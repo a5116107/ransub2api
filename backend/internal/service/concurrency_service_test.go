@@ -269,6 +269,128 @@ func TestAcquireUserSlot_UnlimitedConcurrency(t *testing.T) {
 	require.True(t, result.Acquired)
 }
 
+// ambiguousSlotCache models a successful server write whose reply is lost.
+// The peer reservation must survive cleanup of the caller's exact member.
+type ambiguousSlotCache struct {
+	ConcurrencyCache
+	acquireResult      bool
+	members            map[string]bool
+	acquireErr         error
+	releaseErr         error
+	released           []string
+	cleanupCtxErr      error
+	cleanupHasDeadline bool
+	cleanupValue       any
+	acquiredID         string
+	acquiredOwner      int64
+	releasedOwner      int64
+}
+
+type ambiguousSlotContextKey struct{}
+
+func (c *ambiguousSlotCache) acquire(_ context.Context, owner int64, _ int, request string) (bool, error) {
+	if c.acquireResult || c.acquireErr != nil {
+		c.members[request] = true
+	}
+	c.acquiredID, c.acquiredOwner = request, owner
+	return c.acquireResult, c.acquireErr
+}
+
+func (c *ambiguousSlotCache) release(ctx context.Context, owner int64, request string) error {
+	c.cleanupCtxErr = ctx.Err()
+	_, c.cleanupHasDeadline = ctx.Deadline()
+	c.cleanupValue = ctx.Value(ambiguousSlotContextKey{})
+	c.releasedOwner = owner
+	c.released = append(c.released, request)
+	if c.releaseErr == nil {
+		delete(c.members, request)
+	}
+	return c.releaseErr
+}
+
+func (c *ambiguousSlotCache) AcquireAccountSlot(ctx context.Context, owner int64, limit int, request string) (bool, error) {
+	return c.acquire(ctx, owner, limit, request)
+}
+func (c *ambiguousSlotCache) ReleaseAccountSlot(ctx context.Context, owner int64, request string) error {
+	return c.release(ctx, owner, request)
+}
+func (c *ambiguousSlotCache) AcquireUserSlot(ctx context.Context, owner int64, limit int, request string) (bool, error) {
+	return c.acquire(ctx, owner, limit, request)
+}
+func (c *ambiguousSlotCache) ReleaseUserSlot(ctx context.Context, owner int64, request string) error {
+	return c.release(ctx, owner, request)
+}
+
+func TestAcquireSlotLostReplyReclaimsExactMember(t *testing.T) {
+	for _, dimension := range []string{"account", "user"} {
+		for _, cleanupFails := range []bool{false, true} {
+			t.Run(dimension+"/cleanup_fails="+strconv.FormatBool(cleanupFails), func(t *testing.T) {
+				cache := &ambiguousSlotCache{members: map[string]bool{"peer": true}, acquireErr: context.DeadlineExceeded}
+				if cleanupFails {
+					cache.releaseErr = errors.New("cache unavailable during cleanup")
+				}
+				svc := NewConcurrencyService(cache)
+				ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ambiguousSlotContextKey{}, "regional-routing"))
+				cancel()
+				var result *AcquireResult
+				var err error
+				if dimension == "account" {
+					result, err = svc.AcquireAccountSlot(ctx, 71, 2)
+				} else {
+					result, err = svc.AcquireUserSlot(ctx, 71, 2)
+				}
+				require.Nil(t, result)
+				require.ErrorIs(t, err, context.DeadlineExceeded, "retain original acquisition error")
+				require.Equal(t, []string{cache.acquiredID}, cache.released)
+				require.NotEmpty(t, cache.acquiredID)
+				require.Equal(t, cache.acquiredOwner, cache.releasedOwner)
+				require.NoError(t, cache.cleanupCtxErr, "cancellation must not prevent cleanup")
+				require.True(t, cache.cleanupHasDeadline, "cleanup must remain bounded")
+				require.Equal(t, "regional-routing", cache.cleanupValue)
+				require.True(t, cache.members["peer"], "other requests retain their reservations")
+				require.Equal(t, cleanupFails, cache.members[cache.acquiredID])
+			})
+		}
+	}
+}
+
+func TestAcquireSlotConfirmedReplyOwnership(t *testing.T) {
+	for _, dimension := range []string{"account", "user"} {
+		for _, acquired := range []bool{false, true} {
+			t.Run(dimension+"/acquired="+strconv.FormatBool(acquired), func(t *testing.T) {
+				cache := &ambiguousSlotCache{members: map[string]bool{"peer": true}, acquireResult: acquired}
+				svc := NewConcurrencyService(cache)
+				ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ambiguousSlotContextKey{}, "regional-routing"))
+				defer cancel()
+				var result *AcquireResult
+				var err error
+				if dimension == "account" {
+					result, err = svc.AcquireAccountSlot(ctx, 71, 2)
+				} else {
+					result, err = svc.AcquireUserSlot(ctx, 71, 2)
+				}
+				require.NoError(t, err)
+				require.Equal(t, acquired, result.Acquired)
+				require.Empty(t, cache.released, "confirmed reply must not trigger rollback")
+				if acquired {
+					require.Equal(t, cache.acquiredID, result.RequestID)
+					require.True(t, cache.members[result.RequestID])
+					cancel()
+					result.ReleaseFunc()
+					require.NoError(t, cache.cleanupCtxErr)
+					require.True(t, cache.cleanupHasDeadline)
+					require.Equal(t, "regional-routing", cache.cleanupValue)
+					require.Equal(t, []string{result.RequestID}, cache.released)
+					require.False(t, cache.members[result.RequestID])
+				} else {
+					require.Nil(t, result.ReleaseFunc)
+				}
+				require.Equal(t, map[string]bool{"peer": true}, cache.members)
+			})
+		}
+	}
+}
+
 func TestTrackAPIKeySlot_ReleaseDecrements(t *testing.T) {
 	cache := &stubConcurrencyCacheForTest{}
 	svc := NewConcurrencyService(cache)

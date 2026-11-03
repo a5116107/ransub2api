@@ -346,7 +346,7 @@ type UserLoadInfo struct {
 }
 
 // AcquireAccountSlot attempts to acquire a concurrency slot for an account.
-// If the account is at max concurrency, it waits until a slot is available or timeout.
+// Capacity exhaustion returns Acquired=false; the caller owns any waiting.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
 	// If maxConcurrency is 0 or negative, no limit
@@ -361,21 +361,20 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	requestID := generateRequestID()
 
 	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
+	release := func() {
+		releaseConcurrencySlot(ctx, "account", accountID, requestID, s.cache.ReleaseAccountSlot)
+	}
 	if err != nil {
+		// A lost reply does not prove the server rejected the reservation.
+		release()
 		return nil, err
 	}
 
 	if acquired {
 		return &AcquireResult{
-			Acquired:  true,
-			RequestID: requestID,
-			ReleaseFunc: func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
-					logger.LegacyPrintf("service.concurrency", "Warning: failed to release account slot for %d (req=%s): %v", accountID, requestID, err)
-				}
-			},
+			Acquired:    true,
+			RequestID:   requestID,
+			ReleaseFunc: release,
 		}, nil
 	}
 
@@ -386,7 +385,7 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.
-// If the user is at max concurrency, it waits until a slot is available or timeout.
+// Capacity exhaustion returns Acquired=false; the caller owns any waiting.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int) (*AcquireResult, error) {
 	// If maxConcurrency is 0 or negative, no limit
@@ -401,21 +400,19 @@ func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, 
 	requestID := generateRequestID()
 
 	acquired, err := s.cache.AcquireUserSlot(ctx, userID, maxConcurrency, requestID)
+	release := func() {
+		releaseConcurrencySlot(ctx, "user", userID, requestID, s.cache.ReleaseUserSlot)
+	}
 	if err != nil {
+		release()
 		return nil, err
 	}
 
 	if acquired {
 		return &AcquireResult{
-			Acquired:  true,
-			RequestID: requestID,
-			ReleaseFunc: func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.cache.ReleaseUserSlot(bgCtx, userID, requestID); err != nil {
-					logger.LegacyPrintf("service.concurrency", "Warning: failed to release user slot for %d (req=%s): %v", userID, requestID, err)
-				}
-			},
+			Acquired:    true,
+			RequestID:   requestID,
+			ReleaseFunc: release,
 		}, nil
 	}
 
@@ -423,6 +420,17 @@ func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, 
 		Acquired:    false,
 		ReleaseFunc: nil,
 	}, nil
+}
+
+// Keep regional routing values but detach cancellation, so timeout/cancellation
+// cannot suppress cleanup. Failure remains best-effort and the original
+// acquisition error is returned; the existing cache lease expiry is unchanged.
+func releaseConcurrencySlot(ctx context.Context, dimension string, ownerID int64, requestID string, release func(context.Context, int64, string) error) {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := release(releaseCtx, ownerID, requestID); err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: failed to release %s slot for %d (req=%s): %v", dimension, ownerID, requestID, err)
+	}
 }
 
 // APIKeySlotAdmissionCache adds atomic admission to the shared statistics set.

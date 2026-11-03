@@ -11,6 +11,87 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// lostSlotReplyCache injects a transport failure after the real Redis adapter
+// has committed its write, then cancels the original request before rollback.
+type lostSlotReplyCache struct {
+	service.ConcurrencyCache
+	cancel context.CancelFunc
+}
+
+func (c *lostSlotReplyCache) AcquireAccountSlot(ctx context.Context, id int64, limit int, request string) (bool, error) {
+	acquired, err := c.ConcurrencyCache.AcquireAccountSlot(ctx, id, limit, request)
+	if err != nil || !acquired {
+		return acquired, err
+	}
+	c.cancel()
+	return false, context.DeadlineExceeded
+}
+
+func (c *lostSlotReplyCache) AcquireUserSlot(ctx context.Context, id int64, limit int, request string) (bool, error) {
+	acquired, err := c.ConcurrencyCache.AcquireUserSlot(ctx, id, limit, request)
+	if err != nil || !acquired {
+		return acquired, err
+	}
+	c.cancel()
+	return false, context.DeadlineExceeded
+}
+
+func TestConcurrencyLostReplyRestoresSharedCapacity(t *testing.T) {
+	for _, dimension := range []string{"account", "user"} {
+		t.Run(dimension, func(t *testing.T) {
+			server := miniredis.RunT(t)
+			first := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			second := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			t.Cleanup(func() { require.NoError(t, first.Close()); require.NoError(t, second.Close()) })
+			base := NewConcurrencyCache(first, 15, 900)
+			peer := service.NewConcurrencyService(base)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			faulty := service.NewConcurrencyService(&lostSlotReplyCache{ConcurrencyCache: NewConcurrencyCache(second, 15, 900), cancel: cancel})
+			acquire := func(s *service.ConcurrencyService, ctx context.Context) (*service.AcquireResult, error) {
+				if dimension == "account" {
+					return s.AcquireAccountSlot(ctx, 71, 2)
+				}
+				return s.AcquireUserSlot(ctx, 71, 2)
+			}
+			count := func() int {
+				t.Helper()
+				var n int
+				var err error
+				if dimension == "account" {
+					n, err = base.GetAccountConcurrency(context.Background(), 71)
+				} else {
+					n, err = base.GetUserConcurrency(context.Background(), 71)
+				}
+				require.NoError(t, err)
+				return n
+			}
+			held, err := acquire(peer, context.Background())
+			require.NoError(t, err)
+			require.True(t, held.Acquired)
+			t.Cleanup(held.ReleaseFunc)
+			result, err := acquire(faulty, ctx)
+			require.Nil(t, result)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			require.Equal(t, 1, count(), "only the healthy peer's reservation must remain")
+			peerKey := accountSlotKey(71)
+			if dimension == "user" {
+				peerKey = userSlotKey(71)
+			}
+			require.NoError(t, first.ZScore(context.Background(), peerKey, held.RequestID).Err())
+			next, err := acquire(peer, context.Background())
+			require.NoError(t, err)
+			require.True(t, next.Acquired, "another instance must immediately reuse the recovered capacity")
+			t.Cleanup(next.ReleaseFunc)
+			require.Equal(t, 2, count())
+			next.ReleaseFunc()
+			held.ReleaseFunc()
+			require.Zero(t, count())
+		})
+	}
+}
+
 func TestLiveLeaseReplacesRegularSlotsAndCountsTowardLimits(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})

@@ -175,3 +175,14 @@
 - 最终 service/handler/profit-preview 的 go vet -tags=unit -p 2 实际退出码 0；完整未限量 golangci-lint（--build-tags=unit --timeout=12m --concurrency=2 --allow-parallel-runners --max-same-issues=0 --max-issues-per-linter=0）实际输出 0 issues.、Touched packages lint exit: 0。不重复扩大至未修改包，不运行 CI。
 - D4 转为 in_progress，固定售价附加倍率子项与关联诊断缺口已验证，但完整 D4 仍依赖 D2 及配置新鲜度、模型/fast 来源和剩余路径核查；没有新拆 ID 或把部分验收冒充全局 done。按设计现有 20 个 ID 计数：12 done、2 in_progress、6 pending，本轮 done 增量 0。STATE 更新为 84 行，三份文档原位维护。
 - 仅提交本轮 9 个源码/测试文件与 3 份项目文档；没有推送、PR、worktree、迁移或部署。git diff --check 通过，新增 TODO/FIXME/XXX 为 0，演练产物剩余 0。之前已被自动审批拦截的 bin 产物和图片不重试删除，Windows 符号链接权限等待保持，未宣称全工作区无遗留。
+
+## 2026-11-03：Key 共享上限决策与不明确占槽结果的回收
+
+- 用户明确选择同一上游 API Key 单独配置共享总上限，各账号并发限制同时保留。设计第 4.4 节原位记录该规则：共享策略为 Key 维度单一配置，不取账号最小值，不把总上限复制到各账号；跨账号/产品/实例共享，额度身份与缓存域证据独立。具体策略存储与管理接口仍未实施，不将设计决策写成已具备能力。
+- 核查发现当前申请账号/用户槽位后，只要缓存返回错误就直接返回；服务器已完成写入但回复丢失时，本次 requestID 无释放句柄而遗留到租约过期，可能造成虚假满载。新增旧源码回归实际退出 1：TestAcquireSlotLostReplyReclaimsExactMember 的账号/用户、清理成功/失败四个子例均因未调用释放而失败，service FAIL 1.450s。
+- 在原有 AcquireAccountSlot/AcquireUserSlot 错误路径补精确成员释放尝试；与正常完成路径共用 releaseConcurrencySlot，删除两处重复释放块，并修正“入口自动等待”的过时注释。释放保留上下文路由值、脱离取消且受 5 秒超时约束；仍返回原申请错误，不允许清理故障改写成成功。无清空命名空间、无改动租约期限；迟到写入和缓存持续故障仍需原租约及后续所有权设计处理。
+- 回归验证清理只影响本次 ownerID/requestID，其他请求保留；取消不阻断清理，清理错误不覆盖原申请错误；成功只在显式释放时回收，确认拒绝不额外释放。service 首轮专项三轮通过（1.652s）。service/handler/repository 槽位、并发、清理、Live 与利润终检相关三轮通过，分别 6.726s/1.442s/2.320s，退出码 0。
+- 补充 miniredis 双独立客户端适配器回归，实际执行原 Redis Lua 占槽后注入丢失回复并取消请求，验证健康请求保留、容量立即可复用及最终计数归零；不把 miniredis 冒充生产 Redis 网络故障。增加健康成员 ZSCORE 精确断言后的最终 service/repository 新回归连续三轮实际通过（3.991s/3.803s），退出码 0。
+- 尚未完成 D2 的固定线路/原同步兼容、共享 Key 配置与完整接线、缓存域证据；本轮没有新增或改名任务 ID，20 项状态仍为 12 done、2 in_progress、6 pending，父任务完成增量 0。没有保留探索中的账号 extra 共享上限、独立新槽位入口或未接通的 Redis 方法，避免把部分路径限额冒充全路径保障。
+- 最终 service 与 repository 完整未限量 lint 分别输出 0 issues.、退出码 0；service/handler/repository go vet 退出码 0，最后 repository 测试变更后再次 vet 输出 Final repository vet: PASS。仅本地验证，没有运行 CI。
+- 仅本地提交本轮三个源码/测试文件及现有三份项目文档。单一 work/monitor-driven-scheduling 工作树，未推送、创建 PR、生产迁移或部署。STATE 为 85 行；git diff --check 通过，新增 TODO/FIXME/XXX 为 0；没有生成新日志/二进制/图片。历史受保护图片和已拒绝清理的三个 bin 产物保持，不重试删除。
