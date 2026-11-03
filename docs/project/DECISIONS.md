@@ -300,3 +300,13 @@
 - 首轮服务/handler专项三轮通过（3.980s/2.884s），补齐公共反馈、健康与物理请求边界后的最终专项连续三轮通过（service2.276s、handler0.938s）。完整service/handler回归、vet及未限量lint结果在实际返回后追加；不运行CI、推送、部署或生产迁移。
 - 最终完整service/handler本地回归实际输出ok345.703s/149.916s，Shared key feedback full regression exit: 0；repository共享额度真实路径回归实际输出ok12.315s、退出0。两包最终vet输出Shared key feedback vet: PASS；两包完整未限量lint实际输出0 issues.、退出0。未以专项代替完整包结果，未跳过或放宽断言。
 - 交付复核：14个任务文件纳入本地提交；原错误转换和搜索映射原位更新，唯一判定供3个入口复用，无新增TODO/FIXME/XXX，Go格式与git diff --check通过，STATE保持74行。源码图片仍为历史12个共1164bytes，本轮新增持久测试产物0。origin身份为github.com/ranxi2001/sub2api.git，当前分支无跟踪ref，只本地提交，不推送；单一工作树保持。历史审批拒绝清理及Windows符号链接权限等待不变，全局原20项保持12 done、2 in_progress、6 pending，D2父验收未提前关闭。
+
+## 2026-11-04：D4 多协议供应商权威刷新与发送前线路终检
+
+- 接续 ceeb53d，核对 D2 固定线路时发现 D4 前置缺口：非区域模式仅 OpenAI/严格 Grok 强制刷新，providerProfiles 登记的7个多协议供应商即使启用利润门也可能沿用旧选号对象；最终线路指纹判定同样遗漏这些供应商。旧源码专项实际失败（service 5.334s、退出1），涵盖过期倍率/证据、Key/地址、分组归属及禁用后错误放行。
+- 原位扩展 latestOpenAITurnAccountForGroup 与 checkOpenAITurnBindingAndRate，复用既有主库/区域权威、只读事务、缓存绕过、线路指纹及倍率判定。保留未启用门的既有行为、生产缺读取器时拒绝和原区域权威边界；没有新增调度器、缓存或第二条准入实现。
+- 原测试矩阵扩展到 OpenAI、Grok 和全部7个登记平台，增加协议地址/协议/接入模式变化；原 Grok 读取失败用例替换为全严格供应商矩阵。新增真实 loopback HTTP 三协议测试，初次准入后替换 Key/地址/倍率均在发送前拒绝、网络调用0、下游未写；不变线路真实成功1次。
+- 一次较早验证在测试函数重命名期间生成旧 _testmain.go，引用已替换的 TestGrokStrictProfitAdmissionReadFailure 而编译失败；这是运行期间改动源码造成的入口错配。冻结源码后的最终完整专项连续三轮实际通过（service 2.963s），未忽略失败或保留旧测试实现。
+- 最终完整本地回归实际输出：ok service 324.369s、ok handler 149.140s，Multi-protocol complete regression exit: 0。repository 的 TestOpenAITurnAdmission 连续三轮实际输出 ok 3.405s；三包 go vet 退出0，Multi-protocol repository regression and vet: PASS。service/handler/repository 完整未限量 golangci-lint 输出 0 issues.，退出0；未修改检查规则，未运行CI。
+- 原设计和STATE更新，不把账号级Chat倍率探测证据视为跨协议同价或共享缓存证明。D2固定线路计价依据、直接WS原生接入/Live/区域及缓存域，D4区域传播和模型/fast来源仍保留验收；原20项保持12 done、2 in_progress、6 pending，本轮完成一项D4路径闭环，父任务done增量0。
+- 交付复核：旧 strictGrok 和旧测试名在 internal 下均0命中；新增Go TODO/FIXME/XXX为0，Go格式和git diff --check通过。源码历史图片仍12个共1164bytes，本轮无新增持久测试产物。保留历史审批拒绝清理与Windows符号链接权限等待；单一工作树、只本地提交7个任务文件，不推送、不部署、不迁移。

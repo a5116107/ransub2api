@@ -13,7 +13,7 @@ import (
 var _ service.OpenAITurnAdmissionReader = (*accountRepository)(nil)
 
 // GetOpenAITurnAdmission reads only the fields needed to decide whether an
-// already-selected OpenAI or strictly gated Grok account may start another
+// already-selected OpenAI or strictly gated Grok/multi-protocol account may start another
 // upstream turn. Admission needs group IDs and their model restrictions, but not
 // the complete group entities used by administration and scheduling views.
 // Keeping that distinction avoids an otherwise redundant groups query on every

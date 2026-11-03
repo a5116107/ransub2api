@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
@@ -76,6 +80,81 @@ func cnProtocolIngressCases() []cnProtocolIngressCase {
 				return err
 			},
 		},
+	}
+}
+
+func TestAdaptiveProtocolFinalAdmissionBeforeNetwork(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, ingress := range cnProtocolIngressCases() {
+		for _, change := range []string{"unchanged", "key", "endpoint", "rate"} {
+			t.Run(ingress.name+"/"+change, func(t *testing.T) {
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					var response string
+					switch ingress.path {
+					case "/v1/messages":
+						response = `{"id":"msg_fixture","type":"message","role":"assistant","model":"deepseek-chat","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`
+					case "/v1/chat/completions":
+						response = `{"id":"fixture","model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`
+					default:
+						response = `{"id":"resp_fixture","model":"deepseek-chat","status":"completed","output":[{"id":"msg_fixture","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`
+					}
+					_, _ = io.WriteString(w, response)
+				}))
+				t.Cleanup(server.Close)
+				selected := profitControlSyncedTestAccount(time.Now().UTC())
+				selected.Platform, selected.Status, selected.Schedulable = PlatformDeepseek, StatusActive, true
+				selected.GroupIDs = []int64{9}
+				selected.Credentials = adaptiveProtocolTestAccount(PlatformDeepseek, map[string]any{
+					APIProtocolChatCompletions: server.URL, APIProtocolResponses: server.URL, APIProtocolAnthropic: server.URL,
+				}).Credentials
+				latest := *selected
+				latest.Credentials = maps.Clone(selected.Credentials)
+				reason := ""
+				switch change {
+				case "key":
+					latest.Credentials["api_key"] = "replacement-fixture"
+					reason = "account_binding_changed"
+				case "endpoint":
+					latest.Credentials["api_base_urls"] = map[string]any{APIProtocolChatCompletions: "https://different.invalid"}
+					reason = "account_binding_changed"
+				case "rate":
+					rate := 0.9
+					latest.RateMultiplier = &rate
+					reason = openAIProfitFilterReasonThreshold
+				}
+				repo := &turnAdmissionRepo{accounts: []*Account{selected, &latest}}
+				upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+					return server.Client().Do(req)
+				}}
+				svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), accountRepo: repo, httpUpstream: upstream, requireLatestTurnAdmission: true}
+				ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: PlatformDeepseek, threshold: 0.5})
+				c := adaptiveProtocolTestContext(ingress.path, ingress.body)
+				c.Request = c.Request.WithContext(ctx)
+				var err error
+				switch ingress.path {
+				case "/v1/messages":
+					_, err = svc.ForwardAsAnthropic(ctx, c, selected, ingress.body, "", "")
+				case "/v1/chat/completions":
+					_, err = svc.ForwardAsChatCompletions(ctx, c, selected, ingress.body, "", "")
+				default:
+					_, err = svc.Forward(ctx, c, selected, ingress.body)
+				}
+				require.GreaterOrEqual(t, repo.reads, 2, "check the prepared request after initial admission")
+				if change == "unchanged" {
+					require.NoError(t, err)
+					require.EqualValues(t, 1, calls.Load())
+					return
+				}
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, reason, denied.Reason)
+				require.Zero(t, calls.Load(), "stale prepared credentials must never reach the network")
+				require.False(t, c.Writer.Written())
+			})
+		}
 	}
 }
 

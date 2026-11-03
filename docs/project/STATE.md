@@ -31,7 +31,7 @@
 | M3 | done | WinSock 原生拒绝连接/主机与网络不可达已识别；超时/重置不误判；真实单 POST 及代理/时序/WS 组合回归连续 5 轮通过（140.262s） |
 | M4 | done | 三处私有原子持久化收敛为共用接口；原 22 项 Windows 失败全部实际通过；双平台完整回归、核心三包 lint 0 与最终 vet 通过，本轮产物归零 |
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
-| D4 | in_progress | 固定售价、线路/倍率终检、严格请求跳过旧缓存、HTTP 首次/WS 每轮主库或区域策略读取及请求内开关决定已验证；仍待 D2、其他路径、区域传播及模型/fast 来源 |
+| D4 | in_progress | 固定售价、线路/倍率终检、严格请求跳过旧缓存、HTTP 首次/WS 每轮权威策略读取已验证；已补齐全部7个多协议供应商的账号权威刷新与最终发送绑定；仍待 D2、其他路径、区域传播及模型/fast 来源 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
 | D8 | pending | admin 原8项 lint 阻塞已修复，跨层用例移至 integration/adminkey 并经真实 PostgreSQL 三轮通过；双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮共享 Key 本地拒绝归因：专项三轮通过（service 2.276s、handler 0.938s）；最终完整service 345.703s、handler 149.916s，repository共享额度回归12.315s，均退出0；两包vet通过，完整未限量lint为0 issues。原20项仍12 done、2 in_progress、6 pending，父任务done增量0；前轮WS额度和本轮失败/修复证据见DECISIONS。
+- 本轮多协议权威终检：专项三轮service 2.963s；完整service 324.369s、handler 149.140s；repository准入回归三轮3.405s，均退出0；三包vet通过，三包完整未限量lint为0 issues。原20项仍12 done、2 in_progress、6 pending，完成一项D4路径修复，父任务done增量0；红绿回归及前轮证据见DECISIONS。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -52,8 +52,8 @@
 
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
-go test -tags=unit -p 2 ./internal/service ./internal/handler -run 'Test.*(UpstreamKey|GrokSearchSharedKey|OpenAIAPIKeyHealth|ClassifyOpenAIAPIKeyHealth|PriorityErrorRateScopeRetryDisconnect)' -count=3 -timeout=6m
-go vet -tags=unit -p 2 ./internal/service ./internal/handler
+go test -tags=unit -p 2 ./internal/service -run 'Test(AdaptiveProtocolFinalAdmissionBeforeNetwork|StrictProviderProfitAdmissionReadFailure|OpenAITurnAdmissionFreshProfitEvidence|OpenAITurnAdmissionProfitGateBypassesLocalCache|OpenAIHTTPFinalSendRechecksPurchasedRoute)$' -count=3 -timeout=6m
+go vet -tags=unit -p 2 ./internal/service ./internal/handler ./internal/repository
 ```
 
 ## 下一项工作

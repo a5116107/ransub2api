@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,10 @@ func (r *turnAdmissionRepo) GetOpenAITurnAdmission(context.Context, int64) (*Acc
 	return r.account, r.parent, r.err
 }
 
+func strictTurnAdmissionPlatformsForTest() []string {
+	return append([]string{PlatformOpenAI, PlatformGrok}, slices.Sorted(maps.Keys(providerProfiles))...)
+}
+
 func TestOpenAITurnAdmissionStaticKeyBinding(t *testing.T) {
 	for _, key := range []any{"replacement-fixture", "", nil} {
 		t.Run(fmt.Sprintf("key_%v", key), func(t *testing.T) {
@@ -55,7 +60,7 @@ func TestOpenAITurnAdmissionStaticKeyBinding(t *testing.T) {
 }
 
 func TestOpenAITurnAdmissionFreshProfitEvidence(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformGrok} {
+	for _, platform := range strictTurnAdmissionPlatformsForTest() {
 		for _, tc := range []struct {
 			name, reason string
 			mutate       func(*Account)
@@ -92,7 +97,7 @@ func TestOpenAITurnAdmissionFreshProfitEvidence(t *testing.T) {
 }
 
 func TestOpenAITurnAdmissionProfitGateBypassesLocalCache(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformGrok} {
+	for _, platform := range strictTurnAdmissionPlatformsForTest() {
 		selected := profitControlSyncedTestAccount(time.Now().UTC())
 		selected.Platform = platform
 		selected.Status, selected.Schedulable = StatusActive, true
@@ -105,7 +110,7 @@ func TestOpenAITurnAdmissionProfitGateBypassesLocalCache(t *testing.T) {
 		if platform == PlatformOpenAI {
 			require.Equal(t, 1, repo.reads)
 		} else {
-			require.Zero(t, repo.reads, "ungated Grok keeps the existing direct-call boundary")
+			require.Zero(t, repo.reads, "ungated providers keep the existing direct-call boundary")
 		}
 		previousReads := repo.reads
 		svc.openAITurnAdmissionCache.store(selected, nil)
@@ -123,7 +128,7 @@ func TestOpenAITurnAdmissionProfitGateBypassesLocalCache(t *testing.T) {
 }
 
 func TestOpenAIHTTPFinalSendRechecksPurchasedRoute(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformGrok} {
+	for _, platform := range strictTurnAdmissionPlatformsForTest() {
 		for _, tc := range []struct {
 			name, reason string
 			mutate       func(*Account)
@@ -132,6 +137,11 @@ func TestOpenAIHTTPFinalSendRechecksPurchasedRoute(t *testing.T) {
 			{name: "static key replaced", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["api_key"] = "replacement-fixture" }},
 			{name: "static key cleared", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["api_key"] = "" }},
 			{name: "endpoint changed", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["base_url"] = "https://different.invalid" }},
+			{name: "protocol endpoint changed", reason: "account_binding_changed", mutate: func(a *Account) {
+				a.Credentials["api_base_urls"] = map[string]any{APIProtocolResponses: "https://different.invalid"}
+			}},
+			{name: "protocol changed", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["api_protocol"] = APIProtocolAnthropic }},
+			{name: "account mode changed", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["account_mode"] = AccountModeCoding }},
 			{name: "group removed", reason: "group_membership_changed", mutate: func(a *Account) { a.GroupIDs = nil }},
 			{name: "disabled", reason: "account_ineligible", mutate: func(a *Account) { a.Status = "disabled" }},
 			{name: "purchase rate increased", reason: openAIProfitFilterReasonThreshold, mutate: func(a *Account) { rate := 0.9; a.RateMultiplier = &rate }},
@@ -174,35 +184,37 @@ func TestOpenAIHTTPFinalSendRechecksPurchasedRoute(t *testing.T) {
 	}
 }
 
-func TestGrokStrictProfitAdmissionReadFailure(t *testing.T) {
-	for _, mode := range []string{"deleted", "read error", "missing reader", "missing repository"} {
-		t.Run(mode, func(t *testing.T) {
-			selected := profitControlSyncedTestAccount(time.Now().UTC())
-			selected.Platform, selected.Status, selected.Schedulable = PlatformGrok, StatusActive, true
-			selected.GroupIDs = []int64{9}
-			repo := &turnAdmissionRepo{}
-			svc := &OpenAIGatewayService{accountRepo: repo, requireLatestTurnAdmission: true}
-			switch mode {
-			case "read error":
-				repo.err = errors.New("fixture database unavailable")
-			case "missing reader":
-				svc.accountRepo = &upstreamBillingProbeAccountRepo{}
-			case "missing repository":
-				svc.accountRepo = nil
-			}
-			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: PlatformGrok, threshold: 0.5})
-			req := httptest.NewRequest(http.MethodPost, "https://fixture.invalid/v1/responses", nil).WithContext(ctx)
-			response, err := svc.doOpenAIUpstream(req, "", selected)
-			var denied *OpenAITurnAdmissionError
-			require.ErrorAs(t, err, &denied)
-			require.Equal(t, "latest_state_unavailable", denied.Reason)
-			require.Nil(t, response, "no transport is installed: rejection must precede all sends")
-			previousReads := repo.reads
-			ungated, err := svc.admitOpenAITurn(t.Context(), nil, selected, "grok-4.5")
-			require.NoError(t, err)
-			require.Same(t, selected, ungated)
-			require.Equal(t, previousReads, repo.reads)
-		})
+func TestStrictProviderProfitAdmissionReadFailure(t *testing.T) {
+	for _, platform := range strictTurnAdmissionPlatformsForTest()[1:] {
+		for _, mode := range []string{"deleted", "read error", "missing reader", "missing repository"} {
+			t.Run(platform+"/"+mode, func(t *testing.T) {
+				selected := profitControlSyncedTestAccount(time.Now().UTC())
+				selected.Platform, selected.Status, selected.Schedulable = platform, StatusActive, true
+				selected.GroupIDs = []int64{9}
+				repo := &turnAdmissionRepo{}
+				svc := &OpenAIGatewayService{accountRepo: repo, requireLatestTurnAdmission: true}
+				switch mode {
+				case "read error":
+					repo.err = errors.New("fixture database unavailable")
+				case "missing reader":
+					svc.accountRepo = &upstreamBillingProbeAccountRepo{}
+				case "missing repository":
+					svc.accountRepo = nil
+				}
+				ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: platform, threshold: 0.5})
+				req := httptest.NewRequest(http.MethodPost, "https://fixture.invalid/v1/responses", nil).WithContext(ctx)
+				response, err := svc.doOpenAIUpstream(req, "", selected)
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, "latest_state_unavailable", denied.Reason)
+				require.Nil(t, response, "no transport is installed: rejection must precede all sends")
+				previousReads := repo.reads
+				ungated, err := svc.admitOpenAITurn(t.Context(), nil, selected, "grok-4.5")
+				require.NoError(t, err)
+				require.Same(t, selected, ungated)
+				require.Equal(t, previousReads, repo.reads)
+			})
+		}
 	}
 }
 
