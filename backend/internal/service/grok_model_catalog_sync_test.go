@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -480,7 +481,7 @@ func TestGrokCatalogBackgroundFetchesWhenSnapshotCannotBeReused(t *testing.T) {
 			name: "future timestamp",
 			setup: func(account *Account) {
 				seedGrokCatalogSuccess(account, []string{"grok-old"}, time.Now().Add(-time.Hour).UTC(), officialScope(account))
-				observed := account.Extra[grokObservedModelsExtraKey].(map[string]any)
+				observed := testassert.Type[map[string]any](t, account.Extra[grokObservedModelsExtraKey])
 				observed["fetched_at"] = time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)
 			},
 		},

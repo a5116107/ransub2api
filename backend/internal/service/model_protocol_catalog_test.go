@@ -14,6 +14,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -328,58 +329,61 @@ func TestProtocolRulesWithProtocolSets(t *testing.T) {
 
 // 经真实入口验证：目录声明模型支持入站协议时原样直通，不做协议转换。
 func TestCommandCodeGatewayPassesThroughCatalogProtocols(t *testing.T) {
-	type observation struct {
-		url  string
-		body []byte
-	}
-	forward := func(t *testing.T, ingress routingMatrixIngress, model string, catalog map[string][]string) observation {
-		t.Helper()
-		base := fmt.Sprintf("http://cc-%s-%d.example", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
-		account := commandCodeTestAccount(12)
-		account.Credentials["api_base_urls"] = map[string]any{
-			APIProtocolChatCompletions: base + "/provider/v1",
-			APIProtocolResponses:       base + "/provider/v1",
-			APIProtocolAnthropic:       base + "/provider",
+	synctest.Test(t, func(t *testing.T) {
+		type observation struct {
+			url  string
+			body []byte
 		}
-		url := buildOpenAIModelsURL(base + "/provider/v1")
-		key := modelProtocolCatalogKey(account, url)
-		if catalog != nil {
-			upstreamModelProtocols.store(key, catalog, nil, time.Now())
-		} else {
-			// 目录不可用（退避中）：不触发刷新，回落内置规则。
-			upstreamModelProtocols.store(key, nil, errors.New("unavailable"), time.Now())
+		forward := func(t *testing.T, ingress routingMatrixIngress, model string, catalog map[string][]string) observation {
+			t.Helper()
+			// Clock time is not a unique cache namespace, especially in synctest.
+			base := "http://cc-" + uuid.NewString() + ".example"
+			account := commandCodeTestAccount(12)
+			account.Credentials["api_base_urls"] = map[string]any{
+				APIProtocolChatCompletions: base + "/provider/v1",
+				APIProtocolResponses:       base + "/provider/v1",
+				APIProtocolAnthropic:       base + "/provider",
+			}
+			url := buildOpenAIModelsURL(base + "/provider/v1")
+			key := modelProtocolCatalogKey(account, url)
+			if catalog != nil {
+				upstreamModelProtocols.store(key, catalog, nil, time.Now())
+			} else {
+				// 目录不可用（退避中）：不触发刷新，回落内置规则。
+				upstreamModelProtocols.store(key, nil, errors.New("unavailable"), time.Now())
+			}
+			upstream := &httpUpstreamRecorder{err: errors.New("stop after capture")}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			body := routingMatrixCase{ingress: ingress, model: model}.body()
+			_ = ingress.forward(svc, adaptiveProtocolTestContext(ingress.path, body), account, body)
+			require.NotEmpty(t, upstream.requests)
+			return observation{url: upstream.requests[len(upstream.requests)-1].URL.String(), body: upstream.lastBody}
 		}
-		upstream := &httpUpstreamRecorder{err: errors.New("stop after capture")}
-		svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-		body := routingMatrixCase{ingress: ingress, model: model}.body()
-		_ = ingress.forward(svc, adaptiveProtocolTestContext(ingress.path, body), account, body)
-		require.NotEmpty(t, upstream.requests)
-		return observation{url: upstream.requests[len(upstream.requests)-1].URL.String(), body: upstream.lastBody}
-	}
-	ingresses := map[string]routingMatrixIngress{}
-	for _, ingress := range routingMatrixIngresses() {
-		ingresses[ingress.name] = ingress
-	}
-	catalog := map[string][]string{
-		"deepseek/deepseek-v4-flash":      {APIProtocolChatCompletions, APIProtocolResponses},
-		"deepseek/deepseek-v4-flash-fast": {APIProtocolChatCompletions},
-		"gpt-5.5":                         {APIProtocolChatCompletions, APIProtocolResponses},
-	}
+		ingresses := map[string]routingMatrixIngress{}
+		for _, ingress := range routingMatrixIngresses() {
+			ingresses[ingress.name] = ingress
+		}
+		catalog := map[string][]string{
+			"deepseek/deepseek-v4-flash":      {APIProtocolChatCompletions, APIProtocolResponses},
+			"deepseek/deepseek-v4-flash-fast": {APIProtocolChatCompletions},
+			"gpt-5.5":                         {APIProtocolChatCompletions, APIProtocolResponses},
+		}
 
-	obs := forward(t, ingresses["responses"], "deepseek/deepseek-v4-flash", catalog)
-	require.True(t, strings.HasSuffix(obs.url, "/provider/v1/responses"), obs.url)
-	require.True(t, gjson.GetBytes(obs.body, "input").Exists(), "Responses body passes through unconverted")
+		obs := forward(t, ingresses["responses"], "deepseek/deepseek-v4-flash", catalog)
+		require.True(t, strings.HasSuffix(obs.url, "/provider/v1/responses"), obs.url)
+		require.True(t, gjson.GetBytes(obs.body, "input").Exists(), "Responses body passes through unconverted")
 
-	obs = forward(t, ingresses["responses"], "deepseek/deepseek-v4-flash", nil)
-	require.True(t, strings.HasSuffix(obs.url, "/provider/v1/chat/completions"), obs.url)
-	require.True(t, gjson.GetBytes(obs.body, "messages").Exists())
+		obs = forward(t, ingresses["responses"], "deepseek/deepseek-v4-flash", nil)
+		require.True(t, strings.HasSuffix(obs.url, "/provider/v1/chat/completions"), obs.url)
+		require.True(t, gjson.GetBytes(obs.body, "messages").Exists())
 
-	obs = forward(t, ingresses["responses"], "deepseek/deepseek-v4-flash-fast", catalog)
-	require.True(t, strings.HasSuffix(obs.url, "/provider/v1/chat/completions"), obs.url)
+		obs = forward(t, ingresses["responses"], "deepseek/deepseek-v4-flash-fast", catalog)
+		require.True(t, strings.HasSuffix(obs.url, "/provider/v1/chat/completions"), obs.url)
 
-	obs = forward(t, ingresses["chat"], "gpt-5.5", catalog)
-	require.True(t, strings.HasSuffix(obs.url, "/provider/v1/chat/completions"), obs.url)
-	require.True(t, gjson.GetBytes(obs.body, "messages").Exists(), "Chat body passes through unconverted")
+		obs = forward(t, ingresses["chat"], "gpt-5.5", catalog)
+		require.True(t, strings.HasSuffix(obs.url, "/provider/v1/chat/completions"), obs.url)
+		require.True(t, gjson.GetBytes(obs.body, "messages").Exists(), "Chat body passes through unconverted")
+	})
 }
 
 // 目录缺失时网关拉取目录，首个请求即按目录分流；自定义上游按账号各自拉取，并带上

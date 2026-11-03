@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/securefile"
 	"github.com/google/uuid"
 )
 
@@ -348,34 +349,14 @@ func (d *TrafficDelivery) stage(e TrafficEvent) error {
 	if d.spoolFiles >= d.maxSpoolFiles || d.spoolBytes+int64(len(raw)) > d.maxSpoolBytes {
 		return errTrafficSpoolFull
 	}
-	f, err := os.CreateTemp(d.dir, ".traffic-*")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	defer func() { _ = f.Close(); _ = os.Remove(name) }()
-	if _, err = f.Write(raw); err != nil {
-		return err
-	}
-	if err = f.Sync(); err != nil {
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	if err = os.Rename(name, filepath.Join(d.dir, e.EventID+".json")); err != nil {
+	if err = securefile.WriteAtomic(filepath.Join(d.dir, e.EventID+".json"), raw); err != nil {
 		return err
 	}
 	d.spoolFiles++
 	d.spoolBytes += int64(len(raw))
 	d.pendingFiles++
 	d.updatePendingSnapshot()
-	dir, err := os.Open(d.dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dir.Close() }()
-	return dir.Sync()
+	return nil
 }
 
 func (d *TrafficDelivery) replay(ctx context.Context) error {

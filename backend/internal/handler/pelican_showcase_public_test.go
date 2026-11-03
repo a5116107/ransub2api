@@ -153,7 +153,7 @@ func TestPelicanPublicConditionalReadsAndCompression(t *testing.T) {
 	require.Equal(t, plain.Header().Get("ETag"), compressed.Header().Get("ETag"))
 	zr, err := gzip.NewReader(bytes.NewReader(compressed.Body.Bytes()))
 	require.NoError(t, err)
-	defer zr.Close()
+	defer func() { require.NoError(t, zr.Close()) }()
 	decoded, err := io.ReadAll(zr)
 	require.NoError(t, err)
 	require.Equal(t, plain.Body.Bytes(), decoded)

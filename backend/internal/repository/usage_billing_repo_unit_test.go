@@ -300,7 +300,7 @@ func TestIncrementUsageBillingAccountQuota_ReturnsNotFoundWhenFullStatementMisse
 		mock.ExpectQuery(accountQuotaIncrementSQLs[accountQuotaIncrementSQLIndex(hints[0], hints[1])]).
 			WithArgs(2.5, int64(9)).
 			WillReturnRows(sqlmock.NewRows(accountQuotaStateColumns))
-		if !(hints[0] && hints[1]) {
+		if !hints[0] || !hints[1] {
 			mock.ExpectQuery(accountQuotaIncrementSQLs[accountQuotaIncrementSQLIndex(true, true)]).
 				WithArgs(2.5, int64(9)).
 				WillReturnRows(sqlmock.NewRows(accountQuotaStateColumns))

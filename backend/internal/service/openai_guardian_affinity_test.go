@@ -373,16 +373,21 @@ func TestOpenAIGatewayService_PreviousResponseHonorsGroupAndRequiredPrivacy(t *t
 				nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityResponses,
 				false, false, true,
 			)
-			require.NoError(t, err)
-			require.NotNil(t, selection)
-			require.Equal(t, fallback.ID, selection.Account.ID)
+			if tc.groupErr != nil {
+				require.ErrorContains(t, err, openAIProfitFilterReasonGroupConfigUnavailable)
+				require.Nil(t, selection, "unknown group policy must not admit even the privacy-safe fallback")
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.Equal(t, fallback.ID, selection.Account.ID)
+			}
 			require.NotEqual(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
 			require.Zero(t, repo.setErrorCalls)
 			require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(&accounts[0], codexAutoReviewModel, false))
 			boundAccountID, getErr := store.GetResponseAccount(context.Background(), groupID, responseID)
 			require.NoError(t, getErr)
 			require.Equal(t, tc.boundAccount.ID, boundAccountID, "transient policy misses must preserve the response binding")
-			if selection.ReleaseFunc != nil {
+			if selection != nil && selection.ReleaseFunc != nil {
 				selection.ReleaseFunc()
 			}
 		})

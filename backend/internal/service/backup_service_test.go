@@ -541,7 +541,8 @@ func TestBackupService_CreateBackup_SplitsCompressedArchive(t *testing.T) {
 		data, ok := store.objects[part.S3Key]
 		require.True(t, ok)
 		require.LessOrEqual(t, len(data), 32)
-		compressed.Write(data)
+		_, err = compressed.Write(data)
+		require.NoError(t, err)
 	}
 	store.mu.Unlock()
 

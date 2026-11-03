@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 )
 
 func testCodec(t *testing.T) *Codec {
@@ -238,10 +240,7 @@ func TestSyncHTTPSFullReplacementAndRedirect(t *testing.T) {
 	if err := target.Pull(context.Background(), "http://localhost", nil); err == nil {
 		t.Fatal("plaintext allowed")
 	}
-	stat, err := os.Stat(target.path)
-	if err != nil || stat.Mode().Perm() != 0600 {
-		t.Fatalf("state permissions: %v", err)
-	}
+	assertions.PrivateFile(t, target.path)
 }
 func TestSyncConcurrentUpdatesKeepHighestRevision(t *testing.T) {
 	r, c, n := replicaFixture(t)

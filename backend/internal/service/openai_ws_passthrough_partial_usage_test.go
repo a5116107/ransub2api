@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"fmt"
+	coderws "github.com/coder/websocket"
 	"testing"
 	"time"
 
@@ -44,7 +46,21 @@ func TestSmartProtocolPassthroughPartialUsage(t *testing.T) {
 					f.cancel()
 				}
 				select {
-				case <-f.errors:
+				case err := <-f.errors:
+					switch failure {
+					case "p1_drain":
+						require.NoError(t, err)
+					case "p1_control":
+						var closeErr *OpenAIWSClientCloseError
+						require.ErrorAs(t, err, &closeErr)
+						require.Equal(t, coderws.StatusGoingAway, closeErr.StatusCode())
+						require.ErrorIs(t, err, context.Canceled)
+					default:
+						var closeErr *OpenAIWSClientCloseError
+						require.ErrorAs(t, err, &closeErr)
+						require.Equal(t, coderws.StatusInternalError, closeErr.StatusCode())
+						require.Contains(t, closeErr.Reason(), "request was not replayed")
+					}
 				case <-time.After(6 * time.Second):
 					t.Fatal("P1_LIFECYCLE_TIMEOUT")
 				}

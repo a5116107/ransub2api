@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -124,17 +125,17 @@ func TestToModelPlazaGroupDTO_UserRateAndFieldWhitelist(t *testing.T) {
 		_, exists := decoded[key]
 		require.Truef(t, exists, "plaza group DTO must expose %q", key)
 	}
-	require.InDelta(t, 0.5, decoded["user_rate_multiplier"].(float64), 1e-9)
+	require.InDelta(t, 0.5, testassert.Type[float64](t, decoded["user_rate_multiplier"]), 1e-9)
 	require.Equal(t, true, decoded["video_rate_independent"])
 	require.Equal(t, 0.7, decoded["video_rate_multiplier"])
 
 	// 模型条目:pricing + official_pricing 并存;official 缺失字段输出 null 而非省略
-	models := decoded["models"].([]any)
+	models := testassert.Type[[]any](t, decoded["models"])
 	require.Len(t, models, 1)
-	model := models[0].(map[string]any)
+	model := testassert.Type[map[string]any](t, models[0])
 	require.Contains(t, model, "pricing")
 	require.Contains(t, model, "official_pricing")
-	official := model["official_pricing"].(map[string]any)
+	official := testassert.Type[map[string]any](t, model["official_pricing"])
 	require.Contains(t, official, "input_price")
 	require.Contains(t, official, "cache_read_price")
 	_, has1h := official["cache_write_1h_price"]
@@ -193,20 +194,20 @@ func TestToModelPlazaGroupDTO_LongContextTiersAndBasis(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &decoded))
 	require.Equal(t, true, decoded["long_context_pricing_enabled"])
 
-	model := decoded["models"].([]any)[0].(map[string]any)
+	model := testassert.Type[map[string]any](t, testassert.Type[[]any](t, decoded["models"])[0])
 	require.Equal(t, "whole_request", model["long_context_basis"])
 
-	pricing := model["pricing"].(map[string]any)
-	paidTiers := pricing["intervals"].([]any)
+	pricing := testassert.Type[map[string]any](t, model["pricing"])
+	paidTiers := testassert.Type[[]any](t, pricing["intervals"])
 	require.Len(t, paidTiers, 2)
-	require.Equal(t, ">272K", paidTiers[1].(map[string]any)["tier_label"])
+	require.Equal(t, ">272K", testassert.Type[map[string]any](t, paidTiers[1])["tier_label"])
 
-	official := model["official_pricing"].(map[string]any)
-	officialTiers := official["intervals"].([]any)
+	official := testassert.Type[map[string]any](t, model["official_pricing"])
+	officialTiers := testassert.Type[[]any](t, official["intervals"])
 	require.Len(t, officialTiers, 2)
-	first := officialTiers[0].(map[string]any)
+	first := testassert.Type[map[string]any](t, officialTiers[0])
 	require.Equal(t, "≤272K", first["tier_label"])
-	require.InDelta(t, 272000, first["max_tokens"].(float64), 0)
+	require.InDelta(t, 272000, testassert.Type[float64](t, first["max_tokens"]), 0)
 	require.Contains(t, first, "cache_write_price", "区间 DTO 字段齐全（nil 输出 null）")
 }
 
@@ -235,20 +236,20 @@ func TestToModelPlazaGroupDTO_TimePricing(t *testing.T) {
 	require.NoError(t, err)
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(raw, &decoded))
-	model := decoded["models"].([]any)[0].(map[string]any)
-	tp := model["time_pricing"].(map[string]any)
+	model := testassert.Type[map[string]any](t, testassert.Type[[]any](t, decoded["models"])[0])
+	tp := testassert.Type[map[string]any](t, model["time_pricing"])
 	require.Equal(t, "Asia/Shanghai", tp["timezone"])
 	_, hasWeekdaysOnly := tp["weekdays_only"]
 	require.False(t, hasWeekdaysOnly, "未开启仅工作日时字段省略")
-	periods := tp["periods"].([]any)
+	periods := testassert.Type[[]any](t, tp["periods"])
 	require.Len(t, periods, 1)
-	first := periods[0].(map[string]any)
+	first := testassert.Type[map[string]any](t, periods[0])
 	require.Equal(t, "00:30", first["start_time"])
 	require.Equal(t, "08:30", first["end_time"])
-	require.InDelta(t, 0.5, first["multiplier"].(float64), 1e-12)
+	require.InDelta(t, 0.5, testassert.Type[float64](t, first["multiplier"]), 1e-12)
 
-	weekdaysModel := decoded["models"].([]any)[1].(map[string]any)
-	weekdaysTP := weekdaysModel["time_pricing"].(map[string]any)
+	weekdaysModel := testassert.Type[map[string]any](t, testassert.Type[[]any](t, decoded["models"])[1])
+	weekdaysTP := testassert.Type[map[string]any](t, weekdaysModel["time_pricing"])
 	require.Equal(t, true, weekdaysTP["weekdays_only"])
 }
 

@@ -52,9 +52,8 @@ func TestGetMyPlatformQuotas_EmptyReturns200WithEmptyArray(t *testing.T) {
 	if body.Code != 0 {
 		t.Errorf("expected code=0, got %d", body.Code)
 	}
-	if body.Data.PlatformQuotas == nil {
-		// nil 和 empty slice 均视为可接受（JSON 可能序列化为 null 或 []）
-		// 此断言只验证 HTTP 200 + code=0 即可
+	if len(body.Data.PlatformQuotas) != 0 {
+		t.Errorf("expected no platform quotas, got %v", body.Data.PlatformQuotas)
 	}
 }
 

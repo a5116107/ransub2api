@@ -156,3 +156,121 @@ func TestNewAPIBoundKeyDisappearsPersistsFailureWithBackoff(t *testing.T) {
 	require.Nil(t, snap.Data)
 	require.Equal(t, UpstreamBillingProbeStatusFailed, snap.Balance.Status)
 }
+
+func TestNewAPIBoundKeyRouteChangeInvalidatesRateAndRecovers(t *testing.T) {
+	s, repo, http, accounts := newAPIConfigFixture()
+	ctx := context.Background()
+	_, err := s.SaveNewAPIConfig(ctx, 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	account := accounts.accounts[1]
+	rate := 0.7
+	account.RateMultiplier = &rate
+	fingerprint := NewAPIAccountFingerprint(account)
+	for _, phase := range []struct {
+		name, routes, status string
+	}{
+		{"initial matching group", `["vip"]`, UpstreamBillingProbeStatusOK},
+		{"different upstream route", `["default"]`, UpstreamBillingProbeStatusUnsupported},
+		{"multiple upstream routes", `["vip","default"]`, UpstreamBillingProbeStatusUnsupported},
+		{"matching group restored", `["vip"]`, UpstreamBillingProbeStatusOK},
+	} {
+		t.Run(phase.name, func(t *testing.T) {
+			http.bodies["GET /api/token/?p=0&page_size=100"] = `{"success":true,"data":{"items":[{"id":3,"key":"abcd**********wxyz","group":"vip","route_groups":` + phase.routes + `}],"total":1,"page":1,"page_size":100}}`
+			snapshot, err := s.probeLoadedAccount(ctx, account, 30)
+			require.NoError(t, err)
+			require.Equal(t, phase.status, snapshot.Status)
+			stored := decodeUpstreamBillingProbeSnapshot(account.Extra)
+			require.NotNil(t, stored)
+			require.Equal(t, phase.status, stored.Status)
+			require.Equal(t, UpstreamBillingProbeStatusOK, stored.Balance.Status)
+			require.Equal(t, 2.5, stored.Balance.Data["wallet_balance"])
+			require.Equal(t, 0.7, *account.RateMultiplier, "New API group evidence must not overwrite token account rates")
+			require.Equal(t, fingerprint, repo.bindings[1].Fingerprint)
+			require.Equal(t, fingerprint, NewAPIAccountFingerprint(account))
+			if phase.status == UpstreamBillingProbeStatusOK {
+				require.Equal(t, 0.5, stored.Data["resolved_rate_multiplier"])
+			} else {
+				require.NotContains(t, stored.Data, "resolved_rate_multiplier", "route changes must discard the previously valid rate")
+				require.Nil(t, stored.FreshUntil)
+			}
+		})
+	}
+}
+
+func TestNewAPIBindingRejectsChangedProtocolIdentity(t *testing.T) {
+	for _, change := range []struct {
+		key   string
+		value any
+	}{
+		{"api_base_urls", map[string]any{APIProtocolChatCompletions: "https://new.example/v1"}},
+		{"api_protocol", APIProtocolChatCompletions},
+		{"account_mode", AccountModeCoding},
+	} {
+		t.Run(change.key, func(t *testing.T) {
+			s, repo, _, accounts := newAPIConfigFixture()
+			account := accounts.accounts[1]
+			account.Platform = PlatformDeepseek
+			account.Credentials["api_protocol"] = APIProtocolAdaptive
+			account.Credentials["account_mode"] = "payg"
+			account.Credentials["api_base_urls"] = map[string]any{APIProtocolChatCompletions: "https://example.com/v1"}
+			ctx := context.Background()
+			_, err := s.SaveNewAPIConfig(ctx, 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+			require.NoError(t, err)
+			config, err := s.GetNewAPIConfig(ctx, 1)
+			require.NoError(t, err)
+			require.True(t, config.Configured)
+			binding := repo.bindings[1]
+			account.Credentials[change.key] = change.value
+			config, err = s.GetNewAPIConfig(ctx, 1)
+			require.NoError(t, err)
+			require.False(t, config.Configured, "old binding must require verification after route identity changes")
+			snapshot, err := s.probeNewAPIAccount(ctx, account, binding, 30)
+			require.ErrorIs(t, err, ErrUpstreamBillingProbeIdentityChanged)
+			require.Nil(t, snapshot)
+		})
+	}
+}
+
+func TestNewAPIUsesEffectiveProtocolSite(t *testing.T) {
+	for _, platform := range []string{PlatformKimi, PlatformOpenCodeGo} {
+		t.Run(platform, func(t *testing.T) {
+			s, repo, upstream, accounts := newAPIConfigFixture()
+			for _, id := range []int64{1, 2} {
+				account := accounts.accounts[id]
+				account.Platform = platform
+				account.Credentials["base_url"] = "https://stale.example/v1"
+				account.Credentials["api_protocol"] = APIProtocolAdaptive
+				account.Credentials["api_base_urls"] = map[string]any{APIProtocolChatCompletions: "https://example.com/v1"}
+			}
+			foreign := *accounts.accounts[2]
+			foreign.ID = 4
+			foreign.Credentials = mergeMap(accounts.accounts[2].Credentials, map[string]any{
+				"base_url":      "https://example.com/v1",
+				"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://foreign.example/v1"},
+			})
+			accounts.accounts[4] = &foreign
+			requests := 0
+			upstream.check = func(req *http.Request) {
+				requests++
+				require.Equal(t, "example.com", req.URL.Host, "management credentials must follow the effective site")
+			}
+			ctx := context.Background()
+			preview, err := s.SaveNewAPIConfig(ctx, 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+			require.NoError(t, err)
+			require.Equal(t, "https://example.com", preview.SiteURL)
+			require.Equal(t, "https://example.com", repo.profile.SiteURL)
+			config, err := s.GetNewAPIConfig(ctx, 1)
+			require.NoError(t, err)
+			require.True(t, config.Configured)
+			ids := make([]int64, 0, len(config.Accounts))
+			for _, account := range config.Accounts {
+				ids = append(ids, account.AccountID)
+			}
+			require.Equal(t, []int64{1, 2}, ids, "same-site candidates follow the effective base, not legacy base_url")
+			snapshot, err := s.ProbeAccount(ctx, 1)
+			require.NoError(t, err)
+			require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+			require.Greater(t, requests, 4, "exercise save verification and the bound-key probe")
+		})
+	}
+}

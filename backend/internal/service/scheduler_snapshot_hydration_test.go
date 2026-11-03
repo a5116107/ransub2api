@@ -84,6 +84,7 @@ func (c *snapshotHydrationCache) SetOutboxWatermark(ctx context.Context, id int6
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedulerSnapshot(t *testing.T) {
+	groupID := int64(2)
 	cache := &snapshotHydrationCache{
 		snapshot: []*Account{
 			{
@@ -118,8 +119,8 @@ func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedul
 		},
 	}
 
-	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
-	groupID := int64(2)
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, nil)
+
 	svc := &OpenAIGatewayService{
 		schedulerSnapshot: schedulerSnapshot,
 		cache:             &stubGatewayCache{},
@@ -163,6 +164,7 @@ func TestOpenAINewAcquiredSelectionResult_ReleasesSlotWhenHydrationFails(t *test
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_PreservesAccountRequestID(t *testing.T) {
+	groupID := int64(2)
 	liveAccount := func() *Account {
 		return &Account{
 			ID:          1,
@@ -184,12 +186,11 @@ func TestOpenAISelectAccountWithLoadAwareness_PreservesAccountRequestID(t *testi
 	}
 	concurrencyCache := &mockConcurrencyCache{}
 	svc := &OpenAIGatewayService{
-		schedulerSnapshot:  NewSchedulerSnapshotService(cache, nil, nil, nil, nil),
+		schedulerSnapshot:  NewSchedulerSnapshotService(cache, nil, nil, guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, nil),
 		cache:              &stubGatewayCache{},
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
 
-	groupID := int64(2)
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
 	require.NoError(t, err)
 	require.NotNil(t, selection)

@@ -30,6 +30,40 @@ func TestUpstreamBillingProbeIdentityCoversAllAPIKeyPlatforms(t *testing.T) {
 	require.False(t, isUpstreamBillingProbeAccount(nil))
 }
 
+func TestUpstreamBillingProbeUsesEffectiveProtocolBase(t *testing.T) {
+	for _, tt := range []struct {
+		name, platform, base string
+	}{
+		{"inbound routed", PlatformKimi, "https://stale.example/v1"},
+		{"model routed", PlatformOpenCodeGo, "https://stale.example/v1"},
+		{"model routed without legacy base", PlatformOpenCodeGo, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			account := &Account{ID: 1, Platform: tt.platform, Type: AccountTypeAPIKey, Status: StatusActive,
+				Credentials: map[string]any{
+					"api_key": "fixture-key", "base_url": tt.base, "api_protocol": APIProtocolAdaptive,
+					"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://relay.example/tenant/v1"},
+				},
+				Extra: map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+			}
+			repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{1: account}}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{}, Body: upstreamBillingProbeValidBody(),
+			}}
+			svc := newUpstreamBillingProbeTestService(repo, upstream, nil)
+			snapshot, err := svc.ProbeAccount(context.Background(), 1)
+			require.NoError(t, err)
+			require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+			require.Len(t, upstream.requests, 2)
+			require.Equal(t, "https://relay.example/tenant/v1/sub2api/billing", upstream.requests[0].URL.String())
+			for _, req := range upstream.requests {
+				require.Equal(t, "relay.example", req.URL.Host)
+				require.Equal(t, "Bearer fixture-key", req.Header.Get("Authorization"))
+			}
+		})
+	}
+}
+
 func TestBuildUpstreamBillingRateSnapshotItemsPreservesAllAPIKeyPlatforms(t *testing.T) {
 	makeAccount := func(id int64, platform, accountType string, snapshot any) Account {
 		return Account{

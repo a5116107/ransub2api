@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -287,13 +288,13 @@ func TestGrokCatalogPersistMemoryRepoDeepCopiesAndMergesExtra(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "keep", got.Extra["unrelated"])
 	got.Extra["unrelated"] = "changed-read"
-	got.Extra[grokObservedModelsExtraKey].(map[string]any)["models"] = []any{"changed-read"}
+	testassert.Type[map[string]any](t, got.Extra[grokObservedModelsExtraKey])["models"] = []any{"changed-read"}
 	got.Credentials["access_token"] = "changed-read"
 
 	again, err := repo.GetByID(context.Background(), 25)
 	require.NoError(t, err)
 	require.Equal(t, "keep", again.Extra["unrelated"])
-	require.Equal(t, []any{"kept"}, again.Extra[grokObservedModelsExtraKey].(map[string]any)["models"])
+	require.Equal(t, []any{"kept"}, testassert.Type[map[string]any](t, again.Extra[grokObservedModelsExtraKey])["models"])
 	require.Equal(t, "token-keep", again.Credentials["access_token"])
 
 	metadata := map[string]any{"source": "manual"}
@@ -302,8 +303,8 @@ func TestGrokCatalogPersistMemoryRepoDeepCopiesAndMergesExtra(t *testing.T) {
 	stored, err := repo.GetByID(context.Background(), 25)
 	require.NoError(t, err)
 	require.Equal(t, "keep", stored.Extra["unrelated"])
-	require.Equal(t, "manual", stored.Extra["metadata"].(map[string]any)["source"])
-	require.Equal(t, []any{"kept"}, stored.Extra[grokObservedModelsExtraKey].(map[string]any)["models"])
+	require.Equal(t, "manual", testassert.Type[map[string]any](t, stored.Extra["metadata"])["source"])
+	require.Equal(t, []any{"kept"}, testassert.Type[map[string]any](t, stored.Extra[grokObservedModelsExtraKey])["models"])
 
 	require.NoError(t, repo.UpdateExtra(context.Background(), 25, map[string]any{
 		grokObservedModelsExtraKey: map[string]any{"models": []any{"replaced"}},
@@ -311,8 +312,8 @@ func TestGrokCatalogPersistMemoryRepoDeepCopiesAndMergesExtra(t *testing.T) {
 	stored, err = repo.GetByID(context.Background(), 25)
 	require.NoError(t, err)
 	require.Equal(t, "keep", stored.Extra["unrelated"])
-	require.Equal(t, "manual", stored.Extra["metadata"].(map[string]any)["source"])
-	require.Equal(t, []any{"replaced"}, stored.Extra[grokObservedModelsExtraKey].(map[string]any)["models"])
+	require.Equal(t, "manual", testassert.Type[map[string]any](t, stored.Extra["metadata"])["source"])
+	require.Equal(t, []any{"replaced"}, testassert.Type[map[string]any](t, stored.Extra[grokObservedModelsExtraKey])["models"])
 	require.ErrorIs(t, repo.UpdateExtra(context.Background(), 99, map[string]any{"metadata": "x"}), ErrAccountNotFound)
 }
 

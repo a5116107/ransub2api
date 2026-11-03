@@ -350,9 +350,9 @@ func TestSIWCSharedAuthorizationValidationAndTTL(t *testing.T) {
 				require.NoError(t, err)
 				raw, err := mr.Get(siwcSessionPrefix + other.SessionID)
 				require.NoError(t, err)
-				mr.Set(siwcSessionPrefix+auth.SessionID, raw)
+				require.NoError(t, mr.Set(siwcSessionPrefix+auth.SessionID, raw))
 			case "tampered_ciphertext":
-				mr.Set(siwcSessionPrefix+auth.SessionID, "invalid ciphertext")
+				require.NoError(t, mr.Set(siwcSessionPrefix+auth.SessionID, "invalid ciphertext"))
 			}
 			require.Error(t, svc.CompleteSIWCAuthorization(context.Background(), id, auth.SessionID, callback, nil))
 			require.Zero(t, client.calls)

@@ -186,11 +186,13 @@ func TestExcelBPSImagePolicySettings(t *testing.T) {
 }
 
 func TestExcelBPSImagePolicyForwardCompactAndContinue(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
 	for _, mode := range []string{"native", "relay"} {
 		for _, stream := range []bool{false, true} {
 			for _, failure := range []string{"", "compact_reject", "compact_failed", "compact_eof", "generation_reject", "invalid_compaction"} {
 				t.Run(fmt.Sprintf("%s/stream=%v/%s", mode, stream, failure), func(t *testing.T) {
 					svc := openAIClientToolsTestService(nil)
+					t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
 					svc.cache = newImagePolicyMemoryCache()
 					repo := &excelBPSImageSettingsRepo{values: map[string]string{SettingKeyExcelBPSImageRelayEnabled: "true", SettingKeyExcelBPSImageMode: mode, SettingKeyExcelBPSImageBaseURL: "https://images.example", SettingKeyExcelBPSImageLimitPolicy: "auto_compact"}}
 					svc.settingService = NewSettingService(repo, svc.cfg)

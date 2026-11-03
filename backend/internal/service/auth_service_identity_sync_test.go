@@ -474,7 +474,7 @@ func countProviderGrantRecords(
 		grantReason,
 	)
 	require.NoError(t, err)
-	defer rows.Close()
+	defer func() { require.NoError(t, rows.Close()) }()
 	require.True(t, rows.Next())
 	require.NoError(t, rows.Scan(&count))
 	require.NoError(t, rows.Err())

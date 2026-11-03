@@ -720,6 +720,92 @@ func TestBulkUpdateAccountsInvalidatesProbeSnapshotForIdentityCredentials(t *tes
 	require.Nil(t, repo.bulkUpdates[0].Extra[UpstreamBillingProbeExtraKey])
 }
 
+func TestUpstreamBillingProbeRouteIdentityChanges(t *testing.T) {
+	now := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name        string
+		credentials map[string]any
+		changed     bool
+	}{
+		{"chat endpoint", map[string]any{"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://new.example/v1"}}, true},
+		{"responses endpoint", map[string]any{"api_base_urls": map[string]any{APIProtocolResponses: "https://new.example/v1"}}, true},
+		{"anthropic endpoint", map[string]any{"api_base_urls": map[string]any{APIProtocolAnthropic: "https://new.example/anthropic"}}, true},
+		{"clear endpoints", map[string]any{"api_base_urls": nil}, true},
+		{"protocol", map[string]any{"api_protocol": APIProtocolChatCompletions}, true},
+		{"clear protocol", map[string]any{"api_protocol": nil}, true},
+		{"account mode", map[string]any{"account_mode": AccountModeCoding}, true},
+		{"clear account mode", map[string]any{"account_mode": nil}, true},
+		{"same endpoints", map[string]any{"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://old.example/v1"}}, false},
+		{"same protocol", map[string]any{"api_protocol": APIProtocolAdaptive}, false},
+		{"same account mode", map[string]any{"account_mode": "payg"}, false},
+		{"unrelated model mapping", map[string]any{"model_mapping": map[string]any{"gpt-old": "gpt-new"}}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(now)
+			account.Platform = PlatformDeepseek
+			account.Status = StatusActive
+			account.Credentials = map[string]any{
+				"api_key": "fixture-key", "base_url": "https://old.example/v1",
+				"api_protocol": APIProtocolAdaptive, "account_mode": "payg",
+				"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://old.example/v1"},
+			}
+			_, reason := profitControlAccountRateAt(account, now)
+			require.Empty(t, reason, "fixture must begin with valid rate evidence")
+			target := *account
+			target.Credentials = mergeMap(account.Credentials, tt.credentials)
+			t.Run("binding fingerprint", func(t *testing.T) {
+				require.Equal(t, tt.changed, NewAPIAccountFingerprint(account) != NewAPIAccountFingerprint(&target), "binding fingerprint must track route identity")
+			})
+
+			t.Run("single account edit", func(t *testing.T) {
+				repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+				updated, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), account.ID, &UpdateAccountInput{Credentials: target.Credentials})
+				require.NoError(t, err)
+				require.Equal(t, true, updated.Extra[UpstreamBillingProbeEnabledExtraKey])
+				require.Equal(t, true, updated.Extra[UpstreamBillingRateSyncEnabledExtraKey])
+				_, reason := profitControlAccountRateAt(updated, now)
+				if tt.changed {
+					require.NotContains(t, updated.Extra, UpstreamBillingProbeExtraKey)
+					require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, reason)
+				} else {
+					require.Contains(t, updated.Extra, UpstreamBillingProbeExtraKey)
+					require.Empty(t, reason)
+				}
+			})
+
+			t.Run("CRS merge", func(t *testing.T) {
+				extra := map[string]any{UpstreamBillingProbeExtraKey: map[string]any{"status": "remote"}}
+				reconcileCRSUpstreamBillingProbeExtra(account, target.Platform, target.Type, target.Credentials, extra)
+				require.Equal(t, true, extra[UpstreamBillingProbeEnabledExtraKey])
+				require.Equal(t, true, extra[UpstreamBillingRateSyncEnabledExtraKey])
+				if tt.changed {
+					require.NotContains(t, extra, UpstreamBillingProbeExtraKey)
+				} else {
+					require.Equal(t, account.Extra[UpstreamBillingProbeExtraKey], extra[UpstreamBillingProbeExtraKey])
+				}
+			})
+
+			t.Run("bulk edit", func(t *testing.T) {
+				repo := &upstreamBillingProbeAccountRepo{}
+				result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+					AccountIDs: []int64{account.ID}, Credentials: tt.credentials,
+				})
+				require.NoError(t, err)
+				require.Equal(t, 1, result.Success)
+				require.Len(t, repo.bulkUpdates, 1)
+				// Bulk has no per-row previous value: an explicit route edit clears
+				// evidence conservatively, even when one target already has that value.
+				if tt.name == "unrelated model mapping" {
+					require.NotContains(t, repo.bulkUpdates[0].Extra, UpstreamBillingProbeExtraKey)
+				} else {
+					require.Contains(t, repo.bulkUpdates[0].Extra, UpstreamBillingProbeExtraKey)
+					require.Nil(t, repo.bulkUpdates[0].Extra[UpstreamBillingProbeExtraKey])
+				}
+			})
+		})
+	}
+}
+
 func TestBulkUpdateAccountsInvalidatesProbeSnapshotForProxyUpdate(t *testing.T) {
 	proxyID := int64(9)
 	baseRepo := &upstreamBillingProbeAccountRepo{}

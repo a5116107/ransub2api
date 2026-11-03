@@ -58,10 +58,10 @@ func TestSchedulerTicketFullAccountBatchRedis(t *testing.T) {
 	require.Contains(t, loaded[101].Extra, "codex_turn_ticket:gpt-6-astra")
 
 	// A corrupt full snapshot cannot silently turn into an empty ticket set.
-	mr.Set(schedulerAccountKey("101"), `{"ID":999}`)
+	require.NoError(t, mr.Set(schedulerAccountKey("101"), `{"ID":999}`))
 	_, err = cache.GetAccounts(ctx, []int64{101})
 	require.ErrorContains(t, err, "ID mismatch")
-	mr.Set(schedulerAccountKey("101"), `{invalid`)
+	require.NoError(t, mr.Set(schedulerAccountKey("101"), `{invalid`))
 	_, err = cache.GetAccounts(ctx, []int64{101})
 	require.Error(t, err)
 }
@@ -80,6 +80,16 @@ func (r *ticketRoutingRepo) GetByID(_ context.Context, id int64) (*service.Accou
 }
 
 type ticketRoutingConcurrency struct{ service.ConcurrencyCache }
+
+type ticketRoutingGroupRepo struct{ service.GroupRepository }
+
+func (ticketRoutingGroupRepo) GetByID(_ context.Context, id int64) (*service.Group, error) {
+	return &service.Group{ID: id, Platform: service.PlatformOpenAI, Status: service.StatusActive, RateMultiplier: 1}, nil
+}
+
+func (r ticketRoutingGroupRepo) GetByIDLite(ctx context.Context, id int64) (*service.Group, error) {
+	return r.GetByID(ctx, id)
+}
 
 func (ticketRoutingConcurrency) GetAccountsLoadBatch(_ context.Context, accounts []service.AccountWithConcurrency) (map[int64]*service.AccountLoadInfo, error) {
 	loads := make(map[int64]*service.AccountLoadInfo, len(accounts))
@@ -125,7 +135,7 @@ func TestSchedulerTicketRedisToGateway(t *testing.T) {
 		Enabled: false, FailClosed: true, TargetLength: 292, Models: []string{"gpt-6-astra"},
 	}
 	repo := &ticketRoutingRepo{account: account}
-	snapshot := service.NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	snapshot := service.NewSchedulerSnapshotService(cache, nil, repo, ticketRoutingGroupRepo{}, cfg)
 	gateway := service.NewOpenAIGatewayService(
 		repo, nil, nil, nil, nil, nil, nil, nil, cfg, snapshot,
 		service.NewConcurrencyService(ticketRoutingConcurrency{}),

@@ -1364,7 +1364,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_AccountModelRouteDBRech
 		accountRepo:      repo,
 		cfg:              &config.Config{RunMode: config.RunModeStandard},
 		rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
-		schedulerSnapshot: &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{
+		schedulerSnapshot: &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: &openAISnapshotCacheStub{
 			snapshotAccounts: []*Account{stalePrimary, staleBackup},
 			accountsByID:     map[int64]*Account{stalePrimary.ID: stalePrimary, staleBackup.ID: staleBackup},
 		}},
@@ -1798,7 +1798,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyRateLimite
 	freshBackup := &Account{ID: 31002, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}}
 	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:session_hash_rate_limited": 31001}}
 	snapshotCache := &openAISnapshotCacheStub{snapshotAccounts: []*Account{staleSticky, staleBackup}, accountsByID: map[int64]*Account{31001: freshSticky, 31002: freshBackup}}
-	snapshotService := &SchedulerSnapshotService{cache: snapshotCache}
+	snapshotService := &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: snapshotCache}
 	svc := &OpenAIGatewayService{
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{*freshSticky, *freshBackup}},
 		cache:              cache,
@@ -2176,7 +2176,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyDBRuntimeR
 		snapshotAccounts: []*Account{staleSticky, staleBackup},
 		accountsByID:     map[int64]*Account{33001: staleSticky, 33002: staleBackup},
 	}
-	snapshotService := &SchedulerSnapshotService{cache: snapshotCache}
+	snapshotService := &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: snapshotCache}
 	svc := &OpenAIGatewayService{
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{dbSticky, dbBackup}},
 		cache:              cache,
@@ -2275,7 +2275,7 @@ func TestOpenAIGatewayService_SelectAccountWithLoadAwareness_DBFreshGroupRecheck
 	svc := &OpenAIGatewayService{
 		accountRepo:       schedulerTestOpenAIAccountRepo{accounts: []Account{dbPrimary, dbBackup}},
 		cfg:               cfg,
-		schedulerSnapshot: &SchedulerSnapshotService{cache: snapshotCache},
+		schedulerSnapshot: &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: snapshotCache},
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
 			acquireResults: map[int64]bool{staleBackup.ID: false},
 		}),
@@ -4238,7 +4238,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LegacyAccountModelRoute
 		accountRepo:      repo,
 		cfg:              cfg,
 		rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("false"),
-		schedulerSnapshot: &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{
+		schedulerSnapshot: &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: &openAISnapshotCacheStub{
 			snapshotAccounts: []*Account{stalePrimary, staleBackup},
 			accountsByID:     map[int64]*Account{stalePrimary.ID: stalePrimary, staleBackup.ID: staleBackup},
 		}},

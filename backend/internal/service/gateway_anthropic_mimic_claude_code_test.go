@@ -16,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -282,7 +283,7 @@ func TestBuildUpstreamRequest_AnthropicMimicClaudeCode(t *testing.T) {
 		require.Equal(t, "claude-code-20250219,interleaved-thinking-2025-05-14", getHeaderRaw(req.Header, "anthropic-beta"))
 		require.JSONEq(t, string(ccBody), string(wireBody))
 		value, _ := c.Get(claudeCodeMimicInjectionKey)
-		require.Zero(t, value.(claudeCodeMimicInjection).Tokens)
+		require.Zero(t, testassert.Type[claudeCodeMimicInjection](t, value).Tokens)
 	})
 
 	t.Run("account header override keeps the final say on anthropic-beta", func(t *testing.T) {

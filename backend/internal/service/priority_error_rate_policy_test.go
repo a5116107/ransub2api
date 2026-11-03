@@ -46,7 +46,7 @@ func TestPriorityErrorRateWeightedRecoveryAndIsolation(t *testing.T) {
 	req.RequestedModel = "m"
 	bad.priorityErrors = scheduler.priorityErrorEvidence(req, c, bad.account.ID, now.Add(10*time.Minute))
 	recovered := applyPriorityCandidate(c, &bad, signal, now.Add(10*time.Minute))
-	require.Nil(t, recovered.PriorityErrorEvidence.ErrorRate)
+	require.Nil(t, recovered.ErrorRate)
 	require.InDelta(t, sg.Score, recovered.Score, 1e-9)
 }
 

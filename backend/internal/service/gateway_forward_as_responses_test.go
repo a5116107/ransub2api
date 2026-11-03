@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/tidwall/gjson"
 	"io"
 	"net/http"
@@ -34,14 +35,14 @@ func TestAdaptResponsesClientToolsForAnthropic_FlattensNamespace(t *testing.T) {
 
 	var request map[string]any
 	require.NoError(t, json.Unmarshal(adapted, &request))
-	tools := request["tools"].([]any)
+	tools := testassert.Type[[]any](t, request["tools"])
 	require.Len(t, tools, 1)
-	tool := tools[0].(map[string]any)
+	tool := testassert.Type[map[string]any](t, tools[0])
 	require.Equal(t, "function", tool["type"])
 	require.Equal(t, "codex_app__read_thread", tool["name"])
 
-	input := request["input"].([]any)
-	call := input[0].(map[string]any)
+	input := testassert.Type[[]any](t, request["input"])
+	call := testassert.Type[map[string]any](t, input[0])
 	require.Equal(t, "codex_app__read_thread", call["name"])
 	require.NotContains(t, call, "namespace")
 }
@@ -67,14 +68,14 @@ func TestAdaptResponsesClientToolsForAnthropic_LiftsAdditionalTools(t *testing.T
 
 	var request map[string]any
 	require.NoError(t, json.Unmarshal(adapted, &request))
-	tools := request["tools"].([]any)
+	tools := testassert.Type[[]any](t, request["tools"])
 	require.Len(t, tools, 2)
-	require.Equal(t, "function", tools[0].(map[string]any)["type"])
-	require.Equal(t, "codex_app__read_thread", tools[1].(map[string]any)["name"])
+	require.Equal(t, "function", testassert.Type[map[string]any](t, tools[0])["type"])
+	require.Equal(t, "codex_app__read_thread", testassert.Type[map[string]any](t, tools[1])["name"])
 
-	input := request["input"].([]any)
+	input := testassert.Type[[]any](t, request["input"])
 	require.Len(t, input, 1)
-	require.Equal(t, "message", input[0].(map[string]any)["type"])
+	require.Equal(t, "message", testassert.Type[map[string]any](t, input[0])["type"])
 }
 
 // Codex 的 codex_app 工具（如 automation_update）把 parameters 根节点声明成对象

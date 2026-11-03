@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -145,7 +146,7 @@ func TestUserAvailableChannel_FieldWhitelist(t *testing.T) {
 	} {
 		got, exists := ivDecoded[key]
 		require.Truef(t, exists, "user pricing interval must expose %q", key)
-		require.InDelta(t, want, got.(float64), 1e-12)
+		require.InDelta(t, want, testassert.Type[float64](t, got), 1e-12)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -167,11 +168,11 @@ func TestDuplicateChannelMonitorCopiesConfigurationAndResetsRuntimeState(t *test
 
 	duplicate.ExtraModels[0] = "changed"
 	duplicate.ExtraHeaders["User-Agent"] = "changed"
-	duplicate.BodyOverride["metadata"].(map[string]any)["source"] = "changed"
+	testassert.Type[map[string]any](t, duplicate.BodyOverride["metadata"])["source"] = "changed"
 	*duplicate.TemplateID = 10
 	require.Equal(t, []string{"gpt-5.4", "gpt-5.3"}, source.ExtraModels)
 	require.Equal(t, "Codex", source.ExtraHeaders["User-Agent"])
-	require.Equal(t, "original", source.BodyOverride["metadata"].(map[string]any)["source"])
+	require.Equal(t, "original", testassert.Type[map[string]any](t, source.BodyOverride["metadata"])["source"])
 	require.Equal(t, int64(9), *source.TemplateID)
 	require.Equal(t, "OLD:top-secret", source.APIKey)
 	require.True(t, source.Enabled)

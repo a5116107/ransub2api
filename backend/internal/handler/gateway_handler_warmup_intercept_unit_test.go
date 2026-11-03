@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -294,7 +295,7 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_MixedScheduli
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.True(t, strings.HasPrefix(resp["id"].(string), "msg_01"))
+	require.True(t, strings.HasPrefix(testassert.Type[string](t, resp["id"]), "msg_01"))
 	require.Equal(t, "claude-sonnet-4-5", resp["model"])
 
 	content, ok := resp["content"].([]any)
@@ -383,6 +384,6 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_ForcePlatform
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.True(t, strings.HasPrefix(resp["id"].(string), "msg_01"))
+	require.True(t, strings.HasPrefix(testassert.Type[string](t, resp["id"]), "msg_01"))
 	require.Equal(t, "claude-sonnet-4-5", resp["model"])
 }

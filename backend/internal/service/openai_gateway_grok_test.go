@@ -18,6 +18,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -967,9 +968,10 @@ func TestBuildGrokResponsesRequestAppliesHeaderOverridesLast(t *testing.T) {
 	// 覆写值优先于内置 CLI 身份头。名字不在 wire casing 映射中的覆写头
 	// 以小写键直写（HTTP/2 线上语义），需按写入形态断言。
 	require.Equal(t, "relay-client/2.0", req.Header.Get("User-Agent"))
-	require.Equal(t, []string{"9.9.9"}, req.Header["x-grok-client-version"])
+	rawHeaders := map[string][]string(req.Header)
+	require.Equal(t, []string{"9.9.9"}, rawHeaders["x-grok-client-version"])
 	require.Empty(t, req.Header.Get("X-Grok-Client-Version"))
-	require.Equal(t, []string{"relay-secret"}, req.Header["x-relay-token"])
+	require.Equal(t, []string{"relay-secret"}, rawHeaders["x-relay-token"])
 	// 会话路由头与认证头不受覆写影响。
 	require.Equal(t, "conv-1", req.Header.Get(grokConversationIDHeader))
 	require.Equal(t, "Bearer access-token", req.Header.Get("Authorization"))
@@ -3788,11 +3790,11 @@ func TestStripExplicitNullsFromGrokInputSkipsCompaction(t *testing.T) {
 	items, ok := out.([]any)
 	require.True(t, ok)
 	require.Len(t, items, 2)
-	msg := items[0].(map[string]any)
-	content := msg["content"].([]any)[0].(map[string]any)
+	msg := testassert.Type[map[string]any](t, items[0])
+	content := testassert.Type[map[string]any](t, testassert.Type[[]any](t, msg["content"])[0])
 	_, hasLogprobs := content["logprobs"]
 	require.False(t, hasLogprobs)
-	compaction := items[1].(map[string]any)
+	compaction := testassert.Type[map[string]any](t, items[1])
 	require.Equal(t, "blob", compaction["encrypted_content"])
 	_, hasStatus := compaction["status"]
 	require.True(t, hasStatus, "compaction items must stay unmodified")

@@ -56,9 +56,14 @@ func TestAntigravityBuildGeminiTestRequestWithPrompt_ImageModel(t *testing.T) {
 	contents, ok := inner["contents"].([]any)
 	require.True(t, ok)
 	require.Len(t, contents, 1)
-	firstContent := contents[0].(map[string]any)
-	parts := firstContent["parts"].([]any)
-	require.Equal(t, "a cute cat", parts[0].(map[string]any)["text"])
+	firstContent, ok := contents[0].(map[string]any)
+	require.True(t, ok)
+	parts, ok := firstContent["parts"].([]any)
+	require.True(t, ok)
+	require.Len(t, parts, 1)
+	firstPart, ok := parts[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "a cute cat", firstPart["text"])
 }
 
 func TestExtractContentFromSSEResponse_ExtractsTextAndInlineImages(t *testing.T) {

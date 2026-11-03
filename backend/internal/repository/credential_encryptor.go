@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/securefile"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -54,7 +55,7 @@ func (e *credentialEncryptor) localEncryptor() (*AESEncryptor, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 65 {
+	if !info.Mode().IsRegular() || info.Size() > 65 {
 		return nil, errors.New("credential key must be a private regular file")
 	}
 	f, err := os.Open(e.keyPath)
@@ -62,6 +63,16 @@ func (e *credentialEncryptor) localEncryptor() (*AESEncryptor, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, errors.New("credential key changed while opening")
+	}
+	if err := securefile.CheckPrivate(f); err != nil {
+		return nil, err
+	}
 	raw, err := io.ReadAll(io.LimitReader(f, 66))
 	if err != nil {
 		return nil, err
@@ -109,31 +120,7 @@ func (e *credentialEncryptor) InitializeEncryption() (service.CredentialEncrypti
 	if _, err := rand.Read(key); err != nil {
 		return status, err
 	}
-	f, err := os.CreateTemp(dir, ".credential-key-*")
-	if err != nil {
-		return status, err
-	}
-	defer func() { _ = f.Close(); _ = os.Remove(f.Name()) }()
-	if _, err = f.WriteString(hex.EncodeToString(key) + "\n"); err != nil {
-		return status, err
-	}
-	if err = f.Sync(); err != nil {
-		return status, err
-	}
-	if err = f.Close(); err != nil {
-		return status, err
-	}
-	// Link publishes a complete file atomically without replacing an existing
-	// key, including when another process wins a concurrent initialization.
-	if err = os.Link(f.Name(), e.keyPath); err != nil && !errors.Is(err, os.ErrExist) {
-		return status, err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return status, err
-	}
-	defer func() { _ = d.Close() }()
-	if err = d.Sync(); err != nil {
+	if err = securefile.CreateAtomic(e.keyPath, []byte(hex.EncodeToString(key)+"\n")); err != nil && !errors.Is(err, os.ErrExist) {
 		return status, err
 	}
 	return e.EncryptionStatus()

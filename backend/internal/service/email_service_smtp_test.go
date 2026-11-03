@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"math/big"
 	"net"
 	"strings"
@@ -107,7 +108,7 @@ func startFakeSMTPServer(t *testing.T, implicitTLS, advertiseStartTLS bool) (*fa
 		}
 	}()
 
-	port := listener.Addr().(*net.TCPAddr).Port
+	port := testassert.Type[*net.TCPAddr](t, listener.Addr()).Port
 	return srv, port
 }
 
@@ -154,7 +155,7 @@ func (srv *fakeSMTPServer) serve(conn net.Conn, allowStartTLS bool) {
 			if allowStartTLS {
 				ok = ok && writeLine("250-STARTTLS")
 			}
-			if !(ok && writeLine("250-AUTH PLAIN LOGIN") && writeLine("250 8BITMIME")) {
+			if !ok || !writeLine("250-AUTH PLAIN LOGIN") || !writeLine("250 8BITMIME") {
 				return
 			}
 		case upper == "STARTTLS" && allowStartTLS:
@@ -227,7 +228,7 @@ func (srv *fakeSMTPServer) serveCommands(reader *bufio.Reader, writer *bufio.Wri
 		upper := strings.ToUpper(cmd)
 		switch {
 		case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
-			if !(writeLine("250-fake.test") && writeLine("250-AUTH PLAIN LOGIN") && writeLine("250 8BITMIME")) {
+			if !writeLine("250-fake.test") || !writeLine("250-AUTH PLAIN LOGIN") || !writeLine("250 8BITMIME") {
 				return
 			}
 		case strings.HasPrefix(upper, "AUTH"):

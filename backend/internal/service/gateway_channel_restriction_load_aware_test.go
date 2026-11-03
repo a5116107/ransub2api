@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -107,8 +108,9 @@ func TestSelectAccountWithLoadAwareness_UpstreamRestrictionRejectsWhenAllAccount
 	t.Parallel()
 
 	f := newLoadAwareRestrictionFixture(t, true, nil, nil)
-	// 账号 2 也改为映射到不在定价列表的模型
-	f.svc.accountRepo.(*mockAccountRepoForPlatform).accounts[1].Credentials = map[string]any{
+	testassert.
+		// 账号 2 也改为映射到不在定价列表的模型
+		Type[*mockAccountRepoForPlatform](t, f.svc.accountRepo).accounts[1].Credentials = map[string]any{
 		"model_mapping": map[string]any{"claude-fable-5-1": "claude-fable-5-1"},
 	}
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -88,15 +89,15 @@ func TestBuildGeminiBatchJSONL_WritesReferenceImages(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &got))
-	request := got["request"].(map[string]any)
-	contents := request["contents"].([]any)
-	parts := contents[0].(map[string]any)["parts"].([]any)
+	request := testassert.Type[map[string]any](t, got["request"])
+	contents := testassert.Type[[]any](t, request["contents"])
+	parts := testassert.Type[[]any](t, testassert.Type[map[string]any](t, contents[0])["parts"])
 	require.Len(t, parts, 3)
-	require.Equal(t, "A clean product hero image", parts[0].(map[string]any)["text"])
-	inlineData := parts[1].(map[string]any)["inlineData"].(map[string]any)
+	require.Equal(t, "A clean product hero image", testassert.Type[map[string]any](t, parts[0])["text"])
+	inlineData := testassert.Type[map[string]any](t, testassert.Type[map[string]any](t, parts[1])["inlineData"])
 	require.Equal(t, "image/webp", inlineData["mimeType"])
 	require.Equal(t, "d2VicC1ieXRlcw==", inlineData["data"])
-	fileData := parts[2].(map[string]any)["fileData"].(map[string]any)
+	fileData := testassert.Type[map[string]any](t, testassert.Type[map[string]any](t, parts[2])["fileData"])
 	require.Equal(t, "image/jpeg", fileData["mimeType"])
 	require.Equal(t, "gs://bucket/refs/style.jpg", fileData["fileUri"])
 }
@@ -183,7 +184,7 @@ func TestGeminiProvider_OpenResultStreamsResultFile(t *testing.T) {
 	outputRef := "files/output-jsonl"
 	r, contentType, err := provider.OpenResult(context.Background(), &BatchImageJob{ProviderOutputRef: &outputRef}, geminiAPIKeyAccount("sk-secret"))
 	require.NoError(t, err)
-	defer r.Close()
+	defer func() { require.NoError(t, r.Close()) }()
 
 	body, err := io.ReadAll(r)
 	require.NoError(t, err)
@@ -247,12 +248,12 @@ func requireJSONLLine(t *testing.T, line, wantKey, wantPrompt string) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(line), &got))
 	require.Equal(t, wantKey, got["key"])
-	request := got["request"].(map[string]any)
-	config := request["generationConfig"].(map[string]any)
+	request := testassert.Type[map[string]any](t, got["request"])
+	config := testassert.Type[map[string]any](t, request["generationConfig"])
 	require.Equal(t, []any{"TEXT", "IMAGE"}, config["responseModalities"])
-	contents := request["contents"].([]any)
-	parts := contents[0].(map[string]any)["parts"].([]any)
-	require.Equal(t, wantPrompt, parts[0].(map[string]any)["text"])
+	contents := testassert.Type[[]any](t, request["contents"])
+	parts := testassert.Type[[]any](t, testassert.Type[map[string]any](t, contents[0])["parts"])
+	require.Equal(t, wantPrompt, testassert.Type[map[string]any](t, parts[0])["text"])
 }
 
 func validGeminiBatchInput() BatchImageInput {

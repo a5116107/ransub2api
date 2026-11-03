@@ -53,9 +53,9 @@ func TestScopedAdminAccountListScopesCountAndPageInSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	repo := newAccountRepositoryWithSQL(client, db, nil)
 	mock.ExpectQuery("count").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("page").WillReturnRows(sqlmock.NewRows([]string{"id"}))
@@ -157,9 +157,9 @@ func TestScopedAdminCodexCandidatesQueryIsBounded(t *testing.T) {
 	})
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(matcher))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	repo := newAccountRepositoryWithSQL(client, db, nil)
 	ctx := adminaccess.WithPrincipal(context.Background(), &adminaccess.Principal{Policy: adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: []string{"accounts.credentials"}, AccountTypes: []string{"oauth"}, AllGroups: true, IncludeUngrouped: true}}}})
 	mock.ExpectQuery("候选身份").WillReturnRows(sqlmock.NewRows([]string{"id", "credentials"}))

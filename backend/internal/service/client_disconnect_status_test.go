@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"testing"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -60,7 +61,7 @@ func TestTransportErrorHandlers_ClientDisconnectRecordsNoOpsEvent(t *testing.T) 
 			require.ErrorIs(t, err, context.Canceled)
 			raw, recorded := c.Get(OpsUpstreamErrorsKey)
 			require.True(t, recorded)
-			require.Len(t, raw.([]*OpsUpstreamErrorEvent), 1)
+			require.Len(t, testassert.Type[[]*OpsUpstreamErrorEvent](t, raw), 1)
 		})
 	}
 }

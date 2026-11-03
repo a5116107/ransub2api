@@ -43,7 +43,7 @@ func TestAccountProxySelectionLargePoolAndTransactionalLeastUsed(t *testing.T) {
 	require.Error(t, err)
 	tx, err := client.Tx(context.Background())
 	require.NoError(t, err)
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	ctx := dbent.NewTxContext(context.Background(), tx)
 	selected, err := repo.SelectAccountProxy(ctx, "least_used")
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestAccountProxySelectionLargePoolAndTransactionalLeastUsed(t *testing.T) {
 			}{0, err}
 			return
 		}
-		defer other.Rollback()
+		defer func() { _ = other.Rollback() }()
 		c, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		c = dbent.NewTxContext(c, other)

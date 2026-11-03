@@ -100,18 +100,22 @@ func TestClaudeClientCancelWriteOrFlushPreservesCurrentUsage(t *testing.T) {
 			watchdog := time.AfterFunc(3*time.Second, func() { _ = pw.CloseWithError(io.ErrUnexpectedEOF) })
 			defer watchdog.Stop()
 			producer := make(chan error, 1)
+			continueProduction := make(chan struct{})
 			go func() {
 				_, err := io.WriteString(pw, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11,\"cache_read_input_tokens\":7,\"output_tokens\":2}}}\n\n")
 				if err == nil {
 					_, err = pw.Write([]byte("data: "))
 				}
-				// Never finish the stream unless the reader is closed.
+				// Attempt future output only after cancellation handling returned.
+				// This prevents the read-ahead goroutine from draining the fixture.
+				<-continueProduction
 				if err == nil {
 					_, err = pw.Write([]byte("future output"))
 				}
 				producer <- err
 			}()
 			result, err := newStreamingResponseTestGatewayService().handleStreamingResponse(context.Background(), &http.Response{Header: http.Header{}, Body: pr}, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+			close(continueProduction)
 			require.Error(t, err)
 			var failover *UpstreamFailoverError
 			require.False(t, errors.As(err, &failover))
@@ -120,7 +124,8 @@ func TestClaudeClientCancelWriteOrFlushPreservesCurrentUsage(t *testing.T) {
 			require.Equal(t, 7, result.usage.CacheReadInputTokens)
 			require.Equal(t, 2, result.usage.OutputTokens)
 			select {
-			case <-producer:
+			case err := <-producer:
+				require.ErrorIs(t, err, io.ErrClosedPipe)
 			case <-time.After(time.Second):
 				t.Fatal("upstream reader remained open")
 			}

@@ -394,8 +394,13 @@ func TestOllamaProbeCallback_StaleLongDoesNotOverrideNewShort(t *testing.T) {
 	svc.handle429(context.Background(), acct, http.Header{}, nil) // schedules gen @5s
 	require.Equal(t, 1, scheduler.count())
 
-	// An admin / newer policy re-arms the account to a fresh SHORT cooldown.
-	newShort := time.Now().Add(5 * time.Second)
+	// An admin / newer policy re-arms the account to a distinct short cooldown.
+	// Derive it from the captured reset: consecutive time.Now calls can share
+	// a clock tick and otherwise fail to create a new generation.
+	scheduledReset := repo.currentReset(acct.ID)
+	require.NotNil(t, scheduledReset)
+	newShort := scheduledReset.Add(time.Second)
+	require.False(t, repo.currentReset(acct.ID).Equal(newShort), "fixture must establish a different cooldown generation")
 	repo.mutate(acct.ID, func(a *Account) { a.RateLimitResetAt = ollama429TimePtr(newShort) })
 
 	// The old async result reports a long 7d reset; it must not override.
@@ -583,7 +588,7 @@ func (r *ollama429LinkRepo) UpdateOllamaCloudUsageSnapshot(ctx context.Context, 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if a, ok := r.upstreamBillingProbeAccountRepo.accounts[expected.ID]; ok {
+	if a, ok := r.accounts[expected.ID]; ok {
 		r.bump(a)
 	}
 	return nil
@@ -592,7 +597,7 @@ func (r *ollama429LinkRepo) UpdateOllamaCloudUsageSnapshot(ctx context.Context, 
 func (r *ollama429LinkRepo) SetRateLimitedIfLater(_ context.Context, id int64, resetAt time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	a := r.upstreamBillingProbeAccountRepo.accounts[id]
+	a := r.accounts[id]
 	if a == nil {
 		return nil
 	}
@@ -615,7 +620,7 @@ func (r *ollama429LinkRepo) SetRateLimitedIfUnchanged(
 ) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	a := r.upstreamBillingProbeAccountRepo.accounts[id]
+	a := r.accounts[id]
 	if a == nil {
 		return false, nil
 	}
@@ -634,7 +639,7 @@ func (r *ollama429LinkRepo) SetRateLimitedIfUnchanged(
 func (r *ollama429LinkRepo) currentReset(id int64) *time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	a := r.upstreamBillingProbeAccountRepo.accounts[id]
+	a := r.accounts[id]
 	if a == nil || a.RateLimitResetAt == nil {
 		return nil
 	}

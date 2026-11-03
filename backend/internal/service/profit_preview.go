@@ -2,7 +2,7 @@ package service
 
 // 分组利润控制离线预演：使用生产只读导出的分组配置、账号倍率、探测状态、
 // 用户覆盖倍率与主力模型清单，复用线上 U/D/epsilon 语义推演准入。
-// 探测状态仅用于解释账号倍率来源是否健康，不影响准入结论。
+// 自动同步的 API Key 复用线上快照有效性与实时高峰规则；手工账号使用保存倍率。
 
 import (
 	"math"
@@ -18,6 +18,7 @@ const (
 	ProfitPreviewWarningProbeStale       = "probe_snapshot_stale"
 	ProfitPreviewWarningProbeFailed      = "probe_failed"
 	ProfitPreviewWarningProbeUnsupported = "probe_unsupported"
+	ProfitPreviewWarningProbeInvalid     = "probe_rate_evidence_invalid"
 	ProfitPreviewWarningManualRateOne    = "manual_rate_1_suspected_unmaintained"
 )
 
@@ -38,9 +39,10 @@ type ProfitPreviewGroupInput struct {
 
 // 预演账号分类与线上否决原因一一对应。
 const (
-	ProfitPreviewClassAdmitted            = "admitted"
-	ProfitPreviewClassRejectedThreshold   = "rejected_threshold"
-	ProfitPreviewClassRejectedInvalidRate = "rejected_invalid_account_rate"
+	ProfitPreviewClassAdmitted             = "admitted"
+	ProfitPreviewClassRejectedThreshold    = "rejected_threshold"
+	ProfitPreviewClassRejectedInvalidRate  = "rejected_invalid_account_rate"
+	ProfitPreviewClassRejectedUpstreamRate = "rejected_upstream_rate_unavailable"
 )
 
 // ProfitPreviewAccountVerdict 是单账号的预演结论。
@@ -50,8 +52,11 @@ type ProfitPreviewAccountVerdict struct {
 	Platform    string   `json:"platform"`
 	Class       string   `json:"class"`
 	AccountRate *float64 `json:"account_rate,omitempty"`
-	RateSource  string   `json:"rate_source"`
-	Warnings    []string `json:"warnings,omitempty"`
+	// EffectiveRate is U at evalAt; AccountRate remains the stored base rate.
+	// Invalid or unavailable rate evidence leaves EffectiveRate absent.
+	EffectiveRate *float64 `json:"effective_upstream_rate,omitempty"`
+	RateSource    string   `json:"rate_source"`
+	Warnings      []string `json:"warnings,omitempty"`
 	// RejectedUnderMinD 表示账号在最低有效 D（用户覆盖最坏口径）下会被排除。
 	RejectedUnderMinD bool `json:"rejected_under_min_d,omitempty"`
 	// SupportedModels 为该账号支持的主力模型子集。
@@ -163,31 +168,35 @@ func previewAccountProfitAdmission(
 		Platform:   account.Platform,
 		RateSource: ProfitPreviewRateSourceManual,
 	}
-	if enabled, _ := account.Extra[UpstreamBillingRateSyncEnabledExtraKey].(bool); enabled {
+	if account.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(account) {
 		verdict.RateSource = ProfitPreviewRateSourceUpstreamProbe
 		verdict.Warnings = append(verdict.Warnings, profitPreviewProbeWarnings(account, evalAt)...)
 	} else if account.RateMultiplier != nil && *account.RateMultiplier == 1 {
 		verdict.Warnings = append(verdict.Warnings, ProfitPreviewWarningManualRateOne)
 	}
 
-	validRate := account.RateMultiplier != nil &&
-		!math.IsNaN(*account.RateMultiplier) &&
-		!math.IsInf(*account.RateMultiplier, 0) &&
-		*account.RateMultiplier >= 0
-	if validRate {
+	upstream, reason := profitControlAccountRateAt(account, evalAt)
+	if reason != openAIProfitFilterReasonInvalidAccountRate {
 		rate := *account.RateMultiplier
 		verdict.AccountRate = &rate
+	}
+	if reason == "" {
+		verdict.EffectiveRate = &upstream
+	} else if reason == openAIProfitFilterReasonUpstreamRateUnavailable && len(verdict.Warnings) == 0 {
+		verdict.Warnings = append(verdict.Warnings, ProfitPreviewWarningProbeInvalid)
 	}
 	switch {
 	case !effectiveGate:
 		verdict.Class = ProfitPreviewClassAdmitted
-	case !validRate:
+	case reason == openAIProfitFilterReasonInvalidAccountRate:
 		verdict.Class = ProfitPreviewClassRejectedInvalidRate
-	case profitControlOverThreshold(*account.RateMultiplier, thresholdDefault):
+	case reason == openAIProfitFilterReasonUpstreamRateUnavailable:
+		verdict.Class = ProfitPreviewClassRejectedUpstreamRate
+	case profitControlOverThreshold(upstream, thresholdDefault):
 		verdict.Class = ProfitPreviewClassRejectedThreshold
 	default:
 		verdict.Class = ProfitPreviewClassAdmitted
-		verdict.RejectedUnderMinD = profitControlOverThreshold(*account.RateMultiplier, thresholdMinD)
+		verdict.RejectedUnderMinD = profitControlOverThreshold(upstream, thresholdMinD)
 	}
 	return verdict
 }

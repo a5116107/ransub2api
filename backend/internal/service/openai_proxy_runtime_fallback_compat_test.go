@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"testing"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -149,7 +150,7 @@ func TestRuntimeProxyFallbackRealRefusedConnection(t *testing.T) {
 	defer server.Close()
 	deadListener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	dead := deadListener.Addr().(*net.TCPAddr)
+	dead := testassert.Type[*net.TCPAddr](t, deadListener.Addr())
 	require.NoError(t, deadListener.Close())
 	primary := proxyForTest(1, "127.0.0.1", dead.Port)
 	primary.FallbackMode = FallbackModeDirect
@@ -171,7 +172,7 @@ func TestRuntimeProxyFallbackRealRefusedConnection(t *testing.T) {
 	s := &OpenAIGatewayService{httpUpstream: upstream}
 	resp, err := s.doOpenAIUpstream(req, primary.URL(), account)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 	require.Equal(t, 200, resp.StatusCode)
 	require.Equal(t, 2, calls)
 	require.Equal(t, int32(1), postCount.Load(), "only one POST reaches the target")

@@ -25,7 +25,7 @@ func (s *rpmUserRepoStub) Update(_ context.Context, user *User, fields UserUpdat
 	s.lastUpdated = &clone
 	s.lastFields = fields
 	if s.userRepoStub != nil {
-		s.userRepoStub.user = &clone
+		s.user = &clone
 	}
 	return nil
 }

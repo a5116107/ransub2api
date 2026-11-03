@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -66,9 +67,9 @@ func TestPelicanKeepaliveHTTP(t *testing.T) {
 				payloads <- payload
 				if tc.phase == "body" {
 					w.Header().Set("Content-Type", "text/event-stream")
-					w.(http.Flusher).Flush()
+					testassert.Type[http.Flusher](t, w).Flush()
 					_, _ = io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
-					w.(http.Flusher).Flush()
+					testassert.Type[http.Flusher](t, w).Flush()
 				}
 				if tc.abort {
 					// Disconnect tests must not race a successful 50ms response.
@@ -115,7 +116,7 @@ func TestPelicanKeepaliveHTTP(t *testing.T) {
 			client := &http.Client{Timeout: wait + 10*time.Second}
 			resp, err := client.Get(downstream.URL)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 			require.Less(t, time.Since(started), 2*time.Second, "SSE headers must precede upstream headers")
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
@@ -142,7 +143,8 @@ func TestPelicanKeepaliveHTTP(t *testing.T) {
 			beats := 0
 			for scanner.Scan() {
 				line := scanner.Text()
-				body.WriteString(line + "\n")
+				_, writeErr := body.WriteString(line + "\n")
+				require.NoError(t, writeErr)
 				if line != "" {
 					gap := time.Since(last)
 					if gap > maxGap {
@@ -164,7 +166,7 @@ func TestPelicanKeepaliveHTTP(t *testing.T) {
 			require.Equal(t, 1, strings.Count(body.String(), `"type":"test_complete"`))
 			payload := <-payloads
 			require.Equal(t, "gpt-6-astra", payload["model"])
-			require.Equal(t, "max", payload["reasoning"].(map[string]any)["effort"])
+			require.Equal(t, "max", testassert.Type[map[string]any](t, payload["reasoning"])["effort"])
 			if long {
 				require.GreaterOrEqual(t, time.Since(started), 130*time.Second)
 				require.GreaterOrEqual(t, beats, 13)

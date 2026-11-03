@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ func TestRequestTimezoneSettingsPersistAndInvalidate(t *testing.T) {
 		svc.openAIRequestTimezoneEnabledCache.Store(&cachedOpenAIRequestTimezoneEnabled{value: !enabled, expiresAt: time.Now().Add(time.Hour).UnixNano()})
 		require.NoError(t, svc.UpdateSettings(context.Background(), &SystemSettings{OpenAIRequestTimezoneEnabled: enabled}))
 		require.Equal(t, map[bool]string{false: "false", true: "true"}[enabled], repo.updates[SettingKeyOpenAIRequestTimezoneEnabled])
-		require.Zero(t, svc.openAIRequestTimezoneEnabledCache.Load().(*cachedOpenAIRequestTimezoneEnabled).expiresAt)
+		require.Zero(t, testassert.Type[*cachedOpenAIRequestTimezoneEnabled](t, svc.openAIRequestTimezoneEnabledCache.Load()).expiresAt)
 	}
 }
 
@@ -28,7 +29,7 @@ func TestRequestTimezoneAutoSettingsPersistAndInvalidate(t *testing.T) {
 		svc.openAIRequestTimezoneAutoCache.Store(&cachedOpenAIRequestTimezoneAuto{value: !enabled, expiresAt: time.Now().Add(time.Hour).UnixNano()})
 		require.NoError(t, svc.UpdateSettings(context.Background(), &SystemSettings{OpenAIRequestTimezoneAuto: enabled}))
 		require.Equal(t, map[bool]string{false: "false", true: "true"}[enabled], repo.updates[SettingKeyOpenAIRequestTimezoneAuto])
-		require.Zero(t, svc.openAIRequestTimezoneAutoCache.Load().(*cachedOpenAIRequestTimezoneAuto).expiresAt)
+		require.Zero(t, testassert.Type[*cachedOpenAIRequestTimezoneAuto](t, svc.openAIRequestTimezoneAutoCache.Load()).expiresAt)
 	}
 }
 

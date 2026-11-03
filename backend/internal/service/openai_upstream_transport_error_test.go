@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"runtime"
 	"syscall"
 	"testing"
 )
@@ -54,6 +55,13 @@ func TestClassifyUpstreamTransportError(t *testing.T) {
 		{"ECONNREFUSED bare", syscall.ECONNREFUSED, true},
 		{"EHOSTUNREACH bare", syscall.EHOSTUNREACH, true},
 		{"ENETUNREACH bare", syscall.ENETUNREACH, true},
+
+		// Native WinSock codes can be wrapped by net/http and connectex.
+		{"WinSock connection refused", &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connectex", Err: syscall.Errno(10061)}}, runtime.GOOS == "windows"},
+		{"WinSock host unreachable", syscall.Errno(10065), runtime.GOOS == "windows"},
+		{"WinSock network unreachable", syscall.Errno(10051), runtime.GOOS == "windows"},
+		{"WinSock timeout remains transient", syscall.Errno(10060), false},
+		{"WinSock reset remains transient", syscall.Errno(10054), false},
 
 		// *net.DNSError with IsNotFound — permanent DNS lookup failure.
 		{

@@ -99,7 +99,11 @@ func TestPassthroughSecondTurnKeyWaitCancelsPromptlyAndIgnoresLateTerminal(t *te
 	require.Contains(t, closeErr.Reason, "canceled")
 	require.Less(t, time.Since(begin), 3*time.Second)
 	select {
-	case <-done:
+	case err := <-done:
+		var serverClose *OpenAIWSClientCloseError
+		require.ErrorAs(t, err, &serverClose)
+		require.Equal(t, coderws.StatusNormalClosure, serverClose.StatusCode())
+		require.Contains(t, serverClose.Reason(), "canceled")
 	case <-time.After(3 * time.Second):
 		t.Fatal("relay did not stop after the pending response.cancel")
 	}
@@ -164,7 +168,11 @@ func TestPassthroughSecondTurnKeyWaitRejectsOverlappingCreate(t *testing.T) {
 	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
 	require.Contains(t, closeErr.Reason, "overlapping response.create")
 	select {
-	case <-done:
+	case err := <-done:
+		var serverClose *OpenAIWSClientCloseError
+		require.ErrorAs(t, err, &serverClose)
+		require.Equal(t, coderws.StatusPolicyViolation, serverClose.StatusCode())
+		require.Contains(t, serverClose.Reason(), "overlapping response.create")
 	case <-time.After(3 * time.Second):
 		t.Fatal("relay did not stop after the overlapping response.create")
 	}

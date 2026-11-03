@@ -162,7 +162,7 @@ func TestQuality5xxDoesNotSkipRecentlyCompletedPlan(t *testing.T) {
 	runner.runPelican = func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
 		return &ScheduledTestResult{Status: "success", QualityJudgment: &QualityJudgment{Verdict: "correct"}}, nil
 	}
-	require.NoError(t, runner.runQualityTriggeredAccount(context.Background(), plan.AccountID, time.Now()))
+	require.NoError(t, runner.runQualityTriggeredAccount(context.Background(), plan.AccountID, recent.Add(time.Nanosecond)))
 	require.Len(t, results.results, 1)
 	require.True(t, future.Equal(plans.next), "event test must keep the future cron")
 }

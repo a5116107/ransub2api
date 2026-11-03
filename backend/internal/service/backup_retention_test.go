@@ -319,7 +319,7 @@ func TestBackupRetention_CrossInstanceRecordUpdates(t *testing.T) {
 func TestBackupRetention_RecordLockWithSingleConnectionPool(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { mock.ExpectClose(); require.NoError(t, db.Close()) }()
 	db.SetMaxOpenConns(1)
 	repo := newMockSettingRepo()
 	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())

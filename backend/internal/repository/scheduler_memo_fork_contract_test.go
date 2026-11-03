@@ -30,8 +30,23 @@ func TestSchedulerMemoForkNestedWritesStayRequestLocal(t *testing.T) {
 				return
 			}
 			own := candidates[0]
-			own.Credentials["model_mapping"].(map[string]any)["claude-sonnet"] = "local"
-			own.Extra["model_rate_limits"].(map[string]any)["scope"].(map[string]any)["reason"] = "local"
+			mapping, ok := own.Credentials["model_mapping"].(map[string]any)
+			if !ok {
+				t.Error("model_mapping must be an object")
+				return
+			}
+			limits, ok := own.Extra["model_rate_limits"].(map[string]any)
+			if !ok {
+				t.Error("model_rate_limits must be an object")
+				return
+			}
+			scope, ok := limits["scope"].(map[string]any)
+			if !ok {
+				t.Error("model_rate_limits.scope must be an object")
+				return
+			}
+			mapping["claude-sonnet"] = "local"
+			scope["reason"] = "local"
 			own.AccountGroups[0].AllowedModels[0] = "local"
 			own.GetModelMapping()["claude-sonnet"] = "local"
 		}()
@@ -40,7 +55,11 @@ func TestSchedulerMemoForkNestedWritesStayRequestLocal(t *testing.T) {
 	actual := memoRead(t, cache, bucket)[0]
 	require.Equal(t, "sonnet-a", actual.GetMappedModel("claude-sonnet"))
 	require.Equal(t, "url", actual.GetCredential(service.DeepSeekResponsesImageFieldCredential))
-	require.Equal(t, "original", actual.Extra["model_rate_limits"].(map[string]any)["scope"].(map[string]any)["reason"])
+	limits, ok := actual.Extra["model_rate_limits"].(map[string]any)
+	require.True(t, ok)
+	scope, ok := limits["scope"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "original", scope["reason"])
 	require.Equal(t, []string{"claude-sonnet"}, actual.AccountGroups[0].AllowedModels)
 }
 

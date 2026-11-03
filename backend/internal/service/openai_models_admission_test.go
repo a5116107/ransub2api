@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -112,7 +113,7 @@ func TestAPIKeyAdmissionModelsColdCancellationJoinsWithoutCancelingPeer(t *testi
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if calls.Add(1) == 1 {
 					w.WriteHeader(http.StatusOK)
-					w.(http.Flusher).Flush()
+					testassert.Type[http.Flusher](t, w).Flush()
 					close(firstStarted)
 					select {
 					case <-r.Context().Done():

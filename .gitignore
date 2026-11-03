@@ -135,6 +135,11 @@ deploy/docker-compose.override.yml
 vite.config.js
 user-traffic-pending/
 docs/*
+!docs/project/
+docs/project/*
+!docs/project/STATE.md
+!docs/project/DECISIONS.md
+!docs/project/monitor-driven-scheduling-design.md
 !docs/stream-timing.md
 !docs/user-traffic.md
 !docs/typesafe-content-audit.md

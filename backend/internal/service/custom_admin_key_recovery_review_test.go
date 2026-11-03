@@ -44,7 +44,7 @@ func TestScopedAdminReviewRecoveryCommitBoundary(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { mock.ExpectClose(); require.NoError(t, db.Close()) }()
 			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 			repo := &scopedRecoveryReviewRepo{accountRepoStubForClearAccountError: accountRepoStubForClearAccountError{account: &Account{ID: 31, Platform: "openai", Type: "oauth", Status: StatusError, GroupIDs: []int64{1}}}, failRead: mode == "read_failure"}
 			blocker := &scopedRecoveryReviewBlocker{}
@@ -53,11 +53,12 @@ func TestScopedAdminReviewRecoveryCommitBoundary(t *testing.T) {
 			mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WithArgs(int64(31)).WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectExec(`SELECT id FROM accounts`).WithArgs(int64(31)).WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectExec(`SELECT account_id FROM account_groups`).WithArgs(int64(31)).WillReturnResult(sqlmock.NewResult(0, 1))
-			if mode == "read_failure" {
+			switch mode {
+			case "read_failure":
 				mock.ExpectRollback()
-			} else if mode == "commit_failure" {
+			case "commit_failure":
 				mock.ExpectCommit().WillReturnError(errors.New("模拟提交失败"))
-			} else {
+			default:
 				mock.ExpectCommit()
 			}
 			ctx := adminaccess.WithPrincipal(context.Background(), &adminaccess.Principal{Policy: adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: []string{"accounts.recover"}, GroupIDs: []int64{1}, AccountTypes: []string{"oauth"}}}}})

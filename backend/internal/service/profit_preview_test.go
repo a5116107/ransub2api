@@ -59,8 +59,8 @@ func TestPreviewProfitAdmissionUsesAccountRatesAndPreinitializesModels(t *testin
 		byID[verdict.AccountID] = verdict
 	}
 	require.Equal(t, ProfitPreviewClassAdmitted, byID[cheap.ID].Class)
-	require.Equal(t, ProfitPreviewRateSourceUpstreamProbe, byID[cheap.ID].RateSource)
-	require.Contains(t, byID[cheap.ID].Warnings, ProfitPreviewWarningProbeStale)
+	require.Equal(t, ProfitPreviewRateSourceManual, byID[cheap.ID].RateSource, "probe switch is off, so sync is inactive")
+	require.Empty(t, byID[cheap.ID].Warnings)
 	require.True(t, byID[cheap.ID].RejectedUnderMinD)
 
 	require.Equal(t, ProfitPreviewClassAdmitted, byID[boundary.ID].Class, "U == 阈值按 epsilon 语义准入")

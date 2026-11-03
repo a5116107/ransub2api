@@ -16,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -734,7 +735,7 @@ func TestForwardAsRawChatCompletions_TruncatedStreamAfterOutputFailsRequest(t *t
 
 	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
 	require.True(t, ok)
-	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	events := testassert.Type[[]*OpsUpstreamErrorEvent](t, rawEvents)
 	require.Len(t, events, 1)
 	require.Equal(t, "http_error", events[0].Kind)
 	require.Nil(t, events[0].ProxyID)
@@ -769,7 +770,7 @@ func TestForwardAsRawChatCompletions_TruncationFailoverAttributesManagedProxy(t 
 
 	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
 	require.True(t, ok)
-	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	events := testassert.Type[[]*OpsUpstreamErrorEvent](t, rawEvents)
 	require.Len(t, events, 1)
 	require.Equal(t, "failover", events[0].Kind)
 	require.NotNil(t, events[0].ProxyID)

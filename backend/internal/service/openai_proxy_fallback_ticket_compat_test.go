@@ -56,10 +56,10 @@ func TestRuntimeProxyFallbackPreservesTicketResponsePolicy(t *testing.T) {
 					codexPolicyMigrationRepoStub: &codexPolicyMigrationRepoStub{values: values},
 				}, svc.cfg)
 				for _, ticketState := range []string{state, replacement} {
-					svc.storeOpenAICodexTicket(context.Background(), account, &openAICodexTicket{
+					require.NoError(t, svc.storeOpenAICodexTicket(context.Background(), account, &openAICodexTicket{
 						Model: "gpt-6-astra", State: ticketState, Length: 292,
 						CapturedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
-					})
+					}))
 				}
 				req, err := http.NewRequest(http.MethodPost, "https://example.invalid/responses", strings.NewReader("{}"))
 				require.NoError(t, err)

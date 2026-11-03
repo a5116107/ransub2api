@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,7 +54,7 @@ func (s *duplicateAccountRepoStub) CreateWithAccountGroups(ctx context.Context, 
 	}
 	stored := *account
 	s.accounts[account.ID] = &stored
-	s.mockAccountRepoForGemini.accountsByID[account.ID] = &stored
+	s.accountsByID[account.ID] = &stored
 	return nil
 }
 
@@ -189,15 +190,14 @@ func TestDuplicateAccountCopiesConfigurationAndResetsRuntimeState(t *testing.T) 
 	require.Nil(t, duplicate.SessionWindowStart)
 	require.Nil(t, duplicate.SessionWindowEnd)
 	require.Empty(t, duplicate.SessionWindowStatus)
-
-	duplicate.Credentials["nested"].(map[string]any)["token"] = "changed"
-	duplicate.Extra["config"].(map[string]any)["region"] = "changed"
-	duplicate.Extra["items"].([]any)[0].(map[string]any)["enabled"] = false
+	testassert.Type[map[string]any](t, duplicate.Credentials["nested"])["token"] = "changed"
+	testassert.Type[map[string]any](t, duplicate.Extra["config"])["region"] = "changed"
+	testassert.Type[map[string]any](t, testassert.Type[[]any](t, duplicate.Extra["items"])[0])["enabled"] = false
 	storedSource, getErr := repo.GetByID(ctx, source.ID)
 	require.NoError(t, getErr)
-	require.Equal(t, "source-token", storedSource.Credentials["nested"].(map[string]any)["token"])
-	require.Equal(t, "us-east-1", storedSource.Extra["config"].(map[string]any)["region"])
-	require.Equal(t, true, storedSource.Extra["items"].([]any)[0].(map[string]any)["enabled"])
+	require.Equal(t, "source-token", testassert.Type[map[string]any](t, storedSource.Credentials["nested"])["token"])
+	require.Equal(t, "us-east-1", testassert.Type[map[string]any](t, storedSource.Extra["config"])["region"])
+	require.Equal(t, true, testassert.Type[map[string]any](t, testassert.Type[[]any](t, storedSource.Extra["items"])[0])["enabled"])
 	require.Equal(t, "remote-42", storedSource.Extra["crs_account_id"])
 }
 

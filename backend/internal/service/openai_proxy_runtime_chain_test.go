@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -202,7 +203,7 @@ func TestRuntimeProxyChainSharedHopBudgetCyclesAliasesAndDirectAuthorization(t *
 	for _, tc := range []string{"budget", "budget-with-skips", "cycle", "alias", "direct-not-authorized", "direct-fails"} {
 		t.Run(tc, func(t *testing.T) {
 			s, account, backup := runtimeChainFixture(false)
-			repo := s.proxyRepo.(*fakeProxyLookup)
+			repo := testassert.Type[*fakeProxyLookup](t, s.proxyRepo)
 			wantAttempts := 2
 			switch tc {
 			case "budget", "budget-with-skips":
@@ -271,7 +272,7 @@ func TestRuntimeProxyChainRealTwoRefusalsOnlySendOnePOST(t *testing.T) {
 			for _, p := range []*Proxy{account.Proxy, backup} {
 				listener, err := net.Listen("tcp", "127.0.0.1:0")
 				require.NoError(t, err)
-				p.Host, p.Port = "127.0.0.1", listener.Addr().(*net.TCPAddr).Port
+				p.Host, p.Port = "127.0.0.1", testassert.Type[*net.TCPAddr](t, listener.Addr()).Port
 				listeners = append(listeners, listener)
 			}
 			for _, listener := range listeners {
@@ -292,7 +293,7 @@ func TestRuntimeProxyChainRealTwoRefusalsOnlySendOnePOST(t *testing.T) {
 			req, _ := http.NewRequest(http.MethodPost, target.URL, strings.NewReader("one-post"))
 			resp, err := s.doOpenAIUpstream(req, account.Proxy.URL(), account)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 			require.Equal(t, 200, resp.StatusCode)
 			require.Equal(t, int32(1), posts.Load())
 			want := 3
@@ -317,7 +318,7 @@ func TestRuntimeProxyChainTerminalErrorOpsUsesActualEgress(t *testing.T) {
 			require.ErrorIs(t, result, context.Canceled)
 			value, ok := c.Get(OpsUpstreamErrorsKey)
 			require.True(t, ok)
-			events := value.([]*OpsUpstreamErrorEvent)
+			events := testassert.Type[[]*OpsUpstreamErrorEvent](t, value)
 			require.Len(t, events, 1)
 			if id == 0 {
 				require.Nil(t, events[0].ProxyID)

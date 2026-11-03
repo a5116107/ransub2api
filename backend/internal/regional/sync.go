@@ -14,9 +14,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/securefile"
 )
 
 const MaxSyncBytes = 8 << 20
@@ -211,8 +212,8 @@ func (r *Replica) Accept(ctx context.Context, wire []byte) error {
 	if err = s.Validate(r.cfg, r.kind, 0, r.now()); err != nil {
 		return err
 	}
-	if err = writeAtomic(r.path, wire); err != nil {
-		// A rename may have succeeded before directory fsync failed. Stop admission
+	if err = securefile.WriteAtomic(r.path, wire); err != nil {
+		// Replacement may have succeeded before its durable commit failed. Stop admission
 		// until reopening the on-disk state; never serve an older revoked view.
 		r.failed = true
 		return errors.New("cannot persist regional sync state")
@@ -220,35 +221,6 @@ func (r *Replica) Accept(ctx context.Context, wire []byte) error {
 	r.current = &s
 	r.wire = wire
 	return nil
-}
-func writeAtomic(path string, wire []byte) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".regional-sync-*")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	defer func() { _ = os.Remove(name) }()
-	if _, err = f.Write(wire); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err = f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	if err = os.Rename(name, path); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	return d.Sync()
 }
 func (r *Replica) Current() (Snapshot, error) {
 	r.mu.RLock()

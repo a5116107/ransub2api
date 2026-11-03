@@ -19,7 +19,7 @@ func TestScopedAdminAfterCommitEffects(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { mock.ExpectClose(); require.NoError(t, db.Close()) }()
 			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 			mock.ExpectBegin()
 			tx, err := client.Tx(context.Background())

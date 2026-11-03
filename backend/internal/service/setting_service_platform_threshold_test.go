@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -88,7 +89,7 @@ func TestUpdateSettings_StoresAccountSchedulingThresholds(t *testing.T) {
 	require.NoError(t, err)
 
 	got := svc.parseSettings(map[string]string{
-		SettingKeyAccountSchedulingThresholds: svc.settingRepo.(*mockSettingRepo).data[SettingKeyAccountSchedulingThresholds],
+		SettingKeyAccountSchedulingThresholds: testassert.Type[*mockSettingRepo](t, svc.settingRepo).data[SettingKeyAccountSchedulingThresholds],
 	})
 	require.Equal(t, 92, got.AccountSchedulingThresholds[PlatformOpenAI])
 	require.Equal(t, 89, got.AccountSchedulingThresholds[PlatformAnthropic])
@@ -111,7 +112,7 @@ func TestGetAccountSchedulingThresholds_ReadsStoredValue(t *testing.T) {
 
 func TestGetAccountSchedulingThresholds_MissingSettingUsesDefaultsAndNormalCacheTTL(t *testing.T) {
 	svc := newSettingServiceForPlatformThresholdTest(nil)
-	repo := svc.settingRepo.(*mockSettingRepo)
+	repo := testassert.Type[*mockSettingRepo](t, svc.settingRepo)
 	repo.getValueErr = ErrSettingNotFound
 
 	got := svc.GetAccountSchedulingThresholds(context.Background())

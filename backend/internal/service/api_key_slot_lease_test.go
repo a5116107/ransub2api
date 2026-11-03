@@ -5,15 +5,24 @@ package service
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
+
+func closeAPIKeySlotTestClient(t *testing.T, client *coderws.Conn) {
+	t.Helper()
+	if err := client.CloseNow(); err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Errorf("close WebSocket client: %v", err)
+	}
+}
 
 func TestAPIKeyAdmissionLeaseLossBeforeExpiry(t *testing.T) {
 	for _, mode := range []string{"renew_error", "missing", "blocked"} {
@@ -109,7 +118,7 @@ func TestAPIKeyAdmissionLeaseLossCancelsDetachedHTTPTransport(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
+		testassert.Type[http.Flusher](t, w).Flush()
 		<-r.Context().Done()
 		close(upstreamStopped)
 	}))
@@ -126,7 +135,7 @@ func TestAPIKeyAdmissionLeaseLossCancelsDetachedHTTPTransport(t *testing.T) {
 	require.NoError(t, err)
 	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err)
-	defer response.Body.Close()
+	defer func() { require.NoError(t, response.Body.Close()) }()
 	cache.mu.Lock()
 	cache.id = ""
 	cache.mu.Unlock()
@@ -170,7 +179,7 @@ func TestAPIKeyAdmissionGrokRealtimeJoinsBeforeRelease(t *testing.T) {
 			done <- err
 			return
 		}
-		defer client.CloseNow()
+		defer closeAPIKeySlotTestClient(t, client)
 		lease, err := NewConcurrencyService(cache).AcquireAPIKeySlot(ctx, 8, 1)
 		if err != nil {
 			done <- err
@@ -189,7 +198,7 @@ func TestAPIKeyAdmissionGrokRealtimeJoinsBeforeRelease(t *testing.T) {
 	}()
 	client, _, err := coderws.Dial(context.Background(), "ws"+server.URL[len("http"):], nil)
 	require.NoError(t, err)
-	defer client.CloseNow()
+	defer closeAPIKeySlotTestClient(t, client)
 	select {
 	case <-upstream.started:
 	case <-time.After(time.Second):
@@ -214,7 +223,8 @@ func TestAPIKeyAdmissionGrokRealtimeJoinsBeforeRelease(t *testing.T) {
 	close(upstream.allowStop)
 	allowClosed = true
 	select {
-	case <-done:
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(time.Second):
 		t.Fatal("realtime reader did not join")
 	}

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"entgo.io/ent/dialect"
@@ -34,7 +35,7 @@ func (r *scopedCodexTestRepo) Update(ctx context.Context, a *Account) error {
 	_, err = r.login.sql(ctx).ExecContext(ctx, `UPDATE accounts SET extra=$2,rate_multiplier=$3 WHERE id=$1`, a.ID, string(extra), a.BillingRateMultiplier())
 	return err
 }
-func (r *scopedCodexTestRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+func (r *scopedCodexTestRepo) GetByID(ctx context.Context, id int64) (account *Account, err error) {
 	a, err := r.scopedAdminWriteTestRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -43,7 +44,7 @@ func (r *scopedCodexTestRepo) GetByID(ctx context.Context, id int64) (*Account, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	var extra []byte
 	var rate float64
 	if rows.Next() {

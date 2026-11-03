@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -131,9 +132,7 @@ func TestTrafficDeliverySurvivesDatabaseOutageAndRestart(t *testing.T) {
 	d.RecordTraffic(e)
 	d.Stop()
 	path := filepath.Join(dir, e.EventID+".json")
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	assertions.PrivateFile(t, path)
 	var mu sync.Mutex
 	var received []TrafficEvent
 	d, err = NewTrafficDelivery(dir, func(_ context.Context, e TrafficEvent) error {

@@ -92,7 +92,7 @@ func (s *UpstreamBillingProbeService) newAPIAccount(ctx context.Context, id int6
 	if !isUpstreamBillingProbeAccount(a) || a.GetCredential("api_key") == "" {
 		return nil, "", ErrUpstreamBillingProbeAccountInvalid
 	}
-	site, e := CanonicalNewAPISite(a.GetCredential("base_url"))
+	site, e := NewAPIAccountSite(a)
 	return a, site, e
 }
 func (s *UpstreamBillingProbeService) GetNewAPIConfig(ctx context.Context, id int64) (*NewAPIConfig, error) {
@@ -116,7 +116,7 @@ func (s *UpstreamBillingProbeService) GetNewAPIConfig(ctx context.Context, id in
 	}
 	for i := range accounts {
 		peer := &accounts[i]
-		peerSite, e := CanonicalNewAPISite(peer.GetCredential("base_url"))
+		peerSite, e := NewAPIAccountSite(peer)
 		if e != nil || peerSite != site || peer.GetCredential("api_key") == "" {
 			continue
 		}
@@ -290,7 +290,7 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 	if !s.newAPIFixedKey || s.newAPIEncryptor == nil {
 		return nil, ErrNewAPIEncryptionKey
 	}
-	site, e := CanonicalNewAPISite(a.GetCredential("base_url"))
+	site, e := NewAPIAccountSite(a)
 	if e != nil || site != b.Profile.SiteURL || b.Fingerprint != NewAPIAccountFingerprint(a) {
 		return nil, ErrUpstreamBillingProbeIdentityChanged
 	}
@@ -327,7 +327,7 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 				return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_bound_key_not_owned")
 			}
 		}
-		snap = newAPISnapshot(a, *matched, data, interval, now)
+		snap = newAPISnapshot(*matched, data, interval, now)
 	}
 	if e = s.newAPIRepo.WriteSnapshot(ctx, a, b, snap); e != nil {
 		return nil, ErrUpstreamBillingProbeIdentityChanged

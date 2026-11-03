@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -74,6 +75,14 @@ func classifyUpstreamTransportError(err error) upstreamTransportErrorClass {
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.EHOSTUNREACH) ||
 		errors.Is(err, syscall.ENETUNREACH) {
+		return upstreamTransportErrorClass{Persistent: true}
+	}
+	// WinSock returns WSA* values rather than the syscall POSIX errno aliases.
+	// Keep the numeric checks Windows-only; these values have other meanings
+	// on other systems. WSAECONNREFUSED=10061, WSAEHOSTUNREACH=10065,
+	// WSAENETUNREACH=10051. Timeouts/resets remain transient.
+	if runtime.GOOS == "windows" && (errors.Is(err, syscall.Errno(10061)) ||
+		errors.Is(err, syscall.Errno(10065)) || errors.Is(err, syscall.Errno(10051))) {
 		return upstreamTransportErrorClass{Persistent: true}
 	}
 	var dnsErr *net.DNSError

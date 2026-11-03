@@ -43,9 +43,10 @@ func profitSlotTestAccount(id int64, rate float64) *service.Account {
 		RateMultiplier: &rate,
 		Extra: map[string]any{
 			"upstream_billing_probe": map[string]any{
-				"status":      service.UpstreamBillingProbeStatusOK,
-				"received_at": now.Add(-time.Minute),
-				"fresh_until": now.Add(30 * time.Minute),
+				"status":          service.UpstreamBillingProbeStatusOK,
+				"received_at":     now.Add(-time.Minute),
+				"fresh_until":     now.Add(30 * time.Minute),
+				"last_attempt_at": now.Add(-time.Minute),
 				"data": map[string]any{
 					"billing_scope":            "token",
 					"resolved_rate_multiplier": rate,
@@ -93,6 +94,52 @@ func TestAcquireResponsesAccountSlotProfitRecheck(t *testing.T) {
 			Account:  account,
 			Acquired: false,
 			WaitPlan: &service.AccountWaitPlan{AccountID: account.ID, MaxConcurrency: 2, Timeout: time.Second, MaxWaiting: 2},
+		}
+	}
+
+	for _, acquired := range []bool{false, true} {
+		for _, healthy := range []bool{false, true} {
+			name := "synced wait slot rejects failed evidence"
+			if acquired {
+				name = "synced acquired slot rejects failed evidence"
+			}
+			if healthy {
+				name += " after recovery admits"
+			}
+			t.Run(name, func(t *testing.T) {
+				cache := &profitCountingConcurrencyCache{}
+				h := newHandler(cache)
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", "/v1/responses", nil).WithContext(profitSlotTestContext(t, gw, groupID, false))
+				account := profitSlotTestAccount(4, 0.3)
+				account.Extra[service.UpstreamBillingProbeEnabledExtraKey] = true
+				account.Extra[service.UpstreamBillingRateSyncEnabledExtraKey] = true
+				snapshot, ok := account.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)
+				require.True(t, ok)
+				if !healthy {
+					snapshot["status"] = service.UpstreamBillingProbeStatusFailed
+				}
+				selection := newSelection(account)
+				if acquired {
+					selection.Acquired = true
+					selection.ReleaseFunc = func() { cache.accountReleases.Add(1) }
+				}
+				streamStarted := false
+				release, result := h.acquireResponsesAccountSlot(c, &groupID, "", selection, false, &streamStarted, zap.NewNop())
+				if healthy {
+					require.Equal(t, openAISlotAcquireOK, result)
+					require.NotNil(t, release)
+					require.Zero(t, cache.accountReleases.Load())
+					release()
+				} else {
+					require.Equal(t, openAISlotAcquireProfitVetoed, result)
+					require.Nil(t, release)
+				}
+				require.Equal(t, int64(1), cache.accountReleases.Load())
+				require.Zero(t, w.Body.Len())
+				require.False(t, streamStarted)
+			})
 		}
 	}
 

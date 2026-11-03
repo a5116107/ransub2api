@@ -43,7 +43,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesWSPassthroughSnapsh
 		cache:              &schedulerTestGatewayCache{},
 		cfg:                cfg,
 		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		schedulerSnapshot:  &SchedulerSnapshotService{cache: snapshotCache},
+		schedulerSnapshot:  &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: snapshotCache},
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 	}
 

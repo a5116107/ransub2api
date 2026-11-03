@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -297,9 +298,7 @@ func TestSafetyPromptStoreRetentionAndPermissions(t *testing.T) {
 	require.Len(t, events, 1)
 	require.Equal(t, "sp-new", events[0].ID)
 
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assertions.PrivateFile(t, path)
 }
 
 func TestSafetyPromptStoreCap(t *testing.T) {

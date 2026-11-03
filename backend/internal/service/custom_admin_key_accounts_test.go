@@ -103,7 +103,7 @@ type scopedAdminWriteTestRepo struct {
 	failBind bool
 }
 
-func (r *scopedAdminWriteTestRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+func (r *scopedAdminWriteTestRepo) GetByID(ctx context.Context, id int64) (account *Account, err error) {
 	a := &Account{ID: id}
 	var credentials []byte
 	rows, err := r.login.sql(ctx).QueryContext(ctx, `SELECT name,platform,type,status,credentials FROM accounts WHERE id=$1`, id)
@@ -111,11 +111,10 @@ func (r *scopedAdminWriteTestRepo) GetByID(ctx context.Context, id int64) (*Acco
 		return nil, err
 	}
 	if !rows.Next() {
-		_ = rows.Close()
-		return nil, ErrAccountNotFound
+		return nil, errors.Join(ErrAccountNotFound, rows.Err(), rows.Close())
 	}
 	err = rows.Scan(&a.Name, &a.Platform, &a.Type, &a.Status, &credentials)
-	_ = rows.Close()
+	err = errors.Join(err, rows.Close())
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +125,7 @@ func (r *scopedAdminWriteTestRepo) GetByID(ctx context.Context, id int64) (*Acco
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var group int64
 		if err = rows.Scan(&group); err != nil {
@@ -147,12 +146,12 @@ func (r *scopedAdminWriteTestRepo) Update(ctx context.Context, a *Account) error
 	_, err = r.login.sql(ctx).ExecContext(ctx, `UPDATE accounts SET name=$2,credentials=$3 WHERE id=$1`, a.ID, a.Name, string(credentials))
 	return err
 }
-func (r *scopedAdminWriteTestRepo) Create(ctx context.Context, a *Account) error {
+func (r *scopedAdminWriteTestRepo) Create(ctx context.Context, a *Account) (err error) {
 	rows, err := r.login.sql(ctx).QueryContext(ctx, `INSERT INTO accounts(name,platform,type) VALUES($1,$2,$3) RETURNING id`, a.Name, a.Platform, a.Type)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	if !rows.Next() {
 		return errors.New("创建未返回 ID")
 	}

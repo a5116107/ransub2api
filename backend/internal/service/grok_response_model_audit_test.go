@@ -494,12 +494,14 @@ func grokAuditPriorModelSSE(repeats int, repeated, late, terminal string) string
 	if late != "" {
 		fmt.Fprintf(&b, "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_audit\",\"model\":%q,\"output\":[]}}\n\n", late)
 	}
-	b.WriteString("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+	// strings.Builder.WriteString always succeeds.
+	_, _ = b.WriteString("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
 	completed := `{"id":"resp_audit","object":"response","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1}}`
 	if terminal != "" {
 		completed = fmt.Sprintf(`{"id":"resp_audit","object":"response","model":%q,"status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1}}`, terminal)
 	}
-	b.WriteString("data: {\"type\":\"response.completed\",\"response\":" + completed + "}\n\n")
+	// strings.Builder.WriteString always succeeds.
+	_, _ = b.WriteString("data: {\"type\":\"response.completed\",\"response\":" + completed + "}\n\n")
 	return b.String()
 }
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 )
 
@@ -105,7 +106,7 @@ func TestHandleUpstreamTransportError_AttributesEventTimeProxy(t *testing.T) {
 			if !ok {
 				t.Fatal("no upstream events recorded")
 			}
-			events := raw.([]*OpsUpstreamErrorEvent)
+			events := testassert.Type[[]*OpsUpstreamErrorEvent](t, raw)
 			if len(events) != 1 {
 				t.Fatalf("events = %d, want 1", len(events))
 			}

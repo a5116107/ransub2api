@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +31,7 @@ func TestRecordUsage_ImageReasoningPricing(t *testing.T) {
 								ReasoningEffortMultipliers: map[string]float64{"high": 2},
 							}
 							resolver := newOpenAIImageChannelPricingResolverForTest(t, groupID, model, price)
-							cache := resolver.channelService.cache.Load().(*channelCache)
+							cache := testassert.Type[*channelCache](t, resolver.channelService.cache.Load())
 							cache.pricingByGroupModel[channelModelKey{groupID: groupID, model: model}] = &pricing
 							group := &Group{
 								ID: groupID, Platform: platform, Status: StatusActive, Hydrated: true,
@@ -100,7 +101,7 @@ func TestCalculateRecordUsageCost_MediaReasoningPricing(t *testing.T) {
 				model, effort := "media-model", "high"
 				price := 0.25
 				resolver := newOpenAIImageChannelPricingResolverForTest(t, groupID, model, price)
-				cache := resolver.channelService.cache.Load().(*channelCache)
+				cache := testassert.Type[*channelCache](t, resolver.channelService.cache.Load())
 				pricing := cache.pricingByGroupModel[channelModelKey{groupID: groupID, model: model}]
 				pricing.BillingMode = BillingModePerRequest
 				pricing.ReasoningEffortMultipliers = map[string]float64{"high": 2}

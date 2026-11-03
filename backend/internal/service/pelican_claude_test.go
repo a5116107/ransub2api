@@ -29,15 +29,27 @@ type claudeThinkingUpstream struct {
 }
 
 func (u *claudeThinkingUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
-	body, _ := io.ReadAll(req.Body)
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
 	u.bodies = append(u.bodies, body)
 	u.urls = append(u.urls, req.URL.String())
 	maxTokens := gjson.GetBytes(body, "max_tokens").Int()
 
 	var sse strings.Builder
+	var eventErr error
 	event := func(data any) {
-		raw, _ := json.Marshal(data)
-		sse.WriteString("data: " + string(raw) + "\n\n")
+		if eventErr != nil {
+			return
+		}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			eventErr = err
+			return
+		}
+		// strings.Builder.WriteString always succeeds.
+		_, _ = sse.WriteString("data: " + string(raw) + "\n\n")
 	}
 	event(map[string]any{"type": "message_start", "message": map[string]any{"id": "msg_fixture", "type": "message", "role": "assistant", "model": "claude-opus-5-5", "content": []any{}, "usage": map[string]any{"input_tokens": 40, "output_tokens": 1}}})
 	event(map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "thinking", "thinking": "", "signature": ""}})
@@ -69,6 +81,9 @@ func (u *claudeThinkingUpstream) Do(req *http.Request, _ string, _ int64, _ int)
 	}
 	event(map[string]any{"type": "message_delta", "delta": delta, "usage": map[string]any{"output_tokens": used}})
 	event(map[string]any{"type": "message_stop"})
+	if eventErr != nil {
+		return nil, eventErr
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},

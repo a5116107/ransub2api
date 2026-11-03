@@ -27,7 +27,9 @@ func TestAccountConnectionTimingLifecycle(t *testing.T) {
 				var event map[string]any
 				require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event))
 				if event["type"] == "timing" {
-					timings = append(timings, event["timing"].(map[string]any))
+					timing, ok := event["timing"].(map[string]any)
+					require.True(t, ok, "timing event must contain a timing object")
+					timings = append(timings, timing)
 				}
 			}
 			require.Len(t, timings, 2, "one start and one final timing event must accompany legacy events")

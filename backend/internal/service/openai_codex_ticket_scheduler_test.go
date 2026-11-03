@@ -56,7 +56,7 @@ func ticketSchedulerFixture(t *testing.T, advanced, loadBatch bool) (*OpenAIGate
 	repo := schedulerTestOpenAIAccountRepo{accounts: []Account{*account}}
 	svc := &OpenAIGatewayService{
 		cfg: cfg, accountRepo: repo, cache: &schedulerTestGatewayCache{},
-		schedulerSnapshot:  &SchedulerSnapshotService{cache: cache, accountRepo: repo},
+		schedulerSnapshot:  &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: cache, accountRepo: repo},
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 	}
 	if advanced {

@@ -15,7 +15,7 @@ import (
 func TestScopedAdminKeyRepositoryRotationAndRevocation(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewScopedAdminKeyRepository(db)
 	now := time.Now().UTC()
 	ctx := context.Background()
@@ -29,7 +29,7 @@ func TestScopedAdminKeyRepositoryRotationAndRevocation(t *testing.T) {
 func TestScopedAdminKeyTouchUsesCASAgainstRotationAndRevocation(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewScopedAdminKeyRepository(db)
 	now := time.Now().UTC()
 	mock.ExpectExec(`UPDATE scoped_admin_api_keys SET last_used_at=\$5,last_used_ip=\$4 WHERE id=\$1 AND key_hash=\$2 AND updated_at=\$3 AND revoked_at IS NULL AND enabled=true AND \(expires_at IS NULL OR expires_at>\$5\)`).
@@ -41,7 +41,7 @@ func TestScopedAdminKeyTouchUsesCASAgainstRotationAndRevocation(t *testing.T) {
 func TestScopedAdminKeyRepositoryEditDoesNotRestoreOldHash(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewScopedAdminKeyRepository(db)
 	k := &service.ScopedAdminKey{ID: "id", Hash: "旧摘要", ScopedAdminKeyInput: service.ScopedAdminKeyInput{Name: "更新", AllowedIPs: []string{}}, UpdatedAt: time.Now().UTC()}
 	mock.ExpectExec(`UPDATE scoped_admin_api_keys SET name=\$2,description=\$3,enabled=\$4,expires_at=\$5,allowed_ips=\$6,policy=\$7,updated_at=\$8 WHERE id=\$1 AND revoked_at IS NULL`).WithArgs(k.ID, k.Name, k.Description, k.Enabled, k.ExpiresAt, "[]", sqlmock.AnyArg(), k.UpdatedAt).WillReturnResult(sqlmock.NewResult(0, 1))

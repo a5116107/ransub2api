@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -534,7 +535,7 @@ func TestClearCreditsExhausted(t *testing.T) {
 		svc.clearCreditsExhausted(context.Background(), account)
 		require.Len(t, repo.extraUpdateCalls, 1)
 		// AICredits key 应被删除
-		rawLimits := account.Extra[modelRateLimitsKey].(map[string]any)
+		rawLimits := testassert.Type[map[string]any](t, account.Extra[modelRateLimitsKey])
 		_, exists := rawLimits[creditsExhaustedKey]
 		require.False(t, exists, "AICredits key 应被删除")
 		// 普通模型限流应保留

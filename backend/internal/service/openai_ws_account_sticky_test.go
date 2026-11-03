@@ -164,7 +164,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_DBRuntimeRecheck
 		cfg:                cfg,
 		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
 		openaiWSStateStore: store,
-		schedulerSnapshot:  &SchedulerSnapshotService{cache: snapshotCache},
+		schedulerSnapshot:  &SchedulerSnapshotService{groupRepo: guardianAffinityGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: 1, ProfitControlEnabled: false}}, cache: snapshotCache},
 	}
 
 	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_db_rl", dbAccount.ID, time.Hour))

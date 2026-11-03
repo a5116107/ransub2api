@@ -1430,8 +1430,16 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	return result, nil
 }
 
+// Protocol selectors can change the upstream endpoint without editing base_url.
+// Keep edit invalidation, CRS reconciliation and New API binding fingerprints
+// on the same credential identity boundary.
+var upstreamBillingProbeIdentityCredentialKeys = [...]string{
+	"api_key", "base_url", credKeyHeaderOverrideEnabled, credKeyHeaderOverrides,
+	"api_base_urls", "api_protocol", "account_mode",
+}
+
 func updatesUpstreamBillingProbeIdentity(credentials map[string]any) bool {
-	for _, key := range []string{"api_key", "base_url", credKeyHeaderOverrideEnabled, credKeyHeaderOverrides} {
+	for _, key := range upstreamBillingProbeIdentityCredentialKeys {
 		if _, ok := credentials[key]; ok {
 			return true
 		}
@@ -1447,7 +1455,7 @@ func upstreamBillingProbeIdentity(account *Account) map[string]any {
 	if account.ProxyID != nil {
 		identity["proxy_id"] = *account.ProxyID
 	}
-	for _, key := range []string{"api_key", "base_url", credKeyHeaderOverrideEnabled, credKeyHeaderOverrides} {
+	for _, key := range upstreamBillingProbeIdentityCredentialKeys {
 		if value, ok := account.Credentials[key]; ok {
 			identity[key] = value
 		}

@@ -65,6 +65,13 @@ func CanonicalNewAPISite(raw string) (string, error) {
 	u.RawPath = path
 	return u.String(), nil
 }
+
+// NewAPIAccountSite resolves the management site from the same effective base
+// used by billing observation, rather than a possibly stale legacy base_url.
+func NewAPIAccountSite(a *Account) (string, error) {
+	return CanonicalNewAPISite(upstreamBillingProbeBaseURL(a))
+}
+
 func NewAPIAccountFingerprint(a *Account) string {
 	b, _ := json.Marshal(upstreamBillingProbeIdentity(a))
 	h := sha256.Sum256(b)
@@ -202,7 +209,7 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 	}
 	if e := s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/pricing", &pricing); e == nil && pricing.Success {
 		for g, r := range pricing.Ratios {
-			if g != "" && g != "auto" && len(g) <= 128 && newAPIFinite(r) && r >= 0 && r <= 1000000 {
+			if validNewAPIGroupRate(g, r) {
 				result.ratios[g] = r
 			}
 		}
@@ -278,10 +285,37 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 	return nil, newAPIError("incomplete_inventory")
 }
 func newAPIFinite(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) }
-func newAPISnapshot(a *Account, t NewAPIToken, d *newAPIData, interval int, now time.Time) *UpstreamBillingProbeSnapshot {
+
+func validNewAPIGroupRate(group string, rate float64) bool {
+	return group != "" && group != "auto" && len(group) <= 128 && newAPIFinite(rate) && rate >= 0 && rate <= 1000000
+}
+
+func newAPISnapshot(t NewAPIToken, d *newAPIData, interval int, now time.Time) *UpstreamBillingProbeSnapshot {
 	fresh := now.Add(2 * time.Duration(interval) * time.Minute)
-	snap := &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusUnsupported, LastAttemptAt: now, NextProbeAt: now.Add(nextProbeDelay(interval, 0)), LastError: "unsupported_group", Data: map[string]any{"provider": "new_api", "group": sanitizeUpstreamBalanceText(t.Group, 128), "token_id": t.ID, "object": "new_api.group_billing", "schema_version": 1, "billing_scope": "group"}, Balance: &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusOK, LastAttemptAt: now, ReceivedAt: probeTimePtr(now), FreshUntil: probeTimePtr(fresh), Data: map[string]any{"is_valid": true, "mode": "unrestricted", "wallet_balance": d.wallet, "remaining": d.wallet, "unit": "USD", "source": "new_api"}}}
-	if rate, ok := d.ratios[t.Group]; ok && t.Group != "auto" && !t.CrossGroupRetry && len(t.RouteGroups) <= 1 {
+	snap := &UpstreamBillingProbeSnapshot{
+		Status:        UpstreamBillingProbeStatusUnsupported,
+		LastAttemptAt: now,
+		NextProbeAt:   now.Add(nextProbeDelay(interval, 0)),
+		LastError:     "unsupported_group",
+		Data: map[string]any{
+			"provider": "new_api", "group": sanitizeUpstreamBalanceText(t.Group, 128),
+			"token_id": t.ID, "object": "new_api.group_billing", "schema_version": 1, "billing_scope": "group",
+		},
+		Balance: &UpstreamBalanceSnapshot{
+			Status: UpstreamBillingProbeStatusOK, LastAttemptAt: now,
+			ReceivedAt: probeTimePtr(now), FreshUntil: probeTimePtr(fresh),
+			Data: map[string]any{
+				"is_valid": true, "mode": "unrestricted", "wallet_balance": d.wallet,
+				"remaining": d.wallet, "unit": "USD", "source": "new_api",
+			},
+		},
+	}
+	// A single route is fixed only when it names the declared group. Older
+	// inventories omit route_groups; their fixed group remains usable. Never
+	// substitute a different group's ratio or mutate upstream key configuration.
+	fixedGroup := !t.CrossGroupRetry && (len(t.RouteGroups) == 0 ||
+		(len(t.RouteGroups) == 1 && t.RouteGroups[0] == t.Group))
+	if rate, ok := d.ratios[t.Group]; ok && fixedGroup && validNewAPIGroupRate(t.Group, rate) {
 		snap.Status = UpstreamBillingProbeStatusOK
 		snap.LastError = ""
 		snap.ReceivedAt = probeTimePtr(now)

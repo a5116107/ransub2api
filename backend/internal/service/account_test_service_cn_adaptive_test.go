@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -287,6 +288,6 @@ func TestAccountTestService_AnthropicProtocol401MarksAccountError(t *testing.T) 
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Anthropic endpoint returned 401")
-	repo := svc.accountRepo.(*openAIAccountTestRepo)
+	repo := testassert.Type[*openAIAccountTestRepo](t, svc.accountRepo)
 	require.Equal(t, account.ID, repo.setErrorID)
 }

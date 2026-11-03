@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -33,13 +34,15 @@ func seedNegativeCache(account *service.Account, reason string, until time.Time)
 	}}
 }
 
-func negativeCacheDeadline(account *service.Account) string {
-	return account.Extra["model_rate_limits"].(map[string]any)["provider-sol"].(map[string]any)["rate_limit_reset_at"].(string)
+func negativeCacheDeadline(t *testing.T, account *service.Account) string {
+	return testassert.Type[string](t, testassert.
+
+		// The provider has recovered, but A still has legacy observations from the old
+		// writer. A NEW request must not turn those expiring observations into a fresh
+		// model_not_found response and another 30 minutes on B.
+		Type[map[string]any](t, testassert.Type[map[string]any](t, account.Extra["model_rate_limits"])["provider-sol"])["rate_limit_reset_at"])
 }
 
-// The provider has recovered, but A still has legacy observations from the old
-// writer. A NEW request must not turn those expiring observations into a fresh
-// model_not_found response and another 30 minutes on B.
 func TestPoolModelNegativeCacheTwoLayersHistoricalObservationsDoNotRenew(t *testing.T) {
 	for _, reason := range []string{"upstream_404_model_not_found", "upstream_401_model_not_found", "upstream_400_codex_plan_gated_model"} {
 		t.Run(reason, func(t *testing.T) {
@@ -82,7 +85,7 @@ func TestPoolModelNegativeCacheTwoLayersHistoricalObservationsDoNotRenew(t *test
 					require.NotEqual(t, "model_not_found", firstCodes[i])
 				}
 				for i := range firstRepo.accounts {
-					require.Equal(t, until.Format(time.RFC3339), negativeCacheDeadline(&firstRepo.accounts[i]))
+					require.Equal(t, until.Format(time.RFC3339), negativeCacheDeadline(t, &firstRepo.accounts[i]))
 					require.False(t, firstRepo.accounts[i].IsSchedulableForModel("gpt-6.1-sol"))
 					require.True(t, firstRepo.accounts[i].IsSchedulableForModel("other-model"))
 				}
@@ -150,7 +153,7 @@ func TestPoolModelNegativeCacheNonPoolWriterThenFreshRequestAndHealthyPeer(t *te
 	require.Equal(t, 2, repo.modelWrites, "nonpool keeps actual missing-model protection")
 	require.Equal(t, []int64{11, 12}, provider.hits)
 	for i := range repo.accounts {
-		until, err := time.Parse(time.RFC3339, negativeCacheDeadline(&repo.accounts[i]))
+		until, err := time.Parse(time.RFC3339, negativeCacheDeadline(t, &repo.accounts[i]))
 		require.NoError(t, err)
 		require.WithinDuration(t, time.Now().Add(30*time.Minute), until, 2*time.Second)
 	}

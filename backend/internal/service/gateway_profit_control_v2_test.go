@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -109,7 +110,7 @@ func TestGatewayProfitControlCompositeBillingUsesScheduledMemberConfig(t *testin
 	require.InDelta(t, 0.4*(1-0.25), gate.threshold, 1e-12, "D 必须取 composite 计费父分组，margin 取被调度成员分组")
 }
 
-func TestGatewayProfitControlGroupLoadFailureClearsForeignGate(t *testing.T) {
+func TestGatewayProfitControlGroupLoadFailureRejectsAdmission(t *testing.T) {
 	billingGroup := &Group{
 		ID:               211,
 		Platform:         PlatformComposite,
@@ -138,10 +139,158 @@ func TestGatewayProfitControlGroupLoadFailureClearsForeignGate(t *testing.T) {
 	ctx = svc.withGatewayProfitControlGate(ctx, &targetGroupID)
 	gate, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
 	require.True(t, ok)
-	require.Nil(t, gate, "加载新分组失败时必须清除其他分组遗留的门")
+	require.NotNil(t, gate, "加载新分组失败时必须保留拒绝准入的门")
+	require.Equal(t, targetGroupID, gate.groupID, "不能复用其他分组的阈值")
+	for _, rate := range []float64{0, 0.8} {
+		account := gatewayProfitTestAccount(213, PlatformAnthropic, rate, targetGroupID)
+		require.False(t, svc.isGatewayAccountProfitEligible(ctx, &account), "未知配置不能被免费账号绕过")
+		vetoed, reason := OpenAIProfitControlVeto(ctx, &account)
+		require.True(t, vetoed)
+		require.Equal(t, "profit_group_config_unavailable", reason)
+	}
+}
 
-	account := gatewayProfitTestAccount(213, PlatformAnthropic, 0.8, targetGroupID)
-	require.True(t, svc.isGatewayAccountProfitEligible(ctx, &account), "配置读取失败按既定语义 fail-open")
+func TestOpenAIProfitControlGroupLoadFailureRejectsAdmission(t *testing.T) {
+	for _, turn := range []bool{false, true} {
+		name := "http"
+		if turn {
+			name = "websocket turn"
+		}
+		t.Run(name, func(t *testing.T) {
+			billingGroup := profitControlTestGroup(901, 0, 0)
+			billingGroup.Platform = PlatformComposite
+			targetID := int64(902)
+			ctx := profitControlTestCtx(billingGroup)
+			previous := &openAIProfitControlGate{groupID: 903, threshold: 1}
+			if turn {
+				previous.groupID = targetID
+			}
+			ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, previous)
+			svc := &OpenAIGatewayService{schedulerSnapshot: NewSchedulerSnapshotService(nil, nil, nil, profitControlFailingGroupRepo{}, nil)}
+			var next context.Context
+			var pricingAt time.Time
+			if turn {
+				next, pricingAt = svc.WithOpenAITurnPricingContext(ctx, &targetID)
+			} else {
+				next, pricingAt = svc.WithOpenAIRequestPricingContext(ctx, &targetID)
+			}
+			gate, _ := next.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+			require.NotNil(t, gate)
+			require.NotSame(t, previous, gate)
+			require.Equal(t, targetID, gate.groupID)
+			require.Equal(t, pricingAt, gate.pricingAt)
+			require.Same(t, previous, ctx.Value(openAIProfitControlGateCtxKey{}), "不修改先前请求/轮次的门")
+			require.Same(t, billingGroup, next.Value(ctxkey.Group), "不重写计费分组")
+			for _, rate := range []float64{0, 0.8} {
+				account := &Account{ID: 904, RateMultiplier: &rate}
+				vetoed, reason := OpenAIProfitControlVeto(next, account)
+				require.True(t, vetoed)
+				require.Equal(t, "profit_group_config_unavailable", reason)
+				latest, vetoed, reason := svc.ProfitControlVetoLatest(next, account)
+				require.Same(t, account, latest)
+				require.True(t, vetoed)
+				require.Equal(t, "profit_group_config_unavailable", reason, "账号刷新不得掩盖配置失败")
+			}
+		})
+	}
+}
+
+func TestProfitControlGroupReadOutcomes(t *testing.T) {
+	const targetID int64 = 912
+	enabled := profitControlTestGroup(targetID, 0.5, 0)
+	disabled := *enabled
+	disabled.ProfitControlEnabled = false
+	wrong := *enabled
+	wrong.ID++
+	for _, tc := range []struct {
+		name    string
+		repo    GroupRepository
+		blocked bool
+	}{
+		{"load error", profitControlFailingGroupRepo{}, true},
+		{"missing group", profitControlGroupRepo{}, true},
+		{"wrong group", profitControlGroupRepo{group: &wrong}, true},
+		{"missing repository", nil, true},
+		{"known disabled", profitControlGroupRepo{group: &disabled}, false},
+		{"known enabled", profitControlGroupRepo{group: enabled}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, shared := range []bool{false, true} {
+				name := "openai"
+				if shared {
+					name = "shared gateway"
+				}
+				t.Run(name, func(t *testing.T) {
+					billing := profitControlTestGroup(911, 0, 0)
+					billing.Platform = PlatformComposite
+					ctx := profitControlTestCtx(billing)
+					ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 910, threshold: 0.01})
+					snapshot := NewSchedulerSnapshotService(nil, nil, nil, tc.repo, nil)
+					groupID := targetID
+					if shared {
+						ctx, _ = WithGatewayTokenRequestPricing(ctx)
+						ctx = (&GatewayService{schedulerSnapshot: snapshot}).withGatewayProfitControlGate(ctx, &groupID)
+					} else {
+						ctx, _ = (&OpenAIGatewayService{schedulerSnapshot: snapshot}).WithOpenAIRequestPricingContext(ctx, &groupID)
+					}
+					rate := 0.2
+					account := &Account{ID: 913, RateMultiplier: &rate}
+					vetoed, reason := OpenAIProfitControlVeto(ctx, account)
+					require.Equal(t, tc.blocked, vetoed)
+					if tc.blocked {
+						require.Equal(t, "profit_group_config_unavailable", reason)
+					} else {
+						require.Empty(t, reason, "不得继承外部分组的阈值或修改已确认的关闭开关")
+					}
+					selection := attachSelectionProfitGate(ctx, &AccountSelectionResult{})
+					replayed := ContextWithSelectionProfitGate(context.Background(), selection)
+					vetoed, replayReason := OpenAIProfitControlVeto(replayed, account)
+					require.Equal(t, tc.blocked, vetoed)
+					require.Equal(t, reason, replayReason)
+					require.Same(t, billing, ctx.Value(ctxkey.Group))
+				})
+			}
+		})
+	}
+}
+
+func TestProfitControlUnavailableGroupRecovery(t *testing.T) {
+	targetID := int64(922)
+	billing := profitControlTestGroup(921, 0, 0)
+	billing.Platform = PlatformComposite
+	repo := &profitControlGroupRepo{}
+	svc := &OpenAIGatewayService{schedulerSnapshot: NewSchedulerSnapshotService(nil, nil, nil, repo, nil)}
+	failed, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(billing), &targetID)
+	account := gatewayProfitTestAccount(923, PlatformOpenAI, 0.2, targetID)
+	vetoed, reason := OpenAIProfitControlVeto(failed, &account)
+	require.True(t, vetoed)
+	require.Equal(t, "profit_group_config_unavailable", reason)
+	repo.group = profitControlTestGroup(targetID, 0.5, 0)
+	recovered, _ := svc.WithOpenAITurnPricingContext(failed, &billing.ID)
+	vetoed, reason = OpenAIProfitControlVeto(recovered, &account)
+	require.False(t, vetoed)
+	require.Empty(t, reason)
+	gate, _ := recovered.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+	require.NotNil(t, gate)
+	require.Equal(t, targetID, gate.groupID, "WS 恢复仍读取实际调度分组而非计费父组")
+	require.Same(t, billing, recovered.Value(ctxkey.Group))
+	repo.group.ProfitControlEnabled = false
+	disabled, _ := svc.WithOpenAITurnPricingContext(recovered, &billing.ID)
+	gate, _ = disabled.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+	require.Nil(t, gate, "已确认关闭才能卸门")
+	vetoed, reason = OpenAIProfitControlVeto(failed, &account)
+	require.True(t, vetoed, "恢复不修改先前失败轮次")
+	require.Equal(t, "profit_group_config_unavailable", reason)
+}
+
+func TestProfitControlGroupConfigFailureObservation(t *testing.T) {
+	observer := &openAIProfitControlObserver{}
+	observer.recordVeto(931, "unknown", 0, openAIProfitFilterReasonGroupConfigUnavailable)
+	stats := observer.stats(931, "unknown")
+	require.Equal(t, int64(1), stats.vetoGroupConfig.Load())
+	require.Zero(t, stats.vetoThreshold.Load())
+	require.Zero(t, stats.vetoInvalidRate.Load())
+	require.Zero(t, stats.refreshFailures.Load())
 }
 
 type profitControlFailingGroupRepo struct {
@@ -367,8 +516,39 @@ func TestGatewayProfitControlTerminalRefreshFallsBackFromCacheToDatabase(t *test
 	require.Equal(t, openAIProfitFilterReasonThreshold, reason)
 }
 
-func TestGatewayProfitControlTerminalRefreshFailureFallsBackToSelectedObject(t *testing.T) {
-	selected := gatewayProfitTestAccount(151, PlatformAntigravity, 0.2, 1)
+func TestGatewayProfitControlTerminalRefreshFailureRejectsAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "cache and database unavailable", err: errors.New("database unavailable")},
+		{name: "account no longer exists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selected := gatewayProfitTestAccount(151, PlatformAntigravity, 0.2, 1)
+			snapshot := NewSchedulerSnapshotService(
+				&gatewayProfitSnapshotCache{err: errors.New("cache unavailable")},
+				nil,
+				gatewayProfitAccountRepo{err: tc.err},
+				nil,
+				nil,
+			)
+			ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{
+				groupID:   1,
+				platform:  PlatformAntigravity,
+				threshold: 0.5,
+			})
+
+			latest, vetoed, reason := profitControlVetoLatest(ctx, &selected, snapshot)
+			require.Same(t, &selected, latest)
+			require.True(t, vetoed, "an old low rate must not admit an account whose current rate cannot be verified")
+			require.Equal(t, "profit_account_refresh_failed", reason)
+		})
+	}
+}
+
+func TestGatewayProfitControlTerminalRefreshWithoutGatePreservesAdmission(t *testing.T) {
+	selected := gatewayProfitTestAccount(152, PlatformAntigravity, 0.2, 1)
 	snapshot := NewSchedulerSnapshotService(
 		&gatewayProfitSnapshotCache{err: errors.New("cache unavailable")},
 		nil,
@@ -376,13 +556,8 @@ func TestGatewayProfitControlTerminalRefreshFailureFallsBackToSelectedObject(t *
 		nil,
 		nil,
 	)
-	ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{
-		groupID:   1,
-		platform:  PlatformAntigravity,
-		threshold: 0.5,
-	})
 
-	latest, vetoed, reason := profitControlVetoLatest(ctx, &selected, snapshot)
+	latest, vetoed, reason := profitControlVetoLatest(context.Background(), &selected, snapshot)
 	require.Same(t, &selected, latest)
 	require.False(t, vetoed)
 	require.Empty(t, reason)

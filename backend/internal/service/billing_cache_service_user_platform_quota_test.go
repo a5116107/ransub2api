@@ -94,25 +94,17 @@ func (f *fakeQuotaRepo) BatchSnapshotUsage(_ context.Context, _ []UserPlatformQu
 }
 
 // fakeFullCache 同时支持 Get + Set + Incr + Delete + Pop/Readd/BatchGet（脏集读写）。
-// mu 保护 entry 和 deleteCalls，防止异步 goroutine 与主 goroutine 之间的 data race。
+// mu 保护缓存状态，防止异步 goroutine 与主 goroutine 之间的 data race。
 type fakeFullCache struct {
 	BillingCache
-	mu          sync.Mutex
-	entry       *UserPlatformQuotaCacheEntry
-	deleteCalls int
-	setCalls    int           // SetUserPlatformQuotaCache 调用次数
-	lastSetTTL  time.Duration // 最近一次 Set 的 ttl
-	getErr      error         // 非 nil 时 Get 先返回 (nil,false,getErr)
-	setErr      error         // 非 nil 时 Set 返回该 err(setCalls 仍+1)
+	mu         sync.Mutex
+	entry      *UserPlatformQuotaCacheEntry
+	setCalls   int           // SetUserPlatformQuotaCache 调用次数
+	lastSetTTL time.Duration // 最近一次 Set 的 ttl
+	getErr     error         // 非 nil 时 Get 先返回 (nil,false,getErr)
+	setErr     error         // 非 nil 时 Set 返回该 err(setCalls 仍+1)
 	// dirty 模拟脏集，供 flusher 测试使用。
 	dirty map[UserPlatformQuotaKey]struct{}
-}
-
-// getDeleteCalls 线程安全地读取 deleteCalls。
-func (f *fakeFullCache) getDeleteCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.deleteCalls
 }
 
 // getEntry 线程安全地读取 entry。
@@ -163,7 +155,6 @@ func (f *fakeFullCache) SetUserPlatformQuotaCache(_ context.Context, _ int64, _ 
 func (f *fakeFullCache) DeleteUserPlatformQuotaCache(_ context.Context, _ int64, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.deleteCalls++
 	f.entry = nil
 	return nil
 }

@@ -47,6 +47,7 @@ func encryptWebhookProviderConfig(t *testing.T, config map[string]string) string
 	data, err := json.Marshal(config)
 	require.NoError(t, err)
 
+	//nolint:staticcheck // Creates legacy ciphertext to test the migration decryption fallback.
 	encrypted, err := payment.Encrypt(string(data), []byte(webhookProviderTestEncryptionKey))
 	require.NoError(t, err)
 	return encrypted

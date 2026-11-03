@@ -628,6 +628,19 @@ func (s *UpstreamBillingProbeService) SetAccountEnabled(ctx context.Context, acc
 	return s.accountRepo.UpdateExtra(ctx, accountID, updates)
 }
 
+// Adaptive accounts use the effective Chat Completions base for account-level
+// billing observation, including providers that route protocols by model. This
+// does not establish that other protocol endpoints share the same billing scope.
+func upstreamBillingProbeBaseURL(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if account.IsMultiProtocolAPIKey() && account.IsAdaptiveAPIProtocol() {
+		return account.GetOpenAIBaseURL()
+	}
+	return account.GetCredential("base_url")
+}
+
 func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, account *Account, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
 	now := s.currentTime().UTC()
 	if s.newAPIRepo != nil {
@@ -642,16 +655,12 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
 		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "transport_unavailable", 0)
 	}
-	// 平台放宽后取数直读 credentials：所有 API-key 平台的密钥与自定义上游
-	// 统一存放在 credentials.api_key / credentials.base_url。
+	// 所有 API-key 平台共用 credentials.api_key；探测基址使用统一的生效地址解析。
 	apiKey := account.GetCredential("api_key")
 	if apiKey == "" {
 		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "missing_api_key", 0)
 	}
-	baseURL := account.GetCredential("base_url")
-	if account.RoutesProtocolByInbound() && account.IsAdaptiveAPIProtocol() {
-		baseURL = account.GetCNProtocolBaseURL(APIProtocolChatCompletions)
-	}
+	baseURL := upstreamBillingProbeBaseURL(account)
 	if account.Platform == PlatformOpenAI {
 		if baseURL == "" {
 			// 保持官方语义：OpenAI 账号无自定义 base 时探官方域（404 → unsupported）。

@@ -750,7 +750,7 @@ func TestAuthService_GenerateToken_UsesExpireHourWhenMinutesZero(t *testing.T) {
 	require.NotNil(t, claims.IssuedAt)
 	require.NotNil(t, claims.ExpiresAt)
 
-	require.WithinDuration(t, claims.IssuedAt.Time.Add(24*time.Hour), claims.ExpiresAt.Time, 2*time.Second)
+	require.WithinDuration(t, claims.IssuedAt.Add(24*time.Hour), claims.ExpiresAt.Time, 2*time.Second)
 }
 
 func TestAuthService_GenerateToken_UsesMinutesWhenConfigured(t *testing.T) {
@@ -775,7 +775,7 @@ func TestAuthService_GenerateToken_UsesMinutesWhenConfigured(t *testing.T) {
 	require.NotNil(t, claims.IssuedAt)
 	require.NotNil(t, claims.ExpiresAt)
 
-	require.WithinDuration(t, claims.IssuedAt.Time.Add(90*time.Minute), claims.ExpiresAt.Time, 2*time.Second)
+	require.WithinDuration(t, claims.IssuedAt.Add(90*time.Minute), claims.ExpiresAt.Time, 2*time.Second)
 }
 
 func TestAuthService_Register_AssignsDefaultSubscriptions(t *testing.T) {

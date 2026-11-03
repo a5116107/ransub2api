@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -100,7 +101,7 @@ func requireVertexAccountNotFoundHandled(t *testing.T, c *gin.Context, err error
 
 	raw, ok := c.Get(OpsUpstreamErrorsKey)
 	require.True(t, ok, "应记录 ops 上游错误事件")
-	events := raw.([]*OpsUpstreamErrorEvent)
+	events := testassert.Type[[]*OpsUpstreamErrorEvent](t, raw)
 	require.Len(t, events, 1)
 	require.Equal(t, "failover", events[0].Kind)
 	require.Equal(t, int64(820), events[0].AccountID)

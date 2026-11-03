@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -223,9 +224,9 @@ func TestPoolCapacityExplicitPolicyCooldownDoesNotSlideAndRecovers(t *testing.T)
 			require.Equal(t, 200, servePoolCapacity(router, false).Code)
 			require.Equal(t, []int64{11, 12}, upstream.hits)
 			require.Equal(t, 1, repo.modelWrites, "generic unavailable still honors explicit model policy")
-			limits := repo.accounts[0].Extra["model_rate_limits"].(map[string]any)
-			entry := limits["gpt-6.1-sol"].(map[string]any)
-			reset := entry["rate_limit_reset_at"].(string)
+			limits := testassert.Type[map[string]any](t, repo.accounts[0].Extra["model_rate_limits"])
+			entry := testassert.Type[map[string]any](t, limits["gpt-6.1-sol"])
+			reset := testassert.Type[string](t, entry["rate_limit_reset_at"])
 			until, err := time.Parse(time.RFC3339, reset)
 			require.NoError(t, err)
 			require.WithinDuration(t, time.Now().Add(30*time.Minute), until, 2*time.Second)

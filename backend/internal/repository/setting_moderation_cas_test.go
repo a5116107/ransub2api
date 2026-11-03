@@ -25,7 +25,7 @@ func TestSettingModerationCompareAndSet(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			client := ent.NewClient(ent.Driver(sql.OpenDB(dialect.Postgres, db)))
 			repo := &settingRepository{client: client}
 			mock.ExpectBegin()

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"entgo.io/ent/dialect"
@@ -47,7 +48,7 @@ func (r *scopedSelectionAccountRepo) Update(ctx context.Context, a *Account) err
 	_, err := r.login.sql(ctx).ExecContext(ctx, `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, a.ID, a.ProxyID)
 	return err
 }
-func (r *scopedSelectionAccountRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+func (r *scopedSelectionAccountRepo) GetByID(ctx context.Context, id int64) (result *Account, err error) {
 	a, err := r.scopedAdminWriteTestRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -56,7 +57,7 @@ func (r *scopedSelectionAccountRepo) GetByID(ctx context.Context, id int64) (*Ac
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	if rows.Next() {
 		err = rows.Scan(&a.ProxyID)
 	}

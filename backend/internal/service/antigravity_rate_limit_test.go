@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1225,7 +1226,7 @@ func TestUpdateAccountModelRateLimitInCache_PreservesExistingExtra(t *testing.T)
 
 	// 验证已有数据被保留
 	require.Equal(t, "existing_value", account.Extra["existing_key"])
-	limits := account.Extra["model_rate_limits"].(map[string]any)
+	limits := testassert.Type[map[string]any](t, account.Extra["model_rate_limits"])
 	require.NotNil(t, limits["gemini-3-flash"])
 	require.NotNil(t, limits["claude-sonnet-4-5"])
 }

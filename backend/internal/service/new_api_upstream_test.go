@@ -6,6 +6,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -69,13 +70,13 @@ func TestNewAPIWalletAndUserContextAndMaskMatching(t *testing.T) {
 	matched := matchNewAPITokens(a, result.tokens)
 	require.Len(t, matched, 1)
 	require.Equal(t, int64(3), matched[0].ID)
-	snapshot := newAPISnapshot(a, matched[0], result, 30, time.Now())
+	snapshot := newAPISnapshot(matched[0], result, 30, time.Now())
 	require.Equal(t, "ok", snapshot.Status)
 	require.Equal(t, 2.5, snapshot.Balance.Data["wallet_balance"])
 	_, ok := snapshot.CostMultiplierToSync()
 	require.False(t, ok)
 	result.ratios = map[string]float64{}
-	snapshot = newAPISnapshot(a, matched[0], result, 30, time.Now())
+	snapshot = newAPISnapshot(matched[0], result, 30, time.Now())
 	require.Equal(t, "unsupported", snapshot.Status)
 	require.Equal(t, "ok", snapshot.Balance.Status)
 }
@@ -100,12 +101,60 @@ func TestNewAPIOfficialOneBasedPageEnvelope(t *testing.T) {
 	require.NoError(t, e)
 	require.Len(t, d.tokens, 1)
 }
-func TestNewAPIMultiRouteGroupIsUnsupported(t *testing.T) {
-	var token NewAPIToken
-	require.NoError(t, json.Unmarshal([]byte(`{"id":3,"key":"abcd**********wxyz","group":"vip","cross_group_retry":true,"route_groups":["vip","default"]}`), &token))
-	snap := newAPISnapshot(&Account{}, token, &newAPIData{wallet: 2.5, ratios: map[string]float64{"vip": 0.5}}, 30, time.Now())
-	require.Equal(t, UpstreamBillingProbeStatusUnsupported, snap.Status)
-	require.Equal(t, UpstreamBillingProbeStatusOK, snap.Balance.Status)
+func TestNewAPISnapshotRequiresFixedMatchingGroup(t *testing.T) {
+	now := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name     string
+		token    string
+		rate     float64
+		admitted bool
+	}{
+		{"legacy fixed group", `{"group":"vip"}`, 0.5, true},
+		{"explicit matching route", `{"group":"vip","route_groups":["vip"]}`, 0.5, true},
+		{"different single route", `{"group":"vip","route_groups":["default"]}`, 0.5, false},
+		{"auto route", `{"group":"vip","route_groups":["auto"]}`, 0.5, false},
+		{"empty route", `{"group":"vip","route_groups":[""]}`, 0.5, false},
+		{"route whitespace is not equivalent", `{"group":"vip","route_groups":[" vip "]}`, 0.5, false},
+		{"multiple routes without retry", `{"group":"vip","route_groups":["vip","default"]}`, 0.5, false},
+		{"duplicate routes", `{"group":"vip","route_groups":["vip","vip"]}`, 0.5, false},
+		{"cross group retry alone", `{"group":"vip","cross_group_retry":true}`, 0.5, false},
+		{"cross group retry with matching route", `{"group":"vip","cross_group_retry":true,"route_groups":["vip"]}`, 0.5, false},
+		{"empty declared group", `{"group":""}`, 0.5, false},
+		{"auto declared group", `{"group":"auto"}`, 0.5, false},
+		{"free group remains displayable", `{"group":"vip"}`, 0, true},
+		{"negative rate", `{"group":"vip"}`, -0.5, false},
+		{"nan rate", `{"group":"vip"}`, math.NaN(), false},
+		{"infinite rate", `{"group":"vip"}`, math.Inf(1), false},
+		{"excessive rate", `{"group":"vip"}`, 1000001, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var token NewAPIToken
+			require.NoError(t, json.Unmarshal([]byte(tt.token), &token))
+			token.ID = 3
+			snap := newAPISnapshot(token, &newAPIData{wallet: 2.5, ratios: map[string]float64{token.Group: tt.rate}}, 30, now)
+			require.Equal(t, UpstreamBillingProbeStatusOK, snap.Balance.Status)
+			require.Equal(t, 2.5, snap.Balance.Data["wallet_balance"])
+			require.Equal(t, "group", snap.Data["billing_scope"])
+			require.GreaterOrEqual(t, snap.NextProbeAt.Sub(now), 25*time.Minute)
+			require.LessOrEqual(t, snap.NextProbeAt.Sub(now), 35*time.Minute)
+			_, canSync := snap.CostMultiplierToSync()
+			require.False(t, canSync, "group declarations never become token rate sync evidence")
+			if tt.admitted {
+				require.Equal(t, UpstreamBillingProbeStatusOK, snap.Status)
+				require.Empty(t, snap.LastError)
+				require.Equal(t, tt.rate, snap.Data["resolved_rate_multiplier"])
+				require.Equal(t, now, *snap.ReceivedAt)
+				require.Equal(t, now.Add(time.Hour), *snap.FreshUntil)
+			} else {
+				require.Equal(t, UpstreamBillingProbeStatusUnsupported, snap.Status)
+				require.Equal(t, "unsupported_group", snap.LastError)
+				require.NotContains(t, snap.Data, "resolved_rate_multiplier")
+				require.NotContains(t, snap.Data, "effective_rate_multiplier")
+				require.Nil(t, snap.ReceivedAt)
+				require.Nil(t, snap.FreshUntil)
+			}
+		})
+	}
 }
 func TestNewAPIOlderArrayInventoryDoesNotStopOnShortPage(t *testing.T) {
 	a := &Account{ID: 1, Credentials: map[string]any{}}

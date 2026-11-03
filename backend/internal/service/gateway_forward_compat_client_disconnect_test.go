@@ -634,7 +634,7 @@ func TestAnthropicCompatStreaming_RequestContextCanceledDrainsWithoutWriting(t *
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 				c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
-				var body io.ReadCloser = io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))
+				body := io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))
 				if delayed {
 					pr, pw := io.Pipe()
 					t.Cleanup(func() { _ = pr.Close() })

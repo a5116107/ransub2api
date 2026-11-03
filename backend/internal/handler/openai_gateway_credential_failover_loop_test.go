@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -459,7 +460,7 @@ func TestResponsesCredentialFailoverLoop(t *testing.T) {
 		select {
 		case <-time.After(2 * time.Second):
 			t.Fatal("credential refresh did not start")
-		case <-findHandlerRefresherStarted(router):
+		case <-findHandlerRefresherStarted(t, router):
 			cancel()
 		}
 		select {
@@ -820,7 +821,7 @@ func TestResponsesWebSocketCredentialFailoverLoop(t *testing.T) {
 		conn, closeConn := dial(t, router)
 		writeFirst(t, conn)
 		select {
-		case <-findHandlerRefresherStarted(router):
+		case <-findHandlerRefresherStarted(t, router):
 		case <-time.After(2 * time.Second):
 			t.Fatal("credential refresh did not start")
 		}
@@ -834,9 +835,9 @@ func TestResponsesWebSocketCredentialFailoverLoop(t *testing.T) {
 
 var handlerRefresherStarted sync.Map
 
-func findHandlerRefresherStarted(router *gin.Engine) <-chan struct{} {
+func findHandlerRefresherStarted(t *testing.T, router *gin.Engine) <-chan struct{} {
 	value, _ := handlerRefresherStarted.Load(router)
-	return value.(chan struct{})
+	return testassert.Type[chan struct{}](t, value)
 }
 
 func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*OpenAIGatewayHandler, *grokCredentialHandlerRepo, *grokCredentialHandlerUpstream, *gin.Engine, func()) {

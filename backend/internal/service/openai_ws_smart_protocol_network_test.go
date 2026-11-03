@@ -379,7 +379,15 @@ func TestSmartProtocolNoReplayAndCleanup(t *testing.T) {
 					}
 				}
 				select {
-				case <-f.errors:
+				case err := <-f.errors:
+					if failure == "event_error" || (failure == "cancel" && mode == "http") {
+						require.NoError(t, err)
+					} else {
+						var closeErr *OpenAIWSClientCloseError
+						require.ErrorAs(t, err, &closeErr)
+						require.Equal(t, coderws.StatusInternalError, closeErr.StatusCode())
+						require.Contains(t, closeErr.Reason(), "request was not replayed")
+					}
 				case <-f.ctx.Done():
 					t.Fatal("failed turn cleanup stalled")
 				}
@@ -623,7 +631,8 @@ func TestSmartProtocolActualContentNetwork(t *testing.T) {
 				}
 				_ = c.CloseNow()
 				select {
-				case <-f.errors:
+				case err := <-f.errors:
+					require.NoError(t, err)
 				case <-f.ctx.Done():
 					t.Fatal("content session cleanup stalled")
 				}

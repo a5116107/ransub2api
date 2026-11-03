@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"sync"
 	"testing"
 	"time"
@@ -18,9 +19,9 @@ func TestLocalSchedulerSnapshotIsolationAndExpiry(t *testing.T) {
 	if err := store.Publish(bucket, 1, now.Add(time.Minute), source); err != nil {
 		t.Fatal(err)
 	}
-	source[0].Credentials["nested"].(map[string]any)["value"] = "changed"
+	testassert.Type[map[string]any](t, source[0].Credentials["nested"])["value"] = "changed"
 	got, hit, err := store.GetLocalSnapshot(context.Background(), bucket)
-	if err != nil || !hit || got[0].Credentials["nested"].(map[string]any)["value"] != "original" {
+	if err != nil || !hit || testassert.Type[map[string]any](t, got[0].Credentials["nested"])["value"] != "original" {
 		t.Fatalf("isolation: %v", err)
 	}
 	got[0].ID = 99

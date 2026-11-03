@@ -97,7 +97,7 @@ func (r *newAPIAuthorizationRepository) Save(ctx context.Context, p *service.New
 		if e = matchNewAPIAccountTx(ctx, tx, b.Account); e != nil {
 			return e
 		}
-		site, e := service.CanonicalNewAPISite(b.Account.GetCredential("base_url"))
+		site, e := service.NewAPIAccountSite(b.Account)
 		if e != nil || site != p.SiteURL || b.TokenID <= 0 {
 			return service.ErrNewAPIConfiguration
 		}

@@ -264,28 +264,10 @@ type routingMatrixGolden struct {
 func routingMatrixCaseDigest(cases []routingMatrixCase) string {
 	var keys strings.Builder
 	for _, tc := range cases {
-		keys.WriteString(tc.key())
-		keys.WriteByte('\n')
+		_, _ = keys.WriteString(tc.key())
+		_ = keys.WriteByte('\n')
 	}
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(keys.String())))
-}
-
-func captureRoutingMatrixGolden() routingMatrixGolden {
-	cases := routingMatrixCases()
-	golden := routingMatrixGolden{SourceRevision: routingMatrixMainRevision, CaseCount: len(cases), CaseKeysSHA256: routingMatrixCaseDigest(cases)}
-	indexByObservation := make(map[string]int)
-	for _, tc := range cases {
-		obs := observeRouting(tc)
-		key := obs.String()
-		index, ok := indexByObservation[key]
-		if !ok {
-			index = len(golden.Observations)
-			golden.Observations = append(golden.Observations, obs)
-			indexByObservation[key] = index
-		}
-		golden.Results = append(golden.Results, index)
-	}
-	return golden
 }
 
 // Zhipu has no Responses endpoint. The refactor routes adaptive /responses to

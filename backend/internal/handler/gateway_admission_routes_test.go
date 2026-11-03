@@ -12,6 +12,7 @@ import (
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -103,7 +104,7 @@ func TestAPIKeyAdmissionCanceledUserWaitReturnsReservation(t *testing.T) {
 		}
 		done <- err
 	}()
-	keyCache := cache.(service.APIKeyConcurrencyCache)
+	keyCache := testassert.Type[service.APIKeyConcurrencyCache](t, cache)
 	require.Eventually(t, func() bool {
 		counts, err := keyCache.GetAPIKeyConcurrencyBatch(context.Background(), []int64{77})
 		return err == nil && counts[77] == 1

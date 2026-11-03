@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/securefile"
 	"github.com/tidwall/gjson"
 )
 
@@ -201,29 +202,8 @@ func (s *SafetyPromptStore) saveLocked() {
 		s.warning = "无法序列化安全注入事件；当前仅保留内存记录。"
 		return
 	}
-	tmp, err := os.CreateTemp(dir, "events-*.tmp")
-	if err != nil {
-		s.warning = "无法写入安全注入事件；当前仅保留内存记录。"
-		return
-	}
-	name := tmp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		s.warning = "无法设置安全注入事件文件权限；当前仅保留内存记录。"
-		return
-	}
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		s.warning = "无法写入安全注入事件；当前仅保留内存记录。"
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		s.warning = "无法关闭安全注入事件临时文件；当前仅保留内存记录。"
-		return
-	}
-	if err := os.Rename(name, s.path); err != nil {
-		s.warning = "无法替换安全注入事件文件；当前仅保留内存记录。"
+	if err := securefile.WriteAtomic(s.path, raw); err != nil {
+		s.warning = "无法安全持久化安全注入事件；当前仅保留内存记录。"
 		return
 	}
 	s.warning = ""

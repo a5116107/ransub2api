@@ -12,6 +12,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,9 +36,7 @@ func TestCredentialEncryptionPersistsWithoutChangingSharedKey(t *testing.T) {
 	require.Equal(t, "local_file", status.Source)
 	before, err := os.ReadFile(e.keyPath)
 	require.NoError(t, err)
-	info, err := os.Stat(e.keyPath)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assertions.PrivateFile(t, e.keyPath)
 	ciphertext, err := e.Encrypt("fixture-password")
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(ciphertext, credentialCipherPrefix))

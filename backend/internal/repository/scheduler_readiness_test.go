@@ -5,8 +5,8 @@ package repository
 import (
 	"context"
 	"io"
+	"net"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -60,7 +60,7 @@ func TestSchedulerReadinessRejectsStaleRetiredAndIncomplete(t *testing.T) {
 			case "missing_active":
 				mr.Del(schedulerBucketKey(schedulerActivePrefix, bucket))
 			case "not_ready":
-				mr.Set(schedulerBucketKey(schedulerReadyPrefix, bucket), "0")
+				require.NoError(t, mr.Set(schedulerBucketKey(schedulerReadyPrefix, bucket), "0"))
 			case "retired":
 				require.NoError(t, cache.RetireBucket(ctx, bucket))
 			case "missing_members":
@@ -72,7 +72,7 @@ func TestSchedulerReadinessRejectsStaleRetiredAndIncomplete(t *testing.T) {
 				mr.Del(schedulerAccountMetaKey("7"))
 				mr.HSet(schedulerAccountMetaKey("7"), "bad", "type")
 			case "empty_metadata":
-				mr.Set(schedulerAccountMetaKey("7"), "")
+				require.NoError(t, mr.Set(schedulerAccountMetaKey("7"), ""))
 			case "missing_full_account":
 				mr.Del(schedulerAccountKey("7"))
 			case "over_limit":
@@ -113,13 +113,21 @@ func TestSchedulerReadinessRealRedis(t *testing.T) {
 	if err != nil {
 		t.Skip("redis-server is required for this isolated adapter check")
 	}
-	socket := filepath.Join(t.TempDir(), "redis.sock")
-	cmd := exec.Command(binary, "--port", "0", "--unixsocket", socket, "--unixsocketperm", "700", "--save", "", "--appendonly", "no")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	address := listener.Addr().String()
+	_, port, err := net.SplitHostPort(address)
+	require.NoError(t, err)
+	require.NoError(t, listener.Close())
+	// Use loopback TCP on every platform; native Windows Redis does not expose
+	// the Unix-domain socket used by the old fixture. Persistence stays disabled.
+	cmd := exec.Command(binary, "--bind", "127.0.0.1", "--port", port, "--dir", t.TempDir(), "--save", "", "--appendonly", "no")
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	client := redis.NewClient(&redis.Options{Network: "unix", Addr: socket, MaxRetries: -1})
+	client := redis.NewClient(&redis.Options{Addr: address, MaxRetries: -1, DialTimeout: 200 * time.Millisecond})
 	t.Cleanup(func() { _ = client.Close() })
 	require.Eventually(t, func() bool { return client.Ping(context.Background()).Err() == nil }, 3*time.Second, 10*time.Millisecond)
 	writer, ok := NewSchedulerCache(client).(*schedulerCache)

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -132,7 +133,7 @@ func TestExtraImageModelsWholeChainAndScheduling(t *testing.T) {
 		copy.Extra = map[string]any{ExtraImageModelsKey: []string{}}
 		for _, model := range []string{"my-nai", "provider-image", extraImageTestModel} {
 			if model != missing {
-				copy.Extra[ExtraImageModelsKey] = append(copy.Extra[ExtraImageModelsKey].([]string), model)
+				copy.Extra[ExtraImageModelsKey] = append(testassert.Type[[]string](t, copy.Extra[ExtraImageModelsKey]), model)
 			}
 		}
 		require.ErrorContains(t, r.ValidateAccountModels(&copy, "provider-image"), missing)

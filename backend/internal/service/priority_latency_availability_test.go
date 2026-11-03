@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -163,7 +164,7 @@ func TestPriorityLatencyAvailabilityEligibilityAndScope(t *testing.T) {
 	for _, gate := range []string{"disabled", "wrong group", "model", "privacy", "excluded"} {
 		t.Run(gate, func(t *testing.T) {
 			svc, scheduler, req := availabilityFixture(t, 16000, 17000, 500)
-			repo := svc.accountRepo.(schedulerGroupAwareOpenAIAccountRepo)
+			repo := testassert.Type[schedulerGroupAwareOpenAIAccountRepo](t, svc.accountRepo)
 			switch gate {
 			case "disabled":
 				repo.accounts[2].Schedulable = false
@@ -205,7 +206,7 @@ func TestPriorityLatencyAvailabilityFrozenScope(t *testing.T) {
 	selected, err := modeSelect(t, scheduler, req)
 	require.NoError(t, err)
 	require.NotNil(t, selected)
-	cache := svc.cache.(*schedulerTestGatewayCache)
+	cache := testassert.Type[*schedulerTestGatewayCache](t, svc.cache)
 	require.Empty(t, cache.deletedSessions, "latency fallback must preserve sticky state")
 	other, err := svc.accountRepo.GetByID(context.Background(), 6)
 	require.NoError(t, err)
@@ -240,7 +241,7 @@ func TestPriorityLatencyAvailabilitySafetyNoWaiver(t *testing.T) {
 	for _, gate := range []string{"admin disabled", "auth error", "rate limited", "overloaded", "excluded", "privacy", "quota"} {
 		t.Run(gate, func(t *testing.T) {
 			svc, scheduler, req := availabilityFixture(t, 16000)
-			repo := svc.accountRepo.(schedulerGroupAwareOpenAIAccountRepo)
+			repo := testassert.Type[schedulerGroupAwareOpenAIAccountRepo](t, svc.accountRepo)
 			until := time.Now().Add(time.Hour)
 			switch gate {
 			case "admin disabled":
@@ -327,7 +328,7 @@ func TestPriorityLatencyAvailabilityConfiguredMetric(t *testing.T) {
 	bad := time.Now().Add(-time.Minute)
 	signals := map[int64]PrioritySchedulingSignal{}
 	pool := []openAIAccountCandidateScore{}
-	repo := svc.accountRepo.(schedulerGroupAwareOpenAIAccountRepo)
+	repo := testassert.Type[schedulerGroupAwareOpenAIAccountRepo](t, svc.accountRepo)
 	for i := range repo.accounts {
 		value := 21000 - float64(i)*1000
 		id := repo.accounts[i].ID

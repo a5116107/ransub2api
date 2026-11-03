@@ -102,38 +102,38 @@ func geminiAccountScoped401Rule() map[string]any {
 	}
 }
 
-// geminiSingleCheckForwarders 以三条转发路径各发一次请求，返回转发错误与 gin.Context。
+// geminiSingleCheckForwarders 以三条转发路径各发一次请求，返回 gin.Context 与转发错误。
 var geminiSingleCheckForwarders = []struct {
 	name    string
-	forward func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (error, *gin.Context)
+	forward func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (*gin.Context, error)
 }{
 	{
 		name: "native",
-		forward: func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (error, *gin.Context) {
+		forward: func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (*gin.Context, error) {
 			c, _ := newGeminiNativeTestContext(t)
 			_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false,
 				[]byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
-			return err, c
+			return c, err
 		},
 	},
 	{
 		name: "claude_compat",
-		forward: func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (error, *gin.Context) {
+		forward: func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (*gin.Context, error) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			body := []byte(`{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 			_, err := svc.Forward(context.Background(), c, account, body)
-			return err, c
+			return c, err
 		},
 	},
 	{
 		name: "chat_completions_compat",
-		forward: func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (error, *gin.Context) {
+		forward: func(t *testing.T, svc *GeminiMessagesCompatService, account *Account) (*gin.Context, error) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			body := []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 			_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body)
-			return err, c
+			return c, err
 		},
 	},
 }
@@ -144,7 +144,7 @@ func TestGeminiForward_First401RuleHitOnlyTempUnschedules(t *testing.T) {
 		t.Run(fw.name, func(t *testing.T) {
 			svc, upstream, repo := newGeminiSingleCheckService(geminiSequenceUpstreamResponse{status: http.StatusUnauthorized, body: geminiSingleCheck401Body})
 
-			err, _ := fw.forward(t, svc, geminiAPIKeyAccountWithTempRule(geminiAccountScoped401Rule()))
+			_, err := fw.forward(t, svc, geminiAPIKeyAccountWithTempRule(geminiAccountScoped401Rule()))
 
 			var failoverErr *UpstreamFailoverError
 			require.True(t, errors.As(err, &failoverErr), "规则命中应换号，got %T: %v", err, err)
