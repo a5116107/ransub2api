@@ -142,6 +142,9 @@ func TestOpenAIHTTPFinalSendRechecksPurchasedRoute(t *testing.T) {
 			}},
 			{name: "protocol changed", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["api_protocol"] = APIProtocolAnthropic }},
 			{name: "account mode changed", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["account_mode"] = AccountModeCoding }},
+			{name: "protocol rules changed", reason: "account_binding_changed", mutate: func(a *Account) {
+				a.Credentials[protocolRulesCredentialKey] = []any{map[string]any{"pattern": "gpt-*", "protocol": APIProtocolResponses}}
+			}},
 			{name: "group removed", reason: "group_membership_changed", mutate: func(a *Account) { a.GroupIDs = nil }},
 			{name: "disabled", reason: "account_ineligible", mutate: func(a *Account) { a.Status = "disabled" }},
 			{name: "purchase rate increased", reason: openAIProfitFilterReasonThreshold, mutate: func(a *Account) { rate := 0.9; a.RateMultiplier = &rate }},

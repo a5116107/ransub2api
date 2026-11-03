@@ -1435,7 +1435,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 // on the same credential identity boundary.
 var upstreamBillingProbeIdentityCredentialKeys = [...]string{
 	"api_key", "base_url", credKeyHeaderOverrideEnabled, credKeyHeaderOverrides,
-	"api_base_urls", "api_protocol", "account_mode",
+	"api_base_urls", "api_protocol", "account_mode", protocolRulesCredentialKey,
 }
 
 func updatesUpstreamBillingProbeIdentity(credentials map[string]any) bool {

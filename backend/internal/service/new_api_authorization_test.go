@@ -348,6 +348,7 @@ func TestNewAPIBindingRejectsChangedProtocolIdentity(t *testing.T) {
 		{"api_base_urls", map[string]any{APIProtocolChatCompletions: "https://new.example/v1"}},
 		{"api_protocol", APIProtocolChatCompletions},
 		{"account_mode", AccountModeCoding},
+		{"protocol_rules", []any{map[string]any{"pattern": "gpt-*", "protocol": APIProtocolResponses}}},
 	} {
 		t.Run(change.key, func(t *testing.T) {
 			s, repo, _, accounts := newAPIConfigFixture()

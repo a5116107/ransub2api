@@ -305,7 +305,15 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_TurnRetryForcesF
 	staleConnB := newOpenAIWSConn(pool.nextConnID(account.ID), account.ID, staleB, nil)
 	staleConnB.handshakeCompatibility = openAIWSAcquireCompatibility(*lastAcquire)
 	staleConnB.routingAffinity = normalizeOpenAIWSRoutingAffinity(lastAcquire.Headers)
+	require.NotNil(t, lastAcquire.BindHandshake)
+	staleConnB.turnBinding = lastAcquire.BindHandshake(lastAcquire.Headers)
+	require.NoError(t, lastAcquire.CheckBinding(t.Context(), staleConnB.turnBinding))
 	ap.mu.Lock()
+	// Select the injected stale connection deterministically. It must have the
+	// same admission binding as a real handshake before testing EOF recovery.
+	for _, conn := range ap.conns {
+		staleConnB.lastUsedNano.Store(conn.lastUsedNano.Load() - int64(time.Second))
+	}
 	ap.conns[staleConnB.id] = staleConnB
 	idleConns := len(ap.conns)
 	ap.mu.Unlock()

@@ -21,7 +21,7 @@
 | D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS 桥接共享额度、静态 Key 请求绑定及本地拒绝归因/搜索503已验证；固定线路、直接 WS 原生接入/Live/区域及缓存域仍待验收 |
 | D2.1 | done | 自动同步快照有效性、尝试时刻高峰、原同步值域与在线/预演同源已落地；30 类边界及槽位释放覆盖，三轮专项、完整本地回归、vet 与真实 CLI 演练通过 |
 | D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
-| D2.3 | done | 协议地址/协议/接入模式统一进入身份边界，编辑/CRS/绑定旧证据失效；12 类四路径与 3 项绑定回归，四包三轮回归、vet 和 service 未限量 lint 0 通过 |
+| D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；本轮专项三轮通过 |
 | D2.4 | done | 按入站/模型分流的探测、New API 授权/列表/绑定/事务保存统一使用生效地址；旧源码 6 子例失败，新回归及相关四包三轮通过；不作为跨协议同价或共享缓存证据 |
 | D3 | pending | API Key 最新可用状态、触发、过期与恢复待补齐 |
 | D4.1 | done | 旧实现失败已复现；双故障/账号消失拒绝，缓存回源及未装门行为保持；专项、service/handler 回归和差异检查通过 |
@@ -33,7 +33,7 @@
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
 | D4 | in_progress | 固定售价、线路/倍率终检、严格请求跳过旧缓存、HTTP 首次/WS 每轮权威策略读取已验证；已补齐全部7个多协议供应商的账号权威刷新与最终发送绑定；仍待 D2、其他路径、区域传播及模型/fast 来源 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
-| D8 | pending | admin 原8项 lint 阻塞已修复，跨层用例移至 integration/adminkey 并经真实 PostgreSQL 三轮通过；双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
+| D8 | pending | admin原8项lint与跨层PostgreSQL夹具已验证；本轮补齐WS重试夹具真实握手绑定，确定性重复100次通过；双平台既有回归、本地CLI专项和M5六包lint通过；集成/升级/全局CLI场景仍待完成；不运行CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
 
 ## 环境与工作区
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮多协议权威终检：专项三轮service 2.963s；完整service 324.369s、handler 149.140s；repository准入回归三轮3.405s，均退出0；三包vet通过，三包完整未限量lint为0 issues。原20项仍12 done、2 in_progress、6 pending，完成一项D4路径修复，父任务done增量0；红绿回归及前轮证据见DECISIONS。
+- 本轮分流规则身份：专项三轮service 3.780s；修复既有WS夹具绑定后重复100次2.223s；最终完整service 325.591s、handler 152.076s，均退出0；两包vet通过，完整未限量lint为0 issues。首次完整回归的WS失败、根因及修复证据见DECISIONS；原20项仍12 done、2 in_progress、6 pending，完成一项D2.3缺口及D8夹具修复，父任务done增量0。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -52,8 +52,8 @@
 
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
-go test -tags=unit -p 2 ./internal/service -run 'Test(AdaptiveProtocolFinalAdmissionBeforeNetwork|StrictProviderProfitAdmissionReadFailure|OpenAITurnAdmissionFreshProfitEvidence|OpenAITurnAdmissionProfitGateBypassesLocalCache|OpenAIHTTPFinalSendRechecksPurchasedRoute)$' -count=3 -timeout=6m
-go vet -tags=unit -p 2 ./internal/service ./internal/handler ./internal/repository
+go test -tags=unit -p 2 ./internal/service -run 'Test(UpstreamBillingProbeRouteIdentityChanges|NewAPIBindingRejectsChangedProtocolIdentity|OpenAIHTTPFinalSendRechecksPurchasedRoute|ResolveUpstreamProtocol)$' -count=3 -timeout=6m
+go vet -tags=unit -p 2 ./internal/service ./internal/handler
 ```
 
 ## 下一项工作

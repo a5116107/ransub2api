@@ -735,6 +735,10 @@ func TestUpstreamBillingProbeRouteIdentityChanges(t *testing.T) {
 		{"clear protocol", map[string]any{"api_protocol": nil}, true},
 		{"account mode", map[string]any{"account_mode": AccountModeCoding}, true},
 		{"clear account mode", map[string]any{"account_mode": nil}, true},
+		{"protocol rules", map[string]any{"protocol_rules": []any{map[string]any{"pattern": "gpt-*", "protocol": APIProtocolResponses}}}, true},
+		{"clear protocol rules", map[string]any{"protocol_rules": nil}, true},
+		{"empty protocol rules", map[string]any{"protocol_rules": []any{}}, true},
+		{"same protocol rules", map[string]any{"protocol_rules": []any{map[string]any{"pattern": "gpt-*", "protocol": APIProtocolChatCompletions}}}, false},
 		{"same endpoints", map[string]any{"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://old.example/v1"}}, false},
 		{"same protocol", map[string]any{"api_protocol": APIProtocolAdaptive}, false},
 		{"same account mode", map[string]any{"account_mode": "payg"}, false},
@@ -743,16 +747,24 @@ func TestUpstreamBillingProbeRouteIdentityChanges(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			account := profitControlSyncedTestAccount(now)
 			account.Platform = PlatformDeepseek
+			if tt.name == "protocol rules" {
+				account.Platform = PlatformCommandCode
+			}
 			account.Status = StatusActive
 			account.Credentials = map[string]any{
 				"api_key": "fixture-key", "base_url": "https://old.example/v1",
 				"api_protocol": APIProtocolAdaptive, "account_mode": "payg",
-				"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://old.example/v1"},
+				"api_base_urls":  map[string]any{APIProtocolChatCompletions: "https://old.example/v1"},
+				"protocol_rules": []any{map[string]any{"pattern": "gpt-*", "protocol": APIProtocolChatCompletions}},
 			}
 			_, reason := profitControlAccountRateAt(account, now)
 			require.Empty(t, reason, "fixture must begin with valid rate evidence")
 			target := *account
 			target.Credentials = mergeMap(account.Credentials, tt.credentials)
+			if tt.name == "protocol rules" {
+				require.Equal(t, APIProtocolChatCompletions, resolveUpstreamProtocol(account, APIProtocolChatCompletions, "gpt-fixture", nil))
+				require.Equal(t, APIProtocolResponses, resolveUpstreamProtocol(&target, APIProtocolChatCompletions, "gpt-fixture", nil))
+			}
 			t.Run("binding fingerprint", func(t *testing.T) {
 				require.Equal(t, tt.changed, NewAPIAccountFingerprint(account) != NewAPIAccountFingerprint(&target), "binding fingerprint must track route identity")
 			})

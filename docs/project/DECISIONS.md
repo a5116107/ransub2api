@@ -310,3 +310,13 @@
 - 最终完整本地回归实际输出：ok service 324.369s、ok handler 149.140s，Multi-protocol complete regression exit: 0。repository 的 TestOpenAITurnAdmission 连续三轮实际输出 ok 3.405s；三包 go vet 退出0，Multi-protocol repository regression and vet: PASS。service/handler/repository 完整未限量 golangci-lint 输出 0 issues.，退出0；未修改检查规则，未运行CI。
 - 原设计和STATE更新，不把账号级Chat倍率探测证据视为跨协议同价或共享缓存证明。D2固定线路计价依据、直接WS原生接入/Live/区域及缓存域，D4区域传播和模型/fast来源仍保留验收；原20项保持12 done、2 in_progress、6 pending，本轮完成一项D4路径闭环，父任务done增量0。
 - 交付复核：旧 strictGrok 和旧测试名在 internal 下均0命中；新增Go TODO/FIXME/XXX为0，Go格式和git diff --check通过。源码历史图片仍12个共1164bytes，本轮无新增持久测试产物。保留历史审批拒绝清理与Windows符号链接权限等待；单一工作树、只本地提交7个任务文件，不推送、不部署、不迁移。
+
+## 2026-11-04：D2.3 模型分流规则身份与 D8 WS 重试夹具补齐
+
+- 接续3ce7950，核对固定线路发现 protocol_rules 虽可改变模型实际协议和端点，却未进入既有 upstreamBillingProbeIdentityCredentialKeys。仅改模型分流规则时，单账号编辑、CRS合并仍复用旧倍率证据，批量编辑不清除证据，New API旧绑定仍显示有效。旧实现实际回归失败（service2.079s、退出1），含替换、清空、显式空列表及批量相同值提交；没有用推断替代复现。
+- 在原共用字段清单加入既有 protocolRulesCredentialKey，原编辑、批量、CRS和New API指纹路径自动使用同一边界，不新增持久字段、第二套指纹或协议调度。将原矩阵扩展到16类四路径和4项绑定测试；CommandCode真实解析断言确认同模型从Chat Completions切到Responses。单账号相同规则保持证据，批量显式提交保持原保守清除策略，探测/同步开关保持。原最终发送矩阵补充9平台规则变化拦截。
+- 修复后的相关专项连续三轮实际通过：ok service3.780s。首次完整本地回归实际失败：service336.090s，其中仅 TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_TurnRetryForcesFreshConn 在第二会话读到EOF；handler154.473s通过，两包vet及未限量lint0通过。该失败未被忽略或标为通过。
+- WS用例独立25次复现2次失败（service2.045s），随后100次详细复现（service1.845s、退出1）捕获 connection_binding_expired。根因是测试手工注入的第二条连接只设置握手兼容键和路由偏好，遗漏真实dialConn通过BindHandshake建立的turnBinding；池选择该连接时生产准入正确拒绝，尚未执行要验收的EOF重试。正常选择原连接时用例通过，因此表现不稳定。
+- 原位补齐测试连接的真实BindHandshake/CheckBinding，并将该连接的lastUsed固定为较早值，确定性选中注入连接测试重试。保留生产校验、原拨号次数及新连接写入次数断言，不跳过测试、不增加重试或超时、不隐藏错误。修复夹具后连续100次实际通过：ok service2.223s，WS retry corrected fixture exit: 0。
+- 冻结最终源码后的完整回归实际输出：ok service325.591s、ok handler152.076s，Final protocol identity complete regression exit: 0。最终两包go vet输出Final protocol identity vet: PASS；两包完整未限量golangci-lint输出0 issues.、退出0。原设计4.2和任务定义、STATE均原位同步；不把新增字段视为跨协议同价、模型/fast计价或缓存共享证明。
+- 交付检查：Go格式无未格式化文件，git diff --check通过，新增Go TODO/FIXME/XXX为0；历史源码图片仍12个共1164bytes，本轮新增持久测试产物0。只本地提交8个任务文件；单一工作树，不运行CI、不推送、不部署、不迁移。历史审批拒绝清理与Windows符号链接权限等待保留；原20项仍12 done、2 in_progress、6 pending，D2/D4父验收未提前关闭。
