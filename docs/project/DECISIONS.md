@@ -186,3 +186,19 @@
 - 尚未完成 D2 的固定线路/原同步兼容、共享 Key 配置与完整接线、缓存域证据；本轮没有新增或改名任务 ID，20 项状态仍为 12 done、2 in_progress、6 pending，父任务完成增量 0。没有保留探索中的账号 extra 共享上限、独立新槽位入口或未接通的 Redis 方法，避免把部分路径限额冒充全路径保障。
 - 最终 service 与 repository 完整未限量 lint 分别输出 0 issues.、退出码 0；service/handler/repository go vet 退出码 0，最后 repository 测试变更后再次 vet 输出 Final repository vet: PASS。仅本地验证，没有运行 CI。
 - 仅本地提交本轮三个源码/测试文件及现有三份项目文档。单一 work/monitor-driven-scheduling 工作树，未推送、创建 PR、生产迁移或部署。STATE 为 85 行；git diff --check 通过，新增 TODO/FIXME/XXX 为 0；没有生成新日志/二进制/图片。历史受保护图片和已拒绝清理的三个 bin 产物保持，不重试删除。
+
+## 2026-11-03：D2 共享上游 Key 的 HTTP/SSE 实施
+
+- 本轮从 7a142ac 的单一 work/monitor-driven-scheduling 工作树推进 D2，原 tracked 无差异，仅历史受保护图片未跟踪。用户确认的 Key 独立总上限落在 gateway.upstream_key_concurrency 配置：revision + limits，后者以最终出站凭据的 SHA256 小写摘要为键。没有复制账号额度或构建第二套调度器，原账号/用户限制保持；不新增数据库表或真实采购价格能力。
+- 在现有 HTTPUpstream Do/DoWithTLS 取得最终出站鉴权后、发送前接入独立 Redis namespace。跨账号和下游分组发送同 Key 共用计数，识别标准 Bearer/Token/Key 头及 key/api_key query，重复值只占一次。生产 ProvideHTTPUpstream 与 Wire 生成接线注入既有 Redis；无共享权威时明确拒绝，NewHTTPUpstream 在未配置模式下保持原行为。
+- Redis Lua 使用服务器时间原子判断上限/占槽；revision 不得倒退，同版本完整配置摘要不同拒绝。降低上限保留已有槽位，在途不重置。首次启用或移除规则须停止接流、排空旧请求，所有实例部署同一配置；此前未受限请求没有租约，不能声称滚动修改无需排空。配置启动加载，回滚也用新 revision，禁止清空 Redis 绕过版本保护。
+- 长响应使用 30 秒租约、5 秒续租与 19 秒独立看门狗；续租只刷新现存成员，丢失所有权取消实际出站上下文。HTTP 共享额度随 Body EOF/错误/Close 释放，取消主动关闭响应体，重复释放幂等，多凭据部分申请失败精确回收。清理 Redis 故障依赖租约过期兜底，未声称跨 Redis 数据丢失仍可保持旧所有权。
+- 本地满额与策略冲突沿原有限重选返回 503，不落入供应商/代理故障统计、账号冷却或用量活动记录。回归以 nil service/writer 证明这些外部路径未被调用，并保留原账号状态；发送后丢失租约不作为可直接重放的本地拒绝。
+- 协议兼容边界明确：配置模式下 HTTP-to-WS 路径回落 HTTP，直接 Responses WS ingress 拒绝；受限 Key 的 realtime 请求拒绝；区域 SQL/本地快照模式在配置和运行时拒绝。此为防绕过边界，仍是 D2 未完成能力，未改变原父验收。自定义签名、非标准鉴权、绕过 HTTPUpstream 的任务及共享缓存域仍未验收；前端管理归 D7。
+- 新 config/repository 共享额度专项连续三轮实际通过（3.583s/28.493s），含真实独立 Redis 5 进程的 32 竞争/上限缩小/旧版本及同版本冲突测试。HTTP 双独立客户端验证同 Key 跨账号满额不发第二次网络请求、其他 Key 独立、响应关闭后立即复用；同时覆盖取消、精确成员、重复 Close、申请失败和 realtime/缺 Redis 拒绝。
+- HTTP/配置/WS/原并发回收扩大回归连续三轮实际退出 0：config 3.375s、repository 34.033s、service 14.256s。最终错误归类与 WS 边界专项 verbose 三轮显示各子例 PASS，service 2.763s；真实 Redis 竞争三轮逐项 PASS（2.28s/0.61s/0.35s），repository 包 17.124s，无 skip。首轮 Redis 尚未监听时的连接拒绝由 readiness 重试处理，不作为跳过或通过前提。
+- D2 固定选路、WS/Live/区域完整接线、缓存域仍未完成；D3–D9 保留原依赖。原 20 个 ID 仍为 12 done、2 in_progress、6 pending，本轮父任务 done 增量 0。最终 lint/vet、服务器编译及提交结果待命令返回后追加，不以早期结果代替最终源码检查。
+- 最终静态检查首轮 3 项：新 SSE 测试未检查 Flusher 类型断言、config 既有测试两处 reflect.Ptr 过时用法。前者改用受检 ResponseController.Flush，后者原位改 reflect.Pointer，不修改检查规则。配置可达性回归随后实际发现新 revision 未注册默认值，三轮均报 1 config keys have no default registered；补齐默认值后 config 全包实际通过（2.457s），原断言保持。
+- 修复后一次复核命令遗漏进程 PATH，误用系统 Redis 3，真实 Redis 竞争三轮均失败（预期 4 个获槽，实际 0）；不将其标为跳过，也不改 Lua 兼容旧环境。显式加入 H:/Root/tools/redis/5.0.14.1 后，配置/Key/可达性/PR612 三轮复核实际通过（config 0.760s、repository 28.534s）。cmd/server 生产注入编译实际输出 ok 2.232s [no tests to run]，属于编译检查。
+- 最后源码与夹具修正后，执行 go vet -tags=unit -p 2 ./internal/config ./internal/repository ./internal/service，实际输出 Final shared upstream Key vet: PASS。完整未限量 golangci-lint run --build-tags=unit --timeout=12m --concurrency=2 --allow-parallel-runners --max-same-issues=0 --max-issues-per-linter=0 同三包最终输出 0 issues.，退出码 0。未扩大为全后端/生产验收。
+- 本地提交本轮已核对的 20 个源码/测试/配置/文档文件；git diff --check 通过，新增 TODO/FIXME/XXX 为 0，STATE 87 行，无新持久日志/二进制/图片。只使用原单一工作树，未推送、PR、CI、生产迁移或部署；历史受保护图片和被自动审批拒绝清理的 bin 产物原样保留。实际提交标识由 Git 保存。

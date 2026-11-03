@@ -391,6 +391,32 @@ func TestAcquireSlotConfirmedReplyOwnership(t *testing.T) {
 	}
 }
 
+func TestUpstreamKeyAdmissionPreservesAccountHealth(t *testing.T) {
+	for _, admissionErr := range []error{ErrUpstreamKeyCapacity, ErrUpstreamKeyPolicy} {
+		t.Run(admissionErr.Error(), func(t *testing.T) {
+			account := &Account{ID: 71, Schedulable: true}
+			// Nil services/context writers prove these local refusals never enter
+			// database, proxy attribution, cooldown or activity scheduling paths.
+			var openAI *OpenAIGatewayService
+			var gateway *GatewayService
+			for _, err := range []error{
+				openAI.handleOpenAIUpstreamTransportError(context.Background(), nil, account, admissionErr, false),
+				gateway.handleUpstreamTransportError(context.Background(), nil, account, admissionErr, OpsUpstreamErrorEvent{}),
+			} {
+				var failover *UpstreamFailoverError
+				require.ErrorAs(t, err, &failover)
+				require.Equal(t, 503, failover.StatusCode)
+				require.Contains(t, string(failover.ResponseBody), "upstream_key_admission_unavailable")
+			}
+			require.True(t, account.Schedulable)
+			require.Nil(t, account.TempUnschedulableUntil)
+			require.Empty(t, account.TempUnschedulableReason)
+		})
+	}
+	require.Nil(t, upstreamKeyAdmissionFailover(context.Canceled))
+	require.Nil(t, upstreamKeyAdmissionFailover(ErrUpstreamKeyLease), "lost lease after sending is not a fresh local refusal")
+}
+
 func TestTrackAPIKeySlot_ReleaseDecrements(t *testing.T) {
 	cache := &stubConcurrencyCacheForTest{}
 	svc := NewConcurrencyService(cache)

@@ -43,6 +43,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
+	if s.cfg != nil && s.cfg.Gateway.UpstreamKeyConcurrency.Configured() {
+		return nil, wrapOpenAIWSFallback("upstream_key_concurrency_requires_http", errors.New("upstream key concurrency requires the HTTP response lifetime"))
+	}
 	ctx = withOpenAITransportMode(ctx, "ctx_pool")
 	responseModelObserver := &upstreamResponseModelObserver{}
 

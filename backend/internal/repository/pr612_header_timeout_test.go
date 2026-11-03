@@ -137,7 +137,7 @@ func TestPR612NilSettingsProviderUsesStaticTimeout(t *testing.T) {
 		cfg := &config.Config{}
 		cfg.Gateway.OpenAIResponseHeaderTimeout = seconds
 		cfg.Gateway.ResponseHeaderTimeout = 600
-		s, ok := ProvideHTTPUpstream(cfg, nil).(*httpUpstreamService)
+		s, ok := ProvideHTTPUpstream(cfg, nil, nil).(*httpUpstreamService)
 		require.True(t, ok)
 		require.Equal(t, time.Duration(seconds)*time.Second, s.applyProfilePoolSettings(poolSettings{}, service.HTTPUpstreamProfileOpenAI).responseHeaderTimeout)
 	}

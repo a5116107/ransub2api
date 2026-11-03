@@ -7,11 +7,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSharedUpstreamKeyConfiguredWSRequiresHTTPLifetime(t *testing.T) {
+	s := &OpenAIGatewayService{cfg: &config.Config{}}
+	s.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("fixture-key"): 2}}
+	result, err := s.forwardOpenAIWSV2(context.Background(), nil, &Account{ID: 1}, nil, "", "", "fixture-key", OpenAIWSProtocolDecision{}, false, true, "", "", time.Now(), 0, "", nil)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "upstream_key_concurrency_requires_http")
+	err = s.ProxyResponsesWebSocketFromClient(context.Background(), nil, nil, nil, "fixture-key", nil, nil)
+	require.ErrorContains(t, err, "websocket admission is unavailable")
+}
 
 // HTTP POST /v1/responses -> forwardOpenAIWSV2 keeps the canonical outbound
 // tier separate from response.completed.service_tier for usage-time billing.

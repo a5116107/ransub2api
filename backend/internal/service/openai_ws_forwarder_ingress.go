@@ -577,6 +577,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if s == nil {
 		return errors.New("service is nil")
 	}
+	if s.cfg != nil && s.cfg.Gateway.UpstreamKeyConcurrency.Configured() {
+		return errors.New("upstream key concurrency requires HTTP; websocket admission is unavailable")
+	}
 	if c == nil {
 		return errors.New("gin context is nil")
 	}

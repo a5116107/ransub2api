@@ -1311,7 +1311,8 @@ type GatewayConfig struct {
 	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
 
 	// Scheduling: 账号调度相关配置
-	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
+	Scheduling             GatewaySchedulingConfig      `mapstructure:"scheduling"`
+	UpstreamKeyConcurrency UpstreamKeyConcurrencyConfig `mapstructure:"upstream_key_concurrency"`
 
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
@@ -2843,6 +2844,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_upstream_clients", 5000)
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
+	viper.SetDefault("gateway.upstream_key_concurrency.revision", int64(0))
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.excel_bps_stream_data_interval_timeout", 120)
 	viper.SetDefault("gateway.excel_bps_state_redis_enabled", false)
@@ -3754,6 +3756,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ConcurrencySlotTTLMinutes <= 0 {
 		return fmt.Errorf("gateway.concurrency_slot_ttl_minutes must be positive")
+	}
+	if err := c.Gateway.UpstreamKeyConcurrency.Validate(); err != nil {
+		return err
+	}
+	if c.Gateway.UpstreamKeyConcurrency.Configured() && (c.Runtime.RegionalConcurrencyFile != "" || c.Runtime.RegionalSchedulerFile != "") {
+		return fmt.Errorf("gateway.upstream_key_concurrency requires shared Redis mode; regional quota authority is not supported")
 	}
 	if c.Gateway.StreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")

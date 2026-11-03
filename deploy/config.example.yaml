@@ -260,6 +260,20 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
+  # Optional shared supplier-Key HTTP ceiling; all serving instances must use
+  # the same revision and map. Fingerprint = lowercase SHA256(trim(API_KEY)).
+  # Existing account/user limits remain independent. Never put raw keys here.
+  # Increment revision for every change. Stop/drain traffic before removing a
+  # rule or enabling the first rule: previously unlimited traffic has no lease.
+  # Configured mode uses shared Redis, HTTP/SSE only: Responses WS is rejected
+  # (HTTP-to-WS conversion falls back to HTTP); realtime calls are rejected.
+  # Regional SQL quota mode is rejected at startup. Restart to load changes.
+  upstream_key_concurrency:
+    revision: 0
+    limits: {}
+    # revision: 1
+    # limits:
+    #   LOWERCASE_SHA256_FINGERPRINT: 8
   # Route upstream hosts through operator-managed regional HTTP(S)/SOCKS5 exits.
   # Disabled by default; reload requires a process restart. Explicit account
   # proxies, Codex harvest proxies and BPS keep their existing exit policy.

@@ -39,6 +39,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/transportdiag"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	"github.com/redis/go-redis/v9"
 )
 
 // 默认配置常量
@@ -176,6 +177,7 @@ type OpenAIResponseHeaderTimeoutProvider interface {
 
 // 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type httpUpstreamService struct {
+	upstreamKeyLimiter                  *upstreamKeyLimiter
 	upstreamRoutes                      *upstreamroute.Router
 	upstreamRoutesErr                   error
 	cfg                                 *config.Config                      // 全局配置
@@ -203,18 +205,23 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 // ProvideHTTPUpstream wires the admin-configurable OpenAI response-header
 // timeout provider. Tests and lightweight callers can keep using
 // NewHTTPUpstream, which falls back to the static config.
-func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService) service.HTTPUpstream {
+func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService, rdb *redis.Client) service.HTTPUpstream {
 	if settings == nil {
-		return NewHTTPUpstream(cfg)
+		return newHTTPUpstream(cfg, nil, rdb)
 	}
 	// Warm the cache before the first OpenAI request; the transport reads it
 	// synchronously when it builds a client pool.
 	go settings.GetOpenAIResponseHeaderTimeoutCached(context.Background())
-	return newHTTPUpstream(cfg, settings)
+	return newHTTPUpstream(cfg, settings, rdb)
 }
 
-func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutProvider) service.HTTPUpstream {
+func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutProvider, clients ...*redis.Client) service.HTTPUpstream {
+	var rdb *redis.Client
+	if len(clients) > 0 {
+		rdb = clients[0]
+	}
 	s := &httpUpstreamService{
+		upstreamKeyLimiter:                  newUpstreamKeyLimiter(cfg, rdb),
 		cfg:                                 cfg,
 		openAIResponseHeaderTimeoutProvider: provider,
 		clients:                             make(map[string]*upstreamClientEntry),
@@ -244,7 +251,7 @@ func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutPro
 // 注意:
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
-func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (result *http.Response, resultErr error) {
 	if req != nil {
 		requestcapture.FromContext(req.Context()).BindAccount(accountID)
 		req = req.WithContext(requestcapture.WithAccount(req.Context(), accountID))
@@ -256,6 +263,13 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		}
 		return nil, err
 	}
+	var finish func(*http.Response, error)
+	var admissionErr error
+	req, finish, admissionErr = s.beginUpstreamKeyRequest(req)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	defer func() { finish(result, resultErr) }()
 	profile := service.HTTPUpstreamProfileDefault
 	if req != nil {
 		profile = service.HTTPUpstreamProfileFromContext(req.Context())
@@ -316,7 +330,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 //
 // profile 为 nil 时不启用 TLS 指纹，行为与 Do 方法相同。
 // profile 非 nil 时使用指定的 Profile 进行 TLS 指纹伪装。
-func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (result *http.Response, resultErr error) {
 	if profile == nil {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
@@ -352,6 +366,13 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 		return nil, err
 	}
 
+	var finish func(*http.Response, error)
+	var admissionErr error
+	req, finish, admissionErr = s.beginUpstreamKeyRequest(req)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	defer func() { finish(result, resultErr) }()
 	if s.useRegionalEgress(proxyURL, accountID, upstreamProfile) {
 		return s.doRegionalEgress(req, accountID, accountConcurrency, upstreamProfile, profile)
 	}

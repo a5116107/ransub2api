@@ -1,10 +1,24 @@
 package service
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
+
+var ErrUpstreamKeyCapacity = errors.New("upstream key concurrency capacity unavailable")
+var ErrUpstreamKeyPolicy = errors.New("upstream key concurrency policy unavailable or revision conflict")
+var ErrUpstreamKeyLease = errors.New("upstream key concurrency lease lost")
+
+// Local admission failures are not supplier/network health failures. They use
+// the existing bounded account failover without changing account health.
+func upstreamKeyAdmissionFailover(err error) *UpstreamFailoverError {
+	if !errors.Is(err, ErrUpstreamKeyCapacity) && !errors.Is(err, ErrUpstreamKeyPolicy) {
+		return nil
+	}
+	return &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, ResponseBody: []byte(`{"error":{"type":"upstream_key_admission_unavailable","message":"No shared upstream Key capacity is available"}}`)}
+}
 
 // HTTPUpstream 上游 HTTP 请求接口
 // 用于向上游 API（Claude、OpenAI、Gemini 等）发送请求
