@@ -4,8 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"slices"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
 
 // withGatewayProfitControlGate installs the gate only for explicitly marked
@@ -115,4 +120,48 @@ func (s *GatewayService) isGatewayAccountProfitEligible(ctx context.Context, acc
 func gatewayProfitControlGateActive(ctx context.Context) bool {
 	gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
 	return gate != nil
+}
+
+// doGatewayUpstream is the final send boundary for native gateway requests,
+// including protocol rectification retries. Earlier slot checks do not authorize
+// a prepared request whose route, membership or rates have since changed.
+// Omitting profiles preserves Do; an explicit profile (including nil) preserves
+// DoWithTLS, so callers keep their original transport contract.
+func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL string, selected *Account, profiles ...*tlsfingerprint.Profile) (*http.Response, error) {
+	ctx := request.Context()
+	if gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); gate != nil {
+		if gate.configUnavailable {
+			return nil, denyOpenAITurn(openAIProfitFilterReasonGroupConfigUnavailable)
+		}
+		if s.accountRepo == nil || selected == nil {
+			return nil, denyOpenAITurn("latest_state_unavailable")
+		}
+		readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		latest, err := s.accountRepo.GetByID(readCtx, selected.ID)
+		cancel()
+		if err != nil || latest == nil || latest.ID != selected.ID {
+			return nil, denyOpenAITurn("latest_state_unavailable")
+		}
+		if latest.Platform != selected.Platform || latest.Type != selected.Type || openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(selected) {
+			return nil, denyOpenAITurn("account_binding_changed")
+		}
+		if !latest.IsSchedulable() {
+			return nil, denyOpenAITurn("account_ineligible")
+		}
+		if (s.cfg == nil || s.cfg.RunMode != config.RunModeSimple) && !slices.Contains(latest.GroupIDs, gate.groupID) {
+			return nil, denyOpenAITurn("group_membership_changed")
+		}
+		if vetoed, reason := openAIProfitControlVetoReason(ctx, latest); vetoed {
+			return nil, denyOpenAITurn(reason)
+		}
+		guardedCtx, err := guardUpstreamBillingRequest(ctx, latest, request)
+		if err != nil {
+			return nil, err
+		}
+		request = request.WithContext(guardedCtx)
+	}
+	if len(profiles) == 0 {
+		return s.httpUpstream.Do(request, proxyURL, selected.ID, selected.Concurrency)
+	}
+	return s.httpUpstream.DoWithTLS(request, proxyURL, selected.ID, selected.Concurrency, profiles[0])
 }

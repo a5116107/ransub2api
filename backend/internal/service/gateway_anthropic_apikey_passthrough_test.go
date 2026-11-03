@@ -22,10 +22,11 @@ import (
 )
 
 type anthropicHTTPUpstreamRecorder struct {
-	lastReq  *http.Request
-	lastBody []byte
-	resp     *http.Response
-	err      error
+	lastReq      *http.Request
+	lastBody     []byte
+	resp         *http.Response
+	err          error
+	beforeReturn func()
 }
 
 func newAnthropicAPIKeyAccountForTest() *Account {
@@ -54,6 +55,9 @@ func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, a
 		u.lastBody = b
 		_ = req.Body.Close()
 		req.Body = io.NopCloser(bytes.NewReader(b))
+	}
+	if u.beforeReturn != nil {
+		u.beforeReturn()
 	}
 	if u.err != nil {
 		return nil, u.err
@@ -1916,4 +1920,189 @@ func TestSonnet55BedrockCCCompatTransformsBeforeValidation(t *testing.T) {
 			require.Equal(t, "low", gjson.GetBytes(prepared, "output_config.effort").String())
 		})
 	}
+}
+
+// Native Messages forwarding must revalidate the prepared route immediately
+// before transport, independently of earlier scheduler/slot admission.
+type gatewayFinalAdmissionRepo struct {
+	AccountRepository
+	latest *Account
+	err    error
+	reads  int
+}
+
+func (r *gatewayFinalAdmissionRepo) GetByID(context.Context, int64) (*Account, error) {
+	r.reads++
+	return r.latest, r.err
+}
+
+func TestGatewayFinalAdmissionBeforeNetwork(t *testing.T) {
+	for _, change := range []string{"missing repository", "read failure", "removed", "key", "membership", "rate", "target", "wrong row", "paused", "base", "sale"} {
+		t.Run(change, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(time.Now().UTC())
+			account.Platform = PlatformAnthropic
+			account.Status, account.Schedulable = StatusActive, true
+			account.GroupIDs = []int64{9}
+			account.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "native-fixture"}
+			latest := *account
+			latest.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "native-fixture"}
+			repo := &gatewayFinalAdmissionRepo{latest: &latest}
+			reason := "latest_state_unavailable"
+			switch change {
+			case "read failure":
+				repo.err = errors.New("fixture read failure")
+			case "removed":
+				repo.latest = nil
+			case "key":
+				latest.Credentials["api_key"] = "rotated-fixture"
+				reason = "account_binding_changed"
+			case "membership":
+				latest.GroupIDs = []int64{10}
+				reason = "group_membership_changed"
+			case "rate":
+				rate := 0.9
+				latest.RateMultiplier = &rate
+				reason = openAIProfitFilterReasonThreshold
+			case "wrong row":
+				latest.ID++
+				reason = "latest_state_unavailable"
+			case "paused":
+				latest.Schedulable = false
+				reason = "account_ineligible"
+			case "base":
+				latest.Credentials["base_url"] = "https://fixture.invalid/premium"
+				reason = "account_binding_changed"
+			case "sale":
+				markup := 2.0
+				latest.GroupRateMultiplier = &markup
+				reason = openAIProfitFilterReasonAccountSaleRateMismatch
+			case "target":
+				reason = openAIProfitFilterReasonUpstreamRateUnavailable
+			}
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))}}
+			cfg := &config.Config{}
+			svc := &GatewayService{cfg: cfg, accountRepo: repo, httpUpstream: upstream, rateLimitService: &RateLimitService{}, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+			if change == "missing repository" {
+				svc.accountRepo = nil
+			}
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(ctx)
+			_, err := svc.forwardAnthropicAPIKeyPassthrough(ctx, c, account, []byte(`{"model":"claude-fixture","messages":[{"role":"user","content":"hello"}]}`), "claude-fixture", "claude-fixture", false, time.Now())
+			var denied *OpenAITurnAdmissionError
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, reason, denied.Reason)
+			require.Nil(t, upstream.lastReq, "local rejection must occur before transport")
+			require.False(t, c.Writer.Written(), "handler owns the local admission response")
+		})
+	}
+}
+
+func TestGatewayFinalBillingTargetAndGroup(t *testing.T) {
+	for _, change := range []string{"unchanged", "root", "query", "Host", "group", "missing group", "manual", "disabled", "config unavailable", "simple mode"} {
+		t.Run(change, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(time.Now().UTC())
+			account.Platform, account.Status, account.Schedulable = PlatformAnthropic, StatusActive, true
+			account.GroupIDs = []int64{9}
+			account.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "native-fixture", credKeyHeaderOverrideEnabled: true, credKeyHeaderOverrides: map[string]any{"x-sub2api-group-id": "2"}}
+			snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+			snapshot.Data["selected_group_id"] = "2"
+			account.Extra[UpstreamBillingProbeExtraKey] = snapshot
+			repo := &gatewayFinalAdmissionRepo{latest: account}
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}}
+			svc := &GatewayService{cfg: &config.Config{}, accountRepo: repo, httpUpstream: upstream}
+			gate := &openAIProfitControlGate{groupID: 9, threshold: 0.5}
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, gate)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/cheap/v1/messages", nil)
+			require.NoError(t, err)
+			req.Header.Set(APIKeyGroupHeader, "2")
+			allowed, fenced := false, true
+			switch change {
+			case "unchanged":
+				allowed = true
+			case "root":
+				req.URL.Path = "/premium/v1/messages"
+			case "query":
+				req.URL.RawQuery = "beta=true"
+			case "Host":
+				req.Host = "other.invalid"
+			case "group":
+				req.Header.Set(APIKeyGroupHeader, "3")
+			case "missing group":
+				req.Header.Del(APIKeyGroupHeader)
+			case "manual":
+				account.Extra[UpstreamBillingRateSyncEnabledExtraKey] = false
+				req.URL.Path = "/premium/v1/messages"
+				allowed, fenced = true, false
+			case "disabled":
+				req = req.WithContext(t.Context())
+				svc.accountRepo = nil
+				req.URL.Path = "/premium/v1/messages"
+				allowed, fenced = true, false
+			case "config unavailable":
+				gate.configUnavailable = true
+				svc.accountRepo = nil
+			case "simple mode":
+				svc.cfg.RunMode = config.RunModeSimple
+				account.GroupIDs = nil
+				allowed = true
+			}
+			resp, err := svc.doGatewayUpstream(req, "", account, nil)
+			if allowed {
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+				require.NoError(t, resp.Body.Close())
+				require.NotNil(t, upstream.lastReq)
+				require.Equal(t, fenced, HTTPUpstreamRedirectsDisabled(upstream.lastReq.Context()))
+				require.Equal(t, "2", upstream.lastReq.Header.Get(APIKeyGroupHeader))
+			} else {
+				require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+				require.Nil(t, resp)
+				require.Nil(t, upstream.lastReq)
+			}
+		})
+	}
+}
+
+func TestGatewayFinalAdmissionOnActualRetry(t *testing.T) {
+	account := newAnthropicAPIKeyAccountForTest()
+	rate := 0.4
+	account.RateMultiplier, account.GroupIDs = &rate, []int64{9}
+	account.Credentials["custom_error_codes_enabled"] = true
+	account.Credentials["custom_error_codes"] = []any{float64(401)}
+	latest := *account
+	latest.Credentials = map[string]any{"api_key": "upstream-anthropic-key", "base_url": "https://api.anthropic.com", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(401)}}
+	repo := &gatewayFinalAdmissionRepo{latest: &latest}
+	calls := 0
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: 503, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"type":"overloaded_error","message":"busy"}}`))}}
+	upstream.beforeReturn = func() { calls++; latest.Credentials["api_key"] = "rotated-fixture" }
+	cfg := &config.Config{}
+	svc := &GatewayService{cfg: cfg, accountRepo: repo, httpUpstream: upstream, rateLimitService: &RateLimitService{}, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(ctx)
+	_, err := svc.forwardAnthropicAPIKeyPassthrough(ctx, c, account, []byte(`{"model":"claude-fixture","messages":[{"role":"user","content":"hello"}]}`), "claude-fixture", "claude-fixture", false, time.Now())
+	var denied *OpenAITurnAdmissionError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "account_binding_changed", denied.Reason)
+	require.Equal(t, 2, repo.reads, "retry must reread authority rather than reuse the admitted account")
+	require.Equal(t, 1, calls, "changed credentials must prevent the second transport call")
+	require.False(t, c.Writer.Written())
+	events, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	rows, ok := events.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, rows, 1, "only the actual 503 may be recorded as an upstream event")
+	require.Equal(t, "retry", rows[0].Kind)
+}
+
+func TestGatewayFinalAdmissionHasNoTransportSideEffects(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	svc := &GatewayService{}
+	denied := denyOpenAITurn("account_binding_changed")
+	require.Same(t, denied, svc.handleUpstreamTransportError(t.Context(), c, newAnthropicAPIKeyAccountForTest(), denied, OpsUpstreamErrorEvent{}))
+	_, exists := c.Get(OpsUpstreamErrorsKey)
+	require.False(t, exists)
+	require.False(t, c.Writer.Written())
 }

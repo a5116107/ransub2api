@@ -77,6 +77,9 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		return
 	}
 
+	pricingCtx, _ := service.WithGatewayTokenRequestPricing(c.Request.Context())
+	c.Request = c.Request.WithContext(pricingCtx)
+
 	// Billing eligibility (same as other requests)
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
@@ -194,10 +197,11 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		account = selected.Account
 		accountReleaseFunc = release
 
+		admissionCtx := service.ContextWithSelectionProfitGate(c.Request.Context(), selected)
 		if isXSearch {
-			nativeResp, providerName, err = h.doGrokNativeXSearch(c.Request.Context(), c, account, req, searchModel, maxResults)
+			nativeResp, providerName, err = h.doGrokNativeXSearch(admissionCtx, c, account, req, searchModel, maxResults)
 		} else {
-			nativeResp, providerName, err = h.doGrokNativeWebSearch(c.Request.Context(), c, account, req.Query, maxResults, searchModel)
+			nativeResp, providerName, err = h.doGrokNativeWebSearch(admissionCtx, c, account, req.Query, maxResults, searchModel)
 		}
 		if err == nil {
 			break
@@ -214,6 +218,10 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		account = nil
 	}
 	if err != nil || nativeResp == nil {
+		if service.IsOpenAITurnAdmissionError(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"type": "admission_unavailable", "message": "Account eligibility changed; please retry"}})
+			return
+		}
 		var failover *service.UpstreamFailoverError
 		if errors.As(err, &failover) && failover.Reason == service.UpstreamKeyAdmissionReason {
 			c.Data(http.StatusServiceUnavailable, "application/json; charset=utf-8", failover.ResponseBody)

@@ -1381,7 +1381,10 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.doGatewayUpstream(upstreamReq, proxyURL, account)
+	if IsOpenAITurnAdmissionError(err) {
+		return nil, err
+	}
 	if admission := upstreamKeyAdmissionFailover(err); admission != nil {
 		return nil, admission
 	}

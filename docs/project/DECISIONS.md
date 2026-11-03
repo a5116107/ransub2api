@@ -359,3 +359,16 @@
 - 原位修复墙钟夹具：逐轮独立记录barrier实际阻塞总长、客户端发送前时刻、上游收到生成请求及下游读取delta时刻；队列值须包含实测阻塞且不超过本轮上游收包窗口，首字须落在下游实测窗口内，保留计划最小延迟及passthrough旧计时契约。既有虚拟时钟精确断言继续验证各阶段只计一次及80000ms上一轮尾部隔离；未扩大容差、改生产计时或skip。修复后真实/虚拟时钟及bridge重试专项连续5轮实际通过handler26.555s。
 - 修复夹具后的最终完整handler回归实际输出pass146.402s、Observed timing handler full regression exit: 0；同一最终生产实现的完整service344.544s通过，service源码未再修改，不重复未变包。最终handler go vet输出Observed timing handler vet: PASS、完整未限量lint再次输出0 issues.、退出0；前述两包完整vet/lint证据保持。
 - 本轮闭环现有原生WS的自动倍率握手目标、固定组、重定向、连接复用与后台预热归属，并修复实测等待夹具；11个Go文件及3份现有文档精确纳入本地交付。Go格式及diff空白检查通过，新增代码TODO/FIXME/XXX为0，STATE保持74行；历史源码图片仍12个共1164bytes，本轮新增持久测试产物0。单一工作树，仅本地提交；不推送、不运行CI、不部署或迁移。原20项12 done、2 in_progress、6 pending，D2/D4父任务尚有原验收缺口，未提前关闭；历史清理审核拒绝和Windows符号链接权限等待保留。
+
+
+## 2026-11-04：D2/D4 通用原生网关的最终发送准入
+
+- 接续6b52042。通用GatewayService的原生Messages、透传、转换与重试仍直接调用HTTPUpstream；初始选号/槽位终检不能证明构建后的旧Key/路由仍有资格。新增真实forward路径测试在旧源码的7个子例全部实际失败（service2.608s、退出1）：缺repository、读失败、账号删除、Key轮换、分组撤销、倍率越线及目标无计价证据均发送成功。
+- 原位替换13个Do/DoWithTLS发送点为唯一doGatewayUpstream，每次有门发送都从原repository重新读取，不使用缓存故障回退；保留原simple跨组语义，复用原账号路由指纹、固定售价和倍率谓词。把OpenAI HTTP与WS重复的最终目标/选组判定收敛为guardUpstreamBillingRequest，原判定与禁跳转边界不变；未新建schema、配置、传输实现或平行准入策略。
+- 补齐本地拒绝归因：transport处理直接返回原类型，签名/工具/预算及计数重试不吞掉拒绝、恢复原错误继续发送；Messages与搜索handler映射本地503，不伪装为供应商故障、不自动重放。计数接口正常未装token门的旧行为保持。
+- 初轮新夹具漏设可调度状态，实际返回account_ineligible而非预期细分原因（service1.612s失败）；补齐状态。后续成功夹具漏带selected_group_id确认，重试夹具未启用原custom_error_codes规则，实际未进入重试（service1.530s失败）；按原协议补齐确认和原重试配置，保留失败断言、不改生产许可范围。修正后三轮service2.364s通过，包括真实透传503后Key轮换仅1次传输、2次权威读取。
+- 源码追踪发现Messages在槽位终检后丢弃admissionCtx，传回无门原上下文；原位修复两个分流入口，独立Grok web/x search同样显式标记token请求并传递本次选号门。新增完整handler流程验证缓存选号/槽位终检通过但最终权威缺失时，返回503、网络调用0且槽位释放；补齐搜索对本地类型的503映射。
+- handler首轮实际panic（1.632s）：统一入口把原Do调用改成DoWithTLS(nil)，既有Grok夹具只实现Do；原位保留每个调用点原有传输契约，未通过扩充旧夹具掩盖行为变化。修正后handler专项三轮2.391s通过；新增web/x search实际门传播及账号错行/停用/基址/销售倍率回归后，最终专项三轮service2.840s、handler1.203s通过。两包go vet实际输出Native gateway final admission vet: PASS；完整回归、默认标签与未限量lint待实际返回后追加。
+- 默认标签相关检查实际通过：service8.042s；handler6.109s为编译检查（no tests to run），新增完整handler流程明确在unit标签下验证，不宣称默认标签执行了它们。最终完整unit handler实际通过155.458s；service及lint仍在运行，待实际结果追加。Go格式/diff空白检查通过，新增代码TODO/FIXME/XXX为0；源码data目录的历史图片无扩展名，按全部普通文件复核仍12个共1164bytes，按*.png计数不代表其消失。
+- 最终完整unit回归实际通过：service325.349s、handler155.458s、Native gateway final admission full regression exit: 0。旧直接发送搜索仅剩统一函数内的Do/DoWithTLS两种原出口，无网关调用点遗留；两包vet通过，完整未限量lint仍待实际返回。
+- 最终两包完整未限量golangci-lint实际输出0 issues.、退出0，未调整检查规则。19个任务文件精确交付，原位移除重复计价目标/选组代码与过时搬迁注释，清除18个本轮误触的纯换行改动；格式/差异检查通过，STATE74行，新增代码TODO/FIXME/XXX为0。本轮持久测试产物0，历史图片12个1164bytes及审核拒绝删除等待保持；单一工作树、只本地提交，不推送、不运行CI、不部署/迁移。原20项仍12 done、2 in_progress、6 pending；本轮闭环通用原生网关发送终检与handler门传播，父任务D2/D4未提前关闭。

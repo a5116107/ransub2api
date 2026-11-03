@@ -400,7 +400,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		lastWireBody = wireBody
 
 		// 发送请求
-		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
+		resp, err = s.doGatewayUpstream(upstreamReq, proxyURL, account, tlsProfile)
 		s.rateLimitService.observeQualityResponse(upstreamReq.Context(), account, resp, err)
 		if err != nil {
 			if resp != nil && resp.Body != nil {
@@ -462,7 +462,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					filteredBody := FilterThinkingBlocksForRetry(body, reqModel)
 					retryReq, retryWireBody, buildErr := s.buildUpstreamRequest(ctx, c, account, filteredBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 					if buildErr == nil {
-						retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
+						retryResp, retryErr := s.doGatewayUpstream(retryReq, proxyURL, account, tlsProfile)
+						if IsOpenAITurnAdmissionError(retryErr) {
+							return nil, retryErr
+						}
 						s.rateLimitService.observeQualityResponse(retryReq.Context(), account, retryResp, retryErr)
 						if retryErr == nil {
 							if retryResp.StatusCode < 400 {
@@ -504,7 +507,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 									filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body, reqModel)
 									retryReq2, retryWireBody2, buildErr2 := s.buildUpstreamRequest(ctx, c, account, filteredBody2, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 									if buildErr2 == nil {
-										retryResp2, retryErr2 := s.httpUpstream.DoWithTLS(retryReq2, proxyURL, account.ID, account.Concurrency, tlsProfile)
+										retryResp2, retryErr2 := s.doGatewayUpstream(retryReq2, proxyURL, account, tlsProfile)
+										if IsOpenAITurnAdmissionError(retryErr2) {
+											return nil, retryErr2
+										}
 										s.rateLimitService.observeQualityResponse(retryReq2.Context(), account, retryResp2, retryErr2)
 										if retryErr2 == nil {
 											if retryResp2.StatusCode < 400 {
@@ -586,7 +592,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						logger.LegacyPrintf("service.gateway", "Account %d: detected budget_tokens constraint error, retrying with rectified budget (budget_tokens=%d, max_tokens=%d)", account.ID, BudgetRectifyBudgetTokens, BudgetRectifyMaxTokens)
 						budgetRetryReq, budgetWireBody, buildErr := s.buildUpstreamRequest(ctx, c, account, rectifiedBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 						if buildErr == nil {
-							budgetRetryResp, retryErr := s.httpUpstream.DoWithTLS(budgetRetryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
+							budgetRetryResp, retryErr := s.doGatewayUpstream(budgetRetryReq, proxyURL, account, tlsProfile)
+							if IsOpenAITurnAdmissionError(retryErr) {
+								return nil, retryErr
+							}
 							s.rateLimitService.observeQualityResponse(budgetRetryReq.Context(), account, budgetRetryResp, retryErr)
 							if retryErr == nil {
 								if budgetRetryResp.StatusCode < 400 {

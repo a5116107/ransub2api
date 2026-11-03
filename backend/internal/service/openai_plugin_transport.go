@@ -78,6 +78,23 @@ func checkOpenAIWSBillingHandshake(ctx context.Context, account *Account, bindin
 	return nil
 }
 
+// guardUpstreamBillingRequest ties automatically synced rates to the actual
+// prepared request. Callers retain their existing authoritative account checks.
+func guardUpstreamBillingRequest(ctx context.Context, account *Account, request *http.Request) (context.Context, error) {
+	if account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+		return ctx, nil
+	}
+	if !upstreamBillingRequestTargetConfirmed(account, request) {
+		return ctx, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
+	}
+	expected, expectedErr := upstreamBillingRequestGroup(account)
+	actual, actualErr := ParseAPIKeyRequestGroup(request.Header)
+	if expectedErr != nil || actualErr != nil || expected != actual {
+		return ctx, denyOpenAITurn("account_binding_changed")
+	}
+	return WithHTTPUpstreamRedirectsDisabled(ctx), nil
+}
+
 // guardOpenAIWSBillingHandshake applies the HTTP billing namespace and pin
 // checks to the actual WS handshake. It returns a redirect-fenced context only
 // for requests governed by the automatic-rate profit gate.
@@ -102,15 +119,7 @@ func guardOpenAIWSBillingHandshake(ctx context.Context, account *Account, target
 		return ctx, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
 	}
 	request := &http.Request{Method: http.MethodPost, URL: u, Host: headers.Get("Host"), Header: headers}
-	if !upstreamBillingRequestTargetConfirmed(account, request) {
-		return ctx, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
-	}
-	expected, expectedErr := upstreamBillingRequestGroup(account)
-	actual, actualErr := ParseAPIKeyRequestGroup(headers)
-	if expectedErr != nil || actualErr != nil || expected != actual {
-		return ctx, denyOpenAITurn("account_binding_changed")
-	}
-	return WithHTTPUpstreamRedirectsDisabled(ctx), nil
+	return guardUpstreamBillingRequest(ctx, account, request)
 }
 
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
@@ -130,17 +139,11 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		if err := checkOpenAITurnBindingAndRate(request.Context(), account, latest); err != nil {
 			return nil, err
 		}
-		if latest.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(latest) {
-			if !upstreamBillingRequestTargetConfirmed(latest, request) {
-				return nil, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
-			}
-			expectedGroup, expectedErr := upstreamBillingRequestGroup(latest)
-			actualGroup, actualErr := ParseAPIKeyRequestGroup(request.Header)
-			if expectedErr != nil || actualErr != nil || expectedGroup != actualGroup {
-				return nil, denyOpenAITurn("account_binding_changed")
-			}
-			request = request.WithContext(WithHTTPUpstreamRedirectsDisabled(request.Context()))
+		guardedCtx, err := guardUpstreamBillingRequest(request.Context(), latest, request)
+		if err != nil {
+			return nil, err
 		}
+		request = request.WithContext(guardedCtx)
 	}
 	if s.excelOAuthReauth != nil {
 		if err := s.excelOAuthReauth.validateAuthConnectionPolicy(request.Context(), account); err != nil {
