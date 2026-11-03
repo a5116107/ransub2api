@@ -18,10 +18,10 @@
 | 任务 | 状态 | 证据/剩余范围 |
 | --- | --- | --- |
 | D1 | done | 主设计第 3.1 节已记录原配置覆盖、倍率口径、共享 Key 缺口及最小补丁边界 |
-| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS 桥接共享额度、静态 Key 请求绑定及本地拒绝归因/搜索503已验证；Sub2API请求固定组与倍率确认已实现；跨协议计价、直接 WS 原生接入/Live/区域及缓存域仍待验收 |
+| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS 桥接共享额度、静态 Key 请求绑定及本地拒绝归因/搜索503已验证；Sub2API请求固定组与倍率确认、最终HTTP地址归属已实现；跨协议计价、直接 WS 原生接入/Live/区域及缓存域仍待验收 |
 | D2.1 | done | 自动同步快照有效性、尝试时刻高峰、原同步值域与在线/预演同源已落地；30 类边界及槽位释放覆盖，三轮专项、完整本地回归、vet 与真实 CLI 演练通过 |
 | D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
-| D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；本轮专项三轮通过 |
+| D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；专项三轮通过 |
 | D2.4 | done | 按入站/模型分流的探测、New API 授权/列表/绑定/事务保存统一使用生效地址；旧源码 6 子例失败，新回归及相关四包三轮通过；不作为跨协议同价或共享缓存证据 |
 | D3 | pending | API Key 最新可用状态、触发、过期与恢复待补齐 |
 | D4.1 | done | 旧实现失败已复现；双故障/账号消失拒绝，缓存回源及未装门行为保持；专项、service/handler 回归和差异检查通过 |
@@ -31,9 +31,9 @@
 | M3 | done | WinSock 原生拒绝连接/主机与网络不可达已识别；超时/重置不误判；真实单 POST 及代理/时序/WS 组合回归连续 5 轮通过（140.262s） |
 | M4 | done | 三处私有原子持久化收敛为共用接口；原 22 项 Windows 失败全部实际通过；双平台完整回归、核心三包 lint 0 与最终 vet 通过，本轮产物归零 |
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
-| D4 | in_progress | 固定售价、线路/倍率终检、严格请求跳过旧缓存、HTTP 首次/WS 每轮权威策略读取已验证；已补齐全部7个多协议供应商的账号权威刷新与最终发送绑定；仍待 D2、其他路径、区域传播及模型/fast 来源 |
+| D4 | in_progress | 固定售价、线路/倍率终检、严格请求跳过旧缓存、HTTP 首次/WS 每轮权威策略读取已验证；已补齐全部7个多协议供应商的账号权威刷新与最终发送绑定，并校验自动倍率的实际HTTP目标；仍待 D2、其他路径、区域传播及模型/fast 来源 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
-| D8 | pending | admin原8项lint与跨层PostgreSQL夹具已验证；本轮补齐WS重试夹具真实握手绑定，确定性重复100次通过；双平台既有回归、本地CLI专项和M5六包lint通过；集成/升级/全局CLI场景仍待完成；不运行CI |
+| D8 | pending | admin原8项lint与跨层PostgreSQL夹具已验证；既有WS重试夹具已补齐真实握手绑定，确定性重复100次通过；双平台既有回归、本地CLI专项和M5六包lint通过；集成/升级/全局CLI场景仍待完成；不运行CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
 
 ## 环境与工作区
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮请求级固定组：专项三轮service 2.690s、middleware 2.343s、handler 4.029s；完整三包回归326.025s/6.009s/149.825s、退出0，vet通过、完整未限量lint为0 issues。默认标签夹具可见性阻塞已修复，默认标签两包及最终unit专项三轮、vet通过，明细见DECISIONS；原20项仍12 done、2 in_progress、6 pending，本轮D2请求固定组闭环，父任务done增量0。
+- 本轮最终HTTP地址归属：九平台目标矩阵、真实探测/HTTP、手工/关门兼容及API根边界已验证；最终专项三轮service1.606s、默认标签1.919s、完整service338.699s/handler151.949s、vet通过，完整未限量lint为0 issues。首次完整回归的DeepSeek夹具失败、根因和修正见DECISIONS；原20项仍12 done、2 in_progress、6 pending，本轮闭环一项D2/D4缺口，父任务done增量0。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -52,15 +52,15 @@
 
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
-go test -tags=unit -p 2 ./internal/service ./internal/server/middleware ./internal/handler -run 'Test(ParseAPIKeyRequestGroup|APIKeyRequestGroupRejectsWrongAuthoritativeRow|UpstreamBillingPinnedGroup|ProfitControlPinnedGroup|APIKeyAuthExplicitRequestGroup|PinnedGroupBillingAndBusinessUseSameGroupOverHTTP|OpenAIHTTPFinalSendRechecksPinnedGroup)$' -count=3 -timeout=6m
-go vet -tags=unit -p 2 ./internal/service ./internal/server/middleware ./internal/handler
+go test -tags=unit -p 2 ./internal/service -run 'Test(AdaptiveProtocolFinalAdmissionBeforeNetwork|OpenAIHTTPFinalSend|OpenAIHTTPBillingTarget|UpstreamBillingRequestTargetUsesObservedAPIRoot)' -count=3 -timeout=6m
+go vet -tags=unit -p 2 ./internal/service ./internal/handler
 ```
 
 ## 下一项工作
 
-D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；Sub2API请求级固定组与倍率确认已实现；剩余跨协议计价来源、直接 WS 原生接入/Live/区域共享额度与缓存域；不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
+D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；Sub2API请求级固定组与倍率确认、OpenAI通用最终HTTP地址归属已实现；剩余跨协议计价来源、直接 WS 原生接入/Live/区域共享额度与缓存域；不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
 D3–D9 主线仍待按设计依赖实施与验收；D4.1/D4.2 和 M1–M5 的完成不代表全局方案已全部落地。
-D2 继续核对跨协议计价来源与原同步兼容，再完成直接 WS 原生接入/Live/区域及缓存域证据；HTTP→原生 WS 已按实际握手 Key 共用活跃轮次额度，取消/租约丢失关闭连接且后者不转 HTTP 重放；直接下游 WS 仍经 HTTP/SSE bridge，Live/区域仍拒绝。D4 继续核对其他路径、区域传播及模型/fast 来源，原父验收不变。
+D2 接着核对HTTP→原生WS握手的实际地址归属，避免自动倍率跨WS目标复用，再完成其他协议来源、直接 WS 原生接入/Live/区域及缓存域证据；HTTP→原生 WS 已按实际握手 Key 共用活跃轮次额度，取消/租约丢失关闭连接且后者不转 HTTP 重放；直接下游 WS 仍经 HTTP/SSE bridge，Live/区域仍拒绝。D4 继续核对其他路径、区域传播及模型/fast 来源，原父验收不变。
 
 ## 外部验收等待
 

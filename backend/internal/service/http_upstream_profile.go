@@ -47,7 +47,7 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
 	}
 }
 
-// WithHTTPUpstreamRedirectsDisabled prevents credential-bearing probes from
+// WithHTTPUpstreamRedirectsDisabled prevents credential-bearing requests from
 // following redirects through the shared upstream client.
 func WithHTTPUpstreamRedirectsDisabled(ctx context.Context) context.Context {
 	if ctx == nil {

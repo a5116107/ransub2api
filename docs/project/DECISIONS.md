@@ -332,3 +332,15 @@
 - 默认标签扩大检查实际暴露既有编译阻塞：openai_profit_control_pricing_test.go引用的profitControlFailingGroupRepo只定义在unit标签文件（273/318/416行undefined），service构建失败，handler2.322s通过。原位把唯一夹具定义移动到已有无标签pricing测试文件，保留原方法/断言，删除原定义，不新增并行夹具或skip；修复后默认标签service3.760s、handler5.161s实际通过，退出0；包含夹具消费者的最终unit专项连续三轮实际通过：service11.500s、middleware10.279s、handler3.576s。最终三包go vet输出Final pinned group vet: PASS；该移动未改变生产代码行为。
 - 本轮闭环范围为Sub2API请求级固定组协议；不假设任意NewAPI支持此头，不证明跨端点/模型/fast同价或缓存共享。D2直接原生WS/Live/区域共享额度及缓存域、D4其他路径及价格来源等父验收继续保留；原20项仍12 done、2 in_progress、6 pending。
 - 夹具移动与注释收尾后，最终三包完整未限量golangci-lint再次实际输出0 issues.、退出0；未修改检查规则。18个任务文件精确纳入本地交付，diff空白/Go格式检查通过，新增TODO/FIXME/XXX为0；STATE保持74行，源码图片仍历史12个共1164bytes，本轮新增持久测试产物0。单一工作树，只本地提交，不推送、不运行CI、不部署或生产迁移；历史审核拒绝删除和Windows符号链接权限等待保留。
+
+## 2026-11-04：D2/D4 自动倍率的最终 HTTP 地址归属
+
+- 接续27dba64。发现账号指纹与固定组校验仍只保护配置一致性，未把实际request.URL/Host绑定到原倍率探测的目标。新增九平台矩阵在旧实现实际失败：不同站点/租户/前缀/协议/端口/版本、非token资源、Host覆写、查询改路由和编码分隔符均发送成功；Billing target red regression exit: 1。未把同Key、同账号或同Host视为相同计价来源。
+- 第一版专项连续三轮通过（service1.665s）；增加真实探测和业务HTTP、手工/关门兼容后连续三轮通过（service1.610s）。真实同服务器的/cheap倍率探测后，/premium的生产Responses构造地址被拒绝且premium网络调用0；/cheap业务成功1次，原legacy配置与保存倍率不变。原production repository禁重定向用例连续三轮通过（1.548s），相关两包vet通过。
+- 第一版完整本地service/handler回归实际通过（337.475s/150.261s、退出0），两包完整未限量golangci-lint实际输出0 issues.、退出0。审查随后发现按多个端点构造器枚举目标会把完整端点基址、重复版本和编码斜杠的不同路径当作同一范围，因此继续收敛为实际billing探测URL的API根，不以第一版通过替代最终边界验收。
+- 新增API根边界回归在第一版实现实际失败（service1.578s、退出1）：完整端点误放行、实际探测根下请求误拒绝、重复版本及编码分隔符误放行。原位删除7目标枚举，改为从同一billing构造器生成的实际URL推导API根，scheme/authority/escaped path/raw query及Host均须一致；保留四类token端点、原固定组校验及重定向禁用，不引入并行实现或新配置。
+- 收敛后的最终专项连续三轮实际通过（service1.821s）；默认标签同范围实际通过（service1.919s），两包go vet通过，输出Final billing target default tags and vet: PASS。没有跳过断言、扩大超时或将未知协议端点作为同价来源；最终完整回归和lint在实际返回后追加。
+- 收敛后的首次完整回归实际失败：service320.144s中仅TestAdaptiveProtocolFinalAdmissionBeforeNetwork/responses/unchanged失败，handler151.949s通过；两包完整未限量lint0通过。单独复现同一用例实际失败（service1.766s），明确返回profit_upstream_rate_unavailable。根因是旧DeepSeek成功夹具把三协议基址均设为server根，Responses构造器走无版本/responses，而倍率探测在/v1根；该夹具原服务器不检查实际路径。
+- 原位将成功夹具的Responses基址显式设为server/v1，使其与Chat探测API根一致，并使服务器只响应对应入口的实际路径；Key/地址/倍率变化原断言、真实网络计数及下游未写断言保持。没有为完整端点、不同版本或编码路径增加例外；共享HTTP上下文注释同步从probes改为requests。最终专项、完整service和静态检查结果在实际返回后追加。
+- 修正夹具后的最终专项连续三轮实际通过（service1.606s）；最终完整service回归实际输出ok338.699s、Corrected billing target service regression exit: 0。handler在相同最终生产实现的完整回归已实际通过151.949s，夹具修正后仅调整service测试和一处注释，不重复运行未变handler。最终两包vet输出Corrected billing target vet: PASS；两包完整未限量golangci-lint再次输出0 issues.、退出0。
+- 交付复核：7个任务文件本地提交，原位收敛唯一目标判定、修正既有成功夹具和过时注释；不新增配置、schema、并行传输或TODO/FIXME/XXX。Go格式、diff空白检查通过，STATE保持74行；历史源码图片12个共1164bytes保持，本轮新增持久测试产物0。单一工作树，只本地提交、不推送、不运行CI、不部署/迁移；历史清理审核拒绝与Windows符号链接权限等待保留。原20项仍12 done、2 in_progress、6 pending，本轮闭环自动倍率的最终HTTP目标归属，D2/D4父验收未提前关闭。

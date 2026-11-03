@@ -4,11 +4,44 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
 	s.pluginManager = manager
+}
+
+// upstreamBillingRequestTargetConfirmed keeps an account-level declaration
+// within the API base actually used by the billing probe. A different protocol
+// base is not evidence of the same price, even on the same host.
+func upstreamBillingRequestTargetConfirmed(account *Account, request *http.Request) bool {
+	if account == nil || request == nil || request.URL == nil || request.Method != http.MethodPost {
+		return false
+	}
+	actual := request.URL
+	if actual.User != nil || actual.Opaque != "" || actual.Fragment != "" || actual.ForceQuery ||
+		(request.Host != "" && !strings.EqualFold(request.Host, actual.Host)) {
+		return false
+	}
+	base := upstreamBillingProbeBaseURL(account)
+	if base == "" && account.Platform == PlatformOpenAI {
+		base = "https://api.openai.com"
+	}
+	// Derive the namespace from the exact probe builder, rather than guessing
+	// that protocol-specific builders preserve the same tenant/version root.
+	probe, err := url.Parse(buildOpenAIEndpointURL(base, "/v1/sub2api/billing"))
+	if err != nil || (probe.Scheme != "http" && probe.Scheme != "https") || probe.Host == "" || probe.User != nil ||
+		!strings.EqualFold(actual.Scheme, probe.Scheme) || !strings.EqualFold(actual.Host, probe.Host) || actual.RawQuery != probe.RawQuery {
+		return false
+	}
+	root := strings.TrimSuffix(probe.EscapedPath(), "/sub2api/billing")
+	switch actual.EscapedPath() {
+	case root + "/chat/completions", root + "/responses", root + "/responses/compact", root + "/messages":
+		return true
+	default:
+		return false
+	}
 }
 
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
@@ -29,11 +62,15 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 			return nil, err
 		}
 		if latest.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(latest) {
+			if !upstreamBillingRequestTargetConfirmed(latest, request) {
+				return nil, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
+			}
 			expectedGroup, expectedErr := upstreamBillingRequestGroup(latest)
 			actualGroup, actualErr := ParseAPIKeyRequestGroup(request.Header)
 			if expectedErr != nil || actualErr != nil || expectedGroup != actualGroup {
 				return nil, denyOpenAITurn("account_binding_changed")
 			}
+			request = request.WithContext(WithHTTPUpstreamRedirectsDisabled(request.Context()))
 		}
 	}
 	if s.excelOAuthReauth != nil {

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,7 +192,7 @@ func TestOpenAIHTTPFinalSendRechecksPinnedGroup(t *testing.T) {
 	for _, actual := range []string{"", "2", "3", "2,3"} {
 		t.Run("actual_"+actual, func(t *testing.T) {
 			selected := profitControlSyncedTestAccount(time.Now().UTC())
-			selected.Credentials = map[string]any{"api_key": "pinned-route-fixture"}
+			selected.Credentials = map[string]any{"api_key": "pinned-route-fixture", "base_url": "https://fixture.invalid"}
 			selected.Status, selected.Schedulable = StatusActive, true
 			selected.GroupIDs = []int64{9}
 			selected.Credentials[credKeyHeaderOverrideEnabled] = true
@@ -220,6 +221,181 @@ func TestOpenAIHTTPFinalSendRechecksPinnedGroup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOpenAIHTTPFinalSendRejectsUnobservedBillingTarget(t *testing.T) {
+	for _, platform := range strictTurnAdmissionPlatformsForTest() {
+		for _, tc := range []struct {
+			name, target, host string
+			allowed            bool
+		}{
+			{name: "observed responses", target: "https://fixture.invalid/tenant/v1/responses", allowed: true},
+			{name: "observed chat", target: "https://fixture.invalid/tenant/v1/chat/completions", allowed: true},
+			{name: "observed messages", target: "https://fixture.invalid/tenant/v1/messages", allowed: true},
+			{name: "observed compact", target: "https://fixture.invalid/tenant/v1/responses/compact", allowed: true},
+			{name: "different site", target: "https://other.invalid/tenant/v1/responses"},
+			{name: "different tenant", target: "https://fixture.invalid/other/v1/responses"},
+			{name: "prefix collision", target: "https://fixture.invalid/tenant-2/v1/responses"},
+			{name: "different scheme", target: "http://fixture.invalid/tenant/v1/responses"},
+			{name: "different port", target: "https://fixture.invalid:8443/tenant/v1/responses"},
+			{name: "different version", target: "https://fixture.invalid/tenant/v2/responses"},
+			{name: "alternate resource", target: "https://fixture.invalid/tenant/v1/images/generations"},
+			{name: "host override", target: "https://fixture.invalid/tenant/v1/responses", host: "other.invalid"},
+			{name: "query routing", target: "https://fixture.invalid/tenant/v1/responses?group=other"},
+			{name: "encoded separator", target: "https://fixture.invalid/tenant%2Fv1/responses"},
+		} {
+			t.Run(platform+"/"+tc.name, func(t *testing.T) {
+				account := profitControlSyncedTestAccount(time.Now().UTC())
+				account.Platform, account.Status, account.Schedulable = platform, StatusActive, true
+				account.GroupIDs = []int64{9}
+				account.Credentials = map[string]any{"api_key": "target-fixture", "base_url": "https://fixture.invalid/tenant", "api_protocol": APIProtocolAdaptive,
+					"api_base_urls": map[string]any{APIProtocolChatCompletions: "https://fixture.invalid/tenant", APIProtocolResponses: "https://other.invalid/tenant"}}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, accountRepo: &turnAdmissionRepo{account: account}, httpUpstream: upstream}
+				ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: platform, threshold: 0.5})
+				req := httptest.NewRequest(http.MethodPost, tc.target, nil).WithContext(ctx)
+				if tc.host != "" {
+					req.Host = tc.host
+				}
+				resp, err := svc.doOpenAIUpstream(req, "", account)
+				if resp != nil {
+					require.NoError(t, resp.Body.Close())
+				}
+				if tc.allowed {
+					require.NoError(t, err)
+					require.NotNil(t, upstream.lastReq)
+					require.True(t, HTTPUpstreamRedirectsDisabled(upstream.lastReq.Context()))
+				} else {
+					var denied *OpenAITurnAdmissionError
+					require.ErrorAs(t, err, &denied)
+					require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, denied.Reason)
+					require.Nil(t, upstream.lastReq, "unobserved billing targets must be rejected before egress")
+				}
+			})
+		}
+	}
+}
+
+func TestUpstreamBillingRequestTargetUsesObservedAPIRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, target string
+		allowed            bool
+	}{
+		{"versioned base", "https://fixture.invalid/tenant/v4", "https://fixture.invalid/tenant/v4/responses", true},
+		{"root base", "https://fixture.invalid/", "https://fixture.invalid/v1/messages", true},
+		{"case insensitive host", "https://fixture.invalid/tenant", "https://FIXTURE.INVALID/tenant/v1/messages", true},
+		{"full endpoint is not billing root", "https://fixture.invalid/tenant/v1/responses", "https://fixture.invalid/tenant/v1/responses", false},
+		{"billing root under full endpoint", "https://fixture.invalid/tenant/v1/responses", "https://fixture.invalid/tenant/v1/responses/v1/responses", true},
+		{"duplicate version is another root", "https://fixture.invalid/tenant/v1", "https://fixture.invalid/tenant/v1/v1/messages", false},
+		{"encoded separator is another root", "https://fixture.invalid/tenant%2Fone", "https://fixture.invalid/tenant%2Fone/v1/messages", false},
+		{"probe builder decodes separator", "https://fixture.invalid/tenant%2Fone", "https://fixture.invalid/tenant/one/v1/messages", true},
+		{"probe builder trims decoded trailing separator", "https://fixture.invalid/tenant%2F", "https://fixture.invalid/tenant/v1/messages", true},
+		{"query bound by probe", "https://fixture.invalid/tenant?route=cheap", "https://fixture.invalid/tenant/v1/messages?route=cheap", true},
+		{"query differs from probe", "https://fixture.invalid/tenant?route=cheap", "https://fixture.invalid/tenant/v1/messages?route=premium", false},
+		{"fragment not sent to probe", "https://fixture.invalid/tenant", "https://fixture.invalid/tenant/v1/messages#other", false},
+		{"userinfo not probe identity", "https://fixture.invalid/tenant", "https://other@fixture.invalid/tenant/v1/messages", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": tc.base}}
+			req := httptest.NewRequest(http.MethodPost, tc.target, nil)
+			require.Equal(t, tc.allowed, upstreamBillingRequestTargetConfirmed(account, req))
+		})
+	}
+	require.False(t, upstreamBillingRequestTargetConfirmed(nil, nil))
+	require.False(t, upstreamBillingRequestTargetConfirmed(&Account{}, &http.Request{}))
+}
+
+func TestOpenAIHTTPBillingTargetCompatibility(t *testing.T) {
+	for _, gated := range []bool{false, true} {
+		for _, platform := range strictTurnAdmissionPlatformsForTest() {
+			t.Run(fmt.Sprintf("%s/gated_%v", platform, gated), func(t *testing.T) {
+				account := profitControlSyncedTestAccount(time.Now().UTC())
+				account.Platform, account.Status, account.Schedulable = platform, StatusActive, true
+				account.GroupIDs = []int64{9}
+				account.Credentials = map[string]any{"api_key": "manual-fixture", "base_url": "https://fixture.invalid"}
+				// With a gate this explicitly exercises the manual-rate path. Without a
+				// gate, automatic sync must retain the preexisting transport behavior.
+				if gated {
+					account.Extra[UpstreamBillingRateSyncEnabledExtraKey] = false
+				}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, accountRepo: &turnAdmissionRepo{account: account}, httpUpstream: upstream}
+				ctx := t.Context()
+				if gated {
+					ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: platform, threshold: 0.5})
+				}
+				req := httptest.NewRequest(http.MethodPost, "https://other.invalid/v1/responses", nil).WithContext(ctx)
+				resp, err := svc.doOpenAIUpstream(req, "", account)
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+				require.NoError(t, resp.Body.Close())
+				require.NotNil(t, upstream.lastReq)
+				require.False(t, HTTPUpstreamRedirectsDisabled(upstream.lastReq.Context()))
+			})
+		}
+	}
+}
+
+func TestOpenAIHTTPBillingTargetMatchesRealProbe(t *testing.T) {
+	var businessCalls, premiumCalls atomic.Int32
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cheap/v1/sub2api/billing":
+			w.Header().Set("Content-Type", "application/json")
+			_, err := io.WriteString(w, `{"object":"sub2api.key_billing","schema_version":1,"billing_scope":"token","group_rate_multiplier":0.4,"resolved_rate_multiplier":0.4,"effective_rate_multiplier":0.4,"peak_rate_enabled":false,"observed_at":"`+now.Format(time.RFC3339Nano)+`"}`)
+			require.NoError(t, err)
+		case "/cheap/v1/chat/completions":
+			businessCalls.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		case "/premium/v1/responses":
+			premiumCalls.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	account := profitControlSyncedTestAccount(now)
+	account.Platform, account.Status, account.Schedulable = PlatformKimi, StatusActive, true
+	account.GroupIDs = []int64{9}
+	account.Credentials = map[string]any{"api_key": "actual-billing-target-fixture", "api_protocol": APIProtocolAdaptive,
+		"base_url":      server.URL + "/legacy",
+		"api_base_urls": map[string]any{APIProtocolChatCompletions: server.URL + "/cheap", APIProtocolResponses: server.URL + "/premium"}}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+		return server.Client().Do(req)
+	}}
+	probe := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	snapshot, err := probe.ProbeAccount(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+	require.NotNil(t, snapshot.SyncedRateMultiplier)
+	latest, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, accountRepo: &turnAdmissionRepo{account: latest}, httpUpstream: upstream}
+	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: account.Platform, threshold: 0.5})
+	// Use production endpoint builders: the Responses adapter's configured base
+	// is a different tenant, although both routes share one server and API key.
+	premiumURL := buildOpenAIResponsesURLForPlatform(account.Platform, account.GetCNProtocolBaseURL(APIProtocolResponses))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, premiumURL, nil)
+	require.NoError(t, err)
+	resp, err := svc.doOpenAIUpstream(req, "", latest)
+	require.Nil(t, resp)
+	var denied *OpenAITurnAdmissionError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, denied.Reason)
+	require.Zero(t, premiumCalls.Load())
+	cheapURL := buildOpenAIEndpointURL(account.GetOpenAIBaseURL(), "/v1/chat/completions")
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, cheapURL, nil)
+	require.NoError(t, err)
+	resp, err = svc.doOpenAIUpstream(req, "", latest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.NoError(t, resp.Body.Close())
+	require.EqualValues(t, 1, businessCalls.Load())
+	require.Equal(t, server.URL+"/legacy", latest.GetCredential("base_url"))
+	require.Equal(t, 0.4, latest.BillingRateMultiplier())
 }
 
 func TestStrictProviderProfitAdmissionReadFailure(t *testing.T) {

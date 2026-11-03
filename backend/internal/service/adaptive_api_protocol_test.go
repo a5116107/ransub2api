@@ -90,6 +90,10 @@ func TestAdaptiveProtocolFinalAdmissionBeforeNetwork(t *testing.T) {
 			t.Run(ingress.name+"/"+change, func(t *testing.T) {
 				var calls atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != ingress.path {
+						http.NotFound(w, r)
+						return
+					}
 					calls.Add(1)
 					w.Header().Set("Content-Type", "application/json")
 					var response string
@@ -108,7 +112,7 @@ func TestAdaptiveProtocolFinalAdmissionBeforeNetwork(t *testing.T) {
 				selected.Platform, selected.Status, selected.Schedulable = PlatformDeepseek, StatusActive, true
 				selected.GroupIDs = []int64{9}
 				selected.Credentials = adaptiveProtocolTestAccount(PlatformDeepseek, map[string]any{
-					APIProtocolChatCompletions: server.URL, APIProtocolResponses: server.URL, APIProtocolAnthropic: server.URL,
+					APIProtocolChatCompletions: server.URL, APIProtocolResponses: server.URL + "/v1", APIProtocolAnthropic: server.URL,
 				}).Credentials
 				latest := *selected
 				latest.Credentials = maps.Clone(selected.Credentials)
