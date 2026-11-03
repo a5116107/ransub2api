@@ -264,9 +264,10 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 	if selected == nil {
 		return nil, denyOpenAITurn("account_unavailable")
 	}
-	if !selected.IsOpenAI() && (s.schedulerSnapshot == nil || s.schedulerSnapshot.localSnapshotReader == nil) {
-		// This patch changes OpenAI Responses admission only, not other
-		// providers which share the generic forwarding implementation.
+	strictGrok := selected.IsGrok() && gatewayProfitControlGateActive(ctx)
+	if !selected.IsOpenAI() && !strictGrok && (s.schedulerSnapshot == nil || s.schedulerSnapshot.localSnapshotReader == nil) {
+		// Ungated providers retain their existing direct-call behavior. Strict
+		// Grok text requests use the same authoritative reader as OpenAI.
 		return selected, nil
 	}
 	latest := selected
@@ -443,7 +444,8 @@ func (s *OpenAIGatewayService) admitOpenAITurnWithGroup(
 // Share the predicate between per-turn admission and the final HTTP send.
 // Neither may authorize a prepared old route using a different row's rates.
 func checkOpenAITurnBindingAndRate(ctx context.Context, selected, latest *Account) error {
-	if latest.IsOpenAI() && openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(selected) &&
+	checkBinding := latest.IsOpenAI() || (latest.IsGrok() && gatewayProfitControlGateActive(ctx))
+	if checkBinding && openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(selected) &&
 		(!latest.HasManagedOpenAIConnections() || selected.AuthConnectionID == "") {
 		return denyOpenAITurn("account_binding_changed")
 	}

@@ -246,3 +246,13 @@
 - 完整admin unit lint实际输出0 issues、退出0；新integration包以integration标签完整未限量lint同样0 issues，admin unit vet实际输出Admin unit vet and integration lint: PASS、退出0。最终源码在删去重复SQL期待后再次运行完整单元测试及vet，结果另列。
 - schema清理后SELECT count(*)返回0；pg_ctl fast stop实际输出server stopped、Task PostgreSQL stop exit: 0。包含删除的新目录清理命令被自动审批blocked by policy拒绝，整条未执行；随后仅单独核对schema并关闭进程，不重试文件删除或换工具绕过。保留新目录973文件、41445106 bytes（约39.525 MiB），供手动删除；此前历史受保护文件保持。
 - 删除重复断言后的最终完整admin单元包实际输出ok 5.365s、Final admin unit tests and vet: PASS、退出0；integration三轮后的独立vet退出0。最终admin完整未限量lint再次输出0 issues、退出0，integration完整lint亦0。git识别跨层测试为81%相似度重命名，旧路径不存在，新增TODO/FIXME/XXX为0，diff检查通过；原20项保持12 done、2 in_progress、6 pending，本轮完成admin检查阻塞闭环，未将D8整体提前标done。仅本地提交任务文件；临时数据库目录因审批拒绝保留为明确外部清理等待。
+
+## 2026-11-03：D4 Grok 文本的权威准入与准备后发送复核
+
+- 接续81f003b，按原D4验收修复Grok文本在非区域模式下跳过权威读取的问题：latestOpenAITurnAccountForGroup原本对非OpenAI直接返回选号对象，checkOpenAITurnBindingAndRate又仅比较OpenAI线路指纹。原位复用既有只读可重复读仓库、指纹和倍率判定，没有新增调度器、配置或实现分支副本。
+- 先扩展既有三项OpenAI回归到OpenAI/Grok。旧实现实际失败：Grok倍率上涨/销售倍率改变/同步证据丢失、静态Key替换/清空、地址变化、移出组、禁用账号在每轮或最终发送前仍返回nil。首次运行还发现扩展缓存测试误将Grok未装门的原零读取行为断言为1，夹具按原边界修正，并明确预热本地缓存；修正后的红色回归仍实际退出1（2.338s），包括严格模式缓存未重新读取。未弱化失败边界。
+- 利润门有效时，Grok文本复用原权威刷新和区域快照优先级；跳过本地准入缓存，最终HTTP出站复核当前分组、账号资格、线路指纹、采购/销售倍率及同步证据，保持请求冻结售价。未装门Grok保留原直接调用边界，OAuth正常刷新不当作静态Key替换。保留生产构造器requireLatestTurnAdmission与小型内部夹具原兼容边界；不宣称跨SQL与网络原子，不将额外读取延迟当作零成本。
+- 扩大后的新增专项连续三轮实际通过（3.187s）：含数据库失败/账号消失/缺少Reader/缺少Repository时无网络发送、未装门不额外读库、OAuth刷新保留。真实loopback HTTP跑Grok Responses可恢复加密内容错误：第一读正常，第二读倍率上涨时仅1次网络请求、本地准入错误原样返回且不写下游502、不冷却账号；不变时2次发送并恢复成功。未重复实现HTTP夹具。
+- 此轮局部验收属于原D4，不新增ID或提前关闭父任务；D2、其他路径、分组配置新鲜度和模型/fast来源仍保留。最终全包、扩大回归和静态检查结果待实际返回后列出；无CI、推送、部署或新工作树。
+- 最终扩大回归连续三轮实际通过：service18.644s、repository20.098s、handler2.892s；三包vet实际输出Grok admission regression and three-package vet: PASS、退出0。完整service未限量lint输出0 issues、退出0，最终完整service本地回归ok323.453s、Full service exit: 0。未扩大为全后端/生产验收。
+- 交付复核：旧的非OpenAI直接跳过注释和设计中Grok待实现表述已原位更新；实际代码只扩展两处既有判定，测试扩展既有平台矩阵并复用HTTP夹具，未新增并行实现或TODO/FIXME/XXX。git diff --check通过，STATE保持100行以内；7个任务文件本地提交，未推送、CI或创建工作树。原20项仍12 done、2 in_progress、6 pending，本轮关闭Grok文本缺口，不将D4父任务提前标done；历史受保护图片/bin/已停止临时PG目录保持。

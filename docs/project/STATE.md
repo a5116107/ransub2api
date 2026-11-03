@@ -31,7 +31,7 @@
 | M3 | done | WinSock 原生拒绝连接/主机与网络不可达已识别；超时/重置不误判；真实单 POST 及代理/时序/WS 组合回归连续 5 轮通过（140.262s） |
 | M4 | done | 三处私有原子持久化收敛为共用接口；原 22 项 Windows 失败全部实际通过；双平台完整回归、核心三包 lint 0 与最终 vet 通过，本轮产物归零 |
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
-| D4 | in_progress | 固定售价准入、OpenAI 每轮及最终 HTTP 发送前线路/倍率复核、严格请求绕过进程旧缓存已验证；仍待 D2、Grok 等剩余路径、分组配置新鲜度与模型/fast 来源 |
+| D4 | in_progress | 固定售价准入、OpenAI/Grok 文本每轮及最终 HTTP 发送前线路/倍率复核、严格请求绕过进程旧缓存已验证；仍待 D2、其他剩余路径、分组配置新鲜度与模型/fast 来源 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
 | D8 | pending | admin 原8项 lint 阻塞已修复，跨层用例移至 integration/adminkey 并经真实 PostgreSQL 三轮通过；双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
@@ -69,6 +69,8 @@
 
 - 本轮 D8 admin 检查阻塞：跨层 PostgreSQL/HTTP 测试移入 integration/adminkey，旧 handler 测试文件删除；受检类型断言、事务资源关闭和模式分支原位修复，无 lint 规则例外。原8项诊断归零，完整 admin 单元回归及真实数据库三轮通过；最终完整admin回归5.365s、unit/integration vet均退出0、两个包按各自标签完整lint均0；证据见 DECISIONS。父任务完成数不变。
 
+- 本轮 D4 Grok 文本权威准入闭环：每轮和最终HTTP复用主库/区域读取与线路/倍率判定，严格模式跳过本地缓存，正常OAuth刷新与未装门行为保持。旧实现专项失败；新增专项三轮3.187s、三包扩大三轮与vet通过，完整service323.453s/退出0、完整service lint 0。真实HTTP重试倍率变化仅发1次，正常重试2次；无新增持久产物，本地提交，父任务完成数不变。
+
 ## 可复现的 D4.1 专项验证
 
 在 backend 目录运行，已通过（`ok 1.681s`）：
@@ -81,7 +83,7 @@ go test -tags=unit -p 2 ./internal/service -run 'TestGatewayProfitControlTermina
 
 D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；剩余请求级固定线路选择/原同步兼容、WS/Live/区域共享额度与缓存域；HTTP/SSE 共享上限已有本地实现，不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
 D3–D9 主线仍待按设计依赖实施与验收；D4.1/D4.2 和 M1–M5 的完成不代表全局方案已全部落地。
-D2 继续完成原生上游 WS/Live/区域共享额度、固定分组/协议来源与缓存域证据；Responses 下游 WS 已可经 HTTP/SSE bridge 受控使用，Live/区域仍明确拒绝。D4 继续核对 Grok 等剩余权威刷新、分组配置新鲜度及模型/fast 来源，原父验收不变。
+D2 继续完成原生上游 WS/Live/区域共享额度、固定分组/协议来源与缓存域证据；Responses 下游 WS 已可经 HTTP/SSE bridge 受控使用，Live/区域仍明确拒绝。D4 的 Grok 文本权威刷新缺口已补，继续核对其他路径、分组配置新鲜度及模型/fast 来源，原父验收不变。
 
 ## 外部验收等待
 

@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2215,6 +2218,69 @@ func TestForwardGrokResponsesUsesMetadataSessionForCacheIdentityWithoutForwardin
 	require.Equal(t, firstIdentity, secondIdentity)
 	require.False(t, gjson.GetBytes(upstream.bodies[0], "metadata").Exists())
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "metadata").Exists())
+}
+
+func TestForwardGrokResponsesRetryRechecksPurchasedRoute(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed_%t", changed), func(t *testing.T) {
+			selected := profitControlSyncedTestAccount(time.Now().UTC())
+			selected.Platform, selected.Status, selected.Schedulable = PlatformGrok, StatusActive, true
+			selected.GroupIDs = []int64{9}
+			selected.Credentials = map[string]any{"api_key": "fixture-key", "base_url": "https://api.x.ai/v1"}
+			latest := *selected
+			latest.Extra = maps.Clone(selected.Extra)
+			if changed {
+				rate := 0.9
+				latest.RateMultiplier = &rate
+			}
+			repo := &turnAdmissionRepo{accounts: []*Account{selected, &latest}}
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer fixture-key" {
+					t.Error("unexpected fixture authorization")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if requests.Add(1) == 1 {
+					w.WriteHeader(http.StatusBadRequest)
+					_, err := io.WriteString(w, `{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`)
+					if err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				_, err := io.WriteString(w, `{"id":"resp_fixture","object":"response","model":"grok-4.5","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":1}}`)
+				if err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			target, err := url.Parse(server.URL)
+			require.NoError(t, err)
+			svc := &OpenAIGatewayService{accountRepo: repo, requireLatestTurnAdmission: true, httpUpstream: &accountTestHTTPUpstream{target: target}}
+			t.Cleanup(svc.CloseOpenAIWSPool)
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: PlatformGrok, threshold: 0.5})
+			body := []byte(`{"model":"grok","input":[{"type":"reasoning","summary":[],"encrypted_content":"fixture-reasoning"},{"role":"user","content":"hi"}],"stream":false}`)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body))).WithContext(ctx)
+			result, err := svc.forwardGrokResponses(ctx, c, selected, body, "grok", false, time.Now())
+			require.Equal(t, 2, repo.reads)
+			if changed {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, openAIProfitFilterReasonThreshold, denied.Reason)
+				require.Nil(t, result)
+				require.EqualValues(t, 1, requests.Load(), "the retry must not reach the wire after rate changes")
+				require.Empty(t, recorder.Body.String(), "local denial must not be rendered as an upstream failure")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, "resp_fixture", result.ResponseID)
+				require.EqualValues(t, 2, requests.Load())
+			}
+			require.Equal(t, StatusActive, selected.Status)
+			require.Nil(t, selected.TempUnschedulableUntil)
+		})
+	}
 }
 
 func TestForwardGrokResponsesRetriesInvalidEncryptedContentOnce(t *testing.T) {
