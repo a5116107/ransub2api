@@ -173,7 +173,11 @@ func TestIssue578OlderQueryCannotUndoLaterHeaders(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("quota query did not reach the local server")
 	}
+	// The delayed query must predate the header in the persisted wall clock.
+	queryReachedSeam := time.Now().UTC()
+	require.Eventually(t, func() bool { return time.Now().UTC().After(queryReachedSeam) }, time.Second, time.Millisecond)
 	s := &OpenAIGatewayService{accountRepo: r, codexSnapshotThrottle: newAccountWriteThrottle(40 * time.Millisecond)}
+	t.Cleanup(s.CloseOpenAIWSPool)
 	s.UpdateCodexUsageSnapshotFromHeaders(context.Background(), a.ID, excelBPSQuotaHeaders("100", "20"))
 	issue578WaitUsage(t, r, a.ID, 100)
 	unblock()

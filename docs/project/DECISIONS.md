@@ -222,3 +222,16 @@
 - 新每轮专项三轮 13.584s；扩大相关回归三轮 108.158s，补齐最终 HTTP guard 后相关专项三轮 13.358s，最终新增专项三轮 15.442s。最终完整 service 回归实际输出 ok 376.385s，Full service exit: 0；service/handler vet 输出 PASS、退出 0。
 - 前两次完整 service 返回失败（319.984s/329.647s），工具截断约 18 MB 输出中段，未保留具体失败名称，不能声称根因已定位；首次运行与后续版本/全量运行有重叠。最后使用内存提取失败片段、无持久日志的原完整命令实际退出 0。并发干扰仅是未证实假设，不登记为已修复或跳过任何测试。
 - 最终 service 完整未限量 lint 输出 0 issues.、退出 0；没有降低检查规则。git diff --check 通过，STATE 89 行，无新增 TODO/FIXME/XXX；7 个任务文件本地提交，不推送、不 CI、不创建工作树或生产变更。既有受保护图片和 bin 产物保持；D2/D4 仍 in_progress，原 20 项为 12 done、2 in_progress、6 pending，父任务完成数不变。
+
+## 2026-11-03：New API 完整 Key 归属与授权预览固定分组同源
+
+- 在 caaf3a0 单一工作树原位修复，不增加任务 ID、不修改父验收。旧实现实际复现：唯一掩码碰撞、揭示接口仍为掩码/空值/失败/缺失均错误 Matched=true；绑定后的碰撞仍返回 OK；预览把异组/空路由错误认作有效倍率。首轮红色回归退出 1（2.453s）。
+- 预览、保存与绑定探测复用 verifyNewAPITokenKey。完整库存精确相等可直接证明；掩码即使唯一也须完整揭示比对，多个候选仍由人工明确选择；拒绝掩码凭据，不输出 Key 或管理密钥。揭示不可用时该绑定不再作为有效证据，可能使旧的未完整验证绑定转为 failed，恢复接口/正确 Key 后按原探测恢复。
+- 预览和快照复用 newAPIFixedGroupRate，删除旧的 len(route_groups)<=1 宽松分支；完整归属与固定组适用性分别判断，不合格组仍可保存已验证绑定并独立展示钱包，不写账号倍率或改上游 Key。
+- 首次修复后回归又实际暴露：失败工厂保留上次 FreshUntil（首轮退出 1，2.297s）。New API 失败路径现统一由原 persistNewAPIFailure 清除 Data/ReceivedAt/FreshUntil 和钱包有效状态，保留失败退避，不修改通用原生同步快照规则。恢复回归验证成功→碰撞→成功→揭示404→成功，并检查实际持久快照。
+- 新增四项行为测试覆盖六类揭示结果、完整库存/前缀空白/大小写/掩码凭据、恢复及七类固定分组；默认正常夹具补完整 Key 揭示响应，未放宽失败断言。相关三包三轮回归实际通过：service 3.015s、repository 2.088s、admin handler 2.506s；最终三包 vet 输出 New API final vet: PASS、退出 0。
+- 本轮首次完整 service 实际失败（316.041s）：TestIssue578ReviewActualAutoResetAndPostResetWorkflow 的 post_reset/usage_rejected 与 post_reset/details_delayed 期待100、实际89。独立十轮再次失败，自动重置子例也复现；此前截断失败的历史根因仍不追认。检查确认测试阻塞请求后立即发响应头，没有建立持久墙上时钟的严格先后关系，同刻观测不满足其“旧查询”前提。按既有测试模式等墙上时钟前进，不改业务比较规则/期待值/超时，不跳过测试。
+- 首次扩大十轮后 TestIssue578OlderQueryCannotUndoLaterHeaders 又出现同一前提缺失，补齐该用例同样的墙上时钟先后关系并关闭测试网关资源。修复后的 New API/Issue578 全组十轮实际通过（12.199s），New API and snapshot regression exit: 0；另两处相关测试原位修正，无并行实现或放宽断言。
+- 扩大 service/admin 的完整未限量 lint 退出1：8项均位于本轮未修改的 admin 测试（depguard 1、errcheck 5、staticcheck 2）；git diff --exit-code -- backend/internal/handler/admin 退出0，未隐藏这些诊断。实际修改的完整 service lint 随后输出0 issues、退出0；admin 扩大检查仍待处理，不扩大 M5 原六包验收范围。最终源码检查与完整回归结果另列。
+- 配额测试时序修复后的最终完整 service 未限量 lint 实际输出 0 issues.；service/repository/admin 三包 vet 实际输出 Final service lint and three-package vet: PASS，同一命令退出0。未修改 lint 规则或 admin 的8项既有诊断。
+- 最终完整 service 本地回归实际输出 ok 319.099s、Full service exit: 0。此前316.041s失败及独立十轮失败保留，不以最终通过抹去；时序前提修复已随完整回归验证。本轮只提交8个文件，git diff --check通过，无新增TODO/FIXME/XXX或持久测试产物，STATE保持100行以内；单一工作树、不CI/推送/部署，历史受保护产物保持。原20项仍为12 done、2 in_progress、6 pending，本轮父任务done增量0，D2.2核验缺口修复已闭环。

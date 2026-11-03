@@ -49,6 +49,10 @@ func TestIssue578ReviewQueryDownstreamCannotRestampWindows(t *testing.T) {
 				case <-time.After(time.Second):
 					t.Fatal("query did not reach details seam")
 				}
+				// The header is a strictly later observation; do not rely on two
+				// operations landing in different Windows clock ticks by chance.
+				queryReachedSeam := time.Now().UTC()
+				require.Eventually(t, func() bool { return time.Now().UTC().After(queryReachedSeam) }, time.Second, time.Millisecond)
 				s := &OpenAIGatewayService{accountRepo: r, codexSnapshotThrottle: newAccountWriteThrottle(30 * time.Millisecond)}
 				t.Cleanup(s.CloseOpenAIWSPool)
 				s.UpdateCodexUsageSnapshotFromHeaders(context.Background(), a.ID, excelBPSQuotaHeaders("100", "20"))
@@ -190,6 +194,9 @@ func TestIssue578ReviewActualAutoResetAndPostResetWorkflow(t *testing.T) {
 					t.Fatal("workflow did not reach local query seam")
 				}
 				if stage != "missing usage" {
+					// Establish the ordering required by the stale-query assertion.
+					queryReachedSeam := time.Now().UTC()
+					require.Eventually(t, func() bool { return time.Now().UTC().After(queryReachedSeam) }, time.Second, time.Millisecond)
 					s := &OpenAIGatewayService{accountRepo: r, codexSnapshotThrottle: newAccountWriteThrottle(30 * time.Millisecond)}
 					t.Cleanup(s.CloseOpenAIWSPool)
 					s.UpdateCodexUsageSnapshotFromHeaders(context.Background(), a.ID, excelBPSQuotaHeaders("100", "20"))

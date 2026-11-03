@@ -290,6 +290,16 @@ func validNewAPIGroupRate(group string, rate float64) bool {
 	return group != "" && group != "auto" && len(group) <= 128 && newAPIFinite(rate) && rate >= 0 && rate <= 1000000
 }
 
+func newAPIFixedGroupRate(t NewAPIToken, d *newAPIData) (float64, bool) {
+	// A single route is fixed only when it names the declared group. Older
+	// inventories omit route_groups; their fixed group remains usable. Never
+	// substitute a different group's ratio or mutate upstream key configuration.
+	fixedGroup := !t.CrossGroupRetry && (len(t.RouteGroups) == 0 ||
+		(len(t.RouteGroups) == 1 && t.RouteGroups[0] == t.Group))
+	rate, ok := d.ratios[t.Group]
+	return rate, ok && fixedGroup && validNewAPIGroupRate(t.Group, rate)
+}
+
 func newAPISnapshot(t NewAPIToken, d *newAPIData, interval int, now time.Time) *UpstreamBillingProbeSnapshot {
 	fresh := now.Add(2 * time.Duration(interval) * time.Minute)
 	snap := &UpstreamBillingProbeSnapshot{
@@ -310,12 +320,7 @@ func newAPISnapshot(t NewAPIToken, d *newAPIData, interval int, now time.Time) *
 			},
 		},
 	}
-	// A single route is fixed only when it names the declared group. Older
-	// inventories omit route_groups; their fixed group remains usable. Never
-	// substitute a different group's ratio or mutate upstream key configuration.
-	fixedGroup := !t.CrossGroupRetry && (len(t.RouteGroups) == 0 ||
-		(len(t.RouteGroups) == 1 && t.RouteGroups[0] == t.Group))
-	if rate, ok := d.ratios[t.Group]; ok && fixedGroup && validNewAPIGroupRate(t.Group, rate) {
+	if rate, ok := newAPIFixedGroupRate(t, d); ok {
 		snap.Status = UpstreamBillingProbeStatusOK
 		snap.LastError = ""
 		snap.ReceivedAt = probeTimePtr(now)

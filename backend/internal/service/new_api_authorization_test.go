@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"strings"
@@ -52,11 +53,153 @@ func (newAPIEncryptorFake) Decrypt(s string) (string, error) {
 func newAPIConfigFixture() (*UpstreamBillingProbeService, *newAPIAuthRepoFake, *newAPIHTTP, *newAPIAccounts) {
 	accounts := &newAPIAccounts{&upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{1: {ID: 1, Name: "first", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://example.com/v1", "api_key": "sk-abcd123456789wxyz"}}, 2: {ID: 2, Name: "peer", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://example.com", "api_key": "sk-nope123456789xxxx"}}, 3: {ID: 3, Name: "foreign", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://example.com/tenant", "api_key": "sk-abcd123456789wxyz"}}}}}
 	h := &newAPIHTTP{bodies: map[string]string{"GET /api/status": `{"success":true,"data":{"quota_per_unit":500000}}`, "GET /api/user/self": `{"success":true,"data":{"id":7,"quota":1250000}}`, "GET /api/pricing": `{"success":true,"group_ratio":{"vip":0.5}}`, "GET /api/token/?p=0&page_size=100": `{"success":true,"data":{"items":[{"id":3,"key":"abcd**********wxyz","group":"vip","name":"mine"}],"total":1,"page":1,"page_size":100}}`}}
+	h.bodies["POST /api/token/3/key"] = `{"success":true,"data":{"key":"sk-abcd123456789wxyz"}}`
+	h.bodies["POST /api/token/4/key"] = `{"success":true,"data":{"key":"sk-nope123456789xxxx"}}`
 	s := newUpstreamBillingProbeTestService(accounts, h, nil)
 	r := &newAPIAuthRepoFake{bindings: map[int64]*NewAPIAccountBinding{}}
 	s.SetNewAPIAuthorization(r, newAPIEncryptorFake{}, true)
 	return s, r, h, accounts
 }
+func TestNewAPIUniqueMaskedKeyRequiresFullVerification(t *testing.T) {
+	for _, tc := range []struct {
+		name, response string
+		verified       bool
+	}{
+		{"matching raw key", `{"success":true,"data":{"key":"sk-abcd123456789wxyz"}}`, true},
+		{"single colliding mask", `{"success":true,"data":{"key":"sk-abcdDIFFERENTwxyz"}}`, false},
+		{"endpoint still masked", `{"success":true,"data":{"key":"abcd**********wxyz"}}`, false},
+		{"empty key", `{"success":true,"data":{"key":""}}`, false},
+		{"failed endpoint", `{"success":false,"data":{"key":"sk-abcd123456789wxyz"}}`, false},
+		{"missing endpoint", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, repo, upstream, _ := newAPIConfigFixture()
+			if tc.response != "" {
+				upstream.bodies["POST /api/token/3/key"] = tc.response
+			} else {
+				delete(upstream.bodies, "POST /api/token/3/key")
+			}
+			req := NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}}
+			preview, err := s.PreviewNewAPIConfig(t.Context(), 1, req)
+			require.NoError(t, err)
+			require.Equal(t, tc.verified, preview.Accounts[0].Matched)
+			_, err = s.SaveNewAPIConfig(t.Context(), 1, req)
+			if tc.verified {
+				require.NoError(t, err)
+				require.Equal(t, 1, repo.saves)
+			} else {
+				require.Error(t, err)
+				require.Zero(t, repo.saves)
+				require.Nil(t, preview.Accounts[0].Rate)
+			}
+		})
+	}
+}
+
+func TestNewAPICompleteInventoryKeyProof(t *testing.T) {
+	for _, tc := range []struct {
+		name, credential, inventory string
+		verified                    bool
+	}{
+		{"exact key", "sk-abcd123456789wxyz", "sk-abcd123456789wxyz", true},
+		{"optional prefix and whitespace", "  sk-abcd123456789wxyz  ", " abcd123456789wxyz ", true},
+		{"case is significant", "sk-abcd123456789wxyz", "sk-abcd123456789WXYZ", false},
+		{"masked credential is not proof", "sk-abcd**********wxyz", "abcd**********wxyz", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, repo, upstream, accounts := newAPIConfigFixture()
+			accounts.accounts[1].Credentials["api_key"] = tc.credential
+			upstream.bodies["GET /api/token/?p=0&page_size=100"] = fmt.Sprintf(`{"success":true,"data":{"items":[{"id":3,"key":%q,"group":"vip"}],"total":1,"page":1,"page_size":100}}`, tc.inventory)
+			upstream.check = func(req *http.Request) {
+				require.False(t, strings.HasSuffix(req.URL.Path, "/key"), "complete inventory needs no key reveal")
+			}
+			req := NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}}
+			preview, err := s.PreviewNewAPIConfig(t.Context(), 1, req)
+			require.NoError(t, err)
+			require.Equal(t, tc.verified, preview.Accounts[0].Matched)
+			encoded, err := json.Marshal(preview)
+			require.NoError(t, err)
+			require.NotContains(t, string(encoded), "abcd123456789wxyz")
+			require.NotContains(t, string(encoded), "fixture-secret")
+			_, err = s.SaveNewAPIConfig(t.Context(), 1, req)
+			if tc.verified {
+				require.NoError(t, err)
+				probe, err := s.probeNewAPIAccount(t.Context(), accounts.accounts[1], repo.bindings[1], 30)
+				require.NoError(t, err)
+				require.Equal(t, UpstreamBillingProbeStatusOK, probe.Status)
+			} else {
+				require.Error(t, err)
+				require.Zero(t, repo.saves)
+			}
+		})
+	}
+}
+
+func TestNewAPIProbeRechecksUniqueMaskedKeyAndRecovers(t *testing.T) {
+	s, repo, upstream, accounts := newAPIConfigFixture()
+	upstream.bodies["POST /api/token/3/key"] = `{"success":true,"data":{"key":"sk-abcd123456789wxyz"}}`
+	_, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	for _, tc := range []struct{ key, status string }{
+		{"sk-abcd123456789wxyz", UpstreamBillingProbeStatusOK},
+		{"sk-abcdDIFFERENTwxyz", UpstreamBillingProbeStatusFailed},
+		{"sk-abcd123456789wxyz", UpstreamBillingProbeStatusOK},
+		{"", UpstreamBillingProbeStatusFailed},
+		{"sk-abcd123456789wxyz", UpstreamBillingProbeStatusOK},
+	} {
+		upstream.bodies["POST /api/token/3/key"] = fmt.Sprintf(`{"success":true,"data":{"key":%q}}`, tc.key)
+		if tc.key == "" {
+			delete(upstream.bodies, "POST /api/token/3/key")
+		}
+		snapshot, err := s.probeNewAPIAccount(t.Context(), accounts.accounts[1], repo.bindings[1], 30)
+		require.NoError(t, err)
+		require.Equal(t, tc.status, snapshot.Status)
+		if tc.status == UpstreamBillingProbeStatusFailed {
+			require.Equal(t, "new_api_bound_key_not_owned", snapshot.LastError)
+			require.Nil(t, snapshot.Data)
+			require.Nil(t, snapshot.FreshUntil)
+			require.Nil(t, snapshot.ReceivedAt)
+		}
+		stored := decodeUpstreamBillingProbeSnapshot(accounts.accounts[1].Extra)
+		require.NotNil(t, stored)
+		require.Equal(t, tc.status, stored.Status)
+		if tc.status == UpstreamBillingProbeStatusFailed {
+			require.Nil(t, stored.Data)
+			require.Nil(t, stored.FreshUntil)
+		}
+	}
+}
+
+func TestNewAPIPreviewAndProbeUseSameFixedGroupRule(t *testing.T) {
+	for _, tc := range []struct {
+		name, group, routes string
+		cross, eligible     bool
+	}{
+		{"legacy fixed group", "vip", `[]`, false, true},
+		{"matching route", "vip", `["vip"]`, false, true},
+		{"different route", "vip", `["default"]`, false, false},
+		{"empty route", "vip", `[""]`, false, false},
+		{"multiple routes", "vip", `["vip","default"]`, false, false},
+		{"cross group retry", "vip", `["vip"]`, true, false},
+		{"auto declared group", "auto", `[]`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, repo, upstream, accounts := newAPIConfigFixture()
+			upstream.bodies["GET /api/pricing"] = `{"success":true,"group_ratio":{"vip":0.5,"auto":0.1}}`
+			upstream.bodies["POST /api/token/3/key"] = `{"success":true,"data":{"key":"sk-abcd123456789wxyz"}}`
+			upstream.bodies["GET /api/token/?p=0&page_size=100"] = fmt.Sprintf(`{"success":true,"data":{"items":[{"id":3,"key":"abcd**********wxyz","group":%q,"route_groups":%s,"cross_group_retry":%t}],"total":1,"page":1,"page_size":100}}`, tc.group, tc.routes, tc.cross)
+			preview, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+			require.NoError(t, err, "ownership and fixed-group suitability are separate")
+			require.True(t, preview.Accounts[0].Matched)
+			require.Equal(t, tc.eligible, preview.Accounts[0].Rate != nil)
+			snapshot, err := s.probeNewAPIAccount(t.Context(), accounts.accounts[1], repo.bindings[1], 30)
+			require.NoError(t, err)
+			require.Equal(t, tc.eligible, snapshot.Status == UpstreamBillingProbeStatusOK)
+			require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Balance.Status)
+		})
+	}
+}
+
 func TestNewAPIConfigNoSaveForForeignOrUnmatchedAccounts(t *testing.T) {
 	for _, ids := range [][]int64{{1, 2}, {1, 3}, {2}, {1, 1}} {
 		s, r, _, _ := newAPIConfigFixture()
