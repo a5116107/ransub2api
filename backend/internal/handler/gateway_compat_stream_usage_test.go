@@ -85,7 +85,8 @@ func runCompatStreamUsageHandlerWithDelivery(t *testing.T, endpoint, upstreamStr
 		Credentials:   map[string]any{"api_key": "test-key"},
 		AccountGroups: []service.AccountGroup{{AccountID: 9301, GroupID: groupID}},
 	}
-	snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: []*service.Account{account}}, nil, nil, nil, nil)
+	groupRepo := &fakeGroupRepo{group: group}
+	snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: []*service.Account{account}}, nil, nil, groupRepo, nil)
 	run := compatStreamUsageRun{
 		rec:         httptest.NewRecorder(),
 		usageRepo:   &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 2)},
@@ -116,7 +117,7 @@ func runCompatStreamUsageHandlerWithDelivery(t *testing.T, endpoint, upstreamStr
 		transport = repository.NewHTTPUpstream(cfg)
 	}
 	gw := service.NewGatewayService(
-		nil, &fakeGroupRepo{group: group}, run.usageRepo, billing, nil, nil, nil, nil, cfg,
+		nil, groupRepo, run.usageRepo, billing, nil, nil, nil, nil, cfg,
 		snapshot, nil, service.NewBillingService(cfg, nil), nil, nil, nil, transport,
 		&service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)

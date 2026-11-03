@@ -31,7 +31,7 @@
 | M3 | done | WinSock 原生拒绝连接/主机与网络不可达已识别；超时/重置不误判；真实单 POST 及代理/时序/WS 组合回归连续 5 轮通过（140.262s） |
 | M4 | done | 三处私有原子持久化收敛为共用接口；原 22 项 Windows 失败全部实际通过；双平台完整回归、核心三包 lint 0 与最终 vet 通过，本轮产物归零 |
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
-| D4 | in_progress | 固定售价、OpenAI/Grok 文本线路/倍率终检、严格请求跳过旧缓存及 WS 每轮主库/区域策略刷新已验证；仍待 D2、其他路径、HTTP 首次装门/传播新鲜度及模型/fast 来源 |
+| D4 | in_progress | 固定售价、线路/倍率终检、严格请求跳过旧缓存、HTTP 首次/WS 每轮主库或区域策略读取及请求内开关决定已验证；仍待 D2、其他路径、区域传播及模型/fast 来源 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
 | D8 | pending | admin 原8项 lint 阻塞已修复，跨层用例移至 integration/adminkey 并经真实 PostgreSQL 三轮通过；双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮 WS 策略刷新扩大专项连续三轮通过：service 13.635s、handler 8.440s；完整 service 回归 328.225s、退出 0。同两包 vet 退出 0，完整未限量 lint 输出 0 issues、退出 0；5 个变更 Go 文件 gofmt 和差异检查通过。完整证据见本轮 DECISIONS 记录；原 20 项仍 12 done、2 in_progress、6 pending，本轮关闭 1 个 D4 缺口、父任务 done 增量 0。
+- 本轮 HTTP 策略读取与关闭决定：84 个主库/区域首次读取子例及相关三轮组合通过（service 1.503s、handler 5.398s）；最终完整 service 314.062s、handler 142.754s，均退出 0。两包最终 vet 退出 0、完整未限量 lint 为 0 issues；原 20 项仍 12 done、2 in_progress、6 pending，本轮关闭 D4 首次读取及关闭决定缺口、父任务 done 增量 0，完整证据见 DECISIONS。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -59,7 +59,7 @@ go vet -tags=unit -p 2 ./internal/service ./internal/handler
 
 D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；剩余请求级固定线路选择/原同步兼容、WS/Live/区域共享额度与缓存域；HTTP/SSE 共享上限已有本地实现，不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
 D3–D9 主线仍待按设计依赖实施与验收；D4.1/D4.2 和 M1–M5 的完成不代表全局方案已全部落地。
-D2 继续完成原生上游 WS/Live/区域共享额度、固定分组/协议来源与缓存域证据；Responses 下游 WS 已可经 HTTP/SSE bridge 受控使用，Live/区域仍明确拒绝。D4 已补 Grok 文本权威读取和 WS 每轮策略刷新；继续核对其他路径、HTTP 首次装门/区域传播新鲜度及模型/fast 来源，原父验收不变。
+D2 继续完成原生上游 WS/Live/区域共享额度、固定分组/协议来源与缓存域证据；Responses 下游 WS 已可经 HTTP/SSE bridge 受控使用，Live/区域仍明确拒绝。D4 已补 HTTP 首次和 WS 每轮策略读取，复用请求内关闭决定并保持成员归属；继续核对其他路径、区域传播及模型/fast 来源，原父验收不变。
 
 ## 外部验收等待
 
@@ -67,7 +67,7 @@ Windows 当前令牌没有 SeCreateSymbolicLinkPrivilege；系统在 os.Symlink 
 
 ## 当前清理阻塞
 
-自动审批审核以 blocked by policy 拒绝删除本轮 3 个已验证普通文件，明确路径删除也被拒绝，未改用其他工具规避。
-保留在 backend/bin：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共 132004965 bytes（125.890 MiB）；均为已忽略的本轮产物，可由相同验证命令重新生成。现有 12 个受保护图片夹具保持原样。
+历史自动审批审核以 blocked by policy 拒绝删除 3 个已验证普通文件，明确路径删除也被拒绝，未改用其他工具规避。
+保留在 backend/bin：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共 132004965 bytes（125.890 MiB）；均为已忽略的历史产物，其中 lint 工具仍用于本地验证，可重新构建。现有 12 个受保护图片夹具保持原样。
 
-本轮新增清理等待：backend/tmp/admin-key-pg-d8，41445106 bytes；自动审批拒绝删除（blocked by policy），未重试或换工具。测试 schema 余数0、实例已关闭；解除条件为手动删除该准确目录，不影响代码验收。
+历史清理等待：backend/tmp/admin-key-pg-d8，41445106 bytes；自动审批拒绝删除（blocked by policy），未重试或换工具。测试 schema 余数0、实例已关闭；解除条件为手动删除该准确目录，不影响代码验收。

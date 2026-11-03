@@ -120,7 +120,7 @@ func TestProfitControl_PricingAtFixesDownstreamPeakFactor(t *testing.T) {
 	require.Equal(t, 3.0, group.PeakMultiplierAt(pricingAt), "构造前提：pricingAt 在窗口内")
 
 	ctx := context.WithValue(profitControlTestCtx(group), openAIPricingAtCtxKey{}, pricingAt)
-	gate := svc.resolveOpenAIProfitControlGate(ctx, &groupID, false)
+	gate := svc.resolveOpenAIProfitControlGate(ctx, &groupID)
 	require.NotNil(t, gate)
 	require.InDelta(t, 3.0, gate.threshold, 1e-9, "阈值必须用 pricingAt 时刻的高峰因子（1.0×3.0×(1-0)）")
 	require.Equal(t, pricingAt, gate.pricingAt)
@@ -173,7 +173,7 @@ func TestProfitControl_AccountRateSemantics(t *testing.T) {
 	group := profitControlTestGroup(77, 0.5, 0)
 	group.RateMultiplier = 1
 	base := context.WithValue(profitControlTestCtx(group), openAIPricingAtCtxKey{}, now)
-	gate := (&OpenAIGatewayService{}).resolveOpenAIProfitControlGate(base, &group.ID, false)
+	gate := (&OpenAIGatewayService{}).resolveOpenAIProfitControlGate(base, &group.ID)
 	require.NotNil(t, gate)
 	gateCtx := context.WithValue(base, openAIProfitControlGateCtxKey{}, gate)
 
@@ -238,14 +238,109 @@ func (r *profitTurnLocalReader) GetLocalGroup(context.Context, int64) (*Group, e
 	return r.group, r.err
 }
 
+func TestProfitControlRequestUsesAuthoritativePolicy(t *testing.T) {
+	testProfitControlRequestPolicy(t, false)
+}
+
+func TestGatewayProfitControlRequestUsesAuthoritativePolicy(t *testing.T) {
+	testProfitControlRequestPolicy(t, true)
+}
+
+func testProfitControlRequestPolicy(t *testing.T, gateway bool) {
+	t.Helper()
+	platforms := []string{PlatformOpenAI, PlatformGrok}
+	if gateway {
+		platforms = []string{PlatformOpenAI, PlatformGrok, PlatformAnthropic, PlatformGemini, PlatformAntigravity}
+	}
+	for _, platform := range platforms {
+		for _, local := range []bool{false, true} {
+			for _, phase := range []string{"tightened", "disabled", "enabled", "missing", "error", "wrong group"} {
+				t.Run(platform+map[bool]string{false: "/primary/", true: "/regional/"}[local]+phase, func(t *testing.T) {
+					billing := profitControlTestGroup(967, 0.1, 0)
+					billing.Platform = platform
+					billing.ProfitControlEnabled = phase != "enabled" && phase != "missing" && phase != "error" && phase != "wrong group"
+					fresh := *billing
+					fresh.ProfitControlEnabled = phase != "disabled"
+					fresh.ProfitMinMargin = 0.6
+					fresh.RateMultiplier = 99
+					repo := &profitControlGroupRepo{group: &fresh}
+					reader := &profitTurnLocalReader{group: &fresh}
+					snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, nil)
+					switch phase {
+					case "missing":
+						repo.group, reader.group = nil, nil
+					case "error":
+						snapshot.groupRepo = profitControlFailingGroupRepo{}
+						reader.err = errors.New("fixture regional unavailable")
+					case "wrong group":
+						fresh.ID++
+					}
+					if local {
+						snapshot.localSnapshotReader = reader
+					}
+					svc := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+					install := svc.WithOpenAIRequestPricingContext
+					reenter := svc.withOpenAIProfitControlGate
+					if gateway {
+						gatewaySvc := &GatewayService{schedulerSnapshot: snapshot}
+						install = func(ctx context.Context, groupID *int64) (context.Context, time.Time) {
+							ctx, at := WithGatewayTokenRequestPricing(ctx)
+							return gatewaySvc.withGatewayProfitControlGate(ctx, groupID), at
+						}
+						reenter = gatewaySvc.withGatewayProfitControlGate
+					}
+					ctx, at := install(profitControlTestCtx(billing), &billing.ID)
+					gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+					if phase == "disabled" {
+						require.Nil(t, gate)
+					} else {
+						require.NotNil(t, gate)
+						unavailable := phase == "missing" || phase == "error" || phase == "wrong group"
+						require.Equal(t, unavailable, gate.configUnavailable)
+						if !unavailable {
+							require.InDelta(t, 0.4, gate.threshold, 1e-12)
+						}
+					}
+					for _, rate := range []float64{0, 0.5} {
+						account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(968), rate)
+						blocked, reason := OpenAIProfitControlVeto(ctx, account)
+						if phase == "missing" || phase == "error" || phase == "wrong group" {
+							require.True(t, blocked)
+							require.Equal(t, openAIProfitFilterReasonGroupConfigUnavailable, reason)
+						} else {
+							require.Equal(t, phase != "disabled" && rate > 0.4, blocked)
+						}
+					}
+					// In-flight retries retain both enabled and disabled decisions,
+					// even if the source changes or disappears after request admission.
+					fresh.ProfitControlEnabled = !fresh.ProfitControlEnabled
+					reader.err = errors.New("fixture changed after admission")
+					snapshot.groupRepo = profitControlFailingGroupRepo{}
+					retry := reenter(ctx, &billing.ID)
+					require.Same(t, ctx, retry)
+					if gateway {
+						require.Equal(t, at, GatewayTokenRequestPricingAtFromContext(retry))
+					} else {
+						require.Equal(t, at, OpenAIPricingAtFromContext(retry))
+					}
+					require.Same(t, billing, retry.Value(ctxkey.Group))
+					if local {
+						require.Equal(t, 1, reader.reads)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestProfitControlTurnRefreshIgnoresStaleAuthPolicy(t *testing.T) {
 	for _, platform := range []string{PlatformOpenAI, PlatformGrok} {
 		for _, local := range []bool{false, true} {
 			t.Run(platform+map[bool]string{false: "/primary", true: "/regional"}[local], func(t *testing.T) {
 				billing := profitControlTestGroup(963, 0.1, 0)
 				billing.Platform = platform
-				repo := &profitControlGroupRepo{}
-				reader := &profitTurnLocalReader{}
+				repo := &profitControlGroupRepo{group: billing}
+				reader := &profitTurnLocalReader{group: billing}
 				snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, nil)
 				if local {
 					snapshot.localSnapshotReader = reader
@@ -290,7 +385,7 @@ func TestProfitControlTurnRefreshIgnoresStaleAuthPolicy(t *testing.T) {
 				require.InDelta(t, 0.9, initialGate.threshold, 1e-12)
 				require.Equal(t, initialAt, initialGate.pricingAt)
 				if local {
-					require.Equal(t, 4, reader.reads)
+					require.Equal(t, 5, reader.reads)
 				}
 			})
 		}
@@ -346,6 +441,40 @@ func TestProfitControlTurnRefreshFailureAndRecoveryWithAuthGroup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProfitControlDisabledMemberKeepsTurnScope(t *testing.T) {
+	member := profitControlTestGroup(969, 0.1, 0)
+	member.ProfitControlEnabled = false
+	billing := profitControlTestGroup(970, 0.1, 0)
+	billing.Platform = PlatformComposite
+	reader := &profitTurnLocalReader{group: member}
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, nil)
+	snapshot.localSnapshotReader = reader
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(billing), &member.ID)
+	require.Nil(t, ctx.Value(openAIProfitControlGateCtxKey{}))
+	active := *member
+	active.ProfitControlEnabled = true
+	active.ProfitMinMargin = 0.6
+	reader.group = &active
+	retry := svc.withOpenAIProfitControlGate(ctx, &member.ID)
+	require.Same(t, ctx, retry)
+	require.Equal(t, 1, reader.reads)
+	next, _ := svc.WithOpenAITurnPricingContext(ctx, &billing.ID)
+	gate, _ := next.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+	require.NotNil(t, gate)
+	require.False(t, gate.configUnavailable)
+	require.Equal(t, member.ID, gate.groupID)
+	require.InDelta(t, 0.4, gate.threshold, 1e-12)
+	require.Same(t, billing, next.Value(ctxkey.Group))
+	require.Equal(t, 2, reader.reads)
+	// A disabled member must clear an active foreign gate when revisited.
+	foreign := context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: billing.ID})
+	cleared := svc.withOpenAIProfitControlGate(foreign, &member.ID)
+	clearedGate, _ := cleared.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+	require.Nil(t, clearedGate)
+	require.Equal(t, 2, reader.reads)
 }
 
 // WithOpenAITurnPricingContext：长连接 turn 边界重新冻结 pricingAt 并按当前

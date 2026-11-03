@@ -99,6 +99,10 @@ const (
 
 type openAIProfitControlGateCtxKey struct{}
 
+// A confirmed disabled policy is also a request decision. Keep its scheduled
+// group separate from the billing group without installing an active gate.
+type openAIProfitControlDisabledGroupCtxKey struct{}
+
 // openAIProfitControlSuppressCtxKey 标记本请求显式跳过利润门（独立图片/视频
 // 端点、Grok 媒体、count_tokens、live 等利润门范围外流量）。所有装门点看到该
 // 标记后一律不装门，防止 service 层防御性装门把边界外流量重新拉回利润过滤。
@@ -204,8 +208,8 @@ func WithOpenAIProfitControlSuppressed(ctx context.Context) context.Context {
 // WithOpenAITurnPricingContext 在长连接（Responses WS）的每个 turn 开始重新
 // 冻结 pricingAt 并按当前配置重装利润门，使 turn 的准入与计费同源：峰前建连
 // 保活不再让后续 turn 继续按建连时刻的谷价定价。连接可能被调度到与入口分组
-// 不同的分组（composite 成员分组），turn 级重装以连接上已装门的调度分组为准；
-// 连接从未装门时才回退入口分组。抑制标记下只刷新 pricingAt。
+// 不同的分组（composite 成员分组），turn 级重装以连接上已解析的调度分组为准，
+// 包括已确认关闭的成员分组；无既有决定时回退入口分组。抑制标记下只刷新 pricingAt。
 func (s *OpenAIGatewayService) WithOpenAITurnPricingContext(ctx context.Context, groupID *int64) (context.Context, time.Time) {
 	pricingAt := timezone.Now()
 	ctx = context.WithValue(ctx, openAIPricingAtCtxKey{}, pricingAt)
@@ -215,14 +219,12 @@ func (s *OpenAIGatewayService) WithOpenAITurnPricingContext(ctx context.Context,
 	if existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); ok && existing != nil {
 		gid := existing.groupID
 		groupID = &gid
+	} else if gid, ok := ctx.Value(openAIProfitControlDisabledGroupCtxKey{}).(int64); ok {
+		groupID = &gid
 	}
-	gate := s.resolveOpenAIProfitControlGate(ctx, groupID, true)
+	gate := s.resolveOpenAIProfitControlGate(ctx, groupID)
 	if gate == nil {
-		// 分组已确认关闭或不适用：清除旧 turn 的门，与 HTTP 开关语义一致。
-		if existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); ok && existing != nil {
-			return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, (*openAIProfitControlGate)(nil)), pricingAt
-		}
-		return ctx, pricingAt
+		return withProfitControlDisabledGroup(ctx, groupID), pricingAt
 	}
 	openAIProfitControlObserverInstance.recordInstall(gate.groupID, gate.platform, gate.threshold)
 	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate), pricingAt
@@ -245,8 +247,8 @@ func OpenAIPricingAtFromContext(ctx context.Context) time.Time {
 
 // withOpenAIProfitControlGate 解析分组利润控制配置；启用时把预计算好的准入门
 // 装进 ctx。抑制标记、已确认关闭或不适用的分组维持无门行为；配置读取失败
-// 则安装拒绝准入门。ctx 已有同分组门时直接
-// 复用：同一请求的全部 failover 重入共享同一阈值。
+// 则安装拒绝准入门。ctx 已有同分组门或已确认关闭的决定时直接
+// 复用：同一请求的全部 failover 重入共享同一阈值和开关决定。
 func (s *OpenAIGatewayService) withOpenAIProfitControlGate(ctx context.Context, groupID *int64) context.Context {
 	if _, suppressed := ctx.Value(openAIProfitControlSuppressCtxKey{}).(struct{}); suppressed {
 		return ctx
@@ -255,22 +257,32 @@ func (s *OpenAIGatewayService) withOpenAIProfitControlGate(ctx context.Context, 
 		if existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); ok && existing != nil && existing.groupID == *groupID {
 			return ctx
 		}
-	}
-	gate := s.resolveOpenAIProfitControlGate(ctx, groupID, false)
-	if gate == nil {
-		// 被调度分组无门（已确认关闭/不适用）而 ctx 带着其他分组的
-		// 请求门时清除之：门配置取被调度分组，父分组阈值不得泄漏到成员分组
-		//（composite/模型路由等跨分组调度）。typed-nil 覆盖值由否决点按无门放行。
-		if existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); ok && existing != nil && groupID != nil && existing.groupID != *groupID {
-			return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, (*openAIProfitControlGate)(nil))
+		if disabledGroup, ok := ctx.Value(openAIProfitControlDisabledGroupCtxKey{}).(int64); ok && disabledGroup == *groupID {
+			return withProfitControlDisabledGroup(ctx, groupID)
 		}
-		return ctx
+	}
+	gate := s.resolveOpenAIProfitControlGate(ctx, groupID)
+	if gate == nil {
+		return withProfitControlDisabledGroup(ctx, groupID)
 	}
 	openAIProfitControlObserverInstance.recordInstall(gate.groupID, gate.platform, gate.threshold)
 	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate)
 }
 
-func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Context, groupID *int64, refreshGroup bool) *openAIProfitControlGate {
+func withProfitControlDisabledGroup(ctx context.Context, groupID *int64) context.Context {
+	if groupID == nil || *groupID <= 0 {
+		return ctx
+	}
+	if disabledGroup, ok := ctx.Value(openAIProfitControlDisabledGroupCtxKey{}).(int64); !ok || disabledGroup != *groupID {
+		ctx = context.WithValue(ctx, openAIProfitControlDisabledGroupCtxKey{}, *groupID)
+	}
+	if existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); ok && existing != nil {
+		ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, (*openAIProfitControlGate)(nil))
+	}
+	return ctx
+}
+
+func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Context, groupID *int64) *openAIProfitControlGate {
 	if s == nil || groupID == nil || *groupID <= 0 {
 		return nil
 	}
@@ -278,18 +290,15 @@ func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Contex
 	if !ok {
 		pricingAt = timezone.Now()
 	}
-	// HTTP attempts keep their request policy and auth/billing snapshot. A new
-	// WS turn must read policy from the configured primary or regional source;
-	// the connection's auth group can be stale even when its ID still matches.
-	// Direct-call fixtures without a source retain the supplied group boundary.
-	useAuthGroup := !refreshGroup || s.schedulerSnapshot == nil
+	// Read policy at each request/turn boundary, independently of the auth
+	// billing snapshot. Subsequent attempts reuse the request decision above.
 	var group *Group
 	var err error
-	if ctxGroup, ok := ctx.Value(ctxkey.Group).(*Group); useAuthGroup && ok && IsGroupContextValid(ctxGroup) && ctxGroup.ID == *groupID {
-		group = ctxGroup
-	} else if s.schedulerSnapshot != nil {
+	if s.schedulerSnapshot != nil {
 		// Lite 读取：门只用平台/倍率/利润/高峰字段，不需要账号计数聚合。
 		group, err = s.schedulerSnapshot.GetGroupByIDLite(ctx, *groupID)
+	} else if ctxGroup, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(ctxGroup) && ctxGroup.ID == *groupID {
+		group = ctxGroup
 	} else {
 		// 未接入配置源的内部调用保持原行为；这不是一次失败的配置读取。
 		return nil

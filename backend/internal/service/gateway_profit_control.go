@@ -19,6 +19,9 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 	if existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); ok && existing != nil && existing.groupID == *groupID {
 		return ctx
 	}
+	if disabledGroup, ok := ctx.Value(openAIProfitControlDisabledGroupCtxKey{}).(int64); ok && disabledGroup == *groupID {
+		return withProfitControlDisabledGroup(ctx, groupID)
+	}
 
 	group, err := s.resolveProfitControlGroup(ctx, *groupID)
 	if err != nil || group == nil || group.ID != *groupID {
@@ -28,7 +31,7 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 		return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate)
 	}
 	if !group.ProfitControlEnabled || !profitControlPlatformSupported(group.Platform) {
-		return s.clearForeignProfitControlGate(ctx, groupID)
+		return withProfitControlDisabledGroup(ctx, groupID)
 	}
 
 	billingGroup := gatewayTokenRequestBillingGroupFromContext(ctx)
@@ -57,21 +60,13 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate)
 }
 
-func (s *GatewayService) clearForeignProfitControlGate(ctx context.Context, groupID *int64) context.Context {
-	existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
-	if !ok || existing == nil || groupID == nil || existing.groupID == *groupID {
-		return ctx
-	}
-	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, (*openAIProfitControlGate)(nil))
-}
-
 func (s *GatewayService) resolveProfitControlGroup(ctx context.Context, groupID int64) (*Group, error) {
-	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == groupID {
-		return group, nil
-	}
 	if s.schedulerSnapshot != nil {
 		// Lite 读取：门只用平台/倍率/利润/高峰字段，不需要账号计数聚合。
 		return s.schedulerSnapshot.GetGroupByIDLite(ctx, groupID)
+	}
+	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == groupID {
+		return group, nil
 	}
 	if s.groupRepo == nil {
 		return nil, errors.New("profit control group repository unavailable")

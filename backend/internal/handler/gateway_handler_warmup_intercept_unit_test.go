@@ -165,11 +165,12 @@ func newTestGatewayHandler(t *testing.T, group *service.Group, accounts []*servi
 func newTestGatewayHandlerWithSchedulerCache(t *testing.T, group *service.Group, schedulerCache service.SchedulerCache) (*GatewayHandler, func()) {
 	t.Helper()
 
-	schedulerSnapshot := service.NewSchedulerSnapshotService(schedulerCache, nil, nil, nil, nil)
+	groupRepo := &fakeGroupRepo{group: group}
+	schedulerSnapshot := service.NewSchedulerSnapshotService(schedulerCache, nil, nil, groupRepo, nil)
 
 	gwSvc := service.NewGatewayService(
 		nil, // accountRepo (not used: scheduler snapshot hit)
-		&fakeGroupRepo{group: group},
+		groupRepo,
 		nil, // usageLogRepo
 		nil, // usageBillingRepo
 		nil, // userRepo
