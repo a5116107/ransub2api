@@ -57,7 +57,11 @@ func TestScopedAdminCredentialWritesInvalidateAfterCommit(t *testing.T) {
 			t.Run(endpoint+"/"+mode, func(t *testing.T) {
 				db, mock, err := sqlmock.New()
 				require.NoError(t, err)
-				defer db.Close()
+				t.Cleanup(func() {
+					mock.ExpectClose()
+					require.NoError(t, db.Close())
+					require.NoError(t, mock.ExpectationsWereMet())
+				})
 				client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 				mock.ExpectBegin()
 				tx, err := client.Tx(context.Background())
@@ -89,13 +93,14 @@ func TestScopedAdminCredentialWritesInvalidateAfterCommit(t *testing.T) {
 				}
 				require.Equal(t, want, w.Code, w.Body.String())
 				require.Empty(t, cache.ids, "事务提交前不得使令牌缓存失效")
-				if mode == "rollback" || mode == "write_failure" {
+				switch mode {
+				case "rollback", "write_failure":
 					mock.ExpectRollback()
 					require.NoError(t, tx.Rollback())
-				} else if mode == "commit_failure" {
+				case "commit_failure":
 					mock.ExpectCommit().WillReturnError(errors.New("提交失败"))
 					require.Error(t, tx.Commit())
-				} else {
+				default:
 					mock.ExpectCommit()
 					require.NoError(t, tx.Commit())
 				}
@@ -105,7 +110,6 @@ func TestScopedAdminCredentialWritesInvalidateAfterCommit(t *testing.T) {
 					require.Empty(t, cache.ids)
 				}
 				require.Zero(t, cache.transactionContexts, "提交后的缓存清理不能携带已关闭事务")
-				require.NoError(t, mock.ExpectationsWereMet())
 			})
 		}
 	}
@@ -127,7 +131,11 @@ func (s *scopedRefreshPrivacyService) EnsureAntigravityPrivacy(context.Context, 
 func TestScopedAdminRefreshFailureDoesNotTriggerPrivacyBeforeRollback(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	t.Cleanup(func() {
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 	mock.ExpectBegin()
 	tx, err := client.Tx(context.Background())
@@ -140,7 +148,6 @@ func TestScopedAdminRefreshFailureDoesNotTriggerPrivacyBeforeRollback(t *testing
 	mock.ExpectRollback()
 	require.NoError(t, tx.Rollback())
 	require.Zero(t, svc.privacy)
-	require.NoError(t, mock.ExpectationsWereMet())
 	// 完整管理员没有外层事务，沿用原刷新失败后的隐私检查行为。
 	_, _, err = h.refreshSingleAccount(context.Background(), &service.Account{ID: 7, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth})
 	require.Error(t, err)
@@ -152,7 +159,11 @@ func TestScopedAdminCodexUpdatesInvalidateOnlyAfterCommit(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			t.Cleanup(func() {
+				mock.ExpectClose()
+				require.NoError(t, db.Close())
+				require.NoError(t, mock.ExpectationsWereMet())
+			})
 			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 			mock.ExpectBegin()
 			tx, err := client.Tx(context.Background())
@@ -171,13 +182,14 @@ func TestScopedAdminCodexUpdatesInvalidateOnlyAfterCommit(t *testing.T) {
 			result, err := h.importScopedCodexSessions(dbent.NewTxContext(context.Background(), tx), memory, req, entries)
 			require.NoError(t, err)
 			require.Empty(t, cache.ids)
-			if mode == "rollback" || mode == "identity_changed" {
+			switch mode {
+			case "rollback", "identity_changed":
 				mock.ExpectRollback()
 				require.NoError(t, tx.Rollback())
-			} else if mode == "commit_failure" {
+			case "commit_failure":
 				mock.ExpectCommit().WillReturnError(errors.New("提交失败"))
 				require.Error(t, tx.Commit())
-			} else {
+			default:
 				mock.ExpectCommit()
 				require.NoError(t, tx.Commit())
 			}
@@ -193,7 +205,6 @@ func TestScopedAdminCodexUpdatesInvalidateOnlyAfterCommit(t *testing.T) {
 				require.Equal(t, service.OpenAIAuthModePersonalAccessToken, memory.updatedAccounts[0].input.Credentials["auth_mode"])
 			}
 			require.Zero(t, cache.transactionContexts)
-			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
 }

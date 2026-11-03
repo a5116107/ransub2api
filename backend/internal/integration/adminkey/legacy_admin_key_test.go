@@ -1,6 +1,6 @@
-//go:build unit
+//go:build integration
 
-package admin
+package adminkey_test
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -26,9 +27,10 @@ import (
 // 在轮换读取旧值后暂停，让删除在恢复轮换之前完整提交。
 type legacyKeyReadBarrier struct {
 	service.SettingRepository
-	read   chan struct{}
-	resume chan struct{}
-	once   sync.Once
+	replace func(context.Context, string) (bool, error)
+	read    chan struct{}
+	resume  chan struct{}
+	once    sync.Once
 }
 
 func (r *legacyKeyReadBarrier) GetValue(ctx context.Context, key string) (string, error) {
@@ -40,9 +42,7 @@ func (r *legacyKeyReadBarrier) GetValue(ctx context.Context, key string) (string
 }
 
 func (r *legacyKeyReadBarrier) ReplaceExistingAdminAPIKey(ctx context.Context, value string) (bool, error) {
-	return r.SettingRepository.(interface {
-		ReplaceExistingAdminAPIKey(context.Context, string) (bool, error)
-	}).ReplaceExistingAdminAPIKey(ctx, value)
+	return r.replace(ctx, value)
 }
 
 func legacyKeyRequest(handler gin.HandlerFunc) *httptest.ResponseRecorder {
@@ -60,29 +60,39 @@ func TestLegacyAdminKeyRotationPostgres(t *testing.T) {
 	if dsn == "" {
 		t.Skip("需要独立 SCOPED_ADMIN_TEST_DSN")
 	}
+	gin.SetMode(gin.TestMode)
 	base, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
 	schema := fmt.Sprintf("legacy_key_test_%d", time.Now().UnixNano())
 	_, err = base.Exec(`CREATE SCHEMA ` + schema)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := base.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+		require.NoError(t, err)
+	})
 	db, err := sql.Open("postgres", dsn+" search_path="+schema)
 	require.NoError(t, err)
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
-	t.Cleanup(func() { _ = client.Close(); _, _ = base.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); _ = base.Close() })
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	_, err = db.Exec(`CREATE TABLE settings(id BIGSERIAL PRIMARY KEY, key VARCHAR(100) UNIQUE NOT NULL, value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
 	require.NoError(t, err)
 	repo := repository.NewSettingRepository(client)
 	settings := service.NewSettingService(repo, nil)
-	h := &SettingHandler{settingService: settings}
+	h := admin.NewSettingHandler(settings, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	t.Run("删除先完成不得被轮换重建", func(t *testing.T) {
 		require.NoError(t, repo.Set(ctx, service.SettingKeyAdminAPIKey, "admin-test-old-key"))
-		barrier := &legacyKeyReadBarrier{SettingRepository: repo, read: make(chan struct{}), resume: make(chan struct{})}
+		replacer, ok := repo.(interface {
+			ReplaceExistingAdminAPIKey(context.Context, string) (bool, error)
+		})
+		require.True(t, ok, "repository must support atomic legacy key replacement")
+		barrier := &legacyKeyReadBarrier{SettingRepository: repo, replace: replacer.ReplaceExistingAdminAPIKey, read: make(chan struct{}), resume: make(chan struct{})}
 		var release sync.Once
 		unblock := func() { release.Do(func() { close(barrier.resume) }) }
 		defer unblock()
-		rotating := &SettingHandler{settingService: service.NewSettingService(barrier, nil)}
+		rotating := admin.NewSettingHandler(service.NewSettingService(barrier, nil), nil, nil, nil, nil, nil, nil)
 		done := make(chan *httptest.ResponseRecorder, 1)
 		go func() { done <- legacyKeyRequest(rotating.RegenerateAdminAPIKey) }()
 		select {

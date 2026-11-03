@@ -33,7 +33,7 @@
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
 | D4 | in_progress | 固定售价准入、OpenAI 每轮及最终 HTTP 发送前线路/倍率复核、严格请求绕过进程旧缓存已验证；仍待 D2、Grok 等剩余路径、分组配置新鲜度与模型/fast 来源 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
-| D8 | pending | admin 扩大 lint 有 8 项既有诊断待修；双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
+| D8 | pending | admin 原8项 lint 阻塞已修复，跨层用例移至 integration/adminkey 并经真实 PostgreSQL 三轮通过；双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
 
 ## 环境与工作区
@@ -65,7 +65,9 @@
 - 本轮移除直接 Responses WS 的共享限额整体拒绝，原位接入既有 HTTP bridge；两轮响应结束归零、跨账号同 Key 满额不发请求、第三轮取消真实上游和精确释放均通过。第二轮本地限额错误曾复现为普通 502，已修复为 503 准入类型；相关扩大回归三轮 service/repository 105.830s/18.402s，最终新增回归三轮 1.883s，vet 通过；完整包 lint 状态见本轮 DECISIONS 记录。无新增持久产物。
 - 本轮静态 Key 指纹、每轮及最终 HTTP 入口复核补齐；旧实现六个准入边界与四个最终发送边界实际失败，新专项三轮 15.442s，最终完整 service 376.385s、退出 0，service/handler vet 通过。此前两次全量失败输出截断、具体原因未确认，不以最终通过伪造其根因；完整 service lint 及交付证据见 DECISIONS。无新增测试产物，父任务 done 增量 0。
 
-- 本轮 New API 完整 Key 归属与预览/快照固定分组同源已验证；归属/请求失败清除倍率和有效期。修复既有配额测试墙上时钟排序前提，New API/Issue578 十轮通过（12.199s），最终完整 service 319.099s/退出0，完整 service lint 0、三包 vet 通过；admin 扩大 lint 的8项既有诊断仍开放。原20项完成数不变，无新增持久产物，本地提交。
+- 本轮 New API 完整 Key 归属与预览/快照固定分组同源已验证；归属/请求失败清除倍率和有效期。修复既有配额测试墙上时钟排序前提，New API/Issue578 十轮通过（12.199s），最终完整 service 319.099s/退出0，完整 service lint 0、三包 vet 通过；admin 扩大 lint 的8项既有诊断在后续本轮清理中已解除。原20项完成数不变，无新增持久产物，本地提交。
+
+- 本轮 D8 admin 检查阻塞：跨层 PostgreSQL/HTTP 测试移入 integration/adminkey，旧 handler 测试文件删除；受检类型断言、事务资源关闭和模式分支原位修复，无 lint 规则例外。原8项诊断归零，完整 admin 单元回归及真实数据库三轮通过；最终完整admin回归5.365s、unit/integration vet均退出0、两个包按各自标签完整lint均0；证据见 DECISIONS。父任务完成数不变。
 
 ## 可复现的 D4.1 专项验证
 
@@ -89,3 +91,5 @@ Windows 当前令牌没有 SeCreateSymbolicLinkPrivilege；系统在 os.Symlink 
 
 自动审批审核以 blocked by policy 拒绝删除本轮 3 个已验证普通文件，明确路径删除也被拒绝，未改用其他工具规避。
 保留在 backend/bin：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共 132004965 bytes（125.890 MiB）；均为已忽略的本轮产物，可由相同验证命令重新生成。现有 12 个受保护图片夹具保持原样。
+
+本轮新增清理等待：backend/tmp/admin-key-pg-d8，41445106 bytes；自动审批拒绝删除（blocked by policy），未重试或换工具。测试 schema 余数0、实例已关闭；解除条件为手动删除该准确目录，不影响代码验收。

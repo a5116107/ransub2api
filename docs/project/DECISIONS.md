@@ -235,3 +235,14 @@
 - 扩大 service/admin 的完整未限量 lint 退出1：8项均位于本轮未修改的 admin 测试（depguard 1、errcheck 5、staticcheck 2）；git diff --exit-code -- backend/internal/handler/admin 退出0，未隐藏这些诊断。实际修改的完整 service lint 随后输出0 issues、退出0；admin 扩大检查仍待处理，不扩大 M5 原六包验收范围。最终源码检查与完整回归结果另列。
 - 配额测试时序修复后的最终完整 service 未限量 lint 实际输出 0 issues.；service/repository/admin 三包 vet 实际输出 Final service lint and three-package vet: PASS，同一命令退出0。未修改 lint 规则或 admin 的8项既有诊断。
 - 最终完整 service 本地回归实际输出 ok 319.099s、Full service exit: 0。此前316.041s失败及独立十轮失败保留，不以最终通过抹去；时序前提修复已随完整回归验证。本轮只提交8个文件，git diff --check通过，无新增TODO/FIXME/XXX或持久测试产物，STATE保持100行以内；单一工作树、不CI/推送/部署，历史受保护产物保持。原20项仍为12 done、2 in_progress、6 pending，本轮父任务done增量0，D2.2核验缺口修复已闭环。
+
+## 2026-11-03：D8 admin 静态检查阻塞与跨层测试整理
+
+- 接续86d2685，在同一work/monitor-driven-scheduling工作树处理前轮实际报告的8项诊断；不新建任务ID或工作树，不CI/推送/部署，不改变生产代码和lint规则。原depguard 1、errcheck 5、staticcheck 2对应的检查范围全部保留。
+- 将整个 custom_legacy_admin_key_test.go 从handler单元目录迁入 internal/integration/adminkey/legacy_admin_key_test.go，标签由unit改为integration，改经公开NewSettingHandler构造器调用；旧文件删除，真实repository/HTTP/数据库断言保持。完整Key原子轮换能力在夹具初始化处受检断言后注入屏障，不再运行未检查的类型转换。
+- batch响应数据类型断言增加失败检查；三处sqlmock资源在Cleanup中期待Close、检查关闭错误并统一核验剩余SQL期待，删除原尾部重复期待检查；两个事务结果分支改为switch，保留提交失败、回滚、身份变化与缓存失效时机断言。
+- 真实PostgreSQL测试的数据库连接、schema删除和client关闭均检查错误，并按注册逆序清理。未取得现有55433实例凭据，不修改它；复用本地pgsql17工具在本项目backend/tmp/admin-key-pg-d8建立独立127.0.0.1:55439临时实例，仅该命令进程注入无密钥测试DSN。
+- 首轮相关handler测试连续3轮通过（1.461s），完整admin单元包通过（2.596s）。真实数据库迁移测试首轮三轮通过（1.997s），补齐清理返回值后的最终三轮逐项PASS（2.078s），没有skip；覆盖删除先提交不重建、可轮换并删除、缺失/空值不新建。
+- 完整admin unit lint实际输出0 issues、退出0；新integration包以integration标签完整未限量lint同样0 issues，admin unit vet实际输出Admin unit vet and integration lint: PASS、退出0。最终源码在删去重复SQL期待后再次运行完整单元测试及vet，结果另列。
+- schema清理后SELECT count(*)返回0；pg_ctl fast stop实际输出server stopped、Task PostgreSQL stop exit: 0。包含删除的新目录清理命令被自动审批blocked by policy拒绝，整条未执行；随后仅单独核对schema并关闭进程，不重试文件删除或换工具绕过。保留新目录973文件、41445106 bytes（约39.525 MiB），供手动删除；此前历史受保护文件保持。
+- 删除重复断言后的最终完整admin单元包实际输出ok 5.365s、Final admin unit tests and vet: PASS、退出0；integration三轮后的独立vet退出0。最终admin完整未限量lint再次输出0 issues、退出0，integration完整lint亦0。git识别跨层测试为81%相似度重命名，旧路径不存在，新增TODO/FIXME/XXX为0，diff检查通过；原20项保持12 done、2 in_progress、6 pending，本轮完成admin检查阻塞闭环，未将D8整体提前标done。仅本地提交任务文件；临时数据库目录因审批拒绝保留为明确外部清理等待。
