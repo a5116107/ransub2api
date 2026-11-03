@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,10 @@ func TestPriorityErrorRateScopeRetryDisconnectAndTransportClassification(t *test
 		{"network timeout", &net.DNSError{IsTimeout: true}, false, false, 1},
 		{"upstream watchdog", context.Canceled, false, true, 1},
 		{"local storage", errors.New("storage write failed"), false, false, 0},
+		{"local key capacity", ErrUpstreamKeyCapacity, false, false, 0},
+		{"local key policy", ErrUpstreamKeyPolicy, false, false, 0},
+		{"wrapped local key capacity", &url.Error{Op: "Post", URL: "https://fixture.example", Err: ErrUpstreamKeyCapacity}, false, false, 0},
+		{"classified local key policy", &url.Error{Op: "Post", URL: "https://fixture.example", Err: upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)}, false, false, 0},
 		{"client cancel", context.Canceled, false, false, 0},
 		{"downstream disconnected", &net.DNSError{IsTimeout: true}, true, false, 0},
 	} {

@@ -18,7 +18,7 @@
 | 任务 | 状态 | 证据/剩余范围 |
 | --- | --- | --- |
 | D1 | done | 主设计第 3.1 节已记录原配置覆盖、倍率口径、共享 Key 缺口及最小补丁边界 |
-| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS 桥接共享额度及静态 Key 请求绑定已验证；固定线路、直接 WS 原生接入/Live/区域及缓存域仍待验收 |
+| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS 桥接共享额度、静态 Key 请求绑定及本地拒绝归因/搜索503已验证；固定线路、直接 WS 原生接入/Live/区域及缓存域仍待验收 |
 | D2.1 | done | 自动同步快照有效性、尝试时刻高峰、原同步值域与在线/预演同源已落地；30 类边界及槽位释放覆盖，三轮专项、完整本地回归、vet 与真实 CLI 演练通过 |
 | D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
 | D2.3 | done | 协议地址/协议/接入模式统一进入身份边界，编辑/CRS/绑定旧证据失效；12 类四路径与 3 项绑定回归，四包三轮回归、vet 和 service 未限量 lint 0 通过 |
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮 HTTP→原生 WS 共享 Key 额度闭环：专项三轮 config 3.202s、repository 42.956s、service 9.665s；repository 扩大三轮 34.175s；完整 config 2.598s、service 318.580s、handler 146.025s，均退出 0。四包 vet 退出 0，config/repository/service 完整未限量 lint 为 0 issues；原 20 项仍 12 done、2 in_progress、6 pending，父任务 done 增量 0，完整证据见 DECISIONS。
+- 本轮共享 Key 本地拒绝归因：专项三轮通过（service 2.276s、handler 0.938s）；最终完整service 345.703s、handler 149.916s，repository共享额度回归12.315s，均退出0；两包vet通过，完整未限量lint为0 issues。原20项仍12 done、2 in_progress、6 pending，父任务done增量0；前轮WS额度和本轮失败/修复证据见DECISIONS。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -52,8 +52,8 @@
 
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
-go test -tags=unit -p 2 ./internal/config ./internal/repository ./internal/service -run 'Test.*(UpstreamKey|SharedUpstreamKey|OpenAIWSConnPoolKeepsFinalHandshake)' -count=3 -timeout=6m
-go vet -tags=unit -p 2 ./internal/config ./internal/repository ./internal/service ./internal/handler
+go test -tags=unit -p 2 ./internal/service ./internal/handler -run 'Test.*(UpstreamKey|GrokSearchSharedKey|OpenAIAPIKeyHealth|ClassifyOpenAIAPIKeyHealth|PriorityErrorRateScopeRetryDisconnect)' -count=3 -timeout=6m
+go vet -tags=unit -p 2 ./internal/service ./internal/handler
 ```
 
 ## 下一项工作

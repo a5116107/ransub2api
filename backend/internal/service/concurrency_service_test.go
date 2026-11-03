@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -407,6 +408,8 @@ func TestUpstreamKeyAdmissionPreservesAccountHealth(t *testing.T) {
 				require.ErrorAs(t, err, &failover)
 				require.Equal(t, 503, failover.StatusCode)
 				require.Contains(t, string(failover.ResponseBody), "upstream_key_admission_unavailable")
+				require.False(t, failover.ShouldReportAccountScheduleFailure(), "local shared capacity is not an account failure")
+				require.True(t, failover.ShouldRetryNextAccount(), "keep bounded candidate failover")
 			}
 			require.True(t, account.Schedulable)
 			require.Nil(t, account.TempUnschedulableUntil)
@@ -415,6 +418,41 @@ func TestUpstreamKeyAdmissionPreservesAccountHealth(t *testing.T) {
 	}
 	require.Nil(t, upstreamKeyAdmissionFailover(context.Canceled))
 	require.Nil(t, upstreamKeyAdmissionFailover(ErrUpstreamKeyLease), "lost lease after sending is not a fresh local refusal")
+	require.True(t, (&UpstreamFailoverError{StatusCode: 503}).ShouldReportAccountScheduleFailure(), "a supplier 503 is still a health failure")
+	require.True(t, (&UpstreamFailoverError{StatusCode: 502}).ShouldReportAccountScheduleFailure(), "transport failures keep their existing attribution")
+}
+
+func TestSharedUpstreamKeySchedulerFeedbackPreservesSamples(t *testing.T) {
+	for _, existingFailure := range []bool{false, true} {
+		t.Run(strconv.FormatBool(existingFailure), func(t *testing.T) {
+			cfg := DefaultPrioritySchedulingConfig()
+			cfg.Enabled = true
+			svc := priorityGateway(cfg, &priorityReaderStub{})
+			now := time.Now()
+			svc.openaiAccountStats = newOpenAIAccountRuntimeStats()
+			svc.openaiAccountStats.now = func() time.Time { return now }
+			account := &Account{ID: 71, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			ttft := 450
+			svc.ReportOpenAIAccountScheduleResult(account, "fixture-model", true, &ttft)
+			if existingFailure {
+				svc.ReportOpenAIAccountScheduleResult(account, "fixture-model", false, nil, errors.New("fixture upstream failure"))
+			}
+			beforeRate, beforeTTFT, beforeKnown := svc.openaiAccountStats.snapshot(account.ID)
+			for _, local := range []error{ErrUpstreamKeyCapacity, ErrUpstreamKeyPolicy} {
+				for _, err := range []error{local, fmt.Errorf("wrapped: %w", upstreamKeyAdmissionFailover(local))} {
+					localTTFT := 1
+					require.False(t, svc.ReportOpenAIAccountScheduleResult(account, "fixture-model", false, &localTTFT, err))
+				}
+			}
+			rate, latency, known := svc.openaiAccountStats.snapshot(account.ID)
+			require.Equal(t, beforeRate, rate, "local refusal must neither penalize nor heal an account")
+			require.Equal(t, beforeTTFT, latency)
+			require.Equal(t, beforeKnown, known)
+			svc.ReportOpenAIAccountScheduleResult(account, "fixture-model", false, nil, &UpstreamFailoverError{StatusCode: 503})
+			rate, _, _ = svc.openaiAccountStats.snapshot(account.ID)
+			require.InDelta(t, 0.2+0.8*beforeRate, rate, 1e-12, "real supplier failures still affect scoring")
+		})
+	}
 }
 
 func TestTrackAPIKeySlot_ReleaseDecrements(t *testing.T) {

@@ -197,9 +197,10 @@ func markPriorityDownstreamDisconnect(ctx context.Context) {
 	}
 }
 
-// Observation begins only after local admission, RPM acquisition and storage
+// Observation begins after service admission, RPM acquisition and storage
 // work, immediately before the transport/plugin send. Handler health reports
 // never write these counters; retry/fallback sends have distinct body owners.
+// Final transport-level shared Key refusals are excluded from physical samples.
 func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account *Account) func(*http.Response, error) {
 	scope, _ := req.Context().Value(priorityAttemptScopeContextKey{}).(*priorityAttemptScope)
 	if scope == nil || account == nil || account.Platform != PlatformOpenAI {
@@ -216,7 +217,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 			var phaseErr *openAIHTTPPhaseTimeout
 			include := errors.As(context.Cause(req.Context()), &phaseErr) || !errors.Is(err, context.Canceled) && errors.As(err, &netErr)
 			scope.complete(observation, func(disconnected, forced bool) {
-				if !disconnected && scope.ctx.Err() == nil && (include || forced) {
+				if !disconnected && scope.ctx.Err() == nil && !isUpstreamKeyAdmissionFailure(err) && (include || forced) {
 					stats.attempts.report(key, false, stats.currentTime())
 				}
 			})

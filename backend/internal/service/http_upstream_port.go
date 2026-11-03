@@ -12,6 +12,20 @@ var ErrUpstreamKeyCapacity = errors.New("upstream key concurrency capacity unava
 var ErrUpstreamKeyPolicy = errors.New("upstream key concurrency policy unavailable or revision conflict")
 var ErrUpstreamKeyLease = errors.New("upstream key concurrency lease lost")
 
+// UpstreamKeyAdmissionReason identifies a local refusal before network send.
+const UpstreamKeyAdmissionReason GatewayFailureReason = "upstream_key_admission_unavailable"
+
+// Keep pre-send local capacity refusals out of account-health observations,
+// including when transport adapters wrap the original or classified error.
+// Lease loss after a send deliberately does not match this predicate.
+func isUpstreamKeyAdmissionFailure(err error) bool {
+	if errors.Is(err, ErrUpstreamKeyCapacity) || errors.Is(err, ErrUpstreamKeyPolicy) {
+		return true
+	}
+	var failover *UpstreamFailoverError
+	return errors.As(err, &failover) && failover.Reason == UpstreamKeyAdmissionReason
+}
+
 // UpstreamKeyConcurrency is the optional shared authority used by native WS
 // turns. Fingerprints come from the final handshake, including pooled reuse.
 // A nil release means no configured credential consumed capacity.
@@ -25,7 +39,7 @@ func upstreamKeyAdmissionFailover(err error) *UpstreamFailoverError {
 	if !errors.Is(err, ErrUpstreamKeyCapacity) && !errors.Is(err, ErrUpstreamKeyPolicy) {
 		return nil
 	}
-	return &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, ResponseBody: []byte(`{"error":{"type":"upstream_key_admission_unavailable","message":"No shared upstream Key capacity is available"}}`)}
+	return &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, Reason: UpstreamKeyAdmissionReason, ResponseBody: []byte(`{"error":{"type":"upstream_key_admission_unavailable","message":"No shared upstream Key capacity is available"}}`)}
 }
 
 // HTTPUpstream 上游 HTTP 请求接口

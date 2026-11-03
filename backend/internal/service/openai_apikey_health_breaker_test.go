@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -76,6 +77,9 @@ func TestClassifyOpenAIAPIKeyHealthFailureExclusions(t *testing.T) {
 		eligible bool
 	}{
 		{name: "account attributed 502", err: &UpstreamFailoverError{StatusCode: http.StatusBadGateway}, eligible: true},
+		{name: "account attributed 503", err: &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable}, eligible: true},
+		{name: "local shared key capacity", err: upstreamKeyAdmissionFailover(ErrUpstreamKeyCapacity)},
+		{name: "wrapped local shared key policy", err: fmt.Errorf("wrapped: %w", upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy))},
 		{name: "request scoped capacity", err: &UpstreamFailoverError{StatusCode: 529, RequestScopedTransient: true}},
 		{name: "provider scoped overload", err: &UpstreamFailoverError{StatusCode: 529, Scope: GatewayFailureScopeProvider}},
 		{name: "dedicated same account retry", err: &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests, RetryableOnSameAccount: true}},
@@ -113,6 +117,14 @@ func TestOpenAIAPIKeyHealthBreakerTripsPersistedAndRuntimeState(t *testing.T) {
 	svc.SetOpenAIAPIKeyHealthCache(cache)
 	svc.SetAccountRuntimeBlocker(blocker)
 	account := openAIHealthPoolAccount()
+	for _, local := range []error{ErrUpstreamKeyCapacity, ErrUpstreamKeyPolicy} {
+		require.False(t, svc.ObserveOpenAIAPIKeyHealthFailure(context.Background(), account, fmt.Errorf("wrapped: %w", upstreamKeyAdmissionFailover(local))))
+	}
+	require.Zero(t, cache.recordCalls)
+	require.Zero(t, cache.setCalls)
+	require.Zero(t, repo.setCalls)
+	require.Zero(t, blocker.calls)
+	require.Nil(t, account.TempUnschedulableUntil)
 
 	require.True(t, svc.ObserveOpenAIAPIKeyHealthFailure(context.Background(), account, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":"upstream"}`)}))
 	require.Equal(t, 1, cache.recordCalls)

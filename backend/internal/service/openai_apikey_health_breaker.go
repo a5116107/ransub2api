@@ -20,7 +20,7 @@ func isOpenAIAPIKeyHealthBreakerAccount(account *Account) bool {
 }
 
 func classifyOpenAIAPIKeyHealthFailure(err error) (int, []byte, bool) {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || isUpstreamKeyAdmissionFailure(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return 0, nil, false
 	}
 

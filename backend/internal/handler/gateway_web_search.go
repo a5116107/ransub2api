@@ -214,6 +214,11 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		account = nil
 	}
 	if err != nil || nativeResp == nil {
+		var failover *service.UpstreamFailoverError
+		if errors.As(err, &failover) && failover.Reason == service.UpstreamKeyAdmissionReason {
+			c.Data(http.StatusServiceUnavailable, "application/json; charset=utf-8", failover.ResponseBody)
+			return
+		}
 		msg := "web search failed"
 		if err != nil {
 			msg = err.Error()

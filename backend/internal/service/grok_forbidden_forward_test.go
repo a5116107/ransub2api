@@ -41,6 +41,26 @@ func TestGrokForbiddenForwardingCarriesPolicy(t *testing.T) {
 	}
 }
 
+func TestGrokSearchSharedKeyAdmission(t *testing.T) {
+	for _, admissionErr := range []error{ErrUpstreamKeyCapacity, ErrUpstreamKeyPolicy} {
+		t.Run(admissionErr.Error(), func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{err: fmt.Errorf("wrapped admission: %w", admissionErr)}
+			svc := &GatewayService{httpUpstream: upstream}
+			account := &Account{ID: 991127, Platform: PlatformGrok, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "fixture-key", "base_url": "https://fixture.example/v1"}}
+			body, err := svc.DoGrokNativeResponsesJSON(t.Context(), account, []byte(`{"input":"fixture"}`))
+			require.Nil(t, body)
+			var failover *UpstreamFailoverError
+			require.ErrorAs(t, err, &failover)
+			require.Equal(t, http.StatusServiceUnavailable, failover.StatusCode)
+			require.Contains(t, string(failover.ResponseBody), "upstream_key_admission_unavailable")
+			require.False(t, failover.ShouldReportAccountScheduleFailure())
+			require.True(t, failover.ShouldRetryNextAccount())
+			require.Len(t, upstream.requests, 1)
+		})
+	}
+}
+
 func TestGrokContentErrorsKeepScopeAcrossProtocols(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, code := range []string{"content_policy", "cyber_policy"} {

@@ -289,3 +289,14 @@
 - 四包 go vet -tags=unit -p 2（config/repository/service/handler）实际退出0；config/repository/service 完整未限量 golangci-lint 输出 0 issues.、退出0，未降低规则。Redis5 仅加到测试命令 PATH，未改系统配置；未重复触发已知 Windows 符号链接权限失败的 repository 全包，原外部验收等待保持。
 - 直接下游 WS ingress 继续 HTTP/SSE bridge，原生直接接入、Live SDP 交接、区域权威及固定线路/缓存域仍待原 D2 验收；不声称跨协议同价或缓存共享。原20项保持12 done、2 in_progress、6 pending，本轮完成一项共享额度路径闭环，父任务done增量0。
 - 设计4.4和STATE原位更新，过时整体回落描述删除；Go格式、diff空白检查通过，旧提取器/拒绝原因及新增TODO/FIXME/XXX均0命中。源码图片保持历史12个、1164bytes，本轮新增持久测试产物0；历史自动审批拒绝的清理项保留，不绕过。只本地提交任务源码、测试和原三份文档，单一工作树，无CI、推送、部署或生产迁移。
+
+## 2026-11-04：D2 本地共享 Key 拒绝的跨层错误归因与搜索响应
+
+- 接续0ba20b5，在原单一工作树继续D2共享额度验收。固定线路核对仍发现自适应账号的Chat Completions探测证据不能证明其他协议的倍率；本轮未据此放宽准入或宣称跨协议来源已完成，原D2验收继续保留。
+- 旧实现实际复现四类缺口：共享额度容量/策略拒绝的ShouldReportAccountScheduleFailure返回true，Grok搜索服务将其改成502（初始service回归2.562s、退出1）；服务层修复后HTTP handler的web_search/x_search四个子例仍返回502（handler2.048s、退出1）。公共ReportOpenAIAccountScheduleResult也会绕过handler条件，四次本地拒绝将错误率从0升到0.5904、从已有0.2升到0.67232（service1.887s、退出1）。
+- API Key健康分类器把本地503当作供应商故障，开启的真实健康服务夹具会触发持久和运行时封禁（service7.410s、退出1）。物理请求观察器把url.Error包装的本地拒绝视为网络失败，两个新增子例均产生1个失败样本而非0（service1.955s、退出1）。这些是实际回归证据，不以源码推断替代。
+- 复用既有UpstreamFailoverError及reason字段，增加唯一UpstreamKeyAdmissionReason；共用一个isUpstreamKeyAdmissionFailure判定供调度反馈、健康分类与物理请求观察使用，识别原错误及包装后的已分类错误。原有界候选重选保持，不增加冷却、成功/恢复样本或TTFT样本；保留已有错误率。真正供应商503、传输502及发送后租约失效不冒充发送前本地拒绝。
+- Grok独立搜索原服务入口调用共用准入错误转换，handler候选耗尽后按明确reason返回本地503和原错误体；真正供应商503/传输失败保持原web_search_error映射。HTTP handler八种web_search/x_search组合验证分类、耗尽后不重复调用同账号、账号槽位精确释放；复用原账号、组仓库和并发夹具，没有第二套调度器。
+- 首轮服务/handler专项三轮通过（3.980s/2.884s），补齐公共反馈、健康与物理请求边界后的最终专项连续三轮通过（service2.276s、handler0.938s）。完整service/handler回归、vet及未限量lint结果在实际返回后追加；不运行CI、推送、部署或生产迁移。
+- 最终完整service/handler本地回归实际输出ok345.703s/149.916s，Shared key feedback full regression exit: 0；repository共享额度真实路径回归实际输出ok12.315s、退出0。两包最终vet输出Shared key feedback vet: PASS；两包完整未限量lint实际输出0 issues.、退出0。未以专项代替完整包结果，未跳过或放宽断言。
+- 交付复核：14个任务文件纳入本地提交；原错误转换和搜索映射原位更新，唯一判定供3个入口复用，无新增TODO/FIXME/XXX，Go格式与git diff --check通过，STATE保持74行。源码图片仍为历史12个共1164bytes，本轮新增持久测试产物0。origin身份为github.com/ranxi2001/sub2api.git，当前分支无跟踪ref，只本地提交，不推送；单一工作树保持。历史审批拒绝清理及Windows符号链接权限等待不变，全局原20项保持12 done、2 in_progress、6 pending，D2父验收未提前关闭。
