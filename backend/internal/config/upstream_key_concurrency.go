@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -42,4 +43,43 @@ func (c UpstreamKeyConcurrencyConfig) Validate() error {
 func UpstreamKeyFingerprint(key string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
 	return hex.EncodeToString(sum[:])
+}
+
+// UpstreamCredentialFingerprints identifies final wire credentials without
+// retaining plaintext. HTTP and pooled WS use the same extraction rules.
+func UpstreamCredentialFingerprints(req *http.Request) []string {
+	if req == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var result []string
+	add := func(key string) {
+		if strings.TrimSpace(key) == "" {
+			return
+		}
+		fingerprint := UpstreamKeyFingerprint(key)
+		if !seen[fingerprint] {
+			seen[fingerprint] = true
+			result = append(result, fingerprint)
+		}
+	}
+	for _, value := range req.Header.Values("Authorization") {
+		scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
+		if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
+			add(token)
+		}
+	}
+	for _, name := range []string{"X-Api-Key", "Api-Key", "X-Goog-Api-Key"} {
+		for _, value := range req.Header.Values(name) {
+			add(value)
+		}
+	}
+	if req.URL != nil {
+		for _, name := range []string{"key", "api_key"} {
+			for _, value := range req.URL.Query()[name] {
+				add(value)
+			}
+		}
+	}
+	return result
 }

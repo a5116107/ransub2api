@@ -278,3 +278,14 @@
 - 最终生产源码的完整 service 回归实际通过（314.062s）；同次完整 handler 失败，日志含 profit_group_config_unavailable，流式计费和平台隔离等夹具未提供分组源而未到达上游。6 个 handler 构造点改为给快照和网关注入同一份既有分组仓库，主/备用映射保持；未弱化响应、用量、取消或平台断言。更改夹具后的完整 handler 与最终 lint 结果待实际返回后追加；两包最终 vet 已实际退出 0。
 - 夹具补齐后的完整 handler 实际输出 ok 142.754s、Complete handler fixtures verification exit: 0；最终 service/handler 完整未限量 lint 实际输出 0 issues.、退出 0；两包最终 vet 退出 0。完整 service 的 314.062s 结果仍对应最终生产源码，之后只更改 handler 测试夹具与文档，未重复运行已验证的 service 全包。
 - 交付仍使用原 work/monitor-driven-scheduling 单一工作树；无 CI、推送、迁移或部署。旧清门函数和模式参数检索均为 0，新增 TODO/FIXME/XXX 为 0，源码图片仍为历史 12 个共 1164 bytes。本轮按授权本地提交任务源码、测试及原三份文档，历史审批拒绝删除和 Windows 符号链接权限等待保留；原 20 项仍 12 done、2 in_progress、6 pending，未提前关闭 D2/D4。
+
+## 2026-11-04：D2 HTTP→原生 Responses WS 共享 Key 活跃轮次额度
+
+- 接续 07b07a2，在原转发函数、连接池和 HTTPUpstream 内原位接通，不新建调度器或租约实现。旧实现的真实 loopback 回归实际失败：native WS did not start，原因为 upstream_key_concurrency_requires_http（repository 1.394s、退出1）；首个实现组合通过（6.552s）。最初测试直接调用 HTTPUpstream 返回接口上的可选方法导致编译失败，已改为受检 UpstreamKeyConcurrency 断言。
+- 将最终凭据摘要提取迁至 config 共用函数，删除 repository 私有重复；连接池保存 HeadersFactory 处理后的实际握手 Header/URL 摘要，复用连接继续按已握手凭据取槽。共享端口复用原 Redis Lua、策略版本、续租、看门狗和精确释放；HTTP EOF/Close/取消的所有权保持，不新增明文 Key 存储。
+- 在本轮预热/response.create 前取共享槽；满额/策略错误保留本地503、不发生成帧、不归因供应商健康，允许复用未发帧健康连接。额度按活跃请求/轮次，不按连接握手数；握手可能早于本地拒绝。正常终态释放且保留连接；受限轮次取消/租约丢失关闭上游并等待关闭回调，再精确释放。租约失效保留 ErrUpstreamKeyLease，避免 WS fallback 后 HTTP 重放；未匹配限额的 Key 保持原取消/drain 行为。
+- 真实 loopback WS + miniredis + production service/repository 验证 HTTP→WS 满额拦截、WS→另一账号 HTTP 满额拦截、两轮健康连接复用、取消与删除 Redis 租约时关闭连接/槽位清零；最终生成帧4、HTTP fallback 调用0。独立池测试确认最终凭据替换、重复摘要去重及 query Key，同时保持输入 Header 不变。缺少共享端口仍保守拒绝原生 WS。
+- 最终专项连续三轮实际通过：config 3.202s、repository 42.956s、service 9.665s，退出0；含原 HTTP/SSE、直接 WS bridge 和真实 Redis 原子竞争。repository 扩大 HTTPUpstream/UpstreamKey/WebSocket/Concurrency 三轮实际通过（34.175s）。最终完整 config/service/handler 实际输出 ok 2.598s/318.580s/146.025s，Complete native WS verification exit: 0。
+- 四包 go vet -tags=unit -p 2（config/repository/service/handler）实际退出0；config/repository/service 完整未限量 golangci-lint 输出 0 issues.、退出0，未降低规则。Redis5 仅加到测试命令 PATH，未改系统配置；未重复触发已知 Windows 符号链接权限失败的 repository 全包，原外部验收等待保持。
+- 直接下游 WS ingress 继续 HTTP/SSE bridge，原生直接接入、Live SDP 交接、区域权威及固定线路/缓存域仍待原 D2 验收；不声称跨协议同价或缓存共享。原20项保持12 done、2 in_progress、6 pending，本轮完成一项共享额度路径闭环，父任务done增量0。
+- 设计4.4和STATE原位更新，过时整体回落描述删除；Go格式、diff空白检查通过，旧提取器/拒绝原因及新增TODO/FIXME/XXX均0命中。源码图片保持历史12个、1164bytes，本轮新增持久测试产物0；历史自动审批拒绝的清理项保留，不绕过。只本地提交任务源码、测试和原三份文档，单一工作树，无CI、推送、部署或生产迁移。

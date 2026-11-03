@@ -294,10 +294,11 @@ type openAIWSConn struct {
 	id string
 	ws openAIWSClientConn
 
-	handshakeHeaders       http.Header
-	turnBinding            *openAIWSTurnBinding
-	handshakeCompatibility openAIWSHandshakeCompatibilityKey
-	routingAffinity        string
+	handshakeHeaders        http.Header
+	upstreamKeyFingerprints []string
+	turnBinding             *openAIWSTurnBinding
+	handshakeCompatibility  openAIWSHandshakeCompatibilityKey
+	routingAffinity         string
 
 	leaseCh   chan struct{}
 	closedCh  chan struct{}
@@ -2167,6 +2168,11 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 			return nil, err
 		}
 	}
+	credentialRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, req.WSURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	credentialRequest.Header = headers
 	if req.Account != nil {
 		ctx = upstreamroute.WithAccountID(ctx, req.Account.ID)
 	}
@@ -2207,6 +2213,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	}
 	id := p.nextConnID(req.Account.ID)
 	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
+	pooledConn.upstreamKeyFingerprints = config.UpstreamCredentialFingerprints(credentialRequest)
 	accountID := req.Account.ID
 	evict := func() { p.evictConn(accountID, id) }
 	pooledConn.onPeerClosed.Store(&evict)

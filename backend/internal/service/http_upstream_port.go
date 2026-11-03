@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -10,6 +11,13 @@ import (
 var ErrUpstreamKeyCapacity = errors.New("upstream key concurrency capacity unavailable")
 var ErrUpstreamKeyPolicy = errors.New("upstream key concurrency policy unavailable or revision conflict")
 var ErrUpstreamKeyLease = errors.New("upstream key concurrency lease lost")
+
+// UpstreamKeyConcurrency is the optional shared authority used by native WS
+// turns. Fingerprints come from the final handshake, including pooled reuse.
+// A nil release means no configured credential consumed capacity.
+type UpstreamKeyConcurrency interface {
+	AcquireUpstreamKeySlots(context.Context, []string) (context.Context, func(), error)
+}
 
 // Local admission failures are not supplier/network health failures. They use
 // the existing bounded account failover without changing account health.

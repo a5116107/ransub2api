@@ -36,6 +36,29 @@ func TestOpenAIWSConnPoolDialPassesAccountToRegionalRoute(t *testing.T) {
 	conn.close()
 }
 
+func TestOpenAIWSConnPoolKeepsFinalHandshakeKeyFingerprints(t *testing.T) {
+	pool := newOpenAIWSConnPool(&config.Config{})
+	t.Cleanup(pool.Close)
+	dialer := &openAIWSCaptureDialer{conn: &openAIWSCaptureConn{}}
+	pool.setClientDialerForTest(dialer)
+	headers := http.Header{"Authorization": {"Bearer old-fixture"}}
+	conn, err := pool.dialConn(t.Context(), openAIWSAcquireRequest{
+		Account: &Account{ID: 102},
+		WSURL:   "wss://api.example.com/v1/responses?key=query-fixture",
+		Headers: headers,
+		HeadersFactory: func(_ context.Context, h http.Header) (http.Header, error) {
+			h.Set("Authorization", "Bearer final-fixture")
+			h.Set("X-Api-Key", "final-fixture")
+			return h, nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(conn.close)
+	require.Equal(t, "Bearer final-fixture", dialer.lastHeaders.Get("Authorization"))
+	require.ElementsMatch(t, []string{config.UpstreamKeyFingerprint("final-fixture"), config.UpstreamKeyFingerprint("query-fixture")}, conn.upstreamKeyFingerprints)
+	require.Equal(t, "Bearer old-fixture", headers.Get("Authorization"), "the input snapshot stays unchanged")
+}
+
 func TestOpenAIWSConnPool_CleanupStaleAndTrimIdle(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1

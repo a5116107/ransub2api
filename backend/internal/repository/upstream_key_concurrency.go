@@ -91,40 +91,6 @@ func newUpstreamKeyLimiter(cfg *config.Config, rdb *redis.Client) *upstreamKeyLi
 	return l
 }
 
-func upstreamCredentialFingerprints(req *http.Request) []string {
-	seen := map[string]bool{}
-	var result []string
-	add := func(key string) {
-		if strings.TrimSpace(key) == "" {
-			return
-		}
-		fingerprint := config.UpstreamKeyFingerprint(key)
-		if !seen[fingerprint] {
-			seen[fingerprint] = true
-			result = append(result, fingerprint)
-		}
-	}
-	for _, value := range req.Header.Values("Authorization") {
-		scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
-		if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
-			add(token)
-		}
-	}
-	for _, name := range []string{"X-Api-Key", "Api-Key", "X-Goog-Api-Key"} {
-		for _, value := range req.Header.Values(name) {
-			add(value)
-		}
-	}
-	if req.URL != nil {
-		for _, name := range []string{"key", "api_key"} {
-			for _, value := range req.URL.Query()[name] {
-				add(value)
-			}
-		}
-	}
-	return result
-}
-
 type upstreamKeyLease struct {
 	limiter  *upstreamKeyLimiter
 	key      string
@@ -234,20 +200,16 @@ func (l *upstreamKeyLease) release() {
 	})
 }
 
-// beginUpstreamKeyRequest applies to final outbound credentials, independently
-// of local account IDs or downstream sale groups. All response-body ownership
-// remains inside the existing HTTP upstream implementation.
-func (s *httpUpstreamService) beginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+// AcquireUpstreamKeySlots shares one authority across HTTP response lifetimes
+// and native WS turns. A nil release means no configured credential held a slot.
+func (s *httpUpstreamService) AcquireUpstreamKeySlots(parent context.Context, fingerprints []string) (context.Context, func(), error) {
 	if s.upstreamKeyLimiter == nil {
-		return req, func(*http.Response, error) {}, nil
+		return parent, nil, nil
 	}
 	if s.upstreamKeyLimiter.err != nil {
-		return req, nil, service.ErrUpstreamKeyPolicy
+		return parent, nil, service.ErrUpstreamKeyPolicy
 	}
-	if req == nil || req.URL == nil {
-		return req, nil, service.ErrUpstreamKeyPolicy
-	}
-	ctx, cancel := context.WithCancelCause(req.Context())
+	ctx, cancel := context.WithCancelCause(parent)
 	var leases []*upstreamKeyLease
 	release := sync.OnceFunc(func() {
 		cancel(context.Canceled)
@@ -255,11 +217,11 @@ func (s *httpUpstreamService) beginUpstreamKeyRequest(req *http.Request) (*http.
 			lease.release()
 		}
 	})
-	for _, fingerprint := range upstreamCredentialFingerprints(req) {
+	for _, fingerprint := range fingerprints {
 		lease, err := s.upstreamKeyLimiter.acquire(ctx, fingerprint, cancel)
 		if err != nil {
 			release()
-			return req, nil, err
+			return parent, nil, err
 		}
 		if lease != nil {
 			leases = append(leases, lease)
@@ -267,10 +229,28 @@ func (s *httpUpstreamService) beginUpstreamKeyRequest(req *http.Request) (*http.
 	}
 	if len(leases) == 0 {
 		release()
+		return parent, nil, nil
+	}
+	return ctx, release, nil
+}
+
+// beginUpstreamKeyRequest retains response-body ownership at the existing
+// HTTP boundary; native WS owns its active turn through the shared method above.
+func (s *httpUpstreamService) beginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+	if s.upstreamKeyLimiter == nil {
 		return req, func(*http.Response, error) {}, nil
 	}
-	// A realtime call outlives its SDP response and needs a dedicated handoff;
-	// reject before forwarding rather than drop the slot when SDP completes.
+	if req == nil || req.URL == nil {
+		return req, nil, service.ErrUpstreamKeyPolicy
+	}
+	ctx, release, err := s.AcquireUpstreamKeySlots(req.Context(), config.UpstreamCredentialFingerprints(req))
+	if err != nil {
+		return req, nil, err
+	}
+	if release == nil {
+		return req, func(*http.Response, error) {}, nil
+	}
+	// SDP completes before a realtime session; its lease needs a separate handoff.
 	if strings.Contains(strings.ToLower(req.URL.Path), "/realtime") {
 		release()
 		return req, nil, service.ErrUpstreamKeyPolicy

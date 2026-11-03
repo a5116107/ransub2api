@@ -171,7 +171,7 @@ func TestUpstreamKeyCredentialsAndFailureBoundaries(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer supplier-fixture")
 	req.Header.Set("X-Api-Key", "supplier-fixture")
 	req.Header.Set("X-Goog-Api-Key", "google-fixture")
-	require.ElementsMatch(t, []string{config.UpstreamKeyFingerprint("supplier-fixture"), config.UpstreamKeyFingerprint("query-fixture"), config.UpstreamKeyFingerprint("google-fixture")}, upstreamCredentialFingerprints(req))
+	require.ElementsMatch(t, []string{config.UpstreamKeyFingerprint("supplier-fixture"), config.UpstreamKeyFingerprint("query-fixture"), config.UpstreamKeyFingerprint("google-fixture")}, config.UpstreamCredentialFingerprints(req))
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
