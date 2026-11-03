@@ -1634,7 +1634,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 				return err
 			}
-			if err := s.checkOpenAIWSBinding(latest, firstRoutingFields[0].String(), binding); err != nil {
+			if err := s.checkOpenAIWSBinding(checkCtx, latest, firstRoutingFields[0].String(), binding); err != nil {
 				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
 					checkCtx,
 					groupID,
@@ -1830,7 +1830,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		latest, admissionErr := s.admitOpenAITurn(ctx, c, account, extractOpenAICodexTicketModel(payload), payload)
 		if admissionErr == nil {
-			admissionErr = s.checkOpenAIWSBinding(latest, extractOpenAICodexTicketModel(payload), lease.conn.turnBinding)
+			admissionErr = s.checkOpenAIWSBinding(ctx, latest, extractOpenAICodexTicketModel(payload), lease.conn.turnBinding)
 		}
 		if admissionErr != nil {
 			s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(

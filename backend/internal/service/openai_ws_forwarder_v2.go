@@ -313,7 +313,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				)
 				return err
 			}
-			if err := s.checkOpenAIWSBinding(latest, mappedModel, b); err != nil {
+			if err := s.checkOpenAIWSBinding(checkCtx, latest, mappedModel, b); err != nil {
 				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
 					checkCtx,
 					groupID,
@@ -451,7 +451,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	checkBeforeWrite := func() error {
 		latest, err := s.admitOpenAITurn(ctx, c, account, mappedModel)
 		if err == nil {
-			err = s.checkOpenAIWSBinding(latest, mappedModel, lease.conn.turnBinding)
+			err = s.checkOpenAIWSBinding(ctx, latest, mappedModel, lease.conn.turnBinding)
 		}
 		if err == nil {
 			_, err = s.beginPriorityLatencyTurn(ctx, c, account, originalModel)

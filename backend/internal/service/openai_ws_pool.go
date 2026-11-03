@@ -70,6 +70,7 @@ func (e *openAIWSDialError) Unwrap() error {
 }
 
 type openAIWSAcquireRequest struct {
+	billingGate     *openAIProfitControlGate
 	timezoneBinding *requestTimezoneBinding
 	timezoneMode    string
 	// Private experiment connections must never serve a different client scope.
@@ -296,6 +297,7 @@ type openAIWSConn struct {
 
 	handshakeHeaders        http.Header
 	upstreamKeyFingerprints []string
+	billingHandshake        *openAIWSBillingHandshake
 	turnBinding             *openAIWSTurnBinding
 	handshakeCompatibility  openAIWSHandshakeCompatibilityKey
 	routingAffinity         string
@@ -1123,6 +1125,7 @@ type openAIWSAcquireQueueWait struct {
 
 func (p *openAIWSConnPool) Acquire(ctx context.Context, req openAIWSAcquireRequest) (*openAIWSConnLease, error) {
 	if ctx != nil {
+		req.billingGate, _ = ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
 		req.timezoneBinding, _ = ctx.Value(requestTimezoneEgressKey{}).(*requestTimezoneBinding)
 	}
 	if b := req.timezoneBinding; b != nil && b.service.settingService.GetOpenAIRequestTimezoneEnabled(ctx, false) {
@@ -1160,6 +1163,11 @@ func (p *openAIWSConnPool) Acquire(ctx context.Context, req openAIWSAcquireReque
 		p.metrics.acquireQueueWaitMs.Add(queueWait.total.Milliseconds())
 	}
 	if lease != nil && lease.conn != nil {
+		if checkErr := checkOpenAIWSBillingHandshake(ctx, req.Account, lease.conn.billingHandshake); checkErr != nil {
+			lease.MarkBroken()
+			lease.Release()
+			return nil, checkErr
+		}
 		if req.CheckBinding != nil {
 			if checkErr := req.CheckBinding(ctx, lease.conn.turnBinding); checkErr != nil {
 				lease.MarkBroken()
@@ -2160,6 +2168,11 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	if p == nil || p.clientDialer == nil {
 		return nil, errors.New("openai ws client dialer is nil")
 	}
+	// Prewarm starts with a background context. Preserve the original frozen
+	// gate for the existing per-dial admission and redirect fence as well.
+	if req.billingGate != nil {
+		ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, req.billingGate)
+	}
 	headers := cloneHeader(req.Headers)
 	var err error
 	if req.HeadersFactory != nil {
@@ -2167,6 +2180,10 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 		if err != nil {
 			return nil, err
 		}
+	}
+	ctx, err = guardOpenAIWSBillingHandshake(ctx, req.Account, req.WSURL, headers)
+	if err != nil {
+		return nil, err
 	}
 	credentialRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, req.WSURL, nil)
 	if err != nil {
@@ -2214,6 +2231,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	id := p.nextConnID(req.Account.ID)
 	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
 	pooledConn.upstreamKeyFingerprints = config.UpstreamCredentialFingerprints(credentialRequest)
+	pooledConn.billingHandshake = newOpenAIWSBillingHandshake(ctx, req.WSURL, headers)
 	accountID := req.Account.ID
 	evict := func() { p.evictConn(accountID, id) }
 	pooledConn.onPeerClosed.Store(&evict)
@@ -2223,6 +2241,9 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	pooledConn.routingAffinity = normalizeOpenAIWSRoutingAffinity(headers)
 	if req.BindHandshake != nil {
 		pooledConn.turnBinding = req.BindHandshake(headers)
+		if pooledConn.turnBinding != nil {
+			pooledConn.turnBinding.billingHandshake = pooledConn.billingHandshake
+		}
 	}
 	return pooledConn, nil
 }

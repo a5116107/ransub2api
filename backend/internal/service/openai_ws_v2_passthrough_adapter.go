@@ -925,6 +925,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	var upstreamConn openAIWSClientConn
 	statusCode := 0
 	var handshakeHeaders http.Header
+	billingHandshakeCtx := ctx
 	for {
 		latest, admissionErr := s.admitOpenAITurn(ctx, c, account, gjson.GetBytes(firstClientMessage, "model").String(), firstClientMessage)
 		if admissionErr != nil {
@@ -937,7 +938,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		if err != nil {
 			return fmt.Errorf("refresh ws authentication headers: %w", err)
 		}
-		dialCtx, cancelDial := context.WithTimeout(upstreamroute.WithAccountID(ctx, account.ID), s.openAIWSDialTimeout())
+		billingCtx, billingErr := guardOpenAIWSBillingHandshake(ctx, latest, wsURL, headers)
+		if billingErr != nil {
+			return billingErr
+		}
+		dialCtx, cancelDial := context.WithTimeout(upstreamroute.WithAccountID(billingCtx, account.ID), s.openAIWSDialTimeout())
+		billingHandshakeCtx = billingCtx
 		finishCapture := captureOpenAIWSHandshake(ctx, account.ID, wsURL)
 		upstreamConn, statusCode, handshakeHeaders, err = dialer.Dial(dialCtx, wsURL, headers, proxyURL)
 		finishCapture(statusCode, handshakeHeaders, err)
@@ -976,6 +982,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		_ = upstreamConn.Close()
 	}()
 	handshakeBinding := s.bindOpenAIWSHandshake(account, gjson.GetBytes(firstClientMessage, "model").String(), headers)
+	handshakeBinding.billingHandshake = newOpenAIWSBillingHandshake(billingHandshakeCtx, wsURL, headers)
 	logOpenAIWSV2Passthrough(
 		"relay_dial_ok account_id=%d status_code=%d upstream_request_id=%s",
 		account.ID,
@@ -1242,7 +1249,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if isResponseCreate || eventType == "session.update" || strings.HasPrefix(eventType, "conversation.item.") {
 				latest, err := s.admitOpenAITurn(ctx, c, account, model, payload)
 				if err == nil {
-					err = s.checkOpenAIWSBinding(latest, model, handshakeBinding)
+					err = s.checkOpenAIWSBinding(ctx, latest, model, handshakeBinding)
 				}
 				if err != nil {
 					s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(
@@ -1325,7 +1332,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	upstreamFirstMessageSent := false
 	latest, admissionErr := s.admitOpenAITurn(ctx, c, account, gjson.GetBytes(firstClientMessage, "model").String(), firstClientMessage)
 	if admissionErr == nil {
-		admissionErr = s.checkOpenAIWSBinding(latest, gjson.GetBytes(firstClientMessage, "model").String(), handshakeBinding)
+		admissionErr = s.checkOpenAIWSBinding(ctx, latest, gjson.GetBytes(firstClientMessage, "model").String(), handshakeBinding)
 	}
 	if admissionErr != nil {
 		s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(
@@ -1411,7 +1418,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				model := gjson.GetBytes(payload, "model").String()
 				latest, err := s.admitOpenAITurn(ctx, c, account, model, payload)
 				if err == nil {
-					err = s.checkOpenAIWSBinding(latest, model, handshakeBinding)
+					err = s.checkOpenAIWSBinding(ctx, latest, model, handshakeBinding)
 				}
 				if err != nil {
 					s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(ctx, c, payload, account.ID, err)

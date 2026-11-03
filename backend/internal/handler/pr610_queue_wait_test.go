@@ -27,6 +27,13 @@ type pr610Barrier struct {
 	release chan struct{}
 }
 
+type pr610RealTurn struct {
+	started  time.Time
+	upstream time.Time
+	delta    time.Time
+	blocked  time.Duration
+}
+
 // The clock is request-scoped. Barriers stall the actual slot-cache and pool
 // acquisition calls in authenticated handler -> production ingress -> network.
 // Busy user/account slots still reject according to the existing WS policy;
@@ -57,6 +64,7 @@ type pr610TimingScenario struct {
 	mu            sync.Mutex
 	gated         map[string]bool
 	barriers      chan pr610Barrier
+	realTurns     []pr610RealTurn
 	deltaRead     chan struct{}
 	cache         *pr610SlotCache
 }
@@ -120,6 +128,14 @@ func (s *pr610TimingScenario) block(phase string) {
 	}
 	s.gated[phase] = true
 	s.mu.Unlock()
+	if s.realtime {
+		started, turn := time.Now(), s.turn.Load()
+		defer func() {
+			s.mu.Lock()
+			s.realTurns[turn-1].blocked += time.Since(started)
+			s.mu.Unlock()
+		}()
+	}
 	b := pr610Barrier{phase: phase, release: make(chan struct{})}
 	select {
 	case s.barriers <- b:
@@ -141,6 +157,9 @@ func (s *pr610TimingScenario) prepareTurn() {
 	}
 	s.mu.Lock()
 	s.gated = map[string]bool{}
+	if s.realtime {
+		s.realTurns = append(s.realTurns, pr610RealTurn{started: time.Now()})
+	}
 	s.mu.Unlock()
 	phases := []string{"user", "account"}
 	if s.failover && turn == 2 {
@@ -206,17 +225,30 @@ func (s *pr610TimingScenario) afterDelta() {
 	case <-time.After(3 * time.Second):
 		s.t.Error("synthetic first token did not reach downstream")
 	}
+	if s.realtime {
+		s.mu.Lock()
+		s.realTurns[s.turn.Load()-1].delta = time.Now()
+		s.mu.Unlock()
+	}
 	if s.longFirst && s.turn.Load() == 1 {
 		s.advance(80 * time.Second)
 	}
 }
 func (s *pr610TimingScenario) writeWS(c *coderws.Conn, turn int, payload []byte) {
+	s.observeUpstream()
 	s.advance(2 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	require.NoError(s.t, c.Write(ctx, coderws.MessageText, []byte(`{"type":"response.output_text.delta","response_id":"resp_usage_e2e_`+fmt.Sprint(turn)+`","delta":"x"}`)))
 	s.afterDelta()
 	require.NoError(s.t, c.Write(ctx, coderws.MessageText, []byte(s.terminal(payload, turn))))
+}
+func (s *pr610TimingScenario) observeUpstream() {
+	if s.realtime {
+		s.mu.Lock()
+		s.realTurns[s.turn.Load()-1].upstream = time.Now()
+		s.mu.Unlock()
+	}
 }
 func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, received chan<- []byte) bool {
 	if s.mode != service.OpenAIWSIngressModeHTTPBridge {
@@ -241,6 +273,7 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","code":"invalid_parameter","param":"truncation","message":"Unsupported parameter: truncation"}}`)
 		return true
 	}
+	s.observeUpstream()
 	received <- payload
 	s.advance(2 * time.Second)
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -388,12 +421,21 @@ func TestPR610RealWaitNativeIngress(t *testing.T) {
 				if i == 0 && mode == service.OpenAIWSIngressModeCtxPool {
 					want = 400
 				}
+				s.mu.Lock()
+				observed := s.realTurns[i]
+				s.mu.Unlock()
+				require.False(t, observed.upstream.IsZero())
+				require.False(t, observed.delta.IsZero())
 				require.NotNil(t, row.QueueWaitMs, "native authenticated turn must retain a measured wait")
 				require.GreaterOrEqual(t, *row.QueueWaitMs, want-10, "accepted frame must count real blocked acquisition before forward")
-				require.Less(t, *row.QueueWaitMs, want+150, "each wait must be counted once, without previous-turn tail")
+				// Sleep is a minimum delay, not a scheduling deadline. Compare
+				// independent fixture observations rather than assuming an idle host.
+				require.GreaterOrEqual(t, int64(*row.QueueWaitMs), observed.blocked.Milliseconds()-3, "actual blocked acquisitions must be included once")
+				require.LessOrEqual(t, int64(*row.QueueWaitMs), observed.upstream.Sub(observed.started).Milliseconds()+2, "queue must fit this turn's pre-forward window, excluding the previous tail")
 				require.NotNil(t, row.QueueTiming, "measured source must survive authenticated production usage path")
-				require.InDelta(t, 20, *row.QueueTiming.ForwardFirstTokenMs, 100)
+				require.GreaterOrEqual(t, *row.QueueTiming.ForwardFirstTokenMs, int64(19))
 				require.GreaterOrEqual(t, *row.QueueTiming.ServerFirstTokenMs, int64(want+10))
+				require.LessOrEqual(t, *row.QueueTiming.ServerFirstTokenMs, observed.delta.Sub(observed.started).Milliseconds()+2, "first token must fit the independently observed downstream window")
 				if mode == service.OpenAIWSIngressModePassthrough {
 					require.InDelta(t, *row.FirstTokenMs, *row.QueueTiming.ServerFirstTokenMs, 2, "passthrough legacy already includes queue")
 				}

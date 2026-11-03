@@ -207,6 +207,16 @@ func (d *coderOpenAIWSClientDialer) Dial(
 		opts.HTTPClient = &clone
 	}
 
+	if HTTPUpstreamRedirectsDisabled(ctx) {
+		base := opts.HTTPClient
+		if base == nil {
+			base = http.DefaultClient
+		}
+		clone := *base
+		clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		opts.HTTPClient = &clone
+	}
+
 	conn, resp, err := coderws.Dial(ctx, targetURL, opts)
 	if region != "" {
 		parsed, _ := url.Parse(targetURL)

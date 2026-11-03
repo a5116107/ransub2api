@@ -44,6 +44,75 @@ func upstreamBillingRequestTargetConfirmed(account *Account, request *http.Reque
 	}
 }
 
+// Only non-secret routing selectors are retained with an established socket.
+type openAIWSBillingHandshake struct {
+	target            string
+	headers           http.Header
+	redirectsDisabled bool
+}
+
+func newOpenAIWSBillingHandshake(ctx context.Context, target string, headers http.Header) *openAIWSBillingHandshake {
+	b := &openAIWSBillingHandshake{target: target, headers: make(http.Header), redirectsDisabled: HTTPUpstreamRedirectsDisabled(ctx)}
+	for name, values := range headers {
+		if strings.EqualFold(name, APIKeyGroupHeader) || strings.EqualFold(name, "Host") {
+			b.headers[name] = append([]string(nil), values...)
+		}
+	}
+	return b
+}
+
+func checkOpenAIWSBillingHandshake(ctx context.Context, account *Account, binding *openAIWSBillingHandshake) error {
+	target, headers := "", http.Header(nil)
+	if binding != nil {
+		target, headers = binding.target, binding.headers
+	}
+	_, err := guardOpenAIWSBillingHandshake(ctx, account, target, headers)
+	if err != nil {
+		return err
+	}
+	gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+	if gate != nil && account != nil && account.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(account) &&
+		(binding == nil || !binding.redirectsDisabled) {
+		return denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
+	}
+	return nil
+}
+
+// guardOpenAIWSBillingHandshake applies the HTTP billing namespace and pin
+// checks to the actual WS handshake. It returns a redirect-fenced context only
+// for requests governed by the automatic-rate profit gate.
+func guardOpenAIWSBillingHandshake(ctx context.Context, account *Account, target string, headers http.Header) (context.Context, error) {
+	gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+	if gate == nil || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+		return ctx, nil
+	}
+	if gate.configUnavailable {
+		return ctx, denyOpenAITurn(openAIProfitFilterReasonGroupConfigUnavailable)
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return ctx, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
+	}
+	switch u.Scheme {
+	case "ws":
+		u.Scheme = "http"
+	case "wss":
+		u.Scheme = "https"
+	default:
+		return ctx, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
+	}
+	request := &http.Request{Method: http.MethodPost, URL: u, Host: headers.Get("Host"), Header: headers}
+	if !upstreamBillingRequestTargetConfirmed(account, request) {
+		return ctx, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
+	}
+	expected, expectedErr := upstreamBillingRequestGroup(account)
+	actual, actualErr := ParseAPIKeyRequestGroup(headers)
+	if expectedErr != nil || actualErr != nil || expected != actual {
+		return ctx, denyOpenAITurn("account_binding_changed")
+	}
+	return WithHTTPUpstreamRedirectsDisabled(ctx), nil
+}
+
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (result *http.Response, resultErr error) {

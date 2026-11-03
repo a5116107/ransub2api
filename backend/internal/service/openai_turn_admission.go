@@ -458,10 +458,11 @@ func checkOpenAITurnBindingAndRate(ctx context.Context, selected, latest *Accoun
 // A connection is bound to the ticket actually sent at handshake, not the
 // response's turn-state header and not the most recently harvested standby.
 type openAIWSTurnBinding struct {
-	model       string
-	ticket      *openAICodexTicket
-	fingerprint [32]byte
-	createdAt   time.Time
+	billingHandshake *openAIWSBillingHandshake
+	model            string
+	ticket           *openAICodexTicket
+	fingerprint      [32]byte
+	createdAt        time.Time
 }
 
 func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model string, headers http.Header) *openAIWSTurnBinding {
@@ -475,7 +476,7 @@ func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model str
 	return b
 }
 
-func (s *OpenAIGatewayService) checkOpenAIWSBinding(account *Account, model string, b *openAIWSTurnBinding) error {
+func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account *Account, model string, b *openAIWSTurnBinding) error {
 	if account.isPrismBrowserUpstreamModelEnabled(model) {
 		return denyOpenAITurn("prism_requires_http")
 	}
@@ -485,6 +486,9 @@ func (s *OpenAIGatewayService) checkOpenAIWSBinding(account *Account, model stri
 	if b == nil || openAITurnRouteFingerprint(account) != b.fingerprint ||
 		time.Since(b.createdAt) >= openAIWSConnMaxAge {
 		return denyOpenAITurn("connection_binding_expired")
+	}
+	if err := checkOpenAIWSBillingHandshake(ctx, account, b.billingHandshake); err != nil {
+		return err
 	}
 	if !isOpenAICodexTicketAccount(account) || !s.openAICodexTicketEnabled() ||
 		!s.openAICodexTicketConfig().FailClosed || !s.openAICodexTicketGatedModel(model) {

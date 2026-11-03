@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamroute"
+	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,6 +59,172 @@ func TestOpenAIWSConnPoolKeepsFinalHandshakeKeyFingerprints(t *testing.T) {
 	require.Equal(t, "Bearer final-fixture", dialer.lastHeaders.Get("Authorization"))
 	require.ElementsMatch(t, []string{config.UpstreamKeyFingerprint("final-fixture"), config.UpstreamKeyFingerprint("query-fixture")}, conn.upstreamKeyFingerprints)
 	require.Equal(t, "Bearer old-fixture", headers.Get("Authorization"), "the input snapshot stays unchanged")
+}
+
+func TestOpenAIWSConnPoolBillingTargetBeforeDial(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, group string
+		allowed             bool
+	}{
+		{"same root", "wss://fixture.invalid/cheap/v1/responses", "2", true},
+		{"different root", "wss://fixture.invalid/premium/v1/responses", "2", false},
+		{"different host", "wss://other.invalid/cheap/v1/responses", "2", false},
+		{"downgrade", "ws://fixture.invalid/cheap/v1/responses", "2", false},
+		{"wrong final group", "wss://fixture.invalid/cheap/v1/responses", "3", false},
+		{"missing final group", "wss://fixture.invalid/cheap/v1/responses", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(time.Now().UTC())
+			account.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "ws-billing-fixture",
+				credKeyHeaderOverrideEnabled: true, credKeyHeaderOverrides: map[string]any{"x-sub2api-group-id": "2"}}
+			pool := newOpenAIWSConnPool(&config.Config{})
+			t.Cleanup(pool.Close)
+			dialer := &openAIWSCaptureDialer{conn: &openAIWSCaptureConn{}}
+			pool.setClientDialerForTest(dialer)
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+			conn, err := pool.dialConn(ctx, openAIWSAcquireRequest{Account: account, WSURL: tc.target, Headers: make(http.Header),
+				HeadersFactory: func(_ context.Context, h http.Header) (http.Header, error) {
+					if tc.group != "" {
+						h.Set(APIKeyGroupHeader, tc.group)
+					}
+					return h, nil
+				}})
+			if conn != nil {
+				conn.close()
+			}
+			if tc.allowed {
+				require.NoError(t, err)
+				require.Equal(t, 1, dialer.DialCount())
+			} else {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Zero(t, dialer.DialCount(), "invalid billing target must not open a handshake")
+			}
+		})
+	}
+}
+
+func TestOpenAIWSConnPoolBillingTargetOnReuse(t *testing.T) {
+	for _, change := range []string{"unchanged", "group", "target", "missing evidence", "redirects allowed"} {
+		t.Run(change, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(time.Now().UTC())
+			account.Concurrency = 1
+			account.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "ws-reuse-fixture",
+				credKeyHeaderOverrideEnabled: true, credKeyHeaderOverrides: map[string]any{"x-sub2api-group-id": "2"}}
+			cfg := &config.Config{}
+			cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+			pool := newOpenAIWSConnPool(cfg)
+			t.Cleanup(pool.Close)
+			dialer := &openAIWSCaptureDialer{conn: &openAIWSCaptureConn{}}
+			pool.setClientDialerForTest(dialer)
+			req := openAIWSAcquireRequest{Account: account, WSURL: "wss://fixture.invalid/cheap/v1/responses", Headers: http.Header{APIKeyGroupHeader: {"2"}}}
+			// A connection established before enabling the profit gate must also be
+			// checked against its actual original handshake when borrowed later.
+			lease, err := pool.Acquire(WithHTTPUpstreamRedirectsDisabled(t.Context()), req)
+			require.NoError(t, err)
+			switch change {
+			case "group":
+				lease.conn.billingHandshake.headers.Set(APIKeyGroupHeader, "3")
+			case "target":
+				lease.conn.billingHandshake.target = "wss://fixture.invalid/premium/v1/responses"
+			case "missing evidence":
+				lease.conn.billingHandshake.target = ""
+			case "redirects allowed":
+				lease.conn.billingHandshake.redirectsDisabled = false
+			}
+			lease.Release()
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+			lease, err = pool.Acquire(ctx, req)
+			if change == "unchanged" {
+				require.NoError(t, err)
+				lease.Release()
+			} else {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Nil(t, lease)
+			}
+			require.Equal(t, 1, dialer.DialCount(), "reuse rejection must not silently dial another target")
+		})
+	}
+}
+
+func TestOpenAIWSConnPoolBillingTargetRealHandshake(t *testing.T) {
+	var cheapCalls, premiumCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cheap/v1/responses":
+			cheapCalls.Add(1)
+		case "/premium/v1/responses":
+			premiumCalls.Add(1)
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(APIKeyGroupHeader) != "2" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		_, _, _ = conn.Read(r.Context())
+	}))
+	t.Cleanup(server.Close)
+	account := profitControlSyncedTestAccount(time.Now().UTC())
+	account.Concurrency = 1
+	account.Credentials = map[string]any{"base_url": server.URL + "/cheap", "api_key": "real-ws-fixture",
+		credKeyHeaderOverrideEnabled: true, credKeyHeaderOverrides: map[string]any{"x-sub2api-group-id": "2"}}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	pool := newOpenAIWSConnPool(cfg)
+	t.Cleanup(pool.Close)
+	pool.setClientDialerForTest(newDefaultOpenAIWSClientDialer())
+	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+	req := openAIWSAcquireRequest{Account: account, WSURL: "ws" + strings.TrimPrefix(server.URL, "http") + "/premium/v1/responses", Headers: http.Header{APIKeyGroupHeader: {"2"}}}
+	lease, err := pool.Acquire(ctx, req)
+	require.Error(t, err)
+	require.Nil(t, lease)
+	require.Zero(t, premiumCalls.Load())
+	req.WSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/cheap/v1/responses"
+	lease, err = pool.Acquire(ctx, req)
+	require.NoError(t, err)
+	id := lease.conn.id
+	lease.Release()
+	lease, err = pool.Acquire(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, id, lease.conn.id)
+	lease.Release()
+	require.EqualValues(t, 1, cheapCalls.Load())
+	require.Zero(t, premiumCalls.Load())
+}
+
+func TestOpenAIWSConnPoolBillingPrewarmContext(t *testing.T) {
+	for _, target := range []string{"wss://fixture.invalid/cheap/v1/responses", "wss://fixture.invalid/premium/v1/responses"} {
+		t.Run(target, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(time.Now().UTC())
+			account.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "prewarm-fixture"}
+			pool := newOpenAIWSConnPool(&config.Config{})
+			t.Cleanup(pool.Close)
+			dialer := &openAIWSCaptureDialer{conn: &openAIWSCaptureConn{}}
+			pool.setClientDialerForTest(dialer)
+			gate := &openAIProfitControlGate{groupID: 9, threshold: 0.5}
+			req := cloneOpenAIWSAcquireRequest(openAIWSAcquireRequest{Account: account, WSURL: target, Headers: make(http.Header), billingGate: gate})
+			require.Same(t, gate, req.billingGate)
+			conn, err := pool.dialConn(t.Context(), req)
+			if strings.Contains(target, "/cheap/") {
+				require.NoError(t, err)
+				require.True(t, conn.billingHandshake.redirectsDisabled)
+				require.NoError(t, checkOpenAIWSBillingHandshake(context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, gate), account, conn.billingHandshake))
+				conn.close()
+			} else {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Zero(t, dialer.DialCount())
+			}
+		})
+	}
 }
 
 func TestOpenAIWSConnPool_CleanupStaleAndTrimIdle(t *testing.T) {

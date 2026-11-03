@@ -8,12 +8,44 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCoderOpenAIWSClientDialerBillingRedirectFence(t *testing.T) {
+	var targetCalls atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetCalls.Add(1)
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = conn.CloseNow()
+	}))
+	t.Cleanup(target.Close)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirector.Close)
+	dialer := newDefaultOpenAIWSClientDialer()
+	conn, status, _, err := dialer.Dial(WithHTTPUpstreamRedirectsDisabled(t.Context()), "ws"+strings.TrimPrefix(redirector.URL, "http"), make(http.Header), "")
+	if conn != nil {
+		require.NoError(t, conn.Close())
+	}
+	require.Error(t, err)
+	require.Equal(t, http.StatusTemporaryRedirect, status)
+	require.Zero(t, targetCalls.Load())
+	conn, _, _, err = dialer.Dial(t.Context(), "ws"+strings.TrimPrefix(redirector.URL, "http"), make(http.Header), "")
+	require.NoError(t, err, "unfenced requests retain existing redirect behavior")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	require.EqualValues(t, 1, targetCalls.Load())
+}
 
 func TestCoderOpenAIWSClientDialer_ProxyHTTPClientReuse(t *testing.T) {
 	dialer := newDefaultOpenAIWSClientDialer()

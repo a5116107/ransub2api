@@ -344,3 +344,18 @@
 - 原位将成功夹具的Responses基址显式设为server/v1，使其与Chat探测API根一致，并使服务器只响应对应入口的实际路径；Key/地址/倍率变化原断言、真实网络计数及下游未写断言保持。没有为完整端点、不同版本或编码路径增加例外；共享HTTP上下文注释同步从probes改为requests。最终专项、完整service和静态检查结果在实际返回后追加。
 - 修正夹具后的最终专项连续三轮实际通过（service1.606s）；最终完整service回归实际输出ok338.699s、Corrected billing target service regression exit: 0。handler在相同最终生产实现的完整回归已实际通过151.949s，夹具修正后仅调整service测试和一处注释，不重复运行未变handler。最终两包vet输出Corrected billing target vet: PASS；两包完整未限量golangci-lint再次输出0 issues.、退出0。
 - 交付复核：7个任务文件本地提交，原位收敛唯一目标判定、修正既有成功夹具和过时注释；不新增配置、schema、并行传输或TODO/FIXME/XXX。Go格式、diff空白检查通过，STATE保持74行；历史源码图片12个共1164bytes保持，本轮新增持久测试产物0。单一工作树，只本地提交、不推送、不运行CI、不部署/迁移；历史清理审核拒绝与Windows符号链接权限等待保留。原20项仍12 done、2 in_progress、6 pending，本轮闭环自动倍率的最终HTTP目标归属，D2/D4父验收未提前关闭。
+
+## 2026-11-04：D2/D4 原生 WS 握手计价归属
+
+- 接续2c9adfd。原连接池在HeadersFactory后直接Dial，WS未使用HTTP自动倍率地址终检；默认WS拨号器也未消费已有禁重定向上下文。新增拨号前回归在旧实现实际失败（service2.715s、退出1）：不同根/站点/降级及最终固定组错误/缺失5个子例仍建立握手。
+- 原位复用HTTP的API根与固定组解析，增加WS scheme到对应HTTP scheme的精确映射；在连接池最终握手头之后、直通最终拨号之前检查，在原连接池和每轮绑定检查中复核原握手。绑定仅保存目标和Host/固定组选择头，过滤Authorization等凭据头；checkOpenAIWSBinding原位增加ctx并更新全部调用点，原票据、指纹、年龄和权威状态检查保留。
+- 默认拨号器消费现有WithHTTPUpstreamRedirectsDisabled，复用proxy/regional HTTP client但为该请求复制client并禁用重定向，不修改共享client。真实307跳转在严格上下文下目标调用0，未启用上下文仍按原行为跳转1次；真实WS池不同根目标握手0，正确根只握手1次并成功复用。第一轮专项连续三轮service1.996s；加入最新门和真实WS后专项三轮service7.729s，默认标签service3.628s及两包vet通过。
+- 首次完整回归：service344.694s通过，handler148.469s中TestPR610RealWaitNativeIngress失败；完整两包未限量lint输出0 issues.。该计时用例单独运行实际通过7.268s，尚未把初次失败记为解决；继续10次复现并取得具体断言。
+- 增加握手时redirectsDisabled证据，旧连接仅在已禁跳转时可被新启用的严格门复用；否则即使原始目标匹配也拒绝，避免先前跳转后的实际地址未知。共享摘要在池和turnBinding间引用同一对象；直通保存成功拨号所用上下文，既有每轮权威检查消费原握手。最终专项连续三轮实际通过service2.872s。
+- 计时用例随后连续10次实际通过（handler47.980s），不改容差和断言；后续完整handler152.113s通过，service337.073s失败。原输出筛选混入预期错误日志导致失败细节被截断，因此后续按Go JSON事件仅保留失败测试最后25条输出、即时报告具体失败，不创建持久产物、不把该失败当通过；两包vet和完整未限量lint仍实际通过0 issues.。
+- 预热原后台上下文会丢失原门，导致已启用严格请求创建无禁跳转证据的预热连接。本轮沿现有Acquire/lastAcquire/clone参数保存原冻结门快照，dialConn恢复到预热上下文后再执行原HeadersFactory权威读取及最终握手校验。专项验证背景拨号的正确根可用且证据完整、错误根网络拨号0；不复制请求取消状态、不新建预热器或第二套门。
+
+- 按Go JSON事件收集的最终生产实现完整回归：service344.544s通过；handler152.544s失败，明确为TestPR610RealWaitNativeIngress/ctx_pool第二轮QueueWaitMs=773未满足固定上限450。相同源码两包vet通过、完整未限量lint输出0 issues.。该用例用Sleep(100/200ms)制造等待，固定上限却把调度超时误判成重复计时；之前单独10次通过不作为解决证据。
+- 原位修复墙钟夹具：逐轮独立记录barrier实际阻塞总长、客户端发送前时刻、上游收到生成请求及下游读取delta时刻；队列值须包含实测阻塞且不超过本轮上游收包窗口，首字须落在下游实测窗口内，保留计划最小延迟及passthrough旧计时契约。既有虚拟时钟精确断言继续验证各阶段只计一次及80000ms上一轮尾部隔离；未扩大容差、改生产计时或skip。修复后真实/虚拟时钟及bridge重试专项连续5轮实际通过handler26.555s。
+- 修复夹具后的最终完整handler回归实际输出pass146.402s、Observed timing handler full regression exit: 0；同一最终生产实现的完整service344.544s通过，service源码未再修改，不重复未变包。最终handler go vet输出Observed timing handler vet: PASS、完整未限量lint再次输出0 issues.、退出0；前述两包完整vet/lint证据保持。
+- 本轮闭环现有原生WS的自动倍率握手目标、固定组、重定向、连接复用与后台预热归属，并修复实测等待夹具；11个Go文件及3份现有文档精确纳入本地交付。Go格式及diff空白检查通过，新增代码TODO/FIXME/XXX为0，STATE保持74行；历史源码图片仍12个共1164bytes，本轮新增持久测试产物0。单一工作树，仅本地提交；不推送、不运行CI、不部署或迁移。原20项12 done、2 in_progress、6 pending，D2/D4父任务尚有原验收缺口，未提前关闭；历史清理审核拒绝和Windows符号链接权限等待保留。
