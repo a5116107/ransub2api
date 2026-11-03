@@ -31,7 +31,7 @@
 | M3 | done | WinSock 原生拒绝连接/主机与网络不可达已识别；超时/重置不误判；真实单 POST 及代理/时序/WS 组合回归连续 5 轮通过（140.262s） |
 | M4 | done | 三处私有原子持久化收敛为共用接口；原 22 项 Windows 失败全部实际通过；双平台完整回归、核心三包 lint 0 与最终 vet 通过，本轮产物归零 |
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
-| D4 | pending | 待 D2；继续核查所有路径、配置新鲜度及固定售价；局部修复不替代完整严格范围验收 |
+| D4 | in_progress | 已修复账号附加倍率使切换账号改变售价的缺口；候选/终检/WS/预演与诊断回归通过。仍待 D2、完整路径及配置新鲜度核查，未标整体完成 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
 | D8 | pending | 双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
@@ -56,7 +56,9 @@
 - Windows 完整 service/handler/CLI 通过（326.174s/145.517s/1.793s）；repository 首轮 13 个含父级失败逐项定位后，完整剩余用例通过（22.031s），但创建符号链接夹具缺少系统权限，原测试保留，不能声称 Windows 全部通过。
 - 凭据密钥初始化复用 securefile 原子创建及打开句柄权限检查，删除重复持久化逻辑；并发不覆写、私有 ACL、POSIX 权限/fsync、原备份锁与验证码断言保持。Linux 凭据/New API/备份/验证码及 securefile 连续三轮均 PASS，含符号链接拒绝；最终六包 vet 通过。
 - 测试 Redis 位于 H:/Root/tools/redis/5.0.14.1；仅命令进程 PATH 使用，不改系统 Redis 3 或全局环境。真实 Redis 发布/失效/恢复及 Ticket 三轮通过。新交叉编译程序和下载压缩包已清理 180515955 bytes，便携运行工具保留 48299724 bytes。
-- 最后源码的 service/repository/handler/assertions/regional/securefile/profit-preview 七包完整未限量 lint 输出 0 issues、退出码 0；最终六包 vet 退出码 0。Windows 权限等待与全局未完成验收仍保留，不由静态检查代替。
+- D2.4 验收时七包完整未限量 lint 输出 0 issues、退出码 0，六包 vet 退出码 0；不扩大为后续修改的检查结果。Windows 权限等待与全局未完成验收仍保留。
+- D4 本轮新增固定售价准入、五平台/WS/恢复及槽位释放专项三轮通过；相关利润/定价/用量/槽位/诊断三包三轮通过（2.737s/20.167s/1.821s）。真实 CLI 文本/JSON 均验证 2 个售价不符拒绝、1 个准入；演练输入已删除。
+- D4 最终 service/handler/profit-preview 完整未限量 lint 输出 0 issues、退出码 0，同三包 vet 退出码 0；本轮修复按既有授权本地提交，未推送。现有 20 个 ID 为 12 done、2 in_progress、6 pending，本轮 done 增量 0，D4 从 pending 转为 in_progress。
 
 ## 可复现的 D4.1 专项验证
 
@@ -70,6 +72,7 @@ go test -tags=unit -p 2 ./internal/service -run 'TestGatewayProfitControlTermina
 
 D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；剩余请求级固定线路选择/原同步兼容、共享 Key 限额与缓存域，不能把 AccountOpsGroup 当作 Key 级限额键或缓存共享证据。
 D3–D9 主线仍待按设计依赖实施与验收；D4.1/D4.2 和 M1–M5 的完成不代表全局方案已全部落地。
+D4 固定售价子项已推进，完整 D4 继续核对配置新鲜度、模型/fast 计价来源及剩余路径；本轮完成 ID 数未增加，D2/D4 的未完成标准保持。
 
 ## 外部验收等待
 

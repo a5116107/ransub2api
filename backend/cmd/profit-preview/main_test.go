@@ -55,6 +55,18 @@ func TestParsePreviewInputsRejectsEmptyGroups(t *testing.T) {
 	}
 }
 
+func TestParsePreviewInputsPreservesAccountSaleRate(t *testing.T) {
+	inputs, err := parsePreviewInputs([]byte(`{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":1,"profit_control_enabled":true},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.2,"group_rate_multiplier":2}],"models":["gpt-test"]}]}`), false)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+	require.Len(t, inputs[0].Accounts, 1)
+	require.NotNil(t, inputs[0].Accounts[0].GroupRateMultiplier)
+	require.Equal(t, 2.0, *inputs[0].Accounts[0].GroupRateMultiplier)
+	report := service.PreviewProfitAdmission(inputs, time.Now())[0]
+	require.Equal(t, "rejected_account_sale_rate_mismatch", report.Verdicts[0].Class)
+	require.Zero(t, report.RemainingByModel["gpt-test"])
+}
+
 // TestModelsWithZeroRemainingWarnings 钉死两档 D 的归零告警分工：
 // 默认 D 归零由 modelsWithZeroRemaining 报告；默认 D 仍有账号但最低有效 D
 // （分组内存在更低的用户级倍率覆盖）归零的模型必须单独告警——那些用户的该

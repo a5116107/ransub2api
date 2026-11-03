@@ -9,6 +9,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
@@ -98,6 +99,28 @@ func TestAcquireResponsesAccountSlotProfitRecheck(t *testing.T) {
 	}
 
 	for _, acquired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sale rate change rejects slot acquired=%v", acquired), func(t *testing.T) {
+			cache := &profitCountingConcurrencyCache{}
+			h := newHandler(cache)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/v1/responses", nil).WithContext(profitSlotTestContext(t, gw, groupID, false))
+			account := profitSlotTestAccount(5, 0.3)
+			markup := 2.0
+			account.GroupRateMultiplier = &markup
+			selection := newSelection(account)
+			if acquired {
+				selection.Acquired = true
+				selection.ReleaseFunc = func() { cache.accountReleases.Add(1) }
+			}
+			streamStarted := false
+			release, result := h.acquireResponsesAccountSlot(c, &groupID, "", selection, false, &streamStarted, zap.NewNop())
+			require.Equal(t, openAISlotAcquireProfitVetoed, result)
+			require.Nil(t, release)
+			require.Equal(t, int64(1), cache.accountReleases.Load())
+			require.Zero(t, w.Body.Len())
+			require.False(t, streamStarted)
+		})
 		for _, healthy := range []bool{false, true} {
 			name := "synced wait slot rejects failed evidence"
 			if acquired {

@@ -162,3 +162,16 @@
 - 前述待返回的最终七包 lint 已返回：service/repository/handler/assertions/regional/securefile/profit-preview，完整未限量检查实际输出 0 issues.、Final seven-package lint exit: 0；在最后源码修改之后执行。最终六包 go vet 也实际退出码 0。没有把未执行范围或 Windows 权限阻塞表述为通过。
 - 用户最新 AGENTS.md 明确 Standing local-commit authorization applies，替换之前的无提交授权边界。沿用同一工作树，从原 detached 基线建立本地分支 work/monitor-driven-scheduling，提交已核对归属的累计调度实施、平台修复、测试清理及三份项目文档；不创建 worktree、不推送、不创建 PR、不运行 CI、不迁移或部署。origin 实际指向 ranxi2001/sub2api，未把该名称当作官方上游或推送授权。
 - 提交前暂存区为空；此前 151 个 tracked 修改均为本任务累计差异，新增 securefile/assertions 源码及本目录三份文档属于其必要依赖。受保护 service/data 图片与 bin 产物不进入提交，保持可解释的工作区遗留。STATE 已同步本地交付边界，更新为 81 行；实际提交标识由 Git 保存，避免文档引用自身提交哈希。
+
+## 2026-11-03：D4 固定售价准入与拒绝诊断修复
+
+- 沿用 work/monitor-driven-scheduling 的同一工作树，以 01b4be6 为本轮起点，仅保留原有未跟踪 service/data 图片。D2 剩余范围核对时发现直接影响固定售价的验收缺口：原计费按账号 GroupRateMultiplier 调整用户倍率，而利润门与预演没有排除不同附加售价的账号；CLI 输入还会丢弃 group_rate_multiplier。优先修复此项，D2 仍未完成，不改原依赖和验收标准。
+- 加入回归后，在旧源码实际复现 8 个叶子失败：service 的 0/折扣/加价/NaN/Inf 五项、handler 等待槽/已得槽两项、CLI 丢失附加倍率一项。命令 go test -tags=unit -p 2 ./internal/service ./internal/handler ./cmd/profit-preview -run 'Test(ProfitControlFixedSaleAccountMultiplier|ParsePreviewInputsPreservesAccountSaleRate|AcquireResponsesAccountSlotProfitRecheck)' -count=1，实际退出码 1，三包分别 FAIL 1.703s/1.677s/2.030s。
+- 在既有共用 profitControlAccountRateAt 原位加入固定售价兼容检查：启用门时 Account.UserGroupRateMultiplier() 的有效值必须精确为 1；nil 和原有负值按计费既有默认处理。0、折扣、加价和非有限有效值不参与固定售价调度，独立原因 profit_account_sale_rate_mismatch；不改原计费链、配置、usage 或 U/D，不用增大门阈值允许换路变价。关闭门与显式抑制边界保持。
+- Preview 共用同一判定，新增 rejected_account_sale_rate_mismatch 分类并排除合格容量；CLI 补齐 group_rate_multiplier 输入传递及分类总数。原账号倍率/同步快照字段和 JSON 兼容保持。老导出应包含附加售价字段，正式启用前须重新预演候选容量；已有非单位附加倍率账号在启用门时会被拒绝。
+- 五平台共用门、免费上游、恢复、WS 轮次冻结时刻、已得槽/等待槽释放且不写响应均覆盖。专项连续三轮实际通过：service 1.432s、handler 0.782s、profit-preview 0.895s。相关利润/定价/RecordUsage/槽位/诊断/CLI 三包扩大回归连续三轮实际通过：service 2.737s、handler 20.167s、profit-preview 1.821s，退出码 0；保留未启用门的账号附加计费原测试。
+- 同时发现共享 Gateway 诊断只识别 threshold/invalid-rate，其余利润拒绝落入 default 被计作 eligible。原位补齐 group-config/upstream-evidence/sale-rate 三类，三个真实诊断回归验证 Total=1、Eligible=0 且原因计数=1。详细日志复用既有 summarizeSelectionFailureStats，删除重复的统计格式/参数列表；没有新增平行诊断器。进程采样观测增加独立 veto_account_sale_rate_mismatch_total。
+- 真实执行 go run ./cmd/profit-preview 的文本与 JSON 两种入口，标准/加价/折扣三个账号结果为 1 准入、2 个附加售价不符拒绝，模型合格容量为 1；程序校验输出 Actual CLI JSON: 2 sale-rate rejections, 1 admitted account; PASS。仅生成 bin/task-fixed-sale-input.json，演练后精确删除，Fixture remaining: False，未写日志或二进制产物。
+- 最终 service/handler/profit-preview 的 go vet -tags=unit -p 2 实际退出码 0；完整未限量 golangci-lint（--build-tags=unit --timeout=12m --concurrency=2 --allow-parallel-runners --max-same-issues=0 --max-issues-per-linter=0）实际输出 0 issues.、Touched packages lint exit: 0。不重复扩大至未修改包，不运行 CI。
+- D4 转为 in_progress，固定售价附加倍率子项与关联诊断缺口已验证，但完整 D4 仍依赖 D2 及配置新鲜度、模型/fast 来源和剩余路径核查；没有新拆 ID 或把部分验收冒充全局 done。按设计现有 20 个 ID 计数：12 done、2 in_progress、6 pending，本轮 done 增量 0。STATE 更新为 84 行，三份文档原位维护。
+- 仅提交本轮 9 个源码/测试文件与 3 份项目文档；没有推送、PR、worktree、迁移或部署。git diff --check 通过，新增 TODO/FIXME/XXX 为 0，演练产物剩余 0。之前已被自动审批拦截的 bin 产物和图片不重试删除，Windows 符号链接权限等待保持，未宣称全工作区无遗留。

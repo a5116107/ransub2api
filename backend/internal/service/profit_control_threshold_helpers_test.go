@@ -20,6 +20,43 @@ func TestClampProfitControlThreshold(t *testing.T) {
 	require.Equal(t, 0.7, clampProfitControlThreshold(0.7))
 }
 
+func TestProfitControlFixedSaleAccountMultiplier(t *testing.T) {
+	now := time.Now().UTC()
+	one, zero, discount, markup := 1.0, 0.0, 0.5, 2.0
+	negative, nan, infinity := -1.0, math.NaN(), math.Inf(1)
+	for _, tc := range []struct {
+		name  string
+		rate  *float64
+		admit bool
+	}{
+		{"default", nil, true}, {"unit", &one, true}, {"legacy negative defaults to unit", &negative, true},
+		{"free", &zero, false}, {"discount", &discount, false}, {"markup", &markup, false},
+		{"nan", &nan, false}, {"infinite", &infinity, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(now)
+			account.GroupRateMultiplier = tc.rate
+			ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{threshold: 0.7, pricingAt: now})
+			vetoed, reason := OpenAIProfitControlVeto(ctx, account)
+			require.Equal(t, !tc.admit, vetoed)
+			verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now)
+			if tc.admit {
+				require.Empty(t, reason)
+				require.Equal(t, ProfitPreviewClassAdmitted, verdict.Class)
+			} else {
+				require.Equal(t, "profit_account_sale_rate_mismatch", reason)
+				require.Equal(t, "rejected_account_sale_rate_mismatch", verdict.Class)
+			}
+			// Only enabled admission is affected; billing config is not rewritten.
+			vetoed, reason = OpenAIProfitControlVeto(context.Background(), account)
+			require.False(t, vetoed)
+			require.Empty(t, reason)
+			require.Equal(t, ProfitPreviewClassAdmitted, previewAccountProfitAdmission(account, false, 0.7, 0.3, now).Class)
+			require.Same(t, tc.rate, account.GroupRateMultiplier)
+		})
+	}
+}
+
 // TestProfitControlOverThreshold 钉死「越线」的唯一定义：相对 epsilon 吸收
 // decimal(10,4) 落库与浮点乘法的边界误差，U == 阈值 判定为合格。
 //

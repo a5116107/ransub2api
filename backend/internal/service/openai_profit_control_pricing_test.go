@@ -14,6 +14,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProfitControlFixedSaleAcrossWSTurns(t *testing.T) {
+	group := profitControlTestGroup(946, 0, 0)
+	svc := &OpenAIGatewayService{}
+	ctx, firstPricingAt := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+	account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(947), 0.2)
+	vetoed, reason := OpenAIProfitControlVeto(ctx, account)
+	require.False(t, vetoed)
+	require.Empty(t, reason)
+	markup := 2.0
+	account.GroupRateMultiplier = &markup
+	vetoed, reason = OpenAIProfitControlVeto(ctx, account)
+	require.True(t, vetoed, "a change during a slot wait must not alter the sale price")
+	require.Equal(t, "profit_account_sale_rate_mismatch", reason)
+	next, nextPricingAt := svc.WithOpenAITurnPricingContext(ctx, &group.ID)
+	require.False(t, nextPricingAt.IsZero())
+	require.Equal(t, firstPricingAt, OpenAIPricingAtFromContext(ctx), "the preceding turn keeps its pricing time")
+	vetoed, reason = OpenAIProfitControlVeto(next, account)
+	require.True(t, vetoed)
+	require.Equal(t, "profit_account_sale_rate_mismatch", reason)
+	markup = 1
+	vetoed, reason = OpenAIProfitControlVeto(next, account)
+	require.False(t, vetoed)
+	require.Empty(t, reason)
+	require.Equal(t, 1.0, account.UserGroupRateMultiplier())
+}
+
 // WithOpenAIRequestPricingContext：装门 + 固定 pricingAt；显式抑制标记
 // （媒体/count_tokens/live 等门范围外路径）跳门且防御性装门无法把门加回来。
 func TestProfitControl_RequestPricingContext(t *testing.T) {

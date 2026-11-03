@@ -43,6 +43,7 @@ const (
 	ProfitPreviewClassRejectedThreshold    = "rejected_threshold"
 	ProfitPreviewClassRejectedInvalidRate  = "rejected_invalid_account_rate"
 	ProfitPreviewClassRejectedUpstreamRate = "rejected_upstream_rate_unavailable"
+	ProfitPreviewClassRejectedSaleRate     = "rejected_account_sale_rate_mismatch"
 )
 
 // ProfitPreviewAccountVerdict 是单账号的预演结论。
@@ -192,6 +193,8 @@ func previewAccountProfitAdmission(
 		verdict.Class = ProfitPreviewClassRejectedInvalidRate
 	case reason == openAIProfitFilterReasonUpstreamRateUnavailable:
 		verdict.Class = ProfitPreviewClassRejectedUpstreamRate
+	case reason == openAIProfitFilterReasonAccountSaleRateMismatch:
+		verdict.Class = ProfitPreviewClassRejectedSaleRate
 	case profitControlOverThreshold(upstream, thresholdDefault):
 		verdict.Class = ProfitPreviewClassRejectedThreshold
 	default:

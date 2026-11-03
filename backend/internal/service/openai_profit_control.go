@@ -20,6 +20,8 @@ package service
 //     使用 accounts.rate_multiplier，0 合法；自动同步的 API Key 还要求最新有效的
 //     token 单组快照，按尝试时刻重算上游高峰，并取保存倍率与当前探测倍率较大者。
 //     缺失、失败、过期或非法同步证据不回退旧倍率；nil、负数、NaN、Inf 同样拒绝。
+//   - 启用门时账号的有效用户附加倍率必须为 1；否则切换账号会改变下游单价。
+//     拒绝候选而不改写原计费，关闭门的分组保持账号附加倍率原语义。
 //
 // 装门点（gate 随 ctx 传播，请求内复用，覆盖等待/重试/failover/抢槽后终检）：
 //   - handler 各文本入口经 WithOpenAIRequestPricingContext 在请求开始统一装门并
@@ -58,7 +60,7 @@ package service
 // 已装门请求在抢槽后读取账号失败或账号消失时拒绝本次准入，释放槽位后重新
 // 选号，避免用选号时的旧倍率放行；缓存失败但数据库回源成功则正常复核。
 //
-// 可观测性：按分组和平台累计装门/threshold/invalid-rate/upstream-rate 否决/终检刷新
+// 可观测性：按分组和平台累计装门/threshold/invalid-rate/upstream-rate/sale-rate 否决/终检刷新
 // 失败计数，≥5 分钟采样输出一条 Info（profit_control_activity），无逐请求日志。
 
 import (
@@ -86,6 +88,7 @@ const (
 	openAIProfitFilterReasonInvalidAccountRate      = "profit_invalid_account_rate"
 	openAIProfitFilterReasonGroupConfigUnavailable  = "profit_group_config_unavailable"
 	openAIProfitFilterReasonUpstreamRateUnavailable = "profit_upstream_rate_unavailable"
+	openAIProfitFilterReasonAccountSaleRateMismatch = "profit_account_sale_rate_mismatch"
 
 	// 槽位获取后的账号刷新失败由终检返回，沿用 refresh_failure_total 观测。
 	openAIProfitFilterReasonAccountRefreshFailed = "profit_account_refresh_failed"
@@ -122,13 +125,19 @@ func profitControlOverThreshold(upstream, threshold float64) bool {
 	return upstream-threshold > profitControlRateEpsilon*math.Max(1, math.Abs(threshold))
 }
 
-// profitControlAccountRateAt resolves U without network I/O or writes. The
+// profitControlAccountRateAt checks fixed-sale compatibility and resolves U without network I/O or writes. The
 // original probe owns identity CAS and base-rate write-back; admission only
 // consumes its snapshot. Older valid snapshots need no synced_rate_multiplier.
 func profitControlAccountRateAt(account *Account, attemptAt time.Time) (float64, string) {
 	if account == nil || account.RateMultiplier == nil ||
 		math.IsNaN(*account.RateMultiplier) || math.IsInf(*account.RateMultiplier, 0) || *account.RateMultiplier < 0 {
 		return 0, openAIProfitFilterReasonInvalidAccountRate
+	}
+	// A different account-side sale multiplier would change the customer's
+	// unit price on failover. Keep billing semantics intact and exclude it
+	// from fixed-price admission instead. Use billing's legacy nil/negative default.
+	if account.UserGroupRateMultiplier() != 1 {
+		return 0, openAIProfitFilterReasonAccountSaleRateMismatch
 	}
 	saved := *account.RateMultiplier
 	if account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
@@ -436,6 +445,7 @@ type openAIProfitControlGroupStats struct {
 	vetoInvalidRate  atomic.Int64
 	vetoGroupConfig  atomic.Int64
 	vetoUpstreamRate atomic.Int64
+	vetoSaleRate     atomic.Int64
 	refreshFailures  atomic.Int64
 	lastLogUnixMilli atomic.Int64
 }
@@ -482,6 +492,8 @@ func (o *openAIProfitControlObserver) recordVeto(groupID int64, platform string,
 		s.vetoGroupConfig.Add(1)
 	case openAIProfitFilterReasonUpstreamRateUnavailable:
 		s.vetoUpstreamRate.Add(1)
+	case openAIProfitFilterReasonAccountSaleRateMismatch:
+		s.vetoSaleRate.Add(1)
 	}
 	o.maybeLog(groupID, platform, threshold, s)
 }
@@ -512,6 +524,7 @@ func (o *openAIProfitControlObserver) maybeLog(groupID int64, platform string, t
 		"veto_invalid_account_rate_total", s.vetoInvalidRate.Load(),
 		"veto_group_config_unavailable_total", s.vetoGroupConfig.Load(),
 		"veto_upstream_rate_unavailable_total", s.vetoUpstreamRate.Load(),
+		"veto_account_sale_rate_mismatch_total", s.vetoSaleRate.Load(),
 		"refresh_failure_total", s.refreshFailures.Load(),
 	)
 }

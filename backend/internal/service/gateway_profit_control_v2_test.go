@@ -50,6 +50,62 @@ func gatewayProfitTestAccount(id int64, platform string, rate float64, groupID i
 	}
 }
 
+func TestGatewayProfitControlFixedSaleAcrossPlatforms(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity} {
+		t.Run(platform, func(t *testing.T) {
+			group := gatewayProfitTestGroup(930, platform)
+			svc := &GatewayService{}
+			account := gatewayProfitTestAccount(931, platform, 0, group.ID)
+			markup := 2.0
+			account.GroupRateMultiplier = &markup
+			ctx := svc.withGatewayProfitControlGate(gatewayProfitTestContext(group), &group.ID)
+			vetoed, reason := OpenAIProfitControlVeto(ctx, &account)
+			require.True(t, vetoed, "even a free upstream must not change the sale price")
+			require.Equal(t, "profit_account_sale_rate_mismatch", reason)
+			require.False(t, svc.isGatewayAccountProfitEligible(ctx, &account))
+			_, vetoed, reason = svc.GatewayProfitControlVetoLatest(ctx, &account)
+			require.True(t, vetoed)
+			require.Equal(t, "profit_account_sale_rate_mismatch", reason)
+			markup = 1
+			require.True(t, svc.isGatewayAccountProfitEligible(ctx, &account), "restoring the configured price must restore admission")
+			group.ProfitControlEnabled = false
+			markup = 2
+			plain := svc.withGatewayProfitControlGate(gatewayProfitTestContext(group), &group.ID)
+			require.True(t, svc.isGatewayAccountProfitEligible(plain, &account), "known disabled groups preserve account pricing")
+		})
+	}
+}
+
+func TestGatewayProfitControlDiagnosticsCountEveryRejectedAccount(t *testing.T) {
+	group := gatewayProfitTestGroup(940, PlatformAnthropic)
+	account := gatewayProfitTestAccount(941, PlatformAnthropic, 0.2, group.ID)
+	for _, tc := range []struct{ name, reason string }{
+		{"sale price", "profit_account_sale_rate_mismatch"},
+		{"group config", "profit_group_config_unavailable"},
+		{"upstream evidence", "profit_upstream_rate_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := account
+			gate := &openAIProfitControlGate{groupID: group.ID, platform: group.Platform, threshold: 0.5}
+			switch tc.name {
+			case "sale price":
+				markup := 2.0
+				candidate.GroupRateMultiplier = &markup
+			case "group config":
+				gate.configUnavailable = true
+			case "upstream evidence":
+				candidate.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true, UpstreamBillingRateSyncEnabledExtraKey: true}
+			}
+			ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, gate)
+			svc := &GatewayService{}
+			stats := svc.collectSelectionFailureStats(ctx, &group.ID, []Account{candidate}, "gpt-test", PlatformAnthropic, nil, false)
+			require.Equal(t, 1, stats.Total)
+			require.Zero(t, stats.Eligible)
+			require.Contains(t, summarizeSelectionFailureStats(stats), tc.reason+"=1")
+		})
+	}
+}
+
 func TestGatewayProfitControlInstallsForFivePlatformsOnlyOnTokenRequests(t *testing.T) {
 	for _, platform := range []string{
 		PlatformOpenAI,

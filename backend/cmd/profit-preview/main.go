@@ -34,13 +34,14 @@ type inputGroup struct {
 }
 
 type inputAccount struct {
-	ID             int64             `json:"id"`
-	Name           string            `json:"name"`
-	Platform       string            `json:"platform"`
-	Type           string            `json:"type"`
-	RateMultiplier *float64          `json:"rate_multiplier"`
-	Extra          map[string]any    `json:"extra"`
-	ModelMapping   map[string]string `json:"model_mapping"`
+	ID                  int64             `json:"id"`
+	Name                string            `json:"name"`
+	Platform            string            `json:"platform"`
+	Type                string            `json:"type"`
+	RateMultiplier      *float64          `json:"rate_multiplier"`
+	GroupRateMultiplier *float64          `json:"group_rate_multiplier"`
+	Extra               map[string]any    `json:"extra"`
+	ModelMapping        map[string]string `json:"model_mapping"`
 }
 
 type inputEntry struct {
@@ -122,11 +123,12 @@ func main() {
 			fmt.Printf("  账号 %-4d %-24s 平台=%-12s 保存倍率=%-8s U=%-8s 来源=%-19s %s%s\n",
 				v.AccountID, v.Name, v.Platform, rate, effectiveRate, v.RateSource, v.Class, suffix)
 		}
-		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d\n",
+		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d 账号附加售价不符=%d\n",
 			counts[service.ProfitPreviewClassAdmitted],
 			counts[service.ProfitPreviewClassRejectedThreshold],
 			counts[service.ProfitPreviewClassRejectedInvalidRate],
-			counts[service.ProfitPreviewClassRejectedUpstreamRate])
+			counts[service.ProfitPreviewClassRejectedUpstreamRate],
+			counts[service.ProfitPreviewClassRejectedSaleRate])
 		models := make([]string, 0, len(report.RemainingByModel))
 		for model := range report.RemainingByModel {
 			models = append(models, model)
@@ -178,12 +180,13 @@ func parsePreviewInputs(raw []byte, assumeEnabled bool) ([]service.ProfitPreview
 		accounts := make([]*service.Account, 0, len(entry.Accounts))
 		for _, a := range entry.Accounts {
 			account := &service.Account{
-				ID:             a.ID,
-				Name:           a.Name,
-				Platform:       a.Platform,
-				Type:           a.Type,
-				RateMultiplier: a.RateMultiplier,
-				Extra:          a.Extra,
+				ID:                  a.ID,
+				Name:                a.Name,
+				Platform:            a.Platform,
+				Type:                a.Type,
+				RateMultiplier:      a.RateMultiplier,
+				GroupRateMultiplier: a.GroupRateMultiplier,
+				Extra:               a.Extra,
 			}
 			if len(a.ModelMapping) > 0 {
 				mapping := make(map[string]any, len(a.ModelMapping))

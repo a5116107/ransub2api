@@ -2425,6 +2425,9 @@ type selectionFailureStats struct {
 	ModelRateLimited   int
 	ProfitThreshold    int
 	ProfitInvalidRate  int
+	ProfitGroupConfig  int
+	ProfitUpstreamRate int
+	ProfitSaleRate     int
 	SamplePlatformIDs  []int64
 	SampleMappingIDs   []int64
 	SampleRateLimitIDs []string
@@ -2448,20 +2451,12 @@ func (s *GatewayService) logDetailedSelectionFailure(
 	stats := s.collectSelectionFailureStats(ctx, groupID, accounts, requestedModel, platform, excludedIDs, allowMixedScheduling)
 	logger.LegacyPrintf(
 		"service.gateway",
-		"[SelectAccountDetailed] group_id=%v model=%s platform=%s session=%s total=%d eligible=%d excluded=%d unschedulable=%d platform_filtered=%d model_unsupported=%d model_rate_limited=%d profit_threshold=%d profit_invalid_account_rate=%d sample_platform_filtered=%v sample_model_unsupported=%v sample_model_rate_limited=%v",
+		"[SelectAccountDetailed] group_id=%v model=%s platform=%s session=%s %s sample_platform_filtered=%v sample_model_unsupported=%v sample_model_rate_limited=%v",
 		derefGroupID(groupID),
 		requestedModel,
 		platform,
 		shortSessionHash(sessionHash),
-		stats.Total,
-		stats.Eligible,
-		stats.Excluded,
-		stats.Unschedulable,
-		stats.PlatformFiltered,
-		stats.ModelUnsupported,
-		stats.ModelRateLimited,
-		stats.ProfitThreshold,
-		stats.ProfitInvalidRate,
+		summarizeSelectionFailureStats(stats),
 		stats.SamplePlatformIDs,
 		stats.SampleMappingIDs,
 		stats.SampleRateLimitIDs,
@@ -2504,6 +2499,12 @@ func (s *GatewayService) collectSelectionFailureStats(
 			stats.ProfitThreshold++
 		case openAIProfitFilterReasonInvalidAccountRate:
 			stats.ProfitInvalidRate++
+		case openAIProfitFilterReasonGroupConfigUnavailable:
+			stats.ProfitGroupConfig++
+		case openAIProfitFilterReasonUpstreamRateUnavailable:
+			stats.ProfitUpstreamRate++
+		case openAIProfitFilterReasonAccountSaleRateMismatch:
+			stats.ProfitSaleRate++
 		default:
 			stats.Eligible++
 		}
@@ -2595,7 +2596,7 @@ func appendSelectionFailureRateSample(samples []string, accountID int64, remaini
 
 func summarizeSelectionFailureStats(stats selectionFailureStats) string {
 	return fmt.Sprintf(
-		"total=%d eligible=%d excluded=%d unschedulable=%d platform_filtered=%d model_unsupported=%d model_rate_limited=%d profit_threshold=%d profit_invalid_account_rate=%d",
+		"total=%d eligible=%d excluded=%d unschedulable=%d platform_filtered=%d model_unsupported=%d model_rate_limited=%d profit_threshold=%d profit_invalid_account_rate=%d profit_group_config_unavailable=%d profit_upstream_rate_unavailable=%d profit_account_sale_rate_mismatch=%d",
 		stats.Total,
 		stats.Eligible,
 		stats.Excluded,
@@ -2605,6 +2606,9 @@ func summarizeSelectionFailureStats(stats selectionFailureStats) string {
 		stats.ModelRateLimited,
 		stats.ProfitThreshold,
 		stats.ProfitInvalidRate,
+		stats.ProfitGroupConfig,
+		stats.ProfitUpstreamRate,
+		stats.ProfitSaleRate,
 	)
 }
 
