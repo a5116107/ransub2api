@@ -202,3 +202,12 @@
 - 修复后一次复核命令遗漏进程 PATH，误用系统 Redis 3，真实 Redis 竞争三轮均失败（预期 4 个获槽，实际 0）；不将其标为跳过，也不改 Lua 兼容旧环境。显式加入 H:/Root/tools/redis/5.0.14.1 后，配置/Key/可达性/PR612 三轮复核实际通过（config 0.760s、repository 28.534s）。cmd/server 生产注入编译实际输出 ok 2.232s [no tests to run]，属于编译检查。
 - 最后源码与夹具修正后，执行 go vet -tags=unit -p 2 ./internal/config ./internal/repository ./internal/service，实际输出 Final shared upstream Key vet: PASS。完整未限量 golangci-lint run --build-tags=unit --timeout=12m --concurrency=2 --allow-parallel-runners --max-same-issues=0 --max-issues-per-linter=0 同三包最终输出 0 issues.，退出码 0。未扩大为全后端/生产验收。
 - 本地提交本轮已核对的 20 个源码/测试/配置/文档文件；git diff --check 通过，新增 TODO/FIXME/XXX 为 0，STATE 87 行，无新持久日志/二进制/图片。只使用原单一工作树，未推送、PR、CI、生产迁移或部署；历史受保护图片和被自动审批拒绝清理的 bin 产物原样保留。实际提交标识由 Git 保存。
+
+## 2026-11-03：共享 Key 的直接 Responses WS 桥接与逐轮错误类型
+
+- 原位删除配置共享 Key 后直接拒绝全部 Responses WS ingress 的分支，复用既有 HTTP/SSE bridge。每轮在 HTTPUpstream 以最终请求凭据取共享槽位，账号原 BeforeTurn/AfterTurn 保持；连接空闲不持共享槽位，不新增并行 WS 租约实现。HTTP-to-WS 的 HTTP 回落保持。
+- 共享限额优先于 smart protocol 的 ws/auto/shadow 及原生 passthrough；账号明确 off 仍拒绝，Grok 等原有强制桥接保持。上游须支持 Responses HTTP/SSE；这一选择不证明 HTTP 与 WS 同价、同缓存域，原生上游 WS/Live/区域与 D2 其余验收仍开放。
+- 回归先复现第二轮共享额度满额/策略错误被包装为普通 502：两个 turn_2 子例均失败，第一轮通过。修复桥接器原错误分类入口后，各轮统一保留本地 503 UpstreamFailoverError，不写供应商健康，发送后的 lease lost 不变成可重放的准入失败。
+- 新 repository 组合测试使用真实 loopback WS/HTTP 与 miniredis 执行生产服务及实际 HTTPUpstream：首两轮各持一个共享槽，其他账号/独立客户端同凭据被拒且无额外请求；响应完成后空闲槽为零；第三轮取消传到上游 HTTP 并回收精确成员。连续三轮通过（2.159s）。独立真实 Redis 5 竞争与该组合测试 verbose 复核均 PASS、无 skip（2.243s）。
+- service 网络测试覆盖 smart protocol 关闭/ws/auto/shadow、两轮 usage、账号显式关闭和后续账号并发钩子拒绝。首轮关闭测试误用被账号旧 enabled 字段覆盖的默认 off，30 秒等待失败；按原优先级改为显式账号 off，保持实现和原语义。最终新增专项三轮 1.883s；扩大 WS/bridge/续接/智能协议/Key 回归三轮 service/repository 105.830s/18.402s，最终两包 go vet 退出 0。
+- 完整两包 lint 首轮发现新组合测试未检查取消返回错误 1 项；补齐 require.ErrorIs(err, context.Canceled)，并非忽略错误。最终组合测试三轮 1.796s、两包 go vet 与完整未限量 golangci-lint 均退出 0，lint 输出 0 issues.。git diff --check 通过，STATE 88 行；原整体拒绝分支及误导的 xai-http-bridge 日志名称已移除，无新增 TODO/FIXME/XXX。仅本地提交这 9 个任务文件；父任务仍为 12 done、2 in_progress、6 pending，done 增量 0，推进的是 D2 的直接 WS 生命周期验收。历史受保护文件不重试删除，不 CI/推送/部署。

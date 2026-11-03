@@ -20,6 +20,29 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAIWSHTTPBridgeSharedKeyAdmissionAcrossTurns(t *testing.T) {
+	for _, admissionErr := range []error{ErrUpstreamKeyCapacity, ErrUpstreamKeyPolicy} {
+		for _, turn := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/turn_%d", admissionErr, turn), func(t *testing.T) {
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+				account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{err: admissionErr}}
+				payload := []byte(`{"type":"response.create","model":"gpt-5.1","input":"hi"}`)
+				writes := 0
+				result, err := svc.proxyOpenAIWSHTTPBridgeTurn(t.Context(), c, account, "fixture", payload, len(payload), "gpt-5.1", "", "", "", "", turn, func([]byte) error { writes++; return nil })
+				var failover *UpstreamFailoverError
+				require.ErrorAs(t, err, &failover)
+				require.Equal(t, http.StatusServiceUnavailable, failover.StatusCode)
+				require.Nil(t, result)
+				require.Zero(t, writes, "pre-send admission must remain distinguishable from an upstream 502")
+				require.True(t, account.Schedulable)
+				require.Nil(t, account.TempUnschedulableUntil)
+			})
+		}
+	}
+}
+
 func TestResolveOpenAIWSClientFirstMessageTimeout(t *testing.T) {
 	defaultTimeout := time.Duration(config.DefaultOpenAIWSClientFirstMessageTimeoutSeconds) * time.Second
 	require.Equal(t, defaultTimeout, ResolveOpenAIWSClientFirstMessageTimeout(nil))

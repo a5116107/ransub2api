@@ -18,7 +18,7 @@
 | 任务 | 状态 | 证据/剩余范围 |
 | --- | --- | --- |
 | D1 | done | 主设计第 3.1 节已记录原配置覆盖、倍率口径、共享 Key 缺口及最小补丁边界 |
-| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE 共享 Key 总上限、版本冲突拒绝、续租与精确释放已接入本地代码；固定选路、WS/Live/区域接线和缓存域仍待验收 |
+| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE 共享 Key 与直接 Responses WS 的逐轮 HTTP 桥接已验证；固定选路、原生上游 WS/Live/区域及缓存域仍待验收 |
 | D2.1 | done | 自动同步快照有效性、尝试时刻高峰、原同步值域与在线/预演同源已落地；30 类边界及槽位释放覆盖，三轮专项、完整本地回归、vet 与真实 CLI 演练通过 |
 | D2.2 | done | New API 声明组与单路由须一致；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
 | D2.3 | done | 协议地址/协议/接入模式统一进入身份边界，编辑/CRS/绑定旧证据失效；12 类四路径与 3 项绑定回归，四包三轮回归、vet 和 service 未限量 lint 0 通过 |
@@ -62,6 +62,7 @@
 - 本轮账号/用户占槽丢失回复的精确回收已修复；旧源码四子例失败，新回归含 miniredis 双独立客户端及健康成员 ZSCORE 检查，三轮 service/repository 通过（3.991s/3.803s）；三包相关回归通过，service/repository 完整 lint 均 0，三包 vet 及最终 repository vet 通过；本地提交、不推送。共享 Key 总额度在该次提交尚未实现，本次 HTTP/SSE 实施见下一条。
 
 - 本轮共享额度配置位于 gateway.upstream_key_concurrency，版本/Key 摘要统一管理；独立 Redis namespace、30 秒租约/5 秒续租/19 秒取消看门狗；账号限制保持。三包扩大回归三轮通过（3.375s/34.033s/14.256s），真实 Redis 竞争已通过；config 全包通过（2.457s），三包最终 vet 通过，完整未限量 lint 为 0 issues，服务器注入编译通过（2.232s）；证据见 DECISIONS.md。
+- 本轮移除直接 Responses WS 的共享限额整体拒绝，原位接入既有 HTTP bridge；两轮响应结束归零、跨账号同 Key 满额不发请求、第三轮取消真实上游和精确释放均通过。第二轮本地限额错误曾复现为普通 502，已修复为 503 准入类型；相关扩大回归三轮 service/repository 105.830s/18.402s，最终新增回归三轮 1.883s，vet 通过；完整包 lint 状态见本轮 DECISIONS 记录。无新增持久产物。
 
 ## 可复现的 D4.1 专项验证
 
@@ -75,7 +76,7 @@ go test -tags=unit -p 2 ./internal/service -run 'TestGatewayProfitControlTermina
 
 D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；剩余请求级固定线路选择/原同步兼容、WS/Live/区域共享额度与缓存域；HTTP/SSE 共享上限已有本地实现，不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
 D3–D9 主线仍待按设计依赖实施与验收；D4.1/D4.2 和 M1–M5 的完成不代表全局方案已全部落地。
-D2 继续完成 WS/Live/区域的共享额度归属、固定线路/原同步兼容与缓存域证据；当前仅 HTTP/SSE 可受控启用，其他模式明确拒绝，不能据此标 done。D4 继续依赖 D2 及配置新鲜度、模型/fast 来源与剩余路径验收。
+D2 继续完成原生上游 WS/Live/区域共享额度、固定线路/原同步兼容与缓存域证据；Responses 下游 WS 已可经 HTTP/SSE bridge 受控使用，Live/区域仍明确拒绝，父验收保持开放。D4 继续依赖 D2 及配置新鲜度、模型/fast 来源与剩余路径验收。
 
 ## 外部验收等待
 

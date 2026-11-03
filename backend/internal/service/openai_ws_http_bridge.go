@@ -620,6 +620,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			if upstreamCtx.Err() != nil {
 				return nil, context.Cause(upstreamCtx)
 			}
+			if failover := upstreamKeyAdmissionFailover(err); failover != nil {
+				return nil, failover
+			}
 			if turn == 1 && !strictSession {
 				return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 			}

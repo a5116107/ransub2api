@@ -577,9 +577,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if s == nil {
 		return errors.New("service is nil")
 	}
-	if s.cfg != nil && s.cfg.Gateway.UpstreamKeyConcurrency.Configured() {
-		return errors.New("upstream key concurrency requires HTTP; websocket admission is unavailable")
-	}
 	if c == nil {
 		return errors.New("gin context is nil")
 	}
@@ -672,7 +669,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	// a later bridge/ctx_pool account retry.
 	ingressReader := openAIWSGetIngressReader(c, clientConn)
 	ingressReader.setWaitFrameMode(false)
-	forceHTTPBridge := account.Platform == PlatformGrok ||
+	sharedKeyHTTPBridge := s.cfg != nil && s.cfg.Gateway.UpstreamKeyConcurrency.Configured()
+	// Preserve an explicit account-level WS disable even when shared admission
+	// requires HTTP upstream requests for otherwise enabled WS sessions.
+	if sharedKeyHTTPBridge && account.IsOpenAI() && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled &&
+		account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault) == OpenAIWSIngressModeOff {
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "websocket mode is disabled for this account", nil)
+	}
+	// The existing bridge owns one HTTP response per turn. Reuse its exact
+	// outbound credential and body lifetime instead of reserving idle sockets.
+	forceHTTPBridge := sharedKeyHTTPBridge || account.Platform == PlatformGrok ||
 		(s.pluginManager != nil && s.pluginManager.ShouldRouteOpenAIOAuth(account))
 
 	// Resolve exactly once before dispatching passthrough/native/bridge. Legacy
@@ -815,7 +821,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	wsHost := "-"
 	wsPath := "-"
 	if forceHTTPBridge {
-		wsHost = "xai-http-bridge"
+		wsHost = "http-bridge"
 		wsPath = "/v1/responses"
 	} else {
 		var err error
@@ -1298,6 +1304,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if useHTTPBridge {
 		bridgeReason := "payload_threshold_http_bridge"
 		switch {
+		case sharedKeyHTTPBridge:
+			bridgeReason = "upstream_key_concurrency_http_bridge"
 		case account.Platform == PlatformGrok:
 			bridgeReason = "platform_http_bridge"
 		case s.pluginManager != nil && s.pluginManager.ShouldRouteOpenAIOAuth(account):

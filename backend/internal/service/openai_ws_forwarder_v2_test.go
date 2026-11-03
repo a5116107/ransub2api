@@ -20,8 +20,6 @@ func TestSharedUpstreamKeyConfiguredWSRequiresHTTPLifetime(t *testing.T) {
 	result, err := s.forwardOpenAIWSV2(context.Background(), nil, &Account{ID: 1}, nil, "", "", "fixture-key", OpenAIWSProtocolDecision{}, false, true, "", "", time.Now(), 0, "", nil)
 	require.Nil(t, result)
 	require.ErrorContains(t, err, "upstream_key_concurrency_requires_http")
-	err = s.ProxyResponsesWebSocketFromClient(context.Background(), nil, nil, nil, "fixture-key", nil, nil)
-	require.ErrorContains(t, err, "websocket admission is unavailable")
 }
 
 // HTTP POST /v1/responses -> forwardOpenAIWSV2 keeps the canonical outbound
