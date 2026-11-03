@@ -28,6 +28,13 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		if err := checkOpenAITurnBindingAndRate(request.Context(), account, latest); err != nil {
 			return nil, err
 		}
+		if latest.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(latest) {
+			expectedGroup, expectedErr := upstreamBillingRequestGroup(latest)
+			actualGroup, actualErr := ParseAPIKeyRequestGroup(request.Header)
+			if expectedErr != nil || actualErr != nil || expectedGroup != actualGroup {
+				return nil, denyOpenAITurn("account_binding_changed")
+			}
+		}
 	}
 	if s.excelOAuthReauth != nil {
 		if err := s.excelOAuthReauth.validateAuthConnectionPolicy(request.Context(), account); err != nil {

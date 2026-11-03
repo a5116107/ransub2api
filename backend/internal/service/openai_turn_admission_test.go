@@ -187,6 +187,41 @@ func TestOpenAIHTTPFinalSendRechecksPurchasedRoute(t *testing.T) {
 	}
 }
 
+func TestOpenAIHTTPFinalSendRechecksPinnedGroup(t *testing.T) {
+	for _, actual := range []string{"", "2", "3", "2,3"} {
+		t.Run("actual_"+actual, func(t *testing.T) {
+			selected := profitControlSyncedTestAccount(time.Now().UTC())
+			selected.Credentials = map[string]any{"api_key": "pinned-route-fixture"}
+			selected.Status, selected.Schedulable = StatusActive, true
+			selected.GroupIDs = []int64{9}
+			selected.Credentials[credKeyHeaderOverrideEnabled] = true
+			selected.Credentials[credKeyHeaderOverrides] = map[string]any{"x-sub2api-group-id": "2"}
+			snapshot := decodeUpstreamBillingProbeSnapshot(selected.Extra)
+			snapshot.Data["selected_group_id"] = "2"
+			selected.Extra[UpstreamBillingProbeExtraKey] = snapshot
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, accountRepo: &turnAdmissionRepo{account: selected}, httpUpstream: upstream}
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+			req := httptest.NewRequest(http.MethodPost, "https://fixture.invalid/v1/responses", nil).WithContext(ctx)
+			if actual != "" {
+				req.Header.Set(APIKeyGroupHeader, actual)
+			}
+			response, err := svc.doOpenAIUpstream(req, "", selected)
+			if actual == "2" {
+				require.NoError(t, err)
+				require.NotNil(t, response)
+				require.NoError(t, response.Body.Close())
+				require.NotNil(t, upstream.lastReq)
+			} else {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, "account_binding_changed", denied.Reason)
+				require.Nil(t, upstream.lastReq)
+			}
+		})
+	}
+}
+
 func TestStrictProviderProfitAdmissionReadFailure(t *testing.T) {
 	for _, platform := range strictTurnAdmissionPlatformsForTest()[1:] {
 		for _, mode := range []string{"deleted", "read error", "missing reader", "missing repository"} {

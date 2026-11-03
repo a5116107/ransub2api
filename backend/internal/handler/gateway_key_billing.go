@@ -28,6 +28,7 @@ type keyBillingInfoResponse struct {
 	EffectiveRateMultiplier float64   `json:"effective_rate_multiplier"`
 	Timezone                *string   `json:"timezone,omitempty"`
 	ObservedAt              time.Time `json:"observed_at"`
+	SelectedGroupID         *int64    `json:"selected_group_id,omitempty"`
 }
 
 // KeyBillingInfo returns the token billing multiplier effective for the authenticated API key.
@@ -42,7 +43,12 @@ func (h *GatewayHandler) KeyBillingInfo(c *gin.Context) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Billing information is not supported in simple mode")
 		return
 	}
-	if len(apiKey.ConfiguredGroupIDs()) > 1 {
+	selectedGroupID, pinned := middleware2.PinnedAPIKeyGroup(c)
+	if pinned && (apiKey.GroupID == nil || *apiKey.GroupID != selectedGroupID) {
+		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Selected billing group is unavailable")
+		return
+	}
+	if len(apiKey.ConfiguredGroupIDs()) > 1 && !pinned {
 		h.multiGroupKeyBilling(c, apiKey)
 		return
 	}
@@ -62,7 +68,11 @@ func (h *GatewayHandler) KeyBillingInfo(c *gin.Context) {
 	}
 
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, buildKeyBillingInfo(apiKey, resolvedRate, timezone.Now()))
+	response := buildKeyBillingInfo(apiKey, resolvedRate, timezone.Now())
+	if pinned {
+		response.SelectedGroupID = &selectedGroupID
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *GatewayHandler) resolveKeyBillingRate(c *gin.Context, apiKey *service.APIKey) (float64, bool) {

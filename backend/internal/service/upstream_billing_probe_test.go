@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -241,6 +242,126 @@ func newUpstreamBillingProbeTestService(
 	}}}
 	accountTestService := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: cfg}
 	return NewUpstreamBillingProbeService(repo, accountTestService, NewSettingService(settingRepo, cfg))
+}
+
+func TestUpstreamBillingPinnedGroupConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name, pin, confirmation string
+		valid                   bool
+	}{
+		{"legacy unpinned", "", "", true},
+		{"confirmed", "2", `,"selected_group_id":2`, true},
+		{"ignored by old upstream", "2", "", false},
+		{"wrong group", "2", `,"selected_group_id":3`, false},
+		{"invalid confirmation", "2", `,"selected_group_id":0`, false},
+		{"unexpected confirmation", "", `,"selected_group_id":2`, false},
+		{"invalid pin", "2,1", `,"selected_group_id":2`, false},
+		{"large exact ID", "9007199254740993", `,"selected_group_id":9007199254740993`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			account := profitControlSyncedTestAccount(now)
+			account.Credentials = map[string]any{"api_key": "pinned-route-fixture"}
+			if tc.pin != "" {
+				account.Credentials[credKeyHeaderOverrideEnabled] = true
+				account.Credentials[credKeyHeaderOverrides] = map[string]any{"x-sub2api-group-id": tc.pin}
+			}
+			body := `{"object":"sub2api.key_billing","schema_version":1,"billing_scope":"token","group_rate_multiplier":0.4,"resolved_rate_multiplier":0.4,"effective_rate_multiplier":0.4,"peak_rate_enabled":false,"observed_at":"` + now.Format(time.RFC3339Nano) + `"` + tc.confirmation + `}`
+			snapshot, rate := upstreamBillingRateSnapshotFromResult(account, 30, now, upstreamBillingProbeHTTPResult{statusCode: 200, body: []byte(body)}, account.BillingRateMultiplier())
+			if tc.valid {
+				require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+				require.NotNil(t, rate)
+				require.Equal(t, 0.4, *rate)
+				if tc.pin != "" {
+					require.Equal(t, tc.pin, snapshot.Data["selected_group_id"])
+				}
+			} else {
+				require.Equal(t, UpstreamBillingProbeStatusFailed, snapshot.Status)
+				require.Nil(t, rate, "unconfirmed routing must not change the saved multiplier")
+				require.Nil(t, snapshot.SyncedRateMultiplier)
+			}
+			account.Extra[UpstreamBillingProbeExtraKey] = snapshot
+			_, reason := profitControlAccountRateAt(account, now)
+			if tc.valid {
+				require.Empty(t, reason)
+			} else {
+				require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, reason)
+			}
+		})
+	}
+}
+
+func TestUpstreamBillingPinnedGroupHTTPProbe(t *testing.T) {
+	now := time.Now().UTC()
+	var ignorePin atomic.Bool
+	var probes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sub2api/billing" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get(APIKeyGroupHeader) != "2" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		probes.Add(1)
+		confirmation := `,"selected_group_id":2`
+		if ignorePin.Load() {
+			confirmation = ""
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"sub2api.key_billing","schema_version":1,"billing_scope":"token","group_rate_multiplier":0.4,"resolved_rate_multiplier":0.4,"effective_rate_multiplier":0.4,"peak_rate_enabled":false,"observed_at":"`+now.Format(time.RFC3339Nano)+`"`+confirmation+`}`)
+	}))
+	t.Cleanup(server.Close)
+	account := profitControlSyncedTestAccount(now)
+	account.Credentials = map[string]any{"api_key": "pinned-route-fixture", "base_url": server.URL,
+		credKeyHeaderOverrideEnabled: true, credKeyHeaderOverrides: map[string]any{"x-sub2api-group-id": "2"}}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+		return server.Client().Do(req)
+	}}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	svc.now = func() time.Time { return now }
+	snapshot, err := svc.ProbeAccount(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+	require.Equal(t, "2", snapshot.Data["selected_group_id"])
+	require.NotNil(t, snapshot.SyncedRateMultiplier)
+	ignorePin.Store(true)
+	snapshot, err = svc.ProbeAccount(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, UpstreamBillingProbeStatusFailed, snapshot.Status)
+	require.Equal(t, "group_selection_unconfirmed", snapshot.LastError)
+	require.Nil(t, snapshot.SyncedRateMultiplier)
+	latest, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, 0.4, latest.BillingRateMultiplier())
+	_, reason := profitControlAccountRateAt(latest, now)
+	require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, reason)
+	require.EqualValues(t, 2, probes.Load())
+}
+
+func TestProfitControlPinnedGroupRequiresMatchingEvidence(t *testing.T) {
+	for _, confirmation := range []string{"", "2", "3"} {
+		t.Run("confirmation_"+confirmation, func(t *testing.T) {
+			now := time.Now().UTC()
+			account := profitControlSyncedTestAccount(now)
+			account.Credentials = map[string]any{"api_key": "pinned-route-fixture"}
+			account.Credentials[credKeyHeaderOverrideEnabled] = true
+			account.Credentials[credKeyHeaderOverrides] = map[string]any{"x-sub2api-group-id": "2"}
+			snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+			if confirmation != "" {
+				snapshot.Data["selected_group_id"] = confirmation
+			}
+			account.Extra[UpstreamBillingProbeExtraKey] = snapshot
+			_, reason := profitControlAccountRateAt(account, now)
+			if confirmation == "2" {
+				require.Empty(t, reason)
+			} else {
+				require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, reason)
+			}
+		})
+	}
 }
 
 func TestUpstreamBillingProbeSettingsDefaultsAndValidation(t *testing.T) {

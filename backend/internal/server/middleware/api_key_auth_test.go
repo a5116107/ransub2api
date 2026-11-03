@@ -1522,6 +1522,93 @@ func requireAPIKeyAuthError(t *testing.T, w *httptest.ResponseRecorder, code, me
 	require.Equal(t, message, resp.Message)
 }
 
+type requestGroupRepo struct {
+	service.GroupRepository
+	groups map[int64]*service.Group
+}
+
+func (r requestGroupRepo) GetByIDLite(_ context.Context, id int64) (*service.Group, error) {
+	if group := r.groups[id]; group != nil {
+		return group, nil
+	}
+	return nil, service.ErrGroupNotFound
+}
+
+type requestGroupRouter map[int64]bool
+
+func (r requestGroupRouter) ProbeAPIKeyGroup(_ context.Context, group *service.Group, _, _ string) (service.APIKeyGroupAvailability, error) {
+	return service.APIKeyGroupAvailability{Available: r[group.ID]}, nil
+}
+
+func TestAPIKeyAuthExplicitRequestGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, path string
+		headers    []string
+		status     int
+		groupID    int64
+	}{
+		{"automatic", "/v1/responses", nil, 200, 1},
+		{"fixed", "/v1/responses", []string{"2"}, 200, 2},
+		{"billing", "/v1/sub2api/billing", []string{"2"}, 200, 2},
+		{"unbound", "/v1/responses", []string{"99"}, 403, 0},
+		{"unavailable does not fallback", "/v1/responses", []string{"3"}, 503, 0},
+		{"malformed", "/v1/responses", []string{"2,1"}, 400, 0},
+		{"duplicate", "/v1/responses", []string{"2", "1"}, 400, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			groups := map[int64]*service.Group{}
+			for id := int64(1); id <= 3; id++ {
+				groups[id] = &service.Group{ID: id, Platform: service.PlatformOpenAI, Status: service.StatusActive, RateMultiplier: float64(id)}
+			}
+			key := &service.APIKey{ID: 901, UserID: 7, Key: "request-group-fixture", Status: service.StatusActive,
+				GroupID: &groups[1].ID, GroupIDs: []int64{1, 2, 3}, Group: groups[1],
+				User: &service.User{ID: 7, Status: service.StatusActive, Role: service.RoleUser, Balance: 10}}
+			if tc.name == "fixed" {
+				key.ConcurrencyLimit = 1
+			}
+			repo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) { return key, nil }}
+			cfg := &config.Config{RunMode: config.RunModeStandard}
+			keys := service.NewAPIKeyService(repo, nil, requestGroupRepo{groups: groups}, nil, nil, nil, cfg)
+			keys.SetGroupRouter(requestGroupRouter{1: true, 2: true})
+			router := gin.New()
+			router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(keys, nil, cfg)))
+			endpoint := func(c *gin.Context) {
+				selected, ok := GetAPIKeyFromContext(c)
+				require.True(t, ok)
+				require.Equal(t, tc.groupID, *selected.GroupID)
+				if tc.name == "fixed" {
+					concurrency := &service.ConcurrencyService{}
+					limit, installed, err := concurrency.RevalidateAPIKeyQueueTurn(c.Request.Context())
+					require.True(t, installed)
+					require.NoError(t, err, "queue revalidation must retain the selected group")
+					require.Equal(t, 1, limit)
+					groups[2].Status = service.StatusDisabled
+					_, _, err = concurrency.RevalidateAPIKeyQueueTurn(c.Request.Context())
+					require.Error(t, err, "revoking the pinned group must not reselect group 1")
+				}
+				c.Status(http.StatusOK)
+			}
+			router.POST("/v1/responses", endpoint)
+			router.GET("/v1/sub2api/billing", endpoint)
+			method := http.MethodPost
+			if strings.HasSuffix(tc.path, "/billing") {
+				method = http.MethodGet
+			}
+			req := httptest.NewRequest(method, tc.path, strings.NewReader(`{"model":"gpt-fixture","input":"hello"}`))
+			req.Header.Set("Authorization", "Bearer "+key.Key)
+			req.Header.Set("Content-Type", "application/json")
+			for _, value := range tc.headers {
+				req.Header.Add("X-Sub2API-Group-ID", value)
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			require.Equal(t, int64(1), *key.GroupID, "request pin must not mutate stored key defaults")
+		})
+	}
+}
+
 type stubApiKeyRepo struct {
 	getByKey       func(ctx context.Context, key string) (*service.APIKey, error)
 	updateLastUsed func(ctx context.Context, id int64, usedAt time.Time) error

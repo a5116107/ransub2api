@@ -548,3 +548,16 @@ func TestOpenAIProfitControlAfterAdmissionBindEagerWithoutGate(t *testing.T) {
 	require.NoError(t, svc.BindStickySessionAfterProfitAdmission(context.Background(), &groupID, sessionHash, cheapID))
 	require.Equal(t, cheapID, cache.sessionBindings[cacheKey], "无门时保持既有 eager 绑定行为")
 }
+
+type profitControlFailingGroupRepo struct {
+	GroupRepository
+}
+
+func (profitControlFailingGroupRepo) GetByIDLite(context.Context, int64) (*Group, error) {
+	return nil, errors.New("group cache unavailable")
+}
+
+// 见 profitControlGroupRepo.GetByID：利润门必须走不带账号计数聚合的 lite 读取。
+func (profitControlFailingGroupRepo) GetByID(context.Context, int64) (*Group, error) {
+	panic("profit control gate must read groups via GetByIDLite (no account-count aggregation)")
+}

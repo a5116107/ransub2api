@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -14,8 +15,31 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const pinnedAPIKeyGroupContextKey = "api_key.pinned_group_id"
+
+func PinnedAPIKeyGroup(c *gin.Context) (int64, bool) {
+	value, ok := c.Get(pinnedAPIKeyGroupContextKey)
+	id, valid := value.(int64)
+	return id, ok && valid && id > 0
+}
+
 func isMultiGroupBillingInfoRequest(c *gin.Context, key *service.APIKey) bool {
-	return c.Request.URL.Path == "/v1/sub2api/billing" && len(key.ConfiguredGroupIDs()) > 1
+	_, pinned := PinnedAPIKeyGroup(c)
+	return c.Request.URL.Path == "/v1/sub2api/billing" && len(key.ConfiguredGroupIDs()) > 1 && !pinned
+}
+
+func rejectAPIKeyRequestGroup(c *gin.Context, google bool, err error) (*service.APIKey, error) {
+	status := infraerrors.Code(err)
+	message, reason := infraerrors.Message(err), infraerrors.Reason(err)
+	if status >= 500 {
+		message = "No selected group is currently available for this request"
+	}
+	if google {
+		abortWithGoogleError(c, status, message)
+	} else {
+		AbortWithError(c, status, reason, message)
+	}
+	return nil, err
 }
 
 func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subscriptions *service.SubscriptionService, cfg *config.Config, key *service.APIKey, google bool) (*service.APIKey, error) {
@@ -32,8 +56,34 @@ func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subsc
 	if key == nil || c.IsAborted() {
 		return nil, nil
 	}
+	requestedGroupID, err := service.ParseAPIKeyRequestGroup(c.Request.Header)
+	if err != nil {
+		return rejectAPIKeyRequestGroup(c, google, err)
+	}
 	if target, ok := c.Get("security_penalty.original_group_id"); ok && target != nil {
+		if requestedGroupID != 0 {
+			if key.GroupID == nil || *key.GroupID != requestedGroupID {
+				return rejectAPIKeyRequestGroup(c, google, service.ErrGroupNotAllowed)
+			}
+			c.Set(pinnedAPIKeyGroupContextKey, requestedGroupID)
+		}
 		return key, nil
+	}
+	if requestedGroupID != 0 {
+		if !slices.Contains(key.ConfiguredGroupIDs(), requestedGroupID) {
+			return rejectAPIKeyRequestGroup(c, google, service.ErrGroupNotAllowed)
+		}
+		if c.Request.URL.Path == "/v1/usage" || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path) {
+			return rejectAPIKeyRequestGroup(c, google, infraerrors.BadRequest("API_KEY_GROUP_UNSUPPORTED", "Group selection is not supported for this resource"))
+		}
+		if c.Request.URL.Path == "/v1/sub2api/billing" || len(key.ConfiguredGroupIDs()) < 2 {
+			selected, pinErr := keys.PinAPIKeyGroup(c.Request.Context(), key, requestedGroupID)
+			if pinErr != nil {
+				return rejectAPIKeyRequestGroup(c, google, pinErr)
+			}
+			c.Set(pinnedAPIKeyGroupContextKey, requestedGroupID)
+			return selected, nil
+		}
 	}
 	if len(key.ConfiguredGroupIDs()) < 2 || isMultiGroupBillingInfoRequest(c, key) || c.Request.URL.Path == "/v1/usage" || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path) {
 		return key, nil
@@ -112,19 +162,12 @@ func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subsc
 		return true
 	}
 	ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, key.UserID)
-	selected, err := keys.SelectRequestGroup(ctx, key, models, kind, subscriptions, accepts, checkBilling)
+	selected, err := keys.SelectRequestGroup(ctx, key, models, kind, subscriptions, accepts, checkBilling, requestedGroupID)
 	if err != nil {
-		status := infraerrors.Code(err)
-		message, reason := infraerrors.Message(err), infraerrors.Reason(err)
-		if status >= 500 {
-			message = "No selected group is currently available for this request"
-		}
-		if google {
-			abortWithGoogleError(c, status, message)
-		} else {
-			AbortWithError(c, status, reason, message)
-		}
-		return nil, err
+		return rejectAPIKeyRequestGroup(c, google, err)
+	}
+	if requestedGroupID != 0 {
+		c.Set(pinnedAPIKeyGroupContextKey, requestedGroupID)
 	}
 	SetOpsFallbackAPIKey(c, selected)
 	return selected, nil

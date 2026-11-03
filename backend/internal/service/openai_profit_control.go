@@ -148,7 +148,7 @@ func profitControlAccountRateAt(account *Account, attemptAt time.Time) (float64,
 		return saved, ""
 	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	if snapshot == nil || snapshot.Status != UpstreamBillingProbeStatusOK ||
+	if snapshot == nil || snapshot.Status != UpstreamBillingProbeStatusOK || !upstreamBillingRequestGroupConfirmed(account, snapshot.Data) ||
 		snapshot.ReceivedAt == nil || snapshot.ReceivedAt.IsZero() || snapshot.ReceivedAt.After(attemptAt) ||
 		snapshot.LastAttemptAt.IsZero() || snapshot.LastAttemptAt.After(attemptAt) ||
 		snapshot.FreshUntil == nil || !attemptAt.Before(*snapshot.FreshUntil) {

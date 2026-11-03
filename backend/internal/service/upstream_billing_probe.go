@@ -179,6 +179,7 @@ type upstreamBillingProbeResponse struct {
 	EffectiveRateMultiplier *float64 `json:"effective_rate_multiplier"`
 	Timezone                *string  `json:"timezone"`
 	ObservedAt              string   `json:"observed_at"`
+	SelectedGroupID         *int64   `json:"selected_group_id"`
 }
 
 // GetUpstreamBillingProbeSettings returns defaults when the setting is absent.
@@ -811,6 +812,8 @@ func upstreamBillingRateSnapshotFromResult(
 		var err error
 		if data, err = parseUpstreamBillingProbeResponse(result.body); err != nil {
 			reason = "invalid_response"
+		} else if !upstreamBillingRequestGroupConfirmed(account, data) {
+			reason = "group_selection_unconfirmed"
 		}
 	}
 	if reason != "" {
@@ -966,6 +969,14 @@ func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
 		"effective_rate_multiplier": *response.EffectiveRateMultiplier,
 		"observed_at":               observedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if response.SelectedGroupID != nil {
+		if *response.SelectedGroupID <= 0 {
+			return nil, fmt.Errorf("invalid selected billing group")
+		}
+		// Keep the local evidence exact across JSON map round-trips, including
+		// IDs above the integer precision of float64.
+		data["selected_group_id"] = strconv.FormatInt(*response.SelectedGroupID, 10)
+	}
 	if response.UserRateMultiplier != nil {
 		data["user_rate_multiplier"] = *response.UserRateMultiplier
 	}
@@ -999,6 +1010,29 @@ func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("inconsistent effective billing multiplier")
 	}
 	return data, nil
+}
+
+func upstreamBillingRequestGroup(account *Account) (int64, error) {
+	header := make(http.Header)
+	if value, ok := account.HeaderOverrideValue(strings.ToLower(APIKeyGroupHeader)); ok {
+		header.Set(APIKeyGroupHeader, value)
+	}
+	return ParseAPIKeyRequestGroup(header)
+}
+
+// A pin is evidence only when the upstream explicitly confirms that same
+// request-scoped group. Older upstreams that ignore the header must not sync
+// an arbitrary group's multiplier. Unpinned legacy declarations stay valid.
+func upstreamBillingRequestGroupConfirmed(account *Account, data map[string]any) bool {
+	requested, err := upstreamBillingRequestGroup(account)
+	if err != nil {
+		return false
+	}
+	confirmed, present := data["selected_group_id"]
+	if requested == 0 {
+		return !present
+	}
+	return confirmed == strconv.FormatInt(requested, 10)
 }
 
 func upstreamBillingRateAt(data map[string]any, now time.Time) (float64, bool) {

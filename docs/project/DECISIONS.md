@@ -320,3 +320,15 @@
 - 原位补齐测试连接的真实BindHandshake/CheckBinding，并将该连接的lastUsed固定为较早值，确定性选中注入连接测试重试。保留生产校验、原拨号次数及新连接写入次数断言，不跳过测试、不增加重试或超时、不隐藏错误。修复夹具后连续100次实际通过：ok service2.223s，WS retry corrected fixture exit: 0。
 - 冻结最终源码后的完整回归实际输出：ok service325.591s、ok handler152.076s，Final protocol identity complete regression exit: 0。最终两包go vet输出Final protocol identity vet: PASS；两包完整未限量golangci-lint输出0 issues.、退出0。原设计4.2和任务定义、STATE均原位同步；不把新增字段视为跨协议同价、模型/fast计价或缓存共享证明。
 - 交付检查：Go格式无未格式化文件，git diff --check通过，新增Go TODO/FIXME/XXX为0；历史源码图片仍12个共1164bytes，本轮新增持久测试产物0。只本地提交8个任务文件；单一工作树，不运行CI、不推送、不部署、不迁移。历史审批拒绝清理与Windows符号链接权限等待保留；原20项仍12 done、2 in_progress、6 pending，D2/D4父验收未提前关闭。
+
+## 2026-11-04：D2 Sub2API 请求级固定组与倍率确认
+
+- 旧实现对显式选组头仍走自动选组：fixed/billing 返回默认组1，未绑定/无容量/非法/重复选择仍进入默认组。新增 middleware 回归实际失败（1.959s、退出1）；首次夹具函数类型转换编译错误已修正后才取得上述红色证据。
+- 复用既有选组、PinAPIKeyGroup、请求头覆写及原生倍率探测链路，增加 X-Sub2API-Group-ID。指定已绑定且有权使用的单组，保留模型/能力、余额/订阅与容量检查，不跨组回落、不修改存储或认证缓存Key的默认组。补齐权威Lite返回空/错组的拒绝；安全路由仍优先，区域仅本地单组同ID可用，不引入主库查询。
+- 已验证pin的billing返回v1 token声明和数值selected_group_id；未pin多组保持v2。上游忽略选择、缺确认或错组均以group_selection_unconfirmed拒绝同步；在线/预演共用确认判定，最终通用HTTP发送校验实际头与生效账号配置一致。内部快照确认ID使用十进制字符串，大于float64精确整数范围仍完整；原无pin合法旧快照保持兼容。
+- 新增真实HTTP探测验证选择头、成功写回、上游忽略后的拒绝、保存倍率不变及利润门拒绝；真实middleware+计费handler的HTTP组合验证业务和计费均选组2/倍率0.8，Key仍默认组1。队列重验保持组2，撤销后拒绝，不自动回到组1。最终专项三轮实际通过：service2.690s、middleware2.343s、handler4.029s。
+- 两处新测试夹具问题已修正：Credentials未初始化导致nil map panic；失败快照错误断言FreshUntil为空。保留原失败快照的历史展示语义，以Status=failed、SyncedRateMultiplier=nil、存储倍率不变及门拒绝验证，不通过改变生产失败保留逻辑掩盖测试错误。
+- 完整unit本地回归实际通过：service326.025s、middleware6.009s、handler149.825s，Pinned group full regression exit: 0。三包go vet通过、完整未限量golangci-lint实际输出0 issues.、退出0。
+- 默认标签扩大检查实际暴露既有编译阻塞：openai_profit_control_pricing_test.go引用的profitControlFailingGroupRepo只定义在unit标签文件（273/318/416行undefined），service构建失败，handler2.322s通过。原位把唯一夹具定义移动到已有无标签pricing测试文件，保留原方法/断言，删除原定义，不新增并行夹具或skip；修复后默认标签service3.760s、handler5.161s实际通过，退出0；包含夹具消费者的最终unit专项连续三轮实际通过：service11.500s、middleware10.279s、handler3.576s。最终三包go vet输出Final pinned group vet: PASS；该移动未改变生产代码行为。
+- 本轮闭环范围为Sub2API请求级固定组协议；不假设任意NewAPI支持此头，不证明跨端点/模型/fast同价或缓存共享。D2直接原生WS/Live/区域共享额度及缓存域、D4其他路径及价格来源等父验收继续保留；原20项仍12 done、2 in_progress、6 pending。
+- 夹具移动与注释收尾后，最终三包完整未限量golangci-lint再次实际输出0 issues.、退出0；未修改检查规则。18个任务文件精确纳入本地交付，diff空白/Go格式检查通过，新增TODO/FIXME/XXX为0；STATE保持74行，源码图片仍历史12个共1164bytes，本轮新增持久测试产物0。单一工作树，只本地提交，不推送、不运行CI、不部署或生产迁移；历史审核拒绝删除和Windows符号链接权限等待保留。

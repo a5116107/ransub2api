@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -53,7 +54,7 @@ func TestAPIKeyMultiGroupSelectionUsesActualGroupAndDoesNotMutateAuthSnapshot(t 
 	}
 	key := &APIKey{ID: 11, UserID: 7, GroupID: &primary, GroupIDs: []int64{1, 2, 3}, Group: groups[1], User: &User{ID: 7, Balance: 10, UserGroupDeniedModels: []string{"original"}}}
 	svc := &APIKeyService{groupRepo: multiGroupRepoStub{groups: groups}, userGroupRateRepo: multiGroupRateStub{rates: map[int64]float64{2: 0.2}}, groupRouter: multiGroupRouterStub{1: {Available: true}, 2: {Available: true}}}
-	got, err := svc.SelectRequestGroup(context.Background(), key, []string{"gpt-5"}, "token", nil, nil, true)
+	got, err := svc.SelectRequestGroup(context.Background(), key, []string{"gpt-5"}, "token", nil, nil, true, 0)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), *got.GroupID)
 	require.Same(t, groups[2], got.Group)
@@ -64,7 +65,7 @@ func TestAPIKeyMultiGroupSelectionUsesActualGroupAndDoesNotMutateAuthSnapshot(t 
 
 	// A lower price cannot override user-specific model restrictions.
 	svc.userGroupRateRepo = multiGroupRateStub{rates: map[int64]float64{2: 0.2}, denied: map[int64][]string{2: {"gpt-5"}}}
-	got, err = svc.SelectRequestGroup(context.Background(), key, []string{"gpt-5"}, "token", nil, nil, true)
+	got, err = svc.SelectRequestGroup(context.Background(), key, []string{"gpt-5"}, "token", nil, nil, true, 0)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), *got.GroupID)
 }
@@ -74,14 +75,14 @@ func TestAPIKeyMultiGroupSelectionPrefersReadyCapacityAndRejectsRevokedGroups(t 
 	groups := map[int64]*Group{1: {ID: 1, Status: StatusActive, RateMultiplier: 0.1}, 2: {ID: 2, Status: StatusActive, RateMultiplier: 0.3}, 3: {ID: 3, Status: StatusActive, RateMultiplier: 0, IsExclusive: true}}
 	key := &APIKey{UserID: 7, GroupID: &primary, GroupIDs: []int64{1, 2, 3}, Group: groups[1], User: &User{ID: 7, Balance: 10}}
 	svc := &APIKeyService{groupRepo: multiGroupRepoStub{groups: groups}, groupRouter: multiGroupRouterStub{1: {Available: true, Busy: true, Load: 1}, 2: {Available: true, Load: 0.1}, 3: {Available: true}}}
-	got, err := svc.SelectRequestGroup(context.Background(), key, nil, "token", nil, nil, true)
+	got, err := svc.SelectRequestGroup(context.Background(), key, nil, "token", nil, nil, true, 0)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), *got.GroupID)
 
 	_, err = svc.PinAPIKeyGroup(context.Background(), key, 3)
 	require.ErrorIs(t, err, ErrGroupNotAllowed)
 	svc.groupRouter = multiGroupRouterStub{}
-	_, err = svc.SelectRequestGroup(context.Background(), key, nil, "token", nil, nil, true)
+	_, err = svc.SelectRequestGroup(context.Background(), key, nil, "token", nil, nil, true, 0)
 	require.Error(t, err)
 }
 
@@ -98,4 +99,45 @@ func TestNormalizeAPIKeyGroupIDsCompatibilityAndValidation(t *testing.T) {
 	key := &APIKey{ID: 1, UserID: 7, GroupID: &id, GroupIDs: []int64{7, 8}, User: &User{ID: 7}}
 	roundtrip := svc.snapshotToAPIKey("unused", svc.snapshotFromAPIKey(context.Background(), key))
 	require.Equal(t, []int64{7, 8}, roundtrip.GroupIDs)
+}
+
+func TestAPIKeyRequestGroupRejectsWrongAuthoritativeRow(t *testing.T) {
+	id := int64(2)
+	key := &APIKey{GroupID: &id, GroupIDs: []int64{1, 2}, User: &User{ID: 7}, UserID: 7}
+	svc := &APIKeyService{groupRepo: multiGroupRepoStub{groups: map[int64]*Group{2: {ID: 3, Status: StatusActive}}}, groupRouter: multiGroupRouterStub{3: {Available: true}}}
+	_, err := svc.PinAPIKeyGroup(t.Context(), key, 2)
+	require.Error(t, err)
+	_, err = svc.SelectRequestGroup(t.Context(), key, nil, "token", nil, nil, false, 2)
+	require.Error(t, err)
+}
+
+func TestParseAPIKeyRequestGroup(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header http.Header
+		id     int64
+		valid  bool
+	}{
+		{"absent", nil, 0, true},
+		{"canonical", http.Header{APIKeyGroupHeader: {"2"}}, 2, true},
+		{"raw lower case", http.Header{"x-sub2api-group-id": {"2"}}, 2, true},
+		{"large exact ID", http.Header{APIKeyGroupHeader: {"9007199254740993"}}, 9007199254740993, true},
+		{"duplicate casing", http.Header{APIKeyGroupHeader: {"2"}, "x-sub2api-group-id": {"2"}}, 0, false},
+		{"empty", http.Header{APIKeyGroupHeader: {""}}, 0, false},
+		{"zero", http.Header{APIKeyGroupHeader: {"0"}}, 0, false},
+		{"negative", http.Header{APIKeyGroupHeader: {"-2"}}, 0, false},
+		{"ambiguous", http.Header{APIKeyGroupHeader: {"2,1"}}, 0, false},
+		{"noncanonical", http.Header{APIKeyGroupHeader: {"02"}}, 0, false},
+		{"overflow", http.Header{APIKeyGroupHeader: {"9223372036854775808"}}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := ParseAPIKeyRequestGroup(tc.header)
+			if tc.valid {
+				require.NoError(t, err)
+				require.Equal(t, tc.id, id)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }

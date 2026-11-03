@@ -58,6 +58,18 @@ func RegionalAPIKeyAuth(svc regionalAPIKeyAuthenticator, cfg *config.Config) gin
 			AbortWithError(c, http.StatusServiceUnavailable, "MULTI_GROUP_ROUTING_UNAVAILABLE", "Multi-group routing is unavailable on this regional gateway")
 			return
 		}
+		requestedGroupID, err := service.ParseAPIKeyRequestGroup(c.Request.Header)
+		if err != nil {
+			_, _ = rejectAPIKeyRequestGroup(c, false, err)
+			return
+		}
+		if requestedGroupID != 0 {
+			if auth.GroupID == nil || *auth.GroupID != requestedGroupID {
+				_, _ = rejectAPIKeyRequestGroup(c, false, service.ErrGroupNotAllowed)
+				return
+			}
+			c.Set(pinnedAPIKeyGroupContextKey, requestedGroupID)
+		}
 		if len(auth.IPWhitelist) > 0 || len(auth.IPBlacklist) > 0 {
 			allowed, _ := ip.CheckIPRestrictionWithCompiledRules(ip.GetSecurityClientIP(c, cfg.TrustForwardedIPForAPIKeyACL()), auth.CompiledIPWhitelist, auth.CompiledIPBlacklist)
 			if !allowed {

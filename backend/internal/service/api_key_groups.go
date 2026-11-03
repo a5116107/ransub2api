@@ -6,13 +6,41 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"net/http"
+	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 const maxAPIKeyGroups = 20
+
+const APIKeyGroupHeader = "X-Sub2API-Group-ID"
+
+// ParseAPIKeyRequestGroup rejects ambiguous selectors instead of silently
+// falling back to automatic routing. Zero means the header was absent.
+func ParseAPIKeyRequestGroup(header http.Header) (int64, error) {
+	var values []string
+	for name, entries := range header {
+		if strings.EqualFold(name, APIKeyGroupHeader) {
+			values = append(values, entries...)
+		}
+	}
+	if len(values) == 0 {
+		return 0, nil
+	}
+	if len(values) == 1 {
+		value := strings.TrimSpace(values[0])
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err == nil && id > 0 && strconv.FormatInt(id, 10) == value {
+			return id, nil
+		}
+	}
+	return 0, infraerrors.BadRequest("INVALID_API_KEY_GROUP", "Use one positive group ID")
+}
 
 // APIKeyGroupAvailability describes a snapshot, not a reservation. The selected
 // group's normal admission and account scheduler still own the final checks.
@@ -92,6 +120,9 @@ func (s *APIKeyService) PinAPIKeyGroup(ctx context.Context, key *APIKey, id int6
 	if err != nil {
 		return nil, err
 	}
+	if group == nil || group.ID != id {
+		return nil, infraerrors.ServiceUnavailable("API_KEY_GROUP_UNAVAILABLE", "Selected group is unavailable")
+	}
 	if key.User == nil || !group.IsActive() || !s.canUserBindGroup(ctx, key.User, group) {
 		return nil, ErrGroupNotAllowed
 	}
@@ -150,9 +181,17 @@ type apiKeyGroupCandidate struct {
 // SelectRequestGroup prefers immediately available groups, then the lowest
 // effective token multiplier (including user overrides and peak hours). Equal
 // rates prefer lower load, with randomized ties to avoid a permanent hot group.
-func (s *APIKeyService) SelectRequestGroup(ctx context.Context, key *APIKey, models []string, kind string, subscriptions *SubscriptionService, accepts func(*APIKey) bool, checkBilling bool) (*APIKey, error) {
-	if key == nil || len(key.ConfiguredGroupIDs()) < 2 {
+// A nonzero requestedGroupID restricts selection to that bound group only.
+func (s *APIKeyService) SelectRequestGroup(ctx context.Context, key *APIKey, models []string, kind string, subscriptions *SubscriptionService, accepts func(*APIKey) bool, checkBilling bool, requestedGroupID int64) (*APIKey, error) {
+	if key == nil || (requestedGroupID == 0 && len(key.ConfiguredGroupIDs()) < 2) {
 		return key, nil
+	}
+	ids := key.ConfiguredGroupIDs()
+	if requestedGroupID != 0 {
+		if !slices.Contains(ids, requestedGroupID) {
+			return nil, ErrGroupNotAllowed
+		}
+		ids = []int64{requestedGroupID}
 	}
 	if s.groupRouter == nil || s.localAuth != nil {
 		return nil, infraerrors.ServiceUnavailable("MULTI_GROUP_ROUTING_UNAVAILABLE", "Multi-group routing is unavailable on this gateway")
@@ -160,13 +199,16 @@ func (s *APIKeyService) SelectRequestGroup(ctx context.Context, key *APIKey, mod
 	var candidates []apiKeyGroupCandidate
 	now := time.Now()
 	var lastErr error
-	for _, id := range key.ConfiguredGroupIDs() {
+	for _, id := range ids {
 		group, err := s.groupRepo.GetByIDLite(ctx, id)
 		if err != nil {
 			if !errors.Is(err, ErrGroupNotFound) {
 				return nil, err
 			}
 			continue
+		}
+		if group == nil || group.ID != id {
+			return nil, infraerrors.ServiceUnavailable("API_KEY_GROUP_UNAVAILABLE", "Selected group is unavailable")
 		}
 		if !group.IsActive() {
 			continue

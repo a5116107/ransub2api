@@ -13,7 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type regionalAuthStub struct{ err error }
+type regionalAuthStub struct {
+	err     error
+	groupID int64
+}
 
 func (s regionalAuthStub) GetRegionalByKey(_ context.Context, key string) (*service.APIKey, error) {
 	if s.err != nil {
@@ -22,7 +25,12 @@ func (s regionalAuthStub) GetRegionalByKey(_ context.Context, key string) (*serv
 	if key != "valid" {
 		return nil, service.ErrAPIKeyNotFound
 	}
-	return &service.APIKey{ID: 1, UserID: 2, User: &service.User{ID: 2, Status: service.StatusActive}, IPWhitelist: []string{"127.0.0.1"}, CompiledIPWhitelist: ip.CompileIPRules([]string{"127.0.0.1"})}, nil
+	keyAuth := &service.APIKey{ID: 1, UserID: 2, User: &service.User{ID: 2, Status: service.StatusActive}, IPWhitelist: []string{"127.0.0.1"}, CompiledIPWhitelist: ip.CompileIPRules([]string{"127.0.0.1"})}
+	if s.groupID > 0 {
+		keyAuth.GroupID = &s.groupID
+		keyAuth.Group = &service.Group{ID: s.groupID, Status: service.StatusActive}
+	}
+	return keyAuth, nil
 }
 func TestRegionalAuthMiddlewareLocalIdentityAndIP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -30,6 +38,8 @@ func TestRegionalAuthMiddlewareLocalIdentityAndIP(t *testing.T) {
 		name, header, key, path, remote string
 		err                             error
 		status                          int
+		pin                             string
+		groupID                         int64
 	}{
 		{name: "bearer", header: "Authorization", key: "Bearer valid", status: 204},
 		{name: "anthropic", header: "x-api-key", key: "valid", status: 204},
@@ -40,10 +50,14 @@ func TestRegionalAuthMiddlewareLocalIdentityAndIP(t *testing.T) {
 		{name: "expired-view", header: "x-api-key", key: "valid", err: service.ErrRegionalAuthUnavailable, status: 503},
 		{name: "ip-denied", header: "x-api-key", key: "valid", remote: "192.0.2.1:1234", status: 403},
 		{name: "query-key", path: "/?key=valid", status: 400},
+		{name: "local group pin", header: "x-api-key", key: "valid", pin: "2", groupID: 2, status: 204},
+		{name: "wrong local group", header: "x-api-key", key: "valid", pin: "3", groupID: 2, status: 403},
+		{name: "unassigned pin", header: "x-api-key", key: "valid", pin: "2", status: 403},
+		{name: "invalid local pin", header: "x-api-key", key: "valid", pin: "2,3", groupID: 2, status: 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := gin.New()
-			router.Use(RegionalAPIKeyAuth(regionalAuthStub{err: tc.err}, &config.Config{}))
+			router.Use(RegionalAPIKeyAuth(regionalAuthStub{err: tc.err, groupID: tc.groupID}, &config.Config{}))
 			router.GET("/", func(c *gin.Context) {
 				key, ok := GetAPIKeyFromContext(c)
 				require.True(t, ok)
@@ -61,6 +75,9 @@ func TestRegionalAuthMiddlewareLocalIdentityAndIP(t *testing.T) {
 			}
 			if tc.header != "" {
 				req.Header.Set(tc.header, tc.key)
+			}
+			if tc.pin != "" {
+				req.Header.Set(service.APIKeyGroupHeader, tc.pin)
 			}
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
