@@ -256,3 +256,14 @@
 - 此轮局部验收属于原D4，不新增ID或提前关闭父任务；D2、其他路径、分组配置新鲜度和模型/fast来源仍保留。最终全包、扩大回归和静态检查结果待实际返回后列出；无CI、推送、部署或新工作树。
 - 最终扩大回归连续三轮实际通过：service18.644s、repository20.098s、handler2.892s；三包vet实际输出Grok admission regression and three-package vet: PASS、退出0。完整service未限量lint输出0 issues、退出0，最终完整service本地回归ok323.453s、Full service exit: 0。未扩大为全后端/生产验收。
 - 交付复核：旧的非OpenAI直接跳过注释和设计中Grok待实现表述已原位更新；实际代码只扩展两处既有判定，测试扩展既有平台矩阵并复用HTTP夹具，未新增并行实现或TODO/FIXME/XXX。git diff --check通过，STATE保持100行以内；7个任务文件本地提交，未推送、CI或创建工作树。原20项仍12 done、2 in_progress、6 pending，本轮关闭Grok文本缺口，不将D4父任务提前标done；历史受保护图片/bin/已停止临时PG目录保持。
+
+## 2026-11-03：D4 WS 每轮分组策略刷新与认证售价隔离
+
+- 接续前序已复现的六个失败子例：连接携带同 ID 的旧认证分组时，收紧策略仍放行；旧认证快照显示关闭时，配置源失效也未装入拒绝门。根因是每轮重新解析仍优先使用认证上下文，而非每轮读取配置源。
+- 原位扩展既有 resolveOpenAIProfitControlGate 的调用参数，区分 HTTP 请求内复用与 WS 新轮次刷新；未增加第二个解析器或并行调度实现。WS 使用既有 GetGroupByIDLite：主节点读主库，区域读本地快照；读取报错、空对象及错组继续沿用已有配置不可用门与拒绝原因，免费账号也不绕过。
+- 策略刷新不覆盖认证分组或该轮的销售倍率快照；测试特意将新策略组销售倍率设为 99，仍以原认证售价计算阈值。HTTP 同请求 failover 保持已冻结门与 pricingAt，WS 每轮重冻 pricingAt；内部未接入配置源夹具、抑制标记及确认关闭行为保持。
+- 新回归覆盖 OpenAI/Grok × 主库/区域的收紧、放宽、关闭、重开，以及主库/区域的缺失、报错、错组、恢复，逐次保留旧认证对象以验证不误用连接快照。扩大专项连续三轮实际通过：service 13.635s、handler 8.440s；同两包 go vet -tags=unit -p 2 实际退出 0。完整包回归与 lint 另按实际结果追加。
+- 本轮关闭 WS 每轮策略刷新缺口，D4 父任务仍待 D2、其他路径、HTTP 首次装门/区域传播新鲜度及模型/fast 来源；原 20 项保持 12 done、2 in_progress、6 pending。未运行 CI、推送、部署或生产迁移，单一工作树保持；历史审核拒绝清理的文件不重试删除，不以隐藏未跟踪图片伪造工作区干净。
+- 最终 service/handler 完整未限量 golangci-lint（unit 标签、concurrency=2、max-same-issues=0、max-issues-per-linter=0）实际输出 0 issues.、退出 0；本轮未修改 lint 规则。五个变更 Go 文件 gofmt 检查通过，原解析函数所有调用点已更新，无新增 TODO/FIXME/XXX 或重复解析入口。
+- 最终完整 service 本地回归实际输出 ok 328.225s、Full service verification exit: 0；测试进程仅注入 Redis 5 的 PATH。前序已启动的完整回归在恢复上下文时仍运行，其退出输出未取到，本记录只采用本轮独立取得的最终结果。
+- 状态文档从 97 行收拢为 73 行：删除已在本文件保存的重复历史验证叙述，保留原任务、当前验收、Windows 符号链接权限及历史清理等待，验证入口更新为当前专项；不增加第二份台账。最终源码目录仍只有原 12 个图片共 1164 bytes，本轮新增持久测试产物 0；按授权本地提交这 8 个任务文件，不推送。实际提交标识由 Git 保存。

@@ -31,59 +31,35 @@
 | M3 | done | WinSock 原生拒绝连接/主机与网络不可达已识别；超时/重置不误判；真实单 POST 及代理/时序/WS 组合回归连续 5 轮通过（140.262s） |
 | M4 | done | 三处私有原子持久化收敛为共用接口；原 22 项 Windows 失败全部实际通过；双平台完整回归、核心三包 lint 0 与最终 vet 通过，本轮产物归零 |
 | M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
-| D4 | in_progress | 固定售价准入、OpenAI/Grok 文本每轮及最终 HTTP 发送前线路/倍率复核、严格请求绕过进程旧缓存已验证；仍待 D2、其他剩余路径、分组配置新鲜度与模型/fast 来源 |
+| D4 | in_progress | 固定售价、OpenAI/Grok 文本线路/倍率终检、严格请求跳过旧缓存及 WS 每轮主库/区域策略刷新已验证；仍待 D2、其他路径、HTTP 首次装门/传播新鲜度及模型/fast 来源 |
 | D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
 | D8 | pending | admin 原8项 lint 阻塞已修复，跨层用例移至 integration/adminkey 并经真实 PostgreSQL 三轮通过；双平台既有回归、D2.1 Windows 完整回归/本地 CLI 专项、M5 六包完整 lint 通过；集成/升级/全局 CLI 场景仍待完成；不运行 CI |
 | D9 | pending | 依赖验证与对应生产执行授权 |
 
 ## 环境与工作区
 
-- 基线：`6de829fa2efa801dcf3071c4efe842198c7724be`，单一工作树；本地交付分支 `work/monitor-driven-scheduling`，远程 origin 为 ranxi2001/sub2api，本次不推送。
-- 本机 Go 1.25.6 已通过自动工具链获得项目要求的 Go 1.27.3；未降低 go.mod 要求。
-- D4.1 专项与 service/handler 倍率、槽位、重选、WS 定价回归通过；go vet 通过。
-- lint 工具阻塞已解除：使用本机缓存的 v2.15.0 源码并以 Go 1.27.3 构建。
-- M5 最终 service/handler/assertions/regional/securefile/profit-preview 六包未限量 lint 输出 0 issues、退出码 0。生产边界反向验证准确拒绝两处禁止的 Redis 导入，验证文件均已移除；完整订单兼容与 WS 回归连续 3 轮通过（2.257s），另 5 轮专项通过（2.833s），go vet 通过。例外只适用指定测试范围/调用行，不声称后端全部包均已受检。
-- 图片策略测试已隔离 DATA_DIR 并关闭 relay；完整图片测试连续 3 轮通过（2.487s），源码目录新增产物 0。
-- M4 后 Windows 完整本地回归：service 10396 pass/11 个既有 skip、handler 1100 pass/2 skip、regional 13 pass、securefile 6 pass、assertions 3 pass；5 包均 pass，原 22 个平台失败逐项确认实际通过（无 skip）。
-- M4 最终 Linux service 10397 pass/10 个既有 skip/0 fail，10407 个顶层启动均有结果，退出码 0（377.269s）；securefile/assertions/regional 各连续 3 轮通过，未吞掉 fsync 错误或放松权限断言。
-- M4 验收后精确清理 14 个测试程序/日志，共 396790278 bytes（378.409 MiB），当时任务产物归零；历史证据归入 DECISIONS.md。
-- D2.1 Windows 完整本地回归：service 10399 pass/11 个既有 skip、handler 1100 pass/2 skip、CLI 3 pass；三包 0 fail，启动/结束逐项匹配。相关专项连续 3 轮、go vet 和真实 CLI 文本/JSON 演练通过；旧 lint 诊断已由 M5 核查处理，历史证据见 DECISIONS.md。
-- `backend/internal/service/data/bps-images/` 下 12 个本任务 PNG 共 1164 bytes，删除被执行器策略拦截而保留；未改用其他工具绕过。
-- 清理后调度、路由矩阵、额度与倍率回归：service `ok 13.496s`；此前 service/handler `ok 2.131s/7.787s`；go vet 通过。
-- 仅放行本目录三份主题文档进入 Git 检查，其余 docs 忽略规则保持。
-- 已验收的任务源码、测试及本目录三份文档按最新授权本地提交；提交标识以 Git 记录为准。不纳入生成图片或历史 bin 产物，不清除其他任务文件，不生成重复设计或临时台账。
-- D2.4 四包扩大回归三轮通过：service/repository/handler/CLI 分别 108.055s/5.710s/20.313s/1.907s。目录夹具改用 UUID，固定时钟下十轮通过；repository 受影响组合三轮通过（3.669s）。
-- Windows 完整 service/handler/CLI 通过（326.174s/145.517s/1.793s）；repository 首轮 13 个含父级失败逐项定位后，完整剩余用例通过（22.031s），但创建符号链接夹具缺少系统权限，原测试保留，不能声称 Windows 全部通过。
-- 凭据密钥初始化复用 securefile 原子创建及打开句柄权限检查，删除重复持久化逻辑；并发不覆写、私有 ACL、POSIX 权限/fsync、原备份锁与验证码断言保持。Linux 凭据/New API/备份/验证码及 securefile 连续三轮均 PASS，含符号链接拒绝；最终六包 vet 通过。
-- 测试 Redis 位于 H:/Root/tools/redis/5.0.14.1；仅命令进程 PATH 使用，不改系统 Redis 3 或全局环境。真实 Redis 发布/失效/恢复及 Ticket 三轮通过。新交叉编译程序和下载压缩包已清理 180515955 bytes，便携运行工具保留 48299724 bytes。
-- D2.4 验收时七包完整未限量 lint 输出 0 issues、退出码 0，六包 vet 退出码 0；不扩大为后续修改的检查结果。Windows 权限等待与全局未完成验收仍保留。
-- D4 本轮新增固定售价准入、五平台/WS/恢复及槽位释放专项三轮通过；相关利润/定价/用量/槽位/诊断三包三轮通过（2.737s/20.167s/1.821s）。真实 CLI 文本/JSON 均验证 2 个售价不符拒绝、1 个准入；演练输入已删除。
-- D4 固定售价交付时 service/handler/profit-preview 完整 lint 输出 0 issues，同三包 vet 退出码 0；本地提交记录与验证历史见 DECISIONS.md。当前 20 个 ID 为 12 done、2 in_progress、6 pending，本轮 done 增量 0。
-- 本轮账号/用户占槽丢失回复的精确回收已修复；旧源码四子例失败，新回归含 miniredis 双独立客户端及健康成员 ZSCORE 检查，三轮 service/repository 通过（3.991s/3.803s）；三包相关回归通过，service/repository 完整 lint 均 0，三包 vet 及最终 repository vet 通过；本地提交、不推送。共享 Key 总额度在该次提交尚未实现，本次 HTTP/SSE 实施见下一条。
+- 基线：`6de829fa2efa801dcf3071c4efe842198c7724be`；单一工作树，本地交付分支 `work/monitor-driven-scheduling`，origin 为 ranxi2001/sub2api；只本地提交，不推送。
+- 项目要求的 Go 1.27.3 已通过自动工具链获得；未降低 go.mod 要求。完整包 lint 使用 backend/bin/task-d2-golangci-lint.exe（v2.15.0），不修改检查规则。
+- 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
+- D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
+- 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
+- 本轮 WS 策略刷新扩大专项连续三轮通过：service 13.635s、handler 8.440s；完整 service 回归 328.225s、退出 0。同两包 vet 退出 0，完整未限量 lint 输出 0 issues、退出 0；5 个变更 Go 文件 gofmt 和差异检查通过。完整证据见本轮 DECISIONS 记录；原 20 项仍 12 done、2 in_progress、6 pending，本轮关闭 1 个 D4 缺口、父任务 done 增量 0。
+- 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
-- 本轮共享额度配置位于 gateway.upstream_key_concurrency，版本/Key 摘要统一管理；独立 Redis namespace、30 秒租约/5 秒续租/19 秒取消看门狗；账号限制保持。三包扩大回归三轮通过（3.375s/34.033s/14.256s），真实 Redis 竞争已通过；config 全包通过（2.457s），三包最终 vet 通过，完整未限量 lint 为 0 issues，服务器注入编译通过（2.232s）；证据见 DECISIONS.md。
-- 本轮移除直接 Responses WS 的共享限额整体拒绝，原位接入既有 HTTP bridge；两轮响应结束归零、跨账号同 Key 满额不发请求、第三轮取消真实上游和精确释放均通过。第二轮本地限额错误曾复现为普通 502，已修复为 503 准入类型；相关扩大回归三轮 service/repository 105.830s/18.402s，最终新增回归三轮 1.883s，vet 通过；完整包 lint 状态见本轮 DECISIONS 记录。无新增持久产物。
-- 本轮静态 Key 指纹、每轮及最终 HTTP 入口复核补齐；旧实现六个准入边界与四个最终发送边界实际失败，新专项三轮 15.442s，最终完整 service 376.385s、退出 0，service/handler vet 通过。此前两次全量失败输出截断、具体原因未确认，不以最终通过伪造其根因；完整 service lint 及交付证据见 DECISIONS。无新增测试产物，父任务 done 增量 0。
+## 当前验证入口
 
-- 本轮 New API 完整 Key 归属与预览/快照固定分组同源已验证；归属/请求失败清除倍率和有效期。修复既有配额测试墙上时钟排序前提，New API/Issue578 十轮通过（12.199s），最终完整 service 319.099s/退出0，完整 service lint 0、三包 vet 通过；admin 扩大 lint 的8项既有诊断在后续本轮清理中已解除。原20项完成数不变，无新增持久产物，本地提交。
-
-- 本轮 D8 admin 检查阻塞：跨层 PostgreSQL/HTTP 测试移入 integration/adminkey，旧 handler 测试文件删除；受检类型断言、事务资源关闭和模式分支原位修复，无 lint 规则例外。原8项诊断归零，完整 admin 单元回归及真实数据库三轮通过；最终完整admin回归5.365s、unit/integration vet均退出0、两个包按各自标签完整lint均0；证据见 DECISIONS。父任务完成数不变。
-
-- 本轮 D4 Grok 文本权威准入闭环：每轮和最终HTTP复用主库/区域读取与线路/倍率判定，严格模式跳过本地缓存，正常OAuth刷新与未装门行为保持。旧实现专项失败；新增专项三轮3.187s、三包扩大三轮与vet通过，完整service323.453s/退出0、完整service lint 0。真实HTTP重试倍率变化仅发1次，正常重试2次；无新增持久产物，本地提交，父任务完成数不变。
-
-## 可复现的 D4.1 专项验证
-
-在 backend 目录运行，已通过（`ok 1.681s`）：
+在 backend 目录运行（本地验证，不运行 CI）：
 
 ```powershell
-go test -tags=unit -p 2 ./internal/service -run 'TestGatewayProfitControlTerminalRefresh(FailureRejectsAdmission|WithoutGatePreservesAdmission)$' -count=1
+go test -tags=unit -p 2 ./internal/service ./internal/handler -run 'Test.*(ProfitControl|TurnPricing|WS.*Pricing|WS.*Revalid|Grok.*Admission)' -count=3 -timeout=12m
+go vet -tags=unit -p 2 ./internal/service ./internal/handler
 ```
 
 ## 下一项工作
 
 D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；剩余请求级固定线路选择/原同步兼容、WS/Live/区域共享额度与缓存域；HTTP/SSE 共享上限已有本地实现，不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
 D3–D9 主线仍待按设计依赖实施与验收；D4.1/D4.2 和 M1–M5 的完成不代表全局方案已全部落地。
-D2 继续完成原生上游 WS/Live/区域共享额度、固定分组/协议来源与缓存域证据；Responses 下游 WS 已可经 HTTP/SSE bridge 受控使用，Live/区域仍明确拒绝。D4 的 Grok 文本权威刷新缺口已补，继续核对其他路径、分组配置新鲜度及模型/fast 来源，原父验收不变。
+D2 继续完成原生上游 WS/Live/区域共享额度、固定分组/协议来源与缓存域证据；Responses 下游 WS 已可经 HTTP/SSE bridge 受控使用，Live/区域仍明确拒绝。D4 已补 Grok 文本权威读取和 WS 每轮策略刷新；继续核对其他路径、HTTP 首次装门/区域传播新鲜度及模型/fast 来源，原父验收不变。
 
 ## 外部验收等待
 

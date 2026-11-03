@@ -216,7 +216,7 @@ func (s *OpenAIGatewayService) WithOpenAITurnPricingContext(ctx context.Context,
 		gid := existing.groupID
 		groupID = &gid
 	}
-	gate := s.resolveOpenAIProfitControlGate(ctx, groupID)
+	gate := s.resolveOpenAIProfitControlGate(ctx, groupID, true)
 	if gate == nil {
 		// 分组已确认关闭或不适用：清除旧 turn 的门，与 HTTP 开关语义一致。
 		if existing, ok := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); ok && existing != nil {
@@ -256,7 +256,7 @@ func (s *OpenAIGatewayService) withOpenAIProfitControlGate(ctx context.Context, 
 			return ctx
 		}
 	}
-	gate := s.resolveOpenAIProfitControlGate(ctx, groupID)
+	gate := s.resolveOpenAIProfitControlGate(ctx, groupID, false)
 	if gate == nil {
 		// 被调度分组无门（已确认关闭/不适用）而 ctx 带着其他分组的
 		// 请求门时清除之：门配置取被调度分组，父分组阈值不得泄漏到成员分组
@@ -270,7 +270,7 @@ func (s *OpenAIGatewayService) withOpenAIProfitControlGate(ctx context.Context, 
 	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate)
 }
 
-func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Context, groupID *int64) *openAIProfitControlGate {
+func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Context, groupID *int64, refreshGroup bool) *openAIProfitControlGate {
 	if s == nil || groupID == nil || *groupID <= 0 {
 		return nil
 	}
@@ -278,13 +278,14 @@ func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Contex
 	if !ok {
 		pricingAt = timezone.Now()
 	}
-	// 门配置取被调度分组。直连请求（ctx 认证分组即调度分组，生产绝大多数流量）
-	// 直接复用 auth cache 分组，热路径零额外查询；composite 父分组路由到成员
-	// 分组等 ID 不一致场景才回源仓库读取。auth 快照的分组字段完备性由
-	// GetByKeyForAuth 投影 + 集成测试保证（防投影漏列导致门静默失效）。
+	// HTTP attempts keep their request policy and auth/billing snapshot. A new
+	// WS turn must read policy from the configured primary or regional source;
+	// the connection's auth group can be stale even when its ID still matches.
+	// Direct-call fixtures without a source retain the supplied group boundary.
+	useAuthGroup := !refreshGroup || s.schedulerSnapshot == nil
 	var group *Group
 	var err error
-	if ctxGroup, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(ctxGroup) && ctxGroup.ID == *groupID {
+	if ctxGroup, ok := ctx.Value(ctxkey.Group).(*Group); useAuthGroup && ok && IsGroupContextValid(ctxGroup) && ctxGroup.ID == *groupID {
 		group = ctxGroup
 	} else if s.schedulerSnapshot != nil {
 		// Lite 读取：门只用平台/倍率/利润/高峰字段，不需要账号计数聚合。
