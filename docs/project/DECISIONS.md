@@ -211,3 +211,14 @@
 - 新 repository 组合测试使用真实 loopback WS/HTTP 与 miniredis 执行生产服务及实际 HTTPUpstream：首两轮各持一个共享槽，其他账号/独立客户端同凭据被拒且无额外请求；响应完成后空闲槽为零；第三轮取消传到上游 HTTP 并回收精确成员。连续三轮通过（2.159s）。独立真实 Redis 5 竞争与该组合测试 verbose 复核均 PASS、无 skip（2.243s）。
 - service 网络测试覆盖 smart protocol 关闭/ws/auto/shadow、两轮 usage、账号显式关闭和后续账号并发钩子拒绝。首轮关闭测试误用被账号旧 enabled 字段覆盖的默认 off，30 秒等待失败；按原优先级改为显式账号 off，保持实现和原语义。最终新增专项三轮 1.883s；扩大 WS/bridge/续接/智能协议/Key 回归三轮 service/repository 105.830s/18.402s，最终两包 go vet 退出 0。
 - 完整两包 lint 首轮发现新组合测试未检查取消返回错误 1 项；补齐 require.ErrorIs(err, context.Canceled)，并非忽略错误。最终组合测试三轮 1.796s、两包 go vet 与完整未限量 golangci-lint 均退出 0，lint 输出 0 issues.。git diff --check 通过，STATE 88 行；原整体拒绝分支及误导的 xai-http-bridge 日志名称已移除，无新增 TODO/FIXME/XXX。仅本地提交这 9 个任务文件；父任务仍为 12 done、2 in_progress、6 pending，done 增量 0，推进的是 D2 的直接 WS 生命周期验收。历史受保护文件不重试删除，不 CI/推送/部署。
+
+## 2026-11-03：静态 Key 绑定与发送前倍率证据复核
+
+- 原线路指纹把所有敏感键排除，API Key 替换/清空/null 的三个准入子例实际返回 nil，旧 WS 也会继续匹配。静态 api_key 现纳入 API Key 账号的内存指纹；OAuth token 的正常刷新排除规则保持，未扩大敏感数据输出或存储。
+- 原每轮准入虽然读最新行，却没有复核采购倍率、销售附加倍率与同步证据；在有效账号夹具下，倍率上涨、销售倍率改变、证据移除三个子例均实际错误放行。现于原准入方法共用 checkOpenAITurnBindingAndRate，候选/终检规则、固定销售阈值及原同步写回不改。
+- HTTP 协议适配器可能在早期准入后构建请求再发送；最终 doOpenAIUpstream 的四个负向回归也先实际失败。启用利润门时最终出站前按原调度组重读账号并复核同一判定，失败不调用 HTTPUpstream/插件或进入健康归因。未启用门的发送行为保持。
+- 严格 OpenAI 请求跳过进程准入缓存，不将先前缓存中的便宜倍率或旧 Key 当成新授权；原关闭门缓存、区域快照权威和 TTL/持久栅栏保持。缓存回归先暖缓存再替换主库行，断言发生第二次读取并拒绝；不会把数据库与网络之间的变化窗口表述成原子事务。
+- 新真实 loopback WS/HTTP 两轮回归确认：首轮正常，第二轮 BeforeTurn 替换主库静态 Key 后返回 account_binding_changed，实际 HTTP 请求总数仍为 1。原 OAuth token 更新、未装门准入、正常静态 Key 和不变价格回归保持。
+- 新每轮专项三轮 13.584s；扩大相关回归三轮 108.158s，补齐最终 HTTP guard 后相关专项三轮 13.358s，最终新增专项三轮 15.442s。最终完整 service 回归实际输出 ok 376.385s，Full service exit: 0；service/handler vet 输出 PASS、退出 0。
+- 前两次完整 service 返回失败（319.984s/329.647s），工具截断约 18 MB 输出中段，未保留具体失败名称，不能声称根因已定位；首次运行与后续版本/全量运行有重叠。最后使用内存提取失败片段、无持久日志的原完整命令实际退出 0。并发干扰仅是未证实假设，不登记为已修复或跳过任何测试。
+- 最终 service 完整未限量 lint 输出 0 issues.、退出 0；没有降低检查规则。git diff --check 通过，STATE 89 行，无新增 TODO/FIXME/XXX；7 个任务文件本地提交，不推送、不 CI、不创建工作树或生产变更。既有受保护图片和 bin 产物保持；D2/D4 仍 in_progress，原 20 项为 12 done、2 in_progress、6 pending，父任务完成数不变。

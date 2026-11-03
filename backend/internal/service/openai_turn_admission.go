@@ -219,6 +219,12 @@ func openAITurnRouteFingerprint(a *Account) [32]byte {
 			"expires_at", "expires_in", "token_type", "scope":
 			continue
 		}
+		// Static API keys identify a purchased route. Unlike an OAuth refresh,
+		// replacing one must invalidate requests and sockets built for the old key.
+		if key == "api_key" && a.Type == AccountTypeAPIKey {
+			routeCredentials[key] = value
+			continue
+		}
 		if IsSensitiveCredentialKey(key) || strings.HasPrefix(key, "_token_") {
 			continue
 		}
@@ -277,8 +283,14 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 		}
 		authoritativeRead = true
 	} else {
-		if ttl := s.openAITurnAdmissionCacheTTL(); ttl > 0 {
-			if cached, cachedParent, ok := s.openAITurnAdmissionCache.load(selected.ID, ttl); ok {
+		cacheTTL := s.openAITurnAdmissionCacheTTL()
+		if gatewayProfitControlGateActive(ctx) {
+			// A warm process cache cannot authorize a changed purchase or sale
+			// rate. Regional snapshots retain their own authority and TTL above.
+			cacheTTL = 0
+		}
+		if cacheTTL > 0 {
+			if cached, cachedParent, ok := s.openAITurnAdmissionCache.load(selected.ID, cacheTTL); ok {
 				latest, parent, authoritativeRead = cached, cachedParent, true
 			}
 		}
@@ -304,7 +316,7 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 				if err != nil || latest == nil || latest.ID != selected.ID {
 					return nil, denyOpenAITurn("latest_state_unavailable")
 				}
-				if s.openAITurnAdmissionCacheTTL() > 0 {
+				if cacheTTL > 0 {
 					s.openAITurnAdmissionCache.store(latest, parent)
 				}
 			}
@@ -397,11 +409,11 @@ func (s *OpenAIGatewayService) admitOpenAITurnWithGroup(
 	if enforceGroup && !latest.IsModelAllowedInGroup(&groupID, outboundModel) {
 		return nil, denyOpenAITurn("model_not_allowed_in_group")
 	}
+	if err := checkOpenAITurnBindingAndRate(ctx, selected, latest); err != nil {
+		return nil, err
+	}
 	if !latest.IsOpenAI() {
 		return latest, nil
-	}
-	if openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(selected) && (!latest.HasManagedOpenAIConnections() || selected.AuthConnectionID == "") {
-		return nil, denyOpenAITurn("account_binding_changed")
 	}
 	// Preserve the cause of a model-not-found cooldown before the generic
 	// runtime/rate-limit checks erase it.
@@ -426,6 +438,19 @@ func (s *OpenAIGatewayService) admitOpenAITurnWithGroup(
 		return nil, denyOpenAITicket()
 	}
 	return latest, nil
+}
+
+// Share the predicate between per-turn admission and the final HTTP send.
+// Neither may authorize a prepared old route using a different row's rates.
+func checkOpenAITurnBindingAndRate(ctx context.Context, selected, latest *Account) error {
+	if latest.IsOpenAI() && openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(selected) &&
+		(!latest.HasManagedOpenAIConnections() || selected.AuthConnectionID == "") {
+		return denyOpenAITurn("account_binding_changed")
+	}
+	if vetoed, reason := openAIProfitControlVetoReason(ctx, latest); vetoed {
+		return denyOpenAITurn(reason)
+	}
+	return nil
 }
 
 // A connection is bound to the ticket actually sent at handshake, not the

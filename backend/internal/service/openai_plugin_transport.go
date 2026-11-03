@@ -14,6 +14,21 @@ func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (result *http.Response, resultErr error) {
+	if gate, _ := request.Context().Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); gate != nil {
+		if gate.configUnavailable {
+			return nil, denyOpenAITurn(openAIProfitFilterReasonGroupConfigUnavailable)
+		}
+		// Some protocol adapters build their request after initial admission.
+		// Re-read here as well so a prepared request cannot cross a rate/key or
+		// group-membership change before reaching any egress implementation.
+		latest, err := s.latestOpenAITurnAccountForGroup(request.Context(), account, gate.groupID, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkOpenAITurnBindingAndRate(request.Context(), account, latest); err != nil {
+			return nil, err
+		}
+	}
 	if s.excelOAuthReauth != nil {
 		if err := s.excelOAuthReauth.validateAuthConnectionPolicy(request.Context(), account); err != nil {
 			return nil, err

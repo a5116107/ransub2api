@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -341,6 +342,39 @@ func TestSharedUpstreamKeyWSIngressPreservesTurnAdmission(t *testing.T) {
 		t.Fatal("missing turn admission rejection")
 	}
 	require.EqualValues(t, 1, f.httpCalls.Load(), "shared Key bridge must retain the original account turn hook")
+	require.Zero(t, f.wsCalls.Load())
+}
+
+func TestOpenAIWSHTTPBridgeRejectsRotatedStaticKeyBetweenTurns(t *testing.T) {
+	f := newSmartProtocolNetwork(t, "ws", false, "")
+	f.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled = false
+	f.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	f.account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeHTTPBridge
+	repo := &turnAdmissionRepo{account: f.account}
+	f.svc.accountRepo = repo
+	f.beforeTurn = func(turn int) error {
+		if turn == 2 {
+			latest := *f.account
+			latest.Credentials = maps.Clone(f.account.Credentials)
+			latest.Credentials["api_key"] = "replacement-fixture"
+			repo.account = &latest
+		}
+		return nil
+	}
+	c := f.dial()
+	f.send(c, "first", "", 100)
+	f.terminal(c)
+	f.result()
+	f.send(c, "second", "", 100)
+	select {
+	case err := <-f.errors:
+		var denied *OpenAITurnAdmissionError
+		require.ErrorAs(t, err, &denied)
+		require.Equal(t, "account_binding_changed", denied.Reason)
+	case <-f.ctx.Done():
+		t.Fatal("rotated static key was not rejected")
+	}
+	require.EqualValues(t, 1, f.httpCalls.Load(), "an old WS session must not send the second HTTP request after key rotation")
 	require.Zero(t, f.wsCalls.Load())
 }
 

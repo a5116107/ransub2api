@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +28,127 @@ type turnAdmissionRepo struct {
 func (r *turnAdmissionRepo) GetOpenAITurnAdmission(context.Context, int64) (*Account, *Account, error) {
 	r.reads++
 	return r.account, r.parent, r.err
+}
+
+func TestOpenAITurnAdmissionStaticKeyBinding(t *testing.T) {
+	for _, key := range []any{"replacement-fixture", "", nil} {
+		t.Run(fmt.Sprintf("key_%v", key), func(t *testing.T) {
+			selected := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "original-fixture", "base_url": "https://fixture.invalid"}}
+			latest := *selected
+			latest.Credentials = maps.Clone(selected.Credentials)
+			latest.Credentials["api_key"] = key
+			svc := &OpenAIGatewayService{accountRepo: &turnAdmissionRepo{account: &latest}}
+			_, err := svc.admitOpenAITurn(t.Context(), nil, selected, "gpt-5.1")
+			var denied *OpenAITurnAdmissionError
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, "account_binding_changed", denied.Reason)
+			binding := svc.bindOpenAIWSHandshake(selected, "gpt-5.1", make(http.Header))
+			require.Error(t, svc.checkOpenAIWSBinding(&latest, "gpt-5.1", binding), "an established WS must not outlive static credential replacement")
+			require.Equal(t, "original-fixture", selected.GetCredential("api_key"))
+		})
+	}
+}
+
+func TestOpenAITurnAdmissionFreshProfitEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		mutate       func(*Account)
+	}{
+		{name: "unchanged"},
+		{name: "rate increased", reason: openAIProfitFilterReasonThreshold, mutate: func(a *Account) { rate := 0.9; a.RateMultiplier = &rate }},
+		{name: "sale rate changed", reason: openAIProfitFilterReasonAccountSaleRateMismatch, mutate: func(a *Account) { rate := 1.1; a.GroupRateMultiplier = &rate }},
+		{name: "evidence removed", reason: openAIProfitFilterReasonUpstreamRateUnavailable, mutate: func(a *Account) { delete(a.Extra, UpstreamBillingProbeExtraKey) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selected := profitControlSyncedTestAccount(time.Now().UTC())
+			selected.Status, selected.Schedulable = StatusActive, true
+			latest := *selected
+			latest.Extra = maps.Clone(selected.Extra)
+			if tc.mutate != nil {
+				tc.mutate(&latest)
+			}
+			svc := &OpenAIGatewayService{accountRepo: &turnAdmissionRepo{account: &latest}}
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: PlatformOpenAI, threshold: 0.5})
+			_, err := svc.admitOpenAITurn(ctx, nil, selected, "gpt-5.1")
+			if tc.reason == "" {
+				require.NoError(t, err)
+			} else {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, tc.reason, denied.Reason)
+			}
+			_, err = svc.admitOpenAITurn(t.Context(), nil, selected, "gpt-5.1")
+			require.NoError(t, err, "the unconfigured profit gate must preserve existing behavior")
+		})
+	}
+}
+
+func TestOpenAITurnAdmissionProfitGateBypassesLocalCache(t *testing.T) {
+	selected := profitControlSyncedTestAccount(time.Now().UTC())
+	selected.Status, selected.Schedulable = StatusActive, true
+	repo := &turnAdmissionRepo{account: selected}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.OpenAITurnAdmissionCacheTTLSeconds = 300
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: cfg}
+	_, err := svc.admitOpenAITurn(t.Context(), nil, selected, "gpt-5.1")
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.reads)
+	latest := *selected
+	rate := 0.9
+	latest.RateMultiplier = &rate
+	repo.account = &latest
+	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: PlatformOpenAI, threshold: 0.5})
+	_, err = svc.admitOpenAITurn(ctx, nil, selected, "gpt-5.1")
+	var denied *OpenAITurnAdmissionError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, openAIProfitFilterReasonThreshold, denied.Reason)
+	require.Equal(t, 2, repo.reads, "strict admission must not reuse an unexpired process cache")
+}
+
+func TestOpenAIHTTPFinalSendRechecksPurchasedRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		mutate       func(*Account)
+	}{
+		{name: "unchanged"},
+		{name: "static key replaced", reason: "account_binding_changed", mutate: func(a *Account) { a.Credentials["api_key"] = "replacement-fixture" }},
+		{name: "purchase rate increased", reason: openAIProfitFilterReasonThreshold, mutate: func(a *Account) { rate := 0.9; a.RateMultiplier = &rate }},
+		{name: "sale rate changed", reason: openAIProfitFilterReasonAccountSaleRateMismatch, mutate: func(a *Account) { rate := 1.1; a.GroupRateMultiplier = &rate }},
+		{name: "evidence removed", reason: openAIProfitFilterReasonUpstreamRateUnavailable, mutate: func(a *Account) { delete(a.Extra, UpstreamBillingProbeExtraKey) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selected := profitControlSyncedTestAccount(time.Now().UTC())
+			selected.Status, selected.Schedulable = StatusActive, true
+			selected.GroupIDs = []int64{9}
+			selected.Credentials = map[string]any{"api_key": "original-fixture", "base_url": "https://fixture.invalid"}
+			latest := *selected
+			latest.Extra, latest.Credentials = maps.Clone(selected.Extra), maps.Clone(selected.Credentials)
+			if tc.mutate != nil {
+				tc.mutate(&latest)
+			}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, accountRepo: &turnAdmissionRepo{account: &latest}, httpUpstream: upstream}
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, platform: PlatformOpenAI, threshold: 0.5})
+			req := httptest.NewRequest(http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"gpt-5.1"}`)).WithContext(ctx)
+			req.Header.Set("Authorization", "Bearer original-fixture")
+			response, err := svc.doOpenAIUpstream(req, "", selected)
+			if response != nil {
+				require.NoError(t, response.Body.Close())
+			}
+			if tc.reason == "" {
+				require.NoError(t, err)
+				require.NotNil(t, response)
+				require.NotNil(t, upstream.lastReq)
+				require.Equal(t, "Bearer original-fixture", upstream.lastReq.Header.Get("Authorization"))
+				return
+			}
+			var denied *OpenAITurnAdmissionError
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, tc.reason, denied.Reason)
+			require.Nil(t, upstream.lastReq, "a prepared request must not send old credentials against new evidence")
+		})
+	}
 }
 
 func TestOpenAITurnAdmissionLatestState(t *testing.T) {
