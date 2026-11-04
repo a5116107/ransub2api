@@ -912,25 +912,28 @@ func TestTokenRefreshService_AttemptTimeoutTripsRetryableProviderThreshold(t *te
 }
 
 func TestTokenRefreshService_ParentCancellationStopsRetryWithoutAccountMutation(t *testing.T) {
-	repo := &poolHealthAccountRepo{}
-	ctx, cancel := context.WithCancel(context.Background())
-	refresher := &poolHealthRefresher{
-		err:    errors.New("temporary provider failure"),
-		cancel: cancel,
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "provider failure", err: errors.New("temporary provider failure")},
+		{name: "provider success"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &poolHealthAccountRepo{}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			refresher := &poolHealthRefresher{err: tc.err, cancel: cancel}
+			svc := newPoolHealthService(repo, refresher, config.TokenRefreshConfig{MaxRetries: 3, RetryBackoffSeconds: 1, AttemptTimeoutSeconds: 1})
+			account := grokPoolAccount(42)
+			err := svc.refreshWithRetry(ctx, &account, refresher, nil, time.Hour)
+			require.ErrorIs(t, err, context.Canceled)
+			_, updatedIDs, setErrorCalls, setTempUnschedCalls := repo.snapshot()
+			require.Empty(t, updatedIDs, "even successful provider output is invalid after parent cancellation")
+			require.Zero(t, setErrorCalls)
+			require.Zero(t, setTempUnschedCalls)
+		})
 	}
-	svc := newPoolHealthService(repo, refresher, config.TokenRefreshConfig{
-		MaxRetries:            3,
-		RetryBackoffSeconds:   1,
-		AttemptTimeoutSeconds: 1,
-	})
-	account := grokPoolAccount(42)
-
-	err := svc.refreshWithRetry(ctx, &account, refresher, nil, time.Hour)
-
-	require.ErrorIs(t, err, context.Canceled)
-	_, _, setErrorCalls, setTempUnschedCalls := repo.snapshot()
-	require.Zero(t, setErrorCalls)
-	require.Zero(t, setTempUnschedCalls)
 }
 
 func TestTokenRefreshService_LateSuccessPastAttemptDeadlineIsRejected(t *testing.T) {
@@ -968,4 +971,29 @@ func TestTokenRefreshService_NonRetryableGrokFailureInvalidatesTokenCache(t *tes
 	require.Equal(t, 1, setErrorCalls)
 	require.Zero(t, setTempUnschedCalls)
 	require.Equal(t, 1, invalidator.count())
+}
+
+// A context may have crossed its deadline before the cancellation callback runs.
+// Keep Err/Done pending to exercise that ordering without relying on timer races.
+type pendingDeadlineCancellationContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c pendingDeadlineCancellationContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestTokenRefreshService_ExpiredParentDeadlineBeforeCancellation(t *testing.T) {
+	repo := &poolHealthAccountRepo{}
+	refresher := &poolHealthRefresher{}
+	svc := newPoolHealthService(repo, refresher, config.TokenRefreshConfig{MaxRetries: 1})
+	account := grokPoolAccount(43)
+	ctx := pendingDeadlineCancellationContext{Context: t.Context(), deadline: time.Now().Add(-time.Millisecond)}
+	require.NoError(t, ctx.Err(), "cancellation delivery is deliberately pending")
+	err := svc.refreshWithRetry(ctx, &account, refresher, nil, time.Hour)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, refresher.calls.Load(), "an expired parent must stop before upstream refresh")
+	_, updatedIDs, setErrorCalls, setTempUnschedCalls := repo.snapshot()
+	require.Empty(t, updatedIDs)
+	require.Zero(t, setErrorCalls)
+	require.Zero(t, setTempUnschedCalls, "parent expiry is not an account failure")
 }

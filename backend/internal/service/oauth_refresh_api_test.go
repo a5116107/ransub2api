@@ -1107,3 +1107,18 @@ func TestAntigravityProviderRefreshPolicy(t *testing.T) {
 	require.Equal(t, ProviderLockHeldUseExistingToken, p.OnLockHeld)
 	require.Equal(t, time.Duration(0), p.FailureTTL)
 }
+
+func TestRefreshIfNeeded_ExpiredDeadlineBeforeCancellationDoesNotPersist(t *testing.T) {
+	account := &Account{ID: 85, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Credentials: map[string]any{"refresh_token": "fixture-refresh"}}
+	repo := &refreshAPIAccountRepo{account: account}
+	executor := &refreshAPIExecutorStub{needsRefresh: true, credentials: map[string]any{"access_token": "late-token"}}
+	api := NewOAuthRefreshAPI(repo, nil)
+	ctx := pendingDeadlineCancellationContext{Context: t.Context(), deadline: time.Now().Add(-time.Millisecond)}
+	require.NoError(t, ctx.Err(), "cancellation delivery is deliberately pending")
+	result, err := api.RefreshIfNeeded(ctx, account, executor, time.Hour)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Nil(t, result)
+	require.Zero(t, executor.refreshCalls, "an expired budget must not start a rotating refresh")
+	require.Zero(t, repo.updateCredentialsCalls)
+	require.Zero(t, repo.successCASCalls, "late credentials must not cross conditional persistence either")
+}
