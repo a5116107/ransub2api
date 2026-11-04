@@ -819,6 +819,7 @@ readLoop:
 				}
 				break
 			}
+			s.rateLimitService.observeAvailabilityIncomplete(ctx, account, false)
 			if !wroteDownstream {
 				return nil, wrapOpenAIWSFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr)
 			}

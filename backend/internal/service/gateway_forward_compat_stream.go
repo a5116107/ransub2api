@@ -85,6 +85,127 @@ func (st *anthropicCompatStream) stop() {
 	st.pump.stop()
 }
 
+// Both buffered API adapters must prove completion before publishing JSON.
+// Reuse the streaming reader's cancellation, idle and terminal semantics.
+func (s *GatewayService) readAnthropicBufferedResponse(resp *http.Response, c *gin.Context, account *Account) (*apicompat.AnthropicResponse, ClaudeUsage, error) {
+	stream := newAnthropicCompatStream(s.cfg, c, resp, "anthropic buffered", resp.Header.Get("x-request-id"))
+	defer stream.stop()
+	var finalResp *apicompat.AnthropicResponse
+	var usage ClaudeUsage
+	var parser openAICompatSSEFrameParser
+	process := func(frame openAICompatSSEFrame) error {
+		if strings.TrimSpace(frame.Data) == "[DONE]" {
+			return nil
+		}
+		payload := openAICompatPayloadWithEventType(frame.Data, frame.EventType)
+		var event apicompat.AnthropicStreamEvent
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			return nil
+		}
+		observeAnthropicUpstreamResponseModel(c, []byte(payload))
+		stream.observe(&event, payload)
+		if event.Type == "error" {
+			return &sseStreamErrorEventError{RawData: payload}
+		}
+		switch event.Type {
+		case "message_start":
+			if event.Message != nil {
+				finalResp = event.Message
+				mergeAnthropicUsage(&usage, event.Message.Usage)
+			}
+		case "message_delta":
+			if event.Usage != nil {
+				mergeAnthropicUsage(&usage, *event.Usage)
+			}
+			if event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
+				finalResp.StopReason = apicompat.AnthropicStopReasonPtr(event.Delta.StopReason)
+			}
+		case "content_block_start":
+			if event.ContentBlock != nil && finalResp != nil {
+				finalResp.Content = append(finalResp.Content, *event.ContentBlock)
+			}
+		case "content_block_delta":
+			if event.Delta == nil || finalResp == nil || event.Index == nil {
+				break
+			}
+			idx := *event.Index
+			if idx < 0 || idx >= len(finalResp.Content) {
+				break
+			}
+			switch event.Delta.Type {
+			case "text_delta":
+				finalResp.Content[idx].Text += event.Delta.Text
+			case "thinking_delta":
+				finalResp.Content[idx].Thinking += event.Delta.Thinking
+			case "signature_delta":
+				finalResp.Content[idx].Signature += event.Delta.Signature
+			case "input_json_delta":
+				finalResp.Content[idx].Input = appendRawJSON(finalResp.Content[idx].Input, event.Delta.PartialJSON)
+			}
+		}
+		return nil
+	}
+	for {
+		line, ok := stream.nextLine()
+		if !ok {
+			break
+		}
+		if frame, ready := parser.AddLine(line); ready {
+			if err := process(frame); err != nil {
+				return nil, usage, err
+			}
+		}
+	}
+	if errors.Is(stream.readErr, io.EOF) {
+		if frame, ready := parser.Finish(); ready {
+			if err := process(frame); err != nil {
+				return nil, usage, err
+			}
+		}
+	}
+	if !stream.sawTerminal {
+		if err := stream.ctx.Err(); err != nil {
+			return nil, usage, err
+		}
+	}
+	if failure := stream.failure(); failure != nil {
+		if failure.errType == "stream_incomplete" {
+			s.rateLimitService.observeAvailabilityIncomplete(stream.ctx, account, stream.clientDisconnected)
+		}
+		return nil, usage, failure.err
+	}
+	if finalResp == nil {
+		s.rateLimitService.observeAvailabilityIncomplete(stream.ctx, account, stream.clientDisconnected)
+		return nil, usage, errors.New("upstream stream ended without response")
+	}
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		finalResp.Usage = apicompat.AnthropicUsage{
+			InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+			CacheCreationInputTokens: usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+		}
+	}
+	return finalResp, usage, nil
+}
+
+func writeAnthropicBufferedReadFailure(c *gin.Context, err error, writeError func(*gin.Context, int, string, string)) error {
+	var sseErr *sseStreamErrorEventError
+	if errors.As(err, &sseErr) {
+		if !isAnthropicCompatSafetyRejection([]byte(sseErr.RawData)) {
+			return err
+		}
+		message := sanitizeUpstreamErrorMessage(gjson.Get(sseErr.RawData, "error.message").String())
+		writeError(c, http.StatusForbidden, "permission_error", message)
+		MarkResponseCommitted(c)
+		return fmt.Errorf("upstream safety rejection: %s", message)
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		writeError(c, http.StatusBadGateway, "server_error", "Upstream stream did not complete")
+		MarkResponseCommitted(c)
+	}
+	return err
+}
+
 // markClientDisconnected 标记客户端已断开，此后调用方不再向下游写入；读间隔上限
 // 未启用时以 anthropicCompatDisconnectDrainInterval 启用。
 func (st *anthropicCompatStream) markClientDisconnected() {

@@ -50,14 +50,14 @@ func TestAnthropicBufferedAggregators_IgnoreNegativeBlockIndex(t *testing.T) {
 		{
 			name: "gateway chat completions",
 			run: func(resp *http.Response, c *gin.Context) error {
-				_, err := (&GatewayService{}).handleCCBufferedFromAnthropic(resp, c, "gpt-5", "claude-sonnet-4.5", nil, time.Now())
+				_, err := (&GatewayService{}).handleCCBufferedFromAnthropic(resp, c, nil, "gpt-5", "claude-sonnet-4.5", nil, time.Now())
 				return err
 			},
 		},
 		{
 			name: "gateway responses",
 			run: func(resp *http.Response, c *gin.Context) error {
-				_, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				_, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, nil, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 				return err
 			},
 		},

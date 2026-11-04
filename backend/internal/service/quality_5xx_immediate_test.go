@@ -29,7 +29,7 @@ type immediateQualityAccountRepo struct {
 }
 
 func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
-	for _, path := range []string{"responses", "passthrough", "chat", "messages", "native_messages", "anthropic", "anthropic_passthrough", "anthropic_chat", "anthropic_responses", "ws_http_bridge"} {
+	for _, path := range []string{"responses", "passthrough", "chat", "messages", "native_messages", "anthropic", "anthropic_passthrough", "anthropic_chat", "anthropic_responses", "ws_http_bridge", "anthropic_buffered_chat", "anthropic_buffered_responses", "chat_buffered", "messages_buffered"} {
 		for _, async := range []bool{false, true} {
 			for _, outcome := range []string{"empty", "partial", "complete", "canceled", "probe"} {
 				t.Run(fmt.Sprintf("%s/async=%t/%s", path, async, outcome), func(t *testing.T) {
@@ -80,6 +80,10 @@ func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
 						_, err = svc.handleAnthropicStreamingResponse(response, c, account, "target", "target", "target", time.Now())
 					case "native_messages":
 						_, err = svc.handleNativeAnthropicStreamingResponse(ctx, response, c, account, "target", "target", "target", nil, time.Now())
+					case "chat_buffered":
+						_, err = svc.handleChatBufferedStreamingResponse(response, c, account, "target", "target", "target", time.Now())
+					case "messages_buffered":
+						_, err = svc.handleAnthropicBufferedStreamingResponse(response, c, account, "target", "target", "target", time.Now())
 					case "ws_http_bridge":
 						svc.httpUpstream = &httpUpstreamRecorder{resp: response}
 						request := []byte(`{"type":"response.create","model":"target","input":"fixture"}`)
@@ -96,6 +100,12 @@ func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
 					case "anthropic_responses":
 						gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
 						_, err = gateway.handleResponsesStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+					case "anthropic_buffered_chat":
+						gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
+						_, err = gateway.handleCCBufferedFromAnthropic(response, c, account, "target", "target", nil, time.Now())
+					case "anthropic_buffered_responses":
+						gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
+						_, err = gateway.handleResponsesBufferedStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 					}
 					require.NoError(t, response.Body.Close())
 					want := 0
@@ -128,6 +138,288 @@ func TestAvailabilityProtocolDisconnectExclusions(t *testing.T) {
 	cancel()
 	limiter.observeAvailabilityIncomplete(ctx, &Account{ID: 42, Type: AccountTypeAPIKey}, false)
 	require.Zero(t, repo.availabilityCalls)
+}
+
+func TestAvailabilityAnthropicBufferedFailureNeverPublishesSuccess(t *testing.T) {
+	start := "event:message_start\ndata:{\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"model\":\"target\",\"content\":[],\"usage\":{\"input_tokens\":3}}}\n\n"
+	partial := start + "event:content_block_start\ndata:{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"partial-secret\"}}\n\n"
+	stop := "event:message_stop\ndata:{\"type\":\"message_stop\"}\n\n"
+	for _, api := range []string{"chat", "responses"} {
+		for _, tc := range []struct {
+			name, payload  string
+			readErr        error
+			status, faults int
+			wantSSE        bool
+		}{
+			{name: "empty", status: 502, faults: 1},
+			{name: "partial EOF", payload: partial, status: 502, faults: 1},
+			{name: "partial read failure", payload: partial, readErr: io.ErrUnexpectedEOF, status: 502, faults: 1},
+			{name: "overload stops queued success", payload: partial + "event:error\ndata:{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n" + stop, wantSSE: true},
+			{name: "safety stops queued success", payload: partial + "event:error\ndata:{\"type\":\"error\",\"error\":{\"type\":\"safety_error\",\"message\":\"request rejected by safety policy\"}}\n\n" + stop, status: 403},
+		} {
+			t.Run(api+"/"+tc.name, func(t *testing.T) {
+				repo := &immediateQualityAccountRepo{}
+				limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				gateway := &GatewayService{rateLimitService: limiter}
+				account := &Account{ID: 42, Type: AccountTypeAPIKey}
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(t.Context())
+				var reader io.Reader = strings.NewReader(tc.payload)
+				if tc.readErr != nil {
+					reader = io.MultiReader(reader, iotest.ErrReader(tc.readErr))
+				}
+				response := &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(reader)}
+				limiter.observeQualityResponse(t.Context(), account, response, nil)
+				var result *ForwardResult
+				var err error
+				if api == "chat" {
+					result, err = gateway.handleCCBufferedFromAnthropic(response, c, account, "target", "target", nil, time.Now())
+				} else {
+					result, err = gateway.handleResponsesBufferedStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				}
+				require.NoError(t, response.Body.Close())
+				require.Error(t, err)
+				require.Nil(t, result, "a partial buffer must not become a billable success")
+				if tc.readErr != nil {
+					require.ErrorIs(t, err, tc.readErr)
+				}
+				if tc.wantSSE {
+					var sseErr *sseStreamErrorEventError
+					require.ErrorAs(t, err, &sseErr)
+					require.False(t, c.Writer.Written(), "the existing forwarding layer must handle upstream error events")
+				} else {
+					require.Equal(t, tc.status, recorder.Code)
+				}
+				require.NotContains(t, recorder.Body.String(), "partial-secret")
+				require.Equal(t, tc.faults, repo.availabilityCalls)
+				require.Zero(t, repo.calls, "local buffer errors must not fabricate upstream 5xx")
+			})
+		}
+	}
+}
+
+func TestAvailabilityAnthropicBufferedCancellationBoundsIncompleteRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	body, writer := io.Pipe()
+	defer func() { _ = body.Close(); _ = writer.Close() }()
+	repo := &immediateQualityAccountRepo{}
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	response := &http.Response{StatusCode: 200, Header: make(http.Header), Body: body}
+	cfg := &config.Config{Gateway: config.GatewayConfig{StreamDataIntervalTimeout: 1}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := (&GatewayService{cfg: cfg, rateLimitService: limiter}).handleCCBufferedFromAnthropic(response, c, &Account{ID: 42, Type: AccountTypeAPIKey}, "target", "target", nil, time.Now())
+		done <- err
+	}()
+	_, err := io.WriteString(writer, "event:message_start\ndata:{\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"content\":[]}}\n\n")
+	require.NoError(t, err)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("buffered read did not stop after request cancellation")
+	}
+	require.False(t, c.Writer.Written())
+	require.Zero(t, repo.availabilityCalls)
+	require.Zero(t, repo.calls)
+}
+
+func TestAvailabilityOpenAIBufferedCompletionBoundary(t *testing.T) {
+	for _, outcome := range []string{"done_without_terminal", "idle_timeout", "canceled"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cfg := &config.Config{Gateway: config.GatewayConfig{StreamDataIntervalTimeout: 1}}
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc := &OpenAIGatewayService{cfg: cfg, rateLimitService: limiter}
+			account := &Account{ID: 42, Type: AccountTypeAPIKey}
+			body, writer := io.Pipe()
+			defer func() { _ = body.Close(); _ = writer.Close() }()
+			var responseBody io.ReadCloser = body
+			if outcome == "done_without_terminal" {
+				responseBody = io.NopCloser(strings.NewReader("data: [DONE]\n\n"))
+			}
+			if outcome == "canceled" {
+				cancel()
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+			response := &http.Response{StatusCode: 200, Header: make(http.Header), Body: responseBody}
+			limiter.observeQualityResponse(ctx, account, response, nil)
+			result, _, _, _, err := svc.readOpenAICompatBufferedTerminal(response, c, account, "fixture", "fixture")
+			require.Nil(t, result)
+			want := 1
+			switch outcome {
+			case "done_without_terminal":
+				require.NoError(t, err, "the existing caller maps a missing terminal into its protocol error")
+			case "idle_timeout":
+				require.ErrorContains(t, err, "stream data interval timeout")
+			case "canceled":
+				want = 0
+				require.ErrorContains(t, err, "stream data interval timeout", "client cancellation must not abort detached upstream billing reads")
+			}
+			require.Equal(t, want, repo.availabilityCalls)
+			require.Zero(t, repo.calls)
+			require.NoError(t, response.Body.Close())
+		})
+	}
+}
+
+func TestAvailabilityAnthropicBufferedCanceledCompleteRetainsUsage(t *testing.T) {
+	for _, api := range []string{"chat", "responses"} {
+		t.Run(api, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			gateway := &GatewayService{rateLimitService: limiter}
+			account := &Account{ID: 42, Type: AccountTypeAPIKey}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+			response := &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(anthropicSSEWithNegativeBlockIndex()))}
+			var result *ForwardResult
+			var err error
+			if api == "chat" {
+				result, err = gateway.handleCCBufferedFromAnthropic(response, c, account, "target", "target", nil, time.Now())
+			} else {
+				result, err = gateway.handleResponsesBufferedStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+			}
+			require.NoError(t, response.Body.Close())
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, 10, result.Usage.InputTokens)
+			require.Equal(t, 5, result.Usage.OutputTokens)
+			require.Zero(t, repo.availabilityCalls)
+			require.Zero(t, repo.calls)
+		})
+	}
+}
+
+func TestAvailabilityNativeWSHTTPReadInvalidates(t *testing.T) {
+	for _, outcome := range []string{"empty", "partial", "complete", "probe", "canceled"} {
+		t.Run(outcome, func(t *testing.T) {
+			cfg := passthroughLifecycleConfig()
+			cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+			cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+			upstream := &openAIWSCaptureConn{}
+			if outcome != "empty" {
+				upstream.events = append(upstream.events, []byte(`{"type":"response.output_text.delta","delta":"partial","response_id":"fixture"}`))
+			}
+			if outcome == "complete" {
+				upstream.events = append(upstream.events, []byte(`{"type":"response.completed","response":{"id":"fixture","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`))
+			}
+			pool := newOpenAIWSConnPool(cfg)
+			pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: upstream})
+			t.Cleanup(pool.Close)
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc := &OpenAIGatewayService{cfg: cfg, openaiWSPool: pool, toolCorrector: NewCodexToolCorrector(), rateLimitService: limiter}
+			account := passthroughLifecycleAccount()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if outcome == "probe" {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			if outcome == "canceled" {
+				cancel()
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+			_, err := svc.forwardOpenAIWSV2(ctx, c, account, map[string]any{"model": "gpt-5.1", "input": "fixture", "stream": true}, "", "", "fixture", OpenAIWSProtocolDecision{}, false, true, "gpt-5.1", "gpt-5.1", time.Now(), 0, "", nil)
+			want := 0
+			if outcome == "empty" || outcome == "partial" {
+				want = 1
+				require.Error(t, err)
+			}
+			if outcome == "complete" {
+				require.NoError(t, err)
+			}
+			require.Equal(t, want, repo.availabilityCalls)
+			require.Zero(t, repo.calls)
+		})
+	}
+}
+
+func TestAvailabilityNativeWSIngressReadInvalidates(t *testing.T) {
+	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
+		for _, outcome := range []string{"partial", "complete", "probe", "client_disconnect", "control_cancel"} {
+			t.Run(mode+"/"+outcome, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if outcome == "probe" {
+					ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+				}
+				cfg := passthroughLifecycleConfig()
+				cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
+				cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds = 5
+				cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+				cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+				cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 5
+				upstream := newStagedPassthroughConn()
+				svc := newPassthroughLifecycleService(cfg, upstream)
+				pool := newOpenAIWSConnPool(cfg)
+				pool.setClientDialerForTest(&stagedPassthroughDialer{conn: upstream})
+				t.Cleanup(pool.Close)
+				svc.openaiWSPool = pool
+				repo := &immediateQualityAccountRepo{}
+				svc.rateLimitService = ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				account := passthroughLifecycleAccount()
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+				server, serverErr := startPassthroughLifecycleServer(t, ctx, svc, account)
+				t.Cleanup(func() { cancel(); server.Close() })
+				client := dialPassthroughLifecycleClientWithPayload(t, server, `{"type":"response.create","model":"gpt-5.1","stream":true}`)
+				t.Cleanup(func() { _ = client.CloseNow() })
+				upstream.Send(`{"type":"response.output_text.delta","delta":"partial","response_id":"fixture"}`)
+				_, err := readPassthroughLifecycleFrame(t, client, 3*time.Second)
+				require.NoError(t, err, "the active turn must reach downstream before injecting a failure")
+				switch outcome {
+				case "complete":
+					upstream.Send(`{"type":"response.completed","response":{"id":"fixture","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+					_, err = readPassthroughLifecycleFrame(t, client, 3*time.Second)
+					require.NoError(t, err)
+					_ = client.CloseNow()
+				case "client_disconnect":
+					_ = client.CloseNow()
+				case "control_cancel":
+					cancel()
+					_, _ = readPassthroughLifecycleFrame(t, client, 3*time.Second)
+				default:
+					upstream.Fail(io.EOF)
+					_, err = readPassthroughLifecycleFrame(t, client, 3*time.Second)
+					require.Error(t, err)
+				}
+				select {
+				case err := <-serverErr:
+					switch outcome {
+					case "complete":
+						require.NoError(t, err)
+					case "client_disconnect":
+						if err != nil {
+							require.True(t, isOpenAIWSClientDisconnectError(err) || errors.Is(err, errOpenAIWSUsageDrainExpired), "unexpected client disconnect result: %v", err)
+						}
+					default:
+						require.Error(t, err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("native WS ingress did not settle after failure or cancellation")
+				}
+				want := 0
+				if outcome == "partial" {
+					want = 1
+				}
+				require.Equal(t, want, repo.availabilityCalls)
+				require.Zero(t, repo.calls, "transport closure is not an observed upstream 5xx")
+			})
+		}
+	}
 }
 
 func (r *immediateQualityAccountRepo) ApplyAvailabilityFault(ctx context.Context, id int64) error {

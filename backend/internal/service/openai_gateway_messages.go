@@ -873,6 +873,10 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 		return nil, usage, acc, openAICompatPriorModelAudit{}, errors.New("upstream response body is nil")
 	}
 	prior := newOpenAICompatPriorModelAudit(account)
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
 	recordPrior := func(event *apicompat.ResponsesStreamEvent) {
 		prior.record(event)
 	}
@@ -967,6 +971,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 						}
 					}
 				}
+				s.rateLimitService.observeAvailabilityIncomplete(ctx, account, false)
 				return nil, usage, acc, prior, nil
 			}
 			resetTimeout()
@@ -981,6 +986,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 			}
 
 			if isOpenAICompatDoneSentinelLine(ev.line) {
+				s.rateLimitService.observeAvailabilityIncomplete(ctx, account, false)
 				return nil, usage, acc, prior, nil
 			}
 			frame, ok := parser.AddLine(ev.line)
@@ -1018,6 +1024,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 
 		case <-timeoutCh:
 			_ = resp.Body.Close()
+			s.rateLimitService.observeAvailabilityIncomplete(ctx, account, false)
 			logger.L().Warn(logPrefix+": data interval timeout",
 				zap.String("request_id", requestID),
 				zap.Duration("interval", streamInterval),

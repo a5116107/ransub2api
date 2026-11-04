@@ -1579,6 +1579,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if context.Cause(ctx) != nil {
 					return
 				}
+				if exit.Stage == "read_upstream" && activeTurn.Load() != 0 && !pendingUpstreamTurn.Load() {
+					s.rateLimitService.observeAvailabilityIncomplete(ctx, account, clientFrameConn.reader.disconnected())
+				}
 				status, reason, ok := openAIWSPassthroughRelayClientClose(exit, int(completedTurns.Load()))
 				if !ok {
 					return

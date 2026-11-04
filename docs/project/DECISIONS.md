@@ -566,3 +566,19 @@
 - 修复后原完整命令实际退出0：service369.127s、handler168.781s、routes13.528s；没有跳过原测试或放宽断言。最终静态检查返回另记；只提交本轮源码、测试和原三份文档，历史PNG及已拒绝删除的产物保持。
 
 - 最终三范围lint仍输出0 issues.后超时，退出4，保留为未通过，不冒充三范围静态验收。按实际修改范围执行完整service包（非diff过滤）golangci-lint，保留全部规则、unit标签、并发2和8分钟，实际输出0 issues.、Changed service package lint: PASS，退出0；未修改的handler/cmd-server已有最终vet、完整回归/默认构建证据。文档链接、差异和新增TODO检查通过。缺终态故障处理子范围本地闭环；D3父任务及原20项统计保持不变。
+
+## 2026-11-05：D3 缓冲转换完整性与原生 WS 读故障
+
+- 接续83bf02d，在H盘同一工作树推进原未完成范围。旧Anthropic缓冲Chat/Responses在正常EOF缺终态、读取错误或非安全流内error之后，仍会用部分message_start/content生成成功JSON。新增矩阵在原实现实际失败service1.706s：空流缺少availability失效，partial四例没有返回错误。未通过调整旧断言或隐藏部分结果消除失败。
+- 两处缓冲聚合原位收敛至readAnthropicBufferedResponse，删除各自scanner/事件聚合/usage合并重复实现，共用既有Anthropic流式读取器、读间隔与终态规则和既有SSE frame parser。工具分片JSON、thinking/signature、缓存用量、模型及工具名称恢复保留；非流式JSON只在完整响应后发布。缺终态/空响应独立失效availability；实际读错误保留错误链，由既有响应体观察独立失效，不重复记作缺终态；流内error立即停止并复用既有failover，安全拒绝保留403且不重放。显式传account并同步全部生产/测试调用点，不留旧签名或wrapper。
+- 新增故障测试初轮三次失败service28.255s，集中于两个安全拒绝子例；定点复核service1.807s显示夹具permission_error并非既有安全分类，未修改生产分类器，改用契约已有safety_error后再验收。取消使用Pipe验证关闭读取和退出，不伪造健康故障；新共享读取器用原请求ctx，无Request的既有直接解析夹具使用Background。
+- 原生WS新回归在未接观察的原发送/读取实现实际失败service5.604s：HTTP→WS的empty/partial，以及直接ctx_pool/passthrough的partial均应报告一次、实际零次。沿物理发送后的原读失败分支接入独立availability，保留全部原错误、终态和重试行为。passthrough在既有BeforeRelayCancel、主动关闭下游之前检查首个失败来源、已发送活跃轮次及准入等待状态，不用清理之后的连接断开反推故障来源。客户端断开/控制取消、探测、已完成轮次不失效；观察不授权原生WS探测作用域。
+- 修复后的缓冲/原生WS/原有兼容组合连续三轮service41.682s通过；扩展OpenAI缓冲Chat/Messages的EOF和[DONE]失效后同组合三轮service39.376s通过。OpenAI共用缓冲读取器继续保留原协议错误映射和原始读错误；新增读间隔超时独立失效与取消关闭/退出，最终矩阵、完整回归及静态检查实际结果另附，不使用前一源码结果冒充最终验收。
+- 原20项保持12 done、3 in_progress、5 pending。D3剩余其他协议/能力、握手前传输及原生WS有效探测作用域；此次不放宽保守准入，不改固定售价/倍率规则，不运行CI、不推送、不部署或执行生产迁移。
+- 最终源码新增边界组合三轮service50.146s通过；取消/原生WS断开/缓冲完成边界加压10轮service50.056s通过。完整回归发现两个原取消收尾契约失败：TestForwardAsAnthropic_UpstreamRequestIgnoresClientCancel、TestForwardAsChatCompletions_UpstreamRequestIgnoresClientCancel。新增立即退出分支会在客户端取消时截断已返回的完整上游结果，已撤回该分支，未改原测试；Anthropic共享缓冲读取也改为沿原流式排空逻辑保留完整用量，不因取消发布部分成功。补充取消后完整响应仍返回原input/output usage、取消且未完成按原读间隔结束的回归，先前立即取消的结论由本项更正。原完整命令handler151.610s、routes12.227s已通过，service失败结果待原句柄结束；最终代码重新运行原完整命令。
+
+- 撤回立即取消分支后，availability全范围/原取消契约/缓冲兼容组合连续三轮service52.572s通过。首次完整service实际360.486s、退出1，已明确两项取消契约失败；handler151.610s、routes12.227s通过，不将失败的整条命令记为通过。首轮完整service包lint真实报1项errcheck，原诊断行号因分析期间测试文件加入回归而偏移；实际为原生WS夹具忽略serverErr通道的error。已改为按完成、断开和故障场景检查返回值，不禁用规则或把错误统一丢弃；最终10轮补强和原完整验证等待实际返回。
+- 接续收取原句柄：第二次完整命令handler176.632s、routes24.734s通过，service在TestUpstreamProtocolRoutingMatrixMatchesMainGolden期间触发10分钟测试超时，包最终804.324s、退出1；原过滤输出未保留完整栈，不将内存压力推断当作已证实的唯一根因。同期间系统可用内存实测15–17MiB；核对命令行和父链后仅停止本任务专项与vet的四个Go进程（26860、78144、69448、24784），两条命令退出-1，均不计通过，未停止其他工作区进程。恢复后改为命令级GOMAXPROCS=2、编译-p 1顺序验证；专项同时纳入原路由矩阵，未修改矩阵或放宽断言。
+- 低并发恢复验证：最终断言下的原生WS/取消/缓冲完成边界及原路由矩阵连续三轮service35.565s、退出0；随后完整service（unit标签、不跳过用例、count=1、timeout=10m）342.762s、退出0。与本轮同一生产源码的handler176.632s、routes24.734s通过分别记录，不将原超时命令整体改写为成功。原矩阵未改，超时未复现；未取得原完整栈，因此不认定唯一原因已证实。静态与10轮补强结果续记。
+- 最终原生WS/取消/缓冲完成边界10轮补强实际service73.191s、退出0；包含既有两个UpstreamRequestIgnoresClientCancel测试及新增serverErr场景断言，没有忽略返回错误或取消原计费契约。
+- 最终顺序静态链实际完成：go vet -tags=unit -p 1 ./internal/service ./internal/handler ./cmd/server输出Final vet: PASS；完整service包golangci-lint保留unit标签、全部规则、并发2及8分钟，输出0 issues.与Final service lint: PASS；默认标签go test -p 1 ./cmd/server -run '^$'输出ok 2.306s [no tests to run]，仅证明默认入口编译，整链退出0。最终源码未再改动。生产代码净减少58行；格式、文档链接、diff及新增债务标记检查通过，历史图片仍12个1164bytes。只本地提交本轮14个源码/测试/文档文件；不运行CI、不推送、不部署，D3父任务及20项统计不变。

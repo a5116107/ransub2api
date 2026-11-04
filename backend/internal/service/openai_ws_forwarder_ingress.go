@@ -1961,6 +1961,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, s.openAIWSReadTimeout())
 			if readErr != nil {
 				lease.MarkBroken()
+				s.rateLimitService.observeAvailabilityIncomplete(ctx, account, clientDisconnected || ingressReader.disconnected())
 				if errors.Is(readErr, context.Canceled) && errors.Is(context.Cause(ctx), errOpenAIWSUsageDrainExpired) {
 					return nil, errOpenAIWSUsageDrainExpired
 				}
