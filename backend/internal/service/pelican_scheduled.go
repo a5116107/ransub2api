@@ -250,6 +250,14 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	// Persist timeout failures with a fresh context even after the request deadline.
 	saveCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
+	if plan.PelicanConfig.Availability != nil {
+		action, applyErr := s.planRepo.ApplyAvailabilityOutcomes(saveCtx, plan, until, availabilityRoundOutcomes(plan, results))
+		if applyErr != nil {
+			logger.LegacyPrintf("service.scheduled_test_runner", "availability plan=%d action failed: %v", plan.ID, applyErr)
+		} else if action == "stale_run" {
+			logger.LegacyPrintf("service.scheduled_test_runner", "availability plan=%d stale result retained only in history", plan.ID)
+		}
+	}
 	if plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults() {
 		plan.QualityModelOutcomes = qualityPlanModelOutcomes(plan, results)
 	}
@@ -293,7 +301,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 			logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d save failed: %v", plan.ID, err)
 		}
 	}
-	if succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
+	if succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && plan.PelicanConfig.Availability == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
 		s.tryRecoverAccount(saveCtx, plan.AccountID, plan.ID)
 	}
 	finished := time.Now()

@@ -374,7 +374,7 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	}
 	var bpsRecoveryPending bool
 	var accountFingerprint *[32]byte
-	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults() {
+	if n == 1 && plan.PelicanConfig != nil && (plan.PelicanConfig.Availability != nil || (plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults())) {
 		fingerprint, err := qualityAccountRouteFingerprint(ctx, tx, plan.AccountID)
 		if err != nil {
 			return false, err
@@ -393,6 +393,11 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 			return false, err
 		}
 	}
+	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Availability != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT (state->>'quality_5xx_episode')::bigint FROM account_quality_states WHERE plan_id=$1),0)`, plan.ID).Scan(&plan.AvailabilityQuality5xxEpisode); err != nil {
+			return false, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
@@ -403,6 +408,7 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	}
 	if n == 1 {
 		plan.QualityAccountFingerprint = accountFingerprint
+		plan.AvailabilityAccountFingerprint = accountFingerprint
 	}
 	return n == 1, nil
 }

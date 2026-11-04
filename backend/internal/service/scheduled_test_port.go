@@ -7,6 +7,7 @@ import (
 
 // PelicanTestConfig stores intelligence test inputs; a missing kind preserves legacy HTML plans.
 type PelicanTestConfig struct {
+	Availability *AvailabilityPolicy `json:"availability,omitempty"`
 	// Optional display name stored in the existing configuration JSON.
 	RuleName string `json:"rule_name,omitempty"`
 	// Filled only on saved result snapshots, never used to configure a rule.
@@ -33,6 +34,8 @@ type PelicanTestConfig struct {
 
 // ScheduledTestPlan represents a scheduled test plan domain model.
 type ScheduledTestPlan struct {
+	AvailabilityAccountFingerprint *[32]byte `json:"-"`
+	AvailabilityQuality5xxEpisode  int64     `json:"-"`
 	// Captured transactionally at claim, never accepted from configuration JSON.
 	QualityAccountFingerprint *[32]byte `json:"-"`
 	// Request-only: importing configuration preserves this target's ownership.
@@ -78,6 +81,7 @@ type ScheduledTestResult struct {
 
 // ScheduledTestPlanRepository defines the data access interface for test plans.
 type ScheduledTestPlanRepository interface {
+	ApplyAvailabilityOutcomes(context.Context, *ScheduledTestPlan, time.Time, []AvailabilityModelOutcome) (string, error)
 	FinishTriggeredQuality(context.Context, *ScheduledTestPlan, time.Time, time.Time, time.Time) error
 	ListQualityPlans(context.Context) ([]*ScheduledTestPlan, error)
 	ApplyQualityOutcome(context.Context, *ScheduledTestPlan, time.Time, string) (string, error)

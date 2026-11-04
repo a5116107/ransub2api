@@ -177,6 +177,12 @@ func nextPlanRun(plan *ScheduledTestPlan, now time.Time) (time.Time, error) {
 		if err := validateQualityPolicy(plan); err != nil {
 			return time.Time{}, err
 		}
+		if err := validateAvailabilityPolicy(cfg); err != nil {
+			return time.Time{}, err
+		}
+		if cfg.Availability != nil && plan.AutoRecover {
+			return time.Time{}, fmt.Errorf("availability tracking cannot use connectivity auto_recover")
+		}
 		if cfg.QuestionKind != "" && cfg.QuestionKind != "pelican" && !isQualityAnswerQuestion(cfg.QuestionKind) && cfg.QuestionKind != OpenAICodexStateProbeQuestionKind {
 			return time.Time{}, fmt.Errorf("invalid question kind")
 		}
