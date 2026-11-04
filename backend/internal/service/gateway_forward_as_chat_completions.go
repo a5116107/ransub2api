@@ -195,7 +195,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	var handleErr error
 	if clientStream {
 		writerSizeBeforeStream := c.Writer.Size()
-		result, handleErr = s.handleCCStreamingFromAnthropic(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+		result, handleErr = s.handleCCStreamingFromAnthropic(resp, c, account, originalModel, mappedModel, reasoningEffort, startTime)
 		var sseErr *sseStreamErrorEventError
 		switch {
 		case errors.As(handleErr, &sseErr):
@@ -382,6 +382,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 func (s *GatewayService) handleCCStreamingFromAnthropic(
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 	originalModel string,
 	mappedModel string,
 	reasoningEffort *string,
@@ -532,6 +533,9 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	}
 
 	if failure := stream.failure(); failure != nil {
+		if failure.errType == "stream_incomplete" {
+			s.rateLimitService.observeAvailabilityIncomplete(stream.ctx, account, stream.clientDisconnected)
+		}
 		return finishAnthropicCompatStreamFailure(c, writerSizeBeforeStream, failure, resultWithUsage(), func() {
 			writeAnthropicCompatCCStreamFailure(c, failure)
 		})

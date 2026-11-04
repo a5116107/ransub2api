@@ -1111,6 +1111,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		return resultWithUsage(), streamErr
 	}
 	terminalErr := errors.New("upstream http bridge stream ended before terminal event")
+	s.rateLimitService.observeAvailabilityIncomplete(ctx, account, clientDisconnected)
 	if sawDone {
 		terminalErr = errors.New("upstream http bridge stream sent [DONE] before terminal event")
 	}

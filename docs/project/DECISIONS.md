@@ -553,3 +553,16 @@
 - 响应体补强后的三包lint也输出0 issues.后超时退出1，仍不计通过。最终对service/repository/handler/cmd-server四范围执行vet和lint，保持8分钟及全部规则，检查并发限制为2以降低资源争用；两个夹具修复后完整service/handler/routes重新验收，实际返回后追加。
 
 - 最终两处夹具修复后的完整原命令退出0：service344.703s、handler157.127s、routes12.414s。四范围go vet退出0；四范围golangci-lint保持8分钟、并发2，实际输出0 issues.且退出0。最终默认标签cmd/server3.647s编译通过（no tests to run）；gofmt、旧符号搜索及git diff --check通过，文档链接检查通过，STATE保持100行以内。隔离SQL schema余数0，既有12张图片共1164bytes保留；本轮只本地提交，不运行CI、不推送、不部署或生产迁移。
+
+## 2026-11-05：D3 协议缺终态 EOF 独立失效
+
+- 接续537b8e9，沿现有解析器的明确缺终态错误分支调用独立availability故障事务，不新增队列、状态码或第二套解析器。接入Responses、直通、Chat/Messages、原生Anthropic Messages、Anthropic网关/直通/两个兼容转换及WS→HTTP桥接10类路径；客户端错误、计费usage和发送前/后换路边界保持。正常终态、客户端取消/断开、探测不触发本故障。原生WS、缓冲SSE转JSON、握手前传输与其他协议仍待D3父验收。
+- 首轮新增矩阵实际发现6个空流子例把本地生成的502计作质量5xx。原位修正recordOpenAIStreamUpstreamError：只有实际上游错误payload才执行语义状态观察；协议缺终态由解析器独立失效。修正后9路径矩阵service3.191s通过；实际流内overload/权限/请求策略仍由原语义回归约束。
+- 两个Anthropic兼容转换原位增加account参数并更新全部生产/测试调用点，不保留旧签名或wrapper。三轮相关回归首次service22.589s真实失败：既有直接解析测试的Gin Request为空，新增观察求值造成panic。修复为anthropicCompatStream沿原初始化逻辑保存请求ctx，无Request时使用Background，不篡改夹具。修复后相关流式/桥接/故障观察组合三轮service155.134s通过。
+- 修复前完整回归service100.263s因同一nil Request panic失败，handler157.056s、routes13.170s通过；内存控制夹具内的故意失败子进程不作为主套件失败。修复后原完整命令与新增10路径矩阵重新运行，实际结果另附，不使用此前结果代替当前源码验收。默认标签cmd/server4.664s编译通过（no tests to run）。
+- Anthropic兼容转换未收到message_start的空前言维持既有未观察行为，不将其当作已实现完整性判定。测试同时覆盖启用/禁用keepalive配置、empty/partial/complete/canceled/probe，桥接没有因此被宣称为两套不同扫描实现。STATE与唯一设计原位更新，不新增平行账本；20项仍12 done、3 in_progress、5 pending。
+- 补齐WS→HTTP桥接后的10路径矩阵连续三轮service17.144s通过；最终源码三范围go vet退出0，默认标签cmd/server6.220s编译通过（no tests to run）。最终完整组合的handler168.781s与routes13.528s通过。首轮三包lint输出0 issues.后仍超时退出1，不计通过；对修复后源码保持三包范围、并发2、8分钟与原规则重新检查，最终返回另记。
+
+- 修复后原完整命令实际退出0：service369.127s、handler168.781s、routes13.528s；没有跳过原测试或放宽断言。最终静态检查返回另记；只提交本轮源码、测试和原三份文档，历史PNG及已拒绝删除的产物保持。
+
+- 最终三范围lint仍输出0 issues.后超时，退出4，保留为未通过，不冒充三范围静态验收。按实际修改范围执行完整service包（非diff过滤）golangci-lint，保留全部规则、unit标签、并发2和8分钟，实际输出0 issues.、Changed service package lint: PASS，退出0；未修改的handler/cmd-server已有最终vet、完整回归/默认构建证据。文档链接、差异和新增TODO检查通过。缺终态故障处理子范围本地闭环；D3父任务及原20项统计保持不变。

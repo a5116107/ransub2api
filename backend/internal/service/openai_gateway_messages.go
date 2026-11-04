@@ -1280,6 +1280,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		}
 	}
 	missingTerminalErr := func() (*OpenAIForwardResult, error) {
+		s.rateLimitService.observeAvailabilityIncomplete(c.Request.Context(), account, clientDisconnected)
 		result := resultWithUsage()
 		if clientDisconnected {
 			return result, fmt.Errorf("stream usage incomplete: missing terminal event")

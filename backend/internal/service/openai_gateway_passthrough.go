@@ -1872,7 +1872,11 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 	if c != nil && c.Request != nil {
 		ctx = c.Request.Context()
 	}
-	s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailedEventSemanticStatus(payload, message))
+	// A forwarding error without an upstream event is not an observed 5xx.
+	// Protocol truncation invalidates availability at the parser boundary.
+	if len(payload) > 0 {
+		s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailedEventSemanticStatus(payload, message))
+	}
 	if len(payload) > 0 && s != nil && s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
 		if maxBytes <= 0 {
@@ -2563,6 +2567,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
 	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {
+		s.rateLimitService.observeAvailabilityIncomplete(ctx, account, clientDisconnected)
 		logger.FromContext(ctx).With(
 			zap.String("component", "service.openai_gateway"),
 			zap.Int64("account_id", account.ID),

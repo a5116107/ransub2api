@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue/queuetest"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,6 +26,108 @@ type immediateQualityAccountRepo struct {
 	AccountRepository
 	calls             int
 	availabilityCalls int
+}
+
+func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
+	for _, path := range []string{"responses", "passthrough", "chat", "messages", "native_messages", "anthropic", "anthropic_passthrough", "anthropic_chat", "anthropic_responses", "ws_http_bridge"} {
+		for _, async := range []bool{false, true} {
+			for _, outcome := range []string{"empty", "partial", "complete", "canceled", "probe"} {
+				t.Run(fmt.Sprintf("%s/async=%t/%s", path, async, outcome), func(t *testing.T) {
+					repo := &immediateQualityAccountRepo{}
+					limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+					cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+					if async {
+						cfg.Gateway.StreamKeepaliveInterval = 60
+					}
+					svc := &OpenAIGatewayService{cfg: cfg, rateLimitService: limiter}
+					account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					if outcome == "probe" {
+						ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+					}
+					payload := ""
+					if outcome != "empty" {
+						payload = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\",\"output_index\":0}\n\n"
+					}
+					if outcome == "complete" {
+						payload += "data: " + controlledGatewayTerminal("target", "high") + "\n\n"
+					}
+					if path == "native_messages" || strings.HasPrefix(path, "anthropic") {
+						payload = ""
+						if outcome != "empty" {
+							payload = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"model\":\"target\",\"usage\":{\"input_tokens\":1}}}\n\n"
+						}
+						if outcome == "complete" {
+							payload += "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+						}
+					}
+					if outcome == "canceled" {
+						cancel()
+					}
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+					response := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(payload))}
+					var err error
+					switch path {
+					case "responses":
+						_, err = svc.handleStreamingResponse(ctx, response, c, account, time.Now(), "target", "target")
+					case "passthrough":
+						_, err = svc.handleStreamingResponsePassthrough(ctx, response, c, account, time.Now(), "target", "target")
+					case "chat":
+						_, err = svc.handleChatStreamingResponse(response, c, account, "target", "target", "target", time.Now(), 0)
+					case "messages":
+						_, err = svc.handleAnthropicStreamingResponse(response, c, account, "target", "target", "target", time.Now())
+					case "native_messages":
+						_, err = svc.handleNativeAnthropicStreamingResponse(ctx, response, c, account, "target", "target", "target", nil, time.Now())
+					case "ws_http_bridge":
+						svc.httpUpstream = &httpUpstreamRecorder{resp: response}
+						request := []byte(`{"type":"response.create","model":"target","input":"fixture"}`)
+						_, err = svc.proxyOpenAIWSHTTPBridgeTurn(ctx, c, account, "fixture", request, len(request), "target", "", "", "", "", 1, func([]byte) error { return nil })
+					case "anthropic":
+						gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
+						_, err = gateway.handleStreamingResponse(ctx, response, c, account, time.Now(), "target", "target", false)
+					case "anthropic_passthrough":
+						gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
+						_, err = gateway.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, response, c, account, time.Now(), "target")
+					case "anthropic_chat":
+						gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
+						_, err = gateway.handleCCStreamingFromAnthropic(response, c, account, "target", "target", nil, time.Now())
+					case "anthropic_responses":
+						gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
+						_, err = gateway.handleResponsesStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+					}
+					require.NoError(t, response.Body.Close())
+					want := 0
+					if outcome == "empty" || outcome == "partial" {
+						// Legacy Anthropic converters treat an empty preamble as
+						// unobserved, not an incomplete started message.
+						if outcome == "empty" && (path == "anthropic_chat" || path == "anthropic_responses") {
+							require.Zero(t, repo.availabilityCalls)
+							return
+						}
+						want = 1
+						require.Error(t, err)
+					}
+					if outcome == "complete" {
+						require.NoError(t, err)
+					}
+					require.Equal(t, want, repo.availabilityCalls, "only protocol-confirmed incomplete responses should invalidate")
+					require.Zero(t, repo.calls, "protocol incompleteness must not fabricate a quality 5xx")
+				})
+			}
+		}
+	}
+}
+
+func TestAvailabilityProtocolDisconnectExclusions(t *testing.T) {
+	repo := &immediateQualityAccountRepo{}
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter.observeAvailabilityIncomplete(t.Context(), &Account{ID: 42, Type: AccountTypeAPIKey}, true)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	limiter.observeAvailabilityIncomplete(ctx, &Account{ID: 42, Type: AccountTypeAPIKey}, false)
+	require.Zero(t, repo.availabilityCalls)
 }
 
 func (r *immediateQualityAccountRepo) ApplyAvailabilityFault(ctx context.Context, id int64) error {

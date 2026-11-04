@@ -29,6 +29,7 @@ var anthropicCompatDisconnectDrainInterval = 180 * time.Second
 // 继续读取上游以合并最终 usage。逐行读间隔受 gateway.stream_data_interval_timeout
 // 限制；该配置未启用时，客户端断开后以 anthropicCompatDisconnectDrainInterval 限制。
 type anthropicCompatStream struct {
+	ctx         context.Context
 	pump        *anthropicNativeLinePump
 	body        io.Closer
 	maxLineSize int
@@ -66,6 +67,7 @@ func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Res
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 	stream := &anthropicCompatStream{
+		ctx:         context.Background(),
 		pump:        newAnthropicNativeLinePump(scanner, anthropicNativeStreamInterval(cfg)),
 		body:        resp.Body,
 		maxLineSize: maxLineSize,
@@ -73,7 +75,8 @@ func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Res
 		requestID:   requestID,
 	}
 	if c.Request != nil {
-		stream.clientGone = c.Request.Context().Done()
+		stream.ctx = c.Request.Context()
+		stream.clientGone = stream.ctx.Done()
 	}
 	return stream
 }

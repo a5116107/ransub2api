@@ -235,6 +235,15 @@ func (s *RateLimitService) observeQualityStatus(ctx context.Context, account *Ac
 	}
 }
 
+// The protocol parser, not raw EOF, decides whether a response is incomplete.
+// This is independent of 5xx quality protection and never fabricates a status.
+func (s *RateLimitService) observeAvailabilityIncomplete(ctx context.Context, account *Account, clientDisconnected bool) {
+	if s == nil || clientDisconnected || ctx.Err() != nil {
+		return
+	}
+	s.qualityTrigger.invalidateAvailability(ctx, account, 0)
+}
+
 // Select an execution-only test for the account's actual model route. Never
 // bypass BPS to test direct ticket state when diagnosing the BPS route itself.
 func quality5xxTestConfig(account *Account, model string, cfg PelicanTestConfig) (PelicanTestConfig, bool) {

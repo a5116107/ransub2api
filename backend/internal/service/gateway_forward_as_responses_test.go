@@ -208,7 +208,7 @@ func TestHandleResponsesStreamingResponse_RestoresNamespaceTool(t *testing.T) {
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(namespaceToolAnthropicStream()))}
 
 	svc := &GatewayService{}
-	_, err := svc.handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), namespaceToolMapping())
+	_, err := svc.handleResponsesStreamingResponse(resp, c, nil, "claude-fable-5", "claude-fable-5", nil, time.Now(), namespaceToolMapping())
 	require.NoError(t, err)
 	require.Contains(t, rec.Body.String(), `response.output_item.added`)
 	require.Contains(t, rec.Body.String(), `"name":"read_thread"`)
@@ -301,7 +301,7 @@ func TestHandleResponsesStreamingResponse_PreservesMessageStartCacheUsage(t *tes
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleResponsesStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	result, err := svc.handleResponsesStreamingResponse(resp, c, nil, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 20, result.Usage.InputTokens)
@@ -388,7 +388,7 @@ func TestHandleResponsesStreamingResponse_NormalizesTerminalUsage(t *testing.T) 
 				}
 				resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join(lines, "\n")))}
 
-				result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "k3", "k3", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, nil, "k3", "k3", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 				require.NoError(t, err)
 				require.Equal(t, tt.wantInput, result.Usage.InputTokens)
 				require.Equal(t, tt.wantCached, result.Usage.CacheReadInputTokens)
@@ -556,7 +556,7 @@ func TestHandleResponsesStreamingResponse_CompactSSEFormat(t *testing.T) {
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleResponsesStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	result, err := svc.handleResponsesStreamingResponse(resp, c, nil, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 15, result.Usage.InputTokens)
@@ -586,7 +586,7 @@ func TestClaude55ResponsesSignedThinkingBufferedAndStreamed(t *testing.T) {
 			svc := &GatewayService{}
 			var err error
 			if stream {
-				_, err = svc.handleResponsesStreamingResponse(resp, c, "public-claude", model, nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				_, err = svc.handleResponsesStreamingResponse(resp, c, nil, "public-claude", model, nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 			} else {
 				_, err = svc.handleResponsesBufferedStreamingResponse(resp, c, "public-claude", model, nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 			}

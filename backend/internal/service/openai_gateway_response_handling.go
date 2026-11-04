@@ -411,6 +411,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		if sawTerminalEvent && !sawFailedEvent {
 			s.clearOpenAIProxyStreamDisconnect(account, resp)
 		}
+		if !sawTerminalEvent && !sawFailedEvent {
+			s.rateLimitService.observeAvailabilityIncomplete(ctx, account, clientDisconnected)
+		}
 		if !sawTerminalEvent && !openAIStreamClientOutputStarted(c, clientOutputStarted) && !eventShouldFlush {
 			return resultWithUsage(), s.newOpenAIStreamFailoverError(
 				c,
