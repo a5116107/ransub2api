@@ -3383,6 +3383,7 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 					}
 				}
 			}
+			observeAvailabilityProbeFailure(c.Request.Context(), []byte(jsonStr), errorMsg)
 			return s.sendErrorAndEnd(c, errorMsg)
 		case "error":
 			errorMsg := "Unknown error"
@@ -3391,6 +3392,7 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 					errorMsg = msg
 				}
 			}
+			observeAvailabilityProbeFailure(c.Request.Context(), []byte(jsonStr), errorMsg)
 			return s.sendErrorAndEnd(c, errorMsg)
 		}
 	}

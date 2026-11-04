@@ -39,7 +39,14 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 	ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
 	// 探针题型不下发题目，直接走门票探针。
 	if isOpenAICodexStateProbePlan(cfg) {
-		return s.runOpenAICodexStateProbeScheduled(ctx, accountID, model, cfg)
+		result, err := s.runOpenAICodexStateProbeScheduled(ctx, accountID, model, cfg)
+		if result != nil {
+			snapshot := *cfg
+			snapshot.ModelID = model
+			snapshot.AvailabilityResult = &AvailabilityProbeResult{Version: 1, Status: "inconclusive", Reason: "state_probe_not_connectivity", StartedAt: result.StartedAt, FinishedAt: result.FinishedAt}
+			result.PelicanConfig = &snapshot
+		}
+		return result, err
 	}
 	// Recognize the exact built-in question in legacy HTML plans as well.
 	if isBuiltinCandyPlan(cfg) {
@@ -49,6 +56,8 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 
 	}
 	started := time.Now()
+	observation := &availabilityProbeObservation{}
+	ctx = context.WithValue(ctx, availabilityProbeSnapshotKey{}, observation)
 	ctx = withPelicanTestOptions(ctx, pelicanTestOptions{
 		testChannel: cfg.TestChannel,
 		observeOnly: cfg.Quality != nil && cfg.Quality.Action == QualityActionObserveOnly,
@@ -59,7 +68,9 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 	c, _ := gin.CreateTestContext(w)
 	c.Request = (&http.Request{Header: make(http.Header)}).WithContext(ctx)
 	err := s.TestPelicanAccountConnection(c, accountID, model, intelligenceTestPrompt(cfg), cfg.ReasoningEffort)
+	probeFinished := time.Now()
 	output, message := parsePelicanOutput(w.Body.String())
+	availability := availabilityProbeResult(started, probeFinished, observation, message == "" && err == nil && strings.TrimSpace(output) != "", w.overflow, ctx.Err())
 	if w.overflow {
 		output = ""
 		message = pelicanErrCaptureLimit
@@ -82,6 +93,7 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 	finished := time.Now()
 	snapshot := *cfg
 	snapshot.ModelID = model
+	snapshot.AvailabilityResult = availability
 	return &ScheduledTestResult{Status: status, ResponseText: output, ErrorMessage: message, LatencyMs: finished.Sub(started).Milliseconds(), StartedAt: started, FinishedAt: finished, PelicanConfig: &snapshot}, nil
 }
 
@@ -308,9 +320,18 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 // the persistence loop with a nil entry. Panic values may contain request data.
 func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan *ScheduledTestPlan) (result *ScheduledTestResult) {
 	started := time.Now()
+	var availability *AvailabilityProbeResult
 	failure := func(message string) *ScheduledTestResult {
 		finished := time.Now()
-		return &ScheduledTestResult{Status: "failed", ErrorMessage: message, StartedAt: started, FinishedAt: finished, LatencyMs: finished.Sub(started).Milliseconds(), PelicanConfig: plan.PelicanConfig}
+		snapshot := &PelicanTestConfig{}
+		if plan.PelicanConfig != nil {
+			*snapshot = *plan.PelicanConfig
+		}
+		snapshot.AvailabilityResult = availability
+		if snapshot.AvailabilityResult == nil {
+			snapshot.AvailabilityResult = availabilityProbeResult(started, finished, nil, false, false, ctx.Err())
+		}
+		return &ScheduledTestResult{Status: "failed", ErrorMessage: message, StartedAt: started, FinishedAt: finished, LatencyMs: finished.Sub(started).Milliseconds(), PelicanConfig: snapshot}
 	}
 	defer func() {
 		if recover() != nil {
@@ -329,7 +350,16 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 	if result == nil {
 		return failure("scheduled_test_empty_result: background sample returned no result")
 	}
-	result.PelicanConfig = plan.PelicanConfig
+	snapshot := *plan.PelicanConfig
+	snapshot.AvailabilityResult = nil
+	if result.PelicanConfig != nil {
+		snapshot.AvailabilityResult = result.PelicanConfig.AvailabilityResult
+	}
+	if snapshot.AvailabilityResult == nil {
+		snapshot.AvailabilityResult = availabilityProbeResult(result.StartedAt, result.FinishedAt, nil, false, false, ctx.Err())
+	}
+	result.PelicanConfig = &snapshot
+	availability = snapshot.AvailabilityResult
 	// 探针题型的结果自带 correct/incorrect/unknown 判定，不经过判题模型。
 	if plan.PelicanConfig.Quality != nil && result.Status == "success" && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
 		var judgment *QualityJudgment

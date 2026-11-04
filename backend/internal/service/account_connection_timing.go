@@ -81,6 +81,9 @@ func beginAccountConnectionTiming(c *gin.Context) (*requesttiming.Collector, tim
 		start = time.Now()
 	}
 	collector := requesttiming.New(start, 0)
+	if observation, ok := c.Request.Context().Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation); ok {
+		collector.WhenFinished(func(snapshot requesttiming.Snapshot) { observation.snapshot = &snapshot })
+	}
 	c.Request = c.Request.WithContext(requesttiming.With(c.Request.Context(), collector))
 	return collector, start
 }

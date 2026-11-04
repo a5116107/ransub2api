@@ -120,6 +120,7 @@ func nextPlanRun(plan *ScheduledTestPlan, now time.Time) (time.Time, error) {
 			return time.Time{}, fmt.Errorf("rule name must be at most 100 characters")
 		}
 		cfg.QualityRestoreDiagnostic = nil
+		cfg.AvailabilityResult = nil
 		cfg.QualityModelOutcomes = nil
 		cfg.QualityModelActions = nil
 		cfg.RandomQuestion = nil

@@ -23,7 +23,7 @@
 | D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
 | D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；专项三轮通过 |
 | D2.4 | done | 按入站/模型分流的探测、New API 授权/列表/绑定/事务保存统一使用生效地址；旧源码 6 子例失败，新回归及相关四包三轮通过；不作为跨协议同价或共享缓存证据 |
-| D3 | in_progress | API Key故障观察/真实领取/事件栅栏及人工配置恢复已验证；模型质量领取快照新增线路配置栅栏，含代理与母账号链，拒绝旧配置/无快照结果且不受运行数据干扰，真实PostgreSQL专项三轮通过。独立最新可用状态、有效期、恢复及其证据版本仍待补齐 |
+| D3 | in_progress | API Key真实领取/事件栅栏及模型质量线路配置栅栏已验证；后台检测新增判题前独立可用性证据，逐样本保留并通过真实PostgreSQL历史读写。最新状态索引、有效期、可用性版本栅栏、调度准入及恢复仍待补齐 |
 | D4.1 | done | 旧实现失败已复现；双故障/账号消失拒绝，缓存回源及未装门行为保持；专项、service/handler 回归和差异检查通过 |
 | D4.2 | done | 分组配置失败/空对象/错组拒绝准入，HTTP/WS/免费账号及恢复覆盖；补齐 15 项夹具/旧语义缺口后，专项 3 轮、默认标签、vet 和 Linux 全量通过；历史 lint 诊断在 M5 明确边界后归零 |
 | M1 | done | 删除 6 项未引用测试辅助符号及死计数器；相关回归通过，unused 告警 6→0 |
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮D3补齐模型质量结果的账号线路配置栅栏：旧实现16项真实配置变更回归失败repository3.441s；最终专项三轮repository18.285s、默认标签11.193s、完整service352.819s/handler150.236s、三包vet与完整lint及最终repository vet/lint通过（0 issues.）。配置变更晚到结果、代理/母账号链及领取回滚已覆盖，测试schema余数0且实例已停止；首次lint超时及同限重跑证据见DECISIONS。原20项仍12 done、3 in_progress、5 pending，父任务done增量0。
+- 本轮D3实现判题前独立可用性证据与历史读写，补齐判题器panic不丢网络证据：专项三轮23.726s、等价lint修正后专项三轮1.708s、默认标签service17.178s/repository4.951s、真实PostgreSQL历史三轮4.127s、三包vet及完整lint（0 issues.）通过。首轮完整service349.964s/handler160.016s通过；panic补强后完整service358.941s失败且输出截断；最终同范围重跑371.851s、退出0，保留首轮失败未取得断言的限制。schema余数0、数据库停止；原20项仍12 done、3 in_progress、5 pending，父任务done增量0。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -53,7 +53,8 @@
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
 # 真实SQL回归须先在本命令进程设置 SUB2API_QUALITY_TEST_DSN，指向隔离PostgreSQL。
-go test -tags=unit -p 2 ./internal/repository -run 'TestQuality|TestPelican' -count=3 -timeout=4m
+go test -tags=unit -p 2 ./internal/service -run 'TestAvailabilityProbe|TestQuality|TestPelican|TestAccountConnectionTiming' -count=3 -timeout=6m
+go test -tags=unit -p 2 ./internal/repository -run 'TestAvailabilityProbe|TestQuality|TestPelican' -count=3 -timeout=4m
 go vet -tags=unit -p 2 ./internal/repository
 ```
 

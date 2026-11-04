@@ -475,3 +475,18 @@
 - 完整本地回归实际通过service352.819s、handler150.236s；最终repository默认标签质量/Pelican回归11.193s通过。三包vet退出0；母账号链补强后的repository vet另行退出0。历史Windows完整repository符号链接权限等待保持，未将其改为skip，也未把专项结果作为全量repository验收。
 - 首次串行三包lint输出0 issues.但随后报告Timeout exceeded、退出1，该次不记为通过；保持原8分钟时限、相同范围和检查规则重跑。最终源码的独立repository lint实际输出0 issues.、退出0；没有增加超时时限、缩小原三包验收或停止其他任务进程。
 - 最终三包完整lint在相同8分钟时限下重跑实际输出0 issues.、退出0；相关专项、默认标签、完整service/handler、vet及最终lint均已取得真实通过。旧私有指纹符号源码残留0，新增TODO/FIXME/XXX为0，gofmt与git diff检查无输出；STATE75行。历史图片仍12个共1164bytes，临时测试schema归零且数据库已停止；本轮没有新增持久运行产物。闭环本项模型质量线路配置栅栏，父任务done增量0，原20项仍12 done、3 in_progress、5 pending。
+
+## 2026-11-04：D3 后台可用性证据与质量判题分离
+
+- 接续7e6492a。原后台结果只有统一success/failed，正确响应但答案错误、判题异常与真实上游故障未形成独立可用证据；旧代码13场景实际失败service1.652s。复用原requesttiming观察器及后台检测路径，新增有界AvailabilityProbeResult并使用原pelican_config保存，不新增生产表、迁移、账号状态或第二套传输。
+- 证据在判题前冻结，只计算最后逻辑egress及其物理网络证据；HTTP 200头、空输出、未完成流、合成UI成功不算pass。401/408/429/5xx及已识别Responses语义错误按有界原因分类；本地未观测错误、取消、捕获上限、时序截断、请求/内容策略/模型拒绝保持不确定；已成功但仅观测到旧失败的冲突不归责旧尝试。物理HTTP子尝试不重复计数，AttemptCount只表示一次RunBackground内部的逻辑尝试，不表示外层自动重试总次数。
+- 结果只保存版本、状态、原因码、HTTP/语义状态、尝试数和时间，排除地址、凭据、内部快照与错误原文。规则输入的结果元数据在原验证路径清空；每个样本复制原配置并保留实际证据，取代旧共享配置覆盖。门票状态探针标state_probe_not_connectivity，检测器本地失败保持不确定。
+- 补充真实httptest HTTP正文中断，确认200头加partial SSE后UnexpectedEOF为transport_error；正确/错误/未知判题均保留上游pass。复核发现判题器panic的原恢复闭包丢弃已经取得的证据，新增回归实际失败service1.602s（expected pass / actual inconclusive）；原位修正闭包，仅保留已取得的可信证据，判题执行仍failed，无质量通过或恢复伪造。
+- 隔离PostgreSQL历史Create/GetResult/ListByPlanID（懒加载正文）四组可用/质量组合连续三轮实际通过repository4.127s；每项使用新schema，查询余数0，实例已停止，pg_ctl status返回no server running。没有生产数据库操作或新遗留后台实例。最终源码的专项、完整回归、默认标签和静态检查结果在返回后追加。
+- 此模块是D3的证据前置闭环，不是最新可用状态准入门；最新状态索引、valid_until、可用性配置版本栅栏、晚到结果和独立恢复仍待实施，原20项保持12 done、3 in_progress、5 pending，父任务done增量0。历史Windows符号链接权限及删除自动审核拒绝等待保持；单一工作区，不运行CI、不推送、不部署或生产迁移。
+- 最终判题器panic修复后的专项连续三轮实际通过service23.726s；默认标签相关回归实际通过service17.178s、repository4.951s，随后三包vet退出0。首轮完整unit回归实际通过service349.964s、handler160.016s；该完整轮次早于判题器panic补强，补强后的完整service另行记录，不混用源码版本。
+- 首轮完整lint实际失败，唯一诊断availability_probe.go:98 QF1001（可应用De Morgan律）。原位等价改写该布尔条件，不修改分类行为或检查规则；最终专项、vet和相同三包/8分钟限制lint重跑结果在实际返回后追加。
+- 判题器panic补强后的完整service回归实际失败358.941s，退出1；大量既有日志导致工具输出截断，未取得具体失败断言，该轮不记通过。按相同范围/10分钟限制重跑，直接过滤FAIL及其上下文以提取原因，不延长时限、不跳过测试。De Morgan等价改写后的可用性专项三轮实际通过service1.708s，三包vet输出Final availability tests and three-package vet: PASS。
+- 等价表达式修正后的完整三包lint最终实际输出0 issues.、退出0；前一串行轮次也实际0 issues.退出0。没有缩小范围、关闭诊断或更改8分钟时限。完整service失败诊断轮仍待实际返回。
+- 最终源码相同范围的完整service诊断重跑实际通过371.851s，输出Full service regression exit: 0。此前358.941s失败因工具截断没有取得具体断言，该轮记录保留且原因未确认，不声称已经定位/修复其原因；最终完整通过与该限制分别报告。最终三轮可用性专项1.708s、相关三轮23.726s、默认标签、真实PostgreSQL、三包vet及三包完整lint均已取得真实通过。
+- 本轮闭环判题前真实可用性证据、逐样本保留、判题panic边界和历史读写；没有建立最新状态准入门或改变调度权限。最终gofmt/差异检查通过，新TODO/FIXME/XXX为0，STATE76行；历史PNG仍12个共1164bytes，测试schema归零且数据库停止。本地精确交付9个Go文件和原有3份文档，唯一工作树，不推送、不运行CI、不部署/迁移；原20项12 done、3 in_progress、5 pending不变。
