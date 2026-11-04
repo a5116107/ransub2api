@@ -137,6 +137,9 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		snapshot.TriggerSource = "scheduled"
 	}
 	applyTriggeredQuality := true
+	if plan.TriggerSource == quality5xxSource && plan.PelicanConfig.Availability != nil {
+		applyTriggeredQuality = plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.TriggerOnUpstream5xx && !plan.PelicanConfig.BPSRecoveryPending
+	}
 	if triggeredAccount != nil {
 		snapshot, applyTriggeredQuality = quality5xxTestConfig(triggeredAccount, plan.ModelID, snapshot)
 	}
@@ -160,7 +163,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	// Fallback for queued legacy signals without an immediately applied episode.
 	// A 5xx triggers protection; it is not itself a quality verdict.
 	if plan.TriggerSource == quality5xxSource && plan.PelicanConfig.Quality != nil &&
-		plan.PelicanConfig.Quality.Action == QualityActionRemoveModel && plan.Quality5xxEpisode == 0 && applyTriggeredQuality {
+		plan.PelicanConfig.Quality.TriggerOnUpstream5xx && plan.PelicanConfig.Quality.Action == QualityActionRemoveModel && plan.Quality5xxEpisode == 0 && applyTriggeredQuality {
 		preCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		preAction, preErr := s.planRepo.ApplyQualityOutcome(preCtx, plan, until, "pending")
 		stop()

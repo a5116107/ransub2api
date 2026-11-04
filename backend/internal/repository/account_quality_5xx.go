@@ -11,7 +11,7 @@ import (
 )
 
 // ApplyQuality5xx runs in the response observer, independently of probe leases.
-// The native account row, model cooldown and recovery state commit together.
+// Availability fencing and opted-in native quality protection commit together.
 func (r *accountRepository) ApplyQuality5xx(ctx context.Context, accountID int64) error {
 	db, ok := r.sql.(*sql.DB)
 	if !ok {
@@ -24,7 +24,7 @@ func (r *accountRepository) ApplyQuality5xx(ctx context.Context, accountID int64
 	}
 	changed := false
 	for _, p := range candidates {
-		if p.PelicanConfig == nil || p.PelicanConfig.Quality == nil || !p.Enabled || !p.PelicanConfig.Quality.TriggerOnUpstream5xx || p.PelicanConfig.Quality.Action != service.QualityActionRemoveModel {
+		if !p.Enabled || !p.PelicanConfig.TriggersOnUpstream5xx() {
 			continue
 		}
 		applied, e := plans.applyImmediateQuality5xx(ctx, p.ID, accountID)
@@ -53,11 +53,13 @@ func (r *scheduledTestPlanRepository) applyImmediateQuality5xx(ctx context.Conte
 	if err != nil {
 		return false, err
 	}
-	if !plan.Enabled || plan.PelicanConfig == nil || plan.PelicanConfig.Quality == nil {
+	if !plan.Enabled || !plan.PelicanConfig.TriggersOnUpstream5xx() {
 		return false, nil
 	}
 	policy := plan.PelicanConfig.Quality
-	if !policy.TriggerOnUpstream5xx || policy.Action != service.QualityActionRemoveModel {
+	qualityProtection := policy != nil && policy.TriggerOnUpstream5xx && policy.Action == service.QualityActionRemoveModel
+	availability := plan.PelicanConfig.Availability != nil
+	if !availability && !qualityProtection {
 		return false, nil
 	}
 	var accountType, status string
@@ -66,12 +68,43 @@ func (r *scheduledTestPlanRepository) applyImmediateQuality5xx(ctx context.Conte
 	} else if err != nil {
 		return false, err
 	}
-	if (accountType != service.AccountTypeOAuth && accountType != service.AccountTypeAPIKey) || status != "active" {
+	if accountType != service.AccountTypeOAuth && accountType != service.AccountTypeAPIKey {
 		return false, nil
 	}
+	if availability {
+		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, planID); err != nil {
+			return false, err
+		}
+	}
+	changed := availability
+	if qualityProtection && status == "active" {
+		applied, applyErr := applyImmediateQualityProtection(ctx, tx, plan, status)
+		if applyErr != nil {
+			return false, applyErr
+		}
+		changed = changed || applied
+	}
+	if !changed {
+		return false, nil
+	}
+	// Durable fallback if Redis publication fails; a running lease stays intact.
+	if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, planID, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Quality ownership conflicts do not suppress independent availability faults.
+// The caller owns the plan/account locks and commits both transitions together.
+func applyImmediateQualityProtection(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, status string) (bool, error) {
+	planID, accountID := plan.ID, plan.AccountID
+	policy := plan.PelicanConfig.Quality
 	var raw []byte
 	state := qualityState{}
-	err = tx.QueryRowContext(ctx, `SELECT state FROM account_quality_states WHERE plan_id=$1`, planID).Scan(&raw)
+	err := tx.QueryRowContext(ctx, `SELECT state FROM account_quality_states WHERE plan_id=$1`, planID).Scan(&raw)
 	if err != nil && err != sql.ErrNoRows {
 		return false, err
 	}
@@ -102,18 +135,6 @@ func (r *scheduledTestPlanRepository) applyImmediateQuality5xx(ctx context.Conte
 	}
 	if action != "probe_pending" {
 		return false, nil
-	}
-	if plan.PelicanConfig.Availability != nil {
-		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, planID); err != nil {
-			return false, err
-		}
-	}
-	// Durable fallback if Redis publication fails; a running lease stays intact.
-	if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, planID, time.Now().UTC()); err != nil {
-		return false, err
-	}
-	if err = tx.Commit(); err != nil {
-		return false, err
 	}
 	return true, nil
 }

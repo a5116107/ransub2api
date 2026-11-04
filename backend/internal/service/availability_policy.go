@@ -34,6 +34,12 @@ type AvailabilityPolicy struct {
 	ValidForSeconds int `json:"valid_for_seconds"`
 }
 
+// TriggersOnUpstream5xx keeps availability recovery independent of quality
+// actions while sharing the existing coalesced account probe worker.
+func (c *PelicanTestConfig) TriggersOnUpstream5xx() bool {
+	return c != nil && (c.Availability != nil || (c.Quality != nil && c.Quality.TriggerOnUpstream5xx))
+}
+
 func validateAvailabilityPolicy(cfg *PelicanTestConfig) error {
 	if cfg.Availability == nil {
 		return nil

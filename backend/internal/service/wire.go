@@ -612,8 +612,11 @@ func ProvideRateLimitService(
 	if rdb != nil {
 		svc.qualityTrigger = &quality5xxTrigger{queue: qualityqueue.NewRedis(rdb)}
 	}
-	if svc.qualityTrigger != nil {
-		svc.qualityTrigger.immediate, _ = accountRepo.(quality5xxImmediateRepository)
+	if immediate, ok := accountRepo.(quality5xxImmediateRepository); ok {
+		if svc.qualityTrigger == nil {
+			svc.qualityTrigger = &quality5xxTrigger{}
+		}
+		svc.qualityTrigger.immediate = immediate
 	}
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
 		svc.SetOpenAIAPIKeyHealthCache(healthCache)

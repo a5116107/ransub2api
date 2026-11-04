@@ -357,10 +357,10 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	result, err := tx.ExecContext(ctx, `UPDATE scheduled_test_plans
  SET running_until = $3, next_run_at = $4
  WHERE id = $1 AND enabled = true
- AND (next_run_at <= $2 OR ($7 AND pelican_config->'quality'->>'trigger_on_upstream_5xx'='true'))
- AND (NOT $7 OR (pelican_config->'quality'->>'trigger_on_upstream_5xx'='true'
+ AND (next_run_at <= $2 OR ($7 AND (pelican_config->'quality'->>'trigger_on_upstream_5xx'='true' OR jsonb_typeof(pelican_config->'availability')='object')))
+ AND (NOT $7 OR ((pelican_config->'quality'->>'trigger_on_upstream_5xx'='true' OR jsonb_typeof(pelican_config->'availability')='object')
    AND EXISTS (SELECT 1 FROM accounts WHERE accounts.id=account_id AND type IN ('oauth','apikey'))
-   AND ($8::timestamptz IS NULL OR last_run_at IS NULL OR last_run_at < $8 OR pelican_config->'quality'->>'action'='remove_models')))
+   AND ($8::timestamptz IS NULL OR last_run_at IS NULL OR last_run_at < $8 OR pelican_config->'quality'->>'action'='remove_models' OR jsonb_typeof(pelican_config->'availability')='object')))
  AND (running_until IS NULL OR running_until < $2) AND updated_at = $5 AND next_run_at = $6
  AND EXISTS (SELECT 1 FROM accounts WHERE accounts.id = account_id AND deleted_at IS NULL)
  AND NOT EXISTS (SELECT 1 FROM scheduled_test_plans other WHERE other.account_id = scheduled_test_plans.account_id

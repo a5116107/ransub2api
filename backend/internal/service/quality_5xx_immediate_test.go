@@ -53,6 +53,19 @@ func TestQuality5xxPendingRemoveModelsNotCoveredByOlderFinish(t *testing.T) {
 	require.False(t, qualitySignalCovered(p, now), "old probe finishing after new signal must not acknowledge it")
 }
 
+func TestQuality5xxImmediateProtectionWithoutQueue(t *testing.T) {
+	repo := &immediateQualityAccountRepo{}
+	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	require.NotNil(t, svc.qualityTrigger)
+	trigger := svc.qualityTrigger
+	account := &Account{ID: 42, Type: AccountTypeAPIKey}
+	trigger.Observe(t.Context(), account, 503)
+	require.Equal(t, 1, repo.calls, "missing Redis must not disable the durable fault fence")
+	trigger.Observe(context.WithValue(t.Context(), qualityProbeContextKey{}, true), account, 503)
+	trigger.Observe(t.Context(), account, 429)
+	require.Equal(t, 1, repo.calls)
+}
+
 func TestQuality5xxWorkerProviderHasQueue(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := queuetest.NewClient(mr.Addr())

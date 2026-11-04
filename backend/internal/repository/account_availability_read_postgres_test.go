@@ -7,9 +7,159 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAvailabilityReadPostgresIndependentBusinessFault(t *testing.T) {
+	for _, quality := range []string{"absent", "disabled_trigger", "observe_only"} {
+		t.Run(quality, func(t *testing.T) {
+			repo, plan := availabilityPostgresPlan(t)
+			switch quality {
+			case "absent":
+				plan.PelicanConfig.Quality = nil
+			case "disabled_trigger":
+				plan.PelicanConfig.Quality.TriggerOnUpstream5xx = false
+			case "observe_only":
+				plan.PelicanConfig.Quality.Action = service.QualityActionObserveOnly
+			}
+			var err error
+			due := time.Now().Add(-time.Minute)
+			plan.NextRunAt = &due
+			plan, err = repo.Update(t.Context(), plan)
+			require.NoError(t, err)
+			until := time.Now().Add(time.Minute).Truncate(time.Microsecond)
+			claimed, err := repo.ClaimPelican(t.Context(), plan, time.Now(), until, time.Now().Add(time.Hour))
+			require.NoError(t, err)
+			require.True(t, claimed)
+			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			require.NoError(t, err)
+			accounts := &accountRepository{sql: repo.db}
+			require.NoError(t, accounts.ApplyQuality5xx(t.Context(), plan.AccountID))
+			report, err := repo.ReadAvailability(t.Context(), plan.ID)
+			require.NoError(t, err)
+			require.Equal(t, "new_fault_event", report.Models[0].Reason)
+			require.Equal(t, "unknown", report.Models[0].Status)
+			var version int64
+			var running time.Time
+			var next time.Time
+			require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version,running_until,next_run_at FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&version, &running, &next))
+			require.EqualValues(t, 1, version)
+			require.True(t, running.Equal(until), "faults must not steal an active lease")
+			require.False(t, next.After(time.Now()), "database fallback must schedule a new probe")
+			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			require.NoError(t, err)
+			require.Equal(t, "stale_run", action)
+			var owners, concurrency int
+			require.NoError(t, repo.db.QueryRow(`SELECT count(*) FROM account_quality_states`).Scan(&owners))
+			require.Zero(t, owners)
+			require.NoError(t, repo.db.QueryRow(`SELECT concurrency FROM accounts WHERE id=$1`, plan.AccountID).Scan(&concurrency))
+			require.Equal(t, 17, concurrency)
+			require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+			plan, err = repo.GetByID(t.Context(), plan.ID)
+			require.NoError(t, err)
+			// A queued event must still claim a future timer even when an older
+			// in-flight run finished after the signal but failed its version fence.
+			future := time.Now().Add(time.Hour)
+			_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, plan.ID, future)
+			require.NoError(t, err)
+			plan.NextRunAt = &future
+			observed := time.Now().Add(-time.Second)
+			plan.TriggerObservedAt = &observed
+			until = availabilityPostgresClaim(t, repo, plan)
+			require.EqualValues(t, 1, plan.AvailabilityFaultVersion)
+			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			require.NoError(t, err)
+			report, err = repo.ReadAvailability(t.Context(), plan.ID)
+			require.NoError(t, err)
+			require.Equal(t, "pass", report.Models[0].Status)
+		})
+	}
+}
+
+func TestAvailabilityReadPostgresFaultPreservesManualAndQualityOwnership(t *testing.T) {
+	for _, change := range []string{"manual_status", "manual_unscheduled", "own_quality_action", "other_quality_owner", "paused_plan", "removed_policy", "deleted_account"} {
+		t.Run(change, func(t *testing.T) {
+			repo, plan := availabilityPostgresPlan(t)
+			if change == "manual_unscheduled" {
+				plan.PelicanConfig.Quality = nil
+				var err error
+				plan, err = repo.Update(t.Context(), plan)
+				require.NoError(t, err)
+			}
+			until := availabilityPostgresClaim(t, repo, plan)
+			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			require.NoError(t, err)
+			queries := map[string]string{
+				"manual_status":      `UPDATE accounts SET status='disabled' WHERE id=$1`,
+				"manual_unscheduled": `UPDATE accounts SET schedulable=false WHERE id=$1`,
+				"deleted_account":    `UPDATE accounts SET deleted_at=now() WHERE id=$1`,
+			}
+			if query := queries[change]; query != "" {
+				_, err = repo.db.Exec(query, plan.AccountID)
+				require.NoError(t, err)
+			}
+			switch change {
+			case "own_quality_action":
+				_, err = repo.db.Exec(`INSERT INTO account_quality_states(plan_id,state) VALUES($1,'{"action":"disable_scheduling","manual":"kept"}')`, plan.ID)
+			case "other_quality_owner":
+				_, err = repo.db.Exec(`WITH peer AS (INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,max_results,auto_recover,created_at,updated_at) VALUES($1,'peer','0 * * * *',false,10,false,now(),now()) RETURNING id) INSERT INTO account_quality_states(plan_id,state) SELECT id,'{"action":"disable_scheduling","manual":"kept"}' FROM peer`, plan.AccountID)
+			case "paused_plan":
+				_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan.ID)
+			case "removed_policy":
+				_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET pelican_config='{}' WHERE id=$1`, plan.ID)
+			}
+			require.NoError(t, err)
+			var before, after string
+			require.NoError(t, repo.db.QueryRow(`SELECT jsonb_build_array(status,schedulable,concurrency,extra)::text FROM accounts WHERE id=$1`, plan.AccountID).Scan(&before))
+			var ownerBefore, ownerAfter string
+			require.NoError(t, repo.db.QueryRow(`SELECT COALESCE(jsonb_agg(state),'[]')::text FROM account_quality_states`).Scan(&ownerBefore))
+			changed, err := repo.applyImmediateQuality5xx(t.Context(), plan.ID, plan.AccountID)
+			require.NoError(t, err)
+			want := change != "paused_plan" && change != "removed_policy" && change != "deleted_account"
+			require.Equal(t, want, changed)
+			var version int64
+			require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&version))
+			if want {
+				require.EqualValues(t, 1, version)
+			} else {
+				require.Zero(t, version)
+			}
+			require.NoError(t, repo.db.QueryRow(`SELECT jsonb_build_array(status,schedulable,concurrency,extra)::text FROM accounts WHERE id=$1`, plan.AccountID).Scan(&after))
+			require.Equal(t, before, after)
+			require.NoError(t, repo.db.QueryRow(`SELECT COALESCE(jsonb_agg(state),'[]')::text FROM account_quality_states`).Scan(&ownerAfter))
+			require.Equal(t, ownerBefore, ownerAfter)
+		})
+	}
+}
+
+func TestAvailabilityReadPostgresBusinessFaultDatabaseFallback(t *testing.T) {
+	repo, plan := availabilityPostgresPlan(t)
+	plan.PelicanConfig.Quality = nil
+	var err error
+	plan, err = repo.Update(t.Context(), plan)
+	require.NoError(t, err)
+	accounts := &accountRepository{sql: repo.db}
+	require.NoError(t, accounts.ApplyQuality5xx(t.Context(), plan.AccountID))
+	// No Redis and no event source: the normal scheduled worker must discover
+	// the durable due time and capture the independent fault version.
+	due, err := repo.ListDue(t.Context(), time.Now())
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Empty(t, due[0].TriggerSource)
+	until := time.Now().Add(time.Minute).Truncate(time.Microsecond)
+	claimed, err := repo.ClaimPelican(t.Context(), due[0], time.Now(), until, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.EqualValues(t, 1, due[0].AvailabilityFaultVersion)
+	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), due[0], until, availabilityPostgresObservation("pass"))
+	require.NoError(t, err)
+	require.Equal(t, "observed", action)
+	report, err := repo.ReadAvailability(t.Context(), plan.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pass", report.Models[0].Status)
+}
 
 func TestAvailabilityReadPostgresFreshnessAndScope(t *testing.T) {
 	for _, change := range []string{"none", "paused", "rule", "route", "event", "unrelated", "expired", "removed_policy", "missing"} {

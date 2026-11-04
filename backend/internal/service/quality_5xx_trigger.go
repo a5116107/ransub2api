@@ -41,7 +41,7 @@ func (s *quality5xxTrigger) signalIsCurrent(accountID int64, observedAt time.Tim
 }
 
 func (s *quality5xxTrigger) Observe(ctx context.Context, account *Account, status int) {
-	if s == nil || s.queue == nil || account == nil || account.ID <= 0 || (account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey) || status < 500 || status > 599 || ctx.Value(qualityProbeContextKey{}) != nil {
+	if s == nil || account == nil || account.ID <= 0 || (account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey) || status < 500 || status > 599 || ctx.Value(qualityProbeContextKey{}) != nil {
 		return
 	}
 	// Complete native account protection before retry/selection can continue.
@@ -53,6 +53,9 @@ func (s *quality5xxTrigger) Observe(ctx context.Context, account *Account, statu
 		if err != nil {
 			slog.Warn("quality 5xx immediate protection failed", "account_id", account.ID, "error", err)
 		}
+	}
+	if s.queue == nil {
+		return // The database due time remains the durable probe fallback.
 	}
 	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 150*time.Millisecond)
 	defer cancel()
@@ -123,24 +126,11 @@ func (s *ScheduledTestRunnerService) runQualityTriggeredAccount(ctx context.Cont
 	if err != nil {
 		return err
 	}
-	qualityPlan := false
+	// runPelicanPlan authoritatively loads the account and respects its native
+	// cooldown before claiming. Do not duplicate that read or create a new
+	// account-wide quarantine here.
 	for _, plan := range plans {
-		if plan != nil && plan.Enabled && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.TriggerOnUpstream5xx {
-			qualityPlan = true
-			break
-		}
-	}
-	if qualityPlan && s.rateLimitSvc != nil && s.accountTestSvc != nil {
-		account, lookupErr := s.accountTestSvc.accountRepo.GetByID(ctx, accountID)
-		if lookupErr != nil || account == nil {
-			return fmt.Errorf("quality 5xx account %d could not be loaded", accountID)
-		}
-		// The quality rule owns the quarantine state. Do not apply the generic
-		// account-wide ten-minute temporary unschedule here: it would delay the
-		// probe and make an opted-in 5xx signal ineffective.
-	}
-	for _, plan := range plans {
-		if !plan.Enabled || plan.PelicanConfig == nil || plan.PelicanConfig.Quality == nil || !plan.PelicanConfig.Quality.TriggerOnUpstream5xx {
+		if plan == nil || !plan.Enabled || !plan.PelicanConfig.TriggersOnUpstream5xx() {
 			continue
 		}
 		plan.TriggerSource = quality5xxSource
@@ -158,7 +148,7 @@ func (s *ScheduledTestRunnerService) runQualityTriggeredAccount(ctx context.Cont
 			if err != nil {
 				return err
 			}
-			if current == nil || !current.Enabled || current.PelicanConfig == nil || current.PelicanConfig.Quality == nil || !current.PelicanConfig.Quality.TriggerOnUpstream5xx {
+			if current == nil || !current.Enabled || !current.PelicanConfig.TriggersOnUpstream5xx() {
 				continue
 			}
 			if current.RunningUntil != nil && current.RunningUntil.After(time.Now()) {
@@ -193,6 +183,11 @@ func (s *RateLimitService) observeQualityStatus(ctx context.Context, account *Ac
 // Select an execution-only test for the account's actual model route. Never
 // bypass BPS to test direct ticket state when diagnosing the BPS route itself.
 func quality5xxTestConfig(account *Account, model string, cfg PelicanTestConfig) (PelicanTestConfig, bool) {
+	if cfg.Availability != nil {
+		// A ticket state probe and a substituted question cannot confirm the
+		// configured answer route. Preserve samples, prompt and reasoning.
+		return cfg, cfg.Quality != nil && cfg.Quality.TriggerOnUpstream5xx && !cfg.BPSRecoveryPending
+	}
 	cfg.ParallelCount = 1
 	if cfg.QuestionKind == QualityRandomQuestionKind {
 		// Preserve the configured external judge. Never substitute the public
@@ -219,6 +214,9 @@ func quality5xxTestConfig(account *Account, model string, cfg PelicanTestConfig)
 }
 
 func qualitySignalCovered(plan *ScheduledTestPlan, observedAt time.Time) bool {
+	if plan.PelicanConfig != nil && plan.PelicanConfig.Availability != nil {
+		return false // An old round's finish time does not prove its fault version.
+	}
 	if plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.Action == QualityActionRemoveModel {
 		return false
 	}

@@ -517,3 +517,14 @@
 - 测试schema余数0，pg_ctl停止成功、status为no server running；历史数据库目录复用后当前112799497bytes，状态文档已替换过时数字，未重试此前被自动审核拒绝的删除。原迁移325没有改动，新迁移326仅在隔离schema验证。历史PNG仍12个共1164bytes，没有新增源码目录运行产物。
 - 最终删除旧计数借用后的相关专项连续三轮实际通过service34.499s、admin10.042s；routes6.403s为编译检查（no tests to run）。默认标签实际通过migrations1.677s、service9.004s、repository9.458s。最终四范围vet/lint继续等待原会话，不重启、不停止其他任务进程、不缩范围或增加8分钟时限。
 - 最终源码四范围vet退出0，完整lint实际输出0 issues.，原会话输出Final independent availability fence vet/lint: PASS、退出0；检查范围/规则及8分钟限制均保持。gofmt无输出，git diff --check通过，旧AvailabilityQuality5xxEpisode与qualityAccountRouteFingerprint源码搜索0，新TODO/FIXME/XXX为0。STATE76行，唯一工作树，精确本地交付17个文件，历史PNG目录不纳入提交；本模块闭环，D3父验收及全局完成数保持不变。
+
+## 2026-11-04：D3 独立业务5xx失效与原配置复测
+
+- 接续3d1e149。核对发送准入的前置状态时发现：独立可用性虽然有故障版本，但只在remove_models质量保护成功时递增；缺失质量策略、关闭质量5xx触发、observe_only三种配置都漏失效。新增真实PostgreSQL回归在旧源码实际三例失败repository2.242s，均为availability must observe business faults independently of quality actions。
+- 原位扩展既有业务5xx事务，不新增故障队列或执行器：显式启用availability的规则独立递增版本并提前数据库复测时间，保留在途租约；旧在途pass拒绝提交。质量拥有者冲突不阻止独立版本，质量原保护条件保留。人工账号状态/不可调度不被改写，故障仍可失效旧可用性；暂停规则、移除策略、删除账号保持退出行为。当前账号粒度的事件保守失效整条规则旧证据，不冒充逐模型fail。
+- 事件工作器/数据库claim共用可用性或质量触发条件，不能仅用旧轮次的完成时间确认新事件已覆盖。可用性复测保留题目、推理级别、模型列表与原样本数，避免门票探针或固定糖果题替换有效证据。原5xx队列继续合并并保留新信号，数据库due时间作为持久回退；ProvideRateLimitService在无Redis但仓储支持即时保护时仍安装故障观察，不因缺队列关闭数据库栅栏。
+- 新service测试初轮编译失败于遗漏sync/atomic导入，补齐后同范围运行；随后唯一断言失败是夹具ModelID未在快照前按nextPlanRun正常契约归一化（expected空/actual gpt-6-astra），已在构造时设置模型，不修改生产归一化。修复后可用性/质量/Pelican/定时组合三轮service23.659s通过；首轮真实SQL组合三轮repository84.740s通过，人工状态/拥有者冲突补强三轮11.675s通过。最终数据库回退补强、完整回归及静态检查另记真实返回。
+- 本轮目标是现有业务5xx入口的独立失效与复测闭环，不替代最终发送准入。模型/协议/fast作用域及其他故障分类仍待D3/D2/D4完成，原20项12 done、3 in_progress、5 pending保持。仅本地实施与隔离schema验证，不运行CI、不推送、不部署或执行生产迁移。
+- 最终改为可用性触发不执行关闭的质量动作后，availability/quality/Pelican专项连续三轮实际通过service5.430s。完整service/handler/routes回归通过：service328.697s、handler146.563s、admin1.592s、accounttimerapi0.669s、dto1.733s、quotaview1.726s、routes11.994s，trafficquery无测试；完整回归命令退出0。PostgreSQL专项/迁移和默认标签实际通过repository49.616s、migrations0.513s、service8.469s、repository0.972s；人工状态/质量拥有者补强三轮repository11.675s。最终vet/lint会话在返回后追加。
+- 续接最终验收：四范围go vet实际退出0；相同四范围完整lint输出0 issues.、Independent availability lint: PASS，退出0。沿现有隔离PostgreSQL复核IndependentBusinessFault/FaultPreservesManualAndQualityOwnership连续三轮repository10.686s通过，availability/quality5xx/触发专项连续三轮service4.986s通过。没有缩小此前完整回归的结论，也没有把专项当成全局验收。
+- 原位清除设计中“独立可用性状态/有效期尚未实现”的过时描述，统一为已完成状态持久化与权威报告、待接最终发送准入；未新建任务账本或平行文档。当前批次精确本地提交，保留历史12个PNG和既有清理等待，不运行CI、不推送、不部署或生产迁移。
