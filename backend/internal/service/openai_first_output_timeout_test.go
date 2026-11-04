@@ -53,41 +53,45 @@ func (u *blockingOpenAIResponseHeaderUpstream) DoWithTLS(req *http.Request, _ st
 }
 
 func TestOpenAIForwardFirstOutputTimeoutIncludesResponseHeaderWait(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	upstream := &blockingOpenAIResponseHeaderUpstream{canceled: make(chan struct{})}
-	svc := &OpenAIGatewayService{
-		cfg: &config.Config{Gateway: config.GatewayConfig{
-			OpenAIFirstOutputTimeoutSeconds: 1,
-			MaxLineSize:                     defaultMaxLineSize,
-		}},
-		httpUpstream: upstream,
-	}
-	body := []byte(`{"model":"gpt-5.5","stream":true,"reasoning":{"effort":"low"},"input":"hello"}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
-	account := &Account{
-		ID: 1, Name: "oauth-test", Platform: PlatformOpenAI, Type: AccountTypeOAuth,
-		Status: StatusActive, Schedulable: true, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "test-token", "chatgpt_account_id": "test-account"},
-	}
+	// Exercise the real header guard with virtual time: CPU scheduling must not
+	// count as upstream waiting or weaken the one-second timeout assertion.
+	synctest.Test(t, func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		upstream := &blockingOpenAIResponseHeaderUpstream{canceled: make(chan struct{})}
+		svc := &OpenAIGatewayService{
+			cfg: &config.Config{Gateway: config.GatewayConfig{
+				OpenAIFirstOutputTimeoutSeconds: 1,
+				MaxLineSize:                     defaultMaxLineSize,
+			}},
+			httpUpstream: upstream,
+		}
+		body := []byte(`{"model":"gpt-5.5","stream":true,"reasoning":{"effort":"low"},"input":"hello"}`)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		account := &Account{
+			ID: 1, Name: "oauth-test", Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+			Status: StatusActive, Schedulable: true, Concurrency: 1,
+			Credentials: map[string]any{"access_token": "test-token", "chatgpt_account_id": "test-account"},
+		}
 
-	started := time.Now()
-	_, err := svc.Forward(context.Background(), c, account, body)
+		started := time.Now()
+		_, err := svc.Forward(context.Background(), c, account, body)
 
-	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
-	require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
-	require.True(t, failoverErr.SafeToFailoverAfterWrite)
-	require.Less(t, time.Since(started), 1300*time.Millisecond)
-	require.Empty(t, rec.Body.String())
-	select {
-	case <-upstream.canceled:
-	default:
-		t.Fatal("response-header timeout did not cancel the upstream request context")
-	}
+		require.Error(t, err)
+		var failoverErr *UpstreamFailoverError
+		require.ErrorAs(t, err, &failoverErr)
+		require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+		require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
+		require.True(t, failoverErr.SafeToFailoverAfterWrite)
+		require.Equal(t, time.Second, time.Since(started), "the original first-output budget must include response-header waiting")
+		require.Empty(t, rec.Body.String())
+		select {
+		case <-upstream.canceled:
+		default:
+			t.Fatal("response-header timeout did not cancel the upstream request context")
+		}
+	})
 }
 
 func TestOpenAINativeFirstOutputTimeoutDisabledPreservesSynchronousStream(t *testing.T) {

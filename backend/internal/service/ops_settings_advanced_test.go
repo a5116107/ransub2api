@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -150,20 +151,34 @@ func TestGetOpenAIQuotaAutoPauseSettings_ReadsDefaultsFromOpsAdvancedSettings(t 
 // rather than blocking on the DB. The async refresher will populate the cache for
 // subsequent calls.
 func TestGetOpenAIQuotaAutoPauseSettings_ColdCacheNonBlocking(t *testing.T) {
-	repo := newRuntimeSettingRepoStub()
-	repo.values[SettingKeyOpsAdvancedSettings] = `{"openai_account_quota_auto_pause":{"default_threshold_5h":0.7}}`
-	svc := NewSettingService(repo, &config.Config{})
+	// Virtual time distinguishes repository waiting from host scheduler delays.
+	synctest.Test(t, func(t *testing.T) {
+		repo := newRuntimeSettingRepoStub()
+		repo.values[SettingKeyOpsAdvancedSettings] = `{"openai_account_quota_auto_pause":{"default_threshold_5h":0.7}}`
+		repo.getValueFn = func(key string) (string, error) {
+			time.Sleep(time.Second)
+			return repo.values[key], nil
+		}
+		svc := NewSettingService(repo, &config.Config{})
 
-	start := time.Now()
-	settings := svc.GetOpenAIQuotaAutoPauseSettings(context.Background())
-	elapsed := time.Since(start)
-	if elapsed > 50*time.Millisecond {
-		t.Fatalf("cold-cache Get must be non-blocking, took %v", elapsed)
-	}
-	// Cold cache means we get zero defaults (the async refresh hasn't completed yet).
-	if settings.DefaultThreshold5h != 0 || settings.DefaultThreshold7d != 0 {
-		t.Fatalf("cold-cache Get = %+v, want zeroes", settings)
-	}
+		start := time.Now()
+		settings := svc.GetOpenAIQuotaAutoPauseSettings(context.Background())
+		elapsed := time.Since(start)
+		if elapsed != 0 {
+			t.Fatalf("cold-cache Get must be non-blocking, took %v", elapsed)
+		}
+		// Cold cache means we get zero defaults (the async refresh hasn't completed yet).
+		if settings.DefaultThreshold5h != 0 || settings.DefaultThreshold7d != 0 {
+			t.Fatalf("cold-cache Get = %+v, want zeroes", settings)
+		}
+		synctest.Wait() // Let the asynchronous repository read start and block.
+		time.Sleep(time.Second)
+		synctest.Wait()
+		cached := svc.GetOpenAIQuotaAutoPauseSettings(t.Context())
+		if cached.DefaultThreshold5h != 0.7 || repo.getValueCalls != 1 {
+			t.Fatalf("background refresh = %+v, repository reads = %d; want threshold 0.7 and one read", cached, repo.getValueCalls)
+		}
+	})
 }
 
 // Explicit cache write (e.g. from UpdateOpsAdvancedSettings) must be visible on the
