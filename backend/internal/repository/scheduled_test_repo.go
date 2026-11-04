@@ -373,6 +373,14 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		return false, err
 	}
 	var bpsRecoveryPending bool
+	var accountFingerprint *[32]byte
+	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults() {
+		fingerprint, err := qualityAccountRouteFingerprint(ctx, tx, plan.AccountID)
+		if err != nil {
+			return false, err
+		}
+		accountFingerprint = &fingerprint
+	}
 	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil {
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
  SELECT 1 FROM account_quality_states WHERE plan_id=$1 AND state->>'action'=$2)`,
@@ -392,6 +400,9 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		config := *plan.PelicanConfig
 		config.BPSRecoveryPending = bpsRecoveryPending
 		plan.PelicanConfig = &config
+	}
+	if n == 1 {
+		plan.QualityAccountFingerprint = accountFingerprint
 	}
 	return n == 1, nil
 }

@@ -177,7 +177,7 @@ func denyOpenAITicket() error {
 	return &OpenAITurnAdmissionError{Reason: "model_ticket_unavailable", cause: ErrOpenAICodexTicketUnavailable}
 }
 
-// Used only to detect a binding change, never logged. Include routing/identity
+// AccountRouteFingerprint detects a binding change and is never logged. Include routing/identity
 // settings but not mutable authentication credentials, usage, or
 // harvested-ticket observations.
 //
@@ -187,7 +187,7 @@ func denyOpenAITicket() error {
 // routing identity. Non-secret credential settings such as base_url and
 // protocol mappings remain part of the fingerprint because they do affect
 // where or how the request is sent.
-func openAITurnRouteFingerprint(a *Account) [32]byte {
+func AccountRouteFingerprint(a *Account) [32]byte {
 	if a == nil {
 		return [32]byte{}
 	}
@@ -445,7 +445,7 @@ func (s *OpenAIGatewayService) admitOpenAITurnWithGroup(
 // Neither may authorize a prepared old route using a different row's rates.
 func checkOpenAITurnBindingAndRate(ctx context.Context, selected, latest *Account) error {
 	checkBinding := latest.IsOpenAI() || ((latest.IsGrok() || latest.IsMultiProtocolAPIKey()) && gatewayProfitControlGateActive(ctx))
-	if checkBinding && openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(selected) &&
+	if checkBinding && AccountRouteFingerprint(latest) != AccountRouteFingerprint(selected) &&
 		(!latest.HasManagedOpenAIConnections() || selected.AuthConnectionID == "") {
 		return denyOpenAITurn("account_binding_changed")
 	}
@@ -466,7 +466,7 @@ type openAIWSTurnBinding struct {
 }
 
 func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model string, headers http.Header) *openAIWSTurnBinding {
-	b := &openAIWSTurnBinding{model: strings.TrimSpace(model), fingerprint: openAITurnRouteFingerprint(account), createdAt: time.Now()}
+	b := &openAIWSTurnBinding{model: strings.TrimSpace(model), fingerprint: AccountRouteFingerprint(account), createdAt: time.Now()}
 	ticket := s.lookupOpenAICodexTicket(account, b.model)
 	if ticket != nil && ticket.State == headers.Get(openAICodexTurnStateHeader) {
 		copy := *ticket
@@ -483,7 +483,7 @@ func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account
 	if account.isExcelBPSUpstreamModelEnabled(model) {
 		return denyOpenAITurn("excel_bps_requires_http")
 	}
-	if b == nil || openAITurnRouteFingerprint(account) != b.fingerprint ||
+	if b == nil || AccountRouteFingerprint(account) != b.fingerprint ||
 		time.Since(b.createdAt) >= openAIWSConnMaxAge {
 		return denyOpenAITurn("connection_binding_expired")
 	}

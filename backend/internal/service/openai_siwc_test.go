@@ -194,9 +194,9 @@ func TestSIWCSelectionDisablesOtherProtocolCapabilities(t *testing.T) {
 	require.False(t, account.IsOpenAIResponsesWebSocketV2Enabled())
 	require.False(t, isOpenAICodexTicketAccount(account))
 	require.True(t, shouldEstimateOpenAIInputTokensLocally(account))
-	active := openAITurnRouteFingerprint(account)
+	active := AccountRouteFingerprint(account)
 	account.Extra[OpenAISIWCEnabledKey] = false
-	require.NotEqual(t, active, openAITurnRouteFingerprint(account))
+	require.NotEqual(t, active, AccountRouteFingerprint(account))
 	require.True(t, account.UsesOpenAICodexProtocol())
 }
 

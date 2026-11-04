@@ -96,9 +96,9 @@ func TestExcelBPSSelectedModelsPreserveCodexTransportAndTickets(t *testing.T) {
 	statuses := OpenAICodexTicketStatuses(a, cfg.Gateway.OpenAICodexTicket, time.Now())
 	require.Len(t, statuses, 1)
 	require.Equal(t, "gpt-6-sol", statuses[0].Model)
-	before := openAITurnRouteFingerprint(a)
+	before := AccountRouteFingerprint(a)
 	a.Extra["openai_excel_bps_models"] = []string{"gpt-6-sol"}
-	require.NotEqual(t, before, openAITurnRouteFingerprint(a))
+	require.NotEqual(t, before, AccountRouteFingerprint(a))
 }
 
 func TestExcelBPSSelectedCompactKeepsExcelModel(t *testing.T) {

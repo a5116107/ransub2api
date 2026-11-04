@@ -40,7 +40,9 @@ func quality5xxPostgresDB(t *testing.T) *sql.DB {
  id BIGSERIAL PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'openai', type TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'active', schedulable BOOLEAN NOT NULL DEFAULT true,
  concurrency INT NOT NULL DEFAULT 17, credentials JSONB NOT NULL DEFAULT '{}',
- extra JSONB NOT NULL DEFAULT '{"unrelated":"kept"}', updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ);
+ extra JSONB NOT NULL DEFAULT '{"unrelated":"kept"}', proxy_id BIGINT, parent_account_id BIGINT,
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ);
+CREATE TABLE proxies (id BIGINT PRIMARY KEY, protocol TEXT, host TEXT, port INT, username TEXT, password TEXT, deleted_at TIMESTAMPTZ);
 CREATE TABLE scheduled_test_plans (
  id BIGSERIAL PRIMARY KEY, account_id BIGINT NOT NULL REFERENCES accounts(id),
  model_id TEXT NOT NULL, cron_expression TEXT NOT NULL, enabled BOOLEAN NOT NULL,
@@ -216,6 +218,154 @@ func TestQuality5xxPostgresAPIKeyLateResultGuards(t *testing.T) {
 			var events int
 			require.NoError(t, db.QueryRow(`SELECT count(*) FROM scheduler_outbox WHERE account_id=$1`, plan.AccountID).Scan(&events))
 			require.Zero(t, events, "stale result must not mutate the account")
+		})
+	}
+}
+
+func TestQualityPostgresProbeAccountConfigFence(t *testing.T) {
+	db := quality5xxPostgresDB(t)
+	for _, verdict := range []string{"failed", "passed"} {
+		for _, tc := range []struct {
+			name, edit string
+			stale      bool
+		}{
+			{"key", `UPDATE accounts SET credentials=credentials||'{"api_key":"fixture-rotated"}' WHERE id=$1`, true},
+			{"endpoint", `UPDATE accounts SET credentials=credentials||'{"base_url":"https://new.example/v1"}' WHERE id=$1`, true},
+			{"mapping", `UPDATE accounts SET credentials=credentials||'{"model_mapping":{"target":"other"}}' WHERE id=$1`, true},
+			{"protocol", `UPDATE accounts SET credentials=credentials||'{"api_protocol":"chat_completions"}' WHERE id=$1`, true},
+			{"protocol_endpoints", `UPDATE accounts SET credentials=credentials||'{"api_base_urls":{"responses":"https://new.example/v1"}}' WHERE id=$1`, true},
+			{"protocol_rules", `UPDATE accounts SET credentials=credentials||'{"protocol_rules":[{"pattern":"target","protocol":"responses"}]}' WHERE id=$1`, true},
+			{"account_mode", `UPDATE accounts SET credentials=credentials||'{"account_mode":"coding"}' WHERE id=$1`, true},
+			{"platform", `UPDATE accounts SET platform='anthropic' WHERE id=$1`, true},
+			{"type", `UPDATE accounts SET type='oauth' WHERE id=$1`, true},
+			{"bps", `UPDATE accounts SET extra=extra||'{"openai_excel_bps":true}' WHERE id=$1`, true},
+			{"proxy", `UPDATE accounts SET proxy_id=1 WHERE id=$1`, true},
+			{"proxy_address", `UPDATE proxies SET host=host||'.changed' WHERE id=(SELECT proxy_id FROM accounts WHERE id=$1)`, true},
+			{"parent_binding", `UPDATE accounts SET parent_account_id=99 WHERE id=$1`, true},
+			{"unrelated_extra", `UPDATE accounts SET extra=extra||'{"unrelated":"edited"}',updated_at=clock_timestamp() WHERE id=$1`, false},
+			{"manual_concurrency", `UPDATE accounts SET concurrency=23,updated_at=clock_timestamp() WHERE id=$1`, false},
+			{"rotating_token", `UPDATE accounts SET credentials=credentials||'{"access_token":"fixture-refreshed","refresh_token":"fixture-renewed"}' WHERE id=$1`, false},
+		} {
+			t.Run(verdict+"/"+tc.name, func(t *testing.T) {
+				_, err := db.Exec(`INSERT INTO proxies(id,protocol,host,port) VALUES(1,'http','127.0.0.1',12345) ON CONFLICT DO NOTHING`)
+				require.NoError(t, err)
+				repo, plan := quality5xxPostgresPlan(t, db, service.AccountTypeAPIKey)
+				if tc.name == "proxy_address" {
+					_, err = db.Exec(`UPDATE accounts SET proxy_id=1 WHERE id=$1`, plan.AccountID)
+					require.NoError(t, err)
+				}
+				now := time.Now().UTC().Truncate(time.Microsecond)
+				until := now.Add(time.Minute)
+				claim := func() {
+					t.Helper()
+					plan, err = repo.GetByID(t.Context(), plan.ID)
+					require.NoError(t, err)
+					plan.TriggerSource = "upstream_5xx"
+					ok, claimErr := repo.ClaimPelican(t.Context(), plan, now, until, *plan.NextRunAt)
+					require.NoError(t, claimErr)
+					require.True(t, ok)
+				}
+				claim()
+				if verdict == "passed" {
+					action, applyErr := repo.ApplyQualityOutcome(t.Context(), plan, until, "failed")
+					require.NoError(t, applyErr)
+					require.Equal(t, "models_cooled", action)
+					require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, now))
+					claim()
+				}
+				_, err = db.Exec(tc.edit, plan.AccountID)
+				require.NoError(t, err)
+				snapshot := func() string {
+					t.Helper()
+					var raw string
+					require.NoError(t, db.QueryRow(`SELECT jsonb_build_object(
+ 'account',(SELECT to_jsonb(a) FROM accounts a WHERE id=$1),
+ 'state',(SELECT state FROM account_quality_states WHERE plan_id=$2),
+ 'events',(SELECT count(*) FROM scheduler_outbox WHERE account_id=$1))::text`, plan.AccountID, plan.ID).Scan(&raw))
+					return raw
+				}
+				before := snapshot()
+				action, applyErr := repo.ApplyQualityOutcome(t.Context(), plan, until, verdict)
+				require.NoError(t, applyErr)
+				if tc.stale {
+					require.Equal(t, "stale_run", action, "old probe must not mutate the replacement route")
+					require.Equal(t, before, snapshot(), "rejected result must retain account, ownership and events")
+				} else {
+					expected := "models_cooled"
+					if verdict == "passed" {
+						expected = "restored"
+					}
+					require.Equal(t, expected, action, "unrelated runtime changes must not starve valid probes")
+				}
+			})
+		}
+	}
+}
+
+func TestQualityPostgresProbeMissingConfigSnapshotRejectsResult(t *testing.T) {
+	db := quality5xxPostgresDB(t)
+	repo, plan := quality5xxPostgresPlan(t, db, service.AccountTypeAPIKey)
+	now := time.Now().UTC()
+	until := now.Add(time.Minute)
+	plan.TriggerSource = "upstream_5xx"
+	ok, err := repo.ClaimPelican(t.Context(), plan, now, until, *plan.NextRunAt)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, plan.QualityAccountFingerprint)
+	plan.QualityAccountFingerprint = nil
+	action, err := repo.ApplyQualityOutcome(t.Context(), plan, until, "failed")
+	require.NoError(t, err)
+	require.Equal(t, "stale_run", action)
+	var states, events int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM account_quality_states`).Scan(&states))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM scheduler_outbox`).Scan(&events))
+	require.Zero(t, states)
+	require.Zero(t, events)
+}
+
+func TestQualityPostgresProbeParentCredentialChange(t *testing.T) {
+	db := quality5xxPostgresDB(t)
+	for _, verdict := range []string{"failed", "passed"} {
+		t.Run(verdict, func(t *testing.T) {
+			var parentID int64
+			require.NoError(t, db.QueryRow(`INSERT INTO accounts(type,credentials) VALUES('apikey','{"api_key":"fixture-parent"}') RETURNING id`).Scan(&parentID))
+			repo, plan := quality5xxPostgresPlan(t, db, service.AccountTypeAPIKey)
+			_, err := db.Exec(`UPDATE accounts SET parent_account_id=$2 WHERE id=$1`, plan.AccountID, parentID)
+			require.NoError(t, err)
+			now := time.Now().UTC()
+			until := now.Add(time.Minute)
+			plan.TriggerSource = "upstream_5xx"
+			ok, err := repo.ClaimPelican(t.Context(), plan, now, until, *plan.NextRunAt)
+			require.NoError(t, err)
+			require.True(t, ok)
+			_, err = db.Exec(`UPDATE accounts SET credentials='{"api_key":"fixture-parent-rotated"}' WHERE id=$1`, parentID)
+			require.NoError(t, err)
+			action, err := repo.ApplyQualityOutcome(t.Context(), plan, until, verdict)
+			require.NoError(t, err)
+			require.Equal(t, "stale_run", action, "same parent ID must not hide a credential change")
+		})
+	}
+}
+
+func TestQualityPostgresProbeConfigReadFailureRollsBackClaim(t *testing.T) {
+	db := quality5xxPostgresDB(t)
+	for _, tc := range []struct{ name, edit string }{
+		{"missing_proxy", `UPDATE accounts SET proxy_id=99 WHERE id=$1`},
+		{"parent_cycle", `UPDATE accounts SET parent_account_id=id WHERE id=$1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, plan := quality5xxPostgresPlan(t, db, service.AccountTypeAPIKey)
+			_, err := db.Exec(tc.edit, plan.AccountID)
+			require.NoError(t, err)
+			now := time.Now().UTC()
+			plan.TriggerSource = "upstream_5xx"
+			ok, err := repo.ClaimPelican(t.Context(), plan, now, now.Add(time.Minute), *plan.NextRunAt)
+			require.Error(t, err)
+			require.False(t, ok)
+			stored, err := repo.GetByID(t.Context(), plan.ID)
+			require.NoError(t, err)
+			require.Nil(t, stored.RunningUntil, "snapshot failure must roll back the lease")
+			require.True(t, stored.NextRunAt.Equal(*plan.NextRunAt))
 		})
 	}
 }

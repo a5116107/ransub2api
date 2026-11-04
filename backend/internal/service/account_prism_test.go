@@ -51,7 +51,7 @@ func TestPrismScopePreservesNativeWebSocketModels(t *testing.T) {
 		require.True(t, s.isOpenAIAccountTransportCompatible(a, OpenAIUpstreamTransportResponsesWebsocketV2Ingress, model))
 	}
 	require.False(t, s.isOpenAIAccountTransportCompatible(a, OpenAIUpstreamTransportResponsesWebsocketV2Ingress, "gpt-6.1-sol"))
-	before := openAITurnRouteFingerprint(a)
+	before := AccountRouteFingerprint(a)
 	a.Extra[PrismBrowserModelsKey] = []string{}
-	require.NotEqual(t, before, openAITurnRouteFingerprint(a))
+	require.NotEqual(t, before, AccountRouteFingerprint(a))
 }

@@ -862,7 +862,7 @@ func TestOpenAITurnAdmissionMissingHandshakeTicketFailsClosed(t *testing.T) {
 	}, nil)
 	binding := &openAIWSTurnBinding{
 		model:       "gpt-6-astra",
-		fingerprint: openAITurnRouteFingerprint(a),
+		fingerprint: AccountRouteFingerprint(a),
 		createdAt:   time.Now(),
 	}
 

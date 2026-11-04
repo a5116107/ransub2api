@@ -155,7 +155,7 @@ func guardGatewayUpstreamRequest(request *http.Request, selected *Account, repo 
 		if err != nil || latest == nil || latest.ID != selected.ID {
 			return nil, denyOpenAITurn("latest_state_unavailable")
 		}
-		if latest.Platform != selected.Platform || latest.Type != selected.Type || openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(selected) {
+		if latest.Platform != selected.Platform || latest.Type != selected.Type || AccountRouteFingerprint(latest) != AccountRouteFingerprint(selected) {
 			return nil, denyOpenAITurn("account_binding_changed")
 		}
 		if !latest.IsSchedulable() {

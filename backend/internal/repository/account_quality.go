@@ -149,6 +149,21 @@ func (r *scheduledTestPlanRepository) ApplyQualityOutcome(ctx context.Context, p
 	if state.Quality5xxEpisode != plan.Quality5xxEpisode {
 		return "stale_run", nil
 	}
+	if plan.PelicanConfig.Quality.UsesModelResults() {
+		if plan.QualityAccountFingerprint == nil {
+			return "stale_run", nil
+		}
+		fingerprint, err := qualityAccountRouteFingerprint(ctx, tx, plan.AccountID)
+		if err == sql.ErrNoRows {
+			return "stale_run", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if fingerprint != *plan.QualityAccountFingerprint {
+			return "stale_run", nil
+		}
+	}
 	defer func() {
 		diagnostic := plan.QualityRestoreDiagnostic
 		if diagnostic == nil {

@@ -604,7 +604,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		)
 		return admissionErr
 	}
-	if openAITurnRouteFingerprint(latest) != openAITurnRouteFingerprint(account) {
+	if AccountRouteFingerprint(latest) != AccountRouteFingerprint(account) {
 		admissionErr = denyOpenAITurn("account_binding_changed")
 		s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(
 			ctx,

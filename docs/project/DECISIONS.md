@@ -464,3 +464,14 @@
 - 真实事务链路验证连续新故障推进事件版本、旧成功不得恢复、失败→不确定保留冷却→明确通过恢复；单次5xx不伪造质量失败、不降低API Key人工并发，恢复保留新人工并发及其他模型限制，产生调度失效事件。夹具仅验证repository行为，不充当生产迁移或全局集成验收。
 - repository vet退出0，完整repository lint实际输出0 issues.；PostgreSQL测试schema余数0。新增测试位于既有repository包并复用生产方法，没有新增生产实现、表或配置入口。D3仍in_progress，独立最新可用状态/有效期/配置版本/恢复仍待完成；原20项仍12 done、3 in_progress、5 pending。
 - 最终service触发专项连续三轮实际通过5.178s、repository默认标签质量/Pelican回归1.530s通过；新增真实数据库用例为unit标签，默认标签结果不作为真实SQL验证。结束再次查询测试schema余数0，pg_ctl停止成功且status返回no server running；没有新留后台实例。Windows完整repository符号链接权限等待沿用，本轮专项未替代全量验收；没有运行CI、推送、部署或生产迁移。
+
+## 2026-11-04：D3 模型质量结果绑定领取时的账号线路配置
+
+- 接续a104b5d。实际ApplyQualityOutcome只检查计划版本、租约和5xx事件；账号在检测期间换Key/地址/映射后，旧失败仍可隔离新线路，旧成功仍可解除限制。隔离PostgreSQL旧实现回归实际失败repository3.441s：16项配置变更的失败/成功结果未返回stale_run（映射成功场景为action_conflict，其余多为models_cooled/restored）；无关extra与人工并发场景仍通过。
+- 原转发指纹原位导出为AccountRouteFingerprint并更新全部原调用者，没有保留旧符号或第二套线路指纹实现。模型质量领取事务捕获配置快照；结果事务在原栅栏后核对快照，缺失快照或语义配置变化返回stale_run，原账号、拥有者和outbox不变。快照仅运行时字段，不增加生产表、配置接口或持久凭据。
+- 新repository读取器复用原指纹，捕获静态Key、地址、模型映射、协议及分流、BPS等路由配置、实际代理地址和母账号配置链。持有原账号/计划锁并以共享锁读取代理；缺失关联配置或父账号循环回滚领取。人工并发、无关extra/updated_at及正常token刷新不参与线路版本，避免业务运行数据更新造成复测饥饿。质量观察/其他动作沿原语义，此改动不冒充独立可用状态的实现。
+- 首轮相关质量/Pelican回归实际通过repository8.723s；补强矩阵三轮20.123s通过。复核补入母账号换Key与错误关联读取回滚后，最终相关专项三轮实际通过repository18.285s；新增矩阵含32项配置/非配置变化（失败/成功两方向）、缺失快照、母账号凭据变化及缺失代理/父账号循环。测试只在显式本地DSN的新schema执行，完成查询schema余数0，pg_ctl已停止且status为no server running。
+- 完整service/handler、静态检查与默认标签验证另记实际返回结果。首次lint因其他存活检查进程返回parallel golangci-lint is running，改用工具原生allow-serial-runners等待锁，未杀其他进程或删除锁文件。单一工作区，不运行CI、不推送、不部署或生产迁移；D3仍in_progress，独立最新可用状态、有效期及其配置版本/恢复仍待完成。
+- 完整本地回归实际通过service352.819s、handler150.236s；最终repository默认标签质量/Pelican回归11.193s通过。三包vet退出0；母账号链补强后的repository vet另行退出0。历史Windows完整repository符号链接权限等待保持，未将其改为skip，也未把专项结果作为全量repository验收。
+- 首次串行三包lint输出0 issues.但随后报告Timeout exceeded、退出1，该次不记为通过；保持原8分钟时限、相同范围和检查规则重跑。最终源码的独立repository lint实际输出0 issues.、退出0；没有增加超时时限、缩小原三包验收或停止其他任务进程。
+- 最终三包完整lint在相同8分钟时限下重跑实际输出0 issues.、退出0；相关专项、默认标签、完整service/handler、vet及最终lint均已取得真实通过。旧私有指纹符号源码残留0，新增TODO/FIXME/XXX为0，gofmt与git diff检查无输出；STATE75行。历史图片仍12个共1164bytes，临时测试schema归零且数据库已停止；本轮没有新增持久运行产物。闭环本项模型质量线路配置栅栏，父任务done增量0，原20项仍12 done、3 in_progress、5 pending。

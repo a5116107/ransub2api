@@ -111,6 +111,11 @@ func expectQualityDiagnosticAccount(mock sqlmock.Sqlmock, plan *service.Schedule
 	mock.ExpectQuery("SELECT enabled AND updated_at").WithArgs(plan.ID, plan.UpdatedAt, until).WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(true))
 	mock.ExpectQuery("SELECT state FROM account_quality_states").WithArgs(plan.ID).WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow(state))
 	mock.ExpectQuery("SELECT updated_at, schedulable, status FROM accounts").WithArgs(plan.AccountID).WillReturnRows(sqlmock.NewRows([]string{"updated_at", "schedulable", "status"}).AddRow(plan.UpdatedAt, false, status))
+	if plan.PelicanConfig.Quality.UsesModelResults() {
+		fingerprint := service.AccountRouteFingerprint(&service.Account{Credentials: map[string]any{}, Extra: map[string]any{}})
+		plan.QualityAccountFingerprint = &fingerprint
+		mock.ExpectQuery("SELECT platform,type,COALESCE").WithArgs(plan.AccountID).WillReturnRows(sqlmock.NewRows([]string{"platform", "type", "credentials", "extra", "proxy_id", "parent_account_id"}).AddRow("", "", `{}`, `{}`, nil, nil))
+	}
 }
 
 func TestQualityRestoreDiagnosticsIgnoreUnrelatedAccountVersion(t *testing.T) {
