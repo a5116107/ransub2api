@@ -541,6 +541,7 @@ type OpenAIGatewayService struct {
 	harvestIPPoolCursor    atomic.Uint64
 	codexHarvestRunMu      sync.RWMutex
 	accountRepo            AccountRepository
+	availabilityReader     AccountAvailabilityReader
 	proxyRepo              ProxyRepository
 	usageLogRepo           UsageLogRepository
 	usageBillingRepo       UsageBillingRepository
@@ -638,6 +639,11 @@ type OpenAIGatewayService struct {
 }
 
 type OpenAIGatewayOption func(*OpenAIGatewayService)
+
+// WithOpenAIAvailabilityReader enables authoritative pre-send availability checks.
+func WithOpenAIAvailabilityReader(reader AccountAvailabilityReader) OpenAIGatewayOption {
+	return func(s *OpenAIGatewayService) { s.availabilityReader = reader }
+}
 
 // WithOpenAIRPMCache enables strict RPM accounting for OpenAI OAuth accounts.
 func WithOpenAIRPMCache(cache RPMCache) OpenAIGatewayOption {

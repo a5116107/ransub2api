@@ -528,3 +528,13 @@
 - 最终改为可用性触发不执行关闭的质量动作后，availability/quality/Pelican专项连续三轮实际通过service5.430s。完整service/handler/routes回归通过：service328.697s、handler146.563s、admin1.592s、accounttimerapi0.669s、dto1.733s、quotaview1.726s、routes11.994s，trafficquery无测试；完整回归命令退出0。PostgreSQL专项/迁移和默认标签实际通过repository49.616s、migrations0.513s、service8.469s、repository0.972s；人工状态/质量拥有者补强三轮repository11.675s。最终vet/lint会话在返回后追加。
 - 续接最终验收：四范围go vet实际退出0；相同四范围完整lint输出0 issues.、Independent availability lint: PASS，退出0。沿现有隔离PostgreSQL复核IndependentBusinessFault/FaultPreservesManualAndQualityOwnership连续三轮repository10.686s通过，availability/quality5xx/触发专项连续三轮service4.986s通过。没有缩小此前完整回归的结论，也没有把专项当成全局验收。
 - 原位清除设计中“独立可用性状态/有效期尚未实现”的过时描述，统一为已完成状态持久化与权威报告、待接最终发送准入；未新建任务账本或平行文档。当前批次精确本地提交，保留历史12个PNG和既有清理等待，不运行CI、不推送、不部署或生产迁移。
+
+## 2026-11-05：D3 OpenAI 最终发送准入与已观测作用域
+
+- 接续5e44747，在H盘唯一主工作树原位完成发送准入；C盘运行副本的统计修复已独立保存为effb8271，不并入主线验收或新增第二份项目状态。原20项保持12 done、3 in_progress、5 pending，本批完成一个发送准入子范围，D3父任务保持in_progress。
+- 账号全部规则含暂停规则从同一主库repeatable-read快照读取，核对预构建账号线路、规则和故障版本，所有读取结束后使用数据库实际时钟；发送前再计入读取与body解析耗时。最终HTTP物理尝试在RPM/优先级等待后检查，代理重试重新读取，失败不发送也不归因成上游故障。缺省未配置策略保留旧行为，显式移除策略退出此门，不放宽已有人工/质量/倍率/Key限制。
+- 探测从实际wire request绑定文本能力、模型、HTTP协议、stream、tier和reasoning；无对应Response.Request、跳转、body不一致或多样本scope不一致不发布授权作用域。工具、图片、未知字段/查询参数和其他协议不从普通文本通过推断。旧证据无scope须重新检测。沿用原历史/派生状态JSON，不新增生产迁移。
+- 首轮service专项真实失败于TestAvailabilityAdmissionHTTPPassDoesNotAuthorizeWSOrPrewarm两个子例：HTTP pass错误放行原生WS。原位接入握手/复用绑定检查、预热及逐轮发送前检查，包含等待之后的最终检查；现阶段WS没有已观测作用域，配置策略时保守拒绝。已有连接新增策略后同样重读，显式移除策略恢复旧行为。修复后准入专项service3.260s通过；补入scope/真实HTTP跳转/多样本与WS重读后，availability/quality/Pelican/时序/WS组合service32.237s通过。
+- 真实SQL首次因错误连接角色postgres失败（repository41.266s），随后Administrator角色也不存在；从原决策记录确认既有fixture角色并直接连接，未修改角色或鉴权、未重启既有数据库。相同真实SQL范围修正进程DSN后repository151.451s通过，覆盖全部规则、失效/恢复、绑定和读取错误、并发快照及读取期间过期，结束后quality_5xx_test_* schema余数0。
+- 四范围go vet退出0；默认标签cmd/server8.491s、requesttiming4.106s编译检查通过（no tests to run）。gofmt与git diff --check无输出，新TODO/FIXME/XXX为0。完整service/handler/routes和四范围lint的实际结果在原会话返回后追加，不把尚未结束的命令计为通过。
+- 原会话最终返回：`go test -tags=unit -p 2 ./internal/service ./internal/handler ./internal/server/routes -count=1 -timeout=10m`退出0，service365.157s、handler161.247s、routes15.081s；`./bin/task-d2-golangci-lint.exe run --build-tags unit --timeout 8m ./internal/service/... ./internal/repository/... ./internal/pkg/requesttiming/... ./cmd/server/...`输出`0 issues.`、退出0。项目三份文档本地链接检查输出`Project documentation links: PASS`。既有12张图片共1164bytes保持，单一H盘工作树，不新增运行产物或平行实现；仅本地提交，不运行CI、不推送或部署。

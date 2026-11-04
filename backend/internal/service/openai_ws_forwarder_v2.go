@@ -531,6 +531,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if err := s.priorityLatencyBeforeSend(ctx, account); err != nil {
 			return err
 		}
+		if err := s.admitAvailabilityRequest(ctx, nil, account); err != nil {
+			return err
+		}
 		if err := lease.WriteJSONWithContextTimeout(ctx, value, s.openAIWSWriteTimeout()); err != nil {
 			lease.MarkBroken()
 			logOpenAIWSModeInfo(

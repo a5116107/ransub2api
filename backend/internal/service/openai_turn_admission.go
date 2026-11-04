@@ -477,6 +477,9 @@ func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model str
 }
 
 func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account *Account, model string, b *openAIWSTurnBinding) error {
+	if err := s.admitAvailabilityRequest(ctx, nil, account); err != nil {
+		return err
+	}
 	if account.isPrismBrowserUpstreamModelEnabled(model) {
 		return denyOpenAITurn("prism_requires_http")
 	}

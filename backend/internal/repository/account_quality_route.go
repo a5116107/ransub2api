@@ -13,6 +13,10 @@ import (
 // Share the forwarding identity, not updated_at: usage, fault protection and
 // manual concurrency may change while a valid model probe is running.
 func accountRouteFingerprint(ctx context.Context, tx *sql.Tx, accountID int64, lock bool) ([32]byte, error) {
+	return accountRouteFingerprintWithBinding(ctx, tx, accountID, lock, nil)
+}
+
+func accountRouteFingerprintWithBinding(ctx context.Context, tx *sql.Tx, accountID int64, lock bool, prepared *service.Account) ([32]byte, error) {
 	seen := map[int64]bool{}
 	accountLock, proxyLock := "", ""
 	if lock {
@@ -46,6 +50,9 @@ func accountRouteFingerprint(ctx context.Context, tx *sql.Tx, accountID int64, l
 			}
 		}
 		fingerprint := service.AccountRouteFingerprint(account)
+		if len(chain) == 0 && prepared != nil && (prepared.ID != accountID || fingerprint != service.AccountRouteFingerprint(prepared)) {
+			return [32]byte{}, service.ErrAvailabilityRouteChanged
+		}
 		if len(chain) == 0 && account.ParentAccountID == nil {
 			return fingerprint, nil
 		}

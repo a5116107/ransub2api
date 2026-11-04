@@ -11,6 +11,7 @@ type OpenAIGatewayDependencies struct {
 	TimezoneProber   ProxyExitInfoProber
 	RegionalMetering *RegionalMetering
 	Accounts         AccountRepository
+	ScheduledTests   ScheduledTestPlanRepository
 	Proxies          ProxyRepository
 	UsageLogs        UsageLogRepository
 	UsageBilling     UsageBillingRepository
@@ -48,6 +49,7 @@ func ProvideOpenAIGatewayService(d OpenAIGatewayDependencies) *OpenAIGatewayServ
 		d.BillingCache, d.Upstream, d.Deferred, d.OpenAITokens, d.GrokTokens, d.Pricing,
 		d.Channels, d.BalanceNotify, d.Settings, d.Quotas,
 		WithOpenAIRPMCache(d.RPMCache),
+		WithOpenAIAvailabilityReader(d.ScheduledTests),
 		WithRegionalMetering(d.RegionalMetering),
 		func(s *OpenAIGatewayService) {
 			s.codexHarvest = d.Harvest

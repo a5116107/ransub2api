@@ -12,14 +12,15 @@ import (
 // It is evidence for a future latest-state decision, not scheduling permission.
 // The allowlist excludes trace IDs, credentials, routes and upstream error text.
 type AvailabilityProbeResult struct {
-	Version        int       `json:"version"`
-	Status         string    `json:"status"`
-	Reason         string    `json:"reason"`
-	HTTPStatus     int       `json:"http_status,omitempty"`
-	SemanticStatus int       `json:"semantic_status,omitempty"`
-	AttemptCount   int       `json:"attempt_count"`
-	StartedAt      time.Time `json:"started_at"`
-	FinishedAt     time.Time `json:"finished_at"`
+	Version        int                       `json:"version"`
+	Status         string                    `json:"status"`
+	Reason         string                    `json:"reason"`
+	HTTPStatus     int                       `json:"http_status,omitempty"`
+	SemanticStatus int                       `json:"semantic_status,omitempty"`
+	AttemptCount   int                       `json:"attempt_count"`
+	StartedAt      time.Time                 `json:"started_at"`
+	FinishedAt     time.Time                 `json:"finished_at"`
+	Scope          *AvailabilityRequestScope `json:"scope,omitempty"`
 }
 
 type availabilityProbeSnapshotKey struct{}
@@ -27,6 +28,8 @@ type availabilityProbeSnapshotKey struct{}
 type availabilityProbeObservation struct {
 	snapshot       *requesttiming.Snapshot
 	semanticStatus int
+	scope          *AvailabilityRequestScope
+	scopeAttempt   int
 }
 
 func observeAvailabilityProbeFailure(ctx context.Context, payload []byte, message string) {
@@ -55,6 +58,10 @@ func availabilityProbeResult(started, finished time.Time, observation *availabil
 	}
 	if last == nil {
 		return result
+	}
+	if observation.scopeAttempt == last.Number && observation.scope != nil {
+		scope := *observation.scope
+		result.Scope = &scope
 	}
 	result.HTTPStatus = last.Status
 	status := last.Status

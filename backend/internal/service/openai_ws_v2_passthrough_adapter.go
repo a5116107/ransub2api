@@ -1390,7 +1390,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if _, err := keyTurn.begin(ctx); err != nil {
 		return err
 	}
-	if keyAuthority != nil {
+	if keyAuthority != nil || s.availabilityReader != nil {
 		if _, err := checkAdmission(firstClientMessage, gjson.GetBytes(firstClientMessage, "model").String()); err != nil {
 			return err
 		}
@@ -1461,7 +1461,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if _, err := keyTurn.begin(ctx); err != nil {
 					return err
 				}
-				if keyAuthority != nil {
+				if keyAuthority != nil || s.availabilityReader != nil {
 					if _, err := checkAdmission(payload, model); err != nil {
 						return err
 					}

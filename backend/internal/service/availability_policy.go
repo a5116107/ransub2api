@@ -76,6 +76,8 @@ func availabilityRoundOutcomes(plan *ScheduledTestPlan, results []*ScheduledTest
 	for _, model := range models {
 		probe := &AvailabilityProbeResult{Version: 1, Status: "inconclusive", Reason: "round_not_confirmed"}
 		allPass, observed, samples := true, false, 0
+		var scope *AvailabilityRequestScope
+		sameScope := true
 		for _, result := range results {
 			if result == nil || result.PelicanConfig == nil || result.PelicanConfig.ModelID != model {
 				continue
@@ -87,6 +89,14 @@ func availabilityRoundOutcomes(plan *ScheduledTestPlan, results []*ScheduledTest
 				continue
 			}
 			observed = true
+			if current.Scope == nil {
+				sameScope = false
+			} else if scope == nil {
+				copy := *current.Scope
+				scope = &copy
+			} else if *scope != *current.Scope {
+				sameScope = false
+			}
 			if probe.StartedAt.IsZero() || current.StartedAt.Before(probe.StartedAt) {
 				probe.StartedAt = current.StartedAt
 			}
@@ -102,6 +112,9 @@ func availabilityRoundOutcomes(plan *ScheduledTestPlan, results []*ScheduledTest
 		}
 		if observed && allPass && samples == plan.PelicanConfig.ParallelCount {
 			probe.Status, probe.Reason = "pass", "completed_round"
+			if sameScope {
+				probe.Scope = scope
+			}
 		}
 		outcomes = append(outcomes, AvailabilityModelOutcome{ModelID: model, Probe: probe})
 	}

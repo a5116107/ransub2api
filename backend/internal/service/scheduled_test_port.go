@@ -81,6 +81,7 @@ type ScheduledTestResult struct {
 
 // ScheduledTestPlanRepository defines the data access interface for test plans.
 type ScheduledTestPlanRepository interface {
+	AccountAvailabilityReader
 	ReadAvailability(context.Context, int64) (*AvailabilityReport, error)
 	ApplyAvailabilityOutcomes(context.Context, *ScheduledTestPlan, time.Time, []AvailabilityModelOutcome) (string, error)
 	FinishTriggeredQuality(context.Context, *ScheduledTestPlan, time.Time, time.Time, time.Time) error

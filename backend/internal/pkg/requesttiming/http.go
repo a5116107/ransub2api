@@ -20,6 +20,14 @@ type Trace struct {
 	index int
 }
 
+// Number identifies this attempt within its request-local snapshot.
+func (t *Trace) Number() int {
+	if t == nil {
+		return 0
+	}
+	return t.index + 1
+}
+
 func StartAttempt(req *http.Request, accountID, proxyID int64) (*http.Request, *Trace) {
 	return startAttempt(req, accountID, proxyID, "egress", 0)
 }

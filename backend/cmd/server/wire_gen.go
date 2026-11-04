@@ -182,10 +182,12 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexHarvestFlowRepository := repository.NewCodexHarvestFlowRepository(db)
 	codexHarvestService := service.ProvideCodexHarvestService(codexHarvestNodeRepository, settingRepository, configConfig, codexHarvestFlowRepository)
 	safetyPromptStore := service.NewSafetyPromptStore()
+	scheduledTestPlanRepository := repository.NewScheduledTestPlanRepository(db)
 	openAIGatewayDependencies := service.OpenAIGatewayDependencies{
 		TimezoneProber:    proxyExitInfoProber,
 		RegionalMetering:  regionalMetering,
 		Accounts:          accountRepository,
+		ScheduledTests:    scheduledTestPlanRepository,
 		Proxies:           proxyRepository,
 		UsageLogs:         usageLogRepository,
 		UsageBilling:      usageBillingRepository,
@@ -333,7 +335,6 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	tlsFingerprintProfileHandler := admin.NewTLSFingerprintProfileHandler(tlsFingerprintProfileService)
 	pluginHandler := admin.NewPluginHandler(pluginManager)
 	adminAPIKeyHandler := admin.NewAdminAPIKeyHandler(adminService)
-	scheduledTestPlanRepository := repository.NewScheduledTestPlanRepository(db)
 	scheduledTestResultRepository := repository.NewScheduledTestResultRepository(db)
 	qualityRuleTemplateRepository := repository.NewQualityRuleTemplateRepository(client, db)
 	scheduledTestService := service.ProvideScheduledTestService(scheduledTestPlanRepository, scheduledTestResultRepository, qualityRuleTemplateRepository, accountTestService)
