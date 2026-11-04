@@ -380,6 +380,8 @@ func applyQualityModelOutcome(ctx context.Context, tx *sql.Tx, plan *service.Sch
 	if err := json.Unmarshal(extra, &account.Extra); err != nil {
 		return "", err
 	}
+	// API Key recovery keeps its manual concurrency; OAuth owns the native ramp.
+	state.NativeRecovery = state.NativeRecovery && account.Type == service.AccountTypeOAuth
 	if err := checkQualityCooldownTargets(plan, account, &state); err != nil {
 		return "action_conflict", nil
 	}
@@ -447,7 +449,7 @@ func applyQualityModelOutcome(ctx context.Context, tx *sql.Tx, plan *service.Sch
 			return "", err
 		}
 	}
-	if (outcome == "failed" || outcome == "pending") && plan.PelicanConfig.Quality.TriggerOnUpstream5xx && action != "inconclusive" {
+	if account.Type == service.AccountTypeOAuth && (outcome == "failed" || outcome == "pending") && plan.PelicanConfig.Quality.TriggerOnUpstream5xx && action != "inconclusive" {
 		if err := blockNativeRecoveryRamp(ctx, tx, account.Extra, account.Concurrency); err != nil {
 			return "", err
 		}

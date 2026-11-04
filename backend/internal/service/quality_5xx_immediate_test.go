@@ -38,6 +38,11 @@ func TestQuality5xxProductionProviderAppliesBeforeReturning(t *testing.T) {
 	require.Equal(t, 1, repo.calls, "probes must not recursively start episodes")
 	svc.observeQualityStatus(context.Background(), &Account{ID: 12, Type: AccountTypeOAuth}, 429)
 	require.Equal(t, 1, repo.calls)
+	svc.observeQualityStatus(context.Background(), &Account{ID: 43, Type: AccountTypeAPIKey}, 503)
+	require.Equal(t, 2, repo.calls, "API Key episodes must be fenced before the observer returns")
+	members, err = mr.ZMembers(quality5xxPendingKey)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"12", "43"}, members)
 }
 func TestQuality5xxPendingRemoveModelsNotCoveredByOlderFinish(t *testing.T) {
 	p := pelicanPlan()

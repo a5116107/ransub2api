@@ -24,7 +24,7 @@ func TestQuality5xxSignalsFilterAndCoalesceAcrossReplicas(t *testing.T) {
 	ctx := context.Background()
 	oauth := &Account{ID: 42, Type: AccountTypeOAuth}
 	trigger.Observe(ctx, oauth, 429)
-	trigger.Observe(ctx, &Account{ID: 43, Type: AccountTypeAPIKey}, 503)
+	trigger.Observe(ctx, &Account{ID: 43, Type: AccountTypeUpstream}, 503)
 	trigger.Observe(ctx, &Account{ID: 44, Type: AccountTypeSetupToken}, 503)
 	trigger.Observe(context.WithValue(ctx, qualityProbeContextKey{}, true), oauth, 503)
 	require.EqualValues(t, 0, client.ZCard(ctx, quality5xxPendingKey).Val())
@@ -104,52 +104,6 @@ func TestQuality5xxOnlyObservesActualHTTPFailures(t *testing.T) {
 	require.Equal(t, []string{"21"}, client.ZRange(ctx, quality5xxPendingKey, 0, -1).Val(), "successful retry must not erase initial 503")
 }
 
-type quality5xxTempUnschedRepo struct {
-	AccountRepository
-	account *Account
-	until   time.Time
-	reason  string
-}
-
-func (r *quality5xxTempUnschedRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
-	r.account.ID = id
-	r.account.TempUnschedulableUntil = &until
-	r.account.TempUnschedulableReason = reason
-	r.until = until
-	r.reason = reason
-	return nil
-}
-
-type quality5xxRuntimeBlocker struct {
-	account *Account
-	until   time.Time
-	reason  string
-}
-
-func (b *quality5xxRuntimeBlocker) BlockAccountScheduling(account *Account, until time.Time, reason string) {
-	b.account = account
-	b.until = until
-	b.reason = reason
-}
-func (*quality5xxRuntimeBlocker) ClearAccountSchedulingBlock(int64) {}
-
-func TestQuality5xxTemporarilyUnschedulesOAuthAccountBeforeProbe(t *testing.T) {
-	account := &Account{ID: 21, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}
-	repo := &quality5xxTempUnschedRepo{account: account}
-	blocker := &quality5xxRuntimeBlocker{}
-	limiter := &RateLimitService{accountRepo: repo, runtimeBlocker: blocker}
-
-	limiter.temporarilyUnscheduleQuality5xx(context.Background(), account)
-
-	require.True(t, repo.until.After(time.Now()))
-	require.Equal(t, quality5xxTempUnschedReason, repo.reason)
-	require.Same(t, account, blocker.account)
-	require.Equal(t, quality5xxTempUnschedReason, blocker.reason)
-	expired := time.Now().Add(-time.Minute)
-	account.TempUnschedulableUntil = &expired
-	require.False(t, limiter.temporarilyUnscheduleQuality5xx(context.Background(), account), "an expired quality cooldown must allow the recovery probe")
-}
-
 func TestQuality5xxTriggeredPlanDoesNotProbeDuringTempUnschedulableWindow(t *testing.T) {
 	account := &Account{ID: 42, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}
 	until := time.Now().Add(time.Minute)
@@ -161,7 +115,7 @@ func TestQuality5xxTriggeredPlanDoesNotProbeDuringTempUnschedulableWindow(t *tes
 	plan.PelicanConfig.Quality = &QualityPolicy{TriggerOnUpstream5xx: true, Action: "disable_scheduling"}
 	repo := &qualityClaimFailureRepo{plan: plan}
 	accountRepo := &stateProbeAccountRepo{account: account}
-	limiter := &RateLimitService{accountRepo: &quality5xxTempUnschedRepo{account: account}}
+	limiter := &RateLimitService{accountRepo: accountRepo}
 	runner := &ScheduledTestRunnerService{
 		planRepo:       repo,
 		accountTestSvc: &AccountTestService{accountRepo: accountRepo},
@@ -243,4 +197,37 @@ func TestQuality5xxKeepsSignalWhileAnExistingLeaseCouldBeInterrupted(t *testing.
 	plan.PelicanConfig.Quality = &QualityPolicy{TriggerOnUpstream5xx: true}
 	runner := &ScheduledTestRunnerService{planRepo: &qualityClaimFailureRepo{plan: plan}}
 	require.Error(t, runner.runQualityTriggeredAccount(context.Background(), plan.AccountID, time.Now()))
+}
+
+func TestQuality5xxAPIKeySignalsAndExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		probe        bool
+		transportErr error
+		want         bool
+	}{
+		{name: "upstream_500", status: 500, want: true},
+		{name: "upstream_503", status: 503, want: true},
+		{name: "upstream_599", status: 599, want: true},
+		{name: "success", status: 200},
+		{name: "request_error", status: 400},
+		{name: "credential", status: 401},
+		{name: "rate_limit", status: 429},
+		{name: "invalid_status", status: 600},
+		{name: "probe_recursion", status: 503, probe: true},
+		{name: "local_capacity", status: 503, transportErr: ErrUpstreamKeyCapacity},
+		{name: "local_policy", status: 503, transportErr: ErrUpstreamKeyPolicy},
+		{name: "client_cancel", status: 503, transportErr: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limiter, mr := qualitySignalTestLimiter(t)
+			ctx := t.Context()
+			if tc.probe {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			limiter.observeQualityResponse(ctx, &Account{ID: 43, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, &http.Response{StatusCode: tc.status}, tc.transportErr)
+			require.Equal(t, tc.want, mr.Exists(quality5xxPendingKey))
+		})
+	}
 }

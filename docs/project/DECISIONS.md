@@ -442,3 +442,15 @@
 - 最终完整unit本地回归实际通过：service339.829s、handler153.185s、openai_ws_v2 4.230s，退出0。最新repository补强后go vet输出Final repository vet: PASS；三包完整未限量lint最终输出0 issues.、退出0。前两次lint在包加载阶段返回no go files to analyze；go list独立确认三包各862/89/249个GoFiles且Error=nil，沿原并发2完整命令重跑通过，未执行go mod tidy或修改检查规则。
 - 主设计原位删除共享Key强制HTTP桥接及原生未接通的过时说明，STATE保持74行。旧强制桥接与旧测试符号源码残留0，新增TODO/FIXME/XXX为0，git diff --check通过；历史12个PNG仍共1164bytes，本轮新增持久产物0。精确交付6个Go文件及现有三份文档，单一工作树，仅本地提交。
 - 本轮完整闭环直接原生WS共享额度接线与真实生命周期验收；原20项仍12 done、2 in_progress、6 pending，父任务done增量0。D2跨协议来源、Live/区域与缓存域，D4区域传播与模型/fast来源，以及D3/D5–D9保持原验收。历史Windows符号链接权限和清理审核拒绝等待保留，不以专项通过替代全局验收；不推送、不运行CI、不部署/迁移。
+
+
+## 2026-11-04：D3 API Key 故障触发与质量恢复边界
+
+- 接续e5dc482。源码确认原响应观察器与即时事务仅接收OAuth，API Key已有质量规则但业务故障不触发。新增旧实现回归实际失败：service3.243s，HTTP500/503/599三例和两条WS路径无信号；repository1.906s，即时事件未应用。最初一次命令误在仓库根执行，返回找不到Go模块，随后在backend运行取得上述真实失败。
+- 原位允许OAuth/API Key进入原合并队列与即时事务；仍排除setup-token/历史upstream类型。API Key推进Quality5xxEpisode但不将单次5xx写为质量失败，保留原模型检测、拥有者恢复及人工并发；规范化NativeRecovery并将原生并发栅栏写入限制在OAuth，防止API Key被写入OAuth自动配置。新增事务与原模型生命周期专项三轮实际通过repository4.889s；最新补强另行验证。
+- WS请求错误使用面向客户端的502掩盖了原语义。新增OAuth/API Key × error/response.failed四例实际全部失败service12.983s。原位让质量观察使用既有语义分类器，并补齐invalid_prompt/content_policy_violation的结构化分类；对外错误映射继续沿原接口，既有检测队列不接收这些请求错误。最终专项、完整回归和静态检查结果在实际返回后追加。
+
+- 删除无生产调用的temporarilyUnscheduleQuality5xx、两个常量及专属测试/运行时辅助符号；原真实TempUnschedulable冷却保护用例保留并复用已有仓储。清理后相关专项三轮实际通过service27.332s、repository1.696s；默认标签service4.690s、repository4.348s通过；三包vet退出0，完整未限量lint输出0 issues.。完整service367.510s通过，handler167.160s失败且输出被截断，已独立重跑并过滤失败断言，不把本轮全量记为通过。
+
+- 最终独立完整handler重跑实际通过149.788s、退出0；同一生产源码完整service367.510s通过，最新专项三轮service27.332s/repository1.696s、默认标签及三包vet/lint均通过。首轮handler167.160s失败的具体断言被大输出截断，重跑通过不能证明已定位其根因，保留这一验证局限。本轮API Key触发/事件栅栏/恢复配置边界已闭环；D3的独立可用状态、有效期与配置版本仍待完成。
+- D3由pending转in_progress，原20项现12 done、3 in_progress、5 pending，父任务done增量0。STATE保持74行，新增TODO/FIXME/XXX为0，旧临时停调符号源码残留0，历史PNG仍12个共1164bytes，本轮新增持久测试产物0。单工作树精确本地交付，不推送、不运行CI、不部署或生产迁移。

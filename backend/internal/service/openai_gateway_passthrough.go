@@ -1560,7 +1560,8 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 	switch {
 	case strings.Contains(combined, "rate_limit"):
 		return http.StatusTooManyRequests
-	case strings.Contains(errType, "invalid_request"):
+	case strings.Contains(errType, "invalid_request"), code == "invalid_prompt", errType == "invalid_prompt",
+		code == "content_policy_violation", errType == "content_policy_violation":
 		return http.StatusBadRequest
 	case strings.Contains(combined, "authentication") || strings.Contains(combined, "unauthorized") || strings.Contains(combined, "invalid_api_key"):
 		return http.StatusUnauthorized
@@ -1871,7 +1872,7 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 	if c != nil && c.Request != nil {
 		ctx = c.Request.Context()
 	}
-	s.rateLimitService.observeQualityStatus(ctx, account, statusCode)
+	s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailedEventSemanticStatus(payload, message))
 	if len(payload) > 0 && s != nil && s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
 		if maxBytes <= 0 {

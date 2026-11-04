@@ -71,7 +71,7 @@ func TestQuality5xxWebsocketSemanticFailure(t *testing.T) {
 			limiter, client := qualitySignalTestLimiter(t)
 			svc := &OpenAIGatewayService{rateLimitService: limiter}
 			account := &Account{ID: 417, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-			payload := []byte(`{"type":"error","error":{"code":"invalid_prompt","message":"policy rejection"}}`)
+			payload := []byte(`{"type":"error","error":{"code":"server_is_overloaded","message":"overloaded"}}`)
 			if event == "error" {
 				svc.handleOpenAIWSErrorEventTransientFailure(context.Background(), account, "gpt-5.5", nil, payload)
 			} else {
@@ -187,4 +187,40 @@ func qualityTestMembers(t *testing.T, server *miniredis.Miniredis) []string {
 	members, err := server.ZMembers(quality5xxPendingKey)
 	require.NoError(t, err)
 	return members
+}
+
+func TestQuality5xxAPIKeyWebsocketSemanticFailure(t *testing.T) {
+	for _, handler := range []string{"error", "response.failed"} {
+		t.Run(handler, func(t *testing.T) {
+			limiter, mr := qualitySignalTestLimiter(t)
+			svc := &OpenAIGatewayService{rateLimitService: limiter}
+			account := &Account{ID: 417, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			payload := []byte(`{"type":"error","error":{"code":"server_is_overloaded","message":"overloaded"}}`)
+			if handler == "error" {
+				svc.handleOpenAIWSErrorEventTransientFailure(t.Context(), account, "gpt-5.5", nil, payload)
+			} else {
+				svc.handleOpenAIWSFailureAccountSideEffects(t.Context(), account, "gpt-5.5", nil, payload)
+			}
+			require.Equal(t, []string{"417"}, qualityTestMembers(t, mr))
+		})
+	}
+}
+
+func TestQuality5xxWebsocketRequestErrorsDoNotSignal(t *testing.T) {
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
+		for _, handler := range []string{"error", "response.failed"} {
+			t.Run(accountType+"/"+handler, func(t *testing.T) {
+				limiter, mr := qualitySignalTestLimiter(t)
+				svc := &OpenAIGatewayService{rateLimitService: limiter}
+				account := &Account{ID: 417, Platform: PlatformOpenAI, Type: accountType}
+				payload := []byte(`{"type":"error","error":{"code":"invalid_prompt","message":"policy rejection"}}`)
+				if handler == "error" {
+					svc.handleOpenAIWSErrorEventTransientFailure(t.Context(), account, "gpt-5.5", nil, payload)
+				} else {
+					svc.handleOpenAIWSFailureAccountSideEffects(t.Context(), account, "gpt-5.5", nil, payload)
+				}
+				require.False(t, mr.Exists(quality5xxPendingKey), "request policy errors are not upstream availability evidence")
+			})
+		}
+	}
 }

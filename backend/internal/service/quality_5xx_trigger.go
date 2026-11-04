@@ -13,8 +13,6 @@ import (
 
 const quality5xxSource = "upstream_5xx"
 const quality5xxPendingKey = qualityqueue.PendingKey
-const quality5xxTempUnschedReason = "quality_5xx"
-const quality5xxTempUnschedDuration = 10 * time.Minute
 
 type qualityProbeContextKey struct{}
 
@@ -43,7 +41,7 @@ func (s *quality5xxTrigger) signalIsCurrent(accountID int64, observedAt time.Tim
 }
 
 func (s *quality5xxTrigger) Observe(ctx context.Context, account *Account, status int) {
-	if s == nil || s.queue == nil || account == nil || account.ID <= 0 || account.Type != AccountTypeOAuth || status < 500 || status > 599 || ctx.Value(qualityProbeContextKey{}) != nil {
+	if s == nil || s.queue == nil || account == nil || account.ID <= 0 || (account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey) || status < 500 || status > 599 || ctx.Value(qualityProbeContextKey{}) != nil {
 		return
 	}
 	// Complete native account protection before retry/selection can continue.
@@ -190,35 +188,6 @@ func (s *RateLimitService) observeQualityStatus(ctx context.Context, account *Ac
 	if s != nil {
 		s.qualityTrigger.Observe(ctx, account, status)
 	}
-}
-
-// temporarilyUnscheduleQuality5xx follows the native account runtime-state
-// path. It removes the account from new selection immediately while preserving
-// the lease and context of requests that are already in flight. The queued
-// quality run remains pending and is allowed to execute after the cooldown.
-func (s *RateLimitService) temporarilyUnscheduleQuality5xx(ctx context.Context, account *Account) bool {
-	if s == nil || s.accountRepo == nil || account == nil || account.ID <= 0 || account.Type != AccountTypeOAuth {
-		return false
-	}
-	now := time.Now()
-	if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(now) {
-		return true
-	}
-	if account.TempUnschedulableReason == quality5xxTempUnschedReason {
-		return false
-	}
-	until := now.Add(quality5xxTempUnschedDuration)
-	account.TempUnschedulableUntil = &until
-	account.TempUnschedulableReason = quality5xxTempUnschedReason
-	s.notifyAccountSchedulingBlocked(account, until, quality5xxTempUnschedReason)
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-	defer cancel()
-	if err := s.accountRepo.SetTempUnschedulable(persistCtx, account.ID, until, quality5xxTempUnschedReason); err != nil {
-		slog.Warn("quality_5xx_temp_unschedulable_failed", "account_id", account.ID, "error", err)
-		return true
-	}
-	slog.Warn("quality_5xx_temp_unschedulable", "account_id", account.ID, "until", until)
-	return true
 }
 
 // Select an execution-only test for the account's actual model route. Never

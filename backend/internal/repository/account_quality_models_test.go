@@ -280,3 +280,28 @@ func TestQualityAccountProbeCooldownTargetsLifecycle(t *testing.T) {
 	assertEligible(true)
 	require.Empty(t, state.ModelRateLimits)
 }
+
+func TestQuality5xxAPIKeyModelRecoveryKeepsManualConcurrency(t *testing.T) {
+	now := time.Now().UTC()
+	account := &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: "active", Schedulable: true, Concurrency: 17, Extra: map[string]any{"unrelated": "kept"}}
+	state := qualityState{RecoveryConcurrency: 4}
+	apply := func(outcome string) string {
+		action, err := transitionQualityModels(account, &state, 7, []string{"target"}, now.Add(-time.Minute), outcome, true, now)
+		require.NoError(t, err)
+		require.Equal(t, 17, account.Concurrency)
+		require.Equal(t, "kept", account.Extra["unrelated"])
+		require.Nil(t, state.PreviousConcurrency)
+		require.Nil(t, state.AppliedConcurrency)
+		require.NotContains(t, account.Extra, service.AutoConfigConcurrencyExtraKey)
+		return action
+	}
+	require.Equal(t, "probe_pending", apply("pending"))
+	require.True(t, account.IsSchedulableForModel("target"), "a 5xx signal is not a failed quality judgment")
+	apply("failed")
+	require.False(t, account.IsSchedulableForModel("target"), "expiry schedules a recheck rather than restoring access")
+	require.True(t, account.IsSchedulableForModel("unrelated"))
+	apply("inconclusive")
+	require.False(t, account.IsSchedulableForModel("target"))
+	require.Equal(t, "restored", apply("passed"))
+	require.True(t, account.IsSchedulableForModel("target"))
+}

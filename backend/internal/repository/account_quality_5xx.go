@@ -66,7 +66,7 @@ func (r *scheduledTestPlanRepository) applyImmediateQuality5xx(ctx context.Conte
 	} else if err != nil {
 		return false, err
 	}
-	if accountType != service.AccountTypeOAuth || status != "active" {
+	if (accountType != service.AccountTypeOAuth && accountType != service.AccountTypeAPIKey) || status != "active" {
 		return false, nil
 	}
 	var raw []byte

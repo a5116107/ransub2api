@@ -860,7 +860,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			case "response.completed", "response.failed", "response.cancelled", "response.incomplete", "error":
 				bridgeFailure = basispoints.ParseBridgeFailure(payload)
 				if kind != "response.completed" && bridgeFailure == nil {
-					s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailureStatus(payload, extractOpenAISSEErrorMessage(payload)))
+					s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailedEventSemanticStatus(payload, extractOpenAISSEErrorMessage(payload)))
 				}
 				if kind == "response.completed" && lease != nil {
 					lease.ReportSuccess()
