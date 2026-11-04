@@ -25,6 +25,9 @@ var geminiTransportFailoverBody = []byte(`{"error":{"code":502,"message":"Upstre
 //
 // 本函数不写响应：响应归 handler 所有（换号，或耗尽后按端点格式渲染错误）。
 func (s *GeminiMessagesCompatService) handleUpstreamTransportError(ctx context.Context, c *gin.Context, account *Account, err error) error {
+	if IsOpenAITurnAdmissionError(err) {
+		return err
+	}
 	if isClientCanceledTransportError(ctx, err) {
 		return err
 	}
@@ -53,4 +56,14 @@ func (s *GeminiMessagesCompatService) handleUpstreamTransportError(ctx context.C
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: geminiTransportFailoverBody,
 	}
+}
+
+// Keep generation/retry sends behind the shared final predicate. Model-list
+// and explicit-cache management requests retain their existing non-token scope.
+func (s *GeminiMessagesCompatService) doGeminiUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	request, err := guardGatewayUpstreamRequest(request, account, s.accountRepo, s.cfg)
+	if err != nil {
+		return nil, err
+	}
+	return s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

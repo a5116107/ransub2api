@@ -128,16 +128,29 @@ func gatewayProfitControlGateActive(ctx context.Context) bool {
 // Omitting profiles preserves Do; an explicit profile (including nil) preserves
 // DoWithTLS, so callers keep their original transport contract.
 func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL string, selected *Account, profiles ...*tlsfingerprint.Profile) (*http.Response, error) {
+	request, err := guardGatewayUpstreamRequest(request, selected, s.accountRepo, s.cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(profiles) == 0 {
+		return s.httpUpstream.Do(request, proxyURL, selected.ID, selected.Concurrency)
+	}
+	return s.httpUpstream.DoWithTLS(request, proxyURL, selected.ID, selected.Concurrency, profiles[0])
+}
+
+// guardGatewayUpstreamRequest is shared by native gateway implementations so
+// every protocol consumes the same final account and billing evidence.
+func guardGatewayUpstreamRequest(request *http.Request, selected *Account, repo AccountRepository, cfg *config.Config) (*http.Request, error) {
 	ctx := request.Context()
 	if gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); gate != nil {
 		if gate.configUnavailable {
 			return nil, denyOpenAITurn(openAIProfitFilterReasonGroupConfigUnavailable)
 		}
-		if s.accountRepo == nil || selected == nil {
+		if repo == nil || selected == nil {
 			return nil, denyOpenAITurn("latest_state_unavailable")
 		}
 		readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		latest, err := s.accountRepo.GetByID(readCtx, selected.ID)
+		latest, err := repo.GetByID(readCtx, selected.ID)
 		cancel()
 		if err != nil || latest == nil || latest.ID != selected.ID {
 			return nil, denyOpenAITurn("latest_state_unavailable")
@@ -148,7 +161,7 @@ func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL strin
 		if !latest.IsSchedulable() {
 			return nil, denyOpenAITurn("account_ineligible")
 		}
-		if (s.cfg == nil || s.cfg.RunMode != config.RunModeSimple) && !slices.Contains(latest.GroupIDs, gate.groupID) {
+		if (cfg == nil || cfg.RunMode != config.RunModeSimple) && !slices.Contains(latest.GroupIDs, gate.groupID) {
 			return nil, denyOpenAITurn("group_membership_changed")
 		}
 		if vetoed, reason := openAIProfitControlVetoReason(ctx, latest); vetoed {
@@ -160,8 +173,5 @@ func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL strin
 		}
 		request = request.WithContext(guardedCtx)
 	}
-	if len(profiles) == 0 {
-		return s.httpUpstream.Do(request, proxyURL, selected.ID, selected.Concurrency)
-	}
-	return s.httpUpstream.DoWithTLS(request, proxyURL, selected.ID, selected.Concurrency, profiles[0])
+	return request, nil
 }

@@ -130,3 +130,37 @@ func TestGatewayChatCompletions_GeminiClientCancelBeforeUpstreamResponseMarks499
 	require.Zero(t, rec.Body.Len())
 	require.Zero(t, opsQueued)
 }
+
+func TestGeminiHandlersPreserveFinalAdmissionGate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{"messages", "chat", "native"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newGeminiClientCancelFixture(t)
+			f.group.ProfitControlEnabled, f.group.RateMultiplier, f.group.ProfitMinMargin = true, 1, 0.5
+			rate := 0.4
+			account := f.schedulerCache.accounts[0]
+			account.RateMultiplier = &rate
+			account.GroupIDs = []int64{f.group.ID}
+			var route, path, body string
+			var call func(*gin.Context)
+			switch mode {
+			case "messages":
+				route, path = "/v1/messages", "/v1/messages"
+				body = `{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+				call = f.handler.Messages
+			case "chat":
+				route, path = "/v1/chat/completions", "/v1/chat/completions"
+				body = `{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`
+				call = f.handler.ChatCompletions
+			case "native":
+				route, path = "/v1beta/models/*modelAction", "/v1beta/models/gemini-2.5-flash:generateContent"
+				body = `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+				call = f.handler.GeminiV1BetaModels
+			}
+			rec, _ := f.serve(t, route, path, body, call)
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "Account eligibility changed")
+			require.Zero(t, f.upstream.calls.Load(), "cached slot admission cannot replace the missing final authority")
+		})
+	}
+}

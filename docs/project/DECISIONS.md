@@ -372,3 +372,15 @@
 - 默认标签相关检查实际通过：service8.042s；handler6.109s为编译检查（no tests to run），新增完整handler流程明确在unit标签下验证，不宣称默认标签执行了它们。最终完整unit handler实际通过155.458s；service及lint仍在运行，待实际结果追加。Go格式/diff空白检查通过，新增代码TODO/FIXME/XXX为0；源码data目录的历史图片无扩展名，按全部普通文件复核仍12个共1164bytes，按*.png计数不代表其消失。
 - 最终完整unit回归实际通过：service325.349s、handler155.458s、Native gateway final admission full regression exit: 0。旧直接发送搜索仅剩统一函数内的Do/DoWithTLS两种原出口，无网关调用点遗留；两包vet通过，完整未限量lint仍待实际返回。
 - 最终两包完整未限量golangci-lint实际输出0 issues.、退出0，未调整检查规则。19个任务文件精确交付，原位移除重复计价目标/选组代码与过时搬迁注释，清除18个本轮误触的纯换行改动；格式/差异检查通过，STATE74行，新增代码TODO/FIXME/XXX为0。本轮持久测试产物0，历史图片12个1164bytes及审核拒绝删除等待保持；单一工作树、只本地提交，不推送、不运行CI、不部署/迁移。原20项仍12 done、2 in_progress、6 pending；本轮闭环通用原生网关发送终检与handler门传播，父任务D2/D4未提前关闭。
+
+
+## 2026-11-04：D2/D4 Gemini 独立生成网关的最终准入
+
+- 接续 d3bda5a。Gemini 的 Messages、Chat Completions、原生生成发送循环仍直接使用 HTTPUpstream，槽位后账号或 Key 变更未在真正发送时核对。旧实现新增15项发送前拒绝回归全部实际失败（service1.460s、exit1）；修复后原专项三轮service2.374s通过。
+- 原位从 doGatewayUpstream 抽出唯一 guardGatewayUpstreamRequest，Gemini 三个循环与通用13个发送点共用账号权威读取和最终计价/固定组选路判定；保留各自 Do/DoWithTLS 契约和原重试规则。Gemini transport 错误处理直接保留本地拒绝类型，不记录供应商故障。模型列表、显式缓存管理和未装门计数范围保持；新增显式携门 countTokens 回归确保拒绝不会估算兜底。
+- 首次重试组合service2.385s失败、handler0.779s通过。根因是测试 cfg 空对象把 MaxSameAccountRetriesGemini 设为0，maxAttempts=1，首503后没有第二次发送；修正夹具为原配置允许重试1次，未修改生产重试策略、超时或断言。修正后service专项三轮13.131s通过；同次handler编译因测试执行中重命名产生旧testmain符号冲突，后续冻结源码统一重跑，不把该组合记作全通过。
+- 补齐 Chat Completions、Responses 与 Gemini 原生入口传递 admissionCtx，并将本地拒绝映射为503；扩展既有Messages完整handler回归为Messages/Chat/Responses矩阵，保留网络0及无供应商错误断言。探索SystemOne时真实回归到达了网络；源码确认TypeSafe不在原profitControlPlatformSupported范围，撤销本轮对该入口无效果的改动，不扩大支持平台或用测试夹具假装启用。最终结果在实际返回后追加。
+- 冻结后的最终专项三轮实际通过：service16.996s、handler4.592s；补充显式携门 countTokens 五类拒绝三轮实际通过service2.008s。覆盖三种生成模式的首次拒绝、手工倍率兼容及503后Key轮换（1次网络、2次权威读取），以及Messages/Chat/Responses/原生handler最终门传播；无本地拒绝被记为供应商故障。
+- 默认标签专项实际通过service4.931s；handler1.798s为编译检查（no tests to run），完整handler行为在unit标签验证。两包go vet实际输出Gemini final admission vet: PASS。最终完整unit回归实际通过service357s、handler162.886s，Gemini final admission full regression exit: 0；完整未限量lint待实际返回。
+- 最终两包完整未限量golangci-lint实际输出0 issues.、退出0，未调整检查规则。最终Go格式、staged diff空白检查通过，新增TODO/FIXME/XXX为0，STATE74行。原测试辅助函数原位扩展为三入口矩阵，无并行实现；模型列表/显式缓存管理仍是有意保留的非token出口。13个任务文件纳入本地交付，本轮新增持久测试产物0，历史图片仍12个共1164bytes。
+- 本轮闭环Gemini三个生成发送循环的最终准入、重试拒绝归因及入口门传播；原20项仍12 done、2 in_progress、6 pending，父任务done增量0。Antigravity智能重试、跨协议计价、区域与缓存域及后续主线验收保持待办；历史清理审核拒绝和Windows符号链接权限等待保留。单一工作树，仅本地提交，不推送、不运行CI、不部署或迁移。

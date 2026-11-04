@@ -121,38 +121,49 @@ func TestMessagesAnthropicGroupDoesNotReadAntigravityBucket(t *testing.T) {
 	require.NotContains(t, platforms, service.PlatformAntigravity)
 }
 
-func TestMessagesPreservesSelectionGateUntilNativeSend(t *testing.T) {
+func TestNativeHandlersPreserveSelectionGateUntilSend(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	groupID := int64(9450)
-	group := &service.Group{ID: groupID, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive, RateMultiplier: 1, ProfitControlEnabled: true, ProfitMinMargin: 0.5}
-	rate := 0.4
-	account := &service.Account{ID: 9451, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, RateMultiplier: &rate, GroupIDs: []int64{groupID}, AccountGroups: []service.AccountGroup{{AccountID: 9451, GroupID: groupID}}, Credentials: map[string]any{"api_key": "native-fixture", "base_url": "https://fixture.invalid"}, Extra: map[string]any{"anthropic_passthrough": true}}
-	groups := &fakeGroupRepo{group: group}
-	snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: []*service.Account{account}}, nil, nil, groups, nil)
-	cfg := &config.Config{RunMode: config.RunModeSimple}
-	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
-	t.Cleanup(billing.Stop)
-	upstream := &grokMediaSlotUpstream{call: func(*http.Request, int64) (*http.Response, error) {
-		t.Error("missing final authority must not reach transport")
-		return nil, nil
-	}}
-	// The scheduler and post-slot check have valid cached rows, while the
-	// final authority is absent. Losing the selection context would bypass it.
-	gateway := service.NewGatewayService(nil, groups, nil, nil, nil, nil, nil, nil, cfg, snapshot, nil, nil, nil, billing, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	concurrency := service.NewConcurrencyService(&fakeConcurrencyCache{})
-	h := &GatewayHandler{gatewayService: gateway, billingCacheService: billing, concurrencyHelper: NewConcurrencyHelper(concurrency, SSEPingFormatClaude, 0), maxAccountSwitches: 1}
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(`{"model":"claude-sonnet-4-5","max_tokens":256,"messages":[{"role":"user","content":"hello"}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	c.Request = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, group))
-	apiKey := &service.APIKey{ID: 9452, UserID: 9453, GroupID: &groupID, Group: group, Status: service.StatusActive, User: &service.User{ID: 9453, Concurrency: 10, Balance: 100}}
-	c.Set(string(middleware.ContextKeyAPIKey), apiKey)
-	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.UserID, Concurrency: 10})
-	h.Messages(c)
-	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
-	require.Contains(t, w.Body.String(), "admission_unavailable")
-	require.Zero(t, upstream.calls)
-	_, exists := c.Get(service.OpsUpstreamErrorsKey)
-	require.False(t, exists, "local authority failure must not be logged as a supplier fault")
+	for _, mode := range []string{"messages", "chat", "responses"} {
+		t.Run(mode, func(t *testing.T) {
+			groupID := int64(9450)
+			group := &service.Group{ID: groupID, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive, RateMultiplier: 1, ProfitControlEnabled: true, ProfitMinMargin: 0.5}
+			rate := 0.4
+			account := &service.Account{ID: 9451, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, RateMultiplier: &rate, GroupIDs: []int64{groupID}, AccountGroups: []service.AccountGroup{{AccountID: 9451, GroupID: groupID}}, Credentials: map[string]any{"api_key": "native-fixture", "base_url": "https://fixture.invalid"}, Extra: map[string]any{"anthropic_passthrough": true}}
+			groups := &fakeGroupRepo{group: group}
+			snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: []*service.Account{account}}, nil, nil, groups, nil)
+			cfg := &config.Config{RunMode: config.RunModeSimple}
+			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+			t.Cleanup(billing.Stop)
+			upstream := &grokMediaSlotUpstream{call: func(*http.Request, int64) (*http.Response, error) {
+				t.Error("missing final authority must not reach transport")
+				return nil, nil
+			}}
+			// The scheduler and post-slot check have valid cached rows, while the
+			// final authority is absent. Losing the selection context would bypass it.
+			gateway := service.NewGatewayService(nil, groups, nil, nil, nil, nil, nil, nil, cfg, snapshot, nil, nil, nil, billing, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			concurrency := service.NewConcurrencyService(&fakeConcurrencyCache{})
+			h := &GatewayHandler{cfg: cfg, gatewayService: gateway, billingCacheService: billing, concurrencyHelper: NewConcurrencyHelper(concurrency, SSEPingFormatClaude, 0), maxAccountSwitches: 1}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			path, body, call := "/v1/messages", `{"model":"claude-sonnet-4-5","max_tokens":256,"messages":[{"role":"user","content":"hello"}]}`, h.Messages
+			switch mode {
+			case "chat":
+				path, call = "/v1/chat/completions", h.ChatCompletions
+			case "responses":
+				path, body, call = "/v1/responses", `{"model":"claude-sonnet-4-5","input":"hello"}`, h.Responses
+			}
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			c.Request = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, group))
+			apiKey := &service.APIKey{ID: 9452, UserID: 9453, GroupID: &groupID, Group: group, Status: service.StatusActive, User: &service.User{ID: 9453, Concurrency: 10, Balance: 100}}
+			c.Set(string(middleware.ContextKeyAPIKey), apiKey)
+			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.UserID, Concurrency: 10})
+			call(c)
+			require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+			require.Contains(t, w.Body.String(), "admission_unavailable")
+			require.Zero(t, upstream.calls)
+			_, exists := c.Get(service.OpsUpstreamErrorsKey)
+			require.False(t, exists, "local authority failure must not be logged as a supplier fault")
+		})
+	}
 }

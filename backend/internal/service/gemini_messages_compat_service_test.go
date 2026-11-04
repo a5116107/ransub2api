@@ -19,15 +19,19 @@ import (
 )
 
 type geminiCompatHTTPUpstreamStub struct {
-	response *http.Response
-	err      error
-	calls    int
-	lastReq  *http.Request
+	response     *http.Response
+	err          error
+	calls        int
+	lastReq      *http.Request
+	beforeReturn func()
 }
 
 func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	s.calls++
 	s.lastReq = req
+	if s.beforeReturn != nil {
+		s.beforeReturn()
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -1520,4 +1524,109 @@ func parseAnthropicContentBlockEvents(t *testing.T, raw string) []anthropicConte
 		})
 	}
 	return events
+}
+
+func TestGeminiFinalAdmissionBeforeNetwork(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{"messages", "chat", "native", "count"} {
+		for _, change := range []string{"missing repository", "key", "membership", "rate", "target"} {
+			t.Run(mode+"/"+change, func(t *testing.T) {
+				account := profitControlSyncedTestAccount(time.Now().UTC())
+				account.Platform, account.Status, account.Schedulable = PlatformGemini, StatusActive, true
+				account.GroupIDs = []int64{9}
+				account.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "gemini-fixture"}
+				latest := *account
+				latest.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "gemini-fixture"}
+				repo := &gatewayFinalAdmissionRepo{latest: &latest}
+				reason := openAIProfitFilterReasonUpstreamRateUnavailable
+				switch change {
+				case "missing repository":
+					reason = "latest_state_unavailable"
+				case "key":
+					latest.Credentials["api_key"] = "rotated-fixture"
+					reason = "account_binding_changed"
+				case "membership":
+					latest.GroupIDs = nil
+					reason = "group_membership_changed"
+				case "rate":
+					rate := 0.9
+					latest.RateMultiplier = &rate
+					reason = openAIProfitFilterReasonThreshold
+				}
+				upstream := &geminiCompatHTTPUpstreamStub{response: &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`))}}
+				svc := &GeminiMessagesCompatService{cfg: &config.Config{}, accountRepo: repo, httpUpstream: upstream}
+				if change == "missing repository" {
+					svc.accountRepo = nil
+				}
+				ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(ctx)
+				var err error
+				switch mode {
+				case "messages":
+					_, err = svc.Forward(ctx, c, account, []byte(`{"model":"gemini-fixture","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`))
+				case "chat":
+					_, err = svc.ForwardAsChatCompletions(ctx, c, account, []byte(`{"model":"gemini-fixture","messages":[{"role":"user","content":"hello"}]}`))
+				case "count":
+					_, err = svc.ForwardNative(ctx, c, account, "gemini-fixture", "countTokens", false, []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`))
+				case "native":
+					_, err = svc.ForwardNative(ctx, c, account, "gemini-fixture", "generateContent", false, []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`))
+				}
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, reason, denied.Reason)
+				require.Zero(t, upstream.calls)
+				require.False(t, c.Writer.Written())
+				_, exists := c.Get(OpsUpstreamErrorsKey)
+				require.False(t, exists)
+			})
+		}
+	}
+}
+
+func TestGeminiFinalAdmissionOnRetryAndCompatibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{"messages", "chat", "native"} {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/strict=%v", mode, strict), func(t *testing.T) {
+				rate := 0.4
+				account := &Account{ID: 1, Platform: PlatformGemini, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, GroupIDs: []int64{9}, RateMultiplier: &rate, Credentials: map[string]any{"api_key": "gemini-fixture"}}
+				latest := *account
+				latest.Credentials = map[string]any{"api_key": "gemini-fixture"}
+				repo := &gatewayFinalAdmissionRepo{latest: &latest}
+				upstream := &geminiCompatHTTPUpstreamStub{response: &http.Response{StatusCode: 503, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"code":503,"message":"busy"}}`))}}
+				upstream.beforeReturn = func() { latest.Credentials["api_key"] = "rotated-fixture" }
+				if !strict {
+					upstream.response = &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`))}
+				}
+				svc := &GeminiMessagesCompatService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxSameAccountRetriesGemini: 1}}, accountRepo: repo, httpUpstream: upstream}
+				ctx := t.Context()
+				if strict {
+					ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+				}
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(ctx)
+				var err error
+				switch mode {
+				case "messages":
+					_, err = svc.Forward(ctx, c, account, []byte(`{"model":"gemini-fixture","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`))
+				case "chat":
+					_, err = svc.ForwardAsChatCompletions(ctx, c, account, []byte(`{"model":"gemini-fixture","messages":[{"role":"user","content":"hi"}]}`))
+				case "native":
+					_, err = svc.ForwardNative(ctx, c, account, "gemini-fixture", "generateContent", false, []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
+				}
+				if strict {
+					var denied *OpenAITurnAdmissionError
+					require.ErrorAs(t, err, &denied)
+					require.Equal(t, "account_binding_changed", denied.Reason)
+					require.Equal(t, 2, repo.reads)
+					require.False(t, c.Writer.Written())
+				} else {
+					require.NoError(t, err)
+					require.Zero(t, repo.reads)
+				}
+				require.Equal(t, 1, upstream.calls)
+			})
+		}
+	}
 }

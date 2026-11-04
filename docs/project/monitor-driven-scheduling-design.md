@@ -205,7 +205,15 @@ scheme、Host/显式端口、转义路径和原始查询均参与比较，显式
 
 Messages 两个分流路径将槽位终检使用的选号门传到实际转发，而非恢复无门的原上下文。独立 Grok web/x search 标记 token 请求并传递本次选号门；保持请求内固定售价时刻。最终本地拒绝保留类型，handler 返回 `503 admission_unavailable`，不进入账号故障/网络故障归因，不自动重放已进入转发的请求；签名/预算修正与通用重试同样终检，拒绝后不恢复旧错误继续发送。
 
-原生 Messages 的额外 `beta=true` 查询只有在现有计价来源可匹配时才可能通过；本轮不把已知参数、同 Host 或同 Key 作为同价证明。手工倍率仍使用原目标与跳转语义。本节不证明跨协议、不同模型/fast 的价格一致；Gemini/Antigravity 的独立网关、区域、直接原生接入和缓存域仍待 D2/D4 验收。
+原生 Messages 的额外 `beta=true` 查询只有在现有计价来源可匹配时才可能通过；本轮不把已知参数、同 Host 或同 Key 作为同价证明。手工倍率仍使用原目标与跳转语义。本节不证明跨协议、不同模型/fast 的价格一致；Antigravity 的独立网关、区域、直接原生接入和缓存域仍待 D2/D4 验收。
+
+### 4.10 Gemini 独立网关的最终发送准入
+
+Gemini 的 Messages、Chat Completions 与原生生成三个发送循环统一调用 `doGeminiUpstream`，每次重试重新进入与通用网关共用的 `guardGatewayUpstreamRequest`；原账号权威读取、绑定、分组、倍率和最终计价目标判定只有一份实现。保留 Gemini 原 `Do` 传输契约和同账号重试配置，不增加备用实现或跳过拒绝的重试。
+
+Messages、Chat Completions、Responses 和 Gemini 原生 handler 将选号门传到实际 forward；本地准入拒绝保留错误类型并返回 503，不写供应商网络故障或处罚账号。Gemini 原生计数请求如果显式携带严格门，拒绝也必须保留，不能被本地 token 估算兜底吞掉；正常未装门的计数语义不变。模型列表和显式缓存管理请求继续保持原有非 token 范围。
+
+Gemini 原生 `v1beta/models/...` 不等于现有 `/v1/sub2api/billing` 探测的 token API 根；自动倍率缺少对应计价证据时拒绝，不把同 Key、同站点或协议转换视为同价证据。手工倍率仍按原发送目标工作，无门请求不新增权威读取。TypeSafe/SystemOne 目前未列入原利润门支持平台，本节不改变该平台范围；Antigravity 独立网关的智能重试终检继续作为 D2/D4 剩余验收。
 
 ## 5. 倍率准入与固定售价
 

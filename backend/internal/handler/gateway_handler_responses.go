@@ -297,9 +297,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 			setActualUpstreamEndpoint(c, EndpointAntigravityGenerateContent)
-			result, err = h.antigravityGatewayService.ForwardAsResponses(requestCtx, c, account, forwardBody, parsedReq)
+			result, err = h.antigravityGatewayService.ForwardAsResponses(admissionCtx, c, account, forwardBody, parsedReq)
 		} else {
-			result, err = h.gatewayService.ForwardAsResponses(requestCtx, c, account, forwardBody, parsedReq)
+			result, err = h.gatewayService.ForwardAsResponses(admissionCtx, c, account, forwardBody, parsedReq)
 		}
 
 		if accountReleaseFunc != nil {
@@ -345,6 +345,10 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 
 		if err != nil {
+			if service.IsOpenAITurnAdmissionError(err) {
+				h.responsesErrorResponse(c, http.StatusServiceUnavailable, "admission_unavailable", "Account eligibility changed; please retry with complete context")
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				// Can't failover if streaming content already sent
