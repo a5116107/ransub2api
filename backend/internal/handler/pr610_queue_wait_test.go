@@ -28,10 +28,11 @@ type pr610Barrier struct {
 }
 
 type pr610RealTurn struct {
-	started  time.Time
-	upstream time.Time
-	delta    time.Time
-	blocked  time.Duration
+	started       time.Time
+	firstUpstream time.Time
+	upstream      time.Time
+	delta         time.Time
+	blocked       time.Duration
 }
 
 // The clock is request-scoped. Barriers stall the actual slot-cache and pool
@@ -246,7 +247,12 @@ func (s *pr610TimingScenario) writeWS(c *coderws.Conn, turn int, payload []byte)
 func (s *pr610TimingScenario) observeUpstream() {
 	if s.realtime {
 		s.mu.Lock()
-		s.realTurns[s.turn.Load()-1].upstream = time.Now()
+		turn := &s.realTurns[s.turn.Load()-1]
+		now := time.Now()
+		if turn.firstUpstream.IsZero() {
+			turn.firstUpstream = now
+		}
+		turn.upstream = now
 		s.mu.Unlock()
 	}
 }
@@ -256,6 +262,7 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 	}
 	payload, err := io.ReadAll(r.Body)
 	require.NoError(s.t, err)
+	s.observeUpstream()
 	if (s.failover || s.sameAccount) && s.turn.Load() == 2 && r.Header.Get("Authorization") == "Bearer fixture-account-a" && s.failedSwitch.CompareAndSwap(false, true) {
 		s.advance(7 * time.Second)
 		if !s.sameAccount {
@@ -273,7 +280,6 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","code":"invalid_parameter","param":"truncation","message":"Unsupported parameter: truncation"}}`)
 		return true
 	}
-	s.observeUpstream()
 	received <- payload
 	s.advance(2 * time.Second)
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -452,7 +458,16 @@ func TestPR610RealBridgeRetryDenominator(t *testing.T) {
 	require.EqualValues(t, 2, s.attempts.Load())
 	row := got.log
 	require.GreaterOrEqual(t, *row.DurationMs, 85, "rejected-field network time must stay in legacy TPS denominator")
-	require.Less(t, *row.QueueWaitMs, 380, "rejected-field network time must not move into queue")
+	s.mu.Lock()
+	observed := s.realTurns[0]
+	s.mu.Unlock()
+	require.False(t, observed.firstUpstream.IsZero())
+	require.True(t, observed.upstream.After(observed.firstUpstream), "the fixture must observe both real HTTP attempts")
+	// Scheduler delays before the first send are valid queue time. Compare
+	// against that measured boundary, excluding the entire rejected attempt.
+	require.GreaterOrEqual(t, int64(*row.QueueWaitMs), observed.blocked.Milliseconds()-3, "blocked acquisitions must still be counted")
+	require.LessOrEqual(t, int64(*row.QueueWaitMs), observed.firstUpstream.Sub(observed.started).Milliseconds()+2, "rejected-field network time must not move into queue")
+	require.GreaterOrEqual(t, int64(*row.DurationMs), observed.upstream.Sub(observed.firstUpstream).Milliseconds(), "legacy duration must include the measured rejected-field attempt")
 }
 
 func (s *pr610TimingScenario) startHolder(serverURL, key string, gateway *service.OpenAIGatewayService) {

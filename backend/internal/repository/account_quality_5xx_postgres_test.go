@@ -145,7 +145,7 @@ func TestQuality5xxPostgresAPIKeyEpisodeAndRecovery(t *testing.T) {
 	}
 	claim()
 	for i := 1; i <= 2; i++ {
-		changed, err := repo.applyImmediateQuality5xx(t.Context(), plan.ID, plan.AccountID)
+		changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
 		require.NoError(t, err)
 		require.True(t, changed)
 		apply("passed", "stale_run")

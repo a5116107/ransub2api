@@ -39,7 +39,7 @@ func TestQuality5xxAPIKeyImmediateEpisodePreservesNativeSettings(t *testing.T) {
 	mock.ExpectExec("INSERT INTO account_quality_states").WithArgs(int64(7), qualityAPIKeyPendingState{}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE scheduled_test_plans SET next_run_at").WithArgs(int64(7), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	applied, err := (&scheduledTestPlanRepository{db: db}).applyImmediateQuality5xx(t.Context(), 7, 43)
+	applied, err := (&scheduledTestPlanRepository{db: db}).applyImmediateAccountFault(t.Context(), 7, 43, true)
 	require.NoError(t, err)
 	require.True(t, applied)
 	require.NoError(t, mock.ExpectationsWereMet(), "API Key protection must not write OAuth concurrency/ramp or fabricate a failed quality result")

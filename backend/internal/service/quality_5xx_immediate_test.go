@@ -4,17 +4,171 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"testing/iotest"
+	"time"
+
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue/queuetest"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
-	"testing"
-	"time"
 )
 
 type immediateQualityAccountRepo struct {
 	AccountRepository
-	calls int
+	calls             int
+	availabilityCalls int
+}
+
+func (r *immediateQualityAccountRepo) ApplyAvailabilityFault(ctx context.Context, id int64) error {
+	r.availabilityCalls++
+	return nil
+}
+
+func TestAvailabilityNon5xxFaultProvider(t *testing.T) {
+	for _, status := range []int{401, 408, 429} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			rdb := queuetest.NewClient(mr.Addr())
+			t.Cleanup(func() { _ = rdb.Close() })
+			repo := &immediateQualityAccountRepo{}
+			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, rdb)
+			t.Cleanup(func() { _ = svc.qualityTrigger.queue.Close() })
+			account := &Account{ID: 42, Type: AccountTypeAPIKey}
+			svc.observeQualityResponse(t.Context(), account, &http.Response{StatusCode: status}, nil)
+			require.Equal(t, 1, repo.availabilityCalls, "the observed failure must invalidate availability before returning")
+			require.Zero(t, repo.calls, "a non-5xx fault must not invoke quality 5xx protection")
+			require.False(t, mr.Exists(quality5xxPendingKey), "non-5xx faults use the durable due time, not a mislabeled quality event")
+			svc.observeQualityResponse(t.Context(), account, &http.Response{StatusCode: status}, context.Canceled)
+			svc.observeQualityStatus(context.WithValue(t.Context(), qualityProbeContextKey{}, true), account, status)
+			for _, excluded := range []int{200, 400, 403, 404, 409, 422, 600} {
+				svc.observeQualityStatus(t.Context(), account, excluded)
+			}
+			require.Equal(t, 1, repo.availabilityCalls)
+		})
+	}
+}
+
+func TestAvailabilityNon5xxFaultWithoutRedis(t *testing.T) {
+	repo := &immediateQualityAccountRepo{}
+	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
+		for _, status := range []int{401, 408, 429} {
+			svc.observeQualityStatus(t.Context(), &Account{ID: 42, Type: accountType}, status)
+		}
+	}
+	require.Equal(t, 6, repo.availabilityCalls)
+	require.Zero(t, repo.calls)
+	for _, account := range []*Account{nil, {ID: 0, Type: AccountTypeAPIKey}, {ID: 42, Type: AccountTypeSetupToken}, {ID: 42, Type: AccountTypeUpstream}} {
+		svc.observeQualityStatus(t.Context(), account, 429)
+	}
+	require.Equal(t, 6, repo.availabilityCalls)
+}
+
+func TestAvailabilityResponseBodyFaultClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		err                  error
+		status               int
+		cancel, close, probe bool
+		want                 int
+	}{
+		{name: "normal EOF", err: io.EOF, status: 200},
+		{name: "truncated body", err: io.ErrUnexpectedEOF, status: 200, want: 1},
+		{name: "read failure", err: errors.New("fixture socket read failure"), status: 200, want: 1},
+		{name: "upstream read timeout", err: context.DeadlineExceeded, status: 200, want: 1},
+		{name: "read canceled", err: context.Canceled, status: 200},
+		{name: "local capacity", err: ErrUpstreamKeyCapacity, status: 200},
+		{name: "local key policy", err: ErrUpstreamKeyPolicy, status: 200},
+		{name: "local turn admission", err: denyOpenAITurn("fixture"), status: 200},
+		{name: "caller canceled", err: io.ErrUnexpectedEOF, status: 200, cancel: true},
+		{name: "explicit cleanup", err: io.ErrUnexpectedEOF, status: 200, close: true},
+		{name: "probe cannot recurse", err: io.ErrUnexpectedEOF, status: 200, probe: true},
+		{name: "401 not counted twice", err: io.ErrUnexpectedEOF, status: 401, want: 1},
+		{name: "policy response", err: io.ErrUnexpectedEOF, status: 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &immediateQualityAccountRepo{}
+			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.probe {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			response := &http.Response{StatusCode: tc.status, Body: io.NopCloser(iotest.ErrReader(tc.err))}
+			svc.observeQualityResponse(ctx, &Account{ID: 42, Type: AccountTypeAPIKey}, response, nil)
+			if tc.cancel {
+				cancel()
+			}
+			if tc.close {
+				require.NoError(t, response.Body.Close())
+			}
+			for range 2 {
+				_, err := response.Body.Read(make([]byte, 1))
+				require.ErrorIs(t, err, tc.err, "the observer must preserve the read error")
+			}
+			require.NoError(t, response.Body.Close())
+			require.Equal(t, tc.want, repo.availabilityCalls, "one response must invalidate at most once")
+			require.Zero(t, repo.calls)
+		})
+	}
+}
+
+func TestAvailabilityResponseBodyRealHTTPTruncation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "12")
+		if _, err := w.Write([]byte("partial")); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	repo := &immediateQualityAccountRepo{}
+	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	response, err := server.Client().Do(request)
+	require.NoError(t, err)
+	svc.observeQualityResponse(t.Context(), &Account{ID: 42, Type: AccountTypeAPIKey}, response, nil)
+	require.Zero(t, repo.availabilityCalls, "successful headers alone must not report a fault")
+	content, err := io.ReadAll(response.Body)
+	require.Equal(t, "partial", string(content))
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.Equal(t, 1, repo.availabilityCalls, "an actual incomplete HTTP body must invalidate before the read returns")
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, 1, repo.availabilityCalls)
+}
+
+func TestAvailabilitySIWCFaultObservation(t *testing.T) {
+	for _, status := range []int{401, 408, 429, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			account := ticketTestAccount(901)
+			account.Extra = map[string]any{OpenAISIWCEnabledKey: true}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: status, Header: make(http.Header), Body: http.NoBody}}
+			svc := &OpenAIGatewayService{rateLimitService: limiter, httpUpstream: upstream}
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.openai.com/v1/responses", strings.NewReader(`{"model":"target","input":"fixture"}`))
+			require.NoError(t, err)
+			response, err := svc.doOpenAIUpstream(request, "", account)
+			require.NoError(t, err)
+			require.Equal(t, status, response.StatusCode)
+			require.NoError(t, response.Body.Close())
+			require.Len(t, upstream.requests, 1)
+			if status == 503 {
+				require.Equal(t, 1, repo.calls)
+				require.Zero(t, repo.availabilityCalls)
+			} else {
+				require.Equal(t, 1, repo.availabilityCalls)
+				require.Zero(t, repo.calls)
+			}
+		})
+	}
 }
 
 func (r *immediateQualityAccountRepo) ApplyQuality5xx(ctx context.Context, id int64) error {

@@ -618,6 +618,12 @@ func ProvideRateLimitService(
 		}
 		svc.qualityTrigger.immediate = immediate
 	}
+	if availability, ok := accountRepo.(availabilityFaultRepository); ok {
+		if svc.qualityTrigger == nil {
+			svc.qualityTrigger = &quality5xxTrigger{}
+		}
+		svc.qualityTrigger.availability = availability
+	}
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
 		svc.SetOpenAIAPIKeyHealthCache(healthCache)
 	}

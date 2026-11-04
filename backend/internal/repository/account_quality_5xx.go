@@ -13,6 +13,16 @@ import (
 // ApplyQuality5xx runs in the response observer, independently of probe leases.
 // Availability fencing and opted-in native quality protection commit together.
 func (r *accountRepository) ApplyQuality5xx(ctx context.Context, accountID int64) error {
+	return r.applyObservedAccountFault(ctx, accountID, true)
+}
+
+// ApplyAvailabilityFault invalidates opted-in availability evidence without
+// applying quality protection whose trigger is explicitly limited to 5xx.
+func (r *accountRepository) ApplyAvailabilityFault(ctx context.Context, accountID int64) error {
+	return r.applyObservedAccountFault(ctx, accountID, false)
+}
+
+func (r *accountRepository) applyObservedAccountFault(ctx context.Context, accountID int64, quality5xx bool) error {
 	db, ok := r.sql.(*sql.DB)
 	if !ok {
 		return fmt.Errorf("quality protection requires transactional database")
@@ -24,10 +34,10 @@ func (r *accountRepository) ApplyQuality5xx(ctx context.Context, accountID int64
 	}
 	changed := false
 	for _, p := range candidates {
-		if !p.Enabled || !p.PelicanConfig.TriggersOnUpstream5xx() {
+		if !p.Enabled || p.PelicanConfig == nil || (p.PelicanConfig.Availability == nil && (!quality5xx || !p.PelicanConfig.TriggersOnUpstream5xx())) {
 			continue
 		}
-		applied, e := plans.applyImmediateQuality5xx(ctx, p.ID, accountID)
+		applied, e := plans.applyImmediateAccountFault(ctx, p.ID, accountID, quality5xx)
 		if e != nil {
 			return e
 		}
@@ -39,7 +49,7 @@ func (r *accountRepository) ApplyQuality5xx(ctx context.Context, accountID int64
 	return nil
 }
 
-func (r *scheduledTestPlanRepository) applyImmediateQuality5xx(ctx context.Context, planID, accountID int64) (bool, error) {
+func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Context, planID, accountID int64, quality5xx bool) (bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -53,11 +63,11 @@ func (r *scheduledTestPlanRepository) applyImmediateQuality5xx(ctx context.Conte
 	if err != nil {
 		return false, err
 	}
-	if !plan.Enabled || !plan.PelicanConfig.TriggersOnUpstream5xx() {
+	if !plan.Enabled || plan.PelicanConfig == nil {
 		return false, nil
 	}
 	policy := plan.PelicanConfig.Quality
-	qualityProtection := policy != nil && policy.TriggerOnUpstream5xx && policy.Action == service.QualityActionRemoveModel
+	qualityProtection := quality5xx && policy != nil && policy.TriggerOnUpstream5xx && policy.Action == service.QualityActionRemoveModel
 	availability := plan.PelicanConfig.Availability != nil
 	if !availability && !qualityProtection {
 		return false, nil

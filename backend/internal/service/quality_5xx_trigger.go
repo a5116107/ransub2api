@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue"
@@ -22,9 +25,14 @@ type quality5xxImmediateRepository interface {
 	ApplyQuality5xx(context.Context, int64) error
 }
 
+type availabilityFaultRepository interface {
+	ApplyAvailabilityFault(context.Context, int64) error
+}
+
 type quality5xxTrigger struct {
-	immediate quality5xxImmediateRepository
-	queue     qualityqueue.Queue
+	immediate    quality5xxImmediateRepository
+	availability availabilityFaultRepository
+	queue        qualityqueue.Queue
 }
 
 func (s *quality5xxTrigger) signalIsCurrent(accountID int64, observedAt time.Time) bool {
@@ -41,7 +49,15 @@ func (s *quality5xxTrigger) signalIsCurrent(accountID int64, observedAt time.Tim
 }
 
 func (s *quality5xxTrigger) Observe(ctx context.Context, account *Account, status int) {
-	if s == nil || account == nil || account.ID <= 0 || (account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey) || status < 500 || status > 599 || ctx.Value(qualityProbeContextKey{}) != nil {
+	if s == nil || account == nil || account.ID <= 0 || (account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey) || ctx.Value(qualityProbeContextKey{}) != nil {
+		return
+	}
+	if status < 500 || status > 599 {
+		if s.availability != nil && (status == http.StatusUnauthorized || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests) {
+			s.invalidateAvailability(ctx, account, status)
+		}
+		// The existing database due-time worker retests availability. Do not
+		// enqueue a non-5xx response as a quality 5xx event.
 		return
 	}
 	// Complete native account protection before retry/selection can continue.
@@ -61,6 +77,17 @@ func (s *quality5xxTrigger) Observe(ctx context.Context, account *Account, statu
 	defer cancel()
 	if err := s.queue.Enqueue(enqueueCtx, account.ID, time.Now()); err != nil {
 		slog.Warn("quality 5xx trigger could not be queued", "account_id", account.ID)
+	}
+}
+
+func (s *quality5xxTrigger) invalidateAvailability(ctx context.Context, account *Account, status int) {
+	if s == nil || s.availability == nil || account == nil || account.ID <= 0 || (account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey) || ctx.Value(qualityProbeContextKey{}) != nil {
+		return
+	}
+	actionCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer stop()
+	if err := s.availability.ApplyAvailabilityFault(actionCtx, account.ID); err != nil {
+		slog.Warn("availability fault invalidation failed", "account_id", account.ID, "status", status, "error", err)
 	}
 }
 
@@ -170,6 +197,34 @@ func (s *RateLimitService) observeQualityResponse(ctx context.Context, account *
 		return
 	}
 	s.observeQualityStatus(ctx, account, response.StatusCode)
+	if response.StatusCode >= 200 && response.StatusCode < 300 && response.Body != nil && response.Body != http.NoBody && s.qualityTrigger != nil && s.qualityTrigger.availability != nil && account != nil && ctx.Value(qualityProbeContextKey{}) == nil {
+		response.Body = &availabilityFaultBody{ReadCloser: response.Body, ctx: ctx, trigger: s.qualityTrigger, account: Account{ID: account.ID, Type: account.Type}}
+	}
+}
+
+// A successful response header does not attest to its body. Only a real read
+// failure invalidates evidence; normal EOF, caller cancellation and explicit
+// cleanup must not turn a completed request into an upstream fault.
+type availabilityFaultBody struct {
+	io.ReadCloser
+	ctx     context.Context
+	trigger *quality5xxTrigger
+	account Account
+	closing atomic.Bool
+	once    sync.Once
+}
+
+func (b *availabilityFaultBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrUpstreamKeyCapacity) && !errors.Is(err, ErrUpstreamKeyPolicy) && !IsOpenAITurnAdmissionError(err) && b.ctx.Err() == nil && !b.closing.Load() {
+		b.once.Do(func() { b.trigger.invalidateAvailability(b.ctx, &b.account, 0) })
+	}
+	return n, err
+}
+
+func (b *availabilityFaultBody) Close() error {
+	b.closing.Store(true)
+	return b.ReadCloser.Close()
 }
 
 // Both transport status and semantic failure status feed the same coalescing

@@ -12,6 +12,71 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAvailabilityReadPostgresNon5xxFaultAndRecovery(t *testing.T) {
+	for _, mode := range []string{"enabled", "paused", "removed", "deleted"} {
+		t.Run(mode, func(t *testing.T) {
+			repo, plan := availabilityPostgresPlan(t)
+			until := availabilityPostgresClaim(t, repo, plan)
+			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			require.NoError(t, err)
+			// Even a rule that enables 5xx model protection must retain its
+			// account settings and quality ownership for a non-5xx failure.
+			var accountBefore, ownersBefore string
+			require.NoError(t, repo.db.QueryRow(`SELECT jsonb_build_array(status,schedulable,concurrency,extra)::text FROM accounts WHERE id=$1`, plan.AccountID).Scan(&accountBefore))
+			require.NoError(t, repo.db.QueryRow(`SELECT COALESCE(jsonb_agg(state),'[]')::text FROM account_quality_states`).Scan(&ownersBefore))
+			switch mode {
+			case "paused":
+				_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan.ID)
+			case "removed":
+				_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET pelican_config=pelican_config-'availability' WHERE id=$1`, plan.ID)
+			case "deleted":
+				_, err = repo.db.Exec(`UPDATE accounts SET deleted_at=now() WHERE id=$1`, plan.AccountID)
+			}
+			require.NoError(t, err)
+			accounts := &accountRepository{sql: repo.db}
+			require.NoError(t, accounts.ApplyAvailabilityFault(t.Context(), plan.AccountID))
+			var version int64
+			var running time.Time
+			require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version,running_until FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&version, &running))
+			require.True(t, running.Equal(until), "the failure must preserve the active lease")
+			var accountAfter, ownersAfter string
+			require.NoError(t, repo.db.QueryRow(`SELECT jsonb_build_array(status,schedulable,concurrency,extra)::text FROM accounts WHERE id=$1`, plan.AccountID).Scan(&accountAfter))
+			require.NoError(t, repo.db.QueryRow(`SELECT COALESCE(jsonb_agg(state),'[]')::text FROM account_quality_states`).Scan(&ownersAfter))
+			require.Equal(t, accountBefore, accountAfter)
+			require.Equal(t, ownersBefore, ownersAfter)
+			if mode != "enabled" {
+				require.Zero(t, version)
+				return
+			}
+			require.EqualValues(t, 1, version)
+			report, err := repo.ReadAvailability(t.Context(), plan.ID)
+			require.NoError(t, err)
+			require.Equal(t, "new_fault_event", report.Models[0].Reason)
+			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			require.NoError(t, err)
+			require.Equal(t, "stale_run", action)
+			require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+			// The normal scheduled worker discovers and claims the durable due
+			// time without Redis or a fabricated upstream_5xx trigger source.
+			due, err := repo.ListDue(t.Context(), time.Now())
+			require.NoError(t, err)
+			require.Len(t, due, 1)
+			require.Empty(t, due[0].TriggerSource)
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			until = now.Add(time.Minute)
+			claimed, err := repo.ClaimPelican(t.Context(), due[0], now, until, now.Add(time.Hour))
+			require.NoError(t, err)
+			require.True(t, claimed)
+			require.EqualValues(t, 1, due[0].AvailabilityFaultVersion)
+			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), due[0], until, availabilityPostgresObservation("pass"))
+			require.NoError(t, err)
+			report, err = repo.ReadAvailability(t.Context(), plan.ID)
+			require.NoError(t, err)
+			require.Equal(t, "pass", report.Models[0].Status)
+		})
+	}
+}
+
 func TestAvailabilityReadPostgresIndependentBusinessFault(t *testing.T) {
 	for _, quality := range []string{"absent", "disabled_trigger", "observe_only"} {
 		t.Run(quality, func(t *testing.T) {
@@ -115,7 +180,7 @@ func TestAvailabilityReadPostgresFaultPreservesManualAndQualityOwnership(t *test
 			require.NoError(t, repo.db.QueryRow(`SELECT jsonb_build_array(status,schedulable,concurrency,extra)::text FROM accounts WHERE id=$1`, plan.AccountID).Scan(&before))
 			var ownerBefore, ownerAfter string
 			require.NoError(t, repo.db.QueryRow(`SELECT COALESCE(jsonb_agg(state),'[]')::text FROM account_quality_states`).Scan(&ownerBefore))
-			changed, err := repo.applyImmediateQuality5xx(t.Context(), plan.ID, plan.AccountID)
+			changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
 			require.NoError(t, err)
 			want := change != "paused_plan" && change != "removed_policy" && change != "deleted_account"
 			require.Equal(t, want, changed)
@@ -261,7 +326,7 @@ func TestAvailabilityReadPostgresFaultVersionSurvivesQualityOwnershipReset(t *te
 	require.NoError(t, err)
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	for i := 0; i < 2; i++ {
-		changed, err := repo.applyImmediateQuality5xx(t.Context(), plan.ID, plan.AccountID)
+		changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
 		require.NoError(t, err)
 		require.True(t, changed)
 	}
@@ -296,7 +361,7 @@ func TestAvailabilityReadPostgresFaultVersionSurvivesQualityOwnershipReset(t *te
 func TestAvailabilityReadPostgresIndependentFaultRejectsOldRun(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	changed, err := repo.applyImmediateQuality5xx(t.Context(), plan.ID, plan.AccountID)
+	changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
 	require.NoError(t, err)
 	require.True(t, changed)
 	_, err = repo.db.Exec(`DELETE FROM account_quality_states WHERE plan_id=$1`, plan.ID)
@@ -308,7 +373,7 @@ func TestAvailabilityReadPostgresIndependentFaultRejectsOldRun(t *testing.T) {
 
 func TestAvailabilityReadPostgresQualityRestoreKeepsNewAvailabilityPass(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
-	changed, err := repo.applyImmediateQuality5xx(t.Context(), plan.ID, plan.AccountID)
+	changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
 	require.NoError(t, err)
 	require.True(t, changed)
 	plan, err = repo.GetByID(t.Context(), plan.ID)

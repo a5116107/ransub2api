@@ -538,3 +538,18 @@
 - 真实SQL首次因错误连接角色postgres失败（repository41.266s），随后Administrator角色也不存在；从原决策记录确认既有fixture角色并直接连接，未修改角色或鉴权、未重启既有数据库。相同真实SQL范围修正进程DSN后repository151.451s通过，覆盖全部规则、失效/恢复、绑定和读取错误、并发快照及读取期间过期，结束后quality_5xx_test_* schema余数0。
 - 四范围go vet退出0；默认标签cmd/server8.491s、requesttiming4.106s编译检查通过（no tests to run）。gofmt与git diff --check无输出，新TODO/FIXME/XXX为0。完整service/handler/routes和四范围lint的实际结果在原会话返回后追加，不把尚未结束的命令计为通过。
 - 原会话最终返回：`go test -tags=unit -p 2 ./internal/service ./internal/handler ./internal/server/routes -count=1 -timeout=10m`退出0，service365.157s、handler161.247s、routes15.081s；`./bin/task-d2-golangci-lint.exe run --build-tags unit --timeout 8m ./internal/service/... ./internal/repository/... ./internal/pkg/requesttiming/... ./cmd/server/...`输出`0 issues.`、退出0。项目三份文档本地链接检查输出`Project documentation links: PASS`。既有12张图片共1164bytes保持，单一H盘工作树，不新增运行产物或平行实现；仅本地提交，不运行CI、不推送或部署。
+
+## 2026-11-05：D3 非5xx明确故障失效与SIWC观察补齐
+
+- 接续d8d64b4。业务观察入口只处理5xx，401/408/429不会失效已有通过；SIWC直连还遗漏了原故障观察调用。用Go overlay加载上一提交的三个原实现文件、运行新增回归，真实失败service15.678s：Non5xxFaultProvider的401/408/429三例，以及SIWCFaultObservation的401/408/429/503四例，均为应调用一次实际零次。overlay不修改工作源码或Git历史。
+- 原位将既有每规则事务收敛为applyImmediateAccountFault，由5xx与独立availability入口共用；旧applyImmediateQuality5xx及全部调用点已替换。401/408/429只更新显式启用availability规则的故障版本和数据库due时间，不执行5xx质量动作、不伪造upstream_5xx队列信号。原定时执行器沿数据库due时间领取原配置复测，无Redis同样工作。原5xx质量保护与队列行为保留，SIWC实际响应在原发送点进入同一观察入口。
+- 真实SQL验证新故障使pass变unknown/new_fault_event、旧在途pass写入为stale_run、租约不被抢占、正常定时领取新版本后pass恢复；人工设置/质量拥有者不变，暂停/移除策略/删除账号无新版本。首次相关组合repository13.201s通过，连续三轮repository21.699s通过，测试schema余数0。
+- 当前源码Provider专项service1.673s通过；加入无Redis/OAuth/API Key/无效账号及SIWC实际发送补强后service15.331s通过；最终Non5xx/SIWC/Quality5xx组合连续三轮service14.332s通过。availability/quality/Pelican/时序组合连续三轮service8.285s通过。完整回归及最终静态检查等待原会话结果，不把未结束命令计为通过。
+- 回归overlay删除命令被自动审批拒绝，错误为blocked by policy；未换工具或重试删除。准确目录backend/tmp/availability-non5xx-regression共4文件73491bytes，为忽略的本轮诊断产物，保留为清理等待；不纳入源码提交。既有12张图片及数据库进程保持。原20项12 done、3 in_progress、5 pending，D3其他协议/能力与传输/流中断证据仍未完成。
+- 继续补齐2xx响应头后的响应体真实读取故障：原观察入口在支持availability仓储时包装响应体，非EOF读取错误通过相同事务立即失效；单次包装只报告一次，保留原字节/错误/Close。正常EOF、取消/已过期请求上下文、显式关闭、探测、本地Key容量/策略和逐轮准入错误不触发故障。真实HTTP Content-Length大于实际内容的夹具验证io.ErrUnexpectedEOF返回前已报告，补强专项service5.640s通过；最终含本地拒绝排除的availability/quality/Pelican/时序组合三轮service13.899s通过。
+- 首次完整本地命令service392.914s、routes14.691s通过，handler178.140s失败，原输出被大量日志截断未取得失败用例；独立JSON复核handler174.198s通过。为调查首次失败，原handler包三轮复核继续运行；添加响应体补强后另运行最终源码完整组合。未改断言、未跳过测试。最终前一轮lint输出0 issues.后超时、退出1，不计通过；保持原8分钟和三包范围，对最终源码重新运行vet/lint，不放宽规则。
+- 原handler三轮复核真实失败591.764s：TestPR610RealBridgeRetryDenominator将固定380ms当上限，负载下QueueWait为385ms/492ms。最终生产源码组合中handler195.018s、routes20.025s通过，service410.686s唯一真实失败为TestGrokCredentialMutationCancellationAmbiguityConfirmsDurableCommit/permanent_quarantine，30ms父截止时间可能在模拟提交前到期；内存控制的两段故意失败子进程仍按原契约保留，非主套件失败。
+- 原位修复两个测试夹具，未改生产时限或放宽业务验收：PR610记录第一次和成功重试的上游到达时刻，队列必须覆盖实际阻塞且落在首次上游到达前的窗口内，真实重试耗时必须保留在legacy分母；不再用sleep最小值推导绝对调度截止。Grok在模拟持久提交之后确定性取消父上下文，仍核对脱离取消的回读、持久状态、安全阻断与缓存失效；既有inner deadline成功/未确认分支继续覆盖。队列/原生入口/legacy分母组合20轮handler101.030s通过，取消/inner deadline/未确认安全阻断组合100轮service23.462s通过。
+- 响应体补强后的三包lint也输出0 issues.后超时退出1，仍不计通过。最终对service/repository/handler/cmd-server四范围执行vet和lint，保持8分钟及全部规则，检查并发限制为2以降低资源争用；两个夹具修复后完整service/handler/routes重新验收，实际返回后追加。
+
+- 最终两处夹具修复后的完整原命令退出0：service344.703s、handler157.127s、routes12.414s。四范围go vet退出0；四范围golangci-lint保持8分钟、并发2，实际输出0 issues.且退出0。最终默认标签cmd/server3.647s编译通过（no tests to run）；gofmt、旧符号搜索及git diff --check通过，文档链接检查通过，STATE保持100行以内。隔离SQL schema余数0，既有12张图片共1164bytes保留；本轮只本地提交，不运行CI、不推送、不部署或生产迁移。

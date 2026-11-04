@@ -71,6 +71,7 @@ type grokCredentialBlockingRepo struct {
 type grokCredentialCommitThenCancelRepo struct {
 	*tokenRefreshAccountRepo
 	returnErr error
+	cancel    context.CancelFunc
 }
 
 type grokCredentialUncommittedDeadlineRepo struct {
@@ -106,6 +107,9 @@ func (r *grokCredentialCommitThenCancelRepo) SetGrokCredentialErrorIfMatch(
 	account.Status = StatusError
 	account.Schedulable = false
 	account.ErrorMessage = reason
+	if r.cancel != nil {
+		r.cancel()
+	}
 	if r.returnErr != nil {
 		return false, r.returnErr
 	}
@@ -123,6 +127,9 @@ func (r *grokCredentialCommitThenCancelRepo) SetGrokCredentialTempUnschedulableI
 	account := r.accountsByID[id]
 	account.TempUnschedulableUntil = &until
 	account.TempUnschedulableReason = reason
+	if r.cancel != nil {
+		r.cancel()
+	}
 	if r.returnErr != nil {
 		return false, r.returnErr
 	}
@@ -1197,12 +1204,15 @@ func TestGrokCredentialMutationCancellationAmbiguityConfirmsDurableCommit(t *tes
 			repo := &grokCredentialCommitThenCancelRepo{tokenRefreshAccountRepo: baseRepo}
 			cache := &grokTokenCacheForProviderTest{}
 			svc := &OpenAIGatewayService{accountRepo: repo, grokTokenProvider: NewGrokTokenProvider(repo, cache)}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			// Cancel only after the fake durable commit. A wall-clock timeout
+			// can expire before the mutation starts on a loaded test host.
+			repo.cancel = cancel
 
 			token, err := svc.applyGrokCredentialAccountFailure(ctx, account, tt.class)
 
-			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.ErrorIs(t, err, context.Canceled)
 			require.Empty(t, token)
 			require.True(t, tt.committed(account), "the detached confirmation must recognize the durable mutation")
 			require.True(t, svc.isOpenAIAccountRuntimeBlocked(account), "a confirmed durable quarantine must retain its runtime block")
