@@ -375,6 +375,9 @@ func (s *OpenAIGatewayService) handleOpenAIWSDialTransientFailure(ctx context.Co
 	var dialErr *openAIWSDialError
 	if errors.As(err, &dialErr) && dialErr != nil {
 		s.rateLimitService.observeQualityStatus(ctx, account, dialErr.StatusCode)
+		if dialErr.StatusCode == 0 {
+			s.rateLimitService.observeAvailabilityTransportFailure(ctx, account, dialErr.Err, dialErr.networkAttempted)
+		}
 	}
 	if !errors.As(err, &dialErr) || dialErr == nil || !shouldCooldownOpenAITransientUpstreamError(dialErr.StatusCode, dialErr.ResponseBody) {
 		return

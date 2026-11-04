@@ -111,8 +111,31 @@ type coderOpenAIWSClientDialer struct {
 // Agent Identity recovery path can distinguish an invalid task from other
 // 401 handshake failures.
 type openAIWSHandshakeError struct {
-	Body []byte
-	Err  error
+	Body            []byte
+	Err             error
+	transportFailed bool
+}
+
+// Client.Do can fail after a successful RoundTrip, notably CheckRedirect.
+// Preserve that distinction without changing the response body or error chain.
+type openAIWSHandshakeTransport struct {
+	base   http.RoundTripper
+	failed atomic.Bool
+}
+
+func openAIWSDefaultRedirectPolicy(_ *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
+
+func (t *openAIWSHandshakeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		t.failed.Store(true)
+	}
+	return resp, err
 }
 
 func (e *openAIWSHandshakeError) Error() string {
@@ -199,10 +222,7 @@ func (d *coderOpenAIWSClientDialer) Dial(
 			if base.CheckRedirect != nil {
 				return base.CheckRedirect(req, via)
 			}
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			return nil
+			return openAIWSDefaultRedirectPolicy(req, via)
 		}
 		opts.HTTPClient = &clone
 	}
@@ -217,6 +237,22 @@ func (d *coderOpenAIWSClientDialer) Dial(
 		opts.HTTPClient = &clone
 	}
 
+	baseClient := opts.HTTPClient
+	if baseClient == nil {
+		baseClient = http.DefaultClient
+	}
+	client := *baseClient
+	// coder/websocket installs its own CheckRedirect and otherwise removes
+	// net/http's default bound. Keep the default explicit on every route.
+	if client.CheckRedirect == nil {
+		client.CheckRedirect = openAIWSDefaultRedirectPolicy
+	}
+	transport := &openAIWSHandshakeTransport{base: client.Transport}
+	if transport.base == nil {
+		transport.base = http.DefaultTransport
+	}
+	client.Transport = transport
+	opts.HTTPClient = &client
 	conn, resp, err := coderws.Dial(ctx, targetURL, opts)
 	if region != "" {
 		parsed, _ := url.Parse(targetURL)
@@ -241,7 +277,7 @@ func (d *coderOpenAIWSClientDialer) Dial(
 		if region != "" {
 			err = upstreamroute.TransportError(err)
 		}
-		return nil, status, respHeaders, &openAIWSHandshakeError{Body: body, Err: err}
+		return nil, status, respHeaders, &openAIWSHandshakeError{Body: body, Err: err, transportFailed: transport.failed.Load()}
 	}
 	// coder/websocket 默认单消息读取上限为 32KB，Codex WS 事件（如 rate_limits/大 delta）
 	// 可能超过该阈值，需显式提高上限，避免本地 read_fail(message too big)。

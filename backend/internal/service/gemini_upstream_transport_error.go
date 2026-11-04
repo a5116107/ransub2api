@@ -60,10 +60,12 @@ func (s *GeminiMessagesCompatService) handleUpstreamTransportError(ctx context.C
 
 // Keep generation/retry sends behind the shared final predicate. Model-list
 // and explicit-cache management requests retain their existing non-token scope.
-func (s *GeminiMessagesCompatService) doGeminiUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
-	request, err := guardGatewayUpstreamRequest(request, account, s.accountRepo, s.cfg)
+func (s *GeminiMessagesCompatService) doGeminiUpstream(request *http.Request, proxyURL string, account *Account) (response *http.Response, err error) {
+	request, err = guardGatewayUpstreamRequest(request, account, s.accountRepo, s.cfg)
 	if err != nil {
 		return nil, err
 	}
+	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
+	defer func() { observeTransport(response, err) }()
 	return s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

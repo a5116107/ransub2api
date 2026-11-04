@@ -582,3 +582,17 @@
 - 低并发恢复验证：最终断言下的原生WS/取消/缓冲完成边界及原路由矩阵连续三轮service35.565s、退出0；随后完整service（unit标签、不跳过用例、count=1、timeout=10m）342.762s、退出0。与本轮同一生产源码的handler176.632s、routes24.734s通过分别记录，不将原超时命令整体改写为成功。原矩阵未改，超时未复现；未取得原完整栈，因此不认定唯一原因已证实。静态与10轮补强结果续记。
 - 最终原生WS/取消/缓冲完成边界10轮补强实际service73.191s、退出0；包含既有两个UpstreamRequestIgnoresClientCancel测试及新增serverErr场景断言，没有忽略返回错误或取消原计费契约。
 - 最终顺序静态链实际完成：go vet -tags=unit -p 1 ./internal/service ./internal/handler ./cmd/server输出Final vet: PASS；完整service包golangci-lint保留unit标签、全部规则、并发2及8分钟，输出0 issues.与Final service lint: PASS；默认标签go test -p 1 ./cmd/server -run '^$'输出ok 2.306s [no tests to run]，仅证明默认入口编译，整链退出0。最终源码未再改动。生产代码净减少58行；格式、文档链接、diff及新增债务标记检查通过，历史图片仍12个1164bytes。只本地提交本轮14个源码/测试/文档文件；不运行CI、不推送、不部署，D3父任务及20项统计不变。
+
+## 2026-11-05：D3 实际联网后的无响应传输故障
+
+- 接续aec8b2c，在原H盘工作树推进发送/握手前故障反馈。旧observeQualityResponse直接忽略err或nil response，真实拒绝连接、TLS证书失败不能失效旧availability。首轮回归1.486s失败，但其构建读入的旧夹具带服务端RequestURI，不作为真实联网证据；修正为http.NewRequestWithContext并断言真实net.OpError/证书错误后，原生产源码实际3.130s失败：五条发送入口的10个网络失败子例均期望一次、实际零次，本地拒绝/取消/探测边界未放宽。
+- 原位在通用网关Do/DoWithTLS、Gemini/Antigravity、OpenAI原生代理及SIWC/BPS最终发送处共用beginAvailabilityTransport。网络活动仅保存atomic布尔值，复用httptrace组合而不替换原timing/BPS上下文；排除只有GetConn的本地池等待，有HTTP响应交还原状态/响应体分类。独立availability事务与原计划复测保持，不写伪造5xx，不建立第二队列/状态表。原错误及本地拒绝类型保持。
+- WS池与passthrough实际拨号分别保存同一活动证据到原dial错误，在既有handleOpenAIWSDialTransientFailure中处理无状态传输失败。默认拨号器新增透明RoundTripper故障记录，保留原client字段、代理/区域与Body接口；用于区分底层失败和WS库丢弃HTTP response后的CheckRedirect本地错误。没有网络活动、客户端取消、本地额度/策略/准入与探测自身不失效。
+- 新WS夹具首次编译因错误字段名和直接调用参数不匹配失败；改为复用已有真实下游WS夹具，未增加兼容wrapper或改生产参数。首版发送/证据/WS组合连续三轮service2.038s通过；复核发现WS库会将CheckRedirect错误包装为无响应，补底层RoundTrip证据及真实TLS/重定向环边界后再验收。插件RequestSent源为requestMayHaveBeenSent，仅是重放否决信号，不作为确定联网证明；无活动证据的自定义传输保持不确定。
+- 扩展组合实际service361.498s、退出1，触发6分钟测试超时；期间测试进程工作集约7GiB、系统仍约9GiB可用，不归因为单纯环境卡顿。源码确认coder/websocket v1.8.14的cloneWithDefaults安装CheckRedirect并在原值nil时永远返回nil，绕过net/http默认十次限制；新pool.dialConn重定向环夹具直接使用t.Context，没有Acquire外层拨号时限，因而持续请求。默认WS拨号器现明确补十次缺省上限，与已有区域路径共用一个判定；保留显式策略/ErrUseLastResponse，不修改库或放宽测试。新增池/直通真实重定向环断言必须恰好十次并返回原明确错误，修复后重跑原组合，不以首版结果替代最终源码。
+- 补齐默认重定向上限后，原availability/WS拨号器/池归属/Excel BPS/代理回退/原HTTP故障分类组合连续三轮实际service33.480s、退出0。随后只给重定向测试服务器增加第11次请求返回508的硬性止损，原“恰好10次、明确错误、本地拒绝不隔离”断言保留，使未来删除生产上限时快速失败而非再次增长资源；该最终夹具由完整回归验收。
+- 最终完整命令go test -tags=unit -p 1 ./internal/service ./internal/handler ./internal/server/routes -count=1 -timeout=10m中，service354.431s已通过，包含最终止损夹具。handler/routes和最终静态结果续记，未将尚未完成的整条命令记为通过。
+- 原最终完整命令已实际结束、退出0：service354.431s、handler151.870s、routes12.697s全部通过；没有跳过原用例或放松断言。最终vet、完整service包lint及默认入口编译顺序执行，不运行CI，不使用前一提交的静态结果替代本轮。
+- 三范围最终vet已实际输出Final vet: PASS。首次完整service包lint退出1，唯一诊断为新增WS夹具quality_5xx_immediate_test.go的QF1003（条件链可改为tagged switch）；原位改为switch，保留全部断言、规则与unit标签，重新执行三轮专项、完整service包lint与默认入口编译；结果在实际退出后续记。未将首次lint失败记为通过。
+- 修正QF1003后的最终顺序命令实际结束、退出0：三项新增传输/证据/WS握手专项连续三轮service2.198s；完整service包lint保留unit标签、全部规则、并发2和8分钟上限，输出0 issues.及Final service lint: PASS；默认标签go test -p 1 ./cmd/server -run '^$'输出ok 0.967s [no tests to run]，仅证明默认入口编译。三范围vet沿用本轮已实际通过的结果；lint后源码未再改动。
+- 最终文档本地链接有效、STATE不超过100行、git diff --check与新增债务标记检查通过；历史源码图片仍12个1164bytes，没有新增产物或第二套实现。仅将本轮12个源码/测试文件及三份项目文档交付到原H盘单一工作树并本地提交，不推送、不部署、不运行CI；历史审批拒绝清理的产物与既有隔离PostgreSQL保持原位。D3父任务未关闭，原20项仍12 done、3 in_progress、5 pending，父任务done增量0。

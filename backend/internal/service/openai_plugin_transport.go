@@ -196,7 +196,9 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 			return nil, err
 		}
 		observeAttempt := s.observePriorityAttempt(request, account)
+		request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
 		resp, err := s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
+		observeTransport(resp, err)
 		observeAttempt(resp, err)
 		s.rateLimitService.observeQualityResponse(request.Context(), account, resp, err)
 		if err == nil && resp != nil && resp.StatusCode == http.StatusUnauthorized && s.excelOAuthReauth != nil {

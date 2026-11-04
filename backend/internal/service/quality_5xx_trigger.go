@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -242,6 +243,50 @@ func (s *RateLimitService) observeAvailabilityIncomplete(ctx context.Context, ac
 		return
 	}
 	s.qualityTrigger.invalidateAvailability(ctx, account, 0)
+}
+
+// GetConn alone can mean waiting in the local HTTP connection pool. Only
+// network work or an obtained connection supports a transport fault verdict.
+// Compose with existing timing/BPS traces without replacing their context data.
+func availabilityTransportContext(ctx context.Context) (context.Context, *atomic.Bool) {
+	started := &atomic.Bool{}
+	mark := func() { started.Store(true) }
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		DNSStart:             func(httptrace.DNSStartInfo) { mark() },
+		ConnectStart:         func(string, string) { mark() },
+		TLSHandshakeStart:    mark,
+		GotConn:              func(httptrace.GotConnInfo) { mark() },
+		WroteHeaders:         mark,
+		WroteRequest:         func(httptrace.WroteRequestInfo) { mark() },
+		GotFirstResponseByte: mark,
+	}), started
+}
+
+func (s *RateLimitService) observeAvailabilityTransportFailure(ctx context.Context, account *Account, err error, networkStarted bool) {
+	if s == nil || err == nil || !networkStarted || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, ErrUpstreamKeyCapacity) || errors.Is(err, ErrUpstreamKeyPolicy) || IsOpenAITurnAdmissionError(err) {
+		return
+	}
+	var handshakeErr *openAIWSHandshakeError
+	if errors.As(err, &handshakeErr) && !handshakeErr.transportFailed {
+		return
+	}
+	s.qualityTrigger.invalidateAvailability(ctx, account, 0)
+}
+
+func (s *RateLimitService) beginAvailabilityTransport(req *http.Request, account *Account) (*http.Request, func(*http.Response, error)) {
+	if s == nil || s.qualityTrigger == nil || s.qualityTrigger.availability == nil || account == nil || req.Context().Value(qualityProbeContextKey{}) != nil {
+		return req, func(*http.Response, error) {}
+	}
+	ctx, started := availabilityTransportContext(req.Context())
+	var once sync.Once
+	identity := &Account{ID: account.ID, Type: account.Type}
+	return req.WithContext(ctx), func(response *http.Response, err error) {
+		// A response+error can be a local redirect rejection. Status/body
+		// observations retain their existing, separate classification.
+		if response == nil && err != nil {
+			once.Do(func() { s.observeAvailabilityTransportFailure(ctx, identity, err, started.Load()) })
+		}
+	}
 }
 
 // Select an execution-only test for the account's actual model route. Never

@@ -46,10 +46,11 @@ var (
 )
 
 type openAIWSDialError struct {
-	StatusCode      int
-	ResponseHeaders http.Header
-	ResponseBody    []byte
-	Err             error
+	StatusCode       int
+	ResponseHeaders  http.Header
+	ResponseBody     []byte
+	Err              error
+	networkAttempted bool
 }
 
 func (e *openAIWSDialError) Error() string {
@@ -2201,6 +2202,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 		accountIDForCapture = req.Account.ID
 	}
 	finishCapture := captureOpenAIWSHandshake(ctx, accountIDForCapture, req.WSURL)
+	ctx, networkStarted := availabilityTransportContext(ctx)
 	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, headers, req.ProxyURL)
 	captureErr := err
 	if captureErr == nil && conn == nil {
@@ -2215,10 +2217,11 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 		}
 		captureOpenAIWSHandshakeBody(ctx, responseBody, handshakeHeaders)
 		return nil, &openAIWSDialError{
-			StatusCode:      status,
-			ResponseHeaders: cloneHeader(handshakeHeaders),
-			ResponseBody:    responseBody,
-			Err:             err,
+			networkAttempted: networkStarted.Load(),
+			StatusCode:       status,
+			ResponseHeaders:  cloneHeader(handshakeHeaders),
+			ResponseBody:     responseBody,
+			Err:              err,
 		}
 	}
 	if conn == nil {

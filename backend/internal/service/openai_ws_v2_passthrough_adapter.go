@@ -950,6 +950,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		dialCtx, cancelDial := context.WithTimeout(upstreamroute.WithAccountID(billingCtx, account.ID), s.openAIWSDialTimeout())
 		billingHandshakeCtx = billingCtx
 		finishCapture := captureOpenAIWSHandshake(ctx, account.ID, wsURL)
+		dialCtx, networkStarted := availabilityTransportContext(dialCtx)
 		upstreamConn, statusCode, handshakeHeaders, err = dialer.Dial(dialCtx, wsURL, headers, proxyURL)
 		finishCapture(statusCode, handshakeHeaders, err)
 		cancelDial()
@@ -962,7 +963,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			responseBody = handshakeErr.Body
 		}
 		captureOpenAIWSHandshakeBody(ctx, responseBody, handshakeHeaders)
-		dialErr := &openAIWSDialError{StatusCode: statusCode, ResponseHeaders: cloneHeader(handshakeHeaders), ResponseBody: responseBody, Err: err}
+		dialErr := &openAIWSDialError{StatusCode: statusCode, ResponseHeaders: cloneHeader(handshakeHeaders), ResponseBody: responseBody, Err: err, networkAttempted: networkStarted.Load()}
 		if s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidWSDialError(dialErr) && !agentTaskRecoveryTried {
 			agentTaskRecoveryTried = true
 			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, account.GetCredential("task_id")); recoveryErr != nil {

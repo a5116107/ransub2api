@@ -7,9 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -26,6 +30,240 @@ type immediateQualityAccountRepo struct {
 	AccountRepository
 	calls             int
 	availabilityCalls int
+}
+
+func TestAvailabilityTransportFailureAtFinalSend(t *testing.T) {
+	for _, path := range []string{"gateway", "gateway_tls", "gemini", "antigravity", "openai"} {
+		for _, outcome := range []string{"refused", "tls", "local", "capacity", "policy", "admission", "canceled", "probe"} {
+			t.Run(path+"/"+outcome, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+				if outcome == "tls" {
+					server.Close()
+					server = httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+				} else {
+					server.Close()
+				}
+				t.Cleanup(server.Close)
+				target, err := url.Parse(server.URL)
+				require.NoError(t, err)
+				var upstream HTTPUpstream = &accountTestHTTPUpstream{target: target}
+				localErr := errors.New("local fixture failure")
+				switch outcome {
+				case "capacity":
+					localErr = ErrUpstreamKeyCapacity
+				case "policy":
+					localErr = ErrUpstreamKeyPolicy
+				case "admission":
+					localErr = denyOpenAITurn("fixture")
+				}
+				if outcome == "local" || outcome == "capacity" || outcome == "policy" || outcome == "admission" {
+					upstream = &httpUpstreamRecorder{err: localErr}
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if outcome == "canceled" {
+					cancel()
+				}
+				if outcome == "probe" {
+					ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+				}
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/responses", nil)
+				require.NoError(t, err)
+				repo := &immediateQualityAccountRepo{}
+				cfg := rawChatCompletionsTestConfig()
+				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				account := &Account{ID: 42, Type: AccountTypeAPIKey, Platform: PlatformOpenAI}
+				var response *http.Response
+				switch path {
+				case "gateway", "gateway_tls":
+					svc := &GatewayService{httpUpstream: upstream, rateLimitService: limiter, cfg: cfg}
+					if path == "gateway_tls" {
+						response, err = svc.doGatewayUpstream(req, "", account, nil)
+					} else {
+						response, err = svc.doGatewayUpstream(req, "", account)
+					}
+				case "gemini":
+					response, err = (&GeminiMessagesCompatService{httpUpstream: upstream, rateLimitService: limiter, cfg: cfg}).doGeminiUpstream(req, "", account)
+				case "antigravity":
+					response, err = (&AntigravityGatewayService{rateLimitService: limiter}).doAntigravityUpstream(req, "", account, upstream)
+				case "openai":
+					response, err = (&OpenAIGatewayService{httpUpstream: upstream, rateLimitService: limiter, cfg: cfg}).doOpenAIProxyAttempt(req, account, runtimeProxyEgress{})
+				}
+				require.Nil(t, response)
+				require.Error(t, err)
+				if outcome == "refused" || outcome == "probe" {
+					var networkErr *net.OpError
+					require.ErrorAs(t, err, &networkErr, "the fixture must actually reach the network")
+				}
+				if outcome == "tls" {
+					require.ErrorContains(t, err, "certificate")
+				}
+				if outcome == "local" || outcome == "capacity" || outcome == "policy" || outcome == "admission" {
+					require.ErrorIs(t, err, localErr)
+				}
+				want := 0
+				if outcome == "refused" || outcome == "tls" {
+					want = 1
+				}
+				require.Equal(t, want, repo.availabilityCalls)
+				require.Zero(t, repo.calls, "transport failure is not an observed upstream 5xx")
+			})
+		}
+	}
+}
+
+func TestAvailabilityTransportEvidenceBoundary(t *testing.T) {
+	for _, outcome := range []string{"unobserved", "pool_wait", "dns", "connect", "tls", "reused", "write", "headers", "local_capacity", "local_policy", "local_admission", "canceled_error", "canceled_context", "expired_context", "probe", "response_and_error", "success"} {
+		t.Run(outcome, func(t *testing.T) {
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if outcome == "probe" {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			if outcome == "expired_context" {
+				var stop context.CancelFunc
+				ctx, stop = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer stop()
+			}
+			outerCalls := 0
+			ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{ConnectStart: func(string, string) { outerCalls++ }})
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", nil)
+			require.NoError(t, err)
+			req, finish := limiter.beginAvailabilityTransport(req, &Account{ID: 42, Type: AccountTypeAPIKey})
+			trace := httptrace.ContextClientTrace(req.Context())
+			failure := context.DeadlineExceeded
+			want := 0
+			switch outcome {
+			case "unobserved":
+			case "pool_wait":
+				if trace.GetConn != nil {
+					trace.GetConn("fixture.invalid:443")
+				}
+			case "dns":
+				trace.DNSStart(httptrace.DNSStartInfo{})
+				want = 1
+			case "tls":
+				trace.TLSHandshakeStart()
+				want = 1
+			case "reused":
+				trace.GotConn(httptrace.GotConnInfo{Reused: true})
+				want = 1
+			case "write":
+				trace.WroteRequest(httptrace.WroteRequestInfo{})
+				want = 1
+			case "headers":
+				trace.GotFirstResponseByte()
+				want = 1
+			default:
+				trace.ConnectStart("tcp", "fixture.invalid:443")
+				require.Equal(t, 1, outerCalls, "existing trace callbacks must remain composed")
+				if outcome == "connect" {
+					want = 1
+				}
+			}
+			switch outcome {
+			case "local_capacity":
+				failure = fmt.Errorf("fixture: %w", ErrUpstreamKeyCapacity)
+			case "local_policy":
+				failure = fmt.Errorf("fixture: %w", ErrUpstreamKeyPolicy)
+			case "local_admission":
+				failure = denyOpenAITurn("fixture")
+			case "canceled_error":
+				failure = context.Canceled
+			case "canceled_context":
+				cancel()
+			case "success":
+				failure = nil
+			}
+			var response *http.Response
+			if outcome == "response_and_error" || outcome == "success" {
+				response = &http.Response{StatusCode: http.StatusTemporaryRedirect}
+			}
+			finish(response, failure)
+			finish(response, failure)
+			require.Equal(t, want, repo.availabilityCalls, "each attempt may invalidate only once")
+			require.Zero(t, repo.calls)
+		})
+	}
+}
+
+func TestAvailabilityWSHandshakeTransportFailure(t *testing.T) {
+	for _, mode := range []string{"pool", "passthrough"} {
+		outcomes := []string{"refused", "tls", "redirect_loop", "probe"}
+		if mode == "pool" {
+			outcomes = append(outcomes, "canceled")
+		}
+		for _, outcome := range outcomes {
+			t.Run(mode+"/"+outcome, func(t *testing.T) {
+				var redirectCalls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+				server.Close()
+				switch outcome {
+				case "tls":
+					server = httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+				case "redirect_loop":
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if redirectCalls.Add(1) > 10 {
+							http.Error(w, "fixture redirect budget exceeded", http.StatusLoopDetected)
+							return
+						}
+						http.Redirect(w, r, r.URL.String(), http.StatusTemporaryRedirect)
+					}))
+				}
+				t.Cleanup(server.Close)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if outcome == "probe" {
+					ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+				}
+				if outcome == "canceled" {
+					cancel()
+				}
+				cfg := passthroughLifecycleConfig()
+				repo := &immediateQualityAccountRepo{}
+				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				svc := newPassthroughLifecycleService(cfg, newStagedPassthroughConn())
+				svc.rateLimitService = limiter
+				account := passthroughLifecycleAccount()
+				wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+				var err error
+				if mode == "pool" {
+					pool := newOpenAIWSConnPool(cfg)
+					t.Cleanup(pool.Close)
+					_, err = pool.dialConn(ctx, openAIWSAcquireRequest{Account: account, WSURL: wsURL})
+					var dialErr *openAIWSDialError
+					require.ErrorAs(t, err, &dialErr)
+					require.Equal(t, outcome != "canceled", dialErr.networkAttempted)
+					svc.handleOpenAIWSDialTransientFailure(ctx, account, "gpt-5.1", err)
+				} else {
+					account.Credentials["base_url"] = server.URL
+					svc.openaiWSPassthroughDialer = newDefaultOpenAIWSClientDialer()
+					downstream, serverErr := startPassthroughLifecycleServer(t, ctx, svc, account)
+					t.Cleanup(func() { cancel(); downstream.Close() })
+					client := dialPassthroughLifecycleClientWithPayload(t, downstream, `{"type":"response.create","model":"gpt-5.1","stream":true}`)
+					t.Cleanup(func() { _ = client.CloseNow() })
+					select {
+					case err = <-serverErr:
+					case <-time.After(5 * time.Second):
+						t.Fatal("passthrough did not settle after handshake failure")
+					}
+				}
+				require.Error(t, err)
+				if outcome == "redirect_loop" {
+					require.ErrorContains(t, err, "stopped after 10 redirects")
+					require.EqualValues(t, 10, redirectCalls.Load())
+				}
+				want := 0
+				if outcome == "refused" || outcome == "tls" {
+					want = 1
+				}
+				require.Equal(t, want, repo.availabilityCalls)
+				require.Zero(t, repo.calls)
+			})
+		}
+	}
 }
 
 func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {

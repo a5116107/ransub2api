@@ -389,14 +389,16 @@ func (s *AntigravityGatewayService) extractClaudeUsage(body []byte) *ClaudeUsage
 
 // All generation sends, including smart/credits retries, use the same final
 // account and billing predicate while retaining their original transport.
-func (s *AntigravityGatewayService) doAntigravityUpstream(request *http.Request, proxyURL string, account *Account, upstream HTTPUpstream) (*http.Response, error) {
+func (s *AntigravityGatewayService) doAntigravityUpstream(request *http.Request, proxyURL string, account *Account, upstream HTTPUpstream) (response *http.Response, err error) {
 	var cfg *config.Config
 	if s.settingService != nil {
 		cfg = s.settingService.cfg
 	}
-	request, err := guardGatewayUpstreamRequest(request, account, s.accountRepo, cfg)
+	request, err = guardGatewayUpstreamRequest(request, account, s.accountRepo, cfg)
 	if err != nil {
 		return nil, err
 	}
+	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
+	defer func() { observeTransport(response, err) }()
 	return upstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

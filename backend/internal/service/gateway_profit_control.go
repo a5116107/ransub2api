@@ -127,11 +127,13 @@ func gatewayProfitControlGateActive(ctx context.Context) bool {
 // a prepared request whose route, membership or rates have since changed.
 // Omitting profiles preserves Do; an explicit profile (including nil) preserves
 // DoWithTLS, so callers keep their original transport contract.
-func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL string, selected *Account, profiles ...*tlsfingerprint.Profile) (*http.Response, error) {
-	request, err := guardGatewayUpstreamRequest(request, selected, s.accountRepo, s.cfg)
+func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL string, selected *Account, profiles ...*tlsfingerprint.Profile) (response *http.Response, err error) {
+	request, err = guardGatewayUpstreamRequest(request, selected, s.accountRepo, s.cfg)
 	if err != nil {
 		return nil, err
 	}
+	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, selected)
+	defer func() { observeTransport(response, err) }()
 	if len(profiles) == 0 {
 		return s.httpUpstream.Do(request, proxyURL, selected.ID, selected.Concurrency)
 	}
