@@ -454,3 +454,13 @@
 
 - 最终独立完整handler重跑实际通过149.788s、退出0；同一生产源码完整service367.510s通过，最新专项三轮service27.332s/repository1.696s、默认标签及三包vet/lint均通过。首轮handler167.160s失败的具体断言被大输出截断，重跑通过不能证明已定位其根因，保留这一验证局限。本轮API Key触发/事件栅栏/恢复配置边界已闭环；D3的独立可用状态、有效期与配置版本仍待完成。
 - D3由pending转in_progress，原20项现12 done、3 in_progress、5 pending，父任务done增量0。STATE保持74行，新增TODO/FIXME/XXX为0，旧临时停调符号源码残留0，历史PNG仍12个共1164bytes，本轮新增持久测试产物0。单工作树精确本地交付，不推送、不运行CI、不部署或生产迁移。
+
+## 2026-11-04：D3 补齐 API Key 真实生产领取与恢复验收
+
+- 接续0cc63c2，发现ClaimPelican仍以type='oauth'限制提前触发。上一轮观察器/队列及即时事务回归没有执行该真实SQL，因此“触发已闭环”只成立于观察与入队子范围，未覆盖实际领取；本节纠正该验收缺口，不把历史通过当作端到端通过。
+- 复用项目已有隔离PostgreSQL17实例，仅监听127.0.0.1:55448，显式SUB2API_QUALITY_TEST_DSN注入命令进程；每项测试新建并清理独立schema。默认角色postgres/Administrator/sub2api_test不存在，停止该独立实例后用single-user只查询角色名，确认原测试角色fixture再启动；不修改角色、鉴权或其他数据库实例。
+- 新真实数据库回归在旧源码实际失败repository3.531s：API Key提前领取返回false，事件/恢复链路同样在领取处失败；OAuth及拒绝边界未失败。原位将唯一生产条件改为type IN ('oauth','apikey')，其他条件保持；首轮实际通过2.526s。
+- 补强后质量/Pelican相关专项连续三轮实际通过repository4.169s。真实SQL覆盖API Key/OAuth未来计划领取、cron保持、重复/同账号其他运行计划拦截、关闭触发/暂停/修改版本/改期/删账号及不支持类型拒绝；晚到结果在暂停、配置修改、租约更换/过期后不修改账号。
+- 真实事务链路验证连续新故障推进事件版本、旧成功不得恢复、失败→不确定保留冷却→明确通过恢复；单次5xx不伪造质量失败、不降低API Key人工并发，恢复保留新人工并发及其他模型限制，产生调度失效事件。夹具仅验证repository行为，不充当生产迁移或全局集成验收。
+- repository vet退出0，完整repository lint实际输出0 issues.；PostgreSQL测试schema余数0。新增测试位于既有repository包并复用生产方法，没有新增生产实现、表或配置入口。D3仍in_progress，独立最新可用状态/有效期/配置版本/恢复仍待完成；原20项仍12 done、3 in_progress、5 pending。
+- 最终service触发专项连续三轮实际通过5.178s、repository默认标签质量/Pelican回归1.530s通过；新增真实数据库用例为unit标签，默认标签结果不作为真实SQL验证。结束再次查询测试schema余数0，pg_ctl停止成功且status返回no server running；没有新留后台实例。Windows完整repository符号链接权限等待沿用，本轮专项未替代全量验收；没有运行CI、推送、部署或生产迁移。

@@ -23,7 +23,7 @@
 | D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
 | D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；专项三轮通过 |
 | D2.4 | done | 按入站/模型分流的探测、New API 授权/列表/绑定/事务保存统一使用生效地址；旧源码 6 子例失败，新回归及相关四包三轮通过；不作为跨协议同价或共享缓存证据 |
-| D3 | in_progress | 已接通 API Key HTTP/WS 故障触发与事务事件栅栏，保留人工并发并排除本地额度/请求错误；专项三轮、完整service/handler、vet及完整lint已通过。独立最新可用状态、有效期、恢复及配置版本仍待补齐 |
+| D3 | in_progress | API Key HTTP/WS故障观察、事务事件栅栏及生产SQL领取已接通，保留人工并发；隔离PostgreSQL验证提前领取、版本/租约/事件栅栏与失败→不确定→恢复，相关专项三轮、vet/lint通过。独立最新可用状态、有效期、恢复及配置版本仍待补齐 |
 | D4.1 | done | 旧实现失败已复现；双故障/账号消失拒绝，缓存回源及未装门行为保持；专项、service/handler 回归和差异检查通过 |
 | D4.2 | done | 分组配置失败/空对象/错组拒绝准入，HTTP/WS/免费账号及恢复覆盖；补齐 15 项夹具/旧语义缺口后，专项 3 轮、默认标签、vet 和 Linux 全量通过；历史 lint 诊断在 M5 明确边界后归零 |
 | M1 | done | 删除 6 项未引用测试辅助符号及死计数器；相关回归通过，unused 告警 6→0 |
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮D3：API Key HTTP/WS故障触发、即时事件栅栏与人工并发保护已接通；请求语义错误排除，旧无调用临时停调路径删除。专项三轮service27.332s/repository1.696s、默认标签4.690s/4.348s、完整service367.510s、handler独立重跑149.788s、三包vet及完整lint（0 issues.）通过。首轮handler167.160s失败且断言输出截断，原因未确认，保留该验证局限。原20项现12 done、3 in_progress、5 pending，父任务done增量0。
+- 本轮D3补齐生产领取SQL的OAuth-only遗漏：旧实现真实PostgreSQL失败3.531s，修复后质量/Pelican专项三轮repository4.169s、service触发专项三轮5.178s、repository默认标签1.530s通过，vet退出0、完整repository lint为0 issues.。API Key真实领取、并行计划拦截、版本/租约/事件栅栏及人工配置恢复已验证；测试schema余数0、实例已停止。历史完整service/handler及输出截断局限保存在DECISIONS。原20项仍12 done、3 in_progress、5 pending，父任务done增量0。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -52,8 +52,9 @@
 
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
-go test -tags=unit -p 2 ./internal/service ./internal/repository -run 'TestSharedUpstreamKey|TestUpstreamKey(WebSocketIngress|NativeWebSocket)SharedLifetime' -count=3 -timeout=4m
-go vet -tags=unit -p 2 ./internal/service ./internal/handler ./internal/repository
+# 真实SQL回归须先在本命令进程设置 SUB2API_QUALITY_TEST_DSN，指向隔离PostgreSQL。
+go test -tags=unit -p 2 ./internal/repository -run 'TestQuality|TestPelican' -count=3 -timeout=4m
+go vet -tags=unit -p 2 ./internal/repository
 ```
 
 ## 下一项工作
