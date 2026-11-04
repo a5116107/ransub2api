@@ -12,6 +12,12 @@ import (
 	"github.com/lib/pq"
 )
 
+// The event counter is internal fencing data, not part of the public report.
+type availabilityStoredState struct {
+	service.AvailabilityState
+	FaultVersion *int64 `json:"fault_version"`
+}
+
 // A round writes all model observations atomically without changing account,
 // quality ownership, or native cooldowns. Claim and rule checks precede writes.
 func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Context, plan *service.ScheduledTestPlan, until time.Time, outcomes []service.AvailabilityModelOutcome) (string, error) {
@@ -24,13 +30,17 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 	var rawConfig []byte
 	var storedModel string
 	var now time.Time
-	err = tx.QueryRowContext(ctx, `SELECT enabled AND updated_at=$2 AND running_until=$3 AND running_until>clock_timestamp(),pelican_config,clock_timestamp(),model_id
- FROM scheduled_test_plans WHERE id=$1 AND account_id=$4 FOR UPDATE`, plan.ID, plan.UpdatedAt, until, plan.AccountID).Scan(&valid, &rawConfig, &now, &storedModel)
+	var faultVersion int64
+	err = tx.QueryRowContext(ctx, `SELECT enabled AND updated_at=$2 AND running_until=$3 AND running_until>clock_timestamp(),pelican_config,clock_timestamp(),model_id,availability_fault_version
+ FROM scheduled_test_plans WHERE id=$1 AND account_id=$4 FOR UPDATE`, plan.ID, plan.UpdatedAt, until, plan.AccountID).Scan(&valid, &rawConfig, &now, &storedModel, &faultVersion)
 	if err == sql.ErrNoRows || (err == nil && !valid) {
 		return "stale_run", nil
 	}
 	if err != nil {
 		return "", err
+	}
+	if faultVersion != plan.AvailabilityFaultVersion {
+		return "stale_run", nil
 	}
 	var cfg service.PelicanTestConfig
 	if err = json.Unmarshal(rawConfig, &cfg); err != nil {
@@ -39,7 +49,7 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 	if cfg.Availability == nil || cfg.Availability.ValidForSeconds < 30 || cfg.Availability.ValidForSeconds > 86400 || plan.AvailabilityAccountFingerprint == nil {
 		return "stale_run", nil
 	}
-	fingerprint, err := qualityAccountRouteFingerprint(ctx, tx, plan.AccountID)
+	fingerprint, err := accountRouteFingerprint(ctx, tx, plan.AccountID, true)
 	if err == sql.ErrNoRows {
 		return "stale_run", nil
 	}
@@ -47,13 +57,6 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 		return "", err
 	}
 	if fingerprint != *plan.AvailabilityAccountFingerprint {
-		return "stale_run", nil
-	}
-	var episode int64
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT (state->>'quality_5xx_episode')::bigint FROM account_quality_states WHERE plan_id=$1),0)`, plan.ID).Scan(&episode); err != nil {
-		return "", err
-	}
-	if episode != plan.AvailabilityQuality5xxEpisode {
 		return "stale_run", nil
 	}
 	models := cfg.ModelIDs
@@ -78,7 +81,7 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 		if probe.Status != "inconclusive" && (probe.StartedAt.IsZero() || probe.FinishedAt.Before(probe.StartedAt) || probe.FinishedAt.After(now)) {
 			return "", fmt.Errorf("invalid availability observation time")
 		}
-		state := service.AvailabilityState{}
+		state := availabilityStoredState{}
 		var oldVersion, oldRound time.Time
 		var oldFingerprint, raw []byte
 		err = tx.QueryRowContext(ctx, `SELECT plan_version,route_fingerprint,round_lease,state FROM account_availability_states WHERE plan_id=$1 AND model_id=$2`, plan.ID, outcome.ModelID).Scan(&oldVersion, &oldFingerprint, &oldRound, &raw)
@@ -92,8 +95,12 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 			if err = json.Unmarshal(raw, &state); err != nil {
 				return "", err
 			}
+			if state.FaultVersion == nil || *state.FaultVersion != faultVersion {
+				state = availabilityStoredState{}
+			}
 		}
 		state.Observation = probe
+		state.FaultVersion = &faultVersion
 		if probe.Status == "pass" || probe.Status == "fail" {
 			state.Decision = probe
 			validUntil := probe.FinishedAt.Add(time.Duration(cfg.Availability.ValidForSeconds) * time.Second)

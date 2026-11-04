@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -9,6 +11,26 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+// Availability GET /admin/scheduled-test-plans/:id/availability
+func (h *ScheduledTestHandler) Availability(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "invalid plan id")
+		return
+	}
+	report, err := h.scheduledTestSvc.ReadAvailability(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			response.NotFound(c, "plan not found")
+		} else {
+			response.Error(c, http.StatusServiceUnavailable, "availability state unavailable")
+		}
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
 
 // ScheduledTestHandler handles admin scheduled-test-plan management.
 type ScheduledTestHandler struct {

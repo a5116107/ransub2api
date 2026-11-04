@@ -502,3 +502,18 @@
 - 最终PostgreSQL相关回归连续三轮实际通过repository45.272s，含事务内等至真实租约截止且回滚、迁移回滚/重放与模型清理；测试schema余数0。pg_ctl停止成功，status为no server running。原历史数据库目录复用后当前61596743bytes，STATE已替换过时大小；此前自动审核拒绝删除，该目录未换工具删除或新建平行实例。
 - 最终相关service专项三轮25.366s、默认标签service19.564s/repository1.896s、三包vet输出Final availability state tests and vet: PASS；迁移包实际通过0.954s。完整unit回归service360.068s/handler159.304s通过，输出Full service/handler regression exit: 0；完整轮次之后的证据版本检查补强由最终三轮专项覆盖，repository新增清理/触发器夹具由最终真实SQL三轮覆盖。首轮三包完整lint实际0 issues.退出0，最后补强的同范围lint在返回后追加。
 - 最终补强后的同范围三包完整lint实际输出0 issues.、退出0；没有关闭诊断、缩小范围或增加8分钟时限。gofmt无输出、git diff --check通过，新TODO/FIXME/XXX为0；历史12个PNG仍共1164bytes，STATE76行。精确本地交付8个Go文件、迁移325及原有3份项目文档；唯一工作树，不推送、不运行CI、不部署或执行生产迁移。D3父验收保持in_progress，状态权威读取/即时失效/最终准入/故障复测恢复仍待完成，原20项完成数不变。
+
+## 2026-11-04：D3 权威状态报告与独立故障版本
+
+- 接续1358eb0。本轮补主数据库只读repeatable-read报告和GET /admin/scheduled-test-plans/:id/availability，复用现有ObserverGuard。规则、账号/实际代理/母账号链、状态、故障版本在同一快照核对，最后读取实际数据库时钟计算过期，不使用调度/进程缓存。输出仅含配置状态、模型与有界结果/原因，排除指纹、内部版本和凭据；数据库故障返回有界503，观察员越权在仓储读取前拒绝。
+- 原质量私有指纹读取器原位泛化为accountRouteFingerprint，写入继续使用原FOR UPDATE/FOR SHARE锁，读取明确不加锁以支持只读事务；调用者全部替换，无第二套指纹算法。现有账户并发/用量不参与路由版本，代理实际地址、母账号链和协议配置变化立即使旧证据unknown。
+- 真实PostgreSQL复现故障后不确定复测继承旧pass：repository12.317s失败（expected unknown / actual pass）。修正写入仅在规则/线路/事件版本都一致时继承旧决定；报告核对当前故障版本。补强过程中确认质量拥有者删除会清空其计数，新增forward-only迁移326的availability_fault_version，原remove_models即时5xx事务在显式启用availability时递增。领取、持久状态、写入和读取全部核对，不能以质量计数复位形成ABA或让晚到成功恢复旧状态。
+- 独立版本缺失的旧证据返回unknown/evidence_version_missing，新故障后的不确定结果不继承旧通过；只有新轮次完整通过恢复独立可用状态。配置暂停保持configured=true但unknown/rule_paused，移除availability表示未配置。升级/回滚边界已更新：回滚应用可保留列；若删除/归零版本必须先停止读写、备份并清空派生状态，重放后从unknown重新检测。
+- 首轮读取/故障修正相关真实SQL三轮14.896s通过；独立版本及质量拥有者复位/晚到结果补强后相关三轮repository86.514s通过。管理接口/观察员等专项三轮admin3.379s通过，routes3.030s为编译检查（no tests to run）；早期默认标签migration2.588s/service9.972s/repository2.021s通过。最后代理/母账号只读读取、旧证据和迁移326回滚/重放补强的真实SQL、完整本地回归及静态检查在返回后追加，不混用源码版本。
+- 此轮完整目标为权威状态报告和故障前通过失效闭环，不将管理报告当作发送准入。最终发送、实际模型/协议/fast作用域、其他业务故障入口及独立复测仍待D3/D2/D4按原验收接线，原20项12 done、3 in_progress、5 pending保持，父任务done增量0。只本地实施、隔离schema验证，不运行CI、不推送、不部署或生产迁移。
+- 代理只读矩阵初版repository61.693s失败于夹具将带参数的INSERT/UPDATE合并成预编译多命令（pq: cannot insert multiple commands into a prepared statement），原位拆分两条建数语句后同范围三轮82.749s通过，不修改生产查询或测试范围。接口添加Cache-Control: no-store，最终接口/观察员专项admin3.071s通过；routes6.150s为编译检查，最终admin/repository lint输出0 issues.退出0。
+- 复核恢复顺序后将可用性对质量计数的借用完整替换为独立故障版本，删除旧AvailabilityQuality5xxEpisode字段、领取查询与写入/读取比较，避免真正质量恢复清理拥有者后反向使新可用性通过失效。手工事件夹具改为实际独立版本；新增真实ApplyQualityOutcome恢复链验证新pass仍pass。最终相关真实PostgreSQL连续三轮86.694s通过，含代理/母账号只读指纹、旧证据版本缺失、326回滚/重放、质量拥有者清理及旧结果拒绝。
+- 完整本地回归实际通过service343.212s、handler150.941s、admin1.519s、accounttimerapi1.174s、dto6.808s、quotaview4.451s、routes13.337s，trafficquery无测试；输出Full availability read service/handler/routes exit: 0。完整轮次之后的no-store和旧计数移除由最后专项/静态检查覆盖，不混用源码版本。前两轮四范围完整lint均0 issues.退出0；最终源码检查另记返回结果。
+- 测试schema余数0，pg_ctl停止成功、status为no server running；历史数据库目录复用后当前112799497bytes，状态文档已替换过时数字，未重试此前被自动审核拒绝的删除。原迁移325没有改动，新迁移326仅在隔离schema验证。历史PNG仍12个共1164bytes，没有新增源码目录运行产物。
+- 最终删除旧计数借用后的相关专项连续三轮实际通过service34.499s、admin10.042s；routes6.403s为编译检查（no tests to run）。默认标签实际通过migrations1.677s、service9.004s、repository9.458s。最终四范围vet/lint继续等待原会话，不重启、不停止其他任务进程、不缩范围或增加8分钟时限。
+- 最终源码四范围vet退出0，完整lint实际输出0 issues.，原会话输出Final independent availability fence vet/lint: PASS、退出0；检查范围/规则及8分钟限制均保持。gofmt无输出，git diff --check通过，旧AvailabilityQuality5xxEpisode与qualityAccountRouteFingerprint源码搜索0，新TODO/FIXME/XXX为0。STATE76行，唯一工作树，精确本地交付17个文件，历史PNG目录不纳入提交；本模块闭环，D3父验收及全局完成数保持不变。

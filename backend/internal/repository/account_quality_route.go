@@ -12,8 +12,12 @@ import (
 
 // Share the forwarding identity, not updated_at: usage, fault protection and
 // manual concurrency may change while a valid model probe is running.
-func qualityAccountRouteFingerprint(ctx context.Context, tx *sql.Tx, accountID int64) ([32]byte, error) {
+func accountRouteFingerprint(ctx context.Context, tx *sql.Tx, accountID int64, lock bool) ([32]byte, error) {
 	seen := map[int64]bool{}
+	accountLock, proxyLock := "", ""
+	if lock {
+		accountLock, proxyLock = " FOR UPDATE", " FOR SHARE"
+	}
 	var chain []byte
 	for {
 		if seen[accountID] {
@@ -23,7 +27,7 @@ func qualityAccountRouteFingerprint(ctx context.Context, tx *sql.Tx, accountID i
 		account := &service.Account{}
 		var credentials, extra []byte
 		if err := tx.QueryRowContext(ctx, `SELECT platform,type,COALESCE(credentials,'{}'::jsonb),COALESCE(extra,'{}'::jsonb),proxy_id,parent_account_id
- FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, accountID).Scan(
+ FROM accounts WHERE id=$1 AND deleted_at IS NULL`+accountLock, accountID).Scan(
 			&account.Platform, &account.Type, &credentials, &extra, &account.ProxyID, &account.ParentAccountID); err != nil {
 			return [32]byte{}, err
 		}
@@ -36,7 +40,7 @@ func qualityAccountRouteFingerprint(ctx context.Context, tx *sql.Tx, accountID i
 		if account.ProxyID != nil {
 			account.Proxy = &service.Proxy{ID: *account.ProxyID}
 			if err := tx.QueryRowContext(ctx, `SELECT protocol,host,port,COALESCE(username,''),COALESCE(password,'')
- FROM proxies WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, *account.ProxyID).Scan(
+ FROM proxies WHERE id=$1 AND deleted_at IS NULL`+proxyLock, *account.ProxyID).Scan(
 				&account.Proxy.Protocol, &account.Proxy.Host, &account.Proxy.Port, &account.Proxy.Username, &account.Proxy.Password); err != nil {
 				return [32]byte{}, err
 			}

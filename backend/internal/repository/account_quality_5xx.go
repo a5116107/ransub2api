@@ -103,6 +103,11 @@ func (r *scheduledTestPlanRepository) applyImmediateQuality5xx(ctx context.Conte
 	if action != "probe_pending" {
 		return false, nil
 	}
+	if plan.PelicanConfig.Availability != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, planID); err != nil {
+			return false, err
+		}
+	}
 	// Durable fallback if Redis publication fails; a running lease stays intact.
 	if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, planID, time.Now().UTC()); err != nil {
 		return false, err

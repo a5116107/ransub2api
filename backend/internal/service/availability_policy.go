@@ -1,9 +1,32 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
+
+type AvailabilityModelState struct {
+	ModelID string `json:"model_id"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	AvailabilityState
+}
+
+// AvailabilityReport is derived from one primary-database snapshot. It never
+// contains credentials, route fingerprints or internal event counters.
+type AvailabilityReport struct {
+	PlanID      int64                    `json:"plan_id"`
+	AccountID   int64                    `json:"account_id"`
+	Configured  bool                     `json:"configured"`
+	Enabled     bool                     `json:"enabled"`
+	EvaluatedAt time.Time                `json:"evaluated_at"`
+	Models      []AvailabilityModelState `json:"models"`
+}
+
+func (s *ScheduledTestService) ReadAvailability(ctx context.Context, planID int64) (*AvailabilityReport, error) {
+	return s.planRepo.ReadAvailability(ctx, planID)
+}
 
 // AvailabilityPolicy opts a scheduled answer test into independent latest-state
 // tracking. It never changes quality ownership or manual account settings.

@@ -23,7 +23,7 @@
 | D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
 | D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；专项三轮通过 |
 | D2.4 | done | 按入站/模型分流的探测、New API 授权/列表/绑定/事务保存统一使用生效地址；旧源码 6 子例失败，新回归及相关四包三轮通过；不作为跨协议同价或共享缓存证据 |
-| D3 | in_progress | 已验证真实领取/事件与质量线路栅栏、判题前独立证据；本轮接入可用性状态写入、租约/规则/线路/事件版本拦截和不确定不续期，相关专项/真实PostgreSQL、完整回归、vet和完整lint通过。权威读取、即时失效解释、调度准入和业务故障/复测恢复联动仍待补齐 |
+| D3 | in_progress | 状态写入/有效期/旧结果栅栏已验证；本轮补齐只读权威报告、管理接口及独立故障版本，修复故障后不确定结果复用旧pass，最终专项、vet与四范围lint均通过，模块已闭环。最终发送准入、模型/协议作用域及其他业务故障/独立复测联动仍待完成 |
 | D4.1 | done | 旧实现失败已复现；双故障/账号消失拒绝，缓存回源及未装门行为保持；专项、service/handler 回归和差异检查通过 |
 | D4.2 | done | 分组配置失败/空对象/错组拒绝准入，HTTP/WS/免费账号及恢复覆盖；补齐 15 项夹具/旧语义缺口后，专项 3 轮、默认标签、vet 和 Linux 全量通过；历史 lint 诊断在 M5 明确边界后归零 |
 | M1 | done | 删除 6 项未引用测试辅助符号及死计数器；相关回归通过，unused 告警 6→0 |
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮D3接通独立可用性状态写入/有效期/旧结果栅栏：相关专项三轮25.366s、默认标签service19.564s/repository1.896s、真实PostgreSQL相关三轮45.272s、迁移包0.954s、完整service360.068s/handler159.304s、三包vet及最终完整lint（0 issues.）通过。schema余数0、数据库停止；原20项仍12 done、3 in_progress、5 pending，父任务done增量0。
+- 本轮D3补权威读取/管理接口和独立故障版本：故障后不确定继承旧pass的真实SQL失败已复现；最终读取/故障/质量恢复相关PostgreSQL三轮86.694s通过，完整service343.212s/handler150.941s、admin与路由等子包通过，最终删除旧计数借用后的三轮专项service34.499s/admin10.042s、默认标签及迁移检查已通过，最终四范围vet退出0、lint输出0 issues.且退出0。schema余数0、数据库停止；原20项仍12 done、3 in_progress、5 pending，父任务done增量0。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -53,8 +53,8 @@
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
 # 真实SQL回归须先在本命令进程设置 SUB2API_QUALITY_TEST_DSN，指向隔离PostgreSQL。
-go test -tags=unit -p 2 ./internal/service -run 'TestAvailabilityProbe|TestQuality|TestPelican|TestAccountConnectionTiming' -count=3 -timeout=6m
-go test -tags=unit -p 2 ./internal/repository -run 'TestAvailabilityProbe|TestQuality|TestPelican' -count=3 -timeout=4m
+go test -tags=unit -p 2 ./internal/service -run 'TestAvailability|TestQuality|TestPelican|TestAccountConnectionTiming' -count=3 -timeout=6m
+go test -tags=unit -p 2 ./internal/repository -run 'TestAvailability|TestQuality|TestPelican' -count=3 -timeout=4m
 go vet -tags=unit -p 2 ./internal/repository
 ```
 
@@ -73,4 +73,4 @@ Windows 当前令牌没有 SeCreateSymbolicLinkPrivilege；系统在 os.Symlink 
 历史自动审批审核以 blocked by policy 拒绝删除 3 个已验证普通文件，明确路径删除也被拒绝，未改用其他工具规避。
 保留在 backend/bin：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共 132004965 bytes（125.890 MiB）；均为已忽略的历史产物，其中 lint 工具仍用于本地验证，可重新构建。现有 12 个受保护图片夹具保持原样。
 
-历史清理等待：backend/tmp/admin-key-pg-d8，当前61596743 bytes；自动审批拒绝删除（blocked by policy），未重试或换工具。测试 schema 余数0、实例已关闭；解除条件为手动删除该准确目录，不影响代码验收。
+历史清理等待：backend/tmp/admin-key-pg-d8，当前112799497 bytes；自动审批拒绝删除（blocked by policy），未重试或换工具。测试 schema 余数0、实例已关闭；解除条件为手动删除该准确目录，不影响代码验收。

@@ -34,8 +34,8 @@ type PelicanTestConfig struct {
 
 // ScheduledTestPlan represents a scheduled test plan domain model.
 type ScheduledTestPlan struct {
+	AvailabilityFaultVersion       int64     `json:"-"`
 	AvailabilityAccountFingerprint *[32]byte `json:"-"`
-	AvailabilityQuality5xxEpisode  int64     `json:"-"`
 	// Captured transactionally at claim, never accepted from configuration JSON.
 	QualityAccountFingerprint *[32]byte `json:"-"`
 	// Request-only: importing configuration preserves this target's ownership.
@@ -81,6 +81,7 @@ type ScheduledTestResult struct {
 
 // ScheduledTestPlanRepository defines the data access interface for test plans.
 type ScheduledTestPlanRepository interface {
+	ReadAvailability(context.Context, int64) (*AvailabilityReport, error)
 	ApplyAvailabilityOutcomes(context.Context, *ScheduledTestPlan, time.Time, []AvailabilityModelOutcome) (string, error)
 	FinishTriggeredQuality(context.Context, *ScheduledTestPlan, time.Time, time.Time, time.Time) error
 	ListQualityPlans(context.Context) ([]*ScheduledTestPlan, error)

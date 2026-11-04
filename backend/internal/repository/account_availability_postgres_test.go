@@ -22,6 +22,12 @@ func availabilityPostgresPlan(t *testing.T) (*scheduledTestPlanRepository, *serv
 		_, err = db.Exec(string(sql))
 		require.NoError(t, err, "migration must support idempotent replay")
 	}
+	faultMigration, err := migrations.FS.ReadFile("326_availability_fault_version.sql")
+	require.NoError(t, err)
+	for range 2 {
+		_, err = db.Exec(string(faultMigration))
+		require.NoError(t, err)
+	}
 	repo, plan := quality5xxPostgresPlan(t, db, service.AccountTypeAPIKey)
 	plan.PelicanConfig.Availability = &service.AvailabilityPolicy{ValidForSeconds: 60}
 	plan, err = repo.Update(t.Context(), plan)
@@ -105,7 +111,7 @@ func TestAvailabilityPostgresStaleRunGuards(t *testing.T) {
 				"lease_expired":  `UPDATE scheduled_test_plans SET running_until=clock_timestamp()-interval '1 second' WHERE id=$1`,
 				"deleted":        `UPDATE accounts SET deleted_at=now() WHERE id=(SELECT account_id FROM scheduled_test_plans WHERE id=$1)`,
 				"route":          `UPDATE accounts SET credentials='{"api_key":"fixture-new"}' WHERE id=(SELECT account_id FROM scheduled_test_plans WHERE id=$1)`,
-				"event":          `INSERT INTO account_quality_states(plan_id,state) VALUES($1,'{"quality_5xx_episode":1}')`,
+				"event":          `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`,
 			}
 			if query := queries[change]; query != "" {
 				_, err := repo.db.Exec(query, plan.ID)

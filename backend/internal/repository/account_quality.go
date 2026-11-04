@@ -153,7 +153,7 @@ func (r *scheduledTestPlanRepository) ApplyQualityOutcome(ctx context.Context, p
 		if plan.QualityAccountFingerprint == nil {
 			return "stale_run", nil
 		}
-		fingerprint, err := qualityAccountRouteFingerprint(ctx, tx, plan.AccountID)
+		fingerprint, err := accountRouteFingerprint(ctx, tx, plan.AccountID, true)
 		if err == sql.ErrNoRows {
 			return "stale_run", nil
 		}
