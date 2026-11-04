@@ -596,3 +596,11 @@
 - 三范围最终vet已实际输出Final vet: PASS。首次完整service包lint退出1，唯一诊断为新增WS夹具quality_5xx_immediate_test.go的QF1003（条件链可改为tagged switch）；原位改为switch，保留全部断言、规则与unit标签，重新执行三轮专项、完整service包lint与默认入口编译；结果在实际退出后续记。未将首次lint失败记为通过。
 - 修正QF1003后的最终顺序命令实际结束、退出0：三项新增传输/证据/WS握手专项连续三轮service2.198s；完整service包lint保留unit标签、全部规则、并发2和8分钟上限，输出0 issues.及Final service lint: PASS；默认标签go test -p 1 ./cmd/server -run '^$'输出ok 0.967s [no tests to run]，仅证明默认入口编译。三范围vet沿用本轮已实际通过的结果；lint后源码未再改动。
 - 最终文档本地链接有效、STATE不超过100行、git diff --check与新增债务标记检查通过；历史源码图片仍12个1164bytes，没有新增产物或第二套实现。仅将本轮12个源码/测试文件及三份项目文档交付到原H盘单一工作树并本地提交，不推送、不部署、不运行CI；历史审批拒绝清理的产物与既有隔离PostgreSQL保持原位。D3父任务未关闭，原20项仍12 done、3 in_progress、5 pending，父任务done增量0。
+
+## 2026-11-05：D2 公共共享额度的重复凭据与部分回收
+
+- 接续f625cb0，原H盘同一工作树。HTTP凭据提取已去重，但HTTP/原生WS复用的AcquireUpstreamKeySlots未约束输入重复项，直接为每个摘要创建不同Redis成员。旧源码新增回归实际repository0.983s、退出1：上限1和2的两例都自我竞争而返回ErrUpstreamKeyCapacity；另一例在其他请求释放后仍因重复项无法恢复，共3例失败。未把该公共接口缺口说成标准HTTP提取必然会生成重复项。
+- 原位在公共取槽循环按首次出现的摘要去重，不排序、不改写调用方的握手证据切片，不另建限额实现、不改变Redis策略版本/摘要/租约/续租/取消语义。一个活跃请求对一个实际Key只占一个成员。部分失败继续沿原release清理已取得的本次精确成员，其他请求的成员保持。接口注释明确去重与输入所有权契约。
+- 新增上限1/2的重复摘要、输入不变、重复释放、双凭据后段拒绝/回收、其他请求精确成员保留以及容量恢复断言。最终全部TestUpstreamKey组合含真实Redis和HTTP/原生WS跨入口回归正在执行，结果以实际退出为准。Live只允许既有OpenAI OAuth能力，区域slots资源仍为整数账号/用户/下游Key；未把上游摘要强塞进这些ID，也未去掉Live/区域的拒绝保护。二者完整接线和D2原父验收保持待完成。
+- 修复后go test -tags=unit -p 1 ./internal/repository -run 'TestUpstreamKey' -count=3 -timeout=5m实际repository78.415s、退出0，覆盖HTTP/SSE、原生WS/ctx_pool/passthrough、共享策略版本、租约丢失及真实Redis竞争。详细复核三项新增/真实Redis专项1.777s、退出0，全部PASS、无skip。命令仅在当前进程PATH前置H:/Root/tools/redis/5.0.14.1，不调整全局环境。随后go vet -tags=unit -p 1 ./internal/repository输出Repository vet: PASS；完整repository包lint保留unit标签、全部规则、并发2与8分钟上限，输出0 issues.、退出0。
+- 最终文档链接、gofmt、git diff --check和新增TODO/FIXME/XXX检查通过；STATE小于100行，历史service/data图片仍12个1164bytes。只本地提交本轮两份repository源码/测试、一份接口注释及现有三份项目文档，不推送、不部署、不运行CI。D2父任务仍须跨协议来源、Live/区域及缓存域完整验收，原20项仍12 done、3 in_progress、5 pending，父任务done增量0；本轮完整闭环重复凭据与回收/恢复子任务。

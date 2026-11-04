@@ -140,7 +140,7 @@ api_base_urls 单独提供地址时不再错误要求旧 base_url；非自适应
 
 首期配置位于 `gateway.upstream_key_concurrency`，同一 Key 以最终出站凭据去空白后 SHA256 的小写摘要定位，`limits` 保存共享上限，`revision` 保存递增策略版本。
 不保存第二份明文 Key，不把账号、下游分组、供应商倍率、端点或协议加入额度键；同一凭据通过多个账号/协议入口发送仍共用额度。摘要只用于限额，不证明跨协议计价或缓存共享。
-复用现有 HTTPUpstream 的 Do/DoWithTLS，按实际请求的 Bearer/Token、X-Api-Key、Api-Key、X-Goog-Api-Key 与 key/api_key 查询凭据取槽，重复凭据只计一次。
+复用现有 HTTPUpstream 的 Do/DoWithTLS，按实际请求的 Bearer/Token、X-Api-Key、Api-Key、X-Goog-Api-Key 与 key/api_key 查询凭据取槽，重复凭据只计一次。HTTP/原生WS共用的公共取槽入口也按首次出现的摘要去重，保持调用方握手证据切片不变；一个活跃请求对同一Key只持一个成员。后续凭据满额时回收本次先前取得的成员，保留其他请求，容量释放后允许恢复。
 账号/用户原槽位保持；HTTP 共享 Key 维度在真正出站前抢槽，满额不发送网络请求，沿原有受限重选返回 503，不记录为供应商/代理健康故障。
 HTTP/SSE 槽位持有至响应体 EOF/错误/Close；请求取消主动关闭响应体并回收本次成员，多凭据部分失败回收已取成员，重复 Close 不重复释放。
 独立 Redis `concurrency:upstream_key:*` namespace 使用服务器时间、30 秒租约、5 秒续租；本地 19 秒所有权看门狗在租约被别人复用前取消请求，续租仅更新现存成员，禁止恢复已删除成员。

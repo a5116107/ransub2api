@@ -28,6 +28,7 @@ func isUpstreamKeyAdmissionFailure(err error) bool {
 
 // UpstreamKeyConcurrency is the optional shared authority used by native WS
 // turns. Fingerprints come from the final handshake, including pooled reuse.
+// Duplicate fingerprints consume one slot; the caller's slice is not modified.
 // A nil release means no configured credential consumed capacity.
 type UpstreamKeyConcurrency interface {
 	AcquireUpstreamKeySlots(context.Context, []string) (context.Context, func(), error)

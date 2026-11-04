@@ -217,7 +217,12 @@ func (s *httpUpstreamService) AcquireUpstreamKeySlots(parent context.Context, fi
 			lease.release()
 		}
 	})
+	seen := make(map[string]struct{}, len(fingerprints))
 	for _, fingerprint := range fingerprints {
+		if _, exists := seen[fingerprint]; exists {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
 		lease, err := s.upstreamKeyLimiter.acquire(ctx, fingerprint, cancel)
 		if err != nil {
 			release()

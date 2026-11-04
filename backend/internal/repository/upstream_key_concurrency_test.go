@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -72,6 +73,62 @@ func TestUpstreamKeyAtomicCompetitionAndPolicyRevision(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	testUpstreamKeyCompetition(t, client)
+}
+
+func TestUpstreamKeySharedAuthorityDeduplicatesCredentials(t *testing.T) {
+	for _, limit := range []int{1, 2} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			server := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			t.Cleanup(func() { require.NoError(t, client.Close()) })
+			s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, limit), client)}
+			fingerprint := config.UpstreamKeyFingerprint("supplier-fixture")
+			fingerprints := []string{fingerprint, fingerprint, fingerprint}
+			ctx, release, err := s.AcquireUpstreamKeySlots(t.Context(), fingerprints)
+			require.NoError(t, err, "one active generation must not compete against its own duplicate credential")
+			require.NotNil(t, release)
+			defer release()
+			require.NoError(t, ctx.Err())
+			require.Equal(t, []string{fingerprint, fingerprint, fingerprint}, fingerprints, "the caller owns its handshake evidence")
+			key := "concurrency:upstream_key:slots:" + fingerprint
+			require.EqualValues(t, 1, client.ZCard(t.Context(), key).Val())
+			release()
+			release()
+			require.Zero(t, client.ZCard(t.Context(), key).Val())
+		})
+	}
+}
+
+func TestUpstreamKeySharedAuthorityPartialFailurePreservesPeer(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	first, second := config.UpstreamKeyFingerprint("first-fixture"), config.UpstreamKeyFingerprint("second-fixture")
+	cfg := upstreamKeyTestConfig(1, 1)
+	cfg.Gateway.UpstreamKeyConcurrency.Limits = map[string]int{first: 1, second: 1}
+	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(cfg, client)}
+	_, peerRelease, err := s.AcquireUpstreamKeySlots(t.Context(), []string{second})
+	require.NoError(t, err)
+	require.NotNil(t, peerRelease)
+	defer peerRelease()
+	key := "concurrency:upstream_key:slots:" + second
+	peerMembers, err := client.ZRange(t.Context(), key, 0, -1).Result()
+	require.NoError(t, err)
+	require.Len(t, peerMembers, 1)
+	_, release, err := s.AcquireUpstreamKeySlots(t.Context(), []string{first, first, second, second})
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
+	require.Nil(t, release)
+	require.Zero(t, client.ZCard(t.Context(), "concurrency:upstream_key:slots:"+first).Val(), "a later refusal must roll back this attempt's earlier acquisition")
+	members, err := client.ZRange(t.Context(), key, 0, -1).Result()
+	require.NoError(t, err)
+	require.Equal(t, peerMembers, members, "rollback must preserve the exact peer lease")
+	peerRelease()
+	_, release, err = s.AcquireUpstreamKeySlots(t.Context(), []string{second, first, second, first})
+	require.NoError(t, err, "both credentials must be usable after recovery")
+	require.NotNil(t, release)
+	release()
+	require.Zero(t, client.ZCard(t.Context(), key).Val())
+	require.Zero(t, client.ZCard(t.Context(), "concurrency:upstream_key:slots:"+first).Val())
 }
 
 func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
