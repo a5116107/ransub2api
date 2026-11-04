@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
@@ -79,9 +80,12 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	}
 
 	// 发送请求
-	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.doAntigravityUpstream(req, proxyURL, account, s.httpUpstream)
 	s.rateLimitService.observeQualityResponse(req.Context(), account, resp, err)
 	if err != nil {
+		if IsOpenAITurnAdmissionError(err) {
+			return nil, err
+		}
 		logger.LegacyPrintf("service.antigravity_gateway", "%s upstream request failed: %v", prefix, err)
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
@@ -381,4 +385,18 @@ func (s *AntigravityGatewayService) extractClaudeUsage(body []byte) *ClaudeUsage
 		}
 	}
 	return usage
+}
+
+// All generation sends, including smart/credits retries, use the same final
+// account and billing predicate while retaining their original transport.
+func (s *AntigravityGatewayService) doAntigravityUpstream(request *http.Request, proxyURL string, account *Account, upstream HTTPUpstream) (*http.Response, error) {
+	var cfg *config.Config
+	if s.settingService != nil {
+		cfg = s.settingService.cfg
+	}
+	request, err := guardGatewayUpstreamRequest(request, account, s.accountRepo, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return upstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

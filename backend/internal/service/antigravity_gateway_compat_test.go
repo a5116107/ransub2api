@@ -786,3 +786,201 @@ func TestAntigravityCompatKeepaliveAfterFirstEvent(t *testing.T) {
 	require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
 	require.NoError(t, reader.Close())
 }
+
+func TestAntigravityFinalAdmissionBeforeNetwork(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{"messages", "chat", "responses", "gemini", "upstream", "legacy upstream"} {
+		changes := []string{"missing repository", "binding", "membership", "rate", "unchanged"}
+		if mode == "upstream" || mode == "legacy upstream" {
+			changes = append(changes, "key")
+		}
+		for _, change := range changes {
+			t.Run(mode+"/"+change, func(t *testing.T) {
+				account := newAntigravityCompatAccount(AccountTypeOAuth)
+				account.Schedulable, account.GroupIDs = true, []int64{9}
+				rate := 0.4
+				account.RateMultiplier = &rate
+				account.Credentials["base_url"], account.Credentials["api_key"] = "https://fixture.invalid", "fixture-key"
+				if mode == "upstream" {
+					account.Type = AccountTypeAPIKey
+				}
+				if mode == "legacy upstream" {
+					account.Type = AccountTypeUpstream
+				}
+				latest := *account
+				latest.Credentials = make(map[string]any, len(account.Credentials))
+				for k, v := range account.Credentials {
+					latest.Credentials[k] = v
+				}
+				repo := &gatewayFinalAdmissionRepo{latest: &latest}
+				reason := "latest_state_unavailable"
+				switch change {
+				case "key":
+					latest.Credentials["api_key"] = "rotated-fixture"
+					reason = "account_binding_changed"
+				case "binding":
+					latest.Credentials["base_url"] = "https://changed.invalid"
+					reason = "account_binding_changed"
+				case "membership":
+					latest.GroupIDs = nil
+					reason = "group_membership_changed"
+				case "rate":
+					changed := 0.9
+					latest.RateMultiplier = &changed
+					reason = openAIProfitFilterReasonThreshold
+				}
+				upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{antigravityCompatSuccessResponse()}}
+				svc := newAntigravityCompatService(config.GatewayConfig{}, upstream)
+				if change != "missing repository" {
+					svc.accountRepo = repo
+				}
+				ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+				body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+				c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/messages", body)
+				c.Request = c.Request.WithContext(ctx)
+				var err error
+				switch mode {
+				case "messages":
+					_, err = svc.Forward(ctx, c, account, body, false)
+				case "upstream", "legacy upstream":
+					_, err = svc.ForwardUpstream(ctx, c, account, body)
+				case "chat":
+					_, err = svc.ForwardAsChatCompletions(ctx, c, account, body, nil)
+				case "responses":
+					_, err = svc.ForwardAsResponses(ctx, c, account, []byte(`{"model":"claude-sonnet-4-5","input":"hi"}`), nil)
+				case "gemini":
+					_, err = svc.ForwardGemini(ctx, c, account, "gemini-3.1-pro-high", "generateContent", false, []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), false)
+				}
+				if change == "unchanged" {
+					require.NoError(t, err)
+					require.Equal(t, 1, upstream.callCount)
+					require.Equal(t, 1, repo.reads)
+					return
+				}
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, reason, denied.Reason)
+				require.Zero(t, upstream.callCount)
+				require.False(t, c.Writer.Written())
+				_, exists := c.Get(OpsUpstreamErrorsKey)
+				require.False(t, exists)
+			})
+		}
+	}
+}
+
+func TestAntigravityFinalAdmissionOnRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{"normal", "smart", "single", "credits", "fallback", "signature", "budget", "gemini signature"} {
+		for _, strict := range []bool{false, true} {
+			t.Run(mode+map[bool]string{false: "/disabled", true: "/strict"}[strict], func(t *testing.T) {
+				account := newAntigravityCompatAccount(AccountTypeOAuth)
+				rate := 0.4
+				account.RateMultiplier, account.Schedulable, account.GroupIDs = &rate, true, []int64{9}
+				latest := *account
+				repo := &gatewayFinalAdmissionRepo{latest: &latest}
+				status, errBody := 503, `{"error":{"message":"busy"}}`
+				body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":2048,"messages":[{"role":"user","content":"hi"}]}`)
+				ctx := t.Context()
+				switch mode {
+				case "smart", "single":
+					errBody = `{"error":{"code":503,"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","metadata":{"model":"claude-sonnet-4-5"},"reason":"RATE_LIMIT_EXCEEDED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"0.1s"}]}}`
+					if mode == "single" {
+						ctx = WithSingleAccountRetry(ctx, true, false)
+					}
+				case "credits":
+					status, errBody = 429, `{"error":{"status":"RESOURCE_EXHAUSTED","message":"QUOTA_EXHAUSTED"}}`
+					account.Extra = map[string]any{"allow_overages": true}
+					latest.Extra = account.Extra
+				case "fallback":
+					status, errBody = 404, `{"error":{"message":"model not found"}}`
+				case "signature":
+					status, errBody = 400, `{"error":{"message":"Invalid signature in thinking block"}}`
+					body = []byte(`{"model":"claude-sonnet-4-5","max_tokens":2048,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"old","signature":"bad"},{"type":"text","text":"hi"}]},{"role":"user","content":"continue"}]}`)
+				case "budget":
+					status, errBody = 400, `{"error":{"message":"thinking budget_tokens must be >= 1024"}}`
+				case "gemini signature":
+					status, errBody = 400, `{"error":{"message":"Corrupted thought signature"}}`
+				}
+				upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{
+					{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(errBody))}, antigravityCompatSuccessResponse(),
+				}, onCall: func(_ *http.Request, u *queuedHTTPUpstreamStub) {
+					if u.callCount == 1 {
+						changed := 0.9
+						latest.RateMultiplier = &changed
+					}
+				}}
+				svc := newAntigravityCompatService(config.GatewayConfig{}, upstream)
+				svc.accountRepo = repo
+				if mode == "fallback" {
+					svc.settingService = NewSettingService(&antigravitySettingRepoStub{values: map[string]string{SettingKeyEnableModelFallback: "true", SettingKeyFallbackModelAntigravity: "gemini-2.5-pro"}}, &config.Config{})
+				}
+				if strict {
+					ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+				}
+				c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/messages", body)
+				c.Request = c.Request.WithContext(ctx)
+				var err error
+				if mode == "fallback" || mode == "gemini signature" {
+					geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi","thoughtSignature":"old-signature"}]}]}`)
+					_, err = svc.ForwardGemini(ctx, c, account, "gemini-3.1-pro-high", "generateContent", false, geminiBody, false)
+				} else {
+					_, err = svc.Forward(ctx, c, account, body, false)
+				}
+				if strict {
+					var denied *OpenAITurnAdmissionError
+					require.ErrorAs(t, err, &denied)
+					require.Equal(t, openAIProfitFilterReasonThreshold, denied.Reason)
+					require.Equal(t, 1, upstream.callCount)
+					require.Equal(t, 2, repo.reads)
+					require.False(t, c.Writer.Written())
+				} else {
+					require.NoError(t, err)
+					require.Equal(t, 2, upstream.callCount)
+					require.Zero(t, repo.reads)
+				}
+			})
+		}
+	}
+}
+
+func TestAntigravityFinalBillingTarget(t *testing.T) {
+	for _, mode := range []string{"matching", "different API root", "manual", "disabled"} {
+		t.Run(mode, func(t *testing.T) {
+			account := profitControlSyncedTestAccount(time.Now().UTC())
+			account.Platform, account.Status, account.Schedulable, account.GroupIDs = PlatformAntigravity, StatusActive, true, []int64{9}
+			base := "https://fixture.invalid/cheap"
+			if mode != "matching" {
+				base += "/v1"
+			}
+			account.Credentials = map[string]any{"base_url": base, "api_key": "fixture-key"}
+			if mode == "manual" {
+				account.Extra[UpstreamBillingRateSyncEnabledExtraKey] = false
+			}
+			repo := &gatewayFinalAdmissionRepo{latest: account}
+			upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{antigravityCompatSuccessResponse()}, onCall: func(req *http.Request, _ *queuedHTTPUpstreamStub) {
+				require.Equal(t, mode == "matching", HTTPUpstreamRedirectsDisabled(req.Context()))
+			}}
+			svc := newAntigravityCompatService(config.GatewayConfig{}, upstream)
+			svc.accountRepo = repo
+			ctx := t.Context()
+			if mode != "disabled" {
+				ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
+			}
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+			c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/messages", body)
+			c.Request = c.Request.WithContext(ctx)
+			_, err := svc.ForwardUpstream(ctx, c, account, body)
+			if mode == "different API root" {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, denied.Reason)
+				require.Zero(t, upstream.callCount)
+				require.False(t, c.Writer.Written())
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, 1, upstream.callCount)
+			}
+		})
+	}
+}

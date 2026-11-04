@@ -131,36 +131,64 @@ func TestGatewayChatCompletions_GeminiClientCancelBeforeUpstreamResponseMarks499
 	require.Zero(t, opsQueued)
 }
 
-func TestGeminiHandlersPreserveFinalAdmissionGate(t *testing.T) {
+func TestIndependentGatewayHandlersPreserveFinalAdmissionGate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{"messages", "chat", "native"} {
-		t.Run(mode, func(t *testing.T) {
-			f := newGeminiClientCancelFixture(t)
-			f.group.ProfitControlEnabled, f.group.RateMultiplier, f.group.ProfitMinMargin = true, 1, 0.5
-			rate := 0.4
-			account := f.schedulerCache.accounts[0]
-			account.RateMultiplier = &rate
-			account.GroupIDs = []int64{f.group.ID}
-			var route, path, body string
-			var call func(*gin.Context)
-			switch mode {
-			case "messages":
-				route, path = "/v1/messages", "/v1/messages"
-				body = `{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
-				call = f.handler.Messages
-			case "chat":
-				route, path = "/v1/chat/completions", "/v1/chat/completions"
-				body = `{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`
-				call = f.handler.ChatCompletions
-			case "native":
-				route, path = "/v1beta/models/*modelAction", "/v1beta/models/gemini-2.5-flash:generateContent"
-				body = `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
-				call = f.handler.GeminiV1BetaModels
-			}
-			rec, _ := f.serve(t, route, path, body, call)
-			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-			require.Contains(t, rec.Body.String(), "Account eligibility changed")
-			require.Zero(t, f.upstream.calls.Load(), "cached slot admission cannot replace the missing final authority")
-		})
+	for _, platform := range []string{service.PlatformGemini, service.PlatformAntigravity} {
+		modes := []string{"messages", "chat", "native"}
+		if platform == service.PlatformAntigravity {
+			modes = append(modes, "responses", "legacy messages")
+		}
+		for _, mode := range modes {
+			t.Run(platform+"/"+mode, func(t *testing.T) {
+				f := newGeminiClientCancelFixture(t)
+				f.group.ProfitControlEnabled, f.group.RateMultiplier, f.group.ProfitMinMargin = true, 1, 0.5
+				rate := 0.4
+				account := f.schedulerCache.accounts[0]
+				account.RateMultiplier = &rate
+				account.GroupIDs = []int64{f.group.ID}
+				if platform == service.PlatformAntigravity {
+					f.group.Platform, account.Platform, account.Type = platform, platform, service.AccountTypeOAuth
+					account.Credentials = map[string]any{"access_token": "fixture-token", "project_id": "fixture-project", "model_mapping": map[string]any{"gemini-2.5-flash": "gemini-2.5-flash"}}
+					if mode == "legacy messages" {
+						account.Type = service.AccountTypeUpstream
+						account.Credentials["api_key"] = "fixture-key"
+						account.Credentials["base_url"] = "https://fixture.invalid"
+					}
+					f.handler.antigravityGatewayService = service.NewAntigravityGatewayService(nil, nil, nil, service.NewAntigravityTokenProvider(nil, nil, nil), nil, f.upstream, nil, nil)
+				}
+				var route, path, body string
+				var call func(*gin.Context)
+				switch mode {
+				case "messages", "legacy messages":
+					route, path = "/v1/messages", "/v1/messages"
+					body = `{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+					call = f.handler.Messages
+				case "chat":
+					route, path = "/v1/chat/completions", "/v1/chat/completions"
+					body = `{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`
+					call = f.handler.ChatCompletions
+				case "responses":
+					route, path = "/v1/responses", "/v1/responses"
+					body = `{"model":"gemini-2.5-flash","input":"hi"}`
+					call = f.handler.Responses
+				case "native":
+					route, path = "/v1beta/models/*modelAction", "/v1beta/models/gemini-2.5-flash:generateContent"
+					body = `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+					call = f.handler.GeminiV1BetaModels
+					if platform == service.PlatformAntigravity {
+						route, path = "/antigravity/v1beta/models/*modelAction", "/antigravity/v1beta/models/gemini-2.5-flash:generateContent"
+						call = func(c *gin.Context) {
+							c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, platform))
+							c.Set(string(middleware.ContextKeyForcePlatform), platform)
+							f.handler.GeminiV1BetaModels(c)
+						}
+					}
+				}
+				rec, _ := f.serve(t, route, path, body, call)
+				require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+				require.Contains(t, rec.Body.String(), "Account eligibility changed")
+				require.Zero(t, f.upstream.calls.Load(), "cached slot admission cannot replace the missing final authority")
+			})
+		}
 	}
 }

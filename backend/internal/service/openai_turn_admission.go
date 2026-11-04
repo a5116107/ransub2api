@@ -221,7 +221,7 @@ func openAITurnRouteFingerprint(a *Account) [32]byte {
 		}
 		// Static API keys identify a purchased route. Unlike an OAuth refresh,
 		// replacing one must invalidate requests and sockets built for the old key.
-		if key == "api_key" && a.Type == AccountTypeAPIKey {
+		if key == "api_key" && (a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream) {
 			routeCredentials[key] = value
 			continue
 		}

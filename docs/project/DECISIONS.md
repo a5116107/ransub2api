@@ -384,3 +384,46 @@
 - 默认标签专项实际通过service4.931s；handler1.798s为编译检查（no tests to run），完整handler行为在unit标签验证。两包go vet实际输出Gemini final admission vet: PASS。最终完整unit回归实际通过service357s、handler162.886s，Gemini final admission full regression exit: 0；完整未限量lint待实际返回。
 - 最终两包完整未限量golangci-lint实际输出0 issues.、退出0，未调整检查规则。最终Go格式、staged diff空白检查通过，新增TODO/FIXME/XXX为0，STATE74行。原测试辅助函数原位扩展为三入口矩阵，无并行实现；模型列表/显式缓存管理仍是有意保留的非token出口。13个任务文件纳入本地交付，本轮新增持久测试产物0，历史图片仍12个共1164bytes。
 - 本轮闭环Gemini三个生成发送循环的最终准入、重试拒绝归因及入口门传播；原20项仍12 done、2 in_progress、6 pending，父任务done增量0。Antigravity智能重试、跨协议计价、区域与缓存域及后续主线验收保持待办；历史清理审核拒绝和Windows符号链接权限等待保留。单一工作树，仅本地提交，不推送、不运行CI、不部署或迁移。
+
+
+## 2026-11-04：D2/D4 Antigravity 独立网关与重试最终准入
+
+- 接续35fe52f。源码发现六处独立Do发送，且外层转换、Credits、签名和预算修正会将本地拒绝改为502或继续尝试。新增回归首轮因误用既有stub字段calls编译失败，按真实字段callCount修正；旧生产实现随后26项拒绝场景全部实际失败，service2.124s、Antigravity final admission red exit: 1。
+- 原位替换六个发送点为唯一doAntigravityUpstream，复用既有guardGatewayUpstreamRequest、原repository及配置，不新建准入谓词或传输实现；原p.httpUpstream与s.httpUpstream实例保持。Credits结果携带本地拒绝，所有普通/智能/单账号循环、转换及模型/签名/预算修正保留拒绝类型，拒绝后不执行网络重试或供应商处罚。
+- 历史type=upstream持有静态api_key但原指纹略过该敏感字段；原位补齐静态Key绑定，OAuth刷新排除规则不变，不改变历史类型的探测支持范围。最新专项共32项首次拒绝/手工成功边界、8类重试的严格/关闭门对照，联合Gemini/通用网关/静态Key回归连续三轮实际通过，service30.707s、Antigravity final admission focused exit: 0。严格重试对照均验证1次网络、2次权威读取；关闭门仍2次网络、权威读取0。
+- 追加实际ForwardUpstream目标专项连续三轮实际通过service1.849s：正确计价API根成功并携带禁重定向上下文，不同API根拒绝且网络0，手工倍率/关闭门保留原发送目标与跳转语义。未放宽URI判定或增加协议同价假设。
+- 既有Gemini handler回归原位扩展为两独立网关入口矩阵。初次handler2.000s失败，仅Antigravity native返回400；源码证实普通Gemini路由原本不接收Antigravity分组，修正夹具补齐真实/antigravity路由使用的request/Gin强制平台上下文，不修改生产平台规则。最终结果在实际返回后追加。
+- 修正路由夹具后，两独立网关8条完整handler入口专项连续三轮实际通过handler2.038s，Independent gateways handler focused exit: 0；覆盖Gemini三入口、Antigravity Messages/Chat/Responses/原生及历史upstream Messages，均验证最终权威缺失时503、网络调用0。两包go vet实际输出Antigravity final admission vet: PASS；完整回归、默认标签与完整lint在实际返回后追加。
+- 默认标签相关检查实际通过：service12.801s；handler6.659s为编译检查（no tests to run），完整入口行为由unit专项及完整回归验证。最终完整unit handler实际通过158.474s；完整service与完整未限量lint仍在运行，未以历史结果代替本轮验收。
+- 首次完整unit回归返回：handler158.474s通过，service356.972s失败，仅TestTokenRefreshService_LateSuccessPastAttemptDeadlineIsRejected在约40ms后返回nil而非单次超时；首轮两包完整未限量lint实际输出0 issues.。已继续排查并修复该全量阻塞，不把该轮全量标为通过。
+
+## 2026-11-04：本地全量阻塞——刷新截止时间与取消通知的竞态
+
+- 单独重复原LateSuccess用例100次实际通过service4.658s，不作为原全量失败已解决的证据。源码证实旧刷新服务与统一OAuth API仅检查Context.Err；当定时取消回调尚未执行，截止时间已过仍可得到nil，兼容刷新路径可能继续持久化并接受结果。
+- 新增固定已过期Deadline但Err/Done仍待取消通知的上下文夹具；原实现的服务入口/统一API两个回归均实际失败service2.537s（预期context deadline exceeded，实际nil）。统一API夹具进一步设置原refresh_token，使有效CAS路径也受不落库断言约束，不依赖nil/空map不一致造成的CAS拒绝。
+- 原位引入唯一oauthRefreshContextError，保留已到达的取消错误优先级，并在Err尚为空时检查真实Deadline。统一API在接受provider结果前使用它；后台刷新在父请求检查、兼容路径落库前和单次超时归因时复用。父截止/取消不写账号失败，不持久化其晚到成功；单次超时仍走原暂态与隔离策略，已落库成功后仅清理跨越单次截止的原契约保留。
+- 原LateSuccess、两项确定性回归及父取消专项连续100次实际通过service7.971s；随后原位扩展父取消既有回归，覆盖provider返回错误/成功两种情况，均要求凭据及账号失败状态不变。相关完整刷新回归与最终两包完整回归、默认标签、vet/lint在实际返回后追加；不增大超时、不skip、不改变provider重试配置。
+
+- 统一 API 补齐 provider 启动前的实际 Deadline 检查，过期预算不消费旋转刷新令牌。相关刷新回归三轮实际通过 service8.020s；默认标签 service7.224s、handler1.524s（后者 no tests to run）。父取消成功/失败对照与原已落库清理越时契约保持。
+
+## 2026-11-04：本地全量阻塞——首输出响应头超时的墙钟夹具
+
+- 刷新修复后的全量 service346.380s 实际失败，仅 TestOpenAIForwardFirstOutputTimeoutIncludesResponseHeaderWait：配置1秒，记录 response_headers 1.4543711s，测试总耗时1.4548752s超过固定1.3秒上限；同轮 handler148.315s通过。该轮不记为全量通过。
+- 源码核对：Forward 把 startTime.Add(firstOutputTimeout) 直接传给原 header guard，guard 在响应头到达前取消真实请求上下文，没有重置预算。旧夹具用墙钟衡量定时器回调和测试线程的调度，机器繁忙时将调度延迟计入业务等待。
+- 原位将该回归放进已有 testing/synctest 虚拟时间环境，保留真实 Forward、header guard、取消和错误映射路径；把原小于1.3秒的断言收紧为恰好1秒，仍要求504、first_output_timeout、可切换、下游无输出、上游取消。没有延长生产/测试超时、跳过用例或添加并行计时实现。
+- 最终首输出与刷新截止/父取消专项连续100次实际通过 service5.883s；最终生产源码下完整 handler152.791s通过。最终 service 全量、默认标签、vet 和完整未限量 lint 结果在实际返回后追加。
+
+- 同一最终生产代码的冻结回归返回 service400.836s失败、handler152.791s通过；service 另暴露两个既有时序用例：冷缓存非阻塞调用墙钟61.2438ms超过50ms，以及流量积压回放5秒内未达目标。前一版完整未限量lint仍实际输出0 issues.；失败未作为通过，不延长原验收时限。
+- 冷缓存源码采用 singleflight.DoChan 并立即返回快照。原位将该既有用例置于 testing/synctest：仓储明确延迟1秒，Get必须虚拟耗时0并返回默认；随后等待原异步刷新，验证0.7阈值生效且仓储仅读1次。消除机器调度对非阻塞语义的干扰，同时补齐原测试没有验收的后台生效行为。流量回放继续沿用原真实磁盘及5秒断言，单独复测后记录结果。
+
+- 冷缓存与原流量回放专项连续三轮实际通过 service14.737s；后者保留真实192事件磁盘回放、零丢弃、待处理归零以及原5秒/1秒断言，未改生产持久化、批次或重放预算。该结果仅证明专项通过，最终完整回归仍按实际返回验收。首输出修复后默认标签专项实际通过 service8.284s、handler7.150s（no tests to run）。
+
+- 首输出修复后的完整 service 回归实际通过357.932s，输出 Final deterministic timing service full regression exit: 0；同一最终生产实现完整 handler 已实际通过152.791s。冷缓存夹具在该轮编译后进一步补齐慢仓储与后台生效断言，其最新专项/静态检查独立追加，不把未运行的新夹具描述为该轮已覆盖。
+
+- 最新冷缓存慢仓储/后台生效与首输出两项确定性用例连续100次实际通过 service2.290s；最终两包 go vet 实际输出 Final cold-cache and header deterministic checks/vet: PASS。OAuth四个任务文件已精确本地提交9e9b67c，提交前staged diff空白检查通过；不推送、不运行CI。
+
+- 首输出修复后的两包完整未限量golangci-lint实际输出0 issues.、退出0；最后冷缓存慢仓储断言与synctest补强后的完整lint另行运行，保留独立结果，不把较早检查描述为新夹具已验收。
+
+- 最后冷缓存慢仓储/后台生效补强后的两包完整未限量golangci-lint实际输出0 issues.、退出0，未调整规则、限制诊断数或跳过用例。本轮最终生产实现完整service357.932s、handler152.791s通过；最新补强测试100次2.290s与两包vet通过，服务默认标签回归/handler编译通过，真实流量回放专项三轮通过。
+- 交付复核：Antigravity六处旧直接发送改为唯一最终准入入口，旧handler测试原位扩展，无重复实现。格式与差异空白检查通过，新增TODO/FIXME/XXX为0，STATE74行；源码历史图片仍12个共1164bytes，本轮新增持久测试产物0。18个任务文件分为OAuth、确定性时序测试、Antigravity准入与既有三份文档的本地提交；只保留单一工作树，不推送、不运行CI、不部署/迁移。
+- 本轮完整交付Antigravity最终发送/重试准入范围，并修复刷新截止时间竞态和两项墙钟夹具阻塞。原20项仍12 done、2 in_progress、6 pending，父任务done增量0；D2/D4跨协议来源、直接WS/Live/区域与缓存域及后续D3/D5–D9保持原验收。历史清理审核拒绝与Windows符号链接权限等待保留，不以本轮通过替代其解除条件。
