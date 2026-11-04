@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
@@ -363,6 +364,7 @@ func (l *openAIWSPassthroughTurnLifecycle) finishTerminalWrite(succeeded bool, o
 }
 
 type openAIWSPassthroughFirstOutputFrameConn struct {
+	closeUpstream     func() error
 	inner             openaiwsv2.FrameConn
 	resolveDeadline   func(payload []byte) openAIWSPassthroughFirstOutputDeadline
 	activeReadTimeout time.Duration
@@ -479,6 +481,9 @@ func (c *openAIWSPassthroughFirstOutputFrameConn) WriteFrame(ctx context.Context
 func (c *openAIWSPassthroughFirstOutputFrameConn) Close() error {
 	if c == nil || c.inner == nil {
 		return nil
+	}
+	if c.closeUpstream != nil {
+		return c.closeUpstream()
 	}
 	return c.inner.Close()
 }
@@ -978,11 +983,46 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		return s.mapOpenAIWSPassthroughDialError(err, statusCode, handshakeHeaders)
 	}
-	defer func() {
+	keyAuthority, authorityErr := s.openAIWSKeyAuthority()
+	if authorityErr != nil {
 		_ = upstreamConn.Close()
-	}()
+		return upstreamKeyAdmissionFailover(authorityErr)
+	}
+	closeUpstream := upstreamConn.Close
+	if keyAuthority != nil {
+		if aborter, ok := upstreamConn.(interface{ CloseNow() error }); ok {
+			closeUpstream = aborter.CloseNow
+		}
+	}
+	defer func() { _ = closeUpstream() }()
+	var cancelKeySession context.CancelCauseFunc
+	if keyAuthority != nil {
+		ctx, cancelKeySession = context.WithCancelCause(ctx)
+		defer cancelKeySession(nil)
+	}
+	credentialRequest, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, wsURL, nil)
+	if requestErr != nil {
+		return requestErr
+	}
+	credentialRequest.Header = headers
+	keyTurn := &openAIWSKeyTurn{authority: keyAuthority, fingerprints: config.UpstreamCredentialFingerprints(credentialRequest), abort: func(cause error) {
+		cancelKeySession(cause)
+		_ = closeUpstream()
+	}}
+	defer func() { _ = closeUpstream(); keyTurn.finish() }()
 	handshakeBinding := s.bindOpenAIWSHandshake(account, gjson.GetBytes(firstClientMessage, "model").String(), headers)
 	handshakeBinding.billingHandshake = newOpenAIWSBillingHandshake(billingHandshakeCtx, wsURL, headers)
+	checkAdmission := func(payload []byte, model string) (*Account, error) {
+		latest, err := s.admitOpenAITurn(ctx, c, account, model, payload)
+		if err == nil {
+			err = s.checkOpenAIWSBinding(ctx, latest, model, handshakeBinding)
+		}
+		if err != nil {
+			s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(ctx, c, payload, account.ID, err)
+		}
+		return latest, err
+	}
+
 	logOpenAIWSV2Passthrough(
 		"relay_dial_ok account_id=%d status_code=%d upstream_request_id=%s",
 		account.ID,
@@ -998,6 +1038,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		upstreamFrameConn = &captureUpstreamFrameConn{FrameConn: upstreamFrameConn, capture: capture, account: account.ID, route: openAIWSCaptureRoute(ctx, wsURL)}
 	}
 	relayUpstreamFrameConn := &openAIWSPassthroughFirstOutputFrameConn{
+		closeUpstream:     closeUpstream,
 		inner:             upstreamFrameConn,
 		activeReadTimeout: s.openAIWSPassthroughIdleTimeout(),
 		deadlineChanged:   make(chan struct{}, 1),
@@ -1037,7 +1078,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// Relay joins both directions before returning, so no completion can race
 	// this fallback. Close upstream before releasing an unfinished turn.
 	defer func() {
-		_ = upstreamConn.Close()
+		_ = closeUpstream()
 		if turn := activeTurn.Swap(0); turn != 0 && hooks != nil && hooks.AfterTurn != nil {
 			hooks.AfterTurn(int(turn), nil, errors.New("websocket turn ended before terminal event"))
 		}
@@ -1330,18 +1371,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// Recheck after handshake/slot waits, before the first generation write.
 
 	upstreamFirstMessageSent := false
-	latest, admissionErr := s.admitOpenAITurn(ctx, c, account, gjson.GetBytes(firstClientMessage, "model").String(), firstClientMessage)
-	if admissionErr == nil {
-		admissionErr = s.checkOpenAIWSBinding(ctx, latest, gjson.GetBytes(firstClientMessage, "model").String(), handshakeBinding)
-	}
+	latest, admissionErr := checkAdmission(firstClientMessage, gjson.GetBytes(firstClientMessage, "model").String())
 	if admissionErr != nil {
-		s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(
-			ctx,
-			c,
-			firstClientMessage,
-			account.ID,
-			admissionErr,
-		)
 		return admissionErr
 	}
 	if err := s.acquireOpenAIRPMForSend(ctx, latest); err != nil {
@@ -1355,6 +1386,14 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 	if denied := s.priorityLatencyBeforeSend(ctx, account); denied != nil {
 		return denied
+	}
+	if _, err := keyTurn.begin(ctx); err != nil {
+		return err
+	}
+	if keyAuthority != nil {
+		if _, err := checkAdmission(firstClientMessage, gjson.GetBytes(firstClientMessage, "model").String()); err != nil {
+			return err
+		}
 	}
 	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
 	firstForwardAt := requesttiming.Now(ctx)
@@ -1416,13 +1455,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					return nil
 				}
 				model := gjson.GetBytes(payload, "model").String()
-				latest, err := s.admitOpenAITurn(ctx, c, account, model, payload)
-				if err == nil {
-					err = s.checkOpenAIWSBinding(ctx, latest, model, handshakeBinding)
-				}
-				if err != nil {
-					s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(ctx, c, payload, account.ID, err)
+				if _, err := checkAdmission(payload, model); err != nil {
 					return err
+				}
+				if _, err := keyTurn.begin(ctx); err != nil {
+					return err
+				}
+				if keyAuthority != nil {
+					if _, err := checkAdmission(payload, model); err != nil {
+						return err
+					}
 				}
 				return s.priorityLatencyBeforeSend(pendingLatencyCtx, account)
 			},
@@ -1458,6 +1500,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if activeTurn.Swap(0) == 0 {
 					return
 				}
+				keyTurn.finish()
 				turnNo := int(completedTurns.Add(1))
 				if hooks != nil && hooks.TurnStarted != nil && !turn.StartedAt.IsZero() {
 					hooks.TurnStarted(turnNo, turn.StartedAt)
@@ -1602,7 +1645,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			},
 		},
 	})
-	// Relay has joined both directions. Only this unfinished turn may settle
+	// Relay has joined both directions. Release generation capacity before a
+	// downstream control close can wait for its peer's close handshake.
+	if keyAuthority != nil {
+		_ = closeUpstream()
+		keyTurn.finish()
+	}
+	// Only this unfinished turn may settle
 	// here: completed terminal callbacks already consumed activeTurn. Never use
 	// relayResult.Usage, which aggregates earlier completed turns.
 	var unfinishedResult *OpenAIForwardResult
@@ -1628,6 +1677,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 	}
 	if cause := context.Cause(ctx); cause != nil {
+		if errors.Is(cause, ErrUpstreamKeyLease) {
+			if turn := activeTurn.Swap(0); turn != 0 && hooks != nil && hooks.AfterTurn != nil {
+				hooks.AfterTurn(int(turn), unfinishedResult, cause)
+			}
+			return cause
+		}
 		if isOpenAIWSSessionPreempted(ctx) {
 			if turn := activeTurn.Swap(0); turn != 0 && hooks != nil && hooks.AfterTurn != nil {
 				hooks.AfterTurn(int(turn), unfinishedResult, errOpenAIWSSessionPreempted)

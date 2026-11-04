@@ -271,35 +271,132 @@ func (f *smartProtocolNetwork) result() *OpenAIForwardResult {
 	}
 }
 
-func TestSharedUpstreamKeyWSIngressUsesHTTPBridge(t *testing.T) {
-	for _, mode := range []string{"disabled", "ws", "auto", "shadow"} {
+type smartProtocolKeyHTTP struct {
+	smartProtocolNetworkHTTP
+	calls        atomic.Int32
+	active       atomic.Int32
+	fingerprints []string
+	err          error
+	onAcquire    func()
+}
+
+func (u *smartProtocolKeyHTTP) AcquireUpstreamKeySlots(ctx context.Context, fingerprints []string) (context.Context, func(), error) {
+	u.calls.Add(1)
+	if u.err != nil {
+		return nil, nil, u.err
+	}
+	u.fingerprints = append([]string(nil), fingerprints...)
+	u.active.Add(1)
+	if u.onAcquire != nil {
+		u.onAcquire()
+	}
+	var once sync.Once
+	return ctx, func() { once.Do(func() { u.active.Add(-1) }) }, nil
+}
+
+func TestSharedUpstreamKeyWSIngressPreservesNativeProtocol(t *testing.T) {
+	for _, ingress := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
+		for _, mode := range []string{"disabled", "ws", "auto", "shadow"} {
+			t.Run(ingress+"/"+mode, func(t *testing.T) {
+				f := newSmartProtocolNetwork(t, "ws", false, "")
+				if mode == "disabled" {
+					f.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled = false
+				} else {
+					f.cfg.Gateway.OpenAIWS.SmartProtocol.Mode = mode
+				}
+				f.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("synthetic-only"): 1}}
+				f.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+				f.cfg.Gateway.OpenAIWS.IngressModeDefault = ingress
+				f.account.Extra["openai_apikey_responses_websockets_v2_mode"] = ingress
+				authority := &smartProtocolKeyHTTP{smartProtocolNetworkHTTP: smartProtocolNetworkHTTP{f.upstream.Client()}}
+				f.svc.httpUpstream = authority
+				c := f.dial()
+				for turn, input := range []string{"first", "second"} {
+					f.send(c, input, "", 100)
+					f.terminal(c)
+					result := f.result()
+					require.Equal(t, "ws", result.UpstreamProtocol)
+					require.EqualValues(t, 3, result.Usage.InputTokens)
+					require.EqualValues(t, turn+1, authority.calls.Load())
+					require.Zero(t, authority.active.Load(), "an idle native socket must not reserve a generation slot")
+					require.Equal(t, []string{config.UpstreamKeyFingerprint("synthetic-only")}, authority.fingerprints)
+				}
+				require.EqualValues(t, 2, f.wsCalls.Load())
+				require.Zero(t, f.httpCalls.Load())
+				require.NoError(t, c.CloseNow())
+				select {
+				case err := <-f.errors:
+					require.NoError(t, err)
+				case <-f.ctx.Done():
+					t.Fatal("shared Key native ingress did not finish")
+				}
+			})
+		}
+	}
+}
+
+func TestSharedUpstreamKeyWSIngressRejectsBeforeGeneration(t *testing.T) {
+	for _, ingress := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
+		for _, refusal := range []error{ErrUpstreamKeyCapacity, ErrUpstreamKeyPolicy} {
+			t.Run(ingress+"/"+refusal.Error(), func(t *testing.T) {
+				f := newSmartProtocolNetwork(t, "ws", false, "")
+				f.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("synthetic-only"): 1}}
+				f.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+				f.cfg.Gateway.OpenAIWS.IngressModeDefault = ingress
+				f.account.Extra["openai_apikey_responses_websockets_v2_mode"] = ingress
+				authority := &smartProtocolKeyHTTP{smartProtocolNetworkHTTP: smartProtocolNetworkHTTP{f.upstream.Client()}, err: refusal}
+				f.svc.httpUpstream = authority
+				c := f.dial()
+				f.send(c, "first", "", 100)
+				select {
+				case err := <-f.errors:
+					var failover *UpstreamFailoverError
+					require.ErrorAs(t, err, &failover)
+					require.Equal(t, http.StatusServiceUnavailable, failover.StatusCode)
+					require.True(t, isUpstreamKeyAdmissionFailure(err))
+				case <-f.ctx.Done():
+					t.Fatal("shared Key admission did not finish")
+				}
+				require.EqualValues(t, 1, authority.calls.Load())
+				require.Zero(t, authority.active.Load())
+				require.Zero(t, f.httpCalls.Load())
+				require.Zero(t, f.wsCalls.Load(), "full capacity must not emit a response.create")
+			})
+		}
+	}
+}
+
+func TestSharedUpstreamKeyWSIngressRechecksAfterAuthorityWait(t *testing.T) {
+	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
 		t.Run(mode, func(t *testing.T) {
 			f := newSmartProtocolNetwork(t, "ws", false, "")
-			if mode == "disabled" {
-				f.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled = false
-			} else {
-				f.cfg.Gateway.OpenAIWS.SmartProtocol.Mode = mode
-			}
-			f.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("synthetic-only"): 1}}
+			f.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled = false
 			f.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
-			f.cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModePassthrough
+			f.account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+			f.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("synthetic-only"): 1}}
+			repo := &turnAdmissionRepo{account: f.account}
+			f.svc.accountRepo = repo
+			authority := &smartProtocolKeyHTTP{smartProtocolNetworkHTTP: smartProtocolNetworkHTTP{f.upstream.Client()}, onAcquire: func() {
+				latest := *f.account
+				latest.Credentials = maps.Clone(f.account.Credentials)
+				latest.Credentials["api_key"] = "rotated-fixture"
+				repo.account = &latest
+			}}
+			f.svc.httpUpstream = authority
 			c := f.dial()
-			for _, input := range []string{"first", "second"} {
-				f.send(c, input, "", 100)
-				f.terminal(c)
-				result := f.result()
-				require.Equal(t, "http", result.UpstreamProtocol)
-				require.EqualValues(t, 3, result.Usage.InputTokens)
-			}
-			require.EqualValues(t, 2, f.httpCalls.Load())
-			require.Zero(t, f.wsCalls.Load())
-			require.NoError(t, c.CloseNow())
+			f.send(c, "first", "", 100)
 			select {
 			case err := <-f.errors:
-				require.NoError(t, err)
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Equal(t, "account_binding_changed", denied.Reason)
 			case <-f.ctx.Done():
-				t.Fatal("shared Key HTTP bridge did not finish")
+				t.Fatal("latest account was not rechecked after shared authority wait")
 			}
+			require.EqualValues(t, 1, authority.calls.Load())
+			require.Zero(t, authority.active.Load(), "a post-slot refusal must release its exact member")
+			require.Zero(t, f.httpCalls.Load())
+			require.Zero(t, f.wsCalls.Load())
 		})
 	}
 }
@@ -324,6 +421,7 @@ func TestSharedUpstreamKeyWSIngressPreservesAccountDisable(t *testing.T) {
 func TestSharedUpstreamKeyWSIngressPreservesTurnAdmission(t *testing.T) {
 	f := newSmartProtocolNetwork(t, "ws", false, "")
 	f.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("synthetic-only"): 1}}
+	f.svc.httpUpstream = &smartProtocolKeyHTTP{smartProtocolNetworkHTTP: smartProtocolNetworkHTTP{f.upstream.Client()}}
 	f.beforeTurn = func(turn int) error {
 		if turn == 2 {
 			return errors.New("fixture account concurrency unavailable")
@@ -341,8 +439,8 @@ func TestSharedUpstreamKeyWSIngressPreservesTurnAdmission(t *testing.T) {
 	case <-f.ctx.Done():
 		t.Fatal("missing turn admission rejection")
 	}
-	require.EqualValues(t, 1, f.httpCalls.Load(), "shared Key bridge must retain the original account turn hook")
-	require.Zero(t, f.wsCalls.Load())
+	require.EqualValues(t, 1, f.wsCalls.Load(), "shared Key native ingress must retain the original account turn hook")
+	require.Zero(t, f.httpCalls.Load())
 }
 
 func TestOpenAIWSHTTPBridgeRejectsRotatedStaticKeyBetweenTurns(t *testing.T) {

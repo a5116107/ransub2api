@@ -43,12 +43,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
-	var keyAuthority UpstreamKeyConcurrency
-	if s.cfg != nil && s.cfg.Gateway.UpstreamKeyConcurrency.Configured() {
-		var ok bool
-		if keyAuthority, ok = s.httpUpstream.(UpstreamKeyConcurrency); !ok {
-			return nil, wrapOpenAIWSFallback("upstream_key_concurrency_unavailable", ErrUpstreamKeyPolicy)
-		}
+	keyAuthority, authorityErr := s.openAIWSKeyAuthority()
+	if authorityErr != nil {
+		return nil, wrapOpenAIWSFallback("upstream_key_concurrency_unavailable", authorityErr)
 	}
 	ctx = withOpenAITransportMode(ctx, "ctx_pool")
 	responseModelObserver := &upstreamResponseModelObserver{}
@@ -472,30 +469,19 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if err := checkBeforeWrite(); err != nil {
 		return nil, err
 	}
-	if keyAuthority != nil {
-		keyCtx, releaseKey, admissionErr := keyAuthority.AcquireUpstreamKeySlots(ctx, lease.conn.upstreamKeyFingerprints)
-		if admissionErr != nil {
-			cleanExit = true // No frame sent; local capacity does not break a healthy connection.
-			if failover := upstreamKeyAdmissionFailover(admissionErr); failover != nil {
-				return nil, failover
-			}
-			return nil, admissionErr
-		}
-		if releaseKey != nil {
-			ctx = keyCtx
-			closed := make(chan struct{})
-			stop := context.AfterFunc(ctx, func() {
-				defer close(closed)
-				lease.MarkBroken()
-			})
-			defer func() {
-				if !stop() {
-					<-closed
-				}
-				releaseKey()
-			}()
-		}
+	keyTurn := &openAIWSKeyTurn{authority: keyAuthority, fingerprints: lease.conn.upstreamKeyFingerprints, abort: func(error) { lease.MarkBroken() }}
+	keyCtx, admissionErr := keyTurn.begin(ctx)
+	if admissionErr != nil {
+		cleanExit = true
+		return nil, admissionErr
 	}
+	ctx = keyCtx
+	defer func() {
+		if keyAuthority != nil && !cleanExit {
+			lease.MarkBroken()
+		}
+		keyTurn.finish()
+	}()
 	// Only the optional cold-prewarm path needs a separate size preflight.
 	// Release its encoder buffer before awaiting the prewarm response. The
 	// usual path still encodes once, directly into the synchronous write.

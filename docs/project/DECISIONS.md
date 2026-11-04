@@ -427,3 +427,18 @@
 - 最后冷缓存慢仓储/后台生效补强后的两包完整未限量golangci-lint实际输出0 issues.、退出0，未调整规则、限制诊断数或跳过用例。本轮最终生产实现完整service357.932s、handler152.791s通过；最新补强测试100次2.290s与两包vet通过，服务默认标签回归/handler编译通过，真实流量回放专项三轮通过。
 - 交付复核：Antigravity六处旧直接发送改为唯一最终准入入口，旧handler测试原位扩展，无重复实现。格式与差异空白检查通过，新增TODO/FIXME/XXX为0，STATE74行；源码历史图片仍12个共1164bytes，本轮新增持久测试产物0。18个任务文件分为OAuth、确定性时序测试、Antigravity准入与既有三份文档的本地提交；只保留单一工作树，不推送、不运行CI、不部署/迁移。
 - 本轮完整交付Antigravity最终发送/重试准入范围，并修复刷新截止时间竞态和两项墙钟夹具阻塞。原20项仍12 done、2 in_progress、6 pending，父任务done增量0；D2/D4跨协议来源、直接WS/Live/区域与缓存域及后续D3/D5–D9保持原验收。历史清理审核拒绝与Windows符号链接权限等待保留，不以本轮通过替代其解除条件。
+
+
+## 2026-11-04：直接 Responses WS 原生逐轮共享 Key 额度
+
+- 接续15e676f。原强制HTTP桥接使配置共享Key后的ctx_pool/passthrough丢失原生协议；新增8个协议矩阵子例在旧实现全部实际失败，service1.713s。原位移除强制桥接，HTTP→WS、直接ctx_pool与passthrough共用唯一轮次额度生命周期，继续使用既有HTTPUpstream可选端口及Redis权威，不新增配置或明文凭据副本。
+- 原生每轮按实际握手Key取槽；正常终态释放且空闲连接不占额度，健康连接复用。容量/策略拒绝保持本地503且生成帧0，等待期间账号Key变更在最终物理发送前拒绝并精确归还槽位。原账号off、逐轮BeforeTurn、显式HTTP桥接及智能协议规则保持。
+- 首轮repository13.387s失败暴露夹具默认模式被legacy开关覆盖，以及新租约场景3秒读超时早于原5秒续租发现。显式配置实际账号模式，新租约场景读取预算覆盖已有心跳；原取消3秒回收断言不变。随后三轮repository70.192s和70.561s仍失败，真正透传取消未及时释放。
+- coder/websocket的Close与CloseNow共用closing CAS；只改取消回调不足以打断已开始的普通关闭握手。relay、退出、取消统一使用已有CloseNow后，repository55.333s仍暴露释放排在下游closeForControl之后的问题。原位将已结束relay的额度回收提前至下游关闭通知之前，先关闭上游且等待取消回调，再释放精确成员；不扩大原回收时限、不skip、不重放失效轮次。并保持frame wrapper的nil receiver关闭契约。
+- 修复后的原专项连续三轮实际通过：service16.997s、repository61.565s、退出0。覆盖HTTP→原生WS与直接HTTP桥接/ctx_pool/passthrough、真实Redis租约与HTTP竞争、两轮终态空闲释放及第三轮取消/租约丢失；ctx_pool/passthrough两轮只握手一次。完整回归和静态检查结果在实际返回后追加。
+
+- 上游测试改为独立的服务器请求上下文，确保取消信号只能经真实连接关闭传递，不借用被测客户端上下文。最新repository原生共享生命周期专项三轮实际通过63.336s。默认标签专项此前实际通过service11.748s、repository24.455s；handler2.171s为编译检查（no tests to run），最新连接关闭补强由unit专项覆盖。三包go vet首次实际退出0。
+
+- 最终完整unit本地回归实际通过：service339.829s、handler153.185s、openai_ws_v2 4.230s，退出0。最新repository补强后go vet输出Final repository vet: PASS；三包完整未限量lint最终输出0 issues.、退出0。前两次lint在包加载阶段返回no go files to analyze；go list独立确认三包各862/89/249个GoFiles且Error=nil，沿原并发2完整命令重跑通过，未执行go mod tidy或修改检查规则。
+- 主设计原位删除共享Key强制HTTP桥接及原生未接通的过时说明，STATE保持74行。旧强制桥接与旧测试符号源码残留0，新增TODO/FIXME/XXX为0，git diff --check通过；历史12个PNG仍共1164bytes，本轮新增持久产物0。精确交付6个Go文件及现有三份文档，单一工作树，仅本地提交。
+- 本轮完整闭环直接原生WS共享额度接线与真实生命周期验收；原20项仍12 done、2 in_progress、6 pending，父任务done增量0。D2跨协议来源、Live/区域与缓存域，D4区域传播与模型/fast来源，以及D3/D5–D9保持原验收。历史Windows符号链接权限和清理审核拒绝等待保留，不以专项通过替代全局验收；不推送、不运行CI、不部署/迁移。

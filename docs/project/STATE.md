@@ -18,7 +18,7 @@
 | 任务 | 状态 | 证据/剩余范围 |
 | --- | --- | --- |
 | D1 | done | 主设计第 3.1 节已记录原配置覆盖、倍率口径、共享 Key 缺口及最小补丁边界 |
-| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS 桥接共享额度、静态 Key 请求绑定及本地拒绝归因/搜索503已验证；Sub2API请求固定组与倍率确认、最终HTTP/原生WS握手归属及通用原生网关13个发送点、Gemini三个生成循环及Antigravity六个发送点终检已实现；跨协议计价、直接 WS 原生接入/Live/区域及缓存域仍待验收 |
+| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS ctx_pool/passthrough/桥接逐轮共享额度、静态 Key 请求绑定及本地拒绝归因/搜索503已验证；Sub2API请求固定组与倍率确认、最终HTTP/原生WS握手归属及通用原生网关13个发送点、Gemini三个生成循环及Antigravity六个发送点终检已实现；跨协议计价、Live/区域及缓存域仍待验收 |
 | D2.1 | done | 自动同步快照有效性、尝试时刻高峰、原同步值域与在线/预演同源已落地；30 类边界及槽位释放覆盖，三轮专项、完整本地回归、vet 与真实 CLI 演练通过 |
 | D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
 | D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；专项三轮通过 |
@@ -43,7 +43,7 @@
 - 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
 - D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
 - 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- 本轮Antigravity独立网关：26项旧实现拒绝失败已复现，六发送点/8类重试与历史静态Key绑定已补齐，8条完整入口503已验证。完整service357.932s、handler152.791s通过；修复刷新Deadline竞态并本地提交9e9b67c。首输出与冷缓存原位改为确定性时序，最终专项100次2.290s及两包vet通过，真实流量回放保留原时限且三轮通过；最新两包完整未限量lint输出0 issues.。原20项仍12 done、2 in_progress、6 pending，父任务done增量0。
+- 本轮直接原生 WS：ctx_pool/passthrough 保留原协议，逐轮按实际握手 Key 共享额度，等待后权威终检，终态释放与取消/失效先关闭上游再回收；移除共享配置强制 HTTP 桥接。最终 service 专项三轮16.997s，独立上游连接关闭补强后 repository 三轮63.336s；完整 service339.829s、handler153.185s、WS relay4.230s通过，三包vet与完整未限量lint（0 issues.）通过。原20项仍12 done、2 in_progress、6 pending，父任务done增量0。
 - 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。
 
 ## 当前验证入口
@@ -52,15 +52,15 @@
 
 ```powershell
 $env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
-go test -tags=unit -p 2 ./internal/service ./internal/handler -run 'Test(AntigravityFinal|IndependentGatewayHandlersPreserveFinalAdmissionGate|GeminiFinal|NativeHandlersPreserveSelectionGateUntilSend|GatewayFinal)' -count=3 -timeout=6m
-go vet -tags=unit -p 2 ./internal/service ./internal/handler
+go test -tags=unit -p 2 ./internal/service ./internal/repository -run 'TestSharedUpstreamKey|TestUpstreamKey(WebSocketIngress|NativeWebSocket)SharedLifetime' -count=3 -timeout=4m
+go vet -tags=unit -p 2 ./internal/service ./internal/handler ./internal/repository
 ```
 
 ## 下一项工作
 
-D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；Sub2API请求级固定组与倍率确认、OpenAI通用最终HTTP与原生WS握手归属已实现；剩余跨协议计价来源、直接 WS 原生接入/Live/区域共享额度与缓存域；不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
+D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；Sub2API请求级固定组与倍率确认、OpenAI通用最终HTTP与原生WS握手归属已实现；剩余跨协议计价来源、Live/区域共享额度与缓存域；不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
 D3–D9 主线仍待按设计依赖实施与验收；D4.1/D4.2 和 M1–M5 的完成不代表全局方案已全部落地。
-D2 接着完成跨协议来源、直接 WS 原生接入/Live/区域及缓存域证据；Gemini生成循环与Antigravity六个发送点、智能重试和静态Key最终准入已实现。HTTP→原生 WS 已按实际握手 Key 共用活跃轮次额度，取消/租约丢失关闭连接且后者不转 HTTP 重放；直接下游 WS 仍经 HTTP/SSE bridge，Live/区域仍拒绝。D4 继续核对其他路径、区域传播及模型/fast 来源，原父验收不变。
+D2 接着完成跨协议来源、Live/区域及缓存域证据；Gemini生成循环与Antigravity六个发送点、智能重试和静态Key最终准入已实现。HTTP→原生 WS 已按实际握手 Key 共用活跃轮次额度，取消/租约丢失关闭连接且后者不转 HTTP 重放；直接下游 WS 保留 ctx_pool/passthrough 原生协议并按实际握手 Key 逐轮共享，等待后权威终检、终态释放与取消/失效关闭回收已验证；Live/区域仍拒绝。D4 继续核对其他路径、区域传播及模型/fast 来源，原父验收不变。
 
 ## 外部验收等待
 

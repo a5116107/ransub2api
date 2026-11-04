@@ -193,7 +193,15 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 	require.Zero(t, httpCalls.Load())
 }
 
-func TestUpstreamKeyWebSocketBridgeSharedLifetime(t *testing.T) {
+func TestUpstreamKeyWebSocketIngressSharedLifetime(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough} {
+		for _, loss := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/lease_loss=%t", mode, loss), func(t *testing.T) { testUpstreamKeyWSIngressLifetime(t, mode, loss) })
+		}
+	}
+}
+
+func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
 	gin.SetMode(gin.TestMode)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -206,22 +214,75 @@ func TestUpstreamKeyWebSocketBridgeSharedLifetime(t *testing.T) {
 	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
 	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
 	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
-	cfg.Gateway.OpenAIWS.IngressModeDefault = service.OpenAIWSIngressModePassthrough
+	cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = mode
 	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+	if loss {
+		cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 10
+	}
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 	var requests atomic.Int32
 	started := make(chan struct{}, 4)
 	finish := make(chan struct{}, 4)
 	canceled := make(chan struct{}, 1)
+	var httpCalls, handshakes atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Upgrade") != "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
+		// Observe the actual transport closing, independently of the ingress
+		// cancellation used by the client under test.
+		ctx := r.Context()
 		if r.Header.Get("Authorization") != "Bearer supplier-fixture" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if r.Header.Get("Upgrade") != "" {
+			handshakes.Add(1)
+			peer, err := coderws.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = peer.CloseNow() }()
+			incoming := make(chan []byte, 1)
+			peerClosed := make(chan struct{})
+			go func() {
+				defer close(peerClosed)
+				for {
+					_, payload, err := peer.Read(ctx)
+					if err != nil {
+						return
+					}
+					select {
+					case incoming <- payload:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+			for {
+				select {
+				case <-incoming:
+					request := requests.Add(1)
+					started <- struct{}{}
+					select {
+					case <-finish:
+						event := fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_%d","model":"gpt-5.1","status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}`, request)
+						if err := peer.Write(ctx, coderws.MessageText, []byte(event)); err != nil {
+							return
+						}
+					case <-peerClosed:
+						canceled <- struct{}{}
+						return
+					case <-ctx.Done():
+						canceled <- struct{}{}
+						return
+					}
+				case <-peerClosed:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		httpCalls.Add(1)
 		request := requests.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"pending\"}}\n\n")
@@ -239,8 +300,10 @@ func TestUpstreamKeyWebSocketBridgeSharedLifetime(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	account := &service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 8,
 		Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
+	account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 	httpPort := newHTTPUpstream(cfg, nil, rdb)
 	svc := service.NewOpenAIGatewayService(upstreamKeyWSAccounts{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, httpPort, nil, nil, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(svc.CloseOpenAIWSPool)
 	turns := make(chan *service.OpenAIForwardResult, 4)
 	errors := make(chan error, 4)
 	ingress := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +333,7 @@ func TestUpstreamKeyWebSocketBridgeSharedLifetime(t *testing.T) {
 		select {
 		case <-started:
 		case <-ctx.Done():
-			t.Fatal("bridge did not send HTTP request")
+			t.Fatal("WS ingress did not start its turn")
 		}
 		require.EqualValues(t, 1, rdb.ZCard(ctx, key).Val())
 		// A separate account/client using the same actual credential cannot
@@ -294,14 +357,18 @@ func TestUpstreamKeyWebSocketBridgeSharedLifetime(t *testing.T) {
 		select {
 		case result := <-turns:
 			require.NotNil(t, result)
-			require.Equal(t, "http", result.UpstreamProtocol)
+			expected := "ws"
+			if mode == service.OpenAIWSIngressModeHTTPBridge {
+				expected = "http"
+			}
+			require.Equal(t, expected, result.UpstreamProtocol)
 			require.EqualValues(t, 3, result.Usage.InputTokens)
 		case <-ctx.Done():
 			t.Fatal("missing turn completion")
 		}
 		require.Zero(t, rdb.ZCard(ctx, key).Val(), "idle WS must release the shared slot")
 	}
-	// Cancel an active third turn, rather than just closing an idle socket.
+	// Interrupt an active third turn; idle sockets hold no shared capacity.
 	require.NoError(t, conn.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","input":"cancel"}`)))
 	select {
 	case <-started:
@@ -309,18 +376,39 @@ func TestUpstreamKeyWebSocketBridgeSharedLifetime(t *testing.T) {
 		t.Fatal("third turn did not start")
 	}
 	require.EqualValues(t, 1, rdb.ZCard(ctx, key).Val())
-	cancel()
+	if loss {
+		require.NoError(t, rdb.Del(ctx, key).Err())
+	} else {
+		cancel()
+	}
+	waitBudget := 3 * time.Second
+	if loss {
+		waitBudget = 8 * time.Second
+	} // Includes the existing five-second lease heartbeat.
 	select {
 	case <-canceled:
-	case <-time.After(3 * time.Second):
-		t.Fatal("cancel did not reach the upstream HTTP request")
+	case <-time.After(waitBudget):
+		t.Fatal("cancellation or lease loss did not stop the upstream request")
 	}
 	require.Eventually(t, func() bool { return rdb.ZCard(t.Context(), key).Val() == 0 }, 3*time.Second, 10*time.Millisecond)
 	require.NoError(t, conn.CloseNow())
 	select {
 	case err := <-errors:
-		require.ErrorIs(t, err, context.Canceled)
+		if loss {
+			require.ErrorIs(t, err, service.ErrUpstreamKeyLease)
+		} else {
+			require.ErrorIs(t, err, context.Canceled)
+		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("bridge cleanup did not finish")
+		t.Fatal("WS ingress cleanup did not finish")
 	}
+	require.EqualValues(t, 3, requests.Load(), "no interrupted turn is replayed")
+	if mode == service.OpenAIWSIngressModeHTTPBridge {
+		require.EqualValues(t, 3, httpCalls.Load())
+		require.Zero(t, handshakes.Load())
+	} else {
+		require.Zero(t, httpCalls.Load())
+		require.EqualValues(t, 1, handshakes.Load(), "completed turns retain native connection affinity")
+	}
+
 }
