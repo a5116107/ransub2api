@@ -166,6 +166,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 	}
 
 	var lastUpstreamErr *service.GeminiCachedContentUpstreamError
+	var keyAdmissionRejected bool
 	var ttlRejectedLimit time.Duration
 	for attempts := 0; attempts < geminiCachedContentCreateMaxAttempts; {
 		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, "", modelName, excluded, "", int64(0))
@@ -237,6 +238,11 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		upstream, err := svc.CreateUpstream(c.Request.Context(), account, req, mappedModel, publicID, ttl)
 		accountReleaseFunc()
 		if err != nil {
+			if service.IsUpstreamKeyAdmissionFailure(err) {
+				keyAdmissionRejected = true
+				excluded[account.ID] = struct{}{}
+				continue
+			}
 			var upErr *service.GeminiCachedContentUpstreamError
 			if errors.As(err, &upErr) {
 				reqLog.Info("gemini.cached_content.upstream_create_failed", zap.Int64("account_id", account.ID), zap.Int("status", upErr.StatusCode))
@@ -322,6 +328,10 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 
 	if lastUpstreamErr != nil {
 		h.writeGeminiCachedContentUpstreamError(c, lastUpstreamErr)
+		return
+	}
+	if keyAdmissionRejected {
+		writeGeminiCachedContentKeyAdmissionError(c)
 		return
 	}
 	if ttlRejectedLimit > 0 {
@@ -483,6 +493,10 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 			}
 			cancelPersist()
 		}
+		if service.IsUpstreamKeyAdmissionFailure(err) {
+			writeGeminiCachedContentKeyAdmissionError(c)
+			return
+		}
 		if upstreamRejected {
 			if upErr.NotFound() {
 				if forgetErr := svc.Forget(c.Request.Context(), record); forgetErr != nil {
@@ -539,6 +553,10 @@ func (h *GatewayHandler) GeminiCachedContentsDelete(c *gin.Context) {
 	if account != nil {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 		if err := svc.DeleteUpstream(c.Request.Context(), account, record); err != nil {
+			if service.IsUpstreamKeyAdmissionFailure(err) {
+				writeGeminiCachedContentKeyAdmissionError(c)
+				return
+			}
 			var upErr *service.GeminiCachedContentUpstreamError
 			if !errors.As(err, &upErr) {
 				reqLog.Warn("gemini.cached_content.upstream_delete_error", zap.Int64("account_id", account.ID), zap.Error(err))
@@ -755,6 +773,11 @@ func writeGeminiCachedContentMutationConflict(c *gin.Context) {
 			"status":  "ABORTED",
 		},
 	})
+}
+
+func writeGeminiCachedContentKeyAdmissionError(c *gin.Context) {
+	markOpsRoutingCapacityLimited(c)
+	googleErrorWithType(c, http.StatusServiceUnavailable, "api_error", string(service.UpstreamKeyAdmissionReason), "No shared upstream Key capacity is available")
 }
 
 func writeGeminiCachedContentBillingError(c *gin.Context, err error) {

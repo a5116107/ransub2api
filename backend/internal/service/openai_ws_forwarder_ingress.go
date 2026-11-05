@@ -715,7 +715,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		defer func() {
 			if smartStrict && returnErr != nil {
 				var closeErr *OpenAIWSClientCloseError
-				if !errors.As(returnErr, &closeErr) && !isUpstreamKeyAdmissionFailure(returnErr) && !errors.Is(returnErr, ErrUpstreamKeyLease) {
+				if !errors.As(returnErr, &closeErr) && !IsUpstreamKeyAdmissionFailure(returnErr) && !errors.Is(returnErr, ErrUpstreamKeyLease) {
 					returnErr = NewOpenAIWSClientCloseError(coderws.StatusInternalError, "upstream session ended; request was not replayed", nil)
 				}
 			}
@@ -2864,7 +2864,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentRequestedReasoningEffort)
-		if relayErr != nil && (isUpstreamKeyAdmissionFailure(relayErr) || errors.Is(relayErr, ErrUpstreamKeyLease)) {
+		if relayErr != nil && (IsUpstreamKeyAdmissionFailure(relayErr) || errors.Is(relayErr, ErrUpstreamKeyLease)) {
 			if errors.Is(relayErr, ErrUpstreamKeyLease) {
 				sessionLease.MarkBroken()
 			}

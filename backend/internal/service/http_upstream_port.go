@@ -17,10 +17,10 @@ var ErrUpstreamKeyLease = errors.New("upstream key concurrency lease lost")
 // UpstreamKeyAdmissionReason identifies a local refusal before network send.
 const UpstreamKeyAdmissionReason GatewayFailureReason = "upstream_key_admission_unavailable"
 
-// Keep pre-send local capacity refusals out of account-health observations,
+// IsUpstreamKeyAdmissionFailure keeps pre-send local capacity refusals out of account-health observations,
 // including when transport adapters wrap the original or classified error.
 // Lease loss after a send deliberately does not match this predicate.
-func isUpstreamKeyAdmissionFailure(err error) bool {
+func IsUpstreamKeyAdmissionFailure(err error) bool {
 	if errors.Is(err, ErrUpstreamKeyCapacity) || errors.Is(err, ErrUpstreamKeyPolicy) {
 		return true
 	}

@@ -575,6 +575,15 @@ func TestGeminiCachedContentsPatch_StaleMutationRolledBackBeforeNextUpdate(t *te
 
 // 上游结果未知（传输层错误）时保留修改意图等待回滚；上游明确拒绝时清除修改意图。两种情况都不收费。
 func TestGeminiCachedContentsPatch_MutationKeptOnlyWhenUpstreamOutcomeUnknown(t *testing.T) {
+	t.Run("lease lost after send", func(t *testing.T) {
+		env := newCachedBillingEnv(t, 1000, 900)
+		env.seed(time.Now().Add(time.Hour))
+		env.upstream.transportErrors = map[string]error{http.MethodPatch: service.ErrUpstreamKeyLease}
+
+		require.Equal(t, http.StatusBadGateway, env.patch().Code)
+		require.True(t, env.repo.pendingMutation(100))
+		require.Empty(t, env.usage.totals())
+	})
 	t.Run("transport error", func(t *testing.T) {
 		env := newCachedBillingEnv(t, 1000, 900)
 		env.seed(time.Now().Add(time.Hour))
@@ -594,6 +603,68 @@ func TestGeminiCachedContentsPatch_MutationKeptOnlyWhenUpstreamOutcomeUnknown(t 
 		require.False(t, env.repo.pendingMutation(100))
 		require.Empty(t, env.usage.totals())
 	})
+}
+
+func TestGeminiCachedContentsLocalKeyAdmission(t *testing.T) {
+	for _, failure := range []struct {
+		name string
+		err  error
+	}{
+		{"capacity", service.ErrUpstreamKeyCapacity},
+		{"policy", fmt.Errorf("wrapped: %w", service.ErrUpstreamKeyPolicy)},
+		{"classified", &service.UpstreamFailoverError{StatusCode: 503, Reason: service.UpstreamKeyAdmissionReason}},
+	} {
+		for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete} {
+			t.Run(failure.name+"/"+method, func(t *testing.T) {
+				env := newCachedBillingEnv(t, 1000, 900)
+				env.upstream.createBody = cachedBillingCreateBody(time.Now().Add(100 * time.Hour))
+				if method != http.MethodPost {
+					env.seed(time.Now().Add(time.Hour))
+				}
+				env.upstream.transportErrors = map[string]error{method: failure.err}
+				var scoped bool
+				call := func() *httptest.ResponseRecorder {
+					var handler func(*gin.Context)
+					var body, target string
+					var params gin.Params
+					switch method {
+					case http.MethodPost:
+						handler = env.h.GeminiCachedContentsCreate
+						target = "/v1beta/cachedContents"
+						body = `{"model":"models/gemini-2.5-pro","ttl":"86400s","contents":[{"role":"user","parts":[{"text":"doc"}]}]}`
+					case http.MethodPatch:
+						handler = env.h.GeminiCachedContentsPatch
+						target = "/v1beta/cachedContents/abc?updateMask=ttl"
+						body = `{"ttl":"86400s"}`
+						params = gin.Params{{Key: "cacheID", Value: "abc"}}
+					case http.MethodDelete:
+						handler = env.h.GeminiCachedContentsDelete
+						target = "/v1beta/cachedContents/abc"
+						params = gin.Params{{Key: "cacheID", Value: "abc"}}
+					}
+					return env.serve(method, target, body, params, func(c *gin.Context) {
+						handler(c)
+						scoped = service.IsOpsRequestScopedError(c)
+					})
+				}
+				rejected := call()
+				require.Equal(t, http.StatusServiceUnavailable, rejected.Code, rejected.Body.String())
+				require.Contains(t, rejected.Body.String(), "No shared upstream Key capacity is available")
+				require.False(t, scoped, "capacity is a local platform condition, not a client request error")
+				require.False(t, env.repo.pendingMutation(100), "a pre-send refusal must not leave a mutation to roll back")
+				require.Empty(t, env.repo.deleted)
+				require.Empty(t, env.usage.totals(), "local refusal cannot charge for upstream work")
+				require.Equal(t, 1, env.upstream.methodCalls(method))
+				delete(env.upstream.transportErrors, method)
+				recovered := call()
+				require.Equal(t, http.StatusOK, recovered.Code, recovered.Body.String())
+				require.Equal(t, 2, env.upstream.methodCalls(method), "recovery must not send an unnecessary rollback")
+				if method == http.MethodDelete {
+					require.Equal(t, []int64{100}, env.repo.deleted)
+				}
+			})
+		}
+	}
 }
 
 // 修改前的到期时间已过：恢复时删除上游缓存与本地记录。

@@ -593,7 +593,7 @@ func (s *OpenAIGatewayService) createUpstreamLiveCall(
 	resp, err := s.doOpenAIUpstream(upstreamReq, resolveAccountProxyURL(account), account)
 	if err != nil {
 		logLiveCreateStageFailure(ctx, account.ID, "upstream_transport", err)
-		if isUpstreamKeyAdmissionFailure(err) || IsOpenAITurnAdmissionError(err) {
+		if IsUpstreamKeyAdmissionFailure(err) || IsOpenAITurnAdmissionError(err) {
 			releaseKeyLease()
 			return nil, err
 		}

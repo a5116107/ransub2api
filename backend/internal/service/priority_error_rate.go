@@ -217,7 +217,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 			var phaseErr *openAIHTTPPhaseTimeout
 			include := errors.As(context.Cause(req.Context()), &phaseErr) || !errors.Is(err, context.Canceled) && errors.As(err, &netErr)
 			scope.complete(observation, func(disconnected, forced bool) {
-				if !disconnected && scope.ctx.Err() == nil && !isUpstreamKeyAdmissionFailure(err) && (include || forced) {
+				if !disconnected && scope.ctx.Err() == nil && !IsUpstreamKeyAdmissionFailure(err) && (include || forced) {
 					stats.attempts.report(key, false, stats.currentTime())
 				}
 			})

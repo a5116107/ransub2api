@@ -353,7 +353,7 @@ func TestSharedUpstreamKeyWSIngressRejectsBeforeGeneration(t *testing.T) {
 					var failover *UpstreamFailoverError
 					require.ErrorAs(t, err, &failover)
 					require.Equal(t, http.StatusServiceUnavailable, failover.StatusCode)
-					require.True(t, isUpstreamKeyAdmissionFailure(err))
+					require.True(t, IsUpstreamKeyAdmissionFailure(err))
 				case <-f.ctx.Done():
 					t.Fatal("shared Key admission did not finish")
 				}

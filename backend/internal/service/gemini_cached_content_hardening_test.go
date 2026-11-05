@@ -23,6 +23,34 @@ const geminiCacheHardeningPricing = `{
 	"gemini-2.5-pro":{"litellm_provider":"gemini","input_cost_per_token":0.00000125,"output_cost_per_token":0.00001,
 		"cache_storage_cost_per_token_per_hour":0.0000045}}`
 
+func TestGeminiCachedContentPreSendKeyAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		notSent bool
+	}{
+		{"capacity", ErrUpstreamKeyCapacity, true},
+		{"wrapped_policy", fmt.Errorf("wrapped: %w", ErrUpstreamKeyPolicy), true},
+		{"classified", &UpstreamFailoverError{StatusCode: 503, Reason: UpstreamKeyAdmissionReason}, true},
+		{"lease_lost", ErrUpstreamKeyLease, false},
+		{"transport", errors.New("connection reset"), false},
+	} {
+		for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete} {
+			t.Run(tc.name+"/"+method, func(t *testing.T) {
+				svc, upstream := newGeminiCachedContentServiceForTest(t, 200, `{}`)
+				upstream.err = tc.err
+				account := &Account{ID: 9, Platform: PlatformGemini, Type: AccountTypeAPIKey,
+					Credentials: map[string]any{"api_key": "fixture-key"}}
+				_, err := svc.doUpstream(context.Background(), account, method,
+					"https://generativelanguage.googleapis.com/v1beta/cachedContents/up1", nil, time.Second)
+				require.ErrorIs(t, err, tc.err)
+				require.Equal(t, tc.notSent, errors.Is(err, ErrGeminiCachedContentRequestNotSent))
+				require.Equal(t, tc.notSent, IsUpstreamKeyAdmissionFailure(err))
+			})
+		}
+	}
+}
+
 func newGeminiCacheBillingGatewayForTest(t *testing.T) (*GatewayService, *openAIRecordUsageLogRepoStub) {
 	t.Helper()
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}

@@ -62,6 +62,20 @@ func TestOpsErrorLoggerMiddleware_GooglePlatformErrorStaysPlatform(t *testing.T)
 	require.Equal(t, "gateway", entry.ErrorSource)
 }
 
+func TestOpsErrorLoggerMiddleware_GeminiCacheKeyAdmissionStaysLocal(t *testing.T) {
+	var code string
+	entry := recordGoogleFormatOpsError(t, func(c *gin.Context) {
+		writeGeminiCachedContentKeyAdmissionError(c)
+		_, code = service.OpsLocalErrorType(c)
+	})
+	require.Equal(t, http.StatusServiceUnavailable, entry.StatusCode)
+	require.Equal(t, "api_error", entry.ErrorType)
+	require.Equal(t, string(service.UpstreamKeyAdmissionReason), code)
+	require.Equal(t, "routing", entry.ErrorPhase)
+	require.Equal(t, "platform", entry.ErrorOwner)
+	require.Equal(t, "gateway", entry.ErrorSource)
+}
+
 func TestOpsErrorLoggerMiddleware_GoogleServerErrorsNotTypedByStatus(t *testing.T) {
 	entry := recordGoogleFormatOpsError(t, func(c *gin.Context) {
 		googleError(c, http.StatusInternalServerError, "Failed to persist cached content")

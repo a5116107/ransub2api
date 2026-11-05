@@ -3020,7 +3020,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	if account == nil {
 		return false
 	}
-	if !success && len(observedErr) > 0 && isUpstreamKeyAdmissionFailure(observedErr[0]) {
+	if !success && len(observedErr) > 0 && IsUpstreamKeyAdmissionFailure(observedErr[0]) {
 		return false
 	}
 	if !success && len(observedErr) > 0 && isGrokRequestScopedFailure(observedErr[0]) {

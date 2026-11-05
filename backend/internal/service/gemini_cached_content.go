@@ -1082,6 +1082,9 @@ func (s *GeminiCachedContentService) doUpstream(ctx context.Context, account *Ac
 	}
 	resp, err := s.compat.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
+		if IsUpstreamKeyAdmissionFailure(err) {
+			return nil, geminiCachedContentNotSent(err)
+		}
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
