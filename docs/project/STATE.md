@@ -3,11 +3,11 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2客户端具体turn-state来源、WS/SIWC及共享Redis子范围已本地验证完成；D2父任务保留。不运行CI、不推送/部署/生产迁移。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，基线`dc78167`；最终12份Go摘要`ef3afc947459`，本地交付见Git。
-- 最近证据：95767整链退出0：三轮专项58.978/5.109s、race12.847/10.129s、默认五包编译/vet及完整双包lint 0 issues；真实Redis8540通过4.739s。旧三包/失败边界见DECISIONS。
-- 下一动作：继续D2其他协议/工具任务缓存归属与非标准出站共享额度；先核对Gemini显式缓存、Grok独立缓存，再补D3/D4原验收。
-- 等待：既有验证产物删除预演曾被审批拒绝，保留13文件77603133bytes；Windows符号链接权限及历史清理仍待拥有者解除。原20项12 done、3 in_progress、5 pending，父done增量0。
+- 任务：D2 Gemini显式缓存实际模型终检子范围已验证；继续其他缓存域与非标准出站额度。不运行CI、不推送/部署/生产迁移。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基线`6e19bfd`；上一轮客户端WS/SIWC/Redis来源已本地提交。
+- 最近证据：最终18场景及同账号重试、相关缓存/计费三轮handler15.597s；race三轮13.727s；默认handler/server编译、handler vet及完整handler lint（0 issues.）通过。详见DECISIONS。
+- 下一动作：继续D2其余缓存域及非标准出站额度验收；Gemini模型终检本地交付，不计D2父任务done。
+- 等待：历史产物清理审批与Windows符号链接权限保持；20项12 done、3 in_progress、5 pending，父done增量0。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、发送绑定、公共/区域共享Key及Live持久交接已验证；compat/HTTP归属与WS托管归属、复用隔离及重连恢复本地完成；客户端具体状态/WS/SIWC/共享Redis来源、提交时机及权威TTL本地完成；其他协议缓存域与非标准出站额度待验收 |
+| D2 | in_progress | D2.1–D2.4、发送绑定、公共/区域共享Key及Live持久交接已验证；compat/HTTP/WS/SIWC来源与共享Redis权威TTL完成；Gemini创建时实际模型终检、重试/槽位/恢复已验证；其他缓存域与非标准出站额度待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |

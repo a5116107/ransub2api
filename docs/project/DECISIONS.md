@@ -748,3 +748,13 @@
 - 最终95767整条顺序命令实际退出0；完整`./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 8m --allow-serial-runners ./internal/service/... ./internal/repository/...`输出`0 issues.`与Final service/repository lint: PASS。全部原规则与完整两包保留，验证进程内GOMEMLIMIT=4GiB/GOGC=50，不改全局环境。冻结后源码未变，收尾核对12份Go路径+原字节摘要仍为ef3afc94745985b444a86eee15c34e0b267c0006ee8659b4fe28019005ed6bfb。
 - 本轮完整关闭D2客户端具体blob来源、共享Redis与WS/SIWC接线子范围，包含首次归属冲突、失败attempt/心跳提交边界、共享TTL时钟偏移、故障/恢复和并发验证。最终受影响组合/race/编译/vet/lint覆盖最终源码；完整service/handler/routes350.489/165.167/14.010s在最后WS提交与TTL修复之前，未冒称最终全量重跑。旧无具体blob来源键、提前登记与共享实例到期字段均删除，没有新TODO/FIXME/XXX、第二缓存权威或配置。
 - 设计9.1与STATE已统一完成范围和后续原验收，原20项仍12 done、3 in_progress、5 pending，D2父任务不关闭。仅在H盘同一工作树本地提交15份任务文件，不推送/部署/生产迁移/CI。历史12张PNG与受审批拦截资源保持原路径，不制造干净状态；本轮未生成新的JSONL、临时overlay或任务台账。实际提交与最终工作树以Git为准。
+
+## 2026-11-05：D2 Gemini显式缓存的实际模型资源终检
+
+- 接续6e19bfd，在H盘唯一工作树按原D2其他协议缓存域验收推进。现有数据库已保存创建时UpstreamModel，但generate/stream/count入口只比较客户端Model和AccountID；相同别名改变账号映射仍发送旧缓存。73393在原生产逻辑新增三动作×映射/来源缺失/Vertex项目切换共九项，实际handler1.678s、退出1：映射/缺来源请求被200放行，Vertex切换进入后续鉴权502，而不是出站前拒绝。
+- 原位在GeminiV1BetaModels账号槽位取得及利润终检之后、黏性绑定与转发之前，用原GeminiCachedContentUpstreamModelResource与当前GetMappedModel构造完整模型资源，和创建时UpstreamModel精确比较。错误/空来源/不匹配均归还本次账号槽位、标记请求级permission_error并返回原缓存不存在403，不重写/删除缓存或延长TTL；所有handler同账号重试重走此处。没有新增数据库、配置、缓存或并行转发实现。
+- 第一版修复38877九场景连续三轮handler2.034s、退出0，含恢复原映射后原缓存成功使用。最终补账号槽位精确回收、请求级健康分类，以及首个429之后映射变化不发第二请求和恢复回归；90571执行三轮相关缓存/计费回归、三轮race、默认入口编译、vet与完整handler lint，结果以实际退出为准。此项只保护创建时实际模型/Vertex资源，不证明静态Key/端点未变、提供方真实缓存存活或供应商不降级，D2父任务保留。
+- 恢复时90571句柄已失效，未将未收取结果记为通过。61058重新运行相关缓存/计费三轮，handler14.670s、退出1，九场景的请求级标记断言失败。实际原因是googleErrorWithType调用SetOpsLocalErrorType清除标记；原位将标记移到googleError之后。另将原计费环境工厂复用为可注入调度并发服务，确保槽位计数来自实际选号，而非只替换handler的未使用服务。原拒绝、请求归因、精确释放及恢复断言均保留。25823相关三轮handler14.699s、退出0。
+- 扩展为三动作×六变化（映射、缺来源、Vertex项目/区域/模型/非法区域）共18场景。首轮21767因夹具误用region而非VertexLocation读取的location，handler3.050s、退出1；修正测试字段，没有修改生产区域解析或放宽断言。52575最终相关缓存/计费三轮handler15.597s、退出0；后续race仍待收取。68596默认handler/server编译4.767/3.575s均no tests to run，只计编译；随后handler unit标签vet无诊断、整条退出0。完整handler lint在41337按原规则、unit、并发2、8分钟和串行锁执行。
+- 最终52575整条退出0：`go test -p 1 -tags=unit ./internal/handler -run 'TestGemini.*(CachedContent|BoundCache)' -count=3 -timeout=3m`为handler15.597s；随后`go test -race -p 1 -tags=unit ./internal/handler -run 'TestGeminiV1BetaModels_BoundCache' -count=3 -timeout=3m`为handler13.727s。41337完整`./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 8m --allow-serial-runners ./internal/handler/...`实际输出`0 issues.`、退出0。没有缩小原规则，也不把默认编译称为完整默认测试。
+- 本轮闭环D2 Gemini创建时实际模型资源终检子范围，复用原字段与转发循环，无新增配置/数据库/并行实现或TODO。相关设计9.1与STATE统一；20项仍12 done、3 in_progress、5 pending，D2父任务不关闭。任务源码与文档本地提交，不运行CI、不推送/部署/生产迁移；未新增持久验证产物，历史受审批拦截资源与12张PNG仍按原外部等待保留。

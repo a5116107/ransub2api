@@ -758,6 +758,20 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		}
 		account = latest
 		selection.Account = latest
+		if cachedContentBinding != nil {
+			// The public alias can stay unchanged while an account's mapping,
+			// Vertex project or location changes. Cached content belongs to the
+			// complete model resource observed at creation, including on retries.
+			upstreamModel, modelErr := service.GeminiCachedContentUpstreamModelResource(account, account.GetMappedModel(modelName))
+			if modelErr != nil || upstreamModel != cachedContentBinding.UpstreamModel {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				googleError(c, http.StatusForbidden, service.GeminiCachedContentNotFoundMessage)
+				service.MarkOpsRequestScopedError(c, "permission_error")
+				return
+			}
+		}
 		// 等待路径保持既有 eager 绑定（无门时 helper 直接绑定）；调度器已抢槽
 		// 的直达路径无门时由选号内部绑定，这里只在门下补准入后绑定。
 		if selection.ProfitGateActive() || !selection.Acquired {

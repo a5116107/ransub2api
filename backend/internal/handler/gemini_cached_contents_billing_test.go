@@ -311,6 +311,11 @@ type cachedBillingEnv struct {
 
 func newCachedBillingEnv(t *testing.T, balance float64, accountIDs ...int64) *cachedBillingEnv {
 	t.Helper()
+	return newCachedBillingEnvWithConcurrency(t, balance, nil, accountIDs...)
+}
+
+func newCachedBillingEnvWithConcurrency(t *testing.T, balance float64, concurrency *service.ConcurrencyService, accountIDs ...int64) *cachedBillingEnv {
+	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "model_pricing.json"), []byte(fmt.Sprintf(`{"gemini-2.5-pro":{
 		"litellm_provider":"gemini","mode":"chat","input_cost_per_token":%g,"output_cost_per_token":0.00001,
@@ -343,7 +348,7 @@ func newCachedBillingEnv(t *testing.T, balance float64, accountIDs ...int64) *ca
 	t.Cleanup(bcs.Stop)
 	groupRepo := &fakeGroupRepo{group: group}
 	snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: scheduled}, nil, nil, groupRepo, nil)
-	gw := service.NewGatewayService(nil, groupRepo, usage, nil, userRepo, nil, nil, nil, cfg, snapshot, nil,
+	gw := service.NewGatewayService(nil, groupRepo, usage, nil, userRepo, nil, nil, nil, cfg, snapshot, concurrency,
 		billing, nil, &service.BillingCacheService{}, nil, nil, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	upstream := &cachedBillingUpstream{}
 	compat := service.NewGeminiMessagesCompatService(&cachedBillingAccountRepo{accounts: accounts}, nil, nil, nil, nil, nil, upstream, nil, cfg)
