@@ -771,3 +771,20 @@
 - 最终1337实际整条退出0：相关handler三轮24.399s；`go test -race -p 1 -tags=unit ./internal/service ./internal/handler -run 'TestGemini.*(CachedContent|BoundCache)|TestOpsErrorLoggerMiddleware_GeminiCacheKeyAdmission|TestSharedUpstreamKeySchedulerFeedback|TestOpenAIAPIKeyHealth' -count=3 -timeout=4m`实际service10.894s、handler15.714s。另63694原健康熔断排除用例`TestClassifyOpenAIAPIKeyHealthFailureExclusions`三轮service2.606s、退出0。91641默认service/handler/server编译3.802/3.292/3.730s均no tests to run，后续两包vet无诊断并进入完整两包lint，最终lint仍待实际退出。
 - 最终91641整条退出0，完整`./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 8m --allow-serial-runners ./internal/service/... ./internal/handler/...`输出`0 issues.`。进程内GOMEMLIMIT=4GiB/GOGC=50，未降低Go1.27.3、缩小规则或用差异lint替代。最终Go摘要再次核对后本地提交任务源码与三份原文档；旧私有谓词引用为0，没有新TODO/FIXME/XXX或并行实现。
 - 本轮完整关闭D2内显式缓存管理的本地共享Key拒绝、修改意图回收及恢复子范围；原20项仍12 done、3 in_progress、5 pending，未以局部回归关闭D2或替代生产验收。两个overlay目录及文件已自动清除，新增持久产物为0；12张历史PNG仍为1164bytes，原审批拦截清理资源保留。只在H盘唯一工作树本地交付，不推送/部署/生产迁移/CI。
+
+
+## 2026-11-05：D2 Gemini显式缓存的持久线路归属与实际发送守卫
+
+- 接续5362a6e，在H盘唯一工作树完成原D2缓存域的Gemini子范围；创建记录原先仅绑定AccountID/UpstreamModel，同账号更换静态Key、端点、代理或Vertex身份后无法识别旧缓存来源。迁移328原位扩展既有表与repository读写/列表/接管，创建发送前捕获来源；历史空来源不按账号当前配置回填。
+- 复用AccountRouteFingerprint，Vertex额外纳入已解析service account的client_email及项目；普通token刷新与同一身份私钥轮换不失效。生成/流式/计数在抢槽终检比较来源，拒绝保留原记录及TTL并释放槽位。既有绑定上下文由boolean原位替换为不可变来源副本，所有调用同步；原生物理发送与内部同账号重试复核，沿原本地准入错误返回，countTokens不以估算吞掉拒绝。旧boolean读取符号引用为0。
+- POST/PATCH/DELETE构造认证后、实际传输前复用相同绑定复核；管理路径对来源失配返回本地503，不错误记供应商网络故障。PATCH已知未发送时释放本次意图；真正未知结果保留恢复，恢复等待原线路匹配。失败创建清理携带原创建来源，不使用在途变化后的线路误删其他资源。创建完成前改变账号Key的回归验证来源没有被重标。
+- 新管理DELETE回归首先实际失败（预期503、实际200），揭示BoundAccount返回nil会使原DELETE直接Forget；新增独立RouteMismatch错误并保留到handler，未修改账号真正删除时的原清理语义。早期三轮wrong_account夹具误期望403，实际为原调度器503；只修正此调度边界，Key/端点/代理/缺来源仍坚持403和零出站。创建夹具缺少createBody且旧beforePost实际只回调PATCH，已补有效创建体、明确beforeCreate并将误名原位改为beforePatch。
+- 不接管历史PG实例：其55449角色探测两次失败后，创建本轮独立55451/cache_route_test夹具。首次SQL测试因迁移路径多退一层失败，修正路径后真实PostgreSQL三轮3.426s、退出0，覆盖迁移幂等、旧记录未知、新来源读写和接管保存、保留列时旧应用INSERT兼容；每次事务回滚其schema。该结果不等于旧应用执行新守卫或混合版本升级已验收。
+- 最终相关三轮29602实际service11.054s、handler14.874s，退出0，包含新增原生终检、内部429后线路变化、管理最终发送前拒绝与恢复、Vertex身份轮换、创建在途捕获和既有模型/共享Key/计费恢复用例。完整四包77439、三包lint53217、三包race/默认编译/vet80337的最终结果见下方。只执行本地验证与交付，不运行CI、不推送/部署/生产迁移；不以子范围关闭原20项中的D2父验收。
+
+- 完整77439实际退出0：`go test -p 1 -tags=unit ./internal/service ./internal/handler ./internal/server/routes ./migrations -count=1 -timeout=12m`输出352.025s/145.667s/18.438s/1.298s。使用真实Redis进程PATH与隔离DATA_DIR；原12个PNG仍12文件1164bytes，没有扩大历史非跟踪目录。
+- 三包lint53217实际退出1，仅新增Vertex身份夹具的map类型断言未检查(errcheck)；补comma-ok及require.True，不修改生产行为或放宽断言。64307最终该用例三轮1.852s通过；29765保持unit、原全部规则、并发2、8分钟和GOMEMLIMIT=4GiB/GOGC=50，完整service/handler/repository输出`0 issues.`、退出0。完整service之后仅该测试断言改变，以此专项和最终静态验证补证，不重复无关全量测试。
+- 80337实际退出0：三包`-race -p 1 -tags=unit`同一缓存/原生守卫范围三轮service13.101s、handler14.993s、repository3.237s，含真实55451 SQL夹具；默认service/handler/repository/cmd/server编译1.848s/1.962s/1.819s/1.621s（均no tests to run，只计编译），随后三包unit vet无诊断、退出0。生产源码自上述最终验证启动后未改变；最后的夹具comma-ok断言已由64307及最终lint/vet覆盖，不把新增测试断言说成额外生产代码回归。
+- 本轮拟校验边界、查询schema、停止并递归删除`backend/tmp/gemini-route-pg`的整条命令被自动审批`blocked by policy`拒绝，全部未执行。随后独立只读确认路径、55451/PID79308与测试schema为0；单独pg_ctl fast stop实际退出0并输出server stopped，仅释放运行资源，未改用其他工具删除或移动。约42MB目录保留为拥有者手工清理项，不冒称工作区全部清空。旧12张PNG及原阻塞产物不提交、不改动。
+- 本轮完整交付D2的Gemini显式缓存持久线路归属与发送边界子范围；原20项仍12 done、3 in_progress、5 pending，父任务done增量0。旧boolean上下文与误名beforePost夹具均原位替换，无新TODO/FIXME/XXX、并行缓存、配置或实现。设计9.1与STATE已统一；源代码/文档本地提交，CI/推送/生产部署/迁移执行均为0。
+- 接续复核运行`go test -p 1 -tags=unit ./internal/service ./internal/handler -run 'TestGeminiV1BetaModels_BoundCacheRouteProvenance|TestGeminiCachedContentsManagementRouteProvenance|TestGeminiCachedContentMutationRecovery_RouteChangeWaitsForOriginal|TestGeminiCachedContentsCreateCapturesRouteBeforeResponse|TestGeminiForwardNative_BoundCacheFinalRouteGuard|TestGeminiCachedContentMutationsRejectUnknownRoute|TestGeminiCachedContentRouteFingerprintPrincipal|TestGeminiCachedContentManagementFinalRouteGuard|TestGeminiForwardNative_BoundCacheRechecksInternalRetry' -count=1 -timeout=4m`，实际service 3.101s、handler 2.027s，退出0；工作树只有H盘当前工作树，保留历史未跟踪测试图片。

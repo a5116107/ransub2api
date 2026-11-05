@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +71,7 @@ var (
 	ErrGeminiCachedContentMutationConflict = infraerrors.New(http.StatusConflict, "GEMINI_CACHED_CONTENT_MUTATION_CONFLICT", "another update to this cached content is in progress")
 	// ErrGeminiCachedContentRequestNotSent 表示上游缓存请求在发出前失败（地址、凭据等），上游状态未被改变。
 	ErrGeminiCachedContentRequestNotSent = errors.New("gemini cached content request was not sent")
+	ErrGeminiCachedContentRouteMismatch  = errors.New("gemini cached content route provenance mismatch")
 	// errGeminiCachedContentAccountUnsupported 表示持有缓存的账号存在，但当前不支持显式缓存（能力被关闭或认证方式不支持）。
 	errGeminiCachedContentAccountUnsupported = errors.New("gemini cached content account does not support explicit caching")
 
@@ -88,6 +91,8 @@ type GeminiCachedContent struct {
 	// AccountID 是持有上游缓存的账号；引用缓存的请求只能发往该账号。
 	AccountID    int64
 	UpstreamName string
+	// RouteFingerprint binds the resource to its creation route, not a mutable account row.
+	RouteFingerprint string
 	// Model 是客户端视角的模型名（渠道映射后，不含 models/ 前缀），引用缓存的请求模型必须与之字面一致。
 	Model string
 	// UpstreamModel 是创建时发给上游的模型资源名。
@@ -263,16 +268,20 @@ func ParseGeminiCachedContentPublicID(name string) (string, bool) {
 
 type geminiCachedContentBoundCtxKey struct{}
 
-// WithGeminiCachedContentBound 标记请求引用了显式缓存并已硬绑定到持有账号。
-func WithGeminiCachedContentBound(ctx context.Context) context.Context {
-	return context.WithValue(ctx, geminiCachedContentBoundCtxKey{}, true)
+// WithGeminiCachedContentBound snapshots the resource's route for every physical send.
+func WithGeminiCachedContentBound(ctx context.Context, record *GeminiCachedContent) context.Context {
+	if record == nil {
+		return ctx
+	}
+	bound := &GeminiCachedContent{AccountID: record.AccountID, RouteFingerprint: record.RouteFingerprint}
+	return context.WithValue(ctx, geminiCachedContentBoundCtxKey{}, bound)
 }
 
-func geminiCachedContentBoundFromContext(ctx context.Context) bool {
+func geminiCachedContentBindingFromContext(ctx context.Context) *GeminiCachedContent {
 	if ctx == nil {
-		return false
+		return nil
 	}
-	bound, _ := ctx.Value(geminiCachedContentBoundCtxKey{}).(bool)
+	bound, _ := ctx.Value(geminiCachedContentBoundCtxKey{}).(*GeminiCachedContent)
 	return bound
 }
 
@@ -282,7 +291,7 @@ func isGeminiBoundCacheUpstreamPassthrough(ctx context.Context, account *Account
 	if statusCode != http.StatusTooManyRequests && statusCode < http.StatusInternalServerError {
 		return false
 	}
-	return account.GeminiExplicitCacheUpstreamEnabled() && geminiCachedContentBoundFromContext(ctx)
+	return account.GeminiExplicitCacheUpstreamEnabled() && geminiCachedContentBindingFromContext(ctx) != nil
 }
 
 // GeminiCachedContentReference 是请求体中引用显式缓存的位置。
@@ -846,9 +855,9 @@ func (s *GeminiCachedContentService) recoverStaleMutation(ctx context.Context, i
 // 两种情况下只要 mutationUpstreamMustHaveExpired 成立（上游缓存必已自行过期），本地记录直接作废，不再重试。
 func (s *GeminiCachedContentService) rollbackUpstream(ctx context.Context, record *GeminiCachedContent) (bool, error) {
 	account, err := s.boundAccount(ctx, record)
-	if errors.Is(err, errGeminiCachedContentAccountUnsupported) {
+	if errors.Is(err, errGeminiCachedContentAccountUnsupported) || errors.Is(err, ErrGeminiCachedContentRouteMismatch) {
 		if s.mutationUpstreamMustHaveExpired(record) {
-			logger.LegacyPrintf("service.gemini_cached_content", "Warning: gemini cached content %d (upstream %s) has a pending mutation but account %d stopped supporting explicit caching and the upstream cache has expired since; dropping the local record", record.ID, record.UpstreamName, record.AccountID)
+			logger.LegacyPrintf("service.gemini_cached_content", "Warning: gemini cached content %d (upstream %s) has a pending mutation but account %d no longer matches its cache binding (%v) and the upstream cache has expired since; dropping the local record", record.ID, record.UpstreamName, record.AccountID, err)
 			return true, nil
 		}
 		return false, fmt.Errorf("%w (account %d)", err, record.AccountID)
@@ -897,7 +906,8 @@ func (s *GeminiCachedContentService) Forget(ctx context.Context, record *GeminiC
 	return s.repo.SoftDelete(ctx, record.ID)
 }
 
-// BoundAccount 返回持有缓存的账号；账号已删除或不再支持显式缓存时返回 nil。
+// BoundAccount returns nil for removed or unsupported accounts; route mismatch
+// remains an error so callers cannot mistake it for a permanently lost resource.
 func (s *GeminiCachedContentService) BoundAccount(ctx context.Context, record *GeminiCachedContent) (*Account, error) {
 	account, err := s.boundAccount(ctx, record)
 	if errors.Is(err, errGeminiCachedContentAccountUnsupported) {
@@ -907,7 +917,7 @@ func (s *GeminiCachedContentService) BoundAccount(ctx context.Context, record *G
 }
 
 // boundAccount 返回持有缓存的账号：账号已删除返回 nil；账号存在但当前不支持显式缓存返回
-// errGeminiCachedContentAccountUnsupported，调用方据此区分"永久不可用"与"暂时不可用"。
+// errGeminiCachedContentAccountUnsupported；线路来源缺失或变化返回独立错误。
 func (s *GeminiCachedContentService) boundAccount(ctx context.Context, record *GeminiCachedContent) (*Account, error) {
 	if s.compat == nil || s.compat.accountRepo == nil {
 		return nil, errors.New("account repository not configured")
@@ -922,10 +932,40 @@ func (s *GeminiCachedContentService) boundAccount(ctx context.Context, record *G
 	if account == nil {
 		return nil, nil
 	}
+	if !record.MatchesAccountRoute(account) {
+		return nil, ErrGeminiCachedContentRouteMismatch
+	}
 	if !IsGeminiExplicitCacheAccount(account) {
 		return nil, errGeminiCachedContentAccountUnsupported
 	}
 	return account, nil
+}
+
+// MatchesAccountRoute rejects unknown legacy provenance without rewriting it.
+// Normal OAuth token renewal is excluded by the shared route fingerprint.
+func (c *GeminiCachedContent) MatchesAccountRoute(account *Account) bool {
+	if c == nil || account == nil || c.AccountID != account.ID || c.RouteFingerprint == "" {
+		return false
+	}
+	return c.RouteFingerprint == GeminiCachedContentRouteFingerprint(account)
+}
+
+// GeminiCachedContentRouteFingerprint includes the Vertex principal, which the
+// shared request-route fingerprint excludes with its secret JSON credentials.
+// Replacing a service account key for the same principal preserves its domain.
+func GeminiCachedContentRouteFingerprint(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	fingerprint := AccountRouteFingerprint(account)
+	if account.Type == AccountTypeServiceAccount && !account.IsVertexAPIKey() {
+		key, err := parseVertexServiceAccountKey(account)
+		if err != nil {
+			return ""
+		}
+		fingerprint = sha256.Sum256([]byte(string(fingerprint[:]) + "\x00" + key.ClientEmail + "\x00" + key.ProjectID))
+	}
+	return hex.EncodeToString(fingerprint[:])
 }
 
 // GeminiCachedContentUpstreamModelResource 返回创建缓存时发往上游的模型资源名。
@@ -953,6 +993,11 @@ func GeminiCachedContentUpstreamModelResource(account *Account, mappedModel stri
 
 // CreateUpstream 在账号上创建上游缓存。
 func (s *GeminiCachedContentService) CreateUpstream(ctx context.Context, account *Account, req *GeminiCachedContentCreateRequest, mappedModel, publicID string, ttl time.Duration) (*GeminiCachedContentUpstream, error) {
+	routeFingerprint := GeminiCachedContentRouteFingerprint(account)
+	if routeFingerprint == "" {
+		return nil, geminiCachedContentNotSent(ErrGeminiCachedContentRouteMismatch)
+	}
+	ctx = WithGeminiCachedContentBound(ctx, &GeminiCachedContent{AccountID: account.ID, RouteFingerprint: routeFingerprint})
 	upstreamModel, err := GeminiCachedContentUpstreamModelResource(account, mappedModel)
 	if err != nil {
 		return nil, err
@@ -998,7 +1043,7 @@ func (s *GeminiCachedContentService) PatchUpstream(ctx context.Context, account 
 	}
 	seconds := int64(math.Ceil(ttl.Seconds()))
 	body, _ := json.Marshal(map[string]any{"ttl": fmt.Sprintf("%ds", seconds)})
-	respBody, err := s.doUpstream(ctx, account, http.MethodPatch, resourceURL+"?updateMask=ttl", body, geminiCachedContentMutationUpstreamTimeout)
+	respBody, err := s.doUpstream(WithGeminiCachedContentBound(ctx, record), account, http.MethodPatch, resourceURL+"?updateMask=ttl", body, geminiCachedContentMutationUpstreamTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -1017,12 +1062,15 @@ func (s *GeminiCachedContentService) DeleteUpstream(ctx context.Context, account
 	if err != nil {
 		return err
 	}
-	_, err = s.doUpstream(ctx, account, http.MethodDelete, resourceURL, nil, geminiCachedContentMutationUpstreamTimeout)
+	_, err = s.doUpstream(WithGeminiCachedContentBound(ctx, record), account, http.MethodDelete, resourceURL, nil, geminiCachedContentMutationUpstreamTimeout)
 	return err
 }
 
 // upstreamResourceURL 返回 record 对应上游缓存资源的地址；失败时请求不会发出。
 func (s *GeminiCachedContentService) upstreamResourceURL(account *Account, record *GeminiCachedContent) (string, error) {
+	if !record.MatchesAccountRoute(account) {
+		return "", geminiCachedContentNotSent(ErrGeminiCachedContentRouteMismatch)
+	}
 	base, err := s.apiBase(account)
 	if err != nil {
 		return "", geminiCachedContentNotSent(err)
@@ -1079,6 +1127,9 @@ func (s *GeminiCachedContentService) doUpstream(ctx context.Context, account *Ac
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
+	}
+	if bound := geminiCachedContentBindingFromContext(ctx); bound != nil && !bound.MatchesAccountRoute(account) {
+		return nil, geminiCachedContentNotSent(ErrGeminiCachedContentRouteMismatch)
 	}
 	resp, err := s.compat.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {

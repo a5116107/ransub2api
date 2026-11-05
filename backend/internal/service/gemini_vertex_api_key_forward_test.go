@@ -104,11 +104,15 @@ func TestGeminiForwardAsChatCompletions_VertexAPIKeyUsesAPIKeyHeader(t *testing.
 type geminiVertex429SequenceUpstream struct {
 	responses []*http.Response
 	calls     int
+	onRequest func()
 }
 
 func (s *geminiVertex429SequenceUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	resp := s.responses[min(s.calls, len(s.responses)-1)]
 	s.calls++
+	if s.onRequest != nil {
+		s.onRequest()
+	}
 	return resp, nil
 }
 
@@ -119,13 +123,14 @@ func (s *geminiVertex429SequenceUpstream) DoWithTLS(req *http.Request, proxyURL 
 // Vertex 共享容量不足的 429 在同一账号上退避重试，成功后账号状态不变；绑定显式缓存的请求同样如此。
 func TestGeminiForwardNative_VertexSharedCapacity429RetriesSameAccountWithoutCooldown(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	account := geminiVertexAPIKeyTestAccount("my-project")
 	sharedCapacity := `{"error":{"code":429,"message":"Resource exhausted. Please try again later.","status":"RESOURCE_EXHAUSTED"}}`
 	tests := []struct {
 		name string
 		ctx  context.Context
 	}{
 		{name: "unbound", ctx: context.Background()},
-		{name: "bound_cached_content", ctx: WithGeminiCachedContentBound(context.Background())},
+		{name: "bound_cached_content", ctx: WithGeminiCachedContentBound(context.Background(), &GeminiCachedContent{AccountID: account.ID, RouteFingerprint: GeminiCachedContentRouteFingerprint(account)})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,7 +155,7 @@ func TestGeminiForwardNative_VertexSharedCapacity429RetriesSameAccountWithoutCoo
 			}
 			c, rec := newGeminiNativeTestContext(t)
 
-			result, err := svc.ForwardNative(tt.ctx, c, geminiVertexAPIKeyTestAccount("my-project"),
+			result, err := svc.ForwardNative(tt.ctx, c, account,
 				"gemini-3.7-flash", "generateContent", false, []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
 			require.NoError(t, err)
 			require.NotNil(t, result)
@@ -162,4 +167,20 @@ func TestGeminiForwardNative_VertexSharedCapacity429RetriesSameAccountWithoutCoo
 			require.Empty(t, repo.modelRateLimitCalls)
 		})
 	}
+}
+
+func TestGeminiForwardNative_BoundCacheRechecksInternalRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := geminiVertexAPIKeyTestAccount("my-project")
+	ctx := WithGeminiCachedContentBound(context.Background(), &GeminiCachedContent{AccountID: account.ID, RouteFingerprint: GeminiCachedContentRouteFingerprint(account)})
+	upstream := &geminiVertex429SequenceUpstream{responses: []*http.Response{{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":429,"message":"Resource exhausted. Please try again later.","status":"RESOURCE_EXHAUSTED"}}`))}}}
+	upstream.onRequest = func() { account.Credentials["location"] = "europe-west1" }
+	repo := &geminiBoundCacheRateLimitRepo{}
+	svc := &GeminiMessagesCompatService{httpUpstream: upstream, cfg: &config.Config{Gateway: config.GatewayConfig{MaxSameAccountRetriesGemini: 1}}, accountRepo: repo, rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+	c, _ := newGeminiNativeTestContext(t)
+	_, err := svc.ForwardNative(ctx, c, account, "gemini-3.7-flash", "generateContent", false, []byte(geminiTransportTestNativeBody))
+	require.True(t, IsOpenAITurnAdmissionError(err))
+	require.Equal(t, 1, upstream.calls, "route changed after 429; the internal retry must not send")
+	require.Zero(t, repo.tempCalls)
+	require.Zero(t, repo.rateLimitedCalls)
 }

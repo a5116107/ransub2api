@@ -25,7 +25,7 @@ func NewGeminiCachedContentRepository(db *sql.DB) service.GeminiCachedContentRep
 }
 
 const geminiCachedContentColumns = `id, public_id, user_id, api_key_id, group_id, account_id, upstream_name, model,
- upstream_model, display_name, total_token_count, expire_time, channel_usage, created_at, updated_at`
+ upstream_model, display_name, total_token_count, expire_time, channel_usage, created_at, updated_at, route_fingerprint`
 
 func (r *geminiCachedContentRepository) Create(ctx context.Context, record *service.GeminiCachedContent) error {
 	channelUsage, err := json.Marshal(record.ChannelUsage)
@@ -34,11 +34,11 @@ func (r *geminiCachedContentRepository) Create(ctx context.Context, record *serv
 	}
 	row := r.sql.QueryRowContext(ctx, `
 INSERT INTO gemini_cached_contents (public_id, user_id, api_key_id, group_id, account_id, upstream_name, model,
- upstream_model, display_name, total_token_count, expire_time, channel_usage)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+ upstream_model, display_name, total_token_count, expire_time, channel_usage, route_fingerprint)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING id, created_at, updated_at`,
 		record.PublicID, record.UserID, record.APIKeyID, record.GroupID, record.AccountID, record.UpstreamName,
-		record.Model, record.UpstreamModel, record.DisplayName, record.TotalTokenCount, record.ExpireTime, channelUsage)
+		record.Model, record.UpstreamModel, record.DisplayName, record.TotalTokenCount, record.ExpireTime, channelUsage, record.RouteFingerprint)
 	if err := row.Scan(&record.ID, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		return translatePersistenceError(err, nil, service.ErrGeminiCachedContentExists)
 	}
@@ -193,6 +193,7 @@ func scanGeminiCachedContent(row geminiCachedContentScanner) (*service.GeminiCac
 		&channelUsage,
 		&record.CreatedAt,
 		&record.UpdatedAt,
+		&record.RouteFingerprint,
 	); err != nil {
 		return nil, err
 	}

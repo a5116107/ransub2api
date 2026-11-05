@@ -235,6 +235,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 			return
 		}
 
+		routeFingerprint := service.GeminiCachedContentRouteFingerprint(account)
 		upstream, err := svc.CreateUpstream(c.Request.Context(), account, req, mappedModel, publicID, ttl)
 		accountReleaseFunc()
 		if err != nil {
@@ -259,7 +260,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 			if errors.As(err, &malformed) {
 				reqLog.Error("gemini.cached_content.upstream_create_malformed", zap.Int64("account_id", account.ID), zap.Error(err))
 				if malformed.Name != "" {
-					h.cleanupGeminiCachedContentUpstream(reqLog, account, malformed.Name)
+					h.cleanupGeminiCachedContentUpstream(reqLog, account, malformed.Name, routeFingerprint)
 				}
 				googleError(c, http.StatusBadGateway, "Upstream returned an invalid cached content response")
 				return
@@ -287,7 +288,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		chargeDone, err := h.reserveGeminiCachedContentCharge(c, apiKey, subscription, amount)
 		if err != nil {
 			reqLog.Info("gemini.cached_content.storage_charge_rejected", zap.Float64("amount", amount), zap.Error(err))
-			h.cleanupGeminiCachedContentUpstream(reqLog, account, upstream.Name)
+			h.cleanupGeminiCachedContentUpstream(reqLog, account, upstream.Name, routeFingerprint)
 			h.submitGeminiCachedContentUsage(c, apiKey, account, subscription, pricingAt,
 				service.GeminiCachedContentCreateUsageRequestID(publicID), modelName, mappedModel, int(tokens), 0, usageFields, body)
 			writeGeminiCachedContentBillingError(c, err)
@@ -297,25 +298,26 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 
 		expireTime := service.ClampGeminiCachedContentExpire(upstream.ExpireTime, svc.Now().Add(ttl))
 		record := &service.GeminiCachedContent{
-			PublicID:        publicID,
-			UserID:          authSubject.UserID,
-			APIKeyID:        apiKey.ID,
-			GroupID:         *apiKey.GroupID,
-			AccountID:       account.ID,
-			UpstreamName:    upstream.Name,
-			Model:           modelName,
-			UpstreamModel:   upstreamModel,
-			DisplayName:     req.DisplayName,
-			TotalTokenCount: tokens,
-			ExpireTime:      expireTime,
-			ChannelUsage:    usageFields,
+			PublicID:         publicID,
+			UserID:           authSubject.UserID,
+			APIKeyID:         apiKey.ID,
+			GroupID:          *apiKey.GroupID,
+			AccountID:        account.ID,
+			RouteFingerprint: routeFingerprint,
+			UpstreamName:     upstream.Name,
+			Model:            modelName,
+			UpstreamModel:    upstreamModel,
+			DisplayName:      req.DisplayName,
+			TotalTokenCount:  tokens,
+			ExpireTime:       expireTime,
+			ChannelUsage:     usageFields,
 		}
 		persistCtx, cancelPersist := geminiCachedContentPersistContext(c)
 		err = svc.Save(persistCtx, record)
 		cancelPersist()
 		if err != nil {
 			reqLog.Error("gemini.cached_content.save_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-			h.cleanupGeminiCachedContentUpstream(reqLog, account, record.UpstreamName)
+			h.cleanupGeminiCachedContentUpstream(reqLog, account, record.UpstreamName, routeFingerprint)
 			googleError(c, http.StatusInternalServerError, "Failed to persist cached content")
 			return
 		}
@@ -422,6 +424,11 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 		return
 	}
 	account, err := svc.BoundAccount(c.Request.Context(), record)
+	if errors.Is(err, service.ErrGeminiCachedContentRouteMismatch) {
+		markOpsRoutingCapacityLimited(c)
+		googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
+		return
+	}
 	if err != nil {
 		reqLog.Error("gemini.cached_content.load_account_failed", zap.Int64("account_id", record.AccountID), zap.Error(err))
 		googleError(c, http.StatusInternalServerError, "Failed to load cached content account")
@@ -493,6 +500,11 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 			}
 			cancelPersist()
 		}
+		if errors.Is(err, service.ErrGeminiCachedContentRouteMismatch) {
+			markOpsRoutingCapacityLimited(c)
+			googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
+			return
+		}
 		if service.IsUpstreamKeyAdmissionFailure(err) {
 			writeGeminiCachedContentKeyAdmissionError(c)
 			return
@@ -545,6 +557,11 @@ func (h *GatewayHandler) GeminiCachedContentsDelete(c *gin.Context) {
 		return
 	}
 	account, err := svc.BoundAccount(c.Request.Context(), record)
+	if errors.Is(err, service.ErrGeminiCachedContentRouteMismatch) {
+		markOpsRoutingCapacityLimited(c)
+		googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
+		return
+	}
 	if err != nil {
 		reqLog.Error("gemini.cached_content.load_account_failed", zap.Int64("account_id", record.AccountID), zap.Error(err))
 		googleError(c, http.StatusInternalServerError, "Failed to load cached content account")
@@ -553,6 +570,11 @@ func (h *GatewayHandler) GeminiCachedContentsDelete(c *gin.Context) {
 	if account != nil {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 		if err := svc.DeleteUpstream(c.Request.Context(), account, record); err != nil {
+			if errors.Is(err, service.ErrGeminiCachedContentRouteMismatch) {
+				markOpsRoutingCapacityLimited(c)
+				googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
+				return
+			}
 			if service.IsUpstreamKeyAdmissionFailure(err) {
 				writeGeminiCachedContentKeyAdmissionError(c)
 				return
@@ -740,10 +762,10 @@ func geminiCachedContentPersistContext(c *gin.Context) (context.Context, context
 }
 
 // cleanupGeminiCachedContentUpstream 尽力删除已在上游创建、但网关不会登记的缓存，避免其持续产生存储费。
-func (h *GatewayHandler) cleanupGeminiCachedContentUpstream(reqLog *zap.Logger, account *service.Account, upstreamName string) {
+func (h *GatewayHandler) cleanupGeminiCachedContentUpstream(reqLog *zap.Logger, account *service.Account, upstreamName, routeFingerprint string) {
 	ctx, cancel := context.WithTimeout(context.Background(), geminiCachedContentPersistTimeout)
 	defer cancel()
-	if err := h.geminiCachedContentService.DeleteUpstream(ctx, account, &service.GeminiCachedContent{UpstreamName: upstreamName}); err != nil {
+	if err := h.geminiCachedContentService.DeleteUpstream(ctx, account, &service.GeminiCachedContent{AccountID: account.ID, UpstreamName: upstreamName, RouteFingerprint: routeFingerprint}); err != nil {
 		reqLog.Error("gemini.cached_content.orphan_cleanup_failed", zap.Int64("account_id", account.ID), zap.String("upstream_name", upstreamName), zap.Error(err))
 	}
 }

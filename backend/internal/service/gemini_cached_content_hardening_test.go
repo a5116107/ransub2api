@@ -306,7 +306,7 @@ func TestGeminiForwardNative_BoundCacheUpstreamGatewayErrorsSkipAccountPenalty(t
 			}}
 			c, _ := newGeminiNativeTestContext(t)
 
-			_, err := svc.ForwardNative(WithGeminiCachedContentBound(context.Background()), c, account,
+			_, err := svc.ForwardNative(WithGeminiCachedContentBound(context.Background(), &GeminiCachedContent{AccountID: account.ID, RouteFingerprint: GeminiCachedContentRouteFingerprint(account)}), c, account,
 				"gemini-3.8-flash", "generateContent", false, []byte(geminiCachedContentRequestBody))
 
 			var failoverErr *UpstreamFailoverError
@@ -344,7 +344,7 @@ func TestGeminiForwardNative_BoundCacheUpstreamGatewayErrorsRetryablePerPoolMode
 			}}
 			c, _ := newGeminiNativeTestContext(t)
 
-			_, err := svc.ForwardNative(WithGeminiCachedContentBound(context.Background()), c, account,
+			_, err := svc.ForwardNative(WithGeminiCachedContentBound(context.Background(), &GeminiCachedContent{AccountID: account.ID, RouteFingerprint: GeminiCachedContentRouteFingerprint(account)}), c, account,
 				"gemini-3.8-flash", "generateContent", false, []byte(geminiCachedContentRequestBody))
 
 			var failoverErr *UpstreamFailoverError
@@ -554,4 +554,31 @@ func TestReserveFixedCharge(t *testing.T) {
 		t.Cleanup(svc.Stop)
 		require.NoError(t, reserve(svc, nil, nil, nil, 1000))
 	})
+}
+
+func TestGeminiForwardNative_BoundCacheFinalRouteGuard(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, action := range []string{"generateContent", "streamGenerateContent", "countTokens"} {
+		t.Run(action, func(t *testing.T) {
+			svc, httpStub, _ := newGeminiCachedContentTestService(http.StatusOK, geminiVertexAPIKeyTestResponse)
+			account := &Account{ID: 711, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "original-fixture-key"}}
+			record := &GeminiCachedContent{AccountID: account.ID, RouteFingerprint: GeminiCachedContentRouteFingerprint(account)}
+			ctx := WithGeminiCachedContentBound(context.Background(), record)
+			account.Credentials["api_key"] = "replacement-fixture-key"
+			record.RouteFingerprint = GeminiCachedContentRouteFingerprint(account)
+			c, rec := newGeminiNativeTestContext(t)
+			result, err := svc.ForwardNative(ctx, c, account, "gemini-3.8-flash", action, false, []byte(geminiCachedContentRequestBody))
+			require.True(t, IsOpenAITurnAdmissionError(err), "physical send must reject changed routes, including countTokens")
+			require.Nil(t, result)
+			require.Zero(t, httpStub.calls)
+			require.Empty(t, rec.Body.String(), "countTokens must not hide the local rejection with an estimate")
+			_, observed := c.Get(OpsUpstreamErrorsKey)
+			require.False(t, observed, "local rejection is not a supplier transport failure")
+			account.Credentials["api_key"] = "original-fixture-key"
+			c, _ = newGeminiNativeTestContext(t)
+			_, err = svc.ForwardNative(ctx, c, account, "gemini-3.8-flash", action, false, []byte(geminiCachedContentRequestBody))
+			require.NoError(t, err)
+			require.Equal(t, 1, httpStub.calls)
+		})
+	}
 }

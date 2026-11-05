@@ -590,7 +590,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		// 缓存只存在于绑定账号：排除分组内其余账号，失败不换号。
 		maxAccountSwitches = 0
 		sessionBoundAccountID = cachedContentBinding.AccountID
-		c.Request = c.Request.WithContext(service.WithGeminiCachedContentBound(c.Request.Context()))
+		c.Request = c.Request.WithContext(service.WithGeminiCachedContentBound(c.Request.Context(), cachedContentBinding))
 		cachedContentExclusions, err = h.gatewayService.GeminiExplicitCacheExclusions(c.Request.Context(), apiKey.GroupID, cachedContentBinding.AccountID)
 		if err != nil {
 			reqLog.Warn("gemini.cached_content.list_accounts_failed", zap.Error(err))
@@ -763,7 +763,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			// Vertex project or location changes. Cached content belongs to the
 			// complete model resource observed at creation, including on retries.
 			upstreamModel, modelErr := service.GeminiCachedContentUpstreamModelResource(account, account.GetMappedModel(modelName))
-			if modelErr != nil || upstreamModel != cachedContentBinding.UpstreamModel {
+			if modelErr != nil || upstreamModel != cachedContentBinding.UpstreamModel || !cachedContentBinding.MatchesAccountRoute(account) {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}

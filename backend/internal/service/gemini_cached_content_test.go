@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -284,7 +285,7 @@ func TestGeminiCachedContentUpstreamErrorClassification(t *testing.T) {
 	notFoundBody := `{"error":{"code":403,"message":"CachedContent not found (or permission denied)","status":"PERMISSION_DENIED"}}`
 	svc, _ := newGeminiCachedContentServiceForTest(t, http.StatusForbidden, notFoundBody)
 	account := &Account{ID: 9, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "secret"}}
-	record := &GeminiCachedContent{UpstreamName: "cachedContents/up123"}
+	record := &GeminiCachedContent{AccountID: account.ID, UpstreamName: "cachedContents/up123", RouteFingerprint: GeminiCachedContentRouteFingerprint(account)}
 
 	err := svc.DeleteUpstream(context.Background(), account, record)
 	var upErr *GeminiCachedContentUpstreamError
@@ -519,4 +520,74 @@ func TestGeminiCachedContentCreateUpstreamGateway(t *testing.T) {
 	resource, err := geminiCachedContentResourceURL(account, geminiCachedContentAPIBase(account), upstream.Name)
 	require.NoError(t, err)
 	require.Equal(t, "https://upstream.example.com/gw/v1beta/cachedContents/gatewayid0001", resource)
+}
+
+func TestGeminiCachedContentMutationsRejectUnknownRoute(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		for _, method := range []string{http.MethodPatch, http.MethodDelete} {
+			t.Run(fmt.Sprintf("%s/missing=%t", method, missing), func(t *testing.T) {
+				svc, upstream := newGeminiCachedContentServiceForTest(t, http.StatusOK, `{}`)
+				account := &Account{ID: 9, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "fixture-key"}}
+				record := &GeminiCachedContent{AccountID: 9, UpstreamName: "cachedContents/up1", RouteFingerprint: GeminiCachedContentRouteFingerprint(account)}
+				if missing {
+					record.RouteFingerprint = ""
+				} else {
+					account.Credentials["api_key"] = "replacement-fixture-key"
+				}
+				var err error
+				if method == http.MethodPatch {
+					_, err = svc.PatchUpstream(context.Background(), account, record, time.Hour)
+				} else {
+					err = svc.DeleteUpstream(context.Background(), account, record)
+				}
+				require.ErrorIs(t, err, ErrGeminiCachedContentRequestNotSent)
+				require.ErrorIs(t, err, ErrGeminiCachedContentRouteMismatch)
+				require.Nil(t, upstream.lastReq)
+			})
+		}
+	}
+}
+
+func TestGeminiCachedContentRouteFingerprintPrincipal(t *testing.T) {
+	account := &Account{ID: 9, Platform: PlatformGemini, Type: AccountTypeServiceAccount,
+		Credentials: map[string]any{"project_id": "fixture-project", "service_account_json": map[string]any{
+			"project_id": "fixture-project", "client_email": "original@example.com", "private_key": "fixture-private-key"}}}
+	route := GeminiCachedContentRouteFingerprint(account)
+	require.Len(t, route, 64)
+	record := &GeminiCachedContent{AccountID: 9, RouteFingerprint: route}
+	require.True(t, record.MatchesAccountRoute(account))
+	account.Credentials["access_token"] = "renewed-fixture-token"
+	account.Credentials["expires_at"] = "changed"
+	require.True(t, record.MatchesAccountRoute(account), "ordinary token renewal must preserve the domain")
+	key, ok := account.Credentials["service_account_json"].(map[string]any)
+	require.True(t, ok)
+	key["private_key"] = "rotated-fixture-private-key"
+	require.True(t, record.MatchesAccountRoute(account), "key rotation for the same principal must preserve the domain")
+	key["client_email"] = "replacement@example.com"
+	require.False(t, record.MatchesAccountRoute(account), "a different principal must not inherit the cached resource")
+	key["client_email"] = "original@example.com"
+	require.True(t, record.MatchesAccountRoute(account))
+	delete(account.Credentials, "service_account_json")
+	require.Empty(t, GeminiCachedContentRouteFingerprint(account))
+	require.False(t, record.MatchesAccountRoute(account))
+	require.Empty(t, GeminiCachedContentRouteFingerprint(nil))
+}
+
+func TestGeminiCachedContentManagementFinalRouteGuard(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			svc, upstream := newGeminiCachedContentServiceForTest(t, http.StatusOK, `{}`)
+			account := &Account{ID: 9, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "fixture-key"}}
+			ctx := WithGeminiCachedContentBound(context.Background(), &GeminiCachedContent{AccountID: 9, RouteFingerprint: GeminiCachedContentRouteFingerprint(account)})
+			account.Credentials["api_key"] = "replacement-fixture-key"
+			_, err := svc.doUpstream(ctx, account, method, "https://generativelanguage.googleapis.com/v1beta/cachedContents/up1", nil, time.Second)
+			require.ErrorIs(t, err, ErrGeminiCachedContentRequestNotSent)
+			require.ErrorIs(t, err, ErrGeminiCachedContentRouteMismatch)
+			require.Zero(t, upstream.calls)
+			account.Credentials["api_key"] = "fixture-key"
+			_, err = svc.doUpstream(ctx, account, method, "https://generativelanguage.googleapis.com/v1beta/cachedContents/up1", nil, time.Second)
+			require.NoError(t, err)
+			require.Equal(t, 1, upstream.calls)
+		})
+	}
 }

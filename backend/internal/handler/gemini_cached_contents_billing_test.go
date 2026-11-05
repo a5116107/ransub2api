@@ -196,8 +196,9 @@ type cachedBillingUpstream struct {
 	createBody string
 	calls      []string
 	// patchTTLs 按顺序记录 PATCH 请求体中的 ttl。
-	patchTTLs  []string
-	beforePost func(n int)
+	patchTTLs    []string
+	beforePatch  func(n int)
+	beforeCreate func()
 	// failures 按请求方法返回上游错误响应；transportErrors 按请求方法返回传输层错误（上游结果未知）。
 	failures        map[string]cachedBillingUpstreamFailure
 	transportErrors map[string]error
@@ -234,10 +235,13 @@ func (u *cachedBillingUpstream) Do(req *http.Request, _ string, _ int64, _ int) 
 	body := "{}"
 	switch req.Method {
 	case http.MethodPost:
+		if u.beforeCreate != nil {
+			u.beforeCreate()
+		}
 		body = u.createBody
 	case http.MethodPatch:
-		if u.beforePost != nil {
-			u.beforePost(n)
+		if u.beforePatch != nil {
+			u.beforePatch(n)
 		}
 		seconds, _ := strconv.ParseInt(strings.TrimSuffix(patch.TTL, "s"), 10, 64)
 		body = fmt.Sprintf(`{"name":"cachedContents/up1","expireTime":%q}`, time.Now().Add(time.Duration(seconds)*time.Second).UTC().Format(time.RFC3339Nano))
@@ -413,6 +417,7 @@ func (e *cachedBillingEnv) seed(expire time.Time) {
 		ID: 100, PublicID: "abc", UserID: 3, APIKeyID: 7, GroupID: 42, AccountID: 900,
 		UpstreamName: "cachedContents/up1", Model: "gemini-2.5-pro", UpstreamModel: "models/gemini-2.5-pro",
 		TotalTokenCount: cachedBillingTokens, ExpireTime: expire,
+		RouteFingerprint: service.GeminiCachedContentRouteFingerprint(e.accounts[900]),
 	}
 }
 
@@ -507,7 +512,7 @@ func requireTTLNear(t *testing.T, ttl string, want time.Duration) {
 func TestGeminiCachedContentsPatch_ConcurrentUpdateConflictsAndKeepsUpstreamInSync(t *testing.T) {
 	env := newCachedBillingEnv(t, 1000, 900)
 	env.seed(time.Now().Add(time.Hour))
-	env.upstream.beforePost = func(n int) {
+	env.upstream.beforePatch = func(n int) {
 		if n == 1 {
 			rec := env.patchTTL("abc", "86400s")
 			require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
@@ -772,7 +777,7 @@ func TestGeminiCachedContentsPatch_UnsettledChargeHoldsKeyQuotaAndBalance(t *tes
 			env.repo.records["def"] = &second
 			env.apiKey.Quota = tc.quota
 			enableCachedBillingReservations(t, env, &cachedBillingReservationCache{balance: tc.balance})
-			env.upstream.beforePost = func(n int) {
+			env.upstream.beforePatch = func(n int) {
 				if n == 1 {
 					rec := env.patchTTL("def", "86400s")
 					require.NotEqual(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -1029,4 +1034,87 @@ func TestGeminiCachedContentMutationRecovery_ForgetsRecordWhenAccountDeleted(t *
 	recovered, err = env.h.geminiCachedContentService.RecoverStaleMutations(context.Background())
 	require.NoError(t, err)
 	require.Zero(t, recovered, "不再重复处理")
+}
+
+func TestGeminiCachedContentsManagementRouteProvenance(t *testing.T) {
+	for _, method := range []string{http.MethodPatch, http.MethodDelete} {
+		for _, change := range []string{"key", "endpoint", "missing"} {
+			t.Run(method+"/"+change, func(t *testing.T) {
+				env := newCachedBillingEnv(t, 1000, 900)
+				env.seed(time.Now().Add(time.Hour))
+				account := env.accounts[900]
+				original := account.Credentials["api_key"]
+				before := *env.repo.records["abc"]
+				switch change {
+				case "key":
+					account.Credentials["api_key"] = "replacement-fixture-key"
+				case "endpoint":
+					account.Credentials["base_url"] = "https://replacement.example.com"
+					account.Credentials[service.GeminiExplicitCacheUpstreamCredentialKey] = true
+				case "missing":
+					env.repo.records["abc"].RouteFingerprint = ""
+				}
+				invoke := func() *httptest.ResponseRecorder {
+					if method == http.MethodPatch {
+						return env.patch()
+					}
+					return env.serve(method, "/v1beta/cachedContents/abc", "", gin.Params{{Key: "cacheID", Value: "abc"}}, env.h.GeminiCachedContentsDelete)
+				}
+				require.Equal(t, http.StatusServiceUnavailable, invoke().Code)
+				require.Zero(t, env.upstream.methodCalls(method))
+				require.Empty(t, env.repo.deleted)
+				require.False(t, env.repo.pendingMutation(100))
+				require.Empty(t, env.usage.totals())
+				account.Credentials["api_key"] = original
+				delete(account.Credentials, "base_url")
+				delete(account.Credentials, service.GeminiExplicitCacheUpstreamCredentialKey)
+				*env.repo.records["abc"] = before
+				require.Equal(t, http.StatusOK, invoke().Code)
+				require.Equal(t, 1, env.upstream.methodCalls(method))
+			})
+		}
+	}
+}
+
+func TestGeminiCachedContentMutationRecovery_RouteChangeWaitsForOriginal(t *testing.T) {
+	env := newCachedBillingEnv(t, 1000, 900)
+	env.seed(time.Now().Add(time.Hour))
+	env.repo.failCommit = true
+	require.Equal(t, http.StatusInternalServerError, env.patch().Code)
+	require.True(t, env.repo.pendingMutation(100))
+	env.repo.failCommit = false
+	env.repo.expireLease(100)
+	original := env.accounts[900].Credentials["api_key"]
+	env.accounts[900].Credentials["api_key"] = "replacement-fixture-key"
+	recovered, err := env.h.geminiCachedContentService.RecoverStaleMutations(context.Background())
+	require.ErrorIs(t, err, service.ErrGeminiCachedContentRouteMismatch)
+	require.Zero(t, recovered)
+	require.Equal(t, 1, env.upstream.methodCalls(http.MethodPatch))
+	require.True(t, env.repo.pendingMutation(100))
+	require.Empty(t, env.repo.deleted)
+	env.accounts[900].Credentials["api_key"] = original
+	env.repo.expireLease(100)
+	recovered, err = env.h.geminiCachedContentService.RecoverStaleMutations(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, recovered)
+	require.Equal(t, 2, env.upstream.methodCalls(http.MethodPatch))
+	require.False(t, env.repo.pendingMutation(100))
+}
+
+func TestGeminiCachedContentsCreateCapturesRouteBeforeResponse(t *testing.T) {
+	env := newCachedBillingEnv(t, 1000, 900)
+	account := env.accounts[900]
+	originalKey := account.Credentials["api_key"]
+	originalRoute := service.GeminiCachedContentRouteFingerprint(account)
+	env.upstream.createBody = cachedBillingCreateBody(time.Now().Add(24 * time.Hour))
+	env.upstream.beforeCreate = func() { account.Credentials["api_key"] = "replacement-fixture-key" }
+	rec := env.create()
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Len(t, env.repo.records, 1)
+	for _, record := range env.repo.records {
+		require.Equal(t, originalRoute, record.RouteFingerprint, "in-flight account changes must not relabel creation provenance")
+		require.False(t, record.MatchesAccountRoute(account))
+		account.Credentials["api_key"] = originalKey
+		require.True(t, record.MatchesAccountRoute(account))
+	}
 }

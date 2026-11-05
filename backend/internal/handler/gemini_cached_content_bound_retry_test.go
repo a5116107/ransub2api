@@ -5,6 +5,7 @@ package handler
 import (
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,13 +137,17 @@ func TestGeminiV1BetaModels_BoundCacheRejectsChangedUpstreamModel(t *testing.T) 
 				slots := &boundCacheModelSlots{}
 				env := newBoundRetryEnv(t, upstream, slots, 429)
 				account := env.accounts[900]
+				originalCredentials := maps.Clone(account.Credentials)
+				originalFingerprint := env.repo.records["abc"].RouteFingerprint
 				if strings.Contains(change, "vertex") {
 					account.Type = service.AccountTypeServiceAccount
+					account.Credentials["service_account_json"] = map[string]any{"project_id": "original-project", "client_email": "fixture@example.com", "private_key": "fixture-key"}
 					account.Credentials["project_id"] = "original-project"
 					account.Credentials["location"] = "us-central1"
 					resource, err := service.GeminiCachedContentUpstreamModelResource(account, "gemini-2.5-pro")
 					require.NoError(t, err)
 					env.repo.records["abc"].UpstreamModel = resource
+					env.repo.records["abc"].RouteFingerprint = service.GeminiCachedContentRouteFingerprint(account)
 				}
 				switch change {
 				case "mapping":
@@ -175,7 +180,8 @@ func TestGeminiV1BetaModels_BoundCacheRejectsChangedUpstreamModel(t *testing.T) 
 				require.Equal(t, 1, slots.released)
 				slots.mu.Unlock()
 				account.Type = service.AccountTypeAPIKey
-				account.Credentials["model_mapping"] = map[string]any{"gemini-2.5-pro": "gemini-2.5-pro"}
+				account.Credentials = originalCredentials
+				env.repo.records["abc"].RouteFingerprint = originalFingerprint
 				env.repo.records["abc"].UpstreamModel = "models/gemini-2.5-pro"
 				recovered := env.generateWithCache()
 				require.Equal(t, http.StatusOK, recovered.Code, recovered.Body.String())
@@ -220,8 +226,56 @@ func TestGeminiV1BetaModels_BoundCacheRechecksModelOnRetry(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 	require.Len(t, upstream.requestBodies(), 1, "mapping changed after the first 429; the retry must not send")
 	require.Empty(t, env.repo.deleted)
-	env.accounts[900].Credentials["model_mapping"] = map[string]any{"gemini-2.5-pro": "gemini-2.5-pro"}
+	delete(env.accounts[900].Credentials, "model_mapping")
 	recovered := env.generateWithCache()
 	require.Equal(t, http.StatusOK, recovered.Code, recovered.Body.String())
 	require.Len(t, upstream.requestBodies(), 2)
+}
+
+func TestGeminiV1BetaModels_BoundCacheRouteProvenance(t *testing.T) {
+	for _, action := range []string{"generateContent", "streamGenerateContent", "countTokens"} {
+		for _, change := range []string{"key", "endpoint", "proxy", "missing", "wrong_account"} {
+			t.Run(action+"/"+change, func(t *testing.T) {
+				upstream := &boundRetryUpstream{}
+				slots := &boundCacheModelSlots{}
+				env := newBoundRetryEnv(t, upstream, slots, 429)
+				account := env.accounts[900]
+				original := *account
+				original.Credentials = maps.Clone(account.Credentials)
+				record := *env.repo.records["abc"]
+				switch change {
+				case "key":
+					account.Credentials["api_key"] = "replacement-fixture-key"
+				case "endpoint":
+					account.Credentials["base_url"] = "https://replacement.example.com"
+				case "proxy":
+					id := int64(123)
+					account.ProxyID = &id
+				case "missing":
+					env.repo.records["abc"].RouteFingerprint = ""
+				case "wrong_account":
+					account.ID++
+				}
+				before := *env.repo.records["abc"]
+				rec := env.serve(http.MethodPost, "/v1beta/models/gemini-2.5-pro:"+action,
+					`{"cachedContent":"cachedContents/abc","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
+					gin.Params{{Key: "modelAction", Value: "/gemini-2.5-pro:" + action}}, env.h.GeminiV1BetaModels)
+				expectedStatus := http.StatusForbidden
+				if change == "wrong_account" {
+					expectedStatus = http.StatusServiceUnavailable
+				}
+				require.Equal(t, expectedStatus, rec.Code, rec.Body.String())
+				require.Empty(t, upstream.requestBodies())
+				require.Equal(t, before, *env.repo.records["abc"])
+				require.Empty(t, env.repo.deleted)
+				slots.mu.Lock()
+				require.Zero(t, slots.active)
+				slots.mu.Unlock()
+				*account = original
+				*env.repo.records["abc"] = record
+				require.Equal(t, http.StatusOK, env.generateWithCache().Code)
+				require.Len(t, upstream.requestBodies(), 1)
+			})
+		}
+	}
 }
