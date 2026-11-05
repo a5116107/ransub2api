@@ -935,6 +935,7 @@ func maxBatchImageReferenceImagesForModel(model string) int {
 
 func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, owner BatchImageOwner, requestedProvider, model string) (BatchImageProvider, *Account, error) {
 	providers := batchImageProviderSelectionOrder(requestedProvider)
+	sharedKeyBlocked := false
 	for _, providerName := range providers {
 		provider, ok := s.ProviderRegistry.Get(providerName)
 		if !ok || provider == nil {
@@ -957,12 +958,18 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 				continue
 			}
 			if provider.SupportsAccount(&account) {
+				// A provider batch outlives its HTTP submission; an ordinary HTTP
+				// lease cannot safely account for its active upstream execution.
+				if s.Config != nil && (s.Config.Gateway.UpstreamKeyConcurrency.Configured() || s.Config.Runtime.RegionalConcurrencyFile != "" || s.Config.Runtime.RegionalSchedulerFile != "") {
+					sharedKeyBlocked = true
+					continue
+				}
 				return provider, &account, nil
 			}
 		}
 	}
-	if requestedProvider != "" {
-		return nil, nil, ErrBatchImageNoAccountAvailable
+	if sharedKeyBlocked {
+		return nil, nil, ErrBatchImageSharedKeyUnavailable
 	}
 	return nil, nil, ErrBatchImageNoAccountAvailable
 }

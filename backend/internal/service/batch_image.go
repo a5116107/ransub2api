@@ -68,6 +68,7 @@ var (
 	ErrBatchImageGroupDisabled              = infraerrors.New(http.StatusForbidden, "BATCH_IMAGE_GROUP_DISABLED", "batch image API is disabled for this group")
 	ErrBatchImageInvalidModel               = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_INVALID_MODEL", "batch image model is required")
 	ErrBatchImageNoAccountAvailable         = infraerrors.New(http.StatusBadGateway, "BATCH_IMAGE_NO_ACCOUNT_AVAILABLE", "no compatible batch image account is available")
+	ErrBatchImageSharedKeyUnavailable       = infraerrors.New(http.StatusServiceUnavailable, "BATCH_IMAGE_SHARED_KEY_UNAVAILABLE", "batch image submission is unavailable while shared upstream key limits are configured")
 	ErrBatchImageInvalidItems               = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_INVALID_ITEMS", "batch image items are invalid")
 	ErrBatchImageDuplicateCustomIDInRequest = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_DUPLICATE_CUSTOM_ID", "batch image custom ids must be unique")
 	ErrBatchImagePromptTooLong              = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_PROMPT_TOO_LONG", "batch image prompt is too long")

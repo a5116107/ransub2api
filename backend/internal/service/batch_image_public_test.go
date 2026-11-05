@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,102 @@ func TestBatchImagePublicService_SelectAccountPriority(t *testing.T) {
 			require.Equal(t, tt.wantID, account.ID)
 		})
 	}
+}
+
+func TestBatchImagePublicService_SharedKeyBatchAdmission(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config func(*config.Config)
+	}{
+		{name: "local policy", config: func(c *config.Config) {
+			c.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("test-secret"): 1}}
+		}},
+		{name: "versioned empty policy", config: func(c *config.Config) {
+			c.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 2}
+		}},
+		{name: "regional authority", config: func(c *config.Config) { c.Runtime.RegionalConcurrencyFile = "regional.json" }},
+		{name: "regional scheduler", config: func(c *config.Config) { c.Runtime.RegionalSchedulerFile = "scheduler.json" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
+			gemini.accountType = AccountTypeAPIKey
+			tt.config(svc.Config)
+			_, err := svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "")
+			require.Error(t, err)
+			require.Equal(t, http.StatusServiceUnavailable, infraerrors.Code(err))
+			require.Equal(t, "BATCH_IMAGE_SHARED_KEY_UNAVAILABLE", infraerrors.Reason(err))
+			require.Empty(t, repo.jobs)
+			require.Empty(t, queue.enqueued)
+			require.Empty(t, gemini.submits)
+			require.Empty(t, testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo).reserves)
+		})
+	}
+
+	t.Run("automatic selection cannot bypass through vertex", func(t *testing.T) {
+		svc, repo, queue, gemini, vertex := newTestBatchImagePublicService(true)
+		gemini.accountType = AccountTypeAPIKey
+		vertex.accountType = AccountTypeServiceAccount
+		svc.Config.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("test-secret"): 1}}
+		req := validBatchImageSubmitRequest()
+		req.Provider = ""
+		_, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "")
+		require.Error(t, err)
+		require.Equal(t, http.StatusServiceUnavailable, infraerrors.Code(err))
+		require.Equal(t, "BATCH_IMAGE_SHARED_KEY_UNAVAILABLE", infraerrors.Reason(err))
+		require.Empty(t, repo.jobs)
+		require.Empty(t, queue.enqueued)
+		require.Empty(t, gemini.submits)
+		require.Empty(t, vertex.submits)
+	})
+
+	t.Run("explicit vertex is also protected", func(t *testing.T) {
+		svc, repo, _, _, vertex := newTestBatchImagePublicService(true)
+		vertex.accountType = AccountTypeServiceAccount
+		svc.Config.Gateway.UpstreamKeyConcurrency.Revision = 1
+		req := validBatchImageSubmitRequest()
+		req.Provider = BatchImageProviderVertex
+		_, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "")
+		require.Error(t, err)
+		require.Equal(t, http.StatusServiceUnavailable, infraerrors.Code(err))
+		require.Empty(t, repo.jobs)
+		require.Empty(t, vertex.submits)
+	})
+
+	t.Run("idempotent lookup of an existing job still works", func(t *testing.T) {
+		svc, _, _, gemini, _ := newTestBatchImagePublicService(true)
+		req := validBatchImageSubmitRequest()
+		first, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "known-request")
+		require.NoError(t, err)
+		svc.Config.Gateway.UpstreamKeyConcurrency.Revision = 1
+		repeated, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "known-request")
+		require.NoError(t, err)
+		require.Equal(t, first.ID, repeated.ID)
+		require.Len(t, gemini.submits, 1)
+		require.Len(t, testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo).reserves, 1)
+		lookedUp, err := svc.Get(context.Background(), testBatchImageOwner(), first.ID)
+		require.NoError(t, err)
+		require.Equal(t, first.ID, lookedUp.ID)
+		cancelled, err := svc.Cancel(context.Background(), testBatchImageOwner(), first.ID)
+		require.NoError(t, err)
+		require.Equal(t, first.ID, cancelled.ID)
+		require.Equal(t, 1, gemini.cancelCount)
+	})
+
+	t.Run("missing compatible accounts retains existing classification", func(t *testing.T) {
+		svc, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc.Config.Gateway.UpstreamKeyConcurrency.Revision = 1
+		svc.AccountRepo = &publicBatchImageAccountRepo{}
+		_, err := svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "")
+		require.ErrorIs(t, err, ErrBatchImageNoAccountAvailable)
+	})
+
+	t.Run("unconfigured policy keeps existing behavior", func(t *testing.T) {
+		svc, _, _, gemini, _ := newTestBatchImagePublicService(true)
+		got, err := svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "")
+		require.NoError(t, err)
+		require.Equal(t, BatchImageProviderGeminiAPI, got.Provider)
+		require.Len(t, gemini.submits, 1)
+	})
 }
 
 func TestBatchImagePublicService_Submit(t *testing.T) {
@@ -924,6 +1021,7 @@ func (q *publicBatchImageQueue) TryAcquireJobLock(context.Context, string, time.
 
 type publicBatchImageProvider struct {
 	name           string
+	accountType    string
 	submits        []BatchImageInput
 	submitErr      error
 	cancelCount    int
@@ -935,7 +1033,9 @@ type publicBatchImageProvider struct {
 
 func (p *publicBatchImageProvider) Name() string { return p.name }
 
-func (p *publicBatchImageProvider) SupportsAccount(*Account) bool { return true }
+func (p *publicBatchImageProvider) SupportsAccount(account *Account) bool {
+	return p.accountType == "" || (account != nil && p.accountType == account.Type)
+}
 
 func (p *publicBatchImageProvider) Submit(_ context.Context, _ *BatchImageJob, _ *Account, input BatchImageInput) (*BatchProviderJob, error) {
 	p.submits = append(p.submits, input)
