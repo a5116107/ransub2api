@@ -37,7 +37,7 @@ func TestSIWCHeadersUseIsolatedSessionAndLocalClientIdentity(t *testing.T) {
 		c.Request.Header.Set(k, v)
 	}
 	svc := &OpenAIGatewayService{}
-	req, err := svc.buildSIWCRequest(context.Background(), c, []byte(`{"stream":false}`), "siwc-access")
+	req, err := svc.buildSIWCRequest(context.Background(), c, account, []byte(`{"stream":false}`), "siwc-access")
 	require.NoError(t, err)
 	require.Equal(t, "Sub2API ("+runtime.GOOS+"; "+runtime.GOARCH+")", req.Header.Get("User-Agent"))
 	require.Equal(t, "text/event-stream", req.Header.Get("Accept"))
@@ -46,12 +46,12 @@ func TestSIWCHeadersUseIsolatedSessionAndLocalClientIdentity(t *testing.T) {
 	for _, v := range []string{"private-request", "private-agent", "private-cookie", "private-token", "private-account", "private-state", "client-session"} {
 		require.NotContains(t, fmt.Sprint(req.Header), v)
 	}
-	next, err := svc.buildSIWCRequest(context.Background(), c, []byte(`{}`), "siwc-access")
+	next, err := svc.buildSIWCRequest(context.Background(), c, account, []byte(`{}`), "siwc-access")
 	require.NoError(t, err)
 	require.NotEqual(t, req.Header.Get("X-Client-Request-Id"), next.Header.Get("X-Client-Request-Id"))
 	require.Equal(t, req.Header.Get("session_id"), next.Header.Get("session_id"))
 	c.Set("api_key", &APIKey{ID: 99})
-	userReq, err := svc.buildSIWCRequest(context.Background(), c, []byte(`{}`), "siwc-access")
+	userReq, err := svc.buildSIWCRequest(context.Background(), c, account, []byte(`{}`), "siwc-access")
 	require.NoError(t, err)
 	require.NotEqual(t, req.Header.Get("session_id"), userReq.Header.Get("session_id"))
 	c.Set("api_key", &APIKey{ID: 0})
@@ -69,18 +69,18 @@ func TestSIWCHeadersUseIsolatedSessionAndLocalClientIdentity(t *testing.T) {
 	require.Empty(t, capture.lastReq.Header.Get("Cookie"))
 	require.Empty(t, capture.lastReq.Header.Get("ChatGPT-Account-ID"))
 	account.Credentials["chatgpt_account_id"] = "account-b"
-	other, err := svc.buildSIWCRequest(context.Background(), c, []byte(`{}`), "siwc-access")
+	other, err := svc.buildSIWCRequest(context.Background(), c, account, []byte(`{}`), "siwc-access")
 	require.NoError(t, err)
 	require.NotEqual(t, req.Header.Get("session_id"), other.Header.Get("session_id"))
 	c.Request.Header.Set("Session-Id", "client-session")
 	c.Request.Header.Set("session_id", "conflicting-session")
-	ambiguous, err := svc.buildSIWCRequest(context.Background(), c, []byte(`{}`), "siwc-access")
+	ambiguous, err := svc.buildSIWCRequest(context.Background(), c, account, []byte(`{}`), "siwc-access")
 	require.NoError(t, err)
 	require.Empty(t, ambiguous.Header.Get("session_id"))
 	c.Request.Header.Del("session_id")
 	for _, bad := range []string{strings.Repeat("a", 257), "bad\r\nheader", "bad session"} {
 		c.Request.Header.Set("Session-Id", bad)
-		invalid, err := svc.buildSIWCRequest(context.Background(), c, []byte(`{}`), "siwc-access")
+		invalid, err := svc.buildSIWCRequest(context.Background(), c, account, []byte(`{}`), "siwc-access")
 		require.NoError(t, err)
 		require.Empty(t, invalid.Header.Get("session_id"))
 	}

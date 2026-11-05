@@ -484,13 +484,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			resp.Body = newGrokResponsesClientToolStreamBody(resp.Body, mapping, maxLineSize)
 		}
 
-		// x-codex-turn-state 溯源：下游回传由 writeOpenAIPassthroughResponseHeaders
-		// 在各 handler 的写头点强制放行，本次构造捕获的出站归属在此记录，
-		// 供出站守卫剥离已知跨归属回带（openai_codex_turn_state.go）。
-		if extractOpenAICodexTurnState(resp.Header) != "" {
-			s.noteOpenAICodexTurnStateProvenance(c, account)
-		}
-
 		if reqStream {
 			effort := ""
 			if reasoningEffort != nil {
@@ -661,7 +654,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 ) (*http.Request, error) {
 	defer requesttiming.Observe(ctx, "build_upstream_request")()
 	if account.IsSIWCEnabled() {
-		return s.buildSIWCRequest(ctx, c, body, token)
+		return s.buildSIWCRequest(ctx, c, account, body, token)
 	}
 	if codexAccountIdentitySource(c, account).IsExcelOAuth() {
 		return nil, errExcelOAuthRouteUnavailable
@@ -2072,6 +2065,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 		observer = beginUpstreamResponseModelObservation(c)
 	}
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	// A heartbeat or an abandoned pre-output attempt must not expose or claim
+	// this account's state. Commit it only with the attempt's actual output.
+	c.Writer.Header().Del(openAICodexTurnStateHeader)
+	commitTurnState := func() {
+		if !c.Writer.Written() {
+			s.relayOpenAICodexTurnState(c, account, resp.Header)
+		}
+	}
 
 	// SSE headers
 	c.Header("Content-Type", "text/event-stream")
@@ -2181,6 +2182,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 	}
 	defer flushPendingOutput()
 	writePendingLines := func() bool {
+		commitTurnState()
 		for _, pending := range pendingLines {
 			if _, err := fmt.Fprintln(w, pending); err != nil {
 				clientDisconnected = true
@@ -2486,6 +2488,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 					continue
 				}
 			}
+			if !clientOutputStarted {
+				commitTurnState()
+			}
 			if _, err := fmt.Fprintln(w, line); err != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
@@ -2652,8 +2657,6 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
 
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/json"
@@ -2670,6 +2673,8 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
 	}
+	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	s.relayOpenAICodexTurnState(c, account, resp.Header)
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -2743,6 +2748,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	}
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	s.relayOpenAICodexTurnState(c, account, resp.Header)
 	logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, usage, terminalType, false)
 
 	contentType := "application/json; charset=utf-8"

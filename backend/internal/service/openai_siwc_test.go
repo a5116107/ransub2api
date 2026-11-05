@@ -166,7 +166,7 @@ func TestSIWCRequestUsesOfficialEndpointWithoutCodexSecrets(t *testing.T) {
 	ctx.Request.Header.Set("Cookie", "must-not-forward")
 	ctx.Request.Header.Set("X-Codex-Turn-State", "must-not-forward")
 	service := &OpenAIGatewayService{}
-	req, err := service.buildSIWCRequest(context.Background(), ctx, []byte(`{"model":"gpt-6.1-sol","stream":false,"store":true,"previous_response_id":"old","input":[{"role":"system","content":"rules"}],"tools":[{"type":"function","name":"local","parameters":{"type":"object"}}]}`), "siwc-access")
+	req, err := service.buildSIWCRequest(context.Background(), ctx, nil, []byte(`{"model":"gpt-6.1-sol","stream":false,"store":true,"previous_response_id":"old","input":[{"role":"system","content":"rules"}],"tools":[{"type":"function","name":"local","parameters":{"type":"object"}}]}`), "siwc-access")
 	require.NoError(t, err)
 	require.Equal(t, "https://api.openai.com/v1/responses", req.URL.String())
 	require.Equal(t, "Bearer siwc-access", req.Header.Get("Authorization"))
@@ -183,7 +183,7 @@ func TestSIWCRequestUsesOfficialEndpointWithoutCodexSecrets(t *testing.T) {
 	_, err = normalizeSIWCBody([]byte(`{"tools":[{"type":"tool_search"}]}`))
 	require.Error(t, err)
 	ctx.Request = httptest.NewRequest("POST", "/v1/responses/compact", nil)
-	_, err = service.buildSIWCRequest(context.Background(), ctx, []byte(`{}`), "siwc-access")
+	_, err = service.buildSIWCRequest(context.Background(), ctx, nil, []byte(`{}`), "siwc-access")
 	require.Error(t, err)
 }
 func TestSIWCSelectionDisablesOtherProtocolCapabilities(t *testing.T) {

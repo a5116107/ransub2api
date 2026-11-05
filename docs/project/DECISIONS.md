@@ -721,3 +721,30 @@
 - 本轮原位替换无归属缓存读取与两生产写入，连接保存建连时不可变归属，拒绝把复用握手重标给新模型/档位；原生WS后续轮次的将来重连准入/认证和请求头跟随生效payload更新。同路、别名、过滤后普通档与OAuth刷新保持续接，换账号/线路/生效模型/服务档清除旧托管状态，HTTP桥接隔离、线程键、TTL和容量回收保持。删除重复首轮model/tier解析与冗余Header.Del规范化，不新增平行缓存、兼容shim或TODO。
 - 最终产物清点：本轮准确目录`backend/tmp/ws-turn-state-verification`保留13文件、77603133bytes；其删除预演已被自动审批`blocked by policy`拒绝，未实际删除、未改工具/移动绕过。两份临时overlay源文件/配置已在该拒绝之前按验证脚本清除。旧12张测试PNG1164bytes也有历史精确删除被拦截记录，继续保留；原区域/其他PostgreSQL资源不启动、停止或移动。
 - 本轮完整关闭D2内WS托管turn-state归属与重连子范围，设计9.1与STATE已统一；D2父任务及客户端WS/SIWC/跨实例来源和完整缓存域仍未验收，原20项保持12 done、3 in_progress、5 pending，父done增量0。仅本地交付，不运行CI、不推送、部署或生产迁移。最终暂存前再次核对12份Go摘要一致，后续本地提交记录以Git为准。
+
+
+## 2026-11-05：D2 客户端具体 turn-state 来源、共享 Redis 与 WS/SIWC 接线
+
+- 基线为 `dc78167`，H 盘唯一工作树，用户继续授权本地实施/清理/验证/提交；不运行 CI、不推送、部署或生产迁移。既有未跟踪 12 张测试 PNG 与历史受拦清理资源保持原等待，不作为本轮产物。
+- 88495 在原生产源码上新增两项行为回归，实际 service1.563s、退出1，共七个叶子失败：会话最近响应会误删先前合法 blob、放行其跨账号回带；共享 WS 头在账号/Key/端点/模型/档位变化时仍带 HTTP 旧 blob。没有弱化原断言。
+- 原位替换来源键为下游 Key/原始会话/具体状态的 SHA-256。构造时捕获归属，直出/暂存提交仍共用原记录入口。WS 握手在原门票认证前使用同一守卫，HTTP→WS 返回的握手状态登记来源，反向 WS→HTTP 使用同表；托管状态仍按原连接归属约束。SIWC 构造参数明确传当前账号，来源使用规范化请求，原最终白名单继续排除客户端 Codex 头；全部调用点同步修改。
+- 新共享端口由原 GatewayCache 的 Redis adapter 实现，生产不读写本地来源副本。Redis 仅保存摘要索引、账号/线路/模型/档位、版本/作用域摘要及有效期，不存原始状态或客户端会话/提示词/凭据。读失败剥离回带状态，写失败从直出/暂存/passthrough/WS 响应中撤去新增状态，保持业务执行；端口未提供的独立嵌入者保留原本地存储，来源键和条件更新统一替换。
+- 22702 的真实 Redis 与 miniredis/独立网关 HTTP/WS 组合初次实际 repository1.967s、退出1，四个叶子失败揭示同一个上游状态字符串被另一范围重复返回后仍可能重新归属。修复 Redis 原子脚本与本地 CAS：有效首次归属不变，同域可续期，异域写失败并抑制该响应状态。真实冲突夹具和原同域/跨域断言保留，未通过换 fixture 值掩盖缺口。
+- 修复后 94109 专项实际 service1.847s、repository2.046s、退出0；补齐实际独立 Redis 连接池、32 并发来源竞争、TTL/非法记录、业务级故障与恢复、真实 CLIENT PAUSE 截止后，45483 三轮专项 service3.473s、repository6.399s、退出0。真实 Redis 启动仅绑定 loopback 随机端口且不持久化，由 Go fixture 清除自有进程/目录；没有操作历史 PostgreSQL/Redis 资源。
+- 最终12份 Go 源码的路径+字节摘要为 `3e45a455eef83598f09b1f8b72308fc12fbf98152343fdcc3ed696ff656327e4`；70412 在该源码上执行完整 service/handler/routes、相关 repository 三轮和专项 race，实际结果完成后追加。本轮验证直接输出摘要，不生成旧式整包 JSONL 或独立台账。
+- 70412 已实际完成完整 `go test -p 1 -tags=unit ./internal/service ./internal/handler ./internal/server/routes -count=1 -timeout=10m`：service348.062s、handler148.760s、routes12.248s，三包退出0。普通摘要不枚举条件 skip，不据此宣称真实 API、插件、生产 SQL 或原 Windows 符号链接场景运行通过。其后的 repository 三轮与 race 仍在原句柄继续。
+- 59898 已实际完成默认标签 `go test -p 1 ./internal/service ./internal/repository ./internal/handler ./internal/server/routes ./cmd/server -run '^$' -count=1 -timeout=3m`：五包分别4.767/3.140/1.710/2.512/1.914s、退出0，全部 no tests to run，只计默认编译。后续 vet 与原规则完整 service/repository lint 仍在原句柄继续。
+
+- 恢复收取59898原句柄，实际退出1，唯一diagnostic为新增Redis key校验QF1001；原位以德摩根等价表达式替换，不关规则。70412原句柄已失效、进程已结束；其已记录完整三包证据保留，未收取的repository/race不计通过。新增passthrough两项提交时机回归仍待验，故不能以旧三包证据代替最终源码。
+- 最终12份Go文件冻结摘要（排序路径+NUL+原字节+NUL）为44f98958d9aefd00b0d07251270c3e684081325c7bee29230bc0954867efa786；98809三轮专项实际service6.723s、repository5.417s、退出0，包含废弃attempt不占来源、心跳先写不泄露/登记状态、真实Redis与32并发来源冲突/恢复。78166执行相同边界race，45592按顺序执行最终完整三包、默认五包编译、五包vet与完整service/repository lint；未结束不计通过。
+- 78166已实际退出0：`go test -race -p 1 -tags=unit ./internal/service ./internal/repository -run 'TestCodexTurnState|TestRelayOpenAICodexTurnState|TestStageOpenAICodexTurnState|TestStagedTurnState|TestGuardOpenAICodexTurnState|TestSweepOpenAICodexTurnState' -count=3 -timeout=3m`输出service10.153s、repository6.079s；含最终两项passthrough提交时机、32并发Redis首次归属与恢复。不降低Go1.27.3、不改CGO或race要求，本次原路径实际可运行，未继承交接中未确认的race路径阻塞。
+- 45592实际完成完整三包service350.489s、handler165.167s、routes14.010s，输出Final related package tests: PASS。随后为收敛新发现的WS提交时机而中断剩余链（退出1），不计其默认编译/vet/lint为通过。该完整证据对应44f98958d9ae生产源码；新增测试文件不包含在当时service测试二进制内。
+- 38656新增真实WS失败→恢复回归在修改生产逻辑前实际service2.030s、退出1，流/非流×本地/共享四个叶子都证实未交付握手已抢占来源。原位将登记移至实际SSE/JSON写入，独立托管连接状态仍保留；另外移动passthrough首输出调用，避免pendingLines首写前两次Redis登记。68369顺序复验受影响来源/WS/SIWC、race、默认编译/vet/lint，结果待实际退出。
+- 68369在WS提交时机修复后完成三轮完整受影响组合：service58.696s、repository5.832s、退出0，含原WS/托管续接与SIWC。随后因共享TTL缺口中断后续链（退出1），未将其race/编译/vet/lint记为通过。51667模拟写实例时钟落后但Redis仍持有一分钟TTL，实际repository1.537s、退出1：读取误判未知、冲突写覆盖、无TTL记录默许共三例均失败。
+- 原位删除共享记录的实例expires_at_ms字段与本地过期比较，唯一生命周期由Redis PX/PTTL决定。读操作以脚本原子读取值及有界TTL；活记录的首次scope不可重标，无TTL记录拒绝读取/写覆盖。保留原namespace/版本/哈希和250ms截止，不清空生产Redis；夹具仅修复自有损坏记录。旧clock字段即使存在也不授权跨域改写。新代码冻结SHA256为ef3afc94745985b444a86eee15c34e0b267c0006ee8659b4fe28019005ed6bfb；95767顺序执行最终专项/race/默认五包/vet/完整双包lint，结果待实际退出。
+- 最终冻结ef3afc947459源码的95767已完成三轮受影响来源/WS/SIWC与repository组合：service58.978s、repository5.109s、退出0。独立8540以`go test -v -p 1 -tags=unit ./internal/repository -run '^TestCodexTurnStateGatewaysRealRedis$' -count=1 -timeout=1m`明确输出真实Redis顶层及六个HTTP/WS/账号/模型/档位子例PASS、无skip，repository4.739s；含32并发来源与CLIENT PAUSE截止/恢复。剩余95767 race与静态仍以实际退出为准。
+- 最终95767三轮race已实际输出service12.847s、repository10.129s及Final three-round provenance race: PASS、退出0；包含最终WS失败后换账号恢复、32并发首次归属与权威TTL边界。默认五包编译/vet/完整双包lint继续顺序运行，未用旧源码或仅vet结果代替。
+- 最终95767默认标签五包编译已退出0：service3.108s、repository3.491s、handler2.566s、routes6.152s、cmd/server3.620s，全部no tests to run，只计编译。随后`go vet -p 1 -tags=unit ./internal/service ./internal/repository ./internal/handler ./internal/server/routes ./cmd/server`无诊断，输出Final five-package vet: PASS、退出0。完整双包lint仍在原句柄内执行，保留unit、原规则、并发2和8分钟。
+- 最终95767整条顺序命令实际退出0；完整`./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 8m --allow-serial-runners ./internal/service/... ./internal/repository/...`输出`0 issues.`与Final service/repository lint: PASS。全部原规则与完整两包保留，验证进程内GOMEMLIMIT=4GiB/GOGC=50，不改全局环境。冻结后源码未变，收尾核对12份Go路径+原字节摘要仍为ef3afc94745985b444a86eee15c34e0b267c0006ee8659b4fe28019005ed6bfb。
+- 本轮完整关闭D2客户端具体blob来源、共享Redis与WS/SIWC接线子范围，包含首次归属冲突、失败attempt/心跳提交边界、共享TTL时钟偏移、故障/恢复和并发验证。最终受影响组合/race/编译/vet/lint覆盖最终源码；完整service/handler/routes350.489/165.167/14.010s在最后WS提交与TTL修复之前，未冒称最终全量重跑。旧无具体blob来源键、提前登记与共享实例到期字段均删除，没有新TODO/FIXME/XXX、第二缓存权威或配置。
+- 设计9.1与STATE已统一完成范围和后续原验收，原20项仍12 done、3 in_progress、5 pending，D2父任务不关闭。仅在H盘同一工作树本地提交15份任务文件，不推送/部署/生产迁移/CI。历史12张PNG与受审批拦截资源保持原路径，不制造干净状态；本轮未生成新的JSONL、临时overlay或任务台账。实际提交与最终工作树以Git为准。

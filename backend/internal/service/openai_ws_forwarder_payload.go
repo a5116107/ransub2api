@@ -150,6 +150,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if state := strings.TrimSpace(turnState); state != "" {
 		headers.Set(openAIWSTurnStateHeader, state)
 	}
+	s.guardOpenAICodexTurnStateEcho(c, account, headers, openAICompatCacheScope{
+		Model: strings.TrimSpace(routingModel), ServiceTier: normalizedOpenAIServiceTierValue(routingServiceTier),
+	})
 	if err := s.applyOpenAICodexTicket(ctx, account, routingModel, headers, "websocket"); err != nil {
 		return nil, sessionResolution, err
 	}

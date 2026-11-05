@@ -1,6 +1,10 @@
 package service
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +31,21 @@ type openAICodexTurnStateOrigin struct {
 
 const openAICodexTurnStateEgressKey = "_openai_codex_turn_state_egress"
 
+// OpenAICodexTurnStateStore shares only hashed provenance, never the opaque
+// provider state or the client's session ID. A configured store is authoritative:
+// a failed lookup must not fall back to an instance's older local observation.
+type OpenAICodexTurnStateStore interface {
+	GetOpenAICodexTurnStateOrigin(context.Context, string) (OpenAIWSContinuationScope, bool, error)
+	SetOpenAICodexTurnStateOrigin(context.Context, string, OpenAIWSContinuationScope, time.Duration) error
+}
+
+const openAICodexTurnStateStoreTimeout = 250 * time.Millisecond
+
+func (s *OpenAIGatewayService) openAICodexTurnStateStore() OpenAICodexTurnStateStore {
+	store, _ := s.cache.(OpenAICodexTurnStateStore)
+	return store
+}
+
 // openAICodexTurnStateSeed 返回溯源表键：API Key + 客户端原始会话标识。
 // 客户端会话标识取自请求头（与指纹收敛的 thread 派生同源，见
 // extractClientSessionID），确保同一下游会话的记录/守卫两侧使用同一键。
@@ -40,6 +59,18 @@ func openAICodexTurnStateSeed(c *gin.Context) string {
 		return ""
 	}
 	return strconv.FormatInt(getAPIKeyIDFromContext(c), 10) + "\x00" + sessionID
+}
+
+// Separate concurrent responses and late echoes within the same session. A
+// session's latest response is not evidence about a different opaque blob.
+func openAICodexTurnStateKey(c *gin.Context, state string) string {
+	seed := openAICodexTurnStateSeed(c)
+	state = strings.TrimSpace(state)
+	if seed == "" || state == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(seed + "\x00" + state))
+	return hex.EncodeToString(sum[:])
 }
 
 // relayOpenAICodexTurnState 将上游响应中的 turn-state 显式写入下游响应头，
@@ -57,8 +88,11 @@ func (s *OpenAIGatewayService) relayOpenAICodexTurnState(c *gin.Context, account
 		c.Writer.Header().Del(canonical)
 		return
 	}
-	c.Writer.Header().Set(canonical, state)
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	if s.noteOpenAICodexTurnStateProvenance(c, account, state) {
+		c.Writer.Header().Set(canonical, state)
+	} else {
+		c.Writer.Header().Del(canonical)
+	}
 }
 
 // stageOpenAICodexTurnState 将上游 turn-state 暂存到延迟提交的响应头集合
@@ -91,7 +125,12 @@ func (s *OpenAIGatewayService) noteStagedOpenAICodexTurnStateCommitted(c *gin.Co
 	if staged == nil || strings.TrimSpace(staged.Get(openAICodexTurnStateHeader)) == "" {
 		return
 	}
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	if !s.noteOpenAICodexTurnStateProvenance(c, account, extractOpenAICodexTurnState(staged)) {
+		staged.Del(openAICodexTurnStateHeader)
+		if c != nil && c.Writer != nil {
+			c.Writer.Header().Del(openAICodexTurnStateHeader)
+		}
+	}
 }
 
 func extractOpenAICodexTurnState(upstream http.Header) string {
@@ -102,13 +141,13 @@ func extractOpenAICodexTurnState(upstream http.Header) string {
 }
 
 // noteOpenAICodexTurnStateProvenance records the committed response egress.
-func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account) {
+func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account, state string) bool {
 	if s == nil || account == nil || account.ID <= 0 {
-		return
+		return true
 	}
-	seed := openAICodexTurnStateSeed(c)
-	if seed == "" {
-		return
+	key := openAICodexTurnStateKey(c, state)
+	if key == "" {
+		return true
 	}
 	origin := openAICodexTurnStateOrigin{
 		accountID:        account.ID,
@@ -119,9 +158,36 @@ func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context
 			origin = egress
 		}
 	}
-	origin.expiresAt = time.Now().Add(s.openAIWSSessionStickyTTL())
-	s.openaiCodexTurnStateOrigins.Store(seed, origin)
-	s.sweepOpenAICodexTurnStateOrigins()
+	ttl := s.openAIWSSessionStickyTTL()
+	if store := s.openAICodexTurnStateStore(); store != nil {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), openAICodexTurnStateStoreTimeout)
+		defer cancel()
+		scope := OpenAIWSContinuationScope{AccountID: origin.accountID, RouteFingerprint: origin.routeFingerprint, Model: origin.cacheScope.Model, ServiceTier: origin.cacheScope.ServiceTier}
+		if err := store.SetOpenAICodexTurnStateOrigin(ctx, key, scope, ttl); err != nil {
+			slog.WarnContext(ctx, "Codex turn-state provenance write failed; response state withheld", "account_id", account.ID)
+			return false
+		}
+		return true
+	}
+	origin.expiresAt = time.Now().Add(ttl)
+	for {
+		raw, loaded := s.openaiCodexTurnStateOrigins.LoadOrStore(key, origin)
+		if !loaded {
+			s.sweepOpenAICodexTurnStateOrigins()
+			return true
+		}
+		previous, ok := raw.(openAICodexTurnStateOrigin)
+		if !ok {
+			return false
+		}
+		if time.Now().Before(previous.expiresAt) && (previous.accountID != origin.accountID || previous.routeFingerprint != origin.routeFingerprint || previous.cacheScope != origin.cacheScope) {
+			return false
+		}
+		if s.openaiCodexTurnStateOrigins.CompareAndSwap(key, previous, origin) {
+			s.sweepOpenAICodexTurnStateOrigins()
+			return true
+		}
+	}
 }
 
 // guardOpenAICodexTurnStateEcho strips a known foreign account/route/model/tier
@@ -142,21 +208,33 @@ func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, acc
 	if strings.TrimSpace(h.Get(openAICodexTurnStateHeader)) == "" {
 		return
 	}
-	seed := openAICodexTurnStateSeed(c)
-	if seed == "" {
+	key := openAICodexTurnStateKey(c, h.Get(openAICodexTurnStateHeader))
+	if key == "" {
 		return
 	}
-	raw, ok := s.openaiCodexTurnStateOrigins.Load(seed)
+	if store := s.openAICodexTurnStateStore(); store != nil {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), openAICodexTurnStateStoreTimeout)
+		defer cancel()
+		origin, found, err := store.GetOpenAICodexTurnStateOrigin(ctx, key)
+		if err != nil {
+			h.Del(openAICodexTurnStateHeader)
+			slog.WarnContext(ctx, "Codex turn-state provenance read failed; client state stripped", "account_id", account.ID)
+		} else if found && (origin.AccountID != egress.accountID || origin.RouteFingerprint != egress.routeFingerprint || origin.Model != egress.cacheScope.Model || origin.ServiceTier != egress.cacheScope.ServiceTier) {
+			h.Del(openAICodexTurnStateHeader)
+		}
+		return
+	}
+	raw, ok := s.openaiCodexTurnStateOrigins.Load(key)
 	if !ok {
 		return
 	}
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	if !ok {
-		s.openaiCodexTurnStateOrigins.Delete(seed)
+		s.openaiCodexTurnStateOrigins.Delete(key)
 		return
 	}
 	if !origin.expiresAt.IsZero() && time.Now().After(origin.expiresAt) {
-		s.openaiCodexTurnStateOrigins.CompareAndDelete(seed, origin)
+		s.openaiCodexTurnStateOrigins.CompareAndDelete(key, origin)
 		return
 	}
 	if origin.accountID != egress.accountID || origin.routeFingerprint != egress.routeFingerprint || origin.cacheScope != egress.cacheScope {

@@ -101,7 +101,7 @@ func normalizeSIWCBody(body []byte) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-func (s *OpenAIGatewayService) buildSIWCRequest(ctx context.Context, c *gin.Context, body []byte, token string) (*http.Request, error) {
+func (s *OpenAIGatewayService) buildSIWCRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string) (*http.Request, error) {
 	if suffix := openAIResponsesRequestPathSuffix(c); suffix != "" {
 		return nil, infraerrors.BadRequest("OPENAI_SIWC_UNSUPPORTED_ENDPOINT", "SIWC supports /v1/responses; compact and other endpoints are unavailable")
 	}
@@ -117,8 +117,12 @@ func (s *OpenAIGatewayService) buildSIWCRequest(ctx context.Context, c *gin.Cont
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req = withSIWCRequestIdentity(req, c, codexAccountIdentitySource(c, nil))
+	req = withSIWCRequestIdentity(req, c, codexAccountIdentitySource(c, account))
 	applySIWCRequestHeaders(req)
+	// SIWC intentionally excludes client Codex headers. Still capture the
+	// normalized request scope so a returned state is never relabelled with a
+	// previous attempt's account, model or service tier.
+	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(normalized))
 	return req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI)), nil
 }
 

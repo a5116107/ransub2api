@@ -612,9 +612,9 @@ type OpenAIGatewayService struct {
 	excelBPSModelsCache                 openAIModelsCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
-	// openaiCodexTurnStateOrigins: 下游会话 seed → openAICodexTurnStateOrigin，
-	// 记录最近一次向该会话下发 x-codex-turn-state 的实际账号/线路/模型/档位，
-	// 供出站守卫剥离已知跨归属回带（openai_codex_turn_state.go）。
+	// Standalone fallback when cache has no shared provenance port. Keys hash
+	// API key, session and the specific committed state; shared stores do not
+	// populate or consult this map.
 	openaiCodexTurnStateOrigins sync.Map
 	openaiCodexTurnStateWrites  atomic.Uint64
 	// openaiCodexTickets: accountID\x00model → *openAICodexTicket，292 长度门票。

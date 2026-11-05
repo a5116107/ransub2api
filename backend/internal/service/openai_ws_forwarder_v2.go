@@ -438,15 +438,22 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		handshakeTurnState != "",
 		len(handshakeTurnState),
 	)
+	var handshakeResponseHeaders http.Header
 	if handshakeTurnState != "" && continuationScope.valid() && lease.conn.continuationScope == continuationScope {
 		if stateStore != nil && sessionHash != "" {
 			stateStore.BindSessionTurnState(groupID, sessionHash, continuationScope, handshakeTurnState, s.openAIWSSessionStickyTTL())
 		}
-		if c != nil {
-			c.Header(http.CanonicalHeaderKey(openAIWSTurnStateHeader), handshakeTurnState)
-		}
-	} else if c != nil {
+		handshakeResponseHeaders = lease.HandshakeHeaders()
+	}
+	if c != nil {
 		c.Writer.Header().Del(openAIWSTurnStateHeader)
+	}
+	// A successful upstream handshake is not yet a client-visible response.
+	// An abandoned attempt must leave the blob available for the actual sender.
+	commitTurnState := func() {
+		if c != nil && !c.Writer.Written() {
+			s.relayOpenAICodexTurnState(c, account, handshakeResponseHeaders)
+		}
 	}
 
 	checkBeforeWrite := func() error {
@@ -698,6 +705,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		frame = append(frame, "data: "...)
 		frame = append(frame, message...)
 		frame = append(frame, '\n', '\n')
+		commitTurnState()
 		_, wErr := c.Writer.Write(frame)
 		if wErr == nil {
 			wroteDownstream = true
@@ -967,6 +975,7 @@ readLoop:
 				emitStreamMessage(message, true)
 			}
 			if !reqStream {
+				commitTurnState()
 				c.JSON(statusCode, gin.H{
 					"error": gin.H{
 						"type":    "upstream_error",
@@ -1052,6 +1061,7 @@ readLoop:
 			responseID = strings.TrimSpace(gjson.GetBytes(finalResponse, "id").String())
 		}
 
+		commitTurnState()
 		c.Data(http.StatusOK, "application/json", finalResponse)
 	} else {
 		flushStreamWriter(true)
