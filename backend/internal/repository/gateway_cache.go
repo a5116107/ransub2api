@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -495,23 +496,35 @@ func (c *gatewayCache) SaveLiveCall(ctx context.Context, record *service.LiveCal
 	if record == nil || record.CallHash == "" || record.CallID == "" {
 		return fmt.Errorf("invalid live call record")
 	}
+	var keyLease []byte
+	if record.UpstreamKeyLease != nil {
+		if err := record.UpstreamKeyLease.Validate(); err != nil {
+			return err
+		}
+		var err error
+		keyLease, err = json.Marshal(record.UpstreamKeyLease)
+		if err != nil {
+			return err
+		}
+	}
 	values := map[string]any{
-		"call_id":          record.CallID,
-		"account_id":       record.AccountID,
-		"api_key_id":       record.APIKeyID,
-		"user_id":          record.UserID,
-		"group_id":         record.GroupID,
-		"subscription_id":  record.SubscriptionID,
-		"lease_id":         record.LeaseID,
-		"model":            record.Model,
-		"created_at":       record.CreatedAt.UnixMilli(),
-		"expires_at":       record.ExpiresAt.UnixMilli(),
-		"controller":       record.Controller,
-		"controller_owner": record.ControllerOwner,
-		"user_agent":       record.UserAgent,
-		"ip_address":       record.IPAddress,
-		"inbound_endpoint": record.InboundEndpoint,
-		"attestation":      record.AttestationCiphertext,
+		"call_id":            record.CallID,
+		"account_id":         record.AccountID,
+		"api_key_id":         record.APIKeyID,
+		"user_id":            record.UserID,
+		"group_id":           record.GroupID,
+		"subscription_id":    record.SubscriptionID,
+		"lease_id":           record.LeaseID,
+		"model":              record.Model,
+		"created_at":         record.CreatedAt.UnixMilli(),
+		"expires_at":         record.ExpiresAt.UnixMilli(),
+		"controller":         record.Controller,
+		"controller_owner":   record.ControllerOwner,
+		"user_agent":         record.UserAgent,
+		"ip_address":         record.IPAddress,
+		"inbound_endpoint":   record.InboundEndpoint,
+		"attestation":        record.AttestationCiphertext,
+		"upstream_key_lease": string(keyLease),
 	}
 	key := liveCallKey(record.CallHash)
 	pipe := c.rdb.TxPipeline()
@@ -528,6 +541,13 @@ func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*servi
 	}
 	if len(values) == 0 {
 		return nil, service.ErrLiveCallNotFound
+	}
+	var keyLease *service.LiveUpstreamKeyLease
+	if raw := values["upstream_key_lease"]; raw != "" {
+		keyLease = &service.LiveUpstreamKeyLease{}
+		if err := json.Unmarshal([]byte(raw), keyLease); err != nil || keyLease.Validate() != nil {
+			return nil, service.ErrUpstreamKeyPolicy
+		}
 	}
 	parseInt := func(field string) int64 {
 		value, _ := strconv.ParseInt(values[field], 10, 64)
@@ -553,6 +573,7 @@ func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*servi
 		IPAddress:             values["ip_address"],
 		InboundEndpoint:       values["inbound_endpoint"],
 		AttestationCiphertext: values["attestation"],
+		UpstreamKeyLease:      keyLease,
 	}, nil
 }
 

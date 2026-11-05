@@ -205,6 +205,12 @@ func liveCallIdentity(
 }
 
 func (h *OpenAIGatewayHandler) writeLiveCreateError(c *gin.Context, err error) {
+	var admission *service.UpstreamFailoverError
+	if errors.Is(err, service.ErrUpstreamKeyCapacity) || errors.Is(err, service.ErrUpstreamKeyPolicy) ||
+		(errors.As(err, &admission) && admission.Reason == service.UpstreamKeyAdmissionReason) {
+		h.errorResponse(c, http.StatusServiceUnavailable, "admission_unavailable", "No shared upstream Key capacity is available")
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrAPIKeyConcurrencyLimit):
 		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "API key concurrency limit reached; please retry later")

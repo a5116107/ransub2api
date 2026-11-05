@@ -222,6 +222,8 @@ func TestLiveCreateFailoverUsesExistingOpenAIPolicy(t *testing.T) {
 		StatusCode: http.StatusBadGateway,
 	}))
 	require.True(t, service.shouldFailoverLiveCreateError(account, errors.New("transport failed")))
+	require.False(t, service.shouldFailoverLiveCreateError(account, ErrAPIKeySlotLeaseLost))
+	require.False(t, service.shouldFailoverLiveCreateError(account, errors.Join(errors.New("transport failed"), ErrAPIKeySlotLeaseLost)))
 }
 
 func TestLiveCallIDFromLocation(t *testing.T) {

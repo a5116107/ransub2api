@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -59,4 +60,19 @@ func TestGatewayCacheLiveCallIdentityAndController(t *testing.T) {
 	closed, err = cache.MarkLiveCallClosed(context.Background(), record.CallHash, time.Hour)
 	require.NoError(t, err)
 	require.False(t, closed)
+
+	fingerprint := config.UpstreamKeyFingerprint("live-cache-fixture")
+	record.UpstreamKeyLease = &service.LiveUpstreamKeyLease{Authority: "redis", Member: "live:fixture", Fingerprints: []string{fingerprint}, Resources: []service.LiveUpstreamKeyResource{{Fingerprint: fingerprint}}}
+	require.NoError(t, cache.SaveLiveCall(t.Context(), record, time.Hour))
+	loaded, err = otherInstance.GetLiveCall(t.Context(), record.CallHash)
+	require.NoError(t, err)
+	require.Equal(t, record.UpstreamKeyLease, loaded.UpstreamKeyLease)
+	require.NoError(t, client.HSet(t.Context(), liveCallKey(record.CallHash), "upstream_key_lease", "{").Err())
+	_, err = otherInstance.GetLiveCall(t.Context(), record.CallHash)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy, "corrupt ownership must not become an unrestricted old call")
+	record.UpstreamKeyLease = nil
+	require.NoError(t, cache.SaveLiveCall(t.Context(), record, time.Hour))
+	loaded, err = otherInstance.GetLiveCall(t.Context(), record.CallHash)
+	require.NoError(t, err)
+	require.Nil(t, loaded.UpstreamKeyLease, "legacy records remain readable without inheriting another ownership")
 }

@@ -23,6 +23,7 @@ var (
 	ErrLiveLeaseSourceLost        = errors.New("live source reservation lost before transfer")
 	ErrLiveLeaseTransferUncertain = errors.New("live lease transfer result is unknown")
 	ErrLiveLeaseTransferFenced    = errors.New("live lease transfer was already fenced")
+	ErrLiveUpstreamUncertain      = errors.New("live upstream session completion is unconfirmed")
 )
 
 type LiveAttestationUnavailableError struct {
@@ -78,13 +79,15 @@ type LiveCallRecord struct {
 	InboundEndpoint string
 	// AttestationCiphertext 仅用于让同一会话的 Sideband 复用创建时的证明。
 	AttestationCiphertext string
+	UpstreamKeyLease      *LiveUpstreamKeyLease
 }
 
 type LiveCallCreated struct {
-	SDP      []byte
-	CallID   string
-	Location string
-	Account  *Account
+	SDP              []byte
+	CallID           string
+	Location         string
+	Account          *Account
+	UpstreamKeyLease *LiveUpstreamKeyLease
 }
 
 // LiveCallStore 由 GatewayCache 的 Redis 实现可选提供，避免扩大旧缓存接口。

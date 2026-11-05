@@ -65,6 +65,32 @@ func (c *regionalConcurrencyCache) upstreamKeyHeld(ctx context.Context, r slots.
 	return c.local.Held(ctx, r, request)
 }
 
+// Only a new physical send checks current policy/freshness. Holding an already
+// admitted media session does not reallocate it or depend on a new grant.
+func (c *regionalConcurrencyCache) confirmLiveUpstreamPolicy(ctx context.Context, revision int64, digest string, resources []service.LiveUpstreamKeyResource) error {
+	tx, err := c.database().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, held := range resources {
+		var r slots.Resource
+		var limited bool
+		if c.primary != nil {
+			r, limited, err = c.primary.UpstreamResourceTx(ctx, tx, revision, digest, held.Fingerprint)
+		} else {
+			r, limited, err = c.local.UpstreamResourceTx(ctx, tx, revision, digest, held.Fingerprint)
+		}
+		if err != nil {
+			return err
+		}
+		if !limited || r.ID != held.ResourceID {
+			return service.ErrUpstreamKeyPolicy
+		}
+	}
+	return nil
+}
+
 func (c *regionalConcurrencyCache) releaseUpstreamKeySlot(ctx context.Context, r slots.Resource, request string) error {
 	tx, err := c.database().BeginTx(ctx, nil)
 	if err != nil {

@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
@@ -32,6 +34,61 @@ func isUpstreamKeyAdmissionFailure(err error) bool {
 // A nil release means no configured credential consumed capacity.
 type UpstreamKeyConcurrency interface {
 	AcquireUpstreamKeySlots(context.Context, []string) (context.Context, func(), error)
+}
+
+// Live media outlives the SDP response and local control connection. Its exact
+// members stay reserved until an upstream terminal event confirms completion.
+// Only credential fingerprints are persisted, never authentication headers.
+type LiveUpstreamKeyResource struct {
+	Fingerprint string `json:"fingerprint"`
+	ResourceID  int64  `json:"resource_id,omitempty"`
+}
+
+type LiveUpstreamKeyLease struct {
+	Authority    string                    `json:"authority"`
+	Member       string                    `json:"member"`
+	Fingerprints []string                  `json:"fingerprints"`
+	Resources    []LiveUpstreamKeyResource `json:"resources"`
+}
+
+func (l *LiveUpstreamKeyLease) Validate() error {
+	if l == nil || (l.Authority != "redis" && l.Authority != "regional:primary" && !strings.HasPrefix(l.Authority, "regional:local:")) || !strings.HasPrefix(l.Member, "live:") || len(l.Member) <= len("live:") || len(l.Member) > 128 || len(l.Resources) == 0 {
+		return ErrUpstreamKeyPolicy
+	}
+	seen := make(map[string]bool, len(l.Fingerprints))
+	for _, fingerprint := range l.Fingerprints {
+		decoded, err := hex.DecodeString(fingerprint)
+		if err != nil || len(decoded) != 32 || strings.ToLower(fingerprint) != fingerprint || seen[fingerprint] {
+			return ErrUpstreamKeyPolicy
+		}
+		seen[fingerprint] = true
+	}
+	for _, resource := range l.Resources {
+		if !seen[resource.Fingerprint] || resource.ResourceID < 0 || (l.Authority == "redis") != (resource.ResourceID == 0) {
+			return ErrUpstreamKeyPolicy
+		}
+		delete(seen, resource.Fingerprint)
+	}
+	return nil
+}
+
+// The HTTP transport and Live controller share this port. Rechecking never
+// creates a missing member; release is idempotent and survives process handoff.
+type LiveUpstreamKeyConcurrency interface {
+	AcquireLiveUpstreamKeySlots(context.Context, *http.Request) (*LiveUpstreamKeyLease, error)
+	CheckLiveUpstreamKeySlots(context.Context, *LiveUpstreamKeyLease) error
+	ReleaseLiveUpstreamKeySlots(context.Context, *LiveUpstreamKeyLease) error
+}
+
+type liveUpstreamKeyLeaseContextKey struct{}
+
+func WithLiveUpstreamKeyLease(ctx context.Context, lease *LiveUpstreamKeyLease) context.Context {
+	return context.WithValue(ctx, liveUpstreamKeyLeaseContextKey{}, lease)
+}
+
+func LiveUpstreamKeyLeaseFromContext(ctx context.Context) *LiveUpstreamKeyLease {
+	lease, _ := ctx.Value(liveUpstreamKeyLeaseContextKey{}).(*LiveUpstreamKeyLease)
+	return lease
 }
 
 // Local admission failures are not supplier/network health failures. They use

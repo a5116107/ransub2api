@@ -291,8 +291,8 @@ func TestFinalizeLiveCallIsIdempotentAndWritesZeroUsage(t *testing.T) {
 		usageLogRepo:       usageRepo,
 	}
 
-	service.finalizeLiveCall(record)
-	service.finalizeLiveCall(record)
+	service.finalizeLiveCall(record, true)
+	service.finalizeLiveCall(record, true)
 
 	concurrencyCache.mu.Lock()
 	require.Equal(t, 1, concurrencyCache.releases)
@@ -594,7 +594,7 @@ func TestFinalizeLiveCallUsageLogFallsBackToSyncCreate(t *testing.T) {
 		usageLogRepo:       usageRepo,
 	}
 
-	svc.finalizeLiveCall(record)
+	svc.finalizeLiveCall(record, true)
 
 	usageRepo.mu.Lock()
 	defer usageRepo.mu.Unlock()

@@ -36,8 +36,9 @@ const (
 var liveObserverStoreRetryInterval = time.Second
 
 var (
-	chatGPTLiveCallsURL        = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
-	chatGPTLiveSidebandBaseURL = "wss://chatgpt.com/backend-api/codex"
+	chatGPTLiveCallsURL         = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
+	chatGPTLiveSidebandBaseURL  = "wss://chatgpt.com/backend-api/codex"
+	errLiveUpstreamSessionEnded = fmt.Errorf("%w: upstream confirmed session end", ErrLiveCallNotFound)
 )
 
 type liveFrameConn interface {
@@ -284,7 +285,7 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 		}()
 		created, createErr := s.createUpstreamLiveCall(pendingCtx, account, request, attestation)
 		if errors.Is(context.Cause(pendingCtx), ErrAPIKeySlotLeaseLost) {
-			createErr = ErrAPIKeySlotLeaseLost
+			createErr = errors.Join(createErr, ErrAPIKeySlotLeaseLost)
 		}
 		cancelPending(context.Canceled)
 		<-pendingDone
@@ -325,6 +326,7 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 			IPAddress:             identity.IPAddress,
 			InboundEndpoint:       identity.InboundEndpoint,
 			AttestationCiphertext: attestationCiphertext,
+			UpstreamKeyLease:      created.UpstreamKeyLease,
 		}
 		mappingTTL := s.liveMaxSessionDuration() + 5*time.Minute
 		if saveErr := store.SaveLiveCall(ctx, record, mappingTTL); saveErr != nil {
@@ -497,6 +499,9 @@ func (s *OpenAIGatewayService) releaseLiveLeaseAccount(accountID int64, leaseID 
 }
 
 func (s *OpenAIGatewayService) shouldFailoverLiveCreateError(account *Account, err error) bool {
+	if errors.Is(err, ErrLiveUpstreamUncertain) || errors.Is(err, ErrAPIKeySlotLeaseLost) {
+		return false
+	}
 	var upstreamErr *UpstreamFailoverError
 	if !errors.As(err, &upstreamErr) {
 		// 凭证读取和网络传输错误都可能只影响当前账号或代理。
@@ -554,36 +559,76 @@ func (s *OpenAIGatewayService) createUpstreamLiveCall(
 	upstreamReq.Header.Set("Accept", "application/sdp")
 	upstreamReq.Header.Set(liveAttestationHeader, attestation)
 	applyLiveUpstreamIdentityHeaders(upstreamReq.Header)
+	var keyLease *LiveUpstreamKeyLease
+	keyAuthority, hasAuthority := s.httpUpstream.(LiveUpstreamKeyConcurrency)
+	if hasAuthority {
+		keyLease, err = keyAuthority.AcquireLiveUpstreamKeySlots(ctx, upstreamReq)
+		if err != nil {
+			return nil, err
+		}
+		if keyLease != nil {
+			upstreamReq = upstreamReq.WithContext(WithLiveUpstreamKeyLease(upstreamReq.Context(), keyLease))
+		}
+	} else if s.cfg != nil && (s.cfg.Gateway.UpstreamKeyConcurrency.Configured() || s.cfg.Runtime.RegionalConcurrencyFile != "" || s.cfg.Runtime.RegionalSchedulerFile != "") {
+		return nil, ErrUpstreamKeyPolicy
+	}
+	releaseKeyLease := func() {
+		if keyLease != nil {
+			_ = keyAuthority.ReleaseLiveUpstreamKeySlots(context.WithoutCancel(ctx), keyLease)
+		}
+	}
+	uncertain := func(cause error) error {
+		if keyLease == nil {
+			return cause
+		}
+		// The POST may have created a WebRTC session even without a readable
+		// reply. Keep its durable member, and never replay this creation.
+		return errors.Join(ErrLiveUnavailable, ErrLiveUpstreamUncertain, cause)
+	}
+	if ctx.Err() != nil {
+		releaseKeyLease()
+		return nil, context.Cause(ctx)
+	}
 
 	resp, err := s.doOpenAIUpstream(upstreamReq, resolveAccountProxyURL(account), account)
 	if err != nil {
 		logLiveCreateStageFailure(ctx, account.ID, "upstream_transport", err)
-		return nil, err
+		if isUpstreamKeyAdmissionFailure(err) || IsOpenAITurnAdmissionError(err) {
+			releaseKeyLease()
+			return nil, err
+		}
+		return nil, uncertain(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	rejected := resp.StatusCode >= 400 && resp.StatusCode < 500
+	if rejected {
+		releaseKeyLease()
+		keyLease = nil
+	}
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, liveUpstreamBodyLimit+1))
 	if readErr != nil {
-		return nil, readErr
+		return nil, uncertain(readErr)
 	}
 	if len(responseBody) > liveUpstreamBodyLimit {
-		return nil, errors.New("live upstream response is too large")
+		return nil, uncertain(errors.New("live upstream response is too large"))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logLiveUpstreamFailure(ctx, account.ID, resp.StatusCode, resp.Header, responseBody)
-		return nil, &UpstreamFailoverError{
+		return nil, uncertain(&UpstreamFailoverError{
 			StatusCode:      resp.StatusCode,
 			ResponseBody:    responseBody,
 			ResponseHeaders: resp.Header.Clone(),
-		}
+		})
 	}
 	callID, err := liveCallIDFromLocation(resp.Header.Get("Location"))
 	if err != nil {
-		return nil, err
+		return nil, uncertain(err)
 	}
 	return &LiveCallCreated{
-		SDP:      responseBody,
-		CallID:   callID,
-		Location: resp.Header.Get("Location"),
+		SDP:              responseBody,
+		CallID:           callID,
+		Location:         resp.Header.Get("Location"),
+		UpstreamKeyLease: keyLease,
 	}, nil
 }
 
@@ -802,7 +847,7 @@ func (s *OpenAIGatewayService) ProxyLiveSideband(
 			if messageType == coderws.MessageText {
 				eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 				if eventType == "session.closed" || eventType == "session.ended" {
-					errCh <- ErrLiveCallNotFound
+					errCh <- errLiveUpstreamSessionEnded
 					return
 				}
 			}
@@ -813,7 +858,7 @@ func (s *OpenAIGatewayService) ProxyLiveSideband(
 	cancel()
 	_, _ = store.ReleaseLiveController(context.Background(), record.CallHash, owner)
 	if liveSessionEnded(runErr) || !time.Now().Before(record.ExpiresAt) {
-		s.finalizeLiveCall(record)
+		s.finalizeLiveCall(record, errors.Is(runErr, errLiveUpstreamSessionEnded))
 		return runErr
 	}
 	go s.observeLiveCall(record)
@@ -905,7 +950,7 @@ func (s *OpenAIGatewayService) observeLiveCall(record *LiveCallRecord) {
 			return
 		}
 		if !time.Now().Before(record.ExpiresAt) {
-			s.finalizeLiveCall(record)
+			s.finalizeLiveCall(record, false)
 			return
 		}
 		upstream, dialErr := s.dialLiveSideband(context.Background(), record)
@@ -921,7 +966,7 @@ func (s *OpenAIGatewayService) observeLiveCall(record *LiveCallRecord) {
 			return
 		}
 		if liveSessionEnded(runErr) {
-			s.finalizeLiveCall(record)
+			s.finalizeLiveCall(record, errors.Is(runErr, errLiveUpstreamSessionEnded))
 			return
 		}
 		if !s.waitForLiveObserverRetry(record) {
@@ -966,7 +1011,7 @@ func (s *OpenAIGatewayService) runLiveObserverConnection(record *LiveCallRecord,
 		case payload := <-frameCh:
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			if eventType == "session.closed" || eventType == "session.ended" {
-				return ErrLiveCallNotFound
+				return errLiveUpstreamSessionEnded
 			}
 		case err := <-errCh:
 			return err
@@ -1021,7 +1066,7 @@ func (s *OpenAIGatewayService) finalizeLiveCallAfterExpiry(record *LiveCallRecor
 	if wait := time.Until(record.ExpiresAt); wait > 0 {
 		time.Sleep(wait)
 	}
-	s.finalizeLiveCall(record)
+	s.finalizeLiveCall(record, false)
 }
 
 func (s *OpenAIGatewayService) refreshLiveLease(record *LiveCallRecord) bool {
@@ -1032,7 +1077,14 @@ func (s *OpenAIGatewayService) refreshLiveLease(record *LiveCallRecord) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
 	defer cancel()
 	refreshed, err := cache.RefreshLiveLease(ctx, record.AccountID, record.UserID, record.APIKeyID, record.LeaseID)
-	return err == nil && refreshed
+	if err != nil || !refreshed {
+		return false
+	}
+	if record.UpstreamKeyLease != nil {
+		authority, ok := s.httpUpstream.(LiveUpstreamKeyConcurrency)
+		return ok && authority.CheckLiveUpstreamKeySlots(ctx, record.UpstreamKeyLease) == nil
+	}
+	return true
 }
 
 func (s *OpenAIGatewayService) releaseLiveLease(accountID, userID, apiKeyID int64, leaseID string) {
@@ -1045,7 +1097,7 @@ func (s *OpenAIGatewayService) releaseLiveLease(accountID, userID, apiKeyID int6
 	_ = cache.ReleaseLiveLease(ctx, accountID, userID, apiKeyID, leaseID)
 }
 
-func (s *OpenAIGatewayService) finalizeLiveCall(record *LiveCallRecord) {
+func (s *OpenAIGatewayService) finalizeLiveCall(record *LiveCallRecord, upstreamEnded bool) {
 	if record == nil {
 		return
 	}
@@ -1056,7 +1108,20 @@ func (s *OpenAIGatewayService) finalizeLiveCall(record *LiveCallRecord) {
 	ctx, cancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
 	first, err := store.MarkLiveCallClosed(ctx, record.CallHash, liveClosedRecordTTL)
 	cancel()
-	if err != nil || !first {
+	if err != nil {
+		return
+	}
+	// Local expiry, controller loss and a sent close frame do not prove the
+	// directly connected media session stopped. Only confirmed upstream closure
+	// releases its persistent member; unknown sessions require reconciliation.
+	if upstreamEnded && record.UpstreamKeyLease != nil {
+		if authority, ok := s.httpUpstream.(LiveUpstreamKeyConcurrency); ok {
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
+			_ = authority.ReleaseLiveUpstreamKeySlots(releaseCtx, record.UpstreamKeyLease)
+			releaseCancel()
+		}
+	}
+	if !first {
 		return
 	}
 	s.releaseLiveLease(record.AccountID, record.UserID, record.APIKeyID, record.LeaseID)

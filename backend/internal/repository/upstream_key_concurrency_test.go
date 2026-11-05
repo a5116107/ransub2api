@@ -142,7 +142,7 @@ func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	_, port, err := net.SplitHostPort(address)
 	require.NoError(t, err)
 	require.NoError(t, listener.Close())
-	cmd := exec.Command(binary, "--bind", "127.0.0.1", "--port", port, "--dir", t.TempDir(), "--save", "", "--appendonly", "no")
+	cmd := exec.Command(binary, "--bind", "127.0.0.1", "--port", port, "--dir", t.TempDir(), "--save", "", "--appendonly", "yes", "--appendfsync", "always", "--no-appendfsync-on-rewrite", "no", "--maxmemory-policy", "noeviction")
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
@@ -150,6 +150,9 @@ func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	require.Eventually(t, func() bool { return client.Ping(t.Context()).Err() == nil }, 3*time.Second, 10*time.Millisecond)
 	testUpstreamKeyCompetition(t, client)
+	liveClient := redis.NewClient(&redis.Options{Addr: address, DB: 1})
+	t.Cleanup(func() { require.NoError(t, liveClient.Close()) })
+	testUpstreamKeyLivePersistence(t, liveClient, func() {})
 }
 
 func testUpstreamKeyCompetition(t *testing.T, client *redis.Client) {

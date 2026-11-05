@@ -38,8 +38,6 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 
 func testUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T, authorityMode string) {
 	gin.SetMode(gin.TestMode)
-	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
-	defer cancel()
 	redisServer := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
@@ -52,6 +50,10 @@ func testUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T, authorityMode st
 	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
 	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 10
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+	cache, heldCount, loseLease := upstreamKeyWSAuthority(t, cfg, rdb, authorityMode)
+	// Fixture migrations/connection warming do not consume the request budget.
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+	defer cancel()
 	var requests, handshakes, httpCalls atomic.Int32
 	started, finish := make(chan struct{}, 4), make(chan struct{}, 4)
 	closed := make(chan struct{}, 4)
@@ -110,7 +112,6 @@ func testUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T, authorityMode st
 	t.Cleanup(upstream.Close)
 	account := &service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 8,
 		Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
-	cache, heldCount, loseLease := upstreamKeyWSAuthority(t, cfg, rdb, authorityMode)
 	httpPort := newHTTPUpstream(cfg, nil, rdb, cache)
 	svc := service.NewOpenAIGatewayService(upstreamKeyWSAccounts{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, httpPort, nil, nil, nil, nil, nil, nil, nil, nil)
 	type outcome struct {
@@ -208,8 +209,6 @@ func TestUpstreamKeyWebSocketIngressSharedLifetime(t *testing.T) {
 
 func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool, authorityMode string) {
 	gin.SetMode(gin.TestMode)
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
 	server := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
@@ -226,6 +225,10 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool, auth
 		cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 10
 	}
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+	cache, heldCount, loseLease := upstreamKeyWSAuthority(t, cfg, rdb, authorityMode)
+	// Start the unchanged turn deadline only after the SQL/Redis fixture is ready.
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
 	var requests atomic.Int32
 	started := make(chan struct{}, 4)
 	finish := make(chan struct{}, 4)
@@ -306,7 +309,6 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool, auth
 	account := &service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 8,
 		Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
 	account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
-	cache, heldCount, loseLease := upstreamKeyWSAuthority(t, cfg, rdb, authorityMode)
 	httpPort := newHTTPUpstream(cfg, nil, rdb, cache)
 	svc := service.NewOpenAIGatewayService(upstreamKeyWSAccounts{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, httpPort, nil, nil, nil, nil, nil, nil, nil, nil)
 	t.Cleanup(svc.CloseOpenAIWSPool)

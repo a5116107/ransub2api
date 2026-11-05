@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -118,4 +119,28 @@ func jsonPathString(t *testing.T, raw json.RawMessage, keys ...string) string {
 	result, ok := current.(string)
 	require.True(t, ok)
 	return result
+}
+
+func TestLiveSharedKeyAdmissionErrorsKeepLocal503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+		kind   string
+	}{
+		{"capacity", service.ErrUpstreamKeyCapacity, 503, "admission_unavailable"},
+		{"wrapped policy", errors.Join(errors.New("wrapped"), service.ErrUpstreamKeyPolicy), 503, "admission_unavailable"},
+		{"classified local", &service.UpstreamFailoverError{StatusCode: 503, Reason: service.UpstreamKeyAdmissionReason}, 503, "admission_unavailable"},
+		{"uncertain session", errors.Join(service.ErrLiveUnavailable, service.ErrLiveUpstreamUncertain), 503, "api_error"},
+		{"supplier 503", &service.UpstreamFailoverError{StatusCode: 503}, 502, "api_error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			(&OpenAIGatewayHandler{}).writeLiveCreateError(ctx, test.err)
+			require.Equal(t, test.status, recorder.Code)
+			require.Contains(t, recorder.Body.String(), test.kind)
+		})
+	}
 }

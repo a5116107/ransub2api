@@ -2,9 +2,12 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,8 +46,16 @@ local ttl = tonumber(ARGV[6])
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - ttl)
 if redis.call('ZSCORE', KEYS[2], ARGV[5]) then return 1 end
 if redis.call('ZCARD', KEYS[2]) >= limit then return 0 end
-redis.call('ZADD', KEYS[2], now, ARGV[5])
-redis.call('PEXPIRE', KEYS[2], ttl)
+if ARGV[7] == 'live' then
+  redis.call('ZADD', KEYS[2], '+inf', ARGV[5])
+else
+  redis.call('ZADD', KEYS[2], now, ARGV[5])
+end
+if redis.call('ZCOUNT', KEYS[2], '+inf', '+inf') > 0 then
+  redis.call('PERSIST', KEYS[2])
+else
+  redis.call('PEXPIRE', KEYS[2], ttl)
+end
 return 1
 `)
 
@@ -55,7 +66,11 @@ local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - tonumber(ARGV[2]))
 if not redis.call('ZSCORE', KEYS[1], ARGV[1]) then return 0 end
 redis.call('ZADD', KEYS[1], now, ARGV[1])
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
+if redis.call('ZCOUNT', KEYS[1], '+inf', '+inf') > 0 then
+  redis.call('PERSIST', KEYS[1])
+else
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
 return 1
 `)
 
@@ -101,39 +116,44 @@ type upstreamKeyLease struct {
 	once     sync.Once
 }
 
-func (l *upstreamKeyLimiter) acquire(ctx context.Context, fingerprint string, cancel context.CancelCauseFunc) (*upstreamKeyLease, error) {
+func (l *upstreamKeyLimiter) take(ctx context.Context, fingerprint, member, mode string) (slots.Resource, int, error) {
 	if l.err != nil {
-		return nil, service.ErrUpstreamKeyPolicy
+		return slots.Resource{}, 0, service.ErrUpstreamKeyPolicy
 	}
 	key := upstreamKeySlotKeyPrefix + fingerprint
-	member := uuid.NewString()
-	started := time.Now()
 	opCtx, stop := context.WithTimeout(ctx, 2*time.Second)
+	defer stop()
 	var result int
 	var resource slots.Resource
 	var err error
 	if l.regional != nil {
 		resource, result, err = l.regional.acquireUpstreamKeySlot(opCtx, l.policy.Revision, l.digest, fingerprint, member)
 	} else {
-		result, err = acquireUpstreamKeyScript.Run(opCtx, l.rdb, []string{upstreamKeyPolicyKey, key}, l.policy.Revision, l.digest, l.encoded, fingerprint, member, upstreamKeyLeaseTTL.Milliseconds()).Int()
+		result, err = acquireUpstreamKeyScript.Run(opCtx, l.rdb, []string{upstreamKeyPolicyKey, key}, l.policy.Revision, l.digest, l.encoded, fingerprint, member, upstreamKeyLeaseTTL.Milliseconds(), mode).Int()
 	}
-	stop()
 	if err != nil {
-		l.release(resource, key, member)
-		return nil, service.ErrUpstreamKeyPolicy
+		_ = l.release(resource, key, member)
+		return resource, 0, service.ErrUpstreamKeyPolicy
 	}
 	if result == -1 {
-		return nil, service.ErrUpstreamKeyPolicy
+		return resource, result, service.ErrUpstreamKeyPolicy
 	}
 	if result == 0 {
-		return nil, service.ErrUpstreamKeyCapacity
+		return resource, result, service.ErrUpstreamKeyCapacity
 	}
-	if result == 2 {
-		return nil, nil
+	if result != 1 && result != 2 {
+		_ = l.release(resource, key, member)
+		return resource, result, service.ErrUpstreamKeyPolicy
 	}
-	if result != 1 {
-		l.release(resource, key, member)
-		return nil, service.ErrUpstreamKeyPolicy
+	return resource, result, nil
+}
+
+func (l *upstreamKeyLimiter) acquire(ctx context.Context, fingerprint string, cancel context.CancelCauseFunc) (*upstreamKeyLease, error) {
+	key, member := upstreamKeySlotKeyPrefix+fingerprint, uuid.NewString()
+	started := time.Now()
+	resource, result, err := l.take(ctx, fingerprint, member, "")
+	if err != nil || result == 2 {
+		return nil, err
 	}
 	workerCtx, workerStop := context.WithCancel(context.Background())
 	lease := &upstreamKeyLease{limiter: l, key: key, resource: resource, member: member, cancel: cancel, stop: workerStop, done: make(chan struct{})}
@@ -194,13 +214,13 @@ func (l *upstreamKeyLease) renew(ctx context.Context) {
 	}
 }
 
-func (l *upstreamKeyLimiter) release(resource slots.Resource, key, member string) {
+func (l *upstreamKeyLimiter) release(resource slots.Resource, key, member string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var err error
 	if l.regional != nil {
 		if resource.Kind == "" {
-			return
+			return nil
 		}
 		err = l.regional.releaseUpstreamKeySlot(ctx, resource, member)
 	} else {
@@ -209,6 +229,7 @@ func (l *upstreamKeyLimiter) release(resource slots.Resource, key, member string
 	if err != nil {
 		slog.Warn("upstream_key_slot_release_failed")
 	}
+	return err
 }
 
 func (l *upstreamKeyLease) release() {
@@ -219,7 +240,7 @@ func (l *upstreamKeyLease) release() {
 		l.mu.Unlock()
 		l.stop()
 		<-l.done
-		l.limiter.release(l.resource, l.key, l.member)
+		_ = l.limiter.release(l.resource, l.key, l.member)
 	})
 }
 
@@ -262,6 +283,144 @@ func (s *httpUpstreamService) AcquireUpstreamKeySlots(parent context.Context, fi
 	return ctx, release, nil
 }
 
+func (l *upstreamKeyLimiter) liveAuthority() string {
+	if l.regional != nil {
+		if l.regional.primary != nil {
+			return "regional:primary"
+		}
+		return "regional:local:" + l.regional.region()
+	}
+	return "redis"
+}
+
+func sameLiveCredentials(expected, actual []string) bool {
+	if len(expected) != len(actual) {
+		return false
+	}
+	seen := make(map[string]bool, len(expected))
+	for _, fingerprint := range expected {
+		seen[fingerprint] = true
+	}
+	for _, fingerprint := range actual {
+		if !seen[fingerprint] {
+			return false
+		}
+		delete(seen, fingerprint)
+	}
+	return len(seen) == 0
+}
+
+func (s *httpUpstreamService) AcquireLiveUpstreamKeySlots(ctx context.Context, req *http.Request) (*service.LiveUpstreamKeyLease, error) {
+	l := s.upstreamKeyLimiter
+	if l == nil {
+		return nil, nil
+	}
+	if req == nil || req.URL == nil || !strings.HasSuffix(req.URL.Path, "/realtime/calls") || l.err != nil {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	lease := &service.LiveUpstreamKeyLease{Authority: l.liveAuthority(), Member: "live:" + uuid.NewString(), Fingerprints: config.UpstreamCredentialFingerprints(req)}
+	if l.regional == nil {
+		for _, fingerprint := range lease.Fingerprints {
+			if l.policy.Limits[fingerprint] > 0 {
+				if err := l.redisLiveDurable(ctx); err != nil {
+					return nil, err
+				}
+				break
+			}
+		}
+	}
+	for _, fingerprint := range lease.Fingerprints {
+		resource, result, err := l.take(ctx, fingerprint, lease.Member, "live")
+		if err != nil {
+			// No SDP was sent. Only members acquired by this attempt may go back.
+			for _, held := range lease.Resources {
+				_ = l.release(slots.Resource{Kind: "upstream_key", ID: held.ResourceID, Fingerprint: held.Fingerprint}, upstreamKeySlotKeyPrefix+held.Fingerprint, lease.Member)
+			}
+			return nil, err
+		}
+		if result == 1 {
+			lease.Resources = append(lease.Resources, service.LiveUpstreamKeyResource{Fingerprint: fingerprint, ResourceID: resource.ID})
+		}
+	}
+	if len(lease.Resources) == 0 {
+		return nil, nil
+	}
+	return lease, nil
+}
+
+func (l *upstreamKeyLimiter) redisLiveDurable(ctx context.Context) error {
+	// Direct media cannot be cancelled by an expiring local watchdog. Refuse
+	// admission when Redis may acknowledge volatile/evictable ownership.
+	for field, expected := range map[string]string{"appendonly": "yes", "appendfsync": "always", "no-appendfsync-on-rewrite": "no", "maxmemory-policy": "noeviction"} {
+		values, err := l.rdb.ConfigGet(ctx, field).Result()
+		if err != nil || values[field] != expected {
+			return service.ErrUpstreamKeyPolicy
+		}
+	}
+	return nil
+}
+
+func (s *httpUpstreamService) CheckLiveUpstreamKeySlots(ctx context.Context, lease *service.LiveUpstreamKeyLease) error {
+	l := s.upstreamKeyLimiter
+	if l == nil || l.err != nil || lease.Validate() != nil || lease.Authority != l.liveAuthority() {
+		return service.ErrUpstreamKeyPolicy
+	}
+	for _, resource := range lease.Resources {
+		var held bool
+		var err error
+		if l.regional != nil {
+			held, err = l.regional.upstreamKeyHeld(ctx, slots.Resource{Kind: "upstream_key", ID: resource.ResourceID, Fingerprint: resource.Fingerprint}, lease.Member)
+		} else {
+			var score float64
+			score, err = l.rdb.ZScore(ctx, upstreamKeySlotKeyPrefix+resource.Fingerprint, lease.Member).Result()
+			held = err == nil && math.IsInf(score, 1)
+		}
+		if err != nil || !held {
+			return service.ErrUpstreamKeyLease
+		}
+	}
+	return nil
+}
+
+func (l *upstreamKeyLimiter) confirmLivePolicy(ctx context.Context, lease *service.LiveUpstreamKeyLease) error {
+	limited := make(map[string]bool, len(lease.Resources))
+	for _, fingerprint := range lease.Fingerprints {
+		if l.policy.Limits[fingerprint] > 0 {
+			limited[fingerprint] = true
+		}
+	}
+	if len(limited) != len(lease.Resources) {
+		return service.ErrUpstreamKeyPolicy
+	}
+	for _, resource := range lease.Resources {
+		if !limited[resource.Fingerprint] {
+			return service.ErrUpstreamKeyPolicy
+		}
+	}
+	if l.regional != nil {
+		return l.regional.confirmLiveUpstreamPolicy(ctx, l.policy.Revision, l.digest, lease.Resources)
+	}
+	// HMGET is one atomic read of the same policy published by acquisition.
+	values, err := l.rdb.HMGet(ctx, upstreamKeyPolicyKey, "revision", "digest").Result()
+	if err != nil || len(values) != 2 || values[0] != strconv.FormatInt(l.policy.Revision, 10) || values[1] != l.digest {
+		return service.ErrUpstreamKeyPolicy
+	}
+	return l.redisLiveDurable(ctx)
+}
+
+func (s *httpUpstreamService) ReleaseLiveUpstreamKeySlots(_ context.Context, lease *service.LiveUpstreamKeyLease) error {
+	l := s.upstreamKeyLimiter
+	if l == nil || lease.Validate() != nil || lease.Authority != l.liveAuthority() {
+		return service.ErrUpstreamKeyPolicy
+	}
+	var releaseErr error
+	for _, resource := range lease.Resources {
+		err := l.release(slots.Resource{Kind: "upstream_key", ID: resource.ResourceID, Fingerprint: resource.Fingerprint}, upstreamKeySlotKeyPrefix+resource.Fingerprint, lease.Member)
+		releaseErr = errors.Join(releaseErr, err)
+	}
+	return releaseErr
+}
+
 // beginUpstreamKeyRequest retains response-body ownership at the existing
 // HTTP boundary; native WS owns its active turn through the shared method above.
 func (s *httpUpstreamService) beginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
@@ -270,6 +429,19 @@ func (s *httpUpstreamService) beginUpstreamKeyRequest(req *http.Request) (*http.
 	}
 	if req == nil || req.URL == nil {
 		return req, nil, service.ErrUpstreamKeyPolicy
+	}
+	if lease := service.LiveUpstreamKeyLeaseFromContext(req.Context()); lease != nil {
+		if !strings.HasSuffix(req.URL.Path, "/realtime/calls") || !sameLiveCredentials(lease.Fingerprints, config.UpstreamCredentialFingerprints(req)) {
+			return req, nil, service.ErrUpstreamKeyPolicy
+		}
+		if err := s.CheckLiveUpstreamKeySlots(req.Context(), lease); err != nil {
+			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
+		}
+		if err := s.upstreamKeyLimiter.confirmLivePolicy(req.Context(), lease); err != nil {
+			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
+		}
+		// The controller owns this member, independently of body close/cancel.
+		return req, func(*http.Response, error) {}, nil
 	}
 	ctx, release, err := s.AcquireUpstreamKeySlots(req.Context(), config.UpstreamCredentialFingerprints(req))
 	if err != nil {
