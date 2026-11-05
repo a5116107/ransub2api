@@ -604,3 +604,20 @@
 - 新增上限1/2的重复摘要、输入不变、重复释放、双凭据后段拒绝/回收、其他请求精确成员保留以及容量恢复断言。最终全部TestUpstreamKey组合含真实Redis和HTTP/原生WS跨入口回归正在执行，结果以实际退出为准。Live只允许既有OpenAI OAuth能力，区域slots资源仍为整数账号/用户/下游Key；未把上游摘要强塞进这些ID，也未去掉Live/区域的拒绝保护。二者完整接线和D2原父验收保持待完成。
 - 修复后go test -tags=unit -p 1 ./internal/repository -run 'TestUpstreamKey' -count=3 -timeout=5m实际repository78.415s、退出0，覆盖HTTP/SSE、原生WS/ctx_pool/passthrough、共享策略版本、租约丢失及真实Redis竞争。详细复核三项新增/真实Redis专项1.777s、退出0，全部PASS、无skip。命令仅在当前进程PATH前置H:/Root/tools/redis/5.0.14.1，不调整全局环境。随后go vet -tags=unit -p 1 ./internal/repository输出Repository vet: PASS；完整repository包lint保留unit标签、全部规则、并发2与8分钟上限，输出0 issues.、退出0。
 - 最终文档链接、gofmt、git diff --check和新增TODO/FIXME/XXX检查通过；STATE小于100行，历史service/data图片仍12个1164bytes。只本地提交本轮两份repository源码/测试、一份接口注释及现有三份项目文档，不推送、不部署、不运行CI。D2父任务仍须跨协议来源、Live/区域及缓存域完整验收，原20项仍12 done、3 in_progress、5 pending，父任务done增量0；本轮完整闭环重复凭据与回收/恢复子任务。
+
+
+## 2026-11-05：D2 Messages 桥接续接缓存的线路身份与过期继承
+
+- 接续059d1e1，保持H盘同一工作树。旧实现仅按账号ID/下游Key/会话复用response ID、turn-state、禁用标记和摘要链；账号静态Key/地址/协议/分流规则/代理或OAuth账号身份变化后仍读取旧值，写入也会继承已过期字段并延长TTL。旧源码三项新增专项实际service7.041s、退出1：8个线路/禁用子例、3个过期继承子例与2个真实ForwardAsAnthropic构造路径子例失败。转发使用本地录制上游，未声称访问生产服务。
+- 原位给两类既有binding补现有AccountRouteFingerprint，并收敛七个续接读写入口的类型/有效期/线路校验。零有效期没有新鲜度证据，同过期状态一起失效；只合并有效同线路字段，正常OAuth令牌刷新仍保留续接。response getter不再删除有效的turn-state-only记录。已加载旧记录用CompareAndDelete，response删除保留其他字段时用CompareAndSwap，避免覆盖或删除并发的新观测；非删除写入保持既有最后写入行为，不宣称多字段更新具备事务性。原map键不变，不新增缓存实现、配置、数据库或凭据日志。
+- 新增同路/OAuth刷新保护、静态Key/地址/协议/规则/代理/账号身份变化、禁用标记隔离、过期写入、零/过期证据清理、并发旧新线路混用与恢复，以及实际ForwardAsAnthropic换路后完整历史和新路线后续续接回归。最终本地验证结果在真实退出后续记；不以历史提交的检查代替本轮。
+- 本轮不完成跨协议计价、Live/区域共享额度或模型/fast缓存域来源，D2原父验收保持。原20项仍12 done、3 in_progress、5 pending，父任务done增量0；不运行CI、不推送、不部署、不执行生产迁移。
+
+- 修复后原兼容组合连续三轮service1.684s通过；补齐并发/过期清理后扩展组合三轮service1.906s通过，最终续接/换路专项加压20轮service3.807s通过。完整相关回归实际service338.873s、handler148.465s、routes12.189s全部通过，整条测试命令退出0；三范围vet已输出Final vet: PASS。完整service包lint仍在原句柄运行，以实际退出为准；一处新夹具的类型断言已在静态检查前加显式require.True检查，原断言和规则均保留，最终专项将覆盖该最终夹具。
+
+- 复核既有replay guard确认API Key长会话保留12条尾部消息并扩展工具边界；本轮转发夹具是3条消息，只证明换路撤去旧response ID的增量裁剪和该短历史保留，不证明长会话不截断。唯一设计已明确此边界，不修改既有guard语义或把线路指纹当作完整缓存域/上下文质量证据。
+
+- 首次完整service包lint实际输出0 issues.后以Timeout exceeded退出4，未计为通过，默认入口编译因顺序命令退出尚未运行。期间系统实测可用内存1.71GiB，任务lint工作集6.78GiB，其他任务进程保持不动；下一次保持完整service范围、unit标签、全部规则、并发2及8分钟，仅在验证进程内设置GOMEMLIMIT=4GiB/GOGC=50约束内存再验收，不改变系统环境或lint规则。
+
+- 最终顺序命令实际退出0：go test -race -tags=unit -p 1 ./internal/service -run 'TestOpenAICompatContinuation|TestForwardAsAnthropic_RouteReplacement' -count=3 -timeout=3m输出service2.797s及Final continuation race: PASS，覆盖最终夹具；完整service包lint保留原unit标签、全部规则、并发2及8分钟，进程内GOMEMLIMIT=4GiB/GOGC=50后输出0 issues.及Final service lint: PASS；默认入口go test -p 1 ./cmd/server -run '^$'输出ok1.448s [no tests to run]及Default entry compilation: PASS。源码自该命令启动后未再更改。此结果替代首次超时的静态验收，不删除失败记录。
+- 最终源码净减少55行（两份生产文件），无第二缓存或新债务标记。gofmt、三份文档链接、STATE行数、差异与工作树核对通过，历史service/data仍12个1164bytes。只本地提交本轮三份源码/测试及现有三份项目文档，保留历史清理等待；本轮闭环桥接缓存线路/过期子范围，不关闭D2或全局目标。

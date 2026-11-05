@@ -10,8 +10,9 @@ import (
 )
 
 type openAICompatAnthropicDigestBinding struct {
-	PromptCacheKey string
-	ExpiresAt      time.Time
+	RouteFingerprint [32]byte
+	PromptCacheKey   string
+	ExpiresAt        time.Time
 }
 
 func buildOpenAICompatAnthropicDigestChain(req *apicompat.AnthropicRequest) string {
@@ -52,17 +53,20 @@ func (s *OpenAIGatewayService) findOpenAICompatAnthropicDigestPromptCacheKey(acc
 	if ns == "" {
 		return "", ""
 	}
+	fingerprint := AccountRouteFingerprint(account)
 	chain := digestChain
 	for {
 		if raw, ok := s.openaiCompatAnthropicDigestSessions.Load(ns + chain); ok {
 			if binding, ok := raw.(openAICompatAnthropicDigestBinding); ok {
-				if binding.ExpiresAt.IsZero() || time.Now().Before(binding.ExpiresAt) {
+				if time.Now().Before(binding.ExpiresAt) && binding.RouteFingerprint == fingerprint {
 					if key := strings.TrimSpace(binding.PromptCacheKey); key != "" {
 						return key, chain
 					}
 				}
+				s.openaiCompatAnthropicDigestSessions.CompareAndDelete(ns+chain, binding)
+			} else {
+				s.openaiCompatAnthropicDigestSessions.Delete(ns + chain)
 			}
-			s.openaiCompatAnthropicDigestSessions.Delete(ns + chain)
 		}
 		i := strings.LastIndex(chain, "-")
 		if i < 0 {
@@ -81,8 +85,9 @@ func (s *OpenAIGatewayService) bindOpenAICompatAnthropicDigestPromptCacheKey(acc
 		return
 	}
 	binding := openAICompatAnthropicDigestBinding{
-		PromptCacheKey: strings.TrimSpace(promptCacheKey),
-		ExpiresAt:      time.Now().Add(s.openAIWSResponseStickyTTL()),
+		RouteFingerprint: AccountRouteFingerprint(account),
+		PromptCacheKey:   strings.TrimSpace(promptCacheKey),
+		ExpiresAt:        time.Now().Add(s.openAIWSResponseStickyTTL()),
 	}
 	s.openaiCompatAnthropicDigestSessions.Store(ns+digestChain, binding)
 	if oldDigestChain != "" && oldDigestChain != digestChain {
