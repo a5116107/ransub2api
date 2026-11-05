@@ -1,85 +1,64 @@
 # 项目状态
 
-更新日期：2026-11-05。
+## 恢复检查点
+
+- 任务：D2全局剩余；本轮Messages托管续接的模型/服务档隔离已验证，只本地提交，不运行CI、不推送/部署/生产迁移。
+- 源码：H盘唯一工作树，分支`work/monitor-driven-scheduling`，本轮起点`42df0d6`；交付身份以`git log -1`及状态为准。
+- 最近证据：最终专项20轮5.441s、race三轮4.758s；完整service351.849s/handler143.960s/routes12.087s、vet、完整service lint 0 issues、默认入口编译通过，顺序命令退出0。无运行中的本轮验证句柄。
+- 下一动作：核对客户端回传turn-state与既有Codex门票的独立归属，继续D2其他协议缓存域、跨协议来源与Live/区域，再接D3/D4；不以托管缓存子任务替代父验收。
+- 等待：无新增外部阻塞；Windows符号链接权限及历史清理审批由原拥有者解除。原20项12 done、3 in_progress、5 pending，父done增量0。
 
 ## 目标与入口
 
-倍率范围内的多供应商自动调度，保护质量、完整响应体验和已有会话缓存，并便于跟进原仓库。
+更新日期：2026-11-05。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
-- [决策记录](DECISIONS.md)
-
-## 当前授权
-
-用户已授权推进本地实施、修复、相关清理和本地验证；不运行 CI。
-最新 AGENTS.md 已授权验收后本地提交；未授权远程推送、生产数据库迁移或部署。真实采购价仍在本期范围外。
+- [追加式决策与验证历史](DECISIONS.md)
+- 用户授权本地实施、修复、相关清理与验证、本地提交；真实采购价格不在本期范围。生产执行仍需对应授权。
 
 ## 任务进度
 
-| 任务 | 状态 | 证据/剩余范围 |
+| 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
-| D1 | done | 主设计第 3.1 节已记录原配置覆盖、倍率口径、共享 Key 缺口及最小补丁边界 |
-| D2 | in_progress | D2.1–D2.4 完成；HTTP/SSE、HTTP→原生 WS、直接 WS ctx_pool/passthrough/桥接逐轮共享额度、静态 Key 请求绑定及本地拒绝归因/搜索503已验证；Sub2API请求固定组与倍率确认、最终HTTP/原生WS握手归属及通用原生网关13个发送点、Gemini三个生成循环及Antigravity六个发送点终检已实现；Messages桥接续接/摘要的线路隔离与过期继承已验证；跨协议计价、Live/区域及完整缓存域仍待验收 |
-| D2.1 | done | 自动同步快照有效性、尝试时刻高峰、原同步值域与在线/预演同源已落地；30 类边界及槽位释放覆盖，三轮专项、完整本地回归、vet 与真实 CLI 演练通过 |
-| D2.2 | done | New API 声明组与单路由须一致；唯一掩码完整归属、预览/快照同源及失效时间清理已修复，最终验证见本轮记录；17 类边界、同组→异组/多组→恢复回归通过；保留余额、身份绑定与账号倍率，相关三包三轮回归、vet 与六包未限量 lint 0 通过 |
-| D2.3 | done | 协议地址/协议/接入模式及模型分流规则统一进入身份边界，编辑/CRS/绑定旧证据失效；16 类四路径与 4 项绑定回归，规则实际切换协议及9平台发送前拦截已覆盖；专项三轮通过 |
-| D2.4 | done | 按入站/模型分流的探测、New API 授权/列表/绑定/事务保存统一使用生效地址；旧源码 6 子例失败，新回归及相关四包三轮通过；不作为跨协议同价或共享缓存证据 |
-| D3 | in_progress | 状态/独立业务5xx及OpenAI发送准入已验证；401/408/429及响应体读错误、数据库复测与SIWC观察已补齐；14路径缺终态、四条缓冲转换、原生WS读故障及取消计费收尾已验收；公共HTTP发送与WS握手实际联网故障观察已验收，含本地池等待/重定向拒绝区分及默认重定向上限；完整回归、三轮专项、vet、完整service包lint与默认入口编译通过；其他协议/能力、未观测传输及WS探测作用域仍待完成 |
-| D4.1 | done | 旧实现失败已复现；双故障/账号消失拒绝，缓存回源及未装门行为保持；专项、service/handler 回归和差异检查通过 |
-| D4.2 | done | 分组配置失败/空对象/错组拒绝准入，HTTP/WS/免费账号及恢复覆盖；补齐 15 项夹具/旧语义缺口后，专项 3 轮、默认标签、vet 和 Linux 全量通过；历史 lint 诊断在 M5 明确边界后归零 |
-| M1 | done | 删除 6 项未引用测试辅助符号及死计数器；相关回归通过，unused 告警 6→0 |
-| M2 | done | 错误检查 247→0；受影响顶层用例 1072 pass、6 个既有 skip，vet 通过；受检断言辅助包及图片策略重复回归通过，原边界保留 |
-| M3 | done | WinSock 原生拒绝连接/主机与网络不可达已识别；超时/重置不误判；真实单 POST 及代理/时序/WS 组合回归连续 5 轮通过（140.262s） |
-| M4 | done | 三处私有原子持久化收敛为共用接口；原 22 项 Windows 失败全部实际通过；双平台完整回归、核心三包 lint 0 与最终 vet 通过，本轮产物归零 |
-| M5 | done | 明确生产依赖与根目录测试夹具的检查范围，3 处有意兼容调用逐点说明；六包完整 lint 0，生产禁止依赖反向验证 2/2 命中，回归与 vet 通过 |
-| D4 | in_progress | 固定售价、线路/倍率终检、严格请求跳过旧缓存、HTTP 首次/WS 每轮权威策略读取已验证；已补齐全部7个多协议供应商的账号权威刷新与最终发送绑定，并校验实际HTTP/原生WS目标，通用原生网关13个发送点、Gemini三个生成循环、Antigravity六个发送点及Messages/Chat/Responses/原生入口门传播已补齐；仍待 D2、区域传播及模型/fast 来源 |
-| D5–D7 | pending | 指标、缓存预测、分配与前端依赖前置任务 |
-| D8 | pending | admin/跨层PostgreSQL及既有WS绑定已验证；已修复真实桥接重试的固定墙钟上限和Grok提交前截止的夹具问题，相关组合20轮/100轮及最终完整回归通过；集成/升级/全局CLI场景仍待验收；不运行CI |
-| D9 | pending | 依赖验证与对应生产执行授权 |
+| D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
+| D2 | in_progress | D2.1–D2.4、最终HTTP/WS与多协议发送绑定、公共共享Key重复摘要及回收恢复已验证；桥接线路/过期及生效模型/fast托管缓存隔离完成；跨协议来源、Live/区域及完整缓存域待验收 |
+| D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
+| D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
+| D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
+| D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
+| D3 | in_progress | 最新availability、业务5xx独立、401/408/429/读错误、14路径缺终态、缓冲/原生WS及取消计费、实际联网无响应故障已验证；其他协议/能力、未观测传输及WS探测作用域待补 |
+| D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
+| D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
+| M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
+| M2 | done | 错误检查247→0；1072顶层用例通过、6既有skip保留，vet与重复回归通过 |
+| M3 | done | WinSock拒绝/不可达识别；超时/重置不误判；真实POST及代理/WS组合5轮通过 |
+| M4 | done | 三处原子持久化收敛；22项Windows失败修复，双平台回归/三包lint/vet通过 |
+| M5 | done | 生产依赖与测试夹具边界明确，三处兼容点说明；六包lint 0及禁止依赖反向验证通过 |
+| D4 | in_progress | 固定售价、严格请求新鲜策略、7平台权威账号刷新及全部发送点终检/门传播已验证；依赖D2、区域传播和模型/fast来源 |
+| D5 | pending | timing与缓存分层/冷启动估计；依赖D2/D3 |
+| D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
+| D7 | pending | 前端配置与决策解释；依赖策略契约 |
+| D8 | pending | admin/跨层SQL、WS绑定及重试截止夹具已验证；集成/升级/全局CLI仍待验收，不运行CI |
+| D9 | pending | 依赖前述验收及生产执行授权 |
 
-## 环境与工作区
+## 工作区与验证约定
 
-- 基线：`6de829fa2efa801dcf3071c4efe842198c7724be`；单一工作树，本地交付分支 `work/monitor-driven-scheduling`，origin 为 ranxi2001/sub2api；只本地提交，不推送。
-- 项目要求的 Go 1.27.3 已通过自动工具链获得；未降低 go.mod 要求。完整包 lint 使用 backend/bin/task-d2-golangci-lint.exe（v2.15.0），不修改检查规则。
-- 真实 Redis 测试只在命令进程 PATH 加入 H:/Root/tools/redis/5.0.14.1，不修改系统 Redis 3 或全局环境。
-- D2.1–D2.4、D4.1/D4.2、M1–M5 及本轮之前的逐项回归、失败根因、平台结果和清理证据统一保存在 [DECISIONS.md](DECISIONS.md)；历史通过不代替当前修改的验证。
-- 图片测试已隔离 DATA_DIR 并关闭 relay；历史 12 个 PNG 共 1164 bytes 保留，后续验证不得向源码目录新增产物。
-- D3独立业务5xx链路：旧实现三类配置真实SQL失败已复现；修复后真实PostgreSQL、默认标签、人工状态/拥有者、service专项及完整service/handler/routes回归通过；最终四范围vet退出0、lint为0 issues。续接复核三轮repository10.686s、service4.986s通过；原20项仍12 done、3 in_progress、5 pending，父任务done增量0。
-- D3发送准入：旧HTTP证据误放行WS的两例失败已复现并修复；专项service32.237s、真实SQL repository151.451s通过；完整service365.157s/handler161.247s/routes15.081s通过，四范围vet退出0、lint 0 issues，默认标签wiring编译通过；文档链接和差异检查通过。
-- D3故障补齐与D8夹具修复：SQL组合三轮21.699s、最终service专项三轮13.899s、队列组合20轮101.030s及凭据组合100轮23.462s通过；最终完整service344.703s/handler157.127s/routes12.414s通过，四范围vet/lint退出0且0 issues；默认wiring编译通过。失败及超时尝试保留在决策记录。
-- D3协议缺终态：10路径矩阵三轮17.144s、相关流式/桥接组合三轮155.134s通过；最终完整service369.127s/handler168.781s/routes13.528s通过，三范围vet及默认wiring6.220s编译通过；三范围lint两次超时不计通过；实际修改的完整service包lint为0 issues且退出0。原20项统计不变。
-- D3缓冲/原生WS：14路径矩阵已纳入完整回归；原路由/取消边界三轮35.565s、最终完整service342.762s、handler176.632s/routes24.734s和10轮边界73.191s通过；三范围vet、完整service包lint（0 issues、退出0）及默认入口编译2.306s通过。保留前两次失败/超时与主动停止记录；原20项统计不变，本轮闭环该子范围。
-- D3无响应传输故障：最终完整service354.431s/handler151.870s/routes12.697s通过；三范围vet通过。首次lint唯一QF1003已原位修正测试分支，最终专项三轮2.198s、完整service包lint 0 issues且退出0、默认入口编译0.967s通过；文档链接、差异与新增债务标记检查通过，历史12个图片1164bytes未增加；闭环本子范围，原20项仍12 done、3 in_progress、5 pending。
-- D2公共共享额度：旧源码3例重复摘要/恢复失败已实际复现；原位按首次摘要去重，保持输入切片及原租约/版本语义。全部TestUpstreamKey三轮repository78.415s通过（含HTTP/原生WS及真实Redis）；详细专项含真实Redis1.777s全部PASS且无skip，repository vet通过、完整repository lint 0 issues且退出0。部分失败精确回收与其他请求成员保留已验证；D2父任务与原20项统计不变。
-- D2桥接缓存：旧源码13个失败子例实际复现；response/turn-state/禁用标记/摘要统一线路指纹与有效期，OAuth刷新保留，过期写入不复活。最终20轮专项3.807s、race三轮2.797s通过；完整service338.873s/handler148.465s/routes12.189s、三范围vet通过。首次lint超时退出4保留；进程内内存预算后完整service lint 0 issues且退出0，默认入口编译1.448s通过；D2父任务与20项统计不变。
-- 只将任务源码、测试及本目录三份文档纳入本地交付；保留其他任务资源和历史清理等待，不隐藏未跟踪产物以制造干净状态。C盘运行副本统计修复已保存为effb8271，不计主线完成数，后续开发统一在H盘。
-
-## 当前验证入口
-
-在 backend 目录运行（本地验证，不运行 CI）：
-
-```powershell
-$env:PATH='H:/Root/tools/redis/5.0.14.1;'+$env:PATH
-# 真实SQL回归须先在本命令进程设置 SUB2API_QUALITY_TEST_DSN，指向隔离PostgreSQL。
-go test -tags=unit -p 2 ./internal/service -run 'TestAvailability|TestQuality|TestPelican|TestAccountConnectionTiming' -count=3 -timeout=6m
-go test -tags=unit -p 2 ./internal/repository -run 'TestAvailability|TestQuality|TestPelican' -count=3 -timeout=4m
-go vet -tags=unit -p 2 ./internal/repository
-```
+- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
+- 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包、unit标签、并发2、8分钟与原规则。
+- 真实Redis仅进程PATH前置`H:/Root/tools/redis/5.0.14.1`；真实SQL须进程环境指向隔离PostgreSQL，不打印DSN。
+- 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个PNG共1164bytes保留，不纳入任务提交。
+- 42df0d6：旧13失败子例复现；续接专项20轮3.807s、race三轮2.797s通过；完整service338.873s/handler148.465s/routes12.189s、三范围vet通过。
+- 42df0d6完整service lint首次超时退出4保留；进程内GOMEMLIMIT=4GiB/GOGC=50后0 issues且退出0，默认入口编译1.448s通过。历史证据只证明对应源码，全部详情见DECISIONS。
+- 本轮托管缓存模型/服务档：最终专项20轮5.441s、race三轮4.758s、完整service351.849s/handler143.960s/routes12.087s、vet通过；完整service lint 0 issues且退出0，默认入口缓存编译通过。旧失败/夹具修正见DECISIONS。
+- 不新增平行台账、配置或缓存实现，不用账号运营组充当Key额度键/缓存域证据。C盘副本统计effb8271不计主线完成数，开发统一在H盘。
 
 ## 下一项工作
 
-D2：D2.1 自动同步准入、D2.2 固定分组证据、D2.3 协议线路身份、D2.4 生效目标统一已完成；Sub2API请求级固定组与倍率确认、OpenAI通用最终HTTP与原生WS握手归属已实现；剩余跨协议计价来源、Live/区域共享额度与缓存域；不能把 AccountOpsGroup 当作 Key 限额键或缓存共享证据。
-D3已完成OpenAI发送准入、401/408/429及响应体读取错误失效子范围，缺终态EOF矩阵扩至14路径；四条缓冲转换完整性、原生WS读故障观察及取消计费收尾已通过完整回归、10轮边界、vet和完整service包lint；实际联网后的HTTP无响应与WS握手故障观察、本地拒绝区分及默认重定向上限已通过完整回归、三轮专项、vet、完整service包lint与默认入口编译；其他协议/能力、未观测传输及WS探测作用域待补；D5–D9主线仍待按设计依赖实施与验收；原20项保持12 done、3 in_progress、5 pending，父任务done增量0。
-D2 公共共享额度入口已完成重复凭据归一、部分失败精确回收和恢复回归；Messages桥接续接/摘要缓存已完成线路绑定、过期回收及并发隔离/恢复回归，跨协议来源、Live/区域及完整缓存域证据仍待完成；Gemini生成循环与Antigravity六个发送点、智能重试和静态Key最终准入已实现。HTTP→原生 WS 已按实际握手 Key 共用活跃轮次额度，取消/租约丢失关闭连接且后者不转 HTTP 重放；直接下游 WS 保留 ctx_pool/passthrough 原生协议并按实际握手 Key 逐轮共享，等待后权威终检、终态释放与取消/失效关闭回收已验证；Live/区域仍拒绝。D4 继续核对其他路径、区域传播及模型/fast 来源，原父验收不变。
+依序核对D2客户端turn-state/门票独立归属及其他协议缓存域、跨协议来源/Live与区域，补D3作用域和D4模型/fast来源；随后D5–D7、D8、D9。现有Live/区域保守拒绝保留，不把“拒绝”视作完整接线验收。
+模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
-## 外部验收等待
+## 外部等待与清理
 
-Windows 当前令牌没有 SeCreateSymbolicLinkPrivilege；系统在 os.Symlink 构造夹具时返回 A required privilege is not held by the client。原测试未改成 skip、未放松断言；Linux 同用例已三轮实际通过。Windows 全量验收的解除条件：由系统管理员提供具有符号链接创建权限的测试进程，再运行原 repository 完整命令；本任务未调整机器安全策略。
-
-## 当前清理阻塞
-
-历史自动审批审核以 blocked by policy 拒绝删除 3 个已验证普通文件，明确路径删除也被拒绝，未改用其他工具规避。
-保留在 backend/bin：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共 132004965 bytes（125.890 MiB）；均为已忽略的历史产物，其中 lint 工具仍用于本地验证，可重新构建。现有 12 个受保护图片夹具保持原样。
-
-历史清理等待：backend/tmp/admin-key-pg-d8；自动审批拒绝删除（blocked by policy），未重试或换工具。本轮发现隔离实例已运行并复用，未启动/停止该既有进程；测试schema由夹具清理，最终余数0。解除条件为资源拥有者停止实例后手动清理该准确目录，不影响代码验收。
-
-既有诊断清理等待：backend/tmp/availability-non5xx-regression共4文件73491bytes，旧源码overlay回归已完成，删除被自动审批以blocked by policy拒绝；保留且未换工具重试，解除条件为手动删除此准确目录。
+- Windows令牌缺`SeCreateSymbolicLinkPrivilege`，原repository完整测试在os.Symlink报权限错误；未改skip。Linux同例三轮通过。拥有者：系统管理员；解除：提供可创建符号链接的进程，再运行原Windows完整命令。
+- 历史删除被审批`blocked by policy`拒绝，不换工具绕过。`backend/bin`三文件：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共132004965bytes；lint仍使用。解除：拥有者按准确路径手动清理可回收产物。
+- `backend/tmp/admin-key-pg-d8`删除同被拒绝；既有隔离实例由原拥有者管理，不启动/停止。测试schema已清零；解除：资源拥有者停止实例并手动清理准确目录。
+- `backend/tmp/availability-non5xx-regression`4文件73491bytes，旧源码overlay验证完成，删除被拒绝；解除：拥有者手动删除准确目录。

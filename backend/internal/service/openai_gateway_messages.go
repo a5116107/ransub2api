@@ -135,6 +135,26 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
+	// Resolve the existing fast policy once, before reading continuation state.
+	// This policy reads/writes service_tier only; the resulting value is copied
+	// into the converted request rather than evaluated again after cache lookup.
+	tierPolicyBody := []byte(`{}`)
+	if containsBetaToken(c.GetHeader("anthropic-beta"), claude.BetaFastMode) {
+		tierPolicyBody = []byte(`{"service_tier":"priority"}`)
+	}
+	tierPolicyBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, tierPolicyBody)
+	if policyErr != nil {
+		var blocked *OpenAIFastBlockedError
+		if errors.As(policyErr, &blocked) {
+			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+			writeAnthropicError(c, http.StatusForbidden, "forbidden_error", blocked.Message)
+		}
+		return nil, policyErr
+	}
+	compatCacheScope := openAICompatCacheScope{
+		Model:       upstreamModel,
+		ServiceTier: normalizedOpenAIServiceTierValue(gjson.GetBytes(tierPolicyBody, "service_tier").String()),
+	}
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	apiKeyID := getAPIKeyIDFromContext(c)
 	anthropicDigestChain := ""
@@ -159,7 +179,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		}
 		if promptCacheKey == "" {
 			anthropicDigestChain = buildOpenAICompatAnthropicDigestChain(anthropicDigestReq)
-			if reusedKey, matchedChain := s.findOpenAICompatAnthropicDigestPromptCacheKey(account, apiKeyID, anthropicDigestChain); reusedKey != "" {
+			if reusedKey, matchedChain := s.findOpenAICompatAnthropicDigestPromptCacheKey(account, compatCacheScope, apiKeyID, anthropicDigestChain); reusedKey != "" {
 				promptCacheKey = reusedKey
 				anthropicMatchedDigestChain = matchedChain
 			} else {
@@ -173,10 +193,10 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 	compatContinuationEnabled := openAICompatContinuationEnabled(account, upstreamModel)
 	previousResponseID := ""
 	if compatContinuationEnabled {
-		previousResponseID = s.getOpenAICompatSessionResponseID(ctx, c, account, promptCacheKey)
+		previousResponseID = s.getOpenAICompatSessionResponseID(ctx, c, account, compatCacheScope, promptCacheKey)
 	}
 	compatContinuationDisabled := compatContinuationEnabled &&
-		s.isOpenAICompatSessionContinuationDisabled(ctx, c, account, promptCacheKey)
+		s.isOpenAICompatSessionContinuationDisabled(ctx, c, account, compatCacheScope, promptCacheKey)
 	compatTurnState := ""
 	// ChatGPT/Codex credentials rely on session_id + x-codex-turn-state; trimming to a
 	// sliding 12-message window makes the cached prefix stall at system/tools.
@@ -197,10 +217,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 	responsesReq.Stream = true
 	isStream := true
 
-	// 3b. Handle BetaFastMode → service_tier: "priority"
-	if containsBetaToken(c.GetHeader("anthropic-beta"), claude.BetaFastMode) {
-		responsesReq.ServiceTier = "priority"
-	}
+	responsesReq.ServiceTier = compatCacheScope.ServiceTier
 
 	responsesReq.Model = upstreamModel
 	if responsesReq.Reasoning != nil {
@@ -299,7 +316,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		s.applyCodexAccountIdentityOrHarvestPinMap(ctx, account, codexAccountIdentitySource(c, account), apiKeyID, upstreamModel, reqBody)
 		delete(reqBody, "prompt_cache_key")
 		if shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
-			compatTurnState = s.getOpenAICompatSessionTurnState(ctx, c, account, promptCacheKey)
+			compatTurnState = s.getOpenAICompatSessionTurnState(ctx, c, account, compatCacheScope, promptCacheKey)
 		}
 		// OAuth codex transform forces stream=true upstream, so always use
 		// the streaming response handler regardless of what the client asked.
@@ -348,20 +365,10 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		}
 	}
 
-	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).
-	// Mirrors the Claude anthropic-beta "fast-mode-2026-02-01" filter, but keyed
-	// on the body-level service_tier field (priority/flex).
-	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
-	if policyErr != nil {
-		var blocked *OpenAIFastBlockedError
-		if errors.As(policyErr, &blocked) {
-			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
-			writeAnthropicError(c, http.StatusForbidden, "forbidden_error", blocked.Message)
-		}
-		return nil, policyErr
+	if strings.TrimSpace(gjson.GetBytes(responsesBody, "model").String()) != compatCacheScope.Model ||
+		normalizedOpenAIServiceTierValue(gjson.GetBytes(responsesBody, "service_tier").String()) != compatCacheScope.ServiceTier {
+		return nil, fmt.Errorf("compat continuation scope changed during request construction")
 	}
-	responsesBody = updatedBody
-	responsesReq.ServiceTier = normalizedOpenAIServiceTierValue(gjson.GetBytes(responsesBody, "service_tier").String())
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
 		grokIntentBody := responsesBody
@@ -512,9 +519,9 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		}
 		if previousResponseID != "" && (isOpenAICompatPreviousResponseNotFound(resp.StatusCode, upstreamMsg, respBody) || isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody)) {
 			if isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody) {
-				s.disableOpenAICompatSessionContinuation(ctx, c, account, promptCacheKey)
+				s.disableOpenAICompatSessionContinuation(ctx, c, account, compatCacheScope, promptCacheKey)
 			} else {
-				s.deleteOpenAICompatSessionResponseID(ctx, c, account, promptCacheKey)
+				s.deleteOpenAICompatSessionResponseID(ctx, c, account, compatCacheScope, promptCacheKey)
 			}
 			logger.L().Info("openai messages: previous_response_id unavailable, retrying without continuation",
 				zap.Int64("account_id", account.ID),
@@ -548,7 +555,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 
 	if account.UsesOpenAICodexProtocol() && promptCacheKey != "" {
 		if turnState := strings.TrimSpace(resp.Header.Get("x-codex-turn-state")); turnState != "" {
-			s.bindOpenAICompatSessionTurnState(ctx, c, account, promptCacheKey, turnState)
+			s.bindOpenAICompatSessionTurnState(ctx, c, account, compatCacheScope, promptCacheKey, turnState)
 		}
 	}
 
@@ -575,10 +582,10 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 	// Propagate ServiceTier and ReasoningEffort to result for billing
 	if handleErr == nil && result != nil {
 		if compatContinuationEnabled && promptCacheKey != "" && result.ResponseID != "" {
-			s.bindOpenAICompatSessionResponseID(ctx, c, account, promptCacheKey, result.ResponseID)
+			s.bindOpenAICompatSessionResponseID(ctx, c, account, compatCacheScope, promptCacheKey, result.ResponseID)
 		}
 		if promptCacheKey != "" && anthropicDigestChain != "" {
-			s.bindOpenAICompatAnthropicDigestPromptCacheKey(account, apiKeyID, anthropicDigestChain, promptCacheKey, anthropicMatchedDigestChain)
+			s.bindOpenAICompatAnthropicDigestPromptCacheKey(account, compatCacheScope, apiKeyID, anthropicDigestChain, promptCacheKey, anthropicMatchedDigestChain)
 		}
 		// 计费 tier 优先采用上游回显值；上游未回显时回退到最终出站 body（经过
 		// fast policy filter/force 之后）里的 tier。

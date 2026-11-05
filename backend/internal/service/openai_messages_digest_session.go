@@ -10,6 +10,7 @@ import (
 )
 
 type openAICompatAnthropicDigestBinding struct {
+	CacheScope       openAICompatCacheScope
 	RouteFingerprint [32]byte
 	PromptCacheKey   string
 	ExpiresAt        time.Time
@@ -45,8 +46,8 @@ func openAICompatAnthropicDigestNamespace(account *Account, cAPIKeyID int64) str
 	return fmt.Sprintf("%d|%d|", account.ID, cAPIKeyID)
 }
 
-func (s *OpenAIGatewayService) findOpenAICompatAnthropicDigestPromptCacheKey(account *Account, cAPIKeyID int64, digestChain string) (promptCacheKey string, matchedChain string) {
-	if s == nil || digestChain == "" {
+func (s *OpenAIGatewayService) findOpenAICompatAnthropicDigestPromptCacheKey(account *Account, cacheScope openAICompatCacheScope, cAPIKeyID int64, digestChain string) (promptCacheKey string, matchedChain string) {
+	if s == nil || cacheScope.Model == "" || digestChain == "" {
 		return "", ""
 	}
 	ns := openAICompatAnthropicDigestNamespace(account, cAPIKeyID)
@@ -58,7 +59,7 @@ func (s *OpenAIGatewayService) findOpenAICompatAnthropicDigestPromptCacheKey(acc
 	for {
 		if raw, ok := s.openaiCompatAnthropicDigestSessions.Load(ns + chain); ok {
 			if binding, ok := raw.(openAICompatAnthropicDigestBinding); ok {
-				if time.Now().Before(binding.ExpiresAt) && binding.RouteFingerprint == fingerprint {
+				if time.Now().Before(binding.ExpiresAt) && binding.RouteFingerprint == fingerprint && binding.CacheScope == cacheScope {
 					if key := strings.TrimSpace(binding.PromptCacheKey); key != "" {
 						return key, chain
 					}
@@ -76,8 +77,8 @@ func (s *OpenAIGatewayService) findOpenAICompatAnthropicDigestPromptCacheKey(acc
 	}
 }
 
-func (s *OpenAIGatewayService) bindOpenAICompatAnthropicDigestPromptCacheKey(account *Account, cAPIKeyID int64, digestChain, promptCacheKey, oldDigestChain string) {
-	if s == nil || digestChain == "" || strings.TrimSpace(promptCacheKey) == "" {
+func (s *OpenAIGatewayService) bindOpenAICompatAnthropicDigestPromptCacheKey(account *Account, cacheScope openAICompatCacheScope, cAPIKeyID int64, digestChain, promptCacheKey, oldDigestChain string) {
+	if s == nil || cacheScope.Model == "" || digestChain == "" || strings.TrimSpace(promptCacheKey) == "" {
 		return
 	}
 	ns := openAICompatAnthropicDigestNamespace(account, cAPIKeyID)
@@ -85,6 +86,7 @@ func (s *OpenAIGatewayService) bindOpenAICompatAnthropicDigestPromptCacheKey(acc
 		return
 	}
 	binding := openAICompatAnthropicDigestBinding{
+		CacheScope:       cacheScope,
 		RouteFingerprint: AccountRouteFingerprint(account),
 		PromptCacheKey:   strings.TrimSpace(promptCacheKey),
 		ExpiresAt:        time.Now().Add(s.openAIWSResponseStickyTTL()),

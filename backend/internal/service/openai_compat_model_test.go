@@ -859,7 +859,7 @@ func TestForwardAsAnthropic_ReplaysFullToolHistoryWhenPreviousResponseUnavailabl
 		},
 	}
 
-	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, "stable-cache-key", "resp_missing")
+	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "stable-cache-key", "resp_missing")
 	secondBody := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"first"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"found"},{"type":"text","text":"second"}]}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"stream":false}`)
 	upstream.responses = []*http.Response{
 		{
@@ -920,7 +920,7 @@ func TestForwardAsAnthropic_PreviousResponseUnavailableRetryFailureDoesNotLoop(t
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://api.openai.com/v1"}}
-	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, "stable-cache-key", "resp_missing")
+	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "stable-cache-key", "resp_missing")
 	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -953,7 +953,7 @@ func TestForwardAsAnthropic_DisablesAPIKeyContinuationWhenUpstreamRequiresWebSoc
 		},
 	}
 
-	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, "stable-cache-key", "resp_http_unsupported")
+	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, openAICompatCacheScope{Model: "gpt-5.5"}, "stable-cache-key", "resp_http_unsupported")
 	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"ok"},{"role":"user","content":"second"}],"stream":false}`)
 	upstream.responses = []*http.Response{
 		{
@@ -1036,7 +1036,7 @@ func TestForwardAsAnthropic_APIKeyMetadataSessionSurvivesChangingCacheControlAnc
 	require.NotEmpty(t, firstKey)
 	require.True(t, strings.HasPrefix(firstKey, "anthropic-metadata-"))
 
-	svc.disableOpenAICompatSessionContinuation(context.Background(), nil, account, firstKey)
+	svc.disableOpenAICompatSessionContinuation(context.Background(), nil, account, openAICompatCacheScope{Model: "gpt-5.4-mini"}, firstKey)
 
 	secondRec := httptest.NewRecorder()
 	secondCtx, _ := gin.CreateTestContext(secondRec)
@@ -1076,7 +1076,7 @@ func TestForwardAsAnthropic_DoesNotAttachPreviousResponseIDForOAuthCompat(t *tes
 			"chatgpt_account_id": "chatgpt-acc",
 		},
 	}
-	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, "stable-cache-key", "resp_oauth_prev")
+	svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, openAICompatCacheScope{Model: "gpt-5.4"}, "stable-cache-key", "resp_oauth_prev")
 
 	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"ok"},{"role":"user","content":"second"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -2312,7 +2312,7 @@ func TestForwardAsAnthropic_AstraContinuationRestoresHistoryAndDisablesUnsupport
 			}}
 			svc := &OpenAIGatewayService{httpUpstream: upstream, cfg: &config.Config{}}
 			account := rawGPT56ResponsesAPIKeyAccount("gpt-6-astra", "gpt-6-astra")
-			svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, "astra-session", "resp_old")
+			svc.bindOpenAICompatSessionResponseID(context.Background(), nil, account, openAICompatCacheScope{Model: "gpt-6-astra"}, "astra-session", "resp_old")
 			body := []byte(`{"model":"gpt-6-astra","max_tokens":16,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"ok"},{"role":"user","content":"second"}]}`)
 			for i := 0; i < 2; i++ {
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -2346,9 +2346,9 @@ func TestOpenAICompatContinuationRejectsChangedRoute(t *testing.T) {
 				account.Type = AccountTypeOAuth
 				account.Credentials = map[string]any{"access_token": "original-access", "refresh_token": "original-refresh", "chatgpt_account_id": "original-account"}
 			}
-			svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, "session", "resp_original")
-			svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, "session", "turn_original")
-			svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, 9, "u:first-a:second", "original-cache", "")
+			svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "resp_original")
+			svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "turn_original")
+			svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, 9, "u:first-a:second", "original-cache", "")
 			switch change {
 			case "api_key":
 				account.Credentials["api_key"] = "fixture-replaced"
@@ -2368,9 +2368,9 @@ func TestOpenAICompatContinuationRejectsChangedRoute(t *testing.T) {
 				account.Credentials["chatgpt_account_id"] = "different-account"
 			}
 			same := change == "same" || change == "oauth_refresh"
-			response := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, "session")
-			turn := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, "session")
-			cache, chain := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, 9, "u:first-a:second-u:third")
+			response := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
+			turn := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
+			cache, chain := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, 9, "u:first-a:second-u:third")
 			if same {
 				require.Equal(t, "resp_original", response)
 				require.Equal(t, "turn_original", turn)
@@ -2382,9 +2382,9 @@ func TestOpenAICompatContinuationRejectsChangedRoute(t *testing.T) {
 				require.Empty(t, cache)
 				require.Empty(t, chain)
 			}
-			svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, "disabled-session")
+			svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "disabled-session")
 			account.Credentials["base_url"] = "https://another-route.invalid/v1"
-			require.False(t, svc.isOpenAICompatSessionContinuationDisabled(t.Context(), nil, account, "disabled-session"), "a refusal from the old route must not disable its replacement")
+			require.False(t, svc.isOpenAICompatSessionContinuationDisabled(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "disabled-session"), "a refusal from the old route must not disable its replacement")
 		})
 	}
 }
@@ -2394,8 +2394,8 @@ func TestOpenAICompatContinuationDoesNotReviveExpiredState(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			svc := &OpenAIGatewayService{}
 			account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-			svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, "session", "resp_expired")
-			svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, "session", "turn_expired")
+			svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "resp_expired")
+			svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "turn_expired")
 			key := openAICompatSessionResponseKey(nil, account, "session")
 			raw, ok := svc.openaiCompatSessionResponses.Load(key)
 			require.True(t, ok)
@@ -2405,21 +2405,21 @@ func TestOpenAICompatContinuationDoesNotReviveExpiredState(t *testing.T) {
 			svc.openaiCompatSessionResponses.Store(key, binding)
 			switch operation {
 			case "response":
-				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, "session", "resp_new")
+				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "resp_new")
 			case "turn":
-				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, "session", "turn_new")
+				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "turn_new")
 			case "disable":
-				svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, "session")
+				svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
 			}
 			if operation == "response" {
-				require.Equal(t, "resp_new", svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, "session"))
+				require.Equal(t, "resp_new", svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
 			} else {
-				require.Empty(t, svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, "session"))
+				require.Empty(t, svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
 			}
 			if operation == "turn" {
-				require.Equal(t, "turn_new", svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, "session"))
+				require.Equal(t, "turn_new", svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
 			} else {
-				require.Empty(t, svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, "session"))
+				require.Empty(t, svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
 			}
 		})
 	}
@@ -2472,16 +2472,16 @@ func TestOpenAICompatContinuationConcurrentRouteIsolationAndRecovery(t *testing.
 			account := accounts[worker%2]
 			id := fmt.Sprintf("route_%d", worker%2)
 			for range 100 {
-				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, "session", id)
-				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, "session", id)
-				svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, 9, "u:first", id, "")
-				if got := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, "session"); got != "" && got != id {
+				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", id)
+				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", id)
+				svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, 9, "u:first", id, "")
+				if got := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"); got != "" && got != id {
 					failures <- "response belongs to another route"
 				}
-				if got := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, "session"); got != "" && got != id {
+				if got := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"); got != "" && got != id {
 					failures <- "turn state belongs to another route"
 				}
-				if got, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, 9, "u:first-u:next"); got != "" && got != id {
+				if got, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, 9, "u:first-u:next"); got != "" && got != id {
 					failures <- "digest belongs to another route"
 				}
 			}
@@ -2493,12 +2493,12 @@ func TestOpenAICompatContinuationConcurrentRouteIsolationAndRecovery(t *testing.
 		t.Error(failure)
 	}
 	account := accounts[1]
-	svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, "session", "recovered")
-	svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, "session", "recovered-turn")
-	svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, 9, "u:first", "recovered-cache", "")
-	require.Equal(t, "recovered", svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, "session"))
-	require.Equal(t, "recovered-turn", svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, "session"))
-	cache, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, 9, "u:first-u:next")
+	svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "recovered")
+	svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "recovered-turn")
+	svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, 9, "u:first", "recovered-cache", "")
+	require.Equal(t, "recovered", svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
+	require.Equal(t, "recovered-turn", svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
+	cache, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, 9, "u:first-u:next")
 	require.Equal(t, "recovered-cache", cache)
 }
 
@@ -2508,15 +2508,17 @@ func TestOpenAICompatContinuationUnknownOrExpiredEvidence(t *testing.T) {
 		account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 		key := openAICompatSessionResponseKey(nil, account, "session")
 		svc.openaiCompatSessionResponses.Store(key, openAICompatSessionResponseBinding{
+			CacheScope:       openAICompatCacheScope{Model: "gpt-5.3-codex"},
 			RouteFingerprint: AccountRouteFingerprint(account), ResponseID: "stale", TurnState: "stale", ContinuationDisabled: true, ExpiresAt: expiry,
 		})
 		digestKey := openAICompatAnthropicDigestNamespace(account, 9) + "u:first"
 		svc.openaiCompatAnthropicDigestSessions.Store(digestKey, openAICompatAnthropicDigestBinding{
+			CacheScope:       openAICompatCacheScope{Model: "gpt-5.3-codex"},
 			RouteFingerprint: AccountRouteFingerprint(account), PromptCacheKey: "stale", ExpiresAt: expiry,
 		})
-		require.Empty(t, svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, "session"))
-		require.False(t, svc.isOpenAICompatSessionContinuationDisabled(t.Context(), nil, account, "session"))
-		cache, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, 9, "u:first-u:next")
+		require.Empty(t, svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
+		require.False(t, svc.isOpenAICompatSessionContinuationDisabled(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
+		cache, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, 9, "u:first-u:next")
 		require.Empty(t, cache)
 		_, exists := svc.openaiCompatSessionResponses.Load(key)
 		require.False(t, exists)
@@ -2530,24 +2532,24 @@ func TestOpenAICompatContinuationWritersRejectReplacedRouteState(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			svc := &OpenAIGatewayService{}
 			account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "original"}}
-			svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, "session", "old-response")
-			svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, "session", "old-turn")
+			svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "old-response")
+			svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "old-turn")
 			if operation == "response" {
-				svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, "session")
+				svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
 			}
 			account.Credentials["api_key"] = "replacement"
 			switch operation {
 			case "response":
-				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, "session", "new-response")
+				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "new-response")
 			case "turn":
-				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, "session", "new-turn")
+				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session", "new-turn")
 			case "disable":
-				svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, "session")
+				svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
 			case "delete":
-				svc.deleteOpenAICompatSessionResponseID(t.Context(), nil, account, "session")
+				svc.deleteOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
 			}
-			response := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, "session")
-			turn := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, "session")
+			response := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
+			turn := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session")
 			if operation == "response" {
 				require.Equal(t, "new-response", response)
 			} else {
@@ -2558,7 +2560,202 @@ func TestOpenAICompatContinuationWritersRejectReplacedRouteState(t *testing.T) {
 			} else {
 				require.Empty(t, turn)
 			}
-			require.Equal(t, operation == "disable", svc.isOpenAICompatSessionContinuationDisabled(t.Context(), nil, account, "session"))
+			require.Equal(t, operation == "disable", svc.isOpenAICompatSessionContinuationDisabled(t.Context(), nil, account, openAICompatCacheScope{Model: "gpt-5.3-codex"}, "session"))
 		})
+	}
+}
+
+func TestForwardAsAnthropic_ContinuationUsesEffectiveModelAndTier(t *testing.T) {
+	for _, scenario := range []string{"model", "fast", "filtered_fast", "force_fast"} {
+		t.Run(scenario, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{}
+			svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+			svc.httpUpstream = upstream
+			svc.cfg = &config.Config{}
+			account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture", "base_url": "https://first.invalid/v1"}}
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"second"}]}`)
+			for attempt := 0; attempt < 3; attempt++ {
+				model := "gpt-5.3-codex"
+				if scenario == "model" && attempt > 0 {
+					model = "gpt-5.4"
+				}
+				upstream.resp = openAICompatSSECompletedResponse(fmt.Sprintf("resp_%d", attempt), model)
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+				if (scenario == "fast" || scenario == "filtered_fast") && attempt > 0 {
+					c.Request.Header.Set("anthropic-beta", "fast-mode-2026-02-01")
+				}
+				ctx := t.Context()
+				if scenario == "filtered_fast" {
+					ctx = withOpenAIFastPolicyContext(ctx, openAIFastFilterPriorityPolicy())
+				}
+				if scenario == "force_fast" && attempt > 0 {
+					ctx = withOpenAIFastPolicyContext(ctx, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}})
+				}
+				result, err := svc.ForwardAsAnthropic(ctx, c, account, body, "stable-session", model)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Equal(t, model, gjson.GetBytes(upstream.lastBody, "model").String())
+				if (scenario == "fast" || scenario == "force_fast") && attempt > 0 {
+					require.Equal(t, "priority", gjson.GetBytes(upstream.lastBody, "service_tier").String())
+				} else {
+					require.False(t, gjson.GetBytes(upstream.lastBody, "service_tier").Exists())
+				}
+				expected := ""
+				if attempt == 2 || (scenario == "filtered_fast" && attempt == 1) {
+					expected = fmt.Sprintf("resp_%d", attempt-1)
+				}
+				require.Equal(t, expected, gjson.GetBytes(upstream.lastBody, "previous_response_id").String())
+				if expected == "" {
+					require.GreaterOrEqual(t, gjson.GetBytes(upstream.lastBody, "input.#").Int(), int64(3))
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAICompatContinuationScopeIsolation(t *testing.T) {
+	original := openAICompatCacheScope{Model: "gpt-5.3-codex"}
+	for _, next := range []openAICompatCacheScope{original, {Model: "gpt-5.4"}, {Model: original.Model, ServiceTier: "priority"}, {}} {
+		t.Run(next.Model+"/"+next.ServiceTier, func(t *testing.T) {
+			svc := &OpenAIGatewayService{}
+			account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, original, "session", "old-response")
+			svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, original, "session", "old-turn")
+			svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, original, 9, "u:first", "old-cache", "")
+			response := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, next, "session")
+			turn := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, next, "session")
+			cache, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, next, 9, "u:first-u:next")
+			if next == original {
+				require.Equal(t, "old-response", response)
+				require.Equal(t, "old-turn", turn)
+				require.Equal(t, "old-cache", cache)
+			} else {
+				require.Empty(t, response)
+				require.Empty(t, turn)
+				require.Empty(t, cache)
+			}
+			svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, original, "disabled")
+			require.Equal(t, next == original, svc.isOpenAICompatSessionContinuationDisabled(t.Context(), nil, account, next, "disabled"))
+			if next.Model == "" {
+				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, next, "unknown", "new")
+				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, next, "unknown", "new")
+				svc.disableOpenAICompatSessionContinuation(t.Context(), nil, account, next, "unknown")
+				_, exists := svc.openaiCompatSessionResponses.Load(openAICompatSessionResponseKey(nil, account, "unknown"))
+				require.False(t, exists)
+			}
+		})
+	}
+}
+
+func TestForwardAsAnthropic_OAuthTurnStateUsesEffectiveModelAndTier(t *testing.T) {
+	for _, scenario := range []string{"model", "fast", "filtered_fast", "force_fast"} {
+		t.Run(scenario, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{}
+			svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+			svc.httpUpstream = upstream
+			svc.cfg = &config.Config{}
+			account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{"access_token": "fixture", "chatgpt_account_id": "fixture-account"}}
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"second"}]}`)
+			for attempt := 0; attempt < 3; attempt++ {
+				model := "gpt-5.3-codex"
+				if scenario == "model" && attempt > 0 {
+					model = "gpt-5.4"
+				}
+				upstream.resp = openAICompatSSECompletedResponse(fmt.Sprintf("resp_%d", attempt), model)
+				upstream.resp.Header.Set("x-codex-turn-state", fmt.Sprintf("turn_%d", attempt))
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+				if (scenario == "fast" || scenario == "filtered_fast") && attempt > 0 {
+					c.Request.Header.Set("anthropic-beta", "fast-mode-2026-02-01")
+				}
+				ctx := t.Context()
+				if scenario == "filtered_fast" {
+					ctx = withOpenAIFastPolicyContext(ctx, openAIFastFilterPriorityPolicy())
+				}
+				if scenario == "force_fast" && attempt > 0 {
+					ctx = withOpenAIFastPolicyContext(ctx, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}})
+				}
+				result, err := svc.ForwardAsAnthropic(ctx, c, account, body, "stable-session", model)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				expected := ""
+				if attempt == 2 || (scenario == "filtered_fast" && attempt == 1) {
+					expected = fmt.Sprintf("turn_%d", attempt-1)
+				}
+				require.Equal(t, expected, upstream.lastReq.Header.Get("x-codex-turn-state"))
+			}
+		})
+	}
+}
+
+func TestOpenAICompatContinuationConcurrentScopeIsolation(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	var wg sync.WaitGroup
+	failures := make(chan string, 1200)
+	for worker := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scope := openAICompatCacheScope{Model: fmt.Sprintf("gpt-5.%d", worker/2)}
+			if worker%2 != 0 {
+				scope.ServiceTier = "priority"
+			}
+			id := fmt.Sprintf("scope_%d", worker)
+			for range 100 {
+				svc.bindOpenAICompatSessionResponseID(t.Context(), nil, account, scope, "session", id)
+				svc.bindOpenAICompatSessionTurnState(t.Context(), nil, account, scope, "session", id)
+				svc.bindOpenAICompatAnthropicDigestPromptCacheKey(account, scope, 9, "u:first", id, "")
+				if got := svc.getOpenAICompatSessionResponseID(t.Context(), nil, account, scope, "session"); got != "" && got != id {
+					failures <- "response belongs to another model/tier"
+				}
+				if got := svc.getOpenAICompatSessionTurnState(t.Context(), nil, account, scope, "session"); got != "" && got != id {
+					failures <- "turn belongs to another model/tier"
+				}
+				if got, _ := svc.findOpenAICompatAnthropicDigestPromptCacheKey(account, scope, 9, "u:first-u:next"); got != "" && got != id {
+					failures <- "digest belongs to another model/tier"
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Error(failure)
+	}
+}
+
+func TestForwardAsAnthropic_BlockedFastPreservesOrdinaryContinuation(t *testing.T) {
+	upstream := &httpUpstreamRecorder{}
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	svc.httpUpstream = upstream
+	svc.cfg = &config.Config{}
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture", "base_url": "https://first.invalid/v1"}}
+	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"second"}]}`)
+	for attempt := 0; attempt < 3; attempt++ {
+		upstream.resp = openAICompatSSECompletedResponse(fmt.Sprintf("resp_%d", attempt), "gpt-5.3-codex")
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+		ctx := t.Context()
+		if attempt == 1 {
+			c.Request.Header.Set("anthropic-beta", "fast-mode-2026-02-01")
+			ctx = withOpenAIFastPolicyContext(ctx, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierPriority, Action: BetaPolicyActionBlock, Scope: BetaPolicyScopeAll}}})
+		}
+		result, err := svc.ForwardAsAnthropic(ctx, c, account, body, "stable-session", "gpt-5.3-codex")
+		if attempt == 1 {
+			var blocked *OpenAIFastBlockedError
+			require.ErrorAs(t, err, &blocked)
+			require.Nil(t, result)
+			require.Equal(t, http.StatusForbidden, recorder.Code)
+			require.Len(t, upstream.requests, 1)
+			continue
+		}
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		if attempt == 2 {
+			require.Equal(t, "resp_0", gjson.GetBytes(upstream.lastBody, "previous_response_id").String())
+		}
 	}
 }

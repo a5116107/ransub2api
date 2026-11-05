@@ -621,3 +621,18 @@
 
 - 最终顺序命令实际退出0：go test -race -tags=unit -p 1 ./internal/service -run 'TestOpenAICompatContinuation|TestForwardAsAnthropic_RouteReplacement' -count=3 -timeout=3m输出service2.797s及Final continuation race: PASS，覆盖最终夹具；完整service包lint保留原unit标签、全部规则、并发2及8分钟，进程内GOMEMLIMIT=4GiB/GOGC=50后输出0 issues.及Final service lint: PASS；默认入口go test -p 1 ./cmd/server -run '^$'输出ok1.448s [no tests to run]及Default entry compilation: PASS。源码自该命令启动后未再更改。此结果替代首次超时的静态验收，不删除失败记录。
 - 最终源码净减少55行（两份生产文件），无第二缓存或新债务标记。gofmt、三份文档链接、STATE行数、差异与工作树核对通过，历史service/data仍12个1164bytes。只本地提交本轮三份源码/测试及现有三份项目文档，保留历史清理等待；本轮闭环桥接缓存线路/过期子范围，不关闭D2或全局目标。
+
+
+## 2026-11-05：D2 Messages续接的生效模型与服务档
+
+- 接续42df0d6，在原工作树推进未完成缓存域。旧源码新增转发矩阵实际service3.504s、退出1：模型切换与普通→fast仍带resp_0，两个生产缺口已复现；filtered_fast子例另因夹具未安装settingService而未执行过滤，改用既有设置夹具，不改变生产策略。
+- 原位给两类缓存binding加显式Model/ServiceTier契约，读写/摘要/禁用/删除全部调用点同步传参；沿用原map键及线路指纹，有效期/条件清理不变。模型未知不建立续接证据。读取前调用原fast策略一次，只传该函数实际读取的tier字段，filter/force/pass/block结果写入后续转换请求；删除原末端重复求值位置，出站构造后校验模型/tier仍一致。模型沿原映射/规范化结果，服务档沿策略结果而非客户端fast意图，避免被过滤的fast无谓丢缓存。策略拒绝发生在缓存读取前，不改变缓存；错误优先顺序现在先fast策略后转换/推理策略，均保留原本地拒绝与无出站行为。
+- 首轮兼容组合三轮service1.773s失败：原metadata-session长历史用例直接设置禁用标记时，机械签名迁移误用了gpt-5.3-codex而实际转发为gpt-5.4-mini，导致禁用被新隔离正确拒绝、历史裁到13而非17。修正夹具传真实模型，保留17条/首尾内容原断言，不放松guard或隔离。
+- 新增API Key response ID与OAuth turn-state的模型/fast切换、策略过滤/强制、同档续接恢复，摘要/禁用/未知模型与并发跨模型档隔离。只证明桥接出站契约隔离，不证明供应商内部缓存共享/不降档、跨协议同价或整套缓存域完成。D2/D4父验收与20项统计保持，不运行CI、不推送/部署。
+- 新AGENTS约束STATE同时不超100行/8192 UTF-8 bytes，现将其压缩为当前验收、下一动作与等待，历史细节继续在本DECISIONS及唯一设计中，不新建台账。
+
+- 修正显式scope的旧夹具并补齐API Key/OAuth模型、fast过滤/强制与并发scope后，扩展兼容及原fast策略组合连续三轮实际service2.253s、退出0。最终另加fast被block无出站且原普通档response ID保留的恢复夹具；因本轮改动生产转发的策略求值顺序与共享缓存签名，执行一次最终三包完整回归及静态检查，不用上轮结果代替当前源码。
+
+- 最终顺序命令实际退出0：全部托管续接/模型档位/OAuth/拒绝恢复专项20轮service5.441s通过；完整相关回归service351.849s、handler143.960s、routes12.087s通过；三范围vet输出Final vet: PASS。完整service lint保留unit、原规则、并发2和8分钟，进程内GOMEMLIMIT=4GiB/GOGC=50输出0 issues.与Final service lint: PASS；默认标签cmd/server显示(cached) [no tests to run]，只证明本轮默认入口缓存编译。最终race专项三轮service4.758s通过（含并发跨模型/档位），输出Final scope race: PASS。没有因本轮检查跳过用例或修改既有断言，命令启动后源码未更改。
+- 边界复核：buildUpstreamRequest继续调用原guardOpenAICodexTurnStateEcho，来源记录仅账号归属，同账号/未知客户端回传保留；applyOpenAICodexTicket另有账号/模型门票归属。本轮显式scope只保护网关管理的response/turn/禁用/摘要缓存，不把独立客户端回传或认证门票也说成已完成档位隔离。后续D2原完整缓存域须核对二者真实语义，不盲目删除认证头。原API Key长历史guard保留，其他协议、跨协议计价和Live/区域继续待验收。
+- 已原位整理STATE恢复检查点与当前验收，历史细节在本记录中保留，不新增RUN/任务台账。最终差异/格式/本地文档链接与新增债务标记检查通过，历史service/data仍12文件1164bytes；只提交本轮4份源码/测试与原三份项目文档，维持单工作树，不推送/部署/CI。D2父任务不关闭、原20项统计不变；本轮完整闭环托管续接模型/服务档子范围。
