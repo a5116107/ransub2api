@@ -3760,8 +3760,8 @@ func (c *Config) Validate() error {
 	if err := c.Gateway.UpstreamKeyConcurrency.Validate(); err != nil {
 		return err
 	}
-	if c.Gateway.UpstreamKeyConcurrency.Configured() && (c.Runtime.RegionalConcurrencyFile != "" || c.Runtime.RegionalSchedulerFile != "") {
-		return fmt.Errorf("gateway.upstream_key_concurrency requires shared Redis mode; regional quota authority is not supported")
+	if c.Gateway.UpstreamKeyConcurrency.Configured() && c.Runtime.RegionalSchedulerFile != "" && c.Runtime.RegionalConcurrencyFile == "" {
+		return fmt.Errorf("gateway.upstream_key_concurrency requires regional concurrency authority when using a regional scheduler")
 	}
 	if c.Gateway.StreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")

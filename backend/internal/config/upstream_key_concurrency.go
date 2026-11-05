@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,6 +15,20 @@ import (
 type UpstreamKeyConcurrencyConfig struct {
 	Revision int64          `mapstructure:"revision"`
 	Limits   map[string]int `mapstructure:"limits"`
+}
+
+// EncodeLimits supplies the same canonical policy identity to both authorities.
+func (c UpstreamKeyConcurrencyConfig) EncodeLimits() ([]byte, string, error) {
+	limits := c.Limits
+	if limits == nil {
+		limits = map[string]int{}
+	}
+	raw, err := json.Marshal(limits)
+	if err != nil {
+		return nil, "", err
+	}
+	digest := sha256.Sum256(raw)
+	return raw, hex.EncodeToString(digest[:]), nil
 }
 
 func (c UpstreamKeyConcurrencyConfig) Configured() bool { return c.Revision != 0 || len(c.Limits) != 0 }

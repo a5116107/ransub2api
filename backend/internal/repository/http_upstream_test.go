@@ -1072,17 +1072,17 @@ func TestApplyProfilePoolSettingsUsesRuntimeOpenAIResponseHeaderTimeout(t *testi
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIResponseHeaderTimeout = 20
 
-	svc, ok := newHTTPUpstream(cfg, fakeOpenAIResponseHeaderTimeoutProvider{seconds: 30, enabled: true}).(*httpUpstreamService)
+	svc, ok := newHTTPUpstream(cfg, fakeOpenAIResponseHeaderTimeoutProvider{seconds: 30, enabled: true}, nil, nil).(*httpUpstreamService)
 	require.True(t, ok)
 	settings := svc.applyProfilePoolSettings(poolSettings{}, service.HTTPUpstreamProfileOpenAI)
 	require.Equal(t, 30*time.Second, settings.responseHeaderTimeout)
 
-	svc, ok = newHTTPUpstream(cfg, fakeOpenAIResponseHeaderTimeoutProvider{seconds: 30, enabled: false}).(*httpUpstreamService)
+	svc, ok = newHTTPUpstream(cfg, fakeOpenAIResponseHeaderTimeoutProvider{seconds: 30, enabled: false}, nil, nil).(*httpUpstreamService)
 	require.True(t, ok)
 	settings = svc.applyProfilePoolSettings(poolSettings{}, service.HTTPUpstreamProfileOpenAI)
 	require.Zero(t, settings.responseHeaderTimeout)
 
-	svc, ok = newHTTPUpstream(cfg, nil).(*httpUpstreamService)
+	svc, ok = newHTTPUpstream(cfg, nil, nil, nil).(*httpUpstreamService)
 	require.True(t, ok)
 	settings = svc.applyProfilePoolSettings(poolSettings{}, service.HTTPUpstreamProfileOpenAI)
 	require.Equal(t, 20*time.Second, settings.responseHeaderTimeout)

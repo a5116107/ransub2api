@@ -16,6 +16,8 @@ func NewRegionalSlotAuthority(db *sql.DB) *slots.Primary {
 	return &slots.Primary{DB: db, Limit: func(ctx context.Context, tx *sql.Tx, r slots.Resource) (int, error) {
 		var query string
 		switch r.Kind {
+		case "upstream_key":
+			return slots.UpstreamLimit(ctx, tx, r)
 		case "account":
 			query = `SELECT concurrency FROM accounts WHERE id=$1 AND deleted_at IS NULL AND status='active' AND schedulable=true FOR SHARE`
 		case "user":

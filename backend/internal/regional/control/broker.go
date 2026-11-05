@@ -236,7 +236,7 @@ func (b *Broker) EnsureSlots(ctx context.Context, resource slots.Resource, capac
 		if err = json.Unmarshal(raw, &g); err != nil {
 			return err
 		}
-		if g.Slots != capacity {
+		if g.Slots != capacity || g.Resource != resource {
 			return slots.ErrConflict
 		}
 		if g.ExpiresAt.Sub(now) > lifetime/2 {

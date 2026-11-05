@@ -32,6 +32,7 @@ type Scope struct {
 	UserIDs           []int64
 	AccountIDs        []int64
 	APIKeyIDs         []int64
+	UpstreamKeyIDs    []int64
 	MaximumGrant      regional.Amount
 	MaximumSlots      int
 	MaximumLifetime   time.Duration
@@ -51,7 +52,7 @@ func (s Scope) Validate() error {
 	if _, err := ledger.USD(s.MaximumGrant); err != nil {
 		return err
 	}
-	for _, ids := range [][]int64{s.UserIDs, s.AccountIDs, s.APIKeyIDs} {
+	for _, ids := range [][]int64{s.UserIDs, s.AccountIDs, s.APIKeyIDs, s.UpstreamKeyIDs} {
 		seen := map[int64]bool{}
 		for _, id := range ids {
 			if id <= 0 || seen[id] {
@@ -78,6 +79,8 @@ func (s Scope) resource(r slots.Resource) bool {
 		return contains(s.UserIDs, r.ID)
 	case "api_key":
 		return contains(s.APIKeyIDs, r.ID)
+	case "upstream_key":
+		return contains(s.UpstreamKeyIDs, r.ID)
 	}
 	return false
 }
@@ -110,6 +113,7 @@ func NewHandler(scope Scope, quota *ledger.Primary, capacity *slots.Primary, ver
 	scope.UserIDs = append([]int64(nil), scope.UserIDs...)
 	scope.AccountIDs = append([]int64(nil), scope.AccountIDs...)
 	scope.APIKeyIDs = append([]int64(nil), scope.APIKeyIDs...)
+	scope.UpstreamKeyIDs = append([]int64(nil), scope.UpstreamKeyIDs...)
 	return &Handler{Scope: scope, Quota: quota, Slots: capacity, Verify: verify}, nil
 }
 
@@ -124,6 +128,7 @@ func NewSlotsHandler(scope Scope, capacity *slots.Primary) (http.Handler, error)
 	scope.UserIDs = append([]int64(nil), scope.UserIDs...)
 	scope.AccountIDs = append([]int64(nil), scope.AccountIDs...)
 	scope.APIKeyIDs = append([]int64(nil), scope.APIKeyIDs...)
+	scope.UpstreamKeyIDs = append([]int64(nil), scope.UpstreamKeyIDs...)
 	return &Handler{Scope: scope, Slots: capacity}, nil
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) error {
@@ -158,6 +163,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var err error
 	switch r.URL.Path {
+	case Prefix + "/slots/upstream-policy":
+		var request struct{}
+		if decode(w, r, &request) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var snapshot slots.UpstreamPolicy
+		snapshot, err = h.Slots.ReadUpstreamPolicy(ctx)
+		if err == nil {
+			raw, encodeErr := json.Marshal(snapshot)
+			if encodeErr != nil || len(raw) > maxBody {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(raw)
+			return
+		}
 	case Prefix + "/quota/issue":
 		var lease regional.Lease
 		if decode(w, r, &lease) != nil {
@@ -271,7 +294,7 @@ func NewClient(endpoint string, roots *x509.CertPool, identity tls.Certificate, 
 	}}}
 	return &Client{base: strings.TrimRight(endpoint, "/"), client: &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("control redirect forbidden") }}}, nil
 }
-func (c *Client) post(ctx context.Context, path string, payload any) error {
+func (c *Client) post(ctx context.Context, path string, payload, output any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -292,32 +315,59 @@ func (c *Client) post(ctx context.Context, path string, payload any) error {
 	if response.StatusCode == http.StatusGone {
 		return slots.ErrExpiredUnissued
 	}
+	if output != nil && response.StatusCode == http.StatusOK {
+		raw, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
+		if err != nil || len(raw) > maxBody {
+			return errors.New("regional control response exceeds limit or is incomplete")
+		}
+		d := json.NewDecoder(bytes.NewReader(raw))
+		d.DisallowUnknownFields()
+		if err := d.Decode(output); err != nil {
+			return err
+		}
+		var extra any
+		if d.Decode(&extra) != io.EOF {
+			return errors.New("trailing regional control response")
+		}
+		return nil
+	}
+	if output != nil {
+		return errors.New("regional control response was not confirmed")
+	}
 	if response.StatusCode != http.StatusNoContent {
 		return errors.New("regional control operation was not confirmed")
 	}
 	return nil
 }
 func (c *Client) Settle(ctx context.Context, e ledger.Event) error {
-	return c.post(ctx, "/quota/settle", e)
+	return c.post(ctx, "/quota/settle", e, nil)
 }
 func (c *Client) IssueQuota(ctx context.Context, l regional.Lease) error {
-	return c.post(ctx, "/quota/issue", l)
+	return c.post(ctx, "/quota/issue", l, nil)
 }
 func (c *Client) CloseQuota(ctx context.Context, r ledger.DrainReceipt) error {
-	return c.post(ctx, "/quota/close", r)
+	return c.post(ctx, "/quota/close", r, nil)
 }
 func (c *Client) IssueSlots(ctx context.Context, g slots.Grant) error {
-	return c.post(ctx, "/slots/issue", g)
+	return c.post(ctx, "/slots/issue", g, nil)
 }
 func (c *Client) RenewSlots(ctx context.Context, g slots.Grant) error {
-	return c.post(ctx, "/slots/renew", g)
+	return c.post(ctx, "/slots/renew", g, nil)
+}
+func (c *Client) UpstreamPolicy(ctx context.Context) (slots.UpstreamPolicy, error) {
+	var snapshot slots.UpstreamPolicy
+	err := c.post(ctx, "/slots/upstream-policy", struct{}{}, &snapshot)
+	if err == nil {
+		err = snapshot.Validate()
+	}
+	return snapshot, err
 }
 func (c *Client) DrainSlots(ctx context.Context, id string) error {
 	return c.post(ctx, "/slots/drain", struct {
 		LeaseID string `json:"lease_id"`
-	}{id})
+	}{id}, nil)
 }
 func (c *Client) CloseSlots(ctx context.Context, r slots.DrainReceipt) error {
-	return c.post(ctx, "/slots/close", r)
+	return c.post(ctx, "/slots/close", r, nil)
 }
 func (c *Client) Close() { c.client.CloseIdleConnections() }

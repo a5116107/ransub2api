@@ -649,3 +649,28 @@
 
 - 最终原顺序命令实际退出0：客户端归属/在途快照/原提交边界与门票专项20轮service4.801s通过；完整service339.003s、handler146.082s、routes17.126s通过；三范围vet输出Final vet: PASS。完整service包lint保留unit、原规则、并发2和8分钟，进程内GOMEMLIMIT=4GiB/GOGC=50输出0 issues.、Final service lint: PASS；默认入口cmd/server1.400s编译通过（no tests to run）。最终race专项三轮service4.367s通过，含独立gin上下文并发归属写入和异scope拒绝；实际退出后才计为通过。
 - 最终格式/差异、文档链接、STATE行数/UTF-8大小与顶部检查点、旧签名调用点及新增债务标记核对通过；历史service/data仍12文件1164bytes，不新增产物。只本地提交本轮8份源码/测试及现有三份项目文档，不推送、部署或运行CI。D2父验收及原20项统计不变，HTTP客户端出站归属与既有门票边界本地闭环；其他协议/路径与Live/区域继续推进。
+
+
+## 2026-11-05：D2 区域共享 Key 的独立身份与统一额度
+
+- 从161b3fb继续H盘同一工作树，授权边界为本地实施、隔离数据库验证和本地提交；不运行CI、不推送、不部署、不执行生产迁移。保持原20项12 done、3 in_progress、5 pending，区域共享Key是D2内的原验收范围，不新增任务号或把子范围计为父完成。
+- 旧资源身份专项实际slots0.577s、退出1：两个完整上游指纹被拒绝，带上游指纹的下游api_key被错误接受，共3个失败子例。原位扩展Resource并用不可替换的完整指纹/注册ID绑定；增量327保留原数字资源与主键，不修改280/281。主请求与原broker授权共用SQL预算，配置版本/摘要唯一，策略通过原TLS1.3/mTLS/双端证书pin通道限时同步；空策略也需新鲜证据。HTTP/原生WS/三种直接WS入口继续使用同一公共租约，不新建第二种生命周期或回退Redis。
+- 首轮区域HTTP/WS与SQL专项实际repository60.445s、退出0；共享释放/增量迁移/认证控制专项3.725s、退出0。隔离库使用本轮独立PostgreSQL进程及每例双schema，未触碰既有admin-key-pg-d8实例；两个默认角色探测均失败后未继续猜测或输出私有配置。
+- 首版64并发公共入口试验出现policy拒绝，未计通过；将相同64竞争直接放到权威事务边界后捕获context deadline exceeded，未把其改记为容量拒绝。满额路径原本也提交带行锁的空事务，现拒绝/无受限凭据路径只回滚，成功占用仍持久提交；保留原2秒截止、64次尝试和主/区域各2个成功断言。修复后该竞争与公共租约竞争连续三轮实际repository17.838s、退出0。先前扩展组合88.792s及129.509s失败均保留，不宣称其静态/编译后续命令已执行。
+- 原Windows符号链接权限、历史产物删除审批仍由原拥有者解除。未执行这些历史删除，也未创建平行工作树。最终验证、收尾和交付身份以下方追加记录为准。
+
+- 新增限额缩减的原验收反例实际repository2.322s、退出1：区域装入新策略后仍从超限旧授权放入新请求。修复为主节点快照携带所有区域预留与主请求总预算的overdrawn证据，区域按已确认限额停止新准入；已在途成员继续持有，不能只凭本地grant大小判断总预算。增加第二个区域预留的组合与排空恢复，传播边界明确为后台刷新/15秒有效期，不宣称瞬时全球切换。
+- 中间完整相关组合实际repository114.922s、57个顶层通过、0 skip/0 fail；输出摘要脚本的sum表达式曾对None报TypeError，已用原JSON结果重新读取确认数量，未把摘要异常当作Go失败或重跑相同源码。此组合在overdrawn修复前，仅是对应源码的中间证据，最终结果另记。
+
+- 前一轮最终验证尚未退出时补入overdrawn字段和断言，race构建因此读到不同版本源码并报snapshot.Overdrawn undefined，退出1；属于验证过程失效，不计race通过，也不是运行时race发现。后续冻结源码、顺序验证并以实际退出为准。中间完整lint两次输出0 issues且退出0，但overdrawn改动后的最终lint仍需单独验收。
+
+- 冻结c9683c6…源码的尾轮组合实际repository114.541s退出1，56个顶层通过、0 skip，两个顶层失败：公共租约竞争出现policy拒绝；primary/http_bridge/lease_loss子例等待回收未满足。未继续执行其race/vet/编译/lint。保留原JSON失败输出；先把SQL夹具空闲连接池从默认2与突发建连改为16个已就绪连接，并在原WS最终等待中增加实际占用/重放数量诊断，不扩大截止时间、不删原额度或协议断言。此为夹具环境假设，以下方实际复验判断，不将其写成通用原因。
+
+- 就绪SQL池后，原64竞争、公共租约竞争和primary/http_bridge/lease_loss原失败子例组合三轮实际repository55.387s、退出0；额度、时限、回收和无重放断言全部保留，并加强失败诊断。它证明就绪池场景，不证明冷建连时延或任意机器上的2秒SLA；D5冷启动与D8真实多实例性能验收保持待办。当前再次冻结源码，顺序完成最终相关组合、race、静态检查及入口编译，期间不修改源码。
+
+- 最终冻结源码cf29c626835a0a70a278d7d1ca650b00dded785cfb7d5a7f20a893f9b5d2dd24，顺序命令实际退出0：go test -json -p 1 -tags=unit ./internal/repository -run 'Test(Regional|UpstreamKey|HTTPUpstream|PR612)' -count=1 -timeout=5m，repository125.255s、58顶层通过、0 skip/0 fail；go test -race -p 1 -tags=unit ./internal/repository -run TestRegionalUpstreamKey -count=1 -timeout=4m，repository99.177s；config/regional/repository完整目标范围vet输出Final vet: PASS；默认cmd/server编译1.454s（no tests to run）；migrations包1.465s；完整同目标包lint保留unit/原规则/并发2/8分钟，输出0 issues与Final lint: PASS。此前完整config2.315s、regional/ledger/model/slots及原数值资源回归证据同时保留；本轮没有声称Windows repository全量通过。
+- 最终相关范围覆盖：两个独立SQL schema的主/区域竞争及进程恢复、完整指纹错绑、版本冲突/缩减/移除/恢复、多个区域预留、真实策略到期、SQL故障恢复、mTLS证书范围、原broker幂等安装、HTTP持有期和原生/直接WS三入口的取消/所有权丢失/无重放。ACL/CLIENT元数据的新增旧Redis排空夹具有明确stub边界，不将其称为真实ACL验证；原集成验收与D8/D9保持。
+- 原位删除旧区域一律拒绝配置，替换为实际权威接线；仅scheduler无区域额度仍拒绝。策略编码收敛到单一EncodeLimits；TLS测试证书帮助函数从integration文件迁到共用测试文件，原调用和断言保留，不留下重复实现。设计4.4/4.4.1已统一并移除过时区域未接通描述，补齐混合版本、15秒传播、缩减、排空及保留增量schema的回滚说明。
+
+- 恢复收尾核对仍为161b3fb上的同批未提交改动，未另建工作树或重跑未变化的完整矩阵。恢复命令`go test -p 1 -tags=unit ./internal/config ./internal/regional/slots ./internal/regional/control -count=1 -timeout=2m`实际退出0：config1.826s、slots0.637s，control无独立测试但编译通过；`git diff --check`通过。原58顶层、race及静态结果沿用上述冻结源码的实际证据，不将本次编译说成SQL/生产复验。
+- 上次“停止独立PostgreSQL并删除测试产物”整条命令被自动审批`blocked by policy`拒绝，整条未执行。恢复时确认`backend/tmp/regional-key-pg/data`对应55449实例PID12708仍运行；既有55448实例及其他系统PostgreSQL不属于该清理。准确目录与解除条件写回STATE，保留资源，不换工具绕过拒绝。历史12个PNG1164bytes为原有非本任务改动，未提交或删除。

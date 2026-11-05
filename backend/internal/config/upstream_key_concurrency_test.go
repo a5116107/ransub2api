@@ -37,19 +37,24 @@ func TestUpstreamKeyConcurrencyValidation(t *testing.T) {
 	}
 }
 
-func TestUpstreamKeyConcurrencyRejectsRegionalAuthority(t *testing.T) {
-	for _, regional := range []string{"concurrency", "scheduler"} {
+func TestUpstreamKeyConcurrencyRequiresMatchingRegionalAuthority(t *testing.T) {
+	for _, regional := range []string{"redis", "concurrency", "scheduler", "both"} {
 		t.Run(regional, func(t *testing.T) {
 			resetViperWithJWTSecret(t)
 			cfg, err := Load()
 			require.NoError(t, err)
 			cfg.Gateway.UpstreamKeyConcurrency = UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{UpstreamKeyFingerprint("supplier-fixture"): 2}}
-			if regional == "concurrency" {
+			if regional == "concurrency" || regional == "both" {
 				cfg.Runtime.RegionalConcurrencyFile = "fixture.json"
-			} else {
+			}
+			if regional == "scheduler" || regional == "both" {
 				cfg.Runtime.RegionalSchedulerFile = "fixture.json"
 			}
-			require.EqualError(t, cfg.Validate(), "gateway.upstream_key_concurrency requires shared Redis mode; regional quota authority is not supported")
+			if regional == "scheduler" {
+				require.EqualError(t, cfg.Validate(), "gateway.upstream_key_concurrency requires regional concurrency authority when using a regional scheduler")
+			} else {
+				require.NoError(t, cfg.Validate())
+			}
 		})
 	}
 }

@@ -42,6 +42,9 @@ func (l *Local) Install(ctx context.Context, g Grant) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := installUpstreamResource(ctx, tx, g.Resource); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(g)
 	if err != nil {
 		return err
@@ -85,6 +88,9 @@ func (l *Local) Acquire(ctx context.Context, id, request string) (bool, error) {
 func (l *Local) AcquireTx(ctx context.Context, tx *sql.Tx, id, request string) (bool, error) {
 	var resource Resource
 	if err := tx.QueryRowContext(ctx, "SELECT kind,resource_id FROM regional_local_slot_grants WHERE lease_id=$1 AND region_id=$2", id, l.Region).Scan(&resource.Kind, &resource.ID); err != nil {
+		return false, err
+	}
+	if err := completeUpstreamResource(ctx, tx, &resource); err != nil {
 		return false, err
 	}
 	if err := lockBudget(ctx, tx, resource); err != nil {
@@ -156,6 +162,9 @@ func (l *Local) ReleaseTx(ctx context.Context, tx *sql.Tx, id, request string) e
 	}
 	var resource Resource
 	if err := tx.QueryRowContext(ctx, "SELECT kind,resource_id FROM regional_local_slot_grants WHERE lease_id=$1 AND region_id=$2", id, l.Region).Scan(&resource.Kind, &resource.ID); err != nil {
+		return err
+	}
+	if err := completeUpstreamResource(ctx, tx, &resource); err != nil {
 		return err
 	}
 	if err := lockBudget(ctx, tx, resource); err != nil {

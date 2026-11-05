@@ -21,12 +21,20 @@ var (
 )
 
 type Resource struct {
-	Kind string `json:"kind"`
-	ID   int64  `json:"resource_id"`
+	Kind        string `json:"kind"`
+	ID          int64  `json:"resource_id"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 func (r Resource) Validate() error {
-	if r.ID <= 0 || (r.Kind != "account" && r.Kind != "user" && r.Kind != "api_key") {
+	if r.ID <= 0 {
+		return errors.New("invalid regional slot resource")
+	}
+	if r.Kind == "upstream_key" {
+		if !upstreamFingerprint.MatchString(r.Fingerprint) {
+			return errors.New("invalid regional upstream key fingerprint")
+		}
+	} else if r.Fingerprint != "" || (r.Kind != "account" && r.Kind != "user" && r.Kind != "api_key") {
 		return errors.New("invalid regional slot resource")
 	}
 	return nil
@@ -57,6 +65,9 @@ func sameIdentity(a, b Grant) bool {
 func validRequest(id string) bool { return len(id) > 0 && len(id) <= 128 }
 func lockBudget(ctx context.Context, tx *sql.Tx, r Resource) error {
 	if err := r.Validate(); err != nil {
+		return err
+	}
+	if err := checkUpstreamResource(ctx, tx, r); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO regional_slot_budgets(kind,resource_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, r.Kind, r.ID); err != nil {
@@ -91,6 +102,9 @@ func authorityGrant(ctx context.Context, tx *sql.Tx, id string) (Grant, string, 
 	var g Grant
 	var state string
 	err := tx.QueryRowContext(ctx, `SELECT lease_id,kind,resource_id,region_id,slots,revision,issued_at,expires_at,state FROM regional_slot_grants WHERE lease_id=$1`, id).Scan(&g.LeaseID, &g.Resource.Kind, &g.Resource.ID, &g.Region, &g.Slots, &g.Revision, &g.IssuedAt, &g.ExpiresAt, &state)
+	if err == nil {
+		err = completeUpstreamResource(ctx, tx, &g.Resource)
+	}
 	return g, state, err
 }
 func (p *Primary) Issue(ctx context.Context, g Grant) error {

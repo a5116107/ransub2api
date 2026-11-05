@@ -43,8 +43,8 @@ func TestUpstreamKeyHTTPAdmissionSharedLifetime(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	t.Cleanup(upstream.Close)
-	a := newHTTPUpstream(upstreamKeyTestConfig(1, 1), nil, first)
-	b := newHTTPUpstream(upstreamKeyTestConfig(1, 1), nil, second)
+	a := newHTTPUpstream(upstreamKeyTestConfig(1, 1), nil, first, nil)
+	b := newHTTPUpstream(upstreamKeyTestConfig(1, 1), nil, second, nil)
 	request := func(credential string) *http.Request {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader("{}"))
 		require.NoError(t, err)
@@ -81,7 +81,7 @@ func TestUpstreamKeySharedAuthorityDeduplicatesCredentials(t *testing.T) {
 			server := miniredis.RunT(t)
 			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 			t.Cleanup(func() { require.NoError(t, client.Close()) })
-			s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, limit), client)}
+			s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, limit), client, nil)}
 			fingerprint := config.UpstreamKeyFingerprint("supplier-fixture")
 			fingerprints := []string{fingerprint, fingerprint, fingerprint}
 			ctx, release, err := s.AcquireUpstreamKeySlots(t.Context(), fingerprints)
@@ -106,7 +106,7 @@ func TestUpstreamKeySharedAuthorityPartialFailurePreservesPeer(t *testing.T) {
 	first, second := config.UpstreamKeyFingerprint("first-fixture"), config.UpstreamKeyFingerprint("second-fixture")
 	cfg := upstreamKeyTestConfig(1, 1)
 	cfg.Gateway.UpstreamKeyConcurrency.Limits = map[string]int{first: 1, second: 1}
-	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(cfg, client)}
+	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(cfg, client, nil)}
 	_, peerRelease, err := s.AcquireUpstreamKeySlots(t.Context(), []string{second})
 	require.NoError(t, err)
 	require.NotNil(t, peerRelease)
@@ -158,7 +158,7 @@ func testUpstreamKeyCompetition(t *testing.T, client *redis.Client) {
 	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(nil)
 	const limit = 4
-	limiter := newUpstreamKeyLimiter(upstreamKeyTestConfig(1, limit), client)
+	limiter := newUpstreamKeyLimiter(upstreamKeyTestConfig(1, limit), client, nil)
 	var group sync.WaitGroup
 	results := make(chan *upstreamKeyLease, 32)
 	errors := make(chan error, 32)
@@ -185,10 +185,10 @@ func testUpstreamKeyCompetition(t *testing.T, client *redis.Client) {
 			require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
 		}
 	}
-	conflict := newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 8), client)
+	conflict := newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 8), client, nil)
 	_, err := conflict.acquire(ctx, fingerprint, cancel)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
-	shrink := newUpstreamKeyLimiter(upstreamKeyTestConfig(2, 1), client)
+	shrink := newUpstreamKeyLimiter(upstreamKeyTestConfig(2, 1), client, nil)
 	_, err = shrink.acquire(ctx, fingerprint, cancel)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity, "lowering policy retains existing occupancy")
 	_, err = limiter.acquire(ctx, fingerprint, cancel)
@@ -207,7 +207,7 @@ func TestUpstreamKeyLeaseLossCancelsRequest(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	limiter := newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), client)
+	limiter := newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), client, nil)
 	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(nil)
 	lease, err := limiter.acquire(ctx, config.UpstreamKeyFingerprint("supplier-fixture"), cancel)
@@ -232,7 +232,7 @@ func TestUpstreamKeyCredentialsAndFailureBoundaries(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), client)}
+	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), client, nil)}
 	_, finish, err := s.beginUpstreamKeyRequest(req)
 	require.NoError(t, err)
 	finish(nil, io.ErrUnexpectedEOF)
@@ -241,7 +241,7 @@ func TestUpstreamKeyCredentialsAndFailureBoundaries(t *testing.T) {
 	_, _, err = s.beginUpstreamKeyRequest(req)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
 	req.URL.Path = "/v1/responses"
-	s.upstreamKeyLimiter = newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), nil)
+	s.upstreamKeyLimiter = newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), nil, nil)
 	_, _, err = s.beginUpstreamKeyRequest(req)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy, "missing shared authority must fail closed")
 }
@@ -250,7 +250,7 @@ func TestUpstreamKeyCancellationReleasesOnlyOwnedLease(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 2), client)}
+	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 2), client, nil)}
 	fingerprint := config.UpstreamKeyFingerprint("supplier-fixture")
 	peerCtx, peerCancel := context.WithCancelCause(t.Context())
 	defer peerCancel(nil)

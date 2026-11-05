@@ -101,6 +101,12 @@ func provideRegionalConcurrencyCache(base service.ConcurrencyCache, rdb *redis.C
 	var l *slots.Local
 	if c.Mode == "primary" {
 		p = NewRegionalSlotAuthority(db)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := p.PublishUpstreamPolicy(ctx, cfg.Gateway.UpstreamKeyConcurrency)
+		cancel()
+		if err != nil {
+			return nil, errors.New("regional upstream key policy unavailable or conflicting")
+		}
 		p.GrantGuard = regionalGrantGuard(rdb, c)
 	} else {
 		if cfg.Runtime.Role != config.RuntimeRoleGateway || cfg.Runtime.RegionalAuthFile == "" || cfg.Runtime.RegionalSchedulerFile == "" {
@@ -183,7 +189,7 @@ func regionalLegacyGuard(rdb *redis.Client, c RegionalConcurrencyRuntimeConfig) 
 				}
 			}
 		}
-		for _, pattern := range []string{accountSlotKeyPrefix + "*", userSlotKeyPrefix + "*", apiKeySlotKeyPrefix + "*", liveAccountSlotKeyPrefix + "*", liveUserSlotKeyPrefix + "*", liveAPIKeySlotKeyPrefix + "*"} {
+		for _, pattern := range []string{accountSlotKeyPrefix + "*", userSlotKeyPrefix + "*", apiKeySlotKeyPrefix + "*", liveAccountSlotKeyPrefix + "*", liveUserSlotKeyPrefix + "*", liveAPIKeySlotKeyPrefix + "*", upstreamKeySlotKeyPrefix + "*"} {
 			var cursor uint64
 			for {
 				keys, next, err := rdb.Scan(ctx, cursor, pattern, 100).Result()
@@ -251,6 +257,13 @@ func (c *regionalConcurrencyCache) RunRegionalRuntime(ctx context.Context) {
 	for {
 		cycle, cancel := context.WithTimeout(ctx, 20*time.Second)
 		if c.broker != nil {
+			snapshot, err := c.brokerClient.UpstreamPolicy(cycle)
+			if err == nil {
+				err = c.local.InstallUpstreamPolicy(cycle, snapshot)
+			}
+			if err != nil {
+				slog.Warn("regional upstream key policy not refreshed")
+			}
 			for _, target := range c.runtimeConfig.Targets {
 				if err := c.broker.EnsureSlots(cycle, target.Resource, target.Capacity, time.Duration(c.runtimeConfig.LifetimeSeconds)*time.Second); err != nil {
 					slog.Warn("regional slot target not ready")

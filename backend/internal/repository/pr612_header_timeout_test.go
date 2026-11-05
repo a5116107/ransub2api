@@ -113,7 +113,7 @@ func TestPR612StaleReaderDisableControlsNextHTTPRequest(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			upstream := newHTTPUpstream(cfg, settings)
+			upstream := newHTTPUpstream(cfg, settings, nil, nil)
 			native := pr612NativeTransport(t, upstream)
 			// This is the actual next network request after the stale reader exits.
 			req, err := http.NewRequestWithContext(service.WithHTTPUpstreamProfile(ctx, service.HTTPUpstreamProfileOpenAI),
@@ -137,7 +137,7 @@ func TestPR612NilSettingsProviderUsesStaticTimeout(t *testing.T) {
 		cfg := &config.Config{}
 		cfg.Gateway.OpenAIResponseHeaderTimeout = seconds
 		cfg.Gateway.ResponseHeaderTimeout = 600
-		s, ok := ProvideHTTPUpstream(cfg, nil, nil).(*httpUpstreamService)
+		s, ok := ProvideHTTPUpstream(cfg, nil, nil, nil).(*httpUpstreamService)
 		require.True(t, ok)
 		require.Equal(t, time.Duration(seconds)*time.Second, s.applyProfilePoolSettings(poolSettings{}, service.HTTPUpstreamProfileOpenAI).responseHeaderTimeout)
 	}
@@ -190,7 +190,7 @@ func TestPR612RuntimeDisableRebuildsPoolAndPreservesActiveStream(t *testing.T) {
 	cfg.Gateway.OpenAIResponseHeaderTimeout = 1
 	cfg.Gateway.ResponseHeaderTimeout = 600
 	settings := service.NewSettingService(&pr612SettingRepo{}, cfg)
-	upstreamHTTP := newHTTPUpstream(cfg, settings)
+	upstreamHTTP := newHTTPUpstream(cfg, settings, nil, nil)
 	s := pr612NativeTransport(t, upstreamHTTP)
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
 	defer cancel()

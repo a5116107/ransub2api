@@ -2,10 +2,10 @@
 
 ## 恢复检查点
 
-- 任务：D2全局剩余；HTTP客户端turn-state出站归属与门票边界已验证，只本地提交，不运行CI、不推送/部署/生产迁移。
-- 源码：H盘唯一工作树，分支`work/monitor-driven-scheduling`，本轮起点`b00c535`；交付身份以`git log -1`及状态为准。
-- 最近证据：HTTP客户端归属专项20轮4.801s、race三轮4.367s；完整service339.003s/handler146.082s/routes17.126s、vet、完整service lint 0 issues、默认入口1.400s编译通过，顺序退出0。无本轮活跃验证句柄。
-- 下一动作：继续D2 Live/区域共享额度及其他协议缓存域、跨协议来源，再接D3/D4；不以托管缓存子任务替代父验收。
+- 任务：D2区域共享Key本地验收及收尾完成，待本地提交；独立身份、SQL共用预算、策略同步、HTTP/WS持有期与缩减恢复已验证。不运行CI、不推送/部署/生产迁移。
+- 源码：H盘唯一工作树，分支`work/monitor-driven-scheduling`，本轮起点`161b3fb`；交付身份以`git log -1`及状态为准。
+- 最近证据：冻结cf29c626源码组合125.255s、58顶层无skip/fail；race99.177s、vet、默认入口、迁移包与目标包lint通过。恢复核对config1.826s、slots0.637s及control编译通过；无活跃验证句柄。
+- 下一动作：D2 Live持久交接及其他协议缓存域/跨协议来源，再接D3/D4；区域子范围完成不替代D2父验收。
 - 等待：无新增外部阻塞；Windows符号链接权限及历史清理审批由原拥有者解除。原20项12 done、3 in_progress、5 pending，父done增量0。
 
 ## 目标与入口
@@ -20,7 +20,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、最终HTTP/WS与多协议发送绑定、公共共享Key重复摘要及回收恢复已验证；桥接线路/过期及生效模型/fast托管缓存、HTTP客户端状态归属完成；跨协议来源、Live/区域及完整缓存域待验收 |
+| D2 | in_progress | D2.1–D2.4、最终HTTP/WS与多协议发送绑定、公共共享Key重复摘要及回收恢复已验证；桥接线路/过期及生效模型/fast托管缓存、HTTP客户端状态归属完成；区域共享Key身份/SQL预算/HTTP/WS及缩减恢复完成；跨协议来源、Live及完整缓存域待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -46,15 +46,13 @@
 - 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包、unit标签、并发2、8分钟与原规则。
 - 真实Redis仅进程PATH前置`H:/Root/tools/redis/5.0.14.1`；真实SQL须进程环境指向隔离PostgreSQL，不打印DSN。
 - 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个PNG共1164bytes保留，不纳入任务提交。
-- 42df0d6：旧13失败子例复现；续接专项20轮3.807s、race三轮2.797s通过；完整service338.873s/handler148.465s/routes12.189s、三范围vet通过。
-- 42df0d6完整service lint首次超时退出4保留；进程内GOMEMLIMIT=4GiB/GOGC=50后0 issues且退出0，默认入口编译1.448s通过。历史证据只证明对应源码，全部详情见DECISIONS。
-- 本轮托管缓存模型/服务档：最终专项20轮5.441s、race三轮4.758s、完整service351.849s/handler143.960s/routes12.087s、vet通过；完整service lint 0 issues且退出0，默认入口缓存编译通过。旧失败/夹具修正见DECISIONS。
-- 本轮HTTP客户端状态归属：旧14例失败复现，最终20轮4.801s、race三轮4.367s；完整service339.003s/handler146.082s/routes17.126s、vet通过；完整service lint 0 issues、默认入口编译1.400s通过，门票原规则保留。
+- 42df0d6/b00c535/161b3fb：线路/模型/服务档与HTTP客户端状态归属已验证；专项、race、完整service/handler/routes、vet、lint与默认入口的准确证据见DECISIONS，不能代替本轮源码验证。
+- 本轮区域共享Key：64竞争/公共租约和原WS失败组合就绪池三轮55.387s；最终58顶层125.255s、race99.177s、vet、默认入口1.454s、迁移包1.465s、完整config/regional/repository lint 0 issues，实际顺序退出0。冷建连和生产升级不计通过。
 - 不新增平行台账、配置或缓存实现，不用账号运营组充当Key额度键/缓存域证据。C盘副本统计effb8271不计主线完成数，开发统一在H盘。
 
 ## 下一项工作
 
-依序完成D2 Live/区域共享额度及其他协议缓存域、跨协议来源，补D3作用域和D4模型/fast来源；随后D5–D7、D8、D9。现有Live/区域保守拒绝保留，不把“拒绝”视作完整接线验收。
+依序完成D2 Live及其他协议缓存域、跨协议来源，补D3作用域和D4模型/fast来源；随后D5–D7、D8、D9。Live保守拒绝保留；区域共享额度使用同一SQL预算和受信任策略，不以局部测试替代混合版本升级或生产验收。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理
@@ -63,3 +61,4 @@
 - 历史删除被审批`blocked by policy`拒绝，不换工具绕过。`backend/bin`三文件：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共132004965bytes；lint仍使用。解除：拥有者按准确路径手动清理可回收产物。
 - `backend/tmp/admin-key-pg-d8`删除同被拒绝；既有隔离实例由原拥有者管理，不启动/停止。测试schema已清零；解除：资源拥有者停止实例并手动清理准确目录。
 - `backend/tmp/availability-non5xx-regression`4文件73491bytes，旧源码overlay验证完成，删除被拒绝；解除：拥有者手动删除准确目录。
+- `backend/tmp/regional-key-pg`停止及删除的整条命令被自动审批`blocked by policy`拒绝，未执行；恢复确认55449实例PID12708仍运行。保留该独立夹具，拥有者停止并手动清理；不改用其他工具绕过。

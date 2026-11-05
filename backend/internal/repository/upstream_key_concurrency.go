@@ -2,9 +2,6 @@ package repository
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,12 +10,14 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 const upstreamKeyPolicyKey = "concurrency:upstream_key:policy"
+const upstreamKeySlotKeyPrefix = "concurrency:upstream_key:slots:"
 const upstreamKeyLeaseTTL = 30 * time.Second
 const upstreamKeyLeaseValidFor = 19 * time.Second
 const upstreamKeyRenewInterval = 5 * time.Second
@@ -61,39 +60,37 @@ return 1
 `)
 
 type upstreamKeyLimiter struct {
-	rdb     *redis.Client
-	policy  config.UpstreamKeyConcurrencyConfig
-	encoded string
-	digest  string
-	err     error
+	rdb      *redis.Client
+	regional *regionalConcurrencyCache
+	policy   config.UpstreamKeyConcurrencyConfig
+	encoded  string
+	digest   string
+	err      error
 }
 
-func newUpstreamKeyLimiter(cfg *config.Config, rdb *redis.Client) *upstreamKeyLimiter {
-	if cfg == nil || !cfg.Gateway.UpstreamKeyConcurrency.Configured() {
+func newUpstreamKeyLimiter(cfg *config.Config, rdb *redis.Client, cache service.ConcurrencyCache) *upstreamKeyLimiter {
+	regional, _ := cache.(*regionalConcurrencyCache)
+	if cfg == nil || (!cfg.Gateway.UpstreamKeyConcurrency.Configured() && regional == nil && cfg.Runtime.RegionalConcurrencyFile == "" && cfg.Runtime.RegionalSchedulerFile == "") {
 		return nil
 	}
-	l := &upstreamKeyLimiter{rdb: rdb, policy: cfg.Gateway.UpstreamKeyConcurrency}
+	l := &upstreamKeyLimiter{rdb: rdb, regional: regional, policy: cfg.Gateway.UpstreamKeyConcurrency}
 	l.err = l.policy.Validate()
-	if cfg.Runtime.RegionalConcurrencyFile != "" || cfg.Runtime.RegionalSchedulerFile != "" || rdb == nil {
+	if regional == nil && (cfg.Runtime.RegionalConcurrencyFile != "" || cfg.Runtime.RegionalSchedulerFile != "" || rdb == nil) {
 		l.err = service.ErrUpstreamKeyPolicy
 	}
-	limits := l.policy.Limits
-	if limits == nil {
-		limits = map[string]int{}
-	}
-	encoded, err := json.Marshal(limits)
+	encoded, digest, err := l.policy.EncodeLimits()
 	if err != nil {
 		l.err = err
 	}
 	l.encoded = string(encoded)
-	digest := sha256.Sum256(encoded)
-	l.digest = hex.EncodeToString(digest[:])
+	l.digest = digest
 	return l
 }
 
 type upstreamKeyLease struct {
 	limiter  *upstreamKeyLimiter
 	key      string
+	resource slots.Resource
 	member   string
 	cancel   context.CancelCauseFunc
 	stop     context.CancelFunc
@@ -108,14 +105,21 @@ func (l *upstreamKeyLimiter) acquire(ctx context.Context, fingerprint string, ca
 	if l.err != nil {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	key := "concurrency:upstream_key:slots:" + fingerprint
+	key := upstreamKeySlotKeyPrefix + fingerprint
 	member := uuid.NewString()
 	started := time.Now()
 	opCtx, stop := context.WithTimeout(ctx, 2*time.Second)
-	result, err := acquireUpstreamKeyScript.Run(opCtx, l.rdb, []string{upstreamKeyPolicyKey, key}, l.policy.Revision, l.digest, l.encoded, fingerprint, member, upstreamKeyLeaseTTL.Milliseconds()).Int()
+	var result int
+	var resource slots.Resource
+	var err error
+	if l.regional != nil {
+		resource, result, err = l.regional.acquireUpstreamKeySlot(opCtx, l.policy.Revision, l.digest, fingerprint, member)
+	} else {
+		result, err = acquireUpstreamKeyScript.Run(opCtx, l.rdb, []string{upstreamKeyPolicyKey, key}, l.policy.Revision, l.digest, l.encoded, fingerprint, member, upstreamKeyLeaseTTL.Milliseconds()).Int()
+	}
 	stop()
 	if err != nil {
-		l.release(key, member)
+		l.release(resource, key, member)
 		return nil, service.ErrUpstreamKeyPolicy
 	}
 	if result == -1 {
@@ -128,11 +132,11 @@ func (l *upstreamKeyLimiter) acquire(ctx context.Context, fingerprint string, ca
 		return nil, nil
 	}
 	if result != 1 {
-		l.release(key, member)
+		l.release(resource, key, member)
 		return nil, service.ErrUpstreamKeyPolicy
 	}
 	workerCtx, workerStop := context.WithCancel(context.Background())
-	lease := &upstreamKeyLease{limiter: l, key: key, member: member, cancel: cancel, stop: workerStop, done: make(chan struct{})}
+	lease := &upstreamKeyLease{limiter: l, key: key, resource: resource, member: member, cancel: cancel, stop: workerStop, done: make(chan struct{})}
 	lease.watchdog = time.AfterFunc(time.Until(started.Add(upstreamKeyLeaseValidFor)), lease.lose)
 	go lease.renew(workerCtx)
 	if ctx.Err() != nil || time.Since(started) >= upstreamKeyLeaseValidFor {
@@ -163,7 +167,17 @@ func (l *upstreamKeyLease) renew(ctx context.Context) {
 		case <-ticker.C:
 			started := time.Now()
 			opCtx, stop := context.WithTimeout(ctx, time.Second)
-			exists, err := refreshUpstreamKeyScript.Run(opCtx, l.limiter.rdb, []string{l.key}, l.member, upstreamKeyLeaseTTL.Milliseconds()).Int()
+			var exists int
+			var err error
+			if l.limiter.regional != nil {
+				var held bool
+				held, err = l.limiter.regional.upstreamKeyHeld(opCtx, l.resource, l.member)
+				if held {
+					exists = 1
+				}
+			} else {
+				exists, err = refreshUpstreamKeyScript.Run(opCtx, l.limiter.rdb, []string{l.key}, l.member, upstreamKeyLeaseTTL.Milliseconds()).Int()
+			}
 			stop()
 			if err == nil && exists == 0 {
 				l.lose()
@@ -180,10 +194,19 @@ func (l *upstreamKeyLease) renew(ctx context.Context) {
 	}
 }
 
-func (l *upstreamKeyLimiter) release(key, member string) {
+func (l *upstreamKeyLimiter) release(resource slots.Resource, key, member string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := l.rdb.ZRem(ctx, key, member).Err(); err != nil {
+	var err error
+	if l.regional != nil {
+		if resource.Kind == "" {
+			return
+		}
+		err = l.regional.releaseUpstreamKeySlot(ctx, resource, member)
+	} else {
+		err = l.rdb.ZRem(ctx, key, member).Err()
+	}
+	if err != nil {
 		slog.Warn("upstream_key_slot_release_failed")
 	}
 }
@@ -196,7 +219,7 @@ func (l *upstreamKeyLease) release() {
 		l.mu.Unlock()
 		l.stop()
 		<-l.done
-		l.limiter.release(l.key, l.member)
+		l.limiter.release(l.resource, l.key, l.member)
 	})
 }
 

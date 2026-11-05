@@ -17,6 +17,7 @@ import (
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -32,6 +33,10 @@ func (r upstreamKeyWSAccounts) GetOpenAITurnAdmission(context.Context, int64) (*
 }
 
 func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
+	testUpstreamKeyNativeWebSocketSharedLifetime(t, "redis")
+}
+
+func testUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T, authorityMode string) {
 	gin.SetMode(gin.TestMode)
 	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
 	defer cancel()
@@ -105,9 +110,9 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	account := &service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 8,
 		Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
-	httpPort := newHTTPUpstream(cfg, nil, rdb)
+	cache, heldCount, loseLease := upstreamKeyWSAuthority(t, cfg, rdb, authorityMode)
+	httpPort := newHTTPUpstream(cfg, nil, rdb, cache)
 	svc := service.NewOpenAIGatewayService(upstreamKeyWSAccounts{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, httpPort, nil, nil, nil, nil, nil, nil, nil, nil)
-	key := "concurrency:upstream_key:slots:" + config.UpstreamKeyFingerprint("supplier-fixture")
 	type outcome struct {
 		result *service.OpenAIForwardResult
 		err    error
@@ -146,8 +151,8 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 			cancelTurn()
 			t.Fatal("native WS request did not start")
 		}
-		require.EqualValues(t, 1, rdb.ZCard(ctx, key).Val())
-		other := newHTTPUpstream(cfg, nil, rdb)
+		require.EqualValues(t, 1, heldCount(ctx))
+		other := newHTTPUpstream(cfg, nil, rdb, cache)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader("{}"))
 		require.NoError(t, err)
 		req.Header.Set("Authorization", "Bearer supplier-fixture")
@@ -160,7 +165,7 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 		} else if turn == 3 {
 			cancelTurn()
 		} else {
-			require.NoError(t, rdb.Del(ctx, key).Err())
+			require.NoError(t, loseLease(ctx))
 		}
 		select {
 		case out := <-outcomes:
@@ -180,7 +185,7 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 			t.Fatal("native WS turn did not finish")
 		}
 		cancelTurn()
-		require.Eventually(t, func() bool { return rdb.ZCard(ctx, key).Val() == 0 }, time.Second, 10*time.Millisecond)
+		require.Eventually(t, func() bool { return heldCount(ctx) == 0 }, time.Second, 10*time.Millisecond)
 		if turn > 2 {
 			select {
 			case <-closed:
@@ -196,12 +201,12 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 func TestUpstreamKeyWebSocketIngressSharedLifetime(t *testing.T) {
 	for _, mode := range []string{service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough} {
 		for _, loss := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/lease_loss=%t", mode, loss), func(t *testing.T) { testUpstreamKeyWSIngressLifetime(t, mode, loss) })
+			t.Run(fmt.Sprintf("%s/lease_loss=%t", mode, loss), func(t *testing.T) { testUpstreamKeyWSIngressLifetime(t, mode, loss, "redis") })
 		}
 	}
 }
 
-func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
+func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool, authorityMode string) {
 	gin.SetMode(gin.TestMode)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -301,7 +306,8 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
 	account := &service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 8,
 		Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
 	account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
-	httpPort := newHTTPUpstream(cfg, nil, rdb)
+	cache, heldCount, loseLease := upstreamKeyWSAuthority(t, cfg, rdb, authorityMode)
+	httpPort := newHTTPUpstream(cfg, nil, rdb, cache)
 	svc := service.NewOpenAIGatewayService(upstreamKeyWSAccounts{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, httpPort, nil, nil, nil, nil, nil, nil, nil, nil)
 	t.Cleanup(svc.CloseOpenAIWSPool)
 	turns := make(chan *service.OpenAIForwardResult, 4)
@@ -327,7 +333,6 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
 	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(ingress.URL, "http"), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	key := "concurrency:upstream_key:slots:" + config.UpstreamKeyFingerprint("supplier-fixture")
 	for turn := 1; turn <= 2; turn++ {
 		require.NoError(t, conn.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","input":"hello"}`)))
 		select {
@@ -335,10 +340,10 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
 		case <-ctx.Done():
 			t.Fatal("WS ingress did not start its turn")
 		}
-		require.EqualValues(t, 1, rdb.ZCard(ctx, key).Val())
+		require.EqualValues(t, 1, heldCount(ctx))
 		// A separate account/client using the same actual credential cannot
 		// multiply capacity while the WS turn holds its HTTP response.
-		other := newHTTPUpstream(cfg, nil, rdb)
+		other := newHTTPUpstream(cfg, nil, rdb, cache)
 		req, buildErr := http.NewRequestWithContext(ctx, http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader("{}"))
 		require.NoError(t, buildErr)
 		req.Header.Set("Authorization", "Bearer supplier-fixture")
@@ -366,7 +371,7 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
 		case <-ctx.Done():
 			t.Fatal("missing turn completion")
 		}
-		require.Zero(t, rdb.ZCard(ctx, key).Val(), "idle WS must release the shared slot")
+		require.Zero(t, heldCount(ctx), "idle WS must release the shared slot")
 	}
 	// Interrupt an active third turn; idle sockets hold no shared capacity.
 	require.NoError(t, conn.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","input":"cancel"}`)))
@@ -375,9 +380,9 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
 	case <-ctx.Done():
 		t.Fatal("third turn did not start")
 	}
-	require.EqualValues(t, 1, rdb.ZCard(ctx, key).Val())
+	require.EqualValues(t, 1, heldCount(ctx))
 	if loss {
-		require.NoError(t, rdb.Del(ctx, key).Err())
+		require.NoError(t, loseLease(ctx))
 	} else {
 		cancel()
 	}
@@ -390,7 +395,10 @@ func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool) {
 	case <-time.After(waitBudget):
 		t.Fatal("cancellation or lease loss did not stop the upstream request")
 	}
-	require.Eventually(t, func() bool { return rdb.ZCard(t.Context(), key).Val() == 0 }, 3*time.Second, 10*time.Millisecond)
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		require.Zero(collect, heldCount(t.Context()), "active upstream ownership must be released")
+		require.EqualValues(collect, 3, requests.Load(), "lease loss must not replay an admitted turn")
+	}, 3*time.Second, 10*time.Millisecond)
 	require.NoError(t, conn.CloseNow())
 	select {
 	case err := <-errors:

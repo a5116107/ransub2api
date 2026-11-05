@@ -199,29 +199,25 @@ type httpUpstreamService struct {
 // 返回:
 //   - service.HTTPUpstream 接口实现
 func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
-	return newHTTPUpstream(cfg, nil)
+	return newHTTPUpstream(cfg, nil, nil, nil)
 }
 
 // ProvideHTTPUpstream wires the admin-configurable OpenAI response-header
 // timeout provider. Tests and lightweight callers can keep using
 // NewHTTPUpstream, which falls back to the static config.
-func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService, rdb *redis.Client) service.HTTPUpstream {
+func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService, rdb *redis.Client, cache service.ConcurrencyCache) service.HTTPUpstream {
 	if settings == nil {
-		return newHTTPUpstream(cfg, nil, rdb)
+		return newHTTPUpstream(cfg, nil, rdb, cache)
 	}
 	// Warm the cache before the first OpenAI request; the transport reads it
 	// synchronously when it builds a client pool.
 	go settings.GetOpenAIResponseHeaderTimeoutCached(context.Background())
-	return newHTTPUpstream(cfg, settings, rdb)
+	return newHTTPUpstream(cfg, settings, rdb, cache)
 }
 
-func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutProvider, clients ...*redis.Client) service.HTTPUpstream {
-	var rdb *redis.Client
-	if len(clients) > 0 {
-		rdb = clients[0]
-	}
+func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutProvider, rdb *redis.Client, cache service.ConcurrencyCache) service.HTTPUpstream {
 	s := &httpUpstreamService{
-		upstreamKeyLimiter:                  newUpstreamKeyLimiter(cfg, rdb),
+		upstreamKeyLimiter:                  newUpstreamKeyLimiter(cfg, rdb, cache),
 		cfg:                                 cfg,
 		openAIResponseHeaderTimeoutProvider: provider,
 		clients:                             make(map[string]*upstreamClientEntry),
