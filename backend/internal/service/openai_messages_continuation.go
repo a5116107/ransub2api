@@ -20,6 +20,13 @@ type openAICompatCacheScope struct {
 	ServiceTier string
 }
 
+func openAICompatCacheScopeFromBody(body []byte) openAICompatCacheScope {
+	return openAICompatCacheScope{
+		Model:       strings.TrimSpace(gjson.GetBytes(body, "model").String()),
+		ServiceTier: normalizedOpenAIServiceTierValue(gjson.GetBytes(body, "service_tier").String()),
+	}
+}
+
 type openAICompatSessionResponseBinding struct {
 	CacheScope           openAICompatCacheScope
 	RouteFingerprint     [32]byte

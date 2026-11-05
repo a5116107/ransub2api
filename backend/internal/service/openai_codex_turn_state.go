@@ -15,15 +15,17 @@ import (
 // codex-api/src/sse/responses.rs 与 endpoint/compact.rs）。
 const openAICodexTurnStateHeader = "x-codex-turn-state"
 
-// turn-state blob 是上游在"出站身份"（含 #5553 指纹收敛改写后的
-// installation/session/thread 标识）下铸造的，同账号回放自洽；跨账号回放
-// （failover 换号后客户端仍回带旧账号的 blob）是代理链独有、真实 Codex
-// 永远不会产生的矛盾信号。溯源表记录每个下游会话最近一次铸造该 blob 的
-// 账号，出站守卫据此剥离已知异账号的回带值。
+// Provenance follows the final egress contract, not just a reusable account ID.
+// Capture it during request construction: account settings can change while a
+// response is in flight, and must not relabel that response as the new route.
 type openAICodexTurnStateOrigin struct {
-	accountID int64
-	expiresAt time.Time
+	accountID        int64
+	routeFingerprint [32]byte
+	cacheScope       openAICompatCacheScope
+	expiresAt        time.Time
 }
+
+const openAICodexTurnStateEgressKey = "_openai_codex_turn_state_egress"
 
 // openAICodexTurnStateSeed 返回溯源表键：API Key + 客户端原始会话标识。
 // 客户端会话标识取自请求头（与指纹收敛的 thread 派生同源，见
@@ -99,7 +101,7 @@ func extractOpenAICodexTurnState(upstream http.Header) string {
 	return strings.TrimSpace(upstream.Get(openAICodexTurnStateHeader))
 }
 
-// noteOpenAICodexTurnStateProvenance 记录（下游会话 → 铸造账号）。
+// noteOpenAICodexTurnStateProvenance records the committed response egress.
 func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account) {
 	if s == nil || account == nil || account.ID <= 0 {
 		return
@@ -108,19 +110,34 @@ func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context
 	if seed == "" {
 		return
 	}
-	s.openaiCodexTurnStateOrigins.Store(seed, openAICodexTurnStateOrigin{
-		accountID: account.ID,
-		expiresAt: time.Now().Add(s.openAIWSSessionStickyTTL()),
-	})
+	origin := openAICodexTurnStateOrigin{
+		accountID:        account.ID,
+		routeFingerprint: AccountRouteFingerprint(account),
+	}
+	if raw, ok := c.Get(openAICodexTurnStateEgressKey); ok {
+		if egress, ok := raw.(openAICodexTurnStateOrigin); ok && egress.accountID == account.ID {
+			origin = egress
+		}
+	}
+	origin.expiresAt = time.Now().Add(s.openAIWSSessionStickyTTL())
+	s.openaiCodexTurnStateOrigins.Store(seed, origin)
 	s.sweepOpenAICodexTurnStateOrigins()
 }
 
-// guardOpenAICodexTurnStateEcho 出站守卫：客户端回带的 turn-state 若已知由
-// 其他账号铸造则剥离，同账号或无溯源记录时保持原样。跨账号剥离之后，
-// applyOpenAICodexTicket 会按 (账号, 模型) 覆盖为已捕获的 292 门票。
-func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, account *Account, h http.Header) {
+// guardOpenAICodexTurnStateEcho strips a known foreign account/route/model/tier
+// echo. Unknown provenance retains the existing passthrough behavior. The
+// independent Codex ticket layer can subsequently supply its own valid ticket.
+func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, account *Account, h http.Header, cacheScope openAICompatCacheScope) {
 	if s == nil || h == nil || account == nil {
 		return
+	}
+	egress := openAICodexTurnStateOrigin{
+		accountID:        account.ID,
+		routeFingerprint: AccountRouteFingerprint(account),
+		cacheScope:       cacheScope,
+	}
+	if c != nil {
+		c.Set(openAICodexTurnStateEgressKey, egress)
 	}
 	if strings.TrimSpace(h.Get(openAICodexTurnStateHeader)) == "" {
 		return
@@ -139,10 +156,10 @@ func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, acc
 		return
 	}
 	if !origin.expiresAt.IsZero() && time.Now().After(origin.expiresAt) {
-		s.openaiCodexTurnStateOrigins.Delete(seed)
+		s.openaiCodexTurnStateOrigins.CompareAndDelete(seed, origin)
 		return
 	}
-	if origin.accountID != account.ID {
+	if origin.accountID != egress.accountID || origin.routeFingerprint != egress.routeFingerprint || origin.cacheScope != egress.cacheScope {
 		h.Del(openAICodexTurnStateHeader)
 	}
 }
@@ -156,8 +173,10 @@ func (s *OpenAIGatewayService) sweepOpenAICodexTurnStateOrigins() {
 	now := time.Now()
 	s.openaiCodexTurnStateOrigins.Range(func(key, value any) bool {
 		origin, ok := value.(openAICodexTurnStateOrigin)
-		if !ok || (!origin.expiresAt.IsZero() && now.After(origin.expiresAt)) {
+		if !ok {
 			s.openaiCodexTurnStateOrigins.Delete(key)
+		} else if !origin.expiresAt.IsZero() && now.After(origin.expiresAt) {
+			s.openaiCodexTurnStateOrigins.CompareAndDelete(key, origin)
 		}
 		return true
 	})

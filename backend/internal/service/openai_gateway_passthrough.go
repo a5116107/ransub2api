@@ -485,8 +485,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 
 		// x-codex-turn-state 溯源：下游回传由 writeOpenAIPassthroughResponseHeaders
-		// 在各 handler 的写头点强制放行，铸造账号在此统一记录，供出站守卫剥离
-		// failover 换号后的跨账号回带（openai_codex_turn_state.go）。
+		// 在各 handler 的写头点强制放行，本次构造捕获的出站归属在此记录，
+		// 供出站守卫剥离已知跨归属回带（openai_codex_turn_state.go）。
 		if extractOpenAICodexTurnState(resp.Header) != "" {
 			s.noteOpenAICodexTurnStateProvenance(c, account)
 		}
@@ -712,9 +712,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		}
 	}
 
-	// 客户端回带的 x-codex-turn-state 若已知由其他账号铸造（failover 换号），
-	// 剥离后再出站（openai_codex_turn_state.go）。
-	s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
+	// 按本次实际出站的账号/线路/模型/档位校验已知 turn-state 归属，
+	// 并捕获证据供响应记录；独立门票仍走后续原认证逻辑。
+	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(body))
 	if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
 		return nil, err
 	}

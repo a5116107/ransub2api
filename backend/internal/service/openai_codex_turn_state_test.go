@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,7 +124,7 @@ func TestStagedTurnState_AbandonedAttemptDoesNotPoisonProvenance(t *testing.T) {
 	// 客户端回带的 blob 来自 B，出站到 B 时不得被剥离
 	h := http.Header{}
 	h.Set("x-codex-turn-state", "blob-A")
-	svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 52}, h)
+	svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 52}, h, openAICompatCacheScope{})
 	require.Equal(t, "blob-A", h.Get("x-codex-turn-state"))
 
 	raw, ok := svc.openaiCodexTurnStateOrigins.Load("11\x00sess-abandoned")
@@ -161,7 +162,7 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 		svc.relayOpenAICodexTurnState(c, &Account{ID: 42}, upstream)
 
 		h := newOutbound("blob-A")
-		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 42}, h)
+		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 42}, h, openAICompatCacheScope{})
 		require.Equal(t, "blob-A", h.Get("x-codex-turn-state"))
 	})
 
@@ -174,7 +175,7 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 
 		// failover 换到账号 43：blob 由 42 铸造，必须剥离
 		h := newOutbound("blob-A")
-		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
+		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h, openAICompatCacheScope{})
 		require.Empty(t, h.Get("x-codex-turn-state"))
 	})
 
@@ -182,7 +183,7 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 		svc := &OpenAIGatewayService{}
 		c, _ := newTurnStateTestContext(t, 7, "sess-g3")
 		h := newOutbound("blob-unknown")
-		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
+		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h, openAICompatCacheScope{})
 		require.Equal(t, "blob-unknown", h.Get("x-codex-turn-state"))
 	})
 
@@ -194,7 +195,7 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 			expiresAt: time.Now().Add(-time.Minute),
 		})
 		h := newOutbound("blob-A")
-		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
+		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h, openAICompatCacheScope{})
 		require.Equal(t, "blob-A", h.Get("x-codex-turn-state"))
 		_, ok := svc.openaiCodexTurnStateOrigins.Load("7\x00sess-g4")
 		require.False(t, ok)
@@ -204,7 +205,7 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 		svc := &OpenAIGatewayService{}
 		c, _ := newTurnStateTestContext(t, 7, "")
 		h := newOutbound("blob-A")
-		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
+		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h, openAICompatCacheScope{})
 		require.Equal(t, "blob-A", h.Get("x-codex-turn-state"))
 	})
 
@@ -212,7 +213,7 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 		svc := &OpenAIGatewayService{}
 		c, _ := newTurnStateTestContext(t, 7, "sess-g5")
 		h := newOutbound("")
-		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
+		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h, openAICompatCacheScope{})
 		require.Empty(t, h.Get("x-codex-turn-state"))
 	})
 }
@@ -393,4 +394,151 @@ func TestBuildOpenAIWSHeaders_CarriesSessionBetaFeatures(t *testing.T) {
 	apiKeyHeaders := build(t, &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, "")
 	require.Empty(t, apiKeyHeaders.Get("x-codex-beta-features"),
 		"非 Codex 后端不注入")
+}
+
+func TestCodexTurnStateEgressRejectsChangedRouteOrScope(t *testing.T) {
+	for _, path := range []string{"responses", "passthrough"} {
+		for _, change := range []string{"same", "key", "base_url", "protocol", "proxy", "model", "tier", "oauth_refresh", "oauth_account"} {
+			t.Run(path+"/"+change, func(t *testing.T) {
+				svc := &OpenAIGatewayService{cfg: &config.Config{}}
+				account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "original-fixture", "base_url": "https://first.invalid/v1"}}
+				if change == "oauth_refresh" || change == "oauth_account" {
+					account.Type = AccountTypeOAuth
+					account.Credentials = map[string]any{"access_token": "original-access", "refresh_token": "original-refresh", "chatgpt_account_id": "original-account"}
+				}
+				build := func(c *gin.Context, body []byte) *http.Request {
+					t.Helper()
+					var req *http.Request
+					var err error
+					if path == "responses" {
+						req, err = svc.buildUpstreamRequest(t.Context(), c, account, body, "fixture-token", true, "fixture-session", false)
+					} else {
+						req, err = svc.buildUpstreamRequestOpenAIPassthrough(t.Context(), c, account, body, "fixture-token")
+					}
+					require.NoError(t, err)
+					return req
+				}
+				body := []byte(`{"model":"gpt-5.3-codex","input":[],"stream":true}`)
+				first, _ := newTurnStateTestContext(t, 7, "same-session")
+				build(first, body)
+				upstream := http.Header{}
+				upstream.Set(openAICodexTurnStateHeader, "original-state")
+				svc.relayOpenAICodexTurnState(first, account, upstream)
+				switch change {
+				case "key":
+					account.Credentials["api_key"] = "replacement-fixture"
+				case "base_url":
+					account.Credentials["base_url"] = "https://second.invalid/v1"
+				case "protocol":
+					account.Credentials["api_protocol"] = APIProtocolChatCompletions
+				case "proxy":
+					id := int64(5)
+					account.ProxyID = &id
+				case "model":
+					body = []byte(`{"model":"gpt-5.4","input":[],"stream":true}`)
+				case "tier":
+					body = []byte(`{"model":"gpt-5.3-codex","service_tier":"priority","input":[],"stream":true}`)
+				case "oauth_refresh":
+					account.Credentials["access_token"] = "renewed-access"
+					account.Credentials["refresh_token"] = "renewed-refresh"
+				case "oauth_account":
+					account.Credentials["chatgpt_account_id"] = "replacement-account"
+				}
+				next, _ := newTurnStateTestContext(t, 7, "same-session")
+				next.Request.Header.Set(openAICodexTurnStateHeader, "original-state")
+				req := build(next, body)
+				if change == "same" || change == "oauth_refresh" {
+					require.Equal(t, "original-state", req.Header.Get(openAICodexTurnStateHeader))
+				} else {
+					require.Empty(t, req.Header.Get(openAICodexTurnStateHeader))
+				}
+				upstream.Set(openAICodexTurnStateHeader, "recovered-state")
+				svc.relayOpenAICodexTurnState(next, account, upstream)
+				recovered, _ := newTurnStateTestContext(t, 7, "same-session")
+				recovered.Request.Header.Set(openAICodexTurnStateHeader, "recovered-state")
+				require.Equal(t, "recovered-state", build(recovered, body).Header.Get(openAICodexTurnStateHeader))
+			})
+		}
+	}
+}
+
+func TestCodexTurnStateProvenanceUsesCapturedEgress(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "staged"}[staged], func(t *testing.T) {
+			svc := &OpenAIGatewayService{}
+			account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "original-fixture"}}
+			scope := openAICompatCacheScope{Model: "gpt-5.3-codex", ServiceTier: "priority"}
+			fingerprint := AccountRouteFingerprint(account)
+			c, _ := newTurnStateTestContext(t, 7, "in-flight")
+			svc.guardOpenAICodexTurnStateEcho(c, account, http.Header{}, scope)
+			account.Credentials["api_key"] = "replacement-fixture"
+			response := http.Header{}
+			response.Set(openAICodexTurnStateHeader, "state-from-original-route")
+			if staged {
+				var headers http.Header
+				stageOpenAICodexTurnState(&headers, response)
+				_, exists := svc.openaiCodexTurnStateOrigins.Load(openAICodexTurnStateSeed(c))
+				require.False(t, exists)
+				svc.noteStagedOpenAICodexTurnStateCommitted(c, account, headers)
+			} else {
+				svc.relayOpenAICodexTurnState(c, account, response)
+			}
+			raw, ok := svc.openaiCodexTurnStateOrigins.Load(openAICodexTurnStateSeed(c))
+			require.True(t, ok)
+			origin, ok := raw.(openAICodexTurnStateOrigin)
+			require.True(t, ok)
+			require.Equal(t, fingerprint, origin.routeFingerprint)
+			require.Equal(t, scope, origin.cacheScope)
+			next, _ := newTurnStateTestContext(t, 7, "in-flight")
+			header := http.Header{}
+			header.Set(openAICodexTurnStateHeader, "state-from-original-route")
+			svc.guardOpenAICodexTurnStateEcho(next, account, header, scope)
+			require.Empty(t, header.Get(openAICodexTurnStateHeader))
+			account.Credentials["api_key"] = "original-fixture"
+			header.Set(openAICodexTurnStateHeader, "state-from-original-route")
+			svc.guardOpenAICodexTurnStateEcho(next, account, header, scope)
+			require.Equal(t, "state-from-original-route", header.Get(openAICodexTurnStateHeader))
+		})
+	}
+}
+
+func TestCodexTurnStateConcurrentOriginsDoNotAllowForeignScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newContext := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		c.Request.Header.Set("session_id", "concurrent-session")
+		c.Set("api_key", &APIKey{ID: 7})
+		return c
+	}
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	var wg sync.WaitGroup
+	failures := make(chan struct{}, 400)
+	for worker := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scope := openAICompatCacheScope{Model: "gpt-5.3-codex"}
+			if worker%2 != 0 {
+				scope.ServiceTier = "priority"
+			}
+			for range 100 {
+				c := newContext()
+				svc.guardOpenAICodexTurnStateEcho(c, account, http.Header{}, scope)
+				response := http.Header{}
+				response.Set(openAICodexTurnStateHeader, "fixture-state")
+				svc.relayOpenAICodexTurnState(c, account, response)
+				next := newContext()
+				echo := response.Clone()
+				svc.guardOpenAICodexTurnStateEcho(next, account, echo, openAICompatCacheScope{Model: "foreign-model"})
+				if echo.Get(openAICodexTurnStateHeader) != "" {
+					failures <- struct{}{}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(failures)
+	require.Empty(t, failures)
 }

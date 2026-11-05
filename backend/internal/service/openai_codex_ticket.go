@@ -784,9 +784,6 @@ func (s *OpenAIGatewayService) applyOpenAICodexTicket(ctx context.Context, accou
 		return nil
 	}
 	if openAICodexSkipHarvest(account) {
-		return nil
-	}
-	if openAICodexSkipHarvest(account) {
 		// Do not harvest, but the account stays usable. Own leftover tickets
 		// were injected above; missing tickets fail-open instead of pausing.
 		return nil

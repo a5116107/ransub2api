@@ -636,3 +636,16 @@
 - 最终顺序命令实际退出0：全部托管续接/模型档位/OAuth/拒绝恢复专项20轮service5.441s通过；完整相关回归service351.849s、handler143.960s、routes12.087s通过；三范围vet输出Final vet: PASS。完整service lint保留unit、原规则、并发2和8分钟，进程内GOMEMLIMIT=4GiB/GOGC=50输出0 issues.与Final service lint: PASS；默认标签cmd/server显示(cached) [no tests to run]，只证明本轮默认入口缓存编译。最终race专项三轮service4.758s通过（含并发跨模型/档位），输出Final scope race: PASS。没有因本轮检查跳过用例或修改既有断言，命令启动后源码未更改。
 - 边界复核：buildUpstreamRequest继续调用原guardOpenAICodexTurnStateEcho，来源记录仅账号归属，同账号/未知客户端回传保留；applyOpenAICodexTicket另有账号/模型门票归属。本轮显式scope只保护网关管理的response/turn/禁用/摘要缓存，不把独立客户端回传或认证门票也说成已完成档位隔离。后续D2原完整缓存域须核对二者真实语义，不盲目删除认证头。原API Key长历史guard保留，其他协议、跨协议计价和Live/区域继续待验收。
 - 已原位整理STATE恢复检查点与当前验收，历史细节在本记录中保留，不新增RUN/任务台账。最终差异/格式/本地文档链接与新增债务标记检查通过，历史service/data仍12文件1164bytes；只提交本轮4份源码/测试与原三份项目文档，维持单工作树，不推送/部署/CI。D2父任务不关闭、原20项统计不变；本轮完整闭环托管续接模型/服务档子范围。
+
+
+## 2026-11-05：D2 HTTP客户端turn-state的出站归属
+
+- 接续b00c535。原guard只比账号ID，14个请求构造子例在旧源码实际service0.815s、退出1：Responses及passthrough两路径更换Key/地址/协议/代理/模型/档位/OAuth账号身份仍保留original-state。同路及正常OAuth刷新没有被误判。测试调用原生产请求构造器，不声称访问线上上游。
+- 原位给既有origin加入线路指纹和生效模型/tier。两个HTTP请求构造器在守卫处捕获不可变出站证据到本次gin上下文，即使无客户端状态也捕获，响应实际提交/暂存提交时沿原记录入口写回原表。避免请求在途期间账号字段变化后把旧状态标成新路线；读取有已知记录且归属不同则剥离，未知来源/无session/过期证据保持原兼容行为。过期读取和扫表使用条件删除，避免误删并发新值。cache scope解析收敛为三个真实调用点共用函数，不新增表/配置/日志凭据。
+- 既有Codex门票是独立认证能力，applyOpenAICodexTicket仍按账号、规范化模型、有效期/长度和sse/websocket传输判定，再按原规则注入；本轮不把门票等同于会话缓存共享证明、不移除认证头、不改fail-open/closed设置。移除其相邻重复skip-harvest判断中已被前一return覆盖的死分支，单一分支保留原说明与行为。
+- 新增两类构造器的9场景矩阵及新线路恢复，另补在途字段变化的直接/暂存提交证据。最终结果待实际退出；D2完整缓存域仍包括其他发送入口/协议、来源及Live/区域，不以HTTP子范围关闭父任务，原20项统计保持。
+
+- 首版客户端归属/原提交语义/门票与Messages兼容组合三轮实际service1.974s、退出0。最终补在途直接/暂存快照和并发不同scope写入/守卫测试；并发夹具将gin.SetMode放在启动goroutine前，只并发独立gin上下文，避免夹具写全局模式。因本轮修改两个HTTP构造器和共享来源记录，最终执行一次完整service/handler/routes及适用静态/race，不重复使用上一提交证据。
+
+- 最终原顺序命令实际退出0：客户端归属/在途快照/原提交边界与门票专项20轮service4.801s通过；完整service339.003s、handler146.082s、routes17.126s通过；三范围vet输出Final vet: PASS。完整service包lint保留unit、原规则、并发2和8分钟，进程内GOMEMLIMIT=4GiB/GOGC=50输出0 issues.、Final service lint: PASS；默认入口cmd/server1.400s编译通过（no tests to run）。最终race专项三轮service4.367s通过，含独立gin上下文并发归属写入和异scope拒绝；实际退出后才计为通过。
+- 最终格式/差异、文档链接、STATE行数/UTF-8大小与顶部检查点、旧签名调用点及新增债务标记核对通过；历史service/data仍12文件1164bytes，不新增产物。只本地提交本轮8份源码/测试及现有三份项目文档，不推送、部署或运行CI。D2父验收及原20项统计不变，HTTP客户端出站归属与既有门票边界本地闭环；其他协议/路径与Live/区域继续推进。

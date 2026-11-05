@@ -1980,9 +1980,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 		}
 	}
-	// 客户端回带的 x-codex-turn-state 若已知由其他账号铸造（failover 换号），
-	// 剥离后再出站——异账号 blob 与本账号的（指纹收敛后）出站身份自相矛盾。
-	s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
+	// 已知客户端 turn-state 的账号/线路/模型/档位与本次出站不同则剥离。
+	// 同时捕获构造证据供响应提交时记录，独立门票仍由后续原逻辑处理。
+	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(body))
 	if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
 		return nil, err
 	}

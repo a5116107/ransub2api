@@ -365,8 +365,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		}
 	}
 
-	if strings.TrimSpace(gjson.GetBytes(responsesBody, "model").String()) != compatCacheScope.Model ||
-		normalizedOpenAIServiceTierValue(gjson.GetBytes(responsesBody, "service_tier").String()) != compatCacheScope.ServiceTier {
+	if openAICompatCacheScopeFromBody(responsesBody) != compatCacheScope {
 		return nil, fmt.Errorf("compat continuation scope changed during request construction")
 	}
 	grokCacheIdentity := ""
