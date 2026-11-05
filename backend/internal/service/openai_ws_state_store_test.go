@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,19 +65,104 @@ func TestOpenAIWSStateStore_ResponseConnTTL(t *testing.T) {
 
 func TestOpenAIWSStateStore_SessionTurnStateTTL(t *testing.T) {
 	store := NewOpenAIWSStateStore(nil)
-	store.BindSessionTurnState(9, "session_hash_1", "turn_state_1", 30*time.Millisecond)
+	store.BindSessionTurnState(9, "session_hash_1", openAIWSContinuationScope(&Account{ID: 1}, "gpt-5.1", ""), "turn_state_1", 30*time.Millisecond)
 
-	state, ok := store.GetSessionTurnState(9, "session_hash_1")
+	state, ok := store.GetSessionTurnState(9, "session_hash_1", openAIWSContinuationScope(&Account{ID: 1}, "gpt-5.1", ""))
 	require.True(t, ok)
 	require.Equal(t, "turn_state_1", state)
 
 	// group 隔离
-	_, ok = store.GetSessionTurnState(10, "session_hash_1")
+	_, ok = store.GetSessionTurnState(10, "session_hash_1", openAIWSContinuationScope(&Account{ID: 1}, "gpt-5.1", ""))
 	require.False(t, ok)
 
 	time.Sleep(60 * time.Millisecond)
-	_, ok = store.GetSessionTurnState(9, "session_hash_1")
+	_, ok = store.GetSessionTurnState(9, "session_hash_1", openAIWSContinuationScope(&Account{ID: 1}, "gpt-5.1", ""))
 	require.False(t, ok)
+}
+
+func TestOpenAIWSStateStore_SessionTurnStateScopeAndRecovery(t *testing.T) {
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "original", "base_url": "https://first.invalid/v1"}}
+	original := openAIWSContinuationScope(account, "gpt-5.1", "priority")
+	store := NewOpenAIWSStateStore(nil)
+	store.BindSessionTurnState(9, "session", original, "original-state", time.Minute)
+	for _, change := range []string{"account", "key", "endpoint", "proxy", "model", "tier", "invalid"} {
+		t.Run(change, func(t *testing.T) {
+			scope := original
+			switch change {
+			case "account":
+				scope.AccountID++
+			case "key", "endpoint", "proxy":
+				replacement := &Account{ID: account.ID, Platform: account.Platform, Type: account.Type,
+					Credentials: map[string]any{"api_key": "original", "base_url": "https://first.invalid/v1"}}
+				switch change {
+				case "key":
+					replacement.Credentials["api_key"] = "replacement"
+				case "endpoint":
+					replacement.Credentials["base_url"] = "https://second.invalid/v1"
+				case "proxy":
+					id := int64(7)
+					replacement.ProxyID = &id
+				}
+				scope = openAIWSContinuationScope(replacement, original.Model, original.ServiceTier)
+			case "model":
+				scope.Model = "gpt-5.2"
+			case "tier":
+				scope.ServiceTier = ""
+			case "invalid":
+				scope = OpenAIWSContinuationScope{}
+			}
+			state, ok := store.GetSessionTurnState(9, "session", scope)
+			require.False(t, ok)
+			require.Empty(t, state)
+			state, ok = store.GetSessionTurnState(9, "session", original)
+			require.True(t, ok, "a foreign read must not erase a healthy binding")
+			require.Equal(t, "original-state", state)
+		})
+	}
+	store.BindSessionTurnState(9, "session", OpenAIWSContinuationScope{}, "invalid-state", time.Minute)
+	state, ok := store.GetSessionTurnState(9, "session", original)
+	require.True(t, ok)
+	require.Equal(t, "original-state", state)
+
+	replacement := original
+	replacement.Model = "gpt-5.2"
+	store.BindSessionTurnState(9, "session", replacement, "replacement-state", time.Minute)
+	_, ok = store.GetSessionTurnState(9, "session", original)
+	require.False(t, ok)
+	store.BindSessionTurnState(9, "session", original, "recovered-state", time.Minute)
+	state, ok = store.GetSessionTurnState(9, "session", original)
+	require.True(t, ok)
+	require.Equal(t, "recovered-state", state)
+
+	oauth := &Account{ID: 43, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "old-token", "refresh_token": "old-refresh"}}
+	beforeRefresh := openAIWSContinuationScope(oauth, " gpt-5.1 ", "FAST")
+	oauth.Credentials["access_token"] = "new-token"
+	oauth.Credentials["refresh_token"] = "new-refresh"
+	require.Equal(t, beforeRefresh, openAIWSContinuationScope(oauth, "gpt-5.1", "priority"))
+	require.False(t, openAIWSContinuationScope(nil, "gpt-5.1", "").valid())
+	require.False(t, openAIWSContinuationScope(account, "", "").valid())
+}
+
+func TestOpenAIWSStateStore_SessionTurnStateConcurrentScopes(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	var workers sync.WaitGroup
+	for worker := 0; worker < 16; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			scope := openAIWSContinuationScope(&Account{ID: int64(worker%2 + 1)}, "gpt-5.1", "")
+			want := fmt.Sprintf("account-%d", scope.AccountID)
+			for iteration := 0; iteration < 40; iteration++ {
+				store.BindSessionTurnState(9, "shared-session", scope, want, time.Minute)
+				if state, ok := store.GetSessionTurnState(9, "shared-session", scope); ok && state != want {
+					t.Errorf("scope %d read foreign state %q", scope.AccountID, state)
+				}
+			}
+		}()
+	}
+	workers.Wait()
 }
 
 func TestOpenAIWSStateStore_SessionConnTTL(t *testing.T) {

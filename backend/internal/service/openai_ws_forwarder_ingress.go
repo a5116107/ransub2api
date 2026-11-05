@@ -1248,6 +1248,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	hooks = s.wrapSmartProtocolHooks(ctx, account, smartSession, hooks)
 	turnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+	firstRoutingFields := gjson.GetManyBytes(firstPayload.payloadRaw, "model", "service_tier")
+	continuationScope := openAIWSContinuationScope(account, firstRoutingFields[0].String(), firstRoutingFields[1].String())
+	var managedTurnStateScope OpenAIWSContinuationScope
 	stateStore := s.getOpenAIWSStateStore()
 	groupID, enforceGroup := openAITurnAdmissionGroupFromContext(c)
 	apiKeyID := getAPIKeyIDFromContext(c)
@@ -1270,8 +1273,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return
 		}
 		if turnState == "" && stateStore != nil && sessionHash != "" {
-			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash, continuationScope); ok {
 				turnState = savedTurnState
+				managedTurnStateScope = continuationScope
 			}
 		}
 
@@ -1569,7 +1573,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
-	firstRoutingFields := gjson.GetManyBytes(firstPayload.payloadRaw, "model", "service_tier")
 	wsHeaders, _, buildHdrErr := s.buildOpenAIWSHeaders(
 		ctx,
 		c,
@@ -1590,61 +1593,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		Account: account,
 		WSURL:   wsURL,
 		Headers: wsHeaders,
-		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
-			latest, err := s.admitOpenAITurnForGroup(factoryCtx, groupID, enforceGroup, account, firstRoutingFields[0].String(), firstPayload.payloadRaw)
-			if err != nil {
-				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
-					factoryCtx,
-					groupID,
-					sessionHash,
-					firstPayload.previousResponseID,
-					account.ID,
-					err,
-				)
-				return nil, err
-			}
-			if err := s.applyOpenAICodexTicket(factoryCtx, latest, firstRoutingFields[0].String(), headers, "websocket"); err != nil {
-				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
-					factoryCtx,
-					groupID,
-					sessionHash,
-					firstPayload.previousResponseID,
-					account.ID,
-					err,
-				)
-				return nil, err
-			}
-			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
-		},
-		BindHandshake: func(headers http.Header) *openAIWSTurnBinding {
-			return s.bindOpenAIWSHandshake(account, firstRoutingFields[0].String(), headers)
-		},
-		CheckBinding: func(checkCtx context.Context, binding *openAIWSTurnBinding) error {
-			latest, err := s.admitOpenAITurnForGroup(checkCtx, groupID, enforceGroup, account, firstRoutingFields[0].String(), firstPayload.payloadRaw)
-			if err != nil {
-				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
-					checkCtx,
-					groupID,
-					sessionHash,
-					firstPayload.previousResponseID,
-					account.ID,
-					err,
-				)
-				return err
-			}
-			if err := s.checkOpenAIWSBinding(checkCtx, latest, firstRoutingFields[0].String(), binding); err != nil {
-				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
-					checkCtx,
-					groupID,
-					sessionHash,
-					firstPayload.previousResponseID,
-					account.ID,
-					err,
-				)
-				return err
-			}
-			return nil
-		},
 		ProxyURL: func() string {
 			if account.ProxyID != nil && account.Proxy != nil {
 				return account.Proxy.URL()
@@ -1653,6 +1601,67 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}(),
 		ForceNewConn: false,
 	}
+	configureAcquireScope := func(payload openAIWSClientPayload) {
+		fields := gjson.GetManyBytes(payload.payloadRaw, "model", "service_tier")
+		scope := openAIWSContinuationScope(account, fields[0].String(), fields[1].String())
+		baseAcquireReq.continuationScope = scope
+		baseAcquireReq.HeadersFactory = func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
+			latest, err := s.admitOpenAITurnForGroup(factoryCtx, groupID, enforceGroup, account, scope.Model, payload.payloadRaw)
+			if err != nil {
+				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
+					factoryCtx,
+					groupID,
+					sessionHash,
+					payload.previousResponseID,
+					account.ID,
+					err,
+				)
+				return nil, err
+			}
+			if err := s.applyOpenAICodexTicket(factoryCtx, latest, scope.Model, headers, "websocket"); err != nil {
+				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
+					factoryCtx,
+					groupID,
+					sessionHash,
+					payload.previousResponseID,
+					account.ID,
+					err,
+				)
+				return nil, err
+			}
+			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+		}
+		baseAcquireReq.BindHandshake = func(headers http.Header) *openAIWSTurnBinding {
+			return s.bindOpenAIWSHandshake(account, scope.Model, headers)
+		}
+		baseAcquireReq.CheckBinding = func(checkCtx context.Context, binding *openAIWSTurnBinding) error {
+			latest, err := s.admitOpenAITurnForGroup(checkCtx, groupID, enforceGroup, account, scope.Model, payload.payloadRaw)
+			if err != nil {
+				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
+					checkCtx,
+					groupID,
+					sessionHash,
+					payload.previousResponseID,
+					account.ID,
+					err,
+				)
+				return err
+			}
+			if err := s.checkOpenAIWSBinding(checkCtx, latest, scope.Model, binding); err != nil {
+				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
+					checkCtx,
+					groupID,
+					sessionHash,
+					payload.previousResponseID,
+					account.ID,
+					err,
+				)
+				return err
+			}
+			return nil
+		}
+	}
+	configureAcquireScope(firstPayload)
 	pool := s.getOpenAIWSConnPool()
 	if pool == nil {
 		return errors.New("openai ws conn pool is nil")
@@ -1787,10 +1796,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, acquireErr
 		}
 		connID := strings.TrimSpace(lease.ConnID())
-		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
+		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" && req.continuationScope.valid() && lease.conn.continuationScope == req.continuationScope {
 			turnState = handshakeTurnState
+			managedTurnStateScope = req.continuationScope
 			if stateStore != nil && sessionHash != "" {
-				stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+				stateStore.BindSessionTurnState(groupID, sessionHash, req.continuationScope, handshakeTurnState, s.openAIWSSessionStickyTTL())
 			}
 			updatedHeaders := cloneHeader(baseAcquireReq.Headers)
 			if updatedHeaders == nil {
@@ -3037,7 +3047,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return wsNodeOwnerRejection()
 		}
 		nextRoutingFields := gjson.GetManyBytes(nextPayload.payloadRaw, "model", "service_tier")
-		if nextPayload.promptCacheKey != "" {
+		nextContinuationScope := openAIWSContinuationScope(account, nextRoutingFields[0].String(), nextRoutingFields[1].String())
+		scopeChanged := nextContinuationScope != continuationScope
+		if managedTurnStateScope.valid() && managedTurnStateScope != nextContinuationScope {
+			turnState = ""
+			managedTurnStateScope = OpenAIWSContinuationScope{}
+		}
+		if turnState == "" && scopeChanged && stateStore != nil && sessionHash != "" {
+			if saved, ok := stateStore.GetSessionTurnState(groupID, sessionHash, nextContinuationScope); ok {
+				turnState, managedTurnStateScope = saved, nextContinuationScope
+			}
+		}
+		if nextPayload.promptCacheKey != "" || scopeChanged {
 			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
 			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
 			updatedHeaders, _, updHdrErr := s.buildOpenAIWSHeaders(
@@ -3054,11 +3075,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nextRoutingFields[1].String(),
 			)
 			if updHdrErr != nil {
-				logOpenAIWSModeInfo("ingress_ws_update_headers_failed account_id=%d err=%v", account.ID, updHdrErr)
-			} else {
-				baseAcquireReq.Headers = updatedHeaders
+				return fmt.Errorf("update ws continuation headers: %w", updHdrErr)
 			}
+			baseAcquireReq.Headers = updatedHeaders
 		}
+		continuationScope = nextContinuationScope
+		configureAcquireScope(nextPayload)
 		setOpenAICodexRoutingHint(baseAcquireReq.Headers, account, nextRoutingFields[0].String(), nextRoutingFields[1].String())
 		if nextPayload.previousResponseID != "" {
 			expectedPrev := strings.TrimSpace(lastTurnResponseID)

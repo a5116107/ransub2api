@@ -142,8 +142,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if executionScope = strings.TrimSpace(executionScope); executionScope != "" {
 		sessionHash = executionScope
 	}
+	continuationScope := openAIWSContinuationScope(account, openAIWSPayloadString(payload, "model"), openAIWSPayloadString(payload, "service_tier"))
 	if turnState == "" && stateStore != nil && sessionHash != "" {
-		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash, continuationScope); ok {
 			turnState = savedTurnState
 		}
 	}
@@ -261,10 +262,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		anchorScope = anchor.scope
 	}
 	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
-		AnchorScope: anchorScope,
-		Account:     account,
-		WSURL:       wsURL,
-		Headers:     wsHeaders,
+		continuationScope: continuationScope,
+		AnchorScope:       anchorScope,
+		Account:           account,
+		WSURL:             wsURL,
+		Headers:           wsHeaders,
 		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
 			latest, err := s.admitOpenAITurnForGroup(factoryCtx, groupID, enforceGroup, account, mappedModel)
 			if err != nil {
@@ -436,13 +438,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		handshakeTurnState != "",
 		len(handshakeTurnState),
 	)
-	if handshakeTurnState != "" {
+	if handshakeTurnState != "" && continuationScope.valid() && lease.conn.continuationScope == continuationScope {
 		if stateStore != nil && sessionHash != "" {
-			stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+			stateStore.BindSessionTurnState(groupID, sessionHash, continuationScope, handshakeTurnState, s.openAIWSSessionStickyTTL())
 		}
 		if c != nil {
 			c.Header(http.CanonicalHeaderKey(openAIWSTurnStateHeader), handshakeTurnState)
 		}
+	} else if c != nil {
+		c.Writer.Header().Del(openAIWSTurnStateHeader)
 	}
 
 	checkBeforeWrite := func() error {

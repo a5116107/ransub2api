@@ -160,7 +160,7 @@ func TestOpenAIWSHTTPBridgeAdmissionFailureClearsStickyState(t *testing.T) {
 	stateStore := NewOpenAIWSStateStore(nil)
 	require.NoError(t, stateStore.BindResponseAccount(context.Background(), groupID, responseID, accountID, time.Hour))
 	stateStore.BindResponseConn(responseID, "conn-bridge-rejected", time.Hour)
-	stateStore.BindSessionTurnState(groupID, sessionHash, "turn-bridge-rejected", time.Hour)
+	stateStore.BindSessionTurnState(groupID, sessionHash, openAIWSContinuationScope(selected, "gpt-5.6-sol", ""), "turn-bridge-rejected", time.Hour)
 	stateStore.BindSessionConn(groupID, sessionHash, "conn-bridge-rejected", time.Hour)
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -202,7 +202,7 @@ func TestOpenAIWSHTTPBridgeAdmissionFailureClearsStickyState(t *testing.T) {
 	require.Zero(t, account)
 	_, ok := stateStore.GetResponseConn(responseID)
 	require.False(t, ok)
-	_, ok = stateStore.GetSessionTurnState(groupID, sessionHash)
+	_, ok = stateStore.GetSessionTurnState(groupID, sessionHash, openAIWSContinuationScope(selected, "gpt-5.6-sol", ""))
 	require.False(t, ok)
 	_, ok = stateStore.GetSessionConn(groupID, sessionHash)
 	require.False(t, ok)

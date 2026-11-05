@@ -160,7 +160,7 @@ func TestOpenAIWSHTTPBridgeSessionIsolationAcrossSameSessionHash(t *testing.T) {
 		return c
 	}
 	seedHash := svc.GenerateSessionHash(newContext(httptest.NewRequest(http.MethodGet, "/v1/responses", nil)), nil)
-	stateStore.BindSessionTurnState(groupID, seedHash, "sentinel-turn-state", time.Hour)
+	stateStore.BindSessionTurnState(groupID, seedHash, openAIWSContinuationScope(account, "gpt-5", ""), "sentinel-turn-state", time.Hour)
 	stateStore.BindSessionConn(groupID, seedHash, "sentinel-native-conn", time.Hour)
 
 	serverResults := make(chan error, 2)
@@ -241,7 +241,7 @@ func TestOpenAIWSHTTPBridgeSessionIsolationAcrossSameSessionHash(t *testing.T) {
 		{input: []string{"alpha", "call_alpha", "alpha-result"}, state: "turn-alpha"},
 		{input: []string{"beta", "call_beta", "beta-result"}, state: "turn-beta"},
 	}, requests)
-	gotState, ok := stateStore.GetSessionTurnState(groupID, seedHash)
+	gotState, ok := stateStore.GetSessionTurnState(groupID, seedHash, openAIWSContinuationScope(account, "gpt-5", ""))
 	require.True(t, ok)
 	require.Equal(t, "sentinel-turn-state", gotState)
 	gotConn, ok := stateStore.GetSessionConn(groupID, seedHash)

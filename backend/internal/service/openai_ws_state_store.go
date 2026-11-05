@@ -39,7 +39,31 @@ type openAIWSConnBinding struct {
 
 type openAIWSTurnStateBinding struct {
 	turnState string
+	scope     OpenAIWSContinuationScope
 	expiresAt time.Time
+}
+
+// OpenAIWSContinuationScope is immutable evidence of the request that minted a
+// managed turn state. It does not assert cache sharing between provider routes.
+type OpenAIWSContinuationScope struct {
+	AccountID        int64
+	RouteFingerprint [32]byte
+	Model            string
+	ServiceTier      string
+}
+
+func openAIWSContinuationScope(account *Account, model, tier string) OpenAIWSContinuationScope {
+	if account == nil {
+		return OpenAIWSContinuationScope{}
+	}
+	return OpenAIWSContinuationScope{
+		AccountID: account.ID, RouteFingerprint: AccountRouteFingerprint(account),
+		Model: strings.TrimSpace(model), ServiceTier: normalizedOpenAIServiceTierValue(tier),
+	}
+}
+
+func (s OpenAIWSContinuationScope) valid() bool {
+	return s.AccountID > 0 && s.Model != "" && s.RouteFingerprint != [32]byte{}
 }
 
 type openAIWSSessionConnBinding struct {
@@ -76,8 +100,8 @@ type OpenAIWSStateStore interface {
 	GetResponseConn(responseID string) (string, bool)
 	DeleteResponseConn(responseID string)
 
-	BindSessionTurnState(groupID int64, sessionHash, turnState string, ttl time.Duration)
-	GetSessionTurnState(groupID int64, sessionHash string) (string, bool)
+	BindSessionTurnState(groupID int64, sessionHash string, scope OpenAIWSContinuationScope, turnState string, ttl time.Duration)
+	GetSessionTurnState(groupID int64, sessionHash string, scope OpenAIWSContinuationScope) (string, bool)
 	DeleteSessionTurnState(groupID int64, sessionHash string)
 
 	BindSessionConn(groupID int64, sessionHash, connID string, ttl time.Duration)
@@ -349,10 +373,10 @@ func (s *defaultOpenAIWSStateStore) DeleteResponseConn(responseID string) {
 	s.responseToConnMu.Unlock()
 }
 
-func (s *defaultOpenAIWSStateStore) BindSessionTurnState(groupID int64, sessionHash, turnState string, ttl time.Duration) {
+func (s *defaultOpenAIWSStateStore) BindSessionTurnState(groupID int64, sessionHash string, scope OpenAIWSContinuationScope, turnState string, ttl time.Duration) {
 	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
 	state := strings.TrimSpace(turnState)
-	if key == "" || state == "" {
+	if key == "" || state == "" || !scope.valid() {
 		return
 	}
 	ttl = normalizeOpenAIWSTTL(ttl)
@@ -362,14 +386,15 @@ func (s *defaultOpenAIWSStateStore) BindSessionTurnState(groupID int64, sessionH
 	ensureBindingCapacity(s.sessionToTurnState, key, openAIWSStateStoreMaxEntriesPerMap)
 	s.sessionToTurnState[key] = openAIWSTurnStateBinding{
 		turnState: state,
+		scope:     scope,
 		expiresAt: time.Now().Add(ttl),
 	}
 	s.sessionToTurnStateMu.Unlock()
 }
 
-func (s *defaultOpenAIWSStateStore) GetSessionTurnState(groupID int64, sessionHash string) (string, bool) {
+func (s *defaultOpenAIWSStateStore) GetSessionTurnState(groupID int64, sessionHash string, scope OpenAIWSContinuationScope) (string, bool) {
 	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
-	if key == "" {
+	if key == "" || !scope.valid() {
 		return "", false
 	}
 	s.maybeCleanup()
@@ -378,7 +403,7 @@ func (s *defaultOpenAIWSStateStore) GetSessionTurnState(groupID int64, sessionHa
 	s.sessionToTurnStateMu.RLock()
 	binding, ok := s.sessionToTurnState[key]
 	s.sessionToTurnStateMu.RUnlock()
-	if !ok || now.After(binding.expiresAt) || strings.TrimSpace(binding.turnState) == "" {
+	if !ok || binding.scope != scope || now.After(binding.expiresAt) || strings.TrimSpace(binding.turnState) == "" {
 		return "", false
 	}
 	return binding.turnState, true

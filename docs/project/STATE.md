@@ -3,11 +3,11 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2 Live持久额度交接本地实现与验收完成；阻止租约丢失重放，控制WS关闭不冒充媒体结束。不运行CI、不推送/部署/生产迁移。
-- 源码：H盘唯一工作树，分支`work/monitor-driven-scheduling`，区域提交`d2258d1`；本轮Live随本状态本地提交。15份Go文件摘要`37e9dad3f4a1`，完整证据见DECISIONS。
-- 最近证据：最终78147整条退出0：全Live三轮service153次17.043s（3环境skip）、handler24次8.179s；race4.134/1.254s；默认service/repository/server编译3.995/1.836/2.198s；vet及完整三包lint 0 issues。
-- 下一动作：D2 WS托管缓存的账号/线路/生效模型档位绑定及跨协议来源，再补D3作用域和D4模型/fast来源。Live本地子范围完成不替代D2父验收或D8/D9生产升级；被拒绝的清理仍保持外部等待。
-- 等待：无新增外部阻塞；Windows符号链接权限及历史清理审批由原拥有者解除。原20项12 done、3 in_progress、5 pending，父done增量0。
+- 任务：D2 WS托管turn-state的账号/线路/生效模型及服务档绑定、复用隔离与重连恢复，本地实现和验收完成。不运行CI、不推送/部署/生产迁移。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，实施基线`0242804`；本轮12份Go摘要`5a3a7721c115`，随本状态本地提交，证据见DECISIONS。
+- 最近证据：最终49640整条退出0：专项8.254s/race35.246s各231次通过，默认server编译1.937s、四包vet与完整service lint 0 issues；先前完整三包10538/1106/90顶层通过、13条件skip，末次仅去冗余，边界见DECISIONS。
+- 下一动作：D2客户端WS/SIWC/跨实例来源及其他协议缓存域，再补D3作用域与D4模型/fast来源。WS本地子范围完成不替代D2父验收或D8/D9升级/生产验收。
+- 等待：本轮验证产物删除预演被审批拒绝，保留13文件77603133bytes；Windows符号链接权限及历史清理仍待拥有者解除。原20项12 done、3 in_progress、5 pending，父done增量0。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、HTTP/WS与多协议发送绑定、公共共享Key及回收恢复已验证；桥接线路/过期及生效模型/fast缓存、HTTP客户端状态归属完成；区域共享Key与Live持久交接本地完成；跨协议来源及完整缓存域待验收 |
+| D2 | in_progress | D2.1–D2.4、发送绑定、公共/区域共享Key及Live持久交接已验证；compat/HTTP归属与WS托管归属、复用隔离及重连恢复本地完成；客户端WS/SIWC/跨实例来源与完整缓存域待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -47,15 +47,14 @@
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
 - 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包、unit标签、并发2、8分钟与原规则。
 - 真实Redis仅进程PATH前置`H:/Root/tools/redis/5.0.14.1`；真实SQL须进程环境指向隔离PostgreSQL，不打印DSN。
-- 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个PNG共1164bytes保留，不纳入任务提交。
-- 42df0d6/b00c535/161b3fb：线路/模型/服务档与HTTP客户端状态归属已验证；专项、race、完整service/handler/routes、vet、lint与默认入口的准确证据见DECISIONS，不能代替本轮源码验证。
-- 本轮区域共享Key：64竞争/公共租约和原WS失败组合就绪池三轮55.387s；最终58顶层125.255s、race99.177s、vet、默认入口1.454s、迁移包1.465s、完整config/regional/repository lint 0 issues，实际顺序退出0。冷建连和生产升级不计通过。
-- Live最终整条78147退出0，专项/race/默认编译/vet/完整三包lint通过；repository共享64项134.084s及Live race21.442s通过。完整三包回归在末两项修复之前，原失败/跳过、源码摘要及后补证据保留在DECISIONS。
+- 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个相同测试PNG共1164bytes，历史精确删除曾被策略拒绝（DECISIONS），保留且不提交。
+- 既有HTTP/compat归属、区域共享Key与Live的实际版本、完整/局部验证边界及失败历史见DECISIONS；不代替本轮WS源码或生产升级验收。区域竞争使用就绪SQL池，不计冷建连时延通过。
+- WS最终49640：专项/race各三轮231次通过、默认server编译、四包vet与完整service lint退出0。此前完整三包与最后Header.Del等价去冗余的边界、旧读取6项反向失败及原失败记录见DECISIONS。
 - 不新增平行台账、配置或缓存实现，不用账号运营组充当Key额度键/缓存域证据。C盘副本统计effb8271不计主线完成数，开发统一在H盘。
 
 ## 下一项工作
 
-依序完成D2其他协议缓存域、跨协议来源，补D3作用域和D4模型/fast来源；随后D5–D7、D8、D9。受限Live按设计4.4.2确认持久存储与远端结束；区域继续使用同一SQL预算，不以局部测试替代混合版本升级或生产验收。
+依序完成D2客户端WS/SIWC/跨实例来源及其他协议缓存域，补D3作用域和D4模型/fast来源；随后D5–D7、D8、D9。受限Live按设计4.4.2确认持久存储与远端结束；区域继续使用同一SQL预算，不以局部测试替代混合版本升级或生产验收。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理
@@ -66,3 +65,4 @@
 - `backend/tmp/availability-non5xx-regression`4文件73491bytes，旧源码overlay验证完成，删除被拒绝；解除：拥有者手动删除准确目录。
 - `backend/tmp/regional-key-pg`停止及删除的整条命令被自动审批`blocked by policy`拒绝，未执行；恢复确认55449实例PID12708仍运行。保留该独立夹具，拥有者停止并手动清理；不改用其他工具绕过。
 - 本轮overlay临时文件自动清除；准确空目录`backend/tmp/live-key-verification`的边界校验后删除命令仍被自动审批`blocked by policy`拒绝，整条未执行。拥有者手动删除该空目录；不重试其他删除工具。
+- 本轮`backend/tmp/ws-turn-state-verification`的边界校验与`Remove-Item -WhatIf`删除预演整条被自动审批`blocked by policy`拒绝，未执行实际删除。保留13文件77603133bytes，拥有者按准确目录手动清理；不换工具/移动绕过。

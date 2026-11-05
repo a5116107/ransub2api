@@ -71,9 +71,10 @@ func (e *openAIWSDialError) Unwrap() error {
 }
 
 type openAIWSAcquireRequest struct {
-	billingGate     *openAIProfitControlGate
-	timezoneBinding *requestTimezoneBinding
-	timezoneMode    string
+	billingGate       *openAIProfitControlGate
+	timezoneBinding   *requestTimezoneBinding
+	timezoneMode      string
+	continuationScope OpenAIWSContinuationScope
 	// Private experiment connections must never serve a different client scope.
 	AnchorScope string
 	Account     *Account
@@ -300,6 +301,7 @@ type openAIWSConn struct {
 	upstreamKeyFingerprints []string
 	billingHandshake        *openAIWSBillingHandshake
 	turnBinding             *openAIWSTurnBinding
+	continuationScope       OpenAIWSContinuationScope
 	handshakeCompatibility  openAIWSHandshakeCompatibilityKey
 	routingAffinity         string
 
@@ -2233,6 +2235,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	}
 	id := p.nextConnID(req.Account.ID)
 	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
+	pooledConn.continuationScope = req.continuationScope
 	pooledConn.upstreamKeyFingerprints = config.UpstreamCredentialFingerprints(credentialRequest)
 	pooledConn.billingHandshake = newOpenAIWSBillingHandshake(ctx, req.WSURL, headers)
 	accountID := req.Account.ID

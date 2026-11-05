@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,11 +156,104 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StateBoundToExec
 	require.False(t, connBoundToLegacy, "上游连接不得绑定到按 session-id 算出的会话哈希")
 	_, connBoundToScope := stateStore.GetSessionConn(groupID, scope)
 	require.True(t, connBoundToScope, "上游连接应绑定到执行作用域")
-	_, turnStateOnLegacy := stateStore.GetSessionTurnState(groupID, legacyHash)
+	_, turnStateOnLegacy := stateStore.GetSessionTurnState(groupID, legacyHash, openAIWSContinuationScope(account, "gpt-5.1", ""))
 	require.False(t, turnStateOnLegacy, "turn state 不得绑定到会话哈希")
-	turnState, turnStateOnScope := stateStore.GetSessionTurnState(groupID, scope)
+	turnState, turnStateOnScope := stateStore.GetSessionTurnState(groupID, scope, openAIWSContinuationScope(account, "gpt-5.1", ""))
 	require.True(t, turnStateOnScope, "turn state 应绑定到执行作用域")
 	require.Equal(t, "turn-state-from-upstream", turnState)
+}
+
+func TestWSManagedTurnStateIngressScopeOnReconnect(t *testing.T) {
+	for _, change := range []string{"same scope", "model", "priority", "mapped alias", "filtered priority"} {
+		t.Run(change, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			upstream, observations := newOpenAIWSContinuationUpstream(t, true)
+			cfg := newOpenAIWSExecutionScopeTestConfig()
+			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &httpUpstreamRecorder{}, cache: &stubGatewayCache{},
+				openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector()}
+			settings := DefaultOpenAIFastPolicySettings()
+			if change == "filtered priority" {
+				settings = openAIFastFilterPriorityPolicy()
+			}
+			svc.settingService = newOpenAIGatewayServiceWithSettings(t, settings).settingService
+			t.Cleanup(svc.CloseOpenAIWSPool)
+			groupID := int64(9)
+			account := &Account{ID: 459, GroupIDs: []int64{groupID}, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Status: StatusActive, Schedulable: true, Concurrency: 1,
+				Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL},
+				Extra:       map[string]any{"responses_websockets_v2_enabled": true}}
+			if change == "mapped alias" {
+				account.Credentials["model_mapping"] = map[string]any{"gpt-5.1": "gpt-5.1", "friendly-model": "gpt-5.1"}
+			}
+			serverErr := make(chan error, 1)
+			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := coderws.Accept(w, r, nil)
+				if err != nil {
+					serverErr <- err
+					return
+				}
+				defer func() { _ = conn.CloseNow() }()
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = r
+				c.Set("api_key", &APIKey{ID: 21, GroupID: &groupID})
+				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+				defer cancel()
+				_, first, err := conn.Read(ctx)
+				if err != nil {
+					serverErr <- err
+					return
+				}
+				serverErr <- svc.ProxyResponsesWebSocketFromClient(ctx, c, conn, account, "supplier-fixture", first, nil)
+			}))
+			t.Cleanup(gateway.Close)
+			client := dialOpenAIWSExecutionScopeClient(t, gateway.URL, "stable-thread")
+			t.Cleanup(func() { _ = client.CloseNow() })
+			model, tier := "gpt-5.1", ""
+			for turn := 1; turn <= 3; turn++ {
+				if turn > 1 {
+					switch change {
+					case "model":
+						model = "gpt-5.2"
+					case "priority", "filtered priority":
+						tier = "priority"
+					case "mapped alias":
+						model = "friendly-model"
+					}
+				}
+				body := fmt.Sprintf(`{"type":"response.create","model":%q,"service_tier":%q,"stream":false,"input":[{"role":"user","content":"hello"}]}`, model, tier)
+				writeOpenAIWSExecutionScopeRequest(t, client, body)
+				readCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				_, response, err := client.Read(readCtx)
+				cancel()
+				require.NoError(t, err)
+				require.Equal(t, "response.completed", gjson.GetBytes(response, "type").String())
+				observation := <-observations
+				require.EqualValues(t, turn, observation.connection)
+				wantState := ""
+				if turn == 3 || (turn == 2 && (change == "same scope" || change == "mapped alias" || change == "filtered priority")) {
+					wantState = fmt.Sprintf("minted-%d", turn-1)
+				}
+				require.Equal(t, wantState, observation.turnState, "reconnect must use the current turn's effective scope")
+				effectiveModel := model
+				if change == "mapped alias" {
+					effectiveModel = "gpt-5.1"
+				}
+				require.Equal(t, effectiveModel, observation.payload["model"])
+				if change == "priority" && turn > 1 {
+					require.Equal(t, "priority", observation.payload["service_tier"])
+				} else {
+					require.Empty(t, observation.payload["service_tier"])
+				}
+			}
+			require.NoError(t, client.Close(coderws.StatusNormalClosure, "done"))
+			select {
+			case err := <-serverErr:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("gateway did not finish after the client closed")
+			}
+		})
+	}
 }
 
 // openAIWSGatedConn 是只回一个事件的假上游连接：收到请求后关闭 sent，
