@@ -6,7 +6,7 @@
 - 任务：D2普通OAuth的Codex用量模型探测接入共享Key额度；父任务仍在进行。
 - 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基于402a1f3；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
 - 证据：旧实现漏控而发出CONNECT已复现；两轮真实Redis直连/Astra及最终unit race通过，原规则lint 0；详见DECISIONS。
-- 下一动作：继续D2的AgentAssertion稳定身份、其他未知签名、独立出站及后台额度，再推进D3/D4和D5–D9。
+- 下一动作：继续D2的AgentAssertion真实密钥/运行时身份绑定、其他未知签名、独立出站及后台额度，再推进D3/D4和D5–D9；不猜测不同运行时是否同密钥。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
 
