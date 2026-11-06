@@ -259,7 +259,7 @@ func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy s
 	if err := s.admitAvailabilityRequest(req.Context(), req, account); err != nil {
 		return nil, err
 	}
-	if err := s.guardExcelBPSFileRequest(req, account); err != nil {
+	if err := s.guardExcelBPSOriginRequest(req, account); err != nil {
 		return nil, err
 	}
 	if err := controlledSubmission(req.Context(), "bps"); err != nil {

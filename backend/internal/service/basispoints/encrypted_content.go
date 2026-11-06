@@ -68,3 +68,45 @@ func StripEncryptedContent(raw []byte) ([]byte, error) {
 	}
 	return json.Marshal(source)
 }
+
+// EncryptedHistoryReferences inspects only actual reasoning and compaction
+// input items. Text, tool arguments, and unrelated encrypted parts stay opaque.
+func EncryptedHistoryReferences(raw []byte) ([]string, error) {
+	var source object
+	if err := decode(raw, &source); err != nil || source == nil {
+		return nil, fmt.Errorf("invalid Basispoints request JSON")
+	}
+	input, _ := source["input"].([]any)
+	return encryptedItems(input), nil
+}
+
+// EncryptedResponseReferences inspects only response items that can actually
+// be delivered to a Responses client; it never searches arbitrary text.
+func EncryptedResponseReferences(raw []byte) ([]string, error) {
+	var payload object
+	if err := decode(raw, &payload); err != nil || payload == nil {
+		return nil, fmt.Errorf("invalid Basispoints response event")
+	}
+	var items []any
+	switch text(payload["type"]) {
+	case "response.output_item.added", "response.output_item.done":
+		items = append(items, payload["item"])
+	case "response.created", "response.in_progress", "response.completed", "response.incomplete", "response.failed", "response.cancelled":
+		response, _ := payload["response"].(object)
+		items, _ = response["output"].([]any)
+	}
+	return encryptedItems(items), nil
+}
+
+func encryptedItems(items []any) []string {
+	var values []string
+	for _, raw := range items {
+		item, _ := raw.(object)
+		if kind := text(item["type"]); kind == "reasoning" || kind == "compaction" {
+			if value, ok := item["encrypted_content"].(string); ok && value != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	return values
+}

@@ -13,11 +13,11 @@ import (
 	"time"
 )
 
-var ErrFileOriginMismatch = errors.New("basispoints file belongs to a different upstream route")
+var ErrRouteOriginMismatch = errors.New("basispoints state belongs to a different upstream route")
 
-// FileOrigin stores only digests. An empty principal means that an OAuth
+// RouteOrigin stores only digests. An empty principal means that an OAuth
 // identity could not be established and is not proof of a different owner.
-type FileOrigin struct {
+type RouteOrigin struct {
 	Route     string `json:"route"`
 	Account   string `json:"account,omitempty"`
 	Principal string `json:"principal,omitempty"`
@@ -28,7 +28,7 @@ func fileOriginKey(id string) string {
 	return "\x00file-origin:v1:" + hex.EncodeToString(digest[:])
 }
 
-func validFileOrigin(origin FileOrigin) bool {
+func validRouteOrigin(origin RouteOrigin) bool {
 	if len(origin.Route) != 64 || (origin.Account != "" && len(origin.Account) != 64) || (origin.Principal != "" && len(origin.Principal) != 64) {
 		return false
 	}
@@ -46,7 +46,7 @@ func validFileOrigin(origin FileOrigin) bool {
 	return true
 }
 
-func sameFileOrigin(left, right FileOrigin) bool {
+func sameRouteOrigin(left, right RouteOrigin) bool {
 	return left.Route == right.Route &&
 		(left.Account == "" || right.Account == "" || left.Account == right.Account) &&
 		(left.Principal == "" || right.Principal == "" || left.Principal == right.Principal)
@@ -54,46 +54,82 @@ func sameFileOrigin(left, right FileOrigin) bool {
 
 // CheckFileOrigin preserves the existing unknown-reference behavior. Storage
 // failure is distinct from a missing record and never becomes an unknown pass.
-func (c *CatalogCache) CheckFileOrigin(id string, origin FileOrigin) (bool, error) {
-	if c == nil || !ValidAttachmentID(id) || !validFileOrigin(origin) {
+func (c *CatalogCache) CheckFileOrigin(id string, origin RouteOrigin) (bool, error) {
+	if !ValidAttachmentID(id) {
 		return false, ErrStateUnavailable
 	}
-	raw, _ := c.snapshot(fileOriginKey(id))
+	return c.checkOrigin(fileOriginKey(id), origin)
+}
+
+func encryptedOriginKey(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return "\x00encrypted-origin:v1:" + hex.EncodeToString(digest[:])
+}
+
+// CheckEncryptedOrigin treats absent or expired evidence as unknown. The value
+// is only hashed and is never persisted as plaintext.
+func (c *CatalogCache) CheckEncryptedOrigin(value string, origin RouteOrigin) (bool, error) {
+	if value == "" {
+		return false, ErrStateUnavailable
+	}
+	return c.checkOrigin(encryptedOriginKey(value), origin)
+}
+
+func (c *CatalogCache) checkOrigin(key string, origin RouteOrigin) (bool, error) {
+	if c == nil || !validRouteOrigin(origin) {
+		return false, ErrStateUnavailable
+	}
+	raw, _ := c.snapshot(key)
 	if err := c.Err(); err != nil {
 		return false, err
 	}
 	if len(raw) == 0 {
 		return false, nil
 	}
-	var stored FileOrigin
-	if json.Unmarshal(raw, &stored) != nil || !validFileOrigin(stored) {
+	var stored RouteOrigin
+	if json.Unmarshal(raw, &stored) != nil || !validRouteOrigin(stored) {
 		return false, ErrStateUnavailable
 	}
-	if !sameFileOrigin(stored, origin) {
-		return true, ErrFileOriginMismatch
+	if !sameRouteOrigin(stored, origin) {
+		return true, ErrRouteOriginMismatch
 	}
 	return true, nil
 }
 
 // RememberFileOrigin claims only IDs returned by an actual successful upload.
 // CAS retains the first live observation under concurrent provider responses.
-func (c *CatalogCache) RememberFileOrigin(id string, origin FileOrigin) error {
-	if c == nil || !ValidAttachmentID(id) || !validFileOrigin(origin) {
+func (c *CatalogCache) RememberFileOrigin(id string, origin RouteOrigin) error {
+	if !ValidAttachmentID(id) {
 		return ErrStateUnavailable
 	}
-	key := fileOriginKey(id)
+	return c.rememberOrigin(fileOriginKey(id), origin)
+}
+
+// RememberEncryptedOrigin claims only state produced by the upstream. The
+// same bounded CAS store and first-owner rule are shared with file origins.
+func (c *CatalogCache) RememberEncryptedOrigin(value string, origin RouteOrigin) error {
+	if value == "" {
+		return ErrStateUnavailable
+	}
+	return c.rememberOrigin(encryptedOriginKey(value), origin)
+}
+
+func (c *CatalogCache) rememberOrigin(key string, origin RouteOrigin) error {
+	if c == nil || !validRouteOrigin(origin) {
+		return ErrStateUnavailable
+	}
 	for range 8 {
 		raw, version := c.snapshot(key)
 		if err := c.Err(); err != nil {
 			return err
 		}
 		if len(raw) != 0 {
-			var previous FileOrigin
-			if json.Unmarshal(raw, &previous) != nil || !validFileOrigin(previous) {
+			var previous RouteOrigin
+			if json.Unmarshal(raw, &previous) != nil || !validRouteOrigin(previous) {
 				return ErrStateUnavailable
 			}
-			if !sameFileOrigin(previous, origin) {
-				return ErrFileOriginMismatch
+			if !sameRouteOrigin(previous, origin) {
+				return ErrRouteOriginMismatch
 			}
 			if (previous.Account != "" || origin.Account == "") && (previous.Principal != "" || origin.Principal == "") {
 				return nil
@@ -121,8 +157,8 @@ func (c *CatalogCache) RememberFileOrigin(id string, origin FileOrigin) error {
 }
 
 // CatalogCache holds immutable, versioned client declarations and bounded
-// file-origin digests, not responses or raw file IDs. Catalog callers require
-// an account/key/trusted-session scope; file origins use their own hashed keys.
+// route-origin digests, not responses, raw file IDs, or encrypted states.
+// Catalog callers require an account/key/trusted-session scope; origins use hashed keys.
 // Explicit tools replace the catalog (including []); omitted tools inherit it.
 // Additional tools merge through Prepare's duplicate/schema validation.
 type CatalogCache struct {

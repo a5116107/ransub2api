@@ -56,16 +56,19 @@ func TestBPSFileOriginSharedStore(t *testing.T) {
 
 	_, cache := basispoints.NewPersistentCaches(t.Context(), &gatewayCache{rdb: client})
 	server.SetError("fixture outage")
-	_, err := cache.CheckFileOrigin("file-shared-fixture", basispoints.FileOrigin{Route: fmt.Sprintf("%064x", 1)})
+	_, err := cache.CheckFileOrigin("file-shared-fixture", basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", 1)})
 	require.ErrorIs(t, err, basispoints.ErrStateUnavailable)
 	server.SetError("")
 	_, recovered := basispoints.NewPersistentCaches(t.Context(), &gatewayCache{rdb: client})
-	found, err := recovered.CheckFileOrigin("file-shared-fixture", basispoints.FileOrigin{Route: fmt.Sprintf("%064x", 1)})
+	found, err := recovered.CheckFileOrigin("file-shared-fixture", basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", 1)})
 	require.True(t, found)
 	require.NoError(t, err)
 	server.FastForward(bpsStateTTL + time.Second)
-	found, err = recovered.CheckFileOrigin("file-shared-fixture", basispoints.FileOrigin{Route: fmt.Sprintf("%064x", 2)})
+	found, err = recovered.CheckFileOrigin("file-shared-fixture", basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", 2)})
 	require.False(t, found, "expired origin is unknown, not evidence of another route")
+	require.NoError(t, err)
+	found, err = recovered.CheckEncryptedOrigin("cipher-shared-fixture", basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", 2)})
+	require.False(t, found, "expired ciphertext origin must remain compatible")
 	require.NoError(t, err)
 }
 
@@ -97,13 +100,20 @@ func testBPSFileOriginSharedStore(t *testing.T, client *redis.Client) {
 		_, cache := basispoints.NewPersistentCaches(t.Context(), &gatewayCache{rdb: client})
 		return cache
 	}
-	origin := basispoints.FileOrigin{Route: fmt.Sprintf("%064x", 1), Account: fmt.Sprintf("%064x", 11)}
-	foreign := basispoints.FileOrigin{Route: fmt.Sprintf("%064x", 2), Account: origin.Account}
+	origin := basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", 1), Account: fmt.Sprintf("%064x", 11)}
+	foreign := basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", 2), Account: origin.Account}
 	require.NoError(t, newCache().RememberFileOrigin("file-shared-fixture", origin))
 	found, err := newCache().CheckFileOrigin("file-shared-fixture", foreign)
 	require.True(t, found)
-	require.ErrorIs(t, err, basispoints.ErrFileOriginMismatch)
+	require.ErrorIs(t, err, basispoints.ErrRouteOriginMismatch)
 	found, err = newCache().CheckFileOrigin("file-unknown-fixture", foreign)
+	require.False(t, found)
+	require.NoError(t, err)
+	require.NoError(t, newCache().RememberEncryptedOrigin("cipher-shared-fixture", origin))
+	found, err = newCache().CheckEncryptedOrigin("cipher-shared-fixture", foreign)
+	require.True(t, found)
+	require.ErrorIs(t, err, basispoints.ErrRouteOriginMismatch)
+	found, err = newCache().CheckEncryptedOrigin("cipher-unknown-fixture", foreign)
 	require.False(t, found)
 	require.NoError(t, err)
 
@@ -114,7 +124,7 @@ func testBPSFileOriginSharedStore(t *testing.T, client *redis.Client) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			candidate := basispoints.FileOrigin{Route: fmt.Sprintf("%064x", n+100)}
+			candidate := basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", n+100)}
 			results <- newCache().RememberFileOrigin("file-concurrent-fixture", candidate)
 		}(i)
 	}
@@ -125,16 +135,44 @@ func testBPSFileOriginSharedStore(t *testing.T, client *redis.Client) {
 		if result == nil {
 			winners++
 		} else {
-			require.ErrorIs(t, result, basispoints.ErrFileOriginMismatch)
+			require.ErrorIs(t, result, basispoints.ErrRouteOriginMismatch)
 		}
 	}
 	require.Equal(t, 1, winners, "only one distinct origin can claim a live file")
+	cipherResults := make(chan error, competitors)
+	for i := range competitors {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			candidate := basispoints.RouteOrigin{Route: fmt.Sprintf("%064x", n+200)}
+			cipherResults <- newCache().RememberEncryptedOrigin("cipher-concurrent-fixture", candidate)
+		}(i)
+	}
+	wg.Wait()
+	close(cipherResults)
+	winners = 0
+	for result := range cipherResults {
+		if result == nil {
+			winners++
+		} else {
+			require.ErrorIs(t, result, basispoints.ErrRouteOriginMismatch)
+		}
+	}
+	require.Equal(t, 1, winners, "only one distinct origin can claim live ciphertext")
 	keys, err := client.Keys(t.Context(), bpsStatePrefix+"*").Result()
 	require.NoError(t, err)
 	require.NotEmpty(t, keys)
 	for _, key := range keys {
 		require.NotContains(t, key, "file-shared-fixture")
 		require.NotContains(t, key, "file-concurrent-fixture")
+		require.NotContains(t, key, "cipher-shared-fixture")
+		require.NotContains(t, key, "cipher-concurrent-fixture")
+		if key != bpsStatePrefix+"lru" && key != bpsStatePrefix+"sizes" {
+			raw, err := client.HGet(t.Context(), key, "raw").Result()
+			require.NoError(t, err)
+			require.NotContains(t, raw, "cipher-shared-fixture")
+			require.NotContains(t, raw, "cipher-concurrent-fixture")
+		}
 	}
 }
 
@@ -142,6 +180,9 @@ func testBPSFileOriginAcrossGateways(t *testing.T, client *redis.Client, setErro
 	t.Helper()
 	t.Setenv("DATA_DIR", t.TempDir())
 	var uploads, sends atomic.Int32
+	var encryptedOutput, lastRequest atomic.Value
+	encryptedOutput.Store("")
+	lastRequest.Store("")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/basispoints/api/attachments" {
 			uploads.Add(1)
@@ -150,7 +191,15 @@ func testBPSFileOriginAcrossGateways(t *testing.T, client *redis.Client, setErro
 			return
 		}
 		sends.Add(1)
+		body, _ := io.ReadAll(req.Body)
+		lastRequest.Store(string(body))
 		w.Header().Set("Content-Type", "text/event-stream")
+		item, _ := encryptedOutput.Load().(string)
+		if item != "" {
+			_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_item.done\",\"item\":%s}\n\n", item)
+			_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shared_cipher\",\"status\":\"completed\",\"output\":[%s]}}\n\n", item)
+			return
+		}
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shared_file\",\"status\":\"completed\",\"output\":[]}}\n\n")
 	}))
 	t.Cleanup(upstream.Close)
@@ -208,4 +257,79 @@ func testBPSFileOriginAcrossGateways(t *testing.T, client *redis.Client, setErro
 	_, err = forward(second, account, fileBody("file-gateway-fixture"))
 	require.NoError(t, err)
 	require.EqualValues(t, 3, sends.Load())
+
+	for _, kind := range []string{"reasoning", "compaction"} {
+		for _, stream := range []bool{false, true} {
+			opaque := fmt.Sprintf("cipher-gateway-%s-%t", kind, stream)
+			item := map[string]any{"type": kind, "encrypted_content": opaque}
+			if kind == "reasoning" {
+				item["summary"] = []any{}
+			}
+			itemJSON, err := json.Marshal(item)
+			require.NoError(t, err)
+			encryptedOutput.Store(string(itemJSON))
+			firstBody, err := json.Marshal(map[string]any{"model": "gpt-6-astra", "stream": stream, "input": "first"})
+			require.NoError(t, err)
+			repo.account = account
+			rec, err := forward(first, account, firstBody)
+			require.NoError(t, err)
+			require.Contains(t, rec.Body.String(), opaque, "the first gateway must actually deliver ciphertext")
+			// A second route that independently returns identical state must not
+			// overwrite the first owner or expose it to its client.
+			repo.account = &changed
+			beforeConflict := sends.Load()
+			rec, err = forward(second, &changed, firstBody)
+			require.Error(t, err)
+			require.Equal(t, beforeConflict+1, sends.Load())
+			require.NotContains(t, rec.Body.String(), opaque)
+			if stream {
+				require.Contains(t, rec.Body.String(), "response.failed")
+			} else {
+				require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			}
+			encryptedOutput.Store("")
+			inputBody := func(value string) []byte {
+				body, e := json.Marshal(map[string]any{"model": "gpt-6-astra", "stream": stream, "input": []any{map[string]any{"role": "user", "content": "continue"}, map[string]any{"type": kind, "encrypted_content": value}}})
+				require.NoError(t, e)
+				return body
+			}
+			repo.account = &changed
+			before := sends.Load()
+			rec, err = forward(second, &changed, inputBody(opaque))
+			require.Error(t, err)
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			require.Equal(t, before, sends.Load(), "shared foreign ciphertext must not reach upstream")
+			_, err = forward(second, &changed, inputBody(opaque+"-unknown"))
+			require.NoError(t, err)
+			lastBody, ok := lastRequest.Load().(string)
+			require.True(t, ok)
+			require.Contains(t, lastBody, opaque+"-unknown")
+			repo.account = account
+			_, err = forward(second, account, inputBody(opaque))
+			require.NoError(t, err, "the original route must recover across gateways")
+		}
+	}
+
+	if setError != nil {
+		for _, stream := range []bool{false, true} {
+			const secret = "cipher-store-outage-fixture"
+			encryptedOutput.Store(`{"type":"reasoning","encrypted_content":"` + secret + `"}`)
+			body, err := json.Marshal(map[string]any{"model": "gpt-6-astra", "stream": stream, "input": "fresh text"})
+			require.NoError(t, err)
+			setError("fixture state unavailable")
+			rec, err := forward(first, account, body)
+			setError("")
+			require.Error(t, err, "unrecorded ciphertext must not be delivered")
+			require.NotContains(t, rec.Body.String(), secret)
+			if stream {
+				require.Contains(t, rec.Body.String(), "response.failed")
+			} else {
+				require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			}
+			rec, err = forward(first, account, body)
+			require.NoError(t, err, "delivery recovers once the store is available")
+			require.Contains(t, rec.Body.String(), secret)
+			encryptedOutput.Store("")
+		}
+	}
 }

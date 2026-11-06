@@ -395,6 +395,10 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	if err != nil {
 		return fail(400, "basispoints_request_invalid", "Invalid image references")
 	}
+	clientEncrypted, err := basispoints.EncryptedHistoryReferences(body)
+	if err != nil {
+		return fail(400, "basispoints_request_invalid", "Invalid encrypted history")
+	}
 	token, err := s.getExcelBPSAccessToken(ctx, account)
 	if err != nil {
 		if isExcelBPSClientCancellation(c, err) {
@@ -501,17 +505,20 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		return fail(400, "basispoints_request_invalid", err.Error())
 	}
 	groupID, enforceGroup := openAITurnAdmissionGroupFromContext(c)
-	fileGuard := &excelBPSFileOriginGuard{cache: fileCatalog, store: fileStore, origin: excelBPSFileOrigin(account, accountID, token), groupID: groupID, enforceGroup: enforceGroup}
-	if _, err := fileGuard.check(ctx, clientFileIDs); err != nil {
+	originGuard := &excelBPSOriginGuard{cache: fileCatalog, store: fileStore, origin: excelBPSRouteOrigin(account, accountID, token), groupID: groupID, enforceGroup: enforceGroup}
+	if _, err := originGuard.check(ctx, clientFileIDs); err != nil {
 		return fail(503, "admission_unavailable", "Excel BPS file origin is unavailable for this route")
+	}
+	if _, err := originGuard.encrypted(ctx, clientEncrypted, false); err != nil {
+		return fail(503, "admission_unavailable", "Excel BPS encrypted history is unavailable for this route")
 	}
 	if images != nil && images.HasImages() && fileCatalog == nil {
 		return fail(503, "admission_unavailable", "Excel BPS file origin is unavailable for this route")
 	}
-	// Plain text requests cannot acquire a native file reference later in this
-	// preparation path; avoid rereading their bodies at every physical send.
-	if len(clientFileIDs) > 0 || images != nil && images.HasImages() {
-		ctx = context.WithValue(ctx, excelBPSFileOriginKey{}, fileGuard)
+	// Plain text requests cannot acquire an origin-bound reference later in this
+	// preparation path, except when automatic image compaction creates one.
+	if len(clientFileIDs) > 0 || len(clientEncrypted) > 0 || imagePolicy.split > 0 || images != nil && images.HasImages() {
+		ctx = context.WithValue(ctx, excelBPSOriginKey{}, originGuard)
 	}
 	ctx = withAvailabilityBPSSource(ctx, body, bridge)
 	requestAcquire := s.excelBPSAcquireFor(account)
@@ -544,7 +551,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			if uploadErr != nil {
 				return "", uploadErr
 			}
-			if err := fileGuard.remember(uploadCtx, id); err != nil {
+			if err := originGuard.remember(uploadCtx, id); err != nil {
 				return "", err
 			}
 			return id, nil
@@ -635,6 +642,17 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		window, _, compactErr := basispoints.CompactWindow(compactResponse)
 		if compactErr != nil {
 			return fail(502, "basispoints_image_compaction_failed", compactErr.Error())
+		}
+		windowJSON, compactErr := json.Marshal(map[string]any{"input": window})
+		if compactErr != nil {
+			return fail(502, "basispoints_image_compaction_failed", "Could not inspect compacted history")
+		}
+		windowEncrypted, compactErr := basispoints.EncryptedHistoryReferences(windowJSON)
+		if compactErr != nil {
+			return fail(502, "basispoints_image_compaction_failed", "Could not inspect compacted history")
+		}
+		if _, compactErr = originGuard.encrypted(ctx, windowEncrypted, true); compactErr != nil {
+			return fail(503, "admission_unavailable", "Excel BPS encrypted history origin is unavailable")
 		}
 		next := append(append([]any{}, window...), uploaded.Input[imagePolicy.split:]...)
 		// Count retained inline tool images, not the uploaded attachment placeholders.
@@ -947,6 +965,30 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 					return fail(http.StatusBadGateway, "basispoints_usage_invalid", "Excel BPS usage could not be normalized")
 				}
 				line = "data: " + string(payload)
+			}
+			// Streaming items can reach the client before the terminal response.
+			// Record the immutable route before exposing each such item; for JSON,
+			// only the successful terminal response is actually returned.
+			inspectOrigin := kind == "response.completed" || stream && (kind == "response.output_item.added" ||
+				kind == "response.output_item.done" || kind == "response.created" || kind == "response.in_progress" ||
+				kind == "response.incomplete" || kind == "response.failed" || kind == "response.cancelled")
+			if inspectOrigin {
+				values, originErr := basispoints.EncryptedResponseReferences(payload)
+				if originErr == nil {
+					_, originErr = originGuard.encrypted(ctx, values, true)
+				}
+				if originErr != nil {
+					result.Duration = time.Since(start)
+					if stream {
+						MarkResponseCommitted(c)
+						MarkOpsStreamError(c, "basispoints_origin_unavailable", "Encrypted response origin is unavailable", http.StatusServiceUnavailable)
+						_, _ = c.Writer.WriteString("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"basispoints_origin_unavailable\",\"message\":\"Encrypted response origin is unavailable\"}}}\n\n")
+						c.Writer.Flush()
+						return result, originErr
+					}
+					_, failure := fail(http.StatusServiceUnavailable, "basispoints_origin_unavailable", "Encrypted response origin is unavailable")
+					return result, failure
+				}
 			}
 			if result.FirstTokenMs == nil && (kind == "response.output_text.delta" || kind == "response.output_item.added") {
 				ms := int(time.Since(start).Milliseconds())

@@ -44,7 +44,7 @@ func (*bpsFileOriginCountingStore) SaveBPSState(context.Context, string, string,
 
 func TestExcelBPSFileOriginReadRespectsRequestDeadline(t *testing.T) {
 	store := &bpsFileOriginBlockingStore{}
-	guard := &excelBPSFileOriginGuard{store: store, origin: excelBPSFileOrigin(excelAccount(), "workspace-one", "token")}
+	guard := &excelBPSOriginGuard{store: store, origin: excelBPSRouteOrigin(excelAccount(), "workspace-one", "token")}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -56,7 +56,7 @@ func TestExcelBPSFileOriginReadRespectsRequestDeadline(t *testing.T) {
 
 func TestExcelBPSFileOriginDeduplicatesReferences(t *testing.T) {
 	store := &bpsFileOriginCountingStore{}
-	guard := &excelBPSFileOriginGuard{store: store, origin: excelBPSFileOrigin(excelAccount(), "workspace-one", "token")}
+	guard := &excelBPSOriginGuard{store: store, origin: excelBPSRouteOrigin(excelAccount(), "workspace-one", "token")}
 	found, err := guard.check(t.Context(), []string{"file-one", "file-one", "file-two", "file-one"})
 	require.NoError(t, err)
 	require.False(t, found)
@@ -119,7 +119,7 @@ func TestExcelBPSFileOriginPrincipalEvidence(t *testing.T) {
 	token := excelBPSCacheScopeToken(t, "subject-one", "workspace-one", "old")
 	refreshed := excelBPSCacheScopeToken(t, "subject-one", "workspace-one", "new")
 	different := excelBPSCacheScopeToken(t, "subject-two", "workspace-one", "new")
-	known := excelBPSFileOrigin(account, "workspace-one", token)
+	known := excelBPSRouteOrigin(account, "workspace-one", token)
 	for _, tc := range []struct {
 		name, accountID, token string
 		foreign                bool
@@ -132,22 +132,22 @@ func TestExcelBPSFileOriginPrincipalEvidence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := &basispoints.CatalogCache{}
 			require.NoError(t, cache.RememberFileOrigin("file-principal-fixture", known))
-			found, err := cache.CheckFileOrigin("file-principal-fixture", excelBPSFileOrigin(account, tc.accountID, tc.token))
+			found, err := cache.CheckFileOrigin("file-principal-fixture", excelBPSRouteOrigin(account, tc.accountID, tc.token))
 			require.True(t, found)
 			if tc.foreign {
-				require.ErrorIs(t, err, basispoints.ErrFileOriginMismatch)
+				require.ErrorIs(t, err, basispoints.ErrRouteOriginMismatch)
 			} else {
 				require.NoError(t, err)
 			}
 		})
 	}
 	cache := &basispoints.CatalogCache{}
-	require.NoError(t, cache.RememberFileOrigin("file-upgrade-fixture", excelBPSFileOrigin(account, "workspace-one", "opaque-token")))
+	require.NoError(t, cache.RememberFileOrigin("file-upgrade-fixture", excelBPSRouteOrigin(account, "workspace-one", "opaque-token")))
 	_, err := cache.CheckFileOrigin("file-upgrade-fixture", known)
 	require.NoError(t, err, "a formerly opaque identity is not proof of a foreign principal")
 	require.NoError(t, cache.RememberFileOrigin("file-upgrade-fixture", known), "a confirmed re-upload can add missing principal evidence")
-	_, err = cache.CheckFileOrigin("file-upgrade-fixture", excelBPSFileOrigin(account, "workspace-one", different))
-	require.ErrorIs(t, err, basispoints.ErrFileOriginMismatch)
+	_, err = cache.CheckFileOrigin("file-upgrade-fixture", excelBPSRouteOrigin(account, "workspace-one", different))
+	require.ErrorIs(t, err, basispoints.ErrRouteOriginMismatch)
 }
 
 func TestExcelBPSFileOriginRechecksAfterProxyWait(t *testing.T) {
@@ -157,10 +157,10 @@ func TestExcelBPSFileOriginRechecksAfterProxyWait(t *testing.T) {
 	latest.Proxy = &Proxy{Protocol: "http", Host: "changed.invalid", Port: 8080}
 	repo := &turnAdmissionRepo{account: &latest}
 	cache := &basispoints.CatalogCache{}
-	origin := excelBPSFileOrigin(account, "workspace-one", "opaque-token")
+	origin := excelBPSRouteOrigin(account, "workspace-one", "opaque-token")
 	require.NoError(t, cache.RememberFileOrigin("file-inflight-fixture", origin))
-	guard := &excelBPSFileOriginGuard{cache: cache, origin: origin}
-	ctx := context.WithValue(t.Context(), excelBPSFileOriginKey{}, guard)
+	guard := &excelBPSOriginGuard{cache: cache, origin: origin}
+	ctx := context.WithValue(t.Context(), excelBPSOriginKey{}, guard)
 	calls := 0
 	svc := &OpenAIGatewayService{accountRepo: repo, requireLatestTurnAdmission: true, httpUpstream: &bpsTestUpstream{send: func(*http.Request, string) (*http.Response, error) {
 		calls++
@@ -235,7 +235,7 @@ func TestExcelBPSFileOriginIgnoresInternalPreflightPlaceholder(t *testing.T) {
 	account := excelAccount()
 	other := *account
 	other.ID++
-	require.NoError(t, excelBPSCatalog.RememberFileOrigin("file-preflight", excelBPSFileOrigin(&other, "other-workspace", "opaque")))
+	require.NoError(t, excelBPSCatalog.RememberFileOrigin("file-preflight", excelBPSRouteOrigin(&other, "other-workspace", "opaque")))
 	svc := openAIClientToolsTestService(nil)
 	enableNativeAttachments(svc)
 	t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
@@ -260,21 +260,21 @@ func TestExcelBPSFileOriginIgnoresInternalPreflightPlaceholder(t *testing.T) {
 func TestExcelBPSFileOriginRejectsChangedBodyOrTarget(t *testing.T) {
 	account := excelAccount()
 	cache := &basispoints.CatalogCache{}
-	origin := excelBPSFileOrigin(account, "workspace-one", "opaque-token")
+	origin := excelBPSRouteOrigin(account, "workspace-one", "opaque-token")
 	require.NoError(t, cache.RememberFileOrigin("file-protected-fixture", origin))
-	ctx := context.WithValue(t.Context(), excelBPSFileOriginKey{}, &excelBPSFileOriginGuard{cache: cache, origin: origin})
+	ctx := context.WithValue(t.Context(), excelBPSOriginKey{}, &excelBPSOriginGuard{cache: cache, origin: origin})
 	svc := &OpenAIGatewayService{}
 	good := `{"model":"gpt-6-astra","input":"hi"}`
 	request, err := newExcelBPSRequest(ctx, []byte(good), "token", "workspace-one")
 	require.NoError(t, err)
 	request.Body = io.NopCloser(strings.NewReader(`{"model":"gpt-6-astra","input":[{"role":"user","content":[{"type":"input_image","file_id":"file-protected-fixture"}]}]}`))
-	require.True(t, IsOpenAITurnAdmissionError(svc.guardExcelBPSFileRequest(request, account)), "the actual body must match its replayable copy")
+	require.True(t, IsOpenAITurnAdmissionError(svc.guardExcelBPSOriginRequest(request, account)), "the actual body must match its replayable copy")
 	request, err = newExcelBPSRequest(ctx, []byte(good), "token", "workspace-one")
 	require.NoError(t, err)
 	request.URL.Host = "foreign.invalid"
-	require.True(t, IsOpenAITurnAdmissionError(svc.guardExcelBPSFileRequest(request, account)), "a BPS-bound request cannot silently switch targets")
+	require.True(t, IsOpenAITurnAdmissionError(svc.guardExcelBPSOriginRequest(request, account)), "a BPS-bound request cannot silently switch targets")
 	request, err = newExcelBPSRequest(ctx, []byte(good), "token", "workspace-one")
 	require.NoError(t, err)
 	request.Host = "foreign.invalid"
-	require.True(t, IsOpenAITurnAdmissionError(svc.guardExcelBPSFileRequest(request, account)), "a BPS-bound request cannot override its target host")
+	require.True(t, IsOpenAITurnAdmissionError(svc.guardExcelBPSOriginRequest(request, account)), "a BPS-bound request cannot override its target host")
 }

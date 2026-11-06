@@ -14,13 +14,13 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service/basispoints"
 )
 
-type excelBPSFileOriginKey struct{}
-type excelBPSFileFreshReadKey struct{}
+type excelBPSOriginKey struct{}
+type excelBPSOriginFreshReadKey struct{}
 
-type excelBPSFileOriginGuard struct {
+type excelBPSOriginGuard struct {
 	cache        *basispoints.CatalogCache
 	store        basispoints.StateStore
-	origin       basispoints.FileOrigin
+	origin       basispoints.RouteOrigin
 	groupID      int64
 	enforceGroup bool
 }
@@ -28,13 +28,13 @@ type excelBPSFileOriginGuard struct {
 // The route digest excludes downstream conversation/model, so reopening a
 // session on the same actual upstream does not create a false foreign owner.
 // Opaque OAuth credentials do not prove a different principal after refresh.
-func excelBPSFileOrigin(account *Account, accountID, token string) basispoints.FileOrigin {
+func excelBPSRouteOrigin(account *Account, accountID, token string) basispoints.RouteOrigin {
 	route, _ := json.Marshal(struct {
 		AccountID    int64
 		ConnectionID string
 		Fingerprint  [32]byte
 	}{account.ID, account.AuthConnectionID, AccountRouteFingerprint(account)})
-	origin := basispoints.FileOrigin{Route: fmt.Sprintf("%x", sha256.Sum256(route))}
+	origin := basispoints.RouteOrigin{Route: fmt.Sprintf("%x", sha256.Sum256(route))}
 	if strings.TrimSpace(accountID) != "" {
 		origin.Account = fmt.Sprintf("%x", sha256.Sum256([]byte(accountID)))
 	}
@@ -46,7 +46,7 @@ func excelBPSFileOrigin(account *Account, accountID, token string) basispoints.F
 	return origin
 }
 
-func (g *excelBPSFileOriginGuard) boundedCache(ctx context.Context) (context.Context, *basispoints.CatalogCache, context.CancelFunc) {
+func (g *excelBPSOriginGuard) boundedCache(ctx context.Context) (context.Context, *basispoints.CatalogCache, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	if g.store == nil {
 		return ctx, g.cache, cancel
@@ -55,7 +55,7 @@ func (g *excelBPSFileOriginGuard) boundedCache(ctx context.Context) (context.Con
 	return ctx, cache, cancel
 }
 
-func (g *excelBPSFileOriginGuard) check(ctx context.Context, ids []string) (bool, error) {
+func (g *excelBPSOriginGuard) check(ctx context.Context, ids []string) (bool, error) {
 	ctx, cache, cancel := g.boundedCache(ctx)
 	defer cancel()
 	known := false
@@ -69,7 +69,7 @@ func (g *excelBPSFileOriginGuard) check(ctx context.Context, ids []string) (bool
 			return false, &OpenAITurnAdmissionError{Reason: "bps_file_origin_unavailable", cause: err}
 		}
 		found, err := cache.CheckFileOrigin(id, g.origin)
-		if errors.Is(err, basispoints.ErrFileOriginMismatch) {
+		if errors.Is(err, basispoints.ErrRouteOriginMismatch) {
 			return true, denyOpenAITurn("bps_file_origin_changed")
 		}
 		if err != nil {
@@ -80,14 +80,14 @@ func (g *excelBPSFileOriginGuard) check(ctx context.Context, ids []string) (bool
 	return known, nil
 }
 
-func (g *excelBPSFileOriginGuard) remember(ctx context.Context, id string) error {
+func (g *excelBPSOriginGuard) remember(ctx context.Context, id string) error {
 	ctx, cache, cancel := g.boundedCache(ctx)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return &OpenAITurnAdmissionError{Reason: "bps_file_origin_unavailable", cause: err}
 	}
 	err := cache.RememberFileOrigin(id, g.origin)
-	if errors.Is(err, basispoints.ErrFileOriginMismatch) {
+	if errors.Is(err, basispoints.ErrRouteOriginMismatch) {
 		return denyOpenAITurn("bps_file_origin_changed")
 	}
 	if err != nil {
@@ -96,10 +96,46 @@ func (g *excelBPSFileOriginGuard) remember(ctx context.Context, id string) error
 	return nil
 }
 
+// encrypted records actual upstream output only; merely passing an unknown
+// historical value through must never manufacture ownership evidence.
+func (g *excelBPSOriginGuard) encrypted(ctx context.Context, values []string, remember bool) (bool, error) {
+	if len(values) == 0 {
+		return false, nil
+	}
+	ctx, cache, cancel := g.boundedCache(ctx)
+	defer cancel()
+	known := false
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		if err := ctx.Err(); err != nil {
+			return false, &OpenAITurnAdmissionError{Reason: "bps_encrypted_origin_unavailable", cause: err}
+		}
+		var err error
+		var found bool
+		if remember {
+			err = cache.RememberEncryptedOrigin(value, g.origin)
+		} else {
+			found, err = cache.CheckEncryptedOrigin(value, g.origin)
+		}
+		if errors.Is(err, basispoints.ErrRouteOriginMismatch) {
+			return true, denyOpenAITurn("bps_encrypted_origin_changed")
+		}
+		if err != nil {
+			return false, &OpenAITurnAdmissionError{Reason: "bps_encrypted_origin_unavailable", cause: err}
+		}
+		known = known || found
+	}
+	return known, nil
+}
+
 // Recheck the concrete references and the current account after proxy waits and
 // before each physical attempt. Missing provenance retains compatibility.
-func (s *OpenAIGatewayService) guardExcelBPSFileRequest(req *http.Request, selected *Account) error {
-	guard, _ := req.Context().Value(excelBPSFileOriginKey{}).(*excelBPSFileOriginGuard)
+func (s *OpenAIGatewayService) guardExcelBPSOriginRequest(req *http.Request, selected *Account) error {
+	guard, _ := req.Context().Value(excelBPSOriginKey{}).(*excelBPSOriginGuard)
 	if guard == nil {
 		return nil
 	}
@@ -115,11 +151,21 @@ func (s *OpenAIGatewayService) guardExcelBPSFileRequest(req *http.Request, selec
 	if err != nil {
 		return denyOpenAITurn("bps_file_origin_unavailable")
 	}
-	known, err := guard.check(req.Context(), ids)
-	if err != nil || !known {
+	ciphertexts, err := basispoints.EncryptedHistoryReferences(body)
+	if err != nil {
+		return denyOpenAITurn("bps_encrypted_origin_unavailable")
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	knownFiles, err := guard.check(ctx, ids)
+	if err != nil {
 		return err
 	}
-	ctx := context.WithValue(req.Context(), excelBPSFileFreshReadKey{}, true)
+	knownEncrypted, err := guard.encrypted(ctx, ciphertexts, false)
+	if err != nil || (!knownFiles && !knownEncrypted) {
+		return err
+	}
+	ctx = context.WithValue(ctx, excelBPSOriginFreshReadKey{}, true)
 	latest, err := s.latestOpenAITurnAccountForGroup(ctx, selected, guard.groupID, guard.enforceGroup)
 	if err != nil {
 		return err
@@ -131,6 +177,9 @@ func (s *OpenAIGatewayService) guardExcelBPSFileRequest(req *http.Request, selec
 	} else if AccountRouteFingerprint(selected) != AccountRouteFingerprint(latest) {
 		return denyOpenAITurn("account_binding_changed")
 	}
-	_, err = guard.check(req.Context(), ids)
+	if _, err = guard.check(ctx, ids); err != nil {
+		return err
+	}
+	_, err = guard.encrypted(ctx, ciphertexts, false)
 	return err
 }

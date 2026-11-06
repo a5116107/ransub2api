@@ -105,3 +105,31 @@ func TestStripEncryptedContentLeavesOtherRequestsUnchanged(t *testing.T) {
 		t.Fatal("invalid JSON must be rejected")
 	}
 }
+
+func TestEncryptedOriginReferencesOnlyProtocolItems(t *testing.T) {
+	input := []byte(`{"input":[{"type":"reasoning","encrypted_content":"reasoning-secret"},{"type":"compaction","encrypted_content":"compact-secret"},{"role":"user","content":"reasoning-secret"},{"type":"function_call","arguments":"compact-secret"},{"type":"message","encrypted_content":"not-an-origin"}]}`)
+	values, err := EncryptedHistoryReferences(input)
+	if err != nil || len(values) != 2 || values[0] != "reasoning-secret" || values[1] != "compact-secret" {
+		t.Fatalf("unexpected input references: %v (%v)", values, err)
+	}
+	for _, test := range []struct {
+		raw  string
+		want string
+	}{
+		{`{"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"one"}}`, "one"},
+		{`{"type":"response.completed","response":{"output":[{"type":"compaction","encrypted_content":"two"}]}}`, "two"},
+		{`{"type":"response.output_text.delta","delta":"one","item":{"type":"reasoning","encrypted_content":"wrong"}}`, ""},
+		{`{"type":"response.output_item.done","item":{"type":"message","encrypted_content":"wrong"}}`, ""},
+	} {
+		values, err := EncryptedResponseReferences([]byte(test.raw))
+		if err != nil || (test.want == "" && len(values) != 0) || (test.want != "" && (len(values) != 1 || values[0] != test.want)) {
+			t.Fatalf("unexpected event references: %v (%v)", values, err)
+		}
+	}
+	if _, err := EncryptedHistoryReferences([]byte(`{"input":`)); err == nil {
+		t.Fatal("invalid input must fail")
+	}
+	if _, err := EncryptedResponseReferences([]byte(`{"type":`)); err == nil {
+		t.Fatal("invalid response must fail")
+	}
+}
