@@ -31,6 +31,10 @@ type BatchImageProvider interface {
 // rejected) may authorize releasing the submission hold on an error.
 var errBatchImageSubmitRejected = errors.New("batch image creation was not accepted")
 
+func isBatchImageAdmissionError(err error) bool {
+	return errors.Is(err, ErrBatchImageRouteUnavailable) || errors.Is(err, ErrBatchImageSharedKeyUnavailable) || IsUpstreamKeyAdmissionFailure(err)
+}
+
 type batchImageRequestGuardKey struct{}
 
 func batchImageRouteDigest(parts ...string) string {
@@ -66,21 +70,34 @@ func prepareBatchImageProviderRequest(ctx context.Context, provider BatchImagePr
 }
 
 func doBatchImageHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	finish := func(*http.Response, error) {}
+	if scope, ok := req.Context().Value(batchImageKeyScopeKey{}).(*batchImageKeyScope); ok {
+		var err error
+		req, finish, err = scope.begin(req)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if guard, ok := req.Context().Value(batchImageRequestGuardKey{}).(func(context.Context) error); ok {
 		if err := guard(req.Context()); err != nil {
+			finish(nil, err)
 			return nil, err
 		}
 		// A redirect has no creation-route proof. Copy the shared client rather
 		// than changing redirect behavior for unrelated users of its transport.
 		guardedClient := *client
 		guardedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-		return guardedClient.Do(req)
+		resp, err := guardedClient.Do(req)
+		finish(resp, err)
+		return resp, err
 	}
-	return client.Do(req)
+	resp, err := client.Do(req)
+	finish(resp, err)
+	return resp, err
 }
 
 func batchImageCreateError(original, mapped error) error {
-	if errors.Is(original, ErrBatchImageRouteUnavailable) {
+	if isBatchImageAdmissionError(original) {
 		return errors.Join(mapped, errBatchImageSubmitRejected)
 	}
 	var geminiErr *GeminiAPIError
@@ -104,7 +121,9 @@ func batchImageCreateError(original, mapped error) error {
 }
 
 type BatchImageProviderRegistry struct {
-	providers map[string]BatchImageProvider
+	providers    map[string]BatchImageProvider
+	KeyAuthority BatchImageUpstreamKeyAuthority
+	config       *config.Config
 }
 
 func NewBatchImageProviderRegistry(providers ...BatchImageProvider) *BatchImageProviderRegistry {
@@ -125,11 +144,14 @@ func NewDefaultBatchImageProviderRegistry() *BatchImageProviderRegistry {
 	)
 }
 
-func NewBatchImageProviderRegistryFromConfig(cfg *config.Config) *BatchImageProviderRegistry {
-	return NewBatchImageProviderRegistry(
+func NewBatchImageProviderRegistryFromConfig(cfg *config.Config, upstream HTTPUpstream) *BatchImageProviderRegistry {
+	r := NewBatchImageProviderRegistry(
 		NewGeminiAPIBatchImageProvider(nil),
 		NewVertexBatchImageProviderFromConfig(cfg, nil, nil, nil),
 	)
+	r.config = cfg
+	r.KeyAuthority, _ = upstream.(BatchImageUpstreamKeyAuthority)
+	return r
 }
 
 func (r *BatchImageProviderRegistry) Get(provider string) (BatchImageProvider, bool) {

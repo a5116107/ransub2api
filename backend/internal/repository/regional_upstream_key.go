@@ -67,7 +67,7 @@ func (c *regionalConcurrencyCache) upstreamKeyHeld(ctx context.Context, r slots.
 
 // Only a new physical send checks current policy/freshness. Holding an already
 // admitted media session does not reallocate it or depend on a new grant.
-func (c *regionalConcurrencyCache) confirmLiveUpstreamPolicy(ctx context.Context, revision int64, digest string, resources []service.LiveUpstreamKeyResource) error {
+func (c *regionalConcurrencyCache) confirmPersistentUpstreamPolicy(ctx context.Context, revision int64, digest string, resources []service.PersistentUpstreamKeyResource) error {
 	tx, err := c.database().BeginTx(ctx, nil)
 	if err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -865,7 +866,8 @@ currency, hold_id,
 idempotency_key, request_hash, manifest_hash,
 retry_count, version, session_id, output_expires_at, input_deleted_at, output_deleted_at, downloaded_at, user_deleted_at,
 last_error_code, last_error_message,
-created_at, updated_at, submitted_at, started_at, finished_at, settled_at, route_fingerprint`
+created_at, updated_at, submitted_at, started_at, finished_at, settled_at, route_fingerprint,
+upstream_key_lease, upstream_key_terminal_at, upstream_key_released_at`
 
 const batchImageJobSelectSQL = `SELECT ` + batchImageJobColumns + ` FROM batch_image_jobs`
 
@@ -880,6 +882,8 @@ func scanBatchImageJob(row rowScanner) (*service.BatchImageJob, error) {
 	var outputExpiresAt, inputDeletedAt, outputDeletedAt, downloadedAt, userDeletedAt sql.NullTime
 	var lastErrorCode, lastErrorMessage sql.NullString
 	var submittedAt, startedAt, finishedAt, settledAt sql.NullTime
+	var keyLease []byte
+	var keyTerminalAt, keyReleasedAt sql.NullTime
 
 	err := row.Scan(
 		&job.ID, &job.BatchID, &job.UserID, &apiKeyID, &accountID, &job.Provider, &job.Model, &job.TaskName, &parentBatchID, &job.Status,
@@ -895,6 +899,7 @@ func scanBatchImageJob(row rowScanner) (*service.BatchImageJob, error) {
 		&lastErrorCode, &lastErrorMessage,
 		&job.CreatedAt, &job.UpdatedAt, &submittedAt, &startedAt, &finishedAt, &settledAt,
 		&job.RouteFingerprint,
+		&keyLease, &keyTerminalAt, &keyReleasedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -926,7 +931,90 @@ func scanBatchImageJob(row rowScanner) (*service.BatchImageJob, error) {
 	job.StartedAt = batchImageNullTimePtr(startedAt)
 	job.FinishedAt = batchImageNullTimePtr(finishedAt)
 	job.SettledAt = batchImageNullTimePtr(settledAt)
+	if len(keyLease) != 0 {
+		var lease service.PersistentUpstreamKeyLease
+		if err := json.Unmarshal(keyLease, &lease); err != nil || !lease.MatchesBatch(job.BatchID) {
+			return nil, fmt.Errorf("invalid batch upstream key ownership: %w", service.ErrBatchImageSharedKeyUnavailable)
+		}
+		job.UpstreamKeyLease = &lease
+	}
+	job.UpstreamKeyTerminalAt = batchImageNullTimePtr(keyTerminalAt)
+	job.UpstreamKeyReleasedAt = batchImageNullTimePtr(keyReleasedAt)
 	return &job, nil
+}
+
+func (r *batchImageRepository) BindBatchImageUpstreamKeyLease(ctx context.Context, batchID, route string, lease *service.PersistentUpstreamKeyLease) error {
+	return r.updateBatchImageUpstreamKey(ctx, batchID, lease, "upstream_key_bound", `
+UPDATE batch_image_jobs SET upstream_key_lease = $2::jsonb
+WHERE batch_id = $1 AND route_fingerprint = $3 AND route_fingerprint <> ''
+  AND status = 'uploading' AND provider_job_name IS NULL
+  AND upstream_key_lease IS NULL
+  AND upstream_key_terminal_at IS NULL AND upstream_key_released_at IS NULL`, route)
+}
+
+func (r *batchImageRepository) ConfirmBatchImageUpstreamKeyTerminal(ctx context.Context, batchID string, lease *service.PersistentUpstreamKeyLease) error {
+	return r.updateBatchImageUpstreamKey(ctx, batchID, lease, "upstream_key_terminal_confirmed", `
+UPDATE batch_image_jobs
+SET upstream_key_terminal_at = COALESCE(upstream_key_terminal_at, CURRENT_TIMESTAMP)
+WHERE batch_id = $1 AND upstream_key_lease = $2::jsonb`)
+}
+
+func (r *batchImageRepository) MarkBatchImageUpstreamKeyReleased(ctx context.Context, batchID string, lease *service.PersistentUpstreamKeyLease) error {
+	return r.updateBatchImageUpstreamKey(ctx, batchID, lease, "upstream_key_released", `
+UPDATE batch_image_jobs
+SET upstream_key_released_at = COALESCE(upstream_key_released_at, CURRENT_TIMESTAMP)
+WHERE batch_id = $1 AND upstream_key_lease = $2::jsonb AND upstream_key_terminal_at IS NOT NULL`)
+}
+
+func (r *batchImageRepository) ListBatchImageJobsPendingUpstreamKeyRelease(ctx context.Context, limit int) ([]*service.BatchImageJob, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := r.sql.QueryContext(ctx, batchImageJobSelectSQL+`
+ WHERE upstream_key_terminal_at IS NOT NULL AND upstream_key_released_at IS NULL
+ ORDER BY upstream_key_terminal_at, id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanBatchImageJobs(rows)
+}
+
+func (r *batchImageRepository) updateBatchImageUpstreamKey(ctx context.Context, batchID string, lease *service.PersistentUpstreamKeyLease, eventType, query string, extra ...any) error {
+	if !lease.MatchesBatch(batchID) {
+		return service.ErrBatchImageSharedKeyUnavailable
+	}
+	encoded, err := json.Marshal(lease)
+	if err != nil {
+		return err
+	}
+	args := append([]any{batchID, string(encoded)}, extra...)
+	apply := func(sqlq batchImageSQLExecutor) error {
+		result, err := sqlq.ExecContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return service.ErrBatchImageSharedKeyUnavailable
+		}
+		return appendBatchImageEventWithSQL(ctx, sqlq, batchID, eventType, map[string]any{"batch_id": batchID})
+	}
+	if r.db == nil {
+		return apply(r.sql)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := apply(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func scanBatchImageJobs(rows *sql.Rows) ([]*service.BatchImageJob, error) {

@@ -220,7 +220,7 @@ func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJo
 		return nil, mapVertexClientError(err)
 	}
 	if err := p.objectStore.UploadJSONL(ctx, accessToken, refs.InputURI, bytes.NewReader(jsonl)); err != nil {
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+		if isBatchImageAdmissionError(err) {
 			return nil, err
 		}
 		return nil, vertexProviderError("VERTEX_GCS_UPLOAD_FAILED", "Vertex managed GCS upload failed", nil)
@@ -326,7 +326,7 @@ func (p *VertexBatchImageProvider) OpenResult(ctx context.Context, job *BatchIma
 	}
 	objects, err := p.objectStore.ListJSONLObjects(ctx, accessToken, outputRef)
 	if err != nil {
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+		if isBatchImageAdmissionError(err) {
 			return nil, "", err
 		}
 		return nil, "", vertexProviderError("VERTEX_GCS_LIST_FAILED", "Vertex managed GCS list failed", nil)
@@ -661,7 +661,7 @@ func mapVertexClientError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ErrBatchImageRouteUnavailable) ||
+	if isBatchImageAdmissionError(err) ||
 		errors.Is(err, ErrBatchImageProviderMissingServiceAccount) ||
 		errors.Is(err, ErrBatchImageProviderMissingJobName) ||
 		errors.Is(err, ErrBatchImageProviderMissingResultRef) ||
@@ -775,6 +775,7 @@ func NewVertexBatchHTTPClient(baseURL string, client *http.Client) *VertexBatchH
 }
 
 func (c *VertexBatchHTTPClient) CreateBatchPredictionJob(ctx context.Context, accessToken string, req VertexCreateBatchPredictionJobRequest) (*VertexBatchPredictionJob, error) {
+	ctx = context.WithValue(ctx, batchImageKeyCreationKey{}, true)
 	endpoint, err := BuildVertexBatchPredictionJobsEndpoint(c.baseURL, req.ProjectID, req.Location)
 	if err != nil {
 		return nil, err

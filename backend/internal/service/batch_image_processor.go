@@ -65,7 +65,15 @@ func (p *BatchImageProviderProcessor) Process(ctx context.Context, batchID strin
 	if err != nil {
 		return BatchImageProcessResult{}, err
 	}
+	if job.UpstreamKeyTerminalAt != nil && job.UpstreamKeyReleasedAt == nil {
+		if err := p.ProviderRegistry.releaseUpstreamKey(ctx, p.Repo, job, false); err != nil {
+			return BatchImageProcessResult{}, err
+		}
+	}
 	if isBatchImageProcessorDoneStatus(job.Status) {
+		if err := p.ProviderRegistry.releaseUpstreamKey(ctx, p.Repo, job, false); err != nil {
+			return BatchImageProcessResult{}, err
+		}
 		if err := p.releaseTerminalHold(ctx, job); err != nil {
 			return BatchImageProcessResult{}, err
 		}
@@ -89,12 +97,15 @@ func (p *BatchImageProviderProcessor) Process(ctx context.Context, batchID strin
 	if strings.TrimSpace(batchImageDerefString(job.ProviderJobName)) == "" {
 		return BatchImageProcessResult{}, ErrBatchImageMissingProviderJobName
 	}
-	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, p.AccountResolver.ResolveBatchImageAccount)
+	ctx, err = p.ProviderRegistry.PrepareRequest(ctx, provider, job, account, p.AccountResolver.ResolveBatchImageAccount, p.Repo)
 	if err != nil {
 		return BatchImageProcessResult{}, err
 	}
 
 	if job.Status == BatchImageJobStatusIndexing {
+		if err := p.ProviderRegistry.releaseUpstreamKey(ctx, p.Repo, job, false); err != nil {
+			return BatchImageProcessResult{}, err
+		}
 		return p.indexAndSettle(ctx, job, provider, account)
 	}
 
@@ -110,6 +121,17 @@ func (p *BatchImageProviderProcessor) Process(ctx context.Context, batchID strin
 	}
 	if status == nil {
 		return BatchImageProcessResult{RequeueAfter: p.requeueDelay(0)}, nil
+	}
+	if job.UpstreamKeyLease != nil {
+		switch status.InternalState {
+		case BatchProviderStateSucceeded, BatchProviderStateFailed, BatchProviderStateExpired, BatchProviderStateCancelled:
+			if !isBatchImageConfirmedTerminal(status) {
+				return BatchImageProcessResult{RequeueAfter: p.requeueDelay(0)}, nil
+			}
+			if err := p.ProviderRegistry.releaseUpstreamKey(ctx, p.Repo, job, true); err != nil {
+				return BatchImageProcessResult{}, err
+			}
+		}
 	}
 	if err := p.persistProviderOutputRef(ctx, job, status.ProviderOutputRef); err != nil {
 		return BatchImageProcessResult{}, err
@@ -190,8 +212,8 @@ func (p *BatchImageProviderProcessor) indexAndSettle(ctx context.Context, job *B
 
 	result, err := indexer.Index(ctx, job, provider, account)
 	if err != nil {
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
-			return BatchImageProcessResult{}, ErrBatchImageRouteUnavailable
+		if isBatchImageAdmissionError(err) {
+			return BatchImageProcessResult{}, err
 		}
 		if errors.Is(err, ErrBatchImageIndexOutputMissing) {
 			return BatchImageProcessResult{}, err

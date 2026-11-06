@@ -350,6 +350,9 @@ func (p *BatchImagePipelineProcessor) Process(ctx context.Context, batchID strin
 		return BatchImageProcessResult{}, err
 	}
 	if job.Status == BatchImageJobStatusSettling {
+		if err := p.ProviderProcessor.ProviderRegistry.releaseUpstreamKey(ctx, p.ProviderProcessor.Repo, job, false); err != nil {
+			return BatchImageProcessResult{}, err
+		}
 		if p.SettlementService == nil {
 			return BatchImageProcessResult{Terminal: true}, nil
 		}

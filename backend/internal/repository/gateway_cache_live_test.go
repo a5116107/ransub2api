@@ -2,12 +2,14 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -62,11 +64,24 @@ func TestGatewayCacheLiveCallIdentityAndController(t *testing.T) {
 	require.False(t, closed)
 
 	fingerprint := config.UpstreamKeyFingerprint("live-cache-fixture")
-	record.UpstreamKeyLease = &service.LiveUpstreamKeyLease{Authority: "redis", Member: "live:fixture", Fingerprints: []string{fingerprint}, Resources: []service.LiveUpstreamKeyResource{{Fingerprint: fingerprint}}}
+	record.UpstreamKeyLease = &service.PersistentUpstreamKeyLease{Authority: "redis", Member: "live:fixture", Fingerprints: []string{fingerprint}, Resources: []service.PersistentUpstreamKeyResource{{Fingerprint: fingerprint}}}
 	require.NoError(t, cache.SaveLiveCall(t.Context(), record, time.Hour))
 	loaded, err = otherInstance.GetLiveCall(t.Context(), record.CallHash)
 	require.NoError(t, err)
 	require.Equal(t, record.UpstreamKeyLease, loaded.UpstreamKeyLease)
+	liveLease := record.UpstreamKeyLease
+	batchLease := *liveLease
+	batchLease.Member = "batch:imgbatch_live_conflict:" + uuid.NewString()
+	require.NoError(t, batchLease.Validate())
+	record.UpstreamKeyLease = &batchLease
+	require.ErrorIs(t, cache.SaveLiveCall(t.Context(), record, time.Hour), service.ErrUpstreamKeyPolicy,
+		"a valid batch member must not become a Live call owner")
+	encodedBatch, err := json.Marshal(batchLease)
+	require.NoError(t, err)
+	require.NoError(t, client.HSet(t.Context(), liveCallKey(record.CallHash), "upstream_key_lease", string(encodedBatch)).Err())
+	_, err = otherInstance.GetLiveCall(t.Context(), record.CallHash)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy, "stored batch ownership must not authorize Live management")
+	record.UpstreamKeyLease = liveLease
 	require.NoError(t, client.HSet(t.Context(), liveCallKey(record.CallHash), "upstream_key_lease", "{").Err())
 	_, err = otherInstance.GetLiveCall(t.Context(), record.CallHash)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy, "corrupt ownership must not become an unrestricted old call")

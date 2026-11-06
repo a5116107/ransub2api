@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/google/uuid"
 )
 
 var ErrUpstreamKeyCapacity = errors.New("upstream key concurrency capacity unavailable")
@@ -36,23 +37,29 @@ type UpstreamKeyConcurrency interface {
 	AcquireUpstreamKeySlots(context.Context, []string) (context.Context, func(), error)
 }
 
-// Live media outlives the SDP response and local control connection. Its exact
-// members stay reserved until an upstream terminal event confirms completion.
+// Media and provider batches outlive their creation response. Their exact
+// members stay reserved until upstream termination is explicitly confirmed.
 // Only credential fingerprints are persisted, never authentication headers.
-type LiveUpstreamKeyResource struct {
+type PersistentUpstreamKeyResource struct {
 	Fingerprint string `json:"fingerprint"`
 	ResourceID  int64  `json:"resource_id,omitempty"`
 }
 
-type LiveUpstreamKeyLease struct {
-	Authority    string                    `json:"authority"`
-	Member       string                    `json:"member"`
-	Fingerprints []string                  `json:"fingerprints"`
-	Resources    []LiveUpstreamKeyResource `json:"resources"`
+type PersistentUpstreamKeyLease struct {
+	Authority    string                          `json:"authority"`
+	Member       string                          `json:"member"`
+	Fingerprints []string                        `json:"fingerprints"`
+	Resources    []PersistentUpstreamKeyResource `json:"resources"`
 }
 
-func (l *LiveUpstreamKeyLease) Validate() error {
-	if l == nil || (l.Authority != "redis" && l.Authority != "regional:primary" && !strings.HasPrefix(l.Authority, "regional:local:")) || !strings.HasPrefix(l.Member, "live:") || len(l.Member) <= len("live:") || len(l.Member) > 128 || len(l.Resources) == 0 {
+func (l *PersistentUpstreamKeyLease) Validate() error {
+	if l == nil || (l.Authority != "redis" && l.Authority != "regional:primary" && !strings.HasPrefix(l.Authority, "regional:local:")) || len(l.Member) > 128 || len(l.Resources) == 0 {
+		return ErrUpstreamKeyPolicy
+	}
+	batchID, attempt, hasAttempt := strings.Cut(strings.TrimPrefix(l.Member, "batch:"), ":")
+	liveMember := strings.HasPrefix(l.Member, "live:") && len(l.Member) > len("live:")
+	batchMember := strings.HasPrefix(l.Member, "batch:") && hasAttempt && IsValidBatchImageID(batchID) && uuid.Validate(attempt) == nil
+	if !liveMember && !batchMember {
 		return ErrUpstreamKeyPolicy
 	}
 	seen := make(map[string]bool, len(l.Fingerprints))
@@ -72,22 +79,32 @@ func (l *LiveUpstreamKeyLease) Validate() error {
 	return nil
 }
 
-// The HTTP transport and Live controller share this port. Rechecking never
+func (l *PersistentUpstreamKeyLease) MatchesBatch(batchID string) bool {
+	return l != nil && l.Validate() == nil && IsValidBatchImageID(batchID) && strings.HasPrefix(l.Member, "batch:"+batchID+":")
+}
+
+// The HTTP transport, Live controller and batch worker share this port. Rechecking never
 // creates a missing member; release is idempotent and survives process handoff.
-type LiveUpstreamKeyConcurrency interface {
-	AcquireLiveUpstreamKeySlots(context.Context, *http.Request) (*LiveUpstreamKeyLease, error)
-	CheckLiveUpstreamKeySlots(context.Context, *LiveUpstreamKeyLease) error
-	ReleaseLiveUpstreamKeySlots(context.Context, *LiveUpstreamKeyLease) error
+type PersistentUpstreamKeyConcurrency interface {
+	AcquirePersistentUpstreamKeySlots(context.Context, *http.Request) (*PersistentUpstreamKeyLease, error)
+	CheckPersistentUpstreamKeySlots(context.Context, *PersistentUpstreamKeyLease) error
+	ReleasePersistentUpstreamKeySlots(context.Context, *PersistentUpstreamKeyLease) error
 }
 
-type liveUpstreamKeyLeaseContextKey struct{}
-
-func WithLiveUpstreamKeyLease(ctx context.Context, lease *LiveUpstreamKeyLease) context.Context {
-	return context.WithValue(ctx, liveUpstreamKeyLeaseContextKey{}, lease)
+// UpstreamKeyRequestAdmission reuses the HTTP transport's exact admission and
+// response-body lifecycle with provider-specific HTTP clients.
+type UpstreamKeyRequestAdmission interface {
+	BeginUpstreamKeyRequest(*http.Request) (*http.Request, func(*http.Response, error), error)
 }
 
-func LiveUpstreamKeyLeaseFromContext(ctx context.Context) *LiveUpstreamKeyLease {
-	lease, _ := ctx.Value(liveUpstreamKeyLeaseContextKey{}).(*LiveUpstreamKeyLease)
+type persistentUpstreamKeyLeaseContextKey struct{}
+
+func WithPersistentUpstreamKeyLease(ctx context.Context, lease *PersistentUpstreamKeyLease) context.Context {
+	return context.WithValue(ctx, persistentUpstreamKeyLeaseContextKey{}, lease)
+}
+
+func PersistentUpstreamKeyLeaseFromContext(ctx context.Context) *PersistentUpstreamKeyLease {
+	lease, _ := ctx.Value(persistentUpstreamKeyLeaseContextKey{}).(*PersistentUpstreamKeyLease)
 	return lease
 }
 

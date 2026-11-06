@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -15,8 +16,95 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/migrations"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+func batchImageKeyTestLease(batchID string) *service.PersistentUpstreamKeyLease {
+	fingerprint := strings.Repeat("a", 64)
+	return &service.PersistentUpstreamKeyLease{Authority: "redis", Member: "batch:" + batchID + ":" + uuid.NewString(),
+		Fingerprints: []string{fingerprint}, Resources: []service.PersistentUpstreamKeyResource{{Fingerprint: fingerprint}}}
+}
+
+func TestBatchImageRepository_PersistentKeyOwnershipRoundTripAndRelease(t *testing.T) {
+	ctx := t.Context()
+	tx := testTx(t)
+	repo := newBatchImageRepositoryWithSQL(tx)
+	route := strings.Repeat("b", 64)
+	job, err := repo.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{BatchID: batchImageTestID(t, "key_owner"), UserID: 1001,
+		Provider: service.BatchImageProviderGeminiAPI, Model: "image", Status: service.BatchImageJobStatusUploading, RouteFingerprint: route})
+	require.NoError(t, err)
+	lease := batchImageKeyTestLease(job.BatchID)
+	require.ErrorIs(t, repo.BindBatchImageUpstreamKeyLease(ctx, job.BatchID, "different-route", lease), service.ErrBatchImageSharedKeyUnavailable)
+	require.ErrorIs(t, repo.BindBatchImageUpstreamKeyLease(ctx, job.BatchID, route, batchImageKeyTestLease("imgbatch_another")), service.ErrBatchImageSharedKeyUnavailable)
+	require.NoError(t, repo.BindBatchImageUpstreamKeyLease(ctx, job.BatchID, route, lease))
+	require.ErrorIs(t, repo.BindBatchImageUpstreamKeyLease(ctx, job.BatchID, route, batchImageKeyTestLease(job.BatchID)), service.ErrBatchImageSharedKeyUnavailable)
+	restored, err := newBatchImageRepositoryWithSQL(tx).GetBatchImageJobByBatchID(ctx, job.BatchID)
+	require.NoError(t, err)
+	require.Equal(t, lease, restored.UpstreamKeyLease)
+	require.Nil(t, restored.UpstreamKeyTerminalAt)
+	require.Nil(t, restored.UpstreamKeyReleasedAt)
+	require.ErrorIs(t, repo.MarkBatchImageUpstreamKeyReleased(ctx, job.BatchID, lease), service.ErrBatchImageSharedKeyUnavailable, "age/local state alone is not termination")
+	require.ErrorIs(t, repo.ConfirmBatchImageUpstreamKeyTerminal(ctx, job.BatchID, batchImageKeyTestLease(job.BatchID)), service.ErrBatchImageSharedKeyUnavailable)
+	for repeat := 0; repeat < 2; repeat++ {
+		require.NoError(t, repo.ConfirmBatchImageUpstreamKeyTerminal(ctx, job.BatchID, lease))
+	}
+	pending, err := repo.ListBatchImageJobsPendingUpstreamKeyRelease(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, lease, pending[0].UpstreamKeyLease)
+	require.NotNil(t, pending[0].UpstreamKeyTerminalAt)
+	for repeat := 0; repeat < 2; repeat++ {
+		require.NoError(t, repo.MarkBatchImageUpstreamKeyReleased(ctx, job.BatchID, lease))
+	}
+	pending, err = repo.ListBatchImageJobsPendingUpstreamKeyRelease(ctx, 1)
+	require.NoError(t, err)
+	require.Empty(t, pending)
+	restored, err = repo.GetBatchImageJobByBatchID(ctx, job.BatchID)
+	require.NoError(t, err)
+	require.Equal(t, lease, restored.UpstreamKeyLease, "release retains the exact ownership evidence")
+	require.NotNil(t, restored.UpstreamKeyTerminalAt)
+	require.NotNil(t, restored.UpstreamKeyReleasedAt)
+}
+
+func TestBatchImageRepository_PersistentKeyMigrationPreservesLegacy(t *testing.T) {
+	ctx := t.Context()
+	tx := testTx(t)
+	_, err := tx.ExecContext(ctx, `CREATE TEMP TABLE batch_image_jobs (
+id BIGINT PRIMARY KEY, batch_id TEXT, status TEXT, hold_amount NUMERIC(20,8)
+) ON COMMIT DROP;
+INSERT INTO batch_image_jobs VALUES (1, 'legacy', 'uploading', 0.5)`)
+	require.NoError(t, err)
+	migration, err := migrations.FS.ReadFile("330_batch_image_upstream_key_lease.sql")
+	require.NoError(t, err)
+	for repeat := 0; repeat < 2; repeat++ {
+		_, err = tx.ExecContext(ctx, string(migration))
+		require.NoError(t, err)
+	}
+	var unchanged bool
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT status='uploading' AND hold_amount=0.5 AND
+upstream_key_lease IS NULL AND upstream_key_terminal_at IS NULL AND upstream_key_released_at IS NULL
+FROM batch_image_jobs WHERE id=1`).Scan(&unchanged))
+	require.True(t, unchanged, "old jobs gain no guessed ownership or termination")
+	lease := batchImageKeyTestLease("imgbatch_retained")
+	encoded, err := json.Marshal(lease)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `UPDATE batch_image_jobs SET upstream_key_lease=$1::jsonb, upstream_key_terminal_at=NOW() WHERE id=1;
+`, string(encoded))
+	require.NoError(t, err)
+	// Old binaries can still use their original column lists during rollback.
+	_, err = tx.ExecContext(ctx, `UPDATE batch_image_jobs SET status='failed' WHERE id=1;
+INSERT INTO batch_image_jobs (id,batch_id,status,hold_amount) VALUES (2,'old_writer','created',0.25)`)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(migration))
+	require.NoError(t, err)
+	var retained string
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT upstream_key_lease->>'member' FROM batch_image_jobs WHERE id=1").Scan(&retained))
+	require.Equal(t, lease.Member, retained)
+	var legacyUnowned bool
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT upstream_key_lease IS NULL FROM batch_image_jobs WHERE id=2").Scan(&legacyUnowned))
+	require.True(t, legacyUnowned)
+}
 
 func newBatchImageRepositoryWithSQL(sqlq batchImageSQLExecutor) *batchImageRepository {
 	return &batchImageRepository{sql: sqlq}

@@ -33,8 +33,27 @@ Local cancellation or an expired heartbeat does not establish that an upstream
 batch has stopped. Automatic stale refunds apply only before dispatch, while the
 persisted state is still `created`. See the authoritative
 [submission, recovery and rollback rules](project/monitor-driven-scheduling-design.md#443-批量生图未知提交与旧任务恢复)
-for uncertain submissions and existing tasks. Shared-key policies continue to
-reject new batches until durable batch admission is implemented.
+for uncertain submissions and existing tasks. Built-in Gemini and Vertex HTTP
+clients use the existing shared-key authority, including durable batch admission.
+Missing handoff support, unavailable policy/ownership, or exhausted capacity
+returns local HTTP 503 with `error.code=BATCH_IMAGE_SHARED_KEY_UNAVAILABLE`.
+
+Creation reserves an exact, per-attempt member and persists it with the batch
+before sending the generation request. Closing its response, canceling the local
+request, or acknowledging a provider cancellation does not return that capacity.
+Only a confirmed provider terminal result or proven creation rejection permits
+release. Unknown creation keeps its member and billing hold without automatic
+replay. Polling and cancellation reuse the stored ownership even at full
+capacity. The existing recovery loop retries confirmed releases from SQL after
+restart, independently of Redis queue membership. Ownership and its terminal and
+release receipts remain private.
+
+Migration 330 adds nullable ownership/receipt columns and a recovery index without
+backfilling old jobs. Drain old instances and unowned remote jobs before enabling
+this policy. Redis durable admission requires AOF, `appendfsync=always`,
+`no-appendfsync-on-rewrite=no`, and `maxmemory-policy=noeviction`; regional mode
+uses its existing SQL authority. Retain the new columns and unresolved members
+during rollback. See the [durable batch lifecycle and upgrade rules](project/monitor-driven-scheduling-design.md#444-批量生图持久额度与释放恢复).
 
 Provider operations require the persisted creation route. Rotated API keys,
 changed service-account principals or provider/storage endpoints, missing legacy

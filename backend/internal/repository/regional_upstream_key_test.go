@@ -23,6 +23,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	miniserver "github.com/alicebob/miniredis/v2/server"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -35,6 +36,11 @@ func regionalKeyTestDB(t *testing.T) *sql.DB {
 	dsn := os.Getenv("SUB2API_REGIONAL_TEST_DSN")
 	if dsn == "" {
 		t.Skip("SUB2API_REGIONAL_TEST_DSN must point to an isolated PostgreSQL fixture")
+	}
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		parsed, err := pq.ParseURL(dsn)
+		require.NoError(t, err)
+		dsn = parsed
 	}
 	base, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
@@ -90,7 +96,11 @@ func regionalKeyFixture(t *testing.T, cfg *config.Config, rdb *redis.Client, cap
 	require.NoError(t, err)
 	require.NoError(t, local.InstallUpstreamPolicy(t.Context(), snapshot))
 	fingerprint := config.UpstreamKeyFingerprint("supplier-fixture")
-	g := slots.Grant{LeaseID: uuid.NewString(), Region: local.Region, Resource: slots.Resource{Kind: "upstream_key", ID: snapshot.Resources[fingerprint], Fingerprint: fingerprint}, Slots: capacity, Revision: 1, IssuedAt: time.Now().UTC().Add(-time.Millisecond).Truncate(time.Microsecond), ExpiresAt: time.Now().UTC().Add(time.Minute).Truncate(time.Microsecond)}
+	// Grants use the authority's clock, matching the real broker. Container and
+	// Windows wall clocks need not agree within the old one-millisecond margin.
+	var issuedAt time.Time
+	require.NoError(t, primary.DB.QueryRowContext(t.Context(), "SELECT clock_timestamp()").Scan(&issuedAt))
+	g := slots.Grant{LeaseID: uuid.NewString(), Region: local.Region, Resource: slots.Resource{Kind: "upstream_key", ID: snapshot.Resources[fingerprint], Fingerprint: fingerprint}, Slots: capacity, Revision: 1, IssuedAt: issuedAt.Add(-time.Millisecond).Truncate(time.Microsecond), ExpiresAt: issuedAt.Add(time.Minute).Truncate(time.Microsecond)}
 	if capacity > 0 {
 		require.NoError(t, primary.Issue(t.Context(), g))
 		require.NoError(t, local.Install(t.Context(), g))

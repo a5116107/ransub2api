@@ -498,6 +498,9 @@ func (c *gatewayCache) SaveLiveCall(ctx context.Context, record *service.LiveCal
 	}
 	var keyLease []byte
 	if record.UpstreamKeyLease != nil {
+		if !strings.HasPrefix(record.UpstreamKeyLease.Member, "live:") {
+			return service.ErrUpstreamKeyPolicy
+		}
 		if err := record.UpstreamKeyLease.Validate(); err != nil {
 			return err
 		}
@@ -542,10 +545,10 @@ func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*servi
 	if len(values) == 0 {
 		return nil, service.ErrLiveCallNotFound
 	}
-	var keyLease *service.LiveUpstreamKeyLease
+	var keyLease *service.PersistentUpstreamKeyLease
 	if raw := values["upstream_key_lease"]; raw != "" {
-		keyLease = &service.LiveUpstreamKeyLease{}
-		if err := json.Unmarshal([]byte(raw), keyLease); err != nil || keyLease.Validate() != nil {
+		keyLease = &service.PersistentUpstreamKeyLease{}
+		if err := json.Unmarshal([]byte(raw), keyLease); err != nil || keyLease.Validate() != nil || !strings.HasPrefix(keyLease.Member, "live:") {
 			return nil, service.ErrUpstreamKeyPolicy
 		}
 	}

@@ -182,14 +182,14 @@ type BatchImageItemsQuery struct {
 	Cursor string
 }
 
-func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, cfg *config.Config) *BatchImagePublicService {
+func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, upstream HTTPUpstream, cfg *config.Config) *BatchImagePublicService {
 	return &BatchImagePublicService{
 		Repo:              repo,
 		AccountRepo:       accountRepo,
 		GroupRepo:         groupRepo,
 		UserGroupRateRepo: userGroupRateRepo,
 		Queue:             queue,
-		ProviderRegistry:  NewBatchImageProviderRegistryFromConfig(cfg),
+		ProviderRegistry:  NewBatchImageProviderRegistryFromConfig(cfg, upstream),
 		Pricing:           pricing,
 		BillingRepo:       billingRepo,
 		AuthCache:         authCache,
@@ -368,7 +368,7 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	hbDone := make(chan struct{})
 	go s.runSubmitHeartbeat(hbCtx, job.BatchID, hbDone)
-	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountRepo.GetByID)
+	ctx, err = s.ProviderRegistry.PrepareRequest(ctx, provider, job, account, s.AccountRepo.GetByID, s.Repo)
 	var providerJob *BatchProviderJob
 	if err != nil {
 		err = errors.Join(err, errBatchImageSubmitRejected)
@@ -384,6 +384,7 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		ctx = failureCtx
+		keyReleaseErr := s.ProviderRegistry.releaseUpstreamKey(ctx, s.Repo, job, true)
 		if releaseErr := s.releaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
 			return nil, releaseErr
 		}
@@ -391,6 +392,10 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		reason := batchImageProviderSubmitRecordCode(publicErr)
 		_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, reason, sanitizeBatchImagePublicMessage(err.Error()), true)
 		s.hidePreUpstreamSubmitFailure(ctx, owner, job)
+		if keyReleaseErr != nil {
+			s.enqueueBillingRetry(ctx, job.BatchID)
+			return nil, ErrBatchImageSharedKeyUnavailable.WithCause(keyReleaseErr)
+		}
 		return nil, publicErr
 	}
 	if providerJob == nil || strings.TrimSpace(providerJob.ProviderJobName) == "" {
@@ -504,14 +509,12 @@ func (s *BatchImagePublicService) abortOrphanProviderJob(ctx context.Context, pr
 	confirmed := false
 	if cancelErr == nil {
 		status, statusErr := provider.Get(ctx, &orphan, account)
-		if statusErr == nil && status != nil && status.Done {
-			switch status.InternalState {
-			case BatchProviderStateSucceeded, BatchProviderStateFailed, BatchProviderStateCancelled, BatchProviderStateExpired:
-				confirmed = true
-			}
-		}
+		confirmed = statusErr == nil && isBatchImageConfirmedTerminal(status)
 	}
 	if confirmed {
+		if err := s.ProviderRegistry.releaseUpstreamKey(ctx, s.Repo, job, true); err != nil {
+			logger.L().Warn("batch_image.orphan_key_release_failed", zap.String("batch_id", job.BatchID), zap.Error(err))
+		}
 		if err := provider.Cleanup(ctx, &orphan, account, CleanupTargetInput); err != nil {
 			logger.L().Warn("batch_image.orphan_provider_job_cleanup_failed", zap.String("batch_id", job.BatchID), zap.Error(err))
 		}
@@ -779,7 +782,7 @@ func (s *BatchImagePublicService) Cancel(ctx context.Context, owner BatchImageOw
 		if err != nil {
 			return nil, ErrBatchImageRouteUnavailable
 		}
-		ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountRepo.GetByID)
+		ctx, err = s.ProviderRegistry.PrepareRequest(ctx, provider, job, account, s.AccountRepo.GetByID, s.Repo)
 		if err != nil {
 			return nil, err
 		}
@@ -1019,9 +1022,7 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 				continue
 			}
 			if provider.SupportsAccount(&account) {
-				// A provider batch outlives its HTTP submission; an ordinary HTTP
-				// lease cannot safely account for its active upstream execution.
-				if s.Config != nil && (s.Config.Gateway.UpstreamKeyConcurrency.Configured() || s.Config.Runtime.RegionalConcurrencyFile != "" || s.Config.Runtime.RegionalSchedulerFile != "") {
+				if batchImageSharedKeyConfigured(s.Config) && (s.ProviderRegistry.KeyAuthority == nil || !batchImageProviderSupportsPersistentKey(provider)) {
 					sharedKeyBlocked = true
 					continue
 				}
@@ -1395,6 +1396,9 @@ func batchImageGCSRef(provider, ref string) string {
 }
 
 func batchImageProviderSubmitPublicError(err error) error {
+	if errors.Is(err, ErrBatchImageSharedKeyUnavailable) || IsUpstreamKeyAdmissionFailure(err) {
+		return ErrBatchImageSharedKeyUnavailable
+	}
 	if errors.Is(err, ErrBatchImageRouteUnavailable) {
 		return ErrBatchImageRouteUnavailable
 	}

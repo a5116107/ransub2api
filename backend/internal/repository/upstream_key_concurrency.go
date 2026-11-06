@@ -46,7 +46,7 @@ local ttl = tonumber(ARGV[6])
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - ttl)
 if redis.call('ZSCORE', KEYS[2], ARGV[5]) then return 1 end
 if redis.call('ZCARD', KEYS[2]) >= limit then return 0 end
-if ARGV[7] == 'live' then
+if ARGV[7] == 'persistent' then
   redis.call('ZADD', KEYS[2], '+inf', ARGV[5])
 else
   redis.call('ZADD', KEYS[2], now, ARGV[5])
@@ -283,7 +283,7 @@ func (s *httpUpstreamService) AcquireUpstreamKeySlots(parent context.Context, fi
 	return ctx, release, nil
 }
 
-func (l *upstreamKeyLimiter) liveAuthority() string {
+func (l *upstreamKeyLimiter) persistentAuthority() string {
 	if l.regional != nil {
 		if l.regional.primary != nil {
 			return "regional:primary"
@@ -293,7 +293,7 @@ func (l *upstreamKeyLimiter) liveAuthority() string {
 	return "redis"
 }
 
-func sameLiveCredentials(expected, actual []string) bool {
+func samePersistentCredentials(expected, actual []string) bool {
 	if len(expected) != len(actual) {
 		return false
 	}
@@ -310,19 +310,29 @@ func sameLiveCredentials(expected, actual []string) bool {
 	return len(seen) == 0
 }
 
-func (s *httpUpstreamService) AcquireLiveUpstreamKeySlots(ctx context.Context, req *http.Request) (*service.LiveUpstreamKeyLease, error) {
+func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Context, req *http.Request) (*service.PersistentUpstreamKeyLease, error) {
 	l := s.upstreamKeyLimiter
 	if l == nil {
+		if service.BatchImageKeyPolicyRequired(req) {
+			return nil, service.ErrUpstreamKeyPolicy
+		}
 		return nil, nil
 	}
-	if req == nil || req.URL == nil || !strings.HasSuffix(req.URL.Path, "/realtime/calls") || l.err != nil {
+	if req == nil || req.URL == nil || l.err != nil || !service.BatchImageKeyPolicyMatches(req, l.policy.Revision, l.digest) {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	lease := &service.LiveUpstreamKeyLease{Authority: l.liveAuthority(), Member: "live:" + uuid.NewString(), Fingerprints: config.UpstreamCredentialFingerprints(req)}
+	member := service.BatchImageKeyCreationMember(req)
+	if member == "" {
+		if !strings.HasSuffix(req.URL.Path, "/realtime/calls") {
+			return nil, service.ErrUpstreamKeyPolicy
+		}
+		member = "live:" + uuid.NewString()
+	}
+	lease := &service.PersistentUpstreamKeyLease{Authority: l.persistentAuthority(), Member: member, Fingerprints: config.UpstreamCredentialFingerprints(req)}
 	if l.regional == nil {
 		for _, fingerprint := range lease.Fingerprints {
 			if l.policy.Limits[fingerprint] > 0 {
-				if err := l.redisLiveDurable(ctx); err != nil {
+				if err := l.redisPersistentDurable(ctx); err != nil {
 					return nil, err
 				}
 				break
@@ -330,16 +340,16 @@ func (s *httpUpstreamService) AcquireLiveUpstreamKeySlots(ctx context.Context, r
 		}
 	}
 	for _, fingerprint := range lease.Fingerprints {
-		resource, result, err := l.take(ctx, fingerprint, lease.Member, "live")
+		resource, result, err := l.take(ctx, fingerprint, lease.Member, "persistent")
 		if err != nil {
-			// No SDP was sent. Only members acquired by this attempt may go back.
+			// Creation was not sent. Only this attempt's members may go back.
 			for _, held := range lease.Resources {
 				_ = l.release(slots.Resource{Kind: "upstream_key", ID: held.ResourceID, Fingerprint: held.Fingerprint}, upstreamKeySlotKeyPrefix+held.Fingerprint, lease.Member)
 			}
 			return nil, err
 		}
 		if result == 1 {
-			lease.Resources = append(lease.Resources, service.LiveUpstreamKeyResource{Fingerprint: fingerprint, ResourceID: resource.ID})
+			lease.Resources = append(lease.Resources, service.PersistentUpstreamKeyResource{Fingerprint: fingerprint, ResourceID: resource.ID})
 		}
 	}
 	if len(lease.Resources) == 0 {
@@ -348,8 +358,8 @@ func (s *httpUpstreamService) AcquireLiveUpstreamKeySlots(ctx context.Context, r
 	return lease, nil
 }
 
-func (l *upstreamKeyLimiter) redisLiveDurable(ctx context.Context) error {
-	// Direct media cannot be cancelled by an expiring local watchdog. Refuse
+func (l *upstreamKeyLimiter) redisPersistentDurable(ctx context.Context) error {
+	// Remote work cannot be cancelled by an expiring local watchdog. Refuse
 	// admission when Redis may acknowledge volatile/evictable ownership.
 	for field, expected := range map[string]string{"appendonly": "yes", "appendfsync": "always", "no-appendfsync-on-rewrite": "no", "maxmemory-policy": "noeviction"} {
 		values, err := l.rdb.ConfigGet(ctx, field).Result()
@@ -360,9 +370,9 @@ func (l *upstreamKeyLimiter) redisLiveDurable(ctx context.Context) error {
 	return nil
 }
 
-func (s *httpUpstreamService) CheckLiveUpstreamKeySlots(ctx context.Context, lease *service.LiveUpstreamKeyLease) error {
+func (s *httpUpstreamService) CheckPersistentUpstreamKeySlots(ctx context.Context, lease *service.PersistentUpstreamKeyLease) error {
 	l := s.upstreamKeyLimiter
-	if l == nil || l.err != nil || lease.Validate() != nil || lease.Authority != l.liveAuthority() {
+	if l == nil || l.err != nil || lease.Validate() != nil || lease.Authority != l.persistentAuthority() {
 		return service.ErrUpstreamKeyPolicy
 	}
 	for _, resource := range lease.Resources {
@@ -382,7 +392,7 @@ func (s *httpUpstreamService) CheckLiveUpstreamKeySlots(ctx context.Context, lea
 	return nil
 }
 
-func (l *upstreamKeyLimiter) confirmLivePolicy(ctx context.Context, lease *service.LiveUpstreamKeyLease) error {
+func (l *upstreamKeyLimiter) confirmPersistentPolicy(ctx context.Context, lease *service.PersistentUpstreamKeyLease) error {
 	limited := make(map[string]bool, len(lease.Resources))
 	for _, fingerprint := range lease.Fingerprints {
 		if l.policy.Limits[fingerprint] > 0 {
@@ -398,19 +408,19 @@ func (l *upstreamKeyLimiter) confirmLivePolicy(ctx context.Context, lease *servi
 		}
 	}
 	if l.regional != nil {
-		return l.regional.confirmLiveUpstreamPolicy(ctx, l.policy.Revision, l.digest, lease.Resources)
+		return l.regional.confirmPersistentUpstreamPolicy(ctx, l.policy.Revision, l.digest, lease.Resources)
 	}
 	// HMGET is one atomic read of the same policy published by acquisition.
 	values, err := l.rdb.HMGet(ctx, upstreamKeyPolicyKey, "revision", "digest").Result()
 	if err != nil || len(values) != 2 || values[0] != strconv.FormatInt(l.policy.Revision, 10) || values[1] != l.digest {
 		return service.ErrUpstreamKeyPolicy
 	}
-	return l.redisLiveDurable(ctx)
+	return l.redisPersistentDurable(ctx)
 }
 
-func (s *httpUpstreamService) ReleaseLiveUpstreamKeySlots(_ context.Context, lease *service.LiveUpstreamKeyLease) error {
+func (s *httpUpstreamService) ReleasePersistentUpstreamKeySlots(_ context.Context, lease *service.PersistentUpstreamKeyLease) error {
 	l := s.upstreamKeyLimiter
-	if l == nil || lease.Validate() != nil || lease.Authority != l.liveAuthority() {
+	if l == nil || lease.Validate() != nil || lease.Authority != l.persistentAuthority() {
 		return service.ErrUpstreamKeyPolicy
 	}
 	var releaseErr error
@@ -421,24 +431,35 @@ func (s *httpUpstreamService) ReleaseLiveUpstreamKeySlots(_ context.Context, lea
 	return releaseErr
 }
 
-// beginUpstreamKeyRequest retains response-body ownership at the existing
+// BeginUpstreamKeyRequest retains response-body ownership at the existing
 // HTTP boundary; native WS owns its active turn through the shared method above.
-func (s *httpUpstreamService) beginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
 	if s.upstreamKeyLimiter == nil {
+		if service.BatchImageKeyPolicyRequired(req) {
+			return req, nil, service.ErrUpstreamKeyPolicy
+		}
 		return req, func(*http.Response, error) {}, nil
 	}
 	if req == nil || req.URL == nil {
 		return req, nil, service.ErrUpstreamKeyPolicy
 	}
-	if lease := service.LiveUpstreamKeyLeaseFromContext(req.Context()); lease != nil {
-		if !strings.HasSuffix(req.URL.Path, "/realtime/calls") || !sameLiveCredentials(lease.Fingerprints, config.UpstreamCredentialFingerprints(req)) {
+	if !service.BatchImageKeyPolicyMatches(req, s.upstreamKeyLimiter.policy.Revision, s.upstreamKeyLimiter.digest) {
+		return req, nil, service.ErrUpstreamKeyPolicy
+	}
+	if lease := service.PersistentUpstreamKeyLeaseFromContext(req.Context()); lease != nil {
+		batch := strings.HasPrefix(lease.Member, "batch:")
+		if (batch && lease.Member != service.BatchImageKeyRequestMember(req)) ||
+			(!batch && !strings.HasSuffix(req.URL.Path, "/realtime/calls")) ||
+			!samePersistentCredentials(lease.Fingerprints, config.UpstreamCredentialFingerprints(req)) {
 			return req, nil, service.ErrUpstreamKeyPolicy
 		}
-		if err := s.CheckLiveUpstreamKeySlots(req.Context(), lease); err != nil {
+		if err := s.CheckPersistentUpstreamKeySlots(req.Context(), lease); err != nil {
 			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
 		}
-		if err := s.upstreamKeyLimiter.confirmLivePolicy(req.Context(), lease); err != nil {
-			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
+		if !batch || service.BatchImageKeyCreationMember(req) != "" {
+			if err := s.upstreamKeyLimiter.confirmPersistentPolicy(req.Context(), lease); err != nil {
+				return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
+			}
 		}
 		// The controller owns this member, independently of body close/cancel.
 		return req, func(*http.Response, error) {}, nil

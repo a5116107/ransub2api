@@ -100,10 +100,10 @@ func (w *batchImageDownloadLimitWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func NewBatchImageDownloadService(repo BatchImageRepository, accountRepo AccountRepository, limiter BatchImageDownloadLimiter, cfg *config.Config) *BatchImageDownloadService {
+func NewBatchImageDownloadService(repo BatchImageRepository, accountRepo AccountRepository, limiter BatchImageDownloadLimiter, upstream HTTPUpstream, cfg *config.Config) *BatchImageDownloadService {
 	return &BatchImageDownloadService{
 		Repo:             repo,
-		ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg),
+		ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg, upstream),
 		AccountResolver:  &BatchImageAccountRepositoryResolver{Repo: accountRepo},
 		Limiter:          limiter,
 		Config:           cfg,
@@ -151,14 +151,14 @@ func (s *BatchImageDownloadService) OpenItemContent(ctx context.Context, owner B
 	if err != nil {
 		return nil, err
 	}
-	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount)
+	ctx, err = s.ProviderRegistry.PrepareRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount, s.Repo)
 	if err != nil {
 		return nil, err
 	}
 	r, _, err := provider.OpenResult(ctx, job, account)
 	if err != nil {
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
-			return nil, ErrBatchImageRouteUnavailable
+		if isBatchImageAdmissionError(err) {
+			return nil, err
 		}
 		return nil, ErrBatchImageResultMissing.WithCause(err)
 	}
@@ -166,8 +166,8 @@ func (s *BatchImageDownloadService) OpenItemContent(ctx context.Context, owner B
 
 	line, err := findBatchImageLineImages(r, item.CustomID)
 	if err != nil {
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
-			return nil, ErrBatchImageRouteUnavailable
+		if isBatchImageAdmissionError(err) {
+			return nil, err
 		}
 		return nil, err
 	}
@@ -246,14 +246,14 @@ func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchIm
 	if err != nil {
 		return nil, err
 	}
-	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount)
+	ctx, err = s.ProviderRegistry.PrepareRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount, s.Repo)
 	if err != nil {
 		return nil, err
 	}
 	r, _, err := provider.OpenResult(ctx, job, account)
 	if err != nil {
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
-			return nil, ErrBatchImageRouteUnavailable
+		if isBatchImageAdmissionError(err) {
+			return nil, err
 		}
 		return nil, ErrBatchImageResultMissing.WithCause(err)
 	}
@@ -266,8 +266,8 @@ func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchIm
 		// An interrupted download must not become a valid partial ZIP. In
 		// particular, Close would commit an empty success response before
 		// the HTTP handler has a chance to return the actual error.
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
-			return result, ErrBatchImageRouteUnavailable
+		if isBatchImageAdmissionError(err) {
+			return result, err
 		}
 		if errors.Is(err, errBatchImageDownloadSizeExceeded) {
 			return result, ErrBatchImageDownloadTooLarge.WithCause(err)

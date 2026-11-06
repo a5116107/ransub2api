@@ -559,22 +559,22 @@ func (s *OpenAIGatewayService) createUpstreamLiveCall(
 	upstreamReq.Header.Set("Accept", "application/sdp")
 	upstreamReq.Header.Set(liveAttestationHeader, attestation)
 	applyLiveUpstreamIdentityHeaders(upstreamReq.Header)
-	var keyLease *LiveUpstreamKeyLease
-	keyAuthority, hasAuthority := s.httpUpstream.(LiveUpstreamKeyConcurrency)
+	var keyLease *PersistentUpstreamKeyLease
+	keyAuthority, hasAuthority := s.httpUpstream.(PersistentUpstreamKeyConcurrency)
 	if hasAuthority {
-		keyLease, err = keyAuthority.AcquireLiveUpstreamKeySlots(ctx, upstreamReq)
+		keyLease, err = keyAuthority.AcquirePersistentUpstreamKeySlots(ctx, upstreamReq)
 		if err != nil {
 			return nil, err
 		}
 		if keyLease != nil {
-			upstreamReq = upstreamReq.WithContext(WithLiveUpstreamKeyLease(upstreamReq.Context(), keyLease))
+			upstreamReq = upstreamReq.WithContext(WithPersistentUpstreamKeyLease(upstreamReq.Context(), keyLease))
 		}
 	} else if s.cfg != nil && (s.cfg.Gateway.UpstreamKeyConcurrency.Configured() || s.cfg.Runtime.RegionalConcurrencyFile != "" || s.cfg.Runtime.RegionalSchedulerFile != "") {
 		return nil, ErrUpstreamKeyPolicy
 	}
 	releaseKeyLease := func() {
 		if keyLease != nil {
-			_ = keyAuthority.ReleaseLiveUpstreamKeySlots(context.WithoutCancel(ctx), keyLease)
+			_ = keyAuthority.ReleasePersistentUpstreamKeySlots(context.WithoutCancel(ctx), keyLease)
 		}
 	}
 	uncertain := func(cause error) error {
@@ -1081,8 +1081,8 @@ func (s *OpenAIGatewayService) refreshLiveLease(record *LiveCallRecord) bool {
 		return false
 	}
 	if record.UpstreamKeyLease != nil {
-		authority, ok := s.httpUpstream.(LiveUpstreamKeyConcurrency)
-		return ok && authority.CheckLiveUpstreamKeySlots(ctx, record.UpstreamKeyLease) == nil
+		authority, ok := s.httpUpstream.(PersistentUpstreamKeyConcurrency)
+		return ok && authority.CheckPersistentUpstreamKeySlots(ctx, record.UpstreamKeyLease) == nil
 	}
 	return true
 }
@@ -1115,9 +1115,9 @@ func (s *OpenAIGatewayService) finalizeLiveCall(record *LiveCallRecord, upstream
 	// directly connected media session stopped. Only confirmed upstream closure
 	// releases its persistent member; unknown sessions require reconciliation.
 	if upstreamEnded && record.UpstreamKeyLease != nil {
-		if authority, ok := s.httpUpstream.(LiveUpstreamKeyConcurrency); ok {
+		if authority, ok := s.httpUpstream.(PersistentUpstreamKeyConcurrency); ok {
 			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
-			_ = authority.ReleaseLiveUpstreamKeySlots(releaseCtx, record.UpstreamKeyLease)
+			_ = authority.ReleasePersistentUpstreamKeySlots(releaseCtx, record.UpstreamKeyLease)
 			releaseCancel()
 		}
 	}

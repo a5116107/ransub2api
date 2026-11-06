@@ -31,10 +31,10 @@ type BatchImageCleanupService struct {
 	mu     sync.Mutex
 }
 
-func NewBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config) *BatchImageCleanupService {
+func NewBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, upstream HTTPUpstream, cfg *config.Config) *BatchImageCleanupService {
 	return &BatchImageCleanupService{
 		Repo:             repo,
-		ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg),
+		ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg, upstream),
 		AccountResolver:  &BatchImageAccountRepositoryResolver{Repo: accountRepo},
 		Config:           cfg,
 	}
@@ -218,8 +218,8 @@ func (s *BatchImageCleanupService) cleanupJob(ctx context.Context, job *BatchIma
 		if errors.Is(err, ErrBatchImageProviderUnsafeCleanupPath) {
 			return ErrBatchImageCleanupUnsafePath
 		}
-		if errors.Is(err, ErrBatchImageRouteUnavailable) {
-			return ErrBatchImageRouteUnavailable
+		if isBatchImageAdmissionError(err) {
+			return err
 		}
 		return ErrBatchImageProviderCleanupFailed
 	}
@@ -246,7 +246,7 @@ func (s *BatchImageCleanupService) callProviderCleanup(ctx context.Context, job 
 	if err != nil {
 		return ErrBatchImageRouteUnavailable
 	}
-	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount)
+	ctx, err = s.ProviderRegistry.PrepareRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount, s.Repo)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"go.uber.org/zap"
 )
 
 type BatchImageWorkerRuntime struct {
@@ -29,12 +31,13 @@ func ProvideBatchImageWorkerRuntime(
 	usageLogRepo UsageLogRepository,
 	pricing *BatchImageModelPricingResolver,
 	authCache APIKeyAuthCacheInvalidator,
+	upstream HTTPUpstream,
 	cfg *config.Config,
 ) *BatchImageWorkerRuntime {
 	processor := &BatchImagePipelineProcessor{
 		ProviderProcessor: &BatchImageProviderProcessor{
 			Repo:             repo,
-			ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg),
+			ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg, upstream),
 			AccountResolver:  &BatchImageAccountRepositoryResolver{Repo: accountRepo},
 			BillingRepo:      billingRepo,
 			AuthCache:        authCache,
@@ -50,12 +53,13 @@ func ProvideBatchImageWorkerRuntime(
 	}
 	runtime := NewBatchImageWorkerRuntime(NewBatchImageWorker(queue, processor, NewBatchImageWorkerOptionsFromConfig(cfg)), cfg)
 	runtime.billingRecovery = &BatchImageBillingRecoveryService{
-		Repo:       repo,
-		Billing:    billingRepo,
-		AuthCache:  authCache,
-		Queue:      queue,
-		StaleAfter: NewBatchImageWorkerOptionsFromConfig(cfg).StaleActiveAfter,
-		Limit:      NewBatchImageWorkerOptionsFromConfig(cfg).RecoverLimit,
+		ProviderRegistry: processor.ProviderProcessor.ProviderRegistry,
+		Repo:             repo,
+		Billing:          billingRepo,
+		AuthCache:        authCache,
+		Queue:            queue,
+		StaleAfter:       NewBatchImageWorkerOptionsFromConfig(cfg).StaleActiveAfter,
+		Limit:            NewBatchImageWorkerOptionsFromConfig(cfg).RecoverLimit,
 	}
 	startBackgroundService(cfg, runtime)
 	return runtime
@@ -110,6 +114,9 @@ func (r *BatchImageWorkerRuntime) runBillingRecovery(ctx context.Context) {
 			return
 		}
 		_, _ = r.billingRecovery.ReleaseStaleUnsubmittedOnce(ctx)
+		if _, err := r.billingRecovery.ReleaseConfirmedUpstreamKeyOnce(ctx); err != nil && ctx.Err() == nil {
+			logger.L().Warn("batch_image.recovery_key_release_failed", zap.Error(err))
+		}
 		sleepOrDone(ctx, interval)
 	}
 }

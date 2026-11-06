@@ -153,6 +153,9 @@ func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	liveClient := redis.NewClient(&redis.Options{Addr: address, DB: 1})
 	t.Cleanup(func() { require.NoError(t, liveClient.Close()) })
 	testUpstreamKeyLivePersistence(t, liveClient, func() {})
+	batchClient := redis.NewClient(&redis.Options{Addr: address, DB: 2})
+	t.Cleanup(func() { require.NoError(t, batchClient.Close()) })
+	testUpstreamKeyBatchPersistence(t, batchClient, func() {})
 }
 
 func testUpstreamKeyCompetition(t *testing.T, client *redis.Client) {
@@ -236,16 +239,16 @@ func TestUpstreamKeyCredentialsAndFailureBoundaries(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	s := &httpUpstreamService{upstreamKeyLimiter: newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), client, nil)}
-	_, finish, err := s.beginUpstreamKeyRequest(req)
+	_, finish, err := s.BeginUpstreamKeyRequest(req)
 	require.NoError(t, err)
 	finish(nil, io.ErrUnexpectedEOF)
 	require.Zero(t, client.ZCard(t.Context(), "concurrency:upstream_key:slots:"+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
 	req.URL.Path = "/v1/realtime/calls"
-	_, _, err = s.beginUpstreamKeyRequest(req)
+	_, _, err = s.BeginUpstreamKeyRequest(req)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
 	req.URL.Path = "/v1/responses"
 	s.upstreamKeyLimiter = newUpstreamKeyLimiter(upstreamKeyTestConfig(1, 1), nil, nil)
-	_, _, err = s.beginUpstreamKeyRequest(req)
+	_, _, err = s.BeginUpstreamKeyRequest(req)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy, "missing shared authority must fail closed")
 }
 
@@ -263,7 +266,7 @@ func TestUpstreamKeyCancellationReleasesOnlyOwnedLease(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	req := httptest.NewRequest(http.MethodGet, "http://fixture/v1/responses", nil).WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer supplier-fixture")
-	_, finish, err := s.beginUpstreamKeyRequest(req)
+	_, finish, err := s.BeginUpstreamKeyRequest(req)
 	require.NoError(t, err)
 	response := &http.Response{Body: io.NopCloser(strings.NewReader("done"))}
 	finish(response, nil)

@@ -381,6 +381,10 @@ func (p *fakeProcessorProvider) Cleanup(context.Context, *BatchImageJob, *Accoun
 }
 
 type fakeBatchImageRepository struct {
+	keyBound      map[string]bool
+	keyBindErr    error
+	keyConfirmErr error
+	keyReleaseErr error
 	jobs          map[string]*BatchImageJob
 	items         map[string][]CreateBatchImageItemParams
 	counts        map[string]BatchImageCounts
@@ -392,12 +396,67 @@ type fakeBatchImageRepository struct {
 
 func newFakeBatchImageRepository() *fakeBatchImageRepository {
 	return &fakeBatchImageRepository{
+		keyBound:    make(map[string]bool),
 		jobs:        make(map[string]*BatchImageJob),
 		items:       make(map[string][]CreateBatchImageItemParams),
 		counts:      make(map[string]BatchImageCounts),
 		transitions: make(map[string][]string),
 		events:      make(map[string][]string),
 	}
+}
+
+func (r *fakeBatchImageRepository) BindBatchImageUpstreamKeyLease(_ context.Context, batchID, route string, lease *PersistentUpstreamKeyLease) error {
+	if r.keyBindErr != nil {
+		return r.keyBindErr
+	}
+	job := r.jobs[batchID]
+	if job == nil || job.Status != BatchImageJobStatusUploading || job.RouteFingerprint != route || r.keyBound[batchID] || !lease.MatchesBatch(batchID) {
+		return ErrBatchImageSharedKeyUnavailable
+	}
+	if r.keyBound == nil {
+		r.keyBound = make(map[string]bool)
+	}
+	r.keyBound[batchID] = true
+	job.UpstreamKeyLease = lease
+	return nil
+}
+
+func (r *fakeBatchImageRepository) ConfirmBatchImageUpstreamKeyTerminal(_ context.Context, batchID string, lease *PersistentUpstreamKeyLease) error {
+	if r.keyConfirmErr != nil {
+		return r.keyConfirmErr
+	}
+	job := r.jobs[batchID]
+	if job == nil || !r.keyBound[batchID] || job.UpstreamKeyLease == nil || job.UpstreamKeyLease.Member != lease.Member || lease.Validate() != nil {
+		return ErrBatchImageSharedKeyUnavailable
+	}
+	if job.UpstreamKeyTerminalAt == nil {
+		now := time.Now()
+		job.UpstreamKeyTerminalAt = &now
+	}
+	return nil
+}
+
+func (r *fakeBatchImageRepository) MarkBatchImageUpstreamKeyReleased(_ context.Context, batchID string, lease *PersistentUpstreamKeyLease) error {
+	if r.keyReleaseErr != nil {
+		return r.keyReleaseErr
+	}
+	job := r.jobs[batchID]
+	if job == nil || job.UpstreamKeyTerminalAt == nil || job.UpstreamKeyLease.Member != lease.Member || lease.Validate() != nil {
+		return ErrBatchImageSharedKeyUnavailable
+	}
+	now := time.Now()
+	job.UpstreamKeyReleasedAt = &now
+	return nil
+}
+
+func (r *fakeBatchImageRepository) ListBatchImageJobsPendingUpstreamKeyRelease(_ context.Context, _ int) ([]*BatchImageJob, error) {
+	var jobs []*BatchImageJob
+	for _, job := range r.jobs {
+		if job.UpstreamKeyTerminalAt != nil && job.UpstreamKeyReleasedAt == nil {
+			jobs = append(jobs, job)
+		}
+	}
+	return jobs, nil
 }
 
 func (r *fakeBatchImageRepository) CreateBatchImageJob(_ context.Context, params CreateBatchImageJobParams) (*BatchImageJob, error) {

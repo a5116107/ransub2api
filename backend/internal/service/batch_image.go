@@ -68,7 +68,7 @@ var (
 	ErrBatchImageGroupDisabled              = infraerrors.New(http.StatusForbidden, "BATCH_IMAGE_GROUP_DISABLED", "batch image API is disabled for this group")
 	ErrBatchImageInvalidModel               = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_INVALID_MODEL", "batch image model is required")
 	ErrBatchImageNoAccountAvailable         = infraerrors.New(http.StatusBadGateway, "BATCH_IMAGE_NO_ACCOUNT_AVAILABLE", "no compatible batch image account is available")
-	ErrBatchImageSharedKeyUnavailable       = infraerrors.New(http.StatusServiceUnavailable, "BATCH_IMAGE_SHARED_KEY_UNAVAILABLE", "batch image submission is unavailable while shared upstream key limits are configured")
+	ErrBatchImageSharedKeyUnavailable       = infraerrors.New(http.StatusServiceUnavailable, "BATCH_IMAGE_SHARED_KEY_UNAVAILABLE", "batch image shared upstream key admission is temporarily unavailable")
 	ErrBatchImageSubmitUnconfirmed          = infraerrors.New(http.StatusConflict, "BATCH_IMAGE_SUBMIT_UNCONFIRMED", "provider submission outcome is unconfirmed; query the existing batch before submitting another request")
 	ErrBatchImageCancelUnconfirmed          = infraerrors.New(http.StatusConflict, "BATCH_IMAGE_CANCEL_UNCONFIRMED", "batch submission may be running remotely; cancellation requires a confirmed provider job")
 	ErrBatchImageRouteUnavailable           = infraerrors.New(http.StatusServiceUnavailable, "BATCH_IMAGE_ROUTE_UNAVAILABLE", "the batch creation route is unavailable; restore its original account and provider configuration")
@@ -104,22 +104,25 @@ var (
 )
 
 type BatchImageJob struct {
-	RouteFingerprint  string
-	ID                int64
-	BatchID           string
-	UserID            int64
-	APIKeyID          *int64
-	AccountID         *int64
-	Provider          string
-	Model             string
-	TaskName          string
-	ParentBatchID     *string
-	Status            string
-	ProviderJobName   *string
-	ProviderInputRef  *string
-	ProviderOutputRef *string
-	GCSInputURI       *string
-	GCSOutputURI      *string
+	UpstreamKeyLease      *PersistentUpstreamKeyLease
+	UpstreamKeyTerminalAt *time.Time
+	UpstreamKeyReleasedAt *time.Time
+	RouteFingerprint      string
+	ID                    int64
+	BatchID               string
+	UserID                int64
+	APIKeyID              *int64
+	AccountID             *int64
+	Provider              string
+	Model                 string
+	TaskName              string
+	ParentBatchID         *string
+	Status                string
+	ProviderJobName       *string
+	ProviderInputRef      *string
+	ProviderOutputRef     *string
+	GCSInputURI           *string
+	GCSOutputURI          *string
 
 	ItemCount      int
 	SuccessCount   int
@@ -310,6 +313,10 @@ type BatchImageEvent struct {
 }
 
 type BatchImageRepository interface {
+	BindBatchImageUpstreamKeyLease(context.Context, string, string, *PersistentUpstreamKeyLease) error
+	ConfirmBatchImageUpstreamKeyTerminal(context.Context, string, *PersistentUpstreamKeyLease) error
+	MarkBatchImageUpstreamKeyReleased(context.Context, string, *PersistentUpstreamKeyLease) error
+	ListBatchImageJobsPendingUpstreamKeyRelease(context.Context, int) ([]*BatchImageJob, error)
 	CancelUnsubmittedBatchImageJob(ctx context.Context, batchID string) (bool, error)
 	CreateBatchImageJob(ctx context.Context, params CreateBatchImageJobParams) (*BatchImageJob, error)
 	GetBatchImageJobByBatchID(ctx context.Context, batchID string) (*BatchImageJob, error)
@@ -321,7 +328,7 @@ type BatchImageRepository interface {
 	// TouchBatchImageJobSubmitting 刷新未提交（created/uploading）job 的 updated_at，
 	// 作为慢提交期间的心跳，防止被 stale 恢复扫描误杀。
 	TouchBatchImageJobSubmitting(ctx context.Context, batchID string) error
-	// FailStaleUnsubmittedBatchImageJob 原子地将仍处于 created/uploading 且
+	// FailStaleUnsubmittedBatchImageJob 原子地将仍处于 created 且
 	// provider_job_name 为空、updated_at 早于 cutoff 的 job 转为 failed。
 	// 返回 false 表示 job 已被并发推进（如已提交成功），调用方不得释放冻结。
 	FailStaleUnsubmittedBatchImageJob(ctx context.Context, batchID string, cutoff time.Time, code, message string) (bool, error)

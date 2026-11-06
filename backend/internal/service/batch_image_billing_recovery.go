@@ -15,12 +15,35 @@ const (
 )
 
 type BatchImageBillingRecoveryService struct {
-	Repo       BatchImageRepository
-	Billing    UsageBillingRepository
-	AuthCache  APIKeyAuthCacheInvalidator
-	Queue      BatchImageQueue
-	StaleAfter time.Duration
-	Limit      int
+	ProviderRegistry *BatchImageProviderRegistry
+	Repo             BatchImageRepository
+	Billing          UsageBillingRepository
+	AuthCache        APIKeyAuthCacheInvalidator
+	Queue            BatchImageQueue
+	StaleAfter       time.Duration
+	Limit            int
+}
+
+// This scan is independent of Redis queue membership and local job status.
+// A process may stop after terminal confirmation but before the release receipt.
+func (s *BatchImageBillingRecoveryService) ReleaseConfirmedUpstreamKeyOnce(ctx context.Context) (int, error) {
+	if s == nil || s.Repo == nil || s.ProviderRegistry == nil {
+		return 0, nil
+	}
+	jobs, err := s.Repo.ListBatchImageJobsPendingUpstreamKeyRelease(ctx, s.Limit)
+	if err != nil {
+		return 0, err
+	}
+	released := 0
+	var releaseErr error
+	for _, job := range jobs {
+		if err := s.ProviderRegistry.releaseUpstreamKey(ctx, s.Repo, job, false); err != nil {
+			releaseErr = errors.Join(releaseErr, err)
+			continue
+		}
+		released++
+	}
+	return released, releaseErr
 }
 
 func (s *BatchImageBillingRecoveryService) ReleaseStaleUnsubmittedOnce(ctx context.Context) (int, error) {

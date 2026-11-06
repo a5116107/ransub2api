@@ -261,7 +261,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	}
 	var finish func(*http.Response, error)
 	var admissionErr error
-	req, finish, admissionErr = s.beginUpstreamKeyRequest(req)
+	req, finish, admissionErr = s.BeginUpstreamKeyRequest(req)
 	if admissionErr != nil {
 		return nil, admissionErr
 	}
@@ -364,7 +364,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 	var finish func(*http.Response, error)
 	var admissionErr error
-	req, finish, admissionErr = s.beginUpstreamKeyRequest(req)
+	req, finish, admissionErr = s.BeginUpstreamKeyRequest(req)
 	if admissionErr != nil {
 		return nil, admissionErr
 	}

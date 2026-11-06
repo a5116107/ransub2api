@@ -449,7 +449,7 @@ func mapGeminiClientError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ErrBatchImageRouteUnavailable) {
+	if isBatchImageAdmissionError(err) {
 		return err
 	}
 	var apiErr *GeminiAPIError
@@ -547,6 +547,7 @@ func (c *GeminiBatchHTTPClient) UploadJSONL(ctx context.Context, apiKey string, 
 }
 
 func (c *GeminiBatchHTTPClient) CreateBatch(ctx context.Context, apiKey string, model string, fileName string, displayName string) (*GeminiBatchJob, error) {
+	ctx = context.WithValue(ctx, batchImageKeyCreationKey{}, true)
 	body := map[string]any{
 		"batch": map[string]any{
 			"displayName": displayName,

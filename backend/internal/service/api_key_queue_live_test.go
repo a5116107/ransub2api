@@ -447,7 +447,7 @@ func TestCreateLiveCallSafeRetryRetainsJointLease(t *testing.T) {
 
 type liveKeyHTTPUpstreamStub struct {
 	liveHTTPUpstreamStub
-	lease           *LiveUpstreamKeyLease
+	lease           *PersistentUpstreamKeyLease
 	acquireErr      error
 	transportErr    error
 	checkErr        error
@@ -462,7 +462,7 @@ type liveKeyHTTPUpstreamStub struct {
 	releases        int
 }
 
-func (s *liveKeyHTTPUpstreamStub) AcquireLiveUpstreamKeySlots(_ context.Context, req *http.Request) (*LiveUpstreamKeyLease, error) {
+func (s *liveKeyHTTPUpstreamStub) AcquirePersistentUpstreamKeySlots(_ context.Context, req *http.Request) (*PersistentUpstreamKeyLease, error) {
 	if s.onAcquire != nil {
 		s.onAcquire()
 	}
@@ -470,16 +470,16 @@ func (s *liveKeyHTTPUpstreamStub) AcquireLiveUpstreamKeySlots(_ context.Context,
 		return nil, s.acquireErr
 	}
 	fingerprints := config.UpstreamCredentialFingerprints(req)
-	s.lease = &LiveUpstreamKeyLease{Authority: "redis", Member: "live:fixture", Fingerprints: fingerprints, Resources: []LiveUpstreamKeyResource{{Fingerprint: fingerprints[0]}}}
+	s.lease = &PersistentUpstreamKeyLease{Authority: "redis", Member: "live:fixture", Fingerprints: fingerprints, Resources: []PersistentUpstreamKeyResource{{Fingerprint: fingerprints[0]}}}
 	return s.lease, nil
 }
 
-func (s *liveKeyHTTPUpstreamStub) CheckLiveUpstreamKeySlots(context.Context, *LiveUpstreamKeyLease) error {
+func (s *liveKeyHTTPUpstreamStub) CheckPersistentUpstreamKeySlots(context.Context, *PersistentUpstreamKeyLease) error {
 	s.checks++
 	return s.checkErr
 }
 
-func (s *liveKeyHTTPUpstreamStub) ReleaseLiveUpstreamKeySlots(context.Context, *LiveUpstreamKeyLease) error {
+func (s *liveKeyHTTPUpstreamStub) ReleasePersistentUpstreamKeySlots(context.Context, *PersistentUpstreamKeyLease) error {
 	s.releases++
 	return s.releaseErr
 }
@@ -550,7 +550,7 @@ func TestLiveSharedKeyCreationOutcomeAndNoUnsafeReplay(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, upstream.lease, created.UpstreamKeyLease)
-				require.Same(t, upstream.lease, LiveUpstreamKeyLeaseFromContext(upstream.request.Context()))
+				require.Same(t, upstream.lease, PersistentUpstreamKeyLeaseFromContext(upstream.request.Context()))
 			}
 			require.Equal(t, test.uncertain, errors.Is(err, ErrLiveUpstreamUncertain))
 			if test.uncertain {
@@ -623,7 +623,7 @@ func TestLiveSharedKeyFinalizationRequiresUpstreamClosure(t *testing.T) {
 			upstream := &liveKeyHTTPUpstreamStub{}
 			store := &liveTestStore{}
 			fingerprint := config.UpstreamKeyFingerprint("live-finalize-fixture")
-			record := &LiveCallRecord{CallID: "call_fixture", CallHash: hashLiveCallID("call_fixture"), LeaseID: "joint-fixture", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour), UpstreamKeyLease: &LiveUpstreamKeyLease{Authority: "redis", Member: "live:fixture", Fingerprints: []string{fingerprint}, Resources: []LiveUpstreamKeyResource{{Fingerprint: fingerprint}}}}
+			record := &LiveCallRecord{CallID: "call_fixture", CallHash: hashLiveCallID("call_fixture"), LeaseID: "joint-fixture", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour), UpstreamKeyLease: &PersistentUpstreamKeyLease{Authority: "redis", Member: "live:fixture", Fingerprints: []string{fingerprint}, Resources: []PersistentUpstreamKeyResource{{Fingerprint: fingerprint}}}}
 			require.NoError(t, store.SaveLiveCall(t.Context(), record, time.Hour))
 			usage := &liveTestUsageRepo{}
 			svc := &OpenAIGatewayService{cache: store, httpUpstream: upstream, concurrencyService: NewConcurrencyService(&liveTestConcurrencyCache{}), usageLogRepo: usage}
@@ -655,8 +655,8 @@ func TestLiveSharedKeyClosureEvidenceAcrossControllers(t *testing.T) {
 				record := &LiveCallRecord{CallID: "call_fixture", CallHash: hashLiveCallID("call_fixture"),
 					AccountID: account.ID, APIKeyID: 9, UserID: 20, LeaseID: "joint-fixture",
 					CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute), Controller: LiveControllerPending,
-					UpstreamKeyLease: &LiveUpstreamKeyLease{Authority: "redis", Member: "live:fixture",
-						Fingerprints: []string{fingerprint}, Resources: []LiveUpstreamKeyResource{{Fingerprint: fingerprint}}}}
+					UpstreamKeyLease: &PersistentUpstreamKeyLease{Authority: "redis", Member: "live:fixture",
+						Fingerprints: []string{fingerprint}, Resources: []PersistentUpstreamKeyResource{{Fingerprint: fingerprint}}}}
 				cipher := newLiveAttestationCipher(&config.Config{JWT: config.JWTConfig{Secret: "live-close-fixture"}})
 				var err error
 				record.AttestationCiphertext, err = cipher.Encrypt("fixture-attestation")
