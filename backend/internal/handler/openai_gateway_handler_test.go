@@ -939,7 +939,7 @@ func TestOpenAIResponses_AcceptsHTTPContinuationPreviousResponseIDBeforeRouting(
 	})
 
 	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
-	require.NoError(t, h.gatewayService.BindOpenAIHTTPResponseOwner(context.Background(), groupID, "resp_123456", service.OpenAIHTTPResponseOwner{UserID: 1, APIKeyID: 101, Scope: service.OpenAIWSContinuationScope{AccountID: 42, RouteFingerprint: [32]byte{1}, Model: "gpt-5.1"}}))
+	require.NoError(t, h.gatewayService.BindOpenAIResponseOwner(context.Background(), groupID, "resp_123456", service.OpenAIResponseOwner{UserID: 1, APIKeyID: 101, Scope: service.OpenAIWSContinuationScope{AccountID: 42, RouteFingerprint: [32]byte{1}, Model: "gpt-5.1"}}))
 	h.Responses(c)
 
 	require.NotEqual(t, http.StatusBadRequest, w.Code)
@@ -966,7 +966,7 @@ func TestOpenAIResponses_RejectsHTTPContinuationOwnedByAnotherUser(t *testing.T)
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 2, Concurrency: 1})
 
 	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
-	require.NoError(t, h.gatewayService.BindOpenAIHTTPResponseOwner(context.Background(), groupID, "resp_other_tenant", service.OpenAIHTTPResponseOwner{UserID: 1, APIKeyID: 101, Scope: service.OpenAIWSContinuationScope{AccountID: 42, RouteFingerprint: [32]byte{1}, Model: "gpt-5.1"}}))
+	require.NoError(t, h.gatewayService.BindOpenAIResponseOwner(context.Background(), groupID, "resp_other_tenant", service.OpenAIResponseOwner{UserID: 1, APIKeyID: 101, Scope: service.OpenAIWSContinuationScope{AccountID: 42, RouteFingerprint: [32]byte{1}, Model: "gpt-5.1"}}))
 	h.Responses(c)
 
 	require.Equal(t, http.StatusBadRequest, w.Code)

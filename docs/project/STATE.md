@@ -3,11 +3,11 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2 HTTP Responses创建来源（普通/透传/WS加速）与SIWC拒绝静默重放；复用原拥有者，不运行CI/推送/部署/生产迁移。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，基于54b8f3e；HTTP来源含WS加速与证据随本次本地提交交付。
-- 证据：59464退出0：三包race2.068/3.949/1.357s、相关回归92.382/16.807s、默认及integration四包编译、unit vet通过；52602退出0且0 issues。新WS四例先失败2.253s后通过。
-- 下一动作：D2继续原生WS response ID、其他缓存域/额度及D3–D9。无运行中的验证句柄，不关闭父任务。
-- 等待：Gemini验证PG已停止、schema为0；tmp/gemini-route-pg删除被策略拒绝，目录待拥有者手工清理；历史等待保持。20项12 done、3 in_progress、5 pending。
+- 任务：D2原生WS response ID来源子范围已验证，含同值重复model兼容修复；本地交付，不运行CI/推送/部署/生产迁移。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，基于c7bd5d4；HTTP/WS唯一拥有者及证据随本次本地提交交付。
+- 证据：12021回归110.688/18.215s；75349三包race20.722/2.713/1.442s；57831 lint为0 issues；41736默认/integration编译与vet退出0；40737真实Redis显式PASS。
+- 下一动作：D2其他协议/工具缓存域及非标准额度，再补D3–D9；39个原生WS场景与兼容边界已闭合，不关闭D2父任务。无运行中的本任务验证句柄。
+- 等待：历史清理/符号链接与生产等待不变；20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、发送绑定、公共/区域共享Key及Live交接、turn-state来源与Gemini显式缓存线路归属已验证；Responses共享账号绑定、HTTP创建来源（含WS加速/SIWC边界）已验证；原生WS response ID、其他缓存域及非标准额度待验收 |
+| D2 | in_progress | D2.1–D2.4、发送绑定、公共/区域共享Key及Live交接、turn-state来源与Gemini显式缓存线路归属已验证；Responses共享账号绑定及HTTP/原生WS创建来源（含WS加速/SIWC边界）已验证，39场景及双向续接通过；其他缓存域及非标准额度待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -53,7 +53,7 @@
 
 ## 下一项工作
 
-D2继续原生WS response ID、其他缓存域及非标准出站额度（含批量持久额度/旧任务），再补D3作用域、D4来源及D5–D9。共享策略启用前排空旧版本及远端批量任务；受限Live按4.4.2确认持久存储与远端结束；区域沿原SQL预算，局部测试不替代升级/生产验收。
+D2继续其他协议/工具缓存域及非标准出站额度（含批量持久额度/旧任务），再补D3作用域、D4来源及D5–D9。共享策略启用前排空旧版本及远端批量任务；受限Live按4.4.2确认持久存储与远端结束；区域沿原SQL预算，局部测试不替代升级/生产验收。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理
@@ -63,7 +63,7 @@ D2继续原生WS response ID、其他缓存域及非标准出站额度（含批�
 - `backend/tmp/admin-key-pg-d8`删除同被拒绝；既有隔离实例由原拥有者管理，不启动/停止。测试schema已清零；解除：资源拥有者停止实例并手动清理准确目录。
 - `backend/tmp/availability-non5xx-regression`4文件73491bytes，旧源码overlay验证完成，删除被拒绝；解除：拥有者手动删除准确目录。
 - `backend/tmp/regional-key-pg`停止及删除的整条命令被自动审批`blocked by policy`拒绝，未执行；恢复确认55449实例PID12708仍运行。保留该独立夹具，拥有者停止并手动清理；不改用其他工具绕过。
-- 本轮overlay临时文件自动清除；准确空目录`backend/tmp/live-key-verification`的边界校验后删除命令仍被自动审批`blocked by policy`拒绝，整条未执行。拥有者手动删除该空目录；不重试其他删除工具。
-- 本轮`backend/tmp/ws-turn-state-verification`的边界校验与`Remove-Item -WhatIf`删除预演整条被自动审批`blocked by policy`拒绝，未执行实际删除。保留13文件77603133bytes，拥有者按准确目录手动清理；不换工具/移动绕过。
+- 历史overlay已清除；准确空目录`backend/tmp/live-key-verification`的边界校验后删除命令仍被自动审批`blocked by policy`拒绝，整条未执行。拥有者手动删除该空目录；不重试其他删除工具。
+- 历史`backend/tmp/ws-turn-state-verification`的边界校验与`Remove-Item -WhatIf`删除预演整条被自动审批`blocked by policy`拒绝，未执行实际删除。保留13文件77603133bytes，拥有者按准确目录手动清理；不换工具/移动绕过。
 
-- 本轮`backend/tmp/gemini-route-pg`递归删除命令被自动审批`blocked by policy`拒绝，整条未执行；随后独立停止55451成功，测试schema为0。保留约42MB目录，拥有者手工删除准确路径；不重试删除/移动绕过。
+- 历史`backend/tmp/gemini-route-pg`递归删除命令被自动审批`blocked by policy`拒绝，整条未执行；随后独立停止55451成功，测试schema为0。保留约42MB目录，拥有者手工删除准确路径；不重试删除/移动绕过。

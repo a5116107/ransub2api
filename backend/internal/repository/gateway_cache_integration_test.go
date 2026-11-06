@@ -27,13 +27,13 @@ func (s *GatewayCacheSuite) TestHTTPResponseOwnerSharedRecord() {
 	// Two independent stores use the actual Redis adapter, not a local map.
 	writer := service.NewOpenAIWSStateStore(NewGatewayCache(s.rdb))
 	reader := service.NewOpenAIWSStateStore(NewGatewayCache(s.rdb))
-	require.NoError(t, writer.BindHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture", httpResponseOwnerFixture(101, 201), time.Minute))
-	owner, found, err := reader.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.NoError(t, writer.BindResponseOwner(s.ctx, 17, "resp_shared_fixture", httpResponseOwnerFixture(101, 201), time.Minute))
+	owner, found, err := reader.GetResponseOwner(s.ctx, 17, "resp_shared_fixture")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.EqualValues(t, 101, owner.UserID)
 	require.EqualValues(t, 201, owner.APIKeyID)
-	keys := httpResponseOwnerKeys(17, "resp_shared_fixture")
+	keys := responseOwnerKeys(17, "resp_shared_fixture")
 	for _, ownerKey := range keys {
 		ttl, err := s.rdb.PTTL(s.ctx, ownerKey).Result()
 		require.NoError(t, err)
@@ -41,11 +41,11 @@ func (s *GatewayCacheSuite) TestHTTPResponseOwnerSharedRecord() {
 		require.LessOrEqual(t, ttl, time.Minute)
 	}
 	require.NoError(t, s.rdb.Set(s.ctx, keys[0], "v99:101:201", time.Minute).Err())
-	_, found, err = writer.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
-	require.ErrorIs(t, err, errHTTPResponseOwnerUnavailable)
+	_, found, err = writer.GetResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.ErrorIs(t, err, errResponseOwnerUnavailable)
 	require.False(t, found, "a warm writer must honor authoritative version rejection")
 	require.NoError(t, s.rdb.Del(s.ctx, keys...).Err())
-	_, found, err = writer.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	_, found, err = writer.GetResponseOwner(s.ctx, 17, "resp_shared_fixture")
 	require.NoError(t, err)
 	require.False(t, found)
 }

@@ -85,10 +85,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	applyStagedCodexFingerprintClientMetadata(c, account, payload)
 	previousResponseID := openAIWSPayloadString(payload, "previous_response_id")
 	if c != nil {
-		if _, authenticated := c.Get(openAIHTTPResponseOwnerContextKey); authenticated {
+		if _, authenticated := c.Get(openAIResponseOwnerContextKey); authenticated {
 			// Only these final fields define continuation scope; do not copy a
 			// potentially large conversation just to validate its provenance.
-			ctx, err = s.bindOpenAIHTTPContinuation(ctx, c, account, payloadAsJSONBytes(map[string]any{
+			ctx, err = s.bindOpenAIResponseContinuation(ctx, c, account, payloadAsJSONBytes(map[string]any{
 				"model": payload["model"], "service_tier": payload["service_tier"], "previous_response_id": payload["previous_response_id"],
 			}))
 			if err != nil {
@@ -533,7 +533,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		return nil, err
 	}
 	sendRequest := func(value any) error {
-		if err := s.guardOpenAIHTTPContinuation(ctx, account); err != nil {
+		if err := s.guardOpenAIResponseContinuation(ctx, account); err != nil {
 			return err
 		}
 		if regionalMeterAttemptFrom(ctx) != nil {
@@ -1084,7 +1084,7 @@ readLoop:
 
 	if responseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
-		s.bindHTTPResponseAccount(ctx, c, account, responseID)
+		s.bindResponseAccount(ctx, c, account, responseID, continuationScope)
 		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
 	}
 	if stateStore != nil && storeDisabled && sessionHash != "" {

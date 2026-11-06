@@ -814,7 +814,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if apiKey.GroupID != nil {
 			groupID = *apiKey.GroupID
 		}
-		owned, ownershipErr := h.gatewayService.ValidateOpenAIHTTPResponseOwner(
+		owned, ownershipErr := h.gatewayService.ValidateOpenAIResponseOwner(
 			c.Request.Context(),
 			groupID,
 			previousResponseID,
@@ -830,7 +830,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 	}
-	service.SetOpenAIHTTPResponseOwner(c, subject.UserID, apiKey.ID, previousResponseID)
+	service.SetOpenAIResponseOwner(c, subject.UserID, apiKey.ID, previousResponseID)
 
 	setOpsRequestContext(c, reqModel, reqStream)
 	bindOpenAIPriorityObservation(c, apiKey.GroupID, reqModel, body)
@@ -3016,6 +3016,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
+	service.SetOpenAIResponseOwner(c, subject.UserID, apiKey.ID, previousResponseID)
 	previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
 	if previousResponseID != "" && previousResponseIDKind == service.OpenAIPreviousResponseIDKindMessageID {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "previous_response_id must be a response.id (resp_*), not a message id")

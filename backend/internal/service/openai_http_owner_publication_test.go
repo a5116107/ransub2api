@@ -15,26 +15,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func httpResponseOwnerFixture(userID, apiKeyID int64) OpenAIHTTPResponseOwner {
-	return OpenAIHTTPResponseOwner{UserID: userID, APIKeyID: apiKeyID,
+func httpResponseOwnerFixture(userID, apiKeyID int64) OpenAIResponseOwner {
+	return OpenAIResponseOwner{UserID: userID, APIKeyID: apiKeyID,
 		Scope: OpenAIWSContinuationScope{AccountID: 42, RouteFingerprint: [32]byte{1}, Model: "gpt-5.1"}}
 }
 
 func TestHTTPResponseOwnerRequiresSharedCapability(t *testing.T) {
 	legacy := struct{ GatewayCache }{&stubGatewayCache{}}
 	store := NewOpenAIWSStateStore(legacy)
-	err := store.BindHTTPResponseOwner(t.Context(), 17, "resp_unsupported", httpResponseOwnerFixture(101, 201), time.Minute)
-	require.ErrorIs(t, err, ErrOpenAIHTTPResponseOwnerUnavailable)
-	_, found, err := store.GetHTTPResponseOwner(t.Context(), 17, "resp_unsupported")
-	require.ErrorIs(t, err, ErrOpenAIHTTPResponseOwnerUnavailable)
+	err := store.BindResponseOwner(t.Context(), 17, "resp_unsupported", httpResponseOwnerFixture(101, 201), time.Minute)
+	require.ErrorIs(t, err, ErrOpenAIResponseOwnerUnavailable)
+	_, found, err := store.GetResponseOwner(t.Context(), 17, "resp_unsupported")
+	require.ErrorIs(t, err, ErrOpenAIResponseOwnerUnavailable)
 	require.False(t, found)
 }
 
 func TestHTTPResponseOwnerLocalPublicationKeepsCreationScope(t *testing.T) {
 	ctx := context.Background()
 	store := NewOpenAIWSStateStore(nil)
-	require.NoError(t, store.BindHTTPResponseOwner(ctx, 17, "resp_local", httpResponseOwnerFixture(101, 201), time.Minute))
-	owner, found, err := store.GetHTTPResponseOwner(ctx, 17, "resp_local")
+	require.NoError(t, store.BindResponseOwner(ctx, 17, "resp_local", httpResponseOwnerFixture(101, 201), time.Minute))
+	owner, found, err := store.GetResponseOwner(ctx, 17, "resp_local")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, int64(101), owner.UserID)
@@ -42,8 +42,8 @@ func TestHTTPResponseOwnerLocalPublicationKeepsCreationScope(t *testing.T) {
 	require.Equal(t, httpResponseOwnerFixture(101, 201).Scope, owner.Scope)
 	changed := owner
 	changed.Scope.Model = "gpt-5.4"
-	require.ErrorIs(t, store.BindHTTPResponseOwner(ctx, 17, "resp_local", changed, time.Minute), ErrOpenAIHTTPResponseOwnerUnavailable)
-	unchanged, found, err := store.GetHTTPResponseOwner(ctx, 17, "resp_local")
+	require.ErrorIs(t, store.BindResponseOwner(ctx, 17, "resp_local", changed, time.Minute), ErrOpenAIResponseOwnerUnavailable)
+	unchanged, found, err := store.GetResponseOwner(ctx, 17, "resp_local")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, owner, unchanged)
@@ -66,7 +66,7 @@ func TestHTTPResponseContinuationKeepsCreationScope(t *testing.T) {
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 					groupID := int64(17)
 					c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
-					SetOpenAIHTTPResponseOwner(c, 101, 201, "")
+					SetOpenAIResponseOwner(c, 101, 201, "")
 					return c
 				}
 				build := func(c *gin.Context, body []byte) (*http.Request, error) {
@@ -78,7 +78,7 @@ func TestHTTPResponseContinuationKeepsCreationScope(t *testing.T) {
 				first := newContext()
 				_, err := build(first, []byte(`{"model":"gpt-5.1","input":"first"}`))
 				require.NoError(t, err)
-				svc.bindHTTPResponseAccount(t.Context(), first, account, "resp_creation_scope")
+				svc.bindResponseAccount(t.Context(), first, account, "resp_creation_scope", openAIResponseCreationScope(first))
 				body := []byte(`{"model":"gpt-5.1","previous_response_id":"resp_creation_scope","input":"next"}`)
 				switch change {
 				case "key":
@@ -123,13 +123,13 @@ func TestHTTPResponseContinuationRechecksBeforeSend(t *testing.T) {
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				groupID := int64(17)
 				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
-				SetOpenAIHTTPResponseOwner(c, 101, 201, "")
+				SetOpenAIResponseOwner(c, 101, 201, "")
 				return c
 			}
 			first := newContext()
 			_, err := svc.buildUpstreamRequest(t.Context(), first, account, []byte(`{"model":"gpt-5.1","input":"first"}`), "creation-fixture", false, "", false)
 			require.NoError(t, err)
-			svc.bindHTTPResponseAccount(t.Context(), first, account, "resp_final_scope")
+			svc.bindResponseAccount(t.Context(), first, account, "resp_final_scope", openAIResponseCreationScope(first))
 			request, err := svc.buildUpstreamRequest(t.Context(), newContext(), account, []byte(`{"model":"gpt-5.1","previous_response_id":"resp_final_scope","input":"next"}`), "creation-fixture", false, "", false)
 			require.NoError(t, err)
 			switch change {
@@ -142,7 +142,7 @@ func TestHTTPResponseContinuationRechecksBeforeSend(t *testing.T) {
 				delete(store.responseOwners, openAIWSResponseAccountMapKey(17, "resp_final_scope"))
 				store.responseOwnerMu.Unlock()
 			case "repo_failure":
-				repo.err = ErrOpenAIHTTPResponseOwnerUnavailable
+				repo.err = ErrOpenAIResponseOwnerUnavailable
 			}
 			response, err := svc.doOpenAIUpstream(request, "", account)
 			if change == "same" {
@@ -165,12 +165,12 @@ func TestHTTPResponseOwnerUsesCapturedEgress(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	SetOpenAIHTTPResponseOwner(c, 101, 201, "")
+	SetOpenAIResponseOwner(c, 101, 201, "")
 	scope := openAIWSContinuationScope(account, "gpt-5.1", "priority")
 	svc.guardOpenAICodexTurnStateEcho(c, account, http.Header{}, openAICompatCacheScope{Model: scope.Model, ServiceTier: scope.ServiceTier})
 	account.Credentials["api_key"] = "replacement-fixture"
-	svc.bindHTTPResponseAccount(t.Context(), c, account, "resp_inflight")
-	owner, found, err := svc.getOpenAIWSStateStore().GetHTTPResponseOwner(t.Context(), 0, "resp_inflight")
+	svc.bindResponseAccount(t.Context(), c, account, "resp_inflight", openAIResponseCreationScope(c))
+	owner, found, err := svc.getOpenAIWSStateStore().GetResponseOwner(t.Context(), 0, "resp_inflight")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, scope, owner.Scope, "an in-flight change must not relabel the response")
@@ -181,13 +181,15 @@ func TestHTTPResponseContinuationRejectsAmbiguousOrRemovedState(t *testing.T) {
 	for _, body := range []string{
 		`{"model":"gpt-5.1","input":"lost continuation"}`,
 		`{"model":"gpt-5.1","previous_response_id":"resp_expected","previous_response_id":"resp_other"}`,
+		`{"model":"gpt-5.1","previous_response_id":"resp_expected","previous_response_id":"resp_expected"}`,
 		`{"model":"gpt-5.1","previous_response_id":"resp_expected","Previous_Response_ID":"resp_other"}`,
 		`{"model":"gpt-5.1","model":"gpt-5.4","previous_response_id":"resp_expected"}`,
 		`{"model":"gpt-5.1","service_tier":"default","service_tier":"priority","previous_response_id":"resp_expected"}`,
+		`{"model":"gpt-5.1","service_tier":"default","service_tier":"default","previous_response_id":"resp_expected"}`,
 	} {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-		SetOpenAIHTTPResponseOwner(c, 101, 201, "resp_expected")
+		SetOpenAIResponseOwner(c, 101, 201, "resp_expected")
 		account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "fixture"}}
 		svc := &OpenAIGatewayService{cfg: &config.Config{}}
 		request, err := svc.buildUpstreamRequest(t.Context(), c, account, []byte(body), "fixture", false, "", false)
@@ -216,7 +218,7 @@ func TestHTTPResponseContinuationWSKeepsCreationScope(t *testing.T) {
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				groupID := int64(17)
 				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
-				SetOpenAIHTTPResponseOwner(c, 101, 201, previous)
+				SetOpenAIResponseOwner(c, 101, 201, previous)
 				body := []byte(fmt.Sprintf(`{"model":%q,"service_tier":%q,"previous_response_id":%q,"input":"next","stream":false}`, model, tier, previous))
 				return svc.Forward(t.Context(), c, account, body)
 			}
@@ -224,7 +226,7 @@ func TestHTTPResponseContinuationWSKeepsCreationScope(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, first)
 			<-observations
-			owned, err := svc.ValidateOpenAIHTTPResponseOwner(t.Context(), 17, first.RequestID, 101, 201)
+			owned, err := svc.ValidateOpenAIResponseOwner(t.Context(), 17, first.RequestID, 101, 201)
 			require.NoError(t, err)
 			require.True(t, owned, "an authenticated HTTP request over WS must publish creation evidence")
 			model, tier := "gpt-5.1", ""
@@ -256,7 +258,7 @@ func TestHTTPResponseContinuationSIWCDoesNotDiscardPreviousResponse(t *testing.T
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	SetOpenAIHTTPResponseOwner(c, 101, 201, "resp_expected")
+	SetOpenAIResponseOwner(c, 101, 201, "resp_expected")
 	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	svc := &OpenAIGatewayService{}
 	request, err := svc.buildSIWCRequest(t.Context(), c, account, []byte(`{"model":"gpt-5.1","previous_response_id":"resp_expected","input":"next"}`), "fixture-token")
@@ -277,8 +279,8 @@ func TestHTTPResponseContinuationWSRechecksAfterDial(t *testing.T) {
 	t.Cleanup(svc.CloseOpenAIWSPool)
 	store, ok := svc.getOpenAIWSStateStore().(*defaultOpenAIWSStateStore)
 	require.True(t, ok)
-	owner := OpenAIHTTPResponseOwner{UserID: 101, APIKeyID: 201, Scope: openAIWSContinuationScope(account, "gpt-5.1", "")}
-	require.NoError(t, store.BindHTTPResponseOwner(t.Context(), 17, "resp_before_dial", owner, time.Minute))
+	owner := OpenAIResponseOwner{UserID: 101, APIKeyID: 201, Scope: openAIWSContinuationScope(account, "gpt-5.1", "")}
+	require.NoError(t, store.BindResponseOwner(t.Context(), 17, "resp_before_dial", owner, time.Minute))
 	upstream := newStagedPassthroughConn()
 	svc.getOpenAIWSConnPool().setClientDialerForTest(turnAdmissionDialerFunc(func(context.Context, string, http.Header, string) (openAIWSClientConn, int, http.Header, error) {
 		store.responseOwnerMu.Lock()
@@ -290,7 +292,7 @@ func TestHTTPResponseContinuationWSRechecksAfterDial(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	groupID := int64(17)
 	c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
-	SetOpenAIHTTPResponseOwner(c, 101, 201, "resp_before_dial")
+	SetOpenAIResponseOwner(c, 101, 201, "resp_before_dial")
 	result, err := svc.Forward(t.Context(), c, account, []byte(`{"model":"gpt-5.1","previous_response_id":"resp_before_dial","input":"next","stream":false}`))
 	require.True(t, IsOpenAITurnAdmissionError(err), "revocation during dial must stop the physical frame: %v", err)
 	require.Nil(t, result)

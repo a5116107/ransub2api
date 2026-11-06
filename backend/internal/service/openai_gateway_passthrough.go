@@ -571,7 +571,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 	defer func() { _ = resp.Body.Close() }()
 	serviceTier := extractOpenAIServiceTierFromBody(body)
-	s.bindHTTPResponseAccount(ctx, c, account, responseID)
+	s.bindResponseAccount(ctx, c, account, responseID, openAIResponseCreationScope(c))
 
 	// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 	if !account.IsShadow() {
@@ -708,7 +708,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	// 按本次实际出站的账号/线路/模型/档位校验已知 turn-state 归属，
 	// 并捕获证据供响应记录；独立门票仍走后续原认证逻辑。
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(body))
-	continuationCtx, err := s.bindOpenAIHTTPContinuation(req.Context(), c, account, body)
+	continuationCtx, err := s.bindOpenAIResponseContinuation(req.Context(), c, account, body)
 	if err != nil {
 		return nil, err
 	}

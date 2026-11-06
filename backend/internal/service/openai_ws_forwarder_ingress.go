@@ -881,6 +881,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	parseClientPayload := func(turn int, raw []byte) (openAIWSClientPayload, error) {
+		if turn > 1 {
+			updateOpenAIResponseOwnerContinuation(c, raw)
+		}
 		clientPayloadRaw := append([]byte(nil), raw...)
 		trimmed := bytes.TrimSpace(raw)
 		if len(trimmed) == 0 {
@@ -1229,6 +1232,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if err != nil {
 		return err
 	}
+	if _, err := s.bindOpenAIResponseContinuation(ctx, c, account, firstPayload.payloadRaw); err != nil {
+		return err
+	}
 
 	legacyPayloadBridge := s.shouldBridgeOpenAIWSHTTP(account, firstPayload.payloadBytes, firstPayload.previousResponseID)
 	useHTTPBridge := forceHTTPBridge || legacyPayloadBridge
@@ -1542,8 +1548,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				smartSession.LastResponse = responseID
 			}
 			if responseID != "" && stateStore != nil {
-				ttl := s.openAIWSResponseStickyTTL()
-				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
+				s.bindResponseAccount(ctx, c, account, responseID, openAIResponseCreationScope(c))
 			}
 			nextClientMessage, readErr := readClientMessage(turn + 1)
 			if readErr != nil {
@@ -1836,6 +1841,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
 		}
+		continuationCtx, continuationErr := s.bindOpenAIResponseContinuation(ctx, c, account, payload)
+		if continuationErr != nil {
+			return nil, continuationErr
+		}
 		checkAdmission := func(admissionCtx context.Context) (*Account, error) {
 			latest, admissionErr := s.admitOpenAITurn(admissionCtx, c, account, extractOpenAICodexTicketModel(payload), payload)
 			if admissionErr == nil {
@@ -1855,12 +1864,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			return latest, nil
 		}
-		latest, admissionErr := checkAdmission(ctx)
+		latest, admissionErr := checkAdmission(continuationCtx)
 		if admissionErr != nil {
 			return nil, admissionErr
 		}
 		turnStart := requesttiming.Now(ctx)
-		turnCtx, startDrain, finishDrain := openAIWSDrainContext(ctx)
+		turnCtx, startDrain, finishDrain := openAIWSDrainContext(continuationCtx)
 		defer finishDrain()
 		ctx := turnCtx
 		keyTurn := &openAIWSKeyTurn{authority: keyAuthority, fingerprints: lease.conn.upstreamKeyFingerprints, abort: func(error) { lease.MarkBroken() }}
@@ -1901,6 +1910,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if _, err := checkAdmission(ctx); err != nil {
 				return nil, err
 			}
+		}
+		if err := s.guardOpenAIResponseContinuation(ctx, account); err != nil {
+			return nil, err
 		}
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
@@ -2863,6 +2875,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
+		creationScope := openAIWSContinuationScope(account, gjson.GetBytes(currentPayload, "model").String(), gjson.GetBytes(currentPayload, "service_tier").String())
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentRequestedReasoningEffort)
 		if relayErr != nil && (IsUpstreamKeyAdmissionFailure(relayErr) || errors.Is(relayErr, ErrUpstreamKeyLease)) {
 			if errors.Is(relayErr, ErrUpstreamKeyLease) {
@@ -2995,7 +3008,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		if responseID != "" && stateStore != nil {
 			ttl := s.openAIWSResponseStickyTTL()
-			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
+			s.bindResponseAccount(ctx, c, account, responseID, creationScope)
 			stateStore.BindResponseConn(responseID, connID, ttl)
 			if s.wsNodeOwnerEnabled() && storeDisabled {
 				// AfterTurn above already accounts for the completed model call.

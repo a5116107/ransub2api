@@ -17,7 +17,7 @@ import (
 // Keep the existing record key: old readers continue to consume the two integer
 // keys, while new readers consume one versioned record. No raw response ID,
 // request body, upstream token or node address is stored in a Redis key.
-func httpResponseOwnerKeys(groupID int64, responseID string) []string {
+func responseOwnerKeys(groupID int64, responseID string) []string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(responseID)))
 	id := hex.EncodeToString(sum[:])
 	return []string{
@@ -27,9 +27,9 @@ func httpResponseOwnerKeys(groupID int64, responseID string) []string {
 	}
 }
 
-var errHTTPResponseOwnerUnavailable = errors.New("HTTP response owner unavailable")
+var errResponseOwnerUnavailable = errors.New("response owner unavailable")
 
-type httpResponseOwnerRecord struct {
+type responseOwnerRecord struct {
 	Version   int                               `json:"version"`
 	User      string                            `json:"user"`
 	Key       string                            `json:"key"`
@@ -37,7 +37,7 @@ type httpResponseOwnerRecord struct {
 	ScopeHash string                            `json:"scope_hash"`
 }
 
-var setHTTPResponseOwnerScript = redis.NewScript(`
+var setResponseOwnerScript = redis.NewScript(`
 local value, user, key = ARGV[1], ARGV[2], ARGV[3]
 local previous = redis.call('GET', KEYS[1])
 local legacy = redis.call('MGET', KEYS[2], KEYS[3])
@@ -57,7 +57,7 @@ redis.call('SET', KEYS[3], key, 'PX', ARGV[4])
 return 1
 `)
 
-var getHTTPResponseOwnerScript = redis.NewScript(`
+var getResponseOwnerScript = redis.NewScript(`
 local record = redis.call('GET', KEYS[1])
 local legacy = redis.call('MGET', KEYS[2], KEYS[3])
 if record ~= false then
@@ -75,67 +75,67 @@ if legacy[1] == false or legacy[2] == false then return {} end
 return {'legacy', legacy[1], legacy[2]}
 `)
 
-func (c *gatewayCache) SetHTTPResponseOwner(ctx context.Context, groupID int64, responseID string, owner service.OpenAIHTTPResponseOwner, ttl time.Duration) error {
+func (c *gatewayCache) SetResponseOwner(ctx context.Context, groupID int64, responseID string, owner service.OpenAIResponseOwner, ttl time.Duration) error {
 	if c == nil || c.rdb == nil || groupID < 0 || strings.TrimSpace(responseID) == "" || !owner.Valid() || ttl < time.Millisecond {
-		return errHTTPResponseOwnerUnavailable
+		return errResponseOwnerUnavailable
 	}
 	user, key := strconv.FormatInt(owner.UserID, 10), strconv.FormatInt(owner.APIKeyID, 10)
-	record := httpResponseOwnerRecord{Version: 2, User: user, Key: key, Scope: owner.Scope, ScopeHash: codexTurnStateScopeHash(owner.Scope)}
+	record := responseOwnerRecord{Version: 2, User: user, Key: key, Scope: owner.Scope, ScopeHash: codexTurnStateScopeHash(owner.Scope)}
 	data, err := json.Marshal(record)
 	if err != nil {
-		return errHTTPResponseOwnerUnavailable
+		return errResponseOwnerUnavailable
 	}
 	// One atomic publication also preserves the old reader's exact wire format.
-	stored, err := setHTTPResponseOwnerScript.Run(ctx, c.rdb, httpResponseOwnerKeys(groupID, responseID), data, user, key, ttl.Milliseconds(), record.ScopeHash).Int()
+	stored, err := setResponseOwnerScript.Run(ctx, c.rdb, responseOwnerKeys(groupID, responseID), data, user, key, ttl.Milliseconds(), record.ScopeHash).Int()
 	if err != nil || stored != 1 {
-		return errHTTPResponseOwnerUnavailable
+		return errResponseOwnerUnavailable
 	}
 	return nil
 }
 
-func (c *gatewayCache) GetHTTPResponseOwner(ctx context.Context, groupID int64, responseID string) (service.OpenAIHTTPResponseOwner, bool, error) {
+func (c *gatewayCache) GetResponseOwner(ctx context.Context, groupID int64, responseID string) (service.OpenAIResponseOwner, bool, error) {
 	if c == nil || c.rdb == nil || groupID < 0 || strings.TrimSpace(responseID) == "" {
-		return service.OpenAIHTTPResponseOwner{}, false, errHTTPResponseOwnerUnavailable
+		return service.OpenAIResponseOwner{}, false, errResponseOwnerUnavailable
 	}
-	values, err := getHTTPResponseOwnerScript.Run(ctx, c.rdb, httpResponseOwnerKeys(groupID, responseID)).StringSlice()
+	values, err := getResponseOwnerScript.Run(ctx, c.rdb, responseOwnerKeys(groupID, responseID)).StringSlice()
 	if err != nil {
 		// Do not leak Redis topology or fall back to stale process-local grants.
-		return service.OpenAIHTTPResponseOwner{}, false, errHTTPResponseOwnerUnavailable
+		return service.OpenAIResponseOwner{}, false, errResponseOwnerUnavailable
 	}
 	if len(values) == 0 {
-		return service.OpenAIHTTPResponseOwner{}, false, nil
+		return service.OpenAIResponseOwner{}, false, nil
 	}
 	var parts []string
 	if len(values) == 1 {
 		if strings.HasPrefix(values[0], "{") {
-			var record httpResponseOwnerRecord
+			var record responseOwnerRecord
 			if err := json.Unmarshal([]byte(values[0]), &record); err != nil || record.Version != 2 || record.ScopeHash != codexTurnStateScopeHash(record.Scope) {
-				return service.OpenAIHTTPResponseOwner{}, false, errHTTPResponseOwnerUnavailable
+				return service.OpenAIResponseOwner{}, false, errResponseOwnerUnavailable
 			}
 			user, userErr := strconv.ParseInt(record.User, 10, 64)
 			key, keyErr := strconv.ParseInt(record.Key, 10, 64)
-			owner := service.OpenAIHTTPResponseOwner{UserID: user, APIKeyID: key, Scope: record.Scope}
+			owner := service.OpenAIResponseOwner{UserID: user, APIKeyID: key, Scope: record.Scope}
 			if userErr != nil || keyErr != nil || !owner.Valid() {
-				return service.OpenAIHTTPResponseOwner{}, false, errHTTPResponseOwnerUnavailable
+				return service.OpenAIResponseOwner{}, false, errResponseOwnerUnavailable
 			}
 			return owner, true, nil
 		}
 		parts = strings.Split(values[0], ":")
 		if len(parts) != 3 || parts[0] != "v1" {
-			return service.OpenAIHTTPResponseOwner{}, false, errHTTPResponseOwnerUnavailable
+			return service.OpenAIResponseOwner{}, false, errResponseOwnerUnavailable
 		}
 	} else if len(values) == 3 && values[0] == "legacy" {
 		parts = values
 	} else {
-		return service.OpenAIHTTPResponseOwner{}, false, errHTTPResponseOwnerUnavailable
+		return service.OpenAIResponseOwner{}, false, errResponseOwnerUnavailable
 	}
 	user, userErr := strconv.ParseInt(parts[1], 10, 64)
 	key, keyErr := strconv.ParseInt(parts[2], 10, 64)
 	if userErr != nil || keyErr != nil || user <= 0 || key <= 0 {
-		return service.OpenAIHTTPResponseOwner{}, false, errHTTPResponseOwnerUnavailable
+		return service.OpenAIResponseOwner{}, false, errResponseOwnerUnavailable
 	}
 	// Legacy records prove only a tenant; their unknown scope is never backfilled.
-	return service.OpenAIHTTPResponseOwner{UserID: user, APIKeyID: key}, true, nil
+	return service.OpenAIResponseOwner{UserID: user, APIKeyID: key}, true, nil
 }
 
-var _ service.OpenAIHTTPResponseOwnerCache = (*gatewayCache)(nil)
+var _ service.OpenAIResponseOwnerCache = (*gatewayCache)(nil)

@@ -1654,7 +1654,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageOutputSizes = nonStreamResult.imageOutputSizes
 			searchCount = nonStreamResult.searchCount
 		}
-		s.bindHTTPResponseAccount(ctx, c, account, responseID)
+		s.bindResponseAccount(ctx, c, account, responseID, openAIResponseCreationScope(c))
 
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts).
 		// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
@@ -1983,7 +1983,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 已知客户端 turn-state 的账号/线路/模型/档位与本次出站不同则剥离。
 	// 同时捕获构造证据供响应提交时记录，独立门票仍由后续原逻辑处理。
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(body))
-	continuationCtx, err := s.bindOpenAIHTTPContinuation(req.Context(), c, account, body)
+	continuationCtx, err := s.bindOpenAIResponseContinuation(req.Context(), c, account, body)
 	if err != nil {
 		return nil, err
 	}

@@ -25,8 +25,8 @@ type openAIWSAccountBinding struct {
 	expiresAt time.Time
 }
 
-type openAIHTTPResponseOwnerBinding struct {
-	owner     OpenAIHTTPResponseOwner
+type openAIResponseOwnerBinding struct {
+	owner     OpenAIResponseOwner
 	expiresAt time.Time
 }
 
@@ -91,8 +91,8 @@ type OpenAIWSStateStore interface {
 	BindResponseAccount(ctx context.Context, groupID int64, responseID string, accountID int64, ttl time.Duration) error
 	GetResponseAccount(ctx context.Context, groupID int64, responseID string) (int64, error)
 	DeleteResponseAccount(ctx context.Context, groupID int64, responseID string) error
-	BindHTTPResponseOwner(ctx context.Context, groupID int64, responseID string, owner OpenAIHTTPResponseOwner, ttl time.Duration) error
-	GetHTTPResponseOwner(ctx context.Context, groupID int64, responseID string) (owner OpenAIHTTPResponseOwner, found bool, err error)
+	BindResponseOwner(ctx context.Context, groupID int64, responseID string, owner OpenAIResponseOwner, ttl time.Duration) error
+	GetResponseOwner(ctx context.Context, groupID int64, responseID string) (owner OpenAIResponseOwner, found bool, err error)
 
 	BindResponseConn(responseID, connID string, ttl time.Duration)
 	GetResponseConn(responseID string) (string, bool)
@@ -122,7 +122,7 @@ type defaultOpenAIWSStateStore struct {
 	responseToAccountMu  sync.RWMutex
 	responseToAccount    map[string]openAIWSAccountBinding
 	responseOwnerMu      sync.RWMutex
-	responseOwners       map[string]openAIHTTPResponseOwnerBinding
+	responseOwners       map[string]openAIResponseOwnerBinding
 	responseToConnMu     sync.RWMutex
 	responseToConn       map[string]openAIWSConnBinding
 	sessionToTurnStateMu sync.RWMutex
@@ -141,7 +141,7 @@ func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
 	store := &defaultOpenAIWSStateStore{
 		cache:                   cache,
 		responseToAccount:       make(map[string]openAIWSAccountBinding, 256),
-		responseOwners:          make(map[string]openAIHTTPResponseOwnerBinding, 256),
+		responseOwners:          make(map[string]openAIResponseOwnerBinding, 256),
 		responseToConn:          make(map[string]openAIWSConnBinding, 256),
 		sessionToTurnState:      make(map[string]openAIWSTurnStateBinding, 256),
 		sessionToConn:           make(map[string]openAIWSSessionConnBinding, 256),
@@ -151,20 +151,20 @@ func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
 	return store
 }
 
-func (s *defaultOpenAIWSStateStore) BindHTTPResponseOwner(ctx context.Context, groupID int64, responseID string, owner OpenAIHTTPResponseOwner, ttl time.Duration) error {
+func (s *defaultOpenAIWSStateStore) BindResponseOwner(ctx context.Context, groupID int64, responseID string, owner OpenAIResponseOwner, ttl time.Duration) error {
 	id := normalizeOpenAIWSResponseID(responseID)
 	if id == "" || groupID < 0 || !owner.Valid() {
-		return ErrOpenAIHTTPResponseOwnerUnavailable
+		return ErrOpenAIResponseOwnerUnavailable
 	}
 	ttl = normalizeOpenAIWSTTL(ttl)
 	if s.cache != nil {
-		shared, ok := s.cache.(OpenAIHTTPResponseOwnerCache)
+		shared, ok := s.cache.(OpenAIResponseOwnerCache)
 		if !ok {
-			return ErrOpenAIHTTPResponseOwnerUnavailable
+			return ErrOpenAIResponseOwnerUnavailable
 		}
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
 		defer cancel()
-		return shared.SetHTTPResponseOwner(cacheCtx, groupID, id, owner, ttl)
+		return shared.SetResponseOwner(cacheCtx, groupID, id, owner, ttl)
 	}
 	s.maybeCleanup()
 	mapKey := openAIWSResponseAccountMapKey(groupID, id)
@@ -173,28 +173,28 @@ func (s *defaultOpenAIWSStateStore) BindHTTPResponseOwner(ctx context.Context, g
 	defer s.responseOwnerMu.Unlock()
 	if prior, ok := s.responseOwners[mapKey]; ok && now.Before(prior.expiresAt) {
 		if prior.owner.UserID != owner.UserID || prior.owner.Scope != owner.Scope {
-			return ErrOpenAIHTTPResponseOwnerUnavailable
+			return ErrOpenAIResponseOwnerUnavailable
 		}
 		owner = prior.owner
 	}
 	ensureBindingCapacity(s.responseOwners, mapKey, openAIWSStateStoreMaxEntriesPerMap)
-	s.responseOwners[mapKey] = openAIHTTPResponseOwnerBinding{owner: owner, expiresAt: now.Add(ttl)}
+	s.responseOwners[mapKey] = openAIResponseOwnerBinding{owner: owner, expiresAt: now.Add(ttl)}
 	return nil
 }
 
-func (s *defaultOpenAIWSStateStore) GetHTTPResponseOwner(ctx context.Context, groupID int64, responseID string) (OpenAIHTTPResponseOwner, bool, error) {
+func (s *defaultOpenAIWSStateStore) GetResponseOwner(ctx context.Context, groupID int64, responseID string) (OpenAIResponseOwner, bool, error) {
 	id := normalizeOpenAIWSResponseID(responseID)
 	if id == "" || groupID < 0 {
-		return OpenAIHTTPResponseOwner{}, false, nil
+		return OpenAIResponseOwner{}, false, nil
 	}
 	if s.cache != nil {
-		shared, ok := s.cache.(OpenAIHTTPResponseOwnerCache)
+		shared, ok := s.cache.(OpenAIResponseOwnerCache)
 		if !ok {
-			return OpenAIHTTPResponseOwner{}, false, ErrOpenAIHTTPResponseOwnerUnavailable
+			return OpenAIResponseOwner{}, false, ErrOpenAIResponseOwnerUnavailable
 		}
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
 		defer cancel()
-		return shared.GetHTTPResponseOwner(cacheCtx, groupID, id)
+		return shared.GetResponseOwner(cacheCtx, groupID, id)
 	}
 	s.maybeCleanup()
 	mapKey := openAIWSResponseAccountMapKey(groupID, id)
@@ -203,7 +203,7 @@ func (s *defaultOpenAIWSStateStore) GetHTTPResponseOwner(ctx context.Context, gr
 	if binding, ok := s.responseOwners[mapKey]; ok && time.Now().Before(binding.expiresAt) {
 		return binding.owner, true, nil
 	}
-	return OpenAIHTTPResponseOwner{}, false, nil
+	return OpenAIResponseOwner{}, false, nil
 }
 
 func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, groupID int64, responseID string, accountID int64, ttl time.Duration) error {
@@ -228,7 +228,7 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	return nil
 }
 
-func cleanupExpiredHTTPResponseOwnerBindings(bindings map[string]openAIHTTPResponseOwnerBinding, now time.Time, maxScan int) {
+func cleanupExpiredResponseOwnerBindings(bindings map[string]openAIResponseOwnerBinding, now time.Time, maxScan int) {
 	if len(bindings) == 0 || maxScan <= 0 {
 		return
 	}
@@ -520,7 +520,7 @@ func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 	s.responseToAccountMu.Unlock()
 
 	s.responseOwnerMu.Lock()
-	cleanupExpiredHTTPResponseOwnerBindings(s.responseOwners, now, openAIWSStateStoreCleanupMaxPerMap)
+	cleanupExpiredResponseOwnerBindings(s.responseOwners, now, openAIWSStateStoreCleanupMaxPerMap)
 	s.responseOwnerMu.Unlock()
 
 	s.responseToConnMu.Lock()

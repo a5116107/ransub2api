@@ -571,30 +571,30 @@ func TestOpenAIGatewayService_BindHTTPResponseAccount(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	groupID := int64(4201)
 	c.Set("api_key", &APIKey{ID: 501, GroupID: &groupID})
-	SetOpenAIHTTPResponseOwner(c, 601, 501, "")
+	SetOpenAIResponseOwner(c, 601, 501, "")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 37001, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	svc.guardOpenAICodexTurnStateEcho(c, account, http.Header{}, openAICompatCacheScope{Model: "gpt-5.1"})
-	svc.bindHTTPResponseAccount(context.Background(), c, account, "resp_http_001")
+	svc.bindResponseAccount(context.Background(), c, account, "resp_http_001", openAIResponseCreationScope(c))
 
 	got, err := svc.getOpenAIWSStateStore().GetResponseAccount(context.Background(), groupID, "resp_http_001")
 	require.NoError(t, err)
 	require.Equal(t, account.ID, got)
 
-	owned, err := svc.ValidateOpenAIHTTPResponseOwner(context.Background(), groupID, "resp_http_001", 601, 501)
+	owned, err := svc.ValidateOpenAIResponseOwner(context.Background(), groupID, "resp_http_001", 601, 501)
 	require.NoError(t, err)
 	require.True(t, owned)
 
-	owned, err = svc.ValidateOpenAIHTTPResponseOwner(context.Background(), groupID, "resp_http_001", 601, 502)
+	owned, err = svc.ValidateOpenAIResponseOwner(context.Background(), groupID, "resp_http_001", 601, 502)
 	require.NoError(t, err)
 	require.True(t, owned, "API keys owned by the same downstream user remain interoperable")
 
-	owned, err = svc.ValidateOpenAIHTTPResponseOwner(context.Background(), groupID, "resp_http_001", 602, 501)
+	owned, err = svc.ValidateOpenAIResponseOwner(context.Background(), groupID, "resp_http_001", 602, 501)
 	require.NoError(t, err)
 	require.False(t, owned)
 
-	owned, err = svc.ValidateOpenAIHTTPResponseOwner(context.Background(), groupID, "resp_unknown", 601, 501)
+	owned, err = svc.ValidateOpenAIResponseOwner(context.Background(), groupID, "resp_unknown", 601, 501)
 	require.NoError(t, err)
 	require.False(t, owned)
 }
@@ -606,7 +606,7 @@ func TestOpenAIGatewayService_BindHTTPResponseAccount_DetachesCanceledRequestCon
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	groupID := int64(4201)
 	c.Set("api_key", &APIKey{ID: 501, GroupID: &groupID})
-	SetOpenAIHTTPResponseOwner(c, 601, 501, "")
+	SetOpenAIResponseOwner(c, 601, 501, "")
 
 	cache := &responseBindContextProbeCache{}
 	svc := &OpenAIGatewayService{cache: cache}
@@ -616,7 +616,7 @@ func TestOpenAIGatewayService_BindHTTPResponseAccount_DetachesCanceledRequestCon
 	cancelRequest()
 	startedAt := time.Now()
 
-	svc.bindHTTPResponseAccount(requestCtx, c, account, "resp_http_canceled_001")
+	svc.bindResponseAccount(requestCtx, c, account, "resp_http_canceled_001", openAIResponseCreationScope(c))
 
 	require.Len(t, cache.setContextErrors, 2)
 	for _, contextErr := range cache.setContextErrors {
@@ -751,7 +751,7 @@ func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accoun
 type stubGatewayCache struct {
 	sessionBindings map[string]int64
 	deletedSessions map[string]int
-	responseOwners  map[string]OpenAIHTTPResponseOwner
+	responseOwners  map[string]OpenAIResponseOwner
 }
 
 type responseBindContextProbeCache struct {
@@ -771,7 +771,7 @@ func (c *responseBindContextProbeCache) SetSessionAccountID(ctx context.Context,
 	return c.stubGatewayCache.SetSessionAccountID(ctx, groupID, sessionHash, accountID, ttl)
 }
 
-func (c *responseBindContextProbeCache) SetHTTPResponseOwner(ctx context.Context, groupID int64, responseID string, owner OpenAIHTTPResponseOwner, ttl time.Duration) error {
+func (c *responseBindContextProbeCache) SetResponseOwner(ctx context.Context, groupID int64, responseID string, owner OpenAIResponseOwner, ttl time.Duration) error {
 	c.setContextErrors = append(c.setContextErrors, ctx.Err())
 	if deadline, ok := ctx.Deadline(); ok {
 		c.setDeadlines = append(c.setDeadlines, deadline)
@@ -779,22 +779,22 @@ func (c *responseBindContextProbeCache) SetHTTPResponseOwner(ctx context.Context
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return c.stubGatewayCache.SetHTTPResponseOwner(ctx, groupID, responseID, owner, ttl)
+	return c.stubGatewayCache.SetResponseOwner(ctx, groupID, responseID, owner, ttl)
 }
 
-func (c *stubGatewayCache) SetHTTPResponseOwner(_ context.Context, groupID int64, responseID string, owner OpenAIHTTPResponseOwner, _ time.Duration) error {
+func (c *stubGatewayCache) SetResponseOwner(_ context.Context, groupID int64, responseID string, owner OpenAIResponseOwner, _ time.Duration) error {
 	if c.responseOwners == nil {
-		c.responseOwners = make(map[string]OpenAIHTTPResponseOwner)
+		c.responseOwners = make(map[string]OpenAIResponseOwner)
 	}
 	key := openAIWSResponseAccountMapKey(groupID, responseID)
 	if prior, ok := c.responseOwners[key]; ok && (prior.UserID != owner.UserID || prior.Scope != owner.Scope) {
-		return ErrOpenAIHTTPResponseOwnerUnavailable
+		return ErrOpenAIResponseOwnerUnavailable
 	}
 	c.responseOwners[key] = owner
 	return nil
 }
 
-func (c *stubGatewayCache) GetHTTPResponseOwner(_ context.Context, groupID int64, responseID string) (OpenAIHTTPResponseOwner, bool, error) {
+func (c *stubGatewayCache) GetResponseOwner(_ context.Context, groupID int64, responseID string) (OpenAIResponseOwner, bool, error) {
 	owner, found := c.responseOwners[openAIWSResponseAccountMapKey(groupID, responseID)]
 	return owner, found, nil
 }

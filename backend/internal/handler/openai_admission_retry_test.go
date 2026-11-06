@@ -119,9 +119,9 @@ func TestOpenAIResponses_HTTPContinuationScopeRejectsAndRecovers(t *testing.T) {
 	account.Type = service.AccountTypeAPIKey
 	account.Credentials = map[string]any{"api_key": "creation-fixture", "base_url": "https://supplier.invalid/v1"}
 	account.Extra = map[string]any{}
-	origin := service.OpenAIHTTPResponseOwner{UserID: 100, APIKeyID: 99, Scope: service.OpenAIWSContinuationScope{
+	origin := service.OpenAIResponseOwner{UserID: 100, APIKeyID: 99, Scope: service.OpenAIWSContinuationScope{
 		AccountID: account.ID, RouteFingerprint: service.AccountRouteFingerprint(account), Model: "gpt-6-astra"}}
-	require.NoError(t, h.gatewayService.BindOpenAIHTTPResponseOwner(t.Context(), 3131, "resp_http_scope", origin))
+	require.NoError(t, h.gatewayService.BindOpenAIResponseOwner(t.Context(), 3131, "resp_http_scope", origin))
 	for _, changed := range []bool{true, false} {
 		account.Credentials["api_key"] = "creation-fixture"
 		if changed {

@@ -864,6 +864,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	usageMeta.captureRequestedReasoningEffort(originalFirstClientMessage, capturedSessionModel)
 	_, initialUpstreamModel := usageMeta.turnModels(initialRequestModel)
 	SetOpsUpstreamModel(c, initialUpstreamModel)
+	continuationCtx, continuationErr := s.bindOpenAIResponseContinuation(ctx, c, account, firstClientMessage)
+	if continuationErr != nil {
+		return continuationErr
+	}
+	ctx = continuationCtx
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 	if err != nil {
 		return fmt.Errorf("build ws url: %w", err)
@@ -1013,15 +1018,22 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	defer func() { _ = closeUpstream(); keyTurn.finish() }()
 	handshakeBinding := s.bindOpenAIWSHandshake(account, gjson.GetBytes(firstClientMessage, "model").String(), headers)
 	handshakeBinding.billingHandshake = newOpenAIWSBillingHandshake(billingHandshakeCtx, wsURL, headers)
+	var activeResponseScope atomic.Pointer[OpenAIWSContinuationScope]
+	_, authenticatedResponseOwner := c.Get(openAIResponseOwnerContextKey)
 	checkAdmission := func(payload []byte, model string) (*Account, error) {
-		latest, err := s.admitOpenAITurn(ctx, c, account, model, payload)
+		frameCtx, bindErr := s.bindOpenAIResponseContinuation(ctx, c, account, payload)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		latest, err := s.admitOpenAITurn(frameCtx, c, account, model, payload)
 		if err == nil {
-			err = s.checkOpenAIWSBinding(ctx, latest, model, handshakeBinding)
+			err = s.checkOpenAIWSBinding(frameCtx, latest, model, handshakeBinding)
 		}
 		if err != nil {
 			s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(ctx, c, payload, account.ID, err)
+			return nil, err
 		}
-		return latest, err
+		return latest, s.guardOpenAIResponseContinuation(frameCtx, account)
 	}
 
 	logOpenAIWSV2Passthrough(
@@ -1126,6 +1138,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			responseFrameAt := time.Time{}
 			acceptedTurn := false
 			if isResponseCreate {
+				updateOpenAIResponseOwnerContinuation(c, clientPayload)
 				if hooks != nil && hooks.TurnStarted != nil {
 					if received := clientFrameConn.reader.lastReadAt.Load(); received != nil {
 						hooks.TurnStarted(max(2, int(completedTurns.Load())+1), *received)
@@ -1391,7 +1404,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if _, err := keyTurn.begin(ctx); err != nil {
 		return err
 	}
-	if keyAuthority != nil || s.availabilityReader != nil {
+	if keyAuthority != nil || s.availabilityReader != nil || authenticatedResponseOwner {
 		if _, err := checkAdmission(firstClientMessage, gjson.GetBytes(firstClientMessage, "model").String()); err != nil {
 			return err
 		}
@@ -1406,6 +1419,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		acceptedQueueArrival.Store(&arrival)
 	}
+	initialResponseScope := openAIWSContinuationScope(account, gjson.GetBytes(firstClientMessage, "model").String(), gjson.GetBytes(firstClientMessage, "service_tier").String())
+	activeResponseScope.Store(&initialResponseScope)
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 	cancelFirstWrite()
 	if firstWriteErr != nil {
@@ -1462,12 +1477,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if _, err := keyTurn.begin(ctx); err != nil {
 					return err
 				}
-				if keyAuthority != nil || s.availabilityReader != nil {
+				if keyAuthority != nil || s.availabilityReader != nil || authenticatedResponseOwner {
 					if _, err := checkAdmission(payload, model); err != nil {
 						return err
 					}
 				}
-				return s.priorityLatencyBeforeSend(pendingLatencyCtx, account)
+				if err := s.priorityLatencyBeforeSend(pendingLatencyCtx, account); err != nil {
+					return err
+				}
+				scope := openAIWSContinuationScope(account, model, gjson.GetBytes(payload, "service_tier").String())
+				activeResponseScope.Store(&scope)
+				return nil
 			},
 			FirstTurnStartedAt: firstTurnStartedAt,
 			TakeNextTurnStartedAt: func() time.Time {
@@ -1500,6 +1520,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				if activeTurn.Swap(0) == 0 {
 					return
+				}
+				if scope := activeResponseScope.Swap(nil); scope != nil {
+					s.bindResponseAccount(ctx, c, account, turn.RequestID, *scope)
 				}
 				keyTurn.finish()
 				turnNo := int(completedTurns.Add(1))

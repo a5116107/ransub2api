@@ -972,7 +972,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		return result, fmt.Errorf("excel BPS terminal: %s", terminal)
 	}
 	imagePolicy.finish(ctx, imagePolicy.compact || len(compactOutput) > 0 || (imagePolicy.history != nil && imagePolicy.history.Count < imageSettings.Limits.MaxImages-imageSettings.WarningRemaining))
-	s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+	s.bindResponseAccount(ctx, c, account, result.ResponseID, openAIResponseCreationScope(c))
 	if stream && terminalSuccessful && !result.ClientDisconnect {
 		MarkOpsStreamCompleted(c, account.ID)
 	}
