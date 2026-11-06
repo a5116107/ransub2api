@@ -39,6 +39,10 @@ type Bridge struct {
 	clientStream         bool
 }
 
+func (b *Bridge) HasClientTools() bool {
+	return b != nil && (len(b.tools) > 0 || len(b.unsupportedTools) > 0 || b.hasToolHistory)
+}
+
 func decode(raw []byte, target any) error {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()

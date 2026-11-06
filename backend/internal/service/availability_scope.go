@@ -2,11 +2,14 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/Wei-Shaw/sub2api/internal/service/basispoints"
 	"github.com/tidwall/gjson"
 )
 
@@ -21,6 +24,63 @@ type AvailabilityRequestScope struct {
 	ServiceTier     string `json:"service_tier"`
 	ReasoningEffort string `json:"reasoning_effort"`
 	Capability      string `json:"capability"`
+}
+
+type availabilityBPSSourceKey struct{}
+type availabilityBPSSource struct{ scope *AvailabilityRequestScope }
+
+func withAvailabilityBPSSource(ctx context.Context, body []byte, bridge *basispoints.Bridge) context.Context {
+	var scope *AvailabilityRequestScope
+	if bridge != nil && !bridge.HasClientTools() {
+		request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: "/v1/responses"}, Header: make(http.Header)}
+		scope = availabilityScopeForRequest(request, body)
+	}
+	return context.WithValue(ctx, availabilityBPSSourceKey{}, availabilityBPSSource{scope})
+}
+
+func availabilityBPSScopeForRequest(request *http.Request, payload []byte) *AvailabilityRequestScope {
+	source, _ := request.Context().Value(availabilityBPSSourceKey{}).(availabilityBPSSource)
+	if source.scope == nil || request.URL.String() != basispoints.ResponsesURL ||
+		(request.Host != "" && !strings.EqualFold(request.Host, request.URL.Host)) {
+		return nil
+	}
+	fields, valid := availabilityJSONObject(gjson.ParseBytes(payload))
+	if !valid || fields["model"].Type != gjson.String || fields["model"].String() != source.scope.Model ||
+		fields["model_selection"].String() != "explicit" || fields["stream"].Type != gjson.True ||
+		fields["store"].Type != gjson.False || !fields["input"].IsArray() || !availabilityTextInput(fields["input"], false) {
+		return nil
+	}
+	management := fields["context_management"]
+	if !management.IsArray() || len(management.Array()) != 1 {
+		return nil
+	}
+	compact, valid := availabilityJSONObject(management.Array()[0])
+	if !valid || len(compact) != 2 || compact["type"].String() != "compaction" ||
+		compact["compact_threshold"].Type != gjson.Number || compact["compact_threshold"].Raw != "920000" {
+		return nil
+	}
+	metadata, valid := availabilityJSONObject(fields["metadata"])
+	if !valid || len(metadata) != 3 || metadata["task_id"].Type != gjson.String || metadata["turn_id"].Type != gjson.String ||
+		metadata["agent_iteration"].Type != gjson.String || metadata["agent_iteration"].String() != "1" {
+		return nil
+	}
+	if cacheKey := fields["prompt_cache_key"]; cacheKey.Exists() && cacheKey.Type != gjson.String {
+		return nil
+	}
+	for name := range fields {
+		switch name {
+		case "model", "model_selection", "stream", "store", "input", "reasoning_effort", "context_management", "metadata", "prompt_cache_key":
+		default:
+			return nil
+		}
+	}
+	effort, valid := availabilityOption(fields["reasoning_effort"], "low", "medium", "high", "xhigh")
+	if !valid || effort == "unspecified" {
+		return nil
+	}
+	scope := *source.scope
+	scope.Protocol, scope.ReasoningEffort = "bps_responses", effort
+	return &scope
 }
 
 func availabilityJSONObject(value gjson.Result) (map[string]gjson.Result, bool) {
@@ -119,6 +179,10 @@ func availabilityTextInput(value gjson.Result, chat bool) bool {
 func availabilityScopeForRequest(request *http.Request, payload []byte) *AvailabilityRequestScope {
 	if request == nil || request.URL == nil || request.Method != http.MethodPost || request.URL.RawQuery != "" || request.Header.Get("Content-Encoding") != "" || !gjson.ValidBytes(payload) {
 		return nil
+	}
+	_, isBPS := request.Context().Value(availabilityBPSSourceKey{}).(availabilityBPSSource)
+	if isBPS || request.URL.String() == basispoints.ResponsesURL {
+		return availabilityBPSScopeForRequest(request, payload)
 	}
 	fields, valid := availabilityJSONObject(gjson.ParseBytes(payload))
 	if !valid || fields["model"].Type != gjson.String {

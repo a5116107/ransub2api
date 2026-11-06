@@ -481,6 +481,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		}
 		return fail(400, "basispoints_request_invalid", err.Error())
 	}
+	ctx = withAvailabilityBPSSource(ctx, body, bridge)
 	requestAcquire := s.excelBPSAcquireFor(account)
 	attachmentProxy := ""
 	if account.Proxy != nil {

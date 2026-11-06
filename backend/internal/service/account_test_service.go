@@ -1166,7 +1166,11 @@ func (s *AccountTestService) testResponsesGatewayAccountConnection(c *gin.Contex
 	prompt = promptOrDefault(prompt)
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: model})
 
-	body, err := buildExcelBPSAccountTestBody(model, prompt)
+	effort := "medium"
+	if options, ok := pelicanTestOptionsFromContext(c.Request.Context()); ok && options.reasoningEffort != "" {
+		effort = options.reasoningEffort
+	}
+	body, err := buildExcelBPSAccountTestBody(model, prompt, effort)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create Excel BPS test payload")
 	}
@@ -1238,13 +1242,13 @@ func (s *AccountTestService) testResponsesGatewayAccountConnection(c *gin.Contex
 	return nil
 }
 
-func buildExcelBPSAccountTestBody(model, prompt string) ([]byte, error) {
+func buildExcelBPSAccountTestBody(model, prompt, effort string) ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"model": model, "stream": true, "store": false,
 		"input": []any{map[string]any{"type": "message", "role": "user", "content": []any{
 			map[string]any{"type": "input_text", "text": promptOrDefault(prompt)},
 		}}},
-		"reasoning": map[string]any{"effort": "medium"},
+		"reasoning": map[string]any{"effort": effort},
 	})
 }
 

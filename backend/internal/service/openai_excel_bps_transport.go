@@ -223,7 +223,7 @@ func (s *OpenAIGatewayService) doExcelBPSRequestTo(ctx context.Context, c *gin.C
 		c.Set("excel_bps_upstream_attempt", attempt)
 		req, observeTransport := s.rateLimitService.beginAvailabilityTransport(req, account)
 		evidence := &excelBPSWriteEvidence{}
-		resp, err := s.doPriorityObservedHTTP(evidence.request(req), proxy, account)
+		resp, err := s.doPriorityObservedHTTP(req, proxy, account, evidence)
 		observeTransport(resp, err)
 		controlledHTTPResponse(ctx, resp)
 		s.rateLimitService.observeQualityResponse(req.Context(), account, resp, err)

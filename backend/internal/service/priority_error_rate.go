@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/tidwall/gjson"
 )
 
@@ -243,7 +244,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 }
 
 // Used by HTTP adapters whose physical sends bypass the native proxy pipeline.
-func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy string, account *Account) (*http.Response, error) {
+func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy string, account *Account, evidence ...*excelBPSWriteEvidence) (*http.Response, error) {
 	if err := s.priorityLatencyBeforeSend(req.Context(), account); err != nil {
 		return nil, err
 	}
@@ -255,15 +256,28 @@ func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy s
 	if err != nil {
 		return nil, err
 	}
-	// BPS wire capabilities have no matching observed availability scope yet.
-	if err := s.admitAvailabilityRequest(req.Context(), nil, account); err != nil {
+	if err := s.admitAvailabilityRequest(req.Context(), req, account); err != nil {
 		return nil, err
 	}
 	if err := controlledSubmission(req.Context(), "bps"); err != nil {
 		return nil, &OpenAITurnAdmissionError{Reason: "controlled_submission_unavailable", cause: err}
 	}
+	var trace *requesttiming.Trace
+	observeScope := func(*http.Response) {}
+	if req.Context().Value(availabilityProbeSnapshotKey{}) != nil {
+		req, trace = requesttiming.StartAttempt(req, account.ID, 0)
+		observeScope = observeAvailabilityProbeRequest(req, trace)
+	}
+	if len(evidence) > 0 && evidence[0] != nil {
+		req = evidence[0].request(req)
+	}
 	observe := s.observePriorityAttempt(req, account)
 	resp, err := s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
+	observeScope(resp)
+	trace.Response(resp, err)
+	if trace != nil {
+		accountTestResponseMode(req, resp)
+	}
 	observe(resp, err)
 	return resp, err
 }

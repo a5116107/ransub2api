@@ -3,17 +3,223 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/Wei-Shaw/sub2api/internal/service/basispoints"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/sjson"
 )
+
+func TestAvailabilityBPSProbeScopeAndAdmission(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	account := excelAccount()
+	collector := requesttiming.New(time.Now(), 0)
+	observation := &availabilityProbeObservation{}
+	probeCtx := context.WithValue(requesttiming.With(t.Context(), collector), availabilityProbeSnapshotKey{}, observation)
+	probeCtx = context.WithValue(probeCtx, qualityProbeContextKey{}, true)
+	probeBody, err := buildExcelBPSAccountTestBody("gpt-5.6-sol", "probe", "medium")
+	require.NoError(t, err)
+	calls := 0
+	svc := openAIClientToolsTestService(nil)
+	t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
+	svc.httpUpstream = &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: req,
+			Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n"))}, nil
+	}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(probeBody)).WithContext(probeCtx)
+	_, err = svc.Forward(probeCtx, c, account, probeBody)
+	require.NoError(t, err)
+	require.Equal(t, &AvailabilityRequestScope{Version: 1, Protocol: "bps_responses", Stream: true, Model: "gpt-5.6-sol", ServiceTier: "unspecified", ReasoningEffort: "medium", Capability: "text"}, observation.scope)
+	require.Equal(t, 1, observation.scopeAttempt)
+	report := availabilityAdmissionPass(account.ID, "gpt-5.6-sol")
+	report.Models[0].Decision.Scope = observation.scope
+	svc.availabilityReader = &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}
+	for _, tc := range []struct {
+		name, body string
+		allowed    bool
+	}{
+		{"same", `{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"different prompt"}`, true},
+		{"different model", `{"model":"gpt-6-astra","stream":true,"reasoning":{"effort":"medium"},"input":"hi"}`, false},
+		{"different effort", `{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"high"},"input":"hi"}`, false},
+		{"different stream", `{"model":"gpt-5.6-sol","stream":false,"reasoning":{"effort":"medium"},"input":"hi"}`, false},
+		{"priority tier", `{"model":"gpt-5.6-sol","stream":true,"service_tier":"priority","reasoning":{"effort":"medium"},"input":"hi"}`, false},
+		{"tool", `{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi","tools":[{"type":"function","name":"fixture"}]}`, false},
+		{"image", `{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://fixture.invalid/a.png"}]}]}`, false},
+		{"unknown", `{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi","unknown_capability":true}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := calls
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			body := []byte(tc.body)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			_, err := svc.Forward(t.Context(), c, account, body)
+			if tc.allowed {
+				require.NoError(t, err)
+				require.Equal(t, before+1, calls)
+			} else {
+				require.Error(t, err)
+				require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+				require.Equal(t, before, calls)
+			}
+		})
+	}
+	t.Run("failure and recovery", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi"}`)
+		send := func() error {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			_, err := svc.Forward(t.Context(), c, account, body)
+			return err
+		}
+		before := calls
+		report.Models[0].Status = "fail"
+		require.Error(t, send())
+		require.Equal(t, before, calls)
+		report.Models[0].Status = "pass"
+		require.NoError(t, send())
+		require.Equal(t, before+1, calls)
+	})
+	t.Run("inherited tools", func(t *testing.T) {
+		send := func(body []byte) error {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			c.Request.Header.Set("Session-Id", "availability-inherited-tools")
+			_, err := svc.Forward(t.Context(), c, account, body)
+			return err
+		}
+		svc.availabilityReader = nil
+		withTool := []byte(`{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi","tools":[{"type":"function","name":"fixture"}]}`)
+		require.NoError(t, send(withTool))
+		svc.availabilityReader = &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}
+		before := calls
+		withoutTool := []byte(`{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi"}`)
+		require.Error(t, send(withoutTool))
+		require.Equal(t, before, calls, "a tool catalog inherited from this session is not a text-only probe scope")
+	})
+}
+
+func TestAvailabilityBPSScopeRejectsWireMutation(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi"}`)
+	wire, bridge, err := basispoints.Prepare(body, "fixture", nil)
+	require.NoError(t, err)
+	ctx := withAvailabilityBPSSource(t.Context(), body, bridge)
+	for _, tc := range []struct {
+		name, field string
+		value       any
+	}{
+		{"model", "model", "other"},
+		{"model selection", "model_selection", "automatic"},
+		{"physical stream", "stream", false},
+		{"context management", "context_management.0.compact_threshold", 42},
+		{"agent iteration", "metadata.agent_iteration", "2"},
+		{"extra option", "unknown_capability", true},
+		{"nontext input", "input.0.content.0.type", "input_image"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated, err := sjson.SetBytes(wire, tc.field, tc.value)
+			require.NoError(t, err)
+			req, err := newExcelBPSRequest(ctx, mutated, "token", "account")
+			require.NoError(t, err)
+			require.Nil(t, availabilityScopeForRequest(req, mutated))
+		})
+	}
+	req, err := newExcelBPSRequest(ctx, wire, "token", "account")
+	require.NoError(t, err)
+	require.NotNil(t, availabilityScopeForRequest(req, wire))
+	req.Host = "other.invalid"
+	require.Nil(t, availabilityScopeForRequest(req, wire))
+	other, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://other.invalid/v1/responses", bytes.NewReader(body))
+	require.NoError(t, err)
+	require.Nil(t, availabilityScopeForRequest(other, body), "a BPS source must not be reclassified as an ordinary HTTP probe")
+}
+
+func TestAvailabilityBPSBackgroundProbeRecordsActualScope(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			account := excelAccount()
+			upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+				wire := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[]}}\n\n"
+				if status != http.StatusOK {
+					wire = `{}`
+				}
+				return &http.Response{StatusCode: status, Request: req, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}, nil
+			}}
+			gateway := openAIClientToolsTestService(nil)
+			gateway.httpUpstream = upstream
+			t.Cleanup(func() { require.NoError(t, gateway.CloseExcelBPSImages()) })
+			svc := &AccountTestService{accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: upstream, openaiGatewayService: gateway}
+			cfg := bpsObservationConfig()
+			cfg.TestChannel, cfg.Quality = "account", nil
+			cfg.Availability = &AvailabilityPolicy{ValidForSeconds: 60}
+			require.NoError(t, validateAvailabilityPolicy(cfg))
+			result, err := svc.RunPelicanBackground(t.Context(), account.ID, "gpt-5.6-sol", cfg)
+			require.NoError(t, err)
+			require.NotNil(t, result.PelicanConfig.AvailabilityResult)
+			observation := result.PelicanConfig.AvailabilityResult
+			if status == http.StatusOK {
+				require.Equal(t, "pass", observation.Status)
+				require.NotNil(t, observation.Scope)
+				require.Equal(t, "bps_responses", observation.Scope.Protocol)
+				require.Equal(t, "high", observation.Scope.ReasoningEffort)
+			} else {
+				require.Equal(t, "fail", observation.Status)
+				require.Equal(t, status, observation.HTTPStatus)
+			}
+		})
+	}
+}
+
+func TestAvailabilityBPSAdmissionPreservesUnsentRetryEvidence(t *testing.T) {
+	account := excelAccount()
+	account.Extra["openai_excel_bps_mihomo"] = true
+	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi"}`)
+	wire, bridge, err := basispoints.Prepare(body, "fixture", nil)
+	require.NoError(t, err)
+	ctx := withAvailabilityBPSSource(t.Context(), body, bridge)
+	report := availabilityAdmissionPass(account.ID, "gpt-5.6-sol")
+	report.Models[0].Decision.Scope = &AvailabilityRequestScope{Version: 1, Protocol: "bps_responses", Stream: true, Model: "gpt-5.6-sol", ServiceTier: "unspecified", ReasoningEffort: "medium", Capability: "text"}
+	calls, acquired := 0, 0
+	leases := []*bpsTestLease{{}, {}}
+	svc := &OpenAIGatewayService{availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}, httpUpstream: &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			httptrace.ContextClientTrace(req.Context()).GetConn("bps.openai.com:443")
+			return nil, io.EOF
+		}
+		actual, readErr := io.ReadAll(req.Body)
+		require.NoError(t, readErr)
+		require.Equal(t, wire, actual)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	}}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	response, lease, _, err := svc.doExcelBPSRequest(ctx, c, account, "fixture", wire, "token", "account", func(context.Context, string, ...string) (string, excelBPSLease, error) {
+		lease := leases[acquired]
+		acquired++
+		return "http://127.0.0.1:19000", lease, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, calls)
+	require.Equal(t, 2, acquired)
+	require.Equal(t, 1, leases[0].releases)
+	require.NoError(t, response.Body.Close())
+	lease.Release()
+	require.Equal(t, 1, leases[1].releases)
+}
 
 func TestAvailabilityScopeMatchesOnlyObservedCapabilities(t *testing.T) {
 	for _, tc := range []struct {

@@ -897,3 +897,12 @@
 - 托管连接仍有效时父代理变化的旧判定也实际失败。BPS连接投影捕获父账号实际线路摘要，最终使用权威父账号复核；OAuth和历史API Key父账号的代理、代理池和模型映射变更拒绝，恢复后通过。正文及附件使用实际托管记录验证连接版本撤销、零发送和恢复。托管策略及连接终检移到等待后共用同一栅栏；受控实验只在本地检查通过后登记提交。输出前拒绝映射本地503；已有工具修复或压缩用量保持，不以此关闭完整D2/D3/D4。
 - `go test -p 1 -tags=unit ./internal/service ./internal/handler -run 'TestExcelBPS|TestIssue594ReviewBPS|TestAvailabilityAdmission|TestAvailabilityScope|TestOpenAIHTTPFinalSendRechecksPurchasedRoute|TestOpenAIConnection|TestControlledExperiment|TestPriorityLatency' -count=2 -timeout=8m`退出0，service 12.211s、handler 3.466s；其后只扩展托管连接撤销/恢复测试。最终BPS/认证/利润专项两轮race退出0，service 7.545s；`go vet -p 1 -tags=unit ./internal/service ./internal/handler`退出0无诊断。默认标签service/handler/cmd/server只编译分别2.000s/1.648s/1.572s，该编译早于历史父类型修复。
 - 最终完整原规则`./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/...`实际输出`0 issues.`、退出0。先前两次lint及一次race因继续修复/扩展夹具主动中止，不计通过。无新增迁移或CI；BPS文件ID/加密历史来源、专属可用探测、区域传播及D5–D9仍按原验收进行，原20项12 done、3 in_progress、5 pending不变。
+
+## 2026-11-06：D3 Basispoints 纯文本专属观测
+
+- 旧代码的实际BPS转发测试成功但探测作用域为空，回归实际失败。复用现有检测采集器及最终准入，区分`bps_responses`与普通Responses；仅在原请求和转换后实际wire均为已知纯文本、模型一致且无继承工具目录时发布作用域。检测使用配置的推理强度，原固定medium在low/high/max回归中实际错误；max沿原BPS归一为xhigh。
+- 服务档保存客户端请求值，BPS丢弃该字段不构成priority/fast能力证明；不同模型、档位、流式形式、推理强度、工具、图片、未知字段和被修改的wire不借用原文本通过。仅账号线路检测可发布此证据，托管连接、附件、图片与其他未观测能力仍保守拒绝。真实后台检测夹具通过/503分别产生pass/fail；测试不证明外部供应商的质量或缓存。
+- 检查必须读取实际body，但原BPS重试证据将body读取视为可能发送。将跟踪包装移动至最终检查之后，保留真实物理发送时的读取记录；回归证明首次连接前失败仍能换代理重试，成功响应与本地拒绝不误报故障。
+- 最终`go test -p 1 -tags=unit ./internal/service ./internal/handler -run 'TestAvailability|TestExcelBPS|TestBuildExcelBPS|TestQualityBPS|TestOpenAIConnection|TestControlledExperiment|TestPriorityLatency|TestAccountTiming|TestPelican' -count=2 -timeout=8m`退出0，service 26.619s、handler 1.736s。最终相关race两轮退出0，service 6.617s、basispoints 2.417s；unit标签三包vet退出0无诊断，完整原规则service lint输出`0 issues.`、退出0。首个强度夹具缺少文本增量导致失败，修正后复现low/high/max均错误使用medium，未把首个夹具失败当作生产证据；补充目标地址交叉校验时主动中止旧源码lint，不计通过。
+- 用户明确选择：来源未知的BPS文件ID和加密历史保持兼容透传，已知属于其他线路时拦截；实现与共享归属/在途变化验收仍属于D2，未知不等于已确认同源。原20项12 done、3 in_progress、5 pending不变，未执行CI、推送、部署或生产迁移。
+- 本地提交首次因H盘仅剩131072字节而失败，Git暂存保持。核对并仅清理本任务可重建的1个Go包缓存及8个含本轮测试标识、已被最终源码取代的旧缓存，共2749973984字节；清理时无Go编译进程，随后H盘剩余2708725760字节。另15个旧缓存清理前检测到其他Go进程，全部保留；此前策略拒绝的路径未触碰。H盘空间仍偏低，后续大型构建需先复核可用空间。

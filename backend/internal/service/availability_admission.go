@@ -52,8 +52,8 @@ func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, req
 	if !configured {
 		return nil
 	}
-	// Native WS and BPS have no matching observed wire scope yet. A successful
-	// ordinary HTTP probe must not authorize those distinct sends.
+	// Native WS and BPS attachments have no matching observed wire scope yet.
+	// A successful ordinary HTTP probe must not authorize those distinct sends.
 	if request == nil {
 		return denyOpenAITurn("availability_scope_unconfirmed")
 	}

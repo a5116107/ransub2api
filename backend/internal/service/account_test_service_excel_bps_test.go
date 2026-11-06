@@ -9,10 +9,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestBuildExcelBPSAccountTestBodyUsesResponsesContract(t *testing.T) {
-	raw, err := buildExcelBPSAccountTestBody("gpt-6-astra", "糖果题")
+	raw, err := buildExcelBPSAccountTestBody("gpt-6-astra", "糖果题", "medium")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,4 +91,26 @@ func TestExcelBPSManualTestReportsRateLimit(t *testing.T) {
 	require.EqualError(t, err, excelBPSRateLimitedClientMessage)
 	require.NotContains(t, rec.Body.String(), "PRIVATE_UPSTREAM")
 	require.Len(t, upstream.requests, 1)
+}
+
+func TestExcelBPSPelicanProbeUsesConfiguredReasoning(t *testing.T) {
+	for _, effort := range []string{"", "low", "high", "max"} {
+		t.Run("effort="+effort, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n"))}}
+			svc := &AccountTestService{openaiGatewayService: openAIClientToolsTestService(upstream)}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
+			c.Request = c.Request.WithContext(withPelicanTestOptions(c.Request.Context(), pelicanTestOptions{reasoningEffort: effort}))
+			err := svc.testExcelBPSAccountConnection(c, excelAccount(), "gpt-6-astra", "fixture")
+			require.NoError(t, err)
+			want := effort
+			if want == "" {
+				want = "medium"
+			}
+			if want == "max" {
+				want = "xhigh"
+			}
+			require.Equal(t, want, gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+		})
+	}
 }
