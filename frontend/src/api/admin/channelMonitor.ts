@@ -161,6 +161,8 @@ export type UpdateParams = Partial<CreateParams> & {
 export interface CheckResult {
   model: string
   status: MonitorStatus
+  /** 本地准入失败，未记录供应商状态。 */
+  skipped?: boolean
   latency_ms: number | null
   ping_latency_ms: number | null
   message: string

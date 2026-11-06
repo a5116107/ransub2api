@@ -136,6 +136,7 @@ type ChannelMonitorUpdateParams struct {
 type CheckResult struct {
 	Model         string
 	Status        string // operational / degraded / failed / error
+	Skipped       bool
 	LatencyMs     *int
 	PingLatencyMs *int
 	Message       string

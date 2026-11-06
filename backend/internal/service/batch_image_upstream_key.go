@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/google/uuid"
 )
 
@@ -25,17 +24,12 @@ type batchImageKeyScope struct {
 	member   string
 }
 
-func batchImageSharedKeyConfigured(cfg *config.Config) bool {
-	return cfg != nil && (cfg.Gateway.UpstreamKeyConcurrency.Configured() ||
-		cfg.Runtime.RegionalConcurrencyFile != "" || cfg.Runtime.RegionalSchedulerFile != "")
-}
-
 func (r *BatchImageProviderRegistry) PrepareRequest(ctx context.Context, provider BatchImageProvider, job *BatchImageJob, account *Account, lookup func(context.Context, int64) (*Account, error), repo BatchImageRepository) (context.Context, error) {
 	ctx, err := prepareBatchImageProviderRequest(ctx, provider, job, account, lookup)
 	if err != nil {
 		return ctx, err
 	}
-	if r == nil || (r.KeyAuthority == nil && (batchImageSharedKeyConfigured(r.config) || job.UpstreamKeyLease != nil)) {
+	if r == nil || (r.KeyAuthority == nil && (upstreamKeyAdmissionRequired(r.config) || job.UpstreamKeyLease != nil)) {
 		return ctx, ErrBatchImageSharedKeyUnavailable
 	}
 	if job.UpstreamKeyLease != nil && !job.UpstreamKeyLease.MatchesBatch(job.BatchID) {
@@ -79,7 +73,7 @@ func BatchImageKeyPolicyRequired(req *http.Request) bool {
 		return false
 	}
 	scope, _ := req.Context().Value(batchImageKeyScopeKey{}).(*batchImageKeyScope)
-	return scope != nil && (batchImageSharedKeyConfigured(scope.registry.config) || scope.job.UpstreamKeyLease != nil)
+	return scope != nil && (upstreamKeyAdmissionRequired(scope.registry.config) || scope.job.UpstreamKeyLease != nil)
 }
 
 func BatchImageKeyCreationMember(req *http.Request) string {

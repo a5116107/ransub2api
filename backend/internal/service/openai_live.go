@@ -569,7 +569,7 @@ func (s *OpenAIGatewayService) createUpstreamLiveCall(
 		if keyLease != nil {
 			upstreamReq = upstreamReq.WithContext(WithPersistentUpstreamKeyLease(upstreamReq.Context(), keyLease))
 		}
-	} else if s.cfg != nil && (s.cfg.Gateway.UpstreamKeyConcurrency.Configured() || s.cfg.Runtime.RegionalConcurrencyFile != "" || s.cfg.Runtime.RegionalSchedulerFile != "") {
+	} else if upstreamKeyAdmissionRequired(s.cfg) {
 		return nil, ErrUpstreamKeyPolicy
 	}
 	releaseKeyLease := func() {

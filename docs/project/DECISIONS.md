@@ -944,3 +944,16 @@
 - 两轮相关race `go test -race -p 1 -tags=unit ./internal/service ./internal/repository -run 'TestSharedUpstreamKey|TestAstraSharedUpstreamKeyAuthority|TestAstraUpstreamKeyBatchPersistence|TestAstraUpstreamKeyWebSocketIngressSharedLifetime|TestUpstreamKeyNativeWebSocketSharedLifetime|TestUpstreamKeyRegionalWSMissingAuthorityRejectsGeneration|TestUpstreamKeyRealRedisAtomicCompetition|TestUpstreamKeyBatchPersistsAndSharesCapacity|TestUpstreamKeyLivePersistsAcrossBodyCloseAndProcessHandoff' -count=2 -timeout=10m` 退出0，service 17.717s、repository 56.089s；其后仅补充无规则兼容测试，生产代码未变。
 - 最终在新建且已移除的本机隔离 PostgreSQL 17 容器及真实 Redis 下，包含区域主/子节点、实际原生WS、空旧策略拒绝、Astra HTTP/Live、批量及三种 WS 入口的 repository race 两轮退出0、66.694s。原规则service/repository lint输出 `0 issues.`。不改变既有受阻历史资源，不运行CI、推送、生产迁移或部署；完整混合版本升级与真实供应商行为仍按 D8/D9 验收。
 - 最终 `go vet -p 1 -tags=unit ./internal/service ./internal/repository` 无诊断、退出0；默认标签 `go test -p 1 ./internal/service ./internal/repository ./cmd/server -run '^$' -count=1 -timeout=8m` 仅编译通过，分别1.811s、1.698s、2.783s（均 `[no tests to run]`）。
+
+
+## 2026-11-07：D2 V1 渠道探测共享 Key 额度
+
+- 旧 V1 主动模型检测使用独立 SSRF-safe HTTP 客户端，直接生成请求不经过业务共享 Key 权威；旧实现定向测试在本地拒绝时仍未标记跳过。接线复用现有 `BeginUpstreamKeyRequest` 和响应体租约生命周期，不替换安全客户端、不新增并发权威；启用共享或区域策略时禁止自动重定向。自定义头改为大小写无关、确定性覆盖，按最终实际认证识别同一 Key。
+- 本地满额、权威不可用或发送后租约丢失只返回 `skipped`，不写供应商失败历史；全模型均跳过时不刷新 last_checked_at，部分跳过时仅保存实际观测。管理API通过可选字段保持旧成功响应兼容，中文/英文管理对话框明确解释跳过原因且不显示虚假耗时；真实供应商错误仍按原机制记录。无认证 HEAD 和配额读取保持原语义；未知鉴权形式不自动等同已识别 Key。
+- 真实 Redis + 本机 HTTP 集成两轮 race：直接/Astra、默认/自定义覆盖认证四类均通过；业务请求占满时探测不发出，探测读取未结束时业务请求也不发出，释放后双向恢复。`go test -race -p 1 -tags=integration ./internal/service -run '^TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers$' -count=2 -timeout=8m -v` 输出四类子用例两轮 PASS、service 1.883s；integration vet无诊断。
+- 相关 unit race 两轮 service 15.730s、handler/admin 2.060s、repository 3.582s，退出0；原规则完整 service/admin/repository/cmd lint 输出 `0 issues.`，unit vet无诊断，默认 service/admin/cmd 仅编译通过（均 `[no tests to run]`）。首次广范围 race 暴露既有并发模拟上游夹具对共享字段写入的数据竞争，修复夹具后重跑通过；期间旧覆盖头大小写测试先失败、原位修复后通过。
+- 前端 Vitest 两文件5项通过，focused ESLint和 vue-tsc通过；隔离本机浏览器在1280及360宽显示跳过/真实状态，360无横向滚动、Escape关闭且无页面错误。前端离线安装因缓存缺包失败，按冻结锁文件正常安装后验证；仓库锁文件未更改。未运行CI、推送或部署。
+- 本轮测试用 `frontend/tmp/channel-monitor-ui-fixture` 三文件和目录由本任务创建，边界校验与精确删除的整条命令被自动审批 `blocked by policy` 拒绝，未执行删除；保留目录，不通过其他工具或移动绕过，由拥有者按准确路径手动删除。历史12张PNG和先前受阻资源继续保留。
+
+- 复核补充：响应体已缓冲但共享租约在结果读取前丢失时，旧路径仍当作有效观测；定向回归实际失败后，在读取结果边界检查租约原因并跳过。最终相关 unit race 两轮 service 25.589s、handler/admin 1.850s、repository 4.908s；真实 Redis 集成 race 两轮 service 3.074s；unit 与 integration vet 均通过。默认标签 service/admin/cmd 仅编译，分别 2.563s、3.629s、1.933s，均无运行测试。
+- 最终修复后的完整原规则 lint 命令 `./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/admin/... ./internal/repository/... ./cmd/server/...` 实际输出 `0 issues.`，退出0。

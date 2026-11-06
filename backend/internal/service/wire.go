@@ -1211,9 +1211,12 @@ func ProvideChannelMonitorService(
 	repo ChannelMonitorRepository,
 	encryptor SecretEncryptor,
 	settingService *SettingService,
+	cfg *config.Config,
+	upstream HTTPUpstream,
 ) *ChannelMonitorService {
 	svc := NewChannelMonitorService(repo, encryptor)
 	svc.SetRuntimeReader(settingService)
+	svc.SetUpstreamKeyAuthority(cfg, upstream)
 	return svc
 }
 

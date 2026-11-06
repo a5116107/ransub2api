@@ -1022,7 +1022,7 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 				continue
 			}
 			if provider.SupportsAccount(&account) {
-				if batchImageSharedKeyConfigured(s.Config) && (s.ProviderRegistry.KeyAuthority == nil || !batchImageProviderSupportsPersistentKey(provider)) {
+				if upstreamKeyAdmissionRequired(s.Config) && (s.ProviderRegistry.KeyAuthority == nil || !batchImageProviderSupportsPersistentKey(provider)) {
 					sharedKeyBlocked = true
 					continue
 				}

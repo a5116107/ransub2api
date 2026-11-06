@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,6 +40,7 @@ func TestNewSSRFSafeHTTPClientUsesMonitorTimeoutBudget(t *testing.T) {
 
 // captureHandler 把每次收到的请求 body 和 headers 存起来，测试断言用。
 type captureHandler struct {
+	mu          sync.Mutex
 	lastBody    map[string]any
 	lastHeaders http.Header
 	respondText string // 写到 Anthropic content[0].text 里（校验用）
@@ -46,6 +48,8 @@ type captureHandler struct {
 }
 
 func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.lastHeaders = r.Header.Clone()
 	defer func() { _ = r.Body.Close() }()
 	var parsed map[string]any
@@ -74,6 +78,7 @@ func setupFakeAnthropic(t *testing.T, handler *captureHandler) string {
 }
 
 type openAICaptureHandler struct {
+	mu                        sync.Mutex
 	lastBody                  map[string]any
 	lastHeaders               http.Header
 	lastPath                  string
@@ -83,6 +88,8 @@ type openAICaptureHandler struct {
 }
 
 func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.lastHeaders = r.Header.Clone()
 	h.lastPath = r.URL.Path
 	defer func() { _ = r.Body.Close() }()

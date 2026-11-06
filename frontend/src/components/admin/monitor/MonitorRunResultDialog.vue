@@ -9,21 +9,22 @@
       <div
         v-for="r in results"
         :key="r.model"
-        class="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
       >
-        <div class="flex flex-col">
+        <div class="flex min-w-0 flex-1 basis-40 flex-col break-words">
           <span class="font-medium text-gray-900 dark:text-white">{{ formatMonitorModel(r.model) }}</span>
-          <span v-if="r.message" class="text-xs text-gray-500 dark:text-gray-400">{{ r.message }}</span>
+          <span v-if="r.skipped" class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.channelMonitor.runResultSkippedHint') }}</span>
+          <span v-else-if="r.message" class="text-xs text-gray-500 dark:text-gray-400">{{ r.message }}</span>
           <MonitorQuotaView :snapshot="r.quota" class="mt-1" />
         </div>
         <div class="flex items-center gap-2">
           <span
             class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px]"
-            :class="statusBadgeClass(r.status)"
+            :class="statusBadgeClass(r.skipped ? 'error' : r.status)"
           >
-            {{ statusLabel(r.status) }}
+            {{ r.skipped ? t('admin.channelMonitor.runResultSkipped') : statusLabel(r.status) }}
           </span>
-          <span class="text-xs text-gray-500 dark:text-gray-400">{{ formatLatency(r.latency_ms) }} ms</span>
+          <span v-if="!r.skipped" class="text-xs text-gray-500 dark:text-gray-400">{{ formatLatency(r.latency_ms) }} ms</span>
         </div>
       </div>
     </div>

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,7 +53,9 @@ type CheckOptions struct {
 	BodyOverrideMode string
 	// BodyOverride 在 merge 模式下做浅合并（key 命中黑名单时静默丢弃），
 	// 在 replace 模式下直接当作完整 body。
-	BodyOverride map[string]any
+	BodyOverride        map[string]any
+	keyAdmission        UpstreamKeyRequestAdmission
+	requireKeyAdmission bool
 }
 
 // runCheckForModel 对单个 (provider, model) 做一次完整检测。
@@ -76,6 +79,12 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 	res.LatencyMs = &latencyMs
 
 	if err != nil {
+		if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
+			res.Skipped = true
+			res.LatencyMs = nil
+			res.Message = "Local shared upstream Key admission or lease prevented a valid probe; upstream status was not updated"
+			return res
+		}
 		res.Status = MonitorStatusError
 		res.Message = truncateMessage(sanitizeErrorMessage(err.Error()))
 		return res
@@ -301,7 +310,7 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	}
 	headers := mergeHeaders(adapter.buildHeaders(apiKey), opts)
 	full := joinURL(endpoint, monitorRequestPath(provider, endpoint, adapter, model))
-	respBytes, status, err := postRawJSON(ctx, full, body, headers)
+	respBytes, status, err := postRawJSON(ctx, full, body, headers, opts)
 	if err != nil {
 		return "", "", status, err
 	}
@@ -388,13 +397,20 @@ func mergeHeaders(base map[string]string, opts *CheckOptions) map[string]string 
 	}
 	out := make(map[string]string, len(base)+len(opts.ExtraHeaders))
 	for k, v := range base {
-		out[k] = v
+		out[http.CanonicalHeaderKey(k)] = v
 	}
-	for k, v := range opts.ExtraHeaders {
+	// The persisted map can contain multiple casing variants. Resolve them in
+	// a deterministic order, and apply every override after adapter defaults.
+	keys := make([]string, 0, len(opts.ExtraHeaders))
+	for k := range opts.ExtraHeaders {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		if IsForbiddenHeaderName(k) {
 			continue
 		}
-		out[k] = v
+		out[http.CanonicalHeaderKey(k)] = opts.ExtraHeaders[k]
 	}
 	return out
 }
@@ -535,7 +551,7 @@ func hasNonEmptyBodyValue(v any) bool {
 
 // postRawJSON 发送 POST + 已序列化好的 JSON 字节，限制响应体大小，返回响应字节、HTTP status、错误。
 // adapter 自行 marshal 是为了精确控制字段顺序与类型，所以这里直接收 []byte 而不是 any。
-func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers map[string]string) ([]byte, int, error) {
+func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers map[string]string, opts *CheckOptions) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, 0, fmt.Errorf("build request: %w", err)
@@ -546,13 +562,51 @@ func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers ma
 		req.Header.Set(k, v)
 	}
 
-	resp, err := monitorHTTPClient.Do(req)
+	var finish func(*http.Response, error)
+	if opts != nil && opts.requireKeyAdmission && opts.keyAdmission == nil {
+		return nil, 0, ErrUpstreamKeyPolicy
+	}
+	if opts != nil && opts.keyAdmission != nil {
+		req, finish, err = opts.keyAdmission.BeginUpstreamKeyRequest(req)
+		if err != nil {
+			if finish != nil {
+				finish(nil, err)
+			}
+			return nil, 0, fmt.Errorf("monitor admission: %w", err)
+		}
+		if req == nil || finish == nil {
+			if finish != nil {
+				finish(nil, ErrUpstreamKeyPolicy)
+			}
+			return nil, 0, ErrUpstreamKeyPolicy
+		}
+	}
+	client := monitorHTTPClient
+	if opts != nil && opts.requireKeyAdmission {
+		// A redirect can change the credential or target after the slot was
+		// acquired. Keep the existing SSRF-safe transport, but do not follow it.
+		copy := *client
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copy
+	}
+	resp, err := client.Do(req)
+	if finish != nil {
+		finish(resp, err)
+	}
 	if err != nil {
+		if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {
+			return nil, 0, ErrUpstreamKeyLease
+		}
 		return nil, 0, fmt.Errorf("do request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, monitorResponseMaxBytes))
+	// A transport may deliver an already-buffered response successfully even
+	// after the shared lease was lost. Such bytes are not a valid observation.
+	if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {
+		return nil, resp.StatusCode, ErrUpstreamKeyLease
+	}
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
 	}

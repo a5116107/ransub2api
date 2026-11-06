@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/google/uuid"
 )
@@ -14,6 +15,11 @@ import (
 var ErrUpstreamKeyCapacity = errors.New("upstream key concurrency capacity unavailable")
 var ErrUpstreamKeyPolicy = errors.New("upstream key concurrency policy unavailable or revision conflict")
 var ErrUpstreamKeyLease = errors.New("upstream key concurrency lease lost")
+
+func upstreamKeyAdmissionRequired(cfg *config.Config) bool {
+	return cfg != nil && (cfg.Gateway.UpstreamKeyConcurrency.Configured() ||
+		cfg.Runtime.RegionalConcurrencyFile != "" || cfg.Runtime.RegionalSchedulerFile != "")
+}
 
 // UpstreamKeyAdmissionReason identifies a local refusal before network send.
 const UpstreamKeyAdmissionReason GatewayFailureReason = "upstream_key_admission_unavailable"

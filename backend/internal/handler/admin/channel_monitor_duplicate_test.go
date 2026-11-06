@@ -4,6 +4,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -167,4 +168,15 @@ func TestDuplicateChannelMonitorHandlerRecoversAfterMarkSucceededFailure(t *test
 	require.Contains(t, second.Body.String(), `"id":101`)
 	require.Contains(t, second.Body.String(), `"api_key_masked":"top-***"`)
 	require.NotContains(t, second.Body.String(), "top-secret")
+}
+
+func TestChannelMonitorCheckResultPreservesSkippedStatus(t *testing.T) {
+	response := checkResultToResponse(&service.CheckResult{Model: "fixture", Status: service.MonitorStatusError, Skipped: true})
+	raw, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"skipped":true`)
+	response = checkResultToResponse(&service.CheckResult{Model: "fixture", Status: service.MonitorStatusOperational})
+	raw, err = json.Marshal(response)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), `"skipped"`, "existing successful API responses remain compatible")
 }

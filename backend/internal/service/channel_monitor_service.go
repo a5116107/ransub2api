@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
@@ -70,8 +71,10 @@ type channelMonitorRuntimeReader interface {
 
 // ChannelMonitorService 渠道监控管理服务。
 type ChannelMonitorService struct {
-	repo      ChannelMonitorRepository
-	encryptor SecretEncryptor
+	repo                        ChannelMonitorRepository
+	encryptor                   SecretEncryptor
+	upstreamKeyAdmission        UpstreamKeyRequestAdmission
+	requireUpstreamKeyAdmission bool
 	// settings is optional; when nil, RunCheck fails closed for active probes
 	// (mode defaults to v2 / retired) so tests without settings never hit upstream.
 	settings channelMonitorRuntimeReader
@@ -95,6 +98,16 @@ const ChannelMonitorDuplicateOperationIDMetadataKey = "sub2api:duplicate_operati
 // NewChannelMonitorService 创建渠道监控服务实例。
 func NewChannelMonitorService(repo ChannelMonitorRepository, encryptor SecretEncryptor) *ChannelMonitorService {
 	return &ChannelMonitorService{repo: repo, encryptor: encryptor}
+}
+
+// SetUpstreamKeyAuthority keeps probe traffic inside the same Key budget as
+// normal gateway requests without replacing the monitor's SSRF-safe transport.
+func (s *ChannelMonitorService) SetUpstreamKeyAuthority(cfg *config.Config, upstream HTTPUpstream) {
+	if s == nil {
+		return
+	}
+	s.requireUpstreamKeyAdmission = upstreamKeyAdmissionRequired(cfg)
+	s.upstreamKeyAdmission, _ = upstream.(UpstreamKeyRequestAdmission)
 }
 
 // SetRuntimeReader injects the settings reader used to gate active probes.
@@ -672,6 +685,9 @@ func attachQuotaSnapshot(results []*CheckResult, snapshot *domain.MonitorQuotaSn
 func (s *ChannelMonitorService) persistCheckResults(ctx context.Context, m *ChannelMonitor, results []*CheckResult) {
 	rows := make([]*ChannelMonitorHistoryRow, 0, len(results))
 	for _, r := range results {
+		if r == nil || r.Skipped {
+			continue
+		}
 		rows = append(rows, &ChannelMonitorHistoryRow{
 			MonitorID:     m.ID,
 			Model:         r.Model,
@@ -682,6 +698,9 @@ func (s *ChannelMonitorService) persistCheckResults(ctx context.Context, m *Chan
 			CheckedAt:     r.CheckedAt,
 			Quota:         r.Quota,
 		})
+	}
+	if len(rows) == 0 {
+		return
 	}
 	if err := s.repo.InsertHistoryBatch(ctx, rows); err != nil {
 		slog.Error("channel_monitor: insert history failed",
@@ -704,10 +723,12 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 
 	// 所有模型共用同一份 CheckOptions（来自监控的快照字段）。
 	opts := &CheckOptions{
-		APIMode:          m.APIMode,
-		ExtraHeaders:     m.ExtraHeaders,
-		BodyOverrideMode: m.BodyOverrideMode,
-		BodyOverride:     m.BodyOverride,
+		APIMode:             m.APIMode,
+		ExtraHeaders:        m.ExtraHeaders,
+		BodyOverrideMode:    m.BodyOverrideMode,
+		BodyOverride:        m.BodyOverride,
+		keyAdmission:        s.upstreamKeyAdmission,
+		requireKeyAdmission: s.requireUpstreamKeyAdmission,
 	}
 
 	var eg errgroup.Group

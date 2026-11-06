@@ -171,6 +171,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	scheduledTestPlanRepository := repository.NewScheduledTestPlanRepository(db)
 	openAIOAuthClient := repository.NewOpenAIOAuthClient()
 	privacyClientFactory := providePrivacyClientFactory()
 	openAIOAuthService := service.ProvideOpenAIOAuthService(proxyRepository, openAIOAuthClient, privacyClientFactory, configConfig)
@@ -182,7 +183,6 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexHarvestFlowRepository := repository.NewCodexHarvestFlowRepository(db)
 	codexHarvestService := service.ProvideCodexHarvestService(codexHarvestNodeRepository, settingRepository, configConfig, codexHarvestFlowRepository)
 	safetyPromptStore := service.NewSafetyPromptStore()
-	scheduledTestPlanRepository := repository.NewScheduledTestPlanRepository(db)
 	openAIGatewayDependencies := service.OpenAIGatewayDependencies{
 		TimezoneProber:    proxyExitInfoProber,
 		RegionalMetering:  regionalMetering,
@@ -237,7 +237,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	announcementService := service.NewAnnouncementService(announcementRepository, announcementReadRepository, userRepository, userSubscriptionRepository)
 	announcementHandler := handler.NewAnnouncementHandler(announcementService)
 	channelMonitorRepository := repository.NewChannelMonitorRepository(client, db)
-	channelMonitorService := service.ProvideChannelMonitorService(channelMonitorRepository, secretEncryptor, settingService)
+	channelMonitorService := service.ProvideChannelMonitorService(channelMonitorRepository, secretEncryptor, settingService, configConfig, httpUpstream)
 	channelMonitorUserHandler := handler.NewChannelMonitorUserHandler(channelMonitorService, settingService)
 	channelMonitorV2Repository := repository.NewChannelMonitorV2Repository(db)
 	pelicanGroupTestRepository := repository.NewPelicanGroupTestRepository(db)

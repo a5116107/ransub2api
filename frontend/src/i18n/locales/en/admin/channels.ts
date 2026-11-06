@@ -675,6 +675,8 @@ export default {
         kindRequired: 'Please select a provider'
       },
       runResultTitle: 'Check Result',
+      runResultSkipped: 'Skipped',
+      runResultSkippedHint: 'Local shared upstream Key capacity or lease is unavailable; upstream status was not updated.',
       noMonitorsYet: 'No monitors yet',
       createFirstMonitor: 'Create your first monitor to track channel availability',
       advanced: {

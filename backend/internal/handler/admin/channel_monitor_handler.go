@@ -123,6 +123,7 @@ type channelMonitorResponse struct {
 type channelMonitorCheckResultResponse struct {
 	Model         string                       `json:"model"`
 	Status        string                       `json:"status"`
+	Skipped       bool                         `json:"skipped,omitempty"`
 	LatencyMs     *int                         `json:"latency_ms"`
 	PingLatencyMs *int                         `json:"ping_latency_ms"`
 	Message       string                       `json:"message"`
@@ -198,6 +199,7 @@ func checkResultToResponse(r *service.CheckResult) channelMonitorCheckResultResp
 	return channelMonitorCheckResultResponse{
 		Model:         r.Model,
 		Status:        r.Status,
+		Skipped:       r.Skipped,
 		LatencyMs:     r.LatencyMs,
 		PingLatencyMs: r.PingLatencyMs,
 		Message:       r.Message,

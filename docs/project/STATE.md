@@ -3,10 +3,10 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2的Astra包装共享额度及区域WS权威缺口已完成本地验证。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，现基于5b93488；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
-- 证据：Astra与区域WS相关service/repository两轮race通过；隔离SQL+真实Redis最终race两轮66.694s，lint 0 issues，详见DECISIONS。
-- 下一动作：继续D2自定义签名/未知鉴权、绕过HTTPUpstream的出站和跨请求后台额度，再补D3/D4与D5–D9。
+- 任务：D2的V1渠道主动探测共享Key额度与本地跳过状态已完成本地验证。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基于2deb063；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
+- 证据：V1探测真实Redis双向占槽两轮race通过；unit三包race、vet、lint及前端5项/类型检查通过，详见DECISIONS。
+- 下一动作：继续D2未知鉴权、自定义签名及其他独立出站/跨请求后台额度；随后D3/D4和D5–D9。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
 
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、共享Key头大小写、Astra包装与区域WS权威已验证；其他来源待验收 |
+| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、共享Key头大小写、Astra/区域WS及V1探测已验证；其他来源待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -68,3 +68,4 @@ D2继续非标准鉴权、绕过HTTPUpstream及跨请求后台额度等边界，
 
 - 历史`backend/tmp/gemini-route-pg`递归删除命令被自动审批`blocked by policy`拒绝，整条未执行；随后独立停止55451成功，测试schema为0。保留约42MB目录，拥有者手工删除准确路径；不重试删除/移动绕过。
 - 本次`backend/tmp/batch-key-verification`删除预演被自动审批`blocked by policy`拒绝，命令未执行；保留目录，由拥有者按准确路径手动清理。
+- 本次 `frontend/tmp/channel-monitor-ui-fixture` 精确删除命令被自动审批 `blocked by policy` 拒绝，未执行；保留三文件及目录，拥有者按准确路径手动清理。
