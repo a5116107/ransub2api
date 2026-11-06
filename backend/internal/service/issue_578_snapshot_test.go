@@ -140,7 +140,7 @@ func TestIssue578ConcurrentTTLReservation(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if s.shouldProbeOpenAICodexSnapshot(300, now) {
+			if s.reserveOpenAICodexSnapshot(300, now, false) != nil {
 				accepted.Add(1)
 			}
 		}()

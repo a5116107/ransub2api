@@ -966,3 +966,13 @@
 - `go test -race -p 1 -tags=unit ./internal/config ./internal/service ./internal/repository -run 'TestUpstreamSigV4CredentialScopeBoundaries|TestUpstreamCredentialFingerprintsRawHeaderCasing|TestBedrockSignedRequestUsesStableSharedKeyIdentity|TestBedrockSignedHTTPSharesKeyCapacity|TestUpstreamKeyRealRedisAtomicCompetition|TestUpstreamKeyHTTPAdmissionSharedLifetime|TestUpstreamKeyCredentialsAndFailureBoundaries' -count=2 -timeout=8m` 退出0，分别2.156s、8.614s、4.273s；真实Redis和AWS SDK签名覆盖同ID跨区域满额、释放恢复、不同ID及同文本Bearer隔离，验证并非真实供应商服务。
 - 隔离 PostgreSQL 17 真实主/子区域与签名 HTTP 的两轮 race 输出两类子项均 PASS、repository 4.464s；临时容器已移除。unit vet无诊断；默认config/service/repository/cmd/server仅编译，分别1.361s、1.903s、2.086s、1.771s，均 `[no tests to run]`。首次原规则lint指出一个逻辑表达式风格诊断，等价原位修正后重跑。
 - 最终原规则 `./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/config/... ./internal/service/... ./internal/repository/...` 输出 `0 issues.`、退出0。未运行CI、推送或部署。
+
+## 2026-11-07：D2 Codex 用量快照探测的共享 Key 准入
+
+- 普通 OpenAI OAuth 用量快照使用独立 HTTP 客户端向 Codex Responses 发起模型探测，旧实现绕开 `HTTPUpstream`。旧源码定向回归实际失败：启用共享策略但缺少额度权威时仍向本地代理发出 1 次 CONNECT，预期 0；未使用真实供应商或凭据。
+- 在最终认证头形成后复用既有 `BeginUpstreamKeyRequest` 及响应体租约，保持原客户端的代理、超时和响应语义；配置共享或区域策略时不跟随重定向，权威缺失、满额及策略失败不发送，租约丢失不发布响应头快照或解除冷却。200 的完整成功观测和带用量头的 429 保留既有不同恢复语义；取消与响应关闭释放成员。
+- 原 10 分钟节流保留真实探测语义；本地拒绝或丢失租约改用 5 秒有界退避，手动强制刷新也遵守这段退避。用唯一预约对象条件替换，旧失败不得抹掉并发新预约；不新建缓存权威。BPS/影子账号继续原独立配额查询，不属于本次模型探测修改。
+- 仅最终 Bearer 凭据已配置的摘要受限，OAuth token 轮换不会自动复用旧摘要。AgentAssertion 当前没有可识别的稳定指纹；虽进入准入端口，不等于受到该限额保护。区域缺少端口的拒绝已覆盖，但本次未重新构造区域 SQL 主/子实例，D2 的其他身份、来源和后台任务、D3–D9 仍待原验收。
+- 回归：真实 Redis + 本机 HTTP、直接/Astra 两种路径各两轮，业务请求占满时探测不发送，探测等待响应头时业务请求不发送，释放后同账号经本地退避恢复；`go test -race -p 1 -tags=integration ./internal/service -run '^TestCodexUsageProbeSharesRealRedisCapacityAndRecovers$' -count=2 -timeout=5m -v` 退出0、service 23.395s，四次子例显式 PASS；不宣称验证真实供应商或实际代理网络。
+- 相关 unit race 两轮 service 3.383s、repository 13.028s；随后只将一处夹具断言改为布尔比较，避免失败时打印生成的私钥，最终源码复核见后续记录。unit/integration vet 无诊断；默认标签 service/repository/cmd/server 仅编译，分别 1.718s、2.119s、1.722s，均 `[no tests to run]`。初次测试夹具未读取请求体且服务端只等网络断开，导致 `httptest.Server.Close` 等待至 3 分钟测试超时；已增加请求体读取和独立退出信号，修正夹具后重跑通过。初次接线误放到相邻 Wire provider 导致编译失败，已改回正确 provider，不计产品通过。
+- 最终源码复核：`go test -race -p 1 -tags=unit ./internal/service -run '^Test(CodexUsageProbe|Issue578ConcurrentTTLReservation|AccountUsageService_OpenAIQueriesPreserveRefreshError)' -count=2 -timeout=5m` 输出 service 2.592s、退出0；最终 unit vet 无诊断。原规则 `./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/repository/...` 输出 `0 issues.`、退出0。未运行 CI、推送或部署。

@@ -287,7 +287,11 @@ func ProvideAccountUsageService(
 		identityCache,
 		tlsFPProfileService,
 	)
-	service.agentIdentityWS = openAIGatewayService
+	if openAIGatewayService != nil {
+		service.agentIdentityWS = openAIGatewayService
+		service.requireUpstreamKeyAdmission = upstreamKeyAdmissionRequired(openAIGatewayService.cfg)
+		service.upstreamKeyAdmission, _ = openAIGatewayService.httpUpstream.(UpstreamKeyRequestAdmission)
+	}
 	return service
 }
 

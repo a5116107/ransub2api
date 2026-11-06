@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -105,14 +106,15 @@ type antigravityUsageCache struct {
 }
 
 const (
-	apiCacheTTL         = 3 * time.Minute
-	apiErrorCacheTTL    = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
-	antigravityErrorTTL = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
-	apiQueryMaxJitter   = 800 * time.Millisecond // 用量查询最大随机延迟
-	windowStatsCacheTTL = 1 * time.Minute
-	openAIProbeCacheTTL = 10 * time.Minute
-	grokProbeRetryTTL   = 1 * time.Minute
-	grokFreeQuotaWindow = 24 * time.Hour
+	apiCacheTTL              = 3 * time.Minute
+	apiErrorCacheTTL         = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
+	antigravityErrorTTL      = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
+	apiQueryMaxJitter        = 800 * time.Millisecond // 用量查询最大随机延迟
+	windowStatsCacheTTL      = 1 * time.Minute
+	openAIProbeCacheTTL      = 10 * time.Minute
+	openAIProbeLocalRetryTTL = 5 * time.Second
+	grokProbeRetryTTL        = 1 * time.Minute
+	grokFreeQuotaWindow      = 24 * time.Hour
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -122,8 +124,13 @@ type UsageCache struct {
 	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
-	openAIProbeCache  sync.Map           // accountID -> time.Time
+	openAIProbeCache  sync.Map           // accountID -> *openAIProbeReservation
 	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
+}
+
+type openAIProbeReservation struct {
+	nextAttempt time.Time
+	localRetry  bool
 }
 
 // NewUsageCache 创建 UsageCache 实例
@@ -293,19 +300,21 @@ type ClaudeUsageFetcher interface {
 
 // AccountUsageService 账号使用量查询服务
 type AccountUsageService struct {
-	accountRepo             AccountRepository
-	usageLogRepo            UsageLogRepository
-	usageFetcher            ClaudeUsageFetcher
-	geminiQuotaService      *GeminiQuotaService
-	antigravityQuotaFetcher *AntigravityQuotaFetcher
-	grokQuotaFetcher        *GrokQuotaFetcher
-	grokQuotaService        *GrokQuotaService
-	openAIQuotaService      *OpenAIQuotaService
-	cache                   *UsageCache
-	identityCache           IdentityCache
-	tlsFPProfileService     *TLSFingerprintProfileService
-	agentIdentityTaskMu     sync.Mutex
-	agentIdentityWS         agentIdentityWSConnectionInvalidator
+	accountRepo                 AccountRepository
+	usageLogRepo                UsageLogRepository
+	usageFetcher                ClaudeUsageFetcher
+	geminiQuotaService          *GeminiQuotaService
+	antigravityQuotaFetcher     *AntigravityQuotaFetcher
+	grokQuotaFetcher            *GrokQuotaFetcher
+	grokQuotaService            *GrokQuotaService
+	openAIQuotaService          *OpenAIQuotaService
+	cache                       *UsageCache
+	identityCache               IdentityCache
+	tlsFPProfileService         *TLSFingerprintProfileService
+	agentIdentityTaskMu         sync.Mutex
+	agentIdentityWS             agentIdentityWSConnectionInvalidator
+	upstreamKeyAdmission        UpstreamKeyRequestAdmission
+	requireUpstreamKeyAdmission bool
 }
 
 // NewAccountUsageService 创建AccountUsageService实例
@@ -719,32 +728,39 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 
 	applyExtraToUsage(usage, account.Extra, now)
 
-	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
-		if account.IsShadow() || account.IsExcelBPSEnabled() {
-			// BPS queries reuse quota OAuth authentication, never a model probe
-			// or the independent BPS grant. Spark resolves parent credentials
-			// but persists only its own bengalfox windows on the shadow row.
-			if s.openAIQuotaService != nil {
-				if quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID); err == nil {
-					if updates := quotaUsage.schedulingUpdates; len(updates) > 0 {
-						mergeAccountExtra(account, updates)
-						if account.ParentAccountID != nil {
-							notifyOpenAIAutoReset(*account.ParentAccountID)
+	if force || shouldRefreshOpenAICodexSnapshot(account, usage, now) {
+		reservation := s.reserveOpenAICodexSnapshot(account.ID, now, force)
+		if reservation != nil {
+			if account.IsShadow() || account.IsExcelBPSEnabled() {
+				// BPS queries reuse quota OAuth authentication, never a model probe
+				// or the independent BPS grant. Spark resolves parent credentials
+				// but persists only its own bengalfox windows on the shadow row.
+				if s.openAIQuotaService != nil {
+					if quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID); err == nil {
+						if updates := quotaUsage.schedulingUpdates; len(updates) > 0 {
+							mergeAccountExtra(account, updates)
+							if account.ParentAccountID != nil {
+								notifyOpenAIAutoReset(*account.ParentAccountID)
+							}
+							if usage.UpdatedAt == nil {
+								usage.UpdatedAt = &now
+							}
+							applyExtraToUsage(usage, account.Extra, now)
 						}
-						if usage.UpdatedAt == nil {
-							usage.UpdatedAt = &now
-						}
-						applyExtraToUsage(usage, account.Extra, now)
 					}
 				}
-			}
-		} else {
-			if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
-				mergeAccountExtra(account, updates)
-				if usage.UpdatedAt == nil {
-					usage.UpdatedAt = &now
+			} else {
+				updates, err := s.probeOpenAICodexSnapshot(ctx, account)
+				if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
+					s.retryOpenAICodexSnapshotAfterLocalFailure(account.ID, reservation)
 				}
-				applyExtraToUsage(usage, account.Extra, now)
+				if err == nil && len(updates) > 0 {
+					mergeAccountExtra(account, updates)
+					if usage.UpdatedAt == nil {
+						usage.UpdatedAt = &now
+					}
+					applyExtraToUsage(usage, account.Extra, now)
+				}
 			}
 		}
 	}
@@ -792,7 +808,7 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 	}
 	// Native probes retain their WSv2 eligibility. BPS and Spark use the quota
 	// endpoint independently of transport; their complete windows still expire.
-	// shouldProbeOpenAICodexSnapshot bounds concurrent/stale automatic reads.
+	// reserveOpenAICodexSnapshot bounds concurrent/stale automatic reads.
 	if !account.IsShadow() && !account.IsExcelBPSEnabled() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return false
 	}
@@ -810,24 +826,35 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 	return now.Sub(ts) >= openAIProbeCacheTTL
 }
 
-func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, now time.Time, force ...bool) bool {
+func (s *AccountUsageService) reserveOpenAICodexSnapshot(accountID int64, now time.Time, force bool) *openAIProbeReservation {
+	reservation := &openAIProbeReservation{nextAttempt: now.Add(openAIProbeCacheTTL)}
 	if s == nil || s.cache == nil || accountID <= 0 {
-		return true
+		return reservation
 	}
-	forceProbe := len(force) > 0 && force[0]
 	for {
-		cached, loaded := s.cache.openAIProbeCache.LoadOrStore(accountID, now)
+		cached, loaded := s.cache.openAIProbeCache.LoadOrStore(accountID, reservation)
 		if !loaded {
-			return true
+			return reservation
 		}
-		ts, valid := cached.(time.Time)
-		if !forceProbe && valid && now.Sub(ts) < openAIProbeCacheTTL {
-			return false
+		previous, valid := cached.(*openAIProbeReservation)
+		if valid && previous != nil && now.Before(previous.nextAttempt) && (!force || previous.localRetry) {
+			return nil
 		}
-		if s.cache.openAIProbeCache.CompareAndSwap(accountID, cached, now) {
-			return true
+		if s.cache.openAIProbeCache.CompareAndSwap(accountID, cached, reservation) {
+			return reservation
 		}
 	}
+}
+
+func (s *AccountUsageService) retryOpenAICodexSnapshotAfterLocalFailure(accountID int64, reservation *openAIProbeReservation) {
+	if s == nil || s.cache == nil || accountID <= 0 || reservation == nil {
+		return
+	}
+	// Only replace this attempt's reservation: an overlapping forced probe may
+	// already have installed a newer observation. Bound even forced retries
+	// briefly when capacity or its authority is unavailable.
+	retry := &openAIProbeReservation{nextAttempt: time.Now().Add(openAIProbeLocalRetryTTL), localRetry: true}
+	s.cache.openAIProbeCache.CompareAndSwap(accountID, reservation, retry)
 }
 
 func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
@@ -899,11 +926,45 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if err != nil {
 		return nil, fmt.Errorf("build openai probe client: %w", err)
 	}
+	if s.requireUpstreamKeyAdmission && s.upstreamKeyAdmission == nil {
+		return nil, ErrUpstreamKeyPolicy
+	}
+	var finish func(*http.Response, error)
+	if s.upstreamKeyAdmission != nil {
+		req, finish, err = s.upstreamKeyAdmission.BeginUpstreamKeyRequest(req)
+		if err != nil {
+			if finish != nil {
+				finish(nil, err)
+			}
+			return nil, fmt.Errorf("openai probe admission: %w", err)
+		}
+		if req == nil || finish == nil {
+			if finish != nil {
+				finish(nil, ErrUpstreamKeyPolicy)
+			}
+			return nil, ErrUpstreamKeyPolicy
+		}
+	}
+	if s.requireUpstreamKeyAdmission {
+		// A redirect may change the final credential after it was admitted.
+		copy := *client
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copy
+	}
 	resp, err := client.Do(req)
+	if finish != nil {
+		finish(resp, err)
+	}
 	if err != nil {
+		if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {
+			return nil, ErrUpstreamKeyLease
+		}
 		return nil, fmt.Errorf("openai codex probe request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {
+		return nil, ErrUpstreamKeyLease
+	}
 
 	return s.persistOpenAICodexProbeResponse(account.ID, resp, observed)
 }

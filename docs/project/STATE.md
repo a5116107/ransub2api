@@ -3,10 +3,10 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2的Bedrock SigV4访问密钥身份共享额度已完成本地验证。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基于a3fdeea；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
-- 证据：真实SigV4/Redis三包两轮race通过；隔离PostgreSQL主/区域两轮race通过，vet通过，详见DECISIONS。
-- 下一动作：继续D2其他未知签名、绕过HTTPUpstream出站及后台额度，再推进D3/D4和D5–D9。
+- 任务：D2普通OAuth的Codex用量模型探测接入共享Key额度；父任务仍在进行。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基于402a1f3；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
+- 证据：旧实现漏控而发出CONNECT已复现；两轮真实Redis直连/Astra及最终unit race通过，原规则lint 0；详见DECISIONS。
+- 下一动作：继续D2的AgentAssertion稳定身份、其他未知签名、独立出站及后台额度，再推进D3/D4和D5–D9。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
 
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、共享Key头大小写、Astra/区域WS、V1探测和Bedrock签名已验证；其他来源待验收 |
+| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、共享Key头大小写、Astra/区域WS、V1探测、Bedrock签名及OAuth用量探测Bearer准入已验证；其他来源待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -53,7 +53,7 @@
 
 ## 下一项工作
 
-D2继续非标准鉴权、绕过HTTPUpstream及跨请求后台额度等边界，再补D3其他能力、D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启用前排空旧版本及远端批量任务；受限Live沿4.4.2，区域沿原SQL预算。
+D2继续AgentAssertion、非标准鉴权、绕过HTTPUpstream及跨请求后台额度等边界，再补D3其他能力、D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启用前排空旧版本及远端批量任务；受限Live沿4.4.2，区域沿原SQL预算。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理
