@@ -4,7 +4,7 @@
 
 <!-- resume:start -->
 - 任务：D2普通OAuth的Codex用量模型探测与Agent Identity签名密钥接入共享Key额度；父任务仍在进行。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基于48488f3；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基于d40ac0c；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
 - 证据：旧实现漏控而发出CONNECT已复现；Bearer探测两轮真实Redis直连/Astra race通过；Agent Identity公钥验证与真实Redis/loopback两轮race通过，unit vet、默认编译、原规则lint 0；详见DECISIONS。
 - 下一动作：继续D2其他未知签名、模型清单/插件外独立出站及跨请求后台额度，再推进D3/D4和D5–D9；不猜测不同运行时是否同密钥。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
