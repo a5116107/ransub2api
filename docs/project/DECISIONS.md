@@ -957,3 +957,12 @@
 
 - 复核补充：响应体已缓冲但共享租约在结果读取前丢失时，旧路径仍当作有效观测；定向回归实际失败后，在读取结果边界检查租约原因并跳过。最终相关 unit race 两轮 service 25.589s、handler/admin 1.850s、repository 4.908s；真实 Redis 集成 race 两轮 service 3.074s；unit 与 integration vet 均通过。默认标签 service/admin/cmd 仅编译，分别 2.563s、3.629s、1.933s，均无运行测试。
 - 最终修复后的完整原规则 lint 命令 `./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/admin/... ./internal/repository/... ./cmd/server/...` 实际输出 `0 issues.`，退出0。
+
+
+## 2026-11-07：D2 Bedrock SigV4 共享额度身份
+
+- 旧实现只识别 Bearer/Token、常见 API Key 头与查询参数；真实 AWS SDK 生成的 Bedrock SigV4 Authorization 在生产构造器中提取不到指纹，本地真实签名 HTTP 夹具让同一 access-key ID 的第二个请求越过上限，两个定向测试均实际失败。
+- 现从最终签名头的 SigV4 Credential scope 提取 access-key ID，以 `SHA256(UTF-8("\x00aws4-access-key-id\x00" + trim(id)))` 独立域复用原配置、Redis/区域SQL权威与响应体租约；不保存 secret、session token 或签名，不修改签名和请求，普通 Bearer/API Key 不因相同文本混同。不同临时 access-key ID 即使属于同一 AWS 角色也不猜测合并，须分别配置；畸形/重复 scope 和 SigV4a 不建立该身份。该处理不校验签名，也不覆盖任意自定义签名或查询预签名。
+- `go test -race -p 1 -tags=unit ./internal/config ./internal/service ./internal/repository -run 'TestUpstreamSigV4CredentialScopeBoundaries|TestUpstreamCredentialFingerprintsRawHeaderCasing|TestBedrockSignedRequestUsesStableSharedKeyIdentity|TestBedrockSignedHTTPSharesKeyCapacity|TestUpstreamKeyRealRedisAtomicCompetition|TestUpstreamKeyHTTPAdmissionSharedLifetime|TestUpstreamKeyCredentialsAndFailureBoundaries' -count=2 -timeout=8m` 退出0，分别2.156s、8.614s、4.273s；真实Redis和AWS SDK签名覆盖同ID跨区域满额、释放恢复、不同ID及同文本Bearer隔离，验证并非真实供应商服务。
+- 隔离 PostgreSQL 17 真实主/子区域与签名 HTTP 的两轮 race 输出两类子项均 PASS、repository 4.464s；临时容器已移除。unit vet无诊断；默认config/service/repository/cmd/server仅编译，分别1.361s、1.903s、2.086s、1.771s，均 `[no tests to run]`。首次原规则lint指出一个逻辑表达式风格诊断，等价原位修正后重跑。
+- 最终原规则 `./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/config/... ./internal/service/... ./internal/repository/...` 输出 `0 issues.`、退出0。未运行CI、推送或部署。

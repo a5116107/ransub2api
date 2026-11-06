@@ -96,6 +96,11 @@ func regionalKeyFixture(t *testing.T, cfg *config.Config, rdb *redis.Client, cap
 	require.NoError(t, err)
 	require.NoError(t, local.InstallUpstreamPolicy(t.Context(), snapshot))
 	fingerprint := config.UpstreamKeyFingerprint("supplier-fixture")
+	if len(cfg.Gateway.UpstreamKeyConcurrency.Limits) == 1 {
+		for configured := range cfg.Gateway.UpstreamKeyConcurrency.Limits {
+			fingerprint = configured
+		}
+	}
 	// Grants use the authority's clock, matching the real broker. Container and
 	// Windows wall clocks need not agree within the old one-millisecond margin.
 	var issuedAt time.Time
@@ -352,6 +357,61 @@ func TestRegionalUpstreamKeyHTTPBodyLifetime(t *testing.T) {
 			next, err := port.Do(request(t.Context()), "", 99, 500)
 			require.NoError(t, err)
 			require.NoError(t, next.Body.Close())
+		})
+	}
+}
+
+func TestRegionalBedrockSignedHTTPSharedCapacity(t *testing.T) {
+	for _, mode := range []string{"primary", "regional"} {
+		t.Run(mode, func(t *testing.T) {
+			rdb := regionalKeyRedis(t)
+			cfg := &config.Config{}
+			cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1,
+				Limits: map[string]int{config.UpstreamAWSAccessKeyFingerprint("AKIDEXAMPLE12345"): 1}}
+			capacity := 0
+			if mode == "regional" {
+				capacity = 1
+			}
+			primary, local, grant := regionalKeyFixture(t, cfg, rdb, capacity)
+			cache, table := primary, "regional_primary_slots"
+			if capacity != 0 {
+				cache, table = local, "regional_local_slots"
+			}
+			var sends atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				sends.Add(1)
+				_, _ = io.WriteString(w, "started")
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					return
+				}
+				<-req.Context().Done()
+			}))
+			t.Cleanup(upstream.Close)
+			port := ProvideHTTPUpstream(cfg, nil, rdb, cache)
+			request := func(region string) *http.Request {
+				r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/bedrock", strings.NewReader(`{}`))
+				require.NoError(t, err)
+				err = service.NewBedrockSigner("AKIDEXAMPLE12345", "fixture-secret-not-a-real-key", "fixture-session", region).SignRequest(t.Context(), r, []byte(`{}`))
+				require.NoError(t, err)
+				return r
+			}
+			first, err := port.Do(request("us-east-1"), "", 1, 4)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, first.Body.Close()) })
+			blocked, err := port.Do(request("eu-west-1"), "", 2, 4)
+			require.Nil(t, blocked)
+			require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
+			require.EqualValues(t, 1, sends.Load())
+			require.NoError(t, first.Body.Close())
+			require.Eventually(t, func() bool {
+				var count int
+				err := cache.database().QueryRowContext(t.Context(), `SELECT count(*) FROM `+table+` WHERE kind=$1 AND resource_id=$2 AND NOT released`, grant.Resource.Kind, grant.Resource.ID).Scan(&count)
+				return err == nil && count == 0
+			}, time.Second, 10*time.Millisecond)
+			next, err := port.Do(request("eu-west-1"), "", 2, 4)
+			require.NoError(t, err)
+			require.NoError(t, next.Body.Close())
+			require.EqualValues(t, 2, sends.Load())
 		})
 	}
 }

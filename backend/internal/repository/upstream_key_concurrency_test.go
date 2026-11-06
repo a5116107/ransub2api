@@ -68,6 +68,61 @@ func TestUpstreamKeyHTTPAdmissionSharedLifetime(t *testing.T) {
 	require.Zero(t, first.ZCard(t.Context(), "concurrency:upstream_key:slots:"+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
 }
 
+func TestBedrockSignedHTTPSharesKeyCapacity(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	testBedrockSignedHTTPSharesKeyCapacity(t, client)
+}
+
+func testBedrockSignedHTTPSharesKeyCapacity(t *testing.T, client *redis.Client) {
+	t.Helper()
+	const id = "AKIDEXAMPLE12345"
+	var sends atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		sends.Add(1)
+		_, _ = io.WriteString(w, "started")
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			return
+		}
+		<-req.Context().Done()
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamAWSAccessKeyFingerprint(id): 1}}
+	transport := newHTTPUpstream(cfg, nil, client, nil)
+	signed := func(keyID, region string) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/bedrock", strings.NewReader(`{}`))
+		require.NoError(t, err)
+		err = service.NewBedrockSigner(keyID, "fixture-secret-not-a-real-key", "fixture-session", region).SignRequest(t.Context(), req, []byte(`{}`))
+		require.NoError(t, err)
+		return req
+	}
+	first, err := transport.Do(signed(id, "us-east-1"), "", 1, 10)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, first.Body.Close()) })
+	blocked, err := transport.Do(signed(id, "eu-west-1"), "", 2, 10)
+	if blocked != nil {
+		require.NoError(t, blocked.Body.Close())
+	}
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity, "re-signed requests with the same access-key ID must share capacity")
+	require.EqualValues(t, 1, sends.Load())
+	other, err := transport.Do(signed("AKIDOTHEREXAMPLE", "us-east-1"), "", 3, 10)
+	require.NoError(t, err, "another AWS key remains independent")
+	require.NoError(t, other.Body.Close())
+	bearer, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/bearer", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	bearer.Header.Set("Authorization", "Bearer "+id)
+	other, err = transport.Do(bearer, "", 4, 10)
+	require.NoError(t, err, "an identical-looking Bearer token is a separate credential type")
+	require.NoError(t, other.Body.Close())
+	require.NoError(t, first.Body.Close())
+	next, err := transport.Do(signed(id, "eu-west-1"), "", 2, 10)
+	require.NoError(t, err)
+	require.NoError(t, next.Body.Close())
+	require.EqualValues(t, 4, sends.Load())
+}
+
 func TestUpstreamKeyAtomicCompetitionAndPolicyRevision(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
@@ -165,6 +220,9 @@ func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	astraBatchClient := redis.NewClient(&redis.Options{Addr: address, DB: 5})
 	t.Cleanup(func() { require.NoError(t, astraBatchClient.Close()) })
 	testUpstreamKeyBatchPersistence(t, astraBatchClient, func() {}, true)
+	bedrockClient := redis.NewClient(&redis.Options{Addr: address, DB: 6})
+	t.Cleanup(func() { require.NoError(t, bedrockClient.Close()) })
+	testBedrockSignedHTTPSharesKeyCapacity(t, bedrockClient)
 }
 
 func testUpstreamKeyCompetition(t *testing.T, client *redis.Client) {

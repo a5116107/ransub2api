@@ -61,6 +61,58 @@ func UpstreamKeyFingerprint(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// UpstreamAWSAccessKeyFingerprint identifies a SigV4 access-key ID, not its
+// per-request signature or secret. Its namespace prevents an unrelated Bearer
+// token with the same text from consuming this AWS credential's capacity.
+func UpstreamAWSAccessKeyFingerprint(accessKeyID string) string {
+	// NUL cannot occur in an HTTP header value, so this domain cannot collide
+	// with any valid Bearer or API-Key header value.
+	return UpstreamKeyFingerprint("\x00aws4-access-key-id\x00" + strings.TrimSpace(accessKeyID))
+}
+
+// sigV4AccessKeyID reads the stable ID from the actual AWS4 authorization
+// header. It does not verify signatures or treat a role/session as the same ID.
+func sigV4AccessKeyID(value string) string {
+	scheme, fields, ok := strings.Cut(strings.TrimSpace(value), " ")
+	if !ok || !strings.EqualFold(scheme, "AWS4-HMAC-SHA256") {
+		return ""
+	}
+	var credential string
+	credentialFound := false
+	for _, field := range strings.Split(fields, ",") {
+		name, candidate, found := strings.Cut(strings.TrimSpace(field), "=")
+		if !found || name != "Credential" {
+			continue
+		}
+		if credentialFound {
+			return ""
+		}
+		credentialFound = true
+		credential = candidate
+	}
+	parts := strings.Split(credential, "/")
+	if len(parts) != 5 || parts[0] == "" || len(parts[0]) > 128 || len(parts[1]) != 8 ||
+		parts[2] == "" || parts[3] == "" || parts[4] != "aws4_request" {
+		return ""
+	}
+	for _, c := range parts[0] {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+			return ""
+		}
+	}
+	for _, c := range parts[1] {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	for _, scope := range parts[2:4] {
+		if strings.ContainsAny(scope, " \t\r\n") {
+			return ""
+		}
+	}
+	return parts[0]
+}
+
 // UpstreamCredentialFingerprints identifies final wire credentials without
 // retaining plaintext. HTTP and pooled WS use the same extraction rules.
 func UpstreamCredentialFingerprints(req *http.Request) []string {
@@ -69,15 +121,17 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 	}
 	seen := map[string]bool{}
 	var result []string
-	add := func(key string) {
-		if strings.TrimSpace(key) == "" {
-			return
-		}
-		fingerprint := UpstreamKeyFingerprint(key)
+	addFingerprint := func(fingerprint string) {
 		if !seen[fingerprint] {
 			seen[fingerprint] = true
 			result = append(result, fingerprint)
 		}
+	}
+	add := func(key string) {
+		if strings.TrimSpace(key) == "" {
+			return
+		}
+		addFingerprint(UpstreamKeyFingerprint(key))
 	}
 	// Some upstream builders deliberately preserve wire casing by inserting
 	// keys directly into http.Header. Header.Values canonicalizes its lookup
@@ -97,6 +151,10 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 					scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
 					if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
 						add(token)
+					} else if keyID := sigV4AccessKeyID(value); keyID != "" {
+						// Add uses the same hashing and de-duplication path as other
+						// credentials, with a distinct AWS identity namespace.
+						addFingerprint(UpstreamAWSAccessKeyFingerprint(keyID))
 					}
 				} else {
 					add(value)

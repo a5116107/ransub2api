@@ -86,3 +86,39 @@ func TestUpstreamCredentialFingerprintsRawHeaderCasing(t *testing.T) {
 	//nolint:staticcheck // Verify the deliberately non-canonical on-wire key is unchanged.
 	require.Equal(t, []string{"Bearer supplier-fixture"}, req.Header["authorization"], "extraction must not rewrite the wire")
 }
+
+func TestUpstreamSigV4CredentialScopeBoundaries(t *testing.T) {
+	const id = "AKIDEXAMPLE12345"
+	const valid = "AWS4-HMAC-SHA256 Credential=" + id + "/20261107/us-east-1/bedrock/aws4_request, SignedHeaders=host;x-amz-date, Signature=fixture"
+	for _, tc := range []struct {
+		name, value string
+		want        bool
+	}{
+		{"valid", valid, true},
+		{"lowercase scheme", strings.Replace(valid, "AWS4-HMAC-SHA256", "aws4-hmac-sha256", 1), true},
+		{"missing credential", "AWS4-HMAC-SHA256 SignedHeaders=host, Signature=fixture", false},
+		{"missing scope", "AWS4-HMAC-SHA256 Credential=" + id, false},
+		{"wrong terminator", strings.Replace(valid, "aws4_request", "wrong", 1), false},
+		{"bad date", strings.Replace(valid, "20261107", "2026a107", 1), false},
+		{"bad access id", strings.Replace(valid, id, "bad id", 1), false},
+		{"duplicate", valid + ", Credential=" + id + "/20261107/us-east-1/bedrock/aws4_request", false},
+		{"empty duplicate", "AWS4-HMAC-SHA256 Credential=, Credential=" + id + "/20261107/us-east-1/bedrock/aws4_request", false},
+		{"v4a unsupported", strings.Replace(valid, "AWS4-HMAC-SHA256", "AWS4-ECDSA-P256-SHA256", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid", nil)
+			req.Header["authorization"] = []string{tc.value}
+			got := UpstreamCredentialFingerprints(req)
+			if tc.want {
+				require.Equal(t, []string{UpstreamAWSAccessKeyFingerprint(id)}, got)
+			} else {
+				require.Empty(t, got)
+			}
+		})
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid?key="+id, nil)
+	req.Header["authorization"] = []string{valid}
+	req.Header["Authorization"] = []string{"Bearer " + id}
+	req.Header["x-api-key"] = []string{id}
+	require.ElementsMatch(t, []string{UpstreamAWSAccessKeyFingerprint(id), UpstreamKeyFingerprint(id)}, UpstreamCredentialFingerprints(req))
+}

@@ -260,14 +260,18 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
-  # Optional shared supplier-Key HTTP ceiling; all serving instances must use
-  # the same revision and map. Fingerprint = lowercase SHA256(trim(API_KEY)).
-  # Existing account/user limits remain independent. Never put raw keys here.
-  # Increment revision for every change. Stop/drain traffic before removing a
-  # rule or enabling the first rule: previously unlimited traffic has no lease.
-  # Configured mode uses shared Redis, HTTP/SSE only: Responses WS is rejected
-  # (HTTP-to-WS conversion falls back to HTTP); realtime calls are rejected.
-  # Regional SQL quota mode is rejected at startup. Restart to load changes.
+  # Optional shared supplier-Key ceiling; all serving instances must use the
+  # same revision and map. Bearer/API key fingerprint = lowercase SHA256 of
+  # the trimmed key. AWS SigV4 uses a distinct stable access-key ID identity:
+  # SHA256(UTF-8("\x00aws4-access-key-id\x00" + trim(AWS_ACCESS_KEY_ID))).
+  # Different temporary AWS access-key IDs are distinct; no role identity is
+  # inferred. Unknown auth schemes are not covered. Never put raw keys here.
+  # Account/user limits remain independent. Increment revision on every change.
+  # Stop/drain old traffic before first enable, removal, or binary rollback.
+  # HTTP/SSE and native Responses WS share the authority; Live and remote batch
+  # use persistent handoff. Regional deployments use the configured SQL authority.
+  # Redis durability, complete rollout, and drain requirements are documented in
+  # docs/project/monitor-driven-scheduling-design.md. Restart to load changes.
   upstream_key_concurrency:
     revision: 0
     limits: {}
