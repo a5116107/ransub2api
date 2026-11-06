@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -198,6 +200,47 @@ func excelBPSAccountID(account *Account, accessToken string) string {
 	return strings.TrimSpace(claims.OpenAIAuth.ChatGPTAccountID)
 }
 
+// Only a digest of routing and credential identity becomes cache scope. OAuth
+// refresh preserves it when the token identifies the same upstream principal;
+// opaque credentials use their own digest instead of guessing ownership.
+func excelBPSCacheScope(c *gin.Context, account *Account, model, identity, accountID, token string) string {
+	type principalIdentity struct {
+		Issuer, Subject, Account, User, LegacyUser, Organization, ClientID, AuthorizedParty, TokenDigest string
+		Audience                                                                                         []string
+	}
+	principal := principalIdentity{}
+	if claims, err := openai.DecodeIDToken(token); err == nil {
+		principal.Issuer = claims.Iss
+		principal.Subject = claims.Sub
+		principal.ClientID = claims.ClientID
+		principal.AuthorizedParty = claims.AuthorizedParty
+		principal.Audience = append([]string(nil), claims.Aud...)
+		slices.Sort(principal.Audience)
+		principal.Audience = slices.Compact(principal.Audience)
+		if claims.OpenAIAuth != nil {
+			principal.Account = claims.OpenAIAuth.ChatGPTAccountID
+			principal.User = claims.OpenAIAuth.ChatGPTUserID
+			principal.LegacyUser = claims.OpenAIAuth.UserID
+			principal.Organization = claims.OpenAIAuth.POID
+		}
+	}
+	if strings.TrimSpace(principal.Subject) == "" && strings.TrimSpace(principal.User) == "" && strings.TrimSpace(principal.LegacyUser) == "" {
+		principal.TokenDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	}
+	userID := int64(0)
+	if key := getAPIKeyFromContext(c); key != nil {
+		userID = key.UserID
+	}
+	encoded, _ := json.Marshal(struct {
+		Version, Model, Identity, AccountID, ConnectionID string
+		AccountRowID, UserID, KeyID, GroupID              int64
+		Route                                             [32]byte
+		Principal                                         principalIdentity
+	}{"bps-v2", model, identity, accountID, account.AuthConnectionID, account.ID, userID, getAPIKeyIDFromContext(c),
+		getOpenAIGroupIDFromContext(c), AccountRouteFingerprint(account), principal})
+	return fmt.Sprintf("bps-v2:%x", sha256.Sum256(encoded))
+}
+
 func newExcelBPSRequest(ctx context.Context, body []byte, token, accountID string) (*http.Request, error) {
 	return newExcelBPSRequestTo(ctx, basispoints.ResponsesURL, "text/event-stream", body, token, accountID)
 }
@@ -328,12 +371,12 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return nil, err
 		}
 	}
-	scope := fmt.Sprintf("account:%d/key:%d/thread:%s", account.ID, getAPIKeyIDFromContext(c), identity)
+	sessionScope := fmt.Sprintf("account:%d/key:%d/thread:%s", account.ID, getAPIKeyIDFromContext(c), identity)
 	if account.AuthConnectionID != "" {
-		scope += "/connection:" + account.AuthConnectionID
+		sessionScope += "/connection:" + account.AuthConnectionID
 	}
 	if transient {
-		scope = "transient:" + scope
+		sessionScope = "transient:" + sessionScope
 	}
 	if err = basispoints.ValidateNewAgentMessage(body); err != nil {
 		return fail(400, "basispoints_request_invalid", err.Error())
@@ -344,7 +387,23 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return fail(400, "basispoints_request_invalid", err.Error())
 		}
 	}
-	imagePolicy, err := s.prepareExcelImagePolicy(ctx, c, body, imageSettings, scope+"/model:"+model, identity != "" && !transient)
+	token, err := s.getExcelBPSAccessToken(ctx, account)
+	if err != nil {
+		if isExcelBPSClientCancellation(c, err) {
+			return clientCanceled()
+		}
+		if IsExcelAuthorizationError(err) {
+			code := "basispoints_auth_" + strings.ToLower(strings.TrimPrefix(infraerrors.Reason(err), "OPENAI_EXCEL_AUTH_"))
+			return fail(503, code, infraerrors.Message(err))
+		}
+		return fail(502, "basispoints_auth_unavailable", "Excel OAuth credential is unavailable; see Credential Operations")
+	}
+	accountID := excelBPSAccountID(account, token)
+	if accountID == "" {
+		return fail(400, "basispoints_account_id_missing", "Excel BPS requires chatgpt_account_id")
+	}
+	scope := excelBPSCacheScope(c, account, strings.TrimSpace(model), identity, accountID, token)
+	imagePolicy, err := s.prepareExcelImagePolicy(ctx, c, body, imageSettings, scope, identity != "" && !transient)
 	if err != nil {
 		var policyErr *excelImagePolicyError
 		if errors.As(err, &policyErr) {
@@ -422,21 +481,6 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		}
 		return fail(400, "basispoints_request_invalid", err.Error())
 	}
-	token, err := s.getExcelBPSAccessToken(ctx, account)
-	if err != nil {
-		if isExcelBPSClientCancellation(c, err) {
-			return clientCanceled()
-		}
-		if IsExcelAuthorizationError(err) {
-			code := "basispoints_auth_" + strings.ToLower(strings.TrimPrefix(infraerrors.Reason(err), "OPENAI_EXCEL_AUTH_"))
-			return fail(503, code, infraerrors.Message(err))
-		}
-		return fail(502, "basispoints_auth_unavailable", "Excel OAuth credential is unavailable; see Credential Operations")
-	}
-	accountID := excelBPSAccountID(account, token)
-	if accountID == "" {
-		return fail(400, "basispoints_account_id_missing", "Excel BPS requires chatgpt_account_id")
-	}
 	requestAcquire := s.excelBPSAcquireFor(account)
 	attachmentProxy := ""
 	if account.Proxy != nil {
@@ -446,7 +490,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		var lease excelBPSLease
 		// Pin the attachment upload and the Responses request to the same exit,
 		// whichever pool the account chose.
-		attachmentProxy, lease, err = acquireExcelBPSAttachmentProxy(ctx, c, account, scope, requestAcquire)
+		attachmentProxy, lease, err = acquireExcelBPSAttachmentProxy(ctx, c, account, sessionScope, requestAcquire)
 		if err != nil {
 			if isExcelBPSClientCancellation(c, err) {
 				return clientCanceled()
@@ -509,7 +553,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return fail(400, "basispoints_request_invalid", buildErr.Error())
 		}
 		SetActualOpenAIUpstreamEndpoint(c, "/basispoints/api/responses")
-		cr, cl, cp, compactErr := s.doExcelBPSRequest(requestCtx, c, account, scope, compactWire, token, accountID, requestAcquire)
+		cr, cl, cp, compactErr := s.doExcelBPSRequest(requestCtx, c, account, sessionScope, compactWire, token, accountID, requestAcquire)
 		if cl != nil {
 			defer cl.Release()
 		}
@@ -570,7 +614,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	SetActualOpenAIUpstreamEndpoint(c, "/basispoints/api/responses")
 	SetOpsUpstreamModel(c, model)
 	sent := time.Now()
-	resp, lease, proxyURL, err := s.doExcelBPSRequest(requestCtx, c, account, scope, upstreamBody, token, accountID, requestAcquire)
+	resp, lease, proxyURL, err := s.doExcelBPSRequest(requestCtx, c, account, sessionScope, upstreamBody, token, accountID, requestAcquire)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(sent).Milliseconds())
 	if err != nil {
 		if isExcelBPSClientCancellation(c, err) {
@@ -930,7 +974,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		if lease != nil {
 			lease.ReportStreamFailure()
 		}
-		recordExcelBPSTransportFailure(ctx, c, account, scope, proxyURL, err, "stream", c.GetInt("excel_bps_upstream_attempt"), false)
+		recordExcelBPSTransportFailure(ctx, c, account, sessionScope, proxyURL, err, "stream", c.GetInt("excel_bps_upstream_attempt"), false)
 		MarkOpsStreamError(c, "basispoints_stream_incomplete", "Excel BPS stream ended before completion", http.StatusBadGateway)
 		s.rateLimitService.observeQualityStatus(ctx, account, http.StatusBadGateway)
 		MarkResponseCommitted(c)

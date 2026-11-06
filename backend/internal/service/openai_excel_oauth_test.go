@@ -92,6 +92,43 @@ func excelTestCredentials(tokenLabel string, expiry time.Time) map[string]any {
 		"id_token": reauthTestJWT(map[string]any{"aud": []string{openai.ExcelClientID}, "email": "user@example.com", "sid": "excel-session", "exp": expiry.Unix(), "https://api.openai.com/auth": map[string]any{"user_id": "user-1"}}),
 	}
 }
+
+func TestExcelOAuthTokenAudienceFormatsAndValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		audience any
+		allowed  bool
+	}{
+		{name: "single matching", audience: openai.ExcelClientID, allowed: true},
+		{name: "array matching", audience: []string{"other", openai.ExcelClientID}, allowed: true},
+		{name: "wrong single", audience: "other-client"},
+		{name: "wrong array", audience: []string{"other-client"}},
+		{name: "mixed types", audience: []any{openai.ExcelClientID, 42}},
+		{name: "missing", audience: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expiry := time.Now().Add(time.Hour)
+			credentials := excelTestCredentials("audience-fixture", expiry)
+			credentials["access_token"] = reauthTestJWT(map[string]any{"aud": "bps-api", "client_id": openai.ExcelClientID,
+				"exp": expiry.Unix(), "https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "acct-1", "user_id": "user-1"}})
+			credentials["id_token"] = reauthTestJWT(map[string]any{"aud": tc.audience, "email": "user@example.com",
+				"https://api.openai.com/auth": map[string]any{"user_id": "user-1"}})
+			info, err := excelOAuthTokenInfo(credentials)
+			if tc.allowed {
+				require.NoError(t, err)
+				require.Equal(t, "acct-1", info.ChatGPTAccountID)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+	credentials := excelTestCredentials("invalid-access-audience", time.Now().Add(time.Hour))
+	credentials["access_token"] = reauthTestJWT(map[string]any{"aud": 42, "client_id": openai.ExcelClientID,
+		"exp": time.Now().Add(time.Hour).Unix(), "https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "acct-1", "user_id": "user-1"}})
+	_, err := excelOAuthTokenInfo(credentials)
+	require.Error(t, err, "a malformed access-token audience must remain invalid")
+}
+
 func storeExcelTestCredentials(t *testing.T, svc *OpenAIOAuthReauthService, repo *excelReauthTestRepo, credentials map[string]any) {
 	t.Helper()
 	raw, err := json.Marshal(credentials)

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // OpenAI OAuth Constants (from CRS project - Codex CLI client)
@@ -282,14 +284,16 @@ type RefreshTokenRequest struct {
 // IDTokenClaims represents the claims from OpenAI ID Token
 type IDTokenClaims struct {
 	// Standard claims
-	Sub           string   `json:"sub"`
-	SID           string   `json:"sid"`
-	Email         string   `json:"email"`
-	EmailVerified bool     `json:"email_verified"`
-	Iss           string   `json:"iss"`
-	Aud           []string `json:"aud"` // OpenAI returns aud as an array
-	Exp           int64    `json:"exp"`
-	Iat           int64    `json:"iat"`
+	Sub             string           `json:"sub"`
+	SID             string           `json:"sid"`
+	Email           string           `json:"email"`
+	EmailVerified   bool             `json:"email_verified"`
+	Iss             string           `json:"iss"`
+	Aud             jwt.ClaimStrings `json:"aud"`
+	ClientID        string           `json:"client_id,omitempty"`
+	AuthorizedParty string           `json:"azp,omitempty"`
+	Exp             int64            `json:"exp"`
+	Iat             int64            `json:"iat"`
 
 	// OpenAI specific claims (nested under https://api.openai.com/auth)
 	OpenAIAuth *OpenAIAuthClaims `json:"https://api.openai.com/auth,omitempty"`

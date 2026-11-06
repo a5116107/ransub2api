@@ -208,6 +208,9 @@ func AccountRouteFingerprint(a *Account) [32]byte {
 			routeExtra[key] = value
 		}
 	}
+	if source := a.ExcelBPSProxySource(); source != "" {
+		routeExtra[ExcelBPSProxySourceKey] = source
+	}
 	proxyURL := ""
 	if a.Proxy != nil {
 		proxyURL = a.Proxy.URL()

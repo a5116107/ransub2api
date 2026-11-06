@@ -85,3 +85,32 @@ func TestParseIDTokenSupportsCurrentCodexIdentityClaims(t *testing.T) {
 	require.Equal(t, "user-from-auth", info.ChatGPTUserID)
 	require.Equal(t, "user@example.com", info.Email)
 }
+
+func TestDecodeIDTokenAudienceFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   any
+		want    []string
+		invalid bool
+	}{
+		{name: "single", value: "excel-client", want: []string{"excel-client"}},
+		{name: "array", value: []any{"excel-client", "other"}, want: []string{"excel-client", "other"}},
+		{name: "empty", value: nil},
+		{name: "number", value: 42, invalid: true},
+		{name: "mixed array", value: []any{"excel-client", 42}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{"aud": tc.value, "sub": "fixture-user"})
+			require.NoError(t, err)
+			token := "header." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+			claims, err := DecodeIDToken(token)
+			if tc.invalid {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, []string(claims.Aud))
+			require.Equal(t, "fixture-user", claims.Sub)
+		})
+	}
+}
