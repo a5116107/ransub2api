@@ -186,6 +186,47 @@ func TestUpstreamKeySharedAuthorityPartialFailurePreservesPeer(t *testing.T) {
 	require.Zero(t, client.ZCard(t.Context(), "concurrency:upstream_key:slots:"+first).Val())
 }
 
+func TestUpstreamKeyUnverifiedAgentFailsClosedWithoutLeakingOtherSlots(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	var sends atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sends.Add(1)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	request := func(path string) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+path, strings.NewReader("{}"))
+		require.NoError(t, err)
+		req.Header.Add("Authorization", "Bearer supplier-fixture")
+		req.Header.Add("Authorization", "AgentAssertion invalid-fixture")
+		return req
+	}
+	limited := newHTTPUpstream(upstreamKeyTestConfig(1, 1), nil, client, nil)
+	response, err := limited.Do(request("/v1/responses"), "", 1, 1)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+	require.Zero(t, sends.Load())
+	require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
+	ordinary, ok := limited.(service.UpstreamKeyConcurrency)
+	require.True(t, ok)
+	_, release, err := ordinary.AcquireUpstreamKeySlots(t.Context(), []string{config.UpstreamKeyFingerprint("supplier-fixture"), config.UnverifiedUpstreamAgentCredential})
+	require.Nil(t, release)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+	require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
+	persistent, ok := limited.(service.PersistentUpstreamKeyConcurrency)
+	require.True(t, ok)
+	lease, err := persistent.AcquirePersistentUpstreamKeySlots(t.Context(), request("/v1/realtime/calls"))
+	require.Nil(t, lease)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+	legacy := newHTTPUpstream(&config.Config{}, nil, nil, nil)
+	response, err = legacy.Do(request("/v1/responses"), "", 1, 1)
+	require.NoError(t, err, "disabled policy retains the existing unknown-auth transport behavior")
+	require.NoError(t, response.Body.Close())
+	require.EqualValues(t, 1, sends.Load())
+}
+
 func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	binary, err := exec.LookPath("redis-server")
 	if err != nil {

@@ -1598,6 +1598,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		Account: account,
 		WSURL:   wsURL,
 		Headers: wsHeaders,
+		BindAgentPublicKey: func(request *http.Request) *http.Request {
+			return bindOpenAIAgentPublicKey(request, s.accountRepo, account)
+		},
 		ProxyURL: func() string {
 			if account.ProxyID != nil && account.Proxy != nil {
 				return account.Proxy.URL()

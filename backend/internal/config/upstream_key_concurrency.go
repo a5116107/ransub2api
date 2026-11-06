@@ -1,14 +1,94 @@
 package config
 
 import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
 )
+
+// This non-fingerprint is rejected by the shared authority when an Agent
+// assertion cannot be tied to the actual signing key. It is never persisted.
+const UnverifiedUpstreamAgentCredential = "!unverified-openai-agent!"
+
+type upstreamAgentPublicKeyContextKey struct{}
+
+// WithUpstreamAgentPublicKey carries only a public key, scoped to this request.
+// The final assertion is verified against it before its key identity is used.
+func WithUpstreamAgentPublicKey(ctx context.Context, publicKey ed25519.PublicKey) context.Context {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return ctx
+	}
+	return context.WithValue(ctx, upstreamAgentPublicKeyContextKey{}, append(ed25519.PublicKey(nil), publicKey...))
+}
+
+// UpstreamAgentKeyFingerprint identifies the signing key across runtime IDs,
+// task changes and renewed assertions without storing private key material.
+func UpstreamAgentKeyFingerprint(publicKey ed25519.PublicKey) string {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return ""
+	}
+	data := append([]byte("\x00openai-agent-ed25519\x00"), publicKey...)
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+func upstreamAgentAssertionFingerprint(ctx context.Context, encoded string) string {
+	publicKey, ok := ctx.Value(upstreamAgentPublicKeyContextKey{}).(ed25519.PublicKey)
+	if !ok || len(publicKey) != ed25519.PublicKeySize || len(encoded) > 8192 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return ""
+	}
+	fields := make(map[string]string, 4)
+	for decoder.More() {
+		nameToken, tokenErr := decoder.Token()
+		name, valid := nameToken.(string)
+		if tokenErr != nil || !valid {
+			return ""
+		}
+		switch name {
+		case "agent_runtime_id", "task_id", "timestamp", "signature":
+		default:
+			return ""
+		}
+		if _, duplicate := fields[name]; duplicate {
+			return ""
+		}
+		var value string
+		if decoder.Decode(&value) != nil || value == "" {
+			return ""
+		}
+		fields[name] = value
+	}
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') || len(fields) != 4 {
+		return ""
+	}
+	if _, err = decoder.Token(); err != io.EOF {
+		return ""
+	}
+	signature, err := base64.StdEncoding.DecodeString(fields["signature"])
+	if err != nil || !ed25519.Verify(publicKey, []byte(fields["agent_runtime_id"]+":"+fields["task_id"]+":"+fields["timestamp"]), signature) {
+		return ""
+	}
+	return UpstreamAgentKeyFingerprint(publicKey)
+}
 
 // UpstreamKeyConcurrencyConfig declares one ceiling per actual supplier key.
 // Revision must advance when changing Limits, including when removing a rule.
@@ -148,6 +228,18 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 		for _, name := range names {
 			for _, value := range req.Header[name] {
 				if wanted == "Authorization" {
+					fields := strings.Fields(value)
+					if len(fields) > 0 && strings.EqualFold(fields[0], "AgentAssertion") {
+						fingerprint := ""
+						if len(fields) == 2 {
+							fingerprint = upstreamAgentAssertionFingerprint(req.Context(), fields[1])
+						}
+						if fingerprint == "" {
+							fingerprint = UnverifiedUpstreamAgentCredential
+						}
+						addFingerprint(fingerprint)
+						continue
+					}
 					scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
 					if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
 						add(token)

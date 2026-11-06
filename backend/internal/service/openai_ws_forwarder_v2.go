@@ -279,6 +279,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		Account:           account,
 		WSURL:             wsURL,
 		Headers:           wsHeaders,
+		BindAgentPublicKey: func(request *http.Request) *http.Request {
+			return bindOpenAIAgentPublicKey(request, s.accountRepo, account)
+		},
 		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
 			latest, err := s.admitOpenAITurnForGroup(factoryCtx, groupID, enforceGroup, account, mappedModel)
 			if err != nil {

@@ -158,6 +158,7 @@ func (s *OpenAIGatewayService) guardOpenAIProfitRequest(request *http.Request, a
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (result *http.Response, resultErr error) {
+	request = bindOpenAIAgentPublicKey(request, s.accountRepo, account)
 	if err := s.guardOpenAIResponseContinuation(request.Context(), account); err != nil {
 		return nil, err
 	}
@@ -294,6 +295,7 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 	useTLSFallback bool,
 	body []byte,
 ) (*http.Response, error) {
+	request = bindOpenAIAgentPublicKey(request, s.accountRepo, account)
 	gateway := s.openaiGatewayService
 	model := extractOpenAICodexTicketModel(body)
 	if gateway != nil && !IsAstraSourceAcquisition(request.Context()) && request.URL != nil && request.URL.String() == chatgptCodexAPIURL &&
@@ -308,7 +310,7 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 		return gateway.doOpenAIUpstream(request, proxyURL, account)
 	}
 	if s.pluginManager != nil {
-		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
+		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(pluginUpstreamKeyPolicyContext(request.Context(), s.cfg), request, proxyURL, account)
 		if handled {
 			return response, err
 		}

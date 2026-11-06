@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,6 +104,32 @@ func TestOpenAIGatewayPluginRoutingPreservesAPIKeyAndFailsClosedForOAuth(t *test
 	assert.Nil(t, oauthResponse)
 	assert.Contains(t, err.Error(), "插件不可用")
 	assert.Equal(t, 1, upstream.doCalls)
+}
+
+func TestOpenAIAgentPluginWithSharedKeyPolicyFailsBeforePlugin(t *testing.T) {
+	manager := &PluginManager{}
+	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, unavailable: "fixture plugin unavailable"})
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	svc := &OpenAIGatewayService{cfg: cfg, pluginManager: manager, httpUpstream: &pluginRoutingHTTPUpstream{}}
+	account := &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
+		Credentials: map[string]any{"auth_mode": OpenAIAuthModeAgentIdentity}}
+	request := func() *http.Request {
+		r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://fixture.invalid/v1/responses", nil)
+		require.NoError(t, err)
+		r.Header.Set("Authorization", "AgentAssertion invalid-fixture")
+		return r
+	}
+	response, err := svc.doOpenAIUpstream(request(), "", account)
+	require.Nil(t, response)
+	require.True(t, IsUpstreamKeyAdmissionFailure(err), "a plugin that can change the credential lacks verifiable shared-key admission")
+	var failover *UpstreamFailoverError
+	require.ErrorAs(t, err, &failover)
+	require.Equal(t, http.StatusServiceUnavailable, failover.StatusCode)
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 0
+	response, err = svc.doOpenAIUpstream(request(), "", account)
+	require.Nil(t, response)
+	require.ErrorContains(t, err, "fixture plugin unavailable", "unconfigured routing keeps the plugin's original behavior")
 }
 
 func TestStablePluginBucketIsDeterministicAndBounded(t *testing.T) {

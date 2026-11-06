@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
@@ -129,6 +130,47 @@ func buildAgentAssertion(key agentIdentityKey, now time.Time) (string, error) {
 		return "", errors.New("failed to serialize agent assertion")
 	}
 	return "AgentAssertion " + base64.RawURLEncoding.EncodeToString(encoded), nil
+}
+
+func hasOpenAIAgentAssertion(headers http.Header) bool {
+	for name, values := range headers {
+		if !strings.EqualFold(name, "Authorization") {
+			continue
+		}
+		for _, value := range values {
+			fields := strings.Fields(value)
+			if len(fields) > 0 && strings.EqualFold(fields[0], "AgentAssertion") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bindOpenAIAgentPublicKey adds no wire header and never retains a private key.
+// Missing or stale evidence is left unbound: the shared authority rejects the
+// final AgentAssertion when enabled, while an unconfigured authority keeps its
+// existing behavior. The extractor verifies the final signature against this key.
+func bindOpenAIAgentPublicKey(request *http.Request, repo AccountRepository, account *Account) *http.Request {
+	if request == nil || account == nil || !hasOpenAIAgentAssertion(request.Header) {
+		return request
+	}
+	if account.IsShadow() && repo == nil {
+		return request
+	}
+	credentialAccount, err := resolveCredentialAccount(request.Context(), repo, account)
+	if err != nil || credentialAccount == nil || !credentialAccount.IsOpenAIAgentIdentity() {
+		return request
+	}
+	privateKey, err := agentIdentityPrivateKey(credentialAccount)
+	if err != nil {
+		return request
+	}
+	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return request
+	}
+	return request.WithContext(config.WithUpstreamAgentPublicKey(request.Context(), publicKey))
 }
 
 func signAgentTaskRegistration(key agentIdentityKey, timestamp time.Time) (string, string, error) {

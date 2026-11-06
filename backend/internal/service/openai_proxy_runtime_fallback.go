@@ -169,7 +169,7 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 		}
 	}()
 	if s.pluginManager != nil && account.AuthConnectionID == "" && !s.codexTicketRequestBound(req, account) {
-		resp, handled, err := s.pluginManager.RoundTripOpenAIOAuth(req.Context(), req, target.url, account)
+		resp, handled, err := s.pluginManager.RoundTripOpenAIOAuth(pluginUpstreamKeyPolicyContext(req.Context(), s.cfg), req, target.url, account)
 		if handled {
 			return markOpenAIResponseEgress(resp, req, target.proxyID), err
 		}

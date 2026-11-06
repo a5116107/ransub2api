@@ -1011,6 +1011,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return requestErr
 	}
 	credentialRequest.Header = headers
+	credentialRequest = bindOpenAIAgentPublicKey(credentialRequest, s.accountRepo, account)
 	keyTurn := &openAIWSKeyTurn{authority: keyAuthority, fingerprints: config.UpstreamCredentialFingerprints(credentialRequest), abort: func(cause error) {
 		cancelKeySession(cause)
 		_ = closeUpstream()

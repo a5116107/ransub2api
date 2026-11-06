@@ -253,6 +253,11 @@ func (s *httpUpstreamService) AcquireUpstreamKeySlots(parent context.Context, fi
 	if s.upstreamKeyLimiter.err != nil {
 		return parent, nil, service.ErrUpstreamKeyPolicy
 	}
+	for _, fingerprint := range fingerprints {
+		if fingerprint == config.UnverifiedUpstreamAgentCredential {
+			return parent, nil, service.ErrUpstreamKeyPolicy
+		}
+	}
 	ctx, cancel := context.WithCancelCause(parent)
 	var leases []*upstreamKeyLease
 	release := sync.OnceFunc(func() {
@@ -328,7 +333,13 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 		}
 		member = "live:" + uuid.NewString()
 	}
-	lease := &service.PersistentUpstreamKeyLease{Authority: l.persistentAuthority(), Member: member, Fingerprints: config.UpstreamCredentialFingerprints(req)}
+	fingerprints := config.UpstreamCredentialFingerprints(req)
+	for _, fingerprint := range fingerprints {
+		if fingerprint == config.UnverifiedUpstreamAgentCredential {
+			return nil, service.ErrUpstreamKeyPolicy
+		}
+	}
+	lease := &service.PersistentUpstreamKeyLease{Authority: l.persistentAuthority(), Member: member, Fingerprints: fingerprints}
 	if l.regional == nil {
 		for _, fingerprint := range lease.Fingerprints {
 			if l.policy.Limits[fingerprint] > 0 {

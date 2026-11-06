@@ -21,6 +21,15 @@ func upstreamKeyAdmissionRequired(cfg *config.Config) bool {
 		cfg.Runtime.RegionalConcurrencyFile != "" || cfg.Runtime.RegionalSchedulerFile != "")
 }
 
+type pluginUpstreamKeyPolicyContextKey struct{}
+
+func pluginUpstreamKeyPolicyContext(ctx context.Context, cfg *config.Config) context.Context {
+	if !upstreamKeyAdmissionRequired(cfg) {
+		return ctx
+	}
+	return context.WithValue(ctx, pluginUpstreamKeyPolicyContextKey{}, true)
+}
+
 // UpstreamKeyAdmissionReason identifies a local refusal before network send.
 const UpstreamKeyAdmissionReason GatewayFailureReason = "upstream_key_admission_unavailable"
 
@@ -70,6 +79,9 @@ func (l *PersistentUpstreamKeyLease) Validate() error {
 	}
 	seen := make(map[string]bool, len(l.Fingerprints))
 	for _, fingerprint := range l.Fingerprints {
+		if fingerprint == config.UnverifiedUpstreamAgentCredential {
+			return ErrUpstreamKeyPolicy
+		}
 		decoded, err := hex.DecodeString(fingerprint)
 		if err != nil || len(decoded) != 32 || strings.ToLower(fingerprint) != fingerprint || seen[fingerprint] {
 			return ErrUpstreamKeyPolicy

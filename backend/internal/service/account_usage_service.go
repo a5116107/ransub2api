@@ -929,6 +929,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if s.requireUpstreamKeyAdmission && s.upstreamKeyAdmission == nil {
 		return nil, ErrUpstreamKeyPolicy
 	}
+	req = bindOpenAIAgentPublicKey(req, s.accountRepo, account)
 	var finish func(*http.Response, error)
 	if s.upstreamKeyAdmission != nil {
 		req, finish, err = s.upstreamKeyAdmission.BeginUpstreamKeyRequest(req)

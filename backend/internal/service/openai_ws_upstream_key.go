@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"sync"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 func (s *OpenAIGatewayService) openAIWSKeyAuthority() (UpstreamKeyConcurrency, error) {
@@ -30,6 +32,11 @@ type openAIWSKeyTurn struct {
 func (t *openAIWSKeyTurn) begin(ctx context.Context) (context.Context, error) {
 	if t.authority == nil {
 		return ctx, nil
+	}
+	for _, fingerprint := range t.fingerprints {
+		if fingerprint == config.UnverifiedUpstreamAgentCredential {
+			return nil, upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()

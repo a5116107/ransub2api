@@ -559,6 +559,7 @@ func (s *OpenAIGatewayService) createUpstreamLiveCall(
 	upstreamReq.Header.Set("Accept", "application/sdp")
 	upstreamReq.Header.Set(liveAttestationHeader, attestation)
 	applyLiveUpstreamIdentityHeaders(upstreamReq.Header)
+	upstreamReq = bindOpenAIAgentPublicKey(upstreamReq, s.accountRepo, account)
 	var keyLease *PersistentUpstreamKeyLease
 	keyAuthority, hasAuthority := s.httpUpstream.(PersistentUpstreamKeyConcurrency)
 	if hasAuthority {

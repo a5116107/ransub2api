@@ -954,6 +954,14 @@ func (m *PluginManager) RoundTripOpenAIOAuth(ctx context.Context, request *http.
 	if route == nil {
 		return nil, false, nil
 	}
+	requiredByCaller, _ := ctx.Value(pluginUpstreamKeyPolicyContextKey{}).(bool)
+	if (requiredByCaller || upstreamKeyAdmissionRequired(m.cfg)) &&
+		(account.IsOpenAIAgentIdentity() || (request != nil && hasOpenAIAgentAssertion(request.Header))) {
+		// The v1 plugin owns its physical egress and may replace credentials.
+		// Until it can prove the final signing key, it cannot consume the same
+		// Agent budget as native HTTP/WS without either a bypass or a false slot.
+		return nil, true, upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)
+	}
 	diagnosticRoute := transportdiag.RouteFromContext(ctx)
 	diagnosticRoute.Mode, diagnosticRoute.Upstream = "plugin", "plugin"
 	if request != nil && request.URL != nil {

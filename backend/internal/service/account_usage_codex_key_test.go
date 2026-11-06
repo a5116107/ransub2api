@@ -2,12 +2,16 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -405,12 +409,42 @@ func TestCodexUsageProbeAgentIdentityHeadersReachAdmission(t *testing.T) {
 		authorization := req.Header.Get("Authorization")
 		require.True(t, strings.HasPrefix(authorization, "AgentAssertion "))
 		require.False(t, strings.Contains(authorization, privateKey), "private key must not appear in the assertion")
-		// AgentAssertion is not a stable supported fingerprint yet; observing it
-		// here does not claim it shares the configured Bearer budget.
-		require.Empty(t, config.UpstreamCredentialFingerprints(req))
+		publicKey, ok := key.privateKey.Public().(ed25519.PublicKey)
+		require.True(t, ok)
+		require.Equal(t, []string{config.UpstreamAgentKeyFingerprint(publicKey)}, config.UpstreamCredentialFingerprints(req))
 		return req, func(*http.Response, error) {}, nil
 	}
 	svc := &AccountUsageService{upstreamKeyAdmission: upstream, requireUpstreamKeyAdmission: true}
 	_, err := svc.probeOpenAICodexSnapshot(t.Context(), account)
 	require.NoError(t, err)
+}
+
+func TestCodexUsageProbeAgentIdentitySharesActualSigningKey(t *testing.T) {
+	key, encodedPrivateKey := newTestAgentIdentityKey(t)
+	publicKey, ok := key.privateKey.Public().(ed25519.PublicKey)
+	require.True(t, ok)
+	digest := sha256.Sum256(append([]byte("\x00openai-agent-ed25519\x00"), publicKey...))
+	fingerprint := fmt.Sprintf("%x", digest)
+	var sends atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sends.Add(1)
+		_, _ = io.WriteString(w, "fixture")
+	}))
+	t.Cleanup(server.Close)
+	account := codexProbeFixtureAccount()
+	account.Credentials = map[string]any{"auth_mode": OpenAIAuthModeAgentIdentity,
+		"agent_runtime_id": key.runtimeID, "agent_private_key": encodedPrivateKey, "task_id": key.taskID}
+	codexProbeLoopback(t, account, server)
+	upstream := &codexProbeUpstream{httpUpstreamRecorder: &httpUpstreamRecorder{}}
+	upstream.begin = func(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+		if slices.Contains(config.UpstreamCredentialFingerprints(req), fingerprint) {
+			return req, nil, ErrUpstreamKeyCapacity
+		}
+		return req, func(*http.Response, error) {}, nil
+	}
+	svc := &AccountUsageService{cache: NewUsageCache(), upstreamKeyAdmission: upstream, requireUpstreamKeyAdmission: true}
+	_, err := svc.GetUsageForAccount(t.Context(), account)
+	require.NoError(t, err)
+	require.Zero(t, sends.Load(), "a full signing-key budget must prevent the model probe")
+	require.Equal(t, 77.0, account.Extra["codex_5h_used_percent"])
 }
