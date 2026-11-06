@@ -4,6 +4,7 @@ package handler
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -11,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,6 +149,100 @@ func TestBatchImageDownloadDeferredRouteError(t *testing.T) {
 			require.Error(t, archiveErr, "a refused second object must not finish a valid partial archive")
 		})
 	}
+}
+
+func TestBatchImageDownloadSlowDownstreamDeadline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	image := make([]byte, 256*1024)
+	_, err := rand.Read(image)
+	require.NoError(t, err)
+	provider := &batchImageRouteDownloadProvider{data: fmt.Sprintf(`{"key":"one","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":%q}}]}}]}}`+"\n", base64.StdEncoding.EncodeToString(image))}
+	accountID := int64(3)
+	repo := &batchImageRouteDownloadRepo{job: &service.BatchImageJob{BatchID: "imgbatch_route", AccountID: &accountID,
+		Provider: service.BatchImageProviderGeminiAPI, Status: service.BatchImageJobStatusCompleted, RouteFingerprint: "fixture-route"}}
+	download := &service.BatchImageDownloadService{Repo: repo,
+		ProviderRegistry: service.NewBatchImageProviderRegistry(provider),
+		AccountResolver:  &batchImageRouteDownloadResolver{account: &service.Account{ID: accountID}},
+		Config:           &config.Config{BatchImage: config.BatchImageConfig{MaxDownloadDurationSeconds: 1}}}
+	handler := NewBatchImageHandler(&service.BatchImagePublicService{Repo: repo}, download, nil)
+	finished := make(chan error, 1)
+	router := gin.New()
+	router.GET("/v1/images/batches/:id/download", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 1, UserID: 2})
+		handler.Download(c)
+		finished <- c.Request.Context().Err()
+	})
+	socketSetup := make(chan error, 1)
+	server := httptest.NewUnstartedServer(router)
+	server.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if state != http.StateNew {
+			return
+		}
+		tcp, ok := conn.(*net.TCPConn)
+		if !ok {
+			socketSetup <- fmt.Errorf("download fixture connection is %T", conn)
+			return
+		}
+		socketSetup <- tcp.SetWriteBuffer(1024)
+	}
+	server.Start()
+	defer server.Close()
+	address, err := net.ResolveTCPAddr("tcp", strings.TrimPrefix(server.URL, "http://"))
+	require.NoError(t, err)
+	conn, err := net.DialTCP("tcp", nil, address)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, conn.Close()) }()
+	require.NoError(t, <-socketSetup)
+	require.NoError(t, conn.SetReadBuffer(1024))
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	_, err = fmt.Fprintf(conn, "GET /v1/images/batches/imgbatch_route/download HTTP/1.1\r\nHost: %s\r\n\r\n", address)
+	require.NoError(t, err)
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	// Do not drain the body: the small TCP receive buffer forces a real
+	// blocked server write, independently of the upstream reader's context.
+	select {
+	case err = <-finished:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(3 * time.Second):
+		t.Fatal("a stalled downstream socket kept the download handler alive")
+	}
+	require.Zero(t, repo.downloads)
+	require.Nil(t, repo.job.DownloadedAt)
+}
+
+func TestBatchImageDownloadDeadlineResetsForKeepAlive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	download := &service.BatchImageDownloadService{Config: &config.Config{BatchImage: config.BatchImageConfig{MaxDownloadDurationSeconds: 1}}}
+	handler := NewBatchImageHandler(nil, download, nil)
+	router := gin.New()
+	router.GET("/download", func(c *gin.Context) {
+		finish := handler.bindDownloadDeadline(c)
+		defer finish()
+		c.String(http.StatusOK, "download")
+	})
+	router.GET("/health", func(c *gin.Context) { c.String(http.StatusOK, "healthy") })
+	server := httptest.NewServer(router)
+	defer server.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, conn.Close()) }()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	reader := bufio.NewReader(conn)
+	request := func(path string) string {
+		_, writeErr := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: fixture\r\n\r\n", path)
+		require.NoError(t, writeErr)
+		response, readErr := http.ReadResponse(reader, nil)
+		require.NoError(t, readErr)
+		body, readErr := io.ReadAll(response.Body)
+		require.NoError(t, readErr)
+		require.NoError(t, response.Body.Close())
+		return string(body)
+	}
+	require.Equal(t, "download", request("/download"))
+	<-time.After(1100 * time.Millisecond)
+	require.Equal(t, "healthy", request("/health"), "the same connection must remain usable after the old download deadline")
 }
 
 type batchImageRouteDownloadProvider struct {

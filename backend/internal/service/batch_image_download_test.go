@@ -7,14 +7,179 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBatchImageDownloadService_DeadlineReachesProvider(t *testing.T) {
+	for _, providerName := range []string{BatchImageProviderGeminiAPI, BatchImageProviderVertex} {
+		for _, operation := range []string{"item", "zip"} {
+			for _, stage := range []string{"metadata", "body"} {
+				t.Run(providerName+"/"+operation+"/"+stage, func(t *testing.T) {
+					requestDeadlines := make(chan time.Time, 4)
+					server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						metadata := r.URL.Query().Get("alt") != "media" && !strings.HasSuffix(r.URL.Path, ":download")
+						if metadata && stage == "body" {
+							if providerName == BatchImageProviderGeminiAPI {
+								_, _ = io.WriteString(w, `{}`)
+							} else {
+								_, _ = io.WriteString(w, `{"items":[{"name":"output/first.jsonl"}]}`)
+							}
+							return
+						}
+						if !metadata {
+							_, _ = io.WriteString(w, `{"key":`)
+							if err := http.NewResponseController(w).Flush(); err != nil {
+								t.Errorf("flush stalled result fixture: %v", err)
+								return
+							}
+						}
+						<-r.Context().Done()
+					}))
+					defer server.Close()
+					client := server.Client()
+					client.Transport = &batchImageDownloadDeadlineTransport{base: client.Transport, deadlines: requestDeadlines}
+					svc, repo, limiter := newTestBatchImageDownloadService()
+					svc.Config.BatchImage.MaxDownloadDurationSeconds = 1
+					account := testBatchImageAccount(101, AccountTypeAPIKey)
+					var provider BatchImageProvider = NewGeminiAPIBatchImageProvider(NewGeminiBatchHTTPClient(server.URL, client))
+					outputRef := "files/output"
+					if providerName == BatchImageProviderVertex {
+						account = *vertexServiceAccount()
+						account.ID = 101
+						provider = newTestVertexProvider(NewVertexBatchHTTPClient(server.URL, client), NewVertexGCSObjectStore(server.URL, client))
+						outputRef = "gs://managed-bucket/output/"
+					}
+					job := repo.jobs["imgbatch_download"]
+					job.Provider, job.ProviderOutputRef = providerName, &outputRef
+					job.RouteFingerprint = provider.RouteFingerprint(&account)
+					svc.ProviderRegistry = NewBatchImageProviderRegistry(provider)
+					svc.AccountResolver = &fakeBatchImageAccountResolver{account: &account}
+					// The longer parent bounds the old implementation too, so a
+					// missing download deadline fails without hanging the test.
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+					started := time.Now()
+					var err error
+					if operation == "item" {
+						_, err = svc.OpenItemContent(ctx, testBatchImageOwner(), job.BatchID, "cover/../001", 0)
+					} else {
+						_, err = svc.StreamZip(ctx, testBatchImageOwner(), job.BatchID, BatchImageZipOptions{}, io.Discard)
+					}
+					require.Error(t, err)
+					require.Equal(t, 1, limiter.releaseCount)
+					require.NoError(t, limiter.releaseContextErr, "download cancellation must not cancel permit cleanup")
+					require.Nil(t, job.DownloadedAt)
+					close(requestDeadlines)
+					observed := 0
+					for deadline := range requestDeadlines {
+						observed++
+						require.False(t, deadline.IsZero())
+						require.LessOrEqual(t, deadline.Sub(started), 1500*time.Millisecond, "configured deadline must reach every physical provider request")
+					}
+					require.Positive(t, observed)
+					require.NoError(t, ctx.Err(), "the download must stop before the longer parent expires")
+				})
+			}
+		}
+	}
+}
+
+type batchImageDownloadDeadlineTransport struct {
+	base      http.RoundTripper
+	deadlines chan<- time.Time
+}
+
+func (rt *batchImageDownloadDeadlineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	deadline, _ := req.Context().Deadline()
+	rt.deadlines <- deadline
+	return rt.base.RoundTrip(req)
+}
+
+func TestBatchImageDownloadService_ItemStreamCancellationAndRelease(t *testing.T) {
+	for _, reason := range []string{"cancel", "deadline", "close"} {
+		t.Run(reason, func(t *testing.T) {
+			svc, _, _ := newTestBatchImageDownloadService()
+			limiter := &batchImageDownloadLifecyclePermit{released: make(chan error, 2)}
+			svc.Limiter = limiter
+			ctx, cancel := context.WithCancel(context.Background())
+			if reason == "deadline" {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+			}
+			defer cancel()
+			stream, err := svc.OpenItemContent(ctx, testBatchImageOwner(), "imgbatch_download", "cover/../001", 0)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, stream.Reader.Close()) }()
+			switch reason {
+			case "cancel":
+				cancel()
+			case "close":
+				require.NoError(t, stream.Reader.Close())
+				require.NoError(t, ctx.Err(), "closing a returned stream must not cancel its caller")
+			}
+			select {
+			case releaseErr := <-limiter.released:
+				require.NoError(t, releaseErr, "cleanup must have its own live deadline")
+			case <-time.After(time.Second):
+				t.Fatal("item-stream cancellation did not release its permit")
+			}
+			_, err = stream.Reader.Read(make([]byte, 1))
+			require.Error(t, err)
+			require.NoError(t, stream.Reader.Close())
+			select {
+			case releaseErr := <-limiter.released:
+				t.Fatalf("an already-released stream released again: %v", releaseErr)
+			default:
+			}
+		})
+	}
+
+	t.Run("failed close remains retryable", func(t *testing.T) {
+		svc, _, _ := newTestBatchImageDownloadService()
+		limiter := &batchImageDownloadLifecyclePermit{released: make(chan error, 2)}
+		limiter.fail.Store(true)
+		svc.Limiter = limiter
+		stream, err := svc.OpenItemContent(context.Background(), testBatchImageOwner(), "imgbatch_download", "cover/../001", 0)
+		require.NoError(t, err)
+		require.Error(t, stream.Reader.Close())
+		require.NoError(t, <-limiter.released)
+		require.NoError(t, stream.Reader.Close())
+		require.NoError(t, <-limiter.released)
+		require.NoError(t, stream.Reader.Close())
+	})
+}
+
+type batchImageDownloadLifecyclePermit struct {
+	released chan error
+	fail     atomic.Bool
+}
+
+func (p *batchImageDownloadLifecyclePermit) Acquire(context.Context, string, string) (BatchImageDownloadPermit, error) {
+	return p, nil
+}
+
+func (p *batchImageDownloadLifecyclePermit) Release(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	err := ctx.Err()
+	if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 3*time.Second {
+		err = errors.New("permit cleanup deadline is missing or unbounded")
+	}
+	p.released <- err
+	if p.fail.Swap(false) {
+		return errors.New("injected permit release failure")
+	}
+	return nil
+}
 
 func TestBatchImageDownloadService_OpenItemContent(t *testing.T) {
 	ctx := context.Background()
@@ -267,9 +432,10 @@ func mapValues(in map[string][]byte) [][]byte {
 }
 
 type fakeBatchImageDownloadLimiter struct {
-	acquireCount int
-	releaseCount int
-	deny         bool
+	acquireCount      int
+	releaseCount      int
+	deny              bool
+	releaseContextErr error
 }
 
 func (l *fakeBatchImageDownloadLimiter) Acquire(context.Context, string, string) (BatchImageDownloadPermit, error) {
@@ -277,21 +443,24 @@ func (l *fakeBatchImageDownloadLimiter) Acquire(context.Context, string, string)
 	if l.deny {
 		return nil, ErrBatchImageDownloadLimited
 	}
-	return &fakeBatchImageDownloadPermit{release: func() { l.releaseCount++ }}, nil
+	return &fakeBatchImageDownloadPermit{release: func(ctx context.Context) {
+		l.releaseCount++
+		l.releaseContextErr = ctx.Err()
+	}}, nil
 }
 
 type fakeBatchImageDownloadPermit struct {
 	once    bool
-	release func()
+	release func(context.Context)
 }
 
-func (p *fakeBatchImageDownloadPermit) Release(context.Context) error {
+func (p *fakeBatchImageDownloadPermit) Release(ctx context.Context) error {
 	if p.once {
 		return nil
 	}
 	p.once = true
 	if p.release != nil {
-		p.release()
+		p.release(ctx)
 	}
 	return nil
 }

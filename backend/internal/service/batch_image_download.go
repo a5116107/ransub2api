@@ -80,6 +80,7 @@ type BatchImageDownloadService struct {
 
 type batchImageDownloadLimitWriter struct {
 	w       io.Writer
+	ctx     context.Context
 	limit   int64
 	written int64
 }
@@ -87,6 +88,9 @@ type batchImageDownloadLimitWriter struct {
 func (w *batchImageDownloadLimitWriter) Write(p []byte) (int, error) {
 	if w == nil || w.w == nil {
 		return 0, io.ErrClosedPipe
+	}
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
 	}
 	if w.limit > 0 && w.written+int64(len(p)) > w.limit {
 		return 0, errBatchImageDownloadSizeExceeded
@@ -110,6 +114,13 @@ func (s *BatchImageDownloadService) OpenItemContent(ctx context.Context, owner B
 	if imageIndex < 0 {
 		return nil, ErrBatchImageItemImageIndexOutOfRange
 	}
+	ctx, cancel := context.WithTimeout(ctx, s.MaxDownloadDuration())
+	cancelOnReturn := true
+	defer func() {
+		if cancelOnReturn {
+			cancel()
+		}
+	}()
 	job, err := s.getCompletedJob(ctx, owner, batchID)
 	if err != nil {
 		return nil, err
@@ -132,7 +143,7 @@ func (s *BatchImageDownloadService) OpenItemContent(ctx context.Context, owner B
 	releasePermit := true
 	defer func() {
 		if releasePermit && permit != nil {
-			_ = permit.Release(ctx)
+			_ = releaseBatchImageDownloadPermit(ctx, permit)
 		}
 	}()
 
@@ -180,15 +191,25 @@ func (s *BatchImageDownloadService) OpenItemContent(ctx context.Context, owner B
 	}
 
 	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(image.Base64Data))
+	if err := ctx.Err(); err != nil {
+		return nil, ErrBatchImageDownloadFailed.WithCause(err)
+	}
+	streamReader := &batchImagePermitReadCloser{Reader: reader, permit: permit, ctx: ctx, cancel: cancel}
+	streamReader.mu.Lock()
+	streamReader.stop = context.AfterFunc(ctx, func() { _ = streamReader.Close() })
+	streamReader.mu.Unlock()
 	releasePermit = false
+	cancelOnReturn = false
 	return &BatchImageContentStream{
-		Reader:      &batchImagePermitReadCloser{Reader: reader, permit: permit},
+		Reader:      streamReader,
 		ContentType: contentType,
 		Filename:    BatchImageSafeDownloadFilename(item.CustomID, extension),
 	}, nil
 }
 
 func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchImageOwner, batchID string, opts BatchImageZipOptions, w io.Writer) (*BatchImageZipResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.MaxDownloadDuration())
+	defer cancel()
 	job, err := s.getCompletedJob(ctx, owner, batchID)
 	if err != nil {
 		return nil, err
@@ -218,7 +239,7 @@ func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchIm
 		return nil, err
 	}
 	if permit != nil {
-		defer func() { _ = permit.Release(ctx) }()
+		defer func() { _ = releaseBatchImageDownloadPermit(ctx, permit) }()
 	}
 
 	provider, account, err := s.providerAndAccount(ctx, job)
@@ -238,24 +259,16 @@ func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchIm
 	}
 	defer func() { _ = r.Close() }()
 
-	streamCtx := ctx
-	cancel := func() {}
-	if d := s.maxDownloadDuration(); d > 0 {
-		streamCtx, cancel = context.WithTimeout(ctx, d)
-	}
-	defer cancel()
-
-	limitedWriter := &batchImageDownloadLimitWriter{w: w, limit: s.maxDownloadBytes()}
+	limitedWriter := &batchImageDownloadLimitWriter{w: w, ctx: ctx, limit: s.maxDownloadBytes()}
 	zipWriter := zip.NewWriter(limitedWriter)
-	result, manifestFiles, zipErrors, err := s.writeZipImages(streamCtx, zipWriter, r, successItems)
+	result, manifestFiles, zipErrors, err := s.writeZipImages(ctx, zipWriter, r, successItems)
 	if err != nil {
+		// An interrupted download must not become a valid partial ZIP. In
+		// particular, Close would commit an empty success response before
+		// the HTTP handler has a chance to return the actual error.
 		if errors.Is(err, ErrBatchImageRouteUnavailable) {
-			// Close would emit a valid ZIP footer, even with no entries. Keep
-			// an untouched response available for JSON/503, or abort a started
-			// archive rather than presenting partial results as a complete ZIP.
 			return result, ErrBatchImageRouteUnavailable
 		}
-		_ = zipWriter.Close()
 		if errors.Is(err, errBatchImageDownloadSizeExceeded) {
 			return result, ErrBatchImageDownloadTooLarge.WithCause(err)
 		}
@@ -270,14 +283,12 @@ func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchIm
 		FailCount:    job.FailCount,
 		Files:        manifestFiles,
 	}); err != nil {
-		_ = zipWriter.Close()
 		if errors.Is(err, errBatchImageDownloadSizeExceeded) {
 			return result, ErrBatchImageDownloadTooLarge.WithCause(err)
 		}
 		return result, ErrBatchImageDownloadFailed.WithCause(err)
 	}
 	if err := writeBatchImageZipJSON(zipWriter, "errors.json", zipErrors); err != nil {
-		_ = zipWriter.Close()
 		if errors.Is(err, errBatchImageDownloadSizeExceeded) {
 			return result, ErrBatchImageDownloadTooLarge.WithCause(err)
 		}
@@ -435,7 +446,7 @@ func (s *BatchImageDownloadService) maxDownloadBytes() int64 {
 	return defaultBatchImageZipMaxBytes
 }
 
-func (s *BatchImageDownloadService) maxDownloadDuration() time.Duration {
+func (s *BatchImageDownloadService) MaxDownloadDuration() time.Duration {
 	if s != nil && s.Config != nil && s.Config.BatchImage.MaxDownloadDurationSeconds > 0 {
 		return time.Duration(s.Config.BatchImage.MaxDownloadDurationSeconds) * time.Second
 	}
@@ -669,15 +680,53 @@ func batchImageZipErrorsFromItems(items []*BatchImageItem) []batchImageZipError 
 type batchImagePermitReadCloser struct {
 	io.Reader
 	permit BatchImageDownloadPermit
-	once   sync.Once
-	err    error
+	ctx    context.Context
+	cancel context.CancelFunc
+	stop   func() bool
+
+	mu       sync.Mutex
+	closed   bool
+	released bool
+}
+
+func (r *batchImagePermitReadCloser) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return 0, io.ErrClosedPipe
+	}
+	return r.Reader.Read(p)
 }
 
 func (r *batchImagePermitReadCloser) Close() error {
-	r.once.Do(func() {
-		if r.permit != nil {
-			r.err = r.permit.Release(context.Background())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.closed {
+		r.closed = true
+		if r.stop != nil {
+			r.stop()
 		}
-	})
-	return r.err
+		r.cancel()
+	}
+	if r.released {
+		return nil
+	}
+	err := releaseBatchImageDownloadPermit(r.ctx, r.permit)
+	if err == nil {
+		r.released = true
+	}
+	return err
+}
+
+func releaseBatchImageDownloadPermit(ctx context.Context, permit BatchImageDownloadPermit) error {
+	if permit == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	return permit.Release(cleanupCtx)
 }

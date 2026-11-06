@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -17,23 +18,27 @@ const (
 )
 
 var batchImageDownloadAcquireScript = redis.NewScript(`
-local current = tonumber(redis.call("GET", KEYS[1]) or "0")
-local max = tonumber(ARGV[1])
-if current >= max then
+redis.replicate_commands()
+local kind = redis.call('TYPE', KEYS[1]).ok
+if kind ~= 'none' and kind ~= 'zset' then return -1 end
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then
   return 0
 end
-redis.call("INCR", KEYS[1])
-redis.call("EXPIRE", KEYS[1], ARGV[2])
+redis.call('ZADD', KEYS[1], now + tonumber(ARGV[2]), ARGV[3])
+local latest = redis.call('ZREVRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+redis.call('PEXPIREAT', KEYS[1], latest[2])
 return 1
 `)
 
 var batchImageDownloadReleaseScript = redis.NewScript(`
-local current = tonumber(redis.call("GET", KEYS[1]) or "0")
-if current <= 1 then
-  redis.call("DEL", KEYS[1])
-  return 0
-end
-return redis.call("DECR", KEYS[1])
+local kind = redis.call('TYPE', KEYS[1]).ok
+if kind ~= 'zset' then return 0 end
+redis.call('ZREM', KEYS[1], ARGV[1])
+if redis.call('ZCARD', KEYS[1]) == 0 then redis.call('DEL', KEYS[1]) end
+return 1
 `)
 
 type batchImageDownloadLimiter struct {
@@ -63,18 +68,22 @@ func NewBatchImageDownloadLimiter(rdb *redis.Client, cfg *config.Config) service
 }
 
 func (l *batchImageDownloadLimiter) Acquire(ctx context.Context, userID string, kind string) (service.BatchImageDownloadPermit, error) {
-	if l == nil || l.rdb == nil {
+	if l == nil || l.rdb == nil || l.maxActive <= 0 || l.ttl < time.Millisecond {
 		return nil, service.ErrBatchImageDownloadLimited
 	}
 	key := l.activeKey(userID)
-	ok, err := batchImageDownloadAcquireScript.Run(ctx, l.rdb, []string{key}, l.maxActive, int(l.ttl.Seconds())).Int()
+	permit := &batchImageDownloadPermit{rdb: l.rdb, key: key, member: uuid.NewString()}
+	ok, err := batchImageDownloadAcquireScript.Run(ctx, l.rdb, []string{key}, l.maxActive, l.ttl.Milliseconds(), permit.member).Int()
 	if err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		_ = permit.Release(cleanupCtx)
 		return nil, err
 	}
 	if ok != 1 {
 		return nil, service.ErrBatchImageDownloadLimited
 	}
-	return &batchImageDownloadPermit{rdb: l.rdb, key: key}, nil
+	return permit, nil
 }
 
 func (l *batchImageDownloadLimiter) activeKey(userID string) string {
@@ -82,20 +91,27 @@ func (l *batchImageDownloadLimiter) activeKey(userID string) string {
 }
 
 type batchImageDownloadPermit struct {
-	rdb  *redis.Client
-	key  string
-	once sync.Once
-	err  error
+	rdb      *redis.Client
+	key      string
+	member   string
+	mu       sync.Mutex
+	released bool
 }
 
 func (p *batchImageDownloadPermit) Release(ctx context.Context) error {
-	if p == nil || p.rdb == nil || p.key == "" {
+	if p == nil || p.rdb == nil || p.key == "" || p.member == "" {
 		return nil
 	}
-	p.once.Do(func() {
-		_, p.err = batchImageDownloadReleaseScript.Run(ctx, p.rdb, []string{p.key}).Result()
-	})
-	return p.err
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.released {
+		return nil
+	}
+	_, err := batchImageDownloadReleaseScript.Run(ctx, p.rdb, []string{p.key}, p.member).Result()
+	if err == nil {
+		p.released = true
+	}
+	return err
 }
 
 var _ service.BatchImageDownloadLimiter = (*batchImageDownloadLimiter)(nil)

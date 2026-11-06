@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -209,6 +211,8 @@ func (h *BatchImageHandler) ItemContent(c *gin.Context) {
 		}
 		imageIndex = parsed
 	}
+	finish := h.bindDownloadDeadline(c)
+	defer finish()
 	stream, err := h.download.OpenItemContent(c.Request.Context(), owner, c.Param("id"), c.Param("custom_id"), imageIndex)
 	if err != nil {
 		batchImageError(c, err)
@@ -248,6 +252,8 @@ func (h *BatchImageHandler) Download(c *gin.Context) {
 		return
 	}
 	maxItems, _ := strconv.Atoi(c.Query("max_items"))
+	finish := h.bindDownloadDeadline(c)
+	defer finish()
 
 	c.Header("Content-Type", "application/zip")
 	c.Header("Content-Disposition", service.BatchImageContentDispositionAttachment(c.Param("id")+".zip"))
@@ -267,6 +273,27 @@ func (h *BatchImageHandler) Download(c *gin.Context) {
 		return
 	}
 	h.markDownloadedBestEffort(c, owner)
+}
+
+// Bound both provider work and a blocked downstream socket, then clear the
+// connection deadline so a later keep-alive request gets its own budget.
+func (h *BatchImageHandler) bindDownloadDeadline(c *gin.Context) func() {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.download.MaxDownloadDuration())
+	c.Request = c.Request.WithContext(ctx)
+	controller := http.NewResponseController(c.Writer)
+	deadline, _ := ctx.Deadline()
+	err := controller.SetWriteDeadline(deadline)
+	if err != nil && !errors.Is(err, http.ErrNotSupported) {
+		logger.L().Warn("batch_image.download_deadline_failed", zap.Error(err))
+	}
+	return func() {
+		cancel()
+		if err == nil {
+			if resetErr := controller.SetWriteDeadline(time.Time{}); resetErr != nil && !errors.Is(resetErr, http.ErrNotSupported) {
+				logger.L().Warn("batch_image.download_deadline_reset_failed", zap.Error(resetErr))
+			}
+		}
+	}
 }
 
 func (h *BatchImageHandler) DeleteRecord(c *gin.Context) {

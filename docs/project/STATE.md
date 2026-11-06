@@ -3,10 +3,10 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2批量创建来源、逐次出站守卫和ZIP错误响应完整交付；包含HTTP三时机与真实Vertex延迟读取回归，不关闭D2父任务。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本次为223eec0后的批量来源修复；只做本地代码、增量迁移与隔离验证，不CI/推送/部署/生产迁移。
-- 证据：15738最终三包三轮race6.996/1.932/3.341s、默认四包编译及vet均退出0；31126分批完整三包lint各0 issues退出0；16757 HTTP三时机2.745s通过。PG18/Redis8与迁移兼容证据沿原49754/55411。
-- 下一动作：D2批量持久Key额度及其他缓存域。53985 ZIP夹具失败、88323中途测试变动的vet失败均已修复并最终重跑；53925超时保留于DECISIONS。
+- 任务：D2批量下载可靠性子范围已验证：端到端截止、慢下游、取消释放与精确租约；三包race、真实Redis、完整lint、默认编译和vet通过，不关闭D2父项。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，基于6fc2a03；只做本地代码、增量迁移与隔离验证，不CI/推送/部署/生产迁移。
+- 证据：38915的service/repository三轮race33.134/2.109s；70513最终handler三轮race9.025s；53342最终生命周期三轮race1.887s、默认四包编译及vet退出0；30281两步完整lint均0 issues；44633真实Redis11.073s通过。
+- 下一动作：推进D2批量持久Key额度及其他协议/工具缓存域，再补D3/D4与后续任务；受限批量新提交继续保守拒绝。首轮lint与慢下游夹具失败、修复及回滚边界保留在DECISIONS。
 - 等待：历史清理/符号链接与生产等待不变；20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
 
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、发送绑定、共享Key/Live、turn-state、Gemini显式缓存及HTTP/原生WS创建来源已验证；批量创建来源/逐次守卫/ZIP与升级SQL兼容已验证；其他缓存域及批量持久额度待验收 |
+| D2 | in_progress | D2.1–D2.4、发送绑定、共享Key/Live、turn-state、Gemini及HTTP/原生WS创建来源已验证；批量来源/升级SQL兼容及下载截止/精确租约已验证；其他缓存域及批量持久额度待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -45,7 +45,7 @@
 ## 工作区与验证约定
 
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
-- 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包、unit标签、并发2、8分钟与原规则。
+- 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包、unit标签、并发2与原规则；service预算12分钟，其余8分钟。
 - 真实Redis仅进程PATH前置`H:/Root/tools/redis/5.0.14.1`；真实SQL须进程环境指向隔离PostgreSQL，不打印DSN。
 - 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个相同测试PNG共1164bytes，历史精确删除曾被策略拒绝（DECISIONS），保留且不提交。
 - 既有HTTP/compat归属、区域共享Key与Live的实际版本、完整/局部验证边界及失败历史见DECISIONS；不代替本轮WS源码或生产升级验收。区域竞争使用就绪SQL池，不计冷建连时延通过。

@@ -47,6 +47,22 @@ download marker; retry the download after restoring the route. Migration 329
 adds the route digest without backfilling legacy jobs; retain the column during
 rollback and follow the linked upgrade/drain rules.
 
+`max_download_duration_seconds` bounds the complete local download attempt,
+including metadata, GCS listing, upstream result reads and returned item streams.
+The HTTP handlers also apply that deadline to downstream socket writes when the
+response writer supports deadlines. Interrupted ZIPs have no completion footer
+and are never marked downloaded. Permit cleanup uses a separate, bounded
+context, so canceling the download does not cancel its own cleanup.
+
+Download concurrency uses one exact, expiring Redis member per request, shared
+by item and ZIP downloads for the same user. A late or repeated release removes
+only that member; a failed release remains retryable. Upgrades and rollbacks
+must drain active downloads on every old instance. Live string counters from
+older versions are preserved and cause new requests to return the existing 429
+until their TTL expires; do not delete active limiter keys to force an upgrade.
+Download permits track local transfers and do not account for remote batch
+generation, whose shared-key admission remains subject to the rules above.
+
 Submit request:
 
 ```json

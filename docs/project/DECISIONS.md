@@ -858,3 +858,18 @@
 - 最终31126：原v2.15完整规则、unit标签、并发2、8分钟的`bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 8m --allow-serial-runners ./internal/service/...`，随后同命令`./internal/repository/... ./internal/handler/...`，两步各输出0 issues并最终退出0（进程GOMEMLIMIT=6GiB/GOGC=50）。53925历史超时即使输出0 issues仍退出1，不计通过。
 - 本地文档链接/锚点23项有效，STATE预算及恢复检查点合规；更改Go文件格式与diff检查通过，新增TODO/FIXME/XXX为0。未创建新进度台账或第二套提供方/缓存/额度实现，设计4.4.3和既有BATCH_IMAGE_MVP同步。原12张PNG仍1164bytes，历史自动审批拒绝的清理目标按原拥有者等待，不换删除/移动入口、不提交这些产物。
 - 完成本地批量来源及下载错误处理子范围，原20项仍12 done、3 in_progress、5 pending，父任务完成增量0。共享策略下新批量任务仍拒绝，持久Key额度、其他缓存域、D3/D4及D5–D9保持原验收。部署前处理无来源旧任务并排空旧提交/恢复器；回滚保留新增列、未知任务、原冻结及事件，不重新启用会退款未知提交的旧恢复器。CI/推送/部署/生产迁移为0。
+
+## 2026-11-06：D2 批量下载总截止与精确下载租约
+
+- 接续6fc2a03，在H盘唯一工作树完成下载可靠性子范围。原ZIP时限在提供方OpenResult之后才创建，元数据、GCS列表及结果响应体可以先耗尽父请求预算；单图返回流也没有保留完整下载截止。继承的5820真实TLS下载3秒越界及34511迟到释放/失败重试失败证据保留，不把原先只覆盖解析循环的时限称为端到端保护。
+- 原位将截止提前到单图/ZIP服务入口，并传入所有数据库、提供方和延迟对象读取。单图返回流在取消、到期及Close时停止读取，关闭只取消自己的上下文；下载槽位使用独立3秒清理上下文。HTTP入口同时设置支持的下游socket写截止，结束后清除以保留keep-alive。ZIP任何中断均不写完整尾部、不标记下载成功，首次输出前仍可沿原错误返回JSON。
+- 旧Redis字符串计数器会让过期请求的迟到DECR扣减新请求，sync.Once还会永久缓存首次释放失败。沿原用户级键替换为每请求UUID的ZSET成员，使用Redis服务器时间和成员独立到期，键TTL覆盖最晚成员；单图和ZIP仍共用原上限。释放只移除自己的成员，重复释放幂等、失败可重试；申请结果未知时以独立有界上下文尝试回收本次成员，不触碰其他请求。
+- 旧字符串键不转换、不删除，存活期间保留原429拒绝，等TTL自然到期后恢复。升级及回滚须在全部旧实例排空下载并等待旧键到期，不能把新旧脚本混跑或清库制造容量。本轮不新增迁移；本地下载槽位不代表远端生成已结束，也不放行原受限批量任务或替代待实现的持久Key额度。
+- 85088下载专项实际退出0，service/repository/handler三包10.015s/1.964s/4.376s。包括两种提供方×单图/ZIP×元数据/响应体的8种实际TLS截止、返回流取消/到期/关闭/释放重试、三种ZIP出错时机及keep-alive。此前74675的旧下载回归9.975s/2.083s/1.816s、27911真实Redis16.003s保留为当时源码证据，不替代最终测试。
+- 38915运行`go test -race -p 1 -tags unit ./internal/service ./internal/repository ./internal/handler -run '^Test.*BatchImage|^Test(Gemini|Vertex)Provider_|^Test(GeminiBatch|VertexBatch|VertexGCS|ValidateGeminiDownload)' -count=3 -timeout=4m`，service33.134s、repository2.109s通过，handler11.896s失败，整条退出1。慢下游夹具先解析/压缩6MiB图片，在race下先耗尽1秒截止并返回503，未进入其预期的socket阻塞，不是200路径已验证。原位改为256KiB不可压缩图片并限制真实TCP发送/接收缓冲，保留1秒截止、200已开始响应、DeadlineExceeded及零下载标记断言，未修改生产超时或放宽断言。
+- 最终70513：`go test -race -p 1 -tags unit ./internal/handler -run '^TestBatchImageDownload' -count=3 -timeout=2m`实际退出0、handler9.025s。53342先运行`go test -race -p 1 -tags unit ./internal/service -run '^TestBatchImageDownloadService_ItemStreamCancellationAndRelease$' -count=3 -timeout=2m`，最终测试写法下实际退出0、service1.887s；随后默认标签四包service/repository/handler/cmd/server的`go test -p 1 ... -run '^$' -count=1 -timeout=3m`实际1.451s/2.695s/2.206s/1.819s，均no tests to run，仅计编译；最后`go vet -p 1 -tags unit ./internal/service ./internal/repository ./internal/handler ./cmd/server`退出0、无诊断。
+- 最终44633：`go test -p 1 -tags integration ./internal/repository -run '^TestBatchImageDownloadLimiterRealRedisOwnershipAndRecovery$' -count=1 -timeout=3m -v`在实际PostgreSQL18.1/Redis8.4下显式PASS、repository11.073s、退出0，未跳过。24个跨limiter竞争只获2个名额，覆盖单成员过期、旧成员迟到释放、8次并发重复释放、独立用户及旧字符串键到期恢复。工作线程只收集释放结果，由主测试线程保留全部错误断言。本轮3个测试容器已按准确ID查询确认不存在，未操作历史隔离实例。
+- 29400首轮完整lint实际退出4，包含errcheck遗漏通道错误值、staticcheck QF1003及超时，保留失败。原位检查通道返回值并改用switch，行为断言保持。最终30281使用v2.15原完整规则、unit标签、并发2与allow-serial-runners，先检查`./internal/service/...`（12分钟），再检查`./internal/repository/... ./internal/handler/...`（8分钟）；两步各输出0 issues，整条实际退出0。仅进程GOMEMLIMIT=6GiB/GOGC=50，没有禁用原规则或把局部文件检查冒充完整包。
+- 旧maxDownloadDuration调用、下载限额INCR/DECR与sync.Once均已核对为0；新增TODO/FIXME/XXX为0，Go格式与diff检查通过。设计4.4.3与既有BATCH_IMAGE_MVP同步，STATE仍是唯一进度入口。原12个历史PNG仍1164bytes且不提交，历史自动审批拒绝的准确清理目标继续由原拥有者处理，不换删除/移动入口。
+- 本地完整交付本下载子范围，原20项仍12 done、3 in_progress、5 pending，父任务完成增量0；D2持久Key额度/其他缓存域、D3/D4及D5–D9仍保留原验收。仅本地原子提交；CI、推送、部署和生产迁移均为0。
+- 最终文档检查实际退出0：23个本地链接/锚点有效；STATE为69行7740bytes，恢复检查点结束于前1037bytes，满足原预算。更改Go文件gofmt为0项，git diff --check通过。上述文档检查不代替未执行的生产升级或全局CLI验收。
