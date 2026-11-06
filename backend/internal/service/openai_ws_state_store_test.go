@@ -29,6 +29,42 @@ func TestOpenAIWSStateStore_BindGetDeleteResponseAccount(t *testing.T) {
 	require.Zero(t, accountID)
 }
 
+func TestOpenAIWSStateStore_ResponseAccountUsesSharedBinding(t *testing.T) {
+	cache := &stubGatewayCache{}
+	writer := NewOpenAIWSStateStore(cache)
+	other := NewOpenAIWSStateStore(cache)
+	ctx := context.Background()
+	const groupID = int64(7)
+	const responseID = "resp_shared_binding"
+
+	require.NoError(t, writer.BindResponseAccount(ctx, groupID, responseID, 101, time.Minute))
+	require.NoError(t, other.BindResponseAccount(ctx, groupID, responseID, 202, time.Minute))
+	got, err := writer.GetResponseAccount(ctx, groupID, responseID)
+	require.NoError(t, err)
+	require.EqualValues(t, 202, got, "a warm writer must observe a shared replacement")
+
+	require.NoError(t, other.DeleteResponseAccount(ctx, groupID, responseID))
+	got, err = writer.GetResponseAccount(ctx, groupID, responseID)
+	require.NoError(t, err)
+	require.Zero(t, got, "a warm writer must observe a shared deletion")
+}
+
+func TestOpenAIWSStateStore_ResponseAccountWithoutSharedCache(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	ctx := context.Background()
+	require.NoError(t, store.BindResponseAccount(ctx, 7, "resp_local", 101, 30*time.Millisecond))
+	got, err := store.GetResponseAccount(ctx, 7, "resp_local")
+	require.NoError(t, err)
+	require.EqualValues(t, 101, got)
+	got, err = store.GetResponseAccount(ctx, 8, "resp_local")
+	require.NoError(t, err)
+	require.Zero(t, got)
+	time.Sleep(60 * time.Millisecond)
+	got, err = store.GetResponseAccount(ctx, 7, "resp_local")
+	require.NoError(t, err)
+	require.Zero(t, got)
+}
+
 func TestOpenAIWSStateStore_HTTPResponseOwnerPersistsAcrossStoreInstances(t *testing.T) {
 	cache := &stubGatewayCache{}
 	ctx := context.Background()
@@ -332,13 +368,13 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 
 	accountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_timeout_probe")
 	require.NoError(t, getErr)
-	require.Equal(t, int64(11), accountID, "本地缓存命中应优先返回已绑定账号")
+	require.Equal(t, int64(123), accountID, "共享读取结果应优先于失败的绑定")
 
 	require.NoError(t, store.DeleteResponseAccount(ctx, groupID, "resp_timeout_probe"))
 
 	require.True(t, probe.setHasDeadline, "SetSessionAccountID 应携带独立超时上下文")
 	require.True(t, probe.deleteHasDeadline, "DeleteSessionAccountID 应携带独立超时上下文")
-	require.False(t, probe.getHasDeadline, "GetSessionAccountID 本用例应由本地缓存命中，不触发 Redis 读取")
+	require.True(t, probe.getHasDeadline, "GetSessionAccountID 应携带独立超时上下文")
 	require.Greater(t, probe.setDeadlineDelta, 2*time.Second)
 	require.LessOrEqual(t, probe.setDeadlineDelta, 3*time.Second)
 	require.Greater(t, probe.delDeadlineDelta, 2*time.Second)

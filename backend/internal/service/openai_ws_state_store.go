@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -87,7 +88,7 @@ const openAIWSInvalidEncryptedDigestsPerSession = 512
 // - response_id -> account_id 用于续链路由
 // - response_id -> conn_id 用于连接内上下文复用
 //
-// response_id -> account_id 优先走 GatewayCache（Redis），同时维护本地热缓存。
+// response_id -> account_id 使用 GatewayCache（Redis）作为权威；未配置时仅使用本地缓存。
 // response_id -> conn_id 仅在本进程内有效。
 type OpenAIWSStateStore interface {
 	BindResponseAccount(ctx context.Context, groupID int64, responseID string, accountID int64, ttl time.Duration) error
@@ -243,6 +244,11 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 		return nil
 	}
 	ttl = normalizeOpenAIWSTTL(ttl)
+	if s.cache != nil {
+		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+		defer cancel()
+		return s.cache.SetSessionAccountID(cacheCtx, groupID, openAIWSResponseAccountCacheKey(id), accountID, ttl)
+	}
 	s.maybeCleanup()
 
 	expiresAt := time.Now().Add(ttl)
@@ -251,14 +257,7 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	ensureBindingCapacity(s.responseToAccount, mapKey, openAIWSStateStoreMaxEntriesPerMap)
 	s.responseToAccount[mapKey] = openAIWSAccountBinding{accountID: accountID, expiresAt: expiresAt}
 	s.responseToAccountMu.Unlock()
-
-	if s.cache == nil {
-		return nil
-	}
-	cacheKey := openAIWSResponseAccountCacheKey(id)
-	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
-	defer cancel()
-	return s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
+	return nil
 }
 
 func cleanupExpiredHTTPResponseOwnerBindings(bindings map[string]openAIHTTPResponseOwnerBinding, now time.Time, maxScan int) {
@@ -282,6 +281,18 @@ func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, grou
 	if id == "" {
 		return 0, nil
 	}
+	if s.cache != nil {
+		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+		defer cancel()
+		accountID, err := s.cache.GetSessionAccountID(cacheCtx, groupID, openAIWSResponseAccountCacheKey(id))
+		if errors.Is(err, ErrStickySessionNotFound) {
+			return 0, nil
+		}
+		if err != nil || accountID <= 0 {
+			return 0, err
+		}
+		return accountID, nil
+	}
 	s.maybeCleanup()
 
 	now := time.Now()
@@ -296,19 +307,7 @@ func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, grou
 	}
 	s.responseToAccountMu.RUnlock()
 
-	if s.cache == nil {
-		return 0, nil
-	}
-
-	cacheKey := openAIWSResponseAccountCacheKey(id)
-	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
-	defer cancel()
-	accountID, err := s.cache.GetSessionAccountID(cacheCtx, groupID, cacheKey)
-	if err != nil || accountID <= 0 {
-		// 缓存读取失败不阻断主流程，按未命中降级。
-		return 0, nil
-	}
-	return accountID, nil
+	return 0, nil
 }
 
 func (s *defaultOpenAIWSStateStore) DeleteResponseAccount(ctx context.Context, groupID int64, responseID string) error {
@@ -681,7 +680,7 @@ func openAIHTTPResponseOwnerCacheKey(prefix, responseID string) string {
 	return prefix + hex.EncodeToString(sum[:])
 }
 
-// openAIWSResponseAccountMapKey 本地热缓存按分组隔离的 key，与 Redis 层保持一致，避免跨组命中。
+// openAIWSResponseAccountMapKey 本地绑定按分组隔离的 key，与 Redis 层保持一致，避免跨组命中。
 func openAIWSResponseAccountMapKey(groupID int64, responseID string) string {
 	return fmt.Sprintf("%d:%s", groupID, responseID)
 }
