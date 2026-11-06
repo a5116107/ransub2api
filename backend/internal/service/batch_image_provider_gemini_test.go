@@ -280,6 +280,8 @@ func jobWithProviderName(name string) *BatchImageJob {
 	return &BatchImageJob{ProviderJobName: &name}
 }
 
+func (*fakeGeminiBatchClient) RouteIdentity() string { return "fixture-gemini" }
+
 type fakeGeminiBatchClient struct {
 	calls               []string
 	uploaded            *GeminiUploadedFile

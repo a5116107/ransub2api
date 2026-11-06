@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +18,7 @@ import (
 
 type BatchImageProvider interface {
 	Name() string
+	RouteFingerprint(account *Account) string
 	SupportsAccount(account *Account) bool
 	Submit(ctx context.Context, job *BatchImageJob, account *Account, input BatchImageInput) (*BatchProviderJob, error)
 	Get(ctx context.Context, job *BatchImageJob, account *Account) (*BatchProviderStatus, error)
@@ -27,7 +31,58 @@ type BatchImageProvider interface {
 // rejected) may authorize releasing the submission hold on an error.
 var errBatchImageSubmitRejected = errors.New("batch image creation was not accepted")
 
+type batchImageRequestGuardKey struct{}
+
+func batchImageRouteDigest(parts ...string) string {
+	encoded, _ := json.Marshal(parts)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+// Bind the persisted creation route before any provider operation. The real
+// HTTP clients repeat this check after uploads, token waits and pagination.
+func prepareBatchImageProviderRequest(ctx context.Context, provider BatchImageProvider, job *BatchImageJob, account *Account, lookup func(context.Context, int64) (*Account, error)) (context.Context, error) {
+	if provider == nil || job == nil || account == nil || lookup == nil ||
+		job.AccountID == nil || *job.AccountID <= 0 || account.ID != *job.AccountID ||
+		job.Provider != provider.Name() || job.RouteFingerprint == "" ||
+		job.RouteFingerprint != provider.RouteFingerprint(account) {
+		return ctx, ErrBatchImageRouteUnavailable
+	}
+	accountID, fingerprint := account.ID, job.RouteFingerprint
+	guard := func(requestCtx context.Context) error {
+		readCtx, cancel := context.WithTimeout(requestCtx, 3*time.Second)
+		defer cancel()
+		current, err := lookup(readCtx, accountID)
+		if err != nil || current == nil || current.ID != accountID ||
+			fingerprint != provider.RouteFingerprint(current) {
+			return ErrBatchImageRouteUnavailable
+		}
+		return nil
+	}
+	if err := guard(ctx); err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, batchImageRequestGuardKey{}, guard), nil
+}
+
+func doBatchImageHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	if guard, ok := req.Context().Value(batchImageRequestGuardKey{}).(func(context.Context) error); ok {
+		if err := guard(req.Context()); err != nil {
+			return nil, err
+		}
+		// A redirect has no creation-route proof. Copy the shared client rather
+		// than changing redirect behavior for unrelated users of its transport.
+		guardedClient := *client
+		guardedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		return guardedClient.Do(req)
+	}
+	return client.Do(req)
+}
+
 func batchImageCreateError(original, mapped error) error {
+	if errors.Is(original, ErrBatchImageRouteUnavailable) {
+		return errors.Join(mapped, errBatchImageSubmitRejected)
+	}
 	var geminiErr *GeminiAPIError
 	var vertexErr *VertexAPIError
 	status := 0

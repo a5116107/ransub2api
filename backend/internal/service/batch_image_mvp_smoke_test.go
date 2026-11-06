@@ -222,6 +222,8 @@ type batchImageSmokeProvider struct {
 
 func (p *batchImageSmokeProvider) Name() string { return p.name }
 
+func (*batchImageSmokeProvider) RouteFingerprint(*Account) string { return "batch-image-test-route" }
+
 func (p *batchImageSmokeProvider) SupportsAccount(account *Account) bool {
 	return account != nil && account.IsSchedulable()
 }

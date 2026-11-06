@@ -843,3 +843,18 @@
 - 夹具首错保留：首次追加取消场景后，模拟服务器等待未读请求的Context.Done而在Server.Close互等；精确停止本轮两个测试进程37880/27404，失败包实际129.394s/36.017s，未记通过。移除夹具自身互等，保留“收到创建请求后才取消”及不退款/不重发的全部断言，最终专项与十轮race通过。两处强停测试的Go临时构建目录均确认不存在。一次并行lint以parallel golangci-lint is running退出1，待40401真正退出后串行90581通过；没有把工具锁作为功能阻塞或绕过检查。
 - 旧危险分支和过时注释原位替换；旧事件符号全仓源码搜索0命中，新增TODO/FIXME/XXX为0，gofmt及diff检查通过。设计4.4.3与既有BATCH_IMAGE_MVP接口说明同步，未创建平行进度台账；原12张历史PNG仍1164bytes且不提交，旧审批拒绝目标不换工具重试。本轮测试无新增持久验证产物，Go构建缓存继续使用既有H盘缓存。
 - 完成本地“批量提交/恢复/取消安全及关联幂等”子范围，原20项仍12 done、3 in_progress、5 pending。共享策略下的新批量任务仍按4.4保守拒绝；批量持久额度、旧任务完整出站归属、其他缓存域及D3–D9保持原验收。升级须暂停旧提交/恢复器并处理旧远端任务；回滚保留未知任务/原冻结/事件，不启用会退款这些行的旧恢复器。对应生产操作仍需原授权边界。本轮仅本地提交，CI/推送/部署/生产迁移为0。
+
+
+## 2026-11-06：D2 批量创建来源、逐次出站守卫及 ZIP 中断
+
+- 接续223eec0及其后继承的未提交批量来源改动，在H盘唯一工作树完成本子范围。BatchImageProvider沿原接口提供RouteFingerprint；Gemini绑定静态Key/账号线路与实际客户端端点，Vertex另绑定服务账号主体、项目/区域、批处理与存储端点、托管桶/前缀/环境。同主体私钥正常轮换保留资源域，不把当前账号ID当作历史来源。
+- 迁移329给batch_image_jobs增加默认空字符串的route_fingerprint，原创建/读取/状态接管往返保存。缺少来源的历史任务不按当前账号回填。继承且源码未再改变的49754在实际PG18/Redis8批量18项56.148s退出0，55411的迁移升级及旧列SQL兼容12.628s退出0；这些证据不声称生产迁移或旧应用拥有新守卫。
+- 提交、轮询、取消、下载及清理在原服务入口核对持久来源；同一上下文把有界权威读取传到实际HTTP发送边界，上传后、token等待后、GCS分页及逐对象延迟读取都复核。6处直接HTTP发送收敛至同一个检查入口（6→0，受检调用6处），不修改共享http.Client的重定向设置；有来源绑定的请求拒绝自动跳转，不重放生成。未知创建继续保留原uploading与冻结，已证明创建尚未发送的拒绝沿原账务释放。
+- 六种操作×六种来源/读取变化的真实本地TLS夹具证明拒绝时不出站、任务/冻结/清理标记保持，恢复原来源后可继续；本地查询和幂等读取保持可用。Vertex真实HTTP夹具覆盖列表后权限失败和首对象读取后更换principal，停止第二对象并保留原索引状态和冻结，不把本地拒绝算成解析失败或终态。
+- ZIP来源拒绝时不关闭归档写入器：未输出的响应保持可返回JSON/503；已输出的ZIP停止且无完整尾部，不追加JSON或标记下载成功。handler原位清除附件头并改回JSON类型。新增HTTP处理器用例覆盖首次读取前、图片尚在ZIP缓冲区、图片已经流出三种时机；全部验证失败下载标记为0，流出场景保留原已提交HTTP状态但归档校验失败。
+- 恢复53985真实句柄后发现service失败（1.904s），handler1.784s/repository2.054s通过但整条退出1。原因是5字节图片仍在ZIP/deflate缓冲，夹具却断言已写出网络；换为128KiB不可压缩图片，同时新增成功ZIP能完整解出原图片的断言，没有放宽中断行为。56703专项实际PASS1.908s；16757 HTTP三时机实际PASS2.745s。
+- 88323原三包回归实际PASS：service2.442s/handler1.948s/repository3.195s。其随后race阶段service5.341s通过，但期间补改handler测试导致vet的archive/zip导入信息失配，整条退出1且后续编译/vet未运行；保留此首错并固定全部Go源码后重跑，不把途中结果记成完整通过。
+- 最终15738：`go test -race -p 1 -tags unit ./internal/service ./internal/handler ./internal/repository -run '^Test.*BatchImage|^Test(Gemini|Vertex)Provider_|^Test(GeminiBatch|VertexBatch|VertexGCS|ValidateGeminiDownload)' -count=3 -timeout=4m`实际退出0，三包6.996s/1.932s/3.341s。随后默认标签四包service/repository/handler/cmd/server的`go test -p 1 ... -run '^$' -count=1 -timeout=3m`退出0，1.803s/1.450s/2.006s/1.434s，均为no tests to run，只计编译。最后`go vet -p 1 -tags unit ./internal/service ./internal/repository ./internal/handler ./cmd/server`退出0无诊断。
+- 最终31126：原v2.15完整规则、unit标签、并发2、8分钟的`bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 8m --allow-serial-runners ./internal/service/...`，随后同命令`./internal/repository/... ./internal/handler/...`，两步各输出0 issues并最终退出0（进程GOMEMLIMIT=6GiB/GOGC=50）。53925历史超时即使输出0 issues仍退出1，不计通过。
+- 本地文档链接/锚点23项有效，STATE预算及恢复检查点合规；更改Go文件格式与diff检查通过，新增TODO/FIXME/XXX为0。未创建新进度台账或第二套提供方/缓存/额度实现，设计4.4.3和既有BATCH_IMAGE_MVP同步。原12张PNG仍1164bytes，历史自动审批拒绝的清理目标按原拥有者等待，不换删除/移动入口、不提交这些产物。
+- 完成本地批量来源及下载错误处理子范围，原20项仍12 done、3 in_progress、5 pending，父任务完成增量0。共享策略下新批量任务仍拒绝，持久Key额度、其他缓存域、D3/D4及D5–D9保持原验收。部署前处理无来源旧任务并排空旧提交/恢复器；回滚保留新增列、未知任务、原冻结及事件，不重新启用会退款未知提交的旧恢复器。CI/推送/部署/生产迁移为0。

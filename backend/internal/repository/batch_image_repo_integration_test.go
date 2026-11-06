@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +50,63 @@ func TestBatchImageRepository_CreateJobAndDuplicates(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.True(t, errors.Is(err, service.ErrBatchImageJobExists))
+}
+
+func TestBatchImageRepository_CreationRouteRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repo := newBatchImageRepositoryWithSQL(testTx(t))
+	fingerprint := strings.Repeat("a", 64)
+	job, err := repo.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{
+		BatchID: batchImageTestID(t, "route"), UserID: 1001, Provider: service.BatchImageProviderGeminiAPI,
+		Model: "gemini-2.5-flash-image", RouteFingerprint: fingerprint,
+	})
+	require.NoError(t, err)
+	require.Equal(t, fingerprint, job.RouteFingerprint)
+	require.NoError(t, repo.TransitionBatchImageJobStatus(ctx, job.BatchID, service.BatchImageJobStatusUploading, service.BatchImageTransitionOptions{}))
+	loaded, err := repo.GetBatchImageJobByBatchID(ctx, job.BatchID)
+	require.NoError(t, err)
+	require.Equal(t, fingerprint, loaded.RouteFingerprint)
+	legacy, err := repo.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{
+		BatchID: batchImageTestID(t, "legacy_route"), UserID: 1001, Provider: service.BatchImageProviderGeminiAPI, Model: job.Model,
+	})
+	require.NoError(t, err)
+	require.Empty(t, legacy.RouteFingerprint, "legacy provenance is never guessed from a current account")
+}
+
+func TestBatchImageRepository_RouteMigrationPreservesLegacy(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	_, err := tx.ExecContext(ctx, `CREATE TEMP TABLE batch_image_jobs (
+batch_id TEXT PRIMARY KEY, status TEXT NOT NULL, hold_amount NUMERIC(20,8) NOT NULL
+) ON COMMIT DROP;
+INSERT INTO batch_image_jobs (batch_id, status, hold_amount) VALUES ('legacy', 'uploading', 0.5)`)
+	require.NoError(t, err)
+	migration, err := migrations.FS.ReadFile("329_batch_image_route_fingerprint.sql")
+	require.NoError(t, err)
+	for repeat := 0; repeat < 2; repeat++ {
+		_, err = tx.ExecContext(ctx, string(migration))
+		require.NoError(t, err)
+	}
+	var route, status, amount string
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT route_fingerprint, status, hold_amount::text FROM batch_image_jobs WHERE batch_id='legacy'").Scan(&route, &status, &amount))
+	require.Empty(t, route)
+	require.Equal(t, "uploading", status)
+	require.Equal(t, "0.50000000", amount)
+	fingerprint := strings.Repeat("b", 64)
+	_, err = tx.ExecContext(ctx, "UPDATE batch_image_jobs SET route_fingerprint=$1 WHERE batch_id='legacy'", fingerprint)
+	require.NoError(t, err) // synthetic known provenance, never an account backfill
+	// These are the old column lists, proving SQL compatibility without claiming
+	// that an old application binary enforces the new provenance guard.
+	_, err = tx.ExecContext(ctx, `UPDATE batch_image_jobs SET status='running' WHERE batch_id='legacy';
+INSERT INTO batch_image_jobs (batch_id, status, hold_amount) VALUES ('old_writer', 'created', 0.25)`)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(migration))
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT route_fingerprint, hold_amount::text FROM batch_image_jobs WHERE batch_id='legacy'").Scan(&route, &amount))
+	require.Equal(t, fingerprint, route)
+	require.Equal(t, "0.50000000", amount)
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT route_fingerprint FROM batch_image_jobs WHERE batch_id='old_writer'").Scan(&route))
+	require.Empty(t, route)
 }
 
 func TestBatchImageRepository_InvalidProvider(t *testing.T) {

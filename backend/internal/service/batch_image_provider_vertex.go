@@ -56,12 +56,14 @@ func NewVertexBatchImageProviderOptionsFromConfig(cfg *config.Config) VertexBatc
 }
 
 type VertexBatchClient interface {
+	RouteIdentity() string
 	CreateBatchPredictionJob(ctx context.Context, accessToken string, req VertexCreateBatchPredictionJobRequest) (*VertexBatchPredictionJob, error)
 	GetBatchPredictionJob(ctx context.Context, accessToken string, name string) (*VertexBatchPredictionJob, error)
 	CancelBatchPredictionJob(ctx context.Context, accessToken string, name string) error
 }
 
 type VertexBatchObjectStore interface {
+	RouteIdentity() string
 	UploadJSONL(ctx context.Context, accessToken string, uri string, r io.Reader) error
 	ListJSONLObjects(ctx context.Context, accessToken string, prefixURI string) ([]string, error)
 	OpenObject(ctx context.Context, accessToken string, uri string) (io.ReadCloser, string, error)
@@ -166,6 +168,16 @@ func (p *VertexBatchImageProvider) Name() string {
 	return BatchImageProviderVertex
 }
 
+func (p *VertexBatchImageProvider) RouteFingerprint(account *Account) string {
+	if p == nil || p.client == nil || p.objectStore == nil || !p.SupportsAccount(account) ||
+		p.client.RouteIdentity() == "" || p.objectStore.RouteIdentity() == "" {
+		return ""
+	}
+	return batchImageRouteDigest(p.Name(), GeminiCachedContentRouteFingerprint(account),
+		p.client.RouteIdentity(), p.objectStore.RouteIdentity(), p.opts.ProjectID, p.opts.Location,
+		p.opts.ManagedGCSBucket, p.opts.ManagedGCSPrefix, p.opts.Environment)
+}
+
 func (p *VertexBatchImageProvider) SupportsAccount(account *Account) bool {
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeServiceAccount {
 		return false
@@ -208,6 +220,9 @@ func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJo
 		return nil, mapVertexClientError(err)
 	}
 	if err := p.objectStore.UploadJSONL(ctx, accessToken, refs.InputURI, bytes.NewReader(jsonl)); err != nil {
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			return nil, err
+		}
 		return nil, vertexProviderError("VERTEX_GCS_UPLOAD_FAILED", "Vertex managed GCS upload failed", nil)
 	}
 
@@ -311,6 +326,9 @@ func (p *VertexBatchImageProvider) OpenResult(ctx context.Context, job *BatchIma
 	}
 	objects, err := p.objectStore.ListJSONLObjects(ctx, accessToken, outputRef)
 	if err != nil {
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			return nil, "", err
+		}
 		return nil, "", vertexProviderError("VERTEX_GCS_LIST_FAILED", "Vertex managed GCS list failed", nil)
 	}
 	sort.Strings(objects)
@@ -643,7 +661,8 @@ func mapVertexClientError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ErrBatchImageProviderMissingServiceAccount) ||
+	if errors.Is(err, ErrBatchImageRouteUnavailable) ||
+		errors.Is(err, ErrBatchImageProviderMissingServiceAccount) ||
 		errors.Is(err, ErrBatchImageProviderMissingJobName) ||
 		errors.Is(err, ErrBatchImageProviderMissingResultRef) ||
 		errors.Is(err, ErrBatchImageProviderUnsafeCleanupPath) ||
@@ -741,6 +760,13 @@ type VertexBatchHTTPClient struct {
 	client  *http.Client
 }
 
+func (c *VertexBatchHTTPClient) RouteIdentity() string {
+	if c.baseURL == "" {
+		return "https://aiplatform.googleapis.com"
+	}
+	return c.baseURL
+}
+
 func NewVertexBatchHTTPClient(baseURL string, client *http.Client) *VertexBatchHTTPClient {
 	if client == nil {
 		client = batchImageDefaultHTTPClient()
@@ -797,6 +823,13 @@ func (c *VertexBatchHTTPClient) vertexResourceURL(name string) string {
 type VertexGCSObjectStore struct {
 	baseURL string
 	client  *http.Client
+}
+
+func (s *VertexGCSObjectStore) RouteIdentity() string {
+	if s.baseURL == "" {
+		return "https://storage.googleapis.com"
+	}
+	return s.baseURL
 }
 
 func NewVertexGCSObjectStore(baseURL string, client *http.Client) *VertexGCSObjectStore {
@@ -878,7 +911,7 @@ func (s *VertexGCSObjectStore) OpenObject(ctx context.Context, accessToken strin
 		return nil, "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := s.client.Do(req)
+	resp, err := doBatchImageHTTPRequest(s.client, req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -958,7 +991,7 @@ func doVertexJSON[T any](client *http.Client, req *http.Request) (*T, error) {
 }
 
 func doVertexDecodeJSON(client *http.Client, req *http.Request, out any) error {
-	resp, err := client.Do(req)
+	resp, err := doBatchImageHTTPRequest(client, req)
 	if err != nil {
 		return err
 	}
@@ -970,7 +1003,7 @@ func doVertexDecodeJSON(client *http.Client, req *http.Request, out any) error {
 }
 
 func doVertexNoBody(client *http.Client, req *http.Request) error {
-	resp, err := client.Do(req)
+	resp, err := doBatchImageHTTPRequest(client, req)
 	if err != nil {
 		return err
 	}

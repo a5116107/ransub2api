@@ -307,6 +307,233 @@ func TestBatchImagePublicService_HTTPCreateOutcomes(t *testing.T) {
 	}
 }
 
+func TestBatchImagePublicService_CancelRetainsCreationRoute(t *testing.T) {
+	var cancels atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/upload/"):
+			_, _ = io.WriteString(w, `{"file":{"name":"files/input"}}`)
+		case strings.HasSuffix(r.URL.Path, ":batchGenerateContent"):
+			_, _ = io.WriteString(w, `{"name":"batches/created"}`)
+		case strings.HasSuffix(r.URL.Path, ":cancel"):
+			cancels.Add(1)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+	svc.ProviderRegistry = NewBatchImageProviderRegistry(NewGeminiAPIBatchImageProvider(NewGeminiBatchHTTPClient(server.URL, server.Client())))
+	created, err := svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "creation-route")
+	require.NoError(t, err)
+	accounts := testassert.Type[*publicBatchImageAccountRepo](t, svc.AccountRepo)
+	accounts.accounts[0].Credentials["api_key"] = "different-route-key"
+	_, err = svc.Cancel(context.Background(), testBatchImageOwner(), created.ID)
+	require.Error(t, err, "a mutable account ID must not authorize cancelling an old route's job")
+	require.Equal(t, "BATCH_IMAGE_ROUTE_UNAVAILABLE", infraerrors.Reason(err))
+	require.Zero(t, cancels.Load(), "the replacement key must never receive the original job name")
+	require.Equal(t, BatchImageJobStatusSubmitted, repo.jobs[created.ID].Status)
+	require.Empty(t, testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo).releases)
+	accounts.accounts[0].Credentials["api_key"] = "test-secret"
+	_, err = svc.Cancel(context.Background(), testBatchImageOwner(), created.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, cancels.Load())
+}
+
+func TestBatchImagePersistedRouteRejectsAndRecovers(t *testing.T) {
+	for _, operation := range []string{"poll", "cancel", "item", "zip", "input_cleanup", "output_cleanup"} {
+		for _, change := range []string{"key", "missing_provenance", "endpoint", "read_error", "missing_account", "wrong_account"} {
+			t.Run(operation+"/"+change, func(t *testing.T) {
+				svc, repo, accounts, server, requests := newBatchImageRouteFixture(t)
+				ctx := context.Background()
+				req := validBatchImageSubmitRequest()
+				created, err := svc.Submit(ctx, testBatchImageOwner(), req, "route-operations")
+				require.NoError(t, err)
+				job := repo.jobs[created.ID]
+				job.ProviderOutputRef = batchImageStringPtr("files/output")
+				if operation != "poll" && operation != "cancel" {
+					job.Status = BatchImageJobStatusCompleted
+					repo.items[job.BatchID] = []CreateBatchImageItemParams{{JobID: job.BatchID, CustomID: "cover_001", Status: BatchImageItemStatusSuccess, ImageCount: 1}}
+				}
+				originalAccount, originalFingerprint := accounts.current.Load(), job.RouteFingerprint
+				originalRegistry := svc.ProviderRegistry
+				state := job.Status
+				switch change {
+				case "key":
+					changed := testBatchImageAccount(101, AccountTypeAPIKey)
+					changed.Credentials["api_key"] = "replacement-route"
+					accounts.current.Store(&changed)
+				case "missing_provenance":
+					job.RouteFingerprint = ""
+				case "endpoint":
+					svc.ProviderRegistry = NewBatchImageProviderRegistry(NewGeminiAPIBatchImageProvider(NewGeminiBatchHTTPClient(server.URL+"/changed", server.Client())))
+				case "read_error":
+					accounts.unavailable.Store(true)
+				case "missing_account":
+					accounts.current.Store(nil)
+				case "wrong_account":
+					wrong := *originalAccount
+					wrong.ID++
+					accounts.current.Store(&wrong)
+				}
+				invoke := func() error {
+					resolver := &BatchImageAccountRepositoryResolver{Repo: accounts}
+					switch operation {
+					case "poll":
+						_, err := (&BatchImageProviderProcessor{Repo: repo, ProviderRegistry: svc.ProviderRegistry, AccountResolver: resolver, BillingRepo: svc.BillingRepo}).Process(ctx, job.BatchID)
+						return err
+					case "cancel":
+						_, err := svc.Cancel(ctx, testBatchImageOwner(), job.BatchID)
+						return err
+					case "item", "zip":
+						download := &BatchImageDownloadService{Repo: repo, ProviderRegistry: svc.ProviderRegistry, AccountResolver: resolver}
+						if operation == "zip" {
+							_, err := download.StreamZip(ctx, testBatchImageOwner(), job.BatchID, BatchImageZipOptions{}, io.Discard)
+							return err
+						}
+						stream, err := download.OpenItemContent(ctx, testBatchImageOwner(), job.BatchID, "cover_001", 0)
+						if stream != nil {
+							require.NoError(t, stream.Reader.Close())
+						}
+						return err
+					default:
+						cleanup := &BatchImageCleanupService{Repo: repo, ProviderRegistry: svc.ProviderRegistry, AccountResolver: resolver}
+						if operation == "input_cleanup" {
+							return cleanup.CleanupInput(ctx, job.BatchID)
+						}
+						return cleanup.CleanupOutput(ctx, job.BatchID, "manual")
+					}
+				}
+				requests.Store(0)
+				require.ErrorIs(t, invoke(), ErrBatchImageRouteUnavailable)
+				require.Zero(t, requests.Load())
+				require.Equal(t, state, job.Status)
+				require.Nil(t, job.InputDeletedAt)
+				require.Nil(t, job.OutputDeletedAt)
+				require.Empty(t, testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo).releases)
+				_, err = svc.Get(ctx, testBatchImageOwner(), job.BatchID)
+				require.NoError(t, err, "local task visibility does not depend on upstream provenance")
+				_, err = svc.Submit(ctx, testBatchImageOwner(), req, "route-operations")
+				require.NoError(t, err, "idempotent lookup remains local")
+				require.Zero(t, requests.Load())
+				// Only the synthetic fixture restores its saved creation evidence;
+				// production does not backfill legacy jobs from a current account.
+				job.RouteFingerprint = originalFingerprint
+				accounts.current.Store(originalAccount)
+				accounts.unavailable.Store(false)
+				svc.ProviderRegistry = originalRegistry
+				require.NoError(t, invoke())
+				require.Positive(t, requests.Load())
+			})
+		}
+	}
+}
+
+func TestBatchImagePublicService_RouteRecheckedAfterUpload(t *testing.T) {
+	var creates atomic.Int32
+	svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+	accounts := &batchImageRouteAccounts{BatchImageAccountSelectionRepository: svc.AccountRepo}
+	original := testBatchImageAccount(101, AccountTypeAPIKey)
+	accounts.current.Store(&original)
+	svc.AccountRepo = accounts
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/upload/") {
+			replacement := testBatchImageAccount(101, AccountTypeAPIKey)
+			replacement.Credentials["api_key"] = "replacement-after-upload"
+			accounts.current.Store(&replacement)
+			_, _ = io.WriteString(w, `{"file":{"name":"files/input"}}`)
+			return
+		}
+		creates.Add(1)
+		_, _ = io.WriteString(w, `{"name":"batches/unexpected"}`)
+	}))
+	defer server.Close()
+	svc.ProviderRegistry = NewBatchImageProviderRegistry(NewGeminiAPIBatchImageProvider(NewGeminiBatchHTTPClient(server.URL, server.Client())))
+	_, err := svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "upload-then-rotate")
+	require.ErrorIs(t, err, ErrBatchImageRouteUnavailable)
+	require.Zero(t, creates.Load(), "configuration changes during upload must stop creation")
+	require.Len(t, testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo).releases, 1, "creation was proven unsent")
+	for _, job := range repo.jobs {
+		require.Equal(t, BatchImageJobStatusFailed, job.Status)
+	}
+}
+
+func TestBatchImagePublicService_RouteRedirectDoesNotReplay(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected.Add(1)
+		_, _ = io.WriteString(w, `{"name":"batches/replayed"}`)
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/upload/") {
+			_, _ = io.WriteString(w, `{"file":{"name":"files/input"}}`)
+			return
+		}
+		http.Redirect(w, r, target.URL+"/create", http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+	client := origin.Client()
+	svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+	svc.ProviderRegistry = NewBatchImageProviderRegistry(NewGeminiAPIBatchImageProvider(NewGeminiBatchHTTPClient(origin.URL, client)))
+	_, err := svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "creation-redirect")
+	require.ErrorIs(t, err, ErrBatchImageSubmitUnconfirmed)
+	require.Zero(t, redirected.Load())
+	require.Nil(t, client.CheckRedirect, "the shared client's behavior must remain unchanged")
+	require.Empty(t, testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo).releases)
+	for _, job := range repo.jobs {
+		require.Equal(t, BatchImageJobStatusUploading, job.Status)
+	}
+}
+
+type batchImageRouteAccounts struct {
+	BatchImageAccountSelectionRepository
+	current     atomic.Pointer[Account]
+	unavailable atomic.Bool
+}
+
+func (r *batchImageRouteAccounts) GetByID(context.Context, int64) (*Account, error) {
+	if r.unavailable.Load() {
+		return nil, errors.New("fixture account authority unavailable")
+	}
+	return r.current.Load(), nil
+}
+
+func newBatchImageRouteFixture(t *testing.T) (*BatchImagePublicService, *fakeBatchImageRepository, *batchImageRouteAccounts, *httptest.Server, *atomic.Int32) {
+	t.Helper()
+	requests := &atomic.Int32{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/upload/"):
+			_, _ = io.WriteString(w, `{"file":{"name":"files/input"}}`)
+		case strings.HasSuffix(r.URL.Path, ":batchGenerateContent"):
+			_, _ = io.WriteString(w, `{"name":"batches/created"}`)
+		case r.URL.Path == "/v1beta/batches/created":
+			_, _ = io.WriteString(w, `{"name":"batches/created","state":"JOB_STATE_RUNNING"}`)
+		case r.Method == http.MethodDelete, strings.HasSuffix(r.URL.Path, ":cancel"):
+			_, _ = io.WriteString(w, `{}`)
+		case r.URL.Path == "/v1beta/files/output":
+			_, _ = io.WriteString(w, `{}`)
+		case r.URL.Path == "/v1beta/files/output:download":
+			_, _ = io.WriteString(w, `{"key":"cover_001","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"Zmlyc3Q="}}]}}]}}`+"\n")
+		default:
+			t.Errorf("unexpected route fixture request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+	accounts := &batchImageRouteAccounts{BatchImageAccountSelectionRepository: svc.AccountRepo}
+	original := testBatchImageAccount(101, AccountTypeAPIKey)
+	accounts.current.Store(&original)
+	svc.AccountRepo = accounts
+	svc.ProviderRegistry = NewBatchImageProviderRegistry(NewGeminiAPIBatchImageProvider(NewGeminiBatchHTTPClient(server.URL, server.Client())))
+	return svc, repo, accounts, server, requests
+}
+
 func TestBatchImagePublicService_IdempotencyIgnoresGeneratedTaskTime(t *testing.T) {
 	for _, legacyHash := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy_%t", legacyHash), func(t *testing.T) {
@@ -996,18 +1223,19 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 		holdAmount := 0.5
 		holdID := BatchImageHoldRequestID("imgbatch_cancel")
 		repo.jobs["imgbatch_cancel"] = &BatchImageJob{
-			BatchID:         "imgbatch_cancel",
-			UserID:          11,
-			APIKeyID:        &apiKeyID,
-			AccountID:       &accountID,
-			Provider:        BatchImageProviderGeminiAPI,
-			Model:           "gemini-2.5-flash-image",
-			Status:          BatchImageJobStatusSubmitted,
-			ProviderJobName: batchImageStringPtr("providers/internal/job"),
-			EstimatedCost:   holdAmount,
-			HoldAmount:      &holdAmount,
-			HoldID:          &holdID,
-			CreatedAt:       time.Now(),
+			RouteFingerprint: "batch-image-test-route",
+			BatchID:          "imgbatch_cancel",
+			UserID:           11,
+			APIKeyID:         &apiKeyID,
+			AccountID:        &accountID,
+			Provider:         BatchImageProviderGeminiAPI,
+			Model:            "gemini-2.5-flash-image",
+			Status:           BatchImageJobStatusSubmitted,
+			ProviderJobName:  batchImageStringPtr("providers/internal/job"),
+			EstimatedCost:    holdAmount,
+			HoldAmount:       &holdAmount,
+			HoldID:           &holdID,
+			CreatedAt:        time.Now(),
 		}
 
 		got, err := svc.Cancel(ctx, testBatchImageOwner(), "imgbatch_cancel")
@@ -1046,15 +1274,16 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 		apiKeyID := int64(22)
 		accountID := int64(101)
 		repo.jobs["imgbatch_cancel_error"] = &BatchImageJob{
-			BatchID:         "imgbatch_cancel_error",
-			UserID:          11,
-			APIKeyID:        &apiKeyID,
-			AccountID:       &accountID,
-			Provider:        BatchImageProviderGeminiAPI,
-			Model:           "gemini-2.5-flash-image",
-			Status:          BatchImageJobStatusSubmitted,
-			ProviderJobName: batchImageStringPtr("providers/internal/job"),
-			CreatedAt:       time.Now(),
+			RouteFingerprint: "batch-image-test-route",
+			BatchID:          "imgbatch_cancel_error",
+			UserID:           11,
+			APIKeyID:         &apiKeyID,
+			AccountID:        &accountID,
+			Provider:         BatchImageProviderGeminiAPI,
+			Model:            "gemini-2.5-flash-image",
+			Status:           BatchImageJobStatusSubmitted,
+			ProviderJobName:  batchImageStringPtr("providers/internal/job"),
+			CreatedAt:        time.Now(),
 		}
 
 		_, err := svc.Cancel(ctx, testBatchImageOwner(), "imgbatch_cancel_error")
@@ -1157,6 +1386,7 @@ func requireBatchImagePublicJSONHasNoInternals(t *testing.T, body string) {
 		"gcs_input_uri",
 		"gcs_output_uri",
 		"account_id",
+		"route_fingerprint",
 		"service_account",
 		"api_key",
 		"download_url",
@@ -1255,7 +1485,8 @@ type publicBatchImageProvider struct {
 	cleanupErr     error
 }
 
-func (p *publicBatchImageProvider) Name() string { return p.name }
+func (p *publicBatchImageProvider) Name() string                   { return p.name }
+func (*publicBatchImageProvider) RouteFingerprint(*Account) string { return "batch-image-test-route" }
 
 func (p *publicBatchImageProvider) SupportsAccount(account *Account) bool {
 	return p.accountType == "" || (account != nil && p.accountType == account.Type)

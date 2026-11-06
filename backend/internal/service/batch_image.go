@@ -71,6 +71,7 @@ var (
 	ErrBatchImageSharedKeyUnavailable       = infraerrors.New(http.StatusServiceUnavailable, "BATCH_IMAGE_SHARED_KEY_UNAVAILABLE", "batch image submission is unavailable while shared upstream key limits are configured")
 	ErrBatchImageSubmitUnconfirmed          = infraerrors.New(http.StatusConflict, "BATCH_IMAGE_SUBMIT_UNCONFIRMED", "provider submission outcome is unconfirmed; query the existing batch before submitting another request")
 	ErrBatchImageCancelUnconfirmed          = infraerrors.New(http.StatusConflict, "BATCH_IMAGE_CANCEL_UNCONFIRMED", "batch submission may be running remotely; cancellation requires a confirmed provider job")
+	ErrBatchImageRouteUnavailable           = infraerrors.New(http.StatusServiceUnavailable, "BATCH_IMAGE_ROUTE_UNAVAILABLE", "the batch creation route is unavailable; restore its original account and provider configuration")
 	ErrBatchImageInvalidItems               = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_INVALID_ITEMS", "batch image items are invalid")
 	ErrBatchImageDuplicateCustomIDInRequest = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_DUPLICATE_CUSTOM_ID", "batch image custom ids must be unique")
 	ErrBatchImagePromptTooLong              = infraerrors.New(http.StatusBadRequest, "BATCH_IMAGE_PROMPT_TOO_LONG", "batch image prompt is too long")
@@ -103,6 +104,7 @@ var (
 )
 
 type BatchImageJob struct {
+	RouteFingerprint  string
 	ID                int64
 	BatchID           string
 	UserID            int64
@@ -164,6 +166,7 @@ type BatchImageJob struct {
 }
 
 type CreateBatchImageJobParams struct {
+	RouteFingerprint  string
 	BatchID           string
 	UserID            int64
 	APIKeyID          *int64

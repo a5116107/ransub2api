@@ -36,6 +36,17 @@ persisted state is still `created`. See the authoritative
 for uncertain submissions and existing tasks. Shared-key policies continue to
 reject new batches until durable batch admission is implemented.
 
+Provider operations require the persisted creation route. Rotated API keys,
+changed service-account principals or provider/storage endpoints, missing legacy
+provenance, and account-authority failures return JSON/HTTP 503 before output with
+`error.code=BATCH_IMAGE_ROUTE_UNAVAILABLE`. Restore the original route before
+retrying; local queries and idempotent record lookups remain available. Route
+rejection preserves results, billing holds, and cleanup markers. A ZIP that has
+already started is interrupted without a completion footer or a successful
+download marker; retry the download after restoring the route. Migration 329
+adds the route digest without backfilling legacy jobs; retain the column during
+rollback and follow the linked upgrade/drain rules.
+
 Submit request:
 
 ```json

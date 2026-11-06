@@ -81,13 +81,17 @@ func (p *BatchImageProviderProcessor) Process(ctx context.Context, batchID strin
 	}
 	account, err := p.AccountResolver.ResolveBatchImageAccount(ctx, *job.AccountID)
 	if err != nil {
-		return BatchImageProcessResult{}, err
+		return BatchImageProcessResult{}, ErrBatchImageRouteUnavailable
 	}
 	if !provider.SupportsAccount(account) {
-		return BatchImageProcessResult{}, ErrBatchImageProviderUnsupportedAccount
+		return BatchImageProcessResult{}, ErrBatchImageRouteUnavailable
 	}
 	if strings.TrimSpace(batchImageDerefString(job.ProviderJobName)) == "" {
 		return BatchImageProcessResult{}, ErrBatchImageMissingProviderJobName
+	}
+	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, p.AccountResolver.ResolveBatchImageAccount)
+	if err != nil {
+		return BatchImageProcessResult{}, err
 	}
 
 	if job.Status == BatchImageJobStatusIndexing {
@@ -186,6 +190,9 @@ func (p *BatchImageProviderProcessor) indexAndSettle(ctx context.Context, job *B
 
 	result, err := indexer.Index(ctx, job, provider, account)
 	if err != nil {
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			return BatchImageProcessResult{}, ErrBatchImageRouteUnavailable
+		}
 		if errors.Is(err, ErrBatchImageIndexOutputMissing) {
 			return BatchImageProcessResult{}, err
 		}

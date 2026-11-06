@@ -218,6 +218,9 @@ func (s *BatchImageCleanupService) cleanupJob(ctx context.Context, job *BatchIma
 		if errors.Is(err, ErrBatchImageProviderUnsafeCleanupPath) {
 			return ErrBatchImageCleanupUnsafePath
 		}
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			return ErrBatchImageRouteUnavailable
+		}
 		return ErrBatchImageProviderCleanupFailed
 	}
 
@@ -240,6 +243,10 @@ func (s *BatchImageCleanupService) callProviderCleanup(ctx context.Context, job 
 		return ErrBatchImageMissingAccountID
 	}
 	account, err := s.AccountResolver.ResolveBatchImageAccount(ctx, *job.AccountID)
+	if err != nil {
+		return ErrBatchImageRouteUnavailable
+	}
+	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount)
 	if err != nil {
 		return err
 	}

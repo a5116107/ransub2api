@@ -23,6 +23,7 @@ import (
 const defaultGeminiBatchRequeueAfter = 30 * time.Second
 
 type GeminiBatchClient interface {
+	RouteIdentity() string
 	UploadJSONL(ctx context.Context, apiKey string, displayName string, r io.Reader) (*GeminiUploadedFile, error)
 	CreateBatch(ctx context.Context, apiKey string, model string, fileName string, displayName string) (*GeminiBatchJob, error)
 	GetBatch(ctx context.Context, apiKey string, batchName string) (*GeminiBatchJob, error)
@@ -78,6 +79,13 @@ func NewGeminiAPIBatchImageProvider(client GeminiBatchClient) *GeminiAPIBatchIma
 
 func (p *GeminiAPIBatchImageProvider) Name() string {
 	return BatchImageProviderGeminiAPI
+}
+
+func (p *GeminiAPIBatchImageProvider) RouteFingerprint(account *Account) string {
+	if p == nil || p.client == nil || !p.SupportsAccount(account) || p.client.RouteIdentity() == "" {
+		return ""
+	}
+	return batchImageRouteDigest(p.Name(), GeminiCachedContentRouteFingerprint(account), p.client.RouteIdentity())
 }
 
 func (p *GeminiAPIBatchImageProvider) SupportsAccount(account *Account) bool {
@@ -441,6 +449,9 @@ func mapGeminiClientError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, ErrBatchImageRouteUnavailable) {
+		return err
+	}
 	var apiErr *GeminiAPIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.StatusCode {
@@ -461,6 +472,8 @@ type GeminiBatchHTTPClient struct {
 	baseURL string
 	client  *http.Client
 }
+
+func (c *GeminiBatchHTTPClient) RouteIdentity() string { return c.baseURL }
 
 func NewGeminiBatchHTTPClient(baseURL string, client *http.Client) *GeminiBatchHTTPClient {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
@@ -598,7 +611,7 @@ func (c *GeminiBatchHTTPClient) DownloadFile(ctx context.Context, apiKey string,
 		return nil, "", err
 	}
 	req.Header.Set("x-goog-api-key", apiKey)
-	resp, err := c.client.Do(req)
+	resp, err := doBatchImageHTTPRequest(c.client, req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -634,7 +647,7 @@ func (c *GeminiBatchHTTPClient) doBatchJob(req *http.Request) (*GeminiBatchJob, 
 }
 
 func (c *GeminiBatchHTTPClient) doNoBody(req *http.Request) error {
-	resp, err := c.client.Do(req)
+	resp, err := doBatchImageHTTPRequest(c.client, req)
 	if err != nil {
 		return err
 	}
@@ -646,7 +659,7 @@ func (c *GeminiBatchHTTPClient) doNoBody(req *http.Request) error {
 }
 
 func (c *GeminiBatchHTTPClient) doJSON(req *http.Request, out any) error {
-	resp, err := c.client.Do(req)
+	resp, err := doBatchImageHTTPRequest(c.client, req)
 	if err != nil {
 		return err
 	}

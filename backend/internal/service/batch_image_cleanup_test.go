@@ -204,6 +204,7 @@ func cleanupTestJob(batchID, status string) *BatchImageJob {
 	accountID := int64(101)
 	now := time.Now().Add(-48 * time.Hour)
 	return &BatchImageJob{
+		RouteFingerprint:  "batch-image-test-route",
 		BatchID:           batchID,
 		UserID:            11,
 		APIKeyID:          &apiKeyID,

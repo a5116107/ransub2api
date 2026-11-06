@@ -249,6 +249,10 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	if err != nil {
 		return nil, err
 	}
+	routeFingerprint := provider.RouteFingerprint(account)
+	if routeFingerprint == "" {
+		return nil, ErrBatchImageRouteUnavailable
+	}
 	pricingSnapshot, err := s.resolvePricingSnapshot(ctx, owner, normalized, provider.Name(), account)
 	if err != nil {
 		return nil, err
@@ -276,6 +280,7 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		UserID:                  owner.UserID,
 		APIKeyID:                &apiKeyID,
 		AccountID:               &accountID,
+		RouteFingerprint:        routeFingerprint,
 		Provider:                provider.Name(),
 		Model:                   normalized.Model,
 		TaskName:                normalized.TaskName,
@@ -363,7 +368,13 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	hbDone := make(chan struct{})
 	go s.runSubmitHeartbeat(hbCtx, job.BatchID, hbDone)
-	providerJob, err := provider.Submit(ctx, job, account, input)
+	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountRepo.GetByID)
+	var providerJob *BatchProviderJob
+	if err != nil {
+		err = errors.Join(err, errBatchImageSubmitRejected)
+	} else {
+		providerJob, err = provider.Submit(ctx, job, account, input)
+	}
 	hbCancel()
 	<-hbDone
 	if err != nil {
@@ -766,9 +777,16 @@ func (s *BatchImagePublicService) Cancel(ctx context.Context, owner BatchImageOw
 		}
 		account, err := s.AccountRepo.GetByID(ctx, *job.AccountID)
 		if err != nil {
-			return nil, ErrBatchImageCancelFailed
+			return nil, ErrBatchImageRouteUnavailable
+		}
+		ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountRepo.GetByID)
+		if err != nil {
+			return nil, err
 		}
 		if err := provider.Cancel(ctx, job, account); err != nil {
+			if errors.Is(err, ErrBatchImageRouteUnavailable) {
+				return nil, ErrBatchImageRouteUnavailable
+			}
 			return nil, ErrBatchImageCancelFailed
 		}
 		if eventErr := s.Repo.AppendBatchImageEvent(ctx, job.BatchID, "job_cancel_requested", map[string]any{"batch_id": job.BatchID}); eventErr != nil {
@@ -1377,6 +1395,9 @@ func batchImageGCSRef(provider, ref string) string {
 }
 
 func batchImageProviderSubmitPublicError(err error) error {
+	if errors.Is(err, ErrBatchImageRouteUnavailable) {
+		return ErrBatchImageRouteUnavailable
+	}
 	reason := strings.TrimSpace(infraerrors.Reason(err))
 	switch reason {
 	case "VERTEX_MANAGED_GCS_BUCKET_MISSING":

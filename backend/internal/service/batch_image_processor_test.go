@@ -232,7 +232,7 @@ func TestBatchImageProviderProcessor_StatusFlow(t *testing.T) {
 	accountID := int64(10)
 	providerJob := "providers/job"
 	newJob := func(status string) *BatchImageJob {
-		return &BatchImageJob{BatchID: "imgbatch_flow", Status: status, Provider: "fake", AccountID: &accountID, ProviderJobName: &providerJob}
+		return &BatchImageJob{BatchID: "imgbatch_flow", Status: status, Provider: "fake", AccountID: &accountID, ProviderJobName: &providerJob, RouteFingerprint: "batch-image-test-route"}
 	}
 
 	t.Run("running status updates and requeues", func(t *testing.T) {
@@ -327,7 +327,7 @@ func newTestBatchImageProcessor(repo *fakeBatchImageRepository, provider *fakePr
 	return &BatchImageProviderProcessor{
 		Repo:             repo,
 		ProviderRegistry: NewBatchImageProviderRegistry(provider),
-		AccountResolver:  &fakeBatchImageAccountResolver{account: &Account{}},
+		AccountResolver:  &fakeBatchImageAccountResolver{account: &Account{ID: 10}},
 		Indexer:          &BatchImageResultIndexer{Repo: repo},
 	}
 }
@@ -353,7 +353,8 @@ type fakeProcessorProvider struct {
 	openResultCalled bool
 }
 
-func (p *fakeProcessorProvider) Name() string { return "fake" }
+func (p *fakeProcessorProvider) Name() string                   { return "fake" }
+func (*fakeProcessorProvider) RouteFingerprint(*Account) string { return "batch-image-test-route" }
 func (p *fakeProcessorProvider) SupportsAccount(*Account) bool {
 	return true
 }
@@ -405,6 +406,7 @@ func (r *fakeBatchImageRepository) CreateBatchImageJob(_ context.Context, params
 		UserID:                  params.UserID,
 		APIKeyID:                params.APIKeyID,
 		AccountID:               params.AccountID,
+		RouteFingerprint:        params.RouteFingerprint,
 		Status:                  params.Status,
 		Provider:                params.Provider,
 		Model:                   params.Model,

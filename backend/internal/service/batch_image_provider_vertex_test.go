@@ -3,12 +3,19 @@
 package service
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +23,150 @@ import (
 	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBatchImageVertexDeferredReadKeepsRouteAndHold(t *testing.T) {
+	ctx := context.Background()
+	// An incompressible image larger than both ZIP buffers exercises a
+	// response that really started before a later object is refused.
+	imageData := make([]byte, 128*1024)
+	_, randomErr := rand.Read(imageData)
+	require.NoError(t, randomErr)
+	imagePayload := base64.StdEncoding.EncodeToString(imageData)
+	original := vertexServiceAccount()
+	original.ID = 202
+	accounts := &batchImageRouteAccounts{}
+	accounts.current.Store(original)
+	var reads atomic.Int32
+	var rotate atomic.Bool
+	var rejectAfterList atomic.Bool
+	rotate.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("alt") != "media" {
+			if rejectAfterList.Swap(false) {
+				accounts.unavailable.Store(true)
+			}
+			prefix := r.URL.Query().Get("prefix")
+			if err := json.NewEncoder(w).Encode(map[string]any{"items": []map[string]string{{"name": prefix + "first.jsonl"}, {"name": prefix + "second.jsonl"}}}); err != nil {
+				t.Errorf("write GCS fixture page: %v", err)
+			}
+			return
+		}
+		reads.Add(1)
+		id := "cover_001"
+		if strings.HasSuffix(r.URL.Path, "second.jsonl") {
+			id = "cover_002"
+		}
+		if rotate.Swap(false) {
+			replacement := vertexServiceAccount()
+			replacement.ID = original.ID
+			principal := testassert.Type[map[string]any](t, replacement.Credentials["service_account_json"])
+			principal["client_email"] = "replacement@proj.iam.gserviceaccount.com"
+			accounts.current.Store(replacement)
+		}
+		_, _ = fmt.Fprintf(w, `{"key":%q,"response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":%q}}]}}]}}`+"\n", id, imagePayload)
+	}))
+	defer server.Close()
+	provider := newTestVertexProvider(NewVertexBatchHTTPClient(server.URL, server.Client()), NewVertexGCSObjectStore(server.URL, server.Client()))
+	repo := newFakeBatchImageRepository()
+	holdAmount := 0.5
+	job := &BatchImageJob{BatchID: "imgbatch_vertex_route", Provider: provider.Name(), Model: "gemini-2.5-flash-image", AccountID: &original.ID,
+		Status: BatchImageJobStatusIndexing, ProviderJobName: batchImageStringPtr("projects/proj/locations/global/batchPredictionJobs/created"),
+		ProviderOutputRef: batchImageStringPtr("gs://managed-bucket/batch-image/test/imgbatch_vertex_route/output/"),
+		RouteFingerprint:  provider.RouteFingerprint(original), ItemCount: 2, HoldAmount: &holdAmount}
+	repo.jobs[job.BatchID] = job
+	repo.items[job.BatchID] = []CreateBatchImageItemParams{{JobID: job.BatchID, CustomID: "cover_001"}, {JobID: job.BatchID, CustomID: "cover_002"}}
+	billing := &fakeBatchImageBillingRepo{}
+	processor := &BatchImageProviderProcessor{Repo: repo, ProviderRegistry: NewBatchImageProviderRegistry(provider),
+		AccountResolver: &BatchImageAccountRepositoryResolver{Repo: accounts}, BillingRepo: billing}
+	_, err := processor.Process(ctx, job.BatchID)
+	require.ErrorIs(t, err, ErrBatchImageRouteUnavailable)
+	require.EqualValues(t, 1, reads.Load(), "the replacement principal must not open the next GCS object")
+	require.Equal(t, BatchImageJobStatusIndexing, job.Status, "local route rejection is not a parse failure")
+	require.Equal(t, 0, repo.replaceCalls)
+	require.Empty(t, billing.releases)
+	require.Equal(t, 0.5, *job.HoldAmount)
+	accounts.current.Store(original)
+	_, err = processor.Process(ctx, job.BatchID)
+	require.NoError(t, err)
+	require.Equal(t, BatchImageJobStatusSettling, job.Status)
+	require.Equal(t, 2, repo.counts[job.BatchID].SuccessCount)
+	require.Len(t, repo.items[job.BatchID], 2)
+	require.Empty(t, billing.releases)
+
+	// GCS results open lazily. A refusal before the first object must leave
+	// the response untouched so the HTTP handler can still return JSON/503.
+	job.Status = BatchImageJobStatusCompleted
+	job.UserID = 11
+	apiKeyID := int64(22)
+	job.APIKeyID = &apiKeyID
+	download := &BatchImageDownloadService{Repo: repo, ProviderRegistry: NewBatchImageProviderRegistry(provider),
+		AccountResolver: &BatchImageAccountRepositoryResolver{Repo: accounts}}
+	rejectAfterList.Store(true)
+	recorder := httptest.NewRecorder()
+	_, err = download.StreamZip(ctx, testBatchImageOwner(), job.BatchID, BatchImageZipOptions{}, recorder)
+	require.ErrorIs(t, err, ErrBatchImageRouteUnavailable)
+	require.Zero(t, recorder.Body.Len(), "closing an empty ZIP must not commit a false HTTP success")
+	require.Nil(t, job.DownloadedAt)
+	accounts.unavailable.Store(false)
+	recorder = httptest.NewRecorder()
+	result, err := download.StreamZip(ctx, testBatchImageOwner(), job.BatchID, BatchImageZipOptions{}, recorder)
+	require.NoError(t, err)
+	require.Equal(t, 2, result.FileCount)
+	require.Positive(t, recorder.Body.Len())
+	archive, err := zip.NewReader(bytes.NewReader(recorder.Body.Bytes()), int64(recorder.Body.Len()))
+	require.NoError(t, err)
+	require.Len(t, archive.File, 4, "two images, manifest and errors")
+	imageReader, err := archive.File[0].Open()
+	require.NoError(t, err)
+	imageBytes, err := io.ReadAll(imageReader)
+	require.NoError(t, err)
+	require.NoError(t, imageReader.Close())
+	require.Equal(t, imageData, imageBytes)
+
+	rotate.Store(true)
+	recorder = httptest.NewRecorder()
+	_, err = download.StreamZip(ctx, testBatchImageOwner(), job.BatchID, BatchImageZipOptions{}, recorder)
+	require.ErrorIs(t, err, ErrBatchImageRouteUnavailable)
+	require.Positive(t, recorder.Body.Len(), "the first entry was already streamed")
+	_, archiveErr := zip.NewReader(bytes.NewReader(recorder.Body.Bytes()), int64(recorder.Body.Len()))
+	require.Error(t, archiveErr, "a stopped stream must not finish as a valid partial archive")
+	require.Nil(t, job.DownloadedAt)
+}
+
+func TestVertexProvider_CreationRouteIdentity(t *testing.T) {
+	original := vertexServiceAccount()
+	provider := newTestVertexProvider(&fakeVertexBatchClient{}, &fakeVertexObjectStore{})
+	fingerprint := provider.RouteFingerprint(original)
+	require.Len(t, fingerprint, 64)
+	replacement := vertexServiceAccount()
+	credentials := testassert.Type[map[string]any](t, replacement.Credentials["service_account_json"])
+	credentials["private_key"] = "replacement-private-key-for-same-principal"
+	require.Equal(t, fingerprint, provider.RouteFingerprint(replacement), "same-principal key renewal preserves the resource domain")
+	credentials["client_email"] = "other@proj.iam.gserviceaccount.com"
+	require.NotEqual(t, fingerprint, provider.RouteFingerprint(replacement))
+	for _, change := range []string{"project", "location", "bucket", "prefix", "environment", "batch_endpoint", "storage_endpoint"} {
+		t.Run(change, func(t *testing.T) {
+			changed := *provider
+			switch change {
+			case "project":
+				changed.opts.ProjectID = "other-project"
+			case "location":
+				changed.opts.Location = "us-central1"
+			case "bucket":
+				changed.opts.ManagedGCSBucket = "other-bucket"
+			case "prefix":
+				changed.opts.ManagedGCSPrefix = "other/{batch_id}"
+			case "environment":
+				changed.opts.Environment = "other-environment"
+			case "batch_endpoint":
+				changed.client = NewVertexBatchHTTPClient("https://other.example", nil)
+			case "storage_endpoint":
+				changed.objectStore = NewVertexGCSObjectStore("https://other.example", nil)
+			}
+			require.NotEqual(t, fingerprint, changed.RouteFingerprint(original))
+		})
+	}
+}
 
 func TestBatchImageProviderRegistry_ReturnsVertex(t *testing.T) {
 	registry := NewDefaultBatchImageProviderRegistry()
@@ -319,6 +470,8 @@ func vertexJobWithName(name string) *BatchImageJob {
 	return &BatchImageJob{ProviderJobName: &name}
 }
 
+func (*fakeVertexBatchClient) RouteIdentity() string { return "fixture-vertex" }
+
 type fakeVertexBatchClient struct {
 	created       *VertexBatchPredictionJob
 	got           *VertexBatchPredictionJob
@@ -361,6 +514,8 @@ func (f *fakeVertexBatchClient) createdPayloadForAssert(t *testing.T) []byte {
 	require.NoError(t, err)
 	return b
 }
+
+func (*fakeVertexObjectStore) RouteIdentity() string { return "fixture-gcs" }
 
 type fakeVertexObjectStore struct {
 	uploadURI       string

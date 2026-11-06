@@ -140,14 +140,24 @@ func (s *BatchImageDownloadService) OpenItemContent(ctx context.Context, owner B
 	if err != nil {
 		return nil, err
 	}
+	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount)
+	if err != nil {
+		return nil, err
+	}
 	r, _, err := provider.OpenResult(ctx, job, account)
 	if err != nil {
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			return nil, ErrBatchImageRouteUnavailable
+		}
 		return nil, ErrBatchImageResultMissing.WithCause(err)
 	}
 	defer func() { _ = r.Close() }()
 
 	line, err := findBatchImageLineImages(r, item.CustomID)
 	if err != nil {
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			return nil, ErrBatchImageRouteUnavailable
+		}
 		return nil, err
 	}
 	if imageIndex >= len(line.Images) {
@@ -215,8 +225,15 @@ func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchIm
 	if err != nil {
 		return nil, err
 	}
+	ctx, err = prepareBatchImageProviderRequest(ctx, provider, job, account, s.AccountResolver.ResolveBatchImageAccount)
+	if err != nil {
+		return nil, err
+	}
 	r, _, err := provider.OpenResult(ctx, job, account)
 	if err != nil {
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			return nil, ErrBatchImageRouteUnavailable
+		}
 		return nil, ErrBatchImageResultMissing.WithCause(err)
 	}
 	defer func() { _ = r.Close() }()
@@ -232,6 +249,12 @@ func (s *BatchImageDownloadService) StreamZip(ctx context.Context, owner BatchIm
 	zipWriter := zip.NewWriter(limitedWriter)
 	result, manifestFiles, zipErrors, err := s.writeZipImages(streamCtx, zipWriter, r, successItems)
 	if err != nil {
+		if errors.Is(err, ErrBatchImageRouteUnavailable) {
+			// Close would emit a valid ZIP footer, even with no entries. Keep
+			// an untouched response available for JSON/503, or abort a started
+			// archive rather than presenting partial results as a complete ZIP.
+			return result, ErrBatchImageRouteUnavailable
+		}
 		_ = zipWriter.Close()
 		if errors.Is(err, errBatchImageDownloadSizeExceeded) {
 			return result, ErrBatchImageDownloadTooLarge.WithCause(err)
@@ -376,10 +399,10 @@ func (s *BatchImageDownloadService) providerAndAccount(ctx context.Context, job 
 	}
 	account, err := s.AccountResolver.ResolveBatchImageAccount(ctx, *job.AccountID)
 	if err != nil {
-		return nil, nil, ErrBatchImageDownloadFailed
+		return nil, nil, ErrBatchImageRouteUnavailable
 	}
 	if !provider.SupportsAccount(account) {
-		return nil, nil, ErrBatchImageProviderUnsupportedAccount
+		return nil, nil, ErrBatchImageRouteUnavailable
 	}
 	return provider, account, nil
 }

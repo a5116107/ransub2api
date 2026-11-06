@@ -260,6 +260,8 @@ func (h *BatchImageHandler) Download(c *gin.Context) {
 	}, c.Writer)
 	if err != nil {
 		if result == nil || !c.Writer.Written() {
+			c.Header("Content-Disposition", "")
+			c.Header("Content-Type", "application/json; charset=utf-8")
 			batchImageError(c, err)
 		}
 		return

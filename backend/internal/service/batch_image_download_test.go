@@ -194,6 +194,7 @@ func newTestBatchImageDownloadService() (*BatchImageDownloadService, *fakeBatchI
 	apiKeyID := int64(22)
 	accountID := int64(101)
 	repo.jobs["imgbatch_download"] = &BatchImageJob{
+		RouteFingerprint:  "batch-image-test-route",
 		BatchID:           "imgbatch_download",
 		UserID:            11,
 		APIKeyID:          &apiKeyID,

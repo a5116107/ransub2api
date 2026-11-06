@@ -35,8 +35,9 @@ type snapshotSubmitProvider struct {
 	calls int
 }
 
-func (*snapshotSubmitProvider) Name() string                          { return service.BatchImageProviderGeminiAPI }
-func (*snapshotSubmitProvider) SupportsAccount(*service.Account) bool { return true }
+func (*snapshotSubmitProvider) Name() string                             { return service.BatchImageProviderGeminiAPI }
+func (*snapshotSubmitProvider) SupportsAccount(*service.Account) bool    { return true }
+func (*snapshotSubmitProvider) RouteFingerprint(*service.Account) string { return "fixture-route" }
 func (p *snapshotSubmitProvider) Submit(context.Context, *service.BatchImageJob, *service.Account, service.BatchImageInput) (*service.BatchProviderJob, error) {
 	p.calls++
 	return &service.BatchProviderJob{ProviderJobName: "synthetic/provider-job"}, nil
