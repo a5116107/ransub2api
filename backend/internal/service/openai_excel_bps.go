@@ -228,8 +228,10 @@ func excelBPSCacheScope(c *gin.Context, account *Account, model, identity, accou
 		principal.TokenDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 	}
 	userID := int64(0)
-	if key := getAPIKeyFromContext(c); key != nil {
-		userID = key.UserID
+	if c != nil {
+		if key := getAPIKeyFromContext(c); key != nil {
+			userID = key.UserID
+		}
 	}
 	encoded, _ := json.Marshal(struct {
 		Version, Model, Identity, AccountID, ConnectionID string
@@ -387,6 +389,12 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return fail(400, "basispoints_request_invalid", err.Error())
 		}
 	}
+	// Capture client references before native-image preparation installs its
+	// internal preflight placeholder or image policy rewrites the body.
+	clientFileIDs, err := basispoints.ImageFileReferences(body)
+	if err != nil {
+		return fail(400, "basispoints_request_invalid", "Invalid image references")
+	}
 	token, err := s.getExcelBPSAccessToken(ctx, account)
 	if err != nil {
 		if isExcelBPSClientCancellation(c, err) {
@@ -450,14 +458,25 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	// plan contains valid placeholder IDs until all local protocol checks pass.
 	var replay *basispoints.ReplayCache
 	var catalog *basispoints.CatalogCache
+	fileCatalog := &excelBPSCatalog
+	var sharedReplay *basispoints.ReplayCache
+	var fileStore basispoints.StateStore
+	if s.cfg != nil && s.cfg.Gateway.ExcelBPSStateRedisEnabled {
+		store, ok := s.cache.(basispoints.StateStore)
+		if !ok {
+			fileCatalog = nil
+		} else {
+			fileStore = store
+			sharedReplay, fileCatalog = basispoints.NewPersistentCaches(ctx, store)
+		}
+	}
 	if identity != "" {
 		replay, catalog = &excelBPSReplay, &excelBPSCatalog
 		if s.cfg != nil && s.cfg.Gateway.ExcelBPSStateRedisEnabled && !transient {
-			store, ok := s.cache.(basispoints.StateStore)
-			if !ok {
+			if fileCatalog == nil {
 				return fail(503, "basispoints_state_unavailable", basispoints.ErrStateUnavailable.Error())
 			}
-			replay, catalog = basispoints.NewPersistentCaches(ctx, store)
+			replay, catalog = sharedReplay, fileCatalog
 		}
 	}
 	var upstreamBody []byte
@@ -480,6 +499,19 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return fail(400, "basispoints_request_invalid", err.Error(), contentErr.Path)
 		}
 		return fail(400, "basispoints_request_invalid", err.Error())
+	}
+	groupID, enforceGroup := openAITurnAdmissionGroupFromContext(c)
+	fileGuard := &excelBPSFileOriginGuard{cache: fileCatalog, store: fileStore, origin: excelBPSFileOrigin(account, accountID, token), groupID: groupID, enforceGroup: enforceGroup}
+	if _, err := fileGuard.check(ctx, clientFileIDs); err != nil {
+		return fail(503, "admission_unavailable", "Excel BPS file origin is unavailable for this route")
+	}
+	if images != nil && images.HasImages() && fileCatalog == nil {
+		return fail(503, "admission_unavailable", "Excel BPS file origin is unavailable for this route")
+	}
+	// Plain text requests cannot acquire a native file reference later in this
+	// preparation path; avoid rereading their bodies at every physical send.
+	if len(clientFileIDs) > 0 || images != nil && images.HasImages() {
+		ctx = context.WithValue(ctx, excelBPSFileOriginKey{}, fileGuard)
 	}
 	ctx = withAvailabilityBPSSource(ctx, body, bridge)
 	requestAcquire := s.excelBPSAcquireFor(account)
@@ -508,7 +540,14 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		}
 		body, err = images.Upload(ctx, &s.excelBPSAttachments, attachmentScope, func(uploadCtx context.Context, img basispoints.InlineAttachment) (string, error) {
 			SetActualOpenAIUpstreamEndpoint(c, "/basispoints/api/attachments")
-			return s.uploadExcelBPSAttachment(uploadCtx, account, token, accountID, attachmentProxy, img)
+			id, uploadErr := s.uploadExcelBPSAttachment(uploadCtx, account, token, accountID, attachmentProxy, img)
+			if uploadErr != nil {
+				return "", uploadErr
+			}
+			if err := fileGuard.remember(uploadCtx, id); err != nil {
+				return "", err
+			}
+			return id, nil
 		})
 		if err != nil {
 			if isExcelBPSClientCancellation(c, err) {

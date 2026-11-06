@@ -3,15 +3,126 @@ package basispoints
 import (
 	"container/list"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 	"time"
 )
 
-// CatalogCache holds immutable, versioned client declarations, not responses.
-// Only callers with an account/key/trusted-session scope may opt into reuse.
+var ErrFileOriginMismatch = errors.New("basispoints file belongs to a different upstream route")
+
+// FileOrigin stores only digests. An empty principal means that an OAuth
+// identity could not be established and is not proof of a different owner.
+type FileOrigin struct {
+	Route     string `json:"route"`
+	Account   string `json:"account,omitempty"`
+	Principal string `json:"principal,omitempty"`
+}
+
+func fileOriginKey(id string) string {
+	digest := sha256.Sum256([]byte(id))
+	return "\x00file-origin:v1:" + hex.EncodeToString(digest[:])
+}
+
+func validFileOrigin(origin FileOrigin) bool {
+	if len(origin.Route) != 64 || (origin.Account != "" && len(origin.Account) != 64) || (origin.Principal != "" && len(origin.Principal) != 64) {
+		return false
+	}
+	_, routeErr := hex.DecodeString(origin.Route)
+	if routeErr != nil {
+		return false
+	}
+	for _, digest := range []string{origin.Account, origin.Principal} {
+		if digest != "" {
+			if _, err := hex.DecodeString(digest); err != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func sameFileOrigin(left, right FileOrigin) bool {
+	return left.Route == right.Route &&
+		(left.Account == "" || right.Account == "" || left.Account == right.Account) &&
+		(left.Principal == "" || right.Principal == "" || left.Principal == right.Principal)
+}
+
+// CheckFileOrigin preserves the existing unknown-reference behavior. Storage
+// failure is distinct from a missing record and never becomes an unknown pass.
+func (c *CatalogCache) CheckFileOrigin(id string, origin FileOrigin) (bool, error) {
+	if c == nil || !ValidAttachmentID(id) || !validFileOrigin(origin) {
+		return false, ErrStateUnavailable
+	}
+	raw, _ := c.snapshot(fileOriginKey(id))
+	if err := c.Err(); err != nil {
+		return false, err
+	}
+	if len(raw) == 0 {
+		return false, nil
+	}
+	var stored FileOrigin
+	if json.Unmarshal(raw, &stored) != nil || !validFileOrigin(stored) {
+		return false, ErrStateUnavailable
+	}
+	if !sameFileOrigin(stored, origin) {
+		return true, ErrFileOriginMismatch
+	}
+	return true, nil
+}
+
+// RememberFileOrigin claims only IDs returned by an actual successful upload.
+// CAS retains the first live observation under concurrent provider responses.
+func (c *CatalogCache) RememberFileOrigin(id string, origin FileOrigin) error {
+	if c == nil || !ValidAttachmentID(id) || !validFileOrigin(origin) {
+		return ErrStateUnavailable
+	}
+	key := fileOriginKey(id)
+	for range 8 {
+		raw, version := c.snapshot(key)
+		if err := c.Err(); err != nil {
+			return err
+		}
+		if len(raw) != 0 {
+			var previous FileOrigin
+			if json.Unmarshal(raw, &previous) != nil || !validFileOrigin(previous) {
+				return ErrStateUnavailable
+			}
+			if !sameFileOrigin(previous, origin) {
+				return ErrFileOriginMismatch
+			}
+			if (previous.Account != "" || origin.Account == "") && (previous.Principal != "" || origin.Principal == "") {
+				return nil
+			}
+			if previous.Account == "" {
+				previous.Account = origin.Account
+			}
+			if previous.Principal == "" {
+				previous.Principal = origin.Principal
+			}
+			origin = previous
+		}
+		encoded, err := json.Marshal(origin)
+		if err != nil {
+			return ErrStateUnavailable
+		}
+		if c.commit(key, version, encoded) {
+			return nil
+		}
+		if err := c.Err(); err != nil {
+			return err
+		}
+	}
+	return ErrStateUnavailable
+}
+
+// CatalogCache holds immutable, versioned client declarations and bounded
+// file-origin digests, not responses or raw file IDs. Catalog callers require
+// an account/key/trusted-session scope; file origins use their own hashed keys.
 // Explicit tools replace the catalog (including []); omitted tools inherit it.
 // Additional tools merge through Prepare's duplicate/schema validation.
 type CatalogCache struct {

@@ -8,6 +8,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestImageFileReferencesReadsOnlyImageParts(t *testing.T) {
+	body := []byte(`{"input":[` +
+		`{"role":"user","content":[{"type":"input_image","file_id":"file-one"},{"type":"input_text","text":"file-text"}]},` +
+		`{"type":"function_call","arguments":"{\"file_id\":\"file-argument\"}"},` +
+		`{"type":"function_call_output","output":[{"type":"input_image","file_id":"file-two"}]},` +
+		`{"type":"custom_tool_call_output","output":[{"type":"input_image","file_id":"file-three"}]}` +
+		`]}`)
+	ids, err := ImageFileReferences(body)
+	require.NoError(t, err)
+	require.Equal(t, []string{"file-one", "file-two", "file-three"}, ids)
+	_, err = ImageFileReferences([]byte(`{"input":`))
+	require.Error(t, err)
+}
+
 func TestMessageFileImagesOnlySendNativeFields(t *testing.T) {
 	for _, detail := range []any{nil, "auto", "low", "high", "original"} {
 		for _, kind := range []string{"message", "agent_message"} {

@@ -1,10 +1,43 @@
 package basispoints
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 )
+
+// ImageFileReferences reads only references in actual message and tool-result
+// image parts; tool arguments and arbitrary user text remain opaque.
+func ImageFileReferences(raw []byte) ([]string, error) {
+	var source object
+	if err := json.Unmarshal(raw, &source); err != nil || source == nil {
+		return nil, fmt.Errorf("invalid basispoints image request")
+	}
+	input, _ := source["input"].([]any)
+	var ids []string
+	for _, entry := range input {
+		item, _ := entry.(object)
+		field := "content"
+		switch text(item["type"]) {
+		case "", "message", "agent_message":
+		case "function_call_output", "custom_tool_call_output":
+			field = "output"
+		default:
+			continue
+		}
+		parts, _ := item[field].([]any)
+		for _, rawPart := range parts {
+			part, _ := rawPart.(object)
+			if text(part["type"]) == "input_image" {
+				if id := text(part["file_id"]); id != "" {
+					ids = append(ids, id)
+				}
+			}
+		}
+	}
+	return ids, nil
+}
 
 // Accept HTTPS URLs or validated native attachment references.
 func validateImage(part object) error {

@@ -906,3 +906,12 @@
 - 最终`go test -p 1 -tags=unit ./internal/service ./internal/handler -run 'TestAvailability|TestExcelBPS|TestBuildExcelBPS|TestQualityBPS|TestOpenAIConnection|TestControlledExperiment|TestPriorityLatency|TestAccountTiming|TestPelican' -count=2 -timeout=8m`退出0，service 26.619s、handler 1.736s。最终相关race两轮退出0，service 6.617s、basispoints 2.417s；unit标签三包vet退出0无诊断，完整原规则service lint输出`0 issues.`、退出0。首个强度夹具缺少文本增量导致失败，修正后复现low/high/max均错误使用medium，未把首个夹具失败当作生产证据；补充目标地址交叉校验时主动中止旧源码lint，不计通过。
 - 用户明确选择：来源未知的BPS文件ID和加密历史保持兼容透传，已知属于其他线路时拦截；实现与共享归属/在途变化验收仍属于D2，未知不等于已确认同源。原20项12 done、3 in_progress、5 pending不变，未执行CI、推送、部署或生产迁移。
 - 本地提交首次因H盘仅剩131072字节而失败，Git暂存保持。核对并仅清理本任务可重建的1个Go包缓存及8个含本轮测试标识、已被最终源码取代的旧缓存，共2749973984字节；清理时无Go编译进程，随后H盘剩余2708725760字节。另15个旧缓存清理前检测到其他Go进程，全部保留；此前策略拒绝的路径未触碰。H盘空间仍偏低，后续大型构建需先复核可用空间。
+
+## 2026-11-07：D2 Basispoints 原生文件来源
+
+- 原实现实际复现同一文件ID在代理切线后仍发送。原生图片上传成功后登记文件摘要及实际线路/工作区/可确认主体摘要，复用既有BPS目录缓存和Redis CAS、容量与两小时空闲TTL；首次有效归属不可被异域覆盖。主体不明确不猜异域，后续真实重新上传可补足证据；历史未知、过期及容量淘汰遵照用户决定兼容透传，不等于确认同源。
+- 客户端引用在附件上传前检查，实际正文、压缩及修复尝试在代理等待后复核具体请求、目标和权威账号；内部file-preflight占位符不被误当作客户端文件。相同文件引用去重，来源查询整体限时2秒；存储故障不是未知，返回本地503，不记供应商/代理故障。上传期间线路变更拒绝后续生成，恢复原线路可继续；不发送或记录文件ID、凭据明文到来源表。
+- 最终四包相关回归两轮`go test -p 1 -tags=unit ./internal/service ./internal/service/basispoints ./internal/repository ./internal/handler -run 'TestExcelBPS|TestBPSFileOrigin|TestBPSSharedScope|TestImageFileReferences|TestAvailability|TestOpenAIHTTPFinalSendRechecksPurchasedRoute|TestOpenAIConnection|TestControlledExperiment|TestPriorityLatency' -count=2 -timeout=8m`退出0，分别34.197s、1.277s、4.540s、1.651s。随后仅扩展repository测试，真实Redis实际上传→共享归属→另一网关异域拒绝/未知透传/恢复及16并发首次归属通过；模拟Redis故障返回503并恢复。
+- 最终`go test -race -p 1 -tags=unit ./internal/service ./internal/service/basispoints ./internal/repository -run 'TestExcelBPSFileOrigin|TestBPSFileOriginSharedStore|TestImageFileReferencesReadsOnlyImageParts|TestExcelBPSNativeAttachment|TestExcelBPSProxyFailoverOnlyBeforeRequestSent|TestAvailabilityBPS' -count=2 -timeout=8m`退出0，分别6.719s、3.250s、2.869s；四包unit vet无诊断，原完整service/repository规则lint输出`0 issues.`。默认标签四包只编译均通过，非完整测试。
+- Windows完整basispoints包在既有`TestImageRelayStoresPrivateFilesAndRemovesExpiredImages`断言文件mode 0600时得到0666而失败，未更改断言；同一工作区交叉编译Linux程序并在WSL完整执行该包输出`PASS`，测试程序已按精确路径清除。Windows权限行为仍未修复，不将Linux结果冒充Windows通过。H盘另清除15个带本轮测试标识的可重建旧编译缓存5182246040字节；先前被策略阻止的测试临时目录清理命令整条未执行，不换工具绕过。
+- 本项不覆盖客户端加密推理/压缩历史，仍按用户决定的未知兼容、已知异域拦截继续D2；不证明供应商真实缓存命中、动态出口同域或混合版本安全。原20项12 done、3 in_progress、5 pending不变；仅本地实施，不CI、推送、部署或生产迁移。
