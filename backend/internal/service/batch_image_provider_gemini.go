@@ -87,7 +87,13 @@ func (p *GeminiAPIBatchImageProvider) SupportsAccount(account *Account) bool {
 		batchImageProviderAPIKey(account) != ""
 }
 
-func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImageJob, account *Account, input BatchImageInput) (*BatchProviderJob, error) {
+func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImageJob, account *Account, input BatchImageInput) (result *BatchProviderJob, err error) {
+	createStarted := false
+	defer func() {
+		if err != nil && !createStarted {
+			err = errors.Join(err, errBatchImageSubmitRejected)
+		}
+	}()
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeAPIKey {
 		return nil, ErrBatchImageProviderUnsupportedAccount
 	}
@@ -120,9 +126,10 @@ func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImag
 		return nil, geminiProviderError("GEMINI_INVALID_RESPONSE", "Gemini upload response is missing file name", nil)
 	}
 
+	createStarted = true
 	batch, err := p.client.CreateBatch(ctx, apiKey, input.Model, uploaded.Name, displayName)
 	if err != nil {
-		return nil, mapGeminiClientError(err)
+		return nil, batchImageCreateError(err, mapGeminiClientError(err))
 	}
 	if batch == nil || strings.TrimSpace(batch.Name) == "" {
 		return nil, geminiProviderError("GEMINI_INVALID_RESPONSE", "Gemini batch response is missing job name", nil)

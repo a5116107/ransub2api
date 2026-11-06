@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,6 +144,225 @@ func TestBatchImagePublicService_SharedKeyBatchAdmission(t *testing.T) {
 		require.Equal(t, BatchImageProviderGeminiAPI, got.Provider)
 		require.Len(t, gemini.submits, 1)
 	})
+}
+
+func TestBatchImagePublicService_UnconfirmedSubmission(t *testing.T) {
+	svc, repo, queue, provider, _ := newTestBatchImagePublicService(true)
+	provider.submitErr = context.DeadlineExceeded
+	billing := testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo)
+	req := validBatchImageSubmitRequest()
+	_, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "uncertain-create")
+	require.ErrorIs(t, err, ErrBatchImageSubmitUnconfirmed)
+	require.Empty(t, billing.releases, "a timed-out create may still be running remotely")
+	require.Len(t, repo.jobs, 1)
+	for _, job := range repo.jobs {
+		require.Equal(t, BatchImageJobStatusUploading, job.Status)
+		require.Equal(t, job.BatchID, infraerrors.FromError(err).Metadata["batch_id"])
+		require.Nil(t, job.UserDeletedAt)
+		require.Equal(t, "BATCH_IMAGE_SUBMIT_UNCONFIRMED", batchImageDerefString(job.LastErrorCode))
+		require.Contains(t, repo.events[job.BatchID], "submit_unconfirmed")
+		repeated, repeatErr := svc.Submit(context.Background(), testBatchImageOwner(), req, "uncertain-create")
+		require.NoError(t, repeatErr)
+		require.Equal(t, job.BatchID, repeated.ID)
+		_, cancelErr := svc.Cancel(context.Background(), testBatchImageOwner(), job.BatchID)
+		require.ErrorIs(t, cancelErr, ErrBatchImageCancelUnconfirmed)
+		require.Equal(t, BatchImageJobStatusUploading, job.Status)
+	}
+	require.Len(t, provider.submits, 1)
+	require.Empty(t, queue.enqueued)
+	require.Empty(t, billing.releases)
+}
+
+func TestBatchImagePublicService_OrphanCleanupRequiresTerminalEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		state             BatchProviderInternalState
+		done              bool
+		cancelErr, getErr error
+		wantCleanup       bool
+	}{
+		{name: "queued", state: BatchProviderStateQueued},
+		{name: "running", state: BatchProviderStateRunning},
+		{name: "inconsistent_done", state: BatchProviderStateRunning, done: true},
+		{name: "unconfirmed_cancel", state: BatchProviderStateCancelled},
+		{name: "cancel_failed", cancelErr: context.DeadlineExceeded},
+		{name: "poll_failed", getErr: context.DeadlineExceeded},
+		{name: "cancelled", state: BatchProviderStateCancelled, done: true, wantCleanup: true},
+		{name: "completed", state: BatchProviderStateSucceeded, done: true, wantCleanup: true},
+		{name: "failed", state: BatchProviderStateFailed, done: true, wantCleanup: true},
+		{name: "expired", state: BatchProviderStateExpired, done: true, wantCleanup: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, repo, _, provider, _ := newTestBatchImagePublicService(true)
+			provider.status = &BatchProviderStatus{InternalState: tc.state, Done: tc.done}
+			provider.cancelErr, provider.getErr = tc.cancelErr, tc.getErr
+			job := &BatchImageJob{BatchID: "imgbatch_uncertain_orphan", Status: BatchImageJobStatusUploading}
+			repo.jobs[job.BatchID] = job
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			svc.abortOrphanProviderJob(ctx, provider, job, &Account{}, &BatchProviderJob{
+				ProviderJobName: "batches/fixture", ProviderInputRef: "files/fixture-input",
+			})
+			require.Equal(t, 1, provider.cancelCount)
+			if tc.wantCleanup {
+				require.Equal(t, []CleanupTarget{CleanupTargetInput}, provider.cleanupTargets)
+			} else {
+				require.Empty(t, provider.cleanupTargets)
+			}
+			require.Equal(t, BatchImageJobStatusUploading, job.Status)
+			require.Contains(t, repo.events[job.BatchID], "provider_job_cancel_requested_after_submit")
+		})
+	}
+}
+
+func TestBatchImagePublicService_HTTPCreateOutcomes(t *testing.T) {
+	for _, providerName := range []string{BatchImageProviderGeminiAPI, BatchImageProviderVertex} {
+		for _, tc := range []struct {
+			name           string
+			status         int
+			body           string
+			rejected       bool
+			cancelCreate   bool
+			dropConnection bool
+		}{
+			{name: "invalid", status: 400, rejected: true},
+			{name: "auth", status: 401, rejected: true},
+			{name: "permission", status: 403, rejected: true},
+			{name: "not_found", status: 404, rejected: true},
+			{name: "limited", status: 429, rejected: true},
+			{name: "timeout", status: 408},
+			{name: "conflict", status: 409},
+			{name: "server_error", status: 500},
+			{name: "gateway_error", status: 502},
+			{name: "malformed_success", status: 200, body: `{"name":`},
+			{name: "missing_job", status: 200, body: `{}`},
+			{name: "cancel_after_create_received", cancelCreate: true},
+			{name: "connection_lost_after_create_received", dropConnection: true},
+		} {
+			t.Run(providerName+"/"+tc.name, func(t *testing.T) {
+				var creates atomic.Int32
+				createCtx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.HasPrefix(r.URL.Path, "/upload/") {
+						_, _ = io.WriteString(w, `{"file":{"name":"files/input"}}`)
+						return
+					}
+					creates.Add(1)
+					if tc.cancelCreate {
+						cancel()
+						return
+					}
+					if tc.dropConnection {
+						conn, _, err := http.NewResponseController(w).Hijack()
+						if err != nil {
+							t.Errorf("hijack fixture: %v", err)
+							return
+						}
+						_ = conn.Close()
+						return
+					}
+					w.WriteHeader(tc.status)
+					body := tc.body
+					if body == "" {
+						body = `{"error":{"message":"private upstream detail"}}`
+					}
+					_, _ = io.WriteString(w, body)
+				}))
+				defer server.Close()
+				svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+				var provider BatchImageProvider = NewGeminiAPIBatchImageProvider(NewGeminiBatchHTTPClient(server.URL, server.Client()))
+				if providerName == BatchImageProviderVertex {
+					provider = newTestVertexProvider(NewVertexBatchHTTPClient(server.URL, server.Client()), &fakeVertexObjectStore{})
+					account := testBatchImageAccount(202, AccountTypeServiceAccount)
+					account.Credentials = vertexServiceAccount().Credentials
+					svc.AccountRepo = &publicBatchImageAccountRepo{accounts: []Account{account}}
+				}
+				svc.ProviderRegistry = NewBatchImageProviderRegistry(provider)
+				req := validBatchImageSubmitRequest()
+				req.Provider = providerName
+				billing := testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo)
+				_, err := svc.Submit(createCtx, testBatchImageOwner(), req, "http-outcome")
+				require.Error(t, err)
+				require.NotContains(t, err.Error(), "private upstream detail")
+				require.EqualValues(t, 1, creates.Load())
+				if tc.rejected {
+					require.Len(t, billing.releases, 1)
+				} else {
+					require.ErrorIs(t, err, ErrBatchImageSubmitUnconfirmed)
+					require.Empty(t, billing.releases)
+					_, err = svc.Submit(context.Background(), testBatchImageOwner(), req, "http-outcome")
+					require.NoError(t, err)
+					require.EqualValues(t, 1, creates.Load())
+				}
+				for _, job := range repo.jobs {
+					if tc.rejected {
+						require.Equal(t, BatchImageJobStatusFailed, job.Status)
+					} else {
+						require.Equal(t, BatchImageJobStatusUploading, job.Status)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestBatchImagePublicService_IdempotencyIgnoresGeneratedTaskTime(t *testing.T) {
+	for _, legacyHash := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy_%t", legacyHash), func(t *testing.T) {
+			svc, repo, _, provider, _ := newTestBatchImagePublicService(true)
+			req := validBatchImageSubmitRequest()
+			first, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "clock-independent")
+			require.NoError(t, err)
+			job := repo.jobs[first.ID]
+			normalized, err := svc.validateSubmitRequest(req)
+			require.NoError(t, err)
+			normalized.TaskName = ""
+			require.Equal(t, HashBatchImageSubmitRequest(normalized), batchImageDerefString(job.RequestHash))
+			job.TaskName = "2020-01-01 00:00:00"
+			if legacyHash {
+				normalized.TaskName = job.TaskName
+				hash := HashBatchImageSubmitRequest(normalized)
+				job.RequestHash = &hash
+			}
+			second, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "clock-independent")
+			require.NoError(t, err)
+			require.Equal(t, first.ID, second.ID)
+			require.Len(t, provider.submits, 1)
+			req.TaskName = "different explicit name"
+			_, err = svc.Submit(context.Background(), testBatchImageOwner(), req, "clock-independent")
+			require.ErrorIs(t, err, ErrBatchImageIdempotencyConflict)
+		})
+	}
+}
+
+func TestBatchImagePublicService_UploadFailureDoesNotStartGeneration(t *testing.T) {
+	for _, providerName := range []string{BatchImageProviderGeminiAPI, BatchImageProviderVertex} {
+		t.Run(providerName, func(t *testing.T) {
+			svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+			gemini := &fakeGeminiBatchClient{uploadErr: context.DeadlineExceeded}
+			vertex := &fakeVertexBatchClient{}
+			var provider BatchImageProvider = NewGeminiAPIBatchImageProvider(gemini)
+			if providerName == BatchImageProviderVertex {
+				provider = newTestVertexProvider(vertex, &fakeVertexObjectStore{uploadErr: context.DeadlineExceeded})
+				account := testBatchImageAccount(202, AccountTypeServiceAccount)
+				account.Credentials = vertexServiceAccount().Credentials
+				svc.AccountRepo = &publicBatchImageAccountRepo{accounts: []Account{account}}
+			}
+			svc.ProviderRegistry = NewBatchImageProviderRegistry(provider)
+			req := validBatchImageSubmitRequest()
+			req.Provider = providerName
+			_, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "upload-failure")
+			require.ErrorIs(t, err, ErrBatchImageProviderSubmitFailed)
+			billing := testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo)
+			require.Len(t, billing.releases, 1)
+			require.NotContains(t, gemini.calls, "create")
+			require.Empty(t, vertex.createdReq.ProjectID)
+			for _, job := range repo.jobs {
+				require.Equal(t, BatchImageJobStatusFailed, job.Status)
+			}
+		})
+	}
 }
 
 func TestBatchImagePublicService_Submit(t *testing.T) {
@@ -465,7 +687,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 
 	t.Run("provider failure marks failed and does not enqueue", func(t *testing.T) {
 		svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
-		gemini.submitErr = errors.New("projects/secret-provider-job failed")
+		gemini.submitErr = errors.Join(errors.New("projects/secret-provider-job failed"), errBatchImageSubmitRejected)
 		billing := testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo)
 
 		_, err := svc.Submit(ctx, testBatchImageOwner(), validBatchImageSubmitRequest(), "")
@@ -485,7 +707,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 
 	t.Run("provider failure with release failure enqueues billing retry", func(t *testing.T) {
 		svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
-		gemini.submitErr = errors.New("projects/secret-provider-job failed")
+		gemini.submitErr = errors.Join(errors.New("projects/secret-provider-job failed"), errBatchImageSubmitRejected)
 		billing := testassert.Type[*fakeBatchImageBillingRepo](t, svc.BillingRepo)
 		billing.releaseErr = errors.New("billing database timeout")
 
@@ -1026,6 +1248,8 @@ type publicBatchImageProvider struct {
 	submitErr      error
 	cancelCount    int
 	cancelErr      error
+	status         *BatchProviderStatus
+	getErr         error
 	result         string
 	cleanupTargets []CleanupTarget
 	cleanupErr     error
@@ -1050,6 +1274,9 @@ func (p *publicBatchImageProvider) Submit(_ context.Context, _ *BatchImageJob, _
 }
 
 func (p *publicBatchImageProvider) Get(context.Context, *BatchImageJob, *Account) (*BatchProviderStatus, error) {
+	if p.getErr != nil || p.status != nil {
+		return p.status, p.getErr
+	}
 	return &BatchProviderStatus{InternalState: BatchProviderStateQueued}, nil
 }
 

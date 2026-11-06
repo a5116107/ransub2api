@@ -50,9 +50,9 @@ func (s *BatchImageBillingRecoveryService) ReleaseStaleUnsubmittedOnce(ctx conte
 			return released, err
 		}
 		msg := "batch image submission did not reach provider before recovery cutoff"
-		// 原子转 failed 并复核 stale 条件：List 与转态之间 job 可能已被慢提交
-		// 心跳续期或提交成功（provider_job_name 已写入），此时绝不能退款，
-		// 否则上游任务照常产生成本而用户已拿回冻结余额。
+		// Only created proves dispatch has not started. uploading without a job
+		// name can mean a create response was lost; age is not rejection proof.
+		// The conditional update also checks a concurrent submit transition.
 		applied, err := s.Repo.FailStaleUnsubmittedBatchImageJob(ctx, job.BatchID, cutoff, "SUBMIT_STALE_BEFORE_PROVIDER", msg)
 		if err != nil {
 			// applied=true 时 UPDATE 已提交（仅审计事件写入失败）：必须继续释放，

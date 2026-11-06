@@ -550,7 +550,7 @@ func (r *fakeBatchImageRepository) FailStaleUnsubmittedBatchImageJob(_ context.C
 	if !ok {
 		return false, ErrBatchImageJobNotFound
 	}
-	if job.Status != BatchImageJobStatusCreated && job.Status != BatchImageJobStatusUploading {
+	if job.Status != BatchImageJobStatusCreated {
 		return false, nil
 	}
 	if batchImageDerefString(job.ProviderJobName) != "" || job.UpdatedAt.After(cutoff) {
@@ -574,6 +574,16 @@ func (r *fakeBatchImageRepository) UpdateBatchImageJobProviderOutputRef(_ contex
 	return nil
 }
 
+func (r *fakeBatchImageRepository) CancelUnsubmittedBatchImageJob(_ context.Context, batchID string) (bool, error) {
+	job, ok := r.jobs[batchID]
+	if !ok || job.Status != BatchImageJobStatusCreated || job.ProviderJobName != nil {
+		return false, nil
+	}
+	job.Status = BatchImageJobStatusCancelled
+	r.events[batchID] = append(r.events[batchID], "job_cancelled")
+	return true, nil
+}
+
 func (r *fakeBatchImageRepository) UpdateBatchImageJobProviderSubmit(_ context.Context, params UpdateBatchImageJobProviderSubmitParams) error {
 	job, ok := r.jobs[params.BatchID]
 	if !ok {
@@ -595,7 +605,10 @@ func (r *fakeBatchImageRepository) UpdateBatchImageJobProviderSubmit(_ context.C
 	return nil
 }
 
-func (r *fakeBatchImageRepository) RecordBatchImageJobSubmitFailure(_ context.Context, batchID, code, message string, markFailed bool) error {
+func (r *fakeBatchImageRepository) RecordBatchImageJobSubmitFailure(ctx context.Context, batchID, code, message string, markFailed bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	job, ok := r.jobs[batchID]
 	if !ok {
 		return ErrBatchImageJobNotFound
@@ -608,6 +621,9 @@ func (r *fakeBatchImageRepository) RecordBatchImageJobSubmitFailure(_ context.Co
 	eventType := "submit_failed"
 	if !markFailed {
 		eventType = "queue_failed"
+		if code == "BATCH_IMAGE_SUBMIT_UNCONFIRMED" {
+			eventType = "submit_unconfirmed"
+		}
 	}
 	r.events[batchID] = append(r.events[batchID], eventType)
 	return nil
@@ -825,7 +841,7 @@ func (r *fakeBatchImageRepository) ListStaleUnsubmittedBatchImageJobs(_ context.
 		if len(jobs) >= limit {
 			break
 		}
-		if job.Status != BatchImageJobStatusCreated && job.Status != BatchImageJobStatusUploading {
+		if job.Status != BatchImageJobStatusCreated {
 			continue
 		}
 		if batchImageDerefString(job.ProviderJobName) != "" {

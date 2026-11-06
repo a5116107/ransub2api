@@ -174,7 +174,13 @@ func (p *VertexBatchImageProvider) SupportsAccount(account *Account) bool {
 	return err == nil
 }
 
-func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJob, account *Account, input BatchImageInput) (*BatchProviderJob, error) {
+func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJob, account *Account, input BatchImageInput) (result *BatchProviderJob, err error) {
+	createStarted := false
+	defer func() {
+		if err != nil && !createStarted {
+			err = errors.Join(err, errBatchImageSubmitRejected)
+		}
+	}()
 	if err := p.validateAccount(account); err != nil {
 		return nil, err
 	}
@@ -226,9 +232,10 @@ func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJo
 		OutputConfig:   VertexBatchOutputConfig{PredictionsFormat: "jsonl", GCSDestination: VertexBatchGCSDestination{OutputURIPrefix: refs.OutputPrefixURI}},
 		InstanceConfig: &VertexBatchInstanceConfig{KeyField: "key"},
 	}
+	createStarted = true
 	created, err := p.client.CreateBatchPredictionJob(ctx, accessToken, req)
 	if err != nil {
-		return nil, mapVertexClientError(err)
+		return nil, batchImageCreateError(err, mapVertexClientError(err))
 	}
 	if created == nil || strings.TrimSpace(created.Name) == "" {
 		return nil, vertexProviderError("VERTEX_INVALID_RESPONSE", "Vertex batch response is missing job name", nil)

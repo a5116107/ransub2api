@@ -290,7 +290,7 @@ func requireVertexJSONLLine(t *testing.T, line, wantKey, wantPrompt string) {
 	require.Equal(t, []any{"TEXT", "IMAGE"}, config["responseModalities"])
 }
 
-func newTestVertexProvider(client *fakeVertexBatchClient, store *fakeVertexObjectStore) *VertexBatchImageProvider {
+func newTestVertexProvider(client VertexBatchClient, store VertexBatchObjectStore) *VertexBatchImageProvider {
 	return NewVertexBatchImageProvider(VertexBatchImageProviderOptions{
 		ProjectID:        "proj",
 		Location:         "global",

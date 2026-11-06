@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -343,6 +344,129 @@ func TestBatchImageRepository_AppendEvent(t *testing.T) {
 	err = tx.QueryRowContext(ctx, `SELECT payload::text FROM batch_image_events WHERE job_id = $1 AND event_type = 'job_created'`, batchID).Scan(&payload)
 	require.NoError(t, err)
 	require.Contains(t, payload, batchID)
+}
+
+func TestBatchImageRepository_UnconfirmedSubmissionRecovery(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	repo := newBatchImageRepositoryWithSQL(tx)
+	for _, state := range []string{service.BatchImageJobStatusCreated, service.BatchImageJobStatusUploading, service.BatchImageJobStatusSubmitted} {
+		batchID := batchImageTestID(t, state)
+		_, err := repo.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{
+			BatchID: batchID, UserID: 1001, Provider: service.BatchImageProviderGeminiAPI,
+			Model: "gemini-2.5-flash-image", ItemCount: 1, EstimatedCost: 0.5, Status: state,
+		})
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `UPDATE batch_image_jobs SET updated_at=$2 WHERE batch_id=$1`, batchID, time.Now().Add(-time.Hour))
+		require.NoError(t, err)
+	}
+	cutoff := time.Now().Add(-time.Minute)
+	listed, err := repo.ListStaleUnsubmittedBatchImageJobs(ctx, cutoff, 100)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.Equal(t, service.BatchImageJobStatusCreated, listed[0].Status)
+	for _, state := range []string{service.BatchImageJobStatusUploading, service.BatchImageJobStatusSubmitted} {
+		batchID := batchImageTestID(t, state)
+		applied, err := repo.FailStaleUnsubmittedBatchImageJob(ctx, batchID, cutoff, "STALE", "fixture")
+		require.NoError(t, err)
+		require.False(t, applied)
+		applied, err = repo.CancelUnsubmittedBatchImageJob(ctx, batchID)
+		require.NoError(t, err)
+		require.False(t, applied)
+		job, err := repo.GetBatchImageJobByBatchID(ctx, batchID)
+		require.NoError(t, err)
+		require.Equal(t, state, job.Status)
+		require.Zero(t, job.Version)
+	}
+	createdID := batchImageTestID(t, service.BatchImageJobStatusCreated)
+	applied, err := repo.CancelUnsubmittedBatchImageJob(ctx, createdID)
+	require.NoError(t, err)
+	require.True(t, applied)
+	applied, err = repo.CancelUnsubmittedBatchImageJob(ctx, createdID)
+	require.NoError(t, err)
+	require.False(t, applied)
+	job, err := repo.GetBatchImageJobByBatchID(ctx, createdID)
+	require.NoError(t, err)
+	require.Equal(t, service.BatchImageJobStatusCancelled, job.Status)
+	require.NotNil(t, job.FinishedAt)
+	require.Equal(t, 1, job.Version)
+}
+
+func TestBatchImageRepository_CancelRacesProviderDispatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	repo := &batchImageRepository{db: integrationDB, sql: integrationDB}
+	for attempt := range 12 {
+		batchID := batchImageTestID(t, fmt.Sprintf("race-%d", attempt))
+		_, err := repo.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{
+			BatchID: batchID, UserID: 1001, Provider: service.BatchImageProviderGeminiAPI,
+			Model: "gemini-2.5-flash-image", ItemCount: 1,
+		})
+		require.NoError(t, err)
+		start := make(chan struct{})
+		type cancelResult struct {
+			applied bool
+			err     error
+		}
+		cancelled := make(chan cancelResult, 1)
+		dispatched := make(chan error, 1)
+		go func() {
+			<-start
+			applied, err := repo.CancelUnsubmittedBatchImageJob(ctx, batchID)
+			cancelled <- cancelResult{applied, err}
+		}()
+		go func() {
+			<-start
+			dispatched <- repo.TransitionBatchImageJobStatus(ctx, batchID, service.BatchImageJobStatusUploading, service.BatchImageTransitionOptions{})
+		}()
+		close(start)
+		result := <-cancelled
+		dispatchErr := <-dispatched
+		require.NoError(t, result.err)
+		job, err := repo.GetBatchImageJobByBatchID(ctx, batchID)
+		require.NoError(t, err)
+		if result.applied {
+			require.ErrorIs(t, dispatchErr, service.ErrBatchImageInvalidTransition)
+			require.Equal(t, service.BatchImageJobStatusCancelled, job.Status)
+		} else {
+			require.NoError(t, dispatchErr)
+			require.Equal(t, service.BatchImageJobStatusUploading, job.Status)
+		}
+		require.Equal(t, 1, job.Version)
+	}
+}
+
+func TestBatchImageRepository_CancelEventFailureRollsBack(t *testing.T) {
+	ctx := context.Background()
+	repo := &batchImageRepository{db: integrationDB, sql: integrationDB}
+	batchID := batchImageTestID(t, "cancel-audit")
+	_, err := repo.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{
+		BatchID: batchID, UserID: 1001, Provider: service.BatchImageProviderGeminiAPI,
+		Model: "gemini-2.5-flash-image", ItemCount: 1,
+	})
+	require.NoError(t, err)
+	// The generated ID contains only a fixed prefix and hex. This constraint
+	// affects this one fixture and forces an actual PostgreSQL event failure.
+	constraint := "batch_cancel_audit_fixture"
+	_, err = integrationDB.ExecContext(ctx, `ALTER TABLE batch_image_events ADD CONSTRAINT `+constraint+` CHECK (job_id <> '`+batchID+`')`)
+	require.NoError(t, err)
+	drop := func() error {
+		_, err := integrationDB.ExecContext(ctx, `ALTER TABLE batch_image_events DROP CONSTRAINT IF EXISTS `+constraint)
+		return err
+	}
+	t.Cleanup(func() { require.NoError(t, drop()) })
+	applied, err := repo.CancelUnsubmittedBatchImageJob(ctx, batchID)
+	require.Error(t, err)
+	require.False(t, applied)
+	job, err := repo.GetBatchImageJobByBatchID(ctx, batchID)
+	require.NoError(t, err)
+	require.Equal(t, service.BatchImageJobStatusCreated, job.Status)
+	require.Zero(t, job.Version)
+	require.Nil(t, job.FinishedAt)
+	require.NoError(t, drop())
+	applied, err = repo.CancelUnsubmittedBatchImageJob(ctx, batchID)
+	require.NoError(t, err)
+	require.True(t, applied)
 }
 
 func batchImageTestID(t *testing.T, prefix string) string {

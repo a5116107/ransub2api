@@ -53,6 +53,19 @@ func TestBatchImageSharedKeyAdmissionHTTPResponse(t *testing.T) {
 	require.False(t, provider.submitted)
 }
 
+func TestBatchImageUnconfirmedSubmitHTTPResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	batchImageError(ctx, service.ErrBatchImageSubmitUnconfirmed.WithMetadata(map[string]string{
+		"batch_id": "imgbatch_fixture", "private": "fixture-secret",
+	}))
+	require.Equal(t, http.StatusConflict, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"code":"BATCH_IMAGE_SUBMIT_UNCONFIRMED"`)
+	require.Contains(t, recorder.Body.String(), `"batch_id":"imgbatch_fixture"`)
+	require.NotContains(t, recorder.Body.String(), "fixture-secret")
+}
+
 type batchImageAdmissionRepo struct {
 	service.BatchImageRepository
 	created bool

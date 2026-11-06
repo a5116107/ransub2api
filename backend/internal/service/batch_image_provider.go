@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,31 @@ type BatchImageProvider interface {
 	Cancel(ctx context.Context, job *BatchImageJob, account *Account) error
 	OpenResult(ctx context.Context, job *BatchImageJob, account *Account) (io.ReadCloser, string, error)
 	Cleanup(ctx context.Context, job *BatchImageJob, account *Account, target CleanupTarget) error
+}
+
+// Only providers that can prove creation never started (or was explicitly
+// rejected) may authorize releasing the submission hold on an error.
+var errBatchImageSubmitRejected = errors.New("batch image creation was not accepted")
+
+func batchImageCreateError(original, mapped error) error {
+	var geminiErr *GeminiAPIError
+	var vertexErr *VertexAPIError
+	status := 0
+	if errors.As(original, &geminiErr) {
+		status = geminiErr.StatusCode
+	} else if errors.As(original, &vertexErr) {
+		status = vertexErr.StatusCode
+	}
+	switch status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusRequestEntityTooLarge,
+		http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+		return errors.Join(mapped, errBatchImageSubmitRejected)
+	default:
+		// Timeouts, conflicts, transport errors, malformed success and 5xx can
+		// arrive after creation. They do not establish that nothing is running.
+		return mapped
+	}
 }
 
 type BatchImageProviderRegistry struct {

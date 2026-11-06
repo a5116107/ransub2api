@@ -325,11 +325,17 @@ func batchImageError(c *gin.Context, err error) {
 		code = "BATCH_IMAGE_NOT_FOUND"
 		message = "batch image job not found"
 	}
-	c.JSON(status, gin.H{
-		"error": gin.H{
-			"type":    "invalid_request_error",
-			"code":    code,
-			"message": message,
-		},
-	})
+	payload := gin.H{
+		"type":    "invalid_request_error",
+		"code":    code,
+		"message": message,
+	}
+	if errors.Is(err, service.ErrBatchImageSubmitUnconfirmed) {
+		// Only this task-owned identifier is public; arbitrary error metadata
+		// can contain upstream details and is deliberately not serialized.
+		if batchID := infraerrors.FromError(err).Metadata["batch_id"]; batchID != "" {
+			payload["batch_id"] = batchID
+		}
+	}
+	c.JSON(status, gin.H{"error": payload})
 }

@@ -21,6 +21,21 @@ POST   /v1/images/batches/{id}/cancel
 DELETE /v1/images/batches/{id}/outputs
 ```
 
+Use a stable `Idempotency-Key` for each intended batch. If creation has an
+unconfirmed outcome, the API returns HTTP 409 with
+`error.code=BATCH_IMAGE_SUBMIT_UNCONFIRMED` and `error.batch_id`. Query that local
+batch ID, or repeat the original request with the same idempotency key to obtain
+its existing record. The task and billing hold remain visible while the provider
+outcome is unresolved. A generated display name no longer changes idempotency
+across retries; an explicitly changed name or payload remains a conflict.
+
+Local cancellation or an expired heartbeat does not establish that an upstream
+batch has stopped. Automatic stale refunds apply only before dispatch, while the
+persisted state is still `created`. See the authoritative
+[submission, recovery and rollback rules](project/monitor-driven-scheduling-design.md#443-批量生图未知提交与旧任务恢复)
+for uncertain submissions and existing tasks. Shared-key policies continue to
+reject new batches until durable batch admission is implemented.
+
 Submit request:
 
 ```json

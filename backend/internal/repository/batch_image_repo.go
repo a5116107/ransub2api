@@ -172,7 +172,7 @@ SET status = 'failed',
     updated_at = $4,
     version = version + 1
 WHERE batch_id = $1
-  AND status IN ('created', 'uploading')
+  AND status = 'created'
   AND provider_job_name IS NULL
   AND updated_at <= $5`, batchID, code, message, now, cutoff)
 	if err != nil {
@@ -189,6 +189,40 @@ WHERE batch_id = $1
 		"batch_id":   batchID,
 		"error_code": code,
 	})
+}
+
+func (r *batchImageRepository) CancelUnsubmittedBatchImageJob(ctx context.Context, batchID string) (bool, error) {
+	if r.db == nil {
+		return r.cancelUnsubmittedBatchImageJobWithSQL(ctx, r.sql, batchID)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	applied, err := r.cancelUnsubmittedBatchImageJobWithSQL(ctx, tx, batchID)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return applied, nil
+}
+
+func (r *batchImageRepository) cancelUnsubmittedBatchImageJobWithSQL(ctx context.Context, sqlq batchImageSQLExecutor, batchID string) (bool, error) {
+	res, err := sqlq.ExecContext(ctx, `
+UPDATE batch_image_jobs
+SET status = 'cancelled', finished_at = $2, updated_at = $2, version = version + 1
+WHERE batch_id = $1 AND status = 'created' AND provider_job_name IS NULL`, batchID, time.Now())
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil || affected == 0 {
+		return false, err
+	}
+	return true, appendBatchImageEventWithSQL(ctx, sqlq, batchID, "job_cancelled", map[string]any{"batch_id": batchID})
 }
 
 func (r *batchImageRepository) UpdateBatchImageJobProviderOutputRef(ctx context.Context, batchID, providerOutputRef string) error {
@@ -270,6 +304,9 @@ WHERE batch_id = $1`, batchID, code, message, now)
 	eventType := "submit_failed"
 	if !markFailed {
 		eventType = "queue_failed"
+		if code == "BATCH_IMAGE_SUBMIT_UNCONFIRMED" {
+			eventType = "submit_unconfirmed"
+		}
 	}
 	return appendBatchImageEventWithSQL(ctx, r.sql, batchID, eventType, map[string]any{"error_code": code})
 }
@@ -609,7 +646,7 @@ func (r *batchImageRepository) ListStaleUnsubmittedBatchImageJobs(ctx context.Co
 		limit = 100
 	}
 	rows, err := r.sql.QueryContext(ctx, batchImageJobSelectSQL+`
- WHERE status IN ('created', 'uploading')
+ WHERE status = 'created'
    AND provider_job_name IS NULL
    AND COALESCE(hold_amount, estimated_cost, 0) > 0
    AND updated_at <= $1

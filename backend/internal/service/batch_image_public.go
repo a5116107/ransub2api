@@ -210,12 +210,26 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	if err := s.ensureGroupAllowsBatchImage(ctx, owner.GroupID); err != nil {
 		return nil, err
 	}
-	requestHash := HashBatchImageSubmitRequest(normalized)
+	hashInput := normalized
+	generatedTaskName := strings.TrimSpace(req.TaskName) == ""
+	if generatedTaskName {
+		// A server-generated display timestamp must not change the client's
+		// idempotency identity when a later retry crosses a clock second.
+		hashInput.TaskName = ""
+	}
+	requestHash := HashBatchImageSubmitRequest(hashInput)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey != "" {
 		existing, err := s.Repo.GetBatchImageJobByIdempotencyKey(ctx, owner.UserID, owner.APIKeyID, idempotencyKey)
 		if err == nil {
-			if batchImageDerefString(existing.RequestHash) != requestHash {
+			matches := batchImageDerefString(existing.RequestHash) == requestHash
+			if !matches && generatedTaskName && existing.TaskName != "" {
+				// Older records included the generated name in their hash. Use
+				// the saved name, never the current time or a guessed identity.
+				hashInput.TaskName = existing.TaskName
+				matches = batchImageDerefString(existing.RequestHash) == HashBatchImageSubmitRequest(hashInput)
+			}
+			if !matches {
 				return nil, ErrBatchImageIdempotencyConflict
 			}
 			if existing.Status == BatchImageJobStatusSubmitted && s.Queue != nil {
@@ -328,9 +342,8 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		})
 	}
 
-	// 上游提交（上传参考图 + 创建批任务）可能长达数分钟且不刷新 updated_at，
-	// 会被 stale 恢复扫描误判为滞留并退款。提交前转入 uploading 刷新时间戳，
-	// 提交期间用心跳持续续期。
+	// 在任何上传/创建之前持久化 uploading，划定可能已发生远端执行的边界。
+	// 心跳记录提交仍在活动；心跳消失不作为远端未创建或退款的证据。
 	if err := s.Repo.TransitionBatchImageJobStatus(ctx, job.BatchID, BatchImageJobStatusUploading, BatchImageTransitionOptions{
 		EventType:    "upload_started",
 		EventPayload: map[string]any{"batch_id": job.BatchID},
@@ -354,6 +367,12 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	hbCancel()
 	<-hbDone
 	if err != nil {
+		if !errors.Is(err, errBatchImageSubmitRejected) {
+			return nil, s.recordUnconfirmedSubmit(ctx, job)
+		}
+		failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		ctx = failureCtx
 		if releaseErr := s.releaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
 			return nil, releaseErr
 		}
@@ -364,12 +383,7 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		return nil, publicErr
 	}
 	if providerJob == nil || strings.TrimSpace(providerJob.ProviderJobName) == "" {
-		if releaseErr := s.releaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
-			return nil, releaseErr
-		}
-		_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, "PROVIDER_SUBMIT_FAILED", "provider job name missing", true)
-		s.hidePreUpstreamSubmitFailure(ctx, owner, job)
-		return nil, ErrBatchImageProviderSubmitFailed
+		return nil, s.recordUnconfirmedSubmit(ctx, job)
 	}
 
 	if err := s.Repo.UpdateBatchImageJobProviderSubmit(ctx, UpdateBatchImageJobProviderSubmitParams{
@@ -381,8 +395,8 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		GCSOutputURI:      batchImageGCSRef(provider.Name(), providerJob.ProviderOutputRef),
 		EventPayload:      map[string]any{"provider": provider.Name()},
 	}); err != nil {
-		// job 可能已被恢复扫描转 failed 并退款：上游批任务已创建成功，
-		// 必须尽力取消并清理输入，否则上游照常产生成本（孤儿任务）。
+		// 远端已创建但本地持久化或状态推进失败：尽力请求取消，
+		// 保留冻结金额；输入清理必须等待明确的远端终结证据。
 		s.abortOrphanProviderJob(ctx, provider, job, account, providerJob)
 		return nil, err
 	}
@@ -399,6 +413,17 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		return nil, err
 	}
 	return BatchImageJobToPublic(created), nil
+}
+
+func (s *BatchImagePublicService) recordUnconfirmedSubmit(ctx context.Context, job *BatchImageJob) error {
+	// uploading was persisted before dispatch. Even if this diagnostic write
+	// fails, recovery must preserve its hold rather than replay or refund it.
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.Repo.RecordBatchImageJobSubmitFailure(recordCtx, job.BatchID, "BATCH_IMAGE_SUBMIT_UNCONFIRMED", ErrBatchImageSubmitUnconfirmed.Message, false); err != nil {
+		logger.L().Warn("batch_image.unconfirmed_submit_record_failed", zap.String("batch_id", job.BatchID), zap.Error(err))
+	}
+	return ErrBatchImageSubmitUnconfirmed.WithMetadata(map[string]string{"batch_id": job.BatchID})
 }
 
 func (s *BatchImagePublicService) releaseFailedSubmitHold(ctx context.Context, job *BatchImageJob, requestHash string) error {
@@ -446,32 +471,44 @@ func (s *BatchImagePublicService) submitHeartbeatInterval() time.Duration {
 }
 
 // abortOrphanProviderJob 在上游任务创建成功但本地状态推进失败时，
-// 尽力取消上游批任务并清理已上传的输入文件，避免孤儿任务持续产生成本。
+// 请求取消；仅确认远端终结后才清理输入。取消响应本身不证明任务已结束。
 func (s *BatchImagePublicService) abortOrphanProviderJob(ctx context.Context, provider BatchImageProvider, job *BatchImageJob, account *Account, providerJob *BatchProviderJob) {
 	if s == nil || provider == nil || job == nil || providerJob == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	orphan := *job
 	orphan.ProviderJobName = batchImageOptionalStringPtr(providerJob.ProviderJobName)
 	orphan.ProviderInputRef = batchImageOptionalStringPtr(providerJob.ProviderInputRef)
 	orphan.GCSInputURI = batchImageOptionalStringPtr(batchImageGCSRef(provider.Name(), providerJob.ProviderInputRef))
-	if err := provider.Cancel(ctx, &orphan, account); err != nil {
+	cancelErr := provider.Cancel(ctx, &orphan, account)
+	if cancelErr != nil {
 		logger.L().Warn("batch_image.orphan_provider_job_cancel_failed",
 			zap.String("batch_id", job.BatchID),
 			zap.String("provider", provider.Name()),
-			zap.Error(err),
+			zap.Error(cancelErr),
 		)
 	}
-	if err := provider.Cleanup(ctx, &orphan, account, CleanupTargetInput); err != nil {
-		logger.L().Warn("batch_image.orphan_provider_job_cleanup_failed",
-			zap.String("batch_id", job.BatchID),
-			zap.String("provider", provider.Name()),
-			zap.Error(err),
-		)
+	confirmed := false
+	if cancelErr == nil {
+		status, statusErr := provider.Get(ctx, &orphan, account)
+		if statusErr == nil && status != nil && status.Done {
+			switch status.InternalState {
+			case BatchProviderStateSucceeded, BatchProviderStateFailed, BatchProviderStateCancelled, BatchProviderStateExpired:
+				confirmed = true
+			}
+		}
 	}
-	if err := s.Repo.AppendBatchImageEvent(ctx, job.BatchID, "provider_job_aborted_after_submit", map[string]any{
-		"batch_id": job.BatchID,
-		"provider": provider.Name(),
+	if confirmed {
+		if err := provider.Cleanup(ctx, &orphan, account, CleanupTargetInput); err != nil {
+			logger.L().Warn("batch_image.orphan_provider_job_cleanup_failed", zap.String("batch_id", job.BatchID), zap.Error(err))
+		}
+	}
+	if err := s.Repo.AppendBatchImageEvent(ctx, job.BatchID, "provider_job_cancel_requested_after_submit", map[string]any{
+		"batch_id": job.BatchID, "provider": provider.Name(),
+		"provider_job_name": providerJob.ProviderJobName, "provider_input_ref": providerJob.ProviderInputRef,
+		"provider_output_ref": providerJob.ProviderOutputRef, "terminal_confirmed": confirmed,
 	}); err != nil {
 		logger.L().Warn("batch_image.orphan_provider_job_event_failed",
 			zap.String("batch_id", job.BatchID),
@@ -751,11 +788,17 @@ func (s *BatchImagePublicService) Cancel(ctx context.Context, owner BatchImageOw
 		}
 		return BatchImageJobToPublic(updated), nil
 	}
-	if err := s.Repo.TransitionBatchImageJobStatus(ctx, job.BatchID, BatchImageJobStatusCancelled, BatchImageTransitionOptions{
-		EventType:    "job_cancelled",
-		EventPayload: map[string]any{"batch_id": job.BatchID},
-	}); err != nil {
-		return nil, err
+	// The conditional update also covers a submitter advancing from created
+	// to uploading after the owner read. A stale local read cannot cancel it.
+	applied, cancelErr := s.Repo.CancelUnsubmittedBatchImageJob(ctx, job.BatchID)
+	if !applied {
+		if cancelErr != nil {
+			return nil, cancelErr
+		}
+		return nil, ErrBatchImageCancelUnconfirmed
+	}
+	if cancelErr != nil {
+		logger.L().Warn("batch_image.cancel_event_failed", zap.String("batch_id", job.BatchID), zap.Error(cancelErr))
 	}
 	if err := releaseBatchImageBalanceHold(ctx, s.BillingRepo, job, batchImageDerefString(job.RequestHash)); err != nil {
 		s.enqueueBillingRetry(ctx, job.BatchID)

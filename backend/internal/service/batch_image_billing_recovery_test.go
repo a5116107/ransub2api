@@ -62,6 +62,25 @@ func TestBatchImageBillingRecoveryService_ReleasesStaleUnsubmittedHold(t *testin
 	require.Equal(t, BatchImageJobStatusSubmitted, repo.jobs[active.BatchID].Status)
 }
 
+func TestBatchImageBillingRecoveryService_PreservesStaleUploading(t *testing.T) {
+	repo := newFakeBatchImageRepository()
+	apiKeyID := int64(22)
+	holdAmount := 0.5
+	job := &BatchImageJob{
+		BatchID: "imgbatch_unknown_remote", UserID: 11, APIKeyID: &apiKeyID,
+		Status: BatchImageJobStatusUploading, EstimatedCost: holdAmount, HoldAmount: &holdAmount,
+		CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now().Add(-time.Hour),
+	}
+	repo.jobs[job.BatchID] = job
+	billing := &fakeBatchImageBillingRepo{}
+	svc := &BatchImageBillingRecoveryService{Repo: repo, Billing: billing, StaleAfter: time.Minute}
+	released, err := svc.ReleaseStaleUnsubmittedOnce(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, released, "staleness does not prove the provider rejected creation")
+	require.Equal(t, BatchImageJobStatusUploading, job.Status)
+	require.Empty(t, billing.releases)
+}
+
 func TestBatchImageBillingRecoveryService_SkipsJobRefreshedByHeartbeat(t *testing.T) {
 	repo := newFakeBatchImageRepository()
 	apiKeyID := int64(22)
