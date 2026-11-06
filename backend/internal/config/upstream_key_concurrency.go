@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -78,15 +79,29 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 			result = append(result, fingerprint)
 		}
 	}
-	for _, value := range req.Header.Values("Authorization") {
-		scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
-		if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
-			add(token)
+	// Some upstream builders deliberately preserve wire casing by inserting
+	// keys directly into http.Header. Header.Values canonicalizes its lookup
+	// and silently misses those keys, although net/http still sends them.
+	// Scan every casing variant deterministically without changing wire bytes.
+	for _, wanted := range []string{"Authorization", "X-Api-Key", "Api-Key", "X-Goog-Api-Key"} {
+		var names []string
+		for name := range req.Header {
+			if strings.EqualFold(name, wanted) {
+				names = append(names, name)
+			}
 		}
-	}
-	for _, name := range []string{"X-Api-Key", "Api-Key", "X-Goog-Api-Key"} {
-		for _, value := range req.Header.Values(name) {
-			add(value)
+		sort.Strings(names)
+		for _, name := range names {
+			for _, value := range req.Header[name] {
+				if wanted == "Authorization" {
+					scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
+					if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
+						add(token)
+					}
+				} else {
+					add(value)
+				}
+			}
 		}
 	}
 	if req.URL != nil {

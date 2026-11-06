@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -57,4 +59,30 @@ func TestUpstreamKeyConcurrencyRequiresMatchingRegionalAuthority(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpstreamCredentialFingerprintsRawHeaderCasing(t *testing.T) {
+	for _, name := range []string{"authorization", "aUtHoRiZaTiOn", "x-api-key", "api-key", "x-goog-api-key"} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid/v1", nil)
+			value := "supplier-fixture"
+			if strings.EqualFold(name, "authorization") {
+				value = "Bearer " + value
+			}
+			req.Header[name] = []string{value}
+			require.Equal(t, []string{UpstreamKeyFingerprint("supplier-fixture")}, UpstreamCredentialFingerprints(req))
+		})
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid/v1?api_key=supplier-fixture", nil)
+	req.Header["authorization"] = []string{"Bearer supplier-fixture"}
+	req.Header["Authorization"] = []string{"Token supplier-fixture"}
+	req.Header["x-api-key"] = []string{"supplier-fixture"}
+	require.Equal(t, []string{UpstreamKeyFingerprint("supplier-fixture")}, UpstreamCredentialFingerprints(req))
+	req.Header["AUTHORIZATION"] = []string{"Bearer second-fixture"}
+	req.Header["X-Api-Key"] = []string{"third-fixture"}
+	for range 10 {
+		require.Equal(t, []string{UpstreamKeyFingerprint("second-fixture"), UpstreamKeyFingerprint("supplier-fixture"), UpstreamKeyFingerprint("third-fixture")}, UpstreamCredentialFingerprints(req))
+	}
+	//nolint:staticcheck // Verify the deliberately non-canonical on-wire key is unchanged.
+	require.Equal(t, []string{"Bearer supplier-fixture"}, req.Header["authorization"], "extraction must not rewrite the wire")
 }

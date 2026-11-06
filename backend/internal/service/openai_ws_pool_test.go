@@ -61,6 +61,25 @@ func TestOpenAIWSConnPoolKeepsFinalHandshakeKeyFingerprints(t *testing.T) {
 	require.Equal(t, "Bearer old-fixture", headers.Get("Authorization"), "the input snapshot stays unchanged")
 }
 
+func TestOpenAIWSConnPoolCapturesRawHandshakeKey(t *testing.T) {
+	pool := newOpenAIWSConnPool(&config.Config{})
+	t.Cleanup(pool.Close)
+	dialer := &openAIWSCaptureDialer{conn: &openAIWSCaptureConn{}}
+	pool.setClientDialerForTest(dialer)
+	conn, err := pool.dialConn(t.Context(), openAIWSAcquireRequest{
+		Account: &Account{ID: 103}, WSURL: "wss://api.example.com/v1/responses", Headers: make(http.Header),
+		HeadersFactory: func(_ context.Context, h http.Header) (http.Header, error) {
+			h["authorization"] = []string{"Bearer raw-ws-fixture"}
+			return h, nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(conn.close)
+	//nolint:staticcheck // The handshake intentionally preserves the raw key casing.
+	require.Equal(t, []string{"Bearer raw-ws-fixture"}, dialer.lastHeaders["authorization"])
+	require.Equal(t, []string{config.UpstreamKeyFingerprint("raw-ws-fixture")}, conn.upstreamKeyFingerprints)
+}
+
 func TestOpenAIWSConnPoolBillingTargetBeforeDial(t *testing.T) {
 	for _, tc := range []struct {
 		name, target, group string

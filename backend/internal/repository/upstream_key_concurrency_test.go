@@ -150,6 +150,9 @@ func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	require.Eventually(t, func() bool { return client.Ping(t.Context()).Err() == nil }, 3*time.Second, 10*time.Millisecond)
 	testUpstreamKeyCompetition(t, client)
+	rawClient := redis.NewClient(&redis.Options{Addr: address, DB: 3})
+	t.Cleanup(func() { require.NoError(t, rawClient.Close()) })
+	testUpstreamKeyRawAuthorizationIsSharedAcrossHTTPRequests(t, rawClient)
 	liveClient := redis.NewClient(&redis.Options{Addr: address, DB: 1})
 	t.Cleanup(func() { require.NoError(t, liveClient.Close()) })
 	testUpstreamKeyLivePersistence(t, liveClient, func() {})
@@ -275,4 +278,52 @@ func TestUpstreamKeyCancellationReleasesOnlyOwnedLease(t *testing.T) {
 	require.NoError(t, client.ZScore(t.Context(), peer.key, peer.member).Err())
 	require.NoError(t, response.Body.Close())
 	require.NoError(t, response.Body.Close())
+}
+
+// The Anthropic request builder intentionally emits raw lowercase authorization.
+// Exercise the real HTTP transport, not just the fingerprint helper.
+func TestUpstreamKeyRawAuthorizationIsSharedAcrossHTTPRequests(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	testUpstreamKeyRawAuthorizationIsSharedAcrossHTTPRequests(t, client)
+}
+
+func testUpstreamKeyRawAuthorizationIsSharedAcrossHTTPRequests(t *testing.T, client *redis.Client) {
+	t.Helper()
+	var sends atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		_, _ = io.WriteString(w, "started")
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			return
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(upstream.Close)
+	s := newHTTPUpstream(upstreamKeyTestConfig(1, 1), nil, client, nil)
+	request := func(raw bool) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL, strings.NewReader("{}"))
+		require.NoError(t, err)
+		if raw {
+			req.Header["authorization"] = []string{"Bearer supplier-fixture"}
+		} else {
+			req.Header.Set("Authorization", "Bearer supplier-fixture")
+		}
+		return req
+	}
+	first, err := s.Do(request(true), "", 1, 3)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, first.Body.Close()) })
+	blocked, err := s.Do(request(false), "", 2, 3)
+	if blocked != nil {
+		require.NoError(t, blocked.Body.Close())
+	}
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
+	require.EqualValues(t, 1, sends.Load())
+	require.NoError(t, first.Body.Close())
+	next, err := s.Do(request(false), "", 2, 3)
+	require.NoError(t, err)
+	require.NoError(t, next.Body.Close())
+	require.EqualValues(t, 2, sends.Load())
 }
