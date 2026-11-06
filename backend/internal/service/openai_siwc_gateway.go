@@ -123,6 +123,11 @@ func (s *OpenAIGatewayService) buildSIWCRequest(ctx context.Context, c *gin.Cont
 	// normalized request scope so a returned state is never relabelled with a
 	// previous attempt's account, model or service tier.
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(normalized))
+	continuationCtx, err := s.bindOpenAIHTTPContinuation(req.Context(), c, account, normalized)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(continuationCtx)
 	return req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI)), nil
 }
 

@@ -1496,17 +1496,18 @@ func extractOpenAIResponseIDFromJSONBytes(body []byte) string {
 const openAIHTTPResponseOwnerContextKey = "openai_http_response_owner"
 
 type openAIHTTPResponseOwner struct {
-	userID   int64
-	apiKeyID int64
+	userID             int64
+	apiKeyID           int64
+	previousResponseID string
 }
 
 // SetOpenAIHTTPResponseOwner marks the authenticated downstream owner whose
 // successful Responses IDs may be used for later HTTP continuations.
-func SetOpenAIHTTPResponseOwner(c *gin.Context, userID, apiKeyID int64) {
+func SetOpenAIHTTPResponseOwner(c *gin.Context, userID, apiKeyID int64, previousResponseID string) {
 	if c == nil || userID <= 0 || apiKeyID <= 0 {
 		return
 	}
-	c.Set(openAIHTTPResponseOwnerContextKey, openAIHTTPResponseOwner{userID: userID, apiKeyID: apiKeyID})
+	c.Set(openAIHTTPResponseOwnerContextKey, openAIHTTPResponseOwner{userID: userID, apiKeyID: apiKeyID, previousResponseID: strings.TrimSpace(previousResponseID)})
 }
 
 // ValidateOpenAIHTTPResponseOwner authorizes a continuation by downstream
@@ -1521,26 +1522,25 @@ func (s *OpenAIGatewayService) ValidateOpenAIHTTPResponseOwner(
 	if s == nil || strings.TrimSpace(responseID) == "" || userID <= 0 || apiKeyID <= 0 {
 		return false, nil
 	}
-	ownerUserID, ownerAPIKeyID, found, err := s.getOpenAIWSStateStore().GetHTTPResponseOwner(ctx, groupID, responseID)
-	if err != nil || !found {
+	owner, found, err := s.getOpenAIWSStateStore().GetHTTPResponseOwner(ctx, groupID, responseID)
+	if err != nil || !found || !owner.Valid() {
 		return false, err
 	}
-	return ownerUserID == userID || (ownerUserID <= 0 && ownerAPIKeyID == apiKeyID), nil
+	return owner.UserID == userID, nil
 }
 
-// BindOpenAIHTTPResponseOwner records an HTTP continuation owner independently
-// from the upstream account selected for that response.
+// BindOpenAIHTTPResponseOwner records the tenant and immutable creation egress.
 func (s *OpenAIGatewayService) BindOpenAIHTTPResponseOwner(
 	ctx context.Context,
 	groupID int64,
 	responseID string,
-	userID, apiKeyID int64,
+	owner OpenAIHTTPResponseOwner,
 ) error {
 	if s == nil {
 		return nil
 	}
 	return s.getOpenAIWSStateStore().BindHTTPResponseOwner(
-		ctx, groupID, responseID, userID, apiKeyID, s.openAIWSResponseStickyTTL(),
+		ctx, groupID, responseID, owner, s.openAIWSResponseStickyTTL(),
 	)
 }
 
@@ -1569,10 +1569,20 @@ func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *g
 
 	groupID := getOpenAIGroupIDFromContext(c)
 	ttl := s.openAIWSResponseStickyTTL()
-	logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, store.BindResponseAccount(bindCtx, groupID, responseID, account.ID, ttl))
+	var scope OpenAIWSContinuationScope
+	if raw, ok := c.Get(openAICodexTurnStateEgressKey); ok {
+		if egress, ok := raw.(openAICodexTurnStateOrigin); ok {
+			scope = OpenAIWSContinuationScope{AccountID: egress.accountID, RouteFingerprint: egress.routeFingerprint, Model: egress.cacheScope.Model, ServiceTier: egress.cacheScope.ServiceTier}
+		}
+	}
+	accountID := account.ID
+	if scope.valid() {
+		accountID = scope.AccountID
+	}
 	if rawOwner, ok := c.Get(openAIHTTPResponseOwnerContextKey); ok {
 		if owner, ok := rawOwner.(openAIHTTPResponseOwner); ok && owner.userID > 0 && owner.apiKeyID > 0 {
-			if err := s.BindOpenAIHTTPResponseOwner(bindCtx, groupID, responseID, owner.userID, owner.apiKeyID); err != nil {
+			binding := OpenAIHTTPResponseOwner{UserID: owner.userID, APIKeyID: owner.apiKeyID, Scope: scope}
+			if err := s.BindOpenAIHTTPResponseOwner(bindCtx, groupID, responseID, binding); err != nil {
 				logger.L().Warn(
 					"openai.http_bind_response_owner_failed",
 					zap.Int64("group_id", groupID),
@@ -1582,9 +1592,91 @@ func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *g
 					zap.String("response_id", truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen)),
 					zap.Error(err),
 				)
+				return
 			}
 		}
 	}
+	logOpenAIWSBindResponseAccountWarn(groupID, accountID, responseID, store.BindResponseAccount(bindCtx, groupID, responseID, accountID, ttl))
+}
+
+type openAIHTTPContinuationRequestKey struct{}
+
+type openAIHTTPContinuationRequest struct {
+	groupID    int64
+	responseID string
+	owner      OpenAIHTTPResponseOwner
+}
+
+// Bind only authenticated HTTP Responses continuations. The request builders
+// see the actual mapped model and the result of the existing fast policy.
+func (s *OpenAIGatewayService) bindOpenAIHTTPContinuation(ctx context.Context, c *gin.Context, account *Account, body []byte) (context.Context, error) {
+	if c == nil {
+		return ctx, nil
+	}
+	rawOwner, authenticated := c.Get(openAIHTTPResponseOwnerContextKey)
+	if !authenticated {
+		return ctx, nil
+	}
+	tenant, ok := rawOwner.(openAIHTTPResponseOwner)
+	if !ok {
+		return nil, denyOpenAITurn("http_continuation_unavailable")
+	}
+	// Different JSON decoders disagree about duplicate/case-variant keys. Only
+	// an unambiguous final payload can establish or consume creation evidence.
+	fields := make(map[string]bool, 3)
+	ambiguous := false
+	gjson.ParseBytes(body).ForEach(func(key, value gjson.Result) bool {
+		name := strings.ToLower(key.String())
+		if name != "model" && name != "service_tier" && name != "previous_response_id" {
+			return true
+		}
+		if key.String() != name || fields[name] || (value.Type != gjson.String && value.Type != gjson.Null) {
+			ambiguous = true
+			return false
+		}
+		fields[name] = true
+		return true
+	})
+	if ambiguous {
+		return nil, denyOpenAITurn("http_continuation_payload_ambiguous")
+	}
+	previous := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+	if tenant.previousResponseID != "" && tenant.previousResponseID != previous {
+		return nil, denyOpenAITurn("http_continuation_scope_changed")
+	}
+	if previous == "" {
+		return ctx, nil
+	}
+	groupID := getOpenAIGroupIDFromContext(c)
+	owner, found, err := s.getOpenAIWSStateStore().GetHTTPResponseOwner(ctx, groupID, previous)
+	if err != nil || !found || !owner.Valid() || owner.UserID != tenant.userID {
+		return nil, denyOpenAITurn("http_continuation_unavailable")
+	}
+	cacheScope := openAICompatCacheScopeFromBody(body)
+	if owner.Scope != openAIWSContinuationScope(account, cacheScope.Model, cacheScope.ServiceTier) {
+		return nil, denyOpenAITurn("http_continuation_scope_changed")
+	}
+	proof := openAIHTTPContinuationRequest{groupID: groupID, responseID: previous, owner: owner}
+	return context.WithValue(ctx, openAIHTTPContinuationRequestKey{}, proof), nil
+}
+
+func (s *OpenAIGatewayService) guardOpenAIHTTPContinuation(ctx context.Context, account *Account) error {
+	proof, bound := ctx.Value(openAIHTTPContinuationRequestKey{}).(openAIHTTPContinuationRequest)
+	if !bound {
+		return nil
+	}
+	owner, found, err := s.getOpenAIWSStateStore().GetHTTPResponseOwner(ctx, proof.groupID, proof.responseID)
+	if err != nil || !found || owner != proof.owner {
+		return denyOpenAITurn("http_continuation_unavailable")
+	}
+	latest, err := s.latestOpenAITurnAccountForGroup(ctx, account, proof.groupID, true)
+	if err != nil {
+		return err
+	}
+	if owner.Scope.AccountID != latest.ID || owner.Scope.RouteFingerprint != AccountRouteFingerprint(latest) {
+		return denyOpenAITurn("http_continuation_scope_changed")
+	}
+	return nil
 }
 
 func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {

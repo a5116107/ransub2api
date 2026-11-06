@@ -708,6 +708,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	// 按本次实际出站的账号/线路/模型/档位校验已知 turn-state 归属，
 	// 并捕获证据供响应记录；独立门票仍走后续原认证逻辑。
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(body))
+	continuationCtx, err := s.bindOpenAIHTTPContinuation(req.Context(), c, account, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(continuationCtx)
 	if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
 		return nil, err
 	}

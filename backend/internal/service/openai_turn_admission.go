@@ -285,7 +285,8 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 		authoritativeRead = true
 	} else {
 		cacheTTL := s.openAITurnAdmissionCacheTTL()
-		if gatewayProfitControlGateActive(ctx) {
+		_, httpContinuation := ctx.Value(openAIHTTPContinuationRequestKey{}).(openAIHTTPContinuationRequest)
+		if gatewayProfitControlGateActive(ctx) || httpContinuation {
 			// A warm process cache cannot authorize a changed purchase or sale
 			// rate. Regional snapshots retain their own authority and TTL above.
 			cacheTTL = 0

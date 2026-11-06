@@ -1983,6 +1983,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 已知客户端 turn-state 的账号/线路/模型/档位与本次出站不同则剥离。
 	// 同时捕获构造证据供响应提交时记录，独立门票仍由后续原逻辑处理。
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header, openAICompatCacheScopeFromBody(body))
+	continuationCtx, err := s.bindOpenAIHTTPContinuation(req.Context(), c, account, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(continuationCtx)
 	if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
 		return nil, err
 	}

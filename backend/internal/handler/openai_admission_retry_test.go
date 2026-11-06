@@ -109,6 +109,48 @@ func TestOpenAIInitialAdmissionReselectsBeforeSending(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponses_HTTPContinuationScopeRejectsAndRecovers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &initialAdmissionRepo{}
+	upstream := &excelBPSFailoverUpstream{answer: func(int) *http.Response { return excelBPSCompleted() }}
+	h := newInitialAdmissionHandler(t, repo, upstream)
+	repo.accounts = repo.accounts[:1]
+	account := &repo.accounts[0]
+	account.Type = service.AccountTypeAPIKey
+	account.Credentials = map[string]any{"api_key": "creation-fixture", "base_url": "https://supplier.invalid/v1"}
+	account.Extra = map[string]any{}
+	origin := service.OpenAIHTTPResponseOwner{UserID: 100, APIKeyID: 99, Scope: service.OpenAIWSContinuationScope{
+		AccountID: account.ID, RouteFingerprint: service.AccountRouteFingerprint(account), Model: "gpt-6-astra"}}
+	require.NoError(t, h.gatewayService.BindOpenAIHTTPResponseOwner(t.Context(), 3131, "resp_http_scope", origin))
+	for _, changed := range []bool{true, false} {
+		account.Credentials["api_key"] = "creation-fixture"
+		if changed {
+			account.Credentials["api_key"] = "replacement-fixture"
+		}
+		c, rec := newExcelBPSFailoverTestContext(t.Context(), false)
+		body := `{"model":"gpt-6-astra","stream":false,"previous_response_id":"resp_http_scope","input":"continue"}`
+		c.Request.Body = io.NopCloser(strings.NewReader(body))
+		c.Request.ContentLength = int64(len(body))
+		h.Responses(c)
+		if changed {
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "admission_unavailable")
+			require.Empty(t, upstream.calls(), "scope mismatch must not send or switch upstream")
+			_, recordedUpstreamError := c.Get(service.OpsUpstreamErrorsKey)
+			require.False(t, recordedUpstreamError, "scope mismatch is not a provider failure")
+		} else {
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "done")
+			require.Equal(t, []int64{account.ID}, upstream.calls())
+		}
+	}
+	repo.slots.mu.Lock()
+	acquired, released := repo.slots.accountAcquireCalls, repo.slots.accountReleaseCalls
+	repo.slots.mu.Unlock()
+	require.Equal(t, 2, acquired)
+	require.Equal(t, acquired, released, "denied and recovered requests must both release their slots")
+}
+
 func TestOpenAIInitialAdmissionRetryBoundaries(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, chat := range []bool{false, true} {

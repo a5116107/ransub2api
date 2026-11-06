@@ -830,7 +830,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 	}
-	service.SetOpenAIHTTPResponseOwner(c, subject.UserID, apiKey.ID)
+	service.SetOpenAIHTTPResponseOwner(c, subject.UserID, apiKey.ID, previousResponseID)
 
 	setOpsRequestContext(c, reqModel, reqStream)
 	bindOpenAIPriorityObservation(c, apiKey.GroupID, reqModel, body)

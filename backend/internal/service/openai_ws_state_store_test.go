@@ -71,19 +71,19 @@ func TestOpenAIWSStateStore_HTTPResponseOwnerPersistsAcrossStoreInstances(t *tes
 	groupID := int64(8)
 	writer := NewOpenAIWSStateStore(cache)
 
-	require.NoError(t, writer.BindHTTPResponseOwner(ctx, groupID, "resp_owned", 201, 301, time.Minute))
-	userID, apiKeyID, found, err := writer.GetHTTPResponseOwner(ctx, groupID, "resp_owned")
+	require.NoError(t, writer.BindHTTPResponseOwner(ctx, groupID, "resp_owned", httpResponseOwnerFixture(201, 301), time.Minute))
+	owner, found, err := writer.GetHTTPResponseOwner(ctx, groupID, "resp_owned")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, int64(201), userID)
-	require.Equal(t, int64(301), apiKeyID)
+	require.Equal(t, int64(201), owner.UserID)
+	require.Equal(t, int64(301), owner.APIKeyID)
 
 	reader := NewOpenAIWSStateStore(cache)
-	userID, apiKeyID, found, err = reader.GetHTTPResponseOwner(ctx, groupID, "resp_owned")
+	owner, found, err = reader.GetHTTPResponseOwner(ctx, groupID, "resp_owned")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, int64(201), userID)
-	require.Equal(t, int64(301), apiKeyID)
+	require.Equal(t, int64(201), owner.UserID)
+	require.Equal(t, int64(301), owner.APIKeyID)
 }
 
 func TestOpenAIWSStateStore_ResponseConnTTL(t *testing.T) {
