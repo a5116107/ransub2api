@@ -122,12 +122,9 @@ func guardOpenAIWSBillingHandshake(ctx context.Context, account *Account, target
 	return guardUpstreamBillingRequest(ctx, account, request)
 }
 
-// doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
-// 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
-func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (result *http.Response, resultErr error) {
-	if err := s.guardOpenAIResponseContinuation(request.Context(), account); err != nil {
-		return nil, err
-	}
+// guardOpenAIProfitRequest shares the authoritative final account and billing
+// checks with adapters that send outside the ordinary OpenAI transport.
+func (s *OpenAIGatewayService) guardOpenAIProfitRequest(request *http.Request, account *Account) (*http.Request, error) {
 	if gate, _ := request.Context().Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); gate != nil {
 		if gate.configUnavailable {
 			return nil, denyOpenAITurn(openAIProfitFilterReasonGroupConfigUnavailable)
@@ -139,7 +136,14 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		if err != nil {
 			return nil, err
 		}
-		if err := checkOpenAITurnBindingAndRate(request.Context(), account, latest); err != nil {
+		if account.AuthConnectionID != "" && account.IsExcelBPSEnabled() {
+			if account.excelBPSParentRoute == nil || *account.excelBPSParentRoute != excelBPSParentRouteFingerprint(latest) {
+				return nil, denyOpenAITurn("account_binding_changed")
+			}
+			if vetoed, reason := openAIProfitControlVetoReason(request.Context(), latest); vetoed {
+				return nil, denyOpenAITurn(reason)
+			}
+		} else if err := checkOpenAITurnBindingAndRate(request.Context(), account, latest); err != nil {
 			return nil, err
 		}
 		guardedCtx, err := guardUpstreamBillingRequest(request.Context(), latest, request)
@@ -147,6 +151,20 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 			return nil, err
 		}
 		request = request.WithContext(guardedCtx)
+	}
+	return request, nil
+}
+
+// doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
+// 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
+func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (result *http.Response, resultErr error) {
+	if err := s.guardOpenAIResponseContinuation(request.Context(), account); err != nil {
+		return nil, err
+	}
+	var err error
+	request, err = s.guardOpenAIProfitRequest(request, account)
+	if err != nil {
+		return nil, err
 	}
 	if s.excelOAuthReauth != nil {
 		if err := s.excelOAuthReauth.validateAuthConnectionPolicy(request.Context(), account); err != nil {

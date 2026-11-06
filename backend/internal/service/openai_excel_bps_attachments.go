@@ -63,7 +63,14 @@ func (s *OpenAIGatewayService) uploadExcelBPSAttachment(ctx context.Context, acc
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Encoding", "identity")
 	req.ContentLength = length
-	if err = s.fenceAuthConnectionEgress(ctx, req, account); err != nil {
+	if err = s.fenceExcelBPSAuthConnection(ctx, req, account); err != nil {
+		return "", err
+	}
+	req, err = s.guardOpenAIProfitRequest(req, account)
+	if err != nil {
+		return "", err
+	}
+	if err := s.admitAvailabilityRequest(req.Context(), nil, account); err != nil {
 		return "", err
 	}
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)

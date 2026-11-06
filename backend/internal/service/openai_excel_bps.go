@@ -513,6 +513,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			if isExcelBPSClientCancellation(c, err) {
 				return clientCanceled()
 			}
+			if IsOpenAITurnAdmissionError(err) {
+				return fail(503, "admission_unavailable", "Excel BPS request admission is unavailable; retry later")
+			}
 			status, code := http.StatusBadGateway, "basispoints_attachment_error"
 			var uploadError *excelBPSAttachmentError
 			if errors.As(err, &uploadError) {
@@ -558,6 +561,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			defer cl.Release()
 		}
 		if compactErr != nil {
+			if IsOpenAITurnAdmissionError(compactErr) {
+				return fail(503, "admission_unavailable", "Excel BPS request admission is unavailable; retry later")
+			}
 			return fail(502, "basispoints_image_compaction_failed", "Image history compaction connection failed; generation was not started")
 		}
 		compactID = cr.Header.Get("x-request-id")
@@ -620,6 +626,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		if isExcelBPSClientCancellation(c, err) {
 			return clientCanceled()
 		}
+		if IsOpenAITurnAdmissionError(err) {
+			return fail(503, "admission_unavailable", "Excel BPS request admission is unavailable; retry later")
+		}
 		if errors.Is(err, errExcelBPSProxyUnavailable) {
 			return fail(503, "basispoints_proxy_unavailable", "No healthy BPS session proxy is available; retry later")
 		}
@@ -667,6 +676,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			if err != nil {
 				if isExcelBPSClientCancellation(c, err) {
 					return clientCanceled()
+				}
+				if IsOpenAITurnAdmissionError(err) {
+					return fail(503, "admission_unavailable", "Excel BPS request admission is unavailable; retry later")
 				}
 				if lease != nil && ctx.Err() == nil {
 					lease.ReportFailure()

@@ -161,6 +161,10 @@ func (s *OpenAIGatewayService) prepareAuthConnection(ctx context.Context, c *gin
 	out := *account
 	out.AuthConnectionID = chosen.ID
 	out.AuthConnectionRevision = chosen.Revision
+	if chosen.Kind == "bps" {
+		route := excelBPSParentRouteFingerprint(account)
+		out.excelBPSParentRoute = &route
+	}
 	out.Credentials = shallowCopyMap(account.Credentials)
 	// Keep model configuration, remove every legacy credential and registration
 	// before applying the chosen set. No cross-client token composition.

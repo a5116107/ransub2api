@@ -55,6 +55,21 @@ type excelBPSLease interface {
 
 type excelBPSAcquire func(context.Context, string, ...string) (string, excelBPSLease, error)
 
+// Managed BPS projects its own protocol onto the parent account. Capture the
+// parent's routing inputs as they apply to that projected BPS connection.
+func excelBPSParentRouteFingerprint(account *Account) [32]byte {
+	if account == nil {
+		return AccountRouteFingerprint(nil)
+	}
+	projected := *account
+	projected.Type = AccountTypeOAuth
+	projected.Extra = shallowCopyMap(account.Extra)
+	projected.Extra["openai_excel_bps"] = true
+	delete(projected.Extra, ExcelBPSAuthorizationPendingKey)
+	route := AccountRouteFingerprint(&projected)
+	return sha256.Sum256(append(append([]byte(account.Type), 0), route[:]...))
+}
+
 func acquireExcelBPSProxy(ctx context.Context, scope string, excluded ...string) (string, excelBPSLease, error) {
 	acquire := mihomo.AcquireBPSLease
 	if strings.HasPrefix(scope, "transient:") {
@@ -206,12 +221,6 @@ func (s *OpenAIGatewayService) doExcelBPSRequestTo(ctx context.Context, c *gin.C
 			return nil, nil, proxy, err
 		}
 		c.Set("excel_bps_upstream_attempt", attempt)
-		if err := controlledSubmission(ctx, "bps"); err != nil {
-			if lease != nil {
-				lease.Release()
-			}
-			return nil, nil, proxy, err
-		}
 		req, observeTransport := s.rateLimitService.beginAvailabilityTransport(req, account)
 		evidence := &excelBPSWriteEvidence{}
 		resp, err := s.doPriorityObservedHTTP(evidence.request(req), proxy, account)
@@ -220,6 +229,15 @@ func (s *OpenAIGatewayService) doExcelBPSRequestTo(ctx context.Context, c *gin.C
 		s.rateLimitService.observeQualityResponse(req.Context(), account, resp, err)
 		if err == nil {
 			return resp, lease, proxy, nil
+		}
+		if IsOpenAITurnAdmissionError(err) {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if lease != nil {
+				lease.Release()
+			}
+			return nil, nil, proxy, err
 		}
 		// Even an unusual response+error result makes replay unsafe.
 		retry := !isControlledExperiment(ctx) && managed && attempt == 1 && resp == nil && evidence.unsent() && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)

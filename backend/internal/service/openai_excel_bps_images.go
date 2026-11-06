@@ -266,6 +266,9 @@ func (s *OpenAIGatewayService) forwardExcelBPSImages(ctx context.Context, c *gin
 			MarkOpsClientCancellation(c, false)
 			return nil, false, context.Canceled
 		}
+		if IsOpenAITurnAdmissionError(err) {
+			return fail(http.StatusServiceUnavailable, "admission_unavailable", "Excel BPS request admission is unavailable; retry later")
+		}
 		if errors.Is(err, errExcelBPSProxyUnavailable) {
 			return fail(http.StatusServiceUnavailable, "basispoints_proxy_unavailable", "No healthy BPS session proxy is available; retry later")
 		}

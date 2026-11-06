@@ -28,3 +28,15 @@ func (s *OpenAIGatewayService) fenceAuthConnectionEgress(ctx context.Context, re
 	}
 	return nil
 }
+
+func (s *OpenAIGatewayService) fenceExcelBPSAuthConnection(ctx context.Context, req *http.Request, a *Account) error {
+	if a != nil && a.AuthConnectionID == "" && s.excelOAuthReauth != nil {
+		if err := s.excelOAuthReauth.validateAuthConnectionPolicy(ctx, a); err != nil {
+			return &OpenAITurnAdmissionError{Reason: "authorization_connection_unavailable", cause: err}
+		}
+	}
+	if err := s.fenceAuthConnectionEgress(ctx, req, a); err != nil {
+		return &OpenAITurnAdmissionError{Reason: "authorization_connection_unavailable", cause: err}
+	}
+	return nil
+}

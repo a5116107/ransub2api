@@ -25,6 +25,7 @@ import (
 type Account struct {
 	AuthConnectionID       string
 	AuthConnectionRevision int64
+	excelBPSParentRoute    *[32]byte
 	InitialAdmissionPlan   *ScheduledTestPlan `json:"-"`
 	// InitialQualityPlan is internal create-only state, never imported or exported.
 	InitialQualityPlan      *ScheduledTestPlan `json:"-"`

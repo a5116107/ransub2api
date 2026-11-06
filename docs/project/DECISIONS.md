@@ -890,3 +890,10 @@
 - 71290复现标准JWT字符串`aud`被旧`[]string`解析器拒绝，89827还复现同主体刷新丢缓存、不同受众/客户端和带空白主体错误混域。原解析器改用既有JWT库的`ClaimStrings`，支持字符串及数组并拒绝混合类型；缓存摘要绑定原样主体、客户端/授权方及排序去重的实际受众，无法识别主体则退回完整令牌摘要。88134定向通过，错误/缺失Excel客户端受众和畸形字段仍被原验证拒绝；解析仅供身份一致性检查，不代替签名验证。
 - 89584在最终源码运行双网关及真实Redis本地夹具，跨模型续接和共享状态故障均不发送，恢复后原域继续，实际PASS、repository 1.345s。63886对OpenAI令牌解析、service、repository和admin相关路径执行两轮race，分别4.121s、26.628s、7.818s、1.770s；随后unit标签四包vet无诊断，整条退出0。77795四包默认标签仅编译均通过；1361使用原配置完整service与repository/OpenAI包lint，两步均0 issues、退出0。未运行CI或部署。
 - 对原“所有发送点终检”表述的代码核查发现：BPS通过`doExcelBPSRequestTo`→`doPriorityObservedHTTP`，附件通过独立上传入口；这些实际发送未调用通用HTTP的`admitAvailabilityRequest`和利润门权威账号终检。已纠正STATE和设计中的覆盖表述，该缺口保持D3/D4进行中；须以实际发送、在途变化及恢复回归补齐，不能以本次缓存域通过代替。
+
+## 2026-11-06：D4 Basispoints 独立发送终检
+
+- 旧实现的正文、修复和附件回归实际失败：倍率/线路/分组变化、停用及权威读取失败后仍发送；无发送证据的代理重试也未重新读取。原位复用OpenAI权威账号和倍率门，在正文/图片、附件及每次压缩/修复前检查，保留原发送和租约机制；本地拒绝不计代理或上游故障，不增加自动换路。可用性规则存在但缺BPS专属作用域时保守拒绝，不借普通HTTP成功证明BPS能力；无规则时保留原行为。
+- 托管连接仍有效时父代理变化的旧判定也实际失败。BPS连接投影捕获父账号实际线路摘要，最终使用权威父账号复核；OAuth和历史API Key父账号的代理、代理池和模型映射变更拒绝，恢复后通过。正文及附件使用实际托管记录验证连接版本撤销、零发送和恢复。托管策略及连接终检移到等待后共用同一栅栏；受控实验只在本地检查通过后登记提交。输出前拒绝映射本地503；已有工具修复或压缩用量保持，不以此关闭完整D2/D3/D4。
+- `go test -p 1 -tags=unit ./internal/service ./internal/handler -run 'TestExcelBPS|TestIssue594ReviewBPS|TestAvailabilityAdmission|TestAvailabilityScope|TestOpenAIHTTPFinalSendRechecksPurchasedRoute|TestOpenAIConnection|TestControlledExperiment|TestPriorityLatency' -count=2 -timeout=8m`退出0，service 12.211s、handler 3.466s；其后只扩展托管连接撤销/恢复测试。最终BPS/认证/利润专项两轮race退出0，service 7.545s；`go vet -p 1 -tags=unit ./internal/service ./internal/handler`退出0无诊断。默认标签service/handler/cmd/server只编译分别2.000s/1.648s/1.572s，该编译早于历史父类型修复。
+- 最终完整原规则`./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/...`实际输出`0 issues.`、退出0。先前两次lint及一次race因继续修复/扩展夹具主动中止，不计通过。无新增迁移或CI；BPS文件ID/加密历史来源、专属可用探测、区域传播及D5–D9仍按原验收进行，原20项12 done、3 in_progress、5 pending不变。
