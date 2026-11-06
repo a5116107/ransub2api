@@ -934,3 +934,13 @@
 - 两轮涉及共享额度的四包回归 `go test -p 1 -tags=unit ./internal/config ./internal/service ./internal/repository ./internal/handler -run 'TestUpstreamKey|TestSharedUpstreamKey|TestRegionalUpstreamKey|TestOpenAIWSConnPool.*Handshake|TestGatewayService_AnthropicOAuth_NotAffectedByAPIKeyPassthroughToggle|TestUpstreamCredentialFingerprints' -count=2 -timeout=8m` 退出0，config 0.746s、service 11.884s、repository 52.872s、handler 1.682s（handler `[no tests to run]`）。实际 HTTP/真实 Redis 的小写首请求占槽、标准头第二请求阻断及释放后恢复在repository race两轮中通过（2.878s）；真实 Anthropic 构造及WS原始握手的最终 service race 两轮通过（4.151s），config race 两轮1.754s；unit vet三包无诊断。
 - 首次真实Redis组合夹具意外复用已经升级版本的同一测试库导致策略冲突，改用独立DB；WS夹具首次未初始化Header map导致panic，已修复夹具并重跑，均不作为生产缺陷。两处刻意验证原始大小写的测试行按项目规则逐行标注staticcheck例外，不改变生产规则。
 - 首次原规则lint指出两处读取非canonical测试头的SA1008；按真实wire语义逐行注明例外后，最终 `./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/config/... ./internal/service/... ./internal/repository/...` 输出 `0 issues.`、退出0。未运行CI或生产部署。
+
+
+## 2026-11-07：D2 Astra 包装与区域 WebSocket 共享额度
+
+- 旧代码的隔离回归实际失败：Astra 启用后包装器不实现底层共享 Key 接口，真实原生 WS 回归取不到额度权威，Live/批量同样无法发现相应持久或 HTTP 准入端口；仅区域额度、仅区域调度和两者同时配置且静态策略为空时，WS 判定错误返回无须权威。对应测试中 Astra 两例、区域三例均失败，未把本地失败记为上游故障。
+- 原位为 Astra 包装器转发既有普通取槽、持久申请/检查/释放及 HTTP 准入方法；不新增额度权威、凭据表或第二套取槽。底层接口缺失返回原 `ErrUpstreamKeyPolicy`；静态与区域均未启用时保持无额度规则原行为。WS 准入按区域运行配置与静态配置共同决定是否需要权威；区域策略缺失、过期或不匹配沿原权威拒绝，不使用进程旧缓存或发送业务帧。
+- 普通 HTTP 响应体、WS 活跃轮、Live 持久租约、批量创建/轮询共用原权威。新增真实HTTP、真实WebSocket三种入口及租约丢失、真实Redis、隔离PostgreSQL主/区域权威交接和空旧策略拒绝；覆盖代理包装打开/关闭、配置缺失失败关闭、无规则兼容及普通HTTP只取一次槽。内部批量结果使用原任务绑定，不把模拟上游写成真实供应商验证。
+- 两轮相关race `go test -race -p 1 -tags=unit ./internal/service ./internal/repository -run 'TestSharedUpstreamKey|TestAstraSharedUpstreamKeyAuthority|TestAstraUpstreamKeyBatchPersistence|TestAstraUpstreamKeyWebSocketIngressSharedLifetime|TestUpstreamKeyNativeWebSocketSharedLifetime|TestUpstreamKeyRegionalWSMissingAuthorityRejectsGeneration|TestUpstreamKeyRealRedisAtomicCompetition|TestUpstreamKeyBatchPersistsAndSharesCapacity|TestUpstreamKeyLivePersistsAcrossBodyCloseAndProcessHandoff' -count=2 -timeout=10m` 退出0，service 17.717s、repository 56.089s；其后仅补充无规则兼容测试，生产代码未变。
+- 最终在新建且已移除的本机隔离 PostgreSQL 17 容器及真实 Redis 下，包含区域主/子节点、实际原生WS、空旧策略拒绝、Astra HTTP/Live、批量及三种 WS 入口的 repository race 两轮退出0、66.694s。原规则service/repository lint输出 `0 issues.`。不改变既有受阻历史资源，不运行CI、推送、生产迁移或部署；完整混合版本升级与真实供应商行为仍按 D8/D9 验收。
+- 最终 `go vet -p 1 -tags=unit ./internal/service ./internal/repository` 无诊断、退出0；默认标签 `go test -p 1 ./internal/service ./internal/repository ./cmd/server -run '^$' -count=1 -timeout=8m` 仅编译通过，分别1.811s、1.698s、2.783s（均 `[no tests to run]`）。

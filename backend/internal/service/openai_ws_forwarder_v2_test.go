@@ -22,6 +22,28 @@ func TestSharedUpstreamKeyConfiguredWSRequiresAuthority(t *testing.T) {
 	require.ErrorContains(t, err, "upstream_key_concurrency_unavailable")
 }
 
+func TestSharedUpstreamKeyWSRegionalRequiresAuthority(t *testing.T) {
+	for _, mode := range []string{"concurrency", "scheduler", "both"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := &config.Config{}
+			if mode != "scheduler" {
+				cfg.Runtime.RegionalConcurrencyFile = "fixture"
+			}
+			if mode != "concurrency" {
+				cfg.Runtime.RegionalSchedulerFile = "fixture"
+			}
+			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &httpUpstreamRecorder{}}
+			authority, err := svc.openAIWSKeyAuthority()
+			require.Nil(t, authority)
+			require.ErrorIs(t, err, ErrUpstreamKeyPolicy, "regional authority must not be bypassed by an empty local policy")
+		})
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{}}
+	authority, err := svc.openAIWSKeyAuthority()
+	require.Nil(t, authority)
+	require.NoError(t, err, "ordinary installations remain unchanged")
+}
+
 // HTTP POST /v1/responses -> forwardOpenAIWSV2 keeps the canonical outbound
 // tier separate from response.completed.service_tier for usage-time billing.
 func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testing.T) {

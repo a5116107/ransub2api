@@ -41,6 +41,78 @@ type astraRoutingUpstream struct {
 	historyRecorder func(service.AstraGatewayHistoryRecord, bool)
 }
 
+var _ service.UpstreamKeyConcurrency = (*astraRoutingUpstream)(nil)
+var _ service.BatchImageUpstreamKeyAuthority = (*astraRoutingUpstream)(nil)
+
+// Astra is a routing decorator around the ordinary HTTP transport. Shared
+// upstream-key admission must remain visible through the decorator so native
+// WS turns, Live handoff, and provider-specific HTTP clients use the same
+// authority as direct HTTP requests.
+func (s *astraRoutingUpstream) upstreamKeyConcurrency() (service.UpstreamKeyConcurrency, error) {
+	if s == nil || s.delegate == nil {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	authority, ok := s.delegate.(service.UpstreamKeyConcurrency)
+	if !ok {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	return authority, nil
+}
+
+func (s *astraRoutingUpstream) AcquireUpstreamKeySlots(ctx context.Context, fingerprints []string) (context.Context, func(), error) {
+	authority, err := s.upstreamKeyConcurrency()
+	if err != nil {
+		return ctx, nil, err
+	}
+	return authority.AcquireUpstreamKeySlots(ctx, fingerprints)
+}
+
+func (s *astraRoutingUpstream) upstreamKeyPersistent() (service.PersistentUpstreamKeyConcurrency, error) {
+	if s == nil || s.delegate == nil {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	authority, ok := s.delegate.(service.PersistentUpstreamKeyConcurrency)
+	if !ok {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	return authority, nil
+}
+
+func (s *astraRoutingUpstream) AcquirePersistentUpstreamKeySlots(ctx context.Context, req *http.Request) (*service.PersistentUpstreamKeyLease, error) {
+	authority, err := s.upstreamKeyPersistent()
+	if err != nil {
+		return nil, err
+	}
+	return authority.AcquirePersistentUpstreamKeySlots(ctx, req)
+}
+
+func (s *astraRoutingUpstream) CheckPersistentUpstreamKeySlots(ctx context.Context, lease *service.PersistentUpstreamKeyLease) error {
+	authority, err := s.upstreamKeyPersistent()
+	if err != nil {
+		return err
+	}
+	return authority.CheckPersistentUpstreamKeySlots(ctx, lease)
+}
+
+func (s *astraRoutingUpstream) ReleasePersistentUpstreamKeySlots(ctx context.Context, lease *service.PersistentUpstreamKeyLease) error {
+	authority, err := s.upstreamKeyPersistent()
+	if err != nil {
+		return err
+	}
+	return authority.ReleasePersistentUpstreamKeySlots(ctx, lease)
+}
+
+func (s *astraRoutingUpstream) BeginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+	if s == nil || s.delegate == nil {
+		return req, nil, service.ErrUpstreamKeyPolicy
+	}
+	authority, ok := s.delegate.(service.UpstreamKeyRequestAdmission)
+	if !ok {
+		return req, nil, service.ErrUpstreamKeyPolicy
+	}
+	return authority.BeginUpstreamKeyRequest(req)
+}
+
 func (s *astraRoutingUpstream) SetAstraTicketLifecycle(provider service.AstraTicketLifecycle) {
 	s.tickets = provider
 }

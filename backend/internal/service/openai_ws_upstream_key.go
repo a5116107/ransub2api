@@ -6,7 +6,8 @@ import (
 )
 
 func (s *OpenAIGatewayService) openAIWSKeyAuthority() (UpstreamKeyConcurrency, error) {
-	if s.cfg == nil || !s.cfg.Gateway.UpstreamKeyConcurrency.Configured() {
+	if s.cfg == nil || (!s.cfg.Gateway.UpstreamKeyConcurrency.Configured() &&
+		s.cfg.Runtime.RegionalConcurrencyFile == "" && s.cfg.Runtime.RegionalSchedulerFile == "") {
 		return nil, nil
 	}
 	authority, ok := s.httpUpstream.(UpstreamKeyConcurrency)

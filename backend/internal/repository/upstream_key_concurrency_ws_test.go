@@ -36,12 +36,19 @@ func TestUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 	testUpstreamKeyNativeWebSocketSharedLifetime(t, "redis")
 }
 
-func testUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T, authorityMode string) {
+func TestUpstreamKeyNativeWebSocketSharedLifetimeWithAstra(t *testing.T) {
+	testUpstreamKeyNativeWebSocketSharedLifetime(t, "redis", true)
+}
+
+func testUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T, authorityMode string, wrapAstra ...bool) {
 	gin.SetMode(gin.TestMode)
 	redisServer := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
 	cfg := upstreamKeyTestConfig(1, 1)
+	if len(wrapAstra) != 0 && wrapAstra[0] {
+		cfg.Gateway.CodexGatewayPin.Enabled = true
+	}
 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 	cfg.Gateway.OpenAIWS.Enabled = true
 	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
@@ -199,6 +206,63 @@ func testUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T, authorityMode st
 	require.Zero(t, httpCalls.Load())
 }
 
+// A regional configuration with an unavailable authority must reject the
+// physical generation even when the local static policy has no entries.
+func TestUpstreamKeyRegionalWSMissingAuthorityRejectsGeneration(t *testing.T) {
+	for _, wrap := range []bool{false, true} {
+		t.Run(fmt.Sprintf("astra=%t", wrap), func(t *testing.T) {
+			server := miniredis.RunT(t)
+			rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+			testUpstreamKeyRegionalWSRejectsGeneration(t, rdb, nil, wrap)
+		})
+	}
+}
+
+func testUpstreamKeyRegionalWSRejectsGeneration(t *testing.T, rdb *redis.Client, cache service.ConcurrencyCache, wrap bool) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	cfg.Runtime.RegionalConcurrencyFile = "regional-fixture"
+	cfg.Gateway.CodexGatewayPin.Enabled = wrap
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+	var sent atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := coderws.Accept(w, req, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		_, _, err = conn.Read(req.Context())
+		if err == nil {
+			sent.Add(1)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	account := &service.Account{ID: 23, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
+	svc := service.NewOpenAIGatewayService(upstreamKeyWSAccounts{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, newHTTPUpstream(cfg, nil, rdb, cache), nil, nil, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(svc.StopOpenAICodexTicketHarvester)
+	t.Cleanup(svc.CloseOpenAIWSPool)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	result, err := svc.Forward(ctx, c, account, []byte(`{"model":"gpt-5.5","input":"hello","stream":false}`))
+	require.Nil(t, result)
+	require.Error(t, err)
+	var failover *service.UpstreamFailoverError
+	require.ErrorAs(t, err, &failover)
+	require.Equal(t, http.StatusServiceUnavailable, failover.StatusCode)
+	require.Zero(t, sent.Load(), "an unavailable regional policy must not send a business frame")
+}
+
 func TestUpstreamKeyWebSocketIngressSharedLifetime(t *testing.T) {
 	for _, mode := range []string{service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough} {
 		for _, loss := range []bool{false, true} {
@@ -207,12 +271,23 @@ func TestUpstreamKeyWebSocketIngressSharedLifetime(t *testing.T) {
 	}
 }
 
-func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool, authorityMode string) {
+func TestAstraUpstreamKeyWebSocketIngressSharedLifetime(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough} {
+		for _, loss := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/lease_loss=%t", mode, loss), func(t *testing.T) { testUpstreamKeyWSIngressLifetime(t, mode, loss, "redis", true) })
+		}
+	}
+}
+
+func testUpstreamKeyWSIngressLifetime(t *testing.T, mode string, loss bool, authorityMode string, wrapAstra ...bool) {
 	gin.SetMode(gin.TestMode)
 	server := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
 	cfg := upstreamKeyTestConfig(1, 1)
+	if len(wrapAstra) != 0 && wrapAstra[0] {
+		cfg.Gateway.CodexGatewayPin.Enabled = true
+	}
 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 	cfg.Gateway.OpenAIWS.Enabled = true
 	cfg.Gateway.OpenAIWS.APIKeyEnabled = true

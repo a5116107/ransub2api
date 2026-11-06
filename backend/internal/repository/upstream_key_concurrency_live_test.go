@@ -51,6 +51,119 @@ func liveKeyRedis(t *testing.T, overrides map[string]string) (*miniredis.Minired
 	return server, rdb
 }
 
+// Astra wraps the production transport. HTTP, WS, Live and batch must still
+// share the same authority rather than failing its optional interface checks.
+func TestAstraSharedUpstreamKeyAuthority(t *testing.T) {
+	_, rdb := liveKeyRedis(t, nil)
+	testAstraSharedUpstreamKeyAuthority(t, rdb)
+}
+
+func testAstraSharedUpstreamKeyAuthority(t *testing.T, rdb *redis.Client, caches ...service.ConcurrencyCache) {
+	t.Helper()
+	var cache service.ConcurrencyCache
+	if len(caches) != 0 {
+		cache = caches[0]
+	}
+	cfg := upstreamKeyTestConfig(1, 1)
+	cfg.Gateway.CodexGatewayPin.Enabled = true
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	transport := newHTTPUpstream(cfg, nil, rdb, cache)
+	require.IsType(t, &astraRoutingUpstream{}, transport)
+	ordinary, ok := transport.(service.UpstreamKeyConcurrency)
+	require.True(t, ok, "wrapped transport must retain the WS authority")
+	persistent, ok := transport.(service.PersistentUpstreamKeyConcurrency)
+	require.True(t, ok, "wrapped transport must retain the Live authority")
+	admission, ok := transport.(service.UpstreamKeyRequestAdmission)
+	require.True(t, ok, "wrapped transport must retain provider-specific HTTP admission")
+	_, ok = transport.(service.BatchImageUpstreamKeyAuthority)
+	require.True(t, ok, "wrapped transport must retain the combined batch authority")
+
+	request := func(path string) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+path, strings.NewReader("{}"))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer supplier-fixture")
+		return req
+	}
+	fp := config.UpstreamKeyFingerprint("supplier-fixture")
+	_, release, err := ordinary.AcquireUpstreamKeySlots(t.Context(), []string{fp})
+	require.NoError(t, err)
+	require.NotNil(t, release)
+	t.Cleanup(release)
+	resp, err := transport.Do(request("/v1/responses"), "", 4, 4)
+	require.Nil(t, resp)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
+	release()
+	resp, err = transport.Do(request("/v1/responses"), "", 4, 4)
+	require.NoError(t, err, "a wrapped ordinary request must acquire exactly once")
+	_, _, err = ordinary.AcquireUpstreamKeySlots(t.Context(), []string{fp})
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity, "an open HTTP body shares its slot with native WS")
+	require.NoError(t, resp.Body.Close())
+
+	liveRequest := request("/v1/realtime/calls")
+	lease, err := persistent.AcquirePersistentUpstreamKeySlots(t.Context(), liveRequest)
+	require.NoError(t, err)
+	require.NotNil(t, lease)
+	t.Cleanup(func() { require.NoError(t, persistent.ReleasePersistentUpstreamKeySlots(context.Background(), lease)) })
+	require.NoError(t, persistent.CheckPersistentUpstreamKeySlots(t.Context(), lease))
+	bound := liveRequest.WithContext(service.WithPersistentUpstreamKeyLease(t.Context(), lease))
+	resp, err = transport.Do(bound, "", 4, 4)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	_, _, err = admission.BeginUpstreamKeyRequest(request("/v1/responses"))
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity, "closing the Live response must retain its shared lease")
+	require.NoError(t, persistent.ReleasePersistentUpstreamKeySlots(t.Context(), lease))
+	bound, finish, err := admission.BeginUpstreamKeyRequest(request("/v1/responses"))
+	require.NoError(t, err)
+	require.NotNil(t, bound)
+	require.NotNil(t, finish)
+	finish(nil, nil)
+}
+
+func TestAstraSharedUpstreamKeyAuthorityMissingDelegateFailsClosed(t *testing.T) {
+	for _, delegate := range []service.HTTPUpstream{nil, gatewayPinDelegate{}} {
+		transport := &astraRoutingUpstream{delegate: delegate}
+		_, release, err := transport.AcquireUpstreamKeySlots(t.Context(), []string{config.UpstreamKeyFingerprint("fixture")})
+		require.Nil(t, release)
+		require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+		lease, err := transport.AcquirePersistentUpstreamKeySlots(t.Context(), httptest.NewRequest(http.MethodPost, "/v1/realtime/calls", nil))
+		require.Nil(t, lease)
+		require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+		require.ErrorIs(t, transport.CheckPersistentUpstreamKeySlots(t.Context(), nil), service.ErrUpstreamKeyPolicy)
+		require.ErrorIs(t, transport.ReleasePersistentUpstreamKeySlots(t.Context(), nil), service.ErrUpstreamKeyPolicy)
+		_, finish, err := transport.BeginUpstreamKeyRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+		require.Nil(t, finish)
+		require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+	}
+}
+
+func TestAstraSharedUpstreamKeyAuthorityDisabledKeepsOriginalBehavior(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.CodexGatewayPin.Enabled = true
+	transport := newHTTPUpstream(cfg, nil, nil, nil)
+	ordinary, ok := transport.(service.UpstreamKeyConcurrency)
+	require.True(t, ok)
+	ctx, release, err := ordinary.AcquireUpstreamKeySlots(t.Context(), []string{config.UpstreamKeyFingerprint("unlimited")})
+	require.NoError(t, err)
+	require.Same(t, t.Context(), ctx)
+	require.Nil(t, release)
+	persistent, ok := transport.(service.PersistentUpstreamKeyConcurrency)
+	require.True(t, ok)
+	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/calls", nil)
+	lease, err := persistent.AcquirePersistentUpstreamKeySlots(t.Context(), req)
+	require.NoError(t, err)
+	require.Nil(t, lease)
+	admission, ok := transport.(service.UpstreamKeyRequestAdmission)
+	require.True(t, ok)
+	bound, finish, err := admission.BeginUpstreamKeyRequest(req)
+	require.NoError(t, err)
+	require.Same(t, req, bound)
+	require.NotNil(t, finish)
+	finish(nil, nil)
+}
+
 func TestUpstreamKeyLivePersistsAcrossBodyCloseAndProcessHandoff(t *testing.T) {
 	server, rdb := liveKeyRedis(t, nil)
 	testUpstreamKeyLivePersistence(t, rdb, func() { server.FastForward(2 * upstreamKeyLeaseTTL) })

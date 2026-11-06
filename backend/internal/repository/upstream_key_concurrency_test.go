@@ -153,12 +153,18 @@ func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	rawClient := redis.NewClient(&redis.Options{Addr: address, DB: 3})
 	t.Cleanup(func() { require.NoError(t, rawClient.Close()) })
 	testUpstreamKeyRawAuthorizationIsSharedAcrossHTTPRequests(t, rawClient)
+	astraClient := redis.NewClient(&redis.Options{Addr: address, DB: 4})
+	t.Cleanup(func() { require.NoError(t, astraClient.Close()) })
+	testAstraSharedUpstreamKeyAuthority(t, astraClient)
 	liveClient := redis.NewClient(&redis.Options{Addr: address, DB: 1})
 	t.Cleanup(func() { require.NoError(t, liveClient.Close()) })
 	testUpstreamKeyLivePersistence(t, liveClient, func() {})
 	batchClient := redis.NewClient(&redis.Options{Addr: address, DB: 2})
 	t.Cleanup(func() { require.NoError(t, batchClient.Close()) })
 	testUpstreamKeyBatchPersistence(t, batchClient, func() {})
+	astraBatchClient := redis.NewClient(&redis.Options{Addr: address, DB: 5})
+	t.Cleanup(func() { require.NoError(t, astraBatchClient.Close()) })
+	testUpstreamKeyBatchPersistence(t, astraBatchClient, func() {}, true)
 }
 
 func testUpstreamKeyCompetition(t *testing.T, client *redis.Client) {

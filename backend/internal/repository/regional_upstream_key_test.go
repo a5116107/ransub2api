@@ -396,6 +396,35 @@ func TestRegionalUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
 	}
 }
 
+func TestRegionalAstraUpstreamKeySharedAuthority(t *testing.T) {
+	for _, mode := range []string{"primary", "regional"} {
+		t.Run(mode, func(t *testing.T) {
+			rdb := regionalKeyRedis(t)
+			cfg := upstreamKeyTestConfig(1, 1)
+			cache, _, _ := upstreamKeyWSAuthority(t, cfg, rdb, mode)
+			testAstraSharedUpstreamKeyAuthority(t, rdb, cache)
+		})
+	}
+}
+
+func TestRegionalAstraUpstreamKeyNativeWebSocketSharedLifetime(t *testing.T) {
+	for _, mode := range []string{"primary", "regional"} {
+		t.Run(mode, func(t *testing.T) { testUpstreamKeyNativeWebSocketSharedLifetime(t, mode, true) })
+	}
+}
+
+func TestRegionalAstraWSRejectsEmptyStalePolicy(t *testing.T) {
+	for _, wrap := range []bool{false, true} {
+		t.Run(fmt.Sprintf("astra=%t", wrap), func(t *testing.T) {
+			rdb := regionalKeyRedis(t)
+			cfg := upstreamKeyTestConfig(1, 1)
+			cache, held, _ := upstreamKeyWSAuthority(t, cfg, rdb, "regional")
+			testUpstreamKeyRegionalWSRejectsGeneration(t, rdb, cache, wrap)
+			require.Zero(t, held(t.Context()), "the mismatched regional policy must not allocate capacity")
+		})
+	}
+}
+
 func TestRegionalUpstreamKeyWebSocketIngressSharedLifetime(t *testing.T) {
 	for _, authority := range []string{"primary", "regional"} {
 		for _, mode := range []string{service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough} {

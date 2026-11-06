@@ -67,10 +67,21 @@ func TestUpstreamKeyBatchPersistsAndSharesCapacity(t *testing.T) {
 	testUpstreamKeyBatchPersistence(t, rdb, func() { server.FastForward(2 * upstreamKeyLeaseTTL) })
 }
 
-func testUpstreamKeyBatchPersistence(t *testing.T, rdb *redis.Client, advance func()) {
+func TestAstraUpstreamKeyBatchPersistence(t *testing.T) {
+	server, rdb := liveKeyRedis(t, nil)
+	testUpstreamKeyBatchPersistence(t, rdb, func() { server.FastForward(2 * upstreamKeyLeaseTTL) }, true)
+}
+
+func testUpstreamKeyBatchPersistence(t *testing.T, rdb *redis.Client, advance func(), wrapAstra ...bool) {
 	t.Helper()
 	cfg := upstreamKeyTestConfig(1, 1)
-	authority := liveKeyTestUpstream(t, cfg, rdb, nil)
+	if len(wrapAstra) != 0 && wrapAstra[0] {
+		cfg.Gateway.CodexGatewayPin.Enabled = true
+	}
+	port := newHTTPUpstream(cfg, nil, rdb, nil)
+	configuredRegistry := service.NewBatchImageProviderRegistryFromConfig(cfg, port)
+	authority := configuredRegistry.KeyAuthority
+	require.NotNil(t, authority, "the real configured registry must discover the shared authority")
 	var sent atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		sent.Add(1)
@@ -95,9 +106,13 @@ func testUpstreamKeyBatchPersistence(t *testing.T, rdb *redis.Client, advance fu
 	require.EqualValues(t, 1, rdb.ZCard(t.Context(), key).Val())
 	require.Equal(t, -time.Nanosecond, rdb.TTL(t.Context(), key).Val(), "closing the creation response must not expire remote work")
 	advance()
-	restarted := liveKeyTestUpstream(t, cfg, rdb, nil)
+	restartedPort := newHTTPUpstream(cfg, nil, rdb, nil)
+	restarted, ok := restartedPort.(service.BatchImageUpstreamKeyAuthority)
+	require.True(t, ok)
+	restartedSlots, ok := restartedPort.(service.UpstreamKeyConcurrency)
+	require.True(t, ok)
 	require.NoError(t, restarted.CheckPersistentUpstreamKeySlots(t.Context(), repo.lease))
-	_, _, err = restarted.AcquireUpstreamKeySlots(t.Context(), repo.lease.Fingerprints)
+	_, _, err = restartedSlots.AcquireUpstreamKeySlots(t.Context(), repo.lease.Fingerprints)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity, "HTTP and native WS share the batch budget")
 	registry.KeyAuthority = restarted
 	job.ProviderJobName = &created.ProviderJobName
