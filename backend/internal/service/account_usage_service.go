@@ -926,46 +926,12 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if err != nil {
 		return nil, fmt.Errorf("build openai probe client: %w", err)
 	}
-	if s.requireUpstreamKeyAdmission && s.upstreamKeyAdmission == nil {
-		return nil, ErrUpstreamKeyPolicy
-	}
 	req = bindOpenAIAgentPublicKey(req, s.accountRepo, account)
-	var finish func(*http.Response, error)
-	if s.upstreamKeyAdmission != nil {
-		req, finish, err = s.upstreamKeyAdmission.BeginUpstreamKeyRequest(req)
-		if err != nil {
-			if finish != nil {
-				finish(nil, err)
-			}
-			return nil, fmt.Errorf("openai probe admission: %w", err)
-		}
-		if req == nil || finish == nil {
-			if finish != nil {
-				finish(nil, ErrUpstreamKeyPolicy)
-			}
-			return nil, ErrUpstreamKeyPolicy
-		}
-	}
-	if s.requireUpstreamKeyAdmission {
-		// A redirect may change the final credential after it was admitted.
-		copy := *client
-		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-		client = &copy
-	}
-	resp, err := client.Do(req)
-	if finish != nil {
-		finish(resp, err)
-	}
+	resp, err := doAdmittedOpenAIClientRequest(client, req, s.requireUpstreamKeyAdmission, s.upstreamKeyAdmission)
 	if err != nil {
-		if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {
-			return nil, ErrUpstreamKeyLease
-		}
 		return nil, fmt.Errorf("openai codex probe request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {
-		return nil, ErrUpstreamKeyLease
-	}
 
 	return s.persistOpenAICodexProbeResponse(account.ID, resp, observed)
 }

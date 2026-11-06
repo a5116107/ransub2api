@@ -2009,10 +2009,14 @@ func (s *OpenAIGatewayService) fetchOpenAIModelsUpstream(ctx context.Context, re
 			if clientErr != nil {
 				return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_PROXY_INVALID", "invalid proxy configuration: %v", clientErr)
 			}
-			resp, err = client.Do(req)
+			req = bindOpenAIAgentPublicKey(req, s.accountRepo, request.credentialAccount)
+			resp, err = s.doOpenAIClientRequest(client, req)
 		}
 	}
 	if err != nil {
+		if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
+			return nil, &codexModelsManifestUpstreamError{err: err, retryable: false}
+		}
 		return nil, &codexModelsManifestUpstreamError{
 			err:       infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "模型列表请求失败，请稍后重试"),
 			retryable: isRetryableCodexModelsManifestTransportError(err),
