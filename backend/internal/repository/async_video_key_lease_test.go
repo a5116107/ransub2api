@@ -41,6 +41,7 @@ func TestAsyncVideoKeyLeaseHandoffPersistsBindsAndReleasesAcrossInstances(t *tes
 
 	require.NoError(t, controller.BindAsyncVideoKeyLease(t.Context(), handoff, "grok-task"))
 	require.NoError(t, controller.BindAsyncVideoKeyLease(t.Context(), handoff, "grok-task"), "task binding must be idempotent during response handoff retries")
+	require.Error(t, controller.BindAsyncVideoKeyLease(t.Context(), handoff, "different-task"), "one provisional member must never be rebound to a second task")
 	finish(nil, nil)
 	competitor := service.NewAsyncVideoKeyHandoff()
 	_, err = first.AcquirePersistentUpstreamKeySlots(t.Context(), asyncVideoLeaseRequest(t, competitor))

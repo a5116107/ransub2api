@@ -14,16 +14,17 @@ import (
 
 const (
 	asyncVideoKeyLeasePrefix = "concurrency:upstream_key:async_video:"
-	asyncVideoKeyLeaseTTL    = 7 * 24 * time.Hour
 )
 
 var bindAsyncVideoKeyLeaseScript = redis.NewScript(`
 local member = redis.call('GET', KEYS[1])
 if not member then return 0 end
+local current = cjson.decode(member)
+if current['task_id'] and current['task_id'] ~= '' and current['task_id'] ~= ARGV[4] then return -1 end
 local existing = redis.call('GET', KEYS[2])
 if existing and cjson.decode(existing)['member'] ~= ARGV[1] then return -1 end
-redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
-redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+redis.call('SET', KEYS[1], ARGV[2])
+redis.call('SET', KEYS[2], ARGV[2])
 redis.call('ZREM', KEYS[3], ARGV[1])
 return 1
 `)
@@ -116,7 +117,7 @@ func (s *httpUpstreamService) PersistAsyncVideoKeyLease(ctx context.Context, han
 		return getErr
 	}
 	pipe := limiter.rdb.TxPipeline()
-	pipe.Set(ctx, key, payload, asyncVideoKeyLeaseTTL)
+	pipe.Set(ctx, key, payload, 0)
 	pipe.ZRem(ctx, asyncVideoUnknownKey(), member)
 	_, err = pipe.Exec(ctx)
 	return err
@@ -165,7 +166,7 @@ func bindAsyncVideoKeyLeaseRecord(ctx context.Context, limiter *upstreamKeyLimit
 	}
 	result, err := bindAsyncVideoKeyLeaseScript.Run(ctx, limiter.rdb,
 		[]string{asyncVideoMemberKey(member), asyncVideoTaskKey(taskID), asyncVideoUnknownKey()},
-		member, payload, asyncVideoKeyLeaseTTL.Milliseconds()).Int()
+		member, payload, 0, taskID).Int()
 	if err != nil {
 		return err
 	}
@@ -234,7 +235,7 @@ func (s *httpUpstreamService) MarkAsyncVideoKeySubmissionUnknown(ctx context.Con
 		return err
 	}
 	pipe := limiter.rdb.TxPipeline()
-	pipe.Set(ctx, key, payload, asyncVideoKeyLeaseTTL)
+	pipe.Set(ctx, key, payload, 0)
 	pipe.ZAdd(ctx, asyncVideoUnknownKey(), redis.Z{Score: float64(record.UpdatedAt), Member: member})
 	_, err = pipe.Exec(ctx)
 	return err
