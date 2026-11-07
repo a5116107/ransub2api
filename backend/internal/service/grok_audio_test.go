@@ -70,6 +70,37 @@ func TestForwardGrokVoice_RejectsNonGrok(t *testing.T) {
 	require.Contains(t, err.Error(), "not supported")
 }
 
+func TestForwardGrokVoiceAvailabilityFailsClosedBeforeSend(t *testing.T) {
+	for _, scenario := range []string{"configured", "read_error", "unconfigured"} {
+		t.Run(scenario, func(t *testing.T) {
+			upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"audio":"fixture"}`)}
+			repo := &availabilityAdmissionRepo{}
+			switch scenario {
+			case "configured":
+				report := availabilityAdmissionPass(880301, "voice")
+				repo.reports = []*AvailabilityReport{report}
+			case "read_error":
+				repo.readErr = errors.New("fixture availability outage")
+			}
+			svc := &OpenAIGatewayService{httpUpstream: upstream, availabilityReader: repo}
+			account := &Account{ID: 880301, Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{
+				"api_key": "voice-key", "base_url": "https://relay.example/v1",
+			}}
+			ctx := context.Background()
+			result, err := svc.ForwardGrokVoice(ctx, nil, account, "tts", []byte(`{"input":"hello"}`), "application/json")
+			if scenario == "unconfigured" {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Len(t, upstream.requests, 1)
+			} else {
+				require.Nil(t, result)
+				require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+				require.Empty(t, upstream.requests)
+			}
+		})
+	}
+}
+
 func TestAwaitGrokRealtimeAudioObservedReadsFlagAfterRelayExits(t *testing.T) {
 	errCh := make(chan error, 1)
 	var observed atomic.Bool

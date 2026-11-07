@@ -1066,3 +1066,10 @@
 - Grok、Seedance、MiniMax-H3 统一禁止创建请求跟随重定向；Grok CLI 的兼容性 403 fallback 也排除异步创建。未知结果由 handler 返回 `502/upstream_error`、code `async_video_submission_unconfirmed`，提示先查询任务状态；未预先写入响应，不记为第二个供应商故障。明确的 401/402/403/405/422/429 保持原账号切换预算，同步图片路径不改变。
 - 新增 handler 回归覆盖连接中断、500/408、缺 ID、读失败、超限、重定向、共享Key预发送切线和图片兼容；旧 `TestGrokMedia429FailoverIsBounded` 两轮通过。最新定向 race：`go test -race -p=1 -tags unit ./internal/handler ./internal/service ./internal/repository -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestIsGrokCLIAccessDeniedFallbackCandidate|TestGrokAccessDeniedFallback|TestHTTPUpstreamDoDoesNotFallback)' -count=1 -timeout=10m` 退出0（handler 3.397s、service 1.761s、repository 1.242s）。隔离 Redis 7/TLS WS integration 同命令退出0、7.755s；unit/integration `go vet` 退出0；handler/service/repository 分包 lint 均输出 `0 issues.`。
 - 提交前保持用户已有 Prism 改动和 `backend/internal/service/data/` 测试图片未纳入；本项仍不实现远端持久所有权、未知结果恢复或终态释放，D2 继续进行。
+
+## 2026-11-08：D3 Grok HTTP 语音 availability 终检
+
+- Grok `/tts`、`/stt` 和 custom-voices 的独立 HTTP 出站此前只复用共享 Key，不读取账号最新 availability；已配置规则或控制面读取失败时仍可发送。服务层在最终认证头和账号覆写完成后调用既有终检，规则存在时因缺少语音 wire scope 保守拒绝；无规则保持原行为，管理员探测路径不受业务终检阻断。
+- handler 将 HTTP 语音本地准入拒绝加入原账号切换预算；拒绝释放账号槽位，不更新供应商健康或上游错误样本，候选耗尽返回 `admission_unavailable` 503。WS 终检行为保持并与 HTTP 共享同一 `admitAvailabilityRequest` 入口。
+- `go test -race -p=1 -tags unit ./internal/service ./internal/handler -run '^(TestForwardGrokVoiceAvailabilityFailsClosedBeforeSend|TestGrokVoiceHTTPAvailabilityAdmission|TestGrokVoiceAvailability)' -count=1 -timeout=8m` 退出0（service 1.524s、handler 1.212s）；`go vet -p=1 -tags unit ./internal/service ./internal/handler` 退出0；分包 lint `./internal/service/... ./internal/handler/...` 退出0，输出 `0 issues.`。未运行 CI、未部署或生产迁移。
+- 本项不构造语音专属上游质量探测，也不扩大到其他独立出站；D3 仍有未观测能力和托管连接范围待验收。

@@ -374,6 +374,7 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 	var forbiddenBudget grokForbiddenFailoverBudget
 	upstreamSwitchCount := 0
 	var last *service.UpstreamFailoverError
+	var lastAdmissionErr error
 	reqLog := requestLogger(c, "handler.openai_gateway.grok_voice", zap.String("endpoint", endpoint))
 	selectionModel := "grok-4.5"
 	keyRelease, keyErr := h.concurrencyHelper.AcquireAPIKeySlot(c.Request.Context(), apiKey.ID, apiKey.ConcurrencyLimit)
@@ -399,7 +400,9 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 			service.PlatformGrok,
 		)
 		if selectErr != nil || selection == nil || selection.Account == nil {
-			if last != nil {
+			if lastAdmissionErr != nil {
+				h.handleTurnAdmissionError(c, lastAdmissionErr, false)
+			} else if last != nil {
 				h.handleFailoverExhausted(c, last, false)
 			} else {
 				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available Grok accounts")
@@ -430,6 +433,11 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 			h.recordGrokVoiceUsage(c, apiKey, account, subscription, endpoint, body, result)
 			return
 		}
+		if service.IsOpenAITurnAdmissionError(forwardErr) {
+			lastAdmissionErr = forwardErr
+			failed[account.ID] = struct{}{}
+			continue
+		}
 		var failoverErr *service.UpstreamFailoverError
 		if errors.As(forwardErr, &failoverErr) {
 			if c.Writer.Written() || !forbiddenBudget.canRetry(failoverErr, upstreamSwitchCount) {
@@ -444,7 +452,9 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 		// Non-failover errors: handleGrokMediaErrorResponse / transport already wrote response.
 		return
 	}
-	if last != nil {
+	if lastAdmissionErr != nil {
+		h.handleTurnAdmissionError(c, lastAdmissionErr, false)
+	} else if last != nil {
 		h.handleFailoverExhausted(c, last, false)
 	}
 }

@@ -92,6 +92,12 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 		applyGrokCLIHeaders(req.Header)
 	}
 	account.ApplyHeaderOverrides(req.Header)
+	// Voice HTTP has no availability wire scope yet. When an account has an
+	// active availability rule, fail closed before the physical send instead of
+	// treating an ordinary text probe as voice evidence.
+	if err := s.admitAvailabilityRequest(ctx, nil, account); err != nil {
+		return nil, err
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

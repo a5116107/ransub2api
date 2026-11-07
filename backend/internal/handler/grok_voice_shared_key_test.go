@@ -5,6 +5,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,69 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type grokVoiceAvailabilityReaderStub struct {
+	reports []*service.AvailabilityReport
+	err     error
+}
+
+func (r *grokVoiceAvailabilityReaderStub) ReadAccountAvailability(context.Context, *service.Account) ([]*service.AvailabilityReport, error) {
+	return r.reports, r.err
+}
+
+func newGrokVoiceAvailabilityHandler(t *testing.T, reader service.AccountAvailabilityReader) (*OpenAIGatewayHandler, *grokMediaSlotsCache, *grokMediaSlotUpstream) {
+	t.Helper()
+	accounts := make([]service.Account, 3)
+	for i := range accounts {
+		accounts[i] = service.Account{ID: int64(i + 1), Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey,
+			Status: service.StatusActive, Schedulable: true, Concurrency: 10, Priority: i, GroupIDs: []int64{24},
+			Credentials: map[string]any{"api_key": "voice-key", "base_url": "https://relay.example/v1"}}
+	}
+	slots := &grokMediaSlotsCache{accounts: map[string]int64{}, users: map[string]int64{}}
+	concurrency := service.NewConcurrencyService(slots)
+	bindings := &grokMediaSlotBindings{owner: 1}
+	upstream := &grokMediaSlotUpstream{call: func(*http.Request, int64) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"audio":"fixture"}`))}, nil
+	}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	repo := grokMediaSlotRepo{openAIImagesFailoverAccountRepo: openAIImagesFailoverAccountRepo{accounts: accounts}}
+	gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency,
+		nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+		service.WithOpenAIAvailabilityReader(reader))
+	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billing.Stop)
+	h := NewOpenAIGatewayHandler(gateway, concurrency, billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
+	return h, slots, upstream
+}
+
+func TestGrokVoiceHTTPAvailabilityAdmission(t *testing.T) {
+	for _, scenario := range []string{"configured", "unconfigured", "read_error"} {
+		t.Run(scenario, func(t *testing.T) {
+			reader := &grokVoiceAvailabilityReaderStub{}
+			switch scenario {
+			case "configured":
+				reader.reports = []*service.AvailabilityReport{{AccountID: 1, Configured: true, Enabled: true}}
+			case "read_error":
+				reader.err = errors.New("fixture availability outage")
+			}
+			h, slots, upstream := newGrokVoiceAvailabilityHandler(t, reader)
+			c, recorder := grokMediaSlotContext(t.Context(), false)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(`{"input":"hello"}`)).WithContext(t.Context())
+			c.Request.Header.Set("Content-Type", "application/json")
+			h.GrokVoice(c, "tts")
+			if scenario == "unconfigured" {
+				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+				require.Equal(t, 1, upstream.calls)
+			} else {
+				require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+				require.Contains(t, recorder.Body.String(), "admission_unavailable")
+				require.Zero(t, upstream.calls, "availability refusal must send zero voice requests")
+			}
+			slots.assertReleased(t)
+		})
+	}
+}
 
 func TestGrokVoiceSharedKeyRefusalReturns503BeforeUpgrade(t *testing.T) {
 	for _, tc := range []struct {
