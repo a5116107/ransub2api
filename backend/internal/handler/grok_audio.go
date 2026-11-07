@@ -136,6 +136,7 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 	var token string
 	var upstream *service.GrokRealtimeUpstream
 	var candidateSeen bool
+	var localKeyRefusal bool
 	for attempts := 0; attempts < 4; attempts++ {
 		// Voice models are not a text-model capability. Passing a concrete text
 		// model here would reject accounts mapped only to an older/default text
@@ -174,11 +175,26 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 			failed[account.ID] = struct{}{}
 			continue
 		}
-		probeCtx, cancelProbe := context.WithTimeout(c.Request.Context(), service.DefaultGrokRealtimeDialTimeout)
-		candidateUpstream, openErr := ws.open(probeCtx, account, token)
-		cancelProbe()
+		candidateUpstream, openErr := ws.open(c.Request.Context(), account, token)
 		if openErr != nil {
 			reqLog.Warn("grok_"+ws.name+".pre_accept_failed", zap.Int64("account_id", account.ID), zap.Error(openErr))
+			if errors.Is(openErr, service.ErrUpstreamKeyLease) {
+				localKeyRefusal = true
+				release()
+				release = nil
+				break
+			}
+			if service.IsUpstreamKeyAdmissionFailure(openErr) {
+				localKeyRefusal = true
+				release()
+				release = nil
+				if forbiddenBudget.active {
+					break
+				}
+				failed[account.ID] = struct{}{}
+				continue
+			}
+			localKeyRefusal = false
 			statusCode := http.StatusBadGateway
 			var responseBody []byte
 			var responseHeaders http.Header
@@ -203,7 +219,9 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 		break
 	}
 	if selection == nil || selection.Account == nil || release == nil || upstream == nil {
-		if !candidateSeen {
+		if localKeyRefusal {
+			h.errorResponse(c, http.StatusServiceUnavailable, "upstream_key_admission_unavailable", "No shared upstream Key capacity is available")
+		} else if !candidateSeen {
 			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available Grok accounts")
 		} else {
 			h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Grok "+strings.ReplaceAll(ws.name, "_", " ")+" upstream unavailable")
@@ -223,6 +241,9 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 	if proxyErr != nil {
 		reqLog.Info("grok_"+ws.name+".proxy_failed", zap.Error(proxyErr))
 		if !isExpectedGrokRealtimeClose(proxyErr) {
+			if errors.Is(proxyErr, service.ErrUpstreamKeyLease) && result != nil {
+				h.recordGrokVoiceUsage(c, apiKey, selection.Account, subscription, ws.name, nil, result)
+			}
 			_ = conn.Close(coderws.StatusInternalError, "upstream voice websocket failed")
 			return
 		}

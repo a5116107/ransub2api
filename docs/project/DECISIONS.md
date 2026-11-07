@@ -1030,3 +1030,13 @@
 - `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin ./cmd/server` 与 `go vet -p 1 -tags=integration ./internal/service ./cmd/server` 均退出0。Wire 预装程序由 Go 1.26 构建，不能处理项目 Go 1.27；使用 `go run -mod=readonly github.com/google/wire/cmd/wire gen` 生成，实际仅更新工厂传参。
 - `bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/admin/... ./cmd/server/...` 退出0，输出 `0 issues.`。
 - D2 父项仍保留其他未知鉴权、独立出站及跨请求后台任务，原 20 项总数和状态不变；未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-07：D2 Grok 语音 WebSocket 共享准入
+
+- Grok Realtime 与流式 TTS 使用独立 WebSocket；旧实现在共享 Key 满额时仍拨号。`TestGrokVoiceSharedKeyRejectsBeforeWebSocketDial` 原实现两例失败；独立管理员实时探测原实现也在满额时报告成功，测试先失败。
+- 业务语音、管理员探测及原握手探测收敛至同一最终凭据和额度权威：受限连接建连前取槽并禁重定向，持有、续期到连接关闭；握手超时只约束拨号，租约丢失立即关闭连接，不重放。正常关闭先断连接再释放，异常权威或拨号结果清理本次资源；未启用共享规则保留原握手和关闭方式。
+- 本地拒绝与租约失效不记供应商故障，发送前容量不足可按原边界重选；局部额度拒绝后真实供应商错误保留其分类。新增反例证明未知 403 后本地满额曾额外访问第三个账号，修复后保留原仅一个备用账号的预算。租约丢失后已观察的实时音频或已发送 TTS 字数沿原路径提交用量；标准计费内存仓储验证每次只构造一笔正金额命令，不证明生产余额事务。
+- `go test -race -p 1 -tags=unit ./internal/service ./internal/handler -run '^(TestGrokVoice|TestAccountGrokRealtimeProbe|TestAccountTestService_GrokRealtime|TestOpenGrok|TestProbeGrok|TestProxyGrok|TestGrokForbiddenFailoverBudget|TestSharedUpstreamKey.*WS)' -count=2 -timeout=8m` 退出0，service 11.433s、handler 1.262s；覆盖真实处理器 503、候选切换预算、连接持有与并发关闭、异常结果释放和原语音回归。标准计费用例另以 `go test -race -p 1 -tags=unit ./internal/handler -run '^(TestGrokVoice|TestGrokForbiddenFailoverBudget)' -count=2 -timeout=6m -v` 退出0、1.231s。
+- `go test -race -p 1 -tags=integration ./internal/service -run '^TestGrokVoiceSharesRealRedisKeyCapacityAndRecovers$' -count=2 -timeout=8m -v` 退出0、28.196s；隔离 Redis 7 与本机 TLS WebSocket 覆盖 realtime/TTS 直连及 Astra、HTTP 与语音双向互斥、活跃租约续期、关闭恢复及管理员探测满额/恢复。最终代码单轮同命令退出0、14.251s；不接触线上服务。
+- `go vet -p 1 -tags=unit ./internal/service ./internal/handler` 与 `go vet -p 1 -tags=integration ./internal/service` 均退出0。原规则 lint 首次指出新增测试一处未检查类型断言，修复后该异常清理用例两轮 race 退出0、1.206s；`bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/...` 重跑退出0，输出 `0 issues.`。
+- 本项只覆盖已识别凭据和可关闭的语音连接；远端是否终止、其他未知认证及异步视频跨请求任务仍须独立验收。原20项仍为12 done、3 in_progress、5 pending；未运行CI、推送、部署或生产迁移。

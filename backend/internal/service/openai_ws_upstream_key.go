@@ -8,10 +8,14 @@ import (
 )
 
 func (s *OpenAIGatewayService) openAIWSKeyAuthority() (UpstreamKeyConcurrency, error) {
-	if !upstreamKeyAdmissionRequired(s.cfg) {
+	return sharedWSKeyAuthority(s.cfg, s.httpUpstream)
+}
+
+func sharedWSKeyAuthority(cfg *config.Config, upstream HTTPUpstream) (UpstreamKeyConcurrency, error) {
+	if !upstreamKeyAdmissionRequired(cfg) {
 		return nil, nil
 	}
-	authority, ok := s.httpUpstream.(UpstreamKeyConcurrency)
+	authority, ok := upstream.(UpstreamKeyConcurrency)
 	if !ok {
 		return nil, ErrUpstreamKeyPolicy
 	}

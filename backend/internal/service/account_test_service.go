@@ -2166,9 +2166,17 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 	dialCtx, cancel := context.WithTimeout(ctx, grokRealtimeProbeTimeout)
 	defer cancel()
 
-	conn, status, _, dialErr := dialer.Dial(dialCtx, wsURL, headers, s.grokTestProxyURL(account))
+	upstream, dialErr := dialGrokVoiceWithSharedKey(dialCtx, s.cfg, s.httpUpstream, dialer, u, headers, s.grokTestProxyURL(account))
 	if dialErr != nil {
+		if IsUpstreamKeyAdmissionFailure(dialErr) || errors.Is(dialErr, ErrUpstreamKeyLease) {
+			return s.sendErrorAndEnd(c, "Grok Realtime shared upstream Key capacity unavailable")
+		}
 		detail := dialErr.Error()
+		status := 0
+		var voiceErr *GrokRealtimeDialError
+		if errors.As(dialErr, &voiceErr) {
+			status = voiceErr.StatusCode
+		}
 		var hs *openAIWSHandshakeError
 		if errors.As(dialErr, &hs) && len(hs.Body) > 0 {
 			body := strings.TrimSpace(string(hs.Body))
@@ -2182,7 +2190,7 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Realtime WS dial failed: %s", detail))
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = upstream.Close() }()
 
 	s.sendEvent(c, TestEvent{Type: "content", Text: "realtime ws handshake ok\n"})
 
@@ -2190,7 +2198,7 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 	// Handshake alone is enough for connectivity; missing first event is not a failure.
 	readCtx, readCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer readCancel()
-	if msg, readErr := conn.ReadMessage(readCtx); readErr == nil && len(msg) > 0 {
+	if msg, readErr := upstream.conn.ReadMessage(readCtx); readErr == nil && len(msg) > 0 {
 		eventType := strings.TrimSpace(gjson.GetBytes(msg, "type").String())
 		if eventType == "" {
 			eventType = "unknown"
@@ -2208,6 +2216,9 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 			Type: "content",
 			Text: "realtime handshake succeeded (no server event within 3s; still connectivity OK)\n",
 		})
+	}
+	if upstream.keyCtx != nil && errors.Is(context.Cause(upstream.keyCtx), ErrUpstreamKeyLease) {
+		return s.sendErrorAndEnd(c, "Grok Realtime shared upstream Key lease lost")
 	}
 
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
