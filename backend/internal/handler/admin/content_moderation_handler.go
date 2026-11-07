@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -159,6 +161,10 @@ func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
 		Images:    req.Images,
 	})
 	if err != nil {
+		if service.IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, service.ErrUpstreamKeyLease) {
+			response.Error(c, http.StatusServiceUnavailable, "upstream key concurrency unavailable")
+			return
+		}
 		response.ErrorFrom(c, err)
 		return
 	}

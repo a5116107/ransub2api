@@ -1019,3 +1019,14 @@
 - 原有配置、服务、仓储相关竞态回归两轮分别通过，最终 Basic WebSocket 握手头与监控回归两轮 `go test -race -p 1 -tags=unit ./internal/service -run '^(TestOpenAIWSConnPool(KeepsFinalHandshakeKeyFingerprints|CapturesRawHandshakeKey)|TestChannelMonitor(SharedKey|MissingConfiguredAuthority|PartialSkip|LostLease|HeaderOverrides|BufferedResponse))' -count=2 -timeout=6m` 退出0、service 1.351s。`go vet -p 1 -tags=unit ./internal/config ./internal/service ./internal/repository` 退出0。
 - 复用的 Redis 启动器收敛版本解析后，最终上述 integration race 单轮退出0、service 8.490s，八类监控及两类 quota 用例均显式 PASS；`go vet -p 1 -tags=integration ./internal/config ./internal/service` 退出0。`bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/config/... ./internal/service/...` 退出0，输出 `0 issues.`。
 - 启用 Basic 限额仍须管理员配置摘要、升级所有实例并排空旧请求；真实供应商是否把 Basic 与其他认证视为同一账户未获证明，未验证混合版本或线上环境。D2 父任务仍进行，原 20 项状态不变；不运行 CI、不推送、不部署、不执行生产迁移。
+
+## 2026-11-07：D2 内容审核独立出站共享准入
+
+- 真实 Redis 与本机 HTTP 反例显示，同一 Bearer Key 的业务请求已占满时，OpenAI/TypeSafe 审核经直连和 Astra 四种路径均仍发送；首次夹具误用空数据库在生产构造器初始化处 panic，并未作为产品故障证据，改用内存 SQL 模拟和独立 Redis 后完成复现。
+- 生产构造器在启动审核 worker 前注入原共享 Key 权威；每次审核复制其原 HTTP 客户端，在最终请求 Transport 处取得并保持原租约，不改写共享连接池、代理或 Cookie。共享/区域策略启用时禁止重定向，未启用时保持旧行为。两个引擎、同步/异步执行和管理测试使用同一审核客户端路径。
+- 本地满额/策略拒绝与发送后租约丢失不更新供应商 Key 健康、成功/失败和延迟样本；发送前满额沿原重试轮换其他 Key，租约丢失不重放。管理测试返回本地 503，原审核失败放行及审核错误记录行为保持；TypeSafe 原本隐藏底层传输错误，通过每次调用独有的 Transport 状态恢复本地准入原因，不改变其公共错误文本。
+- 原始四路径反例先失败；`go test -race -p 1 -tags=integration ./internal/service -run '^TestContentModerationSharesRealRedisKeyCapacityAndRecovers$' -count=2 -timeout=8m -v` 使用生产构造器、内存 SQL 模拟及隔离 Redis 7 退出0、service 6.794s；最终代码单轮同命令退出0、5.661s。双向互斥、响应体未结束时占槽、释放后恢复均通过，不连接线上数据库。
+- 初次扩大审核竞态回归失败但错误行被大量日志截断；重新用结构化输出运行时曾复现 `TestContentModerationCheck_ModelFilterIncludeOnlyAuditsListedModels` 等待异步日志超时。其模型过滤夹具原每次启动32个不退出的后台 worker；改为测试内单个真实 worker、结束时取消并等待退出，未改生产逻辑、断言或等待上限。`go test -race -p 1 -tags=unit ./internal/service -run '^TestContentModerationCheck_ModelFilter' -shuffle=on -count=10 -timeout=8m` 退出0、5.692s；随后审核与管理端相关测试随机顺序两轮分别通过（service 31.872s、admin 1.444s）。夹具泄漏的消除已验证，但不能证明它是最初被截断失败的唯一原因。
+- `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin ./cmd/server` 与 `go vet -p 1 -tags=integration ./internal/service ./cmd/server` 均退出0。Wire 预装程序由 Go 1.26 构建，不能处理项目 Go 1.27；使用 `go run -mod=readonly github.com/google/wire/cmd/wire gen` 生成，实际仅更新工厂传参。
+- `bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/admin/... ./cmd/server/...` 退出0，输出 `0 issues.`。
+- D2 父项仍保留其他未知鉴权、独立出站及跨请求后台任务，原 20 项总数和状态不变；未运行 CI、推送、部署或生产迁移。

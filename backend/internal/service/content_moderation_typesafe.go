@@ -71,6 +71,9 @@ func (s *ContentModerationService) callTypeSafeModeration(ctx context.Context, c
 	result, status, err := typesafe.Evaluate(ctx, client, cfg.keyBaseURL(key), key, typesafe.Request{
 		Model: cfg.Model, State: text, Questions: typeSafeModerationQuestions(),
 	})
+	if localErr := moderationLocalAdmissionError(client); localErr != nil {
+		return nil, localErr
+	}
 	if httpStatus != nil {
 		*httpStatus = status
 	}

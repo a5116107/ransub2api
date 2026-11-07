@@ -3,10 +3,10 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2共享Key准入；Basic凭据识别已补齐，父任务仍在进行。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`；Basic修复已验证，不运行CI、推送、部署或生产迁移。
-- 证据：Basic旧实现漏控、头空白漏识别已复现；隔离Redis 7直连/Astra互斥、恢复及无规则兼容race通过，unit/integration vet与原规则lint 0；此前回归见DECISIONS。
-- 下一动作：验证并补齐内容审核OpenAI/TypeSafe独立出站的共享Key额度及本地错误归因；继续D2其他未知签名与跨请求后台额度，再推进D3/D4和D5–D9。
+- 任务：D2共享Key准入；Basic及内容审核独立出站准入已补齐，父任务仍在进行。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`；内容审核修复已验证，不运行CI、推送、部署或生产迁移。
+- 证据：审核旧实现四路径漏控已复现；隔离Redis 7双向占槽/恢复race、审核随机两轮、模型过滤十轮、unit/integration vet及原规则lint 0通过；细节与先前证据见DECISIONS。
+- 下一动作：继续D2其他未知签名、独立出站与跨请求后台额度，再推进D3/D4和D5–D9；不猜测不同认证是否同一真实凭据。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
 
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、BPS quota provider-client、共享Key头大小写、Astra/区域WS、V1探测、Bedrock签名、OAuth用量/模型清单直连准入、Agent Identity公钥及Basic准入已验证；其他来源待验收 |
+| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、BPS quota provider-client、共享Key头大小写、Astra/区域WS、V1探测、Bedrock签名、OAuth用量/模型清单直连准入、Agent Identity公钥、Basic及内容审核准入已验证；其他来源待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |

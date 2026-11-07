@@ -2,12 +2,16 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/cyberevidence"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -16,6 +20,46 @@ import (
 type moderationEngineSettings struct {
 	service.SettingRepository
 	value string
+}
+
+type moderationBlockedUpstream struct {
+	service.HTTPUpstream
+	err error
+}
+
+func (s moderationBlockedUpstream) BeginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+	return req, nil, s.err
+}
+
+func TestContentModerationTestKeyLocalAdmissionReturns503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, engine := range []string{"openai", "typesafe"} {
+		for _, admissionErr := range []error{service.ErrUpstreamKeyCapacity, service.ErrUpstreamKeyPolicy, service.ErrUpstreamKeyLease} {
+			t.Run(engine+"-"+admissionErr.Error(), func(t *testing.T) {
+				settings := &moderationEngineSettings{value: `{}`}
+				cfg := &config.Config{}
+				cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+				db, mock, err := sqlmock.New()
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = db.Close() })
+				mock.ExpectQuery("SELECT value FROM settings").WithArgs(cyberevidence.ConfigKey).WillReturnError(sql.ErrNoRows)
+				svc := service.ProvideContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil, db, nil, cfg, moderationBlockedUpstream{err: admissionErr})
+				t.Cleanup(svc.CyberEvidence().Close)
+				require.NoError(t, mock.ExpectationsWereMet())
+				router := gin.New()
+				router.POST("/test", NewContentModerationHandler(svc).TestAPIKeys)
+				w := httptest.NewRecorder()
+				payload, err := json.Marshal(map[string]any{"engine": engine, "base_url": "https://fixture.invalid", "api_keys": []string{"fixture-secret"}, "prompt": "fixture"})
+				require.NoError(t, err)
+				req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(string(payload)))
+				req.Header.Set("Content-Type", "application/json")
+				router.ServeHTTP(w, req)
+				require.Equal(t, http.StatusServiceUnavailable, w.Code)
+				require.Contains(t, w.Body.String(), "upstream key concurrency unavailable")
+				require.NotContains(t, w.Body.String(), "fixture-secret")
+			})
+		}
+	}
 }
 
 func (r *moderationEngineSettings) GetValue(context.Context, string) (string, error) {

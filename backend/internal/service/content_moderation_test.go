@@ -786,7 +786,7 @@ func newContentModerationModelFilterTestService(t *testing.T, cfg *ContentModera
 			SettingKeyRiskControlEnabled:      "true",
 			SettingKeyContentModerationConfig: string(rawCfg),
 		}},
-		repo,
+		nil,
 		&contentModerationTestHashCache{},
 		nil,
 		nil,
@@ -794,6 +794,21 @@ func newContentModerationModelFilterTestService(t *testing.T, cfg *ContentModera
 		nil,
 		nil,
 	)
+	svc.repo = repo
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		svc.runWorker(ctx, 0)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("moderation test worker did not stop")
+		}
+	})
 	return svc, repo
 }
 

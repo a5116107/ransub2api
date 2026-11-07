@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/cyberevidence"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
@@ -572,6 +573,9 @@ type ContentModerationService struct {
 	runtimeRefreshRetryAt    atomic.Int64
 	keyHealthMu              sync.Mutex
 	keyHealth                map[string]*contentModerationKeyHealth
+
+	upstreamKeyAdmission        UpstreamKeyRequestAdmission
+	requireUpstreamKeyAdmission bool
 }
 
 type contentModerationRuntimeSnapshot struct {
@@ -622,6 +626,21 @@ func NewContentModerationService(
 	authCacheInvalidator APIKeyAuthCacheInvalidator,
 	emailService *EmailService,
 ) *ContentModerationService {
+	return newContentModerationService(settingRepo, repo, hashCache, groupRepo, userRepo, proxyRepo, authCacheInvalidator, emailService, nil, nil)
+}
+
+func newContentModerationService(
+	settingRepo SettingRepository,
+	repo ContentModerationRepository,
+	hashCache ContentModerationHashCache,
+	groupRepo GroupRepository,
+	userRepo UserRepository,
+	proxyRepo ProxyRepository,
+	authCacheInvalidator APIKeyAuthCacheInvalidator,
+	emailService *EmailService,
+	cfg *config.Config,
+	upstream HTTPUpstream,
+) *ContentModerationService {
 	svc := &ContentModerationService{
 		settingRepo:          settingRepo,
 		repo:                 repo,
@@ -636,6 +655,7 @@ func NewContentModerationService(
 		asyncQueue:           make(chan contentModerationTask, maxContentModerationQueueSize),
 		keyHealth:            make(map[string]*contentModerationKeyHealth),
 	}
+	svc.setUpstreamKeyAuthority(cfg, upstream)
 	if settingRepo != nil && repo != nil {
 		for i := 0; i < svc.workerCount; i++ {
 			go svc.worker(i)
@@ -850,6 +870,9 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 		result, err := s.callModerationOnceWithInput(ctx, cfg, key, testInput, &httpStatus)
 		latency := int(time.Since(start).Milliseconds())
 		keyHash := scopedModerationKeyHash(key, cfg.Engine)
+		if isModerationKeyAdmissionFailure(err) {
+			return nil, err
+		}
 		if err != nil {
 			s.markAPIKeyError(key, err.Error(), latency, httpStatus, cfg.Engine)
 		} else {
@@ -1850,17 +1873,20 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		latency := int(time.Since(start).Milliseconds())
 		if err == nil {
 			if trackLoad {
-				s.finishModerationAPIKeyCall(key, latency, true, cfg.Engine)
+				s.finishModerationAPIKeyCall(key, latency, nil, cfg.Engine)
 			}
 			s.markAPIKeySuccess(key, latency, httpStatus, cfg.Engine)
 			return result, nil
 		}
+		localFailure := isModerationKeyAdmissionFailure(err)
 		if trackLoad {
-			s.finishModerationAPIKeyCall(key, latency, false, cfg.Engine)
+			s.finishModerationAPIKeyCall(key, latency, err, cfg.Engine)
 		}
-		s.markAPIKeyError(key, err.Error(), latency, httpStatus, cfg.Engine)
+		if !localFailure {
+			s.markAPIKeyError(key, err.Error(), latency, httpStatus, cfg.Engine)
+		}
 		lastErr = err
-		if httpStatus == http.StatusBadRequest {
+		if httpStatus == http.StatusBadRequest || errors.Is(err, ErrUpstreamKeyLease) {
 			break
 		}
 		if attempt == attempts-1 {
@@ -1909,6 +1935,12 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 		return nil, err
 	}
 	resp, err := client.Do(req)
+	if localErr := moderationLocalAdmissionError(client); localErr != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, localErr
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1919,11 +1951,20 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if localErr := moderationLocalAdmissionError(client); localErr != nil {
+			return nil, localErr
+		}
 		return nil, fmt.Errorf("moderation api status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var out moderationAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		if localErr := moderationLocalAdmissionError(client); localErr != nil {
+			return nil, localErr
+		}
 		return nil, err
+	}
+	if localErr := moderationLocalAdmissionError(client); localErr != nil {
+		return nil, localErr
 	}
 	if len(out.Results) == 0 {
 		return nil, errors.New("moderation api returned empty results")
@@ -1949,9 +1990,9 @@ const contentModerationProxyURLCacheTTL = time.Minute
 func (s *ContentModerationService) moderationHTTPClient(ctx context.Context, cfg *ContentModerationConfig) (*http.Client, error) {
 	if cfg == nil || cfg.ProxyID == nil {
 		if s.httpClient == nil {
-			return http.DefaultClient, nil
+			return s.admitModerationClient(http.DefaultClient)
 		}
-		return s.httpClient, nil
+		return s.admitModerationClient(s.httpClient)
 	}
 	proxyURL, err := s.resolveModerationProxyURL(ctx, *cfg.ProxyID)
 	if err != nil {
@@ -1961,7 +2002,7 @@ func (s *ContentModerationService) moderationHTTPClient(ctx context.Context, cfg
 	if err != nil {
 		return nil, fmt.Errorf("build moderation proxy client: %w", err)
 	}
-	return client, nil
+	return s.admitModerationClient(client)
 }
 
 func (s *ContentModerationService) resolveModerationProxyURL(ctx context.Context, proxyID int64) (string, error) {
@@ -2504,7 +2545,7 @@ func (s *ContentModerationService) beginModerationAPIKeyCall(key string, engine 
 	state.SyncActive++
 }
 
-func (s *ContentModerationService) finishModerationAPIKeyCall(key string, latencyMS int, success bool, engine ...string) {
+func (s *ContentModerationService) finishModerationAPIKeyCall(key string, latencyMS int, outcome error, engine ...string) {
 	hash := scopedModerationKeyHash(key, engine...)
 	if hash == "" || s == nil {
 		return
@@ -2518,9 +2559,12 @@ func (s *ContentModerationService) finishModerationAPIKeyCall(key string, latenc
 	if state.SyncActive > 0 {
 		state.SyncActive--
 	}
+	if isModerationKeyAdmissionFailure(outcome) {
+		return
+	}
 	state.SyncTotal++
 	state.SyncLatencyMS += int64(latencyMS)
-	if success {
+	if outcome == nil {
 		state.SyncSuccess++
 		return
 	}
