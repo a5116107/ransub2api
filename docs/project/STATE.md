@@ -3,9 +3,9 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2普通OAuth的Codex用量/模型清单探测与Agent Identity签名密钥接入共享Key额度；父任务仍在进行。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`，本轮基于60ed5cf；仅本地修改与隔离验证，不CI/推送/部署/生产迁移。
-- 证据：旧实现漏控而发出CONNECT已复现；Bearer探测两轮真实Redis直连/Astra race通过；Agent Identity公钥验证与真实Redis/loopback两轮race通过；models manifest 直连准入回归通过；unit vet、默认编译、原规则lint 0；详见DECISIONS。
+- 任务：D2普通OAuth的Codex用量/模型清单、BPS quota provider-client 与Agent Identity签名密钥接入共享Key额度；父任务仍在进行。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`；BPS quota provider-client 准入修复与验证已在本地提交，未CI/推送/部署/生产迁移。
+- 证据：旧实现漏控而发出CONNECT已复现；Bearer探测两轮真实Redis直连/Astra race通过；Agent Identity公钥验证与真实Redis/loopback两轮race通过；models manifest 与 BPS quota provider-client 准入回归通过；本轮共享客户端并发/重定向隔离、短退避、租约丢失及真实 Redis/Astra 两轮通过；unit vet、默认编译、原规则lint 0；详见DECISIONS。
 - 下一动作：继续D2其他未知签名、插件外独立出站及跨请求后台额度，再推进D3/D4和D5–D9；不猜测不同运行时是否同密钥。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、共享Key头大小写、Astra/区域WS、V1探测、Bedrock签名、OAuth用量/模型清单直连准入、Agent Identity公钥准入已验证；其他来源待验收 |
+| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、BPS quota provider-client、共享Key头大小写、Astra/区域WS、V1探测、Bedrock签名、OAuth用量/模型清单直连准入、Agent Identity公钥准入已验证；其他来源待验收 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -46,7 +46,7 @@
 
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
 - 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包、unit标签、并发2与原规则；service预算12分钟，其余8分钟。
-- 真实Redis仅进程PATH前置`H:/Root/tools/redis/5.0.14.1`；真实SQL须进程环境指向隔离PostgreSQL，不打印DSN。
+- 真实Redis集成优先使用进程PATH；本机Windows Redis 3.0不支持共享额度Lua脚本所需的`redis.replicate_commands`，集成夹具自动切换已有Docker Redis 7；真实SQL须进程环境指向隔离PostgreSQL，不打印DSN。
 - 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个相同测试PNG共1164bytes，历史精确删除曾被策略拒绝（DECISIONS），保留且不提交。
 - 既有HTTP/compat归属、区域共享Key与Live的实际版本、完整/局部验证边界及失败历史见DECISIONS；不代替本轮WS源码或生产升级验收。区域竞争使用就绪SQL池，不计冷建连时延通过。
 - 不新增平行台账、配置或缓存实现，不用账号运营组充当Key额度键/缓存域证据。C盘副本统计effb8271不计主线完成数，开发统一在H盘。

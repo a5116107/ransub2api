@@ -736,7 +736,11 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 				// or the independent BPS grant. Spark resolves parent credentials
 				// but persists only its own bengalfox windows on the shadow row.
 				if s.openAIQuotaService != nil {
-					if quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID); err == nil {
+					quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID)
+					if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
+						s.retryOpenAICodexSnapshotAfterLocalFailure(account.ID, reservation)
+					}
+					if err == nil {
 						if updates := quotaUsage.schedulingUpdates; len(updates) > 0 {
 							mergeAccountExtra(account, updates)
 							if account.ParentAccountID != nil {

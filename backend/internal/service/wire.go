@@ -233,6 +233,10 @@ func ProvideOpenAIQuotaService(
 ) *OpenAIQuotaService {
 	service := NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory, referralClient)
 	service.agentIdentityWS = openAIGatewayService
+	if openAIGatewayService != nil {
+		service.requireUpstreamKeyAdmission = upstreamKeyAdmissionRequired(openAIGatewayService.cfg)
+		service.upstreamKeyAdmission, _ = openAIGatewayService.httpUpstream.(UpstreamKeyRequestAdmission)
+	}
 	return service
 }
 

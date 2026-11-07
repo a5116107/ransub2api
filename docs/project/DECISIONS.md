@@ -994,3 +994,18 @@
 - 本项与 Agent Identity 公钥准入共同覆盖 OAuth 用量/模型清单的 provider-specific 出站；其他非标准签名、后台跨请求额度和 D3–D9 仍待验收。
 - 抽取后最终受影响 race `go test -race -p 1 -tags=unit ./internal/service -run '^Test(CodexModelsOAuthDirectClientSharesConfiguredKeyAdmission|AdmittedOpenAIClientRequest|CodexUsageProbe)' -count=1 -timeout=8m -v` 显式 PASS、service 1.403s；Bearer 用量真实 Redis/Astra loopback 集成复跑一轮显式 PASS、service 12.145s。unit vet、默认 config/service/repository/cmd/server 编译及原规则 lint（`0 issues.`）均在抽取后的源码上通过；未运行 CI、推送或部署。
 - 同一抽取后的源码再复跑 Agent Identity 真实 Redis + loopback 集成：`go test -race -p 1 -tags=integration ./internal/service -run '^TestOpenAIAgentKeySharesRealRedisCapacityAndRecovers$' -count=1 -timeout=8m -v` 显式 PASS、service 7.931s；满额拒绝、释放后按本地退避恢复均保持。
+
+## 2026-11-07：D2 BPS quota provider-client 共享准入
+
+- `OpenAIQuotaService.QueryUsage` 和 reset 使用 `req/v3` 的 privacy client，之前只有 `HTTPUpstream` 路径拥有共享 Key 额度，BPS/后台查询可能绕过总额度。req/v3 的最终 HTTP 请求在 Transport 层形成，适合在这一层复用已有 `BeginUpstreamKeyRequest`。
+- 原位给 quota service 接入可选 HTTP 准入端口：启用共享/区域策略时，缺少权威或满额在发送前拒绝；Agent Identity 通过账号公钥绑定最终断言；响应体租约由 req/v3 自动读完并关闭后释放；租约丢失保留本地错误；重定向禁用。无共享策略沿旧 privacy client 行为。QueryUsage 与 ResetCredit 共用这一个 wrapper，不新增 authority、缓存或配置。
+- 回归 `go test -race -p 1 -tags=unit ./internal/service -run '^Test(OpenAIQuotaProviderClientSharesConfiguredKeyAdmission|OpenAIAgentKey|CodexUsageProbe)' -count=1 -timeout=8m` 显式 PASS、service 2.124s；quota 满额时 loopback 发送数为0，释放后 Query 和 targeted reset 均成功，准入完成次数与释放次数一致。原有 Agent Identity quota 测试继续保留。
+- 本项完成 BPS quota provider-client 的共享准入；其他非标准签名、更多后台跨请求出站和 D3–D9 仍待验收。
+
+## 2026-11-07：D2 BPS 准入边界修复与真实竞争验收
+
+- 首轮反例确认两处缺口：PrivacyClientFactory 在生产按代理/超时缓存同一个 `req.Client`，直接在其 Transport 上追加准入会让重复调用层层占槽并污染隐私/OAuth 请求；BPS/影子账号的 quota 查询被本地额度拒绝时仍保留普通快照冷却，无法及时恢复。定向回归先红：连续两次查询准入计数 `expected=4, actual=6`，本地拒绝未进入 `localRetry`。
+- 原位修复为每次 quota 请求 Clone req 客户端，仅替换副本的 `http.Client.Transport`，复用原连接池与 Cookie Jar；最终请求仍在 Transport 层绑定 Agent Identity 公钥、调用同一 `BeginUpstreamKeyRequest`，共享策略副本禁用重定向，关闭/取消/租约丢失按原 authority 生命周期处理。BPS/影子 quota 的 `ErrUpstreamKeyCapacity`、`ErrUpstreamKeyPolicy`、`ErrUpstreamKeyLease` 进入既有 5 秒本地重试退避，不新增缓存或额度权威。
+- 单元竞态回归：`go test -race -p 1 -tags=unit ./internal/service -run '^(TestOpenAIQuota|TestCodexUsageProbe|TestOpenAIAgentKey|TestAdmittedOpenAIClientRequest|TestGetOpenAIUsage_SparkShadow)' -count=1 -timeout=10m -v` 退出0；覆盖 quota/reset 满额、共享客户端重复与并发、重定向隔离、Agent Identity 影子公钥、短退避、响应体租约丢失，以及既有 Codex/Agent/影子回归。新增定向组再次退出0，service 1.502s。
+- 真实 Redis + loopback 集成 `go test -race -p 1 -tags=integration ./internal/service -run '^TestOpenAIQuotaSharesRealRedisCapacityAndRecovers$' -count=2 -timeout=12m -v` 退出0，direct/Astra 两组各两轮通过：quota 查询与 targeted reset 在满额时不发送，释放后恢复，重复查询不累加准入，响应体未结束时普通请求仍被拒绝。Windows Redis 3.0.504 不支持 `redis.replicate_commands`，夹具自动启动已有 Docker Redis 7；不把旧 Redis 版本误判为产品失败。既有 miniredis authority 回归 `TestUpstreamKeyHTTPAdmissionSharedLifetime|TestUpstreamKeyAtomicCompetitionAndPolicyRevision|TestUpstreamKeySharedAuthorityDeduplicatesCredentials` 两轮 race 通过。
+- 最终 `go vet -p 1 -tags=unit ./internal/config ./internal/service ./internal/repository` 无诊断；默认 `go test -p 1 ./internal/config ./internal/service ./internal/repository ./cmd/server -run '^$' -count=1 -timeout=8m` 编译通过；原规则 `task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/admin/... ./internal/repository/... ./cmd/server/...` 输出 `0 issues.`。未运行 CI、推送、部署或生产迁移；工作树中既有 12 个 BPS 测试 PNG 保留且未纳入本轮改动。

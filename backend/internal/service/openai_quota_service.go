@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -158,13 +159,15 @@ type OpenAIQuotaResetResult struct {
 // for OpenAI OAuth accounts. It reuses the privacy client factory so all calls
 // flow through the impersonated HTTP client (Cloudflare-friendly TLS fingerprint).
 type OpenAIQuotaService struct {
-	accountRepo          AccountRepository
-	proxyRepo            ProxyRepository
-	tokenProvider        *OpenAITokenProvider
-	privacyClientFactory PrivacyClientFactory
-	referralClient       OpenAIReferralClient
-	agentIdentityTaskMu  sync.Mutex
-	agentIdentityWS      agentIdentityWSConnectionInvalidator
+	accountRepo                 AccountRepository
+	proxyRepo                   ProxyRepository
+	tokenProvider               *OpenAITokenProvider
+	privacyClientFactory        PrivacyClientFactory
+	referralClient              OpenAIReferralClient
+	agentIdentityTaskMu         sync.Mutex
+	agentIdentityWS             agentIdentityWSConnectionInvalidator
+	upstreamKeyAdmission        UpstreamKeyRequestAdmission
+	requireUpstreamKeyAdmission bool
 }
 
 // NewOpenAIQuotaService constructs a quota service. token provider is required —
@@ -199,6 +202,10 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_CLIENT_ERROR", "failed to build upstream client: %v", err)
 	}
+	client, err = s.prepareQuotaClient(client, accountID)
+	if err != nil {
+		return nil, err
+	}
 
 	callCtx, cancel := context.WithTimeout(ctx, openaiQuotaUpstreamTimeout)
 	defer cancel()
@@ -224,6 +231,9 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 			SetSuccessResult(&payload).
 			Get(chatGPTUsageURL)
 		if err != nil {
+			if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
+				return nil, err
+			}
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_REQUEST_FAILED", "upstream request failed: %v", err)
 		}
 		if !resp.IsSuccessState() {
@@ -441,6 +451,10 @@ func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, c
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_CLIENT_ERROR", "failed to build upstream client: %v", err)
 	}
+	client, err = s.prepareQuotaClient(client, accountID)
+	if err != nil {
+		return nil, err
+	}
 
 	callCtx, cancel := context.WithTimeout(ctx, openaiQuotaUpstreamTimeout)
 	defer cancel()
@@ -464,6 +478,9 @@ func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, c
 			SetSuccessResult(&payload).
 			Post(chatGPTRateLimitResetURL)
 		if err != nil {
+			if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
+				return nil, err
+			}
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_RESET_REQUEST_FAILED", "upstream request failed: %v", err)
 		}
 		if !resp.IsSuccessState() {
@@ -604,6 +621,67 @@ func (s *OpenAIQuotaService) isAgentIdentityAccount(ctx context.Context, account
 		}
 	}
 	return account.IsOpenAIAgentIdentity()
+}
+
+// prepareQuotaClient places the req/v3 privacy client behind the same shared
+// Key authority as HTTPUpstream. req/v3 exposes the final *http.Request only
+// at its Transport boundary, after headers and the AgentAssertion are built.
+func (s *OpenAIQuotaService) prepareQuotaClient(client *req.Client, accountID int64) (*req.Client, error) {
+	if !s.requireUpstreamKeyAdmission {
+		return client, nil
+	}
+	if client == nil || s.upstreamKeyAdmission == nil {
+		return nil, ErrUpstreamKeyPolicy
+	}
+	pooled := client.GetClient()
+	if pooled == nil || pooled.Transport == nil {
+		return nil, ErrUpstreamKeyPolicy
+	}
+	// The factory may return a shared client. Isolate policy and middleware,
+	// while keeping its connection pool and cookie jar for existing behavior.
+	prepared := client.Clone()
+	prepared.SetRedirectPolicy(req.NoRedirectPolicy())
+	prepared.GetClient().Jar = pooled.Jar
+	prepared.GetClient().Transport = req.HttpRoundTripFunc(func(raw *http.Request) (*http.Response, error) {
+		bound := raw
+		if hasOpenAIAgentAssertion(raw.Header) {
+			bound = bindOpenAIAgentPublicKey(raw, s.accountRepo, accountByID(s.accountRepo, raw.Context(), accountID))
+		}
+		bound, finish, err := s.upstreamKeyAdmission.BeginUpstreamKeyRequest(bound)
+		if err != nil {
+			if finish != nil {
+				finish(nil, err)
+			}
+			return nil, err
+		}
+		if bound == nil || finish == nil {
+			if finish != nil {
+				finish(nil, ErrUpstreamKeyPolicy)
+			}
+			return nil, ErrUpstreamKeyPolicy
+		}
+		resp, roundTripErr := pooled.Transport.RoundTrip(bound)
+		finish(resp, roundTripErr)
+		if errors.Is(context.Cause(bound.Context()), ErrUpstreamKeyLease) {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, ErrUpstreamKeyLease
+		}
+		return resp, roundTripErr
+	})
+	return prepared, nil
+}
+
+func accountByID(repo AccountRepository, ctx context.Context, accountID int64) *Account {
+	if repo == nil || accountID <= 0 {
+		return nil
+	}
+	account, err := repo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil
+	}
+	return account
 }
 
 func (s *OpenAIQuotaService) buildCodexQuotaHeaders(ctx context.Context, accountID int64, accessToken, chatGPTAccountID string, fedRAMP bool) (map[string]string, string, error) {
