@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -129,40 +130,63 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 		if failover := upstreamKeyAdmissionFailover(err); failover != nil {
 			return nil, failover
 		}
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), req, err)
+		}
 		return nil, asyncVideoSubmissionError(endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if endpoint.IsAsyncVideoCreate() && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("seedance creation returned a redirect"))
 	}
 	responseBody, err := readGrokMediaResponseBody(resp.Body, s.cfg, c, endpoint)
 	if err != nil {
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
+		}
 		return nil, err
 	}
 	// Do not retry ambiguous asynchronous creates: the upstream may already have
 	// accepted a billable job. Preserve native error codes and response bodies.
 	if resp.StatusCode >= 300 {
+		forwardErr := fmt.Errorf("seedance upstream status %d", resp.StatusCode)
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), req, forwardErr)
+		}
 		writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
-		return nil, fmt.Errorf("seedance upstream status %d", resp.StatusCode)
+		return nil, forwardErr
 	}
 	result := &OpenAIForwardResult{Model: model, BillingModel: model, UpstreamModel: upstreamModel, Duration: time.Since(started), ResponseHeaders: resp.Header.Clone()}
 	if endpoint == SeedanceEndpointCreate {
 		idValue := gjson.GetBytes(responseBody, "id")
 		id := strings.TrimSpace(idValue.String())
 		if idValue.Type != gjson.String {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 			return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("seedance create response missing task ID"))
 		}
 		if _, err := buildSeedanceURL(base, SeedanceEndpointStatus, id); err != nil {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 			return nil, asyncVideoSubmissionError(endpoint, err)
 		}
 		result.ResponseID = SeedanceTaskKey(id)
+		if err := s.bindAsyncVideoKeyLease(context.WithoutCancel(ctx), req, result.ResponseID); err != nil {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
+			return nil, asyncVideoSubmissionError(endpoint, errors.Join(errors.New("seedance task lease binding failed"), err))
+		}
 	}
 	if endpoint == SeedanceEndpointStatus {
 		result.ResponseID = taskID
 		result.UpstreamModel = gjson.GetBytes(responseBody, "model").String()
-		if gjson.GetBytes(responseBody, "status").String() == "succeeded" {
+		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
+		result.AsyncVideoTerminal = status == "succeeded" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
+		if status == "succeeded" {
 			result.Usage.OutputTokens = max(0, int(gjson.GetBytes(responseBody, "usage.completion_tokens").Int()))
 		}
+	}
+	if endpoint == SeedanceEndpointDelete {
+		result.ResponseID = taskID
+		result.AsyncVideoTerminal = true
 	}
 	writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
 	return result, nil

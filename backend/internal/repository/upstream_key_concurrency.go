@@ -326,7 +326,10 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 	if req == nil || req.URL == nil || l.err != nil || !service.BatchImageKeyPolicyMatches(req, l.policy.Revision, l.digest) {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	member := service.BatchImageKeyCreationMember(req)
+	member := service.AsyncVideoKeyHandoffMember(req)
+	if member == "" {
+		member = service.BatchImageKeyCreationMember(req)
+	}
 	if member == "" {
 		if !strings.HasSuffix(req.URL.Path, "/realtime/calls") {
 			return nil, service.ErrUpstreamKeyPolicy
@@ -481,23 +484,58 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 		// The controller owns this member, independently of body close/cancel.
 		return req, func(*http.Response, error) {}, nil
 	}
-	fingerprints := config.UpstreamCredentialFingerprints(req)
-	if asyncVideo && len(fingerprints) == 0 {
-		return req, nil, service.ErrUpstreamKeyPolicy
-	}
 	if asyncVideo {
 		req = req.WithContext(service.WithHTTPUpstreamRedirectsDisabled(req.Context()))
+		handoff := service.AsyncVideoKeyHandoffFromRequest(req)
+		if s.upstreamKeyLimiter == nil || s.upstreamKeyLimiter.regional != nil {
+			return req, nil, service.ErrUpstreamKeyPolicy
+		}
+		fingerprints := config.UpstreamCredentialFingerprints(req)
+		if len(fingerprints) == 0 {
+			return req, nil, service.ErrUpstreamKeyPolicy
+		}
+		if handoff == nil {
+			for _, fingerprint := range fingerprints {
+				if s.upstreamKeyLimiter.policy.Limits[fingerprint] > 0 {
+					return req, nil, service.ErrUpstreamKeyPolicy
+				}
+			}
+			return req, func(*http.Response, error) {}, nil
+		}
+		controller, ok := any(s).(service.AsyncVideoKeyLeaseController)
+		if !ok {
+			return req, nil, service.ErrUpstreamKeyPolicy
+		}
+		lease, err := s.AcquirePersistentUpstreamKeySlots(req.Context(), req)
+		if err != nil {
+			return req, nil, err
+		}
+		if lease == nil {
+			return req, func(*http.Response, error) {}, nil
+		}
+		handoff.SetLease(lease)
+		if err := controller.PersistAsyncVideoKeyLease(req.Context(), handoff); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(req.Context()), 3*time.Second)
+			_ = s.ReleasePersistentUpstreamKeySlots(cleanupCtx, lease)
+			cancel()
+			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
+		}
+		return req, func(_ *http.Response, requestErr error) {
+			// A nil response is ambiguous for an asynchronous POST. Keep the
+			// provisional record for recovery instead of releasing a remote task
+			// that may already have been accepted.
+			if requestErr != nil {
+				_ = controller.MarkAsyncVideoKeySubmissionUnknown(context.WithoutCancel(req.Context()), handoff)
+			}
+		}, nil
 	}
+	fingerprints := config.UpstreamCredentialFingerprints(req)
 	ctx, release, err := s.AcquireUpstreamKeySlots(req.Context(), fingerprints)
 	if err != nil {
 		return req, nil, err
 	}
 	if release == nil {
 		return req, func(*http.Response, error) {}, nil
-	}
-	if asyncVideo {
-		release()
-		return req, nil, service.ErrUpstreamKeyPolicy
 	}
 	// SDP completes before a realtime session; its lease needs a separate handoff.
 	if strings.Contains(strings.ToLower(req.URL.Path), "/realtime") {

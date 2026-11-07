@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -74,7 +75,8 @@ func (l *PersistentUpstreamKeyLease) Validate() error {
 	batchID, attempt, hasAttempt := strings.Cut(strings.TrimPrefix(l.Member, "batch:"), ":")
 	liveMember := strings.HasPrefix(l.Member, "live:") && len(l.Member) > len("live:")
 	batchMember := strings.HasPrefix(l.Member, "batch:") && hasAttempt && IsValidBatchImageID(batchID) && uuid.Validate(attempt) == nil
-	if !liveMember && !batchMember {
+	videoMember := strings.HasPrefix(l.Member, "video:") && uuid.Validate(strings.TrimPrefix(l.Member, "video:")) == nil
+	if !liveMember && !batchMember && !videoMember {
 		return ErrUpstreamKeyPolicy
 	}
 	seen := make(map[string]bool, len(l.Fingerprints))
@@ -107,6 +109,95 @@ type PersistentUpstreamKeyConcurrency interface {
 	AcquirePersistentUpstreamKeySlots(context.Context, *http.Request) (*PersistentUpstreamKeyLease, error)
 	CheckPersistentUpstreamKeySlots(context.Context, *PersistentUpstreamKeyLease) error
 	ReleasePersistentUpstreamKeySlots(context.Context, *PersistentUpstreamKeyLease) error
+}
+
+// AsyncVideoKeyHandoff is the in-process handle for a video creation member.
+// The member is created before the upstream POST and the lease is attached by
+// the final HTTP admission layer. The handle deliberately contains no
+// authentication material; the durable record stores only the lease's
+// fingerprints and slot resource IDs.
+type AsyncVideoKeyHandoff struct {
+	mu     sync.RWMutex
+	member string
+	lease  *PersistentUpstreamKeyLease
+}
+
+func NewAsyncVideoKeyHandoff() *AsyncVideoKeyHandoff {
+	return &AsyncVideoKeyHandoff{member: "video:" + uuid.NewString()}
+}
+
+func WithAsyncVideoKeyHandoff(ctx context.Context, handoff *AsyncVideoKeyHandoff) context.Context {
+	if handoff == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, asyncVideoKeyHandoffContextKey{}, handoff)
+}
+
+func AsyncVideoKeyHandoffFromContext(ctx context.Context) *AsyncVideoKeyHandoff {
+	if ctx == nil {
+		return nil
+	}
+	handoff, _ := ctx.Value(asyncVideoKeyHandoffContextKey{}).(*AsyncVideoKeyHandoff)
+	return handoff
+}
+
+func AsyncVideoKeyHandoffFromRequest(req *http.Request) *AsyncVideoKeyHandoff {
+	if req == nil {
+		return nil
+	}
+	return AsyncVideoKeyHandoffFromContext(req.Context())
+}
+
+func AsyncVideoKeyHandoffMember(req *http.Request) string {
+	handoff := AsyncVideoKeyHandoffFromRequest(req)
+	if handoff == nil {
+		return ""
+	}
+	return handoff.Member()
+}
+
+func (h *AsyncVideoKeyHandoff) Member() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.member
+}
+
+func (h *AsyncVideoKeyHandoff) Lease() *PersistentUpstreamKeyLease {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.lease
+}
+
+func (h *AsyncVideoKeyHandoff) SetLease(lease *PersistentUpstreamKeyLease) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.lease = lease
+	h.mu.Unlock()
+}
+
+type asyncVideoKeyHandoffContextKey struct{}
+
+// AsyncVideoKeyLeaseController persists the provisional member before the
+// POST, binds it to the provider task ID after an acknowledged response, and
+// releases it only after a terminal task observation. The HTTP transport owns
+// the implementation so direct providers, Astra routing and future instances
+// use the same upstream-key authority.
+type AsyncVideoKeyLeaseController interface {
+	PersistAsyncVideoKeyLease(context.Context, *AsyncVideoKeyHandoff) error
+	BindAsyncVideoKeyLease(context.Context, *AsyncVideoKeyHandoff, string) error
+	BindAsyncVideoKeyLeaseByMember(context.Context, string, string) error
+	MarkAsyncVideoKeySubmissionUnknown(context.Context, *AsyncVideoKeyHandoff) error
+	ReleaseAsyncVideoKeyLease(context.Context, *AsyncVideoKeyHandoff) error
+	ReleaseAsyncVideoKeyLeaseByTask(context.Context, string) error
+	ReleaseAsyncVideoKeyLeaseByMember(context.Context, string) error
 }
 
 // UpstreamKeyRequestAdmission reuses the HTTP transport's exact admission and

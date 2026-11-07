@@ -529,6 +529,14 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		if miniMaxH3BaseCost != nil {
 			result.MiniMaxH3BaseCost = miniMaxH3BaseCost
 		}
+		if endpoint.IsVideoLookupRequest() && result.AsyncVideoTerminal {
+			if err := h.gatewayService.ReleaseAsyncVideoTaskLease(requestCtx, requestID); err != nil {
+				reqLog.Warn("grok_media.release_video_key_lease_failed",
+					zap.String("request_id", requestID),
+					zap.Error(err),
+				)
+			}
+		}
 		if endpoint.IsAsyncVideoCreate() && strings.TrimSpace(result.ResponseID) != "" {
 			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(
 				requestCtx, apiKey.GroupID, result.ResponseID, subject.UserID, apiKey.ID, account.ID,

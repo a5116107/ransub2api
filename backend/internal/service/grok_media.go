@@ -73,6 +73,9 @@ func (s *OpenAIGatewayService) guardAsyncVideoKeyRequest(req *http.Request, endp
 	}
 	// A redirect can replay a POST after the provider accepted the first copy.
 	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(req.Context()))
+	if AsyncVideoKeyHandoffFromRequest(req) == nil {
+		req = req.WithContext(WithAsyncVideoKeyHandoff(req.Context(), NewAsyncVideoKeyHandoff()))
+	}
 	required := upstreamKeyAdmissionRequired(s.cfg)
 	guard, ok := s.httpUpstream.(AsyncVideoKeyGuard)
 	if !ok || !guard.SupportsAsyncVideoKeyGuard() {
@@ -800,22 +803,34 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	s.rateLimitService.observeQualityResponse(upstreamReq.Context(), account, resp, err)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		forwardErr := s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), upstreamReq, forwardErr)
+		}
+		return nil, forwardErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	requestIDHeader := firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
 	requestModel := requestInfo.Model
 	if endpoint.IsAsyncVideoCreate() && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), upstreamReq)
 		return nil, asyncVideoSubmissionError(endpoint, errors.New("grok video creation returned a redirect"))
 	}
 	if resp.StatusCode >= 400 {
-		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader, requestModel)
+		result, forwardErr := s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader, requestModel)
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), upstreamReq, forwardErr)
+		}
+		return result, forwardErr
 	}
 
 	s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, requestModel), account, resp.Header, resp.StatusCode)
 	respBody, err := readGrokMediaResponseBody(resp.Body, s.cfg, c, endpoint)
 	if err != nil {
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), upstreamReq)
+		}
 		return nil, err
 	}
 	if endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits {
@@ -842,7 +857,14 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	}
 	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
 	if endpoint.IsAsyncVideoCreate() && strings.TrimSpace(usage.ResponseID) == "" {
+		_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), upstreamReq)
 		return nil, asyncVideoSubmissionError(endpoint, errors.New("grok video response missing task ID"))
+	}
+	if endpoint.IsAsyncVideoCreate() {
+		if err := s.bindAsyncVideoKeyLease(context.WithoutCancel(ctx), upstreamReq, usage.ResponseID); err != nil {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), upstreamReq)
+			return nil, asyncVideoSubmissionError(endpoint, errors.Join(errors.New("grok video task lease binding failed"), err))
+		}
 	}
 	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	resultModel := requestModel
@@ -874,6 +896,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		VideoCount:           usage.VideoCount,
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
+		AsyncVideoTerminal:   usage.AsyncVideoTerminal,
 	}, nil
 }
 
@@ -995,10 +1018,11 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	// official done+video.url, attach billable units so the handler can claim once
 	// (same path as status polling). Pending snapshot is merged in the handler.
 	result := &OpenAIForwardResult{
-		RequestID:       contentRequestID,
-		UpstreamHeaders: contentResp.Header,
-		ResponseHeaders: contentResp.Header.Clone(),
-		Duration:        time.Since(startTime),
+		RequestID:          contentRequestID,
+		UpstreamHeaders:    contentResp.Header,
+		ResponseHeaders:    contentResp.Header.Clone(),
+		Duration:           time.Since(startTime),
+		AsyncVideoTerminal: true,
 	}
 	if billed := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID); billed != nil {
 		result.ResponseID = firstNonEmpty(billed.ResponseID, strings.TrimSpace(requestID))
@@ -1331,6 +1355,7 @@ type grokMediaUsageMetadata struct {
 	ImageInputSize       string
 	ImageOutputSizes     []string
 	VideoCount           int
+	AsyncVideoTerminal   bool
 	VideoResolution      string
 	VideoDurationSeconds int
 }
@@ -1351,6 +1376,8 @@ func grokMediaUsageFromResponse(endpoint GrokMediaEndpoint, requestInfo GrokMedi
 		meta.VideoResolution = requestInfo.Resolution
 		meta.VideoDurationSeconds = requestInfo.DurationSeconds
 	case GrokMediaEndpointVideoStatus:
+		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
+		meta.AsyncVideoTerminal = status == "done" || status == "expired" || status == "failed"
 		// Prefer status-body URL success + upstream duration/resolution when present.
 		if IsGrokVideoStatusBillable(responseBody) {
 			// provisional units; handler merges with pending snapshot before RecordUsage.

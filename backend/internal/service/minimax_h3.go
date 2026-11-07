@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -183,10 +184,14 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		if failover := upstreamKeyAdmissionFailover(err); failover != nil {
 			return nil, failover
 		}
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), req, err)
+		}
 		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("MiniMax-H3 upstream transport failed"))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if endpoint.IsAsyncVideoCreate() && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("MiniMax-H3 creation returned a redirect"))
 	}
 	result.Duration, result.ResponseHeaders = time.Since(started), resp.Header.Clone()
@@ -196,6 +201,7 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 			return nil, fmt.Errorf("MiniMax-H3 content response has an invalid output URL")
 		}
 		result.VideoCount = 1
+		result.AsyncVideoTerminal = true
 		c.Header("Location", location)
 		c.Header("Cache-Control", "private, no-store")
 		c.Status(http.StatusFound)
@@ -203,17 +209,27 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 	}
 	responseBody, err := readGrokMediaResponseBody(resp.Body, s.cfg, c, endpoint)
 	if err != nil {
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
+		}
 		return nil, err
 	}
 	// An ambiguous POST must never become an automatic account-switch retry.
 	if resp.StatusCode >= 300 {
+		forwardErr := fmt.Errorf("MiniMax-H3 upstream status %d", resp.StatusCode)
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), req, forwardErr)
+		}
 		if resp.StatusCode < 400 {
 			return nil, fmt.Errorf("unexpected MiniMax-H3 redirect")
 		}
 		writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
-		return nil, fmt.Errorf("MiniMax-H3 upstream status %d", resp.StatusCode)
+		return nil, forwardErr
 	}
 	if !gjson.ValidBytes(responseBody) || !gjson.ParseBytes(responseBody).IsObject() {
+		if endpoint.IsAsyncVideoCreate() {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
+		}
 		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("invalid MiniMax-H3 response"))
 	}
 	switch endpoint {
@@ -223,11 +239,18 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 			id = gjson.GetBytes(responseBody, "task_id").String()
 		}
 		if _, err := buildMiniMaxH3URL(base, MiniMaxH3EndpointStatus, id); err != nil {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 			return nil, asyncVideoSubmissionError(endpoint, err)
 		}
 		result.ResponseID = MiniMaxH3TaskKey(id)
+		if err := s.bindAsyncVideoKeyLease(context.WithoutCancel(ctx), req, result.ResponseID); err != nil {
+			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
+			return nil, asyncVideoSubmissionError(endpoint, errors.Join(errors.New("MiniMax-H3 task lease binding failed"), err))
+		}
 	case MiniMaxH3EndpointStatus:
-		if gjson.GetBytes(responseBody, "status").String() == "completed" && validMiniMaxH3OutputURL(gjson.GetBytes(responseBody, "metadata.url").String()) {
+		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
+		result.AsyncVideoTerminal = status == "completed" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
+		if status == "completed" && validMiniMaxH3OutputURL(gjson.GetBytes(responseBody, "metadata.url").String()) {
 			result.VideoCount = 1
 		}
 	}

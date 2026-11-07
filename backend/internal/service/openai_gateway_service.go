@@ -318,6 +318,10 @@ type OpenAIForwardResult struct {
 	ImageSizeSource    string
 	ImageSizeBreakdown map[string]int
 	VideoCount         int
+	// AsyncVideoTerminal marks a provider task state that is no longer running.
+	// It is used solely to release the shared upstream-key lease after status,
+	// content or cancellation has been durably observed.
+	AsyncVideoTerminal bool
 	VideoResolution    string
 	// VideoDurationSeconds 是提交时请求的生成时长（xAI 按输出秒数计费），已归一化到 1-15 秒。
 	VideoDurationSeconds int

@@ -43,6 +43,7 @@ type astraRoutingUpstream struct {
 
 var _ service.UpstreamKeyConcurrency = (*astraRoutingUpstream)(nil)
 var _ service.BatchImageUpstreamKeyAuthority = (*astraRoutingUpstream)(nil)
+var _ service.AsyncVideoKeyLeaseController = (*astraRoutingUpstream)(nil)
 
 func (s *astraRoutingUpstream) SupportsAsyncVideoKeyGuard() bool {
 	if s == nil {
@@ -108,6 +109,73 @@ func (s *astraRoutingUpstream) ReleasePersistentUpstreamKeySlots(ctx context.Con
 		return err
 	}
 	return authority.ReleasePersistentUpstreamKeySlots(ctx, lease)
+}
+
+func (s *astraRoutingUpstream) asyncVideoKeyController() (service.AsyncVideoKeyLeaseController, error) {
+	if s == nil || s.delegate == nil {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	controller, ok := s.delegate.(service.AsyncVideoKeyLeaseController)
+	if !ok {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	return controller, nil
+}
+
+func (s *astraRoutingUpstream) PersistAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return err
+	}
+	return controller.PersistAsyncVideoKeyLease(ctx, handoff)
+}
+
+func (s *astraRoutingUpstream) BindAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff, taskID string) error {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return err
+	}
+	return controller.BindAsyncVideoKeyLease(ctx, handoff, taskID)
+}
+
+func (s *astraRoutingUpstream) BindAsyncVideoKeyLeaseByMember(ctx context.Context, member, taskID string) error {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return err
+	}
+	return controller.BindAsyncVideoKeyLeaseByMember(ctx, member, taskID)
+}
+
+func (s *astraRoutingUpstream) MarkAsyncVideoKeySubmissionUnknown(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return err
+	}
+	return controller.MarkAsyncVideoKeySubmissionUnknown(ctx, handoff)
+}
+
+func (s *astraRoutingUpstream) ReleaseAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return err
+	}
+	return controller.ReleaseAsyncVideoKeyLease(ctx, handoff)
+}
+
+func (s *astraRoutingUpstream) ReleaseAsyncVideoKeyLeaseByTask(ctx context.Context, taskID string) error {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return err
+	}
+	return controller.ReleaseAsyncVideoKeyLeaseByTask(ctx, taskID)
+}
+
+func (s *astraRoutingUpstream) ReleaseAsyncVideoKeyLeaseByMember(ctx context.Context, member string) error {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return err
+	}
+	return controller.ReleaseAsyncVideoKeyLeaseByMember(ctx, member)
 }
 
 func (s *astraRoutingUpstream) BeginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
