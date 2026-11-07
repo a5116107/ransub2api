@@ -115,6 +115,10 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	account.ApplyHeaderOverrides(req.Header)
+	req, err = s.guardAsyncVideoKeyRequest(req, endpoint)
+	if err != nil {
+		return nil, err
+	}
 	proxy := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxy = account.Proxy.URL()
@@ -122,6 +126,9 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	resp, err := s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(started).Milliseconds())
 	if err != nil {
+		if failover := upstreamKeyAdmissionFailover(err); failover != nil {
+			return nil, failover
+		}
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()

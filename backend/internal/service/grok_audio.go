@@ -255,10 +255,12 @@ func (s *OpenAIGatewayService) openGrokVoiceWebSocket(ctx context.Context, accou
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	return dialGrokVoiceWithSharedKey(ctx, s.cfg, s.httpUpstream, s.getOpenAIWSPassthroughDialer(), u, headers, proxyURL)
+	return dialGrokVoiceWithSharedKey(ctx, s.cfg, s.httpUpstream, s.getOpenAIWSPassthroughDialer(), u, headers, proxyURL, func(ctx context.Context) error {
+		return s.admitAvailabilityRequest(ctx, nil, account)
+	})
 }
 
-func dialGrokVoiceWithSharedKey(ctx context.Context, cfg *config.Config, httpUpstream HTTPUpstream, dialer openAIWSClientDialer, target *url.URL, headers http.Header, proxyURL string) (*GrokRealtimeUpstream, error) {
+func dialGrokVoiceWithSharedKey(ctx context.Context, cfg *config.Config, httpUpstream HTTPUpstream, dialer openAIWSClientDialer, target *url.URL, headers http.Header, proxyURL string, admit func(context.Context) error) (*GrokRealtimeUpstream, error) {
 	authority, err := sharedWSKeyAuthority(cfg, httpUpstream)
 	if err != nil {
 		return nil, upstreamKeyAdmissionFailover(err)
@@ -281,6 +283,18 @@ func dialGrokVoiceWithSharedKey(ctx context.Context, cfg *config.Config, httpUps
 				release()
 			}
 			return nil, upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)
+		}
+	}
+	if admit != nil {
+		err := admit(keyCtx)
+		if errors.Is(context.Cause(keyCtx), ErrUpstreamKeyLease) {
+			err = ErrUpstreamKeyLease
+		}
+		if err != nil {
+			if release != nil {
+				release()
+			}
+			return nil, err
 		}
 	}
 	dialCtx, cancelDial := context.WithTimeout(keyCtx, DefaultGrokRealtimeDialTimeout)

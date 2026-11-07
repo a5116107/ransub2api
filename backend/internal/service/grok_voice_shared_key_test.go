@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,11 +28,15 @@ type grokVoiceKeyAuthority struct {
 	takes          atomic.Int32
 	releases       atomic.Int32
 	cancel         context.CancelCauseFunc
+	onAcquire      func()
 }
 
 func (a *grokVoiceKeyAuthority) AcquireUpstreamKeySlots(ctx context.Context, fingerprints []string) (context.Context, func(), error) {
 	a.takes.Add(1)
 	a.fingerprints = append([]string(nil), fingerprints...)
+	if a.onAcquire != nil {
+		a.onAcquire()
+	}
 	if a.err != nil {
 		if a.releaseOnError {
 			return ctx, func() { a.releases.Add(1) }, a.err
@@ -44,6 +49,86 @@ func (a *grokVoiceKeyAuthority) AcquireUpstreamKeySlots(ctx context.Context, fin
 	ctx, cancel := context.WithCancelCause(ctx)
 	a.cancel = cancel
 	return ctx, sync.OnceFunc(func() { a.releases.Add(1); cancel(context.Canceled) }), nil
+}
+
+func TestGrokVoiceAvailabilityAdmissionBeforeDial(t *testing.T) {
+	for _, endpoint := range []string{"realtime", "tts"} {
+		for _, scenario := range []string{"no_reader", "no_rules", "configured_pass", "configured_fail", "paused", "read_error", "probe", "enabled_during_key_acquire"} {
+			t.Run(endpoint+"/"+scenario, func(t *testing.T) {
+				cfg := &config.Config{}
+				cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+				account := &Account{ID: 1, Platform: PlatformGrok, Type: AccountTypeAPIKey}
+				report := availabilityAdmissionPass(account.ID, "fixture")
+				repo := &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}
+				authority := &grokVoiceKeyAuthority{}
+				dialer := &grokVoiceKeyDialer{}
+				svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: authority, availabilityReader: repo, openaiWSPassthroughDialer: dialer}
+				ctx := t.Context()
+				allowed := false
+				switch scenario {
+				case "no_reader":
+					svc.availabilityReader, allowed = nil, true
+				case "no_rules":
+					repo.reports, allowed = nil, true
+				case "configured_fail":
+					report.Models[0].Status = "fail"
+				case "paused":
+					report.Enabled = false
+				case "read_error":
+					repo.readErr = errors.New("fixture availability outage")
+				case "probe":
+					ctx, allowed = context.WithValue(ctx, qualityProbeContextKey{}, true), true
+				case "enabled_during_key_acquire":
+					repo.reports = nil
+					authority.onAcquire = func() { repo.reports = []*AvailabilityReport{report} }
+				}
+				var upstream *GrokRealtimeUpstream
+				var err error
+				if endpoint == "realtime" {
+					upstream, err = svc.OpenGrokRealtime(ctx, account, "shared-fixture", "fixture")
+				} else {
+					upstream, err = svc.OpenGrokTTSStream(ctx, account, "shared-fixture", url.Values{})
+				}
+				if allowed {
+					require.NoError(t, err)
+					require.NotNil(t, upstream)
+					require.EqualValues(t, 1, dialer.sends.Load())
+					require.NoError(t, upstream.Close())
+				} else {
+					require.Nil(t, upstream)
+					require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+					require.Zero(t, dialer.sends.Load(), "unobserved voice scope must not dial")
+				}
+				require.EqualValues(t, 1, authority.releases.Load(), "admission rejection must release the acquired key")
+			})
+		}
+	}
+}
+
+func TestGrokVoiceAvailabilityAdmissionWithoutSharedKeyPolicy(t *testing.T) {
+	dialer := &grokVoiceKeyDialer{}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiWSPassthroughDialer: dialer,
+		availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{availabilityAdmissionPass(1, "fixture")}}}
+	account := &Account{ID: 1, Platform: PlatformGrok, Type: AccountTypeAPIKey}
+	upstream, err := svc.OpenGrokRealtime(t.Context(), account, "fixture", "fixture")
+	require.Nil(t, upstream)
+	require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+	require.Zero(t, dialer.sends.Load())
+}
+
+func TestGrokVoiceKeyLeaseLossDuringAvailabilityCheck(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	authority := &grokVoiceKeyAuthority{}
+	repo := &availabilityAdmissionRepo{onRead: func(context.Context, *Account) { authority.cancel(ErrUpstreamKeyLease) }}
+	dialer := &grokVoiceKeyDialer{}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: authority, availabilityReader: repo, openaiWSPassthroughDialer: dialer}
+	account := &Account{ID: 1, Platform: PlatformGrok, Type: AccountTypeAPIKey}
+	upstream, err := svc.OpenGrokRealtime(t.Context(), account, "fixture", "fixture")
+	require.Nil(t, upstream)
+	require.ErrorIs(t, err, ErrUpstreamKeyLease)
+	require.Zero(t, dialer.sends.Load())
+	require.EqualValues(t, 1, authority.releases.Load())
 }
 
 type grokVoiceKeyDialer struct {

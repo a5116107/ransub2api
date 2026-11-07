@@ -243,7 +243,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	switchCount := 0
 	var forbiddenBudget grokForbiddenFailoverBudget
 	videoCreateStartedAt := ""
-	if isGrokVideoCreateEndpoint(endpoint) {
+	if endpoint.IsAsyncVideoCreate() {
 		videoCreateStartedAt = service.GrokVideoPendingCreatedAtNow()
 	}
 	maxAccountSwitches := h.maxAccountSwitches
@@ -322,7 +322,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				return
 			}
 			if lastFailoverErr != nil {
-				h.handleFailoverExhausted(c, lastFailoverErr, false)
+				h.handleGrokMediaFailoverExhausted(c, endpoint, lastFailoverErr, false)
 			} else {
 				h.errorResponse(c, http.StatusBadGateway, "api_error", "Upstream request failed")
 			}
@@ -445,15 +445,15 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account, grokMediaScheduleModel(account, routingModel, nil), false, nil, err)
 				}
 				if c.Writer.Size() != writerSizeBeforeForward {
-					h.handleFailoverExhausted(c, failoverErr, true)
+					h.handleGrokMediaFailoverExhausted(c, endpoint, failoverErr, true)
 					return
 				}
 				if !forbiddenBudget.canRetry(failoverErr, switchCount) {
-					h.handleFailoverExhausted(c, failoverErr, false)
+					h.handleGrokMediaFailoverExhausted(c, endpoint, failoverErr, false)
 					return
 				}
 				if endpoint.IsVideoLookupRequest() {
-					h.handleFailoverExhausted(c, failoverErr, false)
+					h.handleGrokMediaFailoverExhausted(c, endpoint, failoverErr, false)
 					return
 				}
 				if failoverErr.RetryableOnSameAccount {
@@ -480,12 +480,12 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
-					h.handleFailoverExhausted(c, failoverErr, false)
+					h.handleGrokMediaFailoverExhausted(c, endpoint, failoverErr, false)
 					return
 				}
 				switchCount++
 				if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
-					h.handleFailoverExhausted(c, failoverErr, false)
+					h.handleGrokMediaFailoverExhausted(c, endpoint, failoverErr, false)
 					return
 				}
 				reqLog.Warn("grok_media.upstream_failover_switching",
@@ -511,7 +511,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		if miniMaxH3BaseCost != nil {
 			result.MiniMaxH3BaseCost = miniMaxH3BaseCost
 		}
-		if isGrokVideoCreateEndpoint(endpoint) && strings.TrimSpace(result.ResponseID) != "" {
+		if endpoint.IsAsyncVideoCreate() && strings.TrimSpace(result.ResponseID) != "" {
 			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(
 				requestCtx, apiKey.GroupID, result.ResponseID, subject.UserID, apiKey.ID, account.ID,
 			); err != nil {
@@ -578,6 +578,15 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	}
 }
 
+func (h *OpenAIGatewayHandler) handleGrokMediaFailoverExhausted(c *gin.Context, endpoint service.GrokMediaEndpoint, err *service.UpstreamFailoverError, streamStarted bool) {
+	if endpoint.IsAsyncVideoCreate() && err != nil && err.Reason == service.UpstreamKeyAdmissionReason {
+		h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "server_error", string(service.UpstreamKeyAdmissionReason),
+			"Async video creation is unavailable because shared upstream Key admission or remote task ownership is unavailable", streamStarted, false)
+		return
+	}
+	h.handleFailoverExhausted(c, err, streamStarted)
+}
+
 func (h *OpenAIGatewayHandler) ensureGrokMediaAccountEligibility(ctx context.Context, account *service.Account) (bool, string, error) {
 	if account == nil {
 		return false, "missing_account", errors.New("grok media account is required")
@@ -615,17 +624,6 @@ func grokMediaScheduleModel(account *service.Account, routingModel string, resul
 	return account.GetMappedModel(routingModel)
 }
 
-func isGrokVideoCreateEndpoint(endpoint service.GrokMediaEndpoint) bool {
-	switch endpoint {
-	case service.MiniMaxH3EndpointCreate, service.SeedanceEndpointCreate, service.GrokMediaEndpointVideosGenerations,
-		service.GrokMediaEndpointVideosEdits,
-		service.GrokMediaEndpointVideosExtensions:
-		return true
-	default:
-		return false
-	}
-}
-
 // shouldRecordGrokMediaUsage gates usage writes for immediate (image) generation.
 // Async video create never bills here — status polling does on official
 // status=done with video.url (docs.x.ai Video Generation).
@@ -635,7 +633,7 @@ func shouldRecordGrokMediaUsage(endpoint service.GrokMediaEndpoint, requestModel
 	if result == nil {
 		return false
 	}
-	if isGrokVideoCreateEndpoint(endpoint) || endpoint.IsVideoLookupRequest() {
+	if endpoint.IsAsyncVideoCreate() || endpoint.IsVideoLookupRequest() {
 		return false
 	}
 	if !endpoint.IsGenerationRequest() || strings.TrimSpace(requestModel) == "" {

@@ -4,9 +4,9 @@
 
 <!-- resume:start -->
 - 任务：D2共享Key准入；Basic、内容审核及Grok语音独立出站准入已补齐，父任务仍在进行。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`；Grok语音修复已验证，不运行CI、推送、部署或生产迁移。
-- 证据：Grok语音旧路径漏控已复现；隔离Redis 7与真实WS双向占槽、续期及恢复通过，标准计费命令和故障分类回归通过；细节与先前证据见DECISIONS。
-- 下一动作：验证Grok及其他异步视频跨请求任务的共享额度生命周期，继续D2未知鉴权和独立出站，再推进D3/D4与D5–D9。
+- 源码：H盘唯一工作树`work/monitor-driven-scheduling`；Grok语音终检及异步视频发送前保护已验证，不运行CI、推送、部署或生产迁移。
+- 证据：Grok语音availability漏控与五种异步视频共享槽位提前释放均已复现；隔离Redis 7/真实WS及发送前保护回归通过，细节见DECISIONS。
+- 下一动作：实现异步视频发送前持久交接、未知结果恢复及终态释放；继续D2其他鉴权与出站，再推进D3/D4和D5–D9。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->
 
@@ -22,12 +22,12 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/原生WS来源、批量下载与持久额度、BPS缓存来源、BPS quota provider-client、共享Key头大小写、Astra/区域WS、V1探测、Bedrock签名、OAuth用量/模型清单直连准入、Agent Identity公钥、Basic、内容审核及Grok语音准入已验证；其他来源待验收 |
+| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/WS、批量、BPS、quota、Astra/区域、Bedrock、OAuth、Agent Identity、Basic、内容审核及Grok语音准入已验证；异步视频发送前保护已验，持久交接及其他来源待验 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新availability及故障分类已验证；BPS账号线路纯文本专属探测已验证，其余能力、托管连接、未观测传输及WS作用域待补 |
+| D3 | in_progress | 最新availability、故障分类、BPS纯文本探测及Grok语音握手前终检已验证；其余能力、托管连接、未观测传输及WS作用域待补 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |

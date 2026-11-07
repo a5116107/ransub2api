@@ -115,6 +115,28 @@ type UpstreamKeyRequestAdmission interface {
 	BeginUpstreamKeyRequest(*http.Request) (*http.Request, func(*http.Response, error), error)
 }
 
+// AsyncVideoKeyGuard rejects restricted asynchronous video creates at the
+// final HTTP admission boundary until their remote lifetime has durable ownership.
+type AsyncVideoKeyGuard interface {
+	SupportsAsyncVideoKeyGuard() bool
+}
+
+type asyncVideoKeyGuardContextKey struct{}
+
+type asyncVideoKeyGuardState struct{ required bool }
+
+func WithAsyncVideoKeyGuard(ctx context.Context, required bool) context.Context {
+	return context.WithValue(ctx, asyncVideoKeyGuardContextKey{}, asyncVideoKeyGuardState{required: required})
+}
+
+func AsyncVideoKeyGuardState(req *http.Request) (active, required bool) {
+	if req == nil {
+		return false, false
+	}
+	state, ok := req.Context().Value(asyncVideoKeyGuardContextKey{}).(asyncVideoKeyGuardState)
+	return ok, state.required
+}
+
 type persistentUpstreamKeyLeaseContextKey struct{}
 
 func WithPersistentUpstreamKeyLease(ctx context.Context, lease *PersistentUpstreamKeyLease) context.Context {

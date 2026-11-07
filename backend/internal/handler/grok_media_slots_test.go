@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -183,9 +184,12 @@ func (r grokMediaSlotRepo) GetByID(ctx context.Context, id int64) (*service.Acco
 
 type grokMediaSlotUpstream struct {
 	service.HTTPUpstream
-	call  func(*http.Request, int64) (*http.Response, error)
-	calls int
+	call           func(*http.Request, int64) (*http.Response, error)
+	calls          int
+	guardSupported bool
 }
+
+func (u *grokMediaSlotUpstream) SupportsAsyncVideoKeyGuard() bool { return u.guardSupported }
 
 func (u *grokMediaSlotUpstream) Do(req *http.Request, _ string, id int64, _ int) (*http.Response, error) {
 	u.calls++
@@ -368,6 +372,93 @@ func TestGrokMediaEligibilityReleasesBeforeSwitch(t *testing.T) {
 				require.Equal(t, 503, w.Code)
 				require.Equal(t, 2, slots.released)
 				require.Zero(t, upstream.calls)
+			}
+		})
+	}
+}
+
+func TestAsyncVideoKeyGuardReturnsLocal503(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint service.GrokMediaEndpoint
+		platform string
+		body     string
+	}{
+		{"grok-create", service.GrokMediaEndpointVideosGenerations, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves"}`},
+		{"grok-edit", service.GrokMediaEndpointVideosEdits, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/a.mp4"}}`},
+		{"grok-extension", service.GrokMediaEndpointVideosExtensions, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/a.mp4"}}`},
+		{"seedance", service.SeedanceEndpointCreate, service.PlatformOpenAI, `{"model":"video","content":[{"type":"text","text":"waves"}]}`},
+		{"minimax", service.MiniMaxH3EndpointCreate, service.PlatformMiniMax, `{"model":"MiniMax-H3","prompt":"waves","seconds":"1"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, supported := range []bool{false, true} {
+				t.Run(fmt.Sprintf("guard=%v", supported), func(t *testing.T) {
+					var h *OpenAIGatewayHandler
+					var slots *grokMediaSlotsCache
+					var upstream *grokMediaSlotUpstream
+					if tc.platform == service.PlatformGrok {
+						h, slots, _, upstream = newGrokMediaSlotHandler(t, false, false)
+					} else {
+						h, slots, _, upstream = newGrokMediaSlotHandler(t, false, false, tc.platform)
+					}
+					h.cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+					upstream.guardSupported = supported
+					upstream.call = func(req *http.Request, _ int64) (*http.Response, error) {
+						active, required := service.AsyncVideoKeyGuardState(req)
+						require.True(t, active)
+						require.True(t, required)
+						return nil, service.ErrUpstreamKeyPolicy
+					}
+					c, recorder := grokMediaSlotContext(t.Context(), true)
+					c.Request = httptest.NewRequest(http.MethodPost, "/fixture", strings.NewReader(tc.body)).WithContext(t.Context())
+					c.Request.Header.Set("Content-Type", "application/json")
+					key, ok := middleware2.GetAPIKeyFromContext(c)
+					require.True(t, ok)
+					key.Group.Platform = tc.platform
+					key.Group.VideoModelPrices = map[string]map[string]float64{service.MiniMaxH3PriceFamily: {"request_1s": 0.02}}
+					h.handleGrokMedia(c, tc.endpoint, "")
+					require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+					require.Contains(t, recorder.Body.String(), "upstream_key_admission_unavailable")
+					require.Contains(t, recorder.Body.String(), "remote task ownership")
+					if supported {
+						require.Positive(t, upstream.calls, "the transport must perform the final admission")
+					} else {
+						require.Zero(t, upstream.calls, "the missing guard must be rejected before sending")
+					}
+					if events, ok := c.Get(service.OpsUpstreamErrorsKey); ok {
+						require.Empty(t, events, "local admission failures are not upstream faults")
+					}
+					slots.assertReleased(t)
+				})
+			}
+		})
+	}
+}
+
+func TestGrokMediaSharedKeyFailureMessageUsesEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint service.GrokMediaEndpoint
+		video    bool
+	}{
+		{service.GrokMediaEndpointVideosGenerations, true},
+		{service.SeedanceEndpointCreate, true},
+		{service.MiniMaxH3EndpointCreate, true},
+		{service.GrokMediaEndpointImagesGenerations, false},
+		{service.GrokMediaEndpointVideoStatus, false},
+	} {
+		t.Run(string(tc.endpoint), func(t *testing.T) {
+			c, recorder := grokMediaSlotContext(t.Context(), true)
+			h := &OpenAIGatewayHandler{}
+			h.handleGrokMediaFailoverExhausted(c, tc.endpoint, &service.UpstreamFailoverError{
+				StatusCode: http.StatusServiceUnavailable, Reason: service.UpstreamKeyAdmissionReason,
+			}, false)
+			require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+			require.Contains(t, recorder.Body.String(), "upstream_key_admission_unavailable")
+			if tc.video {
+				require.Contains(t, recorder.Body.String(), "remote task ownership")
+			} else {
+				require.Contains(t, recorder.Body.String(), "No shared upstream Key capacity is available")
+				require.NotContains(t, recorder.Body.String(), "remote task ownership")
 			}
 		})
 	}

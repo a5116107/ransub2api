@@ -442,11 +442,14 @@ func (s *httpUpstreamService) ReleasePersistentUpstreamKeySlots(_ context.Contex
 	return releaseErr
 }
 
+func (*httpUpstreamService) SupportsAsyncVideoKeyGuard() bool { return true }
+
 // BeginUpstreamKeyRequest retains response-body ownership at the existing
 // HTTP boundary; native WS owns its active turn through the shared method above.
 func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+	asyncVideo, asyncRequired := service.AsyncVideoKeyGuardState(req)
 	if s.upstreamKeyLimiter == nil {
-		if service.BatchImageKeyPolicyRequired(req) {
+		if service.BatchImageKeyPolicyRequired(req) || asyncRequired {
 			return req, nil, service.ErrUpstreamKeyPolicy
 		}
 		return req, func(*http.Response, error) {}, nil
@@ -458,6 +461,9 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 		return req, nil, service.ErrUpstreamKeyPolicy
 	}
 	if lease := service.PersistentUpstreamKeyLeaseFromContext(req.Context()); lease != nil {
+		if asyncVideo {
+			return req, nil, service.ErrUpstreamKeyPolicy
+		}
 		batch := strings.HasPrefix(lease.Member, "batch:")
 		if (batch && lease.Member != service.BatchImageKeyRequestMember(req)) ||
 			(!batch && !strings.HasSuffix(req.URL.Path, "/realtime/calls")) ||
@@ -475,12 +481,23 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 		// The controller owns this member, independently of body close/cancel.
 		return req, func(*http.Response, error) {}, nil
 	}
-	ctx, release, err := s.AcquireUpstreamKeySlots(req.Context(), config.UpstreamCredentialFingerprints(req))
+	fingerprints := config.UpstreamCredentialFingerprints(req)
+	if asyncVideo && len(fingerprints) == 0 {
+		return req, nil, service.ErrUpstreamKeyPolicy
+	}
+	if asyncVideo {
+		req = req.WithContext(service.WithHTTPUpstreamRedirectsDisabled(req.Context()))
+	}
+	ctx, release, err := s.AcquireUpstreamKeySlots(req.Context(), fingerprints)
 	if err != nil {
 		return req, nil, err
 	}
 	if release == nil {
 		return req, func(*http.Response, error) {}, nil
+	}
+	if asyncVideo {
+		release()
+		return req, nil, service.ErrUpstreamKeyPolicy
 	}
 	// SDP completes before a realtime session; its lease needs a separate handoff.
 	if strings.Contains(strings.ToLower(req.URL.Path), "/realtime") {

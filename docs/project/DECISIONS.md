@@ -1040,3 +1040,17 @@
 - `go test -race -p 1 -tags=integration ./internal/service -run '^TestGrokVoiceSharesRealRedisKeyCapacityAndRecovers$' -count=2 -timeout=8m -v` 退出0、28.196s；隔离 Redis 7 与本机 TLS WebSocket 覆盖 realtime/TTS 直连及 Astra、HTTP 与语音双向互斥、活跃租约续期、关闭恢复及管理员探测满额/恢复。最终代码单轮同命令退出0、14.251s；不接触线上服务。
 - `go vet -p 1 -tags=unit ./internal/service ./internal/handler` 与 `go vet -p 1 -tags=integration ./internal/service` 均退出0。原规则 lint 首次指出新增测试一处未检查类型断言，修复后该异常清理用例两轮 race 退出0、1.206s；`bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/...` 重跑退出0，输出 `0 issues.`。
 - 本项只覆盖已识别凭据和可关闭的语音连接；远端是否终止、其他未知认证及异步视频跨请求任务仍须独立验收。原20项仍为12 done、3 in_progress、5 pending；未运行CI、推送、部署或生产迁移。
+
+## 2026-11-07：D3 Grok 语音 availability 握手终检
+
+- `TestGrokVoiceAvailabilityAdmissionBeforeDial` 旧实现在实时语音与流式 TTS 的已配置通过、失败、暂停、读取失败和取槽期间启用规则五种情况下各出现实际拨号；处理器的本地准入错误原进入上游故障路径，回归夹具触发 `SetTempUnschedulable`。这只证明所测独立语音路径的缺口，不代表全部能力或WS作用域已验收。
+- 业务握手取得共享Key后、物理拨号前调用现有 availability 终检；无语音专属观测时已配置规则保守拒绝，无规则或探测上下文保持原行为。拒绝归还本次共享槽位并沿本地503和既有预算切线，不登记供应商故障；读取期间租约丢失保留原租约错误。管理员连通性探测沿原独立入口，不受此业务准入阻断；已建立连接不主动中断。
+- `go test -race -p=1 -tags unit ./internal/service ./internal/repository ./internal/handler -run '^(TestAsyncVideo|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestGrokMedia|TestGrokVoiceAvailability|TestGrokVoiceSharedKey|TestGrokVoiceLocalRefusal|TestGrokVoiceKeyLeaseLoss)' -count=1 -timeout=10m` 退出0，service 1.256s、repository 1.344s、handler 1.832s；包含本地拒绝后真实故障、凭据失败、403预算和租约失效。`go test -p=1 -tags integration ./internal/service -run '^(TestAsyncVideoSharedKeyPendingCapacity|TestGrokVoiceAvailabilityRealHandshakeAndSharedKeyRecovery)$' -count=1 -timeout=8m -v` 退出0、5.952s，隔离Redis 7与本机TLS WS验证两种语音无握手、释放槽位和规则移除后恢复。
+
+## 2026-11-07：D2 异步视频发送前共享Key保护
+
+- 使用隔离Redis 7与本机HTTP模拟，`TestAsyncVideoSharedKeyPendingCapacity` 在旧代码对Grok生成/编辑/扩展、Seedance、MiniMax-H3五例全部失败：上游返回 `queued` 后，同Key竞争请求仍成功。提交响应结束不能证明远端终止，既有24小时待计费缓存也不是发送前持久所有权。
+- 在现有最终HTTP准入权威识别受限凭据：尚无持久交接时创建前本地拒绝并归还试取槽位；权威不可用或无可识别凭据也拒绝。未受限凭据与共享策略关闭保留创建，既有查询/下载/取消保留原路；启用权威时创建禁重定向。Astra透传同一守卫，服务配置和传输策略不一致时按实际传输权威保护。错误沿原本地503及有限切线，不登记上游健康故障；候选耗尽保留原错误码并说明共享Key准入或远端任务归属不可用。旧重复视频创建判定已删除并收敛到同一端点方法。
+- 同一隔离Redis集成命令修复后五例全部 `PASS`；上述unit竞态命令覆盖直接/Astra、多个鉴权头、未知认证、无权威、重定向、查询/取消、服务及处理器503，`go vet -p=1 -tags unit ./internal/service ./internal/repository ./internal/handler` 与 `go vet -p=1 -tags integration ./internal/service` 均退出0。此保护主动暂停受限Key的新视频创建，未实现或验证远端任务持久交接；发送前登记、结果未知恢复、终态释放、跨实例恢复及实际供应商行为仍属D2。启用/调整限额前须排空旧任务，混合版本不提供此保护。
+- 原20项仍为12 done、3 in_progress、5 pending；不运行CI、推送、部署或生产迁移，用户已有Prism改动及历史测试图片保留。
+- 最终扩大的 `go test -race -p=1 -tags unit ./internal/handler ./internal/service ./internal/repository -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestProbeGrokRealtime|TestAccountGrokRealtime|TestAccountTestService_GrokRealtime|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestBatchImagePersistentKey|TestUpstreamKey(HTTPAdmissionSharedLifetime|AtomicCompetitionAndPolicyRevision|SharedAuthority|Batch|Live)|TestAstraUpstreamKeyBatch)' -count=1 -timeout=10m` 退出0，handler 1.745s、service 1.330s、repository 1.487s，覆盖最终文案、管理探测及普通/批量/Live共用权威。隔离Redis/本机TLS WS的上述integration命令加`-race`退出0、6.244s。三包组合lint首次输出`0 issues.`但以超时退出1，不记为通过；原规则按handler、repository、service分别运行均退出0、输出`0 issues.`。

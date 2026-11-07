@@ -44,6 +44,14 @@ type astraRoutingUpstream struct {
 var _ service.UpstreamKeyConcurrency = (*astraRoutingUpstream)(nil)
 var _ service.BatchImageUpstreamKeyAuthority = (*astraRoutingUpstream)(nil)
 
+func (s *astraRoutingUpstream) SupportsAsyncVideoKeyGuard() bool {
+	if s == nil {
+		return false
+	}
+	guard, ok := s.delegate.(service.AsyncVideoKeyGuard)
+	return ok && guard.SupportsAsyncVideoKeyGuard()
+}
+
 // Astra is a routing decorator around the ordinary HTTP transport. Shared
 // upstream-key admission must remain visible through the decorator so native
 // WS turns, Live handoff, and provider-specific HTTP clients use the same

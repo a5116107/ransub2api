@@ -137,6 +137,7 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 	var upstream *service.GrokRealtimeUpstream
 	var candidateSeen bool
 	var localKeyRefusal bool
+	var localAdmissionErr error
 	for attempts := 0; attempts < 4; attempts++ {
 		// Voice models are not a text-model capability. Passing a concrete text
 		// model here would reject accounts mapped only to an older/default text
@@ -167,6 +168,8 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 		var credErr error
 		token, _, credErr = h.gatewayService.GetRequestCredential(c.Request.Context(), c, account)
 		if credErr != nil {
+			localKeyRefusal = false
+			localAdmissionErr = nil
 			release()
 			release = nil
 			if forbiddenBudget.active {
@@ -178,6 +181,18 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 		candidateUpstream, openErr := ws.open(c.Request.Context(), account, token)
 		if openErr != nil {
 			reqLog.Warn("grok_"+ws.name+".pre_accept_failed", zap.Int64("account_id", account.ID), zap.Error(openErr))
+			if service.IsOpenAITurnAdmissionError(openErr) {
+				localKeyRefusal = false
+				localAdmissionErr = openErr
+				release()
+				release = nil
+				if forbiddenBudget.active {
+					break
+				}
+				failed[account.ID] = struct{}{}
+				continue
+			}
+			localAdmissionErr = nil
 			if errors.Is(openErr, service.ErrUpstreamKeyLease) {
 				localKeyRefusal = true
 				release()
@@ -219,7 +234,9 @@ func (h *OpenAIGatewayHandler) serveGrokVoiceWebSocket(c *gin.Context, ws grokVo
 		break
 	}
 	if selection == nil || selection.Account == nil || release == nil || upstream == nil {
-		if localKeyRefusal {
+		if localAdmissionErr != nil {
+			h.handleTurnAdmissionError(c, localAdmissionErr, false)
+		} else if localKeyRefusal {
 			h.errorResponse(c, http.StatusServiceUnavailable, "upstream_key_admission_unavailable", "No shared upstream Key capacity is available")
 		} else if !candidateSeen {
 			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available Grok accounts")

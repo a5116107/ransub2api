@@ -2166,7 +2166,7 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 	dialCtx, cancel := context.WithTimeout(ctx, grokRealtimeProbeTimeout)
 	defer cancel()
 
-	upstream, dialErr := dialGrokVoiceWithSharedKey(dialCtx, s.cfg, s.httpUpstream, dialer, u, headers, s.grokTestProxyURL(account))
+	upstream, dialErr := dialGrokVoiceWithSharedKey(dialCtx, s.cfg, s.httpUpstream, dialer, u, headers, s.grokTestProxyURL(account), nil)
 	if dialErr != nil {
 		if IsUpstreamKeyAdmissionFailure(dialErr) || errors.Is(dialErr, ErrUpstreamKeyLease) {
 			return s.sendErrorAndEnd(c, "Grok Realtime shared upstream Key capacity unavailable")

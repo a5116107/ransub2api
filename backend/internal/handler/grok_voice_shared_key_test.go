@@ -50,6 +50,106 @@ func TestGrokVoiceSharedKeyRefusalReturns503BeforeUpgrade(t *testing.T) {
 	}
 }
 
+func TestGrokVoiceAvailabilityRefusalReturns503BeforeUpgrade(t *testing.T) {
+	for _, mode := range []string{"realtime", "tts_stream"} {
+		t.Run(mode, func(t *testing.T) {
+			h, slots, _, _ := newGrokMediaSlotHandler(t, false, false)
+			c, recorder := grokMediaSlotContext(t.Context(), false)
+			c.Request.Header.Set("Connection", "Upgrade")
+			c.Request.Header.Set("Upgrade", "websocket")
+			attempts := 0
+			h.serveGrokVoiceWebSocket(c, grokVoiceWebSocket{
+				name: mode, apiName: "Voice API",
+				open: func(context.Context, *service.Account, string) (*service.GrokRealtimeUpstream, error) {
+					attempts++
+					return nil, &service.OpenAITurnAdmissionError{Reason: "availability_scope_unconfirmed"}
+				},
+			})
+			require.Equal(t, 3, attempts)
+			require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+			require.Contains(t, recorder.Body.String(), "admission_unavailable")
+			slots.assertReleased(t)
+		})
+	}
+}
+
+func TestGrokVoiceAvailabilityRefusalRespectsForbiddenBudget(t *testing.T) {
+	h, slots, _, _ := newGrokMediaSlotHandler(t, false, false)
+	c, recorder := grokMediaSlotContext(t.Context(), false)
+	c.Request.Header.Set("Connection", "Upgrade")
+	c.Request.Header.Set("Upgrade", "websocket")
+	attempts := 0
+	h.serveGrokVoiceWebSocket(c, grokVoiceWebSocket{
+		name: "realtime", apiName: "Realtime API",
+		open: func(_ context.Context, account *service.Account, _ string) (*service.GrokRealtimeUpstream, error) {
+			attempts++
+			if attempts == 1 {
+				account.Extra = map[string]any{"grok_skip_forbidden_pause": true}
+				return nil, &service.GrokRealtimeDialError{StatusCode: http.StatusForbidden,
+					ResponseBody: []byte(`{"error":"unclassified refusal"}`), Err: errors.New("fixture rejection")}
+			}
+			return nil, &service.OpenAITurnAdmissionError{Reason: "availability_scope_unconfirmed"}
+		},
+	})
+	require.Equal(t, 2, attempts, "a local refusal must not bypass the ambiguous 403 budget")
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	require.Contains(t, recorder.Body.String(), "admission_unavailable")
+	slots.assertReleased(t)
+}
+
+func TestGrokVoiceAvailabilityRefusalFollowedBySupplierFailure(t *testing.T) {
+	h, slots, _, _ := newGrokMediaSlotHandler(t, false, false)
+	c, recorder := grokMediaSlotContext(t.Context(), false)
+	c.Request.Header.Set("Connection", "Upgrade")
+	c.Request.Header.Set("Upgrade", "websocket")
+	attempts := 0
+	h.serveGrokVoiceWebSocket(c, grokVoiceWebSocket{
+		name: "realtime", apiName: "Realtime API",
+		open: func(context.Context, *service.Account, string) (*service.GrokRealtimeUpstream, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, &service.OpenAITurnAdmissionError{Reason: "availability_scope_unconfirmed"}
+			}
+			return nil, &service.GrokRealtimeDialError{StatusCode: http.StatusForbidden,
+				ResponseBody: []byte(`{"error":{"code":"content_policy","message":"rejected"}}`), Err: errors.New("fixture rejection")}
+		},
+	})
+	require.Equal(t, 2, attempts)
+	require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+	require.NotContains(t, recorder.Body.String(), "admission_unavailable")
+	slots.assertReleased(t)
+}
+
+func TestGrokVoiceAvailabilityRefusalFollowedByCredentialFailure(t *testing.T) {
+	h, slots, bindings, upstream := newGrokMediaSlotHandler(t, false, false)
+	accounts := make([]service.Account, 3)
+	for i := range accounts {
+		accounts[i] = service.Account{ID: int64(i + 1), Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey,
+			Status: service.StatusActive, Schedulable: true, Concurrency: 10, Priority: i, GroupIDs: []int64{24}}
+	}
+	accounts[0].Credentials = map[string]any{"api_key": "test-key"}
+	repo := grokMediaSlotRepo{openAIImagesFailoverAccountRepo: openAIImagesFailoverAccountRepo{accounts: accounts}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	concurrency := service.NewConcurrencyService(slots)
+	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency,
+		nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	c, recorder := grokMediaSlotContext(t.Context(), false)
+	c.Request.Header.Set("Connection", "Upgrade")
+	c.Request.Header.Set("Upgrade", "websocket")
+	attempts := 0
+	h.serveGrokVoiceWebSocket(c, grokVoiceWebSocket{
+		name: "realtime", apiName: "Realtime API",
+		open: func(context.Context, *service.Account, string) (*service.GrokRealtimeUpstream, error) {
+			attempts++
+			return nil, &service.OpenAITurnAdmissionError{Reason: "availability_scope_unconfirmed"}
+		},
+	})
+	require.Equal(t, 1, attempts)
+	require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+	require.NotContains(t, recorder.Body.String(), "admission_unavailable")
+	slots.assertReleased(t)
+}
+
 func TestGrokVoiceLocalRefusalFollowedBySupplierFailure(t *testing.T) {
 	h, slots, _, _ := newGrokMediaSlotHandler(t, false, false)
 	c, recorder := grokMediaSlotContext(t.Context(), false)

@@ -56,6 +56,31 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 	}
 }
 
+func (e GrokMediaEndpoint) IsAsyncVideoCreate() bool {
+	switch e {
+	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions,
+		SeedanceEndpointCreate, MiniMaxH3EndpointCreate:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *OpenAIGatewayService) guardAsyncVideoKeyRequest(req *http.Request, endpoint GrokMediaEndpoint) (*http.Request, error) {
+	if !endpoint.IsAsyncVideoCreate() {
+		return req, nil
+	}
+	required := upstreamKeyAdmissionRequired(s.cfg)
+	guard, ok := s.httpUpstream.(AsyncVideoKeyGuard)
+	if !ok || !guard.SupportsAsyncVideoKeyGuard() {
+		if required {
+			return nil, upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)
+		}
+		return req, nil
+	}
+	return req.WithContext(WithAsyncVideoKeyGuard(req.Context(), required)), nil
+}
+
 type GrokMediaRequestInfo struct {
 	Model           string
 	Prompt          string
@@ -726,6 +751,10 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	}
 	// 账号级请求头覆写最后应用，配置值优先于内置默认头。
 	account.ApplyHeaderOverrides(upstreamReq.Header)
+	upstreamReq, err = s.guardAsyncVideoKeyRequest(upstreamReq, endpoint)
+	if err != nil {
+		return nil, err
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

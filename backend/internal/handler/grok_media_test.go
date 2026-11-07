@@ -73,7 +73,7 @@ func TestShouldRecordGrokMediaUsage(t *testing.T) {
 			require.False(t, shouldRecordGrokMediaUsage(tt.endpoint, tt.model, nil))
 			// Immediate helper only bills image generation (async video bills on status).
 			result := &service.OpenAIForwardResult{ImageCount: 1, VideoCount: 0}
-			if tt.endpoint.IsGenerationRequest() && !isGrokVideoCreateEndpoint(tt.endpoint) && strings.TrimSpace(tt.model) != "" {
+			if tt.endpoint.IsGenerationRequest() && !tt.endpoint.IsAsyncVideoCreate() && strings.TrimSpace(tt.model) != "" {
 				require.Equal(t, tt.want, shouldRecordGrokMediaUsage(tt.endpoint, tt.model, result))
 			} else {
 				require.False(t, shouldRecordGrokMediaUsage(tt.endpoint, tt.model, result))

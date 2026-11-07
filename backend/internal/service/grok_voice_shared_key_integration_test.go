@@ -21,6 +21,89 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type grokVoiceAvailabilityReader struct {
+	configured atomic.Bool
+}
+
+func (r *grokVoiceAvailabilityReader) ReadAccountAvailability(_ context.Context, account *service.Account) ([]*service.AvailabilityReport, error) {
+	if !r.configured.Load() {
+		return nil, nil
+	}
+	return []*service.AvailabilityReport{{AccountID: account.ID, Configured: true, Enabled: true}}, nil
+}
+
+func TestGrokVoiceAvailabilityRealHandshakeAndSharedKeyRecovery(t *testing.T) {
+	rdb := startKeyAdmissionIntegrationRedis(t)
+	for _, endpoint := range []string{"realtime", "tts"} {
+		t.Run(endpoint, func(t *testing.T) {
+			var handshakes atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := coderws.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.CloseNow() }()
+				handshakes.Add(1)
+				for {
+					if _, _, err = conn.Read(r.Context()); err != nil {
+						return
+					}
+				}
+			}))
+			t.Cleanup(server.Close)
+			originalTransport := http.DefaultTransport
+			http.DefaultTransport = server.Client().Transport
+			t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+			cfg := &config.Config{}
+			fingerprint := config.UpstreamKeyFingerprint("availability-fixture")
+			cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{fingerprint: 1}}
+			transport := repository.ProvideHTTPUpstream(cfg, nil, rdb, nil)
+			authority, ok := transport.(service.UpstreamKeyConcurrency)
+			require.True(t, ok)
+			reader := &grokVoiceAvailabilityReader{}
+			reader.configured.Store(true)
+			svc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, transport, nil, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAvailabilityReader(reader))
+			account := &service.Account{ID: 7, Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": server.URL, "api_key": "availability-fixture"}}
+			open := func() (*service.GrokRealtimeUpstream, error) {
+				if endpoint == "realtime" {
+					return svc.OpenGrokRealtime(t.Context(), account, "availability-fixture", "fixture")
+				}
+				return svc.OpenGrokTTSStream(t.Context(), account, "availability-fixture", url.Values{})
+			}
+
+			upstream, err := open()
+			require.Nil(t, upstream)
+			require.True(t, service.IsOpenAITurnAdmissionError(err), "%v", err)
+			require.Zero(t, handshakes.Load())
+			_, release, err := authority.AcquireUpstreamKeySlots(t.Context(), []string{fingerprint})
+			require.NoError(t, err, "rejected handshake must return its shared slot")
+			require.NotNil(t, release)
+			release()
+
+			reader.configured.Store(false)
+			upstream, err = open()
+			require.NoError(t, err)
+			first := upstream
+			t.Cleanup(func() { _ = first.Close() })
+			require.Eventually(t, func() bool { return handshakes.Load() == 1 }, time.Second, time.Millisecond)
+			reader.configured.Store(true)
+			require.NoError(t, upstream.Close())
+			upstream, err = open()
+			require.Nil(t, upstream)
+			require.True(t, service.IsOpenAITurnAdmissionError(err), "%v", err)
+			require.EqualValues(t, 1, handshakes.Load(), "a newly configured rule must block the next handshake")
+			reader.configured.Store(false)
+			upstream, err = open()
+			require.NoError(t, err)
+			second := upstream
+			t.Cleanup(func() { _ = second.Close() })
+			require.Eventually(t, func() bool { return handshakes.Load() == 2 }, time.Second, time.Millisecond)
+			require.NoError(t, upstream.Close())
+		})
+	}
+}
+
 func TestGrokVoiceSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 	rdb := startKeyAdmissionIntegrationRedis(t)
 	for _, endpoint := range []string{"realtime", "tts"} {

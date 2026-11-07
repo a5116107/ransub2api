@@ -27,6 +27,81 @@ func upstreamKeyTestConfig(revision int64, limit int) *config.Config {
 	return cfg
 }
 
+func TestAsyncVideoKeyGuardAtFinalHTTPAdmission(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	var sends, redirected atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/destination", http.StatusTemporaryRedirect)
+			return
+		}
+		if r.URL.Path == "/destination" {
+			redirected.Add(1)
+		}
+		_, _ = io.WriteString(w, `{"id":"queued"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	for _, astra := range []bool{false, true} {
+		t.Run(fmt.Sprintf("astra=%v", astra), func(t *testing.T) {
+			cfg := upstreamKeyTestConfig(1, 1)
+			cfg.Gateway.CodexGatewayPin.Enabled = astra
+			transport := newHTTPUpstream(cfg, nil, client, nil)
+			guard, ok := transport.(service.AsyncVideoKeyGuard)
+			require.True(t, ok)
+			require.True(t, guard.SupportsAsyncVideoKeyGuard())
+			request := func(path, authorization string) *http.Request {
+				req, err := http.NewRequestWithContext(service.WithAsyncVideoKeyGuard(t.Context(), true), http.MethodPost, server.URL+path, strings.NewReader("{}"))
+				require.NoError(t, err)
+				if authorization != "" {
+					req.Header.Set("Authorization", authorization)
+				}
+				return req
+			}
+			before := sends.Load()
+			for _, auth := range []string{"Bearer supplier-fixture", "Custom unknown", ""} {
+				resp, err := transport.Do(request("/create", auth), "", 1, 1)
+				require.Nil(t, resp)
+				require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+			}
+			multi := request("/create", "Bearer other-fixture")
+			multi.Header.Set("X-Api-Key", "supplier-fixture")
+			resp, err := transport.Do(multi, "", 1, 1)
+			require.Nil(t, resp)
+			require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+			require.Equal(t, before, sends.Load(), "restricted and unknown credentials must not send")
+			require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val(), "a refusal must release its provisional slot")
+
+			resp, err = transport.Do(request("/redirect", "Bearer other-fixture"), "", 1, 1)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+			require.NoError(t, resp.Body.Close())
+			require.Zero(t, redirected.Load(), "a redirect must not bypass final credential admission")
+			ordinary, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/create", strings.NewReader("{}"))
+			require.NoError(t, err)
+			ordinary.Header.Set("Authorization", "Bearer supplier-fixture")
+			resp, err = transport.Do(ordinary, "", 1, 1)
+			require.NoError(t, err, "ordinary HTTP can use the released slot")
+			require.NoError(t, resp.Body.Close())
+		})
+	}
+	withoutLimiter := &httpUpstreamService{}
+	required := httptest.NewRequest(http.MethodPost, "/create", nil)
+	required = required.WithContext(service.WithAsyncVideoKeyGuard(required.Context(), true))
+	_, _, err := withoutLimiter.BeginUpstreamKeyRequest(required)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+	optional := httptest.NewRequest(http.MethodPost, "/create", nil)
+	optional = optional.WithContext(service.WithAsyncVideoKeyGuard(optional.Context(), false))
+	_, finish, err := withoutLimiter.BeginUpstreamKeyRequest(optional)
+	require.NoError(t, err)
+	finish(nil, nil)
+	missingDelegate := &astraRoutingUpstream{}
+	require.False(t, missingDelegate.SupportsAsyncVideoKeyGuard())
+}
+
 func TestUpstreamKeyHTTPAdmissionSharedLifetime(t *testing.T) {
 	server := miniredis.RunT(t)
 	first := redis.NewClient(&redis.Options{Addr: server.Addr()})
