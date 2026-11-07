@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/textproto"
 	"sort"
 	"strings"
 )
@@ -141,6 +142,16 @@ func UpstreamKeyFingerprint(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// UpstreamBasicAuthFingerprint identifies the exact Basic user/password pair.
+// Basic usernames cannot contain a colon; passwords and spaces are preserved.
+func UpstreamBasicAuthFingerprint(username, password string) string {
+	if strings.Contains(username, ":") {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("\x00http-basic\x00" + username + ":" + password))
+	return hex.EncodeToString(sum[:])
+}
+
 // UpstreamAWSAccessKeyFingerprint identifies a SigV4 access-key ID, not its
 // per-request signature or secret. Its namespace prevents an unrelated Bearer
 // token with the same text from consuming this AWS credential's capacity.
@@ -243,6 +254,11 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 					scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
 					if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
 						add(token)
+					} else if ok && strings.EqualFold(scheme, "Basic") {
+						basicRequest := &http.Request{Header: http.Header{"Authorization": {textproto.TrimString(value)}}}
+						if username, password, valid := basicRequest.BasicAuth(); valid {
+							addFingerprint(UpstreamBasicAuthFingerprint(username, password))
+						}
 					} else if keyID := sigV4AccessKeyID(value); keyID != "" {
 						// Add uses the same hashing and de-duplication path as other
 						// credentials, with a distinct AWS identity namespace.

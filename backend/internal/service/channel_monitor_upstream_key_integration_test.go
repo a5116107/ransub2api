@@ -4,11 +4,12 @@ package service_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,7 +19,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,30 +54,15 @@ func (monitorIntegrationRuntime) GetChannelMonitorRuntime(context.Context) servi
 }
 
 func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
-	binary, err := exec.LookPath("redis-server")
-	if err != nil {
-		t.Skip("redis-server is required for this isolated integration")
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	address := listener.Addr().String()
-	_, port, err := net.SplitHostPort(address)
-	require.NoError(t, err)
-	require.NoError(t, listener.Close())
-	cmd := exec.Command(binary, "--bind", "127.0.0.1", "--port", port, "--dir", t.TempDir(), "--save", "", "--appendonly", "no")
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	rdb := redis.NewClient(&redis.Options{Addr: address, MaxRetries: -1, DialTimeout: 200 * time.Millisecond})
-	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
-	require.Eventually(t, func() bool { return rdb.Ping(t.Context()).Err() == nil }, 3*time.Second, 10*time.Millisecond)
+	rdb := startKeyAdmissionIntegrationRedis(t)
 
 	for _, tc := range []struct {
-		name           string
-		wrap, override bool
+		name                  string
+		wrap, override, basic bool
 	}{
-		{"direct", false, false}, {"direct-override", false, true},
-		{"astra", true, false}, {"astra-override", true, true},
+		{"direct", false, false, false}, {"direct-override", false, true, false},
+		{"astra", true, false, false}, {"astra-override", true, true, false},
+		{"direct-basic", false, true, true}, {"astra-basic", true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probes, otherRequests atomic.Int32
@@ -126,7 +111,16 @@ func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 			restore := service.SetChannelMonitorHTTPClientForTesting(server.Client())
 			t.Cleanup(restore)
 			cfg := &config.Config{}
-			cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("shared-fixture"): 1}}
+			fingerprint, authorization := config.UpstreamKeyFingerprint("shared-fixture"), "Bearer shared-fixture"
+			if tc.basic {
+				fingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte("\x00http-basic\x00monitor:shared-fixture")))
+				authorization = " \tBasic " + base64.StdEncoding.EncodeToString([]byte("monitor:shared-fixture")) + " \t"
+			}
+			revision := int64(1)
+			if tc.basic {
+				revision = 2
+			}
+			cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: revision, Limits: map[string]int{fingerprint: 1}}
 			cfg.Gateway.CodexGatewayPin.Enabled = tc.wrap
 			transport := repository.ProvideHTTPUpstream(cfg, nil, rdb, nil)
 			repo := &monitorIntegrationRepo{monitor: &service.ChannelMonitor{ID: 1, Provider: service.MonitorProviderOpenAI,
@@ -134,13 +128,13 @@ func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 				BodyOverride: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "test"}}}}}
 			if tc.override {
 				repo.monitor.APIKey = "unused-default-fixture"
-				repo.monitor.ExtraHeaders = map[string]string{"authorization": "Bearer shared-fixture"}
+				repo.monitor.ExtraHeaders = map[string]string{"authorization": authorization}
 			}
 			svc := service.ProvideChannelMonitorService(repo, monitorIntegrationEncryptor{}, nil, cfg, transport)
 			svc.SetRuntimeReader(monitorIntegrationRuntime{})
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/held", strings.NewReader("{}"))
 			require.NoError(t, err)
-			req.Header.Set("Authorization", "Bearer shared-fixture")
+			req.Header.Set("Authorization", authorization)
 			busy, err := transport.Do(req, "", 10, 4)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, busy.Body.Close()) })
@@ -157,7 +151,7 @@ func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 			require.False(t, results[0].Skipped)
 			require.Equal(t, service.MonitorStatusOperational, results[0].Status)
 			require.EqualValues(t, 1, probes.Load())
-			require.Equal(t, "Bearer shared-fixture", observedHeader.Load())
+			require.Equal(t, strings.Trim(authorization, " \t"), observedHeader.Load())
 			require.Len(t, repo.history, 1)
 			require.Equal(t, 1, repo.marked)
 
@@ -176,7 +170,7 @@ func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 			}
 			other, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/other", strings.NewReader("{}"))
 			require.NoError(t, err)
-			other.Header.Set("Authorization", "Bearer shared-fixture")
+			other.Header.Set("Authorization", authorization)
 			response, err := transport.Do(other, "", 11, 4)
 			if response != nil {
 				_ = response.Body.Close()
@@ -194,11 +188,59 @@ func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 			}
 			other, err = http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/other", strings.NewReader("{}"))
 			require.NoError(t, err)
-			other.Header.Set("Authorization", "Bearer shared-fixture")
+			other.Header.Set("Authorization", authorization)
 			response, err = transport.Do(other, "", 11, 4)
 			require.NoError(t, err)
 			require.NoError(t, response.Body.Close())
 			require.EqualValues(t, 1, otherRequests.Load())
+		})
+	}
+
+	for _, mode := range []string{"disabled", "unlisted"} {
+		t.Run("basic-"+mode, func(t *testing.T) {
+			var probes atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method == http.MethodHead {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				if req.URL.Path == "/held" {
+					_, _ = io.WriteString(w, "held")
+					_ = http.NewResponseController(w).Flush()
+					<-req.Context().Done()
+					return
+				}
+				probes.Add(1)
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+			}))
+			t.Cleanup(server.Close)
+			restore := service.SetChannelMonitorHTTPClientForTesting(server.Client())
+			t.Cleanup(restore)
+			cfg := &config.Config{}
+			if mode == "unlisted" {
+				cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 3, Limits: map[string]int{config.UpstreamKeyFingerprint("other-fixture"): 1}}
+			}
+			transport := repository.ProvideHTTPUpstream(cfg, nil, rdb, nil)
+			authorization := "Basic " + base64.StdEncoding.EncodeToString([]byte("monitor:shared-fixture"))
+			repo := &monitorIntegrationRepo{monitor: &service.ChannelMonitor{ID: 1, Provider: service.MonitorProviderOpenAI,
+				Endpoint: server.URL, APIKey: "unused-default-fixture", PrimaryModel: "fixture-model", BodyOverrideMode: service.MonitorBodyOverrideModeReplace,
+				BodyOverride: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "test"}}},
+				ExtraHeaders: map[string]string{"authorization": authorization}}}
+			svc := service.ProvideChannelMonitorService(repo, monitorIntegrationEncryptor{}, nil, cfg, transport)
+			svc.SetRuntimeReader(monitorIntegrationRuntime{})
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/held", strings.NewReader("{}"))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", authorization)
+			busy, err := transport.Do(req, "", 10, 4)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, busy.Body.Close()) })
+			results, err := svc.RunCheck(t.Context(), 1)
+			require.NoError(t, err)
+			require.Len(t, results, 1)
+			require.False(t, results[0].Skipped)
+			require.Equal(t, service.MonitorStatusOperational, results[0].Status)
+			require.EqualValues(t, 1, probes.Load())
+			require.Len(t, repo.history, 1)
 		})
 	}
 }

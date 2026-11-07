@@ -30,7 +30,7 @@ type quotaIntegrationAccountRepo struct {
 	account *service.Account
 }
 
-func redisServerVersion(info string) (int, int, string) {
+func redisServerVersion(info string) (int, string) {
 	version := ""
 	for _, line := range strings.Split(info, "\n") {
 		if strings.HasPrefix(line, "redis_version:") {
@@ -38,20 +38,17 @@ func redisServerVersion(info string) (int, int, string) {
 			break
 		}
 	}
-	parts := strings.Split(version, ".")
-	major, minor := 0, 0
-	if len(parts) >= 2 {
-		major, _ = strconv.Atoi(parts[0])
-		minor, _ = strconv.Atoi(parts[1])
-	}
-	return major, minor, version
+	majorText, _, _ := strings.Cut(version, ".")
+	major, _ := strconv.Atoi(majorText)
+	return major, version
 }
 
 func (r *quotaIntegrationAccountRepo) GetByID(_ context.Context, _ int64) (*service.Account, error) {
 	return r.account, nil
 }
 
-func TestOpenAIQuotaSharesRealRedisCapacityAndRecovers(t *testing.T) {
+func startKeyAdmissionIntegrationRedis(t *testing.T) *redis.Client {
+	t.Helper()
 	binary, err := exec.LookPath("redis-server")
 	if err != nil {
 		t.Skip("redis-server is required for this isolated integration")
@@ -73,17 +70,17 @@ func TestOpenAIQuotaSharesRealRedisCapacityAndRecovers(t *testing.T) {
 	if infoErr != nil {
 		t.Skipf("redis server info is unavailable: %v", infoErr)
 	}
-	major, minor, version := redisServerVersion(info)
-	if major < 3 || (major == 3 && minor < 2) {
+	major, version := redisServerVersion(info)
+	if major < 4 {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		docker, dockerErr := exec.LookPath("docker")
 		if dockerErr != nil {
-			t.Skipf("redis-server %q lacks redis.replicate_commands and Docker is unavailable", version)
+			t.Skipf("redis-server %q lacks required scripting commands and Docker is unavailable", version)
 		}
 		container, runErr := exec.Command(docker, "run", "-d", "--rm", "-p", "127.0.0.1:"+port+":6379", "redis:7", "redis-server", "--bind", "0.0.0.0", "--port", "6379", "--save", "", "--appendonly", "no").Output()
 		if runErr != nil {
-			t.Skipf("redis-server %q lacks redis.replicate_commands and Docker Redis 7 could not start: %v", version, runErr)
+			t.Skipf("redis-server %q lacks required scripting commands and Docker Redis 7 could not start: %v", version, runErr)
 		}
 		containerID := strings.TrimSpace(string(container))
 		t.Cleanup(func() { _ = exec.Command(docker, "rm", "-f", containerID).Run() })
@@ -92,12 +89,16 @@ func TestOpenAIQuotaSharesRealRedisCapacityAndRecovers(t *testing.T) {
 		if infoErr != nil {
 			t.Skipf("Docker Redis server info is unavailable: %v", infoErr)
 		}
-		major, minor, version = redisServerVersion(info)
-		if major < 3 || (major == 3 && minor < 2) {
-			t.Skipf("Docker Redis version %q lacks redis.replicate_commands", version)
+		major, version = redisServerVersion(info)
+		if major < 4 {
+			t.Skipf("Docker Redis version %q lacks required scripting commands", version)
 		}
 	}
+	return rdb
+}
 
+func TestOpenAIQuotaSharesRealRedisCapacityAndRecovers(t *testing.T) {
+	rdb := startKeyAdmissionIntegrationRedis(t)
 	for _, astra := range []bool{false, true} {
 		name := "direct"
 		if astra {

@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,6 +40,53 @@ func TestUpstreamKeyConcurrencyValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpstreamBasicCredentialFingerprints(t *testing.T) {
+	fingerprint := func(user, password string) string {
+		return fmt.Sprintf("%x", sha256.Sum256([]byte("\x00http-basic\x00"+user+":"+password)))
+	}
+	encoded := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	for _, tc := range []struct {
+		name, header, user, password string
+		valid                        bool
+	}{
+		{"ordinary", "Basic " + encoded("monitor:shared-fixture"), "monitor", "shared-fixture", true},
+		{"case insensitive scheme", "bAsIc " + encoded("monitor:shared-fixture"), "monitor", "shared-fixture", true},
+		{"wire header whitespace", " \tBasic " + encoded("monitor:shared-fixture") + " \t", "monitor", "shared-fixture", true},
+		{"empty username", "Basic " + encoded(":password"), "", "password", true},
+		{"empty password", "Basic " + encoded("user:"), "user", "", true},
+		{"password colon", "Basic " + encoded("user:pass:word"), "user", "pass:word", true},
+		{"credential spaces", "Basic " + encoded(" user:password "), " user", "password ", true},
+		{"unicode", "Basic " + encoded("\u7528\u6236:\u5bc6\u78bc"), "\u7528\u6236", "\u5bc6\u78bc", true},
+		{"invalid base64", "Basic !!!", "", "", false},
+		{"missing colon", "Basic " + encoded("user"), "", "", false},
+		{"missing token", "Basic ", "", "", false},
+		{"unknown scheme", "Custom " + encoded("monitor:shared-fixture"), "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid", nil)
+			req.Header["authorization"] = []string{tc.header}
+			got := UpstreamCredentialFingerprints(req)
+			//nolint:staticcheck // Verify extraction does not rewrite raw header casing or values.
+			require.Equal(t, []string{tc.header}, req.Header["authorization"])
+			if tc.valid {
+				require.Equal(t, []string{fingerprint(tc.user, tc.password)}, got)
+			} else {
+				require.Empty(t, got)
+			}
+		})
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid", nil)
+	req.Header["authorization"] = []string{"Basic " + encoded("monitor:shared-fixture")}
+	req.Header["AUTHORIZATION"] = []string{"bAsIc " + encoded("monitor:shared-fixture")}
+	req.Header["Authorization"] = []string{"Bearer monitor:shared-fixture"}
+	require.ElementsMatch(t, []string{fingerprint("monitor", "shared-fixture"), UpstreamKeyFingerprint("monitor:shared-fixture")}, UpstreamCredentialFingerprints(req))
+	require.NotEqual(t, fingerprint("user", "password"), fingerprint("user", "password "))
+	require.NotEqual(t, fingerprint("user", "password"), fingerprint("other", "password"))
+	require.Equal(t, fingerprint("monitor", "shared-fixture"), UpstreamBasicAuthFingerprint("monitor", "shared-fixture"))
+	require.Equal(t, fingerprint("user", "password "), UpstreamBasicAuthFingerprint("user", "password "))
+	require.Empty(t, UpstreamBasicAuthFingerprint("user:name", "password"))
 }
 
 func TestUpstreamKeyConcurrencyRequiresMatchingRegionalAuthority(t *testing.T) {
