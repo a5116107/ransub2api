@@ -183,9 +183,12 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		if failover := upstreamKeyAdmissionFailover(err); failover != nil {
 			return nil, failover
 		}
-		return nil, fmt.Errorf("MiniMax-H3 upstream transport failed")
+		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("MiniMax-H3 upstream transport failed"))
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if endpoint.IsAsyncVideoCreate() && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("MiniMax-H3 creation returned a redirect"))
+	}
 	result.Duration, result.ResponseHeaders = time.Since(started), resp.Header.Clone()
 	if endpoint == MiniMaxH3EndpointContent && resp.StatusCode == http.StatusFound {
 		location := resp.Header.Get("Location")
@@ -198,7 +201,7 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		c.Status(http.StatusFound)
 		return result, nil
 	}
-	responseBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	responseBody, err := readGrokMediaResponseBody(resp.Body, s.cfg, c, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +214,7 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		return nil, fmt.Errorf("MiniMax-H3 upstream status %d", resp.StatusCode)
 	}
 	if !gjson.ValidBytes(responseBody) || !gjson.ParseBytes(responseBody).IsObject() {
-		return nil, fmt.Errorf("invalid MiniMax-H3 response")
+		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("invalid MiniMax-H3 response"))
 	}
 	switch endpoint {
 	case MiniMaxH3EndpointCreate:
@@ -220,7 +223,7 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 			id = gjson.GetBytes(responseBody, "task_id").String()
 		}
 		if _, err := buildMiniMaxH3URL(base, MiniMaxH3EndpointStatus, id); err != nil {
-			return nil, err
+			return nil, asyncVideoSubmissionError(endpoint, err)
 		}
 		result.ResponseID = MiniMaxH3TaskKey(id)
 	case MiniMaxH3EndpointStatus:

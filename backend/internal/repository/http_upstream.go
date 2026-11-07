@@ -562,6 +562,9 @@ func isGrokCLICompatibilityAccessDenied(body []byte) bool {
 }
 
 func isGrokCLIAccessDeniedFallbackCandidate(req *http.Request, resp *http.Response) bool {
+	if active, _ := service.AsyncVideoKeyGuardState(req); active {
+		return false
+	}
 	return req != nil && req.URL != nil && req.GetBody != nil && resp != nil &&
 		resp.StatusCode == http.StatusForbidden &&
 		strings.EqualFold(strings.TrimSpace(req.URL.Hostname()), grokCLIProxyHost) &&

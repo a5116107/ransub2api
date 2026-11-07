@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -461,6 +463,206 @@ func TestGrokMediaSharedKeyFailureMessageUsesEndpoint(t *testing.T) {
 				require.NotContains(t, recorder.Body.String(), "remote task ownership")
 			}
 		})
+	}
+}
+
+func TestAsyncVideoUnknownSubmissionDoesNotReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint service.GrokMediaEndpoint
+		body     string
+	}{
+		{"create", service.GrokMediaEndpointVideosGenerations, `{"model":"grok-imagine-video","prompt":"waves"}`},
+		{"edit", service.GrokMediaEndpointVideosEdits, `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/a.mp4"}}`},
+		{"extension", service.GrokMediaEndpointVideosExtensions, `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/a.mp4"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, slots, _, upstream := newGrokMediaSlotHandler(t, false, false)
+			h.maxAccountSwitches = 2
+			upstream.call = func(*http.Request, int64) (*http.Response, error) {
+				// The provider may have accepted the job before the connection failed.
+				return nil, errors.New("fixture connection ended after submission")
+			}
+			c, recorder := grokMediaSlotContext(t.Context(), true)
+			c.Request = httptest.NewRequest(http.MethodPost, "/fixture", strings.NewReader(tc.body)).WithContext(t.Context())
+			c.Request.Header.Set("Content-Type", "application/json")
+			h.handleGrokMedia(c, tc.endpoint, "")
+			require.Equal(t, 1, upstream.calls, "an unknown submission must not replay on this or another account")
+			require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+			require.Contains(t, recorder.Body.String(), "async_video_submission_unconfirmed")
+			slots.assertReleased(t)
+		})
+	}
+}
+
+func TestAsyncVideoPreSendKeyRefusalMaySwitchAccount(t *testing.T) {
+	h, slots, _, upstream := newGrokMediaSlotHandler(t, false, false)
+	original := upstream.call
+	upstream.call = func(req *http.Request, id int64) (*http.Response, error) {
+		if upstream.calls == 1 {
+			return nil, service.ErrUpstreamKeyCapacity
+		}
+		return original(req, id)
+	}
+	c, recorder := grokMediaSlotContext(t.Context(), true)
+	h.GrokVideoGeneration(c)
+	require.Equal(t, 2, upstream.calls)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	slots.assertReleased(t)
+}
+
+func TestAsyncVideoRealConnectionLossDoesNotReplay(t *testing.T) {
+	var accepted atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			return
+		}
+		accepted.Add(1)
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("fixture server cannot hijack connection")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(server.Close)
+	target, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	h, slots, _, upstream := newGrokMediaSlotHandler(t, false, false)
+	upstream.call = func(req *http.Request, _ int64) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		clone.URL = target
+		clone.Host = target.Host
+		return server.Client().Do(clone)
+	}
+	c, recorder := grokMediaSlotContext(t.Context(), true)
+	h.GrokVideoGeneration(c)
+	require.EqualValues(t, 1, accepted.Load(), "the fixture accepted exactly one complete request body")
+	require.Equal(t, 1, upstream.calls)
+	require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+	require.Contains(t, recorder.Body.String(), "async_video_submission_unconfirmed")
+	slots.assertReleased(t)
+}
+
+func TestAsyncVideoHTTPFailureDoesNotReplayButImagesStillFailOver(t *testing.T) {
+	for _, video := range []bool{false, true} {
+		t.Run(fmt.Sprintf("video=%v", video), func(t *testing.T) {
+			h, slots, bindings, upstream := newGrokMediaSlotHandler(t, false, false)
+			accounts := make([]service.Account, 3)
+			for i := range accounts {
+				accounts[i] = service.Account{ID: int64(i + 1), Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey,
+					Status: service.StatusActive, Schedulable: true, Concurrency: 10, Priority: i, GroupIDs: []int64{24},
+					Credentials: map[string]any{"api_key": "test-key", "pool_mode": true}}
+			}
+			repo := grokMediaSlotRepo{openAIImagesFailoverAccountRepo: openAIImagesFailoverAccountRepo{accounts: accounts}}
+			concurrency := service.NewConcurrencyService(slots)
+			h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, h.cfg, nil, concurrency,
+				nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+			h.maxAccountSwitches = 1
+			upstream.call = func(*http.Request, int64) (*http.Response, error) {
+				if upstream.calls == 1 {
+					return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header),
+						Body: io.NopCloser(strings.NewReader(`{"error":{"message":"fixture failure"}}`))}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+					Body: io.NopCloser(strings.NewReader(`{"data":[{"url":"https://example.com/image.png"}]}`))}, nil
+			}
+			c, recorder := grokMediaSlotContext(t.Context(), true)
+			if video {
+				h.GrokVideoGeneration(c)
+				require.Equal(t, 1, upstream.calls)
+				require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+				require.Contains(t, recorder.Body.String(), "async_video_submission_unconfirmed")
+			} else {
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"grok-imagine","prompt":"waves"}`)).WithContext(t.Context())
+				c.Request.Header.Set("Content-Type", "application/json")
+				h.GrokImages(c)
+				require.Equal(t, 2, upstream.calls, "synchronous image failover keeps its existing behavior")
+				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			}
+			slots.assertReleased(t)
+		})
+	}
+}
+
+func TestGrokMediaMayRetryFailureDistinguishesPreSend(t *testing.T) {
+	for _, endpoint := range []service.GrokMediaEndpoint{service.GrokMediaEndpointVideosGenerations, service.SeedanceEndpointCreate, service.MiniMaxH3EndpointCreate} {
+		require.False(t, grokMediaMayRetryFailure(endpoint, &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway}))
+		require.False(t, grokMediaMayRetryFailure(endpoint, &service.UpstreamFailoverError{StatusCode: http.StatusRequestTimeout}))
+		require.True(t, grokMediaMayRetryFailure(endpoint, &service.UpstreamFailoverError{Reason: service.UpstreamKeyAdmissionReason}))
+		require.True(t, grokMediaMayRetryFailure(endpoint, &service.UpstreamFailoverError{Stage: service.GatewayFailureStageAccountAuth}))
+		for _, status := range []int{http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusMethodNotAllowed, http.StatusUnprocessableEntity, http.StatusTooManyRequests} {
+			require.True(t, grokMediaMayRetryFailure(endpoint, &service.UpstreamFailoverError{StatusCode: status}))
+		}
+	}
+	require.True(t, grokMediaMayRetryFailure(service.GrokMediaEndpointImagesGenerations, &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway}))
+}
+
+type asyncVideoReadFailure struct{}
+
+func (asyncVideoReadFailure) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (asyncVideoReadFailure) Close() error             { return nil }
+
+func TestAsyncVideoAmbiguousSuccessResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint service.GrokMediaEndpoint
+		platform string
+		body     string
+	}{
+		{"grok-create", service.GrokMediaEndpointVideosGenerations, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves"}`},
+		{"grok-edit", service.GrokMediaEndpointVideosEdits, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/a.mp4"}}`},
+		{"grok-extension", service.GrokMediaEndpointVideosExtensions, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/a.mp4"}}`},
+		{"seedance", service.SeedanceEndpointCreate, service.PlatformOpenAI, `{"model":"video","content":[{"type":"text","text":"waves"}]}`},
+		{"minimax", service.MiniMaxH3EndpointCreate, service.PlatformMiniMax, `{"model":"MiniMax-H3","prompt":"waves","seconds":"1"}`},
+	} {
+		for _, scenario := range []string{"missing_id", "read_failure", "too_large", "redirect"} {
+			t.Run(tc.name+"/"+scenario, func(t *testing.T) {
+				var h *OpenAIGatewayHandler
+				var slots *grokMediaSlotsCache
+				var upstream *grokMediaSlotUpstream
+				if tc.platform == service.PlatformGrok {
+					h, slots, _, upstream = newGrokMediaSlotHandler(t, false, false)
+				} else {
+					h, slots, _, upstream = newGrokMediaSlotHandler(t, false, false, tc.platform)
+				}
+				upstream.call = func(*http.Request, int64) (*http.Response, error) {
+					body := io.NopCloser(strings.NewReader(`{"status":"queued"}`))
+					switch scenario {
+					case "read_failure":
+						body = asyncVideoReadFailure{}
+					case "too_large":
+						h.cfg.Gateway.UpstreamResponseReadMaxBytes = 16
+						body = io.NopCloser(strings.NewReader(strings.Repeat("x", 32)))
+					}
+					status, headers := http.StatusOK, make(http.Header)
+					if scenario == "redirect" {
+						status = http.StatusTemporaryRedirect
+						headers.Set("Location", "https://other.example/create")
+					}
+					return &http.Response{StatusCode: status, Header: headers, Body: body}, nil
+				}
+				c, recorder := grokMediaSlotContext(t.Context(), true)
+				c.Request = httptest.NewRequest(http.MethodPost, "/fixture", strings.NewReader(tc.body)).WithContext(t.Context())
+				c.Request.Header.Set("Content-Type", "application/json")
+				key, ok := middleware2.GetAPIKeyFromContext(c)
+				require.True(t, ok)
+				key.Group.Platform = tc.platform
+				key.Group.VideoModelPrices = map[string]map[string]float64{service.MiniMaxH3PriceFamily: {"request_1s": 0.02}}
+				h.handleGrokMedia(c, tc.endpoint, "")
+				require.Equal(t, 1, upstream.calls, "ambiguous responses must not be replayed")
+				require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+				require.Contains(t, recorder.Body.String(), "async_video_submission_unconfirmed")
+				require.Empty(t, recorder.Header().Get("Location"), "an upstream redirect must not redirect the client")
+				slots.assertReleased(t)
+			})
+		}
 	}
 }
 

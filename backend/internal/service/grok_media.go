@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -70,6 +71,8 @@ func (s *OpenAIGatewayService) guardAsyncVideoKeyRequest(req *http.Request, endp
 	if !endpoint.IsAsyncVideoCreate() {
 		return req, nil
 	}
+	// A redirect can replay a POST after the provider accepted the first copy.
+	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(req.Context()))
 	required := upstreamKeyAdmissionRequired(s.cfg)
 	guard, ok := s.httpUpstream.(AsyncVideoKeyGuard)
 	if !ok || !guard.SupportsAsyncVideoKeyGuard() {
@@ -79,6 +82,38 @@ func (s *OpenAIGatewayService) guardAsyncVideoKeyRequest(req *http.Request, endp
 		return req, nil
 	}
 	return req.WithContext(WithAsyncVideoKeyGuard(req.Context(), required)), nil
+}
+
+// An asynchronous submission may have been accepted even when its response
+// cannot be read or used. Preserve the cause without exposing it to clients.
+type asyncVideoSubmissionUnconfirmedError struct{ cause error }
+
+func (e *asyncVideoSubmissionUnconfirmedError) Error() string {
+	return "async video submission outcome unconfirmed"
+}
+
+func (e *asyncVideoSubmissionUnconfirmedError) Unwrap() error { return e.cause }
+
+func IsAsyncVideoSubmissionUnconfirmed(err error) bool {
+	var unknown *asyncVideoSubmissionUnconfirmedError
+	return errors.As(err, &unknown)
+}
+
+func asyncVideoSubmissionError(endpoint GrokMediaEndpoint, err error) error {
+	if err == nil || !endpoint.IsAsyncVideoCreate() {
+		return err
+	}
+	return &asyncVideoSubmissionUnconfirmedError{cause: err}
+}
+
+func readGrokMediaResponseBody(reader io.Reader, cfg *config.Config, c *gin.Context, endpoint GrokMediaEndpoint) ([]byte, error) {
+	onTooLarge := TooLargeWriter(openAITooLargeError)
+	if endpoint.IsAsyncVideoCreate() {
+		// The client needs the ambiguous-submission error, not a generic 502.
+		onTooLarge = nil
+	}
+	body, err := ReadUpstreamResponseBody(reader, cfg, c, onTooLarge)
+	return body, asyncVideoSubmissionError(endpoint, err)
 }
 
 type GrokMediaRequestInfo struct {
@@ -771,12 +806,15 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 
 	requestIDHeader := firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
 	requestModel := requestInfo.Model
+	if endpoint.IsAsyncVideoCreate() && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, asyncVideoSubmissionError(endpoint, errors.New("grok video creation returned a redirect"))
+	}
 	if resp.StatusCode >= 400 {
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader, requestModel)
 	}
 
 	s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, requestModel), account, resp.Header, resp.StatusCode)
-	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	respBody, err := readGrokMediaResponseBody(resp.Body, s.cfg, c, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -802,8 +840,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		)
 		respBody = setGrokMediaVideoSourceURL(respBody, sourceURL)
 	}
-	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
+	if endpoint.IsAsyncVideoCreate() && strings.TrimSpace(usage.ResponseID) == "" {
+		return nil, asyncVideoSubmissionError(endpoint, errors.New("grok video response missing task ID"))
+	}
+	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	resultModel := requestModel
 	resultBillingModel := requestModel
 	if endpoint == GrokMediaEndpointVideoStatus {

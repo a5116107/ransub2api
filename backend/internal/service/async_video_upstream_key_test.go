@@ -84,11 +84,13 @@ func TestAsyncVideoKeyGuardRequestCapability(t *testing.T) {
 							continue
 						}
 						require.NoError(t, err)
+						require.True(t, HTTPUpstreamRedirectsDisabled(got.Context()), "video creation must not replay through a redirect")
 						active, required := AsyncVideoKeyGuardState(got)
 						require.Equal(t, supported, active)
 						require.Equal(t, supported && policy != "disabled", required)
 						original, _ := AsyncVideoKeyGuardState(req)
 						require.False(t, original, "the caller's request must remain unchanged")
+						require.False(t, HTTPUpstreamRedirectsDisabled(req.Context()))
 					}
 				})
 			}

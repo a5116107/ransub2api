@@ -5,7 +5,7 @@
 <!-- resume:start -->
 - 任务：D2共享Key准入；Basic、内容审核及Grok语音独立出站准入已补齐，父任务仍在进行。
 - 源码：H盘唯一工作树`work/monitor-driven-scheduling`；Grok语音终检及异步视频发送前保护已验证，不运行CI、推送、部署或生产迁移。
-- 证据：Grok语音availability漏控与五种异步视频共享槽位提前释放均已复现；隔离Redis 7/真实WS及发送前保护回归通过，细节见DECISIONS。
+- 证据：Grok语音availability漏控与五种异步视频共享槽位提前释放均已复现；隔离Redis 7/真实WS、发送前保护及未知结果不重放回归通过，细节见DECISIONS。
 - 下一动作：实现异步视频发送前持久交接、未知结果恢复及终态释放；继续D2其他鉴权与出站，再推进D3/D4和D5–D9。
 - 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
 <!-- resume:end -->

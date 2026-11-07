@@ -432,6 +432,17 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
+			if service.IsAsyncVideoSubmissionUnconfirmed(err) {
+				if failoverClientGone(c) {
+					return
+				}
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account, grokMediaScheduleModel(account, routingModel, nil), false, nil, err)
+				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+					h.handleAsyncVideoSubmissionUnconfirmed(c)
+				}
+				reqLog.Warn("grok_media.video_submission_unconfirmed", zap.Int64("account_id", account.ID), zap.Error(err))
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if failoverClientGone(c) {
@@ -446,6 +457,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				}
 				if c.Writer.Size() != writerSizeBeforeForward {
 					h.handleGrokMediaFailoverExhausted(c, endpoint, failoverErr, true)
+					return
+				}
+				// A video create can continue remotely after a lost response or 5xx.
+				// Keep explicit rejection and pre-send failover; never replay an
+				// ambiguous transport failure or server error.
+				if !grokMediaMayRetryFailure(endpoint, failoverErr) {
+					h.handleAsyncVideoSubmissionUnconfirmed(c)
 					return
 				}
 				if !forbiddenBudget.canRetry(failoverErr, switchCount) {
@@ -575,6 +593,29 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			zap.Int("switch_count", switchCount),
 		)
 		return
+	}
+}
+
+func (h *OpenAIGatewayHandler) handleAsyncVideoSubmissionUnconfirmed(c *gin.Context) {
+	h.handleStreamingAwareErrorWithCode(c, http.StatusBadGateway, "upstream_error", "async_video_submission_unconfirmed",
+		"Upstream video submission may have been accepted; verify its status before retrying", false, false)
+}
+
+func grokMediaMayRetryFailure(endpoint service.GrokMediaEndpoint, err *service.UpstreamFailoverError) bool {
+	if !endpoint.IsAsyncVideoCreate() || service.IsUpstreamKeyAdmissionFailure(err) || err.IsCredentialFailure() {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	// These statuses explicitly reject the request; 408 and server errors do
+	// not establish whether the provider already created a task.
+	switch err.StatusCode {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden,
+		http.StatusMethodNotAllowed, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
 	}
 }
 

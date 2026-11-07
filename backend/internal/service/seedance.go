@@ -129,10 +129,13 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 		if failover := upstreamKeyAdmissionFailover(err); failover != nil {
 			return nil, failover
 		}
-		return nil, err
+		return nil, asyncVideoSubmissionError(endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	responseBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	if endpoint.IsAsyncVideoCreate() && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("seedance creation returned a redirect"))
+	}
+	responseBody, err := readGrokMediaResponseBody(resp.Body, s.cfg, c, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +147,13 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	}
 	result := &OpenAIForwardResult{Model: model, BillingModel: model, UpstreamModel: upstreamModel, Duration: time.Since(started), ResponseHeaders: resp.Header.Clone()}
 	if endpoint == SeedanceEndpointCreate {
-		id := strings.TrimSpace(gjson.GetBytes(responseBody, "id").String())
-		if id == "" {
-			return nil, fmt.Errorf("seedance create response missing task ID")
+		idValue := gjson.GetBytes(responseBody, "id")
+		id := strings.TrimSpace(idValue.String())
+		if idValue.Type != gjson.String {
+			return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("seedance create response missing task ID"))
+		}
+		if _, err := buildSeedanceURL(base, SeedanceEndpointStatus, id); err != nil {
+			return nil, asyncVideoSubmissionError(endpoint, err)
 		}
 		result.ResponseID = SeedanceTaskKey(id)
 	}

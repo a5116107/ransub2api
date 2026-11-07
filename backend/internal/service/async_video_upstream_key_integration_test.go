@@ -98,3 +98,58 @@ func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 		})
 	}
 }
+
+func TestAsyncVideoCreateDoesNotFollowRedirect(t *testing.T) {
+	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name     string
+		endpoint service.GrokMediaEndpoint
+		platform string
+		body     string
+	}{
+		{"grok", service.GrokMediaEndpointVideosGenerations, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves"}`},
+		{"seedance", service.SeedanceEndpointCreate, service.PlatformOpenAI, `{"model":"video","content":[{"type":"text","text":"waves"}]}`},
+		{"minimax", service.MiniMaxH3EndpointCreate, service.PlatformMiniMax, `{"model":"MiniMax-H3","prompt":"waves","seconds":"1"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var initial, redirected atomic.Int32
+			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				redirected.Add(1)
+				_, _ = io.WriteString(w, `{"id":"task","request_id":"task"}`)
+			}))
+			t.Cleanup(destination.Close)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				initial.Add(1)
+				w.Header().Set("Location", destination.URL+"/create")
+				w.WriteHeader(http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(server.Close)
+			cfg := &config.Config{}
+			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+			transport := repository.ProvideHTTPUpstream(cfg, nil, nil, nil)
+			svc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, transport, nil, nil, nil, nil, nil, nil, nil, nil)
+			account := &service.Account{ID: 7, Platform: tc.platform, Type: service.AccountTypeAPIKey, Concurrency: 1,
+				Credentials: map[string]any{"api_key": "fixture", "base_url": server.URL, "account_mode": service.AccountModePayG, "openai_capabilities": []string{"seedance"}}}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			body := []byte(tc.body)
+			c.Request = httptest.NewRequest(http.MethodPost, "/fixture", bytes.NewReader(body)).WithContext(t.Context())
+			var err error
+			switch tc.platform {
+			case service.PlatformOpenAI:
+				_, err = svc.ForwardSeedance(t.Context(), c, account, tc.endpoint, "", body)
+			case service.PlatformMiniMax:
+				_, err = svc.ForwardMiniMaxH3(t.Context(), c, account, tc.endpoint, "", body)
+			default:
+				_, err = svc.ForwardGrokMedia(t.Context(), c, account, tc.endpoint, "", body, "application/json")
+			}
+			require.Error(t, err)
+			require.True(t, service.IsAsyncVideoSubmissionUnconfirmed(err), "%v", err)
+			require.Empty(t, recorder.Body.String(), "the handler, not the upstream redirect, owns the error response")
+			require.Empty(t, recorder.Header().Get("Location"))
+			require.EqualValues(t, 1, initial.Load())
+			require.Zero(t, redirected.Load(), "a redirect must not replay the submission")
+		})
+	}
+}

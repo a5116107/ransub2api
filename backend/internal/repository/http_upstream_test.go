@@ -405,6 +405,11 @@ func TestIsGrokCLIAccessDeniedFallbackCandidateRequiresAuthenticatedReplayableCL
 	t.Run("valid candidate", func(t *testing.T) {
 		require.True(t, isGrokCLIAccessDeniedFallbackCandidate(newRequest(), newResponse()))
 	})
+	t.Run("async video is never replayed", func(t *testing.T) {
+		req := newRequest()
+		req = req.WithContext(service.WithAsyncVideoKeyGuard(req.Context(), false))
+		require.False(t, isGrokCLIAccessDeniedFallbackCandidate(req, newResponse()))
+	})
 	t.Run("non CLI host", func(t *testing.T) {
 		req := newRequest()
 		req.URL.Host = "api.x.ai"

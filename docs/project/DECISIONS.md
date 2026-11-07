@@ -1059,3 +1059,10 @@
 
 - 复核提交发现未提交的 Prism 通用处理器改动掩盖了依赖：用 `go test -overlay` 将5个 Prism 文件替换为提交版本，并测试 `TestGrokMediaSharedKeyFailureMessageUsesEndpoint`，原提交的图片及视频状态查询返回502、期望503，两例失败。保留用户改动，在现有 Grok 处理器内对所有共享Key本地拒绝按端点返回原503，视频创建继续说明远端归属不可用，不修改其他处理器。
 - 保持同一5文件提交版 overlay 后，该用例退出0；`go test -race -p=1 -tags unit -overlay <隔离夹具> ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestGrokForbiddenFailoverBudget|TestShouldRecordGrokMediaUsage)' -count=2 -timeout=8m` 退出0、2.891s；同 overlay 的 `go vet -p=1 -tags unit ./internal/handler` 退出0。首次竞态选择器误加末尾锚点，仅执行两个精确名称；已用上述前缀选择器重跑，原结果不作为扩大回归证据。overlay使用本轮独立临时目录，进程退出后清除，不改变Prism工作树。
+
+## 2026-11-08：D2 异步视频结果未知不重放
+
+- 旧路径在 Grok 视频生成/编辑/扩展的一次提交后连接中断中实际发送 3 次；这是可能重复创建远端任务的高风险边界。现对异步创建区分本地共享Key拒绝、明确供应商拒绝与结果未知：前两类保留原有限切线，发送后连接错误、5xx、408、响应体读取失败、响应超限、缺任务 ID和重定向不再切线重放。
+- Grok、Seedance、MiniMax-H3 统一禁止创建请求跟随重定向；Grok CLI 的兼容性 403 fallback 也排除异步创建。未知结果由 handler 返回 `502/upstream_error`、code `async_video_submission_unconfirmed`，提示先查询任务状态；未预先写入响应，不记为第二个供应商故障。明确的 401/402/403/405/422/429 保持原账号切换预算，同步图片路径不改变。
+- 新增 handler 回归覆盖连接中断、500/408、缺 ID、读失败、超限、重定向、共享Key预发送切线和图片兼容；旧 `TestGrokMedia429FailoverIsBounded` 两轮通过。最新定向 race：`go test -race -p=1 -tags unit ./internal/handler ./internal/service ./internal/repository -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestIsGrokCLIAccessDeniedFallbackCandidate|TestGrokAccessDeniedFallback|TestHTTPUpstreamDoDoesNotFallback)' -count=1 -timeout=10m` 退出0（handler 3.397s、service 1.761s、repository 1.242s）。隔离 Redis 7/TLS WS integration 同命令退出0、7.755s；unit/integration `go vet` 退出0；handler/service/repository 分包 lint 均输出 `0 issues.`。
+- 提交前保持用户已有 Prism 改动和 `backend/internal/service/data/` 测试图片未纳入；本项仍不实现远端持久所有权、未知结果恢复或终态释放，D2 继续进行。
