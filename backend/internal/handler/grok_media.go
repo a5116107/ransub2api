@@ -579,9 +579,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 }
 
 func (h *OpenAIGatewayHandler) handleGrokMediaFailoverExhausted(c *gin.Context, endpoint service.GrokMediaEndpoint, err *service.UpstreamFailoverError, streamStarted bool) {
-	if endpoint.IsAsyncVideoCreate() && err != nil && err.Reason == service.UpstreamKeyAdmissionReason {
+	if err != nil && err.Reason == service.UpstreamKeyAdmissionReason {
+		message := "No shared upstream Key capacity is available"
+		if endpoint.IsAsyncVideoCreate() {
+			message = "Async video creation is unavailable because shared upstream Key admission or remote task ownership is unavailable"
+		}
 		h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "server_error", string(service.UpstreamKeyAdmissionReason),
-			"Async video creation is unavailable because shared upstream Key admission or remote task ownership is unavailable", streamStarted, false)
+			message, streamStarted, false)
 		return
 	}
 	h.handleFailoverExhausted(c, err, streamStarted)

@@ -1054,3 +1054,8 @@
 - 同一隔离Redis集成命令修复后五例全部 `PASS`；上述unit竞态命令覆盖直接/Astra、多个鉴权头、未知认证、无权威、重定向、查询/取消、服务及处理器503，`go vet -p=1 -tags unit ./internal/service ./internal/repository ./internal/handler` 与 `go vet -p=1 -tags integration ./internal/service` 均退出0。此保护主动暂停受限Key的新视频创建，未实现或验证远端任务持久交接；发送前登记、结果未知恢复、终态释放、跨实例恢复及实际供应商行为仍属D2。启用/调整限额前须排空旧任务，混合版本不提供此保护。
 - 原20项仍为12 done、3 in_progress、5 pending；不运行CI、推送、部署或生产迁移，用户已有Prism改动及历史测试图片保留。
 - 最终扩大的 `go test -race -p=1 -tags unit ./internal/handler ./internal/service ./internal/repository -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestProbeGrokRealtime|TestAccountGrokRealtime|TestAccountTestService_GrokRealtime|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestBatchImagePersistentKey|TestUpstreamKey(HTTPAdmissionSharedLifetime|AtomicCompetitionAndPolicyRevision|SharedAuthority|Batch|Live)|TestAstraUpstreamKeyBatch)' -count=1 -timeout=10m` 退出0，handler 1.745s、service 1.330s、repository 1.487s，覆盖最终文案、管理探测及普通/批量/Live共用权威。隔离Redis/本机TLS WS的上述integration命令加`-race`退出0、6.244s。三包组合lint首次输出`0 issues.`但以超时退出1，不记为通过；原规则按handler、repository、service分别运行均退出0、输出`0 issues.`。
+
+## 2026-11-08：Grok 错误分类独立于已有 Prism 改动
+
+- 复核提交发现未提交的 Prism 通用处理器改动掩盖了依赖：用 `go test -overlay` 将5个 Prism 文件替换为提交版本，并测试 `TestGrokMediaSharedKeyFailureMessageUsesEndpoint`，原提交的图片及视频状态查询返回502、期望503，两例失败。保留用户改动，在现有 Grok 处理器内对所有共享Key本地拒绝按端点返回原503，视频创建继续说明远端归属不可用，不修改其他处理器。
+- 保持同一5文件提交版 overlay 后，该用例退出0；`go test -race -p=1 -tags unit -overlay <隔离夹具> ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestGrokForbiddenFailoverBudget|TestShouldRecordGrokMediaUsage)' -count=2 -timeout=8m` 退出0、2.891s；同 overlay 的 `go vet -p=1 -tags unit ./internal/handler` 退出0。首次竞态选择器误加末尾锚点，仅执行两个精确名称；已用上述前缀选择器重跑，原结果不作为扩大回归证据。overlay使用本轮独立临时目录，进程退出后清除，不改变Prism工作树。
