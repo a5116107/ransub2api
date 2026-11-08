@@ -1161,3 +1161,10 @@
 - 原位删除该无调用方法及其 TODO，不改 `AdminService.TestProxy`、代理质量检查或其他连接测试接口；`rg "TestConnection\\(" backend --glob '*.go'` 不再命中 `ProxyService`。
 - `gofmt -d backend/internal/service/proxy_service.go` 无输出；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.535s [no tests to run]`；`go vet -p 1 ./internal/service` 退出0、无诊断。
 - 本项只清除仓内无调用的假成功路径，不扩大到仍被 handler/兼容测试引用的已废弃数据管理 RPC；未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-08：M7 删除账号凭证测试伪实现
+
+- `AccountService.TestCredentials` 在仓内只有定义，没有任何调用；Anthropic、OpenAI、Gemini、Grok、TypeSafe 和多协议分支均直接返回 `nil`，其中前三个还只保留 TODO。实际账号验证使用 `AccountTestService` 及各平台专用探针路径。
+- 原位删除该无调用方法及其平台 TODO，不改 `AccountTestService`、OAuth 刷新、模型探测或管理员测试入口；精确搜索 `func (s *AccountService) TestCredentials|.TestCredentials(` 为0。
+- `gofmt -d backend/internal/service/account_service.go` 无输出；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.574s [no tests to run]`；`go vet -p 1 ./internal/service` 退出0、无诊断。
+- 本项只清除仓内无调用的假成功路径，不把实际供应商验证逻辑重建为第二套实现；未运行 CI、推送、部署或生产迁移。
