@@ -29,7 +29,17 @@ func (s *OpenAIGatewayService) bindAsyncVideoKeyLease(ctx context.Context, req *
 	if !ok {
 		return ErrUpstreamKeyPolicy
 	}
-	return controller.BindAsyncVideoKeyLease(ctx, handoff, strings.TrimSpace(taskID))
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	taskID = strings.TrimSpace(taskID)
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		err = controller.BindAsyncVideoKeyLease(ctx, handoff, taskID)
+		if err == nil || errors.Is(err, ErrUpstreamKeyPolicy) || errors.Is(err, ErrUpstreamKeyLease) || ctx.Err() != nil {
+			return err
+		}
+	}
+	return err
 }
 
 func (s *OpenAIGatewayService) markAsyncVideoKeySubmissionUnknown(ctx context.Context, req *http.Request) error {

@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -25,6 +26,23 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+type regionalVideoBindAckLostUpstream struct {
+	service.HTTPUpstream
+	service.AsyncVideoKeyLeaseController
+	service.AsyncVideoKeyGuard
+	binds    atomic.Int32
+	lostAcks atomic.Int32
+}
+
+func (s *regionalVideoBindAckLostUpstream) BindAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff, taskID string) error {
+	err := s.AsyncVideoKeyLeaseController.BindAsyncVideoKeyLease(ctx, handoff, taskID)
+	s.binds.Add(1)
+	if err == nil && s.lostAcks.Add(-1) >= 0 {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
 
 func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
@@ -80,18 +98,25 @@ func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 	regional, err := repository.NewRegionalConcurrencyCache(repository.NewConcurrencyCache(rdb, 15, 30), primary, nil)
 	require.NoError(t, err)
 	transport := repository.ProvideHTTPUpstream(h.cfg, nil, rdb, regional)
+	controller, ok := transport.(service.AsyncVideoKeyLeaseController)
+	require.True(t, ok)
+	guard, ok := transport.(service.AsyncVideoKeyGuard)
+	require.True(t, ok)
+	upstream := &regionalVideoBindAckLostUpstream{HTTPUpstream: transport, AsyncVideoKeyLeaseController: controller, AsyncVideoKeyGuard: guard}
+	upstream.lostAcks.Store(1)
 	account := service.Account{ID: 1, Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey,
 		Status: service.StatusActive, Schedulable: true, Concurrency: 5, GroupIDs: []int64{24},
 		Credentials: map[string]any{"api_key": "regional-fixture", "base_url": provider.URL}}
 	repo := grokMediaSlotRepo{openAIImagesFailoverAccountRepo: openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}}
 	concurrency := service.NewConcurrencyService(slots)
-	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, h.cfg, nil, concurrency, nil, nil, nil, transport, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, h.cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
 	t.Cleanup(h.gatewayService.StopOpenAICodexTicketHarvester)
 
 	create, created := grokMediaSlotContext(t.Context(), true)
 	h.GrokVideoGeneration(create)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	require.EqualValues(t, 1, creates.Load())
+	require.EqualValues(t, 2, upstream.binds.Load(), "a lost SQL acknowledgement must retry the binding, not the provider")
 	tryCompeting := func() error {
 		req, requestErr := http.NewRequestWithContext(t.Context(), http.MethodPost, provider.URL+"/competing", strings.NewReader("{}"))
 		require.NoError(t, requestErr)
@@ -121,5 +146,23 @@ func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 	var records int
 	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM regional_async_video_key_leases`).Scan(&records))
 	require.Zero(t, records)
+
+	upstream.binds.Store(0)
+	upstream.lostAcks.Store(2)
+	create, created = grokMediaSlotContext(t.Context(), true)
+	h.GrokVideoGeneration(create)
+	require.Equal(t, http.StatusBadGateway, created.Code, created.Body.String())
+	require.Contains(t, created.Body.String(), "async_video_submission_unconfirmed")
+	require.EqualValues(t, 2, creates.Load(), "the second request must not be replayed after both acknowledgements are lost")
+	require.EqualValues(t, 2, upstream.binds.Load())
+	require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity)
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM regional_async_video_key_leases WHERE state='bound'`).Scan(&records))
+	require.Equal(t, 1, records, "the committed task and slot must remain recoverable")
+	bindings.owner, bindings.key = 0, ""
+	status, completed = grokMediaSlotContext(t.Context(), false)
+	h.GrokVideoStatus(status)
+	require.Equal(t, http.StatusOK, completed.Code, completed.Body.String())
+	require.EqualValues(t, 2, polls.Load())
+	require.NoError(t, tryCompeting())
 	slots.assertReleased(t)
 }

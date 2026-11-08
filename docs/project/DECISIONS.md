@@ -1112,3 +1112,11 @@
 - 绑定与 unknown 逐次核对完整租约、主体和状态；Redis 脚本原子比较读取快照，竞争时重新读取并有限重试，持续竞争或栅栏拒绝明确报错。绑定相同任务仍可重试，未知任务和持久额度不因冲突自动释放；SQL 主节点路径不变。
 - `go test -race -p=1 -tags unit ./internal/repository -run '^TestAsyncVideoKey' -count=2 -timeout=8m` 退出0、repository 2.377s；覆盖租约不一致、旧快照、成功重试及重试耗尽。最终 `go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideoKey|TestRegionalAsyncVideo|TestAsyncVideoSharedKey|TestGrokVideoHandlerSharedKeyLifecycleWithRedis)' -count=1 -timeout=12m` 退出0，repository 25.238s、service 20.131s、handler 11.323s。`go vet -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler` 退出0、无诊断；repository 原规则 lint 输出 `0 issues.`。测试包含既有未提交的 Prism 改动。
 - D2 父项仍进行中：区域从节点和跨区域归属、unknown 自动核实及其他出站未验收。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-08：D2 已知视频任务绑定应答恢复
+
+- 旧代码在供应商已返回任务 ID、持久绑定实际成功但应答丢失时，直接返回未确认错误，客户端得不到该任务 ID；最小回归对首次 `unexpected EOF` 未重试、持久错误无有限重试及缺少绑定期限均失败。
+- 在原服务绑定入口对相同成员和任务 ID 最多重试一次，使用两秒总上下文期限；共享策略或租约拒绝立即返回。只重复本地幂等绑定，不重发创建请求；两次失败继续返回未确认错误、保留既有任务记录和额度。绑定期限不覆盖后续 unknown 标记或整个请求；完全缺少供应商任务 ID 的 unknown 自动核实尚未完成。
+- 注入持久绑定成功后的应答丢失，`go test -race -p=1 -tags 'unit integration' ./internal/service ./internal/handler -run '^(TestAsyncVideoKeyBindRecoversLostAcknowledgement|TestAsyncVideoKeyBindStopsAtDeadline|TestAsyncVideoSharedKeyBindAckLossRecovers|TestRegionalAsyncVideoGrokHandlerLifecycle)$' -count=1 -timeout=10m -v` 退出0：service 5.639s、handler 6.480s。隔离真实 Redis 对 Grok、Seedance、MiniMax 各验证仅一次上游创建及额度保留；隔离 PostgreSQL 的真实 Grok handler 同时覆盖一次应答丢失自动恢复、两次丢失返回未确认、无重放、保留额度及已知任务的终态释放。故障由控制器边界注入，不表示验证真实网络丢包或生产环境。
+- 扩大 `go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler -run '^(TestRegionalAsyncVideo|TestAsyncVideo|TestGrokMedia|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo)' -count=1 -timeout=12m` 退出0：repository 17.316s、service 17.904s、handler 8.673s。`go vet -p=1 -tags 'unit integration' ./internal/service ./internal/handler` 退出0；service/handler 原规则 lint 输出 `0 issues.`；检查包含既有未提交 Prism 改动。
+- D2 父项仍需区域从节点/跨区域归属、无任务 ID 的 unknown 核实及其他出站；未运行 CI、推送、部署或生产迁移。

@@ -4,9 +4,12 @@ package service
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -16,6 +19,74 @@ import (
 type asyncVideoKeyGuardStub struct {
 	HTTPUpstream
 	supported bool
+}
+
+type asyncVideoBindStub struct {
+	HTTPUpstream
+	AsyncVideoKeyLeaseController
+	bind func(context.Context, *AsyncVideoKeyHandoff, string) error
+}
+
+func (s *asyncVideoBindStub) BindAsyncVideoKeyLease(ctx context.Context, handoff *AsyncVideoKeyHandoff, taskID string) error {
+	return s.bind(ctx, handoff, taskID)
+}
+
+func TestAsyncVideoKeyBindRecoversLostAcknowledgement(t *testing.T) {
+	handoff := NewAsyncVideoKeyHandoff(AsyncVideoKeyOwner{})
+	handoff.SetLease(&PersistentUpstreamKeyLease{})
+	req := httptest.NewRequest(http.MethodPost, "/fixture", nil)
+	req = req.WithContext(WithAsyncVideoKeyHandoff(req.Context(), handoff))
+	for _, tc := range []struct {
+		name     string
+		errors   []error
+		want     error
+		attempts int
+	}{
+		{"lost acknowledgement", []error{io.ErrUnexpectedEOF, nil}, nil, 2},
+		{"policy refusal", []error{ErrUpstreamKeyPolicy}, ErrUpstreamKeyPolicy, 1},
+		{"lease refusal", []error{ErrUpstreamKeyLease}, ErrUpstreamKeyLease, 1},
+		{"still unavailable", []error{io.ErrUnexpectedEOF, io.EOF}, io.EOF, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			var deadlineBounded bool
+			stub := &asyncVideoBindStub{bind: func(ctx context.Context, got *AsyncVideoKeyHandoff, taskID string) error {
+				calls++
+				require.Same(t, handoff, got)
+				require.Equal(t, "task-fixture", taskID)
+				_, deadlineBounded = ctx.Deadline()
+				return tc.errors[calls-1]
+			}}
+			svc := &OpenAIGatewayService{httpUpstream: stub}
+			err := svc.bindAsyncVideoKeyLease(context.Background(), req, " task-fixture ")
+			if tc.want == nil {
+				require.NoError(t, err)
+			} else {
+				require.True(t, errors.Is(err, tc.want), "%v", err)
+			}
+			require.Equal(t, tc.attempts, calls)
+			require.True(t, deadlineBounded, "binding recovery must have a bounded total wait")
+		})
+	}
+}
+
+func TestAsyncVideoKeyBindStopsAtDeadline(t *testing.T) {
+	handoff := NewAsyncVideoKeyHandoff(AsyncVideoKeyOwner{})
+	handoff.SetLease(&PersistentUpstreamKeyLease{})
+	req := httptest.NewRequest(http.MethodPost, "/fixture", nil)
+	req = req.WithContext(WithAsyncVideoKeyHandoff(req.Context(), handoff))
+	var calls int
+	stub := &asyncVideoBindStub{bind: func(ctx context.Context, _ *AsyncVideoKeyHandoff, _ string) error {
+		calls++
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: stub}
+	started := time.Now()
+	err := svc.bindAsyncVideoKeyLease(context.Background(), req, "task")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, 1, calls)
+	require.Less(t, time.Since(started), 5*time.Second)
 }
 
 func TestAsyncVideoKeyGuardPreservesExistingTaskOperations(t *testing.T) {

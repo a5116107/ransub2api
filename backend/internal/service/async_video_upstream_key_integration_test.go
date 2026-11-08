@@ -4,6 +4,7 @@ package service_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,98 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+type asyncVideoBindAckLostUpstream struct {
+	service.HTTPUpstream
+	service.AsyncVideoKeyLeaseController
+	service.AsyncVideoKeyGuard
+	binds atomic.Int32
+}
+
+func (s *asyncVideoBindAckLostUpstream) BindAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff, taskID string) error {
+	err := s.AsyncVideoKeyLeaseController.BindAsyncVideoKeyLease(ctx, handoff, taskID)
+	if s.binds.Add(1) == 1 && err == nil {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+func TestAsyncVideoSharedKeyBindAckLossRecovers(t *testing.T) {
+	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+	gin.SetMode(gin.TestMode)
+	rdb := startKeyAdmissionIntegrationRedis(t)
+	for key, value := range map[string]string{
+		"appendonly": "yes", "appendfsync": "always", "no-appendfsync-on-rewrite": "no", "maxmemory-policy": "noeviction",
+	} {
+		require.NoError(t, rdb.ConfigSet(t.Context(), key, value).Err())
+	}
+	for _, tc := range []struct {
+		name     string
+		endpoint service.GrokMediaEndpoint
+		platform string
+		body     string
+	}{
+		{"grok", service.GrokMediaEndpointVideosGenerations, service.PlatformGrok, `{"model":"grok-imagine-video","prompt":"waves"}`},
+		{"seedance", service.SeedanceEndpointCreate, service.PlatformOpenAI, `{"model":"video","content":[{"type":"text","text":"waves"}]}`},
+		{"minimax", service.MiniMaxH3EndpointCreate, service.PlatformMiniMax, `{"model":"MiniMax-H3","prompt":"waves","seconds":"1"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var submissions atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				submissions.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"task-fixture","request_id":"task-fixture","status":"queued"}`)
+			}))
+			t.Cleanup(server.Close)
+			cfg := &config.Config{}
+			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+			cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("async-fixture"): 1}}
+			transport := repository.ProvideHTTPUpstream(cfg, nil, rdb, nil)
+			controller, ok := transport.(service.AsyncVideoKeyLeaseController)
+			require.True(t, ok)
+			guard, ok := transport.(service.AsyncVideoKeyGuard)
+			require.True(t, ok)
+			upstream := &asyncVideoBindAckLostUpstream{HTTPUpstream: transport, AsyncVideoKeyLeaseController: controller, AsyncVideoKeyGuard: guard}
+			account := &service.Account{ID: 7, Platform: tc.platform, Type: service.AccountTypeAPIKey, Concurrency: 1,
+				Credentials: map[string]any{"api_key": "async-fixture", "base_url": server.URL, "account_mode": service.AccountModePayG, "openai_capabilities": []string{"seedance"}}}
+			owner := service.AsyncVideoKeyOwner{UserID: 10, APIKeyID: 20, GroupID: 30, AccountID: account.ID,
+				Provider: tc.endpoint.AsyncVideoProvider(), RouteFingerprint: service.AccountRouteFingerprint(account)}
+			ctx := service.WithAsyncVideoKeyOwner(t.Context(), owner)
+			body := []byte(tc.body)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/fixture", bytes.NewReader(body)).WithContext(ctx)
+			svc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+			var result *service.OpenAIForwardResult
+			var err error
+			switch tc.platform {
+			case service.PlatformOpenAI:
+				result, err = svc.ForwardSeedance(ctx, c, account, tc.endpoint, "", body)
+			case service.PlatformMiniMax:
+				result, err = svc.ForwardMiniMaxH3(ctx, c, account, tc.endpoint, "", body)
+			default:
+				result, err = svc.ForwardGrokMedia(ctx, c, account, tc.endpoint, "", body, "application/json")
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotEmpty(t, result.ResponseID)
+			require.Equal(t, int32(1), submissions.Load(), "binding recovery must not create another upstream job")
+			require.Equal(t, int32(2), upstream.binds.Load())
+			lease, err := controller.LoadAsyncVideoKeyLeaseByTask(ctx, owner, result.ResponseID)
+			require.NoError(t, err)
+			require.NotNil(t, lease, "the acknowledged task retains its original shared slot")
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/competing", nil)
+			require.NoError(t, err)
+			request.Header.Set("Authorization", "Bearer async-fixture")
+			response, err := transport.Do(request, "", 8, 1)
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
+			require.NoError(t, controller.ReleaseAsyncVideoKeyLeaseByTask(ctx, owner, result.ResponseID))
+		})
+	}
+}
 
 func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
