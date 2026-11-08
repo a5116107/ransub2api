@@ -1205,3 +1205,10 @@
 - 保留现有路由和参数校验，原位删除 mock 响应，统一返回 HTTP 501 及明确消息；不伪造代理请求量、活跃账号、延迟或实时错误率，也不改变真实 `TestProxy`、Ops realtime traffic 和 Usage/Dashboard 聚合接口。
 - 新增 dashboard realtime 失败关闭回归，并更新 admin proxy endpoint 断言；`gofmt` 无输出。
 - `go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestProxyHandlerEndpoints|TestDashboardRealtimeMetricsFailsClosedWithoutSource|TestUserHandlerEndpoints|TestGroupHandlerEndpoints|TestRedeemHandlerEndpoints)$' -count=2 -timeout=8m` 退出0，admin `1.205s`；`go vet -p 1 -tags=unit ./internal/handler/admin` 退出0、无诊断；精确 mock-stat 搜索为0。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：M13 删除孤立分组统计入口
+
+- `GroupService.GetStats` 在仓内只有定义，没有 handler、路由或测试调用；实际 `GET /admin/groups/:id/stats` 已由 `GroupHandler.GetStats` 使用 `AdminService.GetGroupAPIKeys` 与 `DashboardService.GetGroupStatsWithFilters`，旧方法会形成第二套仅返回账号数量的统计口径。
+- 原位删除该孤立方法，不改实际管理端分组统计、分组 CRUD 或 dashboard 聚合路径。
+- `gofmt -d internal/service/group_service.go` 无输出；`go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestGroupHandlerEndpoints|TestGroupHandlerSimpleMode|TestGroup.*Stats)' -count=2 -timeout=8m` 退出0，admin `1.202s`。
+- `go vet -p 1 -tags=unit ./internal/service` 退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.455s [no tests to run]`；精确搜索 `GroupService.*GetStats|GetStats(ctx context.Context, id int64)` 为0。未运行 CI、推送、部署或生产迁移。
