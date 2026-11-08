@@ -254,21 +254,38 @@ func newGrokMediaSlotHandlerWithOptions(t *testing.T, oauth, mismatch bool, opti
 	return handler, slots, bindings, upstream
 }
 
-type grokMediaAvailabilityReader struct{}
+type grokMediaAvailabilityReader struct {
+	blocked      map[int64]bool
+	denyUnlisted bool
+}
 
-func (grokMediaAvailabilityReader) ReadAccountAvailability(_ context.Context, account *service.Account) ([]*service.AvailabilityReport, error) {
+func (r grokMediaAvailabilityReader) ReadAccountAvailability(_ context.Context, account *service.Account) ([]*service.AvailabilityReport, error) {
+	if !r.denyUnlisted && !r.blocked[account.ID] {
+		return nil, nil
+	}
 	return []*service.AvailabilityReport{{AccountID: account.ID, Configured: true, Enabled: true}}, nil
 }
 
 func TestGrokMediaAvailabilityFailsClosedBeforeSending(t *testing.T) {
 	h, slots, _, upstream := newGrokMediaSlotHandlerWithOptions(t, false, false,
-		[]service.OpenAIGatewayOption{service.WithOpenAIAvailabilityReader(grokMediaAvailabilityReader{})})
+		[]service.OpenAIGatewayOption{service.WithOpenAIAvailabilityReader(grokMediaAvailabilityReader{denyUnlisted: true})})
 	c, recorder := grokMediaSlotContext(t.Context(), true)
 	h.GrokVideoGeneration(c)
 
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
 	require.Contains(t, recorder.Body.String(), "admission_unavailable")
 	require.Zero(t, upstream.calls, "unobserved media must not reach the provider")
+	slots.assertReleased(t)
+}
+
+func TestGrokMediaAvailabilityAdmissionSwitchesToUnconfiguredAccount(t *testing.T) {
+	h, slots, _, upstream := newGrokMediaSlotHandlerWithOptions(t, false, false,
+		[]service.OpenAIGatewayOption{service.WithOpenAIAvailabilityReader(grokMediaAvailabilityReader{blocked: map[int64]bool{1: true}})})
+	c, recorder := grokMediaSlotContext(t.Context(), true)
+	h.GrokVideoGeneration(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, 1, upstream.calls, "the next account without an availability rule should be used")
 	slots.assertReleased(t)
 }
 
