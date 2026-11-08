@@ -1010,6 +1010,18 @@
 - 真实 Redis + loopback 集成 `go test -race -p 1 -tags=integration ./internal/service -run '^TestOpenAIQuotaSharesRealRedisCapacityAndRecovers$' -count=2 -timeout=12m -v` 退出0，direct/Astra 两组各两轮通过：quota 查询与 targeted reset 在满额时不发送，释放后恢复，重复查询不累加准入，响应体未结束时普通请求仍被拒绝。Windows Redis 3.0.504 不支持 `redis.replicate_commands`，夹具自动启动已有 Docker Redis 7；不把旧 Redis 版本误判为产品失败。既有 miniredis authority 回归 `TestUpstreamKeyHTTPAdmissionSharedLifetime|TestUpstreamKeyAtomicCompetitionAndPolicyRevision|TestUpstreamKeySharedAuthorityDeduplicatesCredentials` 两轮 race 通过。
 - 最终 `go vet -p 1 -tags=unit ./internal/config ./internal/service ./internal/repository` 无诊断；默认 `go test -p 1 ./internal/config ./internal/service ./internal/repository ./cmd/server -run '^$' -count=1 -timeout=8m` 编译通过；原规则 `task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/admin/... ./internal/repository/... ./cmd/server/...` 输出 `0 issues.`。未运行 CI、推送、部署或生产迁移；工作树中既有 12 个 BPS 测试 PNG 保留且未纳入本轮改动。
 
+## 2026-11-07：D2 Prism 独立出站共享额度 fail-closed
+
+- Prism Browser 通过独立 loopback adapter `http.Client` 发送请求，不能把最终供应商 Key/签名证明回传到 Sub2API 的共享额度权威；旧路径在共享 Key 策略启用时仍可直接触达 adapter，形成绕过 HTTPUpstream 的额度缺口。
+- 原位在 `callPrismBrowserForCaller` 发送前复用现有共享/区域策略开关，未知最终凭据返回 `upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)`，不触达 adapter；未启用共享策略保持原 Prism 行为。新增服务层测试覆盖共享Key、区域并发、区域调度以及管理员测试入口，adapter 请求数均为0。
+- 转发层先写本地503再返回可故障转移错误会阻止切线，并可能使处理层追加第二个错误。现在转发层只返回准入错误，由原处理器在安全边界内切线；线路耗尽时按本地原因返回503及`upstream_key_admission_unavailable`，已开始的 Responses 流只输出一次 `response.failed`，不记供应商上游错误。新增JSON、未开始流及已开始流测试；最初对已写错误的检查三例失败，修正后通过。
+- `go test -race -p 1 -tags=unit ./internal/service ./internal/handler -run '^(TestPrism.*|TestControlledExperimentGatewayPrism.*|TestOpenAIInitialAdmission.*|TestOpenAIEnsureForwardErrorResponse.*|TestOpenAIBodyLimitFailoverExhausted.*|TestResponsesFailoverExhausted.*|TestOpenAIAdmissionError.*)$' -count=2 -timeout=8m` 退出0，service 1.700s、handler 2.819s；`go vet -p 1 -tags=unit ./internal/service ./internal/handler` 退出0。断言覆盖未发送、单次流结束、重试边界及旧Prism流程，不代表生产验收。
+- `task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/service/... ./internal/handler/...` 退出0，输出 `0 issues.`。
+- `go test -p 1 ./internal/service ./internal/handler -run '^$' -count=1 -timeout=8m` 退出0，仅验证默认标签编译，两个包均为 `[no tests to run]`。
+- `go test -race -p 1 -tags=unit ./internal/handler -run '^TestPrismSharedKeyAdmissionReselectsBeforeSending$' -count=2 -timeout=8m -v` 退出0、handler 1.320s；JSON和流式请求均不访问Prism适配器，经原`Responses`调度切到模拟的第二账号成功，未登记供应商故障。第二上游为测试桩，此用例不证明实网额度或生产切换。
+- 增加完整请求链测试后，原规则 `task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/handler/...` 再次退出0，输出 `0 issues.`。
+- 该子范围完成后，D2 仍保留其他非标准鉴权、更多跨请求后台出站及 D3–D9；未运行 CI、未推送/部署/生产迁移。既有 12 个 BPS 测试 PNG 继续保留且不纳入提交。
+
 ## 2026-11-07：D2 Basic 凭据共享准入
 
 - V1 监控自定义认证可覆盖默认 Bearer；原最终凭据提取器对 Basic 返回空，独立 Redis 与本机 HTTP 夹具证明同凭据业务请求占槽时监控仍发送。另一个负向单测证明头首尾空白在实际 HTTP 发送时会去掉，但原始头直接交给 Basic 解析会漏识别。
@@ -1055,17 +1067,17 @@
 - 原20项仍为12 done、3 in_progress、5 pending；不运行CI、推送、部署或生产迁移，用户已有Prism改动及历史测试图片保留。
 - 最终扩大的 `go test -race -p=1 -tags unit ./internal/handler ./internal/service ./internal/repository -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestProbeGrokRealtime|TestAccountGrokRealtime|TestAccountTestService_GrokRealtime|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestBatchImagePersistentKey|TestUpstreamKey(HTTPAdmissionSharedLifetime|AtomicCompetitionAndPolicyRevision|SharedAuthority|Batch|Live)|TestAstraUpstreamKeyBatch)' -count=1 -timeout=10m` 退出0，handler 1.745s、service 1.330s、repository 1.487s，覆盖最终文案、管理探测及普通/批量/Live共用权威。隔离Redis/本机TLS WS的上述integration命令加`-race`退出0、6.244s。三包组合lint首次输出`0 issues.`但以超时退出1，不记为通过；原规则按handler、repository、service分别运行均退出0、输出`0 issues.`。
 
-## 2026-11-08：Grok 错误分类独立于已有 Prism 改动
-
-- 复核提交发现未提交的 Prism 通用处理器改动掩盖了依赖：用 `go test -overlay` 将5个 Prism 文件替换为提交版本，并测试 `TestGrokMediaSharedKeyFailureMessageUsesEndpoint`，原提交的图片及视频状态查询返回502、期望503，两例失败。保留用户改动，在现有 Grok 处理器内对所有共享Key本地拒绝按端点返回原503，视频创建继续说明远端归属不可用，不修改其他处理器。
-- 保持同一5文件提交版 overlay 后，该用例退出0；`go test -race -p=1 -tags unit -overlay <隔离夹具> ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestGrokForbiddenFailoverBudget|TestShouldRecordGrokMediaUsage)' -count=2 -timeout=8m` 退出0、2.891s；同 overlay 的 `go vet -p=1 -tags unit ./internal/handler` 退出0。首次竞态选择器误加末尾锚点，仅执行两个精确名称；已用上述前缀选择器重跑，原结果不作为扩大回归证据。overlay使用本轮独立临时目录，进程退出后清除，不改变Prism工作树。
-
 ## 2026-11-08：D2 异步视频结果未知不重放
 
 - 旧路径在 Grok 视频生成/编辑/扩展的一次提交后连接中断中实际发送 3 次；这是可能重复创建远端任务的高风险边界。现对异步创建区分本地共享Key拒绝、明确供应商拒绝与结果未知：前两类保留原有限切线，发送后连接错误、5xx、408、响应体读取失败、响应超限、缺任务 ID和重定向不再切线重放。
 - Grok、Seedance、MiniMax-H3 统一禁止创建请求跟随重定向；Grok CLI 的兼容性 403 fallback 也排除异步创建。未知结果由 handler 返回 `502/upstream_error`、code `async_video_submission_unconfirmed`，提示先查询任务状态；未预先写入响应，不记为第二个供应商故障。明确的 401/402/403/405/422/429 保持原账号切换预算，同步图片路径不改变。
 - 新增 handler 回归覆盖连接中断、500/408、缺 ID、读失败、超限、重定向、共享Key预发送切线和图片兼容；旧 `TestGrokMedia429FailoverIsBounded` 两轮通过。最新定向 race：`go test -race -p=1 -tags unit ./internal/handler ./internal/service ./internal/repository -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestIsGrokCLIAccessDeniedFallbackCandidate|TestGrokAccessDeniedFallback|TestHTTPUpstreamDoDoesNotFallback)' -count=1 -timeout=10m` 退出0（handler 3.397s、service 1.761s、repository 1.242s）。隔离 Redis 7/TLS WS integration 同命令退出0、7.755s；unit/integration `go vet` 退出0；handler/service/repository 分包 lint 均输出 `0 issues.`。
 - 提交前保持用户已有 Prism 改动和 `backend/internal/service/data/` 测试图片未纳入；本项仍不实现远端持久所有权、未知结果恢复或终态释放，D2 继续进行。
+
+## 2026-11-08：Grok 错误分类独立于已有 Prism 改动
+
+- 复核提交发现未提交的 Prism 通用处理器改动掩盖了依赖：用 `go test -overlay` 将5个 Prism 文件替换为提交版本，并测试 `TestGrokMediaSharedKeyFailureMessageUsesEndpoint`，原提交的图片及视频状态查询返回502、期望503，两例失败。保留用户改动，在现有 Grok 处理器内对所有共享Key本地拒绝按端点返回原503，视频创建继续说明远端归属不可用，不修改其他处理器。
+- 保持同一5文件提交版 overlay 后，该用例退出0；`go test -race -p=1 -tags unit -overlay <隔离夹具> ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVoice|TestGrokForbiddenFailoverBudget|TestShouldRecordGrokMediaUsage)' -count=2 -timeout=8m` 退出0、2.891s；同 overlay 的 `go vet -p=1 -tags unit ./internal/handler` 退出0。首次竞态选择器误加末尾锚点，仅执行两个精确名称；已用上述前缀选择器重跑，原结果不作为扩大回归证据。overlay使用本轮独立临时目录，进程退出后清除，不改变Prism工作树。
 
 ## 2026-11-08：D3 Grok HTTP 语音 availability 终检
 
@@ -1212,3 +1224,44 @@
 - 原位删除该孤立方法，不改实际管理端分组统计、分组 CRUD 或 dashboard 聚合路径。
 - `gofmt -d internal/service/group_service.go` 无输出；`go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestGroupHandlerEndpoints|TestGroupHandlerSimpleMode|TestGroup.*Stats)' -count=2 -timeout=8m` 退出0，admin `1.202s`。
 - `go vet -p 1 -tags=unit ./internal/service` 退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.455s [no tests to run]`；精确搜索 `GroupService.*GetStats|GetStats(ctx context.Context, id int64)` 为0。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：D3 Grok 媒体 availability fail-closed
+
+- Grok 图片/视频生成、视频状态和视频内容下载是独立出站能力，原媒体转发直接调用 `HTTPUpstream.Do`，普通文本 availability 通过不能证明这些请求的协议、能力或模型范围。
+- 原位在媒体生成、状态查询和内容下载的每个物理发送前复用 `admitAvailabilityRequest`；配置规则但没有匹配 wire scope 时返回本地 `OpenAITurnAdmissionError`，不访问上游、不触发供应商故障记录。无规则保持原流程，管理员探测仍由既有 probe context 豁免。
+- 处理层把该本地拒绝视为账号准入失败：生成请求排除当前账号后按原调度切线，已绑定的视频查询不跨账号，所有候选都拒绝时返回 `503 admission_unavailable`；槽位在每次拒绝后释放。
+- 新增服务层图片生成和视频内容未发送回归、处理层多账号切线/槽位释放回归。`go test -race -p=1 -tags=unit ./internal/service -run '^(TestForwardGrokMedia|TestAsyncVideo|TestGrokMedia)' -count=1 -timeout=12m` 退出0（3.920s）；处理层同选择器退出0（1.814s）；availability/语音关联回归退出0（service 8.464s、handler 1.248s）；`go vet -p=1 -tags=unit ./internal/service ./internal/handler` 退出0；默认标签编译退出0（service/handler各1.445s）；原规则 lint 最终输出 `0 issues.`。
+- 同轮修复 M11 用户用量单测的一个 `errcheck` 类型断言，聚焦服务 race 回归退出0（3.442s）。未运行 CI、推送、部署或生产迁移；D3 仍保留媒体专属探测、托管连接、未观测传输及原生 WS 作用域等后续范围。
+
+## 2026-11-09：D3 Seedance 与 MiniMax-H3 availability fail-closed
+
+- Seedance Ark 与 MiniMax-H3 的视频创建、状态和内容路径各自直接调用 `HTTPUpstream.Do`；已有异步任务归属和共享 Key guard 不等于 availability 能力证据，普通文本或其他媒体通过不能授权这些协议。
+- 原位在两个最终发送边界复用 `admitAvailabilityRequest`。规则存在且没有匹配 wire scope 时本地拒绝，零上游发送；无规则保持原任务流程。现有 Grok 媒体 handler 的本地准入错误流转同时覆盖这两个 endpoint，不把拒绝写成供应商故障。
+- 新增 service 回归覆盖 Seedance 与 MiniMax-H3 在配置规则下的 `availability_scope_unconfirmed`、零发送；同时复跑 Seedance、MiniMax、Grok 媒体及异步视频 race，service 退出0（4.076s）。`go vet -p=1 -tags=unit ./internal/service ./internal/handler` 退出0；默认 service/handler 编译退出0（1.451s/1.434s）；原规则 lint 输出 `0 issues.`。
+- 本项完成 D3 未观测媒体能力子范围；托管连接、其他独立传输、原生 WS 作用域和 D2 区域归属/unknown 仍待原验收。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：D3 availability 先于 RPM 与 WS/fallback 复核
+
+- 旧顺序在 WS 预热、原生 WS 各轮、直接 ingress 和 OpenAI proxy fallback 中先预约 OAuth RPM，再做 availability；本地规则拒绝会消耗 RPM，预热还可能在拒绝前写入生成帧。普通 API Key 的一次性请求体也不能为重复复核被无条件读取两次。
+- 原位调整为先做 availability，再取得 RPM；RPM 预约或代理 fallback 等待可能改变权威状态，因此这些路径在物理发送前再次复核。无 RPM 且无 fallback 的普通 API Key 请求只做一次读取；已有 WS/HTTP 重试、线路绑定和代理顺序保持。
+- 新增 WS 预热反例：配置规则但无媒体/WS wire scope 时 `rpm=0`、WS 写入数为0；更新代理 fallback 回归为首次拨号前拒绝，保留两次权威读取。`go test -race -p=1 -tags=unit ./internal/service -run '^(TestAvailabilityAdmission|TestOpenAIGatewayService_PrewarmAvailabilityRefusalDoesNotConsumeRPM|TestOpenAIWSSSEAccelerationPreSendFallback|TestRuntimeProxyFallback|TestOpenAIWSPassthroughLaterTurnAdmission)' -count=1 -timeout=15m` 退出0；补充 focused 选择器退出0、2.597s。`go vet -p=1 -tags=unit ./internal/service ./internal/handler` 退出0；默认 service/handler 编译退出0（1.451s/1.443s）；原规则 lint 输出 `0 issues.`。
+- 本轮只完成本地准入顺序和测试边界，不改变 RPM 计数语义，不覆盖区域传播、托管连接或其他非标准出站。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：D3 OAuth Codex models manifest availability fail-closed
+
+- OAuth Codex models manifest 使用独立 `http.Client`/插件出站，原路径只有共享 Key 客户端准入；availability 规则存在时，普通文本通过不能证明该 GET manifest 能力，可能绕过最新状态。
+- 原位在 OAuth plugin/client 实际发送前调用 `admitAvailabilityRequest`，规则存在且缺少匹配 scope 时返回本地 `OpenAITurnAdmissionError`，通过 manifest upstream error 保留原错误类型和不可重试语义，不触达 ChatGPT backend、代理或插件。API Key 的 `HTTPUpstream` manifest、无规则缓存/ETag、Agent Identity 任务恢复保持原行为。
+- 新增零发送回归，服务端请求计数为0；`go test -race -p=1 -tags=unit ./internal/service -run '^TestFetchCodexModelsManifest' -count=1 -timeout=15m` 退出0（3.337s）。`go vet -p=1 -tags=unit ./internal/service ./internal/handler` 退出0；默认 service/handler 编译退出0（2.076s/1.692s）；原规则 lint 输出 `0 issues.`。
+- 本项完成 D3 一个独立 OAuth 出站子范围；其他非标准鉴权、托管连接、区域传播和 unknown 任务仍待原验收。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：D2 区域从节点异步视频能力边界提前拒绝
+
+- 区域异步视频任务记录、持久额度和释放栅栏只在主节点 SQL 权威可写；从节点或区域运行时已失败时，继续进入账号选择后再到最终 HTTP 层拒绝会制造无意义的账号/用户准入和管理预览工作。
+- `httpUpstreamService.SupportsAsyncVideoKeyGuard` 现复用共享 Key limiter 的有效性：未配置 limiter 保持旧的可选 guard；策略错误、区域从节点（无 primary）或区域 runtime failed 直接报告不支持。Astra 包装器透传该能力信号，Grok/Seedance/MiniMax 创建与管理预览沿现有本地准入错误返回，不发送或猜测任务归属。
+- 新增 repository 回归覆盖未配置旧行为、区域从节点、运行时失败和无效策略；最终异步视频 guard/HTTP 准入 race 退出0，repository vet 退出0，原规则 lint 输出 `0 issues.`。该项只完成区域从节点的 fail-closed 发送边界，不把跨区域任务归属、任务接管或 unknown 自动核实写成完成。
+
+## 2026-11-09：D3 Prism 独立出站共享 Key 准入
+
+- Prism Browser adapter 使用独立本地 HTTP 出站，无法证明其最终供应商凭据与账号共享 Key 相同；共享或区域策略启用时，原路径若继续发送会绕过共享额度和区域权威。
+- 原位在 `callPrismBrowserForCaller` 发送前复用既有策略必需判断；本地拒绝不拨号、不写入响应，并穿过普通/流式/fallback/管理预览的本地准入错误边界。策略关闭时保留原 Prism 流程，不新增第二套额度实现。
+- service/handler Prism race 聚焦回归实际通过，service/handler vet 退出0，原规则两包 lint 输出 `0 issues.`；提交 `f6d6711`。该项不证明 Prism 的供应商凭据、缓存域或质量指标，也不关闭 D3 其余托管连接、WS 作用域和其他独立传输验收。
