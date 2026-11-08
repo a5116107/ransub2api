@@ -1105,3 +1105,10 @@
 - 扩大后的 `go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler ./cmd/server -run '^(TestRegionalAsyncVideo|TestAsyncVideo|TestGrokMedia|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestAccountTestService_GrokVideo|TestProvideCleanup_WithMinimalDependencies_NoPanic)' -count=1 -timeout=12m` 退出0：repository 19.054s、service 12.209s、handler 8.849s、cmd/server 1.732s。测试只使用隔离数据库；未运行 CI、推送、部署或生产迁移。
 - 加入普通共享Key、Live和批量图片的扩大竞态回归退出0：repository 31.184s、service 10.753s、handler 9.610s、cmd/server 1.650s。`go vet -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler ./cmd/server` 退出0、无诊断；原规则 lint 对四包退出0，输出 `0 issues.`。这些检查使用当时工作树，包含既有未提交的 Prism 改动。
 - 生产应用或回滚前仍须停止新任务、核对供应商终态并排空旧/新任务记录与持久槽位，保留迁移表作为回滚证据；此项未在生产执行。父任务 D2 继续进行，未知提交自动核实、区域从节点/跨区域归属及其他出站仍待验收。
+
+## 2026-11-08：D2 Redis 异步视频绑定快照竞争
+
+- 隔离 Redis 反例确认：同一 member 和主体的完整租约被改变后，绑定或标记 unknown 仍返回成功；绑定读到旧快照后可覆盖新的 unknown 记录，而 unknown 原子写入因竞争未执行时也返回成功。原定向测试分别出现两项租约校验失败、一次旧快照覆盖和三项未知状态竞争失败。
+- 绑定与 unknown 逐次核对完整租约、主体和状态；Redis 脚本原子比较读取快照，竞争时重新读取并有限重试，持续竞争或栅栏拒绝明确报错。绑定相同任务仍可重试，未知任务和持久额度不因冲突自动释放；SQL 主节点路径不变。
+- `go test -race -p=1 -tags unit ./internal/repository -run '^TestAsyncVideoKey' -count=2 -timeout=8m` 退出0、repository 2.377s；覆盖租约不一致、旧快照、成功重试及重试耗尽。最终 `go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideoKey|TestRegionalAsyncVideo|TestAsyncVideoSharedKey|TestGrokVideoHandlerSharedKeyLifecycleWithRedis)' -count=1 -timeout=12m` 退出0，repository 25.238s、service 20.131s、handler 11.323s。`go vet -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler` 退出0、无诊断；repository 原规则 lint 输出 `0 issues.`。测试包含既有未提交的 Prism 改动。
+- D2 父项仍进行中：区域从节点和跨区域归属、unknown 自动核实及其他出站未验收。未运行 CI、推送、部署或生产迁移。

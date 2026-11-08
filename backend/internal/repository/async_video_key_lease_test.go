@@ -53,6 +53,27 @@ func (h *blockVideoSlotRelease) ProcessHook(next redis.ProcessHook) redis.Proces
 	}
 }
 
+type raceVideoSnapshot struct {
+	calls  int
+	mutate func(int) error
+}
+
+func (*raceVideoSnapshot) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (*raceVideoSnapshot) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+func (h *raceVideoSnapshot) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "evalsha" {
+			h.calls++
+			if err := h.mutate(h.calls); err != nil {
+				return err
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
 func asyncVideoLeaseRequest(t *testing.T, handoff *service.AsyncVideoKeyHandoff) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/create", strings.NewReader("{}"))
@@ -403,6 +424,177 @@ func TestAsyncVideoKeyReleaseRejectsMismatchedAndLegacyRecords(t *testing.T) {
 				require.Nil(t, resolved, "an ownerless v1 task cannot be attributed to a principal")
 				require.Equal(t, string(damaged), rdb.Get(t.Context(), asyncVideoKeyLeasePrefix+"task:v1-task").Val())
 			}
+		})
+	}
+}
+
+func TestAsyncVideoKeyHandoffRejectsChangedLease(t *testing.T) {
+	for _, operation := range []string{"bind", "unknown"} {
+		t.Run(operation, func(t *testing.T) {
+			_, rdb := liveKeyRedis(t, nil)
+			upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+			handoff := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+			_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, handoff))
+			require.NoError(t, err)
+			finish(nil, nil)
+
+			key := asyncVideoMemberKey(handoff.Member())
+			raw, err := rdb.Get(t.Context(), key).Bytes()
+			require.NoError(t, err)
+			var record asyncVideoKeyLeaseRecord
+			require.NoError(t, json.Unmarshal(raw, &record))
+			other := config.UpstreamKeyFingerprint("other-supplier")
+			record.Lease.Fingerprints[0] = other
+			record.Lease.Resources[0].Fingerprint = other
+			damaged, err := json.Marshal(record)
+			require.NoError(t, err)
+			require.NoError(t, rdb.Set(t.Context(), key, damaged, 0).Err())
+
+			if operation == "bind" {
+				err = upstream.BindAsyncVideoKeyLease(t.Context(), handoff, "task")
+			} else {
+				err = upstream.MarkAsyncVideoKeySubmissionUnknown(t.Context(), handoff)
+			}
+			require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+			require.Equal(t, string(damaged), rdb.Get(t.Context(), key).Val())
+			require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
+		})
+	}
+}
+
+func TestAsyncVideoKeyBindRejectsStaleSnapshot(t *testing.T) {
+	_, rdb := liveKeyRedis(t, nil)
+	upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+	handoff := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+	_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, handoff))
+	require.NoError(t, err)
+	finish(nil, nil)
+
+	key := asyncVideoMemberKey(handoff.Member())
+	oldRaw, err := rdb.Get(t.Context(), key).Bytes()
+	require.NoError(t, err)
+	var stale asyncVideoKeyLeaseRecord
+	require.NoError(t, json.Unmarshal(oldRaw, &stale))
+	require.NoError(t, upstream.MarkAsyncVideoKeySubmissionUnknown(t.Context(), handoff))
+	current := rdb.Get(t.Context(), key).Val()
+	stale.State, stale.TaskID = asyncVideoLeaseStateBound, "task"
+	payload, err := json.Marshal(stale)
+	require.NoError(t, err)
+	result, err := bindAsyncVideoKeyLeaseScript.Run(t.Context(), rdb,
+		[]string{key, asyncVideoTaskKey(handoff.Owner(), "task"), asyncVideoUnknownKey(), asyncVideoFenceKey(handoff.Member())},
+		handoff.Member(), payload, oldRaw, "task").Int()
+	require.NoError(t, err)
+	require.Equal(t, -2, result)
+	require.Equal(t, current, rdb.Get(t.Context(), key).Val())
+	require.NoError(t, rdb.ZScore(t.Context(), asyncVideoUnknownKey(), handoff.Member()).Err())
+	require.NoError(t, upstream.BindAsyncVideoKeyLease(t.Context(), handoff, "task"), "a fresh retry can bind the known task")
+}
+
+func TestAsyncVideoKeyBindRetriesConcurrentSnapshotChanges(t *testing.T) {
+	for _, exhaust := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exhaust=%t", exhaust), func(t *testing.T) {
+			server, rdb := liveKeyRedis(t, nil)
+			upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+			handoff := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+			_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, handoff))
+			require.NoError(t, err)
+			finish(nil, nil)
+			_, err = bindAsyncVideoKeyLeaseScript.Load(t.Context(), rdb).Result()
+			require.NoError(t, err)
+			key := asyncVideoMemberKey(handoff.Member())
+			hook := &raceVideoSnapshot{mutate: func(attempt int) error {
+				if !exhaust && attempt > 1 {
+					return nil
+				}
+				raw, getErr := server.Get(key)
+				if getErr != nil {
+					return getErr
+				}
+				var record asyncVideoKeyLeaseRecord
+				if decodeErr := json.Unmarshal([]byte(raw), &record); decodeErr != nil {
+					return decodeErr
+				}
+				record.State = asyncVideoLeaseStateUnknown
+				record.UpdatedAt++
+				updated, encodeErr := json.Marshal(record)
+				if encodeErr != nil {
+					return encodeErr
+				}
+				return server.Set(key, string(updated))
+			}}
+			rdb.AddHook(hook)
+			err = upstream.BindAsyncVideoKeyLease(t.Context(), handoff, "task")
+			if exhaust {
+				require.ErrorIs(t, err, service.ErrUpstreamKeyLease)
+				require.Equal(t, 3, hook.calls)
+				require.Zero(t, rdb.Exists(t.Context(), asyncVideoTaskKey(handoff.Owner(), "task")).Val())
+				require.NoError(t, rdb.ZScore(t.Context(), asyncVideoUnknownKey(), handoff.Member()).Err())
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, 2, hook.calls)
+				loaded, loadErr := upstream.LoadAsyncVideoKeyLeaseByTask(t.Context(), handoff.Owner(), "task")
+				require.NoError(t, loadErr)
+				require.Equal(t, handoff.Lease(), loaded)
+			}
+			require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
+		})
+	}
+}
+
+func TestAsyncVideoKeyUnknownRetriesConcurrentSnapshotChanges(t *testing.T) {
+	for _, mode := range []string{"retry", "changed_lease", "exhaust"} {
+		t.Run(mode, func(t *testing.T) {
+			server, rdb := liveKeyRedis(t, nil)
+			upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+			handoff := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+			_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, handoff))
+			require.NoError(t, err)
+			finish(nil, nil)
+			_, err = markAsyncVideoKeyUnknownScript.Load(t.Context(), rdb).Result()
+			require.NoError(t, err)
+			key := asyncVideoMemberKey(handoff.Member())
+			hook := &raceVideoSnapshot{mutate: func(attempt int) error {
+				if mode != "exhaust" && attempt > 1 {
+					return nil
+				}
+				raw, getErr := server.Get(key)
+				if getErr != nil {
+					return getErr
+				}
+				var record asyncVideoKeyLeaseRecord
+				if decodeErr := json.Unmarshal([]byte(raw), &record); decodeErr != nil {
+					return decodeErr
+				}
+				record.UpdatedAt++
+				if mode == "changed_lease" {
+					other := config.UpstreamKeyFingerprint("other-supplier")
+					record.Lease.Fingerprints[0] = other
+					record.Lease.Resources[0].Fingerprint = other
+				}
+				updated, encodeErr := json.Marshal(record)
+				if encodeErr != nil {
+					return encodeErr
+				}
+				return server.Set(key, string(updated))
+			}}
+			rdb.AddHook(hook)
+			err = upstream.MarkAsyncVideoKeySubmissionUnknown(t.Context(), handoff)
+			switch mode {
+			case "retry":
+				require.NoError(t, err)
+				require.Equal(t, 2, hook.calls)
+				var record asyncVideoKeyLeaseRecord
+				require.NoError(t, json.Unmarshal([]byte(rdb.Get(t.Context(), key).Val()), &record))
+				require.Equal(t, asyncVideoLeaseStateUnknown, record.State)
+			case "changed_lease":
+				require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+				require.Equal(t, 1, hook.calls)
+			case "exhaust":
+				require.ErrorIs(t, err, service.ErrUpstreamKeyLease)
+				require.Equal(t, 3, hook.calls)
+			}
+			require.NoError(t, rdb.ZScore(t.Context(), asyncVideoUnknownKey(), handoff.Member()).Err())
+			require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
 		})
 	}
 }

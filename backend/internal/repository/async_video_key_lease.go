@@ -25,6 +25,7 @@ var bindAsyncVideoKeyLeaseScript = redis.NewScript(`
 if redis.call('EXISTS', KEYS[4]) ~= 0 then return 0 end
 local member = redis.call('GET', KEYS[1])
 if not member then return 0 end
+if member ~= ARGV[3] then return -2 end
 local current = cjson.decode(member)
 if current['task_id'] and current['task_id'] ~= '' and current['task_id'] ~= ARGV[4] then return -1 end
 local existing = redis.call('GET', KEYS[2])
@@ -49,7 +50,7 @@ return 1
 
 var markAsyncVideoKeyUnknownScript = redis.NewScript(`
 if redis.call('EXISTS', KEYS[3]) ~= 0 then return 0 end
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -2 end
 redis.call('SET', KEYS[1], ARGV[2])
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 return 1
@@ -211,49 +212,66 @@ func (s *httpUpstreamService) BindAsyncVideoKeyLease(ctx context.Context, handof
 	if taskID == "" || len(taskID) > 256 {
 		return service.ErrUpstreamKeyPolicy
 	}
-	priorRaw, err := limiter.rdb.Get(ctx, asyncVideoMemberKey(member)).Bytes()
-	if err != nil {
+	return bindAsyncVideoKeyLeaseRecord(ctx, limiter, member, taskID, &asyncVideoKeyLeaseRecord{Owner: handoff.Owner(), Lease: lease})
+}
+
+func bindAsyncVideoKeyLeaseRecord(ctx context.Context, limiter *upstreamKeyLimiter, member, taskID string, expected *asyncVideoKeyLeaseRecord) error {
+	if limiter == nil || limiter.rdb == nil {
+		return service.ErrUpstreamKeyPolicy
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		raw, err := limiter.rdb.Get(ctx, asyncVideoMemberKey(member)).Bytes()
 		if errors.Is(err, redis.Nil) {
 			return service.ErrUpstreamKeyLease
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		var record asyncVideoKeyLeaseRecord
+		if json.Unmarshal(raw, &record) != nil || record.Member != member || record.Lease == nil || record.Lease.Validate() != nil ||
+			record.Lease.Member != member || !record.Owner.Valid() {
+			return service.ErrUpstreamKeyPolicy
+		}
+		if expected != nil && (record.Owner != expected.Owner || !reflect.DeepEqual(record.Lease, expected.Lease)) {
+			return service.ErrUpstreamKeyPolicy
+		}
+		switch record.State {
+		case asyncVideoLeaseStateProvisional, asyncVideoLeaseStateUnknown:
+			if record.TaskID != "" {
+				return service.ErrUpstreamKeyPolicy
+			}
+		case asyncVideoLeaseStateBound:
+			if record.TaskID == "" || len(record.TaskID) > 256 || record.TaskID != strings.TrimSpace(record.TaskID) {
+				return service.ErrUpstreamKeyPolicy
+			}
+		default:
+			return service.ErrUpstreamKeyPolicy
+		}
+		record.TaskID = taskID
+		record.State = asyncVideoLeaseStateBound
+		record.UpdatedAt = time.Now().UTC().UnixMilli()
+		payload, err := json.Marshal(&record)
+		if err != nil {
+			return err
+		}
+		result, err := bindAsyncVideoKeyLeaseScript.Run(ctx, limiter.rdb,
+			[]string{asyncVideoMemberKey(member), asyncVideoTaskKey(record.Owner, taskID), asyncVideoUnknownKey(), asyncVideoFenceKey(member)},
+			member, payload, raw, taskID).Int()
+		if err != nil {
+			return err
+		}
+		switch result {
+		case 1:
+			return nil
+		case 0:
+			return service.ErrUpstreamKeyLease
+		case -2:
+			continue
+		default:
+			return fmt.Errorf("async video task lease is already bound")
+		}
 	}
-	var record asyncVideoKeyLeaseRecord
-	if err := json.Unmarshal(priorRaw, &record); err != nil || record.Member != member || record.Lease == nil || record.Lease.Validate() != nil {
-		return service.ErrUpstreamKeyPolicy
-	}
-	if record.Lease.Member != lease.Member || record.Owner != handoff.Owner() {
-		return service.ErrUpstreamKeyPolicy
-	}
-	return bindAsyncVideoKeyLeaseRecord(ctx, limiter, member, taskID, &record)
-}
-
-func bindAsyncVideoKeyLeaseRecord(ctx context.Context, limiter *upstreamKeyLimiter, member, taskID string, record *asyncVideoKeyLeaseRecord) error {
-	if limiter == nil || record == nil || record.Member != member || record.Lease == nil || record.Lease.Validate() != nil ||
-		record.Lease.Member != member || !record.Owner.Valid() {
-		return service.ErrUpstreamKeyPolicy
-	}
-	record.TaskID = taskID
-	record.State = asyncVideoLeaseStateBound
-	record.UpdatedAt = time.Now().UTC().UnixMilli()
-	payload, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	result, err := bindAsyncVideoKeyLeaseScript.Run(ctx, limiter.rdb,
-		[]string{asyncVideoMemberKey(member), asyncVideoTaskKey(record.Owner, taskID), asyncVideoUnknownKey(), asyncVideoFenceKey(member)},
-		member, payload, 0, taskID).Int()
-	if err != nil {
-		return err
-	}
-	switch result {
-	case 1:
-		return nil
-	case 0:
-		return service.ErrUpstreamKeyLease
-	default:
-		return fmt.Errorf("async video task lease is already bound")
-	}
+	return service.ErrUpstreamKeyLease
 }
 
 func (s *httpUpstreamService) BindAsyncVideoKeyLeaseByMember(ctx context.Context, member, taskID string) error {
@@ -269,18 +287,7 @@ func (s *httpUpstreamService) BindAsyncVideoKeyLeaseByMember(ctx context.Context
 	if !strings.HasPrefix(member, "video:") || taskID == "" || len(taskID) > 256 {
 		return service.ErrUpstreamKeyPolicy
 	}
-	raw, err := limiter.rdb.Get(ctx, asyncVideoMemberKey(member)).Bytes()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return service.ErrUpstreamKeyLease
-		}
-		return err
-	}
-	var record asyncVideoKeyLeaseRecord
-	if err := json.Unmarshal(raw, &record); err != nil {
-		return service.ErrUpstreamKeyPolicy
-	}
-	return bindAsyncVideoKeyLeaseRecord(ctx, limiter, member, taskID, &record)
+	return bindAsyncVideoKeyLeaseRecord(ctx, limiter, member, taskID, nil)
 }
 
 func (s *httpUpstreamService) MarkAsyncVideoKeySubmissionUnknown(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
@@ -296,32 +303,53 @@ func (s *httpUpstreamService) MarkAsyncVideoKeySubmissionUnknown(ctx context.Con
 		return err
 	}
 	key := asyncVideoMemberKey(member)
-	raw, err := limiter.rdb.Get(ctx, key).Bytes()
-	if err != nil {
+	for attempt := 0; attempt < 3; attempt++ {
+		raw, err := limiter.rdb.Get(ctx, key).Bytes()
 		if errors.Is(err, redis.Nil) {
 			return service.ErrUpstreamKeyLease
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		var record asyncVideoKeyLeaseRecord
+		if json.Unmarshal(raw, &record) != nil || record.Member != member || record.Lease == nil || record.Lease.Validate() != nil ||
+			!reflect.DeepEqual(record.Lease, lease) || record.Owner != handoff.Owner() {
+			return service.ErrUpstreamKeyPolicy
+		}
+		switch record.State {
+		case asyncVideoLeaseStateBound:
+			if record.TaskID == "" || len(record.TaskID) > 256 || record.TaskID != strings.TrimSpace(record.TaskID) {
+				return service.ErrUpstreamKeyPolicy
+			}
+			return nil
+		case asyncVideoLeaseStateProvisional, asyncVideoLeaseStateUnknown:
+			if record.TaskID != "" {
+				return service.ErrUpstreamKeyPolicy
+			}
+		default:
+			return service.ErrUpstreamKeyPolicy
+		}
+		record.State = asyncVideoLeaseStateUnknown
+		record.UpdatedAt = time.Now().UTC().UnixMilli()
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		result, err := markAsyncVideoKeyUnknownScript.Run(ctx, limiter.rdb, []string{key, asyncVideoUnknownKey(), asyncVideoFenceKey(member)},
+			raw, payload, record.UpdatedAt, member).Int()
+		if err != nil {
+			return err
+		}
+		switch result {
+		case 1:
+			return nil
+		case -2:
+			continue
+		default:
+			return service.ErrUpstreamKeyLease
+		}
 	}
-	var record asyncVideoKeyLeaseRecord
-	if err := json.Unmarshal(raw, &record); err != nil || record.Member != member || record.Lease == nil || record.Lease.Validate() != nil {
-		return service.ErrUpstreamKeyPolicy
-	}
-	if record.Lease.Member != lease.Member || record.Owner != handoff.Owner() {
-		return service.ErrUpstreamKeyPolicy
-	}
-	if record.State == asyncVideoLeaseStateBound {
-		return nil
-	}
-	record.State = asyncVideoLeaseStateUnknown
-	record.UpdatedAt = time.Now().UTC().UnixMilli()
-	payload, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	_, err = markAsyncVideoKeyUnknownScript.Run(ctx, limiter.rdb, []string{key, asyncVideoUnknownKey(), asyncVideoFenceKey(member)},
-		raw, payload, record.UpdatedAt, member).Int()
-	return err
+	return service.ErrUpstreamKeyLease
 }
 
 func (s *httpUpstreamService) ReleaseAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
