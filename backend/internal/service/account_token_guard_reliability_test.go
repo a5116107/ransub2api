@@ -8,9 +8,155 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
+
+type guardKeyAuthorityFixture struct {
+	acquire func(context.Context, []string) (context.Context, func(), error)
+}
+
+func (f guardKeyAuthorityFixture) AcquireUpstreamKeySlots(ctx context.Context, fingerprints []string) (context.Context, func(), error) {
+	return f.acquire(ctx, fingerprints)
+}
+
+func TestAccountTokenGuardProbeSharedKeyAdmission(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"status":"active"}`)
+	}))
+	t.Cleanup(server.Close)
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "body-token-fixture"}}
+	cfg := defaultAccountTokenGuardConfig()
+	cfg.ProbeEndpoint = server.URL
+	cfg.ProbeHeaders = map[string]string{"Authorization": "Bearer relay-token-fixture"}
+	for _, tc := range []struct {
+		name         string
+		required     bool
+		missing      bool
+		admitErr     error
+		wantState    string
+		wantCode     string
+		wantCalls    int32
+		wantReleases int
+	}{
+		{"disabled", false, false, nil, AccountTokenGuardProbeOK, "ok", 1, 0},
+		{"missing authority", true, true, nil, AccountTokenGuardProbeTransient, "upstream_key_admission_unavailable", 0, 0},
+		{"full capacity", true, false, ErrUpstreamKeyCapacity, AccountTokenGuardProbeTransient, "upstream_key_admission_unavailable", 0, 1},
+		{"lost during admission", true, false, ErrUpstreamKeyLease, AccountTokenGuardProbeTransient, "upstream_key_lease_lost", 0, 1},
+		{"admitted", true, false, nil, AccountTokenGuardProbeOK, "ok", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls.Store(0)
+			var fingerprints []string
+			var releases int
+			var authority UpstreamKeyConcurrency
+			if !tc.missing {
+				authority = guardKeyAuthorityFixture{acquire: func(ctx context.Context, actual []string) (context.Context, func(), error) {
+					fingerprints = append(fingerprints, actual...)
+					return ctx, func() { releases++ }, tc.admitErr
+				}}
+			}
+			svc := &AccountTokenGuardService{httpClient: server.Client(), keyAuthority: authority, keyPolicyRequired: tc.required}
+			result := svc.probe(context.Background(), cfg, account)
+			if result.State != tc.wantState || result.Diagnostic.Code != tc.wantCode || calls.Load() != tc.wantCalls || releases != tc.wantReleases {
+				t.Fatalf("state=%q code=%q calls=%d releases=%d", result.State, result.Diagnostic.Code, calls.Load(), releases)
+			}
+			if tc.required && !tc.missing {
+				want := map[string]bool{config.UpstreamKeyFingerprint("body-token-fixture"): false, config.UpstreamKeyFingerprint("relay-token-fixture"): false}
+				for _, fingerprint := range fingerprints {
+					if _, ok := want[fingerprint]; ok {
+						want[fingerprint] = true
+					}
+				}
+				for _, present := range want {
+					if !present {
+						t.Fatal("final relay and body credentials must both enter shared admission")
+					}
+				}
+			}
+			if strings.Contains(result.Detail, "body-token-fixture") || strings.Contains(result.Detail, "relay-token-fixture") || strings.Contains(result.Detail, server.URL) {
+				t.Fatal("probe diagnostics leaked credential or endpoint")
+			}
+		})
+	}
+}
+
+func TestAccountTokenGuardProbeSharedKeyLeaseLoss(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var cancel context.CancelCauseFunc
+			var released bool
+			authority := guardKeyAuthorityFixture{acquire: func(ctx context.Context, _ []string) (context.Context, func(), error) {
+				leaseCtx, stop := context.WithCancelCause(ctx)
+				cancel = stop
+				return leaseCtx, func() { released = true }, nil
+			}}
+			client := &http.Client{Transport: guardRecoveryRoundTripper(func(*http.Request) (*http.Response, error) {
+				cancel(ErrUpstreamKeyLease)
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"status":"active"}`))}, nil
+			})}
+			svc := &AccountTokenGuardService{httpClient: client, keyAuthority: authority, keyPolicyRequired: true}
+			cfg := defaultAccountTokenGuardConfig()
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "fixture"}}
+			result := svc.probe(context.Background(), cfg, account)
+			if result.State != AccountTokenGuardProbeTransient || result.Diagnostic.Code != "upstream_key_lease_lost" || !released {
+				t.Fatalf("state=%q code=%q released=%t", result.State, result.Diagnostic.Code, released)
+			}
+		})
+	}
+}
+
+func TestAccountTokenGuardProbeSharedKeyLeaseLossOnRelease(t *testing.T) {
+	authority := guardKeyAuthorityFixture{acquire: func(ctx context.Context, _ []string) (context.Context, func(), error) {
+		leaseCtx, cancel := context.WithCancelCause(ctx)
+		return leaseCtx, func() { cancel(ErrUpstreamKeyLease) }, nil
+	}}
+	client := &http.Client{Transport: guardRecoveryRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"status":"active"}`))}, nil
+	})}
+	svc := &AccountTokenGuardService{httpClient: client, keyAuthority: authority, keyPolicyRequired: true}
+	cfg := defaultAccountTokenGuardConfig()
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "fixture"}}
+	result := svc.probe(context.Background(), cfg, account)
+	if result.State != AccountTokenGuardProbeTransient || result.Diagnostic.Code != "upstream_key_lease_lost" {
+		t.Fatalf("state=%q code=%q", result.State, result.Diagnostic.Code)
+	}
+}
+
+func TestAccountTokenGuardProbeSharedKeyRedirectBoundary(t *testing.T) {
+	var redirected atomic.Int32
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected.Add(1)
+		_, _ = io.WriteString(w, `{"status":"active"}`)
+	}))
+	t.Cleanup(destination.Close)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(origin.Close)
+	for _, required := range []bool{false, true} {
+		redirected.Store(0)
+		authority := guardKeyAuthorityFixture{acquire: func(ctx context.Context, _ []string) (context.Context, func(), error) {
+			return ctx, nil, nil
+		}}
+		svc := &AccountTokenGuardService{httpClient: origin.Client(), keyAuthority: authority, keyPolicyRequired: required}
+		cfg := defaultAccountTokenGuardConfig()
+		cfg.ProbeEndpoint = origin.URL
+		account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "fixture"}}
+		result := svc.probe(context.Background(), cfg, account)
+		if required && (redirected.Load() != 0 || result.State != AccountTokenGuardProbeTransient || result.Diagnostic.HTTPStatus != http.StatusTemporaryRedirect) {
+			t.Fatalf("configured redirect: calls=%d result=%+v", redirected.Load(), result)
+		}
+		if !required && (redirected.Load() != 1 || result.State != AccountTokenGuardProbeOK) {
+			t.Fatalf("unconfigured redirect: calls=%d result=%+v", redirected.Load(), result)
+		}
+	}
+}
 
 func TestReadGuardResultReturnsWithoutEOF(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

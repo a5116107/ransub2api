@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
@@ -203,12 +204,14 @@ type AccountTokenGuardDiagnostic struct {
 
 // AccountTokenGuardService 负责凭证巡检与修复。
 type AccountTokenGuardService struct {
-	settings    SettingRepository
-	repo        AccountTokenGuardRepository
-	accounts    accountTokenGuardAccounts
-	admin       AdminService
-	invalidator TokenCacheInvalidator
-	httpClient  *http.Client
+	settings          SettingRepository
+	repo              AccountTokenGuardRepository
+	accounts          accountTokenGuardAccounts
+	admin             AdminService
+	invalidator       TokenCacheInvalidator
+	httpClient        *http.Client
+	keyAuthority      UpstreamKeyConcurrency
+	keyPolicyRequired bool
 
 	configMu sync.Mutex // Serializes config reads, saves and login credential merges.
 	config   atomic.Value
@@ -1143,7 +1146,7 @@ func findGuardReloginAccount(cfg AccountTokenGuardConfig, accountName string) (A
 }
 
 // probe 用账号当前的 access_token 调测活接口。
-func (s *AccountTokenGuardService) probe(ctx context.Context, cfg AccountTokenGuardConfig, account *Account) AccountTokenGuardProbeResult {
+func (s *AccountTokenGuardService) probe(ctx context.Context, cfg AccountTokenGuardConfig, account *Account) (probeResult AccountTokenGuardProbeResult) {
 	// A probe provider's own 429, 401 or outage must not prevent recovery
 	// when a business request already established that this token was revoked.
 	if guardAccountHasAuthFailure(account) {
@@ -1165,14 +1168,54 @@ func (s *AccountTokenGuardService) probe(ctx context.Context, cfg AccountTokenGu
 		return AccountTokenGuardProbeResult{State: AccountTokenGuardProbeTransient, Detail: `{"code":"request_build_failed"}`, Diagnostic: AccountTokenGuardDiagnostic{Code: "request_build_failed"}}
 	}
 	applyGuardRequestHeaders(req, cfg.ProbeEndpoint, "probe", cfg.ProbeHeaders)
+	localFailure := func(code string) AccountTokenGuardProbeResult {
+		diagnostic := AccountTokenGuardDiagnostic{Code: code, EndedAt: guardTimePtr(time.Now())}
+		return AccountTokenGuardProbeResult{State: AccountTokenGuardProbeTransient, Detail: formatGuardDiagnostic(diagnostic), Diagnostic: diagnostic}
+	}
+	client := s.httpClient
+	if s.keyPolicyRequired {
+		if s.keyAuthority == nil {
+			return localFailure("upstream_key_admission_unavailable")
+		}
+		fingerprints := append(config.UpstreamCredentialFingerprints(req), config.UpstreamKeyFingerprint(token))
+		admitted, release, admissionErr := s.keyAuthority.AcquireUpstreamKeySlots(probeCtx, fingerprints)
+		if admissionErr != nil || admitted == nil {
+			if release != nil {
+				release()
+			}
+			if errors.Is(admissionErr, ErrUpstreamKeyLease) {
+				return localFailure("upstream_key_lease_lost")
+			}
+			return localFailure("upstream_key_admission_unavailable")
+		}
+		if release != nil {
+			defer func() {
+				release()
+				if errors.Is(context.Cause(admitted), ErrUpstreamKeyLease) {
+					probeResult = localFailure("upstream_key_lease_lost")
+				}
+			}()
+		}
+		probeCtx = admitted
+		req = req.WithContext(probeCtx)
+		clientCopy := *client
+		clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &clientCopy
+	}
 	started := time.Now()
-	resp, err := s.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(context.Cause(probeCtx), ErrUpstreamKeyLease) {
+			return localFailure("upstream_key_lease_lost")
+		}
 		code := guardHTTPErrorCode(probeCtx, err)
 		diagnostic := AccountTokenGuardDiagnostic{Code: code, EndedAt: guardTimePtr(time.Now())}
 		return AccountTokenGuardProbeResult{State: AccountTokenGuardProbeTransient, Detail: formatGuardDiagnostic(diagnostic), Diagnostic: diagnostic}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if errors.Is(context.Cause(probeCtx), ErrUpstreamKeyLease) {
+		return localFailure("upstream_key_lease_lost")
+	}
 	latency := int(time.Since(started).Milliseconds())
 	headersAt := time.Now()
 	diagnostic := AccountTokenGuardDiagnostic{HTTPStatus: resp.StatusCode, HeadersAt: &headersAt}
@@ -1183,6 +1226,9 @@ func (s *AccountTokenGuardService) probe(ctx context.Context, cfg AccountTokenGu
 	}
 	result, readDiag, err := readGuardResult(probeCtx, resp.Body, 2<<20, 30*time.Second)
 	diagnostic = mergeGuardDiagnostic(diagnostic, readDiag)
+	if errors.Is(context.Cause(probeCtx), ErrUpstreamKeyLease) {
+		return localFailure("upstream_key_lease_lost")
+	}
 	if err != nil {
 		if diagnostic.Code == "" {
 			diagnostic.Code = guardReadErrorCode(err)

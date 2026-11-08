@@ -1302,9 +1302,13 @@ func ProvideAccountOpsService(settings SettingRepository, repo AccountOpsReposit
 // ProvideAccountTokenGuardService 创建并启动「凭证守护」后台巡检（智能运维子页面）。
 func ProvideAccountTokenGuardService(settings SettingRepository, repo AccountTokenGuardRepository,
 	accounts AccountRepository, admin AdminService, invalidator TokenCacheInvalidator,
-	cfg *config.Config,
+	cfg *config.Config, upstream HTTPUpstream,
 ) *AccountTokenGuardService {
 	svc := NewAccountTokenGuardService(settings, repo, accounts, admin, invalidator)
+	svc.keyPolicyRequired = upstreamKeyAdmissionRequired(cfg)
+	if svc.keyPolicyRequired {
+		svc.keyAuthority, _ = upstream.(UpstreamKeyConcurrency)
+	}
 	startBackgroundService(cfg, svc)
 	return svc
 }

@@ -4,15 +4,137 @@ package repository
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTokenGuardProbeSharesUpstreamKeyCapacity(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	client := tx.Client()
+	accounts := newAccountRepositoryWithSQL(client, tx, nil)
+	guardRepo := NewAccountTokenGuardRepository(integrationDB)
+	token := "guard-capacity-fixture"
+	account := mustCreateAccount(t, client, &service.Account{Name: "guard-capacity@example.com", Platform: service.PlatformOpenAI,
+		Type: service.AccountTypeOAuth, Status: service.StatusActive, Credentials: map[string]any{"access_token": token}})
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(context.Background(), "DELETE FROM account_token_guard_states WHERE account_id=$1", account.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(context.Background(), "DELETE FROM account_token_guard_events WHERE account_id=$1", account.ID)
+		require.NoError(t, err)
+	})
+	var probeCalls, businessCalls atomic.Int32
+	var holdProbe atomic.Bool
+	businessRelease := make(chan struct{})
+	probeRelease := make(chan struct{})
+	probeStarted := make(chan struct{}, 1)
+	var releaseBusiness, releaseProbe sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/business" {
+			businessCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			select {
+			case <-businessRelease:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		probeCalls.Add(1)
+		if holdProbe.Load() {
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			probeStarted <- struct{}{}
+			select {
+			case <-probeRelease:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		_, _ = io.WriteString(w, `{"status":"active"}`)
+	}))
+	t.Cleanup(func() {
+		releaseBusiness.Do(func() { close(businessRelease) })
+		releaseProbe.Do(func() { close(probeRelease) })
+		server.Close()
+	})
+	appCfg := &config.Config{}
+	appCfg.Runtime.Role = config.RuntimeRoleGateway
+	appCfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	appCfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1,
+		Limits: map[string]int{config.UpstreamKeyFingerprint(token): 1}}
+	redisOptions := *integrationRedis.Options()
+	redisOptions.DB = 14
+	rdb := redis.NewClient(&redisOptions)
+	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+	transport := ProvideHTTPUpstream(appCfg, nil, rdb, nil)
+	svc := service.ProvideAccountTokenGuardService(NewSettingRepository(client), guardRepo, accounts, nil, nil, appCfg, transport)
+	guardCfg := service.AccountTokenGuardConfig{IntervalSeconds: 300, ProbeTimeoutSeconds: 5, ProbeConcurrency: 1,
+		MaxProbePerCycle: 1, FailStreakThreshold: 2, ProbeEndpoint: server.URL + "/probe"}
+	_, err := svc.SaveConfig(ctx, guardCfg)
+	require.NoError(t, err)
+	businessRequest := func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/business", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		return transport.Do(req, "", account.ID, 1)
+	}
+	first, err := businessRequest()
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	t.Cleanup(func() { _ = first.Body.Close() })
+	stats, err := svc.RunCycle(ctx, false)
+	require.NoError(t, err)
+	require.Zero(t, probeCalls.Load(), "a full shared key must block the independent probe before sending")
+	require.Equal(t, 1, stats.Transient)
+	require.Zero(t, stats.AuthFailed)
+	require.NoError(t, first.Body.Close())
+	releaseBusiness.Do(func() { close(businessRelease) })
+	stats, err = svc.RunCycle(ctx, false)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Healthy)
+	require.EqualValues(t, 1, probeCalls.Load())
+
+	holdProbe.Store(true)
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := svc.RunCycle(ctx, false)
+		done <- runErr
+	}()
+	select {
+	case <-probeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe did not start")
+	}
+	before := businessCalls.Load()
+	competing, err := businessRequest()
+	if competing != nil {
+		_ = competing.Body.Close()
+	}
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
+	require.Equal(t, before, businessCalls.Load(), "an in-flight probe must keep the shared slot")
+	releaseProbe.Do(func() { close(probeRelease) })
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe did not finish")
+	}
+	last, err := businessRequest()
+	require.NoError(t, err)
+	require.NoError(t, last.Body.Close())
+}
 
 // Exercise the service with the real account queries. In-memory repositories
 // previously returned error accounts even for the active-only scheduling query.
