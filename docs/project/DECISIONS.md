@@ -1154,3 +1154,10 @@
 - `go test -race -p 1 -tags=unit ./internal/service -run '^(TestCodex780EdgeAdmissionFailsBeforeDial|TestCodex780WebSocketEdgeAdmissionFailsBeforeDial|TestCodex780NativeProbe|TestCodex780Edge|TestCodex780WebSocket|TestCodex780Admission)' -count=2 -timeout=8m` 退出0，service 1.347s。
 - 扩大 harvest 回归 `go test -race -p 1 -tags=unit ./internal/service -run '^(TestCodex780|TestHarvest|TestOpenAICodexHarvest|TestCodexHarvest)' -count=1 -timeout=10m` 退出0，service 8.738s；`go vet -p 1 -tags=unit ./internal/service` 退出0；默认 `go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，1.451s。
 - D3 仍保留其他未观测能力、托管连接及 WS 作用域范围；D2 区域从节点/跨区域归属和 unknown 自动核实仍未完成。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-08：M6 删除代理测试伪实现
+
+- `ProxyService.TestConnection` 在仓内只有定义，没有任何调用；函数读取代理后无条件返回 `nil`，既未执行连接测试，也会给潜在调用方制造虚假的成功结果。实际管理入口使用的是 `AdminService.TestProxy`，不依赖该方法。
+- 原位删除该无调用方法及其 TODO，不改 `AdminService.TestProxy`、代理质量检查或其他连接测试接口；`rg "TestConnection\\(" backend --glob '*.go'` 不再命中 `ProxyService`。
+- `gofmt -d backend/internal/service/proxy_service.go` 无输出；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.535s [no tests to run]`；`go vet -p 1 ./internal/service` 退出0、无诊断。
+- 本项只清除仓内无调用的假成功路径，不扩大到仍被 handler/兼容测试引用的已废弃数据管理 RPC；未运行 CI、推送、部署或生产迁移。
