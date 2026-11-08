@@ -1198,3 +1198,10 @@
 - 更新已生成 server Wire 调用和唯一直接 provider 夹具；新增 service 单测覆盖真实聚合映射、五种周期、非法周期、缺依赖和仓储失败。
 - `gofmt` 无输出；`go test -race -p 1 -tags=unit ./internal/service -run '^TestAdminServiceGetUserUsageStats' -count=2 -timeout=8m` 退出0，service `1.231s`；`go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestUserHandlerEndpoints|TestGroupHandlerEndpoints|TestProxyHandlerEndpoints|TestRedeemHandlerEndpoints)$' -count=2 -timeout=8m` 退出0，admin `1.216s`。
 - `go test -p 1 ./cmd/server -run '^$' -count=1 -timeout=8m` 退出0，server `1.407s [no tests to run]`；`go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin` 退出0、无诊断。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：M12 清除代理与仪表盘 realtime 假成功统计
+
+- `GET /admin/proxies/:id/stats` 和 `GET /admin/dashboard/realtime` 在仓内没有前端调用或真实统计来源，原实现却固定返回零值，代理成功率甚至固定为 `100.0`，会把未知状态显示成成功。
+- 保留现有路由和参数校验，原位删除 mock 响应，统一返回 HTTP 501 及明确消息；不伪造代理请求量、活跃账号、延迟或实时错误率，也不改变真实 `TestProxy`、Ops realtime traffic 和 Usage/Dashboard 聚合接口。
+- 新增 dashboard realtime 失败关闭回归，并更新 admin proxy endpoint 断言；`gofmt` 无输出。
+- `go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestProxyHandlerEndpoints|TestDashboardRealtimeMetricsFailsClosedWithoutSource|TestUserHandlerEndpoints|TestGroupHandlerEndpoints|TestRedeemHandlerEndpoints)$' -count=2 -timeout=8m` 退出0，admin `1.205s`；`go vet -p 1 -tags=unit ./internal/handler/admin` 退出0、无诊断；精确 mock-stat 搜索为0。未运行 CI、推送、部署或生产迁移。

@@ -3,10 +3,10 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：M11 补齐管理端用户用量真实统计；父任务进行中，禁止CI/推送/部署/生产迁移。
-证据：GetUserUsageStats 复用 UsageLogRepository 聚合查询，按 day/week/month/year 窗口返回真实请求、token、成本和平均时延。
-验证：service usage unit race 两轮退出0、1.231s；admin handler race 两轮退出0、1.216s；server默认编译1.407s；unit vet退出0；gofmt无输出。
-下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M11 已提交（代码45234d9）。
+任务：M12 清除代理/仪表盘 realtime 假成功统计；父任务进行中，禁止CI/推送/部署/生产迁移。
+证据：两个接口没有仓内真实统计来源或调用方，原固定零值/100%成功率已改为保留路由并明确 501。
+验证：admin handler race 两轮退出0、1.205s；admin unit vet退出0；gofmt无输出；旧 mock-stat 搜索0。
+下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M12 待提交。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 
@@ -41,6 +41,7 @@
 | M9 | done | 兑换码统计移除 mock/TODO；真实分页统计状态、类型和已使用面值，admin race、service编译与vet通过 |
 | M10 | done | 删除无调用且假成功的 AdminService.RefreshAccountCredentials；接口/实现/stub引用为0，admin race、service编译与vet通过 |
 | M11 | done | 用户用量移除 mock 零值；接入既有 UsageLogRepository 聚合、周期校验和缺依赖失败关闭，service/admin race、server编译与vet通过 |
+| M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
 | D5 | pending | timing与缓存分层/冷启动估计；依赖D2/D3 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
