@@ -1175,3 +1175,11 @@
 - 原位按 1000 条分页遍历分组 API Key，准确统计总数和 `active` 数；请求数与标准成本汇总既有 dashboard 结果，dashboard 未注入的兼容测试仍返回零用量而不伪造数据。仓储或 dashboard 查询失败返回 500，不再静默成功。
 - 扩展既有 admin handler 回归断言真实 stub 的 `total_api_keys=1`、`active_api_keys=1`；`gofmt -d backend/internal/handler/admin/group_handler.go backend/internal/handler/admin/admin_basic_handlers_test.go` 无输出。
 - `go test -race -p 1 -tags=unit ./internal/handler/admin -run '^Test(Group|Proxy|User)HandlerEndpoints$' -count=2 -timeout=8m` 退出0，admin `1.236s`；`go vet -p 1 -tags=unit ./internal/handler/admin` 退出0、无诊断。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-08：M9 补齐兑换码统计并删除旧伪实现
+
+- 管理端 `GET /admin/redeem-codes/stats` 原先无条件返回零值，且路由实际为无 ID 的 `/stats`；服务层 `RedeemService.GetStats` 也只是未调用的 TODO 零值实现。两处都不能反映兑换码仓储状态。
+- 原位复用 `AdminService.ListRedeemCodes` 的 1000 条分页读取，按当前时间统计可用、已用、过期数量，按真实类型计数，并仅累计已使用兑换码的面值为 `total_value_distributed`；仓储错误返回 500，不再静默成功。删除服务层无调用 TODO，避免第二套统计口径。
+- 修正既有 admin handler 夹具使用实际 `/stats` 路由，并加入 balance/concurrency/subscription/invitation、活跃/已用/过期和已分配面值断言；`gofmt` 无输出。
+- `go test -race -p 1 -tags=unit ./internal/handler/admin -run '^TestRedeemHandlerEndpoints$' -count=2 -timeout=8m` 退出0，admin `1.902s`；扩大 `^(TestGroup|TestProxy|TestUser|TestRedeem)HandlerEndpoints$` 两轮退出0，admin `1.233s`。
+- `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin` 退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.479s [no tests to run]`。精确搜索旧 `RedeemService.GetStats`/统计 TODO/`redeem-codes/:id/stats` 为0；未运行 CI、推送、部署或生产迁移。
