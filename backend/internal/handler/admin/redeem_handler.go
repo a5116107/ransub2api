@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -373,18 +374,63 @@ func (h *RedeemHandler) Expire(c *gin.Context) {
 // GetStats handles getting redeem code statistics
 // GET /api/v1/admin/redeem-codes/stats
 func (h *RedeemHandler) GetStats(c *gin.Context) {
-	// Return mock data for now
+	if h.adminService == nil {
+		response.InternalError(c, "Admin service not available")
+		return
+	}
+
+	const pageSize = 1000
+	now := time.Now()
+	var (
+		seen                  int64
+		totalCodes            int64
+		activeCodes           int64
+		usedCodes             int64
+		expiredCodes          int64
+		totalValueDistributed float64
+	)
+	byType := map[string]int64{
+		service.RedeemTypeBalance:      0,
+		service.RedeemTypeConcurrency:  0,
+		service.RedeemTypeSubscription: 0,
+		service.RedeemTypeInvitation:   0,
+	}
+
+	for page := 1; ; page++ {
+		codes, total, err := h.adminService.ListRedeemCodes(c.Request.Context(), page, pageSize, "", "", "", "id", "asc")
+		if err != nil {
+			response.Error(c, http.StatusInternalServerError, "Failed to get redeem code statistics")
+			return
+		}
+		if page == 1 {
+			totalCodes = total
+		}
+		for i := range codes {
+			code := &codes[i]
+			seen++
+			byType[code.Type]++
+			switch {
+			case code.IsUsed():
+				usedCodes++
+				totalValueDistributed += code.Value
+			case code.IsExpiredAt(now):
+				expiredCodes++
+			case code.CanUse():
+				activeCodes++
+			}
+		}
+		if len(codes) == 0 || seen >= total || len(codes) < pageSize {
+			break
+		}
+	}
+
 	response.Success(c, gin.H{
-		"total_codes":             0,
-		"active_codes":            0,
-		"used_codes":              0,
-		"expired_codes":           0,
-		"total_value_distributed": 0.0,
-		"by_type": gin.H{
-			"balance":     0,
-			"concurrency": 0,
-			"trial":       0,
-		},
+		"total_codes":             totalCodes,
+		"active_codes":            activeCodes,
+		"used_codes":              usedCodes,
+		"expired_codes":           expiredCodes,
+		"total_value_distributed": totalValueDistributed,
+		"by_type":                 byType,
 	})
 }
 

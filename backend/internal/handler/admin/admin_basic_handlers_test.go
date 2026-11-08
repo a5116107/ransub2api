@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +66,7 @@ func setupAdminRouter() (*gin.Engine, *stubAdminService) {
 	router.DELETE("/api/v1/admin/redeem-codes/:id", redeemHandler.Delete)
 	router.POST("/api/v1/admin/redeem-codes/batch-delete", redeemHandler.BatchDelete)
 	router.POST("/api/v1/admin/redeem-codes/:id/expire", redeemHandler.Expire)
-	router.GET("/api/v1/admin/redeem-codes/:id/stats", redeemHandler.GetStats)
+	router.GET("/api/v1/admin/redeem-codes/stats", redeemHandler.GetStats)
 
 	return router, adminSvc
 }
@@ -333,7 +335,7 @@ func TestProxyHandlerEndpoints(t *testing.T) {
 }
 
 func TestRedeemHandlerEndpoints(t *testing.T) {
-	router, _ := setupAdminRouter()
+	router, adminSvc := setupAdminRouter()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/redeem-codes", nil)
@@ -369,7 +371,22 @@ func TestRedeemHandlerEndpoints(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/redeem-codes/5/stats", nil)
+	adminSvc.redeems = []service.RedeemCode{
+		{ID: 1, Type: service.RedeemTypeBalance, Value: 10, Status: service.StatusUnused},
+		{ID: 2, Type: service.RedeemTypeConcurrency, Value: 2, Status: service.StatusUsed},
+		{ID: 3, Type: service.RedeemTypeSubscription, Value: 30, Status: service.StatusExpired},
+		{ID: 4, Type: service.RedeemTypeInvitation, Value: 0, Status: service.StatusUnused, ExpiresAt: func() *time.Time { t := time.Now().Add(-time.Hour); return &t }()},
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/redeem-codes/stats", nil)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"total_codes":4`)
+	require.Contains(t, rec.Body.String(), `"active_codes":1`)
+	require.Contains(t, rec.Body.String(), `"used_codes":1`)
+	require.Contains(t, rec.Body.String(), `"expired_codes":2`)
+	require.Contains(t, rec.Body.String(), `"total_value_distributed":2`)
+	require.Contains(t, rec.Body.String(), `"balance":1`)
+	require.Contains(t, rec.Body.String(), `"concurrency":1`)
+	require.Contains(t, rec.Body.String(), `"subscription":1`)
+	require.Contains(t, rec.Body.String(), `"invitation":1`)
 }
