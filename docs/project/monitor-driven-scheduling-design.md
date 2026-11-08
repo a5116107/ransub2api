@@ -311,6 +311,8 @@ Gemini 的 Messages、Chat Completions 与原生生成三个发送循环统一�
 
 Messages、Chat Completions、Responses 和 Gemini 原生 handler 将选号门传到实际 forward；本地准入拒绝保留错误类型并返回 503，不写供应商网络故障或处罚账号。Gemini 原生计数请求如果显式携带严格门，拒绝也必须保留，不能被本地 token 估算兜底吞掉；正常未装门的计数语义不变。模型列表和显式缓存管理请求继续保持原有非 token 范围。
 
+Grok 后台模型观测与管理端模型同步继续遵守共享 Key 额度：容量、策略或租约故障不覆盖已有上游观测；已保存账号和预览两个管理入口均返回本地 503。读取响应体期间租约丢失时保留实际租约原因；真实上游 HTTP 或读取故障仍按原故障记录，恢复后可重新同步。
+
 Gemini 原生 `v1beta/models/...` 不等于现有 `/v1/sub2api/billing` 探测的 token API 根；自动倍率缺少对应计价证据时拒绝，不把同 Key、同站点或协议转换视为同价证据。手工倍率仍按原发送目标工作，无门请求不新增权威读取。TypeSafe/SystemOne 目前未列入原利润门支持平台，本节不改变该平台范围；Antigravity 独立网关的发送与智能重试终检见下节。
 
 ### 4.11 Antigravity 独立网关与重试的最终准入

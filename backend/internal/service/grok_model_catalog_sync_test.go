@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -132,6 +134,79 @@ func TestGrokCatalogSyncKeepsSuccessOnHTTPErrors(t *testing.T) {
 			require.NotContains(t, grokCatalogJSON(t, snap), "hidden-upstream-body")
 			require.NotContains(t, err.Error(), "hidden-upstream-body")
 		})
+	}
+}
+
+func TestGrokCatalogLocalKeyRefusalPreservesObservation(t *testing.T) {
+	for _, localErr := range []error{ErrUpstreamKeyCapacity, ErrUpstreamKeyPolicy, ErrUpstreamKeyLease} {
+		for _, background := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%v/background=%t", localErr, background), func(t *testing.T) {
+				account := grokCatalogAccountWithSuccess([]string{"grok-4.7"}, time.Now().Add(-(grokObservedModelsTTL + time.Hour)).UTC())
+				before := grokCatalogJSON(t, account.Extra)
+				repo := newGrokCatalogMemoryRepo(account)
+				upstream := newGrokCatalogUpstream(http.StatusOK, `{}`, http.StatusOK, `{}`)
+				upstream.modelsErr = fmt.Errorf("local admission: %w", localErr)
+				var err error
+				if background {
+					svc := &GrokQuotaService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+					err = svc.syncGrokObservedModels(context.Background(), account)
+				} else {
+					_, err = grokCatalogSyncService(repo, upstream).SyncUpstreamModelCatalog(context.Background(), account)
+				}
+				require.ErrorIs(t, err, localErr)
+				stored, readErr := repo.GetByID(context.Background(), account.ID)
+				require.NoError(t, readErr)
+				require.Equal(t, before, grokCatalogJSON(t, stored.Extra), "a local refusal is not an upstream observation")
+				require.Zero(t, repo.casCalls)
+				require.Empty(t, upstream.registryRequests())
+			})
+		}
+	}
+}
+
+func TestGrokCatalogLeaseLossDuringBodyRead(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		for _, leaseLost := range []bool{false, true} {
+			t.Run(fmt.Sprintf("background=%t/leaseLost=%t", background, leaseLost), func(t *testing.T) {
+				account := grokCatalogAccountWithSuccess([]string{"grok-4.7"}, time.Now().Add(-(grokObservedModelsTTL + time.Hour)).UTC())
+				before := grokCatalogJSON(t, account.Extra)
+				repo := newGrokCatalogMemoryRepo(account)
+				upstream := newGrokCatalogUpstream(http.StatusOK, `{"data":[{"model":"grok-new"}]}`, http.StatusOK, `{}`)
+				upstream.modelsReadErr = io.ErrUnexpectedEOF
+				upstream.modelsLeaseLost = leaseLost
+				runSync := func() error {
+					if background {
+						return (&GrokQuotaService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}).syncGrokObservedModels(context.Background(), account)
+					}
+					_, err := grokCatalogSyncService(repo, upstream).SyncUpstreamModelCatalog(context.Background(), account)
+					return err
+				}
+				err := runSync()
+				stored, readErr := repo.GetByID(context.Background(), account.ID)
+				require.NoError(t, readErr)
+				if leaseLost {
+					require.ErrorIs(t, err, ErrUpstreamKeyLease)
+					require.Equal(t, before, grokCatalogJSON(t, stored.Extra))
+					require.Zero(t, repo.casCalls)
+					kind, _ := grokObservedModelsSyncLogFields(err)
+					require.Equal(t, "local_lease", kind)
+				} else {
+					require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+					require.Equal(t, grokCatalogStatusFailed, parseGrokObservedModels(stored.Extra).LastAttempt.Status)
+					require.Equal(t, 1, repo.casCalls)
+				}
+				upstream.modelsReadErr = nil
+				upstream.modelsLeaseLost = false
+				lastStarted, parseErr := time.Parse(time.RFC3339Nano, parseGrokObservedModels(stored.Extra).LastAttempt.StartedAt)
+				require.NoError(t, parseErr)
+				require.Eventually(t, func() bool { return time.Now().After(lastStarted) }, time.Second, time.Millisecond)
+				require.NoError(t, runSync())
+				stored, readErr = repo.GetByID(context.Background(), account.ID)
+				require.NoError(t, readErr)
+				require.Equal(t, []string{"grok-new"}, parseGrokObservedModels(stored.Extra).Models)
+				require.Equal(t, grokCatalogStatusSuccess, parseGrokObservedModels(stored.Extra).LastAttempt.Status)
+			})
+		}
 	}
 }
 
@@ -686,18 +761,21 @@ func TestGrokCatalogBackgroundLateResultDoesNotOverwriteNewerSuccess(t *testing.
 }
 
 type grokCatalogUpstream struct {
-	mu           sync.Mutex
-	modelsStatus int
-	modelsBody   string
-	secondBody   string
-	modelsSeen   int
-	registryCode int
-	registryBody string
-	requests     []*http.Request
-	proxyURLs    []string
-	blockFirst   bool
-	started      chan struct{}
-	release      chan struct{}
+	mu              sync.Mutex
+	modelsStatus    int
+	modelsBody      string
+	modelsErr       error
+	modelsReadErr   error
+	modelsLeaseLost bool
+	secondBody      string
+	modelsSeen      int
+	registryCode    int
+	registryBody    string
+	requests        []*http.Request
+	proxyURLs       []string
+	blockFirst      bool
+	started         chan struct{}
+	release         chan struct{}
 }
 
 func newGrokCatalogUpstream(modelsStatus int, modelsBody string, registryCode int, registryBody string) *grokCatalogUpstream {
@@ -732,16 +810,31 @@ func (u *grokCatalogUpstream) Do(req *http.Request, proxyURL string, _ int64, _ 
 	}
 	started := u.started
 	release := u.release
+	modelsErr := u.modelsErr
+	modelsReadErr := u.modelsReadErr
+	modelsLeaseLost := u.modelsLeaseLost
 	u.mu.Unlock()
 
 	if registry {
 		return grokCatalogHTTPResponse(status, body), nil
 	}
+	if modelsErr != nil {
+		return nil, modelsErr
+	}
 	if block {
 		started <- struct{}{}
 		<-release
 	}
-	return grokCatalogHTTPResponse(status, body), nil
+	resp := grokCatalogHTTPResponse(status, body)
+	if modelsReadErr != nil {
+		resp.Body = io.NopCloser(iotest.ErrReader(modelsReadErr))
+	}
+	if modelsLeaseLost {
+		ctx, cancel := context.WithCancelCause(req.Context())
+		cancel(ErrUpstreamKeyLease)
+		resp.Request = req.WithContext(ctx)
+	}
+	return resp, nil
 }
 
 func (u *grokCatalogUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {

@@ -1135,3 +1135,13 @@
 - 禁用 lint 诊断数量限制后，首次发现总共108项残余类型断言，其中本轮修复9项，当前 `task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 2 --timeout 8m --allow-serial-runners --max-same-issues 0 --max-issues-per-linter 0 ./internal/repository/...` 退出1，输出 `99 issues: * errcheck: 99`，均为待处理的其余集成测试断言；不能将全包检查记为通过。相同命令加 `--new-from-rev HEAD` 对本轮修改退出0、输出 `0 issues.`。
 - 隔离 PostgreSQL/Redis 的受影响回归：原选择器退出0、repository 13.764s；补跑账号分组和5xx前缀退出0、9.900s（3个额外测试因缺少 `SUB2API_QUALITY_TEST_DSN` 跳过）；账号运营与凭证守护共享夹具回归退出0、9.400s，账号名称补测退出0、8.225s；限流、审核、凭证接管专项退出0、12.820s。首次选择器遗漏前缀的情况已补跑，不把跳过计为通过。
 - 99项仍属可执行技术债务；D2 原区域从节点、跨区域、unknown及其他出站验收保持进行中。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-08：D2 模型目录共享 Key 故障分类
+
+- 后台及管理同步把本地共享 Key 容量/策略拒绝和租约丢失写成 Grok 上游观测失败，两个管理同步入口返回 502。当前同步复用既有本地错误判定，保留既有观测并返回本地 503；真实上游 HTTP、普通读取错误继续走原故障路径。读取响应体时若租约先丢失，依据实际响应请求上下文恢复租约原因，避免通用关闭错误掩盖本地中断；无响应请求上下文时保留原读取错误。
+- 新增读取期间租约丢失反例：修复前后台、手动同步均返回 `unexpected EOF` 而非租约错误。初次恢复断言也因连续尝试取得相同时刻而失败；测试明确等待时钟前进，未据此改变生产排序规则。
+- `go test -race -p 1 -tags=unit ./internal/service ./internal/handler/admin -run '^(TestGrokCatalog|TestAccountHandlerSyncUpstreamModels|TestForwardGrokVoiceAvailabilityFailsClosedBeforeSend)' -count=2 -timeout=8m` 退出0：service 2.708s、admin 2.409s。覆盖后台和管理路径、容量/策略/租约错误、保留观测、真实错误和恢复，以及两种管理入口的本地503。
+- `go test -race -p 1 -tags=integration ./internal/service -run '^TestGrokCatalogRealSharedKeyCapacityAndLeaseRecovery$' -count=1 -timeout=8m -v` 退出0、service 7.783s：隔离Redis和本机HTTP验证满额不发送、释放后恢复、响应体读取期间移除测试租约并识别丢失、再次恢复；不连接生产环境。
+- `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin`、`go vet -p 1 -tags=integration ./internal/service` 均退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0、1.590s，仅验证默认标签编译。
+- 首次仅 integration 标签构建因无标签语音测试引用 unit 专属夹具而失败；将该测试原样移到现有 unit 文件，保留原断言。另一次在测试编译期间补写管理端测试导致 vet 无法解析新增导入，源码稳定后以上双轮回归通过。
+- 原20项维持12 done、3 in_progress、5 pending；D2 仍需区域从节点/跨区域归属、unknown 自动核实与其他出站，另有 repository integration lint 的99项历史诊断。未运行CI、推送、部署或生产迁移。

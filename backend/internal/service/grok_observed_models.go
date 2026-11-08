@@ -78,7 +78,7 @@ func (s *GrokQuotaService) syncGrokObservedModels(ctx context.Context, account *
 	limit := resolveModelsListReadLimit(s.cfg)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return s.finishGrokObservedModelsAttempt(ctx, account, req, started, newUpstreamModelSyncUpstreamError("Failed to read upstream model list", err))
+		return s.finishGrokObservedModelsAttempt(ctx, account, req, started, newUpstreamModelSyncUpstreamError("Failed to read upstream model list", upstreamModelSyncBodyError(resp, err)))
 	}
 	if int64(len(body)) > limit {
 		return s.finishGrokObservedModelsAttempt(ctx, account, req, started, newUpstreamModelSyncUpstreamError("Upstream model list response is too large", fmt.Errorf("response exceeds %d bytes", limit)))
@@ -167,6 +167,9 @@ func (s *GrokQuotaService) prepareGrokObservedModelsRequest(ctx context.Context,
 }
 
 func (s *GrokQuotaService) finishGrokObservedModelsAttempt(ctx context.Context, account *Account, req *http.Request, started time.Time, cause error) error {
+	if IsUpstreamModelSyncLocalKeyFailure(cause) {
+		return cause
+	}
 	observation := buildGrokCatalogObservation(account, req, started, nil, cause)
 	if err := s.saveGrokObservedObservation(ctx, account, &observation); err != nil {
 		slog.Warn("grok model catalog observation was not saved",
@@ -249,6 +252,12 @@ func grokCatalogScopeFromRequest(account *Account, req *http.Request) *GrokCatal
 }
 
 func grokObservedModelsSyncLogFields(err error) (string, int) {
+	if errors.Is(err, ErrUpstreamKeyLease) {
+		return "local_lease", 0
+	}
+	if IsUpstreamKeyAdmissionFailure(err) {
+		return "local_admission", 0
+	}
 	var syncErr *UpstreamModelSyncError
 	if errors.As(err, &syncErr) {
 		return string(syncErr.Kind), syncErr.StatusCode

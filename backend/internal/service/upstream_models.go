@@ -206,6 +206,22 @@ func newUpstreamModelSyncInternalError(message string, err error) error {
 	return &UpstreamModelSyncError{Kind: UpstreamModelSyncErrorInternal, Message: message, Err: err}
 }
 
+// IsUpstreamModelSyncLocalKeyFailure distinguishes local admission/lease
+// failures from observations made by the configured upstream.
+func IsUpstreamModelSyncLocalKeyFailure(err error) bool {
+	return IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease)
+}
+
+// A shared-Key lease can close the response body while it is being read. The
+// body error may then be a generic close error; the request context retains
+// the actual lease cause, unlike the original caller's context.
+func upstreamModelSyncBodyError(resp *http.Response, err error) error {
+	if resp != nil && resp.Request != nil && errors.Is(context.Cause(resp.Request.Context()), ErrUpstreamKeyLease) {
+		return ErrUpstreamKeyLease
+	}
+	return err
+}
+
 // FetchUpstreamSupportedModels fetches only live model IDs. The admin sync path
 // uses SyncUpstreamModelCatalog so capability metadata can also be persisted.
 func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, account *Account) ([]string, error) {
@@ -795,7 +811,7 @@ func (s *AccountTestService) fetchUpstreamModelListWithObservation(ctx context.C
 	started := time.Now().UTC()
 	models, body, req, err := s.fetchUpstreamModelListRequest(ctx, account)
 	result := &upstreamModelListFetchResult{Models: models, Body: body}
-	if account != nil && account.IsGrok() {
+	if account != nil && account.IsGrok() && !IsUpstreamModelSyncLocalKeyFailure(err) {
 		observation := buildGrokCatalogObservation(account, req, started, models, err)
 		result.GrokObservation = &observation
 	}
@@ -896,7 +912,7 @@ func (s *AccountTestService) readUpstreamModelsResponse(req *http.Request, accou
 	bodyLimit := resolveModelsListReadLimit(s.cfg)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit+1))
 	if err != nil {
-		return nil, newUpstreamModelSyncUpstreamError("Failed to read upstream model list", err)
+		return nil, newUpstreamModelSyncUpstreamError("Failed to read upstream model list", upstreamModelSyncBodyError(resp, err))
 	}
 	if int64(len(body)) > bodyLimit {
 		return nil, newUpstreamModelSyncUpstreamError("Upstream model list response is too large", fmt.Errorf("response exceeds %d bytes", bodyLimit))

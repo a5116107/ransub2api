@@ -3269,6 +3269,9 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 
 	catalog, err := h.accountTestService.SyncUpstreamModelCatalog(c.Request.Context(), account)
 	if err != nil {
+		if respondModelSyncLocalKeyFailure(c, err) {
+			return
+		}
 		var syncErr *service.UpstreamModelSyncError
 		if errors.As(err, &syncErr) {
 			switch syncErr.Kind {
@@ -3349,6 +3352,9 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 
 	catalog, err := h.accountTestService.SyncUpstreamModelCatalog(c.Request.Context(), tempAccount)
 	if err != nil {
+		if respondModelSyncLocalKeyFailure(c, err) {
+			return
+		}
 		var syncErr *service.UpstreamModelSyncError
 		if errors.As(err, &syncErr) {
 			switch syncErr.Kind {
@@ -3369,6 +3375,14 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	}
 
 	response.Success(c, catalog)
+}
+
+func respondModelSyncLocalKeyFailure(c *gin.Context, err error) bool {
+	if !service.IsUpstreamModelSyncLocalKeyFailure(err) {
+		return false
+	}
+	response.Error(c, http.StatusServiceUnavailable, "Shared upstream key capacity or lease is unavailable")
+	return true
 }
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth account

@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -404,6 +406,59 @@ func TestAccountHandlerSyncUpstreamModels_ConfigErrorReturnsBadRequest(t *testin
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Contains(t, rec.Body.String(), "No OpenAI API key is available")
+}
+
+func TestAccountHandlerSyncUpstreamModelsLocalKeyRefusal(t *testing.T) {
+	for _, localErr := range []error{service.ErrUpstreamKeyCapacity, service.ErrUpstreamKeyPolicy, service.ErrUpstreamKeyLease} {
+		for _, preview := range []bool{false, true} {
+			t.Run(localErr.Error()+"/preview="+strconv.FormatBool(preview), func(t *testing.T) {
+				svc := &availableModelsAdminService{stubAdminService: newStubAdminService(), account: service.Account{
+					ID: 48, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive,
+					Credentials: map[string]any{"api_key": "fixture", "base_url": "https://provider.example/v1"},
+				}}
+				upstream := &syncUpstreamHTTPUpstream{err: localErr}
+				router := setupSyncUpstreamModelsRouter(svc, upstream)
+				path, body := "/api/v1/admin/accounts/48/models/sync-upstream", ""
+				if preview {
+					path = "/api/v1/admin/accounts/models/sync-upstream-preview"
+					body = `{"platform":"openai","type":"apikey","api_key":"fixture"}`
+				}
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+				require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+				require.NotContains(t, rec.Body.String(), "fixture")
+				require.Len(t, upstream.requests, 1)
+			})
+		}
+	}
+}
+
+func TestAccountHandlerSyncUpstreamModelsBodyLeaseLoss(t *testing.T) {
+	for _, preview := range []bool{false, true} {
+		t.Run("preview="+strconv.FormatBool(preview), func(t *testing.T) {
+			svc := &availableModelsAdminService{stubAdminService: newStubAdminService(), account: service.Account{
+				ID: 48, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive,
+				Credentials: map[string]any{"api_key": "fixture", "base_url": "https://provider.example/v1"},
+			}}
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(service.ErrUpstreamKeyLease)
+			upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Request:    httptest.NewRequest(http.MethodGet, "https://provider.example/v1/models", nil).WithContext(ctx),
+				Body:       io.NopCloser(iotest.ErrReader(io.ErrUnexpectedEOF)),
+			}}
+			path, body := "/api/v1/admin/accounts/48/models/sync-upstream", ""
+			if preview {
+				path = "/api/v1/admin/accounts/models/sync-upstream-preview"
+				body = `{"platform":"openai","type":"apikey","api_key":"fixture"}`
+			}
+			rec := httptest.NewRecorder()
+			setupSyncUpstreamModelsRouter(svc, upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			require.NotContains(t, rec.Body.String(), "fixture")
+			require.Len(t, upstream.requests, 1)
+		})
+	}
 }
 
 func TestAccountHandlerSyncUpstreamModelsReturnsCapabilityMetadata(t *testing.T) {
