@@ -6,7 +6,7 @@
 任务：M10 删除无调用账号刷新伪实现；父任务进行中，禁止CI/推送/部署/生产迁移。
 证据：AdminService.RefreshAccountCredentials 仅存在于接口、空实现和测试 stub，实际刷新由 AccountHandler 各平台 OAuth 服务完成。
 验证：admin handler unit race 两轮退出0、1.223s；service/admin unit vet退出0；service默认编译0.843s；gofmt无输出；旧引用搜索0。
-下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M10 待提交。
+下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M10 已提交（代码5903326）。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 
