@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,21 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+type failOnceAsyncVideoRelease struct{ fail atomic.Bool }
+
+func (*failOnceAsyncVideoRelease) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (*failOnceAsyncVideoRelease) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+func (h *failOnceAsyncVideoRelease) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "zrem" && h.fail.CompareAndSwap(true, false) {
+			return errors.New("injected video release failure")
+		}
+		return next(ctx, cmd)
+	}
+}
 
 func TestGrokVideoHandlerSharedKeyLifecycleWithRedis(t *testing.T) {
 	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
@@ -118,5 +134,28 @@ func TestGrokVideoHandlerSharedKeyLifecycleWithRedis(t *testing.T) {
 	require.EqualValues(t, 2, polls.Load())
 	require.NoError(t, tryCompeting(), "terminal status must release the durable member")
 	require.EqualValues(t, 1, competing.Load())
+	slots.assertReleased(t)
+
+	terminal.Store(false)
+	create, created = grokMediaSlotContext(t.Context(), true)
+	h.GrokVideoGeneration(create)
+	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
+	require.EqualValues(t, 2, creates.Load())
+	hook := &failOnceAsyncVideoRelease{}
+	hook.fail.Store(true)
+	rdb.AddHook(hook)
+	terminal.Store(true)
+	status, completed = grokMediaSlotContext(t.Context(), false)
+	h.GrokVideoStatus(status)
+	require.Equal(t, http.StatusOK, completed.Code, completed.Body.String())
+	require.False(t, hook.fail.Load(), "the terminal release must encounter the injected failure")
+	require.EqualValues(t, 1, rdb.ZCard(t.Context(), "concurrency:upstream_key:async_video:release").Val())
+	require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity)
+	h.gatewayService.StartAsyncVideoKeyReleaseRecovery()
+	t.Cleanup(h.gatewayService.StopAsyncVideoKeyReleaseRecovery)
+	require.Eventually(t, func() bool { return tryCompeting() == nil }, 5*time.Second, 50*time.Millisecond,
+		"the background worker must return capacity after a transient terminal release failure")
+	require.EqualValues(t, 2, competing.Load())
+	require.Zero(t, rdb.ZCard(t.Context(), "concurrency:upstream_key:async_video:release").Val())
 	slots.assertReleased(t)
 }

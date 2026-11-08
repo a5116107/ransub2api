@@ -258,6 +258,11 @@ type AsyncVideoKeyLeaseController interface {
 	ReleaseAsyncVideoKeyLeaseByMember(context.Context, string) error
 }
 
+// AsyncVideoKeyReleaseRecovery retries only releases that were already fenced.
+type AsyncVideoKeyReleaseRecovery interface {
+	RecoverAsyncVideoKeyReleases(context.Context, int) (int, error)
+}
+
 type asyncVideoKeyLookupContextKey struct{}
 
 type asyncVideoKeyLookup struct {

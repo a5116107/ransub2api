@@ -635,6 +635,10 @@ type OpenAIGatewayService struct {
 	openaiCodexTicketCancel        context.CancelFunc
 	openaiCodexTicketDone          chan struct{}
 	openaiCodexTicketStopped       bool
+	asyncVideoRecoveryMu           sync.Mutex
+	asyncVideoRecoveryCancel       context.CancelFunc
+	asyncVideoRecoveryDone         chan struct{}
+	asyncVideoRecoveryStopped      bool
 
 	requireLatestTurnAdmission bool
 	regionalMetering           *RegionalMetering

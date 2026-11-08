@@ -44,6 +44,7 @@ type astraRoutingUpstream struct {
 var _ service.UpstreamKeyConcurrency = (*astraRoutingUpstream)(nil)
 var _ service.BatchImageUpstreamKeyAuthority = (*astraRoutingUpstream)(nil)
 var _ service.AsyncVideoKeyLeaseController = (*astraRoutingUpstream)(nil)
+var _ service.AsyncVideoKeyReleaseRecovery = (*astraRoutingUpstream)(nil)
 
 func (s *astraRoutingUpstream) SupportsAsyncVideoKeyGuard() bool {
 	if s == nil {
@@ -51,6 +52,17 @@ func (s *astraRoutingUpstream) SupportsAsyncVideoKeyGuard() bool {
 	}
 	guard, ok := s.delegate.(service.AsyncVideoKeyGuard)
 	return ok && guard.SupportsAsyncVideoKeyGuard()
+}
+
+func (s *astraRoutingUpstream) RecoverAsyncVideoKeyReleases(ctx context.Context, limit int) (int, error) {
+	if s == nil || s.delegate == nil {
+		return 0, service.ErrUpstreamKeyPolicy
+	}
+	recovery, ok := s.delegate.(service.AsyncVideoKeyReleaseRecovery)
+	if !ok {
+		return 0, service.ErrUpstreamKeyPolicy
+	}
+	return recovery.RecoverAsyncVideoKeyReleases(ctx, limit)
 }
 
 // Astra is a routing decorator around the ordinary HTTP transport. Shared

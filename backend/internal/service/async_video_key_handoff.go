@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // asyncVideoKeyController returns the transport-owned durable handoff. A
@@ -127,6 +129,65 @@ func (s *OpenAIGatewayService) ReleaseAsyncVideoTaskLeaseByMember(ctx context.Co
 		return nil
 	}
 	return controller.ReleaseAsyncVideoKeyLeaseByMember(ctx, strings.TrimSpace(member))
+}
+
+const asyncVideoKeyReleaseRecoveryInterval = 30 * time.Second
+const asyncVideoKeyReleaseRecoveryTimeout = 10 * time.Second
+const asyncVideoKeyReleaseRecoveryBatch = 64
+
+// StartAsyncVideoKeyReleaseRecovery retries only releases fenced by a prior
+// confirmed terminal observation or explicit reconciliation.
+func (s *OpenAIGatewayService) StartAsyncVideoKeyReleaseRecovery() {
+	if s == nil || !s.cfg.RunsBackgroundJobs() {
+		return
+	}
+	recovery, ok := s.httpUpstream.(AsyncVideoKeyReleaseRecovery)
+	if !ok {
+		return
+	}
+	s.asyncVideoRecoveryMu.Lock()
+	defer s.asyncVideoRecoveryMu.Unlock()
+	if s.asyncVideoRecoveryStopped || s.asyncVideoRecoveryDone != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.asyncVideoRecoveryCancel, s.asyncVideoRecoveryDone = cancel, done
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				round, stop := context.WithTimeout(ctx, asyncVideoKeyReleaseRecoveryTimeout)
+				_, err := recovery.RecoverAsyncVideoKeyReleases(round, asyncVideoKeyReleaseRecoveryBatch)
+				stop()
+				if err != nil && ctx.Err() == nil {
+					slog.Warn("async_video_key_release_recovery_deferred")
+				}
+				timer.Reset(asyncVideoKeyReleaseRecoveryInterval)
+			}
+		}
+	}()
+}
+
+func (s *OpenAIGatewayService) StopAsyncVideoKeyReleaseRecovery() {
+	if s == nil {
+		return
+	}
+	s.asyncVideoRecoveryMu.Lock()
+	s.asyncVideoRecoveryStopped = true
+	cancel, done := s.asyncVideoRecoveryCancel, s.asyncVideoRecoveryDone
+	s.asyncVideoRecoveryMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 }
 
 func asyncVideoExplicitRejection(err error) bool {

@@ -574,6 +574,12 @@ func provideCleanup(
 		}
 
 		parallelSteps := []cleanupStep{
+			{"AsyncVideoKeyReleaseRecovery", func() error {
+				if openAIGateway != nil {
+					openAIGateway.StopAsyncVideoKeyReleaseRecovery()
+				}
+				return nil
+			}},
 			{"BPSWarmPool", func() error {
 				if openAIGateway != nil {
 					openAIGateway.StopBPS403Recovery()

@@ -170,6 +170,12 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"AsyncVideoKeyReleaseRecovery", func() error {
+				if openAIGateway != nil {
+					openAIGateway.StopAsyncVideoKeyReleaseRecovery()
+				}
+				return nil
+			}},
 			{"BPSWarmPool", func() error {
 				if openAIGateway != nil {
 					openAIGateway.StopBPS403Recovery()

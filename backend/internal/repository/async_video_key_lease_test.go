@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -206,8 +207,8 @@ func TestAsyncVideoKeyLeaseTaskOwnership(t *testing.T) {
 	raw, err := rdb.Get(t.Context(), asyncVideoMemberKey(handoff.Member())).Bytes()
 	require.NoError(t, err)
 	fenced, err := fenceAsyncVideoKeyLeaseScript.Run(t.Context(), rdb,
-		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), asyncVideoTaskKey(owner, "same-id")},
-		time.Now().UnixMilli(), handoff.Member(), raw).Int()
+		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), asyncVideoTaskKey(owner, "same-id"), asyncVideoReleaseKey()},
+		time.Now().UnixMilli(), handoff.Member(), raw, "0").Int()
 	require.NoError(t, err)
 	require.Equal(t, 1, fenced)
 	_, err = upstream.LoadAsyncVideoKeyLeaseByTask(t.Context(), owner, "same-id")
@@ -268,8 +269,8 @@ func TestAsyncVideoKeyLeaseFencesDelayedAcquisition(t *testing.T) {
 	raw, err := rdb.Get(t.Context(), asyncVideoMemberKey(handoff.Member())).Bytes()
 	require.NoError(t, err)
 	fenced, err := fenceAsyncVideoKeyLeaseScript.Run(t.Context(), rdb,
-		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), ""},
-		time.Now().UnixMilli(), handoff.Member(), raw).Int()
+		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), "", asyncVideoReleaseKey()},
+		time.Now().UnixMilli(), handoff.Member(), raw, "0").Int()
 	require.NoError(t, err)
 	require.Equal(t, 1, fenced)
 	_, _, err = restarted.upstreamKeyLimiter.take(t.Context(), fingerprint, handoff.Member(), "video")
@@ -415,8 +416,8 @@ func TestAsyncVideoKeyFenceRejectsStaleSnapshotAndMissingTaskIndex(t *testing.T)
 	require.NoError(t, upstream.BindAsyncVideoKeyLease(t.Context(), handoff, "task"))
 
 	result, err := fenceAsyncVideoKeyLeaseScript.Run(t.Context(), rdb,
-		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), ""},
-		time.Now().UnixMilli(), handoff.Member(), oldRaw).Int()
+		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), "", asyncVideoReleaseKey()},
+		time.Now().UnixMilli(), handoff.Member(), oldRaw, "0").Int()
 	require.NoError(t, err)
 	require.Zero(t, result, "a concurrent task binding must not be released from a stale snapshot")
 	require.Zero(t, rdb.Exists(t.Context(), asyncVideoFenceKey(handoff.Member())).Val())
@@ -443,6 +444,7 @@ func TestAsyncVideoKeyReleaseFailureKeepsFencedRecordForRetry(t *testing.T) {
 	require.ErrorContains(t, err, "injected release failure")
 	require.EqualValues(t, 1, rdb.Exists(t.Context(), asyncVideoFenceKey(handoff.Member())).Val())
 	require.NoError(t, rdb.ZScore(t.Context(), asyncVideoUnknownKey(), handoff.Member()).Err())
+	require.NoError(t, rdb.ZScore(t.Context(), asyncVideoKeyLeasePrefix+"release", handoff.Member()).Err(), "a failed fenced release must be discoverable separately from unknown submissions")
 	require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
 	_, err = upstream.LoadAsyncVideoKeyLeaseByTask(t.Context(), handoff.Owner(), "task")
 	require.ErrorIs(t, err, service.ErrUpstreamKeyLease)
@@ -452,4 +454,128 @@ func TestAsyncVideoKeyReleaseFailureKeepsFencedRecordForRetry(t *testing.T) {
 	require.Zero(t, rdb.Exists(t.Context(), asyncVideoMemberKey(handoff.Member()), asyncVideoTaskKey(handoff.Owner(), "task"), asyncVideoFenceKey(handoff.Member())).Val())
 	require.Error(t, rdb.ZScore(t.Context(), asyncVideoUnknownKey(), handoff.Member()).Err())
 	require.Error(t, restarted.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
+	require.Error(t, rdb.ZScore(t.Context(), asyncVideoReleaseKey(), handoff.Member()).Err())
+}
+
+func TestAsyncVideoKeyRecoveryRetriesOnlyFencedMembers(t *testing.T) {
+	_, rdb := liveKeyRedis(t, nil)
+	upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 2), rdb, nil)
+	unknown := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+	_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, unknown))
+	require.NoError(t, err)
+	finish(nil, errors.New("submission result unknown"))
+	pending := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+	_, finish, err = upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, pending))
+	require.NoError(t, err)
+	require.NoError(t, upstream.BindAsyncVideoKeyLease(t.Context(), pending, "task"))
+	finish(nil, nil)
+	hook := &failNextVideoSlotRelease{}
+	hook.fail.Store(true)
+	rdb.AddHook(hook)
+	require.Error(t, upstream.ReleaseAsyncVideoKeyLeaseByTask(t.Context(), pending.Owner(), "task"))
+
+	// A corrupt queue entry without a release fence must never release an
+	// unknown submission, nor prevent the next fenced entry from recovering.
+	require.NoError(t, rdb.ZAdd(t.Context(), asyncVideoReleaseKey(), redis.Z{Score: float64(time.Now().Add(-time.Minute).UnixMilli()), Member: unknown.Member()}).Err())
+	recovered, err := upstream.RecoverAsyncVideoKeyReleases(t.Context(), 2)
+	require.ErrorIs(t, err, service.ErrUpstreamKeyLease)
+	require.Equal(t, 1, recovered)
+	require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), unknown.Lease()))
+	require.Error(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), pending.Lease()))
+	require.Error(t, rdb.ZScore(t.Context(), asyncVideoReleaseKey(), pending.Member()).Err())
+	score, err := rdb.ZScore(t.Context(), asyncVideoReleaseKey(), unknown.Member()).Result()
+	require.NoError(t, err)
+	require.Greater(t, score, float64(time.Now().UnixMilli()), "a failed item must back off")
+	recovered, err = upstream.RecoverAsyncVideoKeyReleases(t.Context(), 2)
+	require.NoError(t, err)
+	require.Zero(t, recovered, "a deferred item must not be retried immediately")
+}
+
+func TestAsyncVideoKeyRecoveryRetriesFailedRelease(t *testing.T) {
+	_, rdb := liveKeyRedis(t, nil)
+	upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+	handoff := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+	_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, handoff))
+	require.NoError(t, err)
+	require.NoError(t, upstream.BindAsyncVideoKeyLease(t.Context(), handoff, "task"))
+	finish(nil, nil)
+	hook := &failNextVideoSlotRelease{}
+	hook.fail.Store(true)
+	rdb.AddHook(hook)
+	require.Error(t, upstream.ReleaseAsyncVideoKeyLeaseByTask(t.Context(), handoff.Owner(), "task"))
+	hook.fail.Store(true)
+	recovered, err := upstream.RecoverAsyncVideoKeyReleases(t.Context(), 1)
+	require.ErrorContains(t, err, "injected release failure")
+	require.Zero(t, recovered)
+	require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
+	score, err := rdb.ZScore(t.Context(), asyncVideoReleaseKey(), handoff.Member()).Result()
+	require.NoError(t, err)
+	require.Greater(t, score, float64(time.Now().UnixMilli()))
+	require.NoError(t, rdb.ZAdd(t.Context(), asyncVideoReleaseKey(), redis.Z{Score: float64(time.Now().Add(-time.Second).UnixMilli()), Member: handoff.Member()}).Err())
+	restarted := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+	recovered, err = restarted.RecoverAsyncVideoKeyReleases(t.Context(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, recovered)
+	require.Error(t, restarted.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
+	require.Error(t, rdb.ZScore(t.Context(), asyncVideoReleaseKey(), handoff.Member()).Err())
+}
+
+func TestAsyncVideoKeyRecoveryConcurrentWorkers(t *testing.T) {
+	_, rdb := liveKeyRedis(t, nil)
+	upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+	handoff := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+	_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, handoff))
+	require.NoError(t, err)
+	require.NoError(t, upstream.BindAsyncVideoKeyLease(t.Context(), handoff, "task"))
+	finish(nil, nil)
+	hook := &failNextVideoSlotRelease{}
+	hook.fail.Store(true)
+	rdb.AddHook(hook)
+	require.Error(t, upstream.ReleaseAsyncVideoKeyLeaseByTask(t.Context(), handoff.Owner(), "task"))
+
+	workers := []*httpUpstreamService{upstream, liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)}
+	start := make(chan struct{})
+	errs := make(chan error, len(workers))
+	var group sync.WaitGroup
+	for _, worker := range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			_, recoverErr := worker.RecoverAsyncVideoKeyReleases(t.Context(), 1)
+			errs <- recoverErr
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.Error(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
+	require.Error(t, rdb.ZScore(t.Context(), asyncVideoReleaseKey(), handoff.Member()).Err())
+	require.Zero(t, rdb.Exists(t.Context(), asyncVideoMemberKey(handoff.Member()), asyncVideoFenceKey(handoff.Member())).Val())
+}
+
+func TestAsyncVideoKeyRecoveryUsesRedisClock(t *testing.T) {
+	server, rdb := liveKeyRedis(t, nil)
+	server.SetTime(time.Now().Add(6 * time.Hour))
+	upstream := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
+	handoff := service.NewAsyncVideoKeyHandoff(asyncVideoLeaseOwner())
+	_, finish, err := upstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, handoff))
+	require.NoError(t, err)
+	require.NoError(t, upstream.BindAsyncVideoKeyLease(t.Context(), handoff, "task"))
+	finish(nil, nil)
+	hook := &failNextVideoSlotRelease{}
+	hook.fail.Store(true)
+	rdb.AddHook(hook)
+	require.Error(t, upstream.ReleaseAsyncVideoKeyLeaseByTask(t.Context(), handoff.Owner(), "task"))
+	serverTime, err := rdb.Time(t.Context()).Result()
+	require.NoError(t, err)
+	require.NoError(t, rdb.ZAdd(t.Context(), asyncVideoReleaseKey(), redis.Z{Score: float64(serverTime.Add(-time.Second).UnixMilli()), Member: handoff.Member()}).Err())
+
+	recovered, err := upstream.RecoverAsyncVideoKeyReleases(t.Context(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, recovered, "the Redis clock, not this process clock, determines when a release is due")
+	require.Error(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
 }

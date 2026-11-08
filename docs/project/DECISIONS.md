@@ -1089,3 +1089,10 @@
 - 最终 `go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestAccountTestService_GrokVideo)' -count=1 -timeout=10m` 退出0：repository 14.089s、service 12.077s、handler 4.191s；`go vet -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler` 退出0、无诊断。
 - 三包原规则 `task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/repository/... ./internal/service/... ./internal/handler/...` 退出0，输出 `0 issues.`。将5个既有Prism文件以HEAD版临时只读overlay替换后，`go test -p=1 -tags 'unit integration' -overlay <隔离夹具> ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideo|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestGrokMediaVideoPassesAuthenticatedKeyOwner)' -count=1 -timeout=8m` 退出0，分别为9.492s、7.632s、2.921s；覆盖夹具已清理，未改原工作树。
 - 升级边界：v1无 owner 的任务记录和旧 task 索引不自动归属或释放，新旧版本混跑及关闭策略不保证在途保护；实际生产切换/回滚必须先停新任务并排空，尚未执行。当前区域模式对所有异步视频创建保守拒绝，不只限于受限Key。
+
+## 2026-11-08：D2 异步视频终态释放自动恢复
+
+- 终态释放在槽位回收或记录删除中断时，原先只保留 fenced 成员，缺少安全的后台重试边界。新增独立 release ZSET：栅栏脚本原子登记，Redis claim 防止多实例重复处理；恢复前再次校验 owner、lease、成员快照、任务索引和 fence，仅处理已确认终态的记录，unknown 提交永不自动释放。
+- 释放失败按 Redis TIME 计算退避，避免多机时钟偏差；成功才删除成员、任务/v2索引、unknown、fence和release项。失败项保留并延后，释放失败不阻塞其他队列项。Astra 仅透传恢复接口；后台只在 full 角色启动，gateway 角色不运行，关闭时取消当前轮次并等待退出。
+- go test -race -p=1 -tags unit ./internal/repository -run TestAsyncVideoKeyRecovery -count=2 退出0；go test -race -p=1 -tags unit,integration ./internal/repository ./internal/service ./internal/handler ./cmd/server -run async video focused -count=1 退出0（repository 22.859s、service 2.056s、handler 4.144s、cmd/server 1.802s）。真实Redis handler夹具注入释放失败后由后台恢复重新放行竞争请求。
+- D2 仍未完成：区域 SQL 同源任务记录、unknown 自动恢复、其他非标准鉴权/绕过 HTTPUpstream 的跨请求出站及生产升级演练待验收；未运行 CI、部署或推送。

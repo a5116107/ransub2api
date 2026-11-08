@@ -5,8 +5,8 @@
 <!-- resume:start -->
 任务：D2异步视频共享Key交接；父任务进行中，禁止CI/推送/部署/生产迁移。
 证据：修正Redis持久化夹具后五类视频实际创建、满额查询及终态释放通过；旧夹具假阳性已撤回。
-验证：`go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestAccountTestService_GrokVideo)' -count=1 -timeout=10m` 三包均通过；vet及lint通过。
-下一动作：完成区域SQL同源任务记录、unknown恢复及终态释放自动重试，再验D2其余出站。
+验证：Redis释放失败自动重试、Redis时钟、多实例claim及handler回归均通过；vet及lint通过。
+下一动作：完成区域SQL同源任务记录和unknown自动恢复，再验D2其余出站。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | 已覆盖D2.1–D2.4及多种出站准入；异步视频Redis持久交接、满额查询和终态释放已验证；区域模式全部异步创建暂拒，SQL记录、unknown恢复、释放自动重试及其他来源待验 |
+| D2 | in_progress | 已覆盖D2.1–D2.4及多种出站准入；异步视频Redis持久交接、满额查询、终态释放及已确认释放自动重试已验证；区域模式全部异步创建暂拒，SQL记录、unknown自动恢复及其他来源待验 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -53,7 +53,7 @@
 
 ## 下一项工作
 
-D2继续异步视频区域SQL同源记录、unknown恢复和终态释放自动重试，以及其他非标准鉴权/独立出站；再补D3其他能力、D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启停、变更或版本切换前须排空旧视频和批量任务；受限Live沿4.4.2，区域沿原SQL预算。
+D2继续异步视频区域SQL同源记录、unknown自动恢复，以及其他非标准鉴权/独立出站；再补D3其他能力、D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启停、变更或版本切换前须排空旧视频和批量任务；受限Live沿4.4.2，区域沿原SQL预算。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理
