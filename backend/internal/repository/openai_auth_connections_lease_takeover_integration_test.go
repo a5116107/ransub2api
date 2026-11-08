@@ -65,7 +65,9 @@ func TestIssue594LeaseTakeoverCannotAdoptAnotherOwnersProof(t *testing.T) {
 				repository.Issue594InstallOfflineOAuthTransport(t, func(*http.Request) (*http.Response, error) { network.Add(1); return nil, io.ErrUnexpectedEOF })
 			}
 			base := repository.NewOpenAIOAuthReauthRepository(f.db)
-			wrapper := &takeoverConnectionRepository{OpenAIOAuthReauthRepository: base, OpenAIAuthConnectionRepository: base.(service.OpenAIAuthConnectionRepository)}
+			connectionRepo, ok := base.(service.OpenAIAuthConnectionRepository)
+			require.True(t, ok)
+			wrapper := &takeoverConnectionRepository{OpenAIOAuthReauthRepository: base, OpenAIAuthConnectionRepository: connectionRepo}
 			var ownerA string
 			wrapper.takeover = func() {
 				require.NoError(t, f.db.QueryRow(`SELECT lease_owner FROM openai_auth_connections WHERE id=$1`, c.ID).Scan(&ownerA))
@@ -76,15 +78,18 @@ func TestIssue594LeaseTakeoverCannotAdoptAnotherOwnersProof(t *testing.T) {
 				require.NoError(t, e)
 				require.True(t, acquired)
 			}
-			svc := service.NewOpenAIOAuthReauthService(wrapper, connectionDBReader{f.accounts}, f.accounts.(service.OpenAIOAuthReauthCredentialUpdater), service.NewOpenAIOAuthService(nil, repository.NewOpenAIOAuthClient()), f.encryptor, true, nil, nil)
+			credentialUpdater, ok := f.accounts.(service.OpenAIOAuthReauthCredentialUpdater)
+			require.True(t, ok)
+			svc := service.NewOpenAIOAuthReauthService(wrapper, connectionDBReader{f.accounts}, credentialUpdater, service.NewOpenAIOAuthService(nil, repository.NewOpenAIOAuthClient()), f.encryptor, true, nil, nil)
 			var err error
-			if action == "refresh" {
+			switch action {
+			case "refresh":
 				_, err = svc.ConnectionAccessToken(ctx, f.accountID, c.ID)
-			} else if action == "revoke" {
+			case "revoke":
 				_, err = svc.RevokeAuthConnection(ctx, f.accountID, c.ID, c.Revision)
-			} else if action == "failure" {
+			case "failure":
 				err = svc.FailAuthConnection(ctx, &service.Account{ID: f.accountID, AuthConnectionID: c.ID, AuthConnectionRevision: c.Revision}, 401)
-			} else {
+			default:
 				_, err = svc.UpdateAuthConnection(ctx, f.accountID, c.ID, service.UpdateOpenAIAuthConnectionInput{Action: action, Revision: c.Revision})
 			}
 			require.Zero(t, network.Load(), "a stolen lease snapshot cannot authorize an OAuth network operation")

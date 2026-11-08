@@ -4,6 +4,8 @@ package repository
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 
 	"entgo.io/ent"
@@ -40,7 +42,11 @@ func TestOpenAITurnAdmissionPrimarySnapshotIntegration(t *testing.T) {
 				// the admission reader's read-only snapshot is still open.
 				tx, err := integrationDB.BeginTx(ctx, nil)
 				require.NoError(t, err)
-				defer tx.Rollback()
+				defer func() {
+					if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+						t.Errorf("rollback admission fixture: %v", rollbackErr)
+					}
+				}()
 				_, err = tx.ExecContext(ctx, `UPDATE accounts SET schedulable=false WHERE id=$1`, a.ID)
 				require.NoError(t, err)
 				_, err = tx.ExecContext(ctx, `UPDATE account_groups SET group_id=$1 WHERE account_id=$2`, groupB.ID, a.ID)

@@ -14,7 +14,10 @@ func TestQuality5xxClaimKeepsCronAndCoalescesScheduledRun(t *testing.T) {
 	ctx := context.Background()
 	var account int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('5xx trigger','openai','oauth','active',true) RETURNING id`).Scan(&account))
-	defer integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account)
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account)
+		require.NoError(t, err)
+	})
 	plans := NewScheduledTestPlanRepository(integrationDB)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	future := now.Add(time.Hour)
@@ -68,7 +71,10 @@ func TestQuality5xxFinishConsumesCrossedCronWithoutOverwritingEdits(t *testing.T
 	ctx := context.Background()
 	var account int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('crossing trigger','openai','oauth','active',true) RETURNING id`).Scan(&account))
-	defer integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account)
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account)
+		require.NoError(t, err)
+	})
 	plans := NewScheduledTestPlanRepository(integrationDB)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(time.Second)

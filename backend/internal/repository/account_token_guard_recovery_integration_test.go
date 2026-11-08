@@ -41,10 +41,15 @@ func TestTokenGuardProbeSharesUpstreamKeyCapacity(t *testing.T) {
 	probeStarted := make(chan struct{}, 1)
 	var releaseBusiness, releaseProbe sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server does not support flushing")
+			return
+		}
 		if r.URL.Path == "/business" {
 			businessCalls.Add(1)
 			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
+			flusher.Flush()
 			select {
 			case <-businessRelease:
 			case <-r.Context().Done():
@@ -54,7 +59,7 @@ func TestTokenGuardProbeSharesUpstreamKeyCapacity(t *testing.T) {
 		probeCalls.Add(1)
 		if holdProbe.Load() {
 			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
+			flusher.Flush()
 			probeStarted <- struct{}{}
 			select {
 			case <-probeRelease:

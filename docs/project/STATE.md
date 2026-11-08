@@ -4,9 +4,9 @@
 
 <!-- resume:start -->
 任务：D2异步视频共享Key交接；父任务进行中，禁止CI/推送/部署/生产迁移。
-证据：凭证守护探活复用共享Key，Redis双向互斥与释放恢复已验证。
-验证：竞态回归、vet及unit lint通过；integration扩展lint有19项既存问题，详见DECISIONS。
-下一动作：完成区域从节点及跨区域归属、无任务ID的unknown自动核实，并继续D2其余出站。
+证据：凭证守护共享Key已验；清理integration测试错误检查及两处未用夹具。
+验证：涉及代码竞态回归及差异lint通过；全包integration lint仍有99项，详见DECISIONS。
+下一动作：继续区域任务归属、unknown核实和D2其他出站，并清理integration测试剩余断言。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 

@@ -36,7 +36,7 @@ func TestAccountOpsOnceThresholdCriteriaTransitionsNotify(t *testing.T) {
 			var id int64
 			require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES($1,'openai','apikey','active',true) RETURNING id`, "criteria-transition-"+tc.name).Scan(&id))
 			defer cleanupOnce(t, id)
-			repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+			repo := testAccountOpsRepository(t)
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			e := service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Identity: "same", Criteria: "old-rule"}
 			require.NoError(t, repo.ObserveThreshold(ctx, e, tc.initialObservation, now, true, true))
@@ -88,7 +88,7 @@ func TestAccountOpsOnceEpisodeConcurrentRestartRecovery(t *testing.T) {
 		require.Equal(t, want, n)
 	}
 	count(1)
-	restarted := NewAccountOpsRepository(integrationDB).(onceObserver)
+	restarted := testAccountOpsRepository(t)
 	require.NoError(t, restarted.ObserveThreshold(ctx, e, "active", now.Add(2*time.Hour), true, true))
 	count(1)
 	require.NoError(t, restarted.ObserveThreshold(ctx, e, "resolved", now.Add(2*time.Hour+time.Second), true, true))
@@ -112,7 +112,7 @@ func TestAccountOpsOnceIndependentFlagsHistoryAndReceipts(t *testing.T) {
 			var id int64
 			require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('flags-fixture','openai','apikey','active',true) RETURNING id`).Scan(&id))
 			defer cleanupOnce(t, id)
-			repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+			repo := testAccountOpsRepository(t)
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			amount, threshold := 4.0, 5.0
 			e := service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Identity: "same", Criteria: "criteria", Details: &service.AccountOpsDetails{Balance: &amount, Threshold: &threshold, Unit: "USD"}}
@@ -228,7 +228,7 @@ func TestAccountOpsOnceUnknownDefersAndCriterionChangeInvalidates(t *testing.T) 
 	var id int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('invalid-fixture','openai','apikey','active',true) RETURNING id`).Scan(&id))
 	defer cleanupOnce(t, id)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	e := service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Identity: "same", Criteria: "rule-one"}
 	require.NoError(t, repo.ObserveThreshold(ctx, e, "active", now, true, true))
@@ -344,7 +344,7 @@ func TestAccountOpsOnceOutboxRetryCeilingExpiredLeaseAndRobotCAS(t *testing.T) {
 	var id int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('retry-fixture','openai','apikey','active',true) RETURNING id`).Scan(&id))
 	defer cleanupOnce(t, id)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	now := time.Now().UTC()
 	e := service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Identity: "same", Criteria: "rule"}
 	require.NoError(t, repo.ObserveThreshold(ctx, e, "active", now, true, true))
@@ -396,7 +396,7 @@ func TestAccountOpsOnceRemovalUsesMonitorBeforeEventLockOrder(t *testing.T) {
 	var id int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('lock-order-fixture','openai','apikey','active',true) RETURNING id`).Scan(&id))
 	defer cleanupOnce(t, id)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	require.NoError(t, repo.ObserveThreshold(ctx, service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Criteria: "rule"}, "active", time.Now(), true, true))
 	tx, err := integrationDB.BeginTx(ctx, nil)
 	require.NoError(t, err)
@@ -442,7 +442,7 @@ func TestAccountOpsOnceConfigAndOutboxRollbackTogether(t *testing.T) {
 	var id int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('rollback-fixture','openai','apikey','active',true) RETURNING id`).Scan(&id))
 	defer cleanupOnce(t, id)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	svc := service.NewAccountOpsService(settings, repo, nil)
 	require.NoError(t, svc.SaveConfig(ctx, service.AccountOpsConfig{Enabled: true, Recipient: "before@example.test", BalanceLow: true, CooldownMinutes: 60}))
 	require.NoError(t, repo.ObserveThreshold(ctx, service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Criteria: "rule"}, "active", time.Now(), true, true))
@@ -519,14 +519,14 @@ func TestAccountOpsOnceServiceAssessorPersistsRecoverySnapshot(t *testing.T) {
 
 func TestAccountOpsOnceMigrationTransfersRemainingWorkWithoutReplay(t *testing.T) {
 	ctx := context.Background()
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	ids := []int64{}
 	defer func() {
 		for _, id := range ids {
 			cleanupOnce(t, id)
 		}
 	}()
-	var original map[int64]service.AccountOpsEvent = map[int64]service.AccountOpsEvent{}
+	original := map[int64]service.AccountOpsEvent{}
 	cases := []struct {
 		name, state string
 		attempts    int
@@ -645,7 +645,7 @@ func TestAccountOpsOnceMigratedPartialReceiptRetriesOnlyRobot(t *testing.T) {
 	accounts := NewAccountRepository(integrationEntClient, integrationDB, nil)
 	a, err := accounts.GetByID(ctx, id)
 	require.NoError(t, err)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	email := &opsMigratedEmail{}
 	svc := service.NewAccountOpsService(settings, repo, email)
 	enc, err := NewAESEncryptor(&config.Config{Totp: config.TotpConfig{EncryptionKey: strings.Repeat("42", 32)}})
@@ -724,7 +724,7 @@ func TestAccountOpsOnceMigrationRuleEditSuppressesUnboundWarning(t *testing.T) {
 	accounts := NewAccountRepository(integrationEntClient, integrationDB, nil)
 	a, err := accounts.GetByID(ctx, id)
 	require.NoError(t, err)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	email := &opsMigratedEmail{}
 	svc := service.NewAccountOpsService(settings, repo, email)
 	svc.SetNotificationDependencies(accounts, nil, false, "UTC")

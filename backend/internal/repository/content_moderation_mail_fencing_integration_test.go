@@ -125,7 +125,9 @@ func startModerationMailFencingSMTP(t *testing.T) (int, *atomic.Int64) {
 		}
 	}()
 	t.Cleanup(func() { _ = listener.Close(); <-done })
-	return listener.Addr().(*net.TCPAddr).Port, delivered
+	address, ok := listener.Addr().(*net.TCPAddr)
+	require.True(t, ok)
+	return address.Port, delivered
 }
 
 func TestModerationMailManagementSaveFencesQueuedTasks(t *testing.T) {
@@ -216,7 +218,7 @@ func TestModerationMailManagementSaveFencesQueuedTasks(t *testing.T) {
 
 			old := enqueue("before-mail-save")
 			require.Equal(t, state.Version, old.hit.Version)
-			state = saveEmail(state, true) // Real service -> repository transaction, version 0 -> 1.
+			saveEmail(state, true) // Real service -> repository transaction, version 0 -> 1.
 			close(old.release)
 			waitProcessed(1)
 			state, err = svc.GetModerationUser(ctx, id)

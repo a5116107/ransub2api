@@ -67,8 +67,8 @@ func TestRedeemReductionPreservesRenewal(t *testing.T) {
 	renewed := sub.ExpiresAt.AddDate(0, 0, 10)
 	repo.afterRead = func(stale *service.UserSubscription) {
 		// Commit renewal on another connection after the deduction's initial read.
-		require.NoError(t, repo.UserSubscriptionRepository.ExtendExpiry(context.Background(), stale.ID, renewed))
-		require.NoError(t, repo.UserSubscriptionRepository.UpdateNotes(context.Background(), stale.ID, "renewal"))
+		require.NoError(t, repo.ExtendExpiry(context.Background(), stale.ID, renewed))
+		require.NoError(t, repo.UpdateNotes(context.Background(), stale.ID, "renewal"))
 	}
 	_, err := redeem.RedeemForAdminFulfillment(context.Background(), userID, codes[0])
 	require.NoError(t, err)

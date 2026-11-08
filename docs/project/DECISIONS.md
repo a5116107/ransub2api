@@ -1128,3 +1128,10 @@
 - `go test -race -p=1 -tags integration ./internal/repository -run '^TestTokenGuardProbeSharesUpstreamKeyCapacity$' -count=2 -timeout=10m -v` 退出0、repository 8.588s；真实 Redis 验证业务占槽时探活不发送、释放恢复、探活占槽时业务不发送及结束恢复。首次两轮实验首轮通过、次轮因夹具随机 Key 复用同一策略版本被拒；改用独立 Redis 测试库和稳定策略后两轮通过。最终分类调整后同命令 `-count=1` 再次退出0、9.773s。
 - `go test -race -p=1 -tags unit ./internal/service -run '^(TestAccountTokenGuardProbe|TestTokenGuardRecovery|TestReadGuardResult|TestProbeClassifies|TestProbeOnly|TestRunCycle|TestStartRunDeduplicates)' -shuffle=on -count=2 -timeout=10m` 退出0、service 1.713s；覆盖容量/策略/租约失败、归还竞争、重定向、敏感诊断、取消及既有认证修复。`go test -p=1 -tags unit ./cmd/server -run '^$' -count=1 -timeout=8m` 退出0、仅编译；`go vet -p=1 -tags unit ./internal/service ./cmd/server` 退出0；原 unit lint 最终输出 `0 issues.`。这些检查包含既有未提交 Prism 改动。
 - 额外 `task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 2 --timeout 8m --allow-serial-runners ./internal/repository/...` 退出1，19项诊断均位于本次未修改的既有 integration 文件，新增测试文件无诊断；不将整体检查记为通过。D2 父项仍需区域从节点/跨区域归属、无任务 ID 的 unknown 核实及其他出站；未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-08：repository 集成测试检查清理
+
+- 修复首次输出的错误检查、格式和静态诊断，复用一个有断言的账号运营测试仓储夹具；移除全仓库无调用的 `mustCreateRedeemCode` 与已弃用的 `testEntSQLTx`。对当前提交涉及测试中另外发现的类型断言也补齐检查，不改变生产代码。
+- 禁用 lint 诊断数量限制后，首次发现总共108项残余类型断言，其中本轮修复9项，当前 `task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 2 --timeout 8m --allow-serial-runners --max-same-issues 0 --max-issues-per-linter 0 ./internal/repository/...` 退出1，输出 `99 issues: * errcheck: 99`，均为待处理的其余集成测试断言；不能将全包检查记为通过。相同命令加 `--new-from-rev HEAD` 对本轮修改退出0、输出 `0 issues.`。
+- 隔离 PostgreSQL/Redis 的受影响回归：原选择器退出0、repository 13.764s；补跑账号分组和5xx前缀退出0、9.900s（3个额外测试因缺少 `SUB2API_QUALITY_TEST_DSN` 跳过）；账号运营与凭证守护共享夹具回归退出0、9.400s，账号名称补测退出0、8.225s；限流、审核、凭证接管专项退出0、12.820s。首次选择器遗漏前缀的情况已补跑，不把跳过计为通过。
+- 99项仍属可执行技术债务；D2 原区域从节点、跨区域、unknown及其他出站验收保持进行中。未运行 CI、推送、部署或生产迁移。

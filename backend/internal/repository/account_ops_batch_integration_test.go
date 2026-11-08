@@ -29,7 +29,7 @@ func TestAccountOpsBatchConfigAndOutboxRollbackTogether(t *testing.T) {
 		require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('batch-rollback-fixture','openai','apikey','active',true) RETURNING id`).Scan(&ids[i]))
 		defer cleanupOnce(t, ids[i])
 	}
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	svc := service.NewAccountOpsService(settings, repo, nil)
 	svc.SetNotificationDependencies(NewAccountRepository(integrationEntClient, integrationDB, nil), nil, false, "UTC")
 	on := true
@@ -92,7 +92,7 @@ func TestAccountOpsGroupedBatchRollsBackBothMetricsAndOutbox(t *testing.T) {
 		require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('grouped-rollback-fixture','openai',$1,'active',true) RETURNING id`, kind).Scan(&ids[i]))
 		defer cleanupOnce(t, ids[i])
 	}
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	svc := service.NewAccountOpsService(settings, repo, nil)
 	svc.SetNotificationDependencies(NewAccountRepository(integrationEntClient, integrationDB, nil), nil, false, "UTC")
 	on, off := true, false

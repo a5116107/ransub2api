@@ -4,15 +4,15 @@ package repository
 
 import (
 	"context"
-	"fmt"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,7 +34,7 @@ func TestAPIKeyAdmissionDockerCompetition(t *testing.T) {
 	testAPIKeyLeaseFailureOnRedis(t, clients)
 }
 
-type admissionRenewalFailureCache struct { *concurrencyCache }
+type admissionRenewalFailureCache struct{ *concurrencyCache }
 
 func (*admissionRenewalFailureCache) RefreshAPIKeySlot(context.Context, int64, string) (bool, error) {
 	return false, errors.New("injected renewal transport failure")
@@ -42,8 +42,10 @@ func (*admissionRenewalFailureCache) RefreshAPIKeySlot(context.Context, int64, s
 
 func testAPIKeyLeaseFailureOnRedis(t *testing.T, clients []*redis.Client) {
 	t.Helper()
-	first := NewConcurrencyCache(clients[0], 1, 60).(*concurrencyCache)
-	second := NewConcurrencyCache(clients[1], 1, 60).(*concurrencyCache)
+	first, ok := NewConcurrencyCache(clients[0], 1, 60).(*concurrencyCache)
+	require.True(t, ok)
+	second, ok := NewConcurrencyCache(clients[1], 1, 60).(*concurrencyCache)
+	require.True(t, ok)
 	first.slotTTLSeconds, second.slotTTLSeconds = 6, 6
 	ctx, cancel := service.WithAPIKeyAdmissionOwner(context.Background())
 	defer cancel()
@@ -52,8 +54,13 @@ func testAPIKeyLeaseFailureOnRedis(t *testing.T, clients []*redis.Client) {
 	defer lease.ReleaseFunc()
 	stopped := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server does not support flushing")
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
+		flusher.Flush()
 		<-r.Context().Done()
 		close(stopped)
 	}))
@@ -62,15 +69,23 @@ func testAPIKeyLeaseFailureOnRedis(t *testing.T, clients []*redis.Client) {
 	require.NoError(t, err)
 	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err)
-	defer response.Body.Close()
-	select { case <-ctx.Done(): case <-time.After(5*time.Second): t.Fatal("lease owner was not canceled before expiry") }
+	defer func() { _ = response.Body.Close() }() // Also close when a preceding assertion fails.
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("lease owner was not canceled before expiry")
+	}
 	require.ErrorIs(t, context.Cause(ctx), service.ErrAPIKeySlotLeaseLost)
 	otherCtx, stopOther := service.WithAPIKeyAdmissionOwner(context.Background())
 	defer stopOther()
 	other, err := service.NewConcurrencyService(second).AcquireAPIKeySlot(otherCtx, 905, 1)
 	require.NoError(t, err)
 	require.False(t, other.Acquired, "Redis still reserves capacity while the old transport joins")
-	select { case <-stopped: case <-time.After(time.Second): t.Fatal("old HTTP upstream still active") }
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("old HTTP upstream still active")
+	}
 	require.NoError(t, response.Body.Close())
 	lease.ReleaseFunc()
 	other, err = service.NewConcurrencyService(second).AcquireAPIKeySlot(otherCtx, 905, 1)

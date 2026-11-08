@@ -41,7 +41,7 @@ func TestAccountOpsGroupedCriteriaSurvivesRetryAndMemberOrdering(t *testing.T) {
 	for _, kind := range []string{"balance_threshold", "quota_threshold"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg, e := groupCriteriaFixture(t, kind)
-			repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+			repo := testAccountOpsRepository(t)
 			require.NoError(t, repo.ObserveThreshold(ctx, e, "active", time.Now(), true, true))
 			first, err := repo.Claim(ctx)
 			require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestAccountOpsGroupedCriteriaSurvivesRetryAndMemberOrdering(t *testing.T) {
 			} else {
 				cfg.QuotaThresholds[0], cfg.QuotaThresholds[1] = cfg.QuotaThresholds[1], cfg.QuotaThresholds[0]
 			}
-			restarted := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+			restarted := testAccountOpsRepository(t)
 			require.NoError(t, restarted.SuppressDisabled(ctx, cfg))
 			var state string
 			var delayKept bool
@@ -108,7 +108,7 @@ func TestAccountOpsGroupedCriteriaSuppressesRealConfigChanges(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, e := groupCriteriaFixture(t, "balance_threshold")
-			repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+			repo := testAccountOpsRepository(t)
 			now := time.Now()
 			require.NoError(t, repo.ObserveThreshold(ctx, e, "active", now, true, true))
 			if tc.recovery {
@@ -133,12 +133,12 @@ func TestAccountOpsGroupedCriteriaSuppressesRealConfigChanges(t *testing.T) {
 func TestAccountOpsGroupedCriteriaConfigSaveKeepsPendingEvent(t *testing.T) {
 	ctx := context.Background()
 	cfg, e := groupCriteriaFixture(t, "balance_threshold")
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	require.NoError(t, repo.ObserveThreshold(ctx, e, "active", time.Now(), true, true))
 	// Use a rollback-only transaction so the shared settings fixture is unchanged.
 	tx, err := integrationDB.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	defer tx.Rollback()
+	defer func() { require.NoError(t, tx.Rollback()) }()
 	raw, err := json.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, repo.PersistAccountOpsConfig(context.WithValue(ctx, accountOpsTransactionKey{}, tx), string(raw), cfg))
@@ -152,11 +152,11 @@ func TestAccountOpsGroupedCriteriaIdleCheckUsesWholeGroup(t *testing.T) {
 	cfg, e := groupCriteriaFixture(t, "balance_threshold")
 	cfg.BalanceThresholds[0].Enabled = false
 	e.Criteria, _, _, _ = cfg.ThresholdGroupCriteria(e.GroupID, e.Kind)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	require.NoError(t, repo.ObserveThreshold(ctx, e, "resolved", time.Now(), true, true))
 	readOnlyDB, err := sql.Open("postgres", integrationPostgresDSN)
 	require.NoError(t, err)
-	defer readOnlyDB.Close()
+	defer func() { require.NoError(t, readOnlyDB.Close()) }()
 	readOnlyDB.SetMaxOpenConns(1)
 	_, err = readOnlyDB.ExecContext(ctx, `SET default_transaction_read_only=on`)
 	require.NoError(t, err)

@@ -19,7 +19,7 @@ func TestAccountOpsDeliveryNamesRoundTripAndExplicitReset(t *testing.T) {
 			var id int64
 			require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('channel-name-fixture','openai','apikey','active',true) RETURNING id`).Scan(&id))
 			defer cleanupOnce(t, id)
-			repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+			repo := testAccountOpsRepository(t)
 			event := service.AccountOpsEvent{AccountID: id, Kind: kind, Criteria: "name-rule"}
 			if kind == "balance_threshold" {
 				require.NoError(t, repo.ObserveThreshold(ctx, event, "active", time.Now(), true, true))

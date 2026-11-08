@@ -21,7 +21,9 @@ func TestQualityPresetPersistsWithoutDistributingPlans(t *testing.T) {
 		PelicanConfig: &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Test question", ReasoningEffort: "high", ParallelCount: 2,
 			Quality: &service.QualityPolicy{Action: "disable_scheduling", ExpectedAnswer: "42", AutoRestore: true}}})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = integrationDB.ExecContext(ctx, `DELETE FROM quality_rule_presets WHERE id=$1`, saved.ID) })
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM quality_rule_presets WHERE id=$1`, saved.ID)
+	})
 	// A separate repository/service instance must read persisted data, not a cache.
 	reloaded := service.ProvideScheduledTestService(nil, nil, NewQualityRuleTemplateRepository(integrationEntClient, integrationDB), nil)
 	presets, err := reloaded.ListQualityPresets(ctx)

@@ -17,7 +17,7 @@ func TestAccountOpsIdlePollingIsReadOnlyAndNoticesOtherReplicaWork(t *testing.T)
 	var id int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('idle-poll','openai','apikey','active',true) RETURNING id`).Scan(&id))
 	defer cleanupOnce(t, id)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	cfg := service.AccountOpsConfig{Enabled: true, BalanceThresholds: []service.AccountOpsBalanceRule{{AccountID: id, Enabled: true, Threshold: 10, Unit: "USD"}}}
 	criteria, _, _, _ := cfg.ThresholdCriteria(id, "balance_threshold")
 	require.NoError(t, repo.ObserveThreshold(ctx, service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Criteria: criteria, Identity: "same"}, "resolved", time.Now(), true, true))
@@ -26,7 +26,7 @@ func TestAccountOpsIdlePollingIsReadOnlyAndNoticesOtherReplicaWork(t *testing.T)
 	// UPDATE matching zero rows. It also cannot share a repository-local cache.
 	readOnlyDB, err := sql.Open("postgres", integrationPostgresDSN)
 	require.NoError(t, err)
-	defer readOnlyDB.Close()
+	defer func() { require.NoError(t, readOnlyDB.Close()) }()
 	readOnlyDB.SetMaxOpenConns(1)
 	_, err = readOnlyDB.ExecContext(ctx, `SET default_transaction_read_only=on`)
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestAccountOpsPeriodicSuppressionKeepsCriteriaInvalidation(t *testing.T) {
 	var id int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable) VALUES('idle-criteria','openai','apikey','active',true) RETURNING id`).Scan(&id))
 	defer cleanupOnce(t, id)
-	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
+	repo := testAccountOpsRepository(t)
 	cfg := service.AccountOpsConfig{Enabled: true, BalanceThresholds: []service.AccountOpsBalanceRule{{AccountID: id, Enabled: true, Threshold: 10, Unit: "USD"}}}
 	criteria, _, _, _ := cfg.ThresholdCriteria(id, "balance_threshold")
 	require.NoError(t, repo.ObserveThreshold(ctx, service.AccountOpsEvent{AccountID: id, Kind: "balance_threshold", Criteria: criteria, Identity: "same"}, "active", time.Now(), true, true))
