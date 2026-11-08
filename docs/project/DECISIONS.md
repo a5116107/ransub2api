@@ -1265,3 +1265,9 @@
 - Prism Browser adapter 使用独立本地 HTTP 出站，无法证明其最终供应商凭据与账号共享 Key 相同；共享或区域策略启用时，原路径若继续发送会绕过共享额度和区域权威。
 - 原位在 `callPrismBrowserForCaller` 发送前复用既有策略必需判断；本地拒绝不拨号、不写入响应，并穿过普通/流式/fallback/管理预览的本地准入错误边界。策略关闭时保留原 Prism 流程，不新增第二套额度实现。
 - service/handler Prism race 聚焦回归实际通过，service/handler vet 退出0，原规则两包 lint 输出 `0 issues.`；提交 `f6d6711`。该项不证明 Prism 的供应商凭据、缓存域或质量指标，也不关闭 D3 其余托管连接、WS 作用域和其他独立传输验收。
+
+## 2026-11-09：批量 Gemini JSONL 保留图像生成选项
+
+- `BatchImageInput` 已从公共接口接收 `response_mime_type`、`aspect_ratio` 和 `image_size`，但 Gemini 批量 JSONL 构造器原先只写 `responseModalities`，这些字段在上传前静默丢失，形成已配置但未生效的技术债务。
+- 原位映射到 Gemini GenerateContent 的标准 `generationConfig.responseMimeType` 和可选 `generationConfig.imageConfig.{aspectRatio,imageSize}`；当输入为空时使用 `omitempty` 保持历史 JSON 形状，未新增 provider 或第二套请求构造器。
+- 新增带值/空值回归；`go test -race -p=1 -tags=unit ./internal/service -run '^TestBuildGeminiBatchJSONL|^TestGeminiProvider' -count=1 -timeout=12m` 退出0，service vet退出0，原规则 service lint输出 `0 issues.`。提交 `5b8abe0`；该项只补齐请求字段传递，不证明供应商真实支持矩阵或计费命中。

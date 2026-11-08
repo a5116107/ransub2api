@@ -3,9 +3,9 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3 Prism 独立出站共享 Key 准入；父任务进行中，禁止CI/推送/部署/生产迁移。
-证据：Prism adapter 无法证明最终供应商凭据，现复用共享/区域策略的发送前 fail-closed 边界；拒绝在 adapter 拨号、响应写入和 fallback 追加之前发生，原线路可安全切换。
-验证：Prism service/handler race 聚焦回归退出0；service/handler vet 退出0；原规则两包 lint 输出 0 issues；代码提交 f6d6711，区域异步视频边界提交 56e54e3。
+任务：D3 独立出站与批量图片技术债务推进；父任务进行中，禁止CI、推送、部署、生产迁移。
+证据：Prism adapter 已复用共享/区域策略发送前 fail-closed；Gemini 批量 JSONL 已保留公共请求的 response_mime_type、aspect_ratio、image_size，空值保持旧 JSON 形状。
+验证：Prism service/handler race、vet、lint 通过；Gemini JSONL/provider race 退出0，service vet退出0，原规则 lint输出0 issues；代码提交 f6d6711、5b8abe0，区域异步视频边界提交 56e54e3。
 下一动作：继续 D2 跨区域任务归属与 unknown 自动核实；同时推进 D3 托管连接、其他未观测传输和 WS 作用域。区域从节点仍 fail-closed，不发送异步创建。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
