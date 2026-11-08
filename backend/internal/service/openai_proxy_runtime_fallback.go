@@ -137,9 +137,6 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 	if err := regionalMeterHTTPRequest(req); err != nil {
 		return nil, err
 	}
-	if err := s.acquireOpenAIRPMForSend(req.Context(), account); err != nil {
-		return nil, err
-	}
 	if err := s.priorityLatencyBeforeSend(req.Context(), account); err != nil {
 		return nil, err
 	}
@@ -148,6 +145,20 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 	}
 	if err := s.admitAvailabilityRequest(req.Context(), req, account); err != nil {
 		return nil, err
+	}
+	if err := s.acquireOpenAIRPMForSend(req.Context(), account); err != nil {
+		return nil, err
+	}
+	// RPM acquisition or a proxy-fallback decision may wait and the
+	// authoritative availability can change during that interval. Re-read
+	// immediately before the physical send only for those mutable paths; a
+	// plain API-key request must not consume/re-read a one-shot request body.
+	recheck := account != nil && ((account.IsOpenAIOAuth() && account.GetBaseRPM() > 0) ||
+		(account.Proxy != nil && account.Proxy.FallbackMode != FallbackModeNone))
+	if recheck {
+		if err := s.admitAvailabilityRequest(req.Context(), req, account); err != nil {
+			return nil, err
+		}
 	}
 	if err := regionalMeterBeforeSend(req.Context()); err != nil {
 		return nil, err

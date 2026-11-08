@@ -551,9 +551,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if err := regionalMeterBeforeSend(ctx); err != nil {
 			return err
 		}
-		if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
-			return err
-		}
 		if err := controlledSubmission(ctx, "native_ws"); err != nil {
 			return err
 		}
@@ -561,6 +558,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return err
 		}
 		if err := s.admitAvailabilityRequest(ctx, nil, account); err != nil {
+			return err
+		}
+		if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
 			return err
 		}
 		if err := lease.WriteJSONWithContextTimeout(ctx, value, s.openAIWSWriteTimeout()); err != nil {

@@ -354,7 +354,7 @@ func TestAvailabilityAdmissionAfterRPMWait(t *testing.T) {
 	require.Empty(t, upstream.requests, "a new failure during admission must prevent the physical send")
 }
 
-func TestAvailabilityAdmissionRereadsOnProxyFallback(t *testing.T) {
+func TestAvailabilityAdmissionRejectsDuringRPMBeforeProxyDial(t *testing.T) {
 	account := ticketTestAccount(901)
 	account.Proxy = proxyForTest(100, "127.0.0.1", 1)
 	account.Proxy.FallbackMode = FallbackModeDirect
@@ -379,7 +379,7 @@ func TestAvailabilityAdmissionRereadsOnProxyFallback(t *testing.T) {
 	require.Nil(t, response)
 	require.True(t, IsOpenAITurnAdmissionError(err))
 	require.Equal(t, 2, repo.reads)
-	require.Equal(t, 1, attempts, "a failed recheck must prevent the fallback transport")
+	require.Zero(t, attempts, "a failed recheck must prevent the initial and fallback transports")
 }
 
 func TestAvailabilityAdmissionConsumesReadAndParsingLatency(t *testing.T) {

@@ -1561,6 +1561,53 @@ func TestOpenAIGatewayService_PrewarmReadHonorsParentContext(t *testing.T) {
 	require.Less(t, elapsed, 180*time.Millisecond, "预热读取应受父 context 取消控制，不应阻塞到 read_timeout")
 }
 
+func TestOpenAIGatewayService_PrewarmAvailabilityRefusalDoesNotConsumeRPM(t *testing.T) {
+	capture := &openAIWSCaptureConn{}
+	account := &Account{
+		ID:          603,
+		Name:        "openai-prewarm-admission",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"access_token": "fixture-token"},
+		Extra:       map[string]any{"base_rpm": 1},
+	}
+	rpm := &openAIRPMTestCache{counts: map[int64]int{}}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = true
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		rpmCache:           rpm,
+		availabilityReader: prewarmAvailabilityReader{accountID: account.ID},
+		toolCorrector:      NewCodexToolCorrector(),
+	}
+	lease := &openAIWSConnLease{accountID: account.ID, conn: newOpenAIWSConn("prewarm_admission_conn", account.ID, capture, nil)}
+	err := svc.performOpenAIWSGeneratePrewarm(
+		context.Background(),
+		lease,
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+		map[string]any{"type": "response.create", "model": "gpt-5.1"},
+		"",
+		map[string]any{"model": "gpt-5.1"},
+		account,
+		nil,
+		0,
+	)
+
+	var denied *OpenAITurnAdmissionError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "availability_scope_unconfirmed", denied.Reason)
+	require.Zero(t, rpm.counts[account.ID], "local availability refusal must precede RPM reservation")
+	require.Empty(t, capture.writes, "local refusal must not write a WS prewarm frame")
+}
+
+type prewarmAvailabilityReader struct{ accountID int64 }
+
+func (r prewarmAvailabilityReader) ReadAccountAvailability(context.Context, *Account) ([]*AvailabilityReport, error) {
+	return []*AvailabilityReport{{AccountID: r.accountID, Configured: true, Enabled: true}}, nil
+}
+
 func TestOpenAIGatewayService_Forward_WSv2_TurnMetadataInPayloadOnConnReuse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

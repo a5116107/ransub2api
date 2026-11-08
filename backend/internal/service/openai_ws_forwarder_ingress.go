@@ -1894,9 +1894,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}()
 		wroteDownstream := false
-		if err := s.acquireOpenAIRPMForSend(ctx, latest); err != nil {
-			return nil, err
-		}
 		if err := regionalMeterValidatePayload(ctx, payload); err != nil {
 			return nil, err
 		}
@@ -1913,6 +1910,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if _, err := checkAdmission(ctx); err != nil {
 				return nil, err
 			}
+		}
+		if err := s.acquireOpenAIRPMForSend(ctx, latest); err != nil {
+			return nil, err
 		}
 		if err := s.guardOpenAIResponseContinuation(ctx, account); err != nil {
 			return nil, err
