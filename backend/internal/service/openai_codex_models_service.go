@@ -1997,6 +1997,9 @@ func (s *OpenAIGatewayService) fetchOpenAIModelsUpstream(ctx context.Context, re
 		resp, err = s.httpUpstream.Do(req, request.proxyURL, request.accountID, request.accountConcurrency)
 	} else {
 		handled := false
+		if err := s.admitAvailabilityRequest(req.Context(), req, request.credentialAccount); err != nil {
+			return nil, &codexModelsManifestUpstreamError{err: err, retryable: false}
+		}
 		if s.pluginManager != nil {
 			resp, handled, err = s.pluginManager.RoundTripOpenAIOAuth(pluginUpstreamKeyPolicyContext(reqCtx, s.cfg), req, request.proxyURL, request.credentialAccount)
 		}

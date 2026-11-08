@@ -1789,6 +1789,33 @@ func TestFetchCodexModelsManifestPassthrough(t *testing.T) {
 	}
 }
 
+func TestFetchCodexModelsManifestAvailabilityFailsClosedBeforeOAuthClientSend(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"models":[{"slug":"gpt-5.5"}]}`)
+	}))
+	defer server.Close()
+
+	original := chatgptCodexModelsURL
+	chatgptCodexModelsURL = server.URL
+	t.Cleanup(func() { chatgptCodexModelsURL = original })
+
+	s := &OpenAIGatewayService{availabilityReader: prewarmAvailabilityReader{accountID: 1}}
+	_, err := s.FetchCodexModelsManifest(context.Background(), newCodexModelsTestAccount(), "0.137.0", "")
+
+	var denied *OpenAITurnAdmissionError
+	if !errors.As(err, &denied) {
+		t.Fatalf("expected local availability admission error, got %v", err)
+	}
+	if denied.Reason != "availability_scope_unconfirmed" {
+		t.Fatalf("availability reason: got %q", denied.Reason)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("OAuth models client must not send when availability scope is unconfirmed: calls=%d", calls.Load())
+	}
+}
+
 func TestFetchCodexModelsManifestAgentIdentityUsesAssertionWithoutOAuthToken(t *testing.T) {
 	key, privateKey := newTestAgentIdentityKey(t)
 	account := &Account{
