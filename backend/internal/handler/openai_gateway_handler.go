@@ -4215,6 +4215,10 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
 		return
 	}
+	if failoverErr.Reason == service.UpstreamKeyAdmissionReason {
+		h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "server_error", string(service.UpstreamKeyAdmissionReason), "No shared upstream Key capacity is available", streamStarted, false)
+		return
+	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
 	// Local BPS image admission rejection: nothing reached the upstream, so
 	// keep the fixed code and message of the image relay limit.

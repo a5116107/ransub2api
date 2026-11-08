@@ -9,7 +9,9 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -106,6 +108,45 @@ func TestOpenAIInitialAdmissionReselectsBeforeSending(t *testing.T) {
 				require.False(t, recordedUpstreamError, "a local route change is not an upstream failure")
 			})
 		}
+	}
+}
+
+func TestPrismSharedKeyAdmissionReselectsBeforeSending(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var adapterCalls atomic.Int32
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		adapterCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(adapter.Close)
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			repo := &initialAdmissionRepo{}
+			upstream := &excelBPSFailoverUpstream{answer: func(int) *http.Response {
+				resp := excelBPSCompleted()
+				wire, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				resp.Body = io.NopCloser(strings.NewReader(strings.ReplaceAll(string(wire), "gpt-6-astra", "gpt-6.1-sol")))
+				return resp
+			}}
+			h := newInitialAdmissionHandler(t, repo, upstream)
+			repo.accounts[0].Extra = map[string]any{"openai_prism_browser": true}
+			repo.accounts[1].Extra = map[string]any{"openai_passthrough": true}
+			h.cfg.Gateway.PrismBrowser = config.GatewayPrismBrowserConfig{Enabled: true, BaseURL: adapter.URL + "/v1", APIKey: "fixture"}
+			h.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("fixture-supplier"): 1}}
+			c, rec := newExcelBPSFailoverTestContext(context.Background(), stream)
+			body := fmt.Sprintf(`{"model":"gpt-6.1-sol","stream":%t,"input":"hello"}`, stream)
+			c.Request.Body = io.NopCloser(strings.NewReader(body))
+			c.Request.ContentLength = int64(len(body))
+			h.Responses(c)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "done")
+			require.Equal(t, []int64{2}, upstream.calls(), "only the second account may send")
+			require.Zero(t, adapterCalls.Load())
+			require.NotContains(t, rec.Body.String(), "admission_unavailable")
+			_, recorded := c.Get(service.OpsUpstreamErrorsKey)
+			require.False(t, recorded, "local admission is not an upstream failure")
+		})
 	}
 }
 

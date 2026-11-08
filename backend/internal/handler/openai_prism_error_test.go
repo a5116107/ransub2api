@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -62,6 +64,54 @@ func TestPrismErrorDoesNotAppendFallback(t *testing.T) {
 				require.True(t, service.IsPrismBrowserAttempt(c, 300))
 			}()
 		}
+	}
+}
+
+func TestPrismAdmissionErrorDoesNotAppendFallback(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	for _, mode := range []string{"json", "stream", "stream_started"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Gateway.PrismBrowser = config.GatewayPrismBrowserConfig{Enabled: true, BaseURL: server.URL + "/v1", APIKey: "fixture"}
+			cfg.Runtime.RegionalConcurrencyFile = "fixture"
+			account := &service.Account{ID: 300, Status: service.StatusActive, Schedulable: true, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+				Credentials: map[string]any{"access_token": "fixture"}, Extra: map[string]any{"openai_prism_browser": true}}
+			gateway := service.NewOpenAIGatewayService(excelBPSErrorAccountRepo{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			body, err := json.Marshal(map[string]any{"model": "gpt-6.1-sol", "input": "hi", "stream": mode != "json"})
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			if mode == "stream_started" {
+				c.Header("Content-Type", "text/event-stream")
+				_, err = c.Writer.WriteString(": keepalive\n\n")
+				require.NoError(t, err)
+				c.Writer.Flush()
+			}
+			before := c.Writer.Size()
+			original := rec.Body.String()
+			_, err = gateway.Forward(context.Background(), c, account, body)
+			require.True(t, service.IsUpstreamKeyAdmissionFailure(err))
+			var failover *service.UpstreamFailoverError
+			require.True(t, errors.As(err, &failover))
+			require.Equal(t, original, rec.Body.String(), "admission must not write before failover")
+			require.True(t, openAIForwardMayFailover(c, before, failover))
+			require.Zero(t, requests.Load())
+			(&OpenAIGatewayHandler{}).handleFailoverExhausted(c, failover, mode == "stream_started")
+			response := rec.Body.String()
+			require.Contains(t, response, "admission_unavailable")
+			if mode == "stream_started" {
+				require.Equal(t, 1, strings.Count(response, "event: response.failed"))
+			} else {
+				require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+				require.True(t, json.Valid(rec.Body.Bytes()), response)
+			}
+		})
 	}
 }
 

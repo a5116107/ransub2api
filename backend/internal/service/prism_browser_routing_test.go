@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,6 +179,47 @@ func prismTestService(endpoint string) (*OpenAIGatewayService, *Account) {
 	cfg.Gateway.PrismBrowser = config.GatewayPrismBrowserConfig{Enabled: true, BaseURL: endpoint + "/v1", APIKey: "fixture-bridge-key"}
 	return &OpenAIGatewayService{cfg: cfg}, &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
 		Credentials: map[string]any{"access_token": "fixture-oauth"}, Extra: map[string]any{"openai_prism_browser": true}}
+}
+
+func TestPrismBrowserSharedKeyPolicyFailsClosedBeforeAdapter(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	for _, tc := range []struct {
+		name      string
+		configure func(*config.Config)
+	}{
+		{"shared key", func(cfg *config.Config) {
+			cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{
+				Revision: 1,
+				Limits:   map[string]int{config.UpstreamKeyFingerprint("fixture-supplier"): 1},
+			}
+		}},
+		{"regional concurrency", func(cfg *config.Config) { cfg.Runtime.RegionalConcurrencyFile = "fixture" }},
+		{"regional scheduler", func(cfg *config.Config) { cfg.Runtime.RegionalSchedulerFile = "fixture" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, account := prismTestService(server.URL)
+			tc.configure(s.cfg)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+			_, err := s.forwardPrismBrowser(context.Background(), c, account, []byte(`{"model":"gpt-6.1-sol","input":"fixture"}`), time.Now())
+			require.Error(t, err)
+			require.True(t, IsUpstreamKeyAdmissionFailure(err))
+			require.False(t, c.Writer.Written(), "the handler must be able to fail over before responding")
+			require.Empty(t, recorder.Body.String())
+			require.Zero(t, requests.Load(), "an independent Prism egress cannot bypass shared Key admission")
+
+			_, _, _, err = s.callPrismBrowser(context.Background(), account, []byte(`{"input":"fixture"}`))
+			require.True(t, IsUpstreamKeyAdmissionFailure(err), "admin tests use the same admission boundary")
+			require.Zero(t, requests.Load())
+		})
+	}
 }
 
 func TestPrismBrowserCallProtectsCredentialBoundary(t *testing.T) {

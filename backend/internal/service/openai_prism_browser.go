@@ -305,6 +305,9 @@ func (s *OpenAIGatewayService) forwardPrismBrowser(ctx context.Context, c *gin.C
 		mode.httpStatus.Store(int32(status))
 	}
 	if err != nil {
+		if IsUpstreamKeyAdmissionFailure(err) {
+			return nil, err
+		}
 		fail(http.StatusBadGateway, "prism_unavailable", "Prism adapter unavailable; request was not replayed")
 		return nil, err
 	}
@@ -355,6 +358,13 @@ func (s *OpenAIGatewayService) callPrismBrowserWithSession(ctx context.Context, 
 }
 
 func (s *OpenAIGatewayService) callPrismBrowserForCaller(ctx context.Context, account *Account, body []byte, sessionID, callerID string) ([]byte, http.Header, int, error) {
+	// Prism owns an independent physical egress and cannot prove the final
+	// supplier credential to the shared Key authority. Never let it bypass a
+	// configured shared or regional policy; the caller must receive a local
+	// admission failure before the adapter sees the request.
+	if s != nil && upstreamKeyAdmissionRequired(s.cfg) {
+		return nil, nil, 0, upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)
+	}
 	runtime := PrismBrowserRuntime{}
 	if s.settingService != nil {
 		runtime = s.settingService.GetPrismBrowserRuntime(ctx)
