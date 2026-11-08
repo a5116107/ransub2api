@@ -62,14 +62,5 @@ D2继续异步视频区域从节点/跨区域归属、无任务ID的unknown自�
 
 ## 外部等待与清理
 
-- Windows令牌缺`SeCreateSymbolicLinkPrivilege`，原repository完整测试在os.Symlink报权限错误；未改skip。Linux同例三轮通过。拥有者：系统管理员；解除：提供可创建符号链接的进程，再运行原Windows完整命令。
-- 历史删除被审批`blocked by policy`拒绝，不换工具绕过。`backend/bin`三文件：task-d2-full-tests.jsonl、task-d2-golangci-lint.exe、task-d2-preview.json，共132004965bytes；lint仍使用。解除：拥有者按准确路径手动清理可回收产物。
-- `backend/tmp/admin-key-pg-d8`删除同被拒绝；既有隔离实例由原拥有者管理，不启动/停止。测试schema已清零；解除：资源拥有者停止实例并手动清理准确目录。
-- `backend/tmp/availability-non5xx-regression`4文件73491bytes，旧源码overlay验证完成，删除被拒绝；解除：拥有者手动删除准确目录。
-- `backend/tmp/regional-key-pg`停止及删除的整条命令被自动审批`blocked by policy`拒绝，未执行；恢复确认55449实例PID12708仍运行。保留该独立夹具，拥有者停止并手动清理；不改用其他工具绕过。
-- 历史overlay已清除；准确空目录`backend/tmp/live-key-verification`的边界校验后删除命令仍被自动审批`blocked by policy`拒绝，整条未执行。拥有者手动删除该空目录；不重试其他删除工具。
-- 历史`backend/tmp/ws-turn-state-verification`的边界校验与`Remove-Item -WhatIf`删除预演整条被自动审批`blocked by policy`拒绝，未执行实际删除。保留13文件77603133bytes，拥有者按准确目录手动清理；不换工具/移动绕过。
-
-- 历史`backend/tmp/gemini-route-pg`递归删除命令被自动审批`blocked by policy`拒绝，整条未执行；随后独立停止55451成功，测试schema为0。保留约42MB目录，拥有者手工删除准确路径；不重试删除/移动绕过。
-- 本次`backend/tmp/batch-key-verification`删除预演被自动审批`blocked by policy`拒绝，命令未执行；保留目录，由拥有者按准确路径手动清理。
-- 本次 `frontend/tmp/channel-monitor-ui-fixture` 精确删除命令被自动审批 `blocked by policy` 拒绝，未执行；保留三文件及目录，拥有者按准确路径手动清理。
+- Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
+- 策略拒绝清理的历史产物仍保留：`backend/bin` lint 三文件、`backend/tmp/admin-key-pg-d8`、`availability-non5xx-regression`、`regional-key-pg`（55449/PID12708）、`live-key-verification`、`ws-turn-state-verification`、`gemini-route-pg`、`batch-key-verification`、`frontend/tmp/channel-monitor-ui-fixture` 及 `C:\Users\Administrator\AppData\Local\go-build-sub2api`。相关 schema/实例状态和大小详见 DECISIONS；由拥有者按准确路径手动停止/删除，不换工具绕过策略。
