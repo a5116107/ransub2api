@@ -220,7 +220,11 @@ func (l *upstreamKeyLease) renew(ctx context.Context) {
 }
 
 func (l *upstreamKeyLimiter) release(resource slots.Resource, key, member string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	return l.releaseContext(context.Background(), resource, key, member)
+}
+
+func (l *upstreamKeyLimiter) releaseContext(parent context.Context, resource slots.Resource, key, member string) error {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	var err error
 	if l.regional != nil {
@@ -360,12 +364,20 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 		}
 	}
 	if handoff != nil {
-		if l.regional != nil {
+		if l.regional != nil && l.regional.primary == nil {
 			return nil, service.ErrUpstreamKeyPolicy
 		}
 		for _, fingerprint := range lease.Fingerprints {
 			if l.policy.Limits[fingerprint] > 0 {
-				lease.Resources = append(lease.Resources, service.PersistentUpstreamKeyResource{Fingerprint: fingerprint})
+				resource := service.PersistentUpstreamKeyResource{Fingerprint: fingerprint}
+				if l.regional != nil {
+					resolved, limited, resolveErr := l.regional.upstreamKeyResource(ctx, l.policy.Revision, l.digest, fingerprint)
+					if resolveErr != nil || !limited || resolved.ID <= 0 {
+						return nil, service.ErrUpstreamKeyPolicy
+					}
+					resource.ResourceID = resolved.ID
+				}
+				lease.Resources = append(lease.Resources, resource)
 			}
 		}
 		if len(lease.Resources) > 0 {
@@ -374,15 +386,23 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 			}
 			handoff.SetLease(lease)
 			if err := s.PersistAsyncVideoKeyLease(ctx, handoff); err != nil {
-				// No provider request was sent. A lost Redis acknowledgement may
+				// No provider request was sent. A lost store acknowledgement may
 				// nevertheless have created the provisional record; leave it
 				// indexed for reconciliation rather than guessing its outcome.
 				return nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
 			}
 			for _, fingerprint := range lease.Fingerprints {
-				_, result, err := l.take(ctx, fingerprint, lease.Member, "video")
+				resource, result, err := l.take(ctx, fingerprint, lease.Member, "video")
 				if err == nil && l.policy.Limits[fingerprint] > 0 && result != 1 {
 					err = service.ErrUpstreamKeyPolicy
+				}
+				if err == nil && l.regional != nil {
+					for _, planned := range lease.Resources {
+						if planned.Fingerprint == fingerprint && planned.ResourceID != resource.ID {
+							err = service.ErrUpstreamKeyPolicy
+							break
+						}
+					}
 				}
 				if err != nil {
 					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
@@ -474,13 +494,20 @@ func (l *upstreamKeyLimiter) confirmPersistentPolicy(ctx context.Context, lease 
 }
 
 func (s *httpUpstreamService) ReleasePersistentUpstreamKeySlots(_ context.Context, lease *service.PersistentUpstreamKeyLease) error {
+	return s.releasePersistentUpstreamKeySlots(context.Background(), lease)
+}
+
+func (s *httpUpstreamService) releasePersistentUpstreamKeySlots(ctx context.Context, lease *service.PersistentUpstreamKeyLease) error {
 	l := s.upstreamKeyLimiter
 	if l == nil || lease.Validate() != nil || lease.Authority != l.persistentAuthority() {
 		return service.ErrUpstreamKeyPolicy
 	}
 	var releaseErr error
 	for _, resource := range lease.Resources {
-		err := l.release(slots.Resource{Kind: "upstream_key", ID: resource.ResourceID, Fingerprint: resource.Fingerprint}, upstreamKeySlotKeyPrefix+resource.Fingerprint, lease.Member)
+		if err := ctx.Err(); err != nil {
+			return errors.Join(releaseErr, err)
+		}
+		err := l.releaseContext(ctx, slots.Resource{Kind: "upstream_key", ID: resource.ResourceID, Fingerprint: resource.Fingerprint}, upstreamKeySlotKeyPrefix+resource.Fingerprint, lease.Member)
 		releaseErr = errors.Join(releaseErr, err)
 	}
 	return releaseErr
@@ -530,7 +557,7 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 	if asyncVideo {
 		req = req.WithContext(service.WithHTTPUpstreamRedirectsDisabled(req.Context()))
 		handoff := service.AsyncVideoKeyHandoffFromRequest(req)
-		if s.upstreamKeyLimiter == nil || s.upstreamKeyLimiter.regional != nil {
+		if regional := s.upstreamKeyLimiter.regional; regional != nil && (regional.primary == nil || handoff == nil) {
 			return req, nil, service.ErrUpstreamKeyPolicy
 		}
 		fingerprints := config.UpstreamCredentialFingerprints(req)

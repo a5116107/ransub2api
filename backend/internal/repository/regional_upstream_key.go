@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -40,6 +42,31 @@ func (c *regionalConcurrencyCache) acquireUpstreamKeySlot(ctx context.Context, r
 	if !limited {
 		return resource, 2, nil
 	}
+	if strings.HasPrefix(request, "video:") {
+		if c.primary == nil {
+			return resource, 0, service.ErrUpstreamKeyPolicy
+		}
+		record, readErr := scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, request))
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return resource, 0, service.ErrUpstreamKeyPolicy
+		}
+		if readErr != nil {
+			return resource, 0, readErr
+		}
+		if record.Fenced {
+			return resource, 0, service.ErrUpstreamKeyPolicy
+		}
+		matched := false
+		for _, planned := range record.Lease.Resources {
+			if planned.Fingerprint == fingerprint && planned.ResourceID == resource.ID {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return resource, 0, service.ErrUpstreamKeyPolicy
+		}
+	}
 	ok, err := c.acquireTx(ctx, tx, resource, request)
 	if err != nil {
 		return resource, 0, err
@@ -53,6 +80,19 @@ func (c *regionalConcurrencyCache) acquireUpstreamKeySlot(ctx context.Context, r
 		return resource, 0, err
 	}
 	return resource, 1, nil
+}
+
+func (c *regionalConcurrencyCache) upstreamKeyResource(ctx context.Context, revision int64, digest, fingerprint string) (slots.Resource, bool, error) {
+	if c == nil || c.primary == nil || c.runtimeFailed.Load() {
+		return slots.Resource{}, false, service.ErrUpstreamKeyPolicy
+	}
+	tx, err := c.database().BeginTx(ctx, nil)
+	if err != nil {
+		return slots.Resource{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	resource, limited, err := c.primary.UpstreamResourceTx(ctx, tx, revision, digest, fingerprint)
+	return resource, limited, err
 }
 
 func (c *regionalConcurrencyCache) upstreamKeyHeld(ctx context.Context, r slots.Resource, request string) (bool, error) {

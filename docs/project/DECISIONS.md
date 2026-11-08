@@ -1096,3 +1096,12 @@
 - 释放失败按 Redis TIME 计算退避，避免多机时钟偏差；成功才删除成员、任务/v2索引、unknown、fence和release项。失败项保留并延后，释放失败不阻塞其他队列项。Astra 仅透传恢复接口；后台只在 full 角色启动，gateway 角色不运行，关闭时取消当前轮次并等待退出。
 - go test -race -p=1 -tags unit ./internal/repository -run TestAsyncVideoKeyRecovery -count=2 退出0；go test -race -p=1 -tags unit,integration ./internal/repository ./internal/service ./internal/handler ./cmd/server -run async video focused -count=1 退出0（repository 22.859s、service 2.056s、handler 4.144s、cmd/server 1.802s）。真实Redis handler夹具注入释放失败后由后台恢复重新放行竞争请求。
 - D2 仍未完成：区域 SQL 同源任务记录、unknown 自动恢复、其他非标准鉴权/绕过 HTTPUpstream 的跨请求出站及生产升级演练待验收；未运行 CI、部署或推送。
+
+## 2026-11-08：D2 SQL 主节点与 Redis 恢复领取
+
+- Redis 旧恢复领取脚本先 `ZREM`，领取后进程退出会丢失自动重试入口；`TestAsyncVideoKeyRecoveryReclaimsAbandonedClaim` 在旧实现实际失败。现领取时保留有序集合成员并设置两分钟可见性期限，失联后可接管；栅栏入队和失败退避使用 Redis 时间，迟到的失败不会重建已完成的队列项。
+- 新增迁移 `331_regional_async_video_key_lease.sql`，在区域主节点 SQL 中保存任务、主体和租约。受限抢槽与释放栅栏锁同一行；确认释放后，多凭据槽位释放和记录删除在同一事务内完成。未确认的 unknown 记录不自动释放；主节点未知身份、过期限额策略和数据损坏保持保守拒绝。区域从节点及跨区域归属仍未接入。
+- 隔离 PostgreSQL/Redis 的仓储竞态回归两轮退出0、27.130s，覆盖实际 Seedance HTTP 创建及满额查询、原 member 绑定、任务ID冲突、锁竞争、释放中断回滚、多实例恢复、身份损坏、旧策略拒绝、迁移重复执行和事务回滚。`go test -race -p=1 -tags 'unit integration' ./internal/handler -run '^TestRegionalAsyncVideoGrokHandlerLifecycle$' -count=1 -timeout=10m -v` 退出0、5.690s；真实 handler 与隔离 PostgreSQL/本地供应商夹具覆盖创建、主体隔离、丢失粘性缓存、满额查询及终态释放。
+- 扩大后的 `go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler ./cmd/server -run '^(TestRegionalAsyncVideo|TestAsyncVideo|TestGrokMedia|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestAccountTestService_GrokVideo|TestProvideCleanup_WithMinimalDependencies_NoPanic)' -count=1 -timeout=12m` 退出0：repository 19.054s、service 12.209s、handler 8.849s、cmd/server 1.732s。测试只使用隔离数据库；未运行 CI、推送、部署或生产迁移。
+- 加入普通共享Key、Live和批量图片的扩大竞态回归退出0：repository 31.184s、service 10.753s、handler 9.610s、cmd/server 1.650s。`go vet -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler ./cmd/server` 退出0、无诊断；原规则 lint 对四包退出0，输出 `0 issues.`。这些检查使用当时工作树，包含既有未提交的 Prism 改动。
+- 生产应用或回滚前仍须停止新任务、核对供应商终态并排空旧/新任务记录与持久槽位，保留迁移表作为回滚证据；此项未在生产执行。父任务 D2 继续进行，未知提交自动核实、区域从节点/跨区域归属及其他出站仍待验收。

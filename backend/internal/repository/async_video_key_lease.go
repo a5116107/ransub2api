@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	asyncVideoKeyLeasePrefix = "concurrency:upstream_key:async_video:"
+	asyncVideoKeyLeasePrefix  = "concurrency:upstream_key:async_video:"
+	asyncVideoReleaseClaimTTL = 2 * time.Minute
 )
 
 var bindAsyncVideoKeyLeaseScript = redis.NewScript(`
@@ -62,19 +63,34 @@ return 1
 `)
 
 var fenceAsyncVideoKeyLeaseScript = redis.NewScript(`
-if ARGV[4] == '1' and redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
-if redis.call('GET', KEYS[2]) ~= ARGV[3] then return 0 end
-if KEYS[4] ~= '' and redis.call('GET', KEYS[4]) ~= ARGV[3] then return 0 end
+redis.replicate_commands()
+if ARGV[3] == '1' and redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
+if KEYS[4] ~= '' and redis.call('GET', KEYS[4]) ~= ARGV[2] then return 0 end
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 redis.call('SET', KEYS[1], '1')
-redis.call('ZADD', KEYS[3], ARGV[1], ARGV[2])
-redis.call('ZADD', KEYS[5], ARGV[1], ARGV[2])
+redis.call('ZADD', KEYS[3], now, ARGV[1])
+if not redis.call('ZSCORE', KEYS[5], ARGV[1]) then
+  redis.call('ZADD', KEYS[5], now, ARGV[1])
+end
 return 1
 `)
 
 var claimAsyncVideoKeyReleaseScript = redis.NewScript(`
 local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
 if not score or tonumber(score) > tonumber(ARGV[2]) then return 0 end
-redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
+return 1
+`)
+
+var deferAsyncVideoKeyReleaseScript = redis.NewScript(`
+redis.replicate_commands()
+local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
+if not score or tonumber(score) ~= tonumber(ARGV[2]) then return 0 end
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+redis.call('ZADD', KEYS[1], now + tonumber(ARGV[3]), ARGV[1])
 return 1
 `)
 
@@ -127,13 +143,15 @@ func (s *httpUpstreamService) asyncVideoLeaseStore() (*upstreamKeyLimiter, error
 	if s == nil || s.upstreamKeyLimiter == nil || s.upstreamKeyLimiter.rdb == nil {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	// The regional authority owns the slot, but this process has no regional
-	// task-record table yet. Reject rather than split ownership across Redis and
-	// SQL; ordinary regional HTTP/WS admission remains unchanged.
+	// Regional ownership must stay in its SQL authority, not the Redis store.
 	if s.upstreamKeyLimiter.regional != nil {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
 	return s.upstreamKeyLimiter, nil
+}
+
+func (s *httpUpstreamService) regionalAsyncVideoEnabled() bool {
+	return s != nil && s.upstreamKeyLimiter != nil && s.upstreamKeyLimiter.regional != nil && s.upstreamKeyLimiter.regional.primary != nil
 }
 
 func validateAsyncVideoHandoff(handoff *service.AsyncVideoKeyHandoff) (*service.PersistentUpstreamKeyLease, string, error) {
@@ -149,6 +167,9 @@ func validateAsyncVideoHandoff(handoff *service.AsyncVideoKeyHandoff) (*service.
 }
 
 func (s *httpUpstreamService) PersistAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
+	if s.regionalAsyncVideoEnabled() {
+		return s.persistRegionalAsyncVideoKeyLease(ctx, handoff)
+	}
 	limiter, err := s.asyncVideoLeaseStore()
 	if err != nil {
 		return err
@@ -175,6 +196,9 @@ func (s *httpUpstreamService) PersistAsyncVideoKeyLease(ctx context.Context, han
 }
 
 func (s *httpUpstreamService) BindAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff, taskID string) error {
+	if s.regionalAsyncVideoEnabled() {
+		return s.bindRegionalAsyncVideoKeyLease(ctx, handoff, taskID)
+	}
 	limiter, err := s.asyncVideoLeaseStore()
 	if err != nil {
 		return err
@@ -233,6 +257,9 @@ func bindAsyncVideoKeyLeaseRecord(ctx context.Context, limiter *upstreamKeyLimit
 }
 
 func (s *httpUpstreamService) BindAsyncVideoKeyLeaseByMember(ctx context.Context, member, taskID string) error {
+	if s.regionalAsyncVideoEnabled() {
+		return s.bindRegionalAsyncVideoKeyLeaseByMember(ctx, member, taskID)
+	}
 	limiter, err := s.asyncVideoLeaseStore()
 	if err != nil {
 		return err
@@ -257,6 +284,9 @@ func (s *httpUpstreamService) BindAsyncVideoKeyLeaseByMember(ctx context.Context
 }
 
 func (s *httpUpstreamService) MarkAsyncVideoKeySubmissionUnknown(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
+	if s.regionalAsyncVideoEnabled() {
+		return s.markRegionalAsyncVideoKeySubmissionUnknown(ctx, handoff)
+	}
 	limiter, err := s.asyncVideoLeaseStore()
 	if err != nil {
 		return err
@@ -295,6 +325,9 @@ func (s *httpUpstreamService) MarkAsyncVideoKeySubmissionUnknown(ctx context.Con
 }
 
 func (s *httpUpstreamService) ReleaseAsyncVideoKeyLease(ctx context.Context, handoff *service.AsyncVideoKeyHandoff) error {
+	if s.regionalAsyncVideoEnabled() {
+		return s.releaseRegionalAsyncVideoKeyLeaseByHandoff(ctx, handoff)
+	}
 	limiter, err := s.asyncVideoLeaseStore()
 	if err != nil {
 		return err
@@ -319,10 +352,16 @@ func (s *httpUpstreamService) ReleaseAsyncVideoKeyLease(ctx context.Context, han
 }
 
 func (s *httpUpstreamService) LoadAsyncVideoKeyLeaseByTask(ctx context.Context, owner service.AsyncVideoKeyOwner, taskID string) (*service.PersistentUpstreamKeyLease, error) {
+	if s.regionalAsyncVideoEnabled() {
+		return s.loadRegionalAsyncVideoKeyLeaseByTask(ctx, owner, taskID, false)
+	}
 	return s.loadAsyncVideoKeyLeaseByTask(ctx, owner, taskID, false)
 }
 
 func (s *httpUpstreamService) ResolveAsyncVideoKeyOwner(ctx context.Context, principal service.AsyncVideoKeyOwner, taskID string) (*service.AsyncVideoKeyOwner, error) {
+	if s.regionalAsyncVideoEnabled() {
+		return s.resolveRegionalAsyncVideoKeyOwner(ctx, principal, taskID)
+	}
 	if s != nil && (s.upstreamKeyLimiter == nil || s.upstreamKeyLimiter.regional != nil) {
 		return nil, nil
 	}
@@ -391,6 +430,13 @@ func (s *httpUpstreamService) loadAsyncVideoKeyLeaseByTask(ctx context.Context, 
 }
 
 func (s *httpUpstreamService) ReleaseAsyncVideoKeyLeaseByTask(ctx context.Context, owner service.AsyncVideoKeyOwner, taskID string) error {
+	if s.regionalAsyncVideoEnabled() {
+		lease, err := s.loadRegionalAsyncVideoKeyLeaseByTask(ctx, owner, taskID, true)
+		if err != nil || lease == nil {
+			return err
+		}
+		return s.releaseRegionalAsyncVideoKeyLease(ctx, lease, owner, taskID)
+	}
 	lease, err := s.loadAsyncVideoKeyLeaseByTask(ctx, owner, taskID, true)
 	if err != nil || lease == nil {
 		return err
@@ -399,6 +445,9 @@ func (s *httpUpstreamService) ReleaseAsyncVideoKeyLeaseByTask(ctx context.Contex
 }
 
 func (s *httpUpstreamService) ReleaseAsyncVideoKeyLeaseByMember(ctx context.Context, member string) error {
+	if s.regionalAsyncVideoEnabled() {
+		return s.releaseRegionalAsyncVideoKeyLeaseByMember(ctx, member)
+	}
 	return s.releaseAsyncVideoKeyLeaseByMember(ctx, member, false)
 }
 
@@ -465,14 +514,14 @@ func (s *httpUpstreamService) releaseAsyncVideoKeyLease(ctx context.Context, lim
 	}
 	result, err := fenceAsyncVideoKeyLeaseScript.Run(ctx, limiter.rdb,
 		[]string{asyncVideoFenceKey(lease.Member), asyncVideoMemberKey(lease.Member), asyncVideoUnknownKey(), taskKey, asyncVideoReleaseKey()},
-		time.Now().UTC().UnixMilli(), lease.Member, raw, fenceRequired).Int()
+		lease.Member, raw, fenceRequired).Int()
 	if err != nil {
 		return err
 	}
 	if result != 1 {
 		return service.ErrUpstreamKeyLease
 	}
-	if err := s.ReleasePersistentUpstreamKeySlots(ctx, lease); err != nil {
+	if err := s.releasePersistentUpstreamKeySlots(ctx, lease); err != nil {
 		return err
 	}
 	return deleteAsyncVideoKeyLease(limiter, ctx, lease.Member, owner, taskID)
@@ -501,6 +550,9 @@ func deleteAsyncVideoKeyLease(limiter *upstreamKeyLimiter, ctx context.Context, 
 }
 
 func (s *httpUpstreamService) RecoverAsyncVideoKeyReleases(ctx context.Context, limit int) (int, error) {
+	if s.regionalAsyncVideoEnabled() {
+		return s.recoverRegionalAsyncVideoKeyReleases(ctx, limit)
+	}
 	if s != nil && (s.upstreamKeyLimiter == nil || s.upstreamKeyLimiter.regional != nil) {
 		return 0, nil
 	}
@@ -528,7 +580,8 @@ func (s *httpUpstreamService) RecoverAsyncVideoKeyReleases(ctx context.Context, 
 		if err := ctx.Err(); err != nil {
 			return recovered, errors.Join(recoveryErr, err)
 		}
-		claimed, claimErr := claimAsyncVideoKeyReleaseScript.Run(ctx, limiter.rdb, []string{asyncVideoReleaseKey()}, member, nowMillis).Int()
+		claimUntil := nowMillis + asyncVideoReleaseClaimTTL.Milliseconds()
+		claimed, claimErr := claimAsyncVideoKeyReleaseScript.Run(ctx, limiter.rdb, []string{asyncVideoReleaseKey()}, member, nowMillis, claimUntil).Int()
 		if claimErr != nil {
 			return recovered, errors.Join(recoveryErr, claimErr)
 		}
@@ -536,14 +589,15 @@ func (s *httpUpstreamService) RecoverAsyncVideoKeyReleases(ctx context.Context, 
 			continue
 		}
 		if err := s.releaseAsyncVideoKeyLeaseByMember(ctx, member, true); err != nil {
-			deferred, deferErr := limiter.rdb.ZAdd(ctx, asyncVideoReleaseKey(), redis.Z{Score: float64(serverNow.Add(30 * time.Second).UnixMilli()), Member: member}).Result()
+			deferred, deferErr := deferAsyncVideoKeyReleaseScript.Run(ctx, limiter.rdb,
+				[]string{asyncVideoReleaseKey()},
+				member, claimUntil, (30 * time.Second).Milliseconds()).Int()
 			if deferErr != nil {
 				return recovered, errors.Join(recoveryErr, err, deferErr)
 			}
-			if deferred != 1 {
-				return recovered, errors.Join(recoveryErr, err, service.ErrUpstreamKeyLease)
+			if deferred == 1 {
+				recoveryErr = errors.Join(recoveryErr, err)
 			}
-			recoveryErr = errors.Join(recoveryErr, err)
 			continue
 		}
 		recovered++
