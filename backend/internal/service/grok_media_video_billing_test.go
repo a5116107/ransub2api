@@ -53,6 +53,25 @@ func TestIsGrokVideoStatusBillable(t *testing.T) {
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","video":{"url":"https://vidgen.x.ai/x.mp4"}}`)))
 }
 
+func TestGrokVideoStatusTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		body     string
+		terminal bool
+	}{
+		{`{"status":"pending"}`, false},
+		{`{"status":"running"}`, false},
+		{`{"status":"done"}`, true},
+		{`{"status":"failed"}`, true},
+		{`{"status":"expired"}`, true},
+		{`{"url":"https://example.com/video.mp4"}`, false},
+		{`invalid`, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			require.Equal(t, tc.terminal, grokVideoStatusTerminal([]byte(tc.body)))
+		})
+	}
+}
+
 func TestExtractGrokVideoBillingFromStatusBodyPrefersUpstreamParams(t *testing.T) {
 	t.Parallel()
 	pending := &GrokVideoPendingBilling{

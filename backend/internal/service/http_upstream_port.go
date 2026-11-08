@@ -111,19 +111,55 @@ type PersistentUpstreamKeyConcurrency interface {
 	ReleasePersistentUpstreamKeySlots(context.Context, *PersistentUpstreamKeyLease) error
 }
 
+// AsyncVideoKeyOwner identifies the authenticated task owner and the
+// selected account. A task identifier alone is not globally unique.
+type AsyncVideoKeyOwner struct {
+	UserID           int64    `json:"user_id"`
+	APIKeyID         int64    `json:"api_key_id"`
+	GroupID          int64    `json:"group_id"`
+	AccountID        int64    `json:"account_id"`
+	Provider         string   `json:"provider"`
+	RouteFingerprint [32]byte `json:"route_fingerprint"`
+}
+
+func (o AsyncVideoKeyOwner) Valid() bool {
+	return o.ValidPrincipal() && o.AccountID > 0 && o.RouteFingerprint != [32]byte{}
+}
+
+func (o AsyncVideoKeyOwner) ValidPrincipal() bool {
+	return o.UserID > 0 && o.APIKeyID > 0 && o.GroupID >= 0 &&
+		(o.Provider == "grok" || o.Provider == "seedance" || o.Provider == "minimax-h3")
+}
+
+type asyncVideoKeyOwnerContextKey struct{}
+
+func WithAsyncVideoKeyOwner(ctx context.Context, owner AsyncVideoKeyOwner) context.Context {
+	return context.WithValue(ctx, asyncVideoKeyOwnerContextKey{}, owner)
+}
+
+func AsyncVideoKeyOwnerFromContext(ctx context.Context) (AsyncVideoKeyOwner, bool) {
+	if ctx == nil {
+		return AsyncVideoKeyOwner{}, false
+	}
+	owner, ok := ctx.Value(asyncVideoKeyOwnerContextKey{}).(AsyncVideoKeyOwner)
+	return owner, ok && owner.Valid()
+}
+
 // AsyncVideoKeyHandoff is the in-process handle for a video creation member.
 // The member is created before the upstream POST and the lease is attached by
 // the final HTTP admission layer. The handle deliberately contains no
-// authentication material; the durable record stores only the lease's
-// fingerprints and slot resource IDs.
+// authentication material; the durable record stores owner and route identity
+// with the lease's fingerprints and slot resource IDs.
 type AsyncVideoKeyHandoff struct {
-	mu     sync.RWMutex
-	member string
-	lease  *PersistentUpstreamKeyLease
+	mu      sync.RWMutex
+	member  string
+	lease   *PersistentUpstreamKeyLease
+	owner   AsyncVideoKeyOwner
+	started bool
 }
 
-func NewAsyncVideoKeyHandoff() *AsyncVideoKeyHandoff {
-	return &AsyncVideoKeyHandoff{member: "video:" + uuid.NewString()}
+func NewAsyncVideoKeyHandoff(owner AsyncVideoKeyOwner) *AsyncVideoKeyHandoff {
+	return &AsyncVideoKeyHandoff{member: "video:" + uuid.NewString(), owner: owner}
 }
 
 func WithAsyncVideoKeyHandoff(ctx context.Context, handoff *AsyncVideoKeyHandoff) context.Context {
@@ -165,6 +201,13 @@ func (h *AsyncVideoKeyHandoff) Member() string {
 	return h.member
 }
 
+func (h *AsyncVideoKeyHandoff) Owner() AsyncVideoKeyOwner {
+	if h == nil {
+		return AsyncVideoKeyOwner{}
+	}
+	return h.owner
+}
+
 func (h *AsyncVideoKeyHandoff) Lease() *PersistentUpstreamKeyLease {
 	if h == nil {
 		return nil
@@ -183,6 +226,19 @@ func (h *AsyncVideoKeyHandoff) SetLease(lease *PersistentUpstreamKeyLease) {
 	h.mu.Unlock()
 }
 
+func (h *AsyncVideoKeyHandoff) TryStart() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.started {
+		return false
+	}
+	h.started = true
+	return true
+}
+
 type asyncVideoKeyHandoffContextKey struct{}
 
 // AsyncVideoKeyLeaseController persists the provisional member before the
@@ -196,8 +252,39 @@ type AsyncVideoKeyLeaseController interface {
 	BindAsyncVideoKeyLeaseByMember(context.Context, string, string) error
 	MarkAsyncVideoKeySubmissionUnknown(context.Context, *AsyncVideoKeyHandoff) error
 	ReleaseAsyncVideoKeyLease(context.Context, *AsyncVideoKeyHandoff) error
-	ReleaseAsyncVideoKeyLeaseByTask(context.Context, string) error
+	ResolveAsyncVideoKeyOwner(context.Context, AsyncVideoKeyOwner, string) (*AsyncVideoKeyOwner, error)
+	LoadAsyncVideoKeyLeaseByTask(context.Context, AsyncVideoKeyOwner, string) (*PersistentUpstreamKeyLease, error)
+	ReleaseAsyncVideoKeyLeaseByTask(context.Context, AsyncVideoKeyOwner, string) error
 	ReleaseAsyncVideoKeyLeaseByMember(context.Context, string) error
+}
+
+type asyncVideoKeyLookupContextKey struct{}
+
+type asyncVideoKeyLookup struct {
+	Member string
+	Method string
+	URL    string
+	Host   string
+}
+
+// WithAsyncVideoKeyLookup binds a loaded lease to one prepared status request.
+func WithAsyncVideoKeyLookup(req *http.Request, lease *PersistentUpstreamKeyLease) *http.Request {
+	if req == nil || req.URL == nil || lease == nil {
+		return req
+	}
+	ctx := WithPersistentUpstreamKeyLease(req.Context(), lease)
+	ctx = context.WithValue(ctx, asyncVideoKeyLookupContextKey{}, asyncVideoKeyLookup{
+		Member: lease.Member, Method: req.Method, URL: req.URL.String(), Host: req.Host,
+	})
+	return req.WithContext(ctx)
+}
+
+func AsyncVideoKeyLookupMatches(req *http.Request, lease *PersistentUpstreamKeyLease) bool {
+	if req == nil || req.URL == nil || lease == nil || (req.Method != http.MethodGet && req.Method != http.MethodDelete) {
+		return false
+	}
+	binding, ok := req.Context().Value(asyncVideoKeyLookupContextKey{}).(asyncVideoKeyLookup)
+	return ok && binding.Member == lease.Member && binding.Method == req.Method && binding.URL == req.URL.String() && binding.Host == req.Host
 }
 
 // UpstreamKeyRequestAdmission reuses the HTTP transport's exact admission and

@@ -1073,3 +1073,19 @@
 - handler 将 HTTP 语音本地准入拒绝加入原账号切换预算；拒绝释放账号槽位，不更新供应商健康或上游错误样本，候选耗尽返回 `admission_unavailable` 503。WS 终检行为保持并与 HTTP 共享同一 `admitAvailabilityRequest` 入口。
 - `go test -race -p=1 -tags unit ./internal/service ./internal/handler -run '^(TestForwardGrokVoiceAvailabilityFailsClosedBeforeSend|TestGrokVoiceHTTPAvailabilityAdmission|TestGrokVoiceAvailability)' -count=1 -timeout=8m` 退出0（service 1.524s、handler 1.212s）；`go vet -p=1 -tags unit ./internal/service ./internal/handler` 退出0；分包 lint `./internal/service/... ./internal/handler/...` 退出0，输出 `0 issues.`。未运行 CI、未部署或生产迁移。
 - 本项不构造语音专属上游质量探测，也不扩大到其他独立出站；D3 仍有未观测能力和托管连接范围待验收。
+
+## 2026-11-08：D2 异步视频持久额度交接
+
+- 异步视频响应体关闭不代表远端任务结束。受限请求先在同一 Redis 权威登记 `video:<uuid>` provisional member 和恢复索引，再以记录及栅栏为条件取得 Key 槽位后发送；区域 SQL 缺少同源记录时发送前拒绝。Astra 透传同一控制器。
+- Grok、Seedance、MiniMax-H3 按认证用户/下游Key/组/供应商和任务ID绑定 v2 索引，并保存账号、线路指纹；查询在满额时复用自身成员，实际终态才释放。未知发送结果不重放，自动恢复 worker 未接入；记录含主体ID、指纹和租约资源，不含明文 Key。无 owner 的旧版记录不被新版本猜测认领或按 member 释放；混合版本、策略关闭、升级/回滚均须先排空任务和索引。
+- 更正先前的集成结论：原夹具 `appendonly=no` 被持久化检查拒绝，旧断言允许创建失败，因而五类创建/释放的旧“通过”是误报，不作为验收证据。修正夹具为 Redis 7 `appendonly=yes`、`appendfsync=always`，且断言实际创建、满额查询、终态及释放后再次准入；`go test -tags 'unit integration' ./internal/service -run '^TestAsyncVideoSharedKeyPendingCapacity$'` 退出0，覆盖五类创建各两种服务配置。repository 的 handoff 单测使用 miniredis，不是上述真实 Redis 夹具。
+- D2 仍保持进行中：区域 SQL 同源记录、终态释放失败的自动重试、未知任务自动恢复、其他非标准鉴权/绕过 HTTPUpstream 的跨请求出站及生产恢复演练待验收。未运行 CI、部署、推送或生产迁移。
+
+## 2026-11-08：D2 异步视频归属与释放边界修复
+
+- 在隔离夹具复现：满额任务状态查询原先返回503；成员与租约不一致、无 owner 的旧记录和缺失成员记录原先被当作成功释放，损坏记录还可错误绑定。新路径校验认证主体、账号、线路及成员，绑定/释放前拒绝不一致或无归属记录；释放栅栏原子比较成员和任务索引，防止并发绑定留下孤立索引。释放失败保留栅栏和恢复索引，跨实例手动重试通过；这不是后台自动恢复。
+- 上游明确返回429时，Seedance、MiniMax和Grok自定义错误码路径原先仍保留持久槽位；结果来自错误对象而非原始HTTP状态。现按原状态分类，不改变原客户端错误或重试语义。`go test -race -p=1 -tags 'unit integration' ./internal/service -run '^TestAsyncVideoSharedKeyRejectionReleasesOnlyKnownFailures$' -count=1 -timeout=5m -v` 退出0、3.697s：四种线路各覆盖403/429释放及408/500保留，共16例；旧代码的三种429路径实际失败。
+- `go test -tags 'unit integration' ./internal/handler -run '^TestGrokVideoHandlerSharedKeyLifecycleWithRedis$' -count=1 -v` 退出0、3.827s；真实Redis及本地模拟上游验证handler创建、满额查询、非拥有者拒绝、丢失粘性缓存后恢复账号、终态释放和再次准入。仅Grok经过此完整handler夹具，其他提供方的对应证据为service/Redis集成。
+- 最终 `go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestAccountTestService_GrokVideo)' -count=1 -timeout=10m` 退出0：repository 14.089s、service 12.077s、handler 4.191s；`go vet -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler` 退出0、无诊断。
+- 三包原规则 `task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/repository/... ./internal/service/... ./internal/handler/...` 退出0，输出 `0 issues.`。将5个既有Prism文件以HEAD版临时只读overlay替换后，`go test -p=1 -tags 'unit integration' -overlay <隔离夹具> ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideo|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestGrokMediaVideoPassesAuthenticatedKeyOwner)' -count=1 -timeout=8m` 退出0，分别为9.492s、7.632s、2.921s；覆盖夹具已清理，未改原工作树。
+- 升级边界：v1无 owner 的任务记录和旧 task 索引不自动归属或释放，新旧版本混跑及关闭策略不保证在途保护；实际生产切换/回滚必须先停新任务并排空，尚未执行。当前区域模式对所有异步视频创建保守拒绝，不只限于受限Key。

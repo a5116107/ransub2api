@@ -61,11 +61,44 @@ func (s *OpenAIGatewayService) ReleaseAsyncVideoTaskLease(ctx context.Context, t
 	if s == nil || s.httpUpstream == nil || strings.TrimSpace(taskID) == "" {
 		return nil
 	}
+	owner, ok := AsyncVideoKeyOwnerFromContext(ctx)
+	if !ok {
+		return ErrUpstreamKeyPolicy
+	}
 	controller, ok := s.httpUpstream.(AsyncVideoKeyLeaseController)
 	if !ok {
 		return nil
 	}
-	return controller.ReleaseAsyncVideoKeyLeaseByTask(ctx, strings.TrimSpace(taskID))
+	return controller.ReleaseAsyncVideoKeyLeaseByTask(ctx, owner, strings.TrimSpace(taskID))
+}
+
+// prepareAsyncVideoKeyLookup allows only the authenticated task owner to use
+// its existing persistent member for a read/cancel request. The transport
+// checks the final target and credentials again before the physical send.
+func (s *OpenAIGatewayService) prepareAsyncVideoKeyLookup(req *http.Request, account *Account, endpoint GrokMediaEndpoint, taskID string) (*http.Request, error) {
+	if s == nil || s.httpUpstream == nil || req == nil || strings.TrimSpace(taskID) == "" {
+		return req, nil
+	}
+	owner, ok := AsyncVideoKeyOwnerFromContext(req.Context())
+	if !ok {
+		return req, nil
+	}
+	if account == nil || owner.AccountID != account.ID || owner.Provider != endpoint.AsyncVideoProvider() || owner.RouteFingerprint != AccountRouteFingerprint(account) {
+		return nil, ErrUpstreamKeyPolicy
+	}
+	controller, ok := s.httpUpstream.(AsyncVideoKeyLeaseController)
+	if !ok {
+		return req, nil
+	}
+	lease, err := controller.LoadAsyncVideoKeyLeaseByTask(req.Context(), owner, strings.TrimSpace(taskID))
+	if err != nil {
+		return nil, err
+	}
+	if lease == nil {
+		return req, nil
+	}
+	bound := WithAsyncVideoKeyLookup(req, lease)
+	return bound.WithContext(WithHTTPUpstreamRedirectsDisabled(bound.Context())), nil
 }
 
 // BindAsyncVideoTaskLeaseByMember completes recovery when a process lost the

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -537,6 +538,25 @@ func TestAccountTestService_GrokVideoUpstreamErrorIsNotMaskedAsSuccess(t *testin
 	require.Contains(t, rec.Body.String(), `"type":"error"`)
 	require.Contains(t, rec.Body.String(), "Grok videos API returned 400")
 	require.NotContains(t, rec.Body.String(), `"success":true`)
+}
+
+func TestAccountTestService_GrokVideoRequiresAsyncKeyGuard(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := &Account{ID: 21, Name: "grok-video", Platform: PlatformGrok, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "fixture"}}
+	repo := &mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"error":"fixture"}`))}}
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: cfg}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/21/test", nil)
+	err := svc.TestAccountConnection(c, account.ID, "grok-imagine-video", "waves", AccountTestModeGrokVideo)
+	require.Error(t, err)
+	require.Nil(t, upstream.lastReq, "a guarded asynchronous test must not send through a transport without a guard")
+	require.Contains(t, rec.Body.String(), "shared upstream Key")
 }
 
 type grokRealtimeTestConn struct {

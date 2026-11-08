@@ -221,11 +221,15 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	boundLookupAccountID := int64(0)
 	if endpoint.IsVideoLookupRequest() {
 		sessionHash = service.GrokMediaVideoRequestSessionHash(requestID, subject.UserID, apiKey.ID)
-		boundLookupAccountID, err = h.gatewayService.ResolveGrokMediaVideoRequestAccount(
-			c.Request.Context(), apiKey.GroupID, requestID, subject.UserID, apiKey.ID,
+		boundLookupAccountID, err = h.gatewayService.ResolveMediaVideoRequestAccount(
+			c.Request.Context(), apiKey.GroupID, requestID, subject.UserID, apiKey.ID, endpoint,
 		)
 		if err != nil || boundLookupAccountID <= 0 {
 			reqLog.Info("grok_media.video_lookup_owner_binding_missing", zap.Error(err))
+			if service.IsUpstreamKeyAdmissionFailure(err) {
+				h.handleGrokMediaFailoverExhausted(c, endpoint, &service.UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, Reason: service.UpstreamKeyAdmissionReason}, false)
+				return
+			}
 			h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video request not found")
 			return
 		}
@@ -412,15 +416,26 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 		writerSizeBeforeForward := c.Writer.Size()
+		forwardCtx := requestCtx
+		if provider := endpoint.AsyncVideoProvider(); provider != "" {
+			var groupID int64
+			if apiKey.GroupID != nil {
+				groupID = *apiKey.GroupID
+			}
+			forwardCtx = service.WithAsyncVideoKeyOwner(forwardCtx, service.AsyncVideoKeyOwner{
+				UserID: subject.UserID, APIKeyID: apiKey.ID, GroupID: groupID,
+				AccountID: account.ID, Provider: provider, RouteFingerprint: service.AccountRouteFingerprint(account),
+			})
+		}
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer releaseAccount()
 			if endpoint.IsSeedance() {
-				return h.gatewayService.ForwardSeedance(requestCtx, c, account, endpoint, requestID, body)
+				return h.gatewayService.ForwardSeedance(forwardCtx, c, account, endpoint, requestID, body)
 			}
 			if endpoint.IsMiniMaxH3() {
-				return h.gatewayService.ForwardMiniMaxH3(requestCtx, c, account, endpoint, requestID, body)
+				return h.gatewayService.ForwardMiniMaxH3(forwardCtx, c, account, endpoint, requestID, body)
 			}
-			return h.gatewayService.ForwardGrokMedia(requestCtx, c, account, endpoint, requestID, body, contentType)
+			return h.gatewayService.ForwardGrokMedia(forwardCtx, c, account, endpoint, requestID, body, contentType)
 		}()
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -530,7 +545,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			result.MiniMaxH3BaseCost = miniMaxH3BaseCost
 		}
 		if endpoint.IsVideoLookupRequest() && result.AsyncVideoTerminal {
-			if err := h.gatewayService.ReleaseAsyncVideoTaskLease(requestCtx, requestID); err != nil {
+			if err := h.gatewayService.ReleaseAsyncVideoTaskLease(forwardCtx, requestID); err != nil {
 				reqLog.Warn("grok_media.release_video_key_lease_failed",
 					zap.String("request_id", requestID),
 					zap.Error(err),

@@ -83,6 +83,7 @@ func TestMiniMaxH3StatusStates(t *testing.T) {
 				want = 1
 			}
 			require.Equal(t, want, result.VideoCount)
+			require.Equal(t, status == "failed" || status == "completed", result.AsyncVideoTerminal)
 			require.Zero(t, result.VideoDurationSeconds, "status must not override requested seconds")
 		})
 	}

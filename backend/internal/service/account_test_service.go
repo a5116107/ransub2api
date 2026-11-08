@@ -1742,9 +1742,24 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 		return s.sendErrorAndEnd(c, "Failed to create Grok video request")
 	}
 	s.applyGrokTestRequestHeaders(req, account, authToken, "application/json")
+	// The admin preview can outlive its create response just like a customer
+	// task. Without a durable preview owner, restricted keys must fail closed.
+	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(req.Context()))
+	required := upstreamKeyAdmissionRequired(s.cfg)
+	guard, guarded := s.httpUpstream.(AsyncVideoKeyGuard)
+	if !guarded || !guard.SupportsAsyncVideoKeyGuard() {
+		if required {
+			return s.sendErrorAndEnd(c, "Grok video preview shared upstream Key admission unavailable")
+		}
+	} else {
+		req = req.WithContext(WithAsyncVideoKeyGuard(req.Context(), required))
+	}
 
 	resp, err := timedAccountTestUpstream(s.httpUpstream).Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
+		if IsUpstreamKeyAdmissionFailure(err) {
+			return s.sendErrorAndEnd(c, "Grok video preview shared upstream Key admission unavailable")
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()

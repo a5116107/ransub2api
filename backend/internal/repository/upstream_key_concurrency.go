@@ -30,6 +30,7 @@ const upstreamKeyRenewInterval = 5 * time.Second
 // the same slot keys, so shrinking or removing a limit never resets occupancy.
 var acquireUpstreamKeyScript = redis.NewScript(`
 redis.replicate_commands()
+if ARGV[7] == 'video' and (redis.call('EXISTS', KEYS[3]) == 0 or redis.call('EXISTS', KEYS[4]) ~= 0) then return -1 end
 local revision = tonumber(ARGV[1])
 local current = tonumber(redis.call('HGET', KEYS[1], 'revision') or '0')
 if current > revision then return -1 end
@@ -46,7 +47,7 @@ local ttl = tonumber(ARGV[6])
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - ttl)
 if redis.call('ZSCORE', KEYS[2], ARGV[5]) then return 1 end
 if redis.call('ZCARD', KEYS[2]) >= limit then return 0 end
-if ARGV[7] == 'persistent' then
+if ARGV[7] == 'persistent' or ARGV[7] == 'video' then
   redis.call('ZADD', KEYS[2], '+inf', ARGV[5])
 else
   redis.call('ZADD', KEYS[2], now, ARGV[5])
@@ -129,7 +130,11 @@ func (l *upstreamKeyLimiter) take(ctx context.Context, fingerprint, member, mode
 	if l.regional != nil {
 		resource, result, err = l.regional.acquireUpstreamKeySlot(opCtx, l.policy.Revision, l.digest, fingerprint, member)
 	} else {
-		result, err = acquireUpstreamKeyScript.Run(opCtx, l.rdb, []string{upstreamKeyPolicyKey, key}, l.policy.Revision, l.digest, l.encoded, fingerprint, member, upstreamKeyLeaseTTL.Milliseconds(), mode).Int()
+		keys := []string{upstreamKeyPolicyKey, key}
+		if mode == "video" {
+			keys = append(keys, asyncVideoMemberKey(member), asyncVideoFenceKey(member))
+		}
+		result, err = acquireUpstreamKeyScript.Run(opCtx, l.rdb, keys, l.policy.Revision, l.digest, l.encoded, fingerprint, member, upstreamKeyLeaseTTL.Milliseconds(), mode).Int()
 	}
 	if err != nil {
 		_ = l.release(resource, key, member)
@@ -326,6 +331,7 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 	if req == nil || req.URL == nil || l.err != nil || !service.BatchImageKeyPolicyMatches(req, l.policy.Revision, l.digest) {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
+	handoff := service.AsyncVideoKeyHandoffFromRequest(req)
 	member := service.AsyncVideoKeyHandoffMember(req)
 	if member == "" {
 		member = service.BatchImageKeyCreationMember(req)
@@ -351,6 +357,41 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 				}
 				break
 			}
+		}
+	}
+	if handoff != nil {
+		if l.regional != nil {
+			return nil, service.ErrUpstreamKeyPolicy
+		}
+		for _, fingerprint := range lease.Fingerprints {
+			if l.policy.Limits[fingerprint] > 0 {
+				lease.Resources = append(lease.Resources, service.PersistentUpstreamKeyResource{Fingerprint: fingerprint})
+			}
+		}
+		if len(lease.Resources) > 0 {
+			if !handoff.Owner().Valid() {
+				return nil, service.ErrUpstreamKeyPolicy
+			}
+			handoff.SetLease(lease)
+			if err := s.PersistAsyncVideoKeyLease(ctx, handoff); err != nil {
+				// No provider request was sent. A lost Redis acknowledgement may
+				// nevertheless have created the provisional record; leave it
+				// indexed for reconciliation rather than guessing its outcome.
+				return nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
+			}
+			for _, fingerprint := range lease.Fingerprints {
+				_, result, err := l.take(ctx, fingerprint, lease.Member, "video")
+				if err == nil && l.policy.Limits[fingerprint] > 0 && result != 1 {
+					err = service.ErrUpstreamKeyPolicy
+				}
+				if err != nil {
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+					cleanupErr := s.ReleaseAsyncVideoKeyLease(cleanupCtx, handoff)
+					cancel()
+					return nil, errors.Join(err, cleanupErr)
+				}
+			}
+			return lease, nil
 		}
 	}
 	for _, fingerprint := range lease.Fingerprints {
@@ -468,15 +509,17 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 			return req, nil, service.ErrUpstreamKeyPolicy
 		}
 		batch := strings.HasPrefix(lease.Member, "batch:")
+		video := strings.HasPrefix(lease.Member, "video:")
 		if (batch && lease.Member != service.BatchImageKeyRequestMember(req)) ||
-			(!batch && !strings.HasSuffix(req.URL.Path, "/realtime/calls")) ||
+			(video && !service.AsyncVideoKeyLookupMatches(req, lease)) ||
+			(!batch && !video && !strings.HasSuffix(req.URL.Path, "/realtime/calls")) ||
 			!samePersistentCredentials(lease.Fingerprints, config.UpstreamCredentialFingerprints(req)) {
 			return req, nil, service.ErrUpstreamKeyPolicy
 		}
 		if err := s.CheckPersistentUpstreamKeySlots(req.Context(), lease); err != nil {
 			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
 		}
-		if !batch || service.BatchImageKeyCreationMember(req) != "" {
+		if (!batch && !video) || service.BatchImageKeyCreationMember(req) != "" {
 			if err := s.upstreamKeyLimiter.confirmPersistentPolicy(req.Context(), lease); err != nil {
 				return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
 			}
@@ -496,14 +539,18 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 		}
 		if handoff == nil {
 			for _, fingerprint := range fingerprints {
-				if s.upstreamKeyLimiter.policy.Limits[fingerprint] > 0 {
+				if fingerprint == config.UnverifiedUpstreamAgentCredential || s.upstreamKeyLimiter.policy.Limits[fingerprint] > 0 {
 					return req, nil, service.ErrUpstreamKeyPolicy
 				}
 			}
 			return req, func(*http.Response, error) {}, nil
 		}
-		controller, ok := any(s).(service.AsyncVideoKeyLeaseController)
-		if !ok {
+		for _, fingerprint := range fingerprints {
+			if s.upstreamKeyLimiter.policy.Limits[fingerprint] > 0 && !handoff.Owner().Valid() {
+				return req, nil, service.ErrUpstreamKeyPolicy
+			}
+		}
+		if !handoff.TryStart() {
 			return req, nil, service.ErrUpstreamKeyPolicy
 		}
 		lease, err := s.AcquirePersistentUpstreamKeySlots(req.Context(), req)
@@ -513,19 +560,12 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 		if lease == nil {
 			return req, func(*http.Response, error) {}, nil
 		}
-		handoff.SetLease(lease)
-		if err := controller.PersistAsyncVideoKeyLease(req.Context(), handoff); err != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(req.Context()), 3*time.Second)
-			_ = s.ReleasePersistentUpstreamKeySlots(cleanupCtx, lease)
-			cancel()
-			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
-		}
 		return req, func(_ *http.Response, requestErr error) {
 			// A nil response is ambiguous for an asynchronous POST. Keep the
 			// provisional record for recovery instead of releasing a remote task
 			// that may already have been accepted.
 			if requestErr != nil {
-				_ = controller.MarkAsyncVideoKeySubmissionUnknown(context.WithoutCancel(req.Context()), handoff)
+				_ = s.MarkAsyncVideoKeySubmissionUnknown(context.WithoutCancel(req.Context()), handoff)
 			}
 		}, nil
 	}

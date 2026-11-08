@@ -72,6 +72,11 @@ func TestAsyncVideoKeyGuardAtFinalHTTPAdmission(t *testing.T) {
 			resp, err := transport.Do(multi, "", 1, 1)
 			require.Nil(t, resp)
 			require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+			unverified := request("/create", "Bearer other-fixture")
+			unverified.Header.Add("Authorization", "AgentAssertion invalid-fixture")
+			resp, err = transport.Do(unverified, "", 1, 1)
+			require.Nil(t, resp)
+			require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
 			require.Equal(t, before, sends.Load(), "restricted and unknown credentials must not send")
 			require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val(), "a refusal must release its provisional slot")
 

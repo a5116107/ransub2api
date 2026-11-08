@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-- 任务：D2共享Key准入；Basic、内容审核及Grok语音独立出站准入已补齐，父任务仍在进行。
-- 源码：H盘唯一工作树`work/monitor-driven-scheduling`；Grok语音终检及异步视频发送前保护已验证，不运行CI、推送、部署或生产迁移。
-- 证据：Grok语音HTTP/WS availability漏控与五种异步视频共享槽位提前释放均已复现；隔离Redis 7/真实WS、发送前保护及未知结果不重放回归通过，细节见DECISIONS。
-- 下一动作：实现异步视频发送前持久交接、未知结果恢复及终态释放；继续D2其他鉴权与出站，再推进D3/D4和D5–D9。
-- 等待：历史清理/符号链接与生产等待不变；原20项12 done、3 in_progress、5 pending。
+任务：D2异步视频共享Key交接；父任务进行中，禁止CI/推送/部署/生产迁移。
+证据：修正Redis持久化夹具后五类视频实际创建、满额查询及终态释放通过；旧夹具假阳性已撤回。
+验证：`go test -race -p=1 -tags 'unit integration' ./internal/repository ./internal/service ./internal/handler -run '^(TestAsyncVideo|TestGrokMedia|TestGrokVideoHandlerSharedKeyLifecycleWithRedis|TestSeedance|TestMiniMaxH3|TestForwardGrokMediaVideo|TestAccountTestService_GrokVideo)' -count=1 -timeout=10m` 三包均通过；vet及lint通过。
+下一动作：完成区域SQL同源任务记录、unknown恢复及终态释放自动重试，再验D2其余出站。
+外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新日期：2026-11-07。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
+更新日期：2026-11-08。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
 - 用户授权本地实施、修复、相关清理与验证、本地提交；真实采购价格不在本期范围。生产执行仍需对应授权。
@@ -22,7 +22,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、共享Key/Live、turn-state、Gemini、HTTP/WS、批量、BPS、quota、Astra/区域、Bedrock、OAuth、Agent Identity、Basic、内容审核及Grok语音准入已验证；异步视频发送前保护已验，持久交接及其他来源待验 |
+| D2 | in_progress | 已覆盖D2.1–D2.4及多种出站准入；异步视频Redis持久交接、满额查询和终态释放已验证；区域模式全部异步创建暂拒，SQL记录、unknown恢复、释放自动重试及其他来源待验 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -53,7 +53,7 @@
 
 ## 下一项工作
 
-D2继续其他AgentAssertion来源、非标准鉴权、绕过HTTPUpstream及跨请求后台额度等边界，再补D3其他能力、D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启用前排空旧版本及远端批量任务；受限Live沿4.4.2，区域沿原SQL预算。
+D2继续异步视频区域SQL同源记录、unknown恢复和终态释放自动重试，以及其他非标准鉴权/独立出站；再补D3其他能力、D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启停、变更或版本切换前须排空旧视频和批量任务；受限Live沿4.4.2，区域沿原SQL预算。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理

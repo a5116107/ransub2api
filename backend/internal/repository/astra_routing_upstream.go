@@ -162,12 +162,28 @@ func (s *astraRoutingUpstream) ReleaseAsyncVideoKeyLease(ctx context.Context, ha
 	return controller.ReleaseAsyncVideoKeyLease(ctx, handoff)
 }
 
-func (s *astraRoutingUpstream) ReleaseAsyncVideoKeyLeaseByTask(ctx context.Context, taskID string) error {
+func (s *astraRoutingUpstream) ResolveAsyncVideoKeyOwner(ctx context.Context, principal service.AsyncVideoKeyOwner, taskID string) (*service.AsyncVideoKeyOwner, error) {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return nil, err
+	}
+	return controller.ResolveAsyncVideoKeyOwner(ctx, principal, taskID)
+}
+
+func (s *astraRoutingUpstream) LoadAsyncVideoKeyLeaseByTask(ctx context.Context, owner service.AsyncVideoKeyOwner, taskID string) (*service.PersistentUpstreamKeyLease, error) {
+	controller, err := s.asyncVideoKeyController()
+	if err != nil {
+		return nil, err
+	}
+	return controller.LoadAsyncVideoKeyLeaseByTask(ctx, owner, taskID)
+}
+
+func (s *astraRoutingUpstream) ReleaseAsyncVideoKeyLeaseByTask(ctx context.Context, owner service.AsyncVideoKeyOwner, taskID string) error {
 	controller, err := s.asyncVideoKeyController()
 	if err != nil {
 		return err
 	}
-	return controller.ReleaseAsyncVideoKeyLeaseByTask(ctx, taskID)
+	return controller.ReleaseAsyncVideoKeyLeaseByTask(ctx, owner, taskID)
 }
 
 func (s *astraRoutingUpstream) ReleaseAsyncVideoKeyLeaseByMember(ctx context.Context, member string) error {

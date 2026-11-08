@@ -340,6 +340,35 @@ func TestGrokMediaLookupSlotLifecycle(t *testing.T) {
 	}
 }
 
+func TestGrokMediaVideoPassesAuthenticatedKeyOwner(t *testing.T) {
+	for _, create := range []bool{true, false} {
+		t.Run(fmt.Sprintf("create=%t", create), func(t *testing.T) {
+			h, slots, _, upstream := newGrokMediaSlotHandler(t, false, false)
+			upstream.call = func(req *http.Request, accountID int64) (*http.Response, error) {
+				owner, ok := service.AsyncVideoKeyOwnerFromContext(req.Context())
+				require.True(t, ok)
+				require.Equal(t, int64(10), owner.UserID)
+				require.Equal(t, int64(20), owner.APIKeyID)
+				require.Equal(t, int64(24), owner.GroupID)
+				require.Equal(t, accountID, owner.AccountID)
+				require.Equal(t, "grok", owner.Provider)
+				require.NotEqual(t, [32]byte{}, owner.RouteFingerprint)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(`{"request_id":"task","status":"pending"}`))}, nil
+			}
+			c, recorder := grokMediaSlotContext(t.Context(), create)
+			if create {
+				h.GrokVideoGeneration(c)
+			} else {
+				h.GrokVideoStatus(c)
+			}
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Equal(t, 1, upstream.calls)
+			slots.assertReleased(t)
+		})
+	}
+}
+
 func TestGrokMediaEligibilityReleasesBeforeSwitch(t *testing.T) {
 	for _, scenario := range []string{"switch", "exhausted", "cancel during probe"} {
 		t.Run(scenario, func(t *testing.T) {

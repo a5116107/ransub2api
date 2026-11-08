@@ -116,7 +116,13 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	account.ApplyHeaderOverrides(req.Header)
-	req, err = s.guardAsyncVideoKeyRequest(req, endpoint)
+	if endpoint.IsVideoLookupRequest() {
+		req, err = s.prepareAsyncVideoKeyLookup(req, account, endpoint, taskID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	req, err = s.guardAsyncVideoKeyRequest(req, endpoint, account)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +158,7 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	if resp.StatusCode >= 300 {
 		forwardErr := fmt.Errorf("seedance upstream status %d", resp.StatusCode)
 		if endpoint.IsAsyncVideoCreate() {
-			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), req, forwardErr)
+			_ = s.finalizeAsyncVideoKeyError(context.WithoutCancel(ctx), req, &UpstreamFailoverError{StatusCode: resp.StatusCode})
 		}
 		writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
 		return nil, forwardErr
@@ -186,7 +192,8 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	}
 	if endpoint == SeedanceEndpointDelete {
 		result.ResponseID = taskID
-		result.AsyncVideoTerminal = true
+		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
+		result.AsyncVideoTerminal = status == "succeeded" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
 	}
 	writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
 	return result, nil

@@ -77,7 +77,7 @@ func TestAsyncVideoKeyGuardRequestCapability(t *testing.T) {
 					req := httptest.NewRequest(http.MethodPost, "/fixture", nil)
 					for _, supported := range []bool{false, true} {
 						svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &asyncVideoKeyGuardStub{supported: supported}}
-						got, err := svc.guardAsyncVideoKeyRequest(req, endpoint)
+						got, err := svc.guardAsyncVideoKeyRequest(req, endpoint, nil)
 						if policy != "disabled" && !supported {
 							require.Nil(t, got)
 							require.True(t, IsUpstreamKeyAdmissionFailure(err), "%v", err)
@@ -103,7 +103,7 @@ func TestAsyncVideoKeyGuardRequestCapability(t *testing.T) {
 	for _, endpoint := range []GrokMediaEndpoint{GrokMediaEndpointImagesGenerations, GrokMediaEndpointVideoStatus,
 		GrokMediaEndpointVideoContent, SeedanceEndpointStatus, SeedanceEndpointDelete, MiniMaxH3EndpointStatus, MiniMaxH3EndpointContent} {
 		req := httptest.NewRequest(http.MethodGet, "/fixture", nil)
-		got, err := svc.guardAsyncVideoKeyRequest(req, endpoint)
+		got, err := svc.guardAsyncVideoKeyRequest(req, endpoint, nil)
 		require.NoError(t, err)
 		require.Same(t, req, got, "existing task operations and synchronous images must retain their HTTP behavior")
 	}

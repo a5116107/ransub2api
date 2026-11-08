@@ -53,6 +53,7 @@ func TestSeedanceStatusAndDelete(t *testing.T) {
 			require.NoError(t, err)
 			require.JSONEq(t, body, w.Body.String())
 			require.Equal(t, "/api/v3/contents/generations/tasks/task-1", upstream.request.URL.Path)
+			require.Equal(t, status == "failed" || status == "cancelled" || status == "expired" || status == "succeeded", result.AsyncVideoTerminal)
 			if status == "succeeded" {
 				require.Equal(t, 12345, result.Usage.OutputTokens)
 			} else {
@@ -65,10 +66,18 @@ func TestSeedanceStatusAndDelete(t *testing.T) {
 	upstream.response.StatusCode = http.StatusNoContent
 	svc := &OpenAIGatewayService{httpUpstream: upstream}
 	c, w := grokMediaContentTestContext(http.MethodDelete, "/api/v3/contents/generations/tasks/task-1", nil)
-	_, err := svc.ForwardSeedance(context.Background(), c, seedanceTestAccount(), SeedanceEndpointDelete, "seedance:task-1", nil)
+	result, err := svc.ForwardSeedance(context.Background(), c, seedanceTestAccount(), SeedanceEndpointDelete, "seedance:task-1", nil)
 	require.NoError(t, err)
+	require.False(t, result.AsyncVideoTerminal, "a cancellation acknowledgement does not prove the job has stopped")
 	require.Equal(t, http.MethodDelete, upstream.request.Method)
 	require.Equal(t, http.StatusNoContent, w.Code)
+
+	upstream = &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"status":"cancelled"}`)}
+	svc = &OpenAIGatewayService{httpUpstream: upstream}
+	c, _ = grokMediaContentTestContext(http.MethodDelete, "/api/v3/contents/generations/tasks/task-1", nil)
+	result, err = svc.ForwardSeedance(context.Background(), c, seedanceTestAccount(), SeedanceEndpointDelete, "seedance:task-1", nil)
+	require.NoError(t, err)
+	require.True(t, result.AsyncVideoTerminal)
 }
 
 func TestSeedanceValidationAndCapability(t *testing.T) {
