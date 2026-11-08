@@ -1183,3 +1183,10 @@
 - 修正既有 admin handler 夹具使用实际 `/stats` 路由，并加入 balance/concurrency/subscription/invitation、活跃/已用/过期和已分配面值断言；`gofmt` 无输出。
 - `go test -race -p 1 -tags=unit ./internal/handler/admin -run '^TestRedeemHandlerEndpoints$' -count=2 -timeout=8m` 退出0，admin `1.902s`；扩大 `^(TestGroup|TestProxy|TestUser|TestRedeem)HandlerEndpoints$` 两轮退出0，admin `1.233s`。
 - `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin` 退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.479s [no tests to run]`。精确搜索旧 `RedeemService.GetStats`/统计 TODO/`redeem-codes/:id/stats` 为0；未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：M10 删除账号刷新伪实现
+
+- `AdminService.RefreshAccountCredentials` 在仓内仅有接口声明、`adminServiceImpl` 读取账号后原样返回的 TODO 实现，以及 admin 测试 stub；没有任何 handler、路由或生产调用方。实际 `POST /admin/accounts/:id/refresh` 由 `AccountHandler.refreshSingleAccount` 按 OpenAI、Gemini、Antigravity、Grok 和 Anthropic OAuth 服务刷新并持久化凭据。
+- 原位删除接口成员、空实现和测试 stub，不改实际 OAuth 刷新链、批量刷新或专用 OAuth handler，避免保留第二套入口和假成功结果。
+- `gofmt -d internal/service/admin_service.go internal/service/admin_account.go internal/handler/admin/admin_service_stub_test.go` 无输出；`go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestRefreshSingleAccount|TestAccountHandlerEndpoints|TestGroupHandlerEndpoints|TestProxyHandlerEndpoints|TestRedeemHandlerEndpoints)$' -count=2 -timeout=8m` 退出0，admin `1.223s`。
+- `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin` 退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `0.843s [no tests to run]`；精确搜索 `RefreshAccountCredentials|TODO: Implement refresh logic` 为0。未运行 CI、推送、部署或生产迁移。

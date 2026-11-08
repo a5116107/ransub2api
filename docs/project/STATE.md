@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：M9 补齐兑换码统计真实数据并移除旧统计伪实现；父任务进行中，禁止CI/推送/部署/生产迁移。
-证据：管理端兑换码统计按真实分页数据计算 active/used/expired、类型和已使用面值，服务层旧 TODO 已删除。
-验证：admin handler unit race 两轮退出0、1.233s；service/admin unit vet退出0；service默认编译1.479s；gofmt无输出。
-下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M9 已提交（代码834e336，文档1b986ec）。
+任务：M10 删除无调用账号刷新伪实现；父任务进行中，禁止CI/推送/部署/生产迁移。
+证据：AdminService.RefreshAccountCredentials 仅存在于接口、空实现和测试 stub，实际刷新由 AccountHandler 各平台 OAuth 服务完成。
+验证：admin handler unit race 两轮退出0、1.223s；service/admin unit vet退出0；service默认编译0.843s；gofmt无输出；旧引用搜索0。
+下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M10 待提交。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新日期：2026-11-08。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
+更新日期：2026-11-09。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
 - 用户授权本地实施、修复、相关清理与验证、本地提交；真实采购价格不在本期范围。生产执行仍需对应授权。
@@ -39,6 +39,7 @@
 | M7 | done | 删除无调用且假成功的 AccountService.TestCredentials；引用搜索0、gofmt、service编译及vet通过 |
 | M8 | done | 分组统计移除 mock 零值；API Key 总数/活跃数分页准确，历史请求和标准成本复用 dashboard 数据，handler race/vet通过 |
 | M9 | done | 兑换码统计移除 mock/TODO；真实分页统计状态、类型和已使用面值，admin race、service编译与vet通过 |
+| M10 | done | 删除无调用且假成功的 AdminService.RefreshAccountCredentials；接口/实现/stub引用为0，admin race、service编译与vet通过 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
 | D5 | pending | timing与缓存分层/冷启动估计；依赖D2/D3 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
