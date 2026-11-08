@@ -126,6 +126,11 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	if err != nil {
 		return nil, err
 	}
+	// Seedance has no matching availability wire scope yet. Do not borrow a
+	// text probe result when a rule is configured for this account.
+	if err := s.admitAvailabilityRequest(req.Context(), req, account); err != nil {
+		return nil, err
+	}
 	proxy := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxy = account.Proxy.URL()

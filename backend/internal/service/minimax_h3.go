@@ -180,6 +180,11 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 	if err != nil {
 		return nil, err
 	}
+	// MiniMax-H3 has no matching availability wire scope yet. Keep configured
+	// rules fail-closed instead of treating a text probe as video evidence.
+	if err := s.admitAvailabilityRequest(req.Context(), req, account); err != nil {
+		return nil, err
+	}
 	proxy := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxy = account.Proxy.URL()
