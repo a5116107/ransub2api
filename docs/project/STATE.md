@@ -27,7 +27,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新availability、故障分类、BPS纯文本探测及Grok语音HTTP/WS握手前终检已验证；其余能力、托管连接、未观测传输及WS作用域待补 |
+| D3 | in_progress | 最新availability、故障分类、BPS纯文本探测、Grok语音HTTP/WS握手前终检及Codex harvest Edge HTTP/WS共享准入已验证；其余能力、托管连接、未观测传输及WS作用域待补 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
