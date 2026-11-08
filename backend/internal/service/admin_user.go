@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
 // User management implementations
@@ -756,13 +758,43 @@ func (s *adminServiceImpl) GetUserRPMStatus(ctx context.Context, userID int64) (
 }
 
 func (s *adminServiceImpl) GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error) {
-	// Return mock data for now
+	if s.usageLogs == nil {
+		return nil, infraerrors.New(http.StatusNotImplemented, "USER_USAGE_STATS_UNAVAILABLE", "user usage statistics are not configured")
+	}
+
+	period = strings.ToLower(strings.TrimSpace(period))
+	if period == "" {
+		period = "month"
+	}
+	endTime := time.Now().UTC()
+	var startTime time.Time
+	switch period {
+	case "today", "day":
+		startTime = time.Date(endTime.Year(), endTime.Month(), endTime.Day(), 0, 0, 0, 0, time.UTC)
+	case "week":
+		startTime = endTime.AddDate(0, 0, -7)
+	case "month":
+		startTime = endTime.AddDate(0, -1, 0)
+	case "year":
+		startTime = endTime.AddDate(-1, 0, 0)
+	default:
+		return nil, infraerrors.BadRequest("INVALID_USAGE_PERIOD", "period must be day, week, month, or year")
+	}
+
+	stats, err := s.usageLogs.GetUserStatsAggregated(ctx, userID, startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("get user usage statistics: %w", err)
+	}
+	if stats == nil {
+		stats = &usagestats.UsageStats{}
+	}
 	return map[string]any{
-		"period":          period,
-		"total_requests":  0,
-		"total_cost":      0.0,
-		"total_tokens":    0,
-		"avg_duration_ms": 0,
+		"period":            period,
+		"total_requests":    stats.TotalRequests,
+		"total_cost":        stats.TotalCost,
+		"total_actual_cost": stats.TotalActualCost,
+		"total_tokens":      stats.TotalTokens,
+		"avg_duration_ms":   stats.AverageDurationMs,
 	}, nil
 }
 

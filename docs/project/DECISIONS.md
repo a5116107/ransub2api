@@ -1190,3 +1190,11 @@
 - 原位删除接口成员、空实现和测试 stub，不改实际 OAuth 刷新链、批量刷新或专用 OAuth handler，避免保留第二套入口和假成功结果。
 - `gofmt -d internal/service/admin_service.go internal/service/admin_account.go internal/handler/admin/admin_service_stub_test.go` 无输出；`go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestRefreshSingleAccount|TestAccountHandlerEndpoints|TestGroupHandlerEndpoints|TestProxyHandlerEndpoints|TestRedeemHandlerEndpoints)$' -count=2 -timeout=8m` 退出0，admin `1.223s`。
 - `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin` 退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `0.843s [no tests to run]`；精确搜索 `RefreshAccountCredentials|TODO: Implement refresh logic` 为0。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：M11 补齐管理端用户用量真实统计
+
+- `AdminService.GetUserUsageStats` 原先无条件返回零值，管理端用户用量接口因此把真实请求/成本/Token显示为零。项目已有 `UsageLogRepository.GetUserStatsAggregated` 的数据库聚合口径，直接复用而不读取明细或建立第二套统计。
+- `adminServiceImpl` 通过现有 `ProvideAdminService` 注入 `usageLogRepository`；`day/today` 使用 UTC 当日开始，`week/month/year` 使用对应日历回溯窗口。返回请求数、Token、标准成本、实际成本和平均时延；无仓储返回本地 501，非法周期返回 400，仓储错误透传，不伪造成功零值。
+- 更新已生成 server Wire 调用和唯一直接 provider 夹具；新增 service 单测覆盖真实聚合映射、五种周期、非法周期、缺依赖和仓储失败。
+- `gofmt` 无输出；`go test -race -p 1 -tags=unit ./internal/service -run '^TestAdminServiceGetUserUsageStats' -count=2 -timeout=8m` 退出0，service `1.231s`；`go test -race -p 1 -tags=unit ./internal/handler/admin -run '^(TestUserHandlerEndpoints|TestGroupHandlerEndpoints|TestProxyHandlerEndpoints|TestRedeemHandlerEndpoints)$' -count=2 -timeout=8m` 退出0，admin `1.216s`。
+- `go test -p 1 ./cmd/server -run '^$' -count=1 -timeout=8m` 退出0，server `1.407s [no tests to run]`；`go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin` 退出0、无诊断。未运行 CI、推送、部署或生产迁移。
