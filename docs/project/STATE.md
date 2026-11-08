@@ -6,7 +6,7 @@
 任务：M11 补齐管理端用户用量真实统计；父任务进行中，禁止CI/推送/部署/生产迁移。
 证据：GetUserUsageStats 复用 UsageLogRepository 聚合查询，按 day/week/month/year 窗口返回真实请求、token、成本和平均时延。
 验证：service usage unit race 两轮退出0、1.231s；admin handler race 两轮退出0、1.216s；server默认编译1.407s；unit vet退出0；gofmt无输出。
-下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M11 待提交。
+下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M11 已提交（代码45234d9）。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 
