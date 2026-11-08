@@ -2,16 +2,81 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
+
+type codexHarvestAdmissionUpstream struct {
+	err        error
+	beginCalls int
+	doCalls    int
+}
+
+func (u *codexHarvestAdmissionUpstream) Do(*http.Request, string, int64, int) (*http.Response, error) {
+	u.doCalls++
+	return nil, errors.New("harvest upstream transport should not be called")
+}
+
+func (u *codexHarvestAdmissionUpstream) DoWithTLS(req *http.Request, proxy string, accountID int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxy, accountID, concurrency)
+}
+
+func (u *codexHarvestAdmissionUpstream) BeginUpstreamKeyRequest(req *http.Request) (*http.Request, func(*http.Response, error), error) {
+	u.beginCalls++
+	return req, func(*http.Response, error) {}, u.err
+}
+
+func TestCodex780EdgeAdmissionFailsBeforeDial(t *testing.T) {
+	proxyCalls := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxyCalls++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	upstream := &codexHarvestAdmissionUpstream{err: ErrUpstreamKeyCapacity}
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{"fixture": 1}}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := ticketTestAccount(1)
+	ctx, err := WithCodexHarvestEdgeIP(context.Background(), "104.18.32.7")
+	require.NoError(t, err)
+
+	out := svc.requestCodex780Probe(ctx, account, "token", "gpt-6-astra", proxy.URL, func() bool { return true }, "session")
+	require.Equal(t, "local_admission", out.Kind)
+	require.False(t, out.Sent)
+	require.ErrorIs(t, out.Err, ErrUpstreamKeyCapacity)
+	require.Equal(t, 1, upstream.beginCalls)
+	require.Zero(t, upstream.doCalls)
+	require.Zero(t, proxyCalls, "shared-Key refusal must happen before the pinned edge dial")
+}
+
+func TestCodex780WebSocketEdgeAdmissionFailsBeforeDial(t *testing.T) {
+	proxyCalls := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxyCalls++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	upstream := &codexHarvestAdmissionUpstream{err: ErrUpstreamKeyCapacity}
+	req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	require.NoError(t, err)
+
+	out := requestCodex780WS(req, proxy.URL, "104.18.32.7", []byte(`{"model":"gpt-6-astra"}`), nil, "any", "gpt-6-astra", upstream, true)
+	require.False(t, out.Sent)
+	require.ErrorIs(t, out.Err, ErrUpstreamKeyCapacity)
+	require.Equal(t, 1, upstream.beginCalls)
+	require.Zero(t, proxyCalls, "WebSocket shared-Key refusal must happen before the pinned edge dial")
+}
 
 func harvestProbeCompleteFixture(model string) string {
 	return fmt.Sprintf("data: {\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"model\":%q}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"model\":%q}}\n\n", model, model)

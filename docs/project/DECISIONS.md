@@ -1145,3 +1145,12 @@
 - `go vet -p 1 -tags=unit ./internal/service ./internal/handler/admin`、`go vet -p 1 -tags=integration ./internal/service` 均退出0、无诊断；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0、1.590s，仅验证默认标签编译。
 - 首次仅 integration 标签构建因无标签语音测试引用 unit 专属夹具而失败；将该测试原样移到现有 unit 文件，保留原断言。另一次在测试编译期间补写管理端测试导致 vet 无法解析新增导入，源码稳定后以上双轮回归通过。
 - 原20项维持12 done、3 in_progress、5 pending；D2 仍需区域从节点/跨区域归属、unknown 自动核实与其他出站，另有 repository integration lint 的99项历史诊断。未运行CI、推送、部署或生产迁移。
+
+## 2026-11-08：D3 Codex harvest Edge 出站共享准入
+
+- 代码核查确认：Codex 780 harvest 在配置公网 Edge IP 时使用独立 pinned `http.Client`；HTTP 和 WebSocket 两条路径均绕过 `HTTPUpstream.Do`，共享 Key 满额时仍可能进入代理/Edge 拨号。此处属于 D3 的独立出站缺口，不改变普通 harvest、Host/SNI、CONNECT 或 TLS 语义。
+- 原位在 Edge HTTP 路径复用 `doOpenAIClientRequest`，在 Edge WebSocket 握手前调用同一 `BeginUpstreamKeyRequest`，并在连接关闭后释放本次准入；缺少权威时启用共享/区域策略失败关闭。容量/策略拒绝保留本地错误和未发送状态，租约丢失不伪装成供应商网络失败。
+- 新增回归证明 HTTP/WS 满额时 `beginCalls=1`、底层上游 `Do` 未调用、代理请求数为0；原有 780 harvest、Edge TLS/SNI、CONNECT、WebSocket 握手和 ticket 续接回归保持。
+- `go test -race -p 1 -tags=unit ./internal/service -run '^(TestCodex780EdgeAdmissionFailsBeforeDial|TestCodex780WebSocketEdgeAdmissionFailsBeforeDial|TestCodex780NativeProbe|TestCodex780Edge|TestCodex780WebSocket|TestCodex780Admission)' -count=2 -timeout=8m` 退出0，service 1.347s。
+- 扩大 harvest 回归 `go test -race -p 1 -tags=unit ./internal/service -run '^(TestCodex780|TestHarvest|TestOpenAICodexHarvest|TestCodexHarvest)' -count=1 -timeout=10m` 退出0，service 8.738s；`go vet -p 1 -tags=unit ./internal/service` 退出0；默认 `go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，1.451s。
+- D3 仍保留其他未观测能力、托管连接及 WS 作用域范围；D2 区域从节点/跨区域归属和 unknown 自动核实仍未完成。未运行 CI、推送、部署或生产迁移。

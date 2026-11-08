@@ -194,6 +194,8 @@ func classifyCodexHarvestProbe(ctx context.Context, account *Account, cfg config
 	switch {
 	case ctx.Err() != nil:
 		return shape, "cancelled"
+	case IsUpstreamKeyAdmissionFailure(result.Err) || errors.Is(result.Err, ErrUpstreamKeyLease):
+		return shape, "local_admission"
 	case !result.Sent:
 		return shape, "not_sent"
 	case result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden:

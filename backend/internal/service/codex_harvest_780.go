@@ -217,8 +217,13 @@ func (s *OpenAIGatewayService) requestCodex780Shot(ctx context.Context, account 
 		return
 	}
 	out.Sent = true
+	var admission UpstreamKeyRequestAdmission
+	if s.httpUpstream != nil {
+		admission, _ = s.httpUpstream.(UpstreamKeyRequestAdmission)
+	}
+	requireAdmission := upstreamKeyAdmissionRequired(s.cfg)
 	if controls.Transport == "websocket" {
-		return requestCodex780WS(req, proxy, controls.EdgeIP, payload, seed, target, model)
+		return requestCodex780WS(req, proxy, controls.EdgeIP, payload, seed, target, model, admission, requireAdmission)
 	}
 	var resp *http.Response
 	if controls.EdgeIP != "" {
@@ -226,7 +231,7 @@ func (s *OpenAIGatewayService) requestCodex780Shot(ctx context.Context, account 
 		client, req, err = codexMintHTTPClient(req, proxy, controls.EdgeIP)
 		if err == nil {
 			defer client.CloseIdleConnections()
-			resp, err = client.Do(req)
+			resp, err = s.doOpenAIClientRequest(client, req)
 		}
 	} else {
 		resp, err = s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
@@ -235,7 +240,10 @@ func (s *OpenAIGatewayService) requestCodex780Shot(ctx context.Context, account 
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		out.Err = mintTransportError(err)
+		if IsUpstreamKeyAdmissionFailure(err) {
+			out.Sent = false
+		}
+		out.Err = codexHarvestTransportError(err)
 		return
 	}
 	if resp == nil {

@@ -62,7 +62,7 @@ func TestCodex780WebSocketRejectsTerminalErrorWithoutCookies(t *testing.T) {
 	require.NoError(t, err)
 	payload, err := json.Marshal(map[string]any{"model": "gpt-6-astra", "stream": true})
 	require.NoError(t, err)
-	out := requestCodex780WS(req, "", "", payload, nil, "unified-88", "gpt-6-astra")
+	out := requestCodex780WS(req, "", "", payload, nil, "unified-88", "gpt-6-astra", nil, false)
 	require.Equal(t, http.StatusSwitchingProtocols, out.Status)
 	require.True(t, codex780TerminalFailure(out))
 	var mint *codexMintError

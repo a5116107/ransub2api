@@ -10,8 +10,29 @@ import (
 	coderws "github.com/coder/websocket"
 )
 
-func requestCodex780WS(req *http.Request, proxy, edge string, payload []byte, seed []string, target, model string) (out codexHarvestProbeResult) {
+func requestCodex780WS(req *http.Request, proxy, edge string, payload []byte, seed []string, target, model string, admission UpstreamKeyRequestAdmission, required bool) (out codexHarvestProbeResult) {
 	out = codexHarvestProbeResult{Sent: true, EdgeIP: edge, Transport: "websocket", Gateway: target}
+	if admission != nil {
+		bound, finish, admissionErr := admission.BeginUpstreamKeyRequest(req)
+		if admissionErr != nil {
+			if IsUpstreamKeyAdmissionFailure(admissionErr) {
+				out.Sent = false
+			}
+			out.Err = codexHarvestTransportError(admissionErr)
+			return
+		}
+		if bound == nil || finish == nil {
+			out.Sent = false
+			out.Err = ErrUpstreamKeyPolicy
+			return
+		}
+		req = bound
+		defer finish(nil, nil)
+	} else if required {
+		out.Sent = false
+		out.Err = ErrUpstreamKeyPolicy
+		return
+	}
 	client, req, err := codexMintHTTPClient(req, proxy, edge)
 	if err != nil {
 		out.Err = errors.New("mint websocket proxy unavailable")
@@ -38,7 +59,7 @@ func requestCodex780WS(req *http.Request, proxy, edge string, payload []byte, se
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		out.Err = mintTransportError(err)
+		out.Err = codexHarvestTransportError(err)
 		return
 	}
 	defer func() { _ = conn.CloseNow() }()
@@ -72,7 +93,7 @@ func requestCodex780WS(req *http.Request, proxy, edge string, payload []byte, se
 	}
 	raw, _ := json.Marshal(body)
 	if err := conn.Write(req.Context(), coderws.MessageText, raw); err != nil {
-		out.Err = mintTransportError(err)
+		out.Err = codexHarvestTransportError(err)
 		return
 	}
 	var transcript strings.Builder
@@ -80,7 +101,7 @@ func requestCodex780WS(req *http.Request, proxy, edge string, payload []byte, se
 		kind, message, err := conn.Read(req.Context())
 		total += len(message)
 		if err != nil {
-			out.Err = mintTransportError(err)
+			out.Err = codexHarvestTransportError(err)
 			return
 		}
 		if kind != coderws.MessageText || total > openAICodexStateProbeMaxBody {

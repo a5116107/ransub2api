@@ -19,6 +19,16 @@ type codexMintError struct {
 	terminal     bool
 }
 
+// codexHarvestTransportError preserves local shared-Key admission failures so
+// a custom harvest client cannot turn a pre-send refusal into a provider
+// network failure. Other transport errors retain the existing safe taxonomy.
+func codexHarvestTransportError(err error) error {
+	if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
+		return err
+	}
+	return mintTransportError(err)
+}
+
 // Only allowlisted codes cross the diagnostic boundary; messages can contain credentials.
 func codex780EventError(raw []byte, eventName string) error {
 	type upstreamError struct {
