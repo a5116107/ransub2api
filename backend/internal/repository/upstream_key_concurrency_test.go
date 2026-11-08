@@ -107,6 +107,27 @@ func TestAsyncVideoKeyGuardAtFinalHTTPAdmission(t *testing.T) {
 	require.False(t, missingDelegate.SupportsAsyncVideoKeyGuard())
 }
 
+func TestAsyncVideoKeyGuardCapabilityRequiresRegionalPrimary(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		limiter       *upstreamKeyLimiter
+		wantSupported bool
+	}{
+		{name: "unconfigured legacy transport", wantSupported: true},
+		{name: "regional follower", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{}}, wantSupported: false},
+		{name: "regional runtime failed", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{}}, wantSupported: false},
+		{name: "invalid policy", limiter: &upstreamKeyLimiter{err: service.ErrUpstreamKeyPolicy}, wantSupported: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "regional runtime failed" {
+				tc.limiter.regional.runtimeFailed.Store(true)
+			}
+			upstream := &httpUpstreamService{upstreamKeyLimiter: tc.limiter}
+			require.Equal(t, tc.wantSupported, upstream.SupportsAsyncVideoKeyGuard())
+		})
+	}
+}
+
 func TestUpstreamKeyHTTPAdmissionSharedLifetime(t *testing.T) {
 	server := miniredis.RunT(t)
 	first := redis.NewClient(&redis.Options{Addr: server.Addr()})

@@ -513,7 +513,21 @@ func (s *httpUpstreamService) releasePersistentUpstreamKeySlots(ctx context.Cont
 	return releaseErr
 }
 
-func (*httpUpstreamService) SupportsAsyncVideoKeyGuard() bool { return true }
+func (s *httpUpstreamService) SupportsAsyncVideoKeyGuard() bool {
+	if s == nil || s.upstreamKeyLimiter == nil {
+		// An unconfigured transport keeps the legacy optional-guard behavior.
+		return s != nil
+	}
+	if s.upstreamKeyLimiter.err != nil {
+		return false
+	}
+	if regional := s.upstreamKeyLimiter.regional; regional != nil {
+		// Async video ownership is persisted in the regional primary SQL
+		// authority. A follower cannot safely create, bind, or reconcile a task.
+		return regional.primary != nil && !regional.runtimeFailed.Load()
+	}
+	return true
+}
 
 // BeginUpstreamKeyRequest retains response-body ownership at the existing
 // HTTP boundary; native WS owns its active turn through the shared method above.
