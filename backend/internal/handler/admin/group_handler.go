@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -938,7 +939,7 @@ func (h *GroupHandler) Delete(c *gin.Context) {
 	response.Success(c, gin.H{"message": "Group deleted successfully"})
 }
 
-// GetStats handles getting group statistics
+// GetStats handles getting group statistics.
 // GET /api/v1/admin/groups/:id/stats
 func (h *GroupHandler) GetStats(c *gin.Context) {
 	if h.rejectUnsupportedSimpleModeOperation(c, "stats") {
@@ -950,14 +951,53 @@ func (h *GroupHandler) GetStats(c *gin.Context) {
 		return
 	}
 
-	// Return mock data for now
+	keys, totalKeys, err := h.adminService.GetGroupAPIKeys(c.Request.Context(), groupID, 1, 1000)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Failed to get group API key statistics")
+		return
+	}
+	// Fetch later pages when a group has more than the repository page limit so
+	// active_api_keys remains exact instead of silently counting only page one.
+	for page := 2; int64(len(keys)) < totalKeys; page++ {
+		pageKeys, _, pageErr := h.adminService.GetGroupAPIKeys(c.Request.Context(), groupID, page, 1000)
+		if pageErr != nil {
+			response.Error(c, http.StatusInternalServerError, "Failed to get group API key statistics")
+			return
+		}
+		if len(pageKeys) == 0 {
+			break
+		}
+		keys = append(keys, pageKeys...)
+	}
+	activeKeys := 0
+	for i := range keys {
+		if keys[i].IsActive() {
+			activeKeys++
+		}
+	}
+
+	totalRequests := int64(0)
+	totalCost := float64(0)
+	if h.dashboardService != nil {
+		usage, usageErr := h.dashboardService.GetGroupStatsWithFilters(
+			c.Request.Context(), time.Unix(0, 0).UTC(), time.Now().UTC(), 0, 0, 0, groupID, nil, nil, nil,
+		)
+		if usageErr != nil {
+			response.Error(c, http.StatusInternalServerError, "Failed to get group usage statistics")
+			return
+		}
+		for _, stat := range usage {
+			totalRequests += stat.Requests
+			totalCost += stat.Cost
+		}
+	}
+
 	response.Success(c, gin.H{
-		"total_api_keys":  0,
-		"active_api_keys": 0,
-		"total_requests":  0,
-		"total_cost":      0.0,
+		"total_api_keys":  totalKeys,
+		"active_api_keys": activeKeys,
+		"total_requests":  totalRequests,
+		"total_cost":      totalCost,
 	})
-	_ = groupID // TODO: implement actual stats
 }
 
 // GetUsageSummary returns today's, yesterday's, and cumulative cost for all groups.

@@ -1168,3 +1168,10 @@
 - 原位删除该无调用方法及其平台 TODO，不改 `AccountTestService`、OAuth 刷新、模型探测或管理员测试入口；精确搜索 `func (s *AccountService) TestCredentials|.TestCredentials(` 为0。
 - `gofmt -d backend/internal/service/account_service.go` 无输出；`go test -p 1 ./internal/service -run '^$' -count=1 -timeout=8m` 退出0，service `1.574s [no tests to run]`；`go vet -p 1 ./internal/service` 退出0、无诊断。
 - 本项只清除仓内无调用的假成功路径，不把实际供应商验证逻辑重建为第二套实现；未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-08：M8 补齐分组统计真实数据
+
+- 管理端 `GET /admin/groups/:id/stats` 原先无条件返回四个零值，前端显示的 API Key、请求量和成本与实际数据无关。分组已有 `AdminService.GetGroupAPIKeys` 分页入口和 `DashboardService.GetGroupStatsWithFilters` 用量查询，未引入第二套仓储或统计口径。
+- 原位按 1000 条分页遍历分组 API Key，准确统计总数和 `active` 数；请求数与标准成本汇总既有 dashboard 结果，dashboard 未注入的兼容测试仍返回零用量而不伪造数据。仓储或 dashboard 查询失败返回 500，不再静默成功。
+- 扩展既有 admin handler 回归断言真实 stub 的 `total_api_keys=1`、`active_api_keys=1`；`gofmt -d backend/internal/handler/admin/group_handler.go backend/internal/handler/admin/admin_basic_handlers_test.go` 无输出。
+- `go test -race -p 1 -tags=unit ./internal/handler/admin -run '^Test(Group|Proxy|User)HandlerEndpoints$' -count=2 -timeout=8m` 退出0，admin `1.236s`；`go vet -p 1 -tags=unit ./internal/handler/admin` 退出0、无诊断。未运行 CI、推送、部署或生产迁移。

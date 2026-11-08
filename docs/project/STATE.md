@@ -3,9 +3,9 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：M7 移除无调用账号凭证测试伪实现；父任务进行中，禁止CI/推送/部署/生产迁移。
-证据：AccountService.TestCredentials 仓内无调用，平台分支均为假成功/TODO，已原位删除。
-验证：精确引用搜索为0、gofmt无输出、service默认编译1.574s、service vet退出0。
+任务：M8 补齐分组统计真实数据；父任务进行中，禁止CI/推送/部署/生产迁移。
+证据：分组统计不再返回 mock 零值，API Key 分页和既有 dashboard 用量均接入。
+验证：handler/admin unit race 两轮退出0、1.236s；unit vet退出0；gofmt无输出。
 下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；本轮修复已提交。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
@@ -37,6 +37,7 @@
 | M5 | done | 生产依赖与测试夹具边界明确，三处兼容点说明；六包lint 0及禁止依赖反向验证通过 |
 | M6 | done | 删除无调用且假成功的 ProxyService.TestConnection；引用搜索0、gofmt、service编译及vet通过 |
 | M7 | done | 删除无调用且假成功的 AccountService.TestCredentials；引用搜索0、gofmt、service编译及vet通过 |
+| M8 | done | 分组统计移除 mock 零值；API Key 总数/活跃数分页准确，历史请求和标准成本复用 dashboard 数据，handler race/vet通过 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
 | D5 | pending | timing与缓存分层/冷启动估计；依赖D2/D3 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
