@@ -6,7 +6,7 @@
 任务：M13 删除孤立分组统计伪入口；父任务进行中，禁止CI/推送/部署/生产迁移。
 证据：GroupService.GetStats 在仓内只有定义，实际分组统计由 GroupHandler 复用 AdminService/Dashboard 数据。
 验证：group handler race 两轮退出0、1.202s；service unit vet退出0；service默认编译1.455s；gofmt无输出；旧引用搜索0。
-下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M13 待提交。
+下一动作：继续 D2 区域归属/unknown 核实及 D3 其他未观测出站；M13 已提交（代码6e735b1）。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
 
