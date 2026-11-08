@@ -3,9 +3,9 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3 独立出站与批量图片技术债务推进；父任务进行中，禁止CI、推送、部署、生产迁移。
-证据：Prism adapter 已复用共享/区域策略发送前 fail-closed；Gemini 批量 JSONL 已保留公共请求的 response_mime_type、aspect_ratio、image_size，空值保持旧 JSON 形状。
-验证：Prism service/handler race、vet、lint 通过；Gemini JSONL/provider race 退出0，service vet退出0，原规则 lint输出0 issues；代码提交 f6d6711、5b8abe0，区域异步视频边界提交 56e54e3。
+任务：Redis 批量账号负载回归已恢复；父任务进行中，禁止CI、推送、部署、生产迁移。
+证据：GetAccountsLoadBatch 旧无条件 skip 已移除，严格统计普通/live槽位与等待计数；Prism 与 Gemini 批量选项边界仍保持。
+验证：ConcurrencyCacheSuite race 30项全PASS；service负载契约race、repository integration vet、原规则lint（0 issues）通过；代码提交 f6d6711、5b8abe0、56e54e3，当前回归待提交。
 下一动作：继续 D2 跨区域任务归属与 unknown 自动核实；同时推进 D3 托管连接、其他未观测传输和 WS 作用域。区域从节点仍 fail-closed，不发送异步创建。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
@@ -31,7 +31,7 @@
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
-| M2 | done | 错误检查247→0；1072顶层用例通过、6既有skip保留，vet与重复回归通过 |
+| M2 | done | 错误检查247→0；1072顶层用例通过、5既有skip保留，vet与重复回归通过 |
 | M3 | done | WinSock拒绝/不可达识别；超时/重置不误判；真实POST及代理/WS组合5轮通过 |
 | M4 | done | 三处原子持久化收敛；22项Windows失败修复，双平台回归/三包lint/vet通过 |
 | M5 | done | 生产依赖与测试夹具边界明确，三处兼容点说明；六包lint 0及禁止依赖反向验证通过 |

@@ -1271,3 +1271,9 @@
 - `BatchImageInput` 已从公共接口接收 `response_mime_type`、`aspect_ratio` 和 `image_size`，但 Gemini 批量 JSONL 构造器原先只写 `responseModalities`，这些字段在上传前静默丢失，形成已配置但未生效的技术债务。
 - 原位映射到 Gemini GenerateContent 的标准 `generationConfig.responseMimeType` 和可选 `generationConfig.imageConfig.{aspectRatio,imageSize}`；当输入为空时使用 `omitempty` 保持历史 JSON 形状，未新增 provider 或第二套请求构造器。
 - 新增带值/空值回归；`go test -race -p=1 -tags=unit ./internal/service -run '^TestBuildGeminiBatchJSONL|^TestGeminiProvider' -count=1 -timeout=12m` 退出0，service vet退出0，原规则 service lint输出 `0 issues.`。提交 `5b8abe0`；该项只补齐请求字段传递，不证明供应商真实支持矩阵或计费命中。
+
+## 2026-11-09：恢复并验证批量账号负载集成回归
+
+- `ConcurrencyCacheSuite.TestGetAccountsLoadBatch` 在基线合并提交 `6de829f` 首次引入时即带有无条件 `Skip("TODO: Fix this test - CurrentConcurrency returns 0 instead of expected value in CI")`；仓库历史没有更早失败实现或失败日志，CI 也只把它标为 legacy skip。该屏蔽掩盖了账号槽位、live 槽位和等待计数的真实统计。
+- 删除过时 skip，保留原有 2/3 槽位+1等待=100%、1/2=50%、空闲=0% 的严格断言。隔离 PostgreSQL 18.1/Redis 8.4 下单测显式 PASS；完整 `ConcurrencyCacheSuite` race 的 30 个子用例全部 PASS（含该批量回归），未复现 `CurrentConcurrency=0`。
+- `go test -race -p 1 -tags=unit ./internal/service -run '^TestGetAccountsLoadBatch' -count=1 -timeout=5m -v` 退出0；`go vet -p 1 -tags=integration ./internal/repository` 退出0；`bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/repository/...` 输出 `0 issues.`。未运行 CI、推送、部署或生产迁移。
