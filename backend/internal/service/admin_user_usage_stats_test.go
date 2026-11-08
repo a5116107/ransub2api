@@ -64,7 +64,11 @@ func TestAdminServiceGetUserUsageStatsAcceptsSupportedPeriods(t *testing.T) {
 
 			value, err := svc.GetUserUsageStats(context.Background(), 1, period)
 			require.NoError(t, err)
-			stats := value.(map[string]any)
+			stats, ok := value.(map[string]any)
+			require.True(t, ok)
+			if !ok {
+				return
+			}
 			require.Equal(t, period, stats["period"])
 			require.True(t, repo.start.Before(repo.end))
 		})

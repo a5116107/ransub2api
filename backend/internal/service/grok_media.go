@@ -837,6 +837,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
+	// Media requests do not have a matching availability wire scope yet. Keep
+	// configured rules fail-closed rather than borrowing a text probe result.
+	if err := s.admitAvailabilityRequest(upstreamReq.Context(), upstreamReq, account); err != nil {
+		return nil, err
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -977,6 +982,9 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	if err != nil {
 		return nil, err
 	}
+	if err := s.admitAvailabilityRequest(statusReq.Context(), statusReq, account); err != nil {
+		return nil, err
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -1045,6 +1053,9 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := s.admitAvailabilityRequest(contentReq.Context(), contentReq, account); err != nil {
+		return nil, err
 	}
 
 	contentResp, err := s.httpUpstream.Do(contentReq, proxyURL, account.ID, account.Concurrency)

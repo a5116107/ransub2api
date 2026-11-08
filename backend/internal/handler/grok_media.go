@@ -242,6 +242,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var lastAdmissionErr error
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	mediaEligibilityRejected := false
 	switchCount := 0
@@ -303,6 +304,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				reqLog.Info("grok_media.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
+			if lastAdmissionErr != nil {
+				h.handleTurnAdmissionError(c, lastAdmissionErr, false)
+				return
+			}
 			if boundLookupAccountID > 0 && errors.Is(err, service.ErrNoAvailableAccounts) {
 				h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video request not found")
 				return
@@ -333,6 +338,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 		if selection == nil || selection.Account == nil {
+			if lastAdmissionErr != nil {
+				h.handleTurnAdmissionError(c, lastAdmissionErr, false)
+				return
+			}
 			if endpoint.IsGenerationRequest() {
 				markOpsRoutingCapacityLimited(c)
 				h.errorResponse(c, http.StatusServiceUnavailable, noAccountCode, noAccountMessage)
@@ -457,6 +466,15 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				}
 				reqLog.Warn("grok_media.video_submission_unconfirmed", zap.Int64("account_id", account.ID), zap.Error(err))
 				return
+			}
+			if service.IsOpenAITurnAdmissionError(err) {
+				lastAdmissionErr = err
+				failedAccountIDs[account.ID] = struct{}{}
+				if boundLookupAccountID > 0 {
+					h.handleTurnAdmissionError(c, err, false)
+					return
+				}
+				continue
 			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {

@@ -205,6 +205,10 @@ func (p grokMediaSlotProber) ProbeMediaEligibility(ctx context.Context, id int64
 }
 
 func newGrokMediaSlotHandler(t *testing.T, oauth, mismatch bool, platforms ...string) (*OpenAIGatewayHandler, *grokMediaSlotsCache, *grokMediaSlotBindings, *grokMediaSlotUpstream) {
+	return newGrokMediaSlotHandlerWithOptions(t, oauth, mismatch, nil, platforms...)
+}
+
+func newGrokMediaSlotHandlerWithOptions(t *testing.T, oauth, mismatch bool, options []service.OpenAIGatewayOption, platforms ...string) (*OpenAIGatewayHandler, *grokMediaSlotsCache, *grokMediaSlotBindings, *grokMediaSlotUpstream) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	accounts := make([]service.Account, 3)
@@ -240,7 +244,7 @@ func newGrokMediaSlotHandler(t *testing.T, oauth, mismatch bool, platforms ...st
 		_, err := provider.GetAccessToken(context.Background(), &accounts[1])
 		require.NoError(t, err)
 	}
-	gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, provider, nil, nil, nil, nil, nil)
+	gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, provider, nil, nil, nil, nil, nil, options...)
 	groupID := int64(24)
 	require.NoError(t, gateway.BindGrokMediaVideoRequestAccount(context.Background(), &groupID, "task", 10, 20, 1))
 	bindings.writes = 0
@@ -248,6 +252,24 @@ func newGrokMediaSlotHandler(t *testing.T, oauth, mismatch bool, platforms ...st
 	t.Cleanup(billing.Stop)
 	handler := NewOpenAIGatewayHandler(gateway, concurrency, billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	return handler, slots, bindings, upstream
+}
+
+type grokMediaAvailabilityReader struct{}
+
+func (grokMediaAvailabilityReader) ReadAccountAvailability(_ context.Context, account *service.Account) ([]*service.AvailabilityReport, error) {
+	return []*service.AvailabilityReport{{AccountID: account.ID, Configured: true, Enabled: true}}, nil
+}
+
+func TestGrokMediaAvailabilityFailsClosedBeforeSending(t *testing.T) {
+	h, slots, _, upstream := newGrokMediaSlotHandlerWithOptions(t, false, false,
+		[]service.OpenAIGatewayOption{service.WithOpenAIAvailabilityReader(grokMediaAvailabilityReader{})})
+	c, recorder := grokMediaSlotContext(t.Context(), true)
+	h.GrokVideoGeneration(c)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	require.Contains(t, recorder.Body.String(), "admission_unavailable")
+	require.Zero(t, upstream.calls, "unobserved media must not reach the provider")
+	slots.assertReleased(t)
 }
 
 func grokMediaSlotContext(ctx context.Context, generation bool) (*gin.Context, *httptest.ResponseRecorder) {

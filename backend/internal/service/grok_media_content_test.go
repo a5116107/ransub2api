@@ -70,6 +70,53 @@ func grokMediaContentStatusResponse(body string) *http.Response {
 	}
 }
 
+func TestForwardGrokMediaAvailabilityFailsClosedBeforeSending(t *testing.T) {
+	account := grokMediaContentTestAccount()
+	reader := &availabilityAdmissionRepo{reports: []*AvailabilityReport{{
+		AccountID:  account.ID,
+		Configured: true,
+		Enabled:    true,
+	}}}
+	upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"request_id":"task"}`)}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, availabilityReader: reader}
+	c, _ := grokMediaContentTestContext(http.MethodPost, "https://api.example/v1/images/generations", nil)
+
+	_, err := svc.ForwardGrokMedia(
+		t.Context(), c, account,
+		GrokMediaEndpointImagesGenerations, "", []byte(`{"model":"grok-imagine-image","prompt":"fixture"}`), "application/json",
+	)
+
+	var denied *OpenAITurnAdmissionError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "availability_scope_unconfirmed", denied.Reason)
+	require.Empty(t, upstream.requests)
+}
+
+func TestForwardGrokMediaVideoContentAvailabilityFailsClosedBeforeStatusLookup(t *testing.T) {
+	account := grokMediaContentTestAccount()
+	reader := &availabilityAdmissionRepo{reports: []*AvailabilityReport{{
+		AccountID:  account.ID,
+		Configured: true,
+		Enabled:    true,
+	}}}
+	upstream := &grokMediaContentUpstreamStub{responses: []*http.Response{
+		grokMediaContentStatusResponse(`{"status":"completed"}`),
+		grokMediaContentStatusResponse(`video-payload`),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, availabilityReader: reader}
+	c, _ := grokMediaContentTestContext(http.MethodGet, "https://api.example/v1/videos/task-1/content", nil)
+
+	_, err := svc.ForwardGrokMedia(
+		t.Context(), c, account,
+		GrokMediaEndpointVideoContent, "task-1", nil, "",
+	)
+
+	var denied *OpenAITurnAdmissionError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "availability_scope_unconfirmed", denied.Reason)
+	require.Empty(t, upstream.requests)
+}
+
 func TestForwardGrokMediaContentUsesUpstreamCredentialAndStreamsRange(t *testing.T) {
 	upstream := &grokMediaContentUpstreamStub{
 		responses: []*http.Response{grokMediaContentStatusResponse(`{"status":"completed"}`), {
