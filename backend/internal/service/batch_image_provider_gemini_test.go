@@ -59,6 +59,37 @@ func TestBuildGeminiBatchJSONL_WritesValidLinesAndPreservesCustomID(t *testing.T
 	requireJSONLLine(t, lines[1], "cover_002", "Second prompt")
 }
 
+func TestBuildGeminiBatchJSONL_PreservesImageGenerationOptions(t *testing.T) {
+	input := validGeminiBatchInput()
+	input.ResponseMimeType = "image/png"
+	input.AspectRatio = "16:9"
+	input.ImageSize = "1K"
+
+	jsonl, err := BuildGeminiBatchJSONL(input)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(jsonl))), &got))
+	request := testassert.Type[map[string]any](t, got["request"])
+	config := testassert.Type[map[string]any](t, request["generationConfig"])
+	require.Equal(t, "image/png", config["responseMimeType"])
+	imageConfig := testassert.Type[map[string]any](t, config["imageConfig"])
+	require.Equal(t, "16:9", imageConfig["aspectRatio"])
+	require.Equal(t, "1K", imageConfig["imageSize"])
+}
+
+func TestBuildGeminiBatchJSONL_OmitsEmptyImageGenerationOptions(t *testing.T) {
+	jsonl, err := BuildGeminiBatchJSONL(validGeminiBatchInput())
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(jsonl))), &got))
+	request := testassert.Type[map[string]any](t, got["request"])
+	config := testassert.Type[map[string]any](t, request["generationConfig"])
+	_, hasMime := config["responseMimeType"]
+	_, hasImageConfig := config["imageConfig"]
+	require.False(t, hasMime)
+	require.False(t, hasImageConfig)
+}
+
 func TestBuildGeminiBatchJSONL_RejectsDuplicateCustomIDs(t *testing.T) {
 	input := validGeminiBatchInput()
 	input.Items = append(input.Items, BatchImageInputItem{CustomID: "cover_001", Prompt: "Duplicate"})
