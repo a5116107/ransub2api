@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -18,7 +19,7 @@ type RedeemCacheSuite struct {
 
 func (s *RedeemCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
-	s.cache = NewRedeemCache(s.rdb).(*redeemCache)
+	s.cache = assertions.Type[*redeemCache](s.T(), NewRedeemCache(s.rdb))
 }
 
 func (s *RedeemCacheSuite) TestGetRedeemAttemptCount_Missing() {

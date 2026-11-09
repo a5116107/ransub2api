@@ -229,11 +229,11 @@ const asyncVideoKeyReleaseRecoveryBatch = 64
 // StartAsyncVideoKeyReleaseRecovery retries only releases fenced by a prior
 // confirmed terminal observation or explicit reconciliation.
 func (s *OpenAIGatewayService) StartAsyncVideoKeyReleaseRecovery() {
-	if s == nil || !s.cfg.RunsBackgroundJobs() {
+	if s == nil {
 		return
 	}
 	recovery, ok := s.httpUpstream.(AsyncVideoKeyReleaseRecovery)
-	if !ok {
+	if !ok || (!s.cfg.RunsBackgroundJobs() && !recovery.IsLocalAsyncVideoKeyReleaseRecovery()) {
 		return
 	}
 	s.asyncVideoRecoveryMu.Lock()

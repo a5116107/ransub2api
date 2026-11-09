@@ -9,6 +9,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +19,7 @@ func TestQualityOwnershipReconciliationPreservesLiveRestrictionsAndMatchingOwner
 	require.Equal(t, "groups_removed", isolationRound(f, "failed", "failed"))
 	// Another administrator removed one live restriction, leaving its old owner.
 	f.exec(`UPDATE accounts SET extra=extra #- '{quality_model_isolation,sol}',updated_at=clock_timestamp() WHERE id=$1`)
-	repo := f.plans.(service.QualityOwnershipRepository)
+	repo := assertions.Type[service.QualityOwnershipRepository](t, f.plans)
 	preview, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, preview.RelinquishableCount)
@@ -48,7 +49,7 @@ func TestQualityOwnershipConfirmationRejectsConcurrentRuleAccountAndStateChanges
 			f, _, _ := newQualityIsolationFixture(t)
 			isolationRound(f, "failed", "passed")
 			f.exec(`UPDATE accounts SET extra=extra #- '{quality_model_isolation,sol}' WHERE id=$1`)
-			repo := f.plans.(service.QualityOwnershipRepository)
+			repo := assertions.Type[service.QualityOwnershipRepository](t, f.plans)
 			p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
 			require.NoError(t, err)
 			switch change {
@@ -73,7 +74,7 @@ func TestQualityOwnershipExternalMarkerIsKeptOnAccountAfterRelinquishingSnapshot
 	f, _, _ := newQualityIsolationFixture(t)
 	isolationRound(f, "failed", "passed")
 	f.exec(`UPDATE accounts SET extra=jsonb_set(extra,'{quality_model_isolation,sol}', '{"reason":"quality_rule:999","isolated_at":"2026-01-01T00:00:00Z"}'),updated_at=clock_timestamp() WHERE id=$1`)
-	repo := f.plans.(service.QualityOwnershipRepository)
+	repo := assertions.Type[service.QualityOwnershipRepository](t, f.plans)
 	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, p.RelinquishableCount)
@@ -98,7 +99,7 @@ func TestQualityOwnershipSameMarkerChangeCannotBeSilentlyRelinquished(t *testing
 	f, _, _ := newQualityIsolationFixture(t)
 	isolationRound(f, "failed", "passed")
 	f.exec(`UPDATE accounts SET extra=jsonb_set(extra,'{quality_model_isolation,sol,isolated_at}','"changed-by-administrator"'),updated_at=clock_timestamp() WHERE id=$1`)
-	repo := f.plans.(service.QualityOwnershipRepository)
+	repo := assertions.Type[service.QualityOwnershipRepository](t, f.plans)
 	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
 	require.NoError(t, err)
 	require.Zero(t, p.RelinquishableCount)
@@ -116,7 +117,7 @@ func TestQualityOwnershipConcurrentConfirmationsCommitOnlyOneAndRejectOldRound(t
 	f, _, _ := newQualityIsolationFixture(t)
 	isolationRound(f, "failed", "passed")
 	f.exec(`UPDATE accounts SET extra=extra #- '{quality_model_isolation,sol}',updated_at=clock_timestamp() WHERE id=$1`)
-	repo := f.plans.(service.QualityOwnershipRepository)
+	repo := assertions.Type[service.QualityOwnershipRepository](t, f.plans)
 	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
 	require.NoError(t, err)
 	errors := make(chan error, 2)
@@ -144,7 +145,7 @@ func TestQualityOwnershipGroupPresenceDoesNotDiscardMatchingModelOwnership(t *te
 	f, group, _ := newQualityIsolationFixture(t)
 	isolationRound(f, "failed", "failed")
 	f.exec(`INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,99)`, group)
-	repo := f.plans.(service.QualityOwnershipRepository)
+	repo := assertions.Type[service.QualityOwnershipRepository](t, f.plans)
 	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
 	require.NoError(t, err)
 	require.Zero(t, p.RelinquishableCount)

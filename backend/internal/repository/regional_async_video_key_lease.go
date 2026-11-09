@@ -27,13 +27,18 @@ const regionalAsyncVideoSelect = `SELECT member,COALESCE(task_id,''),COALESCE(ta
 
 func (s *httpUpstreamService) regionalAsyncVideoStore() (*regionalConcurrencyCache, error) {
 	if s == nil || s.upstreamKeyLimiter == nil || s.upstreamKeyLimiter.regional == nil ||
-		s.upstreamKeyLimiter.regional.primary == nil || s.upstreamKeyLimiter.regional.runtimeFailed.Load() {
+		s.upstreamKeyLimiter.regional.runtimeFailed.Load() {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	return s.upstreamKeyLimiter.regional, nil
+	store := s.upstreamKeyLimiter.regional
+	if (store.primary == nil) == (store.local == nil) || store.database() == nil ||
+		(store.local != nil && (store.local.Region == "" || store.local.Region != strings.TrimSpace(store.local.Region))) {
+		return nil, service.ErrUpstreamKeyPolicy
+	}
+	return store, nil
 }
 
-func scanRegionalAsyncVideoRecord(row interface{ Scan(...any) error }) (*regionalAsyncVideoKeyRecord, error) {
+func (c *regionalConcurrencyCache) scanRegionalAsyncVideoRecord(row interface{ Scan(...any) error }) (*regionalAsyncVideoKeyRecord, error) {
 	var record regionalAsyncVideoKeyRecord
 	var ownerJSON, leaseJSON []byte
 	if err := row.Scan(&record.Member, &record.TaskID, &record.TaskKey, &record.State, &ownerJSON, &leaseJSON, &record.Fenced); err != nil {
@@ -41,7 +46,7 @@ func scanRegionalAsyncVideoRecord(row interface{ Scan(...any) error }) (*regiona
 	}
 	if json.Unmarshal(ownerJSON, &record.Owner) != nil || json.Unmarshal(leaseJSON, &record.Lease) != nil ||
 		!record.Owner.Valid() || record.Lease == nil || record.Lease.Validate() != nil ||
-		record.Lease.Authority != "regional:primary" || record.Lease.Member != record.Member {
+		record.Lease.Authority != c.persistentUpstreamKeyAuthority() || record.Lease.Member != record.Member {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
 	switch record.State {
@@ -66,7 +71,7 @@ func (s *httpUpstreamService) persistRegionalAsyncVideoKeyLease(ctx context.Cont
 		return err
 	}
 	lease, member, err := validateAsyncVideoHandoff(handoff)
-	if err != nil || lease.Authority != "regional:primary" {
+	if err != nil || lease.Authority != store.persistentUpstreamKeyAuthority() {
 		return service.ErrUpstreamKeyPolicy
 	}
 	ownerJSON, err := json.Marshal(handoff.Owner())
@@ -118,7 +123,7 @@ func (s *httpUpstreamService) bindRegionalAsyncVideoKeyLeaseRecord(ctx context.C
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	record, err := scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, member))
+	record, err := store.scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, member))
 	if errors.Is(err, sql.ErrNoRows) {
 		return service.ErrUpstreamKeyLease
 	}
@@ -159,7 +164,7 @@ func (s *httpUpstreamService) markRegionalAsyncVideoKeySubmissionUnknown(ctx con
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	record, err := scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, member))
+	record, err := store.scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, member))
 	if errors.Is(err, sql.ErrNoRows) {
 		return service.ErrUpstreamKeyLease
 	}
@@ -191,7 +196,7 @@ func (s *httpUpstreamService) loadRegionalAsyncVideoKeyLeaseByTask(ctx context.C
 	if taskKey == "" || !owner.Valid() {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	record, err := scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE task_key=$1`, taskKey))
+	record, err := store.scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE task_key=$1`, taskKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -217,7 +222,7 @@ func (s *httpUpstreamService) resolveRegionalAsyncVideoKeyOwner(ctx context.Cont
 	if taskKey == "" {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	record, err := scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE task_key=$1`, taskKey))
+	record, err := store.scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE task_key=$1`, taskKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -235,7 +240,7 @@ func (s *httpUpstreamService) releaseRegionalAsyncVideoKeyLease(ctx context.Cont
 	if err != nil {
 		return err
 	}
-	if lease == nil || lease.Validate() != nil || lease.Authority != "regional:primary" || !owner.Valid() {
+	if lease == nil || lease.Validate() != nil || lease.Authority != store.persistentUpstreamKeyAuthority() || !owner.Valid() {
 		return service.ErrUpstreamKeyPolicy
 	}
 	tx, err := store.database().BeginTx(ctx, nil)
@@ -243,7 +248,7 @@ func (s *httpUpstreamService) releaseRegionalAsyncVideoKeyLease(ctx context.Cont
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	record, err := scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, lease.Member))
+	record, err := store.scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, lease.Member))
 	if errors.Is(err, sql.ErrNoRows) {
 		return service.ErrUpstreamKeyLease
 	}
@@ -274,7 +279,7 @@ func (s *httpUpstreamService) releaseRegionalAsyncVideoKeyLeaseByMember(ctx cont
 	if !strings.HasPrefix(member, "video:") {
 		return service.ErrUpstreamKeyPolicy
 	}
-	record, err := scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1`, member))
+	record, err := store.scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1`, member))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -293,7 +298,7 @@ func (s *httpUpstreamService) releaseRegionalAsyncVideoKeyLeaseByHandoff(ctx con
 	if err != nil {
 		return err
 	}
-	record, err := scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1`, member))
+	record, err := store.scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1`, member))
 	if errors.Is(err, sql.ErrNoRows) {
 		return service.ErrUpstreamKeyLease
 	}
@@ -313,7 +318,7 @@ func (s *httpUpstreamService) finishRegionalAsyncVideoKeyRelease(ctx context.Con
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	record, err := scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, member))
+	record, err := store.scanRegionalAsyncVideoRecord(tx.QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE member=$1 FOR UPDATE`, member))
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -347,7 +352,7 @@ func (s *httpUpstreamService) recoverRegionalAsyncVideoKeyReleases(ctx context.C
 	if limit <= 0 || limit > 128 {
 		return 0, service.ErrUpstreamKeyPolicy
 	}
-	rows, err := store.database().QueryContext(ctx, `SELECT member FROM regional_async_video_key_leases WHERE fenced AND release_due_at<=clock_timestamp() ORDER BY release_due_at,member LIMIT $1`, limit)
+	rows, err := store.database().QueryContext(ctx, `SELECT member FROM regional_async_video_key_leases WHERE fenced AND release_due_at<=clock_timestamp() AND lease->>'authority'=$1 ORDER BY release_due_at,member LIMIT $2`, store.persistentUpstreamKeyAuthority(), limit)
 	if err != nil {
 		return 0, err
 	}

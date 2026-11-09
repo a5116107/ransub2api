@@ -11,6 +11,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -71,7 +72,7 @@ func TestIssue594UpgradeRealLegacyDatabasePreservesEveryCredentialSlot(t *testin
 		require.Equal(t, bpsBefore, bpsAfter)
 		require.Equal(t, siwcBefore, siwcAfter)
 		require.Equal(t, hostBefore, hostAfter)
-		repo := NewOpenAIOAuthReauthRepository(db).(*openAIOAuthReauthRepository)
+		repo := assertions.Type[*openAIOAuthReauthRepository](t, NewOpenAIOAuthReauthRepository(db))
 		managed, e := repo.AuthConnectionsManaged(ctx, id)
 		require.NoError(t, e)
 		require.False(t, managed, "upgrade cannot opt into new routing")

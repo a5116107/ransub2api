@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -62,7 +63,7 @@ func TestQuality5xxImmediateDuringRunningProbe(t *testing.T) {
 	require.Equal(t, 4, concurrency, "probe only unlocks native ramp")
 	extra = f.extra()
 	require.NotContains(t, extra, "model_rate_limits")
-	ramp := extra[service.AutoConfigConcurrencyExtraKey].(map[string]any)
+	ramp := assertions.Type[map[string]any](t, extra[service.AutoConfigConcurrencyExtraKey])
 	require.EqualValues(t, 17, ramp["recovery_target"])
 }
 
@@ -71,15 +72,15 @@ func TestQualityModelResultsRemainIndependentInTransaction(t *testing.T) {
 	f.exec(`UPDATE accounts SET concurrency=20 WHERE id=$1`)
 	f.plan.QualityModelOutcomes = map[string]string{"gpt-6-astra": "failed", "gpt-6.1-sol": "passed"}
 	require.Equal(t, "models_cooled", f.apply("failed"))
-	limits := f.extra()["model_rate_limits"].(map[string]any)
+	limits := assertions.Type[map[string]any](t, f.extra()["model_rate_limits"])
 	require.Contains(t, limits, "gpt-6-astra")
 	require.NotContains(t, limits, "gpt-6.1-sol")
 	f.plan.QualityModelOutcomes = map[string]string{"gpt-6-astra": "failed", "gpt-6.1-sol": "failed"}
 	f.apply("failed")
-	require.Len(t, f.extra()["model_rate_limits"].(map[string]any), 2)
+	require.Len(t, assertions.Type[map[string]any](t, f.extra()["model_rate_limits"]), 2)
 	f.plan.QualityModelOutcomes = map[string]string{"gpt-6-astra": "passed", "gpt-6.1-sol": "failed"}
 	f.apply("failed")
-	limits = f.extra()["model_rate_limits"].(map[string]any)
+	limits = assertions.Type[map[string]any](t, f.extra()["model_rate_limits"])
 	require.NotContains(t, limits, "gpt-6-astra")
 	require.Contains(t, limits, "gpt-6.1-sol")
 	f.plan.QualityModelOutcomes = map[string]string{"gpt-6-astra": "passed", "gpt-6.1-sol": "passed"}
@@ -113,6 +114,9 @@ func TestQualityLegacyModelOwnershipDoesNotBlockCurrentRound(t *testing.T) {
 		t.Run(peerVerdict, func(t *testing.T) {
 			f := newQualityBPSFixture(t, `{"unrelated":"kept"}`, &service.QualityPolicy{Action: service.QualityActionRemoveModel, RemoveModels: []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-6.1-sol"}, AutoRestore: true})
 			f.exec(`UPDATE accounts SET type='apikey',concurrency=15 WHERE id=$1`)
+			require.Equal(t, "stale_run", f.apply("failed"), "the old credential-type observation must not mutate the new route")
+			require.NoError(t, f.plans.FinishPelican(context.Background(), f.plan.ID, f.until, time.Now()))
+			f.claim()
 			require.Equal(t, "models_cooled", f.apply("failed"))
 			var raw []byte
 			require.NoError(t, integrationDB.QueryRow(`SELECT state FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&raw))
@@ -136,7 +140,7 @@ func TestQualityLegacyModelOwnershipDoesNotBlockCurrentRound(t *testing.T) {
 			extra := f.extra()
 			require.Equal(t, "kept", extra["unrelated"])
 			if peerVerdict == "failed" {
-				limits := extra["model_rate_limits"].(map[string]any)
+				limits := assertions.Type[map[string]any](t, extra["model_rate_limits"])
 				require.Len(t, limits, 1)
 				require.Contains(t, limits, "gpt-6.1-sol")
 			} else {

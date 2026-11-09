@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
 func TestOpsMonitorCapabilityRejectionsAndForwardedDuplicates(t *testing.T) {
 	ctx := context.Background()
-	ops := NewOpsRepository(integrationDB).(*opsRepository)
-	monitor := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository)
+	ops := assertions.Type[*opsRepository](t, NewOpsRepository(integrationDB))
+	monitor := assertions.Type[*channelMonitorV2Repository](t, NewChannelMonitorV2Repository(integrationDB))
 	start := time.Now().UTC().Truncate(time.Hour).Add(-4 * time.Hour)
 	end := start.Add(time.Hour)
 	model := "monitor-rejection-regression"
@@ -131,7 +132,7 @@ func TestOpsMonitorCapabilityRejectionsAndForwardedDuplicates(t *testing.T) {
 
 func TestOpsMetricMissingIDsAndRecoveredAttempts(t *testing.T) {
 	ctx := context.Background()
-	repo := NewOpsRepository(integrationDB).(*opsRepository)
+	repo := assertions.Type[*opsRepository](t, NewOpsRepository(integrationDB))
 	start := time.Date(2004, 4, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
 	t.Cleanup(func() {

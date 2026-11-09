@@ -152,7 +152,12 @@ func (s *httpUpstreamService) asyncVideoLeaseStore() (*upstreamKeyLimiter, error
 }
 
 func (s *httpUpstreamService) regionalAsyncVideoEnabled() bool {
-	return s != nil && s.upstreamKeyLimiter != nil && s.upstreamKeyLimiter.regional != nil && s.upstreamKeyLimiter.regional.primary != nil
+	return s != nil && s.upstreamKeyLimiter != nil && s.upstreamKeyLimiter.regional != nil
+}
+
+func (s *httpUpstreamService) IsLocalAsyncVideoKeyReleaseRecovery() bool {
+	store, err := s.regionalAsyncVideoStore()
+	return err == nil && store.local != nil
 }
 
 func validateAsyncVideoHandoff(handoff *service.AsyncVideoKeyHandoff) (*service.PersistentUpstreamKeyLease, string, error) {

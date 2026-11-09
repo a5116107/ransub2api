@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -189,7 +190,7 @@ func TestQuality152OwnershipAndExplicitRestoreRemainIntact(t *testing.T) {
 	// Same owner reason does not relax byte/field equality of the entry.
 	raw, _ := json.Marshal(map[string]any{"reason": "quality_rule:7", "isolated_at": "2026-01-01T00:00:01Z"})
 	require.False(t, cooldownEntryEqual(map[string]any{"reason": "quality_rule:7", "isolated_at": "2026-01-01T00:00:02Z"}, raw))
-	owner := f.plans.(service.QualityOwnershipRepository)
+	owner := assertions.Type[service.QualityOwnershipRepository](t, f.plans)
 	preview, err := owner.QualityOwnership(ctx, f.plan.ID, nil)
 	require.NoError(t, err)
 	require.True(t, preview.RestoreReady)

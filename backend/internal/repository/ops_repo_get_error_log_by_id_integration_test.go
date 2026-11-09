@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGetErrorLogByID_APIKeyPrefixAndUpstreamStatus(t *testing.T) {
 	ctx := context.Background()
 	_, _ = integrationDB.ExecContext(ctx, "TRUNCATE ops_error_logs RESTART IDENTITY CASCADE")
-	repo := NewOpsRepository(integrationDB).(*opsRepository)
+	repo := assertions.Type[*opsRepository](t, NewOpsRepository(integrationDB))
 
 	var plainID int64
 	err := integrationDB.QueryRowContext(ctx, `

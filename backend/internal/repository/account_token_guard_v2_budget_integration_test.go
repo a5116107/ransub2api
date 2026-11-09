@@ -13,6 +13,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,13 +25,13 @@ func newBudgetFixture(t *testing.T) (*accountTokenGuardV2Repository, *openAIOAut
 		_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM accounts WHERE id=$1`, account.ID)
 		require.NoError(t, err)
 	})
-	guard := NewAccountTokenGuardV2Repository(integrationDB).(*accountTokenGuardV2Repository)
+	guard := assertions.Type[*accountTokenGuardV2Repository](t, NewAccountTokenGuardV2Repository(integrationDB))
 	require.NoError(t, guard.UpsertAccount(context.Background(), account.ID, true, true))
 	_, err := guard.ClaimAccount(context.Background(), account.ID, "budget-owner", time.Hour)
 	require.NoError(t, err)
 	rules := service.AccountTokenGuardV2Rules{ProbeIntervalSeconds: 180, RetryIntervalSeconds: 120, ReloginCooldownSeconds: 60,
 		FailStreakThreshold: 1, ReloginBackoffMaxSeconds: 240, ReloginMaxFailures: 3}
-	return guard, NewOpenAIOAuthReauthRepository(integrationDB).(*openAIOAuthReauthRepository), account.ID, rules
+	return guard, assertions.Type[*openAIOAuthReauthRepository](t, NewOpenAIOAuthReauthRepository(integrationDB)), account.ID, rules
 }
 
 func finishBudgetTask(t *testing.T, taskID int64, status string, finished time.Time) {
@@ -56,7 +57,7 @@ func TestReloginBudgetAtomicGatePersistenceAndExplicitResume(t *testing.T) {
 		require.Equal(t, i+1, stored.ReloginFailStreak)
 	}
 	// A new repository instance simulates process restart, without in-memory state.
-	restarted := NewAccountTokenGuardV2Repository(integrationDB).(*accountTokenGuardV2Repository)
+	restarted := assertions.Type[*accountTokenGuardV2Repository](t, NewAccountTokenGuardV2Repository(integrationDB))
 	stored, err := restarted.GetAccount(ctx, id)
 	require.NoError(t, err)
 	require.True(t, stored.AutoReloginExhausted)

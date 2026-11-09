@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -43,16 +44,16 @@ func TestUpstreamOperationsHalfOpenPagingGroupsAndPathIsolation(t *testing.T) {
 	}
 	first := read()
 	require.Equal(t, 2.0, first["total"])
-	require.Equal(t, 2.0, first["summary"].(map[string]any)["requests"])
+	require.Equal(t, 2.0, assertions.Type[map[string]any](t, first["summary"])["requests"])
 	require.Len(t, first["rows"], 1)
-	require.Equal(t, "https://same.example:8443/A/v1", first["rows"].([]any)[0].(map[string]any)["key"])
+	require.Equal(t, "https://same.example:8443/A/v1", assertions.Type[map[string]any](t, assertions.Type[[]any](t, first["rows"])[0])["key"])
 	q.Page = 2
 	second := read()
 	require.Equal(t, first["summary"], second["summary"])
-	require.Equal(t, "https://same.example:8443/B/v1", second["rows"].([]any)[0].(map[string]any)["key"])
+	require.Equal(t, "https://same.example:8443/B/v1", assertions.Type[map[string]any](t, assertions.Type[[]any](t, second["rows"])[0])["key"])
 	q.Model = "nonexistent"
 	empty := read()
-	require.Equal(t, 0.0, empty["summary"].(map[string]any)["requests"])
+	require.Equal(t, 0.0, assertions.Type[map[string]any](t, empty["summary"])["requests"])
 }
 
 func TestUpstreamOperationsQualityRetainsCompleteFrozenRoundBoundary(t *testing.T) {

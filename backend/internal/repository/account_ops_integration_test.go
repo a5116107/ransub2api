@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"strings"
 	"sync"
@@ -95,9 +96,10 @@ func TestAccountOpsRobotReservationsAreDurableAndRejectRecoveredLease(t *testing
 	event, err := repo.Claim(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, event)
-	reserver := repo.(interface {
+	reserver := assertions.Type[interface {
 		ReserveRobotDelivery(context.Context, *service.AccountOpsEvent, string, string, string) (bool, error)
-	})
+	}](t, repo)
+
 	ok, err := reserver.ReserveRobotDelivery(ctx, event, "robot:one:revision", "feishu", "synthetic-hash")
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -124,9 +126,10 @@ func TestAccountOpsRobotReservationsAreDurableAndRejectRecoveredLease(t *testing
 
 func TestAccountOpsRobotTestSharesDurableRateGuardWithoutAlertRecord(t *testing.T) {
 	repo := NewAccountOpsRepository(integrationDB)
-	rate := repo.(interface {
+	rate := assertions.Type[interface {
 		ReserveRobotTest(context.Context, string) error
-	})
+	}](t, repo)
+
 	ctx := context.Background()
 	var before int
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM account_ops_alerts`).Scan(&before))

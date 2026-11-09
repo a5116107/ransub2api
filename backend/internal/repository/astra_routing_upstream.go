@@ -65,6 +65,14 @@ func (s *astraRoutingUpstream) RecoverAsyncVideoKeyReleases(ctx context.Context,
 	return recovery.RecoverAsyncVideoKeyReleases(ctx, limit)
 }
 
+func (s *astraRoutingUpstream) IsLocalAsyncVideoKeyReleaseRecovery() bool {
+	if s == nil {
+		return false
+	}
+	recovery, ok := s.delegate.(service.AsyncVideoKeyReleaseRecovery)
+	return ok && recovery.IsLocalAsyncVideoKeyReleaseRecovery()
+}
+
 // Astra is a routing decorator around the ordinary HTTP transport. Shared
 // upstream-key admission must remain visible through the decorator so native
 // WS turns, Live handoff, and provider-specific HTTP clients use the same

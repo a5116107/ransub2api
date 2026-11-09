@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -125,9 +126,10 @@ func TestIssue594ProductionGatewayConnectionRouteAndAccountSafety(t *testing.T) 
 	transport.mu.Lock()
 	require.Len(t, transport.calls, callsBefore)
 	transport.mu.Unlock()
-	usageRepo := repository.NewOpenAIOAuthReauthRepository(f.db).(interface {
+	usageRepo := assertions.Type[interface {
 		RecordAuthConnectionUsage(context.Context, int64, int64, string, string) error
-	})
+	}](t, repository.NewOpenAIOAuthReauthRepository(f.db))
+
 	require.NoError(t, usageRepo.RecordAuthConnectionUsage(ctx, f.accountID, 900, second.ID, "synthetic-request"))
 	var attributed string
 	require.NoError(t, f.db.QueryRow(`SELECT connection_id::text FROM openai_auth_connection_usage WHERE account_id=$1 AND request_id='synthetic-request'`, f.accountID).Scan(&attributed))

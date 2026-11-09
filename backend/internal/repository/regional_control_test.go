@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,15 +10,85 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/regional/control"
+	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRegionalControlSlotLifetimeUsesAuthorityClock(t *testing.T) {
+	_, _, client, _ := regionalControlTLS(t)
+	peer, err := x509.ParseCertificate(client.Certificate[0])
+	require.NoError(t, err)
+	for _, operation := range []string{"issue", "renew"} {
+		for _, tc := range []struct {
+			name       string
+			offset     time.Duration
+			issuedAgo  time.Duration
+			extra      time.Duration
+			clockError bool
+			want       int
+		}{
+			{name: "database ahead", offset: time.Hour, want: http.StatusServiceUnavailable},
+			{name: "database behind", offset: -time.Hour, want: http.StatusServiceUnavailable},
+			{name: "long running lease", issuedAgo: time.Hour, want: http.StatusServiceUnavailable},
+			{name: "over maximum", extra: time.Microsecond, want: http.StatusForbidden},
+			{name: "clock unavailable", clockError: true, want: http.StatusServiceUnavailable},
+		} {
+			t.Run(operation+"/"+tc.name, func(t *testing.T) {
+				db, mock, err := sqlmock.New()
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					mock.ExpectClose()
+					require.NoError(t, db.Close())
+					require.NoError(t, mock.ExpectationsWereMet())
+				})
+				authorityNow := time.Now().UTC().Truncate(time.Microsecond).Add(tc.offset)
+				clock := mock.ExpectQuery(`SELECT clock_timestamp\(\)`)
+				if tc.clockError {
+					clock.WillReturnError(errors.New("fixture clock unavailable"))
+				} else {
+					clock.WillReturnRows(sqlmock.NewRows([]string{"now"}).AddRow(authorityNow))
+				}
+				if tc.want == http.StatusServiceUnavailable && !tc.clockError {
+					// Reaching the authority proves admission used its clock. The
+					// real SQL lifecycle tests cover issuance and renewal themselves.
+					mock.ExpectBegin().WillReturnError(errors.New("fixture authority reached"))
+				}
+				scope := control.Scope{Region: "us", CertificateSHA256: regionalControlPin(client), AccountIDs: []int64{2}, MaximumGrant: 1_000_000_000, MaximumSlots: 1, MaximumLifetime: time.Minute}
+				authority := NewRegionalSlotAuthority(db)
+				authority.GrantGuard = func(context.Context, *sql.Tx) error { return nil }
+				handler, err := control.NewSlotsHandler(scope, authority)
+				require.NoError(t, err)
+				grant := slots.Grant{LeaseID: uuid.NewString(), Region: "us", Resource: slots.Resource{Kind: "account", ID: 2}, Slots: 1, Revision: 1,
+					IssuedAt: authorityNow.Add(-tc.issuedAgo), ExpiresAt: authorityNow.Add(time.Minute + tc.extra)}
+				if operation == "renew" {
+					grant.Revision++
+				}
+				raw, err := json.Marshal(grant)
+				require.NoError(t, err)
+				request := httptest.NewRequest(http.MethodPost, control.Prefix+"/slots/"+operation, bytes.NewReader(raw))
+				request.TLS = &tls.ConnectionState{Version: tls.VersionTLS13, PeerCertificates: []*x509.Certificate{peer}, VerifiedChains: [][]*x509.Certificate{{peer}}}
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				require.Equal(t, tc.want, response.Code)
+			})
+		}
+	}
+}
 
 func regionalControlTLS(t *testing.T) (*x509.CertPool, tls.Certificate, tls.Certificate, tls.Certificate) {
 	t.Helper()

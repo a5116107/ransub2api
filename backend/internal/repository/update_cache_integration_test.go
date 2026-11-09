@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -19,7 +20,7 @@ type UpdateCacheSuite struct {
 
 func (s *UpdateCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
-	s.cache = NewUpdateCache(s.rdb).(*updateCache)
+	s.cache = assertions.Type[*updateCache](s.T(), NewUpdateCache(s.rdb))
 }
 
 func (s *UpdateCacheSuite) TestGetUpdateInfo_Missing() {

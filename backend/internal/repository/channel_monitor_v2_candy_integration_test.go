@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +17,7 @@ import (
 func TestChannelMonitorV2CandyPersistenceAndClaims(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)
-	repo := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository)
+	repo := assertions.Type[*channelMonitorV2Repository](t, NewChannelMonitorV2Repository(integrationDB))
 	original, err := repo.GetConfig(ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -108,7 +109,7 @@ func TestChannelMonitorV2CandyPersistenceAndClaims(t *testing.T) {
 func TestChannelMonitorV2CandyLatest100PerActiveConfig(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)
-	repo := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository)
+	repo := assertions.Type[*channelMonitorV2Repository](t, NewChannelMonitorV2Repository(integrationDB))
 	group := mustCreateGroup(t, client, &service.Group{Name: "history-" + uuid.NewString(), Platform: service.PlatformOpenAI})
 	other := mustCreateGroup(t, client, &service.Group{Name: "history-other-" + uuid.NewString(), Platform: service.PlatformOpenAI})
 	excluded := mustCreateGroup(t, client, &service.Group{Name: "history-excluded-" + uuid.NewString(), Platform: service.PlatformOpenAI})

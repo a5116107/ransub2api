@@ -11,6 +11,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -510,7 +511,7 @@ func (s *APIKeyRepoSuite) TestIncrementQuotaUsedAndGetState() {
 // 注意：此测试使用 testEntClient（非事务隔离），数据会真正写入数据库。
 func TestIncrementQuotaUsed_Concurrent(t *testing.T) {
 	client := testEntClient(t)
-	repo := NewAPIKeyRepository(client, integrationDB).(*apiKeyRepository)
+	repo := assertions.Type[*apiKeyRepository](t, NewAPIKeyRepository(client, integrationDB))
 	ctx := context.Background()
 
 	// 创建测试用户和 API Key

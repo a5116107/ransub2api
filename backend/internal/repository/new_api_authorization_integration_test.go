@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestNewAPIIntegrationSharedEncryptedRotationAndUnbind(t *testing.T) {
 	require.Equal(t, 0.7, updated.CostMultiplier())
 	require.Equal(t, 1.0, updated.BillingRateMultiplier())
 	require.Equal(t, "new_api", updated.Extra[service.UpstreamBillingProviderExtraKey])
-	require.True(t, updated.Extra[service.UpstreamBillingProbeEnabledExtraKey].(bool))
+	require.True(t, assertions.Type[bool](t, updated.Extra[service.UpstreamBillingProbeEnabledExtraKey]))
 	require.Contains(t, updated.Extra, service.UpstreamBillingProbeExtraKey)
 	stale := *bb
 	pa.Ciphertext, e = enc.Encrypt("secret-rotated")

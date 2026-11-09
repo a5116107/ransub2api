@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/setting"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +30,7 @@ func TestAstraAutomaticAtomicSettings(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "keep-test-token", got.Credentials["access_token"])
 	require.Equal(t, "keep-refresh", got.Credentials["refresh_token"])
-	mapping := got.Credentials["model_mapping"].(map[string]any)
+	mapping := assertions.Type[map[string]any](t, got.Credentials["model_mapping"])
 	require.Equal(t, "gpt-6-astra", mapping["gpt-6-astra"])
 	require.Equal(t, "gpt-5.6-sol", mapping["gpt-5.6-sol"])
 	require.Equal(t, true, got.Extra["openai_oauth_responses_websockets_v2_enabled"])

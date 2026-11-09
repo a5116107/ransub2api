@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -55,7 +56,7 @@ func TestChannelOperationsHTTPPostgresWorkflow(t *testing.T) {
 	w := request("POST", base+"/operations", `{"action":"create_upstream","revision":0,"name":"HTTP Provider"}`)
 	require.Equal(t, 200, w.Code, w.Body.String())
 	upstream := func() int64 {
-		catalog, err := repo.(service.ChannelOperationsRepository).ChannelOperationsCatalog(context.Background(), ch.ID, service.ChannelOperationsQuery{Page: 1, PageSize: 20, UpstreamPage: 1, Membership: "all"})
+		catalog, err := assertions.Type[service.ChannelOperationsRepository](t, repo).ChannelOperationsCatalog(context.Background(), ch.ID, service.ChannelOperationsQuery{Page: 1, PageSize: 20, UpstreamPage: 1, Membership: "all"})
 		require.NoError(t, err)
 		return catalog.Upstreams[0].ID
 	}()

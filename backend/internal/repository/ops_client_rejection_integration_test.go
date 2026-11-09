@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
 func TestChannelMonitorExcludesClientRejections(t *testing.T) {
 	ctx := context.Background()
-	ops := NewOpsRepository(integrationDB).(*opsRepository)
-	repo := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository)
+	ops := assertions.Type[*opsRepository](t, NewOpsRepository(integrationDB))
+	repo := assertions.Type[*channelMonitorV2Repository](t, NewChannelMonitorV2Repository(integrationDB))
 	start := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
 	end := start.Add(time.Hour)
 	model := "client-isolation-test"

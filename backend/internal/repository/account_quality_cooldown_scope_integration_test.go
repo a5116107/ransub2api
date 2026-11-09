@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"strconv"
 	"testing"
+	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +29,7 @@ func newQualityCooldownScopeFixture(t *testing.T) *qualityBPSFixture {
 	var decoded qualityState
 	require.NoError(t, json.Unmarshal([]byte(state), &decoded))
 	extra := f.extra()
-	entry := extra["model_rate_limits"].(map[string]any)["sol"].(map[string]any)
+	entry := assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, extra["model_rate_limits"])["sol"])
 	entry["rate_limit_reset_at"] = "2020-01-01T00:00:00Z"
 	raw, err := json.Marshal(entry)
 	require.NoError(t, err)
@@ -124,12 +126,16 @@ func TestQualityCooldownOrdinaryEditRetainsOwnershipUntilPassingRecovery(t *test
 	f.plan.Enabled = true
 	f.plan, err = f.plans.Update(ctx, f.plan)
 	require.NoError(t, err)
+	require.NoError(t, f.plans.FinishPelican(ctx, f.plan.ID, f.until, time.Now()))
+	f.claim()
 	f.plan.QualityModelOutcomes = map[string]string{"sol": "passed"}
 	require.Equal(t, "passed", f.apply("passed"))
 	require.JSONEq(t, before, cooldownScopeState(t, f), "auto_restore=false retains ownership even on pass")
 	f.plan.PelicanConfig.Quality.AutoRestore = true
 	f.plan, err = f.plans.Update(ctx, f.plan)
 	require.NoError(t, err)
+	require.NoError(t, f.plans.FinishPelican(ctx, f.plan.ID, f.until, time.Now()))
+	f.claim()
 	for _, verdict := range []string{"skipped", "inconclusive"} {
 		f.plan.QualityModelOutcomes = map[string]string{"sol": verdict}
 		f.apply("inconclusive")
@@ -156,7 +162,7 @@ func TestQualityCooldownExternalOwnerSurvivesEditsAndRecovery(t *testing.T) {
 			f := newQualityCooldownScopeFixture(t)
 			before := cooldownScopeState(t, f)
 			extra := f.extra()
-			entry := extra["model_rate_limits"].(map[string]any)["sol"].(map[string]any)
+			entry := assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, extra["model_rate_limits"])["sol"])
 			entry["reason"] = reason
 			entry["rate_limit_reset_at"] = "2099-01-01T00:00:00Z"
 			raw, err := json.Marshal(extra)
@@ -166,6 +172,8 @@ func TestQualityCooldownExternalOwnerSurvivesEditsAndRecovery(t *testing.T) {
 			f.plan, err = f.plans.Update(context.Background(), f.plan)
 			require.NoError(t, err)
 			require.JSONEq(t, before, cooldownScopeState(t, f))
+			require.NoError(t, f.plans.FinishPelican(context.Background(), f.plan.ID, f.until, time.Now()))
+			f.claim()
 			for _, verdict := range []string{"failed", "passed"} {
 				f.plan.QualityModelOutcomes = map[string]string{"sol": verdict, "astra": "passed"}
 				expected := "action_conflict"
@@ -188,6 +196,9 @@ func TestQualityCooldownMappingChangeCannotStrandOwnedTarget(t *testing.T) {
 	f.plan.MaxResults++
 	_, err := f.plans.Update(context.Background(), f.plan)
 	require.Error(t, err, "owned cooldown edit must be rejected after mapping changes")
+	require.Equal(t, "stale_run", f.apply("passed"), "an in-flight observation must not recover a changed route")
+	require.NoError(t, f.plans.FinishPelican(context.Background(), f.plan.ID, f.until, time.Now()))
+	f.claim()
 	f.plan.QualityModelOutcomes = map[string]string{"sol": "passed", "astra": "passed"}
 	require.Equal(t, "action_conflict", f.apply("passed"), "a pass for another upstream cannot recover the owned key")
 	require.JSONEq(t, beforeState, cooldownScopeState(t, f))
@@ -199,6 +210,8 @@ func TestQualityCooldownMappingChangeCannotStrandOwnedTarget(t *testing.T) {
 	f.plan.PelicanConfig.Quality.RemoveModels = []string{"owned-alias", "astra"}
 	f.plan, err = f.plans.Update(context.Background(), f.plan)
 	require.NoError(t, err)
+	require.NoError(t, f.plans.FinishPelican(context.Background(), f.plan.ID, f.until, time.Now()))
+	f.claim()
 	f.plan.QualityModelOutcomes = map[string]string{"owned-alias": "passed", "astra": "passed"}
 	require.Equal(t, "restored", f.apply("passed"))
 	require.NotContains(t, f.extra(), "model_rate_limits")

@@ -11,6 +11,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,7 +86,7 @@ func TestAccountTokenGuardV2RepositoryLeasesAndReauth(t *testing.T) {
 	_, started, err := reauth.BeginDirectCallback(ctx, task.ID, "worker-a")
 	require.NoError(t, err)
 	require.True(t, started)
-	accountRepo := NewAccountRepository(testEntClient(t), integrationDB, nil).(service.OpenAIOAuthReauthCredentialUpdater)
+	accountRepo := assertions.Type[service.OpenAIOAuthReauthCredentialUpdater](t, NewAccountRepository(testEntClient(t), integrationDB, nil))
 	updated := map[string]any{"access_token": "test-new-token"}
 	applied, err := accountRepo.ApplyOpenAIOAuthReauth(ctx, task.ID, "worker-a", account.ID, map[string]any{"access_token": "stale-token"}, updated, nil)
 	require.NoError(t, err)
@@ -100,7 +101,7 @@ func TestAccountTokenGuardV2RepositoryLeasesAndReauth(t *testing.T) {
 
 func TestAccountTokenGuardV2ManagedWorkerOnlyClaimsPasswordTasks(t *testing.T) {
 	ctx := context.Background()
-	repo := NewOpenAIOAuthReauthRepository(integrationDB).(*openAIOAuthReauthRepository)
+	repo := assertions.Type[*openAIOAuthReauthRepository](t, NewOpenAIOAuthReauthRepository(integrationDB))
 	var tasks []*service.OpenAIOAuthReauthTaskRecord
 	for _, mode := range []string{service.OpenAIOAuthReauthModeEmailOTPURL, service.OpenAIOAuthReauthModePasswordTOTP} {
 		account := mustCreateAccount(t, testEntClient(t), &service.Account{

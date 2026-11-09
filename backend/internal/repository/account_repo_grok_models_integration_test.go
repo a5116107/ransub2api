@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -366,7 +367,11 @@ func (g *grokCatalogGatingRepo) CompareAndSwapGrokObservedModels(ctx context.Con
 			return false, ctx.Err()
 		}
 	}
-	applied, err := g.AccountRepository.(service.GrokCatalogSnapshotRepository).CompareAndSwapGrokObservedModels(ctx, id, expected, next)
+	catalog, ok := g.AccountRepository.(service.GrokCatalogSnapshotRepository)
+	if !ok {
+		return false, errors.New("catalog fixture requires snapshot compare-and-swap support")
+	}
+	applied, err := catalog.CompareAndSwapGrokObservedModels(ctx, id, expected, next)
 	if g.calls == 1 && err == nil {
 		g.first <- applied
 	}

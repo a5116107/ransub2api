@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
 func TestOpsClientCancellationMetricsAndDuration(t *testing.T) {
 	ctx := context.Background()
-	repo := NewOpsRepository(integrationDB).(*opsRepository)
+	repo := assertions.Type[*opsRepository](t, NewOpsRepository(integrationDB))
 	start := time.Date(2003, 1, 2, 3, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
 	day := start.Truncate(24 * time.Hour)

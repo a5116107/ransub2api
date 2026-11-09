@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -69,7 +70,7 @@ func TestProfitOperationsZeroLossUnknownAndCurrentConfiguration(t *testing.T) {
 		return data
 	}
 	data := read()
-	sum := data["summary"].(map[string]any)
+	sum := assertions.Type[map[string]any](t, data["summary"])
 	require.Equal(t, 5.0, sum["estimated_cost"])
 	require.Equal(t, -5.0, sum["estimated_profit"])
 	require.Nil(t, sum["margin"], "zero revenue margin is unknown")
@@ -84,7 +85,7 @@ func TestProfitOperationsZeroLossUnknownAndCurrentConfiguration(t *testing.T) {
 		_, err = integrationDB.Exec(`UPDATE accounts SET extra=$2::jsonb,updated_at=clock_timestamp() WHERE id=$1`, f.account, tc.extra)
 		require.NoError(t, err)
 		data = read()
-		sum = data["summary"].(map[string]any)
+		sum = assertions.Type[map[string]any](t, data["summary"])
 		require.Equal(t, tc.cost, sum["estimated_cost"])
 		require.Equal(t, tc.defaults, sum["default_multiplier_requests"])
 		require.Equal(t, tc.unknown, sum["unknown_cost_requests"])
@@ -92,7 +93,7 @@ func TestProfitOperationsZeroLossUnknownAndCurrentConfiguration(t *testing.T) {
 	_, err = integrationDB.Exec(`UPDATE accounts SET credentials='{"base_url":"https://new.example/different/v1"}',extra='{"cost_multiplier":0.25}',deleted_at=NOW() WHERE id=$1`, f.account)
 	require.NoError(t, err)
 	data = read()
-	sum = data["summary"].(map[string]any)
+	sum = assertions.Type[map[string]any](t, data["summary"])
 	require.Equal(t, 1.0, sum["deleted_account_requests"])
 	require.Equal(t, 2.5, sum["estimated_cost"])
 	var base, income, stats float64
@@ -214,15 +215,15 @@ func TestProfitOperationsHalfOpenPagingGroupsAndPathIsolation(t *testing.T) {
 	}
 	first := read()
 	require.Equal(t, 2.0, first["total"])
-	require.Equal(t, 2.0, first["summary"].(map[string]any)["requests"])
+	require.Equal(t, 2.0, assertions.Type[map[string]any](t, first["summary"])["requests"])
 	require.Len(t, first["rows"], 1)
-	require.Equal(t, "https://same.example:8443/A/v1", first["rows"].([]any)[0].(map[string]any)["key"])
-	require.Equal(t, 1.0, first["summary"].(map[string]any)["margin"], "zero procurement cost remains an explicit 100 percent margin")
+	require.Equal(t, "https://same.example:8443/A/v1", assertions.Type[map[string]any](t, assertions.Type[[]any](t, first["rows"])[0])["key"])
+	require.Equal(t, 1.0, assertions.Type[map[string]any](t, first["summary"])["margin"], "zero procurement cost remains an explicit 100 percent margin")
 	q.Page = 2
 	second := read()
 	require.Equal(t, first["summary"], second["summary"])
-	require.Equal(t, "https://same.example:8443/B/v1", second["rows"].([]any)[0].(map[string]any)["key"])
+	require.Equal(t, "https://same.example:8443/B/v1", assertions.Type[map[string]any](t, assertions.Type[[]any](t, second["rows"])[0])["key"])
 	q.Model = "nonexistent"
 	empty := read()
-	require.Equal(t, 0.0, empty["summary"].(map[string]any)["requests"])
+	require.Equal(t, 0.0, assertions.Type[map[string]any](t, empty["summary"])["requests"])
 }

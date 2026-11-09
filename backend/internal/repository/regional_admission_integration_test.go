@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/regional/control"
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +39,7 @@ func regionalAdmissionCache(t *testing.T) *regionalConcurrencyCache {
 	p := &slots.Primary{DB: integrationDB, Limit: func(context.Context, *sql.Tx, slots.Resource) (int, error) { return 1, nil }}
 	cache, err := NewRegionalConcurrencyCache(NewConcurrencyCache(testRedis(t), 15, 30), p, nil)
 	require.NoError(t, err)
-	return cache.(*regionalConcurrencyCache)
+	return assertions.Type[*regionalConcurrencyCache](t, cache)
 }
 func TestRegionalAdmissionFIFOAtomicCancelAndReplay(t *testing.T) {
 	ctx := context.Background()

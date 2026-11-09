@@ -11,6 +11,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,12 +40,12 @@ func orphanRemovalFixture(t *testing.T) *qualityBPSFixture {
 }
 func orphanPreview(t *testing.T, f *qualityBPSFixture) *service.QualityOwnershipPreview {
 	t.Helper()
-	p, err := f.plans.(service.QualityOwnershipRepository).QualityOwnership(context.Background(), f.plan.ID, nil)
+	p, err := assertions.Type[service.QualityOwnershipRepository](t, f.plans).QualityOwnership(context.Background(), f.plan.ID, nil)
 	require.NoError(t, err)
 	return p
 }
 func orphanConfirm(f *qualityBPSFixture, p *service.QualityOwnershipPreview, model string) error {
-	_, err := f.plans.(service.QualityOwnershipRepository).QualityOwnership(context.Background(), f.plan.ID, &service.QualityOwnershipRequest{Fence: p.Fence, Confirm: true, RemoveModel: true, Model: model, ReasonCode: "orphan_marker_recovery"})
+	_, err := assertions.Type[service.QualityOwnershipRepository](f.t, f.plans).QualityOwnership(context.Background(), f.plan.ID, &service.QualityOwnershipRequest{Fence: p.Fence, Confirm: true, RemoveModel: true, Model: model, ReasonCode: "orphan_marker_recovery"})
 	return err
 }
 func orphanEntry(t *testing.T, p *service.QualityOwnershipPreview, model string) service.QualityModelRemoval {
@@ -98,24 +99,24 @@ func TestQualityOrphanRemovalAtomicScopeContraction(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(orphanSnapshot(t, f)), &b))
 	// Compare the complete persisted aggregate after removing exactly the permitted
 	// fields. This keeps the guard against accidental broad model/group changes.
-	accountBefore := a["account"].(map[string]any)
-	accountAfter := b["account"].(map[string]any)
+	accountBefore := assertions.Type[map[string]any](t, a["account"])
+	accountAfter := assertions.Type[map[string]any](t, b["account"])
 	delete(accountBefore, "updated_at")
 	delete(accountAfter, "updated_at")
-	delete(accountBefore["extra"].(map[string]any)[service.QualityModelIsolationKey].(map[string]any), "sol")
-	planBefore := a["plan"].(map[string]any)
-	planAfter := b["plan"].(map[string]any)
+	delete(assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, accountBefore["extra"])[service.QualityModelIsolationKey]), "sol")
+	planBefore := assertions.Type[map[string]any](t, a["plan"])
+	planAfter := assertions.Type[map[string]any](t, b["plan"])
 	require.NotEqual(t, planBefore["updated_at"], planAfter["updated_at"])
 	delete(planBefore, "updated_at")
 	delete(planAfter, "updated_at")
 	planBefore["model_id"] = "astra"
-	planBefore["pelican_config"].(map[string]any)["model_ids"] = []any{"astra", "missing"}
-	a["state"].(map[string]any)["isolation_models"] = []any{"astra", "missing"}
-	oldOutbox := a["outbox"].([]any)
-	newOutbox := b["outbox"].([]any)
+	assertions.Type[map[string]any](t, planBefore["pelican_config"])["model_ids"] = []any{"astra", "missing"}
+	assertions.Type[map[string]any](t, a["state"])["isolation_models"] = []any{"astra", "missing"}
+	oldOutbox := assertions.Type[[]any](t, a["outbox"])
+	newOutbox := assertions.Type[[]any](t, b["outbox"])
 	require.Len(t, newOutbox, len(oldOutbox)+1)
 	require.Equal(t, oldOutbox, newOutbox[:len(oldOutbox)])
-	require.Equal(t, "account_changed", newOutbox[len(oldOutbox)].(map[string]any)["event_type"])
+	require.Equal(t, "account_changed", assertions.Type[map[string]any](t, newOutbox[len(oldOutbox)])["event_type"])
 	delete(a, "outbox")
 	delete(b, "outbox")
 	require.Equal(t, a, b, "all other account, policy, ownership, groups, counters and history must be identical")

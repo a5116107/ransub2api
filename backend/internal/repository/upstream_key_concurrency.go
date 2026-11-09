@@ -299,10 +299,7 @@ func (s *httpUpstreamService) AcquireUpstreamKeySlots(parent context.Context, fi
 
 func (l *upstreamKeyLimiter) persistentAuthority() string {
 	if l.regional != nil {
-		if l.regional.primary != nil {
-			return "regional:primary"
-		}
-		return "regional:local:" + l.regional.region()
+		return l.regional.persistentUpstreamKeyAuthority()
 	}
 	return "redis"
 }
@@ -364,8 +361,10 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 		}
 	}
 	if handoff != nil {
-		if l.regional != nil && l.regional.primary == nil {
-			return nil, service.ErrUpstreamKeyPolicy
+		if l.regional != nil {
+			if _, err := s.regionalAsyncVideoStore(); err != nil {
+				return nil, err
+			}
 		}
 		for _, fingerprint := range lease.Fingerprints {
 			if l.policy.Limits[fingerprint] > 0 {
@@ -522,9 +521,10 @@ func (s *httpUpstreamService) SupportsAsyncVideoKeyGuard() bool {
 		return false
 	}
 	if regional := s.upstreamKeyLimiter.regional; regional != nil {
-		// Async video ownership is persisted in the regional primary SQL
-		// authority. A follower cannot safely create, bind, or reconcile a task.
-		return regional.primary != nil && !regional.runtimeFailed.Load()
+		// Both authorities persist the handoff beside their own slot records;
+		// a local replica uses only already-installed grants and policy.
+		_, err := s.regionalAsyncVideoStore()
+		return err == nil
 	}
 	return true
 }
@@ -571,7 +571,7 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 	if asyncVideo {
 		req = req.WithContext(service.WithHTTPUpstreamRedirectsDisabled(req.Context()))
 		handoff := service.AsyncVideoKeyHandoffFromRequest(req)
-		if regional := s.upstreamKeyLimiter.regional; regional != nil && (regional.primary == nil || handoff == nil) {
+		if s.upstreamKeyLimiter.regional != nil && handoff == nil {
 			return req, nil, service.ErrUpstreamKeyPolicy
 		}
 		fingerprints := config.UpstreamCredentialFingerprints(req)

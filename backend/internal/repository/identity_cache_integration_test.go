@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -21,7 +22,7 @@ type IdentityCacheSuite struct {
 
 func (s *IdentityCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
-	s.cache = NewIdentityCache(s.rdb).(*identityCache)
+	s.cache = assertions.Type[*identityCache](s.T(), NewIdentityCache(s.rdb))
 }
 
 func (s *IdentityCacheSuite) TestGetFingerprint_Missing() {

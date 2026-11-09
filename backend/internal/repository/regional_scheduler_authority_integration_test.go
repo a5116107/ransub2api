@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,7 +115,7 @@ func TestRegionalAuthorityUsesOneSnapshotAcrossBucketsAndEdges(t *testing.T) {
 		}
 		require.Equal(t, "regional-before", group.Name)
 		// Raw SQL must be scoped too, rather than accidentally using the pool.
-		repo := accounts.(*accountRepository)
+		repo := assertions.Type[*accountRepository](t, accounts)
 		var name string
 		rows, err := repo.sql.QueryContext(ctx, "SELECT name FROM groups WHERE id=$1", groupID)
 		require.NoError(t, err)

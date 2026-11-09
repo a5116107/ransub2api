@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -86,7 +87,7 @@ func TestIssue594SIWCFinalEgressFencesRevocationAndRevision(t *testing.T) {
 	enc, err := repository.NewAESEncryptor(cfg)
 	require.NoError(t, err)
 	repo := repository.NewOpenAIOAuthReauthRepository(db)
-	svc := service.NewOpenAIOAuthReauthService(repo, siwcBoundaryAccounts{accounts}, accounts.(service.OpenAIOAuthReauthCredentialUpdater), service.NewOpenAIOAuthService(nil, repository.NewOpenAIOAuthClient()), enc, true, nil, nil)
+	svc := service.NewOpenAIOAuthReauthService(repo, siwcBoundaryAccounts{accounts}, assertions.Type[service.OpenAIOAuthReauthCredentialUpdater](t, accounts), service.NewOpenAIOAuthService(nil, repository.NewOpenAIOAuthClient()), enc, true, nil, nil)
 	for _, action := range []string{"unchanged", "disable", "revision"} {
 		t.Run(action, func(t *testing.T) {
 			a := &service.Account{Name: "siwc boundary", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{}, Extra: map[string]any{}}
@@ -95,7 +96,7 @@ func TestIssue594SIWCFinalEgressFencesRevocationAndRevision(t *testing.T) {
 			require.NoError(t, e)
 			c.Status = "active"
 			c.Capabilities = []string{"responses"}
-			r := repo.(service.OpenAIAuthConnectionRepository)
+			r := assertions.Type[service.OpenAIAuthConnectionRepository](t, repo)
 			changed, e := r.CASAuthConnection(ctx, c, c.Revision)
 			require.NoError(t, e)
 			require.True(t, changed)

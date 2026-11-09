@@ -10,6 +10,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -100,7 +101,7 @@ func TestQualityCooldownDeleteAfterRecoveryPreservesExternalRestrictions(t *test
 	require.Zero(t, f.count(`SELECT count(*) FROM account_quality_states s JOIN scheduled_test_plans p ON p.id=s.plan_id WHERE p.account_id=$1`))
 	require.Equal(t, 1, f.count(`SELECT count(*) FROM accounts WHERE id=$1 AND concurrency=20`))
 	extra := f.extra()
-	limits := extra["model_rate_limits"].(map[string]any)
+	limits := assertions.Type[map[string]any](t, extra["model_rate_limits"])
 	require.NotContains(t, limits, "sol")
 	require.Contains(t, limits, "native")
 	require.Contains(t, limits, "other-owner")

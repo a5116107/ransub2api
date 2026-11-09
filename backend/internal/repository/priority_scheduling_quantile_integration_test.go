@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -61,7 +62,7 @@ func TestPriorityQuantileSQLUsesAttributableAttemptNotClientTiming(t *testing.T)
 		require.InDelta(t, 32000, signal.P90TTFTMs, .01, "P90 stays P90 when selecting P50/P70/P95")
 		require.Equal(t, float64(1), out["latency_unknown_samples"])
 		require.Equal(t, float64(5), out["experience_samples"])
-		require.Greater(t, out["experience_p90_ms"].(float64), 400000.0)
+		require.Greater(t, assertions.Type[float64](t, out["experience_p90_ms"]), 400000.0)
 		query.Model = "other"
 		signals, err = repo.ReadPrioritySchedulingSignals(ctx, query)
 		require.NoError(t, err)

@@ -261,6 +261,8 @@ type AsyncVideoKeyLeaseController interface {
 // AsyncVideoKeyReleaseRecovery retries only releases that were already fenced.
 type AsyncVideoKeyReleaseRecovery interface {
 	RecoverAsyncVideoKeyReleases(context.Context, int) (int, error)
+	// A gateway replica may recover only its own regional SQL authority.
+	IsLocalAsyncVideoKeyReleaseRecovery() bool
 }
 
 type asyncVideoKeyLookupContextKey struct{}

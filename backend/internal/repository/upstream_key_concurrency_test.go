@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -107,14 +109,20 @@ func TestAsyncVideoKeyGuardAtFinalHTTPAdmission(t *testing.T) {
 	require.False(t, missingDelegate.SupportsAsyncVideoKeyGuard())
 }
 
-func TestAsyncVideoKeyGuardCapabilityRequiresRegionalPrimary(t *testing.T) {
+func TestAsyncVideoKeyGuardCapabilityRequiresDurableAuthority(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		limiter       *upstreamKeyLimiter
 		wantSupported bool
 	}{
 		{name: "unconfigured legacy transport", wantSupported: true},
-		{name: "regional follower", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{}}, wantSupported: false},
+		{name: "regional authority missing", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{}}, wantSupported: false},
+		{name: "regional primary", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{primary: &slots.Primary{DB: &sql.DB{}}}}, wantSupported: true},
+		{name: "regional follower", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{local: &slots.Local{DB: &sql.DB{}, Region: "us"}}}, wantSupported: true},
+		{name: "regional database missing", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{local: &slots.Local{Region: "us"}}}, wantSupported: false},
+		{name: "regional identity missing", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{local: &slots.Local{DB: &sql.DB{}}}}, wantSupported: false},
+		{name: "regional identity padded", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{local: &slots.Local{DB: &sql.DB{}, Region: " us "}}}, wantSupported: false},
+		{name: "regional dual authority", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{primary: &slots.Primary{DB: &sql.DB{}}, local: &slots.Local{DB: &sql.DB{}, Region: "us"}}}, wantSupported: false},
 		{name: "regional runtime failed", limiter: &upstreamKeyLimiter{regional: &regionalConcurrencyCache{}}, wantSupported: false},
 		{name: "invalid policy", limiter: &upstreamKeyLimiter{err: service.ErrUpstreamKeyPolicy}, wantSupported: false},
 	} {

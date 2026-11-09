@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -19,7 +20,7 @@ type SettingRepoSuite struct {
 func (s *SettingRepoSuite) SetupTest() {
 	s.ctx = context.Background()
 	tx := testEntTx(s.T())
-	s.repo = NewSettingRepository(tx.Client()).(*settingRepository)
+	s.repo = assertions.Type[*settingRepository](s.T(), NewSettingRepository(tx.Client()))
 }
 
 func TestSettingRepoSuite(t *testing.T) {

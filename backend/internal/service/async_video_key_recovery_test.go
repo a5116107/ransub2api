@@ -19,7 +19,10 @@ type asyncVideoRecoveryStub struct {
 	stopped chan struct{}
 	once    sync.Once
 	calls   atomic.Int32
+	local   bool
 }
+
+func (r *asyncVideoRecoveryStub) IsLocalAsyncVideoKeyReleaseRecovery() bool { return r.local }
 
 func (r *asyncVideoRecoveryStub) RecoverAsyncVideoKeyReleases(ctx context.Context, limit int) (int, error) {
 	if limit != asyncVideoKeyReleaseRecoveryBatch {
@@ -62,17 +65,26 @@ func TestAsyncVideoKeyRecoveryLifecycle(t *testing.T) {
 }
 
 func TestAsyncVideoKeyRecoveryRespectsGatewayRoleAndFactory(t *testing.T) {
-	for _, gatewayOnly := range []bool{false, true} {
-		t.Run(map[bool]string{false: "full", true: "gateway"}[gatewayOnly], func(t *testing.T) {
-			recovery := &asyncVideoRecoveryStub{started: make(chan struct{}), stopped: make(chan struct{})}
+	for _, tc := range []struct {
+		name        string
+		gatewayOnly bool
+		local       bool
+		shouldStart bool
+	}{
+		{"full", false, false, true},
+		{"gateway without local authority", true, false, false},
+		{"gateway with local authority", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recovery := &asyncVideoRecoveryStub{started: make(chan struct{}), stopped: make(chan struct{}), local: tc.local}
 			cfg := &config.Config{}
-			if gatewayOnly {
+			if tc.gatewayOnly {
 				cfg.Runtime.Role = config.RuntimeRoleGateway
 			}
 			svc := ProvideOpenAIGatewayService(OpenAIGatewayDependencies{Config: cfg, Upstream: recovery})
 			t.Cleanup(svc.StopOpenAICodexTicketHarvester)
 			t.Cleanup(svc.StopAsyncVideoKeyReleaseRecovery)
-			if gatewayOnly {
+			if !tc.shouldStart {
 				require.Nil(t, svc.asyncVideoRecoveryDone)
 				require.Zero(t, recovery.calls.Load())
 				return

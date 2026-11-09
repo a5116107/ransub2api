@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -105,7 +106,7 @@ func TestQualityTemplateCompleteHTTPRoundtripAllActions(t *testing.T) {
 			body["name"] = "Edited complete template"
 			body["cron_expression"] = "9 */3 * * *"
 			body["max_results"] = 145
-			cfg := body["pelican_config"].(map[string]any)
+			cfg := assertions.Type[map[string]any](t, body["pelican_config"])
 			cfg["reasoning_effort"] = "medium"
 			cfg["parallel_count"] = 2
 			w = qualityLiveRequest(r, "PUT", fmt.Sprintf("/presets/%d", saved.ID), body)
@@ -159,7 +160,7 @@ func TestQualityTemplateCompleteRejectsInvalidGroupsAndPermissions(t *testing.T)
 	f, group, _ := repository.NewQualityLiveFixture(t)
 	r := completeTemplateRouter(t, false)
 	body := completeTemplatePayload("remove_groups", group)
-	body["pelican_config"].(map[string]any)["quality"].(map[string]any)["remove_group_ids"] = []int64{9223372036854770000}
+	assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, body["pelican_config"])["quality"])["remove_group_ids"] = []int64{9223372036854770000}
 	before := completeUnchangedBusiness(t)
 	w := qualityLiveRequest(r, "POST", "/presets", body)
 	require.Equal(t, 400, w.Code, w.Body.String())
@@ -175,7 +176,7 @@ func TestQualityTemplateCompleteRejectsInvalidGroupsAndPermissions(t *testing.T)
 	}
 	body["account_id"] = f.Account
 	delete(body, "auto_recover")
-	delete(body["pelican_config"].(map[string]any)["quality"].(map[string]any), "judge")
+	delete(assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, body["pelican_config"])["quality"]), "judge")
 	w = qualityLiveRequest(completeTemplateRouter(t, true), "POST", "/plans", body)
 	require.Equal(t, 403, w.Code, w.Body.String())
 	require.JSONEq(t, before, completeUnchangedBusiness(t))
@@ -238,8 +239,8 @@ func TestQualityTemplateCompleteDetectionModesAndProviders(t *testing.T) {
 			f, group, _ := repository.NewQualityLiveFixture(t)
 			r := completeTemplateRouter(t, false)
 			body := completeTemplatePayload("observe_only", group)
-			cfg := body["pelican_config"].(map[string]any)
-			q := cfg["quality"].(map[string]any)
+			cfg := assertions.Type[map[string]any](t, body["pelican_config"])
+			q := assertions.Type[map[string]any](t, cfg["quality"])
 			switch kind {
 			case "candy-llm":
 				q["judge"] = map[string]any{"kind": "llm", "group_id": group, "model_id": "judge-model", "prompt": "Compare"}

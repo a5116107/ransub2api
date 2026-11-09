@@ -210,9 +210,10 @@ func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 					require.Equal(t, before+1, submissions.Load())
 					require.NotEmpty(t, result.ResponseID)
 					lookupEndpoint := service.GrokMediaEndpointVideoStatus
-					if tc.platform == service.PlatformOpenAI {
+					switch tc.platform {
+					case service.PlatformOpenAI:
 						lookupEndpoint = service.SeedanceEndpointStatus
-					} else if tc.platform == service.PlatformMiniMax {
+					case service.PlatformMiniMax:
 						lookupEndpoint = service.MiniMaxH3EndpointStatus
 					}
 					groupID := owner.GroupID

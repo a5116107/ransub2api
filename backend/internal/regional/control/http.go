@@ -220,7 +220,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(400)
 			return
 		}
-		if grant.Region != h.Scope.Region || !h.Scope.resource(grant.Resource) || grant.Slots > h.Scope.MaximumSlots || time.Until(grant.ExpiresAt) > h.Scope.MaximumLifetime {
+		if grant.Region != h.Scope.Region || !h.Scope.resource(grant.Resource) || grant.Slots > h.Scope.MaximumSlots {
+			w.WriteHeader(403)
+			return
+		}
+		// Grants are issued and expired by SQL. Process/container clock skew
+		// must not reject a valid grant or extend its permitted remaining life.
+		var authorityNow time.Time
+		if err = h.Slots.DB.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&authorityNow); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if grant.ExpiresAt.Sub(authorityNow) > h.Scope.MaximumLifetime {
 			w.WriteHeader(403)
 			return
 		}

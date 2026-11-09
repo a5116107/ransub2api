@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +22,7 @@ func totpRotationFixture(t *testing.T) (context.Context, *openAIOAuthReauthRepos
 		_, err := integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account.ID)
 		require.NoError(t, err)
 	})
-	repo := NewOpenAIOAuthReauthRepository(integrationDB).(*openAIOAuthReauthRepository)
+	repo := assertions.Type[*openAIOAuthReauthRepository](t, NewOpenAIOAuthReauthRepository(integrationDB))
 	require.NoError(t, repo.UpsertConfig(ctx, &service.OpenAIOAuthReauthStoredConfig{AccountID: account.ID, LoginEmail: "owner@example.test", CredentialMode: "password_totp", Engine: "local_worker", ProxySource: "account", PasswordCiphertext: "enc:password", TOTPSecretCiphertext: "enc:old"}))
 	cfg, err := repo.GetConfig(ctx, account.ID)
 	require.NoError(t, err)

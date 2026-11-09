@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -280,8 +281,7 @@ func TestOllamaCloudUsageGroupWritesAreAtomicAcrossPlatformsAndURLVariants(t *te
 	require.NoError(t, repo.UpdateOllamaCloudUsageSnapshot(ctx, firstLoaded, snapshot))
 	secondLoaded, err = repo.GetByID(ctx, second.ID)
 	require.NoError(t, err)
-	require.Equal(t, service.OllamaCloudUsageStatusOK,
-		secondLoaded.Extra[service.OllamaCloudUsageSnapshotExtraKey].(map[string]any)["status"])
+	require.Equal(t, service.OllamaCloudUsageStatusOK, assertions.Type[map[string]any](t, secondLoaded.Extra[service.OllamaCloudUsageSnapshotExtraKey])["status"])
 
 	staleSecond := secondLoaded
 	require.NoError(t, repo.UpdateCredentials(ctx, second.ID, map[string]any{

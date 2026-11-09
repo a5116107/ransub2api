@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -23,7 +24,7 @@ func TestUserMsgQueueCacheSuite(t *testing.T) {
 
 func (s *UserMsgQueueCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
-	s.cache = NewUserMsgQueueCache(s.rdb).(*userMsgQueueCache)
+	s.cache = assertions.Type[*userMsgQueueCache](s.T(), NewUserMsgQueueCache(s.rdb))
 }
 
 func (s *UserMsgQueueCacheSuite) TestAcquireLockWritesIndexAndReleaseRemovesIt() {

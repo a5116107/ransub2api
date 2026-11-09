@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -39,26 +40,40 @@ func TestPriorityQuantileSQLRejectsUnsafeAttribution(t *testing.T) {
 		{"downstream_error", func(d map[string]any) { d["downstream_error"] = true }},
 		{"incomplete_upload", func(d map[string]any) { d["body_complete"] = false }},
 		{"version", func(d map[string]any) { d["version"] = 2 }},
-		{"write_before_semantic", func(d map[string]any) { d["events"].(map[string]any)["first_write"] = 500 }},
-		{"malformed_write", func(d map[string]any) { d["events"].(map[string]any)["first_write"] = "bad" }},
-		{"wrong_account", func(d map[string]any) { d["attempts"].([]any)[0].(map[string]any)["account_id"] = account.ID + 999 }},
-		{"parent_only", func(d map[string]any) { d["attempts"].([]any)[0].(map[string]any)["kind"] = "egress" }},
-		{"attempt_failed", func(d map[string]any) { d["attempts"].([]any)[0].(map[string]any)["status"] = 503 }},
-		{"attempt_incomplete", func(d map[string]any) { d["attempts"].([]any)[0].(map[string]any)["terminal"] = "incomplete" }},
-		{"attempt_error", func(d map[string]any) { d["attempts"].([]any)[0].(map[string]any)["error"] = "timeout" }},
-		{"negative_start", func(d map[string]any) { d["attempts"].([]any)[0].(map[string]any)["start_ms"] = -1 }},
-		{"malformed_start", func(d map[string]any) { d["attempts"].([]any)[0].(map[string]any)["start_ms"] = "bad" }},
+		{"write_before_semantic", func(d map[string]any) { assertions.Type[map[string]any](t, d["events"])["first_write"] = 500 }},
+		{"malformed_write", func(d map[string]any) { assertions.Type[map[string]any](t, d["events"])["first_write"] = "bad" }},
+		{"wrong_account", func(d map[string]any) {
+			assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["account_id"] = account.ID + 999
+		}},
+		{"parent_only", func(d map[string]any) {
+			assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["kind"] = "egress"
+		}},
+		{"attempt_failed", func(d map[string]any) {
+			assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["status"] = 503
+		}},
+		{"attempt_incomplete", func(d map[string]any) {
+			assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["terminal"] = "incomplete"
+		}},
+		{"attempt_error", func(d map[string]any) {
+			assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["error"] = "timeout"
+		}},
+		{"negative_start", func(d map[string]any) {
+			assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["start_ms"] = -1
+		}},
+		{"malformed_start", func(d map[string]any) {
+			assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["start_ms"] = "bad"
+		}},
 		{"reversed_clock", func(d map[string]any) {
-			d["attempts"].([]any)[0].(map[string]any)["events"].(map[string]any)["first_semantic"] = 500
+			assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["events"])["first_semantic"] = 500
 		}},
 		{"malformed_clock", func(d map[string]any) {
-			d["attempts"].([]any)[0].(map[string]any)["events"].(map[string]any)["first_semantic"] = "bad"
+			assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, assertions.Type[[]any](t, d["attempts"])[0])["events"])["first_semantic"] = "bad"
 		}},
 		{"later_failed_attempt", func(d map[string]any) {
-			d["attempts"] = append(d["attempts"].([]any), map[string]any{"kind": "http", "account_id": account.ID + 999, "status": 503})
+			d["attempts"] = append(assertions.Type[[]any](t, d["attempts"]), map[string]any{"kind": "http", "account_id": account.ID + 999, "status": 503})
 		}},
 		{"later_uninstrumented_parent", func(d map[string]any) {
-			d["attempts"] = append(d["attempts"].([]any), map[string]any{"kind": "egress", "account_id": account.ID, "status": 200})
+			d["attempts"] = append(assertions.Type[[]any](t, d["attempts"]), map[string]any{"kind": "egress", "account_id": account.ID, "status": 200})
 		}},
 		{"malformed_attempts", func(d map[string]any) { d["attempts"] = map[string]any{} }},
 	}
@@ -83,7 +98,7 @@ func TestPriorityQuantileSQLRejectsUnsafeAttribution(t *testing.T) {
 		add(fmt.Sprint(i), baseline(), badAt)
 	}
 	fast := baseline()
-	fast["attempts"].([]any)[0].(map[string]any)["events"].(map[string]any)["first_semantic"] = 2000
+	assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, assertions.Type[[]any](t, fast["attempts"])[0])["events"])["first_semantic"] = 2000
 	add("fast", fast, now)
 	add("missing", nil, now)
 	for _, tc := range mutations {

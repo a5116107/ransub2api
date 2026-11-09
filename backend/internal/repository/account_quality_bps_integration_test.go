@@ -49,8 +49,10 @@ func (f *qualityBPSFixture) claim() {
 	require.NoError(f.t, f.plans.TriggerQuality(ctx, f.plan.ID))
 	plan, err := f.plans.GetByID(ctx, f.plan.ID)
 	require.NoError(f.t, err)
-	// Windows 上 Go 的墙钟按系统时钟节拍更新，可能略早于数据库 NOW()，留一秒余量。
-	now := time.Now().Add(time.Second).Truncate(time.Microsecond)
+	// TriggerQuality and claim deadlines use the SQL authority's clock. A host
+	// or container clock offset must not turn a due fixture into a future run.
+	var now time.Time
+	require.NoError(f.t, integrationDB.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now))
 	f.until = now.Add(15 * time.Minute)
 	ok, err := f.plans.ClaimPelican(ctx, plan, now, f.until, now.Add(30*time.Minute))
 	require.NoError(f.t, err)

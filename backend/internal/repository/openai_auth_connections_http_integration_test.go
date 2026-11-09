@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -72,7 +73,7 @@ func newConnectionHTTPFixture(t *testing.T) *connectionHTTPFixture {
 	router.POST("/accounts/:id/auth-connections/:connection_id/authorize", h.BeginConnectionAuthorization)
 	router.POST("/accounts/:id/auth-connections/:connection_id/callback", h.CompleteConnectionAuthorization)
 	router.POST("/accounts/:id/auth-connections/:connection_id/revoke", h.RevokeAuthConnection)
-	f := &connectionHTTPFixture{db: db, accountID: a.ID, repo: repo.(service.OpenAIAuthConnectionRepository), svc: svc}
+	f := &connectionHTTPFixture{db: db, accountID: a.ID, repo: assertions.Type[service.OpenAIAuthConnectionRepository](t, repo), svc: svc}
 	f.encryptor = encryptor
 	f.accounts = accounts
 	f.restart = func() *service.OpenAIOAuthReauthService {
@@ -170,7 +171,7 @@ func TestIssue594DatabaseCASAndCrossInstanceLease(t *testing.T) {
 	f := newConnectionHTTPFixture(t)
 	ctx := context.Background()
 	c := connectionResponse(t, f.request("POST", "", `{"kind":"siwc","label":"SIWC registration"}`))
-	other := repository.NewOpenAIOAuthReauthRepository(f.db).(service.OpenAIAuthConnectionRepository)
+	other := assertions.Type[service.OpenAIAuthConnectionRepository](t, repository.NewOpenAIOAuthReauthRepository(f.db))
 	acquired, err := f.repo.AcquireAuthConnectionLease(ctx, f.accountID, c.ID, "worker-one")
 	require.NoError(t, err)
 	require.True(t, acquired)
