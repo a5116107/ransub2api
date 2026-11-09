@@ -662,18 +662,12 @@ func StableGrokVideoBillingRequestID(taskRequestID string) string {
 // IsGrokVideoStatusBillable matches official success: status == "done" AND non-empty video.url.
 // pending / expired / failed, or done without a video URL, are not billable.
 func IsGrokVideoStatusBillable(statusBody []byte) bool {
-	if len(statusBody) == 0 || !gjson.ValidBytes(statusBody) {
+	_, status, err := asyncVideoResponseEvidence(statusBody, "grok", "")
+	if err != nil || status != "done" {
 		return false
 	}
-	if !isOfficialGrokVideoStatusDone(statusBody) {
-		return false
-	}
-	return strings.TrimSpace(gjson.GetBytes(statusBody, "video.url").String()) != ""
-}
-
-func isOfficialGrokVideoStatusDone(statusBody []byte) bool {
-	// Official enum: pending | done | expired | failed.
-	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(statusBody, "status").String()), "done")
+	videoURL := gjson.GetBytes(statusBody, "video.url")
+	return videoURL.Type == gjson.String && strings.TrimSpace(videoURL.String()) != ""
 }
 
 // ExtractGrokVideoBillingFromStatusBody builds usage units from an official done status.
@@ -682,25 +676,26 @@ func isOfficialGrokVideoStatusDone(statusBody []byte) bool {
 //   - model: top-level model
 //   - resolution: not in status response → create-time pending snapshot → default 480p
 func ExtractGrokVideoBillingFromStatusBody(statusBody []byte, pending *GrokVideoPendingBilling, requestID string) *OpenAIForwardResult {
+	responseID, _, err := asyncVideoResponseEvidence(statusBody, "grok", requestID)
+	if err != nil {
+		return nil
+	}
 	if !IsGrokVideoStatusBillable(statusBody) {
 		return nil
 	}
-	model := ""
+	// Official: top-level model.
+	model := strings.TrimSpace(gjson.GetBytes(statusBody, "model").String())
 	billingModel := ""
 	upstreamModel := ""
 	resolution := ""
 	durationSeconds := 0
 
-	if gjson.ValidBytes(statusBody) {
-		// Official: top-level model.
-		model = strings.TrimSpace(gjson.GetBytes(statusBody, "model").String())
-		// Official: video.duration (number of seconds).
-		if v := gjson.GetBytes(statusBody, "video.duration"); v.Exists() && v.Type == gjson.Number {
-			durationSeconds = int(v.Int())
-			if durationSeconds == 0 && v.Float() > 0 {
-				// Sub-second values are unexpected for this API; still accept truncated int path above.
-				durationSeconds = int(v.Float())
-			}
+	// Official: video.duration (number of seconds).
+	if v := gjson.GetBytes(statusBody, "video.duration"); v.Exists() && v.Type == gjson.Number {
+		durationSeconds = int(v.Int())
+		if durationSeconds == 0 && v.Float() > 0 {
+			// Sub-second values are unexpected for this API; still accept truncated int path above.
+			durationSeconds = int(v.Float())
 		}
 	}
 	if pending != nil {
@@ -733,7 +728,6 @@ func ExtractGrokVideoBillingFromStatusBody(statusBody []byte, pending *GrokVideo
 	if durationSeconds > 0 {
 		durationSeconds = NormalizeVideoBillingDurationSecondsOrDefault(durationSeconds)
 	}
-	responseID := extractGrokMediaVideoRequestID(statusBody)
 	if responseID == "" {
 		responseID = strings.TrimSpace(requestID)
 	}
@@ -893,6 +887,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		}
 	}
 	if endpoint == GrokMediaEndpointVideoStatus {
+		if _, _, err := asyncVideoResponseEvidence(respBody, "grok", requestID); err != nil {
+			return nil, err
+		}
 		sourceURL := grokMediaVideoSourceURL(respBody, requestID)
 		if sourceURL != "" && !s.settingService.IsGrokVideoSourceURLEnabled(ctx) {
 			sourceURL = ""
@@ -1013,6 +1010,9 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		return nil, err
 	}
 
+	if _, _, err := asyncVideoResponseEvidence(statusBody, "grok", requestID); err != nil {
+		return nil, err
+	}
 	contentURL, err := grokMediaSignedVideoContentURL(statusBody, requestID)
 	if err != nil {
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
@@ -1424,8 +1424,8 @@ type grokMediaUsageMetadata struct {
 }
 
 func grokVideoStatusTerminal(responseBody []byte) bool {
-	status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
-	return status == "done" || status == "expired" || status == "failed"
+	_, status, err := asyncVideoResponseEvidence(responseBody, "grok", "")
+	return err == nil && (status == "done" || status == "expired" || status == "failed")
 }
 
 func grokMediaUsageFromResponse(endpoint GrokMediaEndpoint, requestInfo GrokMediaRequestInfo, responseBody []byte) grokMediaUsageMetadata {
@@ -1462,15 +1462,11 @@ func grokMediaUsageFromResponse(endpoint GrokMediaEndpoint, requestInfo GrokMedi
 }
 
 func extractGrokMediaVideoRequestID(body []byte) string {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	id, _, err := asyncVideoResponseEvidence(body, "grok", "")
+	if err != nil {
 		return ""
 	}
-	for _, path := range []string{"request_id", "id", "data.request_id", "data.id", "video.request_id", "video.id", "task_id", "data.task_id", "video.task_id"} {
-		if id := strings.TrimSpace(gjson.GetBytes(body, path).String()); id != "" {
-			return id
-		}
-	}
-	return ""
+	return id
 }
 
 func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(

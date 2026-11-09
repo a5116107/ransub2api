@@ -1695,7 +1695,7 @@ func TestForwardGrokMediaVideoGenerationReturnsTaskIDAsResponseID(t *testing.T) 
 	require.Equal(t, "video-task-123", result.ResponseID)
 }
 
-func TestExtractGrokMediaVideoRequestIDPreservesExistingPrecedence(t *testing.T) {
+func TestExtractGrokMediaVideoRequestIDRejectsConflictingAliases(t *testing.T) {
 	body := []byte(`{
 		"request_id":"request-id",
 		"id":"id",
@@ -1704,7 +1704,7 @@ func TestExtractGrokMediaVideoRequestIDPreservesExistingPrecedence(t *testing.T)
 		"video":{"request_id":"video-request-id","id":"video-id","task_id":"video-task-id"}
 	}`)
 
-	require.Equal(t, "request-id", extractGrokMediaVideoRequestID(body))
+	require.Empty(t, extractGrokMediaVideoRequestID(body), "field precedence must not hide conflicting task identities")
 }
 
 func TestForwardGrokMediaVideoGenerationPreservesImageToVideoModel(t *testing.T) {

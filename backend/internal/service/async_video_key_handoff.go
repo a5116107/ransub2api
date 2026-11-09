@@ -7,7 +7,88 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
+
+// Only the protocol's task identity and status control durable release/billing.
+// Keep unknown response fields untouched, but reject ambiguous control fields
+// before gjson's first-key behavior or a response rewrite can hide a conflict.
+// A status endpoint need not echo its task ID; an explicit ID must agree with
+// the authenticated request, including every legacy identity alias present.
+func asyncVideoResponseEvidence(body []byte, provider, expectedTaskID string) (string, string, error) {
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+		return "", "", errors.New("invalid async video response")
+	}
+	var identityPaths []string
+	switch provider {
+	case "grok":
+		identityPaths = []string{"request_id", "id", "data.request_id", "data.id", "video.request_id", "video.id", "task_id", "data.task_id", "video.task_id"}
+	case "seedance":
+		identityPaths = []string{"id"}
+	case "minimax-h3":
+		identityPaths = []string{"id", "task_id"}
+	default:
+		return "", "", errors.New("unsupported async video response provider")
+	}
+	paths := map[string]bool{"status": true}
+	for _, path := range identityPaths {
+		paths[path] = true
+		if separator := strings.LastIndexByte(path, '.'); separator >= 0 {
+			paths[path[:separator]] = false
+		}
+	}
+	seen := make(map[string]bool)
+	var taskID, status string
+	valid := true
+	var collect func(gjson.Result, string)
+	collect = func(object gjson.Result, prefix string) {
+		object.ForEach(func(key, value gjson.Result) bool {
+			name := key.String()
+			// A literal dotted member is not one of the protocol's nested paths.
+			if strings.ContainsRune(name, '.') {
+				return true
+			}
+			path := prefix + strings.ToLower(name)
+			field, tracked := paths[path]
+			if !tracked {
+				return true
+			}
+			if name != strings.ToLower(name) || seen[path] {
+				valid = false
+				return false
+			}
+			seen[path] = true
+			if !field {
+				// Pending responses can legitimately have video/data=null.
+				if value.IsObject() {
+					collect(value, path+".")
+				}
+				return valid
+			}
+			if value.Type != gjson.String {
+				valid = false
+				return false
+			}
+			if path == "status" {
+				status = strings.ToLower(strings.TrimSpace(value.String()))
+				return true
+			}
+			id := strings.TrimSpace(value.String())
+			if id == "" || (taskID != "" && taskID != id) {
+				valid = false
+				return false
+			}
+			taskID = id
+			return true
+		})
+	}
+	collect(gjson.ParseBytes(body), "")
+	if !valid || (taskID != "" && expectedTaskID != "" && taskID != strings.TrimSpace(expectedTaskID)) {
+		return "", "", errors.New("ambiguous async video response identity or status")
+	}
+	return taskID, status, nil
+}
 
 // asyncVideoKeyController returns the transport-owned durable handoff. A
 // custom test transport without a shared-key lease remains a valid legacy

@@ -690,7 +690,7 @@ func TestAsyncVideoAmbiguousSuccessResponse(t *testing.T) {
 		{"seedance", service.SeedanceEndpointCreate, service.PlatformOpenAI, `{"model":"video","content":[{"type":"text","text":"waves"}]}`},
 		{"minimax", service.MiniMaxH3EndpointCreate, service.PlatformMiniMax, `{"model":"MiniMax-H3","prompt":"waves","seconds":"1"}`},
 	} {
-		for _, scenario := range []string{"missing_id", "read_failure", "too_large", "redirect"} {
+		for _, scenario := range []string{"missing_id", "read_failure", "too_large", "redirect", "duplicate_id", "nonstring_id", "empty_id", "trailing_garbage"} {
 			t.Run(tc.name+"/"+scenario, func(t *testing.T) {
 				var h *OpenAIGatewayHandler
 				var slots *grokMediaSlotsCache
@@ -708,6 +708,14 @@ func TestAsyncVideoAmbiguousSuccessResponse(t *testing.T) {
 					case "too_large":
 						h.cfg.Gateway.UpstreamResponseReadMaxBytes = 16
 						body = io.NopCloser(strings.NewReader(strings.Repeat("x", 32)))
+					case "duplicate_id":
+						body = io.NopCloser(strings.NewReader(`{"id":"task-fixture","id":"other-task"}`))
+					case "nonstring_id":
+						body = io.NopCloser(strings.NewReader(`{"id":123}`))
+					case "empty_id":
+						body = io.NopCloser(strings.NewReader(`{"id":" "}`))
+					case "trailing_garbage":
+						body = io.NopCloser(strings.NewReader(`{"id":"task-fixture"}garbage`))
 					}
 					status, headers := http.StatusOK, make(http.Header)
 					if scenario == "redirect" {

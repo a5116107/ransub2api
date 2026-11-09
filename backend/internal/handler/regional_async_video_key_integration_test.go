@@ -74,6 +74,8 @@ func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
 
 	var creates, polls, competitors atomic.Int32
+	var pollOverride atomic.Value
+	pollOverride.Store("")
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/competing" {
@@ -84,6 +86,10 @@ func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 			_, _ = io.WriteString(w, `{"request_id":"task","status":"pending"}`)
 		} else {
 			polls.Add(1)
+			if body, ok := pollOverride.Load().(string); ok && body != "" {
+				_, _ = io.WriteString(w, body)
+				return
+			}
 			_, _ = io.WriteString(w, `{"status":"done","video":{"url":"https://vidgen.x.ai/result.mp4","duration":6}}`)
 		}
 	}))
@@ -137,10 +143,28 @@ func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 	h.GrokVideoStatus(wrong)
 	require.Equal(t, http.StatusNotFound, denied.Code, denied.Body.String())
 	require.Zero(t, polls.Load())
+	badResponses := []string{
+		`{"request_id":"another-task","status":"done"}`,
+		`{"request_id":"task","status":"done","status":"pending"}`,
+		`{"request_id":"task","id":"another-task","status":"done"}`,
+		`{"request_id":"task","status":"done"}garbage`,
+	}
+	for _, body := range badResponses {
+		pollOverride.Store(body)
+		status, invalid := grokMediaSlotContext(t.Context(), false)
+		h.GrokVideoStatus(status)
+		require.Equal(t, http.StatusBadGateway, invalid.Code, invalid.Body.String())
+		require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity)
+		var held int
+		require.NoError(t, db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM regional_async_video_key_leases WHERE NOT fenced AND state='bound'`).Scan(&held))
+		require.Equal(t, 1, held, "invalid evidence must not fence or remove the SQL owner")
+		require.EqualValues(t, 1, creates.Load(), "a malformed status must not replay creation")
+	}
+	pollOverride.Store("")
 	status, completed := grokMediaSlotContext(t.Context(), false)
 	h.GrokVideoStatus(status)
 	require.Equal(t, http.StatusOK, completed.Code, completed.Body.String())
-	require.EqualValues(t, 1, polls.Load())
+	require.EqualValues(t, len(badResponses)+1, polls.Load())
 	require.NoError(t, tryCompeting())
 	require.EqualValues(t, 1, competitors.Load())
 	var records int
@@ -162,7 +186,7 @@ func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 	status, completed = grokMediaSlotContext(t.Context(), false)
 	h.GrokVideoStatus(status)
 	require.Equal(t, http.StatusOK, completed.Code, completed.Body.String())
-	require.EqualValues(t, 2, polls.Load())
+	require.EqualValues(t, len(badResponses)+2, polls.Load())
 	require.NoError(t, tryCompeting())
 	slots.assertReleased(t)
 }

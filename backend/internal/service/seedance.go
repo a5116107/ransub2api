@@ -168,11 +168,19 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 		writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
 		return nil, forwardErr
 	}
+	var id, status string
+	if endpoint != SeedanceEndpointDelete || len(bytes.TrimSpace(responseBody)) > 0 {
+		id, status, err = asyncVideoResponseEvidence(responseBody, "seedance", strings.TrimPrefix(taskID, "seedance:"))
+		if err != nil {
+			if endpoint.IsAsyncVideoCreate() {
+				_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
+			}
+			return nil, asyncVideoSubmissionError(endpoint, err)
+		}
+	}
 	result := &OpenAIForwardResult{Model: model, BillingModel: model, UpstreamModel: upstreamModel, Duration: time.Since(started), ResponseHeaders: resp.Header.Clone()}
 	if endpoint == SeedanceEndpointCreate {
-		idValue := gjson.GetBytes(responseBody, "id")
-		id := strings.TrimSpace(idValue.String())
-		if idValue.Type != gjson.String {
+		if id == "" {
 			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 			return nil, asyncVideoSubmissionError(endpoint, fmt.Errorf("seedance create response missing task ID"))
 		}
@@ -189,7 +197,6 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	if endpoint == SeedanceEndpointStatus {
 		result.ResponseID = taskID
 		result.UpstreamModel = gjson.GetBytes(responseBody, "model").String()
-		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
 		result.AsyncVideoTerminal = status == "succeeded" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
 		if status == "succeeded" {
 			result.Usage.OutputTokens = max(0, int(gjson.GetBytes(responseBody, "usage.completion_tokens").Int()))
@@ -197,7 +204,6 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	}
 	if endpoint == SeedanceEndpointDelete {
 		result.ResponseID = taskID
-		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
 		result.AsyncVideoTerminal = status == "succeeded" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
 	}
 	writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)

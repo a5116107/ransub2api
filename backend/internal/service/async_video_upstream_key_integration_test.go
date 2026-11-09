@@ -137,6 +137,9 @@ func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var submissions, polls, competitors atomic.Int32
+			var pollOverride, createOverride atomic.Value
+			pollOverride.Store("")
+			createOverride.Store("")
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/competing" {
 					competitors.Add(1)
@@ -146,6 +149,10 @@ func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 				if r.Method == http.MethodGet {
 					polls.Add(1)
 					w.Header().Set("Content-Type", "application/json")
+					if body, ok := pollOverride.Load().(string); ok && body != "" {
+						_, _ = io.WriteString(w, body)
+						return
+					}
 					switch tc.platform {
 					case service.PlatformOpenAI:
 						_, _ = io.WriteString(w, `{"status":"succeeded","usage":{"completion_tokens":1}}`)
@@ -158,6 +165,10 @@ func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 				}
 				submissions.Add(1)
 				w.Header().Set("Content-Type", "application/json")
+				if body, ok := createOverride.Load().(string); ok && body != "" {
+					_, _ = io.WriteString(w, body)
+					return
+				}
 				_, _ = io.WriteString(w, `{"id":"task-fixture","request_id":"task-fixture","status":"queued"}`)
 			}))
 			t.Cleanup(server.Close)
@@ -183,16 +194,17 @@ func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 					ctx := service.WithAsyncVideoKeyOwner(t.Context(), owner)
 					c.Request = httptest.NewRequest(http.MethodPost, "/fixture", bytes.NewReader(body)).WithContext(ctx)
 					before := submissions.Load()
-					var result *service.OpenAIForwardResult
-					var err error
-					switch tc.platform {
-					case service.PlatformOpenAI:
-						result, err = svc.ForwardSeedance(ctx, c, account, tc.endpoint, "", body)
-					case service.PlatformMiniMax:
-						result, err = svc.ForwardMiniMaxH3(ctx, c, account, tc.endpoint, "", body)
-					default:
-						result, err = svc.ForwardGrokMedia(ctx, c, account, tc.endpoint, "", body, "application/json")
+					submit := func(c *gin.Context) (*service.OpenAIForwardResult, error) {
+						switch tc.platform {
+						case service.PlatformOpenAI:
+							return svc.ForwardSeedance(ctx, c, account, tc.endpoint, "", body)
+						case service.PlatformMiniMax:
+							return svc.ForwardMiniMaxH3(ctx, c, account, tc.endpoint, "", body)
+						default:
+							return svc.ForwardGrokMedia(ctx, c, account, tc.endpoint, "", body, "application/json")
+						}
 					}
+					result, err := submit(c)
 					require.NoError(t, err, "a durable Redis authority must admit the first video creation")
 					require.NotNil(t, result)
 					require.Equal(t, before+1, submissions.Load())
@@ -207,38 +219,95 @@ func TestAsyncVideoSharedKeyPendingCapacity(t *testing.T) {
 					boundAccountID, err := svc.ResolveMediaVideoRequestAccount(ctx, &groupID, result.ResponseID, owner.UserID, owner.APIKeyID, lookupEndpoint)
 					require.NoError(t, err, "durable ownership must survive a missing sticky cache")
 					require.Equal(t, account.ID, boundAccountID)
-					request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/competing", strings.NewReader("{}"))
-					require.NoError(t, err)
-					request.Header.Set("Authorization", "Bearer async-fixture")
-					response, err := transport.Do(request, "", 8, 1)
-					if response != nil {
-						_ = response.Body.Close()
+					tryCompeting := func() error {
+						request, requestErr := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/competing", strings.NewReader("{}"))
+						require.NoError(t, requestErr)
+						request.Header.Set("Authorization", "Bearer async-fixture")
+						response, sendErr := transport.Do(request, "", 8, 1)
+						if response != nil {
+							require.NoError(t, response.Body.Close())
+						}
+						return sendErr
 					}
-					require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity, "a queued remote job still owns the slot")
-					beforePoll := polls.Load()
-					pollContext, _ := gin.CreateTestContext(httptest.NewRecorder())
-					pollContext.Request = httptest.NewRequest(http.MethodGet, "/fixture", nil).WithContext(ctx)
-					var status *service.OpenAIForwardResult
+					require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity, "a queued remote job still owns the slot")
+					poll := func() (*service.OpenAIForwardResult, error) {
+						pollContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+						pollContext.Request = httptest.NewRequest(http.MethodGet, "/fixture", nil).WithContext(ctx)
+						switch tc.platform {
+						case service.PlatformOpenAI:
+							return svc.ForwardSeedance(ctx, pollContext, account, service.SeedanceEndpointStatus, result.ResponseID, nil)
+						case service.PlatformMiniMax:
+							return svc.ForwardMiniMaxH3(ctx, pollContext, account, service.MiniMaxH3EndpointStatus, result.ResponseID, nil)
+						default:
+							return svc.ForwardGrokMedia(ctx, pollContext, account, service.GrokMediaEndpointVideoStatus, result.ResponseID, nil, "")
+						}
+					}
+					terminal := "done"
 					switch tc.platform {
 					case service.PlatformOpenAI:
-						status, err = svc.ForwardSeedance(ctx, pollContext, account, service.SeedanceEndpointStatus, result.ResponseID, nil)
+						terminal = "succeeded"
 					case service.PlatformMiniMax:
-						status, err = svc.ForwardMiniMaxH3(ctx, pollContext, account, service.MiniMaxH3EndpointStatus, result.ResponseID, nil)
-					default:
-						status, err = svc.ForwardGrokMedia(ctx, pollContext, account, service.GrokMediaEndpointVideoStatus, result.ResponseID, nil, "")
+						terminal = "completed"
 					}
+					controller, ok := transport.(service.AsyncVideoKeyLeaseController)
+					require.True(t, ok)
+					for _, bad := range []string{
+						fmt.Sprintf(`{"id":"another-task","status":%q}`, terminal),
+						fmt.Sprintf(`{"id":"task-fixture","status":%q,"status":"pending"}`, terminal),
+						fmt.Sprintf(`{"id":"task-fixture","id":"another-task","status":%q}`, terminal),
+						fmt.Sprintf(`{"id":"task-fixture","status":%q}garbage`, terminal),
+					} {
+						pollOverride.Store(bad)
+						beforePoll := polls.Load()
+						status, pollErr := poll()
+						require.Error(t, pollErr, "invalid evidence must not produce a releasable terminal result")
+						require.Nil(t, status)
+						require.Equal(t, beforePoll+1, polls.Load())
+						require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity)
+						lease, loadErr := controller.LoadAsyncVideoKeyLeaseByTask(ctx, owner, result.ResponseID)
+						require.NoError(t, loadErr)
+						require.NotNil(t, lease, "a malformed or foreign terminal must retain the original durable member")
+						require.Equal(t, before+1, submissions.Load(), "poll failures must not submit another video")
+					}
+					pollOverride.Store("")
+					beforePoll := polls.Load()
+					status, err := poll()
 					require.NoError(t, err)
 					require.True(t, status.AsyncVideoTerminal)
 					require.Equal(t, beforePoll+1, polls.Load())
 					require.NoError(t, svc.ReleaseAsyncVideoTaskLease(ctx, result.ResponseID))
-					request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/competing", strings.NewReader("{}"))
-					require.NoError(t, err)
-					request.Header.Set("Authorization", "Bearer async-fixture")
 					beforeCompetitor := competitors.Load()
-					response, err = transport.Do(request, "", 8, 1)
-					require.NoError(t, err, "terminal confirmation must return capacity")
-					require.NoError(t, response.Body.Close())
+					require.NoError(t, tryCompeting(), "terminal confirmation must return capacity")
 					require.Equal(t, beforeCompetitor+1, competitors.Load())
+					ambiguousCreates := []string{
+						`{"id":"task-fixture","id":"other-task"}`,
+						`{"id":123}`,
+						`{"id":" "}`,
+						`{"id":"task-fixture"}garbage`,
+					}
+					if tc.platform != service.PlatformOpenAI {
+						ambiguousCreates = append(ambiguousCreates, `{"id":"task-fixture","task_id":"other-task"}`)
+					}
+					for _, ambiguous := range ambiguousCreates {
+						createOverride.Store(ambiguous)
+						createRecorder := httptest.NewRecorder()
+						createContext, _ := gin.CreateTestContext(createRecorder)
+						createContext.Request = httptest.NewRequest(http.MethodPost, "/fixture", bytes.NewReader(body)).WithContext(ctx)
+						beforeCreate := submissions.Load()
+						created, createErr := submit(createContext)
+						require.Error(t, createErr)
+						require.Nil(t, created)
+						require.Empty(t, createRecorder.Body.String())
+						require.Equal(t, beforeCreate+1, submissions.Load(), "an ambiguous success must not replay submission")
+						require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity)
+						members, readErr := rdb.ZRange(ctx, "concurrency:upstream_key:async_video:unknown", 0, -1).Result()
+						require.NoError(t, readErr)
+						require.Len(t, members, 1, "an ambiguous creation must retain its unknown durable member")
+						// The fixture creates no remote job; model explicit reconciliation, not a timeout release.
+						require.NoError(t, svc.ReleaseAsyncVideoTaskLeaseByMember(ctx, members[0]))
+						require.NoError(t, tryCompeting(), "only explicit reconciliation restores the unknown member's capacity")
+					}
+					createOverride.Store("")
 				})
 			}
 		})

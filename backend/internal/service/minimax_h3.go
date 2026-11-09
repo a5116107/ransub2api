@@ -237,7 +237,8 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
 		return nil, forwardErr
 	}
-	if !gjson.ValidBytes(responseBody) || !gjson.ParseBytes(responseBody).IsObject() {
+	id, status, evidenceErr := asyncVideoResponseEvidence(responseBody, "minimax-h3", strings.TrimPrefix(taskID, "minimax-h3:"))
+	if evidenceErr != nil {
 		if endpoint.IsAsyncVideoCreate() {
 			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 		}
@@ -245,10 +246,6 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 	}
 	switch endpoint {
 	case MiniMaxH3EndpointCreate:
-		id := gjson.GetBytes(responseBody, "id").String()
-		if id == "" {
-			id = gjson.GetBytes(responseBody, "task_id").String()
-		}
 		if _, err := buildMiniMaxH3URL(base, MiniMaxH3EndpointStatus, id); err != nil {
 			_ = s.markAsyncVideoKeySubmissionUnknown(context.WithoutCancel(ctx), req)
 			return nil, asyncVideoSubmissionError(endpoint, err)
@@ -259,7 +256,6 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 			return nil, asyncVideoSubmissionError(endpoint, errors.Join(errors.New("MiniMax-H3 task lease binding failed"), err))
 		}
 	case MiniMaxH3EndpointStatus:
-		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "status").String()))
 		result.AsyncVideoTerminal = status == "completed" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
 		if status == "completed" && validMiniMaxH3OutputURL(gjson.GetBytes(responseBody, "metadata.url").String()) {
 			result.VideoCount = 1

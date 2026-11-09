@@ -5,9 +5,11 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,5 +179,151 @@ func TestAsyncVideoKeyGuardRequestCapability(t *testing.T) {
 		got, err := svc.guardAsyncVideoKeyRequest(req, endpoint, nil)
 		require.NoError(t, err)
 		require.Same(t, req, got, "existing task operations and synchronous images must retain their HTTP behavior")
+	}
+}
+
+func TestAsyncVideoTerminalResponseEvidence(t *testing.T) {
+	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+	for _, route := range []struct {
+		name, terminal string
+		endpoint       GrokMediaEndpoint
+	}{
+		{"grok-status", "done", GrokMediaEndpointVideoStatus},
+		{"grok-content", "done", GrokMediaEndpointVideoContent},
+		{"seedance-status", "succeeded", SeedanceEndpointStatus},
+		{"seedance-cancel", "cancelled", SeedanceEndpointDelete},
+		{"minimax-status", "completed", MiniMaxH3EndpointStatus},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, body      string
+				valid, terminal bool
+			}{
+				{"matching", `{"id":"task-fixture","status":"%s","video":{"url":"https://vidgen.x.ai/result.mp4"}}`, true, true},
+				{"no echoed ID", `{"status":"%s","video":{"url":"https://vidgen.x.ai/result.mp4"}}`, true, true},
+				{"pending", `{"id":"task-fixture","status":"pending","FutureField":{"keep":true}}`, true, false},
+				{"wrong task", `{"id":"another-task","status":"%s"}`, false, false},
+				{"duplicate ID", `{"id":"task-fixture","id":"another-task","status":"%s"}`, false, false},
+				{"duplicate same ID", `{"id":"task-fixture","id":"task-fixture","status":"%s"}`, false, false},
+				{"duplicate status", `{"id":"task-fixture","status":"%s","status":"pending"}`, false, false},
+				{"escaped duplicate", `{"status":"%s","sta\u0074us":"pending"}`, false, false},
+				{"case variant", `{"Status":"pending","status":"%s"}`, false, false},
+				{"numeric ID", `{"id":123,"status":"%s"}`, false, false},
+				{"null ID", `{"id":null,"status":"%s"}`, false, false},
+				{"numeric status", `{"id":"task-fixture","status":123}`, false, false},
+				{"truncated", `{"id":"task-fixture","status":"%s"`, false, false},
+				{"trailing garbage", `{"id":"task-fixture","status":"%s"}garbage`, false, false},
+				{"multiple objects", `{"id":"task-fixture","status":"%s"}{"status":"pending"}`, false, false},
+				{"array", `[{"id":"task-fixture","status":"%s"}]`, false, false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					body := tc.body
+					if strings.Contains(body, "%s") {
+						body = fmt.Sprintf(body, route.terminal)
+					}
+					upstream := &grokMediaContentUpstreamStub{responses: []*http.Response{
+						grokMediaContentStatusResponse(body), grokMediaContentStatusResponse("video-payload"),
+					}}
+					svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+					c, recorder := grokMediaContentTestContext(http.MethodGet, "/fixture", nil)
+					var result *OpenAIForwardResult
+					var err error
+					switch route.endpoint {
+					case SeedanceEndpointStatus, SeedanceEndpointDelete:
+						result, err = svc.ForwardSeedance(t.Context(), c, seedanceTestAccount(), route.endpoint, "seedance:task-fixture", nil)
+					case MiniMaxH3EndpointStatus:
+						result, err = svc.ForwardMiniMaxH3(t.Context(), c, miniMaxH3TestAccount(), route.endpoint, "minimax-h3:task-fixture", nil)
+					default:
+						result, err = svc.ForwardGrokMedia(t.Context(), c, grokMediaContentTestAccount(), route.endpoint, "task-fixture", nil, "")
+					}
+					if tc.valid {
+						require.NoError(t, err)
+						require.Equal(t, tc.terminal, result.AsyncVideoTerminal)
+					} else {
+						require.Error(t, err, "ambiguous provider evidence must not authorize release or billing")
+						require.Nil(t, result)
+						require.Empty(t, recorder.Body.String(), "do not forward another task's payload")
+						require.Len(t, upstream.requests, 1, "an invalid status must not start a content fetch")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAsyncVideoResponseEvidenceTaskAliases(t *testing.T) {
+	t.Run("unknown dotted members retain compatibility", func(t *testing.T) {
+		body := []byte(`{"id":"task-fixture","status":"done","data.id":"unrelated","video.task_id":"unrelated","FutureField":{"id":"unrelated"},"video":{"url":"https://vidgen.x.ai/result.mp4"}}`)
+		id, status, err := asyncVideoResponseEvidence(body, "grok", "task-fixture")
+		require.NoError(t, err)
+		require.Equal(t, "task-fixture", id)
+		require.Equal(t, "done", status)
+		require.NotNil(t, ExtractGrokVideoBillingFromStatusBody(body, nil, "task-fixture"))
+	})
+	t.Run("pending nullable containers", func(t *testing.T) {
+		id, status, err := asyncVideoResponseEvidence([]byte(`{"status":"pending","data":null,"video":null}`), "grok", "task-fixture")
+		require.NoError(t, err)
+		require.Empty(t, id)
+		require.Equal(t, "pending", status)
+	})
+	for _, container := range []string{"", "data", "video"} {
+		for _, field := range []string{"request_id", "id", "task_id"} {
+			for _, tc := range []struct {
+				name, value string
+				valid       bool
+			}{
+				{"string", `"task-fixture"`, true},
+				{"number", `123`, false},
+				{"null", `null`, false},
+				{"empty", `" "`, false},
+			} {
+				t.Run(container+"/"+field+"/"+tc.name, func(t *testing.T) {
+					member := fmt.Sprintf(`%q:%s`, field, tc.value)
+					if container == "video" {
+						member += `,"url":"https://vidgen.x.ai/result.mp4"`
+					}
+					if container != "" {
+						member = fmt.Sprintf(`%q:{%s}`, container, member)
+					}
+					if container != "video" {
+						member += `,"video":{"url":"https://vidgen.x.ai/result.mp4"}`
+					}
+					body := []byte(`{` + member + `,"status":"done"}`)
+					for _, expectedID := range []string{"", "task-fixture"} {
+						id, status, err := asyncVideoResponseEvidence(body, "grok", expectedID)
+						if !tc.valid {
+							require.Error(t, err)
+							require.Empty(t, extractGrokMediaVideoRequestID(body))
+							continue
+						}
+						require.NoError(t, err)
+						require.Equal(t, "task-fixture", id)
+						require.Equal(t, "done", status)
+						require.Equal(t, id, extractGrokMediaVideoRequestID(body))
+						require.NotNil(t, ExtractGrokVideoBillingFromStatusBody(body, nil, "task-fixture"))
+					}
+					_, _, err := asyncVideoResponseEvidence(body, "grok", "other-task")
+					require.Error(t, err, "no identity alias may authorize a different requested task")
+				})
+			}
+		}
+	}
+	for _, body := range []string{
+		`{"id":"task-fixture","data":{"request_id":"other-task"},"status":"done"}`,
+		`{"video":{"id":"task-fixture","task_id":"other-task"},"status":"done"}`,
+		`{"data":{"id":"task-fixture"},"data":{"id":"task-fixture"},"status":"done"}`,
+		`{"video":{"id":"task-fixture","i\u0064":"task-fixture"},"status":"done"}`,
+		`{"data":{"ID":"task-fixture"},"status":"done"}`,
+		`{"task_id":"task-fixture","id":"other-task","status":"done","video":{"url":"https://vidgen.x.ai/result.mp4"}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			for _, expectedID := range []string{"", "task-fixture"} {
+				_, _, err := asyncVideoResponseEvidence([]byte(body), "grok", expectedID)
+				require.Error(t, err)
+			}
+			require.Empty(t, extractGrokMediaVideoRequestID([]byte(body)))
+			require.False(t, grokVideoStatusTerminal([]byte(body)))
+			require.Nil(t, ExtractGrokVideoBillingFromStatusBody([]byte(body), nil, "task-fixture"))
+		})
 	}
 }

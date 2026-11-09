@@ -51,6 +51,9 @@ func TestIsGrokVideoStatusBillable(t *testing.T) {
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"download_url":"/v1/videos/task/content"}`)))
 	// "completed" is not the official enum value
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","video":{"url":"https://vidgen.x.ai/x.mp4"}}`)))
+	for _, value := range []string{`123`, `true`, `null`, `[]`, `{}`} {
+		require.False(t, IsGrokVideoStatusBillable([]byte(`{"status":"done","video":{"url":`+value+`}}`)), "only a non-empty string URL is billable")
+	}
 }
 
 func TestGrokVideoStatusTerminal(t *testing.T) {

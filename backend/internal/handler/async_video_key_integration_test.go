@@ -59,6 +59,8 @@ func TestGrokVideoHandlerSharedKeyLifecycleWithRedis(t *testing.T) {
 
 	var creates, polls, competing atomic.Int32
 	var terminal atomic.Bool
+	var pollOverride atomic.Value
+	pollOverride.Store("")
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/competing" {
@@ -72,6 +74,10 @@ func TestGrokVideoHandlerSharedKeyLifecycleWithRedis(t *testing.T) {
 			return
 		}
 		polls.Add(1)
+		if body, ok := pollOverride.Load().(string); ok && body != "" {
+			_, _ = io.WriteString(w, body)
+			return
+		}
 		if terminal.Load() {
 			_, _ = io.WriteString(w, `{"status":"done","video":{"url":"https://vidgen.x.ai/result.mp4","duration":6}}`)
 		} else {
@@ -127,11 +133,27 @@ func TestGrokVideoHandlerSharedKeyLifecycleWithRedis(t *testing.T) {
 	require.Equal(t, http.StatusOK, pending.Code, pending.Body.String())
 	require.EqualValues(t, 1, polls.Load(), "the owner must poll even at Key capacity")
 	require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity)
+	badResponses := []string{
+		`{"request_id":"another-task","status":"done"}`,
+		`{"request_id":"task","status":"done","status":"pending"}`,
+		`{"request_id":"task","id":"another-task","status":"done"}`,
+		`{"request_id":"task","status":"done"}garbage`,
+	}
+	for _, body := range badResponses {
+		pollOverride.Store(body)
+		status, invalid := grokMediaSlotContext(t.Context(), false)
+		h.GrokVideoStatus(status)
+		require.Equal(t, http.StatusBadGateway, invalid.Code, invalid.Body.String())
+		require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity, "invalid terminal evidence must retain the persistent member")
+		require.Zero(t, rdb.ZCard(t.Context(), "concurrency:upstream_key:async_video:release").Val(), "no release fence may be queued for invalid evidence")
+		require.EqualValues(t, 1, creates.Load(), "a malformed status must not replay creation")
+	}
+	pollOverride.Store("")
 	terminal.Store(true)
 	status, completed := grokMediaSlotContext(t.Context(), false)
 	h.GrokVideoStatus(status)
 	require.Equal(t, http.StatusOK, completed.Code, completed.Body.String())
-	require.EqualValues(t, 2, polls.Load())
+	require.EqualValues(t, len(badResponses)+2, polls.Load())
 	require.NoError(t, tryCompeting(), "terminal status must release the durable member")
 	require.EqualValues(t, 1, competing.Load())
 	slots.assertReleased(t)
