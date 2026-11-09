@@ -86,6 +86,7 @@ func availabilityRoundOutcomes(plan *ScheduledTestPlan, results []*ScheduledTest
 			current := result.PelicanConfig.AvailabilityResult
 			if current == nil || current.Version != 1 {
 				allPass = false
+				sameScope = false
 				continue
 			}
 			observed = true
@@ -112,9 +113,11 @@ func availabilityRoundOutcomes(plan *ScheduledTestPlan, results []*ScheduledTest
 		}
 		if observed && allPass && samples == plan.PelicanConfig.ParallelCount {
 			probe.Status, probe.Reason = "pass", "completed_round"
-			if sameScope {
-				probe.Scope = scope
-			}
+		}
+		// A failure or inconclusive round can be attributed only when every
+		// configured sample attests to the same actual request scope as well.
+		if observed && sameScope && samples == plan.PelicanConfig.ParallelCount {
+			probe.Scope = scope
 		}
 		outcomes = append(outcomes, AvailabilityModelOutcome{ModelID: model, Probe: probe})
 	}

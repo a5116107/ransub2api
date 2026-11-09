@@ -1285,3 +1285,11 @@
 - `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^(TestAvailabilityManagedProjectionParentRouteWithPostgres|TestAvailabilityManagedProbeToGatewayWithPostgres)$' -count=1 -timeout=12m` 退出0，repository `12.329s`；真实隔离 PostgreSQL/Redis、本机 TLS 验证旧证据拒绝、连接切换/轮换、复测恢复、隐私与父线路恢复。service/handler 相关 race 分别 `16.162s`、`1.215s`，RPM 撤销反例修复后专项 race `1.205s`；BPS/SIWC 后台探测及 SIWC SQL 最终 fence 回归通过。
 - `go vet -p 1 -tags 'unit integration' ./internal/service ./internal/repository ./internal/handler` 退出0；service/repository 原规则 unit lint 输出 `0 issues.`，unit+integration 对本轮增量 lint 输出 `0 issues.`。首次 lint 的 QF1003、测试 TLS/类型断言诊断均原位修复后复验；不把局部通过记成 D3 全部完成。未运行 CI、推送、部署或生产迁移。
 - 更正进度口径：M2 的 6 个 skip 属于当时 service/handler 的 unit 回归；`e121f8b` 恢复的是另一个 repository integration 用例，不能据此把 M2 历史结果改成 5 个。STATE 已恢复原始历史数字，不推断当前全仓 skip 总数。
+
+## 2026-11-09：D3 托管连接独立可用性证据
+
+- 旧的唯一规则/模型状态行只保存一份决定：隔离 PostgreSQL 和本机 TLS 反例中，A、B 分别通过后切回 A 实际报 `availability_scope_unconfirmed`；不是上游失败，而是 B 的结果覆盖了 A 的仍有效证据。
+- 原位扩展状态行的内部 JSON，以实际连接 ID/版本摘要隔离观察、明确结论和有效期；保留历史单连接来源证据，parent-only 旧结果不授权。每规则/模型最多保留256个版本，淘汰后须复测；管理报告没有选定连接时返回 unknown，不泄露摘要。原规则、线路、时间、故障版本、租约与重复提交栅栏继续生效，无新增迁移。明确故障只有全部样本作用域一致时才归属连接；无法归属的明确故障保守推进账号故障版本并安排最多30秒或更早复测，避免未知失败被旧通过掩盖或形成紧密循环。不确定结果不改变其他连接结论。
+- `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^TestAvailability' -count=1 -timeout=12m` 退出0，`14.374s`；隔离 PostgreSQL/Redis、本机 TLS 覆盖两连接真实探测、503隔离/恢复、轮换、旧记录、匿名故障、限容、业务故障、并发重复和过期租约回滚。`go test -race -p 1 -tags unit ./internal/service -run '^(TestAvailability|TestOpenAIConnectionRevokedDuringRPMIsNotSent)' -count=1 -timeout=12m` 退出0，`8.274s`。隔离容器与真实生产上游无关。
+- 默认标签编译首次发现 `availabilityAdmissionRPMCache` 定义仅在 unit 文件、调用却在无标签测试；将既有助手移动至无标签的 `openai_rpm_test.go`，不保留副本。默认标签 `go test -p 1 ./internal/service ./internal/repository -run '^$' -count=1` 退出0，分别 `1.505s` / `1.460s`；对应 RPM 撤销测试默认标签 PASS（service `1.554s`）。最终托管连接定向 race `15.324s`，`go vet -p 1 -tags 'unit integration' ./internal/repository ./internal/service` 退出0；unit+integration 增量原规则 lint 修正一处 S1024 后输出 `0 issues.`，先前完整 unit 标签 lint 两包亦为 `0 issues.`。
+- 本项不证明逐连接自动探测、账号级业务故障精确归属、WS 作用域、生产缓存命中率或上游模型质量。后台仍仅检测首选连接；生产新旧实例混跑和回滚遵循 4.12 排空要求。未运行 CI、推送、部署或生产迁移。

@@ -11,6 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Shared by both default-tag connection tests and unit-tag availability tests.
+type availabilityAdmissionRPMCache struct {
+	*openAIRPMTestCache
+	onAcquire func()
+}
+
+func (c *availabilityAdmissionRPMCache) TryAcquireRPM(ctx context.Context, id int64, limit int) (bool, int, time.Time, error) {
+	c.onAcquire()
+	return c.openAIRPMTestCache.TryAcquireRPM(ctx, id, limit)
+}
+
 type openAIRPMTestCache struct {
 	counts map[int64]int
 	ids    []int64

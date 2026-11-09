@@ -127,6 +127,14 @@ func readAvailabilityModels(ctx context.Context, tx *sql.Tx, plan *availabilityP
 	if routeErr != nil && !errors.Is(routeErr, sql.ErrNoRows) {
 		return routeErr
 	}
+	managed := false
+	if routeErr == nil {
+		var err error
+		managed, err = availabilityAccountManaged(ctx, tx, report.AccountID)
+		if err != nil {
+			return err
+		}
+	}
 	for _, model := range models {
 		item := service.AvailabilityModelState{ModelID: model, Status: "unknown", Reason: "not_observed"}
 		var storedVersion time.Time
@@ -150,6 +158,21 @@ func readAvailabilityModels(ctx context.Context, tx *sql.Tx, plan *availabilityP
 				item.Reason = "evidence_version_missing"
 			case *state.FaultVersion != plan.faultVersion:
 				item.Reason = "new_fault_event"
+			case managed && prepared == nil:
+				// A plan-level report has no selected managed connection and
+				// must not present one grant's result as the whole account.
+				item.Reason = "connection_not_selected"
+			case managed:
+				scope := service.AvailabilityConnectionScope(prepared)
+				state.promoteLegacyConnection()
+				connection, exists := state.Connections[scope]
+				if !validAvailabilityConnectionScope(scope) || !exists {
+					item.Reason = "connection_not_observed"
+					break
+				}
+				restoreAvailabilityConnectionScope(&connection, scope)
+				item.AvailabilityState = connection
+				item.Reason = "response_not_confirmed"
 			default:
 				item.AvailabilityState = state.AvailabilityState
 				item.Reason = "response_not_confirmed"

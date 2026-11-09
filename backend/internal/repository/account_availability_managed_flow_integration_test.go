@@ -46,10 +46,16 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	selectConnection(first.ID, first.Revision)
 
 	var sends atomic.Int32
+	var rejectFirst atomic.Bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sends.Add(1)
 		require.Equal(t, "/v1/responses", r.URL.Path)
 		require.Contains(t, []string{"Bearer synthetic-first", "Bearer synthetic-second", "Bearer synthetic-rotated"}, r.Header.Get("Authorization"))
+		if rejectFirst.Load() && r.Header.Get("Authorization") == "Bearer synthetic-first" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"fixture-unavailable"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n" +
 			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"))
@@ -87,15 +93,25 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 		require.True(t, claimed)
 		return until
 	}
-	probeAndPublish := func() {
+	probeAndPublish := func(want string) {
 		until := claim()
 		result, probeErr := tester.RunPelicanBackground(ctx, f.accountID, plan.ModelID, probeCfg)
 		require.NoError(t, probeErr)
-		require.Equal(t, "success", result.Status, result.ErrorMessage)
+		if want == "pass" {
+			require.Equal(t, "success", result.Status, result.ErrorMessage)
+		} else {
+			require.Equal(t, "failed", result.Status)
+		}
 		probe := result.PelicanConfig.AvailabilityResult
-		require.Equal(t, "pass", probe.Status)
+		require.Equal(t, want, probe.Status)
 		require.NotNil(t, probe.Scope)
 		require.NotEmpty(t, probe.Scope.ConnectionScope)
+		// Windows and Docker have independent wall clocks: let the database
+		// catch up before publishing, without changing the observed timestamp.
+		require.Eventually(t, func() bool {
+			var dbNow time.Time
+			return f.db.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&dbNow) == nil && !dbNow.Before(probe.FinishedAt)
+		}, 2*time.Second, 10*time.Millisecond)
 		action, writeErr := plans.ApplyAvailabilityOutcomes(ctx, plan, until, []service.AvailabilityModelOutcome{{ModelID: plan.ModelID, Probe: probe}})
 		require.NoError(t, writeErr)
 		require.Equal(t, "observed", action)
@@ -122,15 +138,15 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	require.Error(t, forward(), "a parent-only pass must not authorize a managed grant")
 	require.Zero(t, sends.Load())
 
-	probeAndPublish()
+	probeAndPublish("pass")
 	require.EqualValues(t, 1, sends.Load())
 	report, err := plans.ReadAvailability(ctx, plan.ID)
 	require.NoError(t, err)
-	require.NotEmpty(t, report.Models[0].Decision.Scope.ConnectionScope, "the repository must restore the private scope for admission")
+	require.Equal(t, "unknown", report.Models[0].Status, "an unselected plan-level report must not claim all connections are healthy")
+	require.Equal(t, "connection_not_selected", report.Models[0].Reason)
 	publicJSON, err := json.Marshal(report)
 	require.NoError(t, err)
 	require.NotContains(t, string(publicJSON), "connection_scope")
-	require.NotContains(t, string(publicJSON), report.Models[0].Decision.Scope.ConnectionScope)
 	require.NotContains(t, string(publicJSON), "synthetic-first")
 	until = claim()
 	_, err = plans.ApplyAvailabilityOutcomes(ctx, plan, until, []service.AvailabilityModelOutcome{{ModelID: plan.ModelID,
@@ -142,14 +158,32 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	selectConnection(second.ID, second.Revision)
 	require.Error(t, forward(), "a peer connection cannot borrow the first connection's pass")
 	require.EqualValues(t, 2, sends.Load())
+	probeAndPublish("pass")
+	require.NoError(t, forward(), "the second connection may use its own freshly observed pass")
+	require.EqualValues(t, 4, sends.Load())
 	selectConnection(first.ID, first.Revision)
-	require.NoError(t, forward(), "the original connection can resume before its evidence expires")
-	require.EqualValues(t, 3, sends.Load())
+	require.NoError(t, forward(), "a peer's later pass must not overwrite the original connection's unexpired evidence")
+	require.EqualValues(t, 5, sends.Load())
+	rejectFirst.Store(true)
+	probeAndPublish("fail")
+	require.Error(t, forward(), "an observed failure must stop its own connection")
+	require.EqualValues(t, 6, sends.Load())
+	selectConnection(second.ID, second.Revision)
+	require.NoError(t, forward(), "a peer with valid evidence stays available after the first connection fails")
+	require.EqualValues(t, 7, sends.Load())
+	selectConnection(first.ID, first.Revision)
+	rejectFirst.Store(false)
+	probeAndPublish("pass")
+	require.NoError(t, forward(), "a fresh successful probe recovers only the failed connection")
+	require.EqualValues(t, 9, sends.Load())
 	rotated := connectionResponse(t, f.request(http.MethodPut, "/"+first.ID+"/api-key", fmt.Sprintf(`{"revision":%d,"api_key":"synthetic-rotated"}`, first.Revision)))
 	require.Greater(t, rotated.Revision, first.Revision)
 	require.Error(t, forward(), "a rotated connection must not reuse pre-rotation evidence")
-	require.EqualValues(t, 3, sends.Load())
-	probeAndPublish()
+	require.EqualValues(t, 9, sends.Load())
+	probeAndPublish("pass")
 	require.NoError(t, forward(), "a completed fresh probe restores the rotated connection")
-	require.EqualValues(t, 5, sends.Load())
+	require.EqualValues(t, 11, sends.Load())
+	selectConnection(second.ID, second.Revision)
+	require.NoError(t, forward(), "rotating and probing one connection must retain a peer's unexpired evidence")
+	require.EqualValues(t, 12, sends.Load())
 }

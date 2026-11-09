@@ -31,6 +31,16 @@ type AvailabilityRequestScope struct {
 	ConnectionScope string `json:"-"`
 }
 
+// AvailabilityConnectionScope identifies an immutable managed grant revision
+// without exposing its identifier or credentials in stored availability data.
+func AvailabilityConnectionScope(account *Account) string {
+	if account == nil || account.AuthConnectionID == "" || account.AuthConnectionRevision <= 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("availability-connection-v1\x00" + account.AuthConnectionID + "\x00" + strconv.FormatInt(account.AuthConnectionRevision, 10)))
+	return hex.EncodeToString(sum[:])
+}
+
 // Bind observed capability to the independently authorized grant and its
 // revision. A parent-only or legacy observation must not authorize that grant.
 func availabilityScopeForAccount(scope *AvailabilityRequestScope, request *http.Request, account *Account) *AvailabilityRequestScope {
@@ -43,7 +53,8 @@ func availabilityScopeForAccount(scope *AvailabilityRequestScope, request *http.
 		}
 		return scope
 	}
-	if account.AuthConnectionRevision <= 0 {
+	connectionScope := AvailabilityConnectionScope(account)
+	if connectionScope == "" {
 		return nil
 	}
 	credential := account.GetCredential("access_token")
@@ -54,9 +65,8 @@ func availabilityScopeForAccount(scope *AvailabilityRequestScope, request *http.
 	if credential == "" || !valid || authorization != "Bearer "+credential {
 		return nil
 	}
-	sum := sha256.Sum256([]byte("availability-connection-v1\x00" + account.AuthConnectionID + "\x00" + strconv.FormatInt(account.AuthConnectionRevision, 10)))
 	copy := *scope
-	copy.ConnectionScope = hex.EncodeToString(sum[:])
+	copy.ConnectionScope = connectionScope
 	return &copy
 }
 

@@ -362,6 +362,39 @@ func TestAvailabilityRoundScopeRequiresAllSamplesToMatch(t *testing.T) {
 	}
 }
 
+func TestAvailabilityRoundAttributesFailuresOnlyToConsistentConnections(t *testing.T) {
+	for _, scenario := range []string{"same", "different", "missing_scope", "missing_sample"} {
+		t.Run(scenario, func(t *testing.T) {
+			plan := pelicanPlan()
+			plan.PelicanConfig.ParallelCount = 2
+			first := availabilityAdmissionPass(901, plan.ModelID).Models[0].Decision
+			first.Status = "fail"
+			first.Scope.ConnectionScope = "first"
+			second := *first
+			second.Status = "pass"
+			secondScope := *first.Scope
+			second.Scope = &secondScope
+			switch scenario {
+			case "different":
+				second.Scope.ConnectionScope = "second"
+			case "missing_scope":
+				second.Scope = nil
+			}
+			results := []*ScheduledTestResult{{PelicanConfig: &PelicanTestConfig{ModelID: plan.ModelID, AvailabilityResult: first}}}
+			if scenario != "missing_sample" {
+				results = append(results, &ScheduledTestResult{PelicanConfig: &PelicanTestConfig{ModelID: plan.ModelID, AvailabilityResult: &second}})
+			}
+			outcomes := availabilityRoundOutcomes(plan, results)
+			require.Equal(t, "fail", outcomes[0].Probe.Status)
+			if scenario == "same" {
+				require.Equal(t, first.Scope, outcomes[0].Probe.Scope)
+			} else {
+				require.Nil(t, outcomes[0].Probe.Scope, "mixed or missing samples must not guess which connection failed")
+			}
+		})
+	}
+}
+
 func TestAvailabilityWSBindingRereadsRulesForNewTurns(t *testing.T) {
 	account := wsSSETestAccount()
 	repo := &availabilityAdmissionRepo{}

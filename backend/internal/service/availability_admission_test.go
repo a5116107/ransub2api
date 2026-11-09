@@ -389,16 +389,6 @@ func TestAvailabilityAdmissionClosesReplayBodyOnFailures(t *testing.T) {
 	}
 }
 
-type availabilityAdmissionRPMCache struct {
-	*openAIRPMTestCache
-	onAcquire func()
-}
-
-func (c *availabilityAdmissionRPMCache) TryAcquireRPM(ctx context.Context, id int64, limit int) (bool, int, time.Time, error) {
-	c.onAcquire()
-	return c.openAIRPMTestCache.TryAcquireRPM(ctx, id, limit)
-}
-
 func TestAvailabilityAdmissionAfterRPMWait(t *testing.T) {
 	account := ticketTestAccount(901)
 	account.Extra = map[string]any{"base_rpm": 2}
