@@ -374,12 +374,19 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	}
 	var bpsRecoveryPending bool
 	var accountFingerprint *[32]byte
+	var availabilityProbeConnectionID string
 	if n == 1 && plan.PelicanConfig != nil && (plan.PelicanConfig.Availability != nil || (plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults())) {
 		fingerprint, err := accountRouteFingerprint(ctx, tx, plan.AccountID, true)
 		if err != nil {
 			return false, err
 		}
 		accountFingerprint = &fingerprint
+	}
+	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Availability != nil {
+		availabilityProbeConnectionID, err = availabilityProbeTarget(ctx, tx, plan, *accountFingerprint)
+		if err != nil {
+			return false, err
+		}
 	}
 	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil {
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
@@ -409,6 +416,7 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	if n == 1 {
 		plan.QualityAccountFingerprint = accountFingerprint
 		plan.AvailabilityAccountFingerprint = accountFingerprint
+		plan.AvailabilityProbeConnectionID = availabilityProbeConnectionID
 	}
 	return n == 1, nil
 }

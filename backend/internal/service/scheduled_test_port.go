@@ -36,6 +36,8 @@ type PelicanTestConfig struct {
 type ScheduledTestPlan struct {
 	AvailabilityFaultVersion       int64     `json:"-"`
 	AvailabilityAccountFingerprint *[32]byte `json:"-"`
+	// Execution-only target. A pinned grant is never accepted from API JSON.
+	AvailabilityProbeConnectionID string `json:"-"`
 	// Captured transactionally at claim, never accepted from configuration JSON.
 	QualityAccountFingerprint *[32]byte `json:"-"`
 	// Request-only: importing configuration preserves this target's ownership.

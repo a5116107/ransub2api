@@ -354,7 +354,11 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 		return failure("random_question_not_prepared")
 	}
 	var err error
-	result, err = s.runPelicanAnswer(ctx, plan)
+	probeCtx := ctx
+	if plan.PelicanConfig.Availability != nil && plan.AvailabilityProbeConnectionID != "" {
+		probeCtx = withAvailabilityProbeConnection(ctx, plan.AccountID, plan.AvailabilityProbeConnectionID)
+	}
+	result, err = s.runPelicanAnswer(probeCtx, plan)
 	if err != nil {
 		return failure(fmt.Sprint(err))
 	}

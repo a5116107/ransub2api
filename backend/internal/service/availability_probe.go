@@ -25,6 +25,19 @@ type AvailabilityProbeResult struct {
 
 type availabilityProbeSnapshotKey struct{}
 
+// An internal-only scheduled probe target; never accepted from request JSON or
+// stored in the public result history.
+type availabilityProbeConnectionKey struct{}
+
+type availabilityProbeConnection struct {
+	accountID    int64
+	connectionID string
+}
+
+func withAvailabilityProbeConnection(ctx context.Context, accountID int64, connectionID string) context.Context {
+	return context.WithValue(ctx, availabilityProbeConnectionKey{}, availabilityProbeConnection{accountID: accountID, connectionID: connectionID})
+}
+
 type availabilityProbeObservation struct {
 	snapshot       *requesttiming.Snapshot
 	semanticStatus int

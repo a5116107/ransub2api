@@ -43,6 +43,9 @@ func quality5xxPostgresDB(t *testing.T) *sql.DB {
  extra JSONB NOT NULL DEFAULT '{"unrelated":"kept"}', proxy_id BIGINT, parent_account_id BIGINT,
  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ);
 CREATE TABLE proxies (id BIGINT PRIMARY KEY, protocol TEXT, host TEXT, port INT, username TEXT, password TEXT, deleted_at TIMESTAMPTZ);
+CREATE TABLE openai_auth_connections (
+ id UUID PRIMARY KEY, account_id BIGINT NOT NULL REFERENCES accounts(id), kind TEXT NOT NULL, status TEXT NOT NULL,
+ capabilities JSONB NOT NULL DEFAULT '[]', cooldown_until TIMESTAMPTZ, refresh_state TEXT NOT NULL DEFAULT 'idle');
 CREATE TABLE scheduled_test_plans (
  id BIGSERIAL PRIMARY KEY, account_id BIGINT NOT NULL REFERENCES accounts(id),
  model_id TEXT NOT NULL, cron_expression TEXT NOT NULL, enabled BOOLEAN NOT NULL,

@@ -21,6 +21,7 @@ type availabilityStoredState struct {
 	ObservationConnectionScope string                               `json:"observation_connection_scope,omitempty"`
 	DecisionConnectionScope    string                               `json:"decision_connection_scope,omitempty"`
 	Connections                map[string]service.AvailabilityState `json:"connections,omitempty"`
+	ProbeCursor                string                               `json:"probe_cursor,omitempty"`
 }
 
 // Bound storage even if connection revisions are rotated repeatedly. Evicted
@@ -103,6 +104,96 @@ func availabilityAccountManaged(ctx context.Context, tx *sql.Tx, accountID int64
 	err := tx.QueryRowContext(ctx, `SELECT platform='openai' AND COALESCE(extra->'openai_connections_managed'='true'::jsonb,false)
  FROM accounts WHERE id=$1 AND deleted_at IS NULL`, accountID).Scan(&managed)
 	return managed, err
+}
+
+// Select one eligible grant per configured round, in stable hash order. The
+// cursor lives in the existing derived state and survives faults; no token or
+// connection identifier is persisted. Streaming avoids a candidate-count cap.
+func availabilityProbeTarget(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, fingerprint [32]byte) (string, error) {
+	managed, err := availabilityAccountManaged(ctx, tx, plan.AccountID)
+	if err != nil || !managed {
+		return "", err
+	}
+	model := plan.ModelID
+	if len(plan.PelicanConfig.ModelIDs) > 0 {
+		model = plan.PelicanConfig.ModelIDs[0]
+	}
+	var cursor string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(state->>'probe_cursor','') FROM account_availability_states
+ WHERE plan_id=$1 AND model_id=$2 AND plan_version=$3 AND route_fingerprint=$4`, plan.ID, model, plan.UpdatedAt, fingerprint[:]).Scan(&cursor)
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id::text FROM openai_auth_connections
+ WHERE account_id=$1 AND kind IN ('codex','bps','siwc','api_key') AND status='active'
+ AND refresh_state IN ('','idle') AND (cooldown_until IS NULL OR cooldown_until<=clock_timestamp())
+ AND jsonb_typeof(capabilities)='array' AND capabilities ? 'responses'`, plan.AccountID)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	var firstID, firstKey, nextID, nextKey string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return "", err
+		}
+		key := service.AvailabilityProbeTargetKey(plan.AccountID, id)
+		if firstID == "" || key < firstKey {
+			firstID, firstKey = id, key
+		}
+		if key > cursor && (nextID == "" || key < nextKey) {
+			nextID, nextKey = id, key
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return "", err
+	}
+	if nextID != "" {
+		return nextID, nil
+	}
+	return firstID, nil
+}
+
+func upsertAvailabilityState(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, model string, until time.Time, fingerprint [32]byte, state *availabilityStoredState) error {
+	state.captureConnectionScopes()
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO account_availability_states(plan_id,model_id,plan_version,route_fingerprint,round_lease,state)
+ VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(plan_id,model_id) DO UPDATE SET plan_version=EXCLUDED.plan_version,
+ route_fingerprint=EXCLUDED.route_fingerprint,round_lease=EXCLUDED.round_lease,state=EXCLUDED.state`, plan.ID, model, plan.UpdatedAt, fingerprint[:], until, string(raw))
+	return err
+}
+
+// Preserve the fairness cursor even when an unattributed failure fences all
+// decisions; their old fault version is deliberately not advanced.
+func saveAvailabilityProbeCursor(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, until time.Time, fingerprint [32]byte, models []string) error {
+	cursor := service.AvailabilityProbeTargetKey(plan.AccountID, plan.AvailabilityProbeConnectionID)
+	if cursor == "" {
+		return nil
+	}
+	for _, model := range models {
+		state := availabilityStoredState{}
+		var version time.Time
+		var storedFingerprint, raw []byte
+		err := tx.QueryRowContext(ctx, `SELECT plan_version,route_fingerprint,state FROM account_availability_states WHERE plan_id=$1 AND model_id=$2`, plan.ID, model).Scan(&version, &storedFingerprint, &raw)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == nil && version.Equal(plan.UpdatedAt) && bytes.Equal(storedFingerprint, fingerprint[:]) {
+			if json.Unmarshal(raw, &state) != nil {
+				state = availabilityStoredState{}
+			}
+		}
+		state.restoreConnectionScopes()
+		state.ProbeCursor = cursor
+		if err = upsertAvailabilityState(ctx, tx, plan, model, until, fingerprint, &state); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *availabilityStoredState) restoreConnectionScopes() {
@@ -213,6 +304,9 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1,next_run_at=LEAST(next_run_at,clock_timestamp()+interval '30 seconds') WHERE id=$1`, plan.ID); err != nil {
 			return "", err
 		}
+		if err = saveAvailabilityProbeCursor(ctx, tx, plan, until, fingerprint, models); err != nil {
+			return "", err
+		}
 		if err = tx.QueryRowContext(ctx, `SELECT running_until=$2 AND running_until>clock_timestamp() FROM scheduled_test_plans WHERE id=$1`, plan.ID, until).Scan(&valid); err != nil {
 			return "", err
 		}
@@ -243,11 +337,16 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 			}
 			state.restoreConnectionScopes()
 			if state.FaultVersion == nil || *state.FaultVersion != faultVersion {
+				cursor := state.ProbeCursor
 				state = availabilityStoredState{}
+				state.ProbeCursor = cursor
 			}
 		}
 		if managed {
 			state.promoteLegacyConnection()
+			if cursor := service.AvailabilityProbeTargetKey(plan.AccountID, plan.AvailabilityProbeConnectionID); cursor != "" {
+				state.ProbeCursor = cursor
+			}
 			// No confirmed connection is not permission to change any one of
 			// the existing decisions, but record the lease so duplicate delivery
 			// cannot later revise an already committed unattributed round.
@@ -278,14 +377,7 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 			}
 		}
 		state.FaultVersion = &faultVersion
-		state.captureConnectionScopes()
-		raw, err = json.Marshal(state)
-		if err != nil {
-			return "", err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO account_availability_states(plan_id,model_id,plan_version,route_fingerprint,round_lease,state)
- VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(plan_id,model_id) DO UPDATE SET plan_version=EXCLUDED.plan_version,
- route_fingerprint=EXCLUDED.route_fingerprint,round_lease=EXCLUDED.round_lease,state=EXCLUDED.state`, plan.ID, outcome.ModelID, plan.UpdatedAt, fingerprint[:], until, string(raw)); err != nil {
+		if err = upsertAvailabilityState(ctx, tx, plan, outcome.ModelID, until, fingerprint, &state); err != nil {
 			return "", err
 		}
 		changed = true

@@ -4,6 +4,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -183,6 +185,66 @@ func TestAvailabilityRunnerWritesIndependentEvidence(t *testing.T) {
 		require.Equal(t, "failed", result.Status, "availability must not replace the answer result")
 	}
 	require.True(t, repo.finished)
+}
+
+func TestAvailabilityRunnerPropagatesInternalConnectionTarget(t *testing.T) {
+	for _, configured := range []bool{true, false} {
+		t.Run(fmt.Sprint(configured), func(t *testing.T) {
+			plan := pelicanPlan()
+			plan.AvailabilityProbeConnectionID = "fixture-connection"
+			if configured {
+				plan.PelicanConfig.Availability = &AvailabilityPolicy{ValidForSeconds: 60}
+			}
+			repo := &availabilityRunnerRepo{}
+			results := &pelicanResults{}
+			var calls atomic.Int32
+			runner := &ScheduledTestRunnerService{planRepo: repo, scheduledSvc: &ScheduledTestService{resultRepo: results}, runPelican: func(ctx context.Context, id int64, model string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+				target, exists := ctx.Value(availabilityProbeConnectionKey{}).(availabilityProbeConnection)
+				require.Equal(t, configured, exists)
+				if configured {
+					require.Equal(t, availabilityProbeConnection{accountID: plan.AccountID, connectionID: plan.AvailabilityProbeConnectionID}, target)
+				}
+				calls.Add(1)
+				now := time.Now()
+				return &ScheduledTestResult{Status: "success", StartedAt: now, FinishedAt: now, PelicanConfig: &PelicanTestConfig{ModelID: model, AvailabilityResult: &AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: now, FinishedAt: now}}}, nil
+			}}
+			require.True(t, runner.runPelicanPlan(t.Context(), plan))
+			require.EqualValues(t, plan.PelicanConfig.ParallelCount, calls.Load())
+		})
+	}
+}
+
+func TestAvailabilityPinnedProbeDoesNotPinIndependentJudge(t *testing.T) {
+	plan := pelicanPlan()
+	plan.AvailabilityProbeConnectionID = "fixture-connection"
+	plan.PelicanConfig.Availability = &AvailabilityPolicy{ValidForSeconds: 60}
+	plan.PelicanConfig.Quality = &QualityPolicy{Action: QualityActionObserveOnly}
+	runner := &ScheduledTestRunnerService{
+		runPelican: func(ctx context.Context, _ int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+			target, exists := ctx.Value(availabilityProbeConnectionKey{}).(availabilityProbeConnection)
+			require.True(t, exists)
+			require.Equal(t, plan.AvailabilityProbeConnectionID, target.connectionID)
+			return &ScheduledTestResult{Status: "success", ResponseText: "answer", StartedAt: time.Now(), FinishedAt: time.Now()}, nil
+		},
+		judgeQuality: func(ctx context.Context, _ int64, _ *PelicanTestConfig, _ string) *QualityJudgment {
+			_, exists := ctx.Value(availabilityProbeConnectionKey{}).(availabilityProbeConnection)
+			require.False(t, exists, "a separate judge account must not inherit the tested grant")
+			return &QualityJudgment{Verdict: "correct"}
+		},
+	}
+	result := runner.runPelicanSample(t.Context(), plan)
+	require.NotNil(t, result.QualityJudgment)
+	require.Equal(t, "correct", result.QualityJudgment.Verdict)
+}
+
+func TestAvailabilityProbeTargetIsNotAConfigurableAPIField(t *testing.T) {
+	var plan ScheduledTestPlan
+	require.NoError(t, json.Unmarshal([]byte(`{"AvailabilityProbeConnectionID":"forged","availability_probe_connection_id":"forged"}`), &plan))
+	require.Empty(t, plan.AvailabilityProbeConnectionID)
+	plan.AvailabilityProbeConnectionID = "private-fixture"
+	raw, err := json.Marshal(plan)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "private-fixture")
 }
 
 func TestAvailabilityStateExpiryBoundary(t *testing.T) {

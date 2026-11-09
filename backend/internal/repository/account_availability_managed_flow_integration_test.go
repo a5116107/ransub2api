@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,10 +18,12 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,6 +33,82 @@ type managedAvailabilityLoopback struct{ client *http.Client }
 
 func (u *managedAvailabilityLoopback) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
 	return u.client.Do(req)
+}
+
+func TestAvailabilityManagedScheduledWorkerRotatesRealGrants(t *testing.T) {
+	f := newConnectionHTTPFixture(t)
+	ctx := t.Context()
+	first := f.seedHistoricalAPIKey(t, "first", "synthetic-first")
+	second := f.seedHistoricalAPIKey(t, "second", "synthetic-second")
+	connectionResponse(t, f.request(http.MethodPatch, "/"+first.ID, fmt.Sprintf(`{"action":"select","revision":%d}`, first.Revision)))
+	wireTokens := make(chan string, 8)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireTokens <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	upstream := &managedAvailabilityLoopback{client: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+	cfg := &config.Config{}
+	cfg.Default.RateMultiplier = 1
+	plans := repository.NewScheduledTestPlanRepository(f.db)
+	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
+	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+	t.Cleanup(gateway.CloseOpenAIWSPool)
+	tester := service.NewAccountTestService(f.accounts, nil, nil, nil, nil, upstream, cfg, nil)
+	tester.SetOpenAIGatewayService(gateway)
+	probeCfg := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1, Availability: &service.AvailabilityPolicy{ValidForSeconds: 120}}
+	next := time.Now().Add(time.Hour)
+	plan, err := plans.Create(ctx, &service.ScheduledTestPlan{AccountID: f.accountID, ModelID: "gpt-5.4", CronExpression: "0 * * * *", Enabled: true, MaxResults: 10, NextRunAt: &next, PelicanConfig: probeCfg})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plans.Delete(context.Background(), plan.ID)) })
+	results := repository.NewScheduledTestResultRepository(f.db)
+	scheduled := service.NewScheduledTestService(plans, results)
+	queue := qualityqueue.NewRedis(repository.Issue594TestRedis())
+	t.Cleanup(func() { require.NoError(t, queue.Close()) })
+	runner := service.ProvideScheduledTestRunnerService(plans, scheduled, tester, nil, cfg, &service.QualityJudgeService{}, repository.Issue594TestRedis(), nil, &service.ChannelMonitorV2Service{})
+	t.Cleanup(runner.Stop)
+	for round := 1; round <= 2; round++ {
+		require.NoError(t, queue.Enqueue(ctx, f.accountID, time.Now()))
+		require.Eventually(t, func() bool {
+			var count int
+			err := f.db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_results WHERE plan_id=$1`, plan.ID).Scan(&count)
+			_, queued := queue.Score(ctx, f.accountID)
+			return err == nil && count >= round && errors.Is(queued, redis.Nil)
+		}, 20*time.Second, 100*time.Millisecond, "the existing worker must claim, test, persist and acknowledge each signal")
+	}
+	got := []string{<-wireTokens, <-wireTokens}
+	require.ElementsMatch(t, []string{"Bearer synthetic-first", "Bearer synthetic-second"}, got, "the worker must probe both grants without changing the preferred connection")
+	var count int
+	require.NoError(t, f.db.QueryRowContext(ctx, `SELECT count(*) FROM account_availability_states s CROSS JOIN LATERAL jsonb_object_keys(s.state->'connections') WHERE s.plan_id=$1 AND s.model_id=$2`, plan.ID, plan.ModelID).Scan(&count))
+	require.Equal(t, 2, count)
+	var internalState string
+	require.NoError(t, f.db.QueryRowContext(ctx, `SELECT state::text FROM account_availability_states WHERE plan_id=$1 AND model_id=$2`, plan.ID, plan.ModelID).Scan(&internalState))
+	for _, value := range []string{first.ID, second.ID, "synthetic-first", "synthetic-second"} {
+		require.NotContains(t, internalState, value, "the cursor and decisions must not persist raw grants or credentials")
+	}
+	currentPlan, err := plans.GetByID(ctx, plan.ID)
+	require.NoError(t, err)
+	require.NotNil(t, currentPlan.NextRunAt)
+	require.WithinDuration(t, next, *currentPlan.NextRunAt, time.Millisecond, "successful rotation must not increase the configured cron frequency")
+	for _, connection := range []*service.OpenAIAuthConnection{first, second} {
+		connectionResponse(t, f.request(http.MethodPatch, "/"+connection.ID, fmt.Sprintf(`{"action":"select","revision":%d}`, connection.Revision)))
+		account, getErr := f.accounts.GetByID(ctx, f.accountID)
+		require.NoError(t, getErr)
+		body := `{"model":"gpt-5.4","input":"different prompt","stream":true,"reasoning":{"effort":"high"}}`
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		_, forwardErr := gateway.Forward(ctx, c, account, []byte(body))
+		require.NoError(t, forwardErr, "each automatically observed grant must pass the actual gateway admission")
+	}
 }
 func (u *managedAvailabilityLoopback) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxy, id, concurrency)

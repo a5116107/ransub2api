@@ -41,6 +41,16 @@ func AvailabilityConnectionScope(account *Account) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// AvailabilityProbeTargetKey is stable across credential revisions and is used
+// only as a bounded, non-secret round-robin cursor in the existing state row.
+func AvailabilityProbeTargetKey(accountID int64, connectionID string) string {
+	if accountID <= 0 || connectionID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("availability-probe-target-v1\x00" + strconv.FormatInt(accountID, 10) + "\x00" + connectionID))
+	return hex.EncodeToString(sum[:])
+}
+
 // Bind observed capability to the independently authorized grant and its
 // revision. A parent-only or legacy observation must not authorize that grant.
 func availabilityScopeForAccount(scope *AvailabilityRequestScope, request *http.Request, account *Account) *AvailabilityRequestScope {

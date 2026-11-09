@@ -396,8 +396,12 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 
 	// Get account
 	account, err := s.accountRepo.GetByID(ctx, accountID)
-	if err != nil {
+	if err != nil || account == nil {
 		return s.sendErrorAndEnd(c, "Account not found")
+	}
+	target, targeted := ctx.Value(availabilityProbeConnectionKey{}).(availabilityProbeConnection)
+	if targeted && (target.accountID != accountID || target.connectionID == "" || !account.IsOpenAI()) {
+		return s.sendErrorAndEnd(c, "Availability probe connection target is invalid")
 	}
 	bindAccountTestPlatform(c, account)
 	if account.IsOpenAI() {
@@ -408,13 +412,20 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 			capability = "images"
 		}
 		if s.openaiGatewayService == nil {
-			if account.HasManagedOpenAIConnections() {
+			if targeted || account.HasManagedOpenAIConnections() {
 				return s.sendErrorAndEnd(c, "Authorization connection service unavailable")
 			}
 		} else {
-			account, err = s.openaiGatewayService.prepareAuthConnection(ctx, c, account, nil, strings.TrimSpace(modelID), capability)
+			var selected *Account
+			if targeted {
+				selected = &Account{AuthConnectionID: target.connectionID}
+			}
+			account, err = s.openaiGatewayService.prepareAuthConnection(ctx, c, account, selected, strings.TrimSpace(modelID), capability)
 			if err != nil {
 				return s.sendErrorAndEnd(c, err.Error())
+			}
+			if targeted && account.AuthConnectionID != target.connectionID {
+				return s.sendErrorAndEnd(c, "Availability probe connection changed")
 			}
 		}
 	}

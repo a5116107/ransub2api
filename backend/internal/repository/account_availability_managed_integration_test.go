@@ -62,6 +62,133 @@ func TestAvailabilityManagedProjectionParentRouteWithPostgres(t *testing.T) {
 	require.ErrorIs(t, err, service.ErrAvailabilityRouteChanged, "an unprojected managed snapshot must not authorize a legacy route")
 }
 
+func TestAvailabilityManagedScheduledProbeRotatesFairlyWithPostgres(t *testing.T) {
+	dsn, err := pq.ParseURL(integrationPostgresDSN)
+	require.NoError(t, err)
+	t.Setenv("SUB2API_QUALITY_TEST_DSN", dsn)
+	repo, plan := availabilityPostgresPlan(t)
+	_, err = repo.db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{openai_connections_managed}','true') WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	ids := []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "33333333-3333-3333-3333-333333333333"}
+	for _, id := range ids {
+		_, err = repo.db.Exec(`INSERT INTO openai_auth_connections(id,account_id,kind,status,capabilities) VALUES($1,$2,'api_key','active','["responses"]')`, id, plan.AccountID)
+		require.NoError(t, err)
+	}
+	for _, tc := range []struct{ id, status, caps, refresh string }{
+		{"44444444-4444-4444-4444-444444444444", "disabled", `["responses"]`, "idle"},
+		{"55555555-5555-5555-5555-555555555555", "active", `["embeddings"]`, "idle"},
+		{"66666666-6666-6666-6666-666666666666", "active", `["responses"]`, "uncertain"},
+	} {
+		_, err = repo.db.Exec(`INSERT INTO openai_auth_connections(id,account_id,kind,status,capabilities,refresh_state) VALUES($1,$2,'api_key',$3,$4::jsonb,$5)`, tc.id, plan.AccountID, tc.status, tc.caps, tc.refresh)
+		require.NoError(t, err)
+	}
+	unpublished := availabilityPostgresClaim(t, repo, plan)
+	firstCandidate := plan.AvailabilityProbeConnectionID
+	require.Contains(t, ids, firstCandidate)
+	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, unpublished, time.Now()))
+	var selected []string
+	for round := range 4 {
+		until := availabilityPostgresClaim(t, repo, plan)
+		require.Contains(t, ids, plan.AvailabilityProbeConnectionID, "the claimed plan must select an actual eligible grant")
+		selected = append(selected, plan.AvailabilityProbeConnectionID)
+		if round == 0 {
+			require.Equal(t, firstCandidate, plan.AvailabilityProbeConnectionID, "an abandoned round must not advance the cursor")
+		}
+		observation := availabilityPostgresObservation("pass")
+		if round == 1 {
+			observation[0].Probe.Status = "fail" // No attributable response, still advance fairly.
+		} else {
+			observation[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(&service.Account{AuthConnectionID: plan.AvailabilityProbeConnectionID, AuthConnectionRevision: 1})}
+		}
+		action, applyErr := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observation)
+		require.NoError(t, applyErr)
+		if round == 1 {
+			require.Equal(t, "unattributed_failure", action)
+		} else {
+			require.Equal(t, "observed", action)
+		}
+		require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+		plan, err = repo.GetByID(t.Context(), plan.ID)
+		require.NoError(t, err)
+	}
+	require.ElementsMatch(t, ids, selected[:3], "every active grant gets one round before a repeat")
+	require.Equal(t, selected[0], selected[3], "the cursor must wrap after every eligible grant")
+	var raw []byte
+	require.NoError(t, repo.db.QueryRow(`SELECT state FROM account_availability_states WHERE plan_id=$1 AND model_id=$2`, plan.ID, plan.ModelID).Scan(&raw))
+	for _, id := range ids {
+		require.NotContains(t, string(raw), id, "the cursor must not persist a raw connection ID")
+	}
+	_, err = repo.db.Exec(`UPDATE openai_auth_connections SET status='disabled' WHERE id=$1`, selected[1])
+	require.NoError(t, err)
+	until := availabilityPostgresClaim(t, repo, plan)
+	require.NotEqual(t, selected[1], plan.AvailabilityProbeConnectionID, "disabled grants are not selected")
+	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+}
+
+func TestAvailabilityManagedProbeCursorFailureRollsBackWithPostgres(t *testing.T) {
+	dsn, err := pq.ParseURL(integrationPostgresDSN)
+	require.NoError(t, err)
+	t.Setenv("SUB2API_QUALITY_TEST_DSN", dsn)
+	repo, plan := availabilityPostgresPlan(t)
+	_, err = repo.db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{openai_connections_managed}','true') WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	for _, id := range []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"} {
+		_, err = repo.db.Exec(`INSERT INTO openai_auth_connections(id,account_id,kind,status,capabilities) VALUES($1,$2,'api_key','active','["responses"]')`, id, plan.AccountID)
+		require.NoError(t, err)
+	}
+	until := availabilityPostgresClaim(t, repo, plan)
+	first := plan.AvailabilityProbeConnectionID
+	probe := availabilityPostgresObservation("pass")
+	probe[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(&service.Account{AuthConnectionID: first, AuthConnectionRevision: 1})}
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, probe)
+	require.NoError(t, err)
+	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	until = availabilityPostgresClaim(t, repo, plan)
+	second := plan.AvailabilityProbeConnectionID
+	require.NotEqual(t, first, second)
+	var stateBefore, stateAfter string
+	var versionBefore, versionAfter int64
+	var nextBefore, nextAfter time.Time
+	require.NoError(t, repo.db.QueryRow(`SELECT state::text FROM account_availability_states WHERE plan_id=$1`, plan.ID).Scan(&stateBefore))
+	require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version,next_run_at FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&versionBefore, &nextBefore))
+	_, err = repo.db.Exec(`CREATE FUNCTION reject_probe_cursor() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN RAISE EXCEPTION 'fixture cursor write failure'; END $$;
+ CREATE TRIGGER reject_probe_cursor BEFORE INSERT OR UPDATE ON account_availability_states FOR EACH ROW EXECUTE FUNCTION reject_probe_cursor();`)
+	require.NoError(t, err)
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("fail"))
+	require.ErrorContains(t, err, "fixture cursor write failure")
+	require.NoError(t, repo.db.QueryRow(`SELECT state::text FROM account_availability_states WHERE plan_id=$1`, plan.ID).Scan(&stateAfter))
+	require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version,next_run_at FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&versionAfter, &nextAfter))
+	require.Equal(t, stateBefore, stateAfter)
+	require.Equal(t, versionBefore, versionAfter, "failure to save the cursor must roll back the fault fence")
+	require.True(t, nextBefore.Equal(nextAfter), "failure to save the cursor must roll back the retry schedule")
+	_, err = repo.db.Exec(`DROP TRIGGER reject_probe_cursor ON account_availability_states`)
+	require.NoError(t, err)
+	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	until = availabilityPostgresClaim(t, repo, plan)
+	require.Equal(t, second, plan.AvailabilityProbeConnectionID, "a rolled-back round must be retried, not skipped")
+	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+}
+
+func TestAvailabilityManagedProbeSelectionFailureRollsBackClaimWithPostgres(t *testing.T) {
+	dsn, err := pq.ParseURL(integrationPostgresDSN)
+	require.NoError(t, err)
+	t.Setenv("SUB2API_QUALITY_TEST_DSN", dsn)
+	repo, plan := availabilityPostgresPlan(t)
+	_, err = repo.db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{openai_connections_managed}','true') WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	_, err = repo.db.Exec(`DROP TABLE openai_auth_connections`)
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	plan.TriggerSource = "upstream_5xx"
+	claimed, err := repo.ClaimPelican(t.Context(), plan, now, now.Add(time.Minute), *plan.NextRunAt)
+	require.Error(t, err)
+	require.False(t, claimed)
+	var running *time.Time
+	require.NoError(t, repo.db.QueryRow(`SELECT running_until FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&running))
+	require.Nil(t, running, "a failed target lookup must not leave a lease or silently select a preferred grant")
+}
+
 func TestAvailabilityManagedBusinessFaultFencesOnlyConfirmedGrantWithPostgres(t *testing.T) {
 	dsn, err := pq.ParseURL(integrationPostgresDSN)
 	require.NoError(t, err)

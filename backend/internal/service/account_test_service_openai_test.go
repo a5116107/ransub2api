@@ -261,6 +261,58 @@ func TestAccountTestService_ManagedConnectionBackgroundProbeRecordsScope(t *test
 	require.Equal(t, "Bearer managed-connection-token", upstream.requests[0].Header.Get("Authorization"))
 }
 
+func TestAccountTestService_BackgroundProbePinsManagedConnection(t *testing.T) {
+	const peerID = "8110c45b-79a0-4367-a1dc-60e12210e199"
+	for _, scenario := range []string{"preferred", "peer", "missing", "disabled", "managed_disabled", "wrong_account", "gateway_unavailable"} {
+		t.Run(scenario, func(t *testing.T) {
+			wire := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n" +
+				"data: {\"type\":\"response.completed\"}\n\n"
+			resp := newJSONResponse(http.StatusOK, wire)
+			resp.Header.Set("Content-Type", "text/event-stream")
+			svc, reauth, connections, _, parent, upstream := managedConnectionProbeFixture(t, resp)
+			upstream.attachRequest = true
+			peer := &OpenAIAuthConnection{ID: peerID, AccountID: parent.ID, Kind: "codex", Status: "active", Revision: 1, Capabilities: []string{"responses"}}
+			require.NoError(t, reauth.encryptConnectionCredentials(peer, map[string]any{"access_token": "synthetic-peer-token", "expires_at": fmt.Sprint(time.Now().Add(time.Hour).Unix())}))
+			connections.rows = append(connections.rows, peer)
+			ctx := t.Context()
+			switch scenario {
+			case "peer":
+				ctx = withAvailabilityProbeConnection(ctx, parent.ID, peerID)
+			case "missing":
+				ctx = withAvailabilityProbeConnection(ctx, parent.ID, "badc45b0-79a0-4367-a1dc-60e12210e199")
+			case "disabled":
+				peer.Status = "disabled"
+				ctx = withAvailabilityProbeConnection(ctx, parent.ID, peerID)
+			case "managed_disabled":
+				connections.managed = false
+				ctx = withAvailabilityProbeConnection(ctx, parent.ID, peerID)
+			case "wrong_account":
+				ctx = withAvailabilityProbeConnection(ctx, parent.ID+1, peerID)
+			case "gateway_unavailable":
+				svc.openaiGatewayService = nil
+				ctx = withAvailabilityProbeConnection(ctx, parent.ID, peerID)
+			}
+			cfg := &PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1, Availability: &AvailabilityPolicy{ValidForSeconds: 60}}
+			result, err := svc.RunPelicanBackground(ctx, parent.ID, "gpt-5.4", cfg)
+			require.NoError(t, err)
+			if scenario == "preferred" || scenario == "peer" {
+				require.Equal(t, "success", result.Status, result.ErrorMessage)
+				require.Len(t, upstream.requests, 1)
+				token := "managed-connection-token"
+				id := connections.rows[0].ID
+				if scenario == "peer" {
+					token, id = "synthetic-peer-token", peerID
+				}
+				require.Equal(t, "Bearer "+token, upstream.requests[0].Header.Get("Authorization"))
+				require.Equal(t, AvailabilityConnectionScope(&Account{AuthConnectionID: id, AuthConnectionRevision: 1}), result.PelicanConfig.AvailabilityResult.Scope.ConnectionScope)
+			} else {
+				require.Equal(t, "failed", result.Status, "an unavailable explicit target must not silently use the preferred grant")
+				require.Empty(t, upstream.requests)
+			}
+		})
+	}
+}
+
 func TestAccountTestService_ManagedGatewayProbeRecordsScope(t *testing.T) {
 	t.Setenv("DATA_DIR", t.TempDir())
 	for _, kind := range []string{"bps", "siwc"} {

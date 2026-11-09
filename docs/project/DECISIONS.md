@@ -1307,3 +1307,11 @@
 - BPS 主发送在外层创建 availability 观察器，密文恢复和工具修复/纠错直接进入同一内部发送函数，却没有无响应传输故障观察；返回状态和响应体依赖外层分散处理。旧源码直调用真实发送入口的反例在408、503、截断响应体和有网络活动的传输错误四项均实际失败，均未记录故障；本地准入拒绝保持零发送、零故障。
 - 将唯一传输及状态观察器移入 `doPriorityObservedHTTP` 的物理发送边界，删除主发送与三个重试调用处的重复观察。保留原受控提交、重放/代理租约边界和请求体跟踪；已确认托管连接及无来源情况沿现有连接/账号级故障语义，不额外创建监测器。
 - `go test -race -p 1 -tags unit ./internal/service -run '^(TestAvailabilityBPS|TestExcelBPS.*|TestAvailabilityManagedBusinessFaultRequiresConfirmedWireSource)' -count=1 -timeout=12m` 退出0，`7.711s`；覆盖主发送一次观察、直接重试的408/503/体读取/传输、本地拒绝、检测不递归、托管连接归属，以及原BPS路由与发送前重试。Handler 关联 race 退出0（`1.172s`）；service/handler 的 unit `go vet` 退出0，默认标签两包编译退出0（`1.387s` / `1.508s`）；原规则 unit 增量 lint 修正测试 QF1003 后输出 `0 issues.`。本机夹具不证明线上故障或供应商恢复。
+
+## 2026-11-09：D3 托管连接按原计划轮转探测
+
+- 原后台检测始终选首选连接；隔离 PostgreSQL 反例中同一计划拥有三个有效连接，领取后根本没有选中目标。增加计划领取事务内的连接选择，按账号与连接 ID 的摘要稳定轮转，排除禁用、冷却、刷新不确定和无 Responses 能力的连接；每轮仍使用原计划的模型、样本、并发及 cron，不额外增发请求。
+- 目标只存在执行内存并经被测样本 context 传递，复用原连接投影、实际认证和最终版本栅栏；目标缺失、改账号、禁用或托管策略改变时不退回首选。质量判题器使用原 context，不继承被测连接。游标仅存原状态 JSON；结果/游标/故障版本原事务提交，明确但无法归属的失败仍推进游标，失败或过期事务回滚不前进，不修改首选连接及黏性会话。
+- `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^(TestAvailability|TestQuality5xx|TestIssue594)' -count=1 -timeout=12m` 退出0，`24.727s`；包括隔离 PostgreSQL/Redis、本机 TLS 下真实后台 worker 两次信号分别探测两个不同连接并经真实网关放行，另覆盖三连接公平轮转、禁用/能力/刷新过滤、未归属失败、事务中断回滚、目标查询失败、故障栅栏、cron不变和状态不含原始ID/凭据。该测试触发既有队列，不以手工探测模拟后台工作。
+- `go test -race -p 1 -tags unit ./internal/service -run '^(TestAvailability|TestAccountTestService_ManagedConnection|TestAccountTestService_BackgroundProbePinsManagedConnection|TestPelican|TestQuality5xx|TestQualityJudge)' -count=1 -timeout=12m` 退出0，`9.529s`；覆盖非首选凭据/作用域、目标拒绝回退、独立判题及原探测/质量回归。三包 `go vet -p 1 -tags 'unit integration'` 退出0；默认标签三包编译退出0（service `1.421s`、repository `1.476s`、handler `1.428s`）；unit+integration 原规则增量 lint 输出 `0 issues.`。
+- 重要边界：N 条有效连接通常需要 N 次计划运行才完整轮询；原 `valid_for_seconds` 过短时旧证据会如实过期，轮转本身不保证所有连接同时可用。有效期内的批量探测、成本/并发预算和管理员提示仍待 D3/D7 验收；未执行 CI、推送、部署或生产迁移。
