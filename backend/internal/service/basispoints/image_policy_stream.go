@@ -3,6 +3,7 @@ package basispoints
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -140,11 +141,16 @@ func mergeImageUsage(dst, src object) {
 	}
 }
 
+// ErrImageCompactionIncomplete identifies a response that ended without a
+// protocol terminal, distinct from a terminal reporting an upstream failure.
+var ErrImageCompactionIncomplete = errors.New("image history compaction did not complete")
+
 // ReadImageCompaction observes reported usage even when no successful terminal
 // arrives. The caller never sees intermediate text or executable tool events.
 func ReadImageCompaction(reader io.Reader, observe func([]byte)) (map[string]any, error) {
 	var response object
 	completed := false
+	terminal := false
 	progressiveUsage := object{}
 	err := readEvents(io.LimitReader(reader, 32<<20), func(event string, raw []byte) error {
 		if string(raw) == "[DONE]" {
@@ -173,6 +179,7 @@ func ReadImageCompaction(reader io.Reader, observe func([]byte)) (map[string]any
 		}
 		switch kind {
 		case "response.completed", "response.failed", "response.cancelled", "response.incomplete", "error":
+			terminal = true
 			response, _ = p["response"].(object)
 			completed = kind == "response.completed"
 			return io.EOF
@@ -187,6 +194,9 @@ func ReadImageCompaction(reader io.Reader, observe func([]byte)) (map[string]any
 	}
 	if err != nil && err != io.EOF {
 		return response, err
+	}
+	if !terminal {
+		return response, ErrImageCompactionIncomplete
 	}
 	if !completed || response == nil {
 		return response, fmt.Errorf("image history compaction did not complete")

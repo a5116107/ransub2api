@@ -60,6 +60,13 @@ func (t *availabilityReadFaultTracker) incompleteContext(ctx context.Context) (c
 	return context.WithValue(ctx, availabilityFaultSourceKey{}, current.source.Load()), current.observed.Load()
 }
 
+func (t *availabilityReadFaultTracker) observeIncomplete(ctx context.Context, limiter *RateLimitService, account *Account) {
+	faultCtx, observed := t.incompleteContext(ctx)
+	if !observed {
+		limiter.observeAvailabilityIncomplete(faultCtx, account, false)
+	}
+}
+
 type availabilityFaultSource struct {
 	accountID   int64
 	parentRoute [32]byte

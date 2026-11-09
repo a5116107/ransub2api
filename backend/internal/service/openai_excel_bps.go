@@ -639,6 +639,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			compactUsageWire, _ = compactResponse["usage"].(map[string]any)
 		}
 		if compactErr != nil {
+			if errors.Is(compactErr, basispoints.ErrImageCompactionIncomplete) {
+				readFaults.observeIncomplete(ctx, s.rateLimitService, account)
+			}
 			return fail(502, "basispoints_image_compaction_failed", "Image history compaction did not complete; generation was not started")
 		}
 		window, _, compactErr := basispoints.CompactWindow(compactResponse)
@@ -1072,10 +1075,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		// A body read failure was already observed by the HTTP wrapper. A clean
 		// EOF or a nonterminal bridge failure needs its own availability observation,
 		// but neither case is an observed upstream HTTP 5xx.
-		faultCtx, observed := readFaults.incompleteContext(ctx)
-		if !observed {
-			s.rateLimitService.observeAvailabilityIncomplete(faultCtx, account, false)
-		}
+		readFaults.observeIncomplete(ctx, s.rateLimitService, account)
 		MarkResponseCommitted(c)
 		if stream {
 			_, _ = c.Writer.WriteString("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"basispoints_stream_incomplete\",\"message\":\"Upstream stream ended before completion\"}}}\n\n")

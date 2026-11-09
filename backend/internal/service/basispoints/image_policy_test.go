@@ -148,15 +148,17 @@ func TestImagePolicyCompactionReadFailuresAndUsage(t *testing.T) {
 			require.NoError(t, e)
 		} else {
 			require.Error(t, e)
+			require.NotErrorIs(t, e, ErrImageCompactionIncomplete)
 		}
 		usage, ok := response["usage"].(object)
 		require.True(t, ok)
 		require.Equal(t, json.Number("7"), usage["input_tokens"])
 	}
-	for _, wire := range []string{prefix, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"name\":\"unsafe\"}}\n\n"} {
-		_, e := ReadImageCompaction(strings.NewReader(wire), nil)
-		require.Error(t, e)
-	}
+	_, e := ReadImageCompaction(strings.NewReader(prefix), nil)
+	require.ErrorIs(t, e, ErrImageCompactionIncomplete)
+	_, e = ReadImageCompaction(strings.NewReader("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"name\":\"unsafe\"}}\n\n"), nil)
+	require.Error(t, e)
+	require.NotErrorIs(t, e, ErrImageCompactionIncomplete)
 }
 
 func TestImagePolicyReconcilePreservesNewInputsAndMultipleCycles(t *testing.T) {

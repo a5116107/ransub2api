@@ -5,19 +5,25 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service/basispoints"
 	"github.com/gin-gonic/gin"
@@ -189,11 +195,13 @@ func TestExcelBPSImagePolicyForwardCompactAndContinue(t *testing.T) {
 	t.Setenv("DATA_DIR", t.TempDir())
 	for _, mode := range []string{"native", "relay"} {
 		for _, stream := range []bool{false, true} {
-			for _, failure := range []string{"", "compact_reject", "compact_failed", "compact_eof", "generation_reject", "invalid_compaction"} {
+			for _, failure := range []string{"", "compact_reject", "compact_failed", "compact_eof", "compact_broken", "generation_reject", "invalid_compaction"} {
 				t.Run(fmt.Sprintf("%s/stream=%v/%s", mode, stream, failure), func(t *testing.T) {
 					svc := openAIClientToolsTestService(nil)
 					t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
 					svc.cache = newImagePolicyMemoryCache()
+					faultRepo := &immediateQualityAccountRepo{}
+					svc.rateLimitService = ProvideRateLimitService(faultRepo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 					repo := &excelBPSImageSettingsRepo{values: map[string]string{SettingKeyExcelBPSImageRelayEnabled: "true", SettingKeyExcelBPSImageMode: mode, SettingKeyExcelBPSImageBaseURL: "https://images.example", SettingKeyExcelBPSImageLimitPolicy: "auto_compact"}}
 					svc.settingService = NewSettingService(repo, svc.cfg)
 					_, pixels := nativeGatewayBody(t)
@@ -258,10 +266,14 @@ func TestExcelBPSImagePolicyForwardCompactAndContinue(t *testing.T) {
 						}
 						event, _ := json.Marshal(map[string]any{"type": kind, "response": response})
 						wire := "data: " + string(event) + "\n\n"
-						if phase == 1 && failure == "compact_eof" {
+						if phase == 1 && (failure == "compact_eof" || failure == "compact_broken") {
 							wire = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-policy\"}}\n\n"
 						}
-						body := &nativeAttachmentBody{Reader: strings.NewReader(wire)}
+						var reader io.Reader = strings.NewReader(wire)
+						if phase == 1 && failure == "compact_broken" {
+							reader = io.MultiReader(reader, iotest.ErrReader(io.ErrUnexpectedEOF))
+						}
+						body := &nativeAttachmentBody{Reader: reader}
 						if phase == 1 {
 							compactBody = body
 						}
@@ -280,6 +292,13 @@ func TestExcelBPSImagePolicyForwardCompactAndContinue(t *testing.T) {
 							require.NotNil(t, result)
 							require.Equal(t, 7, result.Usage.InputTokens)
 							require.Equal(t, 3, result.Usage.OutputTokens)
+						}
+						if failure == "compact_eof" || failure == "compact_broken" {
+							require.Equal(t, 1, faultRepo.availabilityCalls, "an incomplete compaction must invalidate availability once")
+							require.Zero(t, faultRepo.calls, "the local compaction failure is not an upstream 5xx")
+						}
+						if failure == "compact_failed" {
+							require.Zero(t, faultRepo.availabilityCalls, "an explicit failure terminal is not a missing terminal")
 						}
 						return
 					}
@@ -330,6 +349,93 @@ func TestExcelBPSImagePolicyForwardCompactAndContinue(t *testing.T) {
 		}
 	}
 
+}
+
+func TestExcelBPSImageCompactionIncompleteManagedScope(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	for _, scenario := range []string{"confirmed", "unconfirmed", "canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			reauth, connections := connectionTypeService(AccountTypeOAuth)
+			connections.managed = true
+			connection := &OpenAIAuthConnection{ID: "c910c45b-79a0-4367-a1dc-60e12210e199", AccountID: 42, Kind: "bps", Status: "active", Revision: 1, Preferred: true, Capabilities: []string{"responses"}}
+			require.NoError(t, reauth.encryptConnectionCredentials(connection, map[string]any{"access_token": "fixture-token", "client_id": openai.ExcelClientID, "chatgpt_account_id": "fixture-account", "expires_at": fmt.Sprint(time.Now().Add(time.Hour).Unix())}))
+			connections.rows = []*OpenAIAuthConnection{connection}
+			parent, err := reauth.accounts.GetAccount(t.Context(), 42)
+			require.NoError(t, err)
+			parent.Extra = map[string]any{}
+			faultRepo := &managedFaultAccountRepo{}
+			svc := openAIClientToolsTestService(nil)
+			svc.excelOAuthReauth = reauth
+			svc.rateLimitService = ProvideRateLimitService(faultRepo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc.cache = newImagePolicyMemoryCache()
+			settings := &excelBPSImageSettingsRepo{values: map[string]string{SettingKeyExcelBPSImageRelayEnabled: "true", SettingKeyExcelBPSImageMode: "relay", SettingKeyExcelBPSImageBaseURL: "https://images.example", SettingKeyExcelBPSImageLimitPolicy: "auto_compact"}}
+			svc.settingService = NewSettingService(settings, svc.cfg)
+			t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var sends atomic.Int32
+			var unexpected atomic.Bool
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				sends.Add(1)
+				if req.URL.Path != "/basispoints/api/responses" || req.Header.Get("Authorization") != "Bearer fixture-token" {
+					unexpected.Store(true)
+				}
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+			}))
+			t.Cleanup(server.Close)
+			roots := x509.NewCertPool()
+			roots.AddCert(server.Certificate())
+			transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}}
+			transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+			}
+			t.Cleanup(transport.CloseIdleConnections)
+			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+			svc.httpUpstream = &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+				response, sendErr := client.Do(req)
+				if sendErr != nil {
+					return response, sendErr
+				}
+				if scenario == "unconfirmed" {
+					actual := response.Request.Clone(response.Request.Context())
+					actual.Header.Set("Authorization", "Bearer other-fixture")
+					response.Request = actual
+				}
+				if scenario == "canceled" {
+					cancel()
+				}
+				return response, nil
+			}}
+			_, pixels := nativeGatewayBody(t)
+			body := bytes.ReplaceAll(imagePolicyRequest(t, 19, 2), []byte("data:image/png;base64,synthetic"), []byte("data:image/png;base64,"+base64.StdEncoding.EncodeToString(pixels)))
+			body, err = sjson.SetBytes(body, "model", "gpt-5.6-sol")
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
+			c.Request.Header.Set("User-Agent", "codex_cli_rs/0.116.0")
+			c.Request.Header.Set("session_id", "fixture-session")
+			selected, err := svc.prepareAuthConnection(ctx, c, parent, nil, "gpt-5.6-sol", "responses")
+			require.NoError(t, err)
+			_, err = svc.forwardExcelBPS(ctx, c, selected, body, time.Now())
+			require.Error(t, err)
+			require.EqualValues(t, 1, sends.Load(), "the compaction send must be reached: %v, %s", err, rec.Body.String())
+			require.False(t, unexpected.Load())
+			switch scenario {
+			case "confirmed":
+				require.Len(t, faultRepo.accounts, 1)
+				require.Equal(t, connection.ID, faultRepo.accounts[0].AuthConnectionID)
+				require.Zero(t, faultRepo.availabilityCalls)
+			case "unconfirmed":
+				require.Empty(t, faultRepo.accounts)
+				require.Equal(t, 1, faultRepo.availabilityCalls)
+			case "canceled":
+				require.Empty(t, faultRepo.accounts)
+				require.Zero(t, faultRepo.availabilityCalls)
+			}
+			require.Zero(t, faultRepo.calls)
+		})
+	}
 }
 
 func TestExcelBPSImagePolicyCodexClients(t *testing.T) {
