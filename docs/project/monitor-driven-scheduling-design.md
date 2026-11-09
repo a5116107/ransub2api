@@ -143,6 +143,8 @@ api_base_urls 单独提供地址时不再错误要求旧 base_url；非自适应
 标准 HTTP Basic 使用独立域 `SHA256("\x00http-basic\x00" + decoded_user + ":" + decoded_password)`：保留解码后凭据的原始字节、空格和密码中的冒号，用户名不能包含冒号；认证头首尾空格按 Go 的实际发送规则去除。仅当请求使用 UTF-8 编码凭据时，可从受保护的环境变量计算配置值：`[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("`0http-basic`0$($env:UPSTREAM_BASIC_USER):$($env:UPSTREAM_BASIC_PASSWORD)"))).ToLowerInvariant()`；其他编码须使用实际发出的字节。摘要并非加密，低强度密码仍可能被猜测，配置和 Redis 须限制读取权限。Basic 与 Bearer、不同用户名/密码不推定为同一真实上游身份；即使分别限额，也不证明它们合计受同一供应商总上限保护。识别不会自动创建规则，启用新规则前须升级所有相关实例、排空旧请求并按原协议递增 revision。
 不保存第二份明文 Key，不把账号、下游分组、供应商倍率、端点或协议加入额度键；同一凭据通过多个账号/协议入口发送仍共用额度。摘要只用于限额，不证明跨协议计价或缓存共享。
 复用现有 HTTPUpstream 的 Do/DoWithTLS，按实际请求的 Bearer/Token、Basic、X-Api-Key、Api-Key、X-Goog-Api-Key 与 key/api_key 查询凭据取槽；请求头逐个不区分大小写地扫描原始键，包括为保留 wire 大小写而直接写入的键，多种大小写和重复凭据只计一次，不修改出站头。HTTP/原生WS共用的公共取槽入口也按首次出现的摘要去重，保持调用方握手证据切片不变；一个活跃请求对同一Key只持一个成员。后续凭据满额时回收本次先前取得的成员，保留其他请求，容量释放后允许恢复。
+启用共享或区域策略时，非空 `Authorization` 必须能按上述明确格式识别；未知方案、无法解码的 Basic、无法识别的 SigV4 Credential 范围、缺失令牌或含内部空白而存在歧义的 Bearer/Token，生成不可配置、不可持久化的未验证标记。即使同一请求还有已知 Key，HTTP、原生 WS、语音与巡检也在实际发送前拒绝该标记；WS、语音和巡检在委托额度权威前预检，HTTP共享权威在普通抢槽前拒绝，区域视频查询仍可先读取原有SQL归属。原有 Agent 断言未验证分支复用同一标记，不新增第二种额度身份；SigV4 仍仅识别 access-key ID，不验证签名。策略完全关闭时原始头与既有发送行为不变。无法从 `Authorization` 之外的任意自定义头、Cookie 或独立代理推断身份，仍是本任务的剩余边界，不把它们默认为已受限或声称全覆盖。
+
 账号/用户原槽位保持；HTTP 共享 Key 维度在真正出站前抢槽，满额不发送网络请求，沿原有受限重选返回 503，不记录为供应商/代理健康故障。
 HTTP/SSE 槽位持有至响应体 EOF/错误/Close；请求取消主动关闭响应体并回收本次成员，多凭据部分失败回收已取成员，重复 Close 不重复释放。
 独立 Redis `concurrency:upstream_key:*` namespace 使用服务器时间、30 秒租约、5 秒续租；本地 19 秒所有权看门狗在租约被别人复用前取消请求，续租仅更新现存成员，禁止恢复已删除成员。

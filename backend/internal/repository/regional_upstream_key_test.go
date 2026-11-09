@@ -361,6 +361,64 @@ func TestRegionalUpstreamKeyHTTPBodyLifetime(t *testing.T) {
 	}
 }
 
+func TestRegionalUpstreamKeyUnknownAuthorizationFailsClosed(t *testing.T) {
+	for _, mode := range []string{"primary", "regional"} {
+		t.Run(mode, func(t *testing.T) {
+			rdb := regionalKeyRedis(t)
+			cfg := upstreamKeyTestConfig(1, 1)
+			capacity := 0
+			if mode == "regional" {
+				capacity = 1
+			}
+			primary, local, _ := regionalKeyFixture(t, cfg, rdb, capacity)
+			cache, table := primary, "regional_primary_slots"
+			if capacity > 0 {
+				cache, table = local, "regional_local_slots"
+			}
+			var requests atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				_, _ = io.WriteString(w, "fixture")
+			}))
+			t.Cleanup(upstream.Close)
+			transport := ProvideHTTPUpstream(cfg, nil, rdb, cache)
+			request := func(unknown bool) *http.Request {
+				t.Helper()
+				r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader("{}"))
+				require.NoError(t, err)
+				r.Header.Add("Authorization", "Bearer supplier-fixture")
+				if unknown {
+					r.Header.Add("Authorization", "Custom opaque-fixture")
+				}
+				return r
+			}
+			held, err := transport.Do(request(false), "", 1, 1)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, held.Body.Close()) })
+			var before int
+			require.NoError(t, cache.database().QueryRowContext(t.Context(), `SELECT count(*) FROM `+table+` WHERE NOT released`).Scan(&before))
+			require.Equal(t, 1, before)
+			var member string
+			require.NoError(t, cache.database().QueryRowContext(t.Context(), `SELECT request_id FROM `+table+` WHERE NOT released`).Scan(&member))
+			response, err := transport.Do(request(true), "", 2, 1)
+			require.Nil(t, response)
+			require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+			var after int
+			require.NoError(t, cache.database().QueryRowContext(t.Context(), `SELECT count(*) FROM `+table+` WHERE NOT released`).Scan(&after))
+			require.Equal(t, before, after, "rejection must preserve existing SQL occupancy")
+			var afterMember string
+			require.NoError(t, cache.database().QueryRowContext(t.Context(), `SELECT request_id FROM `+table+` WHERE NOT released`).Scan(&afterMember))
+			require.Equal(t, member, afterMember, "rejection must preserve the exact held member")
+			require.EqualValues(t, 1, requests.Load(), "the unverified request must never reach the provider")
+			require.NoError(t, held.Body.Close())
+			recovered, err := transport.Do(request(false), "", 2, 1)
+			require.NoError(t, err)
+			require.NoError(t, recovered.Body.Close())
+			require.EqualValues(t, 2, requests.Load())
+		})
+	}
+}
+
 func TestRegionalBedrockSignedHTTPSharedCapacity(t *testing.T) {
 	for _, mode := range []string{"primary", "regional"} {
 		t.Run(mode, func(t *testing.T) {

@@ -57,11 +57,11 @@ func TestOpenAIAgentKeyHTTPFinalProofAndShadowParent(t *testing.T) {
 	bound := bindOpenAIAgentPublicKey(agentKeyRequest(t, key), repo, shadow)
 	require.Equal(t, []string{agentKeyFingerprint(t, key)}, config.UpstreamCredentialFingerprints(bound))
 	unbound := bindOpenAIAgentPublicKey(agentKeyRequest(t, key), nil, shadow)
-	require.Equal(t, []string{config.UnverifiedUpstreamAgentCredential}, config.UpstreamCredentialFingerprints(unbound))
+	require.Equal(t, []string{config.UnverifiedUpstreamCredential}, config.UpstreamCredentialFingerprints(unbound))
 
 	other, _ := agentKeyAccount(t, 703)
 	mismatched := bindOpenAIAgentPublicKey(agentKeyRequest(t, key), nil, other)
-	require.Equal(t, []string{config.UnverifiedUpstreamAgentCredential}, config.UpstreamCredentialFingerprints(mismatched), "stale or replaced signing keys cannot claim the old proof")
+	require.Equal(t, []string{config.UnverifiedUpstreamCredential}, config.UpstreamCredentialFingerprints(mismatched), "stale or replaced signing keys cannot claim the old proof")
 }
 
 func TestOpenAIAgentKeyWSFinalHandshakeAndRotation(t *testing.T) {
@@ -95,7 +95,7 @@ func TestOpenAIAgentKeyWSFinalHandshakeAndRotation(t *testing.T) {
 	account.Credentials["agent_private_key"] = rotated.Credentials["agent_private_key"]
 	require.Equal(t, []string{want}, conn.upstreamKeyFingerprints, "a pooled connection retains its actual handshake key")
 	stale := bindOpenAIAgentPublicKey(agentKeyRequest(t, key), nil, account)
-	require.Equal(t, []string{config.UnverifiedUpstreamAgentCredential}, config.UpstreamCredentialFingerprints(stale))
+	require.Equal(t, []string{config.UnverifiedUpstreamCredential}, config.UpstreamCredentialFingerprints(stale))
 }
 
 type agentKeyWSAuthority struct{ calls atomic.Int32 }
@@ -107,7 +107,7 @@ func (a *agentKeyWSAuthority) AcquireUpstreamKeySlots(ctx context.Context, _ []s
 
 func TestOpenAIAgentKeyWSRejectsUnverifiedProofBeforeGeneration(t *testing.T) {
 	authority := &agentKeyWSAuthority{}
-	turn := &openAIWSKeyTurn{authority: authority, fingerprints: []string{config.UnverifiedUpstreamAgentCredential}}
+	turn := &openAIWSKeyTurn{authority: authority, fingerprints: []string{config.UnverifiedUpstreamCredential}}
 	_, err := turn.begin(t.Context())
 	require.True(t, IsUpstreamKeyAdmissionFailure(err))
 	require.Zero(t, authority.calls.Load(), "an unverified assertion must not be treated as an unlimited key")
@@ -115,4 +115,19 @@ func TestOpenAIAgentKeyWSRejectsUnverifiedProofBeforeGeneration(t *testing.T) {
 	ctx, err := turn.begin(t.Context())
 	require.NoError(t, err)
 	require.Same(t, t.Context(), ctx, "disabled shared policy retains existing behavior")
+}
+
+func TestOpenAIWSUnknownAuthorizationFailsClosed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://fixture.invalid/v1/responses", nil)
+	req.Header.Add("Authorization", "Bearer supplier-fixture")
+	req.Header.Add("Authorization", "Custom opaque-fixture")
+	authority := &agentKeyWSAuthority{}
+	turn := &openAIWSKeyTurn{authority: authority, fingerprints: config.UpstreamCredentialFingerprints(req)}
+	_, err := turn.begin(t.Context())
+	require.True(t, IsUpstreamKeyAdmissionFailure(err))
+	require.Zero(t, authority.calls.Load(), "unverified authentication must not reach the authority or a generation turn")
+	turn.authority = nil
+	ctx, err := turn.begin(t.Context())
+	require.NoError(t, err)
+	require.Same(t, t.Context(), ctx, "a disabled policy keeps the original WS behavior")
 }

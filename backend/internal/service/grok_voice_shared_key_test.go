@@ -236,6 +236,26 @@ func TestGrokVoiceSharedKeyRejectsBeforeWebSocketDial(t *testing.T) {
 	}
 }
 
+func TestGrokVoiceUnknownAuthorizationFailsClosed(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	authority := &grokVoiceKeyAuthority{}
+	dialer := &grokVoiceKeyDialer{}
+	target, err := url.Parse("wss://fixture.invalid/v1/realtime")
+	require.NoError(t, err)
+	headers := http.Header{"Authorization": {"Custom opaque-fixture"}}
+	upstream, err := dialGrokVoiceWithSharedKey(t.Context(), cfg, authority, dialer, target, headers, "", nil)
+	require.Nil(t, upstream)
+	require.True(t, IsUpstreamKeyAdmissionFailure(err))
+	require.Zero(t, authority.takes.Load(), "unknown authentication must not be trusted to an opaque authority")
+	require.Zero(t, dialer.sends.Load(), "the socket must not be dialed")
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 0
+	upstream, err = dialGrokVoiceWithSharedKey(t.Context(), cfg, authority, dialer, target, headers, "", nil)
+	require.NoError(t, err, "disabled shared policy retains the original dial behavior")
+	require.NoError(t, upstream.Close())
+	require.EqualValues(t, 1, dialer.sends.Load())
+}
+
 func TestGrokVoiceSharedKeySessionLifetime(t *testing.T) {
 	for _, endpoint := range []string{"realtime", "tts"} {
 		t.Run(endpoint, func(t *testing.T) {

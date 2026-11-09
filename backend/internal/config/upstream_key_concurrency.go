@@ -14,11 +14,12 @@ import (
 	"net/textproto"
 	"sort"
 	"strings"
+	"unicode"
 )
 
-// This non-fingerprint is rejected by the shared authority when an Agent
-// assertion cannot be tied to the actual signing key. It is never persisted.
-const UnverifiedUpstreamAgentCredential = "!unverified-openai-agent!"
+// This non-fingerprint marks authorization that cannot be tied to a stable
+// credential. Shared authorities reject it; it is never a persisted identity.
+const UnverifiedUpstreamCredential = "!unverified-upstream-credential!"
 
 type upstreamAgentPublicKeyContextKey struct{}
 
@@ -239,6 +240,9 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 		for _, name := range names {
 			for _, value := range req.Header[name] {
 				if wanted == "Authorization" {
+					if strings.TrimSpace(value) == "" {
+						continue
+					}
 					fields := strings.Fields(value)
 					if len(fields) > 0 && strings.EqualFold(fields[0], "AgentAssertion") {
 						fingerprint := ""
@@ -246,23 +250,32 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 							fingerprint = upstreamAgentAssertionFingerprint(req.Context(), fields[1])
 						}
 						if fingerprint == "" {
-							fingerprint = UnverifiedUpstreamAgentCredential
+							fingerprint = UnverifiedUpstreamCredential
 						}
 						addFingerprint(fingerprint)
 						continue
 					}
 					scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
 					if ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token")) {
-						add(token)
+						token = strings.TrimSpace(token)
+						if token == "" || strings.IndexFunc(token, unicode.IsSpace) >= 0 {
+							addFingerprint(UnverifiedUpstreamCredential)
+						} else {
+							add(token)
+						}
 					} else if ok && strings.EqualFold(scheme, "Basic") {
 						basicRequest := &http.Request{Header: http.Header{"Authorization": {textproto.TrimString(value)}}}
 						if username, password, valid := basicRequest.BasicAuth(); valid {
 							addFingerprint(UpstreamBasicAuthFingerprint(username, password))
+						} else {
+							addFingerprint(UnverifiedUpstreamCredential)
 						}
 					} else if keyID := sigV4AccessKeyID(value); keyID != "" {
 						// Add uses the same hashing and de-duplication path as other
 						// credentials, with a distinct AWS identity namespace.
 						addFingerprint(UpstreamAWSAccessKeyFingerprint(keyID))
+					} else {
+						addFingerprint(UnverifiedUpstreamCredential)
 					}
 				} else {
 					add(value)

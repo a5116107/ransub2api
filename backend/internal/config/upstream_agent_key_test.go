@@ -37,13 +37,13 @@ func TestUpstreamAgentCredentialProofAndKeyIdentity(t *testing.T) {
 	require.NotEmpty(t, firstFingerprint)
 	require.NotEqual(t, firstFingerprint, UpstreamAgentKeyFingerprint(secondPublic))
 	require.NotEqual(t, firstFingerprint, UpstreamKeyFingerprint(string(firstPublic)))
-	require.Equal(t, []string{UnverifiedUpstreamAgentCredential}, UpstreamCredentialFingerprints(request))
+	require.Equal(t, []string{UnverifiedUpstreamCredential}, UpstreamCredentialFingerprints(request))
 	request = request.WithContext(WithUpstreamAgentPublicKey(request.Context(), firstPublic))
 	require.Equal(t, []string{firstFingerprint}, UpstreamCredentialFingerprints(request))
 	request.Header.Set("Authorization", upstreamAgentFixtureAssertion(t, first, "runtime-b", "task-b", "2026-01-01T00:00:01Z"))
 	require.Equal(t, []string{firstFingerprint}, UpstreamCredentialFingerprints(request), "same signing key survives runtime, task and timestamp changes")
 	request.Header.Set("Authorization", upstreamAgentFixtureAssertion(t, second, "runtime-a", "task-a", "2026-01-01T00:00:00Z"))
-	require.Equal(t, []string{UnverifiedUpstreamAgentCredential}, UpstreamCredentialFingerprints(request), "a different signing key cannot reuse the first key's proof")
+	require.Equal(t, []string{UnverifiedUpstreamCredential}, UpstreamCredentialFingerprints(request), "a different signing key cannot reuse the first key's proof")
 	request = request.WithContext(WithUpstreamAgentPublicKey(request.Context(), secondPublic))
 	require.Equal(t, []string{UpstreamAgentKeyFingerprint(secondPublic)}, UpstreamCredentialFingerprints(request))
 
@@ -74,6 +74,6 @@ func TestUpstreamAgentCredentialRejectsAmbiguousOrAlteredAssertions(t *testing.T
 		request := httptest.NewRequest(http.MethodPost, "https://fixture.invalid/v1/responses", nil)
 		request.Header.Set("Authorization", assertion)
 		request = request.WithContext(WithUpstreamAgentPublicKey(request.Context(), publicKey))
-		require.Equal(t, []string{UnverifiedUpstreamAgentCredential}, UpstreamCredentialFingerprints(request))
+		require.Equal(t, []string{UnverifiedUpstreamCredential}, UpstreamCredentialFingerprints(request))
 	}
 }

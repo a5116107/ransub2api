@@ -320,7 +320,7 @@ func TestUpstreamKeyUnverifiedAgentFailsClosedWithoutLeakingOtherSlots(t *testin
 	require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
 	ordinary, ok := limited.(service.UpstreamKeyConcurrency)
 	require.True(t, ok)
-	_, release, err := ordinary.AcquireUpstreamKeySlots(t.Context(), []string{config.UpstreamKeyFingerprint("supplier-fixture"), config.UnverifiedUpstreamAgentCredential})
+	_, release, err := ordinary.AcquireUpstreamKeySlots(t.Context(), []string{config.UpstreamKeyFingerprint("supplier-fixture"), config.UnverifiedUpstreamCredential})
 	require.Nil(t, release)
 	require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
 	require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
@@ -334,6 +334,59 @@ func TestUpstreamKeyUnverifiedAgentFailsClosedWithoutLeakingOtherSlots(t *testin
 	require.NoError(t, err, "disabled policy retains the existing unknown-auth transport behavior")
 	require.NoError(t, response.Body.Close())
 	require.EqualValues(t, 1, sends.Load())
+}
+
+func TestUpstreamKeyUnknownAuthorizationFailsClosed(t *testing.T) {
+	var sends atomic.Int32
+	legacyHeaders := make(chan []string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		if r.URL.Path == "/legacy" {
+			legacyHeaders <- append([]string(nil), r.Header.Values("Authorization")...)
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	request := func(path string) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+path, strings.NewReader("{}"))
+		require.NoError(t, err)
+		req.Header.Add("Authorization", "Bearer supplier-fixture")
+		req.Header.Add("Authorization", "Custom opaque-fixture")
+		return req
+	}
+	for _, policy := range []string{"limited", "versioned_empty"} {
+		t.Run(policy, func(t *testing.T) {
+			server := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			t.Cleanup(func() { require.NoError(t, client.Close()) })
+			cfg := upstreamKeyTestConfig(1, 1)
+			if policy == "versioned_empty" {
+				cfg.Gateway.UpstreamKeyConcurrency.Limits = nil
+			}
+			transport := newHTTPUpstream(cfg, nil, client, nil)
+			before := sends.Load()
+			response, err := transport.Do(request("/v1/responses"), "", 1, 1)
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			require.Nil(t, response)
+			require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+			require.Equal(t, before, sends.Load(), "unverifiable auth must be rejected before network access")
+			require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
+			persistent, ok := transport.(service.PersistentUpstreamKeyConcurrency)
+			require.True(t, ok)
+			lease, err := persistent.AcquirePersistentUpstreamKeySlots(t.Context(), request("/v1/realtime/calls"))
+			require.Nil(t, lease)
+			require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+		})
+	}
+	legacy := newHTTPUpstream(&config.Config{}, nil, nil, nil)
+	before := sends.Load()
+	response, err := legacy.Do(request("/legacy"), "", 1, 1)
+	require.NoError(t, err, "without shared policy the original transport remains compatible")
+	require.NoError(t, response.Body.Close())
+	require.EqualValues(t, before+1, sends.Load())
+	require.ElementsMatch(t, []string{"Bearer supplier-fixture", "Custom opaque-fixture"}, <-legacyHeaders)
 }
 
 func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {

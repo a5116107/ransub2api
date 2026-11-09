@@ -263,7 +263,7 @@ func (s *httpUpstreamService) AcquireUpstreamKeySlots(parent context.Context, fi
 		return parent, nil, service.ErrUpstreamKeyPolicy
 	}
 	for _, fingerprint := range fingerprints {
-		if fingerprint == config.UnverifiedUpstreamAgentCredential {
+		if fingerprint == config.UnverifiedUpstreamCredential {
 			return parent, nil, service.ErrUpstreamKeyPolicy
 		}
 	}
@@ -345,7 +345,7 @@ func (s *httpUpstreamService) AcquirePersistentUpstreamKeySlots(ctx context.Cont
 	}
 	fingerprints := config.UpstreamCredentialFingerprints(req)
 	for _, fingerprint := range fingerprints {
-		if fingerprint == config.UnverifiedUpstreamAgentCredential {
+		if fingerprint == config.UnverifiedUpstreamCredential {
 			return nil, service.ErrUpstreamKeyPolicy
 		}
 	}
@@ -591,7 +591,7 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 		}
 		if handoff == nil {
 			for _, fingerprint := range fingerprints {
-				if fingerprint == config.UnverifiedUpstreamAgentCredential || s.upstreamKeyLimiter.policy.Limits[fingerprint] > 0 {
+				if fingerprint == config.UnverifiedUpstreamCredential || s.upstreamKeyLimiter.policy.Limits[fingerprint] > 0 {
 					return req, nil, service.ErrUpstreamKeyPolicy
 				}
 			}

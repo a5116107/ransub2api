@@ -274,7 +274,7 @@ func dialGrokVoiceWithSharedKey(ctx context.Context, cfg *config.Config, httpUps
 	keyCtx := ctx
 	var release func()
 	if authority != nil {
-		keyCtx, release, err = authority.AcquireUpstreamKeySlots(ctx, config.UpstreamCredentialFingerprints(&http.Request{URL: target, Header: headers}))
+		keyCtx, release, err = acquireVerifiedUpstreamKeySlots(ctx, authority, config.UpstreamCredentialFingerprints(&http.Request{URL: target, Header: headers}))
 		if err != nil {
 			if release != nil {
 				release()

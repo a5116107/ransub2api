@@ -27,6 +27,7 @@ func TestUpstreamKeyConcurrencyValidation(t *testing.T) {
 		{"negative_revision", UpstreamKeyConcurrencyConfig{Revision: -1}, false},
 		{"imprecise_revision", UpstreamKeyConcurrencyConfig{Revision: 9007199254740992}, false},
 		{"raw_key", UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{"supplier-fixture": 4}}, false},
+		{"unverified_marker", UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{UnverifiedUpstreamCredential: 4}}, false},
 		{"uppercase", UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{strings.ToUpper(fingerprint): 4}}, false},
 		{"zero_limit", UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{fingerprint: 0}}, false},
 		{"negative_limit", UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{fingerprint: -1}}, false},
@@ -73,7 +74,7 @@ func TestUpstreamBasicCredentialFingerprints(t *testing.T) {
 			if tc.valid {
 				require.Equal(t, []string{fingerprint(tc.user, tc.password)}, got)
 			} else {
-				require.Empty(t, got)
+				require.Equal(t, []string{UnverifiedUpstreamCredential}, got)
 			}
 		})
 	}
@@ -137,6 +138,42 @@ func TestUpstreamCredentialFingerprintsRawHeaderCasing(t *testing.T) {
 	require.Equal(t, []string{"Bearer supplier-fixture"}, req.Header["authorization"], "extraction must not rewrite the wire")
 }
 
+func TestUpstreamCredentialFingerprintsUnrecognizedAuthorization(t *testing.T) {
+	known := UpstreamKeyFingerprint("supplier-fixture")
+	for _, tc := range []struct {
+		name   string
+		values []string
+		want   []string
+	}{
+		{"custom", []string{"Custom opaque-fixture"}, []string{UnverifiedUpstreamCredential}},
+		{"invalid_basic", []string{"Basic !!!"}, []string{UnverifiedUpstreamCredential}},
+		{"malformed_aws", []string{"AWS4-HMAC-SHA256 Credential=missing-scope"}, []string{UnverifiedUpstreamCredential}},
+		{"unsupported_aws", []string{"AWS4-ECDSA-P256-SHA256 Credential=opaque"}, []string{UnverifiedUpstreamCredential}},
+		{"bare_bearer", []string{"Bearer"}, []string{UnverifiedUpstreamCredential}},
+		{"empty_bearer", []string{"Bearer "}, []string{UnverifiedUpstreamCredential}},
+		{"ambiguous_bearer", []string{"Bearer supplier-fixture extra"}, []string{UnverifiedUpstreamCredential}},
+		{"mixed", []string{"Bearer supplier-fixture", "Custom opaque-fixture"}, []string{known, UnverifiedUpstreamCredential}},
+		{"duplicate_unknown", []string{"Custom first", "Digest second"}, []string{UnverifiedUpstreamCredential}},
+		{"extra_spaces", []string{"  Bearer   supplier-fixture  "}, []string{known}},
+		{"valid_bearer", []string{"Bearer supplier-fixture"}, []string{known}},
+		{"valid_token", []string{"Token supplier-fixture"}, []string{known}},
+		{"empty", []string{" \t "}, nil},
+		{"absent", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid/v1", nil)
+			req.Header["authorization"] = append([]string(nil), tc.values...)
+			require.Equal(t, tc.want, UpstreamCredentialFingerprints(req))
+			//nolint:staticcheck // Verify the deliberately noncanonical wire header is not rewritten.
+			require.Equal(t, tc.values, req.Header["authorization"], "inspection must not rewrite wire credentials")
+		})
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://fixture.invalid/v1", nil)
+	req.Header.Set("Authorization", "Custom opaque-fixture")
+	req.Header.Set("X-Api-Key", "supplier-fixture")
+	require.ElementsMatch(t, []string{UnverifiedUpstreamCredential, known}, UpstreamCredentialFingerprints(req), "a known key must not hide another unverified authorization")
+}
+
 func TestUpstreamSigV4CredentialScopeBoundaries(t *testing.T) {
 	const id = "AKIDEXAMPLE12345"
 	const valid = "AWS4-HMAC-SHA256 Credential=" + id + "/20261107/us-east-1/bedrock/aws4_request, SignedHeaders=host;x-amz-date, Signature=fixture"
@@ -162,7 +199,7 @@ func TestUpstreamSigV4CredentialScopeBoundaries(t *testing.T) {
 			if tc.want {
 				require.Equal(t, []string{UpstreamAWSAccessKeyFingerprint(id)}, got)
 			} else {
-				require.Empty(t, got)
+				require.Equal(t, []string{UnverifiedUpstreamCredential}, got)
 			}
 		})
 	}

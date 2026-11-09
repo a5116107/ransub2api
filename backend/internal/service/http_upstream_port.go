@@ -55,6 +55,14 @@ type UpstreamKeyConcurrency interface {
 	AcquireUpstreamKeySlots(context.Context, []string) (context.Context, func(), error)
 }
 
+// The caller must not rely on a custom authority recognizing the marker.
+func acquireVerifiedUpstreamKeySlots(ctx context.Context, authority UpstreamKeyConcurrency, fingerprints []string) (context.Context, func(), error) {
+	if authority == nil || slices.Contains(fingerprints, config.UnverifiedUpstreamCredential) {
+		return ctx, nil, ErrUpstreamKeyPolicy
+	}
+	return authority.AcquireUpstreamKeySlots(ctx, fingerprints)
+}
+
 // Media and provider batches outlive their creation response. Their exact
 // members stay reserved until upstream termination is explicitly confirmed.
 // Only credential fingerprints are persisted, never authentication headers.
@@ -83,7 +91,7 @@ func (l *PersistentUpstreamKeyLease) Validate() error {
 	}
 	seen := make(map[string]bool, len(l.Fingerprints))
 	for _, fingerprint := range l.Fingerprints {
-		if fingerprint == config.UnverifiedUpstreamAgentCredential {
+		if fingerprint == config.UnverifiedUpstreamCredential {
 			return ErrUpstreamKeyPolicy
 		}
 		decoded, err := hex.DecodeString(fingerprint)

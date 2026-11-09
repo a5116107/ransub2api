@@ -37,17 +37,12 @@ func (t *openAIWSKeyTurn) begin(ctx context.Context) (context.Context, error) {
 	if t.authority == nil {
 		return ctx, nil
 	}
-	for _, fingerprint := range t.fingerprints {
-		if fingerprint == config.UnverifiedUpstreamAgentCredential {
-			return nil, upstreamKeyAdmissionFailover(ErrUpstreamKeyPolicy)
-		}
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.release != nil {
 		return nil, ErrUpstreamKeyPolicy
 	}
-	keyCtx, release, err := t.authority.AcquireUpstreamKeySlots(ctx, t.fingerprints)
+	keyCtx, release, err := acquireVerifiedUpstreamKeySlots(ctx, t.authority, t.fingerprints)
 	if err != nil {
 		if failover := upstreamKeyAdmissionFailover(err); failover != nil {
 			return nil, failover

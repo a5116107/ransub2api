@@ -1178,7 +1178,7 @@ func (s *AccountTokenGuardService) probe(ctx context.Context, cfg AccountTokenGu
 			return localFailure("upstream_key_admission_unavailable")
 		}
 		fingerprints := append(config.UpstreamCredentialFingerprints(req), config.UpstreamKeyFingerprint(token))
-		admitted, release, admissionErr := s.keyAuthority.AcquireUpstreamKeySlots(probeCtx, fingerprints)
+		admitted, release, admissionErr := acquireVerifiedUpstreamKeySlots(probeCtx, s.keyAuthority, fingerprints)
 		if admissionErr != nil || admitted == nil {
 			if release != nil {
 				release()

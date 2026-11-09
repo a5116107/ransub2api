@@ -86,6 +86,33 @@ func TestAccountTokenGuardProbeSharedKeyAdmission(t *testing.T) {
 	}
 }
 
+func TestAccountTokenGuardUnknownAuthorizationFailsClosed(t *testing.T) {
+	var calls, admissions atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"status":"active"}`)
+	}))
+	t.Cleanup(server.Close)
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "body-fixture"}}
+	cfg := defaultAccountTokenGuardConfig()
+	cfg.ProbeEndpoint = server.URL
+	cfg.ProbeHeaders = map[string]string{"Authorization": "Custom opaque-fixture"}
+	authority := guardKeyAuthorityFixture{acquire: func(ctx context.Context, _ []string) (context.Context, func(), error) {
+		admissions.Add(1)
+		return ctx, nil, nil
+	}}
+	svc := &AccountTokenGuardService{httpClient: server.Client(), keyAuthority: authority, keyPolicyRequired: true}
+	result := svc.probe(t.Context(), cfg, account)
+	if result.State != AccountTokenGuardProbeTransient || result.Diagnostic.Code != "upstream_key_admission_unavailable" || calls.Load() != 0 || admissions.Load() != 0 {
+		t.Fatalf("state=%q code=%q calls=%d admissions=%d", result.State, result.Diagnostic.Code, calls.Load(), admissions.Load())
+	}
+	svc.keyPolicyRequired = false
+	result = svc.probe(t.Context(), cfg, account)
+	if result.State != AccountTokenGuardProbeOK || calls.Load() != 1 || admissions.Load() != 0 {
+		t.Fatalf("disabled policy: state=%q calls=%d admissions=%d", result.State, calls.Load(), admissions.Load())
+	}
+}
+
 func TestAccountTokenGuardProbeSharedKeyLeaseLoss(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
