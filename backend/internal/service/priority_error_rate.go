@@ -265,6 +265,11 @@ func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy s
 	if err := controlledSubmission(req.Context(), "bps"); err != nil {
 		return nil, &OpenAITurnAdmissionError{Reason: "controlled_submission_unavailable", cause: err}
 	}
+	if tracker, _ := req.Context().Value(availabilityReadFaultTrackerKey{}).(*availabilityReadFaultTracker); tracker != nil {
+		observed := &availabilityReadFault{}
+		tracker.current.Store(observed)
+		req = req.WithContext(context.WithValue(req.Context(), availabilityReadFaultKey{}, observed))
+	}
 	// Every BPS physical send, including repair and explicit retry attempts,
 	// uses the same availability observer after local admission has completed.
 	req, observeTransport := s.rateLimitService.beginAvailabilityTransport(req, account)

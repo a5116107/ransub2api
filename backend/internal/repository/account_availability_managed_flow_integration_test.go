@@ -12,17 +12,20 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -112,6 +115,128 @@ func TestAvailabilityManagedScheduledWorkerRotatesRealGrants(t *testing.T) {
 }
 func (u *managedAvailabilityLoopback) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxy, id, concurrency)
+}
+
+func TestAvailabilityManagedBPSIncompleteKeepsHealthyGrantWithPostgres(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	f := newConnectionHTTPFixture(t)
+	ctx := t.Context()
+	seed := func(label, token string) *service.OpenAIAuthConnection {
+		t.Helper()
+		connection := &service.OpenAIAuthConnection{ID: uuid.NewString(), AccountID: f.accountID, Kind: "bps", Label: label, Status: "active", RefreshState: "idle", Revision: 1,
+			ClientID: openai.ExcelClientID, Subject: label, Scopes: []string{}, Capabilities: []string{"responses"}}
+		raw, err := json.Marshal(map[string]any{"_connection_id": connection.ID, "_account_id": strconv.FormatInt(connection.AccountID, 10), "_connection_kind": connection.Kind,
+			"_connection_subject": connection.Subject, "client_id": connection.ClientID, "access_token": token, "chatgpt_account_id": "synthetic-workspace", "expires_at": strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)})
+		require.NoError(t, err)
+		connection.CredentialsCiphertext, err = f.encryptor.Encrypt(string(raw))
+		require.NoError(t, err)
+		require.NoError(t, f.repo.CreateAuthConnection(ctx, connection))
+		return connection
+	}
+	first := seed("first", "synthetic-first")
+	second := seed("second", "synthetic-second")
+	selectConnection := func(connection *service.OpenAIAuthConnection) {
+		t.Helper()
+		connectionResponse(t, f.request(http.MethodPatch, "/"+connection.ID, fmt.Sprintf(`{"action":"select","revision":%d}`, connection.Revision)))
+	}
+	selectConnection(first)
+
+	var sends atomic.Int32
+	var failFirst, badRequest atomic.Bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		if r.URL.Path != "/basispoints/api/responses" || (r.Header.Get("Authorization") != "Bearer synthetic-first" && r.Header.Get("Authorization") != "Bearer synthetic-second") {
+			badRequest.Store(true)
+			http.Error(w, "unexpected fixture request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n"))
+		if !failFirst.Load() || r.Header.Get("Authorization") != "Bearer synthetic-first" {
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"))
+		}
+	}))
+	t.Cleanup(server.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	upstream := &managedAvailabilityLoopback{client: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+	cfg := &config.Config{}
+	cfg.Default.RateMultiplier = 1
+	plans := repository.NewScheduledTestPlanRepository(f.db)
+	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), limiter, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
+	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+	t.Cleanup(gateway.CloseOpenAIWSPool)
+	t.Cleanup(func() { require.NoError(t, gateway.CloseExcelBPSImages()) })
+	tester := service.NewAccountTestService(f.accounts, nil, nil, nil, nil, upstream, cfg, nil)
+	tester.SetOpenAIGatewayService(gateway)
+	probeCfg := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1, Availability: &service.AvailabilityPolicy{ValidForSeconds: 120}}
+	next := time.Now().UTC().Add(-time.Minute)
+	plan, err := plans.Create(ctx, &service.ScheduledTestPlan{AccountID: f.accountID, ModelID: "gpt-5.4", CronExpression: "0 * * * *", Enabled: true, MaxResults: 10, NextRunAt: &next, PelicanConfig: probeCfg})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plans.Delete(context.Background(), plan.ID)) })
+	probeAndPublish := func() {
+		t.Helper()
+		var err error
+		plan, err = plans.GetByID(ctx, plan.ID)
+		require.NoError(t, err)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		until := now.Add(time.Minute)
+		plan.TriggerSource = "upstream_5xx"
+		claimed, err := plans.ClaimPelican(ctx, plan, now, until, *plan.NextRunAt)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		result, err := tester.RunPelicanBackground(ctx, f.accountID, plan.ModelID, probeCfg)
+		require.NoError(t, err)
+		require.Equal(t, "success", result.Status, result.ErrorMessage)
+		probe := result.PelicanConfig.AvailabilityResult
+		require.Equal(t, "pass", probe.Status)
+		require.NotNil(t, probe.Scope)
+		require.NotEmpty(t, probe.Scope.ConnectionScope)
+		require.Eventually(t, func() bool {
+			var dbNow time.Time
+			return f.db.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&dbNow) == nil && !dbNow.Before(probe.FinishedAt)
+		}, 2*time.Second, 10*time.Millisecond)
+		action, err := plans.ApplyAvailabilityOutcomes(ctx, plan, until, []service.AvailabilityModelOutcome{{ModelID: plan.ModelID, Probe: probe}})
+		require.NoError(t, err)
+		require.Equal(t, "observed", action)
+		require.NoError(t, plans.FinishPelican(ctx, plan.ID, until, time.Now()))
+	}
+	forward := func() error {
+		t.Helper()
+		account, err := f.accounts.GetByID(ctx, f.accountID)
+		require.NoError(t, err)
+		body := `{"model":"gpt-5.4","input":"fixture","stream":true,"reasoning":{"effort":"high"}}`
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		_, err = gateway.Forward(ctx, c, account, []byte(body))
+		return err
+	}
+
+	probeAndPublish()
+	selectConnection(second)
+	probeAndPublish()
+	require.NoError(t, forward(), "the peer must have its own admitted evidence")
+	selectConnection(first)
+	failFirst.Store(true)
+	before := sends.Load()
+	require.Error(t, forward(), "the first connection's incomplete real response must fail")
+	require.Equal(t, before+1, sends.Load())
+	selectConnection(second)
+	require.NoError(t, forward(), "the healthy peer must retain its own persisted pass")
+	selectConnection(first)
+	before = sends.Load()
+	require.Error(t, forward(), "the failed connection must be stopped before another send")
+	require.Equal(t, before, sends.Load())
+	failFirst.Store(false)
+	probeAndPublish()
+	require.NoError(t, forward(), "a fresh probe must restore the failed connection")
+	require.False(t, badRequest.Load())
 }
 
 func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {

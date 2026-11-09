@@ -20,6 +20,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue/queuetest"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -235,6 +236,244 @@ func TestAvailabilityBPSManagedDirectRetryKeepsGrantScope(t *testing.T) {
 			require.Len(t, repo.accounts, 1, "each physical send must retain the confirmed grant identity")
 			require.Equal(t, connection.ID, repo.accounts[0].AuthConnectionID)
 			require.Zero(t, repo.availabilityCalls+repo.calls, "no duplicate account-wide observation")
+		})
+	}
+}
+
+func TestAvailabilityBPSIncompleteStreamDoesNotFabricateUpstream5xx(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	for _, scenario := range []string{"missing_terminal", "broken_body", "complete", "probe", "canceled", "semantic_503"} {
+		t.Run(scenario, func(t *testing.T) {
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if scenario == "probe" {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+				if scenario == "canceled" {
+					cancel()
+				}
+				partial := `data: {"type":"response.created","response":{"id":"fixture","status":"in_progress"}}` + "\n\n"
+				var body io.Reader = strings.NewReader(partial)
+				switch scenario {
+				case "broken_body":
+					body = io.MultiReader(body, iotest.ErrReader(io.ErrUnexpectedEOF))
+				case "complete":
+					body = strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+						"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"fixture\",\"status\":\"completed\",\"output\":[]}}\n\n")
+				case "semantic_503":
+					body = strings.NewReader("data: {\"type\":\"response.failed\",\"response\":{\"id\":\"fixture\",\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"server_error\",\"message\":\"fixture upstream failure\"}}}\n\n")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Request: req, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(body)}, nil
+			}}
+			svc := openAIClientToolsTestService(nil)
+			svc.httpUpstream, svc.rateLimitService = upstream, limiter
+			t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
+			body := []byte(`{"model":"gpt-6-astra","stream":true,"input":"fixture"}`)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+			_, err := svc.Forward(ctx, c, excelAccount(), body)
+			switch scenario {
+			case "complete":
+				require.NoError(t, err)
+				require.Zero(t, repo.availabilityCalls)
+			case "probe", "canceled":
+				require.Error(t, err)
+				require.Zero(t, repo.availabilityCalls)
+			case "semantic_503":
+				require.Equal(t, 1, repo.calls, "an actual structured upstream error retains the original 5xx classification")
+			default:
+				require.Error(t, err)
+				require.Equal(t, 1, repo.availabilityCalls, "an incomplete stream must invalidate availability once")
+			}
+			if scenario != "semantic_503" {
+				require.Zero(t, repo.calls, "a local protocol-incomplete classification is not an upstream HTTP 5xx")
+			}
+		})
+	}
+}
+
+func TestAvailabilityBPSManagedIncompleteStreamUsesWireScope(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	for _, scenario := range []string{"confirmed", "changed_authorization", "missing_request", "broken_body", "empty_body"} {
+		t.Run(scenario, func(t *testing.T) {
+			reauth, connections := connectionTypeService(AccountTypeOAuth)
+			connections.managed = true
+			connection := &OpenAIAuthConnection{ID: "c910c45b-79a0-4367-a1dc-60e12210e199", AccountID: 42, Kind: "bps", Status: "active", Revision: 1, Preferred: true, Capabilities: []string{"responses"}}
+			require.NoError(t, reauth.encryptConnectionCredentials(connection, map[string]any{"access_token": "fixture-token", "client_id": openai.ExcelClientID, "chatgpt_account_id": "fixture-account", "expires_at": fmt.Sprint(time.Now().Add(time.Hour).Unix())}))
+			connections.rows = []*OpenAIAuthConnection{connection}
+			parent, err := reauth.accounts.GetAccount(t.Context(), 42)
+			require.NoError(t, err)
+			parent.Extra = map[string]any{}
+			repo := &managedFaultAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc := openAIClientToolsTestService(nil)
+			svc.excelOAuthReauth, svc.rateLimitService = reauth, limiter
+			sends := 0
+			svc.httpUpstream = &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+				sends++
+				actual := req.Clone(req.Context())
+				switch scenario {
+				case "changed_authorization":
+					actual.Header.Set("Authorization", "Bearer other-fixture")
+				case "missing_request":
+					actual = nil
+				}
+				var body io.Reader = strings.NewReader("data: {\"type\":\"response.created\",\"response\":{\"id\":\"fixture\",\"status\":\"in_progress\"}}\n\n")
+				if scenario == "broken_body" {
+					body = io.MultiReader(body, iotest.ErrReader(io.ErrUnexpectedEOF))
+				}
+				status, responseBody := http.StatusOK, io.NopCloser(body)
+				if scenario == "empty_body" {
+					status, responseBody = http.StatusNoContent, http.NoBody
+				}
+				return &http.Response{StatusCode: status, Request: actual, Header: make(http.Header), Body: responseBody}, nil
+			}}
+			t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
+			body := []byte(`{"model":"gpt-5.6-sol","stream":true,"input":"fixture"}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+			selected, err := svc.prepareAuthConnection(t.Context(), c, parent, nil, "gpt-5.6-sol", "responses")
+			require.NoError(t, err)
+			_, err = svc.forwardExcelBPS(t.Context(), c, selected, body, time.Now())
+			require.Error(t, err)
+			require.Equal(t, 1, sends, "the response path must be reached: %v, %s", err, rec.Body.String())
+			if scenario == "confirmed" || scenario == "broken_body" || scenario == "empty_body" {
+				require.Len(t, repo.accounts, 1, "confirmed incomplete responses must only fence their own grant")
+				require.Equal(t, connection.ID, repo.accounts[0].AuthConnectionID)
+				require.Zero(t, repo.availabilityCalls)
+			} else {
+				require.Empty(t, repo.accounts, "unconfirmed provenance must not fence a specific grant")
+				require.Equal(t, 1, repo.availabilityCalls)
+			}
+			require.Zero(t, repo.calls)
+		})
+	}
+}
+
+func TestAvailabilityBPSReadFaultTracksCurrentAttempt(t *testing.T) {
+	repo := &immediateQualityAccountRepo{}
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	tracker := &availabilityReadFaultTracker{}
+	ctx := context.WithValue(t.Context(), availabilityReadFaultTrackerKey{}, tracker)
+	upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Request: req, Header: make(http.Header), Body: io.NopCloser(iotest.ErrReader(io.ErrUnexpectedEOF))}, nil
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream, rateLimitService: limiter}
+	send := func() *http.Response {
+		req, err := newExcelBPSRequest(ctx, []byte(`{"model":"gpt-5.6-sol"}`), "synthetic-token", "fixture-workspace")
+		require.NoError(t, err)
+		response, err := svc.doPriorityObservedHTTP(req, "", excelAccount())
+		require.NoError(t, err)
+		return response
+	}
+	first, second := send(), send()
+	_, err := io.ReadAll(first.Body)
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	_, observed := tracker.incompleteContext(ctx)
+	require.False(t, observed, "a late failure from the previous response must not hide an incomplete current response")
+	_, err = io.ReadAll(second.Body)
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	_, observed = tracker.incompleteContext(ctx)
+	require.True(t, observed, "a read failure on the current response is already observed")
+	require.Equal(t, 2, repo.availabilityCalls)
+	require.NoError(t, first.Body.Close())
+	require.NoError(t, second.Body.Close())
+
+	t.Run("managed_source_is_per_attempt", func(t *testing.T) {
+		reauth, connections := connectionTypeService(AccountTypeOAuth)
+		connections.managed = true
+		connection := &OpenAIAuthConnection{ID: "c910c45b-79a0-4367-a1dc-60e12210e199", AccountID: 42, Kind: "bps", Status: "active", Revision: 1, Preferred: true, Capabilities: []string{"responses"}}
+		require.NoError(t, reauth.encryptConnectionCredentials(connection, map[string]any{"access_token": "fixture-token", "client_id": openai.ExcelClientID, "chatgpt_account_id": "fixture-account", "expires_at": fmt.Sprint(time.Now().Add(time.Hour).Unix())}))
+		connections.rows = []*OpenAIAuthConnection{connection}
+		parent, err := reauth.accounts.GetAccount(t.Context(), 42)
+		require.NoError(t, err)
+		parent.Extra = map[string]any{}
+		repo := &managedFaultAccountRepo{}
+		limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		tracker := &availabilityReadFaultTracker{}
+		ctx := context.WithValue(t.Context(), availabilityReadFaultTrackerKey{}, tracker)
+		sends := 0
+		upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+			sends++
+			actual := req.Clone(req.Context())
+			if sends == 2 {
+				actual.Header.Set("Authorization", "Bearer other-fixture")
+			}
+			return &http.Response{StatusCode: http.StatusOK, Request: actual, Header: make(http.Header), Body: io.NopCloser(iotest.ErrReader(io.ErrUnexpectedEOF))}, nil
+		}}
+		svc := &OpenAIGatewayService{httpUpstream: upstream, rateLimitService: limiter, excelOAuthReauth: reauth}
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		selected, err := svc.prepareAuthConnection(ctx, c, parent, nil, "gpt-5.6-sol", "responses")
+		require.NoError(t, err)
+		send := func() *http.Response {
+			req, requestErr := newExcelBPSRequest(ctx, []byte(`{"model":"gpt-5.6-sol"}`), "fixture-token", "fixture-account")
+			require.NoError(t, requestErr)
+			response, sendErr := svc.doPriorityObservedHTTP(req, "", selected)
+			require.NoError(t, sendErr)
+			return response
+		}
+		first, second := send(), send()
+		_, err = io.ReadAll(first.Body)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		faultCtx, observed := tracker.incompleteContext(ctx)
+		require.False(t, observed)
+		require.False(t, availabilityFaultConnection(faultCtx, selected), "the first response must not confer scope on an unconfirmed second response")
+		third := send()
+		_, err = io.ReadAll(second.Body)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		faultCtx, observed = tracker.incompleteContext(ctx)
+		require.False(t, observed)
+		require.True(t, availabilityFaultConnection(faultCtx, selected), "the second response must not erase the confirmed third response")
+		_, err = io.ReadAll(third.Body)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		_, observed = tracker.incompleteContext(ctx)
+		require.True(t, observed)
+		require.Len(t, repo.accounts, 2)
+		require.Equal(t, 1, repo.availabilityCalls)
+		for _, response := range []*http.Response{first, second, third} {
+			require.NoError(t, response.Body.Close())
+		}
+	})
+}
+
+func TestAvailabilityBPSIncompleteStreamRealHTTP(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	for _, broken := range []bool{false, true} {
+		t.Run(fmt.Sprint(broken), func(t *testing.T) {
+			var sends atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				sends.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				if broken {
+					w.Header().Set("Content-Length", "9999")
+				}
+				if _, err := io.WriteString(w, `data: {"type":"response.created","response":{"id":"fixture","status":"in_progress"}}`+"\n\n"); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			target, err := url.Parse(server.URL)
+			require.NoError(t, err)
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc := openAIClientToolsTestService(nil)
+			svc.httpUpstream, svc.rateLimitService = &accountTestHTTPUpstream{target: target}, limiter
+			t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
+			body := []byte(`{"model":"gpt-6-astra","stream":true,"input":"fixture"}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+			_, err = svc.Forward(t.Context(), c, excelAccount(), body)
+			require.Error(t, err)
+			require.EqualValues(t, 1, sends.Load())
+			require.Contains(t, rec.Body.String(), "basispoints_stream_incomplete")
+			require.Equal(t, 1, repo.availabilityCalls, "both a clean EOF without terminal and a truncated body invalidate once")
+			require.Zero(t, repo.calls, "a downstream 502 must not create an upstream 5xx quality event")
 		})
 	}
 }

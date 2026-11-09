@@ -38,6 +38,27 @@ type managedAvailabilityFaultRepository interface {
 }
 
 type availabilityFaultSourceKey struct{}
+type availabilityReadFaultKey struct{}
+type availabilityReadFaultTrackerKey struct{}
+
+// Each physical send has its own marker and confirmed response scope: a late
+// read from an earlier response must not affect a later repair attempt.
+type availabilityReadFault struct {
+	observed atomic.Bool
+	source   atomic.Pointer[availabilityFaultSource]
+}
+
+type availabilityReadFaultTracker struct {
+	current atomic.Pointer[availabilityReadFault]
+}
+
+func (t *availabilityReadFaultTracker) incompleteContext(ctx context.Context) (context.Context, bool) {
+	current := t.current.Load()
+	if current == nil {
+		return availabilityFaultWithoutSource(ctx), false
+	}
+	return context.WithValue(ctx, availabilityFaultSourceKey{}, current.source.Load()), current.observed.Load()
+}
 
 type availabilityFaultSource struct {
 	accountID   int64
@@ -288,8 +309,16 @@ func (s *RateLimitService) observeQualityResponse(ctx context.Context, account *
 	}
 	ctx = availabilityFaultResponseContext(ctx, response)
 	s.observeQualityStatus(ctx, account, response.StatusCode)
-	if response.StatusCode >= 200 && response.StatusCode < 300 && response.Body != nil && response.Body != http.NoBody && s.qualityTrigger != nil && s.qualityTrigger.availability != nil && account != nil && ctx.Value(qualityProbeContextKey{}) == nil {
-		response.Body = &availabilityFaultBody{ReadCloser: response.Body, ctx: ctx, trigger: s.qualityTrigger, account: *availabilityFaultIdentity(account)}
+	if response.StatusCode >= 200 && response.StatusCode < 300 && s.qualityTrigger != nil && s.qualityTrigger.availability != nil && account != nil && ctx.Value(qualityProbeContextKey{}) == nil {
+		observed, _ := ctx.Value(availabilityReadFaultKey{}).(*availabilityReadFault)
+		if observed != nil {
+			if source, _ := ctx.Value(availabilityFaultSourceKey{}).(*availabilityFaultSource); source != nil && source.confirmed {
+				observed.source.Store(source)
+			}
+		}
+		if response.Body != nil && response.Body != http.NoBody {
+			response.Body = &availabilityFaultBody{ReadCloser: response.Body, ctx: ctx, trigger: s.qualityTrigger, account: *availabilityFaultIdentity(account), observed: observed}
+		}
 	}
 }
 
@@ -298,17 +327,23 @@ func (s *RateLimitService) observeQualityResponse(ctx context.Context, account *
 // cleanup must not turn a completed request into an upstream fault.
 type availabilityFaultBody struct {
 	io.ReadCloser
-	ctx     context.Context
-	trigger *quality5xxTrigger
-	account Account
-	closing atomic.Bool
-	once    sync.Once
+	ctx      context.Context
+	trigger  *quality5xxTrigger
+	account  Account
+	observed *availabilityReadFault
+	closing  atomic.Bool
+	once     sync.Once
 }
 
 func (b *availabilityFaultBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrUpstreamKeyCapacity) && !errors.Is(err, ErrUpstreamKeyPolicy) && !IsOpenAITurnAdmissionError(err) && b.ctx.Err() == nil && !b.closing.Load() {
-		b.once.Do(func() { b.trigger.invalidateAvailability(b.ctx, &b.account, 0) })
+		b.once.Do(func() {
+			if b.observed != nil {
+				b.observed.observed.Store(true)
+			}
+			b.trigger.invalidateAvailability(b.ctx, &b.account, 0)
+		})
 	}
 	return n, err
 }

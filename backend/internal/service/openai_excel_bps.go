@@ -587,6 +587,8 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		}
 	}
 	requestCtx := WithHTTPUpstreamRedirectsDisabled(WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileExcelBPS))
+	readFaults := &availabilityReadFaultTracker{}
+	requestCtx = context.WithValue(requestCtx, availabilityReadFaultTrackerKey{}, readFaults)
 
 	if imagePolicy.split > 0 {
 		logger.LegacyPrintf("service.openai_excel_bps", "image policy auto compact: account_id=%d history_images=%d new_images=%d limit=%d", account.ID, basispoints.CountInlineImages(imagePolicy.history.Input[:imagePolicy.split]), basispoints.CountInlineImages(imagePolicy.history.Input[imagePolicy.split:]), imageSettings.Limits.MaxImages)
@@ -1067,7 +1069,13 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		}
 		recordExcelBPSTransportFailure(ctx, c, account, sessionScope, proxyURL, err, "stream", c.GetInt("excel_bps_upstream_attempt"), false)
 		MarkOpsStreamError(c, "basispoints_stream_incomplete", "Excel BPS stream ended before completion", http.StatusBadGateway)
-		s.rateLimitService.observeQualityStatus(ctx, account, http.StatusBadGateway)
+		// A body read failure was already observed by the HTTP wrapper. A clean
+		// EOF or a nonterminal bridge failure needs its own availability observation,
+		// but neither case is an observed upstream HTTP 5xx.
+		faultCtx, observed := readFaults.incompleteContext(ctx)
+		if !observed {
+			s.rateLimitService.observeAvailabilityIncomplete(faultCtx, account, false)
+		}
 		MarkResponseCommitted(c)
 		if stream {
 			_, _ = c.Writer.WriteString("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"basispoints_stream_incomplete\",\"message\":\"Upstream stream ended before completion\"}}}\n\n")
