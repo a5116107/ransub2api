@@ -1301,3 +1301,9 @@
 - 在原计划锁与单调事件版本内，删除故障连接证据，并仅将同规则、同父线路、旧事件版本的其他连接状态事务性推进到新版本；因此旧在途探测失效、其他连接的有效期不被延长。5xx质量拥有者和触发器沿原账号规则；连接失效是 unknown，必须由原检测重新确认。未新增迁移，未承诺逐连接主动探测或覆盖所有独立传输。
 - 最终 `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^(TestAvailabilityManaged|TestAvailabilityReadPostgres|TestQuality5xxPostgres)' -count=1 -timeout=12m` 退出0，`12.850s`；双连接真实408、503、响应体截断、恢复及轮换，双模型、并发双故障、旧轮次、事务中途失败回滚、旧父线路及质量拥有者均有夹具。Service `go test -race -p 1 -tags unit ./internal/service -run '^(TestAvailability|TestQuality5xx|TestOpenAIConnectionRevokedDuringRPMIsNotSent)' -count=1 -timeout=12m` 退出0，`9.237s`；覆盖401/408/429/503、响应体、重写认证/地址、重定向、合成请求、取消与事务失败回退。
 - `go vet -p 1 -tags 'unit integration' ./internal/repository ./internal/service` 退出0；默认标签两包编译退出0，service `1.519s`、repository `1.508s`；完整包原规则 `unit,integration` 增量 lint 最终输出 `0 issues.`。未执行 CI、推送、部署或生产迁移；生产混合版本及回滚仍须执行既定排空条件。
+
+## 2026-11-09：D3 BPS 修复与重试物理发送观察
+
+- BPS 主发送在外层创建 availability 观察器，密文恢复和工具修复/纠错直接进入同一内部发送函数，却没有无响应传输故障观察；返回状态和响应体依赖外层分散处理。旧源码直调用真实发送入口的反例在408、503、截断响应体和有网络活动的传输错误四项均实际失败，均未记录故障；本地准入拒绝保持零发送、零故障。
+- 将唯一传输及状态观察器移入 `doPriorityObservedHTTP` 的物理发送边界，删除主发送与三个重试调用处的重复观察。保留原受控提交、重放/代理租约边界和请求体跟踪；已确认托管连接及无来源情况沿现有连接/账号级故障语义，不额外创建监测器。
+- `go test -race -p 1 -tags unit ./internal/service -run '^(TestAvailabilityBPS|TestExcelBPS.*|TestAvailabilityManagedBusinessFaultRequiresConfirmedWireSource)' -count=1 -timeout=12m` 退出0，`7.711s`；覆盖主发送一次观察、直接重试的408/503/体读取/传输、本地拒绝、检测不递归、托管连接归属，以及原BPS路由与发送前重试。Handler 关联 race 退出0（`1.172s`）；service/handler 的 unit `go vet` 退出0，默认标签两包编译退出0（`1.387s` / `1.508s`）；原规则 unit 增量 lint 修正测试 QF1003 后输出 `0 issues.`。本机夹具不证明线上故障或供应商恢复。

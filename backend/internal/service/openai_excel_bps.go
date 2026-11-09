@@ -729,7 +729,6 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			if err == nil {
 				s.guardExcelBPSProgress(requestCtx, resp)
 			}
-			s.rateLimitService.observeQualityResponse(retryReq.Context(), account, resp, err)
 			SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(sent).Milliseconds())
 			if err != nil {
 				if isExcelBPSClientCancellation(c, err) {
@@ -844,7 +843,6 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		if err == nil {
 			s.guardExcelBPSProgress(repairCtx, repairResp)
 		}
-		s.rateLimitService.observeQualityResponse(repairReq.Context(), account, repairResp, err)
 		if err != nil {
 			if repairCtx.Err() != nil {
 				return nil, repairCtx.Err()
@@ -894,7 +892,6 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		if err == nil {
 			s.guardExcelBPSProgress(repairCtx, repaired)
 		}
-		s.rateLimitService.observeQualityResponse(retry.Context(), account, repaired, err)
 		if err != nil {
 			return nil, fmt.Errorf("excel BPS tool correction transport failed")
 		}

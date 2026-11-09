@@ -112,6 +112,133 @@ func TestAvailabilityTransportFailureAtFinalSend(t *testing.T) {
 	}
 }
 
+func TestAvailabilityBPSDirectRetryObservesFinalSend(t *testing.T) {
+	for _, scenario := range []string{"408", "503", "broken_body", "transport", "local_rejection", "probe"} {
+		t.Run(scenario, func(t *testing.T) {
+			repo := &immediateQualityAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			account := excelAccount()
+			calls := 0
+			upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+				calls++
+				if scenario == "transport" {
+					if trace := httptrace.ContextClientTrace(req.Context()); trace != nil && trace.ConnectStart != nil {
+						trace.ConnectStart("tcp", "fixture")
+					}
+					return nil, io.ErrUnexpectedEOF
+				}
+				response := &http.Response{StatusCode: http.StatusRequestTimeout, Request: req, Header: make(http.Header), Body: http.NoBody}
+				switch scenario {
+				case "503":
+					response.StatusCode = http.StatusServiceUnavailable
+				case "broken_body":
+					response.StatusCode = http.StatusOK
+					response.Body = io.NopCloser(iotest.ErrReader(io.ErrUnexpectedEOF))
+				}
+				return response, nil
+			}}
+			svc := &OpenAIGatewayService{httpUpstream: upstream, rateLimitService: limiter}
+			if scenario == "local_rejection" {
+				svc.availabilityReader = &availabilityAdmissionRepo{readErr: errors.New("fixture state unavailable")}
+			}
+			ctx := t.Context()
+			if scenario == "probe" {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			req, err := newExcelBPSRequest(ctx, []byte(`{"model":"gpt-5.6-sol"}`), "synthetic-token", "fixture-workspace")
+			require.NoError(t, err)
+			response, err := svc.doPriorityObservedHTTP(req, "", account)
+			if scenario == "transport" || scenario == "local_rejection" {
+				require.Error(t, err)
+				require.Nil(t, response)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, response)
+				if scenario == "broken_body" {
+					_, err = io.ReadAll(response.Body)
+					require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+				}
+				require.NoError(t, response.Body.Close())
+			}
+			if scenario == "local_rejection" {
+				require.Zero(t, calls)
+				require.Zero(t, repo.availabilityCalls+repo.calls, "local rejection is not an upstream fault")
+			} else {
+				require.Equal(t, 1, calls)
+				switch scenario {
+				case "probe":
+					require.Zero(t, repo.availabilityCalls+repo.calls, "the probe cannot recursively schedule itself")
+				case "503":
+					require.Equal(t, 1, repo.calls)
+					require.Zero(t, repo.availabilityCalls)
+				default:
+					require.Equal(t, 1, repo.availabilityCalls, "a direct physical retry must update availability exactly once")
+					require.Zero(t, repo.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestAvailabilityBPSMainSendReportsFaultOnlyOnce(t *testing.T) {
+	repo := &immediateQualityAccountRepo{}
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	account := excelAccount()
+	upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Request: req, Header: make(http.Header), Body: http.NoBody}, nil
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream, rateLimitService: limiter}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	response, lease, _, err := svc.doExcelBPSRequest(t.Context(), c, account, "fixture", []byte(`{"model":"gpt-5.6-sol"}`), "synthetic-token", "fixture-workspace", nil)
+	require.NoError(t, err)
+	require.Nil(t, lease)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, 1, repo.calls, "moving the observer must not duplicate the main-send fault")
+	require.Zero(t, repo.availabilityCalls)
+}
+
+func TestAvailabilityBPSManagedDirectRetryKeepsGrantScope(t *testing.T) {
+	for _, path := range []string{"main", "repair"} {
+		t.Run(path, func(t *testing.T) {
+			reauth, connections := connectionTypeService(AccountTypeOAuth)
+			connections.managed = true
+			connection := &OpenAIAuthConnection{ID: "c910c45b-79a0-4367-a1dc-60e12210e199", AccountID: 42, Kind: "bps", Status: "active", Revision: 1, Preferred: true, Capabilities: []string{"responses"}}
+			require.NoError(t, reauth.encryptConnectionCredentials(connection, map[string]any{"access_token": "fixture-token", "chatgpt_account_id": "fixture-account", "expires_at": fmt.Sprint(time.Now().Add(time.Hour).Unix())}))
+			connections.rows = []*OpenAIAuthConnection{connection}
+			parent, err := reauth.accounts.GetAccount(t.Context(), 42)
+			require.NoError(t, err)
+			parent.Extra = map[string]any{}
+			repo := &managedFaultAccountRepo{}
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusRequestTimeout, Request: req, Header: make(http.Header), Body: http.NoBody}, nil
+			}}
+			svc := &OpenAIGatewayService{excelOAuthReauth: reauth, rateLimitService: limiter, httpUpstream: upstream}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			selected, err := svc.prepareAuthConnection(t.Context(), c, parent, nil, "gpt-5.6-sol", "responses")
+			require.NoError(t, err)
+			var response *http.Response
+			if path == "main" {
+				var lease excelBPSLease
+				response, lease, _, err = svc.doExcelBPSRequest(t.Context(), c, selected, "fixture", []byte(`{"model":"gpt-5.6-sol"}`), "fixture-token", "fixture-account", nil)
+				require.Nil(t, lease)
+			} else {
+				var request *http.Request
+				request, err = newExcelBPSRequest(t.Context(), []byte(`{"model":"gpt-5.6-sol"}`), "fixture-token", "fixture-account")
+				require.NoError(t, err)
+				response, err = svc.doPriorityObservedHTTP(request, "", selected)
+			}
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Len(t, repo.accounts, 1, "each physical send must retain the confirmed grant identity")
+			require.Equal(t, connection.ID, repo.accounts[0].AuthConnectionID)
+			require.Zero(t, repo.availabilityCalls+repo.calls, "no duplicate account-wide observation")
+		})
+	}
+}
+
 func TestAvailabilityTransportEvidenceBoundary(t *testing.T) {
 	for _, outcome := range []string{"unobserved", "pool_wait", "dns", "connect", "tls", "reused", "write", "headers", "local_capacity", "local_policy", "local_admission", "canceled_error", "canceled_context", "expired_context", "probe", "response_and_error", "success"} {
 		t.Run(outcome, func(t *testing.T) {
