@@ -152,6 +152,11 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 								c.Status(http.StatusUnauthorized)
 								return
 							}
+							groupID, groupErr := service.ParseAPIKeyRequestGroup(c.Request.Header)
+							if groupErr != nil || groupID != owner.GroupID || c.GetHeader("originator") != "origin-fixture" || c.Query("model") != "model-fixture" || service.IsCodexSubagentRequest(c, nil) {
+								c.Status(http.StatusForbidden)
+								return
+							}
 							task := c.Param("task")
 							switch tc.platform {
 							case service.PlatformOpenAI:
@@ -209,18 +214,22 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					created, err := forward(origin, t.Context(), c, tc.create, "", []byte(tc.body))
 					require.NoError(t, err)
 					syncDirectory()
-					queryOperation := func(credential string, operation service.GrokMediaEndpoint) (*httptest.ResponseRecorder, error) {
+					queryOperation := func(credential string, operation service.GrokMediaEndpoint, subagent bool) (*httptest.ResponseRecorder, error) {
 						recorder := httptest.NewRecorder()
 						c, _ := gin.CreateTestContext(recorder)
-						c.Request = httptest.NewRequest(http.MethodGet, "/fixture", nil)
+						c.Request = httptest.NewRequest(http.MethodGet, "/fixture?model=model-fixture", nil)
 						c.Request.Header.Set("Authorization", "Bearer "+credential)
+						c.Request.Header.Set("originator", "origin-fixture")
 						c.Request.Header.Set("Range", "bytes=0-12")
+						if subagent {
+							c.Request.Header.Set("X-Codex-Parent-Thread-Id", "parent-fixture")
+						}
 						handled, err := services[1-origin].ForwardRegionalVideoQuery(c, operation, created.ResponseID, key, owner.UserID)
 						require.True(t, handled)
 						return recorder, err
 					}
 					query := func(credential string) (int, error) {
-						recorder, err := queryOperation(credential, tc.status)
+						recorder, err := queryOperation(credential, tc.status, false)
 						return recorder.Code, err
 					}
 					before := executions[origin].Load()
@@ -232,11 +241,15 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, http.StatusOK, status)
 					require.Equal(t, before+1, executions[origin].Load())
+					recorder, err := queryOperation("downstream-fixture", tc.status, true)
+					require.NoError(t, err)
+					require.Equal(t, http.StatusForbidden, recorder.Code, "origin policy must receive the subagent classification")
+					require.Equal(t, before+1, executions[origin].Load(), "a denied origin request must not reach the provider")
 					var received int
 					require.NoError(t, authorities[1-origin].database().QueryRowContext(t.Context(), `SELECT count(*) FROM regional_async_video_key_leases`).Scan(&received))
 					require.Zero(t, received, "forwarding never recreates a generation member at the receiving node")
 					if tc.platform == service.PlatformOpenAI {
-						recorder, err := queryOperation("downstream-fixture", service.SeedanceEndpointDelete)
+						recorder, err := queryOperation("downstream-fixture", service.SeedanceEndpointDelete, false)
 						require.NoError(t, err)
 						require.Equal(t, http.StatusNoContent, recorder.Code)
 						var active int
@@ -256,7 +269,7 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 						if tc.platform == service.PlatformMiniMax {
 							operation = service.MiniMaxH3EndpointContent
 						}
-						recorder, err := queryOperation("downstream-fixture", operation)
+						recorder, err := queryOperation("downstream-fixture", operation, false)
 						require.NoError(t, err)
 						if tc.platform == service.PlatformMiniMax {
 							require.Equal(t, http.StatusFound, recorder.Code)

@@ -105,6 +105,25 @@ func request(t *testing.T, h http.Handler, path string) *httptest.ResponseRecord
 	h.ServeHTTP(w, r)
 	return w
 }
+
+func TestServerlessVideoNamedResponsesRemainsLocal(t *testing.T) {
+	cache := cacheFor(t)
+	store := &memoryStore{}
+	_, node := registeredNode(t, cache, store, func(c *gin.Context) { c.String(http.StatusOK, "pod") })
+	manager := managerFor(t, "", cache, store)
+	require.NoError(t, manager.Save(t.Context(), routeConfig(node.URL)))
+	router := gin.New()
+	router.GET("/v1/videos/:request_id", func(c *gin.Context) {
+		manager.Route(c, 42, "203.0.113.4")
+	}, func(c *gin.Context) { c.String(http.StatusOK, "local-video") })
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, testRequest(http.MethodGet, "/v1/videos/responses", nil))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, "local-video", w.Body.String())
+	affinity := prefix + "affinity:" + manager.mac("key", "42")
+	require.Zero(t, cache.Exists(t.Context(), affinity).Val(), "a video lookup must not create a text Pod binding")
+	require.Equal(t, "pod", request(t, ingressRouter(manager, 43, "203.0.113.4"), "/v1/responses").Body.String(), "normal Responses routing must still use its Pod")
+}
 func TestServerlessRegionRoutesAuthenticatedPayloadAndPinsKey(t *testing.T) {
 	cache := cacheFor(t)
 	store := &memoryStore{}
@@ -292,8 +311,25 @@ func TestServerlessCountryAndEndpointValidation(t *testing.T) {
 	}
 	c.Regions[0].Country = "USA"
 	require.Error(t, Validate(c))
-	require.False(t, routePath(testRequest("POST", "/v1/images/generations", nil)))
-	require.False(t, routePath(testRequest("GET", "/api/v1/admin/settings", nil)))
+	for _, tc := range []struct {
+		method, path string
+		want         bool
+	}{
+		{http.MethodPost, "/responses", true},
+		{http.MethodGet, "/v1/responses", true},
+		{http.MethodPost, "/backend-api/codex/responses", true},
+		{http.MethodGet, "/backend-api/codex/responses", true},
+		{http.MethodPost, "/v1/messages", true},
+		{http.MethodPost, "/chat/completions", true},
+		{http.MethodPost, "/v1/chat/completions", true},
+		{http.MethodGet, "/v1/messages", false},
+		{http.MethodGet, "/v1/videos/:request_id", false},
+		{http.MethodGet, "/backend-api/codex/:call_id", false},
+		{http.MethodPost, "/v1/images/generations", false},
+		{http.MethodGet, "/api/v1/admin/settings", false},
+	} {
+		require.Equal(t, tc.want, routePath(tc.method, tc.path), "%s %s", tc.method, tc.path)
+	}
 }
 func TestServerlessStatsRecordHTTPErrorWithoutCredentials(t *testing.T) {
 	m := managerFor(t, "", cacheFor(t), &memoryStore{})

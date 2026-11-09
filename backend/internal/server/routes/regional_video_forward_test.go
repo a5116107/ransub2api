@@ -21,12 +21,15 @@ import (
 
 type regionalVideoRouteUpstream struct {
 	service.HTTPUpstream
-	mode  string
-	calls int
-	last  video.Query
+	mode     string
+	calls    int
+	last     video.Query
+	dispatch video.Dispatch
 }
 
-func (*regionalVideoRouteUpstream) SetAsyncVideoForwardHandler(video.Dispatch) {}
+func (u *regionalVideoRouteUpstream) SetAsyncVideoForwardHandler(dispatch video.Dispatch) {
+	u.dispatch = dispatch
+}
 
 func (u *regionalVideoRouteUpstream) ForwardAsyncVideoLookup(_ context.Context, query video.Query) (*http.Response, bool, error) {
 	u.calls++
@@ -134,4 +137,99 @@ func TestRegionalVideoQueryForwardingBeforeFundsGate(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestRegionalVideoFundsGateHonorsGroupPolicies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, route := range []struct{ method, path, platform string }{
+		{http.MethodGet, "/v1/videos/task", service.PlatformGrok},
+		{http.MethodGet, "/videos/generations/task/content", service.PlatformGrok},
+		{http.MethodGet, "/v1/contents/generations/tasks/task", service.PlatformOpenAI},
+		{http.MethodDelete, "/api/v3/contents/generations/tasks/task", service.PlatformOpenAI},
+	} {
+		for _, scenario := range []string{"allowed", "subagent", "parent", "metadata", "codex_only", "model_allowlist", "inconsistent_group"} {
+			t.Run(route.method+route.path+"/"+scenario, func(t *testing.T) {
+				cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalFundsFile: "fixture"}, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
+				upstream := &regionalVideoRouteUpstream{mode: "remote"}
+				svc := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Config: cfg, Upstream: upstream})
+				t.Cleanup(svc.StopAsyncVideoKeyReleaseRecovery)
+				t.Cleanup(svc.StopOpenAICodexTicketHarvester)
+				h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(svc, nil, nil, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
+				group := &service.Group{ID: 3, Platform: route.platform}
+				groupID := group.ID
+				path, header, value, want := route.path, "", "", http.StatusForbidden
+				switch scenario {
+				case "allowed":
+					group.BlockSubagents = true
+					want = http.StatusOK
+				case "subagent":
+					group.BlockSubagents, header, value = true, "X-OpenAI-Subagent", "worker"
+				case "parent":
+					group.BlockSubagents, header, value = true, "X-Codex-Parent-Thread-Id", "parent-fixture"
+				case "metadata":
+					group.BlockSubagents, header, value = true, "X-Codex-Turn-Metadata", `{"subagent_kind":"review"}`
+				case "codex_only":
+					group.CodexCLIOnly = true
+				case "model_allowlist":
+					group.ModelAllowlist = service.GroupModelAllowlist{Enabled: true, Models: []string{"allowed-fixture"}}
+					path += "?model=blocked-fixture"
+					want = http.StatusNotFound
+				case "inconsistent_group":
+					groupID++
+					want = http.StatusServiceUnavailable
+				}
+				router := gin.New()
+				RegisterGatewayRoutes(router, h, func(c *gin.Context) {
+					c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: 2, UserID: 1, GroupID: &groupID, Group: group})
+					c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: 1})
+					c.Next()
+				}, nil, nil, nil, nil, nil, cfg)
+				req := httptest.NewRequest(route.method, path, nil)
+				req.Header.Set("Authorization", "Bearer downstream-fixture")
+				if header != "" {
+					req.Header.Set(header, value)
+				}
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				require.Equal(t, want, w.Code, w.Body.String())
+				if want == http.StatusOK {
+					require.Equal(t, 1, upstream.calls)
+				} else {
+					require.Zero(t, upstream.calls, "disallowed requests must stop before origin lookup")
+				}
+			})
+		}
+	}
+}
+
+// Even a validated forwarded lookup cannot bypass the originating node's
+// coordinated funds gate: video completion may itself trigger a charge.
+func TestRegionalVideoOriginFundsGateRejectsUnmeteredLookup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalFundsFile: "fixture"}, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
+	upstream := &regionalVideoRouteUpstream{mode: "local"}
+	svc := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Config: cfg, Upstream: upstream})
+	t.Cleanup(svc.StopAsyncVideoKeyReleaseRecovery)
+	t.Cleanup(svc.StopOpenAICodexTicketHarvester)
+	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(svc, nil, nil, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
+	group := &service.Group{ID: 3, Platform: service.PlatformGrok}
+	router := gin.New()
+	RegisterGatewayRoutes(router, h, func(c *gin.Context) {
+		if c.GetHeader("Authorization") != "Bearer downstream-fixture" || c.GetHeader(service.APIKeyGroupHeader) != "3" {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: 2, UserID: 1, GroupID: &group.ID, Group: group})
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: 1})
+		c.Next()
+	}, nil, nil, nil, nil, nil, cfg)
+	svc.InstallMediaVideoForwarding(router)
+	require.NotNil(t, upstream.dispatch)
+	query := video.Query{PolicyVersion: video.ForwardPolicyVersion, Owner: video.Owner{UserID: 1, APIKeyID: 2, GroupID: 3, AccountID: 4, Provider: "grok", RouteFingerprint: [32]byte{1}},
+		TaskID: "task", Operation: "video_status", Credential: "downstream-fixture", ClientIP: "192.0.2.5"}
+	w := httptest.NewRecorder()
+	upstream.dispatch(w, httptest.NewRequest(http.MethodPost, "/private", nil), query)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Contains(t, w.Body.String(), "regional_cost_bound_unavailable")
+	require.Zero(t, upstream.calls, "the origin must not transfer the lookup or execute an unmetered request")
 }

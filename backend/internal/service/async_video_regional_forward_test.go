@@ -88,6 +88,10 @@ func TestAsyncVideoRegionalForwardDispatchUsesOriginalRouter(t *testing.T) {
 			router.Handle(tc.method, tc.path, func(c *gin.Context) {
 				calls++
 				require.Equal(t, "Bearer downstream-fixture", c.GetHeader("Authorization"))
+				require.Equal(t, "3", c.GetHeader(APIKeyGroupHeader), "the origin must revalidate the authenticated task group")
+				require.Equal(t, "codex_cli_rs", c.GetHeader("originator"))
+				require.Equal(t, "model-fixture", c.Query("model"))
+				require.True(t, IsCodexSubagentRequest(c, nil), "the origin's own subagent policy must see the original classification")
 				require.Equal(t, "192.0.2.5:0", c.Request.RemoteAddr)
 				require.Empty(t, c.GetHeader("Cookie"))
 				require.Empty(t, c.GetHeader("X-Forwarded-For"))
@@ -103,6 +107,12 @@ func TestAsyncVideoRegionalForwardDispatchUsesOriginalRouter(t *testing.T) {
 				handled, err = svc.ForwardRegionalVideoQuery(c, tc.endpoint, tc.task, &wrong, 1)
 				require.True(t, handled)
 				require.ErrorIs(t, err, ErrUpstreamKeyPolicy, "receiver authentication cannot change the original principal")
+				wrongGroup := *key
+				otherGroup := owner.GroupID + 1
+				wrongGroup.GroupID = &otherGroup
+				handled, err = svc.ForwardRegionalVideoQuery(c, tc.endpoint, tc.task, &wrongGroup, 1)
+				require.True(t, handled)
+				require.ErrorIs(t, err, ErrUpstreamKeyPolicy, "origin group changes must not alter the task's billing identity")
 				changed := owner
 				changed.RouteFingerprint[0]++
 				stub.owner = &changed
@@ -112,7 +122,7 @@ func TestAsyncVideoRegionalForwardDispatchUsesOriginalRouter(t *testing.T) {
 			})
 			svc.InstallMediaVideoForwarding(router)
 			require.NotNil(t, stub.dispatch)
-			query := video.Query{Owner: owner, TaskID: tc.task, Operation: string(tc.endpoint), Credential: "downstream-fixture", ClientIP: "192.0.2.5", Range: "bytes=0-99"}
+			query := video.Query{PolicyVersion: video.ForwardPolicyVersion, Owner: owner, TaskID: tc.task, Operation: string(tc.endpoint), Credential: "downstream-fixture", ClientIP: "192.0.2.5", Range: "bytes=0-99", Originator: "codex_cli_rs", Model: "model-fixture", Subagent: true}
 			response := httptest.NewRecorder()
 			stub.dispatch(response, httptest.NewRequest(http.MethodPost, "/private", nil), query)
 			require.Equal(t, 1, calls)
@@ -126,6 +136,28 @@ func TestAsyncVideoRegionalForwardDispatchUsesOriginalRouter(t *testing.T) {
 			require.Equal(t, 1, calls)
 		})
 	}
+}
+
+func TestAsyncVideoRegionalForwardCapturesGroupPolicyEvidence(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(3)
+	stub := &asyncVideoRegionalForwardStub{forward: func(_ context.Context, q video.Query) (*http.Response, bool, error) {
+		require.Equal(t, video.ForwardPolicyVersion, q.PolicyVersion)
+		require.Equal(t, groupID, q.Owner.GroupID)
+		require.Equal(t, "codex_cli_rs", q.Originator)
+		require.Equal(t, "model-fixture", q.Model)
+		require.True(t, q.Subagent)
+		return nil, false, nil
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: stub}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/task?model=model-fixture", nil)
+	c.Request.Header.Set("Authorization", "Bearer downstream-fixture")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set("X-Codex-Parent-Thread-Id", "parent-fixture")
+	handled, err := svc.ForwardRegionalVideoQuery(c, GrokMediaEndpointVideoStatus, "task", &APIKey{ID: 2, GroupID: &groupID}, 1)
+	require.NoError(t, err)
+	require.False(t, handled)
 }
 
 func TestAsyncVideoRegionalForwardStreamsWithoutLocalExecution(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
@@ -56,6 +57,10 @@ func (s *OpenAIGatewayService) InstallMediaVideoForwarding(router http.Handler) 
 		return
 	}
 	controller.SetAsyncVideoForwardHandler(func(w http.ResponseWriter, r *http.Request, query video.Query) {
+		if !query.Valid() {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		method, path, err := mediaVideoForwardPath(query)
 		if err != nil {
 			w.WriteHeader(http.StatusForbidden)
@@ -68,9 +73,23 @@ func (s *OpenAIGatewayService) InstallMediaVideoForwarding(router http.Handler) 
 			return
 		}
 		inner.RemoteAddr = net.JoinHostPort(query.ClientIP, "0")
+		if query.Model != "" {
+			values := inner.URL.Query()
+			values.Set("model", query.Model)
+			inner.URL.RawQuery = values.Encode()
+		}
 		inner.RequestURI = inner.URL.RequestURI()
 		inner.Header.Set("Authorization", "Bearer "+query.Credential)
 		inner.Header.Set("User-Agent", query.UserAgent)
+		if query.Owner.GroupID > 0 {
+			inner.Header.Set(APIKeyGroupHeader, strconv.FormatInt(query.Owner.GroupID, 10))
+		}
+		if query.Originator != "" {
+			inner.Header.Set("originator", query.Originator)
+		}
+		if query.Subagent {
+			inner.Header.Set(openAISubagentHeader, "1")
+		}
 		if query.Range != "" {
 			inner.Header.Set("Range", query.Range)
 		}
@@ -110,8 +129,9 @@ func (s *OpenAIGatewayService) ForwardRegionalVideoQuery(c *gin.Context, endpoin
 	if binding := SessionBindingFromContext(c.Request.Context()); binding != nil && strings.TrimSpace(binding.IP) != "" {
 		clientIP = binding.IP
 	}
-	query := video.Query{Owner: principal, TaskID: taskID, Operation: string(endpoint), Credential: credential,
-		ClientIP: clientIP, UserAgent: strings.TrimSpace(c.Request.UserAgent()), Range: strings.TrimSpace(c.GetHeader("Range"))}
+	query := video.Query{PolicyVersion: video.ForwardPolicyVersion, Owner: principal, TaskID: taskID, Operation: string(endpoint), Credential: credential,
+		ClientIP: clientIP, UserAgent: strings.TrimSpace(c.Request.UserAgent()), Range: strings.TrimSpace(c.GetHeader("Range")),
+		Originator: strings.TrimSpace(c.GetHeader("originator")), Model: strings.TrimSpace(c.Query("model")), Subagent: IsCodexSubagentRequest(c, nil)}
 	response, handled, err := controller.ForwardAsyncVideoLookup(c.Request.Context(), query)
 	if err != nil || !handled {
 		return handled, err

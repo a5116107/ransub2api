@@ -24,6 +24,7 @@ import (
 )
 
 const ForwardPrefix = "/internal/regional/video"
+const ForwardPolicyVersion = 1
 const forwardMaxBody = 16 << 10
 
 // ForwardConfig provisions a separate, bidirectional media data plane. Control
@@ -46,13 +47,17 @@ type Location struct {
 }
 
 type Query struct {
-	Owner      Owner  `json:"owner"`
-	TaskID     string `json:"task_id"`
-	Operation  string `json:"operation"`
-	Credential string `json:"credential"`
-	ClientIP   string `json:"client_ip"`
-	UserAgent  string `json:"user_agent"`
-	Range      string `json:"range"`
+	PolicyVersion int    `json:"policy_version"`
+	Owner         Owner  `json:"owner"`
+	TaskID        string `json:"task_id"`
+	Operation     string `json:"operation"`
+	Credential    string `json:"credential"`
+	ClientIP      string `json:"client_ip"`
+	UserAgent     string `json:"user_agent"`
+	Range         string `json:"range"`
+	Originator    string `json:"originator,omitempty"`
+	Model         string `json:"model,omitempty"`
+	Subagent      bool   `json:"subagent,omitempty"`
 }
 
 func (q Query) Valid() bool {
@@ -66,9 +71,10 @@ func (q Query) Valid() bool {
 		provider = "minimax-h3"
 	}
 	_, err := netip.ParseAddr(q.ClientIP)
-	return provider != "" && q.Owner.Valid() && q.Owner.Provider == provider && validForwardText(q.TaskID, 256, true) &&
+	return q.PolicyVersion == ForwardPolicyVersion && provider != "" && q.Owner.Valid() && q.Owner.Provider == provider && validForwardText(q.TaskID, 256, true) &&
 		validForwardText(q.Credential, 8192, true) && validForwardText(q.UserAgent, 512, false) &&
-		validForwardText(q.Range, 256, false) && err == nil
+		validForwardText(q.Range, 256, false) && validForwardText(q.Originator, 512, false) &&
+		validForwardText(q.Model, 512, false) && err == nil
 }
 
 func validForwardText(s string, max int, required bool) bool {

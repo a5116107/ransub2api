@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -16,6 +17,101 @@ import (
 type regionalAuthStub struct {
 	err     error
 	groupID int64
+}
+
+type regionalVideoPolicyAuth struct {
+	group *service.Group
+}
+
+func (s regionalVideoPolicyAuth) GetRegionalByKey(_ context.Context, key string) (*service.APIKey, error) {
+	if key != "downstream-fixture" {
+		return nil, service.ErrAPIKeyNotFound
+	}
+	return &service.APIKey{ID: 2, UserID: 1, GroupID: &s.group.ID, Group: s.group,
+		User: &service.User{ID: 1, Status: service.StatusActive}, IPWhitelist: []string{"192.0.2.5"},
+		CompiledIPWhitelist: ip.CompileIPRules([]string{"192.0.2.5"})}, nil
+}
+
+type regionalVideoPolicyUpstream struct {
+	service.HTTPUpstream
+	dispatch video.Dispatch
+	forwards int
+}
+
+func (s *regionalVideoPolicyUpstream) SetAsyncVideoForwardHandler(dispatch video.Dispatch) {
+	s.dispatch = dispatch
+}
+
+func (s *regionalVideoPolicyUpstream) ForwardAsyncVideoLookup(context.Context, video.Query) (*http.Response, bool, error) {
+	s.forwards++
+	return nil, true, service.ErrUpstreamKeyPolicy
+}
+
+func TestRegionalVideoOriginRechecksAuthenticatedGroupPolicies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, scenario := range []string{"allowed", "wrong_key", "wrong_group", "wrong_user", "wrong_ip", "model_denied", "client_denied", "subagent_denied"} {
+		t.Run(scenario, func(t *testing.T) {
+			group := &service.Group{ID: 3, Platform: service.PlatformGrok, Status: service.StatusActive,
+				CodexCLIOnly: true, BlockSubagents: true, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"model-fixture"}}}
+			cfg := &config.Config{}
+			upstream := &regionalVideoPolicyUpstream{}
+			svc := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Config: cfg, Upstream: upstream})
+			t.Cleanup(svc.StopAsyncVideoKeyReleaseRecovery)
+			t.Cleanup(svc.StopOpenAICodexTicketHarvester)
+			router := gin.New()
+			router.Use(RegionalAPIKeyAuth(regionalVideoPolicyAuth{group: group}, cfg), GroupModelAllowlist(), GroupCodexCLIOnly(nil), GroupBlockSubagents())
+			handlerCalls := 0
+			router.GET("/v1/videos/:request_id", func(c *gin.Context) {
+				handlerCalls++
+				key, ok := GetAPIKeyFromContext(c)
+				require.True(t, ok)
+				subject, ok := GetAuthSubjectFromContext(c)
+				require.True(t, ok)
+				id, pinned := PinnedAPIKeyGroup(c)
+				require.True(t, pinned)
+				require.Equal(t, int64(3), id)
+				handled, err := svc.ForwardRegionalVideoQuery(c, service.GrokMediaEndpointVideoStatus, c.Param("request_id"), key, subject.UserID)
+				if err != nil || handled {
+					c.Status(http.StatusForbidden)
+					return
+				}
+				c.Status(http.StatusNoContent)
+			})
+			svc.InstallMediaVideoForwarding(router)
+			require.NotNil(t, upstream.dispatch)
+			query := video.Query{PolicyVersion: video.ForwardPolicyVersion, Owner: video.Owner{UserID: 1, APIKeyID: 2, GroupID: 3, AccountID: 4, Provider: "grok", RouteFingerprint: [32]byte{1}},
+				TaskID: "task", Operation: "video_status", Credential: "downstream-fixture", ClientIP: "192.0.2.5",
+				UserAgent: "wrapper/1.2.3", Originator: "codex_cli_rs", Model: "model-fixture"}
+			want := http.StatusForbidden
+			switch scenario {
+			case "allowed":
+				want = http.StatusNoContent
+			case "wrong_key":
+				query.Credential, want = "wrong-fixture", http.StatusUnauthorized
+			case "wrong_group":
+				query.Owner.GroupID++
+			case "wrong_user":
+				query.Owner.UserID++
+			case "wrong_ip":
+				query.ClientIP = "198.51.100.5"
+			case "model_denied":
+				query.Model, want = "blocked-fixture", http.StatusNotFound
+			case "client_denied":
+				query.Originator = "unknown-client"
+			case "subagent_denied":
+				query.Subagent = true
+			}
+			w := httptest.NewRecorder()
+			upstream.dispatch(w, httptest.NewRequest(http.MethodPost, "/private", nil), query)
+			require.Equal(t, want, w.Code, w.Body.String())
+			if scenario == "allowed" || scenario == "wrong_user" {
+				require.Equal(t, 1, handlerCalls)
+			} else {
+				require.Zero(t, handlerCalls)
+			}
+			require.Zero(t, upstream.forwards, "origin requests must never be forwarded for a second hop")
+		})
+	}
 }
 
 func (s regionalAuthStub) GetRegionalByKey(_ context.Context, key string) (*service.APIKey, error) {

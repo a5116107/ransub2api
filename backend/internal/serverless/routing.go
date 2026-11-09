@@ -95,15 +95,19 @@ func (m *Manager) ProbeHandler(c *gin.Context) {
 
 // Route only handles synchronous text APIs and Responses WebSocket handshakes.
 // Existing API auth/body limits run first. Management and async task paths stay local.
-func routePath(r *http.Request) bool {
-	path := strings.TrimSuffix(r.URL.Path, "/")
-	if strings.HasSuffix(path, "/responses") {
-		return r.Method == "POST" || r.Method == "GET"
+func routePath(method, path string) bool {
+	switch path {
+	case "/responses", "/v1/responses", "/backend-api/codex/responses":
+		return method == http.MethodPost || method == http.MethodGet
+	case "/v1/messages", "/chat/completions", "/v1/chat/completions":
+		return method == http.MethodPost
+	default:
+		return false
 	}
-	return r.Method == "POST" && (strings.HasSuffix(path, "/messages") || strings.HasSuffix(path, "/chat/completions"))
 }
 func (m *Manager) Route(c *gin.Context, keyID int64, clientIP string) {
-	if m.runtime.Gateway || keyID <= 0 || !routePath(c.Request) {
+	// Only classify registered routes: a task ID may itself be "responses".
+	if m.runtime.Gateway || keyID <= 0 || !routePath(c.Request.Method, c.FullPath()) {
 		c.Next()
 		return
 	}

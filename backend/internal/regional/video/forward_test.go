@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -65,6 +66,9 @@ func TestVideoForwardingPinnedBidirectional(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
+			if q.Originator != "codex_cli_rs" || q.Model != "model-fixture" || !q.Subagent {
+				t.Error("policy evidence must survive the mutual-TLS hop")
+			}
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write(data)
 		})
@@ -75,7 +79,7 @@ func TestVideoForwardingPinnedBidirectional(t *testing.T) {
 		got, err := f.Locate(t.Context(), principal, "task-fixture")
 		require.NoError(t, err)
 		require.Equal(t, owner, *got)
-		q := Query{Owner: *got, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
+		q := Query{PolicyVersion: ForwardPolicyVersion, Owner: *got, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1", Originator: "codex_cli_rs", Model: "model-fixture", Subagent: true}
 		response, err := f.Query(t.Context(), q)
 		require.NoError(t, err)
 		raw, err := io.ReadAll(response.Body)
@@ -86,9 +90,31 @@ func TestVideoForwardingPinnedBidirectional(t *testing.T) {
 	}
 	require.EqualValues(t, 4, resolves.Load(), "both locate and physical query recheck the original owner")
 	require.EqualValues(t, 2, dispatches.Load())
-	for _, mutation := range []string{"user", "key", "group", "account", "route", "task", "generation", "credential-injection", "client-ip"} {
+	// The previous wire contract had no policy version or evidence fields.
+	// Each direction must reject mixed versions instead of dropping evidence.
+	type legacyQuery struct {
+		Owner      Owner  `json:"owner"`
+		TaskID     string `json:"task_id"`
+		Operation  string `json:"operation"`
+		Credential string `json:"credential"`
+		ClientIP   string `json:"client_ip"`
+		UserAgent  string `json:"user_agent"`
+		Range      string `json:"range"`
+	}
+	legacy := legacyQuery{Owner: owner, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
+	_, err := local.post(t.Context(), "/query", legacy)
+	require.ErrorIs(t, err, ErrUnavailable, "new origins must reject a legacy peer lacking policy evidence")
+	current := Query{PolicyVersion: ForwardPolicyVersion, Owner: owner, TaskID: legacy.TaskID, Operation: legacy.Operation, Credential: legacy.Credential, ClientIP: legacy.ClientIP}
+	raw, err := json.Marshal(current)
+	require.NoError(t, err)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	require.Error(t, decoder.Decode(&legacy), "old strict decoders must reject the new policy version")
+	require.EqualValues(t, 4, resolves.Load())
+	require.EqualValues(t, 2, dispatches.Load())
+	for _, mutation := range []string{"user", "key", "group", "account", "route", "task", "generation", "credential-injection", "client-ip", "originator-injection", "originator-oversize", "model-injection", "model-oversize", "old-policy", "future-policy"} {
 		t.Run(mutation, func(t *testing.T) {
-			q := Query{Owner: owner, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
+			q := Query{PolicyVersion: ForwardPolicyVersion, Owner: owner, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
 			switch mutation {
 			case "user":
 				q.Owner.UserID++
@@ -108,6 +134,18 @@ func TestVideoForwardingPinnedBidirectional(t *testing.T) {
 				q.Credential += "\r\nInjected: true"
 			case "client-ip":
 				q.ClientIP = "127.0.0.1, 8.8.8.8"
+			case "originator-injection":
+				q.Originator = "ok\r\nInjected: true"
+			case "originator-oversize":
+				q.Originator = strings.Repeat("o", 513)
+			case "model-injection":
+				q.Model = "ok\nInjected"
+			case "model-oversize":
+				q.Model = strings.Repeat("m", 513)
+			case "old-policy":
+				q.PolicyVersion = 0
+			case "future-policy":
+				q.PolicyVersion++
 			}
 			response, err := local.Query(t.Context(), q)
 			if err == nil {
@@ -120,7 +158,7 @@ func TestVideoForwardingPinnedBidirectional(t *testing.T) {
 	}
 	local.peerDigest = bytes.Repeat([]byte{7}, sha256.Size)
 	local.client.CloseIdleConnections()
-	_, err := local.Locate(t.Context(), owner, "task-fixture")
+	_, err = local.Locate(t.Context(), owner, "task-fixture")
 	require.Error(t, err, "a trusted CA without the assigned leaf pin must not authorize a peer")
 }
 
@@ -138,7 +176,7 @@ func TestVideoForwardingCancellationAndTarget(t *testing.T) {
 		close(stopped)
 	})
 	ctx, cancel := context.WithCancel(t.Context())
-	q := Query{Owner: owner, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
+	q := Query{PolicyVersion: ForwardPolicyVersion, Owner: owner, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
 	response, err := local.Query(ctx, q)
 	require.NoError(t, err)
 	cancel()
@@ -175,7 +213,7 @@ func TestVideoForwardingPreservesMiniMaxContentRedirect(t *testing.T) {
 		w.Header().Set("Location", "https://video.example/output.mp4")
 		w.WriteHeader(http.StatusFound)
 	})
-	query := Query{Owner: owner, TaskID: "minimax-h3:task", Operation: "minimax_h3_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
+	query := Query{PolicyVersion: ForwardPolicyVersion, Owner: owner, TaskID: "minimax-h3:task", Operation: "minimax_h3_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
 	response, err := local.Query(t.Context(), query)
 	require.NoError(t, err)
 	require.NoError(t, response.Body.Close())
