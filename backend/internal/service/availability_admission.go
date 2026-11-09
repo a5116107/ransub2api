@@ -26,6 +26,19 @@ func AvailabilityModelForAccount(account *Account, requested string) string {
 }
 
 func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, request *http.Request, account *Account) error {
+	return s.admitAvailabilityScope(ctx, account, func() *AvailabilityRequestScope {
+		if request == nil {
+			return nil
+		}
+		payload, confirmed := availabilityRequestPayload(request)
+		if !confirmed {
+			return nil
+		}
+		return availabilityScopeForAccount(availabilityScopeForRequest(request, payload), request, account)
+	})
+}
+
+func (s *OpenAIGatewayService) admitAvailabilityScope(ctx context.Context, account *Account, requestScope func() *AvailabilityRequestScope) error {
 	if s.availabilityReader == nil || ctx.Value(qualityProbeContextKey{}) != nil {
 		return nil
 	}
@@ -52,14 +65,10 @@ func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, req
 	if !configured {
 		return nil
 	}
-	// Native WS and BPS attachments have no matching observed wire scope yet.
-	// A successful ordinary HTTP probe must not authorize those distinct sends.
-	if request == nil {
-		return denyOpenAITurn("availability_scope_unconfirmed")
-	}
-	payload, confirmed := availabilityRequestPayload(request)
-	scope := availabilityScopeForAccount(availabilityScopeForRequest(request, payload), request, account)
-	if !confirmed || scope == nil {
+	// Resolve only after finding a configured rule. Unconfigured requests keep
+	// their original payload lifetime and avoid an unnecessary encoding/read.
+	scope := requestScope()
+	if scope == nil {
 		return denyOpenAITurn("availability_scope_unconfirmed")
 	}
 	matched := false

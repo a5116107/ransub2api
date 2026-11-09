@@ -34,7 +34,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	attempt int,
 	lastFailureReason string,
 	agentTaskRecoveryTried *bool,
-) (*OpenAIForwardResult, error) {
+) (forwardResult *OpenAIForwardResult, forwardErr error) {
 	if anchor := codexWSAnchorFromContext(ctx); anchor != nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, anchor.expires)
@@ -54,6 +54,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if err != nil {
 		return nil, wrapOpenAIWSFallback("build_ws_url", err)
 	}
+	ctx, observeProbeWrite, finishProbe := beginAvailabilityWSProbe(ctx, account, wsURL)
+	defer func() { finishProbe(forwardErr) }()
 	wsHost := "-"
 	wsPath := "-"
 	if parsed, parseErr := url.Parse(wsURL); parseErr == nil && parsed != nil {
@@ -309,10 +311,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if anchor != nil && anchor.cookie != "" {
 				replaceCodexWSAnchorCookie(headers, anchor.cookie)
 			}
-			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+			headers, err = s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+			if err == nil {
+				err = s.admitAvailabilityWS(factoryCtx, account, s.bindOpenAIWSHandshake(account, mappedModel, headers, wsURL), payload)
+			}
+			return headers, err
 		},
 		BindHandshake: func(headers http.Header) *openAIWSTurnBinding {
-			return s.bindOpenAIWSHandshake(account, mappedModel, headers)
+			return s.bindOpenAIWSHandshake(account, mappedModel, headers, wsURL)
 		},
 		CheckBinding: func(checkCtx context.Context, b *openAIWSTurnBinding) error {
 			latest, err := s.admitOpenAITurnForGroup(checkCtx, groupID, enforceGroup, account, mappedModel)
@@ -327,7 +333,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				)
 				return err
 			}
-			if err := s.checkOpenAIWSBinding(checkCtx, latest, mappedModel, b); err != nil {
+			if err := s.checkOpenAIWSBinding(checkCtx, latest, mappedModel, b, payload); err != nil {
 				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
 					checkCtx,
 					groupID,
@@ -474,7 +480,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	checkBeforeWrite := func() error {
 		latest, err := s.admitOpenAITurn(ctx, c, account, mappedModel)
 		if err == nil {
-			err = s.checkOpenAIWSBinding(ctx, latest, mappedModel, lease.conn.turnBinding)
+			err = s.checkOpenAIWSBinding(ctx, latest, mappedModel, lease.conn.turnBinding, payload)
 		}
 		if err == nil {
 			_, err = s.beginPriorityLatencyTurn(ctx, c, account, originalModel)
@@ -557,11 +563,16 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if err := s.priorityLatencyBeforeSend(ctx, account); err != nil {
 			return err
 		}
-		if err := s.admitAvailabilityRequest(ctx, nil, account); err != nil {
+		if err := s.admitAvailabilityWS(ctx, account, lease.conn.turnBinding, value); err != nil {
 			return err
 		}
 		if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
 			return err
+		}
+		if account.IsOpenAIOAuth() && account.GetBaseRPM() > 0 {
+			if err := s.admitAvailabilityWS(ctx, account, lease.conn.turnBinding, value); err != nil {
+				return err
+			}
 		}
 		if err := lease.WriteJSONWithContextTimeout(ctx, value, s.openAIWSWriteTimeout()); err != nil {
 			lease.MarkBroken()
@@ -574,6 +585,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			)
 			return wrapOpenAIWSFallback("write_request", err)
 		}
+		observeProbeWrite(lease.conn, value)
 		return nil
 	}
 	if accelerateHTTPSSE && !preflightBeforePrewarm {
@@ -919,6 +931,7 @@ readLoop:
 		imageCounter.AddSSEData(message)
 
 		if eventType == "error" || eventType == "response.failed" {
+			observeAvailabilityProbeFailure(ctx, message, extractOpenAISSEErrorMessage(message))
 			markOpenAICyberPolicyEvent(c, message, http.StatusOK, usage)
 		}
 

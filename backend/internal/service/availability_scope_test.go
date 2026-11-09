@@ -399,11 +399,11 @@ func TestAvailabilityWSBindingRereadsRulesForNewTurns(t *testing.T) {
 	account := wsSSETestAccount()
 	repo := &availabilityAdmissionRepo{}
 	svc := &OpenAIGatewayService{availabilityReader: repo}
-	binding := svc.bindOpenAIWSHandshake(account, "gpt-5.1", make(http.Header))
-	require.NoError(t, svc.checkOpenAIWSBinding(t.Context(), account, "gpt-5.1", binding), "unconfigured accounts keep the original behavior")
+	binding := svc.bindOpenAIWSHandshake(account, "gpt-5.1", make(http.Header), "")
+	require.NoError(t, svc.checkOpenAIWSBinding(t.Context(), account, "gpt-5.1", binding, nil), "unconfigured accounts keep the original behavior")
 	repo.reports = []*AvailabilityReport{availabilityAdmissionPass(account.ID, "gpt-5.1")}
-	require.True(t, IsOpenAITurnAdmissionError(svc.checkOpenAIWSBinding(t.Context(), account, "gpt-5.1", binding)), "a new policy must apply to an already bound connection")
+	require.True(t, IsOpenAITurnAdmissionError(svc.checkOpenAIWSBinding(t.Context(), account, "gpt-5.1", binding, nil)), "a new policy must apply to an already bound connection")
 	repo.reports = nil
-	require.NoError(t, svc.checkOpenAIWSBinding(t.Context(), account, "gpt-5.1", binding), "explicit policy removal restores legacy eligibility")
+	require.NoError(t, svc.checkOpenAIWSBinding(t.Context(), account, "gpt-5.1", binding, nil), "explicit policy removal restores legacy eligibility")
 	require.Equal(t, 3, repo.reads)
 }

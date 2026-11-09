@@ -482,14 +482,16 @@ func checkOpenAITurnBindingAndRate(ctx context.Context, selected, latest *Accoun
 // response's turn-state header and not the most recently harvested standby.
 type openAIWSTurnBinding struct {
 	billingHandshake *openAIWSBillingHandshake
+	availability     *availabilityWSBinding
 	model            string
 	ticket           *openAICodexTicket
 	fingerprint      [32]byte
 	createdAt        time.Time
 }
 
-func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model string, headers http.Header) *openAIWSTurnBinding {
+func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model string, headers http.Header, target string) *openAIWSTurnBinding {
 	b := &openAIWSTurnBinding{model: strings.TrimSpace(model), fingerprint: AccountRouteFingerprint(account), createdAt: time.Now()}
+	b.availability = bindAvailabilityWS(account, target, headers)
 	ticket := s.lookupOpenAICodexTicket(account, b.model)
 	if ticket != nil && ticket.State == headers.Get(openAICodexTurnStateHeader) {
 		copy := *ticket
@@ -499,8 +501,8 @@ func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model str
 	return b
 }
 
-func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account *Account, model string, b *openAIWSTurnBinding) error {
-	if err := s.admitAvailabilityRequest(ctx, nil, account); err != nil {
+func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account *Account, model string, b *openAIWSTurnBinding, payload any) error {
+	if err := s.admitAvailabilityWS(ctx, account, b, payload); err != nil {
 		return err
 	}
 	if account.isPrismBrowserUpstreamModelEnabled(model) {

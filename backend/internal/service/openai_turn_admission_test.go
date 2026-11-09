@@ -53,8 +53,8 @@ func TestOpenAITurnAdmissionStaticKeyBinding(t *testing.T) {
 			var denied *OpenAITurnAdmissionError
 			require.ErrorAs(t, err, &denied)
 			require.Equal(t, "account_binding_changed", denied.Reason)
-			binding := svc.bindOpenAIWSHandshake(selected, "gpt-5.1", make(http.Header))
-			require.Error(t, svc.checkOpenAIWSBinding(t.Context(), &latest, "gpt-5.1", binding), "an established WS must not outlive static credential replacement")
+			binding := svc.bindOpenAIWSHandshake(selected, "gpt-5.1", make(http.Header), "")
+			require.Error(t, svc.checkOpenAIWSBinding(t.Context(), &latest, "gpt-5.1", binding, nil), "an established WS must not outlive static credential replacement")
 			require.Equal(t, "original-fixture", selected.GetCredential("api_key"))
 		})
 	}
@@ -404,12 +404,12 @@ func TestOpenAIWSBillingBindingUsesLatestGate(t *testing.T) {
 			account := profitControlSyncedTestAccount(time.Now().UTC())
 			account.Credentials = map[string]any{"base_url": "https://fixture.invalid/cheap", "api_key": "turn-fixture"}
 			svc := &OpenAIGatewayService{}
-			binding := svc.bindOpenAIWSHandshake(account, "gpt-fixture", make(http.Header))
+			binding := svc.bindOpenAIWSHandshake(account, "gpt-fixture", make(http.Header), "")
 			binding.billingHandshake = newOpenAIWSBillingHandshake(WithHTTPUpstreamRedirectsDisabled(t.Context()), target, http.Header{"Authorization": {"never-retain"}})
 			require.Empty(t, binding.billingHandshake.headers, "binding must not duplicate credentials")
-			require.NoError(t, svc.checkOpenAIWSBinding(t.Context(), account, "gpt-fixture", binding))
+			require.NoError(t, svc.checkOpenAIWSBinding(t.Context(), account, "gpt-fixture", binding, nil))
 			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 9, threshold: 0.5})
-			err := svc.checkOpenAIWSBinding(ctx, account, "gpt-fixture", binding)
+			err := svc.checkOpenAIWSBinding(ctx, account, "gpt-fixture", binding, nil)
 			if strings.Contains(target, "/cheap/") {
 				require.NoError(t, err)
 			} else {
@@ -642,14 +642,14 @@ func TestOpenAITurnAdmissionAfterDialBeforeLease(t *testing.T) {
 			return headers, err
 		},
 		BindHandshake: func(h http.Header) *openAIWSTurnBinding {
-			return s.bindOpenAIWSHandshake(selected, "gpt-5.5", h)
+			return s.bindOpenAIWSHandshake(selected, "gpt-5.5", h, "")
 		},
 		CheckBinding: func(ctx context.Context, b *openAIWSTurnBinding) error {
 			a, err := s.admitOpenAITurn(ctx, nil, selected, "gpt-5.5")
 			if err != nil {
 				return err
 			}
-			return s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.5", b)
+			return s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.5", b, nil)
 		},
 	})
 	require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
@@ -834,21 +834,21 @@ func TestOpenAITurnAdmissionModelAndHandshakeBinding(t *testing.T) {
 	s := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, FailClosed: true}, nil)
 	h := http.Header{}
 	require.NoError(t, s.applyOpenAICodexTicket(context.Background(), a, "gpt-5.6-sol", h))
-	b := s.bindOpenAIWSHandshake(a, "gpt-5.6-sol", h)
+	b := s.bindOpenAIWSHandshake(a, "gpt-5.6-sol", h, "")
 	_, err := s.admitOpenAITurn(context.Background(), nil, a, "gpt-6-astra")
 	require.ErrorIs(t, err, ErrOpenAICodexTicketUnavailable)
 	_, err = s.admitOpenAITurn(context.Background(), nil, a, "gpt-5.6-sol")
 	require.NoError(t, err)
-	require.NoError(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.6-sol", b))
+	require.NoError(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.6-sol", b, nil))
 	primary := *s.lookupOpenAICodexTicket(a, "gpt-5.6-sol")
 	standby := primary
 	standby.State = fakeCodexTicketState(292)[:291] + "A"
 	primary.Standby = &standby
 	s.openaiCodexTickets.Store(openAICodexTicketKey(a.ID, "gpt-5.6-sol"), &primary)
-	require.NoError(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.6-sol", b), "standby refresh must not force reconnection")
+	require.NoError(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.6-sol", b, nil), "standby refresh must not force reconnection")
 	// A valid inventory does not extend a connection's original handshake.
 	b.ticket.ExpiresAt = time.Now().Add(-time.Second)
-	require.Error(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.6-sol", b))
+	require.Error(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-5.6-sol", b, nil))
 	require.True(t, a.Schedulable)
 	require.Nil(t, a.TempUnschedulableUntil)
 }
@@ -866,7 +866,7 @@ func TestOpenAITurnAdmissionMissingHandshakeTicketFailsClosed(t *testing.T) {
 		createdAt:   time.Now(),
 	}
 
-	err := s.checkOpenAIWSBinding(t.Context(), a, "gpt-6-astra", binding)
+	err := s.checkOpenAIWSBinding(t.Context(), a, "gpt-6-astra", binding, nil)
 
 	var denied *OpenAITurnAdmissionError
 	require.ErrorAs(t, err, &denied)
@@ -890,7 +890,7 @@ func TestOpenAITurnAdmissionBindingUsesFinalHeaders(t *testing.T) {
 			return h, s.applyOpenAICodexTicket(ctx, a, "gpt-6-astra", h)
 		},
 		BindHandshake: func(h http.Header) *openAIWSTurnBinding {
-			return s.bindOpenAIWSHandshake(a, "gpt-6-astra", h)
+			return s.bindOpenAIWSHandshake(a, "gpt-6-astra", h, "")
 		},
 	}
 	conn, err := pool.dialConn(context.Background(), req)
@@ -898,7 +898,7 @@ func TestOpenAITurnAdmissionBindingUsesFinalHeaders(t *testing.T) {
 	defer conn.close()
 	require.NotNil(t, conn.turnBinding.ticket)
 	require.Equal(t, "factory-session", conn.handshakeCompatibility.sessionIDUnderscore)
-	require.NoError(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-6-astra", conn.turnBinding))
+	require.NoError(t, s.checkOpenAIWSBinding(t.Context(), a, "gpt-6-astra", conn.turnBinding, nil))
 }
 
 func TestQualityIsolationAllowsOnlyInternalRecoveryProbeAdmission(t *testing.T) {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
@@ -49,6 +50,57 @@ func observeAvailabilityProbeFailure(ctx context.Context, payload []byte, messag
 	if observation, ok := ctx.Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation); ok {
 		observation.semanticStatus = openAIStreamFailedEventSemanticStatus(payload, message)
 	}
+}
+
+// Reuse the request's existing collector for each WS attempt, including pooled
+// connections. A handshake alone never publishes a passing capability: the
+// actual bound socket must accept the exact business frame and finish its answer.
+func beginAvailabilityWSProbe(ctx context.Context, account *Account, target string) (context.Context, func(*openAIWSConn, any), func(error)) {
+	observation, _ := ctx.Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation)
+	if observation == nil {
+		return ctx, func(*openAIWSConn, any) {}, func(error) {}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return ctx, func(*openAIWSConn, any) {}, func(error) {}
+	}
+	request, trace := requesttiming.StartAttempt(request, account.ID, 0)
+	observation.scope, observation.scopeAttempt, observation.semanticStatus = nil, trace.Number(), 0
+	ctx = request.Context()
+	sent := false
+	return ctx, func(conn *openAIWSConn, payload any) {
+			if conn == nil {
+				return
+			}
+			wire, ok := conn.ws.(*coderOpenAIWSClientConn)
+			if !ok {
+				return // An opaque adapter's WriteJSON is not physical evidence.
+			}
+			sent = true
+			requesttiming.Stage(ctx, "request_written")
+			if trace.Number() == 0 || conn.turnBinding == nil || conn.turnBinding.availability == nil {
+				return
+			}
+			binding := conn.turnBinding.availability
+			if binding.requestHash == ([32]byte{}) || wire.availabilityHandshakeHash != binding.requestHash {
+				return
+			}
+			observation.scope = binding.scope(account, payload)
+		}, func(err error) {
+			if sent {
+				trace.Response(&http.Response{StatusCode: http.StatusSwitchingProtocols}, err)
+				return
+			}
+			var dial *openAIWSDialError
+			if errors.As(err, &dial) && (dial.networkAttempted || dial.StatusCode > 0) {
+				if dial.networkAttempted {
+					requesttiming.Stage(ctx, "connection_start")
+				}
+				trace.Response(&http.Response{StatusCode: dial.StatusCode}, dial.Err)
+				return
+			}
+			trace.Response(nil, nil) // Local admission/queue failures are not network evidence.
+		}
 }
 
 func availabilityProbeResult(started, finished time.Time, observation *availabilityProbeObservation, complete, captureLimited bool, ctxErr error) *AvailabilityProbeResult {
@@ -132,7 +184,11 @@ func availabilityProbeResult(started, finished time.Time, observation *availabil
 		return result
 	}
 	result.Reason = "response_not_confirmed"
-	if last.Status >= 200 && last.Status < 300 && last.Error == "" && snapshot.Outcome == "success" && complete {
+	responseOK := last.Status >= 200 && last.Status < 300
+	if last.Status == http.StatusSwitchingProtocols && result.Scope != nil && result.Scope.Protocol == "responses_ws_v2" {
+		responseOK = true
+	}
+	if responseOK && last.Error == "" && snapshot.Outcome == "success" && complete {
 		result.Status, result.Reason = "pass", "completed_response"
 	}
 	return result

@@ -1637,10 +1637,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 				return nil, err
 			}
-			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+			headers, err = s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+			if err == nil {
+				err = s.admitAvailabilityWS(factoryCtx, account, s.bindOpenAIWSHandshake(account, scope.Model, headers, wsURL), payload.payloadRaw)
+			}
+			return headers, err
 		}
 		baseAcquireReq.BindHandshake = func(headers http.Header) *openAIWSTurnBinding {
-			return s.bindOpenAIWSHandshake(account, scope.Model, headers)
+			return s.bindOpenAIWSHandshake(account, scope.Model, headers, wsURL)
 		}
 		baseAcquireReq.CheckBinding = func(checkCtx context.Context, binding *openAIWSTurnBinding) error {
 			latest, err := s.admitOpenAITurnForGroup(checkCtx, groupID, enforceGroup, account, scope.Model, payload.payloadRaw)
@@ -1655,7 +1659,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 				return err
 			}
-			if err := s.checkOpenAIWSBinding(checkCtx, latest, scope.Model, binding); err != nil {
+			if err := s.checkOpenAIWSBinding(checkCtx, latest, scope.Model, binding, payload.payloadRaw); err != nil {
 				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
 					checkCtx,
 					groupID,
@@ -1851,7 +1855,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		checkAdmission := func(admissionCtx context.Context) (*Account, error) {
 			latest, admissionErr := s.admitOpenAITurn(admissionCtx, c, account, extractOpenAICodexTicketModel(payload), payload)
 			if admissionErr == nil {
-				admissionErr = s.checkOpenAIWSBinding(admissionCtx, latest, extractOpenAICodexTicketModel(payload), lease.conn.turnBinding)
+				admissionErr = s.checkOpenAIWSBinding(admissionCtx, latest, extractOpenAICodexTicketModel(payload), lease.conn.turnBinding, payload)
 			}
 			if admissionErr != nil {
 				s.invalidateOpenAIWSTurnStateAfterAdmissionFailure(
@@ -1913,6 +1917,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		if err := s.acquireOpenAIRPMForSend(ctx, latest); err != nil {
 			return nil, err
+		}
+		if latest.IsOpenAIOAuth() && latest.GetBaseRPM() > 0 {
+			if _, err := checkAdmission(ctx); err != nil {
+				return nil, err
+			}
 		}
 		if err := s.guardOpenAIResponseContinuation(ctx, account); err != nil {
 			return nil, err

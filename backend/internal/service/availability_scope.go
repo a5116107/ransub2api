@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -247,7 +248,11 @@ func availabilityTextInput(value gjson.Result, chat bool) bool {
 }
 
 func availabilityScopeForRequest(request *http.Request, payload []byte) *AvailabilityRequestScope {
-	if request == nil || request.URL == nil || request.Method != http.MethodPost || request.URL.RawQuery != "" || request.Header.Get("Content-Encoding") != "" || !gjson.ValidBytes(payload) {
+	if request == nil || request.URL == nil || request.URL.RawQuery != "" || request.URL.Fragment != "" || request.Header.Get("Content-Encoding") != "" || !gjson.ValidBytes(payload) {
+		return nil
+	}
+	websocket := request.Method == http.MethodGet && (request.URL.Scheme == "ws" || request.URL.Scheme == "wss") && strings.HasSuffix(request.URL.Path, "/responses")
+	if !websocket && request.Method != http.MethodPost {
 		return nil
 	}
 	_, isBPS := request.Context().Value(availabilityBPSSourceKey{}).(availabilityBPSSource)
@@ -267,7 +272,7 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 			return nil
 		}
 	}
-	scope := &AvailabilityRequestScope{Version: 1, Model: model, Capability: "text"}
+	scope := &AvailabilityRequestScope{Version: 1, Model: model, Capability: "text", Stream: websocket}
 	if stream := fields["stream"]; stream.Exists() {
 		if stream.Type != gjson.True && stream.Type != gjson.False {
 			return nil
@@ -275,6 +280,11 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 		scope.Stream = stream.Bool()
 	}
 	switch {
+	case websocket:
+		if fields["type"].Type != gjson.String || fields["type"].String() != "response.create" {
+			return nil
+		}
+		scope.Protocol = "responses_ws_v2"
 	case strings.HasSuffix(request.URL.Path, "/responses"):
 		scope.Protocol = "responses_http"
 	case strings.HasSuffix(request.URL.Path, "/chat/completions"):
@@ -292,13 +302,22 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 	}
 	for name, value := range fields {
 		switch name {
+		case "type":
+			if !websocket {
+				return nil
+			}
+		case "generate":
+			// A text answer does not attest to generate=false prewarming.
+			if !websocket || value.Type != gjson.True {
+				return nil
+			}
 		case "model", "service_tier", "stream", "stream_options", "max_tokens", "max_completion_tokens", "max_output_tokens", "temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty", "seed", "store", "metadata", "user", "safety_identifier", "prompt_cache_key", "prompt_cache_retention", "truncation":
 		case "instructions":
 			if value.Type != gjson.String {
 				return nil
 			}
 		case "input":
-			if scope.Protocol != "responses_http" || !availabilityTextInput(value, false) {
+			if (scope.Protocol != "responses_http" && !websocket) || !availabilityTextInput(value, false) {
 				return nil
 			}
 		case "messages":
@@ -311,7 +330,7 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 			}
 		case "reasoning":
 			reasoning, ok := availabilityJSONObject(value)
-			if !ok || scope.Protocol != "responses_http" {
+			if !ok || (scope.Protocol != "responses_http" && !websocket) {
 				return nil
 			}
 			for option := range reasoning {
@@ -336,6 +355,89 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 		}
 	}
 	return scope
+}
+
+// A binding remembers only a target and an irreversible grant revision. The
+// actual handshake's credentials are checked at construction, never persisted.
+type availabilityWSBinding struct {
+	target          *url.URL
+	connectionScope string
+	requestHash     [32]byte
+}
+
+func bindAvailabilityWS(account *Account, target string, headers http.Header) *availabilityWSBinding {
+	request, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil || request.URL.Host == "" || (request.URL.Scheme != "ws" && request.URL.Scheme != "wss") || headers.Get("Content-Encoding") != "" {
+		return nil
+	}
+	request.Header = headers
+	scope := availabilityScopeForAccount(&AvailabilityRequestScope{}, request, account)
+	if scope == nil {
+		return nil
+	}
+	return &availabilityWSBinding{target: request.URL, connectionScope: scope.ConnectionScope, requestHash: availabilityWSRequestHash(request)}
+}
+
+// coder/websocket uses HTTP(S) on the handshake response. Canonicalize only the
+// scheme; redirect, Host or credential changes must not produce a wire proof.
+func availabilityWSRequestHash(request *http.Request) [32]byte {
+	if request == nil || request.URL == nil || request.Method != http.MethodGet || request.Response != nil {
+		return [32]byte{}
+	}
+	address := *request.URL
+	switch address.Scheme {
+	case "ws":
+		address.Scheme = "http"
+	case "wss":
+		address.Scheme = "https"
+	case "http", "https":
+	default:
+		return [32]byte{}
+	}
+	authorization, valid := availabilitySingleAuthorization(request)
+	if !valid {
+		return [32]byte{}
+	}
+	host := request.Host
+	if host == "" {
+		host = address.Host
+	}
+	return sha256.Sum256([]byte(address.String() + "\x00" + host + "\x00" + authorization))
+}
+
+func (b *availabilityWSBinding) scope(account *Account, payload any) *AvailabilityRequestScope {
+	if b == nil || account == nil || b.target == nil || b.connectionScope != AvailabilityConnectionScope(account) || (account.HasManagedOpenAIConnections() && account.AuthConnectionID == "") {
+		return nil
+	}
+	var raw []byte
+	switch value := payload.(type) {
+	case []byte:
+		raw = value
+	case json.RawMessage:
+		raw = value
+	case openAIWSPreparedJSON:
+		raw = value
+	default:
+		var err error
+		raw, err = json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+	}
+	scope := availabilityScopeForRequest(&http.Request{Method: http.MethodGet, URL: b.target, Header: make(http.Header)}, raw)
+	if scope != nil {
+		scope.ConnectionScope = b.connectionScope
+	}
+	return scope
+}
+
+func (s *OpenAIGatewayService) admitAvailabilityWS(ctx context.Context, account *Account, binding *openAIWSTurnBinding, payload any) error {
+	return s.admitAvailabilityScope(ctx, account, func() *AvailabilityRequestScope {
+		if binding == nil {
+			return nil
+		}
+		return binding.availability.scope(account, payload)
+	})
 }
 
 // Read the exact body being sent and preserve its original Close lifecycle.
@@ -370,7 +472,7 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 	if observation == nil || trace.Number() == 0 {
 		return func(*http.Response) {}
 	}
-	observation.scope, observation.scopeAttempt = nil, trace.Number()
+	observation.scope, observation.scopeAttempt, observation.semanticStatus = nil, trace.Number(), 0
 	payload, confirmed := availabilityRequestPayload(request)
 	scope := availabilityScopeForAccount(availabilityScopeForRequest(request, payload), request, account)
 	if !confirmed || scope == nil {

@@ -948,6 +948,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		if err != nil {
 			return fmt.Errorf("refresh ws authentication headers: %w", err)
 		}
+		if err := s.admitAvailabilityWS(ctx, account, s.bindOpenAIWSHandshake(account, gjson.GetBytes(firstClientMessage, "model").String(), headers, wsURL), firstClientMessage); err != nil {
+			return err
+		}
 		billingCtx, billingErr := guardOpenAIWSBillingHandshake(ctx, latest, wsURL, headers)
 		if billingErr != nil {
 			return billingErr
@@ -1017,7 +1020,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		_ = closeUpstream()
 	}}
 	defer func() { _ = closeUpstream(); keyTurn.finish() }()
-	handshakeBinding := s.bindOpenAIWSHandshake(account, gjson.GetBytes(firstClientMessage, "model").String(), headers)
+	handshakeBinding := s.bindOpenAIWSHandshake(account, gjson.GetBytes(firstClientMessage, "model").String(), headers, wsURL)
 	handshakeBinding.billingHandshake = newOpenAIWSBillingHandshake(billingHandshakeCtx, wsURL, headers)
 	var activeResponseScope atomic.Pointer[OpenAIWSContinuationScope]
 	_, authenticatedResponseOwner := c.Get(openAIResponseOwnerContextKey)
@@ -1028,7 +1031,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		latest, err := s.admitOpenAITurn(frameCtx, c, account, model, payload)
 		if err == nil {
-			err = s.checkOpenAIWSBinding(frameCtx, latest, model, handshakeBinding)
+			err = s.checkOpenAIWSBinding(frameCtx, latest, model, handshakeBinding, payload)
 		}
 		if err != nil {
 			s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(ctx, c, payload, account.ID, err)
@@ -1304,8 +1307,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// mutations and new generations must not feed an ineligible socket.
 			if isResponseCreate || eventType == "session.update" || strings.HasPrefix(eventType, "conversation.item.") {
 				latest, err := s.admitOpenAITurn(ctx, c, account, model, payload)
-				if err == nil {
-					err = s.checkOpenAIWSBinding(ctx, latest, model, handshakeBinding)
+				if err == nil && !isResponseCreate {
+					err = s.checkOpenAIWSBinding(ctx, latest, model, handshakeBinding, payload)
 				}
 				if err != nil {
 					s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(
@@ -1348,7 +1351,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if err := regionalMeterBeforeSend(ctx); err != nil {
 					return out, nil, err
 				}
+				// Availability describes the final wire tier, not the client's
+				// pre-policy tier. Check before RPM and again after its wait.
+				if _, err := checkAdmission(out, model); err != nil {
+					return out, nil, err
+				}
 				if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
+					return out, nil, err
+				}
+				if _, err := checkAdmission(out, model); err != nil {
 					return out, nil, err
 				}
 				pendingLatencyCtx = turnLatencyCtx

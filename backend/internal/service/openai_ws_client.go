@@ -285,6 +285,12 @@ func (d *coderOpenAIWSClientDialer) Dial(
 	respHeaders := http.Header(nil)
 	if resp != nil {
 		respHeaders = cloneHeader(resp.Header)
+		// An opaque RoundTripper may rewrite authentication while retaining
+		// the original Response.Request. Only our direct standard transport
+		// can attest to the exact handshake; custom transports remain unknown.
+		if _, standard := transport.base.(*http.Transport); standard {
+			wrapped.availabilityHandshakeHash = availabilityWSRequestHash(resp.Request)
+		}
 	}
 	wrapped.conn = conn
 	return wrapped, 0, respHeaders, nil
@@ -416,12 +422,13 @@ func (d *coderOpenAIWSClientDialer) SnapshotTransportMetrics() OpenAIWSTransport
 }
 
 type coderOpenAIWSClientConn struct {
-	timezoneBinding *requestTimezoneBinding
-	timezoneProxy   string
-	requestTimezone string
-	timezoneMu      sync.Mutex
-	conn            *coderws.Conn
-	upstreamPings   atomic.Int64
+	availabilityHandshakeHash [32]byte
+	timezoneBinding           *requestTimezoneBinding
+	timezoneProxy             string
+	requestTimezone           string
+	timezoneMu                sync.Mutex
+	conn                      *coderws.Conn
+	upstreamPings             atomic.Int64
 }
 
 func (c *coderOpenAIWSClientConn) UpstreamPingCount() int64 {

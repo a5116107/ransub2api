@@ -1011,6 +1011,12 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		}
 		return s.testOpenAIImageOAuth(c, ctx, account, testModelID, imagePrompt)
 	}
+	// Availability must exercise the selected native transport, not publish an
+	// HTTP pass for a WS-only route. Reuse the existing gateway and answer parser.
+	if observation, _ := ctx.Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation); observation != nil &&
+		s.openaiGatewayService != nil && s.openaiGatewayService.getOpenAIWSProtocolResolver().Resolve(account).Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		return s.testResponsesGatewayAccountConnection(c, account, modelID, prompt)
+	}
 
 	credentialAccount := account
 	if account.IsCredentialShadow() {
@@ -1201,9 +1207,10 @@ func (s *AccountTestService) testResponsesGatewayAccountConnection(c *gin.Contex
 	if model == "" {
 		model = openai.DefaultTestModel
 	}
-	model = account.GetMappedModel(model)
 	prompt = promptOrDefault(prompt)
-	s.sendEvent(c, TestEvent{Type: "test_start", Model: model})
+	// Forward owns model mapping. Pre-mapping here would apply chained aliases
+	// twice and publish evidence for a different model than business traffic.
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: account.GetMappedModel(model)})
 
 	effort := "medium"
 	if options, ok := pelicanTestOptionsFromContext(c.Request.Context()); ok && options.reasoningEffort != "" {

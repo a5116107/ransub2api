@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -526,4 +527,128 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	require.Greater(t, sends.Load(), before503)
 	selectConnection(second.ID, second.Revision)
 	require.NoError(t, forward(), "the native 5xx observer must retain a healthy peer's evidence")
+}
+
+func TestAvailabilityWSProbeToGatewayWithPostgres(t *testing.T) {
+	f := newConnectionHTTPFixture(t)
+	ctx := t.Context()
+	var frames atomic.Int32
+	var reject atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reject.Load() {
+			http.Error(w, "fixture-unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		readCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		for {
+			if _, _, err := conn.Read(readCtx); err != nil {
+				return
+			}
+			id := frames.Add(1)
+			if reject.Load() {
+				_ = conn.Write(readCtx, coderws.MessageText, []byte(`{"type":"response.output_text.delta","delta":"partial"}`))
+				_ = conn.Write(readCtx, coderws.MessageText, []byte(`{"type":"response.failed","response":{"error":{"code":"server_error","message":"fixture-unavailable"}}}`))
+				return
+			}
+			for _, event := range []string{`{"type":"response.output_text.delta","delta":"21"}`,
+				fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_%d","model":"target","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`, id)} {
+				if err := conn.Write(readCtx, coderws.MessageText, []byte(event)); err != nil {
+					return
+				}
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	account, err := f.accounts.GetByID(ctx, f.accountID)
+	require.NoError(t, err)
+	account.Type = service.AccountTypeAPIKey
+	account.Credentials = map[string]any{"api_key": "synthetic-ws", "base_url": server.URL}
+	account.Extra = map[string]any{"responses_websockets_v2_enabled": true}
+	require.NoError(t, f.accounts.Update(ctx, account))
+	cfg := &config.Config{}
+	cfg.Default.RateMultiplier = 1
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+	upstream := &managedAvailabilityLoopback{client: server.Client()}
+	plans := repository.NewScheduledTestPlanRepository(f.db)
+	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAvailabilityReader(plans))
+	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+	t.Cleanup(gateway.CloseOpenAIWSPool)
+	tester := service.NewAccountTestService(f.accounts, nil, nil, nil, nil, upstream, cfg, nil)
+	tester.SetOpenAIGatewayService(gateway)
+	probeCfg := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1,
+		Availability: &service.AvailabilityPolicy{ValidForSeconds: 120}}
+	next := time.Now().UTC().Add(-time.Minute)
+	plan, err := plans.Create(ctx, &service.ScheduledTestPlan{AccountID: f.accountID, ModelID: "target", CronExpression: "0 * * * *", Enabled: true,
+		MaxResults: 10, NextRunAt: &next, PelicanConfig: probeCfg})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plans.Delete(context.Background(), plan.ID)) })
+	probeAndPublish := func(want, protocol string) {
+		t.Helper()
+		plan, err = plans.GetByID(ctx, plan.ID)
+		require.NoError(t, err)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		until := now.Add(time.Minute)
+		plan.TriggerSource = "upstream_5xx"
+		claimed, claimErr := plans.ClaimPelican(ctx, plan, now, until, *plan.NextRunAt)
+		require.NoError(t, claimErr)
+		require.True(t, claimed)
+		result, probeErr := tester.RunPelicanBackground(ctx, account.ID, plan.ModelID, probeCfg)
+		require.NoError(t, probeErr)
+		probe := result.PelicanConfig.AvailabilityResult
+		require.Equal(t, want, probe.Status, result.ErrorMessage)
+		if want == "pass" {
+			require.Equal(t, "responses_ws_v2", probe.Scope.Protocol)
+			// Publish an old-protocol state once to prove SQL round-tripping
+			// does not turn HTTP evidence into native-WS permission.
+			probe.Scope.Protocol = protocol
+		}
+		require.Eventually(t, func() bool {
+			var dbNow time.Time
+			return f.db.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&dbNow) == nil && !dbNow.Before(probe.FinishedAt)
+		}, 2*time.Second, 10*time.Millisecond)
+		action, writeErr := plans.ApplyAvailabilityOutcomes(ctx, plan, until, []service.AvailabilityModelOutcome{{ModelID: plan.ModelID, Probe: probe}})
+		require.NoError(t, writeErr)
+		require.Equal(t, "observed", action)
+		require.NoError(t, plans.FinishPelican(ctx, plan.ID, until, time.Now()))
+	}
+	forward := func() error {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		body := `{"model":"target","input":"different prompt","stream":true,"reasoning":{"effort":"high"}}`
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		_, err := gateway.Forward(ctx, c, account, []byte(body))
+		return err
+	}
+	require.Error(t, forward(), "unknown SQL state must not admit native WS")
+	require.Zero(t, frames.Load())
+	probeAndPublish("pass", "responses_http")
+	require.Error(t, forward(), "HTTP state read from SQL must not admit a native WS frame")
+	require.EqualValues(t, 1, frames.Load())
+	probeAndPublish("pass", "responses_ws_v2")
+	require.NoError(t, forward(), "fresh WS state must survive SQL persistence and authorize its matching frame")
+	report, err := plans.ReadAvailability(ctx, plan.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pass", report.Models[0].Status)
+	require.Equal(t, "responses_ws_v2", report.Models[0].Decision.Scope.Protocol)
+	reject.Store(true)
+	probeAndPublish("fail", "")
+	before := frames.Load()
+	require.Error(t, forward(), "a failed native handshake must stop business traffic")
+	require.Equal(t, before, frames.Load())
+	reject.Store(false)
+	probeAndPublish("pass", "responses_ws_v2")
+	require.NoError(t, forward(), "a fresh native probe must recover the SQL-backed route")
 }

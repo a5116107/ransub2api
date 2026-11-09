@@ -83,7 +83,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		return errOpenAIWSSSEPayloadTooLarge
 	}
 
-	if err := s.admitAvailabilityRequest(ctx, nil, account); err != nil {
+	if err := s.admitAvailabilityWS(ctx, account, lease.conn.turnBinding, prewarmPayload); err != nil {
 		return err
 	}
 	if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
