@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,68 @@ type quality5xxImmediateRepository interface {
 
 type availabilityFaultRepository interface {
 	ApplyAvailabilityFault(context.Context, int64) error
+}
+
+// Optional only for a send whose final HTTP credential and returned request
+// were both confirmed. Other adapters keep the account-wide fault boundary.
+type managedAvailabilityFaultRepository interface {
+	ApplyManagedAvailabilityFault(context.Context, *Account, bool) error
+}
+
+type availabilityFaultSourceKey struct{}
+
+type availabilityFaultSource struct {
+	accountID   int64
+	parentRoute [32]byte
+	scope       string
+	digest      [32]byte
+	confirmed   bool
+}
+
+func availabilityFaultRequestDigest(req *http.Request) ([32]byte, bool) {
+	if req == nil || req.URL == nil {
+		return [32]byte{}, false
+	}
+	authorization, valid := availabilitySingleAuthorization(req)
+	if !valid {
+		return [32]byte{}, false
+	}
+	return sha256.Sum256([]byte(req.Method + "\x00" + req.URL.String() + "\x00" + req.Host + "\x00" + authorization)), true
+}
+
+func availabilityFaultWithoutSource(ctx context.Context) context.Context {
+	return context.WithValue(ctx, availabilityFaultSourceKey{}, (*availabilityFaultSource)(nil))
+}
+
+func availabilityFaultResponseContext(ctx context.Context, response *http.Response) context.Context {
+	source, ok := ctx.Value(availabilityFaultSourceKey{}).(*availabilityFaultSource)
+	if !ok || source == nil {
+		return ctx
+	}
+	if response != nil && response.Request != nil && response.Request.Response == nil && response.Request.Context().Value(openAIResponseSyntheticRequestKey{}) != true {
+		if digest, valid := availabilityFaultRequestDigest(response.Request); valid && digest == source.digest {
+			confirmed := *source
+			confirmed.confirmed = true
+			return context.WithValue(ctx, availabilityFaultSourceKey{}, &confirmed)
+		}
+	}
+	return availabilityFaultWithoutSource(ctx)
+}
+
+func availabilityFaultConnection(ctx context.Context, account *Account) bool {
+	source, ok := ctx.Value(availabilityFaultSourceKey{}).(*availabilityFaultSource)
+	return ok && source != nil && source.confirmed && account != nil && account.AuthConnectionParentRoute != nil && source.accountID == account.ID &&
+		source.parentRoute == *account.AuthConnectionParentRoute &&
+		source.scope != "" && source.scope == AvailabilityConnectionScope(account)
+}
+
+func availabilityFaultIdentity(account *Account) *Account {
+	identity := &Account{ID: account.ID, Type: account.Type, AuthConnectionID: account.AuthConnectionID, AuthConnectionRevision: account.AuthConnectionRevision}
+	if account.AuthConnectionParentRoute != nil {
+		route := *account.AuthConnectionParentRoute
+		identity.AuthConnectionParentRoute = &route
+	}
+	return identity
 }
 
 type quality5xxTrigger struct {
@@ -65,7 +128,19 @@ func (s *quality5xxTrigger) Observe(ctx context.Context, account *Account, statu
 	// This has no dependency on worker slots or a running probe's lease.
 	if s.immediate != nil {
 		actionCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-		err := s.immediate.ApplyQuality5xx(actionCtx, account.ID)
+		var err error
+		if scoped, ok := s.immediate.(managedAvailabilityFaultRepository); ok && availabilityFaultConnection(ctx, account) {
+			err = scoped.ApplyManagedAvailabilityFault(actionCtx, availabilityFaultIdentity(account), true)
+			if err != nil {
+				// A failed scoped transaction must not silently preserve a pass.
+				slog.Warn("managed availability fence failed; applying account-wide protection", "account_id", account.ID)
+				stop()
+				actionCtx, stop = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				err = s.immediate.ApplyQuality5xx(actionCtx, account.ID)
+			}
+		} else {
+			err = s.immediate.ApplyQuality5xx(actionCtx, account.ID)
+		}
 		stop()
 		if err != nil {
 			slog.Warn("quality 5xx immediate protection failed", "account_id", account.ID, "error", err)
@@ -86,8 +161,22 @@ func (s *quality5xxTrigger) invalidateAvailability(ctx context.Context, account 
 		return
 	}
 	actionCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer stop()
-	if err := s.availability.ApplyAvailabilityFault(actionCtx, account.ID); err != nil {
+	var err error
+	// A 429 can represent an entitlement shared by several grants. Preserve
+	// the existing account-wide limit until independence is actually proven.
+	if scoped, ok := s.availability.(managedAvailabilityFaultRepository); ok && status != http.StatusTooManyRequests && availabilityFaultConnection(ctx, account) {
+		err = scoped.ApplyManagedAvailabilityFault(actionCtx, availabilityFaultIdentity(account), false)
+		if err != nil {
+			slog.Warn("managed availability fence failed; applying account-wide protection", "account_id", account.ID)
+			stop()
+			actionCtx, stop = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			err = s.availability.ApplyAvailabilityFault(actionCtx, account.ID)
+		}
+	} else {
+		err = s.availability.ApplyAvailabilityFault(actionCtx, account.ID)
+	}
+	stop()
+	if err != nil {
 		slog.Warn("availability fault invalidation failed", "account_id", account.ID, "status", status, "error", err)
 	}
 }
@@ -197,9 +286,10 @@ func (s *RateLimitService) observeQualityResponse(ctx context.Context, account *
 	if s == nil || err != nil || response == nil {
 		return
 	}
+	ctx = availabilityFaultResponseContext(ctx, response)
 	s.observeQualityStatus(ctx, account, response.StatusCode)
 	if response.StatusCode >= 200 && response.StatusCode < 300 && response.Body != nil && response.Body != http.NoBody && s.qualityTrigger != nil && s.qualityTrigger.availability != nil && account != nil && ctx.Value(qualityProbeContextKey{}) == nil {
-		response.Body = &availabilityFaultBody{ReadCloser: response.Body, ctx: ctx, trigger: s.qualityTrigger, account: Account{ID: account.ID, Type: account.Type}}
+		response.Body = &availabilityFaultBody{ReadCloser: response.Body, ctx: ctx, trigger: s.qualityTrigger, account: *availabilityFaultIdentity(account)}
 	}
 }
 
@@ -277,14 +367,24 @@ func (s *RateLimitService) beginAvailabilityTransport(req *http.Request, account
 	if s == nil || s.qualityTrigger == nil || s.qualityTrigger.availability == nil || account == nil || req.Context().Value(qualityProbeContextKey{}) != nil {
 		return req, func(*http.Response, error) {}
 	}
-	ctx, started := availabilityTransportContext(req.Context())
+	// A previous send's proof is never inherited by a retry or another grant.
+	ctx, started := availabilityTransportContext(availabilityFaultWithoutSource(req.Context()))
+	if account.AuthConnectionID != "" && account.AuthConnectionParentRoute != nil {
+		scope := availabilityScopeForAccount(&AvailabilityRequestScope{}, req, account)
+		if digest, valid := availabilityFaultRequestDigest(req); valid && scope != nil && scope.ConnectionScope != "" {
+			ctx = context.WithValue(ctx, availabilityFaultSourceKey{}, &availabilityFaultSource{accountID: account.ID, parentRoute: *account.AuthConnectionParentRoute, scope: scope.ConnectionScope, digest: digest})
+		}
+	}
 	var once sync.Once
-	identity := &Account{ID: account.ID, Type: account.Type}
+	identity := availabilityFaultIdentity(account)
 	return req.WithContext(ctx), func(response *http.Response, err error) {
 		// A response+error can be a local redirect rejection. Status/body
 		// observations retain their existing, separate classification.
 		if response == nil && err != nil {
-			once.Do(func() { s.observeAvailabilityTransportFailure(ctx, identity, err, started.Load()) })
+			// Without a returned request, an adapter rewrite cannot be ruled out.
+			once.Do(func() {
+				s.observeAvailabilityTransportFailure(availabilityFaultWithoutSource(ctx), identity, err, started.Load())
+			})
 		}
 	}
 }

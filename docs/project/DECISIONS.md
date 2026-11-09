@@ -1293,3 +1293,11 @@
 - `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^TestAvailability' -count=1 -timeout=12m` 退出0，`14.374s`；隔离 PostgreSQL/Redis、本机 TLS 覆盖两连接真实探测、503隔离/恢复、轮换、旧记录、匿名故障、限容、业务故障、并发重复和过期租约回滚。`go test -race -p 1 -tags unit ./internal/service -run '^(TestAvailability|TestOpenAIConnectionRevokedDuringRPMIsNotSent)' -count=1 -timeout=12m` 退出0，`8.274s`。隔离容器与真实生产上游无关。
 - 默认标签编译首次发现 `availabilityAdmissionRPMCache` 定义仅在 unit 文件、调用却在无标签测试；将既有助手移动至无标签的 `openai_rpm_test.go`，不保留副本。默认标签 `go test -p 1 ./internal/service ./internal/repository -run '^$' -count=1` 退出0，分别 `1.505s` / `1.460s`；对应 RPM 撤销测试默认标签 PASS（service `1.554s`）。最终托管连接定向 race `15.324s`，`go vet -p 1 -tags 'unit integration' ./internal/repository ./internal/service` 退出0；unit+integration 增量原规则 lint 修正一处 S1024 后输出 `0 issues.`，先前完整 unit 标签 lint 两包亦为 `0 issues.`。
 - 本项不证明逐连接自动探测、账号级业务故障精确归属、WS 作用域、生产缓存命中率或上游模型质量。后台仍仅检测首选连接；生产新旧实例混跑和回滚遵循 4.12 排空要求。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：D3 已确认 HTTP 业务故障连接隔离
+
+- 隔离 PostgreSQL、Redis 与本机 TLS 的真实网关反例：A、B 均检测通过后，A 的业务请求收到 HTTP 408，切到 B 实际报 `availability_not_confirmed`；原因是业务观察仅递增账号故障版本，使 B 的独立证据也被废弃。
+- 原有 HTTP 发送/响应观察器增加进程内作用域证明，核实所选连接凭据与单一认证头、方法/URL/Host 和实际返回请求一致，排除重定向及由代理辅助函数补造的请求；请求来源不明、无响应传输、未确认语义/WS 和429仍走原账号级失效。仅保存摘要和父线路指纹，不保存或记录凭据、URL明文。作用域事务失败后回退账号级失效；父线路已变的迟到故障不归到新线路。
+- 在原计划锁与单调事件版本内，删除故障连接证据，并仅将同规则、同父线路、旧事件版本的其他连接状态事务性推进到新版本；因此旧在途探测失效、其他连接的有效期不被延长。5xx质量拥有者和触发器沿原账号规则；连接失效是 unknown，必须由原检测重新确认。未新增迁移，未承诺逐连接主动探测或覆盖所有独立传输。
+- 最终 `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^(TestAvailabilityManaged|TestAvailabilityReadPostgres|TestQuality5xxPostgres)' -count=1 -timeout=12m` 退出0，`12.850s`；双连接真实408、503、响应体截断、恢复及轮换，双模型、并发双故障、旧轮次、事务中途失败回滚、旧父线路及质量拥有者均有夹具。Service `go test -race -p 1 -tags unit ./internal/service -run '^(TestAvailability|TestQuality5xx|TestOpenAIConnectionRevokedDuringRPMIsNotSent)' -count=1 -timeout=12m` 退出0，`9.237s`；覆盖401/408/429/503、响应体、重写认证/地址、重定向、合成请求、取消与事务失败回退。
+- `go vet -p 1 -tags 'unit integration' ./internal/repository ./internal/service` 退出0；默认标签两包编译退出0，service `1.519s`、repository `1.508s`；完整包原规则 `unit,integration` 增量 lint 最终输出 `0 issues.`。未执行 CI、推送、部署或生产迁移；生产混合版本及回滚仍须执行既定排空条件。

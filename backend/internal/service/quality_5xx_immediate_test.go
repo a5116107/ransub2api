@@ -665,6 +665,107 @@ func (r *immediateQualityAccountRepo) ApplyAvailabilityFault(ctx context.Context
 	return nil
 }
 
+type managedFaultAccountRepo struct {
+	immediateQualityAccountRepo
+	accounts []*Account
+	quality  []bool
+	writeErr error
+}
+
+func (r *managedFaultAccountRepo) ApplyManagedAvailabilityFault(_ context.Context, account *Account, quality bool) error {
+	r.accounts = append(r.accounts, account)
+	r.quality = append(r.quality, quality)
+	return r.writeErr
+}
+
+func TestAvailabilityManagedBusinessFaultRequiresConfirmedWireSource(t *testing.T) {
+	for _, scenario := range []string{"401", "408", "429_shared", "503", "body", "scoped_error_408", "scoped_error_503", "changed_authorization", "changed_url", "changed_account", "changed_parent", "redirect", "missing_request", "synthetic_request", "wrong_initial", "transport", "unconfirmed_context", "probe"} {
+		t.Run(scenario, func(t *testing.T) {
+			repo := &managedFaultAccountRepo{}
+			if strings.HasPrefix(scenario, "scoped_error_") {
+				repo.writeErr = errors.New("fixture state transaction failed")
+			}
+			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			route := [32]byte{1, 2, 3}
+			account := &Account{ID: 42, Type: AccountTypeAPIKey, Platform: PlatformOpenAI, AuthConnectionID: "fixture-grant", AuthConnectionRevision: 3,
+				AuthConnectionParentRoute: &route, Credentials: map[string]any{"api_key": "synthetic-token"}}
+			ctx := t.Context()
+			if scenario == "probe" {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"target"}`))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer synthetic-token")
+			if scenario == "wrong_initial" {
+				req.Header.Set("Authorization", "Bearer other-token")
+			}
+			req, observe := svc.beginAvailabilityTransport(req, account)
+			actual := req.Clone(req.Context())
+			response := &http.Response{StatusCode: http.StatusRequestTimeout, Request: actual}
+			switch scenario {
+			case "401":
+				response.StatusCode = http.StatusUnauthorized
+			case "429_shared":
+				response.StatusCode = http.StatusTooManyRequests
+			case "503", "scoped_error_503":
+				response.StatusCode = http.StatusServiceUnavailable
+			case "body":
+				response.StatusCode, response.Body = http.StatusOK, io.NopCloser(iotest.ErrReader(io.ErrUnexpectedEOF))
+			case "changed_authorization":
+				actual.Header.Set("Authorization", "Bearer other-token")
+			case "changed_url":
+				actual.URL.Path = "/rewritten"
+			case "changed_account":
+				account.ID++
+			case "changed_parent":
+				newRoute := [32]byte{9}
+				account.AuthConnectionParentRoute = &newRoute
+			case "redirect":
+				actual.Response = &http.Response{StatusCode: http.StatusFound}
+			case "missing_request":
+				response.Request = nil
+			case "synthetic_request":
+				response.Request = nil
+				response = markOpenAIResponseEgress(response, req, 0)
+			case "transport":
+				httptrace.ContextClientTrace(req.Context()).ConnectStart("tcp", "fixture")
+				observe(nil, io.ErrUnexpectedEOF)
+			case "unconfirmed_context":
+				svc.observeQualityStatus(req.Context(), account, http.StatusRequestTimeout)
+			}
+			if scenario != "transport" && scenario != "unconfirmed_context" {
+				observe(response, nil)
+				svc.observeQualityResponse(req.Context(), account, response, nil)
+				if response.Body != nil {
+					_, err = io.ReadAll(response.Body)
+					require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+					require.NoError(t, response.Body.Close())
+				}
+			}
+			if scenario == "401" || scenario == "408" || scenario == "503" || scenario == "body" || strings.HasPrefix(scenario, "scoped_error_") {
+				require.Len(t, repo.accounts, 1)
+				require.Equal(t, scenario == "503" || scenario == "scoped_error_503", repo.quality[0])
+				require.Equal(t, account.AuthConnectionID, repo.accounts[0].AuthConnectionID)
+				require.Equal(t, account.AuthConnectionRevision, repo.accounts[0].AuthConnectionRevision)
+				require.Equal(t, route, *repo.accounts[0].AuthConnectionParentRoute)
+				require.Nil(t, repo.accounts[0].Credentials, "fault records must not carry credentials")
+				if strings.HasPrefix(scenario, "scoped_error_") {
+					require.Equal(t, 1, repo.availabilityCalls+repo.calls, "scoped persistence errors fall back to account-wide protection")
+				} else {
+					require.Zero(t, repo.availabilityCalls+repo.calls)
+				}
+			} else {
+				require.Empty(t, repo.accounts, "unconfirmed provenance must never target one grant")
+				if scenario == "probe" {
+					require.Zero(t, repo.availabilityCalls+repo.calls)
+				} else {
+					require.Equal(t, 1, repo.availabilityCalls+repo.calls, "uncertain failures retain the account-wide fence")
+				}
+			}
+		})
+	}
+}
+
 func TestAvailabilityNon5xxFaultProvider(t *testing.T) {
 	for _, status := range []int{401, 408, 429} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {

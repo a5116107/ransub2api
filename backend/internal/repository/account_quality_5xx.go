@@ -1,9 +1,11 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,16 +15,25 @@ import (
 // ApplyQuality5xx runs in the response observer, independently of probe leases.
 // Availability fencing and opted-in native quality protection commit together.
 func (r *accountRepository) ApplyQuality5xx(ctx context.Context, accountID int64) error {
-	return r.applyObservedAccountFault(ctx, accountID, true)
+	return r.applyObservedAccountFault(ctx, accountID, true, nil)
 }
 
 // ApplyAvailabilityFault invalidates opted-in availability evidence without
 // applying quality protection whose trigger is explicitly limited to 5xx.
 func (r *accountRepository) ApplyAvailabilityFault(ctx context.Context, accountID int64) error {
-	return r.applyObservedAccountFault(ctx, accountID, false)
+	return r.applyObservedAccountFault(ctx, accountID, false, nil)
 }
 
-func (r *accountRepository) applyObservedAccountFault(ctx context.Context, accountID int64, quality5xx bool) error {
+// The caller supplies only a grant that was verified against the actual HTTP
+// request and response. Its captured parent route is rechecked under lock.
+func (r *accountRepository) ApplyManagedAvailabilityFault(ctx context.Context, account *service.Account, quality5xx bool) error {
+	if account == nil || account.ID <= 0 || account.AuthConnectionParentRoute == nil || service.AvailabilityConnectionScope(account) == "" {
+		return fmt.Errorf("managed availability fault requires a confirmed connection")
+	}
+	return r.applyObservedAccountFault(ctx, account.ID, quality5xx, account)
+}
+
+func (r *accountRepository) applyObservedAccountFault(ctx context.Context, accountID int64, quality5xx bool, account *service.Account) error {
 	db, ok := r.sql.(*sql.DB)
 	if !ok {
 		return fmt.Errorf("quality protection requires transactional database")
@@ -37,7 +48,7 @@ func (r *accountRepository) applyObservedAccountFault(ctx context.Context, accou
 		if !p.Enabled || p.PelicanConfig == nil || (p.PelicanConfig.Availability == nil && (!quality5xx || !p.PelicanConfig.TriggersOnUpstream5xx())) {
 			continue
 		}
-		applied, e := plans.applyImmediateAccountFault(ctx, p.ID, accountID, quality5xx)
+		applied, e := plans.applyImmediateAccountFault(ctx, p.ID, accountID, quality5xx, account)
 		if e != nil {
 			return e
 		}
@@ -49,7 +60,7 @@ func (r *accountRepository) applyObservedAccountFault(ctx context.Context, accou
 	return nil
 }
 
-func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Context, planID, accountID int64, quality5xx bool) (bool, error) {
+func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Context, planID, accountID int64, quality5xx bool, prepared *service.Account) (bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -81,7 +92,18 @@ func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Con
 	if accountType != service.AccountTypeOAuth && accountType != service.AccountTypeAPIKey {
 		return false, nil
 	}
-	if availability {
+	if availability && prepared != nil {
+		var fingerprint [32]byte
+		fingerprint, err = accountRouteFingerprintWithBinding(ctx, tx, accountID, true, prepared)
+		if errors.Is(err, service.ErrAvailabilityRouteChanged) || errors.Is(err, sql.ErrNoRows) {
+			// The response belongs to an old parent route, not the current one.
+			availability = false
+		} else if err != nil {
+			return false, err
+		} else if err = fenceManagedAvailabilityFault(ctx, tx, plan, prepared, fingerprint); err != nil {
+			return false, err
+		}
+	} else if availability {
 		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, planID); err != nil {
 			return false, err
 		}
@@ -105,6 +127,63 @@ func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Con
 		return false, err
 	}
 	return true, nil
+}
+
+// The plan lock serializes this retagging with every probe publication. A
+// monotonic plan fence rejects *all* pre-fault in-flight rounds; only evidence
+// for unaffected grants and the exact current route is retagged to survive.
+func fenceManagedAvailabilityFault(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, account *service.Account, fingerprint [32]byte) error {
+	var newVersion int64
+	if err := tx.QueryRowContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1 RETURNING availability_fault_version`, plan.ID).Scan(&newVersion); err != nil {
+		return err
+	}
+	type storedRow struct {
+		model       string
+		version     time.Time
+		fingerprint []byte
+		raw         []byte
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT model_id,plan_version,route_fingerprint,state FROM account_availability_states WHERE plan_id=$1 ORDER BY model_id`, plan.ID)
+	if err != nil {
+		return err
+	}
+	var states []storedRow
+	for rows.Next() {
+		var row storedRow
+		if err = rows.Scan(&row.model, &row.version, &row.fingerprint, &row.raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		states = append(states, row)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	scope := service.AvailabilityConnectionScope(account)
+	for _, row := range states {
+		if !row.version.Equal(plan.UpdatedAt) || !bytes.Equal(row.fingerprint, fingerprint[:]) {
+			continue
+		}
+		var state availabilityStoredState
+		if err = json.Unmarshal(row.raw, &state); err != nil || state.FaultVersion == nil || *state.FaultVersion != newVersion-1 {
+			continue // Corrupt or already stale evidence must not be revived.
+		}
+		state.promoteLegacyConnection()
+		delete(state.Connections, scope)
+		state.FaultVersion = &newVersion
+		raw, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE account_availability_states SET state=$3 WHERE plan_id=$1 AND model_id=$2`, plan.ID, row.model, string(raw)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Quality ownership conflicts do not suppress independent availability faults.

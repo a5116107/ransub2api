@@ -180,7 +180,7 @@ func TestAvailabilityReadPostgresFaultPreservesManualAndQualityOwnership(t *test
 			require.NoError(t, repo.db.QueryRow(`SELECT jsonb_build_array(status,schedulable,concurrency,extra)::text FROM accounts WHERE id=$1`, plan.AccountID).Scan(&before))
 			var ownerBefore, ownerAfter string
 			require.NoError(t, repo.db.QueryRow(`SELECT COALESCE(jsonb_agg(state),'[]')::text FROM account_quality_states`).Scan(&ownerBefore))
-			changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
+			changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true, nil)
 			require.NoError(t, err)
 			want := change != "paused_plan" && change != "removed_policy" && change != "deleted_account"
 			require.Equal(t, want, changed)
@@ -326,7 +326,7 @@ func TestAvailabilityReadPostgresFaultVersionSurvivesQualityOwnershipReset(t *te
 	require.NoError(t, err)
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	for i := 0; i < 2; i++ {
-		changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
+		changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true, nil)
 		require.NoError(t, err)
 		require.True(t, changed)
 	}
@@ -361,7 +361,7 @@ func TestAvailabilityReadPostgresFaultVersionSurvivesQualityOwnershipReset(t *te
 func TestAvailabilityReadPostgresIndependentFaultRejectsOldRun(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
+	changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true, nil)
 	require.NoError(t, err)
 	require.True(t, changed)
 	_, err = repo.db.Exec(`DELETE FROM account_quality_states WHERE plan_id=$1`, plan.ID)
@@ -373,7 +373,7 @@ func TestAvailabilityReadPostgresIndependentFaultRejectsOldRun(t *testing.T) {
 
 func TestAvailabilityReadPostgresQualityRestoreKeepsNewAvailabilityPass(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
-	changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true)
+	changed, err := repo.applyImmediateAccountFault(t.Context(), plan.ID, plan.AccountID, true, nil)
 	require.NoError(t, err)
 	require.True(t, changed)
 	plan, err = repo.GetByID(t.Context(), plan.ID)

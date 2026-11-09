@@ -237,6 +237,7 @@ func openAIProxyStreamCircuitProxyID(account *Account) (int64, bool) {
 }
 
 type openAIResponseEgressKey struct{}
+type openAIResponseSyntheticRequestKey struct{}
 
 // Attach local-only metadata to the response's request, never to HTTP headers
 // or the shared Account snapshot. A fallback response must not heal/blame the
@@ -247,7 +248,9 @@ func markOpenAIResponseEgress(resp *http.Response, req *http.Request, proxyID in
 	}
 	responseRequest := resp.Request
 	if responseRequest == nil {
-		responseRequest = req
+		// Egress metadata remains available, but this reconstructed request is
+		// not independent evidence of which credential the transport sent.
+		responseRequest = req.WithContext(context.WithValue(req.Context(), openAIResponseSyntheticRequestKey{}, true))
 	}
 	resp.Request = responseRequest.WithContext(context.WithValue(responseRequest.Context(), openAIResponseEgressKey{}, proxyID))
 	return resp

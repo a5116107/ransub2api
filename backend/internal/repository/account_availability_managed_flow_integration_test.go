@@ -47,10 +47,22 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 
 	var sends atomic.Int32
 	var rejectFirst atomic.Bool
+	var businessFailure atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sends.Add(1)
 		require.Equal(t, "/v1/responses", r.URL.Path)
 		require.Contains(t, []string{"Bearer synthetic-first", "Bearer synthetic-second", "Bearer synthetic-rotated"}, r.Header.Get("Authorization"))
+		if status := businessFailure.Load(); status != 0 && r.Header.Get("Authorization") != "Bearer synthetic-second" {
+			if status == -1 {
+				w.Header().Set("Content-Length", "9999")
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"))
+			} else {
+				w.WriteHeader(int(status))
+				_, _ = w.Write([]byte(`{"error":"fixture-business-failure"}`))
+			}
+			return
+		}
 		if rejectFirst.Load() && r.Header.Get("Authorization") == "Bearer synthetic-first" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"fixture-unavailable"}`))
@@ -72,7 +84,8 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Default.RateMultiplier = 1
 	plans := repository.NewScheduledTestPlanRepository(f.db)
-	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
+	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), limiter, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
 	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 	t.Cleanup(gateway.CloseOpenAIWSPool)
 	tester := service.NewAccountTestService(f.accounts, nil, nil, nil, nil, upstream, cfg, nil)
@@ -85,6 +98,9 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plans.Delete(context.Background(), plan.ID)) })
 	claim := func() time.Time {
+		var getErr error
+		plan, getErr = plans.GetByID(ctx, plan.ID)
+		require.NoError(t, getErr)
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		until := now.Add(time.Minute)
 		plan.TriggerSource = "upstream_5xx"
@@ -164,26 +180,55 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	selectConnection(first.ID, first.Revision)
 	require.NoError(t, forward(), "a peer's later pass must not overwrite the original connection's unexpired evidence")
 	require.EqualValues(t, 5, sends.Load())
+	businessFailure.Store(http.StatusRequestTimeout)
+	require.Error(t, forward(), "the real first-connection failure must reach the caller")
+	failedSends := sends.Load()
+	require.Greater(t, failedSends, int32(5))
+	selectConnection(second.ID, second.Revision)
+	require.NoError(t, forward(), "a confirmed business failure on the first grant must not invalidate a healthy peer")
+	require.EqualValues(t, failedSends+1, sends.Load())
+	selectConnection(first.ID, first.Revision)
+	businessFailure.Store(0)
+	probeAndPublish("pass")
+	require.NoError(t, forward(), "a fresh probe must restore the failed grant")
+	businessFailure.Store(-1)
+	beforeBrokenBody := sends.Load()
+	require.Error(t, forward(), "a truncated real response body must fail")
+	require.Greater(t, sends.Load(), beforeBrokenBody)
+	selectConnection(second.ID, second.Revision)
+	require.NoError(t, forward(), "a body read fault on one grant must preserve a healthy peer")
+	selectConnection(first.ID, first.Revision)
+	businessFailure.Store(0)
+	probeAndPublish("pass")
+	require.NoError(t, forward(), "the body-failed grant must recover with a fresh probe")
+	base := sends.Load()
 	rejectFirst.Store(true)
 	probeAndPublish("fail")
 	require.Error(t, forward(), "an observed failure must stop its own connection")
-	require.EqualValues(t, 6, sends.Load())
+	require.EqualValues(t, base+1, sends.Load())
 	selectConnection(second.ID, second.Revision)
 	require.NoError(t, forward(), "a peer with valid evidence stays available after the first connection fails")
-	require.EqualValues(t, 7, sends.Load())
+	require.EqualValues(t, base+2, sends.Load())
 	selectConnection(first.ID, first.Revision)
 	rejectFirst.Store(false)
 	probeAndPublish("pass")
 	require.NoError(t, forward(), "a fresh successful probe recovers only the failed connection")
-	require.EqualValues(t, 9, sends.Load())
+	require.EqualValues(t, base+4, sends.Load())
 	rotated := connectionResponse(t, f.request(http.MethodPut, "/"+first.ID+"/api-key", fmt.Sprintf(`{"revision":%d,"api_key":"synthetic-rotated"}`, first.Revision)))
 	require.Greater(t, rotated.Revision, first.Revision)
 	require.Error(t, forward(), "a rotated connection must not reuse pre-rotation evidence")
-	require.EqualValues(t, 9, sends.Load())
+	require.EqualValues(t, base+4, sends.Load())
 	probeAndPublish("pass")
 	require.NoError(t, forward(), "a completed fresh probe restores the rotated connection")
-	require.EqualValues(t, 11, sends.Load())
+	require.EqualValues(t, base+6, sends.Load())
 	selectConnection(second.ID, second.Revision)
 	require.NoError(t, forward(), "rotating and probing one connection must retain a peer's unexpired evidence")
-	require.EqualValues(t, 12, sends.Load())
+	require.EqualValues(t, base+7, sends.Load())
+	selectConnection(first.ID, rotated.Revision)
+	businessFailure.Store(http.StatusServiceUnavailable)
+	before503 := sends.Load()
+	require.Error(t, forward(), "a real 503 must be observed before failover")
+	require.Greater(t, sends.Load(), before503)
+	selectConnection(second.ID, second.Revision)
+	require.NoError(t, forward(), "the native 5xx observer must retain a healthy peer's evidence")
 }

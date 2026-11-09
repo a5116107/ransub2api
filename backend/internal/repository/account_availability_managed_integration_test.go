@@ -62,6 +62,154 @@ func TestAvailabilityManagedProjectionParentRouteWithPostgres(t *testing.T) {
 	require.ErrorIs(t, err, service.ErrAvailabilityRouteChanged, "an unprojected managed snapshot must not authorize a legacy route")
 }
 
+func TestAvailabilityManagedBusinessFaultFencesOnlyConfirmedGrantWithPostgres(t *testing.T) {
+	dsn, err := pq.ParseURL(integrationPostgresDSN)
+	require.NoError(t, err)
+	t.Setenv("SUB2API_QUALITY_TEST_DSN", dsn)
+	repo, plan := availabilityPostgresPlan(t)
+	_, err = repo.db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{openai_connections_managed}','true') WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	plan.PelicanConfig.Quality = nil
+	plan.PelicanConfig.ModelIDs = []string{"target", "other"}
+	plan, err = repo.Update(t.Context(), plan)
+	require.NoError(t, err)
+	parent := availabilityPreparedAccount(plan)
+	parent.Extra = map[string]any{"openai_connections_managed": true}
+	route := service.AccountRouteFingerprint(parent)
+	projection := func(id string) *service.Account {
+		a := *parent
+		a.AuthConnectionID, a.AuthConnectionRevision, a.AuthConnectionParentRoute = id, 1, &route
+		return &a
+	}
+	a, b := projection("connection-a"), projection("connection-b")
+	outcomes := func(account *service.Account) []service.AvailabilityModelOutcome {
+		result := availabilityPostgresObservation("pass")
+		result[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(account)}
+		copy := *result[0].Probe
+		return append(result, service.AvailabilityModelOutcome{ModelID: "other", Probe: &copy})
+	}
+	publish := func(account *service.Account) {
+		until := availabilityPostgresClaim(t, repo, plan)
+		action, publishErr := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, outcomes(account))
+		require.NoError(t, publishErr)
+		require.Equal(t, "observed", action)
+		require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	}
+	statuses := func(account *service.Account) []string {
+		reports, readErr := repo.ReadAccountAvailability(t.Context(), account)
+		require.NoError(t, readErr)
+		require.Len(t, reports[0].Models, 2)
+		return []string{reports[0].Models[0].Status, reports[0].Models[1].Status}
+	}
+	publish(a)
+	publish(b)
+	// Nontransactional sequence proves one model update occurred before the
+	// second failed; the enclosing transaction must roll back both and its fence.
+	_, err = repo.db.Exec(`CREATE SEQUENCE managed_fault_write_counter;
+ CREATE FUNCTION managed_fault_write_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN IF NEW.model_id='other' THEN PERFORM nextval('managed_fault_write_counter'); RETURN NEW; END IF;
+ RAISE EXCEPTION 'fixture state write failure'; END $$;
+ CREATE TRIGGER managed_fault_write_fail BEFORE UPDATE OF state ON account_availability_states FOR EACH ROW EXECUTE FUNCTION managed_fault_write_fail();`)
+	require.NoError(t, err)
+	accounts := &accountRepository{sql: repo.db}
+	require.ErrorContains(t, accounts.ApplyManagedAvailabilityFault(t.Context(), a, false), "fixture state write failure")
+	var wrote bool
+	require.NoError(t, repo.db.QueryRow(`SELECT is_called FROM managed_fault_write_counter`).Scan(&wrote))
+	require.True(t, wrote, "the first model really was updated before the later failure")
+	var version int64
+	require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&version))
+	require.Zero(t, version, "a failed state update must roll back the plan fence")
+	require.Equal(t, []string{"pass", "pass"}, statuses(a))
+	require.Equal(t, []string{"pass", "pass"}, statuses(b))
+	_, err = repo.db.Exec(`DROP TRIGGER managed_fault_write_fail ON account_availability_states`)
+	require.NoError(t, err)
+	until := availabilityPostgresClaim(t, repo, plan)
+	require.NoError(t, accounts.ApplyManagedAvailabilityFault(t.Context(), a, false))
+	require.Equal(t, []string{"unknown", "unknown"}, statuses(a))
+	require.Equal(t, []string{"pass", "pass"}, statuses(b), "the healthy grant retains both models")
+	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, outcomes(a))
+	require.NoError(t, err)
+	require.Equal(t, "stale_run", action, "a probe claimed before the fault cannot resurrect the affected grant")
+	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	publish(a)
+	require.Equal(t, []string{"pass", "pass"}, statuses(a))
+	require.Equal(t, []string{"pass", "pass"}, statuses(b))
+	var before, after int64
+	require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&before))
+	_, err = repo.db.Exec(`UPDATE accounts SET credentials='{"api_key":"new-route"}' WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	require.NoError(t, accounts.ApplyManagedAvailabilityFault(t.Context(), a, false))
+	require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&after))
+	require.Equal(t, before, after, "a late response from a replaced parent route must not invalidate the new route")
+	_, err = repo.db.Exec(`UPDATE accounts SET credentials='{}' WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"pass", "pass"}, statuses(a))
+	require.Equal(t, []string{"pass", "pass"}, statuses(b))
+	c := projection("connection-c")
+	publish(c)
+	until = availabilityPostgresClaim(t, repo, plan)
+	var wg sync.WaitGroup
+	concurrentErrors := make(chan error, 2)
+	for _, account := range []*service.Account{a, b} {
+		wg.Go(func() { concurrentErrors <- accounts.ApplyManagedAvailabilityFault(t.Context(), account, false) })
+	}
+	wg.Wait()
+	require.NoError(t, <-concurrentErrors)
+	require.NoError(t, <-concurrentErrors)
+	require.Equal(t, []string{"unknown", "unknown"}, statuses(a))
+	require.Equal(t, []string{"unknown", "unknown"}, statuses(b))
+	require.Equal(t, []string{"pass", "pass"}, statuses(c), "concurrent faults cannot discard an unrelated healthy grant")
+	action, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, outcomes(a))
+	require.NoError(t, err)
+	require.Equal(t, "stale_run", action, "a pre-fault probe cannot revive a grant after concurrent faults")
+	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	publish(a)
+	publish(b)
+	require.NoError(t, accounts.ApplyAvailabilityFault(t.Context(), plan.AccountID))
+	require.Equal(t, []string{"unknown", "unknown"}, statuses(a))
+	require.Equal(t, []string{"unknown", "unknown"}, statuses(b), "an unknown source remains account-wide")
+	require.NoError(t, accounts.ApplyManagedAvailabilityFault(t.Context(), a, false))
+	require.Equal(t, []string{"unknown", "unknown"}, statuses(b), "a scoped fault must not revive evidence fenced by an earlier global fault")
+}
+
+func TestAvailabilityManagedBusinessFaultPreservesQualityOwnershipWithPostgres(t *testing.T) {
+	dsn, err := pq.ParseURL(integrationPostgresDSN)
+	require.NoError(t, err)
+	t.Setenv("SUB2API_QUALITY_TEST_DSN", dsn)
+	repo, plan := availabilityPostgresPlan(t)
+	_, err = repo.db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{openai_connections_managed}','true') WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	parent := availabilityPreparedAccount(plan)
+	parent.Extra = map[string]any{"openai_connections_managed": true}
+	route := service.AccountRouteFingerprint(parent)
+	projection := func(id string) *service.Account {
+		a := *parent
+		a.AuthConnectionID, a.AuthConnectionRevision, a.AuthConnectionParentRoute = id, 1, &route
+		return &a
+	}
+	a, b := projection("connection-a"), projection("connection-b")
+	for _, account := range []*service.Account{a, b} {
+		until := availabilityPostgresClaim(t, repo, plan)
+		observation := availabilityPostgresObservation("pass")
+		observation[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(account)}
+		_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observation)
+		require.NoError(t, err)
+		require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	}
+	accounts := &accountRepository{sql: repo.db}
+	require.NoError(t, accounts.ApplyManagedAvailabilityFault(t.Context(), a, true))
+	var ownerCount int
+	require.NoError(t, repo.db.QueryRow(`SELECT count(*) FROM account_quality_states WHERE plan_id=$1`, plan.ID).Scan(&ownerCount))
+	require.Equal(t, 1, ownerCount, "a confirmed 5xx still applies the existing account quality policy")
+	reports, err := repo.ReadAccountAvailability(t.Context(), b)
+	require.NoError(t, err)
+	require.Equal(t, "pass", reports[0].Models[0].Status, "quality protection and connection-scoped availability are independent")
+}
+
 func TestAvailabilityManagedConnectionsIndependentEvidenceWithPostgres(t *testing.T) {
 	dsn, err := pq.ParseURL(integrationPostgresDSN)
 	require.NoError(t, err)
