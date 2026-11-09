@@ -714,12 +714,6 @@ func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
 					require.NoError(t, response.Body.Close())
 					want := 0
 					if outcome == "empty" || outcome == "partial" {
-						// Legacy Anthropic converters treat an empty preamble as
-						// unobserved, not an incomplete started message.
-						if outcome == "empty" && (path == "anthropic_chat" || path == "anthropic_responses") {
-							require.Zero(t, repo.availabilityCalls)
-							return
-						}
 						want = 1
 						require.Error(t, err)
 					}
@@ -730,6 +724,71 @@ func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
 					require.Zero(t, repo.calls, "protocol incompleteness must not fabricate a quality 5xx")
 				})
 			}
+		}
+	}
+}
+
+func TestAvailabilityAnthropicCompatRequiresStartedStream(t *testing.T) {
+	start := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"model\":\"target\",\"usage\":{\"input_tokens\":1}}}\n\n"
+	stop := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	delta := "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+	done := "event: message_stop\ndata: [DONE]\n\n"
+	for _, api := range []string{"chat", "responses", "buffered_chat", "buffered_responses"} {
+		for _, tc := range []struct {
+			name, payload string
+			complete      bool
+		}{
+			{"empty", "", false},
+			{"ping_only", "event: ping\ndata: {\"type\":\"ping\"}\n\n", false},
+			{"terminal_only", stop, false},
+			{"terminal_delta_only", delta, false},
+			{"done_only", done, false},
+			{"terminal_then_partial", stop + start, false},
+			{"terminal_delta_then_partial", delta + start, false},
+			{"done_then_partial", done + start, false},
+			{"terminal_then_complete", stop + start + stop, true},
+			{"terminal_delta_then_complete", delta + start + delta, true},
+			{"done_then_complete", done + start + done, true},
+			{"complete", start + stop, true},
+		} {
+			t.Run(api+"/"+tc.name, func(t *testing.T) {
+				repo := &immediateQualityAccountRepo{}
+				cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
+				account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				response := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(tc.payload))}
+				var err error
+				switch api {
+				case "chat":
+					_, err = gateway.handleCCStreamingFromAnthropic(response, c, account, "target", "target", nil, time.Now())
+				case "responses":
+					_, err = gateway.handleResponsesStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				case "buffered_chat":
+					_, err = gateway.handleCCBufferedFromAnthropic(response, c, account, "target", "target", nil, time.Now())
+				case "buffered_responses":
+					_, err = gateway.handleResponsesBufferedStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				}
+				require.NoError(t, response.Body.Close())
+				if tc.complete {
+					require.NoError(t, err)
+					require.Zero(t, repo.availabilityCalls)
+				} else {
+					require.Error(t, err)
+					require.Equal(t, 1, repo.availabilityCalls)
+					if strings.HasPrefix(api, "buffered_") {
+						require.Equal(t, http.StatusBadGateway, recorder.Code)
+					} else {
+						require.Contains(t, recorder.Body.String(), "stream_incomplete")
+					}
+					require.NotContains(t, recorder.Body.String(), "response.completed")
+					require.NotContains(t, recorder.Body.String(), "data: [DONE]")
+				}
+				require.Zero(t, repo.calls, "an incomplete stream is not an upstream 5xx")
+			})
 		}
 	}
 }

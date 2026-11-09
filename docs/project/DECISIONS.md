@@ -1344,3 +1344,12 @@
 - 前端5个相关 Vitest 文件 `5 passed / 186 passed`；`pnpm exec vue-tsc --noEmit`、改动文件的 ESLint 和 `pnpm run check:i18n`（3项）退出0。Vitest 输出既有路由注入警告及 Browserslist 数据过旧提示。本机浏览器夹具曾检查键盘、字段和360/1280宽度；网络列表命令本身参数校验失败，不计为网络验证。
 - `go vet -p 1 -tags 'unit integration' ./internal/service ./internal/repository ./internal/handler` 及最终 repository 复跑退出0。原规则 `bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 12m --allow-serial-runners --new-from-rev HEAD ./internal/service/... ./internal/repository/...` 退出0、`0 issues.`；后续修改了 repository 的SQL字面量和测试，按同参数单独复跑 repository 亦退出0、`0 issues.`。该差异检查不覆盖此前已提交 BPS 变更的完整 lint 缺口。
 - 未运行 CI、推送、部署或生产迁移。临时界面夹具 `frontend/tmp/availability-coverage-ui/` 的删除被自动审批以 `blocked by policy` 拒绝，保持原位等待拥有者处理。
+
+## 2026-11-09：D3 Anthropic兼容空流与乱序终态
+
+- 原Chat/Responses流式兼容入口将缺少`message_start`的正常EOF视为成功，孤立终态还可能先转换成`response.completed`。原位要求先有起始事件再接受终态；空流、仅ping和孤立终态走协议内失败并独立失效availability，不伪造上游5xx。删除测试中允许空流成功的旧例外，正常完成、客户端取消/断开和原usage收尾保持。
+- 扩展为四入口48个场景后，`go test -p 1 -tags unit ./internal/service -run '^TestAvailabilityAnthropicCompatRequiresStartedStream$' -count=1 -timeout=5m`实际退出1：Chat、Responses及其缓冲入口共12个“终态先于起始、随后截断”用例仍错误返回nil。原因是被过滤的孤立终态已提前置位完成标记；进一步只允许`message_start`之后的`message_stop`、带stop_reason的`message_delta`和`[DONE]`置位。乱序后若出现新的完整起止响应仍可正常完成。
+- 第一轮unit增量lint在源码继续修正、系统剩余物理内存降至约1.36GiB时主动停止，不计通过；只停止本任务lint进程，保留占用约27.54GiB的其他任务测试及其资源。最终检查按修正后的源码执行，结果继续追加于本条。
+- 最终源码`go test -race -p 1 -tags unit ./internal/service -run '^Test(AvailabilityAnthropicCompatRequiresStartedStream|AvailabilityProtocolMissingTerminalInvalidates|AvailabilityProtocolDisconnectExclusions|AvailabilityManagedBusinessFaultRequiresConfirmedWireSource|AnthropicCompatStream.*|AnthropicBuffered.*|AnthropicChat.*|AnthropicResponses.*|GatewayAnthropic.*)' -count=1 -timeout=8m`退出0，service `10.017s`；覆盖四入口48个新增场景、14协议路径的完整/截断/取消/探测、正常usage、上游错误/安全拒绝、读间隔及断开排空等既有回归。测试使用本地夹具，不证明生产部署或WS探测能力。
+- 修正后的`go vet -p 1 -tags unit ./internal/service`退出0；源码与设计中旧空流例外引用为0。三个项目文档23个本地链接均有效；STATE为72行、7874字节，恢复检查点结束于787字节，均在预算内。最终增量lint完成后追加结果。
+- 修正源码后的增量检查 `./bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 1 --timeout 12m --allow-serial-runners --new-from-rev HEAD ./internal/service/...` 退出0，输出 `0 issues.`。未运行CI、推送、部署或生产迁移。

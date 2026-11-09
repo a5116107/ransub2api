@@ -439,6 +439,9 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		if stream.upstreamErrType != "" {
 			break
 		}
+		if stream.terminalBeforeMessageStart(&event) {
+			continue
+		}
 		processAnthropicEvent(&event)
 	}
 

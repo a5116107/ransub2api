@@ -349,7 +349,7 @@ func TestAnthropicCompatStreaming_EOFWithoutTerminalEventFails(t *testing.T) {
 	}
 }
 
-func TestAnthropicCompatStreaming_EOFBeforeMessageStartKeepsExistingEnding(t *testing.T) {
+func TestAnthropicCompatStreaming_EOFBeforeMessageStartFails(t *testing.T) {
 	for name, handle := range compatStreamHandlers() {
 		t.Run(name, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
@@ -358,9 +358,11 @@ func TestAnthropicCompatStreaming_EOFBeforeMessageStartKeepsExistingEnding(t *te
 
 			result, err := handle(&GatewayService{}, &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader("event: ping\ndata: {\"type\":\"ping\"}\n\n"))}, c)
 
-			require.NoError(t, err)
-			require.NotNil(t, result)
-			require.NotContains(t, rec.Body.String(), compatStreamFailureMarkers[name])
+			require.ErrorContains(t, err, "missing message_start")
+			require.Nil(t, result)
+			require.True(t, IsResponseCommitted(c))
+			require.Equal(t, 1, strings.Count(rec.Body.String(), compatStreamFailureMarkers[name]))
+			require.NotContains(t, rec.Body.String(), compatStreamTerminalMarkers[name])
 		})
 	}
 }

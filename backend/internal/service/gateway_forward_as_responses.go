@@ -614,6 +614,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		if stream.upstreamErrType != "" {
 			break
 		}
+		if stream.terminalBeforeMessageStart(&event) {
+			continue
+		}
 		processEvent(&event)
 	}
 

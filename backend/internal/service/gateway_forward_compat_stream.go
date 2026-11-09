@@ -40,7 +40,7 @@ type anthropicCompatStream struct {
 
 	clientDisconnected bool
 	sawMessageStart    bool
-	// sawTerminal 表示上游已发出 message_stop、带 stop_reason 的 message_delta 或 [DONE]。
+	// sawTerminal 仅接受 message_start 之后的 message_stop、带 stop_reason 的 message_delta 或 [DONE]。
 	sawTerminal bool
 	// upstreamErr* 记录上游流内的 error 事件；收到后调用方结束读取。
 	upstreamErrType    string
@@ -227,7 +227,7 @@ func (st *anthropicCompatStream) nextLine() (string, bool) {
 	for {
 		line, err := st.pump.nextOrClientGone(st.clientGone)
 		if err == nil {
-			if payload, ok := extractOpenAISSEDataLine(line); ok && strings.TrimSpace(payload) == "[DONE]" {
+			if payload, ok := extractOpenAISSEDataLine(line); ok && st.sawMessageStart && strings.TrimSpace(payload) == "[DONE]" {
 				st.sawTerminal = true
 			}
 			return line, true
@@ -272,10 +272,10 @@ func (st *anthropicCompatStream) observe(event *apicompat.AnthropicStreamEvent, 
 	case "message_start":
 		st.sawMessageStart = true
 	case "message_stop":
-		st.sawTerminal = true
+		st.sawTerminal = st.sawMessageStart
 	case "message_delta":
 		if event.Delta != nil && event.Delta.StopReason != "" {
-			st.sawTerminal = true
+			st.sawTerminal = st.sawMessageStart
 		}
 	case "error":
 		st.upstreamErrPayload = payload
@@ -291,13 +291,26 @@ func (st *anthropicCompatStream) observe(event *apicompat.AnthropicStreamEvent, 
 	}
 }
 
-// failure 返回客户端在线、上游未发出结束事件即中断时的失败原因：上游流内
-// error 事件、读间隔超时、读错误，或 message_start 之后正常关闭。此时调用方不补发
-// 完成事件，而是写出协议内的终止错误。上游已发出结束事件、客户端已断开，或上游
-// 未发出 message_start 即正常关闭时返回 nil，调用方按已累计的 usage 正常收尾。
+func (st *anthropicCompatStream) terminalBeforeMessageStart(event *apicompat.AnthropicStreamEvent) bool {
+	if st.sawMessageStart || event == nil {
+		return false
+	}
+	switch event.Type {
+	case "message_stop":
+		return true
+	case "message_delta":
+		return event.Delta != nil && event.Delta.StopReason != ""
+	default:
+		return false
+	}
+}
+
+// failure 返回客户端在线但上游未完整开始并结束时的失败原因：上游流内
+// error 事件、读间隔超时、读错误，或缺少 message_start / 终态后正常关闭。
+// 此时调用方不补发完成事件，而是写出协议内的终止错误。完整流或客户端已断开返回 nil。
 // 读间隔超时时 err 为 errAnthropicNativeStreamIdle。
 func (st *anthropicCompatStream) failure() *anthropicCompatStreamFailure {
-	if st.clientDisconnected || st.sawTerminal {
+	if st.clientDisconnected || (st.sawMessageStart && st.sawTerminal) {
 		return nil
 	}
 	switch {
@@ -325,14 +338,18 @@ func (st *anthropicCompatStream) failure() *anthropicCompatStreamFailure {
 			errType: "stream_read_error",
 			message: "upstream stream disconnected: " + sanitizeStreamError(st.readErr),
 		}
-	case st.sawMessageStart:
+	case !st.sawMessageStart:
+		return &anthropicCompatStreamFailure{
+			err:     errors.New("stream usage incomplete: missing message_start"),
+			errType: "stream_incomplete",
+			message: "upstream stream ended without a message start event",
+		}
+	default:
 		return &anthropicCompatStreamFailure{
 			err:     errors.New("stream usage incomplete: missing terminal event"),
 			errType: "stream_incomplete",
 			message: "upstream stream ended without a terminal event",
 		}
-	default:
-		return nil
 	}
 }
 
