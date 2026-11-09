@@ -60,6 +60,21 @@ describe('shared scheduled test plans for Pelican', () => {
     expect(adminAPI.scheduledTests.update).toHaveBeenLastCalledWith(4, expect.objectContaining({ pelican_config: { ...config, question_kind: 'candy' } }))
     wrapper.unmount()
   })
+  it('disables connectivity auto-recovery and rejects invalid availability settings', async () => {
+    vi.mocked(adminAPI.scheduledTests.create).mockResolvedValue(plan as any)
+    const wrapper = mountPanel(); await flushPromises()
+    const vm = wrapper.vm as any
+    vm.newPlan.auto_recover = true
+    vm.newPelican = { ...config, availability: { valid_for_seconds: 120, max_extra_samples: 2 } }
+    expect(vm.newPlan.auto_recover).toBe(false)
+    await vm.handleCreate()
+    expect(adminAPI.scheduledTests.create).toHaveBeenLastCalledWith(expect.objectContaining({ auto_recover: false, pelican_config: expect.objectContaining({ availability: { valid_for_seconds: 120, max_extra_samples: 2 } }) }))
+    vi.mocked(adminAPI.scheduledTests.create).mockClear()
+    vm.newPelican = { ...config, availability: { valid_for_seconds: 29, max_extra_samples: 2 } }
+    await vm.handleCreate()
+    expect(adminAPI.scheduledTests.create).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('labels state probe plans and their results by verdict', async () => {
     const probe = { prompt: '', reasoning_effort: 'medium', parallel_count: 1, question_kind: 'state_probe' }
     vi.mocked(adminAPI.scheduledTests.listByAccount).mockResolvedValue([{ ...plan, auto_recover: false, pelican_config: probe }] as any)

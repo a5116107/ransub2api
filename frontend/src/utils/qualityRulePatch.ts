@@ -1,5 +1,6 @@
 import type { PelicanTestConfig, QualityBPSPolicy, QualityJudgeConfig, QualityPolicy, ScheduledTestPlan, UpdateScheduledTestPlanRequest } from '@/types'
 import { DEFAULT_EXCEL_BPS_MODELS } from '@/constants/account'
+import { validAvailability } from './availability'
 import { STATE_PROBE_QUESTION } from './intelligenceTest'
 import { DEFAULT_BPS_RECOVERY_INTERVAL_MINUTES, isValidBPSRecoveryInterval } from './excelBPSRecovery'
 
@@ -42,6 +43,7 @@ export function copyQualityRuleConfig(source: PelicanTestConfig): PelicanTestCon
     reasoning_effort: source.reasoning_effort,
     parallel_count: source.parallel_count,
     model_ids: source.model_ids ? [...source.model_ids] : undefined,
+    ...(source.availability ? { availability: { valid_for_seconds: source.availability.valid_for_seconds, max_extra_samples: source.availability.max_extra_samples } } : {}),
     quality: {
       trigger_on_upstream_5xx: policy.trigger_on_upstream_5xx ?? false,
       expected_answer: source.question_kind === 'random_reasoning' ? '' : policy.expected_answer,
@@ -140,7 +142,7 @@ export function qualityRuleFieldValue(rule: Pick<ScheduledTestPlan, 'model_id' |
     case 'enabled': return rule.enabled
     case 'retention': return rule.max_results
     case 'trigger': return q?.trigger_on_upstream_5xx ?? false
-    case 'test': return [cfg?.question_kind, cfg?.test_channel || 'account', cfg?.prompt, cfg?.reasoning_effort, cfg?.parallel_count,
+    case 'test': return [cfg?.question_kind, cfg?.test_channel || 'account', cfg?.prompt, cfg?.reasoning_effort, cfg?.parallel_count, cfg?.availability || null,
       q?.expected_answer, q?.judge?.kind || 'llm', q?.judge?.group_id, q?.judge?.model_id, q?.judge?.prompt]
     case 'restore': return [q?.auto_restore, b?.pass_threshold, b?.hold_on_usage]
     case 'action': return [q?.action, q?.remove_group_ids || [], q?.remove_models || [], q?.recovery_concurrency,
@@ -184,6 +186,9 @@ export function buildQualityRulePatch(
     if (config.model_ids.some(model => !model || model.length > 100)) throw new Error('qualityOps.modelRequired')
   }
   if (fields.includes('test')) {
+    if (!validAvailability(source.availability, source.question_kind !== STATE_PROBE_QUESTION && source.test_channel !== 'bps')) throw new Error('admin.accounts.pelicanTest.availabilityInvalid')
+    if (source.availability) config.availability = { valid_for_seconds: source.availability.valid_for_seconds, max_extra_samples: source.availability.max_extra_samples }
+    else delete config.availability
     config.question_kind = source.question_kind
     if (source.test_channel) config.test_channel = source.test_channel
     else delete config.test_channel

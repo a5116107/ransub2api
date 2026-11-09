@@ -13,6 +13,7 @@
         <Input :model-value="String(modelValue.parallel_count)" type="number" :label="t('admin.accounts.pelicanTest.parallel')" :hint="t('admin.accounts.pelicanTest.parallelHint')" @update:model-value="update('parallel_count', Number($event))" />
       </div>
     </template>
+    <AvailabilityFields :model-value="modelValue.availability" :supported="!isProbe && modelValue.test_channel !== 'bps'" @update:model-value="updateAvailability" />
   </div>
 </template>
 <script setup lang="ts">
@@ -22,7 +23,8 @@ import { useI18n } from 'vue-i18n'
 import Input from '@/components/common/Input.vue'
 import Select from '@/components/common/Select.vue'
 import TextArea from '@/components/common/TextArea.vue'
-import type { PelicanTestConfig } from '@/types'
+import AvailabilityFields from './AvailabilityFields.vue'
+import type { AvailabilityPolicy, PelicanTestConfig } from '@/types'
 const props = defineProps<{ modelValue: PelicanTestConfig }>()
 const emit = defineEmits<{ 'update:modelValue': [value: PelicanTestConfig] }>()
 const { t } = useI18n()
@@ -43,5 +45,8 @@ function selectQuestion(value: string | number | boolean | null) {
 }
 function update(key: keyof PelicanTestConfig, value: string | number | boolean | null) {
   emit('update:modelValue', { ...props.modelValue, [key]: value })
+}
+function updateAvailability(value: AvailabilityPolicy | undefined) {
+  emit('update:modelValue', { ...props.modelValue, availability: value })
 }
 </script>

@@ -113,6 +113,97 @@ func TestAvailabilityManagedScheduledWorkerRotatesRealGrants(t *testing.T) {
 		require.NoError(t, forwardErr, "each automatically observed grant must pass the actual gateway admission")
 	}
 }
+
+func TestAvailabilityManagedScheduledWorkerCoversBudgetedGrants(t *testing.T) {
+	f := newConnectionHTTPFixture(t)
+	ctx := t.Context()
+	first := f.seedHistoricalAPIKey(t, "first", "synthetic-first")
+	second := f.seedHistoricalAPIKey(t, "second", "synthetic-second")
+	third := f.seedHistoricalAPIKey(t, "third", "synthetic-third")
+	connectionResponse(t, f.request(http.MethodPatch, "/"+first.ID, fmt.Sprintf(`{"action":"select","revision":%d}`, first.Revision)))
+	wireTokens := make(chan string, 8)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireTokens <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	upstream := &managedAvailabilityLoopback{client: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+	cfg := &config.Config{Timezone: "UTC"}
+	cfg.Default.RateMultiplier = 1
+	plans := repository.NewScheduledTestPlanRepository(f.db)
+	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
+	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+	t.Cleanup(gateway.CloseOpenAIWSPool)
+	tester := service.NewAccountTestService(f.accounts, nil, nil, nil, nil, upstream, cfg, nil)
+	tester.SetOpenAIGatewayService(gateway)
+	probeCfg := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1,
+		Availability: &service.AvailabilityPolicy{ValidForSeconds: 30, MaxExtraSamples: 2},
+		Quality:      &service.QualityPolicy{Action: service.QualityActionObserveOnly, ExpectedAnswer: "21"}}
+	next := time.Now().UTC().Add(-time.Minute)
+	plan, err := plans.Create(ctx, &service.ScheduledTestPlan{AccountID: f.accountID, ModelID: "gpt-5.4", CronExpression: "* * * * *", Enabled: true, MaxResults: 3, NextRunAt: &next, PelicanConfig: probeCfg})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plans.Delete(context.Background(), plan.ID)) })
+	results := repository.NewScheduledTestResultRepository(f.db)
+	scheduled := service.NewScheduledTestService(plans, results)
+	runner := service.NewScheduledTestRunnerService(plans, scheduled, tester, nil, cfg)
+	runner.Start()
+	t.Cleanup(runner.Stop)
+	require.Eventually(t, func() bool {
+		var count, extra int
+		err := f.db.QueryRowContext(ctx, `SELECT count(*) FROM account_availability_states s CROSS JOIN LATERAL jsonb_object_keys(s.state->'connections') WHERE s.plan_id=$1 AND s.model_id=$2`, plan.ID, plan.ModelID).Scan(&count)
+		if err != nil || count != 3 {
+			return false
+		}
+		err = f.db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_results WHERE plan_id=$1 AND pelican_config->>'trigger_source'='availability_coverage'`, plan.ID).Scan(&extra)
+		return err == nil && extra == 2
+	}, 85*time.Second, 100*time.Millisecond, "the actual scheduled worker must publish each budgeted connection")
+	require.Len(t, wireTokens, 3)
+	require.ElementsMatch(t, []string{"Bearer synthetic-first", "Bearer synthetic-second", "Bearer synthetic-third"}, []string{<-wireTokens, <-wireTokens, <-wireTokens})
+	var extra int
+	require.NoError(t, f.db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_results WHERE plan_id=$1 AND pelican_config->>'trigger_source'='availability_coverage'`, plan.ID).Scan(&extra))
+	require.Equal(t, 2, extra)
+	var hasQuality int
+	require.NoError(t, f.db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_results WHERE plan_id=$1 AND pelican_config->>'trigger_source'='availability_coverage' AND (pelican_config ? 'quality' OR quality_round_id <> '' OR quality_action <> '' OR quality_judgment IS NOT NULL)`, plan.ID).Scan(&hasQuality))
+	require.Zero(t, hasQuality, "extra availability samples must not be quality evidence")
+	history, err := results.ListQualityHistory(ctx, 0, 100)
+	require.NoError(t, err)
+	qualityRounds := 0
+	for _, item := range history {
+		if item.PlanID == plan.ID {
+			qualityRounds++
+			require.Equal(t, "scheduled", item.PelicanConfig.TriggerSource)
+		}
+	}
+	require.Equal(t, 1, qualityRounds, "only the base scheduled sample belongs to quality history")
+	var lastRun, scheduledFinished time.Time
+	require.NoError(t, f.db.QueryRowContext(ctx, `SELECT last_run_at FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&lastRun))
+	require.NoError(t, f.db.QueryRowContext(ctx, `SELECT finished_at FROM scheduled_test_results WHERE plan_id=$1 AND pelican_config->>'trigger_source'='scheduled' ORDER BY id LIMIT 1`, plan.ID).Scan(&scheduledFinished))
+	require.WithinDuration(t, scheduledFinished, lastRun, time.Second, "availability-only rounds must not overwrite the quality schedule's last run")
+	current, err := plans.GetByID(ctx, plan.ID)
+	require.NoError(t, err)
+	require.NotNil(t, current.NextRunAt)
+	require.True(t, current.NextRunAt.After(time.Now()), "extra rounds must retain the normal next cron time")
+	for _, connection := range []*service.OpenAIAuthConnection{first, second, third} {
+		connectionResponse(t, f.request(http.MethodPatch, "/"+connection.ID, fmt.Sprintf(`{"action":"select","revision":%d}`, connection.Revision)))
+		account, getErr := f.accounts.GetByID(ctx, f.accountID)
+		require.NoError(t, getErr)
+		body := `{"model":"gpt-5.4","input":"fixture","stream":true,"reasoning":{"effort":"high"}}`
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		_, forwardErr := gateway.Forward(ctx, c, account, []byte(body))
+		require.NoError(t, forwardErr, "each actually probed connection must pass the gateway's final admission")
+	}
+}
+
 func (u *managedAvailabilityLoopback) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxy, id, concurrency)
 }

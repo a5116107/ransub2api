@@ -3,10 +3,10 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3 已补 BPS 主流及图片压缩缺终态观察与托管隔离；禁止CI、推送、部署、生产迁移。
-证据：缺终态不伪造上游5xx；同次故障不重复，已确认来源只隔离本连接，来源不明保护全账号。
-验证：主流三包 race、隔离 PostgreSQL 双连接；压缩联合 race 与本机 TLS 来源/取消通过，见 DECISIONS。
-下一动作：D3 补多连接覆盖、未确认传输和WS作用域；D2 跨区域归属与unknown核实继续。
+任务：D3 托管连接预算批量覆盖已本地实现和验证；禁止CI、推送、部署、生产迁移。
+证据：额外样本不进入质量历史；按预算、历史保留与连接数截断，计划到期时数据库拒绝额外领取。
+验证：service race、真实cron/隔离 PostgreSQL与Redis race、前端186项及类型/i18n检查通过，见 DECISIONS。
+下一动作：继续D2跨区域/unknown与D3未确认传输、WS作用域；再补D4区域传播及D5–D9。
 待补验证：BPS service/repository 三类定向 lint 通过，完整原规则增量 lint 因资源/超时未完成，详见 DECISIONS。
 外部等待：生产升级/回滚前排空旧任务与索引，需生产管理员执行；历史目录由拥有者清理。
 <!-- resume:end -->
@@ -28,7 +28,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新availability、BPS主流/图片压缩缺终态、托管隔离、媒体终检及cron轮转已验证；有效期内批量覆盖、未确认传输和WS作用域待补 |
+| D3 | in_progress | 最新availability、BPS缺终态、托管隔离、媒体终检、预算批量覆盖与cron轮转已验证；未确认传输和WS作用域待补 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
@@ -62,10 +62,11 @@
 
 ## 下一项工作
 
-D2继续异步视频跨区域归属、无任务ID的unknown自动核实，以及其他非标准鉴权/独立出站；区域从节点当前只做发送前 fail-closed，不凭本地快照创建或认领任务。D3已按原cron轮转探测托管连接，仍需有效期内批量覆盖、未确认传输及WS作用域；再补D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启停、变更或版本切换前须排空旧视频和批量任务；受限Live沿4.4.2，区域沿原SQL预算。
+D2继续异步视频跨区域归属、无任务ID的unknown自动核实，以及其他非标准鉴权/独立出站；区域从节点当前只做发送前 fail-closed，不凭本地快照创建或认领任务。D3预算批量覆盖不保证有效期内所有连接都被探测，未确认传输及WS作用域仍待验；再补D4区域传播及D5–D9。BPS未观测能力仍保守拒绝；旧批量缺来源任务保持等待。共享策略启停、变更或版本切换前须排空旧视频和批量任务；受限Live沿4.4.2，区域沿原SQL预算。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理
 
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
+- 本任务的 `frontend/tmp/availability-coverage-ui/` 临时界面夹具删除被自动审批拒绝（blocked by policy）；保留原位，由工作区拥有者处理，不尝试绕过。
 - 策略拒绝清理的历史产物仍保留：`backend/bin` lint 三文件、`backend/tmp/admin-key-pg-d8`、`availability-non5xx-regression`、`regional-key-pg`（55449/PID12708）、`live-key-verification`、`ws-turn-state-verification`、`gemini-route-pg`、`batch-key-verification`、`frontend/tmp/channel-monitor-ui-fixture` 及 `C:\Users\Administrator\AppData\Local\go-build-sub2api`。相关 schema/实例状态和大小详见 DECISIONS；由拥有者按准确路径手动停止/删除，不换工具绕过策略。

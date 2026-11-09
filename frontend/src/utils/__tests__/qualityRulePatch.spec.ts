@@ -29,6 +29,30 @@ const probePlan = () => {
 }
 
 describe('quality rule copy inputs', () => {
+  it('copies availability limits without sharing or importing unknown fields', () => {
+    const source = plan().pelican_config!
+    source.availability = { valid_for_seconds: 120, max_extra_samples: 4 }
+    Object.assign(source.availability, { private_field: 'must-not-copy' })
+    const copy = copyQualityRuleConfig(source)
+    expect(copy.availability).toEqual({ valid_for_seconds: 120, max_extra_samples: 4 })
+    copy.availability!.max_extra_samples = 2
+    expect(source.availability.max_extra_samples).toBe(4)
+  })
+
+  it('includes availability in an explicit bulk test edit and its comparison', () => {
+    const original = plan()
+    original.pelican_config!.availability = { valid_for_seconds: 120, max_extra_samples: 4 }
+    const source = draft()
+    source.pelican_config.availability = { valid_for_seconds: 300, max_extra_samples: 8 }
+    const patch = buildQualityRulePatch(original, source, ['test'])
+    expect(patch.pelican_config!.availability).toEqual({ valid_for_seconds: 300, max_extra_samples: 8 })
+    expect(qualityRuleFieldValue(original, 'test')).not.toEqual(qualityRuleFieldValue({ ...original, pelican_config: patch.pelican_config }, 'test'))
+    delete source.pelican_config.availability
+    expect(buildQualityRulePatch(original, source, ['test']).pelican_config!.availability).toBeUndefined()
+    source.pelican_config.availability = { valid_for_seconds: 29, max_extra_samples: 0 }
+    expect(() => buildQualityRulePatch(original, source, ['test'])).toThrow('admin.accounts.pelicanTest.availabilityInvalid')
+  })
+
   it('retains Jev choice in copy and bulk patches without importing arbitrary fields', () => {
     const source = draft()
     source.pelican_config.quality.judge = { kind: 'jev', group_id: 0, model_id: '', prompt: 'Compare values' }

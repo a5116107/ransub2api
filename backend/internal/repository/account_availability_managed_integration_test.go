@@ -125,6 +125,113 @@ func TestAvailabilityManagedScheduledProbeRotatesFairlyWithPostgres(t *testing.T
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 }
 
+func TestAvailabilityManagedCoverageClaimsDistinctGrantsWithPostgres(t *testing.T) {
+	dsn, err := pq.ParseURL(integrationPostgresDSN)
+	require.NoError(t, err)
+	t.Setenv("SUB2API_QUALITY_TEST_DSN", dsn)
+	repo, plan := availabilityPostgresPlan(t)
+	_, err = repo.db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{openai_connections_managed}','true') WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	plan.PelicanConfig.Availability.MaxExtraSamples = 2
+	plan, err = repo.Update(t.Context(), plan)
+	require.NoError(t, err)
+	ids := []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "33333333-3333-3333-3333-333333333333"}
+	for _, id := range ids {
+		_, err = repo.db.Exec(`INSERT INTO openai_auth_connections(id,account_id,kind,status,capabilities) VALUES($1,$2,'api_key','active','["responses"]')`, id, plan.AccountID)
+		require.NoError(t, err)
+	}
+	future := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, plan.ID, future)
+	require.NoError(t, err)
+	var seen []string
+	for range ids {
+		plan, err = repo.GetByID(t.Context(), plan.ID)
+		require.NoError(t, err)
+		plan.TriggerSource = service.AvailabilityCoverageSource
+		plan.AvailabilityExcludedConnections = append([]string(nil), seen...)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		until := now.Add(time.Minute)
+		claimed, claimErr := repo.ClaimPelican(t.Context(), plan, now, until, *plan.NextRunAt)
+		require.NoError(t, claimErr)
+		require.True(t, claimed)
+		require.Equal(t, len(ids), plan.AvailabilityEligibleConnections)
+		require.NotContains(t, seen, plan.AvailabilityProbeConnectionID)
+		seen = append(seen, plan.AvailabilityProbeConnectionID)
+		observations := availabilityPostgresObservation("pass")
+		observations[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(&service.Account{AuthConnectionID: plan.AvailabilityProbeConnectionID, AuthConnectionRevision: 1})}
+		action, applyErr := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observations)
+		require.NoError(t, applyErr)
+		require.Equal(t, "observed", action)
+		require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	}
+	require.ElementsMatch(t, ids, seen)
+	var count int
+	require.NoError(t, repo.db.QueryRow(`SELECT count(*) FROM account_availability_states s CROSS JOIN LATERAL jsonb_object_keys(s.state->'connections') WHERE s.plan_id=$1`, plan.ID).Scan(&count))
+	require.Equal(t, 3, count)
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	require.WithinDuration(t, future, *plan.NextRunAt, time.Microsecond, "coverage must not change the configured cron")
+	plan.TriggerSource = service.AvailabilityCoverageSource
+	plan.AvailabilityExcludedConnections = seen
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	claimed, err := repo.ClaimPelican(t.Context(), plan, now, now.Add(time.Minute), *plan.NextRunAt)
+	require.NoError(t, err)
+	require.False(t, claimed, "an exhausted batch must roll back its claim")
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	require.Nil(t, plan.RunningUntil)
+	require.WithinDuration(t, future, *plan.NextRunAt, time.Microsecond)
+	_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	plan.TriggerSource = service.AvailabilityCoverageSource
+	plan.AvailabilityExcludedConnections = seen[:1]
+	plan.AvailabilityExpectedFault = 0
+	claimed, err = repo.ClaimPelican(t.Context(), plan, now, now.Add(time.Minute), *plan.NextRunAt)
+	require.NoError(t, err)
+	require.False(t, claimed, "a newer fault version must prevent stale batch coverage")
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	require.Nil(t, plan.RunningUntil)
+	// A scheduled tick can become due between the caller's read and claim.
+	// It must keep priority over an extra availability-only round.
+	due := time.Now().UTC().Add(-time.Second).Truncate(time.Microsecond)
+	_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, plan.ID, due)
+	require.NoError(t, err)
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	plan.TriggerSource = service.AvailabilityCoverageSource
+	plan.AvailabilityExpectedFault = 1
+	claimed, err = repo.ClaimPelican(t.Context(), plan, now, now.Add(time.Minute), *plan.NextRunAt)
+	require.NoError(t, err)
+	require.False(t, claimed, "a due base schedule must not be claimed as extra coverage")
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	require.Nil(t, plan.RunningUntil)
+}
+
+func TestAvailabilityTriggeredClaimPreservesFinishScheduleSnapshot(t *testing.T) {
+	dsn, err := pq.ParseURL(integrationPostgresDSN)
+	require.NoError(t, err)
+	t.Setenv("SUB2API_QUALITY_TEST_DSN", dsn)
+	repo, plan := availabilityPostgresPlan(t)
+	due := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, plan.ID, due)
+	require.NoError(t, err)
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	plan.TriggerSource = "upstream_5xx"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	until, next := now.Add(time.Minute), now.Add(time.Hour)
+	claimed, err := repo.ClaimPelican(t.Context(), plan, now, until, next)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.WithinDuration(t, due, *plan.NextRunAt, time.Microsecond, "triggered completion still compares the pre-claim schedule")
+	require.NoError(t, repo.FinishTriggeredQuality(t.Context(), plan, until, now, next))
+	plan, err = repo.GetByID(t.Context(), plan.ID)
+	require.NoError(t, err)
+	require.WithinDuration(t, next, *plan.NextRunAt, time.Microsecond)
+}
+
 func TestAvailabilityManagedProbeCursorFailureRollsBackWithPostgres(t *testing.T) {
 	dsn, err := pq.ParseURL(integrationPostgresDSN)
 	require.NoError(t, err)

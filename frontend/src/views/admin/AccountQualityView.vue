@@ -153,6 +153,7 @@
             <label class="space-y-1"><span>{{ t('qualityOps.parallel') }}</span><input v-model.number="form.pelican_config.parallel_count" type="number" min="1" max="8" required class="input" /></label>
           </template>
         </div>
+        <AvailabilityFields v-if="editsField('test')" v-model="form.pelican_config.availability" :supported="!isProbe && form.pelican_config.test_channel !== 'bps'" />
         <template v-if="editsField('test') && !isProbe">
         <p v-if="isRandom" class="text-sm text-gray-500" data-testid="quality-random-hint">{{ t('qualityOps.randomHint') }}</p>
         <template v-else>
@@ -278,6 +279,7 @@ import QualityAccountSelector from '@/components/admin/operations/QualityAccount
 import SmartOpsNav from '@/components/admin/operations/SmartOpsNav.vue'
 import Icon from '@/components/icons/Icon.vue'
 import QualityBPSSettings from '@/components/admin/operations/QualityBPSSettings.vue'
+import AvailabilityFields from '@/components/admin/account/AvailabilityFields.vue'
 import QualityBPSRestoreOptions from '@/components/admin/operations/QualityBPSRestoreOptions.vue'
 import { useAccountQualityStore } from '@/stores/accountQuality'
 import { useAuthStore } from '@/stores/auth'
@@ -292,7 +294,8 @@ import QualityOwnershipReview from '@/components/admin/operations/QualityOwnersh
 import QualityProbeSchedule from '@/components/admin/operations/QualityProbeSchedule.vue'
 import QualityModelShortcuts from '@/components/admin/operations/QualityModelShortcuts.vue'
 import { qualityAccountStatusOptions, qualityAccountTypeOptions } from '@/utils/qualityAccountFilter'
-import type { AccountListItem, QualityBPSPolicy, QualityJudgeConfig, QualityPolicy, ScheduledTestPlan, ScheduledTestResult } from '@/types'
+import { validAvailability } from '@/utils/availability'
+import type { AccountListItem, AvailabilityPolicy, QualityBPSPolicy, QualityJudgeConfig, QualityPolicy, ScheduledTestPlan, ScheduledTestResult } from '@/types'
 
 const { t, te } = useI18n()
 const store = useAccountQualityStore(), auth = useAuthStore()
@@ -445,6 +448,7 @@ function reuseFieldSummary(rule: Pick<ScheduledTestPlan, 'model_id' | 'cron_expr
     q?.bps ? `${t('qualityOps.bpsPassThreshold')}: ${q.bps.pass_threshold} · ${t('qualityOps.bpsHoldOnUsage')}: ${t(q.bps.hold_on_usage ? 'qualityOps.on' : 'qualityOps.off')}` : ''].filter(Boolean).join(' · ')
   const question = cfg?.question_kind === 'state_probe' ? 'qualityOps.questionStateProbe' : cfg?.question_kind === 'random_reasoning' ? 'qualityOps.questionRandom' : 'qualityOps.questionCandy'
   return [t(question), t(cfg?.test_channel === 'bps' ? 'qualityOps.bpsChannel' : 'qualityOps.accountChannel'),
+    `${t('admin.accounts.pelicanTest.availabilityTitle')}: ${cfg?.availability ? `${cfg.availability.valid_for_seconds}s / ${t('admin.accounts.pelicanTest.availabilityBudget')}: ${cfg.availability.max_extra_samples ?? 0}` : t('qualityOps.off')}`,
     `${t('qualityOps.effort')}: ${cfg?.reasoning_effort || '—'}`, `${t('qualityOps.parallel')}: ${cfg?.parallel_count || 1}`,
     cfg?.prompt, q?.expected_answer ? `${t('qualityOps.answer')}: ${q.expected_answer}` : '',
     q?.judge && cfg?.question_kind !== 'state_probe' ? `${t('qualityOps.judgeTitle')}: ${q.judge.kind === 'jev' ? t('qualityOps.judgeJev') : `#${q.judge.group_id} / ${q.judge.model_id}`}\n${q.judge.prompt}` : ''].filter(Boolean).join('\n')
@@ -607,7 +611,7 @@ function resultContent(result: ScheduledTestResult) {
 }
 function defaults() {
   return { model_id: 'gpt-6-astra', cron_expression: '*/30 * * * *', enabled: true, max_results: 100, auto_recover: false,
-    pelican_config: { rule_name: '', question_kind: 'candy' as 'candy' | 'random_reasoning' | typeof STATE_PROBE_QUESTION, test_channel: 'account' as 'account' | 'bps', prompt: CANDY_PROMPT, reasoning_effort: 'high', parallel_count: 1, model_ids: [] as string[],
+    pelican_config: { rule_name: '', question_kind: 'candy' as 'candy' | 'random_reasoning' | typeof STATE_PROBE_QUESTION, test_channel: 'account' as 'account' | 'bps', prompt: CANDY_PROMPT, reasoning_effort: 'high', parallel_count: 1, model_ids: [] as string[], availability: undefined as AvailabilityPolicy | undefined,
       quality: { trigger_on_upstream_5xx: false, expected_answer: '21', action: 'remove_groups' as QualityPolicy['action'], remove_group_ids: [] as number[], remove_models: [] as string[], recovery_concurrency: 5, auto_restore: false, judge: { group_id: 0, model_id: '', prompt: t('qualityOps.defaultJudgePrompt') } as QualityJudgeConfig, bps: defaultQualityBPS() } } }
 }
 const form = ref(defaults())
@@ -901,6 +905,7 @@ async function save() {
   const scope = identity()
   let changed = false
   try {
+    if (!validAvailability(form.value.pelican_config.availability, !isProbe.value && form.value.pelican_config.test_channel !== 'bps')) throw new Error(t('admin.accounts.pelicanTest.availabilityInvalid'))
     if (copying.value && !editing.value && !bulkEditing.value && !savingPreset.value) {
       if (!selectedAccounts.value.length) throw new Error(t('qualityOps.copyAccountRequired'))
       if (selectedAccounts.value.some(id => existingAccountIds.value.has(id))) throw new Error(t('qualityOps.copyAccountConflict'))

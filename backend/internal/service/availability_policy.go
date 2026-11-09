@@ -32,6 +32,63 @@ func (s *ScheduledTestService) ReadAvailability(ctx context.Context, planID int6
 // tracking. It never changes quality ownership or manual account settings.
 type AvailabilityPolicy struct {
 	ValidForSeconds int `json:"valid_for_seconds"`
+	// Extra answer samples per scheduled run, not a monetary price or a cap on
+	// retries inside each sample. Zero preserves single-connection behavior.
+	MaxExtraSamples int `json:"max_extra_samples,omitempty"`
+}
+
+// AvailabilityCoverageSource identifies extra local scheduled rounds. It is
+// execution-only and never accepts a target connection from an API request.
+const AvailabilityCoverageSource = "availability_coverage"
+const MaxAvailabilityCoverageSamples = 100
+
+// Reserve 20% of the validity window for request duration and scheduling delay.
+// This is an estimate, not a guarantee that slow or failed probes finish in time.
+func availabilityCoverageRounds(plan *ScheduledTestPlan, eligible int, now time.Time) int {
+	if plan == nil || plan.PelicanConfig == nil || plan.PelicanConfig.Availability == nil || eligible <= 1 {
+		return 1
+	}
+	policy := plan.PelicanConfig.Availability
+	if plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.Action == QualityActionOpenAITwoFAAdmission {
+		return 1 // Its native finish operation changes the next-run schedule.
+	}
+	models := len(plan.PelicanConfig.ModelIDs)
+	if models == 0 {
+		models = 1
+	}
+	if models > MaxAvailabilityCoverageSamples || plan.PelicanConfig.ParallelCount < 1 || plan.PelicanConfig.ParallelCount > 8 {
+		return 1
+	}
+	samples := models * plan.PelicanConfig.ParallelCount
+	if policy.ValidForSeconds <= 0 || policy.MaxExtraSamples <= 0 || samples <= 0 {
+		return 1
+	}
+	// All samples share the existing per-plan history limit. Keep enough room
+	// for the base round so extra probes cannot immediately prune its evidence.
+	budget := min(policy.MaxExtraSamples, MaxAvailabilityCoverageSamples-samples, plan.MaxResults-samples)
+	if budget <= 0 {
+		return 1
+	}
+	var first time.Time
+	var err error
+	if plan.NextRunAt != nil && plan.NextRunAt.After(now) {
+		first = *plan.NextRunAt
+	} else {
+		first, err = computeNextRun(plan.CronExpression, now)
+	}
+	if err != nil {
+		return 1
+	}
+	second, err := computeNextRun(plan.CronExpression, first)
+	if err != nil || !second.After(first) {
+		return 1
+	}
+	required := float64(eligible) * second.Sub(first).Seconds() / (float64(policy.ValidForSeconds) * 0.8)
+	rounds := 1
+	for rounds < eligible && rounds < 8 && rounds-1 < budget/samples && float64(rounds) < required {
+		rounds++
+	}
+	return rounds
 }
 
 // TriggersOnUpstream5xx keeps availability recovery independent of quality
@@ -46,6 +103,9 @@ func validateAvailabilityPolicy(cfg *PelicanTestConfig) error {
 	}
 	if cfg.Availability.ValidForSeconds < 30 || cfg.Availability.ValidForSeconds > 86400 {
 		return fmt.Errorf("availability validity must be 30–86400 seconds")
+	}
+	if cfg.Availability.MaxExtraSamples < 0 || cfg.Availability.MaxExtraSamples > 64 {
+		return fmt.Errorf("availability extra sample budget must be 0–64")
 	}
 	if isOpenAICodexStateProbePlan(cfg) || cfg.TestChannel == "bps" {
 		return fmt.Errorf("availability requires an account answer test")

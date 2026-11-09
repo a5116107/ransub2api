@@ -103,7 +103,7 @@
           <div class="flex items-end">
             <div>
               <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                <Toggle v-model="newPlan.auto_recover" />
+                <Toggle v-model="newPlan.auto_recover" :disabled="!!newPelican.availability" />
                 {{ t('admin.scheduledTests.autoRecover') }}
               </label>
               <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
@@ -122,7 +122,7 @@
           </button>
           <button
             @click="handleCreate"
-            :disabled="disabled || !newPlan.model_id || !newPlan.cron_expression || creating"
+            :disabled="disabled || !newPlan.model_id || !newPlan.cron_expression || creating || (!!pelicanConfig && !pelicanAvailabilityValid(newPelican))"
             class="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Icon v-if="creating" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
@@ -322,7 +322,7 @@
               <div class="flex items-end">
                 <div>
                   <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                    <Toggle v-model="editForm.auto_recover" />
+                    <Toggle v-model="editForm.auto_recover" :disabled="!!editPelican.availability" />
                     {{ t('admin.scheduledTests.autoRecover') }}
                   </label>
                   <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
@@ -341,7 +341,7 @@
               </button>
               <button
                 @click="handleEdit"
-                :disabled="disabled || !editForm.model_id || !editForm.cron_expression || updating"
+                :disabled="disabled || !editForm.model_id || !editForm.cron_expression || updating || (!!pelicanConfig && !pelicanAvailabilityValid(editPelican))"
                 class="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Icon v-if="updating" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
@@ -485,6 +485,7 @@ import { useAppStore } from '@/stores/app'
 import { formatDateTime } from '@/utils/format'
 import PelicanTestFields from './PelicanTestFields.vue'
 import { STATE_PROBE_QUESTION, stateProbeVerdict, type StateProbeVerdict } from '@/utils/intelligenceTest'
+import { validAvailability } from '@/utils/availability'
 import type { PelicanTestConfig, ScheduledTestPlan, ScheduledTestResult } from '@/types'
 
 const { t } = useI18n()
@@ -570,6 +571,12 @@ const newPlan = reactive({
   auto_recover: false
 })
 
+function pelicanAvailabilityValid(config: PelicanTestConfig) {
+  return validAvailability(config.availability, config.question_kind !== STATE_PROBE_QUESTION && config.test_channel !== 'bps')
+}
+watch(() => !!newPelican.value.availability, enabled => { if (enabled) newPlan.auto_recover = false }, { flush: 'sync' })
+watch(() => !!editPelican.value.availability, enabled => { if (enabled) editForm.auto_recover = false }, { flush: 'sync' })
+
 const resetNewPlan = () => {
   newPlan.model_id = props.defaultModel || ''
   newPelican.value = configDefaults()
@@ -600,7 +607,7 @@ const loadPlans = async () => {
 }
 
 const handleCreate = async () => {
-  if (!props.accountId || !newPlan.model_id || !newPlan.cron_expression) return
+  if (!props.accountId || !newPlan.model_id || !newPlan.cron_expression || (props.pelicanConfig && !pelicanAvailabilityValid(newPelican.value))) return
   if (props.disabled || creating.value) return
   revision++
   creating.value = true
@@ -656,7 +663,7 @@ const cancelEdit = () => {
 }
 
 const handleEdit = async () => {
-  if (!editingPlanId.value || !editForm.model_id || !editForm.cron_expression) return
+  if (!editingPlanId.value || !editForm.model_id || !editForm.cron_expression || (props.pelicanConfig && !pelicanAvailabilityValid(editPelican.value))) return
   if (props.disabled || updating.value) return
   revision++
   updating.value = true

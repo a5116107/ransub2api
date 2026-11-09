@@ -109,10 +109,10 @@ func availabilityAccountManaged(ctx context.Context, tx *sql.Tx, accountID int64
 // Select one eligible grant per configured round, in stable hash order. The
 // cursor lives in the existing derived state and survives faults; no token or
 // connection identifier is persisted. Streaming avoids a candidate-count cap.
-func availabilityProbeTarget(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, fingerprint [32]byte) (string, error) {
+func availabilityProbeTarget(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, fingerprint [32]byte) (string, int, error) {
 	managed, err := availabilityAccountManaged(ctx, tx, plan.AccountID)
 	if err != nil || !managed {
-		return "", err
+		return "", 0, err
 	}
 	model := plan.ModelID
 	if len(plan.PelicanConfig.ModelIDs) > 0 {
@@ -122,21 +122,30 @@ func availabilityProbeTarget(ctx context.Context, tx *sql.Tx, plan *service.Sche
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(state->>'probe_cursor','') FROM account_availability_states
  WHERE plan_id=$1 AND model_id=$2 AND plan_version=$3 AND route_fingerprint=$4`, plan.ID, model, plan.UpdatedAt, fingerprint[:]).Scan(&cursor)
 	if err != nil && err != sql.ErrNoRows {
-		return "", err
+		return "", 0, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id::text FROM openai_auth_connections
  WHERE account_id=$1 AND kind IN ('codex','bps','siwc','api_key') AND status='active'
  AND refresh_state IN ('','idle') AND (cooldown_until IS NULL OR cooldown_until<=clock_timestamp())
  AND jsonb_typeof(capabilities)='array' AND capabilities ? 'responses'`, plan.AccountID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer func() { _ = rows.Close() }()
 	var firstID, firstKey, nextID, nextKey string
+	eligible := 0
+	excluded := make(map[string]bool, len(plan.AvailabilityExcludedConnections))
+	for _, id := range plan.AvailabilityExcludedConnections {
+		excluded[id] = true
+	}
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
-			return "", err
+			return "", 0, err
+		}
+		eligible++
+		if excluded[id] {
+			continue
 		}
 		key := service.AvailabilityProbeTargetKey(plan.AccountID, id)
 		if firstID == "" || key < firstKey {
@@ -147,12 +156,12 @@ func availabilityProbeTarget(ctx context.Context, tx *sql.Tx, plan *service.Sche
 		}
 	}
 	if err = rows.Err(); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if nextID != "" {
-		return nextID, nil
+		return nextID, eligible, nil
 	}
-	return firstID, nil
+	return firstID, eligible, nil
 }
 
 func upsertAvailabilityState(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, model string, until time.Time, fingerprint [32]byte, state *availabilityStoredState) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -357,14 +358,15 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	result, err := tx.ExecContext(ctx, `UPDATE scheduled_test_plans
  SET running_until = $3, next_run_at = $4
  WHERE id = $1 AND enabled = true
- AND (next_run_at <= $2 OR ($7 AND (pelican_config->'quality'->>'trigger_on_upstream_5xx'='true' OR jsonb_typeof(pelican_config->'availability')='object')))
+ AND (next_run_at <= $2 OR ($7 AND (pelican_config->'quality'->>'trigger_on_upstream_5xx'='true' OR jsonb_typeof(pelican_config->'availability')='object')) OR ($9 AND jsonb_typeof(pelican_config->'availability')='object'))
  AND (NOT $7 OR ((pelican_config->'quality'->>'trigger_on_upstream_5xx'='true' OR jsonb_typeof(pelican_config->'availability')='object')
    AND EXISTS (SELECT 1 FROM accounts WHERE accounts.id=account_id AND type IN ('oauth','apikey'))
    AND ($8::timestamptz IS NULL OR last_run_at IS NULL OR last_run_at < $8 OR pelican_config->'quality'->>'action'='remove_models' OR jsonb_typeof(pelican_config->'availability')='object')))
+ AND (NOT $9 OR (jsonb_typeof(pelican_config->'availability')='object' AND next_run_at > clock_timestamp()))
  AND (running_until IS NULL OR running_until < $2) AND updated_at = $5 AND next_run_at = $6
  AND EXISTS (SELECT 1 FROM accounts WHERE accounts.id = account_id AND deleted_at IS NULL)
  AND NOT EXISTS (SELECT 1 FROM scheduled_test_plans other WHERE other.account_id = scheduled_test_plans.account_id
- AND other.id <> scheduled_test_plans.id AND other.pelican_config IS NOT NULL AND other.running_until > $2)`, plan.ID, now, until, next, plan.UpdatedAt, plan.NextRunAt, plan.TriggerSource == "upstream_5xx", plan.TriggerObservedAt)
+ AND other.id <> scheduled_test_plans.id AND other.pelican_config IS NOT NULL AND other.running_until > $2)`, plan.ID, now, until, next, plan.UpdatedAt, plan.NextRunAt, plan.TriggerSource == "upstream_5xx", plan.TriggerObservedAt, plan.TriggerSource == service.AvailabilityCoverageSource)
 	if err != nil {
 		return false, err
 	}
@@ -375,6 +377,7 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	var bpsRecoveryPending bool
 	var accountFingerprint *[32]byte
 	var availabilityProbeConnectionID string
+	var availabilityEligibleConnections int
 	if n == 1 && plan.PelicanConfig != nil && (plan.PelicanConfig.Availability != nil || (plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults())) {
 		fingerprint, err := accountRouteFingerprint(ctx, tx, plan.AccountID, true)
 		if err != nil {
@@ -383,9 +386,12 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		accountFingerprint = &fingerprint
 	}
 	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Availability != nil {
-		availabilityProbeConnectionID, err = availabilityProbeTarget(ctx, tx, plan, *accountFingerprint)
+		availabilityProbeConnectionID, availabilityEligibleConnections, err = availabilityProbeTarget(ctx, tx, plan, *accountFingerprint)
 		if err != nil {
 			return false, err
+		}
+		if plan.TriggerSource == service.AvailabilityCoverageSource && (availabilityProbeConnectionID == "" || plan.PelicanConfig.Availability.MaxExtraSamples <= 0) {
+			return false, nil // Roll back the claim when no new eligible grant remains.
 		}
 	}
 	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil {
@@ -400,9 +406,13 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 			return false, err
 		}
 	}
+	var currentNext time.Time
 	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Availability != nil {
-		if err := tx.QueryRowContext(ctx, `SELECT availability_fault_version FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&plan.AvailabilityFaultVersion); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT next_run_at,availability_fault_version FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&currentNext, &plan.AvailabilityFaultVersion); err != nil {
 			return false, err
+		}
+		if plan.TriggerSource == service.AvailabilityCoverageSource && plan.AvailabilityFaultVersion != plan.AvailabilityExpectedFault {
+			return false, nil // A newer business fault owns the next probe.
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -417,6 +427,10 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		plan.QualityAccountFingerprint = accountFingerprint
 		plan.AvailabilityAccountFingerprint = accountFingerprint
 		plan.AvailabilityProbeConnectionID = availabilityProbeConnectionID
+		plan.AvailabilityEligibleConnections = availabilityEligibleConnections
+		if !currentNext.IsZero() && plan.TriggerSource != "upstream_5xx" {
+			plan.NextRunAt = &currentNext
+		}
 	}
 	return n == 1, nil
 }
@@ -427,6 +441,23 @@ func (r *scheduledTestPlanRepository) FinishPelican(ctx context.Context, id int6
  THEN $3::timestamptz+make_interval(secs => (pelican_config->'quality'->'admission'->>'wait_seconds')::int) ELSE next_run_at END
  WHERE id = $1 AND running_until = $2`, id, until, finished)
 	return err
+}
+
+// FinishAvailabilityCoverage preserves last_run_at and the scheduled cron.
+// It releases only the lease held by the current coverage round.
+func (r *scheduledTestPlanRepository) FinishAvailabilityCoverage(ctx context.Context, plan *service.ScheduledTestPlan, until time.Time) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE scheduled_test_plans SET running_until=NULL WHERE id=$1 AND running_until=$2`, plan.ID, until)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("availability coverage lease changed")
+	}
+	return nil
 }
 
 func (r *scheduledTestPlanRepository) FinishTriggeredQuality(ctx context.Context, plan *service.ScheduledTestPlan, until, finished, next time.Time) error {

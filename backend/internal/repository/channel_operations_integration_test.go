@@ -517,4 +517,10 @@ func TestChannelOperationsQualityWaitsForAllFrozenModels(t *testing.T) {
 	got = read()
 	require.Equal(t, 2, got.Summary.Passed)
 	require.Equal(t, "success", canonical().Status)
+	_, err = integrationDB.Exec(`INSERT INTO scheduled_test_results(plan_id,status,started_at,finished_at,created_at,pelican_config) VALUES($1,'success',$2,$2,$2,'{"model_id":"round-a","parallel_count":1,"trigger_source":"availability_coverage","availability_result":{"version":1,"status":"pass"}}')`, plan, filter.From.Add(2*time.Minute))
+	require.NoError(t, err)
+	got = read()
+	require.Equal(t, 2, got.Summary.Rounds, "availability-only samples must not inflate quality statistics")
+	require.Equal(t, 2, got.Summary.Passed)
+	require.Equal(t, "success", canonical().Status)
 }

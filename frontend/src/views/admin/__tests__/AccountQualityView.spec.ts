@@ -25,6 +25,22 @@ vi.mock('@/api/admin/groups', () => ({ getModelAllowlistCandidates: vi.fn().mock
 vi.mock('@/components/account/ModelWhitelistSelector.vue', () => ({ default: { props: ['modelValue'], template: '<div data-testid="model-selector">{{ modelValue.join(",") }}</div>' } }))
 const mountView = () => mount(AccountQualityView, { global: { plugins: [createPinia()], stubs: { Teleport: true, AppLayout: { template: '<main><slot /></main>' } } } })
 describe('quality operations', () => {
+  it('edits and saves availability budgets on an existing quality rule', async () => {
+    const rule = rules()[0]
+    rule.pelican_config!.question_kind = 'candy'
+    rule.pelican_config!.prompt = 'Return 21'
+    rule.pelican_config!.quality!.expected_answer = '21'
+    rule.pelican_config!.quality!.judge = { group_id: 9, model_id: 'judge', prompt: 'grade' }
+    rule.pelican_config!.availability = { valid_for_seconds: 120, max_extra_samples: 2 }
+    vi.mocked(listQualityPlans).mockResolvedValue([rule])
+    const wrapper = mountView(); await flushPromises()
+    ;(wrapper.vm as any).edit(rule); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[data-testid="availability-validity"]').element.value).toBe('120')
+    await wrapper.get('[data-testid="availability-budget"]').setValue('4')
+    await (wrapper.vm as any).save()
+    expect(scheduledTests.update).toHaveBeenCalledWith(1, expect.objectContaining({ pelican_config: expect.objectContaining({ availability: { valid_for_seconds: 120, max_extra_samples: 4 } }) }))
+    wrapper.unmount()
+  })
   beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); useAuthStore().user!.id = 1; useAuthStore().user!.role = 'admin'; vi.mocked(scheduledTests.create).mockReset(); vi.mocked(scheduledTests.delete).mockReset().mockResolvedValue(undefined); vi.mocked(scheduledTests.update).mockReset(); vi.mocked(accountsAPI.list).mockReset().mockResolvedValue({ items: [{ id: 1, name: 'Test account', platform: 'openai', type: 'oauth' }], total: 1 } as any); vi.mocked(listQualityPlans).mockResolvedValue([]); vi.mocked(listQualityOperations).mockResolvedValue({items:[],next_cursor:0})
     vi.mocked(listQualityTemplates).mockReset().mockResolvedValue([])
     vi.mocked(listQualityPresets).mockReset().mockResolvedValue([])

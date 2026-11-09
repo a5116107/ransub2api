@@ -2773,6 +2773,11 @@ export interface QualityRestoreDiagnostic {
   current_concurrency?: number
 }
 
+export interface AvailabilityPolicy {
+  valid_for_seconds: number
+  max_extra_samples?: number
+}
+
 export interface PelicanTestConfig {
   // Optional display name, persisted with the rule's editable configuration.
   rule_name?: string
@@ -2780,6 +2785,7 @@ export interface PelicanTestConfig {
   quality_model_outcomes?: Record<string, 'passed' | 'failed' | 'inconclusive' | 'skipped'>
   quality_model_actions?: Record<string, string>
   trigger_source?: string
+  availability?: AvailabilityPolicy
   quality?: QualityPolicy
   question_kind?: 'candy' | 'pelican' | 'state_probe' | 'random_reasoning'
   // Result-only identity of a runtime-generated question.

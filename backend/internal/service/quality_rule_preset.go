@@ -76,10 +76,15 @@ func reusableQualityConfig(source *PelicanTestConfig) (*PelicanTestConfig, error
 		policy.Judge = nil
 		policy.ExpectedAnswer = ""
 	}
+	var availability *AvailabilityPolicy
+	if source.Availability != nil {
+		copy := *source.Availability
+		availability = &copy
+	}
 	return &PelicanTestConfig{
 		Quality: policy, QuestionKind: source.QuestionKind, TestChannel: source.TestChannel,
 		Prompt: source.Prompt, ReasoningEffort: source.ReasoningEffort, ParallelCount: source.ParallelCount,
-		ModelIDs: append([]string(nil), source.ModelIDs...),
+		ModelIDs: append([]string(nil), source.ModelIDs...), Availability: availability,
 	}, nil
 }
 

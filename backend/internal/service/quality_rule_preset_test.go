@@ -50,6 +50,21 @@ func TestQualityPresetSavesOnlyReusableConfiguration(t *testing.T) {
 	require.Len(t, listed, 1)
 }
 
+func TestQualityPresetKeepsIndependentAvailabilityLimits(t *testing.T) {
+	repo := newFakeTemplateRepo(newTemplatePlanRepo())
+	svc := ProvideScheduledTestService(nil, nil, repo, nil)
+	input := presetInput()
+	input.PelicanConfig.Availability = &AvailabilityPolicy{ValidForSeconds: 120, MaxExtraSamples: 4}
+	saved, err := svc.CreateQualityPreset(t.Context(), input)
+	require.NoError(t, err)
+	require.Equal(t, input.PelicanConfig.Availability, saved.PelicanConfig.Availability)
+	saved.PelicanConfig.Availability.MaxExtraSamples = 2
+	require.Equal(t, 4, input.PelicanConfig.Availability.MaxExtraSamples)
+	input.PelicanConfig.Availability.MaxExtraSamples = 65
+	_, err = svc.CreateQualityPreset(t.Context(), input)
+	require.ErrorContains(t, err, "availability extra sample budget")
+}
+
 func TestQualityPresetValidatesNameAndPlanConfiguration(t *testing.T) {
 	for _, change := range []func(*QualityRulePreset){
 		func(p *QualityRulePreset) { p.Name = " " },

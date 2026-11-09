@@ -34,6 +34,52 @@ func TestAvailabilityPolicyValidation(t *testing.T) {
 	require.Error(t, validateAvailabilityPolicy(cfg))
 	cfg = &PelicanTestConfig{TestChannel: "bps", Availability: &AvailabilityPolicy{ValidForSeconds: 60}}
 	require.Error(t, validateAvailabilityPolicy(cfg))
+	for _, budget := range []int{-1, 0, 1, 64, 65} {
+		plan := pelicanPlan()
+		plan.PelicanConfig.Availability = &AvailabilityPolicy{ValidForSeconds: 60, MaxExtraSamples: budget}
+		_, err := nextPlanRun(plan, time.Now())
+		if budget < 0 || budget > 64 {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+}
+
+func TestAvailabilityCoverageRoundsRespectValidityAndSampleBudget(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name                       string
+		eligible, validity, budget int
+		models, samples, want      int
+	}{
+		{"disabled_by_default", 6, 30, 0, 1, 1, 1},
+		{"one_connection", 1, 30, 64, 1, 1, 1},
+		{"needs_three", 3, 30, 4, 1, 2, 3},
+		{"validity_reduces_work", 6, 120, 20, 1, 2, 4},
+		{"budget_limits_rounds", 6, 30, 4, 1, 2, 3},
+		{"multi_model_cost", 6, 30, 7, 2, 2, 2},
+		{"budget_below_one_round", 6, 30, 3, 2, 2, 1},
+		{"global_cap", 100, 30, 64, 1, 1, 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := pelicanPlan()
+			plan.CronExpression = "* * * * *"
+			plan.PelicanConfig.ParallelCount = tc.samples
+			if tc.models > 1 {
+				plan.PelicanConfig.ModelIDs = []string{"first", "second"}
+			}
+			plan.PelicanConfig.Availability = &AvailabilityPolicy{ValidForSeconds: tc.validity, MaxExtraSamples: tc.budget}
+			require.Equal(t, tc.want, availabilityCoverageRounds(plan, tc.eligible, now))
+		})
+	}
+	plan := pelicanPlan()
+	plan.CronExpression = "* * * * *"
+	plan.PelicanConfig.ParallelCount = 1
+	plan.PelicanConfig.Availability = &AvailabilityPolicy{ValidForSeconds: 30, MaxExtraSamples: 4}
+	next := now.Add(time.Minute)
+	plan.NextRunAt = &next
+	require.Equal(t, 3, availabilityCoverageRounds(plan, 3, now.Add(59*time.Second)), "a near-due cron must not be mistaken for the recurring interval")
 }
 
 func TestAvailabilityRoundSeparatesModelsAndRequiresAllSamples(t *testing.T) {
@@ -239,12 +285,19 @@ func TestAvailabilityPinnedProbeDoesNotPinIndependentJudge(t *testing.T) {
 
 func TestAvailabilityProbeTargetIsNotAConfigurableAPIField(t *testing.T) {
 	var plan ScheduledTestPlan
-	require.NoError(t, json.Unmarshal([]byte(`{"AvailabilityProbeConnectionID":"forged","availability_probe_connection_id":"forged"}`), &plan))
+	require.NoError(t, json.Unmarshal([]byte(`{"AvailabilityProbeConnectionID":"forged","availability_probe_connection_id":"forged","AvailabilityExcludedConnections":["forged"],"AvailabilityEligibleConnections":999,"AvailabilityCoverageStop":true,"AvailabilityExpectedFault":999,"TriggerSource":"availability_coverage"}`), &plan))
 	require.Empty(t, plan.AvailabilityProbeConnectionID)
+	require.Empty(t, plan.AvailabilityExcludedConnections)
+	require.Zero(t, plan.AvailabilityEligibleConnections)
+	require.False(t, plan.AvailabilityCoverageStop)
+	require.Zero(t, plan.AvailabilityExpectedFault)
+	require.Empty(t, plan.TriggerSource)
 	plan.AvailabilityProbeConnectionID = "private-fixture"
+	plan.AvailabilityExcludedConnections = []string{"private-exclusion"}
 	raw, err := json.Marshal(plan)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "private-fixture")
+	require.NotContains(t, string(raw), "private-exclusion")
 }
 
 func TestAvailabilityStateExpiryBoundary(t *testing.T) {

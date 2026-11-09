@@ -98,6 +98,8 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 }
 
 func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *ScheduledTestPlan) bool {
+	plan.AvailabilityCoverageStop = false
+	coverageOnly := plan.TriggerSource == AvailabilityCoverageSource
 	var triggeredAccount *Account
 	if plan.TriggerSource == quality5xxSource && s.accountTestSvc != nil {
 		var lookupErr error
@@ -115,7 +117,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d invalid config: %v", plan.ID, err)
 		return false
 	}
-	if plan.TriggerSource == quality5xxSource && plan.NextRunAt != nil && plan.NextRunAt.After(now) {
+	if (plan.TriggerSource == quality5xxSource && plan.NextRunAt != nil && plan.NextRunAt.After(now)) || (coverageOnly && plan.NextRunAt != nil) {
 		next = *plan.NextRunAt
 	}
 	// Persisted lease prevents duplicate execution across ticks and server replicas.
@@ -136,7 +138,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	if snapshot.TriggerSource == "" {
 		snapshot.TriggerSource = "scheduled"
 	}
-	applyTriggeredQuality := true
+	applyTriggeredQuality := !coverageOnly
 	if plan.TriggerSource == quality5xxSource && plan.PelicanConfig.Availability != nil {
 		applyTriggeredQuality = plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.TriggerOnUpstream5xx && !plan.PelicanConfig.BPSRecoveryPending
 	}
@@ -193,7 +195,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	var unsupported sync.Map
 	var allowed []string
 	var catalogErr error
-	if plan.PelicanConfig.Quality != nil {
+	if plan.PelicanConfig.Quality != nil && !coverageOnly {
 		allowed, _, catalogErr = s.scheduledSvc.eligibleQualityModels(runCtx, plan)
 	}
 	var wg sync.WaitGroup
@@ -221,7 +223,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 					continue
 				}
 				_, excluded := unsupported.Load(samplePlan.ModelID)
-				if plan.PelicanConfig.Quality != nil && (catalogErr != nil || excluded || !containsString(allowed, samplePlan.ModelID)) {
+				if plan.PelicanConfig.Quality != nil && !coverageOnly && (catalogErr != nil || excluded || !containsString(allowed, samplePlan.ModelID)) {
 					reason := "model_unavailable"
 					if excluded {
 						reason = "model_unsupported"
@@ -233,7 +235,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 					continue
 				}
 				result := s.runPelicanSample(runCtx, &samplePlan)
-				if plan.PelicanConfig.Quality != nil && qualityModelUnsupported(result.ErrorMessage) {
+				if plan.PelicanConfig.Quality != nil && !coverageOnly && qualityModelUnsupported(result.ErrorMessage) {
 					unsupported.Store(samplePlan.ModelID, true)
 					persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(runCtx), 3*time.Second)
 					persistErr := s.scheduledSvc.rememberUnsupportedQualityModel(persistCtx, plan.AccountID, samplePlan.ModelID)
@@ -254,18 +256,33 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	saveCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
 	if plan.PelicanConfig.Availability != nil {
-		action, applyErr := s.planRepo.ApplyAvailabilityOutcomes(saveCtx, plan, until, availabilityRoundOutcomes(plan, results))
+		outcomes := availabilityRoundOutcomes(plan, results)
+		for _, result := range results {
+			if result != nil && result.PelicanConfig != nil && result.PelicanConfig.AvailabilityResult != nil {
+				probe := result.PelicanConfig.AvailabilityResult
+				if probe.HTTPStatus == http.StatusTooManyRequests || probe.SemanticStatus == http.StatusTooManyRequests {
+					plan.AvailabilityCoverageStop = true
+				}
+			}
+		}
+		for _, outcome := range outcomes {
+			if outcome.Probe == nil || outcome.Probe.Status == "inconclusive" || outcome.Probe.Scope == nil || outcome.Probe.Scope.ConnectionScope == "" || outcome.Probe.HTTPStatus == http.StatusTooManyRequests || outcome.Probe.SemanticStatus == http.StatusTooManyRequests {
+				plan.AvailabilityCoverageStop = true
+			}
+		}
+		action, applyErr := s.planRepo.ApplyAvailabilityOutcomes(saveCtx, plan, until, outcomes)
+		plan.AvailabilityCoverageStop = plan.AvailabilityCoverageStop || applyErr != nil || action != "observed"
 		if applyErr != nil {
 			logger.LegacyPrintf("service.scheduled_test_runner", "availability plan=%d action failed: %v", plan.ID, applyErr)
 		} else if action == "stale_run" {
 			logger.LegacyPrintf("service.scheduled_test_runner", "availability plan=%d stale result retained only in history", plan.ID)
 		}
 	}
-	if plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults() {
+	if plan.PelicanConfig.Quality != nil && !coverageOnly && plan.PelicanConfig.Quality.UsesModelResults() {
 		plan.QualityModelOutcomes = qualityPlanModelOutcomes(plan, results)
 	}
 	qualityAction := ""
-	if plan.PelicanConfig.Quality != nil {
+	if plan.PelicanConfig.Quality != nil && !coverageOnly {
 		qualityAction = "inconclusive"
 		freshSignal := true
 		if plan.TriggerSource == quality5xxSource && plan.TriggerObservedAt != nil && s.qualityTrigger != nil {
@@ -279,11 +296,29 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 				logger.LegacyPrintf("service.scheduled_test_runner", "quality plan=%d action failed: %v", plan.ID, actionErr)
 			}
 		}
+		// Any non-observation quality rule can alter the account or own an
+		// existing quarantine; leave additional probes to the next schedule.
+		if plan.PelicanConfig.Quality.Action != QualityActionObserveOnly && qualityAction != "passed" && qualityAction != "no_change" {
+			plan.AvailabilityCoverageStop = true
+		}
 	}
 	succeeded := false
 	for _, result := range results {
 		result.QualityAction = qualityAction
-		if plan.PelicanConfig.Quality != nil {
+		if coverageOnly {
+			// Quality history and operations statistics select snapshots containing
+			// a quality policy. These extra probes are connectivity observations,
+			// so strip only their saved snapshot, never the executing rule.
+			snapshot := *result.PelicanConfig
+			snapshot.Quality = nil
+			snapshot.QualityModelOutcomes = nil
+			snapshot.QualityModelActions = nil
+			snapshot.QualityRestoreDiagnostic = nil
+			result.PelicanConfig = &snapshot
+			result.QualityJudgment = nil
+			result.QualityRoundID = ""
+		}
+		if plan.PelicanConfig.Quality != nil && !coverageOnly {
 			result.QualityRoundID = until.Format(time.RFC3339Nano)
 			result.PelicanConfig.QualityModelOutcomes = plan.QualityModelOutcomes
 			result.PelicanConfig.QualityRestoreDiagnostic = nil
@@ -308,7 +343,15 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		s.tryRecoverAccount(saveCtx, plan.AccountID, plan.ID)
 	}
 	finished := time.Now()
-	if plan.TriggerSource == quality5xxSource {
+	if coverageOnly {
+		finisher, ok := s.planRepo.(interface {
+			FinishAvailabilityCoverage(context.Context, *ScheduledTestPlan, time.Time) error
+		})
+		if !ok {
+			return false
+		}
+		err = finisher.FinishAvailabilityCoverage(saveCtx, plan, until)
+	} else if plan.TriggerSource == quality5xxSource {
 		// The stored rule was validated before claiming. The execution-only
 		// question may now be candy even for a state-probe BPS recovery rule.
 		following, nextErr := computeNextRun(plan.CronExpression, finished)
@@ -376,7 +419,7 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 	result.PelicanConfig = &snapshot
 	availability = snapshot.AvailabilityResult
 	// 探针题型的结果自带 correct/incorrect/unknown 判定，不经过判题模型。
-	if plan.PelicanConfig.Quality != nil && result.Status == "success" && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
+	if plan.PelicanConfig.Quality != nil && plan.TriggerSource != AvailabilityCoverageSource && result.Status == "success" && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
 		var judgment *QualityJudgment
 		if plan.PelicanConfig.Quality.Action == QualityActionOpenAITwoFAAdmission {
 			judgment = &QualityJudgment{Verdict: "incorrect", Reason: "builtin_admission", AccountID: plan.AccountID}

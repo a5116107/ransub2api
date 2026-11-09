@@ -174,7 +174,11 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		}
 	}()
 	if plan.PelicanConfig != nil {
-		return s.runPelicanPlan(ctx, plan)
+		completed = s.runPelicanPlan(ctx, plan)
+		if completed && plan.TriggerSource == "" {
+			s.runAvailabilityCoverage(ctx, plan)
+		}
+		return completed
 	}
 	result, err := s.accountTestSvc.RunTestBackground(ctx, plan.AccountID, plan.ModelID)
 	if err != nil {
@@ -201,6 +205,31 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun error: %v", plan.ID, err)
 	}
 	return true
+}
+
+// Additional coverage stays inside the same worker slot and uses a fresh
+// database claim per connection. Configuration edits, competing claims,
+// cancellation and unattributed failures stop the remaining batch.
+func (s *ScheduledTestRunnerService) runAvailabilityCoverage(ctx context.Context, plan *ScheduledTestPlan) {
+	if plan.AvailabilityProbeConnectionID == "" || plan.AvailabilityCoverageStop || plan.NextRunAt == nil {
+		return
+	}
+	rounds := availabilityCoverageRounds(plan, plan.AvailabilityEligibleConnections, time.Now())
+	seen := []string{plan.AvailabilityProbeConnectionID}
+	expectedFault := plan.AvailabilityFaultVersion
+	for i := 1; i < rounds && ctx.Err() == nil; i++ {
+		latest, err := s.planRepo.GetByID(ctx, plan.ID)
+		if err != nil || latest == nil || !latest.Enabled || !latest.UpdatedAt.Equal(plan.UpdatedAt) || latest.PelicanConfig == nil || latest.PelicanConfig.Availability == nil || latest.NextRunAt == nil || !latest.NextRunAt.Equal(*plan.NextRunAt) || !latest.NextRunAt.After(time.Now()) {
+			return
+		}
+		latest.TriggerSource = AvailabilityCoverageSource
+		latest.AvailabilityExcludedConnections = append([]string(nil), seen...)
+		latest.AvailabilityExpectedFault = expectedFault
+		if !s.runPelicanPlan(ctx, latest) || latest.AvailabilityCoverageStop || latest.AvailabilityProbeConnectionID == "" {
+			return
+		}
+		seen = append(seen, latest.AvailabilityProbeConnectionID)
+	}
 }
 
 // tryRecoverAccount attempts to recover an account from recoverable runtime state.
