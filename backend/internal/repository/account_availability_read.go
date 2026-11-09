@@ -140,6 +140,7 @@ func readAvailabilityModels(ctx context.Context, tx *sql.Tx, plan *availabilityP
 			if err = json.Unmarshal(stateJSON, &state); err != nil {
 				return err
 			}
+			state.restoreConnectionScopes()
 			switch {
 			case !storedVersion.Equal(plan.version):
 				item.Reason = "rule_changed"

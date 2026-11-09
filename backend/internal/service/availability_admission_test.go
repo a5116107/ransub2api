@@ -47,6 +47,69 @@ func availabilityAdmissionPass(accountID int64, model string) *AvailabilityRepor
 		}}}}
 }
 
+func TestAvailabilityManagedConnectionRejectsUnboundParentEvidence(t *testing.T) {
+	account := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		AuthConnectionID: "connection-a", AuthConnectionRevision: 1,
+		Credentials: map[string]any{"access_token": "synthetic-token"},
+		Extra:       map[string]any{"openai_connections_managed": true}}
+	report := availabilityAdmissionPass(account.ID, "target")
+	svc := &OpenAIGatewayService{availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"target"}`))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer synthetic-token")
+	err = svc.admitAvailabilityRequest(req.Context(), req, account)
+	require.True(t, IsOpenAITurnAdmissionError(err), "a parent-account pass must not authorize an independently managed connection")
+}
+
+func TestAvailabilityManagedConnectionScopeAndRecovery(t *testing.T) {
+	account := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		AuthConnectionID: "connection-a", AuthConnectionRevision: 1,
+		Credentials: map[string]any{"access_token": "synthetic-token"},
+		Extra:       map[string]any{"openai_connections_managed": true}}
+	makeRequest := func(token string) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"target"}`))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		return req
+	}
+	report := availabilityAdmissionPass(account.ID, "target")
+	report.Models[0].Decision.Scope = availabilityScopeForAccount(report.Models[0].Decision.Scope, makeRequest("synthetic-token"), account)
+	require.NotNil(t, report.Models[0].Decision.Scope)
+	require.NotEmpty(t, report.Models[0].Decision.Scope.ConnectionScope)
+	repo := &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}
+	svc := &OpenAIGatewayService{availabilityReader: repo}
+
+	for _, change := range []string{"same", "other_connection", "revision", "wrong_token", "missing_revision", "legacy"} {
+		t.Run(change, func(t *testing.T) {
+			candidate := *account
+			token := "synthetic-token"
+			switch change {
+			case "other_connection":
+				candidate.AuthConnectionID = "connection-b"
+			case "revision":
+				candidate.AuthConnectionRevision++
+			case "wrong_token":
+				token = "other-token"
+			case "missing_revision":
+				candidate.AuthConnectionRevision = 0
+			case "legacy":
+				candidate.AuthConnectionID = ""
+				candidate.Extra = nil
+			}
+			req := makeRequest(token)
+			err := svc.admitAvailabilityRequest(req.Context(), req, &candidate)
+			if change == "same" {
+				require.NoError(t, err)
+			} else {
+				require.True(t, IsOpenAITurnAdmissionError(err), "%s must not borrow another grant's evidence", change)
+			}
+		})
+	}
+	repo.reports = nil
+	req := makeRequest("other-token")
+	require.NoError(t, svc.admitAvailabilityRequest(req.Context(), req, account), "unconfigured accounts retain their existing behavior")
+}
+
 func TestAvailabilityAdmissionFinalHTTP(t *testing.T) {
 	for _, siwc := range []bool{false, true} {
 		for _, state := range []string{"pass", "fail", "stale", "unknown", "rule_paused", "rule_changed", "route_changed", "new_fault_event", "read_error", "prepared_route_changed", "wrong_account", "wrong_model", "nil_report", "missing_decision", "expires_at_send", "missing_rule_models", "missing_evaluation", "no_rules", "unconfigured", "probe"} {

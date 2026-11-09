@@ -15,7 +15,29 @@ import (
 // The event counter is internal fencing data, not part of the public report.
 type availabilityStoredState struct {
 	service.AvailabilityState
-	FaultVersion *int64 `json:"fault_version"`
+	FaultVersion               *int64 `json:"fault_version"`
+	ObservationConnectionScope string `json:"observation_connection_scope,omitempty"`
+	DecisionConnectionScope    string `json:"decision_connection_scope,omitempty"`
+}
+
+func (s *availabilityStoredState) restoreConnectionScopes() {
+	if s.Observation != nil && s.Observation.Scope != nil {
+		s.Observation.Scope.ConnectionScope = s.ObservationConnectionScope
+	}
+	if s.Decision != nil && s.Decision.Scope != nil {
+		s.Decision.Scope.ConnectionScope = s.DecisionConnectionScope
+	}
+}
+
+func (s *availabilityStoredState) captureConnectionScopes() {
+	s.ObservationConnectionScope = ""
+	if s.Observation != nil && s.Observation.Scope != nil {
+		s.ObservationConnectionScope = s.Observation.Scope.ConnectionScope
+	}
+	s.DecisionConnectionScope = ""
+	if s.Decision != nil && s.Decision.Scope != nil {
+		s.DecisionConnectionScope = s.Decision.Scope.ConnectionScope
+	}
 }
 
 // A round writes all model observations atomically without changing account,
@@ -95,6 +117,7 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 			if err = json.Unmarshal(raw, &state); err != nil {
 				return "", err
 			}
+			state.restoreConnectionScopes()
 			if state.FaultVersion == nil || *state.FaultVersion != faultVersion {
 				state = availabilityStoredState{}
 			}
@@ -106,6 +129,7 @@ func (r *scheduledTestPlanRepository) ApplyAvailabilityOutcomes(ctx context.Cont
 			validUntil := probe.FinishedAt.Add(time.Duration(cfg.Availability.ValidForSeconds) * time.Second)
 			state.ValidUntil = &validUntil
 		}
+		state.captureConnectionScopes()
 		raw, err = json.Marshal(state)
 		if err != nil {
 			return "", err

@@ -25,8 +25,11 @@ import (
 type Account struct {
 	AuthConnectionID       string
 	AuthConnectionRevision int64
-	excelBPSParentRoute    *[32]byte
-	InitialAdmissionPlan   *ScheduledTestPlan `json:"-"`
+	// Captured from the parent before projecting an independently managed grant.
+	// Never reconstructed from a projected account or serialized into snapshots.
+	AuthConnectionParentRoute *[32]byte `json:"-"`
+	excelBPSParentRoute       *[32]byte
+	InitialAdmissionPlan      *ScheduledTestPlan `json:"-"`
 	// InitialQualityPlan is internal create-only state, never imported or exported.
 	InitialQualityPlan      *ScheduledTestPlan `json:"-"`
 	ID                      int64

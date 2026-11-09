@@ -387,7 +387,7 @@ func TestExcelBPSManagedProjectionCapturesParentRoute(t *testing.T) {
 	svc := &OpenAIGatewayService{excelOAuthReauth: reauth, accountRepo: &turnAdmissionRepo{account: parent}, requireLatestTurnAdmission: true}
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
-	selected, err := svc.prepareAuthConnection(t.Context(), c, parent, nil, "gpt-5.6-sol")
+	selected, err := svc.prepareAuthConnection(t.Context(), c, parent, nil, "gpt-5.6-sol", "")
 	require.NoError(t, err)
 	require.NotNil(t, selected.excelBPSParentRoute)
 	require.Equal(t, excelBPSParentRouteFingerprint(parent), *selected.excelBPSParentRoute)

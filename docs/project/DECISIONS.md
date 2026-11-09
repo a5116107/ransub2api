@@ -1277,3 +1277,10 @@
 - `ConcurrencyCacheSuite.TestGetAccountsLoadBatch` 在基线合并提交 `6de829f` 首次引入时即带有无条件 `Skip("TODO: Fix this test - CurrentConcurrency returns 0 instead of expected value in CI")`；仓库历史没有更早失败实现或失败日志，CI 也只把它标为 legacy skip。该屏蔽掩盖了账号槽位、live 槽位和等待计数的真实统计。
 - 删除过时 skip，保留原有 2/3 槽位+1等待=100%、1/2=50%、空闲=0% 的严格断言。隔离 PostgreSQL 18.1/Redis 8.4 下单测显式 PASS；完整 `ConcurrencyCacheSuite` race 的 30 个子用例全部 PASS（含该批量回归），未复现 `CurrentConcurrency=0`。
 - `go test -race -p 1 -tags=unit ./internal/service -run '^TestGetAccountsLoadBatch' -count=1 -timeout=5m -v` 退出0；`go vet -p 1 -tags=integration ./internal/repository` 退出0；`bin/task-d2-golangci-lint.exe run --build-tags unit --concurrency 2 --timeout 12m --allow-serial-runners ./internal/repository/...` 输出 `0 issues.`。未运行 CI、推送、部署或生产迁移。
+
+## 2026-11-09：D3 托管连接可用性来源与发送栅栏
+
+- 账号后台探测原先直接使用父账号凭据，托管连接投影与父线路读取不一致；旧父账号通过也可能被另一托管连接借用。反例实际复现无来源通过被错误放行，另复现托管 401 停用父账号及 RPM 等待中连接撤销后仍发送。
+- 复用原连接选择、最终 fence 和账号测试，按实际 Codex/BPS/SIWC/API Key 连接及版本绑定纯文本 scope；读回时复核请求真实认证头、父线路快照和托管策略，连接/版本/父线路变化或旧无来源证据拒绝。RPM/区域等待后再校验连接；托管 401 不改父账号，托管 compact 和 quota 观察不伪装为父账号结果。内部摘要保存于原状态 JSON，管理状态、历史与插件快照不暴露。多连接同时有效的独立状态仍未实现，旧版混跑不提供本保护。
+- `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^(TestAvailabilityManagedProjectionParentRouteWithPostgres|TestAvailabilityManagedProbeToGatewayWithPostgres)$' -count=1 -timeout=12m` 退出0，repository `12.329s`；真实隔离 PostgreSQL/Redis、本机 TLS 验证旧证据拒绝、连接切换/轮换、复测恢复、隐私与父线路恢复。service/handler 相关 race 分别 `16.162s`、`1.215s`，RPM 撤销反例修复后专项 race `1.205s`；BPS/SIWC 后台探测及 SIWC SQL 最终 fence 回归通过。
+- `go vet -p 1 -tags 'unit integration' ./internal/service ./internal/repository ./internal/handler` 退出0；service/repository 原规则 unit lint 输出 `0 issues.`，unit+integration 对本轮增量 lint 输出 `0 issues.`。首次 lint 的 QF1003、测试 TLS/类型断言诊断均原位修复后复验；不把局部通过记成 D3 全部完成。未运行 CI、推送、部署或生产迁移。

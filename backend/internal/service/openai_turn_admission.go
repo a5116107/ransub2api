@@ -243,6 +243,25 @@ func AccountRouteFingerprint(a *Account) [32]byte {
 	return sha256.Sum256(b)
 }
 
+// AvailabilityPreparedRouteFingerprint compares a managed projection against
+// the parent route from which it was built, not against projected credentials.
+// Missing parent evidence is not permission to reconstruct it from a later row.
+func AvailabilityPreparedRouteFingerprint(a *Account) ([32]byte, bool) {
+	if a == nil {
+		return [32]byte{}, false
+	}
+	if a.AuthConnectionID != "" {
+		if a.AuthConnectionRevision <= 0 || a.AuthConnectionParentRoute == nil {
+			return [32]byte{}, false
+		}
+		return *a.AuthConnectionParentRoute, true
+	}
+	if a.HasManagedOpenAIConnections() {
+		return [32]byte{}, false
+	}
+	return AccountRouteFingerprint(a), true
+}
+
 func openAITurnAdmissionGroupFromContext(c *gin.Context) (int64, bool) {
 	if c == nil || getAPIKeyFromContext(c) == nil {
 		return 0, false
@@ -373,7 +392,7 @@ func (s *OpenAIGatewayService) admitOpenAITurn(ctx context.Context, c *gin.Conte
 	if err != nil {
 		return nil, err
 	}
-	return s.prepareAuthConnection(ctx, c, latest, selected, outboundModel)
+	return s.prepareAuthConnection(ctx, c, latest, selected, outboundModel, "")
 }
 
 // admitOpenAITurnForGroup is used by connection-pool callbacks, which run

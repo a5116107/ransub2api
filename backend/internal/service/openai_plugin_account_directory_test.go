@@ -92,7 +92,7 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	// = relational graphs with back-references that would cycle under encoding/json.
 	// InitialQualityPlan = internal creation-only policy, not readable plugin metadata.
 	stripped := map[string]struct{}{
-		"Credentials": {}, "Groups": {}, "AccountGroups": {}, "InitialQualityPlan": {}, "InitialAdmissionPlan": {},
+		"Credentials": {}, "Groups": {}, "AccountGroups": {}, "InitialQualityPlan": {}, "InitialAdmissionPlan": {}, "AuthConnectionParentRoute": {},
 	}
 	// Fields intentionally exposed as readable metadata (incl. Extra and Proxy —
 	// the proxy password is already handed out via ResolveOutboundIdentity's URL).
@@ -126,12 +126,14 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	}
 
 	// The raw Credentials blob must never serialize; Extra and the proxy ARE released.
+	parentRoute := [32]byte{1, 2, 3}
 	acct := &Account{
 		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
-		InitialQualityPlan: &ScheduledTestPlan{PelicanConfig: &PelicanTestConfig{Prompt: "PRIVATE-INITIAL-QUALITY-PROMPT"}},
-		Credentials:        map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
-		Extra:              map[string]any{"opaque": "extra-released", "codex_turn_ticket:gpt-6-astra": map[string]any{"state": "private-ticket-state"}},
-		Proxy:              &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
+		InitialQualityPlan:        &ScheduledTestPlan{PelicanConfig: &PelicanTestConfig{Prompt: "PRIVATE-INITIAL-QUALITY-PROMPT"}},
+		AuthConnectionParentRoute: &parentRoute,
+		Credentials:               map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
+		Extra:                     map[string]any{"opaque": "extra-released", "codex_turn_ticket:gpt-6-astra": map[string]any{"state": "private-ticket-state"}},
+		Proxy:                     &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
 	}
 	snap := accountReadableSnapshotJSON(acct)
 	require.NotNil(t, snap)
@@ -140,6 +142,7 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	assert.NotContains(t, string(snap), "LEAK-REFRESH", "raw Credentials must never appear in metadata")
 	assert.NotContains(t, string(snap), "private-ticket-state")
 	assert.NotContains(t, m, "InitialQualityPlan")
+	assert.NotContains(t, m, "AuthConnectionParentRoute")
 	assert.NotContains(t, string(snap), "PRIVATE-INITIAL-QUALITY-PROMPT")
 	require.NotNil(t, acct.InitialQualityPlan, "snapshot must not mutate creation-only policy")
 	assert.Equal(t, "PRIVATE-INITIAL-QUALITY-PROMPT", acct.InitialQualityPlan.PelicanConfig.Prompt)

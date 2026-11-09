@@ -3,9 +3,12 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
@@ -24,6 +27,53 @@ type AvailabilityRequestScope struct {
 	ServiceTier     string `json:"service_tier"`
 	ReasoningEffort string `json:"reasoning_effort"`
 	Capability      string `json:"capability"`
+	// Stored separately inside the repository's private state, never in API or history JSON.
+	ConnectionScope string `json:"-"`
+}
+
+// Bind observed capability to the independently authorized grant and its
+// revision. A parent-only or legacy observation must not authorize that grant.
+func availabilityScopeForAccount(scope *AvailabilityRequestScope, request *http.Request, account *Account) *AvailabilityRequestScope {
+	if scope == nil || account == nil {
+		return scope
+	}
+	if account.AuthConnectionID == "" {
+		if account.HasManagedOpenAIConnections() {
+			return nil
+		}
+		return scope
+	}
+	if account.AuthConnectionRevision <= 0 {
+		return nil
+	}
+	credential := account.GetCredential("access_token")
+	if account.Type == AccountTypeAPIKey {
+		credential = account.GetCredential("api_key")
+	}
+	authorization, valid := availabilitySingleAuthorization(request)
+	if credential == "" || !valid || authorization != "Bearer "+credential {
+		return nil
+	}
+	sum := sha256.Sum256([]byte("availability-connection-v1\x00" + account.AuthConnectionID + "\x00" + strconv.FormatInt(account.AuthConnectionRevision, 10)))
+	copy := *scope
+	copy.ConnectionScope = hex.EncodeToString(sum[:])
+	return &copy
+}
+
+func availabilitySingleAuthorization(request *http.Request) (string, bool) {
+	if request == nil {
+		return "", false
+	}
+	var values []string
+	for key, headers := range request.Header {
+		if strings.EqualFold(key, "Authorization") {
+			values = append(values, headers...)
+		}
+	}
+	if len(values) != 1 || values[0] == "" {
+		return "", false
+	}
+	return values[0], true
 }
 
 type availabilityBPSSourceKey struct{}
@@ -295,17 +345,18 @@ func availabilityRequestPayload(request *http.Request) ([]byte, bool) {
 	return payload, err == nil && bytes.Equal(payload, replay)
 }
 
-func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming.Trace) func(*http.Response) {
+func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming.Trace, account *Account) func(*http.Response) {
 	observation, _ := request.Context().Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation)
 	if observation == nil || trace.Number() == 0 {
 		return func(*http.Response) {}
 	}
 	observation.scope, observation.scopeAttempt = nil, trace.Number()
 	payload, confirmed := availabilityRequestPayload(request)
-	scope := availabilityScopeForRequest(request, payload)
+	scope := availabilityScopeForAccount(availabilityScopeForRequest(request, payload), request, account)
 	if !confirmed || scope == nil {
 		return func(*http.Response) {}
 	}
+	authorization, _ := availabilitySingleAuthorization(request)
 	method, host, address := request.Method, request.Host, request.URL.String()
 	return func(response *http.Response) {
 		if response == nil || response.Request == nil {
@@ -327,6 +378,15 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		sent, err := io.ReadAll(body)
 		closeErr := body.Close()
 		actualScope := availabilityScopeForRequest(actual, sent)
+		if scope.ConnectionScope != "" {
+			actualAuthorization, valid := availabilitySingleAuthorization(actual)
+			if !valid || actualAuthorization != authorization {
+				return
+			}
+			if actualScope != nil {
+				actualScope.ConnectionScope = scope.ConnectionScope
+			}
+		}
 		if err == nil && closeErr == nil && bytes.Equal(sent, payload) && actualScope != nil && *scope == *actualScope {
 			observation.scope = scope
 		}

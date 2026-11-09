@@ -58,7 +58,7 @@ func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, req
 		return denyOpenAITurn("availability_scope_unconfirmed")
 	}
 	payload, confirmed := availabilityRequestPayload(request)
-	scope := availabilityScopeForRequest(request, payload)
+	scope := availabilityScopeForAccount(availabilityScopeForRequest(request, payload), request, account)
 	if !confirmed || scope == nil {
 		return denyOpenAITurn("availability_scope_unconfirmed")
 	}

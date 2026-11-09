@@ -163,6 +163,13 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 	if err := regionalMeterBeforeSend(req.Context()); err != nil {
 		return nil, err
 	}
+	// RPM, availability and regional metering may wait after the first fence.
+	// Do not send a managed grant revoked or revised during those waits.
+	if account != nil && account.AuthConnectionID != "" {
+		if err := s.fenceAuthConnectionEgress(req.Context(), req, account); err != nil {
+			return nil, err
+		}
+	}
 	if err := controlledSubmission(req.Context(), "native_http"); err != nil {
 		return nil, err
 	}

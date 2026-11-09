@@ -278,7 +278,7 @@ func TestAvailabilityProbeScopeRequiresActualRequestAssociation(t *testing.T) {
 			require.NoError(t, err)
 			upstream := timedAccountTestUpstream(&runtimeFallbackUpstream{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
 				return server.Client().Do(req)
-			}})
+			}}, nil)
 			response, err := upstream.Do(request, "", 901, 1)
 			require.NoError(t, err)
 			_, err = io.Copy(io.Discard, response.Body)
@@ -289,6 +289,44 @@ func TestAvailabilityProbeScopeRequiresActualRequestAssociation(t *testing.T) {
 			} else {
 				require.Equal(t, &AvailabilityRequestScope{Version: 1, Protocol: "responses_http", Stream: true, Model: "target", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}, observation.scope)
 				require.Equal(t, 1, observation.scopeAttempt)
+			}
+		})
+	}
+}
+
+func TestAvailabilityManagedProbeScopeRequiresActualCredential(t *testing.T) {
+	for _, scenario := range []string{"same", "rewrite", "duplicate", "wrong_initial"} {
+		t.Run(scenario, func(t *testing.T) {
+			account := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+				AuthConnectionID: "connection-a", AuthConnectionRevision: 7,
+				Credentials: map[string]any{"access_token": "synthetic-token"}}
+			collector := requesttiming.New(time.Now(), 0)
+			observation := &availabilityProbeObservation{}
+			ctx := context.WithValue(requesttiming.With(t.Context(), collector), availabilityProbeSnapshotKey{}, observation)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"target"}`))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer synthetic-token")
+			switch scenario {
+			case "wrong_initial":
+				req.Header.Set("Authorization", "Bearer different-token")
+			case "duplicate":
+				req.Header["authorization"] = []string{"Bearer different-token"}
+			}
+			upstream := timedAccountTestUpstream(&runtimeFallbackUpstream{do: func(sent *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+				actual := sent.Clone(sent.Context())
+				if scenario == "rewrite" {
+					actual.Header.Set("Authorization", "Bearer different-token")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Request: actual, Header: make(http.Header), Body: http.NoBody}, nil
+			}}, account)
+			resp, err := upstream.Do(req, "", account.ID, 1)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			if scenario == "same" {
+				require.NotNil(t, observation.scope)
+				require.NotEmpty(t, observation.scope.ConnectionScope)
+			} else {
+				require.Nil(t, observation.scope, "unconfirmed wire authentication must not publish connection evidence")
 			}
 		})
 	}

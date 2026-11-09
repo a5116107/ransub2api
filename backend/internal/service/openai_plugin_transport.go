@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 )
 
 func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
@@ -219,7 +221,18 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		}
 		observeAttempt := s.observePriorityAttempt(request, account)
 		request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
+		var probeTrace *requesttiming.Trace
+		observeScope := func(*http.Response) {}
+		if request.Context().Value(availabilityProbeSnapshotKey{}) != nil {
+			request, probeTrace = requesttiming.StartAttempt(request, account.ID, 0)
+			observeScope = observeAvailabilityProbeRequest(request, probeTrace, account)
+		}
 		resp, err := s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
+		observeScope(resp)
+		if probeTrace != nil {
+			probeTrace.Response(resp, err)
+			accountTestResponseMode(request, resp)
+		}
 		observeTransport(resp, err)
 		observeAttempt(resp, err)
 		s.rateLimitService.observeQualityResponse(request.Context(), account, resp, err)
@@ -297,6 +310,19 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 ) (*http.Response, error) {
 	request = bindOpenAIAgentPublicKey(request, s.accountRepo, account)
 	gateway := s.openaiGatewayService
+	if gateway != nil && gateway.excelOAuthReauth != nil {
+		if err := gateway.excelOAuthReauth.validateAuthConnectionPolicy(request.Context(), account); err != nil {
+			return nil, err
+		}
+	}
+	if account.AuthConnectionID != "" {
+		if gateway == nil {
+			return nil, fmt.Errorf("authorization connection fence unavailable")
+		}
+		if err := gateway.fenceAuthConnectionEgress(request.Context(), request, account); err != nil {
+			return nil, err
+		}
+	}
 	model := extractOpenAICodexTicketModel(body)
 	if gateway != nil && !IsAstraSourceAcquisition(request.Context()) && request.URL != nil && request.URL.String() == chatgptCodexAPIURL &&
 		isOpenAICodexTicketAccount(account, model) && gateway.openAICodexTicketEnabledContext(request.Context()) &&
@@ -309,14 +335,14 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 		request = request.WithContext(context.WithValue(request.Context(), astraCandySkipObservationKey{}, true))
 		return gateway.doOpenAIUpstream(request, proxyURL, account)
 	}
-	if s.pluginManager != nil {
+	if s.pluginManager != nil && account.AuthConnectionID == "" {
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(pluginUpstreamKeyPolicyContext(request.Context(), s.cfg), request, proxyURL, account)
 		if handled {
 			return response, err
 		}
 	}
 	if useTLSFallback {
-		return timedAccountTestUpstream(s.httpUpstream).DoWithTLS(
+		return timedAccountTestUpstream(s.httpUpstream, account).DoWithTLS(
 			request,
 			proxyURL,
 			account.ID,
@@ -324,5 +350,5 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 			s.tlsFPProfileService.ResolveTLSProfile(account),
 		)
 	}
-	return timedAccountTestUpstream(s.httpUpstream).Do(request, proxyURL, account.ID, account.Concurrency)
+	return timedAccountTestUpstream(s.httpUpstream, account).Do(request, proxyURL, account.ID, account.Concurrency)
 }

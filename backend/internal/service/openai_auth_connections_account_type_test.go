@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -161,7 +163,7 @@ func TestOpenAIConnectionHistoricalAPIKeyRuntime(t *testing.T) {
 					for _, endpoint := range []string{"responses", "chat/completions", "embeddings"} {
 						ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 						ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, strings.NewReader("{}"))
-						projected, err := gateway.prepareAuthConnection(context.Background(), ctx, a, nil, "synthetic-model")
+						projected, err := gateway.prepareAuthConnection(context.Background(), ctx, a, nil, "synthetic-model", "")
 						require.NoError(t, err, "persisted managed API key route must remain usable")
 						require.Equal(t, c.ID, projected.AuthConnectionID)
 						require.Equal(t, AccountTypeAPIKey, projected.Type)
@@ -192,7 +194,7 @@ func TestOpenAIConnectionOrdinaryAPIKeyRouteUnchanged(t *testing.T) {
 	gateway := &OpenAIGatewayService{excelOAuthReauth: s, cfg: &config.Config{}}
 	a, err := s.accounts.GetAccount(context.Background(), 42)
 	require.NoError(t, err)
-	out, err := gateway.prepareAuthConnection(context.Background(), nil, a, nil, "synthetic-model")
+	out, err := gateway.prepareAuthConnection(context.Background(), nil, a, nil, "synthetic-model", "")
 	require.NoError(t, err)
 	require.Same(t, a, out)
 	require.Empty(t, out.AuthConnectionID)
@@ -201,6 +203,35 @@ func TestOpenAIConnectionOrdinaryAPIKeyRouteUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "apikey", kind)
 	require.Equal(t, "synthetic-primary", token)
+}
+
+func TestOpenAIConnectionRevokedDuringRPMIsNotSent(t *testing.T) {
+	reauth, connections := connectionTypeService(AccountTypeOAuth)
+	connections.managed = true
+	connection := &OpenAIAuthConnection{ID: "c910c45b-79a0-4367-a1dc-60e12210e199", AccountID: 42, Kind: "codex",
+		Status: "active", RefreshState: "idle", Revision: 1, Preferred: true, Capabilities: []string{"responses"}}
+	require.NoError(t, reauth.encryptConnectionCredentials(connection, map[string]any{"access_token": "synthetic-managed", "expires_at": fmt.Sprint(time.Now().Add(time.Hour).Unix())}))
+	connections.rows = []*OpenAIAuthConnection{connection}
+	parent, err := reauth.accounts.GetAccount(t.Context(), 42)
+	require.NoError(t, err)
+	parent.Extra = map[string]any{"openai_connections_managed": true, "base_rpm": 2}
+	cache := &availabilityAdmissionRPMCache{openAIRPMTestCache: &openAIRPMTestCache{counts: map[int64]int{}}, onAcquire: func() {
+		connections.rows[0].Status = "unlinked"
+		connections.rows[0].Revision++
+	}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}}
+	gateway := &OpenAIGatewayService{excelOAuthReauth: reauth, cfg: &config.Config{}, rpmCache: cache, httpUpstream: upstream}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	selected, err := gateway.prepareAuthConnection(t.Context(), c, parent, nil, "gpt-5.4", "")
+	require.NoError(t, err)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"gpt-5.4"}`))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer synthetic-managed")
+	response, err := gateway.doOpenAIUpstream(request, "", selected)
+	require.Error(t, err, "a connection revoked during RPM admission must not be sent")
+	require.Nil(t, response)
+	require.Empty(t, upstream.requests)
 }
 
 func TestOpenAIConnectionManagementRejectsUnsupportedParents(t *testing.T) {

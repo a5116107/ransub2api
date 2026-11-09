@@ -22,15 +22,18 @@ func WithAccountTestTimingStart(ctx context.Context, start time.Time) context.Co
 
 // The adapter is request-scoped through the collector context. It never mutates
 // the shared service or changes authentication, URLs, bodies, retries or billing.
-type accountTimingUpstream struct{ upstream HTTPUpstream }
+type accountTimingUpstream struct {
+	upstream HTTPUpstream
+	account  *Account
+}
 
-func timedAccountTestUpstream(upstream HTTPUpstream) HTTPUpstream {
-	return accountTimingUpstream{upstream}
+func timedAccountTestUpstream(upstream HTTPUpstream, account *Account) HTTPUpstream {
+	return accountTimingUpstream{upstream: upstream, account: account}
 }
 
 func (u accountTimingUpstream) Do(req *http.Request, proxy string, account int64, concurrency int) (*http.Response, error) {
 	req, trace := requesttiming.StartAttempt(req, account, 0)
-	observeScope := observeAvailabilityProbeRequest(req, trace)
+	observeScope := observeAvailabilityProbeRequest(req, trace, u.account)
 	resp, err := u.upstream.Do(req, proxy, account, concurrency)
 	observeScope(resp)
 	trace.Response(resp, err)
@@ -40,7 +43,7 @@ func (u accountTimingUpstream) Do(req *http.Request, proxy string, account int64
 
 func (u accountTimingUpstream) DoWithTLS(req *http.Request, proxy string, account int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	req, trace := requesttiming.StartAttempt(req, account, 0)
-	observeScope := observeAvailabilityProbeRequest(req, trace)
+	observeScope := observeAvailabilityProbeRequest(req, trace, u.account)
 	resp, err := u.upstream.DoWithTLS(req, proxy, account, concurrency, profile)
 	observeScope(resp)
 	trace.Response(resp, err)

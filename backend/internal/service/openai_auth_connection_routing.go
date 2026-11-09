@@ -58,7 +58,12 @@ func (a *Account) managedConnectionSupports(capability string) bool {
 	return false
 }
 
+const accountTestResponsesCapabilityKey = "openai_account_test_responses_capability"
+
 func connectionCapabilityForRequest(c *gin.Context) string {
+	if c != nil && c.GetBool(accountTestResponsesCapabilityKey) {
+		return "responses"
+	}
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return "responses"
 	}
@@ -77,7 +82,7 @@ func connectionCapabilityForRequest(c *gin.Context) string {
 	}
 }
 
-func (s *OpenAIGatewayService) prepareAuthConnection(ctx context.Context, c *gin.Context, account, selected *Account, model string) (*Account, error) {
+func (s *OpenAIGatewayService) prepareAuthConnection(ctx context.Context, c *gin.Context, account, selected *Account, model, capability string) (*Account, error) {
 	if c != nil {
 		c.Set("openai_auth_connection_id", "")
 	}
@@ -105,7 +110,9 @@ func (s *OpenAIGatewayService) prepareAuthConnection(ctx context.Context, c *gin
 	if err != nil {
 		return nil, err
 	}
-	capability := connectionCapabilityForRequest(c)
+	if capability == "" {
+		capability = connectionCapabilityForRequest(c)
+	}
 	pinned := ""
 	if selected != nil {
 		pinned = selected.AuthConnectionID
@@ -161,9 +168,15 @@ func (s *OpenAIGatewayService) prepareAuthConnection(ctx context.Context, c *gin
 	out := *account
 	out.AuthConnectionID = chosen.ID
 	out.AuthConnectionRevision = chosen.Revision
+	if account.AuthConnectionID == "" {
+		parentRoute := AccountRouteFingerprint(account)
+		out.AuthConnectionParentRoute = &parentRoute
+	}
 	if chosen.Kind == "bps" {
-		route := excelBPSParentRouteFingerprint(account)
-		out.excelBPSParentRoute = &route
+		if account.AuthConnectionID == "" {
+			route := excelBPSParentRouteFingerprint(account)
+			out.excelBPSParentRoute = &route
+		}
 	}
 	out.Credentials = shallowCopyMap(account.Credentials)
 	// Keep model configuration, remove every legacy credential and registration

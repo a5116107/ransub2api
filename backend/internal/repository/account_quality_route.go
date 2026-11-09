@@ -50,8 +50,12 @@ func accountRouteFingerprintWithBinding(ctx context.Context, tx *sql.Tx, account
 			}
 		}
 		fingerprint := service.AccountRouteFingerprint(account)
-		if len(chain) == 0 && prepared != nil && (prepared.ID != accountID || fingerprint != service.AccountRouteFingerprint(prepared)) {
-			return [32]byte{}, service.ErrAvailabilityRouteChanged
+		if len(chain) == 0 && prepared != nil {
+			preparedRoute, valid := service.AvailabilityPreparedRouteFingerprint(prepared)
+			if prepared.ID != accountID || !valid || fingerprint != preparedRoute ||
+				account.HasManagedOpenAIConnections() != (prepared.AuthConnectionID != "") {
+				return [32]byte{}, service.ErrAvailabilityRouteChanged
+			}
 		}
 		if len(chain) == 0 && account.ParentAccountID == nil {
 			return fingerprint, nil

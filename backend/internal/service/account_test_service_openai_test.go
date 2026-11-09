@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
@@ -23,9 +24,10 @@ import (
 // --- shared test helpers ---
 
 type queuedHTTPUpstream struct {
-	responses []*http.Response
-	requests  []*http.Request
-	tlsFlags  []bool
+	responses     []*http.Response
+	requests      []*http.Request
+	tlsFlags      []bool
+	attachRequest bool
 }
 
 func (u *queuedHTTPUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
@@ -40,6 +42,9 @@ func (u *queuedHTTPUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ i
 	}
 	resp := u.responses[0]
 	u.responses = u.responses[1:]
+	if u.attachRequest {
+		resp.Request = req
+	}
 	return resp, nil
 }
 
@@ -135,6 +140,173 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 	require.Equal(t, 42.0, repo.updatedExtra["codex_5h_used_percent"])
 	require.Equal(t, 88.0, repo.updatedExtra["codex_7d_used_percent"])
 	require.Contains(t, recorder.Body.String(), "test_complete")
+}
+
+func managedConnectionProbeFixture(t *testing.T, resp *http.Response) (*AccountTestService, *OpenAIOAuthReauthService, *connectionTypeRepo, *openAIAccountTestRepo, *Account, *queuedHTTPUpstream) {
+	t.Helper()
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	reauth, connectionRepo := connectionTypeService(AccountTypeOAuth)
+	parent, err := reauth.accounts.GetAccount(context.Background(), 42)
+	require.NoError(t, err)
+	parent.Extra = map[string]any{"openai_connections_managed": true}
+	connection := &OpenAIAuthConnection{
+		ID:           "c910c45b-79a0-4367-a1dc-60e12210e199",
+		AccountID:    parent.ID,
+		Kind:         "codex",
+		Status:       "active",
+		RefreshState: "idle",
+		Revision:     1,
+		Preferred:    true,
+		Capabilities: []string{"responses", "chat_completions", "responses_compact"},
+	}
+	require.NoError(t, reauth.encryptConnectionCredentials(connection, map[string]any{
+		"access_token": "managed-connection-token",
+		"client_id":    openai.ClientID,
+		"expires_at":   fmt.Sprint(time.Now().Add(time.Hour).Unix()),
+	}))
+	connectionRepo.rows = []*OpenAIAuthConnection{connection}
+	connectionRepo.managed = true
+	repo := &openAIAccountTestRepo{mockAccountRepoForGemini: mockAccountRepoForGemini{
+		accountsByID: map[int64]*Account{parent.ID: parent},
+	}}
+	gateway := &OpenAIGatewayService{excelOAuthReauth: reauth, cfg: &config.Config{}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, openaiGatewayService: gateway}
+	return svc, reauth, connectionRepo, repo, parent, upstream
+}
+
+func TestAccountTestService_ManagedConnectionProbeUsesProjectedCredentials(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+	resp := newJSONResponse(http.StatusOK, "")
+	resp.Body = io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\"}\n\n"))
+	svc, _, _, _, parent, upstream := managedConnectionProbeFixture(t, resp)
+
+	require.NoError(t, svc.TestAccountConnection(ctx, parent.ID, "gpt-5.4", "", ""))
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "Bearer managed-connection-token", upstream.requests[0].Header.Get("Authorization"))
+	require.NotContains(t, recorder.Body.String(), "OPENAI_CONNECTION_NOT_CAPABLE")
+}
+
+type managedProbeChangingConnections struct {
+	*connectionTypeRepo
+	lists int
+}
+
+func (r *managedProbeChangingConnections) ListAuthConnections(ctx context.Context, id int64) ([]*OpenAIAuthConnection, error) {
+	r.lists++
+	if r.lists == 4 {
+		r.rows[0].Revision++
+	}
+	return r.connectionTypeRepo.ListAuthConnections(ctx, id)
+}
+
+func TestAccountTestService_ManagedConnectionProbeFencesRevisionBeforeSend(t *testing.T) {
+	ctx, _ := newTestContext()
+	svc, reauth, connections, _, parent, upstream := managedConnectionProbeFixture(t, newJSONResponse(http.StatusOK, ""))
+	changing := &managedProbeChangingConnections{connectionTypeRepo: connections}
+	reauth.repo = changing
+	err := svc.TestAccountConnection(ctx, parent.ID, "gpt-5.4", "", "")
+	require.Error(t, err, "a revoked or revised connection must be rejected before sending")
+	require.GreaterOrEqual(t, changing.lists, 4)
+	require.Empty(t, upstream.requests)
+}
+
+func TestAccountTestService_ManagedConnectionProbe401PreservesParent(t *testing.T) {
+	ctx, _ := newTestContext()
+	svc, _, _, repo, parent, upstream := managedConnectionProbeFixture(t, newJSONResponse(http.StatusUnauthorized, `{}`))
+	err := svc.TestAccountConnection(ctx, parent.ID, "gpt-5.4", "", "")
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 1)
+	require.Zero(t, repo.setErrorID, "a managed grant's 401 must not disable its parent account")
+}
+
+func TestAccountTestService_ManagedCompactProbePreservesParentState(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ctx, _ := newTestContext()
+			resp := newJSONResponse(status, compactProbeSSESuccessBody)
+			resp.Header.Set("x-codex-primary-used-percent", "99")
+			svc, _, _, repo, parent, upstream := managedConnectionProbeFixture(t, resp)
+			err := svc.TestAccountConnection(ctx, parent.ID, "gpt-5.4", "", AccountTestModeCompact)
+			if status == http.StatusOK {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			require.Len(t, upstream.requests, 1)
+			require.Zero(t, repo.setErrorID)
+			require.Empty(t, repo.updatedExtra, "one managed grant cannot write account-wide compact or quota observations")
+		})
+	}
+}
+
+func TestAccountTestService_ManagedConnectionBackgroundProbeRecordsScope(t *testing.T) {
+	wire := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n" +
+		"data: {\"type\":\"response.completed\"}\n\n"
+	resp := newJSONResponse(http.StatusOK, wire)
+	resp.Header.Set("Content-Type", "text/event-stream")
+	svc, _, _, _, parent, upstream := managedConnectionProbeFixture(t, resp)
+	upstream.attachRequest = true
+	cfg := &PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1,
+		Availability: &AvailabilityPolicy{ValidForSeconds: 60}}
+	result, err := svc.RunPelicanBackground(t.Context(), parent.ID, "gpt-5.4", cfg)
+	require.NoError(t, err)
+	require.Equal(t, "success", result.Status, result.ErrorMessage)
+	probe := result.PelicanConfig.AvailabilityResult
+	require.Equal(t, "pass", probe.Status)
+	require.NotNil(t, probe.Scope)
+	require.NotEmpty(t, probe.Scope.ConnectionScope)
+	require.NotContains(t, probe.Scope.ConnectionScope, "connection")
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "Bearer managed-connection-token", upstream.requests[0].Header.Get("Authorization"))
+}
+
+func TestAccountTestService_ManagedGatewayProbeRecordsScope(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	for _, kind := range []string{"bps", "siwc"} {
+		t.Run(kind, func(t *testing.T) {
+			svc, reauth, connections, _, parent, _ := managedConnectionProbeFixture(t, newJSONResponse(http.StatusOK, ""))
+			connection := connections.rows[0]
+			connection.Kind = kind
+			connection.Capabilities = []string{"responses"}
+			clientID := "synthetic-siwc-client"
+			if kind == "bps" {
+				clientID = openai.ExcelClientID
+			}
+			require.NoError(t, reauth.encryptConnectionCredentials(connection, map[string]any{
+				"access_token": "managed-connection-token", "client_id": clientID,
+				"chatgpt_account_id": "synthetic-workspace", "expires_at": fmt.Sprint(time.Now().Add(time.Hour).Unix()),
+			}))
+			calls := 0
+			upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
+				calls++
+				require.Equal(t, "Bearer managed-connection-token", req.Header.Get("Authorization"))
+				wire := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[]}}\n\n"
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: req,
+					Body: io.NopCloser(strings.NewReader(wire))}, nil
+			}}
+			gateway := openAIClientToolsTestService(nil)
+			gateway.httpUpstream, gateway.excelOAuthReauth = upstream, reauth
+			svc.httpUpstream, svc.openaiGatewayService = upstream, gateway
+			t.Cleanup(func() { require.NoError(t, gateway.CloseExcelBPSImages()) })
+			cfg := &PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1,
+				Availability: &AvailabilityPolicy{ValidForSeconds: 60}}
+			result, err := svc.RunPelicanBackground(t.Context(), parent.ID, "gpt-5.4", cfg)
+			require.NoError(t, err)
+			require.Equal(t, "success", result.Status, result.ErrorMessage)
+			require.Equal(t, 1, calls)
+			probe := result.PelicanConfig.AvailabilityResult
+			require.Equal(t, "pass", probe.Status)
+			require.NotNil(t, probe.Scope)
+			require.NotEmpty(t, probe.Scope.ConnectionScope)
+			if kind == "bps" {
+				require.Equal(t, "bps_responses", probe.Scope.Protocol)
+			} else {
+				require.Equal(t, "responses_http", probe.Scope.Protocol)
+			}
+		})
+	}
 }
 
 func TestAccountTestService_OpenAIOAuthTestNormalizesGPT56Alias(t *testing.T) {
