@@ -5,7 +5,28 @@
 - Mode: primary / regional；Instance、Epoch 必填。
 - primary: PrimaryInstances 为该部署 epoch 的完整主站 Pod 名单；LegacyRedisUser 为迁移前 Redis 准入身份。可先不设 Listen，仅切换主站 SQL 准入。
 - regional: Region、Endpoint、ServerPin、CAFile、CertFile、KeyFile、Targets、LifetimeSeconds 必填；Targets 是 Resource(kind/resource_id) 与 Capacity 的列表。寿命 30–3600 秒。必须 role=gateway 且设置本地 auth/scheduler 文件。
-- primary 的 Listen 启用独立 mTLS 监听；Scope 固定 region、客户端证书 SHA256 pin、账号/用户/Key 范围和最大 grant/lifetime。此阶段仅注册 slots 操作；quota 路径保持 503。
+- primary 的 Listen 启用独立 mTLS 监听；Scope 固定 region、客户端证书 SHA256 pin、账号/用户/Key 范围和最大 grant/lifetime。后台控制复用既有slots、已配置资金通道和视频目录；媒体查询使用下述独立监听。
+
+## 异地视频查询转发
+
+可选 `VideoForward` 属于同一运行时 JSON 文件；双方都须配置，只覆盖当前主节点与一个固定区域节点。先具备迁移331/332及已就绪、未过期的后台视频目录，再开放独立媒体监听。任务生成、持久成员、终态释放及结算始终归原节点，接收节点不重新占用生成额度。不配置时保留本地归属拒绝，不自动猜测对端地址。
+
+| `VideoForward` 字段 | 含义 |
+| --- | --- |
+| `Listen` | 本节点专用媒体监听地址，与公开HTTP及后台控制监听分开 |
+| `Endpoint` | 固定对端的HTTPS根地址，不含用户信息、路径、查询或fragment |
+| `CAFile`、`CertFile`、`KeyFile` | 显式配置CA及本节点双用途证书；叶证书须含serverAuth与clientAuth（或Any） |
+| `PeerPin` | 对端叶证书DER的SHA256小写十六进制摘要，共64位；TLS1.3和CA验证仍必需 |
+| `UserIDs`、`APIKeyIDs`、`AccountIDs` | 允许该peer访问的实际用户、下游Key、上游账号ID；三个列表都须非空、正值且不重复 |
+| `TimeoutSeconds` | 每个节点间请求总超时，默认120秒，范围1–600秒；握手5秒、响应头15秒 |
+
+`locate` 只核对原节点本地持久任务或保留的终态归属；`query` 再次核对并重新进入原完整认证router。六项操作为Grok状态/内容、Seedance状态/取消、MiniMax-H3状态/内容，不接受创建、编辑或扩展任务，也不接受任意URL。请求携带原下游Key供原节点重新鉴权，仅经显式配置的mTLS通道传输，不写入目录或日志；客户端IP复用接收节点已验证的安全来源，不透传原始代理头。双方数据须具有一致的用户/Key/组/账号身份，否则本地拒绝。
+
+启用区域资金门时，上述已鉴权查询在接收节点的资金门前尝试原节点转发；仅远端已处理的请求短路返回。本地执行、所有新建及其他协议仍受原资金门限制。接口按已注册路由分类，任务ID取名为`models`、`usage`或`responses`不会被当作元数据/文本入口。原节点继续走完整鉴权与原资金/结算链，未新增资金授权或额度转移。
+
+下载沿原接口处理，Range和必要响应头保留；MiniMax-H3合法302下载地址返回客户端，节点客户端不跟随任何跳转。目录缺失、过期、冲突、peer失联或归属重验失败返回503；不进行第二跳、任务迁移、重复生成或自动切线。取消确认本身不视为生成终结。终态凭证到期后不靠sticky恢复；原5秒循环按本权威有界清理到期凭证。
+
+配置不代表生产已开放。升级/回滚须按[调度设计](project/monitor-driven-scheduling-design.md)排空旧视频/unknown成员并统一切换；保留原任务、额度和版本下限，禁止用删除槽位来解除阻塞。本地集成证据见[决策记录](project/DECISIONS.md)，生产多区域、排空和部署另行验收。
 
 FIFO 的队列记录、head 判断、槽位申请、取消在同一 SQL 事务。取消保留永久身份；Live 转移锁定精确源成员并按 kind/id 稳定顺序锁预算，不先释放再申请。Live 账号迁移保留联合用户/Key 份额。SQL 槽位不会被 Redis TTL、启动清理或断连自动释放。
 

@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 )
 
 const Prefix = "/internal/regional/control"
@@ -97,10 +98,11 @@ func (s Scope) authenticate(r *http.Request) bool {
 // private CA. Each handler instance has ONE fixed region/certificate assignment.
 // A valid CA certificate alone never grants permission to issue/settle leases.
 type Handler struct {
-	Scope  Scope
-	Quota  *ledger.Primary
-	Slots  *slots.Primary
-	Verify ledger.VerifyEvent
+	Scope          Scope
+	Quota          *ledger.Primary
+	Slots          *slots.Primary
+	Verify         ledger.VerifyEvent
+	VideoDirectory func(context.Context, string, video.Snapshot) (video.Directory, error)
 }
 
 func NewHandler(scope Scope, quota *ledger.Primary, capacity *slots.Primary, verify ledger.VerifyEvent) (http.Handler, error) {
@@ -117,8 +119,9 @@ func NewHandler(scope Scope, quota *ledger.Primary, capacity *slots.Primary, ver
 	return &Handler{Scope: scope, Quota: quota, Slots: capacity, Verify: verify}, nil
 }
 
-// NewSlotsHandler exposes only slot operations until a settlement verifier is wired.
-func NewSlotsHandler(scope Scope, capacity *slots.Primary) (http.Handler, error) {
+// NewSlotsHandler exposes slots and an optional task directory, but no quota
+// operations until a settlement verifier is wired.
+func NewSlotsHandler(scope Scope, capacity *slots.Primary) (*Handler, error) {
 	if err := scope.Validate(); err != nil {
 		return nil, err
 	}
@@ -163,6 +166,51 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var err error
 	switch r.URL.Path {
+	case Prefix + "/video-directory/sync":
+		if h.VideoDirectory == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		var report video.Snapshot
+		if decode(w, r, &report) != nil || report.Validate() != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if report.Authority != video.LocalAuthority(h.Scope.Region) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		for _, entry := range report.Entries {
+			if !h.Scope.videoOwner(entry.Owner) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+		}
+		var directory video.Directory
+		directory, err = h.VideoDirectory(ctx, h.Scope.Region, report)
+		if err == nil {
+			if directory.Validate(h.Scope.Region) != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			for i := range directory.Snapshots {
+				filtered := make([]video.Entry, 0, len(directory.Snapshots[i].Entries))
+				for _, entry := range directory.Snapshots[i].Entries {
+					if h.Scope.videoOwner(entry.Owner) {
+						filtered = append(filtered, entry)
+					}
+				}
+				directory.Snapshots[i].Entries = filtered
+			}
+			raw, encodeErr := json.Marshal(directory)
+			if encodeErr != nil || len(raw) > maxBody {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(raw)
+			return
+		}
 	case Prefix + "/slots/upstream-policy":
 		var request struct{}
 		if decode(w, r, &request) != nil {
@@ -268,7 +316,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, slots.ErrExpiredUnissued), errors.Is(err, ledger.ErrExpiredUnissued):
 			w.WriteHeader(http.StatusGone)
-		case errors.Is(err, ledger.ErrConflict), errors.Is(err, slots.ErrConflict):
+		case errors.Is(err, ledger.ErrConflict), errors.Is(err, slots.ErrConflict), errors.Is(err, video.ErrConflict):
 			w.WriteHeader(409)
 		case errors.Is(err, ledger.ErrExhausted), errors.Is(err, slots.ErrUnavailable):
 			w.WriteHeader(429)
@@ -372,6 +420,31 @@ func (c *Client) UpstreamPolicy(ctx context.Context) (slots.UpstreamPolicy, erro
 		err = snapshot.Validate()
 	}
 	return snapshot, err
+}
+func (s Scope) videoOwner(owner video.Owner) bool {
+	return owner.Valid() && contains(s.UserIDs, owner.UserID) && contains(s.APIKeyIDs, owner.APIKeyID) && contains(s.AccountIDs, owner.AccountID)
+}
+
+func (c *Client) SyncVideoDirectory(ctx context.Context, report video.Snapshot) (video.Directory, error) {
+	var directory video.Directory
+	if err := report.Validate(); err != nil {
+		return directory, err
+	}
+	if !strings.HasPrefix(report.Authority, "regional:local:") {
+		return directory, video.ErrConflict
+	}
+	if err := c.post(ctx, "/video-directory/sync", report, &directory); err != nil {
+		return directory, err
+	}
+	if err := directory.Validate(strings.TrimPrefix(report.Authority, "regional:local:")); err != nil {
+		return directory, err
+	}
+	for _, snapshot := range directory.Snapshots {
+		if snapshot.Authority == report.Authority && !snapshot.Equal(report) {
+			return directory, video.ErrConflict
+		}
+	}
+	return directory, nil
 }
 func (c *Client) DrainSlots(ctx context.Context, id string) error {
 	return c.post(ctx, "/slots/drain", struct {

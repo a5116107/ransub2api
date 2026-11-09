@@ -266,7 +266,7 @@ func TestAsyncVideoKeyLookupRejectsChangedRequest(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "https://upstream.example/status/task", nil)
 	request.Header.Set("Authorization", "Bearer supplier-fixture")
-	bound := service.WithAsyncVideoKeyLookup(request, handoff.Lease())
+	bound := service.WithAsyncVideoKeyLookup(request, handoff.Lease(), "task")
 	_, done, err := upstream.BeginUpstreamKeyRequest(bound)
 	require.NoError(t, err)
 	done(nil, nil)

@@ -545,6 +545,17 @@ func (s *httpUpstreamService) BeginUpstreamKeyRequest(req *http.Request) (*http.
 	if !service.BatchImageKeyPolicyMatches(req, s.upstreamKeyLimiter.policy.Revision, s.upstreamKeyLimiter.digest) {
 		return req, nil, service.ErrUpstreamKeyPolicy
 	}
+	if taskID, lookup := service.AsyncVideoKeyLookupTaskID(req); taskID != "" && s.upstreamKeyLimiter.regional != nil {
+		if !lookup {
+			return req, nil, service.ErrUpstreamKeyPolicy
+		}
+		if err := s.upstreamKeyLimiter.regional.checkAsyncVideoDirectoryLookup(req.Context(), service.PersistentUpstreamKeyLeaseFromContext(req.Context()), taskID); err != nil {
+			return req, nil, errors.Join(service.ErrUpstreamKeyPolicy, err)
+		}
+		// Terminal receipts retain read ownership but carry no generation
+		// lease. Their admitted target is just as strict as an active task's.
+		req = req.WithContext(service.WithHTTPUpstreamRedirectsDisabled(req.Context()))
+	}
 	if lease := service.PersistentUpstreamKeyLeaseFromContext(req.Context()); lease != nil {
 		if asyncVideo {
 			return req, nil, service.ErrUpstreamKeyPolicy

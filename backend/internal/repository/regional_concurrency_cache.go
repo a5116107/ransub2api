@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -23,6 +24,7 @@ type regionalConcurrencyCache struct {
 	controlListener net.Listener
 	broker          *control.Broker
 	brokerClient    *control.Client
+	videoForwarder  *video.Forwarder
 	service.ConcurrencyCache
 	primary    *slots.Primary
 	local      *slots.Local

@@ -301,9 +301,10 @@ func TestGatewaySnapshotMultiProcessFaultRecovery(t *testing.T) {
 		version, err := client.Get(ctx, "sched:active:"+faultBucket).Result()
 		require.NoError(t, err)
 		key := "sched:" + faultBucket + ":v" + version
-		if kind == "metadata" {
+		switch kind {
+		case "metadata":
 			key = "sched:meta:7"
-		} else if kind == "full-account" {
+		case "full-account":
 			key = "sched:acc:7"
 		}
 		removed, err := client.Del(ctx, key).Result()

@@ -187,10 +187,10 @@ func (s *OpenAIGatewayService) prepareAsyncVideoKeyLookup(req *http.Request, acc
 	if err != nil {
 		return nil, err
 	}
+	bound := WithAsyncVideoKeyLookup(req, lease, taskID)
 	if lease == nil {
-		return req, nil
+		return bound, nil
 	}
-	bound := WithAsyncVideoKeyLookup(req, lease)
 	return bound.WithContext(WithHTTPUpstreamRedirectsDisabled(bound.Context())), nil
 }
 

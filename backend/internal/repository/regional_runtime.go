@@ -18,6 +18,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -41,6 +42,7 @@ type RegionalConcurrencyRuntimeConfig struct {
 	Scope            control.Scope
 	Targets          []RegionalSlotTarget
 	LifetimeSeconds  int
+	VideoForward     *video.ForwardConfig
 }
 
 func readRegionalConcurrencyConfig(path string) (RegionalConcurrencyRuntimeConfig, error) {
@@ -233,6 +235,26 @@ func (c *regionalConcurrencyCache) RunRegionalRuntime(ctx context.Context) {
 	if c.runtimeConfig == nil {
 		return
 	}
+	if c.videoForwarder != nil {
+		forwardCtx, stopForward := context.WithCancel(ctx)
+		forwardDone := make(chan struct{})
+		go func() {
+			defer close(forwardDone)
+			err := c.videoForwarder.Run(forwardCtx)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				c.runtimeFailed.Store(true)
+				slog.Error("regional video forwarding listener stopped")
+			}
+		}()
+		defer func() {
+			stopForward()
+			select {
+			case <-forwardDone:
+			case <-time.After(6 * time.Second):
+				_ = c.videoForwarder.Close()
+			}
+		}()
+	}
 	if c.controlServer != nil {
 		go func() {
 			err := c.controlServer.Serve(tls.NewListener(c.controlListener, c.controlServer.TLSConfig))
@@ -256,6 +278,11 @@ func (c *regionalConcurrencyCache) RunRegionalRuntime(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		cycle, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if c.hasAsyncVideoDirectory() {
+			if err := c.pruneCompletedAsyncVideoTasks(cycle); err != nil {
+				slog.Warn("regional completed video directory not pruned")
+			}
+		}
 		if c.broker != nil {
 			snapshot, err := c.brokerClient.UpstreamPolicy(cycle)
 			if err == nil {
@@ -271,6 +298,9 @@ func (c *regionalConcurrencyCache) RunRegionalRuntime(ctx context.Context) {
 			}
 			if err := c.broker.RunOnce(cycle); err != nil {
 				slog.Warn("regional broker has unconfirmed operations")
+			}
+			if err := c.refreshAsyncVideoDirectory(cycle); err != nil {
+				slog.Warn("regional video directory not refreshed")
 			}
 		}
 		if c.runtimeFailed.Load() {
@@ -289,7 +319,7 @@ func (c *regionalConcurrencyCache) RunRegionalRuntime(ctx context.Context) {
 func (c *regionalConcurrencyCache) prepareControl() error {
 	cfg := c.runtimeConfig
 	if cfg.Listen == "" && cfg.Endpoint == "" {
-		return nil
+		return c.prepareVideoForwarding()
 	}
 	pem, err := os.ReadFile(cfg.CAFile)
 	if err != nil {
@@ -307,7 +337,7 @@ func (c *regionalConcurrencyCache) prepareControl() error {
 		if cfg.Listen == "" || cfg.Endpoint != "" {
 			return errors.New("primary requires control listen address")
 		}
-		handler, err := control.NewSlotsHandler(cfg.Scope, c.primary)
+		slotsHandler, err := control.NewSlotsHandler(cfg.Scope, c.primary)
 		if err != nil {
 			return err
 		}
@@ -316,8 +346,8 @@ func (c *regionalConcurrencyCache) prepareControl() error {
 			return errors.New("regional control listener unavailable")
 		}
 		c.controlListener = listener
-		slotsHandler := handler
-		handler = c.withFundsControl(slotsHandler)
+		slotsHandler.VideoDirectory = c.exchangeAsyncVideoDirectory
+		handler := c.withFundsControl(slotsHandler)
 		c.controlServer = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientCAs: roots, ClientAuth: tls.RequireAndVerifyClientCert}}
 	} else {
 		if cfg.Endpoint == "" || cfg.Listen != "" || len(cfg.Targets) == 0 || cfg.LifetimeSeconds < 30 || cfg.LifetimeSeconds > 3600 {
@@ -339,6 +369,15 @@ func (c *regionalConcurrencyCache) prepareControl() error {
 		}
 		c.brokerClient = client
 		c.broker = &control.Broker{DB: c.local.DB, Slots: c.local, Remote: client}
+	}
+	if err := c.prepareVideoForwarding(); err != nil {
+		if c.controlListener != nil {
+			_ = c.controlListener.Close()
+		}
+		if c.brokerClient != nil {
+			c.brokerClient.Close()
+		}
+		return err
 	}
 	return nil
 }

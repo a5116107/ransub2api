@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/google/uuid"
 )
 
@@ -113,23 +115,7 @@ type PersistentUpstreamKeyConcurrency interface {
 
 // AsyncVideoKeyOwner identifies the authenticated task owner and the
 // selected account. A task identifier alone is not globally unique.
-type AsyncVideoKeyOwner struct {
-	UserID           int64    `json:"user_id"`
-	APIKeyID         int64    `json:"api_key_id"`
-	GroupID          int64    `json:"group_id"`
-	AccountID        int64    `json:"account_id"`
-	Provider         string   `json:"provider"`
-	RouteFingerprint [32]byte `json:"route_fingerprint"`
-}
-
-func (o AsyncVideoKeyOwner) Valid() bool {
-	return o.ValidPrincipal() && o.AccountID > 0 && o.RouteFingerprint != [32]byte{}
-}
-
-func (o AsyncVideoKeyOwner) ValidPrincipal() bool {
-	return o.UserID > 0 && o.APIKeyID > 0 && o.GroupID >= 0 &&
-		(o.Provider == "grok" || o.Provider == "seedance" || o.Provider == "minimax-h3")
-}
+type AsyncVideoKeyOwner = video.Owner
 
 type asyncVideoKeyOwnerContextKey struct{}
 
@@ -268,30 +254,52 @@ type AsyncVideoKeyReleaseRecovery interface {
 type asyncVideoKeyLookupContextKey struct{}
 
 type asyncVideoKeyLookup struct {
-	Member string
-	Method string
-	URL    string
-	Host   string
+	Member      string
+	TaskID      string
+	Credentials []string
+	Method      string
+	URL         string
+	Host        string
 }
 
-// WithAsyncVideoKeyLookup binds a loaded lease to one prepared status request.
-func WithAsyncVideoKeyLookup(req *http.Request, lease *PersistentUpstreamKeyLease) *http.Request {
-	if req == nil || req.URL == nil || lease == nil {
+// WithAsyncVideoKeyLookup binds a task and optional active lease to one status
+// request. A nil lease never proves completion; regional SQL must confirm it.
+func WithAsyncVideoKeyLookup(req *http.Request, lease *PersistentUpstreamKeyLease, taskID string) *http.Request {
+	if req == nil || req.URL == nil || strings.TrimSpace(taskID) == "" {
 		return req
 	}
+	member := ""
+	if lease != nil {
+		member = lease.Member
+	}
 	ctx := WithPersistentUpstreamKeyLease(req.Context(), lease)
+	credentials := config.UpstreamCredentialFingerprints(req)
+	slices.Sort(credentials)
 	ctx = context.WithValue(ctx, asyncVideoKeyLookupContextKey{}, asyncVideoKeyLookup{
-		Member: lease.Member, Method: req.Method, URL: req.URL.String(), Host: req.Host,
+		Member: member, TaskID: strings.TrimSpace(taskID), Credentials: credentials, Method: req.Method, URL: req.URL.String(), Host: req.Host,
 	})
 	return req.WithContext(ctx)
 }
 
 func AsyncVideoKeyLookupMatches(req *http.Request, lease *PersistentUpstreamKeyLease) bool {
-	if req == nil || req.URL == nil || lease == nil || (req.Method != http.MethodGet && req.Method != http.MethodDelete) {
+	if _, ok := AsyncVideoKeyLookupTaskID(req); !ok || lease == nil {
 		return false
 	}
 	binding, ok := req.Context().Value(asyncVideoKeyLookupContextKey{}).(asyncVideoKeyLookup)
-	return ok && binding.Member == lease.Member && binding.Method == req.Method && binding.URL == req.URL.String() && binding.Host == req.Host
+	return ok && binding.Member == lease.Member
+}
+
+func AsyncVideoKeyLookupTaskID(req *http.Request) (string, bool) {
+	if req == nil || req.URL == nil {
+		return "", false
+	}
+	binding, ok := req.Context().Value(asyncVideoKeyLookupContextKey{}).(asyncVideoKeyLookup)
+	if !ok {
+		return "", false
+	}
+	credentials := config.UpstreamCredentialFingerprints(req)
+	slices.Sort(credentials)
+	return binding.TaskID, binding.TaskID != "" && (req.Method == http.MethodGet || req.Method == http.MethodDelete) && binding.Method == req.Method && binding.URL == req.URL.String() && binding.Host == req.Host && slices.Equal(binding.Credentials, credentials)
 }
 
 // UpstreamKeyRequestAdmission reuses the HTTP transport's exact admission and

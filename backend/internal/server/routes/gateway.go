@@ -84,11 +84,46 @@ func RegisterGatewayRoutes(
 	if cfg.Runtime.RegionalFundsFile != "" {
 		original := groupModelAllowlist
 		groupModelAllowlist = func(c *gin.Context) {
-			path := c.Request.URL.Path
+			// Classify the registered endpoint, never a task ID such as "models"
+			// or "responses" that happens to resemble a permitted endpoint.
+			path := c.FullPath()
 			discovery := c.Request.Method == http.MethodGet && (strings.Contains(path, "/models") || strings.HasSuffix(path, "/usage"))
 			generation := (c.Request.Method == http.MethodPost && (strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/chat/completions"))) || (c.Request.Method == http.MethodGet && strings.HasSuffix(path, "/responses"))
 			key, ok := middleware.GetAPIKeyFromContext(c)
 			if !discovery && (!generation || !ok || key.Group == nil || key.Group.Platform != service.PlatformOpenAI) {
+				// A remote task is executed and billed only at its original node.
+				// Local lookups and all generation still require the existing bound.
+				var endpoint service.GrokMediaEndpoint
+				taskID := ""
+				if ok && key.Group != nil {
+					platform := key.Group.Platform
+					switch {
+					case c.Request.Method == http.MethodGet && c.Param("request_id") != "" && strings.HasPrefix(strings.TrimPrefix(c.FullPath(), "/v1"), "/videos/"):
+						switch platform {
+						case service.PlatformGrok, service.PlatformComposite:
+							endpoint, taskID = service.GrokMediaEndpointVideoStatus, c.Param("request_id")
+							if strings.HasSuffix(c.FullPath(), "/content") {
+								endpoint = service.GrokMediaEndpointVideoContent
+							}
+						case service.PlatformMiniMax:
+							endpoint, taskID = service.MiniMaxH3EndpointStatus, service.MiniMaxH3TaskKey(c.Param("request_id"))
+							if strings.HasSuffix(c.FullPath(), "/content") {
+								endpoint = service.MiniMaxH3EndpointContent
+							}
+						}
+					case (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodDelete) && c.Param("task_id") != "" && strings.HasSuffix(c.FullPath(), "/contents/generations/tasks/:task_id"):
+						if platform == service.PlatformOpenAI || platform == service.PlatformComposite {
+							endpoint, taskID = service.SeedanceEndpointStatus, service.SeedanceTaskKey(c.Param("task_id"))
+							if c.Request.Method == http.MethodDelete {
+								endpoint = service.SeedanceEndpointDelete
+							}
+						}
+					}
+				}
+				if h.OpenAIGateway.ForwardRegionalVideoQuery(c, endpoint, taskID) {
+					c.Abort()
+					return
+				}
 				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"type": "regional_cost_bound_unavailable", "message": "This protocol has no certified regional cost bound"}})
 				return
 			}

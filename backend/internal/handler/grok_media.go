@@ -51,6 +51,30 @@ func (h *OpenAIGatewayHandler) GrokVideoContent(c *gin.Context) {
 	h.handleGrokMedia(c, service.GrokMediaEndpointVideoContent, c.Param("request_id"))
 }
 
+// ForwardRegionalVideoQuery also serves the regional funds gate: only an
+// authenticated lookup may leave the receiving node before local admission.
+func (h *OpenAIGatewayHandler) ForwardRegionalVideoQuery(c *gin.Context, endpoint service.GrokMediaEndpoint, taskID string) bool {
+	if h == nil || h.gatewayService == nil || !endpoint.IsVideoLookupRequest() || strings.TrimSpace(taskID) == "" {
+		return false
+	}
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok {
+		return false
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		return false
+	}
+	handled, err := h.gatewayService.ForwardRegionalVideoQuery(c, endpoint, taskID, apiKey, subject.UserID)
+	if err != nil {
+		requestLogger(c, "handler.openai_gateway.grok_media", zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("endpoint", string(endpoint))).Info("grok_media.regional_query_failed", zap.Error(err))
+		if !c.Writer.Written() {
+			h.errorResponse(c, http.StatusServiceUnavailable, "upstream_key_admission_unavailable", "Video request origin is temporarily unavailable")
+		}
+	}
+	return handled || err != nil
+}
+
 func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.GrokMediaEndpoint, requestID string) {
 	platform := service.PlatformGrok
 	noAccountCode, noAccountMessage := "grok_media_no_eligible_account", "No eligible Grok media accounts"
@@ -145,6 +169,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	}
 	if endpoint.IsVideoLookupRequest() && strings.TrimSpace(requestID) == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "request_id is required")
+		return
+	}
+	if h.ForwardRegionalVideoQuery(c, endpoint, requestID) {
 		return
 	}
 
@@ -634,6 +661,14 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			zap.Int("switch_count", switchCount),
 		)
 		return
+	}
+}
+
+// InstallMediaVideoForwarding attaches the complete authenticated router only
+// after route registration. The private listener is provisioned independently.
+func (h *OpenAIGatewayHandler) InstallMediaVideoForwarding(router http.Handler) {
+	if h != nil && h.gatewayService != nil {
+		h.gatewayService.InstallMediaVideoForwarding(router)
 	}
 }
 

@@ -57,7 +57,7 @@ func regionalKeyTestDB(t *testing.T) *sql.DB {
 	db.SetMaxOpenConns(16)
 	db.SetMaxIdleConns(16)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	for _, name := range []string{"280_regional_slot_leases.sql", "281_regional_admission.sql", "327_regional_upstream_key_slots.sql", "331_regional_async_video_key_lease.sql"} {
+	for _, name := range []string{"280_regional_slot_leases.sql", "281_regional_admission.sql", "327_regional_upstream_key_slots.sql", "331_regional_async_video_key_lease.sql", "332_regional_async_video_directory.sql"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		require.NoError(t, err)
 		tx, err := db.BeginTx(t.Context(), nil)

@@ -430,6 +430,9 @@ func (s *OpenAIGatewayService) ResolveMediaVideoRequestAccount(
 			if err != nil {
 				return 0, errors.Join(ErrUpstreamKeyPolicy, err)
 			}
+			if err := checkAsyncVideoForwardOwner(ctx, owner, requestID); err != nil {
+				return 0, err
+			}
 			if owner != nil {
 				return owner.AccountID, nil
 			}

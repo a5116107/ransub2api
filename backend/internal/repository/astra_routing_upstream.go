@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/mihomo"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -44,6 +45,20 @@ type astraRoutingUpstream struct {
 var _ service.UpstreamKeyConcurrency = (*astraRoutingUpstream)(nil)
 var _ service.BatchImageUpstreamKeyAuthority = (*astraRoutingUpstream)(nil)
 var _ service.AsyncVideoKeyLeaseController = (*astraRoutingUpstream)(nil)
+
+func (s *astraRoutingUpstream) SetAsyncVideoForwardHandler(dispatch video.Dispatch) {
+	if controller, ok := s.delegate.(service.AsyncVideoRegionalForwarder); ok {
+		controller.SetAsyncVideoForwardHandler(dispatch)
+	}
+}
+
+func (s *astraRoutingUpstream) ForwardAsyncVideoLookup(ctx context.Context, query video.Query) (*http.Response, bool, error) {
+	if controller, ok := s.delegate.(service.AsyncVideoRegionalForwarder); ok {
+		return controller.ForwardAsyncVideoLookup(ctx, query)
+	}
+	return nil, false, nil
+}
+
 var _ service.AsyncVideoKeyReleaseRecovery = (*astraRoutingUpstream)(nil)
 
 func (s *astraRoutingUpstream) SupportsAsyncVideoKeyGuard() bool {

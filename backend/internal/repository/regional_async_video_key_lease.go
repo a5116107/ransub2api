@@ -147,6 +147,15 @@ func (s *httpUpstreamService) bindRegionalAsyncVideoKeyLeaseRecord(ctx context.C
 	if err != nil {
 		return errors.Join(service.ErrUpstreamKeyPolicy, err)
 	}
+	if store.hasAsyncVideoDirectory() {
+		var completed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM regional_async_video_completed_tasks WHERE authority=$1 AND task_key=$2 AND expires_at>clock_timestamp())`, store.persistentUpstreamKeyAuthority(), asyncVideoTaskKey(record.Owner, taskID)).Scan(&completed); err != nil {
+			return err
+		}
+		if completed {
+			return service.ErrUpstreamKeyPolicy
+		}
+	}
 	return tx.Commit()
 }
 
@@ -196,12 +205,12 @@ func (s *httpUpstreamService) loadRegionalAsyncVideoKeyLeaseByTask(ctx context.C
 	if taskKey == "" || !owner.Valid() {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	record, err := store.scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE task_key=$1`, taskKey))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	record, err := store.readRegionalAsyncVideoTask(ctx, taskKey, !allowFenced)
 	if err != nil {
 		return nil, err
+	}
+	if record == nil {
+		return nil, nil
 	}
 	if record.Owner != owner || record.TaskID != taskID {
 		return nil, service.ErrUpstreamKeyPolicy
@@ -222,12 +231,12 @@ func (s *httpUpstreamService) resolveRegionalAsyncVideoKeyOwner(ctx context.Cont
 	if taskKey == "" {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
-	record, err := store.scanRegionalAsyncVideoRecord(store.database().QueryRowContext(ctx, regionalAsyncVideoSelect+` WHERE task_key=$1`, taskKey))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	record, err := store.readRegionalAsyncVideoTask(ctx, taskKey, true)
 	if err != nil {
 		return nil, err
+	}
+	if record == nil {
+		return nil, nil
 	}
 	if record.TaskID != taskID || record.TaskKey != taskKey {
 		return nil, service.ErrUpstreamKeyPolicy
@@ -333,6 +342,27 @@ func (s *httpUpstreamService) finishRegionalAsyncVideoKeyRelease(ctx context.Con
 	for _, resource := range resources {
 		if err := store.releaseTx(ctx, tx, slots.Resource{Kind: "upstream_key", ID: resource.ResourceID, Fingerprint: resource.Fingerprint}, record.Member); err != nil {
 			return false, err
+		}
+	}
+	if store.hasAsyncVideoDirectory() && record.State == asyncVideoLeaseStateBound {
+		ownerJSON, err := json.Marshal(record.Owner)
+		if err != nil {
+			return false, err
+		}
+		retentionSeconds := int64(24 * 60 * 60)
+		if s.cfg != nil && int64(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) > retentionSeconds {
+			retentionSeconds = int64(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds)
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO regional_async_video_completed_tasks(authority,task_key,member,task_id,owner,expires_at) VALUES($1,$2,$3,$4,$5::jsonb,clock_timestamp()+$6*interval '1 second') ON CONFLICT(authority,task_key) DO UPDATE SET member=EXCLUDED.member,task_id=EXCLUDED.task_id,owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at WHERE regional_async_video_completed_tasks.expires_at<=clock_timestamp() OR (regional_async_video_completed_tasks.member=EXCLUDED.member AND regional_async_video_completed_tasks.owner=EXCLUDED.owner)`, store.persistentUpstreamKeyAuthority(), record.TaskKey, record.Member, record.TaskID, string(ownerJSON), retentionSeconds)
+		if err != nil {
+			return false, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		if count != 1 {
+			return false, service.ErrUpstreamKeyPolicy
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM regional_async_video_key_leases WHERE member=$1`, record.Member); err != nil {

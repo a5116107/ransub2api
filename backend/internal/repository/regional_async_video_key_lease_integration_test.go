@@ -18,7 +18,9 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/regional/control"
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/gin-gonic/gin"
@@ -363,7 +365,7 @@ func TestRegionalAsyncVideoLocalAuthorityLifecycle(t *testing.T) {
 	require.NoError(t, restarted.CheckPersistentUpstreamKeySlots(t.Context(), lease), "expiry cannot reclaim a remotely running task")
 	lookup := httptest.NewRequest(http.MethodGet, "https://upstream.example/v1/videos/local-task", nil)
 	lookup.Header.Set("Authorization", "Bearer supplier-fixture")
-	lookup = service.WithAsyncVideoKeyLookup(lookup.WithContext(service.WithAsyncVideoKeyOwner(t.Context(), owner)), lease)
+	lookup = service.WithAsyncVideoKeyLookup(lookup.WithContext(service.WithAsyncVideoKeyOwner(t.Context(), owner)), lease, "local-task")
 	_, finishLookup, err := restarted.BeginUpstreamKeyRequest(lookup)
 	require.NoError(t, err, "an existing owner can observe completion after grant/policy expiry")
 	finishLookup(nil, nil)
@@ -560,18 +562,32 @@ func TestRegionalAsyncVideoActualLifecycle(t *testing.T) {
 						cfg.Runtime.Role = config.RuntimeRoleGateway
 					}
 					authority := regionalAsyncVideoAuthority(t, cfg, rdb, mode)
+					foreign := video.PrimaryAuthority
+					if mode == "primary" {
+						authority.runtimeConfig = &RegionalConcurrencyRuntimeConfig{Mode: mode, Listen: "fixture", Scope: control.Scope{Region: "us"}}
+						foreign = video.LocalAuthority("us")
+					} else {
+						authority.runtimeConfig = &RegionalConcurrencyRuntimeConfig{Mode: mode, Endpoint: "fixture", Region: authority.local.Region}
+					}
 					upstream := liveKeyTestUpstream(t, cfg, rdb, authority)
 					var transport service.HTTPUpstream = upstream
 					if decorated {
 						transport = &astraRoutingUpstream{delegate: upstream}
 					}
-					var creates, polls atomic.Int32
-					var malformed atomic.Bool
+					var creates, polls, redirected atomic.Int32
+					var malformed, redirect atomic.Bool
 					provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 						w.Header().Set("Content-Type", "application/json")
 						if request.Method == http.MethodPost {
 							creates.Add(1)
 							_, _ = io.WriteString(w, `{"id":"regional-video"}`)
+							return
+						}
+						if request.URL.Path == "/unexpected-target" {
+							redirected.Add(1)
+						} else if redirect.Load() {
+							w.Header().Set("Location", "/unexpected-target")
+							w.WriteHeader(http.StatusTemporaryRedirect)
 							return
 						}
 						polls.Add(1)
@@ -608,6 +624,21 @@ func TestRegionalAsyncVideoActualLifecycle(t *testing.T) {
 					created, err := forward(tc.create, "", []byte(tc.body))
 					require.NoError(t, err)
 					require.EqualValues(t, 1, creates.Load())
+					unverified, err := forward(tc.status, created.ResponseID, nil)
+					require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+					require.Nil(t, unverified)
+					require.Zero(t, polls.Load(), "missing directory must reject before the provider HTTP send")
+					var now time.Time
+					require.NoError(t, authority.database().QueryRowContext(t.Context(), `SELECT clock_timestamp()`).Scan(&now))
+					directory := video.Snapshot{SchemaVersion: video.SchemaVersion, Authority: foreign, Revision: 1, IssuedAt: now, ExpiresAt: now.Add(video.Lifetime), Entries: []video.Entry{}}
+					tx, err := authority.database().BeginTx(t.Context(), nil)
+					require.NoError(t, err)
+					t.Cleanup(func() { _ = tx.Rollback() })
+					require.NoError(t, installAsyncVideoDirectorySnapshot(t.Context(), tx, authority.persistentUpstreamKeyAuthority(), directory))
+					require.NoError(t, tx.Commit())
+					accountID, err := svc.ResolveMediaVideoRequestAccount(ctx, &owner.GroupID, created.ResponseID, owner.UserID, owner.APIKeyID, tc.status)
+					require.NoError(t, err)
+					require.Equal(t, account.ID, accountID)
 					fingerprint := []string{config.UpstreamKeyFingerprint("supplier-fixture")}
 					_, _, err = upstream.AcquireUpstreamKeySlots(ctx, fingerprint)
 					require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
@@ -623,6 +654,19 @@ func TestRegionalAsyncVideoActualLifecycle(t *testing.T) {
 					require.True(t, status.AsyncVideoTerminal)
 					require.EqualValues(t, 2, polls.Load())
 					require.NoError(t, svc.ReleaseAsyncVideoTaskLease(ctx, created.ResponseID))
+					afterReleaseID, err := svc.ResolveMediaVideoRequestAccount(ctx, &owner.GroupID, created.ResponseID, owner.UserID, owner.APIKeyID, tc.status)
+					require.NoError(t, err)
+					require.Equal(t, account.ID, afterReleaseID, "terminal content/status lookups retain the original account")
+					afterRelease, err := forward(tc.status, created.ResponseID, nil)
+					require.NoError(t, err)
+					require.True(t, afterRelease.AsyncVideoTerminal)
+					require.EqualValues(t, 3, polls.Load(), "a completed receipt must allow the real follow-up HTTP read")
+					require.NoError(t, svc.ReleaseAsyncVideoTaskLease(ctx, created.ResponseID), "terminal release remains idempotent without recreating its generation lease")
+					redirect.Store(true)
+					_, err = forward(tc.status, created.ResponseID, nil)
+					require.Error(t, err, "completed status reads must remain bound to the admitted target")
+					require.Zero(t, redirected.Load(), "a completed receipt must not authorize a redirected HTTP send")
+					require.EqualValues(t, 1, creates.Load(), "status retries must never recreate the generation")
 					_, release, err := upstream.AcquireUpstreamKeySlots(ctx, fingerprint)
 					require.NoError(t, err)
 					require.NotNil(t, release)
