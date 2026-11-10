@@ -6,16 +6,135 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRegionalVideoPermanentRouteRejectsChangedAccountBeforeHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{"primary", "regional"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := t.Context()
+			var sends atomic.Int32
+			var redirectStatus atomic.Int32
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				sends.Add(1)
+				if request.Header.Get("Authorization") != "Bearer original-video-key" || request.URL.Path != "/v1/videos/original-task" {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				if status := redirectStatus.Load(); status != 0 {
+					w.Header().Set("Location", "/redirected-task")
+					w.WriteHeader(int(status))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"original-task","status":"pending"}`)
+			}))
+			t.Cleanup(provider.Close)
+			user, group, key, account := regionalVideoFinancialSubject(t, "minimax-h3")
+			account.Credentials = map[string]any{"api_key": "original-video-key", "base_url": provider.URL}
+			price := ledger.Price{Model: "route-" + uuid.NewString(), Video: &ledger.VideoPrice{
+				VideoRequest: ledger.VideoRequest{Provider: "minimax-h3", UpstreamModel: "MiniMax-H3", Resolution: "768p", DurationSeconds: 5},
+				Basis:        "request", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10,
+			}}
+			require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
+			primary, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
+			grant := regionalLedgerLease(t, "route-grant-"+uuid.NewString(), user, 8_000_000_000)
+			grant.APIKeyID, grant.AccountID = key.ID, account.ID
+			r := regionalLedgerReservation(t, grant, "route-request-"+uuid.NewString(), 2_000_000)
+			r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
+			r.Video = &price.Video.VideoRequest
+			r.VideoOrigin = &ledger.VideoOrigin{Member: "video:" + uuid.NewString(), Owner: video.Owner{
+				UserID: user, APIKeyID: key.ID, GroupID: group.ID, AccountID: account.ID, Provider: "minimax-h3", RouteFingerprint: service.AccountRouteFingerprint(account),
+			}}
+			var requests ledger.VideoTaskLedger = holds
+			if mode == "regional" {
+				require.NoError(t, primary.Issue(ctx, grant))
+				local := &ledger.Local{DB: integrationDB, Region: grant.RegionID}
+				require.NoError(t, local.Install(ctx, grant))
+				requests = local
+			} else {
+				r.LeaseID, r.RegionID = "", ""
+			}
+			fresh, err := requests.Reserve(ctx, r)
+			require.NoError(t, err)
+			require.True(t, fresh)
+			require.NoError(t, requests.Start(ctx, r.RequestID))
+			const task = "minimax-h3:original-task"
+			require.NoError(t, requests.BindVideoTask(ctx, r.RequestID, task))
+			cfg := &config.Config{}
+			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+			meter := &service.RegionalMetering{Ledger: requests, Readiness: func(context.Context) error { return errors.New("new admissions paused") }}
+			gateway := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Config: cfg, RegionalMetering: meter, Upstream: newHTTPUpstream(cfg, nil, nil, nil)})
+			t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+			t.Cleanup(gateway.StopAsyncVideoKeyReleaseRecovery)
+			query := func(wantSuccess bool) {
+				t.Helper()
+				resolved, err := gateway.ResolveMediaVideoRequestAccount(ctx, &group.ID, task, user, key.ID, service.MiniMaxH3EndpointStatus)
+				require.NoError(t, err)
+				require.Equal(t, account.ID, resolved)
+				current := r.VideoOrigin.Owner
+				current.RouteFingerprint = service.AccountRouteFingerprint(account)
+				queryCtx := service.WithAsyncVideoKeyOwner(ctx, current)
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/original-task", nil).WithContext(queryCtx)
+				before := sends.Load()
+				result, err := gateway.ForwardMiniMaxH3(queryCtx, c, account, service.MiniMaxH3EndpointStatus, task, nil)
+				if wantSuccess {
+					require.NoError(t, err)
+					require.NotNil(t, result)
+					require.Equal(t, before+1, sends.Load())
+				} else {
+					require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+					require.Nil(t, result)
+					require.Equal(t, before, sends.Load(), "changed route must be rejected before reaching the HTTP provider")
+				}
+			}
+			query(true)
+			account.Credentials["api_key"] = "replacement-video-key"
+			query(false)
+			account.Credentials["api_key"] = "original-video-key"
+			account.Credentials["base_url"] = provider.URL + "/replacement"
+			query(false)
+			account.Credentials["base_url"] = provider.URL
+			query(true)
+			record, err := requests.LoadVideoTask(ctx, r.VideoOrigin.Owner, task)
+			require.NoError(t, err)
+			require.Equal(t, r, record.Reservation, "queries must not allocate, reprice or replace the original financial hold")
+			require.Equal(t, "started", record.State)
+			require.EqualValues(t, 2, sends.Load())
+			for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+				redirectStatus.Store(int32(status))
+				queryCtx := service.WithAsyncVideoKeyOwner(ctx, r.VideoOrigin.Owner)
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/original-task", nil).WithContext(queryCtx)
+				before := sends.Load()
+				result, err := gateway.ForwardMiniMaxH3(queryCtx, c, account, service.MiniMaxH3EndpointStatus, task, nil)
+				require.Error(t, err, "status %d must not change the physical task target", status)
+				require.Nil(t, result)
+				require.False(t, c.Writer.Written(), "unexpected redirect must return to the existing error handler without forwarding a response")
+				require.Equal(t, before+1, sends.Load(), "status %d must not send a second request to the redirect target", status)
+			}
+			redirectStatus.Store(0)
+			query(true)
+		})
+	}
+}
 
 func TestRegionalVideoFinancialBindingCompetitionAndRecovery(t *testing.T) {
 	for _, mode := range []string{"primary", "regional"} {
@@ -115,6 +234,11 @@ func TestRegionalVideoFinancialBindingCompetitionAndRecovery(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, winner, record.Reservation)
 			require.Equal(t, "started", record.State)
+			gateway := &service.OpenAIGatewayService{}
+			service.WithRegionalMetering(&service.RegionalMetering{Ledger: requests, Readiness: func(context.Context) error { return errors.New("new admission is unavailable") }})(gateway)
+			resolvedAccount, err := gateway.ResolveMediaVideoRequestAccount(ctx, &group.ID, taskID, user, key.ID, service.MiniMaxH3EndpointStatus)
+			require.NoError(t, err, "the real service must use original SQL ownership without sticky/slot records or new admission")
+			require.Equal(t, account.ID, resolvedAccount)
 			for _, statement := range []string{
 				`UPDATE regional_video_financial_bindings SET member='video:00000000-0000-0000-0000-000000000000' WHERE request_id=$1`,
 				`UPDATE regional_video_financial_bindings SET task_id='replacement' WHERE request_id=$1`,
@@ -141,6 +265,15 @@ func TestRegionalVideoFinancialBindingCompetitionAndRecovery(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, &events[0], record.Event)
 			require.NoError(t, requests.Complete(ctx, *record.Event))
+			resolvedAccount, err = gateway.ResolveMediaVideoRequestAccount(ctx, &group.ID, taskID, user, key.ID, service.MiniMaxH3EndpointContent)
+			require.NoError(t, err)
+			require.Equal(t, account.ID, resolvedAccount)
+			if mode == "regional" {
+				principal := winner.VideoOrigin.Owner
+				principal.AccountID, principal.RouteFingerprint = 0, [32]byte{}
+				_, err := holds.ResolveVideoTaskOwner(ctx, principal, taskID)
+				require.ErrorIs(t, err, sql.ErrNoRows, "primary reconciliation must not transfer execution ownership from the original region")
+			}
 			// Primary requests and every regional grant share one permanent
 			// primary namespace, even when event/member/lease/region all change.
 			cross := regionalLedgerLease(t, "binding-cross-"+uuid.NewString(), user, 10_000_000)

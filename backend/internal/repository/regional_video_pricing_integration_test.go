@@ -147,10 +147,14 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				e.InputTokens, e.OutputTokens = 0, tokens
 				e.Video = &ledger.VideoUsage{VideoRequest: price.Video.VideoRequest, TaskID: "provider-task-" + uuid.NewString(), State: "completed", CompletionTokens: tokens}
 				e.VideoOrigin = r.VideoOrigin
+				principal := r.VideoOrigin.Owner
+				principal.AccountID, principal.RouteFingerprint = 0, [32]byte{}
 				if tc.failed {
 					e.Video.State = "failed"
 				}
 				require.ErrorIs(t, requests.Complete(ctx, e), ledger.ErrConflict, "terminal evidence must not assign an unbound task")
+				_, err = requests.ResolveVideoTaskOwner(ctx, principal, e.Video.TaskID)
+				require.ErrorIs(t, err, sql.ErrNoRows, "unknown task identity must not be guessed from its reservation")
 				for _, invalidTask := range []string{"", " task ", "task\r\n", "task\x00id"} {
 					require.ErrorIs(t, requests.BindVideoTask(ctx, r.RequestID, invalidTask), ledger.ErrConflict)
 				}
@@ -158,6 +162,31 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				cancelBind()
 				require.Error(t, requests.BindVideoTask(canceledBind, r.RequestID, e.Video.TaskID))
 				require.NoError(t, requests.BindVideoTask(ctx, r.RequestID, e.Video.TaskID))
+				resolvedOwner, err := requests.ResolveVideoTaskOwner(ctx, principal, e.Video.TaskID)
+				require.NoError(t, err)
+				require.Equal(t, r.VideoOrigin.Owner, *resolvedOwner)
+				for _, mutate := range []func(*video.Owner){
+					func(o *video.Owner) { o.UserID++ },
+					func(o *video.Owner) { o.APIKeyID++ },
+					func(o *video.Owner) { o.GroupID++ },
+					func(o *video.Owner) {
+						o.Provider = "seedance"
+						if o.Provider == principal.Provider {
+							o.Provider = "grok"
+						}
+					},
+				} {
+					wrongPrincipal := principal
+					mutate(&wrongPrincipal)
+					_, err := requests.ResolveVideoTaskOwner(ctx, wrongPrincipal, e.Video.TaskID)
+					require.ErrorIs(t, err, sql.ErrNoRows, "task identity must remain scoped to its authenticated tenant and provider")
+				}
+				if mode == "regional" {
+					_, err := (&ledger.Local{DB: integrationDB, Region: "another-region"}).ResolveVideoTaskOwner(ctx, principal, e.Video.TaskID)
+					require.ErrorIs(t, err, ledger.ErrConflict, "sharing a database must not transfer task ownership to another region")
+				}
+				_, err = requests.ResolveVideoTaskOwner(ctx, r.VideoOrigin.Owner, e.Video.TaskID)
+				require.ErrorIs(t, err, ledger.ErrConflict, "the resolver accepts an authenticated principal, never a caller-selected route")
 				require.NoError(t, requests.BindVideoTask(ctx, r.RequestID, e.Video.TaskID))
 				require.ErrorIs(t, requests.BindVideoTask(ctx, r.RequestID, "other-task"), ledger.ErrConflict)
 				recovered, err := requests.LoadVideoTask(ctx, r.VideoOrigin.Owner, e.Video.TaskID)
@@ -229,6 +258,9 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				recovered, err = requests.LoadVideoTask(ctx, r.VideoOrigin.Owner, e.Video.TaskID)
 				require.NoError(t, err)
 				require.Equal(t, &e, recovered.Event, "completed recovery retains the exact immutable event")
+				resolvedOwner, err = requests.ResolveVideoTaskOwner(ctx, principal, e.Video.TaskID)
+				require.NoError(t, err)
+				require.Equal(t, r.VideoOrigin.Owner, *resolvedOwner)
 				require.NoError(t, requests.Complete(ctx, *recovered.Event))
 				if local != nil {
 					local = &ledger.Local{DB: integrationDB, Region: lease.RegionID}
@@ -279,6 +311,9 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 					receipt, err := local.Close(ctx, lease.LeaseID)
 					require.NoError(t, err)
 					require.NoError(t, primary.Close(ctx, lease.RegionID, receipt))
+					resolvedOwner, err = local.ResolveVideoTaskOwner(ctx, principal, e.Video.TaskID)
+					require.NoError(t, err, "settlement acknowledgement and closed funds must preserve permanent query ownership")
+					require.Equal(t, r.VideoOrigin.Owner, *resolvedOwner)
 				}
 				actualUSD, err := ledger.USD(tc.charge)
 				require.NoError(t, err)

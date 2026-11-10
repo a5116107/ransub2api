@@ -29,6 +29,7 @@ type VideoTaskLedger interface {
 	RequestLedger
 	BindVideoTask(context.Context, string, string) error
 	LoadVideoTask(context.Context, video.Owner, string) (VideoTaskRecord, error)
+	ResolveVideoTaskOwner(context.Context, video.Owner, string) (*video.Owner, error)
 }
 
 func reserveVideoIdentity(ctx context.Context, tx *sql.Tx, side string, r Reservation) error {
@@ -162,9 +163,13 @@ func (v videoRequestLedger) bind(ctx context.Context, id, taskID string) error {
 	return tx.Commit()
 }
 
-func (v videoRequestLedger) load(ctx context.Context, owner video.Owner, taskID string) (VideoTaskRecord, error) {
+func (v videoRequestLedger) load(ctx context.Context, owner video.Owner, taskID string, exactRoute bool) (VideoTaskRecord, error) {
 	var result VideoTaskRecord
-	if !owner.Valid() || !validVideoTaskID(taskID) {
+	validOwner := owner.Valid()
+	if !exactRoute {
+		validOwner = owner.ValidPrincipal() && owner.AccountID == 0 && owner.RouteFingerprint == [32]byte{}
+	}
+	if !validOwner || !validVideoTaskID(taskID) {
 		return result, ErrConflict
 	}
 	query := `SELECT b.request_id,b.lease_id,b.region_id,b.member,b.origin,b.task_id,r.request,r.state,r.event FROM regional_video_financial_bindings b JOIN regional_primary_requests r ON r.request_id=b.request_id WHERE b.ledger=$1 AND b.task_key=$2`
@@ -180,9 +185,16 @@ func (v videoRequestLedger) load(ctx context.Context, owner video.Owner, taskID 
 	r := &result.Reservation
 	var storedOrigin VideoOrigin
 	if json.Unmarshal(request, r) != nil || json.Unmarshal(origin, &storedOrigin) != nil || r.Video == nil || r.validateVideoOrigin() != nil ||
-		*r.VideoOrigin != storedOrigin || storedOrigin.Owner != owner || storedOrigin.Member != member || result.TaskID != taskID ||
+		*r.VideoOrigin != storedOrigin || storedOrigin.Member != member || result.TaskID != taskID ||
 		r.RequestID != id || r.LeaseID != lease || r.RegionID != region || (v.local && region != v.region) || (!v.local && (lease != "" || region != "")) ||
 		(result.State != "started" && result.State != "completed") {
+		return VideoTaskRecord{}, ErrConflict
+	}
+	requestedOwner := storedOrigin.Owner
+	if !exactRoute {
+		requestedOwner.AccountID, requestedOwner.RouteFingerprint = 0, [32]byte{}
+	}
+	if requestedOwner != owner {
 		return VideoTaskRecord{}, ErrConflict
 	}
 	if result.State == "completed" {
@@ -210,9 +222,29 @@ func (p *PrimaryRequests) BindVideoTask(ctx context.Context, id, taskID string) 
 }
 
 func (l *Local) LoadVideoTask(ctx context.Context, owner video.Owner, taskID string) (VideoTaskRecord, error) {
-	return (videoRequestLedger{db: l.DB, region: l.Region, local: true}).load(ctx, owner, taskID)
+	return (videoRequestLedger{db: l.DB, region: l.Region, local: true}).load(ctx, owner, taskID, true)
 }
 
 func (p *PrimaryRequests) LoadVideoTask(ctx context.Context, owner video.Owner, taskID string) (VideoTaskRecord, error) {
-	return (videoRequestLedger{db: p.DB}).load(ctx, owner, taskID)
+	return (videoRequestLedger{db: p.DB}).load(ctx, owner, taskID, true)
+}
+
+// Resolving returns evidence of the original route, never a new assignment or
+// send authorization. Only local requests are joined; reconciled remote events
+// in the primary namespace do not make the primary their execution owner.
+func (v videoRequestLedger) resolveOwner(ctx context.Context, principal video.Owner, taskID string) (*video.Owner, error) {
+	record, err := v.load(ctx, principal, taskID, false)
+	if err != nil {
+		return nil, err
+	}
+	owner := record.Reservation.VideoOrigin.Owner
+	return &owner, nil
+}
+
+func (l *Local) ResolveVideoTaskOwner(ctx context.Context, principal video.Owner, taskID string) (*video.Owner, error) {
+	return (videoRequestLedger{db: l.DB, region: l.Region, local: true}).resolveOwner(ctx, principal, taskID)
+}
+
+func (p *PrimaryRequests) ResolveVideoTaskOwner(ctx context.Context, principal video.Owner, taskID string) (*video.Owner, error) {
+	return (videoRequestLedger{db: p.DB}).resolveOwner(ctx, principal, taskID)
 }

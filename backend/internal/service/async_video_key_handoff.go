@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	"github.com/tidwall/gjson"
 )
 
@@ -169,18 +170,52 @@ func (s *OpenAIGatewayService) ReleaseAsyncVideoTaskLease(ctx context.Context, t
 // its existing persistent member for a read/cancel request. The transport
 // checks the final target and credentials again before the physical send.
 func (s *OpenAIGatewayService) prepareAsyncVideoKeyLookup(req *http.Request, account *Account, endpoint GrokMediaEndpoint, taskID string) (*http.Request, error) {
-	if s == nil || s.httpUpstream == nil || req == nil || strings.TrimSpace(taskID) == "" {
+	if s == nil || req == nil {
+		return req, nil
+	}
+	financial := s.regionalMetering != nil || s.cfg != nil && s.cfg.Runtime.RegionalFundsFile != ""
+	if s.httpUpstream == nil || strings.TrimSpace(taskID) == "" {
+		if financial {
+			return nil, ErrUpstreamKeyPolicy
+		}
 		return req, nil
 	}
 	owner, ok := AsyncVideoKeyOwnerFromContext(req.Context())
 	if !ok {
+		if financial {
+			return nil, ErrUpstreamKeyPolicy
+		}
 		return req, nil
 	}
 	if account == nil || owner.AccountID != account.ID || owner.Provider != endpoint.AsyncVideoProvider() || owner.RouteFingerprint != AccountRouteFingerprint(account) {
 		return nil, ErrUpstreamKeyPolicy
 	}
+	if financial {
+		if s.regionalMetering == nil || !endpoint.IsVideoLookupRequest() {
+			return nil, ErrUpstreamKeyPolicy
+		}
+		tasks, ok := s.regionalMetering.Ledger.(ledger.VideoTaskLedger)
+		if !ok {
+			return nil, ErrUpstreamKeyPolicy
+		}
+		// The handler builds owner from the current account. Only its original
+		// financial record proves that this route still owns the provider task.
+		record, err := tasks.LoadVideoTask(req.Context(), owner, taskID)
+		if err != nil {
+			return nil, errors.Join(ErrUpstreamKeyPolicy, err)
+		}
+		if record.TaskID != taskID || record.Reservation.VideoOrigin == nil || record.Reservation.VideoOrigin.Owner != owner || (record.State != "started" && record.State != "completed") {
+			return nil, ErrUpstreamKeyPolicy
+		}
+		if err := checkAsyncVideoForwardOwner(req.Context(), &owner, taskID); err != nil {
+			return nil, err
+		}
+	}
 	controller, ok := s.httpUpstream.(AsyncVideoKeyLeaseController)
 	if !ok {
+		if financial {
+			return nil, ErrUpstreamKeyPolicy
+		}
 		return req, nil
 	}
 	lease, err := controller.LoadAsyncVideoKeyLeaseByTask(req.Context(), owner, strings.TrimSpace(taskID))
@@ -188,7 +223,7 @@ func (s *OpenAIGatewayService) prepareAsyncVideoKeyLookup(req *http.Request, acc
 		return nil, err
 	}
 	bound := WithAsyncVideoKeyLookup(req, lease, taskID)
-	if lease == nil {
+	if lease == nil && !financial {
 		return bound, nil
 	}
 	return bound.WithContext(WithHTTPUpstreamRedirectsDisabled(bound.Context())), nil

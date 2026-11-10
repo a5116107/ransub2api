@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -417,12 +418,32 @@ func (s *OpenAIGatewayService) ResolveGrokMediaVideoRequestAccount(
 	return s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
 }
 
-// ResolveMediaVideoRequestAccount prefers the durable scoped task owner for a
-// shared-key job. This survives sticky-cache expiry and create-response races;
-// older or unrestricted jobs retain the existing sticky binding behavior.
+// Financial requests resolve only from their original local SQL authority.
+// Other shared-key jobs use durable slot ownership, then the legacy sticky path.
 func (s *OpenAIGatewayService) ResolveMediaVideoRequestAccount(
 	ctx context.Context, groupID *int64, requestID string, userID, apiKeyID int64, endpoint GrokMediaEndpoint,
 ) (int64, error) {
+	if s != nil && (s.regionalMetering != nil || s.cfg != nil && s.cfg.Runtime.RegionalFundsFile != "") {
+		if s.regionalMetering == nil || !endpoint.IsVideoLookupRequest() {
+			return 0, ErrUpstreamKeyPolicy
+		}
+		tasks, ok := s.regionalMetering.Ledger.(ledger.VideoTaskLedger)
+		if !ok {
+			return 0, ErrUpstreamKeyPolicy
+		}
+		principal := AsyncVideoKeyOwner{UserID: userID, APIKeyID: apiKeyID, GroupID: derefGroupID(groupID), Provider: endpoint.AsyncVideoProvider()}
+		owner, err := tasks.ResolveVideoTaskOwner(ctx, principal, requestID)
+		if err != nil {
+			return 0, errors.Join(ErrUpstreamKeyPolicy, err)
+		}
+		if owner == nil || !owner.Valid() || owner.UserID != principal.UserID || owner.APIKeyID != principal.APIKeyID || owner.GroupID != principal.GroupID || owner.Provider != principal.Provider {
+			return 0, ErrUpstreamKeyPolicy
+		}
+		if err := checkAsyncVideoForwardOwner(ctx, owner, requestID); err != nil {
+			return 0, err
+		}
+		return owner.AccountID, nil
+	}
 	if s != nil && s.httpUpstream != nil {
 		if controller, ok := s.httpUpstream.(AsyncVideoKeyLeaseController); ok {
 			principal := AsyncVideoKeyOwner{UserID: userID, APIKeyID: apiKeyID, GroupID: derefGroupID(groupID), Provider: endpoint.AsyncVideoProvider()}
