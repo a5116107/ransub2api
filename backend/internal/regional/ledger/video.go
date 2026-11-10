@@ -18,6 +18,7 @@ const (
 // exact replay after a lost acknowledgement. Loading never dispatches work.
 type VideoTaskRecord struct {
 	Reservation Reservation
+	Price       Price
 	TaskID      string
 	State       string
 	Event       *Event
@@ -197,6 +198,14 @@ func (v videoRequestLedger) load(ctx context.Context, owner video.Owner, taskID 
 	if requestedOwner != owner {
 		return VideoTaskRecord{}, ErrConflict
 	}
+	result.Price, err = readPrice(ctx, v.db, r.PricingVersion, r.Model)
+	if err != nil {
+		return VideoTaskRecord{}, err
+	}
+	maximum, err := result.Price.VideoMaximum(*r.Video)
+	if err != nil || maximum != r.Maximum {
+		return VideoTaskRecord{}, ErrConflict
+	}
 	if result.State == "completed" {
 		result.Event = new(Event)
 		if len(event) == 0 || json.Unmarshal(event, result.Event) != nil || !videoMatchesReservation(*r, *result.Event) || result.Event.validateVideo() != nil {
@@ -207,6 +216,10 @@ func (v videoRequestLedger) load(ctx context.Context, owner video.Owner, taskID 
 		if u.EventID != id || u.LeaseID != lease || u.RegionID != region || u.UserID != r.UserID || u.APIKeyID != r.APIKeyID || u.AccountID != r.AccountID ||
 			!u.AdmittedAt.Equal(r.AdmittedAt) || u.CompletedAt.Before(u.AdmittedAt) || u.Charge < 0 || u.Charge > r.Maximum ||
 			e.Model != r.Model || e.PricingVersion != r.PricingVersion || e.PayloadSHA256 != r.PayloadSHA256 || e.Video.TaskID != taskID {
+			return VideoTaskRecord{}, ErrConflict
+		}
+		_, charge, err := result.Price.VideoCosts(*e.Video)
+		if err != nil || charge != u.Charge {
 			return VideoTaskRecord{}, ErrConflict
 		}
 	}

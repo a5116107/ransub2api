@@ -910,6 +910,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		}
 		return nil, err
 	}
+	videoEvidence := respBody
 	if endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits {
 		if countOpenAIResponseImageOutputsFromJSONBytes(respBody) <= 0 {
 			setOpsUpstreamError(c, http.StatusBadGateway, "xAI upstream returned no image output", truncateString(string(respBody), 512))
@@ -946,7 +947,6 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			return nil, asyncVideoSubmissionError(endpoint, errors.Join(errors.New("grok video task lease binding failed"), err))
 		}
 	}
-	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	resultModel := requestModel
 	resultBillingModel := requestModel
 	if endpoint == GrokMediaEndpointVideoStatus {
@@ -958,7 +958,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			resultBillingModel = m
 		}
 	}
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:            requestIDHeader,
 		UpstreamHeaders:      resp.Header,
 		ResponseID:           usage.ResponseID,
@@ -977,7 +977,14 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
 		AsyncVideoTerminal:   usage.AsyncVideoTerminal,
-	}, nil
+	}
+	if endpoint.IsVideoLookupRequest() {
+		if err := finishRegionalVideoLookup(upstreamReq, result, endpoint, videoEvidence); err != nil {
+			return nil, err
+		}
+	}
+	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
+	return result, nil
 }
 
 func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
@@ -1108,9 +1115,6 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	}
 
 	s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, ""), account, contentResp.Header, contentResp.StatusCode)
-	if err := writeGrokMediaContentResponse(c, contentResp); err != nil {
-		return nil, err
-	}
 	// Content download is an alternate completion observation: when status body is
 	// official done+video.url, attach billable units so the handler can claim once
 	// (same path as status polling). Pending snapshot is merged in the handler.
@@ -1129,6 +1133,12 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		result.VideoCount = billed.VideoCount
 		result.VideoResolution = billed.VideoResolution
 		result.VideoDurationSeconds = billed.VideoDurationSeconds
+	}
+	if err := finishRegionalVideoLookup(statusReq, result, GrokMediaEndpointVideoContent, statusBody); err != nil {
+		return nil, err
+	}
+	if err := writeGrokMediaContentResponse(c, contentResp); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

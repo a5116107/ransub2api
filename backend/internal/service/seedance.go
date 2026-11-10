@@ -206,6 +206,11 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 		result.ResponseID = taskID
 		result.AsyncVideoTerminal = status == "succeeded" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
 	}
+	if endpoint.IsVideoLookupRequest() {
+		if err := finishRegionalVideoLookup(req, result, endpoint, responseBody); err != nil {
+			return nil, err
+		}
+	}
 	writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
 	return result, nil
 }

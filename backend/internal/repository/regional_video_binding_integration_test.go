@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -22,6 +23,187 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+type regionalVideoTerminalLedger struct {
+	ledger.VideoTaskLedger
+	fail atomic.Bool
+	ack  atomic.Bool
+}
+
+func (l *regionalVideoTerminalLedger) Complete(ctx context.Context, event ledger.Event) error {
+	if l.fail.Load() {
+		return errors.New("fixture original funds temporarily unavailable")
+	}
+	if err := l.VideoTaskLedger.Complete(ctx, event); err != nil {
+		return err
+	}
+	if l.ack.CompareAndSwap(true, false) {
+		return errors.New("fixture committed completion acknowledgement lost")
+	}
+	return nil
+}
+
+func TestRegionalVideoHTTPCompletionUsesOriginalLedger(t *testing.T) {
+	for _, providerName := range []string{"minimax-h3", "grok", "seedance"} {
+		for _, mode := range []string{"primary", "regional"} {
+			t.Run(providerName+"/"+mode, func(t *testing.T) {
+				ctx := t.Context()
+				var sends atomic.Int32
+				var terminal atomic.Bool
+				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					sends.Add(1)
+					if request.Method != http.MethodGet || request.Header.Get("Authorization") != "Bearer original-video-key" {
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if !terminal.Load() {
+						_, _ = io.WriteString(w, `{"status":"pending"}`)
+						return
+					}
+					switch providerName {
+					case "grok":
+						_, _ = io.WriteString(w, `{"request_id":"task","status":"done","model":"grok-imagine-video","video":{"url":"https://cdn.example/video.mp4","duration":99}}`)
+					case "seedance":
+						_, _ = io.WriteString(w, `{"id":"task","status":"succeeded","model":"ep-seedance","usage":{"completion_tokens":12345}}`)
+					default:
+						_, _ = io.WriteString(w, `{"id":"task","status":"completed","metadata":{"url":"https://cdn.example/video.mp4"}}`)
+					}
+				}))
+				t.Cleanup(provider.Close)
+				user, group, key, account := regionalVideoFinancialSubject(t, providerName)
+				account.Credentials = map[string]any{"api_key": "original-video-key", "base_url": provider.URL, "openai_capabilities": []string{"seedance"}}
+				price := ledger.Price{Model: "http-video-" + uuid.NewString(), Video: &ledger.VideoPrice{
+					VideoRequest: ledger.VideoRequest{Provider: providerName, UpstreamModel: "MiniMax-H3", Resolution: "768p", DurationSeconds: 5},
+					Basis:        "request", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10,
+				}}
+				wantCharge := regional.Amount(2_000_000)
+				endpoint, taskID := service.MiniMaxH3EndpointStatus, "minimax-h3:task"
+				if providerName == "grok" {
+					price.Video.VideoRequest = ledger.VideoRequest{Provider: providerName, UpstreamModel: "grok-imagine-video", Resolution: "720p", DurationSeconds: 6}
+					price.Video.Basis, wantCharge = "second", 12_000_000
+					endpoint, taskID = service.GrokMediaEndpointVideoStatus, "task"
+				} else if providerName == "seedance" {
+					price.Video.VideoRequest = ledger.VideoRequest{Provider: providerName, UpstreamModel: "ep-seedance"}
+					price.Video.Basis, price.Video.UnitNano, price.Video.MaxCompletionTokens = "completion_tokens", 28_000_000_000, 1_000_000
+					wantCharge, endpoint, taskID = 34_566_000, service.SeedanceEndpointStatus, "seedance:task"
+				}
+				require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
+				maximum, err := price.VideoMaximum(price.Video.VideoRequest)
+				require.NoError(t, err)
+				primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
+				grant := regionalLedgerLease(t, "http-video-grant-"+uuid.NewString(), user, 8_000_000_000)
+				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				r := regionalLedgerReservation(t, grant, "http-video-request-"+uuid.NewString(), maximum)
+				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
+				r.Video = &price.Video.VideoRequest
+				r.VideoOrigin = &ledger.VideoOrigin{Member: "video:" + uuid.NewString(), Owner: video.Owner{UserID: user, APIKeyID: key.ID, GroupID: group.ID, AccountID: account.ID, Provider: providerName, RouteFingerprint: service.AccountRouteFingerprint(account)}}
+				var requests ledger.VideoTaskLedger = holds
+				var local *ledger.Local
+				if mode == "regional" {
+					require.NoError(t, primary.Issue(ctx, grant))
+					local = &ledger.Local{DB: integrationDB, Region: grant.RegionID}
+					require.NoError(t, local.Install(ctx, grant))
+					requests = local
+				} else {
+					r.LeaseID, r.RegionID = "", ""
+				}
+				fresh, err := requests.Reserve(ctx, r)
+				require.NoError(t, err)
+				require.True(t, fresh)
+				require.NoError(t, requests.Start(ctx, r.RequestID))
+				require.NoError(t, requests.BindVideoTask(ctx, r.RequestID, taskID))
+				_, err = integrationDB.ExecContext(ctx, "UPDATE groups SET rate_multiplier=0.8 WHERE id=$1", group.ID)
+				require.NoError(t, err)
+				wrapped := &regionalVideoTerminalLedger{VideoTaskLedger: requests}
+				cfg := &config.Config{}
+				cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+				newGateway := func() *service.OpenAIGatewayService {
+					gateway := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Config: cfg, RegionalMetering: &service.RegionalMetering{Ledger: wrapped}, Upstream: newHTTPUpstream(cfg, nil, nil, nil)})
+					t.Cleanup(gateway.StopAsyncVideoKeyReleaseRecovery)
+					t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+					return gateway
+				}
+				gateway := newGateway()
+				query := func(gateway *service.OpenAIGatewayService) (*service.OpenAIForwardResult, bool, error) {
+					queryCtx := service.WithAsyncVideoKeyOwner(ctx, r.VideoOrigin.Owner)
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequestWithContext(queryCtx, http.MethodGet, "/video/task", nil)
+					var result *service.OpenAIForwardResult
+					var queryErr error
+					switch providerName {
+					case "grok":
+						result, queryErr = gateway.ForwardGrokMedia(queryCtx, c, account, endpoint, taskID, nil, "")
+					case "seedance":
+						result, queryErr = gateway.ForwardSeedance(queryCtx, c, account, endpoint, taskID, nil)
+					default:
+						result, queryErr = gateway.ForwardMiniMaxH3(queryCtx, c, account, endpoint, taskID, nil)
+					}
+					return result, c.Writer.Written(), queryErr
+				}
+				result, _, err := query(gateway)
+				require.NoError(t, err)
+				require.True(t, result.RegionalMetered)
+				require.False(t, result.AsyncVideoTerminal)
+				terminal.Store(true)
+				wrapped.fail.Store(true)
+				result, written, err := query(gateway)
+				require.Error(t, err)
+				require.Nil(t, result)
+				require.False(t, written)
+				record, err := requests.LoadVideoTask(ctx, r.VideoOrigin.Owner, taskID)
+				require.NoError(t, err)
+				require.Equal(t, price, record.Price)
+				require.Equal(t, "started", record.State)
+				wrapped.fail.Store(false)
+				wrapped.ack.Store(true)
+				var wg sync.WaitGroup
+				errorsCh := make(chan error, 4)
+				for range 4 {
+					wg.Go(func() {
+						result, written, queryErr := query(gateway)
+						if queryErr == nil && (result == nil || !result.RegionalMetered || !result.AsyncVideoTerminal || !written) {
+							queryErr = errors.New("terminal financial query did not produce a metered response")
+						}
+						errorsCh <- queryErr
+					})
+				}
+				wg.Wait()
+				close(errorsCh)
+				for queryErr := range errorsCh {
+					require.NoError(t, queryErr)
+				}
+				record, err = requests.LoadVideoTask(ctx, r.VideoOrigin.Owner, taskID)
+				require.NoError(t, err)
+				require.Equal(t, "completed", record.State)
+				require.Equal(t, wantCharge, record.Event.Usage.Charge)
+				require.Equal(t, r.VideoOrigin, record.Event.VideoOrigin)
+				if local != nil {
+					applied, err := primary.Settle(ctx, grant.RegionID, *record.Event, verify)
+					require.NoError(t, err)
+					require.True(t, applied)
+					require.NoError(t, local.Acknowledge(ctx, *record.Event))
+					wrapped.VideoTaskLedger = &ledger.Local{DB: integrationDB, Region: grant.RegionID}
+				} else {
+					_, restarted, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
+					wrapped.VideoTaskLedger = restarted
+				}
+				gateway = newGateway()
+				result, _, err = query(gateway)
+				require.NoError(t, err)
+				require.True(t, result.RegionalMetered)
+				var count int
+				var exactCharge bool
+				wantUSD, err := ledger.USD(wantCharge)
+				require.NoError(t, err)
+				require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*),COALESCE(sum(actual_cost),0)=$2::numeric FROM usage_logs WHERE request_id=$1", r.RequestID, wantUSD).Scan(&count, &exactCharge))
+				require.Equal(t, 1, count)
+				require.True(t, exactCharge, "canonical usage must match the original exact video charge")
+				require.EqualValues(t, 7, sends.Load(), "lookups must not resubmit generation, including financial retries")
+			})
+		}
+	}
+}
 
 func TestRegionalVideoPermanentRouteRejectsChangedAccountBeforeHTTP(t *testing.T) {
 	gin.SetMode(gin.TestMode)

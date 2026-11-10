@@ -210,6 +210,7 @@ func (s *OpenAIGatewayService) prepareAsyncVideoKeyLookup(req *http.Request, acc
 		if err := checkAsyncVideoForwardOwner(req.Context(), &owner, taskID); err != nil {
 			return nil, err
 		}
+		req = req.WithContext(context.WithValue(req.Context(), regionalVideoTaskKey{}, &regionalVideoTask{ledger: tasks, record: record}))
 	}
 	controller, ok := s.httpUpstream.(AsyncVideoKeyLeaseController)
 	if !ok {

@@ -1568,3 +1568,12 @@
 - 最终`go vet -p 1 -tags 'unit integration' ./internal/service ./internal/repository`实际退出0；三包`bin/task-d2-golangci-lint.exe run --fast-only --build-tags 'unit,integration' --concurrency 1 --timeout 3m --allow-serial-runners ./internal/regional/ledger ./internal/repository ./internal/service`实际退出0、`0 issues.`。相应日志`funds-route-final-vet.log`及`funds-route-final-fast-lint.log`留在原任务目录；源码及配置9项最终清单`funds-route-final-source.sha256`的SHA256为`36818ccb2c4ef84427c3e24d48d9d5b8d42580b1d67460bf3f8b99623bf1377a`。
 - 默认标签完整规则service lint本轮以8分钟配置运行，超过期限后仍在分析且占用约5.4GiB内存；核对可执行路径与完整命令后仅停止本轮PID22804，shell实际退出1，无诊断结果，未计为通过。快速lint、vet和编译各只证明自身覆盖，不替代最后重定向调整后的完整规则lint；未禁用项目规则或降低Go版本。文档本地链接25项、缺失0项，Go差异新增TODO/FIXME/XXX为0。
 - 同一工作区使用`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOMAXPROCS=2 GOMEMLIMIT=6GiB go build -p 1 ./internal/service ./internal/regional/ledger ./internal/repository ./cmd/server`实际退出0、无错误输出；多包构建未在源码目录产生二进制文件，只证明Linux编译，不声称Linux运行或生产已开放。原28项总数保持20 done、3 in_progress、5 pending；本次完成查询归属和发送前复核子范围，创建资金链和其他父验收继续保留。未执行CI、推送、部署或生产迁移；历史拒删资源及12张1164字节PNG不提交、不重试清理。
+
+## 2026-11-10：D2 三家视频终态接原资金账本
+
+- 在基线`6088980`复现终态仍进入旧异步账单且未完成原预留：`funds-terminal-before.jsonl`中completed/failed/pending三项反例失败。沿原`LoadVideoTask`读取创建时不可变Price，复核模型、版本、完整预留与已完成事件金额；Grok、MiniMax-H3、Seedance的状态/内容/取消观察统一沿原`Complete`结算，响应发布前完成事务，不新建预留或转移任务归属。三处旧异步账单入口排除`RegionalMetered`结果。
+- Grok按请求时长/分辨率、MiniMax按原合同、Seedance按严格整数且无歧义的终态completion tokens计费；未证实终态及空取消应答保额。并发轮询/提交确认丢失只能重载并精确重放SQL事件，重启保持原请求ID、时间与金额。资金故障返回专用503，保留任务与预留，不换账号、不重复提交、不进入供应商健康惩罚或旧计费认领。
+- 初轮真实SQL/HTTP六项场景报`USD precision exceeds primary monetary scale`，最终断言沿原`ledger.USD`和SQL numeric精确比较，未放宽金额。MiniMax内容夹具首轮预期302、实际200，夹具在读取状态前显式提交响应头；handler首轮缺少原有Readiness而在发送前403，补齐夹具后503反例通过。中间构建失败及以上失败原日志全部保留，不算通过。
+- 恢复时核对`funds-terminal-source.sha256`全部16项当前源码/依赖/规则完全匹配。复用`funds-terminal-verified.jsonl`中账本、video、service、middleware、routes、repository最终通过范围，handler使用修正Readiness后的`funds-terminal-handler-final.jsonl`替换其失败结果：合计178个顶层、689个子例通过，最终各包0失败/跳过。repository含三供应商×两种账本的真实SQL/HTTP、四路并发、确认丢失、售价快照与重启，104.126s；handler最终25顶层/91子例通过，17.720s。该合并为分包证据，不声称曾有一次七包全绿命令。
+- 四包全标签vet/fast lint及最终handler同标签vet/fast lint通过，两个fast lint日志均为`0 issues.`；Linux五包构建通过。完整lint超12分钟后核对并停止本轮进程，无诊断，保留未通过；fast lint不替代完整规则验收。证据沿`backend/tmp/regional-video-directory/funds-terminal-*`保存，未改Go版本、规则或新增豁免。
+- 原28项仍为20 done、3 in_progress、5 pending；本子项不关闭D2父任务。真实创建资金链/完整入口、运行时非单位倍率、unknown、多peer等仍保留，资金门仍503。本地提交，不CI/推送/部署/生产迁移；历史受保护的12张1164字节PNG保留且不提交，回滚应用保留迁移334与永久财务身份。

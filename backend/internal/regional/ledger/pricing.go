@@ -281,10 +281,12 @@ func verifyPriceReservation(ctx context.Context, tx *sql.Tx, r Reservation) erro
 	return nil
 }
 
-func readPrice(ctx context.Context, tx *sql.Tx, version, model string) (Price, error) {
+func readPrice(ctx context.Context, reader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, version, model string) (Price, error) {
 	var raw []byte
 	var p Price
-	if err := tx.QueryRowContext(ctx, `SELECT price FROM regional_prices WHERE version=$1`, version).Scan(&raw); err != nil {
+	if err := reader.QueryRowContext(ctx, `SELECT price FROM regional_prices WHERE version=$1`, version).Scan(&raw); err != nil {
 		return p, err
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {

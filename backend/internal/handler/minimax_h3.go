@@ -36,7 +36,7 @@ func (h *OpenAIGatewayHandler) MiniMaxH3Videos(c *gin.Context) {
 // Failed/queued/unknown jobs never charge. Always bill requested seconds, even
 // when the completed MP4 duration differs or the upstream omits billing fields.
 func prepareMiniMaxH3CompletionBilling(ctx context.Context, h *OpenAIGatewayHandler, key *service.APIKey, subject middleware.AuthSubject, taskID string, result *service.OpenAIForwardResult) *service.OpenAIForwardResult {
-	if result == nil || result.VideoCount != 1 {
+	if result == nil || result.RegionalMetered || result.VideoCount != 1 {
 		return nil
 	}
 	pending, err := h.gatewayService.LoadGrokVideoPendingBilling(ctx, taskID, subject.UserID, key.ID)

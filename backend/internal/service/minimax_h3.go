@@ -296,6 +296,9 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		}
 		result.VideoCount = 1
 		result.AsyncVideoTerminal = true
+		if err := finishRegionalVideoLookup(req, result, endpoint, nil); err != nil {
+			return nil, err
+		}
 		c.Header("Location", location)
 		c.Header("Cache-Control", "private, no-store")
 		c.Status(http.StatusFound)
@@ -342,6 +345,11 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		result.AsyncVideoTerminal = status == "completed" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
 		if status == "completed" && validMiniMaxH3OutputURL(gjson.GetBytes(responseBody, "metadata.url").String()) {
 			result.VideoCount = 1
+		}
+	}
+	if endpoint.IsVideoLookupRequest() {
+		if err := finishRegionalVideoLookup(req, result, endpoint, responseBody); err != nil {
+			return nil, err
 		}
 	}
 	c.Header("Cache-Control", "private, no-store")

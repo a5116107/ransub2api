@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil"
@@ -788,4 +790,73 @@ func TestGrokMediaVideoCompletionStillClaimsBillingOnce(t *testing.T) {
 		}
 	}
 	require.Len(t, bindings.billed, 1)
+}
+
+func TestRegionalVideoCompletionSkipsLegacyBillingClaims(t *testing.T) {
+	h, _, bindings, _ := newGrokMediaSlotHandler(t, false, false)
+	c, _ := grokMediaSlotContext(t.Context(), false)
+	key, ok := middleware2.GetAPIKeyFromContext(c)
+	require.True(t, ok)
+	subject := middleware2.AuthSubject{UserID: key.UserID}
+	result := &service.OpenAIForwardResult{ResponseID: "task", RegionalMetered: true, VideoCount: 1, VideoDurationSeconds: 6, Usage: service.OpenAIUsage{OutputTokens: 12345}}
+	require.Nil(t, prepareGrokVideoCompletionBilling(t.Context(), h, zap.NewNop(), key, subject, "task", result))
+	require.Nil(t, prepareMiniMaxH3CompletionBilling(t.Context(), h, key, subject, "minimax-h3:task", result))
+	require.Nil(t, prepareSeedanceCompletionBilling(t.Context(), h, key, subject, "seedance:task", result))
+	require.Empty(t, bindings.billed, "original funds ledger completion must never consume a legacy one-shot billing claim")
+}
+
+type regionalVideoSettlementTestLedger struct {
+	ledger.VideoTaskLedger
+	record ledger.VideoTaskRecord
+	called int
+}
+
+func (l *regionalVideoSettlementTestLedger) ResolveVideoTaskOwner(context.Context, video.Owner, string) (*video.Owner, error) {
+	return &l.record.Reservation.VideoOrigin.Owner, nil
+}
+
+func (l *regionalVideoSettlementTestLedger) LoadVideoTask(context.Context, video.Owner, string) (ledger.VideoTaskRecord, error) {
+	return l.record, nil
+}
+
+func (l *regionalVideoSettlementTestLedger) Complete(context.Context, ledger.Event) error {
+	l.called++
+	return errors.New("original funds temporarily unavailable")
+}
+
+type regionalVideoSettlementTestUpstream struct {
+	*grokMediaSlotUpstream
+	service.AsyncVideoKeyLeaseController
+}
+
+func (*regionalVideoSettlementTestUpstream) LoadAsyncVideoKeyLeaseByTask(context.Context, service.AsyncVideoKeyOwner, string) (*service.PersistentUpstreamKeyLease, error) {
+	return nil, nil
+}
+
+func TestRegionalVideoSettlementFailureReturns503WithoutReleasingTask(t *testing.T) {
+	h, slots, bindings, upstream := newGrokMediaSlotHandler(t, false, false)
+	account := service.Account{ID: 1, Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 50, GroupIDs: []int64{24}, Credentials: map[string]any{"api_key": "fixture-key"}}
+	price := ledger.Price{Model: "grok-imagine-video", Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: "grok", UpstreamModel: "grok-imagine-video", Resolution: "720p", DurationSeconds: 6}, Basis: "second", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10}}
+	owner := video.Owner{UserID: 10, APIKeyID: 20, GroupID: 24, AccountID: account.ID, Provider: "grok", RouteFingerprint: service.AccountRouteFingerprint(&account)}
+	l := &regionalVideoSettlementTestLedger{record: ledger.VideoTaskRecord{TaskID: "task", State: "started", Price: price, Reservation: ledger.Reservation{RequestID: "financial-task", UserID: owner.UserID, APIKeyID: owner.APIKeyID, AccountID: account.ID, Model: price.Model, PricingVersion: price.Version(), AdmittedAt: time.Now().Add(-time.Minute), Maximum: 12_000_000, PayloadSHA256: strings.Repeat("a", 64), Video: &price.Video.VideoRequest, VideoOrigin: &ledger.VideoOrigin{Member: "video:00000000-0000-4000-8000-000000000001", Owner: owner}}}}
+	upstream.call = func(*http.Request, int64) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"request_id":"task","status":"done","video":{"url":"https://cdn.example/video.mp4"}}`))}, nil
+	}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	repo := grokMediaSlotRepo{openAIImagesFailoverAccountRepo: openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}}
+	concurrency := service.NewConcurrencyService(slots)
+	provider := service.NewGrokTokenProvider(repo, nil)
+	up := &regionalVideoSettlementTestUpstream{grokMediaSlotUpstream: upstream}
+	meter := &service.RegionalMetering{Ledger: l, Readiness: func(context.Context) error { return nil }, Admit: func(context.Context, *service.APIKey, *service.Account, []byte) (ledger.Reservation, ledger.Price, error) {
+		panic("task queries must never reserve new funds")
+	}}
+	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency, nil, nil, nil, up, nil, nil, provider, nil, nil, nil, nil, nil, service.WithRegionalMetering(meter))
+	c, w := grokMediaSlotContext(t.Context(), false)
+	h.GrokVideoStatus(c)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "regional_video_settlement_unavailable")
+	require.Equal(t, 1, l.called)
+	require.Equal(t, 1, upstream.calls, "financial errors must not switch accounts or resubmit work")
+	require.Empty(t, bindings.billed)
+	slots.assertReleased(t)
 }

@@ -495,6 +495,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
+			if errors.Is(err, service.ErrRegionalVideoSettlement) {
+				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+					h.errorResponse(c, http.StatusServiceUnavailable, "regional_video_settlement_unavailable", "Video settlement is temporarily unavailable; retry this task query")
+				}
+				reqLog.Warn("grok_media.video_settlement_unavailable", zap.Int64("account_id", account.ID), zap.Error(err))
+				return
+			}
 			if service.IsAsyncVideoSubmissionUnconfirmed(err) {
 				if failoverClientGone(c) {
 					return
@@ -789,7 +796,7 @@ func prepareGrokVideoCompletionBilling(
 	taskRequestID string,
 	statusResult *service.OpenAIForwardResult,
 ) *service.OpenAIForwardResult {
-	if h == nil || h.gatewayService == nil || apiKey == nil || statusResult == nil {
+	if h == nil || h.gatewayService == nil || apiKey == nil || statusResult == nil || statusResult.RegionalMetered {
 		return nil
 	}
 	// Forward already set VideoCount only when status=done && video.url (official).
