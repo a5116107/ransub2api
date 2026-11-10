@@ -33,7 +33,7 @@ func TestRegionalControlMTLSScopeAndDurableOutbox(t *testing.T) {
 	client, err := control.NewClient(server.URL, roots, clientCert, regionalControlPin(serverCert))
 	require.NoError(t, err)
 	defer client.Close()
-	lease := regionalLedgerLease(fmt.Sprintf("control-%d", user), user, 1_000_000_000)
+	lease := regionalLedgerLease(t, fmt.Sprintf("control-%d", user), user, 1_000_000_000)
 	require.NoError(t, client.IssueQuota(ctx, lease))
 	require.NoError(t, client.IssueQuota(ctx, lease))
 	require.NoError(t, local.Install(ctx, lease))
@@ -54,7 +54,7 @@ func TestRegionalControlMTLSScopeAndDurableOutbox(t *testing.T) {
 	oversized.LeaseID += "-oversized"
 	oversized.Granted += 10
 	require.Error(t, client.IssueQuota(ctx, oversized))
-	r := regionalLedgerReservation(lease, fmt.Sprintf("control-req-%d", user), 1_000_000_000)
+	r := regionalLedgerReservation(t, lease, fmt.Sprintf("control-req-%d", user), 1_000_000_000)
 	fresh, err := local.Reserve(ctx, r)
 	require.NoError(t, err)
 	require.True(t, fresh)

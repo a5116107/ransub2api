@@ -46,7 +46,7 @@ func TestRegionalBudgetScopeReservesEveryDimension(t *testing.T) {
 			}
 			require.NoError(t, err)
 			primary, _, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
-			first := regionalLedgerLease(fmt.Sprintf("scope-first-%d", user), user, 4_000_000_000)
+			first := regionalLedgerLease(t, fmt.Sprintf("scope-first-%d", user), user, 4_000_000_000)
 			first.APIKeyID = key.ID
 			first.AccountID = account.ID
 			if dimension == "subscription" {
@@ -56,7 +56,7 @@ func TestRegionalBudgetScopeReservesEveryDimension(t *testing.T) {
 			second := first
 			second.LeaseID = fmt.Sprintf("scope-second-%d", user)
 			second.RegionID = "eu"
-			second.IssuedAt = time.Now().Add(-time.Second).Truncate(time.Microsecond)
+			second.IssuedAt = regionalLedgerClock(t).Add(-time.Second)
 			second.ExpiresAt = second.IssuedAt.Add(time.Hour)
 			require.ErrorIs(t, primary.Issue(ctx, second), ledger.ErrExhausted)
 			var balance string
@@ -89,8 +89,8 @@ func TestRegionalSubscriptionCanonicalUsesDurableFundingMetadata(t *testing.T) {
 	_, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 	price := ledger.Price{Model: "mock-subscription", Input: 1_000_000_000, Output: 2_000_000_000, MaxInput: 100, MaxOutput: 100}
 	require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
-	lease := regionalLedgerLease("not-used", user, 1_000_000_000)
-	request := regionalLedgerReservation(lease, "sub-"+uuid.NewString(), 1_000_000_000)
+	lease := regionalLedgerLease(t, "not-used", user, 1_000_000_000)
+	request := regionalLedgerReservation(t, lease, "sub-"+uuid.NewString(), 1_000_000_000)
 	request.LeaseID = ""
 	request.APIKeyID = key.ID
 	request.AccountID = account.ID
@@ -120,6 +120,99 @@ func TestRegionalSubscriptionCanonicalUsesDurableFundingMetadata(t *testing.T) {
 	require.Equal(t, "10.00000000", balance)
 }
 
+func TestRegionalPrimarySettlementRejectsChangedAuthorityIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ledger.Event)
+	}{
+		{"other_region", func(e *ledger.Event) { e.Usage.RegionID = "eu" }},
+		{"missing_region", func(e *ledger.Event) { e.Usage.RegionID = "" }},
+		{"unexpected_lease", func(e *ledger.Event) { e.Usage.LeaseID = "foreign-lease" }},
+		{"missing_schema", func(e *ledger.Event) { e.Usage.SchemaVersion = 0 }},
+		{"future_schema", func(e *ledger.Event) { e.Usage.SchemaVersion++ }},
+		{"other_user", func(e *ledger.Event) { e.Usage.UserID++ }},
+		{"other_key", func(e *ledger.Event) { e.Usage.APIKeyID++ }},
+		{"other_account", func(e *ledger.Event) { e.Usage.AccountID++ }},
+		{"other_model", func(e *ledger.Event) { e.Model += "-other" }},
+		{"other_price", func(e *ledger.Event) { e.PricingVersion = "other-price" }},
+		{"other_payload", func(e *ledger.Event) { e.PayloadSHA256 = "other-payload" }},
+		{"above_maximum", func(e *ledger.Event) { e.Usage.Charge = 1_000_000_010 }},
+		{"before_admission", func(e *ledger.Event) { e.Usage.CompletedAt = e.Usage.AdmittedAt.Add(-time.Second) }},
+		{"stored_request_id", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			user := regionalLedgerUser(t)
+			client := testEntClient(t)
+			group := mustCreateGroup(t, client, &service.Group{Name: "authority-" + uuid.NewString(), Platform: service.PlatformOpenAI, RateMultiplier: 1})
+			key := mustCreateApiKey(t, client, &service.APIKey{UserID: user, GroupID: &group.ID, Key: "sk-mock-" + uuid.NewString(), Name: "authority"})
+			account := mustCreateAccount(t, client, &service.Account{Name: "authority-" + uuid.NewString(), Type: service.AccountTypeAPIKey, Platform: service.PlatformOpenAI, Status: "active", Schedulable: true})
+			_, err := integrationDB.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", account.ID, group.ID)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, _ = integrationDB.Exec("DELETE FROM usage_logs WHERE user_id=$1", user)
+				_, _ = integrationDB.Exec("DELETE FROM regional_primary_requests WHERE user_id=$1", user)
+				_, _ = integrationDB.Exec("DELETE FROM regional_budget_allocations WHERE user_id=$1", user)
+			})
+			_, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
+			price := ledger.Price{Model: "mock-authority-identity", Input: 1_000_000_000, Output: 2_000_000_000, MaxInput: 100, MaxOutput: 100}
+			require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
+			lease := regionalLedgerLease(t, "not-used", user, 1_000_000_000)
+			request := regionalLedgerReservation(t, lease, "authority-"+uuid.NewString(), 1_000_000_000)
+			request.LeaseID, request.APIKeyID, request.AccountID = "", key.ID, account.ID
+			request.Model, request.PricingVersion = price.Model, price.Version()
+			fresh, err := holds.Reserve(ctx, request)
+			require.NoError(t, err)
+			require.True(t, fresh)
+			require.NoError(t, holds.Start(ctx, request.RequestID))
+			charge, err := price.Charge(10, 5, 0, 0)
+			require.NoError(t, err)
+			event := regionalLedgerEvent(request, charge)
+			changed := event
+			if tc.mutate != nil {
+				tc.mutate(&changed)
+			} else {
+				_, err = integrationDB.ExecContext(ctx, "UPDATE regional_primary_requests SET request=jsonb_set(request,'{request_id}',to_jsonb($2::text)) WHERE request_id=$1", request.RequestID, "other-request")
+				require.NoError(t, err)
+			}
+			require.ErrorIs(t, holds.Complete(ctx, changed), ledger.ErrConflict)
+			var state, balance string
+			var spent int64
+			var count int
+			require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT state FROM regional_primary_requests WHERE request_id=$1", request.RequestID).Scan(&state))
+			require.Equal(t, "started", state)
+			require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", user).Scan(&balance))
+			require.Equal(t, "9.00000000", balance)
+			require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT spent FROM regional_budget_allocations WHERE allocation_id=$1 AND state='held'", "request:"+request.RequestID).Scan(&spent))
+			require.Zero(t, spent)
+			require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs WHERE request_id=$1", request.RequestID).Scan(&count))
+			require.Zero(t, count)
+			if tc.mutate == nil {
+				_, err = integrationDB.ExecContext(ctx, "UPDATE regional_primary_requests SET request=jsonb_set(request,'{request_id}',to_jsonb($1::text)) WHERE request_id=$1", request.RequestID)
+				require.NoError(t, err)
+				changed.Usage.SchemaVersion++
+			}
+			const concurrentReplays = 4
+			results := make(chan error, concurrentReplays)
+			for i := 0; i < concurrentReplays; i++ {
+				go func() { results <- holds.Complete(ctx, event) }()
+			}
+			var replayErrors [concurrentReplays]error
+			for i := range replayErrors {
+				replayErrors[i] = <-results
+			}
+			for _, replayErr := range replayErrors {
+				require.NoError(t, replayErr, "the exact completion remains idempotent across concurrent replays")
+			}
+			require.ErrorIs(t, holds.Complete(ctx, changed), ledger.ErrConflict)
+			require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", user).Scan(&balance))
+			require.Equal(t, "9.99998000", balance)
+			require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs WHERE request_id=$1", request.RequestID).Scan(&count))
+			require.Equal(t, 1, count)
+		})
+	}
+}
+
 func TestRegionalLegacyUnknownAllocationKeepsMoneyAndDrainsBeforeNewAdmission(t *testing.T) {
 	ctx := context.Background()
 	user := regionalLedgerUser(t)
@@ -137,8 +230,8 @@ func TestRegionalLegacyUnknownAllocationKeepsMoneyAndDrainsBeforeNewAdmission(t 
 	_, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 	price := ledger.Price{Model: "mock-legacy-allocation", Input: 1_000_000_000, Output: 2_000_000_000, MaxInput: 100, MaxOutput: 100}
 	require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
-	lease := regionalLedgerLease("not-used", user, 1_000_000_000)
-	request := regionalLedgerReservation(lease, "legacy-"+uuid.NewString(), 1_000_000_000)
+	lease := regionalLedgerLease(t, "not-used", user, 1_000_000_000)
+	request := regionalLedgerReservation(t, lease, "legacy-"+uuid.NewString(), 1_000_000_000)
 	request.LeaseID = ""
 	request.APIKeyID = key.ID
 	request.AccountID = account.ID

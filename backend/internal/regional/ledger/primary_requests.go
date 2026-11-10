@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+
+	"github.com/Wei-Shaw/sub2api/internal/regional"
 )
 
 // PrimaryRequests coordinates main-site request holds with Primary.Issue by
@@ -157,7 +159,11 @@ func (p *PrimaryRequests) finish(ctx context.Context, id string, e *Event) error
 			return ErrAlreadyDispatched
 		}
 		u := e.Usage
-		if u.UserID != r.UserID || u.APIKeyID != r.APIKeyID || u.AccountID != r.AccountID || u.Charge < 0 || u.Charge > r.Maximum || !u.AdmittedAt.Equal(r.AdmittedAt) || u.CompletedAt.Before(u.AdmittedAt) || e.Model != r.Model || e.PricingVersion != r.PricingVersion || e.PayloadSHA256 != r.PayloadSHA256 {
+		if u.SchemaVersion != regional.SchemaVersion || u.EventID != r.RequestID ||
+			u.LeaseID != r.LeaseID || u.RegionID != r.RegionID ||
+			u.UserID != r.UserID || u.APIKeyID != r.APIKeyID || u.AccountID != r.AccountID ||
+			u.Charge < 0 || u.Charge > r.Maximum || !u.AdmittedAt.Equal(r.AdmittedAt) || u.CompletedAt.Before(u.AdmittedAt) ||
+			e.Model != r.Model || e.PricingVersion != r.PricingVersion || e.PayloadSHA256 != r.PayloadSHA256 {
 			return ErrConflict
 		}
 		if p.SettleScope == nil {

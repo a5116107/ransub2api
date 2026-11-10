@@ -25,7 +25,7 @@ func TestRegionalPricingCanonicalSettlementAndLostAck(t *testing.T) {
 	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user, Key: "sk-mock-" + uuid.NewString(), Name: "regional-pricing"})
 	account := mustCreateAccount(t, client, &service.Account{Name: "mock-" + uuid.NewString(), Type: service.AccountTypeAPIKey})
 	p := &ledger.Primary{DB: integrationDB}
-	l := regionalLedgerLease(fmt.Sprintf("price-%d", user), user, 5_000_000_000)
+	l := regionalLedgerLease(t, fmt.Sprintf("price-%d", user), user, 5_000_000_000)
 	require.NoError(t, p.Issue(ctx, l))
 	local := &ledger.Local{DB: integrationDB, Region: l.RegionID}
 	require.NoError(t, local.Install(ctx, l))
@@ -34,7 +34,7 @@ func TestRegionalPricingCanonicalSettlementAndLostAck(t *testing.T) {
 	require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
 	_, err := integrationDB.ExecContext(ctx, "UPDATE regional_prices SET price='{}' WHERE version=$1", price.Version())
 	require.Error(t, err)
-	r := regionalLedgerReservation(l, fmt.Sprintf("price-request-%d", user), 4_000_000_000)
+	r := regionalLedgerReservation(t, l, fmt.Sprintf("price-request-%d", user), 4_000_000_000)
 	r.APIKeyID = key.ID
 	r.AccountID = account.ID
 	r.Model = price.Model
@@ -93,7 +93,7 @@ func TestRegionalGrantCompetesWithPrimaryInflightHold(t *testing.T) {
 	primary := &ledger.Primary{DB: integrationDB}
 	holds := &ledger.PrimaryRequests{DB: integrationDB, Authorize: func(context.Context, *sql.Tx, ledger.Reservation) error { return nil }, SettleScope: func(context.Context, *sql.Tx, ledger.Event) error { return nil }, CancelScope: func(context.Context, *sql.Tx, ledger.Reservation) error { return nil }}
 	r := ledger.Reservation{RequestID: fmt.Sprintf("hold-%d", user), UserID: user, Maximum: 6_000_000_000, PayloadSHA256: strings.Repeat("a", 64), Model: "mock-text", PricingVersion: "mock-v1", AdmittedAt: time.Now()}
-	l := regionalLedgerLease(fmt.Sprintf("grant-race-%d", user), user, 6_000_000_000)
+	l := regionalLedgerLease(t, fmt.Sprintf("grant-race-%d", user), user, 6_000_000_000)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	errs := make(chan error, 2)
