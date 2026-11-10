@@ -17,9 +17,17 @@ import (
 // An allowlist does not allocate global concurrency for the shared pool.
 // Full Account JSON is sensitive and must only travel in encrypted snapshots.
 type RegionalSchedulerDocument struct {
-	Version int                       `json:"version"`
-	Buckets []RegionalSchedulerBucket `json:"buckets"`
-	Groups  []*Group                  `json:"groups,omitempty"`
+	Version      int                           `json:"version"`
+	Buckets      []RegionalSchedulerBucket     `json:"buckets"`
+	Groups       []*Group                      `json:"groups,omitempty"`
+	Availability []RegionalAccountAvailability `json:"availability"`
+}
+
+// Reports contain no credentials or private managed-connection identities.
+// A present empty Reports array explicitly attests that no rule is configured.
+type RegionalAccountAvailability struct {
+	AccountID int64                 `json:"account_id"`
+	Reports   []*AvailabilityReport `json:"reports"`
 }
 type RegionalSchedulerBucket struct {
 	Bucket   SchedulerBucket `json:"bucket"`
@@ -66,7 +74,7 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return doc, errors.New("trailing regional scheduler data")
 	}
-	if doc.Version != 1 || doc.Buckets == nil || len(doc.Buckets) > 4096 {
+	if (doc.Version != 1 && doc.Version != 2) || doc.Buckets == nil || len(doc.Buckets) > 4096 {
 		return doc, errors.New("invalid regional scheduler version or buckets")
 	}
 	groups := make(map[int64]bool, len(doc.Groups))
@@ -120,6 +128,37 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 					return doc, errors.New("regional account group mismatch")
 				}
 			}
+		}
+	}
+	if doc.Version == 1 && len(doc.Availability) != 0 {
+		return doc, errors.New("availability requires regional scheduler version 2")
+	}
+	if doc.Version == 2 {
+		if doc.Availability == nil {
+			return doc, errors.New("regional availability coverage missing")
+		}
+		seenAccounts, seenPlans := make(map[int64]bool), make(map[int64]bool)
+		for _, entry := range doc.Availability {
+			if _, exists := accountViews[entry.AccountID]; !exists || seenAccounts[entry.AccountID] || entry.Reports == nil {
+				return doc, errors.New("invalid regional availability account")
+			}
+			seenAccounts[entry.AccountID] = true
+			for _, report := range entry.Reports {
+				if report == nil || report.AccountID != entry.AccountID || report.PlanID <= 0 || seenPlans[report.PlanID] || report.EvaluatedAt.IsZero() || report.Models == nil {
+					return doc, errors.New("invalid regional availability report")
+				}
+				seenPlans[report.PlanID] = true
+				models := make(map[string]bool)
+				for _, state := range report.Models {
+					if state.ModelID == "" || models[state.ModelID] {
+						return doc, errors.New("invalid regional availability model")
+					}
+					models[state.ModelID] = true
+				}
+			}
+		}
+		if len(seenAccounts) != len(accountViews) {
+			return doc, errors.New("regional availability coverage missing")
 		}
 	}
 	return doc, nil
@@ -189,8 +228,9 @@ func (s *SchedulerSnapshotService) ExportRegionalScheduler(ctx context.Context, 
 			allowed[id] = true
 		}
 	}
-	doc := RegionalSchedulerDocument{Version: 1, Buckets: make([]RegionalSchedulerBucket, 0, len(buckets))}
+	doc := RegionalSchedulerDocument{Version: 2, Buckets: make([]RegionalSchedulerBucket, 0, len(buckets)), Availability: []RegionalAccountAvailability{}}
 	seenGroups := make(map[int64]bool)
+	seenAvailability := make(map[int64]bool)
 	for _, bucket := range buckets {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -220,6 +260,21 @@ func (s *SchedulerSnapshotService) ExportRegionalScheduler(ctx context.Context, 
 		for i := range accounts {
 			a := &accounts[i]
 			if allowed[a.ID] && a.IsSchedulable() {
+				if !seenAvailability[a.ID] {
+					reader, ok := s.accountRepo.(AccountAvailabilityReader)
+					if !ok {
+						return nil, errors.New("regional export requires availability authority")
+					}
+					reports, err := reader.ReadAccountAvailability(ctx, a)
+					if err != nil {
+						return nil, err
+					}
+					if reports == nil {
+						reports = []*AvailabilityReport{}
+					}
+					doc.Availability = append(doc.Availability, RegionalAccountAvailability{AccountID: a.ID, Reports: reports})
+					seenAvailability[a.ID] = true
+				}
 				entry.Accounts = append(entry.Accounts, a)
 			}
 		}
@@ -354,4 +409,56 @@ func (r *RegionalSchedulerReader) GetLocalGroup(ctx context.Context, id int64) (
 		return nil, ErrLocalSchedulerSnapshotUnavailable
 	}
 	return out, nil
+}
+
+// ReadAccountAvailability uses the same encrypted complete view as regional
+// account/group hydration. It never opens a primary connection or extends an
+// observation's absolute expiry when the snapshot is read or republished.
+func (r *RegionalSchedulerReader) ReadAccountAvailability(ctx context.Context, account *Account) ([]*AvailabilityReport, error) {
+	doc, expiry, err := r.detailView(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if doc.Version != 2 || account == nil || account.ID <= 0 {
+		return nil, ErrLocalSchedulerSnapshotUnavailable
+	}
+	var current *Account
+	for _, bucket := range doc.Buckets {
+		for _, candidate := range bucket.Accounts {
+			if candidate.ID == account.ID {
+				current = candidate
+				break
+			}
+		}
+	}
+	prepared, valid := AvailabilityPreparedRouteFingerprint(account)
+	if current == nil || !current.IsSchedulable() || !valid || prepared != AccountRouteFingerprint(current) ||
+		current.HasManagedOpenAIConnections() != (account.AuthConnectionID != "") {
+		return nil, ErrAvailabilityRouteChanged
+	}
+	for _, entry := range doc.Availability {
+		if entry.AccountID != account.ID {
+			continue
+		}
+		now := time.Now()
+		for _, report := range entry.Reports {
+			// An immutable primary evaluation is not a frozen "now". Charge
+			// delivery and storage time before the shared pre-send guard runs.
+			// Keep a later authoritative clock rather than moving it backwards.
+			if now.After(report.EvaluatedAt) {
+				report.EvaluatedAt = now
+			}
+			for i := range report.Models {
+				state := &report.Models[i]
+				if state.Status == "pass" && state.StatusAt(report.EvaluatedAt) != "pass" {
+					state.Status, state.Reason = state.StatusAt(report.EvaluatedAt), "expired"
+				}
+			}
+		}
+		if err := regionalReadFinished(ctx, expiry); err != nil {
+			return nil, err
+		}
+		return entry.Reports, nil
+	}
+	return nil, ErrLocalSchedulerSnapshotUnavailable
 }

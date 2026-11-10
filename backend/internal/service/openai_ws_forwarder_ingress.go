@@ -1910,7 +1910,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			latencyGenerationStartedTurn = turn
 		}
-		if keyAuthority != nil || s.availabilityReader != nil {
+		if keyAuthority != nil || s.hasAvailabilityAdmission() {
 			if _, err := checkAdmission(ctx); err != nil {
 				return nil, err
 			}

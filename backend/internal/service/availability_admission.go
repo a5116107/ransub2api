@@ -39,7 +39,18 @@ func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, req
 }
 
 func (s *OpenAIGatewayService) admitAvailabilityScope(ctx context.Context, account *Account, requestScope func() *AvailabilityRequestScope) error {
-	if s.availabilityReader == nil || ctx.Value(qualityProbeContextKey{}) != nil {
+	if ctx.Value(qualityProbeContextKey{}) != nil {
+		return nil
+	}
+	reader := s.availabilityReader
+	if s.schedulerSnapshot != nil && s.schedulerSnapshot.localSnapshotReader != nil {
+		var ok bool
+		reader, ok = s.schedulerSnapshot.localSnapshotReader.(AccountAvailabilityReader)
+		if !ok {
+			return denyOpenAITurn("availability_state_unavailable")
+		}
+	}
+	if reader == nil {
 		return nil
 	}
 	if account == nil || account.ID <= 0 {
@@ -48,7 +59,7 @@ func (s *OpenAIGatewayService) admitAvailabilityScope(ctx context.Context, accou
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	reports, err := s.availabilityReader.ReadAccountAvailability(ctx, account)
+	reports, err := reader.ReadAccountAvailability(ctx, account)
 	if err != nil {
 		if errors.Is(err, ErrAvailabilityRouteChanged) {
 			return denyOpenAITurn("account_binding_changed")
@@ -101,4 +112,8 @@ func (s *OpenAIGatewayService) admitAvailabilityScope(ctx context.Context, accou
 		return denyOpenAITurn("availability_model_unobserved")
 	}
 	return nil
+}
+
+func (s *OpenAIGatewayService) hasAvailabilityAdmission() bool {
+	return s.availabilityReader != nil || (s.schedulerSnapshot != nil && s.schedulerSnapshot.localSnapshotReader != nil)
 }

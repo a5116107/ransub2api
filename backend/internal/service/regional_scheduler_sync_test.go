@@ -115,8 +115,10 @@ func TestRegionalSchedulerRejectsForeignAndBrokenDocuments(t *testing.T) {
 
 type regionalExportRepo struct {
 	AccountRepository
-	accounts []Account
-	fail     bool
+	accounts          []Account
+	fail              bool
+	availabilityErr   error
+	availabilityReads int
 }
 
 func (r *regionalExportRepo) ListSchedulableUngroupedByPlatform(context.Context, string) ([]Account, error) {
@@ -124,6 +126,11 @@ func (r *regionalExportRepo) ListSchedulableUngroupedByPlatform(context.Context,
 		return nil, errors.New("db unavailable")
 	}
 	return r.accounts, nil
+}
+
+func (r *regionalExportRepo) ReadAccountAvailability(context.Context, *Account) ([]*AvailabilityReport, error) {
+	r.availabilityReads++
+	return []*AvailabilityReport{}, r.availabilityErr
 }
 func TestRegionalSchedulerExportFiltersAssignmentAndPreservesOnFailure(t *testing.T) {
 	ctx := context.Background()
@@ -149,6 +156,29 @@ func TestRegionalSchedulerExportFiltersAssignmentAndPreservesOnFailure(t *testin
 	after, err := replica.Current()
 	if err != nil || after.Revision != s.Revision || !after.ExpiresAt.Equal(s.ExpiresAt) {
 		t.Fatal("failure refreshed snapshot")
+	}
+	repo.fail, repo.availabilityErr = false, errors.New("availability authority unavailable")
+	if err := svc.PublishRegionalScheduler(ctx, replica, "test", time.Minute, buckets, []int64{1}); err == nil {
+		t.Fatal("availability failure published a partial view")
+	}
+	after, err = replica.Current()
+	if err != nil || after.Revision != s.Revision || !after.ExpiresAt.Equal(s.ExpiresAt) {
+		t.Fatal("availability failure refreshed snapshot")
+	}
+	repo.availabilityErr, repo.availabilityReads = nil, 0
+	buckets = append(buckets, SchedulerBucket{Platform: PlatformOpenAI, Mode: SchedulerModeForced})
+	if err := svc.PublishRegionalScheduler(ctx, replica, "test", time.Minute, buckets, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.availabilityReads != 1 {
+		t.Fatal("repeated account exported more than one availability view")
+	}
+	// Exposing only the original account interface must not silently turn
+	// unavailable rule authority into an assertion that no rules exist.
+	accountOnly := struct{ AccountRepository }{repo}
+	missing := NewSchedulerSnapshotService(nil, nil, accountOnly, nil, nil)
+	if _, err := missing.ExportRegionalScheduler(ctx, buckets, []int64{1}); err == nil {
+		t.Fatal("missing availability authority accepted")
 	}
 }
 func TestRegionalSchedulerWorkerCancellation(t *testing.T) {

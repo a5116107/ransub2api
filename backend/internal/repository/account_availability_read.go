@@ -48,7 +48,37 @@ func (r *scheduledTestPlanRepository) readAvailabilityReports(ctx context.Contex
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// column is selected only by the two repository methods above.
+	reports, err := readAvailabilityReportsInTx(ctx, tx, column, id, prepared)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return reports, nil
+}
+
+// Regional export must use the same transaction as account/group hydration.
+// It cannot open another primary snapshot through the scheduled-plan pool.
+func (r *accountRepository) ReadAccountAvailability(ctx context.Context, account *service.Account) ([]*service.AvailabilityReport, error) {
+	if account == nil || account.ID <= 0 {
+		return nil, service.ErrAccountNotFound
+	}
+	tx, ok := r.sql.(*sql.Tx)
+	if !ok {
+		return nil, errors.New("regional availability export requires transaction-bound accounts")
+	}
+	prepared := account
+	if account.HasManagedOpenAIConnections() && account.AuthConnectionID == "" {
+		// A catalog row cannot attest to any managed connection. Export the
+		// existing unknown report rather than one connection's private pass.
+		prepared = nil
+	}
+	return readAvailabilityReportsInTx(ctx, tx, "account_id", account.ID, prepared)
+}
+
+func readAvailabilityReportsInTx(ctx context.Context, tx *sql.Tx, column string, id int64, prepared *service.Account) ([]*service.AvailabilityReport, error) {
+	// column is selected only by the fixed repository callers above.
 	rows, err := tx.QueryContext(ctx, `SELECT id,account_id,enabled,updated_at,model_id,pelican_config,availability_fault_version FROM scheduled_test_plans WHERE `+column+`=$1 ORDER BY id`, id)
 	if err != nil {
 		return nil, err
@@ -110,9 +140,6 @@ func (r *scheduledTestPlanRepository) readAvailabilityReports(ctx context.Contex
 				item.Reason = "expired"
 			}
 		}
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
 	}
 	return reports, nil
 }

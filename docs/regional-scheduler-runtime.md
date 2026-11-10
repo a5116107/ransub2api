@@ -40,7 +40,7 @@
 
 1. 获取按 region 划分的事务 advisory lock；其他实例跳过本轮。此处是每轮唯一发布者，不是固定主进程选举。
 2. 锁定持久流记录，读取 revision。并发旧事务若遇到新提交会序列化失败，不能以旧数据库视图覆盖新版本。
-3. 将账号、分组仓储的 Ent client 和原生 SQL 全部绑定到此事务，读取所有桶、账号关系、代理及分组。
+3. 将账号、分组仓储的 Ent client 和原生 SQL 全部绑定到此事务，读取所有桶、账号关系、代理、分组与最新可用性报告；可用性读取复用该事务，不另开主库快照。
 4. 校验分配范围和完整文档，生成 revision+1 的加密包；版本与包原子提交后才对内部 HTTP 可见。
 
 没有 Redis 租约，也不依赖进程本地 mutex 或发布节点本地文件分配版本。失败不会刷新旧包过期时间；提交结果不确定时，本轮不暴露新包，下轮从数据库高水位继续。实例启动从数据库恢复已提交包，过期包不服务。流记录丢失时，正常启动和后续发布失败；恢复数据库备份须保持所有接收者已接受的版本下限。
@@ -58,19 +58,20 @@
 
 日志仅记录同步失败的角色和区域，不输出 endpoint、TLS 密钥、账号凭证或解密 payload。监控应针对持续失败、临近过期、过期/缺失快照和版本停滞告警。同步失败但旧快照尚新鲜时仍允许本地候选读取，到期后拒绝。
 
-## 仍会跨区的路径和后续 PR
+## 请求读取边界与独立协议
 
-| 路径 | 当前依赖 | 后续范围 |
+| 路径 | 当前依赖 | 验收边界 |
 |---|---|---|
-| `SchedulerSnapshotService.ListSchedulableAccounts` | 本 PR 订阅模式下仅本地完整快照 | 已接入，无回源 |
-| `SchedulerSnapshotService.GetAccount`、网关 `hydrateSelectedAccount` | Redis 单账号缓存/主站账号仓储；OpenAI 调度还有直接 `accountRepo.GetByID` | 凭证补全、状态及账号本地读取 |
-| `GetGroupByID/GetGroupByIDLite`、profit control、composite route resolver | 分组仓储/数据库 | 分组和策略本地读取 |
-| API Key/User 权限、撤销、订阅校验 | 缓存/主站数据库 | 本地鉴权快照及过期拒绝 |
-| OAuth token 刷新、账号排空、状态写回 | 主站服务及缓存 | 区域独占归属、迁移和凭证生命周期 |
-| sticky session、并发/等待槽、限速等 | 当前 Redis/concurrency service | 区域内协调，禁止共用跨区请求缓存 |
-| 余额和订阅额度、usage 写入 | 主站账务和 Redis | 主站额度租约、区域预留、持久 outbox、幂等结算 |
+| `SchedulerSnapshotService.ListSchedulableAccounts` | 订阅模式下仅本地完整快照 | 缺失/过期拒绝，不回源 |
+| `GetAccount/GetAccounts` 与逐轮权威账号复验 | 同一完整快照 | 缺少详情接口拒绝；见[详情](regional-scheduler-details.md) |
+| `GetGroupByID/GetGroupByIDLite` | 同一完整快照中的分组 | 缺少策略拒绝，不从旧账号重建 |
+| OpenAI HTTP/原生WS最新可用性终检 | v2本地报告与绝对有效期 | 缺项、旧v1、过期、线路/模型/能力不匹配拒绝；传播非即时 |
+| API Key/User 权限与撤销 | 独立[鉴权协议](regional-auth-runtime.md) | 不由调度候选或白名单授权 |
+| OAuth 刷新、状态写回与账号生命周期 | 各原权威路径 | 本文不证明所有独立出站均已本地化 |
+| sticky session、并发/等待槽、限速 | 独立[共享槽位协议](regional-shared-slots.md) | 不由账号白名单分配额度 |
+| 余额、订阅、usage 与视频原节点结算 | 独立[资金协议](regional-runtime-budget.md) | 排空、双预算、持久outbox和幂等另验 |
 
-导出包含敏感完整账号数据，allowlist 只限制导出/接收范围，不证明区域独占。父子账号目前被文档校验拒绝。`simple` 运行模式与桶/分组语义也尚未形成完整区域协议。以上任一缺口都意味着不能开放生产模型请求；后续依次完成本地鉴权、区域归属、额度租约及区域账本，再做 operate 部署、灰度、真实延迟和账单验收。
+导出包含敏感完整账号数据，allowlist 只限制导出/接收范围，不提供并发或资金分配。父子账号目前被文档校验拒绝。先升级接收端支持v2再启用新发布端；回退先停接流、排空并恢复匹配版本，保留密文版本下限、规则和账单。完整任务和生产待验收范围见[项目状态](project/STATE.md)；本地快照ready不代表生产已验收。
 
 ## 验证范围
 
