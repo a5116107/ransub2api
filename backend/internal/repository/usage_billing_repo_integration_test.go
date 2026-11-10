@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -16,6 +17,46 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
+
+type seedanceLostAcknowledgement struct {
+	service.UsageBillingRepository
+	committed bool
+}
+
+func (r *seedanceLostAcknowledgement) Apply(ctx context.Context, cmd *service.UsageBillingCommand) (*service.UsageBillingApplyResult, error) {
+	result, err := r.UsageBillingRepository.Apply(ctx, cmd)
+	if err == nil && !r.committed {
+		r.committed = true
+		return nil, errors.New("fixture: committed billing acknowledgement lost")
+	}
+	return result, err
+}
+
+func TestSeedanceUsageBillingLostAcknowledgementReplay(t *testing.T) {
+	ctx := t.Context()
+	client := testEntClient(t)
+	user := mustCreateUser(t, client, &service.User{Email: "seedance-" + uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 10})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "fixture-" + uuid.NewString(), Name: "seedance"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "seedance-" + uuid.NewString(), Type: service.AccountTypeAPIKey})
+	billing := &seedanceLostAcknowledgement{UsageBillingRepository: NewUsageBillingRepository(client, integrationDB)}
+	taskID := service.SeedanceTaskKey(uuid.NewString())
+	command := service.UsageBillingCommand{RequestID: service.StableGrokVideoBillingRequestID(taskID), APIKeyID: key.ID, UserID: user.ID,
+		AccountID: account.ID, AccountType: service.AccountTypeAPIKey, Model: "doubao-seedance", OutputTokens: 12345,
+		RequestPayloadHash: service.HashUsageRequestPayload([]byte(taskID)), BalanceCost: 0.185175}
+	_, err := billing.Apply(ctx, &command)
+	require.ErrorContains(t, err, "committed billing acknowledgement lost")
+	// Reconstruct the same bill as a later terminal poll after claim release.
+	retry := command
+	result, err := billing.Apply(ctx, &retry)
+	require.NoError(t, err)
+	require.False(t, result.Applied)
+	var balance float64
+	var count int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT balance FROM users WHERE id=$1`, user.ID).Scan(&balance))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_billing_dedup WHERE request_id=$1 AND api_key_id=$2`, command.RequestID, key.ID).Scan(&count))
+	require.InDelta(t, 9.814825, balance, 1e-8)
+	require.Equal(t, 1, count)
+}
 
 func TestUsageBillingRepositoryApply_DeduplicatesBalanceBilling(t *testing.T) {
 	ctx := context.Background()

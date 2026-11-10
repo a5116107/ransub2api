@@ -1503,3 +1503,11 @@
 - 基线`40361c4`使用已取消的请求上下文执行Redis `DECR`：准入前取消反例实际留下计数1；超限递增到2后取消反例实际留下2而非原有1；两项新测试均退出1，并记录`context canceled`。
 - 原位将超限回滚和普通失败回滚收敛至原`rollbackQuota`，以`context.WithoutCancel`保留上下文值并加5秒清理上限；只归还本次递增，Redis故障仍记录错误。发送后共享租约丢失的可能已计费搜索继续保留配额、不自动重放。
 - `go test -race -p 1 ./internal/pkg/websearch -count=1 -timeout=5m`退出0、`2.103s`；包括两项取消、超限原有计数保护、预发送回滚和发送后不退配额。`go vet -p 1 ./internal/pkg/websearch`退出0；完整规则`bin/task-d2-golangci-lint.exe run --concurrency 1 --timeout 6m --allow-serial-runners ./internal/pkg/websearch`退出0、`0 issues.`。不改变D2父项及28项原分母，未执行CI、推送或部署。
+
+## 2026-11-10：D2 Seedance终态token账单队列与清理
+
+- 基线`78b7a92`的真实Seedance终态合并保留`VideoCount=0`且只计输出token；已获取一次性计费认领后，满worker队列的drop配置将其当普通文本任务丢弃。`TestSeedanceClaimedTokenBillingSurvivesFullUsageQueue`原始运行退出1，账单执行次数实为0。另构造计费事务晚于worker期限返回失败，`TestSeedanceBillingFailureAfterCancellationReleasesClaimForRetry`原始race退出1，认领清理因上下文已取消未执行。
+- 在原handler归类中共享异步视频判定，Seedance token账单与Grok/MiniMax视频账单均走强制提交及队列满同步兜底，不改变token价格或伪造视频数。计费失败清理改用独立5秒有界上下文；成功后原认领保留，清理失败仍记录错误，不清除其他任务。记录了满队列下实际`RecordUsage`生成正余额扣款命令、12345输出token和稳定任务账单ID，并确认重复状态不重复进入计费；故障后可同任务重新认领并成功执行。
+- `go test -race -p 1 -tags unit ./internal/handler ./internal/service -run '^Test(Seedance|GrokVideo|GrokMediaVideo|MiniMaxH3|OpenAIGatewayHandlerSubmit|GatewayHandlerSubmit|OpenAIRecordUsage)' -count=1 -timeout=8m`退出0，handler `1.345s`、service `1.218s`；测试夹具收尾后handler同范围再次退出0、`1.287s`。
+- `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^Test(SeedanceUsageBillingLostAcknowledgementReplay|UsageBillingRepositoryApply_DeduplicatesBalanceBilling|UsageBillingDeliveryCrashBeforeExecutionAndTwoWriters|UsageBillingDeliveryLogFailureRollsBackMoneyAndRecovers)$' -count=1 -v -timeout=10m`退出0、`13.451s`。隔离PostgreSQL用Seedance稳定ID和token账单模拟数据库提交后确认丢失，重放只扣款一次；另测持久暂存双写与日志失败原子回滚。仓储重放和handler故障恢复是互补夹具，不冒充完整线上流程。
+- 三包`go vet -p 1 -tags 'unit integration'`退出0，三包完整规则lint退出0、`0 issues.`；handler测试夹具清理后handler vet及lint复验。四包默认标签`go test -p 1 ... -run '^$'`退出0，仅证明编译。缓存清理失败、进程在持久暂存前退出、原24小时快照过期及价格变化导致的重试指纹冲突仍可能需要对账；本次未完成区域视频资金账本或生产验证，28项原分母不变。

@@ -891,6 +891,12 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
+// Seedance bills completion tokens, not a per-video count, but it has the same
+// once-only task claim and must never be treated as droppable text usage.
+func isAsyncVideoUsage(result *service.OpenAIForwardResult) bool {
+	return result != nil && (result.VideoCount > 0 || strings.HasPrefix(result.ResponseID, service.SeedanceTaskKey("")))
+}
+
 func recordGrokMediaUsage(
 	c *gin.Context,
 	h *OpenAIGatewayHandler,
@@ -923,7 +929,7 @@ func recordGrokMediaUsage(
 	}
 	// Async video: force durable task request id and release claim if billing fails.
 	videoTaskID := ""
-	if result != nil && (result.VideoCount > 0 || strings.HasPrefix(result.ResponseID, "seedance:")) {
+	if isAsyncVideoUsage(result) {
 		videoTaskID = strings.TrimSpace(firstNonEmptyString(requestID, result.ResponseID))
 		if stable := service.StableGrokVideoBillingRequestID(firstNonEmptyString(result.ResponseID, requestID)); stable != "" {
 			result.RequestID = stable
@@ -951,7 +957,13 @@ func recordGrokMediaUsage(
 			ChannelUsageFields: channelUsageFields,
 		}); err != nil {
 			if videoTaskID != "" {
-				if releaseErr := h.gatewayService.ReleaseGrokVideoBilling(ctx, videoTaskID, subject.UserID, apiKey.ID); releaseErr != nil {
+				// The billing worker deadline may already have expired while the
+				// detached billing transaction was running. Give claim cleanup its
+				// own bounded context so a later poll can retry the same task.
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				releaseErr := h.gatewayService.ReleaseGrokVideoBilling(cleanup, videoTaskID, subject.UserID, apiKey.ID)
+				cancel()
+				if releaseErr != nil {
 					reqLog.Warn("grok_media.video_billing_claim_release_failed",
 						zap.String("request_id", videoTaskID),
 						zap.Error(releaseErr),
