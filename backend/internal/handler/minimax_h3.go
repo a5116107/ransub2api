@@ -52,6 +52,7 @@ func prepareMiniMaxH3CompletionBilling(ctx context.Context, h *OpenAIGatewayHand
 	merged.RequestID, merged.ResponseID = service.StableGrokVideoBillingRequestID(taskID), taskID
 	merged.VideoResolution, merged.VideoDurationSeconds = pending.VideoResolution, pending.VideoDurationSeconds
 	merged.MiniMaxH3BaseCost = pending.MiniMaxH3BaseCost
+	merged.MiniMaxH3RateMultiplier = pending.MiniMaxH3RateMultiplier
 	merged.Duration = service.GrokVideoE2EDuration(pending.CreatedAt, time.Now())
 	return &merged
 }

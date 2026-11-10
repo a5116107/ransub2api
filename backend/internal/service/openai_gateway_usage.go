@@ -233,8 +233,19 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	pricingAt := openAIUsagePricingAt(input)
 	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, baseMultiplier, pricingAt)
 	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
-	if result.MiniMaxH3BaseCost != nil && apiKey.Group != nil {
-		videoMultiplier = math.Max(0, apiKey.Group.RateMultiplier)
+	if result.MiniMaxH3BaseCost != nil {
+		if !validMiniMaxH3PriceValue(*result.MiniMaxH3BaseCost) {
+			return errors.New("invalid MiniMax-H3 tariff snapshot")
+		}
+		if result.MiniMaxH3RateMultiplier != nil {
+			videoMultiplier = *result.MiniMaxH3RateMultiplier
+		} else if apiKey.Group != nil {
+			// Existing tasks without a saved multiplier retain legacy behavior.
+			videoMultiplier = math.Max(0, apiKey.Group.RateMultiplier)
+		}
+		if !validMiniMaxH3PriceValue(videoMultiplier) || !validMiniMaxH3PriceValue(*result.MiniMaxH3BaseCost*videoMultiplier) {
+			return errors.New("invalid MiniMax-H3 sale multiplier snapshot")
+		}
 	}
 
 	var cost *CostBreakdown

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -134,6 +135,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	contentType := c.GetHeader("Content-Type")
 	requestInfo := service.ParseGrokMediaRequest(contentType, body)
 	var miniMaxH3BaseCost *float64
+	var miniMaxH3RateMultiplier *float64
 	if endpoint.IsMiniMaxH3() {
 		requestInfo = service.GrokMediaRequestInfo{}
 		if endpoint == service.MiniMaxH3EndpointCreate {
@@ -146,12 +148,22 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				h.errorResponse(c, http.StatusForbidden, "permission_error", "MiniMax-H3 requires a group video price")
 				return
 			}
+			if math.IsNaN(apiKey.Group.RateMultiplier) || math.IsInf(apiKey.Group.RateMultiplier, 0) {
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid MiniMax-H3 group multiplier")
+				return
+			}
+			rate := math.Max(0, apiKey.Group.RateMultiplier)
 			base, quoteErr := service.QuoteMiniMaxH3Video(apiKey.Group.VideoModelPrices, requestInfo.DurationSeconds)
 			if quoteErr != nil {
 				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", quoteErr.Error())
 				return
 			}
+			if math.IsInf(base*rate, 0) {
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "MiniMax-H3 price exceeds the supported range")
+				return
+			}
 			miniMaxH3BaseCost = &base
+			miniMaxH3RateMultiplier = &rate
 		}
 	}
 	if endpoint == service.SeedanceEndpointCreate {
@@ -588,6 +600,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account, grokMediaScheduleModel(account, routingModel, result), true, nil)
 		if miniMaxH3BaseCost != nil {
 			result.MiniMaxH3BaseCost = miniMaxH3BaseCost
+			result.MiniMaxH3RateMultiplier = miniMaxH3RateMultiplier
 		}
 		if endpoint.IsVideoLookupRequest() && result.AsyncVideoTerminal {
 			if err := h.gatewayService.ReleaseAsyncVideoTaskLease(forwardCtx, requestID); err != nil {
@@ -611,13 +624,14 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			// model/duration/resolution so status can still price if upstream omits them.
 			// Retry once: missing pending causes silent underpricing (status omits resolution).
 			pending := service.GrokVideoPendingBilling{
-				MiniMaxH3BaseCost:    result.MiniMaxH3BaseCost,
-				Model:                requestModel,
-				BillingModel:         firstNonEmptyString(result.BillingModel, requestModel),
-				UpstreamModel:        result.UpstreamModel,
-				VideoResolution:      result.VideoResolution,
-				VideoDurationSeconds: result.VideoDurationSeconds,
-				OriginalModel:        clientRequestedModel(c, requestModel),
+				MiniMaxH3BaseCost:       result.MiniMaxH3BaseCost,
+				MiniMaxH3RateMultiplier: result.MiniMaxH3RateMultiplier,
+				Model:                   requestModel,
+				BillingModel:            firstNonEmptyString(result.BillingModel, requestModel),
+				UpstreamModel:           result.UpstreamModel,
+				VideoResolution:         result.VideoResolution,
+				VideoDurationSeconds:    result.VideoDurationSeconds,
+				OriginalModel:           clientRequestedModel(c, requestModel),
 				// Wall-clock start for usage duration_ms: create accepted → first done discovery.
 				CreatedAt: videoCreateStartedAt,
 			}

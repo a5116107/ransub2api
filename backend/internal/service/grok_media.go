@@ -482,13 +482,14 @@ func (s *OpenAIGatewayService) SelectMediaVideoRequestAccount(
 // back to this snapshot, then defaults.
 type GrokVideoPendingBilling struct {
 	// H3 prices requested seconds at submission; later edits cannot reprice a task.
-	MiniMaxH3BaseCost    *float64 `json:"minimax_h3_base_cost,omitempty"`
-	Model                string   `json:"model"`
-	BillingModel         string   `json:"billing_model,omitempty"`
-	UpstreamModel        string   `json:"upstream_model,omitempty"`
-	VideoResolution      string   `json:"video_resolution,omitempty"`
-	VideoDurationSeconds int      `json:"video_duration_seconds,omitempty"`
-	OriginalModel        string   `json:"original_model,omitempty"`
+	MiniMaxH3BaseCost       *float64 `json:"minimax_h3_base_cost,omitempty"`
+	MiniMaxH3RateMultiplier *float64 `json:"minimax_h3_rate_multiplier,omitempty"`
+	Model                   string   `json:"model"`
+	BillingModel            string   `json:"billing_model,omitempty"`
+	UpstreamModel           string   `json:"upstream_model,omitempty"`
+	VideoResolution         string   `json:"video_resolution,omitempty"`
+	VideoDurationSeconds    int      `json:"video_duration_seconds,omitempty"`
+	OriginalModel           string   `json:"original_model,omitempty"`
 	// CreatedAt is when the gateway accepted the async create (RFC3339Nano UTC).
 	// duration_ms for deferred billing is measured from this instant until the
 	// first official done+video.url observation (status poll or content download),
@@ -561,6 +562,9 @@ func (s *OpenAIGatewayService) StoreGrokVideoPendingBilling(
 	if key == "" {
 		return fmt.Errorf("grok video pending billing key is invalid")
 	}
+	if err := pending.validateMiniMaxH3Price(); err != nil {
+		return err
+	}
 	pending.Model = strings.TrimSpace(pending.Model)
 	pending.BillingModel = strings.TrimSpace(pending.BillingModel)
 	pending.UpstreamModel = strings.TrimSpace(pending.UpstreamModel)
@@ -601,8 +605,14 @@ func (s *OpenAIGatewayService) LoadGrokVideoPendingBilling(
 	if err != nil || len(payload) == 0 {
 		return nil, err
 	}
+	if err := validateMiniMaxH3SnapshotFields(payload); err != nil {
+		return nil, err
+	}
 	var pending GrokVideoPendingBilling
 	if err := json.Unmarshal(payload, &pending); err != nil {
+		return nil, err
+	}
+	if err := pending.validateMiniMaxH3Price(); err != nil {
 		return nil, err
 	}
 	return &pending, nil

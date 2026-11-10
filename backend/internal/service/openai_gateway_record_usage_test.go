@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +248,9 @@ func newOpenAIRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo U
 		nil,
 		nil, // userPlatformQuotaRepo
 	)
+	// Usage fixtures replace service dependencies after construction; the
+	// unrelated ticket worker must stop before any of those mutations.
+	svc.StopOpenAICodexTicketHarvester()
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		rateRepo,
 		nil,
@@ -2485,6 +2489,69 @@ func TestGrokVideoBillingUsesSeparateVideoRateMultiplier(t *testing.T) {
 	require.Equal(t, VideoBillingResolution480P, *usageRepo.lastLog.VideoResolution)
 	require.NotNil(t, usageRepo.lastLog.VideoDurationSeconds)
 	require.Equal(t, 1, *usageRepo.lastLog.VideoDurationSeconds)
+}
+
+func TestMiniMaxH3BillingUsesCreateTimeSaleMultiplier(t *testing.T) {
+	paidRate, freeRate := 0.1, 0.0
+	for _, tc := range []struct {
+		name     string
+		snapshot *float64
+		want     float64
+	}{
+		{"paid", &paidRate, 0.1},
+		{"free", &freeRate, 0},
+		{"legacy_snapshot", nil, 0.8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := 0.02
+			result := &OpenAIForwardResult{RequestID: "fixture-video", ResponseID: "fixture-video", Model: "MiniMax-H3", BillingModel: "MiniMax-H3", VideoCount: 1, VideoDurationSeconds: 1, MiniMaxH3BaseCost: &base, MiniMaxH3RateMultiplier: tc.snapshot}
+			groupID := int64(126)
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{Result: result,
+				APIKey: &APIKey{ID: 10126, GroupID: &groupID, Group: &Group{ID: groupID, Platform: PlatformMiniMax, RateMultiplier: 0.8}},
+				User:   &User{ID: 20126}, Account: &Account{ID: 30126, Platform: PlatformMiniMax}})
+			require.NoError(t, err)
+			require.NotNil(t, usageRepo.lastLog)
+			require.InDelta(t, base, usageRepo.lastLog.TotalCost, 1e-12)
+			require.InDelta(t, base*tc.want, usageRepo.lastLog.ActualCost, 1e-12)
+			require.InDelta(t, tc.want, usageRepo.lastLog.RateMultiplier, 1e-12)
+			if tc.want == 0 {
+				require.Zero(t, userRepo.deductCalls)
+			} else {
+				require.Equal(t, 1, userRepo.deductCalls)
+				require.InDelta(t, base*tc.want, userRepo.lastAmount, 1e-12)
+			}
+		})
+	}
+}
+
+func TestMiniMaxH3InvalidSaleSnapshotDoesNotRecordUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		base, rate float64
+	}{
+		{"negative_base", -1, 0.1},
+		{"negative_rate", 0.02, -1},
+		{"nan_rate", 0.02, math.NaN()},
+		{"infinite_rate", 0.02, math.Inf(1)},
+		{"overflow", math.MaxFloat64, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+			groupID := int64(126)
+			result := &OpenAIForwardResult{RequestID: "fixture-video", Model: "MiniMax-H3", VideoCount: 1, MiniMaxH3BaseCost: &tc.base, MiniMaxH3RateMultiplier: &tc.rate}
+			err := svc.RecordUsage(t.Context(), &OpenAIRecordUsageInput{Result: result,
+				APIKey: &APIKey{ID: 10126, GroupID: &groupID, Group: &Group{ID: groupID, Platform: PlatformMiniMax, RateMultiplier: 0.8}},
+				User:   &User{ID: 20126}, Account: &Account{ID: 30126, Platform: PlatformMiniMax}})
+			require.Error(t, err)
+			require.Zero(t, usageRepo.calls)
+			require.Zero(t, userRepo.deductCalls)
+		})
+	}
 }
 
 func TestOpenAIGatewayServiceRecordUsage_GrokVideoUsesDefaultRateCard(t *testing.T) {

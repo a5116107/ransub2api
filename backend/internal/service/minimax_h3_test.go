@@ -8,7 +8,9 @@ import (
 	"math"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -142,4 +144,79 @@ func TestMiniMaxH3TariffsAndBillingSnapshot(t *testing.T) {
 	estimate, ok := (inflightEstimateDeps{}).estimate(context.Background(), key, InflightEstimateRequest{MiniMaxH3BaseCost: &base})
 	require.True(t, ok)
 	require.InDelta(t, cost.ActualCost, estimate, 1e-9)
+}
+
+type miniMaxH3PendingCache struct {
+	stubGatewayCache
+	raw    []byte
+	writes int
+}
+
+func (c *miniMaxH3PendingCache) SetGrokVideoPendingBilling(_ context.Context, _ string, raw []byte, _ time.Duration) error {
+	c.raw = append([]byte(nil), raw...)
+	c.writes++
+	return nil
+}
+
+func (c *miniMaxH3PendingCache) GetGrokVideoPendingBilling(context.Context, string) ([]byte, error) {
+	return append([]byte(nil), c.raw...), nil
+}
+
+func TestMiniMaxH3PendingSalePriceValidationAndLegacyCompatibility(t *testing.T) {
+	base, paid, free := 0.02, 0.1, 0.0
+	negative, notFinite, infinite := -1.0, math.NaN(), math.Inf(1)
+	large, twice := math.MaxFloat64, 2.0
+	for _, tc := range []struct {
+		name    string
+		pending GrokVideoPendingBilling
+		valid   bool
+	}{
+		{"paid", GrokVideoPendingBilling{MiniMaxH3BaseCost: &base, MiniMaxH3RateMultiplier: &paid}, true},
+		{"free", GrokVideoPendingBilling{MiniMaxH3BaseCost: &base, MiniMaxH3RateMultiplier: &free}, true},
+		{"legacy", GrokVideoPendingBilling{MiniMaxH3BaseCost: &base}, true},
+		{"negative_tariff", GrokVideoPendingBilling{MiniMaxH3BaseCost: &negative}, false},
+		{"negative_rate", GrokVideoPendingBilling{MiniMaxH3BaseCost: &base, MiniMaxH3RateMultiplier: &negative}, false},
+		{"nan_rate", GrokVideoPendingBilling{MiniMaxH3BaseCost: &base, MiniMaxH3RateMultiplier: &notFinite}, false},
+		{"infinite_rate", GrokVideoPendingBilling{MiniMaxH3BaseCost: &base, MiniMaxH3RateMultiplier: &infinite}, false},
+		{"missing_tariff", GrokVideoPendingBilling{MiniMaxH3RateMultiplier: &paid}, false},
+		{"overflow", GrokVideoPendingBilling{MiniMaxH3BaseCost: &large, MiniMaxH3RateMultiplier: &twice}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &miniMaxH3PendingCache{}
+			svc := &OpenAIGatewayService{cache: cache}
+			err := svc.StoreGrokVideoPendingBilling(t.Context(), "task", 1, 2, tc.pending)
+			if !tc.valid {
+				require.Error(t, err)
+				require.Zero(t, cache.writes)
+				return
+			}
+			require.NoError(t, err)
+			loaded, err := svc.LoadGrokVideoPendingBilling(t.Context(), "task", 1, 2)
+			require.NoError(t, err)
+			require.Equal(t, tc.pending.MiniMaxH3BaseCost, loaded.MiniMaxH3BaseCost)
+			require.Equal(t, tc.pending.MiniMaxH3RateMultiplier, loaded.MiniMaxH3RateMultiplier)
+		})
+	}
+	for _, raw := range []string{
+		`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":-1}`,
+		`{"minimax_h3_rate_multiplier":0.1}`,
+		`{"minimax_h3_base_cost":1e308,"minimax_h3_rate_multiplier":2}`,
+		`{"minimax_h3_base_cost":null}`,
+		`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":null}`,
+		`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":0.1,"minimax_h3_rate_multiplier":null}`,
+		`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":0.1,"MINIMAX_H3_RATE_MULTIPLIER":0.8}`,
+		`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":0.1,"minimax_h3_rate_\u006dultiplier":0.8}`,
+		`{"minimax_h3_base_cost":0.02,"minimax_h3_base_cost":0.5,"minimax_h3_rate_multiplier":0.1}`,
+		`null`,
+	} {
+		cache := &miniMaxH3PendingCache{raw: []byte(raw)}
+		svc := &OpenAIGatewayService{cache: cache}
+		_, err := svc.LoadGrokVideoPendingBilling(t.Context(), "task", 1, 2)
+		assert.Error(t, err, raw)
+	}
+	cache := &miniMaxH3PendingCache{raw: []byte(`{"model":"legacy","extension":{"minimax_h3_rate_multiplier":null}}`)}
+	svc := &OpenAIGatewayService{cache: cache}
+	loaded, err := svc.LoadGrokVideoPendingBilling(t.Context(), "task", 1, 2)
+	require.NoError(t, err)
+	require.Equal(t, "legacy", loaded.Model)
 }

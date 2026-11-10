@@ -4,10 +4,13 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -20,6 +23,54 @@ type GatewayCacheSuite struct {
 func (s *GatewayCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
 	s.cache = NewGatewayCache(s.rdb)
+}
+
+func (s *GatewayCacheSuite) TestMiniMaxH3SaleSnapshotSharedAcrossGatewayInstances() {
+	t := s.T()
+	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
+	writer := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Cache: s.cache, Config: cfg})
+	reader := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Cache: NewGatewayCache(s.rdb), Config: cfg})
+	t.Cleanup(writer.StopAsyncVideoKeyReleaseRecovery)
+	t.Cleanup(writer.StopOpenAICodexTicketHarvester)
+	t.Cleanup(reader.StopAsyncVideoKeyReleaseRecovery)
+	t.Cleanup(reader.StopOpenAICodexTicketHarvester)
+	base, paid, free := 0.02, 0.1, 0.0
+	for _, tc := range []struct {
+		name string
+		rate *float64
+	}{
+		{"paid", &paid},
+		{"free", &free},
+		{"legacy", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := "minimax-h3:" + uuid.NewString()
+			pending := service.GrokVideoPendingBilling{Model: "MiniMax-H3", MiniMaxH3BaseCost: &base, MiniMaxH3RateMultiplier: tc.rate}
+			require.NoError(t, writer.StoreGrokVideoPendingBilling(s.ctx, task, 101, 202, pending))
+			loaded, err := reader.LoadGrokVideoPendingBilling(s.ctx, task, 101, 202)
+			require.NoError(t, err)
+			require.NotNil(t, loaded)
+			require.Equal(t, pending.MiniMaxH3BaseCost, loaded.MiniMaxH3BaseCost)
+			require.Equal(t, tc.rate, loaded.MiniMaxH3RateMultiplier)
+			other, err := reader.LoadGrokVideoPendingBilling(s.ctx, task, 102, 202)
+			require.NoError(t, err)
+			require.Nil(t, other, "a different user must not see the saved quote")
+			redisKey := fmt.Sprintf("%s101:202:%s", grokVideoPendingBillingPrefix, task)
+			ttl, err := s.rdb.TTL(s.ctx, redisKey).Result()
+			require.NoError(t, err)
+			require.Greater(t, ttl, 23*time.Hour)
+			require.LessOrEqual(t, ttl, 24*time.Hour)
+			for _, invalid := range []string{
+				`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":-1}`,
+				`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":null}`,
+				`{"minimax_h3_base_cost":0.02,"minimax_h3_rate_multiplier":0.1,"MINIMAX_H3_RATE_MULTIPLIER":0.8}`,
+			} {
+				require.NoError(t, s.rdb.Set(s.ctx, redisKey, invalid, time.Hour).Err())
+				_, err = reader.LoadGrokVideoPendingBilling(s.ctx, task, 101, 202)
+				require.Error(t, err, "an invalid persisted quote cannot silently fall back to the current price")
+			}
+		})
+	}
 }
 
 func (s *GatewayCacheSuite) TestHTTPResponseOwnerSharedRecord() {

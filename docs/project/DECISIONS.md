@@ -1478,3 +1478,12 @@
 - `go test -race -p 1 -tags unit ./internal/server ./internal/server/routes ./internal/server/middleware ./internal/regional/video -count=1 -timeout=10m -json`退出0：四包测试及子测试分别82/250/611/38通过，0失败；server原有`TestGatewaySnapshotMultiProcessFaultRecovery`在Windows因Unix socket和继承fd条件SKIP，其他包0跳过。两轮专项race亦通过；源码结构断言失败的原结果保留为该轮失败，不当作通过。
 - `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^TestRegionalAsyncVideo(ForwardingUsesOriginalAuthority|DirectoryCompletedReleaseRollback)$' -count=2 -timeout=8m`退出0，repository `28.163s`。五包`go vet -p 1 -tags 'unit integration'`退出0，五包完整规则`bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners`退出0、`0 issues.`；六包默认标签`go test -p 1 ... -run '^$' -count=1`退出0，仅证明编译。
 - 范围边界：原节点也启用资金门时视频查询仍503，且旧任务须在切换前排空；非单位倍率区域资金授权及视频售价/预留/终态结算仍待验收。原28项分母不变，D2/D3/D4和D5–D9继续跟踪；不运行CI、推送、部署或生产迁移。
+
+## 2026-11-10：D2 MiniMax-H3 创建时售价快照
+
+- 基线`44572bc`按创建时基础价、查询完成时当前分组倍率结算：创建时基础价0.02、倍率0.1，完成时改为0.8后原实现实扣0.016而非0.002，创建时免费任务也会被追溯收费。现沿原Redis待结算记录同时持久化创建时基础价与销售倍率，状态和内容查询合并回结算结果；旧记录未包含倍率时保留按完成时分组倍率的兼容语义。零倍率是有效免费快照，不采用`0`作为缺失哨兵。
+- 创建前检查非有限倍率和价格乘积溢出，快照存取与终态计费拒绝负值、非有限值、溢出及缺失基础价。恢复期间新增反例发现Go的`encoding/json`默认接受显式`null`、重复字段及大小写等价重复：初始`go test -p 1 -tags unit ... -run '^TestMiniMaxH3(...)$' -count=1`实际退出1，其中4个畸形JSON错误回退为合法记录。现原位核验快照对象中的价格字段，拒绝显式空值及重复字段，兼容真正缺失的旧字段；错误记录不获取一次性账单认领，恢复后允许重试。
+- `go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^Test(MiniMaxH3|Grok.*Video|Seedance)' -count=1 -timeout=8m`退出0，service `1.223s`、handler `1.220s`；覆盖付费、免费、旧倍率、非法报价、损坏后恢复、既有Grok/Seedance视频行为。另执行包含新恢复测试的handler专项race，退出0、`1.146s`。
+- `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^TestGatewayCacheSuite$/^TestMiniMaxH3SaleSnapshotSharedAcrossGatewayInstances$' -count=1 -v -timeout=8m`退出0，repository `7.706s`；隔离PostgreSQL/Redis容器、两个独立网关实例验证付费/免费/旧快照、用户隔离、24小时TTL与畸形记录，不代表生产部署。测试容器已由夹具正常终止。
+- `go vet -p 1 -tags 'unit integration' ./internal/service ./internal/handler ./internal/repository`退出0；相同三包使用`bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners`退出0、`0 issues.`，未豁免规则。
+- 快照沿既有Redis记录保留24小时，丢失/过期时不恢复报价；新旧实例混用会导致旧版本不执行倍率快照，升级/回滚须协调并排空任务。此修复未实现区域账本视频预留/终态结算，原节点资金门开启时查询仍503；不改变28项总数，也不代表已推送、部署或线上验证。

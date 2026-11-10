@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -29,6 +30,65 @@ const (
 
 func (e GrokMediaEndpoint) IsMiniMaxH3() bool {
 	return e == MiniMaxH3EndpointCreate || e == MiniMaxH3EndpointStatus || e == MiniMaxH3EndpointContent
+}
+
+func validMiniMaxH3PriceValue(value float64) bool {
+	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+// Missing fields identify legacy snapshots. Explicit nulls and duplicate fields
+// are not produced by our writer and must not be mistaken for legacy prices.
+func validateMiniMaxH3SnapshotFields(payload []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('{') {
+		return errors.New("invalid video billing snapshot")
+	}
+	seenBase, seenRate := false, false
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return errors.New("invalid video billing snapshot field")
+		}
+		var value json.RawMessage
+		if err = decoder.Decode(&value); err != nil {
+			return err
+		}
+		var seen *bool
+		switch {
+		case strings.EqualFold(name, "minimax_h3_base_cost"):
+			seen = &seenBase
+		case strings.EqualFold(name, "minimax_h3_rate_multiplier"):
+			seen = &seenRate
+		}
+		if seen != nil {
+			if *seen || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return errors.New("ambiguous MiniMax-H3 price snapshot")
+			}
+			*seen = true
+		}
+	}
+	_, err = decoder.Token()
+	return err
+}
+
+func (p GrokVideoPendingBilling) validateMiniMaxH3Price() error {
+	if p.MiniMaxH3BaseCost != nil && !validMiniMaxH3PriceValue(*p.MiniMaxH3BaseCost) {
+		return errors.New("invalid MiniMax-H3 tariff snapshot")
+	}
+	if p.MiniMaxH3RateMultiplier != nil {
+		if p.MiniMaxH3BaseCost == nil || !validMiniMaxH3PriceValue(*p.MiniMaxH3RateMultiplier) || !validMiniMaxH3PriceValue((*p.MiniMaxH3BaseCost)*(*p.MiniMaxH3RateMultiplier)) {
+			return errors.New("invalid MiniMax-H3 sale multiplier snapshot")
+		}
+	}
+	return nil
 }
 
 func MiniMaxH3TaskKey(id string) string { return "minimax-h3:" + strings.TrimSpace(id) }
