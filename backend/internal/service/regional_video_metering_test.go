@@ -336,7 +336,7 @@ func (u *videoCreateTestUpstream) Do(req *http.Request, _ string, _ int64, _ int
 
 func TestRegionalVideoCreateReservationAndBinding(t *testing.T) {
 	for _, endpoint := range []GrokMediaEndpoint{GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions, SeedanceEndpointCreate, MiniMaxH3EndpointCreate} {
-		for _, scenario := range []string{"accepted", "bind_ack_lost", "bind_failed", "start_ack_lost", "reserve_failed", "rejected", "server_error", "redirect", "missing_task", "invalid_price", "wrong_owner", "ambiguous_fields", "local_capacity", "canceled"} {
+		for _, scenario := range []string{"accepted", "bind_ack_lost", "bind_failed", "start_ack_lost", "start_rejected", "reserve_failed", "rejected", "server_error", "redirect", "missing_task", "invalid_price", "wrong_owner", "ambiguous_fields", "local_capacity", "canceled"} {
 			t.Run(string(endpoint)+"/"+scenario, func(t *testing.T) {
 				account, record := regionalVideoMeterFixture(t, endpoint.AsyncVideoProvider())
 				price := record.Price
@@ -372,6 +372,9 @@ func TestRegionalVideoCreateReservationAndBinding(t *testing.T) {
 				}
 				if scenario == "start_ack_lost" {
 					l.startErr = io.ErrUnexpectedEOF
+				}
+				if scenario == "start_rejected" {
+					l.startErr = errors.Join(ledger.ErrStartRejected, ledger.ErrConflict)
 				}
 				if scenario == "reserve_failed" {
 					l.reserveErr = ledger.ErrExhausted
@@ -444,10 +447,17 @@ func TestRegionalVideoCreateReservationAndBinding(t *testing.T) {
 					if scenario == "bind_ack_lost" {
 						require.Equal(t, 2, binds)
 					}
-				case "invalid_price", "wrong_owner", "ambiguous_fields", "reserve_failed", "canceled", "start_ack_lost":
+				case "invalid_price", "wrong_owner", "ambiguous_fields", "reserve_failed", "canceled", "start_ack_lost", "start_rejected":
 					require.Error(t, err)
-					if scenario == "start_ack_lost" {
+					if scenario == "start_ack_lost" || scenario == "start_rejected" {
 						require.ErrorIs(t, err, ErrRegionalVideoSettlement, "local SQL failures must not become provider health failures")
+						require.Equal(t, 1, l.starts)
+						if scenario == "start_rejected" {
+							require.ErrorIs(t, err, ledger.ErrStartRejected)
+							require.Equal(t, 1, l.canceled, "a proven pre-transition rejection must refund the unsent reservation")
+						} else {
+							require.Zero(t, l.canceled, "a lost Start acknowledgement must retain funds even with zero provider sends")
+						}
 					}
 					require.Zero(t, sends)
 					require.Zero(t, rejects)

@@ -101,7 +101,7 @@ func (s *OpenAIGatewayService) beginRegionalVideoCreate(req *http.Request, c *gi
 		}
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(req.Context()), 5*time.Second)
 		defer cancel()
-		if !attempt.sent.Load() {
+		if !attempt.sent.Load() || errors.Is(forwardErr, ledger.ErrStartRejected) {
 			return errors.Join(forwardErr, tasks.CancelBeforeStart(cleanup, r.RequestID))
 		}
 		if errors.Is(forwardErr, ErrRegionalVideoSettlement) {

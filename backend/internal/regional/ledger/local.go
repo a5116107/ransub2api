@@ -16,13 +16,17 @@ var (
 	ErrConflict          = errors.New("regional ledger immutable identity conflict")
 	ErrExhausted         = errors.New("regional lease unavailable or exhausted")
 	ErrAlreadyDispatched = errors.New("regional request already dispatched")
+	// ErrStartRejected proves admission was denied before the state transition.
+	// Unlike a failed commit acknowledgement, it permits CancelBeforeStart.
+	ErrStartRejected = errors.New("regional request rejected before dispatch")
 )
 
 // Local is shared by every Pod in the same region. SQL transactions, not a
 // per-process mutex, fence reservations and dispatch across replicas/restarts.
 type Local struct {
-	DB     *sql.DB
-	Region string
+	DB                *sql.DB
+	Region            string
+	ValidateAdmission func(context.Context, *sql.Tx, Reservation) error
 }
 
 func sameJSON(a, b []byte) bool {
@@ -117,6 +121,11 @@ func (l *Local) Reserve(ctx context.Context, r Reservation) (fresh bool, err err
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
+	if l.ValidateAdmission != nil {
+		if err := l.ValidateAdmission(ctx, tx, r); err != nil {
+			return false, err
+		}
+	}
 	if err := reserveVideoIdentity(ctx, tx, videoLocal, r); err != nil {
 		return false, err
 	}
@@ -169,6 +178,26 @@ func (l *Local) Start(ctx context.Context, id string) error {
 	}
 	if state != "open" || now.Before(lease.IssuedAt) || !now.Before(lease.ExpiresAt) {
 		return ErrExhausted
+	}
+	var raw []byte
+	var requestState string
+	if err := tx.QueryRowContext(ctx, `SELECT request,state FROM regional_local_requests WHERE request_id=$1 FOR UPDATE`, id).Scan(&raw, &requestState); err != nil {
+		return err
+	}
+	if requestState != "reserved" {
+		return ErrAlreadyDispatched
+	}
+	var r Reservation
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return err
+	}
+	if r.RequestID != id || r.LeaseID != leaseID || r.RegionID != l.Region {
+		return ErrConflict
+	}
+	if l.ValidateAdmission != nil {
+		if err := l.ValidateAdmission(ctx, tx, r); err != nil {
+			return errors.Join(ErrStartRejected, err)
+		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE regional_local_requests SET state='started' WHERE request_id=$1 AND state='reserved'`, id)
 	if err != nil {

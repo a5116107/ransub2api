@@ -136,7 +136,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 		capacity.fundsHandler.Store(&handler)
 		requests = holds
 	} else {
-		local = &ledger.Local{DB: db, Region: c.Region}
+		local = &ledger.Local{DB: db, Region: c.Region, ValidateAdmission: verifyRegionalVideoSalePolicy}
 		requests = local
 		if capacity.brokerClient == nil {
 			return nil, errors.New("funds broker client missing")

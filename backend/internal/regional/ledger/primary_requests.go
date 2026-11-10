@@ -16,11 +16,12 @@ import (
 // SettleScope consumes/refunds those budgets in this transaction and must write
 // canonical usage. Existing asynchronous balance billing MUST NOT run as well.
 type PrimaryRequests struct {
-	Funding     func(context.Context, *sql.Tx, int64, int64) (bool, error)
-	DB          *sql.DB
-	Authorize   func(context.Context, *sql.Tx, Reservation) error
-	SettleScope VerifyEvent
-	CancelScope func(context.Context, *sql.Tx, Reservation) error
+	Funding           func(context.Context, *sql.Tx, int64, int64) (bool, error)
+	DB                *sql.DB
+	Authorize         func(context.Context, *sql.Tx, Reservation) error
+	ValidateAdmission func(context.Context, *sql.Tx, Reservation) error
+	SettleScope       VerifyEvent
+	CancelScope       func(context.Context, *sql.Tx, Reservation) error
 }
 
 func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, error) {
@@ -89,6 +90,11 @@ func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, err
 	if err = p.Authorize(ctx, tx, r); err != nil {
 		return false, err
 	}
+	if p.ValidateAdmission != nil {
+		if err := p.ValidateAdmission(ctx, tx, r); err != nil {
+			return false, err
+		}
+	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO regional_primary_requests(request_id,user_id,request,maximum,state,balance_funded) VALUES($1,$2,$3,$4,'reserved',$5)", r.RequestID, r.UserID, string(raw), int64(r.Maximum), funded)
 	if err != nil {
 		return false, err
@@ -96,7 +102,32 @@ func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, err
 	return true, tx.Commit()
 }
 func (p *PrimaryRequests) Start(ctx context.Context, id string) error {
-	result, err := p.DB.ExecContext(ctx, "UPDATE regional_primary_requests SET state='started' WHERE request_id=$1 AND state='reserved'", id)
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var raw []byte
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT request,state FROM regional_primary_requests WHERE request_id=$1 FOR UPDATE`, id).Scan(&raw, &state); err != nil {
+		return err
+	}
+	if state != "reserved" {
+		return ErrAlreadyDispatched
+	}
+	var r Reservation
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return err
+	}
+	if r.RequestID != id {
+		return ErrConflict
+	}
+	if p.ValidateAdmission != nil {
+		if err := p.ValidateAdmission(ctx, tx, r); err != nil {
+			return errors.Join(ErrStartRejected, err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE regional_primary_requests SET state='started' WHERE request_id=$1 AND state='reserved'", id)
 	if err != nil {
 		return err
 	}
@@ -107,7 +138,7 @@ func (p *PrimaryRequests) Start(ctx context.Context, id string) error {
 	if n != 1 {
 		return ErrAlreadyDispatched
 	}
-	return nil
+	return tx.Commit()
 }
 func (p *PrimaryRequests) CancelBeforeStart(ctx context.Context, id string) error {
 	return p.finish(ctx, id, nil, false)

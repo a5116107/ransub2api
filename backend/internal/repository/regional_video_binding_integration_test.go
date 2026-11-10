@@ -32,7 +32,25 @@ import (
 
 type regionalVideoCreationLedger struct {
 	ledger.VideoTaskLedger
-	bindAckLost bool
+	bindAckLost  bool
+	startAckLost bool
+	beforeStart  func(context.Context) error
+}
+
+func (l *regionalVideoCreationLedger) Start(ctx context.Context, id string) error {
+	if l.beforeStart != nil {
+		if err := l.beforeStart(ctx); err != nil {
+			return err
+		}
+	}
+	if err := l.VideoTaskLedger.Start(ctx, id); err != nil {
+		return err
+	}
+	if l.startAckLost {
+		l.startAckLost = false
+		return io.ErrUnexpectedEOF
+	}
+	return nil
 }
 
 func (l *regionalVideoCreationLedger) BindVideoTask(ctx context.Context, id, taskID string) error {
@@ -135,7 +153,7 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 				table := "regional_primary_requests"
 				if mode == "regional" {
 					require.NoError(t, primary.Issue(ctx, grant))
-					local := &ledger.Local{DB: integrationDB, Region: grant.RegionID}
+					local := &ledger.Local{DB: integrationDB, Region: grant.RegionID, ValidateAdmission: verifyRegionalVideoSalePolicy}
 					require.NoError(t, local.Install(ctx, grant))
 					requests, table = local, "regional_local_requests"
 				}
@@ -145,7 +163,7 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 				rdb := regionalKeyRedis(t)
 				capacity := regionalAsyncVideoAuthority(t, cfg, rdb, mode)
 				upstream := liveKeyTestUpstream(t, cfg, rdb, capacity)
-				for index, scenario := range []string{"accepted", "bind_ack_lost", "rejected", "unknown_server", "ambiguous_task"} {
+				for index, scenario := range []string{"accepted", "bind_ack_lost", "policy_changed_before_start", "start_ack_lost", "rejected", "unknown_server", "ambiguous_task"} {
 					t.Run(scenario, func(t *testing.T) {
 						taskNumber.Store(int32(index))
 						currentTaskID := fmt.Sprintf("%s-%d", taskID, index)
@@ -170,6 +188,18 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 						responseStatus.Store(0)
 						ambiguous.Store(scenario == "ambiguous_task")
 						wrapped.bindAckLost = scenario == "bind_ack_lost"
+						wrapped.startAckLost = scenario == "start_ack_lost"
+						wrapped.beforeStart = nil
+						if scenario == "policy_changed_before_start" {
+							wrapped.beforeStart = func(ctx context.Context) error {
+								_, err := integrationDB.ExecContext(ctx, "UPDATE groups SET video_rate_independent=true,video_rate_multiplier=0.8 WHERE id=$1", group.ID)
+								return err
+							}
+							t.Cleanup(func() {
+								_, err := integrationDB.ExecContext(ctx, "UPDATE groups SET video_rate_independent=false,video_rate_multiplier=1 WHERE id=$1", group.ID)
+								require.NoError(t, err)
+							})
+						}
 						switch scenario {
 						case "rejected":
 							responseStatus.Store(http.StatusTooManyRequests)
@@ -181,6 +211,8 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 						c, _ := gin.CreateTestContext(httptest.NewRecorder())
 						c.Request = httptest.NewRequestWithContext(forwardCtx, http.MethodPost, "/fixture", strings.NewReader(string(body)))
 						c.Set("api_key", key)
+						var balanceBefore string
+						require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", user).Scan(&balanceBefore))
 						before := sends.Load()
 						var result *service.OpenAIForwardResult
 						var forwardErr error
@@ -192,7 +224,11 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 						default:
 							result, forwardErr = gateway.ForwardMiniMaxH3(forwardCtx, c, account, endpoint, "", body)
 						}
-						require.Equal(t, before+1, sends.Load(), "one creation per financial identity, including lost ACK")
+						if scenario == "policy_changed_before_start" || scenario == "start_ack_lost" {
+							require.Equal(t, before, sends.Load(), "a failed Start must never reach the provider")
+						} else {
+							require.Equal(t, before+1, sends.Load(), "one creation per financial identity, including lost ACK")
+						}
 						var state string
 						var raw []byte
 						require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT state,request FROM "+table+" WHERE request_id=$1", requestID).Scan(&state, &raw))
@@ -202,6 +238,19 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 						require.Equal(t, owner, reservation.VideoOrigin.Owner)
 						require.NotEmpty(t, reservation.VideoOrigin.Member)
 						switch scenario {
+						case "policy_changed_before_start":
+							require.ErrorIs(t, forwardErr, ledger.ErrStartRejected)
+							require.ErrorIs(t, forwardErr, service.ErrRegionalVideoSettlement)
+							require.False(t, service.IsAsyncVideoSubmissionUnconfirmed(forwardErr))
+							require.Equal(t, "canceled", state)
+							var balanceAfter string
+							require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", user).Scan(&balanceAfter))
+							require.Equal(t, balanceBefore, balanceAfter, "proven unsent admission must refund the original reservation")
+						case "start_ack_lost":
+							require.ErrorIs(t, forwardErr, service.ErrRegionalVideoSettlement)
+							require.NotErrorIs(t, forwardErr, ledger.ErrStartRejected)
+							require.Equal(t, "started", state, "a committed Start with a lost acknowledgement must keep the hold")
+							require.ErrorIs(t, requests.CancelBeforeStart(ctx, requestID), ledger.ErrAlreadyDispatched)
 						case "accepted", "bind_ack_lost":
 							require.NoError(t, forwardErr)
 							require.True(t, result.RegionalMetered)

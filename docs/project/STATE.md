@@ -3,17 +3,17 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2单位倍率视频创建资金预留/绑定/明确拒绝退款子项已完成实施与本地验证；不CI/推送/部署。
-证据：本轮修复区域创建路由夹具后，五包race为133顶层/703测试事件通过、0失败；覆盖三家适配器、主/区域账本与原节点查询回归。
-验证：routes专项race通过；五包定向race 133顶层/576含子例、0失败/跳过；七包vet退出0；fast lint退出0（0 issues.）；差异空白/gofmt通过。
-下一动作：保留D2父项进行中，推进非单位/高峰倍率精确有理数合同、unknown供应商核实契约和多peer验收。
-待验：动态非单位倍率、unknown、多peer及D3–D9；单位倍率创建子项不关闭D2父项。
+任务：D2视频创建SQL售价复验与确定未发送退款子项已验证；同一H盘工作树，本地提交，不CI/推送/部署。
+证据：旧代码改价反例24条失败记录；六包race为216顶层/1005含子例通过、0失败/跳过；夹具断言修正后专项51事件通过。
+验证：七包vet及最终仓储vet、三包完整lint退出0（0 issues.）、Linux四包编译退出0；差异/gofmt/文档链接通过。
+下一动作：保持D2进行中，推进非单位/高峰精确合同、多peer；unknown自动核实待供应商契约。
+待验：动态非单位/高峰倍率、unknown、多peer及D3–D9；局部修复不关闭D2父项。
 外部等待：unknown核实待供应商关联查询契约；生产排空待管理员；历史目录待拥有者清理。
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新日期：2026-11-10。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
+更新日期：2026-11-11。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
 - 用户授权本地实施、修复、相关清理与验证、本地提交；真实采购价格不在本期范围。生产执行仍需对应授权。
@@ -23,7 +23,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、多出站、持久交接/单peer查询、售价快照、视频永久身份/原SQL查询/终态及已有资金入口已验；单位倍率创建已接 Reserve→Start→provider POST→Bind；unknown、多peer及非单位/高峰倍率待验 |
+| D2 | in_progress | D2.1–D2.4、多出站、持久交接/单peer查询、视频永久身份/原SQL查询/终态及单位倍率创建已验；Reserve/Start的SQL售价复验、确定未发送退款与确认丢失保额已验；unknown、多peer及非单位/高峰倍率待验 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -54,7 +54,7 @@
 ## 工作区与验证约定
 
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
-- 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包载入、unit/integration标签、按内存并发1–2与原规则；service预算12分钟，其余8分钟。
+- 使用项目Go1.27.3；不降低go.mod。lint工具`backend/bin/task-d2-golangci-lint.exe` v2.15，完整包载入、unit/integration标签、按内存并发1–2与原规则；大包使用8GiB/18分钟配置，不缩减规则。
 - 真实Redis竞争测试按PATH启动；本轮前置已有`H:/Root/tools/redis/5.0.14.1`，系统Redis3缺`redis.replicate_commands`。其余夹具使用已有Docker Redis7；integration默认将自己创建的隔离PostgreSQL交给区域夹具，不打印DSN。
 - 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个相同测试PNG共1164bytes，历史精确删除曾被策略拒绝（DECISIONS），保留且不提交。
 - 既有HTTP/compat归属、区域共享Key与Live的实际版本、完整/局部验证边界及失败历史见DECISIONS；不代替本轮WS源码或生产升级验收。区域竞争使用就绪SQL池，不计冷建连时延通过。
