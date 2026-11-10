@@ -1521,3 +1521,11 @@
 - 隔离临时表验证333在已有正额记录上可重复应用；零值通过、负值与非10粒度拒绝；零值记录存在时恢复旧约束被拒绝。测试仅在事务内临时表移除零值后验证旧约束可恢复，生产回退须保留永久记录并维持333约束，不能为满足旧约束删除财务证据。未对生产数据库执行迁移。
 - 两包 `go vet -p 1 -tags 'unit integration'` 退出0；两包完整规则 `bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners` 退出0、`0 issues.`。未运行CI、推送或部署。
 - 原28项分母不变：区域视频价目与任务级预留/绑定、终态与重启恢复、非单位倍率、跨区资金门和多peer仍属 D2 未完成；此基础只覆盖全零文本价目，并不证明免费分组或视频可用。unknown 无任务ID 的核实仍等待供应商关联查询契约。
+
+## 2026-11-10：D2 MiniMax-H3 请求字段防歧义
+
+- 基线`d95d7ce`的真实handler对重复、转义等价或大小写别名字段按首个`seconds="1"`报价，模拟供应商的Go JSON解码实际取得`seconds="15"`；重复`n`实际取得2。原始`go test -p 1 -tags unit ./internal/service ./internal/handler -run '^TestMiniMaxH3RejectsAmbiguous' -count=1 -timeout=5m`退出1，service九项反例和handler四项反例失败，handler原状态为200而非400。
+- 原位收敛`ParseMiniMaxH3Request`：从解码后的顶层字段统一读取参数，受控字段重复身份或大小写别名在报价及发送前拒绝；显式`n`只接受整数`1`，拒绝空值、浮点近似及单个大小写/转义批量字段。合法的单一JSON转义字段继续兼容，原模型改写不引入第二个等价字段，未知未来字段仍保留；没有新增并行解析入口。
+- `go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^Test(MiniMaxH3|Grok.*Video|Seedance)' -count=1 -timeout=8m`退出0，service `1.217s`、handler `1.298s`；新增兼容反例通过Go标准JSON解码核对实际出站模型、时长、数量和尺寸，失败请求零出站。
+- `go test -race -p 1 -tags unit ./internal/server/routes -run '^Test.*(Video|MiniMax|Regional)' -count=1 -timeout=6m`退出0、`1.251s`。相同三包`go vet -p 1 -tags 'unit integration'`退出0；完整规则lint退出0、`0 issues.`，未调整规则。
+- 本项补齐视频计费参数入口，不代表已实现区域视频任务资金链；原28项总数及D2/D3/D4父状态保持。未执行CI、推送、部署或生产数据修改，历史被策略拒绝清理的图片目录原位保留、不提交。

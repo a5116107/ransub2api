@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"math"
 	"net/http"
@@ -67,6 +68,73 @@ func TestMiniMaxH3ValidationAndURLs(t *testing.T) {
 	a.Credentials["account_mode"] = AccountModePayG
 	a.Platform = PlatformGrok
 	require.False(t, a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityMiniMaxH3))
+}
+
+func TestMiniMaxH3RejectsAmbiguousCreateFieldsBeforeOutbound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"duplicate_seconds", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","seconds":"15"}`},
+		{"escaped_seconds", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","se\u0063onds":"15"}`},
+		{"case_seconds", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","Seconds":"15"}`},
+		{"duplicate_count", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","n":1,"n":2}`},
+		{"case_count", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","n":1,"N":2}`},
+		{"single_case_count", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","N":2}`},
+		{"single_escaped_count", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","\u006e":2}`},
+		{"null_count", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","n":null}`},
+		{"rounded_count", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","n":1.0000000000000001}`},
+		{"unicode_case_seconds", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","\u017Feconds":"15"}`},
+		{"duplicate_model", `{"model":"MiniMax-H3","model":"other","prompt":"x","seconds":"1"}`},
+		{"duplicate_prompt", `{"model":"MiniMax-H3","prompt":"x","prompt":"other","seconds":"1"}`},
+		{"duplicate_size", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","size":"1344x768","size":"768x1344"}`},
+		{"duplicate_metadata", `{"model":"MiniMax-H3","prompt":"x","seconds":"1","metadata":{},"metadata":{"content":[]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(tc.body)
+			_, err := ParseMiniMaxH3Request(body)
+			require.Error(t, err)
+			upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"id":"task","status":"queued"}`)}
+			svc := &OpenAIGatewayService{httpUpstream: upstream}
+			c, _ := grokMediaContentTestContext(http.MethodPost, "/v1/videos", nil)
+			_, err = svc.ForwardMiniMaxH3(context.Background(), c, miniMaxH3TestAccount(), MiniMaxH3EndpointCreate, "", body)
+			require.Error(t, err)
+			require.Empty(t, upstream.requests, "ambiguous pricing or routing fields must never reach the provider")
+		})
+	}
+}
+
+func TestMiniMaxH3EscapedCanonicalFieldsMatchForwardedRequest(t *testing.T) {
+	body := []byte(`{"\u006dodel":"video-alias","pro\u006dpt":"waves","se\u0063onds":"5","\u006e":1,"s\u0069ze":"1344x768","meta\u0064ata":{"content":[{"type":"image_url","image_url":{"url":"https://example.com/frame.png"}}]},"future":{"keep":true}}`)
+	info, err := ParseMiniMaxH3Request(body)
+	require.NoError(t, err)
+	require.Equal(t, 5, info.DurationSeconds)
+	require.Equal(t, 1, info.N)
+	require.Equal(t, "1344x768", info.Size)
+	require.Equal(t, []string{"https://example.com/frame.png"}, info.InputImageURLs)
+	upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"id":"task","status":"queued"}`)}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	c, _ := grokMediaContentTestContext(http.MethodPost, "/v1/videos", nil)
+	result, err := svc.ForwardMiniMaxH3(context.Background(), c, miniMaxH3TestAccount(), MiniMaxH3EndpointCreate, "", body)
+	require.NoError(t, err)
+	forwarded, err := io.ReadAll(upstream.request.Body)
+	require.NoError(t, err)
+	var observed struct {
+		Model   string `json:"model"`
+		Prompt  string `json:"prompt"`
+		Seconds string `json:"seconds"`
+		N       int    `json:"n"`
+		Size    string `json:"size"`
+	}
+	require.NoError(t, json.Unmarshal(forwarded, &observed))
+	require.Equal(t, result.UpstreamModel, observed.Model)
+	require.Equal(t, info.Prompt, observed.Prompt)
+	require.Equal(t, "5", observed.Seconds)
+	require.Equal(t, info.N, observed.N)
+	require.Equal(t, info.Size, observed.Size)
+	_, err = ParseMiniMaxH3Request(forwarded)
+	require.NoError(t, err, "model rewriting must not create duplicate decoded fields")
+	require.Equal(t, gjson.GetBytes(body, "future").Raw, gjson.GetBytes(forwarded, "future").Raw)
 }
 
 func TestMiniMaxH3StatusStates(t *testing.T) {

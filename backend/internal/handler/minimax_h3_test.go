@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -16,6 +17,45 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMiniMaxH3RejectsAmbiguousPriceBeforeSubmission(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"seconds", `{"model":"MiniMax-H3","prompt":"waves","seconds":"1","seconds":"15"}`},
+		{"escaped_seconds", `{"model":"MiniMax-H3","prompt":"waves","seconds":"1","se\u0063onds":"15"}`},
+		{"case_seconds", `{"model":"MiniMax-H3","prompt":"waves","seconds":"1","Seconds":"15"}`},
+		{"count", `{"model":"MiniMax-H3","prompt":"waves","seconds":"1","n":1,"n":2}`},
+		{"single_case_count", `{"model":"MiniMax-H3","prompt":"waves","seconds":"1","N":2}`},
+		{"single_escaped_count", `{"model":"MiniMax-H3","prompt":"waves","seconds":"1","\u006e":2}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, slots, _, upstream := newGrokMediaSlotHandler(t, false, false, service.PlatformMiniMax)
+			c, w := grokMediaSlotContext(context.Background(), true)
+			key, _ := middleware.GetAPIKeyFromContext(c)
+			key.Group.Platform = service.PlatformMiniMax
+			key.Group.VideoModelPrices = map[string]map[string]float64{service.MiniMaxH3PriceFamily: {service.MiniMaxH3PerSecond: 0.02}}
+			key.Group.RateMultiplier = 0.1
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(tc.body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			var observed struct {
+				Seconds string `json:"seconds"`
+				N       int    `json:"n"`
+			}
+			upstream.call = func(req *http.Request, _ int64) (*http.Response, error) {
+				if err := json.NewDecoder(req.Body).Decode(&observed); err != nil {
+					return nil, err
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"task","status":"queued"}`))}, nil
+			}
+			h.MiniMaxH3Videos(c)
+			require.Equal(t, http.StatusBadRequest, w.Code, "upstream decoded seconds=%q n=%d", observed.Seconds, observed.N)
+			require.Zero(t, upstream.calls, "ambiguous billable fields must fail before provider submission")
+			slots.assertReleased(t)
+		})
+	}
+}
 
 func TestMiniMaxH3GroupGateAndLookupOwnership(t *testing.T) {
 	for _, scenario := range []string{"disabled", "wrong duration", "accepted", "upstream unavailable", "other key", "other user", "lookup owned", "wrong content type"} {

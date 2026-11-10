@@ -100,7 +100,30 @@ func ParseMiniMaxH3Request(body []byte) (GrokMediaRequestInfo, error) {
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return info, fmt.Errorf("request body must be a JSON object")
 	}
-	model, prompt, seconds := gjson.GetBytes(body, "model"), gjson.GetBytes(body, "prompt"), gjson.GetBytes(body, "seconds")
+	// Lookup and upstream decoders can choose different values for duplicate or
+	// case-aliased keys. Collect decoded names once, rejecting that ambiguity
+	// before quoting or forwarding while preserving unrecognized future fields.
+	fields := make(map[string]gjson.Result, 6)
+	ambiguous := ""
+	gjson.ParseBytes(body).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		for _, field := range [...]string{"model", "prompt", "seconds", "n", "size", "metadata"} {
+			if !strings.EqualFold(name, field) {
+				continue
+			}
+			if _, exists := fields[field]; exists || name != field {
+				ambiguous = field
+				return false
+			}
+			fields[field] = value
+			break
+		}
+		return true
+	})
+	if ambiguous != "" {
+		return info, fmt.Errorf("ambiguous MiniMax-H3 request field: %s", ambiguous)
+	}
+	model, prompt, seconds := fields["model"], fields["prompt"], fields["seconds"]
 	if model.Type != gjson.String || strings.TrimSpace(model.String()) == "" {
 		return info, fmt.Errorf("model is required")
 	}
@@ -112,12 +135,12 @@ func ParseMiniMaxH3Request(body []byte) (GrokMediaRequestInfo, error) {
 		return info, fmt.Errorf("seconds must be an integer string from \"1\" to \"15\"")
 	}
 	// H3 creates one task/video. Reject batching fields rather than undercharge.
-	if n := gjson.GetBytes(body, "n"); n.Exists() && (n.Type != gjson.Number || n.Float() != 1) {
+	if n, present := fields["n"]; present && (n.Type != gjson.Number || n.Raw != "1") {
 		return info, fmt.Errorf("MiniMax-H3 supports one video per request")
 	}
 	info.Model, info.Prompt, info.DurationSeconds = strings.TrimSpace(model.String()), prompt.String(), duration
-	info.Size = gjson.GetBytes(body, "size").String()
-	for _, item := range gjson.GetBytes(body, "metadata.content").Array() {
+	info.Size = fields["size"].String()
+	for _, item := range fields["metadata"].Get("content").Array() {
 		if item.Get("type").String() == "image_url" {
 			info.InputImageURLs = append(info.InputImageURLs, item.Get("image_url.url").String())
 		}
