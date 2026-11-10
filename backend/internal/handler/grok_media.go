@@ -518,7 +518,11 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		if err != nil {
 			if errors.Is(err, service.ErrRegionalVideoSettlement) {
 				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
-					h.errorResponse(c, http.StatusServiceUnavailable, "regional_video_settlement_unavailable", "Video settlement is temporarily unavailable; retry this task query")
+					message := "Video settlement is temporarily unavailable; retry this task query"
+					if endpoint.IsAsyncVideoCreate() {
+						message = "Video request funds are temporarily unavailable"
+					}
+					h.errorResponse(c, http.StatusServiceUnavailable, "regional_video_settlement_unavailable", message)
 				}
 				reqLog.Warn("grok_media.video_settlement_unavailable", zap.Int64("account_id", account.ID), zap.Error(err))
 				return

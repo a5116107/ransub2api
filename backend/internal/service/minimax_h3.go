@@ -209,7 +209,8 @@ func validMiniMaxH3OutputURL(raw string) bool {
 	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
-func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, taskID string, body []byte) (*OpenAIForwardResult, error) {
+func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, taskID string, body []byte) (forwardResult *OpenAIForwardResult, forwardErr error) {
+	billingBody := body
 	if !endpoint.IsMiniMaxH3() || !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityMiniMaxH3) {
 		return nil, fmt.Errorf("MiniMax-H3 requires a MiniMax pay-as-you-go API key account with a custom base URL")
 	}
@@ -268,11 +269,22 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 	if err := s.admitAvailabilityRequest(req.Context(), req, account); err != nil {
 		return nil, err
 	}
+	req, finish, err := s.beginRegionalVideoCreate(req, c, account, endpoint, billingBody, body)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { forwardErr = finish(forwardResult, forwardErr) }()
 	proxy := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxy = account.Proxy.URL()
 	}
+	if endpoint.IsAsyncVideoCreate() {
+		if err := regionalMeterBeforeSend(req.Context()); err != nil {
+			return nil, errors.Join(ErrRegionalVideoSettlement, err)
+		}
+	}
 	resp, err := s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
+	observeRegionalVideoRejection(req, resp)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(started).Milliseconds())
 	if err != nil {
 		if failover := upstreamKeyAdmissionFailover(err); failover != nil {

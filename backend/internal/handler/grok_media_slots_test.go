@@ -805,6 +805,41 @@ func TestRegionalVideoCompletionSkipsLegacyBillingClaims(t *testing.T) {
 	require.Empty(t, bindings.billed, "original funds ledger completion must never consume a legacy one-shot billing claim")
 }
 
+type regionalVideoStartFailureLedger struct {
+	ledger.VideoTaskLedger
+	starts int
+}
+
+func (*regionalVideoStartFailureLedger) Reserve(context.Context, ledger.Reservation) (bool, error) {
+	return true, nil
+}
+
+func (l *regionalVideoStartFailureLedger) Start(context.Context, string) error {
+	l.starts++
+	return io.ErrUnexpectedEOF
+}
+
+func TestRegionalVideoCreationFundsFailureDoesNotSendOrSwitch(t *testing.T) {
+	l := &regionalVideoStartFailureLedger{}
+	meter := &service.RegionalMetering{Ledger: l, Readiness: func(context.Context) error { return nil }, Admit: func(_ context.Context, key *service.APIKey, account *service.Account, _ []byte) (ledger.Reservation, ledger.Price, error) {
+		return ledger.Reservation{RequestID: "fixture-create", UserID: key.UserID, APIKeyID: key.ID, AccountID: account.ID}, ledger.Price{Model: "grok-imagine-video", Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: "grok", UpstreamModel: "grok-imagine-video", Resolution: "480p", DurationSeconds: 6}, Basis: "second", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 1}}, nil
+	}}
+	h, slots, bindings, upstream := newGrokMediaSlotHandlerWithOptions(t, false, false, []service.OpenAIGatewayOption{service.WithRegionalMetering(meter)})
+	c, w := grokMediaSlotContext(t.Context(), true)
+	h.GrokVideoGeneration(c)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "regional_video_settlement_unavailable")
+	require.NotContains(t, w.Body.String(), "retry this task query")
+	require.Equal(t, 1, l.starts, "uncertain SQL Start must not create another financial identity")
+	require.Zero(t, upstream.calls, "SQL admission failed before the provider was contacted")
+	require.Empty(t, bindings.billed)
+	require.Zero(t, bindings.writes)
+	if events, ok := c.Get(service.OpsUpstreamErrorsKey); ok {
+		require.Empty(t, events, "local funds errors must not become supplier failures")
+	}
+	slots.assertReleased(t)
+}
+
 type regionalVideoSettlementTestLedger struct {
 	ledger.VideoTaskLedger
 	record ledger.VideoTaskRecord

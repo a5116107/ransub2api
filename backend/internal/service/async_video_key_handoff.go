@@ -104,11 +104,13 @@ func (s *OpenAIGatewayService) asyncVideoKeyController(handoff *AsyncVideoKeyHan
 
 func (s *OpenAIGatewayService) bindAsyncVideoKeyLease(ctx context.Context, req *http.Request, taskID string) error {
 	handoff := AsyncVideoKeyHandoffFromRequest(req)
-	if handoff == nil || handoff.Lease() == nil {
+	attempt := regionalMeterAttemptFrom(req.Context())
+	financial := attempt != nil && attempt.reservation.Video != nil
+	if !financial && (handoff == nil || handoff.Lease() == nil) {
 		return nil
 	}
 	controller, ok := s.asyncVideoKeyController(handoff)
-	if !ok {
+	if handoff == nil || handoff.Lease() != nil && !ok {
 		return ErrUpstreamKeyPolicy
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -116,10 +118,30 @@ func (s *OpenAIGatewayService) bindAsyncVideoKeyLease(ctx context.Context, req *
 	taskID = strings.TrimSpace(taskID)
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
-		err = controller.BindAsyncVideoKeyLease(ctx, handoff, taskID)
+		err = nil
+		if financial {
+			funds := regionalMeterAttemptFrom(req.Context())
+			tasks, ok := funds.ledger.(ledger.VideoTaskLedger)
+			if !ok {
+				return ErrUpstreamKeyPolicy
+			}
+			err = tasks.BindVideoTask(ctx, funds.reservation.RequestID, taskID)
+		}
+		if err == nil && handoff.Lease() != nil {
+			err = controller.BindAsyncVideoKeyLease(ctx, handoff, taskID)
+		}
+		if err == nil && financial {
+			regionalMeterAttemptFrom(req.Context()).videoBound.Store(true)
+		}
 		if err == nil || errors.Is(err, ErrUpstreamKeyPolicy) || errors.Is(err, ErrUpstreamKeyLease) || ctx.Err() != nil {
+			if err != nil && financial {
+				return errors.Join(ErrRegionalVideoSettlement, err)
+			}
 			return err
 		}
+	}
+	if financial {
+		return errors.Join(ErrRegionalVideoSettlement, err)
 	}
 	return err
 }

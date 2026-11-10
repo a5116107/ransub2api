@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -20,6 +23,200 @@ var ErrRegionalVideoSettlement = errors.New("original video funds settlement una
 type regionalVideoTask struct {
 	ledger ledger.VideoTaskLedger
 	record ledger.VideoTaskRecord
+}
+
+// Creation uses the existing request ledger and the same member as the shared
+// key handoff. Reserve and Start precede the POST; only its acknowledged task
+// identity may bind the hold. An uncertain send never admits another attempt.
+func (s *OpenAIGatewayService) beginRegionalVideoCreate(req *http.Request, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, billingBody, outboundBody []byte) (*http.Request, func(*OpenAIForwardResult, error) error, error) {
+	noop := func(_ *OpenAIForwardResult, err error) error { return err }
+	if !endpoint.IsAsyncVideoCreate() {
+		return req, noop, nil
+	}
+	financial := s.regionalMetering != nil || s.cfg != nil && s.cfg.Runtime.RegionalFundsFile != ""
+	if !financial {
+		return req, noop, nil
+	}
+	reject := func(err error) (*http.Request, func(*OpenAIForwardResult, error) error, error) {
+		return nil, nil, errors.Join(ErrRegionalVideoSettlement, err)
+	}
+	if c == nil || c.Request == nil {
+		return reject(ledger.ErrConflict)
+	}
+	if err := c.Request.Context().Err(); err != nil {
+		return reject(err)
+	}
+	m := s.regionalMetering
+	if err := m.Check(req.Context()); err != nil {
+		return reject(err)
+	}
+	tasks, ok := m.Ledger.(ledger.VideoTaskLedger)
+	if !ok {
+		return reject(ledger.ErrConflict)
+	}
+	key := getAPIKeyFromContext(c)
+	handoff := AsyncVideoKeyHandoffFromRequest(req)
+	owner, valid := AsyncVideoKeyOwnerFromContext(req.Context())
+	if key == nil || account == nil || !valid || key.GroupID == nil ||
+		owner.UserID != key.UserID || owner.APIKeyID != key.ID || owner.GroupID != *key.GroupID ||
+		owner.AccountID != account.ID || owner.Provider != endpoint.AsyncVideoProvider() || owner.RouteFingerprint != AccountRouteFingerprint(account) ||
+		handoff == nil || handoff.Owner() != owner {
+		return reject(ledger.ErrConflict)
+	}
+	// Authenticate both spellings before the mapper or a first-key decoder can
+	// hide duplicate billing fields. Multipart video needs its own cost proof.
+	if err := validateRegionalVideoFields(billingBody); err != nil {
+		return reject(err)
+	}
+	if err := validateRegionalVideoFields(outboundBody); err != nil {
+		return reject(err)
+	}
+	r, price, err := m.Admit(req.Context(), key, account, billingBody)
+	if err != nil {
+		return reject(err)
+	}
+	if r.UserID != key.UserID || r.APIKeyID != key.ID || r.AccountID != account.ID || price.Model != gjson.GetBytes(billingBody, "model").String() || price.Video == nil || price.Validate() != nil {
+		return reject(ledger.ErrConflict)
+	}
+	dimensions, err := regionalVideoCreateDimensions(endpoint, outboundBody)
+	if err != nil || price.Video.VideoRequest != dimensions {
+		return reject(errors.Join(ledger.ErrConflict, err))
+	}
+	maximum, err := price.VideoMaximum(dimensions)
+	if err != nil {
+		return reject(err)
+	}
+	digest := sha256.Sum256(outboundBody)
+	r.Model, r.PricingVersion, r.Maximum, r.PayloadSHA256 = price.Model, price.Version(), maximum, hex.EncodeToString(digest[:])
+	r.Video, r.VideoOrigin = &dimensions, &ledger.VideoOrigin{Member: handoff.Member(), Owner: owner}
+	fresh, err := tasks.Reserve(req.Context(), r)
+	if err != nil || !fresh {
+		return reject(errors.Join(ledger.ErrAlreadyDispatched, err))
+	}
+	attempt := &regionalMeterAttempt{ledger: tasks, reservation: r, price: price}
+	req = req.WithContext(context.WithValue(req.Context(), regionalMeterKey{}, attempt))
+	finish := func(result *OpenAIForwardResult, forwardErr error) error {
+		if result != nil {
+			result.RegionalMetered = true
+		}
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(req.Context()), 5*time.Second)
+		defer cancel()
+		if !attempt.sent.Load() {
+			return errors.Join(forwardErr, tasks.CancelBeforeStart(cleanup, r.RequestID))
+		}
+		if errors.Is(forwardErr, ErrRegionalVideoSettlement) {
+			return forwardErr
+		}
+		if attempt.videoRejected.Load() || IsUpstreamKeyAdmissionFailure(forwardErr) && !IsAsyncVideoSubmissionUnconfirmed(forwardErr) {
+			if err := tasks.RejectVideoTask(cleanup, r.RequestID); err != nil {
+				return errors.Join(ErrRegionalVideoSettlement, forwardErr, err)
+			}
+			return forwardErr
+		}
+		if forwardErr != nil || !attempt.videoBound.Load() {
+			return asyncVideoSubmissionError(endpoint, errors.Join(errors.New("video creation outcome unresolved; hold retained"), forwardErr))
+		}
+		return nil
+	}
+	return req, finish, nil
+}
+
+func validateRegionalVideoFields(body []byte) error {
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+		return errors.New("video funds require a JSON object")
+	}
+	seen := make(map[string]bool)
+	valid := true
+	gjson.ParseBytes(body).ForEach(func(key, value gjson.Result) bool {
+		name := strings.ToLower(key.String())
+		switch name {
+		case "model", "duration", "seconds", "resolution", "size", "n", "service_tier", "fast", "stream", "metadata", "content":
+			valid = key.String() == name && !seen[name]
+			seen[name] = true
+		}
+		if !valid {
+			return false
+		}
+		switch name {
+		case "model":
+			valid = value.Type == gjson.String && value.String() != "" && strings.TrimSpace(value.String()) == value.String()
+		case "n":
+			valid = value.Type == gjson.Number && value.Raw == "1"
+		case "service_tier":
+			valid = value.Type == gjson.String && value.String() == "default"
+		case "fast", "stream":
+			valid = value.Type == gjson.False
+		}
+		return valid
+	})
+	if !valid || !seen["model"] {
+		return errors.New("video billing fields ambiguous or outside immutable cost bound")
+	}
+	return nil
+}
+
+func regionalVideoCreateDimensions(endpoint GrokMediaEndpoint, body []byte) (ledger.VideoRequest, error) {
+	dimensions := ledger.VideoRequest{Provider: endpoint.AsyncVideoProvider(), UpstreamModel: gjson.GetBytes(body, "model").String()}
+	switch dimensions.Provider {
+	case "minimax-h3":
+		info, err := ParseMiniMaxH3Request(body)
+		if err != nil {
+			return dimensions, err
+		}
+		dimensions.Resolution, dimensions.DurationSeconds = info.Resolution, int64(info.DurationSeconds)
+	case "grok":
+		info := ParseGrokMediaRequest("application/json", body)
+		dimensions.Resolution, dimensions.DurationSeconds = info.Resolution, int64(info.DurationSeconds)
+		if duration := gjson.GetBytes(body, "duration"); duration.Exists() {
+			n, err := strconv.ParseInt(duration.Raw, 10, 32)
+			if duration.Type != gjson.Number || err != nil || n != dimensions.DurationSeconds {
+				return dimensions, ledger.ErrConflict
+			}
+		}
+		if resolution := gjson.GetBytes(body, "resolution"); resolution.Exists() && (resolution.Type != gjson.String || resolution.String() != dimensions.Resolution) {
+			return dimensions, ledger.ErrConflict
+		}
+		if gjson.GetBytes(body, "size").Exists() || gjson.GetBytes(body, "seconds").Exists() {
+			return dimensions, ledger.ErrConflict
+		}
+	case "seedance":
+		if _, err := ParseSeedanceRequest(body); err != nil {
+			return dimensions, err
+		}
+		// Completion-token bounds cover content options. Explicit dimensions
+		// must still match the installed contract rather than being discarded.
+		if resolution := gjson.GetBytes(body, "resolution"); resolution.Exists() {
+			if resolution.Type != gjson.String {
+				return dimensions, ledger.ErrConflict
+			}
+			dimensions.Resolution = resolution.String()
+		}
+		if duration := gjson.GetBytes(body, "duration"); duration.Exists() {
+			var err error
+			dimensions.DurationSeconds, err = strconv.ParseInt(duration.Raw, 10, 32)
+			if duration.Type != gjson.Number || err != nil {
+				return dimensions, ledger.ErrConflict
+			}
+		}
+		if gjson.GetBytes(body, "size").Exists() || gjson.GetBytes(body, "seconds").Exists() {
+			return dimensions, ledger.ErrConflict
+		}
+	default:
+		return dimensions, ledger.ErrConflict
+	}
+	return dimensions, nil
+}
+
+func observeRegionalVideoRejection(req *http.Request, response *http.Response) {
+	a := regionalMeterAttemptFrom(req.Context())
+	if a == nil || a.reservation.Video == nil || response == nil {
+		return
+	}
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden,
+		http.StatusMethodNotAllowed, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+		a.videoRejected.Store(true)
+	}
 }
 
 // A lookup never admits or starts another financial request. Its original SQL

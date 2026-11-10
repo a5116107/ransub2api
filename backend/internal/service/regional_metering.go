@@ -56,6 +56,8 @@ type regionalMeterAttempt struct {
 	price            ledger.Price
 	output           int64
 	fullOutputWindow bool
+	videoRejected    atomic.Bool
+	videoBound       atomic.Bool
 	sent             atomic.Bool
 	finalUsage       atomic.Pointer[OpenAIUsage]
 }

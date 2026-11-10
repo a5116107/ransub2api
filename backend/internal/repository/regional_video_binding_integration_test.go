@@ -4,17 +4,23 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	"github.com/Wei-Shaw/sub2api/internal/regional/video"
@@ -23,6 +29,337 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+type regionalVideoCreationLedger struct {
+	ledger.VideoTaskLedger
+	bindAckLost bool
+}
+
+func (l *regionalVideoCreationLedger) BindVideoTask(ctx context.Context, id, taskID string) error {
+	if err := l.VideoTaskLedger.BindVideoTask(ctx, id, taskID); err != nil {
+		return err
+	}
+	if l.bindAckLost {
+		l.bindAckLost = false
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+
+func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
+	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+	t.Setenv("SUB2API_REGIONAL_TEST_DSN", integrationPostgresDSN)
+	gin.SetMode(gin.TestMode)
+	for _, providerName := range []string{"minimax-h3", "grok", "seedance"} {
+		for _, mode := range []string{"primary", "regional"} {
+			t.Run(providerName+"/"+mode, func(t *testing.T) {
+				ctx := t.Context()
+				user, group, key, account := regionalVideoFinancialSubject(t, providerName)
+				var sends atomic.Int32
+				var responseStatus atomic.Int32
+				var ambiguous atomic.Bool
+				var taskNumber atomic.Int32
+				var activeRequest atomic.Value
+				requestTable := "regional_primary_requests"
+				if mode == "regional" {
+					requestTable = "regional_local_requests"
+				}
+				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					sends.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					if r.Header.Get("Authorization") != "Bearer supplier-fixture" {
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+					if r.Method == http.MethodGet {
+						switch providerName {
+						case "grok":
+							_, _ = io.WriteString(w, `{"status":"done","video":{"url":"https://vidgen.x.ai/video.mp4"}}`)
+						case "seedance":
+							_, _ = io.WriteString(w, `{"status":"succeeded","usage":{"completion_tokens":12345}}`)
+						default:
+							_, _ = io.WriteString(w, `{"status":"completed","metadata":{"url":"https://cdn.example/video.mp4"}}`)
+						}
+						return
+					}
+					if r.Method != http.MethodPost {
+						w.WriteHeader(http.StatusMethodNotAllowed)
+						return
+					}
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					digest := sha256.Sum256(body)
+					var funded bool
+					if err := integrationDB.QueryRowContext(r.Context(), "SELECT state='started' AND request->>'payload_sha256'=$2 FROM "+requestTable+" WHERE request_id=$1", activeRequest.Load(), hex.EncodeToString(digest[:])).Scan(&funded); err != nil || !funded {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					if status := responseStatus.Load(); status != 0 {
+						w.WriteHeader(int(status))
+						_, _ = io.WriteString(w, `{"error":"fixture rejection"}`)
+						return
+					}
+					if ambiguous.Load() {
+						_, _ = io.WriteString(w, `{"id":"task","id":"other"}`)
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"id":"task-%d","request_id":"task-%d","status":"queued"}`, taskNumber.Load(), taskNumber.Load())
+				}))
+				t.Cleanup(provider.Close)
+				price := ledger.Price{Model: "create-video-" + uuid.NewString(), Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: providerName, UpstreamModel: "MiniMax-H3", Resolution: "768p", DurationSeconds: 5}, Basis: "request", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 1}}
+				endpoint, taskID := service.MiniMaxH3EndpointCreate, "minimax-h3:task"
+				bodyOptions := `,"prompt":"waves","seconds":"5"}`
+				switch providerName {
+				case "grok":
+					price.Video.VideoRequest = ledger.VideoRequest{Provider: providerName, UpstreamModel: "grok-imagine-video", Resolution: "720p", DurationSeconds: 6}
+					price.Video.Basis, endpoint, taskID = "second", service.GrokMediaEndpointVideosGenerations, "task"
+					bodyOptions = `,"prompt":"waves","resolution":"720p","duration":6}`
+				case "seedance":
+					price.Video.VideoRequest = ledger.VideoRequest{Provider: providerName, UpstreamModel: "ep-seedance"}
+					price.Video.Basis, price.Video.UnitNano, price.Video.MaxCompletionTokens = "completion_tokens", 28_000_000_000, 50_000
+					endpoint, taskID = service.SeedanceEndpointCreate, "seedance:task"
+					bodyOptions = `,"content":[{"type":"text","text":"waves"}]}`
+				}
+				account.Credentials = map[string]any{"api_key": "supplier-fixture", "base_url": provider.URL, "model_mapping": map[string]any{price.Model: price.Video.UpstreamModel}, "openai_capabilities": []string{"seedance"}}
+				owner := video.Owner{UserID: user, APIKeyID: key.ID, GroupID: group.ID, AccountID: account.ID, Provider: providerName, RouteFingerprint: service.AccountRouteFingerprint(account)}
+				require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
+				maximum, err := price.VideoMaximum(price.Video.VideoRequest)
+				require.NoError(t, err)
+				primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
+				grant := regionalLedgerLease(t, "create-funds-"+uuid.NewString(), user, 8_000_000_000)
+				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				var requests ledger.VideoTaskLedger = holds
+				table := "regional_primary_requests"
+				if mode == "regional" {
+					require.NoError(t, primary.Issue(ctx, grant))
+					local := &ledger.Local{DB: integrationDB, Region: grant.RegionID}
+					require.NoError(t, local.Install(ctx, grant))
+					requests, table = local, "regional_local_requests"
+				}
+				wrapped := &regionalVideoCreationLedger{VideoTaskLedger: requests}
+				cfg := upstreamKeyTestConfig(1, 1)
+				cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+				rdb := regionalKeyRedis(t)
+				capacity := regionalAsyncVideoAuthority(t, cfg, rdb, mode)
+				upstream := liveKeyTestUpstream(t, cfg, rdb, capacity)
+				for index, scenario := range []string{"accepted", "bind_ack_lost", "rejected", "unknown_server", "ambiguous_task"} {
+					t.Run(scenario, func(t *testing.T) {
+						taskNumber.Store(int32(index))
+						currentTaskID := fmt.Sprintf("%s-%d", taskID, index)
+						requestID := "created-request-" + uuid.NewString()
+						activeRequest.Store(requestID)
+						admissions := 0
+						meter := &service.RegionalMetering{Ledger: wrapped, Readiness: func(ctx context.Context) error { return ctx.Err() }, Admit: func(ctx context.Context, _ *service.APIKey, _ *service.Account, _ []byte) (ledger.Reservation, ledger.Price, error) {
+							admissions++
+							var now time.Time
+							if err := integrationDB.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
+								return ledger.Reservation{}, price, err
+							}
+							r := ledger.Reservation{RequestID: requestID, UserID: user, APIKeyID: key.ID, AccountID: account.ID, AdmittedAt: now.UTC().Truncate(time.Microsecond)}
+							if mode == "regional" {
+								r.RegionID, r.LeaseID = grant.RegionID, grant.LeaseID
+							}
+							return r, price, nil
+						}}
+						gateway := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Config: cfg, Upstream: upstream, RegionalMetering: meter})
+						t.Cleanup(gateway.StopAsyncVideoKeyReleaseRecovery)
+						t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+						responseStatus.Store(0)
+						ambiguous.Store(scenario == "ambiguous_task")
+						wrapped.bindAckLost = scenario == "bind_ack_lost"
+						switch scenario {
+						case "rejected":
+							responseStatus.Store(http.StatusTooManyRequests)
+						case "unknown_server":
+							responseStatus.Store(http.StatusInternalServerError)
+						}
+						body := []byte(`{"model":"` + price.Model + `"` + bodyOptions)
+						forwardCtx := service.WithAsyncVideoKeyOwner(ctx, owner)
+						c, _ := gin.CreateTestContext(httptest.NewRecorder())
+						c.Request = httptest.NewRequestWithContext(forwardCtx, http.MethodPost, "/fixture", strings.NewReader(string(body)))
+						c.Set("api_key", key)
+						before := sends.Load()
+						var result *service.OpenAIForwardResult
+						var forwardErr error
+						switch providerName {
+						case "grok":
+							result, forwardErr = gateway.ForwardGrokMedia(forwardCtx, c, account, endpoint, "", body, "application/json")
+						case "seedance":
+							result, forwardErr = gateway.ForwardSeedance(forwardCtx, c, account, endpoint, "", body)
+						default:
+							result, forwardErr = gateway.ForwardMiniMaxH3(forwardCtx, c, account, endpoint, "", body)
+						}
+						require.Equal(t, before+1, sends.Load(), "one creation per financial identity, including lost ACK")
+						var state string
+						var raw []byte
+						require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT state,request FROM "+table+" WHERE request_id=$1", requestID).Scan(&state, &raw))
+						var reservation ledger.Reservation
+						require.NoError(t, json.Unmarshal(raw, &reservation))
+						require.Equal(t, maximum, reservation.Maximum)
+						require.Equal(t, owner, reservation.VideoOrigin.Owner)
+						require.NotEmpty(t, reservation.VideoOrigin.Member)
+						switch scenario {
+						case "accepted", "bind_ack_lost":
+							require.NoError(t, forwardErr)
+							require.True(t, result.RegionalMetered)
+							require.Equal(t, "started", state)
+							record, err := requests.LoadVideoTask(ctx, owner, currentTaskID)
+							require.NoError(t, err)
+							require.Equal(t, reservation, record.Reservation)
+							lease, err := upstream.LoadAsyncVideoKeyLeaseByTask(ctx, owner, currentTaskID)
+							require.NoError(t, err)
+							require.NotNil(t, lease)
+							require.Equal(t, reservation.VideoOrigin.Member, lease.Member)
+							// New-admission failure must not obstruct the original hold's
+							// actual terminal query, settlement, or concurrency release.
+							meter.Readiness = func(context.Context) error { return errors.New("new admission paused") }
+							query, _ := gin.CreateTestContext(httptest.NewRecorder())
+							query.Request = httptest.NewRequestWithContext(forwardCtx, http.MethodGet, "/fixture", nil)
+							query.Set("api_key", key)
+							switch providerName {
+							case "grok":
+								result, err = gateway.ForwardGrokMedia(forwardCtx, query, account, service.GrokMediaEndpointVideoStatus, currentTaskID, nil, "")
+							case "seedance":
+								result, err = gateway.ForwardSeedance(forwardCtx, query, account, service.SeedanceEndpointStatus, currentTaskID, nil)
+							default:
+								result, err = gateway.ForwardMiniMaxH3(forwardCtx, query, account, service.MiniMaxH3EndpointStatus, currentTaskID, nil)
+							}
+							require.NoError(t, err)
+							require.True(t, result.RegionalMetered)
+							require.True(t, result.AsyncVideoTerminal)
+							require.Equal(t, 1, admissions, "query must not create another financial identity")
+							record, err = requests.LoadVideoTask(ctx, owner, currentTaskID)
+							require.NoError(t, err)
+							require.Equal(t, "completed", record.State)
+							require.NotNil(t, record.Event)
+							if local, ok := requests.(*ledger.Local); ok {
+								applied, err := primary.Settle(ctx, grant.RegionID, *record.Event, verify)
+								require.NoError(t, err)
+								require.True(t, applied)
+								require.NoError(t, local.Acknowledge(ctx, *record.Event))
+							}
+							var oneUsage bool
+							require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*)=1 FROM usage_logs WHERE request_id=$1", requestID).Scan(&oneUsage))
+							require.True(t, oneUsage)
+							require.NoError(t, upstream.ReleaseAsyncVideoKeyLeaseByTask(ctx, owner, currentTaskID))
+						case "rejected":
+							require.Error(t, forwardErr)
+							require.Equal(t, "canceled", state)
+						default:
+							require.True(t, service.IsAsyncVideoSubmissionUnconfirmed(forwardErr), "%v", forwardErr)
+							require.Equal(t, "started", state)
+							var storedMember string
+							require.NoError(t, capacity.database().QueryRowContext(ctx, "SELECT member FROM regional_async_video_key_leases WHERE member=$1", reservation.VideoOrigin.Member).Scan(&storedMember))
+							require.Equal(t, reservation.VideoOrigin.Member, storedMember)
+							// Only this fixture's explicit no-task confirmation releases
+							// unknown concurrency; production still requires reconciliation.
+							require.NoError(t, upstream.ReleaseAsyncVideoKeyLeaseByMember(ctx, storedMember))
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
+func TestRegionalVideoExplicitRejectionRefundsOnlyUnboundTask(t *testing.T) {
+	for _, mode := range []string{"primary", "regional"} {
+		for _, scenario := range []string{"unbound", "bound", "racing_bind"} {
+			t.Run(mode+"/"+scenario, func(t *testing.T) {
+				ctx := t.Context()
+				user, group, key, account := regionalVideoFinancialSubject(t, "minimax-h3")
+				price := ledger.Price{Model: "rejected-video-" + uuid.NewString(), Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: "minimax-h3", UpstreamModel: "MiniMax-H3", Resolution: "768p", DurationSeconds: 5}, Basis: "request", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 1}}
+				require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
+				maximum, err := price.VideoMaximum(price.Video.VideoRequest)
+				require.NoError(t, err)
+				primary, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
+				grant := regionalLedgerLease(t, "rejection-"+uuid.NewString(), user, 1_000_000_000)
+				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				r := regionalLedgerReservation(t, grant, "rejection-request-"+uuid.NewString(), maximum)
+				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
+				r.PayloadSHA256, r.Video = strings.Repeat("a", 64), &price.Video.VideoRequest
+				r.VideoOrigin = &ledger.VideoOrigin{Member: "video:" + uuid.NewString(), Owner: video.Owner{UserID: user, APIKeyID: key.ID, GroupID: group.ID, AccountID: account.ID, Provider: "minimax-h3", RouteFingerprint: service.AccountRouteFingerprint(account)}}
+				var requests ledger.VideoTaskLedger = holds
+				table := "regional_primary_requests"
+				if mode == "regional" {
+					require.NoError(t, primary.Issue(ctx, grant))
+					local := &ledger.Local{DB: integrationDB, Region: grant.RegionID}
+					require.NoError(t, local.Install(ctx, grant))
+					requests, table = local, "regional_local_requests"
+				} else {
+					r.LeaseID, r.RegionID = "", ""
+				}
+				fresh, err := requests.Reserve(ctx, r)
+				require.NoError(t, err)
+				require.True(t, fresh)
+				require.NoError(t, requests.Start(ctx, r.RequestID))
+				require.ErrorIs(t, requests.CancelBeforeStart(ctx, r.RequestID), ledger.ErrAlreadyDispatched)
+				bound := false
+				switch scenario {
+				case "bound":
+					require.NoError(t, requests.BindVideoTask(ctx, r.RequestID, "minimax-h3:task"))
+					bound = true
+					require.ErrorIs(t, requests.RejectVideoTask(ctx, r.RequestID), ledger.ErrConflict)
+				case "racing_bind":
+					start := make(chan struct{})
+					var bindErr, rejectErr error
+					var workers sync.WaitGroup
+					workers.Add(2)
+					go func() {
+						defer workers.Done()
+						<-start
+						bindErr = requests.BindVideoTask(ctx, r.RequestID, "minimax-h3:task")
+					}()
+					go func() { defer workers.Done(); <-start; rejectErr = requests.RejectVideoTask(ctx, r.RequestID) }()
+					close(start)
+					workers.Wait()
+					bound = bindErr == nil
+					if bound {
+						require.ErrorIs(t, rejectErr, ledger.ErrConflict)
+					} else {
+						require.ErrorIs(t, bindErr, ledger.ErrAlreadyDispatched)
+						require.NoError(t, rejectErr)
+					}
+				default:
+					require.NoError(t, requests.RejectVideoTask(ctx, r.RequestID))
+					require.NoError(t, requests.RejectVideoTask(ctx, r.RequestID), "refund retries must be idempotent")
+					require.ErrorIs(t, requests.BindVideoTask(ctx, r.RequestID, "minimax-h3:task"), ledger.ErrAlreadyDispatched)
+				}
+				var state string
+				require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT state FROM "+table+" WHERE request_id=$1", r.RequestID).Scan(&state))
+				want := "canceled"
+				if bound {
+					want = "started"
+				}
+				require.Equal(t, want, state)
+				var correct bool
+				amount, err := ledger.USD(maximum)
+				require.NoError(t, err)
+				if mode == "regional" {
+					wantReserved := regional.Amount(0)
+					if bound {
+						wantReserved = maximum
+					}
+					require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT reserved=$2 AND spent=0 FROM regional_local_leases WHERE lease_id=$1", grant.LeaseID, wantReserved).Scan(&correct))
+				} else {
+					if !bound {
+						amount = "0"
+					}
+					require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance=10-$2::numeric FROM users WHERE id=$1", user, amount).Scan(&correct))
+				}
+				require.True(t, correct, "only an unbound rejected task may return its exact original hold")
+				var identities, usage int
+				require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*) FROM regional_video_financial_bindings WHERE request_id=$1", r.RequestID).Scan(&identities))
+				require.Equal(t, 1, identities, "refund must retain the permanent member identity")
+				require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs WHERE request_id=$1", r.RequestID).Scan(&usage))
+				require.Zero(t, usage, "a rejected creation is not fabricated terminal usage")
+			})
+		}
+	}
+}
 
 type regionalVideoTerminalLedger struct {
 	ledger.VideoTaskLedger
@@ -79,11 +416,12 @@ func TestRegionalVideoHTTPCompletionUsesOriginalLedger(t *testing.T) {
 				}}
 				wantCharge := regional.Amount(2_000_000)
 				endpoint, taskID := service.MiniMaxH3EndpointStatus, "minimax-h3:task"
-				if providerName == "grok" {
+				switch providerName {
+				case "grok":
 					price.Video.VideoRequest = ledger.VideoRequest{Provider: providerName, UpstreamModel: "grok-imagine-video", Resolution: "720p", DurationSeconds: 6}
 					price.Video.Basis, wantCharge = "second", 12_000_000
 					endpoint, taskID = service.GrokMediaEndpointVideoStatus, "task"
-				} else if providerName == "seedance" {
+				case "seedance":
 					price.Video.VideoRequest = ledger.VideoRequest{Provider: providerName, UpstreamModel: "ep-seedance"}
 					price.Video.Basis, price.Video.UnitNano, price.Video.MaxCompletionTokens = "completion_tokens", 28_000_000_000, 1_000_000
 					wantCharge, endpoint, taskID = 34_566_000, service.SeedanceEndpointStatus, "seedance:task"

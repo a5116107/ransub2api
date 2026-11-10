@@ -29,8 +29,30 @@ type VideoTaskRecord struct {
 type VideoTaskLedger interface {
 	RequestLedger
 	BindVideoTask(context.Context, string, string) error
+	RejectVideoTask(context.Context, string) error
 	LoadVideoTask(context.Context, video.Owner, string) (VideoTaskRecord, error)
 	ResolveVideoTaskOwner(context.Context, video.Owner, string) (*video.Owner, error)
+}
+
+// RejectVideoTask is only for a trusted adapter's explicit creation rejection.
+// Unknown sends keep their hold. A bound task can never enter this refund path.
+func (p *PrimaryRequests) RejectVideoTask(ctx context.Context, id string) error {
+	return p.finish(ctx, id, nil, true)
+}
+
+func (l *Local) RejectVideoTask(ctx context.Context, id string) error {
+	return l.finish(ctx, id, nil, true)
+}
+
+func verifyUnboundVideoRejection(ctx context.Context, tx *sql.Tx, side string, r Reservation) error {
+	key, taskID, err := readVideoIdentity(ctx, tx, side, r)
+	if err != nil {
+		return err
+	}
+	if key != "" || taskID != "" {
+		return ErrConflict
+	}
+	return nil
 }
 
 func reserveVideoIdentity(ctx context.Context, tx *sql.Tx, side string, r Reservation) error {

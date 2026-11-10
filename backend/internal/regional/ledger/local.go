@@ -184,7 +184,7 @@ func (l *Local) Start(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-func (l *Local) finish(ctx context.Context, id string, event *Event) error {
+func (l *Local) finish(ctx context.Context, id string, event *Event, videoRejected bool) error {
 	tx, err := l.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -208,11 +208,16 @@ func (l *Local) finish(ctx context.Context, id string, event *Event) error {
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return err
 	}
+	if videoRejected {
+		if err := verifyUnboundVideoRejection(ctx, tx, videoLocal, r); err != nil {
+			return err
+		}
+	}
 	if event == nil {
 		if state == "canceled" {
 			return nil
 		}
-		if state != "reserved" {
+		if state != "reserved" && (!videoRejected || state != "started") {
 			return ErrAlreadyDispatched
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE regional_local_requests SET state='canceled' WHERE request_id=$1`, id); err != nil {
@@ -265,10 +270,10 @@ func (l *Local) finish(ctx context.Context, id string, event *Event) error {
 	return tx.Commit()
 }
 func (l *Local) CancelBeforeStart(ctx context.Context, id string) error {
-	return l.finish(ctx, id, nil)
+	return l.finish(ctx, id, nil, false)
 }
 func (l *Local) Complete(ctx context.Context, event Event) error {
-	return l.finish(ctx, event.Usage.EventID, &event)
+	return l.finish(ctx, event.Usage.EventID, &event, false)
 }
 func (l *Local) Pending(ctx context.Context, limit int) ([]Event, error) {
 	if limit < 1 || limit > 1000 {

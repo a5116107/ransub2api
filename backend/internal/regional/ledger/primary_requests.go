@@ -110,12 +110,12 @@ func (p *PrimaryRequests) Start(ctx context.Context, id string) error {
 	return nil
 }
 func (p *PrimaryRequests) CancelBeforeStart(ctx context.Context, id string) error {
-	return p.finish(ctx, id, nil)
+	return p.finish(ctx, id, nil, false)
 }
 func (p *PrimaryRequests) Complete(ctx context.Context, e Event) error {
-	return p.finish(ctx, e.Usage.EventID, &e)
+	return p.finish(ctx, e.Usage.EventID, &e, false)
 }
-func (p *PrimaryRequests) finish(ctx context.Context, id string, e *Event) error {
+func (p *PrimaryRequests) finish(ctx context.Context, id string, e *Event, videoRejected bool) error {
 	tx, err := p.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -131,6 +131,11 @@ func (p *PrimaryRequests) finish(ctx context.Context, id string, e *Event) error
 	if err = json.Unmarshal(raw, &r); err != nil {
 		return err
 	}
+	if videoRejected {
+		if err := verifyUnboundVideoRejection(ctx, tx, videoPrimary, r); err != nil {
+			return err
+		}
+	}
 	// Match admission's user -> key/account scope order. The refund below
 	// must not request this lock after holding quota rows.
 	var lockedUser int64
@@ -144,7 +149,7 @@ func (p *PrimaryRequests) finish(ctx context.Context, id string, e *Event) error
 		if state == "canceled" {
 			return nil
 		}
-		if state != "reserved" {
+		if state != "reserved" && (!videoRejected || state != "started") {
 			return ErrAlreadyDispatched
 		}
 		if p.CancelScope == nil {

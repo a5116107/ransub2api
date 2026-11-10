@@ -784,8 +784,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	requestID string,
 	body []byte,
 	contentType string,
-) (*OpenAIForwardResult, error) {
+) (forwardResult *OpenAIForwardResult, forwardErr error) {
 	startTime := time.Now()
+	billingBody := body
 	if account == nil {
 		return nil, fmt.Errorf("grok account is required")
 	}
@@ -870,13 +871,24 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err := s.admitAvailabilityRequest(upstreamReq.Context(), upstreamReq, account); err != nil {
 		return nil, err
 	}
+	upstreamReq, finish, err := s.beginRegionalVideoCreate(upstreamReq, c, account, endpoint, billingBody, body)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { forwardErr = finish(forwardResult, forwardErr) }()
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
 	upstreamStart := time.Now()
+	if endpoint.IsAsyncVideoCreate() {
+		if err := regionalMeterBeforeSend(upstreamReq.Context()); err != nil {
+			return nil, errors.Join(ErrRegionalVideoSettlement, err)
+		}
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	observeRegionalVideoRejection(upstreamReq, resp)
 	s.rateLimitService.observeQualityResponse(upstreamReq.Context(), account, resp, err)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
