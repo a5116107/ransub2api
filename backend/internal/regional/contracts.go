@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -145,17 +146,19 @@ func (a *Amount) UnmarshalJSON(data []byte) error {
 // It is scoped to one user, region and accounting currency (USD). It must not
 // be reused by another region or returned merely because ExpiresAt elapsed.
 type Lease struct {
-	BillingMode    string    `json:"billing_mode,omitempty"`
-	APIKeyID       int64     `json:"api_key_id,omitempty"`
-	AccountID      int64     `json:"account_id,omitempty"`
-	SchemaVersion  int       `json:"schema_version"`
-	LeaseID        string    `json:"lease_id"`
-	RegionID       string    `json:"region_id"`
-	UserID         int64     `json:"user_id"`
-	Granted        Amount    `json:"granted_nano_usd"`
-	AccountGranted Amount    `json:"account_granted_nano_usd,omitempty"`
-	IssuedAt       time.Time `json:"issued_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
+	GroupID            int64     `json:"group_id,omitempty"`
+	BillingMode        string    `json:"billing_mode,omitempty"`
+	APIKeyID           int64     `json:"api_key_id,omitempty"`
+	AccountID          int64     `json:"account_id,omitempty"`
+	SchemaVersion      int       `json:"schema_version"`
+	LeaseID            string    `json:"lease_id"`
+	RegionID           string    `json:"region_id"`
+	UserID             int64     `json:"user_id"`
+	Granted            Amount    `json:"granted_nano_usd"`
+	AccountGranted     Amount    `json:"account_granted_nano_usd,omitempty"`
+	IssuedAt           time.Time `json:"issued_at"`
+	ExpiresAt          time.Time `json:"expires_at"`
+	VideoPriceVersions []string  `json:"video_price_versions,omitempty"`
 }
 
 func (l Lease) Validate() error {
@@ -165,13 +168,32 @@ func (l Lease) Validate() error {
 	if !identifier.MatchString(l.LeaseID) || !identifier.MatchString(l.RegionID) {
 		return errors.New("invalid lease identity")
 	}
-	if l.UserID <= 0 || l.Granted <= 0 || l.AccountGranted < 0 {
+	if l.UserID <= 0 || l.Granted <= 0 || l.AccountGranted < 0 || l.GroupID < 0 {
 		return errors.New("lease requires a user and positive grant")
 	}
 	if l.IssuedAt.IsZero() || !l.ExpiresAt.After(l.IssuedAt) {
 		return errors.New("invalid lease timestamps")
 	}
+	if len(l.VideoPriceVersions) > 128 {
+		return errors.New("too many video price versions")
+	}
+	if len(l.VideoPriceVersions) > 0 && l.GroupID <= 0 {
+		return errors.New("video grant requires immutable group identity")
+	}
+	for i, version := range l.VideoPriceVersions {
+		decoded, err := hex.DecodeString(version)
+		if err != nil || len(decoded) != sha256.Size || version != hex.EncodeToString(decoded) || i > 0 && l.VideoPriceVersions[i-1] >= version {
+			return errors.New("video price versions must be sorted unique SHA256 identities")
+		}
+	}
 	return nil
+}
+
+// AllowsVideoPrice fences both local dispatch and primary reconciliation. A
+// text-only/legacy grant never implicitly authorizes a new video tariff.
+func (l Lease) AllowsVideoPrice(version string) bool {
+	_, found := slices.BinarySearch(l.VideoPriceVersions, version)
+	return found
 }
 
 // AccountBudget is an independent account-cost ceiling. Omitted legacy grants

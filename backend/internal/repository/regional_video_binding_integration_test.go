@@ -149,11 +149,13 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 				primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 				grant := regionalLedgerLease(t, "create-funds-"+uuid.NewString(), user, 8_000_000_000)
 				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				grant.VideoPriceVersions = []string{price.Version()}
+				grant.GroupID = group.ID
 				var requests ledger.VideoTaskLedger = holds
 				table := "regional_primary_requests"
 				if mode == "regional" {
 					require.NoError(t, primary.Issue(ctx, grant))
-					local := &ledger.Local{DB: integrationDB, Region: grant.RegionID, ValidateAdmission: verifyRegionalVideoSalePolicy}
+					local := &ledger.Local{DB: integrationDB, Region: grant.RegionID, ValidateAdmission: VerifyRegionalSalePolicy}
 					require.NoError(t, local.Install(ctx, grant))
 					requests, table = local, "regional_local_requests"
 				}
@@ -192,11 +194,11 @@ func TestRegionalVideoHTTPCreateUsesOriginalFundsAndSharedMember(t *testing.T) {
 						wrapped.beforeStart = nil
 						if scenario == "policy_changed_before_start" {
 							wrapped.beforeStart = func(ctx context.Context) error {
-								_, err := integrationDB.ExecContext(ctx, "UPDATE groups SET video_rate_independent=true,video_rate_multiplier=0.8 WHERE id=$1", group.ID)
+								_, err := integrationDB.ExecContext(ctx, "UPDATE groups SET rate_multiplier=0.8 WHERE id=$1", group.ID)
 								return err
 							}
 							t.Cleanup(func() {
-								_, err := integrationDB.ExecContext(ctx, "UPDATE groups SET video_rate_independent=false,video_rate_multiplier=1 WHERE id=$1", group.ID)
+								_, err := integrationDB.ExecContext(ctx, "UPDATE groups SET rate_multiplier=1 WHERE id=$1", group.ID)
 								require.NoError(t, err)
 							})
 						}
@@ -327,6 +329,8 @@ func TestRegionalVideoExplicitRejectionRefundsOnlyUnboundTask(t *testing.T) {
 				primary, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 				grant := regionalLedgerLease(t, "rejection-"+uuid.NewString(), user, 1_000_000_000)
 				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				grant.VideoPriceVersions = []string{price.Version()}
+				grant.GroupID = group.ID
 				r := regionalLedgerReservation(t, grant, "rejection-request-"+uuid.NewString(), maximum)
 				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
 				r.PayloadSHA256, r.Video = strings.Repeat("a", 64), &price.Video.VideoRequest
@@ -481,6 +485,8 @@ func TestRegionalVideoHTTPCompletionUsesOriginalLedger(t *testing.T) {
 				primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 				grant := regionalLedgerLease(t, "http-video-grant-"+uuid.NewString(), user, 8_000_000_000)
 				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				grant.VideoPriceVersions = []string{price.Version()}
+				grant.GroupID = group.ID
 				grant.AccountGranted = 40_000_000_000
 				r := regionalLedgerReservation(t, grant, "http-video-request-"+uuid.NewString(), maximum)
 				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
@@ -625,6 +631,8 @@ func TestRegionalVideoPermanentRouteRejectsChangedAccountBeforeHTTP(t *testing.T
 			primary, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 			grant := regionalLedgerLease(t, "route-grant-"+uuid.NewString(), user, 8_000_000_000)
 			grant.APIKeyID, grant.AccountID = key.ID, account.ID
+			grant.VideoPriceVersions = []string{price.Version()}
+			grant.GroupID = group.ID
 			r := regionalLedgerReservation(t, grant, "route-request-"+uuid.NewString(), 2_000_000)
 			r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
 			r.Video = &price.Video.VideoRequest
@@ -720,6 +728,8 @@ func TestRegionalVideoFinancialBindingCompetitionAndRecovery(t *testing.T) {
 			primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 			lease := regionalLedgerLease(t, "binding-grant-"+uuid.NewString(), user, 8_000_000_000)
 			lease.APIKeyID, lease.AccountID = key.ID, account.ID
+			lease.VideoPriceVersions = []string{price.Version()}
+			lease.GroupID = group.ID
 			r := regionalLedgerReservation(t, lease, "binding-request-"+uuid.NewString(), 2_000_000)
 			r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
 			r.Video = &price.Video.VideoRequest
@@ -848,6 +858,8 @@ func TestRegionalVideoFinancialBindingCompetitionAndRecovery(t *testing.T) {
 			// primary namespace, even when event/member/lease/region all change.
 			cross := regionalLedgerLease(t, "binding-cross-"+uuid.NewString(), user, 10_000_000)
 			cross.RegionID, cross.APIKeyID, cross.AccountID = "eu", key.ID, account.ID
+			cross.VideoPriceVersions = []string{price.Version()}
+			cross.GroupID = group.ID
 			cross.AccountGranted = 20_000_000
 			require.NoError(t, primary.Issue(ctx, cross))
 			duplicate := events[0]

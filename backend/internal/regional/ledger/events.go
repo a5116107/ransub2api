@@ -62,6 +62,9 @@ func (r Reservation) Validate(l regional.Lease) error {
 		return errors.New("reservation requires bounded price and payload identity")
 	}
 	if r.Video != nil {
+		if !l.AllowsVideoPrice(r.PricingVersion) || r.VideoOrigin == nil || r.VideoOrigin.Owner.GroupID != l.GroupID {
+			return ErrConflict
+		}
 		if err := r.Video.validate(); err != nil {
 			return err
 		}
@@ -92,6 +95,9 @@ func (e Event) Validate(l regional.Lease) error {
 	}
 	if err := e.validateVideo(); err != nil {
 		return err
+	}
+	if e.Video != nil && (!l.AllowsVideoPrice(e.PricingVersion) || e.VideoOrigin.Owner.GroupID != l.GroupID) {
+		return ErrConflict
 	}
 	_, err := USD(e.Usage.Charge)
 	return err

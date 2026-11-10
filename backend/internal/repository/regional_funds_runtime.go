@@ -61,6 +61,9 @@ func readRegionalFundsConfig(path string) (RegionalFundsRuntimeConfig, error) {
 		if seen[p.Model] {
 			return c, errors.New("duplicate funds model")
 		}
+		if p.Video != nil && p.Video.TemplateVersion != "" {
+			return c, errors.New("funds config requires original video templates")
+		}
 		seen[p.Model] = true
 	}
 	targets := make(map[[3]int64]bool)
@@ -132,7 +135,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 			}
 			return nil
 		}
-		primary, holds, verify := NewRegionalFundsAuthorities(db, guard)
+		primary, holds, verify := NewRegionalFundsAuthorities(db, guard, c.Prices...)
 		handler, err := control.NewHandler(capacity.runtimeConfig.Scope, primary, capacity.primary, verify)
 		if err != nil {
 			return nil, err
@@ -140,7 +143,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 		capacity.fundsHandler.Store(&handler)
 		requests = holds
 	} else {
-		local = &ledger.Local{DB: db, Region: c.Region, ValidateAdmission: verifyRegionalVideoSalePolicy}
+		local = &ledger.Local{DB: db, Region: c.Region, ValidateAdmission: VerifyRegionalSalePolicy}
 		requests = local
 		if capacity.brokerClient == nil {
 			return nil, errors.New("funds broker client missing")
@@ -153,7 +156,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 		if err := meter.Check(ctx); err != nil {
 			return r, ledger.Price{}, err
 		}
-		if key == nil || account == nil {
+		if key == nil || account == nil || key.GroupID == nil {
 			return r, ledger.Price{}, ledger.ErrConflict
 		}
 		var request struct{ Model string }
@@ -174,14 +177,37 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 		if !allowed {
 			return r, price, ledger.ErrConflict
 		}
-		var admitted time.Time
-		if err := db.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&admitted); err != nil {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
 			return r, price, err
 		}
-		r = ledger.Reservation{RequestID: uuid.NewString(), RegionID: c.Region, UserID: key.UserID, APIKeyID: key.ID, AccountID: account.ID, AdmittedAt: admitted.UTC().Truncate(time.Microsecond)}
+		defer func() { _ = tx.Rollback() }()
+		var admitted time.Time
+		if err := tx.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&admitted); err != nil {
+			return r, price, err
+		}
+		if price.Video != nil {
+			policy, err := readRegionalSalePolicy(ctx, tx, key.UserID, key.ID, account.ID)
+			if err != nil || policy.group.ID != *key.GroupID {
+				return r, price, errors.Join(ledger.ErrConflict, err)
+			}
+			price, err = policy.derive(price, admitted)
+			if err != nil {
+				return r, price, err
+			}
+			if err := ledger.InstallPrice(ctx, tx, price); err != nil {
+				return r, price, err
+			}
+		}
+		r = ledger.Reservation{RequestID: uuid.NewString(), UserID: key.UserID, APIKeyID: key.ID, AccountID: account.ID, AdmittedAt: admitted.UTC().Truncate(time.Microsecond)}
 		if c.Mode == "regional" {
+			r.RegionID = c.Region
 			var raw []byte
-			err := db.QueryRowContext(ctx, `SELECT lease FROM regional_local_leases WHERE region_id=$1 AND user_id=$2 AND state='open' AND (lease->>'api_key_id')::bigint=$3 AND (lease->>'account_id')::bigint=$4 AND (lease->>'expires_at')::timestamptz>clock_timestamp() AND granted-spent-reserved>0 AND account_granted-account_spent-account_reserved>0 ORDER BY lease_id LIMIT 1`, c.Region, key.UserID, key.ID, account.ID).Scan(&raw)
+			videoVersion := ""
+			if price.Video != nil {
+				videoVersion = price.Version()
+			}
+			err := tx.QueryRowContext(ctx, `SELECT lease FROM regional_local_leases WHERE region_id=$1 AND user_id=$2 AND state='open' AND (lease->>'api_key_id')::bigint=$3 AND (lease->>'account_id')::bigint=$4 AND (lease->>'expires_at')::timestamptz>clock_timestamp() AND granted-spent-reserved>0 AND account_granted-account_spent-account_reserved>0 AND ($5='' OR (lease->'video_price_versions') ? $5) AND (lease->>'group_id')::bigint=$6 ORDER BY lease_id LIMIT 1`, c.Region, key.UserID, key.ID, account.ID, videoVersion, *key.GroupID).Scan(&raw)
 			if err != nil {
 				return r, price, err
 			}
@@ -191,7 +217,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 			}
 			r.LeaseID = lease.LeaseID
 		}
-		return r, price, nil
+		return r, price, tx.Commit()
 	}
 	// Observe the durable cutover, worker health, outbox and active grants.
 	meter.Readiness = func(ctx context.Context) error {
@@ -281,7 +307,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 					cycleErr = errors.Join(cycleErr, err)
 				}
 				for _, target := range c.Targets {
-					if err := ensureRegionalFunds(cycle, db, broker, c.Region, target, time.Duration(capacity.runtimeConfig.LifetimeSeconds)*time.Second); err != nil {
+					if err := ensureRegionalFunds(cycle, db, broker, c.Region, target, time.Duration(capacity.runtimeConfig.LifetimeSeconds)*time.Second, c.Prices...); err != nil {
 						cycleErr = errors.Join(cycleErr, err)
 					}
 				}

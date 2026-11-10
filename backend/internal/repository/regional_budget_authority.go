@@ -12,7 +12,7 @@ import (
 // NewRegionalFundsAuthorities installs mandatory authoritative scope checks.
 // Guard is shared with the deployment cutover fence; absent evidence refuses
 // grants, never silently runs a partially migrated financial authority.
-func NewRegionalFundsAuthorities(db *sql.DB, guard func(context.Context, *sql.Tx) error) (*ledger.Primary, *ledger.PrimaryRequests, ledger.VerifyEvent) {
+func NewRegionalFundsAuthorities(db *sql.DB, guard func(context.Context, *sql.Tx) error, templates ...ledger.Price) (*ledger.Primary, *ledger.PrimaryRequests, ledger.VerifyEvent) {
 	scope := RegionalBudgetScope{}
 	primary := &ledger.Primary{DB: db}
 	primary.Funding = regionalBalanceFunding
@@ -23,7 +23,10 @@ func NewRegionalFundsAuthorities(db *sql.DB, guard func(context.Context, *sql.Tx
 		if err := guard(ctx, tx); err != nil {
 			return err
 		}
-		return scope.Reserve(ctx, tx, "grant:"+l.LeaseID, l.UserID, l.APIKeyID, l.AccountID, l.Granted, l.AccountBudget(), l.IssuedAt)
+		if err := scope.Reserve(ctx, tx, "grant:"+l.LeaseID, l.UserID, l.APIKeyID, l.AccountID, l.Granted, l.AccountBudget(), l.IssuedAt); err != nil {
+			return err
+		}
+		return verifyRegionalGrantSalePolicy(ctx, tx, l, templates)
 	}
 	primary.CloseScope = func(ctx context.Context, tx *sql.Tx, l regional.Lease, spent regional.Amount) error {
 		return scope.Close(ctx, tx, "grant:"+l.LeaseID, spent)
@@ -31,7 +34,7 @@ func NewRegionalFundsAuthorities(db *sql.DB, guard func(context.Context, *sql.Tx
 	verify := regionalScopedPricingVerifier("grant:", func(ctx context.Context, tx *sql.Tx, e ledger.Event) error {
 		return scope.Charge(ctx, tx, "grant:"+e.Usage.LeaseID, e)
 	})
-	holds := &ledger.PrimaryRequests{DB: db, ValidateAdmission: verifyRegionalVideoSalePolicy}
+	holds := &ledger.PrimaryRequests{DB: db, ValidateAdmission: VerifyRegionalSalePolicy}
 	holds.Funding = regionalBalanceFunding
 	holds.Authorize = func(ctx context.Context, tx *sql.Tx, r ledger.Reservation) error {
 		if guard == nil {
@@ -116,47 +119,6 @@ func verifyRegionalVideoGroup(ctx context.Context, tx *sql.Tx, allocation string
 		return err
 	}
 	if group != origin.Owner.GroupID {
-		return ledger.ErrConflict
-	}
-	return nil
-}
-
-// Immutable video prices currently certify unit dynamic sale policies only.
-// Read the local SQL authority at both Reserve and Start: neither an old auth
-// snapshot nor an earlier regional grant proves the current sale policy.
-// This is new-admission validation, not repricing of accepted provider tasks.
-func verifyRegionalVideoSalePolicy(ctx context.Context, tx *sql.Tx, r ledger.Reservation) error {
-	if r.Video == nil {
-		return nil
-	}
-	if r.VideoOrigin == nil || !r.VideoOrigin.Owner.Valid() {
-		return ledger.ErrConflict
-	}
-	o := r.VideoOrigin.Owner
-	if o.UserID != r.UserID || o.APIKeyID != r.APIKeyID || o.AccountID != r.AccountID || o.Provider != r.Video.Provider {
-		return ledger.ErrConflict
-	}
-	var allowed bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
-		SELECT 1 FROM api_keys k
-		JOIN users u ON u.id=k.user_id
-		JOIN groups g ON g.id=k.group_id
-		JOIN accounts a ON a.id=$3 AND a.platform=g.platform
-		JOIN account_groups ag ON ag.account_id=a.id AND ag.group_id=g.id
-		WHERE k.id=$1 AND k.user_id=$2 AND g.id=$4
-		AND k.status='active' AND k.deleted_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>clock_timestamp())
-		AND u.status='active' AND u.deleted_at IS NULL
-		AND g.status='active' AND g.deleted_at IS NULL AND g.rate_multiplier=1
-		AND (NOT g.peak_rate_enabled OR g.peak_rate_multiplier=1)
-		AND (NOT g.video_rate_independent OR g.video_rate_multiplier=1)
-		AND a.status='active' AND a.schedulable AND a.deleted_at IS NULL
-		AND COALESCE(a.rate_multiplier,1)=1 AND COALESCE(a.group_rate_multiplier,1)=1
-		AND NOT EXISTS(SELECT 1 FROM user_group_rate_multipliers ug WHERE ug.user_id=u.id AND ug.group_id=g.id AND ug.rate_multiplier IS NOT NULL AND ug.rate_multiplier<>1)
-	)`, r.APIKeyID, r.UserID, r.AccountID, o.GroupID).Scan(&allowed)
-	if err != nil {
-		return err
-	}
-	if !allowed {
 		return ledger.ErrConflict
 	}
 	return nil

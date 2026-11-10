@@ -86,12 +86,8 @@ func (s RegionalBudgetScope) Reserve(ctx context.Context, tx *sql.Tx, id string,
 		return errors.New("funded request requires concrete group")
 	}
 	var subscriptionType string
-	var unitRates bool
-	if err = tx.QueryRowContext(ctx, `SELECT subscription_type,rate_multiplier=1 AND peak_rate_multiplier=1 AND NOT EXISTS(SELECT 1 FROM user_group_rate_multipliers WHERE user_id=$2 AND group_id=$1 AND rate_multiplier IS NOT NULL AND rate_multiplier<>1) FROM groups WHERE id=$1 AND deleted_at IS NULL AND status='active' AND platform=$3 FOR SHARE`, group, user, platform).Scan(&subscriptionType, &unitRates); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT subscription_type FROM groups WHERE id=$1 AND deleted_at IS NULL AND status='active' AND platform=$2 FOR SHARE`, group, platform).Scan(&subscriptionType); err != nil {
 		return err
-	}
-	if !unitRates {
-		return errors.New("non-unit rate requires an immutable scoped price contract")
 	}
 	var member bool
 	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM account_groups WHERE account_id=$1 AND group_id=$2)", account, group).Scan(&member); err != nil {

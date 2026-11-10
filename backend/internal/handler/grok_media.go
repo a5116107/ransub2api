@@ -93,13 +93,8 @@ func (h *OpenAIGatewayHandler) AuthorizeRegionalVideoFundsRequest(c *gin.Context
 		return false
 	}
 	if endpoint.IsAsyncVideoCreate() {
-		// The coordinated ledger currently certifies only its immutable video
-		// tariff. Dynamic group, video-specific, and peak sale rates remain
-		// fail-closed until their exact rational contract is installed and
-		// checked in SQL.
-		if !regionalVideoUnitSaleRate(key.Group) {
-			return false
-		}
+		// The adapter installs an exact SQL-derived tariff, then Reserve and
+		// Start revalidate it. An auth snapshot is not a price authority.
 		funds := h.gatewayService.RegionalFundsReadiness()
 		_, supported := funds.Ledger.(ledger.VideoTaskLedger)
 		return supported && funds.Check(c.Request.Context()) == nil
@@ -109,19 +104,6 @@ func (h *OpenAIGatewayHandler) AuthorizeRegionalVideoFundsRequest(c *gin.Context
 	}
 	accountID, err := h.gatewayService.ResolveMediaVideoRequestAccount(c.Request.Context(), key.GroupID, taskID, subject.UserID, key.ID, endpoint)
 	return err == nil && accountID > 0
-}
-
-func regionalVideoUnitSaleRate(group *service.Group) bool {
-	if group == nil || math.IsNaN(group.RateMultiplier) || math.IsInf(group.RateMultiplier, 0) || group.RateMultiplier != 1 {
-		return false
-	}
-	if group.PeakRateEnabled && (math.IsNaN(group.PeakRateMultiplier) || math.IsInf(group.PeakRateMultiplier, 0) || group.PeakRateMultiplier != 1) {
-		return false
-	}
-	if !group.VideoRateIndependent {
-		return true
-	}
-	return !math.IsNaN(group.VideoRateMultiplier) && !math.IsInf(group.VideoRateMultiplier, 0) && group.VideoRateMultiplier == 1
 }
 
 func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.GrokMediaEndpoint, requestID string) {

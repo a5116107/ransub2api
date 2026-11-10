@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/big"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -72,6 +74,8 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 				lease := regionalLedgerLease(t, "video-grant-"+uuid.NewString(), user, 8_000_000_000)
 				lease.APIKeyID, lease.AccountID = key.ID, account.ID
+				lease.VideoPriceVersions = []string{price.Version()}
+				lease.GroupID = group.ID
 				// Seedance's conservative base ceiling exceeds its sale ceiling.
 				lease.AccountGranted = 40_000_000_000
 				r := regionalLedgerReservation(t, lease, "video-request-"+uuid.NewString(), maximum)
@@ -388,6 +392,8 @@ func TestRegionalVideoAccountBudgetUsesBaseCost(t *testing.T) {
 				primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 				grant := regionalLedgerLease(t, "account-cost-"+uuid.NewString(), user, 30_000_000)
 				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				grant.VideoPriceVersions = []string{price.Version()}
+				grant.GroupID = group.ID
 				if sale == 3 {
 					grant.Granted, grant.AccountGranted = 120_000_000, 20_000_000
 				}
@@ -618,6 +624,193 @@ INSERT INTO regional_usage_outbox VALUES ('old',TRUE);`)
 		_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT invalid_budget`)
 		require.NoError(t, err)
 	}
+}
+
+func TestRegionalVideoPriceMigrationRequiresDrain(t *testing.T) {
+	ctx := t.Context()
+	raw, err := migrations.FS.ReadFile("336_regional_video_price_authorizations.sql")
+	require.NoError(t, err)
+	tx, err := integrationDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	name := "video_price_migration_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	_, err = tx.ExecContext(ctx, `CREATE SCHEMA `+pq.QuoteIdentifier(name))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SET LOCAL search_path TO `+pq.QuoteIdentifier(name))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `
+CREATE TABLE regional_quota_leases (lease_id TEXT, state TEXT);
+CREATE TABLE regional_local_leases (lease_id TEXT, state TEXT);
+CREATE TABLE regional_local_requests (request_id TEXT, state TEXT);
+CREATE TABLE regional_primary_requests (request_id TEXT, state TEXT);
+CREATE TABLE regional_budget_allocations (allocation_id TEXT, state TEXT);
+CREATE TABLE regional_usage_outbox (event_id TEXT, acknowledged BOOLEAN);`)
+	require.NoError(t, err)
+	for _, pending := range []string{
+		`INSERT INTO regional_quota_leases VALUES ('old','open')`,
+		`INSERT INTO regional_local_leases VALUES ('old','draining')`,
+		`INSERT INTO regional_primary_requests VALUES ('old','started')`,
+		`INSERT INTO regional_local_requests VALUES ('old','reserved')`,
+		`INSERT INTO regional_budget_allocations VALUES ('old','held')`,
+		`INSERT INTO regional_usage_outbox VALUES ('old',FALSE)`,
+	} {
+		_, err = tx.ExecContext(ctx, `SAVEPOINT before_upgrade`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, pending)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, string(raw))
+		require.ErrorContains(t, err, "drain regional funds", pending)
+		_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT before_upgrade`)
+		require.NoError(t, err)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO regional_quota_leases VALUES ('old','closed')`)
+	require.NoError(t, err)
+	for range 2 {
+		_, err = tx.ExecContext(ctx, string(raw))
+		require.NoError(t, err)
+	}
+	var retained bool
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT group_id=0 AND video_price_versions='[]'::jsonb FROM regional_quota_leases WHERE lease_id='old'`).Scan(&retained))
+	require.True(t, retained, "historical closed rows do not invent authorized video prices")
+	for _, invalid := range []string{
+		`INSERT INTO regional_quota_leases(lease_id,state) VALUES ('old-writer','open')`,
+		`UPDATE regional_quota_leases SET video_price_versions='{}' WHERE lease_id='old'`,
+		`UPDATE regional_quota_leases SET video_price_versions='["unscoped"]' WHERE lease_id='old'`,
+		`UPDATE regional_quota_leases SET group_id=-1 WHERE lease_id='old'`,
+	} {
+		_, err = tx.ExecContext(ctx, `SAVEPOINT invalid_price_grant`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, invalid)
+		require.Error(t, err, invalid)
+		_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT invalid_price_grant`)
+		require.NoError(t, err)
+	}
+}
+
+func TestRegionalVideoPriceAuthorizationAcrossDatabases(t *testing.T) {
+	ctx := t.Context()
+	user, group, key, account := regionalVideoFinancialSubject(t, "grok")
+	_, err := integrationDB.ExecContext(ctx, `UPDATE groups SET rate_multiplier=0.12 WHERE id=$1`, group.ID)
+	require.NoError(t, err)
+	name := "video_price_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	_, err = integrationDB.ExecContext(ctx, `CREATE DATABASE `+pq.QuoteIdentifier(name))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(context.Background(), `DROP DATABASE `+pq.QuoteIdentifier(name))
+		require.NoError(t, err)
+	})
+	address, err := url.Parse(integrationPostgresDSN)
+	require.NoError(t, err)
+	address.Path = "/" + name
+	localDB, err := sql.Open("postgres", address.String())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, localDB.Close()) })
+	require.NoError(t, ApplyMigrations(ctx, localDB))
+	// A separate SQL database models the existing replicated identity/config
+	// authority. No regional request reads the main database to choose its price.
+	for _, row := range []struct {
+		table string
+		id    int64
+	}{{"users", user}, {"groups", group.ID}, {"accounts", account.ID}, {"api_keys", key.ID}} {
+		var raw []byte
+		require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT row_to_json(t) FROM "+row.table+" t WHERE id=$1", row.id).Scan(&raw))
+		_, err := localDB.ExecContext(ctx, "INSERT INTO "+row.table+" SELECT * FROM json_populate_record(NULL::"+row.table+",$1::json)", string(raw))
+		require.NoError(t, err)
+	}
+	_, err = localDB.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, account.ID, group.ID)
+	require.NoError(t, err)
+	template := ledger.Price{Model: "two-db-" + uuid.NewString(), Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: "grok", UpstreamModel: "grok-imagine-video", Resolution: "720p", DurationSeconds: 6}, Basis: "second", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10}}
+	require.NoError(t, ledger.InstallPrice(ctx, integrationDB, template))
+	require.NoError(t, ledger.InstallPrice(ctx, localDB, template))
+	price, err := ledger.DeriveVideoPrice(template, big.NewRat(12, 100))
+	require.NoError(t, err)
+	require.NoError(t, ledger.InstallPrice(ctx, localDB, price))
+	var exists bool
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM regional_prices WHERE version=$1)`, price.Version()).Scan(&exists))
+	require.False(t, exists, "a local installation alone must not create primary authority")
+	primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil }, template)
+	grant := regionalLedgerLease(t, "two-db-"+uuid.NewString(), user, 1_000_000_000)
+	grant.APIKeyID, grant.AccountID, grant.GroupID = key.ID, account.ID, group.ID
+	grant.VideoPriceVersions = []string{price.Version()}
+	for _, mutate := range []func(*regional.Lease){
+		func(l *regional.Lease) { l.VideoPriceVersions = nil },
+		func(l *regional.Lease) { l.VideoPriceVersions = []string{strings.Repeat("f", 64)} },
+		func(l *regional.Lease) { l.GroupID++ },
+	} {
+		bad := grant
+		mutate(&bad)
+		require.ErrorIs(t, primary.Issue(ctx, bad), ledger.ErrConflict)
+		var balance string
+		require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT balance::text FROM users WHERE id=$1`, user).Scan(&balance))
+		require.Equal(t, "10.00000000", balance, "failed price approval must refund the entire grant transaction")
+	}
+	require.NoError(t, primary.Issue(ctx, grant))
+	require.NoError(t, primary.Issue(ctx, grant))
+	changed := grant
+	changed.VideoPriceVersions = []string{strings.Repeat("f", 64)}
+	require.ErrorIs(t, primary.Issue(ctx, changed), ledger.ErrConflict, "retries must retain exact authorizations")
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM regional_prices WHERE version=$1)`, price.Version()).Scan(&exists))
+	require.True(t, exists, "the primary installs its own approved derivation during issuance")
+	local := &ledger.Local{DB: localDB, Region: grant.RegionID, ValidateAdmission: VerifyRegionalSalePolicy}
+	require.NoError(t, local.Install(ctx, grant))
+	r := regionalLedgerReservation(t, grant, "two-db-request-"+uuid.NewString(), 0)
+	r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
+	r.Maximum, err = price.VideoMaximum(price.Video.VideoRequest)
+	require.NoError(t, err)
+	r.Video = &price.Video.VideoRequest
+	r.VideoOrigin = &ledger.VideoOrigin{Member: "video:" + uuid.NewString(), Owner: video.Owner{UserID: user, APIKeyID: key.ID, GroupID: group.ID, AccountID: account.ID, Provider: "grok", RouteFingerprint: service.AccountRouteFingerprint(account)}}
+	for _, mutate := range []func(*ledger.Reservation){
+		func(r *ledger.Reservation) { r.PricingVersion = template.Version() },
+		func(r *ledger.Reservation) { origin := *r.VideoOrigin; origin.Owner.GroupID++; r.VideoOrigin = &origin },
+	} {
+		bad := r
+		mutate(&bad)
+		_, err := local.Reserve(ctx, bad)
+		require.ErrorIs(t, err, ledger.ErrConflict, "installed but unauthorized prices/groups must stop before dispatch")
+	}
+	text := ledger.Price{Model: "text-" + uuid.NewString(), Input: 1_000_000_000, Output: 2_000_000_000, MaxInput: 100, MaxOutput: 100}
+	for _, db := range []*sql.DB{integrationDB, localDB} {
+		require.NoError(t, ledger.InstallPrice(ctx, db, text))
+	}
+	textHold := r
+	textHold.RequestID, textHold.Model, textHold.PricingVersion, textHold.Maximum = "text-"+uuid.NewString(), text.Model, text.Version(), 1000
+	textHold.Video, textHold.VideoOrigin = nil, nil
+	_, err = local.Reserve(ctx, textHold)
+	require.ErrorIs(t, err, ledger.ErrConflict, "non-unit video authorization must not admit unit-priced text")
+	textHold.LeaseID, textHold.RegionID = "", ""
+	_, err = holds.Reserve(ctx, textHold)
+	require.ErrorIs(t, err, ledger.ErrConflict, "main text has the same authoritative policy fence")
+	fresh, err := local.Reserve(ctx, r)
+	require.NoError(t, err)
+	require.True(t, fresh)
+	_, err = localDB.ExecContext(ctx, `UPDATE groups SET rate_multiplier=0.15 WHERE id=$1`, group.ID)
+	require.NoError(t, err)
+	require.ErrorIs(t, local.Start(ctx, r.RequestID), ledger.ErrStartRejected)
+	_, err = localDB.ExecContext(ctx, `UPDATE groups SET rate_multiplier=0.12 WHERE id=$1`, group.ID)
+	require.NoError(t, err)
+	require.NoError(t, local.Start(ctx, r.RequestID), "the original tariff is valid again after policy restoration")
+	const taskID = "two-db-task"
+	require.NoError(t, local.BindVideoTask(ctx, r.RequestID, taskID))
+	_, err = integrationDB.ExecContext(ctx, `UPDATE groups SET rate_multiplier=9 WHERE id=$1`, group.ID)
+	require.NoError(t, err)
+	usage := ledger.VideoUsage{VideoRequest: *r.Video, TaskID: taskID, State: "completed"}
+	_, charge, err := price.VideoCosts(usage)
+	require.NoError(t, err)
+	event := regionalLedgerEvent(r, charge)
+	event.InputTokens, event.OutputTokens, event.Video, event.VideoOrigin = 0, 0, &usage, r.VideoOrigin
+	require.NoError(t, local.Complete(ctx, event))
+	forged := event
+	forged.PricingVersion = template.Version()
+	_, err = primary.Settle(ctx, grant.RegionID, forged, verify)
+	require.ErrorIs(t, err, ledger.ErrConflict)
+	applied, err := primary.Settle(ctx, grant.RegionID, event, verify)
+	require.NoError(t, err, "reconciliation uses the issued contract, never today's rate or the regional price table")
+	require.True(t, applied)
+	require.NoError(t, local.Acknowledge(ctx, event))
+	require.NoError(t, local.Drain(ctx, grant.LeaseID))
+	receipt, err := local.Close(ctx, grant.LeaseID)
+	require.NoError(t, err)
+	require.NoError(t, primary.Close(ctx, grant.RegionID, receipt))
 }
 
 func regionalVideoFinancialSubject(t *testing.T, provider string) (int64, *service.Group, *service.APIKey, *service.Account) {

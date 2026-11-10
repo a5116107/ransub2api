@@ -220,7 +220,7 @@ func (v videoRequestLedger) load(ctx context.Context, owner video.Owner, taskID 
 	if requestedOwner != owner {
 		return VideoTaskRecord{}, ErrConflict
 	}
-	result.Price, err = readPrice(ctx, v.db, r.PricingVersion, r.Model)
+	result.Price, err = ReadPrice(ctx, v.db, r.PricingVersion, r.Model)
 	if err != nil {
 		return VideoTaskRecord{}, err
 	}

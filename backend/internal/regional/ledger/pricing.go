@@ -134,6 +134,7 @@ type VideoPrice struct {
 	SaleNumerator       int64  `json:"sale_numerator"`
 	SaleDenominator     int64  `json:"sale_denominator"`
 	MaxCompletionTokens int64  `json:"max_completion_tokens,omitempty"`
+	TemplateVersion     string `json:"template_version,omitempty"`
 }
 
 func (v VideoPrice) validate() error {
@@ -143,6 +144,9 @@ func (v VideoPrice) validate() error {
 	if v.UnitNano < 0 || v.SaleNumerator < 0 || v.SaleDenominator <= 0 || new(big.Int).GCD(nil, nil, big.NewInt(v.SaleNumerator), big.NewInt(v.SaleDenominator)).Cmp(big.NewInt(1)) != 0 {
 		return errors.New("invalid video tariff or noncanonical sale multiplier")
 	}
+	if v.TemplateVersion != "" && !validDigest(v.TemplateVersion) {
+		return errors.New("invalid video template version")
+	}
 	if v.Provider == "seedance" {
 		if v.Basis != "completion_tokens" || v.MaxCompletionTokens <= 0 || v.MaxCompletionTokens > 2147483647 {
 			return errors.New("seedance requires bounded terminal completion-token pricing")
@@ -151,6 +155,25 @@ func (v VideoPrice) validate() error {
 		return errors.New("video provider does not support this tariff basis")
 	}
 	return nil
+}
+
+// DeriveVideoPrice composes the configured sale tariff with the effective SQL
+// sale policy exactly once. The immutable parent proves the base tariff; text
+// identities and historical video prices retain their original JSON/version.
+func DeriveVideoPrice(template Price, multiplier *big.Rat) (Price, error) {
+	if template.Validate() != nil || template.Video == nil || template.Video.TemplateVersion != "" || multiplier == nil || multiplier.Sign() < 0 {
+		return Price{}, ErrConflict
+	}
+	rate := new(big.Rat).Mul(new(big.Rat).SetFrac64(template.Video.SaleNumerator, template.Video.SaleDenominator), multiplier)
+	if !rate.Num().IsInt64() || !rate.Denom().IsInt64() {
+		return Price{}, errors.New("video sale multiplier exceeds contract range")
+	}
+	p := template
+	v := *template.Video
+	p.Video = &v
+	v.TemplateVersion = template.Version()
+	v.SaleNumerator, v.SaleDenominator = rate.Num().Int64(), rate.Denom().Int64()
+	return p, p.Validate()
 }
 
 // VideoUsage contains a validated provider terminal state. Unknown, queued or
@@ -241,7 +264,7 @@ func AccountMaximum(ctx context.Context, tx *sql.Tx, r Reservation) (regional.Am
 	if r.Video == nil {
 		return r.Maximum, nil
 	}
-	p, err := readPrice(ctx, tx, r.PricingVersion, r.Model)
+	p, err := ReadPrice(ctx, tx, r.PricingVersion, r.Model)
 	if err != nil || p.Video == nil || p.Video.VideoRequest != *r.Video {
 		return 0, errors.Join(ErrConflict, err)
 	}
@@ -258,7 +281,7 @@ func AccountCharge(ctx context.Context, tx *sql.Tx, e Event) (regional.Amount, e
 	if e.Video == nil {
 		return e.Usage.Charge, nil
 	}
-	p, err := readPrice(ctx, tx, e.PricingVersion, e.Model)
+	p, err := ReadPrice(ctx, tx, e.PricingVersion, e.Model)
 	if err != nil {
 		return 0, err
 	}
@@ -269,7 +292,12 @@ func AccountCharge(ctx context.Context, tx *sql.Tx, e Event) (regional.Amount, e
 	return base, nil
 }
 
-func InstallPrice(ctx context.Context, db *sql.DB, p Price) error {
+type priceStore interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func InstallPrice(ctx context.Context, db priceStore, p Price) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -300,7 +328,7 @@ func verifyPriceReservation(ctx context.Context, tx *sql.Tx, r Reservation) erro
 	if r.Maximum != 0 && r.Video == nil {
 		return nil
 	}
-	p, err := readPrice(ctx, tx, r.PricingVersion, r.Model)
+	p, err := ReadPrice(ctx, tx, r.PricingVersion, r.Model)
 	if err != nil {
 		return err
 	}
@@ -315,7 +343,9 @@ func verifyPriceReservation(ctx context.Context, tx *sql.Tx, r Reservation) erro
 	return nil
 }
 
-func readPrice(ctx context.Context, reader interface {
+// ReadPrice verifies the stored content hash, model and bounded tariff before
+// returning an authority-owned immutable contract.
+func ReadPrice(ctx context.Context, reader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, version, model string) (Price, error) {
 	var raw []byte
@@ -342,7 +372,7 @@ func verifyVideoSettlement(ctx context.Context, tx *sql.Tx, r Reservation, e Eve
 	if err := e.validateVideo(); err != nil {
 		return err
 	}
-	p, err := readPrice(ctx, tx, r.PricingVersion, r.Model)
+	p, err := ReadPrice(ctx, tx, r.PricingVersion, r.Model)
 	if err != nil {
 		return err
 	}
@@ -367,7 +397,7 @@ func PricingVerifier(scope VerifyEvent) VerifyEvent {
 		if scope == nil {
 			return errors.New("durable admission scope verifier required")
 		}
-		p, err := readPrice(ctx, tx, e.PricingVersion, e.Model)
+		p, err := ReadPrice(ctx, tx, e.PricingVersion, e.Model)
 		if err != nil {
 			return err
 		}

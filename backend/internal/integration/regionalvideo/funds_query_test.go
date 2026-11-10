@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,12 +146,12 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 				}
 				suffix := uuid.NewString()
 				require.NoError(t, db.QueryRowContext(ctx, "INSERT INTO users(email,password_hash,status,balance) VALUES($1,'fixture','active',10) RETURNING id", "video-"+suffix+"@test.invalid").Scan(&user))
-				require.NoError(t, db.QueryRowContext(ctx, "INSERT INTO groups(name,platform,status,rate_multiplier) VALUES($1,$2,'active',1) RETURNING id", "video-"+suffix, platform).Scan(&groupID))
+				require.NoError(t, db.QueryRowContext(ctx, "INSERT INTO groups(name,platform,status,rate_multiplier) VALUES($1,$2,'active',0.12) RETURNING id", "video-"+suffix, platform).Scan(&groupID))
 				require.NoError(t, db.QueryRowContext(ctx, "INSERT INTO api_keys(user_id,key,name,group_id,status) VALUES($1,$2,'fixture',$3,'active') RETURNING id", user, "sk-fixture-"+suffix, groupID).Scan(&keyID))
 				require.NoError(t, db.QueryRowContext(ctx, "INSERT INTO accounts(name,platform,type,status,schedulable,concurrency) VALUES($1,$2,'apikey','active',true,5) RETURNING id", "video-"+suffix, platform).Scan(&accountID))
 				_, err := db.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", accountID, groupID)
 				require.NoError(t, err)
-				group := &service.Group{ID: groupID, Platform: platform, RateMultiplier: 1, AllowImageGeneration: true}
+				group := &service.Group{ID: groupID, Platform: platform, RateMultiplier: 0.12, AllowImageGeneration: true}
 				key := &service.APIKey{ID: keyID, UserID: user, GroupID: &groupID, Key: "sk-fixture-" + suffix}
 				accountRepo := repository.NewAccountRepository(client, db, nil)
 				credentials := map[string]any{"api_key": "original-video-key", "base_url": provider.URL, "openai_capabilities": []string{"seedance"}}
@@ -175,14 +176,20 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 					taskID, path, operation = "seedance:task", "/v1/contents/generations/tasks/task", service.SeedanceEndpointStatus
 				}
 				require.NoError(t, ledger.InstallPrice(ctx, db, price))
+				template := price
+				price, err = ledger.DeriveVideoPrice(template, big.NewRat(12, 100))
+				require.NoError(t, err)
+				require.NoError(t, ledger.InstallPrice(ctx, db, price))
 				maximum, err := price.VideoMaximum(price.Video.VideoRequest)
 				require.NoError(t, err)
-				primary, holds, verify := repository.NewRegionalFundsAuthorities(db, func(context.Context, *sql.Tx) error { return nil })
+				primary, holds, verify := repository.NewRegionalFundsAuthorities(db, func(context.Context, *sql.Tx) error { return nil }, template)
 				var now time.Time
 				require.NoError(t, db.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now))
 				now = now.UTC().Truncate(time.Microsecond)
 				grant := regional.Lease{SchemaVersion: regional.SchemaVersion, LeaseID: "router-video-grant-" + uuid.NewString(), RegionID: "us", UserID: user, Granted: 8_000_000_000, IssuedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour)}
 				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				grant.VideoPriceVersions = []string{price.Version()}
+				grant.GroupID = group.ID
 				grant.AccountGranted = 40_000_000_000
 				r := ledger.Reservation{RequestID: requestID, LeaseID: grant.LeaseID, RegionID: grant.RegionID, UserID: user, Maximum: maximum, PayloadSHA256: strings.Repeat("a", 64), AdmittedAt: now}
 				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
@@ -192,7 +199,7 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 				var local *ledger.Local
 				if mode == "regional" {
 					require.NoError(t, primary.Issue(ctx, grant))
-					local = &ledger.Local{DB: db, Region: grant.RegionID}
+					local = &ledger.Local{DB: db, Region: grant.RegionID, ValidateAdmission: repository.VerifyRegionalSalePolicy}
 					require.NoError(t, local.Install(ctx, grant))
 					requests = local
 				} else {
@@ -283,9 +290,12 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 					{"batch", `,"n":2`, http.StatusServiceUnavailable},
 					{"ambiguous_model", `,"model":"` + price.Model + `"`, http.StatusServiceUnavailable},
 				} {
+					if scenario.name == "unsupported_video_multiplier" && providerName != "grok" {
+						continue // Independent video rates do not price MiniMax-H3 or Seedance.
+					}
 					t.Run(scenario.name, func(t *testing.T) {
 						sends.Store(0)
-						group.RateMultiplier = 1
+						group.RateMultiplier = 0.12
 						group.VideoRateIndependent = false
 						group.VideoRateMultiplier = 1
 						if scenario.name == "unsupported_multiplier" {
@@ -323,10 +333,10 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 				paused.Store(false)
 				group.BlockSubagents = false
 				group.ModelAllowlist = service.GroupModelAllowlist{}
-				group.RateMultiplier = 1
+				group.RateMultiplier = 0.12
 				group.VideoRateIndependent = false
 				group.VideoRateMultiplier = 1
-				_, err = db.ExecContext(ctx, "UPDATE groups SET rate_multiplier=1, video_rate_independent=false, video_rate_multiplier=1 WHERE id=$1", group.ID)
+				_, err = db.ExecContext(ctx, "UPDATE groups SET rate_multiplier=0.12, video_rate_independent=false, video_rate_multiplier=1 WHERE id=$1", group.ID)
 				require.NoError(t, err)
 				created := create(createBody, key.Key, "")
 				require.Equal(t, http.StatusOK, created.Code, created.Body.String())
@@ -375,7 +385,7 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 				if providerName == "seedance" {
 					usage.CompletionTokens = 12345
 				}
-				_, wantCharge, err := price.VideoCosts(usage)
+				wantBase, wantCharge, err := price.VideoCosts(usage)
 				require.NoError(t, err)
 				require.Equal(t, wantCharge, record.Event.Usage.Charge)
 				if local != nil {
@@ -387,7 +397,7 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 					_, restarted, _ := repository.NewRegionalFundsAuthorities(db, func(context.Context, *sql.Tx) error { return nil })
 					wrapped.VideoTaskLedger = restarted
 				}
-				baseUSD, err := ledger.USD(wantCharge * 10) // this fixture freezes a 1/10 sale contract.
+				baseUSD, err := ledger.USD(wantBase)
 				require.NoError(t, err)
 				var accountExact bool
 				require.NoError(t, db.QueryRowContext(ctx, `SELECT (extra->>'quota_used')::numeric=$2::numeric FROM accounts WHERE id=$1`, account.ID, baseUSD).Scan(&accountExact))

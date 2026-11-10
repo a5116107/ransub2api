@@ -5,11 +5,39 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"math/big"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPricingDerivedVideoContractIsExactAndImmutable(t *testing.T) {
+	template := videoPrice()
+	original := template.Version()
+	price, err := DeriveVideoPrice(template, big.NewRat(12, 100))
+	require.NoError(t, err)
+	require.Equal(t, original, template.Version(), "derivation must not mutate the shared template")
+	require.Equal(t, original, price.Video.TemplateVersion)
+	require.EqualValues(t, 3, price.Video.SaleNumerator)
+	require.EqualValues(t, 250, price.Video.SaleDenominator)
+	maximum, err := price.VideoMaximum(price.Video.VideoRequest)
+	require.NoError(t, err)
+	require.EqualValues(t, 240_000, maximum)
+	_, err = DeriveVideoPrice(price, big.NewRat(1, 1))
+	require.Error(t, err, "a derived contract must not compound a policy twice")
+	for _, rate := range []*big.Rat{nil, big.NewRat(-1, 1), new(big.Rat).SetInt(new(big.Int).Lsh(big.NewInt(1), 100))} {
+		_, err := DeriveVideoPrice(template, rate)
+		require.Error(t, err)
+	}
+	free, err := DeriveVideoPrice(template, big.NewRat(0, 1))
+	require.NoError(t, err)
+	require.EqualValues(t, 0, free.Video.SaleNumerator)
+	require.EqualValues(t, 1, free.Video.SaleDenominator)
+	unit, err := DeriveVideoPrice(template, big.NewRat(1, 1))
+	require.NoError(t, err)
+	require.NotEqual(t, original, unit.Version(), "even unit-derived contracts retain explicit provenance")
+}
 
 func TestPricingVideoContracts(t *testing.T) {
 	for _, raw := range []string{

@@ -323,9 +323,7 @@ func TestRegionalVideoFundsGateAllowsOnlyOriginalFundedQueries(t *testing.T) {
 		for _, scenario := range []string{"allowed", "missing_task", "sql_unavailable", "wrong_group", "wrong_user", "changed_route", "settlement_unavailable"} {
 			t.Run(route.provider+route.method+route.path+"/"+scenario, func(t *testing.T) {
 				cfg := &config.Config{RunMode: config.RunModeStandard, Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalFundsFile: "fixture"}, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
-				// Coordinated video creation is currently certified only for the
-				// immutable unit sale multiplier; keep the fixture on that path so
-				// the readiness assertion exercises the funds gate itself.
+				// Existing queries keep their original price while new admission is paused.
 				group := &service.Group{ID: 3, Platform: route.platform, RateMultiplier: 1}
 				account := service.Account{ID: 4, Platform: route.platform, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 5, GroupIDs: []int64{group.ID}, Credentials: map[string]any{"api_key": "original-key", "base_url": "https://video.example", "openai_capabilities": []string{"seedance"}}}
 				owner := video.Owner{UserID: 1, APIKeyID: 2, GroupID: group.ID, AccountID: account.ID, Provider: route.provider, RouteFingerprint: service.AccountRouteFingerprint(&account)}

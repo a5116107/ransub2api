@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func ensureRegionalFunds(ctx context.Context, db *sql.DB, broker *control.Broker, region string, target RegionalFundsTarget, lifetime time.Duration) error {
+func ensureRegionalFunds(ctx context.Context, db *sql.DB, broker *control.Broker, region string, target RegionalFundsTarget, lifetime time.Duration, templates ...ledger.Price) error {
 	if lifetime < 30*time.Second || lifetime > time.Hour {
 		return errors.New("invalid funds lease lifetime")
 	}
@@ -45,6 +45,17 @@ func ensureRegionalFunds(ctx context.Context, db *sql.DB, broker *control.Broker
 		return err
 	}
 	lease := regional.Lease{SchemaVersion: regional.SchemaVersion, LeaseID: uuid.NewString(), RegionID: region, UserID: target.UserID, APIKeyID: target.APIKeyID, AccountID: target.AccountID, BillingMode: target.BillingMode, Granted: target.Amount, AccountGranted: target.AccountAmount, IssuedAt: now.UTC().Truncate(time.Microsecond), ExpiresAt: now.Add(lifetime).UTC().Truncate(time.Microsecond)}
+	if len(templates) > 0 {
+		policy, err := readRegionalSalePolicy(ctx, tx, target.UserID, target.APIKeyID, target.AccountID)
+		if err != nil {
+			return err
+		}
+		lease.GroupID = policy.group.ID
+		lease.VideoPriceVersions, err = policy.grantPrices(ctx, tx, templates)
+		if err != nil {
+			return err
+		}
+	}
 	raw, err := json.Marshal(lease)
 	if err != nil {
 		return err

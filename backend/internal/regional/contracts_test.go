@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -138,7 +140,7 @@ func TestLeaseAccountBudgetIsIndependentAndWireStable(t *testing.T) {
 		if err := json.Unmarshal(raw, &restored); err != nil {
 			t.Fatal(err)
 		}
-		if restored != l || restored.AccountBudget() != l.AccountBudget() {
+		if !reflect.DeepEqual(restored, l) || restored.AccountBudget() != l.AccountBudget() {
 			t.Fatal("wire transport changed an immutable independent budget")
 		}
 		if ceiling != 0 && l.AccountBudget() != ceiling {
@@ -148,6 +150,33 @@ func TestLeaseAccountBudgetIsIndependentAndWireStable(t *testing.T) {
 	l.AccountGranted = -10
 	if err := l.Validate(); err == nil {
 		t.Fatal("negative account ceiling accepted")
+	}
+}
+
+func TestLeaseVideoVersionsAreBoundedCanonicalAndScoped(t *testing.T) {
+	l, _ := leaseFixture()
+	l.GroupID = 4
+	l.VideoPriceVersions = []string{strings.Repeat("a", 64), strings.Repeat("b", 64)}
+	if err := l.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !l.AllowsVideoPrice(l.VideoPriceVersions[0]) || l.AllowsVideoPrice(strings.Repeat("c", 64)) {
+		t.Fatal("grant did not enforce its exact authorized versions")
+	}
+	for _, versions := range [][]string{{"invalid"}, {strings.Repeat("A", 64)}, {l.VideoPriceVersions[1], l.VideoPriceVersions[0]}, {l.VideoPriceVersions[0], l.VideoPriceVersions[0]}, make([]string, 129)} {
+		bad := l
+		bad.VideoPriceVersions = versions
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("invalid versions accepted: %v", versions)
+		}
+	}
+	l.GroupID = 0
+	if err := l.Validate(); err == nil {
+		t.Fatal("video versions without a funding group accepted")
+	}
+	l.VideoPriceVersions = nil
+	if err := l.Validate(); err != nil || l.AllowsVideoPrice(strings.Repeat("a", 64)) {
+		t.Fatal("legacy text grant must not grant video permission", err)
 	}
 }
 func TestUsageRejectsInvalidChargeAndLease(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/regional"
@@ -24,11 +25,15 @@ func primaryLease(ctx context.Context, tx *sql.Tx, id string) (regional.Lease, r
 	l := regional.Lease{SchemaVersion: regional.SchemaVersion}
 	var spent regional.Amount
 	var state string
-	err := tx.QueryRowContext(ctx, `SELECT lease_id,region_id,user_id,granted,spent,issued_at,expires_at,state,api_key_id,account_id,billing_mode,account_granted FROM regional_quota_leases WHERE lease_id=$1 FOR UPDATE`, id).Scan(&l.LeaseID, &l.RegionID, &l.UserID, &l.Granted, &spent, &l.IssuedAt, &l.ExpiresAt, &state, &l.APIKeyID, &l.AccountID, &l.BillingMode, &l.AccountGranted)
+	var versions []byte
+	err := tx.QueryRowContext(ctx, `SELECT lease_id,region_id,user_id,granted,spent,issued_at,expires_at,state,api_key_id,account_id,billing_mode,account_granted,video_price_versions,group_id FROM regional_quota_leases WHERE lease_id=$1 FOR UPDATE`, id).Scan(&l.LeaseID, &l.RegionID, &l.UserID, &l.Granted, &spent, &l.IssuedAt, &l.ExpiresAt, &state, &l.APIKeyID, &l.AccountID, &l.BillingMode, &l.AccountGranted, &versions, &l.GroupID)
+	if err == nil {
+		err = json.Unmarshal(versions, &l.VideoPriceVersions)
+	}
 	return l, spent, state, err
 }
 func sameLease(a, b regional.Lease) bool {
-	return a.BillingMode == b.BillingMode && a.APIKeyID == b.APIKeyID && a.AccountID == b.AccountID && a.SchemaVersion == b.SchemaVersion && a.LeaseID == b.LeaseID && a.RegionID == b.RegionID && a.UserID == b.UserID && a.Granted == b.Granted && a.AccountGranted == b.AccountGranted && a.IssuedAt.Equal(b.IssuedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
+	return a.GroupID == b.GroupID && a.BillingMode == b.BillingMode && a.APIKeyID == b.APIKeyID && a.AccountID == b.AccountID && a.SchemaVersion == b.SchemaVersion && a.LeaseID == b.LeaseID && a.RegionID == b.RegionID && a.UserID == b.UserID && a.Granted == b.Granted && a.AccountGranted == b.AccountGranted && a.IssuedAt.Equal(b.IssuedAt) && a.ExpiresAt.Equal(b.ExpiresAt) && slices.Equal(a.VideoPriceVersions, b.VideoPriceVersions)
 }
 func (p *Primary) Issue(ctx context.Context, l regional.Lease) error {
 	if err := l.Validate(); err != nil {
@@ -106,7 +111,15 @@ func (p *Primary) Issue(ctx context.Context, l regional.Lease) error {
 	} else if l.APIKeyID != 0 || l.AccountID != 0 {
 		return errors.New("quota scope required")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO regional_quota_leases(lease_id,region_id,user_id,granted,issued_at,expires_at,api_key_id,account_id,billing_mode,account_granted) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, l.LeaseID, l.RegionID, l.UserID, int64(l.Granted), l.IssuedAt, l.ExpiresAt, l.APIKeyID, l.AccountID, l.BillingMode, int64(l.AccountGranted))
+	versions := l.VideoPriceVersions
+	if versions == nil {
+		versions = []string{}
+	}
+	rawVersions, err := json.Marshal(versions)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO regional_quota_leases(lease_id,region_id,user_id,granted,issued_at,expires_at,api_key_id,account_id,billing_mode,account_granted,video_price_versions,group_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, l.LeaseID, l.RegionID, l.UserID, int64(l.Granted), l.IssuedAt, l.ExpiresAt, l.APIKeyID, l.AccountID, l.BillingMode, int64(l.AccountGranted), string(rawVersions), l.GroupID)
 	if err != nil {
 		return err
 	}
