@@ -1487,3 +1487,13 @@
 - `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^TestGatewayCacheSuite$/^TestMiniMaxH3SaleSnapshotSharedAcrossGatewayInstances$' -count=1 -v -timeout=8m`退出0，repository `7.706s`；隔离PostgreSQL/Redis容器、两个独立网关实例验证付费/免费/旧快照、用户隔离、24小时TTL与畸形记录，不代表生产部署。测试容器已由夹具正常终止。
 - `go vet -p 1 -tags 'unit integration' ./internal/service ./internal/handler ./internal/repository`退出0；相同三包使用`bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners`退出0、`0 issues.`，未豁免规则。
 - 快照沿既有Redis记录保留24小时，丢失/过期时不恢复报价；新旧实例混用会导致旧版本不执行倍率快照，升级/回滚须协调并排空任务。此修复未实现区域账本视频预留/终态结算，原节点资金门开启时查询仍503；不改变28项总数，也不代表已推送、部署或线上验证。
+
+## 2026-11-10：D2 Web Search独立出站共享Key准入
+
+- 基线`b78d192`的Brave/Tavily模拟搜索绕过`HTTPUpstream`：新增`TestWebSearchEmulationRequiresSharedKeyAuthorityBeforeOutbound`在启用共享策略、缺失权威时实际连接本机代理1次，测试退出1。Brave的Key位于`X-Subscription-Token`，Tavily位于JSON `api_key`，不能只扫描通用Authorization。另一个反例`TestGatewaySharedKeyAdmissionFailureRemainsLocal503`证明Anthropic/Gemini共用错误处理把本地共享额度503映射成上游502，4个普通/流式子例失败。
+- 搜索管理器在每次供应商调用前以所选配置Key取得既有共享额度权威，用户请求及管理测试复用；启动与配置热更新均在发布管理器前注入，缺失权威失败关闭。不新增密钥存储，受限请求拒绝含空白或控制字符的歧义Key；没有共享策略时保留原客户端行为。响应体结束并关闭后释放，受限客户端副本不跟随重定向。预发送本地拒绝回滚搜索配额并可选其他搜索供应商，不切大模型账号、不伪记供应商故障；发送后租约丢失则保留可能已发生的供应商配额、不自动重放。
+- `go test -race -p 1 -tags unit ./internal/pkg/websearch ./internal/service ./internal/handler ./internal/handler/admin ./internal/repository -run '^Test(WebSearch|Manager|Brave|Tavily|GatewaySharedKeyAdmissionFailureRemainsLocal503|StreamWrittenGuard|UpstreamKeyRealRedisAtomicCompetition|UpstreamKey|AstraSharedUpstreamKey|AccountManagementCapabilities)' -count=1 -timeout=12m`退出0，五包分别`2.083s/1.214s/1.148s/1.154s/32.035s`；真实Redis验证相同Key与普通请求竞争、释放后恢复；模拟供应商覆盖Brave头、Tavily正文、用户/管理请求、响应体持有、取消及不重定向。
+- `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^TestRegionalWebSearchSharesKeyAuthority$' -count=1 -v -timeout=8m`退出0、`10.721s`；隔离PostgreSQL/Redis分别验证primary/regional授权同一Key满额不发送、释放后恢复。容器正常终止；这不是完整线上拓扑验证。
+- 随后将竞争夹具加强为实际`BeginUpstreamKeyRequest` HTTP准入持槽，而不是仅直接调用额度接口；`go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^Test(RegionalWebSearchSharesKeyAuthority|UpstreamKeyRealRedisAtomicCompetition)$' -count=1 -v -timeout=10m`退出0、`9.831s`，primary/regional与本机真实Redis三种权威均通过；受该测试修改影响的repository vet及完整规则lint重跑退出0、`0 issues.`。
+- 六包`go vet -p 1 -tags 'unit integration'`退出0；`bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners`六包最终退出0、`0 issues.`。首轮lint对测试响应flush报告1项errcheck，修正后完整重跑；七包默认标签编译退出0，仅证明编译。
+- 本项不意味着全部自定义头、Cookie和独立出站已受控；视频资金门、D2其余范围及28项原分母不变。未执行CI、推送、部署或生产迁移。

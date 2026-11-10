@@ -5,6 +5,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -154,6 +157,97 @@ var webSearchToolBody = []byte(`{"tools":[{"type":"web_search"}],"messages":[{"r
 
 // nonWebSearchToolBody is a request body without web_search tool.
 var nonWebSearchToolBody = []byte(`{"tools":[{"type":"text_editor"}],"messages":[{"role":"user","content":"test"}]}`)
+
+func TestWebSearchEmulationRequiresSharedKeyAuthorityBeforeOutbound(t *testing.T) {
+	var sends atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sends.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	previous := getWebSearchManager()
+	SetWebSearchManager(websearch.NewManager([]websearch.ProviderConfig{{Type: "brave", APIKey: "fixture-key", ProxyURL: proxy.URL}}, nil))
+	t.Cleanup(func() { SetWebSearchManager(previous) })
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	s := &GatewayService{cfg: cfg}
+	parsed := &ParsedRequest{Body: NewRequestBodyRef(webSearchToolBody), Model: "fixture-model"}
+	_, err := s.handleWebSearchEmulation(t.Context(), nil, &Account{ID: 1}, parsed)
+	require.Zero(t, sends.Load(), "a configured shared-Key policy must be checked before the proxy is contacted")
+	require.True(t, IsUpstreamKeyAdmissionFailure(err), "local admission failure must retain its classification")
+}
+
+type webSearchKeyAuthorityStub struct {
+	HTTPUpstream
+	fingerprints []string
+	attempts     int
+}
+
+func (s *webSearchKeyAuthorityStub) AcquireUpstreamKeySlots(ctx context.Context, fingerprints []string) (context.Context, func(), error) {
+	s.attempts++
+	s.fingerprints = append([]string(nil), fingerprints...)
+	return ctx, nil, ErrUpstreamKeyCapacity
+}
+
+func TestWebSearchKeyAuthorityUsesRealProviderCredential(t *testing.T) {
+	for _, mode := range []string{"static", "regional", "scheduler"} {
+		for _, provider := range []string{websearch.ProviderTypeBrave, websearch.ProviderTypeTavily} {
+			t.Run(mode+"/"+provider, func(t *testing.T) {
+				var sends atomic.Int32
+				proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					sends.Add(1)
+					w.WriteHeader(http.StatusBadGateway)
+				}))
+				t.Cleanup(proxy.Close)
+				cfg := &config.Config{}
+				switch mode {
+				case "static":
+					cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+				case "regional":
+					cfg.Runtime.RegionalConcurrencyFile = "fixture"
+				case "scheduler":
+					cfg.Runtime.RegionalSchedulerFile = "fixture"
+				}
+				authority := &webSearchKeyAuthorityStub{}
+				gateway := &OpenAIGatewayService{httpUpstream: authority}
+				manager := websearch.NewManager([]websearch.ProviderConfig{{Type: provider, APIKey: "fixture-key", ProxyURL: proxy.URL}}, nil)
+				gateway.ConfigureWebSearchKeyAdmission(manager, cfg)
+				require.True(t, manager.HasKeyAdmission())
+				previous := getWebSearchManager()
+				SetWebSearchManager(manager)
+				t.Cleanup(func() { SetWebSearchManager(previous) })
+				svc := &GatewayService{cfg: cfg}
+				parsed := &ParsedRequest{Body: NewRequestBodyRef(webSearchToolBody), Model: "fixture"}
+				_, err := svc.handleWebSearchEmulation(t.Context(), nil, &Account{ID: 1}, parsed)
+				require.True(t, IsUpstreamKeyAdmissionFailure(err))
+				var failure *UpstreamFailoverError
+				require.ErrorAs(t, err, &failure)
+				require.False(t, failure.ShouldRetryNextAccount(), "global search keys cannot be repaired by switching LLM accounts")
+				require.Equal(t, []string{config.UpstreamKeyFingerprint("fixture-key")}, authority.fingerprints)
+				_, err = (&SettingService{cfg: cfg}).TestWebSearch(t.Context(), "fixture")
+				require.ErrorIs(t, err, ErrUpstreamKeyCapacity)
+				require.Equal(t, 2, authority.attempts)
+				require.Zero(t, sends.Load())
+			})
+		}
+	}
+}
+
+func TestWebSearchKeyAuthorityRejectsAmbiguousCredential(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	for _, key := range []string{"  fixture", "fixture ", "fix ture", "fix\tture"} {
+		t.Run(key, func(t *testing.T) {
+			authority := &webSearchKeyAuthorityStub{}
+			gateway := &OpenAIGatewayService{httpUpstream: authority}
+			manager := websearch.NewManager([]websearch.ProviderConfig{{Type: websearch.ProviderTypeTavily, APIKey: key}}, nil)
+			gateway.ConfigureWebSearchKeyAdmission(manager, cfg)
+			_, _, err := manager.TestSearch(t.Context(), websearch.SearchRequest{Query: "fixture"})
+			require.ErrorIs(t, err, ErrUpstreamKeyPolicy)
+			require.Zero(t, authority.attempts)
+		})
+	}
+}
 
 // newAnthropicAPIKeyAccount creates a test Account with the given web search emulation mode.
 func newAnthropicAPIKeyAccount(mode string) *Account {

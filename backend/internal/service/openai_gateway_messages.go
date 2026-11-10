@@ -82,7 +82,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 	// 请求在此直接调用搜索 API 构造 Anthropic 响应，不访问上游。
 	if groupID := getOpenAIGroupIDFromContext(c); shouldEmulateWebSearchFor(ctx, s.settingService, s.channelService, account, &groupID, body) {
 		stream := gjson.GetBytes(body, "stream").Bool()
-		res, err := writeEmulatedWebSearch(ctx, c, account, body, gjson.GetBytes(body, "model").String(), stream)
+		res, err := writeEmulatedWebSearch(ctx, c, account, body, gjson.GetBytes(body, "model").String(), stream, upstreamKeyAdmissionRequired(s.cfg))
 		if err != nil {
 			return nil, err
 		}

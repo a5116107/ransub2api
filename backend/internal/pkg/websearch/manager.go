@@ -34,6 +34,8 @@ type ProviderConfig struct {
 type Manager struct {
 	configs []ProviderConfig
 	redis   *redis.Client
+	// Set before publishing the manager; active searches only read it.
+	keyAdmission KeyAdmission
 
 	clientMu    sync.Mutex
 	clientCache map[string]*http.Client
@@ -57,6 +59,23 @@ const (
 // ErrProxyUnavailable indicates the search failed due to a proxy connectivity issue.
 // Callers may use this to trigger account switching instead of direct fallback.
 var ErrProxyUnavailable = errors.New("websearch: proxy unavailable")
+
+// KeyAdmission reserves the existing shared-Key authority for one search.
+// The key is exactly the configured credential used by the selected provider.
+// A nil release means the authority has no limit for this credential.
+type KeyAdmission func(context.Context, string) (context.Context, func(), error)
+
+type keyAdmissionError struct {
+	cause     error
+	afterSend bool
+}
+
+func (e *keyAdmissionError) Error() string { return "websearch: shared-key admission unavailable" }
+func (e *keyAdmissionError) Unwrap() error { return e.cause }
+
+// SetKeyAdmission must be called before the manager is published to callers.
+func (m *Manager) SetKeyAdmission(admit KeyAdmission) { m.keyAdmission = admit }
+func (m *Manager) HasKeyAdmission() bool              { return m != nil && m.keyAdmission != nil }
 
 // quotaIncrScript atomically increments the counter and sets TTL on first creation.
 var quotaIncrScript = redis.NewScript(`
@@ -98,6 +117,7 @@ func (m *Manager) SearchWithBestProvider(ctx context.Context, req SearchRequest)
 	}
 
 	selected := m.selectByQuotaWeight(ctx, candidates)
+	var admissionErr error
 
 	for _, cfg := range selected {
 		allowed, incremented := m.tryReserveQuota(ctx, cfg)
@@ -106,8 +126,20 @@ func (m *Manager) SearchWithBestProvider(ctx context.Context, req SearchRequest)
 		}
 		resp, err := m.executeSearch(ctx, cfg, req)
 		if err != nil {
+			var local *keyAdmissionError
+			if errors.As(err, &local) && local.afterSend {
+				// The provider may already have billed this search. Never replay it.
+				return nil, "", err
+			}
 			if incremented {
 				m.rollbackQuota(ctx, cfg)
+			}
+			if ctx.Err() != nil {
+				return nil, "", ctx.Err()
+			}
+			if local != nil {
+				admissionErr = err
+				continue
 			}
 			if isProxyError(err) {
 				m.markProxyUnavailable(ctx, cfg, req.ProxyURL)
@@ -129,6 +161,9 @@ func (m *Manager) SearchWithBestProvider(ctx context.Context, req SearchRequest)
 			continue
 		}
 		return resp, cfg.Type, nil
+	}
+	if admissionErr != nil {
+		return nil, "", admissionErr
 	}
 	return nil, "", fmt.Errorf("websearch: no available provider (all exhausted or failed)")
 }
@@ -355,15 +390,29 @@ func (m *Manager) TestSearch(ctx context.Context, req SearchRequest) (*SearchRes
 	if strings.TrimSpace(req.Query) == "" {
 		return nil, "", fmt.Errorf("websearch: empty search query")
 	}
+	var admissionErr error
 	for _, cfg := range m.configs {
 		if !m.isProviderAvailable(cfg) {
 			continue
 		}
 		resp, err := m.executeSearch(ctx, cfg, req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, "", ctx.Err()
+			}
+			var local *keyAdmissionError
+			if errors.As(err, &local) {
+				if local.afterSend {
+					return nil, "", err
+				}
+				admissionErr = err
+			}
 			continue
 		}
 		return resp, cfg.Type, nil
+	}
+	if admissionErr != nil {
+		return nil, "", admissionErr
 	}
 	return nil, "", fmt.Errorf("websearch: no available provider")
 }
@@ -376,6 +425,37 @@ func (m *Manager) executeSearch(ctx context.Context, cfg ProviderConfig, req Sea
 	client, err := m.getOrCreateHTTPClient(proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("websearch: %w", err)
+	}
+	if m.keyAdmission != nil {
+		bound, release, admissionErr := m.keyAdmission(ctx, cfg.APIKey)
+		if admissionErr != nil {
+			if release != nil {
+				release()
+			}
+			return nil, &keyAdmissionError{cause: admissionErr}
+		}
+		if bound == nil {
+			if release != nil {
+				release()
+			}
+			return nil, &keyAdmissionError{cause: errors.New("missing shared-key context")}
+		}
+		if release != nil {
+			defer release()
+		}
+		if cause := context.Cause(bound); cause != nil {
+			return nil, &keyAdmissionError{cause: cause}
+		}
+		// A redirect can send the key to a different endpoint and outlive its
+		// admitted identity. Do not mutate the shared cached client.
+		copy := *client
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		provider := m.buildProvider(cfg, &copy)
+		result, searchErr := provider.Search(bound, req)
+		if cause := context.Cause(bound); cause != nil {
+			return nil, &keyAdmissionError{cause: cause, afterSend: true}
+		}
+		return result, searchErr
 	}
 	provider := m.buildProvider(cfg, client)
 	return provider.Search(ctx, req)

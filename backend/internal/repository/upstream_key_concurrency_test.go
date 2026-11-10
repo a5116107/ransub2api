@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
@@ -426,6 +428,52 @@ func TestUpstreamKeyRealRedisAtomicCompetition(t *testing.T) {
 	bedrockClient := redis.NewClient(&redis.Options{Addr: address, DB: 6})
 	t.Cleanup(func() { require.NoError(t, bedrockClient.Close()) })
 	testBedrockSignedHTTPSharesKeyCapacity(t, bedrockClient)
+	searchClient := redis.NewClient(&redis.Options{Addr: address, DB: 7})
+	t.Cleanup(func() { require.NoError(t, searchClient.Close()) })
+	testWebSearchSharesKeyCapacity(t, searchClient)
+}
+
+func testWebSearchSharesKeyCapacity(t *testing.T, client *redis.Client) {
+	t.Helper()
+	cfg := upstreamKeyTestConfig(1, 1)
+	testWebSearchCompetitionWithAuthority(t, cfg, newHTTPUpstream(cfg, nil, client, nil))
+}
+
+func testWebSearchCompetitionWithAuthority(t *testing.T, cfg *config.Config, upstream service.HTTPUpstream) {
+	t.Helper()
+	var sends atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sends.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	authority, ok := upstream.(service.UpstreamKeyConcurrency)
+	require.True(t, ok)
+	gateway := service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Config: cfg, Upstream: upstream})
+	t.Cleanup(gateway.StopAsyncVideoKeyReleaseRecovery)
+	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+	m := websearch.NewManager([]websearch.ProviderConfig{{Type: websearch.ProviderTypeBrave, APIKey: "supplier-fixture", ProxyURL: proxy.URL}}, nil)
+	gateway.ConfigureWebSearchKeyAdmission(m, cfg)
+	fingerprint := config.UpstreamKeyFingerprint("supplier-fixture")
+	httpRequest, err := http.NewRequestWithContext(t.Context(), http.MethodPost, proxy.URL, strings.NewReader("{}"))
+	require.NoError(t, err)
+	httpRequest.Header.Set("Authorization", "Bearer supplier-fixture")
+	admission, ok := upstream.(service.UpstreamKeyRequestAdmission)
+	require.True(t, ok)
+	_, finish, err := admission.BeginUpstreamKeyRequest(httpRequest)
+	require.NoError(t, err)
+	require.NotNil(t, finish)
+	_, _, err = m.SearchWithBestProvider(t.Context(), websearch.SearchRequest{Query: "fixture"})
+	require.ErrorIs(t, err, service.ErrUpstreamKeyCapacity)
+	require.Zero(t, sends.Load(), "the normal HTTP key lease must also block independent search")
+	finish(nil, errors.New("fixture HTTP request ended"))
+	_, _, err = m.SearchWithBestProvider(t.Context(), websearch.SearchRequest{Query: "fixture"})
+	require.Error(t, err, "the mock proxy rejects the now-admitted request")
+	require.EqualValues(t, 1, sends.Load())
+	_, release, err := authority.AcquireUpstreamKeySlots(t.Context(), []string{fingerprint})
+	require.NoError(t, err, "search failure must release its exact shared member")
+	require.NotNil(t, release)
+	release()
 }
 
 func testUpstreamKeyCompetition(t *testing.T, client *redis.Client) {

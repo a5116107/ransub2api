@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
@@ -26,6 +27,16 @@ const (
 	defaultGrokWebSearchResults = 5
 	maxGrokWebSearchResults     = 20
 )
+
+// ConfigureWebSearchKeyAdmission is called before publishing each rebuilt
+// manager, so both gateway requests and administrative tests use one authority.
+func (h *OpenAIGatewayHandler) ConfigureWebSearchKeyAdmission(m *websearch.Manager, cfg *config.Config) {
+	var gateway *service.OpenAIGatewayService
+	if h != nil {
+		gateway = h.gatewayService
+	}
+	gateway.ConfigureWebSearchKeyAdmission(m, cfg)
+}
 
 func (h *GatewayHandler) WebSearch(c *gin.Context) {
 	isXSearch := c.GetBool("grok_x_search_endpoint")

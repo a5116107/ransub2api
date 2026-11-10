@@ -3,14 +3,169 @@ package websearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+type webSearchRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f webSearchRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestManagerSharedKeyAdmissionCoversProvidersAndAdminTest(t *testing.T) {
+	for _, provider := range []string{ProviderTypeBrave, ProviderTypeTavily} {
+		for _, admin := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/admin=%t", provider, admin), func(t *testing.T) {
+				blocked := errors.New("capacity fixture")
+				var calls, released atomic.Int32
+				m := NewManager([]ProviderConfig{{Type: provider, APIKey: "same-fixture"}}, nil)
+				m.clientCache[""] = &http.Client{Transport: webSearchRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					calls.Add(1)
+					if provider == ProviderTypeBrave {
+						require.Equal(t, "same-fixture", r.Header.Get("X-Subscription-Token"))
+					} else {
+						var body map[string]any
+						require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+						require.Equal(t, "same-fixture", body["api_key"])
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"web":{"results":[]},"results":[]}`)), Request: r}, nil
+				})}
+				m.SetKeyAdmission(func(ctx context.Context, key string) (context.Context, func(), error) {
+					require.Equal(t, "same-fixture", key)
+					return ctx, nil, blocked
+				})
+				search := m.SearchWithBestProvider
+				if admin {
+					search = m.TestSearch
+				}
+				_, _, err := search(t.Context(), SearchRequest{Query: "fixture"})
+				require.ErrorIs(t, err, blocked)
+				require.Zero(t, calls.Load(), "a full shared key must not contact the provider")
+				m.SetKeyAdmission(func(ctx context.Context, key string) (context.Context, func(), error) {
+					require.Equal(t, "same-fixture", key)
+					return ctx, func() { released.Add(1) }, nil
+				})
+				_, got, err := search(t.Context(), SearchRequest{Query: "fixture"})
+				require.NoError(t, err)
+				require.Equal(t, provider, got)
+				require.EqualValues(t, 1, calls.Load())
+				require.EqualValues(t, 1, released.Load())
+			})
+		}
+	}
+}
+
+func TestManagerSharedKeyHeldUntilBodyEnds(t *testing.T) {
+	started, finish := make(chan struct{}), make(chan struct{})
+	var occupied atomic.Bool
+	var sends atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sends.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_ = http.NewResponseController(w).Flush()
+		close(started)
+		<-finish
+		_, _ = w.Write([]byte(`{"web":{"results":[]}}`))
+	}))
+	t.Cleanup(server.Close)
+	finishOnce := sync.OnceFunc(func() { close(finish) })
+	t.Cleanup(finishOnce)
+	old := *braveSearchURL
+	request, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	*braveSearchURL = *request.URL
+	t.Cleanup(func() { *braveSearchURL = old })
+	capacity := errors.New("capacity fixture")
+	m := NewManager([]ProviderConfig{{Type: ProviderTypeBrave, APIKey: "fixture"}}, nil)
+	m.clientCache[""] = server.Client()
+	m.SetKeyAdmission(func(ctx context.Context, _ string) (context.Context, func(), error) {
+		if !occupied.CompareAndSwap(false, true) {
+			return ctx, nil, capacity
+		}
+		return ctx, func() { occupied.Store(false) }, nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := m.SearchWithBestProvider(t.Context(), SearchRequest{Query: "one"})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("search did not reach the local server")
+	}
+	_, _, err = m.TestSearch(t.Context(), SearchRequest{Query: "two"})
+	require.ErrorIs(t, err, capacity)
+	require.EqualValues(t, 1, sends.Load())
+	finishOnce()
+	require.NoError(t, <-done)
+	require.False(t, occupied.Load())
+}
+
+func TestManagerSharedKeyLeaseLossDoesNotReplayOrRefundQuota(t *testing.T) {
+	server := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+	m := NewManager([]ProviderConfig{{Type: ProviderTypeBrave, APIKey: "fixture", QuotaLimit: 1}, {Type: ProviderTypeTavily, APIKey: "other"}}, rdb)
+	lost := errors.New("lease lost fixture")
+	var cancel context.CancelCauseFunc
+	var sends, releases atomic.Int32
+	m.SetKeyAdmission(func(ctx context.Context, _ string) (context.Context, func(), error) {
+		var bound context.Context
+		bound, cancel = context.WithCancelCause(ctx)
+		return bound, func() { releases.Add(1) }, nil
+	})
+	m.clientCache[""] = &http.Client{Transport: webSearchRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		sends.Add(1)
+		cancel(lost)
+		return nil, r.Context().Err()
+	})}
+	_, _, err := m.SearchWithBestProvider(t.Context(), SearchRequest{Query: "fixture"})
+	require.ErrorIs(t, err, lost)
+	require.EqualValues(t, 1, sends.Load(), "lost ownership after a send must not start a second provider")
+	require.EqualValues(t, 1, releases.Load())
+	usage, err := m.GetUsage(t.Context(), ProviderTypeBrave)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, usage, "a possibly billed search retains its provider quota")
+}
+
+func TestManagerSharedKeyRejectRollsBackQuotaAndPreventsRedirect(t *testing.T) {
+	server := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+	m := NewManager([]ProviderConfig{{Type: ProviderTypeBrave, APIKey: "fixture", QuotaLimit: 1}}, rdb)
+	blocked := errors.New("capacity fixture")
+	m.SetKeyAdmission(func(ctx context.Context, _ string) (context.Context, func(), error) { return ctx, nil, blocked })
+	_, _, err := m.SearchWithBestProvider(t.Context(), SearchRequest{Query: "fixture"})
+	require.ErrorIs(t, err, blocked)
+	usage, err := m.GetUsage(t.Context(), ProviderTypeBrave)
+	require.NoError(t, err)
+	require.Zero(t, usage, "a pre-send refusal rolls back the search quota")
+	var sends atomic.Int32
+	client := &http.Client{Transport: webSearchRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		sends.Add(1)
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {"https://different.example/"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})}
+	m.clientCache[""] = client
+	m.SetKeyAdmission(func(ctx context.Context, _ string) (context.Context, func(), error) { return ctx, func() {}, nil })
+	_, _, err = m.SearchWithBestProvider(t.Context(), SearchRequest{Query: "fixture"})
+	require.Error(t, err)
+	require.EqualValues(t, 1, sends.Load(), "a restricted request must not follow a redirect")
+	require.Nil(t, client.CheckRedirect, "the cached client must not be modified")
+}
 
 func TestNewManager_PreservesOrder(t *testing.T) {
 	configs := []ProviderConfig{

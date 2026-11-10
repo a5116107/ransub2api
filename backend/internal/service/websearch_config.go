@@ -276,10 +276,10 @@ type WebSearchTestResult struct {
 // Uses Manager.TestSearch which bypasses quota tracking.
 const testSearchTimeout = 15 * time.Second
 
-func TestWebSearch(ctx context.Context, query string) (*WebSearchTestResult, error) {
-	mgr := getWebSearchManager()
-	if mgr == nil {
-		return nil, fmt.Errorf("web search: manager not initialized, save config first")
+func (s *SettingService) TestWebSearch(ctx context.Context, query string) (*WebSearchTestResult, error) {
+	mgr, err := webSearchManagerForPolicy(upstreamKeyAdmissionRequired(s.cfg))
+	if err != nil {
+		return nil, err
 	}
 	testCtx, cancel := context.WithTimeout(ctx, testSearchTimeout)
 	defer cancel()

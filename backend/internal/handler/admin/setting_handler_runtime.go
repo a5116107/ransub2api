@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
@@ -545,8 +547,12 @@ func (h *SettingHandler) TestWebSearchEmulation(c *gin.Context) {
 		req.Query = "搜索今年世界大事件"
 	}
 
-	result, err := service.TestWebSearch(c.Request.Context(), req.Query)
+	result, err := h.settingService.TestWebSearch(c.Request.Context(), req.Query)
 	if err != nil {
+		if service.IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, service.ErrUpstreamKeyLease) {
+			response.Error(c, http.StatusServiceUnavailable, "Shared upstream Key capacity unavailable")
+			return
+		}
 		response.ErrorFrom(c, err)
 		return
 	}

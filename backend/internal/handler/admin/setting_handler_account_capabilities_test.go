@@ -4,13 +4,31 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWebSearchAdminMissingSharedKeyAuthorityReturns503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	manager := websearch.NewManager([]websearch.ProviderConfig{{Type: websearch.ProviderTypeBrave, APIKey: "fixture"}}, nil)
+	service.SetWebSearchManager(manager)
+	t.Cleanup(func() { service.SetWebSearchManager(nil) })
+	h := NewSettingHandler(service.NewSettingService(nil, cfg), nil, nil, nil, nil, nil, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/settings/web-search/test", strings.NewReader(`{"query":"fixture"}`))
+	h.TestWebSearchEmulation(c)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Contains(t, w.Body.String(), "Shared upstream Key capacity unavailable")
+}
 
 func TestAccountManagementCapabilitiesConcurrencyUpgrade(t *testing.T) {
 	gin.SetMode(gin.TestMode)

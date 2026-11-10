@@ -673,6 +673,26 @@ func TestRegionalUpstreamKeySharedLeaseDedupAndPartialRollback(t *testing.T) {
 	}
 }
 
+func TestRegionalWebSearchSharesKeyAuthority(t *testing.T) {
+	for _, mode := range []string{"primary", "regional"} {
+		t.Run(mode, func(t *testing.T) {
+			rdb := regionalKeyRedis(t)
+			cfg := upstreamKeyTestConfig(1, 1)
+			capacity := 0
+			if mode == "regional" {
+				capacity = 1
+			}
+			primary, local, _ := regionalKeyFixture(t, cfg, rdb, capacity)
+			cache := primary
+			if mode == "regional" {
+				cache = local
+			}
+			cfg.Runtime.RegionalConcurrencyFile = "fixture"
+			testWebSearchCompetitionWithAuthority(t, cfg, newHTTPUpstream(cfg, nil, rdb, cache))
+		})
+	}
+}
+
 func TestRegionalUpstreamKeyAdditiveMigrationAndNumericNamespace(t *testing.T) {
 	db := regionalKeyTestDB(t)
 	p := NewRegionalSlotAuthority(db)

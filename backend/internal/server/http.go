@@ -62,13 +62,13 @@ func ProvideRouter(
 	configureTrustedProxies(r, cfg.Server)
 
 	// Wire up websearch Manager builder so it initializes on startup and rebuilds on config save.
-	settingService.SetWebSearchManagerBuilder(context.Background(), func(cfg *service.WebSearchEmulationConfig, proxyURLs map[int64]string) {
-		if cfg == nil || !cfg.Enabled || len(cfg.Providers) == 0 {
+	settingService.SetWebSearchManagerBuilder(context.Background(), func(settings *service.WebSearchEmulationConfig, proxyURLs map[int64]string) {
+		if settings == nil || !settings.Enabled || len(settings.Providers) == 0 {
 			service.SetWebSearchManager(nil)
 			return
 		}
-		configs := make([]websearch.ProviderConfig, 0, len(cfg.Providers))
-		for _, p := range cfg.Providers {
+		configs := make([]websearch.ProviderConfig, 0, len(settings.Providers))
+		for _, p := range settings.Providers {
 			if p.APIKey == "" {
 				continue
 			}
@@ -94,7 +94,9 @@ func ProvideRouter(
 			}
 			configs = append(configs, pc)
 		}
-		service.SetWebSearchManager(websearch.NewManager(configs, redisClient))
+		manager := websearch.NewManager(configs, redisClient)
+		handlers.OpenAIGateway.ConfigureWebSearchKeyAdmission(manager, cfg)
+		service.SetWebSearchManager(manager)
 	})
 
 	manager, err := serverless.New(serverless.Runtime{ID: cfg.Runtime.ServerlessID, Endpoint: cfg.Runtime.ServerlessEndpoint, Region: cfg.Runtime.ServerlessRegion, Secret: cfg.Runtime.ServerlessSecret, Gateway: cfg.Runtime.Role == config.RuntimeRoleGateway, Version: settingService.ServerlessVersion()}, redisClient, settingService.ServerlessStore())

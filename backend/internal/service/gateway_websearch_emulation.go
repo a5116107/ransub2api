@@ -10,7 +10,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -45,6 +47,48 @@ func SetWebSearchManager(m *websearch.Manager) {
 
 func getWebSearchManager() *websearch.Manager {
 	return webSearchManagerPtr.Load()
+}
+
+// ConfigureWebSearchKeyAdmission wires both customer searches and admin tests
+// to the same shared authority. Call before the manager is published.
+func (s *OpenAIGatewayService) ConfigureWebSearchKeyAdmission(m *websearch.Manager, cfg *config.Config) {
+	if m == nil || !upstreamKeyAdmissionRequired(cfg) {
+		return
+	}
+	m.SetKeyAdmission(func(ctx context.Context, credential string) (context.Context, func(), error) {
+		if s == nil || s.httpUpstream == nil || credential == "" || len(credential) > 8192 || strings.IndexFunc(credential, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+			return ctx, nil, ErrUpstreamKeyPolicy
+		}
+		authority, ok := s.httpUpstream.(UpstreamKeyConcurrency)
+		if !ok {
+			return ctx, nil, ErrUpstreamKeyPolicy
+		}
+		bound, release, err := acquireVerifiedUpstreamKeySlots(ctx, authority, []string{config.UpstreamKeyFingerprint(credential)})
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx, release, ctx.Err()
+			}
+			if !errors.Is(err, ErrUpstreamKeyCapacity) && !errors.Is(err, ErrUpstreamKeyPolicy) {
+				return ctx, release, ErrUpstreamKeyPolicy
+			}
+			return ctx, release, err
+		}
+		if bound == nil {
+			return ctx, release, ErrUpstreamKeyPolicy
+		}
+		return bound, release, nil
+	})
+}
+
+func webSearchManagerForPolicy(required bool) (*websearch.Manager, error) {
+	mgr := getWebSearchManager()
+	if mgr == nil {
+		return nil, fmt.Errorf("web search emulation: manager not initialized")
+	}
+	if required && !mgr.HasKeyAdmission() {
+		return nil, ErrUpstreamKeyPolicy
+	}
+	return mgr, nil
 }
 
 // shouldEmulateWebSearch checks whether a request should be intercepted.
@@ -161,13 +205,13 @@ func (s *GatewayService) handleWebSearchEmulation(
 	if parsed.OnUpstreamAccepted != nil {
 		parsed.OnUpstreamAccepted()
 	}
-	return writeEmulatedWebSearch(ctx, c, account, parsed.Body.Bytes(), parsed.Model, parsed.Stream)
+	return writeEmulatedWebSearch(ctx, c, account, parsed.Body.Bytes(), parsed.Model, parsed.Stream, upstreamKeyAdmissionRequired(s.cfg))
 }
 
 // writeEmulatedWebSearch runs the search for the last user message and writes
 // an Anthropic Messages response (SSE when stream is true).
 func writeEmulatedWebSearch(
-	ctx context.Context, c *gin.Context, account *Account, body []byte, model string, stream bool,
+	ctx context.Context, c *gin.Context, account *Account, body []byte, model string, stream, requireKeyAdmission bool,
 ) (*ForwardResult, error) {
 	startTime := time.Now()
 
@@ -179,8 +223,13 @@ func writeEmulatedWebSearch(
 	slog.Info("web search emulation: executing search",
 		"account_id", account.ID, "account_name", account.Name, "query", query)
 
-	resp, providerName, err := doWebSearch(ctx, account, query)
+	resp, providerName, err := doWebSearch(ctx, account, query, requireKeyAdmission)
 	if err != nil {
+		if local := upstreamKeyAdmissionFailover(err); local != nil {
+			// Provider credentials are global, not properties of the selected LLM account.
+			local.NextAccountAction = NextAccountStop
+			return nil, local
+		}
 		// Proxy unavailable → trigger account switch via UpstreamFailoverError
 		if errors.Is(err, websearch.ErrProxyUnavailable) {
 			return nil, &UpstreamFailoverError{
@@ -204,11 +253,11 @@ func writeEmulatedWebSearch(
 	return writeWebSearchNonStreamResponse(c, query, resp, model, startTime)
 }
 
-func doWebSearch(ctx context.Context, account *Account, query string) (*websearch.SearchResponse, string, error) {
+func doWebSearch(ctx context.Context, account *Account, query string, requireKeyAdmission bool) (*websearch.SearchResponse, string, error) {
 	proxyURL := resolveAccountProxyURL(account)
-	mgr := getWebSearchManager()
-	if mgr == nil {
-		return nil, "", fmt.Errorf("web search emulation: manager not initialized")
+	mgr, err := webSearchManagerForPolicy(requireKeyAdmission)
+	if err != nil {
+		return nil, "", err
 	}
 	resp, providerName, err := mgr.SearchWithBestProvider(ctx, websearch.SearchRequest{
 		Query: query, MaxResults: webSearchDefaultMaxResults, ProxyURL: proxyURL,

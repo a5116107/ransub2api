@@ -1845,6 +1845,10 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
+	if failoverErr.Reason == service.UpstreamKeyAdmissionReason {
+		h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "server_error", string(service.UpstreamKeyAdmissionReason), "No shared upstream Key capacity is available", streamStarted)
+		return
+	}
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 	if service.IsOpenAISilentRefusalErrorBody(responseBody) {

@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,6 +16,30 @@ import (
 // partialMessageStartSSE 模拟 handleStreamingResponse 已写入的首批 SSE 事件。
 const partialMessageStartSSE = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-5\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n" +
 	"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+
+func TestGatewaySharedKeyAdmissionFailureRemainsLocal503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, streaming := range []bool{false, true} {
+		for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini} {
+			t.Run(platform+"/stream="+strconv.FormatBool(streaming), func(t *testing.T) {
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+				if streaming {
+					_, err := c.Writer.Write([]byte(": keepalive\n\n"))
+					require.NoError(t, err)
+				}
+				(&GatewayHandler{}).handleFailoverExhausted(c, &service.UpstreamFailoverError{StatusCode: 503, Reason: service.UpstreamKeyAdmissionReason}, platform, streaming)
+				if !streaming {
+					require.Equal(t, http.StatusServiceUnavailable, w.Code)
+				} else {
+					require.Equal(t, http.StatusOK, w.Code)
+				}
+				require.Contains(t, w.Body.String(), string(service.UpstreamKeyAdmissionReason))
+			})
+		}
+	}
+}
 
 // TestStreamWrittenGuard_MessagesPath_AbortFailoverOnSSEContentWritten 验证：
 // 当 Forward 在返回 UpstreamFailoverError 前已向客户端写入 SSE 内容时，
