@@ -2,12 +2,13 @@ package repository
 
 import (
 	"encoding/json"
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
-	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRegionalFundsConfigTargets(t *testing.T) {
@@ -22,6 +23,16 @@ func TestRegionalFundsConfigTargets(t *testing.T) {
 	got, err := readRegionalFundsConfig(path)
 	require.NoError(t, err)
 	require.Equal(t, base.Targets, got.Targets)
+	base.Targets[0].AccountAmount = 2_000_000_000
+	write(base)
+	got, err = readRegionalFundsConfig(path)
+	require.NoError(t, err)
+	require.Equal(t, base.Targets, got.Targets, "explicit account amount is independent of the sale grant")
+	base.Targets[0].AccountAmount = 1
+	write(base)
+	_, err = readRegionalFundsConfig(path)
+	require.Error(t, err, "both budgets must be exactly representable in the SQL monetary quantum")
+	base.Targets[0].AccountAmount = 2_000_000_000
 	base.Targets = append(base.Targets, base.Targets[0])
 	write(base)
 	_, err = readRegionalFundsConfig(path)

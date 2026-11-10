@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
+
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
-	"time"
 )
 
 // RegionalBudgetScope serializes against authoritative monetary rows. Existing
@@ -15,18 +16,22 @@ import (
 // asynchronous writers before this scope is installed.
 type RegionalBudgetScope struct{}
 
-func (s RegionalBudgetScope) Reserve(ctx context.Context, tx *sql.Tx, id string, user, key, account int64, maximum regional.Amount, admitted time.Time) error {
+func (s RegionalBudgetScope) Reserve(ctx context.Context, tx *sql.Tx, id string, user, key, account int64, maximum, accountMaximum regional.Amount, admitted time.Time) error {
 	amount, err := ledger.USD(maximum)
 	if err != nil {
 		return err
 	}
-	if maximum < 0 || user <= 0 || key <= 0 || account <= 0 {
+	accountAmount, err := ledger.USD(accountMaximum)
+	if err != nil {
+		return err
+	}
+	if maximum < 0 || accountMaximum < 0 || user <= 0 || key <= 0 || account <= 0 {
 		return ledger.ErrConflict
 	}
-	var oldUser, oldKey, oldAccount, oldMaximum int64
-	err = tx.QueryRowContext(ctx, "SELECT user_id,api_key_id,account_id,maximum FROM regional_budget_allocations WHERE allocation_id=$1 FOR UPDATE", id).Scan(&oldUser, &oldKey, &oldAccount, &oldMaximum)
+	var oldUser, oldKey, oldAccount, oldMaximum, oldAccountMaximum int64
+	err = tx.QueryRowContext(ctx, "SELECT user_id,api_key_id,account_id,maximum,account_maximum FROM regional_budget_allocations WHERE allocation_id=$1 FOR UPDATE", id).Scan(&oldUser, &oldKey, &oldAccount, &oldMaximum, &oldAccountMaximum)
 	if err == nil {
-		if oldUser != user || oldKey != key || oldAccount != account || oldMaximum != int64(maximum) {
+		if oldUser != user || oldKey != key || oldAccount != account || oldMaximum != int64(maximum) || oldAccountMaximum != int64(accountMaximum) {
 			return ledger.ErrConflict
 		}
 		return nil
@@ -115,8 +120,8 @@ func (s RegionalBudgetScope) Reserve(ctx context.Context, tx *sql.Tx, id string,
 	}
 	if accountType == "apikey" || accountType == "bedrock" {
 		for _, pair := range [][2]string{{"quota_limit", "quota_used"}, {"quota_daily_limit", "quota_daily_used"}, {"quota_weekly_limit", "quota_weekly_used"}} {
-			query := "SELECT COALESCE((extra->>'" + pair[0] + "')::numeric,0)<=0 OR COALESCE((extra->>'" + pair[1] + "')::numeric,0)+$2::numeric+COALESCE((SELECT SUM(maximum-spent)::numeric/1000000000 FROM regional_budget_allocations WHERE account_id=$1 AND state='held'),0)<=(extra->>'" + pair[0] + "')::numeric FROM accounts WHERE id=$1"
-			if err = tx.QueryRowContext(ctx, query, account, amount).Scan(&enough); err != nil {
+			query := "SELECT COALESCE((extra->>'" + pair[0] + "')::numeric,0)<=0 OR COALESCE((extra->>'" + pair[1] + "')::numeric,0)+$2::numeric+COALESCE((SELECT SUM(account_maximum-account_spent)::numeric/1000000000 FROM regional_budget_allocations WHERE account_id=$1 AND state='held'),0)<=(extra->>'" + pair[0] + "')::numeric FROM accounts WHERE id=$1"
+			if err = tx.QueryRowContext(ctx, query, account, accountAmount).Scan(&enough); err != nil {
 				return err
 			}
 			if !enough {
@@ -143,18 +148,22 @@ func (s RegionalBudgetScope) Reserve(ctx context.Context, tx *sql.Tx, id string,
 			}
 		}
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO regional_budget_allocations(allocation_id,user_id,api_key_id,account_id,subscription_id,platform,maximum,group_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", id, user, key, account, subscription, platform, int64(maximum), group)
+	_, err = tx.ExecContext(ctx, "INSERT INTO regional_budget_allocations(allocation_id,user_id,api_key_id,account_id,subscription_id,platform,maximum,group_id,account_maximum,account_spent) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,0)", id, user, key, account, subscription, platform, int64(maximum), group, int64(accountMaximum))
 	return err
 }
 
 func (s RegionalBudgetScope) Charge(ctx context.Context, tx *sql.Tx, id string, e ledger.Event) error {
-	var user, key, account, subscription, maximum, spent int64
+	var user, key, account, subscription, maximum, spent, accountMaximum, accountSpent int64
 	var platform, state string
-	if err := tx.QueryRowContext(ctx, "SELECT user_id,api_key_id,account_id,subscription_id,platform,maximum,spent,state FROM regional_budget_allocations WHERE allocation_id=$1 FOR UPDATE", id).Scan(&user, &key, &account, &subscription, &platform, &maximum, &spent, &state); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT user_id,api_key_id,account_id,subscription_id,platform,maximum,spent,state,account_maximum,account_spent FROM regional_budget_allocations WHERE allocation_id=$1 FOR UPDATE", id).Scan(&user, &key, &account, &subscription, &platform, &maximum, &spent, &state, &accountMaximum, &accountSpent); err != nil {
 		return err
 	}
 	if state != "held" || e.Usage.UserID != user || e.Usage.APIKeyID != key || e.Usage.AccountID != account || e.Usage.Charge > regional.Amount(maximum-spent) {
 		return ledger.ErrConflict
+	}
+	accountCharge, err := ledger.AccountCharge(ctx, tx, e)
+	if err != nil || accountCharge < 0 || accountCharge > regional.Amount(accountMaximum-accountSpent) {
+		return errors.Join(ledger.ErrConflict, err)
 	}
 	admitted := e.Usage.AdmittedAt
 	if err := regionalKeyWindows(ctx, tx, key, admitted); err != nil {
@@ -173,6 +182,10 @@ func (s RegionalBudgetScope) Charge(ctx context.Context, tx *sql.Tx, id string, 
 	if err != nil {
 		return err
 	}
+	accountAmount, err := ledger.USD(accountCharge)
+	if err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, "UPDATE api_keys SET quota_used=quota_used+$2::numeric,usage_5h=usage_5h+CASE WHEN window_5h_start<=$3 THEN $2::numeric ELSE 0 END,usage_1d=usage_1d+CASE WHEN window_1d_start<=$3 THEN $2::numeric ELSE 0 END,usage_7d=usage_7d+CASE WHEN window_7d_start<=$3 THEN $2::numeric ELSE 0 END,updated_at=NOW() WHERE id=$1", key, amount, admitted); err != nil {
 		return err
 	}
@@ -181,13 +194,13 @@ func (s RegionalBudgetScope) Charge(ctx context.Context, tx *sql.Tx, id string, 
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE accounts SET extra=COALESCE(extra,'{}'::jsonb)||jsonb_build_object('quota_used',COALESCE((extra->>'quota_used')::numeric,0)+$2::numeric,'quota_daily_used',COALESCE((extra->>'quota_daily_used')::numeric,0)+CASE WHEN (extra->>'quota_daily_start')::timestamptz<=$3 THEN $2::numeric ELSE 0 END,'quota_weekly_used',COALESCE((extra->>'quota_weekly_used')::numeric,0)+CASE WHEN (extra->>'quota_weekly_start')::timestamptz<=$3 THEN $2::numeric ELSE 0 END),updated_at=NOW() WHERE id=$1 AND type IN ('apikey','bedrock')`, account, amount, admitted); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE accounts SET extra=COALESCE(extra,'{}'::jsonb)||jsonb_build_object('quota_used',COALESCE((extra->>'quota_used')::numeric,0)+$2::numeric,'quota_daily_used',COALESCE((extra->>'quota_daily_used')::numeric,0)+CASE WHEN (extra->>'quota_daily_start')::timestamptz<=$3 THEN $2::numeric ELSE 0 END,'quota_weekly_used',COALESCE((extra->>'quota_weekly_used')::numeric,0)+CASE WHEN (extra->>'quota_weekly_start')::timestamptz<=$3 THEN $2::numeric ELSE 0 END),updated_at=NOW() WHERE id=$1 AND type IN ('apikey','bedrock')`, account, accountAmount, admitted); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE user_platform_quotas SET daily_usage_usd=daily_usage_usd+CASE WHEN daily_window_start<=$4 THEN $3::numeric ELSE 0 END,weekly_usage_usd=weekly_usage_usd+CASE WHEN weekly_window_start<=$4 THEN $3::numeric ELSE 0 END,monthly_usage_usd=monthly_usage_usd+CASE WHEN monthly_window_start<=$4 THEN $3::numeric ELSE 0 END,updated_at=NOW() WHERE user_id=$1 AND platform=$2 AND deleted_at IS NULL", user, platform, amount, admitted); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE regional_budget_allocations SET spent=spent+$2 WHERE allocation_id=$1", id, int64(e.Usage.Charge))
+	_, err = tx.ExecContext(ctx, "UPDATE regional_budget_allocations SET spent=spent+$2,account_spent=account_spent+$3 WHERE allocation_id=$1", id, int64(e.Usage.Charge), int64(accountCharge))
 	return err
 }
 func (s RegionalBudgetScope) Close(ctx context.Context, tx *sql.Tx, id string, spent regional.Amount) error {

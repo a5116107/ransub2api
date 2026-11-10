@@ -235,6 +235,40 @@ func (p Price) VideoMaximum(v VideoRequest) (regional.Amount, error) {
 	return charge, err
 }
 
+// AccountMaximum reserves the account's base-cost quota, independently of the
+// discounted (or free) downstream sale. The price comes from this SQL authority.
+func AccountMaximum(ctx context.Context, tx *sql.Tx, r Reservation) (regional.Amount, error) {
+	if r.Video == nil {
+		return r.Maximum, nil
+	}
+	p, err := readPrice(ctx, tx, r.PricingVersion, r.Model)
+	if err != nil || p.Video == nil || p.Video.VideoRequest != *r.Video {
+		return 0, errors.Join(ErrConflict, err)
+	}
+	base, charge, err := p.Video.costs(p.Video.MaxCompletionTokens)
+	if err != nil || charge != r.Maximum {
+		return 0, errors.Join(ErrConflict, err)
+	}
+	return base, nil
+}
+
+// AccountCharge is independently recomputed from immutable terminal evidence;
+// no regional caller or sale multiplier can declare the account quota debit.
+func AccountCharge(ctx context.Context, tx *sql.Tx, e Event) (regional.Amount, error) {
+	if e.Video == nil {
+		return e.Usage.Charge, nil
+	}
+	p, err := readPrice(ctx, tx, e.PricingVersion, e.Model)
+	if err != nil {
+		return 0, err
+	}
+	base, charge, err := p.VideoCosts(*e.Video)
+	if err != nil || charge != e.Usage.Charge {
+		return 0, errors.Join(ErrConflict, err)
+	}
+	return base, nil
+}
+
 func InstallPrice(ctx context.Context, db *sql.DB, p Price) error {
 	if err := p.Validate(); err != nil {
 		return err

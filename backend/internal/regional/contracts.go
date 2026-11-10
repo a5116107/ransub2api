@@ -145,16 +145,17 @@ func (a *Amount) UnmarshalJSON(data []byte) error {
 // It is scoped to one user, region and accounting currency (USD). It must not
 // be reused by another region or returned merely because ExpiresAt elapsed.
 type Lease struct {
-	BillingMode   string    `json:"billing_mode,omitempty"`
-	APIKeyID      int64     `json:"api_key_id,omitempty"`
-	AccountID     int64     `json:"account_id,omitempty"`
-	SchemaVersion int       `json:"schema_version"`
-	LeaseID       string    `json:"lease_id"`
-	RegionID      string    `json:"region_id"`
-	UserID        int64     `json:"user_id"`
-	Granted       Amount    `json:"granted_nano_usd"`
-	IssuedAt      time.Time `json:"issued_at"`
-	ExpiresAt     time.Time `json:"expires_at"`
+	BillingMode    string    `json:"billing_mode,omitempty"`
+	APIKeyID       int64     `json:"api_key_id,omitempty"`
+	AccountID      int64     `json:"account_id,omitempty"`
+	SchemaVersion  int       `json:"schema_version"`
+	LeaseID        string    `json:"lease_id"`
+	RegionID       string    `json:"region_id"`
+	UserID         int64     `json:"user_id"`
+	Granted        Amount    `json:"granted_nano_usd"`
+	AccountGranted Amount    `json:"account_granted_nano_usd,omitempty"`
+	IssuedAt       time.Time `json:"issued_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 func (l Lease) Validate() error {
@@ -164,13 +165,22 @@ func (l Lease) Validate() error {
 	if !identifier.MatchString(l.LeaseID) || !identifier.MatchString(l.RegionID) {
 		return errors.New("invalid lease identity")
 	}
-	if l.UserID <= 0 || l.Granted <= 0 {
+	if l.UserID <= 0 || l.Granted <= 0 || l.AccountGranted < 0 {
 		return errors.New("lease requires a user and positive grant")
 	}
 	if l.IssuedAt.IsZero() || !l.ExpiresAt.After(l.IssuedAt) {
 		return errors.New("invalid lease timestamps")
 	}
 	return nil
+}
+
+// AccountBudget is an independent account-cost ceiling. Omitted legacy grants
+// retain their former numeric ceiling, never a sale-derived exchange rate.
+func (l Lease) AccountBudget() Amount {
+	if l.AccountGranted == 0 {
+		return l.Granted
+	}
+	return l.AccountGranted
 }
 
 // UsageEvent is a final charge, not a per-token increment. EventID identifies

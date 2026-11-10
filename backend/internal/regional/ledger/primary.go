@@ -24,11 +24,11 @@ func primaryLease(ctx context.Context, tx *sql.Tx, id string) (regional.Lease, r
 	l := regional.Lease{SchemaVersion: regional.SchemaVersion}
 	var spent regional.Amount
 	var state string
-	err := tx.QueryRowContext(ctx, `SELECT lease_id,region_id,user_id,granted,spent,issued_at,expires_at,state,api_key_id,account_id,billing_mode FROM regional_quota_leases WHERE lease_id=$1 FOR UPDATE`, id).Scan(&l.LeaseID, &l.RegionID, &l.UserID, &l.Granted, &spent, &l.IssuedAt, &l.ExpiresAt, &state, &l.APIKeyID, &l.AccountID, &l.BillingMode)
+	err := tx.QueryRowContext(ctx, `SELECT lease_id,region_id,user_id,granted,spent,issued_at,expires_at,state,api_key_id,account_id,billing_mode,account_granted FROM regional_quota_leases WHERE lease_id=$1 FOR UPDATE`, id).Scan(&l.LeaseID, &l.RegionID, &l.UserID, &l.Granted, &spent, &l.IssuedAt, &l.ExpiresAt, &state, &l.APIKeyID, &l.AccountID, &l.BillingMode, &l.AccountGranted)
 	return l, spent, state, err
 }
 func sameLease(a, b regional.Lease) bool {
-	return a.BillingMode == b.BillingMode && a.APIKeyID == b.APIKeyID && a.AccountID == b.AccountID && a.SchemaVersion == b.SchemaVersion && a.LeaseID == b.LeaseID && a.RegionID == b.RegionID && a.UserID == b.UserID && a.Granted == b.Granted && a.IssuedAt.Equal(b.IssuedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
+	return a.BillingMode == b.BillingMode && a.APIKeyID == b.APIKeyID && a.AccountID == b.AccountID && a.SchemaVersion == b.SchemaVersion && a.LeaseID == b.LeaseID && a.RegionID == b.RegionID && a.UserID == b.UserID && a.Granted == b.Granted && a.AccountGranted == b.AccountGranted && a.IssuedAt.Equal(b.IssuedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
 }
 func (p *Primary) Issue(ctx context.Context, l regional.Lease) error {
 	if err := l.Validate(); err != nil {
@@ -36,6 +36,9 @@ func (p *Primary) Issue(ctx context.Context, l regional.Lease) error {
 	}
 	amount, err := USD(l.Granted)
 	if err != nil {
+		return err
+	}
+	if _, err := USD(l.AccountBudget()); err != nil {
 		return err
 	}
 	// PostgreSQL stores microseconds. Reject loss of identity on a retry rather
@@ -103,7 +106,7 @@ func (p *Primary) Issue(ctx context.Context, l regional.Lease) error {
 	} else if l.APIKeyID != 0 || l.AccountID != 0 {
 		return errors.New("quota scope required")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO regional_quota_leases(lease_id,region_id,user_id,granted,issued_at,expires_at,api_key_id,account_id,billing_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, l.LeaseID, l.RegionID, l.UserID, int64(l.Granted), l.IssuedAt, l.ExpiresAt, l.APIKeyID, l.AccountID, l.BillingMode)
+	_, err = tx.ExecContext(ctx, `INSERT INTO regional_quota_leases(lease_id,region_id,user_id,granted,issued_at,expires_at,api_key_id,account_id,billing_mode,account_granted) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, l.LeaseID, l.RegionID, l.UserID, int64(l.Granted), l.IssuedAt, l.ExpiresAt, l.APIKeyID, l.AccountID, l.BillingMode, int64(l.AccountGranted))
 	if err != nil {
 		return err
 	}

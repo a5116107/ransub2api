@@ -481,6 +481,7 @@ func TestRegionalVideoHTTPCompletionUsesOriginalLedger(t *testing.T) {
 				primary, holds, verify := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
 				grant := regionalLedgerLease(t, "http-video-grant-"+uuid.NewString(), user, 8_000_000_000)
 				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				grant.AccountGranted = 40_000_000_000
 				r := regionalLedgerReservation(t, grant, "http-video-request-"+uuid.NewString(), maximum)
 				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
 				r.Video = &price.Video.VideoRequest
@@ -847,6 +848,7 @@ func TestRegionalVideoFinancialBindingCompetitionAndRecovery(t *testing.T) {
 			// primary namespace, even when event/member/lease/region all change.
 			cross := regionalLedgerLease(t, "binding-cross-"+uuid.NewString(), user, 10_000_000)
 			cross.RegionID, cross.APIKeyID, cross.AccountID = "eu", key.ID, account.ID
+			cross.AccountGranted = 20_000_000
 			require.NoError(t, primary.Issue(ctx, cross))
 			duplicate := events[0]
 			duplicate.Usage.EventID = "binding-replay-" + uuid.NewString()

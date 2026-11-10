@@ -52,13 +52,16 @@ func (l *Local) Install(ctx context.Context, lease regional.Lease) error {
 	if _, err := USD(lease.Granted); err != nil {
 		return err
 	}
+	if _, err := USD(lease.AccountBudget()); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(lease)
 	if err != nil {
 		return err
 	}
 	// Install only accepts leases fetched through the authenticated authority
 	// client; this API is not exposed on a public ingress.
-	_, err = l.DB.ExecContext(ctx, `INSERT INTO regional_local_leases(lease_id,lease,region_id,user_id,granted) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, lease.LeaseID, string(raw), lease.RegionID, lease.UserID, int64(lease.Granted))
+	_, err = l.DB.ExecContext(ctx, `INSERT INTO regional_local_leases(lease_id,lease,region_id,user_id,granted,account_granted,account_reserved,account_spent) VALUES($1,$2,$3,$4,$5,$6,0,0) ON CONFLICT DO NOTHING`, lease.LeaseID, string(raw), lease.RegionID, lease.UserID, int64(lease.Granted), int64(lease.AccountBudget()))
 	if err != nil {
 		return err
 	}
@@ -106,6 +109,10 @@ func (l *Local) Reserve(ctx context.Context, r Reservation) (fresh bool, err err
 	if err := verifyPriceReservation(ctx, tx, r); err != nil {
 		return false, err
 	}
+	accountMaximum, err := AccountMaximum(ctx, tx, r)
+	if err != nil {
+		return false, err
+	}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return false, err
@@ -138,7 +145,7 @@ func (l *Local) Reserve(ctx context.Context, r Reservation) (fresh bool, err err
 	if state != "open" || r.RegionID != l.Region || now.Before(lease.IssuedAt) || !now.Before(lease.ExpiresAt) || r.AdmittedAt.After(now) || now.Sub(r.AdmittedAt) > 5*time.Second {
 		return false, ErrExhausted
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE regional_local_leases SET reserved=reserved+$2 WHERE lease_id=$1 AND granted-spent-reserved >= $2`, r.LeaseID, int64(r.Maximum))
+	result, err := tx.ExecContext(ctx, `UPDATE regional_local_leases SET reserved=reserved+$2,account_reserved=account_reserved+$3 WHERE lease_id=$1 AND granted-spent-reserved >= $2 AND account_granted-account_spent-account_reserved >= $3`, r.LeaseID, int64(r.Maximum), int64(accountMaximum))
 	if err != nil {
 		return false, err
 	}
@@ -149,7 +156,7 @@ func (l *Local) Reserve(ctx context.Context, r Reservation) (fresh bool, err err
 	if n != 1 {
 		return false, ErrExhausted
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO regional_local_requests(request_id,lease_id,request,maximum,state) VALUES($1,$2,$3,$4,'reserved')`, r.RequestID, r.LeaseID, string(raw), int64(r.Maximum))
+	_, err = tx.ExecContext(ctx, `INSERT INTO regional_local_requests(request_id,lease_id,request,maximum,state,account_maximum) VALUES($1,$2,$3,$4,'reserved',$5)`, r.RequestID, r.LeaseID, string(raw), int64(r.Maximum), int64(accountMaximum))
 	if err != nil {
 		return false, err
 	}
@@ -229,8 +236,8 @@ func (l *Local) finish(ctx context.Context, id string, event *Event, videoReject
 	}
 	var raw []byte
 	var state string
-	var maximum int64
-	if err := tx.QueryRowContext(ctx, `SELECT request,state,maximum FROM regional_local_requests WHERE request_id=$1 FOR UPDATE`, id).Scan(&raw, &state, &maximum); err != nil {
+	var maximum, accountMaximum int64
+	if err := tx.QueryRowContext(ctx, `SELECT request,state,maximum,account_maximum FROM regional_local_requests WHERE request_id=$1 FOR UPDATE`, id).Scan(&raw, &state, &maximum, &accountMaximum); err != nil {
 		return err
 	}
 	var r Reservation
@@ -252,7 +259,7 @@ func (l *Local) finish(ctx context.Context, id string, event *Event, videoReject
 		if _, err := tx.ExecContext(ctx, `UPDATE regional_local_requests SET state='canceled' WHERE request_id=$1`, id); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE regional_local_leases SET reserved=reserved-$2 WHERE lease_id=$1`, leaseID, maximum); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE regional_local_leases SET reserved=reserved-$2,account_reserved=account_reserved-$3 WHERE lease_id=$1`, leaseID, maximum, accountMaximum); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -269,6 +276,10 @@ func (l *Local) finish(ctx context.Context, id string, event *Event, videoReject
 	}
 	if err := verifyVideoSettlement(ctx, tx, r, *event); err != nil {
 		return err
+	}
+	accountCharge, err := AccountCharge(ctx, tx, *event)
+	if err != nil || accountCharge > regional.Amount(accountMaximum) {
+		return errors.Join(ErrConflict, err)
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil {
@@ -287,7 +298,7 @@ func (l *Local) finish(ctx context.Context, id string, event *Event, videoReject
 	if state != "started" {
 		return ErrAlreadyDispatched
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE regional_local_leases SET reserved=reserved-$2,spent=spent+$3 WHERE lease_id=$1`, leaseID, maximum, int64(e.Charge)); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE regional_local_leases SET reserved=reserved-$2,spent=spent+$3,account_reserved=account_reserved-$4,account_spent=account_spent+$5 WHERE lease_id=$1`, leaseID, maximum, int64(e.Charge), accountMaximum, int64(accountCharge)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE regional_local_requests SET state='completed' WHERE request_id=$1`, id); err != nil {
@@ -383,15 +394,15 @@ func (l *Local) Close(ctx context.Context, id string) (DrainReceipt, error) {
 	if state == "open" {
 		return receipt, errors.New("lease must drain before closure")
 	}
-	var reserved int64
-	if err := tx.QueryRowContext(ctx, `SELECT spent,reserved FROM regional_local_leases WHERE lease_id=$1`, id).Scan(&receipt.Spent, &reserved); err != nil {
+	var reserved, accountReserved int64
+	if err := tx.QueryRowContext(ctx, `SELECT spent,reserved,account_reserved FROM regional_local_leases WHERE lease_id=$1`, id).Scan(&receipt.Spent, &reserved, &accountReserved); err != nil {
 		return receipt, err
 	}
 	var pending bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM regional_local_requests r LEFT JOIN regional_usage_outbox o ON o.event_id=r.request_id WHERE r.lease_id=$1 AND (r.state IN ('reserved','started') OR (r.state='completed' AND (o.event_id IS NULL OR NOT o.acknowledged))))`, id).Scan(&pending); err != nil {
 		return receipt, err
 	}
-	if reserved != 0 || pending {
+	if reserved != 0 || accountReserved != 0 || pending {
 		return receipt, errors.New("lease has unresolved reservations or outbox")
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE regional_local_leases SET state='closed' WHERE lease_id=$1`, id); err != nil {

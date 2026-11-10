@@ -188,7 +188,7 @@ func TestRegionalFundsBrokerPreservesPendingPayload(t *testing.T) {
 		_, _ = integrationDB.Exec("DELETE FROM regional_broker_operations WHERE operation='quota/issue' AND (payload->>'user_id')::bigint=$1", user)
 	})
 	broker := &control.Broker{DB: integrationDB, Quota: &ledger.Local{DB: integrationDB, Region: "us"}}
-	target := RegionalFundsTarget{UserID: user, APIKeyID: 1, AccountID: 2, Amount: 1000000000}
+	target := RegionalFundsTarget{UserID: user, APIKeyID: 1, AccountID: 2, Amount: 1000000000, AccountAmount: 2000000000}
 	require.NoError(t, ensureRegionalFunds(ctx, integrationDB, broker, "us", target, time.Minute))
 	var firstID string
 	var firstRaw []byte
@@ -196,6 +196,7 @@ func TestRegionalFundsBrokerPreservesPendingPayload(t *testing.T) {
 	// New worker and changed desired amount must replay old pending operation.
 	broker = &control.Broker{DB: integrationDB, Quota: &ledger.Local{DB: integrationDB, Region: "us"}}
 	target.Amount *= 2
+	target.AccountAmount *= 3
 	require.NoError(t, ensureRegionalFunds(ctx, integrationDB, broker, "us", target, time.Minute))
 	var count int
 	var secondID string
@@ -206,6 +207,10 @@ func TestRegionalFundsBrokerPreservesPendingPayload(t *testing.T) {
 	require.Equal(t, firstID, secondID)
 	require.JSONEq(t, string(firstRaw), string(secondRaw))
 	require.True(t, json.Valid(firstRaw))
+	var queued regional.Lease
+	require.NoError(t, json.Unmarshal(firstRaw, &queued))
+	require.EqualValues(t, 1_000_000_000, queued.Granted)
+	require.EqualValues(t, 2_000_000_000, queued.AccountGranted, "restart must not reprice an already queued independent account grant")
 }
 
 func TestRegionalFundsImportsLegacyUsageOnce(t *testing.T) {

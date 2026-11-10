@@ -183,6 +183,7 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 				now = now.UTC().Truncate(time.Microsecond)
 				grant := regional.Lease{SchemaVersion: regional.SchemaVersion, LeaseID: "router-video-grant-" + uuid.NewString(), RegionID: "us", UserID: user, Granted: 8_000_000_000, IssuedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour)}
 				grant.APIKeyID, grant.AccountID = key.ID, account.ID
+				grant.AccountGranted = 40_000_000_000
 				r := ledger.Reservation{RequestID: requestID, LeaseID: grant.LeaseID, RegionID: grant.RegionID, UserID: user, Maximum: maximum, PayloadSHA256: strings.Repeat("a", 64), AdmittedAt: now}
 				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
 				r.Video = &price.Video.VideoRequest
@@ -386,6 +387,11 @@ func TestRegionalVideoOriginalFundsRouterLifecycle(t *testing.T) {
 					_, restarted, _ := repository.NewRegionalFundsAuthorities(db, func(context.Context, *sql.Tx) error { return nil })
 					wrapped.VideoTaskLedger = restarted
 				}
+				baseUSD, err := ledger.USD(wantCharge * 10) // this fixture freezes a 1/10 sale contract.
+				require.NoError(t, err)
+				var accountExact bool
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT (extra->>'quota_used')::numeric=$2::numeric FROM accounts WHERE id=$1`, account.ID, baseUSD).Scan(&accountExact))
+				require.True(t, accountExact, "the original-node router settles account base cost independently of downstream billing")
 				router, _ = newRouter()
 				w = query(http.MethodGet, path, key.Key)
 				require.Equal(t, http.StatusOK, w.Code, w.Body.String())

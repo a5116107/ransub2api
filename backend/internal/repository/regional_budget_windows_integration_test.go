@@ -46,7 +46,7 @@ func TestRegionalBudgetWindowResetRetainsUnknownAndAttributesLateUsage(t *testin
 		return tx.Commit()
 	}
 	require.NoError(t, withTx(func(tx *sql.Tx) error {
-		return scope.Reserve(ctx, tx, first, user, key.ID, account.ID, 4_000_000_000, oldTime)
+		return scope.Reserve(ctx, tx, first, user, key.ID, account.ID, 4_000_000_000, 4_000_000_000, oldTime)
 	}))
 	_, err = integrationDB.Exec("UPDATE user_platform_quotas SET daily_usage_usd=6 WHERE user_id=$1", user)
 	require.NoError(t, err)
@@ -55,10 +55,10 @@ func TestRegionalBudgetWindowResetRetainsUnknownAndAttributesLateUsage(t *testin
 	_, err = integrationDB.Exec("UPDATE api_keys SET usage_5h=6,rate_limit_5h=7 WHERE id=$1", key.ID)
 	require.NoError(t, err)
 	require.ErrorIs(t, withTx(func(tx *sql.Tx) error {
-		return scope.Reserve(ctx, tx, second, user, key.ID, account.ID, 4_000_000_000, now)
+		return scope.Reserve(ctx, tx, second, user, key.ID, account.ID, 4_000_000_000, 4_000_000_000, now)
 	}), ledger.ErrExhausted)
 	require.NoError(t, withTx(func(tx *sql.Tx) error {
-		return scope.Reserve(ctx, tx, second, user, key.ID, account.ID, 3_000_000_000, now)
+		return scope.Reserve(ctx, tx, second, user, key.ID, account.ID, 3_000_000_000, 3_000_000_000, now)
 	}))
 	event := ledger.Event{Usage: regional.UsageEvent{UserID: user, APIKeyID: key.ID, AccountID: account.ID, AdmittedAt: oldTime, Charge: 2_000_000_000}}
 	require.NoError(t, withTx(func(tx *sql.Tx) error { return scope.Charge(ctx, tx, first, event) }))

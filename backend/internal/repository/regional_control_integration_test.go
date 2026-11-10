@@ -54,6 +54,10 @@ func TestRegionalControlMTLSScopeAndDurableOutbox(t *testing.T) {
 	oversized.LeaseID += "-oversized"
 	oversized.Granted += 10
 	require.Error(t, client.IssueQuota(ctx, oversized))
+	oversized = lease
+	oversized.LeaseID += "-account-oversized"
+	oversized.AccountGranted = scope.MaximumGrant + 10
+	require.Error(t, client.IssueQuota(ctx, oversized), "mTLS scope caps independent account funds as well as sale funds")
 	r := regionalLedgerReservation(t, lease, fmt.Sprintf("control-req-%d", user), 1_000_000_000)
 	fresh, err := local.Reserve(ctx, r)
 	require.NoError(t, err)

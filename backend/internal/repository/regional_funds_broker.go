@@ -44,7 +44,7 @@ func ensureRegionalFunds(ctx context.Context, db *sql.DB, broker *control.Broker
 	if err = tx.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		return err
 	}
-	lease := regional.Lease{SchemaVersion: regional.SchemaVersion, LeaseID: uuid.NewString(), RegionID: region, UserID: target.UserID, APIKeyID: target.APIKeyID, AccountID: target.AccountID, BillingMode: target.BillingMode, Granted: target.Amount, IssuedAt: now.UTC().Truncate(time.Microsecond), ExpiresAt: now.Add(lifetime).UTC().Truncate(time.Microsecond)}
+	lease := regional.Lease{SchemaVersion: regional.SchemaVersion, LeaseID: uuid.NewString(), RegionID: region, UserID: target.UserID, APIKeyID: target.APIKeyID, AccountID: target.AccountID, BillingMode: target.BillingMode, Granted: target.Amount, AccountGranted: target.AccountAmount, IssuedAt: now.UTC().Truncate(time.Microsecond), ExpiresAt: now.Add(lifetime).UTC().Truncate(time.Microsecond)}
 	raw, err := json.Marshal(lease)
 	if err != nil {
 		return err
@@ -59,7 +59,7 @@ func ensureRegionalFunds(ctx context.Context, db *sql.DB, broker *control.Broker
 // durable enqueue. A target cannot be reissued until the primary acknowledges
 // its exact receipt. Unknown started consumption always keeps its reservation.
 func drainRegionalFunds(ctx context.Context, db *sql.DB, broker *control.Broker, local *ledger.Local) error {
-	rows, err := db.QueryContext(ctx, "SELECT lease_id FROM regional_local_leases l WHERE region_id=$1 AND ((state='open' AND ((lease->>'expires_at')::timestamptz<=clock_timestamp() OR (granted-spent=0 AND reserved=0))) OR state='draining' OR (state='closed' AND NOT EXISTS(SELECT 1 FROM regional_broker_operations b WHERE b.operation_id='close:'||l.lease_id AND b.state='installed'))) ORDER BY lease_id LIMIT 100", local.Region)
+	rows, err := db.QueryContext(ctx, "SELECT lease_id FROM regional_local_leases l WHERE region_id=$1 AND ((state='open' AND ((lease->>'expires_at')::timestamptz<=clock_timestamp() OR (granted-spent=0 AND reserved=0) OR (account_granted-account_spent=0 AND account_reserved=0))) OR state='draining' OR (state='closed' AND NOT EXISTS(SELECT 1 FROM regional_broker_operations b WHERE b.operation_id='close:'||l.lease_id AND b.state='installed'))) ORDER BY lease_id LIMIT 100", local.Region)
 	if err != nil {
 		return err
 	}

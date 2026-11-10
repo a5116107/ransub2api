@@ -21,11 +21,12 @@ import (
 )
 
 type RegionalFundsTarget struct {
-	BillingMode string          `json:"billing_mode"`
-	UserID      int64           `json:"user_id"`
-	APIKeyID    int64           `json:"api_key_id"`
-	AccountID   int64           `json:"account_id"`
-	Amount      regional.Amount `json:"amount"`
+	BillingMode   string          `json:"billing_mode"`
+	UserID        int64           `json:"user_id"`
+	APIKeyID      int64           `json:"api_key_id"`
+	AccountID     int64           `json:"account_id"`
+	Amount        regional.Amount `json:"amount"`
+	AccountAmount regional.Amount `json:"account_amount,omitempty"`
 }
 type RegionalFundsRuntimeConfig struct {
 	Mode, Region  string
@@ -72,10 +73,13 @@ func readRegionalFundsConfig(path string) (RegionalFundsRuntimeConfig, error) {
 		if target.BillingMode != "" && target.BillingMode != "subscription" {
 			return c, errors.New("invalid funds billing mode")
 		}
-		if target.UserID <= 0 || target.APIKeyID <= 0 || target.AccountID <= 0 || target.Amount <= 0 {
+		if target.UserID <= 0 || target.APIKeyID <= 0 || target.AccountID <= 0 || target.Amount <= 0 || target.AccountAmount < 0 {
 			return c, errors.New("invalid funded target")
 		}
 		if _, err = ledger.USD(target.Amount); err != nil {
+			return c, err
+		}
+		if _, err = ledger.USD(target.AccountAmount); err != nil {
 			return c, err
 		}
 	}
@@ -177,7 +181,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 		r = ledger.Reservation{RequestID: uuid.NewString(), RegionID: c.Region, UserID: key.UserID, APIKeyID: key.ID, AccountID: account.ID, AdmittedAt: admitted.UTC().Truncate(time.Microsecond)}
 		if c.Mode == "regional" {
 			var raw []byte
-			err := db.QueryRowContext(ctx, `SELECT lease FROM regional_local_leases WHERE region_id=$1 AND user_id=$2 AND state='open' AND (lease->>'api_key_id')::bigint=$3 AND (lease->>'account_id')::bigint=$4 AND (lease->>'expires_at')::timestamptz>clock_timestamp() AND granted-spent-reserved>0 ORDER BY lease_id LIMIT 1`, c.Region, key.UserID, key.ID, account.ID).Scan(&raw)
+			err := db.QueryRowContext(ctx, `SELECT lease FROM regional_local_leases WHERE region_id=$1 AND user_id=$2 AND state='open' AND (lease->>'api_key_id')::bigint=$3 AND (lease->>'account_id')::bigint=$4 AND (lease->>'expires_at')::timestamptz>clock_timestamp() AND granted-spent-reserved>0 AND account_granted-account_spent-account_reserved>0 ORDER BY lease_id LIMIT 1`, c.Region, key.UserID, key.ID, account.ID).Scan(&raw)
 			if err != nil {
 				return r, price, err
 			}
@@ -231,7 +235,7 @@ func ProvideRegionalMetering(db *sql.DB, cfg *config.Config, cache service.Concu
 		}
 		for _, target := range c.Targets {
 			var ready bool
-			if err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM regional_local_leases WHERE region_id=$1 AND user_id=$2 AND state='open' AND (lease->>'api_key_id')::bigint=$3 AND (lease->>'account_id')::bigint=$4 AND (lease->>'expires_at')::timestamptz>clock_timestamp() AND granted-spent-reserved>0)", c.Region, target.UserID, target.APIKeyID, target.AccountID).Scan(&ready); err != nil {
+			if err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM regional_local_leases WHERE region_id=$1 AND user_id=$2 AND state='open' AND (lease->>'api_key_id')::bigint=$3 AND (lease->>'account_id')::bigint=$4 AND (lease->>'expires_at')::timestamptz>clock_timestamp() AND granted-spent-reserved>0 AND account_granted-account_spent-account_reserved>0)", c.Region, target.UserID, target.APIKeyID, target.AccountID).Scan(&ready); err != nil {
 				return err
 			}
 			if !ready {

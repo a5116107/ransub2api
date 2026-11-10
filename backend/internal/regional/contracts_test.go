@@ -119,6 +119,37 @@ func TestUsageAllowsCompletionAfterExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLeaseAccountBudgetIsIndependentAndWireStable(t *testing.T) {
+	l, _ := leaseFixture()
+	if l.AccountBudget() != l.Granted {
+		t.Fatal("omitted legacy account ceiling must retain its numeric grant")
+	}
+	for _, ceiling := range []Amount{0, 500, 2000} {
+		l.AccountGranted = ceiling
+		if err := l.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored Lease
+		if err := json.Unmarshal(raw, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if restored != l || restored.AccountBudget() != l.AccountBudget() {
+			t.Fatal("wire transport changed an immutable independent budget")
+		}
+		if ceiling != 0 && l.AccountBudget() != ceiling {
+			t.Fatal("account budget must not be scaled by downstream funds")
+		}
+	}
+	l.AccountGranted = -10
+	if err := l.Validate(); err == nil {
+		t.Fatal("negative account ceiling accepted")
+	}
+}
 func TestUsageRejectsInvalidChargeAndLease(t *testing.T) {
 	cases := []struct {
 		name   string

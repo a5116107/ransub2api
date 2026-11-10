@@ -23,7 +23,7 @@ func NewRegionalFundsAuthorities(db *sql.DB, guard func(context.Context, *sql.Tx
 		if err := guard(ctx, tx); err != nil {
 			return err
 		}
-		return scope.Reserve(ctx, tx, "grant:"+l.LeaseID, l.UserID, l.APIKeyID, l.AccountID, l.Granted, l.IssuedAt)
+		return scope.Reserve(ctx, tx, "grant:"+l.LeaseID, l.UserID, l.APIKeyID, l.AccountID, l.Granted, l.AccountBudget(), l.IssuedAt)
 	}
 	primary.CloseScope = func(ctx context.Context, tx *sql.Tx, l regional.Lease, spent regional.Amount) error {
 		return scope.Close(ctx, tx, "grant:"+l.LeaseID, spent)
@@ -41,7 +41,11 @@ func NewRegionalFundsAuthorities(db *sql.DB, guard func(context.Context, *sql.Tx
 			return err
 		}
 		id := "request:" + r.RequestID
-		if err := scope.Reserve(ctx, tx, id, r.UserID, r.APIKeyID, r.AccountID, r.Maximum, r.AdmittedAt); err != nil {
+		accountMaximum, err := ledger.AccountMaximum(ctx, tx, r)
+		if err != nil {
+			return err
+		}
+		if err := scope.Reserve(ctx, tx, id, r.UserID, r.APIKeyID, r.AccountID, r.Maximum, accountMaximum, r.AdmittedAt); err != nil {
 			return err
 		}
 		return verifyRegionalVideoGroup(ctx, tx, id, r.VideoOrigin)
