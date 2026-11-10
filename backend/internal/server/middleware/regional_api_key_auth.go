@@ -15,7 +15,7 @@ import (
 
 // RegionalAPIKeyAuth runs only identity/permission checks using a local replica.
 // It performs no last-used writes, subscription refresh, Redis admission, billing
-// or ops persistence. The preview gate continues to block local model serving.
+// or ops persistence. Serving still requires independent funds admission.
 type regionalAPIKeyAuthenticator interface {
 	GetRegionalByKey(context.Context, string) (*service.APIKey, error)
 }
@@ -86,10 +86,10 @@ func RegionalAPIKeyAuth(svc regionalAPIKeyAuthenticator, cfg *config.Config) gin
 	}
 }
 
-// RegionalVideoLookup classifies only registered, authenticated video lookups.
-// It does not authorize a provider request: the funds gate requires either a
-// successful origin forward or an existing task's permanent local SQL funds.
-func RegionalVideoLookup(c *gin.Context) (service.GrokMediaEndpoint, string) {
+// RegionalVideoRequest classifies registered video routes for the authenticated
+// group. Classification never authorizes spending: creation must reserve its
+// immutable bound, and lookups require the original task's permanent funds.
+func RegionalVideoRequest(c *gin.Context) (service.GrokMediaEndpoint, string) {
 	if c == nil || c.Request == nil {
 		return "", ""
 	}
@@ -99,6 +99,32 @@ func RegionalVideoLookup(c *gin.Context) (service.GrokMediaEndpoint, string) {
 	}
 	platform, path := key.Group.Platform, c.FullPath()
 	videoPath := strings.TrimPrefix(path, "/v1")
+	if c.Request.Method == http.MethodPost {
+		switch videoPath {
+		case "/videos", "/videos/generations":
+			switch platform {
+			case service.PlatformGrok, service.PlatformComposite:
+				return service.GrokMediaEndpointVideosGenerations, ""
+			case service.PlatformMiniMax:
+				return service.MiniMaxH3EndpointCreate, ""
+			}
+		case "/videos/edits":
+			if platform == service.PlatformGrok || platform == service.PlatformComposite {
+				return service.GrokMediaEndpointVideosEdits, ""
+			}
+		case "/videos/extensions":
+			if platform == service.PlatformGrok || platform == service.PlatformComposite {
+				return service.GrokMediaEndpointVideosExtensions, ""
+			}
+		}
+		if platform == service.PlatformOpenAI || platform == service.PlatformComposite {
+			switch path {
+			case "/contents/generations/tasks", "/v1/contents/generations/tasks", "/v3/contents/generations/tasks", "/api/v3/contents/generations/tasks":
+				return service.SeedanceEndpointCreate, ""
+			}
+		}
+		return "", ""
+	}
 	videoLookup := false
 	switch videoPath {
 	case "/videos/:request_id", "/videos/generations/:request_id", "/videos/edits/:request_id", "/videos/extensions/:request_id",

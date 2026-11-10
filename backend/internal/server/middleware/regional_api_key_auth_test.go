@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -17,6 +18,66 @@ import (
 type regionalAuthStub struct {
 	err     error
 	groupID int64
+}
+
+func TestRegionalVideoRequestClassifiesOnlyRegisteredAuthenticatedRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		method, path, platform string
+		endpoint               service.GrokMediaEndpoint
+		taskID                 string
+	}{
+		{http.MethodPost, "/v1/videos", service.PlatformGrok, service.GrokMediaEndpointVideosGenerations, ""},
+		{http.MethodPost, "/videos/generations", service.PlatformComposite, service.GrokMediaEndpointVideosGenerations, ""},
+		{http.MethodPost, "/v1/videos/edits", service.PlatformGrok, service.GrokMediaEndpointVideosEdits, ""},
+		{http.MethodPost, "/videos/extensions", service.PlatformComposite, service.GrokMediaEndpointVideosExtensions, ""},
+		{http.MethodPost, "/v1/videos", service.PlatformMiniMax, service.MiniMaxH3EndpointCreate, ""},
+		{http.MethodPost, "/videos/generations", service.PlatformMiniMax, service.MiniMaxH3EndpointCreate, ""},
+		{http.MethodPost, "/contents/generations/tasks", service.PlatformOpenAI, service.SeedanceEndpointCreate, ""},
+		{http.MethodPost, "/v1/contents/generations/tasks", service.PlatformComposite, service.SeedanceEndpointCreate, ""},
+		{http.MethodPost, "/v3/contents/generations/tasks", service.PlatformOpenAI, service.SeedanceEndpointCreate, ""},
+		{http.MethodPost, "/api/v3/contents/generations/tasks", service.PlatformComposite, service.SeedanceEndpointCreate, ""},
+		{http.MethodGet, "/v1/videos/:request_id", service.PlatformGrok, service.GrokMediaEndpointVideoStatus, "models"},
+		{http.MethodGet, "/videos/:request_id/content", service.PlatformMiniMax, service.MiniMaxH3EndpointContent, "minimax-h3:models"},
+		{http.MethodDelete, "/v3/contents/generations/tasks/:task_id", service.PlatformOpenAI, service.SeedanceEndpointDelete, "seedance:responses"},
+		{http.MethodPost, "/v1/videos/edits", service.PlatformMiniMax, "", ""},
+		{http.MethodPost, "/v1/videos/extensions", service.PlatformMiniMax, "", ""},
+		{http.MethodPost, "/v1/videos", service.PlatformOpenAI, "", ""},
+		{http.MethodPost, "/v3/contents/generations/tasks", service.PlatformGrok, "", ""},
+		{http.MethodGet, "/v1/videos", service.PlatformGrok, "", ""},
+		{http.MethodPut, "/v1/videos", service.PlatformGrok, "", ""},
+		{http.MethodPost, "/v1/videos/:request_id", service.PlatformGrok, "", ""},
+		{http.MethodPost, "/v1/images/generations", service.PlatformGrok, "", ""},
+		{http.MethodPost, "/v1/responses", service.PlatformOpenAI, "", ""},
+	} {
+		t.Run(tc.method+tc.path+"/"+tc.platform, func(t *testing.T) {
+			for _, identity := range []string{"valid", "missing", "wrong_group"} {
+				t.Run(identity, func(t *testing.T) {
+					router := gin.New()
+					router.Handle(tc.method, tc.path, func(c *gin.Context) {
+						if identity != "missing" {
+							groupID := int64(3)
+							group := &service.Group{ID: groupID, Platform: tc.platform}
+							if identity == "wrong_group" {
+								group.ID++
+							}
+							c.Set(string(ContextKeyAPIKey), &service.APIKey{ID: 2, UserID: 1, GroupID: &groupID, Group: group})
+						}
+						endpoint, taskID := RegionalVideoRequest(c)
+						if identity == "valid" {
+							require.Equal(t, tc.endpoint, endpoint)
+							require.Equal(t, tc.taskID, taskID)
+						} else {
+							require.Empty(t, endpoint)
+							require.Empty(t, taskID)
+						}
+					})
+					path := strings.ReplaceAll(strings.ReplaceAll(tc.path, ":request_id", "models"), ":task_id", "responses")
+					router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, path, nil))
+				})
+			}
+		})
+	}
 }
 
 type regionalVideoPolicyAuth struct {

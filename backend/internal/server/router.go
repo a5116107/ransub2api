@@ -137,13 +137,13 @@ func registerRoutes(
 				// identity and its revalidator; do not invoke primary-backed auth.
 				gatewayAuth = middleware2.APIKeyAuthMiddleware(func(c *gin.Context) { c.Next() })
 			}
-			// Preview never authorizes new spending. Locally authenticated video
-			// lookups reach the funds gate, which requires an origin forward or
-			// the original task's permanent SQL financial reservation.
+			// Registered video routes reach the funds gate after local auth.
+			// Creation still requires its immutable SQL reservation before send;
+			// lookups continue at their original financial authority.
 			r.Use(func(c *gin.Context) {
 				if cfg.Runtime.RegionalAuthFile != "" && cfg.Runtime.RegionalFundsFile != "" {
-					endpoint, taskID := middleware2.RegionalVideoLookup(c)
-					if endpoint.IsVideoLookupRequest() && taskID != "" {
+					endpoint, taskID := middleware2.RegionalVideoRequest(c)
+					if endpoint.IsAsyncVideoCreate() || endpoint.IsVideoLookupRequest() && taskID != "" {
 						c.Next()
 						return
 					}

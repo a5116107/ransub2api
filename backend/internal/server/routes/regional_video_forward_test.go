@@ -160,7 +160,7 @@ func TestRegionalVideoFundsGateHonorsGroupPolicies(t *testing.T) {
 				t.Cleanup(svc.StopAsyncVideoKeyReleaseRecovery)
 				t.Cleanup(svc.StopOpenAICodexTicketHarvester)
 				h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(svc, nil, nil, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
-				group := &service.Group{ID: 3, Platform: route.platform}
+				group := &service.Group{ID: 3, Platform: route.platform, RateMultiplier: 1, AllowImageGeneration: true}
 				groupID := group.ID
 				path, header, value, want := route.path, "", "", http.StatusForbidden
 				switch scenario {
@@ -323,7 +323,10 @@ func TestRegionalVideoFundsGateAllowsOnlyOriginalFundedQueries(t *testing.T) {
 		for _, scenario := range []string{"allowed", "missing_task", "sql_unavailable", "wrong_group", "wrong_user", "changed_route", "settlement_unavailable"} {
 			t.Run(route.provider+route.method+route.path+"/"+scenario, func(t *testing.T) {
 				cfg := &config.Config{RunMode: config.RunModeStandard, Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalFundsFile: "fixture"}, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
-				group := &service.Group{ID: 3, Platform: route.platform}
+				// Coordinated video creation is currently certified only for the
+				// immutable unit sale multiplier; keep the fixture on that path so
+				// the readiness assertion exercises the funds gate itself.
+				group := &service.Group{ID: 3, Platform: route.platform, RateMultiplier: 1}
 				account := service.Account{ID: 4, Platform: route.platform, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 5, GroupIDs: []int64{group.ID}, Credentials: map[string]any{"api_key": "original-key", "base_url": "https://video.example", "openai_capabilities": []string{"seedance"}}}
 				owner := video.Owner{UserID: 1, APIKeyID: 2, GroupID: group.ID, AccountID: account.ID, Provider: route.provider, RouteFingerprint: service.AccountRouteFingerprint(&account)}
 				price := ledger.Price{Model: "video-alias", Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: route.provider, UpstreamModel: "MiniMax-H3", Resolution: "768p", DurationSeconds: 5}, Basis: "request", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10}}
@@ -351,8 +354,9 @@ func TestRegionalVideoFundsGateAllowsOnlyOriginalFundedQueries(t *testing.T) {
 					l.completeErr = errors.New("settlement temporarily unavailable")
 				}
 				upstream := &regionalFundedVideoRouteUpstream{regionalVideoRouteUpstream: &regionalVideoRouteUpstream{mode: "local"}, provider: route.provider}
+				readinessCalls := 0
 				meter := &service.RegionalMetering{Ledger: l, Readiness: func(context.Context) error {
-					t.Error("existing task must not require new admission readiness")
+					readinessCalls++
 					return errors.New("new admission paused")
 				}, Admit: func(context.Context, *service.APIKey, *service.Account, []byte) (ledger.Reservation, ledger.Price, error) {
 					panic("queries must never reserve new funds")
@@ -407,6 +411,7 @@ func TestRegionalVideoFundsGateAllowsOnlyOriginalFundedQueries(t *testing.T) {
 				require.Equal(t, wantSends, upstream.sends)
 				require.Equal(t, 1, l.completes)
 				require.Equal(t, 1, upstream.releases)
+				require.Zero(t, readinessCalls, "existing task must not require new admission readiness")
 				before := l.resolves
 				create := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"grok-imagine-video","prompt":"fixture"}`))
 				create.Header.Set("Authorization", "Bearer downstream-fixture")
@@ -415,6 +420,11 @@ func TestRegionalVideoFundsGateAllowsOnlyOriginalFundedQueries(t *testing.T) {
 				require.Equal(t, http.StatusServiceUnavailable, denied.Code)
 				require.Contains(t, denied.Body.String(), "regional_cost_bound_unavailable")
 				require.Equal(t, before, l.resolves, "creation must not reuse an existing task's financial authority")
+				wantReadiness := 1
+				if route.provider == "seedance" {
+					wantReadiness = 0 // OpenAI groups cannot create through the Grok /videos route.
+				}
+				require.Equal(t, wantReadiness, readinessCalls)
 				require.Equal(t, wantSends, upstream.sends)
 			})
 		}

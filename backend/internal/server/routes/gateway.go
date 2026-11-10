@@ -83,26 +83,26 @@ func RegisterGatewayRoutes(
 	groupModelAllowlist := middleware.GroupModelAllowlist()
 	var regionalVideoFundsGate gin.HandlerFunc
 	if cfg.Runtime.RegionalFundsFile != "" {
-		type deferredVideoQuery struct {
+		type deferredVideoRequest struct {
 			endpoint service.GrokMediaEndpoint
 			taskID   string
 		}
-		const deferredVideoQueryKey = "regional_video.deferred_funds_query"
+		const deferredVideoRequestKey = "regional_video.deferred_funds_request"
 		rejectFunds := func(c *gin.Context) {
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"type": "regional_cost_bound_unavailable", "message": "This protocol has no certified regional cost bound"}})
 		}
 		regionalVideoFundsGate = func(c *gin.Context) {
-			value, exists := c.Get(deferredVideoQueryKey)
+			value, exists := c.Get(deferredVideoRequestKey)
 			if !exists {
 				c.Next()
 				return
 			}
-			query, ok := value.(deferredVideoQuery)
-			if ok && h.OpenAIGateway.ForwardRegionalVideoQuery(c, query.endpoint, query.taskID) {
+			request, ok := value.(deferredVideoRequest)
+			if ok && request.endpoint.IsVideoLookupRequest() && h.OpenAIGateway.ForwardRegionalVideoQuery(c, request.endpoint, request.taskID) {
 				c.Abort()
 				return
 			}
-			if ok && h.OpenAIGateway.AuthorizeRegionalVideoFundsQuery(c, query.endpoint, query.taskID) {
+			if ok && h.OpenAIGateway.AuthorizeRegionalVideoFundsRequest(c, request.endpoint, request.taskID) {
 				c.Next()
 				return
 			}
@@ -118,11 +118,11 @@ func RegisterGatewayRoutes(
 			key, ok := middleware.GetAPIKeyFromContext(c)
 			if !discovery && (!generation || !ok || key == nil || key.Group == nil || key.Group.Platform != service.PlatformOpenAI) {
 				// A remote task is executed and billed only at its original node.
-				// Local queries require their permanent financial owner; generation
-				// still requires a separately certified creation bound.
-				endpoint, taskID := middleware.RegionalVideoLookup(c)
-				if endpoint.IsVideoLookupRequest() && taskID != "" {
-					c.Set(deferredVideoQueryKey, deferredVideoQuery{endpoint: endpoint, taskID: taskID})
+				// Local queries require their permanent financial owner; creation
+				// reserves its immutable bound in the original adapter before send.
+				endpoint, taskID := middleware.RegionalVideoRequest(c)
+				if endpoint.IsAsyncVideoCreate() || endpoint.IsVideoLookupRequest() && taskID != "" {
+					c.Set(deferredVideoRequestKey, deferredVideoRequest{endpoint: endpoint, taskID: taskID})
 					original(c)
 					return
 				}

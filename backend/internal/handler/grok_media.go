@@ -12,6 +12,7 @@ import (
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -76,10 +77,11 @@ func (h *OpenAIGatewayHandler) ForwardRegionalVideoQuery(c *gin.Context, endpoin
 	return handled || err != nil
 }
 
-// AuthorizeRegionalVideoFundsQuery admits only an existing task from the local
-// financial ledger. New-admission readiness is irrelevant to its reserved funds.
-func (h *OpenAIGatewayHandler) AuthorizeRegionalVideoFundsQuery(c *gin.Context, endpoint service.GrokMediaEndpoint, taskID string) bool {
-	if h == nil || h.gatewayService == nil || h.gatewayService.RegionalFundsReadiness() == nil || c == nil || c.Request == nil || !endpoint.IsVideoLookupRequest() || strings.TrimSpace(taskID) == "" {
+// AuthorizeRegionalVideoFundsRequest requires a ready financial authority for
+// creation; the adapter must still reserve and start before sending. Existing
+// tasks authenticate their permanent owner independently of new admission.
+func (h *OpenAIGatewayHandler) AuthorizeRegionalVideoFundsRequest(c *gin.Context, endpoint service.GrokMediaEndpoint, taskID string) bool {
+	if h == nil || h.gatewayService == nil || h.gatewayService.RegionalFundsReadiness() == nil || c == nil || c.Request == nil {
 		return false
 	}
 	key, ok := middleware2.GetAPIKeyFromContext(c)
@@ -90,8 +92,36 @@ func (h *OpenAIGatewayHandler) AuthorizeRegionalVideoFundsQuery(c *gin.Context, 
 	if !ok || subject.UserID != key.UserID {
 		return false
 	}
+	if endpoint.IsAsyncVideoCreate() {
+		// The coordinated ledger currently certifies only its immutable video
+		// tariff. Dynamic group, video-specific, and peak sale rates remain
+		// fail-closed until their exact rational contract is installed and
+		// checked in SQL.
+		if !regionalVideoUnitSaleRate(key.Group) {
+			return false
+		}
+		funds := h.gatewayService.RegionalFundsReadiness()
+		_, supported := funds.Ledger.(ledger.VideoTaskLedger)
+		return supported && funds.Check(c.Request.Context()) == nil
+	}
+	if !endpoint.IsVideoLookupRequest() || strings.TrimSpace(taskID) == "" {
+		return false
+	}
 	accountID, err := h.gatewayService.ResolveMediaVideoRequestAccount(c.Request.Context(), key.GroupID, taskID, subject.UserID, key.ID, endpoint)
 	return err == nil && accountID > 0
+}
+
+func regionalVideoUnitSaleRate(group *service.Group) bool {
+	if group == nil || math.IsNaN(group.RateMultiplier) || math.IsInf(group.RateMultiplier, 0) || group.RateMultiplier != 1 {
+		return false
+	}
+	if group.PeakRateEnabled && (math.IsNaN(group.PeakRateMultiplier) || math.IsInf(group.PeakRateMultiplier, 0) || group.PeakRateMultiplier != 1) {
+		return false
+	}
+	if !group.VideoRateIndependent {
+		return true
+	}
+	return !math.IsNaN(group.VideoRateMultiplier) && !math.IsInf(group.VideoRateMultiplier, 0) && group.VideoRateMultiplier == 1
 }
 
 func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.GrokMediaEndpoint, requestID string) {
@@ -162,26 +192,30 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 				return
 			}
-			if apiKey.Group == nil {
-				h.errorResponse(c, http.StatusForbidden, "permission_error", "MiniMax-H3 requires a group video price")
-				return
+			// Coordinated funds use the immutable SQL tariff below instead of
+			// the legacy floating-point quote and its pending-billing snapshot.
+			if h.gatewayService.RegionalFundsReadiness() == nil {
+				if apiKey.Group == nil {
+					h.errorResponse(c, http.StatusForbidden, "permission_error", "MiniMax-H3 requires a group video price")
+					return
+				}
+				if math.IsNaN(apiKey.Group.RateMultiplier) || math.IsInf(apiKey.Group.RateMultiplier, 0) {
+					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid MiniMax-H3 group multiplier")
+					return
+				}
+				rate := math.Max(0, apiKey.Group.RateMultiplier)
+				base, quoteErr := service.QuoteMiniMaxH3Video(apiKey.Group.VideoModelPrices, requestInfo.DurationSeconds)
+				if quoteErr != nil {
+					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", quoteErr.Error())
+					return
+				}
+				if math.IsInf(base*rate, 0) {
+					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "MiniMax-H3 price exceeds the supported range")
+					return
+				}
+				miniMaxH3BaseCost = &base
+				miniMaxH3RateMultiplier = &rate
 			}
-			if math.IsNaN(apiKey.Group.RateMultiplier) || math.IsInf(apiKey.Group.RateMultiplier, 0) {
-				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid MiniMax-H3 group multiplier")
-				return
-			}
-			rate := math.Max(0, apiKey.Group.RateMultiplier)
-			base, quoteErr := service.QuoteMiniMaxH3Video(apiKey.Group.VideoModelPrices, requestInfo.DurationSeconds)
-			if quoteErr != nil {
-				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", quoteErr.Error())
-				return
-			}
-			if math.IsInf(base*rate, 0) {
-				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "MiniMax-H3 price exceeds the supported range")
-				return
-			}
-			miniMaxH3BaseCost = &base
-			miniMaxH3RateMultiplier = &rate
 		}
 	}
 	if endpoint == service.SeedanceEndpointCreate {
@@ -255,7 +289,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 	}
-	fundedVideoLookup := boundLookupAccountID > 0 && h.gatewayService.RegionalFundsReadiness() != nil
+	fundedVideoRequest := h.gatewayService.RegionalFundsReadiness() != nil && (boundLookupAccountID > 0 || endpoint.IsAsyncVideoCreate())
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
@@ -268,9 +302,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		defer userReleaseFunc()
 	}
 
-	// Permanent SQL ownership proves that this task already reserved its funds.
-	// Pausing new admissions must not prevent querying, settling or cancelling it.
-	if !fundedVideoLookup {
+	// Coordinated requests use the SQL funds authority, never the legacy balance
+	// cache. Creation reserves before send; existing tasks remain queryable while
+	// new admission is paused.
+	if !fundedVideoRequest {
 		if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 			reqLog.Info("grok_media.billing_eligibility_check_failed", zap.Error(err))
 			status, code, message, retryAfter := billingErrorDetails(err)
@@ -646,7 +681,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				)
 			}
 		}
-		if endpoint.IsAsyncVideoCreate() && strings.TrimSpace(result.ResponseID) != "" {
+		if endpoint.IsAsyncVideoCreate() && !result.RegionalMetered && strings.TrimSpace(result.ResponseID) != "" {
 			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(
 				requestCtx, apiKey.GroupID, result.ResponseID, subject.UserID, apiKey.ID, account.ID,
 			); err != nil {

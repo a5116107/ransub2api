@@ -73,7 +73,7 @@ func regionalForwardGateway(t *testing.T, gateway *service.OpenAIGatewayService,
 	router := gin.New()
 	router.Use(servermiddleware.RegionalAPIKeyAuth(keys, cfg), servermiddleware.GroupModelAllowlist(), servermiddleware.GroupCodexCLIOnly(nil), servermiddleware.GroupBlockSubagents())
 	handleLookup := func(c *gin.Context) {
-		endpoint, taskID := servermiddleware.RegionalVideoLookup(c)
+		endpoint, taskID := servermiddleware.RegionalVideoRequest(c)
 		key, keyOK := servermiddleware.GetAPIKeyFromContext(c)
 		subject, userOK := servermiddleware.GetAuthSubjectFromContext(c)
 		if !keyOK || !userOK || !endpoint.IsVideoLookupRequest() || taskID == "" {

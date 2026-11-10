@@ -178,6 +178,27 @@ func TestRegionalGatewayVideoQueryReachesOriginalNodeAfterLocalPolicies(t *testi
 			require.Equal(t, video.ForwardPolicyVersion, upstream.last.PolicyVersion)
 		})
 	}
+	for _, tc := range []struct{ path, platform string }{
+		{"/v1/videos", service.PlatformGrok},
+		{"/videos/edits", service.PlatformGrok},
+		{"/v1/videos/extensions", service.PlatformComposite},
+		{"/videos/generations", service.PlatformMiniMax},
+		{"/v3/contents/generations/tasks", service.PlatformOpenAI},
+		{"/api/v3/contents/generations/tasks", service.PlatformComposite},
+	} {
+		t.Run("create"+tc.path+"/"+tc.platform, func(t *testing.T) {
+			before := upstream.calls
+			w := request(http.MethodPost, tc.path+"?model=model-fixture", "fixture-"+tc.platform, "")
+			require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+			require.Contains(t, w.Body.String(), "regional_cost_bound_unavailable", "locally authenticated creation must reach the funds gate, which refuses this fixture's missing financial authority")
+			require.Equal(t, before, upstream.calls, "creation must not use the cross-region query forwarder")
+			w = request(http.MethodPost, tc.path+"?model=blocked", "fixture-"+tc.platform, "")
+			require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+			w = request(http.MethodPost, tc.path+"?model=model-fixture", "fixture-"+tc.platform, "worker")
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			require.Equal(t, before, upstream.calls)
+		})
+	}
 	// Exercise the full regional ingress through real mutual TLS and back into
 	// the original service's authenticated router. SQL ownership is covered by
 	// the separate regional repository integration test, not this fixture.

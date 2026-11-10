@@ -1,6 +1,6 @@
 # 当前有效决策
 
-更新日期：2026-11-02。
+更新日期：2026-11-11。
 
 本次按用户“统一文档、移除过时内容”的要求归并决策记录，仅保留当前有效结论。
 后续新决策追加记录；技术建议与未确认参数在 [设计文档](monitor-driven-scheduling-design.md) 中讨论。
@@ -1601,3 +1601,11 @@
 - 最终条件/switch修正后六包相关race实际退出0：133顶层/516子例通过、0失败/跳过，service/handler/repository/routes/integration分别`6.922s/4.287s/40.722s/1.696s/16.498s`（`funds-create-acceptance-final.jsonl`）；其中ledger按该筛选无测试，完整ledger验证沿前述`funds-create-ledger-final.jsonl`，不计作新增通过。四包完整lint在6GiB内存目标与12分钟预算下虽打印`0 issues.`，随后明确超时退出4（`funds-create-full-lint-final.log`），未视作通过。观测进程常驻5.83GiB、主机空闲10.2GiB后，仅将检查资源配置改为8GiB/18分钟，保留相同四包、标签和全部规则继续核实；不以超时输出关闭静态验收。
 - 相同源码四包完整规则复验实际退出0、`0 issues.`：`bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners ./internal/service ./internal/regional/ledger ./internal/repository ./internal/handler`，进程级`GOMAXPROCS=2 GOMEMLIMIT=8GiB`（`funds-create-full-lint-verified.log`）。这只证明该资源配置下本轮检查完成，不将先前超时归因推成普遍结论；完整ledger的13顶层/27子例也全部通过、0失败/跳过。原28项主任务保持20 done、3 in_progress、5 pending，创建适配器子项完成不关闭新建路由、运行时倍率、unknown、多peer及D3–D9验收。
 - 为复核用户确认的原节点转发，追加`go test -race -vet=off -p 1 -tags 'unit integration' ./internal/repository -run '^TestRegionalAsyncVideo(ForwardingUsesOriginalAuthority|DirectoryAuthenticatedRoundTrip|DirectoryCompletedReleaseRollback)$' -count=1 -timeout=6m -json`实际退出0：3顶层/8子例通过、0失败/跳过，`36.435s`（`funds-create-origin-regression.jsonl`）。同源四包vet已独立通过，故此处关闭`go test`隐含的重复vet；没有关闭race、测试断言或完整lint。原SQL/Redis、双向TLS目录/查询及释放回滚恢复夹具继续通过，不声称覆盖新建入口或任意多peer。仅在原H盘工作树交付本地提交，未CI/推送/部署/生产迁移；12张1164字节旧PNG及历史审批拒删资源维持原位不提交，不重试清理或另建工作树。
+
+## 2026-11-11：D2 单位倍率创建入口与视频专用倍率拒绝
+
+- 复核发现区域创建路由夹具的默认`Group.RateMultiplier=0`使资金门在调用就绪检查前直接拒绝，无法证明“新准入暂停”边界；将夹具固定为单位倍率，并保留已有非单位倍率负向场景。随后补充`VideoRateIndependent`非单位场景，证明视频专用销售倍率同样在资金授权前拒绝，不让固定SQL价目与动态分组售价脱节。
+- `AuthorizeRegionalVideoFundsRequest`现统一调用`regionalVideoUnitSaleRate`：通用分组倍率、启用的高峰倍率和启用的视频专用倍率均须为有限值`1`；查询仍只核对原SQL永久归属，创建仍由适配器执行Reserve→Start→provider POST→Bind。未安装精确有理数动态价目合同时继续fail-closed。
+- 最终`go test -race -p 1 -tags 'unit integration' ./internal/service ./internal/handler ./internal/repository ./internal/server/routes ./internal/integration/regionalvideo -run '^Test(RegionalVideo|AsyncVideo(KeyBind|SharedKey|CreateDoesNot)|RegionalMeter|Grok.*Video|GrokMedia|MiniMaxH3|Seedance|GatewayRoutes)' -count=1 -timeout=10m -json`退出0：五包133顶层、576个含子例通过，0失败/跳过（`funds-create-acceptance-final-rerun2.jsonl`）；新增视频专用倍率专项与原节点主/区域SQL/HTTP生命周期均通过（`funds-create-video-rate-final.jsonl`）。
+- `go test -race -p 1 -tags unit ./internal/server ./internal/server/middleware -run '^Test(Regional|Gateway)' -count=1 -timeout=5m -json`退出0：10顶层/136含子例通过，1个Windows Unix-socket既有skip；七包`go vet -p 1 -tags 'unit integration'`退出0；fast lint退出0并报告`0 issues.`；`gofmt -d`和`git diff --check`通过。未运行CI、推送、部署或生产迁移。
+- 文档原位同步单位倍率创建、视频专用倍率拒绝、查询暂停时仍可结算及剩余unknown/multi-peer边界；D2父项保持`in_progress`。原节点继续持有任务、额度和结算，unknown无任务ID核实仍等待供应商关联查询契约。
