@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -36,25 +37,7 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 		for _, mode := range []string{"primary", "regional"} {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				ctx := t.Context()
-				user := regionalLedgerUser(t)
-				client := testEntClient(t)
-				platform := service.PlatformOpenAI
-				switch tc.provider {
-				case "minimax-h3":
-					platform = service.PlatformMiniMax
-				case "grok":
-					platform = service.PlatformGrok
-				}
-				group := mustCreateGroup(t, client, &service.Group{Name: "video-funds-" + uuid.NewString(), Platform: platform, RateMultiplier: 1})
-				key := mustCreateApiKey(t, client, &service.APIKey{UserID: user, GroupID: &group.ID, Key: "sk-fixture-" + uuid.NewString(), Name: "video-funds"})
-				account := mustCreateAccount(t, client, &service.Account{Name: "video-funds-" + uuid.NewString(), Type: service.AccountTypeAPIKey, Platform: platform, Status: "active", Schedulable: true})
-				_, err := integrationDB.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", account.ID, group.ID)
-				require.NoError(t, err)
-				t.Cleanup(func() {
-					_, _ = integrationDB.Exec("DELETE FROM usage_logs WHERE user_id=$1", user)
-					_, _ = integrationDB.Exec("DELETE FROM regional_primary_requests WHERE user_id=$1", user)
-					_, _ = integrationDB.Exec("DELETE FROM regional_budget_allocations WHERE user_id=$1", user)
-				})
+				user, group, key, account := regionalVideoFinancialSubject(t, tc.provider)
 				price := ledger.Price{Model: "video-funds-" + uuid.NewString(), Video: &ledger.VideoPrice{
 					VideoRequest: ledger.VideoRequest{Provider: tc.provider, UpstreamModel: "MiniMax-H3", Resolution: "768p", DurationSeconds: 5},
 					Basis:        tc.basis, UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10,
@@ -74,7 +57,7 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				}
 				require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
 				require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
-				_, err = integrationDB.ExecContext(ctx, "UPDATE regional_prices SET price='{}' WHERE version=$1", price.Version())
+				_, err := integrationDB.ExecContext(ctx, "UPDATE regional_prices SET price='{}' WHERE version=$1", price.Version())
 				require.Error(t, err, "published video prices must remain immutable")
 				maximum, err := price.VideoMaximum(price.Video.VideoRequest)
 				require.NoError(t, err)
@@ -84,7 +67,8 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				r := regionalLedgerReservation(t, lease, "video-request-"+uuid.NewString(), maximum)
 				r.APIKeyID, r.AccountID, r.Model, r.PricingVersion = key.ID, account.ID, price.Model, price.Version()
 				r.Video = &price.Video.VideoRequest
-				var requests ledger.RequestLedger = holds
+				r.VideoOrigin = &ledger.VideoOrigin{Member: "video:" + uuid.NewString(), Owner: video.Owner{UserID: user, APIKeyID: key.ID, GroupID: group.ID, AccountID: account.ID, Provider: tc.provider, RouteFingerprint: service.AccountRouteFingerprint(account)}}
+				var requests ledger.VideoTaskLedger = holds
 				var local *ledger.Local
 				if mode == "regional" {
 					require.NoError(t, primary.Issue(ctx, lease))
@@ -94,6 +78,25 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				} else {
 					r.LeaseID, r.RegionID = "", ""
 				}
+				for _, mutate := range []func(*ledger.VideoOrigin){
+					func(o *ledger.VideoOrigin) { o.Member = "video:invalid" },
+					func(o *ledger.VideoOrigin) { o.Owner.UserID++ },
+					func(o *ledger.VideoOrigin) { o.Owner.APIKeyID++ },
+					func(o *ledger.VideoOrigin) { o.Owner.AccountID++ },
+					func(o *ledger.VideoOrigin) { o.Owner.Provider = "other" },
+					func(o *ledger.VideoOrigin) { o.Owner.RouteFingerprint = [32]byte{} },
+				} {
+					bad := r
+					origin := *r.VideoOrigin
+					mutate(&origin)
+					bad.VideoOrigin = &origin
+					_, err := requests.Reserve(ctx, bad)
+					require.ErrorIs(t, err, ledger.ErrConflict)
+				}
+				missingOrigin := r
+				missingOrigin.VideoOrigin = nil
+				_, err = requests.Reserve(ctx, missingOrigin)
+				require.ErrorIs(t, err, ledger.ErrConflict, "historical video records cannot infer an origin from current routing")
 				bad := r
 				bad.RequestID = "video-underhold-" + uuid.NewString()
 				if maximum > 0 {
@@ -109,12 +112,19 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				require.Error(t, err, "missing prices must not imply a free task")
 				cancelBeforeSend := r
 				cancelBeforeSend.RequestID = "video-cancel-" + uuid.NewString()
+				cancelOrigin := *r.VideoOrigin
+				cancelOrigin.Member = "video:" + uuid.NewString()
+				cancelBeforeSend.VideoOrigin = &cancelOrigin
 				fresh, err := requests.Reserve(ctx, cancelBeforeSend)
 				require.NoError(t, err)
 				require.True(t, fresh)
 				require.NoError(t, requests.CancelBeforeStart(ctx, cancelBeforeSend.RequestID))
 				require.NoError(t, requests.CancelBeforeStart(ctx, cancelBeforeSend.RequestID))
 				require.ErrorIs(t, requests.Start(ctx, cancelBeforeSend.RequestID), ledger.ErrAlreadyDispatched)
+				require.ErrorIs(t, requests.BindVideoTask(ctx, cancelBeforeSend.RequestID, "unsent-task"), ledger.ErrAlreadyDispatched)
+				cancelBeforeSend.RequestID = "video-reused-member-" + uuid.NewString()
+				_, err = requests.Reserve(ctx, cancelBeforeSend)
+				require.ErrorIs(t, err, ledger.ErrConflict, "cancellation must not recycle a submission identity")
 				fresh, err = requests.Reserve(ctx, r)
 				require.NoError(t, err)
 				require.True(t, fresh)
@@ -136,8 +146,36 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				e := regionalLedgerEvent(r, tc.charge)
 				e.InputTokens, e.OutputTokens = 0, tokens
 				e.Video = &ledger.VideoUsage{VideoRequest: price.Video.VideoRequest, TaskID: "provider-task-" + uuid.NewString(), State: "completed", CompletionTokens: tokens}
+				e.VideoOrigin = r.VideoOrigin
 				if tc.failed {
 					e.Video.State = "failed"
+				}
+				require.ErrorIs(t, requests.Complete(ctx, e), ledger.ErrConflict, "terminal evidence must not assign an unbound task")
+				for _, invalidTask := range []string{"", " task ", "task\r\n", "task\x00id"} {
+					require.ErrorIs(t, requests.BindVideoTask(ctx, r.RequestID, invalidTask), ledger.ErrConflict)
+				}
+				canceledBind, cancelBind := context.WithCancel(ctx)
+				cancelBind()
+				require.Error(t, requests.BindVideoTask(canceledBind, r.RequestID, e.Video.TaskID))
+				require.NoError(t, requests.BindVideoTask(ctx, r.RequestID, e.Video.TaskID))
+				require.NoError(t, requests.BindVideoTask(ctx, r.RequestID, e.Video.TaskID))
+				require.ErrorIs(t, requests.BindVideoTask(ctx, r.RequestID, "other-task"), ledger.ErrConflict)
+				recovered, err := requests.LoadVideoTask(ctx, r.VideoOrigin.Owner, e.Video.TaskID)
+				require.NoError(t, err)
+				require.Equal(t, r, recovered.Reservation)
+				require.Equal(t, "started", recovered.State)
+				require.Nil(t, recovered.Event)
+				wrongOwner := r.VideoOrigin.Owner
+				wrongOwner.RouteFingerprint[0] ^= 1
+				_, err = requests.LoadVideoTask(ctx, wrongOwner, e.Video.TaskID)
+				require.ErrorIs(t, err, ledger.ErrConflict)
+				wrongOwner = r.VideoOrigin.Owner
+				wrongOwner.UserID++
+				_, err = requests.LoadVideoTask(ctx, wrongOwner, e.Video.TaskID)
+				require.ErrorIs(t, err, sql.ErrNoRows)
+				if local != nil {
+					_, err = (&ledger.Local{DB: integrationDB, Region: "eu"}).LoadVideoTask(ctx, r.VideoOrigin.Owner, e.Video.TaskID)
+					require.ErrorIs(t, err, ledger.ErrConflict)
 				}
 				for _, mutate := range []func(*ledger.Event){
 					func(e *ledger.Event) { e.Usage.Charge += 10 },
@@ -145,6 +183,8 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 					func(e *ledger.Event) { e.Video.State = "queued" },
 					func(e *ledger.Event) { e.InputTokens = 1 },
 					func(e *ledger.Event) { e.Video = nil },
+					func(e *ledger.Event) { e.Video.TaskID = "unbound-task" },
+					func(e *ledger.Event) { e.VideoOrigin = nil },
 				} {
 					badEvent := e
 					copyUsage := *e.Video
@@ -186,6 +226,10 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				for replayErr := range errorsCh {
 					require.NoError(t, replayErr)
 				}
+				recovered, err = requests.LoadVideoTask(ctx, r.VideoOrigin.Owner, e.Video.TaskID)
+				require.NoError(t, err)
+				require.Equal(t, &e, recovered.Event, "completed recovery retains the exact immutable event")
+				require.NoError(t, requests.Complete(ctx, *recovered.Event))
 				if local != nil {
 					local = &ledger.Local{DB: integrationDB, Region: lease.RegionID}
 					pending, err := local.Pending(ctx, 100)
@@ -255,7 +299,47 @@ func TestRegionalVideoPricingReservationsAndSettlement(t *testing.T) {
 				require.True(t, correct, "text metadata updates must not overwrite video or token billing mode")
 				require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT u.balance=10-$2::numeric AND k.quota_used=$2::numeric AND k.usage_5h=$2::numeric FROM users u JOIN api_keys k ON k.user_id=u.id WHERE u.id=$1 AND k.id=$3`, user, actualUSD, key.ID).Scan(&correct))
 				require.True(t, correct, "one charge must reconcile balance and key budgets atomically")
+				if mode == "primary" {
+					duplicate := r
+					duplicate.RequestID = "video-duplicate-" + uuid.NewString()
+					duplicateOrigin := *r.VideoOrigin
+					duplicateOrigin.Member = "video:" + uuid.NewString()
+					duplicate.VideoOrigin = &duplicateOrigin
+					fresh, err := requests.Reserve(ctx, duplicate)
+					require.NoError(t, err)
+					require.True(t, fresh)
+					require.NoError(t, requests.Start(ctx, duplicate.RequestID))
+					require.ErrorIs(t, requests.BindVideoTask(ctx, duplicate.RequestID, e.Video.TaskID), ledger.ErrConflict, "completed tasks retain a permanent financial identity")
+					duplicateEvent := e
+					duplicateEvent.Usage.EventID = duplicate.RequestID
+					duplicateEvent.VideoOrigin = duplicate.VideoOrigin
+					require.ErrorIs(t, requests.Complete(ctx, duplicateEvent), ledger.ErrConflict, "one provider task must not settle under a second financial request")
+				}
 			})
 		}
 	}
+}
+
+func regionalVideoFinancialSubject(t *testing.T, provider string) (int64, *service.Group, *service.APIKey, *service.Account) {
+	t.Helper()
+	user := regionalLedgerUser(t)
+	client := testEntClient(t)
+	platform := service.PlatformOpenAI
+	switch provider {
+	case "minimax-h3":
+		platform = service.PlatformMiniMax
+	case "grok":
+		platform = service.PlatformGrok
+	}
+	group := mustCreateGroup(t, client, &service.Group{Name: "video-funds-" + uuid.NewString(), Platform: platform, RateMultiplier: 1})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user, GroupID: &group.ID, Key: "sk-fixture-" + uuid.NewString(), Name: "video-funds"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "video-funds-" + uuid.NewString(), Type: service.AccountTypeAPIKey, Platform: platform, Status: "active", Schedulable: true})
+	_, err := integrationDB.ExecContext(t.Context(), "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", account.ID, group.ID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = integrationDB.Exec("DELETE FROM usage_logs WHERE user_id=$1", user)
+		_, _ = integrationDB.Exec("DELETE FROM regional_primary_requests WHERE user_id=$1", user)
+		_, _ = integrationDB.Exec("DELETE FROM regional_budget_allocations WHERE user_id=$1", user)
+	})
+	return user, group, key, account
 }

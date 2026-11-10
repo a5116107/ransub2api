@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -122,7 +123,7 @@ func TestAsyncVideoKeyLeaseHandoffPersistsBindsAndReleasesAcrossInstances(t *tes
 	require.NoError(t, second.ReleaseAsyncVideoKeyLeaseByTask(t.Context(), owner, "grok-task"))
 	require.Eventually(t, func() bool {
 		return rdb.ZCard(context.Background(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val() == 0 &&
-			rdb.Exists(context.Background(), asyncVideoTaskKey(owner, "grok-task")).Val() == 0
+			rdb.Exists(context.Background(), video.TaskKey(owner, "grok-task")).Val() == 0
 	}, time.Second, 10*time.Millisecond)
 
 	lease, err := first.AcquirePersistentUpstreamKeySlots(t.Context(), asyncVideoLeaseRequest(t, competitor))
@@ -245,7 +246,7 @@ func TestAsyncVideoKeyLeaseTaskOwnership(t *testing.T) {
 	raw, err := rdb.Get(t.Context(), asyncVideoMemberKey(handoff.Member())).Bytes()
 	require.NoError(t, err)
 	fenced, err := fenceAsyncVideoKeyLeaseScript.Run(t.Context(), rdb,
-		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), asyncVideoTaskKey(owner, "same-id"), asyncVideoReleaseKey()},
+		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), video.TaskKey(owner, "same-id"), asyncVideoReleaseKey()},
 		handoff.Member(), raw, "0").Int()
 	require.NoError(t, err)
 	require.Equal(t, 1, fenced)
@@ -481,7 +482,7 @@ func TestAsyncVideoKeyBindRejectsStaleSnapshot(t *testing.T) {
 	payload, err := json.Marshal(stale)
 	require.NoError(t, err)
 	result, err := bindAsyncVideoKeyLeaseScript.Run(t.Context(), rdb,
-		[]string{key, asyncVideoTaskKey(handoff.Owner(), "task"), asyncVideoUnknownKey(), asyncVideoFenceKey(handoff.Member())},
+		[]string{key, video.TaskKey(handoff.Owner(), "task"), asyncVideoUnknownKey(), asyncVideoFenceKey(handoff.Member())},
 		handoff.Member(), payload, oldRaw, "task").Int()
 	require.NoError(t, err)
 	require.Equal(t, -2, result)
@@ -527,7 +528,7 @@ func TestAsyncVideoKeyBindRetriesConcurrentSnapshotChanges(t *testing.T) {
 			if exhaust {
 				require.ErrorIs(t, err, service.ErrUpstreamKeyLease)
 				require.Equal(t, 3, hook.calls)
-				require.Zero(t, rdb.Exists(t.Context(), asyncVideoTaskKey(handoff.Owner(), "task")).Val())
+				require.Zero(t, rdb.Exists(t.Context(), video.TaskKey(handoff.Owner(), "task")).Val())
 				require.NoError(t, rdb.ZScore(t.Context(), asyncVideoUnknownKey(), handoff.Member()).Err())
 			} else {
 				require.NoError(t, err)
@@ -632,7 +633,7 @@ func TestAsyncVideoKeyFenceRejectsStaleSnapshotAndMissingTaskIndex(t *testing.T)
 	require.Zero(t, rdb.Exists(t.Context(), asyncVideoFenceKey(handoff.Member())).Val())
 	require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
 
-	require.NoError(t, rdb.Del(t.Context(), asyncVideoTaskKey(handoff.Owner(), "task")).Err())
+	require.NoError(t, rdb.Del(t.Context(), video.TaskKey(handoff.Owner(), "task")).Err())
 	require.ErrorIs(t, upstream.ReleaseAsyncVideoKeyLeaseByMember(t.Context(), handoff.Member()), service.ErrUpstreamKeyLease)
 	require.NoError(t, upstream.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()), "a missing task index must preserve the member")
 }
@@ -660,7 +661,7 @@ func TestAsyncVideoKeyReleaseFailureKeepsFencedRecordForRetry(t *testing.T) {
 
 	restarted := liveKeyTestUpstream(t, upstreamKeyTestConfig(1, 1), rdb, nil)
 	require.NoError(t, restarted.ReleaseAsyncVideoKeyLeaseByMember(t.Context(), handoff.Member()))
-	require.Zero(t, rdb.Exists(t.Context(), asyncVideoMemberKey(handoff.Member()), asyncVideoTaskKey(handoff.Owner(), "task"), asyncVideoFenceKey(handoff.Member())).Val())
+	require.Zero(t, rdb.Exists(t.Context(), asyncVideoMemberKey(handoff.Member()), video.TaskKey(handoff.Owner(), "task"), asyncVideoFenceKey(handoff.Member())).Val())
 	require.Error(t, rdb.ZScore(t.Context(), asyncVideoUnknownKey(), handoff.Member()).Err())
 	require.Error(t, restarted.CheckPersistentUpstreamKeySlots(t.Context(), handoff.Lease()))
 	require.Error(t, rdb.ZScore(t.Context(), asyncVideoReleaseKey(), handoff.Member()).Err())
@@ -834,7 +835,7 @@ func TestAsyncVideoKeyRecoveryDoesNotRequeueCompletedRelease(t *testing.T) {
 	raw, err := rdb.Get(t.Context(), asyncVideoMemberKey(handoff.Member())).Bytes()
 	require.NoError(t, err)
 	fenced, err := fenceAsyncVideoKeyLeaseScript.Run(t.Context(), rdb,
-		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), asyncVideoTaskKey(handoff.Owner(), "task"), asyncVideoReleaseKey()},
+		[]string{asyncVideoFenceKey(handoff.Member()), asyncVideoMemberKey(handoff.Member()), asyncVideoUnknownKey(), video.TaskKey(handoff.Owner(), "task"), asyncVideoReleaseKey()},
 		handoff.Member(), raw, "0").Int()
 	require.NoError(t, err)
 	require.Equal(t, 1, fenced)

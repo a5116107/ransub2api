@@ -30,6 +30,9 @@ func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, err
 	if r.RequestID == "" || r.UserID <= 0 || r.Maximum < 0 || !validDigest(r.PayloadSHA256) || r.Model == "" || r.PricingVersion == "" {
 		return false, ErrConflict
 	}
+	if r.Video != nil && (r.LeaseID != "" || r.RegionID != "") {
+		return false, ErrConflict
+	}
 	amount, err := USD(r.Maximum)
 	if err != nil {
 		return false, err
@@ -58,6 +61,9 @@ func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, err
 		return false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if err := reserveVideoIdentity(ctx, tx, videoPrimary, r); err != nil {
 		return false, err
 	}
 	funded := true
@@ -166,8 +172,11 @@ func (p *PrimaryRequests) finish(ctx context.Context, id string, e *Event) error
 			u.LeaseID != r.LeaseID || u.RegionID != r.RegionID ||
 			u.UserID != r.UserID || u.APIKeyID != r.APIKeyID || u.AccountID != r.AccountID ||
 			u.Charge < 0 || u.Charge > r.Maximum || !u.AdmittedAt.Equal(r.AdmittedAt) || u.CompletedAt.Before(u.AdmittedAt) ||
-			e.Model != r.Model || e.PricingVersion != r.PricingVersion || e.PayloadSHA256 != r.PayloadSHA256 || !videoMatchesReservation(r.Video, e.Video) {
+			e.Model != r.Model || e.PricingVersion != r.PricingVersion || e.PayloadSHA256 != r.PayloadSHA256 || !videoMatchesReservation(r, *e) {
 			return ErrConflict
+		}
+		if err := verifyBoundVideoIdentity(ctx, tx, videoPrimary, r, *e); err != nil {
+			return err
 		}
 		if err := verifyVideoSettlement(ctx, tx, r, *e); err != nil {
 			return err

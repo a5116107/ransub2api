@@ -166,7 +166,7 @@ func (v VideoUsage) validate() error {
 	if err := v.VideoRequest.validate(); err != nil {
 		return err
 	}
-	if v.TaskID == "" || v.TaskID != strings.TrimSpace(v.TaskID) || len(v.TaskID) > 256 || strings.ContainsAny(v.TaskID, "\x00\r\n") || v.CompletionTokens < 0 || v.CompletionTokens > 2147483647 {
+	if !validVideoTaskID(v.TaskID) || v.CompletionTokens < 0 || v.CompletionTokens > 2147483647 {
 		return errors.New("invalid video terminal evidence")
 	}
 	switch v.State {
@@ -182,6 +182,10 @@ func (v VideoUsage) validate() error {
 		return errors.New("video terminal state missing; hold retained")
 	}
 	return nil
+}
+
+func validVideoTaskID(id string) bool {
+	return id != "" && id == strings.TrimSpace(id) && len(id) <= 256 && !strings.ContainsAny(id, "\x00\r\n")
 }
 
 func (p Price) VideoCosts(v VideoUsage) (base, charge regional.Amount, err error) {
@@ -256,6 +260,9 @@ func InstallPrice(ctx context.Context, db *sql.DB, p Price) error {
 // Video reservations must match the installed immutable dimensions and full
 // ceiling. Text zero holds still require every billable category to be free.
 func verifyPriceReservation(ctx context.Context, tx *sql.Tx, r Reservation) error {
+	if err := r.validateVideoOrigin(); err != nil {
+		return err
+	}
 	if r.Maximum != 0 && r.Video == nil {
 		return nil
 	}
@@ -293,7 +300,7 @@ func verifyVideoSettlement(ctx context.Context, tx *sql.Tx, r Reservation, e Eve
 	if r.Video == nil && e.Video == nil {
 		return nil
 	}
-	if !videoMatchesReservation(r.Video, e.Video) {
+	if !videoMatchesReservation(r, e) {
 		return ErrConflict
 	}
 	if err := e.validateVideo(); err != nil {

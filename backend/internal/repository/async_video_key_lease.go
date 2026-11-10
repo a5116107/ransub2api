@@ -2,11 +2,10 @@ package repository
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"reflect"
 	"strconv"
 	"strings"
@@ -120,21 +119,6 @@ func asyncVideoMemberKey(member string) string {
 
 func asyncVideoFenceKey(member string) string {
 	return asyncVideoKeyLeasePrefix + "fence:" + strings.TrimSpace(member)
-}
-
-func asyncVideoTaskKey(owner service.AsyncVideoKeyOwner, taskID string) string {
-	if !owner.ValidPrincipal() || strings.TrimSpace(taskID) == "" {
-		return ""
-	}
-	value, _ := json.Marshal(struct {
-		UserID   int64  `json:"user_id"`
-		APIKeyID int64  `json:"api_key_id"`
-		GroupID  int64  `json:"group_id"`
-		Provider string `json:"provider"`
-		TaskID   string `json:"task_id"`
-	}{owner.UserID, owner.APIKeyID, owner.GroupID, owner.Provider, strings.TrimSpace(taskID)})
-	sum := sha256.Sum256(value)
-	return asyncVideoKeyLeasePrefix + "task:v2:" + hex.EncodeToString(sum[:])
 }
 
 func asyncVideoUnknownKey() string { return asyncVideoKeyLeasePrefix + "unknown" }
@@ -260,7 +244,7 @@ func bindAsyncVideoKeyLeaseRecord(ctx context.Context, limiter *upstreamKeyLimit
 			return err
 		}
 		result, err := bindAsyncVideoKeyLeaseScript.Run(ctx, limiter.rdb,
-			[]string{asyncVideoMemberKey(member), asyncVideoTaskKey(record.Owner, taskID), asyncVideoUnknownKey(), asyncVideoFenceKey(member)},
+			[]string{asyncVideoMemberKey(member), video.TaskKey(record.Owner, taskID), asyncVideoUnknownKey(), asyncVideoFenceKey(member)},
 			member, payload, raw, taskID).Int()
 		if err != nil {
 			return err
@@ -402,7 +386,7 @@ func (s *httpUpstreamService) ResolveAsyncVideoKeyOwner(ctx context.Context, pri
 	if err != nil {
 		return nil, err
 	}
-	key := asyncVideoTaskKey(principal, taskID)
+	key := video.TaskKey(principal, taskID)
 	if key == "" {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
@@ -415,7 +399,7 @@ func (s *httpUpstreamService) ResolveAsyncVideoKeyOwner(ctx context.Context, pri
 	}
 	var record asyncVideoKeyLeaseRecord
 	if json.Unmarshal(raw, &record) != nil || !record.Owner.Valid() || record.State != asyncVideoLeaseStateBound ||
-		record.TaskID != strings.TrimSpace(taskID) || asyncVideoTaskKey(record.Owner, record.TaskID) != key ||
+		record.TaskID != strings.TrimSpace(taskID) || video.TaskKey(record.Owner, record.TaskID) != key ||
 		record.Lease == nil || record.Lease.Validate() != nil || record.Member != record.Lease.Member {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
@@ -435,7 +419,7 @@ func (s *httpUpstreamService) loadAsyncVideoKeyLeaseByTask(ctx context.Context, 
 		return nil, err
 	}
 	taskID = strings.TrimSpace(taskID)
-	taskKey := asyncVideoTaskKey(owner, taskID)
+	taskKey := video.TaskKey(owner, taskID)
 	if taskKey == "" {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
@@ -533,7 +517,7 @@ func (s *httpUpstreamService) releaseAsyncVideoKeyLease(ctx context.Context, lim
 		if taskID == "" || len(taskID) > 256 || taskID != strings.TrimSpace(taskID) {
 			return service.ErrUpstreamKeyPolicy
 		}
-		taskKey = asyncVideoTaskKey(owner, taskID)
+		taskKey = video.TaskKey(owner, taskID)
 	case asyncVideoLeaseStateProvisional, asyncVideoLeaseStateUnknown:
 		if taskID != "" {
 			return service.ErrUpstreamKeyPolicy
@@ -572,7 +556,7 @@ func deleteAsyncVideoKeyLease(limiter *upstreamKeyLimiter, ctx context.Context, 
 		return err
 	}
 	result, err := deleteAsyncVideoKeyLeaseScript.Run(ctx, limiter.rdb,
-		[]string{asyncVideoMemberKey(member), asyncVideoTaskKey(owner, taskID), asyncVideoUnknownKey(), asyncVideoFenceKey(member), asyncVideoReleaseKey()}, payload, member).Int()
+		[]string{asyncVideoMemberKey(member), video.TaskKey(owner, taskID), asyncVideoUnknownKey(), asyncVideoFenceKey(member), asyncVideoReleaseKey()}, payload, member).Int()
 	if err != nil {
 		return err
 	}

@@ -31,7 +31,7 @@ func (c *regionalConcurrencyCache) prepareVideoForwarding() error {
 // Only this SQL authority can prove a location. No peer lookup or supplier
 // request is performed while answering another node's locate/query request.
 func (c *regionalConcurrencyCache) resolveLocalVideoForwardOwner(ctx context.Context, principal video.Owner, taskID string) (*video.Owner, error) {
-	record, err := c.readRegionalAsyncVideoTask(ctx, asyncVideoTaskKey(principal, taskID), true)
+	record, err := c.readRegionalAsyncVideoTask(ctx, video.TaskKey(principal, taskID), true)
 	if err != nil {
 		return nil, err
 	}

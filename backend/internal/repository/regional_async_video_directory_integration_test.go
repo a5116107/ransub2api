@@ -246,7 +246,7 @@ func TestRegionalAsyncVideoDirectoryAuthenticatedRoundTrip(t *testing.T) {
 		require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy, mutation)
 	}
 	var retention float64
-	require.NoError(t, local.database().QueryRowContext(t.Context(), `SELECT extract(epoch from expires_at-clock_timestamp()) FROM regional_async_video_completed_tasks WHERE authority=$1 AND task_key=$2`, local.persistentUpstreamKeyAuthority(), asyncVideoTaskKey(owner, "local-only")).Scan(&retention))
+	require.NoError(t, local.database().QueryRowContext(t.Context(), `SELECT extract(epoch from expires_at-clock_timestamp()) FROM regional_async_video_completed_tasks WHERE authority=$1 AND task_key=$2`, local.persistentUpstreamKeyAuthority(), video.TaskKey(owner, "local-only")).Scan(&retention))
 	require.Greater(t, retention, float64(47*60*60), "completed receipts cover the longer existing sticky retention")
 	reused := service.NewAsyncVideoKeyHandoff(owner)
 	_, finish, err = localUpstream.BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, reused))

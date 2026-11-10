@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"reflect"
 	"sort"
 	"strings"
@@ -52,7 +53,7 @@ func (c *regionalConcurrencyCache) scanRegionalAsyncVideoRecord(row interface{ S
 	switch record.State {
 	case asyncVideoLeaseStateBound:
 		if record.TaskID == "" || len(record.TaskID) > 256 || record.TaskID != strings.TrimSpace(record.TaskID) ||
-			record.TaskKey != asyncVideoTaskKey(record.Owner, record.TaskID) {
+			record.TaskKey != video.TaskKey(record.Owner, record.TaskID) {
 			return nil, service.ErrUpstreamKeyPolicy
 		}
 	case asyncVideoLeaseStateProvisional, asyncVideoLeaseStateUnknown:
@@ -143,13 +144,13 @@ func (s *httpUpstreamService) bindRegionalAsyncVideoKeyLeaseRecord(ctx context.C
 		return service.ErrUpstreamKeyPolicy
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE regional_async_video_key_leases SET task_id=$2,task_key=$3,state='bound',updated_at=clock_timestamp() WHERE member=$1`,
-		member, taskID, asyncVideoTaskKey(record.Owner, taskID))
+		member, taskID, video.TaskKey(record.Owner, taskID))
 	if err != nil {
 		return errors.Join(service.ErrUpstreamKeyPolicy, err)
 	}
 	if store.hasAsyncVideoDirectory() {
 		var completed bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM regional_async_video_completed_tasks WHERE authority=$1 AND task_key=$2 AND expires_at>clock_timestamp())`, store.persistentUpstreamKeyAuthority(), asyncVideoTaskKey(record.Owner, taskID)).Scan(&completed); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM regional_async_video_completed_tasks WHERE authority=$1 AND task_key=$2 AND expires_at>clock_timestamp())`, store.persistentUpstreamKeyAuthority(), video.TaskKey(record.Owner, taskID)).Scan(&completed); err != nil {
 			return err
 		}
 		if completed {
@@ -201,7 +202,7 @@ func (s *httpUpstreamService) loadRegionalAsyncVideoKeyLeaseByTask(ctx context.C
 		return nil, err
 	}
 	taskID = strings.TrimSpace(taskID)
-	taskKey := asyncVideoTaskKey(owner, taskID)
+	taskKey := video.TaskKey(owner, taskID)
 	if taskKey == "" || !owner.Valid() {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
@@ -227,7 +228,7 @@ func (s *httpUpstreamService) resolveRegionalAsyncVideoKeyOwner(ctx context.Cont
 		return nil, err
 	}
 	taskID = strings.TrimSpace(taskID)
-	taskKey := asyncVideoTaskKey(principal, taskID)
+	taskKey := video.TaskKey(principal, taskID)
 	if taskKey == "" {
 		return nil, service.ErrUpstreamKeyPolicy
 	}

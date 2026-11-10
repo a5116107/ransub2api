@@ -3,6 +3,9 @@
 package video
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"slices"
@@ -48,6 +51,25 @@ func (o Owner) Valid() bool {
 	return o.ValidPrincipal() && o.AccountID > 0 && o.RouteFingerprint != [32]byte{}
 }
 
+// TaskKey is the existing v2 tenant/provider index. Account and route are
+// deliberately excluded: a different route must not overwrite the same task.
+func TaskKey(owner Owner, taskID string) string {
+	if !owner.ValidPrincipal() || strings.TrimSpace(taskID) == "" {
+		return ""
+	}
+	value, _ := json.Marshal(struct {
+		UserID   int64  `json:"user_id"`
+		APIKeyID int64  `json:"api_key_id"`
+		GroupID  int64  `json:"group_id"`
+		Provider string `json:"provider"`
+		TaskID   string `json:"task_id"`
+	}{owner.UserID, owner.APIKeyID, owner.GroupID, owner.Provider, strings.TrimSpace(taskID)})
+	sum := sha256.Sum256(value)
+	return "concurrency:upstream_key:async_video:task:v2:" + hex.EncodeToString(sum[:])
+}
+
+func ValidMember(member string) bool { return memberPattern.MatchString(member) }
+
 func LocalAuthority(region string) string { return "regional:local:" + region }
 
 func ValidAuthority(authority string) bool {
@@ -68,7 +90,7 @@ type Entry struct {
 }
 
 func (e Entry) Valid() bool {
-	return taskPattern.MatchString(e.TaskKey) && memberPattern.MatchString(e.Member) && e.Owner.Valid()
+	return taskPattern.MatchString(e.TaskKey) && ValidMember(e.Member) && e.Owner.Valid()
 }
 
 // Snapshot is a complete bounded view of one source's bound tasks. Unknown

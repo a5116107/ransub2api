@@ -40,7 +40,11 @@ func NewRegionalFundsAuthorities(db *sql.DB, guard func(context.Context, *sql.Tx
 		if err := guard(ctx, tx); err != nil {
 			return err
 		}
-		return scope.Reserve(ctx, tx, "request:"+r.RequestID, r.UserID, r.APIKeyID, r.AccountID, r.Maximum, r.AdmittedAt)
+		id := "request:" + r.RequestID
+		if err := scope.Reserve(ctx, tx, id, r.UserID, r.APIKeyID, r.AccountID, r.Maximum, r.AdmittedAt); err != nil {
+			return err
+		}
+		return verifyRegionalVideoGroup(ctx, tx, id, r.VideoOrigin)
 	}
 	holds.SettleScope = regionalScopedPricingVerifier("request:", func(ctx context.Context, tx *sql.Tx, e ledger.Event) error {
 		id := "request:" + e.Usage.EventID
@@ -74,12 +78,15 @@ func regionalBalanceFunding(ctx context.Context, tx *sql.Tx, user, key int64) (b
 func regionalScopedPricingVerifier(prefix string, scope ledger.VerifyEvent) ledger.VerifyEvent {
 	verify := ledger.PricingVerifier(scope)
 	return func(ctx context.Context, tx *sql.Tx, event ledger.Event) error {
-		if err := verify(ctx, tx, event); err != nil {
-			return err
-		}
 		id := prefix + event.Usage.EventID
 		if prefix == "grant:" {
 			id = prefix + event.Usage.LeaseID
+		}
+		if err := verifyRegionalVideoGroup(ctx, tx, id, event.VideoOrigin); err != nil {
+			return err
+		}
+		if err := verify(ctx, tx, event); err != nil {
+			return err
 		}
 		result, err := tx.ExecContext(ctx, "UPDATE usage_logs u SET group_id=a.group_id,subscription_id=NULLIF(a.subscription_id,0),billing_type=CASE WHEN a.subscription_id=0 THEN 0 ELSE 1 END,account_rate_multiplier=1 FROM regional_budget_allocations a WHERE a.allocation_id=$1 AND u.request_id=$2 AND u.api_key_id=a.api_key_id", id, event.Usage.EventID)
 		if err != nil {
@@ -94,4 +101,18 @@ func regionalScopedPricingVerifier(prefix string, scope ledger.VerifyEvent) ledg
 		}
 		return nil
 	}
+}
+
+func verifyRegionalVideoGroup(ctx context.Context, tx *sql.Tx, allocation string, origin *ledger.VideoOrigin) error {
+	if origin == nil {
+		return nil
+	}
+	var group int64
+	if err := tx.QueryRowContext(ctx, `SELECT group_id FROM regional_budget_allocations WHERE allocation_id=$1`, allocation).Scan(&group); err != nil {
+		return err
+	}
+	if group != origin.Owner.GroupID {
+		return ledger.ErrConflict
+	}
+	return nil
 }

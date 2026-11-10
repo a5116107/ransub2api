@@ -244,7 +244,7 @@ func (c *regionalConcurrencyCache) checkAsyncVideoDirectoryLookup(ctx context.Co
 	if !ok {
 		return service.ErrUpstreamKeyPolicy
 	}
-	record, err := c.readRegionalAsyncVideoTask(ctx, asyncVideoTaskKey(owner, taskID), true)
+	record, err := c.readRegionalAsyncVideoTask(ctx, video.TaskKey(owner, taskID), true)
 	if err != nil {
 		return err
 	}
@@ -267,7 +267,7 @@ func (c *regionalConcurrencyCache) readCompletedAsyncVideoTask(ctx context.Conte
 	if err != nil {
 		return nil, err
 	}
-	if json.Unmarshal(raw, &record.Owner) != nil || !(video.Entry{TaskKey: taskKey, Member: record.Member, Owner: record.Owner}).Valid() || record.TaskID == "" || len(record.TaskID) > 256 || record.TaskID != strings.TrimSpace(record.TaskID) || asyncVideoTaskKey(record.Owner, record.TaskID) != taskKey {
+	if json.Unmarshal(raw, &record.Owner) != nil || !(video.Entry{TaskKey: taskKey, Member: record.Member, Owner: record.Owner}).Valid() || record.TaskID == "" || len(record.TaskID) > 256 || record.TaskID != strings.TrimSpace(record.TaskID) || video.TaskKey(record.Owner, record.TaskID) != taskKey {
 		return nil, service.ErrUpstreamKeyPolicy
 	}
 	return record, nil

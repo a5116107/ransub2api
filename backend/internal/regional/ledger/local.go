@@ -117,6 +117,9 @@ func (l *Local) Reserve(ctx context.Context, r Reservation) (fresh bool, err err
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
+	if err := reserveVideoIdentity(ctx, tx, videoLocal, r); err != nil {
+		return false, err
+	}
 	// PostgreSQL is the regional clock authority. Never let a stale caller time
 	// make an expired lease spendable or backdate admission after a restart.
 	var now time.Time
@@ -224,8 +227,11 @@ func (l *Local) finish(ctx context.Context, id string, event *Event) error {
 		return err
 	}
 	e := event.Usage
-	if e.EventID != r.RequestID || e.APIKeyID != r.APIKeyID || e.AccountID != r.AccountID || !e.AdmittedAt.Equal(r.AdmittedAt) || e.Charge > r.Maximum || event.Model != r.Model || event.PricingVersion != r.PricingVersion || event.PayloadSHA256 != r.PayloadSHA256 || !videoMatchesReservation(r.Video, event.Video) {
+	if e.EventID != r.RequestID || e.APIKeyID != r.APIKeyID || e.AccountID != r.AccountID || !e.AdmittedAt.Equal(r.AdmittedAt) || e.Charge > r.Maximum || event.Model != r.Model || event.PricingVersion != r.PricingVersion || event.PayloadSHA256 != r.PayloadSHA256 || !videoMatchesReservation(r, *event) {
 		return ErrConflict
+	}
+	if err := verifyBoundVideoIdentity(ctx, tx, videoLocal, r, *event); err != nil {
+		return err
 	}
 	if err := verifyVideoSettlement(ctx, tx, r, *event); err != nil {
 		return err

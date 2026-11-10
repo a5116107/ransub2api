@@ -152,6 +152,15 @@ func (p *Primary) Settle(ctx context.Context, region string, e Event, verify Ver
 	if state != "open" {
 		return false, ErrExhausted
 	}
+	if e.Video != nil {
+		r := Reservation{RequestID: e.Usage.EventID, LeaseID: e.Usage.LeaseID, RegionID: e.Usage.RegionID, UserID: e.Usage.UserID, APIKeyID: e.Usage.APIKeyID, AccountID: e.Usage.AccountID, Video: &e.Video.VideoRequest, VideoOrigin: e.VideoOrigin}
+		if err := reserveVideoIdentity(ctx, tx, videoPrimary, r); err != nil {
+			return false, err
+		}
+		if err := bindVideoIdentity(ctx, tx, videoPrimary, r, e.Video.TaskID); err != nil {
+			return false, err
+		}
+	}
 	if err := verify(ctx, tx, e); err != nil {
 		return false, err
 	}

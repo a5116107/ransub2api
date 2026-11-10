@@ -3,6 +3,7 @@
 package repository
 
 import (
+	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -48,7 +49,7 @@ func TestRegionalAsyncVideoDirectoryCompletedReleaseRollback(t *testing.T) {
 			require.NoError(t, authority.database().QueryRowContext(t.Context(), `SELECT count(*) FROM regional_async_video_key_leases WHERE member=$1`, handoff.Member()).Scan(&active))
 			require.Zero(t, active, "the original active task record is deleted after confirmed release")
 			var raw string
-			require.NoError(t, authority.database().QueryRowContext(t.Context(), `SELECT row_to_json(t)::text FROM regional_async_video_completed_tasks t WHERE authority=$1 AND task_key=$2`, authority.persistentUpstreamKeyAuthority(), asyncVideoTaskKey(owner, "completed-rollback")).Scan(&raw))
+			require.NoError(t, authority.database().QueryRowContext(t.Context(), `SELECT row_to_json(t)::text FROM regional_async_video_completed_tasks t WHERE authority=$1 AND task_key=$2`, authority.persistentUpstreamKeyAuthority(), video.TaskKey(owner, "completed-rollback")).Scan(&raw))
 			require.NotContains(t, raw, "supplier-fixture")
 			require.NotContains(t, raw, config.UpstreamKeyFingerprint("supplier-fixture"))
 			require.NotContains(t, raw, `"lease"`)
