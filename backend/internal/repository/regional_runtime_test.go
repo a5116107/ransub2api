@@ -19,6 +19,8 @@ func TestRegionalConcurrencyRuntimeConfigRejectsUnsafeMembership(t *testing.T) {
 		{"duplicate-member", `{"Mode":"primary","Instance":"a","Epoch":"one","PrimaryInstances":["a","a"],"LegacyRedisUser":"old"}`, false},
 		{"primary", `{"Mode":"primary","Instance":"a","Epoch":"one","PrimaryInstances":["a","b"],"LegacyRedisUser":"old"}`, true},
 		{"regional-missing-region", `{"Mode":"regional","Instance":"a","Epoch":"one"}`, false},
+		{"legacy-video-peer", `{"Mode":"primary","Instance":"a","Epoch":"one","PrimaryInstances":["a"],"LegacyRedisUser":"old","VideoForward":{"Endpoint":"https://peer.example","PeerPin":"old-pin"}}`, false},
+		{"explicit-video-peers", `{"Mode":"primary","Instance":"a","Epoch":"one","PrimaryInstances":["a"],"LegacyRedisUser":"old","VideoForward":{"Peers":[{"Authority":"regional:local:us","Endpoint":"https://us.example"},{"Authority":"regional:local:eu","Endpoint":"https://eu.example"}]}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "runtime.json")

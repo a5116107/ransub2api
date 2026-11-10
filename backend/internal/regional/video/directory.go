@@ -31,6 +31,16 @@ var (
 	taskPattern     = regexp.MustCompile(`^concurrency:upstream_key:async_video:task:v2:[0-9a-f]{64}$`)
 )
 
+// RemoteTask carries the unique source observed in the same SQL snapshot as
+// local ownership. It selects one provisioned peer, never a search/failover list.
+type RemoteTask struct {
+	Authority string
+	Entry     Entry
+}
+
+func (e *RemoteTask) Error() string { return ErrTaskNotLocal.Error() }
+func (e *RemoteTask) Unwrap() error { return ErrTaskNotLocal }
+
 // Owner includes routing identity, never credentials. The downstream principal
 // is necessary for both task uniqueness and control-peer scope enforcement.
 type Owner struct {

@@ -24,6 +24,13 @@ type Identity struct{ CAFile, CertFile, KeyFile, Pin string }
 
 func Pair(t *testing.T) [2]Identity {
 	t.Helper()
+	identities := Group(t, 2)
+	return [2]Identity{identities[0], identities[1]}
+}
+
+func Group(t *testing.T, count int) []Identity {
+	t.Helper()
+	require.GreaterOrEqual(t, count, 2)
 	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "video-fixture"}, IsCA: true,
@@ -32,7 +39,7 @@ func Pair(t *testing.T) [2]Identity {
 	require.NoError(t, err)
 	root, err = x509.ParseCertificate(rootDER)
 	require.NoError(t, err)
-	var identities [2]Identity
+	identities := make([]Identity, count)
 	for i := range identities {
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		require.NoError(t, err)

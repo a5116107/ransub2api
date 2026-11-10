@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,11 +22,14 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/control"
+	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil/mtls"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,12 +109,23 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 		} {
 			t.Run(tc.name+map[bool]string{false: "/direct", true: "/astra"}[decorated], func(t *testing.T) {
 				rdb := regionalKeyRedis(t)
-				cfg := upstreamKeyTestConfig(1, 2)
+				cfg := upstreamKeyTestConfig(1, 3)
 				cfg.Security.URLAllowlist.AllowInsecureHTTP = true
-				primary, local, _ := regionalKeyFixture(t, cfg, rdb, 1)
-				authorities := []*regionalConcurrencyCache{primary, local}
-				identities := mtls.Pair(t)
-				addresses := make([]string, 2)
+				primary, local, grant := regionalKeyFixture(t, cfg, rdb, 1)
+				eu := &slots.Local{DB: regionalKeyTestDB(t), Region: "eu"}
+				policy, err := primary.primary.ReadUpstreamPolicy(t.Context())
+				require.NoError(t, err)
+				require.NoError(t, eu.InstallUpstreamPolicy(t.Context(), policy))
+				grant.LeaseID, grant.Region = uuid.NewString(), eu.Region
+				require.NoError(t, primary.primary.Issue(t.Context(), grant))
+				require.NoError(t, eu.Install(t.Context(), grant))
+				cache, err := NewRegionalConcurrencyCache(primary.ConcurrencyCache, nil, eu)
+				require.NoError(t, err)
+				third, ok := cache.(*regionalConcurrencyCache)
+				require.True(t, ok)
+				authorities := []*regionalConcurrencyCache{primary, local, third}
+				identities := mtls.Group(t, len(authorities))
+				addresses := make([]string, len(authorities))
 				for i := range addresses {
 					listener, err := net.Listen("tcp", "127.0.0.1:0")
 					require.NoError(t, err)
@@ -150,10 +165,7 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 						return
 					}
 					if r.Method == http.MethodPost {
-						id := "primary-task"
-						if creates.Add(1) == 2 {
-							id = "local-task"
-						}
+						id := fmt.Sprintf("original-task-%d", creates.Add(1))
 						_, _ = io.WriteString(w, `{"id":"`+id+`"}`)
 						return
 					}
@@ -169,16 +181,21 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": provider.URL, "openai_capabilities": []string{"seedance"}}}
 				owner := service.AsyncVideoKeyOwner{UserID: 10, APIKeyID: 20, GroupID: 30, AccountID: account.ID, Provider: tc.create.AsyncVideoProvider(), RouteFingerprint: service.AccountRouteFingerprint(account)}
 				key := &service.APIKey{ID: owner.APIKeyID, GroupID: &owner.GroupID}
-				transports := make([]*httpUpstreamService, 2)
-				services := make([]*service.OpenAIGatewayService, 2)
-				var executions [2]atomic.Int32
+				transports := make([]*httpUpstreamService, len(authorities))
+				services := make([]*service.OpenAIGatewayService, len(authorities))
+				var executions [3]atomic.Int32
 				for i, authority := range authorities {
-					forward := &video.ForwardConfig{Listen: addresses[i], Endpoint: "https://" + addresses[1-i], CAFile: identities[i].CAFile, CertFile: identities[i].CertFile, KeyFile: identities[i].KeyFile, PeerPin: identities[1-i].Pin,
-						UserIDs: []int64{owner.UserID}, APIKeyIDs: []int64{owner.APIKeyID}, AccountIDs: []int64{owner.AccountID}, TimeoutSeconds: 10}
+					forward := &video.ForwardConfig{Listen: addresses[i], CAFile: identities[i].CAFile, CertFile: identities[i].CertFile, KeyFile: identities[i].KeyFile, TimeoutSeconds: 10}
+					for j, peer := range authorities {
+						if i != j {
+							forward.Peers = append(forward.Peers, video.ForwardPeer{Authority: peer.persistentUpstreamKeyAuthority(), Endpoint: "https://" + addresses[j], PeerPin: identities[j].Pin,
+								UserIDs: []int64{owner.UserID}, APIKeyIDs: []int64{owner.APIKeyID}, AccountIDs: []int64{owner.AccountID}})
+						}
+					}
 					if i == 0 {
 						authority.runtimeConfig = &RegionalConcurrencyRuntimeConfig{Listen: "fixture", Scope: control.Scope{Region: "us"}, VideoForward: forward}
 					} else {
-						authority.runtimeConfig = &RegionalConcurrencyRuntimeConfig{Endpoint: "fixture", Region: "us", VideoForward: forward}
+						authority.runtimeConfig = &RegionalConcurrencyRuntimeConfig{Endpoint: "fixture", Region: authority.local.Region, VideoForward: forward}
 					}
 					require.NoError(t, authority.prepareVideoForwarding())
 					ctx, cancel := context.WithCancel(t.Context())
@@ -266,33 +283,32 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 				}
 				syncDirectory := func() {
 					t.Helper()
-					for i, authority := range authorities {
-						snapshot, err := authorities[1-i].exportAsyncVideoDirectory(t.Context())
-						require.NoError(t, err)
-						tx, err := authority.database().BeginTx(t.Context(), nil)
-						require.NoError(t, err)
-						require.NoError(t, installAsyncVideoDirectorySnapshot(t.Context(), tx, authority.persistentUpstreamKeyAuthority(), snapshot))
-						require.NoError(t, tx.Commit())
+					for _, authority := range authorities {
+						require.EventuallyWithT(t, func(collect *assert.CollectT) {
+							require.NoError(collect, authority.refreshAsyncVideoDirectory(t.Context()))
+						}, 3*time.Second, 20*time.Millisecond)
 					}
 				}
 				for origin := range services {
+					receiver := (origin + 1) % len(services)
 					terminal.Store(false)
 					c, _ := gin.CreateTestContext(httptest.NewRecorder())
 					c.Request = httptest.NewRequest(http.MethodPost, "/fixture", strings.NewReader(tc.body))
 					created, err := forward(origin, t.Context(), c, tc.create, "", []byte(tc.body))
 					require.NoError(t, err)
 					syncDirectory()
+					queryContext := t.Context()
 					queryOperation := func(credential string, operation service.GrokMediaEndpoint, subagent bool) (*httptest.ResponseRecorder, error) {
 						recorder := httptest.NewRecorder()
 						c, _ := gin.CreateTestContext(recorder)
-						c.Request = httptest.NewRequest(http.MethodGet, "/fixture?model=model-fixture", nil)
+						c.Request = httptest.NewRequest(http.MethodGet, "/fixture?model=model-fixture", nil).WithContext(queryContext)
 						c.Request.Header.Set("Authorization", "Bearer "+credential)
 						c.Request.Header.Set("originator", "origin-fixture")
 						c.Request.Header.Set("Range", "bytes=0-12")
 						if subagent {
 							c.Request.Header.Set("X-Codex-Parent-Thread-Id", "parent-fixture")
 						}
-						handled, err := services[1-origin].ForwardRegionalVideoQuery(c, operation, created.ResponseID, key, owner.UserID)
+						handled, err := services[receiver].ForwardRegionalVideoQuery(c, operation, created.ResponseID, key, owner.UserID)
 						require.True(t, handled)
 						return recorder, err
 					}
@@ -309,6 +325,15 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, http.StatusOK, status)
 					require.Equal(t, before+1, executions[origin].Load())
+					// Every receiving node, including a region-to-region hop, must
+					// dispatch only at the original SQL authority.
+					receiver = (origin + 2) % len(services)
+					status, err = query("downstream-fixture")
+					require.NoError(t, err)
+					require.Equal(t, http.StatusOK, status)
+					require.Equal(t, before+2, executions[origin].Load())
+					receiver = (origin + 1) % len(services)
+					before++
 					if origin == 0 {
 						gateway := regionalForwardGateway(t, services[1], identities[1], identities[0], owner, tc.platform)
 						publicID := strings.TrimPrefix(strings.TrimPrefix(created.ResponseID, "seedance:"), "minimax-h3:")
@@ -336,8 +361,36 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, http.StatusForbidden, recorder.Code, "origin policy must receive the subagent classification")
 					require.Equal(t, before+1, executions[origin].Load(), "a denied origin request must not reach the provider")
+					if origin == 0 {
+						// Two remote sources claiming the same tenant/task must not
+						// be resolved by peer order. The same conflict also blocks
+						// each source's own local execution.
+						duplicate := service.NewAsyncVideoKeyHandoff(owner)
+						_, finish, err := transports[1].BeginUpstreamKeyRequest(asyncVideoLeaseRequest(t, duplicate))
+						require.NoError(t, err)
+						require.NoError(t, transports[1].BindAsyncVideoKeyLease(t.Context(), duplicate, created.ResponseID))
+						finish(nil, nil)
+						syncDirectory()
+						checkpoint := executions[origin].Load()
+						for receiver = range services {
+							_, err := query("downstream-fixture")
+							require.ErrorIs(t, err, video.ErrConflict)
+							require.Equal(t, checkpoint, executions[origin].Load(), "ambiguous directory evidence must not dispatch")
+						}
+						require.NoError(t, transports[1].ReleaseAsyncVideoKeyLeaseByMember(t.Context(), duplicate.Member()))
+						// Simulate expiry of only the deliberately duplicated local
+						// receipt. No original task, funds or revision floor is removed.
+						_, err = authorities[1].database().ExecContext(t.Context(), `UPDATE regional_async_video_completed_tasks SET expires_at=clock_timestamp()-interval '1 second' WHERE authority=$1 AND task_key=$2`, authorities[1].persistentUpstreamKeyAuthority(), video.TaskKey(owner, created.ResponseID))
+						require.NoError(t, err)
+						syncDirectory()
+						receiver = 1
+						status, err = query("downstream-fixture")
+						require.NoError(t, err)
+						require.Equal(t, http.StatusOK, status, "fresh unambiguous evidence must restore original-node routing")
+						require.Equal(t, checkpoint+1, executions[origin].Load())
+					}
 					var received int
-					require.NoError(t, authorities[1-origin].database().QueryRowContext(t.Context(), `SELECT count(*) FROM regional_async_video_key_leases`).Scan(&received))
+					require.NoError(t, authorities[receiver].database().QueryRowContext(t.Context(), `SELECT count(*) FROM regional_async_video_key_leases`).Scan(&received))
 					require.Zero(t, received, "forwarding never recreates a generation member at the receiving node")
 					if tc.platform == service.PlatformOpenAI {
 						recorder, err := queryOperation("downstream-fixture", service.SeedanceEndpointDelete, false)
@@ -355,6 +408,56 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					status, err = query("downstream-fixture")
 					require.NoError(t, err)
 					require.Equal(t, http.StatusOK, status, "completed receipts must still be located after active directory removal")
+					if origin == 0 {
+						receiver = 2
+						checkpoint := executions[origin].Load()
+						// With no active directory entry, two local terminal
+						// receipts are still an ambiguous location, never an
+						// invitation to choose the fastest peer.
+						_, err = authorities[1].database().ExecContext(t.Context(), `UPDATE regional_async_video_completed_tasks SET expires_at=clock_timestamp()+interval '1 minute' WHERE authority=$1 AND task_key=$2`, authorities[1].persistentUpstreamKeyAuthority(), video.TaskKey(owner, created.ResponseID))
+						require.NoError(t, err)
+						_, err = query("downstream-fixture")
+						require.ErrorIs(t, err, video.ErrConflict)
+						require.Equal(t, checkpoint, executions[origin].Load())
+						_, err = authorities[1].database().ExecContext(t.Context(), `UPDATE regional_async_video_completed_tasks SET expires_at=clock_timestamp()-interval '1 second' WHERE authority=$1 AND task_key=$2`, authorities[1].persistentUpstreamKeyAuthority(), video.TaskKey(owner, created.ResponseID))
+						require.NoError(t, err)
+						status, err = query("downstream-fixture")
+						require.NoError(t, err)
+						require.Equal(t, http.StatusOK, status)
+						checkpoint = executions[origin].Load()
+						func() {
+							// The original receipt remains readable, but another
+							// assigned peer cannot finish its SQL absence check.
+							// That timeout must not be treated as a negative vote.
+							tx, err := authorities[1].database().BeginTx(t.Context(), nil)
+							require.NoError(t, err)
+							defer func() { require.NoError(t, tx.Rollback()) }()
+							_, err = tx.ExecContext(t.Context(), `LOCK TABLE regional_async_video_key_leases IN ACCESS EXCLUSIVE MODE`)
+							require.NoError(t, err)
+							ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+							defer cancel()
+							queryContext = ctx
+							defer func() { queryContext = t.Context() }()
+							_, err = query("downstream-fixture")
+							require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
+							require.Equal(t, checkpoint, executions[origin].Load(), "partial location failure must not send the business query")
+							var healthyBefore, failedFloor int64
+							require.NoError(t, authorities[receiver].database().QueryRowContext(t.Context(), `SELECT revision FROM regional_async_video_directory_snapshots WHERE consumer=$1 AND authority=$2`, authorities[receiver].persistentUpstreamKeyAuthority(), authorities[origin].persistentUpstreamKeyAuthority()).Scan(&healthyBefore))
+							require.NoError(t, authorities[1].database().QueryRowContext(t.Context(), `SELECT revision FROM regional_async_video_directory_revisions WHERE authority=$1`, authorities[1].persistentUpstreamKeyAuthority()).Scan(&failedFloor))
+							refresh, stopRefresh := context.WithTimeout(t.Context(), time.Second)
+							defer stopRefresh()
+							require.Error(t, authorities[receiver].refreshAsyncVideoDirectory(refresh))
+							var healthyAfter, failedAfter int64
+							require.NoError(t, authorities[receiver].database().QueryRowContext(t.Context(), `SELECT revision FROM regional_async_video_directory_snapshots WHERE consumer=$1 AND authority=$2`, authorities[receiver].persistentUpstreamKeyAuthority(), authorities[origin].persistentUpstreamKeyAuthority()).Scan(&healthyAfter))
+							require.NoError(t, authorities[receiver].database().QueryRowContext(t.Context(), `SELECT revision FROM regional_async_video_directory_snapshots WHERE consumer=$1 AND authority=$2`, authorities[receiver].persistentUpstreamKeyAuthority(), authorities[1].persistentUpstreamKeyAuthority()).Scan(&failedAfter))
+							require.Greater(t, healthyAfter, healthyBefore, "a failed source must not roll back a healthy source's independent SQL update")
+							require.LessOrEqual(t, failedAfter, failedFloor, "a failed export must not invent a new directory revision")
+						}()
+						status, err = query("downstream-fixture")
+						require.NoError(t, err)
+						require.Equal(t, http.StatusOK, status, "recovered metadata sources must restore the original route")
+						receiver = 1
+					}
 					if tc.platform != service.PlatformOpenAI {
 						operation := service.GrokMediaEndpointVideoContent
 						if tc.platform == service.PlatformMiniMax {
@@ -373,24 +476,24 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 						}
 					}
 					before = executions[origin].Load()
-					_, err = authorities[1-origin].database().ExecContext(t.Context(), `UPDATE regional_async_video_directory_snapshots SET payload=jsonb_set(jsonb_set(payload,'{issued_at}',to_jsonb(clock_timestamp()-interval '1 minute')),'{expires_at}',to_jsonb(clock_timestamp()-interval '31 seconds'))`)
+					_, err = authorities[receiver].database().ExecContext(t.Context(), `UPDATE regional_async_video_directory_snapshots SET payload=jsonb_set(jsonb_set(payload,'{issued_at}',to_jsonb(clock_timestamp()-interval '1 minute')),'{expires_at}',to_jsonb(clock_timestamp()-interval '31 seconds'))`)
 					require.NoError(t, err)
 					_, err = query("downstream-fixture")
 					require.ErrorIs(t, err, service.ErrUpstreamKeyPolicy)
 					require.Equal(t, before, executions[origin].Load(), "an expired directory cannot trigger a remote data request")
 					syncDirectory()
 				}
-				require.EqualValues(t, 2, creates.Load(), "queries must not resubmit either original task")
-				expectedPolls := 7 // three direct queries per origin, plus one registered regional gateway query
+				require.EqualValues(t, len(authorities), creates.Load(), "queries must not resubmit any original task")
+				expectedPolls := 16 // four queries per origin, one gateway query and three conflict/timeout recoveries
 				if tc.platform == service.PlatformGrok {
-					expectedPolls += 2 // each download first verifies the original status
+					expectedPolls += len(authorities) // each download first verifies the original status
 				}
 				require.EqualValues(t, expectedPolls, polls.Load())
 				if tc.platform == service.PlatformOpenAI {
-					require.EqualValues(t, 2, cancels.Load())
+					require.EqualValues(t, len(authorities), cancels.Load())
 					require.Zero(t, downloads.Load())
 				} else {
-					require.EqualValues(t, 2, downloads.Load())
+					require.EqualValues(t, len(authorities), downloads.Load())
 					require.Zero(t, cancels.Load())
 				}
 			})

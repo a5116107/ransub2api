@@ -80,12 +80,12 @@ func (u *regionalRoleVideoUpstream) ForwardAsyncVideoLookup(ctx context.Context,
 	case "unavailable":
 		return nil, true, service.ErrUpstreamKeyPolicy
 	case "mtls":
-		owner, err := u.peer.Locate(ctx, query.Owner, query.TaskID)
+		owner, err := u.peer.Locate(ctx, video.PrimaryAuthority, query.Owner, query.TaskID)
 		if err != nil {
 			return nil, true, err
 		}
 		query.Owner = *owner
-		response, err := u.peer.Query(ctx, query)
+		response, err := u.peer.Query(ctx, video.PrimaryAuthority, query)
 		return response, true, err
 	default:
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"origin":true}`))}, true, nil
@@ -223,14 +223,14 @@ func TestRegionalGatewayVideoQueryReachesOriginalNodeAfterLocalPolicies(t *testi
 	var forwarders [2]*video.Forwarder
 	for i := range forwarders {
 		identity := identities[i]
-		forwardConfig := video.ForwardConfig{Listen: addresses[i], Endpoint: "https://" + addresses[1-i],
-			CAFile: identity.CAFile, CertFile: identity.CertFile, KeyFile: identity.KeyFile, PeerPin: identities[1-i].Pin,
-			UserIDs: []int64{1}, APIKeyIDs: []int64{20}, AccountIDs: []int64{42}, TimeoutSeconds: 5}
 		authority, peer := video.PrimaryAuthority, video.LocalAuthority("us")
 		if i == 1 {
 			authority, peer = peer, authority
 		}
-		forwarders[i], err = video.NewForwarder(forwardConfig, authority, peer, resolve)
+		forwardConfig := video.ForwardConfig{Listen: addresses[i], CAFile: identity.CAFile, CertFile: identity.CertFile, KeyFile: identity.KeyFile, TimeoutSeconds: 5,
+			Peers: []video.ForwardPeer{{Authority: peer, Endpoint: "https://" + addresses[1-i], PeerPin: identities[1-i].Pin,
+				UserIDs: []int64{1}, APIKeyIDs: []int64{20}, AccountIDs: []int64{42}}}}
+		forwarders[i], err = video.NewForwarder(forwardConfig, authority, resolve, func(context.Context) (video.Snapshot, error) { return video.Snapshot{}, video.ErrUnavailable })
 		require.NoError(t, err)
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
@@ -292,7 +292,7 @@ func TestRegionalGatewayVideoQueryReachesOriginalNodeAfterLocalPolicies(t *testi
 				Owner:  video.Owner{UserID: 1, APIKeyID: 20, GroupID: 3, AccountID: 42, Provider: "grok", RouteFingerprint: [32]byte{1}},
 				TaskID: "task", Operation: "video_status", Credential: "fixture-grok", ClientIP: "127.0.0.1", Model: "model-fixture"}
 			tc.mutate(&query)
-			response, err := forwarders[1].Query(t.Context(), query)
+			response, err := forwarders[1].Query(t.Context(), video.PrimaryAuthority, query)
 			require.NoError(t, err)
 			require.Equal(t, tc.status, response.StatusCode)
 			require.NoError(t, response.Body.Close())

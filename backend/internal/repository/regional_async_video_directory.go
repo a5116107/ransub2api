@@ -16,7 +16,7 @@ import (
 const asyncVideoDirectoryCompleted = "completed"
 
 func (c *regionalConcurrencyCache) hasAsyncVideoDirectory() bool {
-	return c.runtimeConfig != nil && (c.runtimeConfig.Listen != "" || c.runtimeConfig.Endpoint != "")
+	return c.runtimeConfig != nil && (c.runtimeConfig.Listen != "" || c.runtimeConfig.Endpoint != "" || c.runtimeConfig.VideoForward != nil)
 }
 
 // Export serializes revisions and captures bound tasks in one SQL snapshot.
@@ -145,6 +145,9 @@ func (c *regionalConcurrencyCache) exchangeAsyncVideoDirectory(ctx context.Conte
 }
 
 func (c *regionalConcurrencyCache) refreshAsyncVideoDirectory(ctx context.Context) error {
+	if c != nil && c.videoForwarder != nil {
+		return c.refreshForwardVideoDirectory(ctx)
+	}
 	if c == nil || c.local == nil || c.brokerClient == nil || c.runtimeFailed.Load() {
 		return video.ErrUnavailable
 	}
@@ -172,6 +175,40 @@ func (c *regionalConcurrencyCache) refreshAsyncVideoDirectory(ctx context.Contex
 	return tx.Commit()
 }
 
+// Poll every configured source through its existing pinned media client. The
+// bounded fanout is background metadata only; business lookups read local SQL.
+func (c *regionalConcurrencyCache) refreshForwardVideoDirectory(ctx context.Context) error {
+	if c.runtimeFailed.Load() {
+		return video.ErrUnavailable
+	}
+	authorities := c.videoForwarder.Authorities()
+	results := make(chan error, len(authorities))
+	for _, authority := range authorities {
+		go func() {
+			cycle, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			snapshot, err := c.videoForwarder.Snapshot(cycle, authority)
+			if err == nil {
+				var tx *sql.Tx
+				tx, err = c.database().BeginTx(cycle, nil)
+				if err == nil {
+					defer func() { _ = tx.Rollback() }()
+					err = installAsyncVideoDirectorySnapshot(cycle, tx, c.persistentUpstreamKeyAuthority(), snapshot)
+					if err == nil {
+						err = tx.Commit()
+					}
+				}
+			}
+			results <- err
+		}()
+	}
+	var joined error
+	for range authorities {
+		joined = errors.Join(joined, <-results)
+	}
+	return joined
+}
+
 func (c *regionalConcurrencyCache) checkAsyncVideoDirectory(ctx context.Context, tx *sql.Tx, taskKey string, local *regionalAsyncVideoKeyRecord) error {
 	if !c.hasAsyncVideoDirectory() {
 		return nil
@@ -179,28 +216,50 @@ func (c *regionalConcurrencyCache) checkAsyncVideoDirectory(ctx context.Context,
 	if c.runtimeFailed.Load() {
 		return video.ErrUnavailable
 	}
-	authority := video.PrimaryAuthority
+	authorities := []string{video.PrimaryAuthority}
 	if c.primary != nil {
-		authority = video.LocalAuthority(c.runtimeConfig.Scope.Region)
+		authorities[0] = video.LocalAuthority(c.runtimeConfig.Scope.Region)
 	}
-	snapshot, err := readAsyncVideoDirectorySnapshot(ctx, tx, c.persistentUpstreamKeyAuthority(), authority, false)
-	if err != nil {
-		return err
+	if c.runtimeConfig.VideoForward != nil {
+		authorities = nil
+		for _, peer := range c.runtimeConfig.VideoForward.Peers {
+			authorities = append(authorities, peer.Authority)
+		}
+		if len(authorities) == 0 {
+			return video.ErrUnavailable
+		}
+	}
+	snapshots := make([]video.Snapshot, 0, len(authorities))
+	for _, authority := range authorities {
+		snapshot, err := readAsyncVideoDirectorySnapshot(ctx, tx, c.persistentUpstreamKeyAuthority(), authority, false)
+		if err != nil {
+			return err
+		}
+		snapshots = append(snapshots, snapshot)
 	}
 	var now time.Time
 	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 		return err
 	}
-	if !snapshot.Fresh(now) {
-		return video.ErrUnavailable
-	}
-	for _, entry := range snapshot.Entries {
-		if entry.TaskKey == taskKey {
-			if local != nil {
-				return video.ErrConflict
-			}
-			return video.ErrTaskNotLocal
+	var remote *video.RemoteTask
+	for _, snapshot := range snapshots {
+		if !snapshot.Fresh(now) {
+			return video.ErrUnavailable
 		}
+		for _, entry := range snapshot.Entries {
+			if entry.TaskKey == taskKey {
+				if local != nil || remote != nil {
+					return video.ErrConflict
+				}
+				remote = &video.RemoteTask{Authority: snapshot.Authority, Entry: entry}
+			}
+		}
+	}
+	if remote != nil {
+		if remote.Entry.Fenced {
+			return video.ErrUnavailable
+		}
+		return remote
 	}
 	if local == nil {
 		// A fresh directory with no match is still not authority to guess a

@@ -283,6 +283,11 @@ func (c *regionalConcurrencyCache) RunRegionalRuntime(ctx context.Context) {
 				slog.Warn("regional completed video directory not pruned")
 			}
 		}
+		if c.videoForwarder != nil {
+			if err := c.refreshAsyncVideoDirectory(cycle); err != nil {
+				slog.Warn("regional video peer directories not refreshed")
+			}
+		}
 		if c.broker != nil {
 			snapshot, err := c.brokerClient.UpstreamPolicy(cycle)
 			if err == nil {
@@ -299,8 +304,10 @@ func (c *regionalConcurrencyCache) RunRegionalRuntime(ctx context.Context) {
 			if err := c.broker.RunOnce(cycle); err != nil {
 				slog.Warn("regional broker has unconfirmed operations")
 			}
-			if err := c.refreshAsyncVideoDirectory(cycle); err != nil {
-				slog.Warn("regional video directory not refreshed")
+			if c.videoForwarder == nil {
+				if err := c.refreshAsyncVideoDirectory(cycle); err != nil {
+					slog.Warn("regional video directory not refreshed")
+				}
 			}
 		}
 		if c.runtimeFailed.Load() {
