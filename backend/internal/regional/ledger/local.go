@@ -99,7 +99,7 @@ func (l *Local) Reserve(ctx context.Context, r Reservation) (fresh bool, err err
 	if err := r.Validate(lease); err != nil {
 		return false, err
 	}
-	if err := verifyZeroReservation(ctx, tx, r); err != nil {
+	if err := verifyPriceReservation(ctx, tx, r); err != nil {
 		return false, err
 	}
 	raw, err := json.Marshal(r)
@@ -224,8 +224,11 @@ func (l *Local) finish(ctx context.Context, id string, event *Event) error {
 		return err
 	}
 	e := event.Usage
-	if e.EventID != r.RequestID || e.APIKeyID != r.APIKeyID || e.AccountID != r.AccountID || !e.AdmittedAt.Equal(r.AdmittedAt) || e.Charge > r.Maximum || event.Model != r.Model || event.PricingVersion != r.PricingVersion || event.PayloadSHA256 != r.PayloadSHA256 {
+	if e.EventID != r.RequestID || e.APIKeyID != r.APIKeyID || e.AccountID != r.AccountID || !e.AdmittedAt.Equal(r.AdmittedAt) || e.Charge > r.Maximum || event.Model != r.Model || event.PricingVersion != r.PricingVersion || event.PayloadSHA256 != r.PayloadSHA256 || !videoMatchesReservation(r.Video, event.Video) {
 		return ErrConflict
+	}
+	if err := verifyVideoSettlement(ctx, tx, r, *event); err != nil {
+		return err
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil {

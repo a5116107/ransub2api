@@ -1529,3 +1529,14 @@
 - `go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^Test(MiniMaxH3|Grok.*Video|Seedance)' -count=1 -timeout=8m`退出0，service `1.217s`、handler `1.298s`；新增兼容反例通过Go标准JSON解码核对实际出站模型、时长、数量和尺寸，失败请求零出站。
 - `go test -race -p 1 -tags unit ./internal/server/routes -run '^Test.*(Video|MiniMax|Regional)' -count=1 -timeout=6m`退出0、`1.251s`。相同三包`go vet -p 1 -tags 'unit integration'`退出0；完整规则lint退出0、`0 issues.`，未调整规则。
 - 本项补齐视频计费参数入口，不代表已实现区域视频任务资金链；原28项总数及D2/D3/D4父状态保持。未执行CI、推送、部署或生产数据修改，历史被策略拒绝清理的图片目录原位保留、不提交。
+
+## 2026-11-10：D2 不可变单视频价格与区域账本基础
+
+- 基线`6a2ccbf`的`TestPricingVideoContracts`实际退出1，MiniMax按次/按秒合同被报`invalid bounded text pricing contract`。在原`Price`增加可选视频合同，冻结供应商、计费/实际上游模型、分辨率、请求时长、基础单价、最简有理数销售倍率及Seedance完成token上限；与文本字段互斥，旧文本JSON/内容版本的固定哈希回归通过。未增加第二套资金账本、独立资金路由或修改历史迁移。
+- MiniMax-H3按原请求秒数选择按次/按秒价，Grok按分辨率与请求时长计秒，Seedance按实际终态completion tokens计价并要求保守上限，不伪造视频数。用整数/有理数计算，销售倍率作用后才向上取整到原10 nano USD粒度；基础价和实扣价分别保存，避免浮点或先取整再乘倍率。免费销售或零费率仍保存预留、身份和outbox，grant及预算权限条件不放宽。
+- 原主/区域`Reserve`在同一事务复核已安装不可变合同、请求规格与完整预留上限；`Complete`复算金额并拒绝未知终态、变更规格、超上限或混入文本计量，主节点继续独立复价。原有请求ID重放、预算、取消前退款、启动后保额、事务回滚与outbox保持；账单归属更新删除强制覆写token模式/倍率1，保留视频或Seedance token元数据。
+- 首轮`go test -race -p 1 -tags 'unit integration' ./internal/regional/ledger ./internal/repository -run '^Test(Pricing|RegionalVideoPricing|RegionalZeroPrice|RegionalPricingCanonical|RegionalSubscriptionCanonical|RegionalPrimarySettlement)' -count=1 -v -timeout=12m`退出0，ledger `1.600s`、repository `18.531s`。加强发送前取消、主权威独立拒绝、写入后失败回滚与四路竞争后，扩展区域资金回归退出0，ledger `1.588s`、repository `20.902s`。
+- 复核发现本轮初版会给文本用量写入空字符串/0的视频字段。扩充原`TestRegionalPricingCanonicalSettlementAndLostAck`后，单项真实SQL回归退出1、`11.266s`，明确失败于`text usage must retain absent media fields`。已改用可空SQL参数，文本及没有时长/分辨率证据的Seedance保留NULL；视频回归使用`IS NOT DISTINCT FROM`核对实际可空元数据，没有放宽文本断言。
+- 最终`go test -race -p 1 -tags 'unit integration' ./internal/regional/ledger ./internal/repository -run '^Test(Regional(ZeroPrice|Ledger|Budget|Funds|Primary|Subscription|Grant|Pricing|VideoPricing)|ExecuteBounded|Pricing)' -count=1 -v -timeout=12m`退出0：ledger `1.496s`、repository `15.898s`。12个视频主/区域SQL场景全部通过，含三种报价依据、零价、失败终态、未知状态拒绝、完整上限、重复/并发结算、提交后故障回滚、重启outbox、确认丢失、NULL兼容、余额和Key预算一致；隔离PostgreSQL/Redis容器正常终止。
+- `go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^Test(Regional(Meter|Billing)|MiniMaxH3|Grok.*Video|Seedance)' -count=1 -timeout=8m`退出0，service `1.345s`、handler `1.760s`。该应用回归验证原文本计量和现有视频流程；不冒充新视频资金链端到端接入。账本/仓储最终`go vet -p 1 -tags 'unit integration'`及完整规则lint退出0、`0 issues.`；首轮lint两项ST1005/QF1003已原位修复，没有禁用规则。
+- 该基础只绑定报价规格与金融请求ID，尚缺供应商task ID到资金预留的永久绑定、同task跨金融请求去重、实际发送/unknown恢复与运行时非单位倍率授权。原视频资金门503保持；不依赖24小时Redis快照冒充永久资金证据，不声称真实多区域或供应商生成已验证。原28项分母及D2/D3/D4状态不变，未执行CI、推送、部署或生产数据修改。

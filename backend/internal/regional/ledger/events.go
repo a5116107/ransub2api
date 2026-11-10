@@ -21,6 +21,7 @@ type Reservation struct {
 	PayloadSHA256  string          `json:"payload_sha256"`
 	PricingVersion string          `json:"pricing_version"`
 	Model          string          `json:"model"`
+	Video          *VideoRequest   `json:"video,omitempty"`
 }
 
 // Event retains raw measured usage and immutable pricing identity for primary
@@ -34,6 +35,7 @@ type Event struct {
 	OutputTokens        int64               `json:"output_tokens"`
 	CacheCreationTokens int64               `json:"cache_creation_tokens"`
 	CacheReadTokens     int64               `json:"cache_read_tokens"`
+	Video               *VideoUsage         `json:"video,omitempty"`
 }
 
 func (r Reservation) Validate(l regional.Lease) error {
@@ -43,6 +45,11 @@ func (r Reservation) Validate(l regional.Lease) error {
 	}
 	if r.Maximum < 0 || r.Model == "" || r.PricingVersion == "" || !validDigest(r.PayloadSHA256) {
 		return errors.New("reservation requires bounded price and payload identity")
+	}
+	if r.Video != nil {
+		if err := r.Video.validate(); err != nil {
+			return err
+		}
 	}
 	_, err := USD(r.Maximum)
 	return err
@@ -65,6 +72,29 @@ func (e Event) Validate(l regional.Lease) error {
 	if e.Model == "" || e.PricingVersion == "" || !validDigest(e.PayloadSHA256) || e.InputTokens < 0 || e.OutputTokens < 0 || e.CacheCreationTokens < 0 || e.CacheReadTokens < 0 {
 		return errors.New("invalid regional usage evidence")
 	}
+	if err := e.validateVideo(); err != nil {
+		return err
+	}
 	_, err := USD(e.Usage.Charge)
 	return err
+}
+
+func (e Event) validateVideo() error {
+	if e.Video == nil {
+		return nil
+	}
+	if err := e.Video.validate(); err != nil {
+		return err
+	}
+	if e.InputTokens != 0 || e.CacheCreationTokens != 0 || e.CacheReadTokens != 0 || e.OutputTokens != e.Video.CompletionTokens {
+		return ErrConflict
+	}
+	return nil
+}
+
+func videoMatchesReservation(request *VideoRequest, usage *VideoUsage) bool {
+	if request == nil || usage == nil {
+		return request == nil && usage == nil
+	}
+	return *request == usage.VideoRequest
 }

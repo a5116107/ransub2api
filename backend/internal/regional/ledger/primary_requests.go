@@ -43,7 +43,7 @@ func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, err
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := verifyZeroReservation(ctx, tx, r); err != nil {
+	if err := verifyPriceReservation(ctx, tx, r); err != nil {
 		return false, err
 	}
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(72422,hashtext($1))", r.RequestID); err != nil {
@@ -166,8 +166,11 @@ func (p *PrimaryRequests) finish(ctx context.Context, id string, e *Event) error
 			u.LeaseID != r.LeaseID || u.RegionID != r.RegionID ||
 			u.UserID != r.UserID || u.APIKeyID != r.APIKeyID || u.AccountID != r.AccountID ||
 			u.Charge < 0 || u.Charge > r.Maximum || !u.AdmittedAt.Equal(r.AdmittedAt) || u.CompletedAt.Before(u.AdmittedAt) ||
-			e.Model != r.Model || e.PricingVersion != r.PricingVersion || e.PayloadSHA256 != r.PayloadSHA256 {
+			e.Model != r.Model || e.PricingVersion != r.PricingVersion || e.PayloadSHA256 != r.PayloadSHA256 || !videoMatchesReservation(r.Video, e.Video) {
 			return ErrConflict
+		}
+		if err := verifyVideoSettlement(ctx, tx, r, *e); err != nil {
+			return err
 		}
 		if p.SettleScope == nil {
 			return errors.New("atomic settlement scope required")

@@ -81,9 +81,11 @@ func TestRegionalPricingCanonicalSettlementAndLostAck(t *testing.T) {
 	require.Equal(t, 1, verified)
 	var count int
 	var amount string
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*),min(actual_cost)::text FROM usage_logs WHERE request_id=$1 AND api_key_id=$2", r.RequestID, key.ID).Scan(&count, &amount))
+	var noMediaMetadata bool
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*),min(actual_cost)::text,bool_and(video_count=0 AND video_resolution IS NULL AND video_duration_seconds IS NULL) FROM usage_logs WHERE request_id=$1 AND api_key_id=$2", r.RequestID, key.ID).Scan(&count, &amount, &noMediaMetadata))
 	require.Equal(t, 1, count)
 	require.Equal(t, "0.0000200000", amount)
+	require.True(t, noMediaMetadata, "text usage must retain absent media fields")
 	require.NoError(t, local.Acknowledge(ctx, e))
 	require.NoError(t, local.Drain(ctx, l.LeaseID))
 	receipt, err := local.Close(ctx, l.LeaseID)
