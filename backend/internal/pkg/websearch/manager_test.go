@@ -167,6 +167,57 @@ func TestManagerSharedKeyRejectRollsBackQuotaAndPreventsRedirect(t *testing.T) {
 	require.Nil(t, client.CheckRedirect, "the cached client must not be modified")
 }
 
+func TestManagerSharedKeyCanceledBeforeSendRefundsQuota(t *testing.T) {
+	server := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+	m := NewManager([]ProviderConfig{{Type: ProviderTypeBrave, APIKey: "fixture", QuotaLimit: 1}}, rdb)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	m.SetKeyAdmission(func(ctx context.Context, _ string) (context.Context, func(), error) {
+		cancel()
+		return ctx, nil, context.Canceled
+	})
+	_, _, err := m.SearchWithBestProvider(ctx, SearchRequest{Query: "fixture"})
+	require.ErrorIs(t, err, context.Canceled)
+	usage, err := m.GetUsage(t.Context(), ProviderTypeBrave)
+	require.NoError(t, err)
+	require.Zero(t, usage, "cancellation before provider send must not consume search quota")
+}
+
+type cancelAfterQuotaIncrement struct{ cancel context.CancelFunc }
+
+func (h cancelAfterQuotaIncrement) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h cancelAfterQuotaIncrement) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+func (h cancelAfterQuotaIncrement) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") {
+			h.cancel()
+		}
+		return err
+	}
+}
+
+func TestManagerQuotaOverLimitCancellationRefundsOnlyOwnIncrement(t *testing.T) {
+	server := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+	require.NoError(t, rdb.Set(t.Context(), quotaRedisKey(ProviderTypeBrave), 1, time.Hour).Err())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	rdb.AddHook(cancelAfterQuotaIncrement{cancel: cancel})
+	m := NewManager(nil, rdb)
+	allowed, incremented := m.tryReserveQuota(ctx, ProviderConfig{Type: ProviderTypeBrave, QuotaLimit: 1})
+	require.False(t, allowed)
+	require.False(t, incremented)
+	usage, err := m.GetUsage(t.Context(), ProviderTypeBrave)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, usage, "an over-limit attempt must preserve the previously held quota")
+}
+
 func TestNewManager_PreservesOrder(t *testing.T) {
 	configs := []ProviderConfig{
 		{Type: "brave", APIKey: "k3"},

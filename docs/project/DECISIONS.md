@@ -1497,3 +1497,9 @@
 - 随后将竞争夹具加强为实际`BeginUpstreamKeyRequest` HTTP准入持槽，而不是仅直接调用额度接口；`go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^Test(RegionalWebSearchSharesKeyAuthority|UpstreamKeyRealRedisAtomicCompetition)$' -count=1 -v -timeout=10m`退出0、`9.831s`，primary/regional与本机真实Redis三种权威均通过；受该测试修改影响的repository vet及完整规则lint重跑退出0、`0 issues.`。
 - 六包`go vet -p 1 -tags 'unit integration'`退出0；`bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners`六包最终退出0、`0 issues.`。首轮lint对测试响应flush报告1项errcheck，修正后完整重跑；七包默认标签编译退出0，仅证明编译。
 - 本项不意味着全部自定义头、Cookie和独立出站已受控；视频资金门、D2其余范围及28项原分母不变。未执行CI、推送、部署或生产迁移。
+
+## 2026-11-10：D2 搜索配额取消回滚
+
+- 基线`40361c4`使用已取消的请求上下文执行Redis `DECR`：准入前取消反例实际留下计数1；超限递增到2后取消反例实际留下2而非原有1；两项新测试均退出1，并记录`context canceled`。
+- 原位将超限回滚和普通失败回滚收敛至原`rollbackQuota`，以`context.WithoutCancel`保留上下文值并加5秒清理上限；只归还本次递增，Redis故障仍记录错误。发送后共享租约丢失的可能已计费搜索继续保留配额、不自动重放。
+- `go test -race -p 1 ./internal/pkg/websearch -count=1 -timeout=5m`退出0、`2.103s`；包括两项取消、超限原有计数保护、预发送回滚和发送后不退配额。`go vet -p 1 ./internal/pkg/websearch`退出0；完整规则`bin/task-d2-golangci-lint.exe run --concurrency 1 --timeout 6m --allow-serial-runners ./internal/pkg/websearch`退出0、`0 issues.`。不改变D2父项及28项原分母，未执行CI、推送或部署。

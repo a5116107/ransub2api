@@ -47,6 +47,7 @@ const (
 	proxyTLSTimeout      = 3 * time.Second  // TLS handshake timeout
 	searchDataTimeout    = 60 * time.Second // response data transfer timeout
 	searchRequestTimeout = searchDataTimeout + proxyDialTimeout
+	quotaCleanupTimeout  = 5 * time.Second
 
 	quotaKeyPrefix      = "websearch:quota:"
 	proxyUnavailableKey = "websearch:proxy_unavailable:%d"
@@ -360,10 +361,7 @@ func (m *Manager) tryReserveQuota(ctx context.Context, cfg ProviderConfig) (bool
 		return true, false
 	}
 	if newVal > cfg.QuotaLimit {
-		if decrErr := m.redis.Decr(ctx, key).Err(); decrErr != nil {
-			slog.Warn("websearch: quota over-limit DECR failed",
-				"provider", cfg.Type, "error", decrErr)
-		}
+		m.rollbackQuota(ctx, cfg)
 		slog.Info("websearch: provider quota exhausted",
 			"provider", cfg.Type, "used", newVal, "limit", cfg.QuotaLimit)
 		return false, false
@@ -375,6 +373,10 @@ func (m *Manager) rollbackQuota(ctx context.Context, cfg ProviderConfig) {
 	if cfg.QuotaLimit <= 0 || m.redis == nil {
 		return
 	}
+	// The request may already be canceled. Release its reserved counter with
+	// a bounded cleanup context rather than stranding quota until TTL expiry.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quotaCleanupTimeout)
+	defer cancel()
 	key := quotaRedisKey(cfg.Type)
 	if err := m.redis.Decr(ctx, key).Err(); err != nil {
 		slog.Warn("websearch: quota rollback DECR failed",
