@@ -15,7 +15,7 @@ import (
 
 // RegionalAPIKeyAuth runs only identity/permission checks using a local replica.
 // It performs no last-used writes, subscription refresh, Redis admission, billing
-// or ops persistence. A separate unconditional gate still blocks model serving.
+// or ops persistence. The preview gate continues to block local model serving.
 type regionalAPIKeyAuthenticator interface {
 	GetRegionalByKey(context.Context, string) (*service.APIKey, error)
 }
@@ -84,4 +84,51 @@ func RegionalAPIKeyAuth(svc regionalAPIKeyAuthenticator, cfg *config.Config) gin
 		setGroupContext(c, auth.Group)
 		nextWithAPIKeyAdmissionLookup(c, svc.GetRegionalByKey, key, ip.GetSecurityClientIP(c, cfg.TrustForwardedIPForAPIKeyACL()), auth, strings.HasPrefix(c.Request.URL.Path, "/v1beta/"))
 	}
+}
+
+// RegionalVideoLookup classifies only registered, authenticated video lookups.
+// It does not authorize a provider request: the funds gate still permits only
+// a successfully forwarded lookup and rejects local execution.
+func RegionalVideoLookup(c *gin.Context) (service.GrokMediaEndpoint, string) {
+	if c == nil || c.Request == nil {
+		return "", ""
+	}
+	key, ok := GetAPIKeyFromContext(c)
+	if !ok || key == nil || key.Group == nil || key.GroupID == nil || *key.GroupID <= 0 || *key.GroupID != key.Group.ID {
+		return "", ""
+	}
+	platform, path := key.Group.Platform, c.FullPath()
+	videoPath := strings.TrimPrefix(path, "/v1")
+	videoLookup := false
+	switch videoPath {
+	case "/videos/:request_id", "/videos/generations/:request_id", "/videos/edits/:request_id", "/videos/extensions/:request_id",
+		"/videos/:request_id/content", "/videos/generations/:request_id/content", "/videos/edits/:request_id/content", "/videos/extensions/:request_id/content":
+		videoLookup = true
+	}
+	if c.Request.Method == http.MethodGet && c.Param("request_id") != "" && videoLookup {
+		switch platform {
+		case service.PlatformGrok, service.PlatformComposite:
+			if strings.HasSuffix(path, "/content") {
+				return service.GrokMediaEndpointVideoContent, c.Param("request_id")
+			}
+			return service.GrokMediaEndpointVideoStatus, c.Param("request_id")
+		case service.PlatformMiniMax:
+			if strings.HasSuffix(path, "/content") {
+				return service.MiniMaxH3EndpointContent, service.MiniMaxH3TaskKey(c.Param("request_id"))
+			}
+			return service.MiniMaxH3EndpointStatus, service.MiniMaxH3TaskKey(c.Param("request_id"))
+		}
+	}
+	seedanceLookup := false
+	switch path {
+	case "/contents/generations/tasks/:task_id", "/v1/contents/generations/tasks/:task_id", "/v3/contents/generations/tasks/:task_id", "/api/v3/contents/generations/tasks/:task_id":
+		seedanceLookup = true
+	}
+	if (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodDelete) && c.Param("task_id") != "" && seedanceLookup && (platform == service.PlatformOpenAI || platform == service.PlatformComposite) {
+		if c.Request.Method == http.MethodDelete {
+			return service.SeedanceEndpointDelete, service.SeedanceTaskKey(c.Param("task_id"))
+		}
+		return service.SeedanceEndpointStatus, service.SeedanceTaskKey(c.Param("task_id"))
+	}
+	return "", ""
 }

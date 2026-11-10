@@ -3,24 +3,92 @@
 package repository
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/regional/control"
 	"github.com/Wei-Shaw/sub2api/internal/regional/video"
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil/mtls"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type regionalForwardAuthSource struct{ record service.RegionalAuthRecord }
+
+func (s regionalForwardAuthSource) ListRegionalAuth(context.Context, []int64) ([]service.RegionalAuthRecord, error) {
+	return []service.RegionalAuthRecord{s.record}, nil
+}
+
+// The receiving ingress uses a genuine local auth replica, the production
+// route classifier and policies; task ownership remains in the SQL fixture.
+func regionalForwardGateway(t *testing.T, gateway *service.OpenAIGatewayService, identity, peer mtls.Identity, owner service.AsyncVideoKeyOwner, platform string) *gin.Engine {
+	t.Helper()
+	groupID := owner.GroupID
+	key := &service.APIKey{ID: owner.APIKeyID, UserID: owner.UserID, GroupID: &groupID, Key: "downstream-fixture", Status: service.StatusActive,
+		User: &service.User{ID: owner.UserID, Status: service.StatusActive}, Group: &service.Group{ID: groupID, Platform: platform, Status: service.StatusActive,
+			BlockSubagents: true, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"model-fixture"}}}}
+	keyMaterial, lookup := bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)
+	policy := regional.Config{RegionID: "us", MaxSnapshotAgeSeconds: 60}
+	statePath := filepath.Join(t.TempDir(), "auth.snapshot")
+	codec, err := regional.NewCodec(map[string][]byte{"fixture": keyMaterial})
+	require.NoError(t, err)
+	replica, err := regional.OpenReplica(statePath, policy, regional.SnapshotAuth, codec, service.RegionalAuthValidator([]int64{owner.UserID}), true)
+	require.NoError(t, err)
+	payload, err := service.ExportRegionalAuth(t.Context(), regionalForwardAuthSource{record: service.RegionalAuthRecord{APIKey: key}}, []int64{owner.UserID}, lookup)
+	require.NoError(t, err)
+	now := time.Now()
+	require.NoError(t, replica.Publish(t.Context(), "fixture", 1, now, now.Add(55*time.Second), payload))
+	runtime := service.RegionalSchedulerRuntimeConfig{Kind: regional.SnapshotAuth, AuthUserIDs: []int64{owner.UserID}, AuthLookupKey: lookup,
+		Mode: "subscriber", Policy: policy, Keys: map[string][]byte{"fixture": keyMaterial}, KeyID: "fixture", StateFile: statePath,
+		Endpoint: "https://127.0.0.1:1/internal/regional/auth", Listen: "127.0.0.1:0", CAFile: identity.CAFile,
+		CertFile: identity.CertFile, KeyFile: identity.KeyFile, TrustedServerCertSHA256: peer.Pin,
+		TrustedClientCertSHA256: []string{peer.Pin}, IntervalSeconds: 1, LifetimeSeconds: 30}
+	raw, err := json.Marshal(runtime)
+	require.NoError(t, err)
+	configPath := filepath.Join(t.TempDir(), "regional-auth.json")
+	require.NoError(t, os.WriteFile(configPath, raw, 0600))
+	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalAuthFile: configPath, RegionalFundsFile: "fixture"},
+		Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
+	keys, err := service.ProvideAPIKeyService(nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(keys.StopAuthCacheInvalidationSubscriber)
+	_, err = keys.GetRegionalByKey(t.Context(), key.Key)
+	require.NoError(t, err)
+	router := gin.New()
+	router.Use(servermiddleware.RegionalAPIKeyAuth(keys, cfg), servermiddleware.GroupModelAllowlist(), servermiddleware.GroupCodexCLIOnly(nil), servermiddleware.GroupBlockSubagents())
+	handleLookup := func(c *gin.Context) {
+		endpoint, taskID := servermiddleware.RegionalVideoLookup(c)
+		key, keyOK := servermiddleware.GetAPIKeyFromContext(c)
+		subject, userOK := servermiddleware.GetAuthSubjectFromContext(c)
+		if !keyOK || !userOK || !endpoint.IsVideoLookupRequest() || taskID == "" {
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		handled, err := gateway.ForwardRegionalVideoQuery(c, endpoint, taskID, key, subject.UserID)
+		if err != nil || !handled {
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+		}
+	}
+	router.GET("/v1/videos/:request_id", handleLookup)
+	router.GET("/v1/contents/generations/tasks/:task_id", handleLookup)
+	return router
+}
 
 func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 	t.Setenv("SUB2API_REGIONAL_TEST_DSN", integrationPostgresDSN)
@@ -241,6 +309,29 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, http.StatusOK, status)
 					require.Equal(t, before+1, executions[origin].Load())
+					if origin == 0 {
+						gateway := regionalForwardGateway(t, services[1], identities[1], identities[0], owner, tc.platform)
+						publicID := strings.TrimPrefix(strings.TrimPrefix(created.ResponseID, "seedance:"), "minimax-h3:")
+						path := "/v1/videos/" + publicID
+						if tc.platform == service.PlatformOpenAI {
+							path = "/v1/contents/generations/tasks/" + publicID
+						}
+						req := httptest.NewRequest(http.MethodGet, path+"?model=model-fixture", nil)
+						req.Header.Set("Authorization", "Bearer downstream-fixture")
+						req.Header.Set("originator", "origin-fixture")
+						w := httptest.NewRecorder()
+						gateway.ServeHTTP(w, req)
+						require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+						require.Equal(t, before+2, executions[origin].Load(), "the authenticated lookup must reach the SQL-proven original authority")
+						req = httptest.NewRequest(http.MethodGet, path+"?model=model-fixture", nil)
+						req.Header.Set("Authorization", "Bearer downstream-fixture")
+						req.Header.Set("X-OpenAI-Subagent", "worker")
+						w = httptest.NewRecorder()
+						gateway.ServeHTTP(w, req)
+						require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+						require.Equal(t, before+2, executions[origin].Load(), "local policy denial must not reach the origin")
+						before++
+					}
 					recorder, err := queryOperation("downstream-fixture", tc.status, true)
 					require.NoError(t, err)
 					require.Equal(t, http.StatusForbidden, recorder.Code, "origin policy must receive the subagent classification")
@@ -290,7 +381,7 @@ func TestRegionalAsyncVideoForwardingUsesOriginalAuthority(t *testing.T) {
 					syncDirectory()
 				}
 				require.EqualValues(t, 2, creates.Load(), "queries must not resubmit either original task")
-				expectedPolls := 6
+				expectedPolls := 7 // three direct queries per origin, plus one registered regional gateway query
 				if tc.platform == service.PlatformGrok {
 					expectedPolls += 2 // each download first verifies the original status
 				}

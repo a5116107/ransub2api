@@ -75,8 +75,14 @@ func TestGatewayRoutesGroupModelAllowlistMountedOnEveryGatewayRoute(t *testing.T
 	require.NoError(t, err)
 	source := string(routeSource)
 
-	// rootRoute helper：apiKeyAuth 之后、compositeTarget 之前。
-	rootHelper := regexp.MustCompile(regexp.QuoteMeta(`r.Handle(method, path, traffic, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), captureTraffic, imageAdmission, groupModelAllowlist, groupCodexCLIOnly, groupBlockSubagents, groupStreamOnly, podRoute, compositeTarget, requireGroupAnthropic, handler)`))
+	// rootRoute must retain the complete order, including the optional funds
+	// gate after all group policies and before Pod/composite routing.
+	rootHelper := regexp.MustCompile(
+		regexp.QuoteMeta(`handlers := []gin.HandlerFunc{traffic, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), captureTraffic, imageAdmission, groupModelAllowlist, groupCodexCLIOnly, groupBlockSubagents, groupStreamOnly}`) +
+			`\s*` + regexp.QuoteMeta(`if regionalVideoFundsGate != nil {`) +
+			`\s*` + regexp.QuoteMeta(`handlers = append(handlers, regionalVideoFundsGate)`) +
+			`\s*}\s*` + regexp.QuoteMeta(`handlers = append(handlers, podRoute, compositeTarget, requireGroupAnthropic, handler)`) +
+			`\s*` + regexp.QuoteMeta(`r.Handle(method, path, handlers...)`))
 	require.Regexp(t, rootHelper, source,
 		"root alias helper must place the allowlist between apiKeyAuth and compositeTarget")
 

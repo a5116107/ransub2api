@@ -129,20 +129,31 @@ func registerRoutes(
 	// 通用路由（健康检查、状态等）
 	routes.RegisterCommonRoutes(r)
 	if cfg.Runtime.Role == config.RuntimeRoleGateway {
+		gatewayAuth := apiKeyAuth
 		if cfg.Runtime.RegionalSchedulerFile != "" || cfg.Runtime.RegionalAuthFile != "" {
 			if cfg.Runtime.RegionalAuthFile != "" {
 				r.Use(middleware2.RegionalAPIKeyAuth(apiKeyService, cfg))
+				// RegionalAPIKeyAuth has already installed the authenticated local
+				// identity and its revalidator; do not invoke primary-backed auth.
+				gatewayAuth = middleware2.APIKeyAuthMiddleware(func(c *gin.Context) { c.Next() })
 			}
-			// Local auth preview still cannot spend or schedule: account ownership and
-			// quota leases are not implemented. Never enter primary-backed middleware.
-			// Health routes above remain available.
+			// Preview still cannot spend or schedule locally. Only locally
+			// authenticated video lookups may reach the existing funds gate,
+			// which rejects anything not actually forwarded to the origin.
 			r.Use(func(c *gin.Context) {
+				if cfg.Runtime.RegionalAuthFile != "" && cfg.Runtime.RegionalFundsFile != "" {
+					endpoint, taskID := middleware2.RegionalVideoLookup(c)
+					if endpoint.IsVideoLookupRequest() && taskID != "" {
+						c.Next()
+						return
+					}
+				}
 				c.AbortWithStatusJSON(503, gin.H{"error": "regional gateway admission is not enabled"})
 			})
 		}
 		// Global settings, payments, and internal worker/admin APIs stay on the
 		// primary. Request replicas only expose authenticated gateway routes.
-		routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
+		routes.RegisterGatewayRoutes(r, h, gatewayAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
 		return
 	}
 

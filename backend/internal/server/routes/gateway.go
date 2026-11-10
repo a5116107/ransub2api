@@ -115,33 +115,7 @@ func RegisterGatewayRoutes(
 			if !discovery && (!generation || !ok || key == nil || key.Group == nil || key.Group.Platform != service.PlatformOpenAI) {
 				// A remote task is executed and billed only at its original node.
 				// Local lookups and all generation still require the existing bound.
-				var endpoint service.GrokMediaEndpoint
-				taskID := ""
-				if ok && key != nil && key.Group != nil && key.GroupID != nil && *key.GroupID > 0 && *key.GroupID == key.Group.ID {
-					platform := key.Group.Platform
-					switch {
-					case c.Request.Method == http.MethodGet && c.Param("request_id") != "" && strings.HasPrefix(strings.TrimPrefix(c.FullPath(), "/v1"), "/videos/"):
-						switch platform {
-						case service.PlatformGrok, service.PlatformComposite:
-							endpoint, taskID = service.GrokMediaEndpointVideoStatus, c.Param("request_id")
-							if strings.HasSuffix(c.FullPath(), "/content") {
-								endpoint = service.GrokMediaEndpointVideoContent
-							}
-						case service.PlatformMiniMax:
-							endpoint, taskID = service.MiniMaxH3EndpointStatus, service.MiniMaxH3TaskKey(c.Param("request_id"))
-							if strings.HasSuffix(c.FullPath(), "/content") {
-								endpoint = service.MiniMaxH3EndpointContent
-							}
-						}
-					case (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodDelete) && c.Param("task_id") != "" && strings.HasSuffix(c.FullPath(), "/contents/generations/tasks/:task_id"):
-						if platform == service.PlatformOpenAI || platform == service.PlatformComposite {
-							endpoint, taskID = service.SeedanceEndpointStatus, service.SeedanceTaskKey(c.Param("task_id"))
-							if c.Request.Method == http.MethodDelete {
-								endpoint = service.SeedanceEndpointDelete
-							}
-						}
-					}
-				}
+				endpoint, taskID := middleware.RegionalVideoLookup(c)
 				if endpoint.IsVideoLookupRequest() && taskID != "" {
 					c.Set(deferredVideoQueryKey, deferredVideoQuery{endpoint: endpoint, taskID: taskID})
 					original(c)
