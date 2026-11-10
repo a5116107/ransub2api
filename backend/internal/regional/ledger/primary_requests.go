@@ -27,7 +27,7 @@ func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, err
 	if p.Authorize == nil || p.SettleScope == nil || p.CancelScope == nil {
 		return false, errors.New("atomic budget scope required")
 	}
-	if r.RequestID == "" || r.UserID <= 0 || r.Maximum <= 0 || !validDigest(r.PayloadSHA256) || r.Model == "" || r.PricingVersion == "" {
+	if r.RequestID == "" || r.UserID <= 0 || r.Maximum < 0 || !validDigest(r.PayloadSHA256) || r.Model == "" || r.PricingVersion == "" {
 		return false, ErrConflict
 	}
 	amount, err := USD(r.Maximum)
@@ -43,6 +43,9 @@ func (p *PrimaryRequests) Reserve(ctx context.Context, r Reservation) (bool, err
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := verifyZeroReservation(ctx, tx, r); err != nil {
+		return false, err
+	}
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(72422,hashtext($1))", r.RequestID); err != nil {
 		return false, err
 	}

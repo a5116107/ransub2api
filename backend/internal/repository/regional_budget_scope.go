@@ -20,7 +20,7 @@ func (s RegionalBudgetScope) Reserve(ctx context.Context, tx *sql.Tx, id string,
 	if err != nil {
 		return err
 	}
-	if maximum <= 0 || user <= 0 || key <= 0 || account <= 0 {
+	if maximum < 0 || user <= 0 || key <= 0 || account <= 0 {
 		return ledger.ErrConflict
 	}
 	var oldUser, oldKey, oldAccount, oldMaximum int64

@@ -41,7 +41,7 @@ func (r Reservation) Validate(l regional.Lease) error {
 	if err := e.ValidateAgainst(l); err != nil {
 		return err
 	}
-	if r.Maximum <= 0 || r.Model == "" || r.PricingVersion == "" || !validDigest(r.PayloadSHA256) {
+	if r.Maximum < 0 || r.Model == "" || r.PricingVersion == "" || !validDigest(r.PayloadSHA256) {
 		return errors.New("reservation requires bounded price and payload identity")
 	}
 	_, err := USD(r.Maximum)

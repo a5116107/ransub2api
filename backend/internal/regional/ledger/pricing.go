@@ -95,6 +95,27 @@ func InstallPrice(ctx context.Context, db *sql.DB, p Price) error {
 	return nil
 }
 
+// verifyZeroReservation refuses a zero hold unless the installed, immutable
+// contract proves every billable text category is free. A caller-supplied
+// amount or an unknown/future media contract is not evidence of a free request.
+func verifyZeroReservation(ctx context.Context, tx *sql.Tx, r Reservation) error {
+	if r.Maximum != 0 {
+		return nil
+	}
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, `SELECT price FROM regional_prices WHERE version=$1`, r.PricingVersion).Scan(&raw); err != nil {
+		return err
+	}
+	var p Price
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return err
+	}
+	if p.Validate() != nil || p.Version() != r.PricingVersion || p.Model != r.Model || p.Input != 0 || p.Output != 0 || p.CacheCreation != 0 || p.CacheRead != 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 // PricingVerifier independently loads authority-owned pricing, validates the
 // final amount and inserts the canonical usage row within Primary.Settle's
 // transaction. Scope MUST verify durable admission and all quota dimensions;

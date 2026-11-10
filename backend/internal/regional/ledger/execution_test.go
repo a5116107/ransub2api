@@ -92,3 +92,15 @@ func TestExecuteBoundedSettlesAfterClientCancel(t *testing.T) {
 	require.False(t, l.canceled)
 	require.Equal(t, "mock-text", l.event.Model)
 }
+
+func TestExecuteBoundedZeroPrice(t *testing.T) {
+	p := Price{Model: "free-text", MaxInput: 100, MaxOutput: 20}
+	l := &executionLedger{fresh: true}
+	err := ExecuteBounded(context.Background(), l, p, Reservation{RequestID: "free-request"}, []byte("payload"), 10, func(context.Context) (MeasuredUsage, error) {
+		return MeasuredUsage{Input: 10, Output: 5, Final: true}, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"reserve", "start", "complete"}, l.calls)
+	require.EqualValues(t, 0, l.event.Usage.Charge)
+	require.Equal(t, p.Version(), l.event.PricingVersion)
+}

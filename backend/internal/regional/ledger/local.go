@@ -99,6 +99,9 @@ func (l *Local) Reserve(ctx context.Context, r Reservation) (fresh bool, err err
 	if err := r.Validate(lease); err != nil {
 		return false, err
 	}
+	if err := verifyZeroReservation(ctx, tx, r); err != nil {
+		return false, err
+	}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return false, err

@@ -1511,3 +1511,13 @@
 - `go test -race -p 1 -tags unit ./internal/handler ./internal/service -run '^Test(Seedance|GrokVideo|GrokMediaVideo|MiniMaxH3|OpenAIGatewayHandlerSubmit|GatewayHandlerSubmit|OpenAIRecordUsage)' -count=1 -timeout=8m`退出0，handler `1.345s`、service `1.218s`；测试夹具收尾后handler同范围再次退出0、`1.287s`。
 - `go test -race -p 1 -tags 'unit integration' ./internal/repository -run '^Test(SeedanceUsageBillingLostAcknowledgementReplay|UsageBillingRepositoryApply_DeduplicatesBalanceBilling|UsageBillingDeliveryCrashBeforeExecutionAndTwoWriters|UsageBillingDeliveryLogFailureRollsBackMoneyAndRecovers)$' -count=1 -v -timeout=10m`退出0、`13.451s`。隔离PostgreSQL用Seedance稳定ID和token账单模拟数据库提交后确认丢失，重放只扣款一次；另测持久暂存双写与日志失败原子回滚。仓储重放和handler故障恢复是互补夹具，不冒充完整线上流程。
 - 三包`go vet -p 1 -tags 'unit integration'`退出0，三包完整规则lint退出0、`0 issues.`；handler测试夹具清理后handler vet及lint复验。四包默认标签`go test -p 1 ... -run '^$'`退出0，仅证明编译。缓存清理失败、进程在持久暂存前退出、原24小时快照过期及价格变化导致的重试指纹冲突仍可能需要对账；本次未完成区域视频资金账本或生产验证，28项原分母不变。
+
+## 2026-11-10：D2 区域账本零价文本预留基础
+
+- 基线 `0ed6d53` 的 `TestExecuteBoundedZeroPrice` 实际报 `nonzero conservative reservation required`；隔离 PostgreSQL 的零价本地预留报 `reservation requires bounded price and payload identity`。已有 Price 虽允许费率为零，预留逻辑和三个 SQL CHECK 却要求正数，故不能形成有身份和幂等证据的免费请求。
+- 沿现有文本 Price、主/区域 RequestLedger、预算分配及 outbox 原位处理零预留：只有事务中查得已安装、模型和内容版本匹配、四项文本费率均为零的不可变合同才允许；缺价、错模型、任一非零费率拒绝，非零预留保留原语义。迁移333只把本地请求、主请求及预算分配的金额 CHECK 扩为非负、保持10 nano USD精度；grant仍须正额、区域就绪仍需可用grant。零预留依旧保存永久身份，未完成/未确认不能排空，不新增平行账本或绕过权限预算。
+- `go test -race -p 1 -tags 'unit integration' ./internal/regional/ledger ./internal/repository -run '^Test(Regional(ZeroPrice|Ledger|Budget|Funds|Primary|Subscription|Grant|Pricing)|ExecuteBounded|Pricing)' -count=1 -timeout=12m` 退出0：ledger `1.536s`，repository `13.555s`。隔离 PostgreSQL 验证四种非零文本费率伪造、缺价/错模型、幂等与四路并发重放、重启、零额在途及outbox阻止关闭、原主资金预算/用量和余额一致；以及真实 HTTPUpstream、OpenAI Forward 与本机模拟供应商配合同一SQL账本，主权威按不可变零价复验。该转发夹具使用确定性 Admit 和单一隔离数据库，不代表完整生产认证、跨区域资金通道或视频。
+- 真实转发夹具首轮因缺少生产构造要求的最新账号仓储而在发送前拒绝；接入真实隔离账号仓储后，SQL fixture 的未定类型参数另报错，明确 `::text` 后通过。两次失败均为夹具条件，不归因于已验证的业务代码。`go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^TestRegional(Meter|Billing)' -count=1 -timeout=8m` 退出0，service `1.223s`、handler `1.171s`。
+- 隔离临时表验证333在已有正额记录上可重复应用；零值通过、负值与非10粒度拒绝；零值记录存在时恢复旧约束被拒绝。测试仅在事务内临时表移除零值后验证旧约束可恢复，生产回退须保留永久记录并维持333约束，不能为满足旧约束删除财务证据。未对生产数据库执行迁移。
+- 两包 `go vet -p 1 -tags 'unit integration'` 退出0；两包完整规则 `bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --concurrency 1 --timeout 18m --allow-serial-runners` 退出0、`0 issues.`。未运行CI、推送或部署。
+- 原28项分母不变：区域视频价目与任务级预留/绑定、终态与重启恢复、非单位倍率、跨区资金门和多peer仍属 D2 未完成；此基础只覆盖全零文本价目，并不证明免费分组或视频可用。unknown 无任务ID 的核实仍等待供应商关联查询契约。

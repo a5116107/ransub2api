@@ -38,9 +38,6 @@ func ExecuteBounded(ctx context.Context, l RequestLedger, p Price, r Reservation
 	if err != nil {
 		return err
 	}
-	if maximum <= 0 {
-		return errors.New("nonzero conservative reservation required")
-	}
 	digest := sha256.Sum256(payload)
 	r.Maximum = maximum
 	r.Model = p.Model
