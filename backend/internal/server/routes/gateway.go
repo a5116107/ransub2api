@@ -102,6 +102,10 @@ func RegisterGatewayRoutes(
 				c.Abort()
 				return
 			}
+			if ok && h.OpenAIGateway.AuthorizeRegionalVideoFundsQuery(c, query.endpoint, query.taskID) {
+				c.Next()
+				return
+			}
 			rejectFunds(c)
 		}
 		original := groupModelAllowlist
@@ -114,7 +118,8 @@ func RegisterGatewayRoutes(
 			key, ok := middleware.GetAPIKeyFromContext(c)
 			if !discovery && (!generation || !ok || key == nil || key.Group == nil || key.Group.Platform != service.PlatformOpenAI) {
 				// A remote task is executed and billed only at its original node.
-				// Local lookups and all generation still require the existing bound.
+				// Local queries require their permanent financial owner; generation
+				// still requires a separately certified creation bound.
 				endpoint, taskID := middleware.RegionalVideoLookup(c)
 				if endpoint.IsVideoLookupRequest() && taskID != "" {
 					c.Set(deferredVideoQueryKey, deferredVideoQuery{endpoint: endpoint, taskID: taskID})

@@ -76,6 +76,24 @@ func (h *OpenAIGatewayHandler) ForwardRegionalVideoQuery(c *gin.Context, endpoin
 	return handled || err != nil
 }
 
+// AuthorizeRegionalVideoFundsQuery admits only an existing task from the local
+// financial ledger. New-admission readiness is irrelevant to its reserved funds.
+func (h *OpenAIGatewayHandler) AuthorizeRegionalVideoFundsQuery(c *gin.Context, endpoint service.GrokMediaEndpoint, taskID string) bool {
+	if h == nil || h.gatewayService == nil || h.gatewayService.RegionalFundsReadiness() == nil || c == nil || c.Request == nil || !endpoint.IsVideoLookupRequest() || strings.TrimSpace(taskID) == "" {
+		return false
+	}
+	key, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || key == nil || key.GroupID == nil || key.Group == nil || *key.GroupID != key.Group.ID {
+		return false
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID != key.UserID {
+		return false
+	}
+	accountID, err := h.gatewayService.ResolveMediaVideoRequestAccount(c.Request.Context(), key.GroupID, taskID, subject.UserID, key.ID, endpoint)
+	return err == nil && accountID > 0
+}
+
 func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.GrokMediaEndpoint, requestID string) {
 	platform := service.PlatformGrok
 	noAccountCode, noAccountMessage := "grok_media_no_eligible_account", "No eligible Grok media accounts"
@@ -216,42 +234,6 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}
-
-	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
-
-	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, apiKey.ID, apiKey.ConcurrencyLimit, false, &streamStarted, reqLog)
-	if !acquired {
-		return
-	}
-	if userReleaseFunc != nil {
-		defer userReleaseFunc()
-	}
-
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
-		reqLog.Info("grok_media.billing_eligibility_check_failed", zap.Error(err))
-		status, code, message, retryAfter := billingErrorDetails(err)
-		if retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
-		}
-		h.errorResponse(c, status, code, message)
-		return
-	}
-
-	// 余额模式在途预留（与计费同口径估算；计费任务扣减余额缓存后才释放）。
-	inflightEstimate := grokMediaInflightEstimate(endpoint, routingModel, requestInfo, body)
-	inflightEstimate.MiniMaxH3BaseCost = miniMaxH3BaseCost
-	inflightDone, inflightErr := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, inflightEstimate)
-	if inflightErr != nil {
-		status, code, message, retryAfter := billingErrorDetails(inflightErr)
-		if retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
-		}
-		h.errorResponse(c, status, code, message)
-		return
-	}
-	defer inflightDone()
-
 	sessionSeed := body
 	if len(sessionSeed) == 0 && strings.TrimSpace(requestID) != "" {
 		sessionSeed = []byte(requestID)
@@ -272,6 +254,45 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video request not found")
 			return
 		}
+	}
+	fundedVideoLookup := boundLookupAccountID > 0 && h.gatewayService.RegionalFundsReadiness() != nil
+
+	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
+
+	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, apiKey.ID, apiKey.ConcurrencyLimit, false, &streamStarted, reqLog)
+	if !acquired {
+		return
+	}
+	if userReleaseFunc != nil {
+		defer userReleaseFunc()
+	}
+
+	// Permanent SQL ownership proves that this task already reserved its funds.
+	// Pausing new admissions must not prevent querying, settling or cancelling it.
+	if !fundedVideoLookup {
+		if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+			reqLog.Info("grok_media.billing_eligibility_check_failed", zap.Error(err))
+			status, code, message, retryAfter := billingErrorDetails(err)
+			if retryAfter > 0 {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			}
+			h.errorResponse(c, status, code, message)
+			return
+		}
+
+		inflightEstimate := grokMediaInflightEstimate(endpoint, routingModel, requestInfo, body)
+		inflightEstimate.MiniMaxH3BaseCost = miniMaxH3BaseCost
+		inflightDone, inflightErr := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, inflightEstimate)
+		if inflightErr != nil {
+			status, code, message, retryAfter := billingErrorDetails(inflightErr)
+			if retryAfter > 0 {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			}
+			h.errorResponse(c, status, code, message)
+			return
+		}
+		defer inflightDone()
 	}
 	// Grok 媒体（图片/视频生成与视频查询）按媒体倍率计费，不在 token 利润门
 	// 范围内：显式豁免，防止 service 层防御性装门按文本 D 误过滤媒体请求，
@@ -511,6 +532,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					h.handleAsyncVideoSubmissionUnconfirmed(c)
 				}
 				reqLog.Warn("grok_media.video_submission_unconfirmed", zap.Int64("account_id", account.ID), zap.Error(err))
+				return
+			}
+			if boundLookupAccountID > 0 && service.IsUpstreamKeyAdmissionFailure(err) {
+				h.handleGrokMediaFailoverExhausted(c, endpoint, &service.UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, Reason: service.UpstreamKeyAdmissionReason}, service.IsResponseCommitted(c) || c.Writer.Size() != writerSizeBeforeForward)
 				return
 			}
 			if service.IsOpenAITurnAdmissionError(err) {

@@ -4,17 +4,22 @@ package routes
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/regional/ledger"
 	"github.com/Wei-Shaw/sub2api/internal/regional/video"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -90,7 +95,7 @@ func TestRegionalVideoQueryForwardingBeforeFundsGate(t *testing.T) {
 					require.Equal(t, operation, upstream.last.Operation)
 					require.Equal(t, task, upstream.last.TaskID)
 					if mode == "local" {
-						require.Contains(t, w.Body.String(), "regional_cost_bound_unavailable", "local execution must remain behind the original funds gate")
+						require.Contains(t, w.Body.String(), "regional_cost_bound_unavailable", "local execution without its original financial ledger must remain blocked")
 					}
 				}
 				for _, taskName := range []string{"task", "models", "usage", "responses"} {
@@ -202,8 +207,8 @@ func TestRegionalVideoFundsGateHonorsGroupPolicies(t *testing.T) {
 	}
 }
 
-// Even a validated forwarded lookup cannot bypass the originating node's
-// coordinated funds gate: video completion may itself trigger a charge.
+// A forwarding proof alone cannot authorize an unfunded task at the origin:
+// video completion still requires its permanent financial reservation.
 func TestRegionalVideoOriginFundsGateRejectsUnmeteredLookup(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalFundsFile: "fixture"}, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
@@ -232,4 +237,186 @@ func TestRegionalVideoOriginFundsGateRejectsUnmeteredLookup(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Contains(t, w.Body.String(), "regional_cost_bound_unavailable")
 	require.Zero(t, upstream.calls, "the origin must not transfer the lookup or execute an unmetered request")
+}
+
+type regionalFundedVideoRouteLedger struct {
+	ledger.VideoTaskLedger
+	record      ledger.VideoTaskRecord
+	resolveErr  error
+	completeErr error
+	resolves    int
+	completes   int
+}
+
+func (l *regionalFundedVideoRouteLedger) ResolveVideoTaskOwner(_ context.Context, principal video.Owner, taskID string) (*video.Owner, error) {
+	l.resolves++
+	owner := l.record.Reservation.VideoOrigin.Owner
+	if l.resolveErr != nil {
+		return nil, l.resolveErr
+	}
+	if !video.SamePrincipal(principal, owner) || taskID != l.record.TaskID {
+		return nil, ledger.ErrConflict
+	}
+	return &owner, nil
+}
+
+func (l *regionalFundedVideoRouteLedger) LoadVideoTask(_ context.Context, owner video.Owner, taskID string) (ledger.VideoTaskRecord, error) {
+	if owner != l.record.Reservation.VideoOrigin.Owner || taskID != l.record.TaskID {
+		return ledger.VideoTaskRecord{}, ledger.ErrConflict
+	}
+	return l.record, nil
+}
+
+func (l *regionalFundedVideoRouteLedger) Complete(context.Context, ledger.Event) error {
+	l.completes++
+	return l.completeErr
+}
+
+type regionalFundedVideoRouteUpstream struct {
+	*regionalVideoRouteUpstream
+	service.AsyncVideoKeyLeaseController
+	provider string
+	sends    int
+	releases int
+}
+
+func (*regionalFundedVideoRouteUpstream) LoadAsyncVideoKeyLeaseByTask(context.Context, service.AsyncVideoKeyOwner, string) (*service.PersistentUpstreamKeyLease, error) {
+	return nil, nil
+}
+
+func (u *regionalFundedVideoRouteUpstream) ReleaseAsyncVideoKeyLeaseByTask(context.Context, service.AsyncVideoKeyOwner, string) error {
+	u.releases++
+	return nil
+}
+
+func (u *regionalFundedVideoRouteUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.sends++
+	status, body := http.StatusOK, `{"status":"done","video":{"url":"https://vidgen.x.ai/video.mp4"}}`
+	headers := http.Header{"Content-Type": {"application/json"}}
+	switch {
+	case u.provider == "minimax-h3" && strings.HasSuffix(req.URL.Path, "/content"):
+		status, body = http.StatusFound, ""
+		headers.Set("Location", "https://cdn.example/video.mp4")
+	case u.provider == "minimax-h3":
+		body = `{"status":"completed","metadata":{"url":"https://cdn.example/video.mp4"}}`
+	case u.provider == "seedance" && req.Method == http.MethodDelete:
+		body = `{"status":"cancelled"}`
+	case u.provider == "seedance":
+		body = `{"status":"succeeded","usage":{"completion_tokens":12345}}`
+	case strings.HasSuffix(req.URL.Path, "/content") || strings.HasSuffix(req.URL.Path, ".mp4"):
+		body = "fixture-video"
+		headers.Set("Content-Type", "video/mp4")
+	}
+	return &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader(body))}, nil
+}
+
+func TestRegionalVideoFundsGateAllowsOnlyOriginalFundedQueries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, route := range []struct{ method, path, provider, platform string }{
+		{http.MethodGet, "/v1/videos/task", "grok", service.PlatformGrok},
+		{http.MethodGet, "/videos/task/content", "grok", service.PlatformGrok},
+		{http.MethodGet, "/v1/videos/task", "minimax-h3", service.PlatformMiniMax},
+		{http.MethodGet, "/videos/task/content", "minimax-h3", service.PlatformMiniMax},
+		{http.MethodGet, "/v3/contents/generations/tasks/task", "seedance", service.PlatformOpenAI},
+		{http.MethodDelete, "/api/v3/contents/generations/tasks/task", "seedance", service.PlatformOpenAI},
+	} {
+		for _, scenario := range []string{"allowed", "missing_task", "sql_unavailable", "wrong_group", "wrong_user", "changed_route", "settlement_unavailable"} {
+			t.Run(route.provider+route.method+route.path+"/"+scenario, func(t *testing.T) {
+				cfg := &config.Config{RunMode: config.RunModeStandard, Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalFundsFile: "fixture"}, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
+				group := &service.Group{ID: 3, Platform: route.platform}
+				account := service.Account{ID: 4, Platform: route.platform, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 5, GroupIDs: []int64{group.ID}, Credentials: map[string]any{"api_key": "original-key", "base_url": "https://video.example", "openai_capabilities": []string{"seedance"}}}
+				owner := video.Owner{UserID: 1, APIKeyID: 2, GroupID: group.ID, AccountID: account.ID, Provider: route.provider, RouteFingerprint: service.AccountRouteFingerprint(&account)}
+				price := ledger.Price{Model: "video-alias", Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: route.provider, UpstreamModel: "MiniMax-H3", Resolution: "768p", DurationSeconds: 5}, Basis: "request", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10}}
+				taskID := "minimax-h3:task"
+				switch route.provider {
+				case "grok":
+					price.Video.VideoRequest = ledger.VideoRequest{Provider: route.provider, UpstreamModel: "grok-imagine-video", Resolution: "720p", DurationSeconds: 6}
+					price.Video.Basis, taskID = "second", "task"
+				case "seedance":
+					price.Video.VideoRequest = ledger.VideoRequest{Provider: route.provider, UpstreamModel: "ep-seedance"}
+					price.Video.Basis, price.Video.UnitNano, price.Video.MaxCompletionTokens = "completion_tokens", 28_000_000_000, 1_000_000
+					taskID = "seedance:task"
+				}
+				maximum, err := price.VideoMaximum(price.Video.VideoRequest)
+				require.NoError(t, err)
+				l := &regionalFundedVideoRouteLedger{record: ledger.VideoTaskRecord{TaskID: taskID, State: "started", Price: price, Reservation: ledger.Reservation{RequestID: "original-financial-request", UserID: owner.UserID, APIKeyID: owner.APIKeyID, AccountID: owner.AccountID, Model: price.Model, PricingVersion: price.Version(), Maximum: maximum, AdmittedAt: time.Now().Add(-time.Minute), PayloadSHA256: strings.Repeat("a", 64), Video: &price.Video.VideoRequest, VideoOrigin: &ledger.VideoOrigin{Member: "video:00000000-0000-4000-8000-000000000001", Owner: owner}}}}
+				switch scenario {
+				case "missing_task":
+					l.resolveErr = sql.ErrNoRows
+				case "sql_unavailable":
+					l.resolveErr = errors.New("original SQL unavailable")
+				case "changed_route":
+					account.Credentials["api_key"] = "replacement-key"
+				case "settlement_unavailable":
+					l.completeErr = errors.New("settlement temporarily unavailable")
+				}
+				upstream := &regionalFundedVideoRouteUpstream{regionalVideoRouteUpstream: &regionalVideoRouteUpstream{mode: "local"}, provider: route.provider}
+				meter := &service.RegionalMetering{Ledger: l, Readiness: func(context.Context) error {
+					t.Error("existing task must not require new admission readiness")
+					return errors.New("new admission paused")
+				}, Admit: func(context.Context, *service.APIKey, *service.Account, []byte) (ledger.Reservation, ledger.Price, error) {
+					panic("queries must never reserve new funds")
+				}}
+				repo := compatibleImagesAccounts{accounts: []service.Account{account}}
+				concurrency := service.NewConcurrencyService(testutil.StubConcurrencyCache{})
+				svc := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, &testutil.StubGatewayCache{}, cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, service.NewGrokTokenProvider(repo, nil), nil, nil, nil, nil, nil, service.WithRegionalMetering(meter))
+				t.Cleanup(svc.StopAsyncVideoKeyReleaseRecovery)
+				t.Cleanup(svc.StopOpenAICodexTicketHarvester)
+				billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+				t.Cleanup(billing.Stop)
+				h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(svc, concurrency, billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
+				router := gin.New()
+				RegisterGatewayRoutes(router, h, func(c *gin.Context) {
+					if c.GetHeader("Authorization") != "Bearer downstream-fixture" {
+						c.AbortWithStatus(http.StatusUnauthorized)
+						return
+					}
+					groupID, userID := group.ID, owner.UserID
+					if scenario == "wrong_group" {
+						groupID++
+					}
+					if scenario == "wrong_user" {
+						userID++
+					}
+					c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: owner.APIKeyID, UserID: owner.UserID, GroupID: &groupID, Group: group, User: &service.User{ID: owner.UserID}})
+					c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: userID, Concurrency: 5})
+					c.Next()
+				}, nil, nil, nil, nil, nil, cfg)
+				req := httptest.NewRequest(route.method, route.path, nil)
+				req.Header.Set("Authorization", "Bearer downstream-fixture")
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				if scenario != "allowed" {
+					require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+					if scenario == "settlement_unavailable" {
+						require.Contains(t, w.Body.String(), "regional_video_settlement_unavailable")
+					} else {
+						require.Zero(t, upstream.sends)
+					}
+					require.Zero(t, upstream.releases)
+					return
+				}
+				wantStatus, wantSends := http.StatusOK, 1
+				if route.provider == "minimax-h3" && strings.HasSuffix(route.path, "/content") {
+					wantStatus = http.StatusFound
+				}
+				if route.provider == "grok" && strings.HasSuffix(route.path, "/content") {
+					wantSends = 2
+				}
+				require.Equal(t, wantStatus, w.Code, w.Body.String())
+				require.Equal(t, wantSends, upstream.sends)
+				require.Equal(t, 1, l.completes)
+				require.Equal(t, 1, upstream.releases)
+				before := l.resolves
+				create := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"grok-imagine-video","prompt":"fixture"}`))
+				create.Header.Set("Authorization", "Bearer downstream-fixture")
+				denied := httptest.NewRecorder()
+				router.ServeHTTP(denied, create)
+				require.Equal(t, http.StatusServiceUnavailable, denied.Code)
+				require.Contains(t, denied.Body.String(), "regional_cost_bound_unavailable")
+				require.Equal(t, before, l.resolves, "creation must not reuse an existing task's financial authority")
+				require.Equal(t, wantSends, upstream.sends)
+			})
+		}
+	}
 }

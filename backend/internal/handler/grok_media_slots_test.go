@@ -809,6 +809,7 @@ type regionalVideoSettlementTestLedger struct {
 	ledger.VideoTaskLedger
 	record ledger.VideoTaskRecord
 	called int
+	err    error
 }
 
 func (l *regionalVideoSettlementTestLedger) ResolveVideoTaskOwner(context.Context, video.Owner, string) (*video.Owner, error) {
@@ -821,7 +822,7 @@ func (l *regionalVideoSettlementTestLedger) LoadVideoTask(context.Context, video
 
 func (l *regionalVideoSettlementTestLedger) Complete(context.Context, ledger.Event) error {
 	l.called++
-	return errors.New("original funds temporarily unavailable")
+	return l.err
 }
 
 type regionalVideoSettlementTestUpstream struct {
@@ -833,7 +834,8 @@ func (*regionalVideoSettlementTestUpstream) LoadAsyncVideoKeyLeaseByTask(context
 	return nil, nil
 }
 
-func TestRegionalVideoSettlementFailureReturns503WithoutReleasingTask(t *testing.T) {
+func newRegionalVideoSettlementHandler(t *testing.T) (*OpenAIGatewayHandler, *grokMediaSlotsCache, *grokMediaSlotBindings, *grokMediaSlotUpstream, *regionalVideoSettlementTestLedger) {
+	t.Helper()
 	h, slots, bindings, upstream := newGrokMediaSlotHandler(t, false, false)
 	account := service.Account{ID: 1, Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 50, GroupIDs: []int64{24}, Credentials: map[string]any{"api_key": "fixture-key"}}
 	price := ledger.Price{Model: "grok-imagine-video", Video: &ledger.VideoPrice{VideoRequest: ledger.VideoRequest{Provider: "grok", UpstreamModel: "grok-imagine-video", Resolution: "720p", DurationSeconds: 6}, Basis: "second", UnitNano: 20_000_000, SaleNumerator: 1, SaleDenominator: 10}}
@@ -851,12 +853,37 @@ func TestRegionalVideoSettlementFailureReturns503WithoutReleasingTask(t *testing
 		panic("task queries must never reserve new funds")
 	}}
 	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency, nil, nil, nil, up, nil, nil, provider, nil, nil, nil, nil, nil, service.WithRegionalMetering(meter))
+	return h, slots, bindings, upstream, l
+}
+
+func TestRegionalVideoSettlementFailureReturns503WithoutReleasingTask(t *testing.T) {
+	h, slots, bindings, upstream, l := newRegionalVideoSettlementHandler(t)
+	l.err = errors.New("original funds temporarily unavailable")
 	c, w := grokMediaSlotContext(t.Context(), false)
 	h.GrokVideoStatus(c)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), "regional_video_settlement_unavailable")
 	require.Equal(t, 1, l.called)
 	require.Equal(t, 1, upstream.calls, "financial errors must not switch accounts or resubmit work")
+	require.Empty(t, bindings.billed)
+	slots.assertReleased(t)
+}
+
+func TestRegionalVideoFundedLookupDoesNotRequireNewAdmission(t *testing.T) {
+	h, slots, bindings, upstream, l := newRegionalVideoSettlementHandler(t)
+	funds := h.gatewayService.RegionalFundsReadiness()
+	funds.Readiness = func(context.Context) error {
+		t.Error("existing funded task must not require new admission readiness")
+		return errors.New("new admission paused")
+	}
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	h.billingCacheService = service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(h.billingCacheService.Stop)
+	c, w := grokMediaSlotContext(t.Context(), false)
+	h.GrokVideoStatus(c)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, 1, l.called)
+	require.Equal(t, 1, upstream.calls)
 	require.Empty(t, bindings.billed)
 	slots.assertReleased(t)
 }

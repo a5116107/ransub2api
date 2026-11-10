@@ -87,8 +87,8 @@ func RegionalAPIKeyAuth(svc regionalAPIKeyAuthenticator, cfg *config.Config) gin
 }
 
 // RegionalVideoLookup classifies only registered, authenticated video lookups.
-// It does not authorize a provider request: the funds gate still permits only
-// a successfully forwarded lookup and rejects local execution.
+// It does not authorize a provider request: the funds gate requires either a
+// successful origin forward or an existing task's permanent local SQL funds.
 func RegionalVideoLookup(c *gin.Context) (service.GrokMediaEndpoint, string) {
 	if c == nil || c.Request == nil {
 		return "", ""
