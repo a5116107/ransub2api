@@ -201,7 +201,7 @@ func TestExcelBPSImagePolicyForwardCompactAndContinue(t *testing.T) {
 					t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
 					svc.cache = newImagePolicyMemoryCache()
 					faultRepo := &immediateQualityAccountRepo{}
-					svc.rateLimitService = ProvideRateLimitService(faultRepo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+					svc.rateLimitService = ProvideRateLimitService(faultRepo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 					repo := &excelBPSImageSettingsRepo{values: map[string]string{SettingKeyExcelBPSImageRelayEnabled: "true", SettingKeyExcelBPSImageMode: mode, SettingKeyExcelBPSImageBaseURL: "https://images.example", SettingKeyExcelBPSImageLimitPolicy: "auto_compact"}}
 					svc.settingService = NewSettingService(repo, svc.cfg)
 					_, pixels := nativeGatewayBody(t)
@@ -366,7 +366,7 @@ func TestExcelBPSImageCompactionIncompleteManagedScope(t *testing.T) {
 			faultRepo := &managedFaultAccountRepo{}
 			svc := openAIClientToolsTestService(nil)
 			svc.excelOAuthReauth = reauth
-			svc.rateLimitService = ProvideRateLimitService(faultRepo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc.rateLimitService = ProvideRateLimitService(faultRepo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			svc.cache = newImagePolicyMemoryCache()
 			settings := &excelBPSImageSettingsRepo{values: map[string]string{SettingKeyExcelBPSImageRelayEnabled: "true", SettingKeyExcelBPSImageMode: "relay", SettingKeyExcelBPSImageBaseURL: "https://images.example", SettingKeyExcelBPSImageLimitPolicy: "auto_compact"}}
 			svc.settingService = NewSettingService(settings, svc.cfg)

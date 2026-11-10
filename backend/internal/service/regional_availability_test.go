@@ -24,7 +24,7 @@ func regionalAvailabilityDoc(t *testing.T, account *Account, reports []*Availabi
 		reports = []*AvailabilityReport{}
 	}
 	doc := RegionalSchedulerDocument{Version: 2, Buckets: []RegionalSchedulerBucket{{
-		Bucket: SchedulerBucket{Platform: PlatformOpenAI, Mode: SchedulerModeSingle}, Accounts: []*Account{account},
+		Bucket: SchedulerBucket{Platform: account.Platform, Mode: SchedulerModeSingle}, Accounts: []*Account{account},
 	}}, Availability: []RegionalAccountAvailability{{AccountID: account.ID, Reports: reports}}}
 	raw, err := json.Marshal(doc)
 	require.NoError(t, err)

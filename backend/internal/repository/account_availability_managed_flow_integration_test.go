@@ -260,7 +260,7 @@ func TestAvailabilityManagedBPSIncompleteKeepsHealthyGrantWithPostgres(t *testin
 	cfg := &config.Config{}
 	cfg.Default.RateMultiplier = 1
 	plans := repository.NewScheduledTestPlanRepository(f.db)
-	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), limiter, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
 	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 	t.Cleanup(gateway.CloseOpenAIWSPool)
@@ -380,7 +380,7 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Default.RateMultiplier = 1
 	plans := repository.NewScheduledTestPlanRepository(f.db)
-	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), limiter, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
 	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 	t.Cleanup(gateway.CloseOpenAIWSPool)

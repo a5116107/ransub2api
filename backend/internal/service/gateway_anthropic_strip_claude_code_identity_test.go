@@ -248,7 +248,9 @@ func (u *stripIdentityCaptureUpstream) Do(req *http.Request, _ string, _ int64, 
 	if req.Body != nil {
 		u.lastBody, _ = io.ReadAll(req.Body)
 	}
-	sse := "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\ndata: [DONE]\n\n"
+	sse := "data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},

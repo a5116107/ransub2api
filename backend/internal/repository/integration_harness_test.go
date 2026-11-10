@@ -98,14 +98,14 @@ func runIntegrationTests(m *testing.M) int {
 		return 1
 	}
 	integrationPostgresDSN = dsn
-	// Regional and quality fixtures own fresh schemas. Use the suite's isolated
-	// container when no source is supplied, in keyword form for search_path.
+	// These fixtures own fresh schemas. Use the suite's isolated container when
+	// no source is supplied, in keyword form for search_path.
 	fixtureDSN, err := pq.ParseURL(dsn)
 	if err != nil {
 		log.Printf("failed to normalize isolated PostgreSQL fixture")
 		return 1
 	}
-	for _, key := range []string{"SUB2API_REGIONAL_TEST_DSN", "SUB2API_QUALITY_TEST_DSN"} {
+	for _, key := range []string{"SUB2API_REGIONAL_TEST_DSN", "SUB2API_QUALITY_TEST_DSN", "SUB2API_GEMINI_CACHE_TEST_DSN"} {
 		if os.Getenv(key) == "" {
 			if err := os.Setenv(key, fixtureDSN); err != nil {
 				log.Printf("failed to select isolated SQL fixture %s: %v", key, err)

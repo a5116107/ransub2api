@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,10 +21,24 @@ import (
 )
 
 func TestRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T) {
+	for _, platform := range []string{service.PlatformOpenAI, service.PlatformAnthropic} {
+		t.Run(platform, func(t *testing.T) {
+			scope := service.AvailabilityRequestScope{Version: 1, Protocol: "responses_http", Model: "target", Capability: "text", ServiceTier: "unspecified", ReasoningEffort: "unspecified"}
+			if platform == service.PlatformAnthropic {
+				scope.Protocol, scope.ThinkingMode, scope.ThinkingBudget = "messages_http", "enabled", 2048
+				scope.ProtocolOptions = strings.Repeat("a", 64)
+			}
+			testRegionalAvailabilitySQLSnapshotFaultAndRecovery(t, platform, scope)
+		})
+	}
+}
+
+func testRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T, platform string, scope service.AvailabilityRequestScope) {
+	t.Helper()
 	ctx := t.Context()
 	var accountID int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,credentials,status,schedulable)
- VALUES('regional-availability','openai','apikey','{"api_key":"fixture-before","base_url":"https://fixture.invalid"}','active',true) RETURNING id`).Scan(&accountID))
+ VALUES('regional-availability',$1,'apikey','{"api_key":"fixture-before","base_url":"https://fixture.invalid"}','active',true) RETURNING id`, platform).Scan(&accountID))
 	regionID := fmt.Sprintf("availability-%d", time.Now().UnixNano())
 	plans := &scheduledTestPlanRepository{db: integrationDB}
 	next := time.Now().Add(-time.Second)
@@ -41,11 +56,11 @@ func TestRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T) {
 	})
 	observePass := func() {
 		t.Helper()
-		_, err := integrationDB.ExecContext(ctx, "UPDATE scheduled_test_plans SET next_run_at=clock_timestamp()-interval '1 second' WHERE id=$1", plan.ID)
+		var now time.Time
+		err := integrationDB.QueryRowContext(ctx, "UPDATE scheduled_test_plans SET next_run_at=clock_timestamp()-interval '1 second' WHERE id=$1 RETURNING clock_timestamp()", plan.ID).Scan(&now)
 		require.NoError(t, err)
 		plan, err = plans.GetByID(ctx, plan.ID)
 		require.NoError(t, err)
-		now := time.Now().UTC().Truncate(time.Microsecond)
 		until := now.Add(time.Minute)
 		claimed, err := plans.ClaimPelican(ctx, plan, now, until, now.Add(time.Hour))
 		require.NoError(t, err)
@@ -54,7 +69,7 @@ func TestRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T) {
 		action, err := plans.ApplyAvailabilityOutcomes(ctx, plan, until, []service.AvailabilityModelOutcome{{ModelID: "target",
 			Probe: &service.AvailabilityProbeResult{Version: 1, Status: "pass", Reason: "completed_response", AttemptCount: 1,
 				StartedAt: finished.Add(-time.Second), FinishedAt: finished,
-				Scope: &service.AvailabilityRequestScope{Version: 1, Protocol: "responses_http", Model: "target", Capability: "text", ServiceTier: "unspecified", ReasoningEffort: "unspecified"}}}})
+				Scope: &scope}}})
 		require.NoError(t, err)
 		require.Equal(t, "observed", action)
 		require.NoError(t, plans.FinishPelican(ctx, plan.ID, until, now))
@@ -87,7 +102,7 @@ func TestRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T) {
 				change()
 			}
 			exporter := service.NewSchedulerSnapshotService(nil, nil, accounts, groups, nil)
-			payload, err := exporter.ExportRegionalScheduler(ctx, []service.SchedulerBucket{{Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}}, []int64{accountID})
+			payload, err := exporter.ExportRegionalScheduler(ctx, []service.SchedulerBucket{{Platform: platform, Mode: service.SchedulerModeSingle}}, []int64{accountID})
 			if err != nil {
 				return nil, err
 			}
@@ -122,6 +137,7 @@ func TestRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T) {
 	oldAccount, reports := read()
 	require.Equal(t, "fixture-before", oldAccount.Credentials["api_key"])
 	require.Equal(t, "pass", reports[0].Models[0].Status, "rules and credentials must share the publication transaction")
+	require.Equal(t, &scope, reports[0].Models[0].Decision.Scope, "the full protocol scope must survive SQL and regional transport")
 	publish(nil)
 	_, err = reader.ReadAccountAvailability(ctx, oldAccount)
 	require.ErrorIs(t, err, service.ErrAvailabilityRouteChanged)
@@ -132,6 +148,7 @@ func TestRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T) {
 	publish(nil)
 	_, reports = read()
 	require.Equal(t, "pass", reports[0].Models[0].Status)
+	require.Equal(t, &scope, reports[0].Models[0].Decision.Scope)
 	_, err = integrationDB.ExecContext(ctx, "UPDATE scheduled_test_plans SET enabled=false WHERE id=$1", plan.ID)
 	require.NoError(t, err)
 	publish(nil)

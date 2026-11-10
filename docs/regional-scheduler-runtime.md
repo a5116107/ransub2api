@@ -65,13 +65,13 @@
 | `SchedulerSnapshotService.ListSchedulableAccounts` | 订阅模式下仅本地完整快照 | 缺失/过期拒绝，不回源 |
 | `GetAccount/GetAccounts` 与逐轮权威账号复验 | 同一完整快照 | 缺少详情接口拒绝；见[详情](regional-scheduler-details.md) |
 | `GetGroupByID/GetGroupByIDLite` | 同一完整快照中的分组 | 缺少策略拒绝，不从旧账号重建 |
-| OpenAI HTTP/原生WS最新可用性终检 | v2本地报告与绝对有效期 | 缺项、旧v1、过期、线路/模型/能力不匹配拒绝；传播非即时 |
+| HTTP独立网关/原生WS最新可用性终检 | v2本地报告与绝对有效期 | 缺项、旧v1、过期、线路/模型/能力不匹配拒绝；传播非即时 |
 | API Key/User 权限与撤销 | 独立[鉴权协议](regional-auth-runtime.md) | 不由调度候选或白名单授权 |
 | OAuth 刷新、状态写回与账号生命周期 | 各原权威路径 | 本文不证明所有独立出站均已本地化 |
 | sticky session、并发/等待槽、限速 | 独立[共享槽位协议](regional-shared-slots.md) | 不由账号白名单分配额度 |
 | 余额、订阅、usage 与视频原节点结算 | 独立[资金协议](regional-runtime-budget.md) | 排空、双预算、持久outbox和幂等另验 |
 
-导出包含敏感完整账号数据，allowlist 只限制导出/接收范围，不提供并发或资金分配。父子账号目前被文档校验拒绝。先升级接收端支持v2再启用新发布端；回退先停接流、排空并恢复匹配版本，保留密文版本下限、规则和账单。完整任务和生产待验收范围见[项目状态](project/STATE.md)；本地快照ready不代表生产已验收。
+导出包含敏感完整账号数据，allowlist 只限制导出/接收范围，不提供并发或资金分配。父子账号目前被文档校验拒绝。先升级接收端支持v2及所用作用域字段，再启用新发布端；Messages新增字段同样受严格解码约束，详见[同步兼容说明](regional-scheduler-sync.md)。回退先停接流、排空并恢复匹配版本，保留密文版本下限、规则和账单。完整任务和生产待验收范围见[项目状态](project/STATE.md)；本地快照ready不代表生产已验收。
 
 ## 验证范围
 

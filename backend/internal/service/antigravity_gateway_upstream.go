@@ -398,6 +398,9 @@ func (s *AntigravityGatewayService) doAntigravityUpstream(request *http.Request,
 	if err != nil {
 		return nil, err
 	}
+	if err := s.rateLimitService.admitAvailabilityRequest(request, account, s.schedulerSnapshot); err != nil {
+		return nil, err
+	}
 	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
 	defer func() { observeTransport(response, err) }()
 	return upstream.Do(request, proxyURL, account.ID, account.Concurrency)

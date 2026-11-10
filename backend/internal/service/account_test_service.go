@@ -3230,9 +3230,12 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 	// that stopped early is reported with the reason instead of as a success.
 	pelican := pelicanTestRequested(c)
 	stopReason, refusalCategory := "", ""
-	messageStopped := false
+	messageStarted := false
 	complete := func() error {
-		if modelTraceRequested(c.Request.Context()) && (!messageStopped || stopReason != "end_turn") {
+		if !messageStarted {
+			return s.sendErrorAndEnd(c, "Stream ended without message_start")
+		}
+		if modelTraceRequested(c.Request.Context()) && stopReason != "end_turn" {
 			return s.sendErrorAndEnd(c, "ModelTrace generation did not finish normally")
 		}
 		if pelican {
@@ -3261,7 +3264,7 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
 		usage.read(jsonStr)
 		if jsonStr == "[DONE]" {
-			return complete()
+			return s.sendErrorAndEnd(c, "Stream ended before message_stop")
 		}
 
 		var data map[string]any
@@ -3271,7 +3274,15 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 
 		eventType, _ := data["type"].(string)
 
+		if !messageStarted && (strings.HasPrefix(eventType, "content_block_") || eventType == "message_delta") {
+			return s.sendErrorAndEnd(c, "Stream content arrived before message_start")
+		}
 		switch eventType {
+		case "message_start":
+			if messageStarted {
+				return s.sendErrorAndEnd(c, "Stream contains duplicate message_start")
+			}
+			messageStarted = true
 		case "content_block_delta":
 			if delta, ok := data["delta"].(map[string]any); ok {
 				if text, ok := delta["text"].(string); ok {
@@ -3289,7 +3300,6 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 				}
 			}
 		case "message_stop":
-			messageStopped = true
 			return complete()
 		case "error":
 			errorMsg := "Unknown error"

@@ -18,6 +18,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAvailabilityProbeNativeMessagesRequiresCompleteProtocol(t *testing.T) {
+	start := "data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":2}}}\n\n"
+	text := "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"21\"}}\n\n"
+	stop := "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+	for _, tc := range []struct {
+		name, wire, status string
+	}{
+		{"complete", start + text + stop, "pass"},
+		{"missing stop", start + text, "inconclusive"},
+		{"done is not message stop", start + text + "data: [DONE]\n\n", "inconclusive"},
+		{"orphan stop", text + stop, "inconclusive"},
+		{"late start", text + start + stop, "inconclusive"},
+		{"duplicate start", start + text + start + stop, "inconclusive"},
+		{"no text", start + stop, "inconclusive"},
+		{"error after text", start + text + "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"fixture error\"}}\n\n", "inconclusive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/messages" {
+					t.Errorf("unexpected probe path: %s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, tc.wire)
+			}))
+			t.Cleanup(server.Close)
+			account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+				Credentials: map[string]any{"base_url": server.URL, "api_key": "fixture-key"}}
+			upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+				return server.Client().Do(req)
+			}}
+			svc := pelicanClaudeTestService(account, upstream)
+			svc.cfg = rawChatCompletionsTestConfig()
+			result, err := svc.RunPelicanBackground(t.Context(), account.ID, "claude-opus-4-6", &PelicanTestConfig{QuestionKind: "candy", Prompt: CandyPrompt, ReasoningEffort: "high", ParallelCount: 1})
+			require.NoError(t, err)
+			probe := result.PelicanConfig.AvailabilityResult
+			require.NotNil(t, probe)
+			require.Equal(t, tc.status, probe.Status)
+			require.NotNil(t, probe.Scope, "scope comes from the actual HTTP response request")
+			require.Equal(t, "messages_http", probe.Scope.Protocol)
+			require.Equal(t, "adaptive", probe.Scope.ThinkingMode)
+			require.Equal(t, "high", probe.Scope.ReasoningEffort)
+			require.Equal(t, 1, probe.AttemptCount)
+			raw, err := json.Marshal(probe)
+			require.NoError(t, err)
+			require.NotContains(t, string(raw), "fixture-key")
+			require.NotContains(t, string(raw), server.URL)
+		})
+	}
+}
+
 func availabilityProbeJSON(t *testing.T, result *ScheduledTestResult) map[string]any {
 	t.Helper()
 	require.NotNil(t, result)

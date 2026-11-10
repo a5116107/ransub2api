@@ -26,7 +26,21 @@ func AvailabilityModelForAccount(account *Account, requested string) string {
 }
 
 func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, request *http.Request, account *Account) error {
-	return s.admitAvailabilityScope(ctx, account, func() *AvailabilityRequestScope {
+	return admitAvailabilityRequest(ctx, request, account, s.availabilityReader, s.schedulerSnapshot)
+}
+
+// Native gateways share the same authoritative reader and regional override as
+// OpenAI. The limiter is composed before serving; no request installs a reader.
+func (s *RateLimitService) admitAvailabilityRequest(request *http.Request, account *Account, snapshot *SchedulerSnapshotService) error {
+	var reader AccountAvailabilityReader
+	if s != nil {
+		reader = s.availabilityReader
+	}
+	return admitAvailabilityRequest(request.Context(), request, account, reader, snapshot)
+}
+
+func admitAvailabilityRequest(ctx context.Context, request *http.Request, account *Account, reader AccountAvailabilityReader, snapshot *SchedulerSnapshotService) error {
+	return admitAvailabilityScope(ctx, account, reader, snapshot, func() *AvailabilityRequestScope {
 		if request == nil {
 			return nil
 		}
@@ -38,14 +52,13 @@ func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, req
 	})
 }
 
-func (s *OpenAIGatewayService) admitAvailabilityScope(ctx context.Context, account *Account, requestScope func() *AvailabilityRequestScope) error {
+func admitAvailabilityScope(ctx context.Context, account *Account, reader AccountAvailabilityReader, snapshot *SchedulerSnapshotService, requestScope func() *AvailabilityRequestScope) error {
 	if ctx.Value(qualityProbeContextKey{}) != nil {
 		return nil
 	}
-	reader := s.availabilityReader
-	if s.schedulerSnapshot != nil && s.schedulerSnapshot.localSnapshotReader != nil {
+	if snapshot != nil && snapshot.localSnapshotReader != nil {
 		var ok bool
-		reader, ok = s.schedulerSnapshot.localSnapshotReader.(AccountAvailabilityReader)
+		reader, ok = snapshot.localSnapshotReader.(AccountAvailabilityReader)
 		if !ok {
 			return denyOpenAITurn("availability_state_unavailable")
 		}

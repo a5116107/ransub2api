@@ -28,6 +28,9 @@ type AvailabilityRequestScope struct {
 	ServiceTier     string `json:"service_tier"`
 	ReasoningEffort string `json:"reasoning_effort"`
 	Capability      string `json:"capability"`
+	ThinkingMode    string `json:"thinking_mode,omitempty"`
+	ThinkingBudget  int64  `json:"thinking_budget,omitempty"`
+	ProtocolOptions string `json:"protocol_options,omitempty"`
 	// Stored separately inside the repository's private state, never in API or history JSON.
 	ConnectionScope string `json:"-"`
 }
@@ -118,7 +121,7 @@ func availabilityBPSScopeForRequest(request *http.Request, payload []byte) *Avai
 	fields, valid := availabilityJSONObject(gjson.ParseBytes(payload))
 	if !valid || fields["model"].Type != gjson.String || fields["model"].String() != source.scope.Model ||
 		fields["model_selection"].String() != "explicit" || fields["stream"].Type != gjson.True ||
-		fields["store"].Type != gjson.False || !fields["input"].IsArray() || !availabilityTextInput(fields["input"], false) {
+		fields["store"].Type != gjson.False || !fields["input"].IsArray() || !availabilityTextInput(fields["input"], "responses_http") {
 		return nil
 	}
 	management := fields["context_management"]
@@ -189,7 +192,7 @@ func availabilityOption(value gjson.Result, options ...string) (string, bool) {
 	return "", false
 }
 
-func availabilityTextContent(value gjson.Result) bool {
+func availabilityTextContent(value gjson.Result, messages bool) bool {
 	if value.Type == gjson.String {
 		return true
 	}
@@ -199,7 +202,19 @@ func availabilityTextContent(value gjson.Result) bool {
 	valid := true
 	value.ForEach(func(_, item gjson.Result) bool {
 		fields, ok := availabilityJSONObject(item)
-		if !ok || len(fields) != 2 || fields["text"].Type != gjson.String {
+		if !ok || fields["text"].Type != gjson.String {
+			valid = false
+			return false
+		}
+		if cache, exists := fields["cache_control"]; exists && messages {
+			options, ok := availabilityJSONObject(cache)
+			if !ok || len(options) != 1 || options["type"].Type != gjson.String || options["type"].String() != "ephemeral" {
+				valid = false
+				return false
+			}
+			delete(fields, "cache_control")
+		}
+		if len(fields) != 2 || messages && fields["type"].String() != "text" {
 			valid = false
 			return false
 		}
@@ -213,8 +228,11 @@ func availabilityTextContent(value gjson.Result) bool {
 	return valid
 }
 
-func availabilityTextInput(value gjson.Result, chat bool) bool {
-	if !value.Exists() || (!chat && value.Type == gjson.String) {
+func availabilityTextInput(value gjson.Result, protocol string) bool {
+	if !value.Exists() {
+		return protocol != "messages_http"
+	}
+	if protocol == "responses_http" && value.Type == gjson.String {
 		return true
 	}
 	if !value.IsArray() {
@@ -223,7 +241,7 @@ func availabilityTextInput(value gjson.Result, chat bool) bool {
 	valid := true
 	value.ForEach(func(_, item gjson.Result) bool {
 		fields, ok := availabilityJSONObject(item)
-		if !ok || !availabilityTextContent(fields["content"]) {
+		if !ok || !availabilityTextContent(fields["content"], protocol == "messages_http") {
 			valid = false
 			return false
 		}
@@ -233,12 +251,14 @@ func availabilityTextInput(value gjson.Result, chat bool) bool {
 				return false
 			}
 		}
-		if kind := fields["type"]; kind.Exists() && (chat || kind.Type != gjson.String || kind.String() != "message") {
+		if kind := fields["type"]; kind.Exists() && (protocol != "responses_http" || kind.Type != gjson.String || kind.String() != "message") {
 			valid = false
 			return false
 		}
 		switch fields["role"].String() {
-		case "system", "developer", "user", "assistant":
+		case "system", "developer":
+			valid = protocol != "messages_http"
+		case "user", "assistant":
 		default:
 			valid = false
 		}
@@ -248,7 +268,11 @@ func availabilityTextInput(value gjson.Result, chat bool) bool {
 }
 
 func availabilityScopeForRequest(request *http.Request, payload []byte) *AvailabilityRequestScope {
-	if request == nil || request.URL == nil || request.URL.RawQuery != "" || request.URL.Fragment != "" || request.Header.Get("Content-Encoding") != "" || !gjson.ValidBytes(payload) {
+	if request == nil || request.URL == nil || request.URL.Fragment != "" || request.Header.Get("Content-Encoding") != "" || !gjson.ValidBytes(payload) {
+		return nil
+	}
+	messages := request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/messages")
+	if request.URL.RawQuery != "" && (!messages || request.URL.RawQuery != "beta=true") {
 		return nil
 	}
 	websocket := request.Method == http.MethodGet && (request.URL.Scheme == "ws" || request.URL.Scheme == "wss") && strings.HasSuffix(request.URL.Path, "/responses")
@@ -289,6 +313,8 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 		scope.Protocol = "responses_http"
 	case strings.HasSuffix(request.URL.Path, "/chat/completions"):
 		scope.Protocol = "chat_http"
+	case messages:
+		return availabilityMessagesScope(request, fields, scope)
 	default:
 		return nil
 	}
@@ -317,11 +343,11 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 				return nil
 			}
 		case "input":
-			if (scope.Protocol != "responses_http" && !websocket) || !availabilityTextInput(value, false) {
+			if (scope.Protocol != "responses_http" && !websocket) || !availabilityTextInput(value, "responses_http") {
 				return nil
 			}
 		case "messages":
-			if scope.Protocol != "chat_http" || !availabilityTextInput(value, true) {
+			if scope.Protocol != "chat_http" || !availabilityTextInput(value, "chat_http") {
 				return nil
 			}
 		case "reasoning_effort":
@@ -348,6 +374,83 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 			}
 		case "tool_choice":
 			if value.Type != gjson.String || value.String() != "none" {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+	return scope
+}
+
+// Messages observations attest only to text plus the exact thinking and public
+// protocol options sent by the native probe. Tool, media and cache-TTL features
+// need their own evidence and are not inferred from a text answer.
+func availabilityMessagesScope(request *http.Request, fields map[string]gjson.Result, scope *AvailabilityRequestScope) *AvailabilityRequestScope {
+	scope.Protocol, scope.ReasoningEffort = "messages_http", "unspecified"
+	var valid bool
+	scope.ServiceTier, valid = availabilityOption(fields["service_tier"], "auto", "standard_only")
+	if !valid || !availabilityTextInput(fields["messages"], scope.Protocol) || len(fields["messages"].Array()) == 0 {
+		return nil
+	}
+	options := request.URL.RawQuery
+	for _, name := range []string{"Anthropic-Version", "Anthropic-Beta"} {
+		var values []string
+		for key, value := range request.Header {
+			if strings.EqualFold(key, name) {
+				values = append(values, value...)
+			}
+		}
+		if len(values) > 1 || len(values) == 1 && len(values[0]) > 4096 {
+			return nil
+		}
+		options += "\x00" + strings.Join(values, "")
+	}
+	sum := sha256.Sum256([]byte(options))
+	scope.ProtocolOptions = hex.EncodeToString(sum[:])
+	for name, value := range fields {
+		switch name {
+		case "model", "messages", "stream", "service_tier", "max_tokens", "temperature", "top_p", "top_k", "metadata", "stop_sequences":
+		case "system":
+			if !availabilityTextContent(value, true) {
+				return nil
+			}
+		case "thinking":
+			thinking, ok := availabilityJSONObject(value)
+			if !ok || thinking["type"].Type != gjson.String {
+				return nil
+			}
+			scope.ThinkingMode = thinking["type"].String()
+			switch scope.ThinkingMode {
+			case "disabled", "adaptive":
+				if len(thinking) != 1 {
+					return nil
+				}
+			case "enabled":
+				budget, err := strconv.ParseInt(thinking["budget_tokens"].Raw, 10, 64)
+				if len(thinking) != 2 || err != nil || budget <= 0 {
+					return nil
+				}
+				scope.ThinkingBudget = budget
+			default:
+				return nil
+			}
+		case "output_config":
+			output, ok := availabilityJSONObject(value)
+			if !ok || len(output) != 1 {
+				return nil
+			}
+			scope.ReasoningEffort, valid = availabilityOption(output["effort"], "low", "medium", "high", "xhigh", "max", "ultra")
+			if !valid || scope.ReasoningEffort == "unspecified" {
+				return nil
+			}
+		case "tools":
+			if !value.IsArray() || len(value.Array()) != 0 {
+				return nil
+			}
+		case "tool_choice":
+			choice, ok := availabilityJSONObject(value)
+			if !ok || len(choice) != 1 || choice["type"].Type != gjson.String || choice["type"].String() != "none" {
 				return nil
 			}
 		default:
@@ -432,7 +535,7 @@ func (b *availabilityWSBinding) scope(account *Account, payload any) *Availabili
 }
 
 func (s *OpenAIGatewayService) admitAvailabilityWS(ctx context.Context, account *Account, binding *openAIWSTurnBinding, payload any) error {
-	return s.admitAvailabilityScope(ctx, account, func() *AvailabilityRequestScope {
+	return admitAvailabilityScope(ctx, account, s.availabilityReader, s.schedulerSnapshot, func() *AvailabilityRequestScope {
 		if binding == nil {
 			return nil
 		}

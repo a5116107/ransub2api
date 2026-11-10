@@ -63,7 +63,9 @@ func adaptiveCNAnthropicTestResponse() *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body: io.NopCloser(strings.NewReader(`data: {"type":"content_block_delta","delta":{"text":"anthropic ok"}}
+		Body: io.NopCloser(strings.NewReader(`data: {"type":"message_start","message":{"role":"assistant"}}
+
+data: {"type":"content_block_delta","delta":{"text":"anthropic ok"}}
 
 data: {"type":"message_stop"}
 
@@ -183,7 +185,7 @@ func TestAccountTestService_AdaptiveRejectsInvalidAnthropicSuccessBody(t *testin
 	err := svc.TestAccountConnection(c, account.ID, "kimi-k2.5", "", AccountTestModeDefault)
 
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Adaptive Anthropic stream ended before message_stop")
+	require.Contains(t, err.Error(), "Stream ended before message_stop")
 	require.Len(t, upstream.requests, 2)
 	require.Contains(t, recorder.Body.String(), `"type":"error"`)
 	require.NotContains(t, recorder.Body.String(), `"type":"test_complete"`)

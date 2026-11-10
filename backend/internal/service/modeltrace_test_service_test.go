@@ -40,7 +40,8 @@ func TestModelTraceNativeProtocolsAndThreeQuestionBudget(t *testing.T) {
 			if protocol == "messages" {
 				account.Platform = PlatformAnthropic
 				account.Credentials["model_mapping"] = map[string]any{"public-model": "claude-sonnet-4-6"}
-				stream = "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":" + string(encoded) + "}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+				stream = "data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\"}}\n\n" +
+					"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":" + string(encoded) + "}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
 			}
 			repo := &modelTraceRepo{account: account}
 			upstream := &queuedHTTPUpstream{}
@@ -114,7 +115,7 @@ func TestModelTraceIncompleteAnswersAndRefusalsAreExcluded(t *testing.T) {
 				err = svc.processOpenAIChatCompletionsStream(c, strings.NewReader("data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n"))
 			case "messages":
 				c.Request = c.Request.WithContext(withPelicanTestOptions(c.Request.Context(), pelicanTestOptions{}))
-				err = svc.processClaudeStream(c, strings.NewReader("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"))
+				err = svc.processClaudeStream(c, strings.NewReader("data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"))
 			}
 			require.Error(t, err)
 			_, message := parsePelicanOutput(rec.Body.String())
@@ -136,11 +137,11 @@ func TestModelTraceBareEOFIsNotAnAnthropicCompletion(t *testing.T) {
 	c, rec := newTestContext()
 	ctx := context.WithValue(c.Request.Context(), modelTraceContextKey{}, modelTraceEnvironment{Protocol: "messages"})
 	c.Request = c.Request.WithContext(withPelicanTestOptions(ctx, pelicanTestOptions{}))
-	stream := "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"17,83,247\"}}\n\n"
+	stream := "data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\"}}\n\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"17,83,247\"}}\n\n"
 	err := (&AccountTestService{}).processClaudeStream(c, strings.NewReader(stream))
 	require.Error(t, err)
 	_, message := parsePelicanOutput(rec.Body.String())
-	require.NotEmpty(t, message)
+	require.Contains(t, message, "Stream ended before message_stop")
 }
 
 func TestModelTraceOAuthInstructionsAreRetainedAndOtherRoutesRejected(t *testing.T) {

@@ -5,6 +5,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,86 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
 )
+
+func TestAvailabilityMessagesScopeMatchesOnlyObservedCapabilities(t *testing.T) {
+	payload, err := createPelicanClaudePayload("claude-opus-4-6", "probe", "high")
+	require.NoError(t, err)
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	newRequest := func(raw []byte) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://fixture.invalid/v1/messages?beta=true", bytes.NewReader(raw))
+		require.NoError(t, err)
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+		return req
+	}
+	scope := availabilityScopeForRequest(newRequest(body), body)
+	require.NotNil(t, scope, "the existing native probe, including ephemeral text caches, must be observable")
+	require.Equal(t, "messages_http", scope.Protocol)
+	require.Equal(t, "adaptive", scope.ThinkingMode)
+	require.Equal(t, "high", scope.ReasoningEffort)
+	require.Len(t, scope.ProtocolOptions, 64)
+	account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+	report := availabilityAdmissionPass(account.ID, "claude-opus-4-6")
+	report.Models[0].Decision.Scope = scope
+	svc := &OpenAIGatewayService{availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}}
+	for _, tc := range []struct {
+		name, field string
+		value       any
+		allowed     bool
+	}{
+		{"same", "", nil, true},
+		{"different prompt", "messages.0.content.0.text", "another question", true},
+		{"empty tools", "tools", []any{}, true},
+		{"no tools", "tool_choice", map[string]any{"type": "none"}, true},
+		{"model", "model", "unobserved-model", false},
+		{"stream", "stream", false, false},
+		{"tier", "service_tier", "standard_only", false},
+		{"effort", "output_config.effort", "medium", false},
+		{"disabled thinking", "thinking", map[string]any{"type": "disabled"}, false},
+		{"budget thinking", "thinking", map[string]any{"type": "enabled", "budget_tokens": 2048}, false},
+		{"unknown thinking option", "thinking.display", "omitted", false},
+		{"unknown output option", "output_config.format", map[string]any{"type": "json"}, false},
+		{"tools", "tools", []any{map[string]any{"name": "fixture"}}, false},
+		{"tool result", "messages.0.content", []any{map[string]any{"type": "tool_result", "content": "ok"}}, false},
+		{"image", "messages.0.content", []any{map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": "https://fixture.invalid/image"}}}, false},
+		{"cache ttl", "messages.0.content.0.cache_control.ttl", "1h", false},
+		{"system image", "system", []any{map[string]any{"type": "image", "text": "hi"}}, false},
+		{"unknown field", "unknown_capability", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := body
+			if tc.field != "" {
+				var err error
+				raw, err = sjson.SetBytes(body, tc.field, tc.value)
+				require.NoError(t, err)
+			}
+			req := newRequest(raw)
+			err := svc.admitAvailabilityRequest(req.Context(), req, account)
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+			}
+		})
+	}
+	for _, header := range []string{"Anthropic-Version", "Anthropic-Beta"} {
+		req := newRequest(body)
+		req.Header.Set(header, "different-option")
+		require.True(t, IsOpenAITurnAdmissionError(svc.admitAvailabilityRequest(req.Context(), req, account)))
+		req.Header[http.CanonicalHeaderKey(header)] = []string{"first", "second"}
+		require.Nil(t, availabilityScopeForRequest(req, body))
+	}
+	for _, budget := range []string{"0", "-1", "1.5", "1e3", "9223372036854775808", `"2048"`} {
+		raw, err := sjson.SetRawBytes(body, "thinking", []byte(`{"type":"enabled","budget_tokens":`+budget+`}`))
+		require.NoError(t, err)
+		require.Nil(t, availabilityScopeForRequest(newRequest(raw), raw), budget)
+	}
+	first, err := sjson.SetBytes(body, "thinking", map[string]any{"type": "enabled", "budget_tokens": 2048})
+	require.NoError(t, err)
+	second, err := sjson.SetBytes(first, "thinking.budget_tokens", 4096)
+	require.NoError(t, err)
+	require.NotEqual(t, availabilityScopeForRequest(newRequest(first), first), availabilityScopeForRequest(newRequest(second), second), "different thinking budgets never share evidence")
+}
 
 func TestAvailabilityBPSProbeScopeAndAdmission(t *testing.T) {
 	t.Setenv("DATA_DIR", t.TempDir())

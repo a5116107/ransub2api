@@ -22,6 +22,7 @@ import (
 type RateLimitService struct {
 	accountOps            *AccountOpsService
 	qualityTrigger        *quality5xxTrigger
+	availabilityReader    AccountAvailabilityReader
 	accountRepo           AccountRepository
 	usageRepo             UsageLogRepository
 	cfg                   *config.Config

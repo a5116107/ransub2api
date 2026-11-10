@@ -614,9 +614,11 @@ func ProvideRateLimitService(
 	ollamaCloudUsage *OllamaCloudUsageService,
 	accountOps *AccountOpsService,
 	rdb *redis.Client,
+	plans ScheduledTestPlanRepository,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	svc.accountOps = accountOps
+	svc.availabilityReader = plans
 	if rdb != nil {
 		svc.qualityTrigger = &quality5xxTrigger{queue: qualityqueue.NewRedis(rdb)}
 	}

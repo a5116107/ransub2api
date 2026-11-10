@@ -132,6 +132,9 @@ func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL strin
 	if err != nil {
 		return nil, err
 	}
+	if err := s.rateLimitService.admitAvailabilityRequest(request, selected, s.schedulerSnapshot); err != nil {
+		return nil, err
+	}
 	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, selected)
 	defer func() { observeTransport(response, err) }()
 	if len(profiles) == 0 {

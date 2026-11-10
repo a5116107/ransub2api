@@ -58,7 +58,7 @@ func TestPelicanTestUsageStreams(t *testing.T) {
 			want:   UsageTokens{InputTokens: 200, OutputTokens: 60, CacheReadTokens: 100},
 		},
 		{
-			name: "adaptive anthropic records its separate request", process: svc.processCNProviderAdaptiveAnthropicStream,
+			name: "adaptive anthropic records its separate request", process: svc.processClaudeStream,
 			events: []string{`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0}}}`, `{"type":"message_stop"}`},
 			want:   UsageTokens{InputTokens: 100},
 		},
