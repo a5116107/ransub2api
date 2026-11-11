@@ -16,22 +16,28 @@ func GeminiContent(ctx context.Context, data []byte, streaming bool) {
 	}
 	Stage(ctx, "typed_gemini_content")
 	type geminiEvent struct {
-		Response   json.RawMessage `json:"response"`
-		Error      json.RawMessage `json:"error"`
-		Type       string          `json:"type"`
-		Candidates []struct {
-			Index   *int `json:"index"`
-			Content struct {
-				Parts []map[string]json.RawMessage `json:"parts"`
-			} `json:"content"`
-			FinishReason string `json:"finishReason"`
-		} `json:"candidates"`
+		Response       json.RawMessage   `json:"response"`
+		Error          json.RawMessage   `json:"error"`
+		Type           string            `json:"type"`
+		Candidates     []json.RawMessage `json:"candidates"`
 		PromptFeedback struct {
 			BlockReason string `json:"blockReason"`
 		} `json:"promptFeedback"`
 	}
+	type geminiCandidate struct {
+		Index   *int `json:"index"`
+		Content struct {
+			Parts []json.RawMessage `json:"parts"`
+		} `json:"content"`
+		FinishReason string `json:"finishReason"`
+	}
 	var event geminiEvent
-	if len(data) > 16*1024*1024 || json.Unmarshal(data, &event) != nil {
+	if len(data) > 16*1024*1024 {
+		Stage(ctx, "typed_content_truncated")
+		return
+	}
+	_, valid := cacheObject(data)
+	if !valid || json.Unmarshal(data, &event) != nil {
 		Stage(ctx, "typed_content_truncated")
 		return
 	}
@@ -41,7 +47,8 @@ func GeminiContent(ctx context.Context, data []byte, streaming bool) {
 		outerError := event.Error
 		inner := event.Response
 		event = geminiEvent{}
-		if json.Unmarshal(inner, &event) != nil || len(event.Response) > 0 {
+		_, valid = cacheObject(inner)
+		if !valid || json.Unmarshal(inner, &event) != nil || len(event.Response) > 0 {
 			Stage(ctx, "typed_content_truncated")
 			return
 		}
@@ -55,11 +62,31 @@ func GeminiContent(ctx context.Context, data []byte, streaming bool) {
 	}
 	reasoning, visible, nonText := false, false, false
 	terminal := ""
-	for _, candidate := range event.Candidates {
+	for _, raw := range event.Candidates {
+		var candidate geminiCandidate
+		object, valid := cacheObject(raw)
+		if !valid || json.Unmarshal(raw, &candidate) != nil {
+			Stage(ctx, "typed_content_truncated")
+			return
+		}
+		if len(event.Candidates) > 1 || (candidate.Index != nil && *candidate.Index != 0) {
+			Stage(ctx, "typed_output_multiple_candidates")
+		}
 		if candidate.Index != nil && *candidate.Index != 0 {
 			continue
 		}
-		for _, part := range candidate.Content.Parts {
+		if rawContent, present := object["content"]; present {
+			if _, valid := cacheObject(rawContent); !valid {
+				Stage(ctx, "typed_content_truncated")
+				return
+			}
+		}
+		for _, rawPart := range candidate.Content.Parts {
+			part, valid := cacheObject(rawPart)
+			if !valid {
+				Stage(ctx, "typed_content_truncated")
+				return
+			}
 			var text string
 			var thought bool
 			if (len(part["text"]) > 0 && json.Unmarshal(part["text"], &text) != nil) ||
@@ -92,5 +119,6 @@ func GeminiContent(ctx context.Context, data []byte, streaming bool) {
 	if len(event.Error) > 0 && string(event.Error) != "null" {
 		terminal = "failed"
 	}
-	recordContent(ctx, "gemini", reasoning, visible, streaming && visible, nonText, terminal, readGeminiCacheUsage(data), nil)
+	recordContent(ctx, "gemini", reasoning, visible, streaming && visible, nonText, terminal,
+		readGeminiCacheUsage(data), readProtocolOutputUsage(data, "gemini", ""))
 }

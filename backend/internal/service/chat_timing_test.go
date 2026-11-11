@@ -3,6 +3,7 @@
 package service
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,9 +15,135 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type outputRateTimingHTTPUpstream struct{ antigravityTimingHTTPUpstream }
+
+func (u outputRateTimingHTTPUpstream) Do(req *http.Request, proxy string, id int64, concurrency int) (*http.Response, error) {
+	resp, err := u.antigravityTimingHTTPUpstream.Do(req, proxy, id, concurrency)
+	if err == nil {
+		resp.Body = &timingSSEStepBody{ReadCloser: resp.Body, reader: bufio.NewReader(resp.Body), delay: 300 * time.Millisecond}
+	}
+	return resp, err
+}
+
+func (u outputRateTimingHTTPUpstream) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxy, id, concurrency)
+}
+
+func TestProtocolOutputRatePublicForward(t *testing.T) {
+	for _, path := range []string{"chat/completions", "responses", "messages", "native_messages", "gemini_native", "gemini_messages", "gemini_chat"} {
+		for _, mode := range []string{"complete", "missing_reasoning", "write_error"} {
+			t.Run(path+"/"+mode, func(t *testing.T) {
+				protocol := "chat_completions"
+				usage := `{"prompt_tokens":100,"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20}}`
+				frames := []string{
+					`{"choices":[{"index":0,"delta":{"content":"private first"}}]}`,
+					`{"choices":[{"index":0,"delta":{"content":"private last"}}]}`,
+					`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+					`{"choices":[],"usage":` + usage + `}`,
+				}
+				if path == "native_messages" {
+					protocol = "messages"
+					frames = []string{
+						`{"type":"message_start","message":{"id":"private-id","role":"assistant","model":"fixture","usage":{"input_tokens":100}}}`,
+						`{"type":"content_block_delta","delta":{"type":"text_delta","text":"private first"}}`,
+						`{"type":"content_block_delta","delta":{"type":"text_delta","text":"private last"}}`,
+						`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":120,"output_tokens_details":{"thinking_tokens":20}}}`,
+						`{"type":"message_stop"}`,
+					}
+				} else if strings.HasPrefix(path, "gemini_") {
+					protocol = "gemini"
+					frames = []string{
+						`{"candidates":[{"content":{"parts":[{"text":"private first"}]}}]}`,
+						`{"candidates":[{"content":{"parts":[{"text":"private last"}]}}]}`,
+						`{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":100,"thoughtsTokenCount":20}}`,
+					}
+				}
+				wire := "data: " + strings.Join(frames, "\n\ndata: ") + "\n\n"
+				if mode == "missing_reasoning" {
+					for _, field := range []string{`,"completion_tokens_details":{"reasoning_tokens":20}`, `,"output_tokens_details":{"thinking_tokens":20}`, `,"thoughtsTokenCount":20`} {
+						wire = strings.ReplaceAll(wire, field, "")
+					}
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, wire)
+				}))
+				defer server.Close()
+				target, err := url.Parse(server.URL)
+				require.NoError(t, err)
+				upstream := outputRateTimingHTTPUpstream{antigravityTimingHTTPUpstream{client: server.Client(), target: target}}
+				collector := requesttiming.New(time.Now(), 0)
+				ctx := requesttiming.With(t.Context(), collector)
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/fixture", nil).WithContext(ctx)
+				c.Writer = &geminiTimingWriter{ResponseWriter: c.Writer, collector: collector, fail: mode == "write_error"}
+				cfg := rawChatCompletionsTestConfig()
+				cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+				body := []byte(`{"model":"fixture","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"fixture"}]}`)
+				if strings.HasPrefix(path, "gemini_") {
+					svc := &GeminiMessagesCompatService{cfg: cfg, httpUpstream: upstream}
+					account := &Account{ID: 707, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "fixture-secret", "base_url": server.URL}}
+					switch path {
+					case "gemini_native":
+						_, err = svc.ForwardNative(ctx, c, account, "fixture", "streamGenerateContent", true, []byte(geminiTransportTestNativeBody))
+					case "gemini_messages":
+						_, err = svc.Forward(ctx, c, account, body)
+					case "gemini_chat":
+						_, err = svc.ForwardAsChatCompletions(ctx, c, account, body)
+					}
+				} else {
+					svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream, rateLimitService: &RateLimitService{cfg: cfg, accountRepo: &errorPolicyRepoStub{}}}
+					account := forceChatResponsesFallbackAccount()
+					account.Credentials["base_url"] = server.URL
+					switch path {
+					case "chat/completions":
+						_, err = svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
+					case "responses":
+						_, err = svc.Forward(ctx, c, account, []byte(`{"model":"fixture","stream":true,"input":"fixture"}`))
+					case "messages":
+						_, err = svc.ForwardAsAnthropic(ctx, c, account, body, "", "")
+					case "native_messages":
+						account = nativeAnthropicTestAccount()
+						account.Credentials["api_base_urls"] = map[string]any{APIProtocolAnthropic: server.URL}
+						account.Credentials["base_url"] = server.URL
+						_, err = svc.ForwardAsAnthropic(ctx, c, account, body, "", "")
+					}
+				}
+				if mode != "write_error" {
+					require.NoError(t, err)
+				}
+				collector.Finish(c.Writer.Status(), false)
+				collector.WhenFinished(func(s requesttiming.Snapshot) {
+					require.NotEmpty(t, s.Outcome, "the production Forward boundary must provide its own outcome")
+					rate := requesttiming.DeriveContentObservation(s).OutputRate
+					if mode == "complete" {
+						require.Equal(t, "success", s.Outcome)
+						require.Equal(t, "estimated", rate.Status)
+						require.Equal(t, "canonical_"+protocol+"_usage_and_text_events", rate.Source)
+						require.NotNil(t, rate.TokensPerSecond)
+						require.EqualValues(t, 100, *rate.NonReasoningTokens)
+						require.EqualValues(t, 20, *rate.ReasoningTokens)
+						require.InDelta(t, float64(100)/(*rate.WindowMS/1000), *rate.TokensPerSecond, 1e-9)
+					} else {
+						require.Nil(t, rate.TokensPerSecond)
+						if mode == "missing_reasoning" {
+							require.Equal(t, "not_reported", rate.Status)
+						}
+					}
+					raw, marshalErr := json.Marshal(s)
+					require.NoError(t, marshalErr)
+					require.NotContains(t, string(raw), "private")
+				})
+			})
+		}
+	}
+}
 
 func TestChatTimingBridges(t *testing.T) {
 	for _, endpoint := range []string{"chat/completions", "responses", "messages"} {

@@ -10,6 +10,8 @@ import (
 // ContentStatus admits only text and reasoning, whose reported tokens can be
 // separated. It retains no generated content.
 type OutputUsage struct {
+	Protocol        string `json:"protocol,omitempty"`
+	Final           bool   `json:"final,omitempty"`
 	OutputTokens    int64  `json:"output_tokens"`
 	ReasoningTokens int64  `json:"reasoning_tokens"`
 	Status          string `json:"status"`
@@ -36,11 +38,18 @@ func unknownOutputRate() OutputRateObservation {
 		Method: "non_reasoning_tokens_over_first_text_to_terminal"}
 }
 
-func readOutputUsage(raw json.RawMessage) *OutputUsage {
+func readOutputUsage(raw json.RawMessage, protocols ...string) *OutputUsage {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil
 	}
 	out := &OutputUsage{Status: "invalid_counters"}
+	protocol := "responses"
+	if len(protocols) > 0 && protocols[0] != "responses" {
+		protocol, out.Protocol = protocols[0], protocols[0]
+		// Older readers ignore protocol/final fields. A distinct content tag
+		// keeps their Responses-only gate from estimating this new wire data.
+		out.ContentStatus = protocol + "_text_and_reasoning"
+	}
 	if len(raw) > 64*1024 {
 		out.Status = "diagnostic_limit"
 		return out
@@ -49,29 +58,148 @@ func readOutputUsage(raw json.RawMessage) *OutputUsage {
 	if !valid {
 		return out
 	}
-	if len(usage["output_tokens"]) == 0 || len(usage["output_tokens_details"]) == 0 {
+	if protocol != "responses" {
+		for key := range usage {
+			wrong := (protocol != "gemini" && (key == "candidatesTokenCount" || key == "thoughtsTokenCount")) ||
+				(protocol != "chat_completions" && (key == "completion_tokens" || key == "completion_tokens_details")) ||
+				(protocol != "messages" && (key == "output_tokens" || key == "output_tokens_details"))
+			if wrong {
+				out.Status = "unsupported_usage"
+				return out
+			}
+		}
+	}
+	if protocol == "gemini" {
+		text, hasText, validText := cacheCounter(usage, "candidatesTokenCount")
+		thoughts, hasThoughts, validThoughts := cacheCounter(usage, "thoughtsTokenCount")
+		if !validText || !validThoughts || text > (1<<53-1)-thoughts {
+			return out
+		}
+		if !hasText || !hasThoughts {
+			out.Status = "not_reported"
+			return out
+		}
+		if raw, present := usage["candidatesTokensDetails"]; present {
+			var details []json.RawMessage
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &details) != nil || len(details) > 4096 {
+				return out
+			}
+			var total int64
+			for _, rawDetail := range details {
+				detail, valid := cacheObject(rawDetail)
+				var modality string
+				n, reported, validCount := cacheCounter(detail, "tokenCount")
+				if !valid || !validCount || !reported || total > (1<<53-1)-n {
+					return out
+				}
+				if json.Unmarshal(detail["modality"], &modality) != nil || modality != "TEXT" {
+					out.Status = "unsupported_usage"
+					return out
+				}
+				total += n
+			}
+			if total != text {
+				return out
+			}
+		}
+		out.OutputTokens, out.ReasoningTokens, out.Status = text+thoughts, thoughts, "observed"
+		return out
+	}
+	outputKey, detailsKey, reasoningKey := "output_tokens", "output_tokens_details", "reasoning_tokens"
+	switch protocol {
+	case "responses":
+	case "chat_completions":
+		outputKey, detailsKey = "completion_tokens", "completion_tokens_details"
+	case "messages":
+		reasoningKey = "thinking_tokens"
+	default:
+		return out
+	}
+	if len(usage[outputKey]) == 0 || len(usage[detailsKey]) == 0 {
 		out.Status = "not_reported"
 		return out
 	}
-	details, valid := cacheObject(usage["output_tokens_details"])
+	details, valid := cacheObject(usage[detailsKey])
 	if !valid {
 		return out
 	}
-	if len(details["reasoning_tokens"]) == 0 {
+	if len(details[reasoningKey]) == 0 {
 		out.Status = "not_reported"
 		return out
 	}
-	if len(details) != 1 {
-		out.Status = "unsupported_usage"
-		return out
+	for key, raw := range details {
+		if key == reasoningKey {
+			continue
+		}
+		// Chat commonly reports explicit zero audio/prediction buckets. Any
+		// nonzero or unknown bucket prevents a pure generated-text estimate.
+		if protocol != "chat_completions" || (key != "audio_tokens" && key != "accepted_prediction_tokens" && key != "rejected_prediction_tokens") {
+			out.Status = "unsupported_usage"
+			return out
+		}
+		n, err := strconv.ParseInt(string(raw), 10, 64)
+		if err != nil || n < 0 || n > 1<<53-1 {
+			return out
+		}
+		if n != 0 {
+			out.Status = "unsupported_usage"
+			return out
+		}
 	}
-	output, outputErr := strconv.ParseInt(string(usage["output_tokens"]), 10, 64)
-	reasoning, reasoningErr := strconv.ParseInt(string(details["reasoning_tokens"]), 10, 64)
+	output, outputErr := strconv.ParseInt(string(usage[outputKey]), 10, 64)
+	reasoning, reasoningErr := strconv.ParseInt(string(details[reasoningKey]), 10, 64)
 	if outputErr != nil || reasoningErr != nil || output < 0 || output > 1<<53-1 || reasoning < 0 || reasoning > output {
 		return out
 	}
 	out.OutputTokens, out.ReasoningTokens, out.Status = output, reasoning, "observed"
 	return out
+}
+
+func readProtocolOutputUsage(data []byte, protocol, eventType string) *OutputUsage {
+	invalid := &OutputUsage{Protocol: protocol, Status: "invalid_counters"}
+	event, valid := cacheObject(data)
+	if !valid {
+		return invalid
+	}
+	if protocol == "gemini" {
+		if raw, wrapped := event["response"]; wrapped && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			event, valid = cacheObject(raw)
+		}
+	} else if eventType == "message_start" {
+		event, valid = cacheObject(event["message"])
+	}
+	if !valid {
+		return invalid
+	}
+	key := "usage"
+	if protocol == "gemini" {
+		key = "usageMetadata"
+	}
+	return readOutputUsage(event[key], protocol)
+}
+
+// Keep invalid counters sticky and never fill missing final fields with an
+// earlier cumulative report. Only a protocol completion boundary can seal them.
+func updateProtocolOutput(a *Attempt, next *OutputUsage, final bool) {
+	if next == nil {
+		return
+	}
+	if previous := a.OutputUsage; previous != nil {
+		if previous.Status != "observed" && previous.Status != "not_reported" {
+			return
+		}
+		if previous.Protocol != next.Protocol {
+			previous.Status = "invalid_counters"
+			return
+		}
+		if previous.Status == "observed" && next.Status == "observed" &&
+			(next.OutputTokens < previous.OutputTokens || next.ReasoningTokens < previous.ReasoningTokens) {
+			previous.Status = "invalid_counters"
+			return
+		}
+	}
+	next.Final = next.Final || final
+	a.OutputUsage = next
 }
 
 func outputContentStatus(envelope map[string]json.RawMessage) string {
@@ -140,6 +268,23 @@ func deriveOutputRate(s Snapshot, a Attempt, stream TextStreamObservation) Outpu
 		return out
 	}
 	out.Source = "canonical_responses_terminal_usage_and_text_events"
+	protocol := raw.Protocol
+	if protocol == "" {
+		protocol = "responses" // Original JSON predates protocol tags.
+	}
+	streamProtocol := "responses"
+	if a.TextStream != nil && a.TextStream.Protocol != "" {
+		streamProtocol = a.TextStream.Protocol
+	}
+	if protocol != streamProtocol || (protocol != "responses" && protocol != "messages" && protocol != "gemini" && protocol != "chat_completions") ||
+		(a.Kind == "ws_turn" && protocol != "responses") {
+		out.Status, out.Source = "invalid_protocol", "none"
+		return out
+	}
+	if protocol != "responses" {
+		out.Source = "canonical_" + protocol + "_usage_and_text_events"
+		out.Scope = "final_physical_http_" + protocol + "_text_at_parser"
+	}
 	out.Status = raw.Status
 	if raw.Status != "observed" {
 		return out
@@ -160,7 +305,19 @@ func deriveOutputRate(s Snapshot, a Attempt, stream TextStreamObservation) Outpu
 		out.Status = "invalid_boundary"
 		return out
 	}
-	if raw.ContentStatus != "text_and_reasoning" {
+	if protocol != "responses" && !raw.Final {
+		out.Status = "not_reported"
+		return out
+	}
+	if _, multiple := a.Events["typed_output_multiple_candidates"]; multiple {
+		out.Status = "unsupported_output"
+		return out
+	}
+	contentStatus := "text_and_reasoning"
+	if protocol != "responses" {
+		contentStatus = protocol + "_text_and_reasoning"
+	}
+	if raw.ContentStatus != contentStatus {
 		out.Status = raw.ContentStatus
 		if out.Status == "" {
 			out.Status = "not_collected"

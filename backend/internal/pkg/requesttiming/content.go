@@ -126,10 +126,15 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 			protocol = ""
 		}
 		var cache *CacheUsage
+		var output *OutputUsage
 		if event.Type == "message_start" || event.Type == "message_delta" || event.Type == "message" {
 			cache = readMessagesCacheUsage(data, event.Type)
+			output = readProtocolOutputUsage(data, "messages", event.Type)
+			if output != nil {
+				output.Final = (event.Type == "message_delta" && delta.StopReason != "") || event.Type == "message"
+			}
 		}
-		recordContent(ctx, protocol, reasoning, visible, textDelta, nonText, terminal, cache, nil)
+		recordContent(ctx, protocol, reasoning, visible, textDelta, nonText, terminal, cache, output)
 		return true
 	}
 	if !strings.HasPrefix(event.Type, "response.") {
@@ -202,7 +207,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		return
 	}
 	tr, _ := ctx.Value(attemptKey{}).(*Trace)
-	if tr == nil || tr.c != c || (!reasoning && !visibleText && !nonTextOutput && terminal == "" && cache == nil) {
+	if tr == nil || tr.c != c || (!reasoning && !visibleText && !nonTextOutput && terminal == "" && cache == nil && output == nil) {
 		return
 	}
 	c.mu.Lock()
@@ -231,6 +236,9 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 			((protocol == "gemini" && stream.Terminal == "completed") || protocol == "chat_completions") {
 			updateProtocolCache(&c.data.Attempts[tr.index], cache)
 		}
+		if stream.Protocol == protocol && protocol != "responses" {
+			updateProtocolOutput(&c.data.Attempts[tr.index], output, true)
+		}
 		return
 	}
 	now := c.offset(c.now())
@@ -240,6 +248,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 			a.OutputUsage = output
 		} else if protocol == "messages" || protocol == "gemini" || protocol == "chat_completions" {
 			updateProtocolCache(a, cache)
+			updateProtocolOutput(a, output, terminal != "")
 		}
 	}
 	for index := tr.index; index >= 0; {

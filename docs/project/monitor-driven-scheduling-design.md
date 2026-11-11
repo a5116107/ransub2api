@@ -652,7 +652,7 @@ Messages 使用独立 `typed_messages_sse` 来源与 Messages parser 作用域�
 首个有效事件前即发生采集缺口时，按最终物理 HTTP 的实际 Messages 端点保留来源标注，不冒用 Responses 来源或前次重试。
 不改变业务扫描上限或截断转发。无采集器的请求不计算额外线路摘要，父 attempt 不重复存储物理分片，重试不借前次数据。
 该路径仍沿原 request timing JSON、30天保留、异步队列及用量投影，不增加表或第二套计时器。
-Messages 的 output_tokens 未提供与 Responses 等价的推理扣除证据，输出阶段 TPS 继续未采集；
+Messages 仅报告 output_tokens 时不推断推理量为零；输出阶段 TPS 还须符合下述明确推理计数和完整文本边界；
 规范缓存按下述独立累计桶采集，不从原计费兼容值反推。Gemini HTTP 与原生 WS 的接线见下文，D5不因单协议交付关闭。
 
 Gemini HTTP 原生、Messages 兼容、Chat Completions 兼容与 Code Assist 流转非流，沿同一物理 attempt
@@ -680,7 +680,7 @@ STOP 后纯用量元数据可保留，继续出现内容或失败信号则使原
 
 该子项复用原 request timing JSON、异步记录、保留期限和 SQL 投影，无数据库迁移或第二套计时器；
 旧 JSON 继续按原协议解释。Gemini 的计费兼容量不套用 Responses 的规范缓存和推理扣除公式，
-规范缓存直接读取原始 usageMetadata，输出阶段 TPS 保持未采集。新观测尚不改变自动排名或线上策略，也不证明真实供应商的缓存、质量或完整能力。
+规范缓存直接读取原始 usageMetadata，输出阶段 TPS 仅按下述独立 candidates/thoughts 计数与完整文本边界估算。新观测尚不改变自动排名或线上策略，也不证明真实供应商的缓存、质量或完整能力。
 回退应用保留原 JSON 和账单；旧读取者不识别 Gemini 的来源与异常边界，不作为完整观测的验收结果，混合版本及生产升级仍按D8/D9核验。
 Antigravity 独立网关在既有最终发送入口复用相同账号/代理/线路初始化，覆盖普通循环、智能重试、
 Credits 重试及模型兜底；物理 HTTP attempt 与外层发送分别记录，旧尝试不贡献最终尝试的文本样本。
@@ -692,7 +692,7 @@ Credits 重试及模型兜底；物理 HTTP attempt 与外层发送分别记录�
 Antigravity 的 scanner 超限、读取错误与间隔超时显式标记 incomplete_capture，包括上游已 STOP
 但后续读取异常的情况；未收到真实终态、损坏事件、下游写错或取消均不形成健康文本流样本。
 保留原扫描限制、keepalive、取消和断连后 drain 计费规则；Messages JSON 直接透传保持文本间隔未知，
-不把完整 JSON 当作文本 delta。Gemini/Messages 的规范缓存使用各自原始协议，文本 TPS 不借用 Responses 公式。
+不把完整 JSON 当作文本 delta。Gemini/Messages 的规范缓存与输出计数使用各自原始协议，文本 TPS 复用下述边界与速度公式，不从缓存或计费兼容桶反推。
 流转非流的 Claude 聚合器另外保留最新原始 usageMetadata：即使尾帧只有用量、无正文，原转换器也能
 保留实际输入/缓存/思考/输出计数；明确零值覆盖旧值，无新用量则保留最近值。该修复不改变计费公式、
 空响应/错误处理或调度权重；相同聚合器服务 Messages、Chat 与 Responses，不新增平行路径。
@@ -767,7 +767,7 @@ CacheUsage.protocol 显式区分来源，缺字段的旧 JSON 仍只按 Response
 冷热历史 p90 关联也按协议来源分层，即使模型/端点/线路相同也不配对；缺少完整模型/档位/推理范围仍不给估计。
 既有前端分开标注三种规范来源，未知来源保持未采集；不新增表、计费公式、后台队列或自动调度权重。
 旧应用回退保留 JSON 与账单，但旧读取者不认识协议标签，不用于跨协议观测验收；混合版本按 D8/D9 核验。
-Messages/Gemini 文本 TPS、未覆盖 wire、实际迁移额外冷输入及面向会话的保守估计继续待验，不以历史 p90 差冒充迁移收益。
+Messages/Gemini/Chat 的文本 TPS 仅使用下述明确计数与完整边界；未覆盖 wire、跨协议可比性、实际迁移额外冷输入及面向会话的保守估计继续待验，不以历史 p90 差冒充迁移收益。
 
 国产供应商原生 Messages→Chat Completions/Responses 桥接，以及 Anthropic 平台的
 Chat Completions/Responses 兼容适配器，复用同一 SSE 观察器及物理 attempt：
@@ -804,7 +804,7 @@ Chat 规范缓存直接读取 prompt_tokens 与 prompt_tokens_details.cached_tok
 作用域 final_physical_http_chat_completions_usage，保留独立协议标签；原 SQL 继续要求
 规范总输入与最终账单输入/缓存桶守恒，历史/失败/多 trace/协议矛盾维持 unknown。
 原分层页面中英文明确来源；冷热历史比较按相同来源单独分群，不混 Responses/Messages/Gemini。
-本项不证明供应商缓存保留、跨线路共享或迁移收益，Chat 输出阶段 TPS 仍待独立用量证据验收；
+本项不证明供应商缓存保留、跨线路共享或迁移收益，Chat 输出阶段 TPS 使用下述独立用量证据；
 沿用既有 JSON、队列、保留及应用回滚边界，不增加表或平行观测实现。
 
 Responses HTTP 与原生 WS 的输出阶段速度复用上述物理 attempt 与原始终态 JSON；`output_usage` 仅保存计数及输出类型结论，
@@ -829,6 +829,26 @@ WS 的输出阶段范围为 `physical_websocket_turn_responses_text_at_parser`�
 既有 HTTP→WS 的流式/非流式渲染也按真实物理 WS 观测；不是非流式客户端接收速率。
 请求详情按实际 scope 区分 HTTP 最终尝试和 WS 单轮，未知/不匹配范围隐藏估算，不将未采集显示为0。
 本指标尚未接入自动排名，跨协议可比性、分位数及会话迁移风险仍按D5–D8验收。
+
+Chat Completions、Messages 与 Gemini HTTP 沿同一 `output_usage` 和 `output_rate` 增补原始计数，
+共用上述成功判定、推理扣除、250ms/两分片/32token 下限和同一速度公式，不新增表、采样器或计费模型。
+Chat 仅接受明确的 `completion_tokens` 与 `completion_tokens_details.reasoning_tokens`；
+Messages 仅接受 `output_tokens` 与 `output_tokens_details.thinking_tokens`；
+Gemini 仅接受明确的 `candidatesTokenCount` 与 `thoughtsTokenCount`，规范总输出为两者之和，
+扣除思考后只剩 candidates 计数，不把 Gemini 的 candidates 计数再次扣除 thoughts。
+缺少推理明细保持未报告，未观察到推理片段不等于推理量为零；不从计费归一化值或另一轮补齐。
+可选音频/预测明细仅在 Chat 明确为零时兼容；非零、未知明细、跨协议别名、非法/重复/不安全整数不估算。
+Gemini 若报告 candidates 模态明细，须全部为 TEXT 且计数守恒；工具、媒体、多候选和采集缺口也不估算。
+
+只有同帧业务终态、Messages 带 stop_reason 的最终累计用量，或已完成 Chat/Gemini 的独立尾帧用量才能封存最终计数。
+仅有中途累计值不作为最终证据；后续缺失字段不借前帧补齐，累计计数倒退或异常证据保持失效。
+尾帧不移动文本终态时刻，结束后的正文/错误/协议矛盾仍拒绝健康样本；Messages 的结束后用量也视为边界矛盾。
+原始计数带独立协议和最终边界标识，协议必须与物理文本流一致，WS 仍只支持原 Responses 逐轮口径。
+来源为 `canonical_<protocol>_usage_and_text_events`，范围为 `final_physical_http_<protocol>_text_at_parser`，
+其中 protocol 分别为 chat_completions/messages/gemini；页面同时核对来源、范围和传输，再展示对应中英文标签。
+范围只匹配明确列出的自有属性，缺来源的历史数据和对象继承属性均保持未采集，不显示速度估算。
+三种新协议使用独立 `content_status`，使忽略新 JSON 字段的旧 Responses 读取器也保留未知，不生成误标估算。
+旧 JSON、原 Responses HTTP/WS 和既有账单保持兼容；完整混版/升级及真实供应商表现仍由 D8/D9 分别验收。
 
 ### 8.2 多窗口与防抖
 

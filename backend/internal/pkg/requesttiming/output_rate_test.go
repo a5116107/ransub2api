@@ -1,7 +1,9 @@
 package requesttiming
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,250 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func observeOutputRateFixture(ctx context.Context, protocol, phase, usage string) {
+	extra := ""
+	if usage != "" {
+		key := "usage"
+		if protocol == "gemini" {
+			key = "usageMetadata"
+		}
+		extra = `,"` + key + `":` + usage
+	}
+	switch protocol {
+	case "chat_completions":
+		choices := `[{"index":0,"delta":{"content":"private text"}}]`
+		switch phase {
+		case "terminal":
+			choices = `[{"index":0,"delta":{},"finish_reason":"stop"}]`
+		case "usage":
+			choices = `[]`
+		case "secondary":
+			choices = `[{"index":1,"delta":{"content":"private secondary"}}]`
+		case "tool":
+			choices = `[{"index":0,"delta":{"tool_calls":[{"index":0}]}}]`
+		}
+		ChatContent(ctx, []byte(`{"choices":`+choices+extra+`}`), true)
+	case "gemini":
+		candidates := `[{"index":0,"content":{"parts":[{"text":"private text"}]}}]`
+		switch phase {
+		case "terminal":
+			candidates = `[{"index":0,"finishReason":"STOP"}]`
+		case "usage":
+			candidates = `[]`
+		case "secondary":
+			candidates = `[{"index":1,"content":{"parts":[{"text":"private secondary"}]}}]`
+		case "tool":
+			candidates = `[{"index":0,"content":{"parts":[{"functionCall":{"name":"fixture"}}]}}]`
+		}
+		GeminiContent(ctx, []byte(`{"response":{"candidates":`+candidates+extra+`}}`), true)
+	case "messages":
+		switch phase {
+		case "terminal":
+			Content(ctx, []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}`+extra+`}`))
+			Content(ctx, []byte(`{"type":"message_stop"}`))
+		case "usage":
+			Content(ctx, []byte(`{"type":"message_delta","delta":{}`+extra+`}`))
+		case "tool":
+			Content(ctx, []byte(`{"type":"content_block_start","content_block":{"type":"tool_use","name":"fixture"}}`))
+		default:
+			Content(ctx, []byte(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"private text"}}`))
+		}
+	}
+}
+
+func TestOutputRateOriginalWireProtocols(t *testing.T) {
+	for _, protocol := range []string{"chat_completions", "messages", "gemini"} {
+		for _, mode := range []string{"complete", "explicit_zero", "missing_reasoning", "invalid_reasoning", "duplicate", "unsafe", "before_only", "late_usage", "late_missing", "tool", "secondary", "capture_gap", "write_error", "missing_terminal"} {
+			if mode == "secondary" && protocol == "messages" {
+				continue
+			}
+			t.Run(protocol+"/"+mode, func(t *testing.T) {
+				usage := `{"output_tokens":120,"output_tokens_details":{"thinking_tokens":20}}`
+				switch protocol {
+				case "chat_completions":
+					usage = `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20}}`
+				case "gemini":
+					usage = `{"candidatesTokenCount":100,"thoughtsTokenCount":20}`
+				}
+				expected := "estimated"
+				switch mode {
+				case "explicit_zero":
+					usage = strings.ReplaceAll(strings.ReplaceAll(usage, ":120", ":100"), ":20", ":0")
+				case "missing_reasoning":
+					usage = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(usage, `"thinking_tokens":20`, ""), `"reasoning_tokens":20`, ""), `,"thoughtsTokenCount":20`, "")
+					expected = "not_reported"
+				case "invalid_reasoning":
+					usage = strings.ReplaceAll(usage, ":20", ":-1")
+					expected = "invalid_counters"
+				case "duplicate":
+					key := "output_tokens"
+					switch protocol {
+					case "chat_completions":
+						key = "completion_tokens"
+					case "gemini":
+						key = "candidatesTokenCount"
+					}
+					usage = strings.TrimSuffix(usage, "}") + `,"` + key + `":121}`
+					expected = "invalid_counters"
+				case "unsafe":
+					usage = strings.ReplaceAll(strings.ReplaceAll(usage, ":120", ":9007199254740992"), ":100", ":9007199254740992")
+					expected = "invalid_counters"
+				case "before_only", "late_missing":
+					expected = "not_reported"
+				case "tool", "secondary":
+					expected = "unsupported_output"
+				case "capture_gap":
+					expected = "incomplete_capture"
+				case "write_error", "missing_terminal":
+					expected = "partial"
+				}
+				if protocol == "messages" && mode == "late_usage" {
+					expected = "invalid_boundary"
+				}
+				start := time.Now()
+				now := start
+				c := newCollector(start, 0, func() time.Time { return now })
+				req := httptest.NewRequest(http.MethodPost, "/fixture", nil).WithContext(With(t.Context(), c))
+				req, _ = StartAttempt(req, 7, 0)
+				req, tr := StartTransport(req)
+				for _, ms := range []int{10, 1010} {
+					now = start.Add(time.Duration(ms) * time.Millisecond)
+					observeOutputRateFixture(req.Context(), protocol, "text", "")
+				}
+				if mode == "tool" || mode == "secondary" {
+					observeOutputRateFixture(req.Context(), protocol, mode, "")
+				}
+				if mode == "before_only" || mode == "missing_terminal" {
+					observeOutputRateFixture(req.Context(), protocol, "usage", usage)
+				}
+				now = start.Add(2010 * time.Millisecond)
+				if mode != "missing_terminal" {
+					terminalUsage := usage
+					if mode == "before_only" || mode == "late_usage" {
+						terminalUsage = ""
+					}
+					observeOutputRateFixture(req.Context(), protocol, "terminal", terminalUsage)
+				}
+				now = start.Add(3 * time.Second)
+				switch mode {
+				case "late_usage":
+					observeOutputRateFixture(req.Context(), protocol, "usage", usage)
+				case "late_missing":
+					observeOutputRateFixture(req.Context(), protocol, "usage", `{}`)
+				}
+				if mode == "capture_gap" {
+					Stage(req.Context(), "typed_content_truncated")
+				}
+				if mode == "write_error" {
+					c.Written(now, 0, io.ErrClosedPipe, false)
+				}
+				tr.Response(&http.Response{StatusCode: http.StatusOK}, nil)
+				c.Finish(http.StatusOK, false)
+				c.WhenFinished(func(s Snapshot) {
+					if protocol == "messages" && (mode == "late_usage" || mode == "late_missing") {
+						require.True(t, s.Attempts[1].TextStream.Invalid, "usage after message_stop contradicts the completed wire")
+					}
+					rate := DeriveContentObservation(s).OutputRate
+					require.Equal(t, expected, rate.Status)
+					require.Equal(t, "canonical_"+protocol+"_usage_and_text_events", rate.Source)
+					require.Equal(t, "final_physical_http_"+protocol+"_text_at_parser", rate.Scope)
+					if expected == "estimated" {
+						require.NotNil(t, rate.TokensPerSecond)
+						require.InDelta(t, 50, *rate.TokensPerSecond, 1e-9)
+						require.Equal(t, 2000.0, *rate.WindowMS, "late usage must not move completion")
+						require.EqualValues(t, 100, *rate.NonReasoningTokens)
+					} else {
+						require.Nil(t, rate.TokensPerSecond)
+					}
+					raw, err := json.Marshal(s)
+					require.NoError(t, err)
+					require.NotContains(t, string(raw), "private")
+				})
+			})
+		}
+	}
+}
+
+func TestOutputRateProtocolCountersAndFinalEvidence(t *testing.T) {
+	for _, tc := range []struct{ protocol, name, usage, status string }{
+		{"chat_completions", "zero_optional", `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`, "observed"},
+		{"chat_completions", "audio", `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20,"audio_tokens":1}}`, "unsupported_usage"},
+		{"chat_completions", "prediction", `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20,"accepted_prediction_tokens":1}}`, "unsupported_usage"},
+		{"chat_completions", "rejected_prediction", `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20,"rejected_prediction_tokens":1}}`, "unsupported_usage"},
+		{"chat_completions", "unknown_detail", `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20,"future":0}}`, "unsupported_usage"},
+		{"chat_completions", "alias", `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20},"output_tokens":120}`, "unsupported_usage"},
+		{"chat_completions", "invalid_optional", `{"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":20,"audio_tokens":null}}`, "invalid_counters"},
+		{"messages", "wrong_detail", `{"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}`, "not_reported"},
+		{"messages", "alias", `{"output_tokens":120,"output_tokens_details":{"thinking_tokens":20},"completion_tokens":120}`, "unsupported_usage"},
+		{"messages", "other_detail", `{"output_tokens":120,"output_tokens_details":{"thinking_tokens":20,"future":0}}`, "unsupported_usage"},
+		{"messages", "string", `{"output_tokens":120,"output_tokens_details":{"thinking_tokens":"20"}}`, "invalid_counters"},
+		{"messages", "excess", `{"output_tokens":120,"output_tokens_details":{"thinking_tokens":121}}`, "invalid_counters"},
+		{"gemini", "text_modality", `{"candidatesTokenCount":100,"thoughtsTokenCount":20,"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":100}]}`, "observed"},
+		{"gemini", "audio_modality", `{"candidatesTokenCount":100,"thoughtsTokenCount":20,"candidatesTokensDetails":[{"modality":"AUDIO","tokenCount":100}]}`, "unsupported_usage"},
+		{"gemini", "modality_total", `{"candidatesTokenCount":100,"thoughtsTokenCount":20,"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":99}]}`, "invalid_counters"},
+		{"gemini", "empty_modality", `{"candidatesTokenCount":100,"thoughtsTokenCount":20,"candidatesTokensDetails":[]}`, "invalid_counters"},
+		{"gemini", "null_modality", `{"candidatesTokenCount":100,"thoughtsTokenCount":20,"candidatesTokensDetails":null}`, "invalid_counters"},
+		{"gemini", "duplicate_modality", `{"candidatesTokenCount":100,"thoughtsTokenCount":20,"candidatesTokensDetails":[{"modality":"TEXT","modality":"AUDIO","tokenCount":100}]}`, "invalid_counters"},
+		{"gemini", "sum_overflow", `{"candidatesTokenCount":9007199254740991,"thoughtsTokenCount":1}`, "invalid_counters"},
+		{"gemini", "null_thoughts", `{"candidatesTokenCount":100,"thoughtsTokenCount":null}`, "invalid_counters"},
+		{"gemini", "fractional", `{"candidatesTokenCount":100.5,"thoughtsTokenCount":20}`, "invalid_counters"},
+		{"gemini", "alias", `{"candidatesTokenCount":100,"thoughtsTokenCount":20,"completion_tokens":120}`, "unsupported_usage"},
+	} {
+		t.Run(tc.protocol+"/"+tc.name, func(t *testing.T) {
+			raw := readOutputUsage([]byte(tc.usage), tc.protocol)
+			require.NotNil(t, raw)
+			require.Equal(t, tc.status, raw.Status)
+			require.False(t, raw.Final, "count decoding alone does not prove a final report")
+			if raw.Status == "observed" {
+				var legacy struct {
+					ContentStatus string `json:"content_status"`
+				}
+				data, err := json.Marshal(raw)
+				require.NoError(t, err)
+				require.NoError(t, json.Unmarshal(data, &legacy))
+				require.NotEqual(t, "text_and_reasoning", legacy.ContentStatus, "the original reader's content gate must reject new protocols even after unknown JSON fields are discarded")
+			}
+		})
+	}
+	for _, protocol := range []string{"chat_completions", "messages", "gemini"} {
+		t.Run(protocol+"/sticky_invalid", func(t *testing.T) {
+			a := Attempt{}
+			updateProtocolOutput(&a, &OutputUsage{Protocol: protocol, Status: "invalid_counters"}, false)
+			updateProtocolOutput(&a, &OutputUsage{Protocol: protocol, Status: "observed"}, true)
+			require.Equal(t, "invalid_counters", a.OutputUsage.Status)
+		})
+		t.Run(protocol+"/cumulative_decrease", func(t *testing.T) {
+			a := Attempt{}
+			updateProtocolOutput(&a, &OutputUsage{Protocol: protocol, Status: "observed", OutputTokens: 120, ReasoningTokens: 20}, false)
+			updateProtocolOutput(&a, &OutputUsage{Protocol: protocol, Status: "observed", OutputTokens: 100, ReasoningTokens: 10}, true)
+			require.Equal(t, "invalid_counters", a.OutputUsage.Status)
+		})
+		for _, mode := range []string{"wrong_protocol", "not_final", "ws", "new_attempt"} {
+			t.Run(protocol+"/"+mode, func(t *testing.T) {
+				s := outputRateTestSnapshot()
+				s.Attempts[0].OutputUsage.Protocol, s.Attempts[0].OutputUsage.Final = protocol, true
+				s.Attempts[0].TextStream.Protocol = protocol
+				expected := "invalid_protocol"
+				switch mode {
+				case "wrong_protocol":
+					s.Attempts[0].TextStream.Protocol = "responses"
+				case "not_final":
+					s.Attempts[0].OutputUsage.Final = false
+					expected = "not_reported"
+				case "ws":
+					s.TTFTMode, s.Attempts[0].Kind = "ws_turn", "ws_turn"
+				case "new_attempt":
+					s.Attempts = append(s.Attempts, Attempt{Kind: "http"})
+					expected = "not_collected"
+				}
+				rate := DeriveContentObservation(s).OutputRate
+				require.Equal(t, expected, rate.Status)
+				require.Nil(t, rate.TokensPerSecond)
+			})
+		}
+	}
+}
 
 func TestOutputRateUsesFinalPhysicalTextWindow(t *testing.T) {
 	start := time.Now()

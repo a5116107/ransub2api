@@ -44,7 +44,7 @@ func newLatencyCacheFixture(t *testing.T) latencyCacheFixture {
 }
 
 func TestLatencyOutputRatePersistsAndRejectsAmbiguousTraces(t *testing.T) {
-	for _, mode := range []string{"complete", "missing_usage", "downstream_error", "retry_without_usage", "duplicate_trace"} {
+	for _, mode := range []string{"complete", "chat_completions", "messages", "gemini", "wrong_protocol", "not_final", "multiple_candidates", "missing_usage", "downstream_error", "retry_without_usage", "duplicate_trace"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newLatencyCacheFixture(t)
 			f.usage.OutputTokens = 120
@@ -56,6 +56,17 @@ func TestLatencyOutputRatePersistsAndRejectsAmbiguousTraces(t *testing.T) {
 				Chunks: 3, FirstMS: 6020, LastMS: 7020, MaxGapMS: 500, Terminal: "completed", TerminalMS: 7520,
 			}
 			switch mode {
+			case "chat_completions", "messages", "gemini":
+				f.trace.Attempts[0].OutputUsage.Protocol, f.trace.Attempts[0].OutputUsage.Final = mode, true
+				f.trace.Attempts[0].OutputUsage.ContentStatus = mode + "_text_and_reasoning"
+				f.trace.Attempts[0].TextStream.Protocol = mode
+			case "wrong_protocol":
+				f.trace.Attempts[0].OutputUsage.Protocol = "gemini"
+			case "not_final":
+				f.trace.Attempts[0].OutputUsage.Protocol = "messages"
+				f.trace.Attempts[0].TextStream.Protocol = "messages"
+			case "multiple_candidates":
+				f.trace.Attempts[0].Events["typed_output_multiple_candidates"] = 1
 			case "missing_usage":
 				f.trace.Attempts[0].OutputUsage = nil
 			case "downstream_error":
@@ -74,7 +85,7 @@ func TestLatencyOutputRatePersistsAndRejectsAmbiguousTraces(t *testing.T) {
 			require.NoError(t, err)
 			observed := items[id].OutputRate
 			switch mode {
-			case "complete":
+			case "complete", "chat_completions", "messages", "gemini":
 				traces, err := f.repo.RequestTimings(t.Context(), id)
 				require.NoError(t, err)
 				require.Len(t, traces, 1)
@@ -85,6 +96,19 @@ func TestLatencyOutputRatePersistsAndRejectsAmbiguousTraces(t *testing.T) {
 				require.Equal(t, "estimated", observed.Status)
 				require.EqualValues(t, 100, *observed.NonReasoningTokens)
 				require.InDelta(t, 100/1.5, *observed.TokensPerSecond, 1e-9)
+				if mode != "complete" {
+					require.Equal(t, "canonical_"+mode+"_usage_and_text_events", observed.Source)
+					require.Equal(t, "final_physical_http_"+mode+"_text_at_parser", observed.Scope)
+				}
+			case "wrong_protocol":
+				require.Equal(t, "invalid_protocol", observed.Status)
+				require.Nil(t, observed.TokensPerSecond)
+			case "not_final":
+				require.Equal(t, "not_reported", observed.Status)
+				require.Nil(t, observed.TokensPerSecond)
+			case "multiple_candidates":
+				require.Equal(t, "unsupported_output", observed.Status)
+				require.Nil(t, observed.TokensPerSecond)
 			case "downstream_error":
 				require.Equal(t, "partial", observed.Status)
 				require.Nil(t, observed.TokensPerSecond)

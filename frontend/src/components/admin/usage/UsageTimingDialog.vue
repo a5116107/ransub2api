@@ -95,9 +95,20 @@ let controller: AbortController | undefined
 const trace = computed(() => traces.value[selected.value])
 const outputRate = computed(() => trace.value?.output_rate)
 const phaseRateScopeKey = computed(() => {
-  const scope = outputRate.value?.scope
-  if (scope === 'physical_websocket_turn_responses_text_at_parser' && trace.value?.ttft_mode === 'ws_turn') return 'requestTiming.outputRate.wsScope'
-  if (scope === 'final_physical_http_responses_text_at_parser' && trace.value?.ttft_mode !== 'ws_turn') return 'requestTiming.outputRate.scope'
+  const rate = outputRate.value
+  if (!rate) return undefined
+  if (trace.value?.ttft_mode === 'ws_turn') {
+    if (rate.scope === 'physical_websocket_turn_responses_text_at_parser' && rate.source === 'canonical_responses_terminal_usage_and_text_events') return 'requestTiming.outputRate.wsScope'
+    return undefined
+  }
+  const scopes: Record<string, [string, string]> = {
+    final_physical_http_responses_text_at_parser: ['canonical_responses_terminal_usage_and_text_events', 'scope'],
+    final_physical_http_chat_completions_text_at_parser: ['canonical_chat_completions_usage_and_text_events', 'chatScope'],
+    final_physical_http_messages_text_at_parser: ['canonical_messages_usage_and_text_events', 'messagesScope'],
+    final_physical_http_gemini_text_at_parser: ['canonical_gemini_usage_and_text_events', 'geminiScope']
+  }
+  const scope = Object.prototype.hasOwnProperty.call(scopes, rate.scope) ? scopes[rate.scope] : undefined
+  if (scope && rate.source === scope[0]) return `requestTiming.outputRate.${scope[1]}`
   return undefined
 })
 const phaseRate = computed(() => {
@@ -112,7 +123,7 @@ const phaseRateStatus = computed(() => {
   const status = phaseRateScopeKey.value ? outputRate.value?.status ?? 'not_collected' : 'not_collected'
   const states = ['estimated', 'not_collected', 'not_reported', 'invalid_counters', 'diagnostic_limit', 'unsupported_usage',
     'invalid_terminal', 'unsupported_output', 'no_text_output', 'partial', 'insufficient_stream', 'incomplete_stream',
-    'short_output', 'insufficient_window', 'invalid_boundary', 'incomplete_capture']
+    'short_output', 'insufficient_window', 'invalid_boundary', 'incomplete_capture', 'invalid_protocol']
   return t(`requestTiming.outputRate.states.${states.includes(status) ? status : 'not_collected'}`)
 })
 const phaseRateTokens = computed(() => {

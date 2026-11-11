@@ -137,7 +137,13 @@ func TestGeminiTimingLoopback(t *testing.T) {
 					} else {
 						require.Equal(t, "partial", v.TextStream.Status)
 					}
-					require.Nil(t, v.OutputRate.TokensPerSecond, "do not coerce billing counters into canonical text TPS")
+					if (ending == "STOP" || ending == "write_error" && path == "buffered") && v.TextStream.SpanMS != nil && *v.TextStream.SpanMS >= 250 {
+						require.Equal(t, "estimated", v.OutputRate.Status)
+						require.Equal(t, "canonical_gemini_usage_and_text_events", v.OutputRate.Source)
+						require.EqualValues(t, 120, *v.OutputRate.NonReasoningTokens)
+					} else {
+						require.Nil(t, v.OutputRate.TokensPerSecond, "short or failed original streams cannot estimate text TPS")
+					}
 					if ending == "STOP" || ending == "write_error" && path == "buffered" {
 						require.Equal(t, "observed", v.Cache.Status)
 						require.Equal(t, "canonical_gemini_usage_metadata", v.Cache.Source)

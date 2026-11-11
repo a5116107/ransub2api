@@ -66,6 +66,8 @@ func ChatContent(ctx context.Context, data []byte, streaming bool) {
 		}
 		if index == 0 {
 			primary = choice
+		} else {
+			Stage(ctx, "typed_output_multiple_candidates")
 		}
 	}
 	reasoning, visible, nonText := false, false, false
@@ -122,5 +124,5 @@ func ChatContent(ctx context.Context, data []byte, streaming bool) {
 		}
 	}
 	recordContent(ctx, "chat_completions", reasoning, visible, streaming && visible, nonText, terminal,
-		readCacheUsage(event["usage"], "chat_completions"), nil)
+		readCacheUsage(event["usage"], "chat_completions"), readOutputUsage(event["usage"], "chat_completions"))
 }

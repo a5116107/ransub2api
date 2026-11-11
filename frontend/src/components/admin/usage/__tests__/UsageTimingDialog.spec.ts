@@ -22,6 +22,35 @@ const phaseTrace = (rate?: OutputRateObservation, id = 'phase'): RequestTiming =
   downstream_write_ms: 0, downstream_error: false, events: {}, spans: [], attempts: [], output_rate: rate
 })
 describe('Usage timing details', () => {
+  it.each(['__proto__', 'constructor', 'toString'])('rejects an inherited scope property %s when a historical source is missing', async scope => {
+    const rate = { ...phaseObservation(), scope }
+    delete (rate as Partial<OutputRateObservation>).source
+    mocks.get.mockResolvedValue({ traces: [phaseTrace(rate)], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="output-phase-scope"]').text()).toBe('requestTiming.missing')
+    wrapper.unmount()
+  })
+  it.each([
+    ['chat_completions', 'chatScope'], ['messages', 'messagesScope'], ['gemini', 'geminiScope']
+  ])('shows the original %s HTTP protocol estimate with its own scope', async (protocol, key) => {
+    const rate = { ...phaseObservation(), source: `canonical_${protocol}_usage_and_text_events`, scope: `final_physical_http_${protocol}_text_at_parser` }
+    mocks.get.mockResolvedValue({ traces: [phaseTrace(rate)], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('50.0 t/s')
+    expect(wrapper.get('[data-testid="output-phase-scope"]').text()).toBe(`requestTiming.outputRate.${key}`)
+    wrapper.unmount()
+  })
+  it.each(['canonical_gemini_usage_and_text_events', 'future_unknown'])('hides a Responses estimate with an incompatible source %s', async source => {
+    mocks.get.mockResolvedValue({ traces: [phaseTrace({ ...phaseObservation(), source })], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="output-phase-scope"]').text()).toBe('requestTiming.missing')
+    wrapper.unmount()
+  })
   it('shows a WS generation estimate with its own scope, excluding socket lifetime', async () => {
     const rate = { ...phaseObservation(), scope: 'physical_websocket_turn_responses_text_at_parser' }
     mocks.get.mockResolvedValue({ traces: [{ ...phaseTrace(rate), status: 0, ttft_mode: 'ws_turn' }], retention_days: 30 })
