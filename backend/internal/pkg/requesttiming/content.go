@@ -96,6 +96,10 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 	if tr == nil || tr.c != c || (!reasoning && !visibleText && terminal == "") {
 		return
 	}
+	var cache *CacheUsage
+	if terminal != "" {
+		cache = readTerminalCacheUsage(data)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.finished {
@@ -105,6 +109,9 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		return
 	}
 	now := c.offset(c.now())
+	if a := &c.data.Attempts[tr.index]; a.Kind == "http" && terminal != "" {
+		a.CacheUsage = cache
+	}
 	for index := tr.index; index >= 0; {
 		a := &c.data.Attempts[index]
 		if reasoning {
@@ -172,6 +179,7 @@ type SocketEvidence struct {
 	Scope           string   `json:"scope"`
 }
 type ContentObservation struct {
+	Cache                        CacheObservation      `json:"cache"`
 	TextStream                   TextStreamObservation `json:"text_stream"`
 	ReasoningFirstMS             *float64              `json:"reasoning_first_ms"`
 	VisibleTextFirstMS           *float64              `json:"visible_text_first_ms"`
@@ -187,6 +195,7 @@ type ContentObservation struct {
 
 func UnknownContentObservation() ContentObservation {
 	return ContentObservation{Status: "not_collected", Source: "none", Scope: "final_physical_http_attempt_offsets_from_application_entry", ReasoningStreamingCapability: "unknown", CapabilitySource: "none",
+		Cache:          unknownCacheObservation(),
 		TextStream:     TextStreamObservation{Status: "not_collected", Source: "none", Scope: "final_physical_http_responses_text_deltas_at_parser"},
 		ClientSocket:   SocketEvidence{Status: "not_collected_or_reverse_proxy_obscured", Source: "none", Scope: "client_to_server; application_direct_peer_may_be_reverse_proxy"},
 		UpstreamSocket: SocketEvidence{Status: "not_collected", Source: "none", Scope: "server_to_upstream"}}
@@ -202,6 +211,7 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 	}
 	out.Status = "partial"
 	out.Source = "httptrace_and_typed_sse"
+	out.Cache = deriveCacheObservation(s, a)
 	if a.ProxyID > 0 {
 		out.UpstreamSocket.Status = "proxy_obscured"
 		out.UpstreamSocket.Scope = "server_to_configured_proxy; upstream_origin_socket_not_observed"

@@ -1,7 +1,26 @@
 import { apiClient } from '../client'
 
+export interface CacheColdStartEvidence {
+  status: string
+  method: string
+  min_samples: number
+  max_age_seconds: number
+  cold_samples: number
+  warm_samples: number
+  cold_p90_ms: number | null
+  warm_p90_ms: number | null
+  delta_ms: number | null
+  as_of: string
+  latest_cold_at: string | null
+  latest_warm_at: string | null
+}
+
 export interface LatencyGroup {
   account_id?: number; model?: string
+  upstream_model?: string; service_tier?: string; upstream_endpoint?: string
+  route_fingerprint?: string; proxy_id?: number; stream?: boolean; cache_source?: string
+  text_wait_samples?: number; post_upload_text_p90_ms?: number | null; text_wait_latest_at?: string | null
+  cold_start?: CacheColdStartEvidence
   reasoning_samples?: number; text_samples?: number; byte_samples?: number
   reasoning_first_avg_ms?: number | null; visible_text_first_avg_ms?: number | null; response_byte_first_avg_ms?: number | null
   visible_text_p50_ms?: number | null; visible_text_p90_ms?: number | null; visible_text_p99_ms?: number | null

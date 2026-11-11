@@ -40,8 +40,13 @@ func StartTransport(req *http.Request) (*http.Request, *Trace) {
 		return req, nil
 	}
 	var accountID, proxyID int64
-	parent.update(func(a *Attempt) { accountID = a.AccountID; proxyID = a.ProxyID })
-	return startAttempt(req, accountID, proxyID, "http", parent.index+1)
+	var fingerprint string
+	parent.update(func(a *Attempt) { accountID, proxyID, fingerprint = a.AccountID, a.ProxyID, a.RouteFingerprint })
+	req, tr := startAttempt(req, accountID, proxyID, "http", parent.index+1)
+	if tr != nil {
+		tr.update(func(a *Attempt) { a.RouteFingerprint = fingerprint })
+	}
+	return req, tr
 }
 func startAttempt(req *http.Request, accountID, proxyID int64, kind string, parent int) (*http.Request, *Trace) {
 	c := From(req.Context())

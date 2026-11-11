@@ -19,6 +19,8 @@ type Span struct {
 	Attempt int     `json:"attempt,omitempty"`
 }
 type Attempt struct {
+	RouteFingerprint string              `json:"route_fingerprint,omitempty"`
+	CacheUsage       *CacheUsage         `json:"cache_usage,omitempty"`
 	TextStream       *TextStreamTiming   `json:"text_stream,omitempty"`
 	ContentEncoding  string              `json:"content_encoding,omitempty"`
 	AutoDecompressed bool                `json:"auto_decompressed,omitempty"`
@@ -209,6 +211,10 @@ func (c *Collector) snapshot() Snapshot {
 	d.Attempts = append([]Attempt{}, d.Attempts...)
 	for i := range d.Attempts {
 		d.Attempts[i].Events = cloneEvents(d.Attempts[i].Events)
+		if d.Attempts[i].CacheUsage != nil {
+			usage := *d.Attempts[i].CacheUsage
+			d.Attempts[i].CacheUsage = &usage
+		}
 		if d.Attempts[i].TextStream != nil {
 			stream := *d.Attempts[i].TextStream
 			d.Attempts[i].TextStream = &stream

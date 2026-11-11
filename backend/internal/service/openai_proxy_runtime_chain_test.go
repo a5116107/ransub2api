@@ -78,6 +78,9 @@ func TestRuntimeProxyChainBackupRefusalContinuesToDirect(t *testing.T) {
 			collector.Finish(200, false)
 			collector.WhenFinished(func(data requesttiming.Snapshot) {
 				require.Len(t, data.Attempts, len(want))
+				for _, attempt := range data.Attempts {
+					require.Equal(t, fmt.Sprintf("%x", AccountRouteFingerprint(account)), attempt.RouteFingerprint, "every fallback attempt retains its captured account route")
+				}
 				require.Equal(t, int64(0), data.Attempts[len(want)-1].ProxyID)
 				require.Equal(t, "transport_error", data.Attempts[0].Error)
 			})

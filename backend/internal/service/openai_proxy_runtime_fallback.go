@@ -180,6 +180,7 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 	defer func() { s.rateLimitService.observeQualityResponse(req.Context(), account, resp, err) }()
 	defer func() { controlledHTTPResponse(req.Context(), resp) }()
 	req, timingTrace := requesttiming.StartAttempt(req, account.ID, target.proxyID)
+	requesttiming.RecordAccountRoute(req.Context(), AccountRouteFingerprint(account))
 	defer func() { timingTrace.Response(resp, err) }()
 	defer func() {
 		if err != nil && target.proxyID >= 0 {

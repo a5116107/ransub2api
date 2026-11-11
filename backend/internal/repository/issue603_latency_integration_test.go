@@ -95,6 +95,38 @@ func TestIssue603RealLatencyAggregationSQL(t *testing.T) {
 	require.EqualValues(t, 1, groups[0].LargeBodySwitches, "partial transition counts cannot be mixed into complete sample totals")
 }
 
+func TestLatencyCacheBucketsIncludeWritesAndRejectInvalidCounters(t *testing.T) {
+	ctx := t.Context()
+	tx := testEntTx(t)
+	client := tx.Client()
+	repo := newUsageLogRepositoryWithSQL(client, tx)
+	u := mustCreateUser(t, client, &service.User{Email: "cache-buckets@synthetic.invalid"})
+	k := mustCreateApiKey(t, client, &service.APIKey{UserID: u.ID, Key: "synthetic-cache-buckets", Name: "synthetic"})
+	a := mustCreateAccount(t, client, &service.Account{Name: "synthetic-cache-buckets"})
+	now := time.Now().UTC().Add(-time.Minute)
+	for _, tc := range []struct {
+		name               string
+		input, read, write int
+		want               string
+	}{
+		{"writes_are_input", 1, 99, 1000, "<80%"},
+		{"negative_input", -1, 99, 0, "unknown"},
+		{"negative_read", 100, -1, 0, "unknown"},
+		{"negative_write", 1, 99, -1, "unknown"},
+		{"all_empty", 0, 0, 0, "unknown"},
+		{"positive_legacy_hit", 1, 99, 0, "95%+"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := repo.Create(ctx, &service.UsageLog{UserID: u.ID, APIKeyID: k.ID, AccountID: a.ID, Model: tc.name, InputTokens: tc.input, CacheReadTokens: tc.read, CacheCreationTokens: tc.write, CreatedAt: now})
+			require.NoError(t, err)
+			groups, err := repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID, Model: tc.name})
+			require.NoError(t, err)
+			require.Len(t, groups, 1)
+			require.Equal(t, tc.want, groups[0].CacheBucket)
+		})
+	}
+}
+
 func TestIssue603NetworkMinuteStorageAndBodySQL(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)

@@ -105,7 +105,7 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 					}
 					switch ending {
 					case "completed", "terminal_only":
-						send(`{"type":"response.completed","response":{"id":"resp_gap_fixture","created_at":1,"output":[{"type":"message","content":[{"type":"output_text","text":"firstsecond"}]}],"usage":{"input_tokens":1,"output_tokens":2}}}`)
+						send(`{"type":"response.completed","response":{"id":"resp_gap_fixture","created_at":1,"output":[{"type":"message","content":[{"type":"output_text","text":"firstsecond"}]}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":95,"cache_write_tokens":3},"output_tokens":2}}}`)
 					case "failed":
 						send(`{"type":"response.failed","response":{"id":"resp_gap_fixture","error":{"code":"server_error","message":"synthetic failure"}}}`)
 					case "eof":
@@ -117,6 +117,7 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 				req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(`{"model":"fixture","stream":true}`))
 				require.NoError(t, err)
 				req, _ = requesttiming.StartAttempt(req, 605, 0)
+				requesttiming.RecordAccountRoute(req.Context(), AccountRouteFingerprint(&Account{ID: 605, Platform: PlatformOpenAI}))
 				req, tr := requesttiming.StartTransport(req)
 				resp, err := server.Client().Do(req)
 				tr.Response(resp, err)
@@ -147,6 +148,16 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 				collector.Finish(c.Writer.Status(), false)
 				collector.WhenFinished(func(s requesttiming.Snapshot) {
 					v := requesttiming.DeriveContentObservation(s)
+					if ending == "completed" || ending == "terminal_only" {
+						require.Equal(t, "observed", v.Cache.Status, "original terminal counters survive native, passthrough and tool-conversion paths")
+						require.EqualValues(t, 100, *v.Cache.InputTokens)
+						require.EqualValues(t, 95, *v.Cache.ReadTokens)
+						require.EqualValues(t, 3, *v.Cache.WriteTokens)
+						require.InDelta(t, .95, *v.Cache.ReadRatio, 1e-9)
+						require.NotEmpty(t, s.Attempts[len(s.Attempts)-1].RouteFingerprint)
+					} else {
+						require.Nil(t, v.Cache.ReadRatio)
+					}
 					require.NotNil(t, v.VisibleTextFirstMS, "completed-only text must use the same existing diagnostic field")
 					if ending == "terminal_only" {
 						require.Equal(t, "not_collected", v.TextStream.Status)
