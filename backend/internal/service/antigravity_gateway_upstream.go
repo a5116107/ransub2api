@@ -414,6 +414,10 @@ func (s *AntigravityGatewayService) doAntigravityUpstream(request *http.Request,
 	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
 	defer func() { observeTransport(response, err) }()
 	request, timingTrace := startAccountTimingAttempt(request, account)
-	defer func() { timingTrace.Response(response, err) }()
+	observeScope := observeAvailabilityProbeRequest(request, timingTrace, account)
+	defer func() {
+		observeScope(response)
+		timingTrace.Response(response, err)
+	}()
 	return upstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

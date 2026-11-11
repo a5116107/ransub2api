@@ -17,9 +17,6 @@ func availabilityGeminiScope(request *http.Request, payload []byte) *Availabilit
 	if request.Method != http.MethodPost || request.URL.RawPath != "" {
 		return nil
 	}
-	if _, valid := availabilityGeminiAuthentication(request); !valid {
-		return nil
-	}
 	path, action, ok := strings.Cut(request.URL.Path, ":")
 	if !ok || action != "generateContent" && action != "streamGenerateContent" {
 		return nil
@@ -33,7 +30,7 @@ func availabilityGeminiScope(request *http.Request, payload []byte) *Availabilit
 		return nil
 	}
 	options := map[string]any{"path": path, "query": request.URL.RawQuery}
-	scope := &AvailabilityRequestScope{Version: 1, Protocol: "gemini_http", Stream: stream, Capability: "text", ServiceTier: "unspecified", ReasoningEffort: "unspecified"}
+	scope := &AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: "gemini_http", Stream: stream, Capability: "text", ServiceTier: "unspecified", ReasoningEffort: "unspecified"}
 	if strings.HasSuffix(path, "/v1internal") {
 		scope.Protocol = "gemini_internal_http"
 		if fields["model"].Type != gjson.String || fields["project"].Type != gjson.String || fields["project"].String() == "" {
@@ -163,27 +160,6 @@ func availabilityGeminiScope(request *http.Request, payload []byte) *Availabilit
 	sum := sha256.Sum256(raw)
 	scope.ProtocolOptions = hex.EncodeToString(sum[:])
 	return scope
-}
-
-// Compare only within the request lifetime. Credentials never enter the scope,
-// its option digest, persisted observations or logs.
-func availabilityGeminiAuthentication(request *http.Request) ([2]string, bool) {
-	var credentials [2]string
-	for index, name := range []string{"Authorization", "X-Goog-Api-Key"} {
-		var values []string
-		for key, value := range request.Header {
-			if strings.EqualFold(key, name) {
-				values = append(values, value...)
-			}
-		}
-		if len(values) > 1 {
-			return [2]string{}, false
-		}
-		if len(values) == 1 {
-			credentials[index] = values[0]
-		}
-	}
-	return credentials, true
 }
 
 func availabilityGeminiTextContent(value gjson.Result, system bool) bool {

@@ -245,6 +245,7 @@ func TestAvailabilityGeminiBackgroundRequiresCompleteAnswer(t *testing.T) {
 					default:
 						t.Fatal("the background test must send its original question")
 					}
+					require.Empty(t, requests, "one physical generation must produce exactly one logical probe attempt")
 					probe := result.PelicanConfig.AvailabilityResult
 					require.NotNil(t, probe)
 					require.Equal(t, tc.status, probe.Status)

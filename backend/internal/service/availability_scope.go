@@ -17,6 +17,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// Version 2 requires upstream identity association as well as address and body
+// evidence. Version 1 observations must be reprobed before they authorize sends.
+const availabilityRequestScopeVersion = 2
+
 // AvailabilityRequestScope describes only observed wire capabilities. It stores
 // no prompt, URL, credential or arbitrary request option. Unknown capabilities
 // are deliberately not inferred from a successful text probe.
@@ -98,6 +102,31 @@ func availabilitySingleAuthorization(request *http.Request) (string, bool) {
 		return "", false
 	}
 	return values[0], true
+}
+
+// Upstream identity is compared only during this request. Values never enter a
+// scope or its persisted option digest; missing credentials remain distinct
+// from empty or ambiguous headers, including differently cased duplicates.
+func availabilityRequestIdentity(request *http.Request) ([7]string, bool) {
+	var identity [7]string
+	if request == nil {
+		return identity, false
+	}
+	for index, name := range []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Chatgpt-Account-Id", "X-Openai-Account-Id", "OpenAI-Organization", "OpenAI-Project"} {
+		var values []string
+		for key, value := range request.Header {
+			if strings.EqualFold(key, name) {
+				values = append(values, value...)
+			}
+		}
+		if len(values) > 1 || len(values) == 1 && values[0] == "" {
+			return [7]string{}, false
+		}
+		if len(values) == 1 {
+			identity[index] = values[0]
+		}
+	}
+	return identity, true
 }
 
 type availabilityBPSSourceKey struct{}
@@ -269,6 +298,9 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 	if request == nil || request.URL == nil || request.URL.Fragment != "" || request.Header.Get("Content-Encoding") != "" || !gjson.ValidBytes(payload) {
 		return nil
 	}
+	if _, valid := availabilityRequestIdentity(request); !valid {
+		return nil
+	}
 	if strings.HasSuffix(request.URL.Path, ":generateContent") || strings.HasSuffix(request.URL.Path, ":streamGenerateContent") {
 		return availabilityGeminiScope(request, payload)
 	}
@@ -297,7 +329,7 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 			return nil
 		}
 	}
-	scope := &AvailabilityRequestScope{Version: 1, Model: model, Capability: "text", Stream: websocket}
+	scope := &AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Model: model, Capability: "text", Stream: websocket}
 	if stream := fields["stream"]; stream.Exists() {
 		if stream.Type != gjson.True && stream.Type != gjson.False {
 			return nil
@@ -479,7 +511,11 @@ func bindAvailabilityWS(account *Account, target string, headers http.Header) *a
 	if scope == nil {
 		return nil
 	}
-	return &availabilityWSBinding{target: request.URL, connectionScope: scope.ConnectionScope, requestHash: availabilityWSRequestHash(request)}
+	requestHash := availabilityWSRequestHash(request)
+	if requestHash == ([32]byte{}) {
+		return nil
+	}
+	return &availabilityWSBinding{target: request.URL, connectionScope: scope.ConnectionScope, requestHash: requestHash}
 }
 
 // coder/websocket uses HTTP(S) on the handshake response. Canonicalize only the
@@ -498,15 +534,15 @@ func availabilityWSRequestHash(request *http.Request) [32]byte {
 	default:
 		return [32]byte{}
 	}
-	authorization, valid := availabilitySingleAuthorization(request)
-	if !valid {
+	identity, valid := availabilityRequestIdentity(request)
+	if !valid || identity[0] == "" {
 		return [32]byte{}
 	}
 	host := request.Host
 	if host == "" {
 		host = address.Host
 	}
-	return sha256.Sum256([]byte(address.String() + "\x00" + host + "\x00" + authorization))
+	return sha256.Sum256([]byte(address.String() + "\x00" + host + "\x00" + strings.Join(identity[:], "\x00")))
 }
 
 func (b *availabilityWSBinding) scope(account *Account, payload any) *AvailabilityRequestScope {
@@ -577,16 +613,14 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		return func(*http.Response) {}
 	}
 	observation.scope, observation.scopeAttempt, observation.semanticStatus = nil, trace.Number(), 0
+	identity, valid := availabilityRequestIdentity(request)
+	if !valid {
+		return func(*http.Response) {}
+	}
 	payload, confirmed := availabilityRequestPayload(request)
 	scope := availabilityScopeForAccount(availabilityScopeForRequest(request, payload), request, account)
 	if !confirmed || scope == nil {
 		return func(*http.Response) {}
-	}
-	authorization, _ := availabilitySingleAuthorization(request)
-	google := strings.HasPrefix(scope.Protocol, "gemini_")
-	var googleAuth [2]string
-	if google {
-		googleAuth, _ = availabilityGeminiAuthentication(request)
 	}
 	method, host, address := request.Method, request.Host, request.URL.String()
 	return func(response *http.Response) {
@@ -599,11 +633,9 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		if actual.URL == nil || actual.URL.String() != address || actual.Host != host || actual.Method != method || actual.Response != nil || actual.GetBody == nil {
 			return
 		}
-		if google {
-			actualAuth, valid := availabilityGeminiAuthentication(actual)
-			if !valid || actualAuth != googleAuth {
-				return
-			}
+		actualIdentity, valid := availabilityRequestIdentity(actual)
+		if !valid || actualIdentity != identity {
+			return
 		}
 		body, err := actual.GetBody()
 		if err != nil || body == nil {
@@ -616,10 +648,6 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		closeErr := body.Close()
 		actualScope := availabilityScopeForRequest(actual, sent)
 		if scope.ConnectionScope != "" {
-			actualAuthorization, valid := availabilitySingleAuthorization(actual)
-			if !valid || actualAuthorization != authorization {
-				return
-			}
 			if actualScope != nil {
 				actualScope.ConnectionScope = scope.ConnectionScope
 			}

@@ -43,7 +43,7 @@ func availabilityAdmissionPass(accountID int64, model string) *AvailabilityRepor
 	return &AvailabilityReport{AccountID: accountID, Configured: true, Enabled: true, EvaluatedAt: now,
 		Models: []AvailabilityModelState{{ModelID: model, Status: "pass", AvailabilityState: AvailabilityState{
 			Decision: &AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: finished.Add(-time.Second), FinishedAt: finished,
-				Scope: &AvailabilityRequestScope{Version: 1, Protocol: "responses_http", Model: model, ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}, ValidUntil: &until,
+				Scope: &AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: model, ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}, ValidUntil: &until,
 		}}}}
 }
 
@@ -172,6 +172,7 @@ func TestAvailabilityAdmissionFinalHTTP(t *testing.T) {
 				payload := `{"model":"gpt-6-astra","input":"fixture","stream":true}`
 				request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/responses", strings.NewReader(payload))
 				require.NoError(t, err)
+				request.Header.Set("Authorization", "Bearer "+account.GetCredential("access_token"))
 				response, err := svc.doOpenAIUpstream(request, "", account)
 				if allowed {
 					require.NoError(t, err)

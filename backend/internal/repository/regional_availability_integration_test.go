@@ -23,7 +23,7 @@ import (
 func TestRegionalAvailabilitySQLSnapshotFaultAndRecovery(t *testing.T) {
 	for _, platform := range []string{service.PlatformOpenAI, service.PlatformAnthropic} {
 		t.Run(platform, func(t *testing.T) {
-			scope := service.AvailabilityRequestScope{Version: 1, Protocol: "responses_http", Model: "target", Capability: "text", ServiceTier: "unspecified", ReasoningEffort: "unspecified"}
+			scope := service.AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "target", Capability: "text", ServiceTier: "unspecified", ReasoningEffort: "unspecified"}
 			if platform == service.PlatformAnthropic {
 				scope.Protocol, scope.ThinkingMode, scope.ThinkingBudget = "messages_http", "enabled", 2048
 				scope.ProtocolOptions = strings.Repeat("a", 64)

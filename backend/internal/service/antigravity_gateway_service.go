@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
@@ -418,13 +419,14 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 		action:         "streamGenerateContent",
 		body:           requestBody,
 		c:              nil, // 无 gin.Context → 跳过 ops 追踪
-		httpUpstream:   timedAccountTestUpstream(s.httpUpstream, account),
+		httpUpstream:   s.httpUpstream,
 		settingService: s.settingService,
 		accountRepo:    s.accountRepo,
 		requestedModel: modelID,
 		handleError:    testConnectionHandleError,
 	}
 
+	requesttiming.Mode(ctx, "stream")
 	result, err := s.antigravityRetryLoop(p)
 	if err != nil {
 		// AccountSwitchError → 测试时不切换账号，返回友好提示

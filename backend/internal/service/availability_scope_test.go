@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -122,7 +124,7 @@ func TestAvailabilityBPSProbeScopeAndAdmission(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(probeBody)).WithContext(probeCtx)
 	_, err = svc.Forward(probeCtx, c, account, probeBody)
 	require.NoError(t, err)
-	require.Equal(t, &AvailabilityRequestScope{Version: 1, Protocol: "bps_responses", Stream: true, Model: "gpt-5.6-sol", ServiceTier: "unspecified", ReasoningEffort: "medium", Capability: "text"}, observation.scope)
+	require.Equal(t, &AvailabilityRequestScope{Version: 2, Protocol: "bps_responses", Stream: true, Model: "gpt-5.6-sol", ServiceTier: "unspecified", ReasoningEffort: "medium", Capability: "text"}, observation.scope)
 	require.Equal(t, 1, observation.scopeAttempt)
 	report := availabilityAdmissionPass(account.ID, "gpt-5.6-sol")
 	report.Models[0].Decision.Scope = observation.scope
@@ -172,6 +174,22 @@ func TestAvailabilityBPSProbeScopeAndAdmission(t *testing.T) {
 		report.Models[0].Status = "pass"
 		require.NoError(t, send())
 		require.Equal(t, before+1, calls)
+	})
+	t.Run("legacy authentication evidence", func(t *testing.T) {
+		current := report.Models[0].Decision.Scope
+		legacy := *current
+		legacy.Version = 1
+		report.Models[0].Decision.Scope = &legacy
+		t.Cleanup(func() { report.Models[0].Decision.Scope = current })
+		before := calls
+		body := []byte(`{"model":"gpt-5.6-sol","stream":true,"reasoning":{"effort":"medium"},"input":"hi"}`)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		_, err := svc.Forward(t.Context(), c, account, body)
+		require.Error(t, err)
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		require.Equal(t, before, calls, "legacy scope must be reprobed before a BPS send")
 	})
 	t.Run("inherited tools", func(t *testing.T) {
 		send := func(body []byte) error {
@@ -272,7 +290,7 @@ func TestAvailabilityBPSAdmissionPreservesUnsentRetryEvidence(t *testing.T) {
 	require.NoError(t, err)
 	ctx := withAvailabilityBPSSource(t.Context(), body, bridge)
 	report := availabilityAdmissionPass(account.ID, "gpt-5.6-sol")
-	report.Models[0].Decision.Scope = &AvailabilityRequestScope{Version: 1, Protocol: "bps_responses", Stream: true, Model: "gpt-5.6-sol", ServiceTier: "unspecified", ReasoningEffort: "medium", Capability: "text"}
+	report.Models[0].Decision.Scope = &AvailabilityRequestScope{Version: 2, Protocol: "bps_responses", Stream: true, Model: "gpt-5.6-sol", ServiceTier: "unspecified", ReasoningEffort: "medium", Capability: "text"}
 	calls, acquired := 0, 0
 	leases := []*bpsTestLease{{}, {}}
 	svc := &OpenAIGatewayService{availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}, httpUpstream: &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
@@ -368,9 +386,167 @@ func TestAvailabilityProbeScopeRequiresActualRequestAssociation(t *testing.T) {
 			if redirect {
 				require.Nil(t, observation.scope, "a redirect must not attest to the original wire scope")
 			} else {
-				require.Equal(t, &AvailabilityRequestScope{Version: 1, Protocol: "responses_http", Stream: true, Model: "target", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}, observation.scope)
+				require.Equal(t, &AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Stream: true, Model: "target", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}, observation.scope)
 				require.Equal(t, 1, observation.scopeAttempt)
 			}
+		})
+	}
+}
+
+type availabilityAuthenticationProtocolCase struct {
+	name, path, payload, header string
+}
+
+func availabilityAuthenticationProtocolCases() []availabilityAuthenticationProtocolCase {
+	return []availabilityAuthenticationProtocolCase{
+		{"responses", "/v1/responses", `{"model":"target","input":"hi","stream":true}`, "Authorization"},
+		{"responses_account", "/v1/responses", `{"model":"target","input":"hi","stream":true}`, "Chatgpt-Account-Id"},
+		{"responses_account_alias", "/v1/responses", `{"model":"target","input":"hi","stream":true}`, "X-Openai-Account-Id"},
+		{"responses_organization", "/v1/responses", `{"model":"target","input":"hi","stream":true}`, "OpenAI-Organization"},
+		{"responses_project", "/v1/responses", `{"model":"target","input":"hi","stream":true}`, "OpenAI-Project"},
+		{"chat", "/v1/chat/completions", `{"model":"target","messages":[{"role":"user","content":"hi"}],"stream":true}`, "Authorization"},
+		{"messages_key", "/v1/messages", `{"model":"target","messages":[{"role":"user","content":"hi"}],"stream":true}`, "X-Api-Key"},
+		{"messages_bearer", "/v1/messages", `{"model":"target","messages":[{"role":"user","content":"hi"}],"stream":true}`, "Authorization"},
+		{"gemini_key", "/v1beta/models/target:streamGenerateContent?alt=sse", `{"contents":[{"parts":[{"text":"hi"}]}]}`, "X-Goog-Api-Key"},
+		{"gemini_bearer", "/v1internal:streamGenerateContent?alt=sse", `{"model":"target","project":"fixture-project","request":{"contents":[{"parts":[{"text":"hi"}]}]}}`, "Authorization"},
+	}
+}
+
+func TestAvailabilityHTTPProbeScopeRequiresUnchangedAuthentication(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_, _ = io.Copy(io.Discard, req.Body)
+		_, _ = io.WriteString(w, `{"fixture":"response"}`)
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	tlsServer := httptest.NewTLSServer(handler)
+	t.Cleanup(tlsServer.Close)
+	for _, protocol := range availabilityAuthenticationProtocolCases() {
+		t.Run(protocol.name, func(t *testing.T) {
+			for _, tls := range []bool{false, true} {
+				mode := "Do"
+				targetServer := server
+				if tls {
+					mode = "DoWithTLS"
+					targetServer = tlsServer
+				}
+				t.Run(mode, func(t *testing.T) {
+					for _, scenario := range []string{"same", "case_only", "unrelated", "no_auth", "rewrite", "rewrite_in_place", "remove", "empty", "duplicate", "case_duplicate", "add_alternative", "initial_duplicate", "initial_empty"} {
+						t.Run(scenario, func(t *testing.T) {
+							collector := requesttiming.New(time.Now(), 0)
+							observation := &availabilityProbeObservation{}
+							ctx := context.WithValue(requesttiming.With(t.Context(), collector), availabilityProbeSnapshotKey{}, observation)
+							request, err := http.NewRequestWithContext(ctx, http.MethodPost, targetServer.URL+protocol.path, strings.NewReader(protocol.payload))
+							require.NoError(t, err)
+							if scenario != "no_auth" {
+								request.Header.Set(protocol.header, "fixture-credential")
+							}
+							switch scenario {
+							case "initial_duplicate":
+								request.Header.Add(protocol.header, "fixture-credential")
+							case "initial_empty":
+								request.Header.Set(protocol.header, "")
+							}
+							upstream := timedAccountTestUpstream(&codexModelsHTTPUpstreamStub{do: func(sent *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+								actual := sent.Clone(sent.Context())
+								if scenario == "rewrite_in_place" {
+									actual = sent
+								}
+								switch scenario {
+								case "rewrite", "rewrite_in_place":
+									actual.Header.Set(protocol.header, "different-fixture-credential")
+								case "remove":
+									actual.Header.Del(protocol.header)
+								case "empty":
+									actual.Header.Set(protocol.header, "")
+								case "duplicate":
+									actual.Header.Add(protocol.header, "fixture-credential")
+								case "case_duplicate":
+									actual.Header[strings.ToLower(protocol.header)] = []string{"fixture-credential"}
+								case "case_only":
+									actual.Header.Del(protocol.header)
+									actual.Header[strings.ToLower(protocol.header)] = []string{"fixture-credential"}
+								case "unrelated":
+									actual.Header.Set("X-Request-Id", "fixture-request")
+								case "add_alternative":
+									other := "Authorization"
+									if protocol.header == other {
+										other = "X-Api-Key"
+									}
+									actual.Header.Set(other, "alternative-fixture-credential")
+								}
+								return targetServer.Client().Do(actual)
+							}}, &Account{ID: 901, Type: AccountTypeAPIKey})
+							var response *http.Response
+							if tls {
+								response, err = upstream.DoWithTLS(request, "", 901, 1, nil)
+							} else {
+								response, err = upstream.Do(request, "", 901, 1)
+							}
+							require.NoError(t, err)
+							require.NoError(t, response.Body.Close())
+							switch scenario {
+							case "same", "case_only", "unrelated", "no_auth":
+								require.NotNil(t, observation.scope)
+								encoded, err := json.Marshal(observation.scope)
+								require.NoError(t, err)
+								require.NotContains(t, string(encoded), "fixture-credential")
+							default:
+								require.Nil(t, observation.scope, "a different or ambiguous physical credential must not authorize the original route")
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAvailabilityAuthenticationScopeUpgradeAndRegionalRecovery(t *testing.T) {
+	protocols := append(availabilityAuthenticationProtocolCases(), availabilityAuthenticationProtocolCase{
+		name: "websocket", path: "/v1/responses", payload: `{"type":"response.create","model":"target","input":"hi"}`, header: "Authorization",
+	})
+	for _, protocol := range protocols {
+		t.Run(protocol.name, func(t *testing.T) {
+			makeRequest := func() *http.Request {
+				method, scheme := http.MethodPost, "https"
+				if protocol.name == "websocket" {
+					method, scheme = http.MethodGet, "wss"
+				}
+				request, err := http.NewRequestWithContext(t.Context(), method, scheme+"://fixture.invalid"+protocol.path, strings.NewReader(protocol.payload))
+				require.NoError(t, err)
+				request.Header.Set(protocol.header, "fixture-credential")
+				return request
+			}
+			scope := availabilityScopeForRequest(makeRequest(), []byte(protocol.payload))
+			require.NotNil(t, scope)
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+			report := availabilityAdmissionPass(account.ID, "target")
+			report.PlanID, report.Models[0].Decision.Scope = 1, scope
+			primary := &OpenAIGatewayService{availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}}
+			replica := regionalTestReplica(t, filepath.Join(t.TempDir(), "state"), true)
+			reader, err := NewRegionalSchedulerReader(replica)
+			require.NoError(t, err)
+			scheduler := NewSchedulerSnapshotService(nil, nil, nil, nil, nil)
+			scheduler.SetLocalSnapshotReader(reader)
+			unavailable := &availabilityAdmissionRepo{readErr: errors.New("primary must remain offline")}
+			regional := &OpenAIGatewayService{schedulerSnapshot: scheduler, availabilityReader: unavailable}
+			for _, version := range []int{1, 2, 3} {
+				scope.Version = version
+				require.NoError(t, replica.PublishNext(t.Context(), "test", time.Minute, regionalAvailabilityDoc(t, account, []*AvailabilityReport{report})))
+				for _, gateway := range []*OpenAIGatewayService{primary, regional} {
+					request := makeRequest()
+					err := gateway.admitAvailabilityRequest(request.Context(), request, account)
+					if version == 2 {
+						require.NoError(t, err, "a newly verified scope must restore admission")
+					} else {
+						var denied *OpenAITurnAdmissionError
+						require.ErrorAs(t, err, &denied, "old or unknown evidence must not authorize sends: version %d", version)
+						require.Equal(t, "availability_scope_unconfirmed", denied.Reason)
+					}
+				}
+			}
+			require.Zero(t, unavailable.reads, "regional admission must not fall back to primary evidence")
 		})
 	}
 }

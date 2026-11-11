@@ -274,8 +274,11 @@ func TestGrokImportProbeFailureLogDoesNotIncludeErrorMessage(t *testing.T) {
 	awaitGrokProbeSignal(t, prober.done)
 
 	require.Eventually(t, func() bool {
-		return bytes.Contains(logs.Bytes(), []byte("grok_import_active_probe_failed"))
+		state := snapshotGrokImportProbeScheduler(scheduler)
+		return state.workers == 0 && state.queued == 0
 	}, time.Second, 10*time.Millisecond)
-	require.Contains(t, logs.String(), "GROK_TEST_PROBE_FAILED")
-	require.NotContains(t, logs.String(), "refresh-token-secret")
+	captured := logs.String()
+	require.Contains(t, captured, "grok_import_active_probe_failed")
+	require.Contains(t, captured, "GROK_TEST_PROBE_FAILED")
+	require.NotContains(t, captured, "refresh-token-secret")
 }

@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5 HTTP/插件准备后首次发送终检本地已验；清理待拥有者。
+任务：D3认证归属v2/计时去重及D8日志竞态修复，本地已验。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线58dab30；Go输入47111a184104ba04；原HTTP/插件传输，不新增调度器。
-验证命令：四包扩展race、原unit/integration规则lint/vet及Linux构建。
-验证结果：349顶层/842含子例PASS、0失败/跳过；lint0/vet0/Linux0。
-验证来源：backend/tmp/protocol-cache/scheduling-http-admission-*。
-下一动作：供应商/接入方补D2关联契约、D4模型/fast及D5前缀/缓存域证据。
-尝试：23
+源码：基线249f933；10项Go输入3b7b5b1ec21e9ff2。
+验证命令：四包race、原规则lint/vet及Linux构建。
+验证结果：642顶层/3203含子例PASS；日志race20次、lint/vet/Linux均0。
+验证来源：backend/tmp/protocol-cache/scheduling-auth-binding-*。
+下一动作：补D2关联契约、D4模型/fast及D5前缀/缓存域；D3其余能力待验。
+尝试：24
 阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -32,7 +32,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新状态/托管轮转、区域v2、HTTP/WS、Messages及Gemini/Antigravity完整回答/作用域已验，race/PG14、lint/vet/build通过；其他能力待验 |
+| D3 | in_progress | 最新状态/托管轮转、区域v2、HTTP/WS/Messages/Gemini/Antigravity文本已验；认证作用域v2、计时去重及642/3203回归、lint/vet/Linux通过；其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
@@ -52,7 +52,7 @@
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；HTTP/TLS/区域/Astra及插件终检race349/842、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
-| D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
+| D8 | pending | admin/跨层SQL、WS绑定、重试截止及资金/竞争/回滚16项夹具、日志race20次通过；其余集成/升级/全局CLI待验收，不运行CI |
 | D9 | pending | 依赖前述验收及生产执行授权 |
 
 ## 工作区与验证约定
@@ -66,7 +66,7 @@
 
 ## 下一项工作
 
-D5跨请求估计/跨协议比较待验，须有可复用前缀、实际模型/fast及候选缓存域证据。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验。
+D2关联契约、D4模型/fast、D5前缀/缓存域待证据；D3其余能力待验。原28项20 done，D2–D5进行中，D6–D9待验。
 
 ## 外部等待与清理
 
@@ -77,3 +77,4 @@ D5跨请求估计/跨协议比较待验，须有可复用前缀、实际模型/f
 - 历史TEMP的sub2api-chat-wire系列约69MiB、sub2api-protocol-rate的18文件/700.05MiB及runtime-ttft空目录拒删保留，精确路径见DECISIONS，拥有者手动处理，不重试。
 - 历史TEMP/sub2api-priority-route：原核查为空、0文件/0引用；删除被策略拦截，拥有者手动处理，未计释放。
 - 本轮拒删：`TEMP/sub2api-http-admission`（空目录、0文件/0引用）及`backend/tmp/protocol-cache/scheduling-http-admission-service-focused.jsonl`（4504bytes）；CreateProcess前被策略拦截，WhatIf/删除均未执行，拥有者手动处理，不重试、不计释放。
+- 本轮：`TEMP/sub2api-auth-binding`2文件/22668bytes、0引用；删除启动前被审查拦截，拥有者手动处理，不重试、不计释放。

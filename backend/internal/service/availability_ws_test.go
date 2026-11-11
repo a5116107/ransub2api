@@ -123,7 +123,7 @@ func TestAvailabilityWSAdmissionScopeAndGrantRevision(t *testing.T) {
 	report.Models[0].Decision.Scope = scope
 	repo := &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}
 	svc.availabilityReader = repo
-	for _, name := range []string{"same", "other_grant", "new_revision", "missing_revision", "managed_parent", "wrong_token", "duplicate_auth", "no_binding", "http_evidence", "paused", "stale", "read_error", "probe", "removed"} {
+	for _, name := range []string{"same", "legacy_scope", "other_grant", "new_revision", "missing_revision", "managed_parent", "wrong_token", "duplicate_auth", "no_binding", "http_evidence", "paused", "stale", "read_error", "probe", "removed"} {
 		t.Run(name, func(t *testing.T) {
 			candidate, bound := *account, binding
 			candidateReport := *report
@@ -134,6 +134,12 @@ func TestAvailabilityWSAdmissionScopeAndGrantRevision(t *testing.T) {
 			switch name {
 			case "same":
 				allowed = true
+			case "legacy_scope":
+				decision := *report.Models[0].Decision
+				legacy := *scope
+				legacy.Version = 1
+				decision.Scope = &legacy
+				candidateReport.Models[0].Decision = &decision
 			case "other_grant":
 				candidate.AuthConnectionID = "connection-b"
 			case "new_revision":
@@ -205,7 +211,7 @@ func TestAvailabilityWSAdmissionScopeAndGrantRevision(t *testing.T) {
 }
 
 func TestAvailabilityWSProbeRequiresBoundPhysicalHandshake(t *testing.T) {
-	for _, name := range []string{"same", "redirect", "credential_rewrite", "host_rewrite", "missing_auth", "opaque_transport", "custom_dialer"} {
+	for _, name := range []string{"same", "same_api_key", "added_api_key", "changed_api_key", "missing_api_key", "duplicate_api_key", "empty_api_key", "initial_duplicate_api_key", "same_account", "added_account", "changed_account", "missing_account", "duplicate_account", "empty_account", "initial_duplicate_account", "redirect", "credential_rewrite", "host_rewrite", "missing_auth", "opaque_transport", "custom_dialer"} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if name == "redirect" && r.URL.Path == "/v1/responses" {
@@ -226,6 +232,18 @@ func TestAvailabilityWSProbeRequiresBoundPhysicalHandshake(t *testing.T) {
 				AuthConnectionID: "connection-a", AuthConnectionRevision: 7, Credentials: map[string]any{"api_key": "fixture"}}
 			target := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
 			headers := http.Header{"Authorization": {"Bearer fixture"}}
+			if name == "same_api_key" || name == "changed_api_key" || name == "missing_api_key" || name == "initial_duplicate_api_key" {
+				headers.Set("X-Api-Key", "fixture-key")
+			}
+			if name == "initial_duplicate_api_key" {
+				headers.Add("X-Api-Key", "fixture-key")
+			}
+			if name == "same_account" || name == "changed_account" || name == "missing_account" || name == "initial_duplicate_account" {
+				headers.Set("Chatgpt-Account-Id", "fixture-account")
+			}
+			if name == "initial_duplicate_account" {
+				headers.Add("Chatgpt-Account-Id", "fixture-account")
+			}
 			svc := &OpenAIGatewayService{}
 			binding := svc.bindOpenAIWSHandshake(account, "target", headers, target)
 			wireHeaders := headers.Clone()
@@ -234,6 +252,24 @@ func TestAvailabilityWSProbeRequiresBoundPhysicalHandshake(t *testing.T) {
 			}
 			if name == "missing_auth" {
 				wireHeaders.Del("Authorization")
+			}
+			switch name {
+			case "added_api_key", "changed_api_key":
+				wireHeaders.Set("X-Api-Key", "other-fixture-key")
+			case "missing_api_key":
+				wireHeaders.Del("X-Api-Key")
+			case "duplicate_api_key":
+				wireHeaders["X-Api-Key"] = []string{"fixture-key", "fixture-key"}
+			case "empty_api_key":
+				wireHeaders.Set("X-Api-Key", "")
+			case "added_account", "changed_account":
+				wireHeaders.Set("Chatgpt-Account-Id", "other-fixture-account")
+			case "missing_account":
+				wireHeaders.Del("Chatgpt-Account-Id")
+			case "duplicate_account":
+				wireHeaders["Chatgpt-Account-Id"] = []string{"fixture-account", "fixture-account"}
+			case "empty_account":
+				wireHeaders.Set("Chatgpt-Account-Id", "")
 			}
 			dialer := newDefaultOpenAIWSClientDialer()
 			if name == "opaque_transport" || name == "host_rewrite" {
@@ -280,7 +316,7 @@ func TestAvailabilityWSProbeRequiresBoundPhysicalHandshake(t *testing.T) {
 			collector.WhenFinished(func(s requesttiming.Snapshot) { observation.snapshot = &s })
 			collector.Finish(http.StatusOK, false)
 			result := availabilityProbeResult(started, time.Now(), observation, true, false, nil)
-			if name == "same" {
+			if name == "same" || name == "same_api_key" || name == "same_account" {
 				require.Equal(t, "pass", result.Status)
 				require.NotEmpty(t, result.Scope.ConnectionScope)
 			} else {
