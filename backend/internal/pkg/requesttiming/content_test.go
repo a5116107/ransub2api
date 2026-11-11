@@ -187,6 +187,8 @@ func TestTextStreamProjectionBoundaries(t *testing.T) {
 		{"unobserved upstream status", func(s *Snapshot) { s.Attempts[0].Status = 0 }, "partial"},
 		{"request canceled", func(s *Snapshot) { s.Canceled = true }, "partial"},
 		{"client disconnected", func(s *Snapshot) { s.ClientDisconnect = true }, "partial"},
+		{"downstream write failure", func(s *Snapshot) { s.DownstreamError = true }, "partial"},
+		{"failed business outcome", func(s *Snapshot) { s.Outcome = "error" }, "partial"},
 		{"downstream failure", func(s *Snapshot) { s.Status = 502 }, "partial"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

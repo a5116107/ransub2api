@@ -35,6 +35,9 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 			Events:     map[string]float64{"first_byte": 10, "first_reasoning": float64(latency), "first_visible_text": float64(latency + 100)},
 			TextStream: &requesttiming.TextStreamTiming{Chunks: 2, FirstMS: float64(latency + 100), LastMS: float64(latency + 200), MaxGapMS: 100, Terminal: "completed", TerminalMS: float64(latency + 250)},
 		}}}
+		if i == 1 {
+			s.Attempts[0].TextStream.Protocol = "messages"
+		}
 		raw, err := json.Marshal(s)
 		require.NoError(t, err)
 		_, err = tx.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail)VALUES($1,$2,$3::jsonb)`, usage.ID, uuid.NewString(), string(raw))
@@ -55,6 +58,10 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 		require.Equal(t, 100.0, *stream.MaxGapMS)
 		require.Equal(t, 50.0, *stream.TailWaitMS)
 	}
+	require.Equal(t, "typed_responses_sse", items[ids[0]].TextStream.Source)
+	require.Equal(t, "typed_messages_sse", items[ids[1]].TextStream.Source)
+	require.Equal(t, "final_physical_http_messages_text_deltas_at_parser", items[ids[1]].TextStream.Scope)
+	require.Nil(t, items[ids[1]].OutputRate.TokensPerSecond)
 	groups, err := repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID})
 	require.NoError(t, err)
 	require.Len(t, groups, 2)

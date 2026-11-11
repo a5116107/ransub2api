@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
 
@@ -137,6 +138,15 @@ func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL strin
 	}
 	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, selected)
 	defer func() { observeTransport(response, err) }()
+	proxyID := int64(0)
+	if selected.ProxyID != nil {
+		proxyID = *selected.ProxyID
+	}
+	request, timingTrace := requesttiming.StartAttempt(request, selected.ID, proxyID)
+	if timingTrace != nil {
+		requesttiming.RecordAccountRoute(request.Context(), AccountRouteFingerprint(selected))
+	}
+	defer func() { timingTrace.Response(response, err) }()
 	if len(profiles) == 0 {
 		return s.httpUpstream.Do(request, proxyURL, selected.ID, selected.Concurrency)
 	}

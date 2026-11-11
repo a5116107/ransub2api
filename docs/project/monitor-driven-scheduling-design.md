@@ -635,7 +635,25 @@ D5 的 Responses 文本间隔子项沿既有 `requesttiming.Content`、物理 at
 此类有缺口的数据不能计算真实相邻间隔或确定首次内容，`text_stream`标incomplete_capture且数值为null；
 用量诊断和既有分层SQL同时排除该attempt的首推理/首文本样本，独立HTTP首字节证据仍可保留。
 用量只投影最终物理 attempt，重试和先前账号不借样本，已有首语义/首可见口径、计费及调度权重不变。
-文本间隔子项不覆盖原生WS、其他协议或分位数排序。Responses HTTP 的输出阶段估算见下文，其余协议仍待验收。
+Responses 文本间隔子项不覆盖原生WS或分位数排序。Messages HTTP 的接线与边界见下文，其余协议仍待验收。
+
+Messages HTTP 普通与 Anthropic API Key 透传复用同一物理 attempt 聚合：原计时中间件扩展到
+POST `/messages` 入口，最终发送边界记录账号、实际代理和不可变线路摘要，解析器从真实响应恢复物理 attempt。
+原 Responses scanner 的有界 SSE 诊断提取为唯一共享观察器，消费端观察原始上游行，业务转发、计费用量和原 `firstTokenMs` 不改写。
+Messages 的 `Forward` 入口记录最终成功、失败与客户端断连，透传继续收集上游用量时也保留真实下游结果，不能由上游终态冒充成功。
+非空 `text_delta` 计入文本分片，非空初始 text block 仅补首文本而不伪造 delta；thinking block/非空 thinking delta
+记录首个可观察推理事件。心跳、空文本、签名、工具参数和 message_start 元数据不冒充文本，推理与心跳不重置文本间隔。
+Messages 使用独立 `typed_messages_sse` 来源与 Messages parser 作用域，旧记录没有协议字段仍保持原 Responses 解释，
+混合协议的同一物理聚合标记无效；不因观察到一次推理就宣称该模型具备稳定推理流式能力。
+
+只有实际 `message_stop` 且整个请求成功、采集完整、下游无写错/断连时，文本间隔才可为 observed；
+`error`、缺终态、仅兼容 `[DONE]`、取消及业务失败保留 partial，单分片不伪造间隔，终态后事件不覆盖首次终态。
+未完成或超过16MiB的诊断事件使 typed 采集不完整，首推理、首文本与间隔数值保持未知，独立 HTTP 首字节仍可保留；
+首个有效事件前即发生采集缺口时，按最终物理 HTTP 的实际 Messages 端点保留来源标注，不冒用 Responses 来源或前次重试。
+不改变业务扫描上限或截断转发。无采集器的请求不计算额外线路摘要，父 attempt 不重复存储物理分片，重试不借前次数据。
+该路径仍沿原 request timing JSON、30天保留、异步队列及用量投影，不增加表或第二套计时器。
+Messages 的 output_tokens 未提供与 Responses 等价的推理扣除证据，因此输出阶段 TPS 与规范缓存比例继续未采集，
+不把原计费用量强行换算为同口径指标。此子项不关闭D5，原生WS、Gemini等协议、跨协议速度与会话冷输入风险仍待验收。
 
 D5 的 Responses HTTP 缓存分层沿相同终态采集点保存原始 `input_tokens` 与明确上报的
 `input_tokens_details.cached_tokens`，可选记录 `cache_write_tokens`；普通、passthrough 与工具转换路径共用原采集器。

@@ -3,17 +3,14 @@ package service
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"strings"
-
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 )
 
 const (
 	maxOpenAIConcatenatedJSONDocuments = 16
-	maxOpenAIConcatenatedJSONBytes     = 16 * 1024 * 1024
+	maxOpenAIConcatenatedJSONBytes     = maxSSETimingBytes
 )
 
 // splitOpenAIConcatenatedJSONDocuments recognizes the narrow corruption shape
@@ -55,19 +52,16 @@ func splitOpenAIConcatenatedJSONDocuments(payload []byte) ([][]byte, bool) {
 }
 
 type openAISSEJSONDocumentScanner struct {
-	ctx     context.Context
 	scanner *bufio.Scanner
 	pending []string
 	current string
 
 	// Diagnostic state only: emitted lines and the repair queue are unchanged.
-	timingEventType string
-	timingData      []byte
-	timingDiscard   bool
+	sseTimingObserver
 }
 
 func newOpenAISSEJSONDocumentScanner(scanner *bufio.Scanner) *openAISSEJSONDocumentScanner {
-	return &openAISSEJSONDocumentScanner{scanner: scanner}
+	return &openAISSEJSONDocumentScanner{scanner: scanner, sseTimingObserver: sseTimingObserver{protocol: "responses"}}
 }
 
 func (s *openAISSEJSONDocumentScanner) Scan() (ok bool) {
@@ -121,56 +115,6 @@ func (s *openAISSEJSONDocumentScanner) Scan() (ok bool) {
 	s.current = expanded[0]
 	s.pending = expanded[1:]
 	return true
-}
-
-func (s *openAISSEJSONDocumentScanner) resetTimingEvent() {
-	s.timingEventType = ""
-	s.timingData = nil
-	s.timingDiscard = false
-}
-
-func (s *openAISSEJSONDocumentScanner) observeTimingLine(line string) {
-	if line == "" || line == "event" {
-		s.resetTimingEvent()
-		return
-	}
-	if eventType, ok := extractOpenAISSEEventLine(line); ok {
-		// Some upstreams omit the blank separator before a new event. Never
-		// combine an unfinished payload or a previous type with that event.
-		s.resetTimingEvent()
-		s.timingEventType = eventType
-		return
-	}
-	data, ok := extractOpenAISSEDataLine(line)
-	if !ok || s.timingDiscard {
-		return
-	}
-	if len(s.timingData) > 0 {
-		if len(data) >= maxOpenAIConcatenatedJSONBytes-len(s.timingData) {
-			s.timingData = nil
-			s.timingDiscard = true
-			requesttiming.Stage(s.ctx, "typed_content_truncated")
-			return
-		}
-		s.timingData = append(s.timingData, '\n')
-	} else if len(data) > maxOpenAIConcatenatedJSONBytes {
-		s.timingDiscard = true
-		requesttiming.Stage(s.ctx, "typed_content_truncated")
-		return
-	}
-	s.timingData = append(s.timingData, data...)
-	if !json.Valid(s.timingData) {
-		return
-	}
-	// Observe complete data immediately, as before, rather than waiting for a
-	// separator/EOF. Incomplete multiline JSON is joined only for diagnostics.
-	requesttiming.Stage(s.ctx, "sse_parsed_first")
-	eventType := effectiveOpenAISSEEventType(s.timingData, s.timingEventType)
-	requesttiming.Content(s.ctx, s.timingData, eventType)
-	if openAIStreamDataStartsVisibleOutput(string(s.timingData), eventType) {
-		requesttiming.Stage(s.ctx, "sse_visible_first")
-	}
-	s.timingData = nil
 }
 
 func (s *openAISSEJSONDocumentScanner) Text() string {

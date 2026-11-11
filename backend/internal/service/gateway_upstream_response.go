@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -725,6 +726,8 @@ func FlushGatewayResponse(w gin.ResponseWriter) error {
 }
 
 func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool) (*streamingResult, error) {
+	timing := sseTimingObserver{ctx: requesttiming.ResponseContext(ctx, resp), protocol: "messages"}
+	defer timing.resetTimingEvent()
 	// Stop the upstream read as soon as forwarding ends, including silent upstreams.
 	defer func() { _ = resp.Body.Close() }()
 	observer := upstreamResponseModelObserverFromContext(c)
@@ -1115,6 +1118,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 			line := ev.line
+			timing.observeTimingLine(line)
 			trimmed := strings.TrimSpace(line)
 
 			if trimmed == "" {

@@ -11,7 +11,49 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
+
+func TestRequestTimingMessagesScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		method, path string
+		collected    bool
+	}{
+		{http.MethodPost, "/v1/messages", true},
+		{http.MethodPost, "/messages", true},
+		{http.MethodPost, "/api/v1/messages", true},
+		{http.MethodPost, "/v1/messages/count_tokens", false},
+		{http.MethodGet, "/v1/messages", false},
+		{http.MethodPost, "/v1/chat/completions", false},
+		{http.MethodPost, "/v1/responses", true},
+		{http.MethodPost, "/v1/responses/compact", true},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			recorder := &connectionRecorderTest{}
+			r := gin.New()
+			r.Use(RequestTiming(recorder))
+			r.Handle(tc.method, tc.path, func(c *gin.Context) {
+				collector := requesttiming.From(c.Request.Context())
+				require.Equal(t, tc.collected, collector != nil)
+				_, err := io.Copy(io.Discard, c.Request.Body)
+				require.NoError(t, err)
+				c.String(http.StatusOK, "ok")
+			})
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("private body"))
+			r.ServeHTTP(httptest.NewRecorder(), req)
+			if tc.collected {
+				require.Len(t, recorder.records, 1)
+				s := recorder.records[0].Detail
+				require.True(t, s.BodyComplete)
+				require.EqualValues(t, len("private body"), s.BodyBytes)
+				require.EqualValues(t, 2, s.DownstreamBytes)
+			} else {
+				require.Empty(t, recorder.records)
+			}
+		})
+	}
+}
 
 func TestRequestTimingPreReadAndHandlerRead(t *testing.T) {
 	gin.SetMode(gin.TestMode)

@@ -9,9 +9,10 @@ import (
 
 const maxTextStreamChunks = 1_000_000
 
-// TextStreamTiming is a constant-size aggregate of parsed Responses text
+// TextStreamTiming is a constant-size aggregate of parsed protocol text
 // deltas, not tokens or network packets. No generated content is retained.
 type TextStreamTiming struct {
+	Protocol      string  `json:"protocol,omitempty"`
 	Chunks        int     `json:"chunks"`
 	FirstMS       float64 `json:"first_ms"`
 	LastMS        float64 `json:"last_ms"`
@@ -50,10 +51,14 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		return
 	}
 	var event struct {
-		Type     string              `json:"type"`
-		Delta    string              `json:"delta"`
-		Text     string              `json:"text"`
-		Item     responseContentItem `json:"item"`
+		Type         string              `json:"type"`
+		Delta        json.RawMessage     `json:"delta"`
+		Text         string              `json:"text"`
+		Item         responseContentItem `json:"item"`
+		ContentBlock struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content_block"`
 		Response struct {
 			Output []responseContentItem `json:"output"`
 		} `json:"response"`
@@ -64,18 +69,52 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 	if event.Type == "" && len(eventTypes) > 0 {
 		event.Type = strings.TrimSpace(eventTypes[0])
 	}
+	if strings.HasPrefix(event.Type, "content_block_") || event.Type == "message_stop" || event.Type == "error" {
+		var delta struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		}
+		if len(event.Delta) > 0 && json.Unmarshal(event.Delta, &delta) != nil {
+			return
+		}
+		start, change := event.Type == "content_block_start", event.Type == "content_block_delta"
+		reasoning := (start && event.ContentBlock.Type == "thinking") ||
+			(change && delta.Type == "thinking_delta" && delta.Thinking != "")
+		textDelta := change && delta.Type == "text_delta" && delta.Text != ""
+		visible := textDelta || (start && event.ContentBlock.Type == "text" && event.ContentBlock.Text != "")
+		nonText := (start && event.ContentBlock.Type != "text" && event.ContentBlock.Type != "thinking" && event.ContentBlock.Type != "redacted_thinking") ||
+			(change && delta.Type != "text_delta" && delta.Type != "thinking_delta" && delta.Type != "signature_delta")
+		terminal := ""
+		switch event.Type {
+		case "message_stop":
+			terminal = "completed"
+		case "error":
+			terminal = "failed"
+		}
+		protocol := "messages"
+		if event.Type == "error" {
+			protocol = ""
+		}
+		recordContent(ctx, protocol, reasoning, visible, textDelta, nonText, terminal, nil, nil)
+		return
+	}
+	var delta string
+	if len(event.Delta) > 0 && json.Unmarshal(event.Delta, &delta) != nil {
+		return
+	}
 	reasoning := false
 	switch event.Type {
 	case "response.output_item.added", "response.output_item.done":
 		reasoning = event.Item.Type == "reasoning"
 	case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
-		reasoning = event.Delta != ""
+		reasoning = delta != ""
 	case "response.reasoning_text.done", "response.reasoning_summary_text.done":
 		reasoning = event.Text != ""
 	case "response.reasoning_summary_part.added", "response.reasoning_summary_part.done":
 		reasoning = true
 	}
-	textDelta := event.Type == "response.output_text.delta" && event.Delta != ""
+	textDelta := event.Type == "response.output_text.delta" && delta != ""
 	nonTextOutput := ((event.Type == "response.output_item.added" || event.Type == "response.output_item.done") &&
 		event.Item.Type != "message" && event.Item.Type != "reasoning") ||
 		(strings.HasPrefix(event.Type, "response.") && strings.HasSuffix(event.Type, ".delta") &&
@@ -97,30 +136,53 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 	case "response.incomplete":
 		terminal = "incomplete"
 	}
-	tr, _ := ctx.Value(attemptKey{}).(*Trace)
-	if tr == nil || tr.c != c || (!reasoning && !visibleText && !nonTextOutput && terminal == "") {
-		return
-	}
 	var cache *CacheUsage
 	var output *OutputUsage
 	if terminal != "" {
 		cache, output = readTerminalUsage(data)
+	}
+	recordContent(ctx, "responses", reasoning, visibleText, textDelta, nonTextOutput, terminal, cache, output)
+}
+
+// Both protocols share the same bounded physical-attempt aggregate. Legacy
+// first_semantic/first_visible and billing usage remain with their consumers.
+func recordContent(ctx context.Context, protocol string, reasoning, visibleText, textDelta, nonTextOutput bool, terminal string, cache *CacheUsage, output *OutputUsage) {
+	c := From(ctx)
+	if c == nil {
+		return
+	}
+	tr, _ := ctx.Value(attemptKey{}).(*Trace)
+	if tr == nil || tr.c != c || (!reasoning && !visibleText && !nonTextOutput && terminal == "") {
+		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.finished {
 		return
 	}
+	if protocol == "" {
+		stream := c.data.Attempts[tr.index].TextStream
+		if stream != nil {
+			protocol = stream.Protocol
+			if protocol == "" {
+				protocol = "responses"
+			}
+		}
+	}
 	if stream := c.data.Attempts[tr.index].TextStream; stream != nil && stream.Terminal != "" {
 		return
 	}
 	now := c.offset(c.now())
-	if a := &c.data.Attempts[tr.index]; a.Kind == "http" && terminal != "" {
+	if a := &c.data.Attempts[tr.index]; a.Kind == "http" && terminal != "" && protocol == "responses" {
 		a.CacheUsage = cache
 		a.OutputUsage = output
 	}
 	for index := tr.index; index >= 0; {
 		a := &c.data.Attempts[index]
+		if (protocol == "messages" || protocol == "") && terminal != "" {
+			a.Terminal = terminal
+			a.Events["terminal"] = now
+		}
 		if reasoning {
 			if _, exists := a.Events["first_reasoning"]; !exists {
 				a.Events["first_reasoning"] = now
@@ -133,11 +195,14 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		}
 		// Parents retain first-event diagnostics, but never a second copy of
 		// physical content counts. Each parser invokes Content once per event.
-		if a.Kind == "http" && (textDelta || nonTextOutput || terminal != "") {
+		if a.Kind == "http" && (textDelta || nonTextOutput || terminal != "" || protocol == "messages") {
 			if a.TextStream == nil {
-				a.TextStream = &TextStreamTiming{}
+				a.TextStream = &TextStreamTiming{Protocol: protocol}
 			}
 			stream := a.TextStream
+			if stream.Protocol != "" && stream.Protocol != protocol {
+				stream.Invalid = true
+			}
 			if stream.Terminal == "" {
 				stream.NonTextOutput = stream.NonTextOutput || nonTextOutput
 				if textDelta && !stream.Invalid {
@@ -163,6 +228,10 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 			}
 		}
 		index = a.Parent - 1
+	}
+	if (protocol == "messages" || protocol == "") && terminal != "" {
+		c.data.Terminal = terminal
+		c.event("terminal", c.now())
 	}
 }
 
@@ -227,9 +296,18 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 		out.UpstreamSocket.Scope = "server_to_configured_proxy; upstream_origin_socket_not_observed"
 	}
 	_, incompleteCapture := a.Events["typed_content_truncated"]
+	// A failed capture can precede the first typed event. In that case the
+	// actual HTTP endpoint identifies Messages without borrowing other attempts.
+	if (a.TextStream != nil && a.TextStream.Protocol == "messages") ||
+		(incompleteCapture && a.Route.Endpoint == "messages") {
+		out.TextStream.Source = "typed_messages_sse"
+		out.TextStream.Scope = "final_physical_http_messages_text_deltas_at_parser"
+	}
 	if incompleteCapture {
 		out.TextStream.Status = "incomplete_capture"
-		out.TextStream.Source = "typed_responses_sse"
+		if out.TextStream.Source == "none" {
+			out.TextStream.Source = "typed_responses_sse"
+		}
 	}
 	read := func(key string) *float64 {
 		if key != "first_byte" && incompleteCapture {
@@ -252,7 +330,9 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 	out.VisibleTextFirstMS = read("first_visible_text")
 	out.ResponseByteFirstMS = read("first_byte")
 	if stream := a.TextStream; !incompleteCapture && stream != nil && stream.Chunks > 0 {
-		out.TextStream.Source = "typed_responses_sse"
+		if out.TextStream.Source == "none" {
+			out.TextStream.Source = "typed_responses_sse"
+		}
 		out.TextStream.Status = "invalid_boundary"
 		upper := s.TotalMS
 		if a.EndMS != nil && finite(*a.EndMS) {
@@ -281,7 +361,8 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 			}
 			out.TextStream.Status = "partial"
 			if !stream.Truncated && stream.Terminal == "completed" && a.Terminal == "completed" && a.Error == "" &&
-				a.Status >= 200 && a.Status < 300 && s.Status >= 200 && s.Status < 300 && !s.Canceled && !s.ClientDisconnect {
+				a.Status >= 200 && a.Status < 300 && s.Status >= 200 && s.Status < 300 && !s.Canceled && !s.ClientDisconnect &&
+				!s.DownstreamError && (s.Outcome == "" || s.Outcome == "success") {
 				out.TextStream.Status = "observed"
 			}
 		}
