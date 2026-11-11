@@ -15,7 +15,6 @@ import (
 )
 
 // Exercise real selection, sticky/ownership, slot waits and forwarding guards.
-// These regressions also run unmodified on 9620d315 in the remote RED checkout.
 func availabilityFixture(t *testing.T, latencies ...float64) (*OpenAIGatewayService, *defaultOpenAIAccountScheduler, OpenAIAccountScheduleRequest) {
 	t.Helper()
 	svc, scheduler, req, _, _ := latencyModeFixture(t, PriorityLatencyStop)
@@ -473,7 +472,9 @@ func TestPriorityLatencyAvailabilityRecoveredHealthyPeer(t *testing.T) {
 
 func TestPriorityLatencyAvailabilityHTTPWSLease(t *testing.T) {
 	svc, req, account, upstream, dialer, ctx := reviewNativeFixture(t, OpenAIWSIngressModeCtxPool)
-	c := newOpenAIRejectedFieldTestContext([]byte(`{"model":"gpt-test","input":"synthetic"}`))
+	body := []byte(`{"model":"gpt-test","input":"synthetic"}`)
+	ctx = WithObservationRequestEffort(ctx, body)
+	c := newOpenAIRejectedFieldTestContext(body)
 	c.Request = c.Request.WithContext(ctx)
 	admitted, err := svc.beginPriorityLatencyTurn(ctx, c, account, req.RequestedModel)
 	require.NoError(t, err)

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -50,6 +51,7 @@ func (d *reviewLeaseDialer) Dial(ctx context.Context, _ string, _ http.Header, _
 func reviewNativeFixture(t *testing.T, mode string) (*OpenAIGatewayService, OpenAIAccountScheduleRequest, *Account, *reviewGenerationConn, *reviewLeaseDialer, context.Context) {
 	t.Helper()
 	svc, _, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
+	req.ObservationEffortScoped = true
 	cfg := newOpenAIWSExecutionScopeTestConfig()
 	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
 	cfg.Gateway.OpenAIWS.IngressModeDefault = mode
@@ -79,7 +81,7 @@ func reviewNativeFixture(t *testing.T, mode string) (*OpenAIGatewayService, Open
 	ctx = WithOpenAIForwardModel(ctx, req.RequestedModel, false)
 	return svc, req, account, conn, dialer, ctx
 }
-func reviewNativeClient(t *testing.T, ctx context.Context, svc *OpenAIGatewayService, req OpenAIAccountScheduleRequest, account *Account) (*coderws.Conn, <-chan error) {
+func reviewNativeClient(t *testing.T, ctx context.Context, svc *OpenAIGatewayService, req OpenAIAccountScheduleRequest, account *Account, firstPayload ...string) (*coderws.Conn, <-chan error) {
 	t.Helper()
 	done := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +102,11 @@ func reviewNativeClient(t *testing.T, ctx context.Context, svc *OpenAIGatewaySer
 		done <- svc.ProxyResponsesWebSocketFromClient(ctx, c, conn, account, "sk-synthetic", first, nil)
 	}))
 	t.Cleanup(server.Close)
-	client := dialPassthroughLifecycleClientWithPayload(t, server, fmt.Sprintf(`{"type":"response.create","model":%q,"stream":true,"input":[{"role":"user","content":"synthetic"}]}`, req.RequestedModel))
+	payload := fmt.Sprintf(`{"type":"response.create","model":%q,"stream":true,"input":[{"role":"user","content":"synthetic"}]}`, req.RequestedModel)
+	if len(firstPayload) > 0 {
+		payload = firstPayload[0]
+	}
+	client := dialPassthroughLifecycleClientWithPayload(t, server, payload)
 	t.Cleanup(func() { _ = client.CloseNow() })
 	return client, done
 }
@@ -174,6 +180,98 @@ func TestPriorityPenaltyReviewNativeStartedOutput(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("native output cleanup did not finish")
+	}
+}
+
+func TestPriorityPenaltyReviewNativeCapacityWait(t *testing.T) {
+	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModePassthrough} {
+		for _, stage := range []string{"key", "rpm"} {
+			t.Run(mode+"/"+stage, func(t *testing.T) {
+				svc, req, account, upstream, dialer, ctx := reviewNativeFixture(t, mode)
+				close(dialer.release)
+				svc.openaiWSPassthroughDialer = &stagedPassthroughDialer{conn: upstream}
+				stop := func() { reviewActivateStop(svc, req, account.ID) }
+				authority := &smartProtocolKeyHTTP{onAcquire: stop}
+				rpm := &availabilityAdmissionRPMCache{openAIRPMTestCache: &openAIRPMTestCache{counts: map[int64]int{}}, onAcquire: stop}
+				if stage == "key" {
+					svc.cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: 1, Limits: map[string]int{config.UpstreamKeyFingerprint("sk-synthetic"): 1}}
+					svc.httpUpstream = authority
+				} else {
+					account.Type = AccountTypeOAuth
+					account.Extra["base_rpm"] = 2
+					account.Extra["openai_oauth_responses_websockets_v2_mode"] = mode
+					svc.rpmCache = rpm
+					pool := []openAIAccountCandidateScore{{account: account}}
+					require.Eventually(t, func() bool { return svc.priorityHistory(req, svc.prioritySchedulingRuntimeConfig(), pool).ready() }, 2*time.Second, time.Millisecond)
+					setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+				}
+				_, done := reviewNativeClient(t, ctx, svc, req, account)
+				select {
+				case err := <-done:
+					require.ErrorIs(t, err, ErrPriorityLatencyUnavailable)
+				case write := <-upstream.writes:
+					t.Fatalf("generation crossed a stop published during %s admission: %s", stage, write)
+				case <-time.After(3 * time.Second):
+					t.Fatal("capacity-wait admission did not finish")
+				}
+				if stage == "key" {
+					require.EqualValues(t, 1, authority.calls.Load())
+					require.Zero(t, authority.active.Load(), "post-wait rejection must release its exact Key member")
+				} else {
+					require.Equal(t, 1, rpm.counts[account.ID], "the stop must have been published by RPM admission")
+				}
+				require.Empty(t, upstream.writes)
+			})
+		}
+	}
+}
+
+func TestPriorityPenaltyReviewNativeEffortTurns(t *testing.T) {
+	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModePassthrough} {
+		t.Run(mode, func(t *testing.T) {
+			svc, req, account, upstream, dialer, ctx := reviewNativeFixture(t, mode)
+			close(dialer.release)
+			svc.openaiWSPassthroughDialer = &stagedPassthroughDialer{conn: upstream}
+			req.ObservationEffort, req.ObservationEffortScoped = "xhigh", true
+			cfg := svc.prioritySchedulingRuntimeConfig()
+			pool := []openAIAccountCandidateScore{{account: account}}
+			require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+			setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+			next := req
+			next.ObservationEffort = "medium"
+			require.Eventually(t, func() bool { return svc.priorityHistory(next, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+			reviewActivateStop(svc, next, account.ID)
+			ctx = WithObservationEffort(ctx, "xhigh")
+			require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, derefGroupID(req.GroupID), "resp_effort_owner", account.ID, time.Hour))
+			first := fmt.Sprintf(`{"type":"response.create","model":%q,"stream":true,"reasoning":{"effort":"xhigh"},"input":[{"role":"user","content":"synthetic"}]}`, req.RequestedModel)
+			client, done := reviewNativeClient(t, ctx, svc, req, account, first)
+			written := requirePassthroughUpstreamWrite(t, upstream.stagedPassthroughConn, time.Second)
+			require.Contains(t, string(written), `"xhigh"`)
+			upstream.Send(`{"type":"response.output_text.delta","delta":"first"}`)
+			delta, err := readPassthroughLifecycleFrame(t, client, time.Second)
+			require.NoError(t, err)
+			require.Contains(t, string(delta), "first")
+			upstream.Send(`{"type":"response.completed","response":{"id":"resp_effort_complete","model":"gpt-test","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`)
+			terminal, err := readPassthroughLifecycleFrame(t, client, time.Second)
+			require.NoError(t, err)
+			require.Contains(t, string(terminal), "response.completed")
+			writeCtx, cancel := context.WithTimeout(ctx, time.Second)
+			err = client.Write(writeCtx, coderws.MessageText, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"reasoning":{"effort":"medium"},"input":[{"role":"user","content":"next"}]}`, req.RequestedModel)))
+			cancel()
+			require.NoError(t, err)
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, ErrPriorityLatencyUnavailable)
+			case unexpected := <-upstream.writes:
+				t.Fatalf("a stopped effort was sent to the provider: %s", unexpected)
+			case <-time.After(3 * time.Second):
+				t.Fatal("effort-scoped WS admission did not finish")
+			}
+			require.Empty(t, upstream.writes)
+			id, err := svc.getOpenAIWSStateStore().GetResponseAccount(ctx, derefGroupID(req.GroupID), "resp_effort_owner")
+			require.NoError(t, err)
+			require.Equal(t, account.ID, id, "effort-specific stop must retain existing response affinity")
+		})
 	}
 }
 

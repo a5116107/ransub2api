@@ -514,6 +514,18 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 	}
 
+	latencyModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if latencyModel == "" {
+		latencyModel = canonicalOpenAIAccountSchedulingModel(account, originalModel)
+	}
+	if turn <= 1 {
+		ctx, err = s.beginPriorityLatencyTurn(WithObservationRequestEffort(ctx, body), c, account, latencyModel)
+	} else {
+		ctx, err = s.nextPriorityLatencyWSTurn(ctx, c, account, latencyModel, body)
+	}
+	if err != nil {
+		return nil, err
+	}
 	upstreamCtx, startDrain, releaseUpstreamCtx := openAIWSDrainContext(ctx)
 	defer releaseUpstreamCtx()
 	buildUpstreamRequest := func(requestBody []byte) (*http.Request, error) {
@@ -614,7 +626,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}
 				return nil, err
 			}
-			if IsOpenAIRPMError(err) {
+			if IsOpenAIRPMError(err) || IsOpenAITurnAdmissionError(err) {
 				return nil, err
 			}
 			if upstreamCtx.Err() != nil {

@@ -137,9 +137,6 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 	if err := regionalMeterHTTPRequest(req); err != nil {
 		return nil, err
 	}
-	if err := s.priorityLatencyBeforeSend(req.Context(), account); err != nil {
-		return nil, err
-	}
 	if err := s.fenceAuthConnectionEgress(req.Context(), req, account); err != nil {
 		return nil, err
 	}
@@ -187,6 +184,9 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 			err = &runtimeProxyEgressError{error: err, target: target}
 		}
 	}()
+	if err := s.priorityLatencyBeforeSend(req.Context(), account); err != nil {
+		return nil, err
+	}
 	if s.pluginManager != nil && account.AuthConnectionID == "" && !s.codexTicketRequestBound(req, account) {
 		resp, handled, err := s.pluginManager.RoundTripOpenAIOAuth(pluginUpstreamKeyPolicyContext(req.Context(), s.cfg), req, target.url, account)
 		if handled {

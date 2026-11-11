@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5同账号换线路反馈/历史/趋势/等待及旧快照隔离已验；父项开放。
-授权：原H盘本地修复/验证/提交；不CI/推送/部署。
-源码：24项Go原位修复，摘要bd2b854aa595；无迁移/新缓存/调度器。
-验证命令：Priority/Issue603专项race、PG14/Redis7 SQL及四包lint/vet/Linux编译。
-验证结果：race合计170顶层/410含子例，零失败/跳过；四包lint0/vet/Linux编译通过。
-验证来源：本轮工具输出；后续日志backend/tmp/protocol-cache/scheduling-route-*。
-下一动作：D5跨请求估计/跨协议比较；先取得前缀、模型/fast和候选缓存域证据。
-尝试：17
-阻塞：D2关联契约、D4/D5证据；生产授权及含本轮空目录的清理等待拥有者。
+任务：D5逐轮effort/首次发送准入修复已验，完成本地交付；父项仍开放。
+授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
+源码：基线eb5cc6c；13Go项6163ec6d，原位修复，无新调度器或迁移。
+验证命令：Priority/WS/桥接/RPM/可用性race；三包原规则lint/vet与Linux编译。
+验证结果：最终race290顶层/700含子例通过，零失败/跳过；lint0/vet0，Linux构建0。
+验证来源：backend/tmp/protocol-cache/scheduling-ws-effort-*；最终75652退出0。
+下一动作：D5跨请求估计/跨协议比较须补可信前缀、模型/fast及候选缓存域证据。
+尝试：21
+阻塞：D2关联契约、D4/D5证据；生产授权和历史清理等待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 协议/缓存/TPS/TTFT、入站与换线路/等待/趋势隔离已验；专项race170顶层/410含子例、四包lint0/vet/Linux通过；跨协议/会话估计待独立证据 |
+| D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort/等待隔离已验；本轮race290顶层/700含子例、三包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |

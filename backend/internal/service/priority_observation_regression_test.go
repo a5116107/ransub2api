@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/stretchr/testify/require"
 )
 
@@ -337,6 +339,215 @@ func TestPriorityObservationSelectionRetainsEffort(t *testing.T) {
 	require.Equal(t, priorityHistoryKey(req, DefaultPrioritySchedulingConfig()), priorityHistoryKey(owned, DefaultPrioritySchedulingConfig()))
 	group++
 	require.Equal(t, int64(11), *owned.GroupID, "owned request must retain its group independently")
+}
+
+func TestPriorityObservationTurnCapturesEffort(t *testing.T) {
+	for _, source := range []string{"context", "request"} {
+		t.Run(source, func(t *testing.T) {
+			ctx := context.Background()
+			c := newOpenAIRejectedFieldTestContext(nil)
+			if source == "context" {
+				ctx = WithObservationEffort(ctx, "medium")
+			} else {
+				c.Request = c.Request.WithContext(WithObservationEffort(c.Request.Context(), "medium"))
+			}
+			svc := &OpenAIGatewayService{}
+			admitted, err := svc.beginPriorityLatencyTurn(ctx, c, &Account{ID: 1, Platform: PlatformOpenAI}, "fixture")
+			require.NoError(t, err)
+			turn, ok := admitted.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+			require.True(t, ok)
+			require.True(t, turn.request.ObservationEffortScoped, "direct forwarding must retain the exact observed effort population")
+			require.Equal(t, "medium", turn.request.ObservationEffort)
+		})
+	}
+}
+
+func TestPriorityObservationWSTurnEffortIsolation(t *testing.T) {
+	svc, scheduler, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	req.ObservationEffort, req.ObservationEffortScoped = "xhigh", true
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+	next := req
+	next.ObservationEffort = "medium"
+	require.Eventually(t, func() bool { return svc.priorityHistory(next, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+	setModeSignal(svc, next, 1, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+	reviewActivateStop(svc, next, 2)
+	selected, err := modeSelect(t, scheduler, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), selected.Account.ID)
+	ctx := WithPrioritySchedulingObservation(context.Background(), req.GroupID, req.HistoryModel, req.InboundEndpoint)
+	ctx = WithObservationEffort(ctx, req.ObservationEffort)
+	ctx = ContextWithSelectionPriorityRequest(ctx, selected)
+	c := newOpenAIRejectedFieldTestContext([]byte(`{"model":"gpt-test","reasoning":{"effort":"medium"}}`))
+	c.Request = c.Request.WithContext(WithObservationEffort(ctx, "medium"))
+	c.Request.Header.Set("Upgrade", "websocket")
+	_, err = svc.beginPriorityLatencyTurn(WithObservationEffort(ctx, "medium"), c, selected.Account, req.RequestedModel)
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "a policy-changed first frame must rebuild membership for its final effort")
+	c.Request = c.Request.WithContext(ctx)
+	_, err = svc.nextPriorityLatencyWSTurn(ctx, c, selected.Account, req.RequestedModel, []byte(`{"model":"gpt-test","reasoning":{"effort":"medium"}}`))
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "a new WS turn must not borrow the first turn's healthy effort population")
+	admitted, err := svc.nextPriorityLatencyWSTurn(ctx, c, selected.Account, req.RequestedModel, []byte(`{"model":"gpt-test","reasoning":{"effort":"xhigh"}}`))
+	require.NoError(t, err, "returning to the original healthy effort recovers")
+	turn, ok := admitted.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+	require.True(t, ok)
+	require.Equal(t, "xhigh", turn.request.ObservationEffort)
+	require.True(t, turn.request.ObservationEffortScoped)
+	require.Equal(t, "xhigh", selected.priorityRequest.ObservationEffort, "turn-local scope must not mutate the original selection")
+	_, err = svc.beginPriorityLatencyTurn(WithObservationEffort(admitted, "medium"), c, selected.Account, req.RequestedModel)
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "a changed effort before any write must not reuse the prepared turn marker")
+	// Once generation starts, new observations cannot interrupt or replay it.
+	turn.started = true
+	_, err = svc.beginPriorityLatencyTurn(WithObservationEffort(admitted, "medium"), c, selected.Account, req.RequestedModel)
+	require.NoError(t, err)
+	require.Equal(t, "xhigh", turn.request.ObservationEffort)
+	admitted, err = svc.nextPriorityLatencyWSTurn(ctx, c, selected.Account, req.RequestedModel, []byte(`{"model":"gpt-test"}`))
+	require.NoError(t, err)
+	turn, ok = admitted.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+	require.True(t, ok)
+	require.True(t, turn.request.ObservationEffortScoped)
+	require.Empty(t, turn.request.ObservationEffort, "a known omitted effort must not inherit xhigh")
+}
+
+func TestPriorityObservationHTTPBridgeTurnEffort(t *testing.T) {
+	svc, req, account, _, _, ctx := reviewNativeFixture(t, OpenAIWSIngressModeHTTPBridge)
+	req.ObservationEffort, req.ObservationEffortScoped = "medium", true
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	pool := []openAIAccountCandidateScore{{account: account}}
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+	reviewActivateStop(svc, req, account.ID)
+	ctx = WithObservationEffort(ctx, "xhigh")
+	body := []byte(`{"model":"gpt-test","reasoning":{"effort":"medium"},"input":"synthetic","stream":true}`)
+	c := newOpenAIRejectedFieldTestContext(body)
+	c.Request = c.Request.WithContext(ctx)
+	c.Request.Header.Set("Upgrade", "websocket")
+	upstream := &httpUpstreamRecorder{resp: priorityMockResponse(200, `{"status":"completed","output":[]}`, false)}
+	svc.httpUpstream = upstream
+	_, err := svc.proxyOpenAIWSHTTPBridgeTurn(ctx, c, account, "sk-synthetic", body, len(body), req.RequestedModel, "", "", "", "", 2, func([]byte) error { return nil })
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable)
+	require.Empty(t, upstream.requests, "HTTP bridge turns must check their own effort before any generation send")
+}
+
+func TestPriorityObservationHTTPBridgeLateAdmission(t *testing.T) {
+	for _, turn := range []int{1, 2} {
+		t.Run(fmt.Sprintf("turn=%d", turn), func(t *testing.T) {
+			svc, req, account, _, _, ctx := reviewNativeFixture(t, OpenAIWSIngressModeHTTPBridge)
+			req.ObservationEffort, req.ObservationEffortScoped = "medium", true
+			cfg := svc.prioritySchedulingRuntimeConfig()
+			pool := []openAIAccountCandidateScore{{account: account}}
+			require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+			setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+			var stop sync.Once
+			ctx = requesttiming.WithClock(ctx, func() time.Time {
+				// The bridge starts timing after initial admission, before its
+				// physical send. Keep the real deadlines and transport intact.
+				stop.Do(func() { reviewActivateStop(svc, req, account.ID) })
+				return time.Now()
+			})
+			body := []byte(`{"model":"gpt-test","reasoning":{"effort":"medium"},"input":"synthetic","stream":true}`)
+			c := newOpenAIRejectedFieldTestContext(body)
+			c.Request = c.Request.WithContext(ctx)
+			c.Request.Header.Set("Upgrade", "websocket")
+			upstream := &httpUpstreamRecorder{resp: priorityMockResponse(200, `{"status":"completed","output":[]}`, false)}
+			svc.httpUpstream = upstream
+			var writes int
+			_, err := svc.proxyOpenAIWSHTTPBridgeTurn(ctx, c, account, "sk-synthetic", body, len(body), req.RequestedModel, "", "", "", "", turn, func([]byte) error { writes++; return nil })
+			require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "late local admission must retain its cause on every turn")
+			require.Empty(t, upstream.requests, "late rejection must precede any provider request")
+			require.Zero(t, writes, "local admission must not emit a provider 502")
+		})
+	}
+}
+
+func TestPriorityObservationHTTPAfterRPMWait(t *testing.T) {
+	svc, req, account, _, _, ctx := reviewNativeFixture(t, OpenAIWSIngressModeHTTPBridge)
+	account.Type = AccountTypeOAuth
+	account.Extra["base_rpm"] = 2
+	req.ObservationEffort, req.ObservationEffortScoped = "medium", true
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	pool := []openAIAccountCandidateScore{{account: account}}
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+	setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+	ctx = WithObservationEffort(ctx, "medium")
+	ctx, err := svc.beginPriorityLatencyTurn(ctx, nil, account, req.RequestedModel)
+	require.NoError(t, err)
+	cache := &availabilityAdmissionRPMCache{openAIRPMTestCache: &openAIRPMTestCache{counts: map[int64]int{}}, onAcquire: func() { reviewActivateStop(svc, req, account.ID) }}
+	svc.rpmCache = cache
+	upstream := &httpUpstreamRecorder{resp: priorityMockResponse(200, `{"status":"completed","output":[]}`, false)}
+	svc.httpUpstream = upstream
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"gpt-test","reasoning":{"effort":"medium"}}`))
+	require.NoError(t, err)
+	response, err := svc.doOpenAIUpstream(request, "", account)
+	if response != nil {
+		require.NoError(t, response.Body.Close())
+	}
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "an RPM wait is not the start of a physical generation")
+	require.Empty(t, upstream.requests)
+	require.Equal(t, 1, cache.counts[account.ID])
+}
+
+func TestPriorityObservationWSTurnEffortFields(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"nested", `{"model":"fixture","reasoning":{"effort":"medium"}}`, "medium"},
+		{"scalar", `{"model":"fixture","reasoning_effort":"low"}`, "low"},
+		{"messages", `{"model":"fixture","output_config":{"effort":"high"}}`, "high"},
+		{"distinct max", `{"model":"fixture","reasoning":{"effort":"max"}}`, "max"},
+		{"omitted", `{"model":"fixture"}`, ""},
+		{"null", `{"model":"fixture","reasoning":null}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := OpenAIAccountScheduleRequest{RequestedModel: "fixture", ObservationEffort: "xhigh", ObservationEffortScoped: true}
+			ctx := context.WithValue(WithObservationEffort(context.Background(), "xhigh"), prioritySelectionRequestKey{}, req)
+			svc := &OpenAIGatewayService{}
+			admitted, err := svc.nextPriorityLatencyWSTurn(ctx, nil, &Account{ID: 1, Platform: PlatformOpenAI}, "fixture", []byte(tc.body))
+			require.NoError(t, err)
+			turn, ok := admitted.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+			require.True(t, ok)
+			require.True(t, turn.request.ObservationEffortScoped)
+			require.Equal(t, tc.want, turn.request.ObservationEffort)
+			original, ok := ctx.Value(prioritySelectionRequestKey{}).(OpenAIAccountScheduleRequest)
+			require.True(t, ok)
+			require.Equal(t, "xhigh", original.ObservationEffort)
+		})
+	}
+}
+
+func TestPriorityObservationDirectForwardEffort(t *testing.T) {
+	for _, entry := range []string{"responses", "chat/completions", "messages"} {
+		t.Run(entry, func(t *testing.T) {
+			svc, req, account, _, _, ctx := reviewNativeFixture(t, OpenAIWSIngressModeHTTPBridge)
+			account.Extra["openai_ws_force_http"] = true
+			req.InboundEndpoint = "/v1/" + entry
+			req.ObservationEffort, req.ObservationEffortScoped = "medium", true
+			cfg := svc.prioritySchedulingRuntimeConfig()
+			pool := []openAIAccountCandidateScore{{account: account}}
+			require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+			reviewActivateStop(svc, req, account.ID)
+			ctx = WithPrioritySchedulingObservation(ctx, req.GroupID, req.HistoryModel, req.InboundEndpoint)
+			ctx = WithObservationEffort(ctx, "xhigh")
+			body := []byte(`{"model":"gpt-test","reasoning":{"effort":"medium"},"input":"synthetic"}`)
+			switch entry {
+			case "chat/completions":
+				body = []byte(`{"model":"gpt-test","reasoning_effort":"medium","messages":[{"role":"user","content":"synthetic"}]}`)
+			case "messages":
+				body = []byte(`{"model":"gpt-test","output_config":{"effort":"medium"},"messages":[{"role":"user","content":"synthetic"}]}`)
+			}
+			c := newOpenAIRejectedFieldTestContext(body)
+			c.Request = c.Request.WithContext(ctx)
+			upstream := &httpUpstreamRecorder{resp: priorityMockResponse(200, `{"status":"completed","output":[]}`, false)}
+			svc.httpUpstream = upstream
+			var err error
+			switch entry {
+			case "chat/completions":
+				_, err = svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
+			case "messages":
+				_, err = svc.ForwardAsAnthropic(ctx, c, account, body, "", "")
+			default:
+				_, err = svc.Forward(ctx, c, account, body)
+			}
+			require.ErrorIs(t, err, ErrPriorityLatencyUnavailable)
+			require.Empty(t, upstream.requests, "the current body's effort must be captured before direct-forward admission")
+		})
+	}
 }
 
 func TestPriorityObservationEndpointSelectionAndRecovery(t *testing.T) {

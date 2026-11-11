@@ -926,7 +926,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return errors.New("openai ws passthrough dialer is nil")
 	}
 
-	latencyCtx, denied := s.beginPriorityLatencyTurn(ctx, c, account, gjson.GetBytes(firstClientMessage, "model").String())
+	latencyCtx, denied := s.beginPriorityLatencyTurn(WithObservationRequestEffort(ctx, firstClientMessage), c, account, gjson.GetBytes(firstClientMessage, "model").String())
 	if denied != nil {
 		return denied
 	}
@@ -1331,7 +1331,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			var turnLatencyCtx context.Context
 			if isResponseCreate {
 				var denied error
-				turnLatencyCtx, denied = s.nextPriorityLatencyWSTurn(ctx, c, account, model)
+				turnLatencyCtx, denied = s.nextPriorityLatencyWSTurn(ctx, c, account, model, payload)
 				if denied != nil {
 					return payload, nil, denied
 				}
@@ -1417,9 +1417,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if err := regionalMeterBeforeSend(ctx); err != nil {
 		return err
 	}
-	if denied := s.priorityLatencyBeforeSend(ctx, account); denied != nil {
-		return denied
-	}
 	if _, err := keyTurn.begin(ctx); err != nil {
 		return err
 	}
@@ -1440,6 +1437,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 	initialResponseScope := openAIWSContinuationScope(account, gjson.GetBytes(firstClientMessage, "model").String(), gjson.GetBytes(firstClientMessage, "service_tier").String())
 	activeResponseScope.Store(&initialResponseScope)
+	if denied := s.priorityLatencyBeforeSend(ctx, account); denied != nil {
+		cancelFirstWrite()
+		return denied
+	}
 	activeTiming.Store(newOpenAIWSTurnTiming(account, time.Now()))
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 	cancelFirstWrite()

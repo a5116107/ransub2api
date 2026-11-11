@@ -306,15 +306,23 @@ func (s *OpenAIGatewayService) CheckPriorityLatencySelection(ctx context.Context
 // retries retain the marker; a penalty learned after output starts cannot abort
 // or replay that already admitted turn. A new WS turn explicitly checks again.
 func (s *OpenAIGatewayService) beginPriorityLatencyTurn(ctx context.Context, c *gin.Context, account *Account, model string) (context.Context, error) {
+	effort, scoped := observationEffort(ctx)
+	if !scoped && c != nil && c.Request != nil {
+		effort, scoped = observationEffort(c.Request.Context())
+	}
 	if turn, ok := ctx.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn); ok && turn != nil && account != nil && turn.accountID == account.ID {
 		turn.mu.Lock()
-		defer turn.mu.Unlock()
-		if !turn.started {
-			if err := s.priorityLatencyAdmission(turn.request, account); err != nil {
-				return ctx, err
+		sameScope := !scoped || turn.request.ObservationEffortScoped && turn.request.ObservationEffort == effort
+		if turn.started || sameScope {
+			defer turn.mu.Unlock()
+			if !turn.started {
+				if err := s.priorityLatencyAdmission(turn.request, account); err != nil {
+					return ctx, err
+				}
 			}
+			return ctx, nil
 		}
-		return ctx, nil
+		turn.mu.Unlock()
 	}
 	req, selectedRequest := ctx.Value(prioritySelectionRequestKey{}).(OpenAIAccountScheduleRequest)
 	if !selectedRequest {
@@ -357,7 +365,14 @@ func (s *OpenAIGatewayService) beginPriorityLatencyTurn(ctx context.Context, c *
 			req.GroupID = &id
 		}
 	}
-	if !selectedRequest && req.priorityLatencyPool == nil && priorityHardStopApplies(s.prioritySchedulingRuntimeConfig(), req) && (s.accountRepo != nil || s.schedulerSnapshot != nil) {
+	scopeChanged := scoped && (!req.ObservationEffortScoped || req.ObservationEffort != effort)
+	if scopeChanged {
+		req.ObservationEffort, req.ObservationEffortScoped = effort, true
+		// Selection may precede the WS payload policy. Its frozen membership
+		// belongs to the old population and cannot authorize this final effort.
+		req.priorityLatencyPool = nil
+	}
+	if (!selectedRequest || scopeChanged) && req.priorityLatencyPool == nil && priorityHardStopApplies(s.prioritySchedulingRuntimeConfig(), req) && (s.accountRepo != nil || s.schedulerSnapshot != nil) {
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.openaiAccountStats}
 		prepared, err := scheduler.preparePriorityLatencyRequest(ctx, req)
 		if err != nil {
@@ -376,10 +391,14 @@ func (s *OpenAIGatewayService) beginPriorityLatencyTurn(ctx context.Context, c *
 
 // Subsequent WS turns get a new bounded decision, while repeated checks within
 // one turn retain the original set. Ownership stays with the connection account.
-func (s *OpenAIGatewayService) nextPriorityLatencyWSTurn(ctx context.Context, c *gin.Context, account *Account, model string) (context.Context, error) {
+func (s *OpenAIGatewayService) nextPriorityLatencyWSTurn(ctx context.Context, c *gin.Context, account *Account, model string, payload []byte) (context.Context, error) {
+	// Capture the current, policy-processed frame. An omitted effort is an
+	// exact empty population, not permission to inherit the connection's first.
+	ctx = WithObservationRequestEffort(ctx, payload)
 	ctx = context.WithValue(ctx, priorityLatencyTurnKey{}, (*priorityLatencyTurn)(nil))
 	if req, ok := ctx.Value(prioritySelectionRequestKey{}).(OpenAIAccountScheduleRequest); ok {
 		req.priorityLatencyPool = nil
+		req.ObservationEffort, req.ObservationEffortScoped = observationEffort(ctx)
 		req.RequestedModel = strings.TrimSpace(model)
 		if c != nil && c.Request != nil {
 			identity := priorityObservationFromContext(c.Request.Context(), model)

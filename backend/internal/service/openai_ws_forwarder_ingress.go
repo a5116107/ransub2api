@@ -1906,12 +1906,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if err := regionalMeterBeforeSend(ctx); err != nil {
 			return nil, err
 		}
-		if latencyGenerationStartedTurn != turn {
-			if err := s.priorityLatencyBeforeSend(priorityLatencyCtx, account); err != nil {
-				return nil, err
-			}
-			latencyGenerationStartedTurn = turn
-		}
 		if keyAuthority != nil || s.hasAvailabilityAdmission() {
 			if _, err := checkAdmission(ctx); err != nil {
 				return nil, err
@@ -1927,6 +1921,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		if err := s.guardOpenAIResponseContinuation(ctx, account); err != nil {
 			return nil, err
+		}
+		if latencyGenerationStartedTurn != turn {
+			if err := s.priorityLatencyBeforeSend(priorityLatencyCtx, account); err != nil {
+				return nil, err
+			}
+			latencyGenerationStartedTurn = turn
 		}
 		timing = newOpenAIWSTurnTiming(account, time.Now())
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
@@ -2527,9 +2527,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if !skipBeforeTurn {
 			var denied error
 			if turn == 1 {
-				priorityLatencyCtx, denied = s.beginPriorityLatencyTurn(ctx, c, account, extractOpenAICodexTicketModel(currentPayload))
+				priorityLatencyCtx, denied = s.beginPriorityLatencyTurn(WithObservationRequestEffort(ctx, currentPayload), c, account, extractOpenAICodexTicketModel(currentPayload))
 			} else {
-				priorityLatencyCtx, denied = s.nextPriorityLatencyWSTurn(ctx, c, account, extractOpenAICodexTicketModel(currentPayload))
+				priorityLatencyCtx, denied = s.nextPriorityLatencyWSTurn(ctx, c, account, extractOpenAICodexTicketModel(currentPayload), currentPayload)
 			}
 			if denied != nil {
 				return denied

@@ -29,7 +29,7 @@ func TestPriorityLifecyclePassthroughPhysicalWriteFence(t *testing.T) {
 	svc.settingService = priorityGateway(cfg, &priorityReaderStub{}).settingService
 	svc.usageLogRepo = &latencyModeReader{noSamples: true}
 	account := passthroughLifecycleAccount()
-	req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, RequestedModel: "gpt-5.1", HistoryModel: "public-model", InboundEndpoint: "/v1/responses", UseUpstreamTokenCost: true}
+	req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, RequestedModel: "gpt-5.1", HistoryModel: "public-model", InboundEndpoint: "/v1/responses", UseUpstreamTokenCost: true, ObservationEffortScoped: true}
 	require.Eventually(t, func() bool {
 		return svc.priorityHistory(req, cfg, []openAIAccountCandidateScore{{account: account}}).ready()
 	}, time.Second, time.Millisecond)
