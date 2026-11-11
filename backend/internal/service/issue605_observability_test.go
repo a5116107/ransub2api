@@ -20,6 +20,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// timingSSEStepBody spaces parser reads, not server writes. TCP buffers and
+// scheduler delays may coalesce flushed server events, so wire sleeps alone
+// cannot prove the parser-side lower bounds asserted by these loopbacks.
+type timingSSEStepBody struct {
+	io.ReadCloser
+	reader  *bufio.Reader
+	pending []byte
+	err     error
+	delay   time.Duration
+}
+
+func (b *timingSSEStepBody) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if len(b.pending) == 0 {
+		if b.err != nil {
+			return 0, b.err
+		}
+		b.pending, b.err = b.reader.ReadBytes('\n')
+		if strings.HasPrefix(string(b.pending), "data:") {
+			time.Sleep(b.delay)
+		}
+	}
+	n := copy(p, b.pending)
+	b.pending = b.pending[n:]
+	if len(b.pending) == 0 {
+		return n, b.err
+	}
+	return n, nil
+}
+
 func TestIssue605NativeLoopbackSSETypedContentAndByte(t *testing.T) {
 	wire := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_synthetic605\",\"created_at\":1}}\n\n" +
 		"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\"}}\n\n" +
@@ -93,19 +125,12 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 						if !send(`{"type":"response.output_text.delta","delta":"first"}`) {
 							return
 						}
-						if ending == "rate_completed" {
-							time.Sleep(300 * time.Millisecond)
-						} else {
-							time.Sleep(30 * time.Millisecond)
-						}
 						if !send(`{"type":"keepalive"}`) || !send(`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`) {
 							return
 						}
-						time.Sleep(30 * time.Millisecond)
 						if !send(`{"type":"response.output_text.delta","delta":"second"}`) || !send(`{"type":"response.output_text.done","text":"firstsecond"}`) {
 							return
 						}
-						time.Sleep(20 * time.Millisecond)
 					}
 					switch ending {
 					case "completed", "rate_completed", "terminal_only":
@@ -126,6 +151,11 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 				resp, err := server.Client().Do(req)
 				tr.Response(resp, err)
 				require.NoError(t, err)
+				delay := 30 * time.Millisecond
+				if ending == "rate_completed" {
+					delay = 100 * time.Millisecond
+				}
+				resp.Body = &timingSSEStepBody{ReadCloser: resp.Body, reader: bufio.NewReader(resp.Body), delay: delay}
 				if path.transform {
 					mapping := apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}
 					if path.instrumentTransform {

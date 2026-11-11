@@ -237,6 +237,8 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
+	// Each physical WS generation owns a separate bounded diagnostic lifetime.
+	requestTiming    *requesttiming.Collector
 	AuthConnectionID string
 	// RegionalMetered prevents the legacy asynchronous path from double charging.
 	RegionalMetered bool

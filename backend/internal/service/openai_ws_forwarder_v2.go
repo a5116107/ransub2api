@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -43,6 +44,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
+	var timing *requesttiming.WSTurnCapture
+	defer func() { finishOpenAIWSTurnTiming(timing, ctx, forwardResult, forwardErr) }()
 	keyAuthority, authorityErr := s.openAIWSKeyAuthority()
 	if authorityErr != nil {
 		return nil, wrapOpenAIWSFallback("upstream_key_concurrency_unavailable", authorityErr)
@@ -574,6 +577,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return err
 			}
 		}
+		timing = newOpenAIWSTurnTiming(account, time.Now())
 		if err := lease.WriteJSONWithContextTimeout(ctx, value, s.openAIWSWriteTimeout()); err != nil {
 			lease.MarkBroken()
 			logOpenAIWSModeInfo(
@@ -723,7 +727,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return
 			}
 		}
-		flusher.Flush()
+		if err := FlushGatewayResponse(c.Writer); err != nil {
+			timing.DownstreamWrite(err)
+			markClientDisconnected("downstream_flush_error")
+		}
 		pendingFlushEvents = 0
 		lastFlushAt = time.Now()
 	}
@@ -737,6 +744,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		frame = append(frame, '\n', '\n')
 		commitTurnState()
 		_, wErr := c.Writer.Write(frame)
+		timing.DownstreamWrite(wErr)
 		if wErr == nil {
 			wroteDownstream = true
 			pendingFlushEvents++
@@ -868,6 +876,7 @@ readLoop:
 			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
+		timing.Content(message)
 		if normalized, changed := normalizeCompletedImageGenerationStatus(message); changed {
 			message = normalized
 		}
@@ -1093,7 +1102,11 @@ readLoop:
 		}
 
 		commitTurnState()
+		renderErrors := len(c.Errors)
 		c.Data(http.StatusOK, "application/json", finalResponse)
+		for _, renderError := range c.Errors[renderErrors:] {
+			timing.DownstreamWrite(renderError.Err)
+		}
 	} else {
 		flushStreamWriter(true)
 	}

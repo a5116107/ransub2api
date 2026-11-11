@@ -1879,6 +1879,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		turnCtx, startDrain, finishDrain := openAIWSDrainContext(continuationCtx)
 		defer finishDrain()
 		ctx := turnCtx
+		var timing *requesttiming.WSTurnCapture
+		defer func() { finishOpenAIWSTurnTiming(timing, continuationCtx, forwardResult, forwardErr) }()
 		keyTurn := &openAIWSKeyTurn{authority: keyAuthority, fingerprints: lease.conn.upstreamKeyFingerprints, abort: func(error) { lease.MarkBroken() }}
 		keyCtx, keyErr := keyTurn.begin(ctx)
 		if keyErr != nil {
@@ -1926,6 +1928,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if err := s.guardOpenAIResponseContinuation(ctx, account); err != nil {
 			return nil, err
 		}
+		timing = newOpenAIWSTurnTiming(account, time.Now())
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
 				"write_upstream",
@@ -2005,6 +2008,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					wroteDownstream,
 				)
 			}
+			timing.Content(upstreamMessage)
 			if normalized, changed := normalizeCompletedImageGenerationStatus(upstreamMessage); changed {
 				upstreamMessage = normalized
 			}
@@ -2191,6 +2195,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				}
 				if err := writeClientMessage(clientMessage); err != nil {
+					timing.DownstreamWrite(err)
 					if isOpenAIWSClientDisconnectError(err) {
 						clientDisconnected = true
 						startDrain()

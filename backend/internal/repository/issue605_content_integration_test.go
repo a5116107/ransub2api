@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -138,4 +139,88 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	require.Nil(t, items[ids[0]].ReasoningFirstMS, "multiple traces for one billing row cannot invent one timeline")
 	require.Equal(t, "not_collected", items[ids[0]].TextStream.Status)
 	require.Nil(t, items[ids[0]].TextStream.Chunks)
+}
+
+func TestIssue605WSTurnTimingPersistenceAndUsageIsolation(t *testing.T) {
+	client := testEntClient(t)
+	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
+	repo.timingOnce.Do(func() {})
+	repo.timingQueue = make(chan timingWrite, 4)
+	u := mustCreateUser(t, client, &service.User{Email: "ws-timing-" + uuid.NewString() + "@synthetic.invalid"})
+	k := mustCreateApiKey(t, client, &service.APIKey{UserID: u.ID, Key: "ws-timing-fixture-" + uuid.NewString(), Name: "synthetic"})
+	a := mustCreateAccount(t, client, &service.Account{Name: "ws-timing", Platform: service.PlatformOpenAI})
+	// The real asynchronous writer needs committed usage rows. Reclaim only this
+	// fixture's records so other integration suites keep their own totals.
+	t.Cleanup(func() {
+		for _, statement := range []struct {
+			sql string
+			id  int64
+		}{
+			{"DELETE FROM request_timing_details WHERE usage_log_id IN (SELECT id FROM usage_logs WHERE user_id=$1)", u.ID},
+			{"DELETE FROM usage_logs WHERE user_id=$1", u.ID},
+			{"DELETE FROM api_keys WHERE user_id=$1", u.ID},
+			{"DELETE FROM accounts WHERE id=$1", a.ID},
+			{"DELETE FROM users WHERE id=$1", u.ID},
+		} {
+			_, err := integrationDB.ExecContext(context.Background(), statement.sql, statement.id)
+			require.NoError(t, err)
+		}
+	})
+	parent := requesttiming.New(time.Now(), 0)
+	ctx := requesttiming.With(t.Context(), parent)
+	var ids []int64
+	traceIDs := map[string]bool{}
+	for turn := range 2 {
+		requestID := fmt.Sprintf("ws-timing-%s-%d", uuid.NewString(), turn)
+		usage := &service.UsageLog{RequestID: requestID, UserID: u.ID, APIKeyID: k.ID, AccountID: a.ID, Model: "fixture", Stream: true, InputTokens: 10, CreatedAt: time.Now()}
+		_, err := repo.Create(t.Context(), usage)
+		require.NoError(t, err)
+		ids = append(ids, usage.ID)
+		capture := requesttiming.NewWSTurn(time.Now(), a.ID, 0, [32]byte{1})
+		capture.Content([]byte(`{"type":"response.reasoning_summary_text.delta","delta":"private-thought"}`))
+		capture.Content([]byte(`{"type":"response.output_text.delta","delta":"private-answer"}`))
+		capture.Content([]byte(`{"type":"response.output_text.delta","delta":"private-answer"}`))
+		capture.Content([]byte(`{"type":"response.completed"}`))
+		repo.RecordRequestTiming(requesttiming.WithUsageTurn(ctx, capture.Collector), requestID, k.ID)
+		require.Empty(t, repo.timingQueue)
+		capture.Finish(nil, false, false)
+		select {
+		case job := <-repo.timingQueue:
+			require.Equal(t, requestID, job.requestID)
+			require.NoError(t, repo.writeTiming(t.Context(), job))
+		default:
+			t.Fatal("missing finished turn persistence job")
+		}
+		traces, err := repo.RequestTimings(t.Context(), usage.ID)
+		require.NoError(t, err)
+		require.Len(t, traces, 1)
+		var s requesttiming.Snapshot
+		require.NoError(t, json.Unmarshal(traces[0], &s))
+		require.False(t, traceIDs[s.TraceID])
+		traceIDs[s.TraceID] = true
+		require.Equal(t, "ws_turn", s.TTFTMode)
+		require.NotContains(t, string(traces[0]), "private-")
+		connections, err := repo.ListConnectionTraces(t.Context(), service.ConnectionTraceFilter{Start: time.Now().Add(-time.Minute), End: time.Now().Add(time.Minute), RequestID: requestID, UserID: u.ID, Page: 1, PageSize: 20})
+		require.NoError(t, err)
+		require.Len(t, connections.Items, 1)
+		require.Empty(t, connections.Items[0].Method, "a physical WS generation does not prove an ingress HTTP method")
+		require.Empty(t, connections.Items[0].HTTPVersion)
+		require.Zero(t, connections.Items[0].Detail.Status)
+	}
+	parent.Finish(200, false)
+	require.Empty(t, repo.timingQueue)
+	items, err := repo.ReadUsageContentTimings(t.Context(), ids)
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	for _, id := range ids {
+		v := items[id]
+		require.Equal(t, "typed_responses_ws", v.Source)
+		require.Equal(t, "observed", v.TextStream.Status)
+		require.Equal(t, 2, *v.TextStream.Chunks)
+		require.NotNil(t, v.ReasoningFirstMS)
+		require.NotNil(t, v.VisibleTextFirstMS)
+		require.Nil(t, v.ResponseByteFirstMS)
+		require.Nil(t, v.OutputRate.TokensPerSecond)
+		require.Nil(t, v.Cache.ReadRatio)
+	}
 }

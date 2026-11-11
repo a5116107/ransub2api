@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5 Antigravity HTTP计时与尾帧用量修复已验证；父项仍进行中。
+任务：D5 Responses WS逐轮内容/账单绑定子项已验证；父项仍进行中。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：基线e3752fa；17项清单91706cba，六原始读取点/五公开Forward。
-验证命令：service相关race、原七类规则lint、vet及Linux build。
-验证结果：最终377顶层/1497含子例race通过，0失败/跳过；原规则lint 0 issues，vet/Linux编译退出0。
-验证来源：backend/tmp/antigravity-timing；原Gemini/Messages及PG证据保留。
-下一动作：D5原生WS逐轮内容观测及持久化，先核对非smart路径与已有逐轮结果边界。
+源码：基线d38d723；20项源码/依赖/规则清单b7a7f2df，复用原诊断表，无迁移。
+验证命令：service/计时/中间件/PG14相关race、原七类lint、六包vet、Linux build。
+验证结果：852顶层/2646含子例，0失败/跳过；lint 0 issues，vet/Linux编译退出0。
+验证来源：backend/tmp/ws-turn-timing；service/packages/postgres-pg14-final及lint-final。
+下一动作：D5 WS规范缓存/TPS、跨协议速度与迁移冷输入风险，先核对实际协议作用域和数据来源。
 尝试：4
 阻塞：D2 unknown待供应商关联契约；生产排空待管理员；历史拒删资源待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | Responses/Messages/Gemini/Antigravity HTTP已交付；本轮377/1497 race、原规则lint 0、vet/Linux编译通过，尾帧用量遗漏已修；WS、跨协议速度和迁移风险待验 |
+| D5 | in_progress | 四协议HTTP与WS逐轮已验；本轮852/2646 race、四包lint 0、六包vet/Linux编译通过；WS缓存/TPS、跨协议速度与迁移冷输入待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -58,7 +58,7 @@
 ## 工作区与验证约定
 
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
-- 使用Go1.27.3、原go.mod和lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 8GiB/18分钟。
+- 使用Go1.27.3、原go.mod和lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 6GiB/18分钟。
 - 真实Redis竞争测试按PATH启动；本轮前置已有`H:/Root/tools/redis/5.0.14.1`，系统Redis3缺`redis.replicate_commands`。其余夹具使用已有Docker Redis7；integration默认将自己创建的隔离PostgreSQL交给区域夹具，不打印DSN。
 - 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个相同测试PNG共1164bytes，历史精确删除曾被策略拒绝（DECISIONS），保留且不提交。
 - 协议/区域/Live验收边界和失败历史见DECISIONS；历史结果不代替新源码或生产验收。区域竞争使用就绪SQL池。
@@ -66,7 +66,7 @@
 
 ## 下一项工作
 
-D5 Antigravity HTTP与尾帧用量修复已验证；继续原生WS逐轮观测，不把整段session当单轮或伪造HTTP attempt，先核对非smart路径及持久化。跨协议TPS、会话冷输入风险仍开放。原28项20 done、D2/D3/D4/D5进行中、D6–D9待验；D2 unknown待供应商契约，D4模型/fast来源待补。视频查询转发原节点，生成/双预算/结算不迁移；336回退先排空并保留账单。本轮保留计费公式，修复尾帧用量遗漏，未改线上策略。
+D5 WS逐轮内容/账单绑定、下游失败与原协议回归已验，原规则lint/vet/Linux编译通过；本地交付，不推送/部署。继续WS规范缓存/TPS、跨协议速度与迁移冷输入。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；外部依赖见下文。视频查询转发原节点，生成/双预算/结算不迁移；336回退须排空并保留账单。未改线上策略。
 
 ## 外部等待与清理
 

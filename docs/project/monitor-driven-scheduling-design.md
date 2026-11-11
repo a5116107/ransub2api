@@ -696,7 +696,27 @@ Antigravity 的 scanner 超限、读取错误与间隔超时显式标记 incompl
 流转非流的 Claude 聚合器另外保留最新原始 usageMetadata：即使尾帧只有用量、无正文，原转换器也能
 保留实际输入/缓存/思考/输出计数；明确零值覆盖旧值，无新用量则保留最近值。该修复不改变计费公式、
 空响应/错误处理或调度权重；相同聚合器服务 Messages、Chat 与 Responses，不新增平行路径。
-原生WS、其他协议、跨协议速度与会话迁移冷输入风险仍属D5剩余验收。
+原生 WS 的逐轮内容观测按下述独立边界交付；WS 规范缓存/TPS、其他协议、跨协议速度与会话迁移冷输入风险仍属 D5 剩余验收。
+
+原生 Responses WS 复用 `requesttiming.Content`、固定大小文本聚合和原 `request_timing_details`，
+按每次实际 generation 的发送边界建立 `kind=ws_turn`、`ttft_mode=ws_turn` 的独立 trace，
+不将 socket session、握手或客户端思考/排队时间当成一轮生成。普通非 smart 的 `ctx_pool`、
+`passthrough` 与 HTTP→WS 共用同一采集方式；每轮只保存当前账号、代理和不可变线路摘要。
+原始文本帧在改写前解析，首推理、首可见文本、非空文本分片间隔和终态尾等复用既有算法；
+不重复观察下游 SSE/JSON 转换结果，不保存内容、response ID、原始 Key 或完整帧。
+
+WS 来源为 `typed_responses_ws`，偏移范围为 `physical_websocket_turn_offsets_from_generation_start`，
+文本范围为 `physical_websocket_turn_text_deltas_at_parser`。HTTP 状态保持未观测的 0，
+网络首字节、DNS、TCP/TLS、上传和规范缓存/TPS不从 WS 内容反推，不进入原 HTTP 分位数或速度排名。
+每轮 usage 仅选择其物理 turn collector；HTTP 请求诊断仍独立保留，不为同一 usage 再写入整段连接数据，
+也不借用前后轮的文本样本。落库仍在原用量关联队列中完成，沿用队列上限、重试及30天保留，
+无数据库迁移或第二条诊断写入链；未产生原用量行的失败、区域独立资金结算的跨节点观测仍不冒充已落库。
+
+透传的上游终态用量回调可以先绑定诊断，但完整计时等待该帧的下游写入完成才发布。
+写入/flush失败、取消、断连 drain、无终态、failed/incomplete、终态后矛盾输出、损坏或超过16MiB
+诊断上限均不形成健康文本流样本；采集失败不截断原业务转发或改变原用量结算。
+二进制帧维持原不透明契约，不解析为文本；回退旧读取者可保留新 JSON，但不会识别 WS turn，
+不得将旧读取者的未采集结果用作本子项或全局验收证据。
 
 D5 的 Responses HTTP 缓存分层沿相同终态采集点保存原始 `input_tokens` 与明确上报的
 `input_tokens_details.cached_tokens`，可选记录 `cache_write_tokens`；普通、passthrough 与工具转换路径共用原采集器。

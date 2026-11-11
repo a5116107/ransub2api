@@ -101,9 +101,7 @@ func TestMessagesTimingLoopback(t *testing.T) {
 					if ending != "terminal_only" {
 						send("content_block_delta", `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"private reasoning"}}`)
 						send("content_block_delta", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"first"}}`)
-						time.Sleep(40 * time.Millisecond)
 						send("ping", `{"type":"ping"}`)
-						time.Sleep(30 * time.Millisecond)
 						if ending == "capture_gap" {
 							send("content_block_delta", `{"delta":`)
 						}
@@ -113,7 +111,6 @@ func TestMessagesTimingLoopback(t *testing.T) {
 						default:
 							send("content_block_delta", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"last"}}`)
 						}
-						time.Sleep(20 * time.Millisecond)
 					}
 					send("message_delta", `{"type":"message_delta","usage":{"output_tokens":120}}`)
 					switch ending {
@@ -136,6 +133,7 @@ func TestMessagesTimingLoopback(t *testing.T) {
 				account := &Account{ID: 701, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
 				resp, err := svc.doGatewayUpstream(req, "", account)
 				require.NoError(t, err)
+				resp.Body = &timingSSEStepBody{ReadCloser: resp.Body, reader: bufio.NewReader(resp.Body), delay: 30 * time.Millisecond}
 				defer func() { _ = resp.Body.Close() }()
 				recorder := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(recorder)

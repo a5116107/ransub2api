@@ -36,7 +36,7 @@ func unknownCacheObservation() CacheObservation {
 	return CacheObservation{Status: "not_collected", Source: "none", Scope: "final_physical_http_responses_terminal_usage"}
 }
 
-// RecordAccountRoute annotates the existing egress attempt with the immutable
+// RecordAccountRoute annotates the existing egress attempt or WS turn with the immutable
 // credential/route digest used by continuation guards, never credentials.
 func RecordAccountRoute(ctx context.Context, fingerprint [32]byte) {
 	if fingerprint == [32]byte{} || ctx == nil {
@@ -45,7 +45,7 @@ func RecordAccountRoute(ctx context.Context, fingerprint [32]byte) {
 	tr, _ := ctx.Value(attemptKey{}).(*Trace)
 	if tr != nil {
 		tr.update(func(a *Attempt) {
-			if a.Kind == "egress" && a.RouteFingerprint == "" {
+			if (a.Kind == "egress" || a.Kind == "ws_turn") && a.RouteFingerprint == "" {
 				a.RouteFingerprint = hex.EncodeToString(fingerprint[:])
 			}
 		})

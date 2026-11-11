@@ -5,12 +5,32 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/gin-gonic/gin"
 )
 
 const maxSSETimingBytes = 16 * 1024 * 1024
+
+func newOpenAIWSTurnTiming(account *Account, start time.Time) *requesttiming.WSTurnCapture {
+	proxyID := int64(0)
+	if account.ProxyID != nil {
+		proxyID = *account.ProxyID
+	}
+	return requesttiming.NewWSTurn(start, account.ID, proxyID, AccountRouteFingerprint(account))
+}
+
+func finishOpenAIWSTurnTiming(capture *requesttiming.WSTurnCapture, ctx context.Context, result *OpenAIForwardResult, err error) {
+	if capture == nil {
+		return
+	}
+	disconnected := result != nil && result.ClientDisconnect
+	if result != nil {
+		result.requestTiming = capture.Collector
+	}
+	capture.Finish(err, ctx != nil && ctx.Err() != nil, disconnected)
+}
 
 func startAccountTimingAttempt(request *http.Request, account *Account) (*http.Request, *requesttiming.Trace) {
 	proxyID := int64(0)

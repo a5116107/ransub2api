@@ -101,7 +101,8 @@ func connectionTraceQuery(f service.ConnectionTraceFilter) (string, []any) {
  (SELECT DISTINCT ON (d.trace_id) d.trace_id,d.created_at,u.request_id,
  CASE WHEN u.request_id LIKE 'client:%' THEN substr(u.request_id,8) ELSE '' END,
  u.user_id,u.api_key_id,u.account_id,COALESCE(u.group_id,0),u.model,
- COALESCE(u.inbound_endpoint,''),COALESCE(u.ip_address,''),COALESCE(u.user_agent,''),u.stream,d.detail,'application'::text,''::text,''::text,'POST'::text,''::text,''::text,''::text,''::text,true
+ COALESCE(u.inbound_endpoint,''),COALESCE(u.ip_address,''),COALESCE(u.user_agent,''),u.stream,d.detail,'application'::text,''::text,''::text,
+ CASE WHEN d.detail->>'ttft_mode'='ws_turn' THEN '' ELSE 'POST' END::text,''::text,''::text,''::text,''::text,true
  FROM request_timing_details d JOIN usage_logs u ON u.id=d.usage_log_id
  WHERE d.created_at >= $1 AND d.created_at < $2
  AND NOT EXISTS (SELECT 1 FROM request_connection_traces n WHERE n.trace_id=d.trace_id)

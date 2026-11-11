@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTimingWriteJoinsBillingIdentityAndKeepsDistinctTraces(t *testing.T) {
@@ -30,6 +31,48 @@ func TestTimingWriteJoinsBillingIdentityAndKeepsDistinctTraces(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTimingBindingWSUsesExactlyOneCollectorPerUsage(t *testing.T) {
+	for _, finishBeforeBinding := range []bool{false, true} {
+		t.Run(map[bool]string{false: "bind first", true: "finish first"}[finishBeforeBinding], func(t *testing.T) {
+			db, _, err := sqlmock.New()
+			require.NoError(t, err)
+			defer func() { _ = db.Close() }()
+			repo := &usageLogRepository{timingQueue: make(chan timingWrite, 4), db: db}
+			repo.timingOnce.Do(func() {})
+			parent := requesttiming.New(time.Now(), 0)
+			ctx := requesttiming.With(t.Context(), parent)
+			seen := map[string]bool{}
+			for _, requestID := range []string{"turn-one", "turn-two"} {
+				turn := requesttiming.NewWSTurn(time.Now(), 17, 0, [32]byte{1})
+				turn.Content([]byte(`{"type":"response.output_text.delta","delta":"private-answer"}`))
+				turn.Content([]byte(`{"type":"response.completed"}`))
+				if finishBeforeBinding {
+					turn.Finish(nil, false, false)
+				}
+				repo.RecordRequestTiming(requesttiming.WithUsageTurn(ctx, turn.Collector), requestID, 8)
+				if !finishBeforeBinding {
+					require.Empty(t, repo.timingQueue)
+					turn.Finish(nil, false, false)
+				}
+				select {
+				case job := <-repo.timingQueue:
+					require.Equal(t, requestID, job.requestID)
+					require.EqualValues(t, 8, job.apiKeyID)
+					require.Equal(t, "ws_turn", job.data.TTFTMode)
+					require.False(t, seen[job.data.TraceID])
+					seen[job.data.TraceID] = true
+					require.Len(t, job.data.Attempts, 1)
+					require.Equal(t, "observed", requesttiming.DeriveContentObservation(job.data).TextStream.Status)
+				default:
+					t.Fatal("turn diagnostic missing")
+				}
+			}
+			parent.Finish(200, false)
+			require.Empty(t, repo.timingQueue, "the enclosing request must not create another trace for either usage row")
+		})
 	}
 }
 func TestTimingBindingDoesNotWriteUntilRequestFinished(t *testing.T) {

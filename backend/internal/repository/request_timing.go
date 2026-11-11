@@ -17,10 +17,10 @@ type timingWrite struct {
 }
 
 // RecordRequestTiming is called after usage persistence has settled. Each real
-// HTTP request has its own server-generated trace ID, including idempotent
-// client retries sharing a single billed usage row.
+// HTTP request or physical WS turn has its own server-generated trace ID,
+// including idempotent client retries sharing a single billed usage row.
 func (r *usageLogRepository) RecordRequestTiming(ctx context.Context, requestID string, apiKeyID int64) {
-	c := requesttiming.From(ctx)
+	c := requesttiming.UsageCollector(ctx)
 	if c == nil || r.db == nil || requestID == "" {
 		return
 	}

@@ -44,11 +44,12 @@ func (item responseContentItem) visibleText() bool {
 }
 
 // Content records typed protocol observations without retaining generated text.
-// The legacy first_semantic/first_visible meanings remain unchanged.
-func Content(ctx context.Context, data []byte, eventTypes ...string) {
+// The legacy first_semantic/first_visible meanings remain unchanged. The return
+// value reports typed decoding, so bounded captures can mark a lost event.
+func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 	c := From(ctx)
 	if c == nil {
-		return
+		return false
 	}
 	var event struct {
 		Type         string              `json:"type"`
@@ -64,7 +65,7 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		} `json:"response"`
 	}
 	if json.Unmarshal(data, &event) != nil {
-		return
+		return false
 	}
 	if event.Type == "" && len(eventTypes) > 0 {
 		event.Type = strings.TrimSpace(eventTypes[0])
@@ -76,7 +77,7 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 			Thinking string `json:"thinking"`
 		}
 		if len(event.Delta) > 0 && json.Unmarshal(event.Delta, &delta) != nil {
-			return
+			return false
 		}
 		start, change := event.Type == "content_block_start", event.Type == "content_block_delta"
 		reasoning := (start && event.ContentBlock.Type == "thinking") ||
@@ -97,11 +98,11 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 			protocol = ""
 		}
 		recordContent(ctx, protocol, reasoning, visible, textDelta, nonText, terminal, nil, nil)
-		return
+		return true
 	}
 	var delta string
 	if len(event.Delta) > 0 && json.Unmarshal(event.Delta, &delta) != nil {
-		return
+		return false
 	}
 	reasoning := false
 	switch event.Type {
@@ -142,6 +143,7 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		cache, output = readTerminalUsage(data)
 	}
 	recordContent(ctx, "responses", reasoning, visibleText, textDelta, nonTextOutput, terminal, cache, output)
+	return true
 }
 
 // All protocols share the same bounded physical-attempt aggregate. Legacy
@@ -172,7 +174,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 	if stream := c.data.Attempts[tr.index].TextStream; stream != nil && stream.Terminal != "" {
 		// Gemini may send trailing usage after STOP, but further output or
 		// an error contradicts the earlier terminal and is not a healthy sample.
-		if protocol == "gemini" && (reasoning || visibleText || nonTextOutput || terminal == "failed" || terminal == "incomplete") {
+		if (protocol == "gemini" || c.data.Attempts[tr.index].Kind == "ws_turn") && (reasoning || visibleText || nonTextOutput || terminal == "failed" || terminal == "incomplete") {
 			stream.Invalid = true
 		}
 		return
@@ -184,7 +186,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 	}
 	for index := tr.index; index >= 0; {
 		a := &c.data.Attempts[index]
-		if protocol != "responses" && terminal != "" {
+		if (protocol != "responses" || a.Kind == "ws_turn") && terminal != "" {
 			a.Terminal = terminal
 			a.Events["terminal"] = now
 		}
@@ -200,7 +202,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		}
 		// Parents retain first-event diagnostics, but never a second copy of
 		// physical content counts. Each parser invokes Content once per event.
-		if a.Kind == "http" && (textDelta || nonTextOutput || terminal != "" || protocol == "messages" || protocol == "gemini") {
+		if (a.Kind == "http" || a.Kind == "ws_turn") && (textDelta || nonTextOutput || terminal != "" || protocol == "messages" || protocol == "gemini") {
 			if a.TextStream == nil {
 				a.TextStream = &TextStreamTiming{Protocol: protocol}
 			}
@@ -234,7 +236,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		}
 		index = a.Parent - 1
 	}
-	if protocol != "responses" && terminal != "" {
+	if (protocol != "responses" || c.data.Attempts[tr.index].Kind == "ws_turn") && terminal != "" {
 		c.data.Terminal = terminal
 		c.event("terminal", c.now())
 	}
@@ -290,11 +292,18 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 		return out
 	}
 	a := s.Attempts[len(s.Attempts)-1]
-	if a.Kind != "http" {
+	wsTurn := a.Kind == "ws_turn" && s.TTFTMode == "ws_turn"
+	if a.Kind != "http" && !wsTurn {
 		return out
 	}
 	out.Status = "partial"
 	out.Source = "httptrace_and_typed_sse"
+	if wsTurn {
+		out.Source = "typed_responses_ws"
+		out.Scope = "physical_websocket_turn_offsets_from_generation_start"
+		out.TextStream.Source = "typed_responses_ws"
+		out.TextStream.Scope = "physical_websocket_turn_text_deltas_at_parser"
+	}
 	out.Cache = deriveCacheObservation(s, a)
 	if a.ProxyID > 0 {
 		out.UpstreamSocket.Status = "proxy_obscured"
@@ -372,8 +381,12 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 				out.TextStream.TailWaitMS = &tail
 			}
 			out.TextStream.Status = "partial"
+			transportSuccess := a.Status >= 200 && a.Status < 300 && s.Status >= 200 && s.Status < 300
+			if wsTurn {
+				transportSuccess = a.Status == 0 && s.Status == 0 && s.Outcome == "success"
+			}
 			if !stream.Truncated && stream.Terminal == "completed" && a.Terminal == "completed" && a.Error == "" &&
-				a.Status >= 200 && a.Status < 300 && s.Status >= 200 && s.Status < 300 && !s.Canceled && !s.ClientDisconnect &&
+				transportSuccess && !s.Canceled && !s.ClientDisconnect &&
 				!s.DownstreamError && (s.Outcome == "" || s.Outcome == "success") {
 				out.TextStream.Status = "observed"
 			}
