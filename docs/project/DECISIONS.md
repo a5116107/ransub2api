@@ -1902,3 +1902,16 @@
 - 历史12个PNG共1164bytes原位、不提交；历史被宿主拒绝删除的目录和Go缓存均未重试、搬移或压缩。本轮复用既有scratch及最小证据目录，未创建新worktree、全局缓存或平行台账。
 
 - 最终键盘关闭验收等待原组件过渡后确认dialogs=0、保留Reopen details（cache-migration-browser-keyboard-close.json）；浏览器会话已关闭，5187夹具随后由原执行句柄停止。原PG17 status明确no server running，原静态壳已退出。STATE为80行/8077bytes，恢复检查点结束于968bytes；23个本地链接及15项源码摘要零漂移。仅保留最小回归证据与原可复用夹具；历史拒删资源不处理。
+
+## 2026-11-11：D5 运行时 TTFT 独立时效、恢复与会话黏性
+
+- 沿原 H 盘唯一工作树、work/monitor-driven-scheduling、b392080 基线完成原统计逻辑修复；授权边界仍为本地修复、验证和提交，不 CI、推送或部署。跨区域视频查询转发原节点，生成、双预算与结算仍由原节点管理。原28项/20 done不变，本子项不关闭D5或其后续依赖。
+- 原账号级 TTFT EWMA 没有独立观察时间和过期检查，旧慢样本长期参与排序和黏性逃逸；乱序报告也会混入更新的均值。原位增加 lastTTFTAt 与10分钟样本时效，错误率继续使用原 lastReportedAt 和2分钟半衰期。缺失、零值或负值不续期，迟到报告保留自身时间且不覆盖更新的TTFT；到期、未来或零时间返回未知，过期后首个有效样本重建均值，未过期保持原0.2权重。
+- 原 shouldEscapeStickyAccount 使用同一统计时钟，未新增调度器、缓存、表、配置开关或计费路径。时效未知不参与TTFT评分或触发慢线路逃逸；近期真实错误仍可触发原错误率逃逸，其他可用性/倍率/质量门保持独立。这不是响应超时、供应商缓存寿命、跨协议比较或会话迁移收益的证明。
+- 续接前保留的 runtime-ttft-before.jsonl 为真实红测：3个顶层失败、9条含父项失败记录，package fail/0.274s；覆盖到期/长闲置/未来、过期均值恢复、迟到覆盖与实际sticky标记。修复后定向 `go test -race -p 1 -tags unit ./internal/service -run '^(TestOpenAIAccountRuntimeStats|TestOpenAIScheduler.*TTFT)' -count=1 -timeout=3m -json` package pass/1.393s，6顶层/19含子例、零失败/跳过（runtime-ttft-focused.jsonl）。新增实际选号矩阵让备用账号优先级更高，验证过期慢样本仍保留原绑定，新鲜慢样本或新近连续错误选择真正的备用账号；不只检查内部判定函数。
+- 扩展 `go test -race -p 1 -tags unit ./internal/service -run '^(TestOpenAI.*Scheduler|TestDefaultOpenAIAccountScheduler|TestOpenAIGatewayService_SelectAccountWithScheduler|TestOpenAIAccountRuntimeStats|TestPriority|TestIssue603|TestSharedUpstreamKey)' -count=1 -timeout=6m -json` 退出0，229顶层/457含子例、零失败/跳过、9.369s（runtime-ttft-regression.jsonl）。包含并发统计、阈值边界、原优先级、共享Key和原生WS；与定向结果重叠，不相加。仅本地所选范围，不作为全仓或生产验收。
+- 收取先前已启动的标准 repository PG14 补验：cache-migration-pg14.jsonl 最终 package pass/21.230s，14顶层/93含子例、零失败/跳过；原SQL选择器含 TestCacheMigration、TestLatencyCache、TestLatencyOutputRate、TestIssue605 和 TestTiming，证明该轮SQL补验，不等同全仓或生产。此次仅改运行时统计，repository/计时JSON/SQL及前端输入未变，复用对应已通过证据，移除STATE中已过时的PG14环境等待。
+- 唯一设计8.2节补齐原统计时效与未知边界；24个本地文档链接无缺失，差异检查通过，无新增TODO/FIXME/XXX、skip或lint抑制。历史12个PNG/1164bytes保持原位、不提交；历史拒删目录和共享Go缓存不重试删除。本轮系统TEMP/sub2api-runtime-ttft只承载子进程中间产物，回收结果与静态检查随后按实际结果补记。
+
+- 原规则完整 service 静态检查 `bin/task-d2-golangci-lint.exe run --build-tags 'unit,integration' --timeout 18m --concurrency 1 ./internal/service` 在原6GiB限制下退出0、`0 issues.`；`go vet -p 1 -tags 'unit integration' ./internal/service` 退出0、无诊断；`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1 ./internal/service ./cmd/server` 退出0，仅证明Linux编译。原串行执行句柄36373最终退出0，runtime-ttft-static-result.json记录Lint/Vet/LinuxBuild均为0，三个原日志保留。没有重复启动完整lint或修改规则、内存/超时配置。
+- 本轮TEMP/sub2api-runtime-ttft的Remove-Item命令含绝对路径、非链接和进程引用保护，但CreateProcess在命令执行前被宿主以`blocked by policy`拒绝，实际手动删除0。未换工具、搬移或压缩。后续只读检查确认0文件、0进程引用，仅剩空目录；中间文件由原Go工具正常回收，不把空目录保留声称为新垃圾文件或磁盘空间回收。由工作区拥有者手动移除空目录，历史拒删产物和12个PNG不动。

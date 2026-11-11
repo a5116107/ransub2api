@@ -3,24 +3,24 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5请求内换线冷输入范围本地已验；父项仍开放。
-授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：0062037后原JSON投影；清单source-cache-migration-final.sha256。
-验证命令：timing/middleware race、PG17原SQL、前端vitest/type/eslint及原lint/vet/Linux编译。
-验证结果：99顶层/710含子例，前端77通过；lint 0，原静态壳退出0。
-验证来源：backend/tmp/protocol-cache/cache-migration-*；清单27540544；PG14仍未补验。
-下一动作：D5跨请求前缀/候选缓存域与跨协议可比性仍待独立证据；D2/D4外部条件不变。
-尝试：13
+任务：D5 TTFT时效/恢复/黏性本地已验；父项开放。
+授权：原H盘本地修复/验证/提交；不CI/推送/部署。
+源码：b392080后原EWMA；无新缓存或调度器。
+验证命令：service race、原规则lint/vet/Linux编译；原PG14 SQL补验。
+验证结果：调度229/457、PG14 14/93通过；lint 0 issues，vet/Linux退出0。
+验证来源：backend/tmp/protocol-cache/runtime-ttft-*、cache-migration-pg14.jsonl。
+下一动作：补齐D5跨请求前缀/缓存域和跨协议可比性证据；D2/D4来源契约仍待。
+尝试：14
 阻塞：D2 unknown待供应商契约；生产排空待管理员；旧缓存及本轮临时目录拒删待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新日期：2026-11-11。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
+更新日期：2026-11-12。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
-- 用户授权本地实施、修复、相关清理与验证、本地提交；真实采购价格不在本期范围。生产执行仍需对应授权。
+- 授权本地实施/修复/清理/验证/提交；真实采购价不做，生产另需授权。
 
 ## 任务进度
 
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 原始协议/缓存/TPS及请求内换线冷输入范围已验；99顶层race/PG17、前端77及静态通过；跨协议可比性与跨请求会话估计待验 |
+| D5 | in_progress | 协议/缓存/TPS/请求内换线已验；TTFT时效/恢复/黏性229顶层race及lint/vet/Linux通过，PG14为14/93；跨协议可比性/会话估计待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -66,15 +66,16 @@
 
 ## 下一项工作
 
-D5请求内换线范围本地完成，跨请求会话估计和跨协议可比性待验。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；336回退须排空并保留账单。未改线上策略。
+D5跨请求估计/跨协议比较待验。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；336回退须排空并留账单。
 
 ## 外部等待与清理
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
-- 本轮Docker容器查询挂起、原PG14命令540秒超时；隔离PG17原SQL已验，不等同PG14/Redis7完整组合，由环境拥有者恢复Docker查询后按原命令补验。
+- 原PG14补验已释放：原repository SQL 14顶层/93含子例通过，零失败/跳过（cache-migration-pg14.jsonl）；不代表全仓或生产。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`及`backend/tmp/output-rate/`中的旧夹具/缓存；由工作区拥有者处理，详见DECISIONS。
 - 历史`backend/tmp/ws-turn-metrics/vite-cache`拒删11文件/2886386bytes待拥有者手动删除，不换工具重试。本轮浏览器及5186夹具已关闭，无新增Vite缓存；历史PNG原位保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
 - 历史TEMP下sub2api-chat-wire及-final-static/-sql/-static约69MiB拒删保留；本轮复用-sql隔离PG17，不重试删除。
 - 本轮TEMP下sub2api-protocol-rate的18文件/700.05MiB删除被宿主blocked by policy拒绝，删除0；PG17/浏览器已停止，拥有者手动清理。
+- TEMP/sub2api-runtime-ttft仅余空目录（0文件/0进程引用）；删除命令被宿主blocked by policy拒绝，未换工具重试，由拥有者手动移除。

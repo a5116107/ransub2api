@@ -212,6 +212,7 @@ type openAIAccountRuntimeStat struct {
 	errorRate      float64
 	ttft           float64
 	lastReportedAt time.Time
+	lastTTFTAt     time.Time
 }
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -246,7 +247,10 @@ func (s *openAIAccountRuntimeStats) loadOrCreate(accountID int64) *openAIAccount
 	return stat
 }
 
-const openAIErrorRateHalfLife = 2 * time.Minute
+const (
+	openAIErrorRateHalfLife = 2 * time.Minute
+	openAITTFTSampleTTL     = 10 * time.Minute
+)
 
 func decayedOpenAIErrorRate(rate float64, last, now time.Time) float64 {
 	if !last.IsZero() && now.After(last) {
@@ -267,6 +271,7 @@ func (s *openAIAccountRuntimeStats) reportAt(accountID int64, success bool, firs
 	stat := s.loadOrCreate(accountID)
 	stat.mu.Lock()
 	defer stat.mu.Unlock()
+	ttftObservedAt := now
 	// Reporters can capture their clock before another reporter gets the lock.
 	// Never move the observation timestamp backwards.
 	if now.Before(stat.lastReportedAt) {
@@ -280,13 +285,16 @@ func (s *openAIAccountRuntimeStats) reportAt(accountID int64, success bool, firs
 	stat.errorRate = alpha*errorSample + (1-alpha)*decayedOpenAIErrorRate(stat.errorRate, stat.lastReportedAt, now)
 	stat.lastReportedAt = now
 
-	if firstTokenMs != nil && *firstTokenMs > 0 {
+	// TTFT has its own observation time: unmeasured results and late reports
+	// must not renew an old latency sample or overwrite a newer one.
+	if firstTokenMs != nil && *firstTokenMs > 0 && !ttftObservedAt.IsZero() && !ttftObservedAt.Before(stat.lastTTFTAt) {
 		ttft := float64(*firstTokenMs)
-		if math.IsNaN(stat.ttft) {
+		if math.IsNaN(stat.ttft) || stat.lastTTFTAt.IsZero() || ttftObservedAt.Sub(stat.lastTTFTAt) >= openAITTFTSampleTTL {
 			stat.ttft = ttft
 		} else {
 			stat.ttft = alpha*ttft + (1-alpha)*stat.ttft
 		}
+		stat.lastTTFTAt = ttftObservedAt
 	}
 }
 
@@ -310,7 +318,8 @@ func (s *openAIAccountRuntimeStats) snapshotAt(accountID int64, now time.Time) (
 	defer stat.mu.Unlock()
 	errorRate = decayedOpenAIErrorRate(stat.errorRate, stat.lastReportedAt, now)
 	ttftValue := stat.ttft
-	if math.IsNaN(ttftValue) {
+	age := now.Sub(stat.lastTTFTAt)
+	if math.IsNaN(ttftValue) || stat.lastTTFTAt.IsZero() || age < 0 || age >= openAITTFTSampleTTL {
 		return errorRate, 0, false
 	}
 	return errorRate, ttftValue, true
@@ -836,7 +845,10 @@ func openAIAccountSchedulingPriority(account *Account) int {
 }
 
 func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int64, cfg openAIStickyEscapeConfig) (reason string, errorRate float64, ttft float64, shouldEscape bool) {
-	return s.shouldEscapeStickyAccountAt(accountID, time.Now(), cfg)
+	if s == nil || s.stats == nil {
+		return "", 0, 0, false
+	}
+	return s.shouldEscapeStickyAccountAt(accountID, s.stats.currentTime(), cfg)
 }
 
 func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccountAt(accountID int64, now time.Time, cfg openAIStickyEscapeConfig) (reason string, errorRate float64, ttft float64, shouldEscape bool) {
