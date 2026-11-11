@@ -26,6 +26,7 @@ type LatencyGroup struct {
 	UpstreamModel     string                 `json:"upstream_model"`
 	ServiceTier       string                 `json:"service_tier"`
 	UpstreamEndpoint  string                 `json:"upstream_endpoint"`
+	TransportEndpoint string                 `json:"transport_endpoint"`
 	RouteFingerprint  string                 `json:"route_fingerprint"`
 	ProxyID           int64                  `json:"proxy_id"`
 	Stream            bool                   `json:"stream"`
@@ -115,9 +116,9 @@ func readLatencyReport(ctx context.Context, reader any, f LatencyReportFilter) (
 
 func annotateCacheColdStart(groups []LatencyGroup, f LatencyReportFilter, now time.Time) {
 	type cohort struct {
-		account, proxy                                               int64
-		model, upstream, tier, endpoint, route, body, effort, source string
-		stream                                                       bool
+		account, proxy                                                          int64
+		model, upstream, tier, endpoint, transport, route, body, effort, source string
+		stream                                                                  bool
 	}
 	type pair struct {
 		cold, warm *LatencyGroup
@@ -135,14 +136,19 @@ func annotateCacheColdStart(groups []LatencyGroup, f LatencyReportFilter, now ti
 		route, err := hex.DecodeString(g.RouteFingerprint)
 		canonical := g.CacheSource == "canonical_responses_terminal_usage" || g.CacheSource == "canonical_messages_cumulative_usage" ||
 			g.CacheSource == "canonical_gemini_usage_metadata" || g.CacheSource == "canonical_chat_completions_usage"
-		if !canonical || err != nil || len(route) != 32 || [32]byte(route) == [32]byte{} ||
+		physicalEndpoint := false
+		switch g.TransportEndpoint {
+		case "responses", "responses_compact", "chat_completions", "messages", "gemini_generate_content", "gemini_stream_generate_content":
+			physicalEndpoint = true
+		}
+		if !canonical || !physicalEndpoint || err != nil || len(route) != 32 || [32]byte(route) == [32]byte{} ||
 			g.AccountID <= 0 || g.Model == "" || g.Model == "unknown" || g.UpstreamModel == "" || g.UpstreamModel == "unknown" ||
 			g.ServiceTier == "" || g.ServiceTier == "unknown" || g.ServiceTier == "unspecified" ||
 			g.UpstreamEndpoint == "" || g.UpstreamEndpoint == "unknown" || g.BodyBucket == "" || g.BodyBucket == "unknown" ||
 			g.ReasoningEffort == "" || g.ReasoningEffort == "unknown" || g.ProxyID < 0 || !g.Stream {
 			continue
 		}
-		key := cohort{g.AccountID, g.ProxyID, g.Model, g.UpstreamModel, g.ServiceTier, g.UpstreamEndpoint, g.RouteFingerprint, g.BodyBucket, g.ReasoningEffort, g.CacheSource, g.Stream}
+		key := cohort{g.AccountID, g.ProxyID, g.Model, g.UpstreamModel, g.ServiceTier, g.UpstreamEndpoint, g.TransportEndpoint, g.RouteFingerprint, g.BodyBucket, g.ReasoningEffort, g.CacheSource, g.Stream}
 		keys[i] = key
 		p := pairs[key]
 		if p == nil {

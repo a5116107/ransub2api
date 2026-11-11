@@ -14,6 +14,38 @@ const result = { groups: [group], end_to_end_ms: null, end_to_end_status: 'not_c
 const coldStart = { status: 'historical_association', method: 'independent_history_p90_difference_not_causal', min_samples: 5, max_age_seconds: 900, cold_samples: 5, warm_samples: 6, cold_p90_ms: 6000, warm_p90_ms: 1000, delta_ms: 5000, as_of: '2026-11-11T00:00:00Z', latest_cold_at: '2026-11-10T23:59:00Z', latest_warm_at: '2026-11-10T23:59:00Z' }
 describe('Issue603 latency observations', () => {
   for (const [locale, messages] of Object.entries({ en, zh })) {
+    it(`separates observed transport endpoints from the billed path in ${locale}`, async () => {
+      const base = { ...group, account_id: 4, model: 'public', upstream_endpoint: '/v1/responses' }
+      mocks.read.mockResolvedValue({ ...result, groups: [
+        { ...base, transport_endpoint: 'messages' },
+        { ...base, transport_endpoint: 'gemini_stream_generate_content' },
+        { ...base, transport_endpoint: 'unknown' },
+        { ...base, transport_endpoint: '/private/path?token=synthetic' },
+        { ...base, transport_endpoint: '__proto__' },
+        base,
+      ] })
+      const w = mount(LatencyObservabilityPanel, { global: { plugins: [localePlugin(locale)] } })
+      await flushPromises()
+      const endpoints = w.findAll('[data-testid="transport-endpoint"]')
+      expect(endpoints).toHaveLength(6)
+      expect(endpoints[0].text()).toContain('messages')
+      expect(endpoints[1].text()).toContain('gemini_stream_generate_content')
+      for (const unknown of endpoints.slice(2)) expect(unknown.text()).toContain(messages.notCollected)
+      expect(w.text()).not.toContain('/private/path?token=synthetic')
+      expect(w.text()).not.toContain('__proto__')
+      expect(w.findAll('[data-testid="cache-cohort"]').every(c => c.text().includes('/v1/responses'))).toBe(true)
+      mocks.read.mockResolvedValue({ ...result, groups: [
+        { ...base, transport_endpoint: 'gemini_stream_generate_content' },
+        { ...base, transport_endpoint: 'messages' },
+      ] })
+      await w.setProps({ refreshToken: 1 })
+      await flushPromises()
+      expect(w.findAll('[data-testid="transport-endpoint"]')[0].text()).toContain('gemini_stream_generate_content')
+      expect(w.findAll('[data-testid="transport-endpoint"]')[1].text()).toContain('messages')
+      w.unmount()
+    })
+  }
+  for (const [locale, messages] of Object.entries({ en, zh })) {
     it(`shows cache evidence, route cohorts and historical uncertainty in ${locale}`, async () => {
       const base = { ...group, account_id: 4, model: 'public', upstream_model: 'actual', service_tier: 'default', upstream_endpoint: '/v1/responses', route_fingerprint: 'a'.repeat(64), proxy_id: 0, stream: true, cache_source: 'canonical_responses_terminal_usage', cold_start: coldStart }
       mocks.read.mockResolvedValue({ ...result, groups: [base, { ...base, service_tier: 'priority', route_fingerprint: 'b'.repeat(64) }] })

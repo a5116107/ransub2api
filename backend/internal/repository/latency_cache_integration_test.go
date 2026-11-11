@@ -4,6 +4,9 @@ package repository
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/transportdiag"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -36,10 +40,200 @@ func newLatencyCacheFixture(t *testing.T) latencyCacheFixture {
 			ServiceTier: &tier, ReasoningEffort: &effort, UpstreamEndpoint: &endpoint, Stream: true,
 			InputTokens: 100, CreatedAt: time.Now().UTC().Add(-time.Minute)},
 		trace: requesttiming.Snapshot{Version: 1, Status: 200, BodyBytes: 2 << 20, TotalMS: end, Attempts: []requesttiming.Attempt{
-			{Kind: "http", Number: 1, AccountID: a.ID, RouteFingerprint: strings.Repeat("a", 64), ProxyID: 0, StartMS: 0,
+			{Kind: "http", Number: 1, AccountID: a.ID, Route: transportdiag.Route{Endpoint: "responses"}, RouteFingerprint: strings.Repeat("a", 64), ProxyID: 0, StartMS: 0,
 				EndMS: &end, Status: 200, Terminal: "completed", CacheUsage: &requesttiming.CacheUsage{Status: "observed", InputTokens: 100},
 				Events: map[string]float64{"headers_written": 10, "request_written": 20, "first_visible_text": 6020}},
 		}},
+	}
+}
+
+func TestLatencyCachePhysicalEndpointsStaySeparate(t *testing.T) {
+	f := newLatencyCacheFixture(t)
+	endpoints := []string{"responses", "responses_compact", "chat_completions", "messages", "gemini_generate_content", "gemini_stream_generate_content"}
+	for _, endpoint := range endpoints {
+		f.trace.Attempts[0].Route.Endpoint = endpoint
+		f.insert(t)
+	}
+	for _, endpoint := range []string{"", "other", "future_endpoint", "/private/path?token=synthetic"} {
+		f.trace.Attempts[0].Route.Endpoint = endpoint
+		f.insert(t)
+	}
+	groups, err := f.repo.ReadLatencyReport(t.Context(), service.LatencyReportFilter{
+		Start: f.usage.CreatedAt.Add(-time.Minute), End: time.Now().UTC(), UserID: f.usage.UserID,
+	})
+	require.NoError(t, err)
+	require.Len(t, groups, len(endpoints)+1, "the same billed path, route, model and wire source do not prove the same physical HTTP endpoint")
+	seen := make(map[string]bool)
+	for _, g := range groups {
+		require.Equal(t, "/v1/responses", g.UpstreamEndpoint, "retain the billed endpoint independently")
+		require.False(t, seen[g.TransportEndpoint], "duplicate physical endpoint cohort")
+		seen[g.TransportEndpoint] = true
+		if g.TransportEndpoint == "unknown" {
+			require.EqualValues(t, 4, g.Requests, "unclassified paths must not be exposed or inferred from the billed endpoint")
+		} else {
+			require.EqualValues(t, 1, g.Requests)
+		}
+	}
+	for _, endpoint := range append(endpoints, "unknown") {
+		require.True(t, seen[endpoint], endpoint)
+	}
+}
+
+func TestLatencyCachePhysicalEndpointRequiresFinalHTTPProof(t *testing.T) {
+	for _, mode := range []string{"observed", "missing", "unknown", "future_version", "previous_attempt_only", "parent_only", "wrong_account", "ws_mode", "ws_kind", "ambiguous_trace", "missing_trace"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newLatencyCacheFixture(t)
+			expected := "unknown"
+			switch mode {
+			case "observed":
+				expected = "responses"
+			case "missing":
+				f.trace.Attempts[0].Route.Endpoint = ""
+			case "unknown":
+				f.trace.Attempts[0].Route.Endpoint = "other"
+			case "future_version":
+				f.trace.Version = 2
+			case "previous_attempt_only", "parent_only":
+				previous := f.trace.Attempts[0]
+				if mode == "parent_only" {
+					previous.Kind = "egress"
+				}
+				f.trace.Attempts[0].Number, f.trace.Attempts[0].Route.Endpoint = 2, ""
+				f.trace.Attempts = append([]requesttiming.Attempt{previous}, f.trace.Attempts...)
+			case "wrong_account":
+				f.trace.Attempts[0].AccountID++
+			case "ws_mode":
+				f.trace.TTFTMode = "ws_turn"
+			case "ws_kind":
+				f.trace.Attempts[0].Kind = "ws_turn"
+			}
+			id := f.insert(t)
+			if mode == "ambiguous_trace" {
+				raw, err := json.Marshal(f.trace)
+				require.NoError(t, err)
+				_, err = f.tx.ExecContext(t.Context(), `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,$3::jsonb)`, id, uuid.NewString(), string(raw))
+				require.NoError(t, err)
+			}
+			if mode == "missing_trace" {
+				_, err := f.tx.ExecContext(t.Context(), `DELETE FROM request_timing_details WHERE usage_log_id=$1`, id)
+				require.NoError(t, err)
+			}
+			groups, err := f.repo.ReadLatencyReport(t.Context(), service.LatencyReportFilter{
+				Start: f.usage.CreatedAt.Add(-time.Minute), End: time.Now().UTC(), UserID: f.usage.UserID,
+			})
+			require.NoError(t, err)
+			require.Len(t, groups, 1)
+			require.Equal(t, expected, groups[0].TransportEndpoint)
+			require.Equal(t, "/v1/responses", groups[0].UpstreamEndpoint)
+		})
+	}
+}
+
+func TestLatencyCachePhysicalEndpointCapturedThroughHTTP(t *testing.T) {
+	f := newLatencyCacheFixture(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(upstream.Close)
+	paths := map[string]string{
+		"/v1/responses": "responses", "/bridge/responses/compact": "responses_compact",
+		"/bridge/chat/completions": "chat_completions", "/bridge/messages": "messages",
+		"/v1beta/models/model-a:generateContent": "gemini_generate_content",
+		"/v1internal:streamGenerateContent":      "gemini_stream_generate_content",
+	}
+	for path := range paths {
+		c := requesttiming.New(time.Now(), 2)
+		req, err := http.NewRequestWithContext(requesttiming.With(t.Context(), c), http.MethodPost,
+			upstream.URL+path+"?token=endpoint-secret-marker", strings.NewReader("{}"))
+		require.NoError(t, err)
+		req, logical := requesttiming.StartAttempt(req, f.usage.AccountID, 0)
+		req, physical := requesttiming.StartTransport(req)
+		resp, err := upstream.Client().Do(req)
+		physical.Response(resp, err)
+		require.NoError(t, err)
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		logical.Response(nil, nil)
+		c.Finish(http.StatusOK, false)
+		captured := false
+		c.WhenFinished(func(s requesttiming.Snapshot) { f.trace, captured = s, true })
+		require.True(t, captured)
+		raw, err := json.Marshal(f.trace)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "endpoint-secret-marker")
+		require.NotContains(t, string(raw), "model-a")
+		f.insert(t)
+	}
+	groups, err := f.repo.ReadLatencyReport(t.Context(), service.LatencyReportFilter{
+		Start: f.usage.CreatedAt.Add(-time.Minute), End: time.Now().UTC(), UserID: f.usage.UserID,
+	})
+	require.NoError(t, err)
+	require.Len(t, groups, len(paths))
+	seen := make(map[string]bool)
+	for _, g := range groups {
+		require.Equal(t, "/v1/responses", g.UpstreamEndpoint)
+		require.EqualValues(t, 1, g.Requests)
+		seen[g.TransportEndpoint] = true
+	}
+	for _, endpoint := range paths {
+		require.True(t, seen[endpoint], endpoint)
+	}
+}
+
+func TestLatencyCachePhysicalEndpointHistoricalComparisonAndRecovery(t *testing.T) {
+	for _, endpoint := range []string{"messages", "unknown", "responses"} {
+		t.Run(endpoint, func(t *testing.T) {
+			f := newLatencyCacheFixture(t)
+			f.trace.Terminal, f.trace.Outcome = "completed", "success"
+			var warmIDs []int64
+			for _, read := range []int{0, 95} {
+				for range 5 {
+					f.usage.InputTokens, f.usage.CacheReadTokens = 100-read, read
+					f.trace.Attempts[0].CacheUsage.ReadTokens = int64(read)
+					if read > 0 {
+						f.trace.Attempts[0].Route.Endpoint = endpoint
+					}
+					id := f.insert(t)
+					if read > 0 {
+						warmIDs = append(warmIDs, id)
+					}
+				}
+			}
+			s := service.NewUsageService(f.repo, nil, nil, nil)
+			filter := service.LatencyReportFilter{Start: f.usage.CreatedAt.Add(-time.Minute), End: time.Now().UTC(), UserID: f.usage.UserID}
+			report, err := s.LatencyReport(t.Context(), filter)
+			require.NoError(t, err)
+			require.Len(t, report.Groups, 2)
+			for _, g := range report.Groups {
+				expected := "insufficient_samples"
+				if endpoint == "responses" {
+					expected = "historical_association"
+				} else if g.TransportEndpoint == "unknown" {
+					expected = "unknown_scope"
+				}
+				require.Equal(t, expected, g.ColdStart.Status)
+				if endpoint != "responses" {
+					require.Nil(t, g.ColdStart.DeltaMS)
+				}
+			}
+			for _, id := range warmIDs {
+				_, err := f.tx.ExecContext(t.Context(), `UPDATE request_timing_details SET detail=jsonb_set(detail,'{attempts,0,route,endpoint}','"responses"'::jsonb) WHERE usage_log_id=$1`, id)
+				require.NoError(t, err)
+			}
+			report, err = s.LatencyReport(t.Context(), filter)
+			require.NoError(t, err)
+			require.Len(t, report.Groups, 2)
+			for _, g := range report.Groups {
+				require.Equal(t, "responses", g.TransportEndpoint)
+				require.Equal(t, "historical_association", g.ColdStart.Status)
+				require.EqualValues(t, 5, g.ColdStart.ColdSamples)
+				require.EqualValues(t, 5, g.ColdStart.WarmSamples)
+				require.NotNil(t, g.ColdStart.DeltaMS)
+				require.Zero(t, *g.ColdStart.DeltaMS)
+			}
+		})
 	}
 }
 

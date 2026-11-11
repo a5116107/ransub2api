@@ -14,7 +14,7 @@ func coldStartGroups(now time.Time) []LatencyGroup {
 	groups := make([]LatencyGroup, 2)
 	for i := range groups {
 		groups[i] = LatencyGroup{AccountID: 7, Model: "public-model", UpstreamModel: "actual-model", ServiceTier: "default",
-			UpstreamEndpoint: "/v1/responses", RouteFingerprint: strings.Repeat("a", 64), ProxyID: 0, Stream: true,
+			UpstreamEndpoint: "/v1/responses", TransportEndpoint: "responses", RouteFingerprint: strings.Repeat("a", 64), ProxyID: 0, Stream: true,
 			CacheSource: "canonical_responses_terminal_usage", BodyBucket: "1-4MiB", ReasoningEffort: "high",
 			TextWaitSamples: 5, TextWaitLatest: &now}
 	}
@@ -58,6 +58,12 @@ func TestCacheColdStartRejectsMissingScope(t *testing.T) {
 		{"missing_tier", func(g *LatencyGroup) { g.ServiceTier = "unknown" }},
 		{"unspecified_tier", func(g *LatencyGroup) { g.ServiceTier = "unspecified" }},
 		{"missing_endpoint", func(g *LatencyGroup) { g.UpstreamEndpoint = "" }},
+		{"missing_physical_endpoint", func(g *LatencyGroup) { g.TransportEndpoint = "" }},
+		{"unknown_physical_endpoint", func(g *LatencyGroup) { g.TransportEndpoint = "unknown" }},
+		{"unclassified_physical_endpoint", func(g *LatencyGroup) { g.TransportEndpoint = "other" }},
+		{"future_physical_endpoint", func(g *LatencyGroup) { g.TransportEndpoint = "future_endpoint" }},
+		{"raw_physical_path", func(g *LatencyGroup) { g.TransportEndpoint = "/v1/responses" }},
+		{"ws_endpoint", func(g *LatencyGroup) { g.TransportEndpoint = "ws_turn" }},
 		{"missing_body", func(g *LatencyGroup) { g.BodyBucket = "" }},
 		{"missing_effort", func(g *LatencyGroup) { g.ReasoningEffort = "unknown" }},
 		{"missing_proxy", func(g *LatencyGroup) { g.ProxyID = -1 }},
@@ -86,6 +92,7 @@ func TestCacheColdStartDoesNotMixCohorts(t *testing.T) {
 		{"upstream_model", func(g *LatencyGroup) { g.UpstreamModel = "another-actual-model" }},
 		{"fast", func(g *LatencyGroup) { g.ServiceTier = "priority" }},
 		{"protocol", func(g *LatencyGroup) { g.UpstreamEndpoint = "/v1/messages" }},
+		{"physical_endpoint", func(g *LatencyGroup) { g.TransportEndpoint = "messages" }},
 		{"messages_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_messages_cumulative_usage" }},
 		{"gemini_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_gemini_usage_metadata" }},
 		{"chat_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_chat_completions_usage" }},
@@ -119,6 +126,23 @@ func TestCacheColdStartNativeProtocolAssociations(t *testing.T) {
 			for _, g := range groups {
 				require.Equal(t, "historical_association", g.ColdStart.Status)
 				require.Equal(t, "independent_history_p90_difference_not_causal", g.ColdStart.Method)
+				require.InDelta(t, 5000, *g.ColdStart.DeltaMS, 1e-9)
+			}
+		})
+	}
+}
+
+func TestCacheColdStartPhysicalEndpointAssociations(t *testing.T) {
+	for _, endpoint := range []string{"responses", "responses_compact", "chat_completions", "messages", "gemini_generate_content", "gemini_stream_generate_content"} {
+		t.Run(endpoint, func(t *testing.T) {
+			now := time.Now().UTC()
+			groups := coldStartGroups(now)
+			for i := range groups {
+				groups[i].TransportEndpoint = endpoint
+			}
+			annotateCacheColdStart(groups, LatencyReportFilter{Start: now.Add(-time.Hour), End: now}, now)
+			for _, g := range groups {
+				require.Equal(t, "historical_association", g.ColdStart.Status)
 				require.InDelta(t, 5000, *g.ColdStart.DeltaMS, 1e-9)
 			}
 		})

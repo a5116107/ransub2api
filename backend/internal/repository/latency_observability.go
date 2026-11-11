@@ -36,7 +36,7 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
 		return where
 	}
 	where := filterWhere("u", "created_at", "COALESCE(NULLIF(u.requested_model,''),u.model)")
-	const cohort = "body_bucket,cache,effort,account_id,model,upstream_model,service_tier,upstream_endpoint,route_fingerprint,proxy_id,stream,cache_source"
+	const cohort = "body_bucket,cache,effort,account_id,model,upstream_model,service_tier,upstream_endpoint,route_fingerprint,proxy_id,stream,cache_source,transport_endpoint"
 	const recentTextWait = `final_attempt AND a->>'account_id'=account_id::text AND upload IS NOT NULL
  AND text_first>=written AND text_first<=parsed_ended
  AND created_at>=LEAST($2::timestamptz,statement_timestamp())-interval '15 minutes'
@@ -74,7 +74,11 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
   AND cache_attempt->>'route_fingerprint' ~ '^[0-9a-f]{64}$'
   AND cache_attempt->>'route_fingerprint'<>repeat('0',64)
   THEN cache_attempt->>'route_fingerprint' ELSE 'unknown' END route_fingerprint,
- CASE WHEN cache_attempt->>'proxy_id' ~ '^[0-9]{1,18}$' THEN (cache_attempt->>'proxy_id')::bigint ELSE -1 END proxy_id
+ CASE WHEN cache_attempt->>'proxy_id' ~ '^[0-9]{1,18}$' THEN (cache_attempt->>'proxy_id')::bigint ELSE -1 END proxy_id,
+ CASE WHEN trace_total=1 AND detail->>'version'='1' AND COALESCE(detail->>'ttft_mode','')<>'ws_turn'
+  AND cache_attempt->>'kind'='http' AND cache_attempt->>'account_id'=account_id::text
+  AND cache_attempt->'route'->>'endpoint' IN ('responses','responses_compact','chat_completions','messages','gemini_generate_content','gemini_stream_generate_content')
+  THEN cache_attempt->'route'->>'endpoint' ELSE 'unknown' END transport_endpoint
  FROM traces
 ), cache_values AS (
  SELECT *,
@@ -183,10 +187,10 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  SELECT c.body_bucket,c.cache,c.effort,c.requests,c.traces,COALESCE(s.attempts,0),COALESCE(s.uploads,0),COALESCE(s.waits,0),COALESCE(s.visibles,0),
  s.upload_avg,s.wait_avg,s.visible_avg,COALESCE(c.switches,0),c.failover_samples,COALESCE(c.retries,0),c.costs,c.extra_upload,c.extra_wait,c.account_id,c.model,
  COALESCE(s.reasonings,0),s.reasoning_avg,COALESCE(s.texts,0),s.text_avg,COALESCE(s.bytes,0),s.byte_avg,s.text_p50,s.text_p90,s.text_p99,
- c.upstream_model,c.service_tier,c.upstream_endpoint,c.route_fingerprint,c.proxy_id,c.stream,c.cache_source,
+ c.upstream_model,c.service_tier,c.upstream_endpoint,c.route_fingerprint,c.proxy_id,c.stream,c.cache_source,c.transport_endpoint,
  COALESCE(s.text_wait_samples,0),s.text_wait_p90,s.text_wait_latest
  FROM trace_counts c LEFT JOIN samples s USING(` + cohort + `)
- ORDER BY c.body_bucket,c.cache,c.effort,c.account_id,c.model,c.upstream_model,c.service_tier,c.upstream_endpoint,c.route_fingerprint,c.proxy_id,c.stream,c.cache_source LIMIT 1000`, args
+ ORDER BY c.body_bucket,c.cache,c.effort,c.account_id,c.model,c.upstream_model,c.service_tier,c.upstream_endpoint,c.route_fingerprint,c.proxy_id,c.stream,c.cache_source,c.transport_endpoint LIMIT 1000`, args
 }
 
 func readLatencyGroups(ctx context.Context, sql sqlExecutor, f service.LatencyReportFilter) ([]service.LatencyGroup, error) {
@@ -199,7 +203,7 @@ func readLatencyGroups(ctx context.Context, sql sqlExecutor, f service.LatencyRe
 	out := []service.LatencyGroup{}
 	for rows.Next() {
 		var v service.LatencyGroup
-		if err := rows.Scan(&v.BodyBucket, &v.CacheBucket, &v.ReasoningEffort, &v.Requests, &v.Traces, &v.Attempts, &v.UploadSamples, &v.WaitSamples, &v.VisibleSamples, &v.UploadAvgMS, &v.WaitAvgMS, &v.VisibleAvgMS, &v.LargeBodySwitches, &v.FailoverSamples, &v.LargeBodyRetries, &v.CostSamples, &v.ExtraUploadMS, &v.ExtraWaitMS, &v.AccountID, &v.Model, &v.ReasoningSamples, &v.ReasoningAvgMS, &v.TextSamples, &v.TextAvgMS, &v.ByteSamples, &v.ByteAvgMS, &v.TextP50MS, &v.TextP90MS, &v.TextP99MS, &v.UpstreamModel, &v.ServiceTier, &v.UpstreamEndpoint, &v.RouteFingerprint, &v.ProxyID, &v.Stream, &v.CacheSource, &v.TextWaitSamples, &v.TextWaitP90MS, &v.TextWaitLatest); err != nil {
+		if err := rows.Scan(&v.BodyBucket, &v.CacheBucket, &v.ReasoningEffort, &v.Requests, &v.Traces, &v.Attempts, &v.UploadSamples, &v.WaitSamples, &v.VisibleSamples, &v.UploadAvgMS, &v.WaitAvgMS, &v.VisibleAvgMS, &v.LargeBodySwitches, &v.FailoverSamples, &v.LargeBodyRetries, &v.CostSamples, &v.ExtraUploadMS, &v.ExtraWaitMS, &v.AccountID, &v.Model, &v.ReasoningSamples, &v.ReasoningAvgMS, &v.TextSamples, &v.TextAvgMS, &v.ByteSamples, &v.ByteAvgMS, &v.TextP50MS, &v.TextP90MS, &v.TextP99MS, &v.UpstreamModel, &v.ServiceTier, &v.UpstreamEndpoint, &v.RouteFingerprint, &v.ProxyID, &v.Stream, &v.CacheSource, &v.TransportEndpoint, &v.TextWaitSamples, &v.TextWaitP90MS, &v.TextWaitLatest); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

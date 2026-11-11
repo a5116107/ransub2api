@@ -19,7 +19,7 @@ type issue603LatencyRepo struct {
 
 func (r *issue603LatencyRepo) ReadLatencyReport(_ context.Context, f service.LatencyReportFilter) ([]service.LatencyGroup, error) {
 	r.filter = f
-	return []service.LatencyGroup{{BodyBucket: "unknown", Requests: 1}}, nil
+	return []service.LatencyGroup{{BodyBucket: "unknown", Requests: 1, UpstreamEndpoint: "/v1/responses", TransportEndpoint: "messages"}}, nil
 }
 func (r *issue603LatencyRepo) InsertNetworkSample(context.Context, service.OpsNetworkPoint) error {
 	return nil
@@ -43,6 +43,9 @@ func TestIssue603RealUsageAndOpsHandlers(t *testing.T) {
 		require.Contains(t, w.Body.String(), `"end_to_end_ms":null`)
 		require.Contains(t, w.Body.String(), `"end_to_end_status":"not_collected"`)
 		require.Contains(t, w.Body.String(), `"end_to_end_source":"none"`)
+		require.Contains(t, w.Body.String(), `"upstream_endpoint":"/v1/responses"`)
+		require.Contains(t, w.Body.String(), `"transport_endpoint":"messages"`)
+		require.Contains(t, w.Body.String(), `"status":"unknown_scope"`, "an endpoint alone must not create historical cache evidence")
 		require.Equal(t, int64(42), stub.filter.UserID)
 		require.Equal(t, "synthetic", stub.filter.Model)
 		require.Equal(t, path == "/ops/latency-report", stub.filter.IncludeUnbilled)

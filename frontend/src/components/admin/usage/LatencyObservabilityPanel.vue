@@ -18,6 +18,7 @@
           <td class="p-2" data-testid="cache-cohort">
             <div>{{ g.upstream_model || '—' }} · {{ g.service_tier || '—' }}</div>
             <div>{{ g.upstream_endpoint || '—' }} · {{ g.stream == null ? '—' : t(`latencyObservability.${g.stream ? 'stream' : 'nonStream'}`) }}</div>
+            <div data-testid="transport-endpoint">{{ t('latencyObservability.transportEndpoint', { endpoint: transportEndpoint(g.transport_endpoint) }) }}</div>
             <div :title="g.route_fingerprint">{{ t('latencyObservability.routeIdentity', { route: g.route_fingerprint?.slice(0, 12) || '—', proxy: g.proxy_id != null && g.proxy_id >= 0 ? g.proxy_id : '—' }) }}</div>
           </td>
           <td class="p-2">{{ g.body_bucket }}</td>
@@ -60,7 +61,14 @@ const { t } = useI18n()
 const report = ref<LatencyReport | null>(null), loading = ref(false), error = ref(false)
 const columns = ['accountModel', 'routeScope', 'body', 'cache', 'effort', 'coldStart', 'reasoning_first_ms', 'visible_text_first_ms', 'response_byte_first_ms', 'textQuantiles', 'samples', 'upload', 'semantic', 'visible', 'switches', 'extra']
 const measured = (value: number | null | undefined, count: number | undefined) => `${value == null ? t('latencyObservability.notCollected') : `${value.toFixed(1)} ms`} (n=${count ?? 0})`
-const cohortKey = (g: LatencyGroup) => JSON.stringify([g.account_id, g.model, g.upstream_model, g.service_tier, g.upstream_endpoint, g.route_fingerprint, g.proxy_id, g.stream, g.body_bucket, g.cache_bucket, g.reasoning_effort, g.cache_source])
+const cohortKey = (g: LatencyGroup) => JSON.stringify([g.account_id, g.model, g.upstream_model, g.service_tier, g.upstream_endpoint, g.transport_endpoint, g.route_fingerprint, g.proxy_id, g.stream, g.body_bucket, g.cache_bucket, g.reasoning_effort, g.cache_source])
+const transportEndpoint = (endpoint?: string) => {
+  switch (endpoint) {
+    case 'responses': case 'responses_compact': case 'chat_completions': case 'messages':
+    case 'gemini_generate_content': case 'gemini_stream_generate_content': return endpoint
+    default: return t('latencyObservability.notCollected')
+  }
+}
 const cacheSource = (source?: string) => {
   const keys: Record<string, string> = { canonical_responses_terminal_usage: 'cacheCanonical', canonical_messages_cumulative_usage: 'cacheMessages', canonical_gemini_usage_metadata: 'cacheGemini', canonical_chat_completions_usage: 'cacheChat', billed_usage_positive_read: 'cacheLegacy', unverified_terminal_usage: 'cacheUnverified' }
   return t(`latencyObservability.${keys[source ?? ''] ?? 'notCollected'}`)

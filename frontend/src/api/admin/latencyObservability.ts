@@ -17,7 +17,7 @@ export interface CacheColdStartEvidence {
 
 export interface LatencyGroup {
   account_id?: number; model?: string
-  upstream_model?: string; service_tier?: string; upstream_endpoint?: string
+  upstream_model?: string; service_tier?: string; upstream_endpoint?: string; transport_endpoint?: string
   route_fingerprint?: string; proxy_id?: number; stream?: boolean; cache_source?: string
   text_wait_samples?: number; post_upload_text_p90_ms?: number | null; text_wait_latest_at?: string | null
   cold_start?: CacheColdStartEvidence
