@@ -12,14 +12,15 @@ const maxTextStreamChunks = 1_000_000
 // TextStreamTiming is a constant-size aggregate of parsed Responses text
 // deltas, not tokens or network packets. No generated content is retained.
 type TextStreamTiming struct {
-	Chunks     int     `json:"chunks"`
-	FirstMS    float64 `json:"first_ms"`
-	LastMS     float64 `json:"last_ms"`
-	MaxGapMS   float64 `json:"max_gap_ms"`
-	Terminal   string  `json:"terminal,omitempty"`
-	TerminalMS float64 `json:"terminal_ms,omitempty"`
-	Truncated  bool    `json:"truncated,omitempty"`
-	Invalid    bool    `json:"invalid,omitempty"`
+	Chunks        int     `json:"chunks"`
+	FirstMS       float64 `json:"first_ms"`
+	LastMS        float64 `json:"last_ms"`
+	MaxGapMS      float64 `json:"max_gap_ms"`
+	Terminal      string  `json:"terminal,omitempty"`
+	TerminalMS    float64 `json:"terminal_ms,omitempty"`
+	Truncated     bool    `json:"truncated,omitempty"`
+	Invalid       bool    `json:"invalid,omitempty"`
+	NonTextOutput bool    `json:"non_text_output,omitempty"`
 }
 
 type responseContentItem struct {
@@ -75,6 +76,10 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		reasoning = true
 	}
 	textDelta := event.Type == "response.output_text.delta" && event.Delta != ""
+	nonTextOutput := ((event.Type == "response.output_item.added" || event.Type == "response.output_item.done") &&
+		event.Item.Type != "message" && event.Item.Type != "reasoning") ||
+		(strings.HasPrefix(event.Type, "response.") && strings.HasSuffix(event.Type, ".delta") &&
+			event.Type != "response.output_text.delta" && event.Type != "response.reasoning_text.delta" && event.Type != "response.reasoning_summary_text.delta")
 	visibleText := textDelta || (event.Type == "response.output_text.done" && event.Text != "")
 	if (event.Type == "response.output_item.added" || event.Type == "response.output_item.done") && event.Item.Type == "message" {
 		visibleText = event.Item.visibleText()
@@ -93,12 +98,13 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		terminal = "incomplete"
 	}
 	tr, _ := ctx.Value(attemptKey{}).(*Trace)
-	if tr == nil || tr.c != c || (!reasoning && !visibleText && terminal == "") {
+	if tr == nil || tr.c != c || (!reasoning && !visibleText && !nonTextOutput && terminal == "") {
 		return
 	}
 	var cache *CacheUsage
+	var output *OutputUsage
 	if terminal != "" {
-		cache = readTerminalCacheUsage(data)
+		cache, output = readTerminalUsage(data)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -111,6 +117,7 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 	now := c.offset(c.now())
 	if a := &c.data.Attempts[tr.index]; a.Kind == "http" && terminal != "" {
 		a.CacheUsage = cache
+		a.OutputUsage = output
 	}
 	for index := tr.index; index >= 0; {
 		a := &c.data.Attempts[index]
@@ -126,12 +133,13 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 		}
 		// Parents retain first-event diagnostics, but never a second copy of
 		// physical content counts. Each parser invokes Content once per event.
-		if a.Kind == "http" && (textDelta || terminal != "") {
+		if a.Kind == "http" && (textDelta || nonTextOutput || terminal != "") {
 			if a.TextStream == nil {
 				a.TextStream = &TextStreamTiming{}
 			}
 			stream := a.TextStream
 			if stream.Terminal == "" {
+				stream.NonTextOutput = stream.NonTextOutput || nonTextOutput
 				if textDelta && !stream.Invalid {
 					switch {
 					case !finite(now) || now < a.StartMS || (stream.Chunks > 0 && now < stream.LastMS):
@@ -179,6 +187,7 @@ type SocketEvidence struct {
 	Scope           string   `json:"scope"`
 }
 type ContentObservation struct {
+	OutputRate                   OutputRateObservation `json:"output_rate"`
 	Cache                        CacheObservation      `json:"cache"`
 	TextStream                   TextStreamObservation `json:"text_stream"`
 	ReasoningFirstMS             *float64              `json:"reasoning_first_ms"`
@@ -195,6 +204,7 @@ type ContentObservation struct {
 
 func UnknownContentObservation() ContentObservation {
 	return ContentObservation{Status: "not_collected", Source: "none", Scope: "final_physical_http_attempt_offsets_from_application_entry", ReasoningStreamingCapability: "unknown", CapabilitySource: "none",
+		OutputRate:     unknownOutputRate(),
 		Cache:          unknownCacheObservation(),
 		TextStream:     TextStreamObservation{Status: "not_collected", Source: "none", Scope: "final_physical_http_responses_text_deltas_at_parser"},
 		ClientSocket:   SocketEvidence{Status: "not_collected_or_reverse_proxy_obscured", Source: "none", Scope: "client_to_server; application_direct_peer_may_be_reverse_proxy"},
@@ -279,6 +289,7 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 	if out.ReasoningFirstMS != nil || out.VisibleTextFirstMS != nil || out.ResponseByteFirstMS != nil {
 		out.Status = "observed"
 	}
+	out.OutputRate = deriveOutputRate(s, a, out.TextStream)
 	return out
 }
 

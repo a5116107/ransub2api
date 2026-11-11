@@ -43,6 +43,59 @@ func newLatencyCacheFixture(t *testing.T) latencyCacheFixture {
 	}
 }
 
+func TestLatencyOutputRatePersistsAndRejectsAmbiguousTraces(t *testing.T) {
+	for _, mode := range []string{"complete", "missing_usage", "downstream_error", "retry_without_usage", "duplicate_trace"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newLatencyCacheFixture(t)
+			f.usage.OutputTokens = 120
+			f.trace.Terminal = "completed"
+			f.trace.Attempts[0].OutputUsage = &requesttiming.OutputUsage{
+				OutputTokens: 120, ReasoningTokens: 20, Status: "observed", ContentStatus: "text_and_reasoning",
+			}
+			f.trace.Attempts[0].TextStream = &requesttiming.TextStreamTiming{
+				Chunks: 3, FirstMS: 6020, LastMS: 7020, MaxGapMS: 500, Terminal: "completed", TerminalMS: 7520,
+			}
+			switch mode {
+			case "missing_usage":
+				f.trace.Attempts[0].OutputUsage = nil
+			case "downstream_error":
+				f.trace.DownstreamError = true
+			case "retry_without_usage":
+				f.trace.Attempts = append(f.trace.Attempts, requesttiming.Attempt{Kind: "http", AccountID: f.usage.AccountID})
+			}
+			rate := requesttiming.DeriveContentObservation(f.trace).OutputRate
+			f.trace.OutputRate = &rate
+			id := f.insert(t)
+			if mode == "duplicate_trace" {
+				_, err := f.tx.ExecContext(t.Context(), `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,'{}'::jsonb)`, id, uuid.NewString())
+				require.NoError(t, err)
+			}
+			items, err := f.repo.ReadUsageContentTimings(t.Context(), []int64{id})
+			require.NoError(t, err)
+			observed := items[id].OutputRate
+			switch mode {
+			case "complete":
+				traces, err := f.repo.RequestTimings(t.Context(), id)
+				require.NoError(t, err)
+				require.Len(t, traces, 1)
+				var saved requesttiming.Snapshot
+				require.NoError(t, json.Unmarshal(traces[0], &saved))
+				require.NotNil(t, saved.OutputRate)
+				require.Equal(t, observed, *saved.OutputRate)
+				require.Equal(t, "estimated", observed.Status)
+				require.EqualValues(t, 100, *observed.NonReasoningTokens)
+				require.InDelta(t, 100/1.5, *observed.TokensPerSecond, 1e-9)
+			case "downstream_error":
+				require.Equal(t, "partial", observed.Status)
+				require.Nil(t, observed.TokensPerSecond)
+			default:
+				require.Equal(t, "not_collected", observed.Status)
+				require.Nil(t, observed.TokensPerSecond)
+			}
+		})
+	}
+}
+
 func (f latencyCacheFixture) insert(t *testing.T) int64 {
 	t.Helper()
 	_, err := f.repo.Create(t.Context(), &f.usage)

@@ -45,7 +45,8 @@ func TestCacheUsageRequiresExplicitCanonicalCounters(t *testing.T) {
 		`{"response":{},"response":{"usage":{}}}`,
 		`{"usage":{},"usage":{}}`,
 	} {
-		require.Equal(t, "invalid_counters", readTerminalCacheUsage([]byte(envelope)).Status)
+		cache, _ := readTerminalUsage([]byte(envelope))
+		require.Equal(t, "invalid_counters", cache.Status)
 	}
 }
 

@@ -1983,6 +1983,12 @@ export type UsageRequestType = 'unknown' | 'sync' | 'stream' | 'ws_v2' | 'cyber'
 export type ImageSizeSource = 'output' | 'input' | 'default' | 'legacy'
 export type ImageSizeBreakdown = Record<string, number>
 
+export interface OutputRateObservation {
+  tokens_per_second: number | null; window_ms: number | null
+  output_tokens: number | null; reasoning_tokens: number | null; non_reasoning_tokens: number | null
+  status: string; source: string; scope: string; method: string
+}
+
 export interface UsageLog {
   id: number
   user_id: number
@@ -2028,6 +2034,7 @@ export interface UsageLog {
     forward_first_token_ms: number | null; forward_duration_ms: number
   } | null
   content_timing?: {
+    output_rate?: OutputRateObservation
     reasoning_first_ms: number | null; visible_text_first_ms: number | null; response_byte_first_ms: number | null
     status: string; source: string; scope: string; reasoning_streaming_capability: string; capability_source: string
     cache?: {

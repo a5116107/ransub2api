@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5缓存分层/冷热历史观测子项已验证交付；父项仍进行中。
+任务：D5 Responses HTTP输出阶段估算子项已验证；父项仍进行中。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：基线f10bb5c；28项最终清单e8b03b81，见证据目录。
-验证命令：requesttiming/service/admin/repository race，四包lint/vet及Linux build。
-验证结果：65顶层/547含子例race通过；lint 0 issues；vet/build、前端17例/类型/ESLint及浏览器通过。
-验证来源：backend/tmp/cache-observability。
-下一动作：D5其余协议/WS timing、TPS与会话迁移冷输入风险；D4模型/fast来源仍开放。
+源码：基线30d7c60；19项源码清单3fa046ff，见证据目录。
+验证命令：requesttiming/service/repository race、PG14/Redis7、三包lint/vet及Linux build。
+验证结果：62顶层/580含子例race通过；lint 0 issues；vet/build、前端24例/类型/ESLint及浏览器通过。
+验证来源：backend/tmp/output-rate。
+下一动作：D5其余协议/WS timing、跨协议TPS与会话迁移冷输入风险；D4模型/fast来源仍开放。
 尝试：1
 阻塞：D2 unknown待供应商关联契约；生产排空待管理员；历史拒删资源待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 文本间隔及缓存分层/冷热历史观测子项已交付；本轮65/547 race、PG14、lint/vet/build与前端通过；其余timing/迁移风险待验 |
+| D5 | in_progress | 文本间隔、缓存分层/冷热历史及Responses HTTP输出阶段估算子项已交付；本轮62/580 race、PG14、lint/vet/build、前端24例与浏览器通过；其余协议/WS及迁移风险待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -61,16 +61,16 @@
 - 使用Go1.27.3、原go.mod和lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 8GiB/18分钟。
 - 真实Redis竞争测试按PATH启动；本轮前置已有`H:/Root/tools/redis/5.0.14.1`，系统Redis3缺`redis.replicate_commands`。其余夹具使用已有Docker Redis7；integration默认将自己创建的隔离PostgreSQL交给区域夹具，不打印DSN。
 - 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个相同测试PNG共1164bytes，历史精确删除曾被策略拒绝（DECISIONS），保留且不提交。
-- 既有HTTP/compat归属、区域共享Key与Live的实际版本、完整/局部验证边界及失败历史见DECISIONS；不代替本轮WS源码或生产升级验收。区域竞争使用就绪SQL池，不计冷建连时延通过。
+- 协议/区域/Live验收边界和失败历史见DECISIONS；历史结果不代替新源码或生产验收。区域竞争使用就绪SQL池。
 - 不新增平行台账、配置或缓存实现，不用账号运营组充当Key额度键/缓存域证据。C盘副本统计effb8271不计主线完成数，开发统一在H盘。
 
 ## 下一项工作
 
-D5缓存分层/冷热历史观测子项完成；后续为其余协议/WS timing、输出TPS及会话迁移冷输入风险，未知不补零。D4模型/fast适用范围仍缺来源。原28项20 done、D2/D3/D4/D5进行中、D6–D9待验；D2 unknown待供应商关联契约。视频查询转发原节点，生成/双预算/结算不迁移；336升级/回退先排空并保留账单。模型/档位隔离与历史冷热差值不证明供应商缓存存活或迁移收益；API Key长历史保留原12条尾部及工具guard。本轮未改计费或线上策略。
+D5 Responses HTTP输出阶段估算子项已完成；后续为其余协议/WS timing、跨协议TPS及会话迁移冷输入风险，未知不补零。原28项20 done、D2/D3/D4/D5进行中、D6–D9待验；D2 unknown待供应商关联契约，D4模型/fast来源待补。视频查询转发原节点，生成/双预算/结算不迁移；336升级/回退先排空并保留账单。本轮未改计费或线上策略。
 
 ## 外部等待与清理
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 本任务的 `frontend/tmp/availability-coverage-ui/` 临时界面夹具删除被自动审批拒绝（blocked by policy）；保留原位，由工作区拥有者处理，不尝试绕过。
-- 自动审批拒删的历史资源及本轮`backend/tmp/cache-observability/`浏览器夹具/Vite缓存保留、不提交；路径/大小见DECISIONS，由工作区拥有者手动处理。本轮浏览器和UI服务器已关闭，不换工具绕过删除限制。
+- 自动审批拒删的历史资源及`backend/tmp/cache-observability/`夹具/缓存保留。本轮删除`backend/tmp/output-rate/browser-fixture.mjs`和`vite-cache`也被自动审批以`blocked by policy`拒绝；原位保留、不提交，由工作区拥有者手动处理。浏览器及UI服务已关闭，大小见DECISIONS。

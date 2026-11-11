@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import type { OutputRateObservation } from '@/types'
 export interface TimingSpan { name: string; start_ms: number; end_ms: number; attempt?: number }
 export interface TimingAttempt {
   kind: string; parent?: number; number: number; account_id: number; proxy_id: number; start_ms: number; end_ms: number | null
@@ -9,6 +10,7 @@ export interface TimingAttempt {
   body_eof: boolean; events: Record<string, number>
 }
 export interface RequestTiming {
+  output_rate?: OutputRateObservation
   latency?: { version: number; status: string; account_switches: number; same_account_retries: number; unknown_transitions: number; large_body: boolean; cost_status: string; extra_upload_component_ms: number | null; extra_wait_component_ms: number | null; attempts: { number: number; transition: string; failed: boolean; body_upload: { ms: number | null; status: string }; post_upload_first_content_wait: { ms: number | null; status: string }; post_upload_first_visible_wait: { ms: number | null; status: string } }[] }
   identity_source?: string
   auth_rejection?: string

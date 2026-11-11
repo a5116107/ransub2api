@@ -32,6 +32,20 @@
         </div>
         <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('requestTiming.scope') }}</p>
         <p class="text-sm"><strong>{{ t('usage.latencyTps') }} {{ formatUsageOutputTps(record) ?? '—' }}</strong> · {{ t('requestTiming.tpsNote') }}</p>
+        <section class="rounded-xl border border-gray-200 p-4 dark:border-dark-600" aria-labelledby="output-rate-title">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h4 id="output-rate-title" class="font-semibold">{{ t('requestTiming.outputRate.title') }}</h4>
+            <strong data-testid="output-phase-rate" class="text-lg tabular-nums">{{ phaseRate }}</strong>
+          </div>
+          <p class="mt-1 text-sm text-gray-600 dark:text-gray-400" data-testid="output-phase-status">{{ phaseRateStatus }}</p>
+          <dl class="mt-3 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+            <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.tokens') }}</dt><dd class="mt-1 tabular-nums">{{ phaseRateTokens }}</dd></div>
+            <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.reasoning') }}</dt><dd class="mt-1 tabular-nums">{{ phaseReasoningTokens }}</dd></div>
+            <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.window') }}</dt><dd class="mt-1 tabular-nums">{{ ms(outputRate?.window_ms) }}</dd></div>
+            <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.scopeLabel') }}</dt><dd class="mt-1">{{ t('requestTiming.outputRate.scope') }}</dd></div>
+          </dl>
+          <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('requestTiming.outputRate.note') }}</p>
+        </section>
         <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('requestTiming.health.attemptGuide') }}</p>
         <p v-if="trace.truncated" class="text-amber-600">{{ t('requestTiming.truncated') }}</p>
         <div class="grid gap-4 lg:grid-cols-3">
@@ -79,6 +93,30 @@ const { width: viewportWidth } = useWindowSize()
 const traces = ref<RequestTiming[]>([]), selected = ref(0), loading = ref(false), error = ref(false), retention = ref(30)
 let controller: AbortController | undefined
 const trace = computed(() => traces.value[selected.value])
+const outputRate = computed(() => trace.value?.output_rate)
+const phaseRate = computed(() => {
+  const rate = outputRate.value
+  const value = rate?.tokens_per_second
+  if (rate?.status !== 'estimated' || value == null || !Number.isFinite(value) || value <= 0 ||
+    rate.window_ms == null || !Number.isFinite(rate.window_ms) || rate.window_ms < 250 ||
+    rate.non_reasoning_tokens == null || !Number.isSafeInteger(rate.non_reasoning_tokens) || rate.non_reasoning_tokens < 32) return t('requestTiming.missing')
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} t/s`
+})
+const phaseRateStatus = computed(() => {
+  const status = outputRate.value?.status ?? 'not_collected'
+  const states = ['estimated', 'not_collected', 'not_reported', 'invalid_counters', 'diagnostic_limit', 'unsupported_usage',
+    'invalid_terminal', 'unsupported_output', 'no_text_output', 'partial', 'insufficient_stream', 'incomplete_stream',
+    'short_output', 'insufficient_window', 'invalid_boundary', 'incomplete_capture']
+  return t(`requestTiming.outputRate.states.${states.includes(status) ? status : 'not_collected'}`)
+})
+const phaseRateTokens = computed(() => {
+  const value = outputRate.value?.non_reasoning_tokens
+  return value != null && Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : t('requestTiming.missing')
+})
+const phaseReasoningTokens = computed(() => {
+  const value = outputRate.value?.reasoning_tokens
+  return value != null && Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : t('requestTiming.missing')
+})
 const label = (name: string) => t(`requestTiming.fields.${name}`)
 const ms = (value: number | null | undefined) => value == null ? t('requestTiming.missing') : value < 1 ? '<1ms' : value < 1000 ? `${value.toFixed(0)}ms` : `${(value / 1000).toFixed(2)}s`
 const bytes = (value: number) => value < 0 ? t('requestTiming.missing') : `${(value / 1048576).toFixed(3)} MiB`

@@ -95,6 +95,33 @@ export default {
   "success": "转发成功",
   "client_disconnected": "客户端已断开",
   "tpsNote": "平均 TPS = 输出 Token ÷ 记录的总耗时(秒). 包含等待时间及上游计入输出用量的推理 Token, 不扣除首字延迟, 不代表模型实际生成速度.",
+  "outputRate": {
+    "title": "输出阶段速度（估算）",
+    "tokens": "非推理输出 Token",
+    "reasoning": "已扣除的推理 Token",
+    "window": "首文本至完成",
+    "scopeLabel": "观测范围",
+    "scope": "当前请求的最终一次上游尝试",
+    "note": "仅比较完整成功的 Responses HTTP 文本流。非推理输出 Token 除以首文本至完成事件的秒数，包含首个分片和完成前的尾部等待；不是模型逐 Token 时钟或客户端接收速率。至少 32 个非推理 Token、2 个文本分片且文本跨度不少于 250ms 才给出估算；不用于自动调度。",
+    "states": {
+      "estimated": "根据原始用量与文本事件估算；不包含首文本前等待",
+      "not_collected": "未采集；旧记录或其他协议保持未知",
+      "not_reported": "上游未完整报告输出用量或文本类型",
+      "invalid_counters": "上游用量计数异常，不估算",
+      "diagnostic_limit": "超过诊断采集上限，不估算",
+      "unsupported_usage": "输出用量包含尚未分离的类型，不估算",
+      "invalid_terminal": "完成状态不一致，不估算",
+      "unsupported_output": "含工具、媒体或未覆盖的输出类型，不估算",
+      "no_text_output": "没有可确认的最终文本输出",
+      "partial": "请求失败、取消或未完整送出，不估算",
+      "insufficient_stream": "缺少完整的连续文本分片，不估算",
+      "incomplete_stream": "首文本与分片边界不一致，不估算",
+      "short_output": "非推理输出少于 32 个 Token，样本过短",
+      "insufficient_window": "文本跨度不足 250ms，缓冲或短流影响较大",
+      "invalid_boundary": "计时边界异常，不估算",
+      "incomplete_capture": "采集有缺口，不估算"
+    }
+  },
   "health": {
     "good": "正常",
     "warn": "需留意",

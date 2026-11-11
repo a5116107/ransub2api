@@ -125,23 +125,34 @@ func readCacheUsage(raw json.RawMessage) *CacheUsage {
 	return out
 }
 
-func readTerminalCacheUsage(data []byte) *CacheUsage {
+func readTerminalUsage(data []byte) (*CacheUsage, *OutputUsage) {
 	outer, ok := cacheObject(data)
 	if !ok {
-		return &CacheUsage{Status: "invalid_counters"}
+		return &CacheUsage{Status: "invalid_counters"}, &OutputUsage{Status: "invalid_counters"}
 	}
+	envelope := outer
+	usage := outer["usage"]
 	if response, exists := outer["response"]; exists {
 		if !bytes.Equal(bytes.TrimSpace(response), []byte("null")) {
 			r, valid := cacheObject(response)
 			if !valid {
-				return &CacheUsage{Status: "invalid_counters"}
+				return &CacheUsage{Status: "invalid_counters"}, &OutputUsage{Status: "invalid_counters"}
 			}
-			if usage, present := r["usage"]; present {
-				return readCacheUsage(usage)
+			if reported, present := r["usage"]; present {
+				usage = reported
+			} else {
+				// Keep the existing cache compatibility fallback, but do not
+				// combine output counters and text from different envelopes.
+				return readCacheUsage(usage), &OutputUsage{Status: "not_reported"}
 			}
+			envelope = r
 		}
 	}
-	return readCacheUsage(outer["usage"])
+	output := readOutputUsage(usage)
+	if output != nil {
+		output.ContentStatus = outputContentStatus(envelope)
+	}
+	return readCacheUsage(usage), output
 }
 
 func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {

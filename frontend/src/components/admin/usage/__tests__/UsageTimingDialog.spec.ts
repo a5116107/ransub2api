@@ -2,7 +2,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import UsageTimingDialog from '../UsageTimingDialog.vue'
 import { observerUsageContext } from '../observerUsageContext'
-import type { AdminUsageLog } from '@/types'
+import type { AdminUsageLog, OutputRateObservation } from '@/types'
+import type { RequestTiming } from '@/api/admin/usageTiming'
 const mocks = vi.hoisted(() => ({ get: vi.fn(), own: vi.fn() }))
 vi.mock('@/api/observerUsage', () => ({ observerUsageAPI: { getTiming: mocks.own } }))
 vi.mock('@/api/admin/usageTiming', () => ({ getUsageTiming: mocks.get }))
@@ -10,7 +11,53 @@ vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/utils/format', () => ({ formatDateTime: (s: string) => s }))
 const row = (id: number) => ({ id, model: 'test', request_id: `r${id}`, first_token_ms: 6055, duration_ms: 6067, created_at: '2026-09-23' }) as AdminUsageLog
 const options = { global: { stubs: { BaseDialog: { template: '<section><slot /></section>' } } } }
+const phaseObservation = (status = 'estimated'): OutputRateObservation => ({
+  status, tokens_per_second: 50, output_tokens: 120, reasoning_tokens: 20, non_reasoning_tokens: 100, window_ms: 2000,
+  source: 'canonical_responses_terminal_usage_and_text_events', scope: 'final_physical_http_responses_text_at_parser',
+  method: 'non_reasoning_tokens_over_first_text_to_terminal'
+})
+const phaseTrace = (rate?: OutputRateObservation, id = 'phase'): RequestTiming => ({
+  version: 1, trace_id: id, started_at: '2026-11-11', total_ms: 7000, status: 200, canceled: false, client_disconnect: false,
+  truncated: false, body_bytes: 0, body_expected: 0, body_complete: true, body_read_ms: 0, downstream_bytes: 100,
+  downstream_write_ms: 0, downstream_error: false, events: {}, spans: [], attempts: [], output_rate: rate
+})
 describe('Usage timing details', () => {
+  it('separates the final-attempt output-phase estimate from request-average TPS', async () => {
+    mocks.get.mockResolvedValue({ traces: [phaseTrace(phaseObservation())], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: { ...row(1), output_tokens: 120, duration_ms: 10_000 } }, ...options })
+    await flushPromises()
+    expect(wrapper.text()).toContain('usage.latencyTps 12.0 t/s')
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('50.0 t/s')
+    expect(wrapper.get('[data-testid="output-phase-status"]').text()).toBe('requestTiming.outputRate.states.estimated')
+    expect(wrapper.text()).toContain('requestTiming.outputRate.reasoning')
+    expect(wrapper.text()).toContain('requestTiming.outputRate.note')
+    wrapper.unmount()
+  })
+  it.each(['partial', 'incomplete_capture', 'short_output', 'unsupported_output', 'invalid_counters', 'insufficient_window'])('hides a reported rate when status is %s', async status => {
+    mocks.get.mockResolvedValue({ traces: [phaseTrace(phaseObservation(status))], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="output-phase-status"]').text()).toBe(`requestTiming.outputRate.states.${status}`)
+    wrapper.unmount()
+  })
+  it.each([NaN, Infinity, -1, 0])('rejects an invalid numeric rate %s', async tokens_per_second => {
+    mocks.get.mockResolvedValue({ traces: [phaseTrace({ ...phaseObservation(), tokens_per_second })], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('requestTiming.missing')
+    wrapper.unmount()
+  })
+  it('keeps historical traces unknown and never borrows a different trace or usage-row rate', async () => {
+    mocks.get.mockResolvedValue({ traces: [phaseTrace(phaseObservation(), 'first'), phaseTrace(undefined, 'historical')], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: { ...row(1), content_timing: { output_rate: phaseObservation() } } as AdminUsageLog }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('50.0 t/s')
+    await wrapper.get('select').setValue('1')
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="output-phase-status"]').text()).toBe('requestTiming.outputRate.states.not_collected')
+    wrapper.unmount()
+  })
   it('reacts to viewport changes between centered mobile and desktop drawer', async () => {
     mocks.get.mockResolvedValue({ traces: [], retention_days: 30 })
     const resize = async (width: number) => {

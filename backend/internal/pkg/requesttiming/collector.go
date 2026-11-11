@@ -19,6 +19,7 @@ type Span struct {
 	Attempt int     `json:"attempt,omitempty"`
 }
 type Attempt struct {
+	OutputUsage      *OutputUsage        `json:"output_usage,omitempty"`
 	RouteFingerprint string              `json:"route_fingerprint,omitempty"`
 	CacheUsage       *CacheUsage         `json:"cache_usage,omitempty"`
 	TextStream       *TextStreamTiming   `json:"text_stream,omitempty"`
@@ -43,34 +44,35 @@ type Attempt struct {
 	Events           map[string]float64  `json:"events"`
 }
 type Snapshot struct {
-	WSTurns           []WSTurnTiming     `json:"ws_turns,omitempty"`
-	ProtocolDecision  *ProtocolDecision  `json:"protocol_decision,omitempty"`
-	Latency           *LatencySummary    `json:"latency,omitempty"`
-	IdentitySource    string             `json:"identity_source,omitempty"`
-	AuthRejection     string             `json:"auth_rejection,omitempty"`
-	Routes            []RouteObservation `json:"routes,omitempty"`
-	Outcome           string             `json:"outcome,omitempty"`
-	ClientDisconnect  bool               `json:"client_disconnect"`
-	Version           int                `json:"version"`
-	TraceID           string             `json:"trace_id"`
-	StartedAt         time.Time          `json:"started_at"`
-	TotalMS           float64            `json:"total_ms"`
-	Status            int                `json:"status"`
-	Canceled          bool               `json:"canceled"`
-	Truncated         bool               `json:"truncated"`
-	BodyBytes         int64              `json:"body_bytes"`
-	BodyExpected      int64              `json:"body_expected"`
-	BodyComplete      bool               `json:"body_complete"`
-	BodyReadMS        float64            `json:"body_read_ms"`
-	DownstreamBytes   int64              `json:"downstream_bytes"`
-	DownstreamWriteMS float64            `json:"downstream_write_ms"`
-	DownstreamError   bool               `json:"downstream_error"`
-	TTFTMode          string             `json:"ttft_mode,omitempty"`
-	Terminal          string             `json:"terminal,omitempty"`
-	TerminalFlushed   string             `json:"terminal_flushed,omitempty"`
-	Events            map[string]float64 `json:"events"`
-	Spans             []Span             `json:"spans"`
-	Attempts          []Attempt          `json:"attempts"`
+	OutputRate        *OutputRateObservation `json:"output_rate,omitempty"`
+	WSTurns           []WSTurnTiming         `json:"ws_turns,omitempty"`
+	ProtocolDecision  *ProtocolDecision      `json:"protocol_decision,omitempty"`
+	Latency           *LatencySummary        `json:"latency,omitempty"`
+	IdentitySource    string                 `json:"identity_source,omitempty"`
+	AuthRejection     string                 `json:"auth_rejection,omitempty"`
+	Routes            []RouteObservation     `json:"routes,omitempty"`
+	Outcome           string                 `json:"outcome,omitempty"`
+	ClientDisconnect  bool                   `json:"client_disconnect"`
+	Version           int                    `json:"version"`
+	TraceID           string                 `json:"trace_id"`
+	StartedAt         time.Time              `json:"started_at"`
+	TotalMS           float64                `json:"total_ms"`
+	Status            int                    `json:"status"`
+	Canceled          bool                   `json:"canceled"`
+	Truncated         bool                   `json:"truncated"`
+	BodyBytes         int64                  `json:"body_bytes"`
+	BodyExpected      int64                  `json:"body_expected"`
+	BodyComplete      bool                   `json:"body_complete"`
+	BodyReadMS        float64                `json:"body_read_ms"`
+	DownstreamBytes   int64                  `json:"downstream_bytes"`
+	DownstreamWriteMS float64                `json:"downstream_write_ms"`
+	DownstreamError   bool                   `json:"downstream_error"`
+	TTFTMode          string                 `json:"ttft_mode,omitempty"`
+	Terminal          string                 `json:"terminal,omitempty"`
+	TerminalFlushed   string                 `json:"terminal_flushed,omitempty"`
+	Events            map[string]float64     `json:"events"`
+	Spans             []Span                 `json:"spans"`
+	Attempts          []Attempt              `json:"attempts"`
 }
 type Collector struct {
 	mu        sync.Mutex
@@ -215,6 +217,10 @@ func (c *Collector) snapshot() Snapshot {
 			usage := *d.Attempts[i].CacheUsage
 			d.Attempts[i].CacheUsage = &usage
 		}
+		if d.Attempts[i].OutputUsage != nil {
+			usage := *d.Attempts[i].OutputUsage
+			d.Attempts[i].OutputUsage = &usage
+		}
 		if d.Attempts[i].TextStream != nil {
 			stream := *d.Attempts[i].TextStream
 			d.Attempts[i].TextStream = &stream
@@ -222,6 +228,8 @@ func (c *Collector) snapshot() Snapshot {
 	}
 	latency := DeriveLatency(d)
 	d.Latency = &latency
+	rate := DeriveContentObservation(d).OutputRate
+	d.OutputRate = &rate
 	return d
 }
 func cloneEvents(src map[string]float64) map[string]float64 {

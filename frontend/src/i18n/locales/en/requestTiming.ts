@@ -95,6 +95,33 @@ export default {
   "success": "Forward succeeded",
   "client_disconnected": "Client disconnected",
   "tpsNote": "Average TPS = output tokens ÷ total recorded duration (seconds). Includes waiting time and any reasoning tokens reported in output usage. The first-token latency is not subtracted; this is not a measurement of model generation speed.",
+  "outputRate": {
+    "title": "Output-phase rate (estimate)",
+    "tokens": "Non-reasoning output tokens",
+    "reasoning": "Reasoning tokens excluded",
+    "window": "First text to completion",
+    "scopeLabel": "Observation scope",
+    "scope": "Final upstream attempt for this request",
+    "note": "Complete successful Responses HTTP text streams only. Non-reasoning output tokens divided by seconds from first text to completion includes the first chunk and terminal tail wait. This is not a model token clock or client delivery rate. Requires at least 32 non-reasoning tokens, two text chunks and a text span of 250ms. Not used for automatic routing.",
+    "states": {
+      "estimated": "Estimated from original usage and text events; excludes waiting before first text",
+      "not_collected": "Not collected; historical rows and other protocols remain unknown",
+      "not_reported": "Upstream output usage or text types were not fully reported",
+      "invalid_counters": "Invalid upstream usage counters; no estimate",
+      "diagnostic_limit": "Diagnostic collection limit exceeded; no estimate",
+      "unsupported_usage": "Output usage includes types that have not been separated; no estimate",
+      "invalid_terminal": "Conflicting completion state; no estimate",
+      "unsupported_output": "Tools, media or unsupported output types; no estimate",
+      "no_text_output": "No confirmed final text output",
+      "partial": "Failed, canceled or incompletely delivered request; no estimate",
+      "insufficient_stream": "Insufficient complete text-stream observations; no estimate",
+      "incomplete_stream": "First-text and chunk boundaries disagree; no estimate",
+      "short_output": "Fewer than 32 non-reasoning tokens; sample too short",
+      "insufficient_window": "Text span below 250ms; buffering or short-stream effects dominate",
+      "invalid_boundary": "Invalid timing boundaries; no estimate",
+      "incomplete_capture": "Collection gaps; no estimate"
+    }
+  },
   "health": {
     "good": "Normal",
     "warn": "Watch",

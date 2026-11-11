@@ -75,7 +75,7 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 		{name: "passthrough_transformed", passthrough: true, transform: true, instrumentTransform: true},
 		{name: "passthrough_uninstrumented_transform", passthrough: true, transform: true},
 	} {
-		for _, ending := range []string{"completed", "failed", "eof", "terminal_only"} {
+		for _, ending := range []string{"completed", "rate_completed", "failed", "eof", "terminal_only"} {
 			t.Run(path.name+"/"+ending, func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					_, _ = io.Copy(io.Discard, r.Body)
@@ -93,7 +93,11 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 						if !send(`{"type":"response.output_text.delta","delta":"first"}`) {
 							return
 						}
-						time.Sleep(30 * time.Millisecond)
+						if ending == "rate_completed" {
+							time.Sleep(300 * time.Millisecond)
+						} else {
+							time.Sleep(30 * time.Millisecond)
+						}
 						if !send(`{"type":"keepalive"}`) || !send(`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`) {
 							return
 						}
@@ -104,8 +108,8 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 						time.Sleep(20 * time.Millisecond)
 					}
 					switch ending {
-					case "completed", "terminal_only":
-						send(`{"type":"response.completed","response":{"id":"resp_gap_fixture","created_at":1,"output":[{"type":"message","content":[{"type":"output_text","text":"firstsecond"}]}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":95,"cache_write_tokens":3},"output_tokens":2}}}`)
+					case "completed", "rate_completed", "terminal_only":
+						send(`{"type":"response.completed","response":{"id":"resp_gap_fixture","created_at":1,"output":[{"type":"message","content":[{"type":"output_text","text":"firstsecond"}]}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":95,"cache_write_tokens":3},"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}}}`)
 					case "failed":
 						send(`{"type":"response.failed","response":{"id":"resp_gap_fixture","error":{"code":"server_error","message":"synthetic failure"}}}`)
 					case "eof":
@@ -148,15 +152,26 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 				collector.Finish(c.Writer.Status(), false)
 				collector.WhenFinished(func(s requesttiming.Snapshot) {
 					v := requesttiming.DeriveContentObservation(s)
-					if ending == "completed" || ending == "terminal_only" {
+					if ending == "completed" || ending == "rate_completed" || ending == "terminal_only" {
 						require.Equal(t, "observed", v.Cache.Status, "original terminal counters survive native, passthrough and tool-conversion paths")
 						require.EqualValues(t, 100, *v.Cache.InputTokens)
 						require.EqualValues(t, 95, *v.Cache.ReadTokens)
 						require.EqualValues(t, 3, *v.Cache.WriteTokens)
 						require.InDelta(t, .95, *v.Cache.ReadRatio, 1e-9)
 						require.NotEmpty(t, s.Attempts[len(s.Attempts)-1].RouteFingerprint)
+						require.EqualValues(t, 120, *v.OutputRate.OutputTokens)
+						require.EqualValues(t, 20, *v.OutputRate.ReasoningTokens)
+						if ending == "rate_completed" {
+							require.Equal(t, "estimated", v.OutputRate.Status)
+							require.NotNil(t, v.OutputRate.TokensPerSecond)
+							require.InDelta(t, 100/(*v.OutputRate.WindowMS/1000), *v.OutputRate.TokensPerSecond, 1e-9)
+							require.Equal(t, v.OutputRate, *s.OutputRate, "raw timing and usage projections must share the same derivation")
+						} else {
+							require.Nil(t, v.OutputRate.TokensPerSecond)
+						}
 					} else {
 						require.Nil(t, v.Cache.ReadRatio)
+						require.Nil(t, v.OutputRate.TokensPerSecond)
 					}
 					require.NotNil(t, v.VisibleTextFirstMS, "completed-only text must use the same existing diagnostic field")
 					if ending == "terminal_only" {
@@ -167,7 +182,7 @@ func TestSchedulingTextStreamLoopback(t *testing.T) {
 					require.Equal(t, 2, *v.TextStream.Chunks, "scanner and native handler must not double-count the same delta")
 					require.Equal(t, 1, *v.TextStream.GapSamples)
 					require.GreaterOrEqual(t, *v.TextStream.MaxGapMS, 40.0, "heartbeats and reasoning must not reset visible-text gaps")
-					if ending == "completed" {
+					if ending == "completed" || ending == "rate_completed" {
 						require.Equal(t, "observed", v.TextStream.Status)
 						require.GreaterOrEqual(t, *v.TextStream.TailWaitMS, 10.0)
 					} else {
