@@ -73,10 +73,13 @@ func accountTestResponseContext(c *gin.Context, resp *http.Response) *gin.Contex
 }
 
 func accountTestContent(c *gin.Context, text string) {
+	accountTestContentContext(c.Request.Context(), text)
+}
+
+func accountTestContentContext(ctx context.Context, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	ctx := c.Request.Context()
 	requesttiming.Mark(ctx, "account_first_content")
 	requesttiming.Output(ctx, true, true, "")
 	requesttiming.Stage(ctx, "sse_visible_first")

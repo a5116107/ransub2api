@@ -46,7 +46,7 @@ func TestProcessGeminiStream_EmitsImageEvent(t *testing.T) {
 	ctx, recorder := newTestContext()
 	svc := &AccountTestService{}
 
-	stream := strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"QUJD\"}}]}}]}\n\ndata: [DONE]\n\n")
+	stream := strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"QUJD\"}}]},\"finishReason\":\"STOP\"}]}\n\n")
 
 	err := svc.processGeminiStream(ctx, stream)
 	require.NoError(t, err)

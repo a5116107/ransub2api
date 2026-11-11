@@ -164,10 +164,8 @@ func availabilityJSONObject(value gjson.Result) (map[string]gjson.Result, bool) 
 	fields, valid := make(map[string]gjson.Result), true
 	value.ForEach(func(key, item gjson.Result) bool {
 		name := key.String()
-		if name != strings.ToLower(name) {
-			valid = false
-			return false
-		}
+		// Keys stay case-sensitive. Each protocol validates its exact names;
+		// Gemini uses camelCase while OpenAI and Messages use snake_case.
 		if previous, ok := fields[name]; ok && previous.Raw != item.Raw {
 			valid = false
 			return false
@@ -270,6 +268,9 @@ func availabilityTextInput(value gjson.Result, protocol string) bool {
 func availabilityScopeForRequest(request *http.Request, payload []byte) *AvailabilityRequestScope {
 	if request == nil || request.URL == nil || request.URL.Fragment != "" || request.Header.Get("Content-Encoding") != "" || !gjson.ValidBytes(payload) {
 		return nil
+	}
+	if strings.HasSuffix(request.URL.Path, ":generateContent") || strings.HasSuffix(request.URL.Path, ":streamGenerateContent") {
+		return availabilityGeminiScope(request, payload)
 	}
 	messages := request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/messages")
 	if request.URL.RawQuery != "" && (!messages || request.URL.RawQuery != "beta=true") {
@@ -582,6 +583,11 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		return func(*http.Response) {}
 	}
 	authorization, _ := availabilitySingleAuthorization(request)
+	google := strings.HasPrefix(scope.Protocol, "gemini_")
+	var googleAuth [2]string
+	if google {
+		googleAuth, _ = availabilityGeminiAuthentication(request)
+	}
 	method, host, address := request.Method, request.Host, request.URL.String()
 	return func(response *http.Response) {
 		if response == nil || response.Request == nil {
@@ -592,6 +598,12 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		// constructed. No scope is published without this final association.
 		if actual.URL == nil || actual.URL.String() != address || actual.Host != host || actual.Method != method || actual.Response != nil || actual.GetBody == nil {
 			return
+		}
+		if google {
+			actualAuth, valid := availabilityGeminiAuthentication(actual)
+			if !valid || actualAuth != googleAuth {
+				return
+			}
 		}
 		body, err := actual.GetBody()
 		if err != nil || body == nil {

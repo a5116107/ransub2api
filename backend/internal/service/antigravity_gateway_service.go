@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -394,9 +393,9 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 	// 构建请求体
 	var requestBody []byte
 	if shouldUseAntigravityGeminiTestRequest(modelID, mappedModel) {
-		requestBody, err = s.buildGeminiTestRequestWithPrompt(projectID, mappedModel, prompt)
+		requestBody, err = s.buildGeminiTestRequestWithPrompt(ctx, projectID, mappedModel, prompt)
 	} else {
-		requestBody, err = s.buildClaudeTestRequest(projectID, mappedModel)
+		requestBody, err = s.buildClaudeTestRequest(ctx, projectID, mappedModel)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
@@ -419,7 +418,7 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 		action:         "streamGenerateContent",
 		body:           requestBody,
 		c:              nil, // 无 gin.Context → 跳过 ops 追踪
-		httpUpstream:   s.httpUpstream,
+		httpUpstream:   timedAccountTestUpstream(s.httpUpstream, account),
 		settingService: s.settingService,
 		accountRepo:    s.accountRepo,
 		requestedModel: modelID,
@@ -441,18 +440,35 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 	}
 	defer func() { _ = result.resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(result.resp.Body, s.upstreamErrorBodyReadLimit()))
-	recordPelicanTestSSE(ctx, "gemini", mappedModel, respBody)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
-	}
-
+	limit := s.upstreamErrorBodyReadLimit()
+	limited := &io.LimitedReader{R: result.resp.Body, N: limit + 1}
 	if result.resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API 返回 %d: %s", result.resp.StatusCode, string(respBody))
+		body, err := io.ReadAll(limited)
+		if err != nil {
+			return nil, fmt.Errorf("读取响应失败: %w", err)
+		}
+		return nil, fmt.Errorf("API 返回 %d: %s", result.resp.StatusCode, string(body))
 	}
-
-	text, images := extractContentFromSSEResponse(respBody)
-	return &TestConnectionResult{Text: text, Images: images, MappedModel: mappedModel}, nil
+	usage := startPelicanTestUsage(ctx, "gemini")
+	if usage != nil {
+		usage.model = mappedModel
+	}
+	var texts []string
+	var images []TestConnectionImage
+	if err := readGeminiTestStream(ctx, limited, usage.read, func(event TestEvent) {
+		switch event.Type {
+		case "content":
+			texts = append(texts, event.Text)
+		case "image":
+			images = append(images, TestConnectionImage{ImageURL: event.ImageURL, MimeType: event.MimeType})
+		}
+	}); err != nil {
+		if limited.N == 0 {
+			return nil, fmt.Errorf("antigravity response exceeds %d-byte capture limit", limit)
+		}
+		return nil, err
+	}
+	return &TestConnectionResult{Text: strings.Join(texts, ""), Images: images, MappedModel: mappedModel}, nil
 }
 
 // testConnectionHandleError 是 TestConnection 使用的轻量 handleError 回调。
@@ -468,70 +484,36 @@ func testConnectionHandleError(
 	return nil
 }
 
-// buildGeminiTestRequestWithPrompt 构建 Gemini 格式测试请求
-// 文本模型使用最小 token 消耗：输入 "." + maxOutputTokens: 1；图片模型使用图片生成配置
-func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, model, prompt string) ([]byte, error) {
-	if isImageGenerationModel(model) {
-		imagePrompt := strings.TrimSpace(prompt)
-		if imagePrompt == "" {
-			imagePrompt = defaultGeminiImageTestPrompt
-		}
-		payload := map[string]any{
-			"contents": []map[string]any{
-				{
-					"role": "user",
-					"parts": []map[string]any{
-						{"text": imagePrompt},
-					},
-				},
-			},
-			"systemInstruction": map[string]any{
-				"parts": []map[string]any{
-					{"text": antigravity.GetDefaultIdentityPatch()},
-				},
-			},
-			"generationConfig": map[string]any{
-				"responseModalities": []string{"TEXT", "IMAGE"},
-				"imageConfig": map[string]any{
-					"aspectRatio": "1:1",
-				},
-			},
-		}
-		payloadBytes, _ := json.Marshal(payload)
-		return s.wrapV1InternalRequest(projectID, model, payloadBytes)
+// buildGeminiTestRequestWithPrompt uses the configured question for background
+// tests; the empty manual connection probe retains its one-token request.
+func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(ctx context.Context, projectID, model, prompt string) ([]byte, error) {
+	options, background := pelicanTestOptionsFromContext(ctx)
+	raw := createGeminiTestPayload(model, prompt)
+	if background {
+		raw = createPelicanGeminiPayload(model, options.prompt, options.reasoningEffort)
 	}
-
-	payload := map[string]any{
-		"contents": []map[string]any{
-			{
-				"role": "user",
-				"parts": []map[string]any{
-					{"text": "."},
-				},
-			},
-		},
-		// Antigravity 上游要求必须包含身份提示词
-		"systemInstruction": map[string]any{
-			"parts": []map[string]any{
-				{"text": antigravity.GetDefaultIdentityPatch()},
-			},
-		},
-		"generationConfig": map[string]any{
-			"maxOutputTokens": 1,
-		},
-		"toolConfig": map[string]any{
-			"functionCallingConfig": map[string]any{
-				"mode": "VALIDATED",
-			},
-		},
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
 	}
-	payloadBytes, _ := json.Marshal(payload)
+	payload["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": antigravity.GetDefaultIdentityPatch()}}}
+	if !isImageGenerationModel(model) {
+		if !background && strings.TrimSpace(prompt) == "" {
+			payload["contents"] = []map[string]any{{"role": "user", "parts": []map[string]any{{"text": "."}}}}
+			payload["generationConfig"] = map[string]any{"maxOutputTokens": 1}
+		}
+		payload["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "VALIDATED"}}
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
 	return s.wrapV1InternalRequest(projectID, model, payloadBytes)
 }
 
 // buildClaudeTestRequest 构建 Claude 格式测试请求并转换为 Gemini 格式
-// 使用最小 token 消耗：输入 "." + MaxTokens: 1
-func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedModel string) ([]byte, error) {
+// 后台检测沿用完整题目与思考配置；手工连接测试保留最小请求。
+func (s *AntigravityGatewayService) buildClaudeTestRequest(ctx context.Context, projectID, mappedModel string) ([]byte, error) {
 	claudeReq := &antigravity.ClaudeRequest{
 		Model: mappedModel,
 		Messages: []antigravity.ClaudeMessage{
@@ -542,6 +524,19 @@ func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedMode
 		},
 		MaxTokens: 1,
 		Stream:    false,
+	}
+	if options, ok := pelicanTestOptionsFromContext(ctx); ok {
+		payload, err := createPelicanClaudePayload(mappedModel, options.prompt, options.reasoningEffort)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, claudeReq); err != nil {
+			return nil, err
+		}
 	}
 	return antigravity.TransformClaudeToGemini(claudeReq, projectID, mappedModel)
 }
@@ -554,84 +549,6 @@ func (s *AntigravityGatewayService) getClaudeTransformOptions(ctx context.Contex
 	opts.EnableIdentityPatch = s.settingService.IsIdentityPatchEnabled(ctx)
 	opts.IdentityPatch = s.settingService.GetIdentityPatchPrompt(ctx)
 	return opts
-}
-
-// extractContentFromSSEResponse 从 SSE 流式响应中提取文本和内联图片
-func extractContentFromSSEResponse(respBody []byte) (string, []TestConnectionImage) {
-	var texts []string
-	var images []TestConnectionImage
-	lines := bytes.Split(respBody, []byte("\n"))
-
-	for _, line := range lines {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		// 跳过 SSE 前缀
-		if bytes.HasPrefix(line, []byte("data:")) {
-			line = bytes.TrimPrefix(line, []byte("data:"))
-			line = bytes.TrimSpace(line)
-		}
-
-		// 跳过非 JSON 行
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-
-		// 解析 JSON
-		var data map[string]any
-		if err := json.Unmarshal(line, &data); err != nil {
-			continue
-		}
-
-		// 尝试从 response.candidates[0].content.parts[] 提取
-		response, ok := data["response"].(map[string]any)
-		if !ok {
-			// 尝试直接从 candidates 提取（某些响应格式）
-			response = data
-		}
-
-		candidates, ok := response["candidates"].([]any)
-		if !ok || len(candidates) == 0 {
-			continue
-		}
-
-		candidate, ok := candidates[0].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		content, ok := candidate["content"].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		parts, ok := content["parts"].([]any)
-		if !ok {
-			continue
-		}
-
-		for _, part := range parts {
-			if partMap, ok := part.(map[string]any); ok {
-				if text, ok := partMap["text"].(string); ok && text != "" {
-					texts = append(texts, text)
-				}
-				if inlineData, ok := partMap["inlineData"].(map[string]any); ok {
-					mimeType, _ := inlineData["mimeType"].(string)
-					b64Data, _ := inlineData["data"].(string)
-					if strings.HasPrefix(strings.ToLower(mimeType), "image/") && b64Data != "" {
-						images = append(images, TestConnectionImage{
-							ImageURL: fmt.Sprintf("data:%s;base64,%s", mimeType, b64Data),
-							MimeType: mimeType,
-						})
-					}
-				}
-			}
-		}
-	}
-
-	return strings.Join(texts, ""), images
 }
 
 // injectIdentityPatchToGeminiRequest 为 Gemini 格式请求注入身份提示词

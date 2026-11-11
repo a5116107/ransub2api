@@ -3,7 +3,9 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -20,7 +22,7 @@ func TestAntigravityBuildGeminiTestRequest_IncludesValidatedToolConfig(t *testin
 	t.Parallel()
 
 	svc := &AntigravityGatewayService{}
-	raw, err := svc.buildGeminiTestRequestWithPrompt("proj-123", "gemini-3.8-flash-high", "")
+	raw, err := svc.buildGeminiTestRequestWithPrompt(t.Context(), "proj-123", "gemini-3.8-flash-high", "")
 	require.NoError(t, err)
 
 	var v1Req map[string]any
@@ -41,7 +43,7 @@ func TestAntigravityBuildGeminiTestRequestWithPrompt_ImageModel(t *testing.T) {
 	t.Parallel()
 
 	svc := &AntigravityGatewayService{}
-	raw, err := svc.buildGeminiTestRequestWithPrompt("proj-123", "gemini-3.1-flash-image", "a cute cat")
+	raw, err := svc.buildGeminiTestRequestWithPrompt(t.Context(), "proj-123", "gemini-3.1-flash-image", "a cute cat")
 	require.NoError(t, err)
 
 	var v1Req map[string]any
@@ -66,12 +68,22 @@ func TestAntigravityBuildGeminiTestRequestWithPrompt_ImageModel(t *testing.T) {
 	require.Equal(t, "a cute cat", firstPart["text"])
 }
 
-func TestExtractContentFromSSEResponse_ExtractsTextAndInlineImages(t *testing.T) {
+func TestReadGeminiTestStreamExtractsTextAndInlineImages(t *testing.T) {
 	t.Parallel()
 
-	sse := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is your image\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}}]}}]}}\n\n"
-	text, images := extractContentFromSSEResponse([]byte(sse))
-	require.Equal(t, "Here is your image", text)
+	sse := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is your image\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}}]},\"finishReason\":\"STOP\"}]}}\n\n"
+	var texts []string
+	var images []TestConnectionImage
+	err := readGeminiTestStream(context.Background(), strings.NewReader(sse), nil, func(event TestEvent) {
+		switch event.Type {
+		case "content":
+			texts = append(texts, event.Text)
+		case "image":
+			images = append(images, TestConnectionImage{ImageURL: event.ImageURL, MimeType: event.MimeType})
+		}
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Here is your image", strings.Join(texts, ""))
 	require.Len(t, images, 1)
 	require.Equal(t, "image/png", images[0].MimeType)
 	require.Equal(t, "data:image/png;base64,iVBORw0KGgo=", images[0].ImageURL)

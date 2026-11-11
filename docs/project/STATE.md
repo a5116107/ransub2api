@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3独立网关发送前准入与Messages作用域子项已完成本地验收。
+任务：D3 Gemini/Antigravity原生范围与完整回答检测子项已完成本地验收。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：父2bf7956；最终27项清单097b6985156cb228，详见DECISIONS。
-验证命令：五包相关race/PG14；三包完整lint/vet及Linux build，测试夹具改动后两包vet。
-验证结果：691顶层/2721含子例通过，0失败/跳过；lint 0 issues，vet/build退出0。
-验证来源：backend/tmp/gateway-availability；三包沿未变源码结果，两包最终复验；失败历史保留。
-下一动作：D3其余协议/能力与D4模型/fast计价来源；D2 unknown等待供应商契约。
+源码：父1fb4b28；最终15项清单648c605fe09e79ac，详见DECISIONS。
+验证命令：四包相关race/PG14；service最终复验；两包完整lint/vet与Linux build。
+验证结果：651顶层/2291含子例通过，0失败/跳过；lint 0 issues，vet/build退出0。
+验证来源：backend/tmp/gemini-availability；三包沿未变范围结果，service最终复验；失败保留。
+下一动作：D3其他能力与D4模型/fast来源；D2 unknown待供应商关联契约。
 尝试：3
 阻塞：D2 unknown待供应商关联契约；生产排空待管理员；历史拒删资源待拥有者。
 边界：原优先级、SQL复验、双预算及视频原节点结算保留；不代替父项或生产验收。
@@ -32,7 +32,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新状态/托管轮转、区域v2、HTTP/WS及独立网关终检、Messages作用域已验，race/PG14及完整lint通过；其他协议/能力待验 |
+| D3 | in_progress | 最新状态/托管轮转、区域v2、HTTP/WS、Messages及Gemini/Antigravity完整回答/作用域已验，race/PG14、lint/vet/build通过；其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
@@ -66,7 +66,7 @@
 
 ## 下一项工作
 
-D3区域传播及本轮独立网关终检/Messages子项已验，证据分别在`backend/tmp/regional-availability`与`backend/tmp/gateway-availability`；其他协议/能力及D4模型/fast来源保持开放。D2动态售价/双预算沿7a6a17b，视频查询及结算归原节点；336升级/回退先排空，保留334/335身份、预算及账单。原28项仍20 done、D2/D3/D4进行中、D5–D9 pending；unknown待供应商契约，真实采购价不在本期。peer与Live边界沿唯一设计。
+D3区域/网关/Messages沿既有证据；本轮Gemini/Antigravity原生文本、完整题目与终止子项race/PG14、完整lint/vet/Linux build已验，证据`backend/tmp/gemini-availability`。其他能力及D4模型/fast来源仍开放。D2动态售价/双预算沿7a6a17b，视频查询及结算归原节点；336升级/回退先排空，保留334/335身份、预算及账单。原28项仍20 done、D2/D3/D4进行中、D5–D9 pending；unknown待供应商契约，真实采购价不在本期。peer与Live边界沿唯一设计。
 模型/服务档隔离只证明请求续接边界，不证明供应商缓存实际存活、内部不降级、跨档同价或高缓存率。API Key长历史仍受既有12条尾部及工具边界guard约束。
 
 ## 外部等待与清理

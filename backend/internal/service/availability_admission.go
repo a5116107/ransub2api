@@ -18,6 +18,9 @@ var ErrAvailabilityRouteChanged = errors.New("availability account route changed
 // AvailabilityModelForAccount resolves the configured probe model in the same
 // namespace as the final request body. The request itself is already mapped.
 func AvailabilityModelForAccount(account *Account, requested string) string {
+	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
+		return (&AntigravityGatewayService{}).getMappedModel(account, requested)
+	}
 	model := account.GetMappedModel(requested)
 	if account.IsOpenAI() && account.IsOAuth() {
 		model = normalizeOpenAIModelForUpstream(account, model)

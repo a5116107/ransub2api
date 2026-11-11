@@ -2792,12 +2792,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 
 	// For static upstream credentials with model mapping, map the model
 	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
-		mapping := account.GetModelMapping()
-		if len(mapping) > 0 {
-			if mappedModel, exists := mapping[testModelID]; exists {
-				testModelID = mappedModel
-			}
-		}
+		testModelID = account.GetMappedModel(testModelID)
 	}
 
 	// Set SSE headers
@@ -2809,6 +2804,9 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 
 	// Create test payload (Gemini format)
 	payload := createGeminiTestPayload(testModelID, prompt)
+	if options, ok := pelicanTestOptionsFromContext(ctx); ok {
+		payload = createPelicanGeminiPayload(testModelID, options.prompt, options.reasoningEffort)
+	}
 
 	// Build request based on account type
 	var req *http.Request
@@ -2866,7 +2864,7 @@ func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Accou
 }
 
 // testAntigravityAccountConnection tests an Antigravity account's connection
-// 支持 Claude 和 Gemini 两种协议，使用非流式请求
+// 支持 Claude 和 Gemini 两种协议，复用流式上游并聚合测试结果
 func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
 	ctx := c.Request.Context()
 
@@ -3093,85 +3091,13 @@ func createGeminiTestPayload(modelID string, prompt string) []byte {
 // processGeminiStream processes SSE stream from Gemini API
 func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader) error {
 	defer accountTestStream(c)()
-	reader := bufio.NewReader(body)
 	usage := startPelicanTestStream(c, "gemini")
-
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				return s.sendErrorAndEnd(c, "Stream ended before Gemini completion")
-			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
-		}
-
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		jsonStr := strings.TrimPrefix(line, "data: ")
-		usage.read(jsonStr)
-		if jsonStr == "[DONE]" {
-			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-			return nil
-		}
-
-		var data map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			continue
-		}
-
-		// Support two Gemini response formats:
-		// - AI Studio: {"candidates": [...]}
-		// - Gemini CLI: {"response": {"candidates": [...]}}
-		if resp, ok := data["response"].(map[string]any); ok && resp != nil {
-			data = resp
-		}
-		if candidates, ok := data["candidates"].([]any); ok && len(candidates) > 0 {
-			if candidate, ok := candidates[0].(map[string]any); ok {
-				// Extract content first (before checking completion)
-				if content, ok := candidate["content"].(map[string]any); ok {
-					if parts, ok := content["parts"].([]any); ok {
-						for _, part := range parts {
-							if partMap, ok := part.(map[string]any); ok {
-								if text, ok := partMap["text"].(string); ok && text != "" {
-									accountTestContent(c, text)
-									s.sendEvent(c, TestEvent{Type: "content", Text: text})
-								}
-								if inlineData, ok := partMap["inlineData"].(map[string]any); ok {
-									mimeType, _ := inlineData["mimeType"].(string)
-									data, _ := inlineData["data"].(string)
-									if strings.HasPrefix(strings.ToLower(mimeType), "image/") && data != "" {
-										s.sendEvent(c, TestEvent{
-											Type:     "image",
-											ImageURL: fmt.Sprintf("data:%s;base64,%s", mimeType, data),
-											MimeType: mimeType,
-										})
-									}
-								}
-							}
-						}
-					}
-				}
-
-				// Check for completion after extracting content
-				if finishReason, ok := candidate["finishReason"].(string); ok && finishReason != "" {
-					s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-					return nil
-				}
-			}
-		}
-
-		// Handle errors
-		if errData, ok := data["error"].(map[string]any); ok {
-			errorMsg := "Unknown error"
-			if msg, ok := errData["message"].(string); ok {
-				errorMsg = msg
-			}
-			return s.sendErrorAndEnd(c, errorMsg)
-		}
+	err := readGeminiTestStream(c.Request.Context(), body, usage.read, func(event TestEvent) { s.sendEvent(c, event) })
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
 	}
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 // createOpenAITestPayload creates a test payload for OpenAI Responses API

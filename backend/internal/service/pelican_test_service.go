@@ -139,6 +139,18 @@ func createPelicanOpenAIPayload(modelID string, isOAuth bool, prompt, reasoningE
 	return payload
 }
 
+func createPelicanGeminiPayload(modelID, prompt, reasoningEffort string) []byte {
+	payload := createGeminiTestPayload(modelID, prompt)
+	if isImageGenerationModel(modelID) {
+		return payload
+	}
+	// Reuse the existing model-specific level/budget mapping. The observed
+	// wire scope records the actual parameter, not the requested UI label.
+	// The normalizer returns only the fixed enum above or an empty string.
+	claudeBody := []byte(`{"output_config":{"effort":"` + normalizePelicanReasoningEffort(reasoningEffort) + `"}}`)
+	return applyGeminiCompatThinkingConfig(payload, claudeBody, modelID, false)
+}
+
 func promptOrDefault(prompt string) string {
 	if value := strings.TrimSpace(prompt); value != "" {
 		return value
