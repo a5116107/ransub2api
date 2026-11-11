@@ -210,7 +210,8 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		authorization := request.Header.Get("Authorization")
 		applySIWCRequestHeaders(request)
 		request.Host = ""
-		if err := s.priorityLatencyBeforeSend(request.Context(), account); err != nil {
+		request, err = s.preparePriorityLatencyHTTPSend(request, account)
+		if err != nil {
 			return nil, err
 		}
 		if err := s.fenceAuthConnectionEgress(request.Context(), request, account); err != nil {

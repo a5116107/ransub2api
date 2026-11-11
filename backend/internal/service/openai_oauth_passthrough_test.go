@@ -65,6 +65,11 @@ func (r passthroughErrReadCloser) Close() error {
 }
 
 func (u *httpUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil {
+		if err := CheckHTTPUpstreamSendGuard(req.Context()); err != nil {
+			return nil, err
+		}
+	}
 	u.lastReq = req
 	u.lastProxyURL = proxyURL
 	if req != nil && req.Body != nil {

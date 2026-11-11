@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -261,6 +262,10 @@ type priorityLatencyTurn struct {
 // First physical HTTP/plugin send rechecks after preparation waits. Any attempted
 // send (even an uncertain result) freezes admission for this generation's retries.
 func (s *OpenAIGatewayService) priorityLatencyBeforeSend(ctx context.Context, account *Account) error {
+	return s.priorityLatencySendAdmission(ctx, account, true)
+}
+
+func (s *OpenAIGatewayService) priorityLatencySendAdmission(ctx context.Context, account *Account, start bool) error {
 	turn, _ := ctx.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
 	if turn == nil || account == nil || turn.accountID != account.ID {
 		return nil
@@ -273,8 +278,24 @@ func (s *OpenAIGatewayService) priorityLatencyBeforeSend(ctx context.Context, ac
 	if err := s.priorityLatencyAdmission(turn.request, account); err != nil {
 		return err
 	}
-	turn.started = true
+	turn.started = start
 	return nil
+}
+
+// HTTP still has shared-Key and client preparation ahead of it. Check now but
+// leave the same turn mutable until the existing final transport starts it.
+func (s *OpenAIGatewayService) preparePriorityLatencyHTTPSend(req *http.Request, account *Account) (*http.Request, error) {
+	if err := s.priorityLatencySendAdmission(req.Context(), account, false); err != nil {
+		return req, err
+	}
+	turn, _ := req.Context().Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+	if turn == nil || account == nil || turn.accountID != account.ID {
+		return req, nil
+	}
+	ctx := WithHTTPUpstreamSendGuard(req.Context(), func(ctx context.Context) error {
+		return s.priorityLatencyBeforeSend(ctx, account)
+	})
+	return req.WithContext(ctx), nil
 }
 
 func ownedPriorityScheduleRequest(req OpenAIAccountScheduleRequest) OpenAIAccountScheduleRequest {

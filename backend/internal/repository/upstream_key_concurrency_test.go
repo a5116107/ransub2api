@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -29,6 +30,85 @@ func upstreamKeyTestConfig(revision int64, limit int) *config.Config {
 	cfg := &config.Config{}
 	cfg.Gateway.UpstreamKeyConcurrency = config.UpstreamKeyConcurrencyConfig{Revision: revision, Limits: map[string]int{config.UpstreamKeyFingerprint("supplier-fixture"): limit}}
 	return cfg
+}
+
+func TestUpstreamKeyFinalHTTPAdmissionGuard(t *testing.T) {
+	for _, path := range []string{"native", "tls", "regional", "astra"} {
+		t.Run(path, func(t *testing.T) {
+			redisServer := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+			t.Cleanup(func() { require.NoError(t, client.Close()) })
+			var sends atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				sends.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(server.Close)
+			cfg := upstreamKeyTestConfig(1, 1)
+			target := server.URL + "/v1/responses"
+			if path == "regional" {
+				regional := regionalHTTPConfig(t, server.URL, "fixture.vendor.test")
+				cfg.Gateway.UpstreamRouting = regional.Gateway.UpstreamRouting
+				target = "http://fixture.vendor.test/v1/responses"
+			}
+			cfg.Gateway.CodexGatewayPin.Enabled = path == "astra"
+			upstream := newHTTPUpstream(cfg, nil, client, nil)
+			var core *httpUpstreamService
+			if routed, ok := upstream.(*astraRoutingUpstream); ok {
+				core, ok = routed.delegate.(*httpUpstreamService)
+				require.True(t, ok)
+			} else {
+				var ok bool
+				core, ok = upstream.(*httpUpstreamService)
+				require.True(t, ok)
+			}
+			marker := errors.New("local final admission fixture")
+			refuse, checks := true, 0
+			ctx := service.WithHTTPUpstreamSendGuard(t.Context(), func(context.Context) error {
+				checks++
+				require.EqualValues(t, 1, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val(), "final admission must follow exact Key acquisition")
+				core.mu.RLock()
+				clients := len(core.clients)
+				core.mu.RUnlock()
+				require.Positive(t, clients, "final admission must follow client preparation")
+				if refuse {
+					return marker
+				}
+				return nil
+			})
+			request := func(url string) *http.Request {
+				r, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader("{}"))
+				require.NoError(t, err)
+				r.Header.Set("Authorization", "Bearer supplier-fixture")
+				return r
+			}
+			var response *http.Response
+			var err error
+			if path == "tls" {
+				// Any TLS handshake would be incorrect here. The fixture serves
+				// plain HTTP; rejection must precede even its first network send.
+				response, err = upstream.DoWithTLS(request(strings.Replace(target, "http:", "https:", 1)), "", 11, 1, &tlsfingerprint.Profile{Name: "test"})
+			} else {
+				response, err = upstream.Do(request(target), "", 11, 1)
+			}
+			require.ErrorIs(t, err, marker)
+			require.Nil(t, response)
+			require.Equal(t, 1, checks)
+			require.Zero(t, sends.Load())
+			require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val(), "a refused first send must return its exact shared member")
+			for _, entry := range core.clients {
+				require.Zero(t, atomic.LoadInt64(&entry.inFlight), "local refusal must release the prepared client")
+			}
+			require.NoError(t, ctx.Err(), "releasing transport admission must not cancel its parent")
+			refuse = false
+			response, err = upstream.Do(request(target), "", 11, 1)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Equal(t, 2, checks)
+			require.EqualValues(t, 1, sends.Load())
+			require.Zero(t, client.ZCard(t.Context(), upstreamKeySlotKeyPrefix+config.UpstreamKeyFingerprint("supplier-fixture")).Val())
+		})
+	}
 }
 
 func TestAsyncVideoKeyGuardAtFinalHTTPAdmission(t *testing.T) {

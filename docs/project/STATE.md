@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5逐轮effort/首次发送准入修复已验，完成本地交付；父项仍开放。
+任务：D5 HTTP/插件准备后首次发送终检本地已验；清理待拥有者。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线eb5cc6c；13Go项6163ec6d，原位修复，无新调度器或迁移。
-验证命令：Priority/WS/桥接/RPM/可用性race；三包原规则lint/vet与Linux编译。
-验证结果：最终race290顶层/700含子例通过，零失败/跳过；lint0/vet0，Linux构建0。
-验证来源：backend/tmp/protocol-cache/scheduling-ws-effort-*；最终75652退出0。
-下一动作：D5跨请求估计/跨协议比较须补可信前缀、模型/fast及候选缓存域证据。
-尝试：21
-阻塞：D2关联契约、D4/D5证据；生产授权和历史清理等待拥有者。
+源码：基线58dab30；Go输入47111a184104ba04；原HTTP/插件传输，不新增调度器。
+验证命令：四包扩展race、原unit/integration规则lint/vet及Linux构建。
+验证结果：349顶层/842含子例PASS、0失败/跳过；lint0/vet0/Linux0。
+验证来源：backend/tmp/protocol-cache/scheduling-http-admission-*。
+下一动作：供应商/接入方补D2关联契约、D4模型/fast及D5前缀/缓存域证据。
+尝试：23
+阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort/等待隔离已验；本轮race290顶层/700含子例、三包lint0/vet/Linux通过；跨协议/会话估计待证据 |
+| D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；HTTP/TLS/区域/Astra及插件终检race349/842、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -72,8 +72,8 @@ D5跨请求估计/跨协议比较待验，须有可复用前缀、实际模型/f
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`及`backend/tmp/output-rate/`中的旧夹具/缓存；由工作区拥有者处理，详见DECISIONS。
-- 历史`backend/tmp/ws-turn-metrics/vite-cache`拒删11文件/2886386bytes待拥有者手动删除，不换工具重试。本轮浏览器及5186夹具已关闭，无新增Vite缓存；历史PNG原位保留、不提交。
+- 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
 - 历史TEMP的sub2api-chat-wire系列约69MiB、sub2api-protocol-rate的18文件/700.05MiB及runtime-ttft空目录拒删保留，精确路径见DECISIONS，拥有者手动处理，不重试。
-- 本轮TEMP/sub2api-priority-route：空目录、0文件/0活跃引用；删除命令被执行策略拦截，保留待拥有者处理，未计作空间释放。
+- 历史TEMP/sub2api-priority-route：原核查为空、0文件/0引用；删除被策略拦截，拥有者手动处理，未计释放。
+- 本轮拒删：`TEMP/sub2api-http-admission`（空目录、0文件/0引用）及`backend/tmp/protocol-cache/scheduling-http-admission-service-focused.jsonl`（4504bytes）；CreateProcess前被策略拦截，WhatIf/删除均未执行，拥有者手动处理，不重试、不计释放。

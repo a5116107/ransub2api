@@ -202,7 +202,7 @@ func markPriorityDownstreamDisconnect(ctx context.Context) {
 // Observation begins after service admission, RPM acquisition and storage
 // work, immediately before the transport/plugin send. Handler health reports
 // never write these counters; retry/fallback sends have distinct body owners.
-// Final transport-level shared Key refusals are excluded from physical samples.
+// Final transport-level local admission refusals are excluded from samples.
 func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account *Account) func(*http.Response, error) {
 	scope, _ := req.Context().Value(priorityAttemptScopeContextKey{}).(*priorityAttemptScope)
 	if scope == nil || account == nil || account.Platform != PlatformOpenAI {
@@ -219,7 +219,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 			var phaseErr *openAIHTTPPhaseTimeout
 			include := errors.As(context.Cause(req.Context()), &phaseErr) || !errors.Is(err, context.Canceled) && errors.As(err, &netErr)
 			scope.complete(observation, func(disconnected, forced bool) {
-				if !disconnected && scope.ctx.Err() == nil && !IsUpstreamKeyAdmissionFailure(err) && (include || forced) {
+				if !disconnected && scope.ctx.Err() == nil && !IsUpstreamKeyAdmissionFailure(err) && !IsOpenAITurnAdmissionError(err) && (include || forced) {
 					stats.attempts.report(key, false, stats.currentTime())
 				}
 			})
@@ -246,13 +246,14 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 
 // Used by HTTP adapters whose physical sends bypass the native proxy pipeline.
 func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy string, account *Account, evidence ...*excelBPSWriteEvidence) (*http.Response, error) {
-	if err := s.priorityLatencyBeforeSend(req.Context(), account); err != nil {
+	var err error
+	req, err = s.preparePriorityLatencyHTTPSend(req, account)
+	if err != nil {
 		return nil, err
 	}
 	if err := s.fenceExcelBPSAuthConnection(req.Context(), req, account); err != nil {
 		return nil, err
 	}
-	var err error
 	req, err = s.guardOpenAIProfitRequest(req, account)
 	if err != nil {
 		return nil, err

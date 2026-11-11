@@ -358,10 +358,34 @@ func upstreamKeyAdmissionFailover(err error) *UpstreamFailoverError {
 	return &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, Reason: UpstreamKeyAdmissionReason, ResponseBody: []byte(`{"error":{"type":"upstream_key_admission_unavailable","message":"No shared upstream Key capacity is available"}}`)}
 }
 
+type httpUpstreamSendGuardKey struct{}
+
+// WithHTTPUpstreamSendGuard carries the current logical turn's final admission
+// into the existing transport. It retains no payload or credentials and does
+// not mark a send before shared capacity and client preparation have completed.
+func WithHTTPUpstreamSendGuard(ctx context.Context, guard func(context.Context) error) context.Context {
+	return context.WithValue(ctx, httpUpstreamSendGuardKey{}, guard)
+}
+
+// CheckHTTPUpstreamSendGuard runs at the physical transport or plugin boundary.
+// A request without a guard preserves its existing behavior. The guard owns
+// logical-turn retry semantics; calling this function does not replay a request.
+func CheckHTTPUpstreamSendGuard(ctx context.Context) error {
+	guard, _ := ctx.Value(httpUpstreamSendGuardKey{}).(func(context.Context) error)
+	if guard == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return guard(ctx)
+}
+
 // HTTPUpstream 上游 HTTP 请求接口
 // 用于向上游 API（Claude、OpenAI、Gemini 等）发送请求
 type HTTPUpstream interface {
-	// Do 执行 HTTP 请求（不启用 TLS 指纹）
+	// Do 执行 HTTP 请求（不启用 TLS 指纹）。实现必须在共享额度及客户端准备后、
+	// 物理发送前调用 CheckHTTPUpstreamSendGuard，拒绝仍归还本次持有的额度。
 	Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error)
 
 	// DoWithTLS 执行带 TLS 指纹伪装的 HTTP 请求

@@ -184,7 +184,8 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 			err = &runtimeProxyEgressError{error: err, target: target}
 		}
 	}()
-	if err := s.priorityLatencyBeforeSend(req.Context(), account); err != nil {
+	req, err = s.preparePriorityLatencyHTTPSend(req, account)
+	if err != nil {
 		return nil, err
 	}
 	if s.pluginManager != nil && account.AuthConnectionID == "" && !s.codexTicketRequestBound(req, account) {

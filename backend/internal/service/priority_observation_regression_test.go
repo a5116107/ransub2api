@@ -4,16 +4,21 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	pluginv1 "github.com/Wei-Shaw/sub2api/pkg/pluginapi/v1"
+	hcplugin "github.com/hashicorp/go-plugin"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
 func TestPriorityObservationRouteReplacementFeedback(t *testing.T) {
@@ -483,6 +488,184 @@ func TestPriorityObservationHTTPAfterRPMWait(t *testing.T) {
 	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "an RPM wait is not the start of a physical generation")
 	require.Empty(t, upstream.requests)
 	require.Equal(t, 1, cache.counts[account.ID])
+}
+
+type priorityWaitingHTTPUpstream struct {
+	*httpUpstreamRecorder
+	before func(*http.Request) error
+}
+
+func (u *priorityWaitingHTTPUpstream) Do(req *http.Request, proxy string, accountID int64, concurrency int) (*http.Response, error) {
+	if err := u.before(req); err != nil {
+		return nil, err
+	}
+	return u.httpUpstreamRecorder.Do(req, proxy, accountID, concurrency)
+}
+
+func TestPriorityObservationHTTPAfterTransportWait(t *testing.T) {
+	for _, path := range []string{"native", "bps", "siwc"} {
+		t.Run(path, func(t *testing.T) {
+			svc, req, account, _, _, ctx := reviewNativeFixture(t, OpenAIWSIngressModeHTTPBridge)
+			if path == "siwc" {
+				account.Type = AccountTypeOAuth
+				account.Extra[OpenAISIWCEnabledKey] = true
+				require.Eventually(t, func() bool {
+					return svc.priorityHistory(req, svc.prioritySchedulingRuntimeConfig(), []openAIAccountCandidateScore{{account: account}}).ready()
+				}, 2*time.Second, time.Millisecond)
+				setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+			}
+			ctx = WithObservationEffort(ctx, "")
+			ctx, err := svc.beginPriorityLatencyTurn(ctx, nil, account, req.RequestedModel)
+			require.NoError(t, err)
+			recorder := &httpUpstreamRecorder{resp: priorityMockResponse(200, `{"status":"completed","output":[]}`, false)}
+			var waited bool
+			svc.httpUpstream = &priorityWaitingHTTPUpstream{httpUpstreamRecorder: recorder, before: func(r *http.Request) error {
+				waited = true
+				reviewActivateStop(svc, req, account.ID)
+				return CheckHTTPUpstreamSendGuard(r.Context())
+			}}
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/responses", strings.NewReader(`{"model":"gpt-test"}`))
+			require.NoError(t, err)
+			var response *http.Response
+			if path != "bps" {
+				response, err = svc.doOpenAIUpstream(request, "", account)
+			} else {
+				response, err = svc.doPriorityObservedHTTP(request, "", account)
+			}
+			if response != nil {
+				require.NoError(t, response.Body.Close())
+			}
+			require.True(t, waited)
+			require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "transport preparation is not a physical generation send")
+			require.Empty(t, recorder.requests, "a stop published during transport admission must precede every provider send")
+			turn, ok := ctx.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+			require.True(t, ok)
+			require.False(t, turn.started, "a local final refusal must not freeze the turn as sent")
+		})
+	}
+}
+
+type priorityGuardPluginClient struct {
+	pluginv1.TransportPluginClient
+	stream   *priorityGuardPluginStream
+	prepared func()
+}
+
+func (c *priorityGuardPluginClient) Forward(ctx context.Context, _ ...grpc.CallOption) (pluginv1.TransportPlugin_ForwardClient, error) {
+	c.stream.ctx = ctx
+	c.prepared()
+	return c.stream, nil
+}
+
+type priorityGuardPluginStream struct {
+	pluginv1.TransportPlugin_ForwardClient
+	ctx   context.Context
+	sends int
+}
+
+func (s *priorityGuardPluginStream) Send(*pluginv1.ForwardRequest) error {
+	s.sends++
+	return errors.New("fixture stops at first plugin frame")
+}
+
+func TestPriorityObservationHTTPAfterPluginPreparation(t *testing.T) {
+	svc, req, account, _, _, ctx := reviewNativeFixture(t, OpenAIWSIngressModeHTTPBridge)
+	account.Type = AccountTypeOAuth
+	require.Eventually(t, func() bool {
+		return svc.priorityHistory(req, svc.prioritySchedulingRuntimeConfig(), []openAIAccountCandidateScore{{account: account}}).ready()
+	}, 2*time.Second, time.Millisecond)
+	setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+	ctx = WithObservationEffort(ctx, "")
+	ctx, err := svc.beginPriorityLatencyTurn(ctx, nil, account, req.RequestedModel)
+	require.NoError(t, err)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", nil)
+	require.NoError(t, err)
+	request, err = svc.preparePriorityLatencyHTTPSend(request, account)
+	require.NoError(t, err)
+	stream := &priorityGuardPluginStream{}
+	client := &priorityGuardPluginClient{stream: stream, prepared: func() {
+		reviewActivateStop(svc, req, account.ID)
+	}}
+	runtime := &pluginRuntime{api: client, client: &hcplugin.Client{}}
+	manager := &PluginManager{}
+	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, runtime: runtime})
+	response, handled, err := manager.RoundTripOpenAIOAuth(request.Context(), request, "", account)
+	require.True(t, handled)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable)
+	require.Zero(t, stream.sends, "stream preparation must not freeze admission before the first plugin frame")
+	require.ErrorIs(t, stream.ctx.Err(), context.Canceled, "refusal must close the prepared RPC stream")
+	require.Zero(t, runtime.inFlight.Load(), "refusal must release the runtime's exact request")
+	require.NoError(t, ctx.Err(), "RPC cleanup must preserve the parent turn")
+	turn, ok := ctx.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+	require.True(t, ok)
+	require.False(t, turn.started)
+	setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+	client.prepared = func() {}
+	response, handled, err = manager.RoundTripOpenAIOAuth(request.Context(), request, "", account)
+	require.True(t, handled)
+	require.Nil(t, response)
+	var transportErr *PluginTransportError
+	require.ErrorAs(t, err, &transportErr)
+	require.True(t, transportErr.RequestSent, "an attempted metadata send remains non-replayable")
+	require.Equal(t, 1, stream.sends)
+	require.True(t, turn.started)
+	require.Zero(t, runtime.inFlight.Load())
+}
+
+func TestPriorityObservationFinalHTTPLocalRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		failures int64
+	}{
+		{"local", priorityLatencyAdmissionError(true), 0},
+		{"http_wrapped_local", &url.Error{Op: "Post", URL: "http://fixture.invalid", Err: priorityLatencyAdmissionError(true)}, 0},
+		{"provider_transport", &url.Error{Op: "Post", URL: "http://fixture.invalid", Err: io.ErrUnexpectedEOF}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newOpenAIRejectedFieldTestService(&httpUpstreamRecorder{})
+			account := newOpenAIRejectedFieldTestAccount()
+			ctx, scope := withPriorityAttemptScope(t.Context(), "fixture", "/v1/responses")
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://fixture.invalid/v1/responses", nil)
+			require.NoError(t, err)
+			observe := svc.observePriorityAttempt(request, account)
+			observe(nil, tc.err)
+			scope.finish(nil)
+			key := priorityRequestAttemptKey(OpenAIAccountScheduleRequest{RequestedModel: "fixture", InboundEndpoint: "/v1/responses"}, account)
+			got := svc.openaiAccountStats.attempts.snapshot(key, time.Now(), 10, 5)
+			require.Equal(t, tc.failures, got.Failures)
+			require.Zero(t, got.Successes, "a local refusal must not manufacture recovery evidence")
+		})
+	}
+}
+
+func TestPriorityObservationHTTPTransportGuardLifecycle(t *testing.T) {
+	svc, req, account, _, _, ctx := reviewNativeFixture(t, OpenAIWSIngressModeHTTPBridge)
+	ctx = WithObservationEffort(ctx, "")
+	ctx, err := svc.beginPriorityLatencyTurn(ctx, nil, account, req.RequestedModel)
+	require.NoError(t, err)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", nil)
+	require.NoError(t, err)
+	request, err = svc.preparePriorityLatencyHTTPSend(request, account)
+	require.NoError(t, err)
+	turn, ok := ctx.Value(priorityLatencyTurnKey{}).(*priorityLatencyTurn)
+	require.True(t, ok)
+	require.False(t, turn.started)
+	reviewActivateStop(svc, req, account.ID)
+	require.ErrorIs(t, CheckHTTPUpstreamSendGuard(request.Context()), ErrPriorityLatencyUnavailable)
+	require.False(t, turn.started)
+	setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+	require.NoError(t, CheckHTTPUpstreamSendGuard(request.Context()), "an unsent refusal may recover without replaying anything")
+	require.True(t, turn.started)
+	reviewActivateStop(svc, req, account.ID)
+	require.NoError(t, CheckHTTPUpstreamSendGuard(request.Context()), "an attempted logical turn retains its original retry admission")
+	_, err = svc.nextPriorityLatencyWSTurn(request.Context(), nil, account, req.RequestedModel, []byte(`{"model":"gpt-test"}`))
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "the next logical turn must not inherit the previous send marker")
+	cancelled, cancel := context.WithCancel(request.Context())
+	cancel()
+	require.ErrorIs(t, CheckHTTPUpstreamSendGuard(cancelled), context.Canceled)
+	require.NoError(t, CheckHTTPUpstreamSendGuard(context.Background()))
 }
 
 func TestPriorityObservationWSTurnEffortFields(t *testing.T) {

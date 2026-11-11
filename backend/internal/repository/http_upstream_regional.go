@@ -63,6 +63,13 @@ func (t *regionalUpstreamTransport) RoundTrip(req *http.Request) (*http.Response
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 	}
+	if err := service.CheckHTTPUpstreamSendGuard(req.Context()); err != nil {
+		finished()
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, err
+	}
 	start := time.Now()
 	resp, err := entry.client.Transport.RoundTrip(req)
 	if region != "" {
