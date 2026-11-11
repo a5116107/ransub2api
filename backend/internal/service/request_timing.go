@@ -145,12 +145,11 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 
 // Match the native forwarding outcome without changing error handling or
 // billing. The defer caller passes its final named return values.
-func recordForwardTimingOutcome(ctx context.Context, c *gin.Context, result *ForwardResult, err error) {
+func recordForwardTimingOutcome(ctx context.Context, c *gin.Context, disconnected bool, err error) {
 	outcome := "success"
 	if err != nil || (c != nil && c.Writer != nil && c.Writer.Status() >= http.StatusBadRequest) {
 		outcome = "failed"
 	}
-	disconnected := result != nil && result.ClientDisconnect
 	if disconnected {
 		outcome = "client_disconnected"
 	}

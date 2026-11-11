@@ -153,7 +153,8 @@ func TestMessagesTextStreamFinalAttemptIsolation(t *testing.T) {
 			}
 			now = start.Add(300 * time.Millisecond)
 			Content(last.Context(), []byte(`{"type":"message_stop"}`))
-			// Later events cannot rewrite the first terminal or its counters.
+			// Later events cannot rewrite the first terminal or its counters,
+			// but contradictory output/error invalidates the healthy sample.
 			Content(last.Context(), []byte(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"late private text"}}`))
 			Content(last.Context(), []byte(`{"type":"error","error":{"type":"overloaded_error"}}`))
 			trace.Response(&http.Response{StatusCode: http.StatusOK}, nil)
@@ -167,7 +168,9 @@ func TestMessagesTextStreamFinalAttemptIsolation(t *testing.T) {
 				require.Equal(t, finalText, v.VisibleTextFirstMS != nil)
 				if finalText {
 					require.Equal(t, 100.0, *v.VisibleTextFirstMS)
-					require.Equal(t, 1, *v.TextStream.Chunks)
+					require.Equal(t, 1, s.Attempts[3].TextStream.Chunks)
+					require.Equal(t, "invalid_boundary", v.TextStream.Status)
+					require.Nil(t, v.TextStream.Chunks)
 					require.Nil(t, v.TextStream.MaxGapMS)
 				} else {
 					require.Equal(t, "not_collected", v.TextStream.Status)

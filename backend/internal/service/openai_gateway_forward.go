@@ -128,15 +128,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 	defer func() {
-		outcome := "success"
-		if resultErr != nil {
-			outcome = "failed"
-		}
-		disconnected := result != nil && result.ClientDisconnect
-		if disconnected {
-			outcome = "client_disconnected"
-		}
-		requesttiming.Outcome(ctx, outcome, disconnected)
+		recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr)
 	}()
 	defer requesttiming.Observe(ctx, "forward_attempt")()
 	latest, admissionErr := s.admitOpenAITurn(ctx, c, account, extractOpenAICodexTicketModel(body), body)

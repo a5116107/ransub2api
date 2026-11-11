@@ -23,9 +23,13 @@ func TestAccountConnectionTimingParsers(t *testing.T) {
 		{"responses", `{"type":"response.created"}`, `{"type":"response.output_text.delta","delta":"hello"}`, `{"type":"response.completed"}`, svc.processOpenAIStream},
 		{"chat", `{"choices":[{"delta":{"role":"assistant"}}]}`, `{"choices":[{"delta":{"content":"hello"}}]}`, `[DONE]`, svc.processOpenAIChatCompletionsStream},
 		{"claude", `{"type":"message_start"}`, `{"type":"content_block_delta","delta":{"text":"hello"}}`, `{"type":"message_stop"}`, svc.processClaudeStream},
-		{"gemini", `{"modelVersion":"synthetic"}`, `{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}`, `[DONE]`, svc.processGeminiStream},
+		{"gemini", `{"modelVersion":"synthetic"}`, `{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}`, `{"candidates":[{"finishReason":"STOP"}]}`, svc.processGeminiStream},
 	} {
-		for _, variant := range []string{"content", "metadata-only", "incomplete"} {
+		variants := []string{"content", "metadata-only", "incomplete"}
+		if protocol.name == "gemini" {
+			variants = append(variants, "sentinel-only")
+		}
+		for _, variant := range variants {
 			t.Run(protocol.name+"/"+variant, func(t *testing.T) {
 				c, rec := newTestContext()
 				collector, _ := beginAccountConnectionTiming(c)
@@ -33,14 +37,18 @@ func TestAccountConnectionTimingParsers(t *testing.T) {
 				trace.Response(&http.Response{StatusCode: 200, Header: http.Header{}}, nil)
 				c.Request = req
 				stream := ": heartbeat\n\ndata: " + protocol.metadata + "\n\n"
-				if variant == "content" {
+				if variant == "content" || variant == "sentinel-only" {
 					stream += "data: " + protocol.content + "\n\n"
 				}
 				if variant != "incomplete" {
-					stream += "data: " + protocol.terminal + "\n\n"
+					terminal := protocol.terminal
+					if variant == "sentinel-only" {
+						terminal = "[DONE]"
+					}
+					stream += "data: " + terminal + "\n\n"
 				}
 				err := protocol.parse(c, strings.NewReader(stream))
-				if variant == "incomplete" {
+				if variant == "incomplete" || protocol.name == "gemini" && (variant == "metadata-only" || variant == "sentinel-only") {
 					require.Error(t, err)
 				} else {
 					require.NoError(t, err)
@@ -58,7 +66,7 @@ func TestAccountConnectionTimingParsers(t *testing.T) {
 					}
 				}
 				require.NotNil(t, timing)
-				if variant == "content" {
+				if variant == "content" || variant == "sentinel-only" {
 					require.NotNil(t, timing.FirstContent.DurationMS)
 					require.NotNil(t, timing.StreamOutput.DurationMS)
 				} else {

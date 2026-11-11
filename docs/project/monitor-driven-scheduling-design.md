@@ -652,8 +652,8 @@ Messages 使用独立 `typed_messages_sse` 来源与 Messages parser 作用域�
 首个有效事件前即发生采集缺口时，按最终物理 HTTP 的实际 Messages 端点保留来源标注，不冒用 Responses 来源或前次重试。
 不改变业务扫描上限或截断转发。无采集器的请求不计算额外线路摘要，父 attempt 不重复存储物理分片，重试不借前次数据。
 该路径仍沿原 request timing JSON、30天保留、异步队列及用量投影，不增加表或第二套计时器。
-Messages 的 output_tokens 未提供与 Responses 等价的推理扣除证据，因此输出阶段 TPS 与规范缓存比例继续未采集，
-不把原计费用量强行换算为同口径指标。Gemini HTTP 与原生 WS 的接线见下文；其他协议的规范计数、跨协议速度与会话冷输入风险仍待验收，D5不因单协议交付关闭。
+Messages 的 output_tokens 未提供与 Responses 等价的推理扣除证据，输出阶段 TPS 继续未采集；
+规范缓存按下述独立累计桶采集，不从原计费兼容值反推。Gemini HTTP 与原生 WS 的接线见下文，D5不因单协议交付关闭。
 
 Gemini HTTP 原生、Messages 兼容、Chat Completions 兼容与 Code Assist 流转非流，沿同一物理 attempt
 记录首推理、首可见文本、文本 chunk 间隔和终态等待。HTTP 采集中间件与传输诊断共用实际端点分类，增加
@@ -679,8 +679,8 @@ STOP 后纯用量元数据可保留，继续出现内容或失败信号则使原
 即使已收到 STOP，后续客户端断连也保留断连结果和原已采集计费用量，不形成健康样本。
 
 该子项复用原 request timing JSON、异步记录、保留期限和 SQL 投影，无数据库迁移或第二套计时器；
-旧 JSON 继续按原协议解释。Gemini 的计费兼容量不直接套用 Responses 的规范缓存和推理扣除公式，
-输出阶段 TPS 与规范缓存比例保持未采集。新观测尚不改变自动排名或线上策略，也不证明真实供应商的缓存、质量或完整能力。
+旧 JSON 继续按原协议解释。Gemini 的计费兼容量不套用 Responses 的规范缓存和推理扣除公式，
+规范缓存直接读取原始 usageMetadata，输出阶段 TPS 保持未采集。新观测尚不改变自动排名或线上策略，也不证明真实供应商的缓存、质量或完整能力。
 回退应用保留原 JSON 和账单；旧读取者不识别 Gemini 的来源与异常边界，不作为完整观测的验收结果，混合版本及生产升级仍按D8/D9核验。
 Antigravity 独立网关在既有最终发送入口复用相同账号/代理/线路初始化，覆盖普通循环、智能重试、
 Credits 重试及模型兜底；物理 HTTP attempt 与外层发送分别记录，旧尝试不贡献最终尝试的文本样本。
@@ -692,11 +692,11 @@ Credits 重试及模型兜底；物理 HTTP attempt 与外层发送分别记录�
 Antigravity 的 scanner 超限、读取错误与间隔超时显式标记 incomplete_capture，包括上游已 STOP
 但后续读取异常的情况；未收到真实终态、损坏事件、下游写错或取消均不形成健康文本流样本。
 保留原扫描限制、keepalive、取消和断连后 drain 计费规则；Messages JSON 直接透传保持文本间隔未知，
-不把完整 JSON 当作文本 delta。Gemini/Messages 的规范 TPS 与缓存比例仍不借用 Responses 公式。
+不把完整 JSON 当作文本 delta。Gemini/Messages 的规范缓存使用各自原始协议，文本 TPS 不借用 Responses 公式。
 流转非流的 Claude 聚合器另外保留最新原始 usageMetadata：即使尾帧只有用量、无正文，原转换器也能
 保留实际输入/缓存/思考/输出计数；明确零值覆盖旧值，无新用量则保留最近值。该修复不改变计费公式、
 空响应/错误处理或调度权重；相同聚合器服务 Messages、Chat 与 Responses，不新增平行路径。
-原生 WS 的逐轮内容、规范缓存与输出阶段速度按下述独立边界交付；其他协议的规范计数、跨协议速度与会话迁移冷输入风险仍属 D5 剩余验收。
+原生 WS 的逐轮内容、规范缓存与输出阶段速度按下述独立边界交付；无规范计数的其他 wire 保持未知，跨协议速度与会话迁移冷输入风险仍属 D5 剩余验收。
 
 原生 Responses WS 复用 `requesttiming.Content`、固定大小文本聚合和原 `request_timing_details`，
 按每次实际 generation 的发送边界建立 `kind=ws_turn`、`ttft_mode=ws_turn` 的独立 trace，
@@ -740,7 +740,34 @@ SQL 同时排除明确失败的请求结果/终态、伪装 HTTP 状态的 WS �
 结果标记 `historical_association`，保留负差值、样本数、方法、时效和不确定状态；
 独立历史分布差值不证明同提示词收益、供应商缓存寿命、下次命中或迁移节省，不自动修改调度权重。
 现有延迟面板同步展示来源、作用域、冷热样本数、准入条件与非因果差值，旧响应字段缺失仍显示未采集。
-本子项不关闭D5：其他协议的规范缓存计数、切换后额外冷输入及面向会话的保守风险估计仍待验收。
+Responses 的缓存子项边界如上；Messages/Gemini 按下述原始口径扩展，不将 D5 的会话风险验收一并关闭。
+
+Messages HTTP 的规范缓存保存显式独立桶：`input_tokens` 为未缓存输入，
+`cache_read_input_tokens` 为读取，`cache_creation_input_tokens` 为写入，总输入为三者之和。
+message_start 初始化、message_delta 按明确出现的字段更新累计桶，不相加多次；明确零覆盖旧值，
+只更新 output_tokens 的事件不清除输入证据。三个桶未齐全不补零，cached_tokens 等兼容别名不补规范读取，
+出现可重定义 input_tokens 的 prompt 兼容字段标 ambiguous_counters。坏计数在本次物理生成内保持异常，后续正常事件不掩盖。
+范围为 `final_physical_http_messages_cumulative_usage`，来源为 `canonical_messages_cumulative_usage`。
+
+Gemini HTTP 从同一原始事件或一层 Code Assist 信封内的 usageMetadata 读取
+`promptTokenCount` 和 `cachedContentTokenCount`；读取包含在总输入内，不重复相加，不伪造写入。
+每份最新元数据独立有效：尾帧在主候选 STOP 后仍可更新用量，明确零覆盖旧读取；
+最新元数据缺读取就保持 not_reported，不拼接不同 chunk 的计数。来源为 `canonical_gemini_usage_metadata`，
+范围为 `final_physical_http_gemini_usage_metadata`。仅元数据不重写内容终态时间，也不伪造文本分片。
+
+普通/透传/国产供应商原生 Messages 的 SSE 与非流式 JSON、Antigravity 的原始 Messages/Gemini、
+Gemini 原生与兼容转换均在改写计费、强制缓存计费或下游转换前采集。JSON 的有效 stop_reason 为
+end_turn、stop_sequence、tool_use；流式已报告 max_tokens、pause_turn、refusal、未知终止等时不由后续
+message_stop 抹成完整回答。只缺 stop_reason 的旧 SSE 保留原 message_stop 兼容；无终态、异常计数、
+漏采、混合协议、失败/取消/下游写错和终态后矛盾内容不形成健康缓存样本。原计费与转发契约不变。
+
+CacheUsage.protocol 显式区分来源，缺字段的旧 JSON 仍只按 Responses 解释。HTTP SQL 同时复核协议、
+唯一 trace、账号、完整成功边界、规范桶与原账单守恒；原账单兼容规则造成差异时分组保持 unknown，
+不回退成历史正读取修复。用量详情展示的是原始计数观测，不声称账单已核对；分层表的规范来源才表示通过守恒。
+冷热历史 p90 关联也按协议来源分层，即使模型/端点/线路相同也不配对；缺少完整模型/档位/推理范围仍不给估计。
+既有前端分开标注三种规范来源，未知来源保持未采集；不新增表、计费公式、后台队列或自动调度权重。
+旧应用回退保留 JSON 与账单，但旧读取者不认识协议标签，不用于跨协议观测验收；混合版本按 D8/D9 核验。
+Messages/Gemini 文本 TPS、未覆盖 wire、实际迁移额外冷输入及面向会话的保守估计继续待验，不以历史 p90 差冒充迁移收益。
 
 Responses HTTP 与原生 WS 的输出阶段速度复用上述物理 attempt 与原始终态 JSON；`output_usage` 仅保存计数及输出类型结论，
 `output_rate` 由同一函数投影到请求详情和用量诊断。不新增表、采样器或计费口径。

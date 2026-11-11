@@ -115,9 +115,9 @@ func readLatencyReport(ctx context.Context, reader any, f LatencyReportFilter) (
 
 func annotateCacheColdStart(groups []LatencyGroup, f LatencyReportFilter, now time.Time) {
 	type cohort struct {
-		account, proxy                                       int64
-		model, upstream, tier, endpoint, route, body, effort string
-		stream                                               bool
+		account, proxy                                               int64
+		model, upstream, tier, endpoint, route, body, effort, source string
+		stream                                                       bool
 	}
 	type pair struct {
 		cold, warm *LatencyGroup
@@ -133,14 +133,16 @@ func annotateCacheColdStart(groups []LatencyGroup, f LatencyReportFilter, now ti
 		g := &groups[i]
 		g.ColdStart = CacheColdStartEvidence{Status: "unknown_scope", Method: "independent_history_p90_difference_not_causal", MinSamples: 5, MaxAgeSeconds: 900, AsOf: asOf}
 		route, err := hex.DecodeString(g.RouteFingerprint)
-		if g.CacheSource != "canonical_responses_terminal_usage" || err != nil || len(route) != 32 || [32]byte(route) == [32]byte{} ||
+		canonical := g.CacheSource == "canonical_responses_terminal_usage" || g.CacheSource == "canonical_messages_cumulative_usage" ||
+			g.CacheSource == "canonical_gemini_usage_metadata"
+		if !canonical || err != nil || len(route) != 32 || [32]byte(route) == [32]byte{} ||
 			g.AccountID <= 0 || g.Model == "" || g.Model == "unknown" || g.UpstreamModel == "" || g.UpstreamModel == "unknown" ||
 			g.ServiceTier == "" || g.ServiceTier == "unknown" || g.ServiceTier == "unspecified" ||
 			g.UpstreamEndpoint == "" || g.UpstreamEndpoint == "unknown" || g.BodyBucket == "" || g.BodyBucket == "unknown" ||
 			g.ReasoningEffort == "" || g.ReasoningEffort == "unknown" || g.ProxyID < 0 || !g.Stream {
 			continue
 		}
-		key := cohort{g.AccountID, g.ProxyID, g.Model, g.UpstreamModel, g.ServiceTier, g.UpstreamEndpoint, g.RouteFingerprint, g.BodyBucket, g.ReasoningEffort, g.Stream}
+		key := cohort{g.AccountID, g.ProxyID, g.Model, g.UpstreamModel, g.ServiceTier, g.UpstreamEndpoint, g.RouteFingerprint, g.BodyBucket, g.ReasoningEffort, g.CacheSource, g.Stream}
 		keys[i] = key
 		p := pairs[key]
 		if p == nil {

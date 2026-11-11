@@ -13,6 +13,8 @@ export default {
   "stream": "Streaming",
   "nonStream": "Non-streaming",
   "cacheCanonical": "Reconciled raw terminal usage",
+  "cacheMessages": "Reconciled raw Messages cumulative usage",
+  "cacheGemini": "Reconciled raw Gemini usage metadata",
   "cacheLegacy": "Historical billed usage (positive read)",
   "cacheUnverified": "Incomplete or inconsistent terminal usage evidence",
   "coldStart": "Cold / warm first-text wait comparison",

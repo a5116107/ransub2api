@@ -1,6 +1,7 @@
 package requesttiming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math"
@@ -51,11 +52,24 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 	if c == nil {
 		return false
 	}
+	if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+		return false // Compatibility marker is not a business terminal or a lost typed event.
+	}
+	if len(data) > 16*1024*1024 {
+		Stage(ctx, "typed_content_truncated")
+		return false
+	}
 	var event struct {
-		Type         string              `json:"type"`
-		Delta        json.RawMessage     `json:"delta"`
-		Text         string              `json:"text"`
-		Item         responseContentItem `json:"item"`
+		Type       string              `json:"type"`
+		Delta      json.RawMessage     `json:"delta"`
+		Text       string              `json:"text"`
+		Item       responseContentItem `json:"item"`
+		StopReason string              `json:"stop_reason"`
+		Content    []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		} `json:"content"`
 		ContentBlock struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -65,18 +79,21 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 		} `json:"response"`
 	}
 	if json.Unmarshal(data, &event) != nil {
+		Stage(ctx, "typed_content_truncated")
 		return false
 	}
 	if event.Type == "" && len(eventTypes) > 0 {
 		event.Type = strings.TrimSpace(eventTypes[0])
 	}
-	if strings.HasPrefix(event.Type, "content_block_") || event.Type == "message_stop" || event.Type == "error" {
+	if strings.HasPrefix(event.Type, "content_block_") || strings.HasPrefix(event.Type, "message_") || event.Type == "message" || event.Type == "error" {
 		var delta struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			Thinking string `json:"thinking"`
+			Type       string `json:"type"`
+			Text       string `json:"text"`
+			Thinking   string `json:"thinking"`
+			StopReason string `json:"stop_reason"`
 		}
 		if len(event.Delta) > 0 && json.Unmarshal(event.Delta, &delta) != nil {
+			Stage(ctx, "typed_content_truncated")
 			return false
 		}
 		start, change := event.Type == "content_block_start", event.Type == "content_block_delta"
@@ -88,6 +105,17 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 			(change && delta.Type != "text_delta" && delta.Type != "thinking_delta" && delta.Type != "signature_delta")
 		terminal := ""
 		switch event.Type {
+		case "message":
+			for _, block := range event.Content {
+				reasoning = reasoning || (block.Type == "thinking" && block.Thinking != "")
+				visible = visible || (block.Type == "text" && block.Text != "")
+				nonText = nonText || (block.Type != "text" && block.Type != "thinking" && block.Type != "redacted_thinking")
+			}
+			terminal = messagesStopTerminal(event.StopReason)
+		case "message_delta":
+			if delta.StopReason != "" && messagesStopTerminal(delta.StopReason) != "completed" {
+				terminal = "incomplete"
+			}
 		case "message_stop":
 			terminal = "completed"
 		case "error":
@@ -97,11 +125,19 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 		if event.Type == "error" {
 			protocol = ""
 		}
-		recordContent(ctx, protocol, reasoning, visible, textDelta, nonText, terminal, nil, nil)
+		var cache *CacheUsage
+		if event.Type == "message_start" || event.Type == "message_delta" || event.Type == "message" {
+			cache = readMessagesCacheUsage(data, event.Type)
+		}
+		recordContent(ctx, protocol, reasoning, visible, textDelta, nonText, terminal, cache, nil)
 		return true
+	}
+	if !strings.HasPrefix(event.Type, "response.") {
+		return true // Opaque metadata and pings have no typed delta contract.
 	}
 	var delta string
 	if len(event.Delta) > 0 && json.Unmarshal(event.Delta, &delta) != nil {
+		Stage(ctx, "typed_content_truncated")
 		return false
 	}
 	reasoning := false
@@ -149,6 +185,15 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 	return true
 }
 
+func messagesStopTerminal(reason string) string {
+	switch reason {
+	case "end_turn", "stop_sequence", "tool_use":
+		return "completed"
+	default:
+		return "incomplete"
+	}
+}
+
 // All protocols share the same bounded physical-attempt aggregate. Legacy
 // first_semantic/first_visible and billing usage remain with their consumers.
 func recordContent(ctx context.Context, protocol string, reasoning, visibleText, textDelta, nonTextOutput bool, terminal string, cache *CacheUsage, output *OutputUsage) {
@@ -157,7 +202,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		return
 	}
 	tr, _ := ctx.Value(attemptKey{}).(*Trace)
-	if tr == nil || tr.c != c || (!reasoning && !visibleText && !nonTextOutput && terminal == "") {
+	if tr == nil || tr.c != c || (!reasoning && !visibleText && !nonTextOutput && terminal == "" && cache == nil) {
 		return
 	}
 	c.mu.Lock()
@@ -177,15 +222,24 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 	if stream := c.data.Attempts[tr.index].TextStream; stream != nil && stream.Terminal != "" {
 		// Gemini may send trailing usage after STOP, but further output or
 		// an error contradicts the earlier terminal and is not a healthy sample.
-		if (protocol == "gemini" || c.data.Attempts[tr.index].Kind == "ws_turn") && (reasoning || visibleText || nonTextOutput || terminal == "failed" || terminal == "incomplete") {
+		if (protocol != "responses" || c.data.Attempts[tr.index].Kind == "ws_turn") &&
+			(reasoning || visibleText || nonTextOutput || terminal == "failed" || terminal == "incomplete" ||
+				(protocol == "messages" && cache != nil)) {
 			stream.Invalid = true
+		}
+		if protocol == "gemini" && stream.Protocol == protocol && stream.Terminal == "completed" && !stream.Invalid {
+			updateProtocolCache(&c.data.Attempts[tr.index], cache)
 		}
 		return
 	}
 	now := c.offset(c.now())
-	if a := &c.data.Attempts[tr.index]; (a.Kind == "http" || a.Kind == "ws_turn") && terminal != "" && protocol == "responses" {
-		a.CacheUsage = cache
-		a.OutputUsage = output
+	if a := &c.data.Attempts[tr.index]; a.Kind == "http" || a.Kind == "ws_turn" {
+		if protocol == "responses" && terminal != "" {
+			a.CacheUsage = cache
+			a.OutputUsage = output
+		} else if protocol == "messages" || protocol == "gemini" {
+			updateProtocolCache(a, cache)
+		}
 	}
 	for index := tr.index; index >= 0; {
 		a := &c.data.Attempts[index]

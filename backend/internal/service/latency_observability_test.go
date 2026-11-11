@@ -86,6 +86,8 @@ func TestCacheColdStartDoesNotMixCohorts(t *testing.T) {
 		{"upstream_model", func(g *LatencyGroup) { g.UpstreamModel = "another-actual-model" }},
 		{"fast", func(g *LatencyGroup) { g.ServiceTier = "priority" }},
 		{"protocol", func(g *LatencyGroup) { g.UpstreamEndpoint = "/v1/messages" }},
+		{"messages_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_messages_cumulative_usage" }},
+		{"gemini_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_gemini_usage_metadata" }},
 		{"route", func(g *LatencyGroup) { g.RouteFingerprint = strings.Repeat("b", 64) }},
 		{"proxy", func(g *LatencyGroup) { g.ProxyID++ }},
 		{"body", func(g *LatencyGroup) { g.BodyBucket = "<64KiB" }},
@@ -99,6 +101,24 @@ func TestCacheColdStartDoesNotMixCohorts(t *testing.T) {
 			for _, g := range groups {
 				require.Equal(t, "insufficient_samples", g.ColdStart.Status)
 				require.Nil(t, g.ColdStart.DeltaMS)
+			}
+		})
+	}
+}
+
+func TestCacheColdStartNativeProtocolAssociations(t *testing.T) {
+	for _, source := range []string{"canonical_messages_cumulative_usage", "canonical_gemini_usage_metadata"} {
+		t.Run(source, func(t *testing.T) {
+			now := time.Now().UTC()
+			groups := coldStartGroups(now)
+			for i := range groups {
+				groups[i].CacheSource = source
+			}
+			annotateCacheColdStart(groups, LatencyReportFilter{Start: now.Add(-time.Hour), End: now}, now)
+			for _, g := range groups {
+				require.Equal(t, "historical_association", g.ColdStart.Status)
+				require.Equal(t, "independent_history_p90_difference_not_causal", g.ColdStart.Method)
+				require.InDelta(t, 5000, *g.ColdStart.DeltaMS, 1e-9)
 			}
 		})
 	}

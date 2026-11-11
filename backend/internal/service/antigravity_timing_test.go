@@ -235,7 +235,7 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 						}
 						if passthrough && !stream {
 							w.Header().Set("Content-Type", "application/json")
-							_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"first last"}],"stop_reason":"end_turn","usage":{"input_tokens":8,"output_tokens":3}}`)
+							_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"first last"}],"stop_reason":"end_turn","usage":{"input_tokens":8,"cache_read_input_tokens":4,"cache_creation_input_tokens":0,"output_tokens":3}}`)
 							return
 						}
 						w.Header().Set("Content-Type", "text/event-stream")
@@ -244,7 +244,7 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 							_ = http.NewResponseController(w).Flush()
 						}
 						if passthrough {
-							send(`{"type":"message_start","message":{"usage":{"input_tokens":8}}}`)
+							send(`{"type":"message_start","message":{"usage":{"input_tokens":8,"cache_read_input_tokens":4,"cache_creation_input_tokens":0}}}`)
 							send(`{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"private reasoning"}}`)
 							send(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"first"}}`)
 						} else {
@@ -267,7 +267,7 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 						} else {
 							send(`{"response":{"candidates":[{"content":{"parts":[{"text":"last"}]}}]}}`)
 							if ending != "eof" {
-								send(`{"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}}`)
+								send(`{"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"cachedContentTokenCount":4,"candidatesTokenCount":3}}}`)
 							}
 						}
 						if ending == "oversized" {
@@ -336,6 +336,13 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 						}
 						if passthrough && !stream {
 							require.Nil(t, v.TextStream.Chunks, "a JSON response is not a text-delta stream")
+							if ending == "STOP" {
+								require.Equal(t, "observed", v.Cache.Status)
+								require.Equal(t, "canonical_messages_cumulative_usage", v.Cache.Source)
+								require.InDelta(t, 1.0/3, *v.Cache.ReadRatio, 1e-9)
+							} else {
+								require.Nil(t, v.Cache.ReadRatio)
+							}
 							return
 						}
 						require.Len(t, s.Attempts, 2, "logical and physical sends remain separate")
@@ -362,7 +369,13 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 						}
 						require.Equal(t, source, v.TextStream.Source)
 						require.Nil(t, v.OutputRate.TokensPerSecond)
-						require.Nil(t, v.Cache.ReadRatio)
+						if ending == "STOP" {
+							require.Equal(t, "observed", v.Cache.Status)
+							require.EqualValues(t, 12, *v.Cache.InputTokens)
+							require.InDelta(t, 1.0/3, *v.Cache.ReadRatio, 1e-9)
+						} else {
+							require.Nil(t, v.Cache.ReadRatio)
+						}
 						raw, marshalErr := json.Marshal(s)
 						require.NoError(t, marshalErr)
 						for _, private := range []string{"private reasoning", "fixture-prompt", "fixture-private-key", "fresh-oauth-token"} {

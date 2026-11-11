@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5 WS规范缓存/输出TPS与HTTP缓存SQL一致性子项已验证；父项仍进行中。
+任务：D5 Messages/Gemini规范缓存、跨协议分层与完整终态已验，待本地提交；父项仍进行中。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：基线b3406cc；19项源码/锁/规则清单ef174df3，原诊断表，无迁移。
-验证命令：service/计时/中间件/PG14 race；前端单测/类型/lint与浏览器；原七类lint、vet/Linux编译。
-验证结果：855/2684与前端28例通过，WS专项10轮通过；原规则lint 0 issues、vet/Linux编译0。
-验证来源：backend/tmp/ws-turn-metrics；service-verified、packages-current、postgres-pg14-complete及browser-final。
-下一动作：D5其他协议规范计数、跨协议可比性与迁移冷输入风险；不从兼容计费用量推断。
-尝试：5
-阻塞：D2 unknown待供应商关联契约；生产排空待管理员；历史拒删资源待拥有者。
+源码：基线9eb61e6；源码/锁/规则清单5803cea8，原诊断表，无迁移。
+验证命令：计时/中间件、service与PG14 race；前端单测/类型/lint、浏览器；原规则lint/vet/Linux编译。
+验证结果：计时/中间件76/424、service149/820、PG14 11/67零失败/跳过；前端19例/浏览器、最终lint/vet/Linux编译通过。
+验证来源：backend/tmp/protocol-cache；packages-final、service-final-fixed、postgres-complete及browser-*。
+下一动作：本地提交；继而D5其他wire、跨协议速度与会话迁移冷输入，不借计费兼容值。
+尝试：7；一次lint因H盘满退出7，失败证据保留，不计通过。
+阻塞：D2 unknown待供应商契约；生产排空待管理员；历史及本轮96份旧Go缓存拒删待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 四协议HTTP、WS逐轮/缓存/TPS、SQL一致性已验；855/2684 race、前端28例和浏览器通过；其他协议规范计数、跨协议可比性与迁移冷输入待验 |
+| D5 | in_progress | HTTP/WS及Messages/Gemini规范缓存/跨协议SQL、lint/vet/build已验；其他wire、文本TPS与会话迁移冷输入待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -66,11 +66,12 @@
 
 ## 下一项工作
 
-D5 WS规范缓存/输出TPS、断连竞态与HTTP缓存SQL一致性已验；本地交付，不推送/部署。继续其他协议规范计数、跨协议可比性与迁移冷输入。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验。视频查询转发原节点，生成/双预算/结算不迁移；336回退须排空并保留账单。未改线上策略。
+D5 Messages/Gemini已验，原分支本地提交；其后为其他wire、文本TPS与会话迁移冷输入。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验。视频查询转发原节点，生成/双预算/结算不迁移；336回退须排空并保留账单。未改线上策略。
 
 ## 外部等待与清理
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`及`backend/tmp/output-rate/`中的旧夹具/缓存；由工作区拥有者处理，详见DECISIONS。
-- 本轮`backend/tmp/ws-turn-metrics/vite-cache`精确删除也被执行策略拦截；11文件/2886386bytes保留待拥有者手动删除，不换工具重试。浏览器及UI服务已关闭；历史PNG原位保留、不提交。
+- 历史`backend/tmp/ws-turn-metrics/vite-cache`拒删11文件/2886386bytes待拥有者手动删除，不换工具重试。本轮浏览器及5186夹具已关闭，无新增Vite缓存；历史PNG原位保留、不提交。
+- H盘Go缓存533.89GiB，本项目96份旧测试缓存32.20GiB删除被策略拒绝，实际删除0；清单见本轮cache-reclaim-blocked.json。仅本轮14份闲置JSONL原位无损压缩，哈希不变，节省4145655bytes；未触碰旧拒删路径，磁盘余量仍需拥有者处理。

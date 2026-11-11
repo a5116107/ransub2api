@@ -78,9 +78,12 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  FROM traces
 ), cache_values AS (
  SELECT *,
+ COALESCE(NULLIF(cu->>'protocol',''),'responses') cache_protocol,
  CASE WHEN jsonb_typeof(cu->'input_tokens')='number' AND cu->>'input_tokens' ~ '^[0-9]{1,16}$' THEN (cu->>'input_tokens')::numeric END cache_input,
  CASE WHEN jsonb_typeof(cu->'read_tokens')='number' AND cu->>'read_tokens' ~ '^[0-9]{1,16}$' THEN (cu->>'read_tokens')::numeric END cache_read,
- CASE WHEN jsonb_typeof(cu->'write_tokens')='number' AND cu->>'write_tokens' ~ '^[0-9]{1,16}$' THEN (cu->>'write_tokens')::numeric END cache_write
+ CASE WHEN jsonb_typeof(cu->'write_tokens')='number' AND cu->>'write_tokens' ~ '^[0-9]{1,16}$' THEN (cu->>'write_tokens')::numeric END cache_write,
+ CASE WHEN NOT (cu ? 'uncached_tokens') THEN 0
+  WHEN jsonb_typeof(cu->'uncached_tokens')='number' AND cu->>'uncached_tokens' ~ '^[0-9]{1,16}$' THEN (cu->>'uncached_tokens')::numeric END cache_uncached
  FROM cache_raw
 ), cache_checked AS (
  SELECT *,(
@@ -92,6 +95,8 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
   AND cache_attempt->>'account_id'=account_id::text AND cache_attempt->>'status' ~ '^2[0-9]{2}$'
   AND cache_attempt->>'terminal'='completed' AND COALESCE(cache_attempt->>'error','')=''
   AND NOT (cache_attempt->'events' ? 'typed_content_truncated') AND cu->>'status'='observed'
+  AND cache_protocol IN ('responses','messages','gemini')
+  AND COALESCE(NULLIF(cache_attempt->'text_stream'->>'protocol',''),'responses')=cache_protocol
   AND COALESCE(cache_attempt->'text_stream'->>'invalid','false')='false'
   AND COALESCE(cache_attempt->'text_stream'->>'truncated','false')='false'
   AND cache_input>0 AND cache_input<=9007199254740991 AND cache_read>=0 AND cache_read<=cache_input
@@ -99,6 +104,10 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
   AND stored_input+stored_read+stored_write=cache_input AND stored_read=cache_read
   AND (cu->>'write_reported'='false' OR (cu->>'write_reported'='true'
    AND cache_write>=0 AND cache_write<=cache_input-cache_read AND cache_write=stored_write))
+  AND (cache_protocol<>'messages' OR (cu->>'input_reported'='true' AND cu->>'read_reported'='true'
+   AND cu->>'write_reported'='true' AND cache_uncached>=0 AND cache_uncached<=cache_input
+   AND cache_uncached+cache_read+cache_write=cache_input))
+  AND (cache_protocol<>'gemini' OR cu->>'write_reported'='false')
  ) canonical_cache,
  (cu IS NULL AND trace_total<=1 AND stored_input>=0 AND stored_read>0 AND stored_write>=0
   AND COALESCE(detail->>'ttft_mode','')<>'ws_turn' AND COALESCE(cache_attempt->>'kind','')<>'ws_turn'
@@ -111,7 +120,10 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
   WHEN legacy_positive THEN CASE WHEN stored_read/(stored_input+stored_read+stored_write)<.8 THEN '<80%'
    WHEN stored_read/(stored_input+stored_read+stored_write)<.95 THEN '80-95%' ELSE '95%+' END
   ELSE 'unknown' END cache,
- CASE WHEN canonical_cache THEN 'canonical_responses_terminal_usage' WHEN legacy_positive THEN 'billed_usage_positive_read'
+ CASE WHEN canonical_cache THEN CASE cache_protocol
+  WHEN 'messages' THEN 'canonical_messages_cumulative_usage'
+  WHEN 'gemini' THEN 'canonical_gemini_usage_metadata' ELSE 'canonical_responses_terminal_usage' END
+  WHEN legacy_positive THEN 'billed_usage_positive_read'
   WHEN cu IS NOT NULL THEN 'unverified_terminal_usage' ELSE 'none' END cache_source
  FROM cache_checked
 ), grouped_traces AS (

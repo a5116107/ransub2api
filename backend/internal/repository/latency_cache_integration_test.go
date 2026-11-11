@@ -203,6 +203,92 @@ func TestLatencyCacheRecentWindowDoesNotBorrowOldSamples(t *testing.T) {
 	}
 }
 
+func TestLatencyCacheNativeProtocolsStaySeparateAndConserveBuckets(t *testing.T) {
+	for _, protocol := range []string{"messages", "gemini"} {
+		for _, mode := range []string{"observed", "billing_mismatch", "wrong_protocol", "missing_presence", "forged_write", "bad_uncached", "failed", "capture_gap", "ambiguous_trace"} {
+			t.Run(protocol+"/"+mode, func(t *testing.T) {
+				f := newLatencyCacheFixture(t)
+				f.usage.InputTokens, f.usage.CacheReadTokens = 5, 95
+				a := &f.trace.Attempts[0]
+				a.CacheUsage = &requesttiming.CacheUsage{Protocol: protocol, Status: "observed", InputTokens: 100, ReadTokens: 95}
+				a.TextStream = &requesttiming.TextStreamTiming{Protocol: protocol, Terminal: "completed"}
+				source := "canonical_gemini_usage_metadata"
+				if protocol == "messages" {
+					source = "canonical_messages_cumulative_usage"
+					a.CacheUsage.UncachedTokens, a.CacheUsage.InputReported, a.CacheUsage.ReadReported, a.CacheUsage.WriteReported = 5, true, true, true
+				}
+				switch mode {
+				case "billing_mismatch":
+					f.usage.CacheReadTokens--
+				case "wrong_protocol":
+					a.TextStream.Protocol = "responses"
+				case "missing_presence":
+					if protocol != "messages" {
+						a.CacheUsage.Status = "not_reported"
+					} else {
+						a.CacheUsage.ReadReported = false
+					}
+				case "forged_write":
+					a.CacheUsage.WriteTokens, a.CacheUsage.WriteReported = 1, true
+				case "bad_uncached":
+					if protocol != "messages" {
+						a.CacheUsage.Protocol = "future_protocol"
+					} else {
+						a.CacheUsage.UncachedTokens++
+					}
+				case "failed":
+					f.trace.Outcome = "error"
+				case "capture_gap":
+					a.Events["typed_content_truncated"] = 1
+				}
+				id := f.insert(t)
+				if mode == "ambiguous_trace" {
+					_, err := f.tx.ExecContext(t.Context(), `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,'{}'::jsonb)`, id, uuid.NewString())
+					require.NoError(t, err)
+				}
+				groups, err := f.repo.ReadLatencyReport(t.Context(), service.LatencyReportFilter{Start: f.usage.CreatedAt.Add(-time.Minute), End: time.Now().UTC(), UserID: f.usage.UserID})
+				require.NoError(t, err)
+				items, err := f.repo.ReadUsageContentTimings(t.Context(), []int64{id})
+				require.NoError(t, err)
+				if mode == "observed" {
+					require.Len(t, groups, 1)
+					require.Equal(t, source, groups[0].CacheSource)
+					require.Equal(t, "95%+", groups[0].CacheBucket)
+					require.Equal(t, "observed", items[id].Cache.Status)
+					require.Equal(t, source, items[id].Cache.Source)
+					require.InDelta(t, 0.95, *items[id].Cache.ReadRatio, 1e-9)
+				} else {
+					for _, g := range groups {
+						require.Equal(t, "unknown", g.CacheBucket)
+						require.NotEqual(t, source, g.CacheSource)
+					}
+					if mode != "billing_mismatch" {
+						require.NotEqual(t, "observed", items[id].Cache.Status)
+						require.Nil(t, items[id].Cache.ReadRatio)
+					}
+				}
+			})
+		}
+	}
+	f := newLatencyCacheFixture(t)
+	for _, protocol := range []string{"responses", "messages", "gemini"} {
+		a := &f.trace.Attempts[0]
+		a.CacheUsage = &requesttiming.CacheUsage{Protocol: protocol, Status: "observed", InputTokens: 100, ReadTokens: 95}
+		a.TextStream = &requesttiming.TextStreamTiming{Protocol: protocol, Terminal: "completed"}
+		if protocol == "messages" {
+			a.CacheUsage.UncachedTokens, a.CacheUsage.InputReported, a.CacheUsage.ReadReported, a.CacheUsage.WriteReported = 5, true, true, true
+		}
+		f.usage.InputTokens, f.usage.CacheReadTokens = 5, 95
+		f.insert(t)
+	}
+	groups, err := f.repo.ReadLatencyReport(t.Context(), service.LatencyReportFilter{Start: f.usage.CreatedAt.Add(-time.Minute), End: time.Now().UTC(), UserID: f.usage.UserID})
+	require.NoError(t, err)
+	require.Len(t, groups, 3, "protocol sources cannot share a distribution even with identical endpoint/model/route")
+	for _, g := range groups {
+		require.EqualValues(t, 1, g.Requests)
+	}
+}
+
 func TestLatencyCacheCohortsKeepRouteModelTierAndProtocolSeparate(t *testing.T) {
 	f := newLatencyCacheFixture(t)
 	now := time.Now().UTC()

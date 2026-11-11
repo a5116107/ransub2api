@@ -137,7 +137,17 @@ func TestGeminiTimingLoopback(t *testing.T) {
 						require.Equal(t, "partial", v.TextStream.Status)
 					}
 					require.Nil(t, v.OutputRate.TokensPerSecond, "do not coerce billing counters into canonical text TPS")
-					require.Nil(t, v.Cache.ReadRatio)
+					if ending == "STOP" || ending == "write_error" && path == "buffered" {
+						require.Equal(t, "observed", v.Cache.Status)
+						require.Equal(t, "canonical_gemini_usage_metadata", v.Cache.Source)
+						require.EqualValues(t, 10, *v.Cache.InputTokens)
+						require.EqualValues(t, 3, *v.Cache.ReadTokens)
+						require.Nil(t, v.Cache.WriteTokens)
+						require.InDelta(t, 0.3, *v.Cache.ReadRatio, 1e-9)
+					} else {
+						require.NotEqual(t, "observed", v.Cache.Status)
+						require.Nil(t, v.Cache.ReadRatio)
+					}
 					raw, marshalErr := json.Marshal(s)
 					require.NoError(t, marshalErr)
 					require.NotContains(t, string(raw), "private reasoning")
@@ -252,12 +262,15 @@ func TestGeminiTimingPublicForward(t *testing.T) {
 							} else {
 								require.Nil(t, v.TextStream.Chunks)
 							}
+							require.Equal(t, "observed", v.Cache.Status)
+							require.Equal(t, "canonical_gemini_usage_metadata", v.Cache.Source)
+							require.InDelta(t, 0.3, *v.Cache.ReadRatio, 1e-9)
 						} else {
 							require.NotEqual(t, "observed", v.TextStream.Status)
 							require.Nil(t, v.VisibleTextFirstMS)
+							require.Nil(t, v.Cache.ReadRatio)
 						}
 						require.Nil(t, v.OutputRate.TokensPerSecond)
-						require.Nil(t, v.Cache.ReadRatio)
 						raw, marshalErr := json.Marshal(s)
 						require.NoError(t, marshalErr)
 						require.NotContains(t, string(raw), "fixture-secret")

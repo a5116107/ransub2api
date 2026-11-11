@@ -5,9 +5,11 @@ package service
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +195,17 @@ func TestMessagesTimingLoopback(t *testing.T) {
 						}
 					}
 					require.Nil(t, v.OutputRate.TokensPerSecond)
-					require.Nil(t, v.Cache.ReadRatio)
+					if ending == "completed" || ending == "event_fallback" || ending == "terminal_only" {
+						require.Equal(t, "observed", v.Cache.Status)
+						require.Equal(t, "canonical_messages_cumulative_usage", v.Cache.Source)
+						require.EqualValues(t, 60, *v.Cache.InputTokens)
+						require.EqualValues(t, 30, *v.Cache.ReadTokens)
+						require.EqualValues(t, 20, *v.Cache.WriteTokens)
+						require.InDelta(t, 0.5, *v.Cache.ReadRatio, 1e-9)
+					} else {
+						require.NotEqual(t, "observed", v.Cache.Status)
+						require.Nil(t, v.Cache.ReadRatio)
+					}
 					raw, marshalErr := json.Marshal(s)
 					require.NoError(t, marshalErr)
 					require.NotContains(t, string(raw), "private reasoning")
@@ -206,6 +218,155 @@ func TestMessagesTimingLoopback(t *testing.T) {
 					require.NotNil(t, result.firstTokenMs)
 					require.Contains(t, recorder.Body.String(), `"type":"message_stop"`)
 				}
+			})
+		}
+	}
+}
+
+func TestMessagesTimingNonStreamingCanonicalWire(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, mode := range []string{"complete", "max_tokens", "missing_read", "alias", "write_error", "forced_billing"} {
+			t.Run(fmt.Sprintf("passthrough=%v/%s", passthrough, mode), func(t *testing.T) {
+				stop, usage := "end_turn", `{"input_tokens":10,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"output_tokens":120}`
+				if mode == "max_tokens" {
+					stop = "max_tokens"
+				}
+				if mode == "missing_read" {
+					usage = `{"input_tokens":10,"cache_creation_input_tokens":0,"output_tokens":120}`
+				}
+				if mode == "alias" {
+					usage = `{"input_tokens":10,"cached_tokens":90,"cache_creation_input_tokens":0,"output_tokens":120}`
+				}
+				wire := `{"type":"message","stop_reason":"` + stop + `","content":[{"type":"text","text":"private answer"}],"usage":` + usage + `}`
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, wire)
+				}))
+				defer server.Close()
+				collector := requesttiming.New(time.Now(), 0)
+				ctx := requesttiming.With(t.Context(), collector)
+				if mode == "forced_billing" {
+					ctx = WithForceCacheBilling(ctx)
+				}
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/messages", strings.NewReader(`{"model":"fixture","stream":false}`))
+				require.NoError(t, err)
+				svc := newMinimalGatewayService()
+				svc.httpUpstream = messagesTimingHTTPUpstream{client: server.Client()}
+				account := &Account{ID: 703, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+				resp, err := svc.doGatewayUpstream(req, "", account)
+				require.NoError(t, err)
+				defer func() { _ = resp.Body.Close() }()
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = req
+				c.Writer = &geminiTimingWriter{ResponseWriter: c.Writer, collector: collector, fail: mode == "write_error"}
+				var bill *ClaudeUsage
+				if passthrough {
+					bill, err = svc.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account)
+				} else {
+					bill, err = svc.handleNonStreamingResponse(ctx, resp, c, account, "fixture", "fixture")
+				}
+				require.NoError(t, err)
+				require.Equal(t, 120, bill.OutputTokens)
+				collector.Finish(c.Writer.Status(), false)
+				collector.WhenFinished(func(s requesttiming.Snapshot) {
+					v := requesttiming.DeriveContentObservation(s)
+					require.Nil(t, v.TextStream.Chunks)
+					require.Nil(t, v.OutputRate.TokensPerSecond)
+					if mode == "complete" || mode == "forced_billing" {
+						require.Equal(t, "observed", v.Cache.Status)
+						require.InDelta(t, 0.9, *v.Cache.ReadRatio, 1e-9)
+						require.EqualValues(t, 100, *v.Cache.InputTokens)
+					} else {
+						require.NotEqual(t, "observed", v.Cache.Status)
+						require.Nil(t, v.Cache.ReadRatio)
+					}
+					raw, marshalErr := json.Marshal(s)
+					require.NoError(t, marshalErr)
+					require.NotContains(t, string(raw), "private answer")
+				})
+				if passthrough && mode == "forced_billing" {
+					require.Contains(t, recorder.Body.String(), `"cache_read_input_tokens":100`)
+				}
+			})
+		}
+	}
+}
+
+func TestMessagesTimingNativeProviderCanonicalWire(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, ending := range []string{"complete", "max_tokens", "eof", "write_error", "alias", "late_error"} {
+			if !stream && (ending == "eof" || ending == "late_error") {
+				continue
+			}
+			t.Run(fmt.Sprintf("stream=%v/%s", stream, ending), func(t *testing.T) {
+				usage := `{"input_tokens":10,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"output_tokens":120}`
+				if ending == "alias" {
+					usage = `{"input_tokens":10,"cached_tokens":90,"cache_creation_input_tokens":0,"output_tokens":120}`
+				}
+				stop := "end_turn"
+				if ending == "max_tokens" {
+					stop = "max_tokens"
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					if !stream {
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, `{"type":"message","stop_reason":"`+stop+`","content":[{"type":"text","text":"private answer"}],"usage":`+usage+`}`)
+						return
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					for _, data := range []string{
+						`{"type":"message_start","message":{"usage":` + usage + `}}`,
+						`{"type":"content_block_delta","delta":{"type":"text_delta","text":"private answer"}}`,
+						`{"type":"message_delta","delta":{"stop_reason":"` + stop + `"},"usage":{"output_tokens":120}}`,
+					} {
+						_, _ = io.WriteString(w, "data: "+data+"\n\n")
+					}
+					if ending != "eof" {
+						_, _ = io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+					}
+					if ending == "late_error" {
+						_, _ = io.WriteString(w, "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n")
+					}
+				}))
+				defer server.Close()
+				collector := requesttiming.New(time.Now(), 0)
+				body := []byte(fmt.Sprintf(`{"model":"k3","stream":%v,"max_tokens":256,"messages":[{"role":"user","content":"fixture"}]}`, stream))
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))).WithContext(requesttiming.With(t.Context(), collector))
+				c.Writer = &geminiTimingWriter{ResponseWriter: c.Writer, collector: collector, fail: ending == "write_error"}
+				account := nativeAnthropicTestAccount()
+				account.Credentials["api_base_urls"] = map[string]any{APIProtocolAnthropic: server.URL}
+				account.Credentials["base_url"] = server.URL
+				target, parseErr := url.Parse(server.URL)
+				require.NoError(t, parseErr)
+				svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), rateLimitService: &RateLimitService{}, httpUpstream: antigravityTimingHTTPUpstream{client: server.Client(), target: target}}
+				result, err := svc.ForwardAsAnthropic(c.Request.Context(), c, account, body, "", "")
+				if ending == "eof" {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+					require.NotNil(t, result)
+					require.Equal(t, 120, result.Usage.OutputTokens)
+				}
+				collector.Finish(c.Writer.Status(), false)
+				collector.WhenFinished(func(s requesttiming.Snapshot) {
+					require.Len(t, s.Attempts, 2)
+					v := requesttiming.DeriveContentObservation(s)
+					if ending == "complete" {
+						require.Equal(t, "success", s.Outcome)
+						require.Equal(t, "observed", v.Cache.Status)
+						require.InDelta(t, 0.9, *v.Cache.ReadRatio, 1e-9)
+					} else {
+						require.NotEqual(t, "observed", v.Cache.Status)
+						require.Nil(t, v.Cache.ReadRatio)
+					}
+					require.Nil(t, v.OutputRate.TokensPerSecond)
+					raw, marshalErr := json.Marshal(s)
+					require.NoError(t, marshalErr)
+					require.NotContains(t, string(raw), "private answer")
+				})
 			})
 		}
 	}

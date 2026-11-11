@@ -43,6 +43,23 @@ describe('Issue603 latency observations', () => {
       w.unmount()
     })
   }
+  for (const [locale, messages] of Object.entries({ en, zh })) {
+    it(`keeps canonical protocol evidence distinct in ${locale}`, async () => {
+      mocks.read.mockResolvedValue({ ...result, groups: [
+        { ...group, cache_source: 'canonical_messages_cumulative_usage' },
+        { ...group, cache_source: 'canonical_gemini_usage_metadata' },
+        { ...group, cache_source: 'future_unrecognized_source' },
+      ] })
+      const w = mount(LatencyObservabilityPanel, { global: { plugins: [localePlugin(locale)] } })
+      await flushPromises()
+      const evidence = w.findAll('[data-testid="cache-evidence"]')
+      expect(evidence[0].text()).toContain(messages.cacheMessages)
+      expect(evidence[1].text()).toContain(messages.cacheGemini)
+      expect(evidence[2].text()).toContain(messages.notCollected)
+      expect(w.text()).not.toContain(messages.cacheCanonical)
+      w.unmount()
+    })
+  }
   it('preserves explicit zero cache misses and never invents a cold-start estimate for legacy reports', async () => {
     mocks.read.mockResolvedValue({ ...result, groups: [{ ...group, cache_bucket: '0%', cache_source: 'canonical_responses_terminal_usage' }, { ...group, cache_bucket: 'unknown', cache_source: 'none' }] })
     const w = mount(LatencyObservabilityPanel, { global: { plugins: [localePlugin()] } })

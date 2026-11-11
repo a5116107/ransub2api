@@ -59,7 +59,9 @@ func (s *AntigravityGatewayService) ForwardAsChatCompletions(
 	body []byte,
 	_ *ParsedRequest,
 ) (forwardResult *ForwardResult, forwardErr error) {
-	defer func() { recordForwardTimingOutcome(ctx, c, forwardResult, forwardErr) }()
+	defer func() {
+		recordForwardTimingOutcome(ctx, c, forwardResult != nil && forwardResult.ClientDisconnect, forwardErr)
+	}()
 	if err := s.validateAntigravityCompatAccount(c, account); err != nil {
 		return nil, err
 	}
@@ -107,7 +109,9 @@ func (s *AntigravityGatewayService) ForwardAsResponses(
 	body []byte,
 	_ *ParsedRequest,
 ) (forwardResult *ForwardResult, forwardErr error) {
-	defer func() { recordForwardTimingOutcome(ctx, c, forwardResult, forwardErr) }()
+	defer func() {
+		recordForwardTimingOutcome(ctx, c, forwardResult != nil && forwardResult.ClientDisconnect, forwardErr)
+	}()
 	if err := s.validateAntigravityCompatAccount(c, account); err != nil {
 		return nil, err
 	}

@@ -92,5 +92,5 @@ func GeminiContent(ctx context.Context, data []byte, streaming bool) {
 	if len(event.Error) > 0 && string(event.Error) != "null" {
 		terminal = "failed"
 	}
-	recordContent(ctx, "gemini", reasoning, visible, streaming && visible, nonText, terminal, nil, nil)
+	recordContent(ctx, "gemini", reasoning, visible, streaming && visible, nonText, terminal, readGeminiCacheUsage(data), nil)
 }

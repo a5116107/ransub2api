@@ -13,6 +13,8 @@ export default {
   "stream": "流式",
   "nonStream": "非流式",
   "cacheCanonical": "已核对终态原始用量",
+  "cacheMessages": "已核对 Messages 原始累计用量",
+  "cacheGemini": "已核对 Gemini 原始用量元数据",
   "cacheLegacy": "历史计费用量（正读取）",
   "cacheUnverified": "终态用量证据不完整或不一致",
   "coldStart": "冷热首文本等待对比",

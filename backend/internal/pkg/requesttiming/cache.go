@@ -7,16 +7,24 @@ import (
 	"encoding/json"
 	"io"
 	"strconv"
+	"strings"
 )
 
-// CacheUsage retains only canonical Responses counters from one terminal
-// event. Billing compatibility coercions are deliberately not cache evidence.
+// CacheUsage retains canonical wire counters from one physical generation.
+// InputTokens is the total input, including read/write buckets. Messages also
+// retains its independent uncached bucket and presence bits for partial updates.
+// Billing compatibility coercions are deliberately not cache evidence.
 type CacheUsage struct {
-	InputTokens   int64  `json:"input_tokens"`
-	ReadTokens    int64  `json:"read_tokens"`
-	WriteTokens   int64  `json:"write_tokens"`
-	WriteReported bool   `json:"write_reported"`
-	Status        string `json:"status"`
+	Protocol       string `json:"protocol,omitempty"`
+	InputTokens    int64  `json:"input_tokens"`
+	ReadTokens     int64  `json:"read_tokens"`
+	WriteTokens    int64  `json:"write_tokens"`
+	WriteReported  bool   `json:"write_reported"`
+	Status         string `json:"status"`
+	UncachedTokens int64  `json:"uncached_tokens,omitempty"`
+	InputReported  bool   `json:"input_reported,omitempty"`
+	ReadReported   bool   `json:"read_reported,omitempty"`
+	messageStart   bool
 }
 
 // CacheObservation describes an observed past response, not cache retention,
@@ -155,14 +163,203 @@ func readTerminalUsage(data []byte) (*CacheUsage, *OutputUsage) {
 	return readCacheUsage(usage), output
 }
 
+func cacheCounter(usage map[string]json.RawMessage, name string) (int64, bool, bool) {
+	raw, present := usage[name]
+	if !present {
+		return 0, false, true
+	}
+	v, err := strconv.ParseInt(string(raw), 10, 64)
+	return v, true, err == nil && v >= 0 && v <= 1<<53-1
+}
+
+func readMessagesCacheUsage(data []byte, eventType string) *CacheUsage {
+	out := &CacheUsage{Protocol: "messages", Status: "invalid_counters", messageStart: eventType == "message_start" || eventType == "message"}
+	event, ok := cacheObject(data)
+	if !ok {
+		return out
+	}
+	if eventType == "message_start" {
+		event, ok = cacheObject(event["message"])
+		if !ok {
+			return out
+		}
+	}
+	if eventType == "message_delta" {
+		if rawDelta, present := event["delta"]; present && !bytes.Equal(bytes.TrimSpace(rawDelta), []byte("null")) {
+			if _, valid := cacheObject(rawDelta); !valid {
+				return out
+			}
+		}
+	}
+	raw, present := event["usage"]
+	if !present {
+		if out.messageStart {
+			out.Status = "not_reported"
+			return out
+		}
+		return nil
+	}
+	if len(raw) > 64*1024 {
+		out.Status = "diagnostic_limit"
+		return out
+	}
+	usage, ok := cacheObject(raw)
+	if !ok {
+		return out
+	}
+	// Some compatible providers redefine input_tokens when prompt aliases
+	// are present. Their billing normalization is not Anthropic wire evidence.
+	for _, name := range []string{"prompt_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "prompt_tokens_details"} {
+		if _, present := usage[name]; present {
+			out.Status = "ambiguous_counters"
+			return out
+		}
+	}
+	var valid bool
+	out.UncachedTokens, out.InputReported, valid = cacheCounter(usage, "input_tokens")
+	if !valid {
+		return out
+	}
+	out.ReadTokens, out.ReadReported, valid = cacheCounter(usage, "cache_read_input_tokens")
+	if !valid {
+		return out
+	}
+	out.WriteTokens, out.WriteReported, valid = cacheCounter(usage, "cache_creation_input_tokens")
+	if !valid {
+		return out
+	}
+	if raw, reported := usage["cache_creation"]; reported {
+		details, ok := cacheObject(raw)
+		if !ok {
+			return out
+		}
+		five, hasFive, validFive := cacheCounter(details, "ephemeral_5m_input_tokens")
+		hour, hasHour, validHour := cacheCounter(details, "ephemeral_1h_input_tokens")
+		if !validFive || !validHour || (out.WriteReported &&
+			((hasFive && five > out.WriteTokens) || (hasHour && hour > out.WriteTokens) ||
+				(hasFive && hasHour && five+hour != out.WriteTokens))) {
+			return out
+		}
+	}
+	out.Status = "not_reported"
+	return out
+}
+
+func readGeminiCacheUsage(data []byte) *CacheUsage {
+	out := &CacheUsage{Protocol: "gemini", Status: "invalid_counters"}
+	event, ok := cacheObject(data)
+	if !ok {
+		return out
+	}
+	if inner, wrapped := event["response"]; wrapped && !bytes.Equal(bytes.TrimSpace(inner), []byte("null")) {
+		event, ok = cacheObject(inner)
+		if !ok {
+			return out
+		}
+	}
+	raw, present := event["usageMetadata"]
+	if !present {
+		return nil
+	}
+	if len(raw) > 64*1024 {
+		out.Status = "diagnostic_limit"
+		return out
+	}
+	usage, ok := cacheObject(raw)
+	if !ok {
+		return out
+	}
+	input, hasInput, validInput := cacheCounter(usage, "promptTokenCount")
+	read, hasRead, validRead := cacheCounter(usage, "cachedContentTokenCount")
+	if !validInput || !validRead || (hasInput && hasRead && read > input) {
+		return out
+	}
+	if !hasInput || !hasRead {
+		out.Status = "not_reported"
+		return out
+	}
+	out.InputTokens, out.ReadTokens, out.Status = input, read, "observed"
+	return out
+}
+
+// Invalid observations remain invalid for the generation. Missing Gemini
+// counters are not filled from a previous chunk; Messages deltas, in contrast,
+// explicitly update independent cumulative buckets, including reported zeros.
+func updateProtocolCache(a *Attempt, next *CacheUsage) {
+	if next == nil {
+		return
+	}
+	previous := a.CacheUsage
+	if previous != nil && previous.Status != "observed" && previous.Status != "not_reported" {
+		return
+	}
+	if previous != nil && (previous.Protocol != next.Protocol || next.messageStart) {
+		previous.Status = "invalid_counters"
+		return
+	}
+	if next.Protocol != "messages" || (next.Status != "not_reported" && next.Status != "observed") {
+		a.CacheUsage = next
+		return
+	}
+	if previous == nil {
+		previous = &CacheUsage{Protocol: "messages"}
+		a.CacheUsage = previous
+	}
+	if next.InputReported {
+		previous.UncachedTokens, previous.InputReported = next.UncachedTokens, true
+	}
+	if next.ReadReported {
+		previous.ReadTokens, previous.ReadReported = next.ReadTokens, true
+	}
+	if next.WriteReported {
+		previous.WriteTokens, previous.WriteReported = next.WriteTokens, true
+	}
+	previous.Status = "not_reported"
+	if previous.InputReported && previous.ReadReported && previous.WriteReported {
+		total := previous.UncachedTokens + previous.ReadTokens + previous.WriteTokens
+		if total > 1<<53-1 {
+			previous.Status = "invalid_counters"
+			return
+		}
+		previous.InputTokens, previous.Status = total, "observed"
+	}
+}
+
 func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
 	out := unknownCacheObservation()
+	protocol := "responses"
+	if a.TextStream != nil && a.TextStream.Protocol != "" {
+		protocol = a.TextStream.Protocol
+	} else if a.CacheUsage != nil && a.CacheUsage.Protocol != "" {
+		protocol = a.CacheUsage.Protocol
+	} else if a.CacheUsage == nil && a.Route.Endpoint == "messages" {
+		protocol = "messages"
+	} else if a.CacheUsage == nil && strings.HasPrefix(a.Route.Endpoint, "gemini_") {
+		protocol = "gemini"
+	}
+	source := "canonical_responses_terminal_usage"
+	switch protocol {
+	case "messages":
+		source, out.Scope = "canonical_messages_cumulative_usage", "final_physical_http_messages_cumulative_usage"
+	case "gemini":
+		source, out.Scope = "canonical_gemini_usage_metadata", "final_physical_http_gemini_usage_metadata"
+	}
 	if a.Kind == "ws_turn" && s.TTFTMode == "ws_turn" {
 		out.Scope = "physical_websocket_turn_responses_terminal_usage"
 	}
 	if raw := a.CacheUsage; raw != nil {
-		out.Source = "canonical_responses_terminal_usage"
+		out.Source = source
 		out.Status = raw.Status
+		rawProtocol := raw.Protocol
+		if rawProtocol == "" {
+			rawProtocol = "responses" // JSON written before protocol tagging.
+		}
+		if rawProtocol != protocol || (protocol != "responses" && protocol != "messages" && protocol != "gemini") ||
+			(protocol != "responses" && (a.TextStream == nil || a.TextStream.Protocol != protocol)) ||
+			(a.Kind == "ws_turn" && protocol != "responses") {
+			out.Status = "invalid_protocol"
+			return out
+		}
 		if raw.Status != "observed" {
 			return out
 		}
@@ -172,6 +369,16 @@ func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
 		}
 		if raw.InputTokens < 0 || raw.InputTokens > 1<<53-1 || raw.ReadTokens < 0 || raw.ReadTokens > raw.InputTokens ||
 			(raw.WriteReported && (raw.WriteTokens < 0 || raw.WriteTokens > raw.InputTokens-raw.ReadTokens)) {
+			out.Status = "invalid_counters"
+			return out
+		}
+		if protocol == "messages" && (!raw.InputReported || !raw.ReadReported || !raw.WriteReported ||
+			raw.UncachedTokens < 0 || raw.UncachedTokens > raw.InputTokens ||
+			raw.UncachedTokens != raw.InputTokens-raw.ReadTokens-raw.WriteTokens) {
+			out.Status = "invalid_counters"
+			return out
+		}
+		if protocol == "gemini" && raw.WriteReported {
 			out.Status = "invalid_counters"
 			return out
 		}

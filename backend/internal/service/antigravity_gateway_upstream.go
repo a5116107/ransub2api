@@ -15,12 +15,15 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/gin-gonic/gin"
 )
 
 // ForwardUpstream 使用 base_url + /v1/messages + 双 header 认证透传上游 Claude 请求
 func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (forwardResult *ForwardResult, forwardErr error) {
-	defer func() { recordForwardTimingOutcome(ctx, c, forwardResult, forwardErr) }()
+	defer func() {
+		recordForwardTimingOutcome(ctx, c, forwardResult != nil && forwardResult.ClientDisconnect, forwardErr)
+	}()
 	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 	sessionID := getSessionID(c)
@@ -134,6 +137,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		if err != nil {
 			return nil, fmt.Errorf("read upstream response: %w", err)
 		}
+		requesttiming.Content(responseTimingContext(c, resp), respBody)
 
 		// 提取 usage
 		upstreamResponseModelObserverFromContext(c).ObserveAnthropic(respBody)
