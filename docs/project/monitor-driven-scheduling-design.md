@@ -682,7 +682,21 @@ STOP 后纯用量元数据可保留，继续出现内容或失败信号则使原
 旧 JSON 继续按原协议解释。Gemini 的计费兼容量不直接套用 Responses 的规范缓存和推理扣除公式，
 输出阶段 TPS 与规范缓存比例保持未采集。新观测尚不改变自动排名或线上策略，也不证明真实供应商的缓存、质量或完整能力。
 回退应用保留原 JSON 和账单；旧读取者不识别 Gemini 的来源与异常边界，不作为完整观测的验收结果，混合版本及生产升级仍按D8/D9核验。
-Antigravity 独立转发、原生WS、其他协议、跨协议速度与会话迁移冷输入风险仍属D5剩余验收。
+Antigravity 独立网关在既有最终发送入口复用相同账号/代理/线路初始化，覆盖普通循环、智能重试、
+Credits 重试及模型兜底；物理 HTTP attempt 与外层发送分别记录，旧尝试不贡献最终尝试的文本样本。
+五个公开 Forward 记录实际返回结果；Messages 上游透传即使沿原契约返回空 error，HTTP 错误状态
+仍记为失败。原生 Gemini、Messages 转换、Chat/Responses 转换及流转非流只在六个原始读取点观察，
+不重复观察解包后的内容、聚合结果或转换器补出的结束事件。来源按实际 wire 区分 Gemini 与 Messages，
+不按下游接口名称冒充协议；无入站 Request 的独立组件可从真实响应恢复 attempt，缺少计时上下文则保持原行为。
+
+Antigravity 的 scanner 超限、读取错误与间隔超时显式标记 incomplete_capture，包括上游已 STOP
+但后续读取异常的情况；未收到真实终态、损坏事件、下游写错或取消均不形成健康文本流样本。
+保留原扫描限制、keepalive、取消和断连后 drain 计费规则；Messages JSON 直接透传保持文本间隔未知，
+不把完整 JSON 当作文本 delta。Gemini/Messages 的规范 TPS 与缓存比例仍不借用 Responses 公式。
+流转非流的 Claude 聚合器另外保留最新原始 usageMetadata：即使尾帧只有用量、无正文，原转换器也能
+保留实际输入/缓存/思考/输出计数；明确零值覆盖旧值，无新用量则保留最近值。该修复不改变计费公式、
+空响应/错误处理或调度权重；相同聚合器服务 Messages、Chat 与 Responses，不新增平行路径。
+原生WS、其他协议、跨协议速度与会话迁移冷输入风险仍属D5剩余验收。
 
 D5 的 Responses HTTP 缓存分层沿相同终态采集点保存原始 `input_tokens` 与明确上报的
 `input_tokens_details.cached_tokens`，可选记录 `cache_write_tokens`；普通、passthrough 与工具转换路径共用原采集器。

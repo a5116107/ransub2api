@@ -53,3 +53,38 @@ func TestAntigravityMalformedFunctionCallNonStreaming(t *testing.T) {
 		}
 	}
 }
+
+func TestAntigravityNonStreamingUsageTail(t *testing.T) {
+	for _, tc := range []struct {
+		name, tail            string
+		input, output, cached int
+	}{
+		{"separate terminal", `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":4,"candidatesTokenCount":7,"thoughtsTokenCount":2}}`, 6, 9, 4},
+		{"usage after terminal", `{"usageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":4,"candidatesTokenCount":7,"thoughtsTokenCount":2}}`, 6, 9, 4},
+		{"explicit zero", `{"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0}}`, 0, 0, 0},
+		{"no replacement", `{"candidates":[{"finishReason":"STOP"}]}`, 8, 3, 0},
+	} {
+		for _, path := range []string{"messages", "chat", "responses"} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				wire := `data: {"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}}` + "\n\n" + "data: {\"response\":" + tc.tail + "}\n\n"
+				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}
+				svc := newAntigravityCompatService(config.GatewayConfig{}, nil)
+				c, recorder := newAntigravityCompatContext(http.MethodPost, "/fixture", nil)
+				handle := svc.handleClaudeStreamToNonStreaming
+				switch path {
+				case "chat":
+					handle = svc.handleChatCompletionsNonStreamingFromAntigravity
+				case "responses":
+					handle = svc.handleResponsesNonStreamingFromAntigravity
+				}
+				result, err := handle(c, resp, time.Now(), "fixture")
+				require.NoError(t, err)
+				require.Equal(t, http.StatusOK, recorder.Code)
+				require.Contains(t, recorder.Body.String(), "hello")
+				require.Equal(t, tc.input, result.usage.InputTokens)
+				require.Equal(t, tc.output, result.usage.OutputTokens)
+				require.Equal(t, tc.cached, result.usage.CacheReadInputTokens)
+			})
+		}
+	}
+}

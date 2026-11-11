@@ -29,7 +29,7 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	account *Account,
 	body []byte,
 ) (result *ForwardResult, err error) {
-	defer func() { recordForwardTimingOutcome(ctx, result, err) }()
+	defer func() { recordForwardTimingOutcome(ctx, c, result, err) }()
 	startTime := time.Now()
 
 	var ccReq apicompat.ChatCompletionsRequest

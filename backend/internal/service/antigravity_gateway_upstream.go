@@ -19,7 +19,8 @@ import (
 )
 
 // ForwardUpstream 使用 base_url + /v1/messages + 双 header 认证透传上游 Claude 请求
-func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (forwardResult *ForwardResult, forwardErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, forwardResult, forwardErr) }()
 	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 	sessionID := getSessionID(c)
@@ -167,6 +168,8 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 
 // streamUpstreamResponse 透传上游 SSE 流并提取 Claude usage
 func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp *http.Response, startTime time.Time) *antigravityStreamResult {
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "messages"}
+	defer timing.resetTimingEvent()
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
 
@@ -247,6 +250,7 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}
 			}
 			if ev.err != nil {
+				timing.failTimingCapture()
 				if disconnect, handled := handleStreamReadError(ev.err, cw.Disconnected(), "antigravity upstream"); handled {
 					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: disconnect}
 				}
@@ -257,6 +261,7 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 			lastDataAt = time.Now()
 
 			line := ev.line
+			timing.observeTimingLine(line)
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				upstreamResponseModelObserverFromContext(c).ObserveAnthropic([]byte(strings.TrimSpace(data)))
 			}
@@ -278,6 +283,7 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 			if time.Since(lastRead) < streamInterval {
 				continue
 			}
+			timing.failTimingCapture()
 			if cw.Disconnected() {
 				logger.LegacyPrintf("service.antigravity_gateway", "Upstream timeout after client disconnect (antigravity upstream), returning collected usage")
 				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}
@@ -403,5 +409,7 @@ func (s *AntigravityGatewayService) doAntigravityUpstream(request *http.Request,
 	}
 	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
 	defer func() { observeTransport(response, err) }()
+	request, timingTrace := startAccountTimingAttempt(request, account)
+	defer func() { timingTrace.Response(response, err) }()
 	return upstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

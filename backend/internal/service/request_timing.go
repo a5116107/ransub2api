@@ -47,6 +47,12 @@ type sseTimingObserver struct {
 	timingDiscard   bool
 }
 
+func (s *sseTimingObserver) failTimingCapture() {
+	if s.ctx != nil {
+		requesttiming.Stage(s.ctx, "typed_content_truncated")
+	}
+}
+
 func (s *sseTimingObserver) resetTimingEvent() {
 	if s.protocol != "responses" && len(s.timingData) > 0 {
 		requesttiming.Stage(s.ctx, "typed_content_truncated")
@@ -119,9 +125,9 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 
 // Match the native forwarding outcome without changing error handling or
 // billing. The defer caller passes its final named return values.
-func recordForwardTimingOutcome(ctx context.Context, result *ForwardResult, err error) {
+func recordForwardTimingOutcome(ctx context.Context, c *gin.Context, result *ForwardResult, err error) {
 	outcome := "success"
-	if err != nil {
+	if err != nil || (c != nil && c.Writer != nil && c.Writer.Status() >= http.StatusBadRequest) {
 		outcome = "failed"
 	}
 	disconnected := result != nil && result.ClientDisconnect
