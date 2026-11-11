@@ -26,6 +26,11 @@ func (r *issue605ContentRepo) ReadUsageContentTimings(_ context.Context, ids []i
 	v := requesttiming.UnknownContentObservation()
 	value := 12.0
 	v.ReasoningFirstMS = &value
+	chunks, gaps := 2, 1
+	span, tail := 40.0, 10.0
+	v.TextStream.Chunks, v.TextStream.GapSamples = &chunks, &gaps
+	v.TextStream.SpanMS, v.TextStream.MaxGapMS, v.TextStream.TailWaitMS = &span, &span, &tail
+	v.TextStream.Status, v.TextStream.Source = "observed", "typed_responses_sse"
 	return map[int64]requesttiming.ContentObservation{605: v}, nil
 }
 
@@ -43,4 +48,6 @@ func TestIssue605ActualAdminUsageListContentDTO(t *testing.T) {
 	require.Contains(t, w.Body.String(), `"reasoning_streaming_capability":"unknown"`)
 	require.Contains(t, w.Body.String(), `"client_socket"`)
 	require.Contains(t, w.Body.String(), `"min_rtt_ms":null`)
+	require.Contains(t, w.Body.String(), `"chunks":2,"gap_samples":1,"span_ms":40,"max_gap_ms":40,"tail_wait_ms":10`)
+	require.Contains(t, w.Body.String(), `"source":"typed_responses_sse"`)
 }

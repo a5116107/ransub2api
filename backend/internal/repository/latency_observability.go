@@ -85,8 +85,8 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  WHEN jsonb_typeof(a->'events'->'wrote_request')='number' THEN (a->'events'->>'wrote_request')::numeric END written,
  CASE WHEN jsonb_typeof(a->'events'->'first_semantic')='number' THEN (a->'events'->>'first_semantic')::numeric END semantic,
  CASE WHEN jsonb_typeof(a->'events'->'first_visible')='number' THEN (a->'events'->>'first_visible')::numeric END visible,
- CASE WHEN jsonb_typeof(a->'events'->'first_reasoning')='number' THEN (a->'events'->>'first_reasoning')::numeric END reasoning,
- CASE WHEN jsonb_typeof(a->'events'->'first_visible_text')='number' THEN (a->'events'->>'first_visible_text')::numeric END text_first,
+ CASE WHEN NOT (a->'events' ? 'typed_content_truncated') AND jsonb_typeof(a->'events'->'first_reasoning')='number' THEN (a->'events'->>'first_reasoning')::numeric END reasoning,
+ CASE WHEN NOT (a->'events' ? 'typed_content_truncated') AND jsonb_typeof(a->'events'->'first_visible_text')='number' THEN (a->'events'->>'first_visible_text')::numeric END text_first,
  CASE WHEN jsonb_typeof(a->'events'->'first_byte')='number' THEN (a->'events'->>'first_byte')::numeric END byte_first
  FROM attempts
 ), measured AS (

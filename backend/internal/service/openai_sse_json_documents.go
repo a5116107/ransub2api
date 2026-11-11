@@ -149,11 +149,13 @@ func (s *openAISSEJSONDocumentScanner) observeTimingLine(line string) {
 		if len(data) >= maxOpenAIConcatenatedJSONBytes-len(s.timingData) {
 			s.timingData = nil
 			s.timingDiscard = true
+			requesttiming.Stage(s.ctx, "typed_content_truncated")
 			return
 		}
 		s.timingData = append(s.timingData, '\n')
 	} else if len(data) > maxOpenAIConcatenatedJSONBytes {
 		s.timingDiscard = true
+		requesttiming.Stage(s.ctx, "typed_content_truncated")
 		return
 	}
 	s.timingData = append(s.timingData, data...)

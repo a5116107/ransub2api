@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -58,6 +59,113 @@ func TestIssue605NativeLoopbackSSETypedContentAndByte(t *testing.T) {
 		require.Equal(t, "unknown", v.ReasoningStreamingCapability)
 		require.Contains(t, c.Writer.Header().Get("Content-Type"), "text/event-stream")
 	})
+}
+
+func TestSchedulingTextStreamLoopback(t *testing.T) {
+	for _, path := range []struct {
+		name                string
+		passthrough         bool
+		transform           bool
+		instrumentTransform bool
+	}{
+		{name: "native"},
+		{name: "passthrough", passthrough: true},
+		{name: "native_transformed", transform: true, instrumentTransform: true},
+		{name: "native_uninstrumented_transform", transform: true},
+		{name: "passthrough_transformed", passthrough: true, transform: true, instrumentTransform: true},
+		{name: "passthrough_uninstrumented_transform", passthrough: true, transform: true},
+	} {
+		for _, ending := range []string{"completed", "failed", "eof", "terminal_only"} {
+			t.Run(path.name+"/"+ending, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.Header().Set("Content-Type", "text/event-stream")
+					send := func(data string) bool {
+						if _, err := io.WriteString(w, "data: "+data+"\n\n"); err != nil {
+							return false
+						}
+						return http.NewResponseController(w).Flush() == nil
+					}
+					if !send(`{"type":"response.created","response":{"id":"resp_gap_fixture","created_at":1}}`) {
+						return
+					}
+					if ending != "terminal_only" {
+						if !send(`{"type":"response.output_text.delta","delta":"first"}`) {
+							return
+						}
+						time.Sleep(30 * time.Millisecond)
+						if !send(`{"type":"keepalive"}`) || !send(`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`) {
+							return
+						}
+						time.Sleep(30 * time.Millisecond)
+						if !send(`{"type":"response.output_text.delta","delta":"second"}`) || !send(`{"type":"response.output_text.done","text":"firstsecond"}`) {
+							return
+						}
+						time.Sleep(20 * time.Millisecond)
+					}
+					switch ending {
+					case "completed", "terminal_only":
+						send(`{"type":"response.completed","response":{"id":"resp_gap_fixture","created_at":1,"output":[{"type":"message","content":[{"type":"output_text","text":"firstsecond"}]}],"usage":{"input_tokens":1,"output_tokens":2}}}`)
+					case "failed":
+						send(`{"type":"response.failed","response":{"id":"resp_gap_fixture","error":{"code":"server_error","message":"synthetic failure"}}}`)
+					case "eof":
+					}
+				}))
+				defer server.Close()
+				collector := requesttiming.New(time.Now(), 0)
+				ctx := requesttiming.With(t.Context(), collector)
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(`{"model":"fixture","stream":true}`))
+				require.NoError(t, err)
+				req, _ = requesttiming.StartAttempt(req, 605, 0)
+				req, tr := requesttiming.StartTransport(req)
+				resp, err := server.Client().Do(req)
+				tr.Response(resp, err)
+				require.NoError(t, err)
+				if path.transform {
+					mapping := apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}
+					if path.instrumentTransform {
+						resp.Body = newResponsesClientToolStreamBody(resp.Body, mapping, defaultMaxLineSize, req.Context())
+					} else {
+						resp.Body = newResponsesClientToolStreamBody(resp.Body, mapping, defaultMaxLineSize)
+					}
+				}
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = req
+				svc := &OpenAIGatewayService{cfg: &config.Config{}}
+				account := &Account{ID: 605, Platform: PlatformOpenAI}
+				if path.passthrough {
+					_, err = svc.handleStreamingResponsePassthrough(req.Context(), resp, c, account, time.Now(), "fixture", "fixture")
+				} else {
+					_, err = svc.handleStreamingResponse(req.Context(), resp, c, account, time.Now(), "fixture", "fixture")
+				}
+				if ending == "failed" || ending == "eof" {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				require.NoError(t, resp.Body.Close())
+				collector.Finish(c.Writer.Status(), false)
+				collector.WhenFinished(func(s requesttiming.Snapshot) {
+					v := requesttiming.DeriveContentObservation(s)
+					require.NotNil(t, v.VisibleTextFirstMS, "completed-only text must use the same existing diagnostic field")
+					if ending == "terminal_only" {
+						require.Equal(t, "not_collected", v.TextStream.Status)
+						require.Nil(t, v.TextStream.MaxGapMS)
+						return
+					}
+					require.Equal(t, 2, *v.TextStream.Chunks, "scanner and native handler must not double-count the same delta")
+					require.Equal(t, 1, *v.TextStream.GapSamples)
+					require.GreaterOrEqual(t, *v.TextStream.MaxGapMS, 40.0, "heartbeats and reasoning must not reset visible-text gaps")
+					if ending == "completed" {
+						require.Equal(t, "observed", v.TextStream.Status)
+						require.GreaterOrEqual(t, *v.TextStream.TailWaitMS, 10.0)
+					} else {
+						require.Equal(t, "partial", v.TextStream.Status)
+					}
+				})
+			})
+		}
+	}
 }
 
 func TestIssue605MixedSSERecordsTypedBoundaries(t *testing.T) {

@@ -14,6 +14,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestResponsesClientToolContentObservationOwnership(t *testing.T) {
+	collector := requesttiming.New(time.Now(), 0)
+	ctx := requesttiming.With(t.Context(), collector)
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		want bool
+	}{
+		{"same_collector", ctx, true},
+		{"no_collector", t.Context(), false},
+		{"nil_context", nil, false},
+		{"different_collector", requesttiming.With(t.Context(), requesttiming.New(time.Now(), 0)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := newResponsesClientToolStreamBody(io.NopCloser(strings.NewReader("")), apicompat.ResponsesClientToolMapping{}, defaultMaxLineSize, tc.ctx)
+			_, err := io.Copy(io.Discard, body)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, responsesClientToolContentObserved(ctx, body))
+			require.NoError(t, body.Close())
+		})
+	}
+	plain := io.NopCloser(strings.NewReader(""))
+	require.False(t, responsesClientToolContentObserved(ctx, plain))
+	require.NoError(t, plain.Close())
+}
+
 func TestToolConversionTimingRetainsPreConversionObservation(t *testing.T) {
 	c := requesttiming.New(time.Now(), 0)
 	req, _ := http.NewRequestWithContext(requesttiming.With(context.Background(), c), "GET", "https://example.test", nil)

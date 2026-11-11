@@ -19,6 +19,7 @@ type Span struct {
 	Attempt int     `json:"attempt,omitempty"`
 }
 type Attempt struct {
+	TextStream       *TextStreamTiming   `json:"text_stream,omitempty"`
 	ContentEncoding  string              `json:"content_encoding,omitempty"`
 	AutoDecompressed bool                `json:"auto_decompressed,omitempty"`
 	Route            transportdiag.Route `json:"route"`
@@ -208,6 +209,10 @@ func (c *Collector) snapshot() Snapshot {
 	d.Attempts = append([]Attempt{}, d.Attempts...)
 	for i := range d.Attempts {
 		d.Attempts[i].Events = cloneEvents(d.Attempts[i].Events)
+		if d.Attempts[i].TextStream != nil {
+			stream := *d.Attempts[i].TextStream
+			d.Attempts[i].TextStream = &stream
+		}
 	}
 	latency := DeriveLatency(d)
 	d.Latency = &latency

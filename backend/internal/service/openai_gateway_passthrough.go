@@ -2099,6 +2099,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 	var firstTokenMs *int
 	responseID := ""
 	ctx = requesttiming.ResponseContext(ctx, resp)
+	contentAlreadyObserved := responsesClientToolContentObserved(ctx, resp.Body)
 	ttftMode := s.openAITTFTMode(ctx)
 	requesttiming.Mode(ctx, ttftMode)
 	clientDisconnected := OpenAIHeaderWaitDisconnected(c)
@@ -2451,13 +2452,15 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 				openAIResponsesCompletedEventIsEmpty(dataBytes, usage) {
 				return resultWithUsage(), newOpenAIResponsesEmptyCompletedFailoverError(c, account, upstreamRequestID)
 			}
-			if requesttiming.From(ctx) != nil && gjson.Valid(trimmedData) {
+			if !contentAlreadyObserved && requesttiming.From(ctx) != nil && gjson.Valid(trimmedData) {
 				requesttiming.Stage(ctx, "sse_parsed_first")
 				if openAIStreamDataStartsVisibleOutput(trimmedData, eventType) {
 					requesttiming.Stage(ctx, "sse_visible_first")
 				}
 			}
-			requesttiming.Content(ctx, []byte(trimmedData), eventType)
+			if !contentAlreadyObserved {
+				requesttiming.Content(ctx, []byte(trimmedData), eventType)
+			}
 			requesttiming.Output(ctx, openAIStreamDataStartsSemanticTTFT(trimmedData, eventType), openAIStreamDataStartsVisibleOutput(trimmedData, eventType), timingTerminal(eventType))
 			if firstTokenMs == nil && openAIStreamDataStartsTTFT(trimmedData, eventType, forceFlushFailedEvent, ttftMode) {
 				ms := int(time.Since(startTime).Milliseconds())

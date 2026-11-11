@@ -108,7 +108,15 @@ func restoreGrokResponsesClientToolPayload(c *gin.Context, payload []byte) ([]by
 
 type responsesClientToolStreamBody struct {
 	*io.PipeReader
-	source io.Closer
+	source          io.Closer
+	timingCollector *requesttiming.Collector
+}
+
+// The converter observes the original SSE before restoring tool events. Its
+// consumer must not count the restored copy again for the same collector.
+func responsesClientToolContentObserved(ctx context.Context, body io.ReadCloser) bool {
+	converted, ok := body.(*responsesClientToolStreamBody)
+	return ok && converted.timingCollector != nil && converted.timingCollector == requesttiming.From(ctx)
 }
 
 func (b *responsesClientToolStreamBody) Close() error {
@@ -128,6 +136,9 @@ func newResponsesClientToolStreamBody(
 ) io.ReadCloser {
 	reader, writer := io.Pipe()
 	body := &responsesClientToolStreamBody{PipeReader: reader, source: source}
+	if len(timingContext) > 0 {
+		body.timingCollector = requesttiming.From(timingContext[0])
+	}
 	go transformResponsesClientToolStream(source, writer, mapping, maxLineSize, timingContext...)
 	return body
 }

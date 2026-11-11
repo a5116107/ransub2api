@@ -31,7 +31,10 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 		_, err := repo.Create(ctx, usage)
 		require.NoError(t, err)
 		ids = append(ids, usage.ID)
-		s := requesttiming.Snapshot{TotalMS: 1000, Attempts: []requesttiming.Attempt{{Kind: "http", AccountID: a.ID, StartMS: 0, EndMS: &end, ProxyID: 2, Events: map[string]float64{"first_byte": 10, "first_reasoning": float64(latency), "first_visible_text": float64(latency + 100)}}}}
+		s := requesttiming.Snapshot{Status: 200, TotalMS: 1000, Attempts: []requesttiming.Attempt{{Kind: "http", AccountID: a.ID, StartMS: 0, EndMS: &end, ProxyID: 2, Status: 200, Terminal: "completed",
+			Events:     map[string]float64{"first_byte": 10, "first_reasoning": float64(latency), "first_visible_text": float64(latency + 100)},
+			TextStream: &requesttiming.TextStreamTiming{Chunks: 2, FirstMS: float64(latency + 100), LastMS: float64(latency + 200), MaxGapMS: 100, Terminal: "completed", TerminalMS: float64(latency + 250)},
+		}}}
 		raw, err := json.Marshal(s)
 		require.NoError(t, err)
 		_, err = tx.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail)VALUES($1,$2,$3::jsonb)`, usage.ID, uuid.NewString(), string(raw))
@@ -43,6 +46,15 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	require.Equal(t, 200.0, *items[ids[0]].VisibleTextFirstMS)
 	require.Equal(t, 10.0, *items[ids[0]].ResponseByteFirstMS)
 	require.Equal(t, "proxy_obscured", items[ids[0]].UpstreamSocket.Status)
+	for _, id := range ids {
+		stream := items[id].TextStream
+		require.Equal(t, "observed", stream.Status)
+		require.Equal(t, 2, *stream.Chunks)
+		require.Equal(t, 1, *stream.GapSamples)
+		require.Equal(t, 100.0, *stream.SpanMS)
+		require.Equal(t, 100.0, *stream.MaxGapMS)
+		require.Equal(t, 50.0, *stream.TailWaitMS)
+	}
 	groups, err := repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID})
 	require.NoError(t, err)
 	require.Len(t, groups, 2)
@@ -53,6 +65,28 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 		require.EqualValues(t, 1, g.TextSamples)
 		require.EqualValues(t, 1, g.ByteSamples)
 		require.NotNil(t, g.TextP90MS)
+	}
+	// A diagnostic cap may hide a text event. Neither per-row projection nor
+	// layered SQL may publish a fabricated first text or inter-delta timeline.
+	_, err = tx.ExecContext(ctx, `UPDATE request_timing_details SET detail=jsonb_set(detail,'{attempts,0,events,typed_content_truncated}','999'::jsonb) WHERE usage_log_id=$1`, ids[0])
+	require.NoError(t, err)
+	items, err = repo.ReadUsageContentTimings(ctx, ids)
+	require.NoError(t, err)
+	require.Nil(t, items[ids[0]].ReasoningFirstMS)
+	require.Nil(t, items[ids[0]].VisibleTextFirstMS)
+	require.Equal(t, 10.0, *items[ids[0]].ResponseByteFirstMS, "HTTP byte evidence is independent of the content parser cap")
+	require.Equal(t, "incomplete_capture", items[ids[0]].TextStream.Status)
+	require.Nil(t, items[ids[0]].TextStream.Chunks)
+	require.Nil(t, items[ids[0]].TextStream.MaxGapMS)
+	groups, err = repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID})
+	require.NoError(t, err)
+	for _, g := range groups {
+		if g.ReasoningEffort == "xhigh" {
+			require.Zero(t, g.ReasoningSamples)
+			require.Zero(t, g.TextSamples)
+			require.Nil(t, g.TextP90MS)
+			require.EqualValues(t, 1, g.ByteSamples)
+		}
 	}
 	effort := "xhigh"
 	signals, err := repo.ReadPrioritySchedulingSignals(ctx, service.PrioritySchedulingQuery{AccountIDs: []int64{a.ID}, Model: "fixture", UsageSince: now.Add(-time.Minute), UsageUntil: now.Add(time.Minute), QualitySince: now.Add(-time.Minute), ObservationEffort: &effort})
@@ -69,6 +103,10 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	require.NoError(t, err)
 	_, err = tx.ExecContext(ctx, `UPDATE request_timing_details SET detail=$2::jsonb WHERE usage_log_id=$1`, ids[0], string(payload))
 	require.NoError(t, err)
+	items, err = repo.ReadUsageContentTimings(ctx, ids)
+	require.NoError(t, err)
+	require.Equal(t, "not_collected", items[ids[0]].TextStream.Status, "historical JSON must not invent zero gaps or inherit earlier attempts")
+	require.Nil(t, items[ids[0]].TextStream.MaxGapMS)
 	groups, err = repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID})
 	require.NoError(t, err)
 	for _, g := range groups {
@@ -83,4 +121,6 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	items, err = repo.ReadUsageContentTimings(ctx, ids)
 	require.NoError(t, err)
 	require.Nil(t, items[ids[0]].ReasoningFirstMS, "multiple traces for one billing row cannot invent one timeline")
+	require.Equal(t, "not_collected", items[ids[0]].TextStream.Status)
+	require.Nil(t, items[ids[0]].TextStream.Chunks)
 }

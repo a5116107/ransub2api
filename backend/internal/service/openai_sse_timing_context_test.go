@@ -122,6 +122,7 @@ func TestOpenAISSEScannerTimingBoundsPendingData(t *testing.T) {
 			require.NoError(t, scanner.Err())
 			collector.Finish(200, false)
 			collector.WhenFinished(func(snapshot requesttiming.Snapshot) {
+				require.Contains(t, snapshot.Attempts[0].Events, "typed_content_truncated")
 				_, parsed := snapshot.Attempts[0].Events["sse_parsed_first"]
 				_, visible := snapshot.Attempts[0].Events["sse_visible_first"]
 				require.Equal(t, nextEvent, parsed)
@@ -129,6 +130,35 @@ func TestOpenAISSEScannerTimingBoundsPendingData(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestOpenAISSEScannerTextTimingOversizedCapture(t *testing.T) {
+	collector := requesttiming.New(time.Now(), 0)
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(requesttiming.With(t.Context(), collector))
+	req, _ = requesttiming.StartAttempt(req, 1, 0)
+	req, transport := requesttiming.StartTransport(req)
+	scanner := newOpenAISSEJSONDocumentScanner(nil)
+	scanner.ctx = req.Context()
+	scanner.observeTimingLine(`data: {"type":"response.output_text.delta","delta":"first"}`)
+	scanner.observeTimingLine("data: " + strings.Repeat("x", maxOpenAIConcatenatedJSONBytes+1))
+	scanner.observeTimingLine("event: response.output_text.delta")
+	scanner.observeTimingLine(`data: {"delta":"last"}`)
+	scanner.observeTimingLine(`data: {"type":"response.completed"}`)
+	requesttiming.Output(req.Context(), false, false, "completed")
+	transport.Response(&http.Response{StatusCode: http.StatusOK}, nil)
+	collector.Finish(200, false)
+	collector.WhenFinished(func(s requesttiming.Snapshot) {
+		require.Contains(t, s.Attempts[0].Events, "typed_content_truncated")
+		require.Contains(t, s.Attempts[1].Events, "typed_content_truncated")
+		require.Equal(t, 2, s.Attempts[1].TextStream.Chunks, "the parser resumes, but those separated observations cannot form a complete timeline")
+		v := requesttiming.DeriveContentObservation(s)
+		require.Nil(t, v.VisibleTextFirstMS)
+		require.Nil(t, v.ReasoningFirstMS)
+		require.Equal(t, "incomplete_capture", v.TextStream.Status)
+		require.Nil(t, v.TextStream.Chunks)
+		require.Nil(t, v.TextStream.MaxGapMS)
+		require.Nil(t, v.TextStream.TailWaitMS)
+	})
 }
 
 func TestOpenAISSEScannerTimingRepairedDocuments(t *testing.T) {

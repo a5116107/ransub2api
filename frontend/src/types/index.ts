@@ -2030,6 +2030,10 @@ export interface UsageLog {
   content_timing?: {
     reasoning_first_ms: number | null; visible_text_first_ms: number | null; response_byte_first_ms: number | null
     status: string; source: string; scope: string; reasoning_streaming_capability: string; capability_source: string
+    text_stream?: {
+      chunks: number | null; gap_samples: number | null; span_ms: number | null; max_gap_ms: number | null; tail_wait_ms: number | null
+      status: string; source: string; scope: string
+    }
   }
 
   // 图片生成字段
