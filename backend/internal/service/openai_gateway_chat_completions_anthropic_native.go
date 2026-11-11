@@ -40,7 +40,8 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 	account *Account,
 	body []byte,
 	defaultMappedModel string,
-) (*OpenAIForwardResult, error) {
+) (result *OpenAIForwardResult, resultErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr) }()
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request
@@ -156,6 +157,8 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "messages"}
+	defer timing.resetTimingEvent()
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -174,6 +177,9 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	defer pump.stop()
 
 	logReadErr := func(err error) {
+		if !errors.Is(err, io.EOF) {
+			timing.failTimingCapture()
+		}
 		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai cc via native anthropic buffered: read error",
 				zap.Error(err),
@@ -182,6 +188,7 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 		}
 	}
 	onIdle := func() (*OpenAIForwardResult, error) {
+		timing.failTimingCapture()
 		_ = resp.Body.Close()
 		logger.L().Warn("openai cc via native anthropic buffered: data interval timeout",
 			zap.String("request_id", requestID),
@@ -200,6 +207,7 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(line)
 		// SSE 规范允许 `event:xxx`（冒号后无空格）：Kimi 等 Anthropic 兼容上游
 		// 返回紧凑格式，严格匹配 "event: " 会丢弃全部事件（#4653 同根因）。
 		if _, ok := extractOpenAISSEEventLine(line); !ok {
@@ -208,12 +216,14 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 
 		dataLine, rerr := pump.next()
 		if rerr != nil {
+			timing.failTimingCapture()
 			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
 				return onIdle()
 			}
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(dataLine)
 		payload, ok := extractOpenAISSEDataLine(dataLine)
 		if !ok {
 			continue
@@ -311,6 +321,8 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "messages"}
+	defer timing.resetTimingEvent()
 	requestID := resp.Header.Get("x-request-id")
 
 	if s.responseHeaderFilter != nil {
@@ -366,6 +378,9 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	defer pump.stop()
 
 	logReadErr := func(err error) {
+		if !errors.Is(err, io.EOF) {
+			timing.failTimingCapture()
+		}
 		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai cc via native anthropic stream: read error",
 				zap.Error(err),
@@ -376,6 +391,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	// onIdle 关闭上游连接（解除阻塞的读、归还连接池位），并按已累计 usage
 	// 返回——与 messages 主路径 "stream usage incomplete after timeout" 同语义。
 	onIdle := func() (*OpenAIForwardResult, error) {
+		timing.failTimingCapture()
 		_ = resp.Body.Close()
 		if !clientDisconnected {
 			logger.L().Warn("openai cc via native anthropic stream: data interval timeout",
@@ -386,23 +402,21 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 	}
 
-	writeChunk := func(chunk apicompat.ChatCompletionsChunk) bool {
+	writeChunk := func(chunk apicompat.ChatCompletionsChunk) {
 		if clientDisconnected {
-			return false // 已断开：不再写客户端，只排水上游累计 usage
+			return // 已断开：不再写客户端，只排水上游累计 usage
 		}
 		sse, err := apicompat.ChatChunkToSSE(chunk)
 		if err != nil {
-			return false
+			return
 		}
 		out := string(reverseToolNamesIfPresent(c, []byte(sse)))
 		if _, err := fmt.Fprint(c.Writer, out); err != nil {
 			clientDisconnected = true
-			return false
 		}
-		return false
 	}
 
-	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) bool {
+	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) {
 		if firstChunk {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
@@ -425,7 +439,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 		// 客户端已断开：跳过转换与写出，继续读上游直到流结束（usage 完整、
 		// 连接及时归还），不再提前 return。
 		if clientDisconnected {
-			return false
+			return
 		}
 
 		responsesEvents := apicompat.AnthropicEventToResponsesEvents(event, anthState)
@@ -438,7 +452,6 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 		if len(responsesEvents) > 0 {
 			c.Writer.Flush()
 		}
-		return false
 	}
 
 	for {
@@ -450,12 +463,14 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(line)
 		if _, ok := extractOpenAISSEEventLine(line); !ok {
 			continue
 		}
 
 		dataLine, rerr := pump.next()
 		if rerr != nil {
+			timing.failTimingCapture()
 			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
 				return onIdle()
 			}
@@ -463,6 +478,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(dataLine)
 		payload, ok := extractOpenAISSEDataLine(dataLine)
 		if !ok {
 			continue
@@ -478,9 +494,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 		// The intermediate Responses converter synthesizes usage even when absent.
 		ccState.IncludeUsage = ccState.IncludeUsage || anthropicChatStreamHasUsage(&event, payload)
 
-		if processAnthropicEvent(&event) {
-			return resultWithUsage(), nil
-		}
+		processAnthropicEvent(&event)
 	}
 
 	// Finalize both state machines（客户端已断开时仍执行，保证 usage 汇总完整）。
@@ -488,17 +502,20 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	for _, resEvt := range finalResEvents {
 		ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
 		for _, chunk := range ccChunks {
-			writeChunk(chunk) //nolint:errcheck
+			writeChunk(chunk)
 		}
 	}
 	finalCCChunks := apicompat.FinalizeResponsesChatStream(ccState)
 	for _, chunk := range finalCCChunks {
-		writeChunk(chunk) //nolint:errcheck
+		writeChunk(chunk)
 	}
 
 	if !clientDisconnected {
-		fmt.Fprint(c.Writer, "data: [DONE]\n\n") //nolint:errcheck
-		c.Writer.Flush()
+		if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
+			clientDisconnected = true
+		} else {
+			c.Writer.Flush()
+		}
 	}
 
 	return resultWithUsage(), nil

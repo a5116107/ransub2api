@@ -40,7 +40,8 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	account *Account,
 	body []byte,
 	defaultMappedModel string,
-) (*OpenAIForwardResult, error) {
+) (result *OpenAIForwardResult, resultErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr) }()
 	startTime := time.Now()
 
 	// 1. Lower Codex client-side tools to function tools understood by Anthropic.
@@ -161,6 +162,8 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*OpenAIForwardResult, error) {
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "messages"}
+	defer timing.resetTimingEvent()
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -179,6 +182,9 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	defer pump.stop()
 
 	logReadErr := func(err error) {
+		if !errors.Is(err, io.EOF) {
+			timing.failTimingCapture()
+		}
 		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai responses via native anthropic buffered: read error",
 				zap.Error(err),
@@ -187,6 +193,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		}
 	}
 	onIdle := func() (*OpenAIForwardResult, error) {
+		timing.failTimingCapture()
 		_ = resp.Body.Close()
 		logger.L().Warn("openai responses via native anthropic buffered: data interval timeout",
 			zap.String("request_id", requestID),
@@ -205,6 +212,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(line)
 		// SSE 规范允许 `event:xxx`（冒号后无空格）：Kimi 等上游返回紧凑格式。
 		if _, ok := extractOpenAISSEEventLine(line); !ok {
 			continue
@@ -212,12 +220,14 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 
 		dataLine, rerr := pump.next()
 		if rerr != nil {
+			timing.failTimingCapture()
 			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
 				return onIdle()
 			}
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(dataLine)
 		payload, ok := extractOpenAISSEDataLine(dataLine)
 		if !ok {
 			continue
@@ -325,6 +335,8 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*OpenAIForwardResult, error) {
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "messages"}
+	defer timing.resetTimingEvent()
 	requestID := resp.Header.Get("x-request-id")
 
 	if s.responseHeaderFilter != nil {
@@ -380,6 +392,9 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	defer pump.stop()
 
 	logReadErr := func(err error) {
+		if !errors.Is(err, io.EOF) {
+			timing.failTimingCapture()
+		}
 		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai responses via native anthropic stream: read error",
 				zap.Error(err),
@@ -388,6 +403,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		}
 	}
 	onIdle := func() (*OpenAIForwardResult, error) {
+		timing.failTimingCapture()
 		_ = resp.Body.Close()
 		logger.L().Warn("openai responses via native anthropic stream: data interval timeout",
 			zap.String("request_id", requestID),
@@ -456,18 +472,21 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(line)
 		if _, ok := extractOpenAISSEEventLine(line); !ok {
 			continue
 		}
 
 		dataLine, rerr := pump.next()
 		if rerr != nil {
+			timing.failTimingCapture()
 			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
 				return onIdle()
 			}
 			logReadErr(rerr)
 			break
 		}
+		timing.observeTimingLine(dataLine)
 		payload, ok := extractOpenAISSEDataLine(dataLine)
 		if !ok {
 			continue

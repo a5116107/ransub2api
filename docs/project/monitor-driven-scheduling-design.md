@@ -769,6 +769,17 @@ CacheUsage.protocol 显式区分来源，缺字段的旧 JSON 仍只按 Response
 旧应用回退保留 JSON 与账单，但旧读取者不认识协议标签，不用于跨协议观测验收；混合版本按 D8/D9 核验。
 Messages/Gemini 文本 TPS、未覆盖 wire、实际迁移额外冷输入及面向会话的保守估计继续待验，不以历史 p90 差冒充迁移收益。
 
+国产供应商原生 Messages→Chat Completions/Responses 桥接的四个读取循环，
+复用同一 SSE 观察器及物理 attempt：上游恒流式，客户端可以流式或缓冲 JSON，
+只在原始 event/data 读取处采集，不观察转换器补出的 Responses/Chat 事件或最终 JSON。
+首字、文本 chunk 与规范缓存均按实际 Messages wire 标注；原 firstTokenMs、计费和转换契约不改写。
+两个原生 Forward 边界记录实际返回结果及断连；缓冲路径存在下游写错时也不形成健康样本。
+缺 message_stop、明确截断停止、坏帧、晚到错误、事件行后 EOF、读取错误、间隔超时及下游写错，
+均不借转换器 finalize 补出的完成事件形成健康缓存或文本样本；终态后的读取超时同样失效。
+Chat 流最后的 [DONE] 写入失败按原断连结果保留用量，不再忽略该错误；两处恒 false 回调与不可达退出分支原位删除。
+此项只覆盖 OpenAIGateway 的两个原生 Anthropic 桥接入口，不把其他独立适配器/原始 Chat wire、
+跨协议 TPS 可比性或实际会话迁移收益一并验收；原数据结构、保留期限及回滚边界不变。
+
 Responses HTTP 与原生 WS 的输出阶段速度复用上述物理 attempt 与原始终态 JSON；`output_usage` 仅保存计数及输出类型结论，
 `output_rate` 由同一函数投影到请求详情和用量诊断。不新增表、采样器或计费口径。
 必须明确报告整数 `output_tokens` 和 `output_tokens_details.reasoning_tokens`，缺失不推断为零；

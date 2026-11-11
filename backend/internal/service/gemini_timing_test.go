@@ -25,12 +25,13 @@ type geminiTimingWriter struct {
 	gin.ResponseWriter
 	collector *requesttiming.Collector
 	fail      bool
+	failOn    string
 	cancel    context.CancelFunc
 }
 
 func (w *geminiTimingWriter) Write(p []byte) (int, error) {
 	start := time.Now()
-	if w.fail {
+	if w.fail || (w.failOn != "" && strings.Contains(string(p), w.failOn)) {
 		w.collector.Written(start, 0, io.ErrClosedPipe, false)
 		return 0, io.ErrClosedPipe
 	}

@@ -372,6 +372,122 @@ func TestMessagesTimingNativeProviderCanonicalWire(t *testing.T) {
 	}
 }
 
+func TestMessagesTimingNativeBridges(t *testing.T) {
+	for _, endpoint := range []string{"chat/completions", "responses"} {
+		for _, stream := range []bool{false, true} {
+			for _, ending := range []string{"complete", "max_tokens", "eof", "missing_read", "malformed", "late_error", "idle_after_stop", "write_error", "final_write_error"} {
+				if ending == "final_write_error" && (endpoint != "chat/completions" || !stream) {
+					continue
+				}
+				t.Run(fmt.Sprintf("%s/stream=%v/%s", endpoint, stream, ending), func(t *testing.T) {
+					usage := `{"input_tokens":10,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"output_tokens":1}`
+					if ending == "missing_read" {
+						usage = `{"input_tokens":10,"cache_creation_input_tokens":0,"output_tokens":1}`
+					}
+					stop := "end_turn"
+					if ending == "max_tokens" {
+						stop = "max_tokens"
+					}
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						_, _ = io.Copy(io.Discard, r.Body)
+						w.Header().Set("Content-Type", "text/event-stream")
+						send := func(kind, payload string) { _, _ = io.WriteString(w, "event:"+kind+"\ndata:"+payload+"\n\n") }
+						send("message_start", `{"type":"message_start","message":{"id":"private-msg","type":"message","role":"assistant","model":"k3","content":[],"usage":`+usage+`}}`)
+						send("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+						send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"private first"}}`)
+						if ending == "malformed" {
+							send("content_block_delta", `{"type":"content_block_delta","delta":"private lost"}`)
+						}
+						send("ping", `{"type":"ping"}`)
+						send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" last"}}`)
+						send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+						send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"`+stop+`"},"usage":{"output_tokens":120}}`)
+						if ending != "eof" {
+							send("message_stop", `{"type":"message_stop"}`)
+						}
+						if ending == "late_error" {
+							send("error", `{"type":"error","error":{"type":"overloaded_error"}}`)
+						}
+						if ending == "idle_after_stop" {
+							require.NoError(t, http.NewResponseController(w).Flush())
+							<-r.Context().Done()
+						}
+					}))
+					defer server.Close()
+					collector := requesttiming.New(time.Now(), 0)
+					body := []byte(fmt.Sprintf(`{"model":"k3","stream":%v,"max_tokens":256,"messages":[{"role":"user","content":"fixture"}]}`, stream))
+					if endpoint == "responses" {
+						body = []byte(fmt.Sprintf(`{"model":"k3","stream":%v,"max_output_tokens":256,"input":"fixture"}`, stream))
+					}
+					recorder := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(recorder)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, strings.NewReader(string(body))).WithContext(requesttiming.With(t.Context(), collector))
+					writer := &geminiTimingWriter{ResponseWriter: c.Writer, collector: collector, fail: ending == "write_error"}
+					if ending == "final_write_error" {
+						writer.failOn = "data: [DONE]"
+					}
+					c.Writer = writer
+					account := nativeAnthropicTestAccount()
+					account.Credentials["api_base_urls"] = map[string]any{APIProtocolAnthropic: server.URL}
+					account.Credentials["base_url"] = server.URL
+					target, err := url.Parse(server.URL)
+					require.NoError(t, err)
+					cfg := rawChatCompletionsTestConfig()
+					cfg.Gateway.StreamDataIntervalTimeout = 1
+					svc := &OpenAIGatewayService{cfg: cfg, rateLimitService: &RateLimitService{}, httpUpstream: antigravityTimingHTTPUpstream{client: server.Client(), target: target}}
+					var result *OpenAIForwardResult
+					if endpoint == "responses" {
+						result, err = svc.Forward(c.Request.Context(), c, account, body)
+					} else {
+						result, err = svc.ForwardAsChatCompletions(c.Request.Context(), c, account, body, "", "")
+					}
+					if ending == "idle_after_stop" {
+						require.Error(t, err)
+					} else {
+						require.NoError(t, err, "the original conversion/finalization contract remains unchanged")
+						require.NotNil(t, result)
+						require.Equal(t, 120, result.Usage.OutputTokens)
+					}
+					collector.Finish(c.Writer.Status(), false)
+					collector.WhenFinished(func(s requesttiming.Snapshot) {
+						require.Len(t, s.Attempts, 2)
+						require.Nil(t, s.Attempts[0].TextStream)
+						require.NotEmpty(t, s.Outcome, "the production forward boundary records its own result")
+						v := requesttiming.DeriveContentObservation(s)
+						require.Equal(t, "typed_messages_sse", v.TextStream.Source, "use original wire, not downstream Responses or Chat events")
+						switch ending {
+						case "complete":
+							require.Equal(t, "observed", v.Cache.Status)
+							require.InDelta(t, 0.9, *v.Cache.ReadRatio, 1e-9)
+							require.Equal(t, "observed", v.TextStream.Status)
+							require.Equal(t, 2, *v.TextStream.Chunks, "converted events never contribute a second sample")
+							require.NotNil(t, v.VisibleTextFirstMS)
+							require.Contains(t, recorder.Body.String(), "private first")
+						case "missing_read":
+							require.Equal(t, "not_reported", v.Cache.Status)
+						default:
+							require.NotEqual(t, "observed", v.Cache.Status)
+							require.Nil(t, v.Cache.ReadRatio)
+							if ending == "malformed" || ending == "idle_after_stop" {
+								require.Contains(t, s.Attempts[1].Events, "typed_content_truncated")
+							}
+						}
+						if stream && (ending == "write_error" || ending == "final_write_error") {
+							require.Equal(t, "client_disconnected", s.Outcome)
+							require.True(t, result.ClientDisconnect)
+						}
+						require.Nil(t, v.OutputRate.TokensPerSecond)
+						raw, marshalErr := json.Marshal(s)
+						require.NoError(t, marshalErr)
+						require.NotContains(t, string(raw), "private first")
+						require.NotContains(t, string(raw), "private-msg")
+					})
+				})
+			}
+		}
+	}
+}
+
 func TestMessagesTimingSSEFraming(t *testing.T) {
 	for _, tc := range []struct {
 		name, wire string
