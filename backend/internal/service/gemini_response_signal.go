@@ -2,8 +2,10 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,7 +13,7 @@ import (
 )
 
 // geminiResponseSignalKind 区分 Gemini 2xx 响应事件里携带的带内信号。
-// 这些信号都承载在 HTTP 2xx 之上，客户端字节原样透传，只影响 ops 记录。
+// 这些信号都承载在 HTTP 2xx 之上，客户端字节原样透传；确定的上游故障同时失效可用证据。
 // 数值越大优先级越高：同一响应出现多个信号时只登记优先级最高的一个。
 type geminiResponseSignalKind int
 
@@ -36,6 +38,8 @@ type geminiResponseSignal struct {
 	Message string
 	// Status 是该信号的语义 HTTP 状态：内容策略类固定 400，错误信封取 error.code，空响应 502。
 	Status int
+	// FaultStatus 只接受无歧义的上游故障；ops 的兜底状态不能作为失效依据。
+	FaultStatus int
 	// Detail 是错误信封原文（已截断），仅 geminiSignalError 填写。
 	Detail string
 }
@@ -68,6 +72,7 @@ func detectGeminiResponseSignal(payload []byte) (geminiResponseSignal, bool) {
 	if len(payload) == 0 || !geminiPayloadMayCarrySignal(payload) || !gjson.ValidBytes(payload) {
 		return geminiResponseSignal{}, false
 	}
+	faultStatus := geminiResponseFaultStatus(payload)
 	if inner := gjson.GetBytes(payload, "response"); inner.Exists() && inner.IsObject() {
 		payload = []byte(inner.Raw)
 	}
@@ -87,11 +92,12 @@ func detectGeminiResponseSignal(payload []byte) (geminiResponseSignal, bool) {
 			reason = "UPSTREAM_ERROR"
 		}
 		return geminiResponseSignal{
-			Kind:    geminiSignalError,
-			Reason:  reason,
-			Message: message,
-			Status:  status,
-			Detail:  truncateString(string(payload), 2048),
+			Kind:        geminiSignalError,
+			Reason:      reason,
+			Message:     message,
+			Status:      status,
+			FaultStatus: faultStatus,
+			Detail:      truncateString(string(payload), 2048),
 		}, true
 	}
 
@@ -125,6 +131,100 @@ func detectGeminiResponseSignal(payload []byte) (geminiResponseSignal, bool) {
 	}, true
 }
 
+// Logging remains lenient for compatibility. Scheduling requires a numeric
+// integer or a known Google status, and rejects conflicting duplicate fields.
+func geminiResponseFaultStatus(payload []byte) int {
+	fields, valid := availabilityJSONObject(gjson.ParseBytes(payload))
+	if !valid {
+		return 0
+	}
+	if inner := fields["response"]; inner.IsObject() {
+		fields, valid = availabilityJSONObject(inner)
+		if !valid {
+			return 0
+		}
+	}
+	fields, valid = availabilityJSONObject(fields["error"])
+	if !valid {
+		return 0
+	}
+	status := 0
+	if code := fields["code"]; code.Exists() {
+		if code.Type != gjson.Number {
+			return 0
+		}
+		var err error
+		status, err = strconv.Atoi(code.Raw)
+		if err != nil || status < 400 || status > 599 {
+			return 0
+		}
+	} else if name := fields["status"]; name.Type == gjson.String {
+		switch strings.ToUpper(strings.TrimSpace(name.String())) {
+		case "UNAUTHENTICATED", "RESOURCE_EXHAUSTED", "INTERNAL", "UNKNOWN", "DATA_LOSS", "UNAVAILABLE", "DEADLINE_EXCEEDED":
+			status = geminiGoogleStatusToHTTPStatus(strings.ToUpper(strings.TrimSpace(name.String())))
+		}
+	}
+	if status == http.StatusUnauthorized || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500 {
+		return status
+	}
+	return 0
+}
+
+// One observer belongs to one upstream response. A later 5xx still triggers
+// quality protection after a 401/429, while repeated chunks cannot multiply it.
+type geminiResponseSignalObserver struct {
+	ctx                  context.Context
+	limiter              *RateLimitService
+	account              *Account
+	best                 geminiResponseSignal
+	availabilityObserved bool
+	qualityObserved      bool
+}
+
+func (s *GeminiMessagesCompatService) newGeminiResponseSignalObserver(ctx context.Context, account *Account, response *http.Response) *geminiResponseSignalObserver {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if response != nil {
+		if body, ok := response.Body.(*availabilityFaultBody); ok {
+			ctx = body.ctx
+		} else if ctx.Value(qualityProbeContextKey{}) == nil && response.Request != nil {
+			ctx = availabilityFaultResponseContext(response.Request.Context(), response)
+		}
+	}
+	observer := &geminiResponseSignalObserver{ctx: ctx, account: account}
+	if s != nil {
+		observer.limiter = s.rateLimitService
+	}
+	return observer
+}
+
+func (o *geminiResponseSignalObserver) observe(sig geminiResponseSignal) {
+	if sig.Kind > o.best.Kind {
+		o.best = sig
+	}
+	if sig.Kind == geminiSignalAbnormalStop {
+		if !o.availabilityObserved {
+			o.limiter.observeAvailabilityIncomplete(o.ctx, o.account, false)
+			o.availabilityObserved = true
+		}
+		return
+	}
+	if sig.FaultStatus == 0 {
+		return
+	}
+	if sig.FaultStatus >= 500 {
+		if o.qualityObserved {
+			return
+		}
+		o.qualityObserved = true
+	} else if o.availabilityObserved {
+		return
+	}
+	o.limiter.observeQualityStatus(o.ctx, o.account, sig.FaultStatus)
+	o.availabilityObserved = true
+}
+
 // geminiPrimaryCandidate 返回首候选：index 缺省或为 0 的候选。多候选流里其它 index 的候选不参与判定。
 func geminiPrimaryCandidate(payload []byte) gjson.Result {
 	candidates := gjson.GetBytes(payload, "candidates")
@@ -153,12 +253,17 @@ func detectGeminiResponseSignalInBody(body []byte) (geminiResponseSignal, bool) 
 		return detectGeminiResponseSignal(body)
 	}
 	var best geminiResponseSignal
+	faultStatus := 0
 	parsed.ForEach(func(_, item gjson.Result) bool {
-		if sig, ok := detectGeminiResponseSignal([]byte(item.Raw)); ok && sig.Kind > best.Kind {
-			best = sig
+		if sig, ok := detectGeminiResponseSignal([]byte(item.Raw)); ok {
+			faultStatus = max(faultStatus, sig.FaultStatus)
+			if sig.Kind > best.Kind {
+				best = sig
+			}
 		}
 		return true
 	})
+	best.FaultStatus = faultStatus
 	return best, best.Kind != geminiSignalNone
 }
 
@@ -378,7 +483,7 @@ func (s *GeminiMessagesCompatService) markGeminiResponseSignal(c *gin.Context, a
 }
 
 // markGeminiEmptyResponse 登记"上游 2xx 但没有任何响应内容"的结果：流式指整段 body 没有 data 事件
-// 也没有其它非空内容，非流式指空体、空对象或 candidates 为空数组。只记录不换号。
+// 也没有其它非空内容，非流式指空体、空对象或 candidates 为空数组。原响应不重放。
 func (s *GeminiMessagesCompatService) markGeminiEmptyResponse(c *gin.Context, account *Account, stream bool, upstreamRequestID string) {
 	reason := geminiSignalEmptyResponseReason
 	message := "Gemini upstream returned an empty response body"
@@ -395,26 +500,30 @@ func (s *GeminiMessagesCompatService) markGeminiEmptyResponse(c *gin.Context, ac
 }
 
 // finalizeGeminiSSESignal 在上游 SSE 读完后做最终登记：优先登记流中优先级最高的信号；
-// 没有任何 data 事件时，兜底内容超限则放弃判定，为空登记空响应，是非 SSE 的 JSON 则对整段
+// 只有空 data 事件同样登记空响应；没有 data 时，兜底内容超限则放弃判定，为空登记空响应，是非 SSE 的 JSON 则对整段
 // 判定一次，整段没有信号但没有任何响应内容同样登记空响应。
-func (s *GeminiMessagesCompatService) finalizeGeminiSSESignal(c *gin.Context, account *Account, stream bool, upstreamRequestID string, best geminiResponseSignal, sawDataEvent bool, fallback *geminiSSEFallbackBody) {
+func (s *GeminiMessagesCompatService) finalizeGeminiSSESignal(c *gin.Context, account *Account, stream bool, upstreamRequestID string, observed *geminiResponseSignalObserver, sawDataEvent, sawResponseContent bool, fallback *geminiSSEFallbackBody) {
+	best := observed.best
 	if best.Kind != geminiSignalNone {
 		s.markGeminiResponseSignal(c, account, best, stream, upstreamRequestID)
 		return
 	}
-	if sawDataEvent || fallback.Truncated() {
+	if sawResponseContent || fallback.Truncated() {
 		return
 	}
 	body := fallback.Bytes()
-	if len(bytes.TrimSpace(body)) == 0 {
+	if sawDataEvent || len(bytes.TrimSpace(body)) == 0 {
+		observed.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
 		s.markGeminiEmptyResponse(c, account, stream, upstreamRequestID)
 		return
 	}
 	if sig, ok := detectGeminiResponseSignalInBody(body); ok {
+		observed.observe(sig)
 		s.markGeminiResponseSignal(c, account, sig, stream, upstreamRequestID)
 		return
 	}
 	if isGeminiEmptyResponseBody(body) {
+		observed.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
 		s.markGeminiEmptyResponse(c, account, stream, upstreamRequestID)
 	}
 }

@@ -47,8 +47,11 @@ func availabilityPostgresClaim(t *testing.T, repo *scheduledTestPlanRepository, 
 	return until
 }
 
-func availabilityPostgresObservation(status string) []service.AvailabilityModelOutcome {
-	finished := time.Now().UTC().Add(-time.Millisecond)
+func availabilityPostgresObservation(t *testing.T, repo *scheduledTestPlanRepository, status string) []service.AvailabilityModelOutcome {
+	t.Helper()
+	// Publication is validated against the database clock, not the host clock.
+	var finished time.Time
+	require.NoError(t, repo.db.QueryRowContext(t.Context(), "SELECT clock_timestamp()-interval '1 millisecond'").Scan(&finished))
 	return []service.AvailabilityModelOutcome{{ModelID: "target", Probe: &service.AvailabilityProbeResult{Version: 1, Status: status, Reason: "completed_response", StartedAt: finished.Add(-time.Second), FinishedAt: finished, AttemptCount: 1}}}
 }
 
@@ -66,7 +69,7 @@ func TestAvailabilityPostgresLatestExpiryAndIndependentRecovery(t *testing.T) {
 	var previousUntil *time.Time
 	for _, status := range []string{"fail", "inconclusive", "pass", "inconclusive"} {
 		until := availabilityPostgresClaim(t, repo, plan)
-		observations := availabilityPostgresObservation(status)
+		observations := availabilityPostgresObservation(t, repo, status)
 		action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observations)
 		require.NoError(t, err)
 		require.Equal(t, "observed", action)
@@ -81,7 +84,7 @@ func TestAvailabilityPostgresLatestExpiryAndIndependentRecovery(t *testing.T) {
 		require.Equal(t, "stale", state.StatusAt(*state.ValidUntil))
 		previousUntil = state.ValidUntil
 		// A second delivery cannot revise an already committed round.
-		action, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("fail"))
+		action, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "fail"))
 		require.NoError(t, err)
 		require.Equal(t, "duplicate_round", action)
 		require.Equal(t, state, availabilityPostgresState(t, repo, plan.ID))
@@ -119,7 +122,7 @@ func TestAvailabilityPostgresStaleRunGuards(t *testing.T) {
 			} else {
 				plan.AvailabilityAccountFingerprint = nil
 			}
-			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			require.Equal(t, "stale_run", action)
 			var count int
@@ -132,13 +135,13 @@ func TestAvailabilityPostgresStaleRunGuards(t *testing.T) {
 func TestAvailabilityPostgresRouteChangeDropsOldDecision(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	_, err = repo.db.Exec(`UPDATE accounts SET credentials='{"api_key":"fixture-new"}' WHERE id=$1`, plan.AccountID)
 	require.NoError(t, err)
 	until = availabilityPostgresClaim(t, repo, plan)
-	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("inconclusive"))
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "inconclusive"))
 	require.NoError(t, err)
 	state := availabilityPostgresState(t, repo, plan.ID)
 	require.Nil(t, state.Decision)
@@ -155,7 +158,7 @@ func TestAvailabilityPostgresConcurrentDeliveryAndAtomicValidation(t *testing.T)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			actions <- action
 			failures <- err
 		}()
@@ -171,7 +174,7 @@ func TestAvailabilityPostgresConcurrentDeliveryAndAtomicValidation(t *testing.T)
 	require.NoError(t, err)
 	until = availabilityPostgresClaim(t, repo, plan)
 	before := availabilityPostgresState(t, repo, plan.ID)
-	observations := availabilityPostgresObservation("fail")
+	observations := availabilityPostgresObservation(t, repo, "fail")
 	observations = append(observations, service.AvailabilityModelOutcome{ModelID: "forged", Probe: observations[0].Probe})
 	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observations)
 	require.ErrorContains(t, err, "invalid availability model observation")
@@ -199,7 +202,7 @@ func TestAvailabilityPostgresLeaseExpiresBeforeCommit(t *testing.T) {
  END $$;
  CREATE TRIGGER availability_commit_wait BEFORE INSERT ON account_availability_states FOR EACH ROW EXECUTE FUNCTION availability_expire_lease();`)
 	require.NoError(t, err)
-	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	require.Equal(t, "stale_run", action)
 	var waited bool
@@ -212,7 +215,7 @@ func TestAvailabilityPostgresLeaseExpiresBeforeCommit(t *testing.T) {
 func TestAvailabilityPostgresMigrationRollbackAndReplay(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	// Manual rollback discards only this feature's derived state. Never put
 	// executable down statements into the forward-only migration directory.

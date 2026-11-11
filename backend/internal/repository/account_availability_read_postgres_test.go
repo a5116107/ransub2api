@@ -17,7 +17,7 @@ func TestAvailabilityReadPostgresNon5xxFaultAndRecovery(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			repo, plan := availabilityPostgresPlan(t)
 			until := availabilityPostgresClaim(t, repo, plan)
-			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			// Even a rule that enables 5xx model protection must retain its
 			// account settings and quality ownership for a non-5xx failure.
@@ -52,7 +52,7 @@ func TestAvailabilityReadPostgresNon5xxFaultAndRecovery(t *testing.T) {
 			report, err := repo.ReadAvailability(t.Context(), plan.ID)
 			require.NoError(t, err)
 			require.Equal(t, "new_fault_event", report.Models[0].Reason)
-			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			require.Equal(t, "stale_run", action)
 			require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
@@ -68,7 +68,7 @@ func TestAvailabilityReadPostgresNon5xxFaultAndRecovery(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, claimed)
 			require.EqualValues(t, 1, due[0].AvailabilityFaultVersion)
-			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), due[0], until, availabilityPostgresObservation("pass"))
+			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), due[0], until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			report, err = repo.ReadAvailability(t.Context(), plan.ID)
 			require.NoError(t, err)
@@ -98,7 +98,7 @@ func TestAvailabilityReadPostgresIndependentBusinessFault(t *testing.T) {
 			claimed, err := repo.ClaimPelican(t.Context(), plan, time.Now(), until, time.Now().Add(time.Hour))
 			require.NoError(t, err)
 			require.True(t, claimed)
-			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			accounts := &accountRepository{sql: repo.db}
 			require.NoError(t, accounts.ApplyQuality5xx(t.Context(), plan.AccountID))
@@ -113,7 +113,7 @@ func TestAvailabilityReadPostgresIndependentBusinessFault(t *testing.T) {
 			require.EqualValues(t, 1, version)
 			require.True(t, running.Equal(until), "faults must not steal an active lease")
 			require.False(t, next.After(time.Now()), "database fallback must schedule a new probe")
-			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			require.Equal(t, "stale_run", action)
 			var owners, concurrency int
@@ -134,7 +134,7 @@ func TestAvailabilityReadPostgresIndependentBusinessFault(t *testing.T) {
 			plan.TriggerObservedAt = &observed
 			until = availabilityPostgresClaim(t, repo, plan)
 			require.EqualValues(t, 1, plan.AvailabilityFaultVersion)
-			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			report, err = repo.ReadAvailability(t.Context(), plan.ID)
 			require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestAvailabilityReadPostgresFaultPreservesManualAndQualityOwnership(t *test
 				require.NoError(t, err)
 			}
 			until := availabilityPostgresClaim(t, repo, plan)
-			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			queries := map[string]string{
 				"manual_status":      `UPDATE accounts SET status='disabled' WHERE id=$1`,
@@ -218,7 +218,7 @@ func TestAvailabilityReadPostgresBusinessFaultDatabaseFallback(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, claimed)
 	require.EqualValues(t, 1, due[0].AvailabilityFaultVersion)
-	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), due[0], until, availabilityPostgresObservation("pass"))
+	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), due[0], until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	require.Equal(t, "observed", action)
 	report, err := repo.ReadAvailability(t.Context(), plan.ID)
@@ -231,7 +231,7 @@ func TestAvailabilityReadPostgresFreshnessAndScope(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			repo, plan := availabilityPostgresPlan(t)
 			until := availabilityPostgresClaim(t, repo, plan)
-			probe := availabilityPostgresObservation("pass")
+			probe := availabilityPostgresObservation(t, repo, "pass")
 			if change == "expired" {
 				probe[0].Probe.StartedAt = time.Now().Add(-2 * time.Minute)
 				probe[0].Probe.FinishedAt = time.Now().Add(-time.Minute - time.Second)
@@ -292,13 +292,13 @@ func TestAvailabilityReadPostgresFreshnessAndScope(t *testing.T) {
 func TestAvailabilityReadPostgresNewEventInconclusiveCannotRevalidatePass(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, plan.ID)
 	require.NoError(t, err)
 	until = availabilityPostgresClaim(t, repo, plan)
-	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("inconclusive"))
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "inconclusive"))
 	require.NoError(t, err)
 	report, err := repo.ReadAvailability(t.Context(), plan.ID)
 	require.NoError(t, err)
@@ -309,7 +309,7 @@ func TestAvailabilityReadPostgresNewEventInconclusiveCannotRevalidatePass(t *tes
 func TestAvailabilityReadPostgresRejectsMalformedDecision(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	_, err = repo.db.Exec(`UPDATE account_availability_states SET state=jsonb_set(state,'{decision,version}','99') WHERE plan_id=$1`, plan.ID)
 	require.NoError(t, err)
@@ -322,7 +322,7 @@ func TestAvailabilityReadPostgresRejectsMalformedDecision(t *testing.T) {
 func TestAvailabilityReadPostgresFaultVersionSurvivesQualityOwnershipReset(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	for i := 0; i < 2; i++ {
@@ -343,7 +343,7 @@ func TestAvailabilityReadPostgresFaultVersionSurvivesQualityOwnershipReset(t *te
 	require.NoError(t, err)
 	until = availabilityPostgresClaim(t, repo, plan)
 	require.EqualValues(t, 2, plan.AvailabilityFaultVersion)
-	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("inconclusive"))
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "inconclusive"))
 	require.NoError(t, err)
 	report, err = repo.ReadAvailability(t.Context(), plan.ID)
 	require.NoError(t, err)
@@ -351,7 +351,7 @@ func TestAvailabilityReadPostgresFaultVersionSurvivesQualityOwnershipReset(t *te
 	require.Nil(t, report.Models[0].Decision)
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	until = availabilityPostgresClaim(t, repo, plan)
-	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	report, err = repo.ReadAvailability(t.Context(), plan.ID)
 	require.NoError(t, err)
@@ -366,7 +366,7 @@ func TestAvailabilityReadPostgresIndependentFaultRejectsOldRun(t *testing.T) {
 	require.True(t, changed)
 	_, err = repo.db.Exec(`DELETE FROM account_quality_states WHERE plan_id=$1`, plan.ID)
 	require.NoError(t, err)
-	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	require.Equal(t, "stale_run", action, "the independent fault version must survive a reset of quality ownership")
 }
@@ -379,7 +379,7 @@ func TestAvailabilityReadPostgresQualityRestoreKeepsNewAvailabilityPass(t *testi
 	plan, err = repo.GetByID(t.Context(), plan.ID)
 	require.NoError(t, err)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	action, err := repo.ApplyQualityOutcome(t.Context(), plan, until, "passed")
 	require.NoError(t, err)
@@ -408,7 +408,7 @@ func TestAvailabilityReadPostgresProxyAndParentIdentity(t *testing.T) {
 				require.NoError(t, err)
 			}
 			until := availabilityPostgresClaim(t, repo, plan)
-			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			report, err := repo.ReadAvailability(t.Context(), plan.ID)
 			require.NoError(t, err, "read-only fingerprint must not acquire FOR UPDATE/SHARE locks")
@@ -430,7 +430,7 @@ func TestAvailabilityReadPostgresProxyAndParentIdentity(t *testing.T) {
 func TestAvailabilityReadPostgresLegacyEvidenceAndFaultMigrationRollback(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	_, err = repo.db.Exec(`UPDATE account_availability_states SET state=state-'fault_version' WHERE plan_id=$1`, plan.ID)
 	require.NoError(t, err)

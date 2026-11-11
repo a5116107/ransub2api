@@ -22,7 +22,7 @@ func TestAvailabilityManagedProjectionParentRouteWithPostgres(t *testing.T) {
 	_, err = repo.db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{openai_connections_managed}','true') WHERE id=$1`, plan.AccountID)
 	require.NoError(t, err)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 
 	parent := availabilityPreparedAccount(plan)
@@ -94,7 +94,7 @@ func TestAvailabilityManagedScheduledProbeRotatesFairlyWithPostgres(t *testing.T
 		if round == 0 {
 			require.Equal(t, firstCandidate, plan.AvailabilityProbeConnectionID, "an abandoned round must not advance the cursor")
 		}
-		observation := availabilityPostgresObservation("pass")
+		observation := availabilityPostgresObservation(t, repo, "pass")
 		if round == 1 {
 			observation[0].Probe.Status = "fail" // No attributable response, still advance fairly.
 		} else {
@@ -157,7 +157,7 @@ func TestAvailabilityManagedCoverageClaimsDistinctGrantsWithPostgres(t *testing.
 		require.Equal(t, len(ids), plan.AvailabilityEligibleConnections)
 		require.NotContains(t, seen, plan.AvailabilityProbeConnectionID)
 		seen = append(seen, plan.AvailabilityProbeConnectionID)
-		observations := availabilityPostgresObservation("pass")
+		observations := availabilityPostgresObservation(t, repo, "pass")
 		observations[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(&service.Account{AuthConnectionID: plan.AvailabilityProbeConnectionID, AuthConnectionRevision: 1})}
 		action, applyErr := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observations)
 		require.NoError(t, applyErr)
@@ -245,7 +245,7 @@ func TestAvailabilityManagedProbeCursorFailureRollsBackWithPostgres(t *testing.T
 	}
 	until := availabilityPostgresClaim(t, repo, plan)
 	first := plan.AvailabilityProbeConnectionID
-	probe := availabilityPostgresObservation("pass")
+	probe := availabilityPostgresObservation(t, repo, "pass")
 	probe[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(&service.Account{AuthConnectionID: first, AuthConnectionRevision: 1})}
 	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, probe)
 	require.NoError(t, err)
@@ -262,7 +262,7 @@ func TestAvailabilityManagedProbeCursorFailureRollsBackWithPostgres(t *testing.T
  BEGIN RAISE EXCEPTION 'fixture cursor write failure'; END $$;
  CREATE TRIGGER reject_probe_cursor BEFORE INSERT OR UPDATE ON account_availability_states FOR EACH ROW EXECUTE FUNCTION reject_probe_cursor();`)
 	require.NoError(t, err)
-	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("fail"))
+	_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "fail"))
 	require.ErrorContains(t, err, "fixture cursor write failure")
 	require.NoError(t, repo.db.QueryRow(`SELECT state::text FROM account_availability_states WHERE plan_id=$1`, plan.ID).Scan(&stateAfter))
 	require.NoError(t, repo.db.QueryRow(`SELECT availability_fault_version,next_run_at FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&versionAfter, &nextAfter))
@@ -317,7 +317,7 @@ func TestAvailabilityManagedBusinessFaultFencesOnlyConfirmedGrantWithPostgres(t 
 	}
 	a, b := projection("connection-a"), projection("connection-b")
 	outcomes := func(account *service.Account) []service.AvailabilityModelOutcome {
-		result := availabilityPostgresObservation("pass")
+		result := availabilityPostgresObservation(t, repo, "pass")
 		result[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(account)}
 		copy := *result[0].Probe
 		return append(result, service.AvailabilityModelOutcome{ModelID: "other", Probe: &copy})
@@ -428,7 +428,7 @@ func TestAvailabilityManagedBusinessFaultPreservesQualityOwnershipWithPostgres(t
 	a, b := projection("connection-a"), projection("connection-b")
 	for _, account := range []*service.Account{a, b} {
 		until := availabilityPostgresClaim(t, repo, plan)
-		observation := availabilityPostgresObservation("pass")
+		observation := availabilityPostgresObservation(t, repo, "pass")
 		observation[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(account)}
 		_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observation)
 		require.NoError(t, err)
@@ -467,7 +467,7 @@ func TestAvailabilityManagedConnectionsIndependentEvidenceWithPostgres(t *testin
 	}
 	apply := func(account *service.Account, result string) string {
 		until := availabilityPostgresClaim(t, repo, plan)
-		observation := availabilityPostgresObservation(result)
+		observation := availabilityPostgresObservation(t, repo, result)
 		if account != nil {
 			observation[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(account)}
 		}
@@ -478,7 +478,7 @@ func TestAvailabilityManagedConnectionsIndependentEvidenceWithPostgres(t *testin
 	}
 	// Seed exactly the pre-upgrade single-connection JSON representation.
 	until := availabilityPostgresClaim(t, repo, plan)
-	legacyProbe := availabilityPostgresObservation("pass")[0].Probe
+	legacyProbe := availabilityPostgresObservation(t, repo, "pass")[0].Probe
 	legacyProbe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(a)}
 	validUntil := legacyProbe.FinishedAt.Add(time.Minute)
 	legacy := availabilityStoredState{AvailabilityState: service.AvailabilityState{Observation: legacyProbe, Decision: legacyProbe, ValidUntil: &validUntil}, FaultVersion: &plan.AvailabilityFaultVersion}
@@ -517,11 +517,11 @@ func TestAvailabilityManagedConnectionsIndependentEvidenceWithPostgres(t *testin
 	require.Equal(t, "observed", apply(nil, "inconclusive"))
 	require.Equal(t, "pass", status(b), "an unattributed inconclusive result must not overwrite a peer")
 	until = availabilityPostgresClaim(t, repo, plan)
-	unattributed := availabilityPostgresObservation("inconclusive")
+	unattributed := availabilityPostgresObservation(t, repo, "inconclusive")
 	action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, unattributed)
 	require.NoError(t, err)
 	require.Equal(t, "observed", action)
-	revised := availabilityPostgresObservation("fail")
+	revised := availabilityPostgresObservation(t, repo, "fail")
 	revised[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(b)}
 	action, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, revised)
 	require.NoError(t, err)
@@ -529,12 +529,12 @@ func TestAvailabilityManagedConnectionsIndependentEvidenceWithPostgres(t *testin
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	require.Equal(t, "pass", status(b))
 	until = availabilityPostgresClaim(t, repo, plan)
-	scoped := availabilityPostgresObservation("pass")
+	scoped := availabilityPostgresObservation(t, repo, "pass")
 	scoped[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(b)}
 	action, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, scoped)
 	require.NoError(t, err)
 	require.Equal(t, "observed", action)
-	action, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("fail"))
+	action, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "fail"))
 	require.NoError(t, err)
 	require.Equal(t, "duplicate_round", action, "an unattributed duplicate cannot fence an already committed round")
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
@@ -587,7 +587,7 @@ func TestAvailabilityManagedAttributedRoundConcurrentDuplicateWithPostgres(t *te
 	actions, failures := make(chan string, 2), make(chan error, 2)
 	for _, id := range []string{"connection-a", "connection-b"} {
 		wg.Go(func() {
-			observation := availabilityPostgresObservation("pass")
+			observation := availabilityPostgresObservation(t, repo, "pass")
 			observation[0].Probe.Scope = &service.AvailabilityRequestScope{Version: 1, ConnectionScope: service.AvailabilityConnectionScope(&service.Account{AuthConnectionID: id, AuthConnectionRevision: 1})}
 			action, applyErr := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, observation)
 			actions <- action
@@ -616,7 +616,7 @@ func TestAvailabilityManagedUnknownFailureRetryAndLeaseWithPostgres(t *testing.T
 		until := availabilityPostgresClaim(t, repo, plan)
 		var earlier time.Time
 		require.NoError(t, repo.db.QueryRow(`UPDATE scheduled_test_plans SET next_run_at=clock_timestamp()+interval '5 seconds' WHERE id=$1 RETURNING next_run_at`, plan.ID).Scan(&earlier))
-		action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("fail"))
+		action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "fail"))
 		require.NoError(t, err)
 		require.Equal(t, "unattributed_failure", action)
 		var next time.Time
@@ -637,7 +637,7 @@ func TestAvailabilityManagedUnknownFailureRetryAndLeaseWithPostgres(t *testing.T
  BEGIN PERFORM pg_sleep(2.1); RETURN NEW; END $$;
  CREATE TRIGGER availability_fault_wait BEFORE UPDATE OF availability_fault_version ON scheduled_test_plans FOR EACH ROW EXECUTE FUNCTION availability_fault_wait();`)
 		require.NoError(t, err)
-		action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("fail"))
+		action, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "fail"))
 		require.NoError(t, err)
 		require.Equal(t, "stale_run", action)
 		var version int64

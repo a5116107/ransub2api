@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3认证归属v2/计时去重及D8日志竞态修复，本地已验。
+任务：D3 Gemini原生故障闭环已验，接续兼容入口。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线249f933；10项Go输入3b7b5b1ec21e9ff2。
-验证命令：四包race、原规则lint/vet及Linux构建。
-验证结果：642顶层/3203含子例PASS；日志race20次、lint/vet/Linux均0。
-验证来源：backend/tmp/protocol-cache/scheduling-auth-binding-*。
-下一动作：补D2关联契约、D4模型/fast及D5前缀/缓存域；D3其余能力待验。
-尝试：24
+源码：基线988fa6a；8项Go输入e3e9ba7fef4149d5。
+验证命令：Gemini/可用性service race、真实SQL恢复及vet/lint/Linux构建。
+验证结果：364/1995复验PASS；四包lint0 issues，vet/Linux退出0。
+验证来源：backend/tmp/protocol-cache/scheduling-gemini-semantic-*。
+下一动作：提交原生修复，复用原观察器补齐兼容JSON/SSE/聚合。
+尝试：25
 阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -32,7 +32,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新状态/托管轮转、区域v2、HTTP/WS/Messages/Gemini/Antigravity文本已验；认证作用域v2、计时去重及642/3203回归、lint/vet/Linux通过；其他能力待验 |
+| D3 | in_progress | 最新状态/托管轮转、区域v2及HTTP/WS/Messages/Gemini/Antigravity文本已验；Gemini原生故障/SQL恢复364/1995、四包lint0/vet/Linux通过；兼容及其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |

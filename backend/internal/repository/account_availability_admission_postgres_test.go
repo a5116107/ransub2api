@@ -18,7 +18,7 @@ func availabilityPreparedAccount(plan *service.ScheduledTestPlan) *service.Accou
 func TestAvailabilityReadAccountPostgresAllRulesAndOptOut(t *testing.T) {
 	repo, plan := availabilityPostgresPlan(t)
 	until := availabilityPostgresClaim(t, repo, plan)
-	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+	_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 	require.NoError(t, err)
 	require.NoError(t, repo.FinishPelican(t.Context(), plan.ID, until, time.Now()))
 	peer := *plan
@@ -56,7 +56,7 @@ func TestAvailabilityReadAccountPostgresInvalidationAndRecovery(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			repo, plan := availabilityPostgresPlan(t)
 			until := availabilityPostgresClaim(t, repo, plan)
-			observations := availabilityPostgresObservation("pass")
+			observations := availabilityPostgresObservation(t, repo, "pass")
 			if change == "expired" {
 				observations[0].Probe.StartedAt = time.Now().Add(-2 * time.Minute)
 				observations[0].Probe.FinishedAt = time.Now().Add(-time.Minute - time.Second)
@@ -101,7 +101,7 @@ func TestAvailabilityReadAccountPostgresInvalidationAndRecovery(t *testing.T) {
 			plan, err = repo.GetByID(t.Context(), plan.ID)
 			require.NoError(t, err)
 			until = availabilityPostgresClaim(t, repo, plan)
-			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			_, err = repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			reports, err = repo.ReadAccountAvailability(t.Context(), account)
 			require.NoError(t, err)
@@ -115,7 +115,7 @@ func TestAvailabilityReadAccountPostgresBindingAndReadFailures(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			repo, plan := availabilityPostgresPlan(t)
 			until := availabilityPostgresClaim(t, repo, plan)
-			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation("pass"))
+			_, err := repo.ApplyAvailabilityOutcomes(t.Context(), plan, until, availabilityPostgresObservation(t, repo, "pass"))
 			require.NoError(t, err)
 			account := availabilityPreparedAccount(plan)
 			switch change {
@@ -162,7 +162,7 @@ func TestAvailabilityReadAccountPostgresSnapshotAndClock(t *testing.T) {
 			var expires time.Time
 			for _, plan := range []*service.ScheduledTestPlan{first, second} {
 				until := availabilityPostgresClaim(t, repo, plan)
-				outcomes := availabilityPostgresObservation("pass")
+				outcomes := availabilityPostgresObservation(t, repo, "pass")
 				if scenario == "expires_while_reading" {
 					outcomes[0].Probe.FinishedAt = time.Now().Add(-59 * time.Second)
 					outcomes[0].Probe.StartedAt = outcomes[0].Probe.FinishedAt.Add(-time.Second)
