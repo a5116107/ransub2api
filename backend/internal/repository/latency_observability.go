@@ -86,10 +86,14 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  SELECT *,(
   trace_total=1 AND detail->>'version'='1' AND detail->>'truncated'='false'
   AND detail->>'canceled'='false' AND detail->>'client_disconnect'='false' AND detail->>'downstream_error'='false'
+  AND COALESCE(detail->>'ttft_mode','')<>'ws_turn'
+  AND COALESCE(detail->>'outcome','') IN ('','success') AND COALESCE(detail->>'terminal','') IN ('','completed')
   AND detail->>'status' ~ '^2[0-9]{2}$' AND cache_attempt->>'kind'='http'
   AND cache_attempt->>'account_id'=account_id::text AND cache_attempt->>'status' ~ '^2[0-9]{2}$'
   AND cache_attempt->>'terminal'='completed' AND COALESCE(cache_attempt->>'error','')=''
   AND NOT (cache_attempt->'events' ? 'typed_content_truncated') AND cu->>'status'='observed'
+  AND COALESCE(cache_attempt->'text_stream'->>'invalid','false')='false'
+  AND COALESCE(cache_attempt->'text_stream'->>'truncated','false')='false'
   AND cache_input>0 AND cache_input<=9007199254740991 AND cache_read>=0 AND cache_read<=cache_input
   AND stored_input>=0 AND stored_read>=0 AND stored_write>=0
   AND stored_input+stored_read+stored_write=cache_input AND stored_read=cache_read
@@ -97,6 +101,7 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
    AND cache_write>=0 AND cache_write<=cache_input-cache_read AND cache_write=stored_write))
  ) canonical_cache,
  (cu IS NULL AND trace_total<=1 AND stored_input>=0 AND stored_read>0 AND stored_write>=0
+  AND COALESCE(detail->>'ttft_mode','')<>'ws_turn' AND COALESCE(cache_attempt->>'kind','')<>'ws_turn'
   AND stored_input+stored_read+stored_write>0) legacy_positive
  FROM cache_values
 ), classified AS (

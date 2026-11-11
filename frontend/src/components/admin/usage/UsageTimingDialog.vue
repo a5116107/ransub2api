@@ -42,7 +42,7 @@
             <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.tokens') }}</dt><dd class="mt-1 tabular-nums">{{ phaseRateTokens }}</dd></div>
             <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.reasoning') }}</dt><dd class="mt-1 tabular-nums">{{ phaseReasoningTokens }}</dd></div>
             <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.window') }}</dt><dd class="mt-1 tabular-nums">{{ ms(outputRate?.window_ms) }}</dd></div>
-            <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.scopeLabel') }}</dt><dd class="mt-1">{{ t('requestTiming.outputRate.scope') }}</dd></div>
+            <div><dt class="text-gray-500">{{ t('requestTiming.outputRate.scopeLabel') }}</dt><dd class="mt-1" data-testid="output-phase-scope">{{ phaseRateScopeKey ? t(phaseRateScopeKey) : t('requestTiming.missing') }}</dd></div>
           </dl>
           <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('requestTiming.outputRate.note') }}</p>
         </section>
@@ -94,16 +94,22 @@ const traces = ref<RequestTiming[]>([]), selected = ref(0), loading = ref(false)
 let controller: AbortController | undefined
 const trace = computed(() => traces.value[selected.value])
 const outputRate = computed(() => trace.value?.output_rate)
+const phaseRateScopeKey = computed(() => {
+  const scope = outputRate.value?.scope
+  if (scope === 'physical_websocket_turn_responses_text_at_parser' && trace.value?.ttft_mode === 'ws_turn') return 'requestTiming.outputRate.wsScope'
+  if (scope === 'final_physical_http_responses_text_at_parser' && trace.value?.ttft_mode !== 'ws_turn') return 'requestTiming.outputRate.scope'
+  return undefined
+})
 const phaseRate = computed(() => {
   const rate = outputRate.value
   const value = rate?.tokens_per_second
-  if (rate?.status !== 'estimated' || value == null || !Number.isFinite(value) || value <= 0 ||
+  if (!phaseRateScopeKey.value || rate?.status !== 'estimated' || value == null || !Number.isFinite(value) || value <= 0 ||
     rate.window_ms == null || !Number.isFinite(rate.window_ms) || rate.window_ms < 250 ||
     rate.non_reasoning_tokens == null || !Number.isSafeInteger(rate.non_reasoning_tokens) || rate.non_reasoning_tokens < 32) return t('requestTiming.missing')
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} t/s`
 })
 const phaseRateStatus = computed(() => {
-  const status = outputRate.value?.status ?? 'not_collected'
+  const status = phaseRateScopeKey.value ? outputRate.value?.status ?? 'not_collected' : 'not_collected'
   const states = ['estimated', 'not_collected', 'not_reported', 'invalid_counters', 'diagnostic_limit', 'unsupported_usage',
     'invalid_terminal', 'unsupported_output', 'no_text_output', 'partial', 'insufficient_stream', 'incomplete_stream',
     'short_output', 'insufficient_window', 'invalid_boundary', 'incomplete_capture']

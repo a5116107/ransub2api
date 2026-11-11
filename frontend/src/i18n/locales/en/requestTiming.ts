@@ -102,7 +102,8 @@ export default {
     "window": "First text to completion",
     "scopeLabel": "Observation scope",
     "scope": "Final upstream attempt for this request",
-    "note": "Complete successful Responses HTTP text streams only. Non-reasoning output tokens divided by seconds from first text to completion includes the first chunk and terminal tail wait. This is not a model token clock or client delivery rate. Requires at least 32 non-reasoning tokens, two text chunks and a text span of 250ms. Not used for automatic routing.",
+    "wsScope": "One WebSocket generation, excluding handshake and inter-turn waiting",
+    "note": "Complete successful Responses HTTP text streams or individual WebSocket generations, compared separately by protocol. Non-reasoning output tokens divided by seconds from first text to completion includes the first chunk and terminal tail wait. This is not a model token clock or client delivery rate. Requires at least 32 non-reasoning tokens, two text chunks and a text span of 250ms. Not used for automatic routing.",
     "states": {
       "estimated": "Estimated from original usage and text events; excludes waiting before first text",
       "not_collected": "Not collected; historical rows and other protocols remain unknown",

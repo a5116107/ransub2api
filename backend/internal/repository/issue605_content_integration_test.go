@@ -179,8 +179,13 @@ func TestIssue605WSTurnTimingPersistenceAndUsageIsolation(t *testing.T) {
 		capture := requesttiming.NewWSTurn(time.Now(), a.ID, 0, [32]byte{1})
 		capture.Content([]byte(`{"type":"response.reasoning_summary_text.delta","delta":"private-thought"}`))
 		capture.Content([]byte(`{"type":"response.output_text.delta","delta":"private-answer"}`))
+		time.Sleep(300 * time.Millisecond)
 		capture.Content([]byte(`{"type":"response.output_text.delta","delta":"private-answer"}`))
-		capture.Content([]byte(`{"type":"response.completed"}`))
+		if turn == 0 {
+			capture.Content([]byte(`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"private-answer"}]}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":8},"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}}}`))
+		} else {
+			capture.Content([]byte(`{"type":"response.completed"}`))
+		}
 		repo.RecordRequestTiming(requesttiming.WithUsageTurn(ctx, capture.Collector), requestID, k.ID)
 		require.Empty(t, repo.timingQueue)
 		capture.Finish(nil, false, false)
@@ -220,7 +225,23 @@ func TestIssue605WSTurnTimingPersistenceAndUsageIsolation(t *testing.T) {
 		require.NotNil(t, v.ReasoningFirstMS)
 		require.NotNil(t, v.VisibleTextFirstMS)
 		require.Nil(t, v.ResponseByteFirstMS)
-		require.Nil(t, v.OutputRate.TokensPerSecond)
-		require.Nil(t, v.Cache.ReadRatio)
+		require.Equal(t, "physical_websocket_turn_responses_text_at_parser", v.OutputRate.Scope)
+		require.Equal(t, "physical_websocket_turn_responses_terminal_usage", v.Cache.Scope)
+		if id == ids[0] {
+			require.Equal(t, "observed", v.Cache.Status)
+			require.InDelta(t, 0.8, *v.Cache.ReadRatio, 1e-9)
+			require.Equal(t, "estimated", v.OutputRate.Status)
+			require.NotNil(t, v.OutputRate.TokensPerSecond)
+		} else {
+			require.Nil(t, v.OutputRate.TokensPerSecond, "the following turn must not borrow terminal usage")
+			require.Nil(t, v.Cache.ReadRatio)
+		}
+	}
+	groups, err := repo.ReadLatencyReport(t.Context(), service.LatencyReportFilter{Start: time.Now().Add(-time.Minute), End: time.Now().Add(time.Minute), UserID: u.ID})
+	require.NoError(t, err)
+	for _, g := range groups {
+		require.Zero(t, g.ByteSamples)
+		require.Zero(t, g.TextSamples, "WS parser offsets must not join HTTP latency cohorts")
+		require.Nil(t, g.TextP90MS)
 	}
 }

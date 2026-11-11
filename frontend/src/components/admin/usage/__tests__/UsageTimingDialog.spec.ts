@@ -22,6 +22,28 @@ const phaseTrace = (rate?: OutputRateObservation, id = 'phase'): RequestTiming =
   downstream_write_ms: 0, downstream_error: false, events: {}, spans: [], attempts: [], output_rate: rate
 })
 describe('Usage timing details', () => {
+  it('shows a WS generation estimate with its own scope, excluding socket lifetime', async () => {
+    const rate = { ...phaseObservation(), scope: 'physical_websocket_turn_responses_text_at_parser' }
+    mocks.get.mockResolvedValue({ traces: [{ ...phaseTrace(rate), status: 0, ttft_mode: 'ws_turn' }], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('50.0 t/s')
+    expect(wrapper.get('[data-testid="output-phase-scope"]').text()).toBe('requestTiming.outputRate.wsScope')
+    wrapper.unmount()
+  })
+  it.each([
+    ['ws_turn', 'final_physical_http_responses_text_at_parser'],
+    [undefined, 'physical_websocket_turn_responses_text_at_parser'],
+    [undefined, 'unverified_scope']
+  ])('hides estimates with mismatched transport %s and scope %s', async (ttft_mode, scope) => {
+    mocks.get.mockResolvedValue({ traces: [{ ...phaseTrace({ ...phaseObservation(), scope }), ttft_mode }], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="output-phase-rate"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="output-phase-scope"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="output-phase-status"]').text()).toBe('requestTiming.outputRate.states.not_collected')
+    wrapper.unmount()
+  })
   it('separates the final-attempt output-phase estimate from request-average TPS', async () => {
     mocks.get.mockResolvedValue({ traces: [phaseTrace(phaseObservation())], retention_days: 30 })
     const wrapper = mount(UsageTimingDialog, { props: { record: { ...row(1), output_tokens: 120, duration_ms: 10_000 } }, ...options })

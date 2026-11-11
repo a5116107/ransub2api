@@ -132,6 +132,9 @@ func outputContentStatus(envelope map[string]json.RawMessage) string {
 
 func deriveOutputRate(s Snapshot, a Attempt, stream TextStreamObservation) OutputRateObservation {
 	out := unknownOutputRate()
+	if a.Kind == "ws_turn" && s.TTFTMode == "ws_turn" {
+		out.Scope = "physical_websocket_turn_responses_text_at_parser"
+	}
 	raw := a.OutputUsage
 	if raw == nil {
 		return out
@@ -145,14 +148,16 @@ func deriveOutputRate(s Snapshot, a Attempt, stream TextStreamObservation) Outpu
 		out.Status = "invalid_counters"
 		return out
 	}
-	if _, gap := a.Events["typed_content_truncated"]; gap {
+	if _, gap := a.Events["typed_content_truncated"]; gap || (a.TextStream != nil && a.TextStream.Truncated) {
 		out.Status = "incomplete_capture"
 		return out
 	}
-	if a.Terminal != "completed" || a.Error != "" || a.Status < 200 || a.Status >= 300 ||
-		s.Status < 200 || s.Status >= 300 || s.Terminal != "completed" || s.Canceled || s.ClientDisconnect || s.DownstreamError ||
-		(s.Outcome != "" && s.Outcome != "success") {
+	if !contentAttemptSucceeded(s, a) || s.Terminal != "completed" {
 		out.Status = "partial"
+		return out
+	}
+	if a.TextStream != nil && a.TextStream.Invalid {
+		out.Status = "invalid_boundary"
 		return out
 	}
 	if raw.ContentStatus != "text_and_reasoning" {

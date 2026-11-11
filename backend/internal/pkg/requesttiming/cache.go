@@ -157,13 +157,16 @@ func readTerminalUsage(data []byte) (*CacheUsage, *OutputUsage) {
 
 func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
 	out := unknownCacheObservation()
+	if a.Kind == "ws_turn" && s.TTFTMode == "ws_turn" {
+		out.Scope = "physical_websocket_turn_responses_terminal_usage"
+	}
 	if raw := a.CacheUsage; raw != nil {
 		out.Source = "canonical_responses_terminal_usage"
 		out.Status = raw.Status
 		if raw.Status != "observed" {
 			return out
 		}
-		if _, gap := a.Events["typed_content_truncated"]; gap {
+		if _, gap := a.Events["typed_content_truncated"]; gap || (a.TextStream != nil && a.TextStream.Truncated) {
 			out.Status = "incomplete_capture"
 			return out
 		}
@@ -172,9 +175,12 @@ func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
 			out.Status = "invalid_counters"
 			return out
 		}
-		if a.Terminal != "completed" || a.Error != "" || a.Status < 200 || a.Status >= 300 ||
-			s.Status < 200 || s.Status >= 300 || s.Canceled || s.ClientDisconnect || s.DownstreamError {
+		if !contentAttemptSucceeded(s, a) {
 			out.Status = "partial"
+			return out
+		}
+		if a.TextStream != nil && a.TextStream.Invalid {
+			out.Status = "invalid_boundary"
 			return out
 		}
 		if raw.InputTokens == 0 {

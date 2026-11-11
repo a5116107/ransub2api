@@ -1619,7 +1619,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			AfterClientWrite: func(msgType coderws.MessageType, payload []byte, writeErr error) {
 				if deliveryTiming != nil {
 					deliveryTiming.DownstreamWrite(writeErr)
-					finishOpenAIWSTurnTiming(deliveryTiming, ctx, nil, writeErr)
+					// A buffered write may succeed after the single ingress reader
+					// has already observed peer closure. Preserve that independent
+					// delivery evidence even before the relay enters drain mode.
+					deliveryTiming.Finish(writeErr, ctx.Err() != nil, clientFrameConn.reader.disconnected())
 					deliveryTiming = nil
 				} else if capture := activeTiming.Load(); capture != nil {
 					capture.DownstreamWrite(writeErr)

@@ -175,7 +175,7 @@ func TestOutputRateProjectionFailuresAndShortSamples(t *testing.T) {
 		{"short_span", func(s *Snapshot) { s.Attempts[0].TextStream.LastMS = 250; s.Attempts[0].TextStream.MaxGapMS = 120 }, "insufficient_window"},
 		{"missing_first_text", func(s *Snapshot) { delete(s.Attempts[0].Events, "first_visible_text") }, "incomplete_stream"},
 		{"earlier_non_delta_text", func(s *Snapshot) { s.Attempts[0].Events["first_visible_text"] = 5 }, "incomplete_stream"},
-		{"truncated_stream", func(s *Snapshot) { s.Attempts[0].TextStream.Truncated = true }, "insufficient_stream"},
+		{"truncated_stream", func(s *Snapshot) { s.Attempts[0].TextStream.Truncated = true }, "incomplete_capture"},
 		{"invalid_clock", func(s *Snapshot) { s.Attempts[0].TextStream.Invalid = true }, "invalid_boundary"},
 		{"future_terminal", func(s *Snapshot) { s.Attempts[0].TextStream.TerminalMS = 4000 }, "invalid_boundary"},
 		{"nan_terminal", func(s *Snapshot) { s.Attempts[0].TextStream.TerminalMS = math.NaN() }, "invalid_boundary"},

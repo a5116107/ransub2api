@@ -141,6 +141,9 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) bool {
 	var output *OutputUsage
 	if terminal != "" {
 		cache, output = readTerminalUsage(data)
+		if terminal == "completed" && cache != nil && output != nil && output.ContentStatus == "invalid_terminal" {
+			cache.Status = "invalid_terminal"
+		}
 	}
 	recordContent(ctx, "responses", reasoning, visibleText, textDelta, nonTextOutput, terminal, cache, output)
 	return true
@@ -180,7 +183,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		return
 	}
 	now := c.offset(c.now())
-	if a := &c.data.Attempts[tr.index]; a.Kind == "http" && terminal != "" && protocol == "responses" {
+	if a := &c.data.Attempts[tr.index]; (a.Kind == "http" || a.Kind == "ws_turn") && terminal != "" && protocol == "responses" {
 		a.CacheUsage = cache
 		a.OutputUsage = output
 	}
@@ -239,6 +242,23 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 	if (protocol != "responses" || c.data.Attempts[tr.index].Kind == "ws_turn") && terminal != "" {
 		c.data.Terminal = terminal
 		c.event("terminal", c.now())
+	}
+}
+
+// HTTP success belongs to a physical request. WS success belongs to a finished
+// generation with confirmed delivery, never the 101 handshake or a fake 200.
+func contentAttemptSucceeded(s Snapshot, a Attempt) bool {
+	if a.Terminal != "completed" || a.Error != "" || s.Canceled || s.ClientDisconnect || s.DownstreamError ||
+		(s.Terminal != "" && s.Terminal != "completed") || (s.Outcome != "" && s.Outcome != "success") {
+		return false
+	}
+	switch a.Kind {
+	case "http":
+		return s.TTFTMode != "ws_turn" && a.Status >= 200 && a.Status < 300 && s.Status >= 200 && s.Status < 300
+	case "ws_turn":
+		return s.TTFTMode == "ws_turn" && a.Status == 0 && s.Status == 0 && s.Outcome == "success" && s.Terminal == "completed"
+	default:
+		return false
 	}
 }
 
@@ -381,13 +401,7 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 				out.TextStream.TailWaitMS = &tail
 			}
 			out.TextStream.Status = "partial"
-			transportSuccess := a.Status >= 200 && a.Status < 300 && s.Status >= 200 && s.Status < 300
-			if wsTurn {
-				transportSuccess = a.Status == 0 && s.Status == 0 && s.Outcome == "success"
-			}
-			if !stream.Truncated && stream.Terminal == "completed" && a.Terminal == "completed" && a.Error == "" &&
-				transportSuccess && !s.Canceled && !s.ClientDisconnect &&
-				!s.DownstreamError && (s.Outcome == "" || s.Outcome == "success") {
+			if !stream.Truncated && stream.Terminal == "completed" && contentAttemptSucceeded(s, a) {
 				out.TextStream.Status = "observed"
 			}
 		}

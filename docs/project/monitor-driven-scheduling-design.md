@@ -635,7 +635,7 @@ D5 的 Responses 文本间隔子项沿既有 `requesttiming.Content`、物理 at
 此类有缺口的数据不能计算真实相邻间隔或确定首次内容，`text_stream`标incomplete_capture且数值为null；
 用量诊断和既有分层SQL同时排除该attempt的首推理/首文本样本，独立HTTP首字节证据仍可保留。
 用量只投影最终物理 attempt，重试和先前账号不借样本，已有首语义/首可见口径、计费及调度权重不变。
-Responses 文本间隔子项不覆盖原生WS或分位数排序。Messages 与 Gemini HTTP 的接线和边界见下文，其余协议仍待验收。
+Responses HTTP 文本间隔与原生 WS 逐轮分开，不进行混合分位数排序。Messages 与 Gemini HTTP 的接线和边界见下文，其余协议仍待验收。
 
 Messages HTTP 普通与 Anthropic API Key 透传复用同一物理 attempt 聚合：原计时中间件扩展到
 POST `/messages` 入口，最终发送边界记录账号、实际代理和不可变线路摘要，解析器从真实响应恢复物理 attempt。
@@ -653,7 +653,7 @@ Messages 使用独立 `typed_messages_sse` 来源与 Messages parser 作用域�
 不改变业务扫描上限或截断转发。无采集器的请求不计算额外线路摘要，父 attempt 不重复存储物理分片，重试不借前次数据。
 该路径仍沿原 request timing JSON、30天保留、异步队列及用量投影，不增加表或第二套计时器。
 Messages 的 output_tokens 未提供与 Responses 等价的推理扣除证据，因此输出阶段 TPS 与规范缓存比例继续未采集，
-不把原计费用量强行换算为同口径指标。Gemini HTTP 的接线见下文；原生WS、其他协议、跨协议速度与会话冷输入风险仍待验收，D5不因单协议交付关闭。
+不把原计费用量强行换算为同口径指标。Gemini HTTP 与原生 WS 的接线见下文；其他协议的规范计数、跨协议速度与会话冷输入风险仍待验收，D5不因单协议交付关闭。
 
 Gemini HTTP 原生、Messages 兼容、Chat Completions 兼容与 Code Assist 流转非流，沿同一物理 attempt
 记录首推理、首可见文本、文本 chunk 间隔和终态等待。HTTP 采集中间件与传输诊断共用实际端点分类，增加
@@ -696,7 +696,7 @@ Antigravity 的 scanner 超限、读取错误与间隔超时显式标记 incompl
 流转非流的 Claude 聚合器另外保留最新原始 usageMetadata：即使尾帧只有用量、无正文，原转换器也能
 保留实际输入/缓存/思考/输出计数；明确零值覆盖旧值，无新用量则保留最近值。该修复不改变计费公式、
 空响应/错误处理或调度权重；相同聚合器服务 Messages、Chat 与 Responses，不新增平行路径。
-原生 WS 的逐轮内容观测按下述独立边界交付；WS 规范缓存/TPS、其他协议、跨协议速度与会话迁移冷输入风险仍属 D5 剩余验收。
+原生 WS 的逐轮内容、规范缓存与输出阶段速度按下述独立边界交付；其他协议的规范计数、跨协议速度与会话迁移冷输入风险仍属 D5 剩余验收。
 
 原生 Responses WS 复用 `requesttiming.Content`、固定大小文本聚合和原 `request_timing_details`，
 按每次实际 generation 的发送边界建立 `kind=ws_turn`、`ttft_mode=ws_turn` 的独立 trace，
@@ -707,7 +707,7 @@ Antigravity 的 scanner 超限、读取错误与间隔超时显式标记 incompl
 
 WS 来源为 `typed_responses_ws`，偏移范围为 `physical_websocket_turn_offsets_from_generation_start`，
 文本范围为 `physical_websocket_turn_text_deltas_at_parser`。HTTP 状态保持未观测的 0，
-网络首字节、DNS、TCP/TLS、上传和规范缓存/TPS不从 WS 内容反推，不进入原 HTTP 分位数或速度排名。
+网络首字节、DNS、TCP/TLS和上传不从 WS 内容反推，WS 逐轮指标不进入原 HTTP 分位数或速度排名。
 每轮 usage 仅选择其物理 turn collector；HTTP 请求诊断仍独立保留，不为同一 usage 再写入整段连接数据，
 也不借用前后轮的文本样本。落库仍在原用量关联队列中完成，沿用队列上限、重试及30天保留，
 无数据库迁移或第二条诊断写入链；未产生原用量行的失败、区域独立资金结算的跨节点观测仍不冒充已落库。
@@ -718,15 +718,17 @@ WS 来源为 `typed_responses_ws`，偏移范围为 `physical_websocket_turn_off
 二进制帧维持原不透明契约，不解析为文本；回退旧读取者可保留新 JSON，但不会识别 WS turn，
 不得将旧读取者的未采集结果用作本子项或全局验收证据。
 
-D5 的 Responses HTTP 缓存分层沿相同终态采集点保存原始 `input_tokens` 与明确上报的
+D5 的 Responses HTTP 与原生 WS 缓存观测沿相同终态采集点保存原始 `input_tokens` 与明确上报的
 `input_tokens_details.cached_tokens`，可选记录 `cache_write_tokens`；普通、passthrough 与工具转换路径共用原采集器。
 终态诊断只属于最终物理 attempt，线路指纹在原出站 attempt 建立时捕获并传到 transport，实际代理 ID 独立分层。
+WS 计数只属于本轮物理 generation，不借整段连接或前后轮用量；其缓存范围为 `physical_websocket_turn_responses_terminal_usage`。
 只保存计数和摘要，不保存提示词、原始 Key 或缓存内容，不新增表或另一套缓存。
 负数、字符串、分数、重复字段、读取/写入超出总输入、诊断超限及旧协议保持明确未知或异常；未上报的读取不补为零。
 已取消、断连、失败终态、下游写错或漏采不作为成功缓存证据；终态后的重复数据不重标首次终态。
 
-既有延迟 SQL 将普通输入、缓存读取和写入作为互斥桶，修正遗漏写入导致的高命中误判。
+既有 HTTP 延迟 SQL 将普通输入、缓存读取和写入作为互斥桶，修正遗漏写入导致的高命中误判；不将 WS 缓存观测混入 HTTP 分布。
 只有唯一 trace、最终账号匹配、成功且完整的原始终态与计费用量守恒时才归入规范证据；
+SQL 同时排除明确失败的请求结果/终态、伪装 HTTP 状态的 WS 模式，以及无效或截断的文本聚合，与请求详情的证据准入一致。
 原始明确零读取才分入 `0%`，历史正读取保留 `billed_usage_positive_read` 来源，历史零读取保持 unknown。
 已知原始用量异常不退回历史正读取“修复”。未计费用量的 Ops trace 保持未知，多个 trace 不各自冒充一份最终用量。
 公开/实际模型、服务档、上游端点、线路指纹、实际代理、流式状态、请求体桶、推理强度与证据来源均独立分层。
@@ -738,9 +740,9 @@ D5 的 Responses HTTP 缓存分层沿相同终态采集点保存原始 `input_to
 结果标记 `historical_association`，保留负差值、样本数、方法、时效和不确定状态；
 独立历史分布差值不证明同提示词收益、供应商缓存寿命、下次命中或迁移节省，不自动修改调度权重。
 现有延迟面板同步展示来源、作用域、冷热样本数、准入条件与非因果差值，旧响应字段缺失仍显示未采集。
-本子项不关闭D5：其他协议/WS、切换后额外冷输入及面向会话的保守风险估计仍待验收。
+本子项不关闭D5：其他协议的规范缓存计数、切换后额外冷输入及面向会话的保守风险估计仍待验收。
 
-Responses HTTP 的输出阶段速度复用上述物理 attempt 与原始终态 JSON；`output_usage` 仅保存计数及输出类型结论，
+Responses HTTP 与原生 WS 的输出阶段速度复用上述物理 attempt 与原始终态 JSON；`output_usage` 仅保存计数及输出类型结论，
 `output_rate` 由同一函数投影到请求详情和用量诊断。不新增表、采样器或计费口径。
 必须明确报告整数 `output_tokens` 和 `output_tokens_details.reasoning_tokens`，缺失不推断为零；
 负数、重复字段、非整数、推理量超出总量及未分离的其他输出用量类型均不估算。
@@ -751,9 +753,17 @@ Responses HTTP 的输出阶段速度复用上述物理 attempt 与原始终态 J
 这是应用解析层的 `estimated`，包含首个分片的 token 和终态尾等，不是供应商逐token时钟、
 隐藏推理速度、客户端接收速率或调度SLO；上述下限只是诊断样本准入边界。
 请求详情保留原“输出token/总耗时”的平均TPS，并分开展示本估算、扣除量、窗口和缺失原因。
-每条trace独立展示，切换trace不借用另一条或用量行的值；旧JSON缺字段与非HTTP/其他协议保持未采集。
+每条trace独立展示，切换trace不借用另一条或用量行的值；旧JSON缺字段与未覆盖协议保持未采集。
 新字段随原详情30天保留及队列上限回收，混合旧写入不回填；回退旧应用可保留JSON并忽略新增字段。
-本指标尚未接入自动排名，跨协议/原生WS、分位数及会话迁移风险仍按D5–D8验收。
+HTTP、WS 复用同一成功判定及计数/速度推导，不维护两套公式。WS 必须是 `kind=ws_turn`、`ttft_mode=ws_turn`、
+两个未观测 HTTP 状态为0且本轮明确成功和 completed；握手101、伪造200、未知结果不作为本轮成功。
+下游写入/flush失败、取消、断连、采集缺口、分片上限和终态后矛盾输出均不给有效缓存比例或速度；
+透传在终态写入返回后同时复核原单一入站读取者的离线信号，缓冲写返回成功不能覆盖已经确认的断连；原用量 drain 与结算回调不改写。
+终态信封和输出项状态矛盾时，缓存计数也标 `invalid_terminal`，不由事件名覆盖失败状态。
+WS 的输出阶段范围为 `physical_websocket_turn_responses_text_at_parser`，只对本轮完整文本和明确推理扣除估算，
+既有 HTTP→WS 的流式/非流式渲染也按真实物理 WS 观测；不是非流式客户端接收速率。
+请求详情按实际 scope 区分 HTTP 最终尝试和 WS 单轮，未知/不匹配范围隐藏估算，不将未采集显示为0。
+本指标尚未接入自动排名，跨协议可比性、分位数及会话迁移风险仍按D5–D8验收。
 
 ### 8.2 多窗口与防抖
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,6 +42,7 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough} {
 		t.Run(mode, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
+			parsedFirstText := make(chan struct{}, 1)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				conn, err := coderws.Accept(w, r, nil)
 				if err != nil {
@@ -55,13 +57,29 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 					if turn == 3 {
 						terminal = "incomplete"
 					}
-					for _, raw := range []string{
+					cached, reasoning := 80, 20
+					if turn == 2 {
+						cached, reasoning = 0, 0
+					}
+					for index, raw := range []string{
 						fmt.Sprintf(`{"type":"response.created","response":{"id":"resp_timing_%d"}}`, turn),
 						`{"type":"response.reasoning_summary_text.delta","delta":"private-thought"}`,
 						`{"type":"response.output_text.delta","delta":"private-answer"}`,
 						`{"type":"response.output_text.delta","delta":"private-answer"}`,
-						fmt.Sprintf(`{"type":"response.%s","response":{"id":"resp_timing_%d","model":"gpt-5.1","status":"%s","usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":80}}}}`, terminal, turn, terminal),
+						fmt.Sprintf(`{"type":"response.%s","response":{"id":"resp_timing_%d","model":"gpt-5.1","status":"%s","output":[{"type":"message","content":[{"type":"output_text","text":"private-answer"}]}],"usage":{"input_tokens":100,"output_tokens":120,"input_tokens_details":{"cached_tokens":%d},"output_tokens_details":{"reasoning_tokens":%d}}}}`, terminal, turn, terminal, cached, reasoning),
 					} {
+						if index == 3 {
+							// Downstream acknowledgement proves the first frame was
+							// parsed before this wait; wire sleep alone permits buffering.
+							select {
+							case <-parsedFirstText:
+							case <-r.Context().Done():
+								return
+							case <-time.After(3 * time.Second):
+								return
+							}
+							time.Sleep(300 * time.Millisecond)
+						}
 						if err = conn.Write(r.Context(), coderws.MessageText, []byte(raw)); err != nil {
 							return
 						}
@@ -92,11 +110,20 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 			ids := map[string]bool{}
 			for turn := 1; turn <= 3; turn++ {
 				writeOpenAIWSExecutionScopeRequest(t, client, `{"type":"response.create","model":"gpt-5.1","stream":true,"input":[{"role":"user","content":"fixture"}]}`)
+				acknowledged := false
 				for {
 					ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 					_, raw, err := client.Read(ctx)
 					cancel()
 					require.NoError(t, err)
+					var event struct {
+						Type string `json:"type"`
+					}
+					require.NoError(t, json.Unmarshal(raw, &event))
+					if event.Type == "response.output_text.delta" && !acknowledged {
+						parsedFirstText <- struct{}{}
+						acknowledged = true
+					}
 					if openAIWSPassthroughIsTerminalOutput(raw) {
 						break
 					}
@@ -106,7 +133,7 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 					require.NotNil(t, result)
 					require.NotNil(t, result.requestTiming, "ordinary WS paths must collect without smart hooks or POST middleware")
 					require.Equal(t, fmt.Sprintf("resp_timing_%d", turn), result.RequestID)
-					require.Equal(t, 10, result.Usage.OutputTokens)
+					require.Equal(t, 120, result.Usage.OutputTokens)
 				case <-time.After(3 * time.Second):
 					t.Fatal("turn result missing")
 				}
@@ -126,8 +153,18 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 					require.Equal(t, 2, *v.TextStream.Chunks)
 					if turn < 3 {
 						require.Equal(t, "observed", v.TextStream.Status)
+						require.Equal(t, "observed", v.Cache.Status)
+						require.Equal(t, turn == 1, *v.Cache.Hit)
+						require.Equal(t, "estimated", v.OutputRate.Status)
+						require.NotNil(t, v.OutputRate.TokensPerSecond)
+						require.Equal(t, "physical_websocket_turn_responses_text_at_parser", v.OutputRate.Scope)
+						require.Equal(t, v.OutputRate, *s.OutputRate)
 					} else {
 						require.Equal(t, "partial", v.TextStream.Status)
+						require.Equal(t, "partial", v.Cache.Status)
+						require.Equal(t, "partial", v.OutputRate.Status)
+						require.Nil(t, v.Cache.ReadRatio)
+						require.Nil(t, v.OutputRate.TokensPerSecond)
 					}
 				case <-time.After(3 * time.Second):
 					t.Fatal("finished turn diagnostic missing")
@@ -175,10 +212,11 @@ func TestWSTurnTimingHTTPToWSUsesPhysicalGeneration(t *testing.T) {
 	for _, stream := range []bool{true, false} {
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
 			cfg := newOpenAIWSExecutionScopeTestConfig()
-			capture := &openAIWSCaptureConn{events: [][]byte{
+			capture := &openAIWSCaptureConn{readDelays: []time.Duration{0, 0, 300 * time.Millisecond, 0}, events: [][]byte{
 				[]byte(`{"type":"response.reasoning_summary_text.delta","delta":"thought"}`),
 				[]byte(`{"type":"response.output_text.delta","delta":"answer"}`),
-				[]byte(`{"type":"response.completed","response":{"id":"resp_http_ws_timing","model":"gpt-5.1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}],"usage":{"input_tokens":10,"output_tokens":5}}}`),
+				[]byte(`{"type":"response.output_text.delta","delta":"answer"}`),
+				[]byte(`{"type":"response.completed","response":{"id":"resp_http_ws_timing","model":"gpt-5.1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":8},"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}}}`),
 			}}
 			pool := newOpenAIWSConnPool(cfg)
 			pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: capture})
@@ -203,10 +241,15 @@ func TestWSTurnTimingHTTPToWSUsesPhysicalGeneration(t *testing.T) {
 				require.NotNil(t, v.VisibleTextFirstMS)
 				require.Nil(t, v.ResponseByteFirstMS)
 				require.Equal(t, "observed", v.TextStream.Status)
+				require.Equal(t, "observed", v.Cache.Status)
+				require.InDelta(t, 0.8, *v.Cache.ReadRatio, 1e-9)
+				require.Equal(t, "estimated", v.OutputRate.Status)
+				require.NotNil(t, v.OutputRate.TokensPerSecond)
+				require.Equal(t, "physical_websocket_turn_responses_text_at_parser", v.OutputRate.Scope)
 			})
 			require.Same(t, result.requestTiming, requesttiming.UsageCollector(requesttiming.WithUsageTurn(ctx, result.requestTiming)))
 			require.Equal(t, "resp_http_ws_timing", result.RequestID)
-			require.Equal(t, 5, result.Usage.OutputTokens)
+			require.Equal(t, 120, result.Usage.OutputTokens)
 		})
 	}
 }
@@ -218,7 +261,7 @@ func TestWSTurnTimingHTTPToWSDeliveryFailures(t *testing.T) {
 			pool := newOpenAIWSConnPool(cfg)
 			pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: &openAIWSCaptureConn{events: [][]byte{
 				[]byte(`{"type":"response.output_text.delta","delta":"answer"}`),
-				[]byte(`{"type":"response.completed","response":{"id":"resp_delivery_failure","status":"completed","model":"gpt-5.1","usage":{"input_tokens":10,"output_tokens":5}}}`),
+				[]byte(`{"type":"response.completed","response":{"id":"resp_delivery_failure","status":"completed","model":"gpt-5.1","usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":8},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":0}}}}`),
 			}}})
 			defer pool.Close()
 			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &httpUpstreamRecorder{}, cache: &stubGatewayCache{}, openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector(), openaiWSPool: pool}
@@ -234,7 +277,12 @@ func TestWSTurnTimingHTTPToWSDeliveryFailures(t *testing.T) {
 			require.NotNil(t, result.requestTiming)
 			result.requestTiming.WhenFinished(func(s requesttiming.Snapshot) {
 				require.True(t, s.DownstreamError)
-				require.NotEqual(t, "observed", requesttiming.DeriveContentObservation(s).TextStream.Status)
+				v := requesttiming.DeriveContentObservation(s)
+				require.NotEqual(t, "observed", v.TextStream.Status)
+				require.Equal(t, "partial", v.Cache.Status)
+				require.Equal(t, "partial", v.OutputRate.Status)
+				require.Nil(t, v.Cache.ReadRatio)
+				require.Nil(t, v.OutputRate.TokensPerSecond)
 			})
 		})
 	}
@@ -267,6 +315,12 @@ func TestWSTurnTimingPassthroughDisconnectDoesNotPublishHealthyTurn(t *testing.T
 	require.NoError(t, err)
 	_, err = readPassthroughLifecycleFrame(t, client, time.Second)
 	require.NoError(t, err)
+	// Client acknowledgement places the second parser delta after a real
+	// output window, so an accidental success would expose cache and TPS too.
+	time.Sleep(300 * time.Millisecond)
+	upstream.Send(`{"type":"response.output_text.delta","delta":"answer"}`)
+	_, err = readPassthroughLifecycleFrame(t, client, time.Second)
+	require.NoError(t, err)
 	require.NoError(t, client.CloseNow())
 	// Wait for observed disconnect, not a sleep racing the terminal write.
 	select {
@@ -274,7 +328,7 @@ func TestWSTurnTimingPassthroughDisconnectDoesNotPublishHealthyTurn(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("ingress reader did not observe client disconnect")
 	}
-	upstream.Send(`{"type":"response.completed","response":{"id":"resp_disconnected_timing","usage":{"input_tokens":10,"output_tokens":5}}}`)
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_disconnected_timing","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":8},"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}}}`)
 	select {
 	case err := <-ended:
 		require.NoError(t, err)
@@ -283,7 +337,11 @@ func TestWSTurnTimingPassthroughDisconnectDoesNotPublishHealthyTurn(t *testing.T
 	}
 	select {
 	case s := <-diagnostics:
-		require.NotEqual(t, "observed", requesttiming.DeriveContentObservation(s).TextStream.Status)
+		v := requesttiming.DeriveContentObservation(s)
+		require.NotEqual(t, "observed", v.TextStream.Status)
+		require.Nil(t, v.Cache.ReadRatio)
+		require.Nil(t, v.OutputRate.TokensPerSecond)
+		require.True(t, s.ClientDisconnect || s.DownstreamError || s.Outcome != "success")
 	case <-time.After(time.Second):
 		t.Fatal("drained turn diagnostic missing")
 	}

@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5 Responses WS逐轮内容/账单绑定子项已验证；父项仍进行中。
+任务：D5 WS规范缓存/输出TPS与HTTP缓存SQL一致性子项已验证；父项仍进行中。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：基线d38d723；20项源码/依赖/规则清单b7a7f2df，复用原诊断表，无迁移。
-验证命令：service/计时/中间件/PG14相关race、原七类lint、六包vet、Linux build。
-验证结果：852顶层/2646含子例，0失败/跳过；lint 0 issues，vet/Linux编译退出0。
-验证来源：backend/tmp/ws-turn-timing；service/packages/postgres-pg14-final及lint-final。
-下一动作：D5 WS规范缓存/TPS、跨协议速度与迁移冷输入风险，先核对实际协议作用域和数据来源。
-尝试：4
+源码：基线b3406cc；19项源码/锁/规则清单ef174df3，原诊断表，无迁移。
+验证命令：service/计时/中间件/PG14 race；前端单测/类型/lint与浏览器；原七类lint、vet/Linux编译。
+验证结果：855/2684与前端28例通过，WS专项10轮通过；原规则lint 0 issues、vet/Linux编译0。
+验证来源：backend/tmp/ws-turn-metrics；service-verified、packages-current、postgres-pg14-complete及browser-final。
+下一动作：D5其他协议规范计数、跨协议可比性与迁移冷输入风险；不从兼容计费用量推断。
+尝试：5
 阻塞：D2 unknown待供应商关联契约；生产排空待管理员；历史拒删资源待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 四协议HTTP与WS逐轮已验；本轮852/2646 race、四包lint 0、六包vet/Linux编译通过；WS缓存/TPS、跨协议速度与迁移冷输入待验 |
+| D5 | in_progress | 四协议HTTP、WS逐轮/缓存/TPS、SQL一致性已验；855/2684 race、前端28例和浏览器通过；其他协议规范计数、跨协议可比性与迁移冷输入待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -66,11 +66,11 @@
 
 ## 下一项工作
 
-D5 WS逐轮内容/账单绑定、下游失败与原协议回归已验，原规则lint/vet/Linux编译通过；本地交付，不推送/部署。继续WS规范缓存/TPS、跨协议速度与迁移冷输入。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；外部依赖见下文。视频查询转发原节点，生成/双预算/结算不迁移；336回退须排空并保留账单。未改线上策略。
+D5 WS规范缓存/输出TPS、断连竞态与HTTP缓存SQL一致性已验；本地交付，不推送/部署。继续其他协议规范计数、跨协议可比性与迁移冷输入。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验。视频查询转发原节点，生成/双预算/结算不迁移；336回退须排空并保留账单。未改线上策略。
 
 ## 外部等待与清理
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 本任务的 `frontend/tmp/availability-coverage-ui/` 临时界面夹具删除被自动审批拒绝（blocked by policy）；保留原位，由工作区拥有者处理，不尝试绕过。
-- 自动审批拒删的历史资源及`backend/tmp/cache-observability/`夹具/缓存保留。本轮删除`backend/tmp/output-rate/browser-fixture.mjs`和`vite-cache`也被自动审批以`blocked by policy`拒绝；原位保留、不提交，由工作区拥有者手动处理。浏览器及UI服务已关闭，大小见DECISIONS。
+- 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`及`backend/tmp/output-rate/`中的旧夹具/缓存；由工作区拥有者处理，详见DECISIONS。
+- 本轮`backend/tmp/ws-turn-metrics/vite-cache`精确删除也被执行策略拦截；11文件/2886386bytes保留待拥有者手动删除，不换工具重试。浏览器及UI服务已关闭；历史PNG原位保留、不提交。

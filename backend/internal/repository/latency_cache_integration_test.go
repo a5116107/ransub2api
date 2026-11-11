@@ -122,6 +122,15 @@ func TestLatencyCacheCanonicalCountersAndBoundaries(t *testing.T) {
 		}},
 		{"missing_read", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Attempts[0].CacheUsage.Status = "not_reported" }},
 		{"legacy_zero_is_unknown", "unknown", "none", func(f *latencyCacheFixture) { f.trace.Attempts[0].CacheUsage = nil }},
+		{"ws_legacy_positive_is_unknown", "unknown", "none", func(f *latencyCacheFixture) {
+			f.usage.InputTokens, f.usage.CacheReadTokens = 5, 95
+			f.trace.TTFTMode = "ws_turn"
+			f.trace.Attempts[0].CacheUsage = nil
+		}},
+		{"ws_kind_legacy_positive_is_unknown", "unknown", "none", func(f *latencyCacheFixture) {
+			f.usage.InputTokens, f.usage.CacheReadTokens = 5, 95
+			f.trace.Attempts[0].Kind, f.trace.Attempts[0].CacheUsage = "ws_turn", nil
+		}},
 		{"counter_mismatch", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.usage.InputTokens++ }},
 		{"negative_counter", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Attempts[0].CacheUsage.ReadTokens = -1 }},
 		{"excess_read", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Attempts[0].CacheUsage.ReadTokens = 101 }},
@@ -134,6 +143,15 @@ func TestLatencyCacheCanonicalCountersAndBoundaries(t *testing.T) {
 		{"failed_terminal", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Attempts[0].Terminal = "failed" }},
 		{"http_error", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Attempts[0].Status = 502 }},
 		{"request_error", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Status = 502 }},
+		{"failed_outcome", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Outcome = "failed" }},
+		{"failed_request_terminal", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Terminal = "incomplete" }},
+		{"ws_mode_with_http_status", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.TTFTMode = "ws_turn" }},
+		{"invalid_stream", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) {
+			f.trace.Attempts[0].TextStream = &requesttiming.TextStreamTiming{Invalid: true}
+		}},
+		{"truncated_stream", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) {
+			f.trace.Attempts[0].TextStream = &requesttiming.TextStreamTiming{Truncated: true}
+		}},
 		{"canceled", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.Canceled = true }},
 		{"disconnected", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.ClientDisconnect = true }},
 		{"downstream_error", "unknown", "unverified_terminal_usage", func(f *latencyCacheFixture) { f.trace.DownstreamError = true }},
@@ -144,12 +162,19 @@ func TestLatencyCacheCanonicalCountersAndBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLatencyCacheFixture(t)
 			tc.edit(&f)
-			f.insert(t)
+			id := f.insert(t)
 			groups, err := f.repo.ReadLatencyReport(t.Context(), service.LatencyReportFilter{Start: f.usage.CreatedAt.Add(-time.Minute), End: time.Now().UTC(), UserID: f.usage.UserID})
 			require.NoError(t, err)
 			require.Len(t, groups, 1)
 			require.Equal(t, tc.bucket, groups[0].CacheBucket)
 			require.Equal(t, tc.source, groups[0].CacheSource)
+			switch tc.name {
+			case "failed_outcome", "failed_request_terminal", "ws_mode_with_http_status", "invalid_stream", "truncated_stream":
+				items, err := f.repo.ReadUsageContentTimings(t.Context(), []int64{id})
+				require.NoError(t, err)
+				require.NotEqual(t, "observed", items[id].Cache.Status, "the detail projection and HTTP cohort must both exclude unhealthy evidence")
+				require.Nil(t, items[id].Cache.ReadRatio)
+			}
 		})
 	}
 }
