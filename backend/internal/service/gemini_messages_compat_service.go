@@ -1036,7 +1036,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	clientDisconnect := false
 	streamFinished := false
 	if req.Stream {
-		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel)
+		streamRes, err := s.handleStreamingResponse(c, resp, startTime, originalModel, account, requestID)
 		if err != nil {
 			return nil, err
 		}
@@ -1046,10 +1046,12 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		streamFinished = streamRes.finished
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, _, err := collectGeminiSSEObserved(resp.Body, true, nil, requesttiming.ResponseContext(ctx, resp))
+			observed := s.newGeminiResponseSignalObserver(ctx, account, resp)
+			collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, true, observed.observePayload, requesttiming.ResponseContext(ctx, resp))
 			if err != nil {
 				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
 			}
+			s.finalizeGeminiSSESignal(c, account, false, requestID, observed, stats.dataEvents > 0, stats.nonemptyDataEvents > 0, stats.fallback)
 			collectedBytes, _ := json.Marshal(collected)
 			upstreamResponseModelObserverFromContext(c).ObserveGemini(collectedBytes)
 			observeGeminiImageOutputs(c, collectedBytes)
@@ -1060,7 +1062,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				usage = usageObj
 			}
 		} else {
-			usage, err = s.handleNonStreamingResponse(c, resp, originalModel)
+			usage, err = s.handleNonStreamingResponse(c, resp, originalModel, account, requestID)
 			if err != nil {
 				return nil, err
 			}
@@ -1579,11 +1581,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	} else {
 		if useUpstreamStream {
 			observed := s.newGeminiResponseSignalObserver(ctx, account, resp)
-			collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, isOAuth, func(rawBytes []byte) {
-				if sig, ok := detectGeminiResponseSignal(rawBytes); ok {
-					observed.observe(sig)
-				}
-			}, requesttiming.ResponseContext(ctx, resp))
+			collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, isOAuth, observed.observePayload, requesttiming.ResponseContext(ctx, resp))
 			if err != nil {
 				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream stream")
 			}
@@ -2156,11 +2154,12 @@ type geminiStreamResult struct {
 	finished         bool // 断开前已收到上游 finishReason
 }
 
-func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, originalModel string) (*ClaudeUsage, error) {
+func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, originalModel string, account *Account, upstreamRequestID string) (*ClaudeUsage, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
 	}
+	s.observeGeminiJSONSignal(c, resp, account, upstreamRequestID, body)
 
 	unwrappedBody, err := unwrapGeminiResponse(body)
 	if err != nil {
@@ -2185,9 +2184,12 @@ func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context,
 	return usage, nil
 }
 
-func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*geminiStreamResult, error) {
+func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, account *Account, upstreamRequestID string) (*geminiStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
+	observed := s.newGeminiResponseSignalObserver(timing.ctx, account, resp)
+	sawDataEvent, sawResponseContent := false, false
+	fallback := &geminiSSEFallbackBody{}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -2252,6 +2254,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 		timing.observeTimingLine(strings.TrimRight(line, "\r\n"))
 
 		if !strings.HasPrefix(line, "data:") {
+			fallback.AddLine(strings.TrimRight(line, "\r\n"))
 			if errors.Is(err, io.EOF) {
 				break
 			}
@@ -2265,6 +2268,11 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 			continue
 		}
 
+		sawDataEvent = true
+		observed.observePayload([]byte(payload))
+		if !isGeminiEmptyResponseBody([]byte(payload)) {
+			sawResponseContent = true
+		}
 		unwrappedBytes, err := unwrapGeminiResponse([]byte(payload))
 		if err != nil {
 			continue
@@ -2483,6 +2491,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 		}
 	}
 
+	s.finalizeGeminiSSESignal(c, account, true, upstreamRequestID, observed, sawDataEvent, sawResponseContent, fallback)
 	if openBlockIndex >= 0 {
 		writeSSE(c.Writer, "content_block_stop", map[string]any{
 			"type":  "content_block_stop",
@@ -2873,7 +2882,7 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 		return nil, err
 	}
 	requesttiming.GeminiContent(responseTimingContext(c, resp), respBody, false)
-	sig, hasSignal := detectGeminiResponseSignalInBody(respBody)
+	s.observeGeminiJSONSignal(c, resp, account, upstreamRequestID, respBody)
 
 	if isOAuth {
 		unwrappedBody, uwErr := unwrapGeminiResponse(respBody)
@@ -2887,14 +2896,6 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 	}
 	observer.ObserveGemini(respBody)
 	observeGeminiImageOutputs(c, respBody)
-	observed := s.newGeminiResponseSignalObserver(responseTimingContext(c, resp), account, resp)
-	if hasSignal {
-		observed.observe(sig)
-		s.markGeminiResponseSignal(c, account, sig, false, upstreamRequestID)
-	} else if isGeminiEmptyResponseBody(respBody) {
-		observed.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
-		s.markGeminiEmptyResponse(c, account, false, upstreamRequestID)
-	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -2985,9 +2986,7 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 					}
 
 					sawDataEvent = true
-					if sig, ok := detectGeminiResponseSignal([]byte(payload)); ok {
-						observed.observe(sig)
-					}
+					observed.observePayload([]byte(payload))
 					if !isGeminiEmptyResponseBody(rawBytes) {
 						sawResponseContent = true
 					}

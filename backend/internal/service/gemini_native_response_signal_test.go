@@ -733,56 +733,190 @@ func TestGeminiForwardNative_AvailabilityCanceledEmptyDoesNotFault(t *testing.T)
 	}
 }
 
-func TestGeminiForwardNative_AvailabilityFaultBeforeStreamClosure(t *testing.T) {
-	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}\n\n")
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Error("test server has no HTTP flusher")
-			return
-		}
-		flusher.Flush()
-		select {
-		case <-release:
-		case <-r.Context().Done():
-		}
-	}))
-	t.Cleanup(server.Close)
-	defer close(release)
-	svc := newGeminiSignalService("", "")
-	svc.cfg = rawChatCompletionsTestConfig()
-	svc.httpUpstream = &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
-		return server.Client().Do(req)
-	}}
-	account := geminiSignalTestAccount()
-	account.Credentials["base_url"] = server.URL
-	repo := &geminiAvailabilityFaultRepo{signal: make(chan struct{}, 1)}
-	svc.rateLimitService.qualityTrigger = &quality5xxTrigger{availability: repo, immediate: repo}
-	c, rec := newGeminiNativeTestContext(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	c.Request = c.Request.WithContext(ctx)
-	done := make(chan error, 1)
-	go func() {
-		_, err := svc.ForwardNative(ctx, c, account, "gemini-3.7-flash", "streamGenerateContent", true, geminiSignalTestRequest())
-		done <- err
-	}()
-	select {
-	case <-repo.signal:
-		require.EqualValues(t, 1, repo.availability.Load())
-		require.EqualValues(t, 1, repo.quality.Load())
-	case <-time.After(2 * time.Second):
-		t.Error("the explicit upstream fault must invalidate the old pass before the connection closes")
+func TestGeminiCompatAvailabilitySemanticFaults(t *testing.T) {
+	for _, entry := range []string{"messages", "chat"} {
+		t.Run(entry, func(t *testing.T) {
+			for _, mode := range []struct {
+				name          string
+				stream, oauth bool
+			}{
+				{"json", false, false},
+				{"stream", true, false},
+				{"oauth_aggregate", false, true},
+				{"oauth_stream", true, true},
+			} {
+				t.Run(mode.name, func(t *testing.T) {
+					for _, tc := range []struct {
+						name                  string
+						chunks                []string
+						availability, quality int64
+					}{
+						{"service", []string{`{"error":{"code":503,"status":"UNAVAILABLE"}}`}, 1, 1},
+						{"authentication", []string{`{"error":{"code":401}}`}, 1, 0},
+						{"quota", []string{`{"error":{"code":429}}`}, 1, 0},
+						{"timeout", []string{`{"error":{"code":408}}`}, 1, 0},
+						{"known_status", []string{`{"error":{"status":"UNAVAILABLE"}}`}, 1, 1},
+						{"policy", []string{`{"promptFeedback":{"blockReason":"SAFETY"}}`}, 0, 0},
+						{"request", []string{`{"error":{"code":400}}`}, 0, 0},
+						{"unknown", []string{`{"error":{"message":"fixture"}}`}, 0, 0},
+						{"duplicate", []string{`{"error":{"code":503,"code":400}}`}, 0, 0},
+						{"empty", []string{`{}`}, 1, 0},
+						{"empty_candidates", []string{`{"candidates":[]}`}, 1, 0},
+						{"answer", []string{`{"candidates":[{"content":{"parts":[{"text":"fixture answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1}}`}, 0, 0},
+						{"repeated", []string{`{"error":{"code":503}}`, `{"error":{"code":503}}`}, 1, 1},
+						{"availability_then_quality", []string{`{"error":{"code":401}}`, `{"error":{"code":503}}`}, 2, 1},
+						{"empty_then_answer", []string{`{}`, `{"candidates":[{"content":{"parts":[{"text":"fixture answer"}]},"finishReason":"STOP"}]}`}, 0, 0},
+						{"heartbeat", nil, 1, 0},
+					} {
+						upstreamStream := mode.stream || mode.oauth
+						if !upstreamStream && len(tc.chunks) != 1 {
+							continue
+						}
+						t.Run(tc.name, func(t *testing.T) {
+							for _, probe := range []bool{false, true} {
+								ctx := t.Context()
+								if probe {
+									ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+								}
+								contentType := "application/json"
+								upstreamBody := ""
+								if upstreamStream {
+									contentType = "text/event-stream"
+									upstreamBody = ": keepalive\n\n"
+								}
+								for _, payload := range tc.chunks {
+									if mode.oauth {
+										payload = `{"response":` + payload + `}`
+									}
+									if upstreamStream {
+										upstreamBody += "data: " + payload + "\n\n"
+									} else {
+										upstreamBody = payload
+									}
+								}
+								svc := newGeminiSignalService(contentType, upstreamBody)
+								repo := &geminiAvailabilityFaultRepo{}
+								svc.rateLimitService.qualityTrigger = &quality5xxTrigger{availability: repo, immediate: repo}
+								account := geminiSignalTestAccount()
+								if mode.oauth {
+									svc.tokenProvider = &GeminiTokenProvider{}
+									account.Type = AccountTypeOAuth
+									account.Credentials["access_token"], account.Credentials["project_id"] = "fixture-token", "fixture-project"
+								}
+								body, err := json.Marshal(map[string]any{"model": "gemini-3.7-flash", "max_tokens": 16, "stream": mode.stream, "messages": []any{map[string]any{"role": "user", "content": "fixture"}}})
+								require.NoError(t, err)
+								c, rec := newGeminiNativeTestContext(t)
+								apiPath, forward := "/v1/messages", svc.Forward
+								if entry == "chat" {
+									apiPath, forward = "/v1/chat/completions", svc.ForwardAsChatCompletions
+								}
+								c.Request = httptest.NewRequest(http.MethodPost, apiPath, bytes.NewReader(body)).WithContext(ctx)
+								result, err := forward(ctx, c, account, body)
+								require.NoError(t, err)
+								require.NotNil(t, result)
+								require.Equal(t, http.StatusOK, rec.Code)
+								require.Equal(t, "gemini-3.7-flash", result.Model)
+								if mode.stream {
+									if entry == "chat" {
+										require.Contains(t, rec.Body.String(), "data: [DONE]")
+									} else {
+										require.Contains(t, rec.Body.String(), "event: message_stop")
+									}
+								} else {
+									var message struct {
+										Type   string `json:"type"`
+										Object string `json:"object"`
+									}
+									require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &message))
+									if entry == "chat" {
+										require.Equal(t, "chat.completion", message.Object)
+									} else {
+										require.Equal(t, "message", message.Type)
+									}
+								}
+								if tc.name == "answer" {
+									require.Equal(t, 3, result.Usage.InputTokens)
+									require.Equal(t, 1, result.Usage.OutputTokens)
+								}
+								wantAvailability, wantQuality := tc.availability, tc.quality
+								if probe {
+									wantAvailability, wantQuality = 0, 0
+								}
+								require.Equal(t, wantAvailability, repo.availability.Load(), "probe=%t", probe)
+								require.Equal(t, wantQuality, repo.quality.Load(), "probe=%t", probe)
+							}
+						})
+					}
+				})
+			}
+		})
 	}
-	cancel()
-	select {
-	case err := <-done:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(5 * time.Second):
-		t.Fatal("native forwarding did not finish after cancellation")
+}
+
+func TestGeminiForward_AvailabilityFaultBeforeStreamClosure(t *testing.T) {
+	for _, entry := range []string{"native", "messages", "chat"} {
+		t.Run(entry, func(t *testing.T) {
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}\n\n")
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					t.Error("test server has no HTTP flusher")
+					return
+				}
+				flusher.Flush()
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			t.Cleanup(server.Close)
+			defer close(release)
+			svc := newGeminiSignalService("", "")
+			svc.cfg = rawChatCompletionsTestConfig()
+			svc.httpUpstream = &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+				return server.Client().Do(req)
+			}}
+			account := geminiSignalTestAccount()
+			account.Credentials["base_url"] = server.URL
+			repo := &geminiAvailabilityFaultRepo{signal: make(chan struct{}, 1)}
+			svc.rateLimitService.qualityTrigger = &quality5xxTrigger{availability: repo, immediate: repo}
+			c, rec := newGeminiNativeTestContext(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			c.Request = c.Request.WithContext(ctx)
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				if entry == "native" {
+					_, err = svc.ForwardNative(ctx, c, account, "gemini-3.7-flash", "streamGenerateContent", true, geminiSignalTestRequest())
+				} else {
+					body := []byte(`{"model":"gemini-3.7-flash","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"fixture"}]}`)
+					forward := svc.Forward
+					if entry == "chat" {
+						forward = svc.ForwardAsChatCompletions
+					}
+					_, err = forward(ctx, c, account, body)
+				}
+				done <- err
+			}()
+			select {
+			case <-repo.signal:
+				require.EqualValues(t, 1, repo.availability.Load())
+				require.EqualValues(t, 1, repo.quality.Load())
+			case <-time.After(2 * time.Second):
+				t.Error("the explicit upstream fault must invalidate the old pass before the connection closes")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(5 * time.Second):
+				t.Fatal("native forwarding did not finish after cancellation")
+			}
+			require.Equal(t, http.StatusOK, rec.Code)
+		})
 	}
-	require.Equal(t, http.StatusOK, rec.Code)
 }

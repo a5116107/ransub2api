@@ -99,9 +99,9 @@ func TestGeminiTimingLoopback(t *testing.T) {
 				case "native":
 					_, err = svc.handleNativeStreamingResponse(c, resp, time.Now(), true, account, "fixture")
 				case "messages":
-					_, err = svc.handleStreamingResponse(c, resp, time.Now(), "fixture")
+					_, err = svc.handleStreamingResponse(c, resp, time.Now(), "fixture", account, "fixture")
 				case "chat":
-					_, err = svc.handleChatCompletionsStreamingResponseFromGemini(c, resp, time.Now(), "fixture", true, true)
+					_, err = svc.handleChatCompletionsStreamingResponseFromGemini(c, resp, time.Now(), "fixture", true, true, account, "fixture")
 				case "buffered":
 					_, _, _, err = collectGeminiSSEObserved(resp.Body, true, nil, requesttiming.ResponseContext(ctx, resp))
 				}

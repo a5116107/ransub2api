@@ -260,7 +260,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	clientDisconnect := false
 	streamFinished := false
 	if clientStream {
-		streamRes, err := s.handleChatCompletionsStreamingResponseFromGemini(c, resp, startTime, originalModel, account.Type == AccountTypeOAuth, includeUsage)
+		streamRes, err := s.handleChatCompletionsStreamingResponseFromGemini(c, resp, startTime, originalModel, account.Type == AccountTypeOAuth, includeUsage, account, requestID)
 		if err != nil {
 			return nil, err
 		}
@@ -269,10 +269,12 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		clientDisconnect = streamRes.clientDisconnect
 		streamFinished = streamRes.finished
 	} else if useUpstreamStream {
-		collected, usageObj, _, err := collectGeminiSSEObserved(resp.Body, account.Type == AccountTypeOAuth, nil, requesttiming.ResponseContext(ctx, resp))
+		observed := s.newGeminiResponseSignalObserver(ctx, account, resp)
+		collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, account.Type == AccountTypeOAuth, observed.observePayload, requesttiming.ResponseContext(ctx, resp))
 		if err != nil {
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
 		}
+		s.finalizeGeminiSSESignal(c, account, false, requestID, observed, stats.dataEvents > 0, stats.nonemptyDataEvents > 0, stats.fallback)
 		collectedBytes, _ := json.Marshal(collected)
 		chatResp, usageObj2, err := geminiResponseToChatCompletions(collected, originalModel, collectedBytes, usageObj)
 		if err != nil {
@@ -281,7 +283,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		c.JSON(http.StatusOK, chatResp)
 		usage = usageObj2
 	} else {
-		usageResp, err := s.handleChatCompletionsNonStreamingResponseFromGemini(c, resp, originalModel, account.Type == AccountTypeOAuth)
+		usageResp, err := s.handleChatCompletionsNonStreamingResponseFromGemini(c, resp, originalModel, account.Type == AccountTypeOAuth, account, requestID)
 		if err != nil {
 			return nil, err
 		}
@@ -463,12 +465,15 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsNonStreamingResponseF
 	resp *http.Response,
 	originalModel string,
 	isOAuth bool,
+	account *Account,
+	upstreamRequestID string,
 ) (*ClaudeUsage, error) {
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
 	}
 	requesttiming.GeminiContent(responseTimingContext(c, resp), respBody, false)
+	s.observeGeminiJSONSignal(c, resp, account, upstreamRequestID, respBody)
 	if isOAuth {
 		if unwrappedBody, uwErr := unwrapGeminiResponse(respBody); uwErr == nil {
 			respBody = unwrappedBody
@@ -525,9 +530,14 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	originalModel string,
 	isOAuth bool,
 	includeUsage bool,
+	account *Account,
+	upstreamRequestID string,
 ) (*geminiStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
+	observed := s.newGeminiResponseSignalObserver(timing.ctx, account, resp)
+	sawDataEvent, sawResponseContent := false, false
+	fallback := &geminiSSEFallbackBody{}
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
@@ -641,6 +651,11 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 				if payload != "" && payload != "[DONE]" {
 					rawBytes := []byte(payload)
+					sawDataEvent = true
+					observed.observePayload(rawBytes)
+					if !isGeminiEmptyResponseBody(rawBytes) {
+						sawResponseContent = true
+					}
 					if isOAuth {
 						if innerBytes, uwErr := unwrapGeminiResponse(rawBytes); uwErr == nil {
 							rawBytes = innerBytes
@@ -804,6 +819,9 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 			}
 		}
 
+		if !strings.HasPrefix(line, "data:") {
+			fallback.AddLine(strings.TrimRight(line, "\r\n"))
+		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -817,6 +835,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 		}
 	}
 
+	s.finalizeGeminiSSESignal(c, account, true, upstreamRequestID, observed, sawDataEvent, sawResponseContent, fallback)
 	if closeOpenBlock() {
 		return streamResult(), nil
 	}

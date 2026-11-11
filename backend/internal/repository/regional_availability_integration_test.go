@@ -66,17 +66,27 @@ func (u *geminiAvailabilitySQLUpstream) DoWithTLS(req *http.Request, proxyURL st
 
 func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 	for _, tc := range []struct {
-		name, payload string
-		fault         bool
+		name, payload, entry string
+		fault                bool
 	}{
-		{"service", `{"error":{"code":503,"status":"UNAVAILABLE"}}`, true},
-		{"quota", `{"error":{"code":429}}`, true},
-		{"authentication", `{"error":{"code":401}}`, true},
-		{"empty", `{}`, true},
-		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, false},
-		{"unknown", `{"error":{"message":"fixture"}}`, false},
+		{"service", `{"error":{"code":503,"status":"UNAVAILABLE"}}`, "native", true},
+		{"quota", `{"error":{"code":429}}`, "native", true},
+		{"authentication", `{"error":{"code":401}}`, "native", true},
+		{"empty", `{}`, "native", true},
+		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "native", false},
+		{"unknown", `{"error":{"message":"fixture"}}`, "native", false},
+		{"service", `{"error":{"code":503}}`, "messages", true},
+		{"quota", `{"error":{"code":429}}`, "messages", true},
+		{"empty", `{}`, "messages", true},
+		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "messages", false},
+		{"unknown", `{"error":{"message":"fixture"}}`, "messages", false},
+		{"service", `{"error":{"code":503}}`, "chat", true},
+		{"quota", `{"error":{"code":429}}`, "chat", true},
+		{"empty", `{}`, "chat", true},
+		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "chat", false},
+		{"unknown", `{"error":{"message":"fixture"}}`, "chat", false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.entry+"/"+tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			var sends atomic.Int32
 			var fail atomic.Bool
@@ -110,7 +120,13 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 			tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
 			probeCfg := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ParallelCount: 1, Availability: &service.AvailabilityPolicy{ValidForSeconds: 120}}
 			next := time.Now().UTC().Add(-time.Minute)
-			plan, err := plans.Create(ctx, &service.ScheduledTestPlan{AccountID: accountID, ModelID: "gemini-3.7-flash", Enabled: true, CronExpression: "0 * * * *", MaxResults: 10, NextRunAt: &next, PelicanConfig: probeCfg})
+			model := "gemini-3.7-flash"
+			if tc.entry == "chat" {
+				// Streaming Chat adds includeThoughts for thinking models. This
+				// fixture uses a model without that option to match the real probe.
+				model = "gemini-2.0-flash"
+			}
+			plan, err := plans.Create(ctx, &service.ScheduledTestPlan{AccountID: accountID, ModelID: model, Enabled: true, CronExpression: "0 * * * *", MaxResults: 10, NextRunAt: &next, PelicanConfig: probeCfg})
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, plans.Delete(context.Background(), plan.ID)) })
 			probeAndPublish := func() []byte {
@@ -141,18 +157,29 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 				return bytes.Clone(upstream.body)
 			}
 			body := probeAndPublish()
+			compatBody, err := json.Marshal(map[string]any{"model": model, "stream": true, "max_tokens": 1024, "messages": []any{map[string]any{"role": "user", "content": "Return 21"}}})
+			require.NoError(t, err)
 			forward := func() error {
 				t.Helper()
 				account, err := accounts.GetByID(ctx, accountID)
 				require.NoError(t, err)
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
-				c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-3.7-flash:streamGenerateContent", bytes.NewReader(body)).WithContext(ctx)
-				_, err = gateway.ForwardNative(ctx, c, account, plan.ModelID, "streamGenerateContent", true, body)
+				switch tc.entry {
+				case "native":
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/"+model+":streamGenerateContent", bytes.NewReader(body)).WithContext(ctx)
+					_, err = gateway.ForwardNative(ctx, c, account, plan.ModelID, "streamGenerateContent", true, body)
+				case "messages":
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(compatBody)).WithContext(ctx)
+					_, err = gateway.Forward(ctx, c, account, compatBody)
+				case "chat":
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(compatBody)).WithContext(ctx)
+					_, err = gateway.ForwardAsChatCompletions(ctx, c, account, compatBody)
+				}
 				return err
 			}
 			require.NoError(t, forward(), "the real probe must authorize the matching generation route")
 			fail.Store(true)
-			require.NoError(t, forward(), "native forwarding must preserve the in-band response")
+			require.NoError(t, forward(), "forwarding must preserve the existing response conversion")
 			report, err := plans.ReadAvailability(ctx, plan.ID)
 			require.NoError(t, err)
 			before := sends.Load()

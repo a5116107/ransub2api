@@ -1444,7 +1444,7 @@ func TestGeminiMessagesHandleStreamingResponse_ClosesToolBlockBeforeText(t *test
 	c, _ := gin.CreateTestContext(rec)
 
 	svc := &GeminiMessagesCompatService{}
-	result, err := svc.handleStreamingResponse(c, resp, time.Now(), "claude-3-5-sonnet")
+	result, err := svc.handleStreamingResponse(c, resp, time.Now(), "claude-3-5-sonnet", nil, "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 

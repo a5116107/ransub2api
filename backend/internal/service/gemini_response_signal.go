@@ -225,6 +225,23 @@ func (o *geminiResponseSignalObserver) observe(sig geminiResponseSignal) {
 	o.availabilityObserved = true
 }
 
+func (o *geminiResponseSignalObserver) observePayload(payload []byte) {
+	if sig, ok := detectGeminiResponseSignal(payload); ok {
+		o.observe(sig)
+	}
+}
+
+func (s *GeminiMessagesCompatService) observeGeminiJSONSignal(c *gin.Context, response *http.Response, account *Account, upstreamRequestID string, body []byte) {
+	observed := s.newGeminiResponseSignalObserver(responseTimingContext(c, response), account, response)
+	if sig, ok := detectGeminiResponseSignalInBody(body); ok {
+		observed.observe(sig)
+		s.markGeminiResponseSignal(c, account, sig, false, upstreamRequestID)
+	} else if isGeminiEmptyResponseBody(body) {
+		observed.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
+		s.markGeminiEmptyResponse(c, account, false, upstreamRequestID)
+	}
+}
+
 // geminiPrimaryCandidate 返回首候选：index 缺省或为 0 的候选。多候选流里其它 index 的候选不参与判定。
 func geminiPrimaryCandidate(payload []byte) gjson.Result {
 	candidates := gjson.GetBytes(payload, "candidates")

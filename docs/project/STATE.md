@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3 Gemini原生故障闭环已验，接续兼容入口。
+任务：D3 Gemini三入口故障闭环已验，接续Antigravity带内故障核对。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线988fa6a；8项Go输入e3e9ba7fef4149d5。
-验证命令：Gemini/可用性service race、真实SQL恢复及vet/lint/Linux构建。
-验证结果：364/1995复验PASS；四包lint0 issues，vet/Linux退出0。
-验证来源：backend/tmp/protocol-cache/scheduling-gemini-semantic-*。
-下一动作：提交原生修复，复用原观察器补齐兼容JSON/SSE/聚合。
-尝试：25
+源码：基线7b1eb25；8项Go输入71731d465f494328。
+验证命令：三入口Gemini/service race、SQL恢复及vet/lint/Linux构建。
+验证结果：service342/2031、SQL51/143 PASS；四包vet/lint零诊断，Linux同源复用。
+验证来源：backend/tmp/protocol-cache/scheduling-gemini-compat-*。
+下一动作：本地提交三入口修复，核对Antigravity业务带内故障是否撤销旧通过。
+尝试：27
 阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -32,7 +32,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新状态/托管轮转、区域v2及HTTP/WS/Messages/Gemini/Antigravity文本已验；Gemini原生故障/SQL恢复364/1995、四包lint0/vet/Linux通过；兼容及其他能力待验 |
+| D3 | in_progress | 最新状态/托管轮转、区域v2及HTTP/WS/Messages/Gemini/Antigravity文本已验；Gemini三入口/16类SQL恢复393/2174、四包vet/lint零诊断和同源Linux构建已验；其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
@@ -58,7 +58,7 @@
 ## 工作区与验证约定
 
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
-- 使用Go1.27.3、原go.mod和lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 6GiB/18分钟。
+- 使用Go1.27.3、原go.mod和lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 8GiB/18分钟。
 - 真实Redis竞争测试按PATH启动；本轮前置已有`H:/Root/tools/redis/5.0.14.1`，系统Redis3缺`redis.replicate_commands`。其余夹具使用已有Docker Redis7；integration默认将自己创建的隔离PostgreSQL交给区域夹具，不打印DSN。
 - 图片测试隔离DATA_DIR并关闭relay；历史12个PNG/1164bytes保留、不提交，精确拒删记录见DECISIONS。
 - 协议/区域/Live验收边界和失败历史见DECISIONS；历史结果不代替新源码或生产验收。区域竞争使用就绪SQL池。
