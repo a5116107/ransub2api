@@ -157,16 +157,17 @@ func TestHandleCCStreamingFromAnthropic_PingFlushesImmediately(t *testing.T) {
 	require.Equal(t, 17, usage.TotalTokens)
 }
 
-func TestHandleCCStreamingFromAnthropic_PingDoesNotSetFirstToken(t *testing.T) {
+func TestHandleCCStreamingFromAnthropic_PingOnlyStreamIsIncomplete(t *testing.T) {
 	writer := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(writer)
 	result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(
 		&http.Response{Body: io.NopCloser(strings.NewReader("event: ping\ndata: {\"type\":\"ping\"}\n\n"))},
 		context, nil, "gpt-5", "claude-sonnet-4.5", nil, time.Now(),
 	)
-	require.NoError(t, err)
-	require.Nil(t, result.FirstTokenMs)
+	require.ErrorContains(t, err, "missing message_start")
+	require.Nil(t, result)
 	require.True(t, strings.HasPrefix(writer.Body.String(), ": ping\n\n"))
+	require.NotContains(t, writer.Body.String(), "[DONE]")
 }
 
 func TestHandleCCStreamingFromAnthropic_PingWriteFailureStopsDownstream(t *testing.T) {
@@ -182,8 +183,11 @@ func TestHandleCCStreamingFromAnthropic_PingWriteFailureStopsDownstream(t *testi
 			if withUsage {
 				stream += "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_failure\",\"usage\":{\"input_tokens\":10}}}\n\n"
 			}
-			stream += "event: ping\ndata: {\"type\":\"ping\"}\n\n" +
-				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n" +
+			stream += "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+			if !withUsage {
+				stream += "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_failure\",\"usage\":{\"input_tokens\":0}}}\n\n"
+			}
+			stream += "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n" +
 				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 			result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(
 				&http.Response{Body: io.NopCloser(strings.NewReader(stream))},

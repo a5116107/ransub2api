@@ -33,7 +33,8 @@ func (s *GatewayService) ForwardAsResponses(
 	account *Account,
 	body []byte,
 	parsed *ParsedRequest,
-) (*ForwardResult, error) {
+) (result *ForwardResult, resultErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr) }()
 	startTime := time.Now()
 
 	normalizedBody, normalized, err := normalizeOpenAIResponsesLegacyIngressWithConfig(s.cfg, body)
@@ -201,7 +202,6 @@ func (s *GatewayService) ForwardAsResponses(
 	}
 
 	// 13. Handle normal response (convert Anthropic → Responses)
-	var result *ForwardResult
 	var handleErr error
 	writerSizeBeforeStream := c.Writer.Size()
 	if clientStream {
@@ -571,7 +571,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 					continue
 				}
 				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-				fmt.Fprint(c.Writer, out) //nolint:errcheck
+				if _, err := fmt.Fprint(c.Writer, out); err != nil {
+					stream.markClientDisconnected()
+					return resultWithUsage(), nil
+				}
 			}
 			c.Writer.Flush()
 		}
@@ -592,6 +595,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		// Read data line
 		dataLine, ok := stream.nextLine()
 		if !ok {
+			stream.timing.failTimingCapture()
 			break
 		}
 		payload, ok := parseAnthropicSSEField(dataLine, "data")

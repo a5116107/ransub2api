@@ -60,11 +60,12 @@ func responseTimingContext(c *gin.Context, response *http.Response) context.Cont
 // sseTimingObserver observes original parser input without altering forwarded
 // lines. Responses, Messages and Gemini share this bounded event observer.
 type sseTimingObserver struct {
-	ctx             context.Context
-	protocol        string
-	timingEventType string
-	timingData      []byte
-	timingDiscard   bool
+	ctx                context.Context
+	protocol           string
+	timingEventType    string
+	timingEventPending bool
+	timingData         []byte
+	timingDiscard      bool
 }
 
 func (s *sseTimingObserver) failTimingCapture() {
@@ -78,6 +79,7 @@ func (s *sseTimingObserver) resetTimingEvent() {
 		requesttiming.Stage(s.ctx, "typed_content_truncated")
 	}
 	s.timingEventType = ""
+	s.timingEventPending = false
 	s.timingData = nil
 	s.timingDiscard = false
 }
@@ -96,6 +98,8 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 	if eventType, ok := extractOpenAISSEEventLine(line); ok {
 		s.resetTimingEvent()
 		s.timingEventType = eventType
+		s.timingEventPending = s.protocol == "messages" &&
+			(strings.HasPrefix(eventType, "message_") || strings.HasPrefix(eventType, "content_block_") || eventType == "message" || eventType == "error")
 		return
 	}
 	data, ok := extractOpenAISSEDataLine(line)
@@ -123,6 +127,7 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 	if !json.Valid(s.timingData) {
 		return
 	}
+	s.timingEventPending = false
 	requesttiming.Stage(s.ctx, "sse_parsed_first")
 	if s.protocol == "gemini" {
 		requesttiming.GeminiContent(s.ctx, s.timingData, true)

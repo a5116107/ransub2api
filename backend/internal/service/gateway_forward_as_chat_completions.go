@@ -31,7 +31,8 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	account *Account,
 	body []byte,
 	parsed *ParsedRequest,
-) (*ForwardResult, error) {
+) (result *ForwardResult, resultErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr) }()
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request
@@ -190,7 +191,6 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 	// 13. Handle normal response
 	// Read Anthropic SSE → convert to Responses events → convert to CC format
-	var result *ForwardResult
 	var handleErr error
 	writerSizeBeforeStream := c.Writer.Size()
 	if clientStream {
@@ -418,6 +418,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 
 		dataLine, ok := stream.nextLine()
 		if !ok {
+			stream.timing.failTimingCapture()
 			break
 		}
 		payload, ok := extractOpenAISSEDataLine(dataLine)
@@ -462,16 +463,25 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	for _, resEvt := range finalResEvents {
 		ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
 		for _, chunk := range ccChunks {
-			writeChunk(chunk) //nolint:errcheck
+			if writeChunk(chunk) {
+				stream.markClientDisconnected()
+				return resultWithUsage(), nil
+			}
 		}
 	}
 	finalCCChunks := apicompat.FinalizeResponsesChatStream(ccState)
 	for _, chunk := range finalCCChunks {
-		writeChunk(chunk) //nolint:errcheck
+		if writeChunk(chunk) {
+			stream.markClientDisconnected()
+			return resultWithUsage(), nil
+		}
 	}
 
 	// Write [DONE] marker
-	fmt.Fprint(c.Writer, "data: [DONE]\n\n") //nolint:errcheck
+	if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
+		stream.markClientDisconnected()
+		return resultWithUsage(), nil
+	}
 	c.Writer.Flush()
 
 	return resultWithUsage(), nil

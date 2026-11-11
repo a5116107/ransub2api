@@ -4,6 +4,7 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -372,11 +373,13 @@ func TestMessagesTimingNativeProviderCanonicalWire(t *testing.T) {
 	}
 }
 
-func TestMessagesTimingNativeBridges(t *testing.T) {
-	for _, endpoint := range []string{"chat/completions", "responses"} {
+func TestMessagesTimingBridges(t *testing.T) {
+	for _, endpoint := range []string{"chat/completions", "responses", "anthropic/chat/completions", "anthropic/responses"} {
+		anthropicPlatform := strings.HasPrefix(endpoint, "anthropic/")
+		wireEndpoint := strings.TrimPrefix(endpoint, "anthropic/")
 		for _, stream := range []bool{false, true} {
-			for _, ending := range []string{"complete", "max_tokens", "eof", "missing_read", "malformed", "late_error", "idle_after_stop", "write_error", "final_write_error"} {
-				if ending == "final_write_error" && (endpoint != "chat/completions" || !stream) {
+			for _, ending := range []string{"complete", "max_tokens", "eof", "missing_read", "malformed", "late_error", "idle_after_stop", "read_error_after_stop", "partial_event_after_stop", "event_only_after_stop", "done_marker", "canceled", "write_error", "final_write_error", "finalize_write_error"} {
+				if (ending == "final_write_error" && (wireEndpoint != "chat/completions" || !stream)) || (ending == "finalize_write_error" && !stream) {
 					continue
 				}
 				t.Run(fmt.Sprintf("%s/stream=%v/%s", endpoint, stream, ending), func(t *testing.T) {
@@ -391,6 +394,9 @@ func TestMessagesTimingNativeBridges(t *testing.T) {
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						_, _ = io.Copy(io.Discard, r.Body)
 						w.Header().Set("Content-Type", "text/event-stream")
+						if ending == "read_error_after_stop" {
+							w.Header().Set("Content-Length", "999999")
+						}
 						send := func(kind, payload string) { _, _ = io.WriteString(w, "event:"+kind+"\ndata:"+payload+"\n\n") }
 						send("message_start", `{"type":"message_start","message":{"id":"private-msg","type":"message","role":"assistant","model":"k3","content":[],"usage":`+usage+`}}`)
 						send("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
@@ -401,30 +407,55 @@ func TestMessagesTimingNativeBridges(t *testing.T) {
 						send("ping", `{"type":"ping"}`)
 						send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" last"}}`)
 						send("content_block_stop", `{"type":"content_block_stop","index":0}`)
-						send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"`+stop+`"},"usage":{"output_tokens":120}}`)
-						if ending != "eof" {
+						if ending == "done_marker" || ending == "finalize_write_error" {
+							send("message_delta", `{"type":"message_delta","usage":{"output_tokens":120}}`)
+							_, _ = io.WriteString(w, "data: [DONE]\n\n")
+						} else {
+							send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"`+stop+`"},"usage":{"output_tokens":120}}`)
+						}
+						if ending != "eof" && ending != "done_marker" && ending != "finalize_write_error" {
 							send("message_stop", `{"type":"message_stop"}`)
 						}
 						if ending == "late_error" {
 							send("error", `{"type":"error","error":{"type":"overloaded_error"}}`)
 						}
 						if ending == "idle_after_stop" {
-							require.NoError(t, http.NewResponseController(w).Flush())
+							if err := http.NewResponseController(w).Flush(); err != nil {
+								t.Errorf("flush loopback fixture: %v", err)
+								return
+							}
 							<-r.Context().Done()
+						}
+						if ending == "partial_event_after_stop" {
+							_, _ = io.WriteString(w, "event:content_block_delta\ndata:{")
+						}
+						if ending == "event_only_after_stop" {
+							_, _ = io.WriteString(w, "event:content_block_delta\n")
 						}
 					}))
 					defer server.Close()
 					collector := requesttiming.New(time.Now(), 0)
 					body := []byte(fmt.Sprintf(`{"model":"k3","stream":%v,"max_tokens":256,"messages":[{"role":"user","content":"fixture"}]}`, stream))
-					if endpoint == "responses" {
+					if wireEndpoint == "responses" {
 						body = []byte(fmt.Sprintf(`{"model":"k3","stream":%v,"max_output_tokens":256,"input":"fixture"}`, stream))
 					}
 					recorder := httptest.NewRecorder()
 					c, _ := gin.CreateTestContext(recorder)
-					c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, strings.NewReader(string(body))).WithContext(requesttiming.With(t.Context(), collector))
+					ctx, cancel := context.WithCancel(requesttiming.With(t.Context(), collector))
+					defer cancel()
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+wireEndpoint, strings.NewReader(string(body))).WithContext(ctx)
 					writer := &geminiTimingWriter{ResponseWriter: c.Writer, collector: collector, fail: ending == "write_error"}
 					if ending == "final_write_error" {
 						writer.failOn = "data: [DONE]"
+					}
+					if ending == "finalize_write_error" {
+						writer.failOn = `"finish_reason":"stop"`
+						if wireEndpoint == "responses" {
+							writer.failOn = "event: response.completed"
+						}
+					}
+					if ending == "canceled" {
+						writer.cancel = cancel
 					}
 					c.Writer = writer
 					account := nativeAnthropicTestAccount()
@@ -435,20 +466,44 @@ func TestMessagesTimingNativeBridges(t *testing.T) {
 					cfg := rawChatCompletionsTestConfig()
 					cfg.Gateway.StreamDataIntervalTimeout = 1
 					svc := &OpenAIGatewayService{cfg: cfg, rateLimitService: &RateLimitService{}, httpUpstream: antigravityTimingHTTPUpstream{client: server.Client(), target: target}}
-					var result *OpenAIForwardResult
-					if endpoint == "responses" {
-						result, err = svc.Forward(c.Request.Context(), c, account, body)
+					var hasResult, disconnected bool
+					var outputTokens int
+					if anthropicPlatform {
+						gateway := newMinimalGatewayService()
+						gateway.cfg, gateway.httpUpstream = cfg, svc.httpUpstream
+						gateway.rateLimitService = &RateLimitService{cfg: cfg, accountRepo: &errorPolicyRepoStub{}}
+						gateway.tlsFPProfileService = &TLSFingerprintProfileService{}
+						account.Platform = PlatformAnthropic
+						var result *ForwardResult
+						if wireEndpoint == "responses" {
+							result, err = gateway.ForwardAsResponses(ctx, c, account, body, nil)
+						} else {
+							result, err = gateway.ForwardAsChatCompletions(ctx, c, account, body, nil)
+						}
+						hasResult = result != nil
+						if hasResult {
+							outputTokens, disconnected = result.Usage.OutputTokens, result.ClientDisconnect
+						}
 					} else {
-						result, err = svc.ForwardAsChatCompletions(c.Request.Context(), c, account, body, "", "")
+						var result *OpenAIForwardResult
+						if wireEndpoint == "responses" {
+							result, err = svc.Forward(ctx, c, account, body)
+						} else {
+							result, err = svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
+						}
+						hasResult = result != nil
+						if hasResult {
+							outputTokens, disconnected = result.Usage.OutputTokens, result.ClientDisconnect
+						}
 					}
-					if ending == "idle_after_stop" {
+					if (ending == "idle_after_stop" && !anthropicPlatform) || (ending == "late_error" && anthropicPlatform && !stream) {
 						require.Error(t, err)
 					} else {
 						require.NoError(t, err, "the original conversion/finalization contract remains unchanged")
-						require.NotNil(t, result)
-						require.Equal(t, 120, result.Usage.OutputTokens)
+						require.True(t, hasResult)
+						require.Equal(t, 120, outputTokens)
 					}
-					collector.Finish(c.Writer.Status(), false)
+					collector.Finish(c.Writer.Status(), ctx.Err() != nil)
 					collector.WhenFinished(func(s requesttiming.Snapshot) {
 						require.Len(t, s.Attempts, 2)
 						require.Nil(t, s.Attempts[0].TextStream)
@@ -468,13 +523,16 @@ func TestMessagesTimingNativeBridges(t *testing.T) {
 						default:
 							require.NotEqual(t, "observed", v.Cache.Status)
 							require.Nil(t, v.Cache.ReadRatio)
-							if ending == "malformed" || ending == "idle_after_stop" {
+							if ending == "malformed" || ending == "idle_after_stop" || ending == "read_error_after_stop" || ending == "partial_event_after_stop" || ending == "event_only_after_stop" {
 								require.Contains(t, s.Attempts[1].Events, "typed_content_truncated")
 							}
 						}
-						if stream && (ending == "write_error" || ending == "final_write_error") {
+						if stream && (ending == "write_error" || ending == "final_write_error" || ending == "finalize_write_error") {
 							require.Equal(t, "client_disconnected", s.Outcome)
-							require.True(t, result.ClientDisconnect)
+							require.True(t, disconnected)
+						}
+						if ending == "canceled" {
+							require.True(t, s.Canceled)
 						}
 						require.Nil(t, v.OutputRate.TokensPerSecond)
 						raw, marshalErr := json.Marshal(s)

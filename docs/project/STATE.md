@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5 Messages/Gemini规范缓存及原生Messages→Chat/Responses桥接已验，本地提交；父项进行中。
+任务：D5原Anthropic平台Chat/Responses观测、EOF残帧与断连修复已验；本地提交，父项进行中。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：b73f6b1基线；桥接源码/锁/规则60f27bd8，原诊断表，无迁移。
-验证命令：计时/中间件、service与PG14 race；前端单测/类型/lint、浏览器；原规则lint/vet/Linux编译。
-验证结果：计时/中间件76/424、service156/860、末次夹具7/101、PG14 11/67零失败/跳过；前端19例/浏览器、lint/vet/Linux编译通过。
-验证来源：backend/tmp/protocol-cache；bridge-regression-final、bridge-test-static-fixed、bridge-lint-test-fixed及原PG/前端证据。
-下一动作：原Anthropic平台适配器及原始Chat wire观测；文本TPS/迁移冷输入仍待验，不借转换副本或计费兼容值。
-尝试：8；红测、未用import与测试lint失败均保留；修复后真实复验通过。
+源码：93f7cc4基线；11项源码/锁/规则清单5a861d97；原诊断表，无迁移。
+验证命令：service与计时/中间件race；原规则lint/vet/Linux编译。
+验证结果：service195/1080、计时/中间件76/424，0失败/跳过；vet/Linux编译退出0，原规则lint为0 issues。
+验证来源：backend/tmp/protocol-cache/anthropic-bridges-*；source-anthropic-bridges.sha256。
+下一动作：原始Chat wire规范缓存/观测；文本TPS、迁移冷输入与父项验收保留。
+尝试：7
 阻塞：D2 unknown待供应商契约；生产排空待管理员；历史及本轮96份旧Go缓存拒删待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | HTTP/WS、Messages/Gemini规范缓存/SQL及原生Chat/Responses桥接已验；其他wire、文本TPS与迁移冷输入待验 |
+| D5 | in_progress | HTTP/WS、Messages/Gemini/SQL及四个Chat/Responses桥接入口已验；原始Chat wire、文本TPS与迁移冷输入待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -66,7 +66,7 @@
 
 ## 下一项工作
 
-D5两协议缓存已提交b73f6b1，原生桥接已验；其后为原Anthropic适配器、Chat wire、文本TPS与迁移冷输入。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验。视频查询归原节点，生成/双预算/结算不迁移；336回退须排空并保留账单。未改线上策略。
+D5原Anthropic适配器源码/race/静态已验；原始Chat wire、文本TPS与迁移冷输入待验。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；336回退须排空并保留账单。未改线上策略。
 
 ## 外部等待与清理
 
@@ -74,4 +74,4 @@ D5两协议缓存已提交b73f6b1，原生桥接已验；其后为原Anthropic�
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`及`backend/tmp/output-rate/`中的旧夹具/缓存；由工作区拥有者处理，详见DECISIONS。
 - 历史`backend/tmp/ws-turn-metrics/vite-cache`拒删11文件/2886386bytes待拥有者手动删除，不换工具重试。本轮浏览器及5186夹具已关闭，无新增Vite缓存；历史PNG原位保留、不提交。
-- H盘Go缓存533.89GiB，96份旧缓存32.20GiB拒删、实际删除0，清单cache-reclaim-blocked.json。仅本轮14份闲置JSONL及4份非拒删的旧桥接编译缓存无损压缩，SHA256不变，分别节省4145655/889848732bytes；归档可读，未触碰旧拒删路径，余量待拥有者治理。
+- 历史H盘Go缓存快照533.89GiB，96份旧缓存32.20GiB拒删、删除0，清单cache-reclaim-blocked.json。前序14份闲置JSONL及4份非拒删旧桥接缓存无损压缩，SHA256不变，分别节省4145655/889848732bytes；未触碰旧拒删路径，余量待拥有者治理。

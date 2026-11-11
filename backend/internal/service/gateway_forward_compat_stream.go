@@ -35,6 +35,8 @@ type anthropicCompatStream struct {
 	maxLineSize int
 	logPrefix   string
 	requestID   string
+	// Observe original Messages wire once, before any usage or protocol conversion.
+	timing sseTimingObserver
 	// clientGone 是请求 ctx 的 Done，客户端断开后为 nil。
 	clientGone <-chan struct{}
 
@@ -73,6 +75,7 @@ func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Res
 		maxLineSize: maxLineSize,
 		logPrefix:   logPrefix,
 		requestID:   requestID,
+		timing:      sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "messages"},
 	}
 	if c.Request != nil {
 		stream.ctx = c.Request.Context()
@@ -83,6 +86,12 @@ func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Res
 
 func (st *anthropicCompatStream) stop() {
 	st.pump.stop()
+	// A known event header cut off by EOF differs from an empty SSE event
+	// dispatched by a blank line, which the protocol permits ignoring.
+	if st.timing.timingEventPending {
+		st.timing.failTimingCapture()
+	}
+	st.timing.resetTimingEvent()
 }
 
 // Both buffered API adapters must prove completion before publishing JSON.
@@ -227,6 +236,7 @@ func (st *anthropicCompatStream) nextLine() (string, bool) {
 	for {
 		line, err := st.pump.nextOrClientGone(st.clientGone)
 		if err == nil {
+			st.timing.observeTimingLine(line)
 			if payload, ok := extractOpenAISSEDataLine(line); ok && st.sawMessageStart && strings.TrimSpace(payload) == "[DONE]" {
 				st.sawTerminal = true
 			}
@@ -245,6 +255,9 @@ func (st *anthropicCompatStream) nextLine() (string, bool) {
 			}
 		}
 		st.readErr = err
+		if !errors.Is(err, io.EOF) {
+			st.timing.failTimingCapture()
+		}
 		switch {
 		case errors.Is(err, errAnthropicNativeStreamIdle):
 			_ = st.body.Close()
