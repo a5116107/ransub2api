@@ -61,7 +61,7 @@ func TestPrioritySnapshotRecomputesAttemptEvidenceWithoutMovingSelectionTime(t *
 	scheduler, ok := newDefaultOpenAIAccountScheduler(g, stats).(*defaultOpenAIAccountScheduler)
 	require.True(t, ok)
 	req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, RequestedModel: "test", UseUpstreamTokenCost: true}
-	key := priorityAttemptKey{accountID: 1, model: "test", endpoint: priorityErrorEndpoint(req)}
+	key := priorityRequestAttemptKey(req, priorityCandidate(1, .1, 0).account)
 	for _, success := range []bool{true, true, true, false} {
 		stats.attempts.report(key, success, time.Now())
 	}
@@ -304,13 +304,15 @@ func BenchmarkPriorityHistoryWarm(b *testing.B) {
 	pool := make([]openAIAccountCandidateScore, 100)
 	signals := make(map[int64]PrioritySchedulingSignal, 100)
 	accounts := make(map[int64]time.Time, 100)
+	routes := make(map[int64]priorityObservationRoute, 100)
 	for i := range pool {
 		id := int64(i + 1)
 		pool[i] = priorityCandidate(id, .1, 0)
 		signals[id] = PrioritySchedulingSignal{Samples: 10}
 		accounts[id] = time.Now()
+		routes[id] = priorityCandidateObservationRoute(pool[i])
 	}
-	g.priorityScheduling.entries = map[string]*prioritySignalEntry{priorityHistoryKey(req, c): {signals: signals, accounts: accounts, observed: time.Now(), expires: time.Now().Add(time.Hour)}}
+	g.priorityScheduling.entries = map[string]*prioritySignalEntry{priorityHistoryKey(req, c): {signals: signals, accounts: accounts, routes: routes, observed: time.Now(), expires: time.Now().Add(time.Hour)}}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

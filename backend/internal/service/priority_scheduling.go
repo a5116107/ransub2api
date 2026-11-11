@@ -244,18 +244,19 @@ type PrioritySchedulingSignal struct {
 }
 
 type PrioritySchedulingQuery struct {
-	ObservationEffort  *string
-	InboundEndpoint    string // exact canonical ingress; empty retains legacy unscoped reads
-	LatencyPercentile  int
-	LatencyMeasurement string
-	TargetTTFTMs       int
-	AccountIDs         []int64
-	Model              string // public requested model in persisted usage
-	QualityModel       string // routing model used by account quality probes; defaults to Model
-	GroupID            *int64
-	UsageUntil         time.Time
-	UsageSince         time.Time
-	QualitySince       time.Time
+	AccountRouteFingerprints map[int64]string // nil retains explicit legacy unscoped reads
+	ObservationEffort        *string
+	InboundEndpoint          string // exact canonical ingress; empty retains legacy unscoped reads
+	LatencyPercentile        int
+	LatencyMeasurement       string
+	TargetTTFTMs             int
+	AccountIDs               []int64
+	Model                    string // public requested model in persisted usage
+	QualityModel             string // routing model used by account quality probes; defaults to Model
+	GroupID                  *int64
+	UsageUntil               time.Time
+	UsageSince               time.Time
+	QualitySince             time.Time
 }
 type PrioritySchedulingSignalReader interface {
 	ReadPrioritySchedulingSignals(context.Context, PrioritySchedulingQuery) (map[int64]PrioritySchedulingSignal, error)
@@ -453,7 +454,7 @@ func (s *defaultOpenAIAccountScheduler) applyPriorityScheduling(req OpenAIAccoun
 	history := s.service.priorityHistory(req, c, plan.candidates)
 	now := time.Now()
 	for i := range plan.candidates {
-		plan.candidates[i].priorityErrors = s.priorityErrorEvidence(req, c, plan.candidates[i].account.ID, now)
+		plan.candidates[i].priorityErrors = s.priorityErrorEvidence(req, c, plan.candidates[i].account, now)
 		applyPriorityCandidate(c, &plan.candidates[i], history.signals[plan.candidates[i].account.ID], now)
 	}
 	plan.priorityScheduling = true

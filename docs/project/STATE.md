@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5 入站/等待effort及趋势同源本地已验；父项开放。
+任务：D5同账号换线路反馈/历史/趋势/等待及旧快照隔离已验；父项开放。
 授权：原H盘本地修复/验证/提交；不CI/推送/部署。
-源码：65cc716后原缓存/SQL/等待及趋势查询；无迁移或新调度器。
-验证命令：service/handler race、PG14/Redis7 SQL及四包lint/vet/Linux编译。
-验证结果：service134/295、SQL9/44、handler14/48通过；lint0 issues，vet/Linux退出0。
-验证来源：backend/tmp/protocol-cache/scheduling-scope-*。
-下一动作：D5可信前缀/候选缓存域、实际模型/fast与同入站物理协议可比性。
-尝试：16
-阻塞：D2供应商关联契约、D4模型/fast证据；生产授权及历史拒删资源待拥有者。
+源码：24项Go原位修复，摘要bd2b854aa595；无迁移/新缓存/调度器。
+验证命令：Priority/Issue603专项race、PG14/Redis7 SQL及四包lint/vet/Linux编译。
+验证结果：race合计170顶层/410含子例，零失败/跳过；四包lint0/vet/Linux编译通过。
+验证来源：本轮工具输出；后续日志backend/tmp/protocol-cache/scheduling-route-*。
+下一动作：D5跨请求估计/跨协议比较；先取得前缀、模型/fast和候选缓存域证据。
+尝试：17
+阻塞：D2关联契约、D4/D5证据；生产授权及含本轮空目录的清理等待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 协议/缓存/TPS/换线/TTFT与物理端点已验；调度入站/等待/趋势service134/295、SQL9/44、handler14/48及四包lint/vet/Linux通过；跨协议/会话估计待验 |
+| D5 | in_progress | 协议/缓存/TPS/TTFT、入站与换线路/等待/趋势隔离已验；专项race170顶层/410含子例、四包lint0/vet/Linux通过；跨协议/会话估计待独立证据 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -76,3 +76,4 @@ D5跨请求估计/跨协议比较待验，须有可复用前缀、实际模型/f
 - 历史`backend/tmp/ws-turn-metrics/vite-cache`拒删11文件/2886386bytes待拥有者手动删除，不换工具重试。本轮浏览器及5186夹具已关闭，无新增Vite缓存；历史PNG原位保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
 - 历史TEMP的sub2api-chat-wire系列约69MiB、sub2api-protocol-rate的18文件/700.05MiB及runtime-ttft空目录拒删保留，精确路径见DECISIONS，拥有者手动处理，不重试。
+- 本轮TEMP/sub2api-priority-route：空目录、0文件/0活跃引用；删除命令被执行策略拦截，保留待拥有者处理，未计作空间释放。

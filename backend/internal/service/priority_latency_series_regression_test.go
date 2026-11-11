@@ -102,6 +102,21 @@ func TestPriorityLatencySeriesUsesSnapshotObservationScope(t *testing.T) {
 	}
 }
 
+func TestPriorityLatencySeriesUsesCapturedRoute(t *testing.T) {
+	reader := &priorityLatencySeriesRegressionReader{}
+	svc := &OpenAIGatewayService{usageLogRepo: reader}
+	account := priorityCandidate(77, 1, 1).account
+	account.Credentials = map[string]any{"api_key": "synthetic-original"}
+	want := priorityAccountObservationRoute(account).historyFingerprint()
+	input := newPrioritySnapshotInput(OpenAIAccountScheduleRequest{RequestedModel: "fixture"}, DefaultPrioritySchedulingConfig(), []openAIAccountCandidateScore{{account: account}}, time.Now())
+	input.limited = true
+	svc.priorityScheduling.latestInput = input
+	account.Credentials["api_key"] = "synthetic-replacement"
+	_, err := svc.PriorityLatencySeries(t.Context(), 60, 5)
+	require.NoError(t, err)
+	require.Equal(t, map[int64]string{77: want}, reader.query.AccountRouteFingerprints)
+}
+
 func TestPriorityRecomputeDoesNotTreatHistoryErrorAsSuccess(t *testing.T) {
 	cfg := DefaultPrioritySchedulingConfig()
 	reader := &priorityReaderStub{err: context.DeadlineExceeded}

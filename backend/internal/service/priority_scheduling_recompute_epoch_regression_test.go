@@ -87,6 +87,7 @@ func priorityRecomputeEpochFixture(reader *priorityRecomputeBarrierReader) (*Ope
 		key: {
 			signals:   map[int64]PrioritySchedulingSignal{8871: old},
 			accounts:  map[int64]time.Time{8871: now},
+			routes:    map[int64]priorityObservationRoute{8871: priorityCandidateObservationRoute(candidates[0])},
 			observed:  now,
 			windowEnd: now,
 			expires:   now.Add(time.Hour),
@@ -180,6 +181,7 @@ func TestPriorityRecomputeIncompleteReadPreservesWholeObservation(t *testing.T) 
 	key := priorityHistoryKey(request, cfg)
 	entry := svc.priorityScheduling.entries[key]
 	entry.accounts[peer.account.ID] = time.Now()
+	entry.routes[peer.account.ID] = priorityCandidateObservationRoute(peer)
 	entry.signals[peer.account.ID] = old
 	svc.priorityScheduling.latestInput = newPrioritySnapshotInput(request, cfg, candidates, time.Now())
 	before := svc.PrioritySchedulingSnapshot()

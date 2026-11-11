@@ -356,11 +356,20 @@ func TestPriorityLatencyAvailabilityHTTPAndChatTransport(t *testing.T) {
 			if chat {
 				req.InboundEndpoint = "/v1/chat/completions"
 			}
+			// Configure the physical route before observing/selecting it. Changing
+			// credentials after selection correctly invalidates that route's evidence.
+			repo := testassert.Type[schedulerGroupAwareOpenAIAccountRepo](t, svc.accountRepo)
+			pool := make([]openAIAccountCandidateScore, 0, len(repo.accounts))
+			for i := range repo.accounts {
+				repo.accounts[i].Credentials = map[string]any{"api_key": "sk-synthetic", "base_url": "https://compat.example"}
+				repo.accounts[i].Extra["openai_responses_mode"] = "force_responses"
+				pool = append(pool, openAIAccountCandidateScore{account: &repo.accounts[i]})
+			}
+			svc.accountRepo = repo
+			require.Eventually(t, func() bool { return svc.priorityHistory(req, svc.prioritySchedulingRuntimeConfig(), pool).ready() }, 2*time.Second, time.Millisecond)
 			selected, err := modeSelect(t, scheduler, req)
 			require.NoError(t, err)
 			require.NotNil(t, selected)
-			selected.Account.Credentials = map[string]any{"api_key": "sk-synthetic", "base_url": "https://compat.example"}
-			selected.Account.Extra["openai_responses_mode"] = "force_responses"
 			wire := `{"id":"resp_fallback_http","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fallback completed"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`
 			// The real CC -> Responses adapter requests SSE even for a nonstream
 			// client, then collects the terminal before writing the CC response.

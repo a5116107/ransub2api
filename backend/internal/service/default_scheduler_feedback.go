@@ -9,8 +9,8 @@ import (
 // Uses existing passive transport evidence, scoped before model routing. It
 // changes only ordering among otherwise eligible same-priority accounts.
 // No evidence/cold start is neutral; all evidence expires after ten minutes.
-func (s *OpenAIGatewayService) defaultFeedbackPenalty(ctx context.Context, group *int64, model string, accountID int64) float64 {
-	if s == nil {
+func (s *OpenAIGatewayService) defaultFeedbackPenalty(ctx context.Context, group *int64, model string, account *Account) float64 {
+	if s == nil || account == nil {
 		return 0
 	}
 	s.initOpenAIAccountScheduler()
@@ -18,7 +18,7 @@ func (s *OpenAIGatewayService) defaultFeedbackPenalty(ctx context.Context, group
 	if identity.endpoint == "" {
 		identity.endpoint = "/v1/responses"
 	}
-	key := priorityAttemptKey{accountID: accountID, model: identity.model, endpoint: identity.endpoint, groupID: identity.groupID, hasGroup: identity.hasGroup}
+	key := priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: identity.model, endpoint: identity.endpoint, groupID: identity.groupID, hasGroup: identity.hasGroup}
 	key.effort, _ = observationEffort(ctx)
 	if !identity.hasGroup && group != nil {
 		key.groupID, key.hasGroup = *group, true
@@ -38,7 +38,7 @@ func (s *OpenAIGatewayService) defaultFeedbackPenalty(ctx context.Context, group
 func (s *OpenAIGatewayService) defaultFeedbackPenalties(ctx context.Context, group *int64, model string, accounts []*Account) map[int64]float64 {
 	out := make(map[int64]float64, len(accounts))
 	for _, a := range accounts {
-		out[a.ID] = s.defaultFeedbackPenalty(ctx, group, model, a.ID)
+		out[a.ID] = s.defaultFeedbackPenalty(ctx, group, model, a)
 	}
 	return out
 }

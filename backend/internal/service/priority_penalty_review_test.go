@@ -50,7 +50,6 @@ func (d *reviewLeaseDialer) Dial(ctx context.Context, _ string, _ http.Header, _
 func reviewNativeFixture(t *testing.T, mode string) (*OpenAIGatewayService, OpenAIAccountScheduleRequest, *Account, *reviewGenerationConn, *reviewLeaseDialer, context.Context) {
 	t.Helper()
 	svc, _, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
-	setModeSignal(svc, req, 1, func(v *PrioritySchedulingSignal) { v.P90TTFTMs = 500; v.LatestBadLatencyAt = nil })
 	cfg := newOpenAIWSExecutionScopeTestConfig()
 	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
 	cfg.Gateway.OpenAIWS.IngressModeDefault = mode
@@ -66,6 +65,8 @@ func reviewNativeFixture(t *testing.T, mode string) (*OpenAIGatewayService, Open
 	account := pool[0].account
 	account.Credentials = map[string]any{"api_key": "sk-synthetic"}
 	account.Extra = map[string]any{"openai_apikey_responses_websockets_v2_mode": mode}
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, svc.prioritySchedulingRuntimeConfig(), pool).ready() }, 2*time.Second, time.Millisecond)
+	setModeSignal(svc, req, 1, func(v *PrioritySchedulingSignal) { v.P90TTFTMs = 500; v.LatestBadLatencyAt = nil })
 	conn := &reviewGenerationConn{newStagedPassthroughConn()}
 	dialer := &reviewLeaseDialer{conn: conn, entered: make(chan struct{}), release: make(chan struct{})}
 	wsPool := newOpenAIWSConnPool(cfg)

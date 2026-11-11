@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,29 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
+
+// The final physical attempt must prove the billed account's current route.
+// A missing/malformed/foreign route is absent evidence, including in legacy
+// latency mode. Nil is reserved for explicit unscoped repository callers.
+func priorityRouteFilterSQL(parameter string) string {
+	return strings.ReplaceAll(`($ROUTES::jsonb IS NULL OR (
+    detail->>'version'='1' AND attempt->>'account_id'=account_id::text
+    AND attempt->>'route_fingerprint' ~ '^[0-9a-f]{64}$'
+    AND attempt->>'route_fingerprint'<>repeat('0',64)
+    AND attempt->>'route_fingerprint'=($ROUTES::jsonb->>account_id::text)
+   ))`, "$ROUTES", parameter)
+}
+
+func priorityRouteQueryValue(routes map[int64]string) (any, error) {
+	if routes == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(routes)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
+}
 
 // ReadPrioritySchedulingSignals aggregates only the requested model. Missing
 // TTFTs and failed placeholders are not zero-latency successes. Quality rounds
@@ -35,6 +59,10 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
 	if qualityModel == "" {
 		qualityModel = query.Model
 	}
+	routes, err := priorityRouteQueryValue(query.AccountRouteFingerprints)
+	if err != nil {
+		return nil, err
+	}
 	querySQL := `
  WITH base_usage AS (
   SELECT id, account_id, created_at, stream, first_token_ms, actual_cost,
@@ -44,6 +72,7 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
    AND COALESCE(NULLIF(requested_model,''),model)=$2
    AND group_id IS NOT DISTINCT FROM $5::bigint
    AND ($11::text='' OR inbound_endpoint=$11)
+   AND ($12::text IS NULL OR COALESCE(reasoning_effort,'')=$12)
    AND (actual_cost>0 OR total_cost>0 OR account_stats_cost>0
     OR input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens>0)
  ), traces AS (
@@ -80,7 +109,7 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
    CASE WHEN jsonb_typeof(detail->'events'->'first_visible')='number'
     AND length((detail->'events'->'first_visible')::text)<32
     THEN (detail->'events'->>'first_visible')::double precision END AS visible_ms
-  FROM traces
+  FROM traces WHERE ` + priorityRouteFilterSQL("$13") + `
  ), measured AS (
   SELECT *, CASE WHEN $7='legacy_forward' THEN first_token_ms::double precision
    WHEN detail->>'version'='1' AND detail->>'outcome'='success'
@@ -122,6 +151,9 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
    AND COALESCE(NULLIF(requested_model,''),model)=$2
    AND group_id IS NOT DISTINCT FROM $5::bigint
    AND ($11::text='' OR inbound_endpoint=$11)
+   -- These logs lack immutable route attribution. Keep legacy unscoped reads,
+   -- but never label their account-wide errors as a replacement route's errors.
+   AND $13::jsonb IS NULL
    AND error_phase='upstream'
   GROUP BY account_id
  ), rounds AS (
@@ -161,12 +193,7 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
  LEFT JOIN quality q ON q.account_id=ids.id
  LEFT JOIN latest_quality lq ON lq.account_id=ids.id
  `
-	args := []any{pq.Array(query.AccountIDs), query.Model, query.UsageSince, query.QualitySince, query.GroupID, query.LatencyPercentile, query.LatencyMeasurement, query.TargetTTFTMs, query.UsageUntil, qualityModel, query.InboundEndpoint}
-	if query.ObservationEffort != nil {
-		// Exact effort population; no max/xhigh inference or cross-effort fallback.
-		querySQL = strings.Replace(querySQL, "AND group_id IS NOT DISTINCT FROM $5::bigint", "AND group_id IS NOT DISTINCT FROM $5::bigint AND COALESCE(reasoning_effort,'')=$12", 1)
-		args = append(args, *query.ObservationEffort)
-	}
+	args := []any{pq.Array(query.AccountIDs), query.Model, query.UsageSince, query.QualitySince, query.GroupID, query.LatencyPercentile, query.LatencyMeasurement, query.TargetTTFTMs, query.UsageUntil, qualityModel, query.InboundEndpoint, query.ObservationEffort, routes}
 	rows, err := r.sql.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err

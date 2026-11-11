@@ -10,16 +10,17 @@ import (
 // latency panel. AccountIDs are limited to the last observed priority snapshot;
 // this endpoint is a diagnostic view and never changes routing state.
 type PriorityLatencySeriesQuery struct {
-	AccountIDs         []int64
-	Model              string
-	GroupID            *int64
-	InboundEndpoint    string
-	ObservationEffort  *string
-	Since              time.Time
-	BucketMinutes      int
-	LatencyPercentile  int
-	LatencyMeasurement string
-	SlowTTFTMs         int
+	AccountRouteFingerprints map[int64]string
+	AccountIDs               []int64
+	Model                    string
+	GroupID                  *int64
+	InboundEndpoint          string
+	ObservationEffort        *string
+	Since                    time.Time
+	BucketMinutes            int
+	LatencyPercentile        int
+	LatencyMeasurement       string
+	SlowTTFTMs               int
 }
 
 type PriorityLatencyBucket struct {
@@ -117,6 +118,12 @@ func (s *OpenAIGatewayService) PriorityLatencySeries(ctx context.Context, minute
 	if input.request.ObservationEffortScoped {
 		value := input.request.ObservationEffort
 		query.ObservationEffort = &value
+	}
+	query.AccountRouteFingerprints = make(map[int64]string, len(ids))
+	for _, candidate := range input.candidates {
+		if _, included := summary[candidate.account.ID]; included {
+			query.AccountRouteFingerprints[candidate.account.ID] = priorityCandidateObservationRoute(candidate).historyFingerprint()
+		}
 	}
 	rows, err := reader.ReadPriorityLatencySeries(ctx, query)
 	if err != nil {

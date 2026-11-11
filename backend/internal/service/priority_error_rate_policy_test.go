@@ -19,14 +19,14 @@ func TestPriorityErrorRateWeightedRecoveryAndIsolation(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	req := OpenAIAccountScheduleRequest{RequestedModel: "m", RequiredCapability: OpenAIEndpointCapabilityResponses}
 	scheduler := &defaultOpenAIAccountScheduler{stats: stats}
+	good, bad := priorityCandidate(1, .1, 0), priorityCandidate(2, .1, 0)
 	for i := 0; i < 100; i++ {
-		stats.attempts.report(priorityAttemptKey{accountID: 1, model: "m", endpoint: "/v1/responses"}, true, now)
-		stats.attempts.report(priorityAttemptKey{accountID: 2, model: "m", endpoint: "/v1/responses"}, false, now)
+		stats.attempts.report(priorityRequestAttemptKey(req, good.account), true, now)
+		stats.attempts.report(priorityRequestAttemptKey(req, bad.account), false, now)
 	}
 	signal := PrioritySchedulingSignal{Samples: 20, P90TTFTMs: 500, QualityPassed: 10, QualitySamples: 10}
-	good, bad := priorityCandidate(1, .1, 0), priorityCandidate(2, .1, 0)
-	good.priorityErrors = scheduler.priorityErrorEvidence(req, c, good.account.ID, now)
-	bad.priorityErrors = scheduler.priorityErrorEvidence(req, c, bad.account.ID, now)
+	good.priorityErrors = scheduler.priorityErrorEvidence(req, c, good.account, now)
+	bad.priorityErrors = scheduler.priorityErrorEvidence(req, c, bad.account, now)
 	sg := applyPriorityCandidate(c, &good, signal, now)
 	sb := applyPriorityCandidate(c, &bad, signal, now)
 	require.Greater(t, sg.Score, sb.Score)
@@ -40,11 +40,11 @@ func TestPriorityErrorRateWeightedRecoveryAndIsolation(t *testing.T) {
 	require.Greater(t, counts[good.account.ID], counts[bad.account.ID])
 	require.Greater(t, counts[bad.account.ID], 100, "failed account retains recovery traffic")
 	req.RequestedModel = "other"
-	bad.priorityErrors = scheduler.priorityErrorEvidence(req, c, bad.account.ID, now)
+	bad.priorityErrors = scheduler.priorityErrorEvidence(req, c, bad.account, now)
 	other := applyPriorityCandidate(c, &bad, signal, now)
 	require.InDelta(t, sg.Score, other.Score, 1e-9, "a different model does not inherit failures")
 	req.RequestedModel = "m"
-	bad.priorityErrors = scheduler.priorityErrorEvidence(req, c, bad.account.ID, now.Add(10*time.Minute))
+	bad.priorityErrors = scheduler.priorityErrorEvidence(req, c, bad.account, now.Add(10*time.Minute))
 	recovered := applyPriorityCandidate(c, &bad, signal, now.Add(10*time.Minute))
 	require.Nil(t, recovered.ErrorRate)
 	require.InDelta(t, sg.Score, recovered.Score, 1e-9)

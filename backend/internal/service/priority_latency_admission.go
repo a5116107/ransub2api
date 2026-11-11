@@ -35,7 +35,7 @@ func priorityLatencyStopped(c PrioritySchedulingConfig, item openAIAccountCandid
 
 // Request-local eligible universe. The first fallback opening freezes membership;
 // later checks cannot refill from a slower rank after waits or history refreshes.
-// Only IDs and exact measurement scope survive in the selection context.
+// Only IDs, immutable route digests and exact measurement scope survive.
 type priorityLatencyPool struct {
 	key      string
 	accounts []openAIAccountCandidateScore
@@ -44,6 +44,24 @@ type priorityLatencyPool struct {
 }
 
 type priorityLatencyFallback struct{ allowed map[int64]struct{} }
+
+// Re-evaluate current candidates after waits without retaining credentials in
+// the request-local pool or mutating its original membership/peer observations.
+func (p *priorityLatencyPool) currentAccounts(accounts ...*Account) []openAIAccountCandidateScore {
+	current := make(map[int64]*Account, len(accounts))
+	for _, account := range accounts {
+		if account != nil {
+			current[account.ID] = account
+		}
+	}
+	pool := slices.Clone(p.accounts)
+	for i := range pool {
+		if account := current[pool[i].account.ID]; account != nil {
+			pool[i].account, pool[i].observationRoute = account, nil
+		}
+	}
+	return pool
+}
 
 func (p *priorityLatencyPool) fallbackActive() bool { return p.fallback.Load() != nil }
 
@@ -94,9 +112,10 @@ func (s *defaultOpenAIAccountScheduler) preparePriorityLatencyRequest(ctx contex
 	admission.members(allowed, fallback)
 	for i := range pool {
 		item := &pool[i]
-		item.priorityErrors = s.priorityErrorEvidence(req, cfg, item.account.ID, now)
+		item.priorityErrors = s.priorityErrorEvidence(req, cfg, item.account, now)
 		applyPriorityCandidate(cfg, item, history.signals[item.account.ID], now)
-		admission.accounts = append(admission.accounts, openAIAccountCandidateScore{account: &Account{ID: item.account.ID}})
+		route := priorityCandidateObservationRoute(*item)
+		admission.accounts = append(admission.accounts, openAIAccountCandidateScore{account: &Account{ID: item.account.ID}, observationRoute: &route})
 	}
 	req.priorityLatencyPool = admission
 	s.recordPrioritySnapshot(req, cfg, pool, now)
@@ -167,7 +186,7 @@ func (s *OpenAIGatewayService) priorityLatencyAdmission(req OpenAIAccountSchedul
 		if admission.key != priorityHistoryKey(req, cfg) {
 			return priorityLatencyAdmissionError(false)
 		}
-		pool = admission.accounts
+		pool = admission.currentAccounts(account)
 	}
 	history := s.priorityHistory(req, cfg, pool)
 	signal, known := history.signals[account.ID]
@@ -205,8 +224,9 @@ func (s *defaultOpenAIAccountScheduler) filterPriorityLatencyAccounts(req OpenAI
 		if admission.key != priorityHistoryKey(req, cfg) {
 			return nil, priorityLatencyAdmissionError(false)
 		}
-		history := s.service.priorityHistory(req, cfg, admission.accounts)
-		current, fallback := priorityLatencyAllowed(cfg, admission.accounts, history, time.Now())
+		pool := admission.currentAccounts(accounts...)
+		history := s.service.priorityHistory(req, cfg, pool)
+		current, fallback := priorityLatencyAllowed(cfg, pool, history, time.Now())
 		members := admission.members(current, fallback)
 		for _, account := range accounts {
 			_, original := members[account.ID]

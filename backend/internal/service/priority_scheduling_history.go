@@ -27,6 +27,7 @@ type prioritySignalEntry struct {
 	windowEnd                              time.Time
 	signals                                map[int64]PrioritySchedulingSignal
 	accounts                               map[int64]time.Time
+	routes                                 map[int64]priorityObservationRoute
 	expires, observed, lastUsed, attempted time.Time
 	refreshing                             bool
 	failure                                string
@@ -89,10 +90,17 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 	if len(accounts) == 0 || len(accounts) > priorityHistoryMaxAccounts || len(priorityHistoryModel(req)) > 200 || len(req.RequestedModel) > 200 {
 		return priorityHistoryResult{status: "limited"}
 	}
-	wanted := make(map[int64]struct{}, len(accounts))
+	wanted := make(map[int64]priorityObservationRoute, len(accounts))
+	var captured map[int64]bool
 	for _, a := range accounts {
 		if a.account != nil {
-			wanted[a.account.ID] = struct{}{}
+			wanted[a.account.ID] = priorityCandidateObservationRoute(a)
+			if a.observationRoute != nil {
+				if captured == nil {
+					captured = make(map[int64]bool)
+				}
+				captured[a.account.ID] = true
+			}
 		}
 	}
 	if len(wanted) == 0 {
@@ -125,15 +133,33 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 		state.entries[key] = entry
 	}
 	entry.lastUsed = now
+	if entry.routes == nil {
+		entry.routes = make(map[int64]priorityObservationRoute)
+	}
 	// Prefer current candidates, then retain recently seen peers up to the bound.
 	for id, seen := range entry.accounts {
 		if _, current := wanted[id]; !current && now.Sub(seen) > priorityHistoryMaxAge {
 			delete(entry.accounts, id)
+			delete(entry.routes, id)
 			delete(entry.signals, id)
 		}
 	}
-	for id := range wanted {
+	supersededCapture := false
+	for id, route := range wanted {
+		if previous, known := entry.routes[id]; !known || previous != route {
+			// A dashboard snapshot or a waiting peer is an older observation,
+			// not permission to replace the route last seen by live selection.
+			if known && captured[id] {
+				supersededCapture = true
+				continue
+			}
+			delete(entry.signals, id)
+			// Bypass the old route's TTL/backoff, while retaining the existing
+			// global launch/worker limits and unaffected peers' evidence.
+			entry.expires = time.Time{}
+		}
 		entry.accounts[id] = now
+		entry.routes[id] = route
 	}
 	if len(entry.accounts) > priorityHistoryMaxAccounts {
 		old := make([]int64, 0, len(entry.accounts)-len(wanted))
@@ -148,11 +174,15 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 				break
 			}
 			delete(entry.accounts, id)
+			delete(entry.routes, id)
 			delete(entry.signals, id)
 		}
 	}
 	missing := false
 	for id := range wanted {
+		if entry.routes[id] != wanted[id] {
+			continue
+		}
 		if _, exists := entry.signals[id]; !exists {
 			missing = true
 			break
@@ -172,6 +202,12 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 			group = &value
 		}
 		query := PrioritySchedulingQuery{LatencyPercentile: c.LatencyPercentile, LatencyMeasurement: c.LatencyMeasurement, TargetTTFTMs: c.TargetTTFTMs, AccountIDs: ids, Model: priorityHistoryModel(req), QualityModel: strings.TrimSpace(req.RequestedModel), InboundEndpoint: priorityErrorEndpoint(req), GroupID: group, UsageUntil: now, UsageSince: now.Add(-time.Duration(c.WindowMinutes) * time.Minute), QualitySince: now.Add(-time.Duration(c.QualityMaxAgeHours) * time.Hour)}
+		capturedRoutes := make(map[int64]priorityObservationRoute, len(ids))
+		query.AccountRouteFingerprints = make(map[int64]string, len(ids))
+		for _, id := range ids {
+			capturedRoutes[id] = entry.routes[id]
+			query.AccountRouteFingerprints[id] = entry.routes[id].historyFingerprint()
+		}
 		if req.ObservationEffortScoped {
 			value := req.ObservationEffort
 			query.ObservationEffort = &value
@@ -209,8 +245,22 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 				return
 			}
 			entry.refreshing = false
-			entry.completedReadGeneration = generation
+			superseded := false
+			for _, id := range ids {
+				if current, tracked := entry.routes[id]; !tracked || current != capturedRoutes[id] {
+					superseded = true
+					break
+				}
+			}
+			if superseded {
+				entry.expires = time.Time{}
+			} else {
+				entry.completedReadGeneration = generation
+			}
 			if err != nil {
+				if superseded {
+					return
+				}
 				// Keep recent evidence, including known risk, through transient failures.
 				entry.failure = failure
 				entry.expires = time.Now().Add(priorityHistoryRetry)
@@ -235,7 +285,7 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 			}
 			for _, id := range ids {
 				if signal, returned := signals[id]; returned {
-					if _, tracked := entry.accounts[id]; tracked {
+					if current, tracked := entry.routes[id]; tracked && current == capturedRoutes[id] {
 						nextSignals[id] = signal
 					}
 				}
@@ -254,7 +304,9 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 					break
 				}
 			}
-			entry.expires = entry.observed.Add(ttl)
+			if !superseded {
+				entry.expires = entry.observed.Add(ttl)
+			}
 		}()
 	}
 	// Completion metadata and evidence belong to the same locked observation.
@@ -265,7 +317,7 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 		windowEnd := entry.windowEnd
 		h.windowEnd = &windowEnd
 		for id := range wanted {
-			if signal, exists := entry.signals[id]; exists {
+			if signal, exists := entry.signals[id]; exists && entry.routes[id] == wanted[id] {
 				h.signals[id] = signal
 			}
 		}
@@ -278,6 +330,8 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 		}
 	case len(h.signals) > 0:
 		h.status = "partial"
+	case supersededCapture:
+		h.status, h.observed, h.windowEnd = "unavailable", nil, nil
 	case entry.failure != "":
 		h.status = "error"
 	}
@@ -297,6 +351,9 @@ func (s *OpenAIGatewayService) cachedPriorityHistory(req OpenAIAccountScheduleRe
 		return h
 	}
 	for _, item := range accounts {
+		if item.account == nil || e.routes[item.account.ID] != priorityCandidateObservationRoute(item) {
+			continue
+		}
 		if signal, exists := e.signals[item.account.ID]; exists {
 			h.signals[item.account.ID] = signal
 		}

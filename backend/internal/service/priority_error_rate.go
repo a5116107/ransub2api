@@ -23,6 +23,7 @@ const (
 )
 
 type priorityAttemptKey struct {
+	route     priorityObservationRoute
 	effort    string
 	accountID int64
 	model     string
@@ -211,7 +212,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 	s.initOpenAIAccountScheduler()
 	stats := s.openaiAccountStats
 	started := stats.currentTime()
-	key := priorityAttemptKey{accountID: account.ID, model: scope.model, endpoint: scope.endpoint, groupID: scope.groupID, hasGroup: scope.hasGroup, effort: scope.effort}
+	key := priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: scope.model, endpoint: scope.endpoint, groupID: scope.groupID, hasGroup: scope.hasGroup, effort: scope.effort}
 	return func(resp *http.Response, err error) {
 		if err != nil {
 			var netErr net.Error
@@ -517,8 +518,8 @@ func priorityErrorEndpoint(req OpenAIAccountScheduleRequest) string {
 	}
 	return "/v1/responses"
 }
-func (s *defaultOpenAIAccountScheduler) priorityErrorEvidence(req OpenAIAccountScheduleRequest, c PrioritySchedulingConfig, id int64, now time.Time) PriorityErrorEvidence {
-	key := priorityRequestAttemptKey(req, id)
+func (s *defaultOpenAIAccountScheduler) priorityErrorEvidence(req OpenAIAccountScheduleRequest, c PrioritySchedulingConfig, account *Account, now time.Time) PriorityErrorEvidence {
+	key := priorityRequestAttemptKey(req, account)
 	if s.stats == nil {
 		return PriorityErrorEvidence{WindowMinutes: c.ErrorRateWindowMinutes, PriorSamples: max(1, c.ErrorRatePriorSamples), ObservedAt: now, Endpoint: key.endpoint}
 	}

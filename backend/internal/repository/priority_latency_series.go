@@ -26,6 +26,10 @@ func (r *usageLogRepository) ReadPriorityLatencySeries(ctx context.Context, quer
 	if measurement == "" {
 		measurement = "legacy_forward"
 	}
+	routes, err := priorityRouteQueryValue(query.AccountRouteFingerprints)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.sql.QueryContext(ctx, `
  WITH base_usage AS (
   SELECT id, account_id, created_at, stream, first_token_ms, actual_cost, total_cost,
@@ -65,7 +69,7 @@ func (r *usageLogRepository) ReadPriorityLatencySeries(ctx context.Context, quer
    CASE WHEN jsonb_typeof(detail->'events'->'first_write')='number'
      AND length((detail->'events'->'first_write')::text)<32
      THEN (detail->'events'->>'first_write')::double precision END AS first_write_ms
-  FROM traces
+  FROM traces WHERE `+priorityRouteFilterSQL("$11")+`
  ), measured AS (
   SELECT *, CASE WHEN $7='legacy_forward' THEN first_token_ms::double precision
    WHEN detail->>'version'='1' AND detail->>'outcome'='success'
@@ -99,6 +103,7 @@ func (r *usageLogRepository) ReadPriorityLatencySeries(ctx context.Context, quer
    AND COALESCE(NULLIF(requested_model,''),model)=$3
    AND group_id IS NOT DISTINCT FROM $4::bigint
    AND ($9::text='' OR inbound_endpoint=$9)
+   AND $11::jsonb IS NULL
    AND error_phase='upstream'
   GROUP BY account_id,bucket
  ), all_buckets AS (
@@ -115,7 +120,7 @@ func (r *usageLogRepository) ReadPriorityLatencySeries(ctx context.Context, quer
  LEFT JOIN usage_buckets u ON u.account_id=k.account_id AND u.bucket=k.bucket
  LEFT JOIN errors e ON e.account_id=k.account_id AND e.bucket=k.bucket
  ORDER BY k.account_id,k.bucket
- `, pq.Array(query.AccountIDs), query.Since, query.Model, query.GroupID, bucketMinutes, slowTTFTMs, measurement, percentile, query.InboundEndpoint, query.ObservationEffort)
+ `, pq.Array(query.AccountIDs), query.Since, query.Model, query.GroupID, bucketMinutes, slowTTFTMs, measurement, percentile, query.InboundEndpoint, query.ObservationEffort, routes)
 	if err != nil {
 		return nil, err
 	}

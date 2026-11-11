@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"slices"
 	"strings"
@@ -66,8 +67,45 @@ func priorityObservationFromContext(ctx context.Context, fallback string) priori
 	return identity
 }
 
-func priorityRequestAttemptKey(req OpenAIAccountScheduleRequest, accountID int64) priorityAttemptKey {
-	key := priorityAttemptKey{accountID: accountID, model: priorityHistoryModel(req), endpoint: priorityErrorEndpoint(req), effort: req.ObservationEffort}
+// Only immutable routing identity is retained by diagnostic snapshots. Managed
+// grants are distinct from their parent and from sibling grants, including when
+// their projected routing settings happen to produce the same fingerprint.
+type priorityObservationRoute struct {
+	fingerprint [32]byte
+	connection  string
+	managed     bool
+}
+
+func priorityAccountObservationRoute(account *Account) priorityObservationRoute {
+	if account == nil {
+		return priorityObservationRoute{}
+	}
+	return priorityObservationRoute{fingerprint: AccountRouteFingerprint(account), connection: account.AuthConnectionID,
+		managed: account.AuthConnectionID != "" || account.HasManagedOpenAIConnections()}
+}
+
+func priorityCandidateObservationRoute(item openAIAccountCandidateScore) priorityObservationRoute {
+	if item.observationRoute != nil {
+		return *item.observationRoute
+	}
+	return priorityAccountObservationRoute(item.account)
+}
+
+func (r priorityObservationRoute) historyFingerprint() string {
+	// Persisted HTTP attempts do not prove which managed grant was used. Parent
+	// routing settings must never pool otherwise indistinguishable sibling grants.
+	if r.managed || r.fingerprint == [32]byte{} {
+		return ""
+	}
+	return fmt.Sprintf("%x", r.fingerprint)
+}
+
+func priorityRequestAttemptKey(req OpenAIAccountScheduleRequest, account *Account) priorityAttemptKey {
+	key := priorityAttemptKey{model: priorityHistoryModel(req), endpoint: priorityErrorEndpoint(req), effort: req.ObservationEffort,
+		route: priorityAccountObservationRoute(account)}
+	if account != nil {
+		key.accountID = account.ID
+	}
 	if req.GroupID != nil {
 		key.groupID, key.hasGroup = *req.GroupID, true
 	}

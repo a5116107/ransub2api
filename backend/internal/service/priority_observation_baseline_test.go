@@ -11,9 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// This test file also compiles against the complete unmodified production
-// baseline. Reflection supplies additive identity fields when the schema has
-// them; expected behavior and assertions are identical on both revisions.
+// Reflection supplied the additive observation fields for the original baseline
+// comparison. The evidence reader now also requires the actual candidate route.
 func baselineObservationIdentity(req *OpenAIAccountScheduleRequest, public, endpoint string) {
 	value := reflect.ValueOf(req).Elem()
 	for key, text := range map[string]string{"HistoryModel": public, "InboundEndpoint": endpoint} {
@@ -32,7 +31,7 @@ func TestPriorityObservationBaselineEndpoint(t *testing.T) {
 	req := OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.5", RequiredCapability: OpenAIEndpointCapabilityChatCompletions}
 	baselineObservationIdentity(&req, "gpt-5.5", "/v1/responses")
 	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: svc.openaiAccountStats}
-	got := scheduler.priorityErrorEvidence(req, DefaultPrioritySchedulingConfig(), account.ID, time.Now())
+	got := scheduler.priorityErrorEvidence(req, DefaultPrioritySchedulingConfig(), account, time.Now())
 	require.Equal(t, int64(1), got.Successes, "actual Responses ingress must survive CC capability fallback")
 }
 

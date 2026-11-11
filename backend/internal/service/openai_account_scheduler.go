@@ -766,7 +766,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		slog.Info("sticky_escape_triggered", "account_id", accountID, "reason", "priority_capacity_imbalance")
 		return nil, true, nil
 	}
-	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyForRequest(req, accountID, escapeCfg); shouldEscape && !req.DisableStickyEscape && !req.EncryptedReasoning {
+	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyForRequest(req, account, escapeCfg); shouldEscape && !req.DisableStickyEscape && !req.EncryptedReasoning {
 		slog.Info("sticky_escape_triggered",
 			"account_id", accountID,
 			"reason", reason,
@@ -866,6 +866,7 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccountAt(accountID in
 }
 
 type openAIAccountCandidateScore struct {
+	observationRoute                   *priorityObservationRoute
 	priorityOAuthSpare                 int
 	priorityAPIStandby                 bool
 	priorityLatencyFactor              float64
@@ -1099,7 +1100,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		if s.stats != nil {
 			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
 			if req.ObservationEffortScoped {
-				e := s.stats.attempts.snapshot(priorityRequestAttemptKey(req, account.ID), s.stats.currentTime(), 10, 5)
+				e := s.stats.attempts.snapshot(priorityRequestAttemptKey(req, account), s.stats.currentTime(), 10, 5)
 				errorRate, ttft, hasTTFT = 0, 0, false
 				if e.Successes+e.Failures >= 5 {
 					errorRate = e.SmoothedRate

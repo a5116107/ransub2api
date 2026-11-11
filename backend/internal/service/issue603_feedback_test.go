@@ -26,11 +26,11 @@ func TestIssue603DefaultSchedulerUsesScopedFeedback(t *testing.T) {
 	cfg.Gateway.Scheduling.LoadBatchEnabled = true
 	svc := &OpenAIGatewayService{accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts}, cfg: cfg, concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}), cache: &schedulerTestGatewayCache{}, openaiAccountStats: &openAIAccountRuntimeStats{now: func() time.Time { return clock }}}
 	ctx := WithPrioritySchedulingObservation(context.Background(), nil, "fixture", "/v1/responses")
-	key := priorityAttemptKey{accountID: 6031, model: "fixture", endpoint: "/v1/responses"}
+	key := priorityAttemptKey{accountID: 6031, route: priorityAccountObservationRoute(&accounts[0]), model: "fixture", endpoint: "/v1/responses"}
 	for range 4 {
 		svc.openaiAccountStats.attempts.report(key, false, now)
 	}
-	require.Zero(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", 6031), "minimum five samples")
+	require.Zero(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", &accounts[0]), "minimum five samples")
 	svc.openaiAccountStats.attempts.report(key, false, now)
 	selection, _, err := svc.SelectAccountWithScheduler(ctx, nil, "", "", "fixture", nil, OpenAIUpstreamTransportAny, false)
 	require.NoError(t, err)
@@ -38,13 +38,13 @@ func TestIssue603DefaultSchedulerUsesScopedFeedback(t *testing.T) {
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
-	require.Zero(t, svc.defaultFeedbackPenalty(context.Background(), nil, "other", 6031), "public model isolation")
-	require.Zero(t, svc.defaultFeedbackPenalty(WithPrioritySchedulingObservation(context.Background(), nil, "fixture", "/v1/chat/completions"), nil, "fixture", 6031), "endpoint isolation")
+	require.Zero(t, svc.defaultFeedbackPenalty(context.Background(), nil, "other", &accounts[0]), "public model isolation")
+	require.Zero(t, svc.defaultFeedbackPenalty(WithPrioritySchedulingObservation(context.Background(), nil, "fixture", "/v1/chat/completions"), nil, "fixture", &accounts[0]), "endpoint isolation")
 	group := int64(9)
-	require.Zero(t, svc.defaultFeedbackPenalty(ctx, &group, "fixture", 6031), "group isolation")
-	require.LessOrEqual(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", 6031), 35.0)
+	require.Zero(t, svc.defaultFeedbackPenalty(ctx, &group, "fixture", &accounts[0]), "group isolation")
+	require.LessOrEqual(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", &accounts[0]), 35.0)
 	clock = now.Add(11 * time.Minute)
-	require.Zero(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", 6031), "cooldown recovers without traffic")
+	require.Zero(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", &accounts[0]), "cooldown recovers without traffic")
 	selection, _, err = svc.SelectAccountWithScheduler(ctx, nil, "", "", "fixture", nil, OpenAIUpstreamTransportAny, false)
 	require.NoError(t, err)
 	require.Equal(t, int64(6031), selection.Account.ID)
@@ -79,7 +79,7 @@ func TestIssue603TransportSemanticAnd403Feedback(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		scope.finish(nil)
 	}
-	require.Greater(t, svc.defaultFeedbackPenalty(context.Background(), nil, "fixture", account.ID), 0.0)
+	require.Greater(t, svc.defaultFeedbackPenalty(context.Background(), nil, "fixture", account), 0.0)
 	for _, tc := range []struct {
 		body     string
 		failures int64
@@ -96,7 +96,7 @@ func TestIssue603TransportSemanticAnd403Feedback(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, resp.Body.Close())
 		scope.finish(nil)
-		e := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, model: tc.body, endpoint: "/v1/responses"}, clock, 10, 5)
+		e := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: tc.body, endpoint: "/v1/responses"}, clock, 10, 5)
 		require.Equal(t, tc.failures, e.Failures)
 	}
 }

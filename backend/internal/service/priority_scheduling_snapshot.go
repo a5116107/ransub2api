@@ -28,6 +28,8 @@ func newPrioritySnapshotInput(req OpenAIAccountScheduleRequest, c PrioritySchedu
 	}
 	for _, item := range pool[:min(len(pool), priorityHistoryMaxAccounts)] {
 		a := item.account
+		route := priorityCandidateObservationRoute(item)
+		item.observationRoute = &route
 		factor := a.EffectiveLoadFactor()
 		projection := &Account{ID: a.ID, Name: a.Name, Platform: a.Platform, Type: a.Type, Priority: a.Priority, Concurrency: a.Concurrency, LoadFactor: &factor, Extra: map[string]any{AccountCostMultiplierExtraKey: a.CostMultiplier()}}
 		// Retain binding IDs without retaining mutable group objects.
@@ -96,7 +98,8 @@ func (s *OpenAIGatewayService) prioritySchedulingSnapshotWithHistory(input *prio
 			role = "standby"
 		}
 		if s.openaiAccountStats != nil {
-			key := priorityRequestAttemptKey(input.request, item.account.ID)
+			key := priorityRequestAttemptKey(input.request, item.account)
+			key.route = priorityCandidateObservationRoute(item)
 			item.priorityErrors = s.openaiAccountStats.attempts.snapshot(key, now, input.config.ErrorRateWindowMinutes, input.config.ErrorRatePriorSamples)
 		}
 		score := applyPriorityCandidate(input.config, &item, h.signals[item.account.ID], now)

@@ -6,13 +6,97 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPriorityObservationPersistedRouteIsolation(t *testing.T) {
+	for _, measurement := range []string{"legacy_forward", "attributed_v1"} {
+		t.Run(measurement, func(t *testing.T) {
+			f := newLatencyCacheFixture(t)
+			account := f.usage.AccountID
+			peer := mustCreateAccount(t, f.tx.Client(), &service.Account{Name: "route-peer", Platform: service.PlatformOpenAI})
+			routeA, routeB := strings.Repeat("a", 64), strings.Repeat("b", 64)
+			inbound := "/v1/responses"
+			f.usage.InboundEndpoint = &inbound
+			for _, mode := range []string{"current", "foreign", "missing", "zero", "malformed", "uppercase", "wrong_account", "earlier_only", "parent_last", "ambiguous", "future_version", "peer"} {
+				id, route, ttft := account, routeA, 500
+				if mode == "peer" {
+					id, route, ttft = peer.ID, routeB, 700
+				} else if mode != "current" {
+					ttft = 25000
+				}
+				f.usage.AccountID, f.usage.FirstTokenMs, f.usage.ActualCost = id, &ttft, 1
+				f.trace.Version, f.trace.Status, f.trace.Outcome, f.trace.Terminal, f.trace.BodyComplete = 1, 200, "success", "completed", true
+				f.trace.Attempts = []requesttiming.Attempt{{Kind: "http", AccountID: id, RouteFingerprint: route, Status: 200, Terminal: "completed", Events: map[string]float64{"first_semantic": float64(ttft)}}}
+				switch mode {
+				case "foreign":
+					f.trace.Attempts[0].RouteFingerprint = routeB
+				case "missing":
+					f.trace.Attempts[0].RouteFingerprint = ""
+				case "zero":
+					f.trace.Attempts[0].RouteFingerprint = strings.Repeat("0", 64)
+				case "malformed":
+					f.trace.Attempts[0].RouteFingerprint = "invalid-route"
+				case "uppercase":
+					f.trace.Attempts[0].RouteFingerprint = strings.ToUpper(routeA)
+				case "wrong_account":
+					f.trace.Attempts[0].AccountID = peer.ID
+				case "earlier_only":
+					last := f.trace.Attempts[0]
+					last.RouteFingerprint = routeB
+					f.trace.Attempts = append(f.trace.Attempts, last)
+				case "parent_last":
+					f.trace.Attempts = append(f.trace.Attempts, requesttiming.Attempt{Kind: "egress", AccountID: id, RouteFingerprint: routeA})
+				case "future_version":
+					f.trace.Version = 2
+				}
+				usageID := f.insert(t)
+				if mode == "ambiguous" {
+					raw, err := json.Marshal(f.trace)
+					require.NoError(t, err)
+					_, err = f.tx.ExecContext(t.Context(), `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,$3::jsonb)`, usageID, uuid.NewString(), string(raw))
+					require.NoError(t, err)
+				}
+			}
+			_, err := f.tx.ExecContext(t.Context(), `INSERT INTO ops_error_logs(account_id,model,requested_model,inbound_endpoint,error_phase,error_type,severity,status_code,created_at) VALUES($1,'cache-fixture','cache-fixture',$2,'upstream','http_error','error',503,NOW()-INTERVAL '1 minute')`, account, inbound)
+			require.NoError(t, err)
+			query := service.PrioritySchedulingQuery{AccountIDs: []int64{account, peer.ID}, Model: "cache-fixture", InboundEndpoint: inbound, LatencyMeasurement: measurement, UsageSince: time.Now().Add(-time.Hour), QualitySince: time.Now().Add(-time.Hour),
+				AccountRouteFingerprints: map[int64]string{account: routeA, peer.ID: routeB}}
+			signals, err := f.repo.ReadPrioritySchedulingSignals(t.Context(), query)
+			require.NoError(t, err)
+			for id, want := range map[int64]float64{account: 500, peer.ID: 700} {
+				require.Equal(t, 1, signals[id].Samples, "only the final physical attempt proving this candidate route may contribute")
+				require.InDelta(t, want, signals[id].P90TTFTMs, .01)
+				require.Equal(t, 1, signals[id].ProfitSamples)
+				require.Zero(t, signals[id].ErrorSamples, "ops errors without route proof cannot be attributed to the current route")
+			}
+			buckets, err := f.repo.ReadPriorityLatencySeries(t.Context(), service.PriorityLatencySeriesQuery{AccountIDs: query.AccountIDs, Model: query.Model, Since: query.UsageSince, InboundEndpoint: inbound, LatencyMeasurement: measurement, AccountRouteFingerprints: query.AccountRouteFingerprints})
+			require.NoError(t, err)
+			counts := map[int64]int{}
+			for _, bucket := range buckets {
+				counts[bucket.AccountID] += bucket.Samples
+				require.Zero(t, bucket.ErrorSamples)
+			}
+			require.Equal(t, map[int64]int{account: 1, peer.ID: 1}, counts)
+			query.AccountRouteFingerprints = map[int64]string{}
+			signals, err = f.repo.ReadPrioritySchedulingSignals(t.Context(), query)
+			require.NoError(t, err)
+			require.Zero(t, signals[account].Samples, "an explicitly scoped account with no route proof stays unknown")
+			query.AccountRouteFingerprints = nil
+			signals, err = f.repo.ReadPrioritySchedulingSignals(t.Context(), query)
+			require.NoError(t, err)
+			require.Greater(t, signals[account].Samples, 1, "explicit legacy unscoped repository calls retain their original population")
+			require.Equal(t, 1, signals[account].ErrorSamples)
+		})
+	}
+}
 
 func TestPriorityObservationPersistedEndpointIsolation(t *testing.T) {
 	ctx := t.Context()

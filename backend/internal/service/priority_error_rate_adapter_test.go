@@ -37,13 +37,13 @@ func TestPriorityErrorRateNativeGuardAfterOutput(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 200, c.Writer.Status(), "the response has already started")
 	require.Contains(t, c.Writer.Header().Get("Content-Type"), "text/event-stream")
-	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, model: "gpt-6.1-sol", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: "gpt-6.1-sol", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 	require.Equal(t, int64(1), got.Failures)
 	require.Zero(t, got.Successes)
 	// Repeated outer health/scheduler feedback cannot write the physical counters.
 	svc.ReportOpenAIAccountScheduleResult(account, "gpt-6.1-sol", false, nil, err)
 	svc.ReportOpenAIAccountScheduleResult(account, "gpt-6.1-sol", false, nil, err)
-	again := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, model: "gpt-6.1-sol", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+	again := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: "gpt-6.1-sol", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 	require.Equal(t, got.Failures, again.Failures)
 }
 
@@ -62,8 +62,8 @@ func TestPriorityErrorRateNativeFallbackKeepsOriginalFailure(t *testing.T) {
 	_, err = svc.Forward(context.Background(), newOpenAIRejectedFieldTestContext(body), &second, body)
 	require.NoError(t, err)
 	require.Len(t, upstream.requests, 2)
-	failed := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: first.ID, model: "gpt-5.5", endpoint: "/v1/responses"}, time.Now(), 10, 5)
-	success := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: second.ID, model: "gpt-5.5", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+	failed := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: first.ID, route: priorityAccountObservationRoute(first), model: "gpt-5.5", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+	success := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: second.ID, route: priorityAccountObservationRoute(&second), model: "gpt-5.5", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 	require.Equal(t, int64(1), failed.Failures)
 	require.Zero(t, failed.Successes)
 	require.Equal(t, int64(1), success.Successes)
@@ -81,7 +81,7 @@ func TestPriorityErrorRateNativeInternalRetryExcludesInputRejection(t *testing.T
 	_, err := svc.Forward(context.Background(), newOpenAIRejectedFieldTestContext(body), account, body)
 	require.NoError(t, err)
 	require.Len(t, upstream.requests, 2)
-	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, model: "gpt-5.5", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: "gpt-5.5", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 	require.Equal(t, int64(1), got.Successes)
 	require.Zero(t, got.Failures)
 }
@@ -114,7 +114,7 @@ func TestPriorityErrorRateScopeRetryDisconnectAndTransportClassification(t *test
 				markPriorityAttemptFailure(ctx)
 			}
 			scope.finish(&OpenAIForwardResult{ClientDisconnect: tc.disconnected})
-			got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, model: "mock-model", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+			got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: "mock-model", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 			require.Equal(t, tc.failures, got.Failures)
 			require.Zero(t, got.Successes)
 		})
@@ -138,7 +138,7 @@ func TestPriorityErrorRateScopeRetryDisconnectAndTransportClassification(t *test
 	require.NoError(t, resp.Body.Close())
 	scope.finish(nil)
 	scope.finish(nil)
-	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: a.ID, model: "mock-model", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: a.ID, route: priorityAccountObservationRoute(a), model: "mock-model", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 	require.Equal(t, int64(1), got.Successes)
 	require.Equal(t, int64(1), got.Failures)
 }
@@ -163,7 +163,7 @@ func TestPriorityErrorRateLateCloseCannotOverwriteRetry(t *testing.T) {
 	require.NoError(t, one.Body.Close())
 	require.NoError(t, one.Body.Close())
 	scope.finish(nil)
-	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: a.ID, model: "mock-model", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+	got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: a.ID, route: priorityAccountObservationRoute(a), model: "mock-model", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 	require.Equal(t, int64(1), got.Successes)
 	require.Equal(t, int64(1), got.Failures)
 }
@@ -188,7 +188,7 @@ func TestPriorityErrorRateBPSActualAdapter(t *testing.T) {
 			}
 			require.NotNil(t, upstream.lastReq)
 			require.Equal(t, "bps.openai.com", upstream.lastReq.URL.Host)
-			got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: a.ID, model: "gpt-5.6-sol", endpoint: "/v1/responses"}, time.Now(), 10, 5)
+			got := svc.openaiAccountStats.attempts.snapshot(priorityAttemptKey{accountID: a.ID, route: priorityAccountObservationRoute(a), model: "gpt-5.6-sol", endpoint: "/v1/responses"}, time.Now(), 10, 5)
 			if failed {
 				require.Equal(t, int64(1), got.Failures)
 				require.Zero(t, got.Successes)

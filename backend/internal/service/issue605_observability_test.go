@@ -262,7 +262,7 @@ func TestIssue605DefaultAndAdvancedFeedbackEffortIsolation(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.Scheduling.LoadBatchEnabled = true
 	svc := &OpenAIGatewayService{cfg: cfg, accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts}, cache: &schedulerTestGatewayCache{}, concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}), openaiAccountStats: newOpenAIAccountRuntimeStats()}
-	key := priorityAttemptKey{accountID: 6051, model: "fixture", endpoint: "/v1/responses", effort: "xhigh"}
+	key := priorityAttemptKey{accountID: 6051, route: priorityAccountObservationRoute(&accounts[0]), model: "fixture", endpoint: "/v1/responses", effort: "xhigh"}
 	for range 5 {
 		svc.openaiAccountStats.attempts.report(key, false, now)
 	}
@@ -280,7 +280,7 @@ func TestIssue605DefaultAndAdvancedFeedbackEffortIsolation(t *testing.T) {
 	}
 	for _, effort := range []string{"medium", "max", ""} {
 		ctx := WithObservationEffort(context.Background(), effort)
-		require.Zero(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", 6051), "xhigh must not contaminate another effort")
+		require.Zero(t, svc.defaultFeedbackPenalty(ctx, nil, "fixture", &accounts[0]), "xhigh must not contaminate another effort")
 	}
 	svc.openaiAccountStats.report(6051, false, nil)
 	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: svc.openaiAccountStats}
