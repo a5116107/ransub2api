@@ -95,6 +95,25 @@ export default {
   "success": "转发成功",
   "client_disconnected": "客户端已断开",
   "tpsNote": "平均 TPS = 输出 Token ÷ 记录的总耗时(秒). 包含等待时间及上游计入输出用量的推理 Token, 不扣除首字延迟, 不代表模型实际生成速度.",
+  "cacheMigration": {
+    "title": "当前请求的缓存冷输入边界",
+    "input": "最终尝试总输入 Token",
+    "read": "缓存读取 Token",
+    "nonRead": "未从缓存读取 Token（含写入）",
+    "bound": "可能归因于本次换线的 Token 范围",
+    "transitions": "本请求内已确认换线 {changed} 次，未知转换 {unknown} 次",
+    "note": "未读缓存输入 = 原始总输入 − 缓存读取，包含缓存创建量。换线后仅给出 0 至最终成功尝试未读缓存输入的归因范围，不包含此前失败尝试的输入或费用。实际换线损失、下一轮命中与切换收益仍未知；未换线也不代表整个会话没有迁移。只比较本请求内可核验的账号、线路指纹和代理；会话前缀、实际模型/fast 缓存共享仍需独立证据。不计为费用，不用于自动调度。",
+    "states": {
+      "not_collected": "未采集；历史或缺失数据保持未知",
+      "partial": "尝试记录不完整或存在重叠，不给出归因范围",
+      "unsupported_transport": "当前范围只覆盖单次请求内的物理 HTTP 尝试",
+      "cache_usage_unavailable": "最终成功响应缺少完整可信的原始缓存计数",
+      "invalid_boundary": "尝试顺序或时间边界异常，不给出归因范围",
+      "unknown_route": "缺少可信线路身份，无法确认完整切换过程",
+      "no_observed_route_change": "本请求未观测到线路变化；会话历史与下一轮仍未知",
+      "bounded_attribution_unknown": "已观测到本请求内换线；仅给保守归因范围，实际换线损失未知"
+    }
+  },
   "outputRate": {
     "title": "输出阶段速度（估算）",
     "tokens": "非推理输出 Token",

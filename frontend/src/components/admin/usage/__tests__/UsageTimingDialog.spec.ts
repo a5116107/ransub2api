@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import UsageTimingDialog from '../UsageTimingDialog.vue'
 import { observerUsageContext } from '../observerUsageContext'
 import type { AdminUsageLog, OutputRateObservation } from '@/types'
-import type { RequestTiming } from '@/api/admin/usageTiming'
+import type { CacheMigrationObservation, RequestTiming } from '@/api/admin/usageTiming'
 const mocks = vi.hoisted(() => ({ get: vi.fn(), own: vi.fn() }))
 vi.mock('@/api/observerUsage', () => ({ observerUsageAPI: { getTiming: mocks.own } }))
 vi.mock('@/api/admin/usageTiming', () => ({ getUsageTiming: mocks.get }))
@@ -21,7 +21,74 @@ const phaseTrace = (rate?: OutputRateObservation, id = 'phase'): RequestTiming =
   truncated: false, body_bytes: 0, body_expected: 0, body_complete: true, body_read_ms: 0, downstream_bytes: 100,
   downstream_write_ms: 0, downstream_error: false, events: {}, spans: [], attempts: [], output_rate: rate
 })
+const migrationObservation = (): CacheMigrationObservation => ({
+  status: 'bounded_attribution_unknown', source: 'canonical_responses_terminal_usage', cache_status: 'observed',
+  scope: 'final_physical_http_input_after_request_route_transitions', method: 'zero_to_final_non_read_input_not_causal',
+  route_switches: 1, unknown_transitions: 0, input_tokens: 1000, read_tokens: 900, non_read_input_tokens: 100,
+  extra_cold_input_min_tokens: 0, extra_cold_input_max_tokens: 100
+})
+const migrationTrace = (observation: CacheMigrationObservation): RequestTiming => ({
+  ...phaseTrace(), latency: {
+    version: 1, status: 'measured', account_switches: 1, same_account_retries: 0, unknown_transitions: 0,
+    large_body: false, cost_status: 'not_applicable', extra_upload_component_ms: null, extra_wait_component_ms: null,
+    attempts: [], cache_migration: observation
+  }
+})
 describe('Usage timing details', () => {
+  it.each(['trace', 'latency'])('does not interpret an unknown %s version as an HTTP cache boundary', async scope => {
+    const trace = migrationTrace(migrationObservation())
+    if (scope === 'trace') trace.version = 2
+    else trace.latency!.version = 2
+    mocks.get.mockResolvedValue({ traces: [trace], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="cache-migration-bound"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="cache-migration-non-read"]').text()).toBe('requestTiming.missing')
+    wrapper.unmount()
+  })
+  it.each([100, 0])('shows an honest cache-attribution bound, including measured upper bound %s', async upper => {
+    const value = { ...migrationObservation(), read_tokens: 1000 - upper, non_read_input_tokens: upper, extra_cold_input_max_tokens: upper }
+    mocks.get.mockResolvedValue({ traces: [migrationTrace(value)], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="cache-migration-bound"]').text()).toBe(`0–${upper}`)
+    expect(wrapper.get('[data-testid="cache-migration-non-read"]').text()).toBe(String(upper))
+    expect(wrapper.get('[data-testid="cache-migration-status"]').text()).toBe('requestTiming.cacheMigration.states.bounded_attribution_unknown')
+    wrapper.unmount()
+  })
+  it.each<Partial<CacheMigrationObservation>>([
+    { source: 'future_unknown' }, { source: '__proto__' }, { scope: 'future_scope' }, { method: 'future_method' },
+    { cache_status: 'partial' }, { input_tokens: null }, { input_tokens: Number.MAX_SAFE_INTEGER + 1 },
+    { read_tokens: -1 }, { read_tokens: 1001 }, { non_read_input_tokens: Number.NaN }, { non_read_input_tokens: 101 },
+    { extra_cold_input_min_tokens: 1 }, { extra_cold_input_max_tokens: 101 }, { route_switches: 0 }, { unknown_transitions: 1 }
+  ])('does not publish a cache-attribution bound for invalid or unsupported evidence %o', async edit => {
+    mocks.get.mockResolvedValue({ traces: [migrationTrace({ ...migrationObservation(), ...edit })], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="cache-migration-bound"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="cache-migration-status"]').text()).toBe('requestTiming.cacheMigration.states.not_collected')
+    wrapper.unmount()
+  })
+  it.each(['partial', 'invalid_boundary', 'unknown_route', 'cache_usage_unavailable', 'no_observed_route_change'])('keeps missing attribution distinct from zero for %s', async status => {
+    mocks.get.mockResolvedValue({ traces: [migrationTrace({ ...migrationObservation(), status })], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="cache-migration-bound"]').text()).toBe('requestTiming.missing')
+    expect(wrapper.get('[data-testid="cache-migration-status"]').text()).toBe(`requestTiming.cacheMigration.states.${status}`)
+    wrapper.unmount()
+  })
+  it('does not inherit another trace or apply an HTTP cache bound to a WebSocket turn', async () => {
+    const ws = { ...migrationTrace(migrationObservation()), ttft_mode: 'ws_turn' }
+    mocks.get.mockResolvedValue({ traces: [migrationTrace(migrationObservation()), phaseTrace(), ws], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="cache-migration-bound"]').text()).toBe('0–100')
+    await wrapper.get('select').setValue('1')
+    expect(wrapper.get('[data-testid="cache-migration-bound"]').text()).toBe('requestTiming.missing')
+    await wrapper.get('select').setValue('2')
+    expect(wrapper.get('[data-testid="cache-migration-bound"]').text()).toBe('requestTiming.missing')
+    wrapper.unmount()
+  })
   it.each(['__proto__', 'constructor', 'toString'])('rejects an inherited scope property %s when a historical source is missing', async scope => {
     const rate = { ...phaseObservation(), scope }
     delete (rate as Partial<OutputRateObservation>).source

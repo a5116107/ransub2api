@@ -46,6 +46,18 @@
           </dl>
           <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('requestTiming.outputRate.note') }}</p>
         </section>
+        <section class="rounded-xl border border-gray-200 p-4 dark:border-dark-600" aria-labelledby="cache-migration-title">
+          <h4 id="cache-migration-title" class="font-semibold">{{ t('requestTiming.cacheMigration.title') }}</h4>
+          <p class="mt-1 text-sm text-gray-600 dark:text-gray-400" data-testid="cache-migration-status">{{ migrationStatus }}</p>
+          <dl class="mt-3 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+            <div><dt class="text-gray-500">{{ t('requestTiming.cacheMigration.input') }}</dt><dd class="mt-1 tabular-nums">{{ migrationCounts?.input ?? t('requestTiming.missing') }}</dd></div>
+            <div><dt class="text-gray-500">{{ t('requestTiming.cacheMigration.read') }}</dt><dd class="mt-1 tabular-nums">{{ migrationCounts?.read ?? t('requestTiming.missing') }}</dd></div>
+            <div><dt class="text-gray-500">{{ t('requestTiming.cacheMigration.nonRead') }}</dt><dd class="mt-1 tabular-nums" data-testid="cache-migration-non-read">{{ migrationCounts?.nonRead ?? t('requestTiming.missing') }}</dd></div>
+            <div><dt class="text-gray-500">{{ t('requestTiming.cacheMigration.bound') }}</dt><dd class="mt-1 tabular-nums" data-testid="cache-migration-bound">{{ migrationBound == null ? t('requestTiming.missing') : `0–${migrationBound}` }}</dd></div>
+          </dl>
+          <p v-if="migrationTransitions" class="mt-3 text-xs text-gray-500 dark:text-gray-400">{{ migrationTransitions }}</p>
+          <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('requestTiming.cacheMigration.note') }}</p>
+        </section>
         <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('requestTiming.health.attemptGuide') }}</p>
         <p v-if="trace.truncated" class="text-amber-600">{{ t('requestTiming.truncated') }}</p>
         <div class="grid gap-4 lg:grid-cols-3">
@@ -94,6 +106,32 @@ const traces = ref<RequestTiming[]>([]), selected = ref(0), loading = ref(false)
 let controller: AbortController | undefined
 const trace = computed(() => traces.value[selected.value])
 const outputRate = computed(() => trace.value?.output_rate)
+const migration = computed(() => trace.value?.latency?.cache_migration)
+const migrationScope = computed(() => trace.value?.version === 1 && trace.value.latency?.version === 1 && trace.value.ttft_mode !== 'ws_turn' && migration.value?.scope === 'final_physical_http_input_after_request_route_transitions' && migration.value.method === 'zero_to_final_non_read_input_not_causal')
+const safeCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const migrationCounts = computed(() => {
+  const v = migration.value
+  if (!migrationScope.value || !v || v.cache_status !== 'observed' || !['canonical_responses_terminal_usage', 'canonical_chat_completions_usage', 'canonical_messages_cumulative_usage', 'canonical_gemini_usage_metadata'].includes(v.source)) return undefined
+  const { input_tokens: input, read_tokens: read, non_read_input_tokens: nonRead } = v
+  if (!safeCount(input) || !safeCount(read) || !safeCount(nonRead) || read > input || nonRead !== input - read) return undefined
+  return { input, read, nonRead }
+})
+const migrationBound = computed(() => {
+  const v = migration.value, counts = migrationCounts.value
+  if (!v || !counts || v.status !== 'bounded_attribution_unknown' || !safeCount(v.route_switches) || v.route_switches < 1 || v.unknown_transitions !== 0 || v.extra_cold_input_min_tokens !== 0 || v.extra_cold_input_max_tokens !== counts.nonRead) return undefined
+  return counts.nonRead
+})
+const migrationStatus = computed(() => {
+  const v = migration.value
+  const states = ['not_collected', 'partial', 'unsupported_transport', 'cache_usage_unavailable', 'invalid_boundary', 'unknown_route', 'no_observed_route_change', 'bounded_attribution_unknown']
+  const status = migrationScope.value && v && states.includes(v.status) && (v.status !== 'bounded_attribution_unknown' || migrationBound.value != null) ? v.status : 'not_collected'
+  return t(`requestTiming.cacheMigration.states.${status}`)
+})
+const migrationTransitions = computed(() => {
+  const v = migration.value
+  if (!migrationScope.value || !v || !['unknown_route', 'no_observed_route_change', 'bounded_attribution_unknown'].includes(v.status) || !safeCount(v.route_switches) || !safeCount(v.unknown_transitions)) return undefined
+  return t('requestTiming.cacheMigration.transitions', { changed: v.route_switches, unknown: v.unknown_transitions })
+})
 const phaseRateScopeKey = computed(() => {
   const rate = outputRate.value
   if (!rate) return undefined

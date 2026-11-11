@@ -20,16 +20,17 @@ type AttemptLatency struct {
 }
 
 type LatencySummary struct {
-	Version                int              `json:"version"`
-	Status                 string           `json:"status"`
-	Attempts               []AttemptLatency `json:"attempts"`
-	AccountSwitches        int              `json:"account_switches"`
-	SameAccountRetries     int              `json:"same_account_retries"`
-	UnknownTransitions     int              `json:"unknown_transitions"`
-	LargeBody              bool             `json:"large_body"`
-	ExtraUploadComponentMS *float64         `json:"extra_upload_component_ms"`
-	ExtraWaitComponentMS   *float64         `json:"extra_wait_component_ms"`
-	CostStatus             string           `json:"cost_status"`
+	CacheMigration         CacheMigrationObservation `json:"cache_migration"`
+	Version                int                       `json:"version"`
+	Status                 string                    `json:"status"`
+	Attempts               []AttemptLatency          `json:"attempts"`
+	AccountSwitches        int                       `json:"account_switches"`
+	SameAccountRetries     int                       `json:"same_account_retries"`
+	UnknownTransitions     int                       `json:"unknown_transitions"`
+	LargeBody              bool                      `json:"large_body"`
+	ExtraUploadComponentMS *float64                  `json:"extra_upload_component_ms"`
+	ExtraWaitComponentMS   *float64                  `json:"extra_wait_component_ms"`
+	CostStatus             string                    `json:"cost_status"`
 }
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
@@ -156,5 +157,6 @@ func DeriveLatency(s Snapshot) LatencySummary {
 			out.ExtraUploadComponentMS, out.ExtraWaitComponentMS = &upload, &wait
 		}
 	}
+	out.CacheMigration = deriveCacheMigration(s, out.Status)
 	return out
 }

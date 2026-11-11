@@ -1884,3 +1884,21 @@
 - 浏览器沿原 5187 有界夹具验证：缺来源的非法历史范围显示未采集/未采集，正常 Messages/Gemini 仍 50.0 t/s 并显示各自中英文原始协议标签；英文移动宽 390、文档宽 390、无失败资源，page errors 为空（protocol-rate-prototype-browser.json、protocol-rate-final-browser-mobile.json、protocol-rate-ui-en-mobile.png）。原空/加载/错误与中/英桌面证据保留，界面结构未改；不将本地合成用量当作真实供应商速度。浏览器会话及 5187 进程已关闭。仅见原 Browserslist 数据陈旧提示，未改依赖锁。设计中三处“TPS 尚未采集/不复用公式”的过时表述已原位更新，保留缺计数/跨协议可比性与迁移收益未知边界。
 - 最终 17 项源码/锁/规则清单 `source-protocol-rate-final.sha256` 的规范 LF 摘要 b72229a8cec88a172894fcfaa5e61c02fe923d5c29cef70308adf3769c6b343e，逐项零漂移；gofmt/diff、23 本地文档链接、新增债务/skip/豁免扫描通过。任务只在原工作树本地提交；历史 12 张 PNG/1164bytes 未加入索引。D5 的会话迁移额外冷输入、保守估计与跨协议可比性，以及 D2 unknown 契约、D4 模型/fast、D6–D9/正式排空验收继续保留。
 - 本轮仅尝试删除自身系统 TEMP/sub2api-protocol-rate，命令含精确路径/非链接/进程引用保护，但宿主在执行前拒绝：`blocked by policy`。只读测量为 18 文件/734050554bytes（700.05MiB），实际删除 0；绝对路径 C:/Users/Administrator/AppData/Local/Temp/sub2api-protocol-rate。未换工具删除、搬移或压缩；由工作区拥有者手动清理。历史被拒目录、96 份 Go 缓存及其他任务资源未动；所有本轮测试/浏览器/SQL 进程已退出，最小证据保留在原 protocol-cache，不声称整个磁盘已清理。
+
+## 2026-11-11：D5 请求内换线的未读缓存输入与保守归因范围
+
+- 沿原 H 盘唯一工作树、work/monitor-driven-scheduling、0062037 基线续接未提交改动，完成本地源码、回归及文档交付。不 CI、推送、部署或修改线上策略；视频查询转发原节点，生成、双预算与结算仍归原节点。原28项20 done不变，本子项不关闭D5或后续依赖。
+- 在原 LatencySummary 新增 cache_migration，由原 collector 快照和 writeTiming 共用 DeriveLatency 重算；不新增表、采集器、队列、计费桶或自动排名。只取最终成功物理 HTTP 的规范总输入与读取量，未读缓存输入包含写入；Responses/Chat/Messages/Gemini 沿已有原始口径，不从账单或其他尝试补计数。
+- 按本请求的账号、规范非零线路指纹及代理比较真实 HTTP 发送，识别换账号、同账号配置/代理变化和同路重试。顺序完整且有确认换线时仅给出0至最终未读缓存输入的归因界限；这是非因果范围，不包含此前失败尝试的输入/费用，不证明下一轮命中、整个会话历史或实际迁移收益。同路/单次发送、未知线路、缺发送、重叠/坏边界、截断、取消/断连/下游写错、缺计数/错误协议及WS保持独立状态，不把未知写成零损失。
+- 请求详情原位展示中英文计数、范围和解释；按trace、版本、来源、scope、method、安全整数与守恒核验。未知版本/来源、历史和WS不借其他trace数值；明确全命中可显示0–0，缺观察显示未采集。存储调用方伪造的派生范围由既有写入投影替换，原始数据和账单不改。
+- 首次cache-migration-red.jsonl真实复现新投影缺口。将直接赋值快照的collector测试替换为实际loopback HTTP：首请求502，第二次换账号/指纹后成功，从真实响应体解析终态及原始用量。首次增强夹具漏走生产Output完成入口，cache-migration-packages-final.jsonl及cache-migration-loopback-before.log真实失败保留；补齐相同公开入口后通过，没有放宽成功判定、修改断言或向collector.data注入成功状态。
+- 最终 `go test -race -p 1 -tags unit ./internal/pkg/requesttiming ./internal/middleware -count=1 -timeout=4m -json` 退出0：计时67顶层/582含子例、5.289s，中间件18/35、14.872s（cache-migration-packages-verified.jsonl）。覆盖最终尝试隔离、四协议计数、写桶不重复扣减、真实物理换线、零范围和失败/未知边界。
+- 复用原 loopback55486 PostgreSQL17.10、原 native-overlay.json：只替换测试harness的Docker准备，原迁移、SQL、adapter和断言不改。`go test -race -p 1 -tags 'unit integration' -overlay <既有 native-overlay.json> ./internal/repository -run '^(TestCacheMigration|TestLatencyCache|TestLatencyOutputRate|TestIssue605|TestTiming)' -count=1 -timeout=6m -json` 退出0，14顶层/93含子例、3.849s、零失败/跳过（cache-migration-pg17.jsonl）。新增六类往返覆盖换线、同路、同账号新线路、未知来源、下游写错和多trace旧记录隔离。与计时/中间件合计99顶层/710含子例；不等同PG14/Redis7组合、全仓或生产验收。
+- PG17首次启动用了Start-Process -Wait，等待进程树使测试尚未开始；中止原会话后原实例确认停止。改为隐藏启动并只对pg_ctl句柄WaitForExit，沿原路径/端口复用。最终启动和fast停止均退出0，未改共享服务。原PG14容器查询阻塞仍归环境拥有者，不重试无新证据的组合。
+- 续接原静态壳PID16592，通过持有进程句柄等待确认聚合退出0（cache-migration-static-exit.log）：原两包unit/integration标签lint为0 issues，三包vet与Linux server编译通过。新增loopback测试后计时包原规则lint单独退出0、0 issues（cache-migration-lint-loopback.log）。生产Go源码未变，不重复全服务回归；既有协议证据按匹配源码复用。
+- 前端UsageTimingDialog、LatencyObservabilityPanel及localeKeyCompleteness三文件77测试通过；vue-tsc --noEmit和五文件定向eslint退出0（cache-migration-frontend-final.log、cache-migration-type-final.log、cache-migration-ui-lint-final.log）。仅既有Browserslist数据陈旧提示，未更换依赖锁或规则。
+- 沿原5187页面夹具验证中英展示、0–100/0–0、未知/非法来源、历史trace/WS隔离、空/加载/错误和键盘选择。390px页面无横溢出，新section的scrollWidth/clientWidth均338，页面错误为空，资源失败数组为空；截图定位新面板。agent-browser select包装器因values参数校验失败，改用同一native select的change和键盘ArrowDown验证，不将失败调用记为通过。初次关闭截图处于过渡期，不据此宣称完成关闭；最终关闭结果单独保存。浏览器/服务进程的最终回收结果随后核对。
+- 唯一设计文档原位补齐已交付范围并改正过时表述。15项源码/锁/规则清单source-cache-migration-final.sha256的规范LF摘要2754054413a892914a315ddd6cdedead1fdd46f153ac9f14ac0547ae6fc499d8；差异检查、本地文档链接和新增TODO/FIXME/XXX/skip/nolint扫描通过。会话可复用前缀、实际模型/fast和候选缓存域证据仍缺，不从session ID、全站命中率或独立历史p90推断；D5跨请求估计/跨协议比较与D6软迁移保持未验收。回退应用保留JSON及账单，旧读者忽略新字段，不为混合版本声称完整观测。
+- 历史12个PNG共1164bytes原位、不提交；历史被宿主拒绝删除的目录和Go缓存均未重试、搬移或压缩。本轮复用既有scratch及最小证据目录，未创建新worktree、全局缓存或平行台账。
+
+- 最终键盘关闭验收等待原组件过渡后确认dialogs=0、保留Reopen details（cache-migration-browser-keyboard-close.json）；浏览器会话已关闭，5187夹具随后由原执行句柄停止。原PG17 status明确no server running，原静态壳已退出。STATE为80行/8077bytes，恢复检查点结束于968bytes；23个本地链接及15项源码摘要零漂移。仅保留最小回归证据与原可复用夹具；历史拒删资源不处理。

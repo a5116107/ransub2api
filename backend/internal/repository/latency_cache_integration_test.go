@@ -131,6 +131,69 @@ func (f latencyCacheFixture) insert(t *testing.T) int64 {
 	return f.usage.ID
 }
 
+func TestCacheMigrationPersistsWithoutInventingSessionLoss(t *testing.T) {
+	for _, mode := range []string{"changed", "same_route", "same_account_new_route", "unknown_old_route", "downstream_failed", "two_traces"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newLatencyCacheFixture(t)
+			old := mustCreateAccount(t, f.tx.Client(), &service.Account{Name: "previous-cache-route"})
+			f.usage.InputTokens, f.usage.CacheReadTokens, f.usage.CacheCreationTokens = 80, 900, 20
+			f.trace.Terminal, f.trace.Outcome = "completed", "success"
+			last := f.trace.Attempts[0]
+			last.Number, last.StartMS, last.RouteFingerprint = 2, 1000, strings.Repeat("b", 64)
+			last.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 1000, ReadTokens: 900, WriteTokens: 20, WriteReported: true}
+			firstEnd := 500.0
+			first := requesttiming.Attempt{Kind: "http", Number: 1, AccountID: old.ID, RouteFingerprint: strings.Repeat("a", 64), EndMS: &firstEnd, Status: 502, Error: "transport_error"}
+			expected := "bounded_attribution_unknown"
+			switch mode {
+			case "same_route":
+				first.AccountID, first.RouteFingerprint = last.AccountID, last.RouteFingerprint
+				expected = "no_observed_route_change"
+			case "same_account_new_route":
+				first.AccountID = last.AccountID
+			case "unknown_old_route":
+				first.RouteFingerprint = ""
+				expected = "unknown_route"
+			case "downstream_failed":
+				f.trace.DownstreamError = true
+				expected = "cache_usage_unavailable"
+			}
+			f.trace.Attempts = []requesttiming.Attempt{first, last}
+			derived := requesttiming.DeriveLatency(f.trace)
+			f.trace.Latency = &derived
+			id := f.insert(t)
+			if mode == "two_traces" {
+				_, err := f.tx.ExecContext(t.Context(), `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,'{}'::jsonb)`, id, uuid.NewString())
+				require.NoError(t, err)
+			}
+			traces, err := f.repo.RequestTimings(t.Context(), id)
+			require.NoError(t, err)
+			observed, missing := 0, 0
+			for _, raw := range traces {
+				var saved requesttiming.Snapshot
+				require.NoError(t, json.Unmarshal(raw, &saved))
+				if saved.Latency == nil {
+					missing++
+					continue
+				}
+				observed++
+				v := saved.Latency.CacheMigration
+				require.Equal(t, expected, v.Status)
+				if expected == "bounded_attribution_unknown" {
+					require.EqualValues(t, 100, *v.NonReadInputTokens)
+					require.EqualValues(t, 0, *v.ExtraColdInputMinTokens)
+					require.EqualValues(t, 100, *v.ExtraColdInputMaxTokens)
+				} else {
+					require.Nil(t, v.ExtraColdInputMaxTokens)
+				}
+			}
+			require.Equal(t, 1, observed)
+			if mode == "two_traces" {
+				require.Equal(t, 1, missing, "an old trace must not borrow another trace's observation")
+			}
+		})
+	}
+}
+
 func TestLatencyCacheCanonicalCountersAndBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name, bucket, source string

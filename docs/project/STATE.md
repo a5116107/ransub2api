@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5协议文本TPS子项本地验收完成；父项继续。
+任务：D5请求内换线冷输入范围本地已验；父项仍开放。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：d5833f4基线；17项清单b72229a8；沿原计时JSON，无迁移/计费变更。
-验证命令：协议/计时/中间件race、PG17原SQL、前端test/type/lint与原Go静态规则。
-验证结果：race552顶层/2642含子例零失败/跳过、前端52、PG17、type/lint/vet/Linux全通过。
-验证来源：backend/tmp/protocol-cache/protocol-rate-*；原PG14超时非通过。
-下一动作：D5迁移冷输入/会话估计继续待验；PG14由环境拥有者恢复Docker后补验。
-尝试：11
+源码：0062037后原JSON投影；清单source-cache-migration-final.sha256。
+验证命令：timing/middleware race、PG17原SQL、前端vitest/type/eslint及原lint/vet/Linux编译。
+验证结果：99顶层/710含子例，前端77通过；lint 0，原静态壳退出0。
+验证来源：backend/tmp/protocol-cache/cache-migration-*；清单27540544；PG14仍未补验。
+下一动作：D5跨请求前缀/候选缓存域与跨协议可比性仍待独立证据；D2/D4外部条件不变。
+尝试：13
 阻塞：D2 unknown待供应商契约；生产排空待管理员；旧缓存及本轮临时目录拒删待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 原始HTTP/WS协议与缓存、三协议文本TPS/race/PG17/UI/type/lint/vet/Linux已验；跨协议可比性、迁移冷输入与会话估计待验 |
+| D5 | in_progress | 原始协议/缓存/TPS及请求内换线冷输入范围已验；99顶层race/PG17、前端77及静态通过；跨协议可比性与跨请求会话估计待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -60,13 +60,13 @@
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
 - 使用Go1.27.3、原go.mod和lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 6GiB/18分钟。
 - 真实Redis竞争测试按PATH启动；本轮前置已有`H:/Root/tools/redis/5.0.14.1`，系统Redis3缺`redis.replicate_commands`。其余夹具使用已有Docker Redis7；integration默认将自己创建的隔离PostgreSQL交给区域夹具，不打印DSN。
-- 图片测试使用隔离DATA_DIR、关闭relay；既有`backend/internal/service/data/`12个相同测试PNG共1164bytes，历史精确删除曾被策略拒绝（DECISIONS），保留且不提交。
+- 图片测试隔离DATA_DIR并关闭relay；历史12个PNG/1164bytes保留、不提交，精确拒删记录见DECISIONS。
 - 协议/区域/Live验收边界和失败历史见DECISIONS；历史结果不代替新源码或生产验收。区域竞争使用就绪SQL池。
 - 不新增平行台账、配置或缓存实现，不用账号运营组充当Key额度键/缓存域证据。C盘副本统计effb8271不计主线完成数，开发统一在H盘。
 
 ## 下一项工作
 
-D5协议文本TPS子项本地完成；迁移冷输入、会话估计及跨协议可比性待验。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；336回退须排空并保留账单。未改线上策略。
+D5请求内换线范围本地完成，跨请求会话估计和跨协议可比性待验。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；336回退须排空并保留账单。未改线上策略。
 
 ## 外部等待与清理
 

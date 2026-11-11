@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,30 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTimingWriteReplacesUntrustedCacheMigrationProjection(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	end, earlier := 1000.0, 100.0
+	s := requesttiming.Snapshot{Version: 1, Status: 200, Terminal: "completed", Outcome: "success", TotalMS: end,
+		TraceID: "00000000-0000-0000-0000-000000000001", Attempts: []requesttiming.Attempt{
+			{Kind: "http", Number: 1, AccountID: 7, RouteFingerprint: strings.Repeat("a", 64), EndMS: &earlier},
+			{Kind: "http", Number: 2, AccountID: 8, RouteFingerprint: strings.Repeat("b", 64), StartMS: 200, EndMS: &end,
+				Status: 200, Terminal: "completed", CacheUsage: &requesttiming.CacheUsage{Status: "observed", InputTokens: 1000, ReadTokens: 900}},
+		}}
+	s.Latency = &requesttiming.LatencySummary{CacheMigration: requesttiming.CacheMigrationObservation{Status: "forged"}}
+	want := s
+	derived := requesttiming.DeriveLatency(s)
+	require.Equal(t, "bounded_attribution_unknown", derived.CacheMigration.Status)
+	want.Latency = &derived
+	raw, err := json.Marshal(want)
+	require.NoError(t, err)
+	mock.ExpectExec("INSERT INTO request_timing_details").WithArgs(s.TraceID, string(raw), "client:migration", int64(8)).WillReturnResult(sqlmock.NewResult(0, 1))
+	repo := newUsageLogRepositoryWithSQL(nil, db)
+	require.NoError(t, repo.writeTiming(t.Context(), timingWrite{requestID: "client:migration", apiKeyID: 8, data: s}))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 func TestTimingWriteJoinsBillingIdentityAndKeepsDistinctTraces(t *testing.T) {
 	db, mock, err := sqlmock.New()

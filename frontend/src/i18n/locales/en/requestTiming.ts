@@ -95,6 +95,25 @@ export default {
   "success": "Forward succeeded",
   "client_disconnected": "Client disconnected",
   "tpsNote": "Average TPS = output tokens ÷ total recorded duration (seconds). Includes waiting time and any reasoning tokens reported in output usage. The first-token latency is not subtracted; this is not a measurement of model generation speed.",
+  "cacheMigration": {
+    "title": "Cold-input boundary for this request",
+    "input": "Total input tokens in final attempt",
+    "read": "Cache-read tokens",
+    "nonRead": "Non-read input tokens (includes writes)",
+    "bound": "Tokens possibly attributable to this route change",
+    "transitions": "This request: {changed} confirmed route changes, {unknown} unknown transitions",
+    "note": "Non-read input = original total input minus cache reads, including cache creation. The attribution range covers zero to the final successful attempt's non-read input; it excludes input and charges from earlier failed attempts. Actual switching loss, next-turn hits and switching savings remain unknown. No observed change in this request does not establish an unchanged session. Only account, route fingerprint and proxy are checked within this request; reusable prefixes and actual model/fast cache sharing require separate evidence. Not a charge or an automatic-routing signal.",
+    "states": {
+      "not_collected": "Not collected; historical or missing observations remain unknown",
+      "partial": "Incomplete or overlapping attempt history; no attribution range",
+      "unsupported_transport": "This scope covers physical HTTP attempts within one request only",
+      "cache_usage_unavailable": "The final successful response lacks complete trusted raw cache counters",
+      "invalid_boundary": "Invalid attempt order or timing boundaries; no attribution range",
+      "unknown_route": "Missing trusted route identity; the full transition history is unknown",
+      "no_observed_route_change": "No route change observed in this request; session history and next turn remain unknown",
+      "bounded_attribution_unknown": "Route change observed within this request; conservative bounds only, actual loss is unknown"
+    }
+  },
   "outputRate": {
     "title": "Output-phase rate (estimate)",
     "tokens": "Non-reasoning output tokens",
