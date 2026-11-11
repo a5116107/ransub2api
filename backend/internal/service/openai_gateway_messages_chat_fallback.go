@@ -34,7 +34,8 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	account *Account,
 	body []byte,
 	defaultMappedModel string,
-) (*OpenAIForwardResult, error) {
+) (result *OpenAIForwardResult, resultErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr) }()
 	startTime := time.Now()
 
 	// 1. Parse Anthropic request

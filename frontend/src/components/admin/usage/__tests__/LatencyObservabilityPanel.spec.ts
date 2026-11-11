@@ -48,6 +48,7 @@ describe('Issue603 latency observations', () => {
       mocks.read.mockResolvedValue({ ...result, groups: [
         { ...group, cache_source: 'canonical_messages_cumulative_usage' },
         { ...group, cache_source: 'canonical_gemini_usage_metadata' },
+        { ...group, cache_source: 'canonical_chat_completions_usage' },
         { ...group, cache_source: 'future_unrecognized_source' },
       ] })
       const w = mount(LatencyObservabilityPanel, { global: { plugins: [localePlugin(locale)] } })
@@ -55,7 +56,8 @@ describe('Issue603 latency observations', () => {
       const evidence = w.findAll('[data-testid="cache-evidence"]')
       expect(evidence[0].text()).toContain(messages.cacheMessages)
       expect(evidence[1].text()).toContain(messages.cacheGemini)
-      expect(evidence[2].text()).toContain(messages.notCollected)
+      expect(evidence[2].text()).toContain(messages.cacheChat)
+      expect(evidence[3].text()).toContain(messages.notCollected)
       expect(w.text()).not.toContain(messages.cacheCanonical)
       w.unmount()
     })

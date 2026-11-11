@@ -29,7 +29,8 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	account *Account,
 	body []byte,
 	startTime time.Time,
-) (*OpenAIForwardResult, error) {
+) (result *OpenAIForwardResult, resultErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr) }()
 
 	// DeepSeek 原生 /responses 不认识 compaction_trigger：remote compaction v2 会得到
 	// reasoning+message 而非 compaction item，Codex 判 fatal。这里改写成普通总结回合

@@ -62,7 +62,7 @@ const columns = ['accountModel', 'routeScope', 'body', 'cache', 'effort', 'coldS
 const measured = (value: number | null | undefined, count: number | undefined) => `${value == null ? t('latencyObservability.notCollected') : `${value.toFixed(1)} ms`} (n=${count ?? 0})`
 const cohortKey = (g: LatencyGroup) => JSON.stringify([g.account_id, g.model, g.upstream_model, g.service_tier, g.upstream_endpoint, g.route_fingerprint, g.proxy_id, g.stream, g.body_bucket, g.cache_bucket, g.reasoning_effort, g.cache_source])
 const cacheSource = (source?: string) => {
-  const keys: Record<string, string> = { canonical_responses_terminal_usage: 'cacheCanonical', canonical_messages_cumulative_usage: 'cacheMessages', canonical_gemini_usage_metadata: 'cacheGemini', billed_usage_positive_read: 'cacheLegacy', unverified_terminal_usage: 'cacheUnverified' }
+  const keys: Record<string, string> = { canonical_responses_terminal_usage: 'cacheCanonical', canonical_messages_cumulative_usage: 'cacheMessages', canonical_gemini_usage_metadata: 'cacheGemini', canonical_chat_completions_usage: 'cacheChat', billed_usage_positive_read: 'cacheLegacy', unverified_terminal_usage: 'cacheUnverified' }
   return t(`latencyObservability.${keys[source ?? ''] ?? 'notCollected'}`)
 }
 const coldStatus = (status?: string) => {

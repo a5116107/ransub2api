@@ -134,7 +134,7 @@ func annotateCacheColdStart(groups []LatencyGroup, f LatencyReportFilter, now ti
 		g.ColdStart = CacheColdStartEvidence{Status: "unknown_scope", Method: "independent_history_p90_difference_not_causal", MinSamples: 5, MaxAgeSeconds: 900, AsOf: asOf}
 		route, err := hex.DecodeString(g.RouteFingerprint)
 		canonical := g.CacheSource == "canonical_responses_terminal_usage" || g.CacheSource == "canonical_messages_cumulative_usage" ||
-			g.CacheSource == "canonical_gemini_usage_metadata"
+			g.CacheSource == "canonical_gemini_usage_metadata" || g.CacheSource == "canonical_chat_completions_usage"
 		if !canonical || err != nil || len(route) != 32 || [32]byte(route) == [32]byte{} ||
 			g.AccountID <= 0 || g.Model == "" || g.Model == "unknown" || g.UpstreamModel == "" || g.UpstreamModel == "unknown" ||
 			g.ServiceTier == "" || g.ServiceTier == "unknown" || g.ServiceTier == "unspecified" ||

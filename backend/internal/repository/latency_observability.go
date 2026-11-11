@@ -95,7 +95,7 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
   AND cache_attempt->>'account_id'=account_id::text AND cache_attempt->>'status' ~ '^2[0-9]{2}$'
   AND cache_attempt->>'terminal'='completed' AND COALESCE(cache_attempt->>'error','')=''
   AND NOT (cache_attempt->'events' ? 'typed_content_truncated') AND cu->>'status'='observed'
-  AND cache_protocol IN ('responses','messages','gemini')
+  AND cache_protocol IN ('responses','messages','gemini','chat_completions')
   AND COALESCE(NULLIF(cache_attempt->'text_stream'->>'protocol',''),'responses')=cache_protocol
   AND COALESCE(cache_attempt->'text_stream'->>'invalid','false')='false'
   AND COALESCE(cache_attempt->'text_stream'->>'truncated','false')='false'
@@ -122,7 +122,8 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
   ELSE 'unknown' END cache,
  CASE WHEN canonical_cache THEN CASE cache_protocol
   WHEN 'messages' THEN 'canonical_messages_cumulative_usage'
-  WHEN 'gemini' THEN 'canonical_gemini_usage_metadata' ELSE 'canonical_responses_terminal_usage' END
+  WHEN 'gemini' THEN 'canonical_gemini_usage_metadata'
+  WHEN 'chat_completions' THEN 'canonical_chat_completions_usage' ELSE 'canonical_responses_terminal_usage' END
   WHEN legacy_positive THEN 'billed_usage_positive_read'
   WHEN cu IS NOT NULL THEN 'unverified_terminal_usage' ELSE 'none' END cache_source
  FROM cache_checked

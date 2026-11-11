@@ -73,6 +73,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	defaultMappedModel string,
 	startTime time.Time,
 ) (result *OpenAIForwardResult, resultErr error) {
+	defer func() { recordForwardTimingOutcome(ctx, c, result != nil && result.ClientDisconnect, resultErr) }()
 
 	// 1. Parse minimal fields needed for routing/billing
 	originalModel := gjson.GetBytes(body, "model").String()
@@ -333,6 +334,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 	scanner := s.newUpstreamSSEScanner(resp.Body)
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "chat_completions"}
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
@@ -377,6 +379,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		timing.observeTimingLine(line)
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			trimmedPayload := strings.TrimSpace(payload)
@@ -429,10 +432,15 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			Stream:                        true,
 			Duration:                      requesttiming.Now(c.Request.Context()).Sub(startTime),
 			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
 		}
 	}
 
 	scanErr := scanner.Err()
+	timing.resetTimingEvent()
+	if scanErr != nil {
+		timing.failTimingCapture()
+	}
 	if scanErr != nil && !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, context.DeadlineExceeded) {
 		logger.L().Warn("openai chat_completions raw: stream read error",
 			zap.Error(scanErr),
@@ -550,11 +558,14 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		timing := sseTimingObserver{ctx: responseTimingContext(c, resp)}
+		timing.failTimingCapture()
 		if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
 			writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
+	requesttiming.ChatContent(responseTimingContext(c, resp), respBody, false)
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -585,7 +596,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		c.Writer.Header().Set("Content-Type", "application/json")
 	}
 	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write(respBody)
+	_, writeErr := c.Writer.Write(respBody)
 
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,
@@ -600,6 +611,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		ReasoningEffort:               reasoningEffort,
 		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
 		Stream:                        false,
+		ClientDisconnect:              writeErr != nil,
 		Duration:                      requesttiming.Now(c.Request.Context()).Sub(startTime),
 	}, nil
 }

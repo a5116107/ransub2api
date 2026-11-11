@@ -88,6 +88,7 @@ func TestCacheColdStartDoesNotMixCohorts(t *testing.T) {
 		{"protocol", func(g *LatencyGroup) { g.UpstreamEndpoint = "/v1/messages" }},
 		{"messages_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_messages_cumulative_usage" }},
 		{"gemini_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_gemini_usage_metadata" }},
+		{"chat_source_same_endpoint", func(g *LatencyGroup) { g.CacheSource = "canonical_chat_completions_usage" }},
 		{"route", func(g *LatencyGroup) { g.RouteFingerprint = strings.Repeat("b", 64) }},
 		{"proxy", func(g *LatencyGroup) { g.ProxyID++ }},
 		{"body", func(g *LatencyGroup) { g.BodyBucket = "<64KiB" }},
@@ -107,7 +108,7 @@ func TestCacheColdStartDoesNotMixCohorts(t *testing.T) {
 }
 
 func TestCacheColdStartNativeProtocolAssociations(t *testing.T) {
-	for _, source := range []string{"canonical_messages_cumulative_usage", "canonical_gemini_usage_metadata"} {
+	for _, source := range []string{"canonical_messages_cumulative_usage", "canonical_gemini_usage_metadata", "canonical_chat_completions_usage"} {
 		t.Run(source, func(t *testing.T) {
 			now := time.Now().UTC()
 			groups := coldStartGroups(now)

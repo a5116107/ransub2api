@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -290,8 +291,10 @@ func (s *OpenAIGatewayService) scanCCStream(
 	var st ccStreamScanState
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "chat_completions"}
 	for scanner.Scan() {
 		line := scanner.Text()
+		timing.observeTimingLine(line)
 		payload, ok := extractOpenAISSEDataLine(line)
 		if !ok {
 			continue
@@ -330,7 +333,9 @@ func (s *OpenAIGatewayService) scanCCStream(
 		emit(&chunk)
 	}
 
+	timing.resetTimingEvent()
 	if err := scanner.Err(); err != nil {
+		timing.failTimingCapture()
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn(logPrefix+": stream read error",
 				zap.Error(err),
@@ -358,11 +363,14 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 ) (*apicompat.ChatCompletionsResponse, OpenAIUsage, error) {
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		timing := sseTimingObserver{ctx: responseTimingContext(c, resp)}
+		timing.failTimingCapture()
 		if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
 			writeError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}
 		return nil, OpenAIUsage{}, fmt.Errorf("read upstream body: %w", err)
 	}
+	requesttiming.ChatContent(responseTimingContext(c, resp), respBody, false)
 
 	var ccResp apicompat.ChatCompletionsResponse
 	if err := json.Unmarshal(respBody, &ccResp); err != nil {

@@ -782,8 +782,30 @@ EOF 截断后留下只有已知 Messages event 字段、没有有效 data 的残
 完整 data 后缺少最后空行仍按原 EOF 规则处理。
 Chat 流最后的 [DONE] 及两个适配器 finalize 写入失败按原断连结果保留用量，不再忽略该错误；
 已结束的上游不重放、生成与结算不迁移。两处恒 false 回调与不可达退出分支原位删除。
-此项覆盖上述原生桥接与 Anthropic 平台适配器，不把原始 Chat wire、
-跨协议 TPS 可比性或实际会话迁移收益一并验收；原数据结构、保留期限及回滚边界不变。
+此项覆盖上述原生桥接与 Anthropic 平台适配器；原始 Chat wire 见下文独立边界，
+跨协议 TPS 可比性和实际会话迁移收益仍独立验收；原数据结构、保留期限及回滚边界不变。
+
+原始 Chat Completions wire 的直接转发、Responses→Chat 回退、Messages→Chat 回退，
+各自流式与非流式读取沿同一物理 HTTP attempt 采集；共用原 SSE 有界观察器，
+不观察协议转换器补出的 Responses/Messages 完成事件。只取 index=0 的主候选；
+单候选缺省 index 保持兼容，多候选缺省/重复主候选、重复关键字段、异协议或错误形状标记漏采。
+非空 content delta 记文本分片，非空 reasoning_content/reasoning 记可观察推理；
+角色、心跳、工具、媒体、空文本及 usage-only chunk 不贡献文本间隔。
+非流式 JSON 只补首次内容及终态，不伪造文本分片或输出速度。
+主候选 finish_reason=stop/tool_calls/function_call 才提供正常结束证据，
+length/content_filter/未知结束为不完整，[DONE] 或 usage 单独出现不证明完整回答。
+完成之后允许原始 usage-only 更新，但额外文本、错误、异协议、残帧或读取失败不形成健康样本。
+三个原转发边界记录业务结果，直接转发保留下游写错/断连和计费用量，不改原 firstTokenMs/重试/结算契约。
+
+Chat 规范缓存直接读取 prompt_tokens 与 prompt_tokens_details.cached_tokens，
+显式零才是未命中；可选的同桶 cache_write_tokens 不得与读取量重叠。
+缺失、非整数、负数、重复字段、别名口径混杂或超出安全整数范围不推断缓存命中，
+不从原兼容计费桶或其他 attempt 补证据。来源 canonical_chat_completions_usage，
+作用域 final_physical_http_chat_completions_usage，保留独立协议标签；原 SQL 继续要求
+规范总输入与最终账单输入/缓存桶守恒，历史/失败/多 trace/协议矛盾维持 unknown。
+原分层页面中英文明确来源；冷热历史比较按相同来源单独分群，不混 Responses/Messages/Gemini。
+本项不证明供应商缓存保留、跨线路共享或迁移收益，Chat 输出阶段 TPS 仍待独立用量证据验收；
+沿用既有 JSON、队列、保留及应用回滚边界，不增加表或平行观测实现。
 
 Responses HTTP 与原生 WS 的输出阶段速度复用上述物理 attempt 与原始终态 JSON；`output_usage` 仅保存计数及输出类型结论，
 `output_rate` 由同一函数投影到请求详情和用量诊断。不新增表、采样器或计费口径。

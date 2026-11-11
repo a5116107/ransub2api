@@ -58,7 +58,7 @@ func responseTimingContext(c *gin.Context, response *http.Response) context.Cont
 }
 
 // sseTimingObserver observes original parser input without altering forwarded
-// lines. Responses, Messages and Gemini share this bounded event observer.
+// lines. All supported wire protocols share this bounded event observer.
 type sseTimingObserver struct {
 	ctx                context.Context
 	protocol           string
@@ -90,6 +90,9 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 	}
 	if s.protocol == "gemini" {
 		requesttiming.Stage(s.ctx, "typed_gemini_content")
+	}
+	if s.protocol == "chat_completions" {
+		requesttiming.Stage(s.ctx, "typed_chat_completions_content")
 	}
 	if line == "" || line == "event" {
 		s.resetTimingEvent()
@@ -129,6 +132,11 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 	}
 	s.timingEventPending = false
 	requesttiming.Stage(s.ctx, "sse_parsed_first")
+	if s.protocol == "chat_completions" {
+		requesttiming.ChatContent(s.ctx, s.timingData, true)
+		s.timingData = nil
+		return
+	}
 	if s.protocol == "gemini" {
 		requesttiming.GeminiContent(s.ctx, s.timingData, true)
 		s.timingData = nil

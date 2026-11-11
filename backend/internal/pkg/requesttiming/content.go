@@ -220,14 +220,15 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		}
 	}
 	if stream := c.data.Attempts[tr.index].TextStream; stream != nil && stream.Terminal != "" {
-		// Gemini may send trailing usage after STOP, but further output or
+		// Gemini and Chat may send trailing usage, but further output or
 		// an error contradicts the earlier terminal and is not a healthy sample.
 		if (protocol != "responses" || c.data.Attempts[tr.index].Kind == "ws_turn") &&
 			(reasoning || visibleText || nonTextOutput || terminal == "failed" || terminal == "incomplete" ||
-				(protocol == "messages" && cache != nil)) {
+				(protocol == "messages" && cache != nil) || (protocol != "" && stream.Protocol != "" && protocol != stream.Protocol)) {
 			stream.Invalid = true
 		}
-		if protocol == "gemini" && stream.Protocol == protocol && stream.Terminal == "completed" && !stream.Invalid {
+		if stream.Protocol == protocol && !stream.Invalid &&
+			((protocol == "gemini" && stream.Terminal == "completed") || protocol == "chat_completions") {
 			updateProtocolCache(&c.data.Attempts[tr.index], cache)
 		}
 		return
@@ -237,7 +238,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		if protocol == "responses" && terminal != "" {
 			a.CacheUsage = cache
 			a.OutputUsage = output
-		} else if protocol == "messages" || protocol == "gemini" {
+		} else if protocol == "messages" || protocol == "gemini" || protocol == "chat_completions" {
 			updateProtocolCache(a, cache)
 		}
 	}
@@ -259,7 +260,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		}
 		// Parents retain first-event diagnostics, but never a second copy of
 		// physical content counts. Each parser invokes Content once per event.
-		if (a.Kind == "http" || a.Kind == "ws_turn") && (textDelta || nonTextOutput || terminal != "" || protocol == "messages" || protocol == "gemini") {
+		if (a.Kind == "http" || a.Kind == "ws_turn") && (textDelta || nonTextOutput || terminal != "" || protocol == "messages" || protocol == "gemini" || protocol == "chat_completions") {
 			if a.TextStream == nil {
 				a.TextStream = &TextStreamTiming{Protocol: protocol}
 			}
@@ -397,6 +398,11 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 		out.Source = "httptrace_and_typed_gemini"
 		out.TextStream.Source = "typed_gemini_content"
 		out.TextStream.Scope = "final_physical_http_gemini_primary_text_chunks_at_parser"
+	}
+	if _, chat := a.Events["typed_chat_completions_content"]; chat || (a.TextStream != nil && a.TextStream.Protocol == "chat_completions") {
+		out.Source = "httptrace_and_typed_chat_completions"
+		out.TextStream.Source = "typed_chat_completions_sse"
+		out.TextStream.Scope = "final_physical_http_chat_completions_primary_text_deltas_at_parser"
 	}
 	if incompleteCapture {
 		out.TextStream.Status = "incomplete_capture"

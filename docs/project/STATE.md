@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5原Anthropic平台Chat/Responses观测、EOF残帧与断连修复已验；本地提交，父项进行中。
+任务：D5原始Chat三入口/规范缓存/SQL/UI及静态验证完成；继续协议TPS，父项进行中。
 授权：原H盘工作树，本地修复/验证/提交，不CI/推送/部署。
-源码：93f7cc4基线；11项源码/锁/规则清单5a861d97；原诊断表，无迁移。
-验证命令：service与计时/中间件race；原规则lint/vet/Linux编译。
-验证结果：service195/1080、计时/中间件76/424，0失败/跳过；vet/Linux编译退出0，原规则lint为0 issues。
-验证来源：backend/tmp/protocol-cache/anthropic-bridges-*；source-anthropic-bridges.sha256。
-下一动作：原始Chat wire规范缓存/观测；文本TPS、迁移冷输入与父项验收保留。
-尝试：7
+源码：9921a27基线；23项清单f1d707df；沿原诊断表/缓存桶/SQL/页面，无迁移。
+验证命令：协议/计时/中间件race、隔离PG17原SQL回归与前端测试/type/lint。
+验证结果：service381/1617、计时62/448、中间件18/35、PG17 12/79；前端19通过；lint/vet/Linux退出0。
+验证来源：backend/tmp/protocol-cache/chat-wire-*与source-chat-wire-final.sha256；原Docker/PG14超时非通过。
+下一动作：提交原始Chat子项，沿既有输出速度投影补协议计数与未知边界；迁移冷输入待验。
+尝试：8
 阻塞：D2 unknown待供应商契约；生产排空待管理员；历史及本轮96份旧Go缓存拒删待拥有者。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -49,7 +49,7 @@
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | HTTP/WS、Messages/Gemini/SQL及四个Chat/Responses桥接入口已验；原始Chat wire、文本TPS与迁移冷输入待验 |
+| D5 | in_progress | HTTP/WS、Messages/Gemini及Chat原始三入口/缓存/PG17/UI、lint/vet/Linux已验；文本TPS与迁移冷输入待验 |
 | D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
 | D7 | pending | 前端配置与决策解释；依赖策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及批量资金/竞争/回滚16项夹具已验证；其余集成/升级/全局CLI待验收，不运行CI |
@@ -66,11 +66,12 @@
 
 ## 下一项工作
 
-D5原Anthropic适配器源码/race/静态已验；原始Chat wire、文本TPS与迁移冷输入待验。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；336回退须排空并保留账单。未改线上策略。
+D5原始Chat三入口/race/PG17/UI及静态子项已验，继续协议文本TPS与迁移冷输入。原28项20 done，D2/D3/D4/D5进行中，D6–D9待验；336回退须排空并保留账单。未改线上策略。
 
 ## 外部等待与清理
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
+- 本轮Docker容器查询挂起、原PG14命令540秒超时；隔离PG17原SQL已验，不等同PG14/Redis7完整组合，由环境拥有者恢复Docker查询后按原命令补验。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`及`backend/tmp/output-rate/`中的旧夹具/缓存；由工作区拥有者处理，详见DECISIONS。
 - 历史`backend/tmp/ws-turn-metrics/vite-cache`拒删11文件/2886386bytes待拥有者手动删除，不换工具重试。本轮浏览器及5186夹具已关闭，无新增Vite缓存；历史PNG原位保留、不提交。

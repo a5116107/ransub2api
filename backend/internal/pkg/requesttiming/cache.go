@@ -94,11 +94,16 @@ func cacheObject(raw []byte) (map[string]json.RawMessage, bool) {
 	return out, true
 }
 
-func readCacheUsage(raw json.RawMessage) *CacheUsage {
+func readCacheUsage(raw json.RawMessage, protocols ...string) *CacheUsage {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil
 	}
 	out := &CacheUsage{Status: "invalid_counters"}
+	inputKey, detailsKey := "input_tokens", "input_tokens_details"
+	if len(protocols) > 0 && protocols[0] == "chat_completions" {
+		out.Protocol = "chat_completions"
+		inputKey, detailsKey = "prompt_tokens", "prompt_tokens_details"
+	}
 	if len(raw) > 64*1024 {
 		out.Status = "diagnostic_limit"
 		return out
@@ -107,14 +112,25 @@ func readCacheUsage(raw json.RawMessage) *CacheUsage {
 	if !ok {
 		return out
 	}
-	details, ok := cacheObject(usage["input_tokens_details"])
+	if out.Protocol == "chat_completions" {
+		for _, alias := range []string{"input_tokens", "input_tokens_details", "cache_read_input_tokens", "cache_creation_input_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"} {
+			if _, present := usage[alias]; present {
+				out.Status = "ambiguous_counters"
+				return out
+			}
+		}
+	}
+	details, ok := cacheObject(usage[detailsKey])
 	if !ok {
+		if _, present := usage[detailsKey]; present && out.Protocol == "chat_completions" {
+			return out
+		}
 		out.Status = "not_reported"
 		return out
 	}
-	input, inputErr := strconv.ParseInt(string(usage["input_tokens"]), 10, 64)
+	input, inputErr := strconv.ParseInt(string(usage[inputKey]), 10, 64)
 	read, readErr := strconv.ParseInt(string(details["cached_tokens"]), 10, 64)
-	if len(usage["input_tokens"]) == 0 || len(details["cached_tokens"]) == 0 {
+	if len(usage[inputKey]) == 0 || len(details["cached_tokens"]) == 0 {
 		out.Status = "not_reported"
 		return out
 	}
@@ -343,6 +359,8 @@ func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
 		source, out.Scope = "canonical_messages_cumulative_usage", "final_physical_http_messages_cumulative_usage"
 	case "gemini":
 		source, out.Scope = "canonical_gemini_usage_metadata", "final_physical_http_gemini_usage_metadata"
+	case "chat_completions":
+		source, out.Scope = "canonical_chat_completions_usage", "final_physical_http_chat_completions_usage"
 	}
 	if a.Kind == "ws_turn" && s.TTFTMode == "ws_turn" {
 		out.Scope = "physical_websocket_turn_responses_terminal_usage"
@@ -354,7 +372,7 @@ func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
 		if rawProtocol == "" {
 			rawProtocol = "responses" // JSON written before protocol tagging.
 		}
-		if rawProtocol != protocol || (protocol != "responses" && protocol != "messages" && protocol != "gemini") ||
+		if rawProtocol != protocol || (protocol != "responses" && protocol != "messages" && protocol != "gemini" && protocol != "chat_completions") ||
 			(protocol != "responses" && (a.TextStream == nil || a.TextStream.Protocol != protocol)) ||
 			(a.Kind == "ws_turn" && protocol != "responses") {
 			out.Status = "invalid_protocol"

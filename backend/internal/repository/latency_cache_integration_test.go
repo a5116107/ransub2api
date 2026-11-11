@@ -204,7 +204,7 @@ func TestLatencyCacheRecentWindowDoesNotBorrowOldSamples(t *testing.T) {
 }
 
 func TestLatencyCacheNativeProtocolsStaySeparateAndConserveBuckets(t *testing.T) {
-	for _, protocol := range []string{"messages", "gemini"} {
+	for _, protocol := range []string{"messages", "gemini", "chat_completions"} {
 		for _, mode := range []string{"observed", "billing_mismatch", "wrong_protocol", "missing_presence", "forged_write", "bad_uncached", "failed", "capture_gap", "ambiguous_trace"} {
 			t.Run(protocol+"/"+mode, func(t *testing.T) {
 				f := newLatencyCacheFixture(t)
@@ -216,6 +216,9 @@ func TestLatencyCacheNativeProtocolsStaySeparateAndConserveBuckets(t *testing.T)
 				if protocol == "messages" {
 					source = "canonical_messages_cumulative_usage"
 					a.CacheUsage.UncachedTokens, a.CacheUsage.InputReported, a.CacheUsage.ReadReported, a.CacheUsage.WriteReported = 5, true, true, true
+				}
+				if protocol == "chat_completions" {
+					source = "canonical_chat_completions_usage"
 				}
 				switch mode {
 				case "billing_mismatch":
@@ -230,6 +233,9 @@ func TestLatencyCacheNativeProtocolsStaySeparateAndConserveBuckets(t *testing.T)
 					}
 				case "forged_write":
 					a.CacheUsage.WriteTokens, a.CacheUsage.WriteReported = 1, true
+					if protocol == "chat_completions" {
+						a.CacheUsage.WriteTokens = 6 // Read + write must not exceed total input.
+					}
 				case "bad_uncached":
 					if protocol != "messages" {
 						a.CacheUsage.Protocol = "future_protocol"
