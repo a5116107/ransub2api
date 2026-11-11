@@ -78,7 +78,7 @@ func (s *OpenAIGatewayService) prioritySignals(req OpenAIAccountScheduleRequest,
 	return h.signals, h.ready()
 }
 
-// Cache by model/group/window, with a bounded union of recently seen accounts.
+// Cache by model/group/ingress/effort/window, with a bounded union of recent accounts.
 // Candidate churn must not erase evidence for peers. Never query on the request
 // goroutine; two workers and bounded scopes also apply to dashboard refreshes.
 func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest, c PrioritySchedulingConfig, accounts []openAIAccountCandidateScore) priorityHistoryResult {
@@ -171,7 +171,7 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 			value := *req.GroupID
 			group = &value
 		}
-		query := PrioritySchedulingQuery{LatencyPercentile: c.LatencyPercentile, LatencyMeasurement: c.LatencyMeasurement, TargetTTFTMs: c.TargetTTFTMs, AccountIDs: ids, Model: priorityHistoryModel(req), QualityModel: strings.TrimSpace(req.RequestedModel), GroupID: group, UsageUntil: now, UsageSince: now.Add(-time.Duration(c.WindowMinutes) * time.Minute), QualitySince: now.Add(-time.Duration(c.QualityMaxAgeHours) * time.Hour)}
+		query := PrioritySchedulingQuery{LatencyPercentile: c.LatencyPercentile, LatencyMeasurement: c.LatencyMeasurement, TargetTTFTMs: c.TargetTTFTMs, AccountIDs: ids, Model: priorityHistoryModel(req), QualityModel: strings.TrimSpace(req.RequestedModel), InboundEndpoint: priorityErrorEndpoint(req), GroupID: group, UsageUntil: now, UsageSince: now.Add(-time.Duration(c.WindowMinutes) * time.Minute), QualitySince: now.Add(-time.Duration(c.QualityMaxAgeHours) * time.Hour)}
 		if req.ObservationEffortScoped {
 			value := req.ObservationEffort
 			query.ObservationEffort = &value
@@ -308,7 +308,7 @@ func priorityHistoryKey(req OpenAIAccountScheduleRequest, c PrioritySchedulingCo
 	// The action changes admission, not the measured population. Switching soft
 	// and stop must retain the exact same model/group/measurement evidence.
 	c.LatencyPenaltyMode = PriorityLatencyDeprioritize
-	return fmt.Sprintf("%q/%q/%d/%t/%d/%d/%t/%q", priorityHistoryModel(req), strings.TrimSpace(req.RequestedModel), derefGroupID(req.GroupID), req.GroupID != nil, c.WindowMinutes, c.QualityMaxAgeHours, req.ObservationEffortScoped, req.ObservationEffort) + "/" + priorityConfigRevision(c)
+	return fmt.Sprintf("%q/%q/%q/%d/%t/%d/%d/%t/%q", priorityHistoryModel(req), strings.TrimSpace(req.RequestedModel), priorityErrorEndpoint(req), derefGroupID(req.GroupID), req.GroupID != nil, c.WindowMinutes, c.QualityMaxAgeHours, req.ObservationEffortScoped, req.ObservationEffort) + "/" + priorityConfigRevision(c)
 }
 
 // Include every scoring setting so stale scopes never mix targets or semantics.

@@ -13,6 +13,8 @@ type PriorityLatencySeriesQuery struct {
 	AccountIDs         []int64
 	Model              string
 	GroupID            *int64
+	InboundEndpoint    string
+	ObservationEffort  *string
 	Since              time.Time
 	BucketMinutes      int
 	LatencyPercentile  int
@@ -101,16 +103,22 @@ func (s *OpenAIGatewayService) PriorityLatencySeries(ctx context.Context, minute
 		value := *snapshot.GroupID
 		group = &value
 	}
-	rows, err := reader.ReadPriorityLatencySeries(ctx, PriorityLatencySeriesQuery{
+	query := PriorityLatencySeriesQuery{
 		AccountIDs:         ids,
 		Model:              snapshot.Model,
 		GroupID:            group,
+		InboundEndpoint:    priorityErrorEndpoint(input.request),
 		Since:              time.Now().Add(-time.Duration(minutes) * time.Minute),
 		BucketMinutes:      bucketMinutes,
 		LatencyPercentile:  cfg.LatencyPercentile,
 		LatencyMeasurement: cfg.LatencyMeasurement,
 		SlowTTFTMs:         cfg.TargetTTFTMs,
-	})
+	}
+	if input.request.ObservationEffortScoped {
+		value := input.request.ObservationEffort
+		query.ObservationEffort = &value
+	}
+	rows, err := reader.ReadPriorityLatencySeries(ctx, query)
 	if err != nil {
 		return nil, err
 	}

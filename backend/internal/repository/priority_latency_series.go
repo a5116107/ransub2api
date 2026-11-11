@@ -34,6 +34,8 @@ func (r *usageLogRepository) ReadPriorityLatencySeries(ctx context.Context, quer
   WHERE account_id=ANY($1) AND created_at >= $2 AND created_at <= NOW()
    AND COALESCE(NULLIF(requested_model,''),model)=$3
    AND group_id IS NOT DISTINCT FROM $4::bigint
+   AND ($9::text='' OR inbound_endpoint=$9)
+   AND ($10::text IS NULL OR COALESCE(reasoning_effort,'')=$10)
    AND (actual_cost>0 OR total_cost>0 OR account_stats_cost>0
     OR input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens>0)
  ), traces AS (
@@ -96,6 +98,7 @@ func (r *usageLogRepository) ReadPriorityLatencySeries(ctx context.Context, quer
   WHERE account_id=ANY($1) AND created_at >= $2 AND created_at <= NOW()
    AND COALESCE(NULLIF(requested_model,''),model)=$3
    AND group_id IS NOT DISTINCT FROM $4::bigint
+   AND ($9::text='' OR inbound_endpoint=$9)
    AND error_phase='upstream'
   GROUP BY account_id,bucket
  ), all_buckets AS (
@@ -112,7 +115,7 @@ func (r *usageLogRepository) ReadPriorityLatencySeries(ctx context.Context, quer
  LEFT JOIN usage_buckets u ON u.account_id=k.account_id AND u.bucket=k.bucket
  LEFT JOIN errors e ON e.account_id=k.account_id AND e.bucket=k.bucket
  ORDER BY k.account_id,k.bucket
- `, pq.Array(query.AccountIDs), query.Since, query.Model, query.GroupID, bucketMinutes, slowTTFTMs, measurement, percentile)
+ `, pq.Array(query.AccountIDs), query.Since, query.Model, query.GroupID, bucketMinutes, slowTTFTMs, measurement, percentile, query.InboundEndpoint, query.ObservationEffort)
 	if err != nil {
 		return nil, err
 	}

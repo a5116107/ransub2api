@@ -71,6 +71,37 @@ func TestPriorityLatencySeriesUsesSnapshotMeasurementAndPercentile(t *testing.T)
 	require.Equal(t, "attributed_v1", query["LatencyMeasurement"])
 }
 
+func TestPriorityLatencySeriesUsesSnapshotObservationScope(t *testing.T) {
+	for _, req := range []OpenAIAccountScheduleRequest{
+		{InboundEndpoint: "/v1/chat/completions", ObservationEffort: "xhigh", ObservationEffortScoped: true},
+		{InboundEndpoint: "/v1/messages", ObservationEffortScoped: true},
+		{RequireCompact: true},
+		{},
+	} {
+		t.Run(priorityErrorEndpoint(req), func(t *testing.T) {
+			group := int64(11)
+			req.GroupID, req.RequestedModel, req.HistoryModel = &group, "route-model", "public-alias"
+			reader := &priorityLatencySeriesRegressionReader{}
+			svc := &OpenAIGatewayService{usageLogRepo: reader}
+			input := newPrioritySnapshotInput(req, DefaultPrioritySchedulingConfig(), []openAIAccountCandidateScore{priorityCandidate(77, 1, 1)}, time.Now())
+			input.limited = true
+			svc.priorityScheduling.latestInput = input
+			group++
+			_, err := svc.PriorityLatencySeries(t.Context(), 60, 5)
+			require.NoError(t, err)
+			require.Equal(t, "public-alias", reader.query.Model)
+			require.Equal(t, int64(11), *reader.query.GroupID)
+			require.Equal(t, priorityErrorEndpoint(req), reader.query.InboundEndpoint, "trend and summary must use the captured ingress")
+			if req.ObservationEffortScoped {
+				require.NotNil(t, reader.query.ObservationEffort)
+				require.Equal(t, req.ObservationEffort, *reader.query.ObservationEffort, "observed empty effort differs from an unscoped query")
+			} else {
+				require.Nil(t, reader.query.ObservationEffort)
+			}
+		})
+	}
+}
+
 func TestPriorityRecomputeDoesNotTreatHistoryErrorAsSuccess(t *testing.T) {
 	cfg := DefaultPrioritySchedulingConfig()
 	reader := &priorityReaderStub{err: context.DeadlineExceeded}

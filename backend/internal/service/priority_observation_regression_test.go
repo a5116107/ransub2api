@@ -34,14 +34,18 @@ func TestPriorityObservationResponsesEndpoint(t *testing.T) {
 
 type observationQueryReader struct {
 	UsageLogRepository
-	mu      sync.Mutex
-	queries []PrioritySchedulingQuery
+	mu        sync.Mutex
+	queries   []PrioritySchedulingQuery
+	endpoints map[string]map[int64]PrioritySchedulingSignal
 }
 
 func (r *observationQueryReader) ReadPrioritySchedulingSignals(_ context.Context, q PrioritySchedulingQuery) (map[int64]PrioritySchedulingSignal, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.queries = append(r.queries, q)
+	if r.endpoints != nil {
+		return r.endpoints[q.InboundEndpoint], nil
+	}
 	return map[int64]PrioritySchedulingSignal{1: {Samples: 6, P90TTFTMs: 1234}}, nil
 }
 
@@ -58,6 +62,7 @@ func TestPriorityObservationPublicHistoryModel(t *testing.T) {
 	require.Equal(t, "public-alias", reader.queries[0].Model)
 	require.Equal(t, "route-model", reader.queries[0].QualityModel)
 	require.Equal(t, group, *reader.queries[0].GroupID)
+	require.Equal(t, "/v1/responses", reader.queries[0].InboundEndpoint)
 	reader.mu.Unlock()
 	other := req
 	other.HistoryModel = "distinct-public-alias"
@@ -65,6 +70,122 @@ func TestPriorityObservationPublicHistoryModel(t *testing.T) {
 	other = req
 	other.GroupID = nil
 	require.Empty(t, svc.priorityHistory(other, c, pool).signals)
+}
+
+func TestPriorityObservationHistoryEndpointIsolation(t *testing.T) {
+	cfg := DefaultPrioritySchedulingConfig()
+	reader := &observationQueryReader{}
+	svc := &OpenAIGatewayService{usageLogRepo: reader}
+	req := OpenAIAccountScheduleRequest{RequestedModel: "route-model", HistoryModel: "public-alias", InboundEndpoint: "/v1/responses"}
+	pool := []openAIAccountCandidateScore{priorityCandidate(1, .1, 0)}
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, time.Second, time.Millisecond)
+	for _, endpoint := range []string{"/v1/chat/completions", "/v1/responses/compact", "/v1/messages", "/unknown"} {
+		t.Run(endpoint, func(t *testing.T) {
+			other := req
+			other.InboundEndpoint = endpoint
+			require.NotEqual(t, priorityHistoryKey(req, cfg), priorityHistoryKey(other, cfg), "different ingress cannot share a latency population")
+			require.Empty(t, svc.cachedPriorityHistory(other, cfg, pool).signals, "sticky balancing must not borrow another endpoint's evidence")
+			require.Empty(t, svc.priorityHistory(other, cfg, pool).signals, "an asynchronous miss is unknown, not the previous endpoint's history")
+		})
+	}
+	implicit := req
+	implicit.InboundEndpoint = ""
+	require.Equal(t, priorityHistoryKey(req, cfg), priorityHistoryKey(implicit, cfg), "legacy Responses defaults remain exact")
+	implicit.RequireCompact = true
+	explicit := req
+	explicit.InboundEndpoint = "/v1/responses/compact"
+	require.Equal(t, priorityHistoryKey(explicit, cfg), priorityHistoryKey(implicit, cfg))
+	implicit.RequireCompact = false
+	implicit.RequiredCapability = OpenAIEndpointCapabilityChatCompletions
+	explicit.InboundEndpoint = "/v1/chat/completions"
+	require.Equal(t, priorityHistoryKey(explicit, cfg), priorityHistoryKey(implicit, cfg))
+	explicit.InboundEndpoint = " /v1/chat/completions "
+	require.Equal(t, priorityHistoryKey(explicit, cfg), priorityHistoryKey(implicit, cfg), "canonical ingress whitespace cannot split the cache")
+}
+
+func TestPriorityObservationSelectionRetainsEffort(t *testing.T) {
+	group := int64(11)
+	req := OpenAIAccountScheduleRequest{GroupID: &group, RequestedModel: "route-model", HistoryModel: "public-alias", InboundEndpoint: "/v1/responses", ObservationEffortScoped: true, ObservationEffort: "xhigh"}
+	owned := ownedPriorityScheduleRequest(req)
+	require.True(t, owned.ObservationEffortScoped, "waiting for a slot must not fall back to account-wide history")
+	require.Equal(t, req.ObservationEffort, owned.ObservationEffort)
+	require.Equal(t, priorityHistoryKey(req, DefaultPrioritySchedulingConfig()), priorityHistoryKey(owned, DefaultPrioritySchedulingConfig()))
+	group++
+	require.Equal(t, int64(11), *owned.GroupID, "owned request must retain its group independently")
+}
+
+func TestPriorityObservationEndpointSelectionAndRecovery(t *testing.T) {
+	svc, scheduler, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	bad := time.Now().Add(-time.Minute)
+	reader := &observationQueryReader{endpoints: map[string]map[int64]PrioritySchedulingSignal{
+		"/v1/chat/completions": {
+			1: {Samples: 20, P90TTFTMs: 500},
+			2: {Samples: 20, P90TTFTMs: 16000, LatestBadLatencyAt: &bad},
+		},
+	}}
+	svc.usageLogRepo = reader
+	selected, err := modeSelect(t, scheduler, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), selected.Account.ID)
+	chat := req
+	chat.InboundEndpoint = "/v1/chat/completions"
+	chat.SessionHash, chat.StickyAccountID = "mode-sticky", 1
+	require.Empty(t, svc.cachedPriorityHistory(chat, cfg, pool).signals)
+	require.Eventually(t, func() bool { return svc.priorityHistory(chat, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+	selected, err = modeSelect(t, scheduler, chat)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), selected.Account.ID, "Responses slowdown must not evict a healthy Chat sticky account")
+	require.NoError(t, svc.CheckPriorityLatencySelection(context.Background(), selected))
+	snapshot := svc.PrioritySchedulingSnapshot()
+	require.NotNil(t, snapshot)
+	require.True(t, snapshot.HistoryReady)
+	require.Equal(t, int64(1), snapshot.Candidates[0].AccountID)
+	for _, candidate := range snapshot.Candidates {
+		require.Equal(t, chat.InboundEndpoint, candidate.Endpoint, "dashboard must retain the same endpoint population")
+	}
+	reader.mu.Lock()
+	require.Len(t, reader.queries, 1)
+	require.Equal(t, chat.InboundEndpoint, reader.queries[0].InboundEndpoint)
+	reader.mu.Unlock()
+	var wg sync.WaitGroup
+	for i := range 60 {
+		wg.Go(func() {
+			request := req
+			want := 16000.0
+			if i%2 == 0 {
+				request, want = chat, 500
+			}
+			signal := svc.cachedPriorityHistory(request, cfg, pool).signals[1]
+			if signal.P90TTFTMs != want {
+				t.Errorf("endpoint %q latency: got %v, want %v", request.InboundEndpoint, signal.P90TTFTMs, want)
+			}
+		})
+	}
+	wg.Wait()
+	selected, err = modeSelect(t, scheduler, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), selected.Account.ID, "returning to Responses must recover its own evidence, not replace it with Chat history")
+}
+
+func TestPriorityObservationScopedSelectionWaitRecheck(t *testing.T) {
+	svc, scheduler, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
+	req.ObservationEffort, req.ObservationEffortScoped = "xhigh", true
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+	selected, err := modeSelect(t, scheduler, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), selected.Account.ID)
+	require.NoError(t, svc.CheckPriorityLatencySelection(context.Background(), selected), "the same evidence must remain valid after slot acquisition")
+	ctx := ContextWithSelectionPriorityRequest(context.Background(), selected)
+	ctx, err = svc.beginPriorityLatencyTurn(ctx, nil, selected.Account, req.RequestedModel)
+	require.NoError(t, err)
+	setModeSignal(svc, req, 1, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+	setModeSignal(svc, req, 2, func(v *PrioritySchedulingSignal) { v.P90TTFTMs = 16000; now := time.Now(); v.LatestBadLatencyAt = &now })
+	require.ErrorIs(t, svc.CheckPriorityLatencySelection(ctx, selected), ErrPriorityLatencyUnavailable, "a wait must still recheck the selected effort, not the older unscoped population")
+	require.ErrorIs(t, svc.priorityLatencyBeforeSend(ctx, selected.Account), ErrPriorityLatencyUnavailable)
+	setModeSignal(svc, req, 2, func(v *PrioritySchedulingSignal) { v.P90TTFTMs, v.LatestBadLatencyAt = 500, nil })
+	require.NoError(t, svc.CheckPriorityLatencySelection(ctx, selected), "restored same-scope evidence recovers the selected account")
 }
 
 func TestPriorityObservationAttemptGroupAndAliasIsolation(t *testing.T) {

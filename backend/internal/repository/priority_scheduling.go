@@ -43,6 +43,7 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
   WHERE account_id=ANY($1) AND created_at >= $3 AND created_at <= $9
    AND COALESCE(NULLIF(requested_model,''),model)=$2
    AND group_id IS NOT DISTINCT FROM $5::bigint
+   AND ($11::text='' OR inbound_endpoint=$11)
    AND (actual_cost>0 OR total_cost>0 OR account_stats_cost>0
     OR input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens>0)
  ), traces AS (
@@ -120,6 +121,7 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
   WHERE account_id=ANY($1) AND created_at >= $3 AND created_at <= $9
    AND COALESCE(NULLIF(requested_model,''),model)=$2
    AND group_id IS NOT DISTINCT FROM $5::bigint
+   AND ($11::text='' OR inbound_endpoint=$11)
    AND error_phase='upstream'
   GROUP BY account_id
  ), rounds AS (
@@ -159,10 +161,10 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
  LEFT JOIN quality q ON q.account_id=ids.id
  LEFT JOIN latest_quality lq ON lq.account_id=ids.id
  `
-	args := []any{pq.Array(query.AccountIDs), query.Model, query.UsageSince, query.QualitySince, query.GroupID, query.LatencyPercentile, query.LatencyMeasurement, query.TargetTTFTMs, query.UsageUntil, qualityModel}
+	args := []any{pq.Array(query.AccountIDs), query.Model, query.UsageSince, query.QualitySince, query.GroupID, query.LatencyPercentile, query.LatencyMeasurement, query.TargetTTFTMs, query.UsageUntil, qualityModel, query.InboundEndpoint}
 	if query.ObservationEffort != nil {
 		// Exact effort population; no max/xhigh inference or cross-effort fallback.
-		querySQL = strings.Replace(querySQL, "AND group_id IS NOT DISTINCT FROM $5::bigint", "AND group_id IS NOT DISTINCT FROM $5::bigint AND COALESCE(reasoning_effort,'')=$11", 1)
+		querySQL = strings.Replace(querySQL, "AND group_id IS NOT DISTINCT FROM $5::bigint", "AND group_id IS NOT DISTINCT FROM $5::bigint AND COALESCE(reasoning_effort,'')=$12", 1)
 		args = append(args, *query.ObservationEffort)
 	}
 	rows, err := r.sql.QueryContext(ctx, querySQL, args...)

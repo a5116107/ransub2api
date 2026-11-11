@@ -260,6 +260,7 @@ func (s *OpenAIGatewayService) priorityLatencyBeforeSend(ctx context.Context, ac
 func ownedPriorityScheduleRequest(req OpenAIAccountScheduleRequest) OpenAIAccountScheduleRequest {
 	// Retain only identity and feature applicability, never session/response IDs.
 	copy := OpenAIAccountScheduleRequest{Platform: req.Platform, RequestedModel: req.RequestedModel, HistoryModel: req.HistoryModel, InboundEndpoint: req.InboundEndpoint, UseUpstreamTokenCost: req.UseUpstreamTokenCost, RequiredImageCapability: req.RequiredImageCapability, RequireCompact: req.RequireCompact, RequiredCapability: req.RequiredCapability, RequiredTransport: req.RequiredTransport, RequirePrivacySet: req.RequirePrivacySet, ExcludedIDs: cloneExcludedAccountIDs(req.ExcludedIDs), priorityLatencyPool: req.priorityLatencyPool}
+	copy.ObservationEffort, copy.ObservationEffortScoped = req.ObservationEffort, req.ObservationEffortScoped
 	if req.GroupID != nil {
 		id := *req.GroupID
 		copy.GroupID = &id

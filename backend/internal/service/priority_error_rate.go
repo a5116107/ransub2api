@@ -506,8 +506,8 @@ func (b *priorityAttemptBody) outcome() (bool, bool) {
 }
 
 func priorityErrorEndpoint(req OpenAIAccountScheduleRequest) string {
-	if req.InboundEndpoint != "" {
-		return req.InboundEndpoint
+	if endpoint := strings.TrimSpace(req.InboundEndpoint); endpoint != "" {
+		return endpoint
 	}
 	if req.RequireCompact {
 		return "/v1/responses/compact"

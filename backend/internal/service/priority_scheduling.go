@@ -245,6 +245,7 @@ type PrioritySchedulingSignal struct {
 
 type PrioritySchedulingQuery struct {
 	ObservationEffort  *string
+	InboundEndpoint    string // exact canonical ingress; empty retains legacy unscoped reads
 	LatencyPercentile  int
 	LatencyMeasurement string
 	TargetTTFTMs       int
