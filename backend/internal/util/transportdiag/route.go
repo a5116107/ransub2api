@@ -41,6 +41,15 @@ func EndpointCategory(path string) string {
 			return strings.ReplaceAll(endpoint, "/", "_")
 		}
 	}
+	if prefix, action, ok := strings.Cut(path, ":"); ok &&
+		(strings.HasSuffix(prefix, "/v1internal") || (strings.Contains(prefix, "/models/") && !strings.HasSuffix(prefix, "/models/"))) {
+		switch action {
+		case "generateContent":
+			return "gemini_generate_content"
+		case "streamGenerateContent":
+			return "gemini_stream_generate_content"
+		}
+	}
 	return "other"
 }
 

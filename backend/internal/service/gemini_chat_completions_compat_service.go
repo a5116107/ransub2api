@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 )
@@ -27,7 +28,8 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	c *gin.Context,
 	account *Account,
 	body []byte,
-) (*ForwardResult, error) {
+) (result *ForwardResult, err error) {
+	defer func() { recordForwardTimingOutcome(ctx, result, err) }()
 	startTime := time.Now()
 
 	var ccReq apicompat.ChatCompletionsRequest
@@ -267,7 +269,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		clientDisconnect = streamRes.clientDisconnect
 		streamFinished = streamRes.finished
 	} else if useUpstreamStream {
-		collected, usageObj, err := collectGeminiSSE(resp.Body, account.Type == AccountTypeOAuth)
+		collected, usageObj, _, err := collectGeminiSSEObserved(resp.Body, account.Type == AccountTypeOAuth, nil, requesttiming.ResponseContext(ctx, resp))
 		if err != nil {
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
 		}
@@ -466,6 +468,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsNonStreamingResponseF
 	if err != nil {
 		return nil, err
 	}
+	requesttiming.GeminiContent(responseTimingContext(c, resp), respBody, false)
 	if isOAuth {
 		if unwrappedBody, uwErr := unwrapGeminiResponse(respBody); uwErr == nil {
 			respBody = unwrappedBody
@@ -523,6 +526,8 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	isOAuth bool,
 	includeUsage bool,
 ) (*geminiStreamResult, error) {
+	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
+	defer timing.resetTimingEvent()
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
@@ -629,6 +634,9 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
 			trimmed := strings.TrimRight(line, "\r\n")
+			if err == nil || errors.Is(err, io.EOF) {
+				timing.observeTimingLine(trimmed)
+			}
 			if strings.HasPrefix(trimmed, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 				if payload != "" && payload != "[DONE]" {

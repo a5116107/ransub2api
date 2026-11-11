@@ -73,5 +73,7 @@ func (s *GeminiMessagesCompatService) doGeminiUpstream(request *http.Request, pr
 	}
 	request, observeTransport := s.rateLimitService.beginAvailabilityTransport(request, account)
 	defer func() { observeTransport(response, err) }()
+	request, timingTrace := startAccountTimingAttempt(request, account)
+	defer func() { timingTrace.Response(response, err) }()
 	return s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

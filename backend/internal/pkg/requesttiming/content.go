@@ -144,7 +144,7 @@ func Content(ctx context.Context, data []byte, eventTypes ...string) {
 	recordContent(ctx, "responses", reasoning, visibleText, textDelta, nonTextOutput, terminal, cache, output)
 }
 
-// Both protocols share the same bounded physical-attempt aggregate. Legacy
+// All protocols share the same bounded physical-attempt aggregate. Legacy
 // first_semantic/first_visible and billing usage remain with their consumers.
 func recordContent(ctx context.Context, protocol string, reasoning, visibleText, textDelta, nonTextOutput bool, terminal string, cache *CacheUsage, output *OutputUsage) {
 	c := From(ctx)
@@ -170,6 +170,11 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		}
 	}
 	if stream := c.data.Attempts[tr.index].TextStream; stream != nil && stream.Terminal != "" {
+		// Gemini may send trailing usage after STOP, but further output or
+		// an error contradicts the earlier terminal and is not a healthy sample.
+		if protocol == "gemini" && (reasoning || visibleText || nonTextOutput || terminal == "failed" || terminal == "incomplete") {
+			stream.Invalid = true
+		}
 		return
 	}
 	now := c.offset(c.now())
@@ -179,7 +184,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 	}
 	for index := tr.index; index >= 0; {
 		a := &c.data.Attempts[index]
-		if (protocol == "messages" || protocol == "") && terminal != "" {
+		if protocol != "responses" && terminal != "" {
 			a.Terminal = terminal
 			a.Events["terminal"] = now
 		}
@@ -195,7 +200,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		}
 		// Parents retain first-event diagnostics, but never a second copy of
 		// physical content counts. Each parser invokes Content once per event.
-		if a.Kind == "http" && (textDelta || nonTextOutput || terminal != "" || protocol == "messages") {
+		if a.Kind == "http" && (textDelta || nonTextOutput || terminal != "" || protocol == "messages" || protocol == "gemini") {
 			if a.TextStream == nil {
 				a.TextStream = &TextStreamTiming{Protocol: protocol}
 			}
@@ -229,7 +234,7 @@ func recordContent(ctx context.Context, protocol string, reasoning, visibleText,
 		}
 		index = a.Parent - 1
 	}
-	if (protocol == "messages" || protocol == "") && terminal != "" {
+	if protocol != "responses" && terminal != "" {
 		c.data.Terminal = terminal
 		c.event("terminal", c.now())
 	}
@@ -302,6 +307,13 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 		(incompleteCapture && a.Route.Endpoint == "messages") {
 		out.TextStream.Source = "typed_messages_sse"
 		out.TextStream.Scope = "final_physical_http_messages_text_deltas_at_parser"
+	}
+	if _, gemini := a.Events["typed_gemini_content"]; gemini ||
+		(a.TextStream != nil && a.TextStream.Protocol == "gemini") ||
+		(incompleteCapture && strings.HasPrefix(a.Route.Endpoint, "gemini_")) {
+		out.Source = "httptrace_and_typed_gemini"
+		out.TextStream.Source = "typed_gemini_content"
+		out.TextStream.Scope = "final_physical_http_gemini_primary_text_chunks_at_parser"
 	}
 	if incompleteCapture {
 		out.TextStream.Status = "incomplete_capture"

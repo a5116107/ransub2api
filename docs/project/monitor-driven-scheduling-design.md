@@ -635,7 +635,7 @@ D5 的 Responses 文本间隔子项沿既有 `requesttiming.Content`、物理 at
 此类有缺口的数据不能计算真实相邻间隔或确定首次内容，`text_stream`标incomplete_capture且数值为null；
 用量诊断和既有分层SQL同时排除该attempt的首推理/首文本样本，独立HTTP首字节证据仍可保留。
 用量只投影最终物理 attempt，重试和先前账号不借样本，已有首语义/首可见口径、计费及调度权重不变。
-Responses 文本间隔子项不覆盖原生WS或分位数排序。Messages HTTP 的接线与边界见下文，其余协议仍待验收。
+Responses 文本间隔子项不覆盖原生WS或分位数排序。Messages 与 Gemini HTTP 的接线和边界见下文，其余协议仍待验收。
 
 Messages HTTP 普通与 Anthropic API Key 透传复用同一物理 attempt 聚合：原计时中间件扩展到
 POST `/messages` 入口，最终发送边界记录账号、实际代理和不可变线路摘要，解析器从真实响应恢复物理 attempt。
@@ -653,7 +653,36 @@ Messages 使用独立 `typed_messages_sse` 来源与 Messages parser 作用域�
 不改变业务扫描上限或截断转发。无采集器的请求不计算额外线路摘要，父 attempt 不重复存储物理分片，重试不借前次数据。
 该路径仍沿原 request timing JSON、30天保留、异步队列及用量投影，不增加表或第二套计时器。
 Messages 的 output_tokens 未提供与 Responses 等价的推理扣除证据，因此输出阶段 TPS 与规范缓存比例继续未采集，
-不把原计费用量强行换算为同口径指标。此子项不关闭D5，原生WS、Gemini等协议、跨协议速度与会话冷输入风险仍待验收。
+不把原计费用量强行换算为同口径指标。Gemini HTTP 的接线见下文；原生WS、其他协议、跨协议速度与会话冷输入风险仍待验收，D5不因单协议交付关闭。
+
+Gemini HTTP 原生、Messages 兼容、Chat Completions 兼容与 Code Assist 流转非流，沿同一物理 attempt
+记录首推理、首可见文本、文本 chunk 间隔和终态等待。HTTP 采集中间件与传输诊断共用实际端点分类，增加
+POST `/chat/completions` 及 Gemini 的 `generateContent`/`streamGenerateContent`；模型列表、`countTokens`、
+缓存管理和 GET 继续不进入生成请求采集。分类只保留固定端点码，不保存模型路径、查询或凭据。
+Gemini 共用最终发送入口记录账号、实际代理和不可变线路摘要，普通网关与 Gemini 复用相同初始化函数；
+解析器从真实响应恢复物理 attempt，父 attempt 不复制物理 chunk 数。三个公开 Forward 入口记录最终业务结果。
+
+观测只消费原始 Gemini wire；Code Assist 只解包一层 `response`，外层错误不会被内层 STOP 隐藏。
+只以 index 缺省或为0的首个主候选为准，其他候选不能替主候选完成或提前首文本。非空且 `thought=true` 的文本
+标记首个可观察推理，非空且非 thought 的文本标记首可见文本；每个含可见文本的原始流式 chunk 记一次，
+不是 token 数、网络包数或转换后下游 delta 数，也不假定各供应商的 chunk 是等粒度或逐 token 输出。
+空文本、签名、心跳、模型元数据与用量不抵消文本停顿，工具和媒体只标记非文本输出，不冒充可见文本。
+聚合路径观察原始行且不再观察聚合结果；普通 JSON 响应只补解析时首内容和终态，不伪造流式 chunk 或间隔。
+来源独立为 `typed_gemini_content`，作用域明确为最终物理 HTTP 的 Gemini 主候选在解析层的文本 chunk。
+
+只有主候选正常 STOP、完整采集、请求成功且无取消/断连/下游写错时，文本流样本才可为 observed。
+MAX_TOKENS、内容策略、未知停止原因、错误信封、EOF 或仅 `[DONE]` 都不等价于正常完整回答；
+保留原 ops 对请求级内容策略与账号故障的区分，不为计时改写计费、字节转发或错误策略。
+STOP 后纯用量元数据可保留，继续出现内容或失败信号则使原聚合无效，不能以早先 STOP 掩盖后续异常。
+损坏事件、错误字段类型、混入其他协议或超过16MiB诊断上限使 typed 采集标为 incomplete_capture，
+首推理/首文本/间隔数值保持未知；独立 HTTP 首字节仍可保留，不截断业务转发。
+即使已收到 STOP，后续客户端断连也保留断连结果和原已采集计费用量，不形成健康样本。
+
+该子项复用原 request timing JSON、异步记录、保留期限和 SQL 投影，无数据库迁移或第二套计时器；
+旧 JSON 继续按原协议解释。Gemini 的计费兼容量不直接套用 Responses 的规范缓存和推理扣除公式，
+输出阶段 TPS 与规范缓存比例保持未采集。新观测尚不改变自动排名或线上策略，也不证明真实供应商的缓存、质量或完整能力。
+回退应用保留原 JSON 和账单；旧读取者不识别 Gemini 的来源与异常边界，不作为完整观测的验收结果，混合版本及生产升级仍按D8/D9核验。
+Antigravity 独立转发、原生WS、其他协议、跨协议速度与会话迁移冷输入风险仍属D5剩余验收。
 
 D5 的 Responses HTTP 缓存分层沿相同终态采集点保存原始 `input_tokens` 与明确上报的
 `input_tokens_details.cached_tokens`，可选记录 `cache_write_tokens`；普通、passthrough 与工具转换路径共用原采集器。

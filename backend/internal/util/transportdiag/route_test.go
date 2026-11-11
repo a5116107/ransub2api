@@ -14,11 +14,17 @@ func TestHTTPRouteUsesActualEndpointAndDoesNotRetainSecrets(t *testing.T) {
 	parent := Route{Downstream: "websocket", Upstream: "websocket", Mode: "http_bridge", Endpoint: "responses"}
 	ctx := WithRoute(context.Background(), parent)
 	for path, want := range map[string]string{
-		"/backend-api/codex/responses": "responses",
-		"/v1/responses/compact/":       "responses_compact",
-		"/v1/chat/completions":         "chat_completions",
-		"/v1/messages":                 "messages",
-		"/private/SECRET_PATH":         "other",
+		"/backend-api/codex/responses":                   "responses",
+		"/v1/responses/compact/":                         "responses_compact",
+		"/v1/chat/completions":                           "chat_completions",
+		"/v1/messages":                                   "messages",
+		"/v1beta/models/PRIVATE_MODEL:generateContent":   "gemini_generate_content",
+		"/v1/models/PRIVATE_MODEL:streamGenerateContent": "gemini_stream_generate_content",
+		"/v1internal:streamGenerateContent":              "gemini_stream_generate_content",
+		"/v1beta/models/PRIVATE_MODEL:countTokens":       "other",
+		"/v1beta/models/":                                "other",
+		"/private:generateContent":                       "other",
+		"/private/SECRET_PATH":                           "other",
 	} {
 		req, err := http.NewRequestWithContext(ctx, "POST", "https://user:SECRET_PASSWORD@example.test"+path+"?token=SECRET_QUERY", nil)
 		require.NoError(t, err)
@@ -30,6 +36,7 @@ func TestHTTPRouteUsesActualEndpointAndDoesNotRetainSecrets(t *testing.T) {
 		raw, err := json.Marshal(route)
 		require.NoError(t, err)
 		require.NotContains(t, string(raw), "SECRET")
+		require.NotContains(t, string(raw), "PRIVATE_MODEL")
 	}
 }
 

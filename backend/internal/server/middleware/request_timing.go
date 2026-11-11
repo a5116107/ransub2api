@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/transportdiag"
 	"github.com/gin-gonic/gin"
 )
 
@@ -23,7 +24,8 @@ type ConnectionTraceRecorder interface {
 func RequestTiming(recorders ...ConnectionTraceRecorder) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := strings.TrimRight(c.Request.URL.Path, "/")
-		if c.Request.Method != http.MethodPost || (!strings.HasSuffix(path, "/responses") && !strings.HasSuffix(path, "/responses/compact") && !strings.HasSuffix(path, "/messages")) {
+		endpoint := transportdiag.EndpointCategory(path)
+		if c.Request.Method != http.MethodPost || endpoint == "other" {
 			c.Next()
 			return
 		}

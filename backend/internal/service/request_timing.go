@@ -3,15 +3,42 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/gin-gonic/gin"
 )
 
 const maxSSETimingBytes = 16 * 1024 * 1024
 
+func startAccountTimingAttempt(request *http.Request, account *Account) (*http.Request, *requesttiming.Trace) {
+	proxyID := int64(0)
+	if account.ProxyID != nil {
+		proxyID = *account.ProxyID
+	}
+	request, trace := requesttiming.StartAttempt(request, account.ID, proxyID)
+	if trace != nil {
+		requesttiming.RecordAccountRoute(request.Context(), AccountRouteFingerprint(account))
+	}
+	return request, trace
+}
+
+func responseTimingContext(c *gin.Context, response *http.Response) context.Context {
+	var ctx context.Context
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	} else if response != nil && response.Request != nil {
+		ctx = response.Request.Context()
+	}
+	if ctx == nil {
+		return nil // Standalone parsers without a request retain no timing state.
+	}
+	return requesttiming.ResponseContext(ctx, response)
+}
+
 // sseTimingObserver observes original parser input without altering forwarded
-// lines. It is shared by Responses and Messages and retains at most one event.
+// lines. Responses, Messages and Gemini share this bounded event observer.
 type sseTimingObserver struct {
 	ctx             context.Context
 	protocol        string
@@ -21,7 +48,7 @@ type sseTimingObserver struct {
 }
 
 func (s *sseTimingObserver) resetTimingEvent() {
-	if s.protocol == "messages" && len(s.timingData) > 0 {
+	if s.protocol != "responses" && len(s.timingData) > 0 {
 		requesttiming.Stage(s.ctx, "typed_content_truncated")
 	}
 	s.timingEventType = ""
@@ -32,6 +59,9 @@ func (s *sseTimingObserver) resetTimingEvent() {
 func (s *sseTimingObserver) observeTimingLine(line string) {
 	if s.ctx == nil || requesttiming.From(s.ctx) == nil {
 		return
+	}
+	if s.protocol == "gemini" {
+		requesttiming.Stage(s.ctx, "typed_gemini_content")
 	}
 	if line == "" || line == "event" {
 		s.resetTimingEvent()
@@ -46,7 +76,7 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 	if !ok || s.timingDiscard {
 		return
 	}
-	if s.protocol == "messages" && strings.TrimSpace(data) == "[DONE]" {
+	if s.protocol != "responses" && strings.TrimSpace(data) == "[DONE]" {
 		s.resetTimingEvent()
 		return
 	}
@@ -68,6 +98,11 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 		return
 	}
 	requesttiming.Stage(s.ctx, "sse_parsed_first")
+	if s.protocol == "gemini" {
+		requesttiming.GeminiContent(s.ctx, s.timingData, true)
+		s.timingData = nil
+		return
+	}
 	eventType := effectiveOpenAISSEEventType(s.timingData, s.timingEventType)
 	if (s.protocol == "messages" && strings.HasPrefix(eventType, "response.")) ||
 		(s.protocol == "responses" && (strings.HasPrefix(eventType, "message_") || strings.HasPrefix(eventType, "content_block_"))) {
@@ -80,6 +115,20 @@ func (s *sseTimingObserver) observeTimingLine(line string) {
 		requesttiming.Stage(s.ctx, "sse_visible_first")
 	}
 	s.timingData = nil
+}
+
+// Match the native forwarding outcome without changing error handling or
+// billing. The defer caller passes its final named return values.
+func recordForwardTimingOutcome(ctx context.Context, result *ForwardResult, err error) {
+	outcome := "success"
+	if err != nil {
+		outcome = "failed"
+	}
+	disconnected := result != nil && result.ClientDisconnect
+	if disconnected {
+		outcome = "client_disconnected"
+	}
+	requesttiming.Outcome(ctx, outcome, disconnected)
 }
 
 func timingTerminal(event string) string {

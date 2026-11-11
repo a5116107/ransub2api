@@ -25,7 +25,7 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	now := time.Now().UTC().Add(-time.Minute)
 	end := 50.0
 	var ids []int64
-	for i, effort := range []string{"xhigh", "medium"} {
+	for i, effort := range []string{"xhigh", "medium", "low"} {
 		latency := 100 + i*200
 		usage := &service.UsageLog{UserID: u.ID, APIKeyID: k.ID, AccountID: a.ID, Model: "fixture", Stream: true, InputTokens: 1, FirstTokenMs: &latency, ReasoningEffort: &effort, CreatedAt: now}
 		_, err := repo.Create(ctx, usage)
@@ -37,6 +37,10 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 		}}}
 		if i == 1 {
 			s.Attempts[0].TextStream.Protocol = "messages"
+		}
+		if i == 2 {
+			s.Attempts[0].TextStream.Protocol = "gemini"
+			s.Attempts[0].Events["typed_gemini_content"] = 1
 		}
 		raw, err := json.Marshal(s)
 		require.NoError(t, err)
@@ -62,9 +66,13 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	require.Equal(t, "typed_messages_sse", items[ids[1]].TextStream.Source)
 	require.Equal(t, "final_physical_http_messages_text_deltas_at_parser", items[ids[1]].TextStream.Scope)
 	require.Nil(t, items[ids[1]].OutputRate.TokensPerSecond)
+	require.Equal(t, "typed_gemini_content", items[ids[2]].TextStream.Source)
+	require.Equal(t, "final_physical_http_gemini_primary_text_chunks_at_parser", items[ids[2]].TextStream.Scope)
+	require.Nil(t, items[ids[2]].OutputRate.TokensPerSecond)
+	require.Nil(t, items[ids[2]].Cache.ReadRatio)
 	groups, err := repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID})
 	require.NoError(t, err)
-	require.Len(t, groups, 2)
+	require.Len(t, groups, 3)
 	for _, g := range groups {
 		require.Equal(t, a.ID, g.AccountID)
 		require.Equal(t, "fixture", g.Model)
