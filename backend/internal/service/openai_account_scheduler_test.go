@@ -3948,79 +3948,167 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SubscriptionPriorityWai
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_YieldsStickyToHigherPriorityTicket(t *testing.T) {
-	ctx := context.Background()
-	groupID := int64(3)
-	sticky := Account{
-		ID:          5,
-		Name:        "5x",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeOAuth,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Priority:    100,
-		GroupIDs:    []int64{groupID},
-		Credentials: map[string]any{"access_token": "tok", "chatgpt_account_id": "acc-5x"},
-	}
-	preferred := Account{
-		ID:          20,
-		Name:        "20x",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeOAuth,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Priority:    1,
-		GroupIDs:    []int64{groupID},
-		Credentials: map[string]any{"access_token": "tok", "chatgpt_account_id": "acc-20x"},
-	}
-	attachReadyCodexTicket(&sticky, "gpt-6-astra")
-	attachReadyCodexTicket(&preferred, "gpt-6-astra")
+	for _, tc := range []struct {
+		name                                                                           string
+		protect, disabled, full, missingTicket, excluded, otherGroup, otherModel, kept bool
+		weighted, newSession, expiredTicket                                            bool
+		apiKey, skipHarvest, failOpen                                                  bool
+	}{
+		{name: "legacy_priority_yields"},
+		{name: "protected_ticket_retained", protect: true, kept: true},
+		{name: "protected_full_waits", protect: true, full: true, kept: true},
+		{name: "protected_weighted_retained", protect: true, weighted: true, kept: true},
+		{name: "new_session_still_prefers_ticket_priority", protect: true, newSession: true},
+		{name: "missing_ticket_still_rejected", protect: true, missingTicket: true},
+		{name: "expired_ticket_still_rejected", protect: true, expiredTicket: true},
+		{name: "protected_static_key_retained", protect: true, apiKey: true, missingTicket: true, kept: true},
+		{name: "legacy_static_key_priority_unchanged", apiKey: true, missingTicket: true},
+		{name: "protected_skip_harvest_retained", protect: true, skipHarvest: true, missingTicket: true, kept: true},
+		{name: "protected_fail_open_missing_retained", protect: true, failOpen: true, missingTicket: true, kept: true},
+		{name: "protected_fail_open_expired_retained", protect: true, failOpen: true, expiredTicket: true, kept: true},
+		{name: "excluded_still_rejected", protect: true, excluded: true},
+		{name: "disabled_policy_unchanged", protect: true, disabled: true},
+		{name: "other_group_unchanged", protect: true, otherGroup: true},
+		{name: "other_model_unchanged", protect: true, otherModel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetOpenAIAdvancedSchedulerSettingCacheForTest()
+			ctx := context.Background()
+			groupID := int64(3)
+			sticky := Account{
+				ID:          5,
+				Name:        "5x",
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    100,
+				GroupIDs:    []int64{groupID},
+				Credentials: map[string]any{"access_token": "tok", "chatgpt_account_id": "acc-5x"},
+			}
+			preferred := Account{
+				ID:          20,
+				Name:        "20x",
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+				GroupIDs:    []int64{groupID},
+				Credentials: map[string]any{"access_token": "tok", "chatgpt_account_id": "acc-20x"},
+			}
+			if !tc.missingTicket {
+				attachReadyCodexTicket(&sticky, "gpt-6-astra")
+			}
+			if tc.expiredTicket {
+				key := openAICodexTicketExtraKey("gpt-6-astra")
+				ticket, ok := sticky.Extra[key].(openAICodexTicket)
+				require.True(t, ok)
+				ticket.ExpiresAt = time.Now().Add(-time.Minute)
+				sticky.Extra[key] = ticket
+			}
+			if tc.apiKey {
+				sticky.Type = AccountTypeAPIKey
+				sticky.Credentials = map[string]any{"api_key": "fixture-key"}
+			}
+			if tc.skipHarvest {
+				sticky.Extra = map[string]any{OpenAICodexSkipHarvestExtraKey: true}
+			}
+			attachReadyCodexTicket(&preferred, "gpt-6-astra")
 
-	cache := &schedulerTestGatewayCache{
-		sessionBindings: map[string]int64{
-			"openai:session_hash_ticket": sticky.ID,
-		},
-	}
-	cfg := &config.Config{}
-	cfg.Gateway.OpenAICodexTicket = config.OpenAICodexTicketConfig{
-		Enabled:      true,
-		TargetLength: 292,
-		TTLSeconds:   3600,
-		FailClosed:   true,
-		Models:       []string{"gpt-6-astra", "gpt-5.6-sol"},
-	}
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 1
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1
+			cache := &schedulerTestGatewayCache{
+				sessionBindings: map[string]int64{
+					"openai:session_hash_ticket": sticky.ID,
+				},
+			}
+			cfg := &config.Config{}
+			cfg.Gateway.OpenAICodexTicket = config.OpenAICodexTicketConfig{
+				Enabled:      true,
+				TargetLength: 292,
+				TTLSeconds:   3600,
+				FailClosed:   true,
+				Models:       []string{"gpt-6-astra", "gpt-5.6-sol"},
+			}
+			cfg.Gateway.Scheduling.StickySessionWaitTimeout = 75 * time.Millisecond
+			cfg.Gateway.Scheduling.StickySessionMaxWaiting = 3
+			cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 1
+			cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1
+			cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1
 
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{sticky, preferred}},
-		cache:              cache,
-		cfg:                cfg,
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
+			policy := DefaultPrioritySchedulingConfig()
+			policy.Enabled, policy.PreserveSessionAffinity = !tc.disabled, tc.protect
+			policy.GroupIDs, policy.Models = []int64{groupID}, []string{"gpt-6-astra"}
+			if tc.otherGroup {
+				policy.GroupIDs = []int64{groupID + 1}
+			}
+			if tc.otherModel {
+				policy.Models = []string{"gpt-5.6-sol"}
+			}
+			settings := priorityGateway(policy, &priorityReaderStub{}).settingService
+			settings.settingRepo = &openAIAdvancedSchedulerSettingRepoStub{values: map[string]string{
+				SettingKeyOpenAICodexTicketFailClosed: strconv.FormatBool(!tc.failOpen),
+			}}
+			svc := &OpenAIGatewayService{
+				settingService:     settings,
+				accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{sticky, preferred}},
+				cache:              cache,
+				cfg:                cfg,
+				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+			}
 
-	selection, decision, err := svc.SelectAccountWithScheduler(
-		ctx,
-		&groupID,
-		"",
-		"session_hash_ticket",
-		"gpt-6-astra",
-		nil,
-		OpenAIUpstreamTransportAny,
-		false,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.NotNil(t, selection.Account)
-	require.Equal(t, preferred.ID, selection.Account.ID)
-	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	require.False(t, decision.StickySessionHit)
-	require.Equal(t, preferred.ID, cache.sessionBindings["openai:session_hash_ticket"])
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
+			if tc.full {
+				svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{acquireResults: map[int64]bool{sticky.ID: false, preferred.ID: true}})
+			}
+			if tc.weighted {
+				svc.rateLimitService = newOpenAIAdvancedSchedulerRateLimitService("true", "true")
+			}
+			require.Equal(t, !tc.failOpen, svc.openAICodexTicketConfig().FailClosed, "the fixture must use the effective setting, not an overridden static fallback")
+			sessionHash := "session_hash_ticket"
+			if tc.newSession {
+				sessionHash += "_new"
+			}
+			var excluded map[int64]struct{}
+			if tc.excluded {
+				excluded = map[int64]struct{}{sticky.ID: {}}
+			}
+			selection, decision, err := svc.SelectAccountWithScheduler(
+				ctx,
+				&groupID,
+				"",
+				sessionHash,
+				"gpt-6-astra",
+				excluded,
+				OpenAIUpstreamTransportAny,
+				false,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			require.NotNil(t, selection.Account)
+			want, layer, stickyHit := preferred.ID, openAIAccountScheduleLayerLoadBalance, false
+			if tc.kept {
+				want, layer, stickyHit = sticky.ID, openAIAccountScheduleLayerSessionSticky, true
+			}
+			require.Equal(t, want, selection.Account.ID)
+			require.Equal(t, layer, decision.Layer)
+			require.Equal(t, stickyHit, decision.StickySessionHit)
+			require.Equal(t, want, cache.sessionBindings["openai:"+sessionHash])
+			if tc.newSession {
+				require.Equal(t, sticky.ID, cache.sessionBindings["openai:session_hash_ticket"], "new-session allocation must leave existing sessions alone")
+			}
+			if tc.full && tc.kept {
+				require.False(t, selection.Acquired)
+				require.NotNil(t, selection.WaitPlan)
+				require.Equal(t, sticky.ID, selection.WaitPlan.AccountID)
+				require.Equal(t, 75*time.Millisecond, selection.WaitPlan.Timeout)
+				require.Equal(t, 3, selection.WaitPlan.MaxWaiting)
+			}
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+		})
 	}
 }
 

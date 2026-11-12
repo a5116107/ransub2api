@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D6保留/硬准入交互与D7原入口本地闭环，父验收保留。
+任务：D6门票软换线子项本地闭环，父验收和外部等待保留。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线1c4ef78；在原调度/配置/API/UI内修改，不新增调度器。
-验证命令：原89382扩大race/vet/Linux/lint；UI40和Chromium复用。
-验证结果：race603/3092无失败/跳过；四包lint零诊断；UI/构建通过。
-验证来源：backend/tmp/protocol-cache/scheduling-session-affinity-*。
-下一动作：D5/D6软迁移待前缀/缓存域证据；D2/D4待关联/模型fast契约。
-尝试：35
+源码：d14700f基线；只改原调度分支/既有测试/统一文档。
+验证命令：5226三轮race及75335扩大race/四包vet/Linux/lint均退出0。
+验证结果：扩大668顶层/3225含子例，零失败/跳过；完整lint为0 issues。
+验证来源：backend/tmp/protocol-cache/scheduling-session-ticket-*。
+下一动作：收到D3非文本组合/供应商及缓存域证据后，继续对应验收。
+尝试：37
 阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -50,7 +50,7 @@
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；HTTP/TLS/区域/Astra及插件终检race349/842、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
-| D6 | in_progress | 会话保留13场景、最新状态失效/恢复及强归属已验，扩大race603/3092通过；软迁移仍须前缀/候选缓存域与净收益证据 |
+| D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 原表单/API会话开关、旧客户端兼容、UI40及键盘/390px/503恢复已验；完整解释依赖其余策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及资金/竞争/回滚16项夹具、日志race20次通过；其余集成/升级/全局CLI待验收，不运行CI |
 | D9 | pending | 依赖前述验收及生产执行授权 |
@@ -66,11 +66,12 @@
 
 ## 下一项工作
 
-D6保留/硬准入交互与D7入口本地闭环；D2关联契约、D4模型/fast、D5/D6前缀/缓存域待证据，D3其余能力待验。原28项20 done，D2–D7进行中，D8–D9待验。
+D6门票保留子项已验；D2关联契约、D4模型/fast、D5/D6前缀/缓存域待证据，D3非文本验收组合待确认。原28项20 done，D2–D7进行中，D8–D9待验。
 
 ## 外部等待与清理
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
+- D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
