@@ -3,17 +3,17 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D9自有首版已上线，修复实际页面空状态并验证在线升级。
-授权：用户选定先合并再全量发布；自有仓库同步/发布已授权；不运行CI。
-源码：线上v2.19.2-ransub.1/b0297efe3；production为6e19819a7。
-验证命令：WSL工具29项、UI117项/类型/ESLint通过；迁移398→410通过。
-验证结果：线上登录/原性能/更新通过；真实文本200完整终态3.814s。
-验证来源：backend/tmp/protocol-cache/ransub-*；定时同步run43234434430成功。
-回滚：hk2:/opt/sub2api/deploy/backups/deploy-f046622。
-下一动作：构建发布.2，以真实版本按钮在线更新并验重建持久化和页面。
-尝试：54
-阻塞：无；空快照触发延迟503的UI已修复，待发行及线上加载验收。
-边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
+任务：D9自有更新链已交付；.2在线升级及重建持久化通过。
+授权：先保留线上功能再全量发布；自有公开仓库同步/发行/部署已授权；不运行CI。
+源码：线上v2.19.2-ransub.2/bbe3274f7；origin为a5116107/ransub2api。
+验证命令：最终远程Python核验、GitHub匿名latest、真实HTTPS浏览器。
+验证结果：healthy；8账号/2组/1用户/1Key/410迁移；.2同镜像重建后同SHA。
+验证来源：backend/tmp/protocol-cache/ransub-{final-live,final-channel,recreate-result,browser-result}.json。
+回滚：远端/app/bin/sub2api.backup及hk2:/opt/sub2api/deploy/backups/。
+下一动作：当前发行交付完成；上游v2.21.0的PR1冲突待独立审阅，不自动覆盖。
+尝试：55
+阻塞：当前发行无阻塞；D2–D8原供应商/能力/缓存证据及完整依赖仍待释放。
+边界：优先调度保持原关闭；视频任务及额度归原节点；真实采购价不做。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -54,7 +54,7 @@
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 并发保存/409、重算及候选缺失/无效延迟已验；UI112+支付21、类型/lint/构建/中英390px刷新通过；完整解释待契约 |
 | D8 | in_progress | CLI/三PID/30请求/重启/额度/升级及备份字段已验；配置并发race299/707、SQL三轮12/90、vet/Linux/lint0；其他能力/完整混版待验 |
-| D9 | in_progress | 自有.1上线、398→410迁移/回滚、登录/性能/文本/更新通过；空状态修复本地117项通过，.2在线更新/重建待验 |
+| D9 | in_progress | 自有.2上线；398→410迁移/旧程序回滚、版本菜单升级/重启及同镜像重建持久化通过；登录/原性能/8账号/桌面与390px页面通过；完整D8及未确认能力发布仍待依赖 |
 
 ## 工作区与验证约定
 
@@ -67,15 +67,14 @@
 
 ## 下一项工作
 
-原28项20 done，D2–D8部分；D9首版上线，.2在线更新和重建持久化待验。
+原28项20 done、8部分（D2–D9）；本轮公开仓库、自动同步、自有发行及线上更新/重建子验收完成，未将原依赖缺口记为完成。
 
 ## 外部等待与清理
 
-- D2 unknown待供应商/接入方补关联查询契约；D4待完整模型/fast证据。D9本轮合并全量已授权，先通过演练再排空切换。
+- D2 unknown待供应商/接入方补关联查询契约；D4待完整模型/fast证据。D9本轮演练及生产切换已完成，未确认能力和完整D8仍依赖原证据。
+- 上游v2.21.0已由自动同步提出PR1，存在合并冲突；由维护者独立审阅语义、验证迁移/回归后再发布，线上不自动覆盖。
 - D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。
-- 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不重试。
-- 历史TEMP拒删：chat-wire/protocol-rate、latency-evidence/cli-processes/priority-backup/recompute-latency及其余测试产物；精确路径/大小和拦截证据见DECISIONS，拥有者手工处理，不重试/移动、不计释放。
-- `H:/Root/DevCache/tmp/sub2api-candidate-latency`为239文件/9578704bytes，无重解析点/活跃引用；递归清理在启动前被策略拒绝，删除0，拥有者手工处理，不重试/移动。浏览器复现脚本仍在其中，最小验证证据留原protocol-cache。
+- 历史拒删路径、大小与清单见DECISIONS：UI/后端缓存11文件（2886386bytes）、Go缓存96份（32.20GiB）、TEMP测试产物；删除0，由拥有者手工处理，不重试/移动。
+- `H:/Root/DevCache/tmp/sub2api-candidate-latency`（239文件/9578704bytes）清理被策略拦截、删除0；拥有者手工处理，不重试/移动，最小证据已保留。

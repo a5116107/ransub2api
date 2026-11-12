@@ -2269,3 +2269,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 同步run43238014242使用6e19819a7成功，仍仅Release/Sync upstream active。上游v2.21.0的PR1继续存在语义冲突，不覆盖自研或自动上线。
 - 真实Chromium通过HTTPS表单登录、版本徽标强制刷新自有Release、8账号与优先调度页面；API未拦截/模拟。原脚本错误预期登录进入/admin，实际进入/dashboard，纠正验收夹具后再验。Python默认请求公网域名被边缘403/1010拒绝，未触达应用；改用证书验证的本机Caddy TLS路径验证后端，gpt-6.1-sol真实SSE请求200、response.completed且文本DEPLOY_OK，3.814秒。此结果不冒充全部供应商/能力验收。
 - 浏览器发现原onMounted在无快照时直接请求延迟分析，服务按既有契约503；默认调度仍关闭。UI原位删除无条件请求，只在候选快照存在后查询，空态禁用刷新；池消失丢弃在途结果。新空态两例先红，修复后候选/分位数/账号列三个文件117/117通过，ESLint和vue-tsc退出0。原热图夹具补齐真实候选池；未变后端503契约、配置或调度策略。准备.2自有发行并以真实在线更新验证加载及容器重建持久化。
+
+
+### 自有.2真实在线升级、重建与最终交付
+
+- `v2.19.2-ransub.2` 已公开为stable/latest，源码 `bbe3274f72849c9f7718ac51aa2ef7da0e4e2fad`；Linux amd64归档48425278bytes，四项资产已核验。Release预构建镜像封装run43241254122成功，匿名pull通过，镜像digest `sha256:39d6cffae518a2ce0d7b16d5bc8f3c5e9474176d48967db58e17454a94b96fe0`。本轮未运行构建/测试CI；此前错误触发的继承工作流保留失败历史说明，不声称从未发生。当前只有Release和Sync upstream两项active，其余六项disabled。
+- 实际HTTPS浏览器通过版本菜单执行`.1 → .2`立即更新及重启，新版已加载；随后应用容器从dbb0c2f03178重建为7c42c1f1f3c2。基础镜像仍为原.1的固定digest `sha256:97fbad3b591e249cdefb0c8d2d8b8a80726ad23fd8859b5125751d805307b352`，重建前后实际进程`/app/bin/sub2api` SHA256均为 `98c594ad6cd851f019b00b1045274f26c510f791e407052f5e6f13bee1addf55`，版本为2.19.2-ransub.2，healthy；数据库及Redis容器ID未变，独立程序挂载与上一程序backup均保留。证明在线替换程序可跨同镜像重建持久化，不以镜像标签代替实际进程身份。
+- 重建后真实浏览器再次登录，刷新自有发行渠道，检查8个账号、优先调度页和390px移动端；page_errors/http_errors/request_failures均为空，无快照状态禁用延迟刷新且无页面横向溢出。证据为`ransub-browser-result.json`和三张页面截图；该后验文件记录的是重建后页面观察，在线升级操作另由实际按钮执行记录及前后程序身份支持，不将后验检查数组伪称含升级操作。
+- 最终远程Python只读核验退出0：版本/当前/最新均2.19.2-ransub.2、has_update=false、warning=null、healthy；账号8/分组2/用户1/Key1/迁移410，原账号性能API成功，优先调度仍为false，未为生成候选而启用。结果存`ransub-final-live.json`。匿名GitHub latest及认证只读渠道核验退出0，visibility=public、latest=v2.19.2-ransub.2、production=bbe3274f7、两项active/six disabled；PR1仍open/mergeable=false/dirty，结果存`ransub-final-channel.json`。先前真实文本SSE200/完整终态/DEPLOY_OK/3.814s来自同后端的.1；本轮.2仅前端空态变更，复用该证据，不冒充再次调用所有供应商。
+- 原28项20done/8部分口径不变；本轮完成公开自有仓库、保留线上功能的合并/迁移/发布、定时同步、公开Release及真实线上更新/重建子验收，不据此关闭缺少供应商契约、非文本组合、模型/fast、可信缓存域/净收益或完整混版等原父验收。上游v2.21.0的自动同步结果仅待审PR，不自动合并或发布。保留原数据备份与回滚镜像；不自动降级数据库。
+- 核查本轮三份一次性部署/演练/浏览器脚本无活动进程，解析绝对路径均在原protocol-cache且为非重解析普通文件；原生PowerShell逐项WhatIf后删除，3文件实际释放25907bytes。最小失败/成功JSON、三张页面图、H盘两版发行归档（交付物）及远端回滚备份保留；历史PNG与拒删路径未触碰。文档检查先发现STATE为8636bytes超8192，原位压缩历史拒删说明并保留DECISIONS中完整路径/证据，未删改待验收项。
+- 最终文档检查退出0：26个本地链接有效，STATE为8102bytes/80行（后续仅同长度措辞修订），恢复检查点位于前2048bytes；git diff --check通过。生产源码与已通过的117项UI测试、类型/ESLint及29项WSL工具测试输入未变，本轮不重复构建或运行CI。仅提交三份任务文档，历史未跟踪图片保留。
