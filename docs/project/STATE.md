@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D7/D8并发兼容保存子验收完成；父项待外部证据。
+任务：D5/D7选定延迟重算解释子验收完成；父项待外部证据。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：2fa463e后原保存入口SQL条件写入；18项冻结摘要匹配。
-验证命令：47836最终race/lint/CLI双平台vet退出0；3744的vet/Linux0。
-验证结果：扩大race299/707、SQL三轮12/90全过，lint 0 issues；旧lint失败已留。
-验证来源：backend/tmp/protocol-cache/priority-config-concurrent-*。
-下一动作：待D2关联契约、D3组合、D4fast来源及D5/D6缓存证据释放后验父项。
-尝试：47
-阻塞：供应商/能力/缓存与生产授权待补；历史拒删资源不重试。
+源码：a688344后原重算API/UI替换P90误用；13项输入匹配。
+验证命令：72695最终race/vet/Linux/lint全0；UI60/类型/lint/构建/浏览器0。
+验证结果：后端11类红转绿，扩大race171/450；三轮30/69，lint 0 issues。
+验证来源：backend/tmp/protocol-cache/priority-recompute-latency-*。
+下一动作：待供应商关联/能力/模型fast与缓存证据释放后恢复对应父验收。
+尝试：48
+阻塞：外部事实/生产授权待补；本轮TEMP删除被拦截，历史拒删不重试。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -51,7 +51,7 @@
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；选定延迟未知/null已验，service662/3193、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
-| D7 | in_progress | 表单/API省略字段并发保留/409及恢复已验；UI48/类型/lint/构建、中英键盘/390px/503通过；完整解释待契约 |
+| D7 | in_progress | 表单/API并发保留/409恢复及重算选定延迟已验；UI60/类型/lint/构建、中英390px/503通过；完整解释待契约 |
 | D8 | in_progress | CLI/三PID/30请求/重启/额度/升级及备份字段已验；配置并发race299/707、SQL三轮12/90、vet/Linux/lint0；其他能力/完整混版待验 |
 | D9 | pending | 依赖前述验收及生产执行授权 |
 
@@ -66,7 +66,7 @@
 
 ## 下一项工作
 
-D7/D8并发兼容保存子验收完成；原28项20 done、7部分、D9待生产。其余等待下列证据/授权。
+D5/D7重算选定延迟子验收完成；原28项20 done、7部分、D9待生产。其余等待下列证据/授权。
 
 ## 外部等待与清理
 
@@ -77,4 +77,4 @@ D7/D8并发兼容保存子验收完成；原28项20 done、7部分、D9待生产
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
 - 历史TEMP拒删（chat-wire、protocol-rate及其余测试产物/空目录）精确路径见DECISIONS；拥有者手工处理，不重试、不计释放。
-- TEMP根`C:/Users/Administrator/AppData/Local/Temp/`下`sub2api-latency-evidence`（236文件/9455936bytes）、`sub2api-cli-processes`（171文件/14216731bytes）、`sub2api-priority-backup`（1文件/187356661bytes）无重解析点/任务活跃引用；清理预演启动前被拦截，拥有者手工处理，不重试/移动、不计释放。
+- TEMP根`C:/Users/Administrator/AppData/Local/Temp/`下`sub2api-latency-evidence`（236文件/9455936bytes）、`sub2api-cli-processes`（171文件/14216731bytes）、`sub2api-priority-backup`（1文件/187356661bytes）、`sub2api-recompute-latency`（235文件/8504133bytes）无重解析点/任务活跃引用；清理预演启动前被拦截，拥有者手工处理，不重试/移动、不计释放。

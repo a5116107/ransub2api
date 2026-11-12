@@ -110,12 +110,12 @@
             <button v-if="recomputeCanClearSticky" class="btn btn-secondary" :disabled="stickyLoading || !changedDiffRows.length" data-testid="clear-changed-sticky" @click="clearChangedSticky">{{ t('priorityScheduling.recompute.clearChanged') }}</button>
           </header>
           <p class="my-2 text-xs text-gray-500" data-testid="recompute-scope">{{ t('priorityScheduling.recompute.scope', { model: recomputeResult.before?.model ?? '—', group: recomputeResult.before?.group_id ?? '—', accounts: changedDiffRows.map(row => `${row.account_name} (#${row.account_id})`).join(', ') || '—' }) }}</p>
-          <p class="my-2 text-xs leading-5 text-gray-500">{{ t('priorityScheduling.recompute.hint') }}</p>
+          <p class="my-2 text-xs leading-5 text-gray-500" data-testid="recompute-hint">{{ t('priorityScheduling.recompute.hint') }}</p>
           <p v-if="recomputeResult.timed_out" class="text-amber-600">{{ t('priorityScheduling.recompute.timedOut') }}</p>
           <p v-if="!changedDiffRows.length" class="text-sm text-gray-500">{{ t('priorityScheduling.recompute.noChange') }}</p>
           <div v-else class="overflow-x-auto">
             <table class="w-full whitespace-nowrap text-left text-sm">
-              <thead><tr><th v-for="key in ['account','rank','score','weight','tier','p90','errors']" :key="key" class="px-3 py-2 text-xs font-medium text-gray-500">{{ t(`priorityScheduling.recompute.${key}`) }}</th></tr></thead>
+              <thead><tr><th v-for="key in ['account','rank','score','weight','tier','latency','errors']" :key="key" class="px-3 py-2 text-xs font-medium text-gray-500">{{ t(`priorityScheduling.recompute.${key}`) }}</th></tr></thead>
               <tbody>
                 <tr v-for="row in changedDiffRows" :key="row.account_id" class="border-t border-gray-100 dark:border-dark-700">
                   <td class="px-3 py-2"><strong class="font-medium">{{ row.account_name }}</strong><small class="block text-gray-400">#{{ row.account_id }}</small></td>
@@ -123,7 +123,10 @@
                   <td class="px-3 py-2 tabular-nums">{{ row.old_score.toFixed(1) }} → {{ row.new_score.toFixed(1) }}</td>
                   <td class="px-3 py-2 tabular-nums">{{ row.old_weight.toFixed(2) }} → {{ row.new_weight.toFixed(2) }}</td>
                   <td class="px-3 py-2">{{ tierLabel(row.new_tier) }}</td>
-                  <td class="px-3 py-2 tabular-nums">{{ formatMs(row.old_p90_ttft_ms) }} → {{ formatMs(row.new_p90_ttft_ms) }}</td>
+                  <td class="px-3 py-2 tabular-nums" :data-testid="`recompute-latency-${row.account_id}`">
+                    <span data-testid="recompute-latency-values">{{ formatMs(row.old_selected_ttft_ms) }} → {{ formatMs(row.new_selected_ttft_ms) }}</span>
+                    <small class="block text-gray-400">P{{ recomputeResult.before?.latency_percentile ?? '—' }} · {{ recomputeResult.before?.latency_measurement ?? '—' }} → P{{ recomputeResult.after?.latency_percentile ?? '—' }} · {{ recomputeResult.after?.latency_measurement ?? '—' }}</small>
+                  </td>
                   <td class="px-3 py-2 tabular-nums">{{ row.old_error_samples }} → {{ row.new_error_samples }}</td>
                 </tr>
               </tbody>
@@ -260,8 +263,8 @@ function formatBucket(value: string) {
   const date = new Date(value)
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
-function formatMs(value: number) {
-  return value > 0 ? `${Math.round(value)} ms` : '—'
+function formatMs(value?: number | null) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? `${Math.round(value)} ms` : '—'
 }
 function formatRate(value: number) {
   return value > 0 ? `${(value * 100).toFixed(1)}%` : '—'

@@ -159,6 +159,8 @@ export interface PrioritySchedulingDiffRow {
   new_tier?: string
   old_p90_ttft_ms: number
   new_p90_ttft_ms: number
+  old_selected_ttft_ms?: number | null
+  new_selected_ttft_ms?: number | null
   old_samples: number
   new_samples: number
   old_error_samples: number

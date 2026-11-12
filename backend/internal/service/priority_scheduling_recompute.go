@@ -14,24 +14,26 @@ var ErrPrioritySchedulingRecomputeIncomplete = errors.New("priority scheduling h
 // the ranking produced by a forced history refresh. It is a diagnostic diff:
 // it never persists account priority or mutates routing state.
 type PrioritySchedulingDiffRow struct {
-	AccountID       int64    `json:"account_id"`
-	AccountName     string   `json:"account_name"`
-	OldRank         int      `json:"old_rank,omitempty"`
-	NewRank         int      `json:"new_rank,omitempty"`
-	OldScore        float64  `json:"old_score"`
-	NewScore        float64  `json:"new_score"`
-	OldWeight       float64  `json:"old_weight"`
-	NewWeight       float64  `json:"new_weight"`
-	OldTier         string   `json:"old_tier,omitempty"`
-	NewTier         string   `json:"new_tier,omitempty"`
-	OldP90TTFTMs    float64  `json:"old_p90_ttft_ms"`
-	NewP90TTFTMs    float64  `json:"new_p90_ttft_ms"`
-	OldSamples      int      `json:"old_samples"`
-	NewSamples      int      `json:"new_samples"`
-	OldErrorSamples int      `json:"old_error_samples"`
-	NewErrorSamples int      `json:"new_error_samples"`
-	Changed         bool     `json:"changed"`
-	Reasons         []string `json:"reasons,omitempty"`
+	OldSelectedTTFTMs *float64 `json:"old_selected_ttft_ms"`
+	NewSelectedTTFTMs *float64 `json:"new_selected_ttft_ms"`
+	AccountID         int64    `json:"account_id"`
+	AccountName       string   `json:"account_name"`
+	OldRank           int      `json:"old_rank,omitempty"`
+	NewRank           int      `json:"new_rank,omitempty"`
+	OldScore          float64  `json:"old_score"`
+	NewScore          float64  `json:"new_score"`
+	OldWeight         float64  `json:"old_weight"`
+	NewWeight         float64  `json:"new_weight"`
+	OldTier           string   `json:"old_tier,omitempty"`
+	NewTier           string   `json:"new_tier,omitempty"`
+	OldP90TTFTMs      float64  `json:"old_p90_ttft_ms"`
+	NewP90TTFTMs      float64  `json:"new_p90_ttft_ms"`
+	OldSamples        int      `json:"old_samples"`
+	NewSamples        int      `json:"new_samples"`
+	OldErrorSamples   int      `json:"old_error_samples"`
+	NewErrorSamples   int      `json:"new_error_samples"`
+	Changed           bool     `json:"changed"`
+	Reasons           []string `json:"reasons,omitempty"`
 }
 
 type PrioritySchedulingRecomputeResult struct {
@@ -44,8 +46,8 @@ type PrioritySchedulingRecomputeResult struct {
 // RecomputePriorityScheduling forces the history cache for the last observed
 // candidate pool to refresh and returns a before/after ranking diff. The pool
 // itself stays the last selection observation; only latency, error and quality
-// signals are re-read. Callers that want sessions to move must clear sticky
-// bindings after reviewing the diff.
+// signals are re-read. Existing session affinity is untouched; manual binding
+// cleanup remains a separate operation and may cause cache rebuilds.
 func (s *OpenAIGatewayService) RecomputePriorityScheduling(ctx context.Context) (*PrioritySchedulingRecomputeResult, error) {
 	if s == nil {
 		return nil, ErrPrioritySchedulingSnapshotUnavailable
@@ -132,29 +134,35 @@ func diffPrioritySnapshots(before, after *PrioritySchedulingSnapshot) []Priority
 		seen[candidate.AccountID] = struct{}{}
 		old, ok := oldRows[candidate.AccountID]
 		row := PrioritySchedulingDiffRow{
-			AccountID:       candidate.AccountID,
-			AccountName:     candidate.AccountName,
-			OldRank:         oldRank[candidate.AccountID],
-			NewRank:         index + 1,
-			OldScore:        old.Score,
-			NewScore:        candidate.Score,
-			OldWeight:       old.SelectionWeight,
-			NewWeight:       candidate.SelectionWeight,
-			OldTier:         old.Tier,
-			NewTier:         candidate.Tier,
-			OldP90TTFTMs:    old.P90TTFTMs,
-			NewP90TTFTMs:    candidate.P90TTFTMs,
-			OldSamples:      old.Samples,
-			NewSamples:      candidate.Samples,
-			OldErrorSamples: old.ErrorSamples,
-			NewErrorSamples: candidate.ErrorSamples,
-			Reasons:         candidate.Reasons,
+			OldSelectedTTFTMs: priorityDiffLatency(old.SelectedTTFTMs),
+			NewSelectedTTFTMs: priorityDiffLatency(candidate.SelectedTTFTMs),
+			AccountID:         candidate.AccountID,
+			AccountName:       candidate.AccountName,
+			OldRank:           oldRank[candidate.AccountID],
+			NewRank:           index + 1,
+			OldScore:          old.Score,
+			NewScore:          candidate.Score,
+			OldWeight:         old.SelectionWeight,
+			NewWeight:         candidate.SelectionWeight,
+			OldTier:           old.Tier,
+			NewTier:           candidate.Tier,
+			OldP90TTFTMs:      old.P90TTFTMs,
+			NewP90TTFTMs:      candidate.P90TTFTMs,
+			OldSamples:        old.Samples,
+			NewSamples:        candidate.Samples,
+			OldErrorSamples:   old.ErrorSamples,
+			NewErrorSamples:   candidate.ErrorSamples,
+			Reasons:           candidate.Reasons,
 		}
+		selectedLatencyChanged := (row.OldSelectedTTFTMs == nil) != (row.NewSelectedTTFTMs == nil) ||
+			row.OldSelectedTTFTMs != nil && row.NewSelectedTTFTMs != nil && !almostEqual(*row.OldSelectedTTFTMs, *row.NewSelectedTTFTMs, 1)
 		row.Changed = !ok || row.OldRank != row.NewRank ||
 			!almostEqual(row.OldScore, row.NewScore, 0.01) ||
 			!almostEqual(row.OldWeight, row.NewWeight, 0.001) ||
 			row.OldTier != row.NewTier ||
-			!almostEqual(row.OldP90TTFTMs, row.NewP90TTFTMs, 1) ||
+			selectedLatencyChanged ||
+			before.LatencyPercentile != after.LatencyPercentile ||
+			before.LatencyMeasurement != after.LatencyMeasurement ||
 			row.OldSamples != row.NewSamples ||
 			row.OldErrorSamples != row.NewErrorSamples
 		rows = append(rows, row)
@@ -167,20 +175,29 @@ func diffPrioritySnapshots(before, after *PrioritySchedulingSnapshot) []Priority
 				continue
 			}
 			rows = append(rows, PrioritySchedulingDiffRow{
-				AccountID:       candidate.AccountID,
-				AccountName:     candidate.AccountName,
-				OldRank:         index + 1,
-				OldScore:        candidate.Score,
-				OldWeight:       candidate.SelectionWeight,
-				OldTier:         candidate.Tier,
-				OldP90TTFTMs:    candidate.P90TTFTMs,
-				OldSamples:      candidate.Samples,
-				OldErrorSamples: candidate.ErrorSamples,
-				Changed:         true,
+				OldSelectedTTFTMs: priorityDiffLatency(candidate.SelectedTTFTMs),
+				AccountID:         candidate.AccountID,
+				AccountName:       candidate.AccountName,
+				OldRank:           index + 1,
+				OldScore:          candidate.Score,
+				OldWeight:         candidate.SelectionWeight,
+				OldTier:           candidate.Tier,
+				OldP90TTFTMs:      candidate.P90TTFTMs,
+				OldSamples:        candidate.Samples,
+				OldErrorSamples:   candidate.ErrorSamples,
+				Changed:           true,
 			})
 		}
 	}
 	return rows
+}
+
+func priorityDiffLatency(value *float64) *float64 {
+	if value == nil || *value <= 0 || math.IsNaN(*value) || math.IsInf(*value, 0) {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func almostEqual(a, b, tolerance float64) bool {

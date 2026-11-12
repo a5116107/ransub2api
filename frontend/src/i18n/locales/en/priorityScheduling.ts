@@ -33,7 +33,7 @@ export default {
   latencyPenaltyModeHint: 'Prefer lower latency keeps slow accounts as overflow. Stop scheduling prefers healthy accounts in the same model and group. If all otherwise eligible accounts are stopped, open 2–5 accounts from the lowest measured latency band (use the actual count below 2; never exceed 5). Pending or unavailable history uses bounded degraded admission; unknown ranks after valid measurements, without zero samples or changed penalty deadlines. Bound continuations proceed only if their original owner meets the same admission rule; otherwise they are temporarily unavailable. Existing output completes. Measured triggers are unchanged.',
   latencyPenaltyUntil: 'Latency penalty ends',
   softPenalty: 'Soft penalty: remains a fallback, not stopped',
-  recoveryNote: 'Recovery: P90 still above target; fallback/explicit exploration only',
+  recoveryNote: 'Recovery: selected latency still above target; fallback/explicit exploration only',
   latencyFallback: 'The pool has no normal candidate; degraded/recovery accounts are allowed as fallback',
 
   oauthQuotaPriority: 'Consume OAuth quota first; move trailing API keys to standby',
@@ -70,7 +70,7 @@ export default {
   snapshotHint: 'Shows this instance’s latest pool, up to 100 accounts. Refresh asynchronously reads history and re-evaluates scores; candidates, configuration and load remain those observed at selection time. Re-evaluated scores do not describe the original routing decision. Rows are ordered by risk, recovery/penalty class, projected utilization band and preference. Recovery and active-penalty accounts stay behind normal candidates and are used only when every normal candidate loses its slot race; explicit recovery exploration follows its configured share. Similar-capacity peers use weighted selection; selection weight is not a global probability; row order is not a fixed allocation. Live candidates remain visible while history is loading.',
   model: 'Model', group: 'Group', account: 'Account', score: 'Score', tier: 'Status', latency: "Selected first token", load: 'Concurrency', rate: 'Cost rate', quality: 'Quality passed', samples: 'samples', unknown: 'Unknown',
   tiers: { eligible: 'Targets met', insufficient: 'Insufficient data', degraded: 'Targets missed' },
-  reasons: { latency_recovery: 'Latency penalty expired, P90 still above target (recovery: fallback/exploration only)', quality_below_target: 'Quality below target', quality_unknown: 'No fresh quality result', latency_above_target: 'Latency above target', latency_insufficient: 'Insufficient latency samples', busy: 'High concurrency or queueing', load_unknown: 'Concurrency unknown', cost_unknown: 'Cost unknown', recent_errors: 'Elevated recent errors', historical_loss: 'Recent charges below theoretical cost', profit_insufficient: 'Insufficient profit samples' },
+  reasons: { latency_recovery: 'Latency penalty expired, selected latency still above target (recovery: fallback/exploration only)', quality_below_target: 'Quality below target', quality_unknown: 'No fresh quality result', latency_above_target: 'Latency above target', latency_insufficient: 'Insufficient latency samples', busy: 'High concurrency or queueing', load_unknown: 'Concurrency unknown', cost_unknown: 'Cost unknown', recent_errors: 'Elevated recent errors', historical_loss: 'Recent charges below theoretical cost', profit_insufficient: 'Insufficient profit samples' },
   latencyPanel: {
     title: 'Latency analysis', refresh: 'Refresh', hint: 'Uses the last observed candidate pool. P50/P90/P99 are first-token milliseconds; errors are deduplicated upstream error events; slow requests exceed the target first-token threshold. Summary uses the priority history window; heat cells use the reported percentile and measurement in the selected window above, in 5-minute buckets. A dash means unknown; another percentile or measurement is never substituted.',
     account: 'Account', samples: 'Samples', p50: 'P50 first token', p90: 'P90 first token', p99: 'P99 first token', errors: 'Errors', slow: 'Slow', errorRate: 'Error rate',
@@ -78,9 +78,9 @@ export default {
   },
   recompute: {
     action: 'Recompute diff', running: 'Recomputing…', title: 'Recompute diff (no account write-back)',
-    hint: 'Forces a fresh history read and compares the latest candidate pool by rank, score and selection weight. Pool and concurrency remain those observed at the last selection; clear the affected accounts’ sticky sessions to apply the new ranking.',
-    clearChanged: 'Clear changed accounts’ sticky sessions', timedOut: 'History refresh timed out; showing the current available result.', noChange: 'Recomputed with no rank or score changes.', error: 'Recompute failed. Please retry.', scope: 'Recompute scope: model {model}, group {group}, changed accounts {accounts}.',
-    account: 'Account', rank: 'Rank', score: 'Score', weight: 'Selection weight', tier: 'Status', p90: 'P90 first token', errors: 'Errors'
+    hint: 'Forces a fresh history read and compares rank, score, selection weight and selected latency. Pool and concurrency remain those observed at the last selection. New sessions use updated signals under the routing policy; healthy existing sessions retain stickiness and session protection. Clearing stickiness is an optional manual action that may cause a cold cache; recompute does not clear or migrate sessions. Missing selected latency stays unknown, without borrowing P90.',
+    clearChanged: 'Clear changed accounts’ sticky sessions', timedOut: 'History refresh timed out; showing the current available result.', noChange: 'Recomputed with no rank, score or selected-metric changes.', error: 'Recompute failed. Please retry.', scope: 'Recompute scope: model {model}, group {group}, changed accounts {accounts}.',
+    account: 'Account', rank: 'Rank', score: 'Score', weight: 'Selection weight', tier: 'Status', latency: 'Selected first token', errors: 'Errors'
   },
   sticky: {
     title: 'Session stickiness', group: 'Group', refresh: 'Count', clearAll: 'Clear all', clear: 'Clear', count: 'Bindings',

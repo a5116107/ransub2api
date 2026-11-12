@@ -33,7 +33,7 @@ export default {
   latencyPenaltyModeHint: '延迟优先调度：保留慢账号作为后备。停止调度：同模型和分组中优先使用健康账号；其它资格过滤后全池停调时，开放最低有效延迟档 2–5 个账号（不足 2 个用实际数量，最多 5 个）。历史未就绪或不可用时有界降级，未知排在有效测量之后，不补零、不改惩罚截止。绑定续接仅在原账号满足同一准入规则时继续，否则暂不可用；已有输出继续完成。沿用原测量门槛。',
   latencyPenaltyUntil: '延迟惩罚截止',
   softPenalty: '软惩罚：仍可作为后备，不是停用',
-  recoveryNote: '恢复期：P90 仍超目标，只参与兜底/显式探索',
+  recoveryNote: '恢复期：选定延迟仍超目标，只参与兜底/显式探索',
   latencyFallback: '候选池没有正常账号，已允许降级/恢复期账号兜底；候选按实际顺序展示',
 
   oauthQuotaPriority: '优先消耗 OAuth 额度，末位 API Key 自动后备',
@@ -78,7 +78,7 @@ export default {
   snapshotHint: '展示当前实例最近一次候选池，最多 100 个账号。刷新会异步读取历史并重算评分；候选、配置与并发占用仍取自该次选号，顶部时间不会改变，重算结果不代表当时实际选路。按风险、恢复/惩罚状态、预计占用档位及分流偏好展示；恢复期与惩罚期账号排在正常候选之后，只有正常候选都拿不到槽位时才兜底，显式恢复探索按配置比例另计。占用接近的候选会加权抽样，分流权重不是全局概率，表格不是固定选取顺序或流量比例。历史未就绪也会展示实时容量候选。',
   model: '模型', group: '分组', account: '账号', score: '得分', tier: '状态', latency: "选定首 token", load: '并发占用', rate: '成本倍率', quality: '质量通过', samples: '条样本', unknown: '未知',
   tiers: { eligible: '体验达标', insufficient: '数据不足', degraded: '体验未达标' },
-  reasons: { latency_recovery: '延迟惩罚到期，P90 仍超目标（恢复期仅兜底/探索）', quality_below_target: '质量低于目标', quality_unknown: '无有效质量结果', latency_above_target: '延迟超过目标', latency_insufficient: '延迟样本不足', busy: '并发偏高或有排队', load_unknown: '并发数据未知', cost_unknown: '成本未知', recent_errors: '近期错误偏多', historical_loss: '近期用户扣费低于理论成本', profit_insufficient: '利润样本不足' },
+  reasons: { latency_recovery: '延迟惩罚到期，选定延迟仍超目标（恢复期仅兜底/探索）', quality_below_target: '质量低于目标', quality_unknown: '无有效质量结果', latency_above_target: '延迟超过目标', latency_insufficient: '延迟样本不足', busy: '并发偏高或有排队', load_unknown: '并发数据未知', cost_unknown: '成本未知', recent_errors: '近期错误偏多', historical_loss: '近期用户扣费低于理论成本', profit_insufficient: '利润样本不足' },
   latencyPanel: {
     title: '延迟分析', refresh: '刷新', hint: '按下单次选号的候选池统计：P50/P90/P99 为首 token 毫秒，错误为上游错误事件去重数，慢请求为超过目标首字阈值的请求数。汇总取优先调度历史窗口，热力格按返回的分位数和测量口径，取上方所选窗口、每 5 分钟一格。破折号表示未知，不以其他分位数或口径替代。',
     account: '账号', samples: '样本', p50: 'P50 首字', p90: 'P90 首字', p99: 'P99 首字', errors: '错误', slow: '慢请求', errorRate: '错误率',
@@ -86,9 +86,9 @@ export default {
   },
   recompute: {
     action: '重算对比', running: '重算中…', title: '重算对比（不写回账号）',
-    hint: '强制读取最新历史信号，对比最近一次候选池的排名、得分和分流权重。候选池与并发占用仍取自最近一次选号；要应用新排名，请清理对应账号的会话粘性。',
-    clearChanged: '清理变化账号的粘性', timedOut: '历史统计刷新超时，展示的是当前可用结果。', noChange: '重算完成，排名与得分没有变化。', error: '重算失败，请稍后重试。', scope: '重算范围：模型 {model}，分组 {group}，变化账号 {accounts}。',
-    account: '账号', rank: '排名', score: '得分', weight: '分流权重', tier: '状态', p90: 'P90 首字', errors: '错误'
+    hint: '强制读取最新历史信号，对比最近一次候选池的排名、得分、分流权重和选定延迟；候选池与并发占用仍取自最近一次选号。新会话按调度策略采用更新信号，健康已有会话继续受粘性与会话保护约束。清理粘性是可选的人工操作，可能造成缓存冷启动；重算本身不清理或迁移会话。缺失的选定延迟保持未知，不借用 P90。',
+    clearChanged: '清理变化账号的粘性', timedOut: '历史统计刷新超时，展示的是当前可用结果。', noChange: '重算完成，排名、得分与所选指标没有变化。', error: '重算失败，请稍后重试。', scope: '重算范围：模型 {model}，分组 {group}，变化账号 {accounts}。',
+    account: '账号', rank: '排名', score: '得分', weight: '分流权重', tier: '状态', latency: '选定首字', errors: '错误'
   },
   sticky: {
     title: '会话粘性', group: '分组', refresh: '统计', clearAll: '全部清除', clear: '清除', count: '绑定数',
