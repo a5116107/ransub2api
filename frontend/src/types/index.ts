@@ -1888,8 +1888,10 @@ export interface AdminDataAccount {
   extra?: Record<string, unknown>
   proxy_key?: string | null
   concurrency: number
+  load_factor?: number | null
   priority: number
   rate_multiplier?: number | null
+  group_rate_multiplier?: number | null
   expires_at?: number | null
   auto_pause_on_expired?: boolean
 }

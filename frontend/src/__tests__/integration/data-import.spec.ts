@@ -180,6 +180,36 @@ describe('ImportDataModal', () => {
     expect(showSuccess).toHaveBeenCalledWith('admin.accounts.dataImportSuccess')
   })
 
+  it.each([1, 2])('preserves scheduling fields from %i backup files', async (count) => {
+    const { adminAPI } = await import('@/api/admin')
+    vi.mocked(adminAPI.accounts.importData).mockResolvedValue({
+      proxy_created: 0, proxy_reused: 0, proxy_failed: 0,
+      account_created: count, account_failed: 0
+    })
+    const accounts = Array.from({ length: count }, (_, index) => ({
+      name: `backup-${index}`, platform: 'openai', type: 'apikey',
+      credentials: { api_key: 'synthetic', model_mapping: { 'gpt-test': 'supplier-model' } },
+      concurrency: 3, load_factor: index === 0 ? 8 : null, priority: 27,
+      rate_multiplier: 1.25, group_rate_multiplier: 1.5,
+      extra: { cost_multiplier: index === 0 ? 0.17 : 0, cost_multiplier_auto_sync: false }
+    }))
+    const wrapper = mountModal()
+    const input = wrapper.find('input[type="file"]')
+    setInputFiles(input.element, accounts.map((account, index) => makeJsonFile(
+      `backup-${index}.json`, JSON.stringify({
+        exported_at: '2026-11-12T00:00:00Z', proxies: [], accounts: [account]
+      })
+    )))
+    await input.trigger('change')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(adminAPI.accounts.importData).toHaveBeenCalledWith({
+      data: expect.objectContaining({ accounts }), skip_default_group_bind: true
+    })
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('部分成功时关闭弹窗仍通知父组件刷新', async () => {
     const { adminAPI } = await import('@/api/admin')
     vi.mocked(adminAPI.accounts.importData).mockResolvedValue({

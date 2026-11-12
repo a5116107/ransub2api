@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8真实CLI跨进程/重启子验收与双目标静态已完成。
+任务：D8账号备份/编辑/快照字段保留子验收完成。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：0802ff3；复用原SQL/Redis/调度夹具，不改生产调度或账单。
-验证命令：CLI专项race0；仓储186/626；Windows vet/lint0；Linux目标vet0。
-验证结果：30次完成/三PID/12轮/重启/满额恢复/用量余额通过；九项输入一致。
-验证来源：backend/tmp/protocol-cache/priority-cli-processes-*。
+源码：982374e后原备份三行修复；九项输入摘要一致。
+验证命令：往返三轮3/12、仓储70/182、admin14/48；vet/Linux/lint0。
+验证结果：负载系数8不再丢失；前端15/类型/ESLint通过，lint为0 issues。
+验证来源：backend/tmp/protocol-cache/priority-backup-roundtrip-*。
 下一动作：等待D2–D8契约/能力/缓存证据；D9待生产授权与窗口。
-尝试：44
-阻塞：本轮TEMP清理预演在启动前被策略拦截，171文件/14216731bytes由拥有者手工处理。
+尝试：45
+阻塞：TEMP清理预演启动前被拦截；新增1文件/187356661bytes由拥有者手工处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -52,7 +52,7 @@
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；选定延迟未知/null已验，service662/3193、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 会话表单/API兼容、选定延迟/精确分位已验；UI48/类型/lint/构建、中英键盘/390px/503恢复通过；完整解释待契约 |
-| D8 | in_progress | 原admin/SQL、WS/资金/回滚/升级已验；两CLI/三PID/30请求/重启/额度及余额通过，race186/626、Win vet/lint0、Linux目标vet0；其他协议CLI/混版待验 |
+| D8 | in_progress | CLI/三PID/30请求/重启/额度/升级已验；备份负载修复及往返/编辑/快照race70/182、admin14/48、UI15、vet/Linux/lint0；其他能力/完整混版待验 |
 | D9 | pending | 依赖前述验收及生产执行授权 |
 
 ## 工作区与验证约定
@@ -66,7 +66,7 @@
 
 ## 下一项工作
 
-D8真实CLI子验收完成；原28项20 done、7部分、D9待生产。其余等待下列证据/授权，不以本地结果替代供应商或生产验收。
+D8备份字段子验收完成，CLI已提交982374e；原28项20 done、7部分、D9待生产。其余等待下列证据/授权。
 
 ## 外部等待与清理
 
@@ -77,4 +77,4 @@ D8真实CLI子验收完成；原28项20 done、7部分、D9待生产。其余等
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
 - 历史TEMP拒删（chat-wire、protocol-rate及其余测试产物/空目录）精确路径见DECISIONS；拥有者手工处理，不重试、不计释放。
-- TEMP根`C:/Users/Administrator/AppData/Local/Temp/`下`sub2api-latency-evidence`（236文件/9455936bytes）及`sub2api-cli-processes`（171文件/14216731bytes）无活跃引用/重解析点，删除/清理预演在启动前被策略拦截；拥有者手工处理，不重试、不移动、不计释放。
+- TEMP根`C:/Users/Administrator/AppData/Local/Temp/`下`sub2api-latency-evidence`（236文件/9455936bytes）、`sub2api-cli-processes`（171文件/14216731bytes）、`sub2api-priority-backup`（1文件/187356661bytes）无重解析点/任务活跃引用；清理预演启动前被拦截，拥有者手工处理，不重试/移动、不计释放。

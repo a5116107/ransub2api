@@ -339,3 +339,59 @@ func TestExportDataExcludesCodexTicketMaterial(t *testing.T) {
 	require.Contains(t, extra, "codex_turn_ticket:gpt-6-astra")
 	require.Contains(t, extra, "codex_harvest_proxy_url")
 }
+
+func TestAccountDataLoadFactorCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		value  *int
+		exists bool
+	}{
+		{name: "omitted"},
+		{name: "null", exists: true},
+		{name: "zero", value: new(0), exists: true},
+		{name: "configured", value: new(8), exists: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, management := setupAccountDataRouter()
+			item := DataAccount{
+				Name: "load fixture", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "synthetic"}, Concurrency: 3, Priority: 27,
+			}
+			raw, err := json.Marshal(item)
+			require.NoError(t, err)
+			var fields map[string]any
+			require.NoError(t, json.Unmarshal(raw, &fields))
+			if tc.exists {
+				fields["load_factor"] = tc.value
+			}
+			body, err := json.Marshal(map[string]any{"data": map[string]any{
+				"accounts": []any{fields}, "proxies": []any{},
+			}, "skip_default_group_bind": true})
+			require.NoError(t, err)
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Len(t, management.createdAccounts, 1)
+			require.Equal(t, tc.value, management.createdAccounts[0].LoadFactor)
+			management.accounts = []service.Account{{ID: 21, Name: item.Name, Platform: item.Platform, Type: item.Type,
+				Credentials: item.Credentials, Concurrency: item.Concurrency, Priority: item.Priority, LoadFactor: tc.value}}
+			exported := httptest.NewRecorder()
+			router.ServeHTTP(exported, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?include_proxies=false", nil))
+			require.Equal(t, http.StatusOK, exported.Code)
+			var result struct {
+				Data struct{ Accounts []map[string]json.RawMessage }
+			}
+			require.NoError(t, json.Unmarshal(exported.Body.Bytes(), &result))
+			require.Len(t, result.Data.Accounts, 1)
+			if tc.value == nil {
+				require.NotContains(t, result.Data.Accounts[0], "load_factor", "legacy backups keep omitting an unset override")
+			} else {
+				var value int
+				require.NoError(t, json.Unmarshal(result.Data.Accounts[0]["load_factor"], &value))
+				require.Equal(t, *tc.value, value)
+			}
+		})
+	}
+}
