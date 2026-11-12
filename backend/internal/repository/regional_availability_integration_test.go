@@ -91,6 +91,7 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 		{"authentication", `{"error":{"code":401}}`, "antigravity", true},
 		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "antigravity", false},
 		{"unknown", `{"error":{"message":"fixture"}}`, "antigravity", false},
+		{"empty", `{}`, "antigravity", true},
 	} {
 		t.Run(tc.entry+"/"+tc.name, func(t *testing.T) {
 			ctx := t.Context()

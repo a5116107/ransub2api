@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3 Antigravity带内故障闭环已验，接续空流反馈。
+任务：D3 Antigravity带内故障与空流闭环本地已验，提交见HEAD。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线788962b；8项Go输入31e7b4d1fab8f10d。
-验证命令：Antigravity/Gemini race、SQL恢复及四包静态/Linux构建。
-验证结果：service443/2543、SQL1/22 PASS；四包vet/lint零诊断，Linux同源复用。
-验证来源：backend/tmp/protocol-cache/scheduling-antigravity-semantic-*。
-下一动作：提交已验修复，复现并补齐Antigravity空流撤销旧通过。
-尝试：30
+源码：基线60b0f35；6项Go输入28da416e936eef57。
+验证命令：空流focused/race、真实SQL恢复，再扩大race/静态/Linux构建。
+验证结果：service444/2904、SQL1/23 PASS，四包vet/lint零诊断，Linux构建通过。
+验证来源：backend/tmp/protocol-cache/scheduling-antigravity-empty-*。
+下一动作：D3核对缺终态/读间隔超时及剩余能力；D2/D4/D5待来源证据。
+尝试：31
 阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -32,7 +32,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新状态/托管/区域文本准入已验；Antigravity带内故障race443/2543、21场景SQL、四包vet/lint零诊断和同源Linux构建已验；空流及其余能力待验 |
+| D3 | in_progress | 最新状态/托管/区域文本准入、带内故障和空流已验；race444/2904、22场景SQL、四包vet/lint零诊断、Linux构建通过；其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
@@ -74,8 +74,8 @@ D2关联契约、D4模型/fast、D5前缀/缓存域待证据；D3其余能力待
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
-- 历史TEMP的sub2api-chat-wire系列约69MiB、sub2api-protocol-rate的18文件/700.05MiB及runtime-ttft空目录拒删保留，精确路径见DECISIONS，拥有者手动处理，不重试。
+- 历史TEMP：chat-wire约69MiB、protocol-rate18文件/700.05MiB及runtime-ttft空目录拒删保留；完整路径见DECISIONS，拥有者手工处理，不重试。
 - 历史TEMP/sub2api-priority-route：原核查为空、0文件/0引用；删除被策略拦截，拥有者手动处理，未计释放。
-- 本轮拒删：`TEMP/sub2api-http-admission`（空目录、0文件/0引用）及`backend/tmp/protocol-cache/scheduling-http-admission-service-focused.jsonl`（4504bytes）；CreateProcess前被策略拦截，WhatIf/删除均未执行，拥有者手动处理，不重试、不计释放。
+- 本轮拒删：`TEMP/sub2api-http-admission`空目录及`scheduling-http-admission-service-focused.jsonl`4504bytes；命令启动前拦截，拥有者手工处理，不重试/不计释放；完整路径见DECISIONS。
 - 本轮：`TEMP/sub2api-auth-binding`2文件/22668bytes、0引用；删除启动前被审查拦截，拥有者手动处理，不重试、不计释放。
-- 本轮：`TEMP/sub2api-antigravity-semantic`仅1个0字节lock；删除命令启动前被策略拦截，保留供手工处理，不重试、不计释放。
+- 本轮：`TEMP/sub2api-antigravity-semantic`原0字节lock、`TEMP/sub2api-antigravity-empty`已空且无活跃引用；删除启动前拦截，拥有者手工处理，不重试/不计释放。

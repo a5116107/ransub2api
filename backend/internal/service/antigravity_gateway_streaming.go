@@ -29,6 +29,9 @@ func (s *AntigravityGatewayService) observeAntigravityGeminiSSELine(c *gin.Conte
 	}
 	trimmed := strings.TrimSpace(line)
 	if !strings.HasPrefix(trimmed, "data:") {
+		if signals != nil {
+			signals.sseFallback.AddLine(trimmed)
+		}
 		return
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
@@ -36,7 +39,11 @@ func (s *AntigravityGatewayService) observeAntigravityGeminiSSELine(c *gin.Conte
 		return
 	}
 	if signals != nil {
+		signals.sawSSEData = true
 		signals.observePayload([]byte(payload))
+		if !isGeminiEmptyResponseBody([]byte(payload)) {
+			signals.sawSSEResponseContent = true
+		}
 	}
 	// Observe the original payload: ObserveGemini supports both the v1internal
 	// wrapper and direct Gemini response shapes. The main stream handler will
@@ -236,6 +243,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				signals.finishSSE(cw.Disconnected())
 				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, nil
 			}
 			if ev.err != nil {
@@ -498,6 +506,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 	}
 
 returnResponse:
+	signals.finishSSE(false)
 	// 选择最后一个有效响应
 	finalResponse := pickGeminiCollectResult(last, lastWithParts)
 
@@ -909,6 +918,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 	}
 
 returnResponse:
+	signals.finishSSE(false)
 	// 处理空响应情况 — 触发同账号重试 + failover 切换账号
 	if !meaningfulResponse {
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty stream response (claude non-stream), triggering failover")
@@ -1112,6 +1122,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				signals.finishSSE(cw.Disconnected())
 				// 上游完成，发送结束事件
 				finalEvents, agUsage := processor.Finish()
 				if len(finalEvents) > 0 {

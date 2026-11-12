@@ -292,6 +292,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 		select {
 		case event, open := <-events:
 			if !open {
+				signals.finishSSE(writer.Disconnected())
 				if !session.hasMeaningfulData() && !writer.Disconnected() {
 					return nil, antigravityCompatEmptyStreamError()
 				}

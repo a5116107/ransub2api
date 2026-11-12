@@ -173,12 +173,15 @@ func geminiResponseFaultStatus(payload []byte) int {
 // One observer belongs to one upstream response. A later 5xx still triggers
 // quality protection after a 401/429, while repeated chunks cannot multiply it.
 type geminiResponseSignalObserver struct {
-	ctx                  context.Context
-	limiter              *RateLimitService
-	account              *Account
-	best                 geminiResponseSignal
-	availabilityObserved bool
-	qualityObserved      bool
+	ctx                   context.Context
+	limiter               *RateLimitService
+	account               *Account
+	best                  geminiResponseSignal
+	availabilityObserved  bool
+	qualityObserved       bool
+	sawSSEData            bool
+	sawSSEResponseContent bool
+	sseFallback           geminiSSEFallbackBody
 }
 
 func newGeminiResponseSignalObserver(ctx context.Context, account *Account, response *http.Response, limiter *RateLimitService) *geminiResponseSignalObserver {
@@ -230,6 +233,13 @@ func (o *geminiResponseSignalObserver) observePayload(payload []byte) {
 	if sig, ok := detectGeminiResponseSignal(payload); ok {
 		o.observe(sig)
 	}
+}
+
+func (o *geminiResponseSignalObserver) finishSSE(clientDisconnected bool) {
+	if clientDisconnected || o.ctx.Err() != nil {
+		return
+	}
+	o.finalizeSSESignal(o.sawSSEData, o.sawSSEResponseContent, &o.sseFallback)
 }
 
 func (s *GeminiMessagesCompatService) observeGeminiJSONSignal(c *gin.Context, response *http.Response, account *Account, upstreamRequestID string, body []byte) {
@@ -314,16 +324,21 @@ func isGeminiEmptyResponseObject(item gjson.Result) bool {
 	if inner := item.Get("response"); inner.Exists() && inner.IsObject() {
 		item = inner
 	}
-	empty := true
-	item.ForEach(func(_, _ gjson.Result) bool {
-		empty = false
-		return false
-	})
-	if empty {
+	candidates := item.Get("candidates")
+	if candidates.IsArray() && len(candidates.Array()) == 0 && !item.Get("promptFeedback").Exists() {
 		return true
 	}
-	candidates := item.Get("candidates")
-	return candidates.IsArray() && len(candidates.Array()) == 0 && !item.Get("promptFeedback").Exists()
+	empty := true
+	item.ForEach(func(key, _ gjson.Result) bool {
+		switch key.String() {
+		case "usageMetadata", "modelVersion", "responseId":
+			return true
+		default:
+			empty = false
+			return false
+		}
+	})
+	return empty
 }
 
 // isGeminiContentFilterFinishReason 的集合与 gemini-cli 遥测的 CONTENT_FILTER 归类一致，并纳入同语义的图片枚举。
@@ -521,27 +536,31 @@ func (s *GeminiMessagesCompatService) markGeminiEmptyResponse(c *gin.Context, ac
 // 只有空 data 事件同样登记空响应；没有 data 时，兜底内容超限则放弃判定，为空登记空响应，是非 SSE 的 JSON 则对整段
 // 判定一次，整段没有信号但没有任何响应内容同样登记空响应。
 func (s *GeminiMessagesCompatService) finalizeGeminiSSESignal(c *gin.Context, account *Account, stream bool, upstreamRequestID string, observed *geminiResponseSignalObserver, sawDataEvent, sawResponseContent bool, fallback *geminiSSEFallbackBody) {
-	best := observed.best
-	if best.Kind != geminiSignalNone {
-		s.markGeminiResponseSignal(c, account, best, stream, upstreamRequestID)
+	sig := observed.finalizeSSESignal(sawDataEvent, sawResponseContent, fallback)
+	if sig.Kind == geminiSignalAbnormalStop {
+		s.markGeminiEmptyResponse(c, account, stream, upstreamRequestID)
 		return
 	}
-	if sawResponseContent || fallback.Truncated() {
-		return
+	s.markGeminiResponseSignal(c, account, sig, stream, upstreamRequestID)
+}
+
+// Both gateways use the same EOF classification. An explicit non-fault signal
+// or unknown response must not be promoted to an empty-response fault.
+func (o *geminiResponseSignalObserver) finalizeSSESignal(sawDataEvent, sawResponseContent bool, fallback *geminiSSEFallbackBody) geminiResponseSignal {
+	if o.best.Kind != geminiSignalNone || sawResponseContent || fallback.Truncated() {
+		return o.best
 	}
 	body := fallback.Bytes()
 	if sawDataEvent || len(bytes.TrimSpace(body)) == 0 {
-		observed.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
-		s.markGeminiEmptyResponse(c, account, stream, upstreamRequestID)
-		return
+		o.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
+		return o.best
 	}
 	if sig, ok := detectGeminiResponseSignalInBody(body); ok {
-		observed.observe(sig)
-		s.markGeminiResponseSignal(c, account, sig, stream, upstreamRequestID)
-		return
+		o.observe(sig)
+		return o.best
 	}
 	if isGeminiEmptyResponseBody(body) {
-		observed.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
-		s.markGeminiEmptyResponse(c, account, stream, upstreamRequestID)
+		o.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop})
 	}
+	return o.best
 }

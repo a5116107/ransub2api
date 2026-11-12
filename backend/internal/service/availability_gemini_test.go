@@ -22,6 +22,93 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestAvailabilityAntigravityEmptyStreamFeedback(t *testing.T) {
+	for _, entry := range []string{"gemini", "messages", "chat", "responses"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(entry+map[bool]string{false: "/aggregate", true: "/stream"}[stream], func(t *testing.T) {
+				for _, tc := range []struct {
+					name, body            string
+					availability, quality int64
+				}{
+					{"empty", "", 1, 0},
+					{"heartbeat", ": keepalive\n\ndata: [DONE]\n\n", 1, 0},
+					{"empty_object", "data: {\"response\":{}}\n\n", 1, 0},
+					{"empty_candidates", "data: {\"response\":{\"candidates\":[]}}\n\n", 1, 0},
+					{"usage_only", "data: {\"response\":{\"responseId\":\"fixture\",\"usageMetadata\":{\"promptTokenCount\":8}}}\n\n", 1, 0},
+					{"raw_empty", "{}\n", 1, 0},
+					{"raw_service", "{\"error\":{\"code\":503}}\n", 1, 1},
+					{"raw_request", "{\"error\":{\"code\":400}}\n", 0, 0},
+					{"raw_unknown", "{\"error\":{\"message\":\"fixture\"}}\n", 0, 0},
+					{"policy", "data: {\"response\":{\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}}\n\n", 0, 0},
+					{"answer_after_empty", "data: {\"response\":{}}\n\ndata: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}}\n\n", 0, 0},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						for _, mode := range []string{"business", "probe", "canceled"} {
+							t.Run(mode, func(t *testing.T) {
+								ctx := t.Context()
+								switch mode {
+								case "probe":
+									ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+								case "canceled":
+									var cancel context.CancelFunc
+									ctx, cancel = context.WithCancel(ctx)
+									cancel()
+								}
+								repo := &geminiAvailabilityFaultRepo{}
+								svc := newAntigravityCompatService(rawChatCompletionsTestConfig().Gateway, nil)
+								svc.rateLimitService = &RateLimitService{qualityTrigger: &quality5xxTrigger{availability: repo, immediate: repo}}
+								c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/"+entry, nil)
+								c.Request = c.Request.WithContext(ctx)
+								account := newAntigravityCompatAccount(AccountTypeOAuth)
+								resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: c.Request,
+									Body: &availabilityFaultBody{ReadCloser: io.NopCloser(strings.NewReader(tc.body)), ctx: ctx,
+										account: *availabilityFaultIdentity(account), trigger: svc.rateLimitService.qualityTrigger}}
+								var err error
+								switch entry {
+								case "gemini":
+									if stream {
+										_, err = svc.handleGeminiStreamingResponse(c, resp, time.Now())
+									} else {
+										_, err = svc.handleGeminiStreamToNonStreaming(c, resp, time.Now())
+									}
+								case "messages":
+									if stream {
+										_, err = svc.handleClaudeStreamingResponse(c, resp, time.Now(), "gemini-3.1-pro-high")
+									} else {
+										_, err = svc.handleClaudeStreamToNonStreaming(c, resp, time.Now(), "gemini-3.1-pro-high")
+									}
+								case "chat":
+									if stream {
+										_, err = svc.handleChatCompletionsStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.1-pro-high", true)
+									} else {
+										_, err = svc.handleChatCompletionsNonStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.1-pro-high")
+									}
+								case "responses":
+									if stream {
+										_, err = svc.handleResponsesStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.1-pro-high")
+									} else {
+										_, err = svc.handleResponsesNonStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.1-pro-high")
+									}
+								}
+								if err != nil {
+									var failover *UpstreamFailoverError
+									require.ErrorAs(t, err, &failover, "preserve the existing empty-stream error contract")
+								}
+								wantAvailability, wantQuality := tc.availability, tc.quality
+								if mode != "business" {
+									wantAvailability, wantQuality = 0, 0
+								}
+								require.Equal(t, wantAvailability, repo.availability.Load())
+								require.Equal(t, wantQuality, repo.quality.Load())
+							})
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
 func TestAvailabilityAntigravityBusinessSemanticFaults(t *testing.T) {
 	for _, entry := range []string{"gemini", "messages", "chat", "responses"} {
 		t.Run(entry, func(t *testing.T) {
