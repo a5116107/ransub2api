@@ -2256,3 +2256,9 @@ GitHub API先前EOF与复用连接/系统代理路径相关：requests每次新�
 源码合并提交822c67df1、持久化修复b0297efe3已推a5116107/ransub2api production；v2.19.2-ransub.1指向b0297efe3，真实Linux amd64归档47387576字节，内嵌前端构建通过。自动化注册后仅Release和Sync upstream两项active，无构建/测试CI运行。首个同步run43233339649因checkout生成不带.git的remote被精确验证拒绝；修复并补回归后run43234434430 success，来源766c8f115。上游v2.21.0/b5990096与自研存在冲突，PR1保留待处理，production未被自动合并。
 
 GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等不自动重放，发行draft/已上传同digest资产可检查后续传。迁移演练首次恢复398条后因Docker Env含裸变量名而在夹具解析中止，所有夹具已删除且生产未变；过滤裸项后沿同一目录重跑，不改生产环境。
+
+### 发行、回滚演练与无CI入口修复
+
+- v2.19.2-ransub.1/b0297efe3已公开为stable/latest，GitHub资产digest与本地一致；47387576字节Linux amd64归档SHA256为740f9930e904f778137bc4b8392604c25c7a56d5aacf0e07b41be66ab877e070。隔离恢复398迁移，候选启动后410迁移，原性能监控表保留；旧程序对迁移后数据库启动健康。演练容器/网络全部删除，生产当时未变。
+- 手动prebuilt_only发行run43237162940成功，仅封装已构建程序，无源码编译或测试。hk2匿名读取自有latest及docker pull通过，运行镜像digest为97fbad3b591e249cdefb0c8d2d8b8a80726ad23fd8859b5125751d805307b352，OCI版本与源码b0297efe3一致。
+- 接续检查发现本地用户凭据推送upstream/stable使上游继承工作流重新注册并运行，故前序“无CI运行”结论不成立。当前六个无关workflow均已disable，仅Release/Sync upstream active；本地同步现在仅允许dry-run，有实际推送时必须走workflow_dispatch/定时任务，并显式以github.token checkout/push，避免触发递归Actions。不以PR标题skip ci代替推送凭据控制。新回归先实跑9项出现1失败/1错误；修复后WSL全套29/29通过。Windows原生全套因Bash跨路径与POSIX模式语义出现1失败/6错误，保留该限制，不将其计为通过。

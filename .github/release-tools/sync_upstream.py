@@ -2,6 +2,7 @@
 """Track upstream stable releases and propose integration without replacing custom code."""
 import argparse
 import json
+import os
 import re
 import subprocess
 from github_api import github
@@ -57,6 +58,10 @@ def sync(dry_run=False):
               'base_sha': base, 'upstream_sha': source, 'status': status, 'dry_run': dry_run}
     if dry_run or status == 'integrated':
         return result
+    # The workflow's ephemeral repository token suppresses recursive Actions.
+    # A local user token would run workflows contained in the upstream commit.
+    if os.environ.get('GITHUB_ACTIONS') != 'true':
+        raise ValueError('use workflow_dispatch for synchronization; local runs support --dry-run only')
     # Normal push intentionally rejects a rewritten upstream history. Never
     # force-push or copy upstream files over the custom production branch.
     git('push', 'origin', f'{source}:refs/heads/{TRACKING}')

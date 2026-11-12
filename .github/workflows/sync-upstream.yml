@@ -24,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Keep pushes on the ephemeral token so upstream CI is not triggered.
+          token: ${{ github.token }}
           ref: production
           fetch-depth: 0
       - name: Track the latest stable release and open an integration request

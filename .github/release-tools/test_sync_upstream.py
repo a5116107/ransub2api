@@ -58,6 +58,19 @@ class SyncUpstreamTest(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
+    def test_local_sync_does_not_push_upstream_code_with_user_credentials(self):
+        responses = [
+            {'full_name': sync.REPOSITORY, 'default_branch': sync.BASE},
+            {'tag_name': 'v2.21.0', 'draft': False, 'prerelease': False}
+        ]
+        results = [subprocess.CompletedProcess([], 0, 'https://github.com/a5116107/ransub2api\n'),
+                   subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, 'a' * 40),
+                   subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, 'b' * 40)]
+        with patch.dict(os.environ, {}, clear=True), patch.object(sync, 'gh_json', side_effect=responses), patch.object(sync, 'git', side_effect=results) as git, patch.object(sync, 'integration_status', return_value='conflicts'):
+            with self.assertRaisesRegex(ValueError, 'workflow_dispatch'):
+                sync.sync()
+        self.assertFalse(any(call.args[0] == 'push' for call in git.call_args_list))
+
     def test_integrated_release_does_not_preview_or_publish(self):
         with patch.object(sync, 'git', return_value=subprocess.CompletedProcess([], 0, '')) as git:
             self.assertEqual(sync.integration_status('custom', 'source'), 'integrated')
@@ -91,6 +104,8 @@ class SyncUpstreamTest(unittest.TestCase):
         text = (Path(__file__).parents[1] / 'workflows/sync-upstream.yml').read_text(encoding='utf-8')
         self.assertIn('23 */6 * * *', text)
         self.assertIn('ref: production', text)
+        self.assertIn('token: ${{ github.token }}', text)
+        self.assertIn('GH_TOKEN: ${{ github.token }}', text)
         self.assertNotIn('pull_request_target', text)
         for executable in ('go test', 'pnpm', 'git merge ', 'gh pr merge', 'goreleaser'):
             self.assertNotIn(executable, text)

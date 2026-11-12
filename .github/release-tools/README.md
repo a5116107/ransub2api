@@ -34,6 +34,8 @@ bash -n .github/release-tools/release-images.sh
 
 The user-owned public channel is `a5116107/ransub2api`. Its `production` branch retains custom history. `sync-upstream.yml` tracks stable `ranxi2001/sub2api` releases every six hours and opens/updates one integration PR from `upstream/stable`; it never merges or deploys. Review semantic conflicts and run local regression, migration and rollback checks before promotion. The unrelated `a5116107/bps2api` fork is unchanged.
 
+Run synchronization through the scheduled workflow or `workflow_dispatch`, using its ephemeral `github.token` for both checkout/push and API calls. This suppresses recursive Actions from upstream code; local user credentials could trigger imported workflows. Local `sync_upstream.py` runs therefore permit only `--dry-run` when a tracking push would be required. Keep unrelated workflows disabled; only Release and Sync upstream remain active.
+
 Use `X.Y.Z-ransub.N` for stable custom revisions. Tags alone do not start a release: publishing is explicit. Existing build/test workflows remain disabled. Build from a committed clean source tree, then publish its exact tag and archives:
 
 ```powershell
