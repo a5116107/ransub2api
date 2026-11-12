@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3 Gemini/Antigravity缺终态与间隔超时闭环本地已验，提交见HEAD。
+任务：D6保留/硬准入交互与D7原入口本地闭环，父验收保留。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线c3fec4c；7项Go输入00bdf55c03c0f859。
-验证命令：缺终态/超时最小race→修复→SQL恢复/扩大race与四包静态。
-验证结果：race447顶层/3151含子例、SQL26场景通过；四包vet/lint零诊断，Linux通过。
-验证来源：backend/tmp/protocol-cache/scheduling-gemini-completion-*。
-下一动作：D3未观测能力按实际探测作用域核对；D2/D4/D5补原契约与来源证据。
-尝试：33
+源码：基线1c4ef78；在原调度/配置/API/UI内修改，不新增调度器。
+验证命令：原89382扩大race/vet/Linux/lint；UI40和Chromium复用。
+验证结果：race603/3092无失败/跳过；四包lint零诊断；UI/构建通过。
+验证来源：backend/tmp/protocol-cache/scheduling-session-affinity-*。
+下一动作：D5/D6软迁移待前缀/缓存域证据；D2/D4待关联/模型fast契约。
+尝试：35
 阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -50,8 +50,8 @@
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；HTTP/TLS/区域/Astra及插件终检race349/842、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
-| D6 | pending | 分配与缓存保护；依赖前置指标与准入 |
-| D7 | pending | 前端配置与决策解释；依赖策略契约 |
+| D6 | in_progress | 会话保留13场景、最新状态失效/恢复及强归属已验，扩大race603/3092通过；软迁移仍须前缀/候选缓存域与净收益证据 |
+| D7 | in_progress | 原表单/API会话开关、旧客户端兼容、UI40及键盘/390px/503恢复已验；完整解释依赖其余策略契约 |
 | D8 | pending | admin/跨层SQL、WS绑定、重试截止及资金/竞争/回滚16项夹具、日志race20次通过；其余集成/升级/全局CLI待验收，不运行CI |
 | D9 | pending | 依赖前述验收及生产执行授权 |
 
@@ -66,7 +66,7 @@
 
 ## 下一项工作
 
-D2关联契约、D4模型/fast、D5前缀/缓存域待证据；D3其余能力待验。原28项20 done，D2–D5进行中，D6–D9待验。
+D6保留/硬准入交互与D7入口本地闭环；D2关联契约、D4模型/fast、D5/D6前缀/缓存域待证据，D3其余能力待验。原28项20 done，D2–D7进行中，D8–D9待验。
 
 ## 外部等待与清理
 
@@ -74,4 +74,4 @@ D2关联契约、D4模型/fast、D5前缀/缓存域待证据；D3其余能力待
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
-- 历史TEMP拒删：chat-wire约69MiB、protocol-rate18文件/700.05MiB，以及runtime-ttft、sub2api-priority-route、sub2api-http-admission、sub2api-auth-binding、sub2api-antigravity-semantic/empty；关联日志、精确路径及原核查见DECISIONS。均保留供拥有者手工处理，不重试、不计释放。
+- TEMP拒删：chat-wire约69MiB、protocol-rate约700MiB及runtime-ttft、priority-route、http-admission、auth-binding、antigravity-semantic/empty；本轮session-affinity及其构建约8.12MiB。精确路径/原核查见DECISIONS，保留供拥有者手工处理，不重试、不计释放。

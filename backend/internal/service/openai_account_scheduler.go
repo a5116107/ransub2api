@@ -433,6 +433,11 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	if s != nil && s.service != nil && s.service.openAIGroupRequiresPrivacySet(ctx, req.GroupID) {
 		req.RequirePrivacySet = true
 	}
+	if s.service.preservesPrioritySession(req) && strings.TrimSpace(req.PreviousResponseID) == "" {
+		// Resolve the existing session before the weighted race. A missing
+		// binding still falls through to the same new-session allocation.
+		req.StickyWeighted = false
+	}
 
 	start := time.Now()
 	latencyOwnerID := int64(0)
@@ -794,7 +799,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	cfg := s.service.schedulingConfig()
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	if s.service.concurrencyService != nil {
-		if escapeCfg.enabled && !req.DisableStickyEscape && acquireErr == nil && result != nil && !result.Acquired {
+		if escapeCfg.enabled && !req.DisableStickyEscape && !s.service.preservesPrioritySession(req) && acquireErr == nil && result != nil && !result.Acquired {
 			errorRate, ttft, _ := s.stats.snapshot(accountID)
 			slog.Info("sticky_escape_triggered",
 				"account_id", accountID,

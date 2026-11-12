@@ -1,4 +1,6 @@
 export default {
+  preserveSessionAffinity: 'Keep eligible session routes to reduce cache rebuilds',
+  preserveSessionAffinityHint: 'Applies only to enabled groups and models. Existing ordinary sessions do not move for soft latency, historical error rate, transient capacity differences or sticky weighting; full routes use their existing bounded wait. Latest availability, quality isolation, profit limits, hard latency stops and ownership still apply. New sessions retain normal allocation. Off by default; this does not prove upstream cache survival or treat unknown migration cost as zero.',
   errorRate: "Attempt error rate",
   error_rate_weight: "Error penalty weight (%)",
   error_rate_window_minutes: "Error window (minutes)",

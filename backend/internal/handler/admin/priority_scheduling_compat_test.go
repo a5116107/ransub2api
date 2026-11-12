@@ -27,6 +27,47 @@ func (r *priorityCompatSettings) Set(_ context.Context, _ string, value string) 
 	return nil
 }
 
+func TestPrioritySavePreservesOrChangesSessionAffinity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		value  any
+		want   bool
+		status int
+	}{
+		{"omitted", nil, true, http.StatusOK},
+		{"enabled", true, true, http.StatusOK},
+		{"disabled", false, false, http.StatusOK},
+		{"invalid", "false", true, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := service.DefaultPrioritySchedulingConfig()
+			cfg.PreserveSessionAffinity = true
+			raw, err := json.Marshal(cfg)
+			require.NoError(t, err)
+			repo := &priorityCompatSettings{value: string(raw)}
+			h := &SettingHandler{settingService: service.NewSettingService(repo, nil)}
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(raw, &body))
+			delete(body, "preserve_session_affinity")
+			if tc.value != nil {
+				body["preserve_session_affinity"] = tc.value
+			}
+			raw, err = json.Marshal(body)
+			require.NoError(t, err)
+			router := gin.New()
+			router.PUT("/config", h.SavePriorityScheduling)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(raw))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, tc.status, recorder.Code, recorder.Body.String())
+			var saved service.PrioritySchedulingConfig
+			require.NoError(t, json.Unmarshal([]byte(repo.value), &saved))
+			require.Equal(t, tc.want, saved.PreserveSessionAffinity)
+		})
+	}
+}
+
 func TestPrioritySavePreservesOmittedProtocolPreference(t *testing.T) {
 	for _, explicit := range []bool{false, true} {
 		cfg := service.DefaultPrioritySchedulingConfig()

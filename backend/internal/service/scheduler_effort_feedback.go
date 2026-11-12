@@ -1,6 +1,9 @@
 package service
 
 func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyForRequest(req OpenAIAccountScheduleRequest, account *Account, cfg openAIStickyEscapeConfig) (string, float64, float64, bool) {
+	if s.service.preservesPrioritySession(req) {
+		return "", 0, 0, false
+	}
 	if !req.ObservationEffortScoped {
 		return s.shouldEscapeStickyAccount(account.ID, cfg)
 	}

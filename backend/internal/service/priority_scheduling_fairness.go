@@ -116,6 +116,9 @@ func (s *defaultOpenAIAccountScheduler) shouldRebalancePrioritySticky(ctx contex
 	if !priorityApplies(cfg, req) {
 		return false
 	}
+	if cfg.PreserveSessionAffinity {
+		return false
+	}
 	balanceProtocols := cfg.BalanceProtocols
 	quotaSticky := cfg.OAuthQuotaPriority && sticky.IsOpenAIApiKey()
 	// Optional balancing must not hold a healthy sticky turn behind slow dependencies.

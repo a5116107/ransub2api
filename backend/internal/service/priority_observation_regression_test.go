@@ -865,6 +865,198 @@ func TestPriorityObservationCompletedCallFreshness(t *testing.T) {
 	require.Equal(t, 1, got.LatencyUnknownSamples)
 }
 
+func TestPrioritySessionAffinityPreservesEligibleBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name                             string
+		protect, weighted, full, exclude bool
+		stop, wrongScope, disabled       bool
+		capacity, newSession, profit     bool
+		quality                          bool
+		want                             int64
+	}{
+		{name: "legacy_latency_escape", want: 2},
+		{name: "protected_latency", protect: true, want: 1},
+		{name: "protected_weighted", protect: true, weighted: true, want: 1},
+		{name: "protected_full_waits", protect: true, full: true, want: 1},
+		{name: "legacy_capacity_escape", capacity: true, want: 2},
+		{name: "protected_capacity", protect: true, capacity: true, want: 1},
+		{name: "new_session_still_scored", protect: true, newSession: true, weighted: true, want: 2},
+		{name: "profit_gate_still_applies", protect: true, profit: true, want: 2},
+		{name: "quality_isolation_still_applies", protect: true, quality: true, want: 2},
+		{name: "exclusion_still_applies", protect: true, exclude: true, want: 2},
+		{name: "disabled_still_applies", protect: true, disabled: true, want: 2},
+		{name: "stop_still_applies", protect: true, stop: true, want: 2},
+		{name: "different_group_unchanged", protect: true, wrongScope: true, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetOpenAIAdvancedSchedulerSettingCacheForTest()
+			cfg := DefaultPrioritySchedulingConfig()
+			cfg.Enabled, cfg.PreserveSessionAffinity = true, tc.protect
+			group := int64(11)
+			cfg.GroupIDs = []int64{group}
+			if tc.wrongScope {
+				cfg.GroupIDs = []int64{12}
+			}
+			if tc.stop {
+				cfg.LatencyPenaltyMode = PriorityLatencyStop
+			}
+			badAt := time.Now().Add(-time.Minute)
+			reader := &priorityReaderStub{signal: map[int64]PrioritySchedulingSignal{
+				1: {Samples: 20, P90TTFTMs: 20000, LatestBadLatencyAt: &badAt, QualitySamples: 10, QualityPassed: 10},
+				2: {Samples: 20, P90TTFTMs: 500, QualitySamples: 10, QualityPassed: 10},
+			}}
+			if tc.capacity {
+				signal := reader.signal[1]
+				signal.P90TTFTMs, signal.LatestBadLatencyAt = 500, nil
+				reader.signal[1] = signal
+			}
+			svc := priorityGateway(cfg, reader)
+			pool := []openAIAccountCandidateScore{priorityCandidate(1, .1, 0), priorityCandidate(2, 1, 0)}
+			accounts := make([]Account, 0, len(pool))
+			for _, item := range pool {
+				item.account.Status, item.account.Schedulable = StatusActive, true
+				item.account.GroupIDs = []int64{group}
+				accounts = append(accounts, *item.account)
+			}
+			if tc.disabled {
+				accounts[0].Schedulable = false
+			}
+			if tc.profit {
+				rate := 2.0
+				accounts[0].RateMultiplier = &rate
+				accounts[0].Extra[AccountCostMultiplierExtraKey] = float64(2)
+			}
+			if tc.quality {
+				accounts[0].Extra["model_rate_limits"] = map[string]any{"gpt-test": map[string]any{
+					"reason": "quality_rule:7", "rate_limit_reset_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+				}}
+			}
+			cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:protected-session": 1}}
+			svc.cache, svc.accountRepo, svc.cfg = cache, schedulerTestOpenAIAccountRepo{accounts: accounts}, newSchedulerTestOpenAIWSV2Config()
+			svc.cfg.Gateway.OpenAIScheduler.StickyEscapeEnabled = true
+			loadMap := map[int64]*AccountLoadInfo{}
+			if tc.capacity {
+				loadMap[1] = &AccountLoadInfo{AccountID: 1, CurrentConcurrency: 8, LoadRate: 80}
+			}
+			svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{acquireResults: map[int64]bool{1: !tc.full, 2: true}, loadMap: loadMap})
+			svc.openaiAccountStats = newOpenAIAccountRuntimeStats()
+			for range 8 {
+				ttft := 30000
+				if tc.capacity {
+					ttft = 500
+				}
+				svc.openaiAccountStats.report(1, true, &ttft)
+			}
+			req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, GroupID: &group, SessionHash: "protected-session", StickyAccountID: 1,
+				StickyWeighted: tc.weighted, RequestedModel: "gpt-test", InboundEndpoint: "/v1/responses", UseUpstreamTokenCost: true}
+			if tc.newSession {
+				req.SessionHash, req.StickyAccountID = "new-session", 0
+			}
+			if tc.exclude {
+				req.ExcludedIDs = map[int64]struct{}{1: {}}
+			}
+			require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, time.Second, time.Millisecond)
+			scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: svc.openaiAccountStats}
+			ctx := t.Context()
+			if tc.profit {
+				ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: group, threshold: 1, pricingAt: time.Now()})
+			}
+			selected, decision, err := scheduler.Select(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, selected)
+			require.Equal(t, tc.want, selected.Account.ID)
+			if selected.ReleaseFunc != nil {
+				selected.ReleaseFunc()
+			}
+			if tc.protect && !tc.exclude && !tc.disabled && !tc.stop && !tc.wrongScope && !tc.newSession && !tc.profit && !tc.quality {
+				require.Equal(t, openAIAccountScheduleLayerSessionSticky, decision.Layer)
+				require.Equal(t, int64(1), cache.sessionBindings["openai:protected-session"])
+				if tc.full {
+					require.False(t, selected.Acquired)
+					require.NotNil(t, selected.WaitPlan)
+					require.Equal(t, int64(1), selected.WaitPlan.AccountID)
+				}
+			}
+		})
+	}
+}
+
+func TestPrioritySessionAffinityAvailabilityFailureAndRecovery(t *testing.T) {
+	svc, scheduler, req, _, _ := latencyModeFixture(t, PriorityLatencyDeprioritize)
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	cfg.PreserveSessionAffinity = true
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(t.Context(), cfg))
+	req.SessionHash, req.StickyAccountID, req.StickyWeighted = "mode-sticky", 1, true
+	selected, err := modeSelect(t, scheduler, req)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.Account.ID)
+	repo := &availabilityAdmissionRepo{}
+	upstream := &httpUpstreamRecorder{}
+	svc.availabilityReader, svc.httpUpstream = repo, upstream
+	for _, state := range []string{"pass", "fail", "stale", "unknown", "read_error", "recovered"} {
+		t.Run(state, func(t *testing.T) {
+			report := availabilityAdmissionPass(selected.Account.ID, req.RequestedModel)
+			repo.reports, repo.readErr = []*AvailabilityReport{report}, nil
+			switch state {
+			case "fail":
+				report.Models[0].Status, report.Models[0].Decision.Status = "fail", "fail"
+			case "stale":
+				past := time.Now().Add(-time.Minute)
+				report.Models[0].Status, report.Models[0].ValidUntil = "stale", &past
+			case "unknown":
+				report.Models[0].Status, report.Models[0].Decision = "unknown", nil
+			case "read_error":
+				repo.readErr = errors.New("fixture availability read failed")
+			}
+			before := len(upstream.requests)
+			upstream.resp = &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}
+			ctx := ContextWithSelectionPriorityRequest(t.Context(), selected)
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"fixture"}`))
+			require.NoError(t, err)
+			response, err := svc.doOpenAIUpstream(request, "", selected.Account)
+			if state == "pass" || state == "recovered" {
+				require.NoError(t, err)
+				require.NotNil(t, response)
+				require.NoError(t, response.Body.Close())
+				require.Len(t, upstream.requests, before+1)
+			} else {
+				var denied *OpenAITurnAdmissionError
+				require.ErrorAs(t, err, &denied)
+				require.Nil(t, response)
+				require.Len(t, upstream.requests, before, "session protection must not send through failed authoritative admission")
+			}
+		})
+	}
+	require.Equal(t, 6, repo.reads, "each send must consult the current state, not its selection-time pass")
+	boundID, err := svc.getStickySessionAccountID(t.Context(), req.GroupID, req.SessionHash)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), boundID)
+}
+
+func TestPrioritySessionAffinityRetainsResponseOwnership(t *testing.T) {
+	svc, scheduler, req, _, _ := latencyModeFixture(t, PriorityLatencyStop)
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	cfg.PreserveSessionAffinity = true
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(t.Context(), cfg))
+	const responseID = "resp_protected_owner"
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(t.Context(), 11, responseID, 1, time.Hour))
+	req.PreviousResponseID, req.PreviousResponseCanMove, req.StickyWeighted = responseID, true, true
+	selected, err := modeSelect(t, scheduler, req)
+	require.Nil(t, selected)
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "a stopped response owner must not be replaced with a healthy non-owner")
+	setModeSignal(svc, req, 1, func(signal *PrioritySchedulingSignal) { signal.P90TTFTMs, signal.LatestBadLatencyAt = 500, nil })
+	req.ExcludedIDs = map[int64]struct{}{1: {}}
+	selected, err = modeSelect(t, scheduler, req)
+	require.Nil(t, selected)
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "excluding a healthy owner must not make its response portable")
+	req.ExcludedIDs = nil
+	selected, err = modeSelect(t, scheduler, req)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.Account.ID, "recovery retains the original response owner")
+}
+
 func TestPriorityObservationStickyPenaltyAndExpiry(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 	cfg := DefaultPrioritySchedulingConfig()

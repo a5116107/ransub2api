@@ -27,6 +27,7 @@ type PrioritySchedulingConfig struct {
 	OAuthQuotaPriority         bool     `json:"oauth_quota_priority"`
 	OAuthQuotaThreshold        int      `json:"oauth_quota_threshold"`
 	BalanceProtocols           bool     `json:"balance_protocols"`
+	PreserveSessionAffinity    bool     `json:"preserve_session_affinity"`
 	Enabled                    bool     `json:"enabled"`
 	Mode                       string   `json:"mode"`
 	GroupIDs                   []int64  `json:"group_ids"`

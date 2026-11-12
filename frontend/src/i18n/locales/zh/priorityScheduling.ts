@@ -1,4 +1,6 @@
 export default {
+  preserveSessionAffinity: '保留合格会话线路，减少缓存重建',
+  preserveSessionAffinityHint: '仅作用于已启用的分组和模型。已有普通会话不因软延迟、历史错误率、瞬时容量差或粘性加权换线；并发满时沿用原线路的有界等待。最新可用性、质量隔离、倍率、硬延迟停调和强归属继续生效，新会话仍正常分配。默认关闭，不承诺上游缓存仍存活，也不将未知迁移收益当作零成本。',
   errorRate: "上游尝试错误率",
   error_rate_weight: "错误惩罚权重（%）",
   error_rate_window_minutes: "错误窗口（分钟）",

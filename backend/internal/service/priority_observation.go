@@ -118,6 +118,9 @@ func (s *defaultOpenAIAccountScheduler) shouldYieldPriorityLatencySticky(req Ope
 	if s == nil || s.service == nil || account == nil || req.DisableStickyEscape || req.PreserveStickyBinding || req.EncryptedReasoning || req.GuardianParentAccountID > 0 || strings.TrimSpace(req.PreviousResponseID) != "" || req.Platform != PlatformOpenAI || !req.UseUpstreamTokenCost || req.RequiredImageCapability != "" {
 		return false
 	}
+	if s.service.preservesPrioritySession(req) {
+		return false
+	}
 	cfg := s.service.prioritySchedulingRuntimeConfig()
 	if !priorityApplies(cfg, req) {
 		return false
@@ -133,4 +136,15 @@ func (s *defaultOpenAIAccountScheduler) shouldYieldPriorityLatencySticky(req Ope
 	}
 	score := scorePriorityCandidate(cfg, pool[0], signal, time.Now())
 	return slices.Contains(score.Reasons, "latency_above_target")
+}
+
+// Preserve affinity while migration benefit and cache-rebuild cost are unknown.
+// This is not an ownership or eligibility grant: all hard gates and the existing
+// bounded concurrency wait remain authoritative.
+func (s *OpenAIGatewayService) preservesPrioritySession(req OpenAIAccountScheduleRequest) bool {
+	if s == nil || req.Platform != PlatformOpenAI || !req.UseUpstreamTokenCost || req.RequiredImageCapability != "" {
+		return false
+	}
+	cfg := s.prioritySchedulingRuntimeConfig()
+	return cfg.PreserveSessionAffinity && priorityApplies(cfg, req)
 }
