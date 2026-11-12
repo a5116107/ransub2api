@@ -2299,3 +2299,9 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 隔离容器 `go test -race -p 1 -parallel 2 -tags integration ./internal/repository -run 'Test(.*UpstreamKey|Priority(SessionAffinity|Config)|AccountPerformancePostgres|Issue758RedisHTTP)' -count=1 -timeout 15m -json` 实跑 149 个测试通过、1 个失败、零跳过；原 unit race 的 36 个 SQL 跳过均逐名匹配到本次 pass。唯一失败 TestUpstreamKeyRealRedisAtomicCompetition 因进程 PATH 调用系统 Redis 3.0.504，而脚本使用该版本缺少的 redis.replicate_commands()；保留原失败日志。
 - 仅在子进程 PATH 优先使用已有 `H:/Root/tools/redis/5.0.14.1`，未改源码或系统配置；`go test -race -p 1 -parallel 2 -tags unit ./internal/repository -run '^TestUpstreamKeyRealRedisAtomicCompetition$' -count=1 -timeout 5m -json` 退出 0，测试 0.55 秒、包 1.744 秒，无失败/跳过。证据为 upstream-v2.21.0-integration-race.jsonl、upstream-v2.21.0-redis5-race.jsonl 与对应 stderr；不将前一次失败改报成整包通过。
 - 原 28 项仍为 20 done、8 部分；本次关闭的是 v2.21.0 冲突与本地回归子项，集成分支交付待审，不合并 production、不发布、不部署、不运行 CI。核验 production 的既有自动同步脚本尚无候选复用逻辑；新版逻辑须本 PR 审查合入才生效，届时复用人工集成分支。此前纯上游 PR 在旧定时脚本下仍可能被重新提出，不将候选代码当作已生效自动化。
+
+### 2026-11-13 — 自有集成分支与待审 PR 交付
+
+- 合并提交 `29224ee2b6977041b11db2dea76bb268af86b825` 的两个父提交为自研 `98d089446433437338e4284030be6852f554ed4e` 和上游 `b5990096ae10a0b2481182f2ac45812effacda22`；显式暂存 128 个本轮 tracked 修复路径，合并共 1705 路径，未加入历史图片或验证产物。远端 origin/integration/upstream-stable 与本地提交一致；production 仍为自研基线，upstream/stable 仍为纯上游提交。
+- 已建立 [草稿 PR #2](https://github.com/a5116107/ransub2api/pull/2)，head 为上述集成分支，base 为 production；GitHub 返回 mergeable=true、mergeable_state=clean、merged=false。旧 PR #1 已关闭并指向替代请求，未合并任一请求。提交对应 Actions runs=0、check runs=0，仅 Release 与 Sync upstream 两个 workflow active；88 份候选工作流事件已检查，除同步的 schedule 外均仅 workflow_dispatch。
+- 文档本地链接 27 项有效，STATE 当时 7995 bytes/79 行；新修复 diff --check 通过、无新增 TODO/FIXME/XXX、无旧热图/getPriorityLatency 调用、无冲突标记。cached diff check 唯一提示为继承迁移 250 原尾部空行，未改其内容。提交后唯一未跟踪内容为历史 backend/internal/service/data/，不将该工作区称为完全干净。迁移/发布与原 D2–D9 外部验收继续保留，不将 mergeable 当作生产可发布证明。

@@ -1090,13 +1090,13 @@ Redis 重建不将空状态当通过；多实例传播时延要实测，允许�
 
 用户已指定并授权使用公开仓库 `a5116107/ransub2api`。`a5116107/bps2api` 实为 `liulixin-lex/bps2api` 的分叉，与本工作区来源不同，保持不变。唯一工作树的 origin 改为自有仓库；ranxi2001/sub2api 设为只拉取的 upstream，禁用推送。
 
-`production` 保存合并自研后的稳定源码；`upstream/stable` 仅跟踪 ranxi2001/sub2api 的最新稳定 Release 标签，每6小时及手动触发同步。同步流程不运行上游代码、不强推、不自动合并、不构建/部署，只提出或更新指向 production 的合并请求；无冲突也须本地验证后集成。冲突显示在请求中，线上及自研分支保持原状。原构建/测试 CI 禁用；仅开放定时同步和手动发布自动化。
+`production` 保存合并自研后的稳定源码；`upstream/stable` 仅跟踪 ranxi2001/sub2api 的最新稳定 Release 标签，每6小时及手动触发同步。同步流程不运行上游代码、不强推、不自动合并、不构建/部署，只提出或更新指向 production 的合并请求；无冲突也须本地验证后集成。人工解冲突使用唯一 `integration/upstream-stable` 分支；本候选中的同步逻辑会复用它，新上游不在候选中时标记 `requires_integration`，不覆盖自研分支。该逻辑须审查合入 production 才生效，此前旧定时脚本仍可能重建纯上游请求。原构建/测试 CI 禁用；仅开放定时同步和手动发布自动化。
 
 稳定自研版本使用 `X.Y.Z-ransub.N`，X.Y.Z保留已集成的上游基线，N区分同一基线的自研修订。后端比较自研修订号，Release明确标为stable/latest；前端回退脚本、GHCR镜像及后端检查/下载/指定版本回退统一到自有渠道，旧仓库的缓存不能作为新渠道更新证据。未完成自有发布的source构建仍禁止在线替换。
 
 复用 `.github/release-tools/release_matrix.py local-build/local-publish` 在干净已提交源码上本地构建，绑定源码commit、内嵌前端、归档和SHA256；先上传draft，逐个核对GitHub计算的资产digest再公开为latest。首版仅提供生产对应的Linux amd64归档，其他架构没有验证前不宣称可用。现有Release工作流增加prebuilt_only入口，只将同一标签下已验证的归档封装为GHCR运行镜像，不重复编译、不运行CI。Docker将可更新程序单独持久化到/app/bin；同一镜像重启/重建保留在线更新，明确更换镜像时原子切换为新镜像程序并保留上一程序。每实例使用独立程序卷，避免多个进程共同替换。安装/镜像发布不等于生产切换；D9仍要求迁移及回滚演练、加载身份和真实用户流证据。
 
-当前交付已验证 `v2.19.2-ransub.2` 自有公开发行、线上版本菜单更新/重启及同镜像容器重建后保留新程序；正式进度与证据见 [STATE.md](STATE.md) 和 [DECISIONS.md](DECISIONS.md)。上游 `v2.21.0` 已形成待审 [PR #1](https://github.com/a5116107/ransub2api/pull/1)，存在冲突，不视为已集成或已上线。线上仍保留原调度开关，不自动启用未完成供应商/能力/缓存证据的策略。
+当前线上已验证 `v2.19.2-ransub.2` 自有公开发行、版本菜单更新/重启及同镜像容器重建后保留新程序；正式进度与证据见 [STATE.md](STATE.md) 和 [DECISIONS.md](DECISIONS.md)。上游 `v2.21.0` 与自研基线已在 `29224ee2b` 整合并完成本地回归，交付 [草稿 PR #2](https://github.com/a5116107/ransub2api/pull/2)，GitHub 确认无合并冲突，旧纯上游 PR #1 已关闭并由它替代。采用统一账号性能/均值评分和页面，保留倍率门、共享 Key 并发、会话/缓存归属、线路隔离及未知值规则。候选尚未合入 production、发布或上线；完整混版和本候选的生产迁移/回滚仍待验。线上保留原调度开关，不自动启用未完成供应商/能力/缓存证据的策略。
 
 ## 12. 前端与选路解释
 
