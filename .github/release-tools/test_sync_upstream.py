@@ -12,6 +12,19 @@ spec.loader.exec_module(sync)
 
 
 class SyncUpstreamTest(unittest.TestCase):
+    def test_actions_checkout_remote_without_git_suffix_is_accepted(self):
+        responses = [
+            {'full_name': sync.REPOSITORY, 'default_branch': sync.BASE},
+            {'tag_name': 'v2.21.0', 'draft': False, 'prerelease': False}
+        ]
+        results = [subprocess.CompletedProcess([], 0, 'https://github.com/a5116107/ransub2api\n'),
+                   subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, 'a' * 40),
+                   subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, 'b' * 40)]
+        with patch.object(sync, 'gh_json', side_effect=responses), patch.object(sync, 'git', side_effect=results), patch.object(sync, 'integration_status', return_value='conflicts'):
+            result = sync.sync(dry_run=True)
+        self.assertEqual(result['status'], 'conflicts')
+        self.assertTrue(result['dry_run'])
+
     def test_real_merge_preview_retains_custom_head_and_files(self):
         with tempfile.TemporaryDirectory() as directory:
             previous = Path.cwd()

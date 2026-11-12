@@ -42,7 +42,7 @@ def sync(dry_run=False):
     if repository['full_name'] != REPOSITORY or repository['default_branch'] != BASE:
         raise ValueError('unexpected repository identity or default branch')
     origin = git('remote', 'get-url', '--push', 'origin').stdout.strip()
-    if origin not in (f'https://github.com/{REPOSITORY}.git', f'git@github.com:{REPOSITORY}.git'):
+    if origin.removesuffix('.git') not in (f'https://github.com/{REPOSITORY}', f'git@github.com:{REPOSITORY}'):
         raise ValueError('origin is not the confirmed user-owned repository')
     release = gh_json('api', f'repos/{UPSTREAM}/releases/latest')
     tag = release['tag_name']
