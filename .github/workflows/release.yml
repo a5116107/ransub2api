@@ -1,4 +1,5 @@
 name: Release
+run-name: Publish ${{ inputs.tag }} for ${{ github.repository }}
 
 on:
   workflow_dispatch:

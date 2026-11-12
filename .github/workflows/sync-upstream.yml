@@ -1,4 +1,5 @@
 name: Sync upstream stable release
+run-name: Track upstream stable release for ${{ github.repository }}
 
 on:
   schedule:
