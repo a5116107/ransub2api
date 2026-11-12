@@ -52,7 +52,7 @@ type PriorityLatencyAccountSeries struct {
 	P95TTFTMs          float64                 `json:"p95_ttft_ms"`
 	P99TTFTMs          float64                 `json:"p99_ttft_ms"`
 	MeanTTFTMs         float64                 `json:"mean_ttft_ms"`
-	SelectedTTFTMs     float64                 `json:"selected_ttft_ms"`
+	SelectedTTFTMs     *float64                `json:"selected_ttft_ms"`
 	LatencyPercentile  int                     `json:"latency_percentile"`
 	LatencyMeasurement string                  `json:"latency_measurement"`
 	SlowSamples        int                     `json:"slow_samples"`
@@ -152,7 +152,8 @@ func (s *OpenAIGatewayService) PriorityLatencySeries(ctx context.Context, minute
 			ErrorRate:          score.UpstreamErrorRate,
 		}
 		if score.SelectedTTFTMs != nil {
-			account.SelectedTTFTMs = *score.SelectedTTFTMs
+			value := *score.SelectedTTFTMs
+			account.SelectedTTFTMs = &value
 		}
 		account.Buckets = byAccount[id]
 		if account.Buckets == nil {

@@ -12,7 +12,16 @@ import (
 
 type priorityLatencySeriesRegressionReader struct {
 	UsageLogRepository
-	query PriorityLatencySeriesQuery
+	query   PriorityLatencySeriesQuery
+	signals map[int64]PrioritySchedulingSignal
+}
+
+func (r *priorityLatencySeriesRegressionReader) ReadPrioritySchedulingSignals(_ context.Context, query PrioritySchedulingQuery) (map[int64]PrioritySchedulingSignal, error) {
+	signals := make(map[int64]PrioritySchedulingSignal, len(query.AccountIDs))
+	for _, id := range query.AccountIDs {
+		signals[id] = r.signals[id]
+	}
+	return signals, nil
 }
 
 func (r *priorityLatencySeriesRegressionReader) ReadPriorityLatencySeries(_ context.Context, query PriorityLatencySeriesQuery) ([]PriorityLatencyBucket, error) {
@@ -39,11 +48,13 @@ func TestPriorityLatencySeriesNoHistorySerializesEmptyBuckets(t *testing.T) {
 	require.NoError(t, err)
 	var response struct {
 		Accounts []struct {
-			Buckets json.RawMessage `json:"buckets"`
+			Buckets        json.RawMessage `json:"buckets"`
+			SelectedTTFTMs json.RawMessage `json:"selected_ttft_ms"`
 		} `json:"accounts"`
 	}
 	require.NoError(t, json.Unmarshal(raw, &response))
 	require.JSONEq(t, `[]`, string(response.Accounts[0].Buckets), "the public API must represent an empty series as an array")
+	require.JSONEq(t, `null`, string(response.Accounts[0].SelectedTTFTMs), "missing selected evidence must remain unknown, not become a measured zero")
 }
 
 func TestPriorityLatencySeriesUsesSnapshotMeasurementAndPercentile(t *testing.T) {
@@ -69,6 +80,48 @@ func TestPriorityLatencySeriesUsesSnapshotMeasurementAndPercentile(t *testing.T)
 	require.NoError(t, json.Unmarshal(raw, &query))
 	require.Equal(t, float64(50), query["LatencyPercentile"])
 	require.Equal(t, "attributed_v1", query["LatencyMeasurement"])
+}
+
+func TestPriorityLatencySeriesPreservesSelectedEvidence(t *testing.T) {
+	for _, state := range []string{"known", "unknown", "different_measurement", "different_percentile"} {
+		t.Run(state, func(t *testing.T) {
+			cfg := DefaultPrioritySchedulingConfig()
+			cfg.Enabled, cfg.LatencyPercentile, cfg.LatencyMeasurement = true, 70, "attributed_v1"
+			value := 7000.0
+			signal := PrioritySchedulingSignal{Samples: 10, P90TTFTMs: 20000, SelectedTTFTMs: &value, LatencyPercentile: 70, LatencyMeasurement: "attributed_v1", LatencyEvidenceVersion: 1}
+			switch state {
+			case "unknown":
+				signal.SelectedTTFTMs = nil
+			case "different_measurement":
+				signal.LatencyMeasurement = "legacy_forward"
+			case "different_percentile":
+				signal.LatencyPercentile = 90
+			}
+			reader := &priorityLatencySeriesRegressionReader{signals: map[int64]PrioritySchedulingSignal{77: signal}}
+			svc := &OpenAIGatewayService{usageLogRepo: reader}
+			req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, RequestedModel: "fixture", UseUpstreamTokenCost: true}
+			candidates := []openAIAccountCandidateScore{priorityCandidate(77, 1, 1)}
+			svc.priorityScheduling.latestInput = newPrioritySnapshotInput(req, cfg, candidates, time.Now())
+			require.Eventually(t, func() bool {
+				_, ready := svc.prioritySignals(req, cfg, candidates)
+				return ready
+			}, time.Second, time.Millisecond)
+			got, err := svc.PriorityLatencySeries(t.Context(), 60, 5)
+			require.NoError(t, err)
+			require.Len(t, got.Accounts, 1)
+			raw, err := json.Marshal(got.Accounts[0])
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(raw, &fields))
+			want := "null"
+			if state == "known" {
+				want = "7000"
+				require.NotSame(t, signal.SelectedTTFTMs, got.Accounts[0].SelectedTTFTMs, "the response must own its selected value")
+			}
+			require.JSONEq(t, want, string(fields["selected_ttft_ms"]))
+			require.Equal(t, float64(20000), got.Accounts[0].P90TTFTMs, "the separate P90 statistic must not replace the selected measurement")
+		})
+	}
 }
 
 func TestPriorityLatencySeriesUsesSnapshotObservationScope(t *testing.T) {

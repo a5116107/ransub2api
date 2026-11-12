@@ -1035,10 +1035,13 @@ func TestPrioritySessionAffinityAvailabilityFailureAndRecovery(t *testing.T) {
 }
 
 func TestPrioritySessionAffinityRetainsResponseOwnership(t *testing.T) {
-	svc, scheduler, req, _, _ := latencyModeFixture(t, PriorityLatencyStop)
+	svc, scheduler, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
 	cfg := svc.prioritySchedulingRuntimeConfig()
 	cfg.PreserveSessionAffinity = true
 	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(t.Context(), cfg))
+	// Saving changes the history scope. Establish the known slow-owner evidence
+	// for that scope before asserting stop admission, not the cold fallback.
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, time.Second, time.Millisecond)
 	const responseID = "resp_protected_owner"
 	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(t.Context(), 11, responseID, 1, time.Hour))
 	req.PreviousResponseID, req.PreviousResponseCanMove, req.StickyWeighted = responseID, true, true

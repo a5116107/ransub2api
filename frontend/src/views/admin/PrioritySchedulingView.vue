@@ -80,7 +80,7 @@
               <tbody>
                 <tr v-for="row in latencyRows" :key="row.account_id" class="border-t border-gray-100 dark:border-dark-700">
                   <td class="sticky left-0 z-10 bg-white px-2 py-2 dark:bg-dark-900">{{ row.account_name }}</td>
-                  <td v-for="bucket in latencyBuckets" :key="bucket" class="px-2 py-2 tabular-nums" :class="latencyClass(bucketLatency(row, bucket) ?? 0)">{{ bucketText(row, bucket) }}</td>
+                  <td v-for="bucket in latencyBuckets" :key="bucket" class="px-2 py-2 tabular-nums" :class="latencyClass(bucketLatency(row, bucket))" :title="bucketLatency(row, bucket) == null ? t('priorityScheduling.unknown') : undefined">{{ bucketText(row, bucket) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -176,7 +176,7 @@ import {
   getPriorityConfig, savePriorityConfig, getPrioritySnapshot, getPriorityLatency,
   recomputePriorityScheduling, getPriorityStickyBindings, clearPriorityStickyBindings,
   type PrioritySchedulingConfig, type PrioritySnapshot, type PriorityCandidate,
-  type PriorityLatencySeries, type PriorityLatencyAccount,
+  type PriorityLatencySeries, type PriorityLatencyAccount, type PriorityLatencyBucket,
   type PrioritySchedulingRecomputeResult, type PriorityStickyBindings,
 } from '@/api/admin/priorityScheduling'
 function selectedLatency(row: PriorityCandidate) {
@@ -210,7 +210,7 @@ let alive = true, generation = 0, recomputeRequestGeneration = 0, stickyRequestG
 let historyTimer: ReturnType<typeof setTimeout> | undefined
 function stopHistoryRefresh() { clearTimeout(historyTimer); historyTimer = undefined }
 const active = (version: number) => alive && generation === version
-const latencyRows = computed(() => [...(latency.value?.accounts ?? [])].sort((a, b) => bucketMetric(b) - bucketMetric(a)))
+const latencyRows = computed(() => [...(latency.value?.accounts ?? [])].sort((a, b) => (bucketMetric(b) ?? -1) - (bucketMetric(a) ?? -1)))
 const latencyBuckets = computed(() => {
   const buckets = new Set<string>()
   for (const account of latency.value?.accounts ?? []) for (const bucket of account.buckets ?? []) buckets.add(bucket.bucket)
@@ -230,20 +230,27 @@ const recomputeCanClearSticky = computed(() => {
     snapshotScope(result.before) === snapshotScope(result.after) &&
     result.after.history_status === 'ready' && result.after.history_ready && !result.after.history_refreshing && !result.after.history_error
 })
-function metricValue(item: { selected_ttft_ms?: number; p50_ttft_ms: number; p70_ttft_ms?: number; p90_ttft_ms: number; p95_ttft_ms?: number; p99_ttft_ms: number }, percentile: number) {
-  if (item.selected_ttft_ms != null) return item.selected_ttft_ms
-  if (percentile === 50) return item.p50_ttft_ms
-  if (percentile === 70) return item.p70_ttft_ms ?? item.p90_ttft_ms
-  if (percentile === 95) return item.p95_ttft_ms ?? item.p90_ttft_ms
-  if (percentile === 99) return item.p99_ttft_ms
-  return item.p90_ttft_ms
+function metricValue(item: PriorityLatencyBucket | PriorityLatencyAccount, percentile: number, measurement: string) {
+  // Explicit unknown evidence is authoritative. Only older legacy payloads
+  // without the selected field may use the exact requested percentile.
+  let value = item.selected_ttft_ms
+  if (value === undefined && measurement === 'legacy_forward') {
+    switch (percentile) {
+      case 50: value = item.p50_ttft_ms; break
+      case 70: value = item.p70_ttft_ms; break
+      case 90: value = item.p90_ttft_ms; break
+      case 95: value = item.p95_ttft_ms; break
+      case 99: value = item.p99_ttft_ms; break
+    }
+  }
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 }
 function bucketMetric(account: PriorityLatencyAccount) {
-  return account.selected_ttft_ms != null && account.selected_ttft_ms > 0 ? account.selected_ttft_ms : metricValue(account, account.latency_percentile ?? latency.value?.latency_percentile ?? 90)
+  return metricValue(account, account.latency_percentile ?? latency.value?.latency_percentile ?? 90, account.latency_measurement ?? latency.value?.latency_measurement ?? 'legacy_forward')
 }
 function bucketLatency(account: PriorityLatencyAccount, bucket: string) {
   const value = (account.buckets ?? []).find(item => item.bucket === bucket)
-  return value ? value.selected_ttft_ms != null && value.selected_ttft_ms > 0 ? value.selected_ttft_ms : metricValue(value, account.latency_percentile ?? latency.value?.latency_percentile ?? 90) : null
+  return value ? metricValue(value, account.latency_percentile ?? latency.value?.latency_percentile ?? 90, account.latency_measurement ?? latency.value?.latency_measurement ?? 'legacy_forward') : null
 }
 function bucketText(account: PriorityLatencyAccount, bucket: string) {
   const value = bucketLatency(account, bucket)
@@ -259,7 +266,7 @@ function formatMs(value: number) {
 function formatRate(value: number) {
   return value > 0 ? `${(value * 100).toFixed(1)}%` : '—'
 }
-function latencyClass(value: number) {
+function latencyClass(value: number | null) {
   const target = draft.value?.target_ttft_ms ?? 3000
   if (!value) return 'text-gray-400'
   if (value <= target) return 'text-emerald-600'

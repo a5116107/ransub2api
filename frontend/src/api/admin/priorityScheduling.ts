@@ -115,7 +115,7 @@ export interface PriorityLatencyBucket {
   p95_ttft_ms?: number
   p99_ttft_ms: number
   mean_ttft_ms?: number
-  selected_ttft_ms?: number
+  selected_ttft_ms?: number | null
   slow_samples: number
   error_samples: number
 }
@@ -129,7 +129,7 @@ export interface PriorityLatencyAccount {
   p95_ttft_ms?: number
   p99_ttft_ms: number
   mean_ttft_ms?: number
-  selected_ttft_ms?: number
+  selected_ttft_ms?: number | null
   latency_percentile?: number
   latency_measurement?: string
   slow_samples: number

@@ -260,6 +260,37 @@ describe('priority scheduling', () => {
     wrapper.unmount()
   })
 
+  it.each([
+    { name: 'explicit null', selected: null, percentile: 90, measurement: 'legacy_forward', p70: undefined, p95: undefined, expected: '—' },
+    { name: 'explicit zero', selected: 0, percentile: 90, measurement: 'legacy_forward', p70: undefined, p95: undefined, expected: '—' },
+    { name: 'missing P70', selected: undefined, percentile: 70, measurement: 'legacy_forward', p70: undefined, p95: undefined, expected: '—' },
+    { name: 'missing P95', selected: undefined, percentile: 95, measurement: 'legacy_forward', p70: undefined, p95: undefined, expected: '—' },
+    { name: 'missing attributed evidence', selected: undefined, percentile: 70, measurement: 'attributed_v1', p70: 700, p95: undefined, expected: '—' },
+    { name: 'legacy P90', selected: undefined, percentile: 90, measurement: 'legacy_forward', p70: undefined, p95: undefined, expected: '20000' },
+    { name: 'exact legacy P70', selected: undefined, percentile: 70, measurement: 'legacy_forward', p70: 700, p95: undefined, expected: '700' },
+    { name: 'explicit selected evidence', selected: 8000, percentile: 95, measurement: 'attributed_v1', p70: undefined, p95: undefined, expected: '8000' },
+  ])('does not substitute another latency population for $name', async ({ selected, percentile, measurement, p70, p95, expected }) => {
+    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [] })
+    const bucket = { account_id: 1, bucket: '2026-10-30T00:00:00Z', samples: 10, p50_ttft_ms: 500, p70_ttft_ms: p70, p90_ttft_ms: 20000, p95_ttft_ms: p95, p99_ttft_ms: 40000, selected_ttft_ms: selected, slow_samples: 0, error_samples: 0 }
+    vi.mocked(getPriorityLatency).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, bucket_minutes: 5, latency_percentile: percentile, latency_measurement: measurement, accounts: [
+      { ...bucket, account_name: 'Latency candidate', latency_percentile: percentile, error_rate: 0, buckets: [bucket] },
+      { ...bucket, account_id: 2, account_name: 'Known reference', selected_ttft_ms: 3000, error_rate: 0, buckets: [{ ...bucket, account_id: 2, selected_ttft_ms: 3000 }] },
+    ] })
+    const wrapper = mount(PrioritySchedulingView)
+    try {
+      await flushPromises()
+      const rows = wrapper.get('[data-testid="latency-panel"]').findAll('table').at(-1)!.findAll('tbody tr')
+      const candidate = rows.find(row => row.text().includes('Latency candidate'))!
+      expect(candidate.findAll('td')[1].text()).toBe(expected)
+      if (expected === '—') {
+        expect(rows[0].text()).toContain('Known reference')
+        expect(candidate.findAll('td')[1].classes()).toContain('text-gray-400')
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('drops sticky rows as soon as the selected group changes', async () => {
     vi.mocked(getPriorityConfig).mockResolvedValue({ ...config, group_ids: [11] })
     vi.mocked(getPriorityStickyBindings).mockResolvedValue({ group_id: 11, total: 3, by_account: [{ account_id: 1, count: 3 }] })
