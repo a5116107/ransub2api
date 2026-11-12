@@ -317,9 +317,9 @@ func TestPriorityLatencyModesFeatureScopeAndUnmeasured(t *testing.T) {
 				altered.UseUpstreamTokenCost = false
 			}
 			old := svc.prioritySchedulingRuntimeConfig()
-			require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), cfg))
+			require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), &cfg))
 			require.NoError(t, svc.priorityLatencyAdmission(altered, pool[0].account))
-			require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), old))
+			require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), &old))
 		})
 	}
 	setModeSignal(svc, req, 1, func(v *PrioritySchedulingSignal) {
@@ -393,7 +393,7 @@ func TestPriorityLatencyModesWSTurnRoutingIdentity(t *testing.T) {
 	svc, _, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
 	cfg := svc.prioritySchedulingRuntimeConfig()
 	cfg.Models = []string{req.RequestedModel}
-	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), cfg))
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), &cfg))
 	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
 	ctx := WithPrioritySchedulingObservation(context.Background(), req.GroupID, req.HistoryModel, "/v1/responses")
 	ctx = WithOpenAIForwardModel(ctx, req.RequestedModel, false)

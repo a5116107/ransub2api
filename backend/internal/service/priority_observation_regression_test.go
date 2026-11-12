@@ -985,7 +985,7 @@ func TestPrioritySessionAffinityAvailabilityFailureAndRecovery(t *testing.T) {
 	svc, scheduler, req, _, _ := latencyModeFixture(t, PriorityLatencyDeprioritize)
 	cfg := svc.prioritySchedulingRuntimeConfig()
 	cfg.PreserveSessionAffinity = true
-	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(t.Context(), cfg))
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(t.Context(), &cfg))
 	req.SessionHash, req.StickyAccountID, req.StickyWeighted = "mode-sticky", 1, true
 	selected, err := modeSelect(t, scheduler, req)
 	require.NoError(t, err)
@@ -1038,7 +1038,7 @@ func TestPrioritySessionAffinityRetainsResponseOwnership(t *testing.T) {
 	svc, scheduler, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
 	cfg := svc.prioritySchedulingRuntimeConfig()
 	cfg.PreserveSessionAffinity = true
-	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(t.Context(), cfg))
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(t.Context(), &cfg))
 	// Saving changes the history scope. Establish the known slow-owner evidence
 	// for that scope before asserting stop admission, not the cold fallback.
 	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, time.Second, time.Millisecond)

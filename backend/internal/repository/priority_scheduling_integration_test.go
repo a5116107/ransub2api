@@ -60,7 +60,7 @@ func TestPrioritySessionAffinityAcrossGateways(t *testing.T) {
 		policy := service.DefaultPrioritySchedulingConfig()
 		policy.Enabled, policy.PreserveSessionAffinity = true, true
 		policy.GroupIDs, policy.Models = []int64{group.ID}, []string{"gpt-test"}
-		require.NoError(t, settings.SavePrioritySchedulingConfig(t.Context(), policy))
+		require.NoError(t, settings.SavePrioritySchedulingConfig(t.Context(), &policy))
 		cache := NewSchedulerCache(clients[i])
 		snapshots[i] = cache
 		bucket := service.SchedulerBucket{GroupID: group.ID, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}

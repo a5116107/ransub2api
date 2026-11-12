@@ -115,6 +115,23 @@ func (r *settingRepository) Set(ctx context.Context, key, value string) error {
 		Exec(ctx)
 }
 
+// CompareAndSetPrioritySchedulingConfig keeps an omitted-field merge atomic
+// across instances. A missing row is inserted, never repaired through upsert;
+// existing empty/corrupt values cannot be mistaken for an absent setting.
+func (r *settingRepository) CompareAndSetPrioritySchedulingConfig(ctx context.Context, previous *string, value string) (bool, error) {
+	const key = "priority_scheduling_v1"
+	if previous == nil {
+		_, err := r.client.Setting.Create().SetKey(key).SetValue(value).SetUpdatedAt(time.Now()).Save(ctx)
+		if ent.IsConstraintError(err) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	n, err := r.client.Setting.Update().Where(setting.KeyEQ(key), setting.ValueEQ(*previous)).
+		SetValue(value).SetUpdatedAt(time.Now()).Save(ctx)
+	return n == 1, err
+}
+
 // ReplaceExistingAdminAPIKey 原子轮换仍存在的旧版管理员密钥。
 // 受影响行数为零表示密钥已被删除或不存在，绝不能通过 upsert 重新创建。
 func (r *settingRepository) ReplaceExistingAdminAPIKey(ctx context.Context, value string) (bool, error) {

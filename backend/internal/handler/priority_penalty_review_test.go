@@ -44,7 +44,7 @@ func TestPriorityPenaltyReviewHandlerFailover(t *testing.T) {
 			penalty := service.DefaultPrioritySchedulingConfig()
 			penalty.Enabled = true
 			settings := service.NewSettingService(&penaltyModeSettings{}, cfg)
-			require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), penalty))
+			require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), &penalty))
 			slots := &reviewFailoverSlots{}
 			concurrency := service.NewConcurrencyService(slots)
 			repo := &initialAdmissionRepo{}
@@ -83,7 +83,7 @@ func TestPriorityPenaltyReviewHandlerFailover(t *testing.T) {
 			slots.beforeSecond = func() {
 				hard := penalty
 				hard.LatencyPenaltyMode = service.PriorityLatencyStop
-				require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), hard))
+				require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), &hard))
 			}
 			requestCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

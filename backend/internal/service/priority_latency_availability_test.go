@@ -323,7 +323,7 @@ func TestPriorityLatencyAvailabilityConfiguredMetric(t *testing.T) {
 	cfg := svc.prioritySchedulingRuntimeConfig()
 	cfg.LatencyPercentile = 95
 	cfg.LatencyMeasurement = "attributed_v1"
-	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), cfg))
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), &cfg))
 	bad := time.Now().Add(-time.Minute)
 	signals := map[int64]PrioritySchedulingSignal{}
 	pool := []openAIAccountCandidateScore{}

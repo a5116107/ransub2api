@@ -308,7 +308,7 @@ func TestPriorityPenaltyReviewLateSelection(t *testing.T) {
 						reviewActivateStop(svc, req, 1)
 						soft := svc.prioritySchedulingRuntimeConfig()
 						soft.LatencyPenaltyMode = PriorityLatencyDeprioritize
-						require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), soft))
+						require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), &soft))
 					}
 					candidates := pool[:1]
 					if alternate {
@@ -332,7 +332,7 @@ func TestPriorityPenaltyReviewLateSelection(t *testing.T) {
 						} else {
 							hard := svc.prioritySchedulingRuntimeConfig()
 							hard.LatencyPenaltyMode = PriorityLatencyStop
-							require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), hard))
+							require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), &hard))
 						}
 					}
 					var releases []int64

@@ -327,7 +327,7 @@ func TestPrioritySessionAffinityCLIProcesses(t *testing.T) {
 	policy := service.DefaultPrioritySchedulingConfig()
 	policy.Enabled, policy.PreserveSessionAffinity = true, true
 	policy.GroupIDs, policy.Models = []int64{f.Group.ID}, []string{"gpt-5.4"}
-	require.NoError(t, service.NewSettingService(f.Settings, nil).SavePrioritySchedulingConfig(t.Context(), policy))
+	require.NoError(t, service.NewSettingService(f.Settings, nil).SavePrioritySchedulingConfig(t.Context(), &policy))
 	cache := repository.NewSchedulerCache(f.Clients[0])
 	bucket := service.SchedulerBucket{GroupID: f.Group.ID, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
 	token, err := cache.CaptureBucketWriteToken(t.Context(), bucket)

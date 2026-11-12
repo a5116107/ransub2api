@@ -59,7 +59,7 @@ func TestPriorityLatencySeriesHandlerUsesEmptyArrayForNoHistory(t *testing.T) {
 	raw, err := json.Marshal(cfg)
 	require.NoError(t, err)
 	settings := service.NewSettingService(&penaltyModeSettings{value: string(raw)}, nil)
-	require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), cfg))
+	require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), &cfg))
 	appCfg := &config.Config{RunMode: config.RunModeSimple}
 	account := service.Account{ID: 901, Name: "synthetic", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 2, GroupIDs: []int64{11}}
 	gateway := service.NewOpenAIGatewayService(openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}, nil, penaltyModeUsage{}, nil, nil, nil, nil, nil, appCfg, nil, service.NewConcurrencyService(&penaltySlotCache{}), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil)
@@ -114,7 +114,7 @@ func TestPriorityLatencyModesHandlerWaitAndAcquiredBoundary(t *testing.T) {
 			raw, err := json.Marshal(cfg)
 			require.NoError(t, err)
 			settings := service.NewSettingService(&penaltyModeSettings{value: string(raw)}, nil)
-			require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), cfg))
+			require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), &cfg))
 			appCfg := &config.Config{RunMode: config.RunModeSimple}
 			schedulingCache := &penaltySlotCache{full: path != "already acquired"}
 			schedulingSlots := service.NewConcurrencyService(schedulingCache)
@@ -140,7 +140,7 @@ func TestPriorityLatencyModesHandlerWaitAndAcquiredBoundary(t *testing.T) {
 			harden := func() {
 				hard := cfg
 				hard.LatencyPenaltyMode = service.PriorityLatencyStop
-				require.NoError(t, settings.SavePrioritySchedulingConfig(ctx, hard))
+				require.NoError(t, settings.SavePrioritySchedulingConfig(ctx, &hard))
 			}
 			cache := &penaltySlotCache{wait: path == "queued slot", beforeAcquire: harden}
 			if path == "already acquired" {

@@ -8,9 +8,13 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 const prioritySchedulingSettingKey = "priority_scheduling_v1"
+
+var ErrPrioritySchedulingConfigConflict = infraerrors.Conflict("PRIORITY_SCHEDULING_CONFIG_CONFLICT", "Scheduling configuration changed; reload and retry")
 
 const (
 	PriorityLatencyDeprioritize = "deprioritize"
@@ -134,43 +138,122 @@ type priorityConfigCache struct {
 }
 
 func (s *SettingService) GetPrioritySchedulingConfig(ctx context.Context) (PrioritySchedulingConfig, error) {
+	c, _, err := s.prioritySchedulingConfigSnapshot(ctx)
+	return c, err
+}
+
+func (s *SettingService) prioritySchedulingConfigSnapshot(ctx context.Context) (PrioritySchedulingConfig, *string, error) {
 	c := DefaultPrioritySchedulingConfig()
 	raw, err := s.settingRepo.GetValue(ctx, prioritySchedulingSettingKey)
 	if errors.Is(err, ErrSettingNotFound) {
-		return c, nil
+		return c, nil, nil
 	}
 	if err != nil {
-		return c, err
+		return c, nil, err
 	}
 	// Existing stored configurations opt in explicitly; fresh installations use 25.
 	c.ErrorRateWeight = 0
 	if err = json.Unmarshal([]byte(raw), &c); err != nil {
-		return c, err
+		return c, nil, err
 	}
-	return c, ValidatePrioritySchedulingConfig(c)
+	return c, &raw, ValidatePrioritySchedulingConfig(c)
 }
-func (s *SettingService) SavePrioritySchedulingConfig(ctx context.Context, c PrioritySchedulingConfig) error {
-	if c.LatencyPenaltyMode == "" {
-		c.LatencyPenaltyMode = PriorityLatencyDeprioritize
+
+// SavePrioritySchedulingConfig publishes the committed value back to c. Fully
+// specified writes retain their original replacement semantics; compatibility
+// fields omitted by an older client are merged against the latest SQL value.
+// The conditional write protects that merge across independent instances.
+func (s *SettingService) SavePrioritySchedulingConfig(ctx context.Context, c *PrioritySchedulingConfig, preserve ...string) error {
+	if c == nil {
+		return errors.New("scheduling configuration is required")
 	}
-	if err := ValidatePrioritySchedulingConfig(c); err != nil {
-		return err
+	requested := *c
+	if requested.LatencyPenaltyMode == "" {
+		requested.LatencyPenaltyMode = PriorityLatencyDeprioritize
 	}
-	raw, err := json.Marshal(c)
-	if err != nil {
+	if err := ValidatePrioritySchedulingConfig(requested); err != nil {
 		return err
 	}
 	cache := &s.prioritySchedulingConfig
 	cache.saveMu.Lock()
 	defer cache.saveMu.Unlock()
-	if err = s.settingRepo.Set(ctx, prioritySchedulingSettingKey, string(raw)); err != nil {
-		return err
+	var committed PrioritySchedulingConfig
+	for attempt := 0; ; attempt++ {
+		committed = requested
+		var previous *string
+		if len(preserve) > 0 {
+			current, raw, err := s.prioritySchedulingConfigSnapshot(ctx)
+			if err != nil {
+				return err
+			}
+			previous = raw
+			for _, field := range preserve {
+				switch field {
+				case "error_rate_weight":
+					committed.ErrorRateWeight = current.ErrorRateWeight
+				case "error_rate_window_minutes":
+					committed.ErrorRateWindowMinutes = current.ErrorRateWindowMinutes
+				case "error_rate_prior_samples":
+					committed.ErrorRatePriorSamples = current.ErrorRatePriorSamples
+				case "balance_protocols":
+					committed.BalanceProtocols = current.BalanceProtocols
+				case "preserve_session_affinity":
+					committed.PreserveSessionAffinity = current.PreserveSessionAffinity
+				case "oauth_quota_priority":
+					committed.OAuthQuotaPriority = current.OAuthQuotaPriority
+				case "oauth_quota_threshold":
+					committed.OAuthQuotaThreshold = current.OAuthQuotaThreshold
+				case "latency_penalty_mode":
+					committed.LatencyPenaltyMode = current.LatencyPenaltyMode
+				case "latency_penalty_minutes":
+					committed.LatencyPenaltyMinutes = current.LatencyPenaltyMinutes
+				case "latency_percentile":
+					committed.LatencyPercentile = current.LatencyPercentile
+				case "latency_measurement":
+					committed.LatencyMeasurement = current.LatencyMeasurement
+				case "recovery_exploration_percent":
+					committed.RecoveryExplorationPercent = current.RecoveryExplorationPercent
+				default:
+					return errors.New("unknown scheduling compatibility field")
+				}
+			}
+		}
+		if err := ValidatePrioritySchedulingConfig(committed); err != nil {
+			return err
+		}
+		raw, err := json.Marshal(committed)
+		if err != nil {
+			return err
+		}
+		if len(preserve) == 0 {
+			if err := s.settingRepo.Set(ctx, prioritySchedulingSettingKey, string(raw)); err != nil {
+				return err
+			}
+			break
+		}
+		writer, ok := s.settingRepo.(interface {
+			CompareAndSetPrioritySchedulingConfig(context.Context, *string, string) (bool, error)
+		})
+		if !ok {
+			return errors.New("atomic scheduling configuration storage is required")
+		}
+		stored, err := writer.CompareAndSetPrioritySchedulingConfig(ctx, previous, string(raw))
+		if err != nil {
+			return err
+		}
+		if stored {
+			break
+		}
+		if attempt == 2 {
+			return ErrPrioritySchedulingConfigConflict
+		}
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	cache.revision++
-	cache.config = c
+	cache.config = committed
 	cache.expires = time.Now().Add(5 * time.Second)
+	*c = committed
 	return nil
 }
 

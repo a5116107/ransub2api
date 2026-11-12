@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,45 +42,41 @@ func (h *SettingHandler) SavePriorityScheduling(c *gin.Context) {
 		return
 	}
 	cfg := request.PrioritySchedulingConfig
-	if request.ErrorRateWeight == nil || request.ErrorRateWindowMinutes == nil || request.ErrorRatePriorSamples == nil || request.OAuthQuotaPriority == nil || request.OAuthQuotaThreshold == nil || request.BalanceProtocols == nil || request.PreserveSessionAffinity == nil || request.LatencyPenaltyMode == nil || request.LatencyPenaltyMinutes == nil || request.LatencyPercentile == nil || request.LatencyMeasurement == nil || request.RecoveryExplorationPercent == nil {
-		current, err := h.settingService.GetPrioritySchedulingConfig(c.Request.Context())
-		if err != nil {
-			response.Error(c, http.StatusServiceUnavailable, "Priority scheduling configuration unavailable")
-			return
-		}
-		cfg.ErrorRateWeight = current.ErrorRateWeight
-		cfg.ErrorRateWindowMinutes = current.ErrorRateWindowMinutes
-		cfg.ErrorRatePriorSamples = current.ErrorRatePriorSamples
-		cfg.BalanceProtocols = current.BalanceProtocols
-		cfg.PreserveSessionAffinity = current.PreserveSessionAffinity
-		cfg.OAuthQuotaPriority = current.OAuthQuotaPriority
-		cfg.OAuthQuotaThreshold = current.OAuthQuotaThreshold
-		cfg.LatencyPenaltyMode = current.LatencyPenaltyMode
-		cfg.LatencyPenaltyMinutes = current.LatencyPenaltyMinutes
-		cfg.LatencyPercentile = current.LatencyPercentile
-		cfg.LatencyMeasurement = current.LatencyMeasurement
-		cfg.RecoveryExplorationPercent = current.RecoveryExplorationPercent
-	}
+	preserve := make([]string, 0, 12)
 	if request.ErrorRateWeight != nil {
 		cfg.ErrorRateWeight = *request.ErrorRateWeight
+	} else {
+		preserve = append(preserve, "error_rate_weight")
 	}
 	if request.ErrorRateWindowMinutes != nil {
 		cfg.ErrorRateWindowMinutes = *request.ErrorRateWindowMinutes
+	} else {
+		preserve = append(preserve, "error_rate_window_minutes")
 	}
 	if request.ErrorRatePriorSamples != nil {
 		cfg.ErrorRatePriorSamples = *request.ErrorRatePriorSamples
+	} else {
+		preserve = append(preserve, "error_rate_prior_samples")
 	}
 	if request.OAuthQuotaPriority != nil {
 		cfg.OAuthQuotaPriority = *request.OAuthQuotaPriority
+	} else {
+		preserve = append(preserve, "oauth_quota_priority")
 	}
 	if request.OAuthQuotaThreshold != nil {
 		cfg.OAuthQuotaThreshold = *request.OAuthQuotaThreshold
+	} else {
+		preserve = append(preserve, "oauth_quota_threshold")
 	}
 	if request.BalanceProtocols != nil {
 		cfg.BalanceProtocols = *request.BalanceProtocols
+	} else {
+		preserve = append(preserve, "balance_protocols")
 	}
 	if request.PreserveSessionAffinity != nil {
 		cfg.PreserveSessionAffinity = *request.PreserveSessionAffinity
+	} else {
+		preserve = append(preserve, "preserve_session_affinity")
 	}
 	if request.LatencyPenaltyMode != nil {
 		if *request.LatencyPenaltyMode == "" {
@@ -87,25 +84,39 @@ func (h *SettingHandler) SavePriorityScheduling(c *gin.Context) {
 			return
 		}
 		cfg.LatencyPenaltyMode = *request.LatencyPenaltyMode
+	} else {
+		preserve = append(preserve, "latency_penalty_mode")
 	}
 	if request.LatencyPenaltyMinutes != nil {
 		cfg.LatencyPenaltyMinutes = *request.LatencyPenaltyMinutes
+	} else {
+		preserve = append(preserve, "latency_penalty_minutes")
 	}
 
 	if request.LatencyPercentile != nil {
 		cfg.LatencyPercentile = *request.LatencyPercentile
+	} else {
+		preserve = append(preserve, "latency_percentile")
 	}
 	if request.LatencyMeasurement != nil {
 		cfg.LatencyMeasurement = *request.LatencyMeasurement
+	} else {
+		preserve = append(preserve, "latency_measurement")
 	}
 	if request.RecoveryExplorationPercent != nil {
 		cfg.RecoveryExplorationPercent = *request.RecoveryExplorationPercent
+	} else {
+		preserve = append(preserve, "recovery_exploration_percent")
 	}
 	if err := service.ValidatePrioritySchedulingConfig(cfg); err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	if err := h.settingService.SavePrioritySchedulingConfig(c.Request.Context(), cfg); err != nil {
+	if err := h.settingService.SavePrioritySchedulingConfig(c.Request.Context(), &cfg, preserve...); err != nil {
+		if errors.Is(err, service.ErrPrioritySchedulingConfigConflict) {
+			response.ErrorFrom(c, err)
+			return
+		}
 		response.Error(c, http.StatusServiceUnavailable, "Could not save scheduling configuration")
 		return
 	}

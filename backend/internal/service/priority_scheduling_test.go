@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"github.com/stretchr/testify/require"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func priorityCandidate(id int64, rate float64, load int) openAIAccountCandidateScore {
@@ -182,19 +185,159 @@ func TestPriorityConfigPersistenceAndColdStart(t *testing.T) {
 	require.False(t, settings.prioritySchedulingRuntimeConfig().Enabled)
 	c := DefaultPrioritySchedulingConfig()
 	c.Enabled = true
-	require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), c))
+	require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), &c))
 	require.True(t, settings.prioritySchedulingRuntimeConfig().Enabled)
 	got, err := settings.GetPrioritySchedulingConfig(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, c, got)
 	c.Enabled = false
-	require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), c))
+	require.NoError(t, settings.SavePrioritySchedulingConfig(context.Background(), &c))
 	require.False(t, settings.prioritySchedulingRuntimeConfig().Enabled)
 	repo.mu.Lock()
 	repo.value = "{"
 	repo.mu.Unlock()
 	_, err = settings.GetPrioritySchedulingConfig(context.Background())
 	require.Error(t, err)
+}
+
+type priorityConfigCASStub struct {
+	*prioritySettingStub
+	compareAndSet func(context.Context, *string, string) (bool, error)
+}
+
+func (r *priorityConfigCASStub) CompareAndSetPrioritySchedulingConfig(ctx context.Context, previous *string, value string) (bool, error) {
+	return r.compareAndSet(ctx, previous, value)
+}
+
+func TestPriorityConfigCompatibilitySaveRetriesLatest(t *testing.T) {
+	for conflicts := 0; conflicts <= 3; conflicts++ {
+		t.Run(fmt.Sprint(conflicts), func(t *testing.T) {
+			base := &prioritySettingStub{}
+			repo := &priorityConfigCASStub{prioritySettingStub: base}
+			settings := &SettingService{settingRepo: repo}
+			initial := DefaultPrioritySchedulingConfig()
+			initial.PreserveSessionAffinity = true
+			require.NoError(t, settings.SavePrioritySchedulingConfig(t.Context(), &initial))
+			latest := initial
+			calls := 0
+			repo.compareAndSet = func(ctx context.Context, previous *string, value string) (bool, error) {
+				calls++
+				stored, err := base.GetValue(ctx, prioritySchedulingSettingKey)
+				require.NoError(t, err)
+				require.NotNil(t, previous)
+				require.Equal(t, stored, *previous, "each retry must reread the committed value")
+				if calls <= conflicts {
+					latest.PreserveSessionAffinity = !latest.PreserveSessionAffinity
+					latest.ErrorRateWindowMinutes++
+					raw, err := json.Marshal(latest)
+					require.NoError(t, err)
+					require.NoError(t, base.Set(ctx, prioritySchedulingSettingKey, string(raw)))
+					return false, nil
+				}
+				return true, base.Set(ctx, prioritySchedulingSettingKey, value)
+			}
+			requested := initial
+			requested.Mode = "profit"
+			requested.PreserveSessionAffinity = false
+			requested.ErrorRateWindowMinutes = 1
+			before := requested
+			err := settings.SavePrioritySchedulingConfig(t.Context(), &requested, "preserve_session_affinity", "error_rate_window_minutes")
+			stored, readErr := settings.GetPrioritySchedulingConfig(t.Context())
+			require.NoError(t, readErr)
+			if conflicts == 3 {
+				require.ErrorIs(t, err, ErrPrioritySchedulingConfigConflict)
+				require.Equal(t, 3, calls)
+				require.Equal(t, latest, stored, "conflict exhaustion must not write the stale merge")
+				require.Equal(t, before, requested, "failure must not publish a configuration")
+				require.Equal(t, initial, settings.prioritySchedulingRuntimeConfig())
+				require.Equal(t, uint64(1), settings.prioritySchedulingConfig.revision)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, conflicts+1, calls)
+			latest.Mode = "profit"
+			require.Equal(t, latest, stored)
+			require.Equal(t, stored, requested, "response value must be the committed merge")
+			require.Equal(t, stored, settings.prioritySchedulingRuntimeConfig())
+			require.Equal(t, uint64(2), settings.prioritySchedulingConfig.revision)
+		})
+	}
+}
+
+func TestPriorityConfigCompatibilitySaveFailsClosed(t *testing.T) {
+	for _, name := range []string{"read", "corrupt", "invalid_stored", "missing_atomic", "write", "canceled", "unknown_field", "invalid_requested", "nil_config"} {
+		t.Run(name, func(t *testing.T) {
+			base := &prioritySettingStub{}
+			repo := &priorityConfigCASStub{prioritySettingStub: base}
+			settings := &SettingService{settingRepo: repo}
+			initial := DefaultPrioritySchedulingConfig()
+			require.NoError(t, settings.SavePrioritySchedulingConfig(t.Context(), &initial))
+			beforeExpires := settings.prioritySchedulingConfig.expires
+			requested := initial
+			requested.Enabled = true
+			input := &requested
+			preserve := []string{"preserve_session_affinity"}
+			ctx := t.Context()
+			switch name {
+			case "read":
+				base.err = errors.New("read failed")
+			case "corrupt":
+				base.value = "{"
+			case "invalid_stored":
+				bad := initial
+				bad.Mode = "invalid"
+				raw, err := json.Marshal(bad)
+				require.NoError(t, err)
+				base.value = string(raw)
+			case "missing_atomic":
+				settings.settingRepo = base
+			case "canceled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			case "unknown_field":
+				preserve = []string{"misspelled_field"}
+			case "invalid_requested":
+				requested.Mode = "invalid"
+			case "nil_config":
+				input = nil
+			}
+			beforeValue, beforeInput := base.value, requested
+			calls := 0
+			repo.compareAndSet = func(ctx context.Context, _ *string, _ string) (bool, error) {
+				calls++
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
+				return false, errors.New("conditional write failed")
+			}
+			err := settings.SavePrioritySchedulingConfig(ctx, input, preserve...)
+			require.Error(t, err)
+			if name == "canceled" {
+				require.ErrorIs(t, err, context.Canceled)
+			}
+			wantCalls := 0
+			if name == "write" || name == "canceled" {
+				wantCalls = 1
+			}
+			require.Equal(t, wantCalls, calls)
+			require.Equal(t, beforeValue, base.value, "never fall back to an unconditional write")
+			require.Equal(t, beforeInput, requested)
+			require.Equal(t, initial, settings.prioritySchedulingRuntimeConfig())
+			require.Equal(t, uint64(1), settings.prioritySchedulingConfig.revision)
+			require.Equal(t, beforeExpires, settings.prioritySchedulingConfig.expires)
+			// An explicit replacement retains the existing repair behavior, including
+			// when the old stored value is corrupt or no conditional adapter exists.
+			base.err = nil
+			repaired := initial
+			repaired.Enabled = true
+			require.NoError(t, settings.SavePrioritySchedulingConfig(t.Context(), &repaired))
+			stored, err := settings.GetPrioritySchedulingConfig(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, repaired, stored)
+			require.Equal(t, repaired, settings.prioritySchedulingRuntimeConfig())
+		})
+	}
 }
 
 func (r *prioritySettingStub) GetMultiple(context.Context, []string) (map[string]string, error) {
@@ -234,7 +377,7 @@ func TestPrioritySchedulingGatewayEntryAndDisable(t *testing.T) {
 	}
 	require.NotNil(t, svc.PrioritySchedulingSnapshot())
 	c.Enabled = false
-	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), c))
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), &c))
 	require.Nil(t, svc.getOpenAIAccountScheduler(context.Background(), svc.prioritySchedulingRuntimeConfig().Enabled))
 }
 

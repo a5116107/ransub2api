@@ -27,6 +27,14 @@ func (r *priorityCompatSettings) Set(_ context.Context, _ string, value string) 
 	return nil
 }
 
+func (r *priorityCompatSettings) CompareAndSetPrioritySchedulingConfig(_ context.Context, previous *string, value string) (bool, error) {
+	if previous == nil || *previous != r.value {
+		return false, nil
+	}
+	r.value = value
+	return true, nil
+}
+
 func TestPrioritySavePreservesOrChangesSessionAffinity(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
