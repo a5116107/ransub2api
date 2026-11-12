@@ -5,11 +5,11 @@
 <!-- resume:start -->
 任务：D9将v2.21.0-ransub.1发布并同步本地/仓库/生产，保持自研。
 授权：本轮用户明确要求最新生产一致，允许合并/发布/上线；不CI。
-源码：integration/upstream-stable；d13cff56c；上游最新稳定b5990096a/v2.21.0已核。
+源码：integration/upstream-stable；合入远端README提交3b4d1a5c2；上游v2.21.0已核。
 验证：隔离406→428、四阶段加载/登录/配置/旧程序写入通过；工具WSL45/45。
 来源：backend/tmp/protocol-cache/upstream-v2.21.0-upgrade-rehearsal.json；首次失败证据保留。
-下一：生产数据隔离演练后合并/发布/排空升级，核验加载与真实用户流。
-尝试：60
+下一：定位恢复后旧版启动的字段变化；最终源码重建后再演练/发行/排空升级。
+尝试：61
 阻塞：源码已验；本轮候选/两pyc清理被策略拦截，删除0；历史拒删不重试。
 边界：升级前生产.2/410迁移；保留DB/Redis/回退，不改原调度开关。
 <!-- resume:end -->

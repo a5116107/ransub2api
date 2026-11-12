@@ -21,27 +21,6 @@
 
 </div>
 
-## 社区交流群
-
-欢迎正在部署、使用或维护 Sub2API 的朋友加入 QQ 群「中转技术交流」（群号 **1004036018**），交流部署实践、协议兼容、出口代理和功能改进。也欢迎参与问题复现、测试、文档补充和 Pull Request，一起维护这个独立分支。
-
-<table>
-<tr>
-<td align="center" width="50%">
-  <img src="assets/community/qq-relay-tech-group.png" alt="QQ 群：中转技术交流，群号 1004036018" width="71%" />
-  <br />
-  加入 QQ 群「中转技术交流」
-</td>
-<td align="center" width="50%">
-  <img src="assets/community/coffee-reward.png" alt="支付宝和微信赞赏码：如果帮到大家可以打赏咖啡" width="100%" />
-  <br />
-  如果帮到大家可以打赏咖啡！
-</td>
-</tr>
-</table>
-
-二维码长期有效。需要长期留档、报告问题或讨论具体改动时，请使用 [Issues](https://github.com/a5116107/ransub2api/issues)。
-
 ## 快速开始
 
 新人部署、官方版替换、Excel / BPS 配置和质量运维步骤，请阅读[新人入门文档](docs/新人入门.md)。
