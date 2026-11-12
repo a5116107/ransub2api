@@ -16,8 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Requires an explicitly supplied disposable PostgreSQL server. Each path gets
-// its own database; this must never point to an application database/server.
+// Requires a disposable PostgreSQL server: supplied by the integration harness,
+// or explicitly for standalone runs. Each path gets its own database; this must
+// never point to an application database/server.
 func TestAPIKeyConcurrencyUpgradePaths(t *testing.T) {
 	dsn := os.Getenv("SUB2API_UPGRADE_TEST_POSTGRES_URL")
 	if dsn == "" {

@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D6门票软换线子项本地闭环，父验收和外部等待保留。
+任务：D8双网关会话/真实槽位/共享Key及升级子验收闭环，父验收保留。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：d14700f基线；只改原调度分支/既有测试/统一文档。
-验证命令：5226三轮race及75335扩大race/四包vet/Linux/lint均退出0。
-验证结果：扩大668顶层/3225含子例，零失败/跳过；完整lint为0 issues。
-验证来源：backend/tmp/protocol-cache/scheduling-session-ticket-*。
-下一动作：收到D3非文本组合/供应商及缓存域证据后，继续对应验收。
-尝试：37
-阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
+源码：d36b540基线；四处repository测试/夹具，生产逻辑与迁移不变。
+验证命令：原71886三轮专项9/21、扩大186/626、四包vet/lint均退出0。
+验证结果：零失败/跳过，lint 0 issues；升级fresh/已部署PR均通过。
+验证来源：backend/tmp/protocol-cache/scheduling-affinity-nodes-*。
+下一动作：D2/D4/D5/D6补供应商证据，D3确认能力组合，D7/D8据此恢复。
+尝试：40
+阻塞：生产需管理员授权/窗口；本轮空TEMP及历史拒删资源由工作区拥有者手工处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -27,7 +27,7 @@
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置覆盖、倍率口径、共享Key缺口与最小补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、多出站/持久交接、三节点查询/冲突/恢复、视频永久身份/原节点结算、双预算/退款/竞争已验；精确动态售价、grant组/价格授权及336排空/跨库已验，完整lint零诊断；unknown待契约 |
+| D2 | in_progress | D2.1–D2.4、多出站/持久交接、三节点及视频身份/双预算/原节点结算/竞争、336排空/跨库已验；unknown待原请求关联契约 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -52,7 +52,7 @@
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；HTTP/TLS/区域/Astra及插件终检race349/842、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 原表单/API会话开关、旧客户端兼容、UI40及键盘/390px/503恢复已验；完整解释依赖其余策略契约 |
-| D8 | pending | admin/跨层SQL、WS绑定、重试截止及资金/竞争/回滚16项夹具、日志race20次通过；其余集成/升级/全局CLI待验收，不运行CI |
+| D8 | in_progress | 原admin/SQL、WS/资金/竞争/回滚已验；双网关/共享Key及升级race186/626、专项三轮9/21、四包vet/lint0；全局CLI/混版待依赖证据，不CI |
 | D9 | pending | 依赖前述验收及生产执行授权 |
 
 ## 工作区与验证约定
@@ -66,13 +66,14 @@
 
 ## 下一项工作
 
-D6门票保留子项已验；D2关联契约、D4模型/fast、D5/D6前缀/缓存域待证据，D3非文本验收组合待确认。原28项20 done，D2–D7进行中，D8–D9待验。
+本轮D8本地组合/升级子验收完成；D2关联查询、D3非文本组合、D4模型/fast、D5/D6前缀与缓存域待证据，D7/D8依此恢复。原28项20 done、7部分验收、D9待生产，不提前关闭父项。
 
 ## 外部等待与清理
 
 - D2 unknown由供应商/接入方补原请求关联查询契约；D4补完整模型/fast适用证据后恢复对应验收。D9由管理员提供生产执行授权与排空窗口。
 - D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
+- D5/D6由供应商/接入方补可信可复用前缀、候选缓存共享/存活证据；验证软迁移净收益后恢复D7/D8依赖验收。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
 - 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
-- TEMP拒删：chat-wire约69MiB、protocol-rate约700MiB及runtime-ttft、priority-route、http-admission、auth-binding、antigravity-semantic/empty；本轮session-affinity及其构建约8.12MiB。精确路径/原核查见DECISIONS，保留供拥有者手工处理，不重试、不计释放。
+- TEMP拒删：chat-wire约69MiB、protocol-rate约700MiB及runtime-ttft、priority-route、http-admission、auth-binding、antigravity-semantic/empty、session-affinity及构建约8.12MiB；本轮affinity-nodes空目录亦拒删。精确路径见DECISIONS，拥有者手工处理，不重试、不计释放。

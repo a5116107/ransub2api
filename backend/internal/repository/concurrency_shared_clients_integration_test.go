@@ -15,15 +15,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSharedAccountAndUserConcurrencyAcrossIndependentClients(t *testing.T) {
-	// Share keys, not connection pools. Both clients use the isolated Docker
+func sharedConcurrencyRedisClients(t *testing.T, count int) []*redis.Client {
+	t.Helper()
+	// Share keys, not connection pools. The clients use the isolated Docker
 	// Redis supplied by TestMain, never an application configuration or URL.
 	prefix := fmt.Sprintf("it:%s:%d:%d:", sanitizeRedisNamespace(t.Name()), time.Now().UnixNano(), atomic.AddUint64(&redisNamespaceSeq, 1))
-	var caches [2]service.ConcurrencyCache
-	var connectionIDs [2]int64
+	clients := make([]*redis.Client, count)
+	connectionIDs := make(map[int64]struct{}, count)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for i := range caches {
+	for i := range clients {
 		opts := *integrationRedis.Options()
 		opts.PoolSize = 1
 		opts.ContextTimeoutEnabled = true
@@ -32,10 +33,10 @@ func TestSharedAccountAndUserConcurrencyAcrossIndependentClients(t *testing.T) {
 		t.Cleanup(func() { require.NoError(t, client.Close()) })
 		id, err := client.ClientID(ctx).Result()
 		require.NoError(t, err)
-		connectionIDs[i] = id
-		caches[i] = NewConcurrencyCache(client, 15, 60)
+		require.NotContains(t, connectionIDs, id, "the contenders must use distinct Redis connections")
+		connectionIDs[id] = struct{}{}
+		clients[i] = client
 	}
-	require.NotEqual(t, connectionIDs[0], connectionIDs[1], "the contenders must use distinct Redis connections")
 	t.Cleanup(func() {
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
@@ -52,6 +53,15 @@ func TestSharedAccountAndUserConcurrencyAcrossIndependentClients(t *testing.T) {
 			}
 		}
 	})
+	return clients
+}
+
+func TestSharedAccountAndUserConcurrencyAcrossIndependentClients(t *testing.T) {
+	clients := sharedConcurrencyRedisClients(t, 2)
+	var caches [2]service.ConcurrencyCache
+	for i := range caches {
+		caches[i] = NewConcurrencyCache(clients[i], 15, 60)
+	}
 
 	for _, kind := range []string{"account", "user"} {
 		t.Run(kind, func(t *testing.T) {

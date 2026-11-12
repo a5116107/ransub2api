@@ -98,16 +98,22 @@ func runIntegrationTests(m *testing.M) int {
 		return 1
 	}
 	integrationPostgresDSN = dsn
-	// These fixtures own fresh schemas. Use the suite's isolated container when
-	// no source is supplied, in keyword form for search_path.
+	// These fixtures own fresh schemas or databases. Use the suite's isolated
+	// container when no source is supplied: keyword form for search_path, URL
+	// form for the upgrade fixture that creates separate databases.
 	fixtureDSN, err := pq.ParseURL(dsn)
 	if err != nil {
 		log.Printf("failed to normalize isolated PostgreSQL fixture")
 		return 1
 	}
-	for _, key := range []string{"SUB2API_REGIONAL_TEST_DSN", "SUB2API_QUALITY_TEST_DSN", "SUB2API_GEMINI_CACHE_TEST_DSN"} {
+	for key, source := range map[string]string{
+		"SUB2API_REGIONAL_TEST_DSN":         fixtureDSN,
+		"SUB2API_QUALITY_TEST_DSN":          fixtureDSN,
+		"SUB2API_GEMINI_CACHE_TEST_DSN":     fixtureDSN,
+		"SUB2API_UPGRADE_TEST_POSTGRES_URL": dsn,
+	} {
 		if os.Getenv(key) == "" {
-			if err := os.Setenv(key, fixtureDSN); err != nil {
+			if err := os.Setenv(key, source); err != nil {
 				log.Printf("failed to select isolated SQL fixture %s: %v", key, err)
 				return 1
 			}
@@ -288,6 +294,30 @@ func testRedis(t *testing.T) *redisclient.Client {
 	return rdb
 }
 
+func TestRedisNamespaceMultiKeyExists(t *testing.T) {
+	for _, pipeline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pipeline_%t", pipeline), func(t *testing.T) {
+			rdb := testRedis(t)
+			ctx := t.Context()
+			require.NoError(t, rdb.Set(ctx, "first", "one", time.Minute).Err())
+			require.NoError(t, rdb.Set(ctx, "second", "two", time.Minute).Err())
+			var count *redisclient.IntCmd
+			if pipeline {
+				_, err := rdb.Pipelined(ctx, func(pipe redisclient.Pipeliner) error {
+					count = pipe.Exists(ctx, "first", "second", "missing")
+					return nil
+				})
+				require.NoError(t, err)
+			} else {
+				count = rdb.Exists(ctx, "first", "second", "missing")
+			}
+			value, err := count.Result()
+			require.NoError(t, err)
+			require.EqualValues(t, 2, value, "all EXISTS keys must share the test namespace")
+		})
+	}
+}
+
 func assertTTLWithin(t *testing.T, ttl time.Duration, min, max time.Duration) {
 	t.Helper()
 	require.GreaterOrEqual(t, ttl, min, "ttl should be >= min")
@@ -348,14 +378,10 @@ func (h prefixHook) prefixCmd(cmd redisclient.Cmder) {
 
 	switch strings.ToLower(cmd.Name()) {
 	case "get", "getset", "set", "setnx", "setex", "psetex", "incr", "decr", "incrby", "expire", "pexpire", "ttl", "pttl",
-		"hgetall", "hget", "hset", "hdel", "hincrbyfloat", "exists",
+		"hgetall", "hget", "hset", "hdel", "hincrbyfloat",
 		"zadd", "zcard", "zrange", "zrangebyscore", "zrem", "zremrangebyscore", "zrevrange", "zrevrangebyscore", "zscore":
 		prefixOne(1)
-	case "mget":
-		for i := 1; i < len(args); i++ {
-			prefixOne(i)
-		}
-	case "del", "unlink":
+	case "mget", "exists", "del", "unlink":
 		for i := 1; i < len(args); i++ {
 			prefixOne(i)
 		}
