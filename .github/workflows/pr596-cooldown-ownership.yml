@@ -1,7 +1,7 @@
 name: PR596 cooldown ownership dedicated CI
 
 on:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

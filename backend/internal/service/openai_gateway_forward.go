@@ -139,6 +139,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, markOpenAIInitialAdmissionError(admissionErr)
 	}
 	account = latest
+	if err := s.checkOpenAIAgentRecoveryDispatch(ctx, c, account, body); err != nil {
+		return nil, err
+	}
 	ctx = withOpenAITransportRoute(ctx, "http", "native", "", "")
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
@@ -279,15 +282,24 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	// HTTP SSE may opt into the native WS pool on ordinary OAuth accounts.
 	wsDecision = s.resolveOpenAIHTTPWSSSEDecision(c, account, body, wsDecision)
-	accelerateHTTPSSE := wsDecision.Reason == openAIOAuthWSSSEAccelerationReason
-	anchorCtx, anchorFinish, anchorErr := s.prepareCodexWSAnchor(ctx, c, account, body)
-	if anchorErr != nil {
-		return nil, anchorErr
+	if openAIAgentRecoveryBound(ctx) {
+		// The observation was made at an actual HTTP send. Preserve that wire
+		// instead of letting a later WS preference change its continuation.
+		wsDecision = openAIWSHTTPDecision("encrypted_agent_continuation")
 	}
-	if anchorFinish != nil {
-		ctx = anchorCtx
-		defer func() { anchorFinish(result, resultErr) }()
-		wsDecision = OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2, Reason: "private_astra_ws_anchor"}
+	accelerateHTTPSSE := wsDecision.Reason == openAIOAuthWSSSEAccelerationReason
+	var anchorFinish func(*OpenAIForwardResult, error)
+	if !openAIAgentRecoveryBound(ctx) {
+		anchorCtx, finish, anchorErr := s.prepareCodexWSAnchor(ctx, c, account, body)
+		if anchorErr != nil {
+			return nil, anchorErr
+		}
+		anchorFinish = finish
+		if anchorFinish != nil {
+			ctx = anchorCtx
+			defer func() { anchorFinish(result, resultErr) }()
+			wsDecision = OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2, Reason: "private_astra_ws_anchor"}
+		}
 	}
 	if mode := controlledMode(ctx); mode != nil {
 		switch mode.channel {
@@ -773,7 +785,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		maxOutputTokens := gjson.GetBytes(body, "max_output_tokens")
 		if maxOutputTokens.Exists() {
 			switch account.Platform {
-			case PlatformOpenAI, PlatformDeepseek:
+			case PlatformOpenAI, PlatformDeepseek, PlatformQwen:
 				// Preserve Responses-native output limits unless the selected upstream
 				// explicitly rejects the field in the bounded HTTP retry loop below.
 			case PlatformAnthropic:
@@ -822,7 +834,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		markPatchSet("max_output_tokens", clampedCap)
 	}
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 &&
-		!account.IsOpenAIApiKey() && gjson.GetBytes(body, "previous_response_id").Exists() {
+		!account.IsOpenAIApiKey() && !account.QwenSessionCacheEnabled() && gjson.GetBytes(body, "previous_response_id").Exists() {
 		markPatchDelete("previous_response_id")
 	}
 	if openAIRequestBodyMayContainEmptyBase64InputImage(body) {
@@ -1254,6 +1266,20 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		if fallbackReason == "" {
 			s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
+			if accelerateHTTPSSE && wsResult != nil {
+				wsResult.UpstreamModel = upstreamModel
+				if wsResult.BillingModel == "" {
+					wsResult.BillingModel = billingModel
+				}
+				if wsResult.ImageCount > 0 {
+					wsResult.ImageSize = imageSizeTier
+					wsResult.ImageInputSize = imageInputSize
+					wsResult.BillingModel = imageBillingModel
+				}
+			}
+			if accelerateHTTPSSE {
+				return wsResult, wsErr
+			}
 			return nil, wsErr
 		}
 		// Discard the unused WS handshake header before HTTP commits its own.
@@ -1331,7 +1357,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return true, nil
 	}
 	for {
-		latest, admissionErr := s.admitOpenAITurn(ctx, c, account, extractOpenAICodexTicketModel(body))
+		latest, admissionErr := s.admitOpenAITurn(ctx, c, account, extractOpenAICodexTicketModel(body), body)
 		if admissionErr != nil {
 			return nil, admissionErr
 		}
@@ -1373,6 +1399,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			return nil, err
 		}
+		completeAgentRecovery, recoveryErr := s.prepareOpenAIAgentRecoveryAttempt(ctx, account, upstreamReq)
+		if recoveryErr != nil {
+			if headerGuard != nil {
+				headerGuard.close()
+			}
+			return nil, recoveryErr
+		}
+		defer completeAgentRecovery(false) // revoke pending exposure on every early return
 		upstreamStart := time.Now()
 		resp, err := func() (*http.Response, error) {
 			stop := s.startOpenAIHeaderWaitKeepalive(c, reqStream)
@@ -1531,6 +1565,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		var usage *OpenAIUsage
 		var firstTokenMs *int
 		var clientDisconnected bool
+		var downstreamDeliveryErr error
+		agentCompleted := false
 		responseID := ""
 		imageCount := 0
 		searchCount := 0
@@ -1547,6 +1583,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, handleOpenAIHTTPPhaseError(c, account, phaseErr)
 			}
 
+			var agentRecoveryErr *OpenAIAgentRecoveryError
+			if streamResult != nil && errors.As(err, &agentRecoveryErr) {
+				downstreamDeliveryErr = err
+				streamResult.agentCompleted = false
+				err = nil
+			}
 			if err != nil {
 				var encryptedSignal *openAIEncryptedContentRecoverySignal
 				if errors.As(err, &encryptedSignal) {
@@ -1613,6 +1655,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, err
 			}
 			clientDisconnected = streamResult.clientDisconnect
+			agentCompleted = streamResult.agentCompleted
 			usage = streamResult.usage
 			firstTokenMs = streamResult.firstTokenMs
 			responseID = strings.TrimSpace(streamResult.responseID)
@@ -1624,7 +1667,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if phaseErr := openAIHTTPPhaseError(resp); phaseErr != nil {
 				return nil, handleOpenAIHTTPPhaseError(c, account, phaseErr)
 			}
-			if err != nil {
+			var deliveryErr *openAINonStreamingDeliveryError
+			if nonStreamResult != nil && errors.As(err, &deliveryErr) {
+				downstreamDeliveryErr = err
+				var recoveryErr *OpenAIAgentRecoveryError
+				clientDisconnected = !errors.As(err, &recoveryErr)
+			} else if err != nil {
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
 						c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, compactModelFallbackRetried,
@@ -1641,12 +1689,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, err
 			}
 			usage = nonStreamResult.usage
+			agentCompleted = nonStreamResult.agentCompleted
 			responseID = strings.TrimSpace(nonStreamResult.responseID)
 			imageCount = nonStreamResult.imageCount
 			imageOutputSizes = nonStreamResult.imageOutputSizes
 			searchCount = nonStreamResult.searchCount
 		}
 		s.bindResponseAccount(ctx, c, account, responseID, openAIResponseCreationScope(c))
+		completeAgentRecovery(agentCompleted && !clientDisconnected && c.Request.Context().Err() == nil && !OpenAIHeaderWaitDisconnected(c))
 
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts).
 		// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
@@ -1695,7 +1745,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			forwardResult.SearchCount = searchCount
 		}
 		stampOpenAIResponsesUpstreamEndpoint(c, forwardResult)
-		return forwardResult, nil
+		return forwardResult, downstreamDeliveryErr
 	}
 }
 
@@ -2064,6 +2114,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	if account.QwenSessionCacheEnabled() {
+		req.Header.Set("x-dashscope-session-cache", "enable")
+	}
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, body, openCodeSessionHintBody(promptCacheKey))
 	// x-codex-beta-features：按真实 Codex 的会话级行为补注（在账号级覆写之后，
 	// 保证不被覆盖丢失）。

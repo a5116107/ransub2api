@@ -136,7 +136,7 @@ func TestWSResponseOwnerNativeIngress(t *testing.T) {
 					c, _ := gin.CreateTestContext(httptest.NewRecorder())
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 					group := int64(17)
-					c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &group})
+					c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &group, AllowLongContext: true})
 					SetOpenAIResponseOwner(c, 101, 201, previous)
 					result, err := svc.Forward(ctx, c, account, []byte(fmt.Sprintf(`{"model":"gpt-5.1","previous_response_id":%q,"input":"http continuation","stream":false}`, previous)))
 					require.NoError(t, err)

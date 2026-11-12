@@ -18,14 +18,14 @@ func priorityDiffRowsByAccount(rows []PrioritySchedulingDiffRow) map[int64]Prior
 
 func TestDiffPrioritySnapshots(t *testing.T) {
 	before := &PrioritySchedulingSnapshot{Candidates: []PrioritySchedulingScore{
-		{AccountID: 1, AccountName: "A", Score: 80, SelectionWeight: 1.5, Tier: "eligible", PrioritySchedulingSignal: PrioritySchedulingSignal{P90TTFTMs: 1000, Samples: 10, ErrorSamples: 1}},
-		{AccountID: 2, AccountName: "B", Score: 70, SelectionWeight: 1.0, Tier: "insufficient", PrioritySchedulingSignal: PrioritySchedulingSignal{P90TTFTMs: 5000, Samples: 5}},
-		{AccountID: 4, AccountName: "D", Score: 50, SelectionWeight: 0.5, Tier: "degraded", PrioritySchedulingSignal: PrioritySchedulingSignal{P90TTFTMs: 9000, Samples: 2}},
+		{AccountID: 1, AccountName: "A", Score: 80, SelectionWeight: 1.5, Tier: "eligible", PrioritySchedulingSignal: withAccountPerformanceFixture(PrioritySchedulingSignal{P90TTFTMs: 1000, Samples: 10, ErrorSamples: 1})},
+		{AccountID: 2, AccountName: "B", Score: 70, SelectionWeight: 1.0, Tier: "insufficient", PrioritySchedulingSignal: withAccountPerformanceFixture(PrioritySchedulingSignal{P90TTFTMs: 5000, Samples: 5})},
+		{AccountID: 4, AccountName: "D", Score: 50, SelectionWeight: 0.5, Tier: "degraded", PrioritySchedulingSignal: withAccountPerformanceFixture(PrioritySchedulingSignal{P90TTFTMs: 9000, Samples: 2})},
 	}}
 	after := &PrioritySchedulingSnapshot{Candidates: []PrioritySchedulingScore{
-		{AccountID: 2, AccountName: "B", Score: 90, SelectionWeight: 2.0, Tier: "eligible", PrioritySchedulingSignal: PrioritySchedulingSignal{P90TTFTMs: 2000, Samples: 8}},
-		{AccountID: 1, AccountName: "A", Score: 60, SelectionWeight: 0.8, Tier: "degraded", PrioritySchedulingSignal: PrioritySchedulingSignal{P90TTFTMs: 8000, Samples: 12, ErrorSamples: 3}},
-		{AccountID: 3, AccountName: "C", Score: 85, SelectionWeight: 1.7, Tier: "eligible", PrioritySchedulingSignal: PrioritySchedulingSignal{P90TTFTMs: 1500, Samples: 6}},
+		{AccountID: 2, AccountName: "B", Score: 90, SelectionWeight: 2.0, Tier: "eligible", PrioritySchedulingSignal: withAccountPerformanceFixture(PrioritySchedulingSignal{P90TTFTMs: 2000, Samples: 8})},
+		{AccountID: 1, AccountName: "A", Score: 60, SelectionWeight: 0.8, Tier: "degraded", PrioritySchedulingSignal: withAccountPerformanceFixture(PrioritySchedulingSignal{P90TTFTMs: 8000, Samples: 12, ErrorSamples: 3})},
+		{AccountID: 3, AccountName: "C", Score: 85, SelectionWeight: 1.7, Tier: "eligible", PrioritySchedulingSignal: withAccountPerformanceFixture(PrioritySchedulingSignal{P90TTFTMs: 1500, Samples: 6})},
 	}}
 	rows := priorityDiffRowsByAccount(diffPrioritySnapshots(before, after))
 	require.Len(t, rows, 4)
@@ -50,7 +50,7 @@ func TestDiffPrioritySnapshots(t *testing.T) {
 
 func TestDiffPrioritySnapshotsUnchangedAndNil(t *testing.T) {
 	snapshot := &PrioritySchedulingSnapshot{Candidates: []PrioritySchedulingScore{
-		{AccountID: 1, AccountName: "A", Score: 80, SelectionWeight: 1.5, Tier: "eligible", PrioritySchedulingSignal: PrioritySchedulingSignal{P90TTFTMs: 1000, Samples: 10}},
+		{AccountID: 1, AccountName: "A", Score: 80, SelectionWeight: 1.5, Tier: "eligible", PrioritySchedulingSignal: withAccountPerformanceFixture(PrioritySchedulingSignal{P90TTFTMs: 1000, Samples: 10})},
 	}}
 	for _, row := range diffPrioritySnapshots(snapshot, snapshot) {
 		require.False(t, row.Changed)
@@ -62,7 +62,7 @@ func TestDiffPrioritySnapshotsUnchangedAndNil(t *testing.T) {
 	}
 }
 
-func TestDiffPrioritySnapshotsSelectedLatency(t *testing.T) {
+func TestDiffPrioritySnapshotsMeanLatency(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		old, fresh     *float64
@@ -90,13 +90,13 @@ func TestDiffPrioritySnapshotsSelectedLatency(t *testing.T) {
 			}}
 			rows := diffPrioritySnapshots(before, after)
 			require.Len(t, rows, 1)
-			require.Equal(t, tc.changed, rows[0].Changed, "the selected measurement, not an unrelated P90, must drive the diff")
+			require.Equal(t, tc.changed, rows[0].Changed, "the shared mean, not an unrelated P90, must drive the diff")
 			raw, err := json.Marshal(rows[0])
 			require.NoError(t, err)
 			var body map[string]any
 			require.NoError(t, json.Unmarshal(raw, &body))
-			for field, value := range map[string]*float64{"old_selected_ttft_ms": tc.old, "new_selected_ttft_ms": tc.fresh} {
-				require.Contains(t, body, field, "unknown selected latency must be explicitly null")
+			for field, value := range map[string]*float64{"old_avg_ttft_ms": tc.old, "new_avg_ttft_ms": tc.fresh} {
+				require.Contains(t, body, field, "unknown mean latency must be explicitly null")
 				if value == nil || *value <= 0 || math.IsNaN(*value) || math.IsInf(*value, 0) {
 					require.Nil(t, body[field])
 				} else {
@@ -118,7 +118,7 @@ func TestDiffPrioritySnapshotsSelectedLatency(t *testing.T) {
 	}
 }
 
-func TestDiffPrioritySnapshotsSelectedScopeAndMembership(t *testing.T) {
+func TestDiffPrioritySnapshotsMeanDiagnosticsAndMembership(t *testing.T) {
 	before := &PrioritySchedulingSnapshot{LatencyPercentile: 95, LatencyMeasurement: "attributed_v1", Candidates: []PrioritySchedulingScore{
 		{AccountID: 1, PrioritySchedulingSignal: PrioritySchedulingSignal{SelectedTTFTMs: new(900.0)}},
 	}}
@@ -132,7 +132,7 @@ func TestDiffPrioritySnapshotsSelectedScopeAndMembership(t *testing.T) {
 			}
 			rows := diffPrioritySnapshots(before, &after)
 			require.Len(t, rows, 1)
-			require.True(t, rows[0].Changed, "an identical number does not make different measurements comparable")
+			require.False(t, rows[0].Changed, "diagnostic percentile settings do not change shared mean scoring")
 		})
 	}
 	after := &PrioritySchedulingSnapshot{LatencyPercentile: 95, LatencyMeasurement: "attributed_v1", Candidates: []PrioritySchedulingScore{
@@ -140,18 +140,18 @@ func TestDiffPrioritySnapshotsSelectedScopeAndMembership(t *testing.T) {
 	}}
 	rows := priorityDiffRowsByAccount(diffPrioritySnapshots(before, after))
 	require.Len(t, rows, 2)
-	require.Equal(t, float64(900), *rows[1].OldSelectedTTFTMs)
-	require.Nil(t, rows[1].NewSelectedTTFTMs)
-	require.Nil(t, rows[2].OldSelectedTTFTMs)
-	require.Equal(t, float64(1500), *rows[2].NewSelectedTTFTMs)
+	require.Equal(t, float64(900), *rows[1].OldAvgTTFTMs)
+	require.Nil(t, rows[1].NewAvgTTFTMs)
+	require.Nil(t, rows[2].OldAvgTTFTMs)
+	require.Equal(t, float64(1500), *rows[2].NewAvgTTFTMs)
 	require.True(t, rows[1].Changed)
 	require.True(t, rows[2].Changed)
 	first := diffPrioritySnapshots(nil, after)
 	require.Len(t, first, 1)
-	require.Nil(t, first[0].OldSelectedTTFTMs)
-	require.Equal(t, float64(1500), *first[0].NewSelectedTTFTMs)
+	require.Nil(t, first[0].OldAvgTTFTMs)
+	require.Equal(t, float64(1500), *first[0].NewAvgTTFTMs)
 
 	// The removal path owns the old value just as the ordinary row path does.
 	*before.Candidates[0].SelectedTTFTMs = 42
-	require.Equal(t, float64(900), *rows[1].OldSelectedTTFTMs)
+	require.Equal(t, float64(900), *rows[1].OldAvgTTFTMs)
 }

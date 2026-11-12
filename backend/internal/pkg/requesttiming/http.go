@@ -16,8 +16,9 @@ import (
 
 type attemptKey struct{}
 type Trace struct {
-	c     *Collector
-	index int
+	c               *Collector
+	index           int
+	logicalResponse bool
 }
 
 // Number identifies this attempt within its request-local snapshot.
@@ -29,7 +30,17 @@ func (t *Trace) Number() int {
 }
 
 func StartAttempt(req *http.Request, accountID, proxyID int64) (*http.Request, *Trace) {
-	return startAttempt(req, accountID, proxyID, "egress", 0)
+	// A handshake may make an HTTP request inside a native WS response. Keep
+	// that diagnostic child from replacing the logical response's ownership.
+	parent := 0
+	if tr, ok := req.Context().Value(attemptKey{}).(*Trace); ok && tr != nil && tr.c == From(req.Context()) {
+		tr.update(func(a *Attempt) {
+			if a.Route.Upstream == "websocket" && a.EndMS == nil {
+				parent = a.Number
+			}
+		})
+	}
+	return startAttempt(req, accountID, proxyID, "egress", parent)
 }
 
 // StartTransport separates physical Client.Do calls, including the safe TLS
@@ -61,6 +72,9 @@ func startAttempt(req *http.Request, accountID, proxyID int64, kind string, pare
 	}
 	idx := len(c.data.Attempts)
 	c.data.Attempts = append(c.data.Attempts, Attempt{Route: transportdiag.HTTPRoute(req), Kind: kind, Parent: parent, Number: idx + 1, AccountID: accountID, ProxyID: proxyID, StartMS: c.offset(c.now()), RequestBytes: req.ContentLength, Events: map[string]float64{}})
+	if kind == "egress" && parent == 0 {
+		c.data.FinalResponseAttempt = idx + 1
+	}
 	c.mu.Unlock()
 	t := &Trace{c: c, index: idx}
 	ctx := context.WithValue(req.Context(), attemptKey{}, t)
@@ -72,7 +86,7 @@ func (t *Trace) update(fn func(*Attempt)) {
 	}
 	t.c.mu.Lock()
 	defer t.c.mu.Unlock()
-	if !t.c.finished {
+	if !t.c.finished && (!t.logicalResponse || t.c.data.Attempts[t.index].EndMS == nil) {
 		fn(&t.c.data.Attempts[t.index])
 	}
 }
@@ -214,6 +228,9 @@ func Stage(ctx context.Context, name string) {
 	t.c.mu.Lock()
 	defer t.c.mu.Unlock()
 	if t.c.finished {
+		return
+	}
+	if t.logicalResponse && t.c.data.Attempts[t.index].EndMS != nil {
 		return
 	}
 	now := t.c.offset(t.c.now())

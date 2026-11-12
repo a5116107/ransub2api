@@ -131,7 +131,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 	// 2. Model mapping
 	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	if err := validateGPT61SolCompatRequest(body, upstreamModel); err != nil {
+	if err := validateGPT61RawEffort(body, upstreamModel); err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
@@ -207,7 +207,10 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 
 	// 3. Convert Anthropic → Responses after compatibility-only replay guard.
 	anthropicReq.Model = upstreamModel
-	responsesReq, err := anthropicToResponses(s.cfg, &anthropicReq)
+	responsesReq, err := apicompat.AnthropicToResponsesWithOptions(&anthropicReq, apicompat.AnthropicToResponsesOptions{
+		MinOutputTokens:                configuredMinOutputTokens(s.cfg),
+		DeferReasoningEffortValidation: true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
 	}
@@ -368,6 +371,10 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 	if openAICompatCacheScopeFromBody(responsesBody) != compatCacheScope {
 		return nil, fmt.Errorf("compat continuation scope changed during request construction")
 	}
+	if err := validateGPT61CompatRequest(responsesBody, upstreamModel); err != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
 		grokIntentBody := responsesBody
@@ -384,6 +391,10 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		if patchErr != nil {
 			return nil, fmt.Errorf("apply grok Free function-tool cache route: %w", patchErr)
 		}
+	}
+
+	if err := s.checkAPIKeyLongContextBeforeSend(ctx, c, responsesBody, upstreamModel); err != nil {
+		return nil, err
 	}
 
 	// 5. Get access token
@@ -965,13 +976,13 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 						recordPrior(&event)
 						if response := openAICompatTerminalResponse(&event, []byte(payload)); isOpenAICompatResponsesTerminalEvent(event.Type) && response != nil {
 							if event.Usage != nil {
-								usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
+								usage = copyOpenAIUsageFromResponsesUsage(event.Usage, usage)
 								if response.Usage == nil {
 									response.Usage = event.Usage
 								}
 							}
 							if response.Usage != nil {
-								usage = copyOpenAIUsageFromResponsesUsage(response.Usage)
+								usage = copyOpenAIUsageFromResponsesUsage(response.Usage, usage)
 							}
 							return response, usage, acc, prior, nil
 						}
@@ -1017,13 +1028,13 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 
 			if response := openAICompatTerminalResponse(&event, []byte(payload)); isOpenAICompatResponsesTerminalEvent(event.Type) && response != nil {
 				if event.Usage != nil {
-					usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
+					usage = copyOpenAIUsageFromResponsesUsage(event.Usage, usage)
 					if response.Usage == nil {
 						response.Usage = event.Usage
 					}
 				}
 				if response.Usage != nil {
-					usage = copyOpenAIUsageFromResponsesUsage(response.Usage)
+					usage = copyOpenAIUsageFromResponsesUsage(response.Usage, usage)
 				}
 				return response, usage, acc, prior, nil
 			}
@@ -1149,11 +1160,11 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 					responseID = id
 				}
 				if event.Response.Usage != nil {
-					usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
+					usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage, usage)
 				}
 			}
 			if event.Usage != nil {
-				usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
+				usage = copyOpenAIUsageFromResponsesUsage(event.Usage, usage)
 			}
 			// cyber_policy 致命不可重试：标记供 handler 事后记录；以 Anthropic SSE error 事件
 			// 回写让客户端感知并停止重试（F4），丢弃后续转换输出。
@@ -1489,7 +1500,7 @@ func buildAnthropicStreamErrorSSE(errType, message string) string {
 	return "event: error\ndata: " + string(payload) + "\n\n"
 }
 
-func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUsage {
+func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage, observed ...OpenAIUsage) OpenAIUsage {
 	if usage == nil {
 		return OpenAIUsage{}
 	}
@@ -1498,8 +1509,16 @@ func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUs
 		OutputTokens:             usage.OutputTokens,
 		CacheCreationInputTokens: usage.CacheCreationInputTokens,
 	}
+	if len(observed) > 0 {
+		result.cacheReadMediaObserved = observed[0].cacheReadMediaObserved
+	}
 	if usage.InputTokensDetails != nil {
 		result.CacheReadInputTokens = usage.InputTokensDetails.CachedTokens
+		// Typed compatibility usage does not retain the image breakdown. Keep
+		// those requests outside text protection even after that conversion.
+		result.CacheReadKnown = len(observed) > 0 && !result.cacheReadMediaObserved && observed[0].CacheReadKnown &&
+			observed[0].CacheReadInputTokens == result.CacheReadInputTokens &&
+			observed[0].ImageInputTokens == 0 && observed[0].ImageOutputTokens == 0 && observed[0].ImageCacheReadTokens == 0
 	}
 	return result
 }

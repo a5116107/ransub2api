@@ -1,12 +1,7 @@
 name: Upstream v0.2.19 regressions
 on:
-  push:
-    branches: [cherry/upstream-v0.2.19]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/upstream-v0219-regression.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

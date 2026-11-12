@@ -155,6 +155,15 @@ func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) erro
 	} else if err != nil {
 		return err
 	}
+	if err := deleteScheduledTestPlanTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// The caller holds the plan lock. Manual and automated deletion share exactly
+// the same ownership checks and never restore or modify the account.
+func deleteScheduledTestPlanTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	state, err := readQualityState(ctx, tx, id)
 	if err != nil {
 		return err
@@ -191,7 +200,7 @@ func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) erro
 	if _, err = tx.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time) error {
@@ -212,7 +221,11 @@ func NewScheduledTestResultRepository(db *sql.DB) service.ScheduledTestResultRep
 }
 
 func (r *scheduledTestResultRepository) Create(ctx context.Context, result *service.ScheduledTestResult) (*service.ScheduledTestResult, error) {
-	row := r.db.QueryRowContext(ctx, `
+	return insertScheduledTestResult(ctx, r.db, result)
+}
+
+func insertScheduledTestResult(ctx context.Context, q planRowQuerier, result *service.ScheduledTestResult) (*service.ScheduledTestResult, error) {
+	row := q.QueryRowContext(ctx, `
 		INSERT INTO scheduled_test_results (plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)
 		RETURNING id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id
@@ -364,6 +377,9 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
    AND ($8::timestamptz IS NULL OR last_run_at IS NULL OR last_run_at < $8 OR pelican_config->'quality'->>'action'='remove_models' OR jsonb_typeof(pelican_config->'availability')='object')))
  AND (NOT $9 OR (jsonb_typeof(pelican_config->'availability')='object' AND next_run_at > clock_timestamp()))
  AND (running_until IS NULL OR running_until < $2) AND updated_at = $5 AND next_run_at = $6
+ AND NOT EXISTS (SELECT 1 FROM account_quality_states rest WHERE rest.plan_id=scheduled_test_plans.id
+ AND COALESCE((pelican_config->'quality'->>'retest_rest_minutes')::int,0)>0
+ AND (rest.state->>'retest_after')::timestamptz>$2)
  AND EXISTS (SELECT 1 FROM accounts WHERE accounts.id = account_id AND deleted_at IS NULL)
  AND NOT EXISTS (SELECT 1 FROM scheduled_test_plans other WHERE other.account_id = scheduled_test_plans.account_id
  AND other.id <> scheduled_test_plans.id AND other.pelican_config IS NOT NULL AND other.running_until > $2)`, plan.ID, now, until, next, plan.UpdatedAt, plan.NextRunAt, plan.TriggerSource == "upstream_5xx", plan.TriggerObservedAt, plan.TriggerSource == service.AvailabilityCoverageSource)
@@ -413,6 +429,11 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		}
 		if plan.TriggerSource == service.AvailabilityCoverageSource && plan.AvailabilityFaultVersion != plan.AvailabilityExpectedFault {
 			return false, nil // A newer business fault owns the next probe.
+		}
+	}
+	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.OAuth401MaxRounds > 0 {
+		if err := claimQualityOAuth401Tx(ctx, tx, plan, until); err != nil {
+			return false, err
 		}
 	}
 	if err := tx.Commit(); err != nil {

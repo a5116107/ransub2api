@@ -347,6 +347,8 @@ type SocketEvidence struct {
 	Scope           string   `json:"scope"`
 }
 type ContentObservation struct {
+	SSEEventFirstMS              *float64              `json:"sse_event_first_ms"`
+	SemanticFirstMS              *float64              `json:"semantic_first_ms"`
 	OutputRate                   OutputRateObservation `json:"output_rate"`
 	Cache                        CacheObservation      `json:"cache"`
 	TextStream                   TextStreamObservation `json:"text_stream"`
@@ -375,9 +377,14 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 	if s.Truncated || len(s.Attempts) == 0 {
 		return out
 	}
-	a := s.Attempts[len(s.Attempts)-1]
+	a, ok := finalContentAttempt(s)
+	if !ok {
+		return out
+	}
 	wsTurn := a.Kind == "ws_turn" && s.TTFTMode == "ws_turn"
-	if a.Kind != "http" && !wsTurn {
+	plugin := a.Kind == "egress" && a.Route.Mode == "plugin" && a.Route.Upstream == "plugin"
+	websocket := a.Kind == "egress" && a.Route.Upstream == "websocket"
+	if a.Kind != "http" && !plugin && !websocket && !wsTurn {
 		return out
 	}
 	out.Status = "partial"
@@ -389,7 +396,15 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 		out.TextStream.Scope = "physical_websocket_turn_text_deltas_at_parser"
 	}
 	out.Cache = deriveCacheObservation(s, a)
-	if a.ProxyID > 0 {
+	if plugin {
+		out.Source = "host_plugin_body_parser"
+		out.Scope = "final_plugin_egress_attempt_offsets_from_application_entry"
+		out.UpstreamSocket.Status = "plugin_transport_not_observed"
+	} else if websocket {
+		out.Source = "native_websocket_events"
+		out.Scope = "final_websocket_egress_attempt_offsets_from_application_entry"
+		out.UpstreamSocket.Status = "websocket_transport_not_observed"
+	} else if a.ProxyID > 0 {
 		out.UpstreamSocket.Status = "proxy_obscured"
 		out.UpstreamSocket.Scope = "server_to_configured_proxy; upstream_origin_socket_not_observed"
 	}
@@ -428,7 +443,7 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 			return nil
 		}
 		upper := *a.EndMS
-		if key != "first_byte" && finite(s.TotalMS) && s.TotalMS > upper {
+		if !websocket && key != "first_byte" && finite(s.TotalMS) && s.TotalMS > upper {
 			upper = s.TotalMS
 		}
 		if !ok || !finite(v) || !finite(a.StartMS) || a.StartMS < 0 || v < a.StartMS || v > upper {
@@ -438,7 +453,11 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 	}
 	out.ReasoningFirstMS = read("first_reasoning")
 	out.VisibleTextFirstMS = read("first_visible_text")
-	out.ResponseByteFirstMS = read("first_byte")
+	out.SSEEventFirstMS = read("first_sse_event_flush")
+	out.SemanticFirstMS = read("first_semantic")
+	if !plugin && !websocket {
+		out.ResponseByteFirstMS = read("first_byte")
+	}
 	if stream := a.TextStream; !incompleteCapture && stream != nil && stream.Chunks > 0 {
 		if out.TextStream.Source == "none" {
 			out.TextStream.Source = "typed_responses_sse"
@@ -475,11 +494,46 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 			}
 		}
 	}
-	if out.ReasoningFirstMS != nil || out.VisibleTextFirstMS != nil || out.ResponseByteFirstMS != nil {
+	if out.ReasoningFirstMS != nil || out.VisibleTextFirstMS != nil || out.ResponseByteFirstMS != nil || out.SSEEventFirstMS != nil || out.SemanticFirstMS != nil {
 		out.Status = "observed"
 	}
 	out.OutputRate = deriveOutputRate(s, a, out.TextStream)
 	return out
+}
+
+// New snapshots identify the logical response owner explicitly. Physical HTTP
+// retries are children of that owner; a native WS handshake is not the response.
+// Historical snapshots keep their original last-attempt projection.
+func finalContentAttempt(s Snapshot) (Attempt, bool) {
+	if s.FinalResponseAttempt == 0 {
+		return s.Attempts[len(s.Attempts)-1], true
+	}
+	root := s.FinalResponseAttempt - 1
+	if root < 0 || root >= len(s.Attempts) || s.Attempts[root].Number != s.FinalResponseAttempt || s.Attempts[root].Parent != 0 {
+		return Attempt{}, false
+	}
+	a := s.Attempts[root]
+	if a.Route.Upstream == "websocket" || (a.Route.Upstream == "plugin" && a.Route.Mode == "plugin") {
+		return a, true
+	}
+	for i := len(s.Attempts) - 1; i > root; i-- {
+		if s.Attempts[i].Kind != "http" {
+			continue
+		}
+		for parent := s.Attempts[i].Parent; parent > 0; {
+			if parent == s.FinalResponseAttempt {
+				return s.Attempts[i], true
+			}
+			index := parent - 1
+			// Parents must precede children. Malformed historical JSON cannot
+			// create a cycle or borrow a different attempt's content evidence.
+			if index < 0 || index >= i || index >= len(s.Attempts) || s.Attempts[index].Parent >= parent {
+				break
+			}
+			parent = s.Attempts[index].Parent
+		}
+	}
+	return a, true
 }
 
 func NormalizeObservationEffort(value string) string {

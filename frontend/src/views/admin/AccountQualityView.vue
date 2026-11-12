@@ -199,6 +199,11 @@
           <label v-if="form.pelican_config.quality.action === 'remove_models'" class="block space-y-1 pl-6"><span>{{ t('qualityOps.removeModelsInput') }}</span><input :value="removeModelsInput" class="input" data-testid="quality-remove-models-input" placeholder="gpt-6-astra, gpt-5.6-sol" @input="updateRemoveModelsInput" /><span class="block text-xs text-gray-500">{{ t('qualityOps.cooldownRecoveryHint') }}</span></label>
           <p v-if="form.pelican_config.quality.action === 'remove_models'" class="pl-6 text-sm text-gray-500" data-testid="quality-model-independence">{{ t('qualityOps.cooldownPerModelHint') }}</p>
           <label v-if="form.pelican_config.quality.action === 'remove_models'" class="block space-y-1 pl-6"><span>{{ t('qualityOps.recoveryConcurrency') }}</span><input v-model.number="form.pelican_config.quality.recovery_concurrency" type="number" min="1" max="10000" class="input" data-testid="quality-recovery-concurrency" /></label>
+          <div v-if="qualityUsesRetestRest(form.pelican_config.quality.action)" class="space-y-1" data-testid="quality-retest-rest-setting">
+            <div class="flex items-center gap-2"><label for="quality-retest-rest">{{ t('qualityOps.retestRest') }}</label><NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.qualityRetestRest" :user-id="auth.user?.id" /></div>
+            <input id="quality-retest-rest" v-model.number="form.pelican_config.quality.retest_rest_minutes" type="number" min="0" max="10080" step="1" required class="input" data-testid="quality-retest-rest" />
+            <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('qualityOps.retestRestHint') }}</p>
+          </div>
           <template v-if="isProbe">
             <label class="flex items-center gap-2"><input v-model="form.pelican_config.quality.action" type="radio" value="enable_bps" data-testid="quality-action-enable-bps" />{{ t('qualityOps.enableBPS') }}</label>
             <QualityBPSSettings v-if="form.pelican_config.quality.action === 'enable_bps'" v-model:bps="form.pelican_config.quality.bps" v-model:auto-restore="form.pelican_config.quality.auto_restore" class="pl-6" :target-groups="bpsTargetGroups" :show-auto-restore="editsField('restore')" />
@@ -208,6 +213,11 @@
           <QualityBPSRestoreOptions v-if="form.pelican_config.quality.action === 'enable_bps'" v-model:bps="form.pelican_config.quality.bps" v-model:auto-restore="form.pelican_config.quality.auto_restore" class="text-sm" always-show-hold />
           <template v-else><label class="flex items-center gap-2"><input v-model="form.pelican_config.quality.auto_restore" type="checkbox" data-testid="quality-auto-restore" />{{ t('qualityOps.autoRestore') }}</label><p class="text-sm text-gray-500">{{ t(form.pelican_config.quality.action === 'isolate_models' ? 'qualityOps.isolationRestoreHelp' : 'qualityOps.restoreHelp') }}</p></template>
         </template>
+        <div v-if="editsField('oauth401')" class="space-y-1" data-testid="quality-oauth-401-setting">
+          <div class="flex items-center gap-2"><label for="quality-oauth-401-max-rounds">{{ t('qualityOps.oauth401MaxRounds') }}</label><NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.qualityOAuth401Cleanup" :user-id="auth.user?.id" /></div>
+          <input id="quality-oauth-401-max-rounds" v-model.number="form.pelican_config.quality.oauth_401_max_rounds" type="number" min="0" max="100" step="1" required class="input" data-testid="quality-oauth-401-max-rounds" aria-describedby="quality-oauth-401-hint" />
+          <p id="quality-oauth-401-hint" class="text-xs text-gray-500 dark:text-gray-400">{{ t('qualityOps.oauth401MaxRoundsHint') }}</p>
+        </div>
         <template v-if="editsField('trigger')">
           <label class="flex items-center gap-2"><input v-model="form.pelican_config.quality.trigger_on_upstream_5xx" type="checkbox" data-testid="quality-trigger-5xx" />{{ t('qualityOps.trigger5xx') }}</label>
           <p class="text-sm text-gray-500">{{ t('qualityOps.trigger5xxHint') }}</p>
@@ -237,6 +247,16 @@
             <div v-if="answerLoading" class="detail-loading" role="status"><span class="cell-skeleton" /><span class="cell-skeleton" />{{ t('qualityOps.loadingAnswer') }}</div>
             <template v-else-if="selectedResult"><header class="answer-heading"><h4>{{ t(isProbeResult(selectedResult) ? 'qualityOps.probeVerdictTitle' : 'qualityOps.answerAndVerdict') }}</h4><span class="outcome-badge" :class="resultTone(selectedResult)" data-testid="quality-result-badge">{{ resultLabel(selectedResult) }}</span></header>
               <details v-if="selectedResult.pelican_config?.random_question" class="answer-reference" data-testid="quality-random-question-detail"><summary>{{ t('qualityOps.generatedQuestion') }} · {{ selectedResult.pelican_config.random_question.id }}</summary><pre class="whitespace-pre-wrap">{{ selectedResult.pelican_config.prompt }}</pre></details>
+              <div v-if="selectedResult.pelican_config?.question_kind === 'random_reasoning'" class="answer-reference" data-testid="quality-batch-evidence">
+                <template v-if="selectedResult.pelican_config.quality_batch">
+                  <strong>{{ t('qualityOps.sharedBatch') }} · {{ selectedResult.pelican_config.quality_batch.id }}</strong>
+                  <p>{{ batchDecisionLabel(selectedResult.pelican_config.quality_batch.decision) }}</p>
+                  <p>{{ t('qualityOps.batchCondition', { model: selectedResult.pelican_config.model_id || '—', mapped: selectedResult.pelican_config.quality_batch.mapped_model || '—', effort: selectedResult.pelican_config.reasoning_effort || '—', route: selectedResult.pelican_config.quality_batch.route || '—' }) }}</p>
+                  <p>{{ t('qualityOps.batchPeers', { total: selectedResult.pelican_config.quality_batch.peer_accounts, passed: selectedResult.pelican_config.quality_batch.peer_passed, failed: selectedResult.pelican_config.quality_batch.peer_failed, unknown: selectedResult.pelican_config.quality_batch.peer_inconclusive }) }}</p>
+                  <p>{{ t('qualityOps.batchWindow', { from: date(selectedResult.pelican_config.quality_batch.started_at), to: date(selectedResult.pelican_config.quality_batch.start_deadline) }) }}</p>
+                </template>
+                <p v-else>{{ t('qualityOps.batchLegacy') }}</p>
+              </div>
               <div v-if="selectedResult.status !== 'skipped' && !isProbeResult(selectedResult)" class="answer-reference"><span>{{ t('qualityOps.answer') }}</span><p>{{ selectedResult.pelican_config?.quality?.expected_answer || detailOperation?.pelican_config?.quality?.expected_answer || '—' }}</p></div>
               <div class="response-heading">{{ t(selectedResult.status === 'skipped' ? 'qualityOps.skipReason' : isProbeResult(selectedResult) ? 'qualityOps.probeDetail' : 'qualityOps.actualAnswer') }}<span v-if="selectedResult.latency_ms">{{ (selectedResult.latency_ms / 1000).toFixed(1) }}s</span></div>
               <pre class="response-content">{{ resultContent(selectedResult) }}</pre>
@@ -275,6 +295,8 @@ import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
 import QualityAccountSelector from '@/components/admin/operations/QualityAccountSelector.vue'
 import SmartOpsNav from '@/components/admin/operations/SmartOpsNav.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -288,7 +310,7 @@ import scheduledTests from '@/api/admin/scheduledTests'
 import * as accountsAPI from '@/api/admin/accounts'
 import * as groupsAPI from '@/api/admin/groups'
 import { CANDY_PROMPT, STATE_PROBE_QUESTION, stateProbeVerdict, type StateProbeVerdict } from '@/utils/intelligenceTest'
-import { buildQualityRulePatch, copyQualityRuleConfig, qualityRuleFieldValue, qualityActionPayload, qualityUsesGroups, qualityUsesModelResults, defaultQualityBPS, qualityBPSError, qualityBPSForm, qualityJudgeConfigured, qualityRuleFields, type QualityRuleField } from '@/utils/qualityRulePatch'
+import { buildQualityRulePatch, copyQualityRuleConfig, qualityRuleFieldValue, qualityActionPayload, qualityUsesGroups, qualityUsesModelResults, qualityUsesRetestRest, defaultQualityBPS, qualityBPSError, qualityBPSForm, qualityJudgeConfigured, qualityRuleFields, type QualityRuleField } from '@/utils/qualityRulePatch'
 import { DEFAULT_STATE_PROBE_CRON } from '@/utils/intelligenceTest'
 import QualityOwnershipReview from '@/components/admin/operations/QualityOwnershipReview.vue'
 import QualityProbeSchedule from '@/components/admin/operations/QualityProbeSchedule.vue'
@@ -442,6 +464,7 @@ function reuseFieldSummary(rule: Pick<ScheduledTestPlan, 'model_id' | 'cron_expr
   if (field === 'schedule') return rule.cron_expression
   if (field === 'retention') return String(('max_results' in rule ? rule.max_results : '') ?? '')
   if (field === 'trigger') return t(q?.trigger_on_upstream_5xx ? 'qualityOps.on' : 'qualityOps.off')
+  if (field === 'oauth401') return q?.oauth_401_max_rounds ? t('qualityOps.oauth401Rounds', { count: q.oauth_401_max_rounds }) : t('qualityOps.off')
   if (field === 'enabled') return t(rule.enabled ? 'qualityOps.on' : 'qualityOps.off')
   if (field === 'action') return policyTarget(q)
   if (field === 'restore') return [t(q?.auto_restore ? 'qualityOps.on' : 'qualityOps.off'),
@@ -564,12 +587,17 @@ function actionLabel(action?: string) {
   const key = `qualityOps.outcomes.${action}`; return action && te(key) ? t(key) : '—'
 }
 function operationLabel(op: QualityOperation) {
+  if (op.quality_action === 'inconclusive' && op.pelican_config?.quality_batch?.decision === 'no_passing_peer') return t('qualityOps.batchNoControl')
   const policy = op.pelican_config?.quality?.action, bpsKey = `qualityOps.bpsOutcomes.${actionKey(op.quality_action)}`
   const diagnostic = op.pelican_config?.quality_restore_diagnostic
   if (op.quality_action === 'restore_conflict' && diagnostic?.scope === 'remove_groups' && diagnostic.disposition === 'external_membership_present') return t('qualityOps.externalMembershipPresent')
   if (op.quality_action === 'restored' && policy === 'remove_groups') return t('qualityOps.groupsRestored')
   if (policy === 'enable_bps' && op.quality_action && te(bpsKey)) return t(bpsKey)
   return actionLabel(op.quality_action)
+}
+function batchDecisionLabel(decision: string) {
+  const key = `qualityOps.batchDecisions.${decision}`
+  return te(key) ? t(key) : t('qualityOps.batchLegacy')
 }
 function tone(action?: string) {
   const key = actionKey(action)
@@ -612,7 +640,7 @@ function resultContent(result: ScheduledTestResult) {
 function defaults() {
   return { model_id: 'gpt-6-astra', cron_expression: '*/30 * * * *', enabled: true, max_results: 100, auto_recover: false,
     pelican_config: { rule_name: '', question_kind: 'candy' as 'candy' | 'random_reasoning' | typeof STATE_PROBE_QUESTION, test_channel: 'account' as 'account' | 'bps', prompt: CANDY_PROMPT, reasoning_effort: 'high', parallel_count: 1, model_ids: [] as string[], availability: undefined as AvailabilityPolicy | undefined,
-      quality: { trigger_on_upstream_5xx: false, expected_answer: '21', action: 'remove_groups' as QualityPolicy['action'], remove_group_ids: [] as number[], remove_models: [] as string[], recovery_concurrency: 5, auto_restore: false, judge: { group_id: 0, model_id: '', prompt: t('qualityOps.defaultJudgePrompt') } as QualityJudgeConfig, bps: defaultQualityBPS() } } }
+      quality: { trigger_on_upstream_5xx: false, oauth_401_max_rounds: 6, expected_answer: '21', action: 'remove_groups' as QualityPolicy['action'], remove_group_ids: [] as number[], remove_models: [] as string[], recovery_concurrency: 5, retest_rest_minutes: 0, auto_restore: false, judge: { group_id: 0, model_id: '', prompt: t('qualityOps.defaultJudgePrompt') } as QualityJudgeConfig, bps: defaultQualityBPS() } } }
 }
 const form = ref(defaults())
 const removeModelsInput = ref('')
@@ -713,6 +741,7 @@ function reusedForm(rule: Pick<ScheduledTestPlan, 'model_id' | 'cron_expression'
       question_kind: config.question_kind === 'state_probe' || config.question_kind === 'random_reasoning' ? config.question_kind : 'candy',
       test_channel: config.test_channel || 'account', model_ids: (config.model_ids || []).filter(model => model !== rule.model_id),
       quality: { ...draft.pelican_config.quality, ...config.quality,
+        oauth_401_max_rounds: config.quality.oauth_401_max_rounds ?? 0,
         judge: config.quality.judge || draft.pelican_config.quality.judge, bps: qualityBPSForm(config.quality.bps) } } }
 }
 function copyRule(plan: ScheduledTestPlan) {
@@ -782,6 +811,8 @@ function edit(plan: ScheduledTestPlan) {
   form.value = { ...defaults(), model_id: plan.model_id, cron_expression: plan.cron_expression, enabled: plan.enabled, max_results: plan.max_results, pelican_config: { ...defaults().pelican_config, ...JSON.parse(JSON.stringify(plan.pelican_config || {})) } }
   form.value.pelican_config.model_ids = (form.value.pelican_config.model_ids || []).filter(model => model !== form.value.model_id)
   form.value.pelican_config.quality.trigger_on_upstream_5xx ??= false
+  form.value.pelican_config.quality.oauth_401_max_rounds ??= 0
+  form.value.pelican_config.quality.retest_rest_minutes ??= 0
   form.value.pelican_config.quality.judge ||= defaults().pelican_config.quality.judge
   form.value.pelican_config.quality.bps = qualityBPSForm(form.value.pelican_config.quality.bps)
   showForm.value = true; initialForm.value = formSnapshot(); void loadJudgeModels()
@@ -878,7 +909,7 @@ function payload() {
   if (nextQuality.action === 'isolate_models' && isProbe.value) throw new Error(t('qualityOps.isolationRequiresCandy'))
   if (isRandom.value) {
     nextQuality.expected_answer = ''
-    return { ...form.value, max_results, pelican_config: { ...form.value.pelican_config, model_ids, prompt: '', random_question: undefined, quality: nextQuality } }
+    return { ...form.value, max_results, pelican_config: { ...form.value.pelican_config, model_ids, prompt: '', random_question: undefined, quality_batch: undefined, quality: nextQuality } }
   }
   if (!isProbe.value) return { ...form.value, max_results, pelican_config: { ...form.value.pelican_config, model_ids, quality: nextQuality } }
   nextQuality.expected_answer = ''

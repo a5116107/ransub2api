@@ -103,6 +103,7 @@ export interface User {
 }
 
 export interface AdminUser extends User {
+  auto_credit_outstanding?: string
   // 管理员备注（普通用户接口不返回）
   notes: string
   last_used_at?: string | null
@@ -798,6 +799,9 @@ export interface ApiKey {
   reset_1d_at: string | null
   reset_7d_at: string | null
   group_ids?: number[]
+  model_mapping?: Record<string, string>
+  reasoning_effort?: string
+  allow_long_context?: boolean
 }
 
 export interface ApiKeyConcurrencySnapshot {
@@ -987,7 +991,7 @@ export interface UpdateGroupRequest {
 // ==================== Account & Proxy Types ====================
 
 /** 前端内置专属界面（图标、配色、表单等）的平台。 */
-export type KnownAccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'typesafe' | 'command_code' | 'cline'
+export type KnownAccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'typesafe' | 'command_code' | 'cline' | 'mistral'
 /**
  * 账号平台：内置平台，或后端平台清单中新登记的平台（任意字符串）。
  * `string & {}` 保留内置平台的字面量补全。
@@ -1604,6 +1608,19 @@ export interface UsageProgress {
 }
 
 // Antigravity 单个模型的配额信息
+export interface AntigravityQuotaWindow {
+  window: string // '5h' or 'weekly'
+  utilization: number // 0-100
+  resets_at: string | null
+}
+
+export interface AntigravityQuotaGroup {
+  key: string // bucket prefix: 'gemini' or '3p' (Claude and GPT)
+  name: string
+  description?: string
+  windows: AntigravityQuotaWindow[]
+}
+
 export interface AntigravityModelQuota {
   utilization: number // 使用率 0-100
   reset_time: string  // 重置时间 ISO8601
@@ -1667,6 +1684,7 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  antigravity_quota_groups?: AntigravityQuotaGroup[] | null
   grok_request_quota?: GrokQuotaWindow | null
   grok_token_quota?: GrokQuotaWindow | null
   grok_retry_after_seconds?: number | null
@@ -2012,6 +2030,8 @@ export interface UsageLog {
   cache_read_tokens: number
   cache_creation_5m_tokens: number
   cache_creation_1h_tokens: number
+  cache_creation_30m_tokens?: number
+  cache_creation_12h_tokens?: number
 
   input_cost: number
   output_cost: number
@@ -2037,6 +2057,7 @@ export interface UsageLog {
   } | null
   content_timing?: {
     output_rate?: OutputRateObservation
+    sse_event_first_ms?: number | null; semantic_first_ms?: number | null
     reasoning_first_ms: number | null; visible_text_first_ms: number | null; response_byte_first_ms: number | null
     status: string; source: string; scope: string; reasoning_streaming_capability: string; capability_source: string
     cache?: {
@@ -2763,6 +2784,8 @@ export interface QualityBPSPolicy {
 }
 export interface QualityPolicy {
   trigger_on_upstream_5xx?: boolean
+  // OAuth quality rules only: 0 or missing disables automatic rule cleanup.
+  oauth_401_max_rounds?: number
   admission?: import('@/utils/openaiTwoFAAdmission').OpenAITwoFAAdmissionConfig
   judge?: QualityJudgeConfig
   expected_answer: string
@@ -2770,6 +2793,7 @@ export interface QualityPolicy {
   remove_group_ids: number[]
   remove_models?: string[]
   recovery_concurrency?: number
+  retest_rest_minutes?: number
   auto_restore: boolean
   bps?: QualityBPSPolicy
 }
@@ -2795,7 +2819,19 @@ export interface AvailabilityPolicy {
   max_extra_samples?: number
 }
 
+export interface PelicanQuestion {
+  id: string
+  version: string
+  round_id: string
+  source: string
+  prompt: string
+  criteria: string[]
+}
+
 export interface PelicanTestConfig {
+  prompt_mode?: 'custom' | 'random'
+  pelican_question?: PelicanQuestion
+  actual_prompt?: string
   // Optional display name, persisted with the rule's editable configuration.
   rule_name?: string
   quality_restore_diagnostic?: QualityRestoreDiagnostic
@@ -2807,6 +2843,20 @@ export interface PelicanTestConfig {
   question_kind?: 'candy' | 'pelican' | 'state_probe' | 'random_reasoning'
   // Result-only identity of a runtime-generated question.
   random_question?: { id: string; family: 'paths' | 'weighted_xor'; version: string }
+  quality_batch?: {
+    route: string
+    mapped_model: string
+    id: string
+    started_at: string
+    start_deadline: string
+    closes_at: string
+    comparison_key: string
+    decision: string
+    peer_accounts: number
+    peer_passed: number
+    peer_failed: number
+    peer_inconclusive: number
+  }
   test_channel?: 'account' | 'bps'
   prompt: string
   reasoning_effort: string

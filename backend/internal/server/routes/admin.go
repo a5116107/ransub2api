@@ -52,6 +52,7 @@ func RegisterAdminRoutes(
 		lottery.PUT("/pools/:id/prizes/:prize_id", h.Lottery.SavePrize)
 		lottery.GET("/records", h.Lottery.AdminRecords)
 		lottery.GET("/ledger", h.Lottery.AdminLedger)
+		lottery.GET("/invitations", h.Lottery.AdminInvitations)
 	}
 	{
 		// Optional region-to-Pod routing, configured inside Gateway settings.
@@ -254,6 +255,23 @@ func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	ops := admin.Group("/ops")
 	{
+		// AI observe mode uses a separate bounded companion service. These routes
+		// deliberately grant no production account/scheduling mutation capability.
+		ops.GET("/ai/status", h.Admin.Ops.GetAIOpsStatus)
+		ops.GET("/ai/runs", h.Admin.Ops.ListAIOpsRuns)
+		ops.GET("/ai/runs/:id", h.Admin.Ops.GetAIOpsRun)
+		ops.POST("/ai/runs", h.Admin.Ops.CreateAIOpsRun)
+		ops.GET("/ai/policy", h.Admin.Ops.GetAIOpsPolicy)
+		ops.PUT("/ai/policy", h.Admin.Ops.SaveAIOpsPolicy)
+		ops.POST("/ai/halt", h.Admin.Ops.HaltAIOps)
+		ops.POST("/ai/proposals/preview", h.Admin.Ops.PreviewAIOpsProposal)
+		ops.POST("/ai/proposals/:id/apply", h.Admin.Ops.ApplyAIOpsProposal)
+		ops.POST("/ai/proposals/:id/cancel", h.Admin.Ops.CancelAIOpsProposal)
+		ops.GET("/ai/actions", h.Admin.Ops.ListAIOpsActions)
+		ops.POST("/ai/actions/:id/rollback", h.Admin.Ops.RollbackAIOpsAction)
+		ops.GET("/ai/probes", h.Admin.Ops.ListAIOpsProbes)
+		ops.POST("/ai/probes", h.Admin.Ops.CreateAIOpsProbe)
+
 		// Realtime ops signals
 		ops.GET("/concurrency", h.Admin.Ops.GetConcurrencyStats)
 		ops.GET("/user-concurrency", h.Admin.Ops.GetUserConcurrencyStats)
@@ -375,6 +393,9 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		users.GET("/:id/api-keys", h.Admin.User.GetUserAPIKeys)
 		users.GET("/:id/usage", h.Admin.User.GetUserUsage)
 		users.GET("/:id/balance-history", h.Admin.User.GetBalanceHistory)
+		users.GET("/:id/auto-credit", h.Admin.User.GetAutoCredit)
+		users.PUT("/:id/auto-credit", h.Admin.User.SaveAutoCredit)
+		users.POST("/:id/auto-credit/:entry_id/settle", h.Admin.User.SettleAutoCredit)
 		users.POST("/:id/replace-group", h.Admin.User.ReplaceGroup)
 		users.GET("/:id/rpm-status", h.Admin.User.GetUserRPMStatus)
 		users.POST("/batch-concurrency", h.Admin.User.BatchUpdateConcurrency)
@@ -405,6 +426,8 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.POST("/:id/composite-routes/preview", h.Admin.Group.PreviewCompositeRoute)
 		groups.PUT("/:id/composite-routes/:route_id", h.Admin.Group.UpdateCompositeRoute)
 		groups.DELETE("/:id/composite-routes/:route_id", h.Admin.Group.DeleteCompositeRoute)
+		groups.GET("/:id/anti-distillation", h.Admin.Group.GetAntiDistillation)
+		groups.PUT("/:id/anti-distillation", h.Admin.Group.SaveAntiDistillation)
 		groups.GET("/:id", h.Admin.Group.GetByID)
 		groups.POST("", h.Admin.Group.Create)
 		groups.POST("/:id/duplicate", h.Admin.Group.Duplicate)
@@ -427,6 +450,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 	{
 		accounts.GET("/openai-request-timezones", h.Admin.Account.GetOpenAIRequestTimezones)
 		accounts.GET("", h.Admin.Account.List)
+		accounts.GET("/concurrency-summary", h.Admin.Account.GetConcurrencySummary)
 		accounts.GET("/management-capabilities", h.Admin.Setting.GetAccountManagementCapabilities)
 		accounts.GET("/upstream-billing-rates", h.Admin.Account.GetUpstreamBillingRates)
 		accounts.GET("/upstream-billing-probe/settings", h.Admin.Account.GetUpstreamBillingProbeSettings)
@@ -496,6 +520,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/:id/opencode-go-usage/refresh", h.Admin.Account.RefreshOpenCodeGoUsage)
 		accounts.DELETE("/:id", h.Admin.Account.Delete)
 		accounts.POST("/:id/test", h.Admin.Account.Test)
+		accounts.GET("/pelican-question", h.Admin.Account.PreparePelicanQuestion)
 		accounts.POST("/:id/pelican-test", h.Admin.Account.PelicanTest)
 		accounts.POST("/:id/modeltrace-test", h.Admin.Account.ModelTraceTest)
 		accounts.POST("/:id/state-probe", h.Admin.Account.StateProbe)
@@ -519,6 +544,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.GET("/:id/schedulable-timers", h.Admin.Account.ListSchedulableTimers)
 		accounts.POST("/:id/schedulable-timers/preview", h.Admin.Account.PreviewSchedulableTimer)
 		accounts.POST("/:id/schedulable-timers", h.Admin.Account.SaveSchedulableTimer)
+		accounts.POST("/:id/schedulable-timers/daily-window", h.Admin.Account.SaveDailySchedulableWindow)
 		accounts.DELETE("/:id/schedulable-timers/:action", h.Admin.Account.CancelSchedulableTimer)
 		accounts.POST("/models/sync-upstream-preview", h.Admin.Account.SyncUpstreamModelsPreview)
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
@@ -761,6 +787,8 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpA
 		// OpenAI/Codex 响应头超时配置
 		adminSettings.GET("/openai-response-header-timeout", h.Admin.Setting.GetOpenAIResponseHeaderTimeoutSettings)
 		adminSettings.PUT("/openai-response-header-timeout", h.Admin.Setting.UpdateOpenAIResponseHeaderTimeoutSettings)
+		adminSettings.GET("/account-performance", h.Admin.Setting.GetAccountPerformanceSettings)
+		adminSettings.PUT("/account-performance", h.Admin.Setting.UpdateAccountPerformanceSettings)
 		// 请求整流器配置
 		adminSettings.GET("/rectifier", h.Admin.Setting.GetRectifierSettings)
 		adminSettings.PUT("/rectifier", h.Admin.Setting.UpdateRectifierSettings)
@@ -908,6 +936,8 @@ func registerScheduledTestRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	admin.GET("/priority-scheduling/config", h.Admin.Setting.GetPriorityScheduling)
 	admin.PUT("/priority-scheduling/config", h.Admin.Setting.SavePriorityScheduling)
 	admin.GET("/priority-scheduling/snapshot", h.Admin.Account.PrioritySchedulingSnapshot)
+	admin.GET("/priority-scheduling/analysis", h.Admin.Account.PrioritySchedulingAnalysis)
+	admin.GET("/priority-scheduling/models", h.Admin.Account.PrioritySchedulingModels)
 	admin.GET("/priority-scheduling/latency", h.Admin.Account.PrioritySchedulingLatency)
 	admin.POST("/priority-scheduling/recompute", h.Admin.Account.RecomputePriorityScheduling)
 	admin.GET("/priority-scheduling/sticky-bindings", h.Admin.Account.PrioritySchedulingStickyBindings)

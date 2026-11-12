@@ -4,6 +4,23 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyForRequest(req OpenAIA
 	if s.service.preservesPrioritySession(req) {
 		return "", 0, 0, false
 	}
+	if s.service != nil {
+		priority := s.service.prioritySchedulingRuntimeConfig()
+		if req.Platform == PlatformOpenAI && req.UseUpstreamTokenCost && req.RequiredImageCapability == "" && priorityApplies(priority, req) {
+			if !cfg.enabled || priorityLatencyOwnershipBound(req) || req.DisableStickyEscape || req.EncryptedReasoning {
+				return "", 0, 0, false
+			}
+			history := s.service.priorityHistory(req, priority, []openAIAccountCandidateScore{{account: account}})
+			if metrics := history.signals[account.ID].Performance; metrics != nil && priority.ErrorRateWeight > 0 {
+				if rate := performanceUpstreamErrorRate(metrics.UpstreamError); rate != nil && *rate > cfg.errorRate {
+					return "error_rate", *rate, 0, true
+				}
+			}
+			// Average TTFT admission/escape is already handled by the shared
+			// priority path; never substitute independent attempt/EWMA evidence.
+			return "", 0, 0, false
+		}
+	}
 	if !req.ObservationEffortScoped {
 		return s.shouldEscapeStickyAccount(account.ID, cfg)
 	}

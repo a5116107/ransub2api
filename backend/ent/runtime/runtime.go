@@ -27,6 +27,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/lotteryaccount"
 	"github.com/Wei-Shaw/sub2api/ent/lotterycontribution"
 	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
+	"github.com/Wei-Shaw/sub2api/ent/lotteryinvitation"
+	"github.com/Wei-Shaw/sub2api/ent/lotteryinvitelink"
 	"github.com/Wei-Shaw/sub2api/ent/lotteryledger"
 	"github.com/Wei-Shaw/sub2api/ent/lotterypool"
 	"github.com/Wei-Shaw/sub2api/ent/lotteryprize"
@@ -125,36 +127,50 @@ func init() {
 	apikey.DefaultStatus = apikeyDescStatus.Default.(string)
 	// apikey.StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	apikey.StatusValidator = apikeyDescStatus.Validators[0].(func(string) error)
+	// apikeyDescModelMapping is the schema descriptor for model_mapping field.
+	apikeyDescModelMapping := apikeyFields[6].Descriptor()
+	// apikey.DefaultModelMapping holds the default value on creation for the model_mapping field.
+	apikey.DefaultModelMapping = apikeyDescModelMapping.Default.(map[string]string)
+	// apikeyDescReasoningEffort is the schema descriptor for reasoning_effort field.
+	apikeyDescReasoningEffort := apikeyFields[7].Descriptor()
+	// apikey.DefaultReasoningEffort holds the default value on creation for the reasoning_effort field.
+	apikey.DefaultReasoningEffort = apikeyDescReasoningEffort.Default.(string)
+	// apikey.ReasoningEffortValidator is a validator for the "reasoning_effort" field. It is called by the builders before save.
+	apikey.ReasoningEffortValidator = apikeyDescReasoningEffort.Validators[0].(func(string) error)
+	// apikeyDescAllowLongContext is the schema descriptor for allow_long_context field.
+	apikeyDescAllowLongContext := apikeyFields[8].Descriptor()
+	// apikey.DefaultAllowLongContext holds the default value on creation for the allow_long_context field.
+	apikey.DefaultAllowLongContext = apikeyDescAllowLongContext.Default.(bool)
 	// apikeyDescQuota is the schema descriptor for quota field.
-	apikeyDescQuota := apikeyFields[9].Descriptor()
+	apikeyDescQuota := apikeyFields[12].Descriptor()
 	// apikey.DefaultQuota holds the default value on creation for the quota field.
 	apikey.DefaultQuota = apikeyDescQuota.Default.(float64)
 	// apikeyDescQuotaUsed is the schema descriptor for quota_used field.
-	apikeyDescQuotaUsed := apikeyFields[10].Descriptor()
+	apikeyDescQuotaUsed := apikeyFields[13].Descriptor()
 	// apikey.DefaultQuotaUsed holds the default value on creation for the quota_used field.
 	apikey.DefaultQuotaUsed = apikeyDescQuotaUsed.Default.(float64)
 	// apikeyDescRateLimit5h is the schema descriptor for rate_limit_5h field.
-	apikeyDescRateLimit5h := apikeyFields[12].Descriptor()
+	apikeyDescRateLimit5h := apikeyFields[15].Descriptor()
 	// apikey.DefaultRateLimit5h holds the default value on creation for the rate_limit_5h field.
 	apikey.DefaultRateLimit5h = apikeyDescRateLimit5h.Default.(float64)
 	// apikeyDescRateLimit1d is the schema descriptor for rate_limit_1d field.
-	apikeyDescRateLimit1d := apikeyFields[13].Descriptor()
+	apikeyDescRateLimit1d := apikeyFields[16].Descriptor()
 	// apikey.DefaultRateLimit1d holds the default value on creation for the rate_limit_1d field.
 	apikey.DefaultRateLimit1d = apikeyDescRateLimit1d.Default.(float64)
 	// apikeyDescRateLimit7d is the schema descriptor for rate_limit_7d field.
-	apikeyDescRateLimit7d := apikeyFields[14].Descriptor()
+	apikeyDescRateLimit7d := apikeyFields[17].Descriptor()
 	// apikey.DefaultRateLimit7d holds the default value on creation for the rate_limit_7d field.
 	apikey.DefaultRateLimit7d = apikeyDescRateLimit7d.Default.(float64)
 	// apikeyDescUsage5h is the schema descriptor for usage_5h field.
-	apikeyDescUsage5h := apikeyFields[15].Descriptor()
+	apikeyDescUsage5h := apikeyFields[18].Descriptor()
 	// apikey.DefaultUsage5h holds the default value on creation for the usage_5h field.
 	apikey.DefaultUsage5h = apikeyDescUsage5h.Default.(float64)
 	// apikeyDescUsage1d is the schema descriptor for usage_1d field.
-	apikeyDescUsage1d := apikeyFields[16].Descriptor()
+	apikeyDescUsage1d := apikeyFields[19].Descriptor()
 	// apikey.DefaultUsage1d holds the default value on creation for the usage_1d field.
 	apikey.DefaultUsage1d = apikeyDescUsage1d.Default.(float64)
 	// apikeyDescUsage7d is the schema descriptor for usage_7d field.
-	apikeyDescUsage7d := apikeyFields[17].Descriptor()
+	apikeyDescUsage7d := apikeyFields[20].Descriptor()
 	// apikey.DefaultUsage7d holds the default value on creation for the usage_7d field.
 	apikey.DefaultUsage7d = apikeyDescUsage7d.Default.(float64)
 	accountMixin := schema.Account{}.Mixin()
@@ -1385,6 +1401,58 @@ func init() {
 	lotterydrawDescCreatedAt := lotterydrawFields[5].Descriptor()
 	// lotterydraw.DefaultCreatedAt holds the default value on creation for the created_at field.
 	lotterydraw.DefaultCreatedAt = lotterydrawDescCreatedAt.Default.(func() time.Time)
+	lotteryinvitationFields := schema.LotteryInvitation{}.Fields()
+	_ = lotteryinvitationFields
+	// lotteryinvitationDescVisitorKey is the schema descriptor for visitor_key field.
+	lotteryinvitationDescVisitorKey := lotteryinvitationFields[3].Descriptor()
+	// lotteryinvitation.VisitorKeyValidator is a validator for the "visitor_key" field. It is called by the builders before save.
+	lotteryinvitation.VisitorKeyValidator = lotteryinvitationDescVisitorKey.Validators[0].(func(string) error)
+	// lotteryinvitationDescIPAddress is the schema descriptor for ip_address field.
+	lotteryinvitationDescIPAddress := lotteryinvitationFields[4].Descriptor()
+	// lotteryinvitation.IPAddressValidator is a validator for the "ip_address" field. It is called by the builders before save.
+	lotteryinvitation.IPAddressValidator = lotteryinvitationDescIPAddress.Validators[0].(func(string) error)
+	// lotteryinvitationDescCountry is the schema descriptor for country field.
+	lotteryinvitationDescCountry := lotteryinvitationFields[5].Descriptor()
+	// lotteryinvitation.DefaultCountry holds the default value on creation for the country field.
+	lotteryinvitation.DefaultCountry = lotteryinvitationDescCountry.Default.(string)
+	// lotteryinvitation.CountryValidator is a validator for the "country" field. It is called by the builders before save.
+	lotteryinvitation.CountryValidator = lotteryinvitationDescCountry.Validators[0].(func(string) error)
+	// lotteryinvitationDescNetUnits is the schema descriptor for net_units field.
+	lotteryinvitationDescNetUnits := lotteryinvitationFields[6].Descriptor()
+	// lotteryinvitation.DefaultNetUnits holds the default value on creation for the net_units field.
+	lotteryinvitation.DefaultNetUnits = lotteryinvitationDescNetUnits.Default.(int64)
+	// lotteryinvitationDescQualified is the schema descriptor for qualified field.
+	lotteryinvitationDescQualified := lotteryinvitationFields[7].Descriptor()
+	// lotteryinvitation.DefaultQualified holds the default value on creation for the qualified field.
+	lotteryinvitation.DefaultQualified = lotteryinvitationDescQualified.Default.(bool)
+	// lotteryinvitationDescInviterAwarded is the schema descriptor for inviter_awarded field.
+	lotteryinvitationDescInviterAwarded := lotteryinvitationFields[8].Descriptor()
+	// lotteryinvitation.DefaultInviterAwarded holds the default value on creation for the inviter_awarded field.
+	lotteryinvitation.DefaultInviterAwarded = lotteryinvitationDescInviterAwarded.Default.(bool)
+	// lotteryinvitationDescInviteeAwarded is the schema descriptor for invitee_awarded field.
+	lotteryinvitationDescInviteeAwarded := lotteryinvitationFields[9].Descriptor()
+	// lotteryinvitation.DefaultInviteeAwarded holds the default value on creation for the invitee_awarded field.
+	lotteryinvitation.DefaultInviteeAwarded = lotteryinvitationDescInviteeAwarded.Default.(bool)
+	// lotteryinvitationDescCreatedAt is the schema descriptor for created_at field.
+	lotteryinvitationDescCreatedAt := lotteryinvitationFields[11].Descriptor()
+	// lotteryinvitation.DefaultCreatedAt holds the default value on creation for the created_at field.
+	lotteryinvitation.DefaultCreatedAt = lotteryinvitationDescCreatedAt.Default.(func() time.Time)
+	// lotteryinvitationDescUpdatedAt is the schema descriptor for updated_at field.
+	lotteryinvitationDescUpdatedAt := lotteryinvitationFields[12].Descriptor()
+	// lotteryinvitation.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	lotteryinvitation.DefaultUpdatedAt = lotteryinvitationDescUpdatedAt.Default.(func() time.Time)
+	// lotteryinvitation.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	lotteryinvitation.UpdateDefaultUpdatedAt = lotteryinvitationDescUpdatedAt.UpdateDefault.(func() time.Time)
+	lotteryinvitelinkFields := schema.LotteryInviteLink{}.Fields()
+	_ = lotteryinvitelinkFields
+	// lotteryinvitelinkDescCode is the schema descriptor for code field.
+	lotteryinvitelinkDescCode := lotteryinvitelinkFields[2].Descriptor()
+	// lotteryinvitelink.CodeValidator is a validator for the "code" field. It is called by the builders before save.
+	lotteryinvitelink.CodeValidator = lotteryinvitelinkDescCode.Validators[0].(func(string) error)
+	// lotteryinvitelinkDescCreatedAt is the schema descriptor for created_at field.
+	lotteryinvitelinkDescCreatedAt := lotteryinvitelinkFields[3].Descriptor()
+	// lotteryinvitelink.DefaultCreatedAt holds the default value on creation for the created_at field.
+	lotteryinvitelink.DefaultCreatedAt = lotteryinvitelinkDescCreatedAt.Default.(func() time.Time)
 	lotteryledgerFields := schema.LotteryLedger{}.Fields()
 	_ = lotteryledgerFields
 	// lotteryledgerDescAction is the schema descriptor for action field.
@@ -1414,31 +1482,31 @@ func init() {
 	// lotterypool.ModeValidator is a validator for the "mode" field. It is called by the builders before save.
 	lotterypool.ModeValidator = lotterypoolDescMode.Validators[0].(func(string) error)
 	// lotterypoolDescThresholdUnits is the schema descriptor for threshold_units field.
-	lotterypoolDescThresholdUnits := lotterypoolFields[2].Descriptor()
+	lotterypoolDescThresholdUnits := lotterypoolFields[3].Descriptor()
 	// lotterypool.ThresholdUnitsValidator is a validator for the "threshold_units" field. It is called by the builders before save.
 	lotterypool.ThresholdUnitsValidator = lotterypoolDescThresholdUnits.Validators[0].(func(int64) error)
 	// lotterypoolDescGrantEnabled is the schema descriptor for grant_enabled field.
-	lotterypoolDescGrantEnabled := lotterypoolFields[3].Descriptor()
+	lotterypoolDescGrantEnabled := lotterypoolFields[4].Descriptor()
 	// lotterypool.DefaultGrantEnabled holds the default value on creation for the grant_enabled field.
 	lotterypool.DefaultGrantEnabled = lotterypoolDescGrantEnabled.Default.(bool)
 	// lotterypoolDescDrawEnabled is the schema descriptor for draw_enabled field.
-	lotterypoolDescDrawEnabled := lotterypoolFields[4].Descriptor()
+	lotterypoolDescDrawEnabled := lotterypoolFields[5].Descriptor()
 	// lotterypool.DefaultDrawEnabled holds the default value on creation for the draw_enabled field.
 	lotterypool.DefaultDrawEnabled = lotterypoolDescDrawEnabled.Default.(bool)
 	// lotterypoolDescRuleLocked is the schema descriptor for rule_locked field.
-	lotterypoolDescRuleLocked := lotterypoolFields[5].Descriptor()
+	lotterypoolDescRuleLocked := lotterypoolFields[6].Descriptor()
 	// lotterypool.DefaultRuleLocked holds the default value on creation for the rule_locked field.
 	lotterypool.DefaultRuleLocked = lotterypoolDescRuleLocked.Default.(bool)
 	// lotterypoolDescSortOrder is the schema descriptor for sort_order field.
-	lotterypoolDescSortOrder := lotterypoolFields[6].Descriptor()
+	lotterypoolDescSortOrder := lotterypoolFields[7].Descriptor()
 	// lotterypool.DefaultSortOrder holds the default value on creation for the sort_order field.
 	lotterypool.DefaultSortOrder = lotterypoolDescSortOrder.Default.(int)
 	// lotterypoolDescCreatedAt is the schema descriptor for created_at field.
-	lotterypoolDescCreatedAt := lotterypoolFields[9].Descriptor()
+	lotterypoolDescCreatedAt := lotterypoolFields[10].Descriptor()
 	// lotterypool.DefaultCreatedAt holds the default value on creation for the created_at field.
 	lotterypool.DefaultCreatedAt = lotterypoolDescCreatedAt.Default.(func() time.Time)
 	// lotterypoolDescUpdatedAt is the schema descriptor for updated_at field.
-	lotterypoolDescUpdatedAt := lotterypoolFields[10].Descriptor()
+	lotterypoolDescUpdatedAt := lotterypoolFields[11].Descriptor()
 	// lotterypool.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	lotterypool.DefaultUpdatedAt = lotterypoolDescUpdatedAt.Default.(func() time.Time)
 	// lotterypool.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
@@ -2284,88 +2352,96 @@ func init() {
 	usagelogDescCacheCreation1hTokens := usagelogFields[20].Descriptor()
 	// usagelog.DefaultCacheCreation1hTokens holds the default value on creation for the cache_creation_1h_tokens field.
 	usagelog.DefaultCacheCreation1hTokens = usagelogDescCacheCreation1hTokens.Default.(int)
+	// usagelogDescCacheCreation30mTokens is the schema descriptor for cache_creation_30m_tokens field.
+	usagelogDescCacheCreation30mTokens := usagelogFields[21].Descriptor()
+	// usagelog.DefaultCacheCreation30mTokens holds the default value on creation for the cache_creation_30m_tokens field.
+	usagelog.DefaultCacheCreation30mTokens = usagelogDescCacheCreation30mTokens.Default.(int)
+	// usagelogDescCacheCreation12hTokens is the schema descriptor for cache_creation_12h_tokens field.
+	usagelogDescCacheCreation12hTokens := usagelogFields[22].Descriptor()
+	// usagelog.DefaultCacheCreation12hTokens holds the default value on creation for the cache_creation_12h_tokens field.
+	usagelog.DefaultCacheCreation12hTokens = usagelogDescCacheCreation12hTokens.Default.(int)
 	// usagelogDescInputCost is the schema descriptor for input_cost field.
-	usagelogDescInputCost := usagelogFields[21].Descriptor()
+	usagelogDescInputCost := usagelogFields[23].Descriptor()
 	// usagelog.DefaultInputCost holds the default value on creation for the input_cost field.
 	usagelog.DefaultInputCost = usagelogDescInputCost.Default.(float64)
 	// usagelogDescOutputCost is the schema descriptor for output_cost field.
-	usagelogDescOutputCost := usagelogFields[22].Descriptor()
+	usagelogDescOutputCost := usagelogFields[24].Descriptor()
 	// usagelog.DefaultOutputCost holds the default value on creation for the output_cost field.
 	usagelog.DefaultOutputCost = usagelogDescOutputCost.Default.(float64)
 	// usagelogDescCacheCreationCost is the schema descriptor for cache_creation_cost field.
-	usagelogDescCacheCreationCost := usagelogFields[23].Descriptor()
+	usagelogDescCacheCreationCost := usagelogFields[25].Descriptor()
 	// usagelog.DefaultCacheCreationCost holds the default value on creation for the cache_creation_cost field.
 	usagelog.DefaultCacheCreationCost = usagelogDescCacheCreationCost.Default.(float64)
 	// usagelogDescCacheReadCost is the schema descriptor for cache_read_cost field.
-	usagelogDescCacheReadCost := usagelogFields[24].Descriptor()
+	usagelogDescCacheReadCost := usagelogFields[26].Descriptor()
 	// usagelog.DefaultCacheReadCost holds the default value on creation for the cache_read_cost field.
 	usagelog.DefaultCacheReadCost = usagelogDescCacheReadCost.Default.(float64)
 	// usagelogDescTotalCost is the schema descriptor for total_cost field.
-	usagelogDescTotalCost := usagelogFields[25].Descriptor()
+	usagelogDescTotalCost := usagelogFields[27].Descriptor()
 	// usagelog.DefaultTotalCost holds the default value on creation for the total_cost field.
 	usagelog.DefaultTotalCost = usagelogDescTotalCost.Default.(float64)
 	// usagelogDescActualCost is the schema descriptor for actual_cost field.
-	usagelogDescActualCost := usagelogFields[26].Descriptor()
+	usagelogDescActualCost := usagelogFields[28].Descriptor()
 	// usagelog.DefaultActualCost holds the default value on creation for the actual_cost field.
 	usagelog.DefaultActualCost = usagelogDescActualCost.Default.(float64)
 	// usagelogDescRateMultiplier is the schema descriptor for rate_multiplier field.
-	usagelogDescRateMultiplier := usagelogFields[27].Descriptor()
+	usagelogDescRateMultiplier := usagelogFields[29].Descriptor()
 	// usagelog.DefaultRateMultiplier holds the default value on creation for the rate_multiplier field.
 	usagelog.DefaultRateMultiplier = usagelogDescRateMultiplier.Default.(float64)
 	// usagelogDescLongContextBillingApplied is the schema descriptor for long_context_billing_applied field.
-	usagelogDescLongContextBillingApplied := usagelogFields[28].Descriptor()
+	usagelogDescLongContextBillingApplied := usagelogFields[30].Descriptor()
 	// usagelog.DefaultLongContextBillingApplied holds the default value on creation for the long_context_billing_applied field.
 	usagelog.DefaultLongContextBillingApplied = usagelogDescLongContextBillingApplied.Default.(bool)
 	// usagelogDescBillingType is the schema descriptor for billing_type field.
-	usagelogDescBillingType := usagelogFields[30].Descriptor()
+	usagelogDescBillingType := usagelogFields[32].Descriptor()
 	// usagelog.DefaultBillingType holds the default value on creation for the billing_type field.
 	usagelog.DefaultBillingType = usagelogDescBillingType.Default.(int8)
 	// usagelogDescStream is the schema descriptor for stream field.
-	usagelogDescStream := usagelogFields[31].Descriptor()
+	usagelogDescStream := usagelogFields[33].Descriptor()
 	// usagelog.DefaultStream holds the default value on creation for the stream field.
 	usagelog.DefaultStream = usagelogDescStream.Default.(bool)
 	// usagelogDescUserAgent is the schema descriptor for user_agent field.
-	usagelogDescUserAgent := usagelogFields[35].Descriptor()
+	usagelogDescUserAgent := usagelogFields[37].Descriptor()
 	// usagelog.UserAgentValidator is a validator for the "user_agent" field. It is called by the builders before save.
 	usagelog.UserAgentValidator = usagelogDescUserAgent.Validators[0].(func(string) error)
 	// usagelogDescIPAddress is the schema descriptor for ip_address field.
-	usagelogDescIPAddress := usagelogFields[36].Descriptor()
+	usagelogDescIPAddress := usagelogFields[38].Descriptor()
 	// usagelog.IPAddressValidator is a validator for the "ip_address" field. It is called by the builders before save.
 	usagelog.IPAddressValidator = usagelogDescIPAddress.Validators[0].(func(string) error)
 	// usagelogDescImageCount is the schema descriptor for image_count field.
-	usagelogDescImageCount := usagelogFields[37].Descriptor()
+	usagelogDescImageCount := usagelogFields[39].Descriptor()
 	// usagelog.DefaultImageCount holds the default value on creation for the image_count field.
 	usagelog.DefaultImageCount = usagelogDescImageCount.Default.(int)
 	// usagelogDescImageSize is the schema descriptor for image_size field.
-	usagelogDescImageSize := usagelogFields[38].Descriptor()
+	usagelogDescImageSize := usagelogFields[40].Descriptor()
 	// usagelog.ImageSizeValidator is a validator for the "image_size" field. It is called by the builders before save.
 	usagelog.ImageSizeValidator = usagelogDescImageSize.Validators[0].(func(string) error)
 	// usagelogDescImageInputSize is the schema descriptor for image_input_size field.
-	usagelogDescImageInputSize := usagelogFields[39].Descriptor()
+	usagelogDescImageInputSize := usagelogFields[41].Descriptor()
 	// usagelog.ImageInputSizeValidator is a validator for the "image_input_size" field. It is called by the builders before save.
 	usagelog.ImageInputSizeValidator = usagelogDescImageInputSize.Validators[0].(func(string) error)
 	// usagelogDescImageOutputSize is the schema descriptor for image_output_size field.
-	usagelogDescImageOutputSize := usagelogFields[40].Descriptor()
+	usagelogDescImageOutputSize := usagelogFields[42].Descriptor()
 	// usagelog.ImageOutputSizeValidator is a validator for the "image_output_size" field. It is called by the builders before save.
 	usagelog.ImageOutputSizeValidator = usagelogDescImageOutputSize.Validators[0].(func(string) error)
 	// usagelogDescImageSizeSource is the schema descriptor for image_size_source field.
-	usagelogDescImageSizeSource := usagelogFields[41].Descriptor()
+	usagelogDescImageSizeSource := usagelogFields[43].Descriptor()
 	// usagelog.ImageSizeSourceValidator is a validator for the "image_size_source" field. It is called by the builders before save.
 	usagelog.ImageSizeSourceValidator = usagelogDescImageSizeSource.Validators[0].(func(string) error)
 	// usagelogDescVideoCount is the schema descriptor for video_count field.
-	usagelogDescVideoCount := usagelogFields[43].Descriptor()
+	usagelogDescVideoCount := usagelogFields[45].Descriptor()
 	// usagelog.DefaultVideoCount holds the default value on creation for the video_count field.
 	usagelog.DefaultVideoCount = usagelogDescVideoCount.Default.(int)
 	// usagelogDescVideoResolution is the schema descriptor for video_resolution field.
-	usagelogDescVideoResolution := usagelogFields[44].Descriptor()
+	usagelogDescVideoResolution := usagelogFields[46].Descriptor()
 	// usagelog.VideoResolutionValidator is a validator for the "video_resolution" field. It is called by the builders before save.
 	usagelog.VideoResolutionValidator = usagelogDescVideoResolution.Validators[0].(func(string) error)
 	// usagelogDescCacheTTLOverridden is the schema descriptor for cache_ttl_overridden field.
-	usagelogDescCacheTTLOverridden := usagelogFields[46].Descriptor()
+	usagelogDescCacheTTLOverridden := usagelogFields[48].Descriptor()
 	// usagelog.DefaultCacheTTLOverridden holds the default value on creation for the cache_ttl_overridden field.
 	usagelog.DefaultCacheTTLOverridden = usagelogDescCacheTTLOverridden.Default.(bool)
 	// usagelogDescCreatedAt is the schema descriptor for created_at field.
-	usagelogDescCreatedAt := usagelogFields[48].Descriptor()
+	usagelogDescCreatedAt := usagelogFields[50].Descriptor()
 	// usagelog.DefaultCreatedAt holds the default value on creation for the created_at field.
 	usagelog.DefaultCreatedAt = usagelogDescCreatedAt.Default.(func() time.Time)
 	userMixin := schema.User{}.Mixin()

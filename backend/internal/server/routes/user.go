@@ -26,7 +26,10 @@ func RegisterUserRoutes(
 	authenticated.Use(gin.HandlerFunc(auditLog))
 	if h.Lottery != nil {
 		lottery := authenticated.Group("/lottery")
+		lottery.Use(handler.LotteryVisitorContext)
 		lottery.GET("/pools", h.Lottery.Pools)
+		lottery.GET("/pools/:id/invite", h.Lottery.InviteLink)
+		lottery.POST("/invitations/claim", h.Lottery.ClaimInvitation)
 		lottery.POST("/pools/:id/draw", h.Lottery.Draw)
 		lottery.GET("/records", h.Lottery.Records)
 	}
@@ -35,6 +38,10 @@ func RegisterUserRoutes(
 		user := authenticated.Group("/user")
 		{
 			user.GET("/profile", h.User.GetProfile)
+			if h.Admin != nil && h.Admin.Setting != nil {
+				user.GET("/key-risks", h.Admin.Setting.GetMyKeyRisks)
+				user.POST("/key-risks/:id/acknowledge", h.Admin.Setting.AcknowledgeMyKeyRisk)
+			}
 			if h.Admin != nil && h.Admin.PromptAudit != nil {
 				user.GET("/security/summary", h.Admin.PromptAudit.MyPenaltySummary)
 				user.GET("/security/events", h.Admin.PromptAudit.MyPenaltyEvents)

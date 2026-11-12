@@ -9,6 +9,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamstats"
 )
 
 var ErrPerformanceConflict = errors.New("performance monitor changed; reload before saving")
@@ -34,10 +36,11 @@ func (b PerformanceBounds) Breached(v *float64) bool {
 }
 
 type PerformanceConfig struct {
-	Enabled     bool              `json:"enabled"`
-	TPS         PerformanceBounds `json:"tps"`
-	Degradation PerformanceBounds `json:"degradation"`
-	TTFT        PerformanceBounds `json:"ttft"`
+	Enabled       bool              `json:"enabled"`
+	TPS           PerformanceBounds `json:"tps"`
+	Degradation   PerformanceBounds `json:"degradation"`
+	TTFT          PerformanceBounds `json:"ttft"`
+	UpstreamError PerformanceBounds `json:"upstream_error"`
 }
 
 func (c PerformanceConfig) Validate() error {
@@ -46,25 +49,67 @@ func (c PerformanceConfig) Validate() error {
 			return err
 		}
 	}
+	if err := c.UpstreamError.Validate(true); err != nil {
+		return err
+	}
 	return nil
 }
 
 type AccountPerformance struct {
-	AccountID          int64             `json:"account_id"`
-	AvgTPS             *float64          `json:"avg_tps"`
-	DegradationPercent *float64          `json:"degradation_percent"`
-	AvgTTFTMs          *float64          `json:"avg_ttft_ms"`
-	TPSSamples         int               `json:"tps_samples"`
-	TTFTSamples        int               `json:"ttft_samples"`
-	QualitySamples     int               `json:"quality_samples"`
-	Config             PerformanceConfig `json:"config"`
-	Revision           int64             `json:"revision"`
-	Paused             bool              `json:"paused"`
-	PauseGeneration    int64             `json:"pause_generation"`
-	PausedAt           *time.Time        `json:"paused_at"`
-	Reason             string            `json:"reason"`
-	WindowStart        time.Time         `json:"window_start"`
-	WindowEnd          time.Time         `json:"window_end"`
+	UpstreamError      upstreamstats.Evidence `json:"upstream_error"`
+	AccountID          int64                  `json:"account_id"`
+	AvgTPS             *float64               `json:"avg_tps"`
+	DegradationPercent *float64               `json:"degradation_percent"`
+	AvgTTFTMs          *float64               `json:"avg_ttft_ms"`
+	TPSSamples         int                    `json:"tps_samples"`
+	TTFTSamples        int                    `json:"ttft_samples"`
+	QualitySamples     int                    `json:"quality_samples"`
+	Config             PerformanceConfig      `json:"config"`
+	Revision           int64                  `json:"revision"`
+	Paused             bool                   `json:"paused"`
+	PauseGeneration    int64                  `json:"pause_generation"`
+	PausedAt           *time.Time             `json:"paused_at"`
+	Reason             string                 `json:"reason"`
+	WindowStart        time.Time              `json:"window_start"`
+	WindowEnd          time.Time              `json:"window_end"`
+}
+
+// Snapshot callers own the returned evidence; do not expose cache pointers.
+func cloneAccountPerformance(in *AccountPerformance) *AccountPerformance {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	clone := func(p *float64) *float64 {
+		if p == nil {
+			return nil
+		}
+		value := *p
+		return &value
+	}
+	out.AvgTPS, out.AvgTTFTMs, out.DegradationPercent = clone(in.AvgTPS), clone(in.AvgTTFTMs), clone(in.DegradationPercent)
+	out.UpstreamError.Percent = clone(in.UpstreamError.Percent)
+	for _, bounds := range []*PerformanceBounds{&out.Config.TPS, &out.Config.TTFT, &out.Config.Degradation, &out.Config.UpstreamError} {
+		bounds.Min, bounds.Max = clone(bounds.Min), clone(bounds.Max)
+	}
+	if in.PausedAt != nil {
+		value := *in.PausedAt
+		out.PausedAt = &value
+	}
+	return &out
+}
+
+// Shared validation for display evidence and scheduling. Unknown is not zero.
+func validPerformanceMetric(value *float64) bool {
+	return value != nil && !math.IsNaN(*value) && !math.IsInf(*value, 0) && *value >= 0
+}
+
+func performanceUpstreamErrorRate(e upstreamstats.Evidence) *float64 {
+	if e.Source != "process_local_http_responses" || e.Total <= 0 || e.Failures < 0 || e.Failures > e.Total || !validPerformanceMetric(e.Percent) || *e.Percent > 100 {
+		return nil
+	}
+	value := float64(e.Failures) / float64(e.Total)
+	return &value
 }
 
 func (m AccountPerformance) Breaches() []string {
@@ -77,6 +122,14 @@ func (m AccountPerformance) Breaches() []string {
 	}
 	if m.Config.TTFT.Breached(m.AvgTTFTMs) {
 		reasons = append(reasons, "ttft")
+	}
+	// This is process-local HTTP response evidence, not a final-request error
+	// rate. A partial process window can contain usable samples; no response
+	// samples is unknown, while zero failures among real samples is valid 0%.
+	if p := m.UpstreamError.Percent; m.UpstreamError.Total > 0 && p != nil &&
+		!math.IsNaN(*p) && !math.IsInf(*p, 0) && *p >= 0 && *p <= 100 &&
+		m.Config.UpstreamError.Breached(p) {
+		reasons = append(reasons, "upstream_error")
 	}
 	return reasons
 }

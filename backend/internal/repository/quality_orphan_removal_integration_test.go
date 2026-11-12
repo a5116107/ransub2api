@@ -101,6 +101,9 @@ func TestQualityOrphanRemovalAtomicScopeContraction(t *testing.T) {
 	// fields. This keeps the guard against accidental broad model/group changes.
 	accountBefore := assertions.Type[map[string]any](t, a["account"])
 	accountAfter := assertions.Type[map[string]any](t, b["account"])
+	// Removing a configuration marker must invalidate existing AI proposals.
+	require.Equal(t, assertions.Type[float64](t, accountBefore["ai_ops_revision"])+1, accountAfter["ai_ops_revision"])
+	accountBefore["ai_ops_revision"] = accountAfter["ai_ops_revision"]
 	delete(accountBefore, "updated_at")
 	delete(accountAfter, "updated_at")
 	delete(assertions.Type[map[string]any](t, assertions.Type[map[string]any](t, accountBefore["extra"])[service.QualityModelIsolationKey]), "sol")

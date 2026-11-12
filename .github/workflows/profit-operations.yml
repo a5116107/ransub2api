@@ -1,16 +1,7 @@
 name: Upstream profit operations exact head
 on:
-  pull_request:
-    paths:
-      - '**/profit_operations*'
-      - '**/ProfitOperations*'
-      - '**/UpstreamChannelOperations*'
-      - '**/ProfitAnalytics*'
-      - '.github/workflows/profit-operations.yml'
-      - '.github/scripts/upstream-channel-entities-screenshot.mjs'
-      - 'frontend/src/api/admin/profitOperations.ts'
-      - 'frontend/src/i18n/locales/*/profitOps.ts'
   workflow_dispatch:
+
 permissions:
   contents: read
 jobs:
@@ -71,6 +62,11 @@ jobs:
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm exec vitest run src/views/admin/__tests__/ProfitOperationsView.spec.ts src/components/admin/operations/__tests__/SmartOpsNav.spec.ts src/components/layout/__tests__/AppSidebar.spec.ts --maxWorkers=1 --minWorkers=1 --no-file-parallelism
         working-directory: frontend
+      - name: Calendar presets in local timezones
+        working-directory: frontend
+        run: |
+          TZ=Asia/Shanghai pnpm exec vitest run src/views/admin/__tests__/ProfitOperationsView.spec.ts --maxWorkers=1 --minWorkers=1 --no-file-parallelism
+          TZ=Europe/Berlin pnpm exec vitest run src/views/admin/__tests__/ProfitOperationsView.spec.ts --maxWorkers=1 --minWorkers=1 --no-file-parallelism
       - run: pnpm --dir frontend run build
       - name: Install isolated browser
         run: |

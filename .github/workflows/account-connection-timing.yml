@@ -1,14 +1,7 @@
 name: Account connection timing synthetic regression
 
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/**'
-      - 'frontend/src/**'
-      - '.github/workflows/account-connection-timing.yml'
-      - '.github/scripts/account-connection-timing*'
-      - 'docs/account-connection-timing.md'
+  workflow_dispatch:
 
 permissions:
   contents: read

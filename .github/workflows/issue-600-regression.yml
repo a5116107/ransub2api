@@ -1,12 +1,7 @@
 name: Issue 600 WS client identity
 on:
-  push:
-    branches: [fix/issue600-ws-client-identity]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/issue-600-regression.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

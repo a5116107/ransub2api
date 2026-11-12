@@ -98,7 +98,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		mappedModel = account.GetMappedModel(req.Model)
 	}
 
-	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
+	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody, mappedModel)
 	if err != nil {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -143,6 +143,9 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		}
 		requestIDHeader = idHeader
 
+		if err := checkAPIKeyLongContextRequestBeforeForward(ctx, c, upstreamReq, originalModel, mappedModel); err != nil {
+			return nil, err
+		}
 		resp, err = s.doGeminiUpstream(upstreamReq, proxyURL, account)
 		s.rateLimitService.observeQualityResponse(upstreamReq.Context(), account, resp, err)
 		if err != nil {
@@ -613,11 +616,11 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	nextBlockIndex := 0
 	openBlockIndex := -1
 	openBlockType := ""
-	seenText := ""
-	seenThought := ""
+	var seenText geminiTextDelta
+	var seenThought geminiTextDelta
 	openToolIndex := -1
 	openToolName := ""
-	seenToolJSON := ""
+	var seenToolJSON geminiTextDelta
 
 	closeOpenBlock := func() bool {
 		if openBlockIndex < 0 {
@@ -635,7 +638,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 		disconnected := emitAnthropicEvent(&apicompat.AnthropicStreamEvent{Type: "content_block_stop"})
 		openToolIndex = -1
 		openToolName = ""
-		seenToolJSON = ""
+		seenToolJSON.reset()
 		return disconnected
 	}
 
@@ -678,8 +681,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 
 						for _, part := range extractGeminiParts(geminiResp) {
 							if text, ok := part["text"].(string); ok && isGeminiThoughtPart(part) {
-								delta, newSeen := computeGeminiTextDelta(seenThought, text)
-								seenThought = newSeen
+								delta := seenThought.next(text)
 								if delta == "" {
 									continue
 								}
@@ -718,8 +720,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 										return streamResult(), nil
 									}
 								}
-								delta, newSeen := computeGeminiTextDelta(seenText, text)
-								seenText = newSeen
+								delta := seenText.next(text)
 								if delta == "" {
 									continue
 								}
@@ -799,8 +800,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 										argsJSONText = string(b)
 									}
 								}
-								delta, newSeen := computeGeminiTextDelta(seenToolJSON, argsJSONText)
-								seenToolJSON = newSeen
+								delta := seenToolJSON.next(argsJSONText)
 								if delta != "" {
 									if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
 										Type: "content_block_delta",

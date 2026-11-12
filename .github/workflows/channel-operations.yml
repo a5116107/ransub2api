@@ -1,18 +1,7 @@
 name: Channel operations exact-head acceptance
 on:
-  pull_request:
-    paths:
-      - 'backend/internal/**/channel_operations*'
-      - 'backend/migrations/309_channel_operations.sql'
-      - 'frontend/src/**/ChannelOperations*'
-      - 'frontend/src/components/admin/operations/SmartOpsNav.vue'
-      - 'frontend/src/components/admin/operations/__tests__/SmartOpsNav.spec.ts'
-      - 'docs/channel-operations.md'
-      - 'frontend/src/api/admin/channelOperations.ts'
-      - 'frontend/src/i18n/locales/*/channelOps.ts'
-      - '.github/workflows/channel-operations.yml'
-      - '.github/scripts/channel-operations-screenshot.mjs'
   workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:

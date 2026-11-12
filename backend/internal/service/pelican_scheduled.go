@@ -58,9 +58,14 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 	started := time.Now()
 	observation := &availabilityProbeObservation{}
 	ctx = context.WithValue(ctx, availabilityProbeSnapshotKey{}, observation)
+	directOAuth401, directOAuthRevoked401, nativeOAuthTransport := false, false, false
 	ctx = withPelicanTestOptions(ctx, pelicanTestOptions{
-		testChannel: cfg.TestChannel,
-		observeOnly: cfg.Quality != nil && cfg.Quality.Action == QualityActionObserveOnly,
+		directOAuth401:        &directOAuth401,
+		directOAuthRevoked401: &directOAuthRevoked401,
+		nativeOAuthTransport:  &nativeOAuthTransport,
+		qualityBatch:          cfg.QualityBatch,
+		testChannel:           cfg.TestChannel,
+		observeOnly:           cfg.Quality != nil && cfg.Quality.Action == QualityActionObserveOnly,
 	})
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -94,7 +99,8 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 	snapshot := *cfg
 	snapshot.ModelID = model
 	snapshot.AvailabilityResult = availability
-	return &ScheduledTestResult{Status: status, ResponseText: output, ErrorMessage: message, LatencyMs: finished.Sub(started).Milliseconds(), StartedAt: started, FinishedAt: finished, PelicanConfig: &snapshot}, nil
+	snapshot.ActualPrompt = intelligenceTestPrompt(cfg)
+	return &ScheduledTestResult{DirectOAuth401: directOAuth401, DirectOAuthRevoked401: directOAuthRevoked401, Status: status, ResponseText: output, ErrorMessage: message, LatencyMs: finished.Sub(started).Milliseconds(), StartedAt: started, FinishedAt: finished, PelicanConfig: &snapshot}, nil
 }
 
 func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *ScheduledTestPlan) bool {
@@ -120,6 +126,10 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	if (plan.TriggerSource == quality5xxSource && plan.NextRunAt != nil && plan.NextRunAt.After(now)) || (coverageOnly && plan.NextRunAt != nil) {
 		next = *plan.NextRunAt
 	}
+	roundTime := now
+	if plan.NextRunAt != nil {
+		roundTime = *plan.NextRunAt
+	}
 	// Persisted lease prevents duplicate execution across ticks and server replicas.
 	// It also recovers automatically after a process crash.
 	until := now.Add(15 * time.Minute).Truncate(time.Microsecond)
@@ -132,6 +142,9 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	}
 	// Result-only metadata must not mutate the stored rule or shared plan config.
 	snapshot := *plan.PelicanConfig
+	if snapshot.PromptMode == PelicanPromptModeRandom {
+		snapshot = *freezePelicanQuestion(plan.PelicanConfig, "scheduled:"+roundTime.UTC().Format(time.RFC3339Nano), nil)
+	}
 	snapshot.QualityRestoreDiagnostic = nil
 	plan.QualityRestoreDiagnostic = nil
 	snapshot.TriggerSource = plan.TriggerSource
@@ -182,8 +195,21 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	results := make([]*ScheduledTestResult, len(models)*plan.PelicanConfig.ParallelCount)
 	var randomSamples []*PelicanTestConfig
 	var randomQuestionErr error
+	var sharedBatch *QualitySharedBatch
 	if plan.PelicanConfig.QuestionKind == QualityRandomQuestionKind {
-		randomSamples, randomQuestionErr = newQualityRandomSamples(plan.PelicanConfig)
+		candidate, _ := ctx.Value(qualitySharedBatchContextKey{}).(*QualitySharedBatch)
+		if candidate == nil {
+			candidate, randomQuestionErr = newQualitySharedBatch(now)
+		}
+		repo := s.sharedQualityBatchRepo()
+		if repo == nil {
+			randomQuestionErr = fmt.Errorf("quality shared batch storage unavailable")
+		} else if randomQuestionErr == nil {
+			sharedBatch, randomQuestionErr = repo.StartQualityBatch(runCtx, candidate, plan, until)
+		}
+		if randomQuestionErr == nil {
+			randomSamples, randomQuestionErr = sharedQualitySamples(plan.PelicanConfig, sharedBatch)
+		}
 	}
 	// Samples are interleaved by model so each model can start before repeats.
 	// Bound upstream concurrency while waiting for every result, even failures.
@@ -215,6 +241,10 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 				if randomSamples != nil {
 					cfg = *randomSamples[index/len(models)]
 					cfg.ModelID = samplePlan.ModelID
+					if cfg.QualityBatch != nil {
+						evidence := *cfg.QualityBatch
+						cfg.QualityBatch = &evidence
+					}
 				}
 				samplePlan.PelicanConfig = &cfg
 				if randomQuestionErr != nil {
@@ -278,6 +308,26 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 			logger.LegacyPrintf("service.scheduled_test_runner", "availability plan=%d stale result retained only in history", plan.ID)
 		}
 	}
+	if sharedBatch != nil && randomQuestionErr == nil {
+		for _, result := range results {
+			result.PlanID = plan.ID
+			result.QualityRoundID = until.Format(time.RFC3339Nano)
+			result.QualityAction = "comparison_pending"
+		}
+		applyBatch := applyTriggeredQuality
+		if plan.TriggerSource == quality5xxSource && plan.TriggerObservedAt != nil && s.qualityTrigger != nil {
+			applyBatch = applyBatch && s.qualityTrigger.signalIsCurrent(plan.AccountID, *plan.TriggerObservedAt)
+		}
+		run := &QualityBatchRun{Apply: applyBatch, Plan: plan, Until: until, Results: results, Episode: plan.Quality5xxEpisode,
+			Trigger: plan.TriggerSource, ObservedAt: plan.TriggerObservedAt}
+		if err := s.sharedQualityBatchRepo().CollectQualityBatch(saveCtx, run); err != nil {
+			logQualityBatchFailure()
+			return false
+		}
+		// Release worker/concurrency slots before waiting for other accounts.
+		// A later tick finalizes this durable run using the original lease/version.
+		return true
+	}
 	if plan.PelicanConfig.Quality != nil && !coverageOnly && plan.PelicanConfig.Quality.UsesModelResults() {
 		plan.QualityModelOutcomes = qualityPlanModelOutcomes(plan, results)
 	}
@@ -303,6 +353,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		}
 	}
 	succeeded := false
+	allSaved := true
 	for _, result := range results {
 		result.QualityAction = qualityAction
 		if coverageOnly {
@@ -336,7 +387,21 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 			succeeded = true
 		}
 		if err := s.scheduledSvc.SaveResult(saveCtx, plan.ID, plan.MaxResults, result); err != nil {
+			allSaved = false
 			logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d save failed: %v", plan.ID, err)
+		}
+	}
+	if cleanup, ok := s.planRepo.(QualityOAuth401Repository); ok {
+		evidence := &QualityOAuth401Round{}
+		if allSaved {
+			evidence = QualityOAuth401Evidence(plan, results)
+		}
+		deleted, cleanupErr := cleanup.CompleteQualityOAuth401Round(saveCtx, plan, until, evidence)
+		if cleanupErr != nil {
+			logger.LegacyPrintf("service.scheduled_test_runner", "quality OAuth 401 cleanup plan=%d account=%d failed", plan.ID, plan.AccountID)
+		}
+		if deleted {
+			return true // Native deletion cascaded results; do not write them again.
 		}
 	}
 	if succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && plan.PelicanConfig.Availability == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
@@ -395,6 +460,9 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 	}()
 	if plan.PelicanConfig.QuestionKind == QualityRandomQuestionKind && (plan.PelicanConfig.RandomQuestion == nil || plan.PelicanConfig.Prompt == "" || plan.PelicanConfig.Quality == nil || plan.PelicanConfig.Quality.ExpectedAnswer == "") {
 		return failure("random_question_not_prepared")
+	}
+	if batch := plan.PelicanConfig.QualityBatch; batch != nil && !time.Now().Before(batch.StartDeadline) {
+		return failure("quality_batch_start_window_closed")
 	}
 	var err error
 	probeCtx := ctx

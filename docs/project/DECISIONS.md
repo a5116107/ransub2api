@@ -2280,3 +2280,22 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 原28项20done/8部分口径不变；本轮完成公开自有仓库、保留线上功能的合并/迁移/发布、定时同步、公开Release及真实线上更新/重建子验收，不据此关闭缺少供应商契约、非文本组合、模型/fast、可信缓存域/净收益或完整混版等原父验收。上游v2.21.0的自动同步结果仅待审PR，不自动合并或发布。保留原数据备份与回滚镜像；不自动降级数据库。
 - 核查本轮三份一次性部署/演练/浏览器脚本无活动进程，解析绝对路径均在原protocol-cache且为非重解析普通文件；原生PowerShell逐项WhatIf后删除，3文件实际释放25907bytes。最小失败/成功JSON、三张页面图、H盘两版发行归档（交付物）及远端回滚备份保留；历史PNG与拒删路径未触碰。文档检查先发现STATE为8636bytes超8192，原位压缩历史拒删说明并保留DECISIONS中完整路径/证据，未删改待验收项。
 - 最终文档检查退出0：26个本地链接有效，STATE最终为8105bytes/80行，恢复检查点位于前2048bytes；git diff --check通过。生产源码与已通过的117项UI测试、类型/ESLint及29项WSL工具测试输入未变，本轮不重复构建或运行CI。仅提交三份任务文档，历史未跟踪图片保留。
+
+
+### 2026-11-13 — v2.21.0 冲突整合：统一性能，保留自研边界
+
+- 用户明确采用上游统一账号性能/均值评分和页面，不保留第二套分位数评分或并列热图；保留倍率硬门、共享 Key 并发、会话/缓存与线路归属、未知值规则。真实采购价格继续暂缓。集成分支从自研 `98d089446` 合入上游 `b5990096a`，70 个冲突标记已清；生产保持 `v2.19.2-ransub.2`，此次不自动合并、发布或切换线上。
+- 复用同一账号性能聚合与公式，但调度读取增加当前最终物理线路/模型/分组/入站协议/推理档约束；只读分析也带当前线路。账号级 HTTP 计数和质量轮次缺不可变线路证据时保持未知，不向新线路借用旧样本；原质量准入不放宽。PostgreSQL 回归覆盖旧/空/零/外线路、末次尝试、模型、分组、协议和推理档隔离。
+- 上游冷却期 HTTP 归属续期原接口与自研统一 owner 记录不兼容：原位接入版本 2 完整归属，Lua CAS 比较用户、原 Key 和完整创建 scope 后才延长三条记录；不重建丢失镜像，不把同用户换 Key 变成改写原归属。新增账号/线路/模型/tier 不匹配回归，并保留过期、错误、缺记录、持久记录和原用户隔离测试。修复自动合并的重复字段、WS 命名返回值、过时调用签名及重复导入，未新增兼容垫片。
+- 新 target_tps 省略值继续条件写入并保留最新目标；竞争重读最多三次，409/失败不发布缓存。零值保留上游旧配置“默认 TPS”语义，不误改为非法；负值与错误类型拒绝。原会话保护开关在新版表单保留，失败保存保留草稿。重算使用独立拥有的平均首字指针，移除账号仍保留旧值；P90 不参与变更判断。删除新版页面不再调用的前端 getPriorityLatency 导出。
+- 本地证据：正式源码 `go test -p 2 -tags unit ./cmd/... ./ent/... ./internal/... ./migrations ./pkg/... -run '^$'` 153 包编译通过（89 个有测试、64 个无测试）；共享性能/owner/共享 Key 的 unit race 687 用例通过，36 个依赖区域 SQL 的用例当时跳过。请求计时整包 race 通过；handler 专项 16、server/路由、配置、迁移与 wire 测试通过；八包 vet 退出 0。独立 Docker PostgreSQL/Redis 集成 23 个顶层场景/58 用例，零失败零跳过；额外区域 SQL race 正在补验，结果在下条追加。
+- UI 原冲突回归 298/298、新分组/读取消竞态 22/22；vue-tsc、12 文件 ESLint 与最终新增测试 lint 退出 0，生产构建通过。浏览器运行真实组件配合离线合成 API，桌面/390px截图、旧热图移除、共用性能组件、外站请求 0 和浏览器错误 0；这是本地 UI 证据，不冒充生产登录/业务回归。无新增依赖升级来消除 Browserslist/大分包警告。
+- 全量 Python 工具测试在 Windows 首次因 WSL Bash 路径/执行模式出现 1 失败和 6 错误，保留事实；原位相同源码在 WSL Python 下 32/32 通过。自动同步复用人工解冲突的 integration/upstream-stable；新上游不在候选分支时标记 requires_integration，绝不覆盖自研集成分支。仅 Release/Sync upstream 为活动自动化，继承工作流改为手动触发，不运行 CI。
+- 406 份原 SQL 文件内容与 HEAD 比对完全不变，新增 22 份，总 428；新库全迁移、原 Key 并发/共享额度迁移、重复升级和区域视频回滚专项通过。未宣称旧二进制混跑、全部自研能力或生产迁移/回滚已在本候选验证。继承迁移 250 的尾部空行保留，避免为格式修改已发布迁移校验和。
+- 根 go test ./... 发现历史拒删 overlay `backend/tmp/availability-non5xx-regression` 被当独立包编译，失败不隐藏、不重试删除/移动；改用全部正式源码根完成 153 包检查。历史 12 张 PNG/1164 bytes 不改。本轮 resolve-upstream.py 无活动 Python 引用，确认普通文件及绝对目录后原生 PowerShell WhatIf/删除，移除 12902 bytes；回归 JSON/日志、迁移比对和两张浏览器截图作为最小证据留在既有 protocol-cache。
+
+### 2026-11-13 — 补齐隔离 SQL 竞态验证与交付边界
+
+- 隔离容器 `go test -race -p 1 -parallel 2 -tags integration ./internal/repository -run 'Test(.*UpstreamKey|Priority(SessionAffinity|Config)|AccountPerformancePostgres|Issue758RedisHTTP)' -count=1 -timeout 15m -json` 实跑 149 个测试通过、1 个失败、零跳过；原 unit race 的 36 个 SQL 跳过均逐名匹配到本次 pass。唯一失败 TestUpstreamKeyRealRedisAtomicCompetition 因进程 PATH 调用系统 Redis 3.0.504，而脚本使用该版本缺少的 redis.replicate_commands()；保留原失败日志。
+- 仅在子进程 PATH 优先使用已有 `H:/Root/tools/redis/5.0.14.1`，未改源码或系统配置；`go test -race -p 1 -parallel 2 -tags unit ./internal/repository -run '^TestUpstreamKeyRealRedisAtomicCompetition$' -count=1 -timeout 5m -json` 退出 0，测试 0.55 秒、包 1.744 秒，无失败/跳过。证据为 upstream-v2.21.0-integration-race.jsonl、upstream-v2.21.0-redis5-race.jsonl 与对应 stderr；不将前一次失败改报成整包通过。
+- 原 28 项仍为 20 done、8 部分；本次关闭的是 v2.21.0 冲突与本地回归子项，集成分支交付待审，不合并 production、不发布、不部署、不运行 CI。核验 production 的既有自动同步脚本尚无候选复用逻辑；新版逻辑须本 PR 审查合入才生效，届时复用人工集成分支。此前纯上游 PR 在旧定时脚本下仍可能被重新提出，不将候选代码当作已生效自动化。

@@ -23,7 +23,14 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config, db *sql.DB) 
 	if waitTTLSeconds <= 0 {
 		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
 	}
-	base := NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+	// 专用 API Key 短租约只作用于普通共享 Redis 实现。regional authority 的
+	// base 缓存仍按旧的三参语义构造（专用值传 0 = 继承共享 slot TTL），其
+	// 统计/续租委托 base 的行为保持不变。
+	apiKeySlotTTLSeconds := 0
+	if cfg.Runtime.RegionalConcurrencyFile == "" {
+		apiKeySlotTTLSeconds = cfg.Gateway.APIKeySlotTTLSeconds
+	}
+	base := NewConcurrencyCacheWithAPIKeyTTL(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds, apiKeySlotTTLSeconds)
 	if cfg.Runtime.RegionalConcurrencyFile == "" {
 		return base, nil
 	}
@@ -69,12 +76,14 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
+	ProvideAutoCreditEmailOutboxRepository,
 	ProvideRegionalMetering,
 	NewRegionalSchedulerAuthority,
 	NewRegionalAuthAuthority,
 	NewUserRepository,
 	NewAPIKeyRepository,
 	NewGroupRepository,
+	NewGroupAntiDistillationCache,
 	NewAdminGroupRepository,
 	NewCompositeModelRouteRepository,
 	NewAccountRepository,
@@ -195,6 +204,7 @@ var ProviderSet = wire.NewSet(
 
 	ProvideEnt,
 	ProvideSQLDB,
+	NewAutoCreditRepository,
 	ProvideRedis,
 )
 

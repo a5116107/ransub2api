@@ -69,7 +69,7 @@ func regionalForwardGateway(t *testing.T, gateway *service.OpenAIGatewayService,
 	require.NoError(t, os.WriteFile(configPath, raw, 0600))
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway, RegionalAuthFile: configPath, RegionalFundsFile: "fixture"},
 		Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
-	keys, err := service.ProvideAPIKeyService(nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil)
+	keys, err := service.ProvideAPIKeyService(nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil)
 	require.NoError(t, err)
 	t.Cleanup(keys.StopAuthCacheInvalidationSubscriber)
 	_, err = keys.GetRegionalByKey(t.Context(), key.Key)

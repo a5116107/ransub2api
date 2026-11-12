@@ -100,6 +100,31 @@ class SyncUpstreamTest(unittest.TestCase):
                 sync.sync()
             self.assertEqual(git.call_count, 1)
 
+    def test_resolved_integration_is_reused_without_overwriting_tracking(self):
+        sha = 'c' * 40
+        calls = [subprocess.CompletedProcess([], 0, sha + '\trefs/heads/integration/upstream-stable\n'),
+                 subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, sha),
+                 subprocess.CompletedProcess([], 0, '')]
+        with patch.object(sync, 'git', side_effect=calls) as git, patch.object(sync, 'integration_status', return_value='ready_for_review'):
+            self.assertEqual(sync.review_candidate('base', 'source', 'conflicts'),
+                             (sync.INTEGRATION, sha, 'ready_for_review', True))
+        self.assertFalse(any(c.args[0] == 'push' for c in git.call_args_list))
+
+    def test_new_release_marks_existing_candidate_pending_instead_of_replacing_it(self):
+        sha = 'c' * 40
+        calls = [subprocess.CompletedProcess([], 0, sha + '\trefs/heads/integration/upstream-stable\n'),
+                 subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, sha),
+                 subprocess.CompletedProcess([], 1, '')]
+        with patch.object(sync, 'git', side_effect=calls), patch.object(sync, 'integration_status') as preview:
+            self.assertEqual(sync.review_candidate('base', 'new-source', 'conflicts'),
+                             (sync.INTEGRATION, sha, 'requires_integration', False))
+            preview.assert_not_called()
+
+    def test_no_prepared_candidate_retains_pure_upstream_review(self):
+        with patch.object(sync, 'git', return_value=subprocess.CompletedProcess([], 0, '')):
+            self.assertEqual(sync.review_candidate('base', 'source', 'conflicts'),
+                             (sync.TRACKING, 'source', 'conflicts', True))
+
     def test_workflow_has_no_build_release_or_merge_step(self):
         text = (Path(__file__).parents[1] / 'workflows/sync-upstream.yml').read_text(encoding='utf-8')
         self.assertIn('23 */6 * * *', text)

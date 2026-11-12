@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -64,6 +65,10 @@ const (
 // 若编辑 Key 时无条件整行回写，并发累计的配额与限流计数就会被旧快照覆盖。
 // 因此调用方必须显式声明要改的列。
 type APIKeyUpdateFields struct {
+	// Administrator-only policy fields have independent masks to preserve concurrent edits.
+	ModelMapping     bool
+	ReasoningEffort  bool
+	AllowLongContext bool
 	ConcurrencyLimit bool
 	Name             bool
 	Status           bool
@@ -293,6 +298,9 @@ type RateLimitCacheInvalidator interface {
 }
 
 type APIKeyService struct {
+	groupAntiDistillation     *GroupAntiDistillationService
+	autoCredit                AutoCreditRepository
+	autoCreditBilling         *BillingCacheService
 	balanceRejectionNotifier  BalanceRejectionNotifier
 	localAuth                 *RegionalAuthReader
 	regionalAuthRuntime       *regionalSchedulerRuntime
@@ -589,6 +597,7 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		GroupIDs:         groupIDs,
 		GroupID:          req.GroupID,
 		Status:           StatusActive,
+		AllowLongContext: true,
 		IPWhitelist:      req.IPWhitelist,
 		IPBlacklist:      req.IPBlacklist,
 		Quota:            req.Quota,
@@ -775,7 +784,8 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 	if s.cfg != nil && s.cfg.Runtime.Role == config.RuntimeRoleGateway && s.cfg.Runtime.RegionalAuthFile != "" {
 		return nil, ErrRegionalAuthUnavailable
 	}
-	if len(key) == 0 || len(key) > MaxAPIKeyCredentialBytes {
+	// Reject malformed credentials before any cache or PostgreSQL lookup.
+	if len(key) == 0 || len(key) > MaxAPIKeyCredentialBytes || !utf8.ValidString(key) {
 		return nil, ErrAPIKeyNotFound
 	}
 	cacheKey := s.authCacheKey(key)
@@ -840,7 +850,7 @@ func (s *APIKeyService) GetByKeyUncached(ctx context.Context, key string) (*APIK
 	if s.cfg != nil && s.cfg.Runtime.Role == config.RuntimeRoleGateway && s.cfg.Runtime.RegionalAuthFile != "" {
 		return nil, ErrRegionalAuthUnavailable
 	}
-	if len(key) == 0 || len(key) > MaxAPIKeyCredentialBytes {
+	if len(key) == 0 || len(key) > MaxAPIKeyCredentialBytes || !utf8.ValidString(key) {
 		return nil, ErrAPIKeyNotFound
 	}
 	apiKey, err := s.lookupAPIKeyForAuth(ctx, key)

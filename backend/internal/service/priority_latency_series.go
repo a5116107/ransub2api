@@ -16,6 +16,7 @@ type PriorityLatencySeriesQuery struct {
 	GroupID                  *int64
 	InboundEndpoint          string
 	ObservationEffort        *string
+	Until                    time.Time
 	Since                    time.Time
 	BucketMinutes            int
 	LatencyPercentile        int
@@ -62,6 +63,8 @@ type PriorityLatencyAccountSeries struct {
 }
 
 type PriorityLatencySeries struct {
+	ConfigRevision     string                         `json:"config_revision"`
+	TargetTTFTMs       int                            `json:"target_ttft_ms,omitempty"`
 	At                 time.Time                      `json:"at"`
 	Model              string                         `json:"model"`
 	GroupID            *int64                         `json:"group_id"`
@@ -91,7 +94,7 @@ func (s *OpenAIGatewayService) PriorityLatencySeries(ctx context.Context, minute
 	if input == nil || len(input.candidates) == 0 {
 		return nil, ErrPriorityLatencySeriesUnavailable
 	}
-	snapshot := s.prioritySchedulingSnapshot(input)
+	snapshot, history := s.prioritySchedulingSnapshotWithHistory(input)
 	ids := make([]int64, 0, len(snapshot.Candidates))
 	summary := make(map[int64]PrioritySchedulingScore, len(snapshot.Candidates))
 	for _, candidate := range snapshot.Candidates {
@@ -133,26 +136,28 @@ func (s *OpenAIGatewayService) PriorityLatencySeries(ctx context.Context, minute
 	for _, row := range rows {
 		byAccount[row.AccountID] = append(byAccount[row.AccountID], row)
 	}
-	series := &PriorityLatencySeries{At: snapshot.At, Model: snapshot.Model, GroupID: group, BucketMinutes: bucketMinutes, LatencyPercentile: cfg.LatencyPercentile, LatencyMeasurement: cfg.LatencyMeasurement, Accounts: make([]PriorityLatencyAccountSeries, 0, len(ids))}
+	series := &PriorityLatencySeries{ConfigRevision: snapshot.ConfigRevision, At: snapshot.At, Model: snapshot.Model, GroupID: group, BucketMinutes: bucketMinutes, LatencyPercentile: cfg.LatencyPercentile, LatencyMeasurement: cfg.LatencyMeasurement, Accounts: make([]PriorityLatencyAccountSeries, 0, len(ids))}
 	for _, id := range ids {
 		score := summary[id]
+		diagnostic := history.signals[id]
 		account := PriorityLatencyAccountSeries{
 			AccountID:          id,
 			AccountName:        score.AccountName,
-			Samples:            score.Samples,
-			P50TTFTMs:          score.P50TTFTMs,
-			P70TTFTMs:          score.P70TTFTMs,
-			P90TTFTMs:          score.P90TTFTMs,
-			P95TTFTMs:          score.P95TTFTMs,
-			P99TTFTMs:          score.P99TTFTMs,
+			Samples:            diagnostic.Samples,
+			P50TTFTMs:          diagnostic.P50TTFTMs,
+			P70TTFTMs:          diagnostic.P70TTFTMs,
+			P90TTFTMs:          diagnostic.P90TTFTMs,
+			P95TTFTMs:          diagnostic.P95TTFTMs,
+			P99TTFTMs:          diagnostic.P99TTFTMs,
 			LatencyPercentile:  cfg.LatencyPercentile,
 			LatencyMeasurement: cfg.LatencyMeasurement,
-			SlowSamples:        score.SlowSamples,
-			ErrorSamples:       score.ErrorSamples,
-			ErrorRate:          score.UpstreamErrorRate,
+			SlowSamples:        diagnostic.SlowSamples,
+			ErrorSamples:       diagnostic.ErrorSamples,
+			ErrorRate:          diagnostic.UpstreamErrorRate,
 		}
-		if score.SelectedTTFTMs != nil {
-			value := *score.SelectedTTFTMs
+		// Quantiles remain diagnostics only; never alias the scoring mean.
+		if diagnostic.SelectedTTFTMs != nil && diagnostic.LatencyPercentile == cfg.LatencyPercentile && diagnostic.LatencyMeasurement == cfg.LatencyMeasurement {
+			value := *diagnostic.SelectedTTFTMs
 			account.SelectedTTFTMs = &value
 		}
 		account.Buckets = byAccount[id]

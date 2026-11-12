@@ -105,6 +105,42 @@ func TestPrioritySavePreservesOmittedProtocolPreference(t *testing.T) {
 	}
 }
 
+func TestPrioritySavePreservesLegacyTPSAndValidatesExplicitTarget(t *testing.T) {
+	for _, target := range []any{nil, float64(40), float64(0), float64(-1), "40"} {
+		t.Run(fmt.Sprint(target), func(t *testing.T) {
+			cfg := service.DefaultPrioritySchedulingConfig()
+			cfg.TargetTPS = 55
+			raw, err := json.Marshal(cfg)
+			require.NoError(t, err)
+			repo := &priorityCompatSettings{value: string(raw)}
+			h := &SettingHandler{settingService: service.NewSettingService(repo, nil)}
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(raw, &body))
+			delete(body, "target_tps")
+			want, status := 55.0, http.StatusOK
+			if target != nil {
+				body["target_tps"] = target
+				if value, ok := target.(float64); ok && value >= 0 {
+					// Zero is the upstream legacy sentinel for the default TPS.
+					want = value
+				} else {
+					status = http.StatusBadRequest
+				}
+			}
+			raw, err = json.Marshal(body)
+			require.NoError(t, err)
+			router := gin.New()
+			router.PUT("/config", h.SavePriorityScheduling)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(raw)))
+			require.Equal(t, status, recorder.Code, recorder.Body.String())
+			var saved service.PrioritySchedulingConfig
+			require.NoError(t, json.Unmarshal([]byte(repo.value), &saved))
+			require.Equal(t, want, saved.TargetTPS)
+		})
+	}
+}
+
 func TestPrioritySavePreservesAndDisablesOAuthQuotaPolicy(t *testing.T) {
 	for _, explicit := range []bool{false, true} {
 		cfg := service.DefaultPrioritySchedulingConfig()

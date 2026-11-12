@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/serverless"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/google/wire"
@@ -37,6 +38,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	wire.Build(
 		// Infrastructure layer ProviderSets
 		config.ProviderSet,
+		serverless.NewGeoJSResolver,
+		wire.Bind(new(serverless.CountryResolver), new(*serverless.GeoJSResolver)),
 
 		// Business layer ProviderSets
 		repository.ProviderSet,
@@ -84,6 +87,8 @@ func providePluginHostInfo(buildInfo handler.BuildInfo) service.PluginHostInfo {
 }
 
 func provideCleanup(
+	balanceNotify *service.BalanceNotifyService,
+	autoCreditEmail *service.AutoCreditEmailWorker,
 	cfg *config.Config,
 	requestCaptures *requestcapture.Manager,
 	entClient *ent.Client,
@@ -151,6 +156,9 @@ func provideCleanup(
 		}
 	}
 	return func() {
+		if balanceNotify != nil {
+			balanceNotify.Stop()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
@@ -177,6 +185,7 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"AutoCreditEmailWorker", func() error { autoCreditEmail.Stop(); return nil }},
 			{"BPSWarmPool", func() error {
 				if openAIGateway != nil {
 					openAIGateway.StopBPS403Recovery()

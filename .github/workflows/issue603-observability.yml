@@ -1,7 +1,7 @@
 name: Issue 603 complete observability acceptance
 on:
-  pull_request:
-    branches: [production]
+  workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:

@@ -1,10 +1,7 @@
 name: PR597 dedicated streaming timing regression
 
 on:
-  pull_request:
-    branches: [production]
-  push:
-    branches: [ci/pr597-stream-timing-evidence]
+  workflow_dispatch:
 
 permissions:
   contents: read

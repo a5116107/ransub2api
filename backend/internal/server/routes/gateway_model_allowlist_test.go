@@ -78,13 +78,13 @@ func TestGatewayRoutesGroupModelAllowlistMountedOnEveryGatewayRoute(t *testing.T
 	// rootRoute must retain the complete order, including the optional funds
 	// gate after all group policies and before Pod/composite routing.
 	rootHelper := regexp.MustCompile(
-		regexp.QuoteMeta(`handlers := []gin.HandlerFunc{traffic, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), captureTraffic, imageAdmission, groupModelAllowlist, groupCodexCLIOnly, groupBlockSubagents, groupStreamOnly}`) +
+		regexp.QuoteMeta(`handlers := []gin.HandlerFunc{traffic, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), captureTraffic, imageAdmission, groupModelAllowlist, apiKeyModelPolicy, groupCodexCLIOnly, groupBlockSubagents, groupAntiDistillation, groupStreamOnly, apiKeyLongContext}`) +
 			`\s*` + regexp.QuoteMeta(`if regionalVideoFundsGate != nil {`) +
 			`\s*` + regexp.QuoteMeta(`handlers = append(handlers, regionalVideoFundsGate)`) +
-			`\s*}\s*` + regexp.QuoteMeta(`handlers = append(handlers, podRoute, compositeTarget, requireGroupAnthropic, handler)`) +
+			`\s*}\s*` + regexp.QuoteMeta(`handlers = append(handlers, podRoute, compositeTarget, apiKeyLongContext, requireGroupAnthropic, handler)`) +
 			`\s*` + regexp.QuoteMeta(`r.Handle(method, path, handlers...)`))
 	require.Regexp(t, rootHelper, source,
-		"root alias helper must place the allowlist between apiKeyAuth and compositeTarget")
+		"root alias helper must place the allowlist after apiKeyAuth, then protection and stream-only admission before compositeTarget")
 
 	chains := []struct {
 		group     string
@@ -92,9 +92,9 @@ func TestGatewayRoutesGroupModelAllowlistMountedOnEveryGatewayRoute(t *testing.T
 		marker    string
 		composite string
 	}{
-		{group: "gateway", auth: "gin.HandlerFunc(apiKeyAuth)", marker: "gateway.Use(groupModelAllowlist)", composite: "gateway.Use(compositeTarget)"},
+		{group: "gateway", auth: "gin.HandlerFunc(apiKeyAuth)", marker: "gateway.Use(groupModelAllowlist, apiKeyModelPolicy)", composite: "gateway.Use(compositeTarget)"},
 		{group: "gemini", auth: "middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg)", marker: "gemini.Use(groupModelAllowlist)", composite: "gemini.Use(compositeGeminiTarget)"},
-		{group: "antigravityV1", auth: "gin.HandlerFunc(apiKeyAuth)", marker: "antigravityV1.Use(groupModelAllowlist)", composite: "antigravityV1.Use(requireGroupAnthropic)"},
+		{group: "antigravityV1", auth: "gin.HandlerFunc(apiKeyAuth)", marker: "antigravityV1.Use(groupModelAllowlist, apiKeyModelPolicy)", composite: "antigravityV1.Use(requireGroupAnthropic)"},
 		{group: "antigravityV1Beta", auth: "middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg)", marker: "antigravityV1Beta.Use(groupModelAllowlist)", composite: "antigravityV1Beta.Use(requireGroupGoogle)"},
 	}
 	for _, chain := range chains {
@@ -107,8 +107,8 @@ func TestGatewayRoutesGroupModelAllowlistMountedOnEveryGatewayRoute(t *testing.T
 	}
 
 	// codexDirect 链是一条 Use 调用，直接断言顺序。
-	codexDirect := regexp.MustCompile(regexp.QuoteMeta(`codexDirect.Use(traffic, bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), captureTraffic, imageAdmission, groupModelAllowlist, groupCodexCLIOnly, groupBlockSubagents, groupStreamOnly, podRoute, compositeTarget, requireGroupAnthropic)`))
-	require.Regexp(t, codexDirect, source, "codexDirect chain must mount the allowlist after auth and before compositeTarget")
+	codexDirect := regexp.MustCompile(regexp.QuoteMeta(`codexDirect.Use(traffic, bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), captureTraffic, imageAdmission, groupModelAllowlist, apiKeyModelPolicy, groupCodexCLIOnly, groupBlockSubagents, groupAntiDistillation, groupStreamOnly, apiKeyLongContext, podRoute, compositeTarget, apiKeyLongContext, requireGroupAnthropic)`))
+	require.Regexp(t, codexDirect, source, "codexDirect chain must mount the allowlist after auth, then protection and stream-only admission before compositeTarget")
 
 	// 所有带 apiKeyAuth 的根路径路由必须收敛到 rootRoute，避免漏挂。
 	stray := regexp.MustCompile(`\br\.(GET|POST|PUT|PATCH|DELETE)\("[^"]+",[^(]*apiKeyAuth`)

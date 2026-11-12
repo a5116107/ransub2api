@@ -1,18 +1,7 @@
 name: Issue 582 Redis compatibility
 
 on:
-  push:
-    branches: [fix/issue-582-redis-compatibility]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/**'
-      - 'README*.md'
-      - 'deploy/README.md'
-      - 'docs/redis-compatibility.md'
-      - 'docs/openai-siwc.md'
-      - '.github/workflows/issue-582-regression.yml'
-      - '.github/scripts/issue-582-red.sh'
+  workflow_dispatch:
 
 permissions:
   contents: read

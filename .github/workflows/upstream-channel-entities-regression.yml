@@ -1,25 +1,7 @@
 name: Upstream channel entities regression
 on:
-  push:
-    branches: [feat/profit-url-channel-remarks]
-  pull_request:
-    paths:
-      - '**/upstream_channels*'
-      - '**/UpstreamChannel*'
-      - '**/AccountUpstreamChannel*'
-      - 'frontend/src/components/account/*AccountModal.vue'
-      - 'backend/migrations/312_upstream_channel_entities.sql'
-      - 'backend/migrations/313_upstream_channel_binding_delete_revision.sql'
-      - '**/profit_operations*'
-      - '**/ProfitOperations*'
-      - '**/ProfitAnalytics*'
-      - 'backend/internal/server/routes/admin.go'
-      - 'backend/internal/server/middleware/audit_log.go'
-      - 'frontend/src/api/admin/profitOperations.ts'
-      - 'frontend/src/i18n/locales/*/profitOps.ts'
-      - '.github/workflows/upstream-channel-entities-regression.yml'
-      - '.github/scripts/upstream-channel-entities-screenshot.mjs'
   workflow_dispatch:
+
 permissions:
   contents: read
 jobs:
@@ -160,6 +142,7 @@ jobs:
       - run: pnpm --dir frontend run build
       - name: Install isolated browser
         run: |
+          bash .github/scripts/ci-ubuntu-mirrors.sh
           npm install --prefix "$RUNNER_TEMP/upstream-channel-browser" --no-save --ignore-scripts playwright@1.56.1
           "$RUNNER_TEMP/upstream-channel-browser/node_modules/.bin/playwright" install --with-deps chromium
       - name: Exact profit page browser with synthetic data

@@ -226,13 +226,20 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
-	ImageCacheReadTokens     int `json:"image_cache_read_tokens,omitempty"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	// CacheReadKnown records an explicit, valid cache read counter from the
+	// upstream. Missing counters must never become zero-cache protection samples.
+	CacheReadKnown bool `json:"-"`
+	// Preserve request modality when a terminal usage omits earlier media details.
+	cacheReadMediaObserved      bool
+	InputTokens                 int `json:"input_tokens"`
+	ImageInputTokens            int `json:"image_input_tokens,omitempty"`
+	ImageCacheReadTokens        int `json:"image_cache_read_tokens,omitempty"`
+	OutputTokens                int `json:"output_tokens"`
+	CacheCreation30mInputTokens int `json:"cache_creation_30m_input_tokens,omitempty"`
+	CacheCreation12hInputTokens int `json:"cache_creation_12h_input_tokens,omitempty"`
+	CacheCreationInputTokens    int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens        int `json:"cache_read_input_tokens,omitempty"`
+	ImageOutputTokens           int `json:"image_output_tokens,omitempty"`
 }
 
 // OpenAIForwardResult represents the result of forwarding
@@ -345,7 +352,8 @@ type OpenAIForwardResult struct {
 	wsAccountFailoverReplayInput []json.RawMessage
 	// Local stream-read timeout is not an observed upstream terminal event.
 	// Keep observed partial usage without reporting a successful generation.
-	streamReadIncomplete bool
+	streamReadIncomplete      bool
+	antiDistillationRequestID string
 }
 
 const maxOpenAIQueueWait = time.Hour
@@ -521,12 +529,15 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
+	agentMessageRecovery    openAIAgentRecoveryState
+	groupAntiDistillation   *GroupAntiDistillationService
 	smartProtocolHistory    openAISmartProtocolHistory
 	requestTimezoneEgress   openAIRequestTimezoneEgress
 	requestTimezoneProber   ProxyExitInfoProber
 	stopAstraSetup          func()
 	codexWSAnchors          codexWSAnchorStore
 	priorityScheduling      prioritySchedulingState
+	priorityAnalysis        priorityAnalysisFlights
 	excelBPSRecoveryMu      sync.Mutex
 	excelBPSRecoveryCancel  context.CancelFunc
 	excelBPSRecoveryDone    chan struct{}
@@ -887,6 +898,7 @@ func (s *OpenAIGatewayService) billingDeps() *billingDeps {
 // 应在应用优雅关闭时调用。
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	if s != nil {
+		s.priorityAnalysis.close()
 		s.codexSnapshotMu.Lock()
 		s.codexSnapshotClosed = true
 		throttle := s.codexSnapshotThrottle
@@ -1099,6 +1111,10 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 }
 
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
+	var incomplete *OpenAIWSSSEIncompleteError
+	if errors.As(wsErr, &incomplete) {
+		return s.writeOpenAIWSSSEIncomplete(c, account, incomplete)
+	}
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
 	}

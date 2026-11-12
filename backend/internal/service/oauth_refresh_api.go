@@ -20,6 +20,18 @@ type OAuthRefreshExecutor interface {
 	CacheKey(account *Account) string
 }
 
+// refreshContextErr also checks the clock: a deadline can pass before the
+// context's timer callback is scheduled and updates Err.
+func refreshContextErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 // GrokOAuthRefreshSuccessRepository is the persistence boundary for a
 // provider-issued Grok credential rotation. Implementations must compare the
 // complete credential document and proxy used by the upstream attempt, and
@@ -254,12 +266,12 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	}
 
 	// 4. 执行平台特定刷新逻辑
-	if ctxErr := oauthRefreshContextError(ctx); ctxErr != nil {
+	if ctxErr := refreshContextErr(ctx); ctxErr != nil {
 		return nil, ctxErr
 	}
 	attemptedAccount := snapshotOAuthRefreshAccount(freshAccount)
 	newCredentials, refreshErr := executor.Refresh(ctx, freshAccount)
-	if ctxErr := oauthRefreshContextError(ctx); ctxErr != nil {
+	if ctxErr := refreshContextErr(ctx); ctxErr != nil {
 		// A provider implementation may ignore cancellation and return late
 		// credentials. Never persist them after the attempt/cycle boundary.
 		return nil, ctxErr
@@ -353,12 +365,20 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// while the provider call was in flight. Return the durable row so
 			// post-refresh cache publication cannot restore that stale snapshot.
 			freshAccount = durableAccount
-		} else if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
-			slog.Error("oauth_refresh_update_failed",
-				"account_id", freshAccount.ID,
-				"error", updateErr,
-			)
-			return nil, fmt.Errorf("%w: %v", errOAuthRefreshCredentialPersist, updateErr)
+		} else {
+			current, applied, updateErr := persistOAuthRefreshedCredentials(ctx, api.accountRepo, freshAccount, attemptedAccount, newCredentials)
+			if updateErr != nil {
+				slog.Error("oauth_refresh_update_failed",
+					"account_id", freshAccount.ID,
+					"error", updateErr,
+				)
+				return nil, fmt.Errorf("%w: %w", errOAuthRefreshCredentialPersist, updateErr)
+			}
+			if !applied {
+				return &OAuthRefreshResult{Account: current}, nil
+			}
+			freshAccount = current
+			newCredentials = shallowCopyMap(current.Credentials)
 		}
 	}
 
@@ -467,16 +487,4 @@ func BuildClaudeAccountCredentials(tokenInfo *TokenInfo) map[string]any {
 		creds["scope"] = tokenInfo.Scope
 	}
 	return creds
-}
-
-// Cancellation callbacks may be scheduled after the deadline. A pending Err
-// cannot authorize accepting or persisting a result beyond the refresh budget.
-func oauthRefreshContextError(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-		return context.DeadlineExceeded
-	}
-	return nil
 }

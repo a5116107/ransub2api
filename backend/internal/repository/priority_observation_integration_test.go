@@ -33,6 +33,10 @@ func TestPriorityObservationPersistedRouteIsolation(t *testing.T) {
 					ttft = 25000
 				}
 				f.usage.AccountID, f.usage.FirstTokenMs, f.usage.ActualCost = id, &ttft, 1
+ f.usage.OutputTokens = 20
+ duration := 30000
+ f.usage.DurationMs = &duration
+ f.trace.StartedAt = time.Now().Add(-time.Minute)
 				f.trace.Version, f.trace.Status, f.trace.Outcome, f.trace.Terminal, f.trace.BodyComplete = 1, 200, "success", "completed", true
 				f.trace.Attempts = []requesttiming.Attempt{{Kind: "http", AccountID: id, RouteFingerprint: route, Status: 200, Terminal: "completed", Events: map[string]float64{"first_semantic": float64(ttft)}}}
 				switch mode {
@@ -72,9 +76,9 @@ func TestPriorityObservationPersistedRouteIsolation(t *testing.T) {
 			signals, err := f.repo.ReadPrioritySchedulingSignals(t.Context(), query)
 			require.NoError(t, err)
 			for id, want := range map[int64]float64{account: 500, peer.ID: 700} {
-				require.Equal(t, 1, signals[id].Samples, "only the final physical attempt proving this candidate route may contribute")
-				require.InDelta(t, want, signals[id].P90TTFTMs, .01)
-				require.Equal(t, 1, signals[id].ProfitSamples)
+				require.Equal(t, 1, signals[id].Performance.TTFTSamples, "only the final physical attempt proving this candidate route may contribute")
+				require.InDelta(t, want, *signals[id].Performance.AvgTTFTMs, .01)
+				require.Greater(t, signals[id].ProfitSamples, 0, "financial history retains real model/group usage even across route changes")
 				require.Zero(t, signals[id].ErrorSamples, "ops errors without route proof cannot be attributed to the current route")
 			}
 			buckets, err := f.repo.ReadPriorityLatencySeries(t.Context(), service.PriorityLatencySeriesQuery{AccountIDs: query.AccountIDs, Model: query.Model, Since: query.UsageSince, InboundEndpoint: inbound, LatencyMeasurement: measurement, AccountRouteFingerprints: query.AccountRouteFingerprints})
@@ -88,12 +92,12 @@ func TestPriorityObservationPersistedRouteIsolation(t *testing.T) {
 			query.AccountRouteFingerprints = map[int64]string{}
 			signals, err = f.repo.ReadPrioritySchedulingSignals(t.Context(), query)
 			require.NoError(t, err)
-			require.Zero(t, signals[account].Samples, "an explicitly scoped account with no route proof stays unknown")
+			require.Zero(t, signals[account].Performance.TTFTSamples, "an explicitly scoped account with no route proof stays unknown")
 			query.AccountRouteFingerprints = nil
 			signals, err = f.repo.ReadPrioritySchedulingSignals(t.Context(), query)
 			require.NoError(t, err)
-			require.Greater(t, signals[account].Samples, 1, "explicit legacy unscoped repository calls retain their original population")
-			require.Equal(t, 1, signals[account].ErrorSamples)
+			require.Greater(t, signals[account].Performance.TTFTSamples, 1, "explicit legacy unscoped repository calls retain their original population")
+			require.Zero(t, signals[account].ErrorSamples, "legacy error rows are not the shared HTTP response evidence")
 		})
 	}
 }
@@ -253,30 +257,24 @@ func TestPriorityObservationPersistedPublicAliasAndGroup(t *testing.T) {
 	})
 	got, err := committedReader.ReadPrioritySchedulingSignals(ctx, query)
 	require.NoError(t, err)
-	require.Equal(t, 1, got[account.ID].Samples)
-	require.Equal(t, 1, got[account.ID].LatencyUnknownSamples, "NULL TTFT remains unknown")
 	require.Equal(t, 2, got[account.ID].ProfitSamples)
-	require.Equal(t, 1, got[account.ID].QualitySamples)
-	require.Equal(t, 1, got[account.ID].QualityPassed)
-	require.InDelta(t, 1234, got[account.ID].P90TTFTMs, .01)
+	require.NotNil(t, got[account.ID].Performance)
+	require.Nil(t, got[account.ID].Performance.AvgTTFTMs, "untraced legacy usage is not valid performance evidence")
+	require.Equal(t, 1, got[account.ID].Performance.QualitySamples)
 	query.QualityModel = "different-route"
 	qualityOther, err := committedReader.ReadPrioritySchedulingSignals(ctx, query)
 	require.NoError(t, err)
-	require.Zero(t, qualityOther[account.ID].QualitySamples)
-	require.Equal(t, 1, qualityOther[account.ID].Samples)
-	query.QualityModel = "channel-route"
+	require.Equal(t, got[account.ID].Performance.QualitySamples, qualityOther[account.ID].Performance.QualitySamples, "account performance pools probe models")
 	query.Model = "other-public"
 	other, err := committedReader.ReadPrioritySchedulingSignals(ctx, query)
 	require.NoError(t, err)
-	require.Equal(t, 1, other[account.ID].Samples)
-	require.Zero(t, other[account.ID].LatencyUnknownSamples)
-	query.Model = "public-composite"
-	query.GroupID = nil
+	require.Equal(t, 1, other[account.ID].ProfitSamples)
+	query.Model, query.GroupID = "public-composite", nil
 	other, err = committedReader.ReadPrioritySchedulingSignals(ctx, query)
 	require.NoError(t, err)
-	require.Equal(t, 1, other[account.ID].Samples)
+	require.Equal(t, 1, other[account.ID].ProfitSamples)
 	query.Model = "channel-route"
 	other, err = committedReader.ReadPrioritySchedulingSignals(ctx, query)
 	require.NoError(t, err)
-	require.Zero(t, other[account.ID].Samples, "routing identity cannot borrow a different public model")
+	require.Zero(t, other[account.ID].ProfitSamples, "financial history retains public model identity")
 }

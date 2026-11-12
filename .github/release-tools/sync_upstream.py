@@ -11,6 +11,7 @@ REPOSITORY = 'a5116107/ransub2api'
 UPSTREAM = 'ranxi2001/sub2api'
 BASE = 'production'
 TRACKING = 'upstream/stable'
+INTEGRATION = 'integration/upstream-stable'
 
 
 def command(*args, check=True):
@@ -25,7 +26,8 @@ def gh_json(*args):
     if args[0] == 'api':
         return github('GET', args[1])
     if args[:2] == ('pr', 'list'):
-        return github('GET', f'repos/{REPOSITORY}/pulls?state=open&base={BASE}&head=a5116107:{TRACKING}')
+        head = args[args.index('--head') + 1]
+        return github('GET', f'repos/{REPOSITORY}/pulls?state=open&base={BASE}&head=a5116107:{head}')
     return json.loads(command('gh', *args).stdout)
 
 
@@ -36,6 +38,19 @@ def integration_status(base, source):
     if merged.returncode not in (0, 1):
         raise RuntimeError('merge preview failed; no branch or release was changed')
     return 'ready_for_review' if merged.returncode == 0 else 'conflicts'
+
+
+def review_candidate(base, source, status):
+    """Reuse a maintainer-resolved branch; never replace it with an upstream tip."""
+    remote = git('ls-remote', '--heads', 'origin', f'refs/heads/{INTEGRATION}').stdout.strip()
+    if not remote:
+        return TRACKING, source, status, True
+    git('fetch', '--no-tags', 'origin', f'refs/heads/{INTEGRATION}')
+    candidate = git('rev-parse', 'FETCH_HEAD^{commit}').stdout.strip()
+    contains_source = git('merge-base', '--is-ancestor', source, candidate, check=False).returncode == 0
+    if not contains_source:
+        return INTEGRATION, candidate, 'requires_integration', False
+    return INTEGRATION, candidate, integration_status(base, candidate), True
 
 
 def sync(dry_run=False):
@@ -65,24 +80,34 @@ def sync(dry_run=False):
     # Normal push intentionally rejects a rewritten upstream history. Never
     # force-push or copy upstream files over the custom production branch.
     git('push', 'origin', f'{source}:refs/heads/{TRACKING}')
+    head, candidate, status, contains_source = review_candidate(base, source, status)
+    result.update(status=status, review_head=head, candidate_sha=candidate, upstream_in_candidate=contains_source)
     title = f'chore: integrate upstream {tag} [skip ci]'
     body = (f'Upstream: {UPSTREAM} {tag}\n\n'
             f'Pinned upstream commit: `{source}`\n\n'
             f'Custom base at preview: `{base}`\n\n'
             f'Merge preview: **{status}**.\n\n'
+            f'Review branch: `{head}` at `{candidate}`; pinned upstream included: `{contains_source}`.\n\n'
+            'A prepared integration branch is never overwritten. New releases missing from it require maintainer integration.\n\n'
             'This sync does not merge production, build, release, or deploy. '
             'Retain custom scheduling, session/cache ownership, shared-Key limits, '
             'regional video ownership, and account performance monitoring. '
             'Resolve semantic conflicts, run local regressions and migration/rollback '
             'checks, then publish a custom stable release. No CI was requested.\n')
     existing = gh_json('pr', 'list', '--repo', REPOSITORY, '--base', BASE,
-                       '--head', TRACKING, '--state', 'open', '--json', 'number,url')
+                       '--head', head, '--state', 'open', '--json', 'number,url')
     if existing:
         github('PATCH', f'repos/{REPOSITORY}/pulls/{existing[0]["number"]}', {'title': title, 'body': body})
         result['pull_request'] = existing[0]['html_url']
     else:
-        request = github('POST', f'repos/{REPOSITORY}/pulls', {'title': title, 'body': body, 'base': BASE, 'head': TRACKING})
+        request = github('POST', f'repos/{REPOSITORY}/pulls', {'title': title, 'body': body, 'base': BASE, 'head': head})
         result['pull_request'] = request['html_url']
+    if head == INTEGRATION:
+        superseded = gh_json('pr', 'list', '--repo', REPOSITORY, '--base', BASE,
+                             '--head', TRACKING, '--state', 'open', '--json', 'number,url')
+        for request in superseded:
+            github('PATCH', f"repos/{REPOSITORY}/pulls/{request['number']}",
+                   {'state': 'closed', 'body': 'Superseded by the resolved integration review: ' + result['pull_request']})
     return result
 
 

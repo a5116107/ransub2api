@@ -84,6 +84,9 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	}
 
 	// 发送请求
+	if err := checkAPIKeyLongContextBeforeForward(ctx, c, nil, body, originalModel); err != nil {
+		return nil, err
+	}
 	resp, err := s.doAntigravityUpstream(req, proxyURL, account, s.httpUpstream)
 	s.rateLimitService.observeQualityResponse(req.Context(), account, resp, err)
 	if err != nil {

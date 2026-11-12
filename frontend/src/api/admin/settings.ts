@@ -45,11 +45,12 @@ export type SchedulingThresholdPlatformType =
   | "minimax"
   | "opencode_go"
   | "command_code"
+  | "mistral"
 
 export type AccountSchedulingThresholdsMap = Record<SchedulingThresholdPlatformType, number>
 
 // 与后端 AllowedSchedulingThresholdPlatforms 保持一致（deepseek 为余额型，
-// 走余额检测而非用量阈值；minimax Coding/Token Plan、OpenCode GO 与 Command Code 有滚动窗口）。
+// 走余额检测而非用量阈值；minimax Coding/Token Plan、OpenCode GO、Command Code 与 Mistral 有滚动/月度窗口）。
 export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] = [
   "openai",
   "anthropic",
@@ -59,6 +60,7 @@ export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] =
   "minimax",
   "opencode_go",
   "command_code",
+  "mistral",
 ]
 
 export function normalizeAccountSchedulingThresholdsMap(
@@ -746,6 +748,9 @@ export interface SystemSettings {
   openai_advanced_scheduler_effective_weight_session_sticky?: string;
 
   // 余额、订阅到期与账号限额通知
+  balance_forecast_enabled: boolean;
+  balance_forecast_threshold_hours: number;
+  balance_forecast_max_notifications: number;
   balance_low_notify_enabled: boolean;
   balance_low_notify_threshold: number;
   balance_low_notify_recharge_url: string;
@@ -791,6 +796,7 @@ export interface SystemSettings {
   usage_show_cache_rate: boolean;
   usage_show_cache_rate_to_users: boolean;
   usage_show_upstream_response_model_to_users: boolean;
+  smart_ops_hidden_menu_items: string[];
   request_capture_enabled: boolean;
   request_capture_quota_mib: number;
   request_capture_retention_days: number;
@@ -1107,6 +1113,9 @@ export interface UpdateSettingsRequest {
   openai_advanced_scheduler_weight_previous_response?: string;
   openai_advanced_scheduler_weight_session_sticky?: string;
   // 余额、订阅到期与账号限额通知
+  balance_forecast_enabled?: boolean;
+  balance_forecast_threshold_hours?: number;
+  balance_forecast_max_notifications?: number;
   balance_low_notify_enabled?: boolean;
   balance_low_notify_threshold?: number;
   balance_low_notify_recharge_url?: string;
@@ -1149,6 +1158,7 @@ export interface UpdateSettingsRequest {
   usage_show_cache_rate?: boolean;
   usage_show_cache_rate_to_users?: boolean;
   usage_show_upstream_response_model_to_users?: boolean;
+  smart_ops_hidden_menu_items?: string[];
   request_capture_enabled?: boolean;
   request_capture_quota_mib?: number;
   request_capture_retention_days?: number;
@@ -1518,6 +1528,8 @@ export async function updateStreamTimeoutSettings(
 export interface OpenAIResponseHeaderTimeoutSettings {
   enabled: boolean;
   seconds: number;
+  image_group_ids: number[];
+  image_seconds: number;
 }
 
 export async function getOpenAIResponseHeaderTimeoutSettings(): Promise<OpenAIResponseHeaderTimeoutSettings> {
@@ -1532,6 +1544,27 @@ export async function updateOpenAIResponseHeaderTimeoutSettings(
 ): Promise<OpenAIResponseHeaderTimeoutSettings> {
   const { data } = await apiClient.put<OpenAIResponseHeaderTimeoutSettings>(
     "/admin/settings/openai-response-header-timeout",
+    settings,
+  );
+  return data;
+}
+
+export interface AccountPerformanceSettings {
+  window_minutes: number;
+}
+
+export async function getAccountPerformanceSettings(): Promise<AccountPerformanceSettings> {
+  const { data } = await apiClient.get<AccountPerformanceSettings>(
+    "/admin/settings/account-performance",
+  );
+  return data;
+}
+
+export async function updateAccountPerformanceSettings(
+  settings: AccountPerformanceSettings,
+): Promise<AccountPerformanceSettings> {
+  const { data } = await apiClient.put<AccountPerformanceSettings>(
+    "/admin/settings/account-performance",
     settings,
   );
   return data;
@@ -1651,7 +1684,7 @@ export async function updateBetaPolicySettings(
 // --- Web Search Emulation Config ---
 
 export interface WebSearchProviderConfig {
-  type: "brave" | "tavily";
+  type: "brave" | "tavily" | "deepseek";
   api_key: string;
   api_key_configured: boolean;
   quota_limit: number | null;
@@ -1731,6 +1764,8 @@ export const settingsAPI = {
   updateStreamTimeoutSettings,
   getOpenAIResponseHeaderTimeoutSettings,
   updateOpenAIResponseHeaderTimeoutSettings,
+  getAccountPerformanceSettings,
+  updateAccountPerformanceSettings,
   getRectifierSettings,
   updateRectifierSettings,
   getBetaPolicySettings,

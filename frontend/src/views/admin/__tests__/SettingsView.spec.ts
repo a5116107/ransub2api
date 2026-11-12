@@ -10,6 +10,8 @@ import zhCommon from "@/i18n/locales/zh/common";
 import zhSettings from "@/i18n/locales/zh/admin/settings";
 import SettingsView from "../SettingsView.vue";
 import { apiClient } from "@/api/client";
+import NewFeatureBadge from "@/components/common/NewFeatureBadge.vue";
+import { NEW_FEATURE_NOTICES } from "@/constants/newFeatureNotices";
 
 enableAutoUnmount(afterEach);
 
@@ -25,6 +27,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   getOpenAIResponseHeaderTimeoutSettings.mockReset().mockResolvedValue({ enabled: false, seconds: 20 });
   updateOpenAIResponseHeaderTimeoutSettings.mockReset().mockImplementation(async (payload) => payload);
+  getAccountPerformanceSettings.mockReset().mockResolvedValue({ window_minutes: 60 });
 });
 
 const {
@@ -41,6 +44,8 @@ const {
   getStreamTimeoutSettings,
   getOpenAIResponseHeaderTimeoutSettings,
   updateOpenAIResponseHeaderTimeoutSettings,
+  getAccountPerformanceSettings,
+  updateAccountPerformanceSettings,
   getRectifierSettings,
   getBetaPolicySettings,
   getUpstreamBillingProbeSettings,
@@ -77,6 +82,8 @@ const {
   getStreamTimeoutSettings: vi.fn(),
   getOpenAIResponseHeaderTimeoutSettings: vi.fn(),
   updateOpenAIResponseHeaderTimeoutSettings: vi.fn(),
+  getAccountPerformanceSettings: vi.fn(),
+  updateAccountPerformanceSettings: vi.fn().mockImplementation(async (payload) => payload),
   getRectifierSettings: vi.fn(),
   getBetaPolicySettings: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({
@@ -120,6 +127,8 @@ vi.mock("@/api", () => ({
       getStreamTimeoutSettings,
       getOpenAIResponseHeaderTimeoutSettings,
       updateOpenAIResponseHeaderTimeoutSettings,
+      getAccountPerformanceSettings,
+      updateAccountPerformanceSettings,
       getRectifierSettings,
       getBetaPolicySettings,
     },
@@ -766,17 +775,204 @@ describe("admin SettingsView payment visible method controls", () => {
     adminSettingsFetch.mockResolvedValue(undefined);
   });
 
+  it("offers DeepSeek alongside existing search providers and saves its settings", async () => {
+    getWebSearchEmulationConfig.mockResolvedValue({ enabled: true, providers: [] });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const add = wrapper.findAll('button').find(b => b.text() === 'admin.settings.webSearchEmulation.addProvider');
+    await add!.trigger('click');
+    const providerSelect = wrapper.findAll('select').find(s => s.find('option[value="deepseek"]').exists())!;
+    expect(providerSelect.findAll('option').map(o => o.attributes('value'))).toEqual(['brave', 'tavily', 'deepseek']);
+    await providerSelect.setValue('deepseek');
+    expect(wrapper.text()).toContain('admin.settings.webSearchEmulation.deepSeekHint');
+    await wrapper.get('input[placeholder="admin.settings.webSearchEmulation.apiKeyPlaceholder"]').setValue('fictional-deepseek-key');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(updateWebSearchEmulationConfig).toHaveBeenCalledWith({ enabled: true, providers: [expect.objectContaining({ type: 'deepseek', api_key: 'fictional-deepseek-key', proxy_id: null })] });
+    expect(zhSettings.settings.webSearchEmulation.deepSeekHint).toContain('1–128');
+    expect(enSettings.settings.webSearchEmulation.deepSeekHint).toContain('standalone DeepSeek Search API');
+  });
+
+  it.each([0, 1, 2])("dismisses DeepSeek notice at entry %s, persists it, and preserves other announcements", async (index) => {
+    const old = NEW_FEATURE_NOTICES.protocolFeatureSwitches;
+    const future = 'fixture-next-search-provider-announcement';
+    localStorage.setItem('sub2api:new-feature-notices:v1:41', JSON.stringify([old]));
+    getWebSearchEmulationConfig.mockResolvedValue({ enabled: true, providers: [{ type: 'deepseek', api_key: '', api_key_configured: true, quota_limit: null, proxy_id: null }] });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const badges = () => wrapper.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.deepSeekSearch)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'));
+    expect(badges()).toHaveLength(3);
+    await badges()[index]!.trigger('click');
+    expect(badges()).toHaveLength(0);
+    expect(updateWebSearchEmulationConfig).not.toHaveBeenCalled();
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === old || b.props('noticeId') === NEW_FEATURE_NOTICES.deepSeekSearch)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.serverlessIPRouting)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]')).length).toBeGreaterThan(0);
+    const later = mount(NewFeatureBadge, { props: { noticeId: future, userId: 41 }, global: { plugins: [createPinia()] } });
+    expect(later.find('[data-testid="new-feature-badge"]').exists()).toBe(true);
+  });
+
+  it("shows the Mistral budget notice independently and keeps its dismissal on remount", async () => {
+    localStorage.setItem("sub2api:new-feature-notices:v1:41", JSON.stringify([NEW_FEATURE_NOTICES.protocolFeatureSwitches]));
+    const wrapper = mountView();
+    await flushPromises();
+    const badge = wrapper.findAllComponents(NewFeatureBadge)
+      .find(b => b.props('noticeId') === NEW_FEATURE_NOTICES.mistralBudgetUsage);
+    expect(badge).toBeDefined();
+    await badge!.get('[data-testid="new-feature-badge"]').trigger('click');
+    await flushPromises();
+    expect(badge!.find('[data-testid="new-feature-badge"]').exists()).toBe(false);
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.mistralBudgetUsage)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    refreshed.unmount();
+  });
+
+  it.each([0, 1])("dismisses the forecast notice from real entry %s and keeps it dismissed on remount", async (index) => {
+    const wrapper = mountView();
+    await flushPromises();
+    const badges = () => wrapper.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.balanceForecast)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'));
+    expect(badges()).toHaveLength(2);
+    await badges()[index]!.trigger('click');
+    await flushPromises();
+    expect(badges()).toHaveLength(0);
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.balanceForecast)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+  });
+
+  it.each([0, 1, 2])("dismisses the BEpusdt notice from real entry %s without changing payment settings", async (index) => {
+    const oldNotice = NEW_FEATURE_NOTICES.protocolFeatureSwitches;
+    localStorage.setItem("sub2api:new-feature-notices:v1:41", JSON.stringify([oldNotice]));
+    getSettings.mockResolvedValue({ ...baseSettingsResponse, payment_enabled_types: ["bepusdt"] });
+    const wrapper = mountView();
+    await flushPromises();
+    await openPaymentTab(wrapper);
+    const badges = () => wrapper.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.bepusdtPayment)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'));
+    expect(badges()).toHaveLength(3);
+    await badges()[index]!.trigger('click');
+    await flushPromises();
+    expect(badges()).toHaveLength(0);
+    expect(wrapper.get('[data-testid="bepusdt-payment-type"]').classes()).toContain('bg-primary-500');
+    expect((wrapper.findComponent({ name: 'BEpusdtManager' }).get('details').element as HTMLDetailsElement).open).toBe(false);
+    expect(updateSettings).not.toHaveBeenCalled();
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === oldNotice || b.props('noticeId') === NEW_FEATURE_NOTICES.bepusdtPayment)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.balanceForecast)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(2);
+    expect(JSON.parse(localStorage.getItem("sub2api:new-feature-notices:v1:41") ?? '[]'))
+      .toEqual([oldNotice, NEW_FEATURE_NOTICES.bepusdtPayment]);
+  });
+
+  it("loads, saves, and disables forecast independently of amount notifications", async () => {
+    getSettings.mockResolvedValue({ ...baseSettingsResponse, balance_forecast_enabled: true, balance_forecast_threshold_hours: 6.5, balance_forecast_max_notifications: 2, balance_low_notify_enabled: true });
+    const wrapper = mountView();
+    await flushPromises();
+    expect((wrapper.get('[data-testid="forecast-hours"]').element as HTMLInputElement).value).toBe('6.5');
+    await wrapper.get('[data-testid="forecast-enabled"]').setValue(false);
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({ balance_forecast_enabled: false, balance_forecast_threshold_hours: 6.5, balance_forecast_max_notifications: 2, balance_low_notify_enabled: true }));
+  });
+
+  it("rejects an invalid forecast lead time before updating any settings", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('[data-testid="forecast-hours"]').setValue('169');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalled();
+  });
+
   it("shares one dismissible notice between the feature tab and its settings section", async () => {
     const wrapper = mountView();
     await flushPromises();
 
-    const badges = wrapper.findAll('[data-testid="new-feature-badge"]');
+    const badges = wrapper.findAllComponents(NewFeatureBadge)
+      .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.protocolFeatureSwitches);
     expect(badges).toHaveLength(2);
     await badges[0]!.trigger("click");
     await flushPromises();
-    expect(wrapper.findAll('[data-testid="new-feature-badge"]')).toHaveLength(0);
+    expect(wrapper.findAllComponents(NewFeatureBadge)
+      .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.protocolFeatureSwitches)
+      .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    expect(wrapper.findAllComponents(NewFeatureBadge)
+      .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.serverlessIPRouting)
+      .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(1);
     expect(wrapper.get("#settings-tab-features").attributes("aria-selected")).toBe("false");
     expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps tab badges in the normal tab flow so dismissing one reserves no space", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    const tabBadge = (tab: string) => wrapper.find(`#settings-tab-${tab} + [data-testid="new-feature-badge"]`);
+    const tabBar = wrapper.get(".settings-tabs").element;
+
+    expect(["features", "gateway", "payment", "email"].filter((tab) => tabBadge(tab).exists())).toHaveLength(4);
+    expect(tabBar.querySelector("[style]")).toBeNull();
+    expect(tabBar.querySelector(".absolute")).toBeNull();
+
+    await tabBadge("gateway").trigger("click");
+    await flushPromises();
+
+    // Gateway has independent announcements; dismissing one leaves the other
+    // in normal flow until it is dismissed as well.
+    expect(tabBadge("gateway").exists()).toBe(true);
+    await tabBadge("gateway").trigger("click");
+    await flushPromises();
+    expect(tabBadge("gateway").exists()).toBe(false);
+    expect(tabBadge("email").exists()).toBe(true);
+    expect(tabBar.querySelector("[style]")).toBeNull();
+  });
+
+  it("dismisses the gateway notice across the tab and both routing controls without dismissing protocol settings", async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { config: { enabled: false, pods: [], regions: [] }, pods: [], stats: {} } });
+    try {
+      const wrapper = mountView();
+      await flushPromises();
+      await openGatewayTab(wrapper);
+      const gatewayBadges = () => wrapper.findAllComponents(NewFeatureBadge)
+        .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.serverlessIPRouting)
+        .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'));
+      expect(gatewayBadges()).toHaveLength(3);
+      await gatewayBadges()[0]!.trigger('click');
+      await flushPromises();
+      expect(gatewayBadges()).toHaveLength(0);
+      expect(wrapper.findAllComponents(NewFeatureBadge)
+        .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.protocolFeatureSwitches)
+        .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(2);
+      expect(wrapper.get('#settings-tab-gateway').attributes('aria-selected')).toBe('true');
+      expect(updateSettings).not.toHaveBeenCalled();
+    } finally {
+      get.mockRestore();
+    }
   });
 
   it("keeps the IP risk form on IP Audit without loading or saving it from Settings", async () => {
@@ -1269,7 +1465,7 @@ describe("admin SettingsView payment visible method controls", () => {
     const vm = wrapper.vm as unknown as {
       openAIResponseHeaderTimeoutForm: { enabled: boolean; seconds: number };
     };
-    expect(vm.openAIResponseHeaderTimeoutForm).toEqual({ enabled: false, seconds: 20 });
+    expect(vm.openAIResponseHeaderTimeoutForm).toEqual({ enabled: false, seconds: 20, image_group_ids: [], image_seconds: 180 });
 
     await flushPromises();
     await openGatewayTab(wrapper);
@@ -1277,13 +1473,58 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(wrapper.find('[data-testid="openai-header-timeout-seconds"]').exists()).toBe(false);
     await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
     await flushPromises();
-    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: false, seconds: 20 });
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: false, seconds: 20, image_group_ids: [], image_seconds: 180 });
 
     await wrapper.get('[data-testid="openai-header-timeout-enabled"]').setValue(true);
     expect((wrapper.get('[data-testid="openai-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('20');
     await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
     await flushPromises();
-    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 20 });
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 20, image_group_ids: [], image_seconds: 180 });
+  });
+
+  it("saves the image timeout groups with the OpenAI header timeout", async () => {
+    getOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: true, seconds: 60, image_group_ids: [7], image_seconds: 150 });
+    getGroups.mockResolvedValue([
+      { id: 7, name: "image-a", platform: "openai", status: "active", rate_multiplier: 1, subscription_type: "standard" },
+      { id: 8, name: "image-b", platform: "openai", status: "active", rate_multiplier: 1, subscription_type: "standard" },
+      { id: 9, name: "claude", platform: "anthropic", status: "active", rate_multiplier: 1, subscription_type: "standard" },
+    ]);
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const selector = wrapper.get('[data-testid="openai-image-header-timeout-groups"]');
+    const checkboxes = selector.findAll('input[type="checkbox"]');
+    expect(checkboxes).toHaveLength(2);
+    expect((checkboxes[0].element as HTMLInputElement).checked).toBe(true);
+    await checkboxes[1].setValue(true);
+    expect((wrapper.get('[data-testid="openai-image-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('150');
+    await wrapper.get('[data-testid="openai-image-header-timeout-seconds"]').setValue('200');
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 60, image_group_ids: [7, 8], image_seconds: 200 });
+  });
+
+  it("keeps the image timeout announcement independent and dismissed after remount", async () => {
+    const oldNotice = NEW_FEATURE_NOTICES.protocolFeatureSwitches;
+    const notice = NEW_FEATURE_NOTICES.openaiImageHeaderTimeoutGroups;
+    localStorage.setItem('sub2api:new-feature-notices:v1:41', JSON.stringify([oldNotice]));
+    getOpenAIResponseHeaderTimeoutSettings.mockResolvedValue({ enabled: true, seconds: 60, image_group_ids: [], image_seconds: 180 });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const badge = wrapper.findAllComponents(NewFeatureBadge).find(b => b.props('noticeId') === notice);
+    expect(badge).toBeDefined();
+    await badge!.get('[data-testid="new-feature-badge"]').trigger('click');
+    await flushPromises();
+    expect(badge!.find('[data-testid="new-feature-badge"]').exists()).toBe(false);
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge).filter(b => b.props('noticeId') === notice)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    const dismissed = JSON.parse(localStorage.getItem('sub2api:new-feature-notices:v1:41') ?? '[]');
+    expect(dismissed).toEqual(expect.arrayContaining([oldNotice, notice]));
+    refreshed.unmount();
   });
 
   it("loads, disables, enables and saves the OpenAI header timeout with server readback", async () => {
@@ -1297,13 +1538,13 @@ describe("admin SettingsView payment visible method controls", () => {
     updateOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: true, seconds: 61 });
     await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
     await flushPromises();
-    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 60 });
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 60, image_group_ids: [], image_seconds: 180 });
     expect((wrapper.get('[data-testid="openai-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('61');
     expect(showSuccess).toHaveBeenCalledWith('admin.settings.openaiResponseHeaderTimeout.saved');
     await wrapper.get('[data-testid="openai-header-timeout-enabled"]').setValue(false);
     await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
     await flushPromises();
-    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: false, seconds: 61 });
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: false, seconds: 61, image_group_ids: [], image_seconds: 180 });
   });
 
   it("keeps the edited timeout after a save error and allows retry", async () => {
@@ -1320,7 +1561,7 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(wrapper.get('[data-testid="openai-header-timeout-save"]').attributes('disabled')).toBeUndefined();
     await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
     await flushPromises();
-    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 42 });
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 42, image_group_ids: [], image_seconds: 180 });
   });
 
   it("requires a successful reload after a timeout settings load failure", async () => {
