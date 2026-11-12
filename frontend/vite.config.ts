@@ -144,6 +144,11 @@ export default defineConfig(({ mode }) => {
               return 'vendor-stripe'
             }
 
+            // Airwallex 模块求值会请求外站脚本，必须保留支付页的按需边界。
+            if (id.includes('/@airwallex/components-sdk/')) {
+              return 'vendor-airwallex'
+            }
+
             // 其他小型第三方库合并
             return 'vendor-misc'
           }
