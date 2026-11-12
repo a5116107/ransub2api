@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D9将v2.21.0-ransub.1发布并同步本地/仓库/生产，保持自研。
+任务：D9自有v2.21.0-ransub.1合并/发行/生产一致子项已完成。
 授权：本轮用户明确要求最新生产一致，允许合并/发布/上线；不CI。
-源码：integration/upstream-stable；合入远端README提交3b4d1a5c2；上游v2.21.0已核。
-验证：隔离406→428、四阶段加载/登录/配置/旧程序写入通过；工具WSL45/45。
-来源：backend/tmp/protocol-cache/upstream-v2.21.0-upgrade-rehearsal.json；首次失败证据保留。
-下一：定位恢复后旧版启动的字段变化；最终源码重建后再演练/发行/排空升级。
-尝试：61
-阻塞：源码已验；本轮候选/两pyc清理被策略拦截，删除0；历史拒删不重试。
-边界：升级前生产.2/410迁移；保留DB/Redis/回退，不改原调度开关。
+源码：production；发行源cdabde2f4，保留README提交3b4d1a5c2；上游v2.21.0。
+验证：生产副本410→432四阶段通过；线上加载/重建/登录/UI/公网SSE与账单通过。
+来源：backend/tmp/protocol-cache/ransub-v221-{rehearse,deploy,verify,public-smoke,closeout}.json。
+下一：依序等待D2关联契约、D3能力范围和D5/D6缓存证据；保留未验策略原开关。
+尝试：62
+阻塞：原28项20done/8部分；本地旧候选删除受策略拦截，已有拒删路径不重试。
+边界：PG/Redis原实例不变；实际程序f5e76ea06ff6，优先调度仍false，回退材料保留。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -51,26 +51,24 @@
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；选定延迟未知/null已验，service662/3193、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 并发保存/409、重算及候选缺失/无效延迟已验；UI112+支付21、类型/lint/构建/中英390px刷新通过；完整解释待契约 |
-| D8 | in_progress | 既有CLI/三PID/额度保留；v2.21统一性能、隔离406→428/旧程序回退写入/重升/加载哈希已验；生产数据/混版及其他能力待验 |
-| D9 | in_progress | 自有.2线上升级/重建及398→410历史验收保留；v2.21隔离回退已验，PR待审未发布；完整D8/能力仍待 |
+| D8 | in_progress | CLI/额度与统一性能已验；生产副本410→432四阶段、旧程序回退及重升通过；并行混版及其他能力待验 |
+| D9 | in_progress | .1自有发行/排空上线/重建/加载哈希、公网SSE与账单、桌面/手机UI已验；完整D8及供应商能力仍待 |
 
 ## 工作区与验证约定
 
-- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为a5116107/ransub2api；upstream为ranxi2001/sub2api且禁推。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
-- Go1.27.3、原go.mod/lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 8GiB/18分钟。
-- Redis竞争测试用PATH既有`H:/Root/tools/redis/5.0.14.1`；Redis3缺`redis.replicate_commands`。其他夹具用Docker Redis7；integration将自建PostgreSQL交区域夹具，不输出DSN。
-- 图片测试隔离DATA_DIR/关闭relay；历史12个PNG/1164bytes保留、不提交。
-- 协议/区域/Live验收边界和失败历史见DECISIONS；历史结果不代替新源码或生产验收。区域竞争使用就绪SQL池。
-- 不增平行实现/台账；运营组不作Key额度键/缓存域证据。C盘effb8271不计主线，开发统一H盘。
+- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为a5116107/ransub2api，upstream为ranxi2001/sub2api且禁推。
+- 正式源码根153包已验；unit/integration并发1–2，沿用go.mod/lint规则。Redis竞争用既有5.0.14.1，Redis3缺Lua方法；历史失败不改报成功。
+- 图片夹具隔离DATA_DIR；12张历史PNG/1164bytes保留。协议/区域/CLI的实际覆盖与复现命令见DECISIONS，不把本地夹具当真实供应商。
+- 不增平行实现/台账；C盘effb8271不计主线，开发统一H盘。
 
 ## 下一项工作
 
-原28项20 done、8部分（D2–D9）；v2.21冲突/本地回归已交付[草稿PR#2](https://github.com/a5116107/ransub2api/pull/2)，无合并冲突，未上线。
+原28项20 done、8部分（D2–D9）；本轮发布子项完成，[PR#2](https://github.com/a5116107/ransub2api/pull/2)已合入。发行/镜像/生产绑定cdabde2f4；后续仅文档提交，不构成应用漂移。
 
 ## 外部等待与清理
 
-- D2 unknown待供应商/接入方补关联查询契约；D4待完整模型/fast证据。D9本轮演练及生产切换已完成，未确认能力和完整D8仍依赖原证据。
-- PR#2待审；候选复用逻辑合入前，定时同步仍按production旧逻辑，已关闭的纯上游PR#1可能重建。production保持98d089446。
+- D2/D4：供应商或接入方补unknown关联查询及模型/fast倍率来源契约；不恢复真实采购价格任务。
+- D9发布子项已完成；并行混版、非文本能力及缓存迁移净收益仍按原D8依赖验收。
 - D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
@@ -78,3 +76,5 @@
 - 历史拒删资源的完整路径/大小及证据见DECISIONS；删除0，拥有者手工处理，不重试/移动。
 - `H:/Root/DevCache/tmp/sub2api-candidate-latency`（239文件/9578704bytes）清理被策略拦截、删除0；拥有者手工处理，不重试/移动，最小证据已保留。
 - 本轮`H:/Root/DevCache/tmp/sub2api-v221-upgrade/candidate`及两pyc（183686813bytes）清理被策略拦截，删除0；由拥有者手工清理，详见DECISIONS。
+- 本地旧候选`H:/Root/DevCache/releases/ransub2api/2.21.0-ransub.1`删除/归整被拦截、未执行；正式包在同级`2.21.0-ransub.1-final`，由拥有者处理旧候选，不重试。
+- 本轮`backend/tmp/protocol-cache/ransub-v221-ops.py`及其同目录pyc共60880bytes删除被拦截、删除0；由拥有者处理，不重试。
