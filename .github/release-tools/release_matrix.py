@@ -14,6 +14,8 @@ import zipfile
 from datetime import datetime, timezone
 
 import yaml
+from github_api import github
+from urllib.parse import quote
 
 FULL_CONFIG = Path('.goreleaser.yaml')
 SIMPLE_CONFIG = Path('.goreleaser.simple.yaml')
@@ -231,16 +233,29 @@ def local_publish(args):
         raise ValueError('release checksums do not match the verified archives')
     assets = sorted((output / 'input').iterdir()) + [output / 'checksums.txt', output / 'release-manifest.json']
     repo = manifest['repository']
-    subprocess.run(['gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
-                    '--title', f'RanSub2API {manifest["version"]}', '--notes-file', args.notes,
-                    *map(str, assets)], check=True)
-    remote = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases/tags/{tag}'], text=True, encoding='utf-8'))
+    releases = github('GET', f'repos/{repo}/releases?per_page=100')
+    draft = next((release for release in releases if release['tag_name'] == tag), None)
+    if draft is not None and not draft['draft']:
+        raise ValueError('selected release is already published; its assets must remain immutable')
+    if draft is None:
+        draft = github('POST', f'repos/{repo}/releases', {'tag_name': tag, 'name': f'RanSub2API {manifest["version"]}',
+                       'body': Path(args.notes).read_text(encoding='utf-8'), 'draft': True, 'prerelease': False})
+    release_id = draft['id']
+    existing = {asset['name']: asset for asset in draft.get('assets', [])}
+    for asset in assets:
+        if asset.name in existing:
+            uploaded = existing[asset.name]
+            if uploaded.get('size') != asset.stat().st_size or uploaded.get('digest') != 'sha256:' + sha256(asset):
+                raise ValueError('existing draft asset has different content; draft retained')
+            continue
+        github('POST', f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(asset.name)}', upload=asset)
+    remote = github('GET', f'repos/{repo}/releases/{release_id}')
     by_name = {asset['name']: asset for asset in remote['assets']}
     for asset in assets:
         uploaded = by_name.get(asset.name, {})
         if uploaded.get('size') != asset.stat().st_size or uploaded.get('digest') != 'sha256:' + sha256(asset):
             raise ValueError('uploaded release asset verification failed; draft retained')
-    subprocess.run(['gh', 'release', 'edit', tag, '--repo', repo, '--draft=false', '--latest'], check=True)
+    github('PATCH', f'repos/{repo}/releases/{release_id}', {'draft': False, 'prerelease': False, 'make_latest': 'true'})
     print(json.dumps({'repository': repo, 'tag': tag, 'sha': tagged, 'published': True}))
 
 

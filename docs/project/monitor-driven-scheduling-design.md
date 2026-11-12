@@ -1094,7 +1094,7 @@ Redis 重建不将空状态当通过；多实例传播时延要实测，允许�
 
 稳定自研版本使用 `X.Y.Z-ransub.N`，X.Y.Z保留已集成的上游基线，N区分同一基线的自研修订。后端比较自研修订号，Release明确标为stable/latest；前端回退脚本、GHCR镜像及后端检查/下载/指定版本回退统一到自有渠道，旧仓库的缓存不能作为新渠道更新证据。未完成自有发布的source构建仍禁止在线替换。
 
-复用 `.github/release-tools/release_matrix.py local-build/local-publish` 在干净已提交源码上本地构建，绑定源码commit、内嵌前端、归档和SHA256；先上传draft，逐个核对GitHub计算的资产digest再公开为latest。首版仅提供生产对应的Linux amd64归档，其他架构没有验证前不宣称可用。现有Release工作流增加prebuilt_only入口，只将同一标签下已验证的归档封装为GHCR运行镜像，不重复编译、不运行CI。安装/镜像发布不等于生产切换；D9仍要求迁移及回滚演练、加载身份和真实用户流证据。
+复用 `.github/release-tools/release_matrix.py local-build/local-publish` 在干净已提交源码上本地构建，绑定源码commit、内嵌前端、归档和SHA256；先上传draft，逐个核对GitHub计算的资产digest再公开为latest。首版仅提供生产对应的Linux amd64归档，其他架构没有验证前不宣称可用。现有Release工作流增加prebuilt_only入口，只将同一标签下已验证的归档封装为GHCR运行镜像，不重复编译、不运行CI。Docker将可更新程序单独持久化到/app/bin；同一镜像重启/重建保留在线更新，明确更换镜像时原子切换为新镜像程序并保留上一程序。每实例使用独立程序卷，避免多个进程共同替换。安装/镜像发布不等于生产切换；D9仍要求迁移及回滚演练、加载身份和真实用户流证据。
 
 ## 12. 前端与选路解释
 

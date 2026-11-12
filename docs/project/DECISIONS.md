@@ -2242,3 +2242,10 @@
 合并回归原有两项失败：区域性能导出测试夹具未实现AccountAvailabilityReader；迁移测试误把325数字前缀当作唯一标识。补齐夹具并改为验证324前置文件先执行，保留已部署的325_account_performance_monitor.sql和自研325_account_availability_states.sql原名/内容。Go unit及四包race通过；前端59项、类型/ESLint通过；WSL发行工具24项通过。
 
 公开前扫描197个可达提交/80.35MB，gitleaks报告84条：72条来自已公开上游祖先；12条自研历史逐条核对为配置键、SQL测试夹具和New API授权测试固定样本，未把凭据库、运行环境或未跟踪图片加入提交。脱敏扫描证据留backend/tmp/protocol-cache/ransub-gitleaks-history.json，不把历史报告伪称零告警。原生产仍为2.19.2/5eb89ca；发行与迁移发布验收分别记录，不以源码测试代替生产恢复。
+
+
+### 自研更新的容器持久化与GitHub连接验证
+
+线上Docker仅挂/app/data，直接替换镜像层内程序会在重建时丢失。新增可选SUB2API_BINARY_DIR并在三份正式Compose中独立挂/app/bin：同镜像重启/重建保留在线更新；镜像程序digest变化时原子更换并保留backup。WSL两个真实shell流程验证首次采用、在线替换、连续重建和显式换镜像。旧实例未配置该变量时保留原入口。
+
+GitHub API先前EOF与复用连接/系统代理路径相关：requests每次新建直连且Connection:close成功，而复用Session连续请求第二次断连。同步和本地发布复用标准库github_api，显式关闭连接/不隐式将HTTP代理用于SOCKS监听；不打印令牌或签名下载链接。原398条生产迁移与本地checksum全部一致，仅新增12条325_availability至336，未篡改已执行迁移。

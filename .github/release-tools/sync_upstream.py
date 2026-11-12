@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import subprocess
+from github_api import github
 
 REPOSITORY = 'a5116107/ransub2api'
 UPSTREAM = 'ranxi2001/sub2api'
@@ -20,6 +21,10 @@ def git(*args, check=True):
 
 
 def gh_json(*args):
+    if args[0] == 'api':
+        return github('GET', args[1])
+    if args[:2] == ('pr', 'list'):
+        return github('GET', f'repos/{REPOSITORY}/pulls?state=open&base={BASE}&head=a5116107:{TRACKING}')
     return json.loads(command('gh', *args).stdout)
 
 
@@ -68,13 +73,11 @@ def sync(dry_run=False):
     existing = gh_json('pr', 'list', '--repo', REPOSITORY, '--base', BASE,
                        '--head', TRACKING, '--state', 'open', '--json', 'number,url')
     if existing:
-        command('gh', 'pr', 'edit', str(existing[0]['number']), '--repo', REPOSITORY,
-                '--title', title, '--body', body)
-        result['pull_request'] = existing[0]['url']
+        github('PATCH', f'repos/{REPOSITORY}/pulls/{existing[0]["number"]}', {'title': title, 'body': body})
+        result['pull_request'] = existing[0]['html_url']
     else:
-        result['pull_request'] = command('gh', 'pr', 'create', '--repo', REPOSITORY,
-                                        '--base', BASE, '--head', TRACKING,
-                                        '--title', title, '--body', body).stdout.strip()
+        request = github('POST', f'repos/{REPOSITORY}/pulls', {'title': title, 'body': body, 'base': BASE, 'head': TRACKING})
+        result['pull_request'] = request['html_url']
     return result
 
 

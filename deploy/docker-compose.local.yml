@@ -38,6 +38,7 @@ services:
     volumes:
       # Local directory mapping for easy migration
       - ./data:/app/data:Z
+      - ./bin:/app/bin:Z
       # Optional: Mount custom config.yaml (uncomment and create the file first)
       # Copy config.example.yaml to config.yaml, modify it, then uncomment:
       # - ./config.yaml:/app/data/config.yaml
@@ -46,6 +47,7 @@ services:
       # Auto Setup (REQUIRED for Docker deployment)
       # =======================================================================
       - AUTO_SETUP=true
+      - SUB2API_BINARY_DIR=/app/bin
 
       # =======================================================================
       # Server Configuration
