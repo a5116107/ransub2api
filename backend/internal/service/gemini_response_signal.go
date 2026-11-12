@@ -181,22 +181,23 @@ type geminiResponseSignalObserver struct {
 	qualityObserved      bool
 }
 
-func (s *GeminiMessagesCompatService) newGeminiResponseSignalObserver(ctx context.Context, account *Account, response *http.Response) *geminiResponseSignalObserver {
+func newGeminiResponseSignalObserver(ctx context.Context, account *Account, response *http.Response, limiter *RateLimitService) *geminiResponseSignalObserver {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if response != nil {
 		if body, ok := response.Body.(*availabilityFaultBody); ok {
 			ctx = body.ctx
+			if account == nil {
+				// Independent Gemini-wire gateways consume the same immutable,
+				// transport-bound identity instead of guessing it from headers.
+				account = &body.account
+			}
 		} else if ctx.Value(qualityProbeContextKey{}) == nil && response.Request != nil {
 			ctx = availabilityFaultResponseContext(response.Request.Context(), response)
 		}
 	}
-	observer := &geminiResponseSignalObserver{ctx: ctx, account: account}
-	if s != nil {
-		observer.limiter = s.rateLimitService
-	}
-	return observer
+	return &geminiResponseSignalObserver{ctx: ctx, account: account, limiter: limiter}
 }
 
 func (o *geminiResponseSignalObserver) observe(sig geminiResponseSignal) {
@@ -232,7 +233,7 @@ func (o *geminiResponseSignalObserver) observePayload(payload []byte) {
 }
 
 func (s *GeminiMessagesCompatService) observeGeminiJSONSignal(c *gin.Context, response *http.Response, account *Account, upstreamRequestID string, body []byte) {
-	observed := s.newGeminiResponseSignalObserver(responseTimingContext(c, response), account, response)
+	observed := newGeminiResponseSignalObserver(responseTimingContext(c, response), account, response, s.rateLimitService)
 	if sig, ok := detectGeminiResponseSignalInBody(body); ok {
 		observed.observe(sig)
 		s.markGeminiResponseSignal(c, account, sig, false, upstreamRequestID)

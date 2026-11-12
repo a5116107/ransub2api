@@ -1046,7 +1046,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		streamFinished = streamRes.finished
 	} else {
 		if useUpstreamStream {
-			observed := s.newGeminiResponseSignalObserver(ctx, account, resp)
+			observed := newGeminiResponseSignalObserver(ctx, account, resp, s.rateLimitService)
 			collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, true, observed.observePayload, requesttiming.ResponseContext(ctx, resp))
 			if err != nil {
 				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
@@ -1580,7 +1580,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		streamFinished = streamRes.finished
 	} else {
 		if useUpstreamStream {
-			observed := s.newGeminiResponseSignalObserver(ctx, account, resp)
+			observed := newGeminiResponseSignalObserver(ctx, account, resp, s.rateLimitService)
 			collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, isOAuth, observed.observePayload, requesttiming.ResponseContext(ctx, resp))
 			if err != nil {
 				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream stream")
@@ -2187,7 +2187,7 @@ func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context,
 func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string, account *Account, upstreamRequestID string) (*geminiStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
-	observed := s.newGeminiResponseSignalObserver(timing.ctx, account, resp)
+	observed := newGeminiResponseSignalObserver(timing.ctx, account, resp, s.rateLimitService)
 	sawDataEvent, sawResponseContent := false, false
 	fallback := &geminiSSEFallbackBody{}
 	c.Header("Content-Type", "text/event-stream")
@@ -2951,7 +2951,7 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 		observer = beginUpstreamResponseModelObservation(c)
 	}
 	var firstTokenMs *int
-	observed := s.newGeminiResponseSignalObserver(timing.ctx, account, resp)
+	observed := newGeminiResponseSignalObserver(timing.ctx, account, resp, s.rateLimitService)
 	sawDataEvent := false
 	sawResponseContent := false
 	fallback := &geminiSSEFallbackBody{}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -85,6 +86,11 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 		{"empty", `{}`, "chat", true},
 		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "chat", false},
 		{"unknown", `{"error":{"message":"fixture"}}`, "chat", false},
+		{"service", `{"error":{"code":503}}`, "antigravity", true},
+		{"quota", `{"error":{"code":429}}`, "antigravity", true},
+		{"authentication", `{"error":{"code":401}}`, "antigravity", true},
+		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "antigravity", false},
+		{"unknown", `{"error":{"message":"fixture"}}`, "antigravity", false},
 	} {
 		t.Run(tc.entry+"/"+tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -94,18 +100,35 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 				sends.Add(1)
 				_, _ = io.Copy(io.Discard, r.Body)
 				w.Header().Set("Content-Type", "text/event-stream")
+				writePayload := func(payload string) {
+					if tc.entry == "antigravity" {
+						payload = `{"response":` + payload + `}`
+					}
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+				}
 				if fail.Load() {
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", tc.payload)
+					writePayload(tc.payload)
 					return
 				}
-				_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"21\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n")
+				writePayload(`{"candidates":[{"content":{"role":"model","parts":[{"text":"21"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1}}`)
 			}))
 			t.Cleanup(server.Close)
-			credentials, err := json.Marshal(map[string]string{"api_key": "fixture-key", "base_url": server.URL})
+			platform, accountType := service.PlatformGemini, service.AccountTypeAPIKey
+			credentialFields := map[string]any{"api_key": "fixture-key", "base_url": server.URL}
+			if tc.entry == "antigravity" {
+				original := antigravity.BaseURLs
+				antigravity.BaseURLs = []string{server.URL}
+				t.Cleanup(func() { antigravity.BaseURLs = original })
+				platform, accountType = service.PlatformAntigravity, service.AccountTypeOAuth
+				credentialFields["access_token"], credentialFields["project_id"] = "fixture-token", "fixture-project"
+				credentialFields["expires_at"] = time.Now().Add(time.Hour).Format(time.RFC3339)
+				credentialFields["model_mapping"] = map[string]any{"gemini-3.7-flash": "gemini-3.7-flash"}
+			}
+			credentials, err := json.Marshal(credentialFields)
 			require.NoError(t, err)
 			var accountID int64
 			require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,credentials,status,schedulable)
- VALUES('gemini-semantic','gemini','apikey',$1,'active',true) RETURNING id`, string(credentials)).Scan(&accountID))
+ VALUES('gemini-semantic',$1,$2,$3,'active',true) RETURNING id`, platform, accountType, string(credentials)).Scan(&accountID))
 			t.Cleanup(func() {
 				_, err := integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id=$1", accountID)
 				require.NoError(t, err)
@@ -117,7 +140,8 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 			upstream := &geminiAvailabilitySQLUpstream{client: server.Client()}
 			limiter := service.ProvideRateLimitService(accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, plans)
 			gateway := service.NewGeminiMessagesCompatService(accounts, nil, nil, nil, nil, limiter, upstream, nil, cfg)
-			tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+			antigravityGateway := service.NewAntigravityGatewayService(accounts, nil, nil, &service.AntigravityTokenProvider{}, limiter, upstream, service.NewSettingService(nil, cfg), nil)
+			tester := service.NewAccountTestService(accounts, nil, nil, nil, antigravityGateway, upstream, cfg, nil)
 			probeCfg := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ParallelCount: 1, Availability: &service.AvailabilityPolicy{ValidForSeconds: 120}}
 			next := time.Now().UTC().Add(-time.Minute)
 			model := "gemini-3.7-flash"
@@ -145,7 +169,11 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 				require.NotNil(t, probe)
 				require.Equal(t, "pass", probe.Status, result.ErrorMessage)
 				require.NotNil(t, probe.Scope)
-				require.Equal(t, "gemini_http", probe.Scope.Protocol)
+				if tc.entry == "antigravity" {
+					require.Equal(t, "gemini_internal_http", probe.Scope.Protocol)
+				} else {
+					require.Equal(t, "gemini_http", probe.Scope.Protocol)
+				}
 				require.Eventually(t, func() bool {
 					var dbNow time.Time
 					return integrationDB.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&dbNow) == nil && !dbNow.Before(probe.FinishedAt)
@@ -154,6 +182,14 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, "observed", action)
 				require.NoError(t, plans.FinishPelican(ctx, plan.ID, until, now))
+				if tc.entry == "antigravity" {
+					var wrapped struct {
+						Request json.RawMessage `json:"request"`
+					}
+					require.NoError(t, json.Unmarshal(upstream.body, &wrapped))
+					require.NotEmpty(t, wrapped.Request)
+					return bytes.Clone(wrapped.Request)
+				}
 				return bytes.Clone(upstream.body)
 			}
 			body := probeAndPublish()
@@ -168,6 +204,9 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 				case "native":
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/"+model+":streamGenerateContent", bytes.NewReader(body)).WithContext(ctx)
 					_, err = gateway.ForwardNative(ctx, c, account, plan.ModelID, "streamGenerateContent", true, body)
+				case "antigravity":
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/"+model+":streamGenerateContent", bytes.NewReader(body)).WithContext(ctx)
+					_, err = antigravityGateway.ForwardGemini(ctx, c, account, plan.ModelID, "streamGenerateContent", true, body, false)
 				case "messages":
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(compatBody)).WithContext(ctx)
 					_, err = gateway.Forward(ctx, c, account, compatBody)

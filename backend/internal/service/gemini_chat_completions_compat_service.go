@@ -269,7 +269,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		clientDisconnect = streamRes.clientDisconnect
 		streamFinished = streamRes.finished
 	} else if useUpstreamStream {
-		observed := s.newGeminiResponseSignalObserver(ctx, account, resp)
+		observed := newGeminiResponseSignalObserver(ctx, account, resp, s.rateLimitService)
 		collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, account.Type == AccountTypeOAuth, observed.observePayload, requesttiming.ResponseContext(ctx, resp))
 		if err != nil {
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
@@ -535,7 +535,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 ) (*geminiStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
-	observed := s.newGeminiResponseSignalObserver(timing.ctx, account, resp)
+	observed := newGeminiResponseSignalObserver(timing.ctx, account, resp, s.rateLimitService)
 	sawDataEvent, sawResponseContent := false, false
 	fallback := &geminiSSEFallbackBody{}
 	if s.responseHeaderFilter != nil {

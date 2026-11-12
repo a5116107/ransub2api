@@ -189,7 +189,7 @@ func TestObserveAntigravityGeminiSSELineReadsWrapperModelWithoutUnwrap(t *testin
 			beginUpstreamResponseModelObservation(c)
 
 			svc := &AntigravityGatewayService{}
-			svc.observeAntigravityGeminiSSELine(c, "data: "+tt.payload)
+			svc.observeAntigravityGeminiSSELine(c, "data: "+tt.payload, nil)
 
 			require.Equal(t, tt.want, observedUpstreamResponseModel(c))
 			require.False(t, observedUpstreamResponseModelConflict(c))

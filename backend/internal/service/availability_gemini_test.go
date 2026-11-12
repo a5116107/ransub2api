@@ -22,6 +22,179 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestAvailabilityAntigravityBusinessSemanticFaults(t *testing.T) {
+	for _, entry := range []string{"gemini", "messages", "chat", "responses"} {
+		t.Run(entry, func(t *testing.T) {
+			for _, stream := range []bool{false, true} {
+				t.Run(map[bool]string{false: "aggregate", true: "stream"}[stream], func(t *testing.T) {
+					for _, tc := range []struct {
+						name                  string
+						chunks                []string
+						availability, quality int64
+					}{
+						{"service", []string{`{"error":{"code":503,"status":"UNAVAILABLE"}}`}, 1, 1},
+						{"authentication", []string{`{"error":{"code":401}}`}, 1, 0},
+						{"quota", []string{`{"error":{"code":429}}`}, 1, 0},
+						{"timeout", []string{`{"error":{"code":408}}`}, 1, 0},
+						{"known_status", []string{`{"error":{"status":"UNAVAILABLE"}}`}, 1, 1},
+						{"repeated", []string{`{"error":{"code":503}}`, `{"error":{"code":503}}`}, 1, 1},
+						{"availability_then_quality", []string{`{"error":{"code":401}}`, `{"error":{"code":503}}`}, 2, 1},
+						{"policy", []string{`{"promptFeedback":{"blockReason":"SAFETY"}}`}, 0, 0},
+						{"request", []string{`{"error":{"code":400}}`}, 0, 0},
+						{"unknown", []string{`{"error":{"message":"fixture"}}`}, 0, 0},
+						{"duplicate", []string{`{"error":{"code":503,"code":400}}`}, 0, 0},
+						{"normal", nil, 0, 0},
+					} {
+						t.Run(tc.name, func(t *testing.T) {
+							for _, probe := range []bool{false, true} {
+								ctx := t.Context()
+								if probe {
+									ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+								}
+								payloads := []string{`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}`}
+								payloads = append(payloads, tc.chunks...)
+								payloads = append(payloads, `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}`)
+								upstreamBody := ""
+								for _, payload := range payloads {
+									upstreamBody += "data: {\"response\":" + payload + "}\n\n"
+								}
+								var sends atomic.Int32
+								upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+									sends.Add(1)
+									return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(upstreamBody)), Request: req}, nil
+								}}
+								svc := newAntigravityCompatService(rawChatCompletionsTestConfig().Gateway, upstream)
+								repo := &geminiAvailabilityFaultRepo{}
+								svc.rateLimitService = &RateLimitService{qualityTrigger: &quality5xxTrigger{availability: repo, immediate: repo}}
+								account := newAntigravityCompatAccount(AccountTypeOAuth)
+								request := map[string]any{"model": "gemini-3.1-pro-high", "stream": stream, "max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": "Reply ok"}}}
+								path := "/v1/" + entry
+								if entry == "responses" {
+									delete(request, "messages")
+									request["input"] = "Reply ok"
+								}
+								if entry == "gemini" {
+									request = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "Reply ok"}}}}}
+									path = "/v1beta/models/gemini-3.1-pro-high:streamGenerateContent"
+								}
+								body, err := json.Marshal(request)
+								require.NoError(t, err)
+								c, recorder := newAntigravityCompatContext(http.MethodPost, path, body)
+								c.Request = c.Request.WithContext(ctx)
+								var result *ForwardResult
+								switch entry {
+								case "gemini":
+									result, err = svc.ForwardGemini(ctx, c, account, "gemini-3.1-pro-high", "streamGenerateContent", stream, body, false)
+								case "messages":
+									result, err = svc.Forward(ctx, c, account, body, false)
+								case "chat":
+									result, err = svc.ForwardAsChatCompletions(ctx, c, account, body, nil)
+								case "responses":
+									result, err = svc.ForwardAsResponses(ctx, c, account, body, nil)
+								}
+								require.NoError(t, err, "probe=%t", probe)
+								require.NotNil(t, result)
+								require.Equal(t, http.StatusOK, recorder.Code)
+								require.Contains(t, recorder.Body.String(), "ok")
+								require.EqualValues(t, 1, sends.Load(), "a semantic fault must not replay the current generation")
+								require.Equal(t, 8, result.Usage.InputTokens)
+								require.Equal(t, 3, result.Usage.OutputTokens)
+								wantAvailability, wantQuality := tc.availability, tc.quality
+								if probe {
+									wantAvailability, wantQuality = 0, 0
+								}
+								require.Equal(t, wantAvailability, repo.availability.Load(), "probe=%t", probe)
+								require.Equal(t, wantQuality, repo.quality.Load(), "probe=%t", probe)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAvailabilityAntigravityFaultBeforeStreamClosure(t *testing.T) {
+	for _, entry := range []string{"gemini", "messages", "chat", "responses"} {
+		t.Run(entry, func(t *testing.T) {
+			release := make(chan struct{})
+			var sends atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sends.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":3}}}\n\ndata: {\"response\":{\"error\":{\"code\":503}}}\n\n")
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					t.Error("test server has no HTTP flusher")
+					return
+				}
+				flusher.Flush()
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			t.Cleanup(server.Close)
+			defer close(release)
+			original := antigravity.BaseURLs
+			antigravity.BaseURLs = []string{server.URL}
+			t.Cleanup(func() { antigravity.BaseURLs = original })
+			upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+				return server.Client().Do(req)
+			}}
+			svc := newAntigravityCompatService(rawChatCompletionsTestConfig().Gateway, upstream)
+			repo := &geminiAvailabilityFaultRepo{signal: make(chan struct{}, 1)}
+			svc.rateLimitService = &RateLimitService{qualityTrigger: &quality5xxTrigger{availability: repo, immediate: repo}}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			account := newAntigravityCompatAccount(AccountTypeOAuth)
+			body := []byte(`{"model":"gemini-3.1-pro-high","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"Reply ok"}]}`)
+			switch entry {
+			case "responses":
+				body = []byte(`{"model":"gemini-3.1-pro-high","stream":true,"input":"Reply ok"}`)
+			case "gemini":
+				body = []byte(`{"contents":[{"role":"user","parts":[{"text":"Reply ok"}]}]}`)
+			}
+			c, rec := newAntigravityCompatContext(http.MethodPost, "/v1/"+entry, body)
+			c.Request = c.Request.WithContext(ctx)
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				switch entry {
+				case "gemini":
+					_, err = svc.ForwardGemini(ctx, c, account, "gemini-3.1-pro-high", "streamGenerateContent", true, body, false)
+				case "messages":
+					_, err = svc.Forward(ctx, c, account, body, false)
+				case "chat":
+					_, err = svc.ForwardAsChatCompletions(ctx, c, account, body, nil)
+				case "responses":
+					_, err = svc.ForwardAsResponses(ctx, c, account, body, nil)
+				}
+				done <- err
+			}()
+			select {
+			case <-repo.signal:
+				require.EqualValues(t, 1, repo.availability.Load())
+				require.EqualValues(t, 1, repo.quality.Load())
+			case <-time.After(2 * time.Second):
+				t.Error("the semantic fault must invalidate the old pass before the upstream connection closes")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					require.ErrorIs(t, err, context.Canceled)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Antigravity forwarding did not finish after cancellation")
+			}
+			require.EqualValues(t, 1, sends.Load())
+			require.Equal(t, http.StatusOK, rec.Code)
+		})
+	}
+}
+
 func TestAvailabilityGeminiScopeAndAdmission(t *testing.T) {
 	for _, wrapped := range []bool{false, true} {
 		name, path := "native", "/v1beta/models/gemini-3.7-pro:streamGenerateContent?alt=sse"

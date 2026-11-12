@@ -260,6 +260,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 ) (*antigravityStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
+	signals := newGeminiResponseSignalObserver(timing.ctx, nil, resp, s.rateLimitService)
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return nil, errors.New("streaming not supported")
@@ -302,7 +303,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 			}
 			resetAntigravityCompatTimer(timeoutTimer, timeout)
 			timing.observeTimingLine(event.line)
-			s.observeAntigravityGeminiSSELine(c, event.line)
+			s.observeAntigravityGeminiSSELine(c, event.line, signals)
 			session.consume(event.line)
 
 		case <-timeoutCh:

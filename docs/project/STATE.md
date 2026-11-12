@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3 Gemini三入口故障闭环已验，接续Antigravity带内故障核对。
+任务：D3 Antigravity带内故障闭环已验，接续空流反馈。
 授权：原H盘本地修复/验证/清理/提交；不CI/推送/部署。
-源码：基线7b1eb25；8项Go输入71731d465f494328。
-验证命令：三入口Gemini/service race、SQL恢复及vet/lint/Linux构建。
-验证结果：service342/2031、SQL51/143 PASS；四包vet/lint零诊断，Linux同源复用。
-验证来源：backend/tmp/protocol-cache/scheduling-gemini-compat-*。
-下一动作：本地提交三入口修复，核对Antigravity业务带内故障是否撤销旧通过。
-尝试：27
+源码：基线788962b；8项Go输入31e7b4d1fab8f10d。
+验证命令：Antigravity/Gemini race、SQL恢复及四包静态/Linux构建。
+验证结果：service443/2543、SQL1/22 PASS；四包vet/lint零诊断，Linux同源复用。
+验证来源：backend/tmp/protocol-cache/scheduling-antigravity-semantic-*。
+下一动作：提交已验修复，复现并补齐Antigravity空流撤销旧通过。
+尝试：30
 阻塞：生产需管理员授权与窗口；拒删资源待工作区拥有者手动处理。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
@@ -32,7 +32,7 @@
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 最新状态/托管轮转、区域v2及HTTP/WS/Messages/Gemini/Antigravity文本已验；Gemini三入口/16类SQL恢复393/2174、四包vet/lint零诊断和同源Linux构建已验；其他能力待验 |
+| D3 | in_progress | 最新状态/托管/区域文本准入已验；Antigravity带内故障race443/2543、21场景SQL、四包vet/lint零诊断和同源Linux构建已验；空流及其余能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
@@ -78,3 +78,4 @@ D2关联契约、D4模型/fast、D5前缀/缓存域待证据；D3其余能力待
 - 历史TEMP/sub2api-priority-route：原核查为空、0文件/0引用；删除被策略拦截，拥有者手动处理，未计释放。
 - 本轮拒删：`TEMP/sub2api-http-admission`（空目录、0文件/0引用）及`backend/tmp/protocol-cache/scheduling-http-admission-service-focused.jsonl`（4504bytes）；CreateProcess前被策略拦截，WhatIf/删除均未执行，拥有者手动处理，不重试、不计释放。
 - 本轮：`TEMP/sub2api-auth-binding`2文件/22668bytes、0引用；删除启动前被审查拦截，拥有者手动处理，不重试、不计释放。
+- 本轮：`TEMP/sub2api-antigravity-semantic`仅1个0字节lock；删除命令启动前被策略拦截，保留供手工处理，不重试、不计释放。

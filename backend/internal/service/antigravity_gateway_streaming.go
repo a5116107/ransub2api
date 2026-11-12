@@ -22,7 +22,7 @@ type antigravityStreamResult struct {
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
 }
 
-func (s *AntigravityGatewayService) observeAntigravityGeminiSSELine(c *gin.Context, line string) {
+func (s *AntigravityGatewayService) observeAntigravityGeminiSSELine(c *gin.Context, line string, signals *geminiResponseSignalObserver) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -34,6 +34,9 @@ func (s *AntigravityGatewayService) observeAntigravityGeminiSSELine(c *gin.Conte
 	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 	if payload == "" || payload == "[DONE]" {
 		return
+	}
+	if signals != nil {
+		signals.observePayload([]byte(payload))
 	}
 	// Observe the original payload: ObserveGemini supports both the v1internal
 	// wrapper and direct Gemini response shapes. The main stream handler will
@@ -117,6 +120,7 @@ func handleStreamReadError(err error, clientDisconnected bool, prefix string) (d
 func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
+	signals := newGeminiResponseSignalObserver(timing.ctx, nil, resp, s.rateLimitService)
 	if upstreamResponseModelObserverFromContext(c) == nil {
 		beginUpstreamResponseModelObservation(c)
 	}
@@ -252,7 +256,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 
 			line := ev.line
 			timing.observeTimingLine(line)
-			s.observeAntigravityGeminiSSELine(c, line)
+			s.observeAntigravityGeminiSSELine(c, line, signals)
 			trimmed := strings.TrimRight(line, "\r\n")
 			if strings.HasPrefix(trimmed, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
@@ -342,6 +346,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
+	signals := newGeminiResponseSignalObserver(timing.ctx, nil, resp, s.rateLimitService)
 	if upstreamResponseModelObserverFromContext(c) == nil {
 		beginUpstreamResponseModelObservation(c)
 	}
@@ -425,7 +430,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 
 			line := ev.line
 			timing.observeTimingLine(line)
-			s.observeAntigravityGeminiSSELine(c, line)
+			s.observeAntigravityGeminiSSELine(c, line, signals)
 			trimmed := strings.TrimRight(line, "\r\n")
 
 			if !strings.HasPrefix(trimmed, "data:") {
@@ -758,6 +763,7 @@ func (s *AntigravityGatewayService) writeGoogleError(c *gin.Context, status int,
 func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) ([]byte, *antigravityStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
+	signals := newGeminiResponseSignalObserver(timing.ctx, nil, resp, s.rateLimitService)
 	if upstreamResponseModelObserverFromContext(c) == nil {
 		beginUpstreamResponseModelObservation(c)
 	}
@@ -842,6 +848,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 
 			line := ev.line
 			timing.observeTimingLine(line)
+			s.observeAntigravityGeminiSSELine(c, line, signals)
 			trimmed := strings.TrimRight(line, "\r\n")
 
 			if !strings.HasPrefix(trimmed, "data:") {
@@ -858,7 +865,6 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 			if parseErr != nil {
 				continue
 			}
-			upstreamResponseModelObserverFromContext(c).ObserveGemini(inner)
 
 			var parsed map[string]any
 			if err := json.Unmarshal(inner, &parsed); err != nil {
@@ -985,6 +991,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*antigravityStreamResult, error) {
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "gemini"}
 	defer timing.resetTimingEvent()
+	signals := newGeminiResponseSignalObserver(timing.ctx, nil, resp, s.rateLimitService)
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -1137,7 +1144,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 
 			lastDataAt = time.Now()
 			timing.observeTimingLine(ev.line)
-			s.observeAntigravityGeminiSSELine(c, ev.line)
+			s.observeAntigravityGeminiSSELine(c, ev.line, signals)
 
 			// 处理 SSE 行，转换为 Claude 格式
 			claudeEvents := processor.ProcessLine(strings.TrimRight(ev.line, "\r\n"))
