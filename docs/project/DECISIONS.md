@@ -2313,3 +2313,8 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 新建隔离基线迁移 406→428，旧 checksum 不变；测试账号凭据/倍率、暂停性能监控的配置/修订、会话保护和未启用开关保留。新版 TPS=47 经旧客户端字段保存仍为47，旧程序在新 schema 上普通账号编辑成功，再升级的迁移/配置幂等。此结果只关闭串行排空与合成数据子项：未还原生产410条历史迁移数据库，未验证并行混版、旧程序修改新版专属配置、全部能力或供应商缓存。D8/D9 与原28项20done/8部分口径不变；production/发布/线上均未改变。
 - 首次演练因内部 Docker 网络无宿主端口映射失败；最小复现返回 `no public port '8080/tcp' published`，改为容器内标准库 HTTP 客户端。第二次因新装夹具尚未完成既有 admin compliance 流程返回423，按正常夹具 API 完成后通过。分别保留 port-failure/bootstrap-failure JSON。新增清理回归先出现1失败/1错误，修复未拥有 scratch 被删与 Docker 断连误报已清理；最终 Windows `python -m unittest discover -s .github/release-tools -p test_release_rehearsal.py` 13/13，WSL `python3 -m unittest discover -s .github/release-tools -p 'test_*.py'` 45/45。加入远程 Docker 拒绝、进程身份不符、凭据仅 stdin、超时不回显命令和清理归属回归；无 CI。
 - 最终演练的6个容器与1个网络按捕获ID及归属全部清理，后验同标签容器/网络查询为空。候选可重建程序 `H:/Root/DevCache/tmp/sub2api-v221-upgrade/candidate` 为183636128bytes；本轮两个缓存为 `.github/release-tools/__pycache__/release_rehearsal.cpython-311.pyc` 29700bytes、`test_release_rehearsal.cpython-311.pyc` 20985bytes。原生 PowerShell 的校验/WhatIf/删除候选、这两个缓存和空目录命令在启动前被自动审批策略拦截，原因 `blocked by policy`，整条未执行、删除0；总183686813bytes保留，由拥有者手工清理，不改用其他工具或移动重试。原`.2`归档/回滚材料、最小演练证据、历史PNG与其他拒删路径保留。
+
+### 2026-11-13 — 最新自研版本合并与生产一致授权
+
+- 用户本轮明确要求继续全局任务并使本地、远端仓库与生产一致且采用最新版本，授权本轮将已验证候选合并自有 production、发布自有稳定 Release 并更新既有 hk2 服务；沿用不运行构建/测试 CI。该授权替代此前仅交付草稿 PR 的上线限制；仍保留自研边界、现有数据库/Redis、原调度开关与必要回滚材料，不推官方上游。
+- GitHub API 当前核验 ranxi2001/sub2api latest stable 为 v2.21.0（2026-11-11T19:04:59Z 发布），自有渠道 latest 为 v2.19.2-ransub.2；PR2 head d13cff56c、无冲突。SSH 重新核验 hk2 既有 sub2api 容器7c42c1f1f3c2 healthy，实际加载 /app/bin/sub2api，程序SHA256为98c594ad6cd851f019b00b1045274f26c510f791e407052f5e6f13bee1addf55，版本.2；原PG/Redis容器身份与两处程序/数据挂载保持。先完成生产数据还原隔离演练，再执行排空串行升级，不把串行演练算作并行混版隔离。
