@@ -297,6 +297,14 @@ def main():
     p.add_argument('--input', required=True)
     p.add_argument('--notes', required=True)
     p.set_defaults(run=local_publish)
+    p = commands.add_parser('local-rehearse')
+    for arg in ('baseline', 'candidate', 'candidate-sha', 'scratch', 'output'):
+        p.add_argument('--' + arg, required=True)
+    p.add_argument('--runtime-image', default='python:3.11-slim')
+    p.add_argument('--postgres-image', default='postgres:17-alpine')
+    p.add_argument('--redis-image', default='redis:7-alpine')
+    from release_rehearsal import local_rehearse
+    p.set_defaults(run=lambda args: local_rehearse(args, verify, sha256))
     args = parser.parse_args()
     args.run(args)
 

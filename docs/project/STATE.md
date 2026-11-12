@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8/D9的v2.21.0集成已交付草稿PR#2，70冲突已清，待审。
+任务：D8/D9的v2.21排空串行升级/回滚子验收通过，工具交付PR#2。
 授权：统一性能评分/页面；保留倍率、共享Key、会话缓存、线路隔离；不CI、不切线上。
-源码：integration/upstream-stable；合并29224ee2b；上游b5990096a。
-验证：正式源码153包编译、race687、SQL58+149、Redis5竞态、UI320、WSL32通过；vet0。
-来源：backend/tmp/protocol-cache/upstream-v2.21.0-*；原36个SQL跳过全补齐，Redis3失败保留。
-下一：审查PR#2；完整混版/生产迁移与发行仍待验，不自动合并production。
-尝试：58
-阻塞：无源码阻塞；历史拒删overlay排除出正式包编译，未重试删除。
+源码：integration/upstream-stable；应用5b5050e97；工具本轮提交；上游b5990096a。
+验证：隔离406→428、四阶段加载/登录/配置/旧程序写入通过；工具WSL45/45。
+来源：backend/tmp/protocol-cache/upstream-v2.21.0-upgrade-rehearsal.json；首次失败证据保留。
+下一：PR#2审查；生产数据还原/混版及能力证据待验，不自动合并production。
+尝试：59
+阻塞：源码已验；本轮候选/两pyc清理被策略拦截，删除0；历史拒删不重试。
 边界：生产仍v2.19.2-ransub.2；未知归属不借值；upstream/stable保持纯跟踪。
 <!-- resume:end -->
 
@@ -51,8 +51,8 @@
 | D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；选定延迟未知/null已验，service662/3193、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 并发保存/409、重算及候选缺失/无效延迟已验；UI112+支付21、类型/lint/构建/中英390px刷新通过；完整解释待契约 |
-| D8 | in_progress | 既有CLI/三PID/额度/备份历史验收保留；v2.21统一性能/换线与条件保存、本地回归及迁移兼容已验；完整混版/其他能力待验 |
-| D9 | in_progress | 自有.2线上升级/重建、398→410迁移/旧程序回滚历史已验；v2.21仅集成PR，未发布；完整D8/能力仍待依赖 |
+| D8 | in_progress | 既有CLI/三PID/额度保留；v2.21统一性能、隔离406→428/旧程序回退写入/重升/加载哈希已验；生产数据/混版及其他能力待验 |
+| D9 | in_progress | 自有.2线上升级/重建及398→410历史验收保留；v2.21隔离回退已验，PR待审未发布；完整D8/能力仍待 |
 
 ## 工作区与验证约定
 
@@ -75,5 +75,6 @@
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 历史拒删路径、大小与清单见DECISIONS：UI/后端缓存11文件（2886386bytes）、Go缓存96份（32.20GiB）、TEMP测试产物；删除0，由拥有者手工处理，不重试/移动。
+- 历史拒删资源的完整路径/大小及证据见DECISIONS；删除0，拥有者手工处理，不重试/移动。
 - `H:/Root/DevCache/tmp/sub2api-candidate-latency`（239文件/9578704bytes）清理被策略拦截、删除0；拥有者手工处理，不重试/移动，最小证据已保留。
+- 本轮`H:/Root/DevCache/tmp/sub2api-v221-upgrade/candidate`及两pyc（183686813bytes）清理被策略拦截，删除0；由拥有者手工清理，详见DECISIONS。
