@@ -2262,3 +2262,10 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - v2.19.2-ransub.1/b0297efe3已公开为stable/latest，GitHub资产digest与本地一致；47387576字节Linux amd64归档SHA256为740f9930e904f778137bc4b8392604c25c7a56d5aacf0e07b41be66ab877e070。隔离恢复398迁移，候选启动后410迁移，原性能监控表保留；旧程序对迁移后数据库启动健康。演练容器/网络全部删除，生产当时未变。
 - 手动prebuilt_only发行run43237162940成功，仅封装已构建程序，无源码编译或测试。hk2匿名读取自有latest及docker pull通过，运行镜像digest为97fbad3b591e249cdefb0c8d2d8b8a80726ad23fd8859b5125751d805307b352，OCI版本与源码b0297efe3一致。
 - 接续检查发现本地用户凭据推送upstream/stable使上游继承工作流重新注册并运行，故前序“无CI运行”结论不成立。当前六个无关workflow均已disable，仅Release/Sync upstream active；本地同步现在仅允许dry-run，有实际推送时必须走workflow_dispatch/定时任务，并显式以github.token checkout/push，避免触发递归Actions。不以PR标题skip ci代替推送凭据控制。新回归先实跑9项出现1失败/1错误；修复后WSL全套29/29通过。Windows原生全套因Bash跨路径与POSIX模式语义出现1失败/6错误，保留该限制，不将其计为通过。
+
+### 首版生产加载与空状态修复
+
+- 自有.1实际程序SHA256为25a62b172bb935c8b835404ca1ecd742dc7d275384ee7a45ba61bb15c51e9ff5；候选健康后root读取非root的/proc/1/exe被权限机制拒绝，首轮自动回退旧程序健康，410条迁移保留。以应用UID1000读取复现成功后修复核验脚本，保留首轮失败JSON并接续切换；最终实际加载/app/bin/sub2api且同SHA256，登录、原性能批量API、优先调度配置和强制更新检查通过，账号8/分组2/用户1/Key1保持。PostgreSQL/Redis容器ID未变，最新生产备份79656099字节，SHA256为85a27bb8f5ec7e34cdf2c53b5078c06715805d49c404cd9ad81ec13e40109ed9。
+- 同步run43238014242使用6e19819a7成功，仍仅Release/Sync upstream active。上游v2.21.0的PR1继续存在语义冲突，不覆盖自研或自动上线。
+- 真实Chromium通过HTTPS表单登录、版本徽标强制刷新自有Release、8账号与优先调度页面；API未拦截/模拟。原脚本错误预期登录进入/admin，实际进入/dashboard，纠正验收夹具后再验。Python默认请求公网域名被边缘403/1010拒绝，未触达应用；改用证书验证的本机Caddy TLS路径验证后端，gpt-6.1-sol真实SSE请求200、response.completed且文本DEPLOY_OK，3.814秒。此结果不冒充全部供应商/能力验收。
+- 浏览器发现原onMounted在无快照时直接请求延迟分析，服务按既有契约503；默认调度仍关闭。UI原位删除无条件请求，只在候选快照存在后查询，空态禁用刷新；池消失丢弃在途结果。新空态两例先红，修复后候选/分位数/账号列三个文件117/117通过，ESLint和vue-tsc退出0。原热图夹具补齐真实候选池；未变后端503契约、配置或调度策略。准备.2自有发行并以真实在线更新验证加载及容器重建持久化。

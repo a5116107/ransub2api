@@ -48,7 +48,7 @@
               <option :value="60">60m</option>
               <option :value="180">180m</option>
             </select>
-            <button class="btn btn-secondary" :disabled="latencyLoading" data-testid="latency-refresh" @click="loadLatency">{{ t('priorityScheduling.latencyPanel.refresh') }}</button>
+            <button class="btn btn-secondary" :disabled="latencyLoading || !hasLatencyPool" data-testid="latency-refresh" @click="loadLatency">{{ t('priorityScheduling.latencyPanel.refresh') }}</button>
           </div>
         </header>
         <p class="my-3 text-xs leading-5 text-gray-500">{{ t('priorityScheduling.latencyPanel.hint') }}</p>
@@ -197,6 +197,7 @@ const draft = ref<PrioritySchedulingConfig | null>(null), snapshot = ref<Priorit
 const groups = ref(''), modelsText = ref(''), error = ref(''), snapshotError = ref(''), notice = ref('')
 const loading = ref(false), saving = ref(false), refreshing = ref(false)
 const latency = ref<PriorityLatencySeries | null>(null), latencyMinutes = ref(60), latencyLoading = ref(false), latencyError = ref('')
+const hasLatencyPool = computed(() => (snapshot.value?.candidates.length ?? 0) > 0)
 const recomputeResult = ref<PrioritySchedulingRecomputeResult | null>(null), recomputeLoading = ref(false), recomputeError = ref('')
 const stickyGroupID = ref(2), sticky = ref<PriorityStickyBindings | null>(null), stickyLoading = ref(false), stickyError = ref(''), stickyNotice = ref('')
 const modes = ['experience', 'balanced', 'profit', 'custom'] as const
@@ -327,7 +328,7 @@ async function loadSnapshot(attempt: number) {
       snapshot.value = value
       if (snapshotScope(value) !== priorScope) {
         recomputeResult.value = null
-        latencyRequestGeneration++; latency.value = null; latencyLoading.value = false
+        latencyRequestGeneration++; latency.value = null; latencyLoading.value = false; latencyError.value = ''
         if (snapshotScope(value)) void loadLatency()
       }
       // Short follow-ups collect an in-flight query; subsequent polling sees
@@ -353,6 +354,8 @@ function scheduleHistoryRefresh(version: number, delay: number, attempt: number)
 async function loadLatency() {
   const version = generation, request = ++latencyRequestGeneration, scope = snapshotScope(snapshot.value), minutes = latencyMinutes.value
   latency.value = null
+  latencyError.value = ''; latencyLoading.value = false
+  if (!hasLatencyPool.value) return
   latencyLoading.value = true; latencyError.value = ''
   try { const value = await getPriorityLatency(minutes, 5); if (active(version) && request === latencyRequestGeneration && minutes === latencyMinutes.value && scope === snapshotScope(snapshot.value) && value.model === snapshot.value?.model && value.group_id === snapshot.value?.group_id) latency.value = value }
   catch { if (active(version) && request === latencyRequestGeneration && scope === snapshotScope(snapshot.value)) latencyError.value = t('priorityScheduling.latencyPanel.error') }
@@ -434,7 +437,7 @@ watch(() => auth.user ? `${auth.user.id}:${auth.user.role}` : '', () => {
   sticky.value = null; stickyError.value = ''; stickyNotice.value = ''; stickyLoading.value = false; stickyGroupID.value = 2
   loading.value = saving.value = refreshing.value = false
 }, { flush: 'sync' })
-onMounted(() => { void load().then(() => { void loadSticky() }); void refresh(); void loadLatency() })
+onMounted(() => { void load().then(() => { void loadSticky() }); void refresh() })
 onBeforeUnmount(() => { stopHistoryRefresh(); alive = false; generation++ })
 </script>
 <style scoped>

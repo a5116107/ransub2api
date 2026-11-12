@@ -12,6 +12,7 @@ vi.mock('vue-i18n', () => ({ useI18n: () => ({
 }) }))
 vi.mock('@/api/admin/priorityScheduling', () => ({ getPriorityConfig: vi.fn(), getPrioritySnapshot: vi.fn(), savePriorityConfig: vi.fn(), getPriorityLatency: vi.fn(), recomputePriorityScheduling: vi.fn(), getPriorityStickyBindings: vi.fn(), clearPriorityStickyBindings: vi.fn() }))
 const config: PrioritySchedulingConfig = { error_rate_weight: 25, error_rate_window_minutes: 10, error_rate_prior_samples: 5, latency_percentile: 90, latency_measurement: 'legacy_forward', recovery_exploration_percent: 0, oauth_quota_priority: false, oauth_quota_threshold: 90, balance_protocols: true, preserve_session_affinity: false, enabled: false, mode: 'balanced', group_ids: [], models: [], window_minutes: 60, min_samples: 5, target_ttft_ms: 3000, latency_penalty_mode: 'deprioritize', latency_penalty_minutes: 10, max_load_percent: 80, min_quality_percent: 90, quality_max_age_hours: 24, quality_weight: 30, latency_weight: 25, load_weight: 25, cost_weight: 20 }
+const latencyCandidate: PriorityCandidate = { account_id: 1, account_name: 'Mock OAuth', score: 0, tier: 'insufficient', reasons: [], priority: 1, concurrency: 1, load_factor: 1, load_percent: 0, waiting: 0, rate: null, revenue: 0, theoretical_cost: 0, profit: null, margin: null, economics_source: 'unknown', profit_samples: 0, samples: 0, p90_ttft_ms: 0, quality_passed: 0, quality_samples: 0 }
 beforeEach(() => {
   vi.resetAllMocks()
   state.auth = reactive({ user: { id: 1, role: 'admin' } })
@@ -25,6 +26,40 @@ beforeEach(() => {
   vi.spyOn(window, 'confirm').mockReturnValue(true)
 })
 describe('priority scheduling', () => {
+  it.each([null, { at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', candidates: [] }])('does not request latency without an observed candidate pool: %s', async snapshot => {
+    vi.mocked(getPrioritySnapshot).mockResolvedValue(snapshot)
+    const wrapper = mount(PrioritySchedulingView)
+    try {
+      await flushPromises()
+      expect(getPriorityLatency).not.toHaveBeenCalled()
+      expect(wrapper.get('[data-testid="latency-panel"]').text()).toContain('priorityScheduling.latencyPanel.empty')
+      expect(wrapper.get('[data-testid="latency-refresh"]').attributes('disabled')).toBeDefined()
+      await wrapper.get('[data-testid="latency-window"]').setValue(15)
+      await flushPromises()
+      expect(getPriorityLatency).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
+  it('loads the first observed latency pool and discards a late result after it disappears', async () => {
+    const wrapper = mount(PrioritySchedulingView)
+    try {
+      await flushPromises()
+      let resolve!: (value: any) => void
+      vi.mocked(getPriorityLatency).mockReturnValueOnce(new Promise(r => { resolve = r }))
+      vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', candidates: [latencyCandidate] })
+      await (wrapper.vm as any).refresh(); await flushPromises()
+      expect(getPriorityLatency).toHaveBeenCalledTimes(1)
+      expect(getPriorityLatency).toHaveBeenLastCalledWith(60, 5)
+      vi.mocked(getPrioritySnapshot).mockResolvedValue(null)
+      await (wrapper.vm as any).refresh(); await flushPromises()
+      resolve({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, bucket_minutes: 5, accounts: [{ account_id: 1, account_name: 'Stale latency' }] })
+      await flushPromises()
+      expect(wrapper.get('[data-testid="latency-panel"]').text()).not.toContain('Stale latency')
+      expect(wrapper.get('[data-testid="latency-panel"]').text()).toContain('priorityScheduling.latencyPanel.empty')
+      expect(wrapper.get('[data-testid="latency-refresh"]').attributes('disabled')).toBeDefined()
+    } finally { wrapper.unmount() }
+  })
+
   it('loads, changes and saves session-affinity protection through the existing form', async () => {
     vi.mocked(getPriorityConfig).mockResolvedValue({ ...config, preserve_session_affinity: true })
     const wrapper = mount(PrioritySchedulingView)
@@ -230,7 +265,7 @@ describe('priority scheduling', () => {
 
   it('renders latency analysis and clears sticky bindings', async () => {
     vi.mocked(getPriorityConfig).mockResolvedValue({ ...config, group_ids: [11] })
-    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [] })
+    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [latencyCandidate] })
     vi.mocked(getPriorityLatency).mockResolvedValue({
       at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, bucket_minutes: 5,
       accounts: [{ account_id: 1, account_name: 'Mock OAuth', samples: 10, p50_ttft_ms: 500, p90_ttft_ms: 1500, p99_ttft_ms: 4000, selected_ttft_ms: 500, latency_percentile: 50, slow_samples: 1, error_samples: 2, error_rate: 0.1667, buckets: [{ account_id: 1, bucket: '2026-10-30T00:00:00Z', samples: 10, p50_ttft_ms: 500, p90_ttft_ms: 1500, p99_ttft_ms: 4000, selected_ttft_ms: 500, slow_samples: 1, error_samples: 0 }] }],
@@ -248,7 +283,7 @@ describe('priority scheduling', () => {
 
   it('uses the configured percentile in every heatmap bucket', async () => {
     vi.mocked(getPriorityConfig).mockResolvedValue({ ...config, latency_percentile: 50 })
-    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [] })
+    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [latencyCandidate] })
     vi.mocked(getPriorityLatency).mockResolvedValue({
       at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, bucket_minutes: 5, latency_percentile: 50, latency_measurement: 'attributed_v1',
       accounts: [{ account_id: 1, account_name: 'Mock OAuth', samples: 10, p50_ttft_ms: 500, p90_ttft_ms: 1500, p99_ttft_ms: 4000, selected_ttft_ms: 500, latency_percentile: 50, slow_samples: 1, error_samples: 2, error_rate: 0.1667, buckets: [{ account_id: 1, bucket: '2026-10-30T00:00:00Z', samples: 10, p50_ttft_ms: 500, p90_ttft_ms: 1500, p99_ttft_ms: 4000, selected_ttft_ms: 500, slow_samples: 1, error_samples: 0 }] }],
@@ -270,7 +305,7 @@ describe('priority scheduling', () => {
     { name: 'exact legacy P70', selected: undefined, percentile: 70, measurement: 'legacy_forward', p70: 700, p95: undefined, expected: '700' },
     { name: 'explicit selected evidence', selected: 8000, percentile: 95, measurement: 'attributed_v1', p70: undefined, p95: undefined, expected: '8000' },
   ])('does not substitute another latency population for $name', async ({ selected, percentile, measurement, p70, p95, expected }) => {
-    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [] })
+    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [latencyCandidate] })
     const bucket = { account_id: 1, bucket: '2026-10-30T00:00:00Z', samples: 10, p50_ttft_ms: 500, p70_ttft_ms: p70, p90_ttft_ms: 20000, p95_ttft_ms: p95, p99_ttft_ms: 40000, selected_ttft_ms: selected, slow_samples: 0, error_samples: 0 }
     vi.mocked(getPriorityLatency).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, bucket_minutes: 5, latency_percentile: percentile, latency_measurement: measurement, accounts: [
       { ...bucket, account_name: 'Latency candidate', latency_percentile: percentile, error_rate: 0, buckets: [bucket] },
@@ -403,7 +438,7 @@ describe('priority scheduling', () => {
   })
 
   it('supersedes an in-flight old latency window with the selected window', async () => {
-    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [] })
+    vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-30T00:00:00Z', model: 'gpt-test', group_id: 11, mode: 'balanced', history_status: 'ready', history_ready: true, candidates: [latencyCandidate] })
     const wrapper = mount(PrioritySchedulingView); await flushPromises()
     let resolveOld!: (value: any) => void
     const oldWindow = new Promise(resolve => { resolveOld = resolve })
