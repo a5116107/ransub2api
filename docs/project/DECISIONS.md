@@ -2219,3 +2219,15 @@
 - 原设计文档只补充候选展示与按需边界，不建平行台账。原28项20done、7部分、D9待生产不变；本轮关闭D7的上述本地子验收，不关闭依赖契约、缓存存活/迁移净收益、完整能力混版和生产发布等父验收。
 - 本轮进程退出后，H:/Root/DevCache/tmp/sub2api-candidate-latency核对为239文件/9578704bytes、0重解析点/0活跃引用。原生PowerShell精确路径核对、脚本移入最小证据目录、WhatIf及递归删除的组合在CreateProcess之前被自动审批拒绝，返回blocked by policy，整条未执行。再只读核对目录和脚本仍在原位、目标脚本不存在；实际删除0bytes。由工作区拥有者手工处理，不重试/换工具/移动绕过。cleanup.json保留实测；历史12PNG/1164bytes及历史拒删资源保持原位，不暂存，不以Git状态宣称空间已释放。
 - 最终输入指纹及验证边界在priority-candidate-latency-source.json，现有checks/build/payment/browser/bundle记录各自实际结果。仅本地提交本轮源码/测试/设计/STATE/决策，不CI、不推送、不部署；剩余外部证据/权限按STATE的拥有者与释放条件保留。
+
+## 2026-11-12：D9发布授权、运行版本分叉与备份恢复验收
+
+- 用户明确要求部署到线上，解除此前生产执行授权等待；继续不CI、不推送，沿用唯一H盘工作树。按server-access已保存且重新核验的hk2连接，目标sub.acompany.cv。已验证SSH主机身份和登录，未改认证、域名、Caddy配置或数据库内容。发布范围遇到真实语义分叉，已向用户异步询问仅本轮前端热修/先保留线上功能后发布全量；尚未得到选择，未切换生产，不将D9标完成。
+- 生产容器sub2api为healthy，容器镜像标签2.19.1/源标签6de829f，但/app/sub2api被在线更新替换，实际版本2.19.2、commit5eb89ca77c7bee5b73dbac4927078458612a169d，SHA256为9986da3c77448d71a65a7f4b5a9a5753b96fbfb02f4fb34f064e9f09690d6f83。不能仅将原镜像标签作为当前版本或回滚目标。docker diff仅原运行程序及其backup变动，持久目录仍为原/app/data映射。
+- 从确认的origin只读fetch实际运行commit到现有仓库，未创建clone/worktree/分支或触发CI。它与本地f046622共同基线为6de829fa2efa801dcf3071c4efe842198c7724be；实际生产侧另有15个提交，本地另有195个提交。两端差异907文件，直接覆盖将移除线上账号性能监控的API/UI/325迁移源码，并新增本地325_availability及326–336共12个迁移；不将发布解释为默认授权删除已上线特性。生产实际已有398个迁移，最高325_account_performance_monitor.sql，数据库约521MB。
+- git merge-tree --write-tree --messages HEAD 5eb89ca77c7bee5b73dbac4927078458612a169d仅做对象级合并预演，返回1；唯一文本冲突为backend/internal/service/openai_plugin_account_directory_test.go。未实际merge或修改源码，工作树的当前f046622保留。前后package.json/pnpm-lock.yaml/go.mod/go.sum一致，后续可复用依赖；全量仍须用户选择后在原工作树保留生产15提交、处理冲突及验证迁移/已有特性。仅热修则应基于实际2.19.2保留后端/契约/数据结构，不能直接上传当前分支整套前端冒充小补丁。
+- 以0700目录和0600文件权限在hk2:/opt/sub2api/deploy/backups/deploy-f046622保存原Compose/.env、当前程序、PostgreSQL18一致性自定义格式备份与原data归档。数据库归档75437118bytes、SHA256 e25149939311fe4bdfe4c6b0772bb0b2150f42acb3315ec9b5f4004bdce93d4c，pg_restore --list实际识别1879项；data.tar.gz为6561003bytes。配置与数据未输出/上传，保留远端回滚材料作为交付物，不当作临时缓存回收。
+- 保存运行容器实际可回滚镜像sub2api-local:rollback-5eb89ca-f046622，ID sha256:946763c26a45177696216b4342356d9f0aca01eae43cb4cfd05880c807298b60；以无外网一次性容器运行/app/sub2api -version，确认实际5eb89ca。Docker29对--pause旧参数的警告混入最初stdout，已用image inspect读取规范ID并修正远端backup.json，不将警告字符串误当镜像ID。原应用容器ID/程序SHA保持不变、RestartCount为0。
+- 实际数据库恢复使用postgres:18-alpine、network=none、1CPU/768MiB的隔离验证容器，pg_restore --no-owner --no-acl --exit-on-error退出0，恢复202个public表、398个schema_migrations，最高325_account_performance_monitor.sql。此项证明备份可恢复，不证明新分支迁移或业务可用。首轮Unix socket就绪探测误命中entrypoint临时postmaster，恢复时socket消失而失败；原错误保留restore-before证据。按实际启动行为改为127.0.0.1 TCP就绪与恢复，等待正式postmaster后成功，不重做原数据库备份。
+- 两次隔离恢复容器均已退出并删除；匿名PostgreSQL18卷单独按两次启动时间、匿名标签、PG_VERSION及无容器引用核对后以非force volume rm回收，结果另见verifier-cleanup证据。未prune或删除其他运行卷、共享缓存或旧拒删路径。原生产六容器及其数据卷不变。
+- 切换前HTTPS经本机Caddy并验证证书：sub.acompany.cv/health为200、rs.acompany.cv/healthz为204，ssl_verify_result均0；最终原应用仍healthy/200、同容器/同程序且未发布。证据保存于原backend/tmp/protocol-cache/deploy-f046622-{backup,restore-before,restore,preflight,merge-preview,verifier-cleanup}。D9仅关闭备份/运行版本核验/恢复子观察，发布、生产新版本加载、页面/业务验证及新版本回滚观察仍待选定范围后执行。
