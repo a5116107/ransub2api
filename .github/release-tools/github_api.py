@@ -2,6 +2,8 @@
 import json
 import os
 import subprocess
+import time
+from http.client import RemoteDisconnected
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
@@ -25,11 +27,19 @@ def github(method, path, data=None, *, upload=None):
         body = json.dumps(data).encode('utf-8')
         headers['Content-Type'] = 'application/json'
     request = Request(url, data=body, headers=headers, method=method)
-    try:
-        # Explicit direct connections avoid a Windows system HTTP proxy being
-        # applied to a SOCKS listener. Each request closes its connection.
-        with build_opener(ProxyHandler({})).open(request, timeout=120 if upload else 30) as response:
-            result = response.read()
-    except HTTPError as error:
-        raise RuntimeError(f'GitHub {method} {urlsplit(url).path} returned {error.code}') from None
+    for attempt in range(3):
+        try:
+            # Explicit direct connections avoid a Windows system HTTP proxy being
+            # applied to a SOCKS listener. Each request closes its connection.
+            with build_opener(ProxyHandler({})).open(request, timeout=120 if upload else 30) as response:
+                result = response.read()
+            break
+        except HTTPError as error:
+            raise RuntimeError(f'GitHub {method} {urlsplit(url).path} returned {error.code}') from None
+        except (RemoteDisconnected, TimeoutError, ConnectionError):
+            # Never repeat a mutation with an unknown outcome. Draft uploads and
+            # sync requests are resumed by inspecting remote state instead.
+            if method != 'GET' or attempt == 2:
+                raise
+            time.sleep(attempt + 1)
     return json.loads(result) if result else None

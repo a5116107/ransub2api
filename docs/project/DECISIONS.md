@@ -2249,3 +2249,10 @@
 线上Docker仅挂/app/data，直接替换镜像层内程序会在重建时丢失。新增可选SUB2API_BINARY_DIR并在三份正式Compose中独立挂/app/bin：同镜像重启/重建保留在线更新；镜像程序digest变化时原子更换并保留backup。WSL两个真实shell流程验证首次采用、在线替换、连续重建和显式换镜像。旧实例未配置该变量时保留原入口。
 
 GitHub API先前EOF与复用连接/系统代理路径相关：requests每次新建直连且Connection:close成功，而复用Session连续请求第二次断连。同步和本地发布复用标准库github_api，显式关闭连接/不隐式将HTTP代理用于SOCKS监听；不打印令牌或签名下载链接。原398条生产迁移与本地checksum全部一致，仅新增12条325_availability至336，未篡改已执行迁移。
+
+
+### 自有仓库的真实同步运行
+
+源码合并提交822c67df1、持久化修复b0297efe3已推a5116107/ransub2api production；v2.19.2-ransub.1指向b0297efe3，真实Linux amd64归档47387576字节，内嵌前端构建通过。自动化注册后仅Release和Sync upstream两项active，无构建/测试CI运行。首个同步run43233339649因checkout生成不带.git的remote被精确验证拒绝；修复并补回归后run43234434430 success，来源766c8f115。上游v2.21.0/b5990096与自研存在冲突，PR1保留待处理，production未被自动合并。
+
+GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等不自动重放，发行draft/已上传同digest资产可检查后续传。迁移演练首次恢复398条后因Docker Env含裸变量名而在夹具解析中止，所有夹具已删除且生产未变；过滤裸项后沿同一目录重跑，不改生产环境。

@@ -6,6 +6,15 @@ import github_api
 
 
 class GitHubAPITest(unittest.TestCase):
+    def test_only_reads_retry_after_a_lost_connection(self):
+        for method, calls in (('GET', 3), ('POST', 1)):
+            opener = MagicMock()
+            opener.open.side_effect = github_api.RemoteDisconnected('fixture disconnect')
+            with patch.dict(os.environ, {'GH_TOKEN': 'fixture-token'}), patch.object(github_api, 'build_opener', return_value=opener), patch.object(github_api.time, 'sleep'):
+                with self.assertRaises(github_api.RemoteDisconnected):
+                    github_api.github(method, 'repos/a5116107/ransub2api')
+            self.assertEqual(opener.open.call_count, calls)
+
     def test_auth_uses_exact_authority_and_closes_connection(self):
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b'{"ok":true}'
