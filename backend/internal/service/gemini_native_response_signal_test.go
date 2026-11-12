@@ -638,6 +638,10 @@ func TestGeminiForwardNative_AvailabilityFaultSequences(t *testing.T) {
 		{"empty then answer", "data: {}\n\n" + geminiSignalTestStopSSE, "text/event-stream", true, 0, 0},
 		{"empty events", "data: {}\n\ndata: {\"candidates\":[]}\n\n", "text/event-stream", true, 1, 0},
 		{"heartbeat only", ": keepalive\n\ndata: [DONE]\n\n", "text/event-stream", true, 1, 0},
+		{"partial text", "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n", "text/event-stream", true, 1, 0},
+		{"partial then done", "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\ndata: [DONE]\n\n", "text/event-stream", true, 1, 0},
+		{"secondary terminal", "data: {\"candidates\":[{\"index\":0,\"content\":{\"parts\":[{\"text\":\"partial\"}]}},{\"index\":1,\"finishReason\":\"STOP\"}]}\n\n", "text/event-stream", true, 1, 0},
+		{"max tokens", "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]},\"finishReason\":\"MAX_TOKENS\"}]}\n\n", "text/event-stream", true, 0, 0},
 		{"raw JSON fault", `{ "error": { "code": 503 } }`, "application/json", true, 1, 1},
 		{"raw JSON unknown", `{ "error": { "message": "fixture" } }`, "application/json", true, 0, 0},
 		{"array request then fault", `[{"error":{"code":400}},{"error":{"code":503}}]`, "application/json", false, 1, 1},
@@ -660,6 +664,11 @@ func TestGeminiForwardNative_AvailabilityFaultSequences(t *testing.T) {
 			require.Equal(t, tc.body, rec.Body.String())
 			require.Equal(t, tc.availability, repo.availability.Load())
 			require.Equal(t, tc.quality, repo.quality.Load())
+			if strings.HasPrefix(tc.name, "partial") || tc.name == "secondary terminal" {
+				signals := GetOpsStreamErrors(c)
+				require.Len(t, signals, 1)
+				require.Equal(t, geminiSignalIncompleteStreamReason, signals[0].Code)
+			}
 			require.Equal(t, tc.quality > 0, queue.Exists(quality5xxPendingKey))
 			if tc.quality > 0 {
 				require.Equal(t, []string{"703"}, qualityTestMembers(t, queue))
@@ -767,8 +776,13 @@ func TestGeminiCompatAvailabilitySemanticFaults(t *testing.T) {
 						{"availability_then_quality", []string{`{"error":{"code":401}}`, `{"error":{"code":503}}`}, 2, 1},
 						{"empty_then_answer", []string{`{}`, `{"candidates":[{"content":{"parts":[{"text":"fixture answer"}]},"finishReason":"STOP"}]}`}, 0, 0},
 						{"heartbeat", nil, 1, 0},
+						{"partial_stream", []string{`{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`}, 1, 0},
+						{"partial_stream_done", []string{`{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`, `[DONE]`}, 1, 0},
 					} {
 						upstreamStream := mode.stream || mode.oauth
+						if !upstreamStream && strings.HasPrefix(tc.name, "partial_stream") {
+							continue // These cases exercise an interrupted SSE, not a complete JSON response.
+						}
 						if !upstreamStream && len(tc.chunks) != 1 {
 							continue
 						}
@@ -785,7 +799,7 @@ func TestGeminiCompatAvailabilitySemanticFaults(t *testing.T) {
 									upstreamBody = ": keepalive\n\n"
 								}
 								for _, payload := range tc.chunks {
-									if mode.oauth {
+									if mode.oauth && payload != "[DONE]" {
 										payload = `{"response":` + payload + `}`
 									}
 									if upstreamStream {

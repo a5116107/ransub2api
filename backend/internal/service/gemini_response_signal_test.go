@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,56 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGeminiIncompleteSSEObservationBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload                 string
+		canceled, disconnected, probe bool
+		faults                        int64
+	}{
+		{name: "partial", payload: `{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`, faults: 1},
+		{name: "empty_timeout", faults: 1},
+		{name: "numeric_finish", payload: `{"candidates":[{"finishReason":1}]}`, faults: 1},
+		{name: "unspecified_finish", payload: `{"candidates":[{"finishReason":"FINISH_REASON_UNSPECIFIED"}]}`, faults: 1},
+		{name: "blank_finish", payload: `{"candidates":[{"finishReason":" "}]}`, faults: 1},
+		{name: "secondary_finish", payload: `{"candidates":[{"index":0,"content":{}},{"index":1,"finishReason":"STOP"}]}`, faults: 1},
+		{name: "completed", payload: `{"candidates":[{"finishReason":"STOP"}]}`},
+		{name: "max_tokens", payload: `{"candidates":[{"finishReason":"MAX_TOKENS"}]}`},
+		{name: "model_tool_error", payload: `{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}]}`},
+		{name: "wrapped_complete", payload: `{"response":{"candidates":[{"finishReason":"STOP"}]}}`},
+		{name: "wrapped_partial", payload: `{"response":{"candidates":[{"content":{}}]}}`, faults: 1},
+		{name: "policy", payload: `{"promptFeedback":{"blockReason":"SAFETY"}}`},
+		{name: "unknown_error", payload: `{"error":{"message":"fixture"}}`},
+		{name: "request_error", payload: `{"error":{"code":400}}`},
+		{name: "duplicate_error", payload: `{"error":{"code":503,"code":400}}`},
+		{name: "canceled", payload: `{"candidates":[{"content":{}}]}`, canceled: true},
+		{name: "disconnected", payload: `{"candidates":[{"content":{}}]}`, disconnected: true},
+		{name: "probe", payload: `{"candidates":[{"content":{}}]}`, probe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			if tc.canceled {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			if tc.probe {
+				ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+			}
+			repo := &geminiAvailabilityFaultRepo{}
+			limiter := &RateLimitService{qualityTrigger: &quality5xxTrigger{availability: repo, immediate: repo}}
+			observer := newGeminiResponseSignalObserver(ctx, geminiSignalTestAccount(), nil, limiter)
+			observer.observePayload([]byte(tc.payload))
+			observer.observeIncompleteSSE(tc.disconnected)
+			observer.observeIncompleteSSE(tc.disconnected)
+			require.Equal(t, tc.faults, repo.availability.Load())
+			require.Zero(t, repo.quality.Load())
+			if tc.faults > 0 {
+				require.Equal(t, geminiSignalIncompleteStreamReason, observer.best.Reason)
+			}
+		})
+	}
+}
 
 func TestDetectGeminiResponseSignal(t *testing.T) {
 	prohibited := `{"candidates":[{"content":{},"finishMessage":"The model output could not be generated. This output contains sensitive words that violate Google's [Generative AI Prohibited Use policy](https://policies.google.com/terms/generative-ai/use-policy).","finishReason":"PROHIBITED_CONTENT"}],"usageMetadata":{"candidatesTokenCount":1289,"promptTokenCount":21775}}`

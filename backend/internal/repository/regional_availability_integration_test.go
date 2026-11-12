@@ -92,6 +92,10 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "antigravity", false},
 		{"unknown", `{"error":{"message":"fixture"}}`, "antigravity", false},
 		{"empty", `{}`, "antigravity", true},
+		{"partial", `{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`, "native", true},
+		{"partial", `{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`, "messages", true},
+		{"partial", `{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`, "chat", true},
+		{"partial", `{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`, "antigravity", true},
 	} {
 		t.Run(tc.entry+"/"+tc.name, func(t *testing.T) {
 			ctx := t.Context()

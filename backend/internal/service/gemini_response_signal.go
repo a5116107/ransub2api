@@ -23,7 +23,7 @@ const (
 	geminiSignalPromptBlocked
 	// geminiSignalContentFilter：首候选 finishReason 属于内容过滤类枚举。
 	geminiSignalContentFilter
-	// geminiSignalAbnormalStop：上游 2xx 但响应体为空（EMPTY_STREAM / EMPTY_RESPONSE）。
+	// geminiSignalAbnormalStop：上游 2xx 但响应为空或 SSE 缺少完整终态。
 	geminiSignalAbnormalStop
 	// geminiSignalError：事件本身是 Google 错误信封 {"error":{"code","message","status"}}，
 	// 与 Gemini SDK 客户端对流式 chunk 的错误判定相同。
@@ -36,7 +36,7 @@ type geminiResponseSignal struct {
 	// Reason 是 finishReason / blockReason 枚举值，或 Google 错误信封的 status；作为 ops 错误 code。
 	Reason  string
 	Message string
-	// Status 是该信号的语义 HTTP 状态：内容策略类固定 400，错误信封取 error.code，空响应 502。
+	// Status 是该信号的语义 HTTP 状态：内容策略类固定 400，错误信封取 error.code，异常响应 502。
 	Status int
 	// FaultStatus 只接受无歧义的上游故障；ops 的兜底状态不能作为失效依据。
 	FaultStatus int
@@ -45,8 +45,9 @@ type geminiResponseSignal struct {
 }
 
 const (
-	geminiSignalEmptyStreamReason   = "EMPTY_STREAM"
-	geminiSignalEmptyResponseReason = "EMPTY_RESPONSE"
+	geminiSignalEmptyStreamReason      = "EMPTY_STREAM"
+	geminiSignalEmptyResponseReason    = "EMPTY_RESPONSE"
+	geminiSignalIncompleteStreamReason = "INCOMPLETE_STREAM"
 	// geminiSSEFallbackBodyLimit 是非 data 行兜底内容的收集上限，超过即放弃整段判定。
 	geminiSSEFallbackBodyLimit = 1 << 20
 )
@@ -181,6 +182,8 @@ type geminiResponseSignalObserver struct {
 	qualityObserved       bool
 	sawSSEData            bool
 	sawSSEResponseContent bool
+	sawSSECandidate       bool
+	sawSSETerminal        bool
 	sseFallback           geminiSSEFallbackBody
 }
 
@@ -233,6 +236,45 @@ func (o *geminiResponseSignalObserver) observePayload(payload []byte) {
 	if sig, ok := detectGeminiResponseSignal(payload); ok {
 		o.observe(sig)
 	}
+	if !gjson.ValidBytes(payload) {
+		return
+	}
+	root := gjson.ParseBytes(payload)
+	fields, valid := availabilityJSONObject(root)
+	if !valid {
+		return
+	}
+	if response, exists := fields["response"]; exists {
+		if fields["candidates"].Exists() {
+			return
+		}
+		_, valid = availabilityJSONObject(response)
+		if !valid {
+			return
+		}
+		root = response
+	}
+	// Only the primary candidate can complete the stream being served. Unknown
+	// JSON, usage tails and a secondary candidate's STOP are not that evidence.
+	fields, valid = availabilityJSONObject(geminiPrimaryCandidate([]byte(root.Raw)))
+	if !valid || fields["index"].Exists() && fields["index"].Raw != "0" {
+		return
+	}
+	o.sawSSECandidate = true
+	if finish := fields["finishReason"]; finish.Type == gjson.String {
+		reason := strings.TrimSpace(finish.String())
+		if reason != "" && reason != "FINISH_REASON_UNSPECIFIED" {
+			o.sawSSETerminal = true
+		}
+	}
+}
+
+func (o *geminiResponseSignalObserver) observeIncompleteSSE(clientDisconnected bool) {
+	if clientDisconnected || o.ctx.Err() != nil || o.best.Kind != geminiSignalNone || o.sawSSETerminal {
+		return
+	}
+	o.observe(geminiResponseSignal{Kind: geminiSignalAbnormalStop,
+		Reason: geminiSignalIncompleteStreamReason, Message: "Gemini upstream stream ended before completion", Status: http.StatusBadGateway})
 }
 
 func (o *geminiResponseSignalObserver) finishSSE(clientDisconnected bool) {
@@ -532,12 +574,13 @@ func (s *GeminiMessagesCompatService) markGeminiEmptyResponse(c *gin.Context, ac
 	}, stream, upstreamRequestID)
 }
 
-// finalizeGeminiSSESignal 在上游 SSE 读完后做最终登记：优先登记流中优先级最高的信号；
+// finalizeGeminiSSESignal 在上游 SSE 读完后做最终登记：已识别主候选缺终态时先记录未完成，
+// 然后登记流中优先级最高的信号；
 // 只有空 data 事件同样登记空响应；没有 data 时，兜底内容超限则放弃判定，为空登记空响应，是非 SSE 的 JSON 则对整段
 // 判定一次，整段没有信号但没有任何响应内容同样登记空响应。
 func (s *GeminiMessagesCompatService) finalizeGeminiSSESignal(c *gin.Context, account *Account, stream bool, upstreamRequestID string, observed *geminiResponseSignalObserver, sawDataEvent, sawResponseContent bool, fallback *geminiSSEFallbackBody) {
 	sig := observed.finalizeSSESignal(sawDataEvent, sawResponseContent, fallback)
-	if sig.Kind == geminiSignalAbnormalStop {
+	if sig.Kind == geminiSignalAbnormalStop && sig.Reason == "" {
 		s.markGeminiEmptyResponse(c, account, stream, upstreamRequestID)
 		return
 	}
@@ -547,6 +590,9 @@ func (s *GeminiMessagesCompatService) finalizeGeminiSSESignal(c *gin.Context, ac
 // Both gateways use the same EOF classification. An explicit non-fault signal
 // or unknown response must not be promoted to an empty-response fault.
 func (o *geminiResponseSignalObserver) finalizeSSESignal(sawDataEvent, sawResponseContent bool, fallback *geminiSSEFallbackBody) geminiResponseSignal {
+	if o.sawSSECandidate {
+		o.observeIncompleteSSE(false)
+	}
 	if o.best.Kind != geminiSignalNone || sawResponseContent || fallback.Truncated() {
 		return o.best
 	}

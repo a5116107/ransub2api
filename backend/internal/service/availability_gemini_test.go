@@ -35,6 +35,11 @@ func TestAvailabilityAntigravityEmptyStreamFeedback(t *testing.T) {
 					{"empty_object", "data: {\"response\":{}}\n\n", 1, 0},
 					{"empty_candidates", "data: {\"response\":{\"candidates\":[]}}\n\n", 1, 0},
 					{"usage_only", "data: {\"response\":{\"responseId\":\"fixture\",\"usageMetadata\":{\"promptTokenCount\":8}}}\n\n", 1, 0},
+					{"partial_text", "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}}\n\n", 1, 0},
+					{"partial_then_done", "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}}\n\ndata: [DONE]\n\n", 1, 0},
+					{"secondary_terminal", "data: {\"response\":{\"candidates\":[{\"index\":0,\"content\":{\"parts\":[{\"text\":\"partial\"}]}},{\"index\":1,\"finishReason\":\"STOP\"}]}}\n\n", 1, 0},
+					{"max_tokens", "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]},\"finishReason\":\"MAX_TOKENS\"}]}}\n\n", 0, 0},
+					{"unknown_payload", "data: {\"response\":{\"extension\":\"fixture\"}}\n\n", 0, 0},
 					{"raw_empty", "{}\n", 1, 0},
 					{"raw_service", "{\"error\":{\"code\":503}}\n", 1, 1},
 					{"raw_request", "{\"error\":{\"code\":400}}\n", 0, 0},
@@ -198,6 +203,85 @@ func TestAvailabilityAntigravityBusinessSemanticFaults(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestAvailabilityAntigravityIntervalTimeoutFeedback(t *testing.T) {
+	for _, entry := range []string{"gemini", "messages", "chat", "responses"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(entry+map[bool]string{false: "/aggregate", true: "/stream"}[stream], func(t *testing.T) {
+				for _, probe := range []bool{false, true} {
+					t.Run(map[bool]string{false: "business", true: "probe"}[probe], func(t *testing.T) {
+						release := make(chan struct{})
+						var sends atomic.Int32
+						server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							sends.Add(1)
+							_, _ = io.Copy(io.Discard, r.Body)
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = io.WriteString(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":3}}}\n\n")
+							flusher, ok := w.(http.Flusher)
+							if !ok {
+								t.Error("test server has no HTTP flusher")
+								return
+							}
+							flusher.Flush()
+							select {
+							case <-release:
+							case <-r.Context().Done():
+							}
+						}))
+						t.Cleanup(server.Close)
+						defer close(release)
+						original := antigravity.BaseURLs
+						antigravity.BaseURLs = []string{server.URL}
+						t.Cleanup(func() { antigravity.BaseURLs = original })
+						upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+							return server.Client().Do(req)
+						}}
+						gatewayCfg := rawChatCompletionsTestConfig().Gateway
+						gatewayCfg.StreamDataIntervalTimeout = 1
+						svc := newAntigravityCompatService(gatewayCfg, upstream)
+						repo := &geminiAvailabilityFaultRepo{}
+						svc.rateLimitService = &RateLimitService{qualityTrigger: &quality5xxTrigger{availability: repo, immediate: repo}}
+						ctx := t.Context()
+						if probe {
+							ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+						}
+						request := map[string]any{"model": "gemini-3.1-pro-high", "stream": stream, "max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": "Reply ok"}}}
+						switch entry {
+						case "responses":
+							delete(request, "messages")
+							request["input"] = "Reply ok"
+						case "gemini":
+							request = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "Reply ok"}}}}}
+						}
+						body, err := json.Marshal(request)
+						require.NoError(t, err)
+						c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/"+entry, body)
+						c.Request = c.Request.WithContext(ctx)
+						account := newAntigravityCompatAccount(AccountTypeOAuth)
+						switch entry {
+						case "gemini":
+							_, err = svc.ForwardGemini(ctx, c, account, "gemini-3.1-pro-high", "streamGenerateContent", stream, body, false)
+						case "messages":
+							_, err = svc.Forward(ctx, c, account, body, false)
+						case "chat":
+							_, err = svc.ForwardAsChatCompletions(ctx, c, account, body, nil)
+						case "responses":
+							_, err = svc.ForwardAsResponses(ctx, c, account, body, nil)
+						}
+						require.ErrorContains(t, err, "interval timeout")
+						require.EqualValues(t, 1, sends.Load(), "a stalled generation must not be replayed")
+						want := int64(1)
+						if probe {
+							want = 0
+						}
+						require.Equal(t, want, repo.availability.Load())
+						require.Zero(t, repo.quality.Load(), "a local interval timeout must not fabricate upstream 5xx")
+					})
+				}
+			})
+		}
 	}
 }
 

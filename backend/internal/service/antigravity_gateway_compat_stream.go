@@ -309,6 +309,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 
 		case <-timeoutCh:
 			timing.failTimingCapture()
+			signals.observeIncompleteSSE(writer.Disconnected())
 			if writer.Disconnected() {
 				return session.collectResult(true), nil
 			}
