@@ -14,12 +14,12 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--namespace", required=True)
-    parser.add_argument("--image", required=True, help="ghcr.io/ranxi2001/sub2api@sha256:<64 lowercase hex>")
+    parser.add_argument("--image", required=True, help="ghcr.io/a5116107/ransub2api@sha256:<64 lowercase hex>")
     parser.add_argument("--replicas", type=int, choices=range(0, 33), default=0)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", args.namespace):
         parser.error("namespace must be a DNS label of at most 63 characters")
-    image_match = re.fullmatch(r"(ghcr\.io/ranxi2001/sub2api)@(sha256:[0-9a-f]{64})", args.image)
+    image_match = re.fullmatch(r"(ghcr\.io/a5116107/ransub2api)@(sha256:[0-9a-f]{64})", args.image)
     if not image_match:
         parser.error("image must be an owner-fork image pinned to a sha256 digest")
     standalone = shutil.which("kustomize")

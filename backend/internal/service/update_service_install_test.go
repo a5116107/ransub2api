@@ -25,6 +25,20 @@ type updateInstallClient struct {
 	recentCalls  int
 }
 
+func TestUpdateServiceSourceBuildPreservesCustomBinary(t *testing.T) {
+	for _, buildType := range []string{"source", "custom", ""} {
+		t.Run(buildType, func(t *testing.T) {
+			client := &updateInstallClient{}
+			svc := NewUpdateService(&updateServiceCacheStub{}, client, "2.19.2-custom.1", buildType)
+			require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrSourceBuildManaged)
+			require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "2.19.1"), ErrSourceBuildManaged)
+			require.Zero(t, client.latestCalls, "source builds must not fetch replacement releases")
+			require.Zero(t, client.recentCalls)
+			require.False(t, svc.restartRequired)
+		})
+	}
+}
+
 func (c *updateInstallClient) FetchLatestRelease(ctx context.Context, repo string) (*GitHubRelease, error) {
 	c.latestCalls++
 	if c.latestErr != nil {

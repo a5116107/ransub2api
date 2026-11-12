@@ -28,3 +28,21 @@ python -m pip install -r .github/release-tools/requirements-release.txt
 python -m unittest discover -s .github/release-tools -p 'test_release_matrix.py'
 bash -n .github/release-tools/release-images.sh
 ```
+
+
+## Custom stable channel without CI
+
+The user-owned public channel is `a5116107/ransub2api`. Its `production` branch retains custom history. `sync-upstream.yml` tracks stable `ranxi2001/sub2api` releases every six hours and opens/updates one integration PR from `upstream/stable`; it never merges or deploys. Review semantic conflicts and run local regression, migration and rollback checks before promotion. The unrelated `a5116107/bps2api` fork is unchanged.
+
+Use `X.Y.Z-ransub.N` for stable custom revisions. Tags alone do not start a release: publishing is explicit. Existing build/test workflows remain disabled. Build from a committed clean source tree, then publish its exact tag and archives:
+
+```powershell
+python .github/release-tools/release_matrix.py local-build --simple --output H:/Root/DevCache/releases/ransub2api
+git tag -a vX.Y.Z-ransub.N -m "Custom stable release"
+git push origin vX.Y.Z-ransub.N
+python .github/release-tools/release_matrix.py local-publish --input H:/Root/DevCache/releases/ransub2api --notes NOTES_PATH
+```
+
+`--simple` builds a real Linux amd64 archive including the embedded frontend; it is not the old image-only simple release. Other targets remain unavailable until built and verified. Publication first creates a draft and compares GitHub-calculated asset digests before making it latest. Failures leave the draft unpublished. No GitHub credential is included in the package or required by public update downloads.
+
+To publish the corresponding GHCR runtime image, manually dispatch the existing Release workflow with `tag=vX.Y.Z-ransub.N` and `prebuilt_only=true`. This path verifies the downloaded archive against its source commit and packages it without compiling or running CI. Confirm public image pull access before pinning production to its digest. Container update binaries must persist across recreation; keep the previous image and database/data backups until deployment acceptance is complete.

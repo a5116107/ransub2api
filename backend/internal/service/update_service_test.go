@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -13,6 +14,35 @@ import (
 
 type updateServiceCacheStub struct {
 	data string
+}
+
+func TestUpdateServiceCustomStableRevisionOrdering(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"2.19.2", "2.19.2-ransub.1"},
+		{"2.19.2-ransub.1", "2.19.2-ransub.2"},
+		{"2.19.2-ransub.2", "2.19.2-ransub.10"},
+		{"2.19.2-ransub.99", "2.20.0-ransub.1"},
+	} {
+		require.Equal(t, -1, compareVersions(pair[0], pair[1]), "%v", pair)
+		require.Equal(t, 1, compareVersions(pair[1], pair[0]), "%v", pair)
+		require.Zero(t, compareVersions(pair[1], pair[1]))
+	}
+}
+
+func TestUpdateServiceRejectsOtherChannelCache(t *testing.T) {
+	for _, repository := range []string{"", "ranxi2001/sub2api", "Wei-Shaw/sub2api"} {
+		data, err := json.Marshal(map[string]any{"repository": repository, "latest": "99.0.0", "timestamp": time.Now().Unix()})
+		require.NoError(t, err)
+		svc := NewUpdateService(&updateServiceCacheStub{data: string(data)}, nil, "2.19.2-ransub.1", "release")
+		_, err = svc.getFromCache(context.Background())
+		require.Error(t, err)
+	}
+	cache := &updateServiceCacheStub{}
+	svc := NewUpdateService(cache, nil, "2.19.2-ransub.1", "release")
+	svc.saveToCache(context.Background(), &UpdateInfo{LatestVersion: "2.19.2-ransub.2"})
+	info, err := svc.getFromCache(context.Background())
+	require.NoError(t, err)
+	require.True(t, info.HasUpdate)
 }
 
 func (s *updateServiceCacheStub) GetUpdateInfo(context.Context) (string, error) {
@@ -70,7 +100,7 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrNoUpdateAvailable))
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
-	require.Equal(t, "ranxi2001/sub2api", githubClient.latestRepo)
+	require.Equal(t, "a5116107/ransub2api", githubClient.latestRepo)
 }
 
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {

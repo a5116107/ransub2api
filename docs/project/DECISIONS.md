@@ -2231,3 +2231,14 @@
 - 实际数据库恢复使用postgres:18-alpine、network=none、1CPU/768MiB的隔离验证容器，pg_restore --no-owner --no-acl --exit-on-error退出0，恢复202个public表、398个schema_migrations，最高325_account_performance_monitor.sql。此项证明备份可恢复，不证明新分支迁移或业务可用。首轮Unix socket就绪探测误命中entrypoint临时postmaster，恢复时socket消失而失败；原错误保留restore-before证据。按实际启动行为改为127.0.0.1 TCP就绪与恢复，等待正式postmaster后成功，不重做原数据库备份。
 - 两次隔离恢复容器均已退出并删除；匿名PostgreSQL18卷单独按两次启动时间、匿名标签、PG_VERSION及无容器引用核对后以非force volume rm回收，结果另见verifier-cleanup证据。未prune或删除其他运行卷、共享缓存或旧拒删路径。原生产六容器及其数据卷不变。
 - 切换前HTTPS经本机Caddy并验证证书：sub.acompany.cv/health为200、rs.acompany.cv/healthz为204，ssl_verify_result均0；最终原应用仍healthy/200、同容器/同程序且未发布。证据保存于原backend/tmp/protocol-cache/deploy-f046622-{backup,restore-before,restore,preflight,merge-preview,verifier-cleanup}。D9仅关闭备份/运行版本核验/恢复子观察，发布、生产新版本加载、页面/业务验证及新版本回滚观察仍待选定范围后执行。
+
+
+## 2026-11-12 自有更新渠道与保留自研
+
+用户指定a5116107/ransub2api用于独立仓库，并确认公开以免凭据下载Release。GitHub认证账号a5116107对两仓库均为ADMIN；bps2api的parent是liulixin-lex/bps2api，与当前ranxi2001/sub2api来源不同，故保持该分叉不变。origin改为ransub2api，upstream只拉ranxi production并禁推；补全原浅克隆历史，不重写历史。
+
+定时同步只跟踪最新稳定标签并开/更新集成PR，不自动合并、运行上游代码或部署。保留不运行CI的约束；发行在本地验证构建，先draft并核对GitHub资产digest再公开，现有Release工作流仅增加封装已构建归档的手动入口。X.Y.Z-ransub.N按自研修订比较；检查/下载/回退/安装及镜像命名统一到自有仓库，缓存绑定仓库，旧渠道缓存拒绝。
+
+合并回归原有两项失败：区域性能导出测试夹具未实现AccountAvailabilityReader；迁移测试误把325数字前缀当作唯一标识。补齐夹具并改为验证324前置文件先执行，保留已部署的325_account_performance_monitor.sql和自研325_account_availability_states.sql原名/内容。Go unit及四包race通过；前端59项、类型/ESLint通过；WSL发行工具24项通过。
+
+公开前扫描197个可达提交/80.35MB，gitleaks报告84条：72条来自已公开上游祖先；12条自研历史逐条核对为配置键、SQL测试夹具和New API授权测试固定样本，未把凭据库、运行环境或未跟踪图片加入提交。脱敏扫描证据留backend/tmp/protocol-cache/ransub-gitleaks-history.json，不把历史报告伪称零告警。原生产仍为2.19.2/5eb89ca；发行与迁移发布验收分别记录，不以源码测试代替生产恢复。

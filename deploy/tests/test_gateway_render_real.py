@@ -9,7 +9,7 @@ import yaml
 
 
 RENDER = Path(__file__).parents[1] / "kubernetes" / "render.py"
-IMAGE = "ghcr.io/ranxi2001/sub2api@sha256:" + "a" * 64
+IMAGE = "ghcr.io/a5116107/ransub2api@sha256:" + "a" * 64
 
 
 class RealGatewayRenderTests(unittest.TestCase):

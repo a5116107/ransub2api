@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import zipfile
 from datetime import datetime, timezone
 
 import yaml
@@ -18,10 +19,11 @@ FULL_CONFIG = Path('.goreleaser.yaml')
 SIMPLE_CONFIG = Path('.goreleaser.simple.yaml')
 VERSION_FILE = Path('backend/cmd/server/VERSION')
 VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?')
+CUSTOM_STABLE_RE = re.compile(r'\d+\.\d+\.\d+-ransub\.[1-9]\d*')
 
 
 def config(simple=False):
-    return yaml.safe_load((SIMPLE_CONFIG if simple else FULL_CONFIG).read_text())
+    return yaml.safe_load((SIMPLE_CONFIG if simple else FULL_CONFIG).read_text(encoding='utf-8'))
 
 
 def targets(simple=False):
@@ -51,23 +53,23 @@ def sha256(path):
 
 
 def plan(args):
-    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, encoding='utf-8').strip()
     if args.dry_run:
-        version = VERSION_FILE.read_text().strip()
+        version = VERSION_FILE.read_text(encoding='utf-8').strip()
         tag = 'v' + version
     else:
         tag = args.ref
         version = tag.removeprefix('v')
         if not tag.startswith('v') or not VERSION_RE.fullmatch(version):
             raise ValueError('publishing requires a v-prefixed release version tag')
-        tagged_sha = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
+        tagged_sha = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], text=True, encoding='utf-8').strip()
         if sha != tagged_sha:
             raise ValueError('checkout does not match the selected release tag')
     if not VERSION_RE.fullmatch(version):
         raise ValueError('invalid VERSION')
     VERSION_FILE.write_text(version + '\n')
     result = {'sha': sha, 'tag': tag, 'version': version,
-              'prerelease': str('-' in version).lower(),
+              'prerelease': str('-' in version and not CUSTOM_STABLE_RE.fullmatch(version)).lower(),
               'owner_lower': os.environ.get('GITHUB_REPOSITORY_OWNER', '').lower(),
               'simple': str(args.simple).lower(), 'dry_run': str(args.dry_run).lower(),
               'date': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -82,6 +84,8 @@ def generate_config(args):
     data['snapshot'] = {'version_template': '{{ .Env.RELEASE_VERSION }}'}
     data['dockers'] = []
     data['docker_manifests'] = []
+    if CUSTOM_STABLE_RE.fullmatch(os.environ.get('RELEASE_VERSION', '')):
+        data['release']['prerelease'] = False
     if args.mode == 'build':
         target = {'goos': args.goos, 'goarch': args.goarch}
         if target not in targets():
@@ -102,14 +106,14 @@ def generate_config(args):
         else:
             data['release']['extra_files'] = extra
             data['checksum'] = {'name_template': 'checksums.txt', 'algorithm': 'sha256', 'extra_files': extra}
-    Path(args.output).write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+    Path(args.output).write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding='utf-8')
 
 
 def collect(args):
     target = {'goos': args.goos, 'goarch': args.goarch}
     name = archive_name(args.version, target)
     source = Path('dist') / name
-    checksums = {line.split()[1].lstrip('*'): line.split()[0] for line in Path('dist/checksums.txt').read_text().splitlines()}
+    checksums = {line.split()[1].lstrip('*'): line.split()[0] for line in Path('dist/checksums.txt').read_text(encoding='utf-8').splitlines()}
     digest = sha256(source)
     if checksums.get(name) != digest:
         raise ValueError('archive does not match the build checksum')
@@ -127,7 +131,7 @@ def verify(args):
         name = archive_name(args.version, target)
         manifest_name = f"manifest-{target['goos']}-{target['goarch']}.json"
         expected.update((name, manifest_name))
-        manifest = json.loads((directory / manifest_name).read_text())
+        manifest = json.loads((directory / manifest_name).read_text(encoding='utf-8'))
         if manifest != {'sha': args.sha, 'version': args.version, 'target': target,
                         'archive': name, 'sha256': sha256(directory / name)}:
             raise ValueError(f'build provenance or checksum mismatch: {name}')
@@ -153,6 +157,91 @@ def contexts(args):
         (dest / 'deploy').mkdir(exist_ok=True)
         shutil.copy2('deploy/docker-entrypoint.sh', dest / 'deploy/docker-entrypoint.sh')
         shutil.copytree('backend/resources', dest / 'backend/resources', dirs_exist_ok=True)
+
+
+def local_build(args):
+    """Build the same release artifacts locally without starting GitHub CI."""
+    if subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all', '--', '.', ':!backend/internal/service/data'], text=True, encoding='utf-8').strip():
+        raise ValueError('commit the verified source before building a release')
+    version = VERSION_FILE.read_text(encoding='utf-8').strip()
+    if not CUSTOM_STABLE_RE.fullmatch(version):
+        raise ValueError('local custom releases require VERSION X.Y.Z-ransub.N')
+    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, encoding='utf-8').strip()
+    output = Path(args.output).resolve()
+    inputs = output / 'input'
+    inputs.mkdir(parents=True, exist_ok=True)
+    if any(inputs.iterdir()):
+        raise ValueError('release input directory is not empty; preserve or remove the previous artifacts explicitly')
+    pnpm = shutil.which('pnpm.cmd') or shutil.which('pnpm')
+    if not pnpm:
+        raise ValueError('pnpm is required to build the matching embedded frontend')
+    subprocess.run([pnpm, 'run', 'build'], cwd='frontend', check=True)
+    date = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    files = subprocess.check_output(['git', 'ls-files', 'LICENSE*', 'README*', 'deploy', 'backend/resources'], text=True, encoding='utf-8').splitlines()
+    for target in targets(args.simple):
+        binary = output / ('sub2api.exe' if target['goos'] == 'windows' else 'sub2api')
+        env = dict(os.environ, CGO_ENABLED='0', GOOS=target['goos'], GOARCH=target['goarch'])
+        flags = f'-s -w -X main.Version={version} -X main.Commit={sha} -X main.Date={date} -X main.BuildType=release'
+        subprocess.run(['go', 'build', '-tags', 'embed', '-trimpath', '-ldflags', flags, '-o', str(binary), './cmd/server'], cwd='backend', env=env, check=True)
+        name = archive_name(version, target)
+        archive = inputs / name
+        if target['goos'] == 'windows':
+            with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as dest:
+                dest.write(binary, 'sub2api.exe')
+                for file in files:
+                    dest.write(file, file)
+        else:
+            with tarfile.open(archive, 'w:gz') as dest:
+                info = dest.gettarinfo(binary, 'sub2api')
+                info.mode = 0o755
+                with binary.open('rb') as source:
+                    dest.addfile(info, source)
+                for file in files:
+                    dest.add(file, file, recursive=False)
+        manifest = {'sha': sha, 'version': version, 'target': target, 'archive': name, 'sha256': sha256(archive)}
+        (inputs / f"manifest-{target['goos']}-{target['goarch']}.json").write_text(json.dumps(manifest) + '\n', encoding='utf-8')
+        binary.unlink()
+    verify(argparse.Namespace(input=str(inputs), version=version, sha=sha, simple=args.simple))
+    checksums = ''.join(f'{sha256(file)}  {file.name}\n' for file in sorted(inputs.glob('sub2api_*')))
+    (output / 'checksums.txt').write_text(checksums, encoding='utf-8')
+    provenance = {'repository': 'a5116107/ransub2api', 'version': version, 'sha': sha, 'built_at': date,
+                  'simple': args.simple, 'targets': targets(args.simple), 'upstream': 'ranxi2001/sub2api',
+                  'build_type': 'release'}
+    (output / 'release-manifest.json').write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
+    print(json.dumps(provenance))
+
+
+def local_publish(args):
+    """Publish verified local archives; CI and deployment are not invoked."""
+    output = Path(args.input).resolve()
+    manifest = json.loads((output / 'release-manifest.json').read_text(encoding='utf-8'))
+    if manifest['repository'] != 'a5116107/ransub2api' or not CUSTOM_STABLE_RE.fullmatch(manifest['version']):
+        raise ValueError('unexpected release repository or version')
+    tag = 'v' + manifest['version']
+    tagged = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], text=True, encoding='utf-8').strip()
+    if tagged != manifest['sha']:
+        raise ValueError('release tag does not identify the built source')
+    remote_refs = subprocess.check_output(['git', 'ls-remote', 'origin', f'refs/tags/{tag}', f'refs/tags/{tag}^{{}}'], text=True, encoding='utf-8')
+    refs = {line.split()[1]: line.split()[0] for line in remote_refs.splitlines()}
+    if refs.get(f'refs/tags/{tag}^{{}}', refs.get(f'refs/tags/{tag}')) != tagged:
+        raise ValueError('remote release tag does not identify the built source')
+    verify(argparse.Namespace(input=str(output / 'input'), version=manifest['version'], sha=tagged, simple=manifest['simple']))
+    checksums = ''.join(f'{sha256(file)}  {file.name}\n' for file in sorted((output / 'input').glob('sub2api_*')))
+    if (output / 'checksums.txt').read_text(encoding='utf-8') != checksums:
+        raise ValueError('release checksums do not match the verified archives')
+    assets = sorted((output / 'input').iterdir()) + [output / 'checksums.txt', output / 'release-manifest.json']
+    repo = manifest['repository']
+    subprocess.run(['gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
+                    '--title', f'RanSub2API {manifest["version"]}', '--notes-file', args.notes,
+                    *map(str, assets)], check=True)
+    remote = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases/tags/{tag}'], text=True, encoding='utf-8'))
+    by_name = {asset['name']: asset for asset in remote['assets']}
+    for asset in assets:
+        uploaded = by_name.get(asset.name, {})
+        if uploaded.get('size') != asset.stat().st_size or uploaded.get('digest') != 'sha256:' + sha256(asset):
+            raise ValueError('uploaded release asset verification failed; draft retained')
+    subprocess.run(['gh', 'release', 'edit', tag, '--repo', repo, '--draft=false', '--latest'], check=True)
+    print(json.dumps({'repository': repo, 'tag': tag, 'sha': tagged, 'published': True}))
 
 
 def main():
@@ -182,6 +271,14 @@ def main():
         if command == 'contexts':
             p.add_argument('--output', required=True)
         p.set_defaults(run=handler)
+    p = commands.add_parser('local-build')
+    p.add_argument('--output', required=True)
+    p.add_argument('--simple', action='store_true', help='build the Linux amd64 archive only')
+    p.set_defaults(run=local_build)
+    p = commands.add_parser('local-publish')
+    p.add_argument('--input', required=True)
+    p.add_argument('--notes', required=True)
+    p.set_defaults(run=local_publish)
     args = parser.parse_args()
     args.run(args)
 

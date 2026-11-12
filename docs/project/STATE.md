@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D9备份及恢复验证完成；分叉发布范围待选，未切换生产。
-授权：用户2026-11-12要求部署；不CI/推送；先备份，不覆盖线上功能。
-源码：本地f046622；线上实际5eb89ca，镜像基线6de829f，非祖先关系。
-验证命令：SSH/HTTPS、回滚版本校验、PostgreSQL18隔离恢复均退出0。
-验证结果：Sub/RS为200/204；恢复202表/398迁移；回滚程序SHA一致。
+任务：D9合并线上已有功能、演练迁移及回滚后发布，执行中。
+授权：用户选定先合并再全量发布；自有仓库同步/发布已授权；不运行CI。
+源码：本地552739a合并线上5eb89ca；现有生产版本2.19.2。
+验证命令：Go unit更新/性能监控回归通过；WSL发行工具24项、前端59项通过。
+验证结果：生产仍2.19.2/5eb89ca且healthy；自有渠道迁移/上线验收待完成。
 验证来源：backend/tmp/protocol-cache/deploy-f046622-*。
-回滚：hk2:/opt/sub2api/deploy/backups/deploy-f046622；原运行镜像已保存。
-下一动作：按用户选择发布热修，或保留线上功能合并后演练全量。
-尝试：52
-阻塞：已异步询问热修/全量；未切换生产。历史清理策略拒绝仍保留。
+回滚：hk2:/opt/sub2api/deploy/backups/deploy-f046622。
+下一动作：修复合并回归，接入公开a5116107/ransub2api的同步及发行渠道；验证迁移后发布。
+尝试：53
+阻塞：无仓库权限阻塞；等待本地发行构建和迁移/回滚演练。
 边界：视频查询转发原节点，生成/双预算/结算不迁移；真实采购价不做。
 <!-- resume:end -->
 
@@ -21,7 +21,7 @@
 更新日期：2026-11-12。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
-- 授权本地实施及本次线上发布；真实采购价不做，不CI/推送，分叉范围待确认。
+- 授权保留线上功能后全量发布；真实采购价不做；自有仓库同步/发布已授权，不运行CI。
 
 ## 任务进度
 
@@ -54,11 +54,11 @@
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 并发保存/409、重算及候选缺失/无效延迟已验；UI112+支付21、类型/lint/构建/中英390px刷新通过；完整解释待契约 |
 | D8 | in_progress | CLI/三PID/30请求/重启/额度/升级及备份字段已验；配置并发race299/707、SQL三轮12/90、vet/Linux/lint0；其他能力/完整混版待验 |
-| D9 | in_progress | 已授权；备份/回滚及202表恢复通过；分叉热修/合并全量范围待选，尚未发布 |
+| D9 | in_progress | 自有公开ransub2api已授权；同步/发行代码与更新/回退渠道已接入，待构建/远端及迁移上线验收 |
 
 ## 工作区与验证约定
 
-- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为ranxi2001/sub2api。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
+- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为a5116107/ransub2api；upstream为ranxi2001/sub2api且禁推。基线`6de829fa2efa801dcf3071c4efe842198c7724be`，不推官方上游。
 - Go1.27.3、原go.mod/lint规则；`backend/bin/task-d2-golangci-lint.exe` v2.15，unit/integration标签、并发1–2，lint 8GiB/18分钟。
 - Redis竞争测试用PATH既有`H:/Root/tools/redis/5.0.14.1`；Redis3缺`redis.replicate_commands`。其他夹具用Docker Redis7；integration将自建PostgreSQL交区域夹具，不输出DSN。
 - 图片测试隔离DATA_DIR/关闭relay；历史12个PNG/1164bytes保留、不提交。
@@ -67,15 +67,15 @@
 
 ## 下一项工作
 
-D7子验收完成；原28项20 done，D2–D8部分、D9发布准备中。先确定分叉发布范围。
+D7子验收完成；原28项20 done，D2–D8部分，D9合并/迁移/发布执行中。
 
 ## 外部等待与清理
 
-- D2 unknown待供应商/接入方补关联查询契约；D4待完整模型/fast证据。D9发布已授权，热修或保留线上功能后全量及排空范围待确认。
+- D2 unknown待供应商/接入方补关联查询契约；D4待完整模型/fast证据。D9本轮合并全量已授权，先通过演练再排空切换。
 - D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。历史PNG保留、不提交。
-- 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不换工具重试。
+- 历史拒删：`frontend/tmp/availability-coverage-ui/`、`backend/tmp/cache-observability/`、`backend/tmp/output-rate/`及`backend/tmp/ws-turn-metrics/vite-cache`（11文件/2886386bytes）；拥有者手动处理，不重试，详见DECISIONS。
+- 历史Go缓存拒删96份/32.20GiB、删除0，清单cache-reclaim-blocked.json；前序压缩及SHA256证据见DECISIONS，不重试。
 - 历史TEMP拒删：chat-wire/protocol-rate、latency-evidence/cli-processes/priority-backup/recompute-latency及其余测试产物；精确路径/大小和拦截证据见DECISIONS，拥有者手工处理，不重试/移动、不计释放。
-- 本轮`H:/Root/DevCache/tmp/sub2api-candidate-latency`为239文件/9578704bytes，无重解析点/活跃引用；递归清理在启动前被策略拒绝，删除0，拥有者手工处理，不重试/移动。浏览器复现脚本仍在其中，最小验证证据留原protocol-cache。
+- `H:/Root/DevCache/tmp/sub2api-candidate-latency`为239文件/9578704bytes，无重解析点/活跃引用；递归清理在启动前被策略拒绝，删除0，拥有者手工处理，不重试/移动。浏览器复现脚本仍在其中，最小验证证据留原protocol-cache。

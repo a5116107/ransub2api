@@ -21,6 +21,52 @@ spec.loader.exec_module(release)
 
 
 class ReleaseMatrixTest(unittest.TestCase):
+    def test_custom_stable_image_publishes_revision_and_latest(self):
+        fake_bin = Path('bin')
+        fake_bin.mkdir()
+        docker = fake_bin / 'docker'
+        docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\n')
+        docker.chmod(0o755)
+        env = {**os.environ, 'PATH': str(fake_bin.resolve()) + os.pathsep + os.environ['PATH'],
+               'DOCKER_LOG': str(Path('docker.log').resolve()), 'RUNNER_TEMP': self.temp.name,
+               'RELEASE_VERSION': '2.19.2-ransub.1', 'RELEASE_SHA': 'a' * 40,
+               'GITHUB_REPOSITORY': 'a5116107/ransub2api', 'DRY_RUN': 'false',
+               'SIMPLE_RELEASE': 'true', 'DOCKERHUB_USERNAME': 'skip'}
+        subprocess.run(['bash', str(ROOT / '.github/release-tools/release-images.sh')], env=env, check=True)
+        log = Path('docker.log').read_text(encoding='utf-8')
+        self.assertIn('ghcr.io/a5116107/ransub2api:2.19.2-ransub.1', log)
+        self.assertIn('ghcr.io/a5116107/ransub2api:latest', log)
+
+    def test_release_is_manual_and_prebuilt_mode_skips_compilation(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8'))
+        trigger = workflow.get('on', workflow.get(True))
+        self.assertEqual(set(trigger), {'workflow_dispatch'})
+        self.assertIn('prebuilt_only', trigger['workflow_dispatch']['inputs'])
+        self.assertIn('prebuilt_only != true', workflow['jobs']['prepare']['if'])
+        steps = workflow['jobs']['publish-prebuilt-image']['steps']
+        self.assertFalse(any('go build' in step.get('run', '') or 'pnpm' in step.get('run', '') for step in steps))
+
+    def test_custom_stable_version_is_not_hidden_as_prerelease(self):
+        self.assertTrue(release.CUSTOM_STABLE_RE.fullmatch('2.19.2-ransub.1'))
+        self.assertFalse(release.CUSTOM_STABLE_RE.fullmatch('2.19.2-beta.1'))
+        with patch.dict(os.environ, {'RELEASE_VERSION': '2.19.2-ransub.1'}):
+            release.generate_config(argparse.Namespace(mode='publish', simple=False, output='publisher.yaml'))
+        self.assertIs(yaml.safe_load(Path('publisher.yaml').read_text(encoding='utf-8'))['release']['prerelease'], False)
+
+    def test_local_release_rejects_uncommitted_source_before_build(self):
+        with patch.object(subprocess, 'check_output', return_value=' M source.go\n'), patch.object(subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'commit the verified source'):
+                release.local_build(argparse.Namespace(output='release', simple=True))
+            run.assert_not_called()
+
+    def test_local_publication_rejects_wrong_repository_before_upload(self):
+        Path('release').mkdir()
+        Path('release/release-manifest.json').write_text(json.dumps({'repository': 'ranxi2001/sub2api', 'version': '2.19.2-ransub.1'}))
+        with patch.object(subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'unexpected release repository'):
+                release.local_publish(argparse.Namespace(input='release', notes='notes.md'))
+            run.assert_not_called()
+
     def setUp(self):
         self.previous = Path.cwd()
         self.temp = tempfile.TemporaryDirectory()
@@ -60,7 +106,7 @@ class ReleaseMatrixTest(unittest.TestCase):
     def test_leaf_keeps_packaging_and_selects_only_one_target(self):
         original = release.config()
         release.generate_config(argparse.Namespace(mode='build', simple=False, goos='darwin', goarch='arm64', output='leaf.yaml'))
-        leaf = yaml.safe_load(Path('leaf.yaml').read_text())
+        leaf = yaml.safe_load(Path('leaf.yaml').read_text(encoding='utf-8'))
         self.assertEqual(leaf['builds'][0]['goos'], ['darwin'])
         self.assertEqual(leaf['builds'][0]['goarch'], ['arm64'])
         self.assertEqual(leaf['builds'][0]['ignore'], [])
@@ -74,7 +120,7 @@ class ReleaseMatrixTest(unittest.TestCase):
             with self.subTest(simple=simple):
                 original = release.config(simple)
                 release.generate_config(argparse.Namespace(mode='publish', simple=simple, output='publisher.yaml'))
-                data = yaml.safe_load(Path('publisher.yaml').read_text())
+                data = yaml.safe_load(Path('publisher.yaml').read_text(encoding='utf-8'))
                 self.assertTrue(data['builds'][0]['skip'])
                 self.assertFalse(data['archives'])
                 self.assertFalse(data['dockers'])
@@ -134,7 +180,7 @@ class ReleaseMatrixTest(unittest.TestCase):
     def test_dry_run_plan_resolves_matrix_without_a_new_tag(self):
         with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs', 'GITHUB_REPOSITORY_OWNER': 'ExampleOwner'}), patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'):
             release.plan(argparse.Namespace(ref='feature/matrix', dry_run=True, simple=False))
-        output = dict(line.split('=', 1) for line in Path('outputs').read_text().splitlines())
+        output = dict(line.split('=', 1) for line in Path('outputs').read_text(encoding='utf-8').splitlines())
         self.assertEqual(output['dry_run'], 'true')
         self.assertEqual(output['owner_lower'], 'exampleowner')
         self.assertEqual(len(json.loads(output['matrix'])['include']), 5)
@@ -150,7 +196,7 @@ class ReleaseMatrixTest(unittest.TestCase):
                'RELEASE_VERSION': '9.8.7', 'RELEASE_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'ExampleOwner/sub2api',
                'DRY_RUN': 'true', 'SIMPLE_RELEASE': 'false', 'DOCKERHUB_USERNAME': 'skip'}
         subprocess.run(['bash', str(ROOT / '.github/release-tools/release-images.sh')], env=env, check=True)
-        log = Path('docker.log').read_text()
+        log = Path('docker.log').read_text(encoding='utf-8')
         self.assertEqual(log.count('buildx build'), 2)
         self.assertIn('linux/arm64', log)
         self.assertNotIn('--push', log)
@@ -173,7 +219,7 @@ class ReleaseMatrixTest(unittest.TestCase):
                        'RELEASE_VERSION': '9.8.7', 'RELEASE_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'ExampleOwner/sub2api',
                        'DRY_RUN': 'false', 'SIMPLE_RELEASE': str(simple).lower(), 'DOCKERHUB_USERNAME': 'fixturehub'}
                 subprocess.run(['bash', str(ROOT / '.github/release-tools/release-images.sh')], env=env, check=True)
-                log = log_path.read_text()
+                log = log_path.read_text(encoding='utf-8')
                 self.assertIn('--push', log)
                 self.assertEqual(log.count('buildx build'), 1 if simple else 2)
                 if simple:
@@ -191,7 +237,7 @@ class ReleaseMatrixTest(unittest.TestCase):
         release.VERSION_FILE.write_text('9.8.7-rc.1\n')
         with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs'}), patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'):
             release.plan(argparse.Namespace(ref='feature/rc', dry_run=True, simple=False))
-        output = dict(line.split('=', 1) for line in Path('outputs').read_text().splitlines())
+        output = dict(line.split('=', 1) for line in Path('outputs').read_text(encoding='utf-8').splitlines())
         self.assertEqual(output['prerelease'], 'true')
         fake_bin = Path('bin')
         fake_bin.mkdir()
@@ -206,18 +252,18 @@ class ReleaseMatrixTest(unittest.TestCase):
                        'RELEASE_VERSION': '9.8.7-rc.1', 'RELEASE_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'ExampleOwner/sub2api',
                        'DRY_RUN': 'false', 'SIMPLE_RELEASE': str(simple).lower(), 'DOCKERHUB_USERNAME': 'fixturehub'}
                 subprocess.run(['bash', str(ROOT / '.github/release-tools/release-images.sh')], env=env, check=True)
-                log = log_path.read_text()
+                log = log_path.read_text(encoding='utf-8')
                 self.assertIn('--push', log)
                 self.assertIn(':9.8.7-rc.1', log)
                 self.assertNotIn(':latest', log)
                 self.assertNotRegex(log, r':9(?:\.8)?(?:\s|$)')
-        workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())
+        workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8'))
         self.assertIn("prerelease != 'true'", workflow['jobs']['sync-version-file']['if'])
         notification = next(step for step in workflow['jobs']['release']['steps'] if step.get('name') == 'Send Telegram Notification')
         self.assertIn("prerelease != 'true'", notification['if'])
 
     def test_release_announcement_requires_explicit_opt_in(self):
-        workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())
+        workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8'))
         trigger = workflow.get('on', workflow.get(True))
         self.assertIs(trigger['workflow_dispatch']['inputs']['notify_release']['default'], False)
         step = next(step for step in workflow['jobs']['release']['steps'] if step.get('name') == 'Send Telegram Notification')

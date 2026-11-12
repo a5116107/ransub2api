@@ -188,12 +188,12 @@ def migrate_locked(args):
     if root.is_symlink() or dropin.exists() or target.exists() or (root / "totp-recovery").exists():
         raise ValueError("managed migration files already exist; inspect before retrying")
     asset_name = "sub2api-reauth_" + version + "_linux_" + architecture + ".tar.gz"
-    release = json.loads(download("https://api.github.com/repos/ranxi2001/sub2api/releases/tags/v" + version, 4 << 20))
+    release = json.loads(download("https://api.github.com/repos/a5116107/ransub2api/releases/tags/v" + version, 4 << 20))
     asset = next(item for item in release["assets"] if item["name"] == asset_name)
     digest = asset.get("digest", "")
     if not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
         raise ValueError("release has no valid runtime SHA-256")
-    body = download("https://github.com/ranxi2001/sub2api/releases/download/v" + version + "/" + asset_name, 256 << 20)
+    body = download("https://github.com/a5116107/ransub2api/releases/download/v" + version + "/" + asset_name, 256 << 20)
     if hashlib.sha256(body).hexdigest() != digest[7:]:
         raise ValueError("runtime checksum mismatch")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)

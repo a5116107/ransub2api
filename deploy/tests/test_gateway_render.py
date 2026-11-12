@@ -10,7 +10,7 @@ import unittest
 
 
 RENDER = Path(__file__).parents[1] / "kubernetes" / "render.py"
-IMAGE = "ghcr.io/ranxi2001/sub2api@sha256:" + "a" * 64
+IMAGE = "ghcr.io/a5116107/ransub2api@sha256:" + "a" * 64
 FAKE_TOOL = '''#!{python}
 import json, os
 from pathlib import Path
@@ -60,7 +60,7 @@ class GatewayRenderTests(unittest.TestCase):
                       json.loads(namespace_patch["patch"]))
         self.assertEqual(overlay["replicas"], [{"name": "sub2api-gateway", "count": 2}])
         self.assertEqual(overlay["images"], [{
-            "name": "ghcr.io/ranxi2001/sub2api", "newName": "ghcr.io/ranxi2001/sub2api",
+            "name": "ghcr.io/a5116107/ransub2api", "newName": "ghcr.io/a5116107/ransub2api",
             "digest": "sha256:" + "a" * 64,
         }])
         self.assertIn("Offline render only", result.stdout)
@@ -77,7 +77,7 @@ class GatewayRenderTests(unittest.TestCase):
     def test_invalid_inputs_do_not_invoke_tool_or_emit_manifest(self):
         for namespace, image, replicas in [
             ("Bad.Namespace", IMAGE, "1"), ("a" * 64, IMAGE, "1"),
-            ("sub2api", "ghcr.io/ranxi2001/sub2api:latest", "1"),
+            ("sub2api", "ghcr.io/a5116107/ransub2api:latest", "1"),
             ("sub2api", "ghcr.io/other/sub2api@sha256:" + "a" * 64, "1"),
             ("sub2api", IMAGE, "-1"), ("sub2api", IMAGE, "33"),
         ]:
@@ -96,7 +96,7 @@ class GatewayRenderTests(unittest.TestCase):
 
     def test_placeholder_image_is_rejected_without_output(self):
         result = self.invoke("--namespace", "sub2api", "--image", IMAGE, extra_env={
-            "RENDER_OUTPUT": "image: ghcr.io/ranxi2001/sub2api:build-with-k8s-runtime-required",
+            "RENDER_OUTPUT": "image: ghcr.io/a5116107/ransub2api:build-with-k8s-runtime-required",
         })
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")

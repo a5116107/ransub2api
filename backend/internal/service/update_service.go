@@ -27,15 +27,15 @@ var (
 	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
 	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
 	ErrSystemRestartRequired     = infraerrors.Conflict("SYSTEM_RESTART_REQUIRED", "an update or rollback is already installed; restart the service before another update or rollback")
+	ErrSourceBuildManaged        = infraerrors.Conflict("SOURCE_BUILD_MANAGED", "update source builds through their own build and release channel to preserve custom changes")
 )
 
 const (
-	updateCacheKey = "update_check_cache"
 	updateCacheTTL = 1200 // 20 minutes
 	// Releases are maintained on the owner-controlled production fork. Keep the
 	// updater independent from the upstream repository so production installs
 	// see our release stream and can update to our fork's assets.
-	githubRepo = "ranxi2001/sub2api"
+	githubRepo = "a5116107/ransub2api"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
@@ -172,6 +172,9 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 	if err := s.checkRestartRequired(); err != nil {
 		return err
+	}
+	if s.buildType != "release" {
+		return ErrSourceBuildManaged
 	}
 
 	info, err := s.CheckUpdate(ctx, true)
@@ -366,6 +369,9 @@ func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVer
 func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) error {
 	if err := s.checkRestartRequired(); err != nil {
 		return err
+	}
+	if s.buildType != "release" {
+		return ErrSourceBuildManaged
 	}
 
 	target := strings.TrimPrefix(strings.TrimSpace(version), "v")
@@ -641,12 +647,16 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	var cached struct {
+		Repository  string       `json:"repository"`
 		Latest      string       `json:"latest"`
 		ReleaseInfo *ReleaseInfo `json:"release_info"`
 		Timestamp   int64        `json:"timestamp"`
 	}
 	if err := json.Unmarshal([]byte(data), &cached); err != nil {
 		return nil, err
+	}
+	if cached.Repository != githubRepo {
+		return nil, fmt.Errorf("cached release belongs to a different update channel")
 	}
 
 	if time.Now().Unix()-cached.Timestamp > updateCacheTTL {
@@ -665,10 +675,12 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 
 func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 	cacheData := struct {
+		Repository  string       `json:"repository"`
 		Latest      string       `json:"latest"`
 		ReleaseInfo *ReleaseInfo `json:"release_info"`
 		Timestamp   int64        `json:"timestamp"`
 	}{
+		Repository:  githubRepo,
 		Latest:      info.LatestVersion,
 		ReleaseInfo: info.ReleaseInfo,
 		Timestamp:   time.Now().Unix(),
@@ -691,7 +703,30 @@ func compareVersions(current, latest string) int {
 			return 1
 		}
 	}
+	// Custom stable releases retain the real upstream version and add their
+	// own revision. Compare that revision so a custom fix is installable even
+	// when the upstream base has not changed.
+	currentRevision := customReleaseRevision(current)
+	latestRevision := customReleaseRevision(latest)
+	if currentRevision < latestRevision {
+		return -1
+	}
+	if currentRevision > latestRevision {
+		return 1
+	}
 	return 0
+}
+
+func customReleaseRevision(version string) int {
+	_, suffix, ok := strings.Cut(version, "-ransub.")
+	if !ok || suffix == "" || strings.ContainsAny(suffix, ".-+") {
+		return 0
+	}
+	revision, err := strconv.Atoi(suffix)
+	if err != nil || revision < 1 {
+		return 0
+	}
+	return revision
 }
 
 func parseVersion(v string) [3]int {
