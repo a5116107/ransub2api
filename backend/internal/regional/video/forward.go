@@ -273,6 +273,11 @@ func (f *Forwarder) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	// A socket write deadline does not cancel SQL or upstream work. Bound the
+	// original handler too, even when the receiving node allows a longer wait.
+	ctx, cancel := context.WithTimeout(r.Context(), f.server.WriteTimeout)
+	defer cancel()
+	r = r.WithContext(ctx)
 	r.Body = http.MaxBytesReader(w, r.Body, forwardMaxBody)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()

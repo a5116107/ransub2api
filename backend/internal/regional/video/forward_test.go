@@ -17,8 +17,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func forwardPair(t *testing.T, resolve func(context.Context, Owner, string) (*Owner, error)) (*Forwarder, *Forwarder) {
+func forwardPair(t *testing.T, resolve func(context.Context, Owner, string) (*Owner, error), timeouts ...int) (*Forwarder, *Forwarder) {
 	t.Helper()
+	require.True(t, len(timeouts) == 0 || len(timeouts) == 2)
 	identities := mtls.Pair(t)
 	configs := make([]ForwardConfig, 2)
 	for i, identity := range identities {
@@ -29,6 +30,9 @@ func forwardPair(t *testing.T, resolve func(context.Context, Owner, string) (*Ow
 		configs[i] = ForwardConfig{Listen: "127.0.0.1:0", TimeoutSeconds: 5,
 			CAFile: identity.CAFile, CertFile: identity.CertFile, KeyFile: identity.KeyFile,
 			Peers: []ForwardPeer{{Authority: peer, Endpoint: "https://127.0.0.1:1", PeerPin: identities[1-i].Pin, UserIDs: []int64{1}, APIKeyIDs: []int64{2}, AccountIDs: []int64{3}}}}
+		if len(timeouts) == 2 {
+			configs[i].TimeoutSeconds = timeouts[i]
+		}
 	}
 	export := func(authority string) func(context.Context) (Snapshot, error) {
 		return func(context.Context) (Snapshot, error) {
@@ -207,6 +211,105 @@ func TestVideoForwardingCancellationAndTarget(t *testing.T) {
 	})
 	_, err = local.Query(t.Context(), PrimaryAuthority, q)
 	require.Error(t, err, "forwarding must never follow another node's redirect")
+}
+
+func TestVideoForwardingOriginDeadline(t *testing.T) {
+	for _, stage := range []string{"locate", "query-before-headers", "query-stream"} {
+		t.Run(stage, func(t *testing.T) {
+			owner := directoryFixture().Entries[0].Owner
+			deadlines := make(chan time.Time, 1)
+			stopped := make(chan error, 1)
+			release := make(chan struct{})
+			wait := func(ctx context.Context) {
+				deadline, _ := ctx.Deadline()
+				deadlines <- deadline
+				select {
+				case <-ctx.Done():
+				case <-release:
+				}
+				stopped <- ctx.Err()
+			}
+			var resolves, dispatches atomic.Int32
+			primary, local := forwardPair(t, func(ctx context.Context, _ Owner, _ string) (*Owner, error) {
+				if resolves.Add(1) == 1 && stage == "locate" {
+					wait(ctx)
+					return nil, ctx.Err()
+				}
+				return &owner, nil
+			}, 1, 5)
+			t.Cleanup(func() { close(release) })
+			primary.SetDispatch(func(w http.ResponseWriter, r *http.Request, _ Query) {
+				dispatches.Add(1)
+				if stage == "query-stream" {
+					w.Header().Set("Content-Type", "video/mp4")
+					w.WriteHeader(http.StatusOK)
+					if err := http.NewResponseController(w).Flush(); err != nil {
+						return
+					}
+				}
+				wait(r.Context())
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+			defer cancel()
+			finished := make(chan error, 1)
+			go func() {
+				if stage == "locate" {
+					_, err := local.Locate(ctx, PrimaryAuthority, owner, "task-fixture")
+					finished <- err
+					return
+				}
+				query := Query{PolicyVersion: ForwardPolicyVersion, Owner: owner, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
+				response, err := local.Query(ctx, PrimaryAuthority, query)
+				if err == nil {
+					_, err = io.Copy(io.Discard, response.Body)
+					_ = response.Body.Close()
+				}
+				finished <- err
+			}()
+			select {
+			case deadline := <-deadlines:
+				require.False(t, deadline.IsZero(), "the origin's timeout must bound handler work, not only socket writes")
+				require.WithinDuration(t, time.Now().Add(time.Second), deadline, 500*time.Millisecond)
+			case <-time.After(2 * time.Second):
+				t.Fatal("the original node did not begin the request")
+			}
+			select {
+			case err := <-stopped:
+				require.ErrorIs(t, err, context.DeadlineExceeded, "the origin must stop before the receiving node's longer timeout")
+			case <-time.After(2500 * time.Millisecond):
+				t.Fatal("the original node kept processing after its configured timeout")
+			}
+			select {
+			case err := <-finished:
+				require.Error(t, err, "an incomplete lookup or stream must not report success")
+			case <-time.After(time.Second):
+				t.Fatal("the receiving node did not finish after the original node stopped")
+			}
+			require.EqualValues(t, 1, resolves.Load(), "a timeout must not replay the original request")
+			if stage == "locate" {
+				require.Zero(t, dispatches.Load())
+			} else {
+				require.EqualValues(t, 1, dispatches.Load())
+			}
+			primary.SetDispatch(func(w http.ResponseWriter, _ *http.Request, _ Query) {
+				dispatches.Add(1)
+				_, _ = io.WriteString(w, "recovered")
+			})
+			query := Query{PolicyVersion: ForwardPolicyVersion, Owner: owner, TaskID: "task-fixture", Operation: "video_content", Credential: "downstream-fixture", ClientIP: "127.0.0.1"}
+			response, err := local.Query(t.Context(), PrimaryAuthority, query)
+			require.NoError(t, err, "the same original node must remain usable after a timed-out request")
+			raw, err := io.ReadAll(response.Body)
+			require.NoError(t, response.Body.Close())
+			require.NoError(t, err)
+			require.Equal(t, "recovered", string(raw))
+			require.EqualValues(t, 2, resolves.Load())
+			if stage == "locate" {
+				require.EqualValues(t, 1, dispatches.Load())
+			} else {
+				require.EqualValues(t, 2, dispatches.Load())
+			}
+		})
+	}
 }
 
 func TestVideoForwardingConfigRejectsUntrustedEndpoints(t *testing.T) {
