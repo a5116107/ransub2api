@@ -1127,6 +1127,14 @@ Redis 重建不将空状态当通过；多实例传播时延要实测，允许�
 
 会话保留的本地多节点组合使用两个独立网关对象、独立 Redis 连接池和真实 PostgreSQL，覆盖暖快照、原绑定满槽时的有界等待计划、新会话使用空闲容量、手工停调后的换线与恢复不抢回，以及同 Key 多账号的实际 HTTP 上限和释放恢复。此夹具在同一测试进程内运行，不替代跨进程多 CLI 长会话、完整混版升级或生产验收。
 
+跨进程 CLI 子验收显式使用 `codexcli` 测试标签及 `SUB2API_TEST_CODEX_BIN` 指定已安装的原生 CLI，不下载客户端或连接真实供应商。复用同一仓储夹具的隔离 PostgreSQL、Redis 命名空间与暖快照，启动两个独立网关进程，并核对 PID/Redis 连接身份；真实 CLI 的新建与 resume 请求经过原生产路由、选号、最终倍率及共享 Key 准入。检查跨节点长会话历史与缓存键保持、节点正常重启后的续聊、满 Key 时零物理发送与释放恢复、人工停调后迁移及恢复不抢回。CLI 使用隔离 HOME/CODEX_HOME 和仅本地夹具凭据，不继承用户配置、代理或 MCP。
+
+本地命令为 `SUB2API_TEST_CODEX_BIN=<原生CLI绝对路径> go test -json -race -p 1 -tags 'unit,integration,codexcli' ./internal/repository -run '^TestPrioritySessionAffinityCLIProcesses$' -count=1 -timeout=8m`（在backend目录；Windows先设置同名环境变量）。固定两会话各12轮续聊，中间重启一个节点，共30次成功物理请求；满额请求先遇共享Key的503，回退到已占满账号后按既有handler契约公开返回429，二者都不出站。Windows以独立未命名job拥有每次CLI及其后代，挂起启动、安装kill-on-close后才运行，主命令退出后回收自己的后代再结束输出采集，避免继承输出句柄泄漏；只读文本夹具关闭shell/工具host，不终止用户的其他CLI。
+
+该夹具注入隔离 SQL 中的下游身份，使用 standard 模式保留分组作用域，接入真实使用记录及扣费仓储；检查成功记录一次性落库、额度拒绝不记假成功，以及余额与已记录费用守恒。该结果不证明生产登录、供应商实际采购价/对账、缓存存活或不同版本混跑。普通组合与跨进程组合共用账号/设置清理和 Redis 命名空间规则；对外共享的构造器仅存在于 `_test.go`，不扩展生产 API。完整混版、其他能力/协议及生产验收继续保留。
+
+本轮运行证据来自 Windows 原生 CLI；Linux 目标执行 `GOOS=linux CGO_ENABLED=0 go vet -tags 'unit,integration,codexcli' -p 1 ./internal/repository` 检查同一测试包及 Unix 适配器，不将交叉目标静态检查记作 Linux CLI 运行验收。专项和扩大回归分别保留，不重复累加同一场景的通过数。
+
 验证使用项目现有后端 service/repository 单测、集成与 race，前端 test/typecheck/lint/build，另做实际多 CLI 长会话。
 本地 lint 按实际执行的包范围验收，不用本次差异无告警替代完整包检查；具体范围、诊断数量和例外依据由 STATE.md 与 DECISIONS.md 记录。
 生产依赖边界不约束直接验证真实 repository/Redis adapter 的根目录测试夹具；其他测试 lint 仍启用，刻意调用 nil-context 或历史密文接口的例外必须逐点说明。变更规则范围时以禁止生产依赖的负向检查验证限制仍然生效。

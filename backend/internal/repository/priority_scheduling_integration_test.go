@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,38 +25,6 @@ import (
 // caches and slot owners. Neither an in-memory binding nor a fake slot result
 // can establish that an eligible session survives a request on another node.
 func TestPrioritySessionAffinityAcrossGateways(t *testing.T) {
-	// Background config refreshes need independent connections, not concurrent
-	// operations on a single outer SQL transaction. This is TestMain's disposable
-	// container; restore the shared setting and delete only this test's rows.
-	accounts := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil)
-	groups := newGroupRepositoryWithSQL(integrationEntClient, integrationDB)
-	settingsRepo := NewSettingRepository(integrationEntClient)
-	previous, err := settingsRepo.GetValue(t.Context(), "priority_scheduling_v1")
-	missing := err != nil
-	if missing {
-		require.ErrorIs(t, err, service.ErrSettingNotFound)
-	}
-	t.Cleanup(func() {
-		if missing {
-			_, err := integrationDB.Exec(`DELETE FROM settings WHERE key='priority_scheduling_v1'`)
-			require.NoError(t, err)
-		} else {
-			require.NoError(t, settingsRepo.Set(context.Background(), "priority_scheduling_v1", previous))
-		}
-	})
-	group := mustCreateGroup(t, integrationEntClient, &service.Group{Name: "affinity", Platform: service.PlatformOpenAI, RateMultiplier: 1, ProfitControlEnabled: true})
-	var pool []service.Account
-	t.Cleanup(func() {
-		_, err := integrationDB.Exec(`DELETE FROM account_groups WHERE group_id=$1`, group.ID)
-		require.NoError(t, err)
-		for _, a := range pool {
-			_, err = integrationDB.Exec(`DELETE FROM accounts WHERE id=$1`, a.ID)
-			require.NoError(t, err)
-		}
-		_, err = integrationDB.Exec(`DELETE FROM groups WHERE id=$1`, group.ID)
-		require.NoError(t, err)
-	})
-	clients := sharedConcurrencyRedisClients(t, 2)
 	var sends atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sends.Add(1)
@@ -73,17 +42,8 @@ func TestPrioritySessionAffinityAcrossGateways(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id":"resp_affinity","object":"response","status":"completed","model":"gpt-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":3,"output_tokens":1}}`)
 	}))
 	t.Cleanup(upstream.Close)
-	for i := range 2 {
-		a := mustCreateAccount(t, integrationEntClient, &service.Account{Name: fmt.Sprintf("affinity-%d", i), Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Concurrency: 1, Priority: i + 1,
-			Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream.URL}})
-		rate := 0.1
-		a.RateMultiplier = &rate
-		require.NoError(t, accounts.Update(t.Context(), a))
-		require.NoError(t, accounts.BindGroups(t.Context(), a.ID, []int64{group.ID}))
-		loaded, err := accounts.GetByID(t.Context(), a.ID)
-		require.NoError(t, err)
-		pool = append(pool, *loaded)
-	}
+	f := NewPrioritySessionFixture(t, []string{upstream.URL, upstream.URL})
+	accounts, groups, settingsRepo, group, pool, clients := f.Accounts, f.Groups, f.Settings, f.Group, f.Pool, f.Clients
 	var nodes [2]*service.OpenAIGatewayService
 	var transports [2]service.HTTPUpstream
 	var snapshots [2]service.SchedulerCache
@@ -214,7 +174,7 @@ func TestPrioritySessionAffinityAcrossGateways(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body))).WithContext(ctx)
-		c.Set("api_key", &service.APIKey{ID: 7, GroupID: &group.ID, Group: group})
+		c.Set("api_key", f.Key)
 		result, err := nodes[1].Forward(ctx, c, selected.Account, body)
 		return result, recorder, err
 	}
@@ -245,6 +205,80 @@ func TestPrioritySessionAffinityAcrossGateways(t *testing.T) {
 	require.NoError(t, err, "the completed HTTP response must release its Key member")
 	require.NotNil(t, releaseKey)
 	releaseKey()
+}
+
+type PrioritySessionFixture struct {
+	Accounts service.AccountRepository
+	Groups   service.GroupRepository
+	Settings service.SettingRepository
+	Group    *service.Group
+	Pool     []service.Account
+	Clients  []*redis.Client
+	Prefix   string
+	DSN      string
+	Key      *service.APIKey
+}
+
+func NewPrioritySessionFixture(t *testing.T, upstreams []string) *PrioritySessionFixture {
+	t.Helper()
+	// Background readers need real independent SQL connections, not concurrent
+	// operations on one outer transaction. Only this fixture's rows are removed.
+	f := &PrioritySessionFixture{
+		DSN:      integrationPostgresDSN,
+		Accounts: newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil),
+		Groups:   newGroupRepositoryWithSQL(integrationEntClient, integrationDB),
+		Settings: NewSettingRepository(integrationEntClient),
+	}
+	previous, err := f.Settings.GetValue(t.Context(), "priority_scheduling_v1")
+	missing := err != nil
+	if missing {
+		require.ErrorIs(t, err, service.ErrSettingNotFound)
+	}
+	t.Cleanup(func() {
+		if missing {
+			_, err := integrationDB.Exec(`DELETE FROM settings WHERE key='priority_scheduling_v1'`)
+			require.NoError(t, err)
+		} else {
+			require.NoError(t, f.Settings.Set(context.Background(), "priority_scheduling_v1", previous))
+		}
+	})
+	f.Group = mustCreateGroup(t, integrationEntClient, &service.Group{Name: "affinity", Platform: service.PlatformOpenAI, RateMultiplier: 1, ProfitControlEnabled: true})
+	user := mustCreateUser(t, integrationEntClient, &service.User{Email: fmt.Sprintf("affinity-%d@test.invalid", f.Group.ID), Balance: 100, Concurrency: 8})
+	f.Key = mustCreateApiKey(t, integrationEntClient, &service.APIKey{UserID: user.ID, Key: fmt.Sprintf("sk-affinity-%d", f.Group.ID), Name: "affinity", GroupID: &f.Group.ID})
+	f.Key.User, f.Key.Group = user, f.Group
+	t.Cleanup(func() {
+		for _, statement := range []string{
+			`DELETE FROM usage_billing_events WHERE api_key_id=$1`,
+			`DELETE FROM usage_logs WHERE api_key_id=$1`,
+			`DELETE FROM api_keys WHERE id=$1`,
+		} {
+			_, err := integrationDB.Exec(statement, f.Key.ID)
+			require.NoError(t, err)
+		}
+		_, err := integrationDB.Exec(`DELETE FROM users WHERE id=$1`, user.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.Exec(`DELETE FROM account_groups WHERE group_id=$1`, f.Group.ID)
+		require.NoError(t, err)
+		for _, a := range f.Pool {
+			_, err = integrationDB.Exec(`DELETE FROM accounts WHERE id=$1`, a.ID)
+			require.NoError(t, err)
+		}
+		_, err = integrationDB.Exec(`DELETE FROM groups WHERE id=$1`, f.Group.ID)
+		require.NoError(t, err)
+	})
+	f.Clients, f.Prefix = sharedConcurrencyRedisClients(t, 2)
+	for i, upstream := range upstreams {
+		a := mustCreateAccount(t, integrationEntClient, &service.Account{Name: fmt.Sprintf("affinity-%d", i), Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Concurrency: 1, Priority: i + 1,
+			Credentials: map[string]any{"api_key": "supplier-fixture", "base_url": upstream}})
+		rate := 0.1
+		a.RateMultiplier = &rate
+		require.NoError(t, f.Accounts.Update(t.Context(), a))
+		require.NoError(t, f.Accounts.BindGroups(t.Context(), a.ID, []int64{f.Group.ID}))
+		loaded, err := f.Accounts.GetByID(t.Context(), a.ID)
+		require.NoError(t, err)
+		f.Pool = append(f.Pool, *loaded)
+	}
+	return f
 }
 
 func TestPrioritySchedulingSignalsSeparateModelsAndCompletedRounds(t *testing.T) {

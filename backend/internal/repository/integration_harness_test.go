@@ -55,6 +55,15 @@ func runIntegrationTests(m *testing.M) int {
 		log.Printf("failed to init timezone: %v", err)
 		return 1
 	}
+	// The opt-in CLI fixture passes its own disposable connections on stdin.
+	// A child gateway must not create another database or Redis container.
+	if os.Getenv("SUB2API_PRIORITY_PROCESS") == "1" {
+		for _, arg := range os.Args {
+			if arg == "-test.run=^TestPrioritySchedulingCLIProcessNode$" {
+				return m.Run()
+			}
+		}
+	}
 
 	if !dockerIsAvailable(ctx) {
 		// In CI we expect Docker to be available so integration tests should fail loudly.
@@ -268,8 +277,7 @@ func testRedis(t *testing.T) *redisclient.Client {
 	)
 
 	opts := *integrationRedis.Options()
-	rdb := redisclient.NewClient(&opts)
-	rdb.AddHook(prefixHook{prefix: prefix})
+	rdb := NewNamespacedRedisClient(&opts, prefix)
 
 	t.Cleanup(func() {
 		ctx := context.Background()

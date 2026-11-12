@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func sharedConcurrencyRedisClients(t *testing.T, count int) []*redis.Client {
+func sharedConcurrencyRedisClients(t *testing.T, count int) ([]*redis.Client, string) {
 	t.Helper()
 	// Share keys, not connection pools. The clients use the isolated Docker
 	// Redis supplied by TestMain, never an application configuration or URL.
@@ -28,8 +28,7 @@ func sharedConcurrencyRedisClients(t *testing.T, count int) []*redis.Client {
 		opts := *integrationRedis.Options()
 		opts.PoolSize = 1
 		opts.ContextTimeoutEnabled = true
-		client := redis.NewClient(&opts)
-		client.AddHook(prefixHook{prefix: prefix})
+		client := NewNamespacedRedisClient(&opts, prefix)
 		t.Cleanup(func() { require.NoError(t, client.Close()) })
 		id, err := client.ClientID(ctx).Result()
 		require.NoError(t, err)
@@ -53,11 +52,19 @@ func sharedConcurrencyRedisClients(t *testing.T, count int) []*redis.Client {
 			}
 		}
 	})
-	return clients
+	return clients, prefix
+}
+
+// NewNamespacedRedisClient exposes the same test hook to external-package
+// process fixtures without duplicating its command-key rules.
+func NewNamespacedRedisClient(opts *redis.Options, prefix string) *redis.Client {
+	client := redis.NewClient(opts)
+	client.AddHook(prefixHook{prefix: prefix})
+	return client
 }
 
 func TestSharedAccountAndUserConcurrencyAcrossIndependentClients(t *testing.T) {
-	clients := sharedConcurrencyRedisClients(t, 2)
+	clients, _ := sharedConcurrencyRedisClients(t, 2)
 	var caches [2]service.ConcurrencyCache
 	for i := range caches {
 		caches[i] = NewConcurrencyCache(clients[i], 15, 60)
