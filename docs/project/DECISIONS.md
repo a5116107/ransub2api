@@ -2342,3 +2342,6 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 
 - 用户明确继续修复同步和发布缺口；保持唯一工作区、既有自研边界及不运行构建/测试CI。线上仍为2.21.0-ransub.1；上游API最新v2.21.1。同步run43331172013失败于tracking分支push，但旧脚本捕获stderr后未显示，尚无证据归因权限。
 - 原位补充失败stderr（屏蔽环境token、GitHub token格式及URL凭据），保留预期非零返回值；`python -B -m unittest discover -s .github/release-tools -p test_sync_upstream.py`实跑14/14、diff检查通过。先交付观测修复，再使用原定时工作流复现实际拒绝，不修改凭据权限或强推。
+
+- 观测修复提交bca8d2e59后，复现run43352630354的明确拒绝为GitHub App缺workflows权限，目标account-performance-error-threshold.yml；非快进历史不是本次原因。修复tracking提交保留自有workflow树，其他文件逐一与原始上游核对，双亲保留上游历史；一次本地bootstrap后使用短期token续推，不上传用户token。旧候选已合入时改提新tracking，不覆盖尚未合入的人工候选。
+- 镜像真实Git回归先发现分支前缀冲突及alternate-index rm需显式cached强制，均在夹具内修复；最终16/16通过，覆盖两次上游更新、幂等、祖先关系、非工作流源码相等与工作区/索引不变。

@@ -130,11 +130,69 @@ class SyncUpstreamTest(unittest.TestCase):
         sha = 'c' * 40
         calls = [subprocess.CompletedProcess([], 0, sha + '\trefs/heads/integration/upstream-stable\n'),
                  subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, sha),
-                 subprocess.CompletedProcess([], 1, '')]
+                 subprocess.CompletedProcess([], 1, ''), subprocess.CompletedProcess([], 1, '')]
         with patch.object(sync, 'git', side_effect=calls), patch.object(sync, 'integration_status') as preview:
             self.assertEqual(sync.review_candidate('base', 'new-source', 'conflicts'),
                              (sync.INTEGRATION, sha, 'requires_integration', False))
             preview.assert_not_called()
+
+    def test_already_merged_candidate_yields_to_new_tracking_tip(self):
+        calls = [subprocess.CompletedProcess([], 0, 'old\trefs/heads/integration/upstream-stable\n'),
+                 subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, 'old'),
+                 subprocess.CompletedProcess([], 1, ''), subprocess.CompletedProcess([], 0, '')]
+        with patch.object(sync, 'git', side_effect=calls):
+            self.assertEqual(sync.review_candidate('base', 'new-source', 'conflicts'),
+                             (sync.TRACKING, 'new-source', 'conflicts', True))
+
+    def test_tracking_retains_workflows_and_upstream_ancestry_without_touching_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                sync.git('init', '-b', 'production')
+                sync.git('config', 'user.name', 'Release Test Fixture')
+                sync.git('config', 'user.email', 'fixture@example.invalid')
+                workflows = Path('.github/workflows')
+                workflows.mkdir(parents=True)
+                (workflows / 'ci.yml').write_text('on: push\n')
+                Path('app').write_text('old\n')
+                sync.git('add', '.')
+                sync.git('commit', '-m', 'upstream old')
+                old = sync.git('rev-parse', 'HEAD').stdout.strip()
+                sync.git('branch', sync.TRACKING)
+                sync.git('checkout', '-b', 'incoming')
+                Path('app').write_text('new\n')
+                (workflows / 'new.yml').write_text('on: push\n')
+                sync.git('add', '.')
+                sync.git('commit', '-m', 'upstream new')
+                source = sync.git('rev-parse', 'HEAD').stdout.strip()
+                sync.git('checkout', 'production')
+                (workflows / 'ci.yml').write_text('on: workflow_dispatch\n')
+                sync.git('commit', '-am', 'owner workflow policy')
+                base = sync.git('rev-parse', 'HEAD').stdout.strip()
+                sync.git('remote', 'add', 'origin', '.')
+                with self.assertRaisesRegex(ValueError, 'bootstrap-tracking'):
+                    sync.tracking_candidate(base, source, 'v1.0.1')
+                candidate = sync.tracking_candidate(base, source, 'v1.0.1', bootstrap=True)
+                self.assertEqual(sync.git('show', f'{candidate}:app').stdout, 'new\n')
+                self.assertEqual(sync.git('diff', '--name-only', base, candidate, '--', '.github/workflows').stdout, '')
+                self.assertEqual(sync.git('merge-base', '--is-ancestor', old, candidate).returncode, 0)
+                self.assertEqual(sync.git('merge-base', '--is-ancestor', source, candidate).returncode, 0)
+                self.assertEqual(sync.git('status', '--porcelain').stdout, '')
+                self.assertEqual(Path('app').read_text(), 'old\n')
+                sync.git('update-ref', f'refs/heads/{sync.TRACKING}', candidate)
+                self.assertEqual(sync.tracking_candidate(base, source, 'v1.0.1'), candidate)
+                sync.git('checkout', 'incoming')
+                Path('app').write_text('newer\n')
+                sync.git('commit', '-am', 'next upstream')
+                newer = sync.git('rev-parse', 'HEAD').stdout.strip()
+                sync.git('checkout', 'production')
+                following = sync.tracking_candidate(base, newer, 'v1.0.2')
+                self.assertEqual(sync.git('diff', '--name-only', candidate, following, '--', '.github/workflows').stdout, '')
+                self.assertEqual(sync.git('diff', '--name-only', newer, following, '--', '.', ':!.github/workflows').stdout, '')
+                self.assertEqual(sync.git('status', '--porcelain').stdout, '')
+            finally:
+                os.chdir(previous)
 
     def test_no_prepared_candidate_retains_pure_upstream_review(self):
         with patch.object(sync, 'git', return_value=subprocess.CompletedProcess([], 0, '')):

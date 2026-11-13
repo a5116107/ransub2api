@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from github_api import github
 
 REPOSITORY = 'a5116107/ransub2api'
@@ -14,8 +15,8 @@ TRACKING = 'upstream/stable'
 INTEGRATION = 'integration/upstream-stable'
 
 
-def command(*args, check=True):
-    result = subprocess.run(args, text=True, encoding='utf-8', capture_output=True, check=False)
+def command(*args, check=True, env=None):
+    result = subprocess.run(args, text=True, encoding='utf-8', capture_output=True, check=False, env=env)
     if check and result.returncode:
         detail = result.stderr or result.stdout or 'no diagnostic output'
         for name in ('GH_TOKEN', 'GITHUB_TOKEN'):
@@ -28,8 +29,8 @@ def command(*args, check=True):
     return result
 
 
-def git(*args, check=True):
-    return command('git', *args, check=check)
+def git(*args, check=True, env=None):
+    return command('git', *args, check=check, env=env)
 
 
 def gh_json(*args):
@@ -50,6 +51,47 @@ def integration_status(base, source):
     return 'ready_for_review' if merged.returncode == 0 else 'conflicts'
 
 
+def tracking_candidate(base, source, tag, bootstrap=False):
+    """Mirror application sources while retaining the owner's workflow policy.
+
+    The merge commit retains upstream ancestry and records the exact raw source.
+    Only .github/workflows differs from upstream. An alternate index keeps the
+    developer's checkout and index untouched, including on command failure.
+    """
+    git('fetch', '--no-tags', 'origin', f'refs/heads/{TRACKING}')
+    previous = git('rev-parse', 'FETCH_HEAD^{commit}').stdout.strip()
+    message = git('show', '-s', '--format=%B', previous).stdout
+    recorded = re.search(r'^Upstream-Commit: ([0-9a-f]{40})$', message, re.MULTILINE)
+    prior_source = recorded[1] if recorded else previous
+    if git('merge-base', '--is-ancestor', prior_source, source, check=False).returncode:
+        raise ValueError('upstream history is not fast-forward; tracking branch retained')
+    if not recorded and not bootstrap:
+        raise ValueError('tracking workflow policy needs one local --bootstrap-tracking run')
+    if recorded and prior_source == source:
+        if git('diff', '--quiet', source, previous, '--', '.', ':!.github/workflows', check=False).returncode:
+            raise ValueError('tracking branch contains non-upstream application changes')
+        return previous
+    policy = base if bootstrap else previous
+    with tempfile.TemporaryDirectory(prefix='ransub-sync-') as directory:
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(directory, 'index'),
+                   GIT_AUTHOR_NAME='RanSub2API Sync', GIT_AUTHOR_EMAIL='sync@users.noreply.github.com',
+                   GIT_COMMITTER_NAME='RanSub2API Sync', GIT_COMMITTER_EMAIL='sync@users.noreply.github.com')
+        git('read-tree', source, env=env)
+        # --cached only changes the disposable alternate index, never files.
+        git('rm', '-r', '-f', '--cached', '--ignore-unmatch', '.github/workflows', env=env)
+        git('read-tree', '--prefix=.github/workflows/', f'{policy}:.github/workflows', env=env)
+        tree = git('write-tree', env=env).stdout.strip()
+        parents = ['-p', previous] + (['-p', source] if previous != source else [])
+        candidate = git('commit-tree', tree, *parents, '-m',
+                        f'chore: track upstream {tag} with owner workflows [skip ci]\n\n'
+                        f'Upstream-Commit: {source}', env=env).stdout.strip()
+    if git('diff', '--quiet', source, candidate, '--', '.', ':!.github/workflows', check=False).returncode:
+        raise ValueError('tracking snapshot differs from upstream application sources')
+    if git('diff', '--quiet', policy, candidate, '--', '.github/workflows', check=False).returncode:
+        raise ValueError('tracking snapshot changed the owner workflow policy')
+    return candidate
+
+
 def review_candidate(base, source, status):
     """Reuse a maintainer-resolved branch; never replace it with an upstream tip."""
     remote = git('ls-remote', '--heads', 'origin', f'refs/heads/{INTEGRATION}').stdout.strip()
@@ -59,11 +101,15 @@ def review_candidate(base, source, status):
     candidate = git('rev-parse', 'FETCH_HEAD^{commit}').stdout.strip()
     contains_source = git('merge-base', '--is-ancestor', source, candidate, check=False).returncode == 0
     if not contains_source:
+        # A previously merged candidate has nothing left to review. Propose the
+        # new tracking tip rather than opening an empty PR from that ancestor.
+        if git('merge-base', '--is-ancestor', candidate, base, check=False).returncode == 0:
+            return TRACKING, source, status, True
         return INTEGRATION, candidate, 'requires_integration', False
     return INTEGRATION, candidate, integration_status(base, candidate), True
 
 
-def sync(dry_run=False):
+def sync(dry_run=False, bootstrap_tracking=False):
     repository = gh_json('api', f'repos/{REPOSITORY}')
     if repository['full_name'] != REPOSITORY or repository['default_branch'] != BASE:
         raise ValueError('unexpected repository identity or default branch')
@@ -85,12 +131,13 @@ def sync(dry_run=False):
         return result
     # The workflow's ephemeral repository token suppresses recursive Actions.
     # A local user token would run workflows contained in the upstream commit.
-    if os.environ.get('GITHUB_ACTIONS') != 'true':
+    if os.environ.get('GITHUB_ACTIONS') != 'true' and not bootstrap_tracking:
         raise ValueError('use workflow_dispatch for synchronization; local runs support --dry-run only')
-    # Normal push intentionally rejects a rewritten upstream history. Never
-    # force-push or copy upstream files over the custom production branch.
-    git('push', 'origin', f'{source}:refs/heads/{TRACKING}')
-    head, candidate, status, contains_source = review_candidate(base, source, status)
+    tracked = tracking_candidate(base, source, tag, bootstrap=bootstrap_tracking)
+    git('push', 'origin', f'{tracked}:refs/heads/{TRACKING}')
+    status = integration_status(base, tracked)
+    head, candidate, status, contains_source = review_candidate(base, tracked, status)
+    result['tracking_sha'] = tracked
     result.update(status=status, review_head=head, candidate_sha=candidate, upstream_in_candidate=contains_source)
     title = f'chore: integrate upstream {tag} [skip ci]'
     body = (f'Upstream: {UPSTREAM} {tag}\n\n'
@@ -98,7 +145,8 @@ def sync(dry_run=False):
             f'Custom base at preview: `{base}`\n\n'
             f'Merge preview: **{status}**.\n\n'
             f'Review branch: `{head}` at `{candidate}`; pinned upstream included: `{contains_source}`.\n\n'
-            'A prepared integration branch is never overwritten. New releases missing from it require maintainer integration.\n\n'
+            'Owner workflow policy is retained; application sources match the pinned upstream. '
+            'An unmerged prepared candidate is never overwritten. An already merged candidate yields to the new tracking tip.\n\n'
             'This sync does not merge production, build, release, or deploy. '
             'Retain custom scheduling, session/cache ownership, shared-Key limits, '
             'regional video ownership, and account performance monitoring. '
@@ -124,4 +172,7 @@ def sync(dry_run=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true')
-    print(json.dumps(sync(parser.parse_args().dry_run), ensure_ascii=False))
+    parser.add_argument('--bootstrap-tracking', action='store_true',
+                        help='one local owner-authorized transition to a tracking branch with owner workflows')
+    args = parser.parse_args()
+    print(json.dumps(sync(args.dry_run, args.bootstrap_tracking), ensure_ascii=False))
