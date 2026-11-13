@@ -780,7 +780,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			return nil, fmt.Errorf("upstream response failed (passthrough): %s", errMsg)
 		}
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", message)
-		return nil, fmt.Errorf("upstream response failed: %s", message)
+		return nil, newOpenAIUpstreamTerminalError(payload, message)
 	}
 	if strings.TrimSpace(finalResponse.Status) == "completed" {
 		logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, &usage, "response.completed", false)
@@ -1079,7 +1079,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if !clientDisconnected {
 				c.Writer.Flush()
 			}
-			streamNonFailoverErr = fmt.Errorf("upstream response failed: %s", message)
+			streamNonFailoverErr = newOpenAIUpstreamTerminalError(payloadBytes, message)
 			return true
 		}
 

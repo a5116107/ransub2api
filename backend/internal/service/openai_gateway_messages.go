@@ -720,7 +720,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			return nil, fmt.Errorf("upstream response failed (passthrough): %s", errMsg)
 		}
 		writeAnthropicError(c, http.StatusBadGateway, "api_error", message)
-		return nil, fmt.Errorf("upstream response failed: %s", message)
+		return nil, newOpenAIUpstreamTerminalError(payload, message)
 	}
 	if strings.TrimSpace(finalResponse.Status) == "completed" {
 		logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, &usage, "response.completed", false)
@@ -1228,7 +1228,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 						}
 					}
 				}
-				streamNonFailoverErr = fmt.Errorf("upstream response failed: %s", errMsg)
+				streamNonFailoverErr = newOpenAIUpstreamTerminalError(payloadBytes, errMsg)
 				return true
 			}
 		}

@@ -2175,6 +2175,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 	budgetProgressPending := false
 	capacityFailoverSuppressedLogged := false
 	failedMessage := ""
+	var terminalFailure error
 	clientOutputStarted := false
 	codexFailureTerminal := account != nil && account.Platform == PlatformOpenAI
 	failureDelivered := false
@@ -2428,6 +2429,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 				if failedMessage == "" {
 					failedMessage = "Upstream response failed"
 				}
+				terminalFailure = newOpenAIUpstreamTerminalError(dataBytes, failedMessage)
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
 				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
 				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
@@ -2667,7 +2669,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 			return resultWithUsage(), nil
 		}
 		if sawFailedEvent {
-			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
+			return resultWithUsage(), terminalFailure
 		}
 		if errors.Is(err, errOpenAISSEIdle) || errors.Is(err, errOpenAISSEFirstOutput) {
 			// The request was already sent. Silence, even before visible output,
@@ -2715,7 +2717,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", err)
 	}
 	if sawFailedEvent {
-		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
+		return resultWithUsage(), terminalFailure
 	}
 	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {
 		s.rateLimitService.observeAvailabilityIncomplete(ctx, account, clientDisconnected)

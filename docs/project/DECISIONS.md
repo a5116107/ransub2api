@@ -2366,3 +2366,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 真实公网Chromium同域Responses SSE：gpt-6.1-sol、HTTP200、唯一response.completed、文本2字符，总2.5511秒，无error/failed/incomplete。响应x-client-request-id为b9a59767-dad8-4242-b783-5bc78663913d，以既有client:账单键关联到usage39468/账号7，唯一落库；未因查询再发送成功请求。线上未注入三次超时来制造熔断，触发/滚动窗口/人工停用/冷却恢复仍采用前述本地回归证明，不冒充所有自然故障已复现。
 - 后验同标签夹具容器/网络均0。仅删除远端未挂载的本轮候选程序190877856bytes及一次性明文字段快照12028bytes，共释放190889884bytes；必要回滚资料保留。本地核对无本轮Python/Node进程、普通非重解析文件及绝对边界后，原生PowerShell逐项WhatIf再删除三份一次性脚本/发行说明及诊断截图，共4文件198629bytes。正式归档、最小JSON/构建日志和三张最终截图保留；历史service/data、拒删脚本与受保护路径未触碰。
 - 上游同步修复的真实run43353810047已经success，已提出[PR #3](https://github.com/a5116107/ransub2api/pull/3)跟踪v2.21.1/11f250894；其预览明确有冲突，尚未整合/发布，当前.2仍基于v2.21.0，不称已上线最新官方基线。原28项20done/8部分口径保持；本次完整关闭D3/D9跨请求超时保护修复、配置与发行子验收，不关闭缺少供应商契约、非文本、缓存净收益或完整混版的父验收。
+
+### 2026-11-13 — D3/D9截图流内失败漏计与初始发送前重选
+
+- 既有线上只读证据stream-health-live-diagnosis.json关联错误3336–3339及3341：账号10在约两分钟内5次明确上游失败，健康熔断记录为0；设置已开启5/3/1，实际加载.2/4f3010130ddf。错误为上游SSE携带的HTTP/2流失败和无终态消息，并非凭单个账号测试认定可用。账号10现人工停用，保留当前状态，不改组别、模型、售价、并发或缓存归属。
+- 根因：已输出流内终态返回普通fmt错误，健康分类器只识别结构化故障；初始终检明确账号失效也被一律当作不可重选，造成账号10失效后503而未尝试其他合格账号。原真实红测stream-health-red.log有流内漏计和Responses/Chat停用后重选失败；fixture编译错误单列，不算行为复现。
+- 原位保留终态错误的健康归因，刻意不Unwrap到UpstreamFailoverError，防止已输出内容重放。流内error/response.failed成对只在请求结果边界计一次；错误快照仅保留错误字段。原生Responses、透传、Chat/Messages桥接沿原入口替换普通终态错误；无效输入/加密历史、策略、凭据专用处理、容量等沿原分类排除。初始HTTP终检只对明确失效的五类原因标记可重选，数据库故障/模型或所有权拒绝、后续逐次发送/WS终检仍关闭重放；原switch预算和上下文限制保留。
+- 原三包命令go test -race -p 1 -tags unit ./internal/service ./internal/handler ./internal/repository -run 'Test(ClassifyOpenAIAPIKeyHealth|OpenAIAPIKeyHealth|OpenAIUpstreamTerminal|OpenAIInitialAdmission|OpenAIResponseFlush|OpenAISSETerminal|OpenAIStream|StreamFailedEvent|OpenAIHTTPCapacity|ForwardAsChatCompletions_Stream|ForwardAsMessages_.*(Stream|Failed)|OpenAI.*(CapacityShed|Failover|Admission)|UpstreamKeyAdmission|PR612Header|OpenAIHTTP)' -count=1 -timeout 8m已退出0，三包分别15.334s/4.884s/1.198s。四流路径扩展后专项TestOpenAIAPIKeyHealthCommittedStreamFailures再次race通过（1.195s），12场景确认先有partial输出、失败归因一次且无可重放标记。测试扩展首次路径前缀误写导致编辑失败，未改变源码；随即纠正，保留实际终态结果，不将其记作代码红测。
+- 候选版本2.21.0-ransub.3；三包vet/原规则lint正在原句柄收取。发行、线上加载和业务观察尚未完成，不将本地回归当生产恢复；基线仍v2.21.0，上游v2.21.1/PR#3待冲突整合。原28项20done/8部分保持。

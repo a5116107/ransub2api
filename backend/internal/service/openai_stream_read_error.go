@@ -23,6 +23,29 @@ const (
 // EOF — without a read error — before any terminal signal arrived.
 var ErrOpenAIUpstreamStreamTruncated = errors.New("upstream stream ended before any terminal chunk")
 
+// A terminal failure keeps its structured health attribution without exposing
+// a failover sentinel: semantic output may already have reached the client.
+type openAIUpstreamTerminalError struct {
+	message string
+	health  *UpstreamFailoverError
+}
+
+func (e *openAIUpstreamTerminalError) Error() string {
+	return "upstream response failed: " + e.message
+}
+
+func newOpenAIUpstreamTerminalError(payload []byte, message string) error {
+	err := &openAIUpstreamTerminalError{message: message}
+	if !openAIStreamFailedEventShouldFailover(payload, message) ||
+		isOpenAIInvalidEncryptedContentSSE(payload, "error") || isOpenAIUpstreamSessionBlocked(payload) {
+		return err
+	}
+	err.health = newOpenAIUpstreamFailoverError(openAIStreamFailedEventSemanticStatus(payload, message), nil, payload, message, false)
+	// Retain only error fields, never the response's generated output/history.
+	err.health.ResponseBody = openAICapacityShedRuleBody(payload)
+	return err
+}
+
 type openAIUpstreamStreamReadError struct {
 	cause         error
 	clientCode    string

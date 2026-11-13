@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -219,4 +222,74 @@ func TestOpenAIAPIKeyHealthBreakerSubmittedTimeoutThresholdAndRecovery(t *testin
 		account.Schedulable = false
 		require.False(t, account.IsSchedulable(), "cooldown expiry must preserve manual disable")
 	})
+}
+
+func TestOpenAIAPIKeyHealthCommittedStreamFailures(t *testing.T) {
+	for _, route := range []string{"responses", "passthrough", "chat", "messages"} {
+		for _, terminal := range []string{
+			`{"type":"response.failed","response":{"status":"failed","error":{"code":"upstream_http2_stream_error","message":"Upstream HTTP/2 stream failed"},"usage":{"input_tokens":3,"output_tokens":2}}}`,
+			`{"type":"error","error":{"code":"internal_server_error","type":"server_error","message":"siwc executor: stream ended without terminal event"}}`,
+			"{\"type\":\"error\",\"error\":{\"code\":\"internal_server_error\",\"message\":\"pending upstream failure\"}}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"upstream_error\",\"message\":\"final upstream failure\"}}}",
+		} {
+			t.Run(fmt.Sprintf("route=%s/%s", route, terminal[:24]), func(t *testing.T) {
+				settings := NewSettingService(&openAIAPIKeyHealthSettingRepo{value: `{"enabled":true,"window_minutes":5,"failure_threshold":3,"cooldown_minutes":1}`}, &config.Config{})
+				cache := &openAIAPIKeyHealthCacheStub{tripped: true}
+				repo := &openAIAPIKeyHealthAccountRepo{}
+				rateLimit := NewRateLimitService(repo, nil, &config.Config{}, nil, cache)
+				rateLimit.SetSettingService(settings)
+				rateLimit.SetOpenAIAPIKeyHealthCache(cache)
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, rateLimitService: rateLimit, toolCorrector: NewCodexToolCorrector()}
+				account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				wire := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" + "data: " + terminal + "\n\n"
+				resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}
+				var err error
+				switch route {
+				case "chat":
+					_, err = svc.handleChatStreamingResponse(resp, c, account, "gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol", time.Now(), 0)
+				case "messages":
+					_, err = svc.handleAnthropicStreamingResponse(resp, c, account, "gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol", time.Now())
+				case "passthrough":
+					_, err = svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "gpt-6.1-sol", "gpt-6.1-sol")
+				default:
+					_, err = svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-6.1-sol", "gpt-6.1-sol")
+				}
+				require.ErrorContains(t, err, "upstream response failed")
+				require.Contains(t, rec.Body.String(), "partial", "the test must commit output before failing")
+				var failover *UpstreamFailoverError
+				require.False(t, errors.As(err, &failover), "committed output must never become replayable")
+				require.True(t, svc.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err), "an explicit upstream failure must reach the enabled health breaker")
+				require.Equal(t, 1, cache.recordCalls, "count one failed physical stream, not each event")
+				require.Equal(t, 1, repo.setCalls)
+			})
+		}
+	}
+}
+
+func TestOpenAIUpstreamTerminalErrorHealthExclusions(t *testing.T) {
+	for _, tt := range []struct {
+		name, payload string
+		eligible      bool
+	}{
+		{"server", `{"type":"response.failed","response":{"error":{"code":"upstream_error","message":"upstream unavailable"},"output":[{"text":"private generated output"}]}}`, true},
+		{"capacity", `{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"Please try again later"}}}`, false},
+		{"invalid request", `{"type":"error","error":{"type":"invalid_request_error","message":"bad input"}}`, false},
+		{"encrypted history", `{"type":"error","error":{"code":"invalid_encrypted_content","message":"history rejected"}}`, false},
+		{"nested encrypted history", `{"type":"response.failed","response":{"error":{"code":"invalid_encrypted_content","message":"history rejected"}}}`, false},
+		{"cyber", `{"type":"error","error":{"code":"cyber_policy","message":"request blocked"}}`, false},
+		{"session", `{"type":"error","error":{"code":"session_blocked_by_cyber_policy","message":"session blocked"}}`, false},
+		{"credential", `{"type":"error","error":{"code":"invalid_api_key","message":"credential revoked"}}`, false},
+		{"context", `{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := newOpenAIUpstreamTerminalError([]byte(tt.payload), extractOpenAISSEErrorMessage([]byte(tt.payload)))
+			_, body, eligible := classifyOpenAIAPIKeyHealthFailure(fmt.Errorf("wrapped: %w", err))
+			require.Equal(t, tt.eligible, eligible)
+			require.NotContains(t, string(body), "private generated output")
+			var replay *UpstreamFailoverError
+			require.NotErrorAs(t, err, &replay)
+		})
+	}
 }

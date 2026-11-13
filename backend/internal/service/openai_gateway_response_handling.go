@@ -276,6 +276,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	responsesSemanticOutputSeen := false
 	capacityFailoverSuppressedLogged := false
 	failedMessage := ""
+	var terminalFailure error
 	var grokScopedFailure error
 	clientOutputStarted := false
 	codexFailureTerminal := account != nil && account.IsOpenAIOAuthLike()
@@ -501,7 +502,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if grokScopedFailure != nil {
 				return resultWithUsage(), grokScopedFailure
 			}
-			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
+			return resultWithUsage(), terminalFailure
 		}
 		logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, terminalEventType, clientDisconnected)
 		if terminalSuccessful && !clientDisconnected {
@@ -599,6 +600,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				bareErrorPayload = nil
 				bareErrorAccountSideEffectsPending = false
 				failedMessage = ""
+				terminalFailure = nil
 			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed && eventType != "response.failed" {
 				suppressCurrentEvent = true
@@ -647,6 +649,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				if failedMessage == "" {
 					failedMessage = "Upstream response failed"
 				}
+				terminalFailure = newOpenAIUpstreamTerminalError(dataBytes, failedMessage)
 				if isOpenAIInvalidEncryptedContentEvent(dataBytes) {
 					markOpenAIStreamInvalidEncryptedContent(c, dataBytes)
 				}
@@ -1120,7 +1123,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				if grokScopedFailure != nil {
 					return resultWithUsage(), grokScopedFailure
 				}
-				return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
+				return resultWithUsage(), terminalFailure
 			}
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
 			if time.Since(lastRead) < streamInterval {

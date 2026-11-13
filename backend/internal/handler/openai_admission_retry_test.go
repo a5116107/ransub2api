@@ -23,6 +23,7 @@ import (
 type initialAdmissionRepo struct {
 	excelBPSFailoverAccountRepo
 	changed      map[int64]bool
+	disabled     map[int64]bool
 	readErr      error
 	onRead       func()
 	initialReads []int64
@@ -41,6 +42,9 @@ func (r *initialAdmissionRepo) GetOpenAITurnAdmission(ctx context.Context, id in
 	if a != nil && r.changed[id] {
 		a.Extra = maps.Clone(a.Extra)
 		a.Extra["openai_excel_bps"] = false
+	}
+	if a != nil && r.disabled[id] {
+		a.Schedulable = false
 	}
 	return a, nil, err
 }
@@ -108,6 +112,29 @@ func TestOpenAIInitialAdmissionReselectsBeforeSending(t *testing.T) {
 				require.False(t, recordedUpstreamError, "a local route change is not an upstream failure")
 			})
 		}
+	}
+}
+
+func TestOpenAIInitialAdmissionReselectsDisabledAccountBeforeSending(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chat=%t", chat), func(t *testing.T) {
+			repo := &initialAdmissionRepo{disabled: map[int64]bool{1: true}}
+			upstream := &excelBPSFailoverUpstream{answer: func(int) *http.Response { return excelBPSCompleted() }}
+			h := newInitialAdmissionHandler(t, repo, upstream)
+			c, rec := newExcelBPSFailoverTestContext(context.Background(), false)
+			if chat {
+				c.Request.URL.Path = "/v1/chat/completions"
+				h.ChatCompletions(c)
+			} else {
+				h.Responses(c)
+			}
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Equal(t, []int64{2}, upstream.calls(), "the disabled account must not send; another eligible account serves")
+			repo.slots.mu.Lock()
+			defer repo.slots.mu.Unlock()
+			require.Equal(t, 2, repo.slots.accountAcquireCalls)
+			require.Equal(t, repo.slots.accountAcquireCalls, repo.slots.accountReleaseCalls)
+		})
 	}
 }
 

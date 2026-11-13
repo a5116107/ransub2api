@@ -23,6 +23,13 @@ func classifyOpenAIAPIKeyHealthFailure(err error) (int, []byte, bool) {
 	if err == nil || IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return 0, nil, false
 	}
+	var terminalErr *openAIUpstreamTerminalError
+	if errors.As(err, &terminalErr) {
+		if terminalErr.health == nil {
+			return 0, nil, false
+		}
+		return classifyOpenAIAPIKeyHealthFailure(terminalErr.health)
+	}
 
 	var failoverErr *UpstreamFailoverError
 	if errors.As(err, &failoverErr) {

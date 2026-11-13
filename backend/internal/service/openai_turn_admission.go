@@ -42,7 +42,14 @@ func IsOpenAITurnAdmissionError(err error) bool {
 // unmarked: an earlier send may already have executed the request.
 func markOpenAIInitialAdmissionError(err error) error {
 	var denied *OpenAITurnAdmissionError
-	if !errors.As(err, &denied) || denied.Reason != "account_binding_changed" {
+	if !errors.As(err, &denied) {
+		return err
+	}
+	switch denied.Reason {
+	case "account_binding_changed", "account_ineligible", "credential_parent_ineligible", "group_membership_changed", "account_runtime_blocked":
+		// Only a positively identified stale account permits bounded reselect.
+		// A failed authoritative read or model/ownership rejection stays closed.
+	default:
 		return err
 	}
 	copy := *denied
@@ -50,8 +57,8 @@ func markOpenAIInitialAdmissionError(err error) error {
 	return &copy
 }
 
-// IsOpenAIInitialAdmissionRejection identifies a route change before this HTTP
-// forward started. Callers must still check cancellation, downstream writes,
+// IsOpenAIInitialAdmissionRejection identifies a stale or ineligible account
+// before this HTTP forward started. Callers must still check cancellation, downstream writes,
 // continuation state and their account-switch budget before reselecting.
 func IsOpenAIInitialAdmissionRejection(err error) bool {
 	var denied *OpenAITurnAdmissionError

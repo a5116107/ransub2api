@@ -12,12 +12,13 @@ import (
 )
 
 func TestOpenAIInitialAdmissionMarker(t *testing.T) {
-	for _, reason := range []string{"account_binding_changed", "latest_state_unavailable", "account_ineligible", "model_ticket_unavailable", "group_membership_changed"} {
+	for _, reason := range []string{"account_binding_changed", "latest_state_unavailable", "account_ineligible", "credential_parent_ineligible", "account_runtime_blocked", "model_ticket_unavailable", "group_membership_changed", "model_not_supported", "unknown_reason"} {
 		t.Run(reason, func(t *testing.T) {
 			original := denyOpenAITurn(reason)
 			marked := markOpenAIInitialAdmissionError(original)
 			require.False(t, IsOpenAIInitialAdmissionRejection(original), "later admission errors must remain non-retryable")
-			require.Equal(t, reason == "account_binding_changed", IsOpenAIInitialAdmissionRejection(fmt.Errorf("wrapped: %w", marked)))
+			expected := reason == "account_binding_changed" || reason == "account_ineligible" || reason == "credential_parent_ineligible" || reason == "account_runtime_blocked" || reason == "group_membership_changed"
+			require.Equal(t, expected, IsOpenAIInitialAdmissionRejection(fmt.Errorf("wrapped: %w", marked)))
 			require.True(t, IsOpenAITurnAdmissionError(marked))
 		})
 	}
