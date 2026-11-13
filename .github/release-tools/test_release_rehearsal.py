@@ -104,6 +104,177 @@ class ReleaseRehearsalTest(unittest.TestCase):
                 run.api('GET', '/fixture', token='synthetic-token')
         self.assertNotIn('synthetic-token', str(error.exception))
 
+    def test_api_can_assert_revocation_without_exposing_an_error_body(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        reply = json.dumps({'status': 401, 'data': {'secret': 'synthetic-token'}})
+        with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, reply, '')):
+            self.assertIsNone(run.api('GET', '/v1/usage', expected_status=401))
+        reply = json.dumps({'status': 200, 'data': {}})
+        with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, reply, '')):
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 200'):
+                run.api('GET', '/v1/usage', expected_status=401)
+
+    def test_api_targets_original_node_without_changing_current_selection(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        reply = json.dumps({'status': 200, 'data': {'code': 0, 'data': {'saved': True}}})
+        with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, reply, '')) as docker:
+            self.assertEqual(run.api('GET', '/fixture', container='d' * 64), {'saved': True})
+        self.assertEqual(docker.call_args.args[2], 'd' * 64)
+        self.assertEqual(run.app, 'c' * 64)
+
+    def test_overlapping_node_uses_an_independent_container_name(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.result['candidate_binary_sha256'] = 'fixture-digest'
+        replies = [{'status': 'ok'}, {'access_token': 'synthetic-token'}, {'required': False}]
+        with patch.object(run, 'create', return_value='c' * 64) as create, \
+                patch.object(run, 'api', side_effect=replies), \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'fixture-digest', '')):
+            run.start_app(Path(self.args.candidate), 'mixed', slot='legacy')
+        self.assertIn(run.prefix + '-legacy', create.call_args.args)
+
+    def test_l1_fixture_settings_are_explicit_and_default_to_disabled(self):
+        for enabled in (False, True):
+            with self.subTest(l1_enabled=enabled):
+                run = rehearsal.Rehearsal(self.args)
+                run.result['candidate_binary_sha256'] = 'fixture-digest'
+                replies = [{'status': 'ok'}, {'access_token': 'synthetic-token'}, {'required': False}]
+                with patch.object(run, 'create', return_value='c' * 64) as create, \
+                        patch.object(run, 'api', side_effect=replies), \
+                        patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'fixture-digest', '')):
+                    run.start_app(Path(self.args.candidate), 'l1-fixture', l1_enabled=enabled)
+                self.assertIn('API_KEY_AUTH_CACHE_L1_SIZE=' + ('1024' if enabled else '0'), create.call_args.args)
+                self.assertIn('API_KEY_AUTH_CACHE_L1_TTL_SECONDS=600', create.call_args.args)
+
+    def test_invalid_node_slot_stops_before_creating_anything(self):
+        run = rehearsal.Rehearsal(self.args)
+        with patch.object(run, 'create') as create:
+            with self.assertRaisesRegex(RuntimeError, 'invalid fixture application slot'):
+                run.start_app(Path(self.args.candidate), 'mixed', slot='unowned')
+        create.assert_not_called()
+
+    def test_mixed_state_uses_a_grouped_key_and_checks_both_snapshot_versions(self):
+        scenarios = ((None, None), ('stale-context', 'candidate accepted a stale authentication policy'),
+                     ('lost-limit', 'authentication lost the shared key limit'),
+                     ('unstable-version', 'auth snapshot version is unstable'),
+                     ('billable-usage', 'read-only probes generated billable usage'),
+                     ('lost-key-save', 'mixed legacy key save was lost'),
+                     ('lost-account-save', 'mixed legacy account save was lost'))
+        for failure, message in scenarios:
+            with self.subTest(failure=failure):
+                run = rehearsal.Rehearsal(self.args)
+                run.app, run.db, run.redis = 'candidate-node', 'shared-db', 'shared-redis'
+                ceiling = 0
+                cache_reads = 0
+                key_name = None
+
+                def start(*args, **kwargs):
+                    run.app = 'legacy-node'
+                    return 'legacy-token'
+
+                def api(method, path, body=None, token=None, *, container=None):
+                    nonlocal ceiling, key_name
+                    if (method, path) == ('POST', '/api/v1/admin/groups'):
+                        self.assertEqual(container, 'candidate-node')
+                        self.assertEqual(body['platform'], 'openai')
+                        self.assertFalse(body['is_exclusive'])
+                        self.assertEqual(body['subscription_type'], 'standard')
+                        return {'id': 42}
+                    if (method, path) == ('POST', '/api/v1/keys'):
+                        self.assertEqual(body['group_id'], 42)
+                        return {'id': 3, 'key': 'synthetic-key'}
+                    if path == '/api/v1/admin/api-keys/3':
+                        ceiling = body['context_token_limit']
+                    if method == 'PUT' and path == '/api/v1/keys/3':
+                        key_name = body['name']
+                    if method == 'GET' and path == '/api/v1/keys/3':
+                        return {'name': 'unchanged' if failure == 'lost-key-save' else key_name,
+                                'context_token_limit': ceiling, 'allow_long_context': False, 'concurrency_limit': 3}
+                    if path == '/api/v1/admin/accounts/1':
+                        return {'name': 'unchanged' if failure == 'lost-account-save' else body['name']}
+                    return {}
+
+                def docker(*args, **kwargs):
+                    nonlocal cache_reads
+                    if args[0] == 'inspect':
+                        output = 'true\ntrue\n'
+                    else:
+                        version = 1 if cache_reads % 2 == 0 else 2
+                        cache_reads += 1
+                        if failure == 'unstable-version' and cache_reads == 3:
+                            version = 9
+                        snapshot = {'version': version,
+                                    'context_token_limit': 0 if failure == 'stale-context' else ceiling,
+                                    'allow_long_context': False,
+                                    'concurrency_limit': 4 if failure == 'lost-limit' else 3}
+                        output = json.dumps({'snapshot': snapshot})
+                    return subprocess.CompletedProcess([], 0, output, '')
+
+                def sql(query):
+                    if failure == 'billable-usage' and 'usage_logs' in query:
+                        return '1'
+                    return '2' if 'pg_stat_activity' in query else '0'
+
+                with patch.object(run, 'start_app', side_effect=start), \
+                        patch.object(run, 'api', side_effect=api) as calls, \
+                        patch.object(run, 'docker', side_effect=docker), \
+                        patch.object(run, 'sql', side_effect=sql), \
+                        patch.object(run, 'migrations', return_value={}), \
+                        patch.object(run, 'snapshot', return_value='original'):
+                    if failure is None:
+                        run.exercise_shared_state(1, 'original', 'candidate-token')
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, message):
+                            run.exercise_shared_state(1, 'original', 'candidate-token')
+                probe = run.result['mixed_shared_state']
+                if failure is not None:
+                    self.assertFalse(probe['passed'])
+                    continue
+                self.assertFalse(run.result['mixed_version_isolation_verified'])
+                self.assertEqual(probe['generation_requests'], 0)
+                self.assertTrue(probe['passed'])
+                self.assertEqual(len(probe['rounds']), 3)
+                self.assertEqual(cache_reads, 12)
+                self.assertTrue(all(row['old_snapshot_reloaded'] for row in probe['rounds']))
+                usage_nodes = [call.kwargs['container'] for call in calls.call_args_list if call.args[1] == '/v1/usage']
+                self.assertEqual(usage_nodes, ['legacy-node', 'candidate-node'] * 6)
+
+    def test_mixed_state_stops_before_creating_a_key_if_group_is_invalid(self):
+        for invalid_id in (None, 0, -1, True, '42'):
+            with self.subTest(group_id=invalid_id):
+                run = rehearsal.Rehearsal(self.args)
+                run.app, run.db, run.redis = 'candidate-node', 'shared-db', 'shared-redis'
+
+                def start(*args, **kwargs):
+                    run.app = 'legacy-node'
+                    return 'legacy-token'
+
+                with patch.object(run, 'start_app', side_effect=start), \
+                        patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'true\ntrue\n', '')), \
+                        patch.object(run, 'sql', return_value='2'), \
+                        patch.object(run, 'migrations', return_value={}), \
+                        patch.object(run, 'api', return_value={'id': invalid_id}) as api:
+                    with self.assertRaisesRegex(RuntimeError, 'fixture group creation'):
+                        run.exercise_shared_state(1, 'original', 'candidate-token')
+                self.assertEqual(api.call_count, 1)
+                self.assertEqual(api.call_args.args[1], '/api/v1/admin/groups')
+
+    def test_preflight_preserves_an_existing_legacy_node(self):
+        run = rehearsal.Rehearsal(self.args)
+
+        def inspect(*args, **kwargs):
+            if args[:2] == ('image', 'inspect') or args[-1] == run.prefix + '-legacy':
+                return subprocess.CompletedProcess([], 0, 'existing', '')
+            return subprocess.CompletedProcess([], 1, '', 'No such object')
+
+        with patch.dict(os.environ, {'DOCKER_HOST': 'npipe://fixture'}), \
+                patch.object(run, 'docker', side_effect=inspect), patch.object(run, 'create') as create:
+            with self.assertRaisesRegex(RuntimeError, 'existing rehearsal resource requires owner recovery'):
+                run.preflight()
+        create.assert_not_called()
+        self.assertEqual(run.resources, [])
+
     def test_fresh_fixture_completes_existing_onboarding_before_admin_calls(self):
         run = rehearsal.Rehearsal(self.args)
         run.result['candidate_binary_sha256'] = 'fixture-digest'

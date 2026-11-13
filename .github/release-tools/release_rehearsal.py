@@ -1,5 +1,7 @@
-"""Exercise a drained binary upgrade and rollback using disposable local data."""
+"""Exercise upgrades, rollback and mixed-node shared state on disposable local data."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 import re
@@ -72,7 +74,7 @@ class Rehearsal:
         require(endpoint.startswith(('unix://', 'npipe://')), 'rehearsal requires a local Docker endpoint')
         for image in (self.args.runtime_image, self.args.postgres_image, self.args.redis_image):
             self.docker('image', 'inspect', image)
-        for name in (self.prefix, self.prefix + '-db', self.prefix + '-redis', self.prefix + '-app'):
+        for name in (self.prefix, self.prefix + '-db', self.prefix + '-redis', self.prefix + '-app', self.prefix + '-legacy'):
             kind = 'network' if name == self.prefix else 'container'
             require(self.docker(kind, 'inspect', name, check=False).returncode != 0,
                     'existing rehearsal resource requires owner recovery: ' + name)
@@ -121,28 +123,33 @@ class Rehearsal:
         return self.docker('exec', '-i', self.db, 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
                            '-U', 'postgres', '-d', 'sub2api_test', '-Atq', input=query).stdout.strip()
 
-    def api(self, method, path, body=None, token=None):
+    def api(self, method, path, body=None, token=None, *, container=None, expected_status=200):
         headers = {'Content-Type': 'application/json'}
         if token:
             headers['Authorization'] = 'Bearer ' + token
-        result = self.docker('exec', '-i', self.app, 'python', '-c', HTTP_CLIENT,
+        result = self.docker('exec', '-i', container or self.app, 'python', '-c', HTTP_CLIENT,
                              input=json.dumps({'method': method, 'path': path, 'headers': headers, 'body': body}))
         response = json.loads(result.stdout)
-        require(response['status'] == 200, f'local API {method} {path}: HTTP {response["status"]}')
+        require(response['status'] == expected_status, f'local API {method} {path}: HTTP {response["status"]}')
+        if expected_status != 200:
+            return None
         data = response['data']
         require(data.get('code', 0) == 0, 'local API rejected ' + path)
         return data.get('data', data)
 
-    def start_app(self, binary, stage):
+    def start_app(self, binary, stage, *, slot='app', l1_enabled=False):
+        require(slot in ('app', 'legacy'), 'invalid fixture application slot')
         env = {'AUTO_SETUP': 'true', 'DATABASE_HOST': 'db', 'DATABASE_PORT': '5432',
                'DATABASE_USER': 'postgres', 'DATABASE_PASSWORD': self.password,
                'DATABASE_DBNAME': 'sub2api_test', 'DATABASE_SSLMODE': 'disable',
                'REDIS_HOST': 'redis', 'REDIS_PORT': '6379', 'REDIS_DB': '0',
                'ADMIN_EMAIL': 'rehearsal@example.invalid', 'ADMIN_PASSWORD': self.password,
                'JWT_SECRET': self.jwt, 'SERVER_HOST': '0.0.0.0', 'SERVER_PORT': '8080',
-               'SERVER_MODE': 'release', 'RUN_MODE': 'standard', 'DATA_DIR': '/app/data', 'TZ': 'UTC'}
+               'SERVER_MODE': 'release', 'RUN_MODE': 'standard', 'DATA_DIR': '/app/data', 'TZ': 'UTC',
+               'API_KEY_AUTH_CACHE_L1_SIZE': '1024' if l1_enabled else '0',
+               'API_KEY_AUTH_CACHE_L1_TTL_SECONDS': '600'}
         flags = [part for key, value in env.items() for part in ('--env', key + '=' + value)]
-        self.app = self.create('container', '--name', self.prefix + '-app', '--network', self.prefix,
+        self.app = self.create('container', '--name', self.prefix + '-' + slot, '--network', self.prefix,
                                '--tmpfs', '/app/data', '--workdir', '/app',
                                '--mount', f'type=bind,source={binary},target=/rehearsal-bin,readonly',
                                *flags, self.args.runtime_image, '/rehearsal-bin')
@@ -174,7 +181,8 @@ class Rehearsal:
                 'language': 'en', 'phrase': compliance['ack_phrase_en']}, token)
         require(compliance['required'] is False, 'local fixture onboarding did not complete')
         self.result['stages'].append({'stage': stage, 'health': True, 'login': True,
-                                     'fixture_onboarding': True, 'container_id': self.app, 'loaded_sha256': loaded})
+                                     'fixture_onboarding': True, 'container_id': self.app, 'loaded_sha256': loaded,
+                                     'auth_l1_size': 1024 if l1_enabled else 0})
         return login['access_token']
 
     def migrations(self):
@@ -183,7 +191,8 @@ class Rehearsal:
     def snapshot(self, account):
         return self.sql(f"""SELECT jsonb_build_object(
           'account',(SELECT jsonb_build_object('credentials',credentials,'extra',extra,
-              'concurrency',concurrency,'rate_multiplier',rate_multiplier) FROM accounts WHERE id={account}),
+              'concurrency',concurrency,'rate_multiplier',rate_multiplier,'status',status,
+              'schedulable',schedulable) FROM accounts WHERE id={account}),
           'monitor',(SELECT jsonb_build_object('config',config,'paused',paused,'revision',revision,
               'pause_generation',pause_generation) FROM account_performance_monitors WHERE account_id={account}))""")
 
@@ -193,7 +202,7 @@ class Rehearsal:
                                '--network-alias', 'db', '--tmpfs', '/var/lib/postgresql/data',
                                '--env', 'POSTGRES_PASSWORD=' + self.password,
                                '--env', 'POSTGRES_DB=sub2api_test', self.args.postgres_image)
-        self.create('container', '--name', self.prefix + '-redis', '--network', self.prefix,
+        self.redis = self.create('container', '--name', self.prefix + '-redis', '--network', self.prefix,
                     '--network-alias', 'redis', '--tmpfs', '/data', self.args.redis_image,
                     'redis-server', '--save', '', '--appendonly', 'no')
         deadline = time.monotonic() + 60
@@ -208,7 +217,7 @@ class Rehearsal:
         account = self.api('POST', '/api/v1/admin/accounts', {
             'name': 'upgrade-fixture', 'platform': 'openai', 'type': 'apikey',
             'credentials': {'api_key': 'synthetic-rehearsal-key', 'base_url': 'https://fixture.invalid'},
-            'extra': {'rehearsal_marker': self.owner}, 'concurrency': 2,
+            'extra': {'rehearsal_marker': self.owner, 'upstream_key_concurrency_limit': 5}, 'concurrency': 2,
             'rate_multiplier': 0.12, 'group_rate_multiplier': 1, 'group_ids': []}, token)['id']
         require(isinstance(account, int) and account > 0, 'invalid fixture account ID')
         self.sql(f"INSERT INTO account_performance_monitors(account_id,config,paused,revision,pause_generation) VALUES({account},'{{\"enabled\":false}}',true,1,1)")
@@ -243,7 +252,140 @@ class Rehearsal:
                 're-upgrade lost saved policy')
         require(self.migrations() == after and self.snapshot(account) == original, 're-upgrade was not idempotent')
         self.result['reupgrade_idempotent'] = True
+        key_id, credential = self.exercise_shared_state(account, original, token)
+        self.exercise_l1_invalidation(key_id, credential, account, original)
         self.result['passed'] = True
+
+    def exercise_shared_state(self, account, original, candidate_token):
+        # This checks shared configuration/authentication, not whether an old
+        # forwarder implements every new scheduling or admission policy.
+        candidate = self.app
+        migrations = self.migrations()
+        legacy_token = self.start_app(self.baseline, 'mixed_legacy', slot='legacy')
+        legacy = self.app
+        require(candidate != legacy, 'mixed nodes must have different container identities')
+        nodes = self.docker('inspect', '--format', '{{.State.Running}}', candidate, legacy).stdout.splitlines()
+        require(nodes == ['true', 'true'], 'both application versions must be running')
+        require(int(self.sql("SELECT count(DISTINCT client_addr) FROM pg_stat_activity "
+                             "WHERE datname='sub2api_test' AND client_addr IS NOT NULL")) >= 2,
+                'mixed nodes did not connect to the shared database')
+        probe = {'passed': False, 'candidate_container_id': candidate, 'legacy_container_id': legacy,
+                 'database_container_id': self.db, 'redis_container_id': self.redis,
+                 'overlap_verified': True, 'l1_cache_enabled': False, 'rounds': []}
+        self.result['mixed_shared_state'] = probe
+        self.sql("UPDATE users SET balance=100 WHERE email='rehearsal@example.invalid'")
+        group = self.api('POST', '/api/v1/admin/groups', {
+            'name': 'mixed-state-fixture', 'platform': 'openai',
+            'rate_multiplier': 1, 'is_exclusive': False, 'subscription_type': 'standard'},
+            candidate_token, container=candidate)
+        group_id = group.get('id')
+        require(type(group_id) is int and group_id > 0, 'fixture group creation did not return a usable group')
+        key = self.api('POST', '/api/v1/keys', {
+            'name': 'mixed-state-fixture', 'group_id': group_id, 'concurrency_limit': 3},
+                       candidate_token, container=candidate)
+        key_id, credential = key.get('id'), key.get('key')
+        require(isinstance(key_id, int) and key_id > 0 and isinstance(credential, str) and bool(credential),
+                'fixture API key creation did not return a usable key')
+        cache_key = 'apikey:auth:' + hashlib.sha256(credential.encode()).hexdigest()
+        self.api('PUT', f'/api/v1/admin/api-keys/{key_id}',
+                 {'context_token_limit': 1234, 'allow_long_context': False}, candidate_token, container=candidate)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            for index, ceiling in enumerate((2345, 3456, 4567), start=1):
+                writes = [
+                    executor.submit(self.api, 'PUT', f'/api/v1/keys/{key_id}',
+                                    {'name': f'legacy-write-{index}'}, legacy_token, container=legacy),
+                    executor.submit(self.api, 'PUT', f'/api/v1/admin/api-keys/{key_id}',
+                                    {'context_token_limit': ceiling}, candidate_token, container=candidate),
+                ]
+                for write in writes:
+                    write.result()
+                edited_account = self.api('PUT', f'/api/v1/admin/accounts/{account}',
+                                          {'name': f'mixed-account-{index}'}, legacy_token, container=legacy)
+                require(edited_account.get('name') == f'mixed-account-{index}', 'mixed legacy account save was lost')
+                require(self.snapshot(account) == original, 'mixed legacy save changed account or monitor fields')
+                state = self.api('GET', f'/api/v1/keys/{key_id}', token=candidate_token, container=candidate)
+                require(state.get('name') == f'legacy-write-{index}', 'mixed legacy key save was lost')
+                require(state.get('context_token_limit') == ceiling and state.get('allow_long_context') is False,
+                        'mixed key save erased the candidate policy')
+                require(state.get('concurrency_limit') == 3, 'mixed key save erased its concurrency limit')
+                versions = []
+                for node in (legacy, candidate, legacy, candidate):
+                    self.api('GET', '/v1/usage', token=credential, container=node)
+                    cached = self.docker('exec', self.redis, 'redis-cli', '--raw', 'GET', cache_key).stdout
+                    snapshot = json.loads(cached).get('snapshot', {})
+                    version = snapshot.get('version')
+                    require(isinstance(version, int), 'authentication did not persist a versioned snapshot')
+                    versions.append(version)
+                    if node == candidate:
+                        require(snapshot.get('context_token_limit') == ceiling and snapshot.get('allow_long_context') is False,
+                                'candidate accepted a stale authentication policy')
+                        require(snapshot.get('concurrency_limit') == 3, 'authentication lost the shared key limit')
+                require(versions[0] == versions[2] and versions[1] == versions[3], 'auth snapshot version is unstable')
+                probe['rounds'].append({'context_token_limit': ceiling, 'concurrency_limit': 3,
+                                        'allow_long_context': False, 'snapshot_versions': versions,
+                                        'old_snapshot_reloaded': versions[0] != versions[1]})
+        require(self.migrations() == migrations and self.snapshot(account) == original,
+                'mixed writers changed protected state or migration history')
+        require(int(self.sql('SELECT count(*) FROM usage_logs')) == 0, 'read-only probes generated billable usage')
+        probe.update(passed=True, generation_requests=0)
+        return key_id, credential
+
+    def exercise_l1_invalidation(self, key_id, credential, account, original):
+        candidate = self.result['mixed_shared_state']['candidate_container_id']
+        self.stop_app()
+        self.app = candidate
+        self.stop_app()
+        candidate_token = self.start_app(Path(self.args.candidate).resolve(), 'mixed_l1_candidate', l1_enabled=True)
+        candidate = self.app
+        legacy_token = self.start_app(self.baseline, 'mixed_l1_legacy', slot='legacy', l1_enabled=True)
+        legacy = self.app
+        nodes = (legacy, candidate)
+        migrations = self.migrations()
+        probe = {'passed': False, 'l1_ttl_seconds': 600, 'l1_reuse_observed': False, 'transitions': []}
+        self.result['mixed_l1_invalidation'] = probe
+        for node in nodes:
+            self.api('GET', '/v1/usage', token=credential, container=node)
+        # Ristretto admits writes asynchronously. Evict only this fixture's L2
+        # entry, then require both warmed nodes to serve without repopulating it.
+        time.sleep(0.1)
+        cache_key = 'apikey:auth:' + hashlib.sha256(credential.encode()).hexdigest()
+        self.docker('exec', self.redis, 'redis-cli', 'DEL', cache_key)
+        for node in nodes:
+            self.api('GET', '/v1/usage', token=credential, container=node)
+        exists = self.docker('exec', self.redis, 'redis-cli', 'EXISTS', cache_key).stdout.strip()
+        require(exists == '0', 'warmed nodes did not reuse their process-local authentication cache')
+        probe['l1_reuse_observed'] = True
+
+        def observe(expected, stale):
+            started = time.monotonic()
+            attempts = []
+            for node in nodes:
+                count = 0
+                while True:
+                    count += 1
+                    try:
+                        self.api('GET', '/v1/usage', token=credential, container=node, expected_status=expected)
+                        break
+                    except RuntimeError as error:
+                        if str(error) != f'local API GET /v1/usage: HTTP {stale}' or time.monotonic() - started >= 3:
+                            raise
+                        time.sleep(0.05)
+                attempts.append(count)
+            return {'expected_status': expected, 'attempts': attempts,
+                    'seconds': round(time.monotonic() - started, 3)}
+
+        self.api('PUT', f'/api/v1/keys/{key_id}', {'status': 'inactive'}, legacy_token, container=legacy)
+        probe['transitions'].append(observe(401, 200))
+        self.api('PUT', f'/api/v1/keys/{key_id}', {'status': 'active'}, candidate_token, container=candidate)
+        probe['transitions'].append(observe(200, 401))
+        state = self.api('GET', f'/api/v1/keys/{key_id}', token=candidate_token, container=candidate)
+        require(state.get('status') == 'active' and state.get('context_token_limit') == 4567
+                and state.get('allow_long_context') is False and state.get('concurrency_limit') == 3,
+                'L1 invalidation or recovery changed the key policy')
+        require(self.migrations() == migrations and self.snapshot(account) == original,
+                'L1 invalidation or recovery changed protected state')
+        require(int(self.sql('SELECT count(*) FROM usage_logs')) == 0, 'L1 probes generated billable usage')
+        probe.update(passed=True, generation_requests=0)
 
 
 def local_rehearse(args, verify, sha256):
