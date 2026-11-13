@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D9自有v2.21.0-ransub.1合并/发行/生产一致子项已完成。
+任务：D9自动同步/自有发行缺口修复中；线上.1保持健康。
 授权：本轮用户明确要求最新生产一致，允许合并/发布/上线；不CI。
 源码：production；发行源cdabde2f4，保留README提交3b4d1a5c2；上游v2.21.0。
 验证：生产副本410→432四阶段通过；线上加载/重建/登录/UI/公网SSE与账单通过。
 来源：backend/tmp/protocol-cache/ransub-v221-{rehearse,deploy,verify,public-smoke,closeout}.json。
-下一：依序等待D2关联契约、D3能力范围和D5/D6缓存证据；保留未验策略原开关。
-尝试：62
+下一：显示同步失败stderr并复现；修复旧集成分支和自有发行衔接；不运行CI。
+尝试：63
 阻塞：原28项20done/8部分；本地旧候选删除受策略拦截，已有拒删路径不重试。
 边界：PG/Redis原实例不变；实际程序f5e76ea06ff6，优先调度仍false，回退材料保留。
 <!-- resume:end -->

@@ -12,6 +12,22 @@ spec.loader.exec_module(sync)
 
 
 class SyncUpstreamTest(unittest.TestCase):
+    def test_command_failure_reports_sanitized_stderr(self):
+        diagnostic = ('remote: refusing workflow update with token fixture-secret '
+                      'https://user:password@github.com/repo ghp_example github_pat_example')
+        with patch.dict(os.environ, {'GH_TOKEN': 'fixture-secret'}), patch.object(
+                sync.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', diagnostic)):
+            with self.assertRaises(RuntimeError) as error:
+                sync.command('git', 'push', 'origin', 'fixture')
+        message = str(error.exception)
+        self.assertIn('refusing workflow update', message)
+        for secret in ('fixture-secret', 'password', 'ghp_example', 'github_pat_example'):
+            self.assertNotIn(secret, message)
+
+    def test_expected_nonzero_command_remains_inspectable(self):
+        with patch.object(sync.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'conflict')):
+            self.assertEqual(sync.command('git', 'merge-tree', check=False).returncode, 1)
+
     def test_actions_checkout_remote_without_git_suffix_is_accepted(self):
         responses = [
             {'full_name': sync.REPOSITORY, 'default_branch': sync.BASE},

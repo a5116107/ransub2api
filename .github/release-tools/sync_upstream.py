@@ -15,7 +15,17 @@ INTEGRATION = 'integration/upstream-stable'
 
 
 def command(*args, check=True):
-    return subprocess.run(args, text=True, encoding='utf-8', capture_output=True, check=check)
+    result = subprocess.run(args, text=True, encoding='utf-8', capture_output=True, check=False)
+    if check and result.returncode:
+        detail = result.stderr or result.stdout or 'no diagnostic output'
+        for name in ('GH_TOKEN', 'GITHUB_TOKEN'):
+            if os.environ.get(name):
+                detail = detail.replace(os.environ[name], '[REDACTED]')
+        detail = re.sub(r'https?://[^\s/@]+(?::[^\s/@]+)?@', 'https://[REDACTED]@', detail)
+        detail = re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)', '[REDACTED]', detail)
+        raise RuntimeError(f'{args[0]} {args[1] if len(args) > 1 else ""} failed '
+                           f'(exit {result.returncode}): {detail[-6000:].strip()}')
+    return result
 
 
 def git(*args, check=True):
