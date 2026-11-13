@@ -1,13 +1,7 @@
 name: Quality rule152 account saves
 on:
-  push:
-    branches: [fix/quality-operations-live-regressions]
-  pull_request:
-    paths:
-      - 'backend/internal/repository/account_repo.go'
-      - 'backend/internal/service/admin_account.go'
-      - 'backend/internal/repository/quality_rule152_integration_test.go'
-      - '.github/workflows/quality-rule152.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

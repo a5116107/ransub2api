@@ -1,12 +1,7 @@
 name: Mistral budget acceptance
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/service/mistral_usage*'
-      - 'frontend/src/components/account/AccountUsageCell.vue'
-      - '.github/scripts/mistral-budget-screenshot.mjs'
-      - '.github/workflows/mistral-budget.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

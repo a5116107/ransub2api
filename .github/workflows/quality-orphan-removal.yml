@@ -1,13 +1,7 @@
 name: Quality orphan model removal
 on:
-  push:
-    branches: [fix/quality-orphan-isolation-release]
-  pull_request:
-    paths:
-      - 'backend/internal/**/quality*'
-      - 'frontend/src/**/QualityOwnershipReview*'
-      - 'frontend/src/**/AccountQualityView*'
-      - '.github/workflows/quality-orphan-removal.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

@@ -1,15 +1,7 @@
 name: Smart ops sidebar rendered evidence
 on:
-  push:
-    branches: [fix/smart-ops-default-six-20261109]
-  pull_request:
-    branches: [production]
-    paths:
-      - '.github/workflows/smart-ops-sidebar-evidence.yml'
-      - '.github/scripts/smart-ops-sidebar-screenshot.mjs'
-      - 'frontend/src/constants/smartOpsMenu.ts'
-      - 'frontend/src/stores/adminSettings.ts'
-      - 'frontend/src/components/settings/SmartOpsSidebarSettings.vue'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

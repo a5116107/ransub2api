@@ -1,16 +1,7 @@
 name: Serverless IP routing
 
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/serverless/**'
-      - 'frontend/src/components/settings/ServerlessSettings*'
-      - 'frontend/src/constants/newFeatureNotices.ts'
-      - 'frontend/src/views/admin/SettingsView.vue'
-      - 'frontend/src/views/admin/__tests__/SettingsView.spec.ts'
-      - '.github/scripts/serverless-ip-routing-screenshot.mjs'
-      - '.github/workflows/serverless-ip-routing.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

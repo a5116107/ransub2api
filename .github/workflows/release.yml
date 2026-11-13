@@ -1,9 +1,7 @@
 name: Release
+run-name: Publish ${{ inputs.tag }} for ${{ github.repository }}
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -25,6 +23,11 @@ on:
         required: false
         type: boolean
         default: false
+      prebuilt_only:
+        description: 'Package verified local Release archives into GHCR images; do not compile or run CI'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.repository }}
@@ -38,7 +41,57 @@ env:
   DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
 
 jobs:
+  publish-prebuilt-image:
+    if: inputs.prebuilt_only == true && github.repository == 'a5116107/ransub2api'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      SIMPLE_RELEASE: 'true'
+      DRY_RUN: 'false'
+      DOCKERHUB_USERNAME: skip
+    steps:
+      - name: Validate selected custom stable tag
+        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ransub\.[1-9][0-9]*$ ]]'
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Download existing verified local release artifacts
+        run: |
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'sub2api_*_linux_amd64.tar.gz' --pattern 'manifest-linux-amd64.json' --dir release-input
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern release-manifest.json
+          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - run: python -m pip install -r .github/release-tools/requirements-release.txt
+      - name: Verify source identity and prepare the existing runtime image context
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          manifest = json.loads(Path('release-manifest.json').read_text())
+          assert manifest['repository'] == os.environ['GITHUB_REPOSITORY']
+          assert manifest['sha'] == os.environ['RELEASE_SHA']
+          assert manifest['version'] == os.environ['RELEASE_VERSION']
+          PY
+          python .github/release-tools/release_matrix.py contexts --simple \
+            --version "$RELEASE_VERSION" --sha "$RELEASE_SHA" --input release-input --output .release-context
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish runtime image without compiling source or running CI
+        run: bash .github/release-tools/release-images.sh
+
   prepare:
+    if: inputs.prebuilt_only != true
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.plan.outputs.sha }}

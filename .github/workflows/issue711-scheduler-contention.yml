@@ -1,19 +1,7 @@
 name: Issue711 scheduler contention
 
 on:
-  push:
-    branches: [fix/scheduler-snapshot-lock-contention]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/repository/account_codex_snapshot.go'
-      - 'backend/internal/repository/account_scheduler_publication_unit_test.go'
-      - 'backend/internal/service/openai_codex_snapshot_contract.go'
-      - 'backend/internal/service/scheduler_snapshot_latest_accounts_test.go'
-      - 'backend/internal/service/scheduler_snapshot_service.go'
-      - 'backend/internal/service/scheduler_snapshot_retired_group_batch_test.go'
-      - 'backend/internal/integration/issue711/**'
-      - '.github/workflows/issue711-scheduler-contention.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

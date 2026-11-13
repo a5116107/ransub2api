@@ -1,13 +1,7 @@
 name: Pelican random question evidence
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/service/pelican*'
-      - 'frontend/src/components/admin/account/Pelican*'
-      - 'frontend/src/components/admin/account/IQTestModal.vue'
-      - '.github/scripts/pelican-question-browser.mjs'
-      - '.github/workflows/pelican-random-questions.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

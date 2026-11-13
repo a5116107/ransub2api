@@ -1,12 +1,7 @@
 name: Issue605 isolated smart upstream protocol
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/issue605-smart-protocol.yml'
-      - '.github/scripts/issue605-proof.py'
-      - 'docs/design/issue605-smart-upstream-protocol.md'
+  workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:

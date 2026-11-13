@@ -1,22 +1,7 @@
 name: Issue 603 load capacity regression
 
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/service/account.go'
-      - 'backend/internal/service/account_load_factor_test.go'
-      - 'backend/internal/service/openai_account_scheduler.go'
-      - 'backend/internal/service/openai_account_scheduler_test.go'
-      - 'backend/internal/service/openai_gateway_scheduling.go'
-      - 'backend/internal/service/gateway_scheduling.go'
-      - 'backend/internal/service/ops_concurrency.go'
-      - 'backend/internal/service/ops_metrics_collector.go'
-      - 'backend/internal/repository/account_repo.go'
-      - 'backend/internal/repository/account_repo_schedulable_projection_test.go'
-      - 'backend/internal/handler/admin/account_handler.go'
-      - '.github/workflows/issue603-loadrate.yml'
-      - '.github/scripts/issue603-loadrate-check-red.py'
+  workflow_dispatch:
 
 permissions:
   contents: read

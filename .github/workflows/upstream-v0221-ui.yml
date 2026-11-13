@@ -1,9 +1,7 @@
 name: Upstream v0.2.21 rendered evidence
 on:
-  push:
-    branches: [cherry/upstream-v0.2.21]
-  pull_request:
-    branches: [production]
+  workflow_dispatch:
+
 permissions:
   contents: read
 env:

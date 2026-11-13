@@ -1,17 +1,7 @@
 name: Multi-group model catalogue
 
 on:
-  push:
-    branches: [fix/multigroup-model-list-union]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/handler/gateway*'
-      - 'backend/internal/service/api_key_groups.go'
-      - 'backend/internal/service/gateway*'
-      - 'backend/internal/server/middleware/api_key*'
-      - 'backend/internal/server/routes/gateway_models_union_test.go'
-      - '.github/workflows/multigroup-model-list.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -1,8 +1,7 @@
 name: OAuth fallback scope
 on:
-  push:
-    branches: [fix/oauth-fallback-attribution]
   workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

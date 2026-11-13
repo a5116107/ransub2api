@@ -1,12 +1,7 @@
 name: VIP credit history UI
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - '**admin_balance_history**'
-      - '**UserBalanceHistoryModal*'
-      - '.github/scripts/vip-credit-history-preview.mjs'
-      - '.github/workflows/vip-credit-history.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

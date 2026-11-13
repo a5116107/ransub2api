@@ -1,19 +1,7 @@
 name: Balance forecast acceptance
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/balanceforecast/**'
-      - 'backend/internal/service/*forecast*'
-      - 'backend/internal/service/notification_email_service.go'
-      - 'backend/internal/repository/balance_forecast*'
-      - 'backend/migrations/*balance_forecast*'
-      - 'frontend/src/components/settings/BalanceForecast*'
-      - 'frontend/src/views/admin/SettingsView.vue'
-      - '.github/workflows/balance-forecast.yml'
-      - '.github/scripts/balance-forecast-screenshot.mjs'
-  push:
-    branches: [feat/balance-exhaustion-forecast]
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

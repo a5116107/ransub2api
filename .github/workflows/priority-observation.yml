@@ -1,26 +1,7 @@
 name: Priority observation regression
 on:
-  push:
-    branches: [fix/priority-observation-identity]
-  pull_request:
-    paths:
-      - 'backend/internal/service/priority*'
-      - 'backend/internal/service/openai_account_scheduler.go'
-      - 'backend/internal/handler/*observation*'
-      - 'backend/internal/handler/priority_penalty_review_test.go'
-      - 'backend/internal/service/openai_ws_forwarder_ingress.go'
-      - '.github/scripts/priority-penalty-review-red.py'
-      - 'backend/internal/handler/openai_gateway_handler.go'
-      - 'backend/internal/handler/openai_chat_completions.go'
-      - 'backend/internal/repository/priority_scheduling*'
-      - 'frontend/src/views/admin/PrioritySchedulingView.vue'
-      - 'frontend/src/views/admin/__tests__/PrioritySchedulingView.spec.ts'
-      - '.github/workflows/priority-observation.yml'
-      - '.github/scripts/priority-observation-red.py'
-      - '.github/scripts/priority-observation-check-red.py'
-      - 'backend/internal/handler/admin/priority_scheduling*'
-      - 'frontend/src/api/admin/priorityScheduling.ts'
-      - 'frontend/src/i18n/locales/*/priorityScheduling.ts'
+  workflow_dispatch:
+
 concurrency:
   group: priority-observation-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true

@@ -1,16 +1,7 @@
 name: Upstream profit operations exact head
 on:
-  pull_request:
-    paths:
-      - '**/profit_operations*'
-      - '**/ProfitOperations*'
-      - '**/UpstreamChannelOperations*'
-      - '**/ProfitAnalytics*'
-      - '.github/workflows/profit-operations.yml'
-      - '.github/scripts/upstream-channel-entities-screenshot.mjs'
-      - 'frontend/src/api/admin/profitOperations.ts'
-      - 'frontend/src/i18n/locales/*/profitOps.ts'
   workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

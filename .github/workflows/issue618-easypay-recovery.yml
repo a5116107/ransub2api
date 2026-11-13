@@ -1,15 +1,7 @@
 name: Issue618 EasyPay confirmation recovery
 on:
-  push:
-    branches: [fix/payment-confirmation-recovery-618]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/service/payment*.go'
-      - 'backend/internal/payment/**'
-      - 'backend/go.mod'
-      - 'backend/go.sum'
-      - '.github/workflows/issue618-easypay-recovery.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

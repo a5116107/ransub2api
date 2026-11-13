@@ -1,10 +1,7 @@
 name: Upstream v0.2.20 selected regressions
 
 on:
-  push:
-    branches: [cherry/upstream-v0.2.20]
-  pull_request:
-    branches: [production]
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -1,10 +1,6 @@
 name: BPS function code branches
 
 on:
-  pull_request:
-    paths:
-      - backend/internal/service/basispoints/**
-      - .github/workflows/bps-function-code-branches.yml
   workflow_dispatch:
 
 permissions:

@@ -1,20 +1,7 @@
 name: PR598 repair regression
 
 on:
-  push:
-    branches: [feat/priority-scheduling-latency-sticky]
-  pull_request:
-    paths:
-      - 'backend/internal/service/priority*'
-      - 'backend/internal/repository/priority*'
-      - 'frontend/src/views/admin/PrioritySchedulingView.vue'
-      - 'frontend/src/views/admin/__tests__/PrioritySchedulingView.spec.ts'
-      - 'frontend/src/api/admin/priorityScheduling.ts'
-      - 'frontend/src/i18n/locales/*/priorityScheduling.ts'
-      - 'backend/internal/handler/priority_latency_modes_test.go'
-      - '.github/scripts/pr598-priority-scheduling-screenshot.mjs'
-      - '.github/scripts/pr598-source-proof.sh'
-      - '.github/workflows/pr598-repair-regression.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

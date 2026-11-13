@@ -1,16 +1,7 @@
 name: API key model policy UI
 
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'frontend/src/components/admin/user/ApiKeyModelPolicyDialog.vue'
-      - 'frontend/src/components/admin/user/UserApiKeysModal.vue'
-      - 'frontend/src/components/admin/user/__tests__/ApiKeyModelPolicy*.spec.ts'
-      - 'frontend/src/views/user/KeysView.vue'
-      - 'frontend/src/i18n/locales/*/apiKeyModelPolicy.ts'
-      - '.github/scripts/api-key-model-policy-screenshot.mjs'
-      - '.github/workflows/api-key-model-policy-ui.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

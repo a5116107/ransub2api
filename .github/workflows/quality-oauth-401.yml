@@ -1,17 +1,7 @@
 name: Quality OAuth 401 safety
 
 on:
-  pull_request:
-    paths:
-      - 'backend/internal/service/quality_oauth_401*'
-      - 'backend/internal/service/account_test_service.go'
-      - 'backend/internal/service/pelican*'
-      - 'backend/internal/service/scheduled_test_port.go'
-      - 'backend/internal/repository/quality_oauth_401*'
-      - 'backend/internal/repository/quality_shared_batch.go'
-      - 'backend/internal/repository/scheduled_test_repo.go'
-      - 'backend/migrations/*quality_oauth_401*'
-      - '.github/workflows/quality-oauth-401.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

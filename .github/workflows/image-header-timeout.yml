@@ -1,17 +1,7 @@
 name: Image header timeout acceptance
 on:
-  push:
-    branches: [review/pr714-merge-fixes]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/handler/pr714_image_header_timeout_test.go'
-      - 'backend/internal/repository/pr714_image_header_timeout_test.go'
-      - 'backend/internal/service/openai_images.go'
-      - 'backend/internal/service/openai_images_header_timeout_test.go'
-      - 'backend/internal/service/setting_openai_response_header_timeout.go'
-      - '.github/workflows/image-header-timeout.yml'
-      - '.github/scripts/image-header-timeout-screenshot.mjs'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

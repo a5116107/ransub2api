@@ -1,12 +1,7 @@
 name: Issue 600 WS client identity
 on:
-  push:
-    branches: [fix/issue600-ws-client-identity]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/issue-600-regression.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:
@@ -155,9 +150,9 @@ jobs:
         working-directory: backend
         run: |
           set -euo pipefail
-          # Select relevant lifecycle methods; the legacy GetAccountsLoadBatch
-          # method is unconditionally skipped in the repository and is outside
-          # this regression. Every selected test must execute without skips.
+          # Select relevant lifecycle methods; batch-load coverage is exercised
+          # by the repository's dedicated integration regression. Every selected
+          # test must execute without skips.
           go test -tags=integration ./internal/repository -run '^(TestUsageLog_SessionIDPersistence|TestUserMsgQueueCacheSuite|TestConcurrencyCacheSuite|TestSessionLimitCacheSuite)$/(TestOpenAIWSIngressAPIKeySlot|TestLiveLease_|TestAccountSlot_|TestUserSlot_|TestAPIKeySlot_|TestAccountActiveIndex_|TestUserActiveIndex_|TestAccountWaitQueue_|TestWaitQueue_|TestCleanup|TestUnregisterSession|TestAcquire|TestReconcile)' -count=1 -v -timeout=15m | tee "$RUNNER_TEMP/issue600-pg-redis.log"
           for name in TestUsageLog_SessionIDPersistence TestUserMsgQueueCacheSuite TestConcurrencyCacheSuite TestSessionLimitCacheSuite; do
             grep -q -- "--- PASS: $name " "$RUNNER_TEMP/issue600-pg-redis.log"

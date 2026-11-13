@@ -1,15 +1,7 @@
 name: Issue 765 image scheduler authorization
 
 on:
-  push:
-    branches: [fix/issue765-image-scheduler-20261110]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/repository/scheduler_cache*'
-      - 'backend/internal/service/openai_images_allowlist*'
-      - 'backend/internal/handler/openai_gateway_handler_test.go'
-      - '.github/workflows/issue765-image-scheduler.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

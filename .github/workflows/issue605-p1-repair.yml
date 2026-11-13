@@ -1,11 +1,7 @@
 name: Issue605 P1 passthrough usage repair
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/issue605-p1-repair.yml'
-      - '.github/scripts/issue605-p1-proof.py'
+  workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:

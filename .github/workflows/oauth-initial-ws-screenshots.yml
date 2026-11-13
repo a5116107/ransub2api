@@ -1,8 +1,6 @@
 name: OAuth initial WS screenshots
 
 on:
-  push:
-    branches: [feat/oauth-initial-ws-settings-20261109]
   workflow_dispatch:
 
 permissions:

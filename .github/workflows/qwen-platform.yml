@@ -1,8 +1,7 @@
 name: Qwen platform acceptance
 on:
-  push:
-    branches: [feat/qwen-platform]
   workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

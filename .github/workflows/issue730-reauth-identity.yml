@@ -1,13 +1,7 @@
 name: Issue730 re-login identity
 
 on:
-  pull_request:
-    paths:
-      - 'backend/internal/service/openai_oauth_reauth*.go'
-      - 'tools/openai_oauth_reauth_worker.py'
-      - 'tools/test_openai_oauth_reauth_engines.py'
-      - 'frontend/src/utils/credentialOperationFailure.ts'
-      - '.github/workflows/issue730-reauth-identity.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

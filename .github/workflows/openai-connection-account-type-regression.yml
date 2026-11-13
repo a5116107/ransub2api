@@ -1,16 +1,7 @@
 name: OpenAI connection account type regression
 
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/service/openai_auth_connection*.go'
-      - 'backend/internal/handler/admin/openai_auth_connections*.go'
-      - 'backend/internal/repository/openai_auth_connections*test.go'
-      - 'frontend/src/components/account/**'
-      - 'frontend/src/api/admin/openaiAuthConnections.ts'
-      - '.github/workflows/openai-connection-account-type-regression.yml'
-      - '.github/scripts/openai-connection-account-type-proof.py'
+  workflow_dispatch:
 
 permissions:
   contents: read

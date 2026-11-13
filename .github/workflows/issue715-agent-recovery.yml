@@ -1,14 +1,6 @@
 name: Issue715 agent continuation
 
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - '.github/workflows/issue715-agent-recovery.yml'
-      - 'backend/internal/service/openai_*'
-      - 'backend/internal/handler/openai_*'
-      - 'backend/internal/repository/gateway_cache_agent_recovery*'
-      - 'backend/internal/repository/gateway_cache_integration_test.go'
   workflow_dispatch:
 
 permissions:

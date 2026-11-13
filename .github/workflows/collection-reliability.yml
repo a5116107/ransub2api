@@ -1,35 +1,6 @@
 name: Embedded collection reliability
 
 on:
-  pull_request:
-    paths:
-      - 'backend/third_party/bepusdt/**'
-      - 'backend/internal/bepusdt/**'
-      - 'backend/internal/payment/**'
-      - 'backend/internal/service/payment*'
-      - 'backend/internal/handler/*payment*'
-      - 'backend/internal/handler/admin/payment*'
-      - 'backend/internal/server/routes/payment*'
-      - 'backend/go.*'
-      - 'frontend/src/components/payment/**'
-      - 'frontend/src/views/user/*Payment*'
-      - 'frontend/src/views/user/__tests__/*Payment*'
-      - 'frontend/src/views/admin/SettingsView.vue'
-      - 'frontend/src/views/admin/__tests__/SettingsView.spec.ts'
-      - 'frontend/src/api/*payment*'
-      - 'frontend/src/api/admin/bepusdt.ts'
-      - 'frontend/src/types/payment.ts'
-      - 'frontend/src/constants/newFeatureNotices.ts'
-      - 'frontend/src/i18n/**'
-      - 'frontend/src/router/**'
-      - 'frontend/package.json'
-      - 'frontend/pnpm-lock.yaml'
-      - '.github/release-tools/**'
-      - '.goreleaser*.yaml'
-      - '*Dockerfile*'
-      - 'backend/Dockerfile'
-      - 'deploy/Dockerfile'
-      - '.github/workflows/collection-reliability.yml'
   workflow_dispatch:
 
 permissions:

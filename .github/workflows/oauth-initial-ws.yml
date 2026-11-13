@@ -1,17 +1,6 @@
 name: OAuth initial WS settings
 
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/service/oauth_auto_config*'
-      - 'backend/internal/handler/admin/account_auto_config*'
-      - 'frontend/src/api/admin/autoConfig.ts'
-      - 'frontend/src/views/admin/AutoConfigView.vue'
-      - 'frontend/src/views/admin/__tests__/AutoConfigView.spec.ts'
-      - 'frontend/src/constants/newFeatureNotices.ts'
-      - 'frontend/src/i18n/locales/*/autoConfig.ts'
-      - '.github/workflows/oauth-initial-ws.yml'
   workflow_dispatch:
 
 permissions:

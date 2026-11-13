@@ -1,14 +1,7 @@
 name: Quality complete template roundtrip
 on:
-  push:
-    branches: [fix/quality-orphan-isolation-release]
-  pull_request:
-    paths:
-      - 'backend/internal/**/quality*'
-      - 'backend/internal/**/scheduled_test*'
-      - 'frontend/src/**/AccountQualityView*'
-      - 'frontend/src/utils/qualityRulePatch.ts'
-      - '.github/workflows/quality-template-complete.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

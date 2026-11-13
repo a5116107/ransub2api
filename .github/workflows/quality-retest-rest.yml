@@ -1,17 +1,7 @@
 name: Quality retest rest
 
 on:
-  pull_request:
-    paths:
-      - 'backend/internal/service/account_quality.go'
-      - 'backend/internal/service/quality_retest_rest_test.go'
-      - 'backend/internal/service/quality_rule_preset.go'
-      - 'backend/internal/repository/account_quality.go'
-      - 'backend/internal/repository/scheduled_test_repo.go'
-      - 'backend/internal/repository/quality_retest_rest_integration_test.go'
-      - 'frontend/src/**/qualityRulePatch*'
-      - 'frontend/src/**/AccountQualityView*'
-      - '.github/workflows/quality-retest-rest.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

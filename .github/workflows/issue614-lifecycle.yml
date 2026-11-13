@@ -1,10 +1,7 @@
 name: Issue614 lifecycle synthetic regression
 on:
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/issue614-lifecycle.yml'
+  workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:

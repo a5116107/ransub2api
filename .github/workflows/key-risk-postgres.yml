@@ -1,18 +1,7 @@
 name: Key risk PostgreSQL acceptance
 
 on:
-  push:
-    branches: [production, review/pr717-merge-fixes]
-    paths:
-      - 'backend/internal/keyrisk/**'
-      - 'backend/migrations/*key_risk*.sql'
-      - '.github/workflows/key-risk-postgres.yml'
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/keyrisk/**'
-      - 'backend/migrations/*key_risk*.sql'
-      - '.github/workflows/key-risk-postgres.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

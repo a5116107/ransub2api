@@ -1,15 +1,7 @@
 name: Issue733 explicit priority filters
 on:
   workflow_dispatch:
-  push:
-    branches: [fix/issue733-priority-filter-fix]
-  pull_request:
-    paths:
-      - 'frontend/src/**/PriorityScheduling*'
-      - 'frontend/src/api/admin/priorityScheduling.ts'
-      - 'backend/internal/**/priority*'
-      - '.github/scripts/issue733-filter*'
-      - '.github/workflows/issue733-priority-filters.yml'
+
 permissions:
   contents: read
 concurrency:

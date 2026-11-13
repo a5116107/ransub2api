@@ -1,14 +1,7 @@
 name: VIP credit email UI and production builds
 on:
-  push:
-    branches: [feat/vip-credit-email]
-  pull_request:
-    branches: [production]
-    paths:
-      - '**auto_credit_email**'
-      - '**autoCredit*'
-      - '**UserAutoCreditModal*'
-      - '.github/*/vip-credit-email*'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

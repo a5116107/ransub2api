@@ -1,20 +1,7 @@
 name: Keys usage layout
 
 on:
-  push:
-    branches: [fix/keys-usage-layout-20261108]
-  pull_request:
-    paths:
-      - 'frontend/src/views/user/KeysView.vue'
-      - 'frontend/src/components/common/DataTable.vue'
-      - 'frontend/src/components/common/GroupBadge.vue'
-      - 'frontend/src/components/layout/TablePageLayout.vue'
-      - 'frontend/src/features/ip-audit/UserKeyRiskNotices.vue'
-      - 'frontend/src/features/ip-audit/__tests__/UserKeyRiskNotices.spec.ts'
-      - 'frontend/src/views/user/__tests__/KeysView.spec.ts'
-      - 'frontend/src/i18n/locales/*/ipAudit.ts'
-      - '.github/scripts/keys-usage-layout-browser.mjs'
-      - '.github/workflows/keys-usage-layout.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

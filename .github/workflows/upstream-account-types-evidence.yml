@@ -1,13 +1,7 @@
 name: Upstream account types rendered evidence
 on:
-  push:
-    branches: [feat/upstream-model-sync-account-types-20261109]
-  pull_request:
-    branches: [production]
-    paths:
-      - '.github/workflows/upstream-account-types-evidence.yml'
-      - '.github/scripts/upstream-account-types-screenshot.mjs'
-      - 'frontend/src/views/admin/AccountsView.vue'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

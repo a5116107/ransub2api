@@ -1,17 +1,7 @@
 name: Model billing group scope
 on:
-  push:
-    branches: [feat/model-multiplier-group-scope]
-  pull_request:
-    paths:
-      - 'backend/internal/service/model_billing*'
-      - 'backend/internal/service/oauth_auto_config.go'
-      - 'backend/internal/service/gateway_usage_billing.go'
-      - 'backend/internal/service/openai_gateway_usage.go'
-      - 'frontend/src/**/modelBilling*'
-      - 'frontend/src/views/admin/AutoConfigView.vue'
-      - '.github/workflows/model-billing-groups.yml'
-      - '.github/scripts/model-billing-groups-browser.mjs'
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

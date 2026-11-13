@@ -1,0 +1,34 @@
+name: Sync upstream stable release
+run-name: Track upstream stable release for ${{ github.repository }}
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream-stable
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'a5116107/ransub2api'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Keep pushes on the ephemeral token so upstream CI is not triggered.
+          token: ${{ github.token }}
+          ref: production
+          fetch-depth: 0
+      - name: Track the latest stable release and open an integration request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/release-tools/sync_upstream.py

@@ -1,8 +1,6 @@
 name: 2FA import bounded parallel
 
 on:
-  push:
-    branches: [feat/twofa-import-bounded-parallel]
   workflow_dispatch:
 
 permissions:

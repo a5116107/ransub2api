@@ -1,18 +1,7 @@
 name: Pool model cooldown regression
 
 on:
-  push:
-    branches: [fix/pool-model-cooldown-cascade]
-  pull_request:
-    branches: [production]
-    paths:
-      - 'backend/internal/service/openai*'
-      - 'backend/internal/handler/openai*'
-      - 'backend/internal/service/pool_model_negative_cache*'
-      - 'backend/internal/handler/pool_model_negative_cache*'
-      - 'backend/internal/service/*model*availability*'
-      - 'backend/internal/service/ratelimit_service*'
-      - '.github/workflows/pool-capacity-regression.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
