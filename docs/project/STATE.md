@@ -3,16 +3,17 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D8/v2.21.1冲突整合；本地冲突修复与最终定向回归完成，提交同步中。
+Task: D8/v2.21.1来源冲突整合及嵌套身份分进程验收完成。
 Scope: 单功能分支/单PR本地实施验证及自有分支同步；不CI、不改生产。
-Source: HEAD90754b9aa；合入db1c6ecbb/上游11f250894。
+Source: 7054ef6c3已同步origin功能分支；保留90754b9aa并合入db1c6ecbb/11f250894。
 Verified: 前端714/类型/lint/构建/UI输入未变；SQL96及428→431三阶段通过。
 Verified: 增量lint/errcheck 0；BPS/支付双轮1966、真实PG风控98、断言80通过。
-Verified: POSIX权限/清理5例双轮通过（Go1.26.6）；前端714及71份输入哈希未变。
-Verified: 最终归属634/身份叶10通过，160份后端输入匹配；fast lint 0 issues/vet exit0。
-Next: 整合提交及自有功能分支同步；D8完整身份矩阵/混版等未验收项保持开放。
+Verified: POSIX权限/清理5例双轮通过（Go1.26.6）。
+Verified: 归属634/身份叶10通过；嵌套身份280场景双轮560叶通过，29进程全exit0。
+Verified: 后端160/前端71输入匹配；fast lint 0 issues/vet exit0。
+Next: 接入方补实际scope/独立基线及首批非文本契约后，恢复D2–D9相应依赖验收。
 Attempt: 4
-Blocker: 接入方补实际scope/独立基线；历史拒删由拥有者清理，不重试。
+Blocker: 供应商事实/独立基线；混版待前置验收；拒删文件由拥有者清理，不重试。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
 Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未关闭。
 <!-- resume:end -->
@@ -39,7 +40,7 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 未用符号/死计数删除，unused 6→0 |
-| M2 | done | 历史247项/integration101诊断清零，123处断言已核；四包lint 0、240顶层race及指纹/时钟夹具通过 |
+| M2 | done | 历史247项/integration101诊断清零，123处断言已核；四包lint及race通过 |
 | M3 | done | WinSock拒绝/不可达识别，无超时/重置误判；真实POST/代理/WS组合5轮通过 |
 | M4 | done | 三处原子持久化统一，22项Windows失败修复；双平台回归/三包lint/vet通过 |
 | M5 | done | 生产/夹具依赖边界及三处兼容点明确；六包lint 0与禁止依赖反向验证通过 |
@@ -60,7 +61,7 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
 | D7.3 | in_progress | 三页统一历史结论/覆盖/年龄/身份未知；87项/类型/lint/构建/中英390px已验；分维度/基线待接入方 |
-| D8 | in_progress | v2.21.1冲突修复、定向回归/SQL及428→431本地升级通过；既有生产副本410→432四阶段保留；完整身份矩阵/并行混版及其他能力待验 |
+| D8 | in_progress | v2.21.1来源整合/SQL及428→431通过；280嵌套身份场景双轮全覆盖；旧副本410→432四阶段保留；并行混版及其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
 ## 工作区与验证约定
@@ -70,10 +71,6 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 - 夹具隔离DATA_DIR；历史12PNG/1164bytes保留；协议/区域/CLI命令见DECISIONS，非真实供应商证据。
 - 不增平行实现/台账；C盘effb8271不计主线，开发统一H盘。
 
-## 下一项工作
-
-D5.2已本地验收；D5上游聚合待实际组/模型scope，D7.3待独立基线。原28项20done/8部分、7子项6done/1部分；v2.21.1/PR#3来源冲突已在本功能分支解决，整合提交/同步中，完整身份矩阵/混版/生产仍待。
-
 ## 外部等待与清理
 
 - D2/D4：供应商或接入方补unknown关联查询及模型/fast倍率来源契约；不恢复真实采购价格任务。
@@ -82,7 +79,8 @@ D5.2已本地验收；D5上游聚合待实际组/模型scope，D7.3待独立基�
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 历史拒删候选/overlay/pyc/脚本及stream-health的3文件9817bytes保留；路径见DECISIONS，拥有者清理，不重试/移动；.1包保留。
-- 历史`H:/Root/DevCache/tmp/sub2api-cache-conclusions`拒删，删除0；256文件9744426bytes、无活跃引用；拥有者手工清理后解除，不重试/移动。
+- 历史拒删候选/overlay/pyc/脚本及stream-health保留，详情见DECISIONS；拥有者清理，不重试/移动；.1包保留。
+- 历史`H:/Root/DevCache/tmp/sub2api-cache-conclusions`拒删，256文件9744426bytes、删除0；拥有者清理，不重试/移动。
 - 历史大包lint限制保留，既有局部结果不冒充整合后全仓通过。
 - 本轮browser-check.mjs清理被blocked by policy拦截，删除0；位于H:/Root/DevCache/tmp/sub2api-v2211-verify，8305bytes，由拥有者手工清理，不重试/移动。
+- 同目录handler-identity.test.exe共342989777bytes，删除命令同样启动前被拒；无活跃测试进程，删除0，由拥有者清理，不重试/移动。
