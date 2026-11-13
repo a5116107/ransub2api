@@ -209,6 +209,17 @@ func TestIssue758HTTPOAuthPreviousResponseCannotPromiseRecovery(t *testing.T) {
 				require.Equal(t, http.StatusOK, completed.Code, completed.Body.String())
 				responseID := issue758CompletedResponse(t, completed.Body.String(), stream).Get("id").String()
 				require.NotEmpty(t, responseID)
+				owners, ok := cache.(service.OpenAIResponseOwnerCache)
+				require.True(t, ok)
+				owner, found, err := owners.GetResponseOwner(t.Context(), 3132, responseID)
+				require.NoError(t, err)
+				require.True(t, found)
+				require.Equal(t, service.OpenAIResponseOwner{
+					UserID: 100, APIKeyID: 99,
+					Scope: service.OpenAIWSContinuationScope{
+						AccountID: accounts[0].ID, RouteFingerprint: service.AccountRouteFingerprint(&accounts[0]), Model: "gpt-5.4",
+					},
+				}, owner, "the shared adapter must retain the immutable creation scope")
 				body, err := sjson.Set(issue715Body(true, stream), "previous_response_id", responseID)
 				require.NoError(t, err)
 
@@ -236,7 +247,10 @@ func TestIssue758HTTPOAuthPreviousResponseCannotPromiseRecovery(t *testing.T) {
 						anchors++
 						switch {
 						case strings.Contains(key, "http-response-owner:v1:"):
-							require.Equal(t, "v1:100:99", value)
+							require.EqualValues(t, 2, gjson.Get(value, "version").Int())
+							require.Equal(t, "100", gjson.Get(value, "user").String())
+							require.Equal(t, "99", gjson.Get(value, "key").String())
+							require.Len(t, gjson.Get(value, "scope_hash").String(), 64)
 						case strings.Contains(key, "http-response-owner:user:"):
 							require.Equal(t, "100", value)
 						case strings.Contains(key, "http-response-owner:key:"):
@@ -247,7 +261,7 @@ func TestIssue758HTTPOAuthPreviousResponseCannotPromiseRecovery(t *testing.T) {
 					}
 				}
 				require.Equal(t, 1, agents)
-				require.Equal(t, 4, anchors, "response account plus v1/user/key HTTP authorization must all exist")
+				require.Equal(t, 4, anchors, "response account plus complete owner/user/key HTTP authorization must all exist")
 				// A fresh handler must resolve the proven item and all authorization
 				// anchors from the real shared adapter, without process-local history.
 				handler = newOpenAIResponsesFailoverTestHandlerWithCache(t, upstream, cache, accounts...)

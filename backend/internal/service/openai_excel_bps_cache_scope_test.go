@@ -47,7 +47,7 @@ func TestExcelBPSCacheScopeUsesEffectiveRouteAndModel(t *testing.T) {
 		{name: "effective model whitespace", nextModel: " gpt-5.6-sol ", same: true},
 		{name: "effective model changes", nextModel: "gpt-6-astra"},
 		{name: "downstream product changes", nextGroup: 11},
-		{name: "filtered fast tier remains same", nextTier: "priority", same: true},
+		{name: "priority tier preserves route identity", nextTier: "priority", same: true},
 		{name: "normal OAuth refresh", same: true, configure: func(first, next *Account) {
 			first.Credentials["access_token"] = excelBPSCacheScopeToken(t, "actor-one", "test-account", "before")
 			next.Credentials["access_token"] = excelBPSCacheScopeToken(t, "actor-one", "test-account", "after")
@@ -123,7 +123,11 @@ func TestExcelBPSCacheScopeUsesEffectiveRouteAndModel(t *testing.T) {
 			forward := func(account *Account, model, tier string, group int64) (string, string) {
 				t.Helper()
 				upstream.resp = &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(excelBPSToolPolicyResponse))}
-				body, err := json.Marshal(map[string]any{"model": model, "stream": false, "input": "fixture", "service_tier": tier})
+				source := map[string]any{"model": model, "stream": false, "input": "fixture"}
+				if tier != "" {
+					source["service_tier"] = tier
+				}
+				body, err := json.Marshal(source)
 				require.NoError(t, err)
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
@@ -131,7 +135,11 @@ func TestExcelBPSCacheScopeUsesEffectiveRouteAndModel(t *testing.T) {
 				c.Set("api_key", &APIKey{ID: 42, UserID: 7, GroupID: &group})
 				_, err = svc.Forward(context.Background(), c, account, body)
 				require.NoError(t, err)
-				require.False(t, gjson.GetBytes(upstream.lastBody, "service_tier").Exists())
+				if tier == "" {
+					require.False(t, gjson.GetBytes(upstream.lastBody, "service_tier").Exists())
+				} else {
+					require.Equal(t, tier, gjson.GetBytes(upstream.lastBody, "service_tier").String())
+				}
 				cache := gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String()
 				task := gjson.GetBytes(upstream.lastBody, "metadata.task_id").String()
 				require.NotEmpty(t, cache)

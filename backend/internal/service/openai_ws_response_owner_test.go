@@ -29,7 +29,7 @@ func (r *wsResponseOwnerAdmissionRepo) GetOpenAITurnAdmission(context.Context, i
 
 func TestWSResponseOwnerNativeIngress(t *testing.T) {
 	for _, mode := range []string{OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeDedicated, OpenAIWSIngressModePassthrough} {
-		for _, change := range []string{"same", "model", "tier", "unknown", "revoked", "key", "endpoint", "tenant", "other_key", "group", "http_roundtrip", "new_root", "identical_model"} {
+		for _, change := range []string{"same", "model", "tier", "unknown", "revoked", "key", "endpoint", "tenant", "other_key", "group", "http_roundtrip", "new_root", "identical_model", "rebuilt_root", "revoked_rebuilt_root"} {
 			t.Run(mode+"/"+change, func(t *testing.T) {
 				gin.SetMode(gin.TestMode)
 				observations := make(chan map[string]any, 8)
@@ -105,7 +105,12 @@ func TestWSResponseOwnerNativeIngress(t *testing.T) {
 					return client
 				}
 				write := func(client *coderws.Conn, model, tier, previous string) {
-					body := fmt.Sprintf(`{"type":"response.create","model":%q,"service_tier":%q,"previous_response_id":%q,"store":true,"input":"next"}`, model, tier, previous)
+					rebuild := change == "rebuilt_root" || change == "revoked_rebuilt_root"
+					instructions := ""
+					if rebuild && previous != "" {
+						instructions = `,"instructions":"use the updated instructions"`
+					}
+					body := fmt.Sprintf(`{"type":"response.create","model":%q,"service_tier":%q,"previous_response_id":%q,"store":%t,"input":"next"%s}`, model, tier, previous, !rebuild, instructions)
 					if change == "identical_model" {
 						body = fmt.Sprintf(`{"type":"response.create","model":%q,"model":%q,"service_tier":%q,"previous_response_id":%q,"store":true,"input":"next"}`, model, model, tier, previous)
 					}
@@ -181,7 +186,7 @@ func TestWSResponseOwnerNativeIngress(t *testing.T) {
 					}
 					repo.latest.Store(&latest)
 				}
-				if change == "revoked" || change == "new_root" {
+				if change == "revoked" || change == "new_root" || change == "revoked_rebuilt_root" {
 					store, ok := svc.getOpenAIWSStateStore().(*defaultOpenAIWSStateStore)
 					require.True(t, ok)
 					store.responseOwnerMu.Lock()
@@ -193,10 +198,14 @@ func TestWSResponseOwnerNativeIngress(t *testing.T) {
 				}
 				write(client, model, tier, previous)
 				_, _, readErr = client.Read(ctx)
-				if change == "same" || change == "other_key" || change == "http_roundtrip" || change == "new_root" || change == "identical_model" {
+				if change == "same" || change == "other_key" || change == "http_roundtrip" || change == "new_root" || change == "identical_model" || change == "rebuilt_root" {
 					require.NoError(t, readErr)
 					observation := <-observations
-					require.Equal(t, previous, observation["previous_response_id"])
+					if change == "rebuilt_root" && mode != OpenAIWSIngressModePassthrough {
+						require.Empty(t, observation["previous_response_id"], "the validated stateless continuation can become a full create")
+					} else {
+						require.Equal(t, previous, observation["previous_response_id"])
+					}
 					if change == "other_key" {
 						owner, found, err := svc.getOpenAIWSStateStore().GetResponseOwner(ctx, 17, previous)
 						require.NoError(t, err)
@@ -210,7 +219,7 @@ func TestWSResponseOwnerNativeIngress(t *testing.T) {
 				require.Error(t, readErr, "a changed or revoked continuation must close locally")
 				require.True(t, IsOpenAITurnAdmissionError(<-results))
 				require.Empty(t, observations)
-				if change != "revoked" {
+				if change != "revoked" && change != "revoked_rebuilt_root" {
 					repo.latest.Store(account)
 					userID.Store(101)
 					keyID.Store(201)

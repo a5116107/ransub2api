@@ -3,15 +3,24 @@ package service
 import (
 	"context"
 	"math"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
 
+const groupUsageTestTimezoneEnv = "SUB2API_TEST_GROUP_USAGE_TIMEZONE"
+
 func init() {
-	// 测试固定全局时区为 UTC，确保判定可复现。
-	_ = timezone.Init("UTC")
+	name := os.Getenv(groupUsageTestTimezoneEnv)
+	if name == "" {
+		name = "UTC"
+	}
+	// Initialize before tests start timers; timezone.Init is startup-only.
+	if err := timezone.Init(name); err != nil {
+		panic(err)
+	}
 }
 
 func newPeakGroup(enabled bool, start, end string, mult float64) *Group {

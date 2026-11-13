@@ -33,6 +33,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -968,6 +969,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var rpmAdmission openAIRPMAdmission
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	var passthroughFailoverState openAIPassthroughFailoverState
+	omittedEncryptedHistory := false
+	upstreamAttempted := false
 
 	// 生图意图的 /v1/responses 请求必须调度到确实支持 Responses API 的账号，否则
 	// 会在 forward 阶段被静默降级为无法生图的 Chat Completions 直转（#4417）。
@@ -1018,6 +1021,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			requestPlatform,
 		)
 		if err != nil {
+			if !omittedEncryptedHistory && !upstreamAttempted && !streamStarted && !c.Writer.Written() && requestPlatform == service.PlatformOpenAI {
+				if next, clean, changed := h.gatewayService.TryOmitOpenAI409History(c.Request.Context(), c, body, sessionHash, forwardModel, err); changed {
+					// Preserve the channel's model mapping while replacing only input.
+					mapped, mapErr := sjson.SetRawBytes(forwardBody, "input", []byte(gjson.GetBytes(clean, "input").Raw))
+					if mapErr == nil {
+						body, forwardBody = clean, mapped
+						omittedEncryptedHistory = true
+						c.Request = c.Request.WithContext(next)
+						reqLog.Info("openai.encrypted_history_409_omitted", zap.Bool("context_loss", true))
+						continue
+					}
+				}
+			}
 			if h.handleOpenAIAgentRecoveryError(c, err, streamStarted) {
 				return
 			}
@@ -1135,6 +1151,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 
+		// Omission is only allowed before this request has attempted any forward.
+		upstreamAttempted = true
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -1286,7 +1304,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					if failoverErr.ShouldReportAccountScheduleFailure() {
 						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), false, nil, err)
 					}
-					if service.OpenAIAgentToolResultContinuation(c.Request.Context()) {
+					if service.OpenAIAgentRecoveryNoReplay(c.Request.Context()) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -3032,7 +3050,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 	if err := h.gatewayService.CheckAPIKeyLongContext(c.Request.Context(), apiKey, firstMessage, reqModel, service.MapAPIKeyModel(apiKey, reqModel)); err != nil {
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, apiKeyLongContextWSCloseReason(err))
+		rejectAPIKeyLongContextWS(wsConn, err)
 		return
 	}
 	// Start the connection's single frame reader after the temporary
@@ -3174,7 +3192,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	wsForwardModel := openAIChannelForwardModel(channelMappingWS, wsRouteModel)
 	if err := h.gatewayService.CheckAPIKeyLongContext(ctx, apiKey, firstMessage, reqModel, wsRouteModel, wsForwardModel); err != nil {
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, apiKeyLongContextWSCloseReason(err))
+		rejectAPIKeyLongContextWS(wsConn, err)
 		return
 	}
 
@@ -3974,6 +3992,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, reason)
 				return
 			}
+			var contextErr *service.APIKeyLongContextError
+			if errors.As(err, &contextErr) {
+				releaseTurnSlots()
+				rejectAPIKeyLongContextWS(wsConn, err)
+				return
+			}
 			if service.IsOpenAIWSSessionPreemptedError(err) {
 				// 关闭帧已由抢占登记在取消前发给本连接，这里只记录并释放。
 				reqLog.Info("openai.websocket_ingress_preempted", zap.Int64("account_id", account.ID))
@@ -3981,6 +4005,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			}
 			if service.IsOpenAITurnAdmissionError(err) {
 				releaseTurnSlots()
+				var admissionClose *service.OpenAIWSClientCloseError
+				if errors.As(err, &admissionClose) {
+					closeOpenAIClientWS(wsConn, admissionClose.StatusCode(), admissionClose.Reason())
+					return
+				}
+				var admissionErr *service.OpenAITurnAdmissionError
+				if errors.As(err, &admissionErr) && strings.HasPrefix(admissionErr.Reason, "http_continuation_") {
+					closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "response continuation is unavailable; original history was preserved")
+					return
+				}
 				reason := "account eligibility changed; reconnect with complete context"
 				if errors.Is(err, service.ErrPriorityLatencyUnavailable) {
 					reason = "latency scheduling temporarily unavailable; retry after 5 seconds"

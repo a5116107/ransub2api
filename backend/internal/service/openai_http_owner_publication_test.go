@@ -217,7 +217,7 @@ func TestHTTPResponseContinuationWSKeepsCreationScope(t *testing.T) {
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				groupID := int64(17)
-				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
+				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID, AllowLongContext: true})
 				SetOpenAIResponseOwner(c, 101, 201, previous)
 				body := []byte(fmt.Sprintf(`{"model":%q,"service_tier":%q,"previous_response_id":%q,"input":"next","stream":false}`, model, tier, previous))
 				return svc.Forward(t.Context(), c, account, body)

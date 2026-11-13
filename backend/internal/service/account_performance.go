@@ -61,17 +61,20 @@ type AccountPerformance struct {
 	AvgTPS             *float64               `json:"avg_tps"`
 	DegradationPercent *float64               `json:"degradation_percent"`
 	AvgTTFTMs          *float64               `json:"avg_ttft_ms"`
-	TPSSamples         int                    `json:"tps_samples"`
-	TTFTSamples        int                    `json:"ttft_samples"`
-	QualitySamples     int                    `json:"quality_samples"`
-	Config             PerformanceConfig      `json:"config"`
-	Revision           int64                  `json:"revision"`
-	Paused             bool                   `json:"paused"`
-	PauseGeneration    int64                  `json:"pause_generation"`
-	PausedAt           *time.Time             `json:"paused_at"`
-	Reason             string                 `json:"reason"`
-	WindowStart        time.Time              `json:"window_start"`
-	WindowEnd          time.Time              `json:"window_end"`
+	// Billing-derived per-request mean, not raw upstream Key/model cache evidence.
+	AvgCachePercent *float64          `json:"avg_cache_percent"`
+	CacheSamples    int               `json:"cache_samples"`
+	TPSSamples      int               `json:"tps_samples"`
+	TTFTSamples     int               `json:"ttft_samples"`
+	QualitySamples  int               `json:"quality_samples"`
+	Config          PerformanceConfig `json:"config"`
+	Revision        int64             `json:"revision"`
+	Paused          bool              `json:"paused"`
+	PauseGeneration int64             `json:"pause_generation"`
+	PausedAt        *time.Time        `json:"paused_at"`
+	Reason          string            `json:"reason"`
+	WindowStart     time.Time         `json:"window_start"`
+	WindowEnd       time.Time         `json:"window_end"`
 }
 
 // Snapshot callers own the returned evidence; do not expose cache pointers.
@@ -88,6 +91,7 @@ func cloneAccountPerformance(in *AccountPerformance) *AccountPerformance {
 		return &value
 	}
 	out.AvgTPS, out.AvgTTFTMs, out.DegradationPercent = clone(in.AvgTPS), clone(in.AvgTTFTMs), clone(in.DegradationPercent)
+	out.AvgCachePercent = clone(in.AvgCachePercent)
 	out.UpstreamError.Percent = clone(in.UpstreamError.Percent)
 	for _, bounds := range []*PerformanceBounds{&out.Config.TPS, &out.Config.TTFT, &out.Config.Degradation, &out.Config.UpstreamError} {
 		bounds.Min, bounds.Max = clone(bounds.Min), clone(bounds.Max)

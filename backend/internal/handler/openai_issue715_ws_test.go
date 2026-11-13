@@ -168,6 +168,7 @@ type issue715WSDeliveryCache interface {
 
 type issue715WSBarrierCache struct {
 	service.GatewayCache
+	service.OpenAIResponseOwnerCache
 	issue715WSDeliveryCache
 	entered, release, observed chan struct{}
 	once, readOnce             sync.Once
@@ -239,7 +240,9 @@ func issue715WSContinuation(t *testing.T, useBarrier bool) {
 					base := newCache()
 					transactional, ok := base.(issue715WSDeliveryCache)
 					require.True(t, ok)
-					barrier := &issue715WSBarrierCache{GatewayCache: base, issue715WSDeliveryCache: transactional, entered: make(chan struct{}), release: make(chan struct{}), observed: make(chan struct{})}
+					responseOwners, ok := base.(service.OpenAIResponseOwnerCache)
+					require.True(t, ok)
+					barrier := &issue715WSBarrierCache{GatewayCache: base, OpenAIResponseOwnerCache: responseOwners, issue715WSDeliveryCache: transactional, entered: make(chan struct{}), release: make(chan struct{}), observed: make(chan struct{})}
 					var releaseOnce sync.Once
 					release := func() { releaseOnce.Do(func() { close(barrier.release) }) }
 					defer release()
@@ -257,7 +260,9 @@ func issue715WSContinuation(t *testing.T, useBarrier bool) {
 						consumerCache := newCache()
 						consumerTransactional, ok := consumerCache.(issue715WSDeliveryCache)
 						require.True(t, ok)
-						observing := &issue715WSBarrierCache{GatewayCache: consumerCache, issue715WSDeliveryCache: consumerTransactional, entered: make(chan struct{}), release: barrier.release, observed: barrier.observed}
+						consumerOwners, ok := consumerCache.(service.OpenAIResponseOwnerCache)
+						require.True(t, ok)
+						observing := &issue715WSBarrierCache{GatewayCache: consumerCache, OpenAIResponseOwnerCache: consumerOwners, issue715WSDeliveryCache: consumerTransactional, entered: make(chan struct{}), release: barrier.release, observed: barrier.observed}
 						if useBarrier {
 							consumerCache = observing
 						}

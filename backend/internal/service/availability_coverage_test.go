@@ -196,7 +196,7 @@ func TestAvailabilityCoverageDoesNotJudgeOrApplyQuality(t *testing.T) {
 	runner := &ScheduledTestRunnerService{planRepo: repo, scheduledSvc: NewScheduledTestService(repo, results)}
 	runner.runPelican = func(_ context.Context, _ int64, model string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
 		now := time.Now()
-		return &ScheduledTestResult{Status: "success", ResponseText: "21", StartedAt: now, FinishedAt: now, QualityJudgment: &QualityJudgment{Verdict: "correct"}, PelicanConfig: &PelicanTestConfig{ModelID: model, AvailabilityResult: &AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: now, FinishedAt: now}}}, nil
+		return &ScheduledTestResult{Status: "success", ResponseText: "21", StartedAt: now, FinishedAt: now, QualityJudgment: &QualityJudgment{Verdict: "correct"}, PelicanConfig: &PelicanTestConfig{ModelID: model, TriggerSource: "scheduled", ActualPrompt: "executed prompt", AvailabilityResult: &AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: now, FinishedAt: now}}}, nil
 	}
 	runner.judgeQuality = func(context.Context, int64, *PelicanTestConfig, string) *QualityJudgment {
 		judges.Add(1)
@@ -216,6 +216,7 @@ func TestAvailabilityCoverageDoesNotJudgeOrApplyQuality(t *testing.T) {
 	require.Nil(t, saved.PelicanConfig.QualityRestoreDiagnostic)
 	require.NotNil(t, saved.PelicanConfig.AvailabilityResult)
 	require.Equal(t, AvailabilityCoverageSource, saved.PelicanConfig.TriggerSource)
+	require.Equal(t, "executed prompt", saved.PelicanConfig.ActualPrompt)
 	require.Same(t, quality, plan.PelicanConfig.Quality)
 	encoded, err := json.Marshal(saved.PelicanConfig)
 	require.NoError(t, err)

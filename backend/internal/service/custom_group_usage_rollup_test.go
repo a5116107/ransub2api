@@ -3,6 +3,9 @@
 package service
 
 import (
+	"context"
+	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -10,16 +13,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func useGroupUsageTestTimezone(t *testing.T, name string) {
+func runGroupUsageTimezoneInSubprocess(t *testing.T, name string) bool {
 	t.Helper()
-
-	previousName := appTimezone.Name()
-	require.NoError(t, appTimezone.Init(name))
-	t.Cleanup(func() { require.NoError(t, appTimezone.Init(previousName)) })
+	if os.Getenv(groupUsageTestTimezoneEnv) == name {
+		require.Equal(t, name, appTimezone.Name())
+		return false
+	}
+	binary, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "-test.run=^"+t.Name()+"$", "-test.v", "-test.count=1", "-test.timeout=20s")
+	cmd.Env = append(os.Environ(), groupUsageTestTimezoneEnv+"="+name)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "isolated timezone assertion:\n%s", output)
+	return true
 }
 
 func TestGroupUsageDateUsesConfiguredTimezoneBoundary(t *testing.T) {
-	useGroupUsageTestTimezone(t, "America/New_York")
+	if runGroupUsageTimezoneInSubprocess(t, "America/New_York") {
+		return
+	}
 
 	beforeMidnight := time.Date(2026, 3, 9, 3, 59, 59, 0, time.UTC)
 	atMidnight := time.Date(2026, 3, 9, 4, 0, 0, 0, time.UTC)
@@ -30,7 +44,9 @@ func TestGroupUsageDateUsesConfiguredTimezoneBoundary(t *testing.T) {
 }
 
 func TestGroupUsageParseDateUsesConfiguredTimezone(t *testing.T) {
-	useGroupUsageTestTimezone(t, "America/New_York")
+	if runGroupUsageTimezoneInSubprocess(t, "America/New_York") {
+		return
+	}
 
 	parsed, err := ParseGroupUsageDate("2026-03-08")
 	require.NoError(t, err)
@@ -39,7 +55,9 @@ func TestGroupUsageParseDateUsesConfiguredTimezone(t *testing.T) {
 }
 
 func TestGroupUsageYesterdayStartHandlesDST(t *testing.T) {
-	useGroupUsageTestTimezone(t, "America/New_York")
+	if runGroupUsageTimezoneInSubprocess(t, "America/New_York") {
+		return
+	}
 
 	todayStart := time.Date(2026, 3, 9, 4, 0, 0, 0, time.UTC)
 	yesterdayStart := GroupUsageYesterdayStart(todayStart)

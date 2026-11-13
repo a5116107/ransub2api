@@ -112,11 +112,13 @@ func newOpenAIWSPassthroughHandlerHarnessWithKey(t *testing.T, upstreamURL strin
 	}
 	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 8)}
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo, nil, usageRepo, nil, nil, nil, nil, gatewayCache, cfg, nil, nil,
 		service.NewBillingService(cfg, nil), service.NewRateLimitService(accountRepo, nil, cfg, nil, nil), billingCacheSvc, httpUpstream, &service.DeferredService{},
 		nil, nil, nil, nil, nil, settingSvc, nil,
 	)
+	t.Cleanup(gatewaySvc.StopOpenAICodexTicketHarvester)
 	t.Cleanup(gatewaySvc.CloseOpenAIWSPool)
 	concurrencyCache := &concurrencyCacheMock{
 		acquireUserSlotFn:    func(context.Context, int64, int, string) (bool, error) { return true, nil },

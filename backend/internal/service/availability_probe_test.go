@@ -241,7 +241,23 @@ func TestAvailabilityProbeSurvivesJudgeResultAndSampleSnapshot(t *testing.T) {
 				require.Equal(t, verdict, result.QualityJudgment.Verdict)
 			}
 			require.Equal(t, "pass", availabilityProbeJSON(t, result)["status"])
+			require.Equal(t, intelligenceTestPrompt(cfg), result.PelicanConfig.ActualPrompt, "prompt and transport evidence must both survive grading, including panic recovery")
+			require.Empty(t, cfg.ActualPrompt, "result evidence must not be copied back into the reusable rule")
 			require.NotSame(t, cfg, result.PelicanConfig, "per-sample evidence must not mutate the reusable plan")
 		})
 	}
+}
+
+func TestAvailabilityProbeDoesNotTrustRuleEvidenceWithoutExecutorSnapshot(t *testing.T) {
+	plan := &ScheduledTestPlan{ID: 1, AccountID: 1, ModelID: "target", PelicanConfig: &PelicanTestConfig{
+		QuestionKind: "candy", Prompt: CandyPrompt,
+		AvailabilityResult: &AvailabilityProbeResult{Version: 1, Status: "pass", Reason: "client_supplied"},
+	}}
+	runner := &ScheduledTestRunnerService{runPelican: func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+		return &ScheduledTestResult{Status: "success"}, nil
+	}}
+	result := runner.runPelicanSample(t.Context(), plan)
+	require.Equal(t, "inconclusive", availabilityProbeJSON(t, result)["status"])
+	require.Equal(t, "not_observed", result.PelicanConfig.AvailabilityResult.Reason)
+	require.Equal(t, "pass", plan.PelicanConfig.AvailabilityResult.Status, "rule snapshot must remain untouched")
 }

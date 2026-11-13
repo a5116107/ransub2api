@@ -51,6 +51,8 @@ type ScheduledTestPlan struct {
 	QualityAccountFingerprint *[32]byte         `json:"-"`
 	QualityBatchEvaluated     bool              `json:"-"`
 	QualityBatchModels        map[string]string `json:"-"`
+	// Populated only from the repository's one-shot manual trigger marker.
+	ManualQualityRun bool `json:"-"`
 	// Request-only: importing configuration preserves this target's ownership.
 	PreserveQualityState     bool                      `json:"-"`
 	QualityRestoreDiagnostic *QualityRestoreDiagnostic `json:"-"`

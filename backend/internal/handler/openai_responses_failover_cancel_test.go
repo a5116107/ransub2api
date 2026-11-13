@@ -56,6 +56,11 @@ func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUp
 
 func newOpenAIResponsesFailoverTestHandlerWithCache(t *testing.T, upstream service.HTTPUpstream, cache service.GatewayCache, fixtureAccounts ...service.Account) *OpenAIGatewayHandler {
 	t.Helper()
+	return newOpenAIResponsesFailoverTestHandlerWithSettings(t, upstream, cache, nil, fixtureAccounts...)
+}
+
+func newOpenAIResponsesFailoverTestHandlerWithSettings(t *testing.T, upstream service.HTTPUpstream, cache service.GatewayCache, settings *service.SettingService, fixtureAccounts ...service.Account) *OpenAIGatewayHandler {
+	t.Helper()
 	accounts := []service.Account{
 		{
 			ID:          1,
@@ -111,11 +116,13 @@ func newOpenAIResponsesFailoverTestHandlerWithCache(t *testing.T, upstream servi
 		nil,
 		nil,
 		nil,
-		nil,
+		settings,
 		nil,
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
+	t.Cleanup(gatewayService.StopOpenAICodexTicketHarvester)
+	t.Cleanup(gatewayService.CloseOpenAIWSPool)
 	concurrencyService := service.NewConcurrencyService(nil)
 	handler := NewOpenAIGatewayHandler(
 		gatewayService,

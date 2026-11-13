@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -37,7 +38,11 @@ func TestMistralReviewSDKAccumulation(t *testing.T) {
 	deltas = append(deltas, json.RawMessage(`{"content":" world"}`))
 	data, err := json.Marshal(deltas)
 	require.NoError(t, err)
-	cmd := exec.Command("python3", "testdata/mistral/accumulate.py")
+	python := "python3"
+	if runtime.GOOS == "windows" {
+		python = "python"
+	}
+	cmd := exec.Command(python, "testdata/mistral/accumulate.py")
 	cmd.Stdin = bytes.NewReader(data)
 	accumulated, err := cmd.CombinedOutput()
 	require.NoError(t, err, "pinned SDK accumulate_delta: %s", accumulated)
