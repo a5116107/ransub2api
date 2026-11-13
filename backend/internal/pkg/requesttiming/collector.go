@@ -45,6 +45,7 @@ type Attempt struct {
 	Events             map[string]float64             `json:"events"`
 }
 type Snapshot struct {
+	RawCache             *CacheObservation      `json:"raw_cache,omitempty"`
 	FinalResponseAttempt int                    `json:"final_response_attempt,omitempty"`
 	OutputRate           *OutputRateObservation `json:"output_rate,omitempty"`
 	WSTurns              []WSTurnTiming         `json:"ws_turns,omitempty"`

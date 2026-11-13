@@ -68,6 +68,10 @@ func (r *usageLogRepository) runTimingWriter() {
 func (r *usageLogRepository) writeTiming(ctx context.Context, job timingWrite) error {
 	derived := requesttiming.DeriveLatency(job.data)
 	job.data.Latency = &derived
+	// Freeze only the final response's canonical counters. Never reuse a supplied
+	// projection or the billing buckets, which may have been rewritten by policy.
+	cache := requesttiming.DeriveContentObservation(job.data).Cache
+	job.data.RawCache = &cache
 	raw, err := json.Marshal(job.data)
 	if err != nil {
 		return err
@@ -75,7 +79,7 @@ func (r *usageLogRepository) writeTiming(ctx context.Context, job timingWrite) e
 	if len(raw) > 128*1024 {
 		return fmt.Errorf("timing payload exceeds bound")
 	}
-	result, err := r.db.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail)
+	result, err := r.sql.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail)
  SELECT id,$1,$2::jsonb FROM usage_logs WHERE request_id=$3 AND api_key_id=$4
  ON CONFLICT (usage_log_id,trace_id) DO UPDATE SET detail=EXCLUDED.detail`, job.data.TraceID, string(raw), job.requestID, job.apiKeyID)
 	if err != nil {

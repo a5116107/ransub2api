@@ -25,10 +25,13 @@ func TestTimingWriteReplacesUntrustedCacheMigrationProjection(t *testing.T) {
 				Status:             200, Terminal: "completed", CacheUsage: &requesttiming.CacheUsage{Status: "observed", InputTokens: 1000, ReadTokens: 900}},
 		}}
 	s.Latency = &requesttiming.LatencySummary{CacheMigration: requesttiming.CacheMigrationObservation{Status: "forged"}}
+	s.RawCache = &requesttiming.CacheObservation{Status: "observed", Source: "billing"}
 	want := s
 	derived := requesttiming.DeriveLatency(s)
 	require.Equal(t, "bounded_attribution_unknown", derived.CacheMigration.Status)
 	want.Latency = &derived
+	cache := requesttiming.DeriveContentObservation(s).Cache
+	want.RawCache = &cache
 	raw, err := json.Marshal(want)
 	require.NoError(t, err)
 	mock.ExpectExec("INSERT INTO request_timing_details").WithArgs(s.TraceID, string(raw), "client:migration", int64(8)).WillReturnResult(sqlmock.NewResult(0, 1))

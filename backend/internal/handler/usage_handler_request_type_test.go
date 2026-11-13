@@ -331,6 +331,49 @@ func TestUserUsageStatsUsesScopedFilters(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "endpoint_paths")
 }
 
+func TestUserUsageStatsRejectsInvalidRawCacheOption(t *testing.T) {
+	router := newUserUsageRequestTypeTestRouter(&userUsageRepoCapture{})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/usage/stats?include_raw_cache=invalid", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUserUsageRawCacheStatsKeepAuthenticatedScope(t *testing.T) {
+	for _, query := range []string{"", "&api_key_id=7", "&api_key_id=8", "&api_key_id=999"} {
+		t.Run(query, func(t *testing.T) {
+			repo := &userUsageRepoCapture{stats: &usagestats.UsageStats{RawCache: &usagestats.RawCacheStats{TotalRequests: 2}}}
+			apiKeys := &dailyUsageAPIKeyRepoStub{keys: map[int64]*service.APIKey{
+				7: {ID: 7, UserID: 42}, 8: {ID: 8, UserID: 43},
+			}}
+			handler := NewUsageHandler(service.NewUsageService(repo, nil, nil, nil), service.NewAPIKeyService(apiKeys, nil, nil, nil, nil, nil, nil), nil, nil)
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 42})
+			})
+			router.GET("/usage/stats", handler.Stats)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/usage/stats?include_raw_cache=true&user_id=43&account_id=99&group_id=5&model=public-model&model_source=upstream&start_date=2026-11-01&end_date=2026-11-02"+query, nil))
+			switch query {
+			case "&api_key_id=8":
+				require.Equal(t, http.StatusForbidden, rec.Code)
+			case "&api_key_id=999":
+				require.Equal(t, http.StatusNotFound, rec.Code)
+			default:
+				require.Equal(t, http.StatusOK, rec.Code)
+				require.True(t, repo.statsFilters.IncludeRawCache)
+				require.EqualValues(t, 42, repo.statsFilters.UserID)
+				require.Zero(t, repo.statsFilters.AccountID)
+				require.EqualValues(t, 5, repo.statsFilters.GroupID)
+				require.Equal(t, "public-model", repo.statsFilters.Model)
+				require.Equal(t, usagestats.ModelSourceRequested, repo.statsFilters.ModelFilterSource)
+				require.Contains(t, rec.Body.String(), `"raw_cache":`)
+				require.NotContains(t, rec.Body.String(), "credential")
+				require.NotContains(t, rec.Body.String(), "account_id")
+			}
+		})
+	}
+}
+
 func TestUserUsageDashboardModelsOmitsAccountCost(t *testing.T) {
 	repo := &userUsageRepoCapture{
 		modelStats: []usagestats.ModelStat{{

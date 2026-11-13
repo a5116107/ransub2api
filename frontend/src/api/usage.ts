@@ -168,7 +168,7 @@ export async function query(
  * @returns Usage statistics
  */
 export async function getStats(
-  paramsOrPeriod: (UsageQueryParams & { period?: string; timezone?: string }) | string = 'today',
+  paramsOrPeriod: (UsageQueryParams & { period?: string; timezone?: string; include_raw_cache?: boolean }) | string = 'today',
   apiKeyId?: number
 ): Promise<UsageStatsResponse> {
   const params: Record<string, unknown> = typeof paramsOrPeriod === 'string'

@@ -1504,12 +1504,12 @@ export default {
         description: 'When enabled, usage records billed under long-context tiered pricing show an x2 badge next to their cost. Enabled by default.',
       },
       cache_rate: {
-        label: 'Show usage billed cache share',
-        description: 'Shows the billed cached-token share per usage record. Billing rules may adjust cache buckets, so this is not the raw upstream cache hit rate. Turning it off hides the share from both admins and users. Enabled by default.',
+        label: 'Show usage cache statistics',
+        description: 'Billed cached-token shares in usage records and raw cache experience on the user page are shown separately. Billing rules may adjust cache buckets and do not establish raw upstream cache hits. Turning this off hides these displays from admins and users. Enabled by default.',
       },
       cache_rate_to_users: {
-        label: 'Show billed cache share to users',
-        description: 'Shows billed cached-token shares for users\' own keys and downstream groups in their usage page and exports. Upstream keys and procurement metrics stay private. Off by default, so only admins see it.',
+        label: 'Show users their own cache statistics',
+        description: 'The user usage page separately shows raw cache experience and billed cache shares for their own keys and downstream groups. Exports remain billing-based. Missing raw observations stay unknown; upstream keys and procurement metrics stay private. Off by default.',
       },
       upstream_response_model_to_users: {
         label: 'Show users the actual upstream response model',

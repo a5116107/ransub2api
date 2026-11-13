@@ -377,6 +377,20 @@ export default {
 
   // Usage
   usage: {
+    rawCache: {
+      title: 'My requests · Raw cache experience',
+      tokenReadRate: 'Cached share of input tokens',
+      requestHitRate: 'Requests with cache hits',
+      coverage: 'Raw observation coverage',
+      observed: 'Fully observed',
+      partial: 'Partially observed',
+      unknown: 'Raw observation unknown',
+      empty: 'No requests in this range',
+      loadFailed: 'Raw cache statistics failed to load. Refresh to retry.',
+      counts: '{observed}/{total} observed · {hits} with hits · {unknown} unknown',
+      tokens: 'Observed cache reads {read} / total input {input} tokens',
+      scope: 'Only your own key, selected product group, requested model and time range are included, once per recorded logical usage. Token share is weighted by totals; request hit rate uses observed requests only. Unknown is not a miss. These historical final-response observations are separate from billed cache share, upstream-key monitoring and request success rate. Diagnostics are retained for 30 days; legacy, missing or ambiguously owned diagnostics remain unknown.',
+    },
     title: 'Usage Records',
     description: 'View and analyze your API usage history',
     costDetails: 'Cost Breakdown',

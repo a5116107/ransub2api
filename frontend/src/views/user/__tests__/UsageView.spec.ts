@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { reactive } from 'vue'
 
 import UsageView from '../UsageView.vue'
 import TrafficPanel from '@/components/usage/TrafficPanel.vue'
@@ -92,9 +93,11 @@ vi.mock('@/api', () => ({
   },
 }))
 
-const appStoreState = vi.hoisted(() => ({
+const appStoreState = reactive({
   cachedPublicSettings: { allow_user_view_error_requests: true } as Record<string, unknown>,
-}))
+})
+
+enableAutoUnmount(afterEach)
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
@@ -251,6 +254,100 @@ describe('user UsageView', () => {
     expect(list).toHaveBeenCalledTimes(1)
     expect(list).toHaveBeenCalledWith(1, 100)
     expect(getAvailable).toHaveBeenCalled()
+  })
+
+  it('keeps raw-cache observations separate from billing, with explicit partial coverage', async () => {
+    appStoreState.cachedPublicSettings.usage_show_cache_rate_to_users = true
+    getStats.mockResolvedValue({ raw_cache: { total_requests: 4, observed_requests: 2, hit_requests: 1,
+      unknown_requests: 2, input_tokens: 1000, read_tokens: 100, token_read_rate: 0.1, request_hit_rate: 0.5, coverage: 0.5 } })
+    const wrapper = mountUsageView(); await flushPromises()
+    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ include_raw_cache: true }))
+    expect(wrapper.get('[data-testid="raw-cache-token-rate"]').text()).toBe('10.0%')
+    expect(wrapper.get('[data-testid="raw-cache-request-rate"]').text()).toBe('50.0%')
+    expect(wrapper.get('[data-testid="raw-cache-coverage"]').text()).toBe('50.0%')
+    expect(wrapper.get('[data-testid="raw-cache-stats"]').text()).toContain('usage.rawCache.partial')
+    expect(wrapper.get('progress').attributes()).toMatchObject({ value: '2', max: '4' })
+    wrapper.unmount()
+  })
+
+  it.each([
+    { total_requests: 0, observed_requests: 0, hit_requests: 0, unknown_requests: 0, state: 'empty', coverage: null },
+    { total_requests: 3, observed_requests: 0, hit_requests: 0, unknown_requests: 3, state: 'unknown', coverage: 0 },
+    { total_requests: 3, observed_requests: 3, hit_requests: 0, unknown_requests: 0, state: 'observed', coverage: 1 },
+  ])('renders raw-cache $state without turning missing counters into misses', async (raw) => {
+    appStoreState.cachedPublicSettings.usage_show_cache_rate_to_users = true
+    getStats.mockResolvedValue({ raw_cache: { ...raw, input_tokens: raw.observed_requests * 100, read_tokens: 0, token_read_rate: raw.observed_requests ? 0 : null, request_hit_rate: raw.observed_requests ? 0 : null } })
+    const wrapper = mountUsageView(); await flushPromises()
+    expect(wrapper.get('[data-testid="raw-cache-token-rate"]').text()).toBe(raw.observed_requests ? '0.0%' : '—')
+    expect(wrapper.get('[data-testid="raw-cache-request-rate"]').text()).toBe(raw.observed_requests ? '0.0%' : '—')
+    expect(wrapper.get('[data-testid="raw-cache-stats"]').text()).toContain(`usage.rawCache.${raw.state}`)
+    wrapper.unmount()
+  })
+
+  it('does not request or display raw-cache statistics when user visibility is off', async () => {
+    const wrapper = mountUsageView(); await flushPromises()
+    expect(wrapper.find('[data-testid="raw-cache-stats"]').exists()).toBe(false)
+    expect(getStats.mock.calls[0][0]).not.toHaveProperty('include_raw_cache')
+    wrapper.unmount()
+  })
+
+  it('loads raw statistics when public settings arrive after the usage route mounted', async () => {
+    const wrapper = mountUsageView(); await flushPromises()
+    expect(getStats.mock.calls[0][0]).not.toHaveProperty('include_raw_cache')
+    expect(wrapper.find('[data-testid="raw-cache-stats"]').exists()).toBe(false)
+    getStats.mockResolvedValueOnce({ raw_cache: { total_requests: 1, observed_requests: 1, hit_requests: 1,
+      unknown_requests: 0, input_tokens: 100, read_tokens: 70, token_read_rate: 0.7, request_hit_rate: 1, coverage: 1 } })
+    appStoreState.cachedPublicSettings = { usage_show_cache_rate_to_users: true }
+    await flushPromises()
+    expect(getStats).toHaveBeenLastCalledWith(expect.objectContaining({ include_raw_cache: true }))
+    expect(wrapper.get('[data-testid="raw-cache-token-rate"]').text()).toBe('70.0%')
+    wrapper.unmount()
+  })
+
+  it('does not round partial raw-cache coverage up to full coverage', async () => {
+    appStoreState.cachedPublicSettings.usage_show_cache_rate_to_users = true
+    getStats.mockResolvedValue({ raw_cache: { total_requests: 400, observed_requests: 399, hit_requests: 399,
+      unknown_requests: 1, input_tokens: 400, read_tokens: 399, token_read_rate: 0.9975, request_hit_rate: 1, coverage: 0.9975 } })
+    const wrapper = mountUsageView(); await flushPromises()
+    expect(wrapper.get('[data-testid="raw-cache-coverage"]').text()).toBe('99.7%')
+    expect(wrapper.get('[data-testid="raw-cache-stats"]').text()).toContain('usage.rawCache.partial')
+    wrapper.unmount()
+  })
+
+  it('keeps the selected key and model statistics when an older query completes later', async () => {
+    appStoreState.cachedPublicSettings.usage_show_cache_rate_to_users = true
+    let resolveOld!: (value: unknown) => void
+    getStats.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+    const wrapper = mountUsageView(); await flushPromises()
+    getStats.mockResolvedValueOnce({ raw_cache: { total_requests: 1, observed_requests: 1, hit_requests: 0,
+      unknown_requests: 0, input_tokens: 100, read_tokens: 0, token_read_rate: 0, request_hit_rate: 0, coverage: 1 } })
+    const keySelect = wrapper.findAllComponents(Select).find(select =>
+      (select.props('options') as SelectOption[]).some(option => option.label === 'demo-key'))!
+    keySelect.vm.$emit('update:modelValue', 1)
+    keySelect.vm.$emit('change', 1)
+    await flushPromises()
+    expect(getStats).toHaveBeenLastCalledWith(expect.objectContaining({ api_key_id: 1, include_raw_cache: true }))
+    expect(wrapper.get('[data-testid="raw-cache-token-rate"]').text()).toBe('0.0%')
+    resolveOld({ raw_cache: { total_requests: 100, observed_requests: 100, token_read_rate: 1, request_hit_rate: 1, coverage: 1 } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="raw-cache-token-rate"]').text()).toBe('0.0%')
+    wrapper.unmount()
+  })
+
+  it('clears old raw-cache results on refresh and shows failures instead of stale percentages', async () => {
+    appStoreState.cachedPublicSettings.usage_show_cache_rate_to_users = true
+    getStats.mockResolvedValueOnce({ raw_cache: { total_requests: 1, observed_requests: 1, token_read_rate: 1, request_hit_rate: 1, coverage: 1 } })
+    const wrapper = mountUsageView(); await flushPromises()
+    expect(wrapper.get('[data-testid="raw-cache-token-rate"]').text()).toBe('100.0%')
+    let rejectStats!: (reason: Error) => void
+    getStats.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectStats = reject }))
+    await wrapper.findAll('button').find(button => button.text() === 'Refresh')!.trigger('click')
+    expect(wrapper.get('[data-testid="raw-cache-stats"]').attributes('aria-busy')).toBe('true')
+    expect(wrapper.find('[data-testid="raw-cache-token-rate"]').exists()).toBe(false)
+    rejectStats(new Error('fixture failure')); await flushPromises()
+    expect(wrapper.get('[data-testid="raw-cache-stats"] [role="alert"]').text()).toBe('usage.rawCache.loadFailed')
+    expect(wrapper.find('[data-testid="raw-cache-token-rate"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('includes API keys after the first page in both record filters and queries by the selected key', async () => {

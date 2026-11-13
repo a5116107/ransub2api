@@ -695,6 +695,51 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		args = append(args, *filters.EndTime)
 	}
 
+	from := "usage_logs " + buildWhere(conditions)
+	rawColumns, rawTotals := "", ""
+	if filters.IncludeRawCache {
+		// Count traces before inspecting their payload: selecting a successful
+		// trace out of several client retries would invent logical ownership.
+		// LIMIT 2 bounds the indexed diagnostic lookup for every scoped usage.
+		from = `(SELECT * FROM usage_logs ` + buildWhere(conditions) + `) u
+		LEFT JOIN LATERAL (
+			SELECT (array_agg(detail))[1]->'raw_cache' AS cache
+			FROM (SELECT detail,created_at FROM request_timing_details
+				WHERE usage_log_id=u.id AND u.created_at >= NOW()-INTERVAL '30 days' LIMIT 2) traces
+			HAVING COUNT(*)=1 AND MIN(created_at) >= NOW()-INTERVAL '30 days'
+		) trace ON true
+		LEFT JOIN LATERAL (
+			SELECT
+				CASE WHEN jsonb_typeof(cache->'input_tokens')='number'
+					AND cache->>'input_tokens' ~ '^[0-9]{1,16}$'
+					THEN (cache->>'input_tokens')::bigint END AS raw_input,
+				CASE WHEN jsonb_typeof(cache->'read_tokens')='number'
+					AND cache->>'read_tokens' ~ '^[0-9]{1,16}$'
+					THEN (cache->>'read_tokens')::bigint END AS raw_read,
+				CASE WHEN jsonb_typeof(cache->'write_tokens')='number'
+					AND cache->>'write_tokens' ~ '^[0-9]{1,16}$'
+					THEN (cache->>'write_tokens')::bigint END AS raw_write
+		) counters ON true
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(cache->>'status'='observed'
+				AND (cache->>'source',cache->>'scope') IN (
+					('canonical_responses_terminal_usage','final_physical_http_responses_terminal_usage'),
+					('canonical_responses_terminal_usage','physical_websocket_turn_responses_terminal_usage'),
+					('canonical_messages_cumulative_usage','final_physical_http_messages_cumulative_usage'),
+					('canonical_gemini_usage_metadata','final_physical_http_gemini_usage_metadata'),
+					('canonical_chat_completions_usage','final_physical_http_chat_completions_usage'))
+				AND raw_input BETWEEN 1 AND 9007199254740991
+				AND raw_read BETWEEN 0 AND raw_input
+				AND (cache->'write_tokens'='null'::jsonb
+					OR raw_write BETWEEN 0 AND raw_input-raw_read), false) AS raw_valid
+		) validity ON true`
+		rawColumns = ", raw_input, raw_read, raw_valid"
+		rawTotals = `, COUNT(*) FILTER (WHERE raw_valid),
+			COUNT(*) FILTER (WHERE raw_valid AND raw_read>0),
+			COALESCE(SUM(raw_input) FILTER (WHERE raw_valid),0),
+			COALESCE(SUM(raw_read) FILTER (WHERE raw_valid),0)`
+	}
+
 	query := fmt.Sprintf(`
 		WITH scoped AS (
 			SELECT
@@ -707,9 +752,8 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 				total_cost,
 				actual_cost,
 				COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) AS account_cost,
-				duration_ms
-			FROM usage_logs
-			%s
+				duration_ms%s
+			FROM %s
 		)
 		SELECT
 			GROUPING(inbound_endpoint) AS inbound_grouped,
@@ -724,7 +768,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			COALESCE(SUM(total_cost), 0) AS cost,
 			COALESCE(SUM(actual_cost), 0) AS actual_cost,
 			COALESCE(SUM(account_cost), 0) AS account_cost,
-			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms
+			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms%s
 		FROM scoped
 		GROUP BY GROUPING SETS (
 			(),
@@ -732,7 +776,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			(upstream_endpoint),
 			(inbound_endpoint, upstream_endpoint)
 		)
-	`, buildWhere(conditions))
+	`, rawColumns, from, rawTotals)
 
 	stats := &UsageStats{}
 	var totalAccountCost float64
@@ -750,7 +794,8 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			requests, inputTokens, outputTokens, cacheCreationTokens, cacheReads int64
 			cost, actualCost, accountCost, averageDurationMs                     float64
 		)
-		if err := rows.Scan(
+		var observed, hits, rawInput, rawRead int64
+		dest := []any{
 			&inboundGrouped,
 			&upstreamGrouped,
 			&inboundEndpoint,
@@ -764,7 +809,11 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			&actualCost,
 			&accountCost,
 			&averageDurationMs,
-		); err != nil {
+		}
+		if filters.IncludeRawCache {
+			dest = append(dest, &observed, &hits, &rawInput, &rawRead)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
 
@@ -776,6 +825,25 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 
 		switch {
 		case inboundGrouped == 1 && upstreamGrouped == 1:
+			if filters.IncludeRawCache {
+				raw := &usagestats.RawCacheStats{
+					TotalRequests: requests, ObservedRequests: observed, HitRequests: hits,
+					UnknownRequests: requests - observed, InputTokens: rawInput, ReadTokens: rawRead,
+				}
+				if requests > 0 {
+					coverage := float64(observed) / float64(requests)
+					raw.Coverage = &coverage
+				}
+				if observed > 0 {
+					rate := float64(hits) / float64(observed)
+					raw.RequestHitRate = &rate
+				}
+				if rawInput > 0 {
+					rate := float64(rawRead) / float64(rawInput)
+					raw.TokenReadRate = &rate
+				}
+				stats.RawCache = raw
+			}
 			stats.TotalRequests = requests
 			stats.TotalInputTokens = inputTokens
 			stats.TotalOutputTokens = outputTokens

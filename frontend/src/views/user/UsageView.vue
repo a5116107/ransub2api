@@ -167,6 +167,51 @@
         </div>
       </div>
 
+      <section
+        v-if="activeTab === 'usage' && includeCacheRate"
+        class="card space-y-4 p-4 sm:p-6"
+        data-testid="raw-cache-stats"
+        aria-labelledby="raw-cache-title"
+        :aria-busy="endpointStatsLoading"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="raw-cache-title" class="font-semibold text-gray-900 dark:text-gray-100">{{ t('usage.rawCache.title') }}</h2>
+          <span v-if="!endpointStatsLoading && !statsError" class="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+            {{ t(`usage.rawCache.${rawCacheStatus}`) }}
+          </span>
+        </div>
+        <p v-if="endpointStatsLoading" role="status" class="text-sm text-gray-600 dark:text-gray-300">{{ t('common.loading') }}</p>
+        <p v-else-if="statsError" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ t('usage.rawCache.loadFailed') }}</p>
+        <template v-else>
+          <dl class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+              <dt class="text-sm text-gray-600 dark:text-gray-300">{{ t('usage.rawCache.tokenReadRate') }}</dt>
+              <dd class="text-2xl font-semibold tabular-nums" data-testid="raw-cache-token-rate">{{ rawCachePercent(usageStats?.raw_cache?.token_read_rate) }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-600 dark:text-gray-300">{{ t('usage.rawCache.requestHitRate') }}</dt>
+              <dd class="text-2xl font-semibold tabular-nums" data-testid="raw-cache-request-rate">{{ rawCachePercent(usageStats?.raw_cache?.request_hit_rate) }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-600 dark:text-gray-300">{{ t('usage.rawCache.coverage') }}</dt>
+              <dd class="text-2xl font-semibold tabular-nums" data-testid="raw-cache-coverage">{{ rawCachePercent(usageStats?.raw_cache?.coverage) }}</dd>
+            </div>
+          </dl>
+          <div v-if="usageStats?.raw_cache" class="space-y-2 text-sm text-gray-600 dark:text-gray-300">
+            <progress
+              v-if="usageStats.raw_cache.total_requests > 0"
+              class="h-2 w-full accent-primary-500"
+              :value="usageStats.raw_cache.observed_requests"
+              :max="usageStats.raw_cache.total_requests"
+              :aria-label="t('usage.rawCache.coverage')"
+            />
+            <p>{{ t('usage.rawCache.counts', { observed: usageStats.raw_cache.observed_requests, total: usageStats.raw_cache.total_requests, hits: usageStats.raw_cache.hit_requests, unknown: usageStats.raw_cache.unknown_requests }) }}</p>
+            <p>{{ t('usage.rawCache.tokens', { read: usageStats.raw_cache.read_tokens, input: usageStats.raw_cache.input_tokens }) }}</p>
+          </div>
+        </template>
+        <p class="text-sm text-gray-600 dark:text-gray-300">{{ t('usage.rawCache.scope') }}</p>
+      </section>
+
       <div class="flex gap-2 border-b border-gray-200 dark:border-dark-700">
         <button class="tab" :class="{ 'tab-active': activeTab === 'usage' }" @click="activeTab = 'usage'">
           {{ t('usage.tabs.usage') }}
@@ -280,6 +325,20 @@ const loading = ref(false)
 const chartsLoading = ref(false)
 const modelStatsLoading = ref(false)
 const endpointStatsLoading = ref(false)
+const statsError = ref(false)
+const rawCacheStatus = computed(() => {
+  const raw = usageStats.value?.raw_cache
+  if (!raw) return 'unknown'
+  if (raw.total_requests === 0) return 'empty'
+  if (raw.observed_requests === 0) return 'unknown'
+  return raw.observed_requests === raw.total_requests ? 'observed' : 'partial'
+})
+
+function rawCachePercent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0 || value > 1) return '—'
+  if (value > 0 && value < 0.001) return '<0.1%'
+  return `${(Math.floor(value * 1000) / 10).toFixed(1)}%`
+}
 const exporting = ref(false)
 const errorRows = ref<UserErrorRequest[]>([])
 const errorLoading = ref(false)
@@ -476,16 +535,21 @@ const loadLogs = async () => {
 const loadStats = async () => {
   const seq = ++statsReqSeq
   endpointStatsLoading.value = true
+  statsError.value = false
+  usageStats.value = null
   try {
-    const stats = await usageAPI.getStats(normalizedFilters.value)
+    const stats = await usageAPI.getStats({
+      ...normalizedFilters.value,
+      ...(includeCacheRate.value ? { include_raw_cache: true } : {}),
+    })
     if (seq !== statsReqSeq) return
     usageStats.value = stats
     inboundEndpointStats.value = stats.endpoints || []
     upstreamEndpointStats.value = []
     endpointPathStats.value = []
-  } catch (error) {
+  } catch {
     if (seq !== statsReqSeq) return
-    console.error('Failed to load usage stats:', error)
+    statsError.value = true
     inboundEndpointStats.value = []
     upstreamEndpointStats.value = []
     endpointPathStats.value = []
@@ -923,7 +987,9 @@ onUnmounted(() => {
   document.removeEventListener('click', handleColumnClickOutside)
 })
 
-watch(endpointDistributionSource, () => {
-  // Endpoint source switching is handled by the chart component using already loaded stats.
+watch(includeCacheRate, (visible) => {
+  // Static deployments may load public settings after this route has mounted.
+  if (visible) void loadStats()
 })
+
 </script>

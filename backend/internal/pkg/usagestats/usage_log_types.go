@@ -269,12 +269,13 @@ type PlatformDashboardStats struct {
 
 // UsageLogFilters represents filters for usage log queries
 type UsageLogFilters struct {
-	UserID    int64
-	APIKeyID  int64
-	AccountID int64
-	GroupID   int64
-	RequestID string
-	Model     string
+	IncludeRawCache bool
+	UserID          int64
+	APIKeyID        int64
+	AccountID       int64
+	GroupID         int64
+	RequestID       string
+	Model           string
 	// ModelFilterSource controls how Model is matched. Empty preserves raw usage_logs.model semantics.
 	ModelFilterSource     string
 	RequestType           *int16
@@ -291,6 +292,7 @@ type UsageLogFilters struct {
 
 // UsageStats represents usage statistics
 type UsageStats struct {
+	RawCache                 *RawCacheStats `json:"raw_cache,omitempty"`
 	TotalRequests            int64          `json:"total_requests"`
 	TotalInputTokens         int64          `json:"total_input_tokens"`
 	TotalOutputTokens        int64          `json:"total_output_tokens"`
@@ -305,6 +307,20 @@ type UsageStats struct {
 	Endpoints                []EndpointStat `json:"endpoints,omitempty"`
 	UpstreamEndpoints        []EndpointStat `json:"upstream_endpoints,omitempty"`
 	EndpointPaths            []EndpointStat `json:"endpoint_paths,omitempty"`
+}
+
+// RawCacheStats counts each persisted logical usage once, independently of
+// billing adjustments. Missing or ambiguous diagnostics are unobserved.
+type RawCacheStats struct {
+	TotalRequests    int64    `json:"total_requests"`
+	ObservedRequests int64    `json:"observed_requests"`
+	HitRequests      int64    `json:"hit_requests"`
+	UnknownRequests  int64    `json:"unknown_requests"`
+	InputTokens      int64    `json:"input_tokens"`
+	ReadTokens       int64    `json:"read_tokens"`
+	Coverage         *float64 `json:"coverage"`
+	RequestHitRate   *float64 `json:"request_hit_rate"`
+	TokenReadRate    *float64 `json:"token_read_rate"`
 }
 
 // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。

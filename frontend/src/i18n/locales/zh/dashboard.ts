@@ -382,6 +382,20 @@ export default {
 
   // Usage
   usage: {
+    rawCache: {
+      title: '我的请求 · 原始缓存体验',
+      tokenReadRate: '输入 Token 缓存读取占比',
+      requestHitRate: '有缓存命中的请求占比',
+      coverage: '原始观测覆盖率',
+      observed: '观测完整',
+      partial: '部分可观测',
+      unknown: '原始观测未知',
+      empty: '所选范围暂无请求',
+      loadFailed: '原始缓存统计加载失败，请刷新重试。',
+      counts: '有效观测 {observed}/{total} 次 · 有命中 {hits} 次 · 未知 {unknown} 次',
+      tokens: '已观测缓存读取 {read} / 总输入 {input} Token',
+      scope: '仅统计本人 Key、所选产品分组、请求模型和时间范围内已记录的逻辑用量请求。Token 占比按总量加权，请求命中占比仅以有效观测为分母；未知不当作未命中。这是最终响应的历史观测，与计费缓存占比、上游 Key 监控及请求成功率分别统计。诊断保留 30 天；旧版、缺失或多条归属的诊断均记未知。',
+    },
     title: '使用记录',
     description: '查看和分析您的 API 使用历史',
     costDetails: '费用明细',

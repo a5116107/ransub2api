@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D2.5发送归属/快照/脱敏已验；原D2/D5及D7.3父验收保持。
+Task: D5.2本地验收完成，继续提交/自有分支同步；原父验收保持。
 Scope: 用户已授权规划后实施；单功能分支/单PR，不CI、不改生产。
-Source: feat/automated-upstream-supply；D2.5见HEAD；参考仓只读。
-Verified: race122/706；四包vet；timing全lint/三包增量0；非生产。
-Next: D5原始聚合的实际组/模型scope；D7.3分维度/独立基线。
-Attempt: 3
+Source: feat/automated-upstream-supply；基线2231e57ba，21输入指纹匹配。
+Verified: race108/713、前端93、五包vet、快速lint0、构建/中英390px。
+Next: 完成D5.2同步；核对D8独立验收和v2.21.1整合依赖。
+Attempt: 1
 Blocker: 接入方补实际scope/独立基线；历史拒删由拥有者清理，不重试。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
-Remaining: 原28项20done/8部分；既有6子项5done/1部分，供应商/生产未关闭。
+Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未关闭。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -31,7 +31,7 @@ Remaining: 原28项20done/8部分；既有6子项5done/1部分，供应商/生�
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D2.5 | done | HTTP/WS最终凭据、重定向/重试及快照/观察员隔离；race122/706、四包vet、分层lint通过，实际组/缓存域仍待证明 |
+| D2.5 | done | HTTP/WS最终凭据、重试及快照/观察员隔离已验；实际组/缓存域仍待证明 |
 | D3 | in_progress | 状态/文本准入及空流/终态/间隔超时已验；.3漏计/初始重选与5/3/1上线，race/副本/公网SSE账单通过；其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
@@ -49,10 +49,11 @@ Remaining: 原28项20done/8部分；既有6子项5done/1部分，供应商/生�
 | M12 | done | 代理统计与 dashboard realtime 移除固定零值/100%假成功；兼容路由明确 501，admin race/vet通过 |
 | M13 | done | 删除无调用的 GroupService.GetStats 第二套统计入口；group handler race、service编译与vet通过，引用为0 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 协议/缓存/TPS/TTFT及scope隔离、延迟未知已验；跨协议/会话估计与上下游原始聚合待证据；历史命令见DECISIONS |
+| D5 | in_progress | 下游原始聚合见D5.2；协议/同层计时及scope隔离已验，供应商scope/会话估计待证据 |
 | D6 | in_progress | 健康保留/硬准入及门票已验；软迁移仍须前缀/候选缓存域与净收益证据；历史race668/3225等见DECISIONS |
-| D7 | in_progress | 并发保存/409、重算及候选未知已验；完整解释/原始缓存面板待契约；历史UI112+支付21等见DECISIONS |
+| D7 | in_progress | D5.2下游原始面板及并发保存/409已验；完整解释及供应商真实scope待合同 |
 | D5.1/D6.1 | done | 上下游及账单合同；同run粘性/跨run隔离、Messages独立前缀，race40与vet通过 |
+| D5.2 | done | 原始终态摘要、唯一逻辑计数/覆盖、本人筛选、30天边界及中英390px通过；非生产 |
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
 | D7.3 | in_progress | 三页统一历史结论/覆盖/年龄/身份未知；87项/类型/lint/构建/中英390px已验；分维度/基线待接入方 |
@@ -68,7 +69,7 @@ Remaining: 原28项20done/8部分；既有6子项5done/1部分，供应商/生�
 
 ## 下一项工作
 
-D2.5已验；D5聚合仍需实际组/模型scope，D7.3待独立基线。原28项20done/8部分、既有6子项5done/1部分；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待整合，供应商/混版/生产仍待。
+D5.2已本地验收；D5上游聚合待实际组/模型scope，D7.3待独立基线。原28项20done/8部分、7子项6done/1部分；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待整合，混版/生产仍待。
 
 ## 外部等待与清理
 
@@ -80,4 +81,4 @@ D2.5已验；D5聚合仍需实际组/模型scope，D7.3待独立基线。原28�
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删候选/overlay/pyc/脚本及stream-health的3文件9817bytes原位保留；路径/证据见DECISIONS，由拥有者清理，不重试/移动；.1包保留。
 - 历史`H:/Root/DevCache/tmp/sub2api-cache-conclusions`拒删，删除0；256文件9744426bytes、无活跃引用；拥有者手工清理后解除，不重试/移动。
-- 历史三包lint62项保留；本轮两包vet、快速增量lint通过；完整lint两次超8分钟/约8与6GiB预算中止，不称全包清零。
+- 大包lint历史限制保留；五包vet/四包增量lint0非全仓结果。

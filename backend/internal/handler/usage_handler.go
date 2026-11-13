@@ -472,6 +472,11 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	if !ok {
 		return
 	}
+	includeRawCache, ok := parseBoolQueryWithDefault(c, "include_raw_cache", false)
+	if !ok {
+		return
+	}
+	parsed.Filters.IncludeRawCache = includeRawCache
 
 	stats, err := h.usageService.GetStatsWithFilters(c.Request.Context(), parsed.Filters)
 	if err != nil {

@@ -2254,7 +2254,20 @@ export interface DashboardStats {
   tpm: number // 近5分钟平均每分钟Token数
 }
 
+export interface RawCacheStats {
+  total_requests: number
+  observed_requests: number
+  hit_requests: number
+  unknown_requests: number
+  input_tokens: number
+  read_tokens: number
+  coverage: number | null
+  request_hit_rate: number | null
+  token_read_rate: number | null
+}
+
 export interface UsageStatsResponse {
+  raw_cache?: RawCacheStats
   period?: string
   total_requests: number
   total_input_tokens: number
