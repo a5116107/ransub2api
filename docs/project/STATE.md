@@ -9,7 +9,7 @@ Source: feat/automated-upstream-supply，基线7f846ede7；参考仓只读。
 Verified: 前端148通过、末改53复验；race40/vet、类型/lint/构建、浏览器9模拟请求通过。
 Next: D3.1真实同池故障/恢复链及D7.3质量/指纹证据；保持单PR，不发布。
 Attempt: 1
-Blocker: 接入方补真实供应商scope/独立基线；上下游原始缓存聚合仍属D5/D7。
+Blocker: 接入方补scope/独立基线；本轮scratch删除被自动检查拦截，归拥有者处理。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
 Remaining: 原28项20done/8部分；本轮6子项4done/1部分/1待证据，未关闭生产验收。
 <!-- resume:end -->
@@ -62,7 +62,7 @@ Remaining: 原28项20done/8部分；本轮6子项4done/1部分/1待证据，未�
 
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为a5116107/ransub2api，upstream为ranxi2001/sub2api且禁推。
 - 正式源码根153包已验；unit/integration并发1–2，沿用go.mod/lint规则。Redis竞争用既有5.0.14.1，Redis3缺Lua方法；历史失败不改报成功。
-- 图片夹具隔离DATA_DIR；12张历史PNG/1164bytes保留。协议/区域/CLI的实际覆盖与复现命令见DECISIONS，不把本地夹具当真实供应商。
+- 夹具隔离DATA_DIR；历史12PNG/1164bytes保留；协议/区域/CLI命令见DECISIONS，非真实供应商证据。
 - 不增平行实现/台账；C盘effb8271不计主线，开发统一H盘。
 
 ## 下一项工作
@@ -77,6 +77,6 @@ Remaining: 原28项20done/8部分；本轮6子项4done/1部分/1待证据，未�
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 历史拒删的候选、overlay、pyc和运维脚本完整路径/大小/证据见DECISIONS；均保留由拥有者处理，不重试或移动；正式.1包仍在-final。
-- 本轮`H:/Root/DevCache/tmp/sub2api-stream-health`的ops.py/public-smoke.py/notes.md（3文件/9817bytes）删除在进程创建前被策略拦截，实际删除0；无活跃引用，由拥有者手工清理，不重试或移动。
+- 历史拒删候选/overlay/pyc/脚本及stream-health的3文件9817bytes原位保留；路径/证据见DECISIONS，由拥有者清理，不重试/移动；.1包保留。
+- 本轮`H:/Root/DevCache/tmp/sub2api-cache-conclusions`删除被自动检查拦截，删除0；256文件9744426bytes、无活跃引用；由拥有者手工清理后解除，不重试/移动。
 - 历史三包lint62项/增量0保留；本轮仅前端所改文件lint通过，不称后端全包清零。
