@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D8双版本配置/L2及L1跨节点撤销/恢复子验收完成；严格产品混版仍开放。
+Task: D8认证订阅运行错误恢复修复/回归/候选双节点验收；严格产品混版仍开放。
 Scope: 单功能分支/单PR本地实施验证及自有分支同步；不CI、不改生产。
-Source: 应用b67e0a2ae；演练工具本轮修订，同一功能分支交付。
+Source: 55cf1f600上认证订阅/演练器修复，本轮提交后构建同源候选。
 Verified: 归属634/身份叶10通过；嵌套身份280场景双轮560叶通过，29进程全exit0。
 Verified: local-rehearse exit0/56.58s；428→431、回退重升、并发保存及Redis33/34重载通过。
-Verified: Linux发行工具57PASS/Windows演练21PASS；L1撤销401/恢复200通过，10资源全回收。
-Next: 接入方补实际scope/独立基线/首批非文本合同；严格产品全节点能力与生产按原D8/D9等待。
+Verified: 订阅race14/服务race50通过，fail/skip0；两包vet及差异fast lint0；工具Linux58/Win22通过。
+Next: 提交已验源码，构建并运行双候选漏收失效恢复；旧新版失败保留，混版不关闭。
 Attempt: 1
-Blocker: 供应商事实/独立基线及严格准入前置；历史拒删路径由拥有者清理，不重试。
+Blocker: 旧新版ACL恢复演练失败已复现；供应商/独立基线/严格准入等待不变。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
 Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未关闭。
 <!-- resume:end -->

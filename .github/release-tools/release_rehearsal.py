@@ -337,11 +337,13 @@ class Rehearsal:
         self.stop_app()
         candidate_token = self.start_app(Path(self.args.candidate).resolve(), 'mixed_l1_candidate', l1_enabled=True)
         candidate = self.app
-        legacy_token = self.start_app(self.baseline, 'mixed_l1_legacy', slot='legacy', l1_enabled=True)
-        legacy = self.app
-        nodes = (legacy, candidate)
+        peer_binary = self.baseline if self.args.l1_peer == 'baseline' else Path(self.args.candidate).resolve()
+        peer_token = self.start_app(peer_binary, 'mixed_l1_peer', slot='legacy', l1_enabled=True)
+        peer = self.app
+        nodes = (peer, candidate)
         migrations = self.migrations()
-        probe = {'passed': False, 'l1_ttl_seconds': 600, 'l1_reuse_observed': False, 'transitions': []}
+        probe = {'passed': False, 'l1_ttl_seconds': 600, 'l1_reuse_observed': False, 'transitions': [],
+                 'peer_kind': self.args.l1_peer}
         self.result['mixed_l1_invalidation'] = probe
         for node in nodes:
             self.api('GET', '/v1/usage', token=credential, container=node)
@@ -374,10 +376,11 @@ class Rehearsal:
             return {'expected_status': expected, 'attempts': attempts,
                     'seconds': round(time.monotonic() - started, 3)}
 
-        self.api('PUT', f'/api/v1/keys/{key_id}', {'status': 'inactive'}, legacy_token, container=legacy)
+        self.api('PUT', f'/api/v1/keys/{key_id}', {'status': 'inactive'}, peer_token, container=peer)
         probe['transitions'].append(observe(401, 200))
         self.api('PUT', f'/api/v1/keys/{key_id}', {'status': 'active'}, candidate_token, container=candidate)
         probe['transitions'].append(observe(200, 401))
+        self.exercise_missed_invalidation(key_id, credential, nodes, (peer_token, candidate_token), observe)
         state = self.api('GET', f'/api/v1/keys/{key_id}', token=candidate_token, container=candidate)
         require(state.get('status') == 'active' and state.get('context_token_limit') == 4567
                 and state.get('allow_long_context') is False and state.get('concurrency_limit') == 3,
@@ -386,6 +389,59 @@ class Rehearsal:
                 'L1 invalidation or recovery changed protected state')
         require(int(self.sql('SELECT count(*) FROM usage_logs')) == 0, 'L1 probes generated billable usage')
         probe.update(passed=True, generation_requests=0)
+
+    def exercise_missed_invalidation(self, key_id, credential, nodes, tokens, observe):
+        channel = 'auth:cache:invalidate'
+
+        def subscribers():
+            result = self.docker('exec', self.redis, 'redis-cli', '--raw', 'PUBSUB', 'NUMSUB', channel)
+            lines = result.stdout.strip().splitlines()
+            require(len(lines) == 2 and lines[0] == channel, 'invalid fixture subscription observation')
+            return int(lines[1])
+
+        def set_subscriptions(enabled):
+            sign = '+' if enabled else '-'
+            response = self.docker('exec', self.redis, 'redis-cli', 'ACL', 'SETUSER', 'default',
+                                   sign + 'subscribe', sign + 'psubscribe')
+            require(response.stdout.strip() == 'OK', 'fixture subscription permissions were not changed')
+
+        result = {'passed': False, 'rounds': []}
+        self.result.setdefault('mixed_l1_invalidation', {})['missed_invalidation'] = result
+        require(subscribers() == len(nodes), 'both fixture authentication subscribers must be ready')
+        for index, label in enumerate(('peer', 'candidate')):
+            current = {'writer': label, 'permissions_restored': False}
+            result['rounds'].append(current)
+            for node in nodes:
+                self.api('GET', '/v1/usage', token=credential, container=node)
+            time.sleep(0.1)
+            # Restrict only this disposable Redis. GET/DEL/PUBLISH and the DB
+            # remain available, while resubscription is impossible during the save.
+            try:
+                set_subscriptions(False)
+                killed = self.docker('exec', self.redis, 'redis-cli', 'CLIENT', 'KILL', 'TYPE', 'pubsub')
+                require(int(killed.stdout.strip()) >= len(nodes), 'fixture pubsub connections were not interrupted')
+                require(subscribers() == 0, 'fixture subscriptions survived the interruption')
+                self.api('PUT', f'/api/v1/keys/{key_id}', {'status': 'inactive'}, tokens[index], container=nodes[index])
+                require(subscribers() == 0, 'the invalidation was not published during the subscription gap')
+                current['subscribers_at_save'] = 0
+            finally:
+                set_subscriptions(True)
+                current['permissions_restored'] = True
+            deadline = time.monotonic() + 12
+            while True:
+                recovered = subscribers()
+                current['subscribers_after_recovery'] = recovered
+                if recovered == len(nodes):
+                    break
+                require(time.monotonic() < deadline, 'fixture authentication subscriptions did not recover')
+                time.sleep(0.1)
+            revoked = observe(401, 200)
+            other = 1 - index
+            self.api('PUT', f'/api/v1/keys/{key_id}', {'status': 'active'}, tokens[other], container=nodes[other])
+            restored = observe(200, 401)
+            current.update(revoked=revoked, restored=restored)
+        result['passed'] = True
+        return result
 
 
 def local_rehearse(args, verify, sha256):

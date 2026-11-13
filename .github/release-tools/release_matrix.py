@@ -303,6 +303,7 @@ def main():
     p.add_argument('--runtime-image', default='python:3.11-slim')
     p.add_argument('--postgres-image', default='postgres:17-alpine')
     p.add_argument('--redis-image', default='redis:7-alpine')
+    p.add_argument('--l1-peer', choices=('baseline', 'candidate'), default='baseline')
     from release_rehearsal import local_rehearse
     p.set_defaults(run=lambda args: local_rehearse(args, verify, sha256))
     args = parser.parse_args()

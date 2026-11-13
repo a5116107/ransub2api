@@ -2494,3 +2494,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 补充双写落地断言后真实演练38.03s通过，确保旧版名称保存确实生效，而非仅检查新版字段尚在。随后继续同一D8共享认证子验收，启用两个真实程序的L1。首次以容量32预热后不能观察命中，10资源均回收，保留 `mixed-shared-state-l1-small.json`。Ristretto v0.2.0 的 cache.go:469–471 会计入storeItem内部开销，32容量小于条目实际cost；改为夹具容量1024后直接L2淘汰验证两个节点均用L1，未修改产品缓存实现或生产默认值。外层Python证据采集曾因Windows默认编码解析含中文路径的失败回溯报UnicodeDecodeError；改为子进程显式UTF-8、外层原始字节采集，保留该次JSON失败，不将采集异常称为产品错误。
 - 最终同一应用源码的完整演练退出0、56.58s：四阶段串行升级/回退、三轮并发双写及33/34快照重载继续通过；L1 TTL=600秒，淘汰夹具L2后两节点请求均200且Redis条目未重建，证明真实L1命中。通过旧节点停用Key后双节点均401，再经候选恢复后双节点均200；两段双节点检查耗时0.282s/0.265s、均一次观测成功，不将其当作生产传播SLA。恢复后context上限4567、禁止长上下文和Key并发3保持，迁移/账号/监控不变、生成/用量记录均0。新增 `mixed_l1_invalidation.passed=true`，完整严格产品混版标记仍false；9容器/1网络全部按身份回收，baseline提取文件消失，候选仍保留原拒删状态、不再次尝试。
 - 最终源码的Linux发行工具57项通过（Ran 57 tests in 0.877s / OK、进程退出0），Windows原演练测试21项通过（Ran 21 tests in 0.148s / OK、进程退出0），取代本节早期55/19作为当前工具源码的验收。8份Python语法与13项工具/配置源码指纹匹配，文档相对链接和STATE预算核对。只补齐共享配置及Key撤销/恢复的L1行为；供应商事实、其他能力、严格产品全节点准入、缓存迁移收益和生产验收保持原任务边界。
+
+
+## 2026-11-14：D8 认证失效订阅运行错误恢复修复
+
+- 接续55cf1f600及已有未提交修改，范围仅认证缓存Redis适配器、原发行演练器和同一设计/状态；不CI、不接生产、不建平行实现或工作树。旧新版真实演练mixed-resubscribe.json退出1，权限恢复后订阅数未恢复；原实现红测在6秒断言“runtime Redis error was hidden from the subscription retry loop”，原失败与10资源清理结果保留。
+- 根因：go-redis ChannelWithSubscriptions隐藏运行期协议错误，重订阅被NOPERM拒绝后可留下存活但未订阅的连接。原位改为ReceiveTimeout：Redis协议错误/关闭进入既有服务重试，传输重连的subscribe确认仍推进既有L1 epoch；空闲3秒PING、再等5秒无响应则退出；context取消关闭阻塞读，Close由sync.Once保护。不新增调度器、存储、配置、迁移或第二套缓存。
+- 当前源码实跑go test -json -race -tags unit -p 1 ./internal/repository -run ^TestAPIKeyCacheSubscriber -count=2 -timeout=90s退出0，14个含子项通过、fail/skip0；覆盖原消息/取消、自动重连、运行期错误、空闲后投递、无心跳响应、确认前取消且不通知ready。服务层认证缓存/撤销/重订阅/Key并发及上下文回归双轮50个含子项通过、fail/skip0。两包go vet退出0；repository相对55cf1f600的原配置fast-only lint退出0/0 issues，不称完整规则全仓通过。
+- 原演练器新增漏收通知恢复和baseline/candidate节点配置，保留局部失败结果及finally恢复权限。Windows 22项、Linux原发行工具58项全部通过；Linux只读源码、network none、已有工具镜像，没有CI或安装。最小日志、命令及源码哈希保留H:/Root/DevCache/evidence/sub2api-v2211-integration/auth-recovery-*。上述结果证明源码/工具，候选真实运行验收在本次提交后构建执行；不提前关闭D8或D9。

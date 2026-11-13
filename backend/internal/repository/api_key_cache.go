@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -126,41 +129,82 @@ func (c *apiKeyCache) SubscribeAuthCacheInvalidation(ctx context.Context, handle
 
 func (c *apiKeyCache) subscribeAuthCacheInvalidation(ctx context.Context, handler func(string), ready func()) error {
 	pubsub := c.rdb.Subscribe(ctx, authCacheInvalidateChannel)
+	var closeOnce sync.Once
+	closeSubscription := func() {
+		closeOnce.Do(func() {
+			if err := pubsub.Close(); err != nil {
+				log.Printf("Warning: failed to close auth cache invalidation pubsub: %v", err)
+			}
+		})
+	}
+	stopClosing := context.AfterFunc(ctx, closeSubscription)
+	defer func() {
+		stopClosing()
+		closeSubscription()
+	}()
 
 	// Verify subscription is working
-	_, err := pubsub.Receive(ctx)
+	_, err := pubsub.ReceiveTimeout(ctx, 5*time.Second)
 	if err != nil {
-		_ = pubsub.Close()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("subscribe to auth cache invalidation: %w", err)
 	}
-
-	defer func() {
-		if err := pubsub.Close(); err != nil {
-			log.Printf("Warning: failed to close auth cache invalidation pubsub: %v", err)
-		}
-	}()
 	ready()
 
-	// The message-only channel hides automatic reconnects. Subscription events
-	// mark a recovery checkpoint at which consumers discard missed L1 grants.
-	ch := pubsub.ChannelWithSubscriptions()
+	// ChannelWithSubscriptions hides protocol errors as well as connection
+	// errors. A rejected resubscribe can leave a live but unsubscribed socket.
+	// Surface server errors to the service retry loop; retain transport reconnects
+	// and their acknowledgement checkpoints so missed L1 grants are discarded.
+	readTimeout := 3 * time.Second
+	waitingForPong := false
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case event, ok := <-ch:
-			if !ok {
-				return errors.New("auth cache invalidation pubsub channel closed")
+		event, err := pubsub.ReceiveTimeout(ctx, readTimeout)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
-			switch message := event.(type) {
-			case *redis.Subscription:
-				if message.Kind == "subscribe" && message.Channel == authCacheInvalidateChannel {
-					ready()
+			var serverError redis.Error
+			if errors.As(err, &serverError) || errors.Is(err, redis.ErrClosed) {
+				return fmt.Errorf("receive auth cache invalidation: %w", err)
+			}
+			var networkError net.Error
+			if errors.As(err, &networkError) && networkError.Timeout() {
+				if waitingForPong {
+					return fmt.Errorf("auth cache invalidation heartbeat: %w", err)
 				}
-			case *redis.Message:
-				if message != nil {
-					handler(message.Payload)
+				if pingErr := pubsub.Ping(ctx); pingErr != nil {
+					return fmt.Errorf("ping auth cache invalidation: %w", pingErr)
 				}
+				waitingForPong = true
+				readTimeout = 5 * time.Second
+				continue
+			}
+			if !errors.As(err, &networkError) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+				return fmt.Errorf("receive auth cache invalidation: %w", err)
+			}
+			waitingForPong = false
+			readTimeout = 3 * time.Second
+			retry := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				retry.Stop()
+				return ctx.Err()
+			case <-retry.C:
+			}
+			continue
+		}
+		waitingForPong = false
+		readTimeout = 3 * time.Second
+		switch message := event.(type) {
+		case *redis.Subscription:
+			if message.Kind == "subscribe" && message.Channel == authCacheInvalidateChannel {
+				ready()
+			}
+		case *redis.Message:
+			if message != nil {
+				handler(message.Payload)
 			}
 		}
 	}

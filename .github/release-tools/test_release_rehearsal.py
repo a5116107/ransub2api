@@ -7,7 +7,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import release_rehearsal as rehearsal
 
@@ -19,7 +19,8 @@ class ReleaseRehearsalTest(unittest.TestCase):
         root = Path(self.temp.name)
         self.args = argparse.Namespace(candidate_sha='a' * 40, candidate=str(root / 'candidate'),
             baseline=str(root / 'release'), scratch=str(root / 'scratch'), output=str(root / 'result.json'),
-            runtime_image='fixture-runtime', postgres_image='fixture-postgres', redis_image='fixture-redis')
+            runtime_image='fixture-runtime', postgres_image='fixture-postgres', redis_image='fixture-redis',
+            l1_peer='baseline')
         header = bytearray(20)
         header[:6], header[18:20] = b'\x7fELF\x02\x01', b'\x3e\x00'
         Path(self.args.candidate).write_bytes(header)
@@ -146,6 +147,64 @@ class ReleaseRehearsalTest(unittest.TestCase):
                     run.start_app(Path(self.args.candidate), 'l1-fixture', l1_enabled=enabled)
                 self.assertIn('API_KEY_AUTH_CACHE_L1_SIZE=' + ('1024' if enabled else '0'), create.call_args.args)
                 self.assertIn('API_KEY_AUTH_CACHE_L1_TTL_SECONDS=600', create.call_args.args)
+
+    def test_missed_invalidation_checks_recovery_and_restores_fixture_permissions(self):
+        scenarios = ((None, None), ('write', 'fixture write failed'), ('kill', 'fixture kill failed'),
+                     ('disable', 'fixture subscription permissions were not changed'),
+                     ('restore', 'fixture subscription permissions were not changed'),
+                     ('missing', 'both fixture authentication subscribers must be ready'),
+                     ('timeout', 'fixture authentication subscriptions did not recover'))
+        for fault, message in scenarios:
+            with self.subTest(fault=fault):
+                run = rehearsal.Rehearsal(self.args)
+                run.redis = 'fixture-redis'
+                state = {'blocked': False, 'restorations': 0}
+
+                def docker(*args, **kwargs):
+                    output = 'OK'
+                    if 'NUMSUB' in args:
+                        count = 0 if state['blocked'] else 2
+                        if fault == 'missing':
+                            count = 1
+                        if fault == 'timeout' and state['restorations']:
+                            count = 0
+                        output = 'auth:cache:invalidate\n' + str(count) + '\n'
+                    elif 'SETUSER' in args:
+                        state['blocked'] = '-subscribe' in args
+                        if state['blocked'] and fault == 'disable':
+                            output = 'ERR rejected fixture ACL change'
+                        if not state['blocked']:
+                            state['restorations'] += 1
+                            if fault == 'restore':
+                                output = 'ERR rejected fixture ACL change'
+                    elif 'KILL' in args:
+                        if fault == 'kill':
+                            raise RuntimeError('fixture kill failed')
+                        output = '2\n'
+                    return subprocess.CompletedProcess([], 0, output, '')
+
+                def api(method, path, body=None, *args, **kwargs):
+                    if fault == 'write' and method == 'PUT':
+                        raise RuntimeError('fixture write failed')
+                    return {}
+
+                observe = Mock(side_effect=lambda expected, stale: {'expected_status': expected})
+                with patch.object(run, 'docker', side_effect=docker), \
+                        patch.object(run, 'api', side_effect=api), \
+                        patch.object(rehearsal.time, 'sleep'), \
+                        patch.object(rehearsal.time, 'monotonic', side_effect=(0, 13) if fault == 'timeout' else None,
+                                     return_value=0):
+                    if fault is not None:
+                        with self.assertRaisesRegex(RuntimeError, message):
+                            run.exercise_missed_invalidation(1, 'synthetic-key', ('old', 'new'), ('t1', 't2'), observe)
+                        self.assertFalse(run.result['mixed_l1_invalidation']['missed_invalidation']['passed'])
+                    else:
+                        result = run.exercise_missed_invalidation(1, 'synthetic-key', ('old', 'new'), ('t1', 't2'), observe)
+                        self.assertTrue(result['passed'])
+                        self.assertEqual([row['writer'] for row in result['rounds']], ['peer', 'candidate'])
+                        self.assertEqual([call.args[0] for call in observe.call_args_list], [401, 200, 401, 200])
+                self.assertFalse(state['blocked'])
+                self.assertEqual(state['restorations'], 0 if fault == 'missing' else 2 if fault is None else 1)
 
     def test_invalid_node_slot_stops_before_creating_anything(self):
         run = rehearsal.Rehearsal(self.args)
