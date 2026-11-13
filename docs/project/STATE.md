@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D3.1本地完整链已验；本轮6子项5done、D7.3待证据。
+Task: D3.1已交付；D7.3历史UI已验，真实验真待证据。
 Scope: 用户已授权规划后实施；单功能分支/单PR，不CI、不改生产。
-Source: feat/automated-upstream-supply，本轮基线7fa9da408；参考仓只读。
-Verified: race106/1838、独立Key11复验、两包vet/快速lint通过；完整lint预算中止。
-Next: D7.3分维度质量/指纹证据及独立基线；D5聚合仍依赖D2归属契约。
+Source: feat/automated-upstream-supply；D3.1=4e3d168b6，D7.3见HEAD；参考仓只读。
+Verified: D3.1race106/1838；D7.3前端87/类型/lint8/构建/中英390px通过。
+Next: D7.3分维度/独立基线；D2/D5原始attempt归属，保留原验收。
 Attempt: 1
 Blocker: 接入方补scope/独立基线；历史拒删scratch归拥有者处理，不重试。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
-Remaining: 原28项20done/8部分；本轮6子项5done/1待证据，未关闭供应商/生产验收。
+Remaining: 原28项20done/8部分；本轮6子项5done/1部分，供应商/生产未关闭。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -54,7 +54,7 @@ Remaining: 原28项20done/8部分；本轮6子项5done/1待证据，未关闭供
 | D5.1/D6.1 | done | 上下游及账单合同；同run粘性/跨run隔离、Messages独立前缀，race40与vet通过 |
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地HTTP+miniredis/原适配器链：5类失效切换、恢复不抢回、读失败/预算/全失效关闭；race106/1838及独立Key11复验通过，非生产证据 |
-| D7.3 | pending | 待接入方提供分维度质量/模型指纹证据和独立基线，不以假指纹替代 |
+| D7.3 | in_progress | 三页统一历史结论/覆盖/年龄/身份未知；87项/类型/lint/构建/中英390px已验；分维度/基线待接入方 |
 | D8 | in_progress | CLI/额度与统一性能已验；生产副本410→432四阶段、旧程序回退及重升通过；并行混版及其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
@@ -67,7 +67,7 @@ Remaining: 原28项20done/8部分；本轮6子项5done/1待证据，未关闭供
 
 ## 下一项工作
 
-本轮6子项5done，D7.3待分维度证据/独立基线；D5原始聚合依赖D2的Key/实际组/物理attempt归属契约。原28项20done/8部分保持；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待整合；供应商/混版/生产验收保留。
+本轮6子项5done，D7.3历史展示已验、真实证据待接入方；D5聚合依赖D2的Key/实际组/attempt合同。原28项20done/8部分；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待整合；供应商/混版/生产仍待。
 
 ## 外部等待与清理
 

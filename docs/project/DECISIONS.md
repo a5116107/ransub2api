@@ -2421,3 +2421,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 静态检查如实分层：默认PATH工具由Go1.26构建，低于模块Go1.27.4，加载配置退出3；复用原task-d2工具后完整分析超过8分钟、常驻约8GiB，经路径/参数核验只停止本轮PID21864，退出-1。改用缓存v2.15.0源码及Go1.27.4后完整分析也超8分钟/约6GiB预算，只停止本轮PID87160，Go包装器退出1；两次均无最终诊断，不称通过。离线版本化go run又因查询模块deprecation被GOPROXY=off拒绝，保留该工具启动失败。
 - 已从缓存源码在H:/Root/tools/golangci-lint-v2.15.0-go1.27.4.exe构建可复用工具，不覆盖系统工具、不修改项目依赖/规则。直接运行原配置的--fast-only --build-tags=unit --concurrency=1 --new-from-rev=7fa9da408 --timeout=3m ./internal/service ./internal/handler退出0，输出0 issues；两包go vet与格式检查已通过。完整原规则lint仍属未完成证据，历史三包62项不改报清零。工具是H盘复用缓存，不是待清理scratch。
 - 最终7项源码/依赖/规则SHA256匹配，新增债务/skip/nolint标记0，本地文档链接及STATE预算检查通过。原12PNG/1164bytes保持，未重试任何历史拒删路径；无新增任务scratch，Go进程已收回本轮中间物。远端功能分支预检仍为7fa9da408，只有一个工作树，所有push/PR触发工作流未启用；本轮同步仅自有功能分支并使用[skip ci]，不创建PR/Release或修改production。
+
+## 2026-11-13：D3.1交付与D7.3历史证据展示
+
+- D3.1实现及原验证文档提交为`4e3d168b663feb29a8de5037c05a5e25e3df75b1`，已推送`origin/feat/automated-upstream-supply`并用独立ls-remote确认。原race106顶层/1838含子例、独立Key11例、vet和快速lint证据的7项输入SHA256全部匹配，复用原成功结果；完整lint超预算记录仍保留，不重复运行。
+- 恢复可执行边界：独立参考缺失只阻塞真实分维度/指纹结论，不阻塞既有历史质量结果的统一展示。原SQL的冻结计划/完整轮次判断保持；三处管理页面原位共用QualityRoundAssessment，替换原始英文outcome与重复展示逻辑，不新增采集服务、API、表、迁移、评分器或准入策略。仅前端解释，未把历史结果升级成当前Key/线路的放行证据。
+- 显示持久化功能结论、轮次配置样本保存覆盖、模型通过/已测/预期、记录时间与读取时年龄。部分/矛盾/非法计数及未知模型不呈现通过，所有已测通过也不覆盖服务器的inconclusive；缺预期不画覆盖进度，399/400显示99.7%而非100%。身份始终明确待验证；当前接口未提供线路/测量版本/有效期/分维度向量/独立参考，缺失不回填假指纹或准入结论。
+- 原入口新增红例实跑为3失败/1通过，缺结构化结果可稳定复现。最终`pnpm exec vitest run src/components/admin/operations/__tests__/QualityRoundAssessment.spec.ts src/views/admin/__tests__/UpstreamChannelOperationsView.spec.ts src/views/admin/__tests__/ChannelOperationsView.spec.ts src/views/admin/__tests__/ProfitOperationsView.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts --maxWorkers=2 --minWorkers=1`实跑5文件87通过、0失败/skip：共享组件35、原三入口49、国际化3。`pnpm exec vue-tsc --noEmit`、8个所改文件eslint退出0；Vite构建1626模块/51.72秒退出0，原Browserslist/分包/Node提示未改规则掩盖。
+- 真实Chromium加载该本地构建的原路由，普通刷新及语言菜单、键盘展开、390px与中英、部分/未知/失败/空数据共7类观察通过；8次合成快照读取、外站/真实供应商/写入请求0，pageErrors为空，手机无整页横向溢出。初轮夹具因引导延迟遮挡和English按钮可访问名含国旗出现超时；改为等待真实引导后Escape及正确名称选择，未强制点击、修改DOM结论或改产品代码来让浏览器测试通过。
+- 最小证据固定于`H:/Root/DevCache/evidence/sub2api-quality-evidence`，含源输入绑定verification.json、browser-result.json和桌面/手机截图；浏览器脚本经stdin运行，无一次性脚本文件。浏览器与自有preview均退出，5188监听0；既有ignored构建目录复用。历史12PNG/1164bytes及拒删资源原位保留，不重试、不暂存，未将工作区称为完全干净。
+- 单功能分支/单PR范围不变，不运行CI、不连接或改生产、不建新PR。D7.3历史展示子观察完成，分维度采集/真实scope/独立基线仍由接入方补证，未关闭原验真；D2/D5归属聚合、D6净收益、D8混版/非文本及D9完整生产验收保持。原28项20done/8部分、本轮6子项5done/1部分，不以新增UI改变分母或宣称全局done。

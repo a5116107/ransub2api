@@ -7,6 +7,20 @@ vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { tem
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/api/admin/upstreamOperations', () => ({ readOperations: vi.fn() }))
 describe('upstream channel definition', () => {
+ it.each([
+  { complete: true, outcome: 'passed', expected: 'channelOps.passed' },
+  { complete: true, outcome: 'degraded', expected: 'channelOps.degraded' },
+  { complete: false, outcome: 'passed', expected: 'channelOps.inconclusive' }
+ ])('shows bounded quality evidence for $outcome, complete=$complete without claiming model identity', async ({complete, outcome, expected}) => {
+  vi.mocked(readOperations).mockResolvedValue({ scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], total: 0, catalog: [] }, quality: {status:'ready',queried_at:'2026-11-13T12:00:00Z', data: {summary:{rounds:1,passed:0,degraded:0,inconclusive:1},rows:[{id:1,account_id:42,plan_id:8,measured_model:'fixture-model',observed_at:'2026-11-13T11:55:00Z',probes:2,passed_probes:outcome==='degraded'?1:2,expected:2,outcome,round_complete:complete,round_probes:2,round_expected:complete?2:4,actions:[]}]}},errors:{status:'query_failed'} } as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView); await flushPromises()
+  expect(w.get('[data-testid="quality-round-outcome"]').text()).toBe(expected)
+  expect(w.get('[data-testid="quality-round-identity"]').text()).toContain('channelOps.evidence.identityUnknown')
+  expect(w.get('[data-testid="quality-round-coverage"]').text()).toContain(complete?'100%':'50%')
+  expect(w.get('[data-testid="quality-round-evidence"]').text()).toContain('channelOps.evidence.historical')
+  expect(w.get('a[href="/admin/account-quality?plan_id=8"]').exists()).toBe(true)
+  w.unmount()
+ })
  it('discovers URLs without creating or fetching model-pricing channels, including idle accounts', async () => {
   vi.mocked(readOperations).mockResolvedValue({ scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [{id:42,name:'Idle account'}],member_total:1, total: 0, catalog_total: 1, catalog: [{key:'https://idle.example:8443/tenant/v1',name:'https://idle.example:8443/tenant/v1',accounts:2}] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} } as unknown as OperationsSnapshot)
   const w=mount(UpstreamChannelOperationsView); await flushPromises()
