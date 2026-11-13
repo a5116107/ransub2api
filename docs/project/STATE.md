@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D8认证订阅运行错误恢复修复/回归/候选双节点验收；严格产品混版仍开放。
-Scope: 单功能分支/单PR本地实施验证及自有分支同步；不CI、不改生产。
-Source: 55cf1f600上认证订阅/演练器修复，本轮提交后构建同源候选。
-Verified: 归属634/身份叶10通过；嵌套身份280场景双轮560叶通过，29进程全exit0。
-Verified: local-rehearse exit0/56.58s；428→431、回退重升、并发保存及Redis33/34重载通过。
-Verified: 订阅race14/服务race50通过，fail/skip0；两包vet及差异fast lint0；工具Linux58/Win22通过。
-Next: 提交已验源码，构建并运行双候选漏收失效恢复；旧新版失败保留，混版不关闭。
+Task: D8认证恢复及双候选故障链已验；旧新版对照失败保留，严格混版仍开放。
+Scope: 单功能分支/单PR本地验证及自有分支同步；不CI、不改生产。
+Source: 修复06b1305e5；Linux程序4e980ded5b8d。
+Verified: 订阅race14/服务race50、两包vet/差异fast lint0、Linux58/Win22；fail/skip0。
+Verified: 双候选exit0/55.02s；迁移/回退/双写/漏收后401和恢复200，10资源回收。
+Verified: 候选+.3 exit1/56.44s，仅1/2订阅恢复；失败保留，10资源回收。
+Next: 原D2–D9待供应商scope/基线/非文本、严格全节点及生产验收。
 Attempt: 1
-Blocker: 旧新版ACL恢复演练失败已复现；供应商/独立基线/严格准入等待不变。
+Blocker: 旧版重订阅失败；候选/空构建目录拒删由拥有者手清；外部证据待接入方。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
 Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未关闭。
 <!-- resume:end -->
@@ -59,7 +59,7 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
 | D7.3 | in_progress | 三页统一历史结论/覆盖/年龄/身份未知；87项/类型/lint/构建/中英390px已验；分维度/基线待接入方 |
-| D8 | in_progress | v2.21.1来源整合/SQL及428→431通过；280嵌套身份场景双轮全覆盖；428→431双版本配置/认证兼容及回退重升通过；旧副本410→432保留；严格准入及其他能力待验 |
+| D8 | in_progress | v2.21.1/SQL/280身份场景、428→431配置兼容和回退重升已验；双候选漏收后恢复通过，旧新版订阅仅1/2；旧副本410→432保留，严格产品/其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
 ## 工作区与验证约定
@@ -72,7 +72,7 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 ## 外部等待与清理
 
 - D2/D4：供应商或接入方补unknown关联查询及模型/fast倍率来源契约；不恢复真实采购价格任务。
-- D9既有发布子项已完成；本轮配置/L2及Key撤销/恢复L1混版已验，严格准入、非文本能力及缓存迁移净收益仍待原D8/D9验收。
+- D9既有发布子项已完成；共享配置、在线失效及双候选漏收后恢复已验；旧版重订阅失败，严格混版、非文本及缓存净收益保留原D8/D9。
 - D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
@@ -81,4 +81,5 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 - 历史`H:/Root/DevCache/tmp/sub2api-cache-conclusions`拒删，256文件9744426bytes、删除0；拥有者清理，不重试/移动。
 - 历史大包lint限制保留，既有局部结果不冒充整合后全仓通过。
 - 历史H:/Root/DevCache/tmp/sub2api-v2211-verify内browser-check.mjs（8305bytes）和handler-identity.test.exe（342989777bytes）删除被blocked by policy拦截，删除0；拥有者手工清理，不重试/移动。
-- 本轮mixed-candidate-sub2api删除在启动前被blocked by policy拦截，删除0；240521376bytes保留于上述v2211-verify目录，由拥有者手工清理，不重试。
+- 历史mixed-candidate-sub2api（240521376bytes）保留于上述v2211-verify目录；原拒删不重试。
+- 本轮同目录auth-recovery-sub2api（240525472bytes）及空H:/Root/DevCache/tmp/sub2api-auth-recovery-build删除被blocked by policy在启动前拦截，删除0；拥有者手工清理后解除。
