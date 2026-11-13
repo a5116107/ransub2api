@@ -2431,3 +2431,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 真实Chromium加载该本地构建的原路由，普通刷新及语言菜单、键盘展开、390px与中英、部分/未知/失败/空数据共7类观察通过；8次合成快照读取、外站/真实供应商/写入请求0，pageErrors为空，手机无整页横向溢出。初轮夹具因引导延迟遮挡和English按钮可访问名含国旗出现超时；改为等待真实引导后Escape及正确名称选择，未强制点击、修改DOM结论或改产品代码来让浏览器测试通过。
 - 最小证据固定于`H:/Root/DevCache/evidence/sub2api-quality-evidence`，含源输入绑定verification.json、browser-result.json和桌面/手机截图；浏览器脚本经stdin运行，无一次性脚本文件。浏览器与自有preview均退出，5188监听0；既有ignored构建目录复用。历史12PNG/1164bytes及拒删资源原位保留，不重试、不暂存，未将工作区称为完全干净。
 - 单功能分支/单PR范围不变，不运行CI、不连接或改生产、不建新PR。D7.3历史展示子观察完成，分维度采集/真实scope/独立基线仍由接入方补证，未关闭原验真；D2/D5归属聚合、D6净收益、D8混版/非文本及D9完整生产验收保持。原28项20done/8部分、本轮6子项5done/1部分，不以新增UI改变分母或宣称全局done。
+
+## 2026-11-13：D2.5 最终发送凭据归属、快照与观察员边界
+
+- 基线e6b249880，继续同一功能分支与单PR本地实施授权。原HTTP与TLS真实发送、观察员透传共3个场景在修改前复现缺口；红日志保留于`H:/Root/DevCache/evidence/sub2api-credential-attribution/red.jsonl`。本轮不连接/改生产、不建PR或发行、不运行CI，原28项20done/8部分及既有6子项5done/1部分保持。
+- 原`accountResponseTransport.RoundTrip`在交接前复用`config.UpstreamCredentialFingerprints`，每轮原生/池化/透传WS使用已建立连接保存的最终握手摘要。新增观测沿原timing JSON持久化，账号/线路摘要与凭据身份分开；不存凭据原文、不从账号现值回填历史，不新增表、迁移、调度器、重试或准入规则。
+- 仅唯一规范摘要记observed；无受支持凭据、多凭据、验证失败或超界分别保留未知原因。原HTTP attempt是一轮`Client.Do`，重定向或兼容回退更换/移除凭据时整个attempt记changed_credentials且不再恢复唯一身份；安全TLS重试分别记录，终态后不重标，逻辑egress不重复持有物理身份。这些记录不证明网络发送成功、实际供应商组、模型真实性或缓存域；OAuth轮换及Agent授权也不据此合并成同一缓存身份。
+- 新快照隔离回归揭示原`Finish`向提前注册的回调传递同一个副本，前一回调的修改会污染后一回调；初轮timing完整回归保留1项失败。原位统一复用`WhenFinished`的独立快照路径，并补齐凭据、结束时间和连接复用指针复制；无锁调用业务回调。最终timing全包race实跑76顶层/605含子例通过，0失败/0skip；含并发冲突、尝试隔离、完成前后绑定与回调修改。
+- 观察员仅在原身份/记录拥有权检查后对响应投影删除完整upstream_credential字段；原始存储与管理诊断保持，未知兼容字段和缓存计数保留。非法诊断关闭返回，不回传原始数据；原账户/角色权限不扩大。初轮WS链的预期误用了账号配置Key，实际夹具显式传入另一Key；修正为核对服务端握手头和对应摘要，并保留配置不同的断言，验证的是已建立连接身份。
+- `go vet -tags unit -p 1 ./internal/pkg/requesttiming ./internal/repository ./internal/service ./internal/handler`最终退出0；兼容Go1.27.4的既有golangci-lint对timing包运行完整原规则，以及三包`--fast-only --new-from-rev=e6b24988061426766a4bbe76f99ba19514e2159b`增量检查，均退出0、0 issues。初轮完整lint对新增nil Context测试调用报SA1012；移除该不符合Go调用约定的测试调用后通过，未加抑制。历史大包完整lint超预算、三包旧诊断及根overlay故障保持原记录，不称全仓lint或完整测试清零。
+- 最终链命令为`go test -json -race -tags unit -p 1 ./internal/repository ./internal/service ./internal/handler -run '^(TestHTTPUpstreamTiming.*|TestUpstreamCredentialPreRequestRetryIsolation|TestAccountHTTPResponse.*|TestRegionalHTTP.*|TestOpenAIPreRequestRetry.*|TestTiming.*|TestWSTurnTiming.*|TestObserver.*|TestOpenAIAgentKey.*|TestUpstreamKey.*WebSocket.*)$' -count=1 -timeout=6m`，退出0：46顶层/101含子例，0失败/0skip。repository 27.945s、service 5.704s、handler 1.302s；包括真实本机HTTP/TLS/区域代理重定向、双模式WS三轮、HTTP到WS、失败/断开、实际Agent握手与共享Key容量；安全TLS重试的身份隔离另用同一原发送链的确定性传输夹具验证。加上timing全包，共122顶层/706含子例，两个集合不重复累计。源码/配置/锁文件21项SHA256全部匹配，详细命令与结果保留同目录verification.json及原红/绿日志。
+- D2.5本地子验收关闭；D2实际组/模型/原请求关联、D5/D7原始缓存聚合与前端、D6可证迁移净收益、D7.3独立基线、D8混版/其他能力及D9生产仍按原任务保留。唯一设计与STATE原位更新，不增加平行台账。历史service/data仍12文件1164bytes，未暂存或删除；历史拒删资源未重试，未创建本轮一次性脚本/服务/工作树，Go中间物由已退出的本轮命令回收，最小日志与复用缓存保持。

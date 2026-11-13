@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +26,43 @@ import (
 type preRequestRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f preRequestRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestUpstreamCredentialPreRequestRetryIsolation(t *testing.T) {
+	capture := requesttiming.New(time.Now(), 0)
+	req, err := http.NewRequestWithContext(requesttiming.With(t.Context(), capture), http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader("fixture"))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer retry-timing-fixture")
+	req, outer := requesttiming.StartAttempt(req, 7, 0)
+	calls := 0
+	client := httpClientWithGrokAccessDeniedFallback(&http.Client{Transport: preRequestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls++
+		defer func() { _ = r.Body.Close() }()
+		if calls == 1 {
+			trace := httptrace.ContextClientTrace(r.Context())
+			require.NotNil(t, trace)
+			trace.TLSHandshakeStart()
+			trace.TLSHandshakeDone(tls.ConnectionState{}, syscall.ECONNRESET)
+			return nil, syscall.ECONNRESET
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: http.NoBody, Request: r}, nil
+	})})
+	resp, err := doWithOpenAIPreRequestRetry(client, req, "http://proxy.invalid", service.HTTPUpstreamProfileOpenAI)
+	outer.Response(resp, err)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, 2, calls)
+	capture.Finish(200, false)
+	capture.WhenFinished(func(s requesttiming.Snapshot) {
+		require.Len(t, s.Attempts, 3)
+		require.Nil(t, s.Attempts[0].UpstreamCredential)
+		for _, attempt := range s.Attempts[1:] {
+			require.Equal(t, &requesttiming.UpstreamCredentialObservation{Status: "observed", Source: "http_transport_handoff", Fingerprint: config.UpstreamKeyFingerprint("retry-timing-fixture")}, attempt.UpstreamCredential)
+			require.Equal(t, 1, attempt.Parent)
+		}
+		require.Equal(t, "transport_error", s.Attempts[1].Error)
+		require.Equal(t, 200, s.Attempts[2].Status)
+	})
+}
 
 func TestOpenAIPreRequestRetrySafety(t *testing.T) {
 	for _, name := range []string{"transient", "persistent", "no_trace", "got_conn", "header_field", "wrote_headers", "wrote_request", "response_byte", "certificate", "cancelled", "cancel_during_backoff", "direct", "grok", "default", "harvest", "no_getbody", "getbody_error", "429", "502", "503", "redirect_already_sent"} {

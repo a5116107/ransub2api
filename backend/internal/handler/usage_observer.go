@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -109,5 +110,36 @@ func (h *UsageHandler) ObserverTiming(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"traces": traces, "retention_days": 30, "end_to_end_ms": nil, "end_to_end_status": "not_collected", "end_to_end_source": "none", "client_upload_ms": nil, "client_upload_status": "not_collected"})
+	// Keep transport credential identity admin-only. Preserve unknown diagnostic
+	// fields and avoid mutating repository-owned buffers or the stored evidence.
+	projected := make([]json.RawMessage, 0, len(traces))
+	for _, raw := range traces {
+		var trace map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &trace); err != nil || trace == nil {
+			response.InternalError(c, "Invalid timing data")
+			return
+		}
+		if attemptsRaw, exists := trace["attempts"]; exists {
+			var attempts []map[string]json.RawMessage
+			if err := json.Unmarshal(attemptsRaw, &attempts); err != nil {
+				response.InternalError(c, "Invalid timing data")
+				return
+			}
+			for _, attempt := range attempts {
+				delete(attempt, "upstream_credential")
+			}
+			trace["attempts"], err = json.Marshal(attempts)
+			if err != nil {
+				response.InternalError(c, "Invalid timing data")
+				return
+			}
+		}
+		data, err := json.Marshal(trace)
+		if err != nil {
+			response.InternalError(c, "Invalid timing data")
+			return
+		}
+		projected = append(projected, data)
+	}
+	response.Success(c, gin.H{"traces": projected, "retention_days": 30, "end_to_end_ms": nil, "end_to_end_status": "not_collected", "end_to_end_source": "none", "client_upload_ms": nil, "client_upload_status": "not_collected"})
 }

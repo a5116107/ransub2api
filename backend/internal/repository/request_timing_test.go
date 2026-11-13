@@ -21,7 +21,8 @@ func TestTimingWriteReplacesUntrustedCacheMigrationProjection(t *testing.T) {
 		TraceID: "00000000-0000-0000-0000-000000000001", Attempts: []requesttiming.Attempt{
 			{Kind: "http", Number: 1, AccountID: 7, RouteFingerprint: strings.Repeat("a", 64), EndMS: &earlier},
 			{Kind: "http", Number: 2, AccountID: 8, RouteFingerprint: strings.Repeat("b", 64), StartMS: 200, EndMS: &end,
-				Status: 200, Terminal: "completed", CacheUsage: &requesttiming.CacheUsage{Status: "observed", InputTokens: 1000, ReadTokens: 900}},
+				UpstreamCredential: &requesttiming.UpstreamCredentialObservation{Status: "observed", Source: "http_transport_handoff", Fingerprint: strings.Repeat("c", 64)},
+				Status:             200, Terminal: "completed", CacheUsage: &requesttiming.CacheUsage{Status: "observed", InputTokens: 1000, ReadTokens: 900}},
 		}}
 	s.Latency = &requesttiming.LatencySummary{CacheMigration: requesttiming.CacheMigrationObservation{Status: "forged"}}
 	want := s

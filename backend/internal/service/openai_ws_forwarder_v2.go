@@ -610,7 +610,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return err
 			}
 		}
-		timing = newOpenAIWSTurnTiming(account, time.Now())
+		timing = newOpenAIWSTurnTiming(account, time.Now(), lease.conn.upstreamKeyFingerprints)
 		if err := lease.WriteJSONWithContextTimeout(ctx, value, s.openAIWSWriteTimeout()); err != nil {
 			lease.MarkBroken()
 			logOpenAIWSModeInfo(

@@ -19,29 +19,30 @@ type Span struct {
 	Attempt int     `json:"attempt,omitempty"`
 }
 type Attempt struct {
-	OutputUsage      *OutputUsage        `json:"output_usage,omitempty"`
-	RouteFingerprint string              `json:"route_fingerprint,omitempty"`
-	CacheUsage       *CacheUsage         `json:"cache_usage,omitempty"`
-	TextStream       *TextStreamTiming   `json:"text_stream,omitempty"`
-	ContentEncoding  string              `json:"content_encoding,omitempty"`
-	AutoDecompressed bool                `json:"auto_decompressed,omitempty"`
-	Route            transportdiag.Route `json:"route"`
-	Terminal         string              `json:"terminal,omitempty"`
-	CleanupCanceled  bool                `json:"cleanup_canceled,omitempty"`
-	Kind             string              `json:"kind"`
-	Parent           int                 `json:"parent,omitempty"`
-	Number           int                 `json:"number"`
-	AccountID        int64               `json:"account_id"`
-	ProxyID          int64               `json:"proxy_id"`
-	StartMS          float64             `json:"start_ms"`
-	EndMS            *float64            `json:"end_ms"`
-	Status           int                 `json:"status"`
-	Error            string              `json:"error,omitempty"`
-	Reused           *bool               `json:"reused"`
-	RequestBytes     int64               `json:"request_bytes"`
-	ResponseBytes    int64               `json:"response_bytes"`
-	BodyEOF          bool                `json:"body_eof"`
-	Events           map[string]float64  `json:"events"`
+	UpstreamCredential *UpstreamCredentialObservation `json:"upstream_credential,omitempty"`
+	OutputUsage        *OutputUsage                   `json:"output_usage,omitempty"`
+	RouteFingerprint   string                         `json:"route_fingerprint,omitempty"`
+	CacheUsage         *CacheUsage                    `json:"cache_usage,omitempty"`
+	TextStream         *TextStreamTiming              `json:"text_stream,omitempty"`
+	ContentEncoding    string                         `json:"content_encoding,omitempty"`
+	AutoDecompressed   bool                           `json:"auto_decompressed,omitempty"`
+	Route              transportdiag.Route            `json:"route"`
+	Terminal           string                         `json:"terminal,omitempty"`
+	CleanupCanceled    bool                           `json:"cleanup_canceled,omitempty"`
+	Kind               string                         `json:"kind"`
+	Parent             int                            `json:"parent,omitempty"`
+	Number             int                            `json:"number"`
+	AccountID          int64                          `json:"account_id"`
+	ProxyID            int64                          `json:"proxy_id"`
+	StartMS            float64                        `json:"start_ms"`
+	EndMS              *float64                       `json:"end_ms"`
+	Status             int                            `json:"status"`
+	Error              string                         `json:"error,omitempty"`
+	Reused             *bool                          `json:"reused"`
+	RequestBytes       int64                          `json:"request_bytes"`
+	ResponseBytes      int64                          `json:"response_bytes"`
+	BodyEOF            bool                           `json:"body_eof"`
+	Events             map[string]float64             `json:"events"`
 }
 type Snapshot struct {
 	FinalResponseAttempt int                    `json:"final_response_attempt,omitempty"`
@@ -217,6 +218,18 @@ func (c *Collector) snapshot() Snapshot {
 	d.Attempts = append([]Attempt{}, d.Attempts...)
 	for i := range d.Attempts {
 		d.Attempts[i].Events = cloneEvents(d.Attempts[i].Events)
+		if d.Attempts[i].EndMS != nil {
+			end := *d.Attempts[i].EndMS
+			d.Attempts[i].EndMS = &end
+		}
+		if d.Attempts[i].Reused != nil {
+			reused := *d.Attempts[i].Reused
+			d.Attempts[i].Reused = &reused
+		}
+		if d.Attempts[i].UpstreamCredential != nil {
+			credential := *d.Attempts[i].UpstreamCredential
+			d.Attempts[i].UpstreamCredential = &credential
+		}
 		if d.Attempts[i].CacheUsage != nil {
 			usage := *d.Attempts[i].CacheUsage
 			d.Attempts[i].CacheUsage = &usage
@@ -276,10 +289,9 @@ func (c *Collector) Finish(status int, canceled bool) {
 	c.data.Canceled = canceled
 	callbacks := c.callbacks
 	c.callbacks = nil
-	d := c.snapshot()
 	c.mu.Unlock()
 	for _, fn := range callbacks {
-		fn(d)
+		c.WhenFinished(fn)
 	}
 }
 

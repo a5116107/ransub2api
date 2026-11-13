@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D3.1已交付；D7.3历史UI已验，真实验真待证据。
+Task: D2.5发送归属/快照/脱敏已验；原D2/D5及D7.3父验收保持。
 Scope: 用户已授权规划后实施；单功能分支/单PR，不CI、不改生产。
-Source: feat/automated-upstream-supply；D3.1=4e3d168b6，D7.3见HEAD；参考仓只读。
-Verified: D3.1race106/1838；D7.3前端87/类型/lint8/构建/中英390px通过。
-Next: D7.3分维度/独立基线；D2/D5原始attempt归属，保留原验收。
-Attempt: 1
-Blocker: 接入方补scope/独立基线；历史拒删scratch归拥有者处理，不重试。
+Source: feat/automated-upstream-supply；D2.5见HEAD；参考仓只读。
+Verified: race122/706；四包vet；timing全lint/三包增量0；非生产。
+Next: D5原始聚合的实际组/模型scope；D7.3分维度/独立基线。
+Attempt: 3
+Blocker: 接入方补实际scope/独立基线；历史拒删由拥有者清理，不重试。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
-Remaining: 原28项20done/8部分；本轮6子项5done/1部分，供应商/生产未关闭。
+Remaining: 原28项20done/8部分；既有6子项5done/1部分，供应商/生产未关闭。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -26,12 +26,13 @@ Remaining: 原28项20done/8部分；本轮6子项5done/1部分，供应商/生�
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、多出站/持久交接、三节点及视频身份/双预算/原节点结算/竞争、336排空/跨库及原节点期限恢复已验；unknown待原请求关联契约 |
+| D2 | in_progress | D2.1–D2.5及多出站/持久交接/三节点/视频/排空恢复已验，细节见DECISIONS；unknown仍待原请求关联契约 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
-| D3 | in_progress | 状态/文本准入及带内/空流/终态/间隔超时已验；.3流内漏计/初始重选及5/3/1上线，race/副本/公网SSE账单通过；其他能力待验 |
+| D2.5 | done | HTTP/WS最终凭据、重定向/重试及快照/观察员隔离；race122/706、四包vet、分层lint通过，实际组/缓存域仍待证明 |
+| D3 | in_progress | 状态/文本准入及空流/终态/间隔超时已验；.3漏计/初始重选与5/3/1上线，race/副本/公网SSE账单通过；其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 6项未引用辅助符号与死计数器删除，unused 6→0 |
@@ -53,7 +54,7 @@ Remaining: 原28项20done/8部分；本轮6子项5done/1部分，供应商/生�
 | D7 | in_progress | 并发保存/409、重算及候选未知已验；完整解释/原始缓存面板待契约；历史UI112+支付21等见DECISIONS |
 | D5.1/D6.1 | done | 上下游及账单合同；同run粘性/跨run隔离、Messages独立前缀，race40与vet通过 |
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
-| D3.1 | done | 本地HTTP+miniredis/原适配器链：5类失效切换、恢复不抢回、读失败/预算/全失效关闭；race106/1838及独立Key11复验通过，非生产证据 |
+| D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
 | D7.3 | in_progress | 三页统一历史结论/覆盖/年龄/身份未知；87项/类型/lint/构建/中英390px已验；分维度/基线待接入方 |
 | D8 | in_progress | CLI/额度与统一性能已验；生产副本410→432四阶段、旧程序回退及重升通过；并行混版及其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
@@ -61,13 +62,13 @@ Remaining: 原28项20done/8部分；本轮6子项5done/1部分，供应商/生�
 ## 工作区与验证约定
 
 - 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`；origin为a5116107/ransub2api，upstream为ranxi2001/sub2api且禁推。
-- 正式源码根153包已验；unit/integration并发1–2，沿用go.mod/lint规则。Redis竞争用既有5.0.14.1，Redis3缺Lua方法；历史失败不改报成功。
+- 正式源码根153包历史已验；unit/integration并发1–2，原依赖/lint规则保持。Redis竞争用既有5.0.14.1，Redis3缺Lua方法；保留失败记录。
 - 夹具隔离DATA_DIR；历史12PNG/1164bytes保留；协议/区域/CLI命令见DECISIONS，非真实供应商证据。
 - 不增平行实现/台账；C盘effb8271不计主线，开发统一H盘。
 
 ## 下一项工作
 
-本轮6子项5done，D7.3历史展示已验、真实证据待接入方；D5聚合依赖D2的Key/实际组/attempt合同。原28项20done/8部分；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待整合；供应商/混版/生产仍待。
+D2.5已验；D5聚合仍需实际组/模型scope，D7.3待独立基线。原28项20done/8部分、既有6子项5done/1部分；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待整合，供应商/混版/生产仍待。
 
 ## 外部等待与清理
 

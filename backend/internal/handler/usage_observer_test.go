@@ -19,6 +19,7 @@ type observerUsageRepo struct {
 	userUsageRepoCapture
 	record        *service.UsageLog
 	timingCalls   int
+	timingRows    []json.RawMessage
 	optionUserID  int64
 	includeErrors bool
 	modelFilters  usagestats.UsageLogFilters
@@ -35,7 +36,7 @@ func (r *observerUsageRepo) GetByID(context.Context, int64) (*service.UsageLog, 
 }
 func (r *observerUsageRepo) RequestTimings(context.Context, int64) ([]json.RawMessage, error) {
 	r.timingCalls++
-	return []json.RawMessage{}, nil
+	return r.timingRows, nil
 }
 func (r *observerUsageRepo) OwnUsageFilterOptions(_ context.Context, id int64, _, _ string, errors bool) ([]service.UsageFilterOption, error) {
 	r.optionUserID, r.includeErrors = id, errors
@@ -101,6 +102,31 @@ func TestObserverUsageScopeAndProjection(t *testing.T) {
 			require.Equal(t, int64(42), r.trendFilters.UserID)
 			require.Equal(t, int64(42), r.groupFilters.UserID)
 		})
+	}
+}
+
+func TestObserverTimingRedactsUpstreamCredential(t *testing.T) {
+	r := &observerUsageRepo{
+		record:     &service.UsageLog{ID: 1, UserID: 42},
+		timingRows: []json.RawMessage{json.RawMessage(`{"trace_id":"own-trace","future_field":true,"attempts":[{"kind":"http","upstream_credential":{"status":"observed","fingerprint":"supplier-private-identity"},"cache_usage":{"read_tokens":80},"future_attempt_field":7}]}`)},
+	}
+	w := usageGET(observerUsageRouter(r, service.RoleObserver), "/usage/1/timing")
+	require.Equal(t, 200, w.Code, w.Body.String())
+	require.NotContains(t, w.Body.String(), "supplier-private-identity")
+	require.NotContains(t, w.Body.String(), "upstream_credential")
+	require.Contains(t, w.Body.String(), "own-trace")
+	require.Contains(t, w.Body.String(), `"read_tokens":80`)
+	require.Contains(t, w.Body.String(), `"future_field":true`)
+	require.Contains(t, w.Body.String(), `"future_attempt_field":7`)
+	require.Contains(t, string(r.timingRows[0]), "supplier-private-identity", "projection must not mutate stored admin diagnostics")
+}
+
+func TestObserverTimingMalformedEvidenceFailsClosed(t *testing.T) {
+	for _, raw := range []string{`null`, `[]`, `{"attempts":{}}`, `{"attempts":["supplier-private-identity"]}`} {
+		r := &observerUsageRepo{record: &service.UsageLog{ID: 1, UserID: 42}, timingRows: []json.RawMessage{json.RawMessage(raw)}}
+		w := usageGET(observerUsageRouter(r, service.RoleObserver), "/usage/1/timing")
+		require.Equal(t, 500, w.Code)
+		require.NotContains(t, w.Body.String(), "supplier-private-identity")
 	}
 }
 

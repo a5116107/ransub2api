@@ -44,6 +44,7 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			parsedFirstText := make(chan struct{}, 1)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "Bearer sk-test", r.Header.Get("Authorization"))
 				conn, err := coderws.Accept(w, r, nil)
 				if err != nil {
 					return
@@ -93,6 +94,7 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &httpUpstreamRecorder{}, cache: &stubGatewayCache{}, openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector()}
 			defer svc.CloseOpenAIWSPool()
 			account := passthroughLifecycleAccount()
+			account.Credentials["api_key"] = "ws-handshake-timing-fixture"
 			account.Credentials["base_url"] = upstream.URL
 			account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 			results := make(chan *OpenAIForwardResult, 4)
@@ -145,6 +147,10 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 					require.Len(t, s.Attempts, 1)
 					fingerprint := AccountRouteFingerprint(account)
 					require.Equal(t, hex.EncodeToString(fingerprint[:]), s.Attempts[0].RouteFingerprint)
+					// The ingress fixture passes sk-test explicitly while account
+					// configuration differs. Timing must describe the actual socket.
+					require.Equal(t, &requesttiming.UpstreamCredentialObservation{Status: "observed", Source: "websocket_handshake_credentials", Fingerprint: config.UpstreamKeyFingerprint("sk-test")}, s.Attempts[0].UpstreamCredential)
+					require.NotEqual(t, config.UpstreamKeyFingerprint("ws-handshake-timing-fixture"), s.Attempts[0].UpstreamCredential.Fingerprint)
 					v := requesttiming.DeriveContentObservation(s)
 					require.Equal(t, "typed_responses_ws", v.Source)
 					require.NotNil(t, v.ReasoningFirstMS)
@@ -197,7 +203,7 @@ func TestWSTurnTimingUsageBindingSurvivesBillingContext(t *testing.T) {
 	parent := requesttiming.New(time.Now(), 0)
 	ctx := requesttiming.With(t.Context(), parent)
 	for i := range 2 {
-		capture := newOpenAIWSTurnTiming(&Account{ID: 3}, time.Now())
+		capture := newOpenAIWSTurnTiming(&Account{ID: 3}, time.Now(), nil)
 		result := &OpenAIForwardResult{RequestID: fmt.Sprintf("resp_timing_%d", i), Model: "gpt-5.1", Usage: OpenAIUsage{InputTokens: 10, OutputTokens: 5}}
 		finishOpenAIWSTurnTiming(capture, ctx, result, nil)
 		require.NoError(t, svc.RecordUsage(ctx, &OpenAIRecordUsageInput{Result: result, APIKey: &APIKey{ID: 1}, User: &User{ID: 2}, Account: &Account{ID: 3}}))
@@ -205,6 +211,29 @@ func TestWSTurnTimingUsageBindingSurvivesBillingContext(t *testing.T) {
 		require.Same(t, capture.Collector, repo.collectors[i])
 	}
 	require.NotSame(t, repo.collectors[0], repo.collectors[1])
+}
+
+func TestWSTurnTimingRetainsHandshakeCredentialIdentity(t *testing.T) {
+	account := &Account{ID: 7, Credentials: map[string]any{"api_key": "new-account-config-fixture"}}
+	for _, tc := range []struct {
+		name         string
+		fingerprints []string
+		status       string
+		fingerprint  string
+	}{
+		{"established_socket", []string{config.UpstreamKeyFingerprint("established-handshake-fixture")}, "observed", config.UpstreamKeyFingerprint("established-handshake-fixture")},
+		{"unverified", []string{config.UnverifiedUpstreamCredential}, "unverified", ""},
+		{"not_provided", nil, "no_credential", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := newOpenAIWSTurnTiming(account, time.Now(), tc.fingerprints)
+			capture.Finish(nil, false, false)
+			capture.WhenFinished(func(s requesttiming.Snapshot) {
+				require.Equal(t, &requesttiming.UpstreamCredentialObservation{Status: tc.status, Source: "websocket_handshake_credentials", Fingerprint: tc.fingerprint}, s.Attempts[0].UpstreamCredential)
+				require.NotEqual(t, config.UpstreamKeyFingerprint("new-account-config-fixture"), s.Attempts[0].UpstreamCredential.Fingerprint)
+			})
+		})
+	}
 }
 
 func TestWSTurnTimingHTTPToWSUsesPhysicalGeneration(t *testing.T) {
@@ -236,6 +265,8 @@ func TestWSTurnTimingHTTPToWSUsesPhysicalGeneration(t *testing.T) {
 			result.requestTiming.WhenFinished(func(s requesttiming.Snapshot) {
 				require.Len(t, s.Attempts, 1)
 				require.Equal(t, "ws_turn", s.Attempts[0].Kind)
+				require.NotNil(t, s.Attempts[0].UpstreamCredential)
+				require.Equal(t, "websocket_handshake_credentials", s.Attempts[0].UpstreamCredential.Source)
 				v := requesttiming.DeriveContentObservation(s)
 				require.NotNil(t, v.ReasoningFirstMS)
 				require.NotNil(t, v.VisibleTextFirstMS)

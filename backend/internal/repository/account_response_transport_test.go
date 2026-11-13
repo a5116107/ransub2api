@@ -2,12 +2,15 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamstats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -168,3 +171,77 @@ func TestAccountHTTPResponseCancellationHeaderBoundary(t *testing.T) {
 }
 
 var _ service.HTTPUpstream = (*httpUpstreamService)(nil)
+
+func TestHTTPUpstreamTimingCapturesFinalCredential(t *testing.T) {
+	for _, withTLS := range []bool{false, true} {
+		t.Run(map[bool]string{false: "native", true: "fingerprinted_tls"}[withTLS], func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "Bearer timing-wire-fixture", r.Header.Get("Authorization"))
+				_, _ = w.Write([]byte("ok"))
+			}))
+			defer server.Close()
+			_, send := lifecycleClient(t, server, withTLS)
+			c := requesttiming.New(time.Now(), 0)
+			req, err := http.NewRequestWithContext(requesttiming.With(t.Context(), c), http.MethodPost, server.URL+"/v1/responses", nil)
+			require.NoError(t, err)
+			req, outer := requesttiming.StartAttempt(req, 1, 0)
+			req.Header.Set("Authorization", "Bearer timing-wire-fixture")
+			resp, err := send(req)
+			outer.Response(resp, err)
+			require.NoError(t, err)
+			_, err = io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			c.Finish(200, false)
+			c.WhenFinished(func(s requesttiming.Snapshot) {
+				require.Len(t, s.Attempts, 2)
+				raw, marshalErr := json.Marshal(s.Attempts[1])
+				require.NoError(t, marshalErr)
+				var attempt map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(raw, &attempt))
+				require.Contains(t, attempt, "upstream_credential")
+				require.JSONEq(t, `{"status":"observed","source":"http_transport_handoff","fingerprint":"`+config.UpstreamKeyFingerprint("timing-wire-fixture")+`"}`, string(attempt["upstream_credential"]))
+				require.NotContains(t, string(raw), "timing-wire-fixture")
+			})
+		})
+	}
+}
+
+func TestHTTPUpstreamTimingCredentialSources(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+	defer server.Close()
+	client := NewHTTPUpstream(nil)
+	for _, tc := range []struct {
+		name        string
+		headers     http.Header
+		query       string
+		status      string
+		fingerprint string
+	}{
+		{"bearer", http.Header{"Authorization": {"Bearer shared-timing-fixture"}}, "", "observed", config.UpstreamKeyFingerprint("shared-timing-fixture")},
+		{"wire_casing", http.Header{"x-api-key": {"shared-timing-fixture"}}, "", "observed", config.UpstreamKeyFingerprint("shared-timing-fixture")},
+		{"query", nil, "?api_key=shared-timing-fixture", "observed", config.UpstreamKeyFingerprint("shared-timing-fixture")},
+		{"duplicate", http.Header{"Authorization": {"Bearer shared-timing-fixture"}, "X-Api-Key": {"shared-timing-fixture"}}, "", "observed", config.UpstreamKeyFingerprint("shared-timing-fixture")},
+		{"different", http.Header{"Authorization": {"Bearer shared-timing-fixture"}, "X-Api-Key": {"different-fixture"}}, "", "ambiguous", ""},
+		{"unverified", http.Header{"Authorization": {"AgentAssertion invalid-fixture"}}, "", "unverified", ""},
+		{"missing", nil, "", "no_credential", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := requesttiming.New(time.Now(), 0)
+			req, err := http.NewRequestWithContext(requesttiming.With(t.Context(), c), http.MethodPost, server.URL+"/v1/responses"+tc.query, nil)
+			require.NoError(t, err)
+			req, outer := requesttiming.StartAttempt(req, 7, 0)
+			if tc.headers != nil {
+				req.Header = tc.headers
+			}
+			resp, err := client.Do(req, "", 7, 1)
+			outer.Response(resp, err)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			c.Finish(200, false)
+			c.WhenFinished(func(s requesttiming.Snapshot) {
+				require.Equal(t, &requesttiming.UpstreamCredentialObservation{Status: tc.status, Source: "http_transport_handoff", Fingerprint: tc.fingerprint}, s.Attempts[1].UpstreamCredential)
+			})
+		})
+	}
+}

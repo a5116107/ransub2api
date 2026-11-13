@@ -13,12 +13,14 @@ import (
 
 const maxSSETimingBytes = 16 * 1024 * 1024
 
-func newOpenAIWSTurnTiming(account *Account, start time.Time) *requesttiming.WSTurnCapture {
+func newOpenAIWSTurnTiming(account *Account, start time.Time, fingerprints []string) *requesttiming.WSTurnCapture {
 	proxyID := int64(0)
 	if account.ProxyID != nil {
 		proxyID = *account.ProxyID
 	}
-	return requesttiming.NewWSTurn(start, account.ID, proxyID, AccountRouteFingerprint(account))
+	capture := requesttiming.NewWSTurn(start, account.ID, proxyID, AccountRouteFingerprint(account))
+	capture.RecordUpstreamCredentials(fingerprints)
+	return capture
 }
 
 func finishOpenAIWSTurnTiming(capture *requesttiming.WSTurnCapture, ctx context.Context, result *OpenAIForwardResult, err error) {

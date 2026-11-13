@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamstats"
 	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 )
@@ -14,6 +16,9 @@ import (
 type accountResponseTransport struct{ base http.RoundTripper }
 
 func (t *accountResponseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if requesttiming.From(req.Context()) != nil {
+		requesttiming.RecordUpstreamCredentials(req.Context(), config.UpstreamCredentialFingerprints(req))
+	}
 	resp, err := t.base.RoundTrip(req)
 	if err == nil && resp != nil && req.Context().Err() == nil && isAccountInferenceRequest(req) {
 		upstreamstats.Default.Record(requestcapture.AccountFromContext(req.Context()), resp.StatusCode, time.Now())

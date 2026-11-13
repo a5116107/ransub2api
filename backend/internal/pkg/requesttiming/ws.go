@@ -28,6 +28,14 @@ func NewWSTurn(start time.Time, accountID, proxyID int64, fingerprint [32]byte) 
 	return &WSTurnCapture{Collector: c, ctx: ctx, trace: tr}
 }
 
+// RecordUpstreamCredentials binds a generation to the already established
+// socket's verified handshake identity, not current mutable account settings.
+func (w *WSTurnCapture) RecordUpstreamCredentials(fingerprints []string) {
+	if w != nil {
+		RecordUpstreamCredentials(w.ctx, fingerprints)
+	}
+}
+
 // Content receives the original complete text frame before rewriting. No raw
 // frame, response ID, generated text or credential is retained.
 func (w *WSTurnCapture) Content(data []byte) {

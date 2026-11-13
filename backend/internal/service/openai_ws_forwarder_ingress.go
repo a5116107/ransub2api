@@ -1940,7 +1940,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			latencyGenerationStartedTurn = turn
 		}
-		timing = newOpenAIWSTurnTiming(account, time.Now())
+		timing = newOpenAIWSTurnTiming(account, time.Now(), lease.conn.upstreamKeyFingerprints)
 		if err := agentRecovery.beginSocket(latest, clientPayload, payload, wsURL, lease.conn.agentRecoveryHeaders, "ctx_pool"); err != nil {
 			return nil, openAIWSAgentRecoveryClose(err)
 		}

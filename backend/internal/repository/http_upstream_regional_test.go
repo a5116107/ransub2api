@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamroute"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -111,15 +112,23 @@ func TestRegionalHTTPRedirectChangesEgressAndStripsCredentials(t *testing.T) {
 	cfg.Gateway.UpstreamRouting.Regions = append(cfg.Gateway.UpstreamRouting.Regions, upstreamroute.Region{ID: "eu", ProxyURLEnv: "TEST_HTTP_EU_PROXY"})
 	cfg.Gateway.UpstreamRouting.Rules = append(cfg.Gateway.UpstreamRouting.Rules, upstreamroute.Rule{Domain: "api.eu.test", Region: "eu"})
 	up := NewHTTPUpstream(cfg)
-	req, err := http.NewRequestWithContext(t.Context(), "GET", "http://api.us.test/start", nil)
+	capture := requesttiming.New(time.Now(), 0)
+	req, err := http.NewRequestWithContext(requesttiming.With(t.Context(), capture), "GET", "http://api.us.test/start", nil)
 	require.NoError(t, err)
+	req, outer := requesttiming.StartAttempt(req, 12, 0)
 	req.Header.Set("Authorization", "Bearer must-not-leak")
 	resp, err := up.Do(req, "", 12, 2)
+	outer.Response(resp, err)
 	require.NoError(t, err)
 	require.Equal(t, 204, resp.StatusCode)
 	require.NoError(t, resp.Body.Close())
 	require.EqualValues(t, 1, us.Load())
 	require.EqualValues(t, 1, eu.Load())
+	capture.Finish(204, false)
+	capture.WhenFinished(func(s requesttiming.Snapshot) {
+		require.Len(t, s.Attempts, 2)
+		require.Equal(t, &requesttiming.UpstreamCredentialObservation{Status: "changed_credentials", Source: "http_transport_handoff"}, s.Attempts[1].UpstreamCredential)
+	})
 	req = req.WithContext(service.WithHTTPUpstreamRedirectsDisabled(t.Context()))
 	resp, err = up.Do(req, "", 12, 2)
 	require.NoError(t, err)
