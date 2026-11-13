@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D5.1/D6.1/D7.1/D7.2 已完成；D3.1部分、D7.3待证据。
+Task: D3.1本地完整链已验；本轮6子项5done、D7.3待证据。
 Scope: 用户已授权规划后实施；单功能分支/单PR，不CI、不改生产。
-Source: feat/automated-upstream-supply，基线7f846ede7；参考仓只读。
-Verified: 前端148通过、末改53复验；race40/vet、类型/lint/构建、浏览器9模拟请求通过。
-Next: D3.1真实同池故障/恢复链及D7.3质量/指纹证据；保持单PR，不发布。
+Source: feat/automated-upstream-supply，本轮基线7fa9da408；参考仓只读。
+Verified: race106/1838、独立Key11复验、两包vet/快速lint通过；完整lint预算中止。
+Next: D7.3分维度质量/指纹证据及独立基线；D5聚合仍依赖D2归属契约。
 Attempt: 1
-Blocker: 接入方补scope/独立基线；本轮scratch删除被自动检查拦截，归拥有者处理。
+Blocker: 接入方补scope/独立基线；历史拒删scratch归拥有者处理，不重试。
 Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
-Remaining: 原28项20done/8部分；本轮6子项4done/1部分/1待证据，未关闭生产验收。
+Remaining: 原28项20done/8部分；本轮6子项5done/1待证据，未关闭供应商/生产验收。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -53,7 +53,7 @@ Remaining: 原28项20done/8部分；本轮6子项4done/1部分/1待证据，未�
 | D7 | in_progress | 并发保存/409、重算及候选未知已验；完整解释/原始缓存面板待契约；历史UI112+支付21等见DECISIONS |
 | D5.1/D6.1 | done | 上下游及账单合同；同run粘性/跨run隔离、Messages独立前缀，race40与vet通过 |
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
-| D3.1 | in_progress | 最新状态终检与质量/倍率/强归属守卫已验；真实同池迁移及恢复不抢回待验 |
+| D3.1 | done | 本地HTTP+miniredis/原适配器链：5类失效切换、恢复不抢回、读失败/预算/全失效关闭；race106/1838及独立Key11复验通过，非生产证据 |
 | D7.3 | pending | 待接入方提供分维度质量/模型指纹证据和独立基线，不以假指纹替代 |
 | D8 | in_progress | CLI/额度与统一性能已验；生产副本410→432四阶段、旧程序回退及重升通过；并行混版及其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
@@ -67,7 +67,7 @@ Remaining: 原28项20done/8部分；本轮6子项4done/1部分/1待证据，未�
 
 ## 下一项工作
 
-本轮6子项4done，D3.1部分、D7.3待证据；尚未确认参数仍为提案。原28项20done/8部分保持；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待冲突整合，未关闭原外部验收。
+本轮6子项5done，D7.3待分维度证据/独立基线；D5原始聚合依赖D2的Key/实际组/物理attempt归属契约。原28项20done/8部分保持；v2.21.1/[PR#3](https://github.com/a5116107/ransub2api/pull/3)待整合；供应商/混版/生产验收保留。
 
 ## 外部等待与清理
 
@@ -78,5 +78,5 @@ Remaining: 原28项20done/8部分；本轮6子项4done/1部分/1待证据，未�
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删候选/overlay/pyc/脚本及stream-health的3文件9817bytes原位保留；路径/证据见DECISIONS，由拥有者清理，不重试/移动；.1包保留。
-- 本轮`H:/Root/DevCache/tmp/sub2api-cache-conclusions`删除被自动检查拦截，删除0；256文件9744426bytes、无活跃引用；由拥有者手工清理后解除，不重试/移动。
-- 历史三包lint62项/增量0保留；本轮仅前端所改文件lint通过，不称后端全包清零。
+- 历史`H:/Root/DevCache/tmp/sub2api-cache-conclusions`拒删，删除0；256文件9744426bytes、无活跃引用；拥有者手工清理后解除，不重试/移动。
+- 历史三包lint62项保留；本轮两包vet、快速增量lint通过；完整lint两次超8分钟/约8与6GiB预算中止，不称全包清零。

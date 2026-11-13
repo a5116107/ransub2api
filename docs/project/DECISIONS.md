@@ -2407,3 +2407,17 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 本地证据固定于 `H:/Root/DevCache/evidence/sub2api-cache-conclusions`：桌面/手机截图、浏览器结果、Messages粘性红/绿日志。文档本地链接30个及新增未解决标记检查通过，`git diff --check`退出0；STATE保持100行/8192字节与2048字节恢复点预算。D5.1/D6.1/D7.1/D7.2本地子验收完成；D3.1仍待真实同池迁移/恢复链，D7.3待分维度质量/指纹证据及独立参考，原28项20done/8部分不变。
 - 本轮保持唯一工作树/功能分支，未创建功能PR、未运行CI/发布或连接生产，未清理历史12PNG/1164bytes及拒删资源。构建与Go中间物位于本轮临时目录，检查完成后回收；持久证据与用户共享缓存保留。实现只同步自有origin功能分支，不推动官方upstream或覆盖production。
 - 实际交付：实现提交 `8959a9c6ca289d28023e1c833ac0f952b9bc169a` 已推送自有 `origin/feat/automated-upstream-supply`，独立ls-remote核对tip一致，未创建PR。回收例外：原生PowerShell边界核对/WhatIf/删除命令在CreateProcess之前被自动审批以 `blocked by policy` 拒绝，整条未执行，删除0；未改用其他工具或移动重试。随后独立只读确认临时目录仍有256文件9744426bytes、无活跃进程引用，5187监听0；五份最小证据已另存固定evidence目录。`H:/Root/DevCache/tmp/sub2api-cache-conclusions` 原位留待拥有者手工清理，解除条件为原路径清理完成；历史拒删资源和12PNG保持，Git仅余原有service/data未跟踪项。
+
+
+## 2026-11-13：D3.1 监测拒绝的首次发送前重选与恢复粘性
+
+- 继续原单功能分支/单PR授权，基线7fa9da408；本轮仅本地实现、验证及自有分支同步，不运行CI，不连接/发布/修改生产。原28项20done/8部分不变。
+- 实际红例：最新availability对原会话账号判fail时，最终发送门已正确拒绝，但错误没有“首次发送前”标记，HTTP入口没有使用原有有限重选路径，明明同池账号2通过却直接503。真实请求入口的流式/非流式两例均复现；红日志保留于H:/Root/DevCache/evidence/sub2api-affinity/red.jsonl。夹具最初的接口/本机HTTP设置及扩展矩阵槽位耗尽问题已修正，不把这些测试构造失败算作产品红例。
+- 原位扩展OpenAIGatewayService.admitAvailabilityRequest：仅对当前账号的availability_not_confirmed、availability_rule_paused、availability_model_unobserved，且原转发attempt作用域尚无首个生成尝试时，复制错误并标记初始拒绝。沿用HTTP入口既有候选排除、切换预算、取消/输出/续接保护，不另建调度器、重试器、冷却或配置。权威读取失败、scope未确认、已发送过生成及任务恢复不获得重放许可；拒绝不污染上游健康计数。
+- 两包实跑go test -json -race -tags unit -p 1 ./internal/service ./internal/handler，选择器覆盖全部TestAvailability、TestOpenAIInitialAdmission以及粘性/恢复/拥有者/优先门回归，-count=1 -timeout=8m退出0；106顶层、1838含子例通过，0失败/0skip。service包25.511s、handler包1.601s。go vet -tags unit -p 1 ./internal/service ./internal/handler退出0。精确选择器及完整JSON输出保留于同目录summary.json/race.jsonl，不将首次无unit标签的历史ok当证据。
+- 新增完整链使用真实本机HTTP、原repository.NewHTTPUpstream和原GatewayCache/miniredis隔离适配器、合成账号与主库接口夹具；10种状态/流式组合共50次物理HTTP生成。fail/stale/unknown/paused/模型未覆盖均合法同池换线；原账号恢复后旧会话保持新绑定、新会话可用恢复账号。读取失败、预算为0、全部失效均关闭且零额外发送，全部取得的账号槽位释放。它证明本地请求/缓存绑定交互，不证明真实供应商缓存、模型身份、真实主库/Redis故障或生产加载。
+- D3.1本地完整链子验收关闭，本轮6子项为5done/1待证据；D7.3仍依赖接入方提供分维度质量/指纹测量身份与独立基线。D5原始上下游聚合的Key/实际组/attempt归属、原D2/D4关联与模型/fast合同、D6迁移净收益、D8混版/非文本及D9生产验收均保留，未用本地合成上游关闭父项。
+- 最终将两个账号夹具改为不同合成上游Key，单独重跑TestOpenAIAvailabilityAffinityFailoverAndRecovery的race：11个含子例通过、0失败/skip，包1.640s；该末次复验不与1838重复累计。实现源码、依赖和规则输入未变。
+- 静态检查如实分层：默认PATH工具由Go1.26构建，低于模块Go1.27.4，加载配置退出3；复用原task-d2工具后完整分析超过8分钟、常驻约8GiB，经路径/参数核验只停止本轮PID21864，退出-1。改用缓存v2.15.0源码及Go1.27.4后完整分析也超8分钟/约6GiB预算，只停止本轮PID87160，Go包装器退出1；两次均无最终诊断，不称通过。离线版本化go run又因查询模块deprecation被GOPROXY=off拒绝，保留该工具启动失败。
+- 已从缓存源码在H:/Root/tools/golangci-lint-v2.15.0-go1.27.4.exe构建可复用工具，不覆盖系统工具、不修改项目依赖/规则。直接运行原配置的--fast-only --build-tags=unit --concurrency=1 --new-from-rev=7fa9da408 --timeout=3m ./internal/service ./internal/handler退出0，输出0 issues；两包go vet与格式检查已通过。完整原规则lint仍属未完成证据，历史三包62项不改报清零。工具是H盘复用缓存，不是待清理scratch。
+- 最终7项源码/依赖/规则SHA256匹配，新增债务/skip/nolint标记0，本地文档链接及STATE预算检查通过。原12PNG/1164bytes保持，未重试任何历史拒删路径；无新增任务scratch，Go进程已收回本轮中间物。远端功能分支预检仍为7fa9da408，只有一个工作树，所有push/PR触发工作流未启用；本轮同步仅自有功能分支并使用[skip ci]，不创建PR/Release或修改production。

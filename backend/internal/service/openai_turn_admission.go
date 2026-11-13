@@ -58,7 +58,7 @@ func markOpenAIInitialAdmissionError(err error) error {
 }
 
 // IsOpenAIInitialAdmissionRejection identifies a stale or ineligible account
-// before this HTTP forward started. Callers must still check cancellation, downstream writes,
+// before this HTTP forward's first generation send. Callers must still check cancellation, downstream writes,
 // continuation state and their account-switch budget before reselecting.
 func IsOpenAIInitialAdmissionRejection(err error) bool {
 	var denied *OpenAITurnAdmissionError

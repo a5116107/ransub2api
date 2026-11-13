@@ -470,6 +470,73 @@ func TestAvailabilityAdmissionFactoryWiring(t *testing.T) {
 	require.Same(t, repo, svc.availabilityReader)
 }
 
+func TestAvailabilityAdmissionInitialReselectionBoundary(t *testing.T) {
+	for _, state := range []string{"fail", "stale", "unknown", "paused", "unobserved", "read_error", "scope_mismatch", "after_send", "recovery", "outside_forward"} {
+		t.Run(state, func(t *testing.T) {
+			account := priorityCandidate(901, 1, 0).account
+			report := availabilityAdmissionPass(account.ID, "gpt-test")
+			report.Models[0].Status, report.Models[0].Decision.Status = "fail", "fail"
+			repo := &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}
+			ctx, scope := withPriorityAttemptScope(t.Context(), "gpt-test", "/v1/responses")
+			wantRetry := true
+			switch state {
+			case "stale":
+				past := time.Now().Add(-time.Minute)
+				report.Models[0].Status, report.Models[0].ValidUntil = "stale", &past
+			case "unknown":
+				report.Models[0].Status, report.Models[0].Decision = "unknown", nil
+			case "paused":
+				report.Enabled = false
+			case "unobserved":
+				report.Models[0].ModelID = "different-model"
+			case "read_error":
+				repo.readErr, wantRetry = errors.New("fixture authority failure"), false
+			case "scope_mismatch":
+				report.Models[0].Status, report.Models[0].Decision.Status = "pass", "pass"
+				report.Models[0].Decision.Scope.Stream, wantRetry = true, false
+			case "after_send":
+				scope.begin()
+				wantRetry = false
+			case "recovery":
+				ctx, wantRetry = markAgentIdentityTaskRecoveryTried(ctx), false
+			case "outside_forward":
+				ctx, wantRetry = t.Context(), false
+			}
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"fixture"}`))
+			require.NoError(t, err)
+			svc := &OpenAIGatewayService{availabilityReader: repo}
+			err = svc.admitAvailabilityRequest(ctx, request, account)
+			require.True(t, IsOpenAITurnAdmissionError(err))
+			require.Equal(t, wantRetry, IsOpenAIInitialAdmissionRejection(err))
+			scope.finish(nil)
+		})
+	}
+}
+
+func TestAvailabilityAdmissionNeverReselectsAfterPhysicalAttempt(t *testing.T) {
+	account := priorityCandidate(901, 1, 0).account
+	report := availabilityAdmissionPass(account.ID, "gpt-test")
+	repo := &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}}
+	svc := &OpenAIGatewayService{availabilityReader: repo, httpUpstream: upstream}
+	ctx, scope := withPriorityAttemptScope(t.Context(), "gpt-test", "/v1/responses")
+	defer scope.finish(nil)
+	newRequest := func() *http.Request {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"fixture"}`))
+		require.NoError(t, err)
+		return request
+	}
+	response, err := svc.doOpenAIUpstream(newRequest(), "", account)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	report.Models[0].Status, report.Models[0].Decision.Status = "fail", "fail"
+	response, err = svc.doOpenAIUpstream(newRequest(), "", account)
+	require.Nil(t, response)
+	require.True(t, IsOpenAITurnAdmissionError(err))
+	require.False(t, IsOpenAIInitialAdmissionRejection(err), "even with performance scoring disabled, an earlier send prevents automatic account replay")
+	require.Len(t, upstream.requests, 1)
+}
+
 func TestAvailabilityAdmissionRejectsUnscopedEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, payload string

@@ -29,7 +29,35 @@ func AvailabilityModelForAccount(account *Account, requested string) string {
 }
 
 func (s *OpenAIGatewayService) admitAvailabilityRequest(ctx context.Context, request *http.Request, account *Account) error {
-	return admitAvailabilityRequest(ctx, request, account, s.availabilityReader, s.schedulerSnapshot)
+	err := admitAvailabilityRequest(ctx, request, account, s.availabilityReader, s.schedulerSnapshot)
+	var denied *OpenAITurnAdmissionError
+	if !errors.As(err, &denied) || account == nil || account.Platform != PlatformOpenAI || agentIdentityTaskRecoveryWasTried(ctx) {
+		return err
+	}
+	switch denied.Reason {
+	case "availability_not_confirmed", "availability_rule_paused", "availability_model_unobserved":
+		// A current account-local rejection may leave another qualified route.
+		// An unreadable authority or an unconfirmed wire scope stays terminal.
+	default:
+		return err
+	}
+	// Forward's existing attempt scope spans protocol/repair/proxy retries.
+	// Its first observation starts before a physical generation send, even
+	// when performance scoring is disabled. Do not infer replay safety from
+	// downstream silence: a previous send may already have executed work.
+	scope, _ := ctx.Value(priorityAttemptScopeContextKey{}).(*priorityAttemptScope)
+	if scope == nil {
+		return err
+	}
+	scope.mu.Lock()
+	started := scope.current != nil
+	scope.mu.Unlock()
+	if started {
+		return err
+	}
+	copy := *denied
+	copy.initialHTTPForward = true
+	return &copy
 }
 
 // Native gateways share the same authoritative reader and regional override as
