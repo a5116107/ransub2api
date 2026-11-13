@@ -46,6 +46,28 @@ beforeEach(() => {
 afterEach(() => wrapper?.unmount())
 
 describe('GroupCacheTestView', () => {
+  it.each([
+    { missing: false, verdict: 'hit', coverage: '2 / 2 (100.0%)' },
+    { missing: true, verdict: 'partial', coverage: '1 / 2 (50.0%)' }
+  ])('shows the $verdict conclusion and honest coverage', async ({ missing, verdict, coverage }) => {
+    mocks.execute.mockImplementation(async (run: CacheTestRun) => {
+      run.status = 'completed'; run.affinityRequested = true
+      run.rounds = [1, 2, 3].map(index => ({
+        index, status: 'completed', startedAt: run.startedAt, requestId: `fixture-${index}`,
+        tokens: { input: 100, read: missing && index === 3 ? null : 80, write: null, output: 2 },
+        responseModel: 'test-model', serviceTier: null, firstTextMs: 10, durationMs: 20,
+        error: null, httpStatus: 200, bill: null, billingState: 'pending'
+      }))
+    })
+    wrapper = mountView(); await configure()
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(wrapper.get('[data-testid="cache-verdict"]').text()).toBe(`admin.groupCacheTest.verdict.${verdict}`)
+    expect(wrapper.get('[data-testid="cache-coverage"]').text()).toBe(coverage)
+    expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe(missing ? '50' : '100')
+    expect(wrapper.get('[data-testid="cache-affinity"]').text()).toBe('admin.groupCacheTest.affinityState.unknown')
+    expect(wrapper.text()).toContain('admin.groupCacheTest.affinityRequested')
+  })
+
   it('requires a model and an owned, active key bound to the chosen group', async () => {
     mocks.keys.mockResolvedValue(result([key, { ...key, id: 11, user_id: 2 }, { ...key, id: 12, group_id: 8 }, { ...key, id: 13, status: 'inactive' }]))
     wrapper = mountView()

@@ -2393,3 +2393,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 对照源码为sub2api `8396a7d46`、avoding-newapi `3c85af256`。拟吸收分维度质量证据、测量/策略版本分离、可信基线、缓存可观测覆盖与公平探测预算，扩展原倍率门/质量/统一性能/会话链，不复制第二套实现。具体阈值、默认采购桶组合与缓存承诺均为提案，未记为用户已批准参数。
 - 核对发现现有倍率runner默认30分钟、最小5分钟、每轮20账号；100绑定每5分钟覆盖已占满理论20任务/分钟，不能把现状宣传为实时全覆盖。设计补充调用/token/判题预算、scope轮转、到期拒绝和覆盖预览。
 - 文档合同检查实跑退出0：29个本地链接、13个提案章节、9个参考源码存在，章节/代码围栏/新增未解决标记检查通过；`git diff --check`退出0。仅证明方案文档一致性，不证明算法、上游缓存/模型或生产业务通过；原28项20done/8部分保持。
+
+## 2026-11-13：缓存归属、稳定探测与可视化结论
+
+- 用户追加授权规划后本地实施，并明确管理端上游检测按上游Key/模型统计，下游仅看本人Key及所购产品的结果。统一设计13.2区分上游物理attempt、下游逻辑请求、产品出口探测和计费桶；上下游原始体验聚合仍按D5/D7父验收继续，不把本轮计费标签修正冒充完整监控。
+- sub2api `gateway_handler.go:Usage/buildUsageData` 的Key用量为计费汇总；avoding-newapi `router/api-router.go` 的 `/api/log/token` 经TokenAuthReadOnly到GetLogByKey，仅有权限内最近日志。可按实际计数计算样本比例，但不据此获得全站或供应商内部缓存真值；亲和路由缓存与prompt cache分开。参考仓只读。
+- 原分组缓存测试新增run级固定X-Session-Id，持久化仅保留是否请求亲和的布尔值。结构化结论含复用状态、请求命中/有效报告、覆盖进度、已完成/计划轮数和精确账单账号一致性；基线单列，缺失/失败不冒充零或通过。同账号只证明所关联账号一致，不证明上游缓存域共享、模型身份或高缓存准入。
+- 新回归发现Messages缓存消息提取会包含同消息的可变轮次尾文，原请求体每轮hash不同；红测 `TestGenerateSessionHash_CacheProbePrefixContinuity` 明确失败。仅将探测固定参考移到独立system缓存块、轮次尾文保留用户消息，未修改全局亲和算法；前端断言请求形状，后端断言同run一致、跨run不同。另有前端红测证明缺写入桶会被旧逻辑当零；现缺必要桶保持总量未知，分段更新保留未缓存部分，显式非法值不回用旧有效值。
+- 使用记录、悬浮提示、管理开关与用户CSV统一标为计费缓存Token占比，保留原开关及用户授权边界；供应商原始指标不混入用户结果，密钥、正文和完整账单对象仍不持久化/导出。原实现原位替换，无第二套调度器、表或执行接口，无迁移。
+- 本地前端命令 `pnpm exec vitest run src/api/__tests__/groupCacheTest.spec.ts src/utils/__tests__/groupCacheTestAssessment.spec.ts src/utils/__tests__/usageCacheRate.spec.ts src/views/admin/__tests__/GroupCacheTestView.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts src/components/admin/usage/__tests__/UsageTable.spec.ts src/components/admin/usage/__tests__/UsageLatencyDisplay.spec.ts src/views/user/__tests__/UsageView.spec.ts src/views/__tests__/KeyUsageView.spec.ts --maxWorkers=2 --minWorkers=1` 实跑9文件/148通过。末次Messages请求体变动后原三相关文件53项复验通过，不重复累计。`pnpm exec vue-tsc --noEmit` 与16个所改TS/Vue文件eslint退出0；末次变动再次类型检查及三文件eslint通过。Vite真实构建1622模块、48.15秒退出0；保留既有Browserslist、混合动态/静态导入、大包及Node DEP0190提示，未修改规则掩盖提示。
+- 后端最终命令 `go test -json -race -tags unit -p 1 ./internal/service -run '^(TestPrioritySessionAffinityPreservesEligibleBinding|TestPrioritySessionAffinityAvailabilityFailureAndRecovery|TestPrioritySessionAffinityRetainsResponseOwnership|TestOpenAIGatewayService_SelectAccountWithScheduler_YieldsStickyToHigherPriorityTicket|TestGenerateSessionHash_CacheProbePrefixContinuity)$' -count=1 -timeout=6m` 退出0，5顶层/40含子用例通过、0失败、包1.225秒；`go vet -tags unit -p 1 ./internal/service`退出0。早期漏unit标签的默认包ok不记作目标回归证据；原有4项粘性/资格/最新状态/强归属回归保留，新增探测前缀回归通过。
+- Chromium实际组件/路由在127.0.0.1:5187运行，全部接口隔离到本地夹具。普通Escape关闭首次引导后，桌面、390px、50%覆盖、账号切换、历史刷新、键盘和真实语言菜单切换/刷新均通过；9次合成请求，真实供应商请求0，pageErrors和externalRequests均空。最初截图发生响应式过渡尚未完成，等待媒体条件与过渡后scrollWidth=390；没有修改全局布局或绕开遮罩强制点击。一次类型检查发现Object.hasOwn超出项目lib目标，已改用既有目标支持的hasOwnProperty.call并复验；语言切换夹具修复为等待原控件自动刷新，不注入预期DOM结果。
+- 本地证据固定于 `H:/Root/DevCache/evidence/sub2api-cache-conclusions`：桌面/手机截图、浏览器结果、Messages粘性红/绿日志。文档本地链接30个及新增未解决标记检查通过，`git diff --check`退出0；STATE保持100行/8192字节与2048字节恢复点预算。D5.1/D6.1/D7.1/D7.2本地子验收完成；D3.1仍待真实同池迁移/恢复链，D7.3待分维度质量/指纹证据及独立参考，原28项20done/8部分不变。
+- 本轮保持唯一工作树/功能分支，未创建功能PR、未运行CI/发布或连接生产，未清理历史12PNG/1164bytes及拒删资源。构建与Go中间物位于本轮临时目录，检查完成后回收；持久证据与用户共享缓存保留。实现只同步自有origin功能分支，不推动官方upstream或覆盖production。

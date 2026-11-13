@@ -1504,12 +1504,12 @@ export default {
         description: 'When enabled, usage records billed under long-context tiered pricing show an x2 badge next to their cost. Enabled by default.',
       },
       cache_rate: {
-        label: 'Show usage cache rate',
-        description: 'When enabled, the usage record status column shows the cache rate for that request. Turning it off hides the rate from both admins and users. Enabled by default.',
+        label: 'Show usage billed cache share',
+        description: 'Shows the billed cached-token share per usage record. Billing rules may adjust cache buckets, so this is not the raw upstream cache hit rate. Turning it off hides the share from both admins and users. Enabled by default.',
       },
       cache_rate_to_users: {
-        label: 'Show cache rate to users',
-        description: 'When enabled, users can see the per-request cache rate on their own usage page. Off by default, so only admins see it.',
+        label: 'Show billed cache share to users',
+        description: 'Shows billed cached-token shares for users\' own keys and downstream groups in their usage page and exports. Upstream keys and procurement metrics stay private. Off by default, so only admins see it.',
       },
       upstream_response_model_to_users: {
         label: 'Show users the actual upstream response model',

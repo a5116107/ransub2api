@@ -84,7 +84,7 @@ const localizedMessages: Record<'en' | 'zh', Record<string, string>> = {
 
 const messages: Record<string, string> = {
   'usage.latencyTps': 'Avg TPS',
-  'usage.latencyCacheRate': 'Cache rate',
+  'usage.latencyCacheRate': enDashboard.usage.latencyCacheRate,
   'usage.latencyCacheRateHint': 'cache rate hint',
   'admin.usage.userDeletedBadge': 'Deleted',
   'usage.costDetails': 'Cost Breakdown',
@@ -1210,7 +1210,7 @@ describe('admin UsageTable latency TPS', () => {
     expect(tpsCell(wrapper, 'req-tps-image').text()).toBe('-')
   })
 
-  it('shows that request cache rate beside first token, duration, and TPS', () => {
+  it('shows the billed cached-token share beside first token, duration, and TPS', () => {
     const wrapper = mountLatency([
       { request_id: 'req-cache-hit', input_tokens: 4_057, cache_read_tokens: 278_272, cache_creation_tokens: 4, output_tokens: 101, duration_ms: 345, first_token_ms: 12 },
       { request_id: 'req-cache-miss', input_tokens: 1_200, cache_read_tokens: 0, cache_creation_tokens: 0, output_tokens: 20, duration_ms: 1_000, first_token_ms: 100 },
@@ -1218,7 +1218,7 @@ describe('admin UsageTable latency TPS', () => {
     ])
 
     const hit = wrapper.find('[data-row="req-cache-hit"] [data-testid="latency-cache-rate"]')
-    expect(wrapper.text()).toContain('Cache rate')
+    expect(wrapper.text()).toContain(enDashboard.usage.latencyCacheRate)
     expect(hit.text()).toBe('98.6%')
     expect(hit.attributes('title')).toBe('cache rate hint')
     expect(hit.classes()).toContain('text-emerald-600')
@@ -1247,7 +1247,7 @@ describe('admin UsageTable latency TPS', () => {
     appStoreMocks.cachedPublicSettings = { usage_show_cache_rate: false, usage_show_cache_rate_to_users: true }
     const wrapper = mountLatency([cacheHitRow])
     expect(wrapper.find('[data-testid="latency-cache-rate"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('Cache rate')
+    expect(wrapper.text()).not.toContain(enDashboard.usage.latencyCacheRate)
     appStoreMocks.cachedPublicSettings = undefined
   })
 

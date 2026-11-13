@@ -16,11 +16,16 @@ export function parseCacheUsage(protocol: CacheProtocol, value: unknown, previou
   const usage = object(value)
   if (!Object.keys(usage).length) return previous
   if (protocol === 'messages') {
-    const input = nonnegative(usage.input_tokens)
-    const read = nonnegative(usage.cache_read_input_tokens) ?? previous?.read ?? null
-    const write = nonnegative(usage.cache_creation_input_tokens) ?? previous?.write ?? null
+    // Messages reports exclusive buckets. Preserve the uncached component for
+    // partial updates; absent/invalid buckets must not become measured zeroes.
+    const previousInput = previous && previous.input !== null && previous.read !== null && previous.write !== null
+      ? previous.input - previous.read - previous.write : null
+    const reported = (field: string) => Object.prototype.hasOwnProperty.call(usage, field)
+    const input = reported('input_tokens') ? nonnegative(usage.input_tokens) : previousInput
+    const read = reported('cache_read_input_tokens') ? nonnegative(usage.cache_read_input_tokens) : previous?.read ?? null
+    const write = reported('cache_creation_input_tokens') ? nonnegative(usage.cache_creation_input_tokens) : previous?.write ?? null
     return {
-      input: input === null ? previous?.input ?? null : input + (read ?? 0) + (write ?? 0),
+      input: input === null || read === null || write === null ? null : input + read + write,
       output: nonnegative(usage.output_tokens) ?? previous?.output ?? null, read, write
     }
   }
@@ -100,7 +105,12 @@ export async function probeCacheRound(run: CacheTestRun, round: CacheRound, key:
   }
   try {
     const protocol = run.settings.protocol
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(run.id)) throw new ProbeError('invalid_stream')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json', Accept: 'text/event-stream',
+      'X-Session-Id': 'cache-test:' + run.id
+    }
+    run.affinityRequested = true
     if (protocol === 'messages') { headers['x-api-key'] = key; headers['anthropic-version'] = '2023-06-01' }
     else headers.Authorization = 'Bearer ' + key
     const response = await fetch(buildGatewayUrl(CACHE_ENDPOINTS[protocol]), {

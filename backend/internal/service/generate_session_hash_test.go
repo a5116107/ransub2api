@@ -473,6 +473,21 @@ func TestGenerateSessionHash_CacheControlOverridesSessionContext(t *testing.T) {
 	require.Equal(t, h1, h2, "cache_control ephemeral has higher priority, SessionContext should not affect result")
 }
 
+func TestGenerateSessionHash_CacheProbePrefixContinuity(t *testing.T) {
+	svc := &GatewayService{}
+	ctx := &SessionContext{ClientIP: "127.0.0.1", UserAgent: "cache-probe", APIKeyID: 10}
+	probe := func(prefix, suffix string) string {
+		body := anthropicSessionBody([]any{
+			map[string]any{"type": "text", "text": prefix, "cache_control": map[string]any{"type": "ephemeral"}},
+		}, []any{msg("user", suffix)}, "")
+		return svc.GenerateSessionHash(mustParseSessionHashRequest(t, body, ctx))
+	}
+	first := probe("Cache experiment run-a. Stable synthetic reference.", "Round 1. Reply CACHE_OK.")
+	require.NotEmpty(t, first)
+	require.Equal(t, first, probe("Cache experiment run-a. Stable synthetic reference.", "Round 2. Reply CACHE_OK."))
+	require.NotEqual(t, first, probe("Cache experiment run-b. Stable synthetic reference.", "Round 1. Reply CACHE_OK."))
+}
+
 func TestGenerateSessionHash_EmptyMessages(t *testing.T) {
 	svc := &GatewayService{}
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{}, ""), &SessionContext{ClientIP: "1.1.1.1", UserAgent: "test", APIKeyID: 1})

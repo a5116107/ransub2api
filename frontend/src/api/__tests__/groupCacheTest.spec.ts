@@ -43,7 +43,12 @@ describe('group cache request contract', () => {
     expect(JSON.stringify(first)).toContain(JSON.stringify(prefix).slice(1, -1))
     expect(JSON.stringify(repeat)).toContain(JSON.stringify(prefix).slice(1, -1))
     expect(prefix).not.toEqual(buildCachePrefix('another-run', test.settings.prefixBlocks))
-    if (protocol === 'messages') expect(JSON.stringify(repeat)).toContain('"cache_control":{"type":"ephemeral"}')
+    if (protocol === 'messages') {
+      expect(first.system).toEqual([{ type: 'text', text: prefix, cache_control: { type: 'ephemeral' } }])
+      expect(repeat.system).toEqual(first.system)
+      expect(JSON.stringify(repeat.messages)).not.toContain('cache_control')
+      expect(JSON.stringify(repeat.messages)).not.toContain(JSON.stringify(prefix).slice(1, -1))
+    }
     expect(first.model).toBe(repeat.model)
   })
   it('normalizes input buckets without double-counting cached tokens', () => {
@@ -65,9 +70,33 @@ describe('group cache request contract', () => {
     expect(cacheHitRate(aggregateCacheTokens([first, second]))).toBe(0.1)
     expect(aggregateCacheTokens([{ ...first, status: 'failed' }]).read).toBeNull()
   })
+
+  it('keeps Messages totals unknown when an exclusive cache bucket is missing or invalid', () => {
+    const missingWrite = parseCacheUsage('messages', { input_tokens: 10, cache_read_input_tokens: 90 })
+    expect(missingWrite).toMatchObject({ input: null, read: 90, write: null })
+    expect(cacheHitRate(missingWrite)).toBeNull()
+    const previous = parseCacheUsage('messages', { input_tokens: 10, cache_read_input_tokens: 90, cache_creation_input_tokens: 0 })
+    const invalidRead = parseCacheUsage('messages', { cache_read_input_tokens: -1, output_tokens: 2 }, previous)
+    expect(invalidRead).toMatchObject({ input: null, read: null })
+    expect(cacheHitRate(invalidRead)).toBeNull()
+    expect(parseCacheUsage('messages', { cache_creation_input_tokens: 20 }, previous)).toMatchObject({ input: 120, read: 90, write: 20 })
+  })
 })
 
 describe('streamed probes', () => {
+  it.each<CacheProtocol>(['responses', 'chat', 'messages'])('requests the same sticky session for a %s run and isolates another run', async protocol => {
+    fetchMock.mockImplementation(async () => new Response(null, { status: 503 }))
+    const test = run(protocol)
+    await probeCacheRound(test, newCacheRound(1), 'FIXTURE_KEY', 'prefix', signal())
+    await probeCacheRound(test, newCacheRound(2), 'FIXTURE_KEY', 'prefix', signal())
+    const next = run(protocol); next.id = 'another-run'
+    await probeCacheRound(next, newCacheRound(1), 'FIXTURE_KEY', 'prefix', signal())
+    const sessions = fetchMock.mock.calls.map(call => call[1].headers['X-Session-Id'])
+    expect(sessions[0]).toBe('cache-test:synthetic-run')
+    expect(sessions[1]).toBe(sessions[0])
+    expect(sessions[2]).not.toBe(sessions[0])
+  })
+
   it('handles split UTF-8 and CRLF, correlates the returned header, and never sends the panel JWT', async () => {
     localStorage.setItem('auth_token', 'PANEL_JWT_MUST_NOT_LEAK')
     fetchMock.mockResolvedValue(sse(': keepalive\r\n\r\n' + completed(), 'demo-1', 1))

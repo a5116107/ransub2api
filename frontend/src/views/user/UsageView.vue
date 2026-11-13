@@ -674,7 +674,7 @@ const exportToCSV = async () => {
       'Output Tokens',
       'Cache Read Tokens',
       'Cache Creation Tokens',
-      ...(includeCacheRate.value ? ['Cache Rate'] : []),
+      ...(includeCacheRate.value ? ['Billed Cached Token Share'] : []),
       'Rate Multiplier',
       'Billed Cost',
       'Original Cost',

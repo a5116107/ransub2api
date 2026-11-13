@@ -36,12 +36,14 @@ function bucket(value: number | null | undefined): number | null {
 }
 
 /**
- * Prompt cache rate for one usage record.
+ * Billed cached-token share for one usage record, for either authorized audience.
  *
  * Stored usage logs keep three exclusive prompt buckets: input_tokens is the
  * uncached input, cache_read_tokens is the cache hit, and cache_creation_tokens
  * is the cache write. The rate is cache read ÷ (input + cache read + cache write),
- * the same definition used by channel monitor and the usage trend chart.
+ * Billing policies can rewrite these buckets. This is not the physical upstream
+ * cache observation used for supplier admission, nor a request-hit ratio. An
+ * end-user caller must supply only that user's key/product/model records.
  *
  * Returns null when the request has no prompt tokens, so image-only or empty
  * records show a placeholder instead of a misleading 0%.

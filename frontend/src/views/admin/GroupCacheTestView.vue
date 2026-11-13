@@ -50,8 +50,24 @@
             <template v-else>
               <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm"><strong>{{ selected.groupName }}</strong><span>{{ selected.settings.model }}</span><code class="text-xs">{{ CACHE_ENDPOINTS[selected.settings.protocol] }}</code><span role="status" aria-live="polite" class="ml-auto">{{ busy ? t(reconciling ? 'admin.groupCacheTest.reconciling' : 'admin.groupCacheTest.testing') : t('admin.groupCacheTest.status.' + selected.status) }}</span></div>
               <p class="mt-2 text-xs text-gray-500">{{ runConfiguration(selected) }}</p>
+              <section v-if="assessment" class="mt-4 rounded-xl border p-4" :class="conclusionStyle" aria-labelledby="cache-conclusion-title" data-testid="cache-conclusion">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <h3 id="cache-conclusion-title" class="text-sm font-semibold">{{ t('admin.groupCacheTest.conclusion') }}</h3>
+                  <strong role="status" aria-live="polite" data-testid="cache-verdict" class="rounded-full border border-current px-3 py-1 text-sm">{{ t('admin.groupCacheTest.verdict.' + assessment.verdict) }}</strong>
+                </div>
+                <p class="mt-2 text-xs">{{ t('admin.groupCacheTest.scope', { key: selected.keyId, group: selected.groupId, model: selected.settings.model }) }}</p>
+                <dl class="mt-4 grid gap-4 sm:grid-cols-3">
+                  <div><dt class="text-xs">{{ t('admin.groupCacheTest.requestHits') }}</dt><dd class="mt-1 text-lg font-semibold tabular-nums" data-testid="cache-request-hits">{{ assessment.hits }} / {{ assessment.observed }} <span class="text-sm">({{ percent(assessment.requestHitRate) }})</span></dd></div>
+                  <div><dt class="text-xs">{{ t('admin.groupCacheTest.coverage') }}</dt><dd class="mt-1 text-lg font-semibold tabular-nums" data-testid="cache-coverage">{{ assessment.observed }} / {{ assessment.completed }} <span class="text-sm">({{ percent(assessment.coverage) }})</span></dd>
+                    <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10" role="progressbar" :aria-label="t('admin.groupCacheTest.coverage')" :aria-valuenow="assessment.coverage === null ? undefined : Math.round(assessment.coverage * 100)" :aria-valuemin="0" :aria-valuemax="100"><div class="h-full rounded-full bg-current" :style="{ width: `${(assessment.coverage ?? 0) * 100}%` }" /></div>
+                  </div>
+                  <div><dt class="text-xs">{{ t('admin.groupCacheTest.affinity') }}</dt><dd class="mt-1 text-sm font-semibold" data-testid="cache-affinity" :class="assessment.affinity === 'changed_account' ? 'text-amber-800 dark:text-amber-300' : ''">{{ t('admin.groupCacheTest.affinityState.' + assessment.affinity) }}</dd><dd class="mt-1 text-xs">{{ t(selected.affinityRequested ? 'admin.groupCacheTest.affinityRequested' : 'admin.groupCacheTest.affinityUnknown') }}</dd></div>
+                </dl>
+                <p class="mt-3 text-xs">{{ t('admin.groupCacheTest.repeatCompletion', { complete: assessment.completed, expected: assessment.expected }) }}</p>
+                <p class="mt-2 text-xs leading-5">{{ t('admin.groupCacheTest.conclusionHint') }}</p>
+              </section>
               <div class="my-5 grid grid-cols-2 gap-3 2xl:grid-cols-4">
-                <div class="cache-stat"><span>{{ t('admin.groupCacheTest.baselineHit') }}</span><strong>{{ percent(cacheHitRate(selected.rounds[0]?.tokens ?? null)) }}</strong></div>
+                <div class="cache-stat"><span>{{ t('admin.groupCacheTest.baselineHit') }}</span><strong>{{ percent(selected.rounds[0]?.status === 'completed' ? cacheHitRate(selected.rounds[0].tokens) : null) }}</strong></div>
                 <div class="cache-stat"><span>{{ t('admin.groupCacheTest.repeatHit') }}</span><strong>{{ percent(cacheHitRate(repeatTokens)) }}</strong><small>{{ t('admin.groupCacheTest.reportedRounds', { count: comparableRounds }) }}</small></div>
                 <div class="cache-stat"><span>{{ t('admin.groupCacheTest.cacheRead') }}</span><strong>{{ number(repeatTokens.read) }}</strong><small>{{ t('admin.groupCacheTest.repeatOnly') }}</small></div>
                 <div class="cache-stat"><span>{{ t('admin.groupCacheTest.billed') }}</span><strong>{{ money(knownCost) }}</strong><small>{{ t('admin.groupCacheTest.billsMatched', { count: matchedBills, total: selected.rounds.length }) }}</small></div>
@@ -59,7 +75,7 @@
               <p class="cache-hint">{{ t('admin.groupCacheTest.resultHint') }}</p>
               <div class="mt-4 overflow-x-auto">
                 <table class="cache-table"><thead><tr><th>{{ t('admin.groupCacheTest.round') }}</th><th>{{ t('admin.groupCacheTest.input') }}</th><th>{{ t('admin.groupCacheTest.cacheRead') }}</th><th>{{ t('admin.groupCacheTest.cacheWrite') }}</th><th>{{ t('admin.groupCacheTest.hitRate') }}</th><th>{{ t('admin.groupCacheTest.output') }}</th><th>{{ t('admin.groupCacheTest.firstText') }}</th><th>{{ t('admin.groupCacheTest.billed') }}</th></tr></thead><tbody>
-                  <tr v-for="round in selected.rounds" :key="round.index"><td><button class="text-left text-primary-600 underline underline-offset-4" :aria-expanded="detailIndex === round.index" @click="detailIndex = detailIndex === round.index ? null : round.index">{{ round.index === 1 ? t('admin.groupCacheTest.baseline') : t('admin.groupCacheTest.repeat', { index: round.index - 1 }) }}</button><small :class="round.status === 'failed' ? 'text-red-600' : ''">{{ t('admin.groupCacheTest.status.' + round.status) }}</small></td><td>{{ number(round.tokens?.input) }}</td><td>{{ number(round.tokens?.read) }}</td><td>{{ number(round.tokens?.write) }}</td><td>{{ percent(cacheHitRate(round.tokens)) }}</td><td>{{ number(round.tokens?.output) }}</td><td>{{ ms(round.firstTextMs) }}</td><td>{{ money(round.bill?.actualCost) }}<small>{{ t('admin.groupCacheTest.billing.' + round.billingState) }}</small></td></tr>
+                  <tr v-for="round in selected.rounds" :key="round.index"><td><button class="text-left text-primary-600 underline underline-offset-4" :aria-expanded="detailIndex === round.index" @click="detailIndex = detailIndex === round.index ? null : round.index">{{ round.index === 1 ? t('admin.groupCacheTest.baseline') : t('admin.groupCacheTest.repeat', { index: round.index - 1 }) }}</button><small :class="round.status === 'failed' ? 'text-red-600' : ''">{{ t('admin.groupCacheTest.status.' + round.status) }}</small></td><td>{{ number(round.tokens?.input) }}</td><td>{{ number(round.tokens?.read) }}</td><td>{{ number(round.tokens?.write) }}</td><td>{{ percent(round.status === 'completed' ? cacheHitRate(round.tokens) : null) }}</td><td>{{ number(round.tokens?.output) }}</td><td>{{ ms(round.firstTextMs) }}</td><td>{{ money(round.bill?.actualCost) }}<small>{{ t('admin.groupCacheTest.billing.' + round.billingState) }}</small></td></tr>
                 </tbody></table>
               </div>
               <div v-if="detail" class="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-900" data-testid="cache-detail">
@@ -95,7 +111,7 @@ import { useAuthStore } from '@/stores/auth'
 import * as groupsAPI from '@/api/admin/groups'
 import * as keysAPI from '@/api/keys'
 import { executeCacheRun, reconcileCacheBills } from '@/api/groupCacheTest'
-import { CACHE_ENDPOINTS, DEFAULT_CACHE_SETTINGS, aggregateCacheTokens, buildCachePrefix, cacheHitRate, createCacheTestId, exportCacheRun, loadCacheHistory, saveCacheHistory, validCacheSettings, type CacheTestRun } from '@/utils/groupCacheTest'
+import { CACHE_ENDPOINTS, DEFAULT_CACHE_SETTINGS, aggregateCacheTokens, assessCacheRun, buildCachePrefix, cacheHitRate, createCacheTestId, exportCacheRun, loadCacheHistory, saveCacheHistory, validCacheSettings, type CacheTestRun } from '@/utils/groupCacheTest'
 import type { AdminGroup, ApiKey } from '@/types'
 
 const { t } = useI18n(), auth = useAuthStore()
@@ -109,6 +125,13 @@ const group = computed(() => groups.value.find(g => g.id === groupId.value))
 const canStart = computed(() => !!auth.user && !!group.value && !!keyId.value && keys.value.some(k => k.id === keyId.value) && !busy.value && !loading.value && !keysLoading.value && !keyError.value && validCacheSettings(settings))
 const prefixLength = computed(() => buildCachePrefix('00000000-0000-0000-0000-000000000000', settings.prefixBlocks).length)
 const detail = computed(() => selected.value?.rounds.find(r => r.index === detailIndex.value))
+const assessment = computed(() => selected.value ? assessCacheRun(selected.value) : null)
+const conclusionStyle = computed(() => {
+  const verdict = assessment.value?.verdict
+  if (verdict === 'failed' || verdict === 'miss') return 'border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300'
+  if (verdict === 'hit') return 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300'
+  return 'border-slate-200 bg-slate-50 text-slate-700 dark:border-dark-600 dark:bg-dark-800 dark:text-slate-300'
+})
 const repeatTokens = computed(() => aggregateCacheTokens(selected.value?.rounds.slice(1) ?? []))
 const comparableRounds = computed(() => selected.value?.rounds.slice(1).filter(r => r.status === 'completed' && cacheHitRate(r.tokens) !== null).length ?? 0)
 const matchedBills = computed(() => selected.value?.rounds.filter(r => r.bill?.actualCost != null).length ?? 0)

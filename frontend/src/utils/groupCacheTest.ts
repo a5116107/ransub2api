@@ -57,6 +57,8 @@ export interface CacheRound {
 }
 export interface CacheTestRun {
   version: 1
+  /** Present only for runs that requested explicit, run-scoped session affinity. */
+  affinityRequested?: boolean
   id: string
   startedAt: string
   finishedAt: string | null
@@ -103,10 +105,11 @@ export function buildCacheRequest(s: CacheTestSettings, prefix: string, round: n
   const suffix = 'Round ' + round + '. Reply with only CACHE_OK. Do not summarize the reference notes.'
   const base = { model: s.model.trim(), stream: true }
   if (s.protocol === 'messages') return {
-    ...base, max_tokens: s.maxOutputTokens, messages: [{ role: 'user', content: [
-      { type: 'text', text: prefix, cache_control: { type: 'ephemeral' } },
-      { type: 'text', text: suffix }
-    ] }]
+    ...base, max_tokens: s.maxOutputTokens,
+    // The existing Messages scheduler hashes the complete cacheable message.
+    // Keep the changing round instruction outside its stable cache anchor.
+    system: [{ type: 'text', text: prefix, cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: suffix }]
   }
   const tier = s.serviceTier ? { service_tier: s.serviceTier } : {}
   if (s.protocol === 'responses') return {
@@ -124,15 +127,59 @@ export function nonnegative(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 export function cacheHitRate(tokens: CacheTokens | null): number | null {
-  return tokens?.input && tokens.read !== null && tokens.read <= tokens.input ? tokens.read / tokens.input : null
+  const count = (value: number | null) => value !== null && Number.isSafeInteger(value) && value >= 0
+  if (!tokens || !count(tokens.input) || !count(tokens.read) || tokens.input! <= 0 || tokens.read! > tokens.input!) return null
+  if (tokens.write !== null && (!count(tokens.write) || tokens.write > tokens.input! - tokens.read!)) return null
+  return tokens.read! / tokens.input!
 }
 export function aggregateCacheTokens(rounds: CacheRound[]): CacheTokens {
   const reports = rounds.filter(r => r.status === 'completed' && cacheHitRate(r.tokens) !== null)
   if (!reports.length) return { input: null, output: null, read: null, write: null }
   return reports.reduce<CacheTokens>((sum, r) => ({
     input: (sum.input ?? 0) + r.tokens!.input!, read: (sum.read ?? 0) + r.tokens!.read!,
-    output: (sum.output ?? 0) + (r.tokens!.output ?? 0), write: (sum.write ?? 0) + (r.tokens!.write ?? 0)
+    output: sum.output === null || r.tokens!.output === null ? null : sum.output + r.tokens!.output,
+    write: sum.write === null || r.tokens!.write === null ? null : sum.write + r.tokens!.write
   }), { input: 0, output: 0, read: 0, write: 0 })
+}
+
+export interface CacheRunAssessment {
+  verdict: 'running' | 'failed' | 'stopped' | 'insufficient' | 'partial' | 'hit' | 'miss'
+  expected: number
+  completed: number
+  observed: number
+  hits: number
+  coverage: number | null
+  requestHitRate: number | null
+  tokenHitRate: number | null
+  /** Account continuity only: billing records do not prove a shared upstream cache domain. */
+  affinity: 'same_account' | 'changed_account' | 'unknown'
+}
+
+export function assessCacheRun(run: CacheTestRun): CacheRunAssessment {
+  const ordered = Number.isInteger(run.settings.rounds) && run.settings.rounds >= 2 && run.settings.rounds <= 6 &&
+    run.rounds.length <= run.settings.rounds && run.rounds.every((r, i) => r.index === i + 1)
+  const repeats = ordered ? run.rounds.slice(1) : []
+  const completed = repeats.filter(r => r.status === 'completed')
+  const reports = completed.filter(r => cacheHitRate(r.tokens) !== null)
+  const hits = reports.filter(r => r.tokens!.read! > 0).length
+  const tokenHitRate = cacheHitRate(aggregateCacheTokens(reports))
+  const complete = ordered && run.rounds.length === run.settings.rounds && run.rounds.every(r => r.status === 'completed')
+  const verdict = run.status !== 'completed' ? run.status :
+    !reports.length || tokenHitRate === null ? 'insufficient' :
+    !complete || reports.length !== completed.length ? 'partial' : hits > 0 ? 'hit' : 'miss'
+  // Require every round, not just the first and last bill. Partial reconciliation
+  // must not turn a missing middle route into a claim of stable account usage.
+  const billed = complete && run.rounds.every(r => r.billingState === 'matched' && r.bill &&
+    r.bill.requestId === r.requestId && r.bill.groupId === run.groupId && r.bill.model === run.settings.model &&
+    Number.isSafeInteger(r.bill.accountId) && r.bill.accountId! > 0) &&
+    new Set(run.rounds.map(r => r.bill!.id)).size === run.rounds.length &&
+    new Set(run.rounds.map(r => r.requestId)).size === run.rounds.length
+  return {
+    verdict, expected: Math.max(0, run.settings.rounds - 1), completed: completed.length, observed: reports.length, hits,
+    coverage: completed.length ? reports.length / completed.length : null,
+    requestHitRate: reports.length ? hits / reports.length : null, tokenHitRate,
+    affinity: billed ? new Set(run.rounds.map(r => r.bill!.accountId)).size === 1 ? 'same_account' : 'changed_account' : 'unknown'
+  }
 }
 export function billFromUsage(log: AdminUsageLog): CacheBill {
   const input = nonnegative(log.input_tokens), read = nonnegative(log.cache_read_tokens), write = nonnegative(log.cache_creation_tokens)
@@ -159,7 +206,7 @@ function pick<T extends object, K extends keyof T>(value: T, fields: readonly K[
 // user objects, or complete usage records.
 export function safeCacheRun(run: CacheTestRun): CacheTestRun {
   return {
-    ...pick(run, ['version', 'id', 'startedAt', 'finishedAt', 'groupId', 'groupName', 'keyId', 'keyName', 'status']),
+    ...pick(run, ['version', 'affinityRequested', 'id', 'startedAt', 'finishedAt', 'groupId', 'groupName', 'keyId', 'keyName', 'status']),
     settings: pick(run.settings, ['protocol', 'model', 'rounds', 'prefixBlocks', 'intervalMs', 'timeoutMs', 'maxOutputTokens', 'reasoningEffort', 'serviceTier']),
     rounds: run.rounds.map(r => ({
       ...pick(r, roundFields), tokens: r.tokens ? pick(r.tokens, tokenFields) : null,
@@ -196,7 +243,7 @@ export function loadCacheHistory(userId: number, storage?: Storage): CacheTestRu
     const items = JSON.parse(raw)
     if (!Array.isArray(items)) return []
     return items.slice(0, 20).filter((r): r is CacheTestRun =>
-      r && r.version === 1 && typeof r.id === 'string' && typeof r.startedAt === 'string' &&
+      r && r.version === 1 && (r.affinityRequested === undefined || typeof r.affinityRequested === 'boolean') && typeof r.id === 'string' && typeof r.startedAt === 'string' &&
       typeof r.groupName === 'string' && typeof r.keyName === 'string' && Number.isInteger(r.groupId) &&
       Number.isInteger(r.keyId) && r.settings && validCacheSettings(r.settings) &&
       ['running', 'completed', 'stopped', 'failed'].includes(r.status) &&
