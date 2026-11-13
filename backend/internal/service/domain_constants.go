@@ -622,7 +622,7 @@ const (
 	SettingKeyRateLimit429CooldownSettings = "rate_limit_429_cooldown_settings"
 	// SettingKeyOpenAIImagesOAuthUnavailableCooldownSettings stores the cooldown applied when the OAuth image tool is unavailable.
 	SettingKeyOpenAIImagesOAuthUnavailableCooldownSettings = "openai_images_oauth_unavailable_cooldown_settings"
-	// SettingKeyOpenAIAPIKeyHealthBreakerSettings stores the opt-in OpenAI pool API-key breaker config.
+	// SettingKeyOpenAIAPIKeyHealthBreakerSettings stores the opt-in OpenAI API-key breaker config.
 	SettingKeyOpenAIAPIKeyHealthBreakerSettings = "openai_apikey_health_breaker_settings"
 	// SettingKeyOpenAIResponseHeaderTimeoutSettings stores the admin-configurable
 	// OpenAI/Codex response-header timeout and enable toggle.

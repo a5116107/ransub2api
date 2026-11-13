@@ -1284,6 +1284,20 @@ export default {
         saveFailed: 'Failed to save OpenAI response header timeout settings',
         loadFailed: 'Could not load the saved timeout. Reload before editing.'
       },
+      openaiAPIKeyHealthBreaker: {
+        title: 'OpenAI API key health breaker',
+        description: 'Briefly pause an account after repeated upstream failures so later requests avoid the same failing route. Off by default; independent of the response header timeout.',
+        enabled: 'Enable cross-request health breaker',
+        window_minutes: 'Window (minutes, 1–60)',
+        failure_threshold: 'Failure count (1–10000)',
+        cooldown_minutes: 'Cooldown (minutes, 1–60)',
+        scopeHint: 'OpenAI API key accounts only; pool mode and same-account retries are not required. Counts attributable upstream 429/5xx and submitted response-header timeouts, not client cancellation, request-scoped capacity errors or local concurrency rejection. Successes do not reset the window; high concurrency can still trip the breaker.',
+        recoveryHint: 'After cooldown the original admission checks apply again; expiry is not a successful recovery probe. Manual disable, group, model, quota and cost limits remain. Saves apply immediately on this node and within 30 seconds on others. Disabling does not clear an existing cooldown.',
+        invalid: 'Enter whole numbers within the displayed ranges.',
+        saved: 'Health breaker settings saved',
+        saveFailed: 'Save failed. Your edits are preserved.',
+        loadFailed: 'Loading failed. Reload before editing.'
+      },
       rectifier: {
         title: 'Request Rectifier',
         description: 'Automatically fix request parameters and retry when upstream returns specific errors',

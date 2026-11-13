@@ -1549,6 +1549,29 @@ export async function updateOpenAIResponseHeaderTimeoutSettings(
   return data;
 }
 
+export interface OpenAIAPIKeyHealthBreakerSettings {
+  enabled: boolean;
+  window_minutes: number;
+  failure_threshold: number;
+  cooldown_minutes: number;
+}
+
+export async function getOpenAIAPIKeyHealthBreakerSettings(): Promise<OpenAIAPIKeyHealthBreakerSettings> {
+  const { data } = await apiClient.get<OpenAIAPIKeyHealthBreakerSettings>(
+    "/admin/settings/openai-apikey-health-breaker",
+  );
+  return data;
+}
+
+export async function updateOpenAIAPIKeyHealthBreakerSettings(
+  settings: OpenAIAPIKeyHealthBreakerSettings,
+): Promise<OpenAIAPIKeyHealthBreakerSettings> {
+  const { data } = await apiClient.put<OpenAIAPIKeyHealthBreakerSettings>(
+    "/admin/settings/openai-apikey-health-breaker", settings,
+  );
+  return data;
+}
+
 export interface AccountPerformanceSettings {
   window_minutes: number;
 }
@@ -1764,6 +1787,8 @@ export const settingsAPI = {
   updateStreamTimeoutSettings,
   getOpenAIResponseHeaderTimeoutSettings,
   updateOpenAIResponseHeaderTimeoutSettings,
+  getOpenAIAPIKeyHealthBreakerSettings,
+  updateOpenAIAPIKeyHealthBreakerSettings,
   getAccountPerformanceSettings,
   updateAccountPerformanceSettings,
   getRectifierSettings,

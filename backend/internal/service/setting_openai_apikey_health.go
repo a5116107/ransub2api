@@ -47,9 +47,17 @@ func (s *SettingService) GetOpenAIAPIKeyHealthBreakerSettings(ctx context.Contex
 		result := cached.settings
 		return &result, nil
 	}
+	s.openAIAPIKeyHealthBreakerMu.Lock()
+	defer s.openAIAPIKeyHealthBreakerMu.Unlock()
+	if cached, ok := s.openAIAPIKeyHealthBreakerCache.Load().(*cachedOpenAIAPIKeyHealthBreakerSettings); ok && cached != nil && time.Now().Before(cached.expiresAt) {
+		result := cached.settings
+		return &result, nil
+	}
 
 	settings := DefaultOpenAIAPIKeyHealthBreakerSettings()
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAIAPIKeyHealthBreakerSettings)
+	dbCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	value, err := s.settingRepo.GetValue(dbCtx, SettingKeyOpenAIAPIKeyHealthBreakerSettings)
 	if err != nil && !errors.Is(err, ErrSettingNotFound) {
 		return nil, fmt.Errorf("get OpenAI API key health breaker settings: %w", err)
 	}
@@ -65,4 +73,38 @@ func (s *SettingService) GetOpenAIAPIKeyHealthBreakerSettings(ctx context.Contex
 	})
 	result := *settings
 	return &result, nil
+}
+
+// SetOpenAIAPIKeyHealthBreakerSettings keeps the hot-path cache consistent with
+// persisted admin settings. Other instances refresh within the existing TTL.
+func (s *SettingService) SetOpenAIAPIKeyHealthBreakerSettings(ctx context.Context, settings *OpenAIAPIKeyHealthBreakerSettings) error {
+	if s == nil || s.settingRepo == nil {
+		return fmt.Errorf("settings repository is required")
+	}
+	if settings == nil {
+		return fmt.Errorf("settings are required")
+	}
+	if settings.WindowMinutes < 1 || settings.WindowMinutes > 60 {
+		return fmt.Errorf("window_minutes must be between 1-60")
+	}
+	if settings.FailureThreshold < 1 || settings.FailureThreshold > 10000 {
+		return fmt.Errorf("failure_threshold must be between 1-10000")
+	}
+	if settings.CooldownMinutes < 1 || settings.CooldownMinutes > 60 {
+		return fmt.Errorf("cooldown_minutes must be between 1-60")
+	}
+	saved := *settings
+	data, err := json.Marshal(saved)
+	if err != nil {
+		return fmt.Errorf("marshal OpenAI API key health breaker settings: %w", err)
+	}
+	s.openAIAPIKeyHealthBreakerMu.Lock()
+	defer s.openAIAPIKeyHealthBreakerMu.Unlock()
+	if err := s.settingRepo.Set(ctx, SettingKeyOpenAIAPIKeyHealthBreakerSettings, string(data)); err != nil {
+		return err
+	}
+	s.openAIAPIKeyHealthBreakerCache.Store(&cachedOpenAIAPIKeyHealthBreakerSettings{
+		settings: saved, expiresAt: time.Now().Add(openAIAPIKeyHealthBreakerSettingsCacheTTL),
+	})
+	return nil
 }

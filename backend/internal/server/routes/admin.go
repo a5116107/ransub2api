@@ -787,6 +787,8 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpA
 		// OpenAI/Codex 响应头超时配置
 		adminSettings.GET("/openai-response-header-timeout", h.Admin.Setting.GetOpenAIResponseHeaderTimeoutSettings)
 		adminSettings.PUT("/openai-response-header-timeout", h.Admin.Setting.UpdateOpenAIResponseHeaderTimeoutSettings)
+		adminSettings.GET("/openai-apikey-health-breaker", h.Admin.Setting.GetOpenAIAPIKeyHealthBreakerSettings)
+		adminSettings.PUT("/openai-apikey-health-breaker", h.Admin.Setting.UpdateOpenAIAPIKeyHealthBreakerSettings)
 		adminSettings.GET("/account-performance", h.Admin.Setting.GetAccountPerformanceSettings)
 		adminSettings.PUT("/account-performance", h.Admin.Setting.UpdateAccountPerformanceSettings)
 		// 请求整流器配置

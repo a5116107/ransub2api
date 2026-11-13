@@ -1278,6 +1278,20 @@ export default {
         saveFailed: '保存 OpenAI 响应头超时设置失败',
         loadFailed: '无法加载已保存的超时设置，请重新加载后编辑。'
       },
+      openaiAPIKeyHealthBreaker: {
+        title: 'OpenAI API Key 健康熔断',
+        description: '累计多次上游失败后短暂停调账号，避免后续请求反复等待同一故障线路。默认关闭，独立于响应头超时开关。',
+        enabled: '启用跨请求健康熔断',
+        window_minutes: '统计窗口（分钟，1–60）',
+        failure_threshold: '累计失败次数（1–10000）',
+        cooldown_minutes: '暂停调度（分钟，1–60）',
+        scopeHint: '仅 OpenAI API Key 账号，无需开启池模式或同账号重试。统计可归属上游的 429/5xx 和已发送请求的响应头超时；客户端取消、请求级容量错误及本地并发拒绝不计。成功请求不清除窗口内失败，并发较高时也可能触发。',
+        recoveryHint: '冷却到期后重新参与原有准入检查，不等于探测恢复成功。手动停用、分组、模型、额度与成本限制始终保留；保存本节点立即生效，其他节点最多 30 秒刷新。关闭不撤销已触发的冷却。',
+        invalid: '请填写范围内的整数。',
+        saved: '健康熔断设置已保存',
+        saveFailed: '健康熔断设置保存失败，编辑内容已保留。',
+        loadFailed: '健康熔断设置加载失败，请刷新后编辑。'
+      },
       rectifier: {
         title: '请求整流器',
         description: '当上游返回特定错误时，自动修正请求参数并重试，提高请求成功率',

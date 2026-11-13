@@ -682,6 +682,14 @@
             </div>
           </div>
 
+          <div class="card">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 id="settings-section-openai-apikey-health-breaker" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiAPIKeyHealthBreaker.title') }}</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiAPIKeyHealthBreaker.description') }}</p>
+            </div>
+            <OpenAIAPIKeyHealthBreakerSettings />
+          </div>
+
           <!-- Request Rectifier Settings -->
           <div class="card">
             <div
@@ -9651,6 +9659,7 @@ import GroupBadge from "@/components/common/GroupBadge.vue";
 import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import RequestTimezoneSettings from "@/components/settings/RequestTimezoneSettings.vue";
 import AccountPerformanceSettings from "@/components/settings/AccountPerformanceSettings.vue";
+import OpenAIAPIKeyHealthBreakerSettings from "@/components/settings/OpenAIAPIKeyHealthBreakerSettings.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";

@@ -16,7 +16,7 @@ import (
 const openAIAPIKeyHealthBreakerReason = "openai_apikey_health_breaker"
 
 func isOpenAIAPIKeyHealthBreakerAccount(account *Account) bool {
-	return account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey && account.IsPoolMode()
+	return account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey
 }
 
 func classifyOpenAIAPIKeyHealthFailure(err error) (int, []byte, bool) {
@@ -31,8 +31,15 @@ func classifyOpenAIAPIKeyHealthFailure(err error) (int, []byte, bool) {
 		if failoverErr.IsCredentialFailure() ||
 			failoverErr.RequestScopedTransient ||
 			failoverErr.RetryableOnSameAccount ||
-			failoverErr.Scope == GatewayFailureScopeRequest ||
 			failoverErr.Scope == GatewayFailureScopeProvider {
+			return failoverErr.StatusCode, failoverErr.ResponseBody, false
+		}
+		// The submitted header deadline is request-scoped for replay/billing,
+		// but repeated waits still provide an upstream health signal. Only the
+		// explicit submission marker qualifies; client deadlines and other
+		// request-scoped admission/capacity failures remain excluded.
+		if failoverErr.Scope == GatewayFailureScopeRequest &&
+			!(failoverErr.HeaderTimeoutSubmitted && failoverErr.StatusCode == http.StatusGatewayTimeout) {
 			return failoverErr.StatusCode, failoverErr.ResponseBody, false
 		}
 		if failoverErr.StatusCode == http.StatusTooManyRequests || failoverErr.StatusCode >= http.StatusInternalServerError {

@@ -18,6 +18,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { tab: 'gateway', id: 'overload-cooldown', titleKey: 'admin.settings.overloadCooldown.title' },
   { tab: 'gateway', id: 'rate-limit429cooldown', titleKey: 'admin.settings.rateLimit429Cooldown.title' },
   { tab: 'gateway', id: 'openai-response-header-timeout', titleKey: 'admin.settings.openaiResponseHeaderTimeout.title' },
+  { tab: 'gateway', id: 'openai-apikey-health-breaker', titleKey: 'admin.settings.openaiAPIKeyHealthBreaker.title', keywordKeys: ['admin.settings.openaiAPIKeyHealthBreaker.description', 'admin.settings.openaiAPIKeyHealthBreaker.scopeHint'] },
   { tab: 'gateway', id: 'stream-timeout', titleKey: 'admin.settings.streamTimeout.title' },
   { tab: 'gateway', id: 'account-performance', titleKey: 'accountPerformance.settings.title', keywordKeys: ['accountPerformance.settings.windowMinutes', 'accountPerformance.settings.description'] },
   { tab: 'gateway', id: 'rectifier', titleKey: 'admin.settings.rectifier.title' },

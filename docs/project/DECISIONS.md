@@ -2345,3 +2345,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 
 - 观测修复提交bca8d2e59后，复现run43352630354的明确拒绝为GitHub App缺workflows权限，目标account-performance-error-threshold.yml；非快进历史不是本次原因。修复tracking提交保留自有workflow树，其他文件逐一与原始上游核对，双亲保留上游历史；一次本地bootstrap后使用短期token续推，不上传用户token。旧候选已合入时改提新tracking，不覆盖尚未合入的人工候选。
 - 镜像真实Git回归先发现分支前缀冲突及alternate-index rm需显式cached强制，均在夹具内修复；最终16/16通过，覆盖两次上游更新、幂等、祖先关系、非工作流源码相等与工作区/索引不变。
+
+### 2026-11-13 — 线上候选耗尽与跨请求响应头超时保护
+
+- 线上故障日志证实请求已执行切线（switch_count=1/max_switches=10），但组2故障期候选池仅1条，随后 pool=1/excluded=1；单账号测试成功或 active 不证明符合网关的分组/模型/人工开关/额度条件。账号3当时 schedulable=false 且计划测试曾403额度不足，不强制恢复。9随后加入组2已有200；10后加入也有200，本次再查已不绑定组，保留当前人工配置，不按历史快照重绑。
+- 进一步只读核查发现三项叠加：生产健康熔断设置不存在（默认关闭）；提交后的响应头超时带request scope而被分类器排除；7/9/10均未开pool_mode，旧熔断资格又要求池模式。响应头等待仍为60秒。用户明确选择启用5分钟3次、暂停1分钟，接受成功不重置滚动失败窗口的高并发取舍。
+- 原位将健康熔断与同账号重试模式解耦，只针对OpenAI API Key，未开启池模式或增加重试。仅明确HeaderTimeoutSubmitted/504可穿过request-scope过滤；取消、deadline、本地共享Key拒绝、请求级瞬态、provider scope和既有专门恢复路径保持排除。未改收费、分组、模型、倍率或缓存归属，不把冷却到期称为探测恢复通过。
+- 新增既有设置键的GET/PUT管理入口和网关设置卡片，默认关闭；显示累计阈值/范围、30秒跨实例刷新、关闭不清已有冷却和手动停用保留。保存和刷新用本实例锁串行发布，写入失败保留已生效缓存；测试覆盖新进程回读、草稿保留、加载失败重试、重复保存及中英文标签。
+- 旧分类器新增两例实跑失败（eligible期望true实际false）。非池模式回归首轮误写不存在的PlatformClaude导致编译失败，改为真实PlatformAnthropic后实跑断言失败；修复资格判断后通过，不将夹具编译错误计作行为复现。最终三包go test -race -p 1 -tags unit ./internal/service ./internal/handler/admin ./internal/repository -run 'Test(ClassifyOpenAIAPIKeyHealthFailure|OpenAIAPIKeyHealth|OpenAIUpload|OpenAIHTTP|PR612Header|UpstreamKeyAdmission|GrokForbidden)' -count=1 -timeout 8m均ok。独立Redis滚动窗口和服务阈值/临时状态/冷却恢复分别验证，不冒充生产注入熔断。
+- 前端SettingsView92、组件最终9、搜索4和i18n3项通过（前轮组件7被最终9覆盖，不重复计数）；vue-tsc与8文件ESLint退出0。原SettingsView夹具仍有router-link警告及Browserslist数据旧提示，未为静默测试修改无关行为或依赖。当前应用候选2.21.0-ransub.2；准备自有发行和生产副本验证，尚未部署，也未启用生产配置，不运行CI。原28项20done/8部分不变。
