@@ -4,7 +4,9 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -82,5 +84,39 @@ func TestSchedulerSnapshotIDRetryFiltersLatestMembership(t *testing.T) {
 			require.Empty(t, ids)
 			require.Empty(t, cache.snapshot)
 		})
+	}
+}
+
+func TestSchedulerSnapshotRetryRetainsCoolingMembers(t *testing.T) {
+	until := time.Now().Add(time.Minute)
+	for _, kind := range []string{"temporary", "overload", "rate_limit"} {
+		for _, idWriter := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/ids_%t", kind, idWriter), func(t *testing.T) {
+				account := Account{ID: 101, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, GroupIDs: []int64{10}}
+				switch kind {
+				case "temporary":
+					account.TempUnschedulableUntil = &until
+				case "overload":
+					account.OverloadUntil = &until
+				case "rate_limit":
+					account.RateLimitResetAt = &until
+				}
+				source := &retryAccountRepository{current: []Account{account}}
+				cache := &retryAccountCache{}
+				wrapped := &codexOrderedSchedulerCache{SchedulerCache: &latestSnapshotIDCache{cache}, source: source}
+				bucket := SchedulerBucket{GroupID: 10, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+				ctx := context.WithValue(t.Context(), schedulerOutboxRetryPublicationKey{}, true)
+				token := SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}
+				if idWriter {
+					ids, err := wrapped.SetSnapshotAndReturnAccountIDs(ctx, bucket, token, []Account{account})
+					require.NoError(t, err)
+					require.Equal(t, []int64{account.ID}, ids)
+				} else {
+					require.NoError(t, wrapped.SetSnapshot(ctx, bucket, token, []Account{account}))
+				}
+				require.Len(t, cache.snapshot, 1)
+				require.False(t, cache.snapshot[0].IsSchedulable(), "retaining membership must not bypass cooldown")
+			})
+		}
 	}
 }

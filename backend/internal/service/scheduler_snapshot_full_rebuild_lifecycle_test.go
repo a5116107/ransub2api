@@ -198,32 +198,12 @@ func (r *fullRebuildAccountRepo) record(groupID int64, platform string) ([]Accou
 	return []Account{{ID: 1, Platform: platform, Status: StatusActive, Schedulable: true}}, nil
 }
 
-func (r *fullRebuildAccountRepo) ListSchedulableByGroupIDAndPlatform(_ context.Context, groupID int64, platform string) ([]Account, error) {
-	return r.record(groupID, platform)
-}
-
-func (r *fullRebuildAccountRepo) ListSchedulableByGroupIDAndPlatforms(_ context.Context, groupID int64, platforms []string) ([]Account, error) {
-	return r.record(groupID, firstPlatform(platforms))
-}
-
-func (r *fullRebuildAccountRepo) ListSchedulableUngroupedByPlatform(_ context.Context, platform string) ([]Account, error) {
-	return r.record(0, platform)
-}
-
-func (r *fullRebuildAccountRepo) ListSchedulableUngroupedByPlatforms(_ context.Context, platforms []string) ([]Account, error) {
-	return r.record(0, firstPlatform(platforms))
-}
-
-func (r *fullRebuildAccountRepo) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]Account, error) {
-	panic("unexpected ListModelAvailabilityCandidates call")
-}
-
-func (r *fullRebuildAccountRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]Account, error) {
-	return r.record(0, platform)
-}
-
-func (r *fullRebuildAccountRepo) ListSchedulableByPlatforms(_ context.Context, platforms []string) ([]Account, error) {
-	return r.record(0, firstPlatform(platforms))
+func (r *fullRebuildAccountRepo) ListModelAvailabilityCandidates(_ context.Context, groupID *int64, platforms []string, _ bool) ([]Account, error) {
+	var id int64
+	if groupID != nil {
+		id = *groupID
+	}
+	return r.record(id, firstPlatform(platforms))
 }
 
 func (r *fullRebuildAccountRepo) callCount() int {

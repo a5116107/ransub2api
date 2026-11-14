@@ -28,7 +28,9 @@ func filterOutboxRetryBucketAccounts(ctx context.Context, bucket SchedulerBucket
 	simple, _ := ctx.Value(schedulerOutboxRetrySimpleKey{}).(bool)
 	filtered := make([]Account, 0, len(accounts))
 	for _, account := range accounts {
-		if !account.IsSchedulable() {
+		// A retry publishes durable membership too; expiring runtime blocks
+		// are checked by the snapshot reader rather than deleting the member.
+		if !account.IsActive() || !account.Schedulable {
 			continue
 		}
 		if bucket.Mode == SchedulerModeMixed {

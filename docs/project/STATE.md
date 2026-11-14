@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2/D4 New API的null不再误报免费；预览/探测/SQL恢复已验。
-授权：单分支本地修复/验证/提交/自有分支同步；不CI/生产。
-验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository -run ^TestNewAPI -count=2 -timeout=6m
-验证结果：135叶双轮270次通过，fail/skip0；两包vet/增量fast lint0，UI17通过。
-验证来源：573b870b3基线；newapi-null-rate-final；15项输入匹配。
-下一动作：补真实scope/独立参考及缓存域证据，续验原D2–D9。
-尝试：1
-阻塞：供应商scope/独立基线、严格混版及受限清理。
-责任方：接入方、部署及宿主资源拥有者。
-解除条件：提供真实scope/独立参考；统一节点版本；拥有者清理。
+任务：D3冷却到期回池源码回归通过；生产仍待补丁发布。
+授权：本地修复/验证/提交/自有分支同步；线上只读诊断，不CI/生产改写。
+验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository -run ^Test(Scheduler|LocalScheduler|FullSnapshotReader|ListSchedulable|Issue582|ModelAvailability) -count=2 -timeout=5m
+验证结果：323叶双轮646pass，fail/skip0；两包vet0，增量fast lint为0 issues.；源码输入一致。
+验证来源：e2e0c0c83工作差异；H:/Root/DevCache/evidence/sub2api-cooldown-recovery/race-final-checks；生产.3/5ce1d189。
+下一动作：生产补丁发布及加载/请求恢复验收待部署方；原D8网络期限补证待提交。
+尝试：2
+阻塞：生产补丁未发布；供应商scope/独立基线、严格混版及历史受限清理仍待。
+责任方：部署方、接入方及宿主资源拥有者。
+解除条件：批准并发布已验证补丁；补齐scope/独立参考；统一节点版本；拥有者清理。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -34,7 +34,7 @@
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
 | D2.5 | done | HTTP/WS最终凭据、重试及快照/观察员隔离已验；实际组/缓存域仍待证明 |
-| D3 | in_progress | 状态/文本准入及空流/终态/间隔超时已验；.3漏计/初始重选与5/3/1上线，race/副本/公网SSE账单通过；其他能力待验 |
+| D3 | in_progress | .3漏计/初始重选及5/3/1已上线；本地冷却回池323叶双轮/race/vet/lint通过，补丁未上线；其他能力待验 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项和完整回归通过 |
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 未用符号/死计数删除，unused 6→0 |
@@ -73,14 +73,11 @@
 
 - D2/D4：供应商或接入方补unknown关联查询及模型/fast倍率来源契约；不恢复真实采购价格任务。
 - D9既有发布子项已完成；共享配置、在线失效及双候选漏收后恢复已验；旧版重订阅失败，严格混版、非文本及缓存净收益保留原D8/D9。
+- D3：冷却到期仍空池的源码修复已验，生产仍.3/5ce1d189；待补丁发布后核验加载身份与原请求恢复，不以当前成功用量代替。
 - D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
-- 历史拒删候选/overlay/pyc/脚本及stream-health保留，详情见DECISIONS；拥有者清理，不重试/移动；.1包保留。
-- 历史`H:/Root/DevCache/tmp/sub2api-cache-conclusions`拒删，256文件9744426bytes、删除0；拥有者清理，不重试/移动。
+- 历史拒删候选、overlay、pyc、stream-health、cache-conclusions及v2211-verify产物仍待拥有者清理；精确路径/字节及原失败见DECISIONS，删除0，不重试/移动，.1包保留。
+- 历史newapi-retry/newapi-bindings空目录的宿主拒删保持；本轮H:/Root/DevCache/tmp/sub2api-cooldown-recovery同被blocked by policy拦截，独立只读核实0文件/0字节、非重解析点，删除0；拥有者清理。
 - 历史大包lint失败保留；本轮仅增量范围。
-- 历史H:/Root/DevCache/tmp/sub2api-v2211-verify内browser-check.mjs（8305bytes）和handler-identity.test.exe（342989777bytes）删除被blocked by policy拦截，删除0；拥有者手工清理，不重试/移动。
-- 历史mixed-candidate-sub2api（240521376bytes）保留于上述v2211-verify目录；原拒删不重试。
-- 本轮同目录auth-recovery-sub2api（240525472bytes）及空H:/Root/DevCache/tmp/sub2api-auth-recovery-build删除被blocked by policy在启动前拦截，删除0；拥有者手工清理后解除。
-- H:/Root/DevCache/tmp/下sub2api-newapi-retry及sub2api-newapi-bindings空目录均被宿主启动前以blocked by policy拒删；各0文件/0bytes、无活动引用，删除0。拥有者清理，不重试/移动。
