@@ -287,26 +287,9 @@ func (s *ScheduledTestService) ListQualityHistory(ctx context.Context, beforeID 
 	if err != nil {
 		return nil, err
 	}
-	// Results are persisted individually after all model requests have ended.
-	// During those writes (or after a failed write), never label a partial round
-	// as passing simply because its first saved sample passed.
-	for _, item := range items {
-		expected := item.TotalCount
-		if cfg := item.PelicanConfig; cfg != nil && len(cfg.ModelIDs) > 1 {
-			if planned := len(cfg.ModelIDs) * cfg.ParallelCount; planned > expected {
-				expected = planned
-			}
-		}
-		item.TotalCount = expected - item.SkippedCount
-		if item.TotalCount <= 0 {
-			item.TotalCount = 0
-			item.Status = "skipped"
-		} else if item.PassedCount == item.TotalCount {
-			item.Status = "success"
-		} else {
-			item.Status = "failed"
-		}
-	}
+	// The repository classifies every frozen sample before pagination. Do not
+	// reconstruct a round from its latest configuration or overwrite its verdict
+	// merely because the displayed pass/total counts happen to be equal.
 	page := &QualityHistoryPage{Items: items}
 	if len(items) > 100 {
 		page.Items = items[:100]

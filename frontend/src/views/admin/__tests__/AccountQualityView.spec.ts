@@ -1734,6 +1734,22 @@ describe('quality operations', () => {
     expect(wrapper.text()).not.toContain('qualityOps.outcomes.groups_removed')
     wrapper.unmount()
   })
+  it.each([
+    { name: 'incomplete frozen round', status: 'success', round_complete: false, passed_count: 2, total_count: 2, passed: false },
+    { name: 'failed round with equal counts', status: 'failed', round_complete: true, passed_count: 2, total_count: 2, passed: false },
+    { name: 'fractional sample counts', status: 'success', round_complete: true, passed_count: 1.5, total_count: 1.5, passed: false },
+    { name: 'empty round', status: 'skipped', round_complete: false, passed_count: 0, total_count: 0, passed: false },
+    { name: 'complete passing round', status: 'success', round_complete: true, passed_count: 2, total_count: 2, passed: true },
+    { name: 'legacy passing round', status: 'success', round_complete: undefined, passed_count: 2, total_count: 2, passed: true },
+  ])('respects the persisted verdict for $name', async sample => {
+    const operation = { id: 103, plan_id: 4, account_id: 1, account_name: 'Synthetic account',
+      error_message: '', quality_action: 'inconclusive', result_ids: [103, 102], ...sample }
+    vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 0 })
+    const wrapper = mountView(); await flushPromises()
+    expect(wrapper.get('.test-count').classes().includes('test-passed')).toBe(sample.passed)
+    expect(wrapper.text()).toContain(sample.status === 'skipped' ? 'qualityOps.skipped' : sample.passed ? 'qualityOps.roundPassed' : 'qualityOps.roundNotPassed')
+    wrapper.unmount()
+  })
   it('shows one operation row per round and loads response bodies only on demand', async () => {
     const operation = { id: 10, plan_id: 4, account_id: 1, account_name: 'Test account', status: 'success', error_message: '', quality_action: 'restored', passed_count: 2, total_count: 2, result_ids: [10, 9], pelican_config: { quality: { action: 'remove_groups', remove_group_ids: [21] } } }
     vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 10 })

@@ -568,7 +568,10 @@ function date(value: string | null | undefined) { return value ? new Date(value)
 function clock(value: string | number | undefined) { return value ? new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '—' }
 function day(value: string | undefined) { return value ? new Date(value).toLocaleDateString() : '—' }
 function running(plan: ScheduledTestPlan) { return !!plan.running_until && Date.parse(plan.running_until) > Date.now() }
-function allPassed(op: QualityOperation) { return op.total_count > 0 && op.passed_count === op.total_count }
+function allPassed(op: QualityOperation) {
+  return op.status === 'success' && op.round_complete !== false && Number.isSafeInteger(op.total_count) &&
+    Number.isSafeInteger(op.passed_count) && op.total_count > 0 && op.passed_count === op.total_count
+}
 function bpsTrigger(policy?: QualityBPSPolicy) {
   const parts = [
     policy?.failure_threshold ? t('qualityOps.bpsTriggerCount', { n: policy.failure_threshold }) : '',

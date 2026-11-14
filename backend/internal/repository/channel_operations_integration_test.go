@@ -642,6 +642,29 @@ func TestOperationsQualityRequiresUniformFrozenSampleCounts(t *testing.T) {
 					}
 				})
 			}
+			t.Run("canonical_history", func(t *testing.T) {
+				page, readErr := service.NewScheduledTestService(nil, NewScheduledTestResultRepository(integrationDB)).ListQualityHistory(ctx, 0)
+				require.NoError(t, readErr)
+				var history *service.QualityHistoryResult
+				for _, item := range page.Items {
+					if item.PlanID == plan {
+						history = item
+					}
+				}
+				require.NotNil(t, history)
+				wantStatus := "failed"
+				if tc.complete && tc.outcome == "passed" {
+					wantStatus = "success"
+				}
+				require.Equal(t, wantStatus, history.Status, "canonical history must not pass a conflicting or partial frozen round")
+				require.Equal(t, tc.complete, history.RoundComplete)
+				if tc.roundExpected > 0 {
+					require.NotNil(t, history.ExpectedCount)
+					require.Equal(t, tc.roundExpected, *history.ExpectedCount)
+				} else {
+					require.Nil(t, history.ExpectedCount)
+				}
+			})
 		})
 	}
 }

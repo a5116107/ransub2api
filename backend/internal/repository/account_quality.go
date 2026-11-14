@@ -420,24 +420,41 @@ func qualityGroups(ctx context.Context, tx *sql.Tx, accountID int64) ([]byte, er
 // Response bodies are loaded through the existing per-result detail endpoint.
 
 func (r *scheduledTestResultRepository) ListQualityHistory(ctx context.Context, beforeID int64, limit int) ([]*service.QualityHistoryResult, error) {
-	rows, err := r.db.QueryContext(ctx, `WITH rounds AS (
- SELECT r.*, a.id AS account_id,a.name AS account_name,
+	rows, err := r.db.QueryContext(ctx, `WITH selected_rounds AS (
+ SELECT r.plan_id,COALESCE(NULLIF(r.quality_round_id,''),'legacy-'||r.id::text) AS round_key
+ FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id JOIN accounts a ON a.id=p.account_id
+ WHERE jsonb_typeof(r.pelican_config->'quality')='object' AND a.deleted_at IS NULL
+ GROUP BY r.plan_id,COALESCE(NULLIF(r.quality_round_id,''),'legacy-'||r.id::text)
+ HAVING ($1::bigint=0 OR max(r.id)<$1) ORDER BY max(r.id) DESC LIMIT $2
+), scoped AS (
+ SELECT p.account_id,a.name AS account_name,r.id,r.plan_id,r.status,r.created_at,r.started_at,r.finished_at,r.latency_ms,
+ r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,NULLIF(r.pelican_config->>'model_id','') AS measured_model
+ FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id JOIN accounts a ON a.id=p.account_id
+ JOIN selected_rounds s ON s.plan_id=r.plan_id AND s.round_key=COALESCE(NULLIF(r.quality_round_id,''),'legacy-'||r.id::text)
+ WHERE jsonb_typeof(r.pelican_config->'quality')='object' AND a.deleted_at IS NULL
+`+qualityRoundClassification+`, verdicts AS (
+ SELECT account_id,plan_id,round_key,bool_and(round_complete) AS round_complete,
+ bool_and(outcome='passed' OR probes=skipped_probes) AS all_passed,max(round_expected) AS expected_count
+ FROM quality_classified GROUP BY account_id,plan_id,round_key
+), history_rows AS (
+ SELECT r.*,v.round_complete,v.all_passed,v.expected_count,
  row_number() OVER round_window AS row_in_round,
  count(*) FILTER (WHERE r.status='success') OVER round_window AS passed_count,
  count(*) FILTER (WHERE r.status='skipped') OVER round_window AS skipped_count,
- GREATEST(count(*) OVER round_window,COALESCE((r.pelican_config->>'parallel_count')::int,0)) AS total_count,
+ GREATEST(count(*) OVER round_window,COALESCE(v.expected_count,0)) AS total_count,
  array_agg(r.id) OVER round_window AS result_ids,
  min(r.started_at) OVER round_window AS round_started_at,
  max(r.finished_at) OVER round_window AS round_finished_at,
- bool_and(r.status='success') OVER round_window AS all_passed,
  bool_or(r.error_message='answer_mismatch') OVER round_window AS any_wrong
- FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id JOIN accounts a ON a.id=p.account_id
- WHERE r.pelican_config->'quality' IS NOT NULL AND a.deleted_at IS NULL
+ FROM model_sets r JOIN verdicts v ON v.account_id=r.account_id AND v.plan_id=r.plan_id
+ AND v.round_key=COALESCE(NULLIF(r.quality_round_id,''),'legacy-'||r.id::text)
  WINDOW round_window AS (PARTITION BY r.plan_id,COALESCE(NULLIF(r.quality_round_id,''),r.id::text) ORDER BY r.id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
- ) SELECT id,plan_id,CASE WHEN all_passed THEN 'success' ELSE 'failed' END,
+ ) SELECT id,plan_id,CASE WHEN total_count=skipped_count THEN 'skipped' WHEN round_complete AND all_passed THEN 'success' ELSE 'failed' END,
  CASE WHEN any_wrong THEN 'answer_mismatch' ELSE error_message END,
- latency_ms,round_started_at,round_finished_at,created_at,pelican_config,quality_action,quality_judgment,account_id,account_name,passed_count,total_count,skipped_count,result_ids
- FROM rounds WHERE row_in_round=1 AND ($1::bigint=0 OR id<$1) ORDER BY id DESC LIMIT $2`, beforeID, limit)
+ latency_ms,round_started_at,round_finished_at,created_at,
+ CASE WHEN expected_probes IS NOT NULL THEN pelican_config ELSE pelican_config-'parallel_count' END,
+ quality_action,quality_judgment,account_id,account_name,passed_count,total_count-skipped_count,skipped_count,result_ids,round_complete,expected_count
+ FROM history_rows WHERE row_in_round=1 ORDER BY id DESC`, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +463,7 @@ func (r *scheduledTestResultRepository) ListQualityHistory(ctx context.Context, 
 	for rows.Next() {
 		item := &service.QualityHistoryResult{}
 		var cfg, judgment []byte
-		if err := rows.Scan(&item.ID, &item.PlanID, &item.Status, &item.ErrorMessage, &item.LatencyMs, &item.StartedAt, &item.FinishedAt, &item.CreatedAt, &cfg, &item.QualityAction, &judgment, &item.AccountID, &item.AccountName, &item.PassedCount, &item.TotalCount, &item.SkippedCount, pq.Array(&item.ResultIDs)); err != nil {
+		if err := rows.Scan(&item.ID, &item.PlanID, &item.Status, &item.ErrorMessage, &item.LatencyMs, &item.StartedAt, &item.FinishedAt, &item.CreatedAt, &cfg, &item.QualityAction, &judgment, &item.AccountID, &item.AccountName, &item.PassedCount, &item.TotalCount, &item.SkippedCount, pq.Array(&item.ResultIDs), &item.RoundComplete, &item.ExpectedCount); err != nil {
 			return nil, err
 		}
 		if len(cfg) > 0 {

@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: D7.3历史质量配置一致性已验；三入口共享分类，缺失/矛盾保持未知。
-Scope: 单功能分支/单PR本地验证及自有分支同步；不CI、不改生产。
-Source: e7ba4a0f7基线；4份修改源码与SQL/race证据指纹全部匹配。
-Verified: SQL/race双轮154通过（含父项）；新增36叶场景各两轮，fail/skip0。
-Verified: repository vet/增量fast lint0；组件/i18n38通过；原87项/类型/构建输入未变。
-Next: 本地修复交付；D2–D9原供应商scope/基线/非文本、净收益及生产等待保留。
-Attempt: 1
-Blocker: 历史拒删保留；外部证据待接入方；严格混版旧版失败保留。
-Production: 本轮未连接/变更；原.3/5/3/1/优先调度false记录保留。
-Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未关闭。
+任务：D7.3历史结论一致性修复已验；独立验真基线仍待。
+授权：单分支本地修复/验证/提交/自有分支同步；不CI/生产。
+验证命令：go test -json -race -tags unit,integration -p 1 ./internal/repository -run '^(TestQualityActionsRestoreOwnershipAndStaleRuns|TestQualitySkippedRoundHistoryCountsOnlyTestedModels)$' -count=2 -timeout=6m
+验证结果：SQL192及补充16、Service30、前端202通过；vet/lint/类型/构建0。
+验证来源：8946edd11基线；quality-history-*指纹已核。
+下一动作：接入方补scope/独立基线，续验原D2–D9。
+尝试：1
+阻塞：供应商scope/独立基线、严格混版及历史拒删。
+责任方：接入方、部署及资源拥有者。
+解除条件：提供真实scope/独立参考；统一节点版本；拥有者清理。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -21,6 +21,7 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
 - 保留自研/自有渠道；本轮仅单PR本地实施验证，不发布/CI/真实采购价。
+- 原28项20done/8部分，7子项6done/1部分；外部验收不因本地子修复关闭。
 
 ## 任务进度
 
@@ -57,7 +58,7 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 | D5.2 | done | 原始终态摘要、唯一逻辑计数/覆盖、本人筛选、30天边界及中英390px通过；非生产 |
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
-| D7.3 | in_progress | 三页历史结论及SQL配置一致性已验，race154/组件38；原UI证据输入未变；分维度/基线待接入方 |
+| D7.3 | in_progress | 原入口/三页统一冻结分类；SQL192+16、Service30及前端202通过，vet/增量lint0；分维度/基线待接入方 |
 | D8 | in_progress | v2.21.1/SQL/280身份场景、428→431配置兼容和回退重升已验；双候选漏收后恢复通过，旧新版订阅仅1/2；旧副本410→432保留，严格产品/其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
@@ -78,7 +79,7 @@ Remaining: 原28项20done/8部分；7子项6done/1部分，供应商/生产未�
 - Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
 - 历史拒删候选/overlay/pyc/脚本及stream-health保留，详情见DECISIONS；拥有者清理，不重试/移动；.1包保留。
 - 历史`H:/Root/DevCache/tmp/sub2api-cache-conclusions`拒删，256文件9744426bytes、删除0；拥有者清理，不重试/移动。
-- 历史大包lint限制保留，既有局部结果不冒充整合后全仓通过。
+- 历史大包lint失败保留；本轮仅增量范围。
 - 历史H:/Root/DevCache/tmp/sub2api-v2211-verify内browser-check.mjs（8305bytes）和handler-identity.test.exe（342989777bytes）删除被blocked by policy拦截，删除0；拥有者手工清理，不重试/移动。
 - 历史mixed-candidate-sub2api（240521376bytes）保留于上述v2211-verify目录；原拒删不重试。
 - 本轮同目录auth-recovery-sub2api（240525472bytes）及空H:/Root/DevCache/tmp/sub2api-auth-recovery-build删除被blocked by policy在启动前拦截，删除0；拥有者手工清理后解除。

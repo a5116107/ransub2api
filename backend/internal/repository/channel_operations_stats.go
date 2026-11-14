@@ -43,10 +43,14 @@ const channelOperationsQualityBase = `WITH scoped AS (
  AND jsonb_typeof(r.pelican_config->'quality')='object'
 ` + operationsQualityClassification
 
-// All three operations views classify the same frozen round before filtering
+// All history views classify the same frozen round before filtering
 // models. Missing or conflicting sample targets must remain unknown; MAX alone
 // can make different execution snapshots look like a complete passing round.
-const operationsQualityClassification = `), model_sets AS (
+const operationsQualityClassification = qualityRoundClassification + `, classified AS (
+ SELECT * FROM quality_classified WHERE ($7='' OR measured_model=$7)
+)`
+
+const qualityRoundClassification = `), model_sets AS (
  SELECT scoped.*,
  CASE WHEN jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$'
   THEN (pelican_config->>'parallel_count')::int END AS expected_probes,
@@ -59,6 +63,7 @@ const operationsQualityClassification = `), model_sets AS (
  SELECT account_id,plan_id,COALESCE(NULLIF(quality_round_id,''),'legacy-'||id::text) AS round_key,measured_model,
  max(id) AS id,max(created_at) AS observed_at,count(*) AS probes,
  count(*) FILTER(WHERE status='success' AND quality_judgment->>'verdict'='correct') AS passed_probes,
+ count(*) FILTER(WHERE status='skipped') AS skipped_probes,
  bool_or(COALESCE(status='failed' AND quality_judgment->>'verdict'='incorrect' AND error_message IN ('answer_mismatch','state_degraded')
  AND (COALESCE(pelican_config->>'question_kind','')<>'random_reasoning' OR pelican_config->'quality_batch'->>'decision'='peer_passed')
  AND quality_action NOT IN ('','stale_run','comparison_pending') AND quality_round_id<>'',false)) AS degraded,
@@ -85,11 +90,10 @@ const operationsQualityClassification = `), model_sets AS (
   AND count(*)=max(expected_model_count) AND min(expected_model_count)=max(expected_model_count)
   AND min(model_set_min)=max(model_set_max) AND min(expected)=max(expected) AS complete
  FROM rounds GROUP BY account_id,plan_id,round_key
-), classified AS (
+), quality_classified AS (
  SELECT b.*,COALESCE(i.complete,false) AS round_complete,i.round_probes,i.round_expected,
  CASE WHEN NOT COALESCE(i.complete,false) THEN 'inconclusive' WHEN b.degraded THEN 'degraded' WHEN b.passed THEN 'passed' ELSE 'inconclusive' END AS outcome
  FROM rounds b JOIN round_integrity i USING(account_id,plan_id,round_key)
- WHERE ($7='' OR b.measured_model=$7)
 )`
 
 func (r *channelRepository) operationsSection(ctx context.Context, query string, args ...any) service.ChannelOperationsSection {

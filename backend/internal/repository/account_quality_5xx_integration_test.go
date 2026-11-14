@@ -89,24 +89,58 @@ func TestQualityModelResultsRemainIndependentInTransaction(t *testing.T) {
 }
 
 func TestQualitySkippedRoundHistoryCountsOnlyTestedModels(t *testing.T) {
-	f := newQualityBPSFixture(t, `{}`, &service.QualityPolicy{Action: service.QualityActionRemoveModel, RemoveModels: []string{"gpt-6-astra"}, AutoRestore: true})
-	results := NewScheduledTestResultRepository(integrationDB)
-	svc := service.NewScheduledTestService(f.plans, results)
-	cfg := *f.plan.PelicanConfig
-	cfg.ModelIDs = []string{"gpt-6-astra", "gpt-6.1-sol"}
-	cfg.ParallelCount = 1
-	now := time.Now()
-	for _, status := range []string{"success", "skipped"} {
-		_, err := results.Create(context.Background(), &service.ScheduledTestResult{PlanID: f.plan.ID, QualityRoundID: "supported-model-round", Status: status, PelicanConfig: &cfg, StartedAt: now, FinishedAt: now})
-		require.NoError(t, err)
+	for _, tc := range []struct {
+		name     string
+		statuses []string
+		status   string
+		passed   int
+		total    int
+		skipped  int
+		complete bool
+	}{
+		{"supported_peer", []string{"success", "skipped"}, "success", 1, 1, 1, true},
+		{"all_skipped", []string{"skipped", "skipped"}, "skipped", 0, 0, 2, true},
+		{"partial_skipped", []string{"skipped"}, "failed", 0, 1, 1, false},
+		{"failed_peer", []string{"failed", "skipped"}, "failed", 0, 1, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newQualityBPSFixture(t, `{}`, &service.QualityPolicy{Action: service.QualityActionRemoveModel, RemoveModels: []string{"gpt-6-astra"}, AutoRestore: true})
+			results := NewScheduledTestResultRepository(integrationDB)
+			svc := service.NewScheduledTestService(f.plans, results)
+			cfg := *f.plan.PelicanConfig
+			cfg.ModelIDs = []string{"gpt-6-astra", "gpt-6.1-sol"}
+			cfg.ParallelCount = 1
+			now := time.Now()
+			for i, status := range tc.statuses {
+				sample := cfg
+				sample.ModelID = cfg.ModelIDs[i]
+				result := &service.ScheduledTestResult{PlanID: f.plan.ID, QualityRoundID: "supported-model-round", Status: status, QualityAction: "skipped", PelicanConfig: &sample, StartedAt: now, FinishedAt: now}
+				switch status {
+				case "success":
+					result.QualityAction = "passed"
+					result.QualityJudgment = &service.QualityJudgment{Verdict: "correct"}
+				case "failed":
+					result.QualityAction = "failure_counted:1/2"
+					result.QualityJudgment = &service.QualityJudgment{Verdict: "incorrect"}
+					result.ErrorMessage = "answer_mismatch"
+				}
+				_, err := results.Create(context.Background(), result)
+				require.NoError(t, err)
+			}
+			page, err := svc.ListQualityHistory(context.Background(), 0)
+			require.NoError(t, err)
+			require.NotEmpty(t, page.Items)
+			require.Equal(t, f.plan.ID, page.Items[0].PlanID)
+			require.Equal(t, tc.passed, page.Items[0].PassedCount)
+			require.Equal(t, tc.total, page.Items[0].TotalCount)
+			require.Equal(t, tc.skipped, page.Items[0].SkippedCount)
+			require.Equal(t, tc.status, page.Items[0].Status)
+			require.Equal(t, tc.complete, page.Items[0].RoundComplete)
+			require.NotNil(t, page.Items[0].ExpectedCount)
+			require.Equal(t, 2, *page.Items[0].ExpectedCount)
+			require.Len(t, page.Items[0].ResultIDs, len(tc.statuses))
+		})
 	}
-	page, err := svc.ListQualityHistory(context.Background(), 0)
-	require.NoError(t, err)
-	require.NotEmpty(t, page.Items)
-	require.Equal(t, 1, page.Items[0].PassedCount)
-	require.Equal(t, 1, page.Items[0].TotalCount)
-	require.Equal(t, 1, page.Items[0].SkippedCount)
-	require.Equal(t, "success", page.Items[0].Status)
 }
 
 func TestQualityLegacyModelOwnershipDoesNotBlockCurrentRound(t *testing.T) {

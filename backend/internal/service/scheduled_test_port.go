@@ -143,10 +143,12 @@ type ScheduledTestResultRepository interface {
 
 type QualityHistoryResult struct {
 	PelicanHistoryResult
-	PassedCount  int     `json:"passed_count"`
-	SkippedCount int     `json:"skipped_count"`
-	TotalCount   int     `json:"total_count"`
-	ResultIDs    []int64 `json:"result_ids"`
+	RoundComplete bool    `json:"round_complete"`
+	ExpectedCount *int    `json:"expected_count"`
+	PassedCount   int     `json:"passed_count"`
+	SkippedCount  int     `json:"skipped_count"`
+	TotalCount    int     `json:"total_count"`
+	ResultIDs     []int64 `json:"result_ids"`
 }
 type QualityHistoryPage struct {
 	Items      []*QualityHistoryResult `json:"items"`
