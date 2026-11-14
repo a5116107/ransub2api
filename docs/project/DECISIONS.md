@@ -2597,3 +2597,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 沿原100绑定的TestNewAPIIntegrationProbeWaitPersistsAcrossRunners追加一阶段，不增加runner、SQL路径或另一套实现。真实HTTP前三步各等待7秒，库存阶段等待请求上下文结束，以原30秒共享网络期限耗尽而非每请求10秒超时触发失败；断言29–45秒内结束、SQL失败状态/退避写入、无部分倍率及新鲜度、重建runner不额外发请求。调整原绑定到期后仅该绑定恢复，其他99个及四个对照不重探；源测试已有成本/分组保护断言保持。
 - 原执行命令go test -json -race -vet=off -tags unit,integration -p 1 ./internal/repository -run '^TestNewAPIIntegrationProbeWaitPersistsAcrossRunners$' -count=2 -timeout=6m退出0，216.70s、14叶双轮28次通过，fail/skip0；对应repository vet退出0（97.92s），原fast增量lint退出0（5.30s）且0 issues.。已有证据newapi-network-deadline-*的11项输入均重新核对匹配；Go依赖文件按原字节哈希核对，换行归一化差异不误报依赖变更。本轮不重跑未改输入的216秒检查；当前冷却回池两包vet/lint及race也已编译同一测试文件。
 - 原位更新D8说明/STATE，源码测试独立提交后随原自有功能分支同步；本地网络总期限子验收闭环，不代表完整预算、严格混版、供应商scope或生产通过。全局28项20done/8部分、7子项6done/1部分不变；不CI、新PR、发行或生产改写。未创建新的临时目录，继承历史受限清理保持。
+
+## 2026-11-15：R1生产分支自动发行，保留自研与显式安装边界
+
+- 用户追加“发布也需要是自动更新”，授权自有 production 分支自动发行工具。仅将已验收进入 production 的应用代码自动编号为 X.Y.Z-ransub.N、类型检查/打包、验证归档/可执行文件来源、发行自有公开 Release 与 GHCR；上游同步和功能分支不自动提升，不自动部署/重启，不运行测试 CI。单功能 PR 与原28项20done/8部分、7子项6done/1部分保持。
+- 根因实证：原 Release 只有 workflow_dispatch，最新公开版本仍 v2.21.0-ransub.3；更新器已指向自有仓库，缺少新发行而非指错来源。新增 production push 和15分钟 schedule补偿（非时限承诺）；无应用变化不增版本，镜像指针可独立恢复。并发串行、生产前进/降版/异源拒绝、草稿可恢复而已发布资产不可变；镜像 latest 仅随公开稳定发行提升。
+- 前端 build 别名含 check:i18n 测试，故原位改 local-build 为 pnpm exec vue-tsc -b 和 pnpm exec vite build，避免发布阶段隐式运行测试。保留手工发行/预构建镜像入口；线上缓存20分钟且强制检查绕过缓存，安装沿用原按钮。
+- 本机 Windows 首轮17项出现2失败/6错误：旧手动入口断言与新合同不符、WSL bash收到Windows路径及NTFS执行权限差异；按新合同更新回归，直接在WSL运行完整工具集。最终 python3 -B -m unittest discover -s .github/release-tools -p 'test_*.py' 为76/76、0skip，bash -n通过；go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= .github/workflows/release.yml退出0；diff检查通过。包括真实Git历史编号/重用/降版、旧任务、草稿校验/恢复及禁止覆盖已发布资产。未以本地工具测试冒充新应用生产验收。
+- 当前仅R1工具待提升/自动运行实证；D3冷却回池补丁和其余供应商/混版/缓存外部验收保持开放。沿用唯一H盘工作树，未清理或提交历史service/data和拒删资源，未生成新的验证目录或pyc。

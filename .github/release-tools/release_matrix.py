@@ -22,6 +22,85 @@ SIMPLE_CONFIG = Path('.goreleaser.simple.yaml')
 VERSION_FILE = Path('backend/cmd/server/VERSION')
 VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?')
 CUSTOM_STABLE_RE = re.compile(r'\d+\.\d+\.\d+-ransub\.[1-9]\d*')
+CUSTOM_REPOSITORY = 'a5116107/ransub2api'
+
+
+def custom_version(tag):
+    match = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)-ransub\.([1-9]\d*)', tag)
+    if not match:
+        raise ValueError('automatic publication requires a custom stable tag')
+    return tuple(map(int, match.groups()))
+
+
+def automatic_source():
+    if os.environ.get('GITHUB_REPOSITORY') != CUSTOM_REPOSITORY or os.environ.get('GITHUB_REF') != 'refs/heads/production':
+        raise ValueError('automatic publication requires the owner production branch')
+    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, encoding='utf-8').strip()
+    remote = subprocess.check_output(['git', 'ls-remote', 'origin', 'refs/heads/production'], text=True, encoding='utf-8').split()
+    return sha, bool(remote and remote[0] == sha)
+
+
+def automatic_plan(args):
+    sha, current = automatic_source()
+    result = {'publish': 'false', 'sha': sha, 'reason': 'production advanced before this run'}
+    if current:
+        latest = github('GET', f'repos/{CUSTOM_REPOSITORY}/releases/latest')
+        latest_tag = latest['tag_name']
+        if latest.get('draft') or latest.get('prerelease'):
+            raise ValueError('automatic publication requires an existing custom stable channel')
+        published_version = custom_version(latest_tag)
+        pinned = VERSION_FILE.read_text(encoding='utf-8').strip()
+        if not VERSION_RE.fullmatch(pinned) or ('-' in pinned and not CUSTOM_STABLE_RE.fullmatch(pinned)):
+            raise ValueError('automatic publication requires a stable VERSION')
+        base = pinned.split('-')[0]
+        if tuple(map(int, base.split('.'))) < published_version[:3]:
+            raise ValueError('automatic publication must not downgrade the stable channel')
+        subprocess.run(['git', 'merge-base', '--is-ancestor', f'{latest_tag}^{{commit}}', 'HEAD'], check=True)
+        changed = subprocess.run(['git', 'diff', '--quiet', f'{latest_tag}^{{commit}}', 'HEAD', '--', '.',
+                                  ':(exclude).github/**', ':(exclude)docs/**', ':(exclude)**/*.md',
+                                  ':(exclude)backend/cmd/server/VERSION'], check=False).returncode
+        if changed not in (0, 1):
+            raise ValueError('could not compare production with the published source')
+        result.update(reason='published application source is unchanged', image_tag=latest_tag, image_version=latest_tag[1:])
+        if changed:
+            tags = subprocess.check_output(['git', 'tag', '--list', f'v{base}-ransub.*'], text=True, encoding='utf-8').splitlines()
+            valid = [tag for tag in tags if CUSTOM_STABLE_RE.fullmatch(tag.removeprefix('v'))]
+            pending = subprocess.check_output(['git', 'tag', '--points-at', 'HEAD', '--list', f'v{base}-ransub.*'], text=True, encoding='utf-8').splitlines()
+            pending = [tag for tag in pending if tag in valid and tag != latest_tag]
+            tag = max(pending, key=lambda item: int(item.rsplit('.', 1)[1])) if pending else f'v{base}-ransub.{max([int(item.rsplit(".", 1)[1]) for item in valid], default=0) + 1}'
+            result.update(publish='true', tag=tag, version=tag[1:], image_tag=tag, image_version=tag[1:], reason='production application changed')
+    with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+        for key, value in result.items():
+            output.write(f'{key}={value}\n')
+    print(json.dumps(result))
+
+
+def automatic_publish(args):
+    sha, current = automatic_source()
+    if not current:
+        raise ValueError('production advanced during the build; no release was published')
+    output = Path(args.input).resolve()
+    manifest = json.loads((output / 'release-manifest.json').read_text(encoding='utf-8'))
+    if manifest['repository'] != CUSTOM_REPOSITORY or manifest['sha'] != sha or not CUSTOM_STABLE_RE.fullmatch(manifest['version']):
+        raise ValueError('automatic release does not match the selected production source')
+    verify(argparse.Namespace(input=str(output / 'input'), version=manifest['version'], sha=sha, simple=manifest['simple']))
+    tag = 'v' + manifest['version']
+    latest = github('GET', f'repos/{CUSTOM_REPOSITORY}/releases/latest')
+    if custom_version(tag) <= custom_version(latest['tag_name']):
+        raise ValueError('selected release must be newer than the published stable version')
+    notes = output / 'release-notes.md'
+    changes = subprocess.check_output(['git', 'log', '--format=- %s', '-30', f'{latest["tag_name"]}..HEAD'], text=True, encoding='utf-8').strip()
+    notes.write_text(f'# RanSub2API {manifest["version"]}\n\nProduction source: `{sha}`\n\n{changes}\n', encoding='utf-8')
+    tagged = subprocess.run(['git', 'rev-parse', '--verify', '--quiet', f'refs/tags/{tag}^{{commit}}'], capture_output=True, text=True, encoding='utf-8')
+    if tagged.returncode == 0:
+        if tagged.stdout.strip() != sha:
+            raise ValueError('existing release tag identifies different source')
+    elif tagged.returncode == 1:
+        subprocess.run(['git', '-c', 'tag.gpgSign=false', 'tag', '-a', tag, '-m', f'RanSub2API {manifest["version"]}'], check=True)
+    else:
+        raise ValueError('could not inspect the selected release tag')
+    subprocess.run(['git', 'push', 'origin', f'refs/tags/{tag}'], check=True)
+    local_publish(argparse.Namespace(input=str(output), notes=str(notes), automatic=True))
 
 
 def config(simple=False):
@@ -168,7 +247,7 @@ def local_build(args):
     """Build the same release artifacts locally without starting GitHub CI."""
     if subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all', '--', '.', ':!backend/internal/service/data'], text=True, encoding='utf-8').strip():
         raise ValueError('commit the verified source before building a release')
-    version = VERSION_FILE.read_text(encoding='utf-8').strip()
+    version = getattr(args, 'version', None) or VERSION_FILE.read_text(encoding='utf-8').strip()
     if not CUSTOM_STABLE_RE.fullmatch(version):
         raise ValueError('local custom releases require VERSION X.Y.Z-ransub.N')
     sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, encoding='utf-8').strip()
@@ -180,7 +259,9 @@ def local_build(args):
     pnpm = shutil.which('pnpm.cmd') or shutil.which('pnpm')
     if not pnpm:
         raise ValueError('pnpm is required to build the matching embedded frontend')
-    subprocess.run([pnpm, 'run', 'build'], cwd='frontend', check=True)
+    # The package build alias may include test hooks; release runners only build.
+    subprocess.run([pnpm, 'exec', 'vue-tsc', '-b'], cwd='frontend', check=True)
+    subprocess.run([pnpm, 'exec', 'vite', 'build'], cwd='frontend', check=True)
     date = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     files = subprocess.check_output(['git', 'ls-files', 'LICENSE*', 'README*', 'deploy', 'backend/resources'], text=True, encoding='utf-8').splitlines()
     for target in targets(args.simple):
@@ -249,8 +330,12 @@ def local_publish(args):
         if asset.name in existing:
             uploaded = existing[asset.name]
             if uploaded.get('size') != asset.stat().st_size or uploaded.get('digest') != 'sha256:' + sha256(asset):
-                raise ValueError('existing draft asset has different content; draft retained')
-            continue
+                if not getattr(args, 'automatic', False):
+                    raise ValueError('existing draft asset has different content; draft retained')
+                # Only an unpublished draft of this exact source may be repaired.
+                github('DELETE', f'repos/{repo}/releases/assets/{uploaded["id"]}')
+            else:
+                continue
         github('POST', f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(asset.name)}', upload=asset)
     remote = github('GET', f'repos/{repo}/releases/{release_id}')
     by_name = {asset['name']: asset for asset in remote['assets']}
@@ -258,6 +343,13 @@ def local_publish(args):
         uploaded = by_name.get(asset.name, {})
         if uploaded.get('size') != asset.stat().st_size or uploaded.get('digest') != 'sha256:' + sha256(asset):
             raise ValueError('uploaded release asset verification failed; draft retained')
+    if getattr(args, 'automatic', False):
+        current_sha, current = automatic_source()
+        if not current or current_sha != tagged:
+            raise ValueError('production advanced during upload; draft retained')
+        latest = github('GET', f'repos/{repo}/releases/latest')
+        if custom_version(tag) <= custom_version(latest['tag_name']):
+            raise ValueError('a newer stable release exists; draft retained')
     github('PATCH', f'repos/{repo}/releases/{release_id}', {'draft': False, 'prerelease': False, 'make_latest': 'true'})
     print(json.dumps({'repository': repo, 'tag': tag, 'sha': tagged, 'published': True}))
 
@@ -291,12 +383,18 @@ def main():
         p.set_defaults(run=handler)
     p = commands.add_parser('local-build')
     p.add_argument('--output', required=True)
+    p.add_argument('--version', help='custom stable version selected for automatic publication')
     p.add_argument('--simple', action='store_true', help='build the Linux amd64 archive only')
     p.set_defaults(run=local_build)
     p = commands.add_parser('local-publish')
     p.add_argument('--input', required=True)
     p.add_argument('--notes', required=True)
     p.set_defaults(run=local_publish)
+    p = commands.add_parser('automatic-plan')
+    p.set_defaults(run=automatic_plan)
+    p = commands.add_parser('automatic-publish')
+    p.add_argument('--input', required=True)
+    p.set_defaults(run=automatic_publish)
     p = commands.add_parser('local-rehearse')
     for arg in ('baseline', 'candidate', 'candidate-sha', 'scratch', 'output'):
         p.add_argument('--' + arg, required=True)

@@ -3,24 +3,21 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3冷却到期回池源码回归通过；生产仍待补丁发布。
-授权：本地修复/验证/提交/自有分支同步；线上只读诊断，不CI/生产改写。
-验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository -run ^Test(Scheduler|LocalScheduler|FullSnapshotReader|ListSchedulable|Issue582|ModelAvailability) -count=2 -timeout=5m
-验证结果：323叶双轮646pass，fail/skip0；两包vet0，增量fast lint为0 issues.；源码输入一致。
-验证来源：c9688a439；H:/Root/DevCache/evidence/sub2api-cooldown-recovery/race-final-checks；生产.3/5ce1d189。
-下一动作：生产补丁发布及加载/请求恢复验收；原D2–D9的供应商/混版依赖继续保留。
-尝试：2
-阻塞：生产补丁未发布；供应商scope/独立基线、严格混版及历史受限清理仍待。
-责任方：部署方、接入方及宿主资源拥有者。
-解除条件：批准并发布已验证补丁；补齐scope/独立参考；统一节点版本；拥有者清理。
+任务：R1自动发行工具本地76项通过，待production启用；D3补丁生产验收仍开放。
+授权：自有production自动打包/发行；不测试CI、不自动部署/重启、不提升未验功能分支。
+验证：WSL python3 -B -m unittest discover -s .github/release-tools -p test_*.py：76/76；bash -n/actionlint/diff通过。
+原D3：c9688a439双轮race646pass、vet/lint0；生产仍.3/5ce1d189。
+下一动作：仅提升R1工具，核实真实自动运行；父项范围和供应商等待不变。
+等待：新应用发行/生产加载；供应商scope/独立基线、严格混版及历史清理。
+责任方：发布/部署方、接入方、宿主资源拥有者；按原验收解除，不以工具通过代替。
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新日期：2026-11-14。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
+更新日期：2026-11-15。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
-- 保留自研/自有渠道；本轮仅单PR本地实施验证，不发布/CI/真实采购价。
+- 保留自研/自有渠道；功能仍单PR本地验收；R1授权production自动发行工具，不测试CI/自动重启/真实采购价。
 - 原28项20done/8部分，7子项6done/1部分；外部验收不因本地子修复关闭。
 
 ## 任务进度
@@ -61,6 +58,8 @@
 | D7.3 | in_progress | 原入口/三页及模型类型、冻结集合、列表/详情兼容已验；188叶双轮/race/vet通过，分维度/独立基线待接入方 |
 | D8 | in_progress | 两格式各100账号轮转、New API分页/等待及30秒网络耗尽后SQL落库/退避/恢复已验；严格混版/完整预算待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
+
+| R1 | in_progress | 自动编号/打包/校验/Release及镜像恢复，本地76项通过；待production启用及真实自动运行 |
 
 ## 工作区与验证约定
 

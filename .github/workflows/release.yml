@@ -1,7 +1,16 @@
 name: Release
-run-name: Publish ${{ inputs.tag }} for ${{ github.repository }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Publish {0}', inputs.tag) || 'Publish production automatically' }} for ${{ github.repository }}
 
 on:
+  push:
+    branches: [production]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'backend/cmd/server/VERSION'
+  schedule:
+    # Recover skipped bot/[skip ci] push events without enabling build/test CI.
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       tag:
@@ -41,6 +50,109 @@ env:
   DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
 
 jobs:
+  publish-production:
+    if: github.event_name != 'workflow_dispatch' && github.repository == 'a5116107/ransub2api'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'production' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r .github/release-tools/requirements-release.txt
+      - name: Select unpublished production source and next custom revision
+        id: plan
+        run: python -B .github/release-tools/release_matrix.py automatic-plan
+      - uses: pnpm/action-setup@v6
+        if: steps.plan.outputs.publish == 'true'
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        if: steps.plan.outputs.publish == 'true'
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - uses: actions/setup-go@v6
+        if: steps.plan.outputs.publish == 'true'
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Install locked frontend build dependencies
+        if: steps.plan.outputs.publish == 'true'
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Build matching embedded frontend and Linux amd64 archive
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+        run: python -B .github/release-tools/release_matrix.py local-build --simple --version "$RELEASE_VERSION" --output "$RUNNER_TEMP/automatic-release"
+      - name: Verify archive identity and prepare runtime image
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+          RELEASE_SHA: ${{ steps.plan.outputs.sha }}
+        run: >-
+          python -B .github/release-tools/release_matrix.py contexts --simple
+          --version "$RELEASE_VERSION" --sha "$RELEASE_SHA"
+          --input "$RUNNER_TEMP/automatic-release/input" --output .release-context
+      - name: Verify packaged executable build identity
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+          RELEASE_SHA: ${{ steps.plan.outputs.sha }}
+        run: |
+          .release-context/amd64/sub2api -version 2>&1 | tee "$RUNNER_TEMP/release-version.txt"
+          grep -F -- "$RELEASE_VERSION" "$RUNNER_TEMP/release-version.txt"
+          grep -F -- "$RELEASE_SHA" "$RUNNER_TEMP/release-version.txt"
+      - uses: docker/setup-buildx-action@v3
+        if: steps.plan.outputs.image_tag != ''
+      - uses: docker/login-action@v3
+        if: steps.plan.outputs.image_tag != ''
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish verified production runtime image
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+          RELEASE_SHA: ${{ steps.plan.outputs.sha }}
+          SIMPLE_RELEASE: 'true'
+          DRY_RUN: 'false'
+          DOCKERHUB_USERNAME: skip
+          PUBLISH_LATEST: 'false'
+        run: bash .github/release-tools/release-images.sh
+      - name: Publish checksummed archives as latest custom stable release
+        if: steps.plan.outputs.publish == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python -B .github/release-tools/release_matrix.py automatic-publish --input "$RUNNER_TEMP/automatic-release"
+      - name: Promote the published stable image
+        if: steps.plan.outputs.image_tag != ''
+        env:
+          RELEASE_TAG: ${{ steps.plan.outputs.image_tag }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.image_version }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
+          IMAGE="ghcr.io/$GITHUB_REPOSITORY"
+          published=$(docker buildx imagetools inspect --raw "$IMAGE:$RELEASE_VERSION" | sha256sum)
+          current=$(docker buildx imagetools inspect --raw "$IMAGE:latest" | sha256sum) || current=''
+          if [ "$published" = "$current" ]; then
+            echo "Image latest already matches $RELEASE_TAG"
+            exit 0
+          fi
+          docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$RELEASE_VERSION"
+
   publish-prebuilt-image:
     if: inputs.prebuilt_only == true && github.repository == 'a5116107/ransub2api'
     runs-on: ubuntu-latest
@@ -91,7 +203,7 @@ jobs:
         run: bash .github/release-tools/release-images.sh
 
   prepare:
-    if: inputs.prebuilt_only != true
+    if: github.event_name == 'workflow_dispatch' && inputs.prebuilt_only != true
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.plan.outputs.sha }}

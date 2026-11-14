@@ -30,15 +30,23 @@ bash -n .github/release-tools/release-images.sh
 ```
 
 
-## Custom stable channel without CI
+## Automatic custom stable channel without test CI
 
 The user-owned public channel is `a5116107/ransub2api`. Its `production` branch retains custom history. `sync-upstream.yml` tracks stable `ranxi2001/sub2api` releases every six hours. `upstream/stable` mirrors the pinned application sources with the owner's `.github/workflows` directory retained. Each tracking commit includes the raw upstream commit as a parent and in `Upstream-Commit`; all non-workflow files must match it exactly. This avoids requiring workflow-write credentials in Actions or importing upstream CI. Never use this tracking branch as a production artifact. The unrelated `a5116107/bps2api` fork is unchanged.
 
 A one-time local `python -B .github/release-tools/sync_upstream.py --bootstrap-tracking` transitions an existing raw tracking branch to the owner workflow policy. It uses existing owner credentials, a normal fast-forward push and a `[skip ci]` commit, without storing a long-lived token in GitHub. Subsequent scheduled pushes use the ephemeral `github.token`; the script verifies unchanged workflow files before pushing. Upstream history rewrites stop synchronization. Git failures show sanitized stderr.
 
-The helper preserves an unmerged `integration/upstream-stable` candidate. If that candidate is already merged, the next release is proposed from the new tracking tip instead of creating an empty PR from the old candidate. Review semantic conflicts and run local regression, migration and rollback checks before promotion. Scheduled synchronization does not merge, compile, publish or deploy; publishing remains a separate local stage. All imported workflows retain manual triggers; build/test CI is not run.
+The helper preserves an unmerged `integration/upstream-stable` candidate. If that candidate is already merged, the next release is proposed from the new tracking tip instead of creating an empty PR from the old candidate. Review semantic conflicts and run local regression, migration and rollback checks before promotion. Scheduled upstream synchronization does not merge, compile, publish or deploy. Imported test workflows retain manual triggers.
 
-Use `X.Y.Z-ransub.N` for stable custom revisions. Tags alone do not start a release: publishing is explicit. Existing build/test workflows remain disabled. Build from a committed clean source tree, then publish its exact tag and archives:
+After accepted application changes reach the owner's `production` branch, `release.yml` automatically selects the next `X.Y.Z-ransub.N`, builds the embedded frontend and Linux amd64 archive, verifies checksums/source identity and the packaged executable, publishes its GHCR revision image, then publishes the public stable Release and promotes the image's `latest` tag. The frontend is type-checked and built directly; the package's test-containing build alias and all test CI are excluded. Feature/tracking branches and pushed tags do not trigger production publication. This does not merge upstream code, deploy, restart services or send announcements.
+
+A 15-minute scheduled check recovers skipped push events (including `[skip ci]` and bot pushes). GitHub schedules can be delayed. It reads `production`, compares application sources with the latest published custom tag, and does nothing for already-published or documentation/tooling-only changes. Versions come from the committed VERSION base plus the next available custom revision; promotion rejects downgrades, unrelated histories and stale production builds. Concurrent release runs are serialized. Partial draft uploads may be repaired only for the same unpublished source/tag; published release assets remain immutable. If production advances during upload, the draft stays unpublished and its image does not become `latest`.
+
+The same check compares the stable revision image with `latest` and repairs a missing/stale image pointer without rebuilding or issuing another Release. This recovers an interrupted image promotion after Release publication; matching images are left unchanged.
+
+The online admin updater continues reading this repository's public latest Release. It caches update checks for 20 minutes; **Check for updates** forces a fresh check. Installation and service restart retain the existing explicit one-click controls. A successful Release is distinct from a verified production installation. Keep migration/rollback checks local before promoting application code.
+
+Manual local publication remains available for recovery. Build from committed clean source, then publish its exact tag and archives:
 
 ```powershell
 python .github/release-tools/release_matrix.py local-build --simple --output H:/Root/DevCache/releases/ransub2api
@@ -49,7 +57,7 @@ python .github/release-tools/release_matrix.py local-publish --input H:/Root/Dev
 
 `--simple` builds a real Linux amd64 archive including the embedded frontend; it is not the old image-only simple release. Other targets remain unavailable until built and verified. Publication first creates a draft and compares GitHub-calculated asset digests before making it latest. Failures leave the draft unpublished. No GitHub credential is included in the package or required by public update downloads.
 
-To publish the corresponding GHCR runtime image, manually dispatch the existing Release workflow with `tag=vX.Y.Z-ransub.N` and `prebuilt_only=true`. This path verifies the downloaded archive against its source commit and packages it without compiling or running CI. Confirm public image pull access before pinning production to its digest. Container update binaries must persist across recreation; keep the previous image and database/data backups until deployment acceptance is complete.
+To recover a missing GHCR runtime image for a locally published release, manually dispatch the existing Release workflow with `tag=vX.Y.Z-ransub.N` and `prebuilt_only=true`. This path verifies the downloaded archive against its source commit and packages it without compiling or running test CI. Confirm public image pull access before pinning production to its digest. Container update binaries must persist across recreation; keep the previous image and database/data backups until deployment acceptance is complete.
 
 ## Local upgrade, rollback and shared-state rehearsal
 
