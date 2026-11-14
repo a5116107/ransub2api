@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8百账号轮转、503等待与余额恢复已验；外部验收待证。
+任务：D8 New API等待/分类/独立落库与恢复已验；空目录清理待宿主。
 授权：单分支本地修复/验证/提交/自有分支同步；不CI/生产。
-验证命令：go test -json -race -tags unit,integration -p 1 ./internal/service ./internal/repository（原选择器双轮）
-验证结果：197叶双轮/458含父项通过，fail/skip0；vet/增量fast lint0。
-验证来源：749d1034e；probe-service-retry-after-final；12项输入匹配。
-下一动作：接入方补真实scope/独立参考，续验原D2–D9剩余边界。
-尝试：2
-阻塞：供应商scope/独立基线、严格混版及历史拒删。
-责任方：接入方、部署及资源拥有者。
+验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository（原选择器双轮）
+验证结果：415叶双轮/934项通过，fail/skip0；vet与增量fast lint0。
+验证来源：641e579fc基线；newapi-retry-final；17项输入匹配。
+下一动作：接入方补真实scope/独立参考，续验D2–D9；宿主清理本轮空目录。
+尝试：3
+阻塞：供应商scope/独立基线、严格混版及受限清理。
+责任方：接入方、部署及宿主资源拥有者。
 解除条件：提供真实scope/独立参考；统一节点版本；拥有者清理。
 <!-- resume:end -->
 
@@ -44,11 +44,11 @@
 | M5 | done | 生产/夹具依赖边界及三处兼容点明确；六包lint 0与禁止依赖反向验证通过 |
 | M6 | done | 删假成功ProxyService.TestConnection；引用0、编译/vet通过 |
 | M7 | done | 删假成功AccountService.TestCredentials；引用0、编译/vet通过 |
-| M8 | done | 分组统计接真实Key分页/活跃量和dashboard请求/成本；handler race/vet通过 |
-| M9 | done | 兑换码真实分页状态/类型/已用面值；admin race、service编译/vet通过 |
+| M8 | done | 真实Key分页/用量聚合；handler race/vet通过 |
+| M9 | done | 真实兑换码分页/面值；admin race及编译/vet通过 |
 | M10 | done | 删假成功AdminService.RefreshAccountCredentials；接口/stub引用0，admin race、编译/vet通过 |
-| M11 | done | 用量接UsageLogRepository聚合、周期校验/缺依赖关闭；service/admin race、server编译/vet通过 |
-| M12 | done | 删代理/dashboard假零值和100%；兼容路由501，admin race/vet通过 |
+| M11 | done | 原用量聚合/周期校验/缺依赖关闭；service/admin race及编译/vet通过 |
+| M12 | done | 代理/dashboard兼容接口501；admin race/vet通过 |
 | M13 | done | 删GroupService.GetStats重复入口；引用0，handler race、service编译/vet通过 |
 | D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
 | D5 | in_progress | 下游原始聚合见D5.2；协议/同层计时及scope隔离已验，供应商scope/会话估计待证据 |
@@ -59,7 +59,7 @@
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
 | D7.3 | in_progress | 原入口/三页及模型类型、冻结集合、列表/详情兼容已验；188叶双轮/race/vet通过，分维度/独立基线待接入方 |
-| D8 | in_progress | v2.21.1/SQL升级回退、280身份及双候选认证恢复已验；100账号SQL/HTTP轮转、503等待及恢复已验；旧新版订阅1/2，严格产品/其他能力待验 |
+| D8 | in_progress | 100账号轮转、New API等待/分页/落库恢复及原升级子项已验；严格混版及其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
 ## 工作区与验证约定
@@ -83,3 +83,4 @@
 - 历史H:/Root/DevCache/tmp/sub2api-v2211-verify内browser-check.mjs（8305bytes）和handler-identity.test.exe（342989777bytes）删除被blocked by policy拦截，删除0；拥有者手工清理，不重试/移动。
 - 历史mixed-candidate-sub2api（240521376bytes）保留于上述v2211-verify目录；原拒删不重试。
 - 本轮同目录auth-recovery-sub2api（240525472bytes）及空H:/Root/DevCache/tmp/sub2api-auth-recovery-build删除被blocked by policy在启动前拦截，删除0；拥有者手工清理后解除。
+- 本轮H:/Root/DevCache/tmp/sub2api-newapi-retry空目录删除被自动审批在启动前以blocked by policy拒绝，删除0；只读确认0文件/0bytes、无活动引用。宿主/拥有者清理，不重试/移动。

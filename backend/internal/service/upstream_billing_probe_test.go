@@ -949,6 +949,33 @@ func TestUpstreamBillingProbeRetryAfterIsCappedAtMaxDelay(t *testing.T) {
 	require.Equal(t, upstreamBillingProbeMaxDelay, delay)
 }
 
+func TestUpstreamBillingProbeRetryAfterDoesNotOverflow(t *testing.T) {
+	now := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	for _, value := range []string{"9223372037", "9223372036854775807", "999999999999999999999999999999999999"} {
+		t.Run(value, func(t *testing.T) {
+			delay := retryAfter(http.Header{"Retry-After": []string{value}}, now)
+			require.Equal(t, time.Duration(1<<63-1), delay)
+			require.Equal(t, upstreamBillingProbeMaxDelay, nextProbeDelay(30, delay))
+		})
+	}
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+	}{
+		{"9223372036", time.Duration(9223372036) * time.Second},
+		{"172800", 48 * time.Hour},
+		{"14400", 4 * time.Hour},
+		{"0", 0},
+		{"-1", 0},
+		{"-999999999999999999999999999999999999", 0},
+		{"invalid", 0},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			require.Equal(t, tc.want, retryAfter(http.Header{"Retry-After": []string{tc.value}}, now))
+		})
+	}
+}
+
 // unsupported 的重探间隔明显长于普通失败，但始终有上界：上游后来接入 sub2api
 // 时最迟一天内会被重新发现，且上游超长 Retry-After 亦受 24h 封顶保护。
 func TestUpstreamBillingProbeUnsupportedDelayIsStretchedAndBounded(t *testing.T) {

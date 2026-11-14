@@ -11,7 +11,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -90,6 +94,171 @@ func TestNewAPIIntegrationSharedEncryptedRotationAndUnbind(t *testing.T) {
 	require.NoError(t, e)
 	require.NotContains(t, updated.Extra, service.UpstreamBillingProviderExtraKey)
 }
+func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
+	ctx := t.Context()
+	db, client := newBillingAuditDatabase(t)
+	var phase atomic.Int32
+	var calls [3][6]atomic.Int64
+	var unexpected atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/line-"), "/", 2)
+		if len(parts) != 2 {
+			unexpected.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		index, err := strconv.Atoi(parts[0])
+		if err != nil || index < 0 || index >= len(calls) || r.Header.Get("Authorization") != "Bearer fixture-management-secret" || r.Header.Get("New-Api-User") != "7" {
+			unexpected.Add(1)
+			http.Error(w, "unexpected fixture request", http.StatusBadRequest)
+			return
+		}
+		step := -1
+		body := ""
+		switch r.Method + " /" + parts[1] {
+		case "GET /api/status":
+			step, body = 0, `{"success":true,"data":{"quota_per_unit":500000}}`
+		case "GET /api/user/self":
+			step, body = 1, `{"success":true,"data":{"id":7,"quota":1250000}}`
+		case "GET /api/pricing":
+			step, body = 2, `{"success":true,"group_ratio":{"vip":0.03}}`
+		case "GET /api/token/":
+			switch r.URL.Query().Get("p") {
+			case "0":
+				step, body = 3, `{"success":true,"data":{"items":[{"id":2,"key":"foreign","group":"vip"}],"total":2,"page":1,"page_size":1}}`
+			case "2":
+				step, body = 4, `{"success":true,"data":{"items":[{"id":3,"key":"abcd**********wxyz","group":"vip"}],"total":2,"page":2,"page_size":1}}`
+			}
+		case "POST /api/token/3/key":
+			step, body = 5, fmt.Sprintf(`{"success":true,"data":{"key":"sk-abcd%d123456789wxyz"}}`, index)
+		}
+		if step < 0 {
+			unexpected.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		calls[index][step].Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if phase.Load() == 1 && ((index == 0 && step == 2) || (index == 1 && step == 4)) {
+			w.Header().Set("Retry-After", "14400")
+			code := http.StatusServiceUnavailable
+			if index == 1 {
+				code = http.StatusTooManyRequests
+			}
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"error":"fixture response must not be persisted"}`))
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	upstream, ok := NewHTTPUpstream(cfg).(*httpUpstreamService)
+	require.True(t, ok)
+	t.Cleanup(func() {
+		upstream.mu.Lock()
+		defer upstream.mu.Unlock()
+		for _, entry := range upstream.clients {
+			entry.client.CloseIdleConnections()
+		}
+	})
+	encryptor, err := NewAESEncryptor(&config.Config{Totp: config.TotpConfig{EncryptionKey: strings.Repeat("42", 32)}})
+	require.NoError(t, err)
+	ciphertext, err := encryptor.Encrypt("fixture-management-secret")
+	require.NoError(t, err)
+	auth := NewNewAPIAuthorizationRepository(db)
+	settings := service.NewSettingService(NewSettingRepository(client), cfg)
+	require.NoError(t, settings.SetUpstreamBillingProbeSettings(ctx, &service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}))
+	ids := make([]int64, len(calls))
+	for i := range ids {
+		site := fmt.Sprintf("%s/line-%d", server.URL, i)
+		account := mustCreateAccount(t, client, &service.Account{
+			Name: fmt.Sprintf("new-api-wait-%d", i), Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+			Status: service.StatusActive, Concurrency: 1,
+			Credentials: map[string]any{"api_key": fmt.Sprintf("sk-abcd%d123456789wxyz", i), "base_url": site + "/v1"},
+			Extra:       map[string]any{service.AccountCostMultiplierExtraKey: 0.7},
+		})
+		ids[i] = account.ID
+		require.NoError(t, auth.Save(ctx, &service.NewAPISiteAuthorization{SiteURL: site, UserID: 7, Ciphertext: ciphertext}, []service.NewAPIBindingSave{{Account: account, TokenID: 3, Group: "vip"}}))
+	}
+	run := func(t *testing.T) {
+		t.Helper()
+		repo := newAccountRepositoryWithSQL(client, db, nil)
+		tester := service.NewAccountTestService(repo, nil, nil, nil, nil, upstream, cfg, nil)
+		runner := service.NewUpstreamBillingProbeService(repo, tester, settings)
+		runner.SetNewAPIAuthorization(NewNewAPIAuthorizationRepository(db), encryptor, true)
+		defer runner.Stop()
+		require.NoError(t, runner.RunDue(ctx))
+	}
+	read := func(index int) service.UpstreamBillingProbeSnapshot {
+		t.Helper()
+		var raw []byte
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT extra->'upstream_billing_probe' FROM accounts WHERE id=$1`, ids[index]).Scan(&raw))
+		var snapshot service.UpstreamBillingProbeSnapshot
+		require.NoError(t, json.Unmarshal(raw, &snapshot))
+		require.NotContains(t, string(raw), "fixture-management-secret")
+		require.NotContains(t, string(raw), "fixture response")
+		return snapshot
+	}
+	due := func(index int) {
+		t.Helper()
+		_, err := db.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_set(extra,'{upstream_billing_probe,next_probe_at}',to_jsonb($1::text)) WHERE id=$2`, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), ids[index])
+		require.NoError(t, err)
+	}
+	run(t)
+	for i := range ids {
+		require.Equal(t, service.UpstreamBillingProbeStatusOK, read(i).Status)
+		due(i)
+	}
+	phase.Store(1)
+	run(t)
+	for i, code := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests} {
+		snapshot := read(i)
+		require.Equal(t, service.UpstreamBillingProbeStatusFailed, snapshot.Status)
+		require.Equal(t, code, snapshot.HTTPStatus)
+		require.Equal(t, "new_api_request_failed", snapshot.LastError)
+		require.GreaterOrEqual(t, snapshot.NextProbeAt.Sub(snapshot.LastAttemptAt), 4*time.Hour)
+		require.Nil(t, snapshot.Data)
+		require.Nil(t, snapshot.FreshUntil)
+		require.Nil(t, snapshot.ReceivedAt)
+	}
+	require.Equal(t, service.UpstreamBillingProbeStatusOK, read(2).Status, "a waiting line must not prevent an independent line from being probed")
+	var before [3][6]int64
+	for i := range calls {
+		for step := range calls[i] {
+			want := int64(2)
+			if (i == 0 && step > 2) || (i == 1 && step > 4) {
+				want = 1
+			}
+			before[i][step] = calls[i][step].Load()
+			require.Equal(t, want, before[i][step], "line %d step %d must stop at its wait response", i, step)
+		}
+	}
+	run(t)
+	for i := range calls {
+		for step := range calls[i] {
+			require.Equal(t, before[i][step], calls[i][step].Load(), "a new runner must honor the persisted next_probe_at")
+		}
+	}
+	phase.Store(2)
+	due(0)
+	due(1)
+	run(t)
+	for i := range ids {
+		snapshot := read(i)
+		require.Equal(t, service.UpstreamBillingProbeStatusOK, snapshot.Status)
+		require.Zero(t, snapshot.FailureCount)
+		require.Zero(t, snapshot.HTTPStatus)
+		require.Equal(t, 0.03, snapshot.Data["resolved_rate_multiplier"])
+		require.Equal(t, service.UpstreamBillingProbeStatusOK, snapshot.Balance.Status)
+		var cost, rate float64
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT (extra->>'cost_multiplier')::numeric, rate_multiplier FROM accounts WHERE id=$1`, ids[i]).Scan(&cost, &rate))
+		require.Equal(t, 0.7, cost)
+		require.Equal(t, 1.0, rate, "group evidence must not overwrite the account's token rate")
+	}
+	require.Zero(t, unexpected.Load())
+}
+
 func TestNewAPIIntegrationChangedSecondAccountSavesNothing(t *testing.T) {
 	ctx := context.Background()
 	a, b, site := newAPIIntegrationAccounts(t)

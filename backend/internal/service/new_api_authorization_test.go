@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/require"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type newAPIAccounts struct {
@@ -24,9 +26,10 @@ func (r *newAPIAccounts) ListAllWithFilters(context.Context, string, string, str
 
 type newAPIAuthRepoFake struct {
 	NewAPIAuthorizationRepository
-	profile  *NewAPISiteAuthorization
-	bindings map[int64]*NewAPIAccountBinding
-	saves    int
+	profile    *NewAPISiteAuthorization
+	bindings   map[int64]*NewAPIAccountBinding
+	saves      int
+	writeCheck func(context.Context)
 }
 
 func (r *newAPIAuthRepoFake) GetProfile(context.Context, string, int64) (*NewAPISiteAuthorization, error) {
@@ -155,7 +158,13 @@ func TestNewAPIProbeRechecksUniqueMaskedKeyAndRecovers(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, tc.status, snapshot.Status)
 		if tc.status == UpstreamBillingProbeStatusFailed {
-			require.Equal(t, "new_api_bound_key_not_owned", snapshot.LastError)
+			if tc.key == "" {
+				require.Equal(t, "new_api_request_failed", snapshot.LastError)
+				require.Equal(t, http.StatusNotFound, snapshot.HTTPStatus)
+			} else {
+				require.Equal(t, "new_api_bound_key_not_owned", snapshot.LastError)
+				require.Zero(t, snapshot.HTTPStatus)
+			}
 			require.Nil(t, snapshot.Data)
 			require.Nil(t, snapshot.FreshUntil)
 			require.Nil(t, snapshot.ReceivedAt)
@@ -282,10 +291,190 @@ func TestNewAPIFingerprintIgnoresModelMappingButGuardsTransport(t *testing.T) {
 	a.Credentials["base_url"] = "https://foreign.example"
 	require.NotEqual(t, first, NewAPIAccountFingerprint(a))
 }
-func (r *newAPIAuthRepoFake) WriteSnapshot(_ context.Context, a *Account, _ *NewAPIAccountBinding, s *UpstreamBillingProbeSnapshot) error {
-	a.Extra = map[string]any{UpstreamBillingProbeExtraKey: s}
+func (r *newAPIAuthRepoFake) WriteSnapshot(ctx context.Context, a *Account, _ *NewAPIAccountBinding, s *UpstreamBillingProbeSnapshot) error {
+	if r.writeCheck != nil {
+		r.writeCheck(ctx)
+	}
+	if a.Extra == nil {
+		a.Extra = map[string]any{}
+	}
+	a.Extra[UpstreamBillingProbeExtraKey] = s
 	return nil
 }
+
+func TestNewAPIProbeHonorsRetryAfterAndRecovers(t *testing.T) {
+	for _, stage := range []string{"GET /api/status", "GET /api/user/self", "GET /api/pricing", "GET /api/token/?p=0&page_size=100", "POST /api/token/3/key"} {
+		for _, code := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+			t.Run(fmt.Sprintf("%s/%d", stage, code), func(t *testing.T) {
+				s, repo, upstream, accounts := newAPIConfigFixture()
+				ctx := t.Context()
+				_, err := s.SaveNewAPIConfig(ctx, 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+				require.NoError(t, err)
+				now := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+				s.now = func() time.Time { return now }
+				account := accounts.accounts[1]
+				initial, err := s.probeNewAPIAccount(ctx, account, repo.bindings[1], 30)
+				require.NoError(t, err)
+				require.Equal(t, UpstreamBillingProbeStatusOK, initial.Status)
+				upstream.statusCodes = map[string]int{stage: code}
+				upstream.headers = map[string]http.Header{stage: {"Retry-After": []string{"14400"}}}
+				var requests []string
+				upstream.check = func(req *http.Request) { requests = append(requests, req.Method+" "+req.URL.RequestURI()) }
+
+				snapshot, err := s.probeNewAPIAccount(ctx, account, repo.bindings[1], 30)
+				require.NoError(t, err)
+				require.Equal(t, UpstreamBillingProbeStatusFailed, snapshot.Status)
+				require.Equal(t, "new_api_request_failed", snapshot.LastError)
+				require.Equal(t, code, snapshot.HTTPStatus)
+				require.Equal(t, now.Add(4*time.Hour), snapshot.NextProbeAt)
+				require.Equal(t, stage, requests[len(requests)-1], "a wait response must stop the remaining management requests")
+				require.Nil(t, snapshot.Data, "a failed ownership/rate observation must not authorize a stale rate")
+				require.Nil(t, snapshot.ReceivedAt)
+				require.Nil(t, snapshot.FreshUntil)
+				require.Equal(t, UpstreamBillingProbeStatusFailed, snapshot.Balance.Status)
+				stored := decodeUpstreamBillingProbeSnapshot(account.Extra)
+				require.Equal(t, snapshot.NextProbeAt, stored.NextProbeAt)
+				require.Equal(t, code, stored.HTTPStatus)
+				require.Equal(t, 1, stored.FailureCount)
+				encoded, err := json.Marshal(stored)
+				require.NoError(t, err)
+				require.NotContains(t, string(encoded), "fixture-secret")
+				require.NotContains(t, string(encoded), "abcd123456789wxyz")
+
+				upstream.statusCodes = nil
+				upstream.headers = nil
+				now = snapshot.NextProbeAt
+				recovered, err := s.probeNewAPIAccount(ctx, account, repo.bindings[1], 30)
+				require.NoError(t, err)
+				require.Equal(t, UpstreamBillingProbeStatusOK, recovered.Status)
+				require.Zero(t, recovered.FailureCount)
+				require.Zero(t, recovered.HTTPStatus)
+				require.Equal(t, now, *recovered.ReceivedAt)
+				require.Equal(t, 0.5, recovered.Data["resolved_rate_multiplier"])
+				require.Equal(t, UpstreamBillingProbeStatusOK, recovered.Balance.Status)
+			})
+		}
+	}
+}
+func TestNewAPIProbeRetryAfterFormats(t *testing.T) {
+	now := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, header string
+		wait         time.Duration
+	}{
+		{"seconds", "14400", 4 * time.Hour},
+		{"http date", now.Add(4 * time.Hour).Format(http.TimeFormat), 4 * time.Hour},
+		{"capped seconds", "172800", upstreamBillingProbeMaxDelay},
+		{"overflow seconds", "9223372036854775807", upstreamBillingProbeMaxDelay},
+		{"overflow integer", "999999999999999999999999999999999999", upstreamBillingProbeMaxDelay},
+		{"capped date", now.Add(48 * time.Hour).Format(http.TimeFormat), upstreamBillingProbeMaxDelay},
+		{"zero", "0", 0},
+		{"negative", "-1", 0},
+		{"invalid", "later", 0},
+		{"expired date", now.Add(-time.Hour).Format(http.TimeFormat), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, repo, upstream, accounts := newAPIConfigFixture()
+			_, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+			require.NoError(t, err)
+			s.now = func() time.Time { return now }
+			upstream.statusCodes = map[string]int{"GET /api/status": http.StatusServiceUnavailable}
+			upstream.headers = map[string]http.Header{"GET /api/status": {"Retry-After": []string{tc.header}}}
+			snapshot, err := s.probeNewAPIAccount(t.Context(), accounts.accounts[1], repo.bindings[1], 30)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusServiceUnavailable, snapshot.HTTPStatus)
+			if tc.wait > 0 {
+				require.Equal(t, now.Add(tc.wait), snapshot.NextProbeAt)
+			} else {
+				require.GreaterOrEqual(t, snapshot.NextProbeAt.Sub(now), 24*time.Minute)
+				require.LessOrEqual(t, snapshot.NextProbeAt.Sub(now), 36*time.Minute)
+			}
+		})
+	}
+}
+
+func TestNewAPIProbeWaitStartsAtResponse(t *testing.T) {
+	s, repo, upstream, accounts := newAPIConfigFixture()
+	_, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	start := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	now := start
+	s.now = func() time.Time { return now }
+	upstream.statusCodes = map[string]int{"GET /api/status": http.StatusServiceUnavailable}
+	upstream.headers = map[string]http.Header{"GET /api/status": {"Retry-After": []string{"14400"}}}
+	upstream.check = func(*http.Request) { now = start.Add(10 * time.Second) }
+	snapshot, err := s.probeNewAPIAccount(t.Context(), accounts.accounts[1], repo.bindings[1], 30)
+	require.NoError(t, err)
+	require.Equal(t, start, snapshot.LastAttemptAt)
+	require.Equal(t, now.Add(4*time.Hour), snapshot.NextProbeAt)
+}
+
+func TestNewAPIProbePersistsWithIndependentDeadline(t *testing.T) {
+	for _, code := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			s, repo, upstream, accounts := newAPIConfigFixture()
+			_, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+			require.NoError(t, err)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			deadline, ok := ctx.Deadline()
+			require.True(t, ok)
+			upstream.statusCodes = map[string]int{"GET /api/status": code}
+			var requestDeadline time.Time
+			var requestContext context.Context
+			upstream.check = func(req *http.Request) {
+				requestContext = req.Context()
+				var ok bool
+				requestDeadline, ok = req.Context().Deadline()
+				require.True(t, ok)
+				require.True(t, requestDeadline.Before(deadline))
+			}
+			writes := 0
+			repo.writeCheck = func(writeCtx context.Context) {
+				writes++
+				writeDeadline, ok := writeCtx.Deadline()
+				require.True(t, ok)
+				require.True(t, writeDeadline.Before(deadline), "snapshot persistence must retain the caller's deadline")
+				require.False(t, writeDeadline.Before(requestDeadline), "persistence must not shorten the last request's budget")
+				require.ErrorIs(t, requestContext.Err(), context.Canceled, "the network context is already released before the independent write")
+				require.Positive(t, time.Until(writeDeadline))
+				require.LessOrEqual(t, time.Until(writeDeadline), upstreamBillingProbeRequestTimeout, "snapshot persistence must remain bounded")
+				require.NoError(t, writeCtx.Err())
+			}
+			_, err = s.probeNewAPIAccount(ctx, accounts.accounts[1], repo.bindings[1], 30)
+			require.NoError(t, err)
+			require.Equal(t, 1, writes)
+		})
+	}
+}
+
+func TestNewAPIPreviewStopsOnKeyVerificationWait(t *testing.T) {
+	for _, code := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		for _, save := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%d/save_%t", code, save), func(t *testing.T) {
+				s, repo, upstream, _ := newAPIConfigFixture()
+				upstream.statusCodes = map[string]int{"POST /api/token/3/key": code}
+				upstream.headers = map[string]http.Header{"POST /api/token/3/key": {"Retry-After": []string{"14400"}}}
+				var requests []string
+				upstream.check = func(req *http.Request) { requests = append(requests, req.Method+" "+req.URL.RequestURI()) }
+				req := NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1, 2}}
+				var err error
+				if save {
+					_, err = s.SaveNewAPIConfig(t.Context(), 1, req)
+				} else {
+					_, err = s.PreviewNewAPIConfig(t.Context(), 1, req)
+				}
+				require.ErrorIs(t, err, newAPIError("http_error"))
+				require.NotContains(t, err.Error(), "fixture-secret")
+				require.Len(t, requests, 5, "the next selected account must not send requests after a wait")
+				require.Equal(t, "POST /api/token/3/key", requests[len(requests)-1])
+				require.Zero(t, repo.saves)
+				require.Empty(t, repo.bindings)
+			})
+		}
+	}
+}
+
 func TestNewAPIBoundKeyDisappearsPersistsFailureWithBackoff(t *testing.T) {
 	s, r, h, accounts := newAPIConfigFixture()
 	_, e := s.SaveNewAPIConfig(context.Background(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "secret", AccountIDs: []int64{1}})

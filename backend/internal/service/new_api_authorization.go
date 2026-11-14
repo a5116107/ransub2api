@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -245,7 +246,11 @@ func (s *UpstreamBillingProbeService) verifyNewAPIConfig(ctx context.Context, id
 				item.Error = "key_not_owned"
 			}
 		} else {
-			if !s.verifyNewAPITokenKey(ctx, a, site, req.UserID, secret, *token) {
+			verified, verifyErr := s.verifyNewAPITokenKey(ctx, a, site, req.UserID, secret, *token)
+			if newAPIRequestRequiresWait(verifyErr) {
+				return nil, nil, nil, verifyErr
+			}
+			if !verified {
 				item.Error = "selected_key_verification_failed"
 				token = nil
 			}
@@ -276,13 +281,13 @@ func (s *UpstreamBillingProbeService) verifyNewAPIConfig(ctx context.Context, id
 
 // Inventory masks identify candidates, never ownership. Unmasked inventory
 // keys can prove ownership directly; masked entries require the owner's endpoint.
-func (s *UpstreamBillingProbeService) verifyNewAPITokenKey(ctx context.Context, a *Account, site string, userID int64, secret string, token NewAPIToken) bool {
+func (s *UpstreamBillingProbeService) verifyNewAPITokenKey(ctx context.Context, a *Account, site string, userID int64, secret string, token NewAPIToken) (bool, error) {
 	key := newAPIKey(a.GetCredential("api_key"))
 	if key == "" || strings.Contains(key, "*") {
-		return false
+		return false, nil
 	}
 	if newAPIKey(token.Key) == key {
-		return true
+		return true, nil
 	}
 	var raw struct {
 		Success bool `json:"success"`
@@ -290,12 +295,15 @@ func (s *UpstreamBillingProbeService) verifyNewAPITokenKey(ctx context.Context, 
 			Key string `json:"key"`
 		} `json:"data"`
 	}
-	return s.newAPIRequest(ctx, a, site, userID, secret, "POST", fmtNewAPIKeyPath(token.ID), &raw) == nil && raw.Success && newAPIKey(raw.Data.Key) == key
+	if err := s.newAPIRequest(ctx, a, site, userID, secret, "POST", fmtNewAPIKeyPath(token.ID), &raw); err != nil {
+		return false, err
+	}
+	return raw.Success && newAPIKey(raw.Data.Key) == key, nil
 }
 
 func fmtNewAPIKeyPath(id int64) string { return "/api/token/" + strconv.FormatInt(id, 10) + "/key" }
 func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a *Account, b *NewAPIAccountBinding, interval int) (*UpstreamBillingProbeSnapshot, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if !s.newAPIFixedKey || s.newAPIEncryptor == nil {
 		return nil, ErrNewAPIEncryptionKey
@@ -309,10 +317,10 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 		return nil, newAPIError("authorization_unavailable")
 	}
 	now := s.currentTime().UTC()
-	data, e := s.fetchNewAPI(ctx, a, site, b.Profile.UserID, secret)
+	data, e := s.fetchNewAPI(probeCtx, a, site, b.Profile.UserID, secret)
 	var snap *UpstreamBillingProbeSnapshot
 	if e != nil {
-		return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_request_failed")
+		return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_request_failed", e)
 	} else {
 		matches := matchNewAPITokens(a, data.tokens)
 		var matched *NewAPIToken
@@ -322,25 +330,41 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 			}
 		}
 		if matched == nil {
-			return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_bound_key_not_owned")
+			return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_bound_key_not_owned", nil)
 		}
-		if !s.verifyNewAPITokenKey(ctx, a, site, b.Profile.UserID, secret, *matched) {
-			return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_bound_key_not_owned")
+		verified, verifyErr := s.verifyNewAPITokenKey(probeCtx, a, site, b.Profile.UserID, secret, *matched)
+		if verifyErr != nil {
+			return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_request_failed", verifyErr)
+		}
+		if !verified {
+			return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_bound_key_not_owned", nil)
 		}
 		snap = newAPISnapshot(*matched, data, interval, now)
 	}
-	if e = s.newAPIRepo.WriteSnapshot(ctx, a, b, snap); e != nil {
-		return nil, ErrUpstreamBillingProbeIdentityChanged
-	}
-	return snap, nil
+	return s.persistNewAPISnapshot(ctx, a, b, snap)
 }
 
-func (s *UpstreamBillingProbeService) persistNewAPIFailure(ctx context.Context, a *Account, b *NewAPIAccountBinding, interval int, now time.Time, reason string) (*UpstreamBillingProbeSnapshot, error) {
-	snap := upstreamBillingProbeFailureSnapshot(a, interval, now, 0, reason, 0)
+func (s *UpstreamBillingProbeService) persistNewAPIFailure(ctx context.Context, a *Account, b *NewAPIAccountBinding, interval int, now time.Time, reason string, cause error) (*UpstreamBillingProbeSnapshot, error) {
+	var responseErr *newAPIHTTPError
+	var status int
+	var delay time.Duration
+	if errors.As(cause, &responseErr) {
+		status = responseErr.statusCode
+		if responseErr.retryAfter > 0 {
+			delay = responseErr.observedAt.Add(responseErr.retryAfter).Sub(now)
+		}
+	}
+	snap := upstreamBillingProbeFailureSnapshot(a, interval, now, status, reason, delay)
 	snap.Data = nil
 	snap.ReceivedAt = nil
 	snap.FreshUntil = nil
 	snap.Balance = &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusFailed, LastAttemptAt: now, LastError: reason}
+	return s.persistNewAPISnapshot(ctx, a, b, snap)
+}
+
+func (s *UpstreamBillingProbeService) persistNewAPISnapshot(ctx context.Context, a *Account, b *NewAPIAccountBinding, snap *UpstreamBillingProbeSnapshot) (*UpstreamBillingProbeSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, upstreamBillingProbeRequestTimeout)
+	defer cancel()
 	if err := s.newAPIRepo.WriteSnapshot(ctx, a, b, snap); err != nil {
 		return nil, ErrUpstreamBillingProbeIdentityChanged
 	}

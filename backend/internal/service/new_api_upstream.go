@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -26,6 +27,22 @@ var ErrNewAPIEncryptionKey = infraerrors.ServiceUnavailable("NEW_API_ENCRYPTION_
 
 func newAPIError(reason string) error {
 	return infraerrors.BadRequest("NEW_API_VERIFICATION_FAILED", "New API verification failed: "+reason)
+}
+
+// Retain only scheduling metadata; response bodies and credentials stay private.
+type newAPIHTTPError struct {
+	error
+	statusCode int
+	retryAfter time.Duration
+	observedAt time.Time
+}
+
+func (e *newAPIHTTPError) Unwrap() error { return e.error }
+
+func newAPIRequestRequiresWait(err error) bool {
+	var responseErr *newAPIHTTPError
+	return errors.As(err, &responseErr) && (responseErr.statusCode == http.StatusTooManyRequests ||
+		(responseErr.statusCode == http.StatusServiceUnavailable && responseErr.retryAfter > 0))
 }
 
 // CanonicalNewAPISite preserves the origin and tenant path. Only a terminal v1
@@ -156,7 +173,8 @@ func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Acco
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return newAPIError("http_error")
+		now := s.currentTime().UTC()
+		return &newAPIHTTPError{error: newAPIError("http_error"), statusCode: resp.StatusCode, retryAfter: retryAfter(resp.Header, now), observedAt: now}
 	}
 	b, e := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
 	if e != nil || len(b) > 2*1024*1024 {
@@ -213,6 +231,8 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 				result.ratios[g] = r
 			}
 		}
+	} else if newAPIRequestRequiresWait(e) {
+		return nil, e
 	}
 	seen := map[int64]bool{}
 	queryPage := 0

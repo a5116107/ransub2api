@@ -15,8 +15,10 @@ import (
 
 type newAPIHTTP struct {
 	HTTPUpstream
-	bodies map[string]string
-	check  func(*http.Request)
+	bodies      map[string]string
+	check       func(*http.Request)
+	statusCodes map[string]int
+	headers     map[string]http.Header
 }
 
 func (h *newAPIHTTP) DoWithTLS(r *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
@@ -29,7 +31,10 @@ func (h *newAPIHTTP) DoWithTLS(r *http.Request, _ string, _ int64, _ int, _ *tls
 		code = 404
 		b = `{}`
 	}
-	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(b)), Header: http.Header{}}, nil
+	if status, ok := h.statusCodes[r.Method+" "+r.URL.RequestURI()]; ok {
+		code = status
+	}
+	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(b)), Header: h.headers[r.Method+" "+r.URL.RequestURI()].Clone()}, nil
 }
 func TestNewAPICanonicalSiteKeepsTenantAndPort(t *testing.T) {
 	for _, tt := range []struct{ in, out string }{{"https://EXAMPLE.com:443/tenant/v1/", "https://example.com/tenant"}, {"http://example.com:8080/v1", "http://example.com:8080"}, {"https://example.com/v10", "https://example.com/v10"}} {
@@ -163,6 +168,49 @@ func TestNewAPIOlderArrayInventoryDoesNotStopOnShortPage(t *testing.T) {
 	require.NoError(t, e)
 	require.Len(t, d.tokens, 2)
 }
+func TestNewAPIPricingFailureCompatibility(t *testing.T) {
+	now := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		code   int
+		header string
+		wait   bool
+	}{
+		{"missing", 404, "", false},
+		{"method unsupported", 405, "", false},
+		{"gateway failure", 502, "", false},
+		{"service failure without wait", 503, "", false},
+		{"zero wait", 503, "0", false},
+		{"negative wait", 503, "-1", false},
+		{"invalid wait", 503, "later", false},
+		{"expired wait", 503, now.Add(-time.Minute).Format(http.TimeFormat), false},
+		{"explicit wait", 503, "14400", true},
+		{"date wait", 503, now.Add(time.Hour).Format(http.TimeFormat), true},
+		{"rate limit without header", 429, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, upstream, accounts := newAPIConfigFixture()
+			s.now = func() time.Time { return now }
+			upstream.statusCodes = map[string]int{"GET /api/pricing": tc.code}
+			upstream.headers = map[string]http.Header{"GET /api/pricing": {"Retry-After": []string{tc.header}}}
+			var requests []string
+			upstream.check = func(req *http.Request) { requests = append(requests, req.Method+" "+req.URL.RequestURI()) }
+			data, err := s.fetchNewAPI(t.Context(), accounts.accounts[1], "https://example.com", 7, "fixture-secret")
+			if tc.wait {
+				require.ErrorIs(t, err, newAPIError("http_error"))
+				require.Nil(t, data)
+				require.Len(t, requests, 3)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, 2.5, data.wallet)
+				require.Empty(t, data.ratios, "fallback must not invent a valid group rate")
+				require.Len(t, data.tokens, 1)
+				require.Len(t, requests, 4)
+			}
+		})
+	}
+}
+
 func TestNewAPICostSyncRejectsGroupScopeEvenWithoutProvider(t *testing.T) {
 	snap := &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusOK, LastAttemptAt: time.Now(), Data: map[string]any{"billing_scope": "group", "resolved_rate_multiplier": 0.5, "effective_rate_multiplier": 0.5, "peak_rate_enabled": false}}
 	_, ok := snap.CostMultiplierToSync()
