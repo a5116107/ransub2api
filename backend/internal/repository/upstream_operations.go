@@ -148,7 +148,7 @@ func (r *channelRepository) ReadUpstreamOperations(ctx context.Context, f servic
 		// Reuse canonical complete frozen plan×round×model classification. Only the
 		// account cohort changes; filtering by model still follows round integrity.
 		quality := `WITH ` + upstreamOperationsCohort + `, scoped AS (
-          SELECT p.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,NULLIF(r.pelican_config->>'model_id','') AS measured_model
+          SELECT p.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,` + qualityMeasuredModel + ` AS measured_model
           FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
           WHERE p.account_id IN (SELECT id FROM cohort) AND r.created_at >= $1 AND r.created_at < $2
           AND ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=p.account_id AND ag.group_id=$6))

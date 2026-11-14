@@ -416,6 +416,18 @@ func qualityGroups(ctx context.Context, tx *sql.Tx, accountID int64) ([]byte, er
 	return raw, err
 }
 
+// Repair display types only for quality history, never the stored evidence or
+// the inputs used by the shared round classifier. Other decoding errors remain errors.
+const qualityHistoryConfig = `CASE WHEN jsonb_typeof(pelican_config->'quality')='object' THEN
+ pelican_config-ARRAY(SELECT field FROM (VALUES
+  ('parallel_count',jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$'),
+  ('model_id',jsonb_typeof(pelican_config->'model_id')='string'),
+  ('model_ids',CASE WHEN jsonb_typeof(pelican_config->'model_ids')='array' THEN NOT EXISTS (
+   SELECT 1 FROM jsonb_array_elements(pelican_config->'model_ids') m(value) WHERE jsonb_typeof(value)<>'string'
+  ) ELSE false END)
+ ) display_fields(field,valid) WHERE NOT COALESCE(valid,false))
+ ELSE pelican_config END`
+
 // Global operation history is cursor-paginated independently of account/rule selection.
 // Response bodies are loaded through the existing per-result detail endpoint.
 
@@ -428,7 +440,7 @@ func (r *scheduledTestResultRepository) ListQualityHistory(ctx context.Context, 
  HAVING ($1::bigint=0 OR max(r.id)<$1) ORDER BY max(r.id) DESC LIMIT $2
 ), scoped AS (
  SELECT p.account_id,a.name AS account_name,r.id,r.plan_id,r.status,r.created_at,r.started_at,r.finished_at,r.latency_ms,
- r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,NULLIF(r.pelican_config->>'model_id','') AS measured_model
+ r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,`+qualityMeasuredModel+` AS measured_model
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id JOIN accounts a ON a.id=p.account_id
  JOIN selected_rounds s ON s.plan_id=r.plan_id AND s.round_key=COALESCE(NULLIF(r.quality_round_id,''),'legacy-'||r.id::text)
  WHERE jsonb_typeof(r.pelican_config->'quality')='object' AND a.deleted_at IS NULL
@@ -452,7 +464,7 @@ func (r *scheduledTestResultRepository) ListQualityHistory(ctx context.Context, 
  ) SELECT id,plan_id,CASE WHEN total_count=skipped_count THEN 'skipped' WHEN round_complete AND all_passed THEN 'success' ELSE 'failed' END,
  CASE WHEN any_wrong THEN 'answer_mismatch' ELSE error_message END,
  latency_ms,round_started_at,round_finished_at,created_at,
- CASE WHEN expected_probes IS NOT NULL THEN pelican_config ELSE pelican_config-'parallel_count' END,
+ `+qualityHistoryConfig+`,
  quality_action,quality_judgment,account_id,account_name,passed_count,total_count-skipped_count,skipped_count,result_ids,round_complete,expected_count
  FROM history_rows WHERE row_in_round=1 ORDER BY id DESC`, beforeID, limit)
 	if err != nil {

@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D7.3历史结论一致性修复已验；独立验真基线仍待。
+任务：D7.3模型元数据与详情兼容修复已验；分维度验真待证。
 授权：单分支本地修复/验证/提交/自有分支同步；不CI/生产。
-验证命令：go test -json -race -tags unit,integration -p 1 ./internal/repository -run '^(TestQualityActionsRestoreOwnershipAndStaleRuns|TestQualitySkippedRoundHistoryCountsOnlyTestedModels)$' -count=2 -timeout=6m
-验证结果：SQL192及补充16、Service30、前端202通过；vet/lint/类型/构建0。
-验证来源：8946edd11基线；quality-history-*指纹已核。
-下一动作：接入方补scope/独立基线，续验原D2–D9。
-尝试：1
+验证命令：go test -json -race -tags unit,integration -p 1 ./internal/repository（原选择器双轮）
+验证结果：188种叶场景双轮376次通过，fail/skip0；vet/增量fast lint0。
+验证来源：c67c5c6f9基线；quality-model-metadata-final；8项输入哈希匹配。
+下一动作：接入方补scope/独立基线；按原D2–D9剩余验收续验。
+尝试：2
 阻塞：供应商scope/独立基线、严格混版及历史拒删。
 责任方：接入方、部署及资源拥有者。
 解除条件：提供真实scope/独立参考；统一节点版本；拥有者清理。
@@ -58,7 +58,7 @@
 | D5.2 | done | 原始终态摘要、唯一逻辑计数/覆盖、本人筛选、30天边界及中英390px通过；非生产 |
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
-| D7.3 | in_progress | 原入口/三页统一冻结分类；SQL192+16、Service30及前端202通过，vet/增量lint0；分维度/基线待接入方 |
+| D7.3 | in_progress | 原入口/三页及模型类型、冻结集合、列表/详情兼容已验；188叶双轮/race/vet通过，分维度/独立基线待接入方 |
 | D8 | in_progress | v2.21.1/SQL/280身份场景、428→431配置兼容和回退重升已验；双候选漏收后恢复通过，旧新版订阅仅1/2；旧副本410→432保留，严格产品/其他能力待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
