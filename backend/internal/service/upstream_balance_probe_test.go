@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -202,6 +203,66 @@ func TestUpstreamBalanceProbeAllowed(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestUpstreamBalanceProbeHonorsServiceRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		header string
+		want   bool
+	}{
+		{"service_wait_seconds", http.StatusServiceUnavailable, "600", false},
+		{"service_wait_date", http.StatusServiceUnavailable, time.Now().Add(time.Hour).UTC().Format(http.TimeFormat), false},
+		{"service_no_wait", http.StatusServiceUnavailable, "", true},
+		{"service_zero_wait", http.StatusServiceUnavailable, "0", true},
+		{"service_negative_wait", http.StatusServiceUnavailable, "-1", true},
+		{"service_invalid_wait", http.StatusServiceUnavailable, "invalid", true},
+		{"service_expired_wait", http.StatusServiceUnavailable, time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat), true},
+		{"gateway_error_still_checks_balance", http.StatusBadGateway, "600", true},
+		{"missing_rate_endpoint_still_checks_balance", http.StatusNotFound, "600", true},
+		{"method_unsupported_still_checks_balance", http.StatusMethodNotAllowed, "600", true},
+		{"success_still_checks_balance", http.StatusOK, "600", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := upstreamBalanceProbeAllowed("https://relay.example/v1", upstreamBillingProbeHTTPResult{statusCode: tc.status, header: http.Header{"Retry-After": []string{tc.header}}})
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestUpstreamBillingProbeServiceRetryAfterPreservesBalanceUntilRecovery(t *testing.T) {
+	now := time.Now().UTC()
+	received := now.Add(-time.Minute)
+	freshUntil := now.Add(time.Minute)
+	previousBalance := &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusOK, ReceivedAt: &received, FreshUntil: &freshUntil, LastAttemptAt: received, Data: map[string]any{"wallet_balance": 7.0}}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "synthetic-retry-after", "base_url": "https://relay.example"},
+		Extra:       map[string]any{UpstreamBillingProbeExtraKey: &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusOK, Balance: previousBalance}},
+	}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	billing := fmt.Sprintf(`{"object":"sub2api.key_billing","schema_version":1,"billing_scope":"token","group_rate_multiplier":0.03,"resolved_rate_multiplier":0.03,"peak_rate_enabled":false,"effective_rate_multiplier":0.03,"observed_at":%q}`, now.Format(time.RFC3339Nano))
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Retry-After": []string{"600"}}, Body: io.NopCloser(strings.NewReader(`{"error":"fixture busy"}`))},
+		upstreamBalanceProbeJSONResponse(http.StatusOK, billing),
+		{StatusCode: http.StatusOK, Header: http.Header{}, Body: upstreamBalanceProbeWalletBody()},
+	}}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	svc.now = func() time.Time { return now }
+	snapshot, err := svc.ProbeAccount(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 1, "an explicit service wait must not be followed by a balance request")
+	require.Equal(t, UpstreamBillingProbeStatusFailed, snapshot.Status)
+	require.Equal(t, previousBalance, snapshot.Balance, "retaining a balance must not refresh its evidence")
+
+	now = snapshot.NextProbeAt.Add(time.Second)
+	snapshot, err = svc.ProbeAccount(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 3)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Balance.Status)
+	require.Equal(t, now, *snapshot.Balance.ReceivedAt)
+	require.Equal(t, 12.34, snapshot.Balance.Data["wallet_balance"])
 }
 
 func TestUpstreamBalanceProbeURLAsksForSmallestStatisticsWindow(t *testing.T) {

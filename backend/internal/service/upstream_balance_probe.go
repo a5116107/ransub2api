@@ -81,7 +81,9 @@ type upstreamUsageBalanceRateLimit struct {
 // rate request of the same probe. It only follows a rate request that reached
 // the upstream: a transport failure would just repeat, 401 means the key is
 // rejected (and a Sub2API upstream counts every rejected key against the
-// caller's IP), and 429 asks the caller to back off. Official provider APIs
+// caller's IP), and 429 asks the caller to back off. A 503 with an active
+// Retry-After also defers the balance request without refreshing old evidence.
+// Official provider APIs
 // never serve Sub2API's usage endpoint; OpenAI accounts without a custom base
 // URL still probe api.openai.com for the rate but must not send the key to a
 // second official path.
@@ -89,6 +91,10 @@ func upstreamBalanceProbeAllowed(baseURL string, rate upstreamBillingProbeHTTPRe
 	switch rate.statusCode {
 	case 0, http.StatusUnauthorized, http.StatusTooManyRequests:
 		return false
+	case http.StatusServiceUnavailable:
+		if retryAfter(rate.header, time.Now()) > 0 {
+			return false
+		}
 	}
 	return !upstreamBillingProbeTargetIsOfficialAPI(baseURL)
 }
