@@ -19,7 +19,7 @@ for arch in "${arches[@]}"; do
     args+=(--tag "$registry:$RELEASE_VERSION-$arch")
     if [[ ${SIMPLE_RELEASE:-false} == true ]]; then
       args+=(--tag "$registry:$RELEASE_VERSION")
-      if [[ $stable == true ]]; then args+=(--tag "$registry:latest"); fi
+      if [[ $stable == true && ${PUBLISH_LATEST:-true} == true ]]; then args+=(--tag "$registry:latest"); fi
     fi
   done
   if [[ ${DRY_RUN:-false} == true ]]; then

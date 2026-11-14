@@ -37,10 +37,47 @@ class ReleaseMatrixTest(unittest.TestCase):
         self.assertIn('ghcr.io/a5116107/ransub2api:2.19.2-ransub.1', log)
         self.assertIn('ghcr.io/a5116107/ransub2api:latest', log)
 
-    def test_release_is_manual_and_prebuilt_mode_skips_compilation(self):
+    def test_automatic_image_is_not_latest_before_release_publication(self):
+        fake_bin = Path('bin')
+        fake_bin.mkdir()
+        docker = fake_bin / 'docker'
+        docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\n')
+        docker.chmod(0o755)
+        env = {**os.environ, 'PATH': str(fake_bin.resolve()) + os.pathsep + os.environ['PATH'],
+               'DOCKER_LOG': str(Path('docker.log').resolve()), 'RUNNER_TEMP': self.temp.name,
+               'RELEASE_VERSION': '9.8.7-ransub.3', 'RELEASE_SHA': 'a' * 40,
+               'GITHUB_REPOSITORY': release.CUSTOM_REPOSITORY, 'DRY_RUN': 'false',
+               'SIMPLE_RELEASE': 'true', 'DOCKERHUB_USERNAME': 'skip', 'PUBLISH_LATEST': 'false'}
+        subprocess.run(['bash', str(ROOT / '.github/release-tools/release-images.sh')], env=env, check=True)
+        log = Path('docker.log').read_text()
+        self.assertIn('--push', log)
+        self.assertIn(':9.8.7-ransub.3', log)
+        self.assertNotIn(':latest', log)
+
+    def test_production_release_is_automatic_and_prebuilt_mode_stays_manual(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8'))
         trigger = workflow.get('on', workflow.get(True))
-        self.assertEqual(set(trigger), {'workflow_dispatch'})
+        self.assertEqual(set(trigger), {'workflow_dispatch', 'push', 'schedule'})
+        self.assertEqual(trigger['push']['branches'], ['production'])
+        self.assertNotIn('tags', trigger['push'])
+        self.assertEqual(trigger['schedule'], [{'cron': '*/15 * * * *'}])
+        self.assertFalse(workflow['concurrency']['cancel-in-progress'])
+        automatic = workflow['jobs']['publish-production']
+        self.assertIn("github.event_name != 'workflow_dispatch'", automatic['if'])
+        self.assertIn("github.repository == 'a5116107/ransub2api'", automatic['if'])
+        self.assertIn("github.event_name == 'workflow_dispatch'", workflow['jobs']['prepare']['if'])
+        steps = automatic['steps']
+        commands = '\n'.join(step.get('run', '') for step in steps)
+        self.assertNotRegex(commands, r'go test|pytest|unittest|pnpm (test|lint)|ssh |systemctl|compose up')
+        image = next(i for i, step in enumerate(steps) if step.get('name') == 'Publish verified production runtime image')
+        archive = next(i for i, step in enumerate(steps) if step.get('name') == 'Publish checksummed archives as latest custom stable release')
+        latest = next(i for i, step in enumerate(steps) if step.get('name') == 'Promote the published stable image')
+        self.assertEqual(steps[image]['env']['PUBLISH_LATEST'], 'false')
+        self.assertLess(image, archive)
+        self.assertLess(archive, latest)
+        identity = next(step for step in steps if step.get('name') == 'Verify packaged executable build identity')
+        self.assertIn('-version 2>&1', identity['run'])
+        self.assertIn('"$RELEASE_SHA"', identity['run'])
         self.assertIn('prebuilt_only', trigger['workflow_dispatch']['inputs'])
         self.assertIn('prebuilt_only != true', workflow['jobs']['prepare']['if'])
         steps = workflow['jobs']['publish-prebuilt-image']['steps']
@@ -58,6 +95,21 @@ class ReleaseMatrixTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'commit the verified source'):
                 release.local_build(argparse.Namespace(output='release', simple=True))
             run.assert_not_called()
+
+    def test_local_build_uses_selected_version_and_bypasses_package_test_hooks(self):
+        def build(command, **kwargs):
+            if command[:2] == ['go', 'build']:
+                Path(command[command.index('-o') + 1]).write_bytes(b'fixture binary')
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(subprocess, 'check_output', side_effect=['', 'a' * 40, '']), \
+                patch.object(shutil, 'which', return_value='pnpm'), \
+                patch.object(subprocess, 'run', side_effect=build) as command:
+            release.local_build(argparse.Namespace(output='build', simple=True, version='9.8.7-ransub.3'))
+        commands = [call.args[0] for call in command.call_args_list]
+        self.assertEqual(commands[:2], [['pnpm', 'exec', 'vue-tsc', '-b'], ['pnpm', 'exec', 'vite', 'build']])
+        self.assertIn('main.Version=9.8.7-ransub.3', commands[2][commands[2].index('-ldflags') + 1])
+        release.verify(argparse.Namespace(input='build/input', version='9.8.7-ransub.3', sha='a' * 40, simple=True))
 
     def test_local_publication_rejects_wrong_repository_before_upload(self):
         Path('release').mkdir()
@@ -78,11 +130,11 @@ class ReleaseMatrixTest(unittest.TestCase):
         Path('backend/cmd/server').mkdir(parents=True)
         release.VERSION_FILE.write_text('9.8.7\n')
 
-    def fixture_artifacts(self, simple=False):
+    def fixture_artifacts(self, simple=False, version='9.8.7'):
         directory = Path('release-input')
         directory.mkdir()
         for target in release.targets(simple):
-            name = release.archive_name('9.8.7', target)
+            name = release.archive_name(version, target)
             archive = directory / name
             if target['goos'] == 'linux':
                 with tarfile.open(archive, 'w:gz') as out:
@@ -92,10 +144,196 @@ class ReleaseMatrixTest(unittest.TestCase):
                     out.addfile(info, io.BytesIO(b'fixture'))
             else:
                 archive.write_bytes(b'fixture archive')
-            metadata = {'version': '9.8.7', 'sha': 'a' * 40, 'target': target,
+            metadata = {'version': version, 'sha': 'a' * 40, 'target': target,
                         'archive': name, 'sha256': release.sha256(archive)}
             (directory / f"manifest-{target['goos']}-{target['goarch']}.json").write_text(json.dumps(metadata))
-        return argparse.Namespace(input='release-input', version='9.8.7', sha='a' * 40, simple=simple, output='contexts')
+        return argparse.Namespace(input='release-input', version=version, sha='a' * 40, simple=simple, output='contexts')
+
+    def production_history(self, changed=True):
+        for command in (['init', '-q', '--initial-branch=production'],
+                        ['config', 'user.name', 'Fixture'], ['config', 'user.email', 'fixture@example.invalid'],
+                        ['add', '.'], ['commit', '-qm', 'Published source'],
+                        ['tag', 'v9.8.7-ransub.2']):
+            subprocess.run(['git', *command], check=True)
+        Path('docs').mkdir()
+        Path('docs/notes.md').write_text('Documentation change\n')
+        if changed:
+            Path('application.go').write_text('package fixture\n')
+        subprocess.run(['git', 'add', '.'], check=True)
+        subprocess.run(['git', 'commit', '-qm', 'Candidate source'], check=True)
+
+    def automatic_plan(self):
+        with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs'}), \
+                patch.object(release, 'automatic_source', return_value=('a' * 40, True)), \
+                patch.object(release, 'github', return_value={'tag_name': 'v9.8.7-ransub.2'}):
+            release.automatic_plan(argparse.Namespace())
+        return dict(line.split('=', 1) for line in Path('outputs').read_text().splitlines())
+
+    def test_automatic_plan_uses_real_source_diff_and_increments_revision(self):
+        self.production_history()
+        result = self.automatic_plan()
+        self.assertEqual(result['publish'], 'true')
+        self.assertEqual(result['tag'], 'v9.8.7-ransub.3')
+        self.assertEqual(result['sha'], 'a' * 40)
+
+    def test_automatic_plan_skips_documentation_only_changes(self):
+        self.production_history(changed=False)
+        result = self.automatic_plan()
+        self.assertEqual(result['publish'], 'false')
+        self.assertEqual(result['image_tag'], 'v9.8.7-ransub.2')
+
+    def test_automatic_plan_reuses_unpublished_tag_at_exact_source(self):
+        self.production_history()
+        subprocess.run(['git', 'tag', 'v9.8.7-ransub.3'], check=True)
+        self.assertEqual(self.automatic_plan()['tag'], 'v9.8.7-ransub.3')
+
+    def test_automatic_plan_does_not_reuse_tag_at_other_source(self):
+        self.production_history()
+        subprocess.run(['git', 'tag', 'v9.8.7-ransub.3', 'HEAD^'], check=True)
+        self.assertEqual(self.automatic_plan()['tag'], 'v9.8.7-ransub.4')
+
+    def test_automatic_plan_preserves_new_upstream_version(self):
+        self.production_history()
+        release.VERSION_FILE.write_text('9.8.8\n')
+        self.assertEqual(self.automatic_plan()['tag'], 'v9.8.8-ransub.1')
+
+    def test_automatic_plan_rejects_downgrade_and_prerelease_source(self):
+        self.production_history()
+        for version in ('9.8.6', '9.8.8-rc.1'):
+            with self.subTest(version=version):
+                release.VERSION_FILE.write_text(version + '\n')
+                with self.assertRaises(ValueError):
+                    self.automatic_plan()
+
+    def test_automatic_source_rejects_fork_and_feature_branch_before_git(self):
+        for repo, ref in (('other/fork', 'refs/heads/production'),
+                          (release.CUSTOM_REPOSITORY, 'refs/heads/feature'),
+                          (release.CUSTOM_REPOSITORY, 'refs/tags/v9.8.7-ransub.3')):
+            with self.subTest(repo=repo, ref=ref), \
+                    patch.dict(os.environ, {'GITHUB_REPOSITORY': repo, 'GITHUB_REF': ref}), \
+                    patch.object(subprocess, 'check_output') as command:
+                with self.assertRaisesRegex(ValueError, 'owner production branch'):
+                    release.automatic_source()
+                command.assert_not_called()
+
+    def test_automatic_source_detects_advanced_production(self):
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': release.CUSTOM_REPOSITORY, 'GITHUB_REF': 'refs/heads/production'}), \
+                patch.object(subprocess, 'check_output', side_effect=['a' * 40, 'b' * 40 + '\trefs/heads/production\n']):
+            self.assertEqual(release.automatic_source(), ('a' * 40, False))
+
+    def test_automatic_plan_skips_stale_job_without_reading_releases(self):
+        with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs'}), \
+                patch.object(release, 'automatic_source', return_value=('a' * 40, False)), \
+                patch.object(release, 'github') as api:
+            release.automatic_plan(argparse.Namespace())
+            api.assert_not_called()
+        self.assertIn('publish=false', Path('outputs').read_text())
+
+    def publication_fixture(self):
+        built = self.fixture_artifacts(True, '9.8.7-ransub.3')
+        output = Path('release')
+        output.mkdir()
+        shutil.move(built.input, output / 'input')
+        manifest = {'repository': release.CUSTOM_REPOSITORY, 'version': built.version,
+                    'sha': built.sha, 'simple': True}
+        (output / 'release-manifest.json').write_text(json.dumps(manifest))
+        checksums = ''.join(f'{release.sha256(file)}  {file.name}\n' for file in sorted((output / 'input').glob('sub2api_*')))
+        (output / 'checksums.txt').write_text(checksums)
+        Path('notes.md').write_text('Fixture release\n')
+        return argparse.Namespace(input=str(output), notes='notes.md', automatic=True)
+
+    def publication_api(self, corrupt_upload=False):
+        assets = {}
+        for file in [*Path('release/input').iterdir(), Path('release/checksums.txt'), Path('release/release-manifest.json')]:
+            assets[file.name] = {'id': len(assets) + 1, 'name': file.name, 'size': file.stat().st_size,
+                                 'digest': 'sha256:' + release.sha256(file)}
+        draft = {'id': 123, 'tag_name': 'v9.8.7-ransub.3', 'draft': True,
+                 'assets': [{**asset, 'digest': 'sha256:stale'} for asset in assets.values()]}
+
+        def api(method, path, data=None, *, upload=None):
+            if method == 'GET' and path.endswith('releases?per_page=100'):
+                return [draft]
+            if method == 'GET' and path.endswith('releases/123'):
+                return {'assets': draft['assets'] if corrupt_upload else list(assets.values())}
+            if method == 'GET' and path.endswith('releases/latest'):
+                return {'tag_name': 'v9.8.7-ransub.2'}
+            if method in ('POST', 'DELETE', 'PATCH'):
+                return {}
+            raise AssertionError((method, path))
+        return api
+
+    def test_automatic_publication_repairs_only_unpublished_draft_assets(self):
+        args = self.publication_fixture()
+        refs = 'a' * 40 + '\trefs/tags/v9.8.7-ransub.3^{}\n'
+        with patch.object(subprocess, 'check_output', side_effect=['a' * 40, refs]), \
+                patch.object(release, 'automatic_source', return_value=('a' * 40, True)), \
+                patch.object(release, 'github', side_effect=self.publication_api()) as api:
+            release.local_publish(args)
+        self.assertEqual(sum(call.args[0] == 'DELETE' for call in api.call_args_list), 4)
+        self.assertEqual(api.call_args_list[-1].args[0], 'PATCH')
+
+    def test_manual_publication_preserves_draft_on_mismatch(self):
+        args = self.publication_fixture()
+        args.automatic = False
+        refs = 'a' * 40 + '\trefs/tags/v9.8.7-ransub.3^{}\n'
+        with patch.object(subprocess, 'check_output', side_effect=['a' * 40, refs]), \
+                patch.object(release, 'github', side_effect=self.publication_api()) as api:
+            with self.assertRaisesRegex(ValueError, 'different content'):
+                release.local_publish(args)
+        self.assertFalse(any(call.args[0] == 'DELETE' for call in api.call_args_list))
+
+    def test_automatic_publication_never_promotes_stale_or_corrupt_upload(self):
+        args = self.publication_fixture()
+        refs = 'a' * 40 + '\trefs/tags/v9.8.7-ransub.3^{}\n'
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt), \
+                    patch.object(subprocess, 'check_output', side_effect=['a' * 40, refs]), \
+                    patch.object(release, 'automatic_source', return_value=('a' * 40, False)), \
+                    patch.object(release, 'github', side_effect=self.publication_api(corrupt)) as api:
+                with self.assertRaises(ValueError):
+                    release.local_publish(args)
+                self.assertFalse(any(call.args[0] == 'PATCH' for call in api.call_args_list))
+
+    def test_published_assets_are_never_replaced_by_automatic_recovery(self):
+        args = self.publication_fixture()
+        refs = 'a' * 40 + '\trefs/tags/v9.8.7-ransub.3^{}\n'
+        with patch.object(subprocess, 'check_output', side_effect=['a' * 40, refs]), \
+                patch.object(release, 'github', return_value=[{'tag_name': 'v9.8.7-ransub.3', 'draft': False}]) as api:
+            with self.assertRaisesRegex(ValueError, 'already published'):
+                release.local_publish(args)
+        self.assertTrue(all(call.args[0] == 'GET' for call in api.call_args_list))
+
+    def test_automatic_publish_rejects_mismatched_artifacts_before_tag_push(self):
+        args = self.publication_fixture()
+        Path('release/input/manifest-linux-amd64.json').write_text('{}')
+        with patch.object(release, 'automatic_source', return_value=('a' * 40, True)), \
+                patch.object(subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                release.automatic_publish(args)
+            command.assert_not_called()
+
+    def test_automatic_publish_pushes_only_matching_source_tag(self):
+        args = self.publication_fixture()
+        with patch.object(release, 'automatic_source', return_value=('a' * 40, True)), \
+                patch.object(release, 'github', return_value={'tag_name': 'v9.8.7-ransub.2'}), \
+                patch.object(subprocess, 'check_output', return_value='- Accepted change\n'), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout='a' * 40)) as command, \
+                patch.object(release, 'local_publish') as publish:
+            release.automatic_publish(args)
+        self.assertEqual(command.call_args_list[-1].args[0], ['git', 'push', 'origin', 'refs/tags/v9.8.7-ransub.3'])
+        self.assertTrue(publish.call_args.args[0].automatic)
+
+    def test_automatic_publish_rejects_existing_tag_at_different_source(self):
+        args = self.publication_fixture()
+        with patch.object(release, 'automatic_source', return_value=('a' * 40, True)), \
+                patch.object(release, 'github', return_value={'tag_name': 'v9.8.7-ransub.2'}), \
+                patch.object(subprocess, 'check_output', return_value='- Accepted change\n'), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout='b' * 40)) as command, \
+                patch.object(release, 'local_publish') as publish:
+            with self.assertRaisesRegex(ValueError, 'different source'):
+                release.automatic_publish(args)
+        self.assertEqual(command.call_count, 1)
+        publish.assert_not_called()
 
     def test_full_and_simple_matrix_match_existing_targets(self):
         full = release.targets()
