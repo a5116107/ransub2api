@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8 New API等待/分类/独立落库与恢复已验；空目录清理待宿主。
+任务：D8 New API修复已同步，100授权绑定双轮轮转/退避恢复已验。
 授权：单分支本地修复/验证/提交/自有分支同步；不CI/生产。
-验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository（原选择器双轮）
-验证结果：415叶双轮/934项通过，fail/skip0；vet与增量fast lint0。
-验证来源：641e579fc基线；newapi-retry-final；17项输入匹配。
-下一动作：接入方补真实scope/独立参考，续验D2–D9；宿主清理本轮空目录。
-尝试：3
+验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/repository（原NewAPI持久化用例双轮）
+验证结果：100绑定/1280HTTP/并发4，双轮通过；repo vet及增量fast lint0。
+验证来源：a9c0bdd14后测试扩展；newapi-bindings-focused；12项输入匹配。
+下一动作：接入方补真实scope/独立参考，续验D2–D9；宿主清理空目录。
+尝试：1
 阻塞：供应商scope/独立基线、严格混版及受限清理。
 责任方：接入方、部署及宿主资源拥有者。
 解除条件：提供真实scope/独立参考；统一节点版本；拥有者清理。
@@ -59,7 +59,7 @@
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
 | D7.3 | in_progress | 原入口/三页及模型类型、冻结集合、列表/详情兼容已验；188叶双轮/race/vet通过，分维度/独立基线待接入方 |
-| D8 | in_progress | 100账号轮转、New API等待/分页/落库恢复及原升级子项已验；严格混版及其他能力待验 |
+| D8 | in_progress | 两格式各100账号轮转，New API分页/等待/重建退避/到期恢复及原升级已验；严格混版/完整预算待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
 ## 工作区与验证约定
@@ -83,4 +83,4 @@
 - 历史H:/Root/DevCache/tmp/sub2api-v2211-verify内browser-check.mjs（8305bytes）和handler-identity.test.exe（342989777bytes）删除被blocked by policy拦截，删除0；拥有者手工清理，不重试/移动。
 - 历史mixed-candidate-sub2api（240521376bytes）保留于上述v2211-verify目录；原拒删不重试。
 - 本轮同目录auth-recovery-sub2api（240525472bytes）及空H:/Root/DevCache/tmp/sub2api-auth-recovery-build删除被blocked by policy在启动前拦截，删除0；拥有者手工清理后解除。
-- 本轮H:/Root/DevCache/tmp/sub2api-newapi-retry空目录删除被自动审批在启动前以blocked by policy拒绝，删除0；只读确认0文件/0bytes、无活动引用。宿主/拥有者清理，不重试/移动。
+- H:/Root/DevCache/tmp/下sub2api-newapi-retry及sub2api-newapi-bindings空目录均被宿主启动前以blocked by policy拒删；各0文件/0bytes、无活动引用，删除0。拥有者清理，不重试/移动。

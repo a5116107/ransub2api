@@ -97,10 +97,17 @@ func TestNewAPIIntegrationSharedEncryptedRotationAndUnbind(t *testing.T) {
 func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	ctx := t.Context()
 	db, client := newBillingAuditDatabase(t)
+	const enabledAccounts = 100
 	var phase atomic.Int32
-	var calls [3][6]atomic.Int64
-	var unexpected atomic.Int64
+	var calls [enabledAccounts + 4][6]atomic.Int64
+	var active, maximum, unexpected atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for previous := maximum.Load(); current > previous && !maximum.CompareAndSwap(previous, current); previous = maximum.Load() {
+		}
+		// Observe overlap between independent slots without extending network deadlines.
+		time.Sleep(3 * time.Millisecond)
 		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/line-"), "/", 2)
 		if len(parts) != 2 {
 			unexpected.Add(1)
@@ -139,10 +146,10 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		}
 		calls[index][step].Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if phase.Load() == 1 && ((index == 0 && step == 2) || (index == 1 && step == 4)) {
+		if phase.Load() == 1 && ((index < 10 && step == 2) || (index >= 10 && index < 20 && step == 4)) {
 			w.Header().Set("Retry-After", "14400")
 			code := http.StatusServiceUnavailable
-			if index == 1 {
+			if index >= 10 {
 				code = http.StatusTooManyRequests
 			}
 			w.WriteHeader(code)
@@ -181,8 +188,17 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		ids[i] = account.ID
 		require.NoError(t, auth.Save(ctx, &service.NewAPISiteAuthorization{SiteURL: site, UserID: 7, Ciphertext: ciphertext}, []service.NewAPIBindingSave{{Account: account, TokenID: 3, Group: "vip"}}))
 	}
+	_, err = db.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_set(extra,'{upstream_billing_probe_enabled}','false'::jsonb) WHERE id=$1`, ids[enabledAccounts])
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, ids[enabledAccounts+1])
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE accounts SET type='oauth' WHERE id=$1`, ids[enabledAccounts+2])
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_set(extra,'{upstream_billing_probe}',jsonb_build_object('status','ok','next_probe_at',$1::text)) WHERE id=$2`, time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano), ids[enabledAccounts+3])
+	require.NoError(t, err)
 	run := func(t *testing.T) {
 		t.Helper()
+		// Reconstruct every runner and repository: progress must come from SQL.
 		repo := newAccountRepositoryWithSQL(client, db, nil)
 		tester := service.NewAccountTestService(repo, nil, nil, nil, nil, upstream, cfg, nil)
 		runner := service.NewUpstreamBillingProbeService(repo, tester, settings)
@@ -205,14 +221,37 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		_, err := db.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_set(extra,'{upstream_billing_probe,next_probe_at}',to_jsonb($1::text)) WHERE id=$2`, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), ids[index])
 		require.NoError(t, err)
 	}
-	run(t)
-	for i := range ids {
+	runAll := func(t *testing.T, priorCalls int64) {
+		t.Helper()
+		for cycle := 0; cycle < enabledAccounts/20; cycle++ {
+			t.Run(fmt.Sprintf("cycle_%d", cycle+1), func(t *testing.T) {
+				run(t)
+				for i := 0; i < enabledAccounts; i++ {
+					want := priorCalls
+					if i < (cycle+1)*20 {
+						want++
+					}
+					require.Equal(t, want, calls[i][0].Load(), "binding %d must get exactly one turn per scan", i)
+				}
+				repo := newAccountRepositoryWithSQL(client, db, nil)
+				due, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, time.Now(), enabledAccounts+4)
+				require.NoError(t, err)
+				require.Len(t, due, enabledAccounts-(cycle+1)*20)
+			})
+		}
+	}
+	t.Run("initial_hundred_bindings", func(t *testing.T) { runAll(t, 0) })
+	for i := 0; i < enabledAccounts; i++ {
 		require.Equal(t, service.UpstreamBillingProbeStatusOK, read(i).Status)
 		due(i)
 	}
 	phase.Store(1)
-	run(t)
-	for i, code := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests} {
+	t.Run("waits_do_not_starve_healthy_bindings", func(t *testing.T) { runAll(t, 1) })
+	for i := 0; i < 20; i++ {
+		code := http.StatusServiceUnavailable
+		if i >= 10 {
+			code = http.StatusTooManyRequests
+		}
 		snapshot := read(i)
 		require.Equal(t, service.UpstreamBillingProbeStatusFailed, snapshot.Status)
 		require.Equal(t, code, snapshot.HTTPStatus)
@@ -222,18 +261,26 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		require.Nil(t, snapshot.FreshUntil)
 		require.Nil(t, snapshot.ReceivedAt)
 	}
-	require.Equal(t, service.UpstreamBillingProbeStatusOK, read(2).Status, "a waiting line must not prevent an independent line from being probed")
-	var before [3][6]int64
+	for i := 20; i < enabledAccounts; i++ {
+		require.Equal(t, service.UpstreamBillingProbeStatusOK, read(i).Status, "waiting lines must not prevent independent lines from being probed")
+	}
+	var before [len(calls)][6]int64
+	var physicalCalls int64
 	for i := range calls {
 		for step := range calls[i] {
 			want := int64(2)
-			if (i == 0 && step > 2) || (i == 1 && step > 4) {
+			if (i < 10 && step > 2) || (i >= 10 && i < 20 && step > 4) {
 				want = 1
 			}
+			if i >= enabledAccounts {
+				want = 0
+			}
 			before[i][step] = calls[i][step].Load()
+			physicalCalls += before[i][step]
 			require.Equal(t, want, before[i][step], "line %d step %d must stop at its wait response", i, step)
 		}
 	}
+	require.Equal(t, int64(1160), physicalCalls, "count management HTTP calls, not just logical probes")
 	run(t)
 	for i := range calls {
 		for step := range calls[i] {
@@ -241,10 +288,11 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		}
 	}
 	phase.Store(2)
-	due(0)
-	due(1)
+	for i := 0; i < 20; i++ {
+		due(i)
+	}
 	run(t)
-	for i := range ids {
+	for i := 0; i < enabledAccounts; i++ {
 		snapshot := read(i)
 		require.Equal(t, service.UpstreamBillingProbeStatusOK, snapshot.Status)
 		require.Zero(t, snapshot.FailureCount)
@@ -256,7 +304,23 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		require.Equal(t, 0.7, cost)
 		require.Equal(t, 1.0, rate, "group evidence must not overwrite the account's token rate")
 	}
+	physicalCalls = 0
+	for i := range calls {
+		for step := range calls[i] {
+			want := before[i][step]
+			if i < 20 {
+				want++
+			}
+			actual := calls[i][step].Load()
+			require.Equal(t, want, actual, "only due failed bindings may be retried")
+			physicalCalls += actual
+		}
+	}
+	require.Equal(t, int64(1280), physicalCalls)
+	require.Greater(t, maximum.Load(), int64(1), "exercise concurrent physical requests")
+	require.LessOrEqual(t, maximum.Load(), int64(4), "management pagination and key verification share the existing probe slots")
 	require.Zero(t, unexpected.Load())
+	t.Logf("100 authorized bindings: five bounded cycles per scan, 1160 HTTP calls before recovery, %d total, max concurrency %d; disabled/OAuth/future bindings untouched", physicalCalls, maximum.Load())
 }
 
 func TestNewAPIIntegrationChangedSecondAccountSavesNothing(t *testing.T) {
