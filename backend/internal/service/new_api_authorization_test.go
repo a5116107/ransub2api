@@ -181,20 +181,30 @@ func TestNewAPIProbeRechecksUniqueMaskedKeyAndRecovers(t *testing.T) {
 
 func TestNewAPIPreviewAndProbeUseSameFixedGroupRule(t *testing.T) {
 	for _, tc := range []struct {
-		name, group, routes string
-		cross, eligible     bool
+		name, group, routes, pricing string
+		cross, eligible              bool
 	}{
-		{"legacy fixed group", "vip", `[]`, false, true},
-		{"matching route", "vip", `["vip"]`, false, true},
-		{"different route", "vip", `["default"]`, false, false},
-		{"empty route", "vip", `[""]`, false, false},
-		{"multiple routes", "vip", `["vip","default"]`, false, false},
-		{"cross group retry", "vip", `["vip"]`, true, false},
-		{"auto declared group", "auto", `[]`, false, false},
+		{"legacy fixed group", "vip", `[]`, `{"vip":0.5,"auto":0.1}`, false, true},
+		{"matching route", "vip", `["vip"]`, `{"vip":0.5}`, false, true},
+		{"different route", "vip", `["default"]`, `{"vip":0.5}`, false, false},
+		{"empty route", "vip", `[""]`, `{"vip":0.5}`, false, false},
+		{"multiple routes", "vip", `["vip","default"]`, `{"vip":0.5}`, false, false},
+		{"cross group retry", "vip", `["vip"]`, `{"vip":0.5}`, true, false},
+		{"auto declared group", "auto", `[]`, `{"auto":0.1}`, false, false},
+		{"null group rate is unknown", "vip", `["vip"]`, `{"vip":null,"default":0.2}`, false, false},
+		{"missing group rate is unknown", "vip", `["vip"]`, `{"default":0.2}`, false, false},
+		{"null ratio table is unknown", "vip", `["vip"]`, `null`, false, false},
+		{"explicit zero remains valid", "vip", `["vip"]`, `{"vip":0}`, false, true},
+		{"unrelated null does not erase numeric group", "vip", `["vip"]`, `{"vip":0.5,"default":null}`, false, true},
+		{"numeric string is not a rate", "vip", `["vip"]`, `{"vip":"0.5"}`, false, false},
+		{"boolean is not a rate", "vip", `["vip"]`, `{"vip":false}`, false, false},
+		{"object is not a rate", "vip", `["vip"]`, `{"vip":{}}`, false, false},
+		{"negative rate", "vip", `["vip"]`, `{"vip":-0.5}`, false, false},
+		{"excessive rate", "vip", `["vip"]`, `{"vip":1000001}`, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, repo, upstream, accounts := newAPIConfigFixture()
-			upstream.bodies["GET /api/pricing"] = `{"success":true,"group_ratio":{"vip":0.5,"auto":0.1}}`
+			upstream.bodies["GET /api/pricing"] = fmt.Sprintf(`{"success":true,"group_ratio":%s}`, tc.pricing)
 			upstream.bodies["POST /api/token/3/key"] = `{"success":true,"data":{"key":"sk-abcd123456789wxyz"}}`
 			upstream.bodies["GET /api/token/?p=0&page_size=100"] = fmt.Sprintf(`{"success":true,"data":{"items":[{"id":3,"key":"abcd**********wxyz","group":%q,"route_groups":%s,"cross_group_retry":%t}],"total":1,"page":1,"page_size":100}}`, tc.group, tc.routes, tc.cross)
 			preview, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
@@ -205,6 +215,19 @@ func TestNewAPIPreviewAndProbeUseSameFixedGroupRule(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.eligible, snapshot.Status == UpstreamBillingProbeStatusOK)
 			require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Balance.Status)
+			require.Equal(t, 2.5, snapshot.Balance.Data["wallet_balance"])
+			if tc.eligible {
+				require.Equal(t, *preview.Accounts[0].Rate, snapshot.Data["resolved_rate_multiplier"])
+				require.NotNil(t, snapshot.ReceivedAt)
+				require.NotNil(t, snapshot.FreshUntil)
+			} else {
+				require.Equal(t, "unsupported_group", snapshot.LastError)
+				require.Nil(t, snapshot.ReceivedAt)
+				require.Nil(t, snapshot.FreshUntil)
+				for _, name := range []string{"group_rate_multiplier", "resolved_rate_multiplier", "effective_rate_multiplier"} {
+					require.NotContains(t, snapshot.Data, name)
+				}
+			}
 		})
 	}
 }

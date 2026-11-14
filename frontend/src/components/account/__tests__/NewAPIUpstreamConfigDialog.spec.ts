@@ -49,6 +49,26 @@ beforeEach(() => {
 afterEach(() => { wrappers.forEach(wrapper => wrapper.unmount()); wrappers = [] })
 
 describe('New API shared authorization dialog', () => {
+  it.each([
+    { name: 'missing', rate: undefined, known: false },
+    { name: 'null', rate: null, known: false },
+    { name: 'explicit zero', rate: 0, known: true },
+    { name: 'numeric', rate: 0.03, known: true }
+  ])('keeps $name group rates distinct from unknown', async ({ rate, known }) => {
+    api.preview.mockResolvedValue({ ...preview, accounts: [{ ...preview.accounts[0], group: 'vip', rate }] })
+    const wrapper = await open()
+    await wrapper.get('[data-testid="new-api-preview"]').trigger('click')
+    await flushPromises()
+    const result = wrapper.get('[data-testid="new-api-result-7"]').text()
+    if (known) {
+      expect(result).toContain(`admin.accounts.upstreamBilling.newAPI.ratio:${rate}`)
+      expect(result).not.toContain('admin.accounts.upstreamBilling.newAPI.noFixedRatio')
+    } else {
+      expect(result).toContain('admin.accounts.upstreamBilling.newAPI.noFixedRatio')
+      expect(result).not.toContain('admin.accounts.upstreamBilling.newAPI.ratio:0')
+    }
+  })
+
   it('loads full same-site candidates without reading a secret or selecting another user', async () => {
     const wrapper = await open()
     expect(wrapper.text()).toContain(config.site_url)

@@ -3,12 +3,12 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8 New API修复已同步，100授权绑定双轮轮转/退避恢复已验。
+任务：D2/D4 New API的null不再误报免费；预览/探测/SQL恢复已验。
 授权：单分支本地修复/验证/提交/自有分支同步；不CI/生产。
-验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/repository（原NewAPI持久化用例双轮）
-验证结果：100绑定/1280HTTP/并发4，双轮通过；repo vet及增量fast lint0。
-验证来源：a9c0bdd14后测试扩展；newapi-bindings-focused；12项输入匹配。
-下一动作：接入方补真实scope/独立参考，续验D2–D9；宿主清理空目录。
+验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository -run ^TestNewAPI -count=2 -timeout=6m
+验证结果：135叶双轮270次通过，fail/skip0；两包vet/增量fast lint0，UI17通过。
+验证来源：573b870b3基线；newapi-null-rate-final；15项输入匹配。
+下一动作：补真实scope/独立参考及缓存域证据，续验原D2–D9。
 尝试：1
 阻塞：供应商scope/独立基线、严格混版及受限清理。
 责任方：接入方、部署及宿主资源拥有者。
@@ -30,7 +30,7 @@
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
 | D2 | in_progress | D2.1–D2.5及多出站/持久交接/三节点/视频/排空恢复已验，细节见DECISIONS；unknown仍待原请求关联契约 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
-| D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
+| D2.2 | done | New API固定组及null/明确0区分、预览/探测同源；SQL旧证据失效/恢复、绑定/成本保持与回归通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
 | D2.4 | done | 探测与New API授权/列表/绑定/事务使用生效地址；旧源码6例失败、修复四包三轮通过 |
 | D2.5 | done | HTTP/WS最终凭据、重试及快照/观察员隔离已验；实际组/缓存域仍待证明 |

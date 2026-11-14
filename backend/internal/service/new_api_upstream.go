@@ -222,13 +222,13 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 	result := &newAPIData{wallet: wallet, ratios: map[string]float64{}, tokens: []NewAPIToken{}}
 	// A missing pricing endpoint does not erase a successfully verified wallet.
 	var pricing struct {
-		Success bool               `json:"success"`
-		Ratios  map[string]float64 `json:"group_ratio"`
+		Success bool                `json:"success"`
+		Ratios  map[string]*float64 `json:"group_ratio"`
 	}
 	if e := s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/pricing", &pricing); e == nil && pricing.Success {
 		for g, r := range pricing.Ratios {
-			if validNewAPIGroupRate(g, r) {
-				result.ratios[g] = r
+			if r != nil && validNewAPIGroupRate(g, *r) {
+				result.ratios[g] = *r
 			}
 		}
 	} else if newAPIRequestRequiresWait(e) {

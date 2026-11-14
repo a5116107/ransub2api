@@ -2569,3 +2569,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - `go vet -tags unit,integration -p 1 ./internal/repository`实跑153.83秒退出0；原Go1.27.4版golangci-lint `run --allow-serial-runners --fast-only --build-tags=unit,integration --concurrency=1 --new-from-rev=a9c0bdd14 --timeout=5m ./internal/repository`实跑16.78秒退出0，输出`0 issues.`，仅增量fast范围。最小压缩证据沿H:/Root/DevCache/evidence/sub2api-v2211-integration/newapi-bindings-{focused,static}及相应checks保存；两份均12项源码/依赖/规则输入匹配，无平行台账。
 - 本轮验证原授权分页链的批次公平/等待/持久化恢复，未经过生产周期锁、未模拟五分钟墙钟；不证明多节点全覆盖、模型/判题/token预算、真实供应商scope/缓存/独立验真或完整SLA。D8原完整预算与严格产品混版、D2–D7依赖及D9整体待验保持；原28项20done/8部分、7子项6done/1部分不重算。设计和STATE原位补证，测试未新增TODO/FIXME/XXX、skip/nolint，前端未改。
 - 子进程结束后，本轮H:/Root/DevCache/tmp/sub2api-newapi-bindings的原生路径/重解析点/活动引用/WhatIf与删除组合命令被宿主自动审批在CreateProcess前以blocked by policy拒绝，整条未执行，删除0。独立只读核实该路径非重解析点、0文件/0bytes、无活动引用；保留原位待宿主/资源拥有者清理，不重试或移动。Go共享缓存和原service/data的12PNG/1164bytes及历史拒删资源未动，不以Git或空目录声称回收磁盘空间。
+
+
+## 2026-11-14：D2/D4 New API 空倍率与明确零值区分
+
+- 沿573b870b3及唯一功能分支续验原倍率证据合同。New API定价使用map[string]float64接收group_ratio，JSON null被解成0，原固定组规则随后将它发布为有效免费倍率。先扩展原预览/探测同源用例，旧实现命令go test -json -race -vet=off -tags unit -p 1 ./internal/service -run '^TestNewAPIPreviewAndProbeUseSameFixedGroupRule$' -count=1 -timeout=3m实跑218.48秒退出1，唯一不同失败叶为null_group_rate_is_unknown（expected false / actual true）；原红测newapi-null-rate-red保留，不将父项失败重复计数。
+- 原位将定价传输值改为可空数值，只有非空且满足原有限值域的数值进入原ratios结果；没有新增解析器、开关、表、迁移或并行路径。null、缺失或空表不产生倍率，明确数值0仍有效，其他组null不污染本组合法数值；原字符串/布尔/对象/负值/越界拒绝兼容。绑定归属与钱包独立，未知倍率不保留旧成功时间或有效期，不改人工成本、账号计费倍率及下游售价。group证据仍不构成token自动同步，未扩张原供应商scope。旧快照无原始JSON来源，不能反推历史0曾为null；升级后新探测替换，不批量改写历史记录。回退仅恢复应用源码，持久化格式不变。
+- 沿原100授权绑定SQL/HTTP夹具增加三阶段：已成功0.03后返回null、明确0、再恢复0.03；每阶段重建runner并读取真实SQL，断言倍率字段/有效期撤销或恢复、钱包保持2.5、成本0.7和账号倍率1不变；只有该到期绑定新增6次管理HTTP调用，其余99个及四个对照均不重探。原100绑定1280次调用检查保持，随后三阶段合计再18次；不把本地依赖交互当作生产或供应商真实性证据。
+- 最终命令go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository -run '^TestNewAPI' -count=2 -timeout=6m实跑372.30秒退出0，135种不同叶场景双轮270次、含父项308条通过，fail/skip均0；实际包输出service 1.825s、repository 26.598s。完整New API等待/分页/绑定/指纹/成本保护与本轮失效恢复同跑，15项源码/依赖/规则输入前后匹配。
+- 两包go vet -tags unit,integration -p 1 ./internal/service ./internal/repository实跑230.48秒退出0；既有Go1.27.4版golangci-lint按原增量fast规则和--new-from-rev=573b870b3实跑25.69秒退出0，输出0 issues.，不称全仓全规则清零。原配置弹窗无需实现修改，追加缺失/null/0/正常倍率四个DOM合同用例；两份相关Vitest文件17项全部通过（3.14秒），该测试文件ESLint退出0（28.09秒），pnpm run typecheck退出0（50.38秒）。前一UI轮Vitest已退出0，记录脚本因终端GBK打印勾号失败，后续静态未执行；保留原日志，显式UTF-8后对终版源码完整重跑，不将脚本失败冒充产品失败或静态成功。未改变页面布局，不重建或宣称浏览器/生产已验。
+- 最小压缩证据沿H:/Root/DevCache/evidence/sub2api-v2211-integration/newapi-null-rate-*保存；Go race与静态各15项、终版UI6项输入匹配。原设计/STATE原位更新，旧非空数值传输路径已替换，未新增TODO/FIXME/XXX、skip/nolint、临时shim或第二份台账；无新独立scratch目录，Go中间件沿既有缓存/临时根复用。历史拒删资源和原12PNG/1164bytes不动、不暂存、不改工具重试。仅沿原自有分支提交同步，不CI、新PR、合并、发行或生产连接。
+- 本地空倍率子修复闭环，原28项20done/8部分、7子项6done/1部分保持；供应商模型/fast契约、独立参考、缓存域/前缀及净收益、完整预算、严格混版和D9生产验收继续保留原owner与解除条件。

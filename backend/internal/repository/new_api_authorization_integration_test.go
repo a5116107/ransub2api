@@ -129,6 +129,14 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 			step, body = 1, `{"success":true,"data":{"id":7,"quota":1250000}}`
 		case "GET /api/pricing":
 			step, body = 2, `{"success":true,"group_ratio":{"vip":0.03}}`
+			if index == 0 {
+				switch phase.Load() {
+				case 3:
+					body = `{"success":true,"group_ratio":{"vip":null,"other":0.01}}`
+				case 4:
+					body = `{"success":true,"group_ratio":{"vip":0,"other":null}}`
+				}
+			}
 		case "GET /api/token/":
 			switch r.URL.Query().Get("p") {
 			case "0":
@@ -321,6 +329,57 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	require.LessOrEqual(t, maximum.Load(), int64(4), "management pagination and key verification share the existing probe slots")
 	require.Zero(t, unexpected.Load())
 	t.Logf("100 authorized bindings: five bounded cycles per scan, 1160 HTTP calls before recovery, %d total, max concurrency %d; disabled/OAuth/future bindings untouched", physicalCalls, maximum.Load())
+	for _, tc := range []struct {
+		name  string
+		phase int32
+		known bool
+		rate  float64
+	}{
+		{"null_group_revokes_old_rate", 3, false, 0},
+		{"explicit_zero_remains_known", 4, true, 0},
+		{"numeric_group_recovers", 5, true, 0.03},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			phase.Store(tc.phase)
+			due(0)
+			run(t)
+			snapshot := read(0)
+			if !tc.known {
+				require.Equal(t, service.UpstreamBillingProbeStatusUnsupported, snapshot.Status)
+				require.Equal(t, "unsupported_group", snapshot.LastError)
+				require.Nil(t, snapshot.ReceivedAt)
+				require.Nil(t, snapshot.FreshUntil)
+				for _, name := range []string{"group_rate_multiplier", "resolved_rate_multiplier", "effective_rate_multiplier"} {
+					require.NotContains(t, snapshot.Data, name, "SQL must not retain a previous successful rate")
+				}
+			} else {
+				require.Equal(t, service.UpstreamBillingProbeStatusOK, snapshot.Status)
+				require.Empty(t, snapshot.LastError)
+				require.NotNil(t, snapshot.ReceivedAt)
+				require.NotNil(t, snapshot.FreshUntil)
+				require.Equal(t, tc.rate, snapshot.Data["resolved_rate_multiplier"])
+			}
+			require.Equal(t, service.UpstreamBillingProbeStatusOK, snapshot.Balance.Status)
+			require.Equal(t, 2.5, snapshot.Balance.Data["wallet_balance"])
+			var cost, rate float64
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT (extra->>'cost_multiplier')::numeric, rate_multiplier FROM accounts WHERE id=$1`, ids[0]).Scan(&cost, &rate))
+			require.Equal(t, 0.7, cost)
+			require.Equal(t, 1.0, rate)
+			for i := range calls {
+				for step := range calls[i] {
+					want := before[i][step]
+					if i < 20 {
+						want++
+					}
+					if i == 0 {
+						want += int64(tc.phase - 2)
+					}
+					require.Equal(t, want, calls[i][step].Load(), "price recovery must not reprobe unrelated bindings")
+				}
+			}
+		})
+	}
+	require.Zero(t, unexpected.Load())
 }
 
 func TestNewAPIIntegrationChangedSecondAccountSavesNothing(t *testing.T) {
