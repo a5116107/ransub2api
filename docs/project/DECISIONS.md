@@ -2508,3 +2508,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 使用同一修复候选、同一工具及旧版2.21.0-ransub.3再次运行--l1-peer baseline，56.44秒真实退出1，错误fixture authentication subscriptions did not recover；正常在线失效及共享配置仍通过，漏收后只恢复1/2订阅。保留auth-recovery-baseline-pair.json及完整日志，不以候选profile通过覆盖旧版失败，不关闭严格混版父验收。部署边界仍为排空旧进程并统一升级，当前无部署操作。两轮各9容器/1网络按捕获ID及owner回收，独立Docker查询同owner剩余容器/网络均0。
 - 本轮清理例外：新候选auth-recovery-sub2api和空目录H:/Root/DevCache/tmp/sub2api-auth-recovery-build的原生PowerShell边界/哈希/活跃引用/WhatIf/Remove-Item组合命令被自动审批在CreateProcess之前以blocked by policy拒绝，整条未运行、删除0；不改工具、移动或再次删除。随后只读确认240525472bytes候选和空构建目录仍在，无本轮活跃进程引用；拥有者手工清理后解除。历史拒删、旧候选及原12PNG/1164bytes保留，未暂存。最小证据沿用既有目录auth-recovery-*，无新增平行台账。
 - 本地D8认证恢复子观察闭环，旧版兼容失败和全部原外部依赖如实保留；原28项20done/8部分、7子项6done/1部分不变。供应商scope/独立基线/非文本合同/缓存共享及净收益由接入方补证，严格全节点/生产仍按原D8/D9。源码及文档只同步既有自有功能分支，未创建新PR、合并production、运行CI或发行。
+
+## 2026-11-14：D7.3 冻结样本配置一致性修复
+
+- 恢复e7ba4a0f7之后已有四份源码修改与原测试证据；8份后端输入和7份前端输入指纹全部匹配，没有重跑已完成的昂贵验证。原SQL使用MAX(parallel_count)时，混合1/2样本目标可被拼成完整轮次。旧实现真实SQL红测退出1：五类问题在三个入口共15个叶场景失败，计入父项为21条失败事件；保留原失败，不把父项计作独立场景。
+- 渠道、上游和利润运维原查询复用显式`operationsQualityClassification`；删除两处按字符串位置截取SQL的脆弱路径及已无调用的import。同模型要求每条冻结并发数有效且一致，冲突/缺失/非法时expected=null；跨模型配置矛盾时round_expected=null。完整性和模型筛选顺序保持；已知目标下的缺模型/部分结果仍不获得通过或降级结论。没有新增调度、准入、存储、迁移或平行实现。
+- 原命令`go test -json -race -tags unit,integration -p 1 ./internal/repository -run '^(TestOperationsQualityRequiresUniformFrozenSampleCounts|TestChannelOperations|TestUpstreamOperations|TestProfitOperations)' -count=2 -timeout=6m`实跑退出0，总耗时283.88s，包输出`ok github.com/Wei-Shaw/sub2api/internal/repository 23.510s`。重新解析原jsonl为154条含父项通过事件、fail/skip均0；新增12类×3入口=36个不同叶场景，每个两轮共72次，不把父项/重复运行算成新场景。
+- 原`go vet -tags unit,integration -p 1 ./internal/repository`退出0；原规则`golangci-lint run --fast-only --build-tags=unit,integration --concurrency=1 --new-from-rev=e7ba4a0f7 --timeout=4m ./internal/repository`退出0、`0 issues.`，只表示增量fast检查，不称全仓规则清零。四份源码gofmt检查无输出，`git diff --check`退出0。
+- 原组件与国际化命令`pnpm exec vitest run src/components/admin/operations/__tests__/QualityRoundAssessment.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts --maxWorkers=2 --minWorkers=1`为2文件/38通过、退出0。此前三页87项、类型、lint、构建及中英390px的9份输入指纹仍全部匹配；复用原证据，不声称重新执行浏览器或生产验收。恢复时读取日志的Windows GBK输出/文件解码错误已改为显式UTF-8，只影响证据读取，原测试结果不变。
+- 最小证据沿用`H:/Root/DevCache/evidence/sub2api-v2211-integration/quality-round-counts-*`及原质量UI证据目录；本轮未新建候选、工作树或临时脚本。原service/data的12PNG/1164bytes及历史拒删资源保留、不暂存、不重试删除。回退只恢复原应用代码，历史配置与结果不改写。交付沿唯一自有功能分支，未运行CI、接生产、发行或新建PR；D7.3分维度/独立基线和原28项20done/8部分、7子项6done/1部分保持，外部证据仍由接入方提供。

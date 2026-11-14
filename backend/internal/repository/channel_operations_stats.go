@@ -41,8 +41,16 @@ const channelOperationsQualityBase = `WITH scoped AS (
  AND ($5::bigint=0 OR p.account_id=$5)
  AND ($6::bigint=0 OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id=p.account_id AND ag.group_id=$6))
  AND jsonb_typeof(r.pelican_config->'quality')='object'
-), model_sets AS (
- SELECT scoped.*,CASE WHEN NOT (pelican_config ? 'model_ids') THEN jsonb_build_array(measured_model)
+` + operationsQualityClassification
+
+// All three operations views classify the same frozen round before filtering
+// models. Missing or conflicting sample targets must remain unknown; MAX alone
+// can make different execution snapshots look like a complete passing round.
+const operationsQualityClassification = `), model_sets AS (
+ SELECT scoped.*,
+ CASE WHEN jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$'
+  THEN (pelican_config->>'parallel_count')::int END AS expected_probes,
+ CASE WHEN NOT (pelican_config ? 'model_ids') THEN jsonb_build_array(measured_model)
   WHEN jsonb_typeof(pelican_config->'model_ids')='array' THEN
    CASE WHEN jsonb_array_length(pelican_config->'model_ids') BETWEEN 1 AND 50 THEN pelican_config->'model_ids' END
   END AS expected_models
@@ -57,8 +65,9 @@ const channelOperationsQualityBase = `WITH scoped AS (
  bool_and(COALESCE(status='success' AND quality_judgment->>'verdict'='correct'
  AND (COALESCE(pelican_config->>'question_kind','')<>'random_reasoning' OR pelican_config->'quality_batch'->>'decision'='passed')
  AND quality_action NOT IN ('','stale_run','comparison_pending') AND quality_round_id<>'',false)) AS passed,
- bool_and(COALESCE(jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$',false)) AS valid_count,
- max(CASE WHEN jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$' THEN (pelican_config->>'parallel_count')::int END) AS expected,
+ bool_and(expected_probes IS NOT NULL) AND min(expected_probes)=max(expected_probes) AS valid_count,
+ CASE WHEN bool_and(expected_probes IS NOT NULL) AND min(expected_probes)=max(expected_probes)
+  THEN max(expected_probes) END AS expected,
  jsonb_agg(DISTINCT NULLIF(quality_action,'')) AS actions,
  bool_and(COALESCE(quality_round_id<>'',false)) AS valid_round,
  bool_and(COALESCE(expected_models ? measured_model,false) AND NOT EXISTS (
@@ -69,7 +78,9 @@ const channelOperationsQualityBase = `WITH scoped AS (
  max(jsonb_array_length(expected_models)) AS expected_model_count
  FROM model_sets GROUP BY account_id,plan_id,COALESCE(NULLIF(quality_round_id,''),'legacy-'||id::text),measured_model
 ), round_integrity AS (
- SELECT account_id,plan_id,round_key,sum(probes) AS round_probes,max(expected_model_count*expected) AS round_expected,
+ SELECT account_id,plan_id,round_key,sum(probes) AS round_probes,
+ CASE WHEN bool_and(valid_count AND valid_models) AND min(expected)=max(expected)
+  AND min(model_set_min)=max(model_set_max) THEN max(expected_model_count*expected) END AS round_expected,
  bool_and(valid_round AND valid_count AND valid_models AND probes=expected)
   AND count(*)=max(expected_model_count) AND min(expected_model_count)=max(expected_model_count)
   AND min(model_set_min)=max(model_set_max) AND min(expected)=max(expected) AS complete

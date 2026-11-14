@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -148,14 +147,13 @@ func (r *channelRepository) ReadUpstreamOperations(ctx context.Context, f servic
 	} else {
 		// Reuse canonical complete frozen plan×round×model classification. Only the
 		// account cohort changes; filtering by model still follows round integrity.
-		classifier := channelOperationsQualityBase[strings.Index(channelOperationsQualityBase, "), model_sets AS ("):]
 		quality := `WITH ` + upstreamOperationsCohort + `, scoped AS (
           SELECT p.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,NULLIF(r.pelican_config->>'model_id','') AS measured_model
           FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
           WHERE p.account_id IN (SELECT id FROM cohort) AND r.created_at >= $1 AND r.created_at < $2
           AND ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=p.account_id AND ag.group_id=$6))
           AND jsonb_typeof(r.pelican_config->'quality')='object' AND $8::text IS NOT NULL
-        ` + classifier
+        ` + operationsQualityClassification
 		quality += ` SELECT jsonb_build_object('source','scheduled_test_results complete frozen plan+round+model; current account cohort', 'summary',(SELECT jsonb_build_object('rounds',count(*),'passed',count(*) FILTER(WHERE outcome='passed'),'degraded',count(*) FILTER(WHERE outcome='degraded'),'inconclusive',count(*) FILTER(WHERE outcome='inconclusive')) FROM classified),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(c)) FROM (SELECT * FROM classified ORDER BY id DESC LIMIT $9 OFFSET $10)c),'[]'::jsonb),'total',(SELECT count(*) FROM classified))`
 		out.Quality = readUpstreamSection(ctx, tx, quality, args...)
 	}
