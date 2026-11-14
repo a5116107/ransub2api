@@ -4,8 +4,12 @@
  * browser; use a new ID to announce the feature again in a later release.
  */
 export const NEW_FEATURE_NOTICES = {
+  moderationUpstreamAccountScope: 'moderation-upstream-account-scope',
+  adminUsagePlatform: 'admin-usage-platform-filter-initial-announcement',
+  usageTrendRate: 'usage-trend-tooltip-rpm-tpm-initial-announcement',
   priorityCacheWeight: 'priority-cache-weight-initial-announcement',
   openai409OmitEncryptedHistory: 'openai-409-omit-encrypted-history-beta',
+  openai400OmitEncryptedHistory: 'openai-400-omit-encrypted-history-beta',
   userIdCopy: 'user-id-copy-initial-announcement',
   accountAverageCache: 'account-average-cache-initial-announcement',
   pelicanRandomQuestionBank: 'pelican-random-question-bank',
@@ -56,4 +60,5 @@ export const NEW_FEATURE_NOTICES = {
   openaiImageHeaderTimeoutGroups: 'openai-image-header-timeout-groups-initial-announcement',
   oauthInitialModelSelection: 'oauth-initial-model-selection-initial-announcement',
   usageRateCard: 'usage-rpm-tpm-card-initial-announcement',
+  tempUnschedStreamCountWindow: 'temp-unsched-stream-timing-count-window',
 } as const
