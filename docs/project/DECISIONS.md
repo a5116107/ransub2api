@@ -2605,3 +2605,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 前端 build 别名含 check:i18n 测试，故原位改 local-build 为 pnpm exec vue-tsc -b 和 pnpm exec vite build，避免发布阶段隐式运行测试。保留手工发行/预构建镜像入口；线上缓存20分钟且强制检查绕过缓存，安装沿用原按钮。
 - 本机 Windows 首轮17项出现2失败/6错误：旧手动入口断言与新合同不符、WSL bash收到Windows路径及NTFS执行权限差异；按新合同更新回归，直接在WSL运行完整工具集。最终 python3 -B -m unittest discover -s .github/release-tools -p 'test_*.py' 为76/76、0skip，bash -n通过；go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= .github/workflows/release.yml退出0；diff检查通过。包括真实Git历史编号/重用/降版、旧任务、草稿校验/恢复及禁止覆盖已发布资产。未以本地工具测试冒充新应用生产验收。
 - 当前仅R1工具待提升/自动运行实证；D3冷却回池补丁和其余供应商/混版/缓存外部验收保持开放。沿用唯一H盘工作树，未清理或提交历史service/data和拒删资源，未生成新的验证目录或pyc。
+
+## 2026-11-15：R1发行自动化工具独立提升
+
+- 用户要求发布也自动更新。本次仅从自有功能分支077bf5a2d原位应用发行脚本/工作流/回归/说明差异，不提升未验收的调度、监测或迁移代码。production push自动发行，15分钟schedule补偿bot/skip事件；仅自有生产分支且应用代码有变化才自动编号/构建。上游同步仍走独立整合边界，安装/重启沿原按钮，不测试CI/自动部署。
+- 采用X.Y.Z-ransub.N，Linux amd64包含匹配前端。显式执行类型检查/Vite，避免build别名隐式测试；验证归档SHA/源码及程序版本/完整commit。旧任务/降版/异源保护、串行发布、仅修复未公开草稿、上传后复查production；先公开Release后提升镜像latest，定时可独立修复中断的镜像提升。已公开资产保持不可变。
+- 功能分支完整工具集76/76与actionlint/bash -n通过；production应用工具补丁后需按实际输入复验。真实自动run/镜像一致性待push后记录，不以本地测试替代。当前应用仍v2.21.0-ransub.3，文档/工具变化不制造新应用版本；原28项20done/8部分保持。
+- production实跑同一命令67/67通过，差异为功能分支已有9项新版演练回归未提升；bash -n/diff通过。工作流内容与已通过actionlint的功能分支相同，未重复工具编译。
+- 工具提交eb0b6243a36fac28f1e8eef98db2ae898f18cafa已非强推至自有production，真实push run43618719372成功，publish-production为27秒；其他7个构建/发行/版本同步job均skipped，该SHA只有此Release运行，无测试CI。日志实值publish=false、reason=published application source is unchanged；Image latest already matches v2.21.0-ransub.3。git diff应用源码退出0，公开最新仍.3，未为工具/文档制造新应用版本，未连接或重启生产。首次gh日志下载被本机代理断开，随后仅子进程去除代理变量读取同一run成功，未改全局代理。
+- R1配置/自动触发/无重复发行/镜像对齐验收闭环；新应用第一次自动实发与线上实际加载属于D9后续应用推广验收，保留原父项20done/8部分。停用自动发行可在GitHub禁用Release工作流，或回退本工具提交；应用回滚仍用原归档/镜像/备份。
