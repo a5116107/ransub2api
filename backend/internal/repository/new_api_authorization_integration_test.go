@@ -153,6 +153,21 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 			return
 		}
 		calls[index][step].Add(1)
+		if phase.Load() == 6 && index == 0 {
+			if step < 3 {
+				select {
+				case <-time.After(7 * time.Second):
+				case <-r.Context().Done():
+					return
+				}
+			} else {
+				// Three successful requests consume 21 seconds. The inventory
+				// request must end at the shared 30-second network deadline,
+				// before its own 10-second per-request budget expires.
+				<-r.Context().Done()
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if phase.Load() == 1 && ((index < 10 && step == 2) || (index >= 10 && index < 20 && step == 4)) {
 			w.Header().Set("Retry-After", "14400")
@@ -379,6 +394,65 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 			}
 		})
 	}
+	t.Run("exhausted_network_deadline_persists_and_recovers", func(t *testing.T) {
+		var beforeTimeout [len(calls)][6]int64
+		for i := range calls {
+			for step := range calls[i] {
+				beforeTimeout[i][step] = calls[i][step].Load()
+			}
+		}
+		phase.Store(6)
+		due(0)
+		started := time.Now()
+		run(t)
+		elapsed := time.Since(started)
+		require.GreaterOrEqual(t, elapsed, 29*time.Second, "exercise the actual shared network deadline")
+		require.Less(t, elapsed, 45*time.Second, "snapshot persistence must not hold the slot indefinitely")
+		snapshot := read(0)
+		require.Equal(t, service.UpstreamBillingProbeStatusFailed, snapshot.Status)
+		require.Equal(t, "new_api_request_failed", snapshot.LastError)
+		require.Zero(t, snapshot.HTTPStatus)
+		require.Equal(t, 1, snapshot.FailureCount)
+		require.True(t, snapshot.NextProbeAt.After(time.Now()))
+		require.Nil(t, snapshot.Data)
+		require.Nil(t, snapshot.ReceivedAt)
+		require.Nil(t, snapshot.FreshUntil)
+		require.Equal(t, service.UpstreamBillingProbeStatusFailed, snapshot.Balance.Status)
+		// Another runner must honor the failure that was written only after
+		// the complete network context expired, without making a new request.
+		run(t)
+		for i := range calls {
+			for step := range calls[i] {
+				want := beforeTimeout[i][step]
+				if i == 0 && step < 4 {
+					want++
+				}
+				require.Equal(t, want, calls[i][step].Load(), "expired network budget must stop pagination and persist backoff")
+			}
+		}
+		phase.Store(7)
+		due(0)
+		run(t)
+		recovered := read(0)
+		require.Equal(t, service.UpstreamBillingProbeStatusOK, recovered.Status)
+		require.Zero(t, recovered.FailureCount)
+		require.Empty(t, recovered.LastError)
+		require.Equal(t, 0.03, recovered.Data["resolved_rate_multiplier"])
+		require.Equal(t, service.UpstreamBillingProbeStatusOK, recovered.Balance.Status)
+		for i := range calls {
+			for step := range calls[i] {
+				want := beforeTimeout[i][step]
+				if i == 0 {
+					want++
+					if step < 4 {
+						want++
+					}
+				}
+				require.Equal(t, want, calls[i][step].Load(), "only the expired binding may recover")
+			}
+		}
+		t.Logf("shared network deadline exhausted after %s; failure/backoff persisted in SQL and recovered after expiry", elapsed.Round(time.Millisecond))
+	})
 	require.Zero(t, unexpected.Load())
 }
 

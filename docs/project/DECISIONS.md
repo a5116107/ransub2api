@@ -2590,3 +2590,10 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 终版真实命令go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository -run '^Test(Scheduler|LocalScheduler|FullSnapshotReader|ListSchedulable|Issue582|ModelAvailability)' -count=2 -timeout=5m实跑244.41s、退出0，323种叶双轮646pass、fail/skip0、无race报告；service 2.384s、repository 43.660s。两包go vet同标签退出0（189.20s）；Go1.27.4版golangci-lint以原fast/增量规则、--new-from-rev=e2e0c0c83退出0（45.19s），输出0 issues.，不宣称全仓全规则。终版源码/依赖/规则输入前后匹配；前轮失败仍保留，未重复加总为新场景。
 - 最小证据沿H:/Root/DevCache/evidence/sub2api-cooldown-recovery保存，源码修复仅沿原自有功能分支提交同步；不运行CI、新PR、合并、发行或生产改写。生产补丁尚未加载，原D3/全局28项20done/8部分、7子项6done/1部分保持；生产发布后仍须加载哈希、原用户路径与冷却恢复验收，现有成功流量不证明运行了补丁。未新增TODO/FIXME/XXX、skip/nolint或临时兼容层，旧时间依赖成员查询从快照路径移除；原12PNG及其他任务资源保留。
 - 本轮临时目录H:/Root/DevCache/tmp/sub2api-cooldown-recovery的核对/WhatIf/删除组合命令在CreateProcess前被宿主自动审批以blocked by policy拦截，整条未执行，删除0；随后只读核实非重解析点、0文件/0字节。未换工具重试或移动，保留原位由宿主/资源拥有者清理；同条未执行的文档压缩独立恢复，STATE保持100行/8192bytes以内，原12PNG未动。
+
+
+## 2026-11-14：D8真实网络总期限耗尽后的持久化恢复补证
+
+- 沿原100绑定的TestNewAPIIntegrationProbeWaitPersistsAcrossRunners追加一阶段，不增加runner、SQL路径或另一套实现。真实HTTP前三步各等待7秒，库存阶段等待请求上下文结束，以原30秒共享网络期限耗尽而非每请求10秒超时触发失败；断言29–45秒内结束、SQL失败状态/退避写入、无部分倍率及新鲜度、重建runner不额外发请求。调整原绑定到期后仅该绑定恢复，其他99个及四个对照不重探；源测试已有成本/分组保护断言保持。
+- 原执行命令go test -json -race -vet=off -tags unit,integration -p 1 ./internal/repository -run '^TestNewAPIIntegrationProbeWaitPersistsAcrossRunners$' -count=2 -timeout=6m退出0，216.70s、14叶双轮28次通过，fail/skip0；对应repository vet退出0（97.92s），原fast增量lint退出0（5.30s）且0 issues.。已有证据newapi-network-deadline-*的11项输入均重新核对匹配；Go依赖文件按原字节哈希核对，换行归一化差异不误报依赖变更。本轮不重跑未改输入的216秒检查；当前冷却回池两包vet/lint及race也已编译同一测试文件。
+- 原位更新D8说明/STATE，源码测试独立提交后随原自有功能分支同步；本地网络总期限子验收闭环，不代表完整预算、严格混版、供应商scope或生产通过。全局28项20done/8部分、7子项6done/1部分不变；不CI、新PR、发行或生产改写。未创建新的临时目录，继承历史受限清理保持。

@@ -7,8 +7,8 @@
 授权：本地修复/验证/提交/自有分支同步；线上只读诊断，不CI/生产改写。
 验证命令：go test -json -race -vet=off -tags unit,integration -p 1 ./internal/service ./internal/repository -run ^Test(Scheduler|LocalScheduler|FullSnapshotReader|ListSchedulable|Issue582|ModelAvailability) -count=2 -timeout=5m
 验证结果：323叶双轮646pass，fail/skip0；两包vet0，增量fast lint为0 issues.；源码输入一致。
-验证来源：e2e0c0c83工作差异；H:/Root/DevCache/evidence/sub2api-cooldown-recovery/race-final-checks；生产.3/5ce1d189。
-下一动作：生产补丁发布及加载/请求恢复验收待部署方；原D8网络期限补证待提交。
+验证来源：c9688a439；H:/Root/DevCache/evidence/sub2api-cooldown-recovery/race-final-checks；生产.3/5ce1d189。
+下一动作：生产补丁发布及加载/请求恢复验收；原D2–D9的供应商/混版依赖继续保留。
 尝试：2
 阻塞：生产补丁未发布；供应商scope/独立基线、严格混版及历史受限清理仍待。
 责任方：部署方、接入方及宿主资源拥有者。
@@ -59,7 +59,7 @@
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV；148前端与末改53复验、类型/lint/构建及中英390px通过 |
 | D3.1 | done | 本地原HTTP/Redis适配器链5类失效切换/恢复不抢回及失败关闭；race106/1838、独立Key11通过，非生产证据 |
 | D7.3 | in_progress | 原入口/三页及模型类型、冻结集合、列表/详情兼容已验；188叶双轮/race/vet通过，分维度/独立基线待接入方 |
-| D8 | in_progress | 两格式各100账号轮转，New API分页/等待/重建退避/到期恢复及原升级已验；严格混版/完整预算待验 |
+| D8 | in_progress | 两格式各100账号轮转、New API分页/等待及30秒网络耗尽后SQL落库/退避/恢复已验；严格混版/完整预算待验 |
 | D9 | in_progress | .3自有发行/排空/重建/加载哈希及公网SSE唯一账单已验；原设置持久化/桌面/手机保存保持；完整D8及供应商能力仍待 |
 
 ## 工作区与验证约定
