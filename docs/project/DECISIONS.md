@@ -2392,3 +2392,5 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 采用X.Y.Z-ransub.N，Linux amd64包含匹配前端。显式执行类型检查/Vite，避免build别名隐式测试；验证归档SHA/源码及程序版本/完整commit。旧任务/降版/异源保护、串行发布、仅修复未公开草稿、上传后复查production；先公开Release后提升镜像latest，定时可独立修复中断的镜像提升。已公开资产保持不可变。
 - 功能分支完整工具集76/76与actionlint/bash -n通过；production应用工具补丁后需按实际输入复验。真实自动run/镜像一致性待push后记录，不以本地测试替代。当前应用仍v2.21.0-ransub.3，文档/工具变化不制造新应用版本；原28项20done/8部分保持。
 - production实跑同一命令67/67通过，差异为功能分支已有9项新版演练回归未提升；bash -n/diff通过。工作流内容与已通过actionlint的功能分支相同，未重复工具编译。
+- 工具提交eb0b6243a36fac28f1e8eef98db2ae898f18cafa已非强推至自有production，真实push run43618719372成功，publish-production为27秒；其他7个构建/发行/版本同步job均skipped，该SHA只有此Release运行，无测试CI。日志实值publish=false、reason=published application source is unchanged；Image latest already matches v2.21.0-ransub.3。git diff应用源码退出0，公开最新仍.3，未为工具/文档制造新应用版本，未连接或重启生产。首次gh日志下载被本机代理断开，随后仅子进程去除代理变量读取同一run成功，未改全局代理。
+- R1配置/自动触发/无重复发行/镜像对齐验收闭环；新应用第一次自动实发与线上实际加载属于D9后续应用推广验收，保留原父项20done/8部分。停用自动发行可在GitHub禁用Release工作流，或回退本工具提交；应用回滚仍用原归档/镜像/备份。
