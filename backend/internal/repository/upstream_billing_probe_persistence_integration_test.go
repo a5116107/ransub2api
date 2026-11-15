@@ -12,6 +12,200 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestManualApplicabilityLockedSaveRevokeAndBindingInvalidation(t *testing.T) {
+	tx := testEntTx(t)
+	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+	rate := 0.4
+	account := mustCreateAccount(t, tx.Client(), &service.Account{Name: "manual-applicability", Platform: service.PlatformOpenAI,
+		Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture-1"}, RateMultiplier: &rate})
+	manual := json.RawMessage(`{"schema_version":1,"source":"manual.admin","source_version":"contract-1","revision":"revision-1","binding":"fixture-binding","rate_multiplier":0.4,"reason":"fixture reviewed","observed_at":"2026-11-16T00:00:00Z","expires_at":"2026-11-16T01:00:00Z","entries":[{"model":"gpt-fixture","protocol":"responses_http","service_tier":"unspecified","reasoning_effort":"unspecified","context":"all","group_rate_applies":true}]}`)
+	_, err := tx.ExecContext(t.Context(), `UPDATE accounts SET extra=jsonb_build_object($1::text,$2::jsonb) WHERE id=$3`, service.UpstreamBillingManualApplicabilityExtraKey, string(manual), account.ID)
+	require.NoError(t, err)
+	loaded, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	// An old form cannot remove the current attestation or inject its private binding.
+	loaded.Extra = map[string]any{service.UpstreamBillingManualApplicabilityExtraKey: "forged"}
+	loaded.Name = "ordinary edit"
+	require.NoError(t, repo.UpdateWithAccountBillingSettings(t.Context(), loaded, nil, nil, nil))
+	got, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	stored := got.Extra[service.UpstreamBillingManualApplicabilityExtraKey].(map[string]any)
+	require.Equal(t, "revision-1", stored["revision"])
+	require.Equal(t, "fixture-binding", stored["binding"])
+	got.Credentials["api_key"] = "fixture-2"
+	require.NoError(t, repo.UpdateWithAccountBillingSettings(t.Context(), got, nil, nil, nil))
+	rotated, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, true, rotated.Extra[service.UpstreamBillingManualApplicabilityExtraKey].(map[string]any)["invalidated"])
+	rotated.Credentials["api_key"] = "fixture-1"
+	require.NoError(t, repo.UpdateWithAccountBillingSettings(t.Context(), rotated, nil, nil, nil))
+	reverted, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, "binding_changed", service.UpstreamBillingManualApplicabilityView(reverted, time.Now())["status"], "restoring a former key must not revive an invalidated attestation")
+	for _, mode := range []string{"credentials", "bulk-key", "bulk-rate"} {
+		t.Run(mode, func(t *testing.T) {
+			_, err := tx.ExecContext(t.Context(), `UPDATE accounts SET extra=jsonb_build_object($1::text,$2::jsonb) WHERE id=$3`, service.UpstreamBillingManualApplicabilityExtraKey, string(manual), account.ID)
+			require.NoError(t, err)
+			key := "fixture-3"
+			switch mode {
+			case "credentials":
+				require.NoError(t, repo.UpdateCredentials(t.Context(), account.ID, map[string]any{"base_url": "https://relay.example", "api_key": key}))
+			case "bulk-key":
+				_, err = repo.BulkUpdate(t.Context(), []int64{account.ID}, service.AccountBulkUpdate{Credentials: map[string]any{"api_key": "fixture-4"}})
+			case "bulk-rate":
+				newRate := 0.5
+				_, err = repo.BulkUpdate(t.Context(), []int64{account.ID}, service.AccountBulkUpdate{RateMultiplier: &newRate})
+			}
+			require.NoError(t, err)
+			got, err := repo.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, true, got.Extra[service.UpstreamBillingManualApplicabilityExtraKey].(map[string]any)["invalidated"], "all original account mutation paths retain a failed-closed marker")
+		})
+	}
+}
+
+func TestManualApplicabilityAdminSQLLifecycle(t *testing.T) {
+	tx := testEntTx(t)
+	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+	rate := 0.4
+	account := mustCreateAccount(t, tx.Client(), &service.Account{Name: "manual-admin-lifecycle", Platform: service.PlatformOpenAI,
+		Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"}, RateMultiplier: &rate})
+	svc := service.NewAdminService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, tx.Client(), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	command, err := json.Marshal(map[string]any{"expected_revision": "", "confirm_current_binding": true, "source_version": "sql-review-1", "reason": "supplier terms reviewed",
+		"expires_at": time.Now().Add(time.Hour), "entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}}})
+	require.NoError(t, err)
+	updated, err := svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
+	require.NoError(t, err)
+	view := service.UpstreamBillingManualApplicabilityView(updated, time.Now())
+	require.Equal(t, "active", view["status"])
+	revision := view["revision"]
+	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
+	require.ErrorIs(t, err, service.ErrUpstreamBillingManualApplicabilityConflict)
+	loaded, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, revision, service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["revision"])
+	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{Extra: map[string]any{service.UpstreamBillingManualApplicabilityExtraKey: "forged"}})
+	require.NoError(t, err)
+	loaded, err = repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, revision, service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["revision"])
+	revoke, err := json.Marshal(map[string]any{"revoke": true, "expected_revision": revision})
+	require.NoError(t, err)
+	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: revoke})
+	require.NoError(t, err)
+	loaded, err = repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, "revoked", service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["status"])
+	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
+	require.ErrorIs(t, err, service.ErrUpstreamBillingManualApplicabilityConflict, "revocation retains an ABA-safe revision")
+}
+
+func TestManualApplicabilityAdminSQLMutationRecovery(t *testing.T) {
+	for _, mode := range []string{"credentials", "mapping", "rate", "bulk-key", "bulk-rate"} {
+		t.Run(mode, func(t *testing.T) {
+			tx := testEntTx(t)
+			repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+			rate := 0.4
+			originalCredentials := map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"}
+			account := mustCreateAccount(t, tx.Client(), &service.Account{Name: "manual-recovery-" + mode, Platform: service.PlatformOpenAI,
+				Type: service.AccountTypeAPIKey, Credentials: originalCredentials, RateMultiplier: &rate})
+			svc := service.NewAdminService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, tx.Client(), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			command := func(revision string) json.RawMessage {
+				raw, err := json.Marshal(map[string]any{"expected_revision": revision, "confirm_current_binding": true, "source_version": "sql-binding-review", "reason": "supplier terms reviewed",
+					"expires_at": time.Now().Add(time.Hour), "entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}}})
+				require.NoError(t, err)
+				return raw
+			}
+			updated, err := svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command("")})
+			require.NoError(t, err)
+			view := service.UpstreamBillingManualApplicabilityView(updated, time.Now())
+			require.Equal(t, "active", view["status"], "start with a real server-generated binding, not a fabricated digest")
+			revision := view["revision"].(string)
+			expiresAt := view["expires_at"]
+			_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{Name: "ordinary edit"})
+			require.NoError(t, err)
+			loaded, err := repo.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			view = service.UpstreamBillingManualApplicabilityView(loaded, time.Now())
+			require.Equal(t, "active", view["status"])
+			require.Equal(t, expiresAt, view["expires_at"], "ordinary saves never renew evidence")
+			changedRate := 0.5
+			switch mode {
+			case "credentials":
+				err = repo.UpdateCredentials(t.Context(), account.ID, map[string]any{"base_url": "https://relay.example", "api_key": "rotated-key"})
+			case "mapping":
+				_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{Credentials: map[string]any{"model_mapping": map[string]any{"alias": "different-model"}}})
+			case "rate":
+				_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{RateMultiplier: &changedRate})
+			case "bulk-key":
+				_, err = repo.BulkUpdate(t.Context(), []int64{account.ID}, service.AccountBulkUpdate{Credentials: map[string]any{"api_key": "rotated-key"}})
+			case "bulk-rate":
+				_, err = repo.BulkUpdate(t.Context(), []int64{account.ID}, service.AccountBulkUpdate{RateMultiplier: &changedRate})
+			}
+			require.NoError(t, err)
+			loaded, err = repo.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, "binding_changed", service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["status"])
+			require.NoError(t, repo.UpdateCredentials(t.Context(), account.ID, originalCredentials))
+			_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{RateMultiplier: &rate})
+			require.NoError(t, err)
+			loaded, err = repo.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, "binding_changed", service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["status"], "restoring the former configuration must not revive prior evidence")
+			updated, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command(revision)})
+			require.NoError(t, err)
+			view = service.UpstreamBillingManualApplicabilityView(updated, time.Now())
+			require.Equal(t, "active", view["status"], "explicit reconfirmation is the recovery path")
+			require.NotEqual(t, revision, view["revision"])
+		})
+	}
+}
+
+func TestManualApplicabilityAutomaticRateMutationRecovery(t *testing.T) {
+	tx := testEntTx(t)
+	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+	rate := 0.4
+	account := mustCreateAccount(t, tx.Client(), &service.Account{Name: "manual-automatic-rate", Platform: service.PlatformOpenAI,
+		Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"}, RateMultiplier: &rate,
+		Extra: map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true, service.UpstreamBillingRateSyncEnabledExtraKey: true}})
+	probe := func(nextRate float64) {
+		current, err := repo.GetByID(t.Context(), account.ID)
+		require.NoError(t, err)
+		at := time.Now().UTC()
+		until := at.Add(time.Hour)
+		snapshot := &service.UpstreamBillingProbeSnapshot{Status: "ok", LastAttemptAt: at, ReceivedAt: &at, FreshUntil: &until,
+			Data: map[string]any{"object": "sub2api.key_billing", "schema_version": 1, "billing_scope": "token",
+				"group_rate_multiplier": nextRate, "resolved_rate_multiplier": nextRate, "effective_rate_multiplier": nextRate,
+				"peak_rate_enabled": false, "observed_at": at.Format(time.RFC3339Nano)}}
+		require.NoError(t, repo.UpdateUpstreamBillingProbeSnapshot(t.Context(), current, snapshot, &nextRate))
+	}
+	probe(rate)
+	svc := service.NewAdminService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, tx.Client(), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	command, err := json.Marshal(map[string]any{"expected_revision": "", "confirm_current_binding": true, "source_version": "automatic-review", "reason": "supplier terms reviewed",
+		"expires_at": time.Now().Add(time.Hour), "entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}}})
+	require.NoError(t, err)
+	updated, err := svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
+	require.NoError(t, err)
+	initial := service.UpstreamBillingManualApplicabilityView(updated, time.Now())
+	require.Equal(t, "active", initial["status"])
+	for _, step := range []struct {
+		rate   float64
+		status string
+	}{{rate, "active"}, {0.5, "binding_changed"}, {rate, "binding_changed"}} {
+		probe(step.rate)
+		loaded, err := repo.GetByID(t.Context(), account.ID)
+		require.NoError(t, err)
+		view := service.UpstreamBillingManualApplicabilityView(loaded, time.Now())
+		require.Equal(t, step.status, view["status"])
+		require.Equal(t, step.rate, *loaded.RateMultiplier)
+		require.Equal(t, initial["revision"], view["revision"], "a probe is not explicit reconfirmation")
+		require.Equal(t, initial["expires_at"], view["expires_at"])
+	}
+	loaded, err := repo.GetByID(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, "binding_changed", service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["status"], "observed automatic price changes stay invalid after restoration")
+}
+
 func TestProbeApplicabilityCASAndCredentialInvalidation(t *testing.T) {
 	ctx := t.Context()
 	tx := testEntTx(t)

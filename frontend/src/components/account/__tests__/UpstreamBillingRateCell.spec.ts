@@ -734,3 +734,18 @@ describe('UpstreamBillingRateCell', () => {
     expect(value().text()).toBe('admin.accounts.upstreamBilling.stale')
   })
 })
+
+
+describe('manual applicability conclusions', () => {
+  it('shows manual status separately from supplier probes and expires without a refresh', async () => {
+    const now = Date.now()
+    const account = makeAccount({ extra: { upstream_billing_manual_applicability: { revision: 'review-1', status: 'active', source: 'manual.admin', source_version: 'contract-1', reason: 'reviewed', expires_at: new Date(now + 1000).toISOString(), entries: [{ model: 'wire-fixture', protocol: 'responses_http', service_tier: 'unspecified', reasoning_effort: 'unspecified', context: 'all', group_rate_applies: true, conclusion: 'covered' }] } } })
+    const wrapper = mount(UpstreamBillingRateCell, { props: { account, now } })
+    expect(wrapper.get('[data-testid="upstream-manual-status"]').text()).toContain('manualApplicability.active')
+    expect(wrapper.get('[data-testid="upstream-manual-entry"]').text()).toContain('applicability.covered')
+    await wrapper.setProps({ now: now + 1001 })
+    expect(wrapper.get('[data-testid="upstream-manual-status"]').text()).toContain('manualApplicability.expired')
+    expect(wrapper.get('[data-testid="upstream-manual-entry"]').text()).not.toContain('applicability.covered')
+    wrapper.unmount()
+  })
+})

@@ -1459,10 +1459,16 @@ const applyUpstreamBillingRateSnapshots = async (
     const previousSnapshot = account.extra?.upstream_billing_probe ?? null
     const costChanged = isValidAccountCostMultiplier(item.cost_multiplier)
       && account.extra?.cost_multiplier !== item.cost_multiplier
-    if (!costChanged && JSON.stringify(previousSnapshot) === JSON.stringify(nextSnapshot)) return account
+    const hasManual = Object.prototype.hasOwnProperty.call(item, 'manual_applicability')
+    const manualChanged = hasManual && JSON.stringify(account.extra?.upstream_billing_manual_applicability ?? null) !== JSON.stringify(item.manual_applicability ?? null)
+    if (!costChanged && !manualChanged && JSON.stringify(previousSnapshot) === JSON.stringify(nextSnapshot)) return account
 
     const nextExtra = { ...(account.extra ?? {}) }
     if (costChanged) nextExtra.cost_multiplier = item.cost_multiplier
+    if (hasManual) {
+      if (item.manual_applicability) nextExtra.upstream_billing_manual_applicability = item.manual_applicability
+      else delete nextExtra.upstream_billing_manual_applicability
+    }
     if (nextSnapshot) nextExtra.upstream_billing_probe = nextSnapshot
     else delete nextExtra.upstream_billing_probe
     const nextAccount = {

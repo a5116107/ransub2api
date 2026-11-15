@@ -44,6 +44,14 @@ var (
 	redisNamespaceSeq uint64
 )
 
+func init() {
+	// TestMain runs after testing has started timers that read time.Local.
+	// Configure this startup-only global before the test runner is initialized.
+	if err := timezone.Init("UTC"); err != nil {
+		panic(err)
+	}
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(runIntegrationTests(m))
 }
@@ -51,10 +59,6 @@ func TestMain(m *testing.M) {
 func runIntegrationTests(m *testing.M) int {
 	ctx := context.Background()
 
-	if err := timezone.Init("UTC"); err != nil {
-		log.Printf("failed to init timezone: %v", err)
-		return 1
-	}
 	// The opt-in CLI fixture passes its own disposable connections on stdin.
 	// A child gateway must not create another database or Redis container.
 	if os.Getenv("SUB2API_PRIORITY_PROCESS") == "1" {

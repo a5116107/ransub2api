@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.1已同步4f05336eb；D2.6.2精确scope预演已验，沿本提交同步。
+任务：D2.6.3限期手工适用声明本地验收完成，沿原功能分支交付。
 授权：统一H盘工作树；本地代码/测试/文档及功能分支提交同步；不CI/部署。
-验证：auto race738/SQL30；scope race134及CLI12双轮；前端26；vet/增量lint/Linux/CLI实际输出通过。
-实证：精确scope/版本TTL/unknown冲突、换Key、物理发送及scope离线预演；非供应商/生产证明。
-下一动作：D2.6限期手工合同；余New API来源/候选接线及D5.3物理attempt。
+验证：终版race914/SQL48双轮及独立启动SQL12；前端190；vet/增量fast lint/Linux/中英390px通过。
+实证：手工声明SQL保存/409/撤销/变更失效/显式恢复、HTTP发送/WS终检；非供应商/生产证明。
+下一动作：D2.6 New API可核对scope来源与运行候选资格消费，随后D5.3物理attempt/延迟。
 等待：供应商实际scope/基线/缓存域；历史fixture/scratch拒删见末节。
-Attempt：2
+Attempt：3
 <!-- resume:end -->
 
 ## 目标与入口
@@ -25,30 +25,19 @@ Attempt：2
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.6.1自动声明及.2精确预演已验；手工/供应商合同未齐；D2.7 unknown关联待供应商 |
+| D2 | in_progress | D2.6.1–.3自动/手工声明及精确预演已验；New API例外来源/候选接线未齐；D2.7待供应商 |
 | D2.1 | done | 同步新鲜度/高峰及同源预演、CLI已验 |
 | D2.2 | done | 固定组/null/明确0及SQL失效恢复已验 |
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
-| D2.6.1 | done | 自动合同/TTL/冲突/终检/结论UI；race738、SQL30、前端26/构建及中英390px；仅本地 |
-| D2.6.2 | done | 原profit-preview精确scope/映射/新鲜度/默认及最低售价结论，strict CLI；race134/CLI12/实际文本JSON/vet/lint/Linux；仅本地 |
+| D2.6.1 | done | 自动合同/TTL/冲突/终检/UI；race738/SQL30/前端26/中英390px；仅本地 |
+| D2.6.2 | done | 原预演精确scope/映射/时效/售价；race134/CLI12、实际CLI/vet/lint/Linux；仅本地 |
+| D2.6.3 | done | SQL保存/409/撤销/失效恢复、空Key/HTTP/WS；race914/SQL48+启动12、前端190/中英390px/vet/增量lint/Linux；仅本地 |
 | D3 | in_progress | .3漏计/重选及5/3/1历史已上线；本地冷却回池双轮646pass待发布；D3.2多维/基线仍缺，D3.3非文本待scope |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
-| M1 | done | 未用符号/死计数删除，unused 6→0 |
-| M2 | done | 历史247项/integration101诊断清零，123处断言已核；四包lint/race |
-| M3 | done | WinSock拒绝/不可达识别，无超时/重置误判；真实POST/代理/WS五轮 |
-| M4 | done | 三处原子持久化统一，22项Windows失败修复；双平台回归/三包lint/vet |
-| M5 | done | 生产/夹具依赖边界及兼容点明确；六包lint与禁止依赖反向验证 |
-| M6 | done | 删假成功ProxyService.TestConnection；引用0、编译/vet |
-| M7 | done | 删假成功AccountService.TestCredentials；引用0、编译/vet |
-| M8 | done | 真实Key分页/用量聚合；handler race/vet |
-| M9 | done | 真实兑换码分页/面值；admin race及编译/vet |
-| M10 | done | 删AdminService.RefreshAccountCredentials接口/实现/stub；admin race/编译/vet |
-| M11 | done | 用量原聚合/周期校验/缺依赖关闭；service/admin race及编译/vet |
-| M12 | done | 代理/dashboard未支持兼容接口501；admin race/vet |
-| M13 | done | 删GroupService.GetStats重复入口；引用0、handler race/service编译/vet |
+| M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |
 | D4 | in_progress | 固定售价/新鲜策略/多平台最终门已有本地证据；D4.3采购桶/受管资格/模式与重归类仍未闭环 |
 | D5 | in_progress | D5.3.1最终Key/线路/模型原始缓存聚合已验；实际组及同scope物理attempt/延迟仍缺，D5.4缓存域/定向能力待补 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
@@ -65,7 +54,7 @@ Attempt：2
 
 ## 剩余执行顺序与等待
 
-- 本地可执行：D2.6限期手工声明与New API可核对来源→D5.3物理attempt/延迟→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；高缓存产品仍等D5.4。不因缺供应商数据停做本地合同。
+- 本地可执行：D2.6 New API可核对来源/运行资格接线→D5.3物理attempt/延迟→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；高缓存产品仍等D5.4。不因缺供应商数据停做本地合同。
 - 独立发布：D9.1先核当前生产/可部署差异，按原发布边界交付冷却补丁；不可整分支带入未验功能。本轮不发布。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。
@@ -74,11 +63,12 @@ Attempt：2
 ## 工作区与既有环境限制
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
-- 历史153包证据及本轮命令见DECISIONS；并发1–2、共享Go缓存，不代表真实供应商。
+- 历史153包/本轮证据见DECISIONS；并发1–2、共享Go缓存。
 - 12个2×3测试PNG/1164bytes已由源码生成匹配SHA256；data/删除被执行策略拦截，保留原路径不换工具。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
-- Windows完整repository缺SeCreateSymbolicLinkPrivilege，Linux同例通过；系统管理员提供符号链接权限进程后重跑，未改skip。
+- Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 历史拒删候选/overlay/pyc及空目录按DECISIONS保留原owner/路径；不换工具重试/移动，.1包保留。
 - H:/Root/DevCache/tmp/sub2api-cooldown-recovery同被blocked by policy；已有0文件/0字节、非重解析点证据，删除0，待拥有者清理。
-- D5.3旧timing/lint/vet/Linux证据复用；PATH旧lint不使用。独立PG/Redis/预览已停；raw-cache原scratch仍待删除策略解除。
-- D2.6.1全规则lint耗时/内存超预算已停，未报通过；增量fast lint及vet通过，证据在DECISIONS。
+- D5.3旧timing证据复用；PATH旧lint不使用。本轮独立PG/Redis/预览已停，三端口无监听；raw-cache原scratch仍待删除策略解除。
+- 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。
+- D2.6.3六份旧日志压缩/删除命令被策略拒绝，执行/删除0；原evidence待宿主/拥有者清理，不换工具重试。

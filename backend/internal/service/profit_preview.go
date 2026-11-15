@@ -5,11 +5,8 @@ package service
 // 自动同步的 API Key 复用线上快照有效性与实时高峰规则；手工账号使用保存倍率。
 
 import (
-	"encoding/json"
 	"errors"
 	"math"
-	"net/http"
-	"net/url"
 	"sort"
 	"time"
 
@@ -237,7 +234,7 @@ func previewProfitRequestScope(account *Account, request ProfitPreviewRequestSco
 	}
 	price := previewAccountProfitAdmission(account, enabled, threshold, minThreshold, at)
 	result.PriceClass = price.Class
-	if !profitPreviewScopeShapeKnown(request.Scope) {
+	if !billingApplicabilityScopeShapeKnown(request.Scope) {
 		result.Reason = "profit_upstream_scope_unknown"
 		return result
 	}
@@ -256,40 +253,6 @@ func previewProfitRequestScope(account *Account, request ProfitPreviewRequestSco
 		result.AdmittedUnderMinD = !price.RejectedUnderMinD
 	}
 	return result
-}
-
-// Validate the supplied descriptor with the existing wire parser, rather than
-// keeping a second list of accepted tier/effort options. This constructs no
-// generation request and supplies no evidence of a real upstream send.
-func profitPreviewScopeShapeKnown(scope AvailabilityRequestScope) bool {
-	body := map[string]any{"model": scope.Model, "stream": scope.Stream}
-	method, scheme, path := http.MethodPost, "https", "/v1/responses"
-	switch scope.Protocol {
-	case "responses_http":
-	case "responses_ws_v2":
-		method, scheme = http.MethodGet, "wss"
-		body["type"] = "response.create"
-	case "chat_http":
-		path = "/v1/chat/completions"
-	default:
-		return false
-	}
-	if scope.ServiceTier != "unspecified" {
-		body["service_tier"] = scope.ServiceTier
-	}
-	if scope.ReasoningEffort != "unspecified" {
-		if scope.Protocol == "chat_http" {
-			body["reasoning_effort"] = scope.ReasoningEffort
-		} else {
-			body["reasoning"] = map[string]any{"effort": scope.ReasoningEffort}
-		}
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return false
-	}
-	parsed := availabilityScopeForRequest(&http.Request{Method: method, URL: &url.URL{Scheme: scheme, Host: "preview.invalid", Path: path}, Header: make(http.Header)}, payload)
-	return parsed != nil && *parsed == scope
 }
 
 func previewAccountProfitAdmission(

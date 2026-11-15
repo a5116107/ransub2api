@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
@@ -481,12 +482,13 @@ type UpdateAccountInput struct {
 	GroupIDs            *[]int64
 	// GroupAllowedModels 按分组 ID 覆盖账号在各分组内可用的模型；nil 表示不改，
 	// 非 nil 时没有列出的分组恢复为不限制。
-	GroupAllowedModels    map[int64][]string
-	ExpiresAt             *int64
-	AutoPauseOnExpired    *bool
-	ProbeEnabled          *bool
-	RateSyncEnabled       *bool
-	SkipMixedChannelCheck bool // 跳过混合渠道检查（用户已确认风险）
+	GroupAllowedModels      map[int64][]string
+	ExpiresAt               *int64
+	AutoPauseOnExpired      *bool
+	ProbeEnabled            *bool
+	RateSyncEnabled         *bool
+	ManualRateApplicability json.RawMessage
+	SkipMixedChannelCheck   bool // 跳过混合渠道检查（用户已确认风险）
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.

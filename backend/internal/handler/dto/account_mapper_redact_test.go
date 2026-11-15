@@ -11,6 +11,19 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
+func TestAccountManualApplicabilityProjectionDoesNotExposePrivateBinding(t *testing.T) {
+	account := &service.Account{ID: 93, Type: service.AccountTypeAPIKey, Extra: map[string]any{
+		service.UpstreamBillingManualApplicabilityExtraKey: map[string]any{"binding": "private-binding-fixture", "api_key": "credential-fixture", "revision": "review-1"},
+	}}
+	projected := AccountFromServiceShallow(account)
+	raw, err := json.Marshal(projected.Extra)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "private-binding-fixture")
+	require.NotContains(t, string(raw), "credential-fixture")
+	require.Contains(t, string(raw), "invalid")
+	require.Contains(t, account.Extra[service.UpstreamBillingManualApplicabilityExtraKey], "binding", "projection must not mutate private storage")
+}
+
 func TestAccountFromServiceShallow_RedactsSensitiveCredentials(t *testing.T) {
 	src := &service.Account{
 		ID:       42,

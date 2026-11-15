@@ -1073,7 +1073,24 @@ func lockAndMergeAccountProbeExtra(
 		}
 	}
 
-	return extra, nil
+	mergedManual, err := service.MergeUpstreamBillingManualApplicability(ctx, currentExtra, extra)
+	if err != nil {
+		return nil, err
+	}
+	if !service.HasUpstreamBillingManualApplicabilityUpdate(ctx) {
+		candidate := *account
+		candidate.Extra = mergedManual
+		view := service.UpstreamBillingManualApplicabilityView(&candidate, time.Now())
+		if !identityUnchanged || view != nil && view["status"] == "binding_changed" {
+			service.InvalidateUpstreamBillingManualApplicability(mergedManual)
+		}
+	}
+	return mergedManual, nil
+}
+
+// Input predicates are repository-owned SQL; all data remains parameterized.
+func manualApplicabilityInvalidationPatchSQL(changed string) string {
+	return "CASE WHEN (" + changed + ") AND jsonb_typeof(extra->'upstream_billing_manual_applicability')='object' THEN jsonb_build_object('upstream_billing_manual_applicability',(extra->'upstream_billing_manual_applicability') || '{\"invalidated\":true}'::jsonb) ELSE '{}'::jsonb END"
 }
 
 func decodeAccountExtraJSON(raw []byte) (any, bool, error) {
@@ -1176,7 +1193,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 					AND credentials IS DISTINCT FROM $1::jsonb
 				THEN COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe'
 				ELSE extra
-			END,
+			END || `+manualApplicabilityInvalidationPatchSQL("type = 'apikey' AND credentials IS DISTINCT FROM $1::jsonb")+`,
 			updated_at = NOW()
 		WHERE id = $2 AND deleted_at IS NULL
 	`, string(payload), id)
@@ -3442,7 +3459,7 @@ func (r *accountRepository) updateUpstreamBillingProbeSnapshotInTx(
 				WHEN extra @> '{"cost_multiplier_auto_sync": false}'::jsonb
 				THEN $1::jsonb - 'cost_multiplier'
 				ELSE $1::jsonb
-			END,
+			END || `+manualApplicabilityInvalidationPatchSQL("$10::numeric IS NOT NULL AND rate_multiplier IS DISTINCT FROM $10::numeric")+`,
 			rate_multiplier = CASE
 				WHEN $10::numeric IS NOT NULL
 					AND extra @> '{"upstream_billing_probe_enabled": true}'::jsonb
@@ -3557,11 +3574,13 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	// Only ordinary bulk saves reject this input; runtime UpdateExtra remains
 	// available to the dedicated isolation owner.
 	delete(updates.Extra, service.QualityModelIsolationKey)
+	delete(updates.Extra, service.UpstreamBillingManualApplicabilityExtraKey)
 
 	setClauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
 
 	idx := 1
+	manualChanges := make([]string, 0, 4)
 	ollamaProxyIdentityChanged := ""
 	if updates.Name != nil {
 		setClauses = append(setClauses, "name = $"+itoa(idx))
@@ -3592,11 +3611,13 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		idx++
 	}
 	if updates.RateMultiplier != nil {
+		manualChanges = append(manualChanges, "rate_multiplier IS DISTINCT FROM $"+itoa(idx)+"::numeric")
 		setClauses = append(setClauses, "rate_multiplier = $"+itoa(idx))
 		args = append(args, *updates.RateMultiplier)
 		idx++
 	}
 	if updates.GroupRateMultiplier != nil {
+		manualChanges = append(manualChanges, "group_rate_multiplier IS DISTINCT FROM $"+itoa(idx)+"::numeric")
 		setClauses = append(setClauses, "group_rate_multiplier = $"+itoa(idx))
 		args = append(args, *updates.GroupRateMultiplier)
 		idx++
@@ -3634,6 +3655,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			return 0, err
 		}
 		credentialPlaceholder = "$" + itoa(idx)
+		manualChanges = append(manualChanges, "credentials IS DISTINCT FROM (COALESCE(credentials, '{}'::jsonb) || "+credentialPlaceholder+"::jsonb)")
 		setClauses = append(setClauses, "credentials = COALESCE(credentials, '{}'::jsonb) || "+credentialPlaceholder+"::jsonb")
 		args = append(args, payload)
 		idx++
@@ -3681,7 +3703,10 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 				" AND COALESCE(btrim("+credentialPlaceholder+"::jsonb ->> 'account_mode') <> 'zen', true) IS NOT TRUE")
 	}
 
-	if updates.Concurrency != nil || len(updates.Extra) > 0 || len(updates.ExcelBPSAuthorizationPending) > 0 || len(ollamaGroupIdentityChanges) > 0 || len(opencodeGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || updates.EnsureCodexFingerprintSeed {
+	if ollamaProxyIdentityChanged != "" {
+		manualChanges = append(manualChanges, ollamaProxyIdentityChanged)
+	}
+	if updates.Concurrency != nil || len(updates.Extra) > 0 || len(updates.ExcelBPSAuthorizationPending) > 0 || len(ollamaGroupIdentityChanges) > 0 || len(opencodeGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || updates.EnsureCodexFingerprintSeed || len(manualChanges) > 0 {
 		extraExpression := "COALESCE(extra, '{}'::jsonb)"
 		if len(updates.Extra) > 0 {
 			payload, err := json.Marshal(updates.Extra)
@@ -3807,6 +3832,9 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			// An explicit native concurrency save releases only this upgrade
 			// hold. The degradation history remains immutable audit data.
 			extraExpression = "(" + extraExpression + ") - 'auto_config_concurrency'"
+		}
+		if len(manualChanges) > 0 {
+			extraExpression = "(" + extraExpression + ") || " + manualApplicabilityInvalidationPatchSQL("("+strings.Join(manualChanges, " OR ")+")")
 		}
 		setClauses = append(setClauses, "extra = "+extraExpression)
 	}

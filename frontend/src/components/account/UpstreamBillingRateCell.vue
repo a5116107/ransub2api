@@ -126,6 +126,19 @@
         </div>
       </template>
     </details>
+    <details v-if="manualApplicability" class="my-1 max-w-sm text-xs" data-testid="upstream-manual-applicability">
+      <summary class="cursor-pointer text-blue-600 dark:text-blue-400">{{ t('admin.accounts.upstreamBilling.manualApplicability.title') }}</summary>
+      <p class="mt-1" :class="manualStatus === 'active' ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'" data-testid="upstream-manual-status">{{ t(`admin.accounts.upstreamBilling.manualApplicability.${manualStatus}`) }}</p>
+      <p class="mt-1 break-all">{{ manualApplicability.source }} · {{ manualApplicability.source_version }}</p>
+      <p v-if="manualApplicability.reason" class="break-all">{{ manualApplicability.reason }}</p>
+      <p v-if="manualApplicability.rate_multiplier != null">{{ t('admin.accounts.upstreamBilling.manualApplicability.rate', { value: manualApplicability.rate_multiplier }) }}</p>
+      <p v-if="manualApplicability.expires_at">{{ t('admin.accounts.upstreamBilling.applicability.expires', { value: formatDate(manualApplicability.expires_at) }) }}</p>
+      <div v-for="(entry, index) in manualApplicability.entries" :key="index" class="mt-2 rounded bg-gray-50 p-2 dark:bg-dark-800" data-testid="upstream-manual-entry">
+        <p class="break-all font-medium">{{ entry.model }}</p>
+        <p class="break-all">{{ entry.protocol }} · {{ entry.service_tier }} · {{ entry.reasoning_effort }} · {{ entry.context }}</p>
+        <span :class="manualStatus === 'active' && entry.conclusion === 'covered' ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">{{ manualStatus === 'active' ? scopeLabel(entry.conclusion) : t(`admin.accounts.upstreamBilling.manualApplicability.${manualStatus}`) }}</span>
+      </div>
+    </details>
     <div v-if="showBalance" class="flex h-5 items-center gap-1 text-xs" data-testid="upstream-balance">
       <HelpTooltip class="-ml-1" width-class="w-max max-w-[calc(100vw-2rem)]" data-testid="upstream-balance-details">
         <template #trigger>
@@ -227,6 +240,14 @@ const eligible = computed(() => props.account.type === 'apikey')
 const snapshot = computed<UpstreamBillingProbeSnapshot | undefined>(() => props.account.extra?.upstream_billing_probe)
 const data = computed(() => snapshot.value?.data)
 const applicability = computed(() => data.value?.rate_applicability)
+const manualApplicability = computed(() => props.account.extra?.upstream_billing_manual_applicability)
+const manualStatus = computed(() => {
+  const value = manualApplicability.value
+  if (!value || !['active', 'expired', 'unavailable', 'binding_changed', 'superseded', 'revoked'].includes(value.status)) return 'invalid'
+  const expiry = Date.parse(value.expires_at ?? '')
+  if (value.status === 'active' && (!Number.isFinite(expiry) || props.now >= expiry)) return 'expired'
+  return value.status
+})
 const scopeLabel = (status: string) => t(`admin.accounts.upstreamBilling.applicability.${status}`)
 const scopeStatus = (conclusion: string) => {
   if (snapshot.value?.status !== 'ok' || !validTimestamps.value || props.now >= freshUntil.value) return 'unavailable'

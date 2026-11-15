@@ -184,6 +184,7 @@ type UpdateAccountRequest struct {
 	AutoPauseOnExpired      *bool              `json:"auto_pause_on_expired"`
 	ProbeEnabled            *bool              `json:"upstream_billing_probe_enabled"`
 	RateSyncEnabled         *bool              `json:"upstream_billing_rate_sync_enabled"`
+	ManualRateApplicability json.RawMessage    `json:"upstream_billing_manual_applicability"`
 	ConfirmMixedChannelRisk *bool              `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
@@ -1283,25 +1284,26 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
 	account, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Name:                  req.Name,
-		Notes:                 req.Notes,
-		Type:                  req.Type,
-		Credentials:           req.Credentials,
-		Extra:                 req.Extra,
-		ProxyID:               req.ProxyID,
-		Concurrency:           req.Concurrency, // 指针类型，nil 表示未提供
-		Priority:              req.Priority,    // 指针类型，nil 表示未提供
-		RateMultiplier:        req.RateMultiplier,
-		GroupRateMultiplier:   req.GroupRateMultiplier,
-		LoadFactor:            req.LoadFactor,
-		Status:                req.Status,
-		GroupIDs:              req.GroupIDs,
-		GroupAllowedModels:    req.GroupAllowedModels,
-		ExpiresAt:             req.ExpiresAt,
-		AutoPauseOnExpired:    req.AutoPauseOnExpired,
-		ProbeEnabled:          req.ProbeEnabled,
-		RateSyncEnabled:       req.RateSyncEnabled,
-		SkipMixedChannelCheck: skipCheck,
+		Name:                    req.Name,
+		Notes:                   req.Notes,
+		Type:                    req.Type,
+		Credentials:             req.Credentials,
+		Extra:                   req.Extra,
+		ProxyID:                 req.ProxyID,
+		Concurrency:             req.Concurrency, // 指针类型，nil 表示未提供
+		Priority:                req.Priority,    // 指针类型，nil 表示未提供
+		RateMultiplier:          req.RateMultiplier,
+		GroupRateMultiplier:     req.GroupRateMultiplier,
+		LoadFactor:              req.LoadFactor,
+		Status:                  req.Status,
+		GroupIDs:                req.GroupIDs,
+		GroupAllowedModels:      req.GroupAllowedModels,
+		ExpiresAt:               req.ExpiresAt,
+		AutoPauseOnExpired:      req.AutoPauseOnExpired,
+		ProbeEnabled:            req.ProbeEnabled,
+		RateSyncEnabled:         req.RateSyncEnabled,
+		ManualRateApplicability: req.ManualRateApplicability,
+		SkipMixedChannelCheck:   skipCheck,
 	})
 	if err != nil {
 		// 检查是否为混合渠道错误

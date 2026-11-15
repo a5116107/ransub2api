@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"reflect"
 	"time"
 
@@ -175,11 +176,7 @@ func (d *upstreamBillingApplicability) verdict(scope *AvailabilityRequestScope, 
 }
 
 func guardUpstreamBillingApplicability(account *Account, scope *AvailabilityRequestScope) error {
-	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	if snapshot == nil {
-		return nil // The existing rate gate owns missing-snapshot rejection.
-	}
-	if _, present := snapshot.Data[upstreamBillingApplicabilityKey]; !present {
+	if !upstreamBillingHasApplicability(account) {
 		return nil // Legacy routing remains compatible, not qualified for managed supply.
 	}
 	if _, reason := upstreamBillingScopeVerdictAt(account, scope, time.Now()); reason != "" {
@@ -188,19 +185,53 @@ func guardUpstreamBillingApplicability(account *Account, scope *AvailabilityRequ
 	return nil
 }
 
+func upstreamBillingEvidenceRequired(account *Account) bool {
+	return account != nil && (upstreamBillingRateSyncEnabled(account) || upstreamBillingHasApplicability(account))
+}
+
+func upstreamBillingHasApplicability(account *Account) bool {
+	if account == nil || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	if _, present := account.Extra[UpstreamBillingManualApplicabilityExtraKey]; present && !manualApplicabilityRevoked(account.Extra) {
+		return true
+	}
+	if upstreamBillingRateSyncEnabled(account) {
+		if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil {
+			_, present := snapshot.Data[upstreamBillingApplicabilityKey]
+			return present
+		}
+	}
+	return false
+}
+
 // The offline preview and final send consume one contract at one explicit
 // instant. Legacy/manual routing compatibility is NOT strict scope evidence.
 func upstreamBillingScopeVerdictAt(account *Account, scope *AvailabilityRequestScope, at time.Time) (string, string) {
-	if account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+	if account == nil || account.Type != AccountTypeAPIKey {
 		return "not_declared", "profit_upstream_scope_not_declared"
 	}
 	if _, reason := profitControlAccountRateAt(account, at); reason != "" {
 		return "unavailable", reason
 	}
-	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	declaration, present := upstreamBillingApplicabilityFromData(snapshot.Data)
+	var declaration *upstreamBillingApplicability
+	present := false
+	if upstreamBillingRateSyncEnabled(account) {
+		if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil {
+			declaration, present = upstreamBillingApplicabilityFromData(snapshot.Data)
+		}
+	}
+	// A manual attestation fills only missing supplier support. An explicit
+	// supplier exclusion, invalid declaration or expiry never falls back to it.
 	if !present {
-		return "not_declared", "profit_upstream_scope_not_declared"
+		if _, manual := account.Extra[UpstreamBillingManualApplicabilityExtraKey]; !manual || manualApplicabilityRevoked(account.Extra) {
+			return "not_declared", "profit_upstream_scope_not_declared"
+		}
+		stored, status := manualBillingApplicabilityAt(account, at)
+		if status != "active" {
+			return status, "profit_upstream_scope_" + status
+		}
+		declaration = &stored.upstreamBillingApplicability
 	}
 	status := declaration.verdict(scope, at)
 	if status != "covered" {
@@ -210,11 +241,7 @@ func upstreamBillingScopeVerdictAt(account *Account, scope *AvailabilityRequestS
 }
 
 func guardUpstreamBillingHTTPApplicability(account *Account, request *http.Request) error {
-	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	if snapshot == nil {
-		return nil
-	}
-	if _, present := snapshot.Data[upstreamBillingApplicabilityKey]; !present {
+	if !upstreamBillingHasApplicability(account) {
 		return nil
 	}
 	payload, confirmed := availabilityRequestPayload(request)
@@ -226,14 +253,10 @@ func guardUpstreamBillingHTTPApplicability(account *Account, request *http.Reque
 }
 
 func guardUpstreamBillingWSApplicability(ctx context.Context, account *Account, binding *openAIWSTurnBinding, payload any) error {
-	if !gatewayProfitControlGateActive(ctx) || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+	if !gatewayProfitControlGateActive(ctx) || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingEvidenceRequired(account) {
 		return nil
 	}
-	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	if snapshot == nil {
-		return nil
-	}
-	if _, present := snapshot.Data[upstreamBillingApplicabilityKey]; !present {
+	if !upstreamBillingHasApplicability(account) {
 		return nil
 	}
 	var scope *AvailabilityRequestScope
@@ -276,4 +299,38 @@ func upstreamBillingApplicabilityReplay(previous, next map[string]any) bool {
 func stringMapValue(data map[string]any, key string) string {
 	value, _ := data[key].(string)
 	return value
+}
+
+// Validate the supplied descriptor with the existing wire parser, rather than
+// keeping a second list of accepted tier/effort options. This constructs no
+// generation request and supplies no evidence of a real upstream send.
+func billingApplicabilityScopeShapeKnown(scope AvailabilityRequestScope) bool {
+	body := map[string]any{"model": scope.Model, "stream": scope.Stream}
+	method, scheme, path := http.MethodPost, "https", "/v1/responses"
+	switch scope.Protocol {
+	case "responses_http":
+	case "responses_ws_v2":
+		method, scheme = http.MethodGet, "wss"
+		body["type"] = "response.create"
+	case "chat_http":
+		path = "/v1/chat/completions"
+	default:
+		return false
+	}
+	if scope.ServiceTier != "unspecified" {
+		body["service_tier"] = scope.ServiceTier
+	}
+	if scope.ReasoningEffort != "unspecified" {
+		if scope.Protocol == "chat_http" {
+			body["reasoning_effort"] = scope.ReasoningEffort
+		} else {
+			body["reasoning"] = map[string]any{"effort": scope.ReasoningEffort}
+		}
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return false
+	}
+	parsed := availabilityScopeForRequest(&http.Request{Method: method, URL: &url.URL{Scheme: scheme, Host: "preview.invalid", Path: path}, Header: make(http.Header)}, payload)
+	return parsed != nil && *parsed == scope
 }

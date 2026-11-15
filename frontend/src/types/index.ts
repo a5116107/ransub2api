@@ -1156,6 +1156,27 @@ export interface UpstreamBillingApplicability {
   entries: UpstreamBillingApplicabilityEntry[]
 }
 
+export interface UpstreamBillingManualApplicability {
+  status: 'active' | 'invalid' | 'expired' | 'unavailable' | 'binding_changed' | 'superseded' | 'revoked'
+  revision: string
+  source?: 'manual.admin'
+  source_version?: string
+  observed_at?: string
+  expires_at?: string
+  reason?: string
+  rate_multiplier?: number
+  entries?: Array<Omit<UpstreamBillingApplicabilityEntry, 'conclusion'> & { conclusion: string }>
+}
+
+export type UpstreamBillingManualApplicabilityUpdate = { revoke: true; expected_revision: string } | {
+  expected_revision: string
+  confirm_current_binding: true
+  source_version: string
+  reason: string
+  expires_at: string
+  entries: Array<Omit<UpstreamBillingApplicabilityEntry, 'conclusion'>>
+}
+
 export interface UpstreamBillingData {
   object: 'sub2api.key_billing' | 'new_api.group_billing'
   schema_version: 1 | 2
@@ -1293,6 +1314,7 @@ export interface UpstreamBillingRateSnapshotItem {
   cost_multiplier?: number
   account_id: number
   snapshot?: UpstreamBillingProbeSnapshot | null
+  manual_applicability?: UpstreamBillingManualApplicability | null
 }
 
 export interface UpstreamBillingRatesResponse {
@@ -1464,6 +1486,7 @@ export interface Account {
     upstream_billing_provider?: 'new_api'
     upstream_billing_probe_enabled?: boolean
     upstream_billing_rate_sync_enabled?: boolean
+    upstream_billing_manual_applicability?: UpstreamBillingManualApplicability
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
     codex_reset_credit_snapshot?: {
       available_count?: number
@@ -1839,6 +1862,7 @@ export interface UpdateAccountRequest {
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean
   upstream_billing_rate_sync_enabled?: boolean
+  upstream_billing_manual_applicability?: UpstreamBillingManualApplicabilityUpdate
   confirm_mixed_channel_risk?: boolean
 }
 

@@ -2060,6 +2060,7 @@
             />
           </div>
         </div>
+        <UpstreamBillingManualApplicabilityForm class="col-span-2" v-if="account?.type === 'apikey' && !isSparkShadow" ref="manualApplicabilityForm" :account="account" :show="show" />
         <div>
           <div class="mb-2 flex items-center justify-between gap-1">
             <label class="input-label mb-0" for="account-cost-multiplier">{{ t('admin.accounts.costMultiplier') }}</label>
@@ -3830,6 +3831,7 @@ import { extractApiErrorMessage, extractI18nErrorMessage } from '@/utils/apiErro
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
+import UpstreamBillingManualApplicabilityForm from './UpstreamBillingManualApplicabilityForm.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import { DEFAULT_EXCEL_BPS_MODELS, VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
@@ -3859,6 +3861,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const manualApplicabilityForm = ref<InstanceType<typeof UpstreamBillingManualApplicabilityForm> | null>(null)
 const emit = defineEmits<{
   close: []
   updated: [account: Account]
@@ -6254,6 +6257,8 @@ const handleSubmit = async () => {
     delete updatePayload.status
   }
   try {
+    const manualUpdate = manualApplicabilityForm.value?.buildUpdate?.()
+    if (manualUpdate) updatePayload.upstream_billing_manual_applicability = manualUpdate
     if (authStore.isObserver) {
       delete updatePayload.proxy_id
     }

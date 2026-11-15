@@ -73,7 +73,7 @@ func checkOpenAIWSBillingHandshake(ctx context.Context, account *Account, bindin
 		return err
 	}
 	gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
-	if gate != nil && account != nil && account.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(account) &&
+	if gate != nil && account != nil && account.Type == AccountTypeAPIKey && upstreamBillingEvidenceRequired(account) &&
 		(binding == nil || !binding.redirectsDisabled) {
 		return denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
 	}
@@ -84,7 +84,7 @@ func checkOpenAIWSBillingHandshake(ctx context.Context, account *Account, bindin
 // prepared request. Callers retain their existing authoritative account checks.
 func guardUpstreamBillingRequest(ctx context.Context, account *Account, request *http.Request) (context.Context, error) {
 	ctx, err := guardUpstreamBillingTarget(ctx, account, request)
-	if err != nil || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+	if err != nil || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingEvidenceRequired(account) {
 		return ctx, err
 	}
 	if err := guardUpstreamBillingHTTPApplicability(account, request); err != nil {
@@ -94,7 +94,7 @@ func guardUpstreamBillingRequest(ctx context.Context, account *Account, request 
 }
 
 func guardUpstreamBillingTarget(ctx context.Context, account *Account, request *http.Request) (context.Context, error) {
-	if account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+	if account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingEvidenceRequired(account) {
 		return ctx, nil
 	}
 	if !upstreamBillingRequestTargetConfirmed(account, request) {
@@ -113,7 +113,7 @@ func guardUpstreamBillingTarget(ctx context.Context, account *Account, request *
 // for requests governed by the automatic-rate profit gate.
 func guardOpenAIWSBillingHandshake(ctx context.Context, account *Account, target string, headers http.Header) (context.Context, error) {
 	gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
-	if gate == nil || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+	if gate == nil || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingEvidenceRequired(account) {
 		return ctx, nil
 	}
 	if gate.configUnavailable {

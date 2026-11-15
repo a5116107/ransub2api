@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -12,6 +13,28 @@ import (
 
 type upstreamBillingProbeAdminRepo struct {
 	*upstreamBillingProbeAccountRepo
+}
+
+func TestUpdateAccountManualApplicabilityLifecycle(t *testing.T) {
+	account := billingManualAccount()
+	repo := &accountBillingSettingsAdminRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}}
+	svc := &adminServiceImpl{accountRepo: &upstreamBillingProbeAdminRepo{repo.upstreamBillingProbeAccountRepo}, accountBillingRepo: repo}
+	command := billingManualCommand(t, account, time.Now(), billingApplicabilityEntry("responses_http", "unspecified", true))
+	updated, err := svc.UpdateAccount(t.Context(), account.ID, &UpdateAccountInput{ManualRateApplicability: command})
+	require.NoError(t, err)
+	view := UpstreamBillingManualApplicabilityView(updated, time.Now())
+	require.Equal(t, "active", view["status"])
+	revision := view["revision"]
+	updated, err = svc.UpdateAccount(t.Context(), account.ID, &UpdateAccountInput{Name: "ordinary", Extra: map[string]any{UpstreamBillingManualApplicabilityExtraKey: "forged"}})
+	require.NoError(t, err)
+	require.Equal(t, revision, UpstreamBillingManualApplicabilityView(updated, time.Now())["revision"])
+	_, err = svc.UpdateAccount(t.Context(), account.ID, &UpdateAccountInput{ManualRateApplicability: command})
+	require.ErrorIs(t, err, ErrUpstreamBillingManualApplicabilityConflict)
+	revoke, err := json.Marshal(map[string]any{"revoke": true, "expected_revision": revision})
+	require.NoError(t, err)
+	updated, err = svc.UpdateAccount(t.Context(), account.ID, &UpdateAccountInput{ManualRateApplicability: revoke})
+	require.NoError(t, err)
+	require.Equal(t, "revoked", UpstreamBillingManualApplicabilityView(updated, time.Now())["status"])
 }
 
 func (r *upstreamBillingProbeAdminRepo) ListShadowsByParent(context.Context, int64) ([]*Account, error) {

@@ -52,6 +52,16 @@ func billingApplicabilityAccount(t *testing.T, at time.Time, declaration any) *A
 	return account
 }
 
+func TestBillingManualApplicabilityInvalidEvidenceStopsFinalSend(t *testing.T) {
+	account := &Account{ID: 91, Type: AccountTypeAPIKey, Platform: PlatformOpenAI,
+		Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"},
+		Extra:       map[string]any{"upstream_billing_manual_applicability": map[string]any{"expires_at": "2020-01-01T00:00:00Z"}}}
+	req, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", strings.NewReader(`{"model":"gpt-fixture","input":"hello"}`))
+	require.NoError(t, err)
+	_, err = guardUpstreamBillingRequest(t.Context(), account, req)
+	require.True(t, IsOpenAITurnAdmissionError(err), "an explicit invalid manual declaration must not silently become legacy admission")
+}
+
 func TestBillingApplicabilityFinalHTTP(t *testing.T) {
 	at := time.Now().UTC().Add(-time.Second)
 	decl := billingApplicabilityFixture(at, billingApplicabilityEntry("responses_http", "unspecified", true),
@@ -385,24 +395,39 @@ func TestBillingApplicabilityZeroIsNotMissing(t *testing.T) {
 }
 
 func TestBillingApplicabilityPhysicalRetryRechecksExpiry(t *testing.T) {
-	at := time.Now().UTC().Add(-time.Minute)
-	account := billingApplicabilityAccount(t, at, billingApplicabilityFixture(at, billingApplicabilityEntry("responses_http", "unspecified", true)))
-	account.GroupIDs = []int64{41}
-	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 41, threshold: 0.5})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://relay.example/v1/responses", bytes.NewBufferString(`{"model":"gpt-fixture","input":"hello"}`))
-	require.NoError(t, err)
-	svc := &OpenAIGatewayService{}
-	req, err = svc.guardOpenAIProfitRequest(req, account)
-	require.NoError(t, err, "entry admission has valid evidence")
-	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	snapshot.Data[upstreamBillingApplicabilityKey].(map[string]any)["expires_at"] = time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)
-	account.Extra[UpstreamBillingProbeExtraKey] = snapshot
-	// No HTTPUpstream is installed: a stale physical attempt must stop before
-	// transport, submission accounting, or supplier-fault attribution.
-	response, err := svc.doOpenAIProxyAttempt(req, account, runtimeProxyEgress{})
-	require.Nil(t, response)
-	var denied *OpenAITurnAdmissionError
-	require.ErrorAs(t, err, &denied)
-	require.Equal(t, "profit_upstream_scope_expired", denied.Reason)
-	require.False(t, IsOpenAIInitialAdmissionRejection(err))
+	for _, source := range []string{"automatic", "manual"} {
+		t.Run(source, func(t *testing.T) {
+			at := time.Now().UTC().Add(-time.Minute)
+			account := billingApplicabilityAccount(t, at, billingApplicabilityFixture(at, billingApplicabilityEntry("responses_http", "unspecified", true)))
+			if source == "manual" {
+				account = billingManualAccount()
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, billingApplicabilityEntry("responses_http", "unspecified", true)), at)
+				require.NoError(t, err)
+			}
+			account.GroupIDs = []int64{41}
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 41, threshold: 0.5})
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://relay.example/v1/responses", bytes.NewBufferString(`{"model":"gpt-fixture","input":"hello"}`))
+			require.NoError(t, err)
+			svc := &OpenAIGatewayService{}
+			req, err = svc.guardOpenAIProfitRequest(req, account)
+			require.NoError(t, err, "entry admission has valid evidence")
+			if source == "manual" {
+				stored := account.Extra[UpstreamBillingManualApplicabilityExtraKey].(upstreamBillingManualApplicability)
+				stored.ExpiresAt = time.Now().Add(-time.Second)
+				account.Extra[UpstreamBillingManualApplicabilityExtraKey] = stored
+			} else {
+				snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+				snapshot.Data[upstreamBillingApplicabilityKey].(map[string]any)["expires_at"] = time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)
+				account.Extra[UpstreamBillingProbeExtraKey] = snapshot
+			}
+			// No HTTPUpstream is installed: a stale physical attempt must stop before
+			// transport, submission accounting, or supplier-fault attribution.
+			response, err := svc.doOpenAIProxyAttempt(req, account, runtimeProxyEgress{})
+			require.Nil(t, response)
+			var denied *OpenAITurnAdmissionError
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, "profit_upstream_scope_expired", denied.Reason)
+			require.False(t, IsOpenAIInitialAdmissionRejection(err))
+		})
+	}
 }

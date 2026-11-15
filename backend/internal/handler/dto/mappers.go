@@ -250,6 +250,9 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	}
 	redactedCreds, credsStatus := RedactCredentials(a.Credentials)
 	extra := redactAccountManagedExtra(a.Extra)
+	if view := service.UpstreamBillingManualApplicabilityView(a, time.Now()); view != nil {
+		extra[service.UpstreamBillingManualApplicabilityExtraKey] = view
+	}
 	var ollamaCloudUsage *service.OllamaCloudUsageState
 	if state := service.OllamaCloudUsageStateFromAccount(a); state.Eligible {
 		ollamaCloudUsage = state

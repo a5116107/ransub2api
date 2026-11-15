@@ -349,6 +349,22 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
 }
 
 describe('EditAccountModal', () => {
+  it('sends explicit manual applicability through the existing save only after confirmation', async () => {
+    const account = buildAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await flushPromises()
+    await wrapper.get('[data-testid="manual-edit"]').setValue(true)
+    await wrapper.get('[data-testid="manual-version"]').setValue('contract-1')
+    await wrapper.get('[data-testid="manual-reason"]').setValue('reviewed supplier terms')
+    await wrapper.get('[data-testid="manual-model"]').setValue('wire-fixture')
+    await wrapper.get('[data-testid="manual-confirm"]').setValue(true)
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledWith(account.id, expect.objectContaining({ upstream_billing_manual_applicability: expect.objectContaining({ expected_revision: '', source_version: 'contract-1', confirm_current_binding: true }) }))
+  })
+
   it.each(['active', 'error'])('omits unchanged OpenAI OAuth status %s from an unrelated edit', async (status) => {
     const account = { ...buildOpenAIOAuthParentAccount(), status }
     updateAccountMock.mockReset().mockResolvedValue(account)
