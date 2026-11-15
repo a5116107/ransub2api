@@ -49,6 +49,7 @@ type inputEntry struct {
 	Accounts      []inputAccount      `json:"accounts"`
 	UserOverrides map[string]*float64 `json:"user_overrides"`
 	Models        []string            `json:"models"`
+	RequestScopes []json.RawMessage   `json:"request_scopes"`
 }
 
 type inputDoc struct {
@@ -92,7 +93,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("利润门预演 @ %s（U=本次有效上游倍率；自动同步要求有效快照并重算高峰）\n", evalAt.Format(time.RFC3339))
+	fmt.Printf("利润门预演 @ %s（账号级价格筛选；不代表模型/fast、健康或缓存资格）\n", evalAt.Format(time.RFC3339))
 	for _, report := range reports {
 		fmt.Printf("\n== 分组 %d %s [%s] ==\n", report.GroupID, report.GroupName, report.Platform)
 		fmt.Printf("  利润门生效=%v 假定启用=%v | 默认 D=%.4f 阈值=%.4f | 最低有效 D=%.4f 阈值=%.4f\n",
@@ -135,7 +136,7 @@ func main() {
 		}
 		sort.Strings(models)
 		for _, model := range models {
-			fmt.Printf("  模型 %-20s 利润门准入账号: 默认D=%d 最低有效D=%d\n",
+			fmt.Printf("  模型 %-20s 账号级价格筛选: 默认D=%d 最低有效D=%d（非scope资格）\n",
 				model, report.RemainingByModel[model], report.RemainingByModelMinD[model])
 		}
 		for _, model := range modelsWithZeroRemaining(report) {
@@ -143,6 +144,14 @@ func main() {
 		}
 		for _, model := range modelsWithZeroRemainingUnderMinD(report) {
 			fmt.Printf("  警告: 模型 %s 在最低有效D（存在低倍率用户覆盖）下利润门准入账号为 0\n", model)
+		}
+		if len(report.ScopeVerdicts) > 0 {
+			fmt.Println("  精确scope预演（不含健康/缓存资格或实际发送证明）：")
+			for _, verdict := range report.ScopeVerdicts {
+				fmt.Printf("    账号%d %s -> %s %s/%s/%s 适用=%s 价格=%s 默认D=%v 最低D=%v 原因=%s\n",
+					verdict.AccountID, verdict.PublicModel, verdict.Scope.Model, verdict.Scope.Protocol, verdict.Scope.ServiceTier, verdict.Scope.ReasoningEffort,
+					verdict.Applicability, verdict.PriceClass, verdict.Admitted, verdict.AdmittedUnderMinD, verdict.Reason)
+			}
 		}
 	}
 }
@@ -178,7 +187,11 @@ func parsePreviewInputs(raw []byte, assumeEnabled bool) ([]service.ProfitPreview
 			PeakRateMultiplier:   entry.Group.PeakRateMultiplier,
 		}
 		accounts := make([]*service.Account, 0, len(entry.Accounts))
+		accountIDs := make(map[int64]bool, len(entry.Accounts))
 		for _, a := range entry.Accounts {
+			if len(entry.RequestScopes) > 0 && accountIDs[a.ID] {
+				return nil, fmt.Errorf("request_scopes has ambiguous account %d in group %d", a.ID, entry.Group.ID)
+			}
 			account := &service.Account{
 				ID:                  a.ID,
 				Name:                a.Name,
@@ -196,6 +209,21 @@ func parsePreviewInputs(raw []byte, assumeEnabled bool) ([]service.ProfitPreview
 				account.Credentials = map[string]any{"model_mapping": mapping}
 			}
 			accounts = append(accounts, account)
+			accountIDs[account.ID] = true
+		}
+		if len(entry.RequestScopes) > 4096 {
+			return nil, fmt.Errorf("too many request_scopes in group %d", entry.Group.ID)
+		}
+		requests := make([]service.ProfitPreviewRequestScope, 0, len(entry.RequestScopes))
+		for _, rawRequest := range entry.RequestScopes {
+			request, err := service.ParseProfitPreviewRequestScope(rawRequest)
+			if err != nil {
+				return nil, fmt.Errorf("invalid request_scope in group %d: %w", entry.Group.ID, err)
+			}
+			if request.AccountID <= 0 || !accountIDs[request.AccountID] || strings.TrimSpace(request.PublicModel) == "" {
+				return nil, fmt.Errorf("request_scope needs an existing account and public_model in group %d", entry.Group.ID)
+			}
+			requests = append(requests, request)
 		}
 		overrides := make(map[int64]float64, len(entry.UserOverrides))
 		for userID, rate := range entry.UserOverrides {
@@ -212,6 +240,7 @@ func parsePreviewInputs(raw []byte, assumeEnabled bool) ([]service.ProfitPreview
 			Accounts:      accounts,
 			UserOverrides: overrides,
 			Models:        entry.Models,
+			RequestScopes: requests,
 			AssumeEnabled: assumeEnabled,
 		})
 	}

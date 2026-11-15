@@ -179,18 +179,34 @@ func guardUpstreamBillingApplicability(account *Account, scope *AvailabilityRequ
 	if snapshot == nil {
 		return nil // The existing rate gate owns missing-snapshot rejection.
 	}
-	declaration, present := upstreamBillingApplicabilityFromData(snapshot.Data)
-	if !present {
+	if _, present := snapshot.Data[upstreamBillingApplicabilityKey]; !present {
 		return nil // Legacy routing remains compatible, not qualified for managed supply.
 	}
-	if _, reason := profitControlAccountRateAt(account, time.Now()); reason != "" {
+	if _, reason := upstreamBillingScopeVerdictAt(account, scope, time.Now()); reason != "" {
 		return denyOpenAITurn(reason)
 	}
-	status := declaration.verdict(scope, time.Now())
-	if status != "covered" {
-		return denyOpenAITurn("profit_upstream_scope_" + status)
-	}
 	return nil
+}
+
+// The offline preview and final send consume one contract at one explicit
+// instant. Legacy/manual routing compatibility is NOT strict scope evidence.
+func upstreamBillingScopeVerdictAt(account *Account, scope *AvailabilityRequestScope, at time.Time) (string, string) {
+	if account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+		return "not_declared", "profit_upstream_scope_not_declared"
+	}
+	if _, reason := profitControlAccountRateAt(account, at); reason != "" {
+		return "unavailable", reason
+	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	declaration, present := upstreamBillingApplicabilityFromData(snapshot.Data)
+	if !present {
+		return "not_declared", "profit_upstream_scope_not_declared"
+	}
+	status := declaration.verdict(scope, at)
+	if status != "covered" {
+		return status, "profit_upstream_scope_" + status
+	}
+	return status, ""
 }
 
 func guardUpstreamBillingHTTPApplicability(account *Account, request *http.Request) error {

@@ -5,9 +5,15 @@ package service
 // 自动同步的 API Key 复用线上快照有效性与实时高峰规则；手工账号使用保存倍率。
 
 import (
+	"encoding/json"
+	"errors"
 	"math"
+	"net/http"
+	"net/url"
 	"sort"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -33,9 +39,63 @@ type ProfitPreviewGroupInput struct {
 	UserOverrides map[int64]float64
 	// Models 为该分组近期主力模型清单。
 	Models []string
+	// RequestScopes are explicit final wire scopes, never inferred from the
+	// public model or an account-level price. No prompt/credential is accepted.
+	RequestScopes []ProfitPreviewRequestScope
 	// AssumeEnabled 在分组当前关闭时仍按其保存配置启用利润门，供部署前执行
 	// “先关组、预演、逐组重开”。
 	AssumeEnabled bool
+}
+
+type ProfitPreviewRequestScope struct {
+	AccountID   int64                    `json:"account_id"`
+	PublicModel string                   `json:"public_model"`
+	Scope       AvailabilityRequestScope `json:"scope"`
+}
+
+type ProfitPreviewScopeVerdict struct {
+	ProfitPreviewRequestScope
+	Applicability     string `json:"applicability"`
+	PriceClass        string `json:"price_class"`
+	Reason            string `json:"reason,omitempty"`
+	Admitted          bool   `json:"admitted"`
+	AdmittedUnderMinD bool   `json:"admitted_under_min_d"`
+}
+
+func ParseProfitPreviewRequestScope(raw []byte) (ProfitPreviewRequestScope, error) {
+	var request ProfitPreviewRequestScope
+	top := gjson.ParseBytes(raw)
+	selectors, selectorsValid := availabilityJSONObject(top)
+	if !gjson.ValidBytes(raw) || !selectorsValid || len(selectors) != 3 {
+		return request, errors.New("invalid request_scope")
+	}
+	for _, name := range []string{"account_id", "public_model", "scope"} {
+		if _, present := selectors[name]; !present {
+			return request, errors.New("unknown or missing request_scope selector")
+		}
+	}
+	if !decodeBillingApplicabilityFields(top, &request, "account_id", "public_model", "scope") {
+		return request, errors.New("invalid request_scope")
+	}
+	fields, valid := availabilityJSONObject(top.Get("scope"))
+	allowed := map[string]bool{
+		"version": true, "protocol": true, "stream": true, "model": true,
+		"service_tier": true, "reasoning_effort": true, "capability": true,
+		"thinking_mode": true, "thinking_budget": true, "protocol_options": true,
+	}
+	if !valid || len(fields) == 0 || len(fields) > len(allowed) {
+		return ProfitPreviewRequestScope{}, errors.New("invalid request_scope.scope")
+	}
+	for name := range fields {
+		if !allowed[name] {
+			return ProfitPreviewRequestScope{}, errors.New("unknown request_scope.scope field")
+		}
+	}
+	if !decodeBillingApplicabilityFields(top.Get("scope"), &request.Scope,
+		"version", "protocol", "stream", "model", "service_tier", "reasoning_effort", "capability", "thinking_mode", "thinking_budget", "protocol_options") {
+		return ProfitPreviewRequestScope{}, errors.New("invalid request_scope.scope")
+	}
+	return request, nil
 }
 
 // 预演账号分类与线上否决原因一一对应。
@@ -82,7 +142,9 @@ type ProfitPreviewGroupReport struct {
 	// RemainingByModel 仅表示利润门准入账号数，不模拟健康、冷却、限流或槽位。
 	RemainingByModel     map[string]int                `json:"profit_admitted_by_model"`
 	RemainingByModelMinD map[string]int                `json:"profit_admitted_by_model_min_d"`
+	ModelCountsScope     string                        `json:"model_counts_scope"`
 	Verdicts             []ProfitPreviewAccountVerdict `json:"verdicts"`
+	ScopeVerdicts        []ProfitPreviewScopeVerdict   `json:"scope_verdicts,omitempty"`
 }
 
 // PreviewProfitAdmission 对五大平台分组推演利润门准入结果。未启用的分组仅在
@@ -103,10 +165,17 @@ func PreviewProfitAdmission(inputs []ProfitPreviewGroupInput, evalAt time.Time) 
 			AssumedEnabled:       in.AssumeEnabled && !group.ProfitControlEnabled && effectiveGate,
 			RemainingByModel:     make(map[string]int, len(in.Models)),
 			RemainingByModelMinD: make(map[string]int, len(in.Models)),
+			ModelCountsScope:     "account_price_only",
 		}
 		for _, model := range in.Models {
 			report.RemainingByModel[model] = 0
 			report.RemainingByModelMinD[model] = 0
+		}
+		accountsByID := make(map[int64]*Account, len(in.Accounts))
+		for _, account := range in.Accounts {
+			if account != nil {
+				accountsByID[account.ID] = account
+			}
 		}
 
 		peak := group.PeakMultiplierAt(evalAt)
@@ -151,10 +220,76 @@ func PreviewProfitAdmission(inputs []ProfitPreviewGroupInput, evalAt time.Time) 
 			sort.Strings(verdict.SupportedModels)
 			report.Verdicts = append(report.Verdicts, verdict)
 		}
+		for _, request := range in.RequestScopes {
+			report.ScopeVerdicts = append(report.ScopeVerdicts, previewProfitRequestScope(accountsByID[request.AccountID], request, group.ID, effectiveGate, thresholdDefault, thresholdMinD, evalAt))
+		}
 		sort.Slice(report.Verdicts, func(i, j int) bool { return report.Verdicts[i].AccountID < report.Verdicts[j].AccountID })
 		reports = append(reports, report)
 	}
 	return reports
+}
+
+func previewProfitRequestScope(account *Account, request ProfitPreviewRequestScope, groupID int64, enabled bool, threshold, minThreshold float64, at time.Time) ProfitPreviewScopeVerdict {
+	result := ProfitPreviewScopeVerdict{ProfitPreviewRequestScope: request, Applicability: "unknown"}
+	if account == nil {
+		result.Reason = "account_unavailable"
+		return result
+	}
+	price := previewAccountProfitAdmission(account, enabled, threshold, minThreshold, at)
+	result.PriceClass = price.Class
+	if !profitPreviewScopeShapeKnown(request.Scope) {
+		result.Reason = "profit_upstream_scope_unknown"
+		return result
+	}
+	result.Applicability, result.Reason = upstreamBillingScopeVerdictAt(account, &request.Scope, at)
+	switch {
+	case !enabled:
+		result.Reason = "profit_gate_disabled"
+	case request.PublicModel == "" || !account.IsModelSupportedInGroup(&groupID, request.PublicModel):
+		result.Reason = "model_not_supported"
+	case AvailabilityModelForAccount(account, request.PublicModel) != request.Scope.Model:
+		result.Reason = "model_mapping_unconfirmed"
+	case price.Class != ProfitPreviewClassAdmitted:
+		result.Reason = price.Class
+	case result.Applicability == "covered":
+		result.Admitted = true
+		result.AdmittedUnderMinD = !price.RejectedUnderMinD
+	}
+	return result
+}
+
+// Validate the supplied descriptor with the existing wire parser, rather than
+// keeping a second list of accepted tier/effort options. This constructs no
+// generation request and supplies no evidence of a real upstream send.
+func profitPreviewScopeShapeKnown(scope AvailabilityRequestScope) bool {
+	body := map[string]any{"model": scope.Model, "stream": scope.Stream}
+	method, scheme, path := http.MethodPost, "https", "/v1/responses"
+	switch scope.Protocol {
+	case "responses_http":
+	case "responses_ws_v2":
+		method, scheme = http.MethodGet, "wss"
+		body["type"] = "response.create"
+	case "chat_http":
+		path = "/v1/chat/completions"
+	default:
+		return false
+	}
+	if scope.ServiceTier != "unspecified" {
+		body["service_tier"] = scope.ServiceTier
+	}
+	if scope.ReasoningEffort != "unspecified" {
+		if scope.Protocol == "chat_http" {
+			body["reasoning_effort"] = scope.ReasoningEffort
+		} else {
+			body["reasoning"] = map[string]any{"effort": scope.ReasoningEffort}
+		}
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return false
+	}
+	parsed := availabilityScopeForRequest(&http.Request{Method: method, URL: &url.URL{Scheme: scheme, Host: "preview.invalid", Path: path}, Header: make(http.Header)}, payload)
+	return parsed != nil && *parsed == scope
 }
 
 func previewAccountProfitAdmission(

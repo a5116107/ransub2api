@@ -1,12 +1,42 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestParsePreviewInputsPreservesFinalRequestScopes(t *testing.T) {
+	input := `{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":1,"profit_control_enabled":true},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.2}],"request_scopes":[{"account_id":2,"public_model":"public-fixture","scope":{"version":2,"protocol":"responses_http","model":"wire-fixture","stream":false,"service_tier":"priority","reasoning_effort":"high","capability":"text"}}]}]}`
+	inputs, err := parsePreviewInputs([]byte(input), false)
+	require.NoError(t, err)
+	reports := service.PreviewProfitAdmission(inputs, time.Now())
+	raw, err := json.Marshal(reports[0])
+	require.NoError(t, err)
+	var report map[string]any
+	require.NoError(t, json.Unmarshal(raw, &report))
+	require.NotEmpty(t, report["scope_verdicts"], "explicit final scopes must not disappear into account-only counts")
+}
+
+func TestParsePreviewInputsRejectsAmbiguousRequestScopes(t *testing.T) {
+	for _, scope := range []string{
+		`{"account_id":2,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"wire","service_tier":"priority","reasoning_effort":"high","capability":"text","unknown_price_option":true}}`,
+		`{"account_id":99,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"wire","service_tier":"priority","reasoning_effort":"high","capability":"text"}}`,
+		`{"account_id":2,"public_model":"fixture","PUBLIC_MODEL":"fixture","scope":{"version":2,"protocol":"responses_http","model":"wire","service_tier":"priority","reasoning_effort":"high","capability":"text"}}`,
+	} {
+		input := `{"groups":[{"group":{"id":1,"platform":"openai"},"accounts":[{"id":2}],"request_scopes":[` + scope + `]}]}`
+		_, err := parsePreviewInputs([]byte(input), false)
+		require.Error(t, err, "unknown options or an absent target account are not an exact preview")
+	}
+	var err error
+	_, err = service.ParseProfitPreviewRequestScope([]byte(`{"account_id":2,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"wire","capability":"text","model":"other"}}`))
+	require.Error(t, err, "differing duplicate selectors cannot choose the billed model")
+	_, err = parsePreviewInputs([]byte(`{"groups":[{"group":{"id":1,"platform":"openai"},"accounts":[{"id":2},{"id":2}],"request_scopes":[{"account_id":2,"public_model":"fixture","scope":{}}]}]}`), false)
+	require.ErrorContains(t, err, "ambiguous account")
+}
 
 func TestParsePreviewInputsIgnoresNullUserOverride(t *testing.T) {
 	raw := []byte(`{
