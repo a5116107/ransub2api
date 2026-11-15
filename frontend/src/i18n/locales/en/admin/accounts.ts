@@ -449,6 +449,19 @@ export default {
         }
       },
       upstreamBilling: {
+        applicability: {
+          title: 'Model / fast rate applicability',
+          hint: 'Supplier-declared group-rate applicability only; not model verification, actual billing proof, or current scheduling eligibility. Legacy suppliers remain compatible but are not qualified for managed supply.',
+          source: 'Declaration: {source} · version: {version}',
+          expires: 'Declaration expires: {value}',
+          covered: 'Declared applicable',
+          excluded: 'Explicitly excluded',
+          unknown: 'Uncovered / unconfirmed',
+          conflict: 'Conflicting · held',
+          invalid: 'Invalid declaration · held',
+          expired: 'Declaration expired',
+          unavailable: 'Rate evidence unavailable'
+        },
         newAPI: {
           upstreamVerificationFailed: "The upstream query could not be completed. Check site connectivity, the user ID, and the access token, including permission to read the wallet and complete token inventory.",
           keyNotOwned: "This account API key was not found in this user token inventory.",

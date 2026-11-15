@@ -814,6 +814,8 @@ func upstreamBillingRateSnapshotFromResult(
 			reason = "invalid_response"
 		} else if !upstreamBillingRequestGroupConfirmed(account, data) {
 			reason = "group_selection_unconfirmed"
+		} else if previous := decodeUpstreamBillingProbeSnapshot(account.Extra); previous != nil && upstreamBillingApplicabilityReplay(previous.Data, data) {
+			reason = "applicability_declaration_replayed"
 		}
 	}
 	if reason != "" {
@@ -1009,6 +1011,7 @@ func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
 	if !equalBillingMultiplier(*response.EffectiveRateMultiplier, *response.ResolvedRateMultiplier*appliedPeak) {
 		return nil, fmt.Errorf("inconsistent effective billing multiplier")
 	}
+	parseUpstreamBillingApplicabilityResponse(body, data, observedAt)
 	return data, nil
 }
 

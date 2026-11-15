@@ -167,6 +167,15 @@ func (s *OpenAIGatewayService) doOpenAIProxyAttempt(req *http.Request, account *
 			return nil, err
 		}
 	}
+	if gatewayProfitControlGateActive(req.Context()) && account != nil && account.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(account) {
+		// RPM/metering waits and proxy retries are physical send boundaries.
+		// Re-read the authority, including newly added or expired applicability,
+		// instead of reusing entry admission across those waits.
+		req, err = s.guardOpenAIProfitRequest(req, account)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := controlledSubmission(req.Context(), "native_http"); err != nil {
 		return nil, err
 	}

@@ -12,6 +12,54 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProbeApplicabilityCASAndCredentialInvalidation(t *testing.T) {
+	ctx := t.Context()
+	tx := testEntTx(t)
+	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+	rate := 0.4
+	account := mustCreateAccount(t, tx.Client(), &service.Account{
+		Name: "probe-applicability-cas", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "fixture-v1"}, RateMultiplier: &rate,
+		Extra: map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true, service.UpstreamBillingRateSyncEnabledExtraKey: true},
+	})
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	makeSnapshot := func(version string, observed time.Time) *service.UpstreamBillingProbeSnapshot {
+		until := observed.Add(10 * time.Minute)
+		return &service.UpstreamBillingProbeSnapshot{Status: "ok", LastAttemptAt: observed, ReceivedAt: &observed, FreshUntil: &until,
+			Data: map[string]any{"object": "sub2api.key_billing", "schema_version": 1, "billing_scope": "token",
+				"group_rate_multiplier": rate, "resolved_rate_multiplier": rate, "effective_rate_multiplier": rate,
+				"peak_rate_enabled": false, "observed_at": observed.Format(time.RFC3339Nano),
+				"rate_applicability": map[string]any{"schema_version": 1, "source": "sub2api.key_billing", "source_version": version,
+					"observed_at": observed.Format(time.RFC3339Nano), "expires_at": until.Format(time.RFC3339Nano),
+					"entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "priority",
+						"reasoning_effort": "unspecified", "context": "all", "group_rate_applies": false, "conclusion": "excluded"}}}}}
+	}
+	initial, err := repo.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	require.NoError(t, repo.UpdateUpstreamBillingProbeSnapshot(ctx, initial, makeSnapshot("v1", at), &rate))
+	stale, err := repo.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	current, err := repo.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	require.NoError(t, repo.UpdateUpstreamBillingProbeSnapshot(ctx, current, makeSnapshot("v2", at.Add(time.Second)), &rate))
+	require.ErrorIs(t, repo.UpdateUpstreamBillingProbeSnapshot(ctx, stale, makeSnapshot("v1-late", at), &rate), service.ErrUpstreamBillingProbeIdentityChanged)
+	got, err := repo.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	items := service.BuildUpstreamBillingRateSnapshotItems([]service.Account{*got})
+	require.Len(t, items, 1)
+	declaration := items[0].Snapshot.Data["rate_applicability"].(map[string]any)
+	require.Equal(t, "v2", declaration["source_version"])
+	entry := declaration["entries"].([]any)[0].(map[string]any)
+	require.Equal(t, false, entry["group_rate_applies"], "explicit exception survives JSONB round trip")
+	require.Equal(t, "excluded", entry["conclusion"])
+	got.Credentials["api_key"] = "fixture-v2"
+	require.NoError(t, repo.Update(ctx, got))
+	require.ErrorIs(t, repo.UpdateUpstreamBillingProbeSnapshot(ctx, current, makeSnapshot("v2-late", at), &rate), service.ErrUpstreamBillingProbeIdentityChanged)
+	rotated, err := repo.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	require.NotContains(t, rotated.Extra, service.UpstreamBillingProbeExtraKey, "credential replacement invalidates price applicability with its parent snapshot")
+}
+
 func TestAccountUpdatePreservesConcurrentProbeSnapshot(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)

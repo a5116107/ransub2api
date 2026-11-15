@@ -14,12 +14,13 @@ const (
 	ProfitPreviewRateSourceManual        = "manual"
 	ProfitPreviewRateSourceUpstreamProbe = "upstream_probe_sync"
 
-	ProfitPreviewWarningProbeMissing     = "probe_snapshot_missing"
-	ProfitPreviewWarningProbeStale       = "probe_snapshot_stale"
-	ProfitPreviewWarningProbeFailed      = "probe_failed"
-	ProfitPreviewWarningProbeUnsupported = "probe_unsupported"
-	ProfitPreviewWarningProbeInvalid     = "probe_rate_evidence_invalid"
-	ProfitPreviewWarningManualRateOne    = "manual_rate_1_suspected_unmaintained"
+	ProfitPreviewWarningProbeMissing      = "probe_snapshot_missing"
+	ProfitPreviewWarningProbeStale        = "probe_snapshot_stale"
+	ProfitPreviewWarningProbeFailed       = "probe_failed"
+	ProfitPreviewWarningProbeUnsupported  = "probe_unsupported"
+	ProfitPreviewWarningProbeInvalid      = "probe_rate_evidence_invalid"
+	ProfitPreviewWarningScopeNotEvaluated = "probe_request_scope_not_evaluated"
+	ProfitPreviewWarningManualRateOne     = "manual_rate_1_suspected_unmaintained"
 )
 
 // ProfitPreviewGroupInput 是一个分组的预演输入。
@@ -172,6 +173,13 @@ func previewAccountProfitAdmission(
 	if account.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(account) {
 		verdict.RateSource = ProfitPreviewRateSourceUpstreamProbe
 		verdict.Warnings = append(verdict.Warnings, profitPreviewProbeWarnings(account, evalAt)...)
+		if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil {
+			if _, present := snapshot.Data[upstreamBillingApplicabilityKey]; present {
+				// This preview has no prepared protocol/tier/effort/context.
+				// An account-level price verdict must not claim wire qualification.
+				verdict.Warnings = append(verdict.Warnings, ProfitPreviewWarningScopeNotEvaluated)
+			}
+		}
 	} else if account.RateMultiplier != nil && *account.RateMultiplier == 1 {
 		verdict.Warnings = append(verdict.Warnings, ProfitPreviewWarningManualRateOne)
 	}

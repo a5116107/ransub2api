@@ -547,6 +547,9 @@ func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account
 	if err := checkOpenAIWSBillingHandshake(ctx, account, b.billingHandshake); err != nil {
 		return err
 	}
+	if err := guardUpstreamBillingWSApplicability(ctx, account, b, payload); err != nil {
+		return err
+	}
 	if !isOpenAICodexTicketAccount(account) || !s.openAICodexTicketEnabled() ||
 		!s.openAICodexTicketConfig().FailClosed || !s.openAICodexTicketGatedModel(model) {
 		return nil

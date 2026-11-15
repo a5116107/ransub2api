@@ -59,6 +59,55 @@ const billingData = {
 }
 
 describe('UpstreamBillingRateCell', () => {
+  const scopeAccount = (conclusion: 'covered' | 'excluded' | 'unknown' | 'conflict' = 'covered'): Account => makeAccount({ extra: {
+    upstream_billing_probe: {
+      status: 'ok', received_at: '2026-07-13T00:00:00Z', fresh_until: '2026-07-13T01:00:00Z',
+      last_attempt_at: '2026-07-13T00:00:00Z', next_probe_at: '2026-07-13T00:30:00Z',
+      data: { ...billingData, rate_applicability: {
+        schema_version: 1, source: 'sub2api.key_billing', source_version: 'fixture-1',
+        observed_at: '2026-07-13T00:00:00Z', expires_at: '2026-07-13T00:40:00Z',
+        entries: [{ model: 'gpt-fixture', protocol: 'responses_http', service_tier: 'priority',
+          reasoning_effort: 'unspecified', context: 'all', group_rate_applies: conclusion === 'covered', conclusion }]
+      } }
+    }
+  } })
+
+  it.each(['covered', 'excluded', 'unknown', 'conflict'] as const)('shows the server %s conclusion with exact scope and provenance', (conclusion) => {
+    const wrapper = mount(UpstreamBillingRateCell, { props: { account: scopeAccount(conclusion), now: Date.parse('2026-07-13T00:30:00Z') } })
+    const scope = wrapper.get('[data-testid="upstream-billing-applicability"]')
+    expect(scope.text()).toContain('sub2api.key_billing,fixture-1')
+    expect(scope.text()).toContain('gpt-fixture')
+    expect(scope.text()).toContain('responses_http · priority · unspecified · all')
+    expect(scope.get('[data-testid="upstream-scope-conclusion"]').text()).toBe(`admin.accounts.upstreamBilling.applicability.${conclusion}`)
+    expect(scope.find('summary').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('expires the declaration at its own boundary, independently of the group rate', async () => {
+    const wrapper = mount(UpstreamBillingRateCell, { props: { account: scopeAccount(), now: Date.parse('2026-07-13T00:39:59Z') } })
+    expect(wrapper.get('[data-testid="upstream-scope-conclusion"]').text()).toContain('.covered')
+    await wrapper.setProps({ now: Date.parse('2026-07-13T00:40:00Z') })
+    expect(wrapper.get('[data-testid="upstream-scope-conclusion"]').text()).toContain('.expired')
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).not.toContain('.stale')
+    const account = scopeAccount()
+    account.extra!.upstream_billing_probe!.status = 'failed'
+    await wrapper.setProps({ account, now: Date.parse('2026-07-13T00:30:00Z') })
+    expect(wrapper.get('[data-testid="upstream-scope-conclusion"]').text()).toContain('.unavailable')
+    wrapper.unmount()
+  })
+
+  it('keeps invalid declarations distinct from suppliers without this capability', async () => {
+    const account = scopeAccount()
+    account.extra!.upstream_billing_probe!.data!.rate_applicability = null
+    const wrapper = mount(UpstreamBillingRateCell, { props: { account, now: Date.parse('2026-07-13T00:30:00Z') } })
+    expect(wrapper.get('[data-testid="upstream-scope-missing"]').text()).toContain('.invalid')
+    const legacy = scopeAccount()
+    delete legacy.extra!.upstream_billing_probe!.data!.rate_applicability
+    await wrapper.setProps({ account: legacy })
+    expect(wrapper.get('[data-testid="upstream-scope-missing"]').text()).toContain('.unknown')
+    wrapper.unmount()
+  })
+
   it('shows every upstream group rate and pauses scalar synchronization', async () => {
     const now = Date.parse('2026-07-13T00:30:00Z')
     const wrapper = mount(UpstreamBillingRateCell, { props: {

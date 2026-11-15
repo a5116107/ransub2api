@@ -286,6 +286,19 @@ export default {
         }
       },
       upstreamBilling: {
+        applicability: {
+          title: '模型 / fast 倍率适用范围',
+          hint: '仅表示供应商声明的分组倍率适用性，不代表模型验真、实际扣费或当前可调度。未声明的旧上游保持兼容，但不构成受管池资格。',
+          source: '声明来源：{source} · 版本：{version}',
+          expires: '声明到期：{value}',
+          covered: '声明适用',
+          excluded: '明确不适用',
+          unknown: '未覆盖 / 待确认',
+          conflict: '声明冲突 · 暂不放行',
+          invalid: '声明无效 · 暂不放行',
+          expired: '声明过期 · 待更新',
+          unavailable: '倍率证据失效 · 待恢复'
+        },
         newAPI: {
           upstreamVerificationFailed: "无法完成上游查询。请检查站点是否可访问、用户 ID 和访问令牌是否有效，以及令牌是否允许查询钱包和完整令牌列表。",
           keyNotOwned: "该账号的 API Key 未出现在此用户的令牌列表中。",

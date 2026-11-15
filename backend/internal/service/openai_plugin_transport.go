@@ -83,6 +83,17 @@ func checkOpenAIWSBillingHandshake(ctx context.Context, account *Account, bindin
 // guardUpstreamBillingRequest ties automatically synced rates to the actual
 // prepared request. Callers retain their existing authoritative account checks.
 func guardUpstreamBillingRequest(ctx context.Context, account *Account, request *http.Request) (context.Context, error) {
+	ctx, err := guardUpstreamBillingTarget(ctx, account, request)
+	if err != nil || account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
+		return ctx, err
+	}
+	if err := guardUpstreamBillingHTTPApplicability(account, request); err != nil {
+		return ctx, err
+	}
+	return ctx, nil
+}
+
+func guardUpstreamBillingTarget(ctx context.Context, account *Account, request *http.Request) (context.Context, error) {
 	if account == nil || account.Type != AccountTypeAPIKey || !upstreamBillingRateSyncEnabled(account) {
 		return ctx, nil
 	}
@@ -121,7 +132,7 @@ func guardOpenAIWSBillingHandshake(ctx context.Context, account *Account, target
 		return ctx, denyOpenAITurn(openAIProfitFilterReasonUpstreamRateUnavailable)
 	}
 	request := &http.Request{Method: http.MethodPost, URL: u, Host: headers.Get("Host"), Header: headers}
-	return guardUpstreamBillingRequest(ctx, account, request)
+	return guardUpstreamBillingTarget(ctx, account, request)
 }
 
 // guardOpenAIProfitRequest shares the authoritative final account and billing

@@ -1137,6 +1137,25 @@ export interface TempUnschedulableStatus {
   state?: TempUnschedulableState
 }
 
+export interface UpstreamBillingApplicabilityEntry {
+  model: string
+  protocol: string
+  service_tier: string
+  reasoning_effort: string
+  context: string
+  group_rate_applies: boolean | null
+  conclusion: 'covered' | 'excluded' | 'unknown' | 'conflict'
+}
+
+export interface UpstreamBillingApplicability {
+  schema_version: 1
+  source: 'sub2api.key_billing'
+  source_version: string
+  observed_at: string
+  expires_at: string
+  entries: UpstreamBillingApplicabilityEntry[]
+}
+
 export interface UpstreamBillingData {
   object: 'sub2api.key_billing' | 'new_api.group_billing'
   schema_version: 1 | 2
@@ -1155,6 +1174,8 @@ export interface UpstreamBillingData {
   effective_rate_multiplier?: number
   timezone?: string
   observed_at: string
+  // Absent: legacy supplier. Null: explicitly invalid/unknown declaration.
+  rate_applicability?: UpstreamBillingApplicability | null
   billing_mode?: 'multi_group'
   min_rate_multiplier?: number
   max_rate_multiplier?: number
