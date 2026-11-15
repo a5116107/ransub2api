@@ -35,3 +35,36 @@ describe('upstream channel definition', () => {
   w.unmount()
  })
 })
+
+
+describe('upstream raw cache monitoring', () => {
+ const base = { scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], total: 0, catalog: [] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} }
+ const summary = { requests:4, observed_requests:2, unknown_requests:2,unattributed_requests:1,hit_requests:1,input_tokens:1000,read_tokens:100,coverage:0.5,request_hit_rate:0.5,token_read_rate:0.1,latest_sample_at:'2026-11-15T00:00:00Z' }
+ it('separates weighted raw token, request hit and coverage from historical billing', async () => {
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,retention_days:30,rows:[{...summary,account_id:42,credential_fingerprint:'a'.repeat(64),route_fingerprint:'b'.repeat(64),public_model:'requested',upstream_model:'wire-model',protocol:'responses',transport:'http',upstream_group_status:'not_observed',service_tier:'priority',reasoning_effort:'high'}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="upstream-cache-token-rate"]').text()).toBe('10.0%')
+  expect(w.get('[data-testid="upstream-cache-request-rate"]').text()).toBe('50.0%')
+  expect(w.get('[data-testid="upstream-cache-coverage"]').text()).toBe('50.0%')
+  expect(w.get('[data-testid="upstream-cache-status"]').text()).toContain('upstreamOps.rawCache.partial')
+  expect(w.get('[data-testid="upstream-cache-row"]').text()).toContain('aaaaaaaaaaaa')
+  expect(w.get('[data-testid="upstream-cache-row"]').text()).toContain('wire-model')
+  expect(w.get('[data-testid="upstream-cache-row"]').text()).toContain('upstreamOps.rawCache.groupUnknown')
+  w.unmount()
+ })
+ it('keeps missing ratios unknown, including explicit zero observation coverage', async () => {
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary:{...summary,observed_requests:0,coverage:0,token_read_rate:null,request_hit_rate:null},total:0,rows:[]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="upstream-cache-token-rate"]').text()).toBe('upstreamOps.unknown')
+  expect(w.get('[data-testid="upstream-cache-coverage"]').text()).toBe('0.0%')
+  expect(w.get('[data-testid="upstream-cache-status"]').text()).toContain('upstreamOps.rawCache.unknown')
+  w.unmount()
+ })
+ it('shows query failure rather than successful zeroes', async () => {
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'query_failed',data:null}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="upstream-raw-cache"]').text()).toContain('upstreamOps.queryFailed')
+  expect(w.find('[data-testid="upstream-cache-token-rate"]').exists()).toBe(false)
+  w.unmount()
+ })
+})

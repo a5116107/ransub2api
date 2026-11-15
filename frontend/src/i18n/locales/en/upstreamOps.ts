@@ -55,5 +55,22 @@ export default {
   "errorNote": "Diagnostic log counts for the current account cohort, excluding count_tokens, do not represent a complete request failure rate. 5xx does not prove degraded intelligence. Only the first 20 error categories are listed.",
   "errorRecords": "Log records",
   "queryFailed": "Query failed; retry. Failure has not been displayed as zero.",
-  "invalidRange": "Choose a valid half-open range of at most 31 days."
+  "invalidRange": "Choose a valid half-open range of at most 31 days.",
+  "rawCache": {
+    "title": "Upstream raw cache reports",
+    "scope": "Final transport credential and route, recorded model/tier/effort, and protocol are kept separate. Totals use canonical wire usage from uniquely attributed, retained billed requests, not rewritten billing buckets. Missing or duplicate traces remain unknown; this excludes unbilled failures and does not prove supplier cache retention or model identity. Current account configuration only selects inventory. Old records are not backfilled; the diagnostic retention is 30 days.",
+    "tokenRate": "Token read share",
+    "requestRate": "Requests with a cache read",
+    "coverage": "Observable coverage",
+    "counts": "{observed} / {total} observed · {unknown} unknown · {unattributed} without final identity",
+    "rowCounts": "{observed} / {total} observed · {read} / {input} input tokens read from cache",
+    "credential": "Credential digest",
+    "groupUnknown": "Actual supplier group: not observed",
+    "route": "Route digest and latest valid sample",
+    "page": "Page {page} · {total} scope rows",
+    "empty": "No requests",
+    "unknown": "Insufficient evidence",
+    "partial": "Partially observed",
+    "observed": "Reports observed"
+  }
 }

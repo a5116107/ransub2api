@@ -55,5 +55,22 @@ export default {
   "errorNote": "留存错误日志仅表示当前账号集合中的诊断记录，排除 count_tokens；不是完整请求失败率。5xx 不能证明降智。仅列前 20 个错误分类。",
   "errorRecords": "日志条数",
   "queryFailed": "查询失败，请重试；未将失败显示为零。",
-  "invalidRange": "请选择不超过31天、结束晚于开始的有效时间范围。"
+  "invalidRange": "请选择不超过31天、结束晚于开始的有效时间范围。",
+  "rawCache": {
+    "title": "上游原始缓存观测",
+    "scope": "按最终传输凭据、线路、已记录模型/服务档/effort及协议分开。统计仅取唯一归属且仍保留的已记用量终态原始usage，不读改写后的计费桶。缺失或多条trace保持未知；不含未记用量的失败，也不证明供应商缓存存活或模型身份。当前账号配置仅用于筛选库存，旧记录不回填；诊断保留30天。",
+    "tokenRate": "Token 缓存读取占比",
+    "requestRate": "请求缓存命中率",
+    "coverage": "可观测覆盖率",
+    "counts": "有效 {observed} / {total} · 未知 {unknown} · 缺最终身份 {unattributed}",
+    "rowCounts": "有效 {observed} / {total} · 缓存读取 {read} / 总输入 {input} Token",
+    "credential": "凭据摘要",
+    "groupUnknown": "实际上游分组：尚未观测",
+    "route": "线路摘要与最近有效样本",
+    "page": "第 {page} 页 · 共 {total} 个范围",
+    "empty": "暂无请求",
+    "unknown": "证据不足",
+    "partial": "部分可观测",
+    "observed": "已观测上报"
+  }
 }

@@ -28,7 +28,40 @@
           <p v-if="!snapshot.usage.rows.length">{{ t('upstreamOps.empty') }}</p>
           <div v-else class="overflow-x-auto"><table class="w-full min-w-[1000px] text-left text-sm"><thead><tr><th class="p-2">{{ t(`upstreamOps.${applied.dimension}`) }}</th><th v-for="key in amountKeys" :key="key" class="p-2">{{ t(`upstreamOps.${key}`) }}</th><th>P50 / P90 / P95 (ms)</th><th>{{ t('upstreamOps.duration') }}</th></tr></thead><tbody><tr v-for="row in snapshot.usage.rows" :key="row.key" class="border-t dark:border-dark-700"><td class="max-w-80 break-all p-2"><button v-if="applied.dimension !== 'model'" class="text-primary-600 underline" data-testid="drill-row" @click="drill(row)">{{ row.name }}</button><span v-else>{{ row.name }}</span></td><td v-for="key in amountKeys" :key="key" class="p-2">{{ key === 'requests' ? row.requests : formatMetric(row,key) }}</td><td>{{ number(row.p50_ms, 0) }} / {{ number(row.p90_ms, 0) }} / {{ number(row.p95_ms, 0) }}<span class="block text-xs">{{ t('upstreamOps.samples') }} {{ row.samples }} / {{ t('upstreamOps.unknown') }} {{ row.unknown_samples }}</span></td><td>{{ number(row.duration_p90_ms,0) }}</td></tr></tbody></table></div>
           <p class="text-xs text-gray-500">{{ t('upstreamOps.latencyNote') }}</p>
-          <div class="flex flex-wrap items-center gap-3"><button class="btn btn-secondary" :disabled="loading || applied.page <= 1" @click="page(-1)">{{ t('upstreamOps.previous') }}</button><span>{{ applied.page }} · {{ snapshot.usage.total }}</span><button class="btn btn-secondary" data-testid="operations-next" :disabled="loading || applied.page * applied.page_size >= Math.max(snapshot.usage.total, snapshot.usage.catalog_total || 0, snapshot.quality.data?.total || 0, applied.upstream || applied.account_id ? snapshot.usage.member_total || 0 : 0)" @click="page(1)">{{ t('upstreamOps.next') }}</button></div>
+          <div class="flex flex-wrap items-center gap-3"><button class="btn btn-secondary" :disabled="loading || applied.page <= 1" @click="page(-1)">{{ t('upstreamOps.previous') }}</button><span>{{ applied.page }} · {{ snapshot.usage.total }}</span><button class="btn btn-secondary" data-testid="operations-next" :disabled="loading || applied.page * applied.page_size >= Math.max(snapshot.usage.total, snapshot.usage.catalog_total || 0, snapshot.quality.data?.total || 0, snapshot.raw_cache?.data?.total || 0, applied.upstream || applied.account_id ? snapshot.usage.member_total || 0 : 0)" @click="page(1)">{{ t('upstreamOps.next') }}</button></div>
+        </section>
+        <section v-if="snapshot.raw_cache" class="card min-w-0 space-y-4 p-4" data-testid="upstream-raw-cache" aria-labelledby="upstream-raw-cache-title">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="upstream-raw-cache-title" class="font-semibold">{{ t('upstreamOps.rawCache.title') }}</h2>
+            <span v-if="snapshot.raw_cache.data" class="rounded-full bg-primary-50 px-3 py-1 text-xs dark:bg-dark-800" data-testid="upstream-cache-status">{{ t(`upstreamOps.rawCache.${cacheStatus(snapshot.raw_cache.data.summary)}`) }}</span>
+          </div>
+          <p class="text-xs leading-5 text-gray-500">{{ t('upstreamOps.rawCache.scope') }}</p>
+          <p v-if="snapshot.raw_cache.status !== 'ready'" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ t('upstreamOps.queryFailed') }}</p>
+          <template v-else-if="snapshot.raw_cache.data">
+            <dl class="grid gap-3 sm:grid-cols-3">
+              <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.rawCache.tokenRate') }}</dt><dd class="text-2xl font-semibold tabular-nums" data-testid="upstream-cache-token-rate">{{ percent(snapshot.raw_cache.data.summary.token_read_rate) }}</dd></div>
+              <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.rawCache.requestRate') }}</dt><dd class="text-2xl font-semibold tabular-nums" data-testid="upstream-cache-request-rate">{{ percent(snapshot.raw_cache.data.summary.request_hit_rate) }}</dd></div>
+              <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.rawCache.coverage') }}</dt><dd class="text-2xl font-semibold tabular-nums" data-testid="upstream-cache-coverage">{{ percent(snapshot.raw_cache.data.summary.coverage) }}</dd></div>
+            </dl>
+            <p class="text-sm">{{ t('upstreamOps.rawCache.counts', { observed: number(snapshot.raw_cache.data.summary.observed_requests, 0), total: number(snapshot.raw_cache.data.summary.requests, 0), unknown: number(snapshot.raw_cache.data.summary.unknown_requests, 0), unattributed: number(snapshot.raw_cache.data.summary.unattributed_requests, 0) }) }}</p>
+            <p v-if="!snapshot.raw_cache.data.summary.requests" class="text-sm text-gray-500">{{ t('upstreamOps.empty') }}</p>
+            <ul v-else class="grid min-w-0 gap-3 lg:grid-cols-2">
+              <li v-for="(row, index) in snapshot.raw_cache.data.rows" :key="index" class="min-w-0 space-y-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="upstream-cache-row">
+                <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
+                <p class="break-words">{{ row.public_model }} → {{ row.upstream_model ?? t('upstreamOps.unknown') }}</p>
+                <p class="break-words text-xs text-gray-500">{{ row.protocol ?? t('upstreamOps.unknown') }} / {{ row.transport ?? t('upstreamOps.unknown') }} · {{ row.service_tier || t('upstreamOps.unknown') }} · {{ row.reasoning_effort || t('upstreamOps.unknown') }}</p>
+                <dl class="grid grid-cols-3 gap-2 tabular-nums">
+                  <div><dt class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.tokenRate') }}</dt><dd>{{ percent(row.token_read_rate) }}</dd></div>
+                  <div><dt class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.requestRate') }}</dt><dd>{{ percent(row.request_hit_rate) }}</dd></div>
+                  <div><dt class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.coverage') }}</dt><dd>{{ percent(row.coverage) }}</dd></div>
+                </dl>
+                <p class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.rowCounts', { observed: number(row.observed_requests, 0), total: number(row.requests, 0), read: number(row.read_tokens, 0), input: number(row.input_tokens, 0) }) }}</p>
+                <p class="text-xs text-amber-700 dark:text-amber-400">{{ t('upstreamOps.rawCache.groupUnknown') }}</p>
+                <details class="text-xs"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('upstreamOps.rawCache.route') }}</summary><p class="mt-2 break-all">{{ row.route_fingerprint ?? t('upstreamOps.unknown') }}</p><p class="mt-1 break-words">{{ row.latest_sample_at ?? t('upstreamOps.unknown') }}</p></details>
+              </li>
+            </ul>
+            <p class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.page', { page: applied.page, total: snapshot.raw_cache.data.total }) }}</p>
+          </template>
         </section>
         <section v-if="snapshot.usage.capacity" class="card space-y-2 p-4"><h2 class="font-semibold">{{ t('upstreamOps.capacity') }}</h2><p>{{ t('upstreamOps.account') }} {{ snapshot.usage.capacity.accounts }} · {{ t('upstreamOps.schedulable') }} {{ snapshot.usage.capacity.schedulable }} · {{ t('upstreamOps.concurrency') }} {{ snapshot.usage.capacity.configured_concurrency }}</p><p class="text-xs text-gray-500">{{ t('upstreamOps.capacityNote') }}</p></section>
         <section class="card space-y-3 p-4"><h2 class="font-semibold">{{ t('upstreamOps.quality') }}</h2><p class="text-sm text-gray-500">{{ t('upstreamOps.qualityNote') }}</p><p v-if="snapshot.quality.status !== 'ready'" role="alert">{{ snapshot.quality.error }}</p><template v-else-if="snapshot.quality.data"><p>{{ t('upstreamOps.rounds') }} {{ snapshot.quality.data.summary.rounds }} · {{ t('upstreamOps.passed') }} {{ snapshot.quality.data.summary.passed }} · {{ t('upstreamOps.degraded') }} {{ snapshot.quality.data.summary.degraded }} · {{ t('upstreamOps.inconclusive') }} {{ snapshot.quality.data.summary.inconclusive }}</p><div class="overflow-x-auto"><table class="w-full min-w-[650px] text-left text-sm"><tbody><tr v-for="round in snapshot.quality.data.rows" :key="round.id"><td class="p-2">#{{ round.account_id }}</td><td>{{ round.measured_model }}</td><td>{{ round.observed_at }}</td><td><QualityRoundAssessment :round="round" :queried-at="snapshot.quality.queried_at" /></td><td><a class="underline text-primary-600" :href="`/admin/account-quality?plan_id=${round.plan_id}`">{{ t('upstreamOps.plan') }} #{{ round.plan_id }}</a></td></tr></tbody></table></div><p class="text-xs">{{ t('upstreamOps.pageScope') }} {{ applied.page }} · {{ snapshot.quality.data.total }}</p></template><a class="text-primary-600 underline" href="/admin/account-quality">{{ t('upstreamOps.quality') }}</a></section>
@@ -43,7 +76,7 @@ import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import SmartOpsNav from './SmartOpsNav.vue'
 import QualityRoundAssessment from './QualityRoundAssessment.vue'
-import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics } from '@/api/admin/upstreamOperations'
+import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics } from '@/api/admin/upstreamOperations'
 const { t } = useI18n()
 const amountKeys = ['requests'] as const
 const sortKeys = [...amountKeys, 'name']
@@ -55,6 +88,8 @@ const draft=ref<OperationsQuery>({...initial}), applied=ref<OperationsQuery>({..
 const snapshot=ref<OperationsSnapshot|null>(null), loading=ref(false), error=ref('')
 let request=0, alive=true, controller: AbortController|undefined
 function number(v: number|null|undefined, decimals=6) { return v==null || !Number.isFinite(v) ? t('upstreamOps.unknown') : v.toLocaleString(undefined,{minimumFractionDigits:decimals,maximumFractionDigits:decimals}) }
+function percent(value: number | null | undefined) { return value != null && Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : t('upstreamOps.unknown') }
+function cacheStatus(value: UpstreamRawCacheMetrics) { return value.requests === 0 ? 'empty' : value.observed_requests === 0 ? 'unknown' : value.observed_requests < value.requests ? 'partial' : 'observed' }
 function formatMetric(m:UpstreamMetrics,key:typeof amountKeys[number]) {return number(m[key],0)}
 async function load() {
  const id=++request; controller?.abort(); controller=new AbortController(); loading.value=true; error.value=''; snapshot.value=null

@@ -30,6 +30,14 @@ func TestUpstreamOperationsHTTPPostgresWithoutModelChannelBinding(t *testing.T) 
 	})
 	_, err := db.Exec(`INSERT INTO usage_logs(user_id,api_key_id,account_id,request_id,model,total_cost,actual_cost,account_stats_cost,account_rate_multiplier,created_at) VALUES($1,$2,$3,'http-channel-request','cache-model',10,4,8,999,$4)`, user, key, account, now.Add(-time.Hour))
 	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO request_timing_details(usage_log_id,trace_id,detail)
+ SELECT id,'00000000-0000-0000-0000-000000000001',jsonb_build_object('version',1,
+ 'raw_upstream',jsonb_build_object('version',1,'status','observed','account_id',account_id,'transport','http',
+ 'credential_source','http_transport_handoff','credential_fingerprint',repeat('a',64),'route_fingerprint',repeat('b',64)),
+ 'raw_cache',jsonb_build_object('status','observed','source','canonical_responses_terminal_usage',
+ 'scope','final_physical_http_responses_terminal_usage','input_tokens',100,'read_tokens',70,'write_tokens',NULL))
+ FROM usage_logs WHERE account_id=$1`, account)
+	require.NoError(t, err)
 	var before string
 	require.NoError(t, db.QueryRow(`SELECT row_to_json(u)::text FROM usage_logs u WHERE account_id=$1`, account).Scan(&before))
 	h := admin.NewChannelHandler(service.NewChannelService(repository.NewChannelRepository(db), nil, nil, nil, nil), nil, nil)
@@ -41,6 +49,8 @@ func TestUpstreamOperationsHTTPPostgresWithoutModelChannelBinding(t *testing.T) 
 		require.Equal(t, 200, w.Code, w.Body.String())
 		require.NotContains(t, w.Body.String(), "fixture-do-not-return")
 		require.NotContains(t, w.Body.String(), `"credentials"`)
+		require.Contains(t, w.Body.String(), `"token_read_rate":0.7`)
+		require.Contains(t, w.Body.String(), `"upstream_group_status":"not_observed"`)
 		var body struct {
 			Data struct {
 				Attribution string

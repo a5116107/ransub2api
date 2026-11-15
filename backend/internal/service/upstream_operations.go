@@ -38,6 +38,7 @@ type UpstreamOperationsSnapshot struct {
 	Usage       json.RawMessage          `json:"usage"`
 	Quality     ChannelOperationsSection `json:"quality"`
 	Errors      ChannelOperationsSection `json:"errors"`
+	RawCache    ChannelOperationsSection `json:"raw_cache"`
 }
 
 type UpstreamOperationsRepository interface {

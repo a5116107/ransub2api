@@ -72,6 +72,8 @@ func (r *usageLogRepository) writeTiming(ctx context.Context, job timingWrite) e
 	// projection or the billing buckets, which may have been rewritten by policy.
 	cache := requesttiming.DeriveContentObservation(job.data).Cache
 	job.data.RawCache = &cache
+	upstream := requesttiming.DeriveCacheUpstream(job.data)
+	job.data.RawUpstream = &upstream
 	raw, err := json.Marshal(job.data)
 	if err != nil {
 		return err

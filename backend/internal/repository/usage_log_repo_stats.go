@@ -708,31 +708,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 				WHERE usage_log_id=u.id AND u.created_at >= NOW()-INTERVAL '30 days' LIMIT 2) traces
 			HAVING COUNT(*)=1 AND MIN(created_at) >= NOW()-INTERVAL '30 days'
 		) trace ON true
-		LEFT JOIN LATERAL (
-			SELECT
-				CASE WHEN jsonb_typeof(cache->'input_tokens')='number'
-					AND cache->>'input_tokens' ~ '^[0-9]{1,16}$'
-					THEN (cache->>'input_tokens')::bigint END AS raw_input,
-				CASE WHEN jsonb_typeof(cache->'read_tokens')='number'
-					AND cache->>'read_tokens' ~ '^[0-9]{1,16}$'
-					THEN (cache->>'read_tokens')::bigint END AS raw_read,
-				CASE WHEN jsonb_typeof(cache->'write_tokens')='number'
-					AND cache->>'write_tokens' ~ '^[0-9]{1,16}$'
-					THEN (cache->>'write_tokens')::bigint END AS raw_write
-		) counters ON true
-		LEFT JOIN LATERAL (
-			SELECT COALESCE(cache->>'status'='observed'
-				AND (cache->>'source',cache->>'scope') IN (
-					('canonical_responses_terminal_usage','final_physical_http_responses_terminal_usage'),
-					('canonical_responses_terminal_usage','physical_websocket_turn_responses_terminal_usage'),
-					('canonical_messages_cumulative_usage','final_physical_http_messages_cumulative_usage'),
-					('canonical_gemini_usage_metadata','final_physical_http_gemini_usage_metadata'),
-					('canonical_chat_completions_usage','final_physical_http_chat_completions_usage'))
-				AND raw_input BETWEEN 1 AND 9007199254740991
-				AND raw_read BETWEEN 0 AND raw_input
-				AND (cache->'write_tokens'='null'::jsonb
-					OR raw_write BETWEEN 0 AND raw_input-raw_read), false) AS raw_valid
-		) validity ON true`
+` + rawCacheObservationJoins
 		rawColumns = ", raw_input, raw_read, raw_valid"
 		rawTotals = `, COUNT(*) FILTER (WHERE raw_valid),
 			COUNT(*) FILTER (WHERE raw_valid AND raw_read>0),

@@ -3,14 +3,14 @@
 | 属性 | 内容 |
 | --- | --- |
 | 状态 | 部分已实现；自动供应池闭环未完成；本轮源码审计与剩余任务见13.3，实时进度见STATE |
-| 更新日期 | 2026-11-15 |
+| 更新日期 | 2026-11-16 |
 | 项目 | sub2api |
 | 本轮核对基线 | sub2api `c03a72245`、`feat/automated-upstream-supply`；avoding-newapi沿用`3c85af256`历史对照，本轮未重新审计；源码核对不等于生产能力 |
 | 状态入口 | [STATE.md](STATE.md) |
 | 已确认决策 | [DECISIONS.md](DECISIONS.md) |
 
 本文是本主题唯一设计与任务定义。当前进度和下一项工作只在 STATE.md 维护。
-既有实施和生产结果保留原验收边界。此前已授权本地实施及R1生产分支自动发行工具；本轮仅核对源码、更新这三份项目文档，不改业务代码、生产配置，不触发CI、PR、发行或部署。
+既有实施和生产结果保留原验收边界。此前已授权本地实施及R1生产分支自动发行工具；当前继续本地实现、回归、文档与自有功能分支同步，不改生产配置，不触发CI、PR、发行或部署。
 完整自动供应池保持单分支/单PR。各节标注“提案”的部分以13.3源码矩阵区分已实现与剩余能力，不能把已有局部实现或R1工具完成当作整个供应池完成。
 
 ## 1. 目标与验收方向
@@ -1624,7 +1624,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 
 ### 13.3 2026-11-15源码审计：缺口、依赖与剩余验收
 
-**审计身份与证据边界。** 应用源码为`c03a72245`，唯一H盘工作树、功能分支`feat/automated-upstream-supply`。本轮静态追踪对象/DTO、请求入口、持久化、原调度门、UI与测试用例；未重跑业务测试，未连接生产或刷新Release。下表“已存在”只证明源码路径存在；历史测试结果复用DECISIONS的来源与边界，不升级为本轮运行通过。
+**审计身份与证据边界。** 应用源码为`c03a72245`，唯一H盘工作树、功能分支`feat/automated-upstream-supply`。审计基线静态追踪对象/DTO、请求入口、持久化、原调度门、UI与测试用例，未重跑业务测试。后续D5.3.1本地实现与验证见下文，不覆盖其余审计结论；未连接生产或刷新Release。下表“已存在”只证明源码路径存在；历史测试结果复用DECISIONS的来源与边界，不升级为本轮运行通过。
 原28项的组成保持D1–D9、D2.1–D2.4、D4.1/D4.2、M1–M13；D2.5、13.2及本节子验收不增加分母。实时状态只在STATE，本节定义缺口和完成条件。
 
 #### 源码事实与未闭环部分
@@ -1635,7 +1635,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
-| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[现有供应商统计SQL](../../backend/internal/repository/upstream_operations.go#L82)、[面板DTO](../../frontend/src/api/admin/profitOperations.ts#L8) | 最终凭据已采集，但现运维统计主要按账号/供应商/模型及计费值聚合，未形成“最终Key摘要＋实际绑定组＋模型/协议/档位＋线路版本”的原始缓存监控与资格消费。D5.3；历史配置不得反推请求时身份 |
+| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1已接最终Key/线路/模型/协议/档位的原始缓存聚合与管理员面板；实际组保持未观测，缺同scope物理attempt/延迟及资格消费。D5.3继续开放；历史配置不得反推请求时身份 |
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
@@ -1667,12 +1667,23 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 | D2.7 / P2 | 为unknown视频/批量等提交接原请求唯一关联的只读核实；依赖实际线路/协议可验证合同 | 先由供应商/接入方证明member/请求与task唯一关联，再补原reconciler持久/并发/重启用例；明确不存在才释放，未知不重放/猜退；合同未知不堵塞独立文本任务 |
 | D3.3 / P2 | 明确首批工具/图片/视频/语音的检测scope并补独立成功、质量、倍率与归属合同；依赖实际能力范围及D2.6 | 文本pass不外推非文本；先确定供应商/模型/协议/服务档，再完成对应源码和实际能力验收；未选定能力保持未覆盖，不伪造支持 |
 
+#### D5.3.1 原始缓存观测子验收与边界
+
+沿原`request_timing_details` JSON、`/admin/upstream-operations/snapshot`和渠道运维页扩展，不新增统计路由/数据库表/第二个总览；上下游共用原始计数合法性SQL，避免两套算法漂移。
+
+- 写入时从同一个最终物理attempt重建`raw_cache`和仅管理员可见的`raw_upstream`，覆盖调用方预填投影；摘要/线路缺失、凭据改变、歧义或不支持版本不借用前次重试。观察员接口删除新凭据投影，原管理员认证及观察员403合同保持。
+- 以账号、最终凭据摘要、线路摘要、已记录请求/上游模型、协议/传输、服务档、effort与stream分桶；当前账号URL仅筛选库存，不回填历史身份。实际上游分组始终`not_observed`，它既不是下游请求组，也不是供应商缓存域证明。
+- 请求命中率=上报缓存读取大于0的有效请求数/有效请求数；Token占比=原始读取Token总和/原始总输入Token；覆盖=有效唯一身份及计数请求数/筛选内已记用量请求数。没有分母返回null，明确无命中返回0；缺trace、重复trace及任一侧超过30天均未知。账单缓存桶仍独立，不用于反推原始值。
+- API返回来源、窗口、样本/未知/缺身份数、最近有效时间与独立分页；单个缓存查询失败沿原SAVEPOINT隔离并返回`query_failed`，不伪装成功零值或中断其他分区。面板显示结论徽标、三种比例和凭据/线路下钻，分页包含缓存范围数；中英390px、键盘筛选/分页及错误恢复均属于本地验收。
+- 本子项仅统计具有唯一留存trace的已记用量终态业务记录，**不是完整成功率或物理调用分母**；不收集未落用量的失败，不把最终成功掩盖前序失败的缺口认定为解决。业务/合成统一来源标签、同scope TTFB/TTFS/首推理/首文本/停顿及全部物理attempt仍归D5.3剩余；实际组依赖D2.6可信合同，缓存能力/存活依赖D5.4。它们通过前不据此自动授权严格高缓存产品。
+- 对应回归：[最终投影](../../backend/internal/pkg/requesttiming/cache_upstream_test.go)、[真实SQL/权限失败恢复/100范围](../../backend/internal/repository/upstream_raw_cache_integration_test.go)、[真实HTTP](../../backend/internal/repository/upstream_operations_http_integration_test.go)及[原页面测试](../../frontend/src/views/admin/__tests__/UpstreamChannelOperationsView.spec.ts)。运行证据/来源与限制在DECISIONS，实时状态只在STATE；不增加原28项分母。
+
 D5.2、D6.1、D7.1/D7.2、D3.1及D2.1–D2.5/D4.1/D4.2的已验子范围继续保留；不存在“把旧任务换名字重新做”的要求。13.3新ID只是原父验收的缺口定位，不能凭新增子任务完成数提高原28项完成率。
 
 #### 执行顺序与解除条件
 
 1. **可立即本地推进：** D2.6、D5.3，随后D3.2/D8.1，再D4.3→D6.2→D7.3/D7.4→D8.2；D5.4在输入合同稳定后补齐，严格高缓存产品的D6.2须等它通过。先写有真实消费者的合同与回归，原位实现，不新增空接口/平行服务。质量/缓存运行数据尚缺，不妨碍完成本地采集、版本失效、未知和拒绝边界。
-2. **独立生产缺口：** D9.1先核对最新生产身份与可部署差异；不等待未来整个自动供应池，但必须保持未验功能隔离。当前请求限文档，任务保留待执行，不重新部署或声称已加载。
+2. **独立生产缺口：** D9.1先核对最新生产身份与可部署差异；不等待未来整个自动供应池，但必须保持未验功能隔离。本轮本地功能实施不提升生产，任务保留待发布，不声称已加载。
 3. **真实证据等待：** 供应商/接入方负责实际组/模型/fast适用声明、独立参考、缓存域/保留与未知提交关联合同；开发方负责接入/验证。释放条件是拿到可核对scope与证据，测试夹具不替代它们。D6.3和D3.3的对应真实能力仍单独等待。
 4. **最终交付：** 完成本地组合与所启用范围真实验收后，D9.2统一提交完整功能PR并沿自有production发行/安装；不拆多个功能PR，不向官方upstream推送。严格混版未验、历史符号链接权限和拒删资源保留原owner/解除条件，不以归档/skip改成done。
 

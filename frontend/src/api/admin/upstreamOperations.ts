@@ -4,5 +4,19 @@ export interface OperationsQuery { from: string; until: string; upstream: string
 export interface UpstreamMetrics { requests: number; attributed_requests: number; unknown_upstream_requests: number; samples: number; unknown_samples: number; p50_ms: number|null; p90_ms: number|null; p95_ms: number|null; duration_p90_ms: number|null; latest_config_updated_at: string|null; oldest_config_updated_at: string|null }
 export interface OperationsRow extends UpstreamMetrics { key: string; name: string }
 export interface AccountBasis { id: number; name: string; key: string; attribution: string; updated_at: string; deleted: boolean }
-export interface OperationsSnapshot { scope: OperationsQuery; queried_at: string; attribution: string; usage: { summary: UpstreamMetrics; rows: OperationsRow[]; total: number; accounts: AccountBasis[]; members: AccountBasis[]; member_total: number; capacity: {accounts: number; schedulable: number; configured_concurrency: number}; catalog: Array<{key: string; name: string; accounts: number}>; catalog_total: number; account_details_limit: number }; quality: Section<Quality & { total: number }>; errors: Section<ErrorLogs> }
+export interface UpstreamRawCacheMetrics {
+ requests: number; observed_requests: number; unknown_requests: number; unattributed_requests: number
+ hit_requests: number; input_tokens: number; read_tokens: number
+ coverage: number | null; request_hit_rate: number | null; token_read_rate: number | null; latest_sample_at: string | null
+}
+export interface UpstreamRawCacheRow extends UpstreamRawCacheMetrics {
+ account_id: number; credential_fingerprint: string | null; route_fingerprint: string | null
+ public_model: string; upstream_model: string | null; service_tier: string | null; reasoning_effort: string | null
+ protocol: string | null; transport: string | null; stream: boolean; upstream_group_status: 'not_observed'
+}
+export interface UpstreamRawCache {
+ source: string; scope: string; retention_days: number; summary: UpstreamRawCacheMetrics
+ total: number; rows: UpstreamRawCacheRow[]
+}
+export interface OperationsSnapshot { scope: OperationsQuery; queried_at: string; attribution: string; usage: { summary: UpstreamMetrics; rows: OperationsRow[]; total: number; accounts: AccountBasis[]; members: AccountBasis[]; member_total: number; capacity: {accounts: number; schedulable: number; configured_concurrency: number}; catalog: Array<{key: string; name: string; accounts: number}>; catalog_total: number; account_details_limit: number }; raw_cache?: Section<UpstreamRawCache>; quality: Section<Quality & { total: number }>; errors: Section<ErrorLogs> }
 export async function readOperations(params: OperationsQuery, signal?: AbortSignal): Promise<OperationsSnapshot> { return (await apiClient.get<OperationsSnapshot>('/admin/upstream-operations/snapshot',{params,signal})).data }

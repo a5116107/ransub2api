@@ -70,7 +70,10 @@ func TestHTTPTraceKeepsOuterHooksAndReuse(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer server.Close()
-	c := New(time.Now(), 0)
+	// Hook presence, not a positive timestamp: fast Windows events may share
+	// the collector start tick. Keep that boundary deterministic.
+	start := time.Now()
+	c := newCollector(start, 0, func() time.Time { return start })
 	client := server.Client()
 	for range 2 {
 		req, _ := http.NewRequestWithContext(With(context.Background(), c), "POST", server.URL, strings.NewReader("hello"))
@@ -89,7 +92,9 @@ func TestHTTPTraceKeepsOuterHooksAndReuse(t *testing.T) {
 			t.Fatal("lost attempts")
 		}
 		for _, a := range s.Attempts {
-			if !a.BodyEOF || a.ResponseBytes != 2 || a.Events["request_written"] == 0 || a.Events["first_byte"] == 0 {
+			written, wrote := a.Events["request_written"]
+			firstByte, received := a.Events["first_byte"]
+			if !a.BodyEOF || a.ResponseBytes != 2 || !wrote || !received || written < a.StartMS || firstByte < written || a.EndMS == nil || firstByte > *a.EndMS {
 				t.Fatalf("incomplete trace %+v", a)
 			}
 		}

@@ -2627,3 +2627,18 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 纠正文档过时基线、API Key可用性待补及只手工发行的表述：R1工具已在production自动触发成功，但当次无应用变化、未重发.3；最后记录生产仍.3/5ce1d189，不声称当前生产已重新核验。D9.1独立跟踪c9688a439冷却补丁的制品/加载/业务恢复；D9.2保留完整功能和新应用实发。旧新重订阅失败与同候选通过分开，排空统一升级不等同严格混版通过。
 - 本地验证与交付结果在下条补记；历史service/data及拒删资源保持原状，不以删除/移动制造干净工作区。
 - 本轮实际文档检查：git diff --check退出0；内联Python验证62个本地链接、29个源码行锚点、15个唯一子验收及依赖无环，原28项20done/8部分守恒；STATE为7799字节/80行，恢复检查点689字节。只改三份项目文档，未运行业务测试；Git仅Release在production push触发，当前功能分支提交使用[skip ci]。远端同步前已读到原分支tip=c03a722455d339fddb71705a84e9364c45929673；最终提交/同步身份由Git记录核验。
+
+
+## 2026-11-16：D5.3.1最终上游身份的原始缓存监控闭环
+
+- 用户继续全局实施；复用唯一H盘工作树和`feat/automated-upstream-supply`，不CI、PR、发行或生产改写。沿原timing JSON、管理员snapshot和运维页增加原始缓存分区，不建表/第二接口/第二面板；上下游原始计数合法性SQL原位抽取为同一`rawCacheObservationJoins`，实际生产引用2处，旧内联重复已删除。
+- 持久化从最终逻辑响应的物理HTTP/WS attempt重建`raw_upstream`与`raw_cache`，不相信预填摘要、不借前次重试或当前账号配置。凭据/线路摘要、模型/协议/服务档/effort/stream分桶；实际供应商组始终`not_observed`。用户与观察员保持原权限，新摘要仅管理员可见。无唯一留存trace、版本/身份/原始计数不合法保持未知；覆盖0不等于零命中，无分母null。原账单缓存字段不改变。
+- 新SQL使用既有25秒服务预算、最多31天筛选/30天诊断留存和有界分页；缓存分区复用SAVEPOINT的查询失败隔离与恢复。真实权限REVOKE→失败→事务仍可SELECT→GRANT恢复全部验证，未通过删表模拟成功。当前账号换Key/URL不重写历史分桶；同账号换最终Key或线路产生不同范围，最终成功不替代前序失败指标。
+- Docker引擎此前无响应，未重试/重启共享服务。本轮由既有PG17工具启动独立127.0.0.1:55441和Redis5工具56441；测试进程overlay只替换原integration harness依赖装配，正式harness与生产源码不变，原迁移全量应用至独立测试库。overlay最小源码压缩留存于`H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/native-harness.go.txt.gz`，不提交仓库或冒充容器/生产验证。
+- 原命令`go test -json -race -p 1 -tags unit,integration -overlay <task>/overlay.json ./internal/repository -run '^Test(UpstreamRawCache|UpstreamOperations|UsageRawCache|TimingWrite)' -count=2 -timeout=6m`退出0，202通过事件、0失败/skip，包7.354s，含Responses/Messages/Gemini/Chat/WS、最终身份、加权、重复trace、半开窗口、30天失效/恢复、真实HTTP与权限失败恢复。1万条已记用量/100凭据范围/20行返回两轮快照937.7857ms和1.2638009s；只证明本地夹具规模，不承诺生产负载。
+- 五包定向race命令`go test -json -race -p 1 ./internal/pkg/requesttiming ./internal/repository ./internal/handler/admin ./internal/handler ./internal/server/routes -run 'Test(FinalCacheUpstream|TimingWrite|UpstreamOperations|ObserverTiming|ChannelOperationsRoutes)' -count=1 -timeout=6m`退出0，29通过事件、0失败/skip。完整timing包`go test -json -race -p 1 ./internal/pkg/requesttiming -count=2 -timeout=5m`退出0，1234通过事件、0失败/skip，包2.410s。上述计数含子例及重复轮次，不当作独立场景数，也不重复累计交集。旧writer overlay对新增预填投影回归退出1，新writer同例退出0，保留红测。
+- 上轮Windows零毫秒时钟边界按事件存在及先后关系验证，固定时钟覆盖0值，未弱化为跳过。前端三份Vitest24项通过、typecheck/改动文件ESLint退出0，`pnpm build`退出0；现有大chunk警告保留。构建后的真实Edge本地夹具验证原页面：三种比例/状态、模型筛选、键盘分页、未知/空/查询失败/刷新恢复、中英390px及原语言切换，console/pageerror为0，截图/结果保存原evidence目录。UI夹具不是生产API证据，真实SQL/HTTP另由上述测试证明。
+- 同标签六包`go vet -tags unit,integration -p 1 ...`退出0；Go1.27.4兼容工具对timing包完整原规则lint退出0，六包`--fast-only --build-tags=unit,integration --new-from-rev=HEAD --allow-serial-runners --concurrency=1 --timeout=5m`增量lint退出0、`0 issues.`。PATH旧lint由Go1.26构建而模块要求1.27.4，退出3保留，不修改模块/规则；不称全仓全规则清零。原44248的`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1`上述六包退出0，`LINUX_BUILD=0`。最终源码与依赖规范LF摘要见source-inputs.json。
+- 首轮SQL夹具把until设为未来1小时，被原校验正确拒绝；容量夹具混用$3为text/bigint，被PG拒绝。仅修夹具时间及显式类型，失败记录保留；最终双轮通过不隐藏它们。浏览器首轮英文结论断言/公告响应形状不符合实际合同，修正夹具后全通过，不改产品文案迎合夹具。
+- 12个历史未跟踪PNG均97bytes、2×3且SHA256=`6b8e4242e23eb59c0a1b76189cf7a74ac9b30aa88300220ded8b7a2a0b060095`，由原源码`png.Encode(image.NewRGBA(image.Rect(0,0,2,3)))`重建完全匹配；`backend/internal/service/data/`递归删除被执行策略拦截，未执行、未改用其他工具或移动。独立PG/Redis经原data目录/PID核对后正常停止，预览86307退出1（Ctrl-C），端口18441/55441/56441均无监听；共享PG/Redis未动。Linux构建自行回收go-build后，本轮scratch余2801文件/230068880bytes；`H:/Root/DevCache/tmp/sub2api-upstream-raw-cache`删除同被策略拦截，保留原路径及owner，等待执行策略允许后的拥有者清理，不报已释放空间。压缩日志、最小overlay、截图与源码指纹归evidence，通用编译缓存不清空。
+- 统一更新原设计13.3和STATE，D5.3.1本地子项done；全局原28项20done/8部分保持。D5.3的实际组、同scope物理attempt/延迟、业务/合成来源与资格消费仍开放，D5.4缓存域/存活另验；本地观测不授权严格高缓存产品或代表线上已加载。后续按D2.6/D5.3剩余→D3.2/D8.1→D4.3/D6.2原依赖推进，不因缺供应商证据停止本地合同。

@@ -27,11 +27,33 @@ type upstreamHTTPRepo struct {
 	service.ChannelRepository
 	filter service.UpstreamOperationsFilter
 	err    error
+	cache  service.ChannelOperationsSection
 }
 
 func (r *upstreamHTTPRepo) ReadUpstreamOperations(_ context.Context, f service.UpstreamOperationsFilter) (*service.UpstreamOperationsSnapshot, error) {
 	r.filter = f
-	return &service.UpstreamOperationsSnapshot{Scope: f, Usage: json.RawMessage(`{"summary":{"requests":2},"rows":[],"total":0}`)}, r.err
+	return &service.UpstreamOperationsSnapshot{Scope: f, Usage: json.RawMessage(`{"summary":{"requests":2},"rows":[],"total":0}`), RawCache: r.cache}, r.err
+}
+
+func TestUpstreamOperationsHTTPRawCacheEvidenceAndPartialFailure(t *testing.T) {
+	repo := &upstreamHTTPRepo{cache: service.ChannelOperationsSection{Status: "ready", Data: json.RawMessage(`{"summary":{"requests":2,"coverage":0.5,"token_read_rate":0.1},"rows":[{"credential_fingerprint":"admin-only-digest","upstream_group_status":"not_observed"}]}`)}}
+	h := NewChannelHandler(service.NewChannelService(repo, nil, nil, nil, nil), nil, nil)
+	r := gin.New()
+	r.GET("/upstream", h.UpstreamOperations)
+	path := "/upstream?from=2026-10-01T00:00:00Z&until=2026-10-02T00:00:00Z"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"raw_cache":{"status":"ready"`)
+	require.Contains(t, w.Body.String(), `"token_read_rate":0.1`)
+	require.Contains(t, w.Body.String(), "admin-only-digest")
+	repo.cache = service.ChannelOperationsSection{Status: "query_failed", Data: json.RawMessage("null"), Error: "Data query failed; retry"}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"raw_cache":{"status":"query_failed","data":null`)
+	require.NotContains(t, w.Body.String(), "admin-only-digest")
+	require.Contains(t, w.Body.String(), `"requests":2`, "one failed section must not hide unaffected usage")
 }
 func TestUpstreamOperationsHTTPIndependentScopesAndSafeFailure(t *testing.T) {
 	repo := &upstreamHTTPRepo{}

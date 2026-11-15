@@ -142,6 +142,7 @@ func (r *channelRepository) ReadUpstreamOperations(ctx context.Context, f servic
 		return nil, fmt.Errorf("read upstream usage: %w", err)
 	}
 	out.Errors = readUpstreamSection(ctx, tx, upstreamOperationsErrors, args[:8]...)
+	out.RawCache = readUpstreamSection(ctx, tx, upstreamOperationsRawCache, args...)
 	if f.Model != "" && f.ModelScope != "upstream" {
 		out.Quality = service.ChannelOperationsSection{Status: "unsupported_scope", Data: json.RawMessage("null"), Error: "Quality uses probe model identity; public/recorded aliases cannot be inferred", QueriedAt: out.QueriedAt}
 	} else {
