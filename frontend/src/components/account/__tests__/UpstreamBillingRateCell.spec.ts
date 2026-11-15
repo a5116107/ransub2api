@@ -96,6 +96,20 @@ describe('UpstreamBillingRateCell', () => {
     wrapper.unmount()
   })
 
+  it('shows the fixed-group New API contract source without relabeling native group ratios as verified scopes', async () => {
+    const account = scopeAccount('excluded')
+    account.extra!.upstream_billing_probe!.data!.rate_applicability!.source = 'new_api.pricing'
+    const wrapper = mount(UpstreamBillingRateCell, { props: { account, now: Date.parse('2026-07-13T00:30:00Z') } })
+    expect(wrapper.get('[data-testid="upstream-billing-applicability"]').text()).toContain('new_api.pricing,fixture-1')
+    expect(wrapper.get('[data-testid="upstream-scope-conclusion"]').text()).toContain('.excluded')
+    const native = scopeAccount()
+    delete native.extra!.upstream_billing_probe!.data!.rate_applicability
+    await wrapper.setProps({ account: native })
+    expect(wrapper.get('[data-testid="upstream-scope-missing"]').text()).toContain('.unknown')
+    expect(wrapper.find('[data-testid="upstream-scope-conclusion"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('keeps invalid declarations distinct from suppliers without this capability', async () => {
     const account = scopeAccount()
     account.extra!.upstream_billing_probe!.data!.rate_applicability = null

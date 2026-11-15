@@ -1045,7 +1045,16 @@ func upstreamBillingRateAt(data map[string]any, now time.Time) (float64, bool) {
 		return 0, false
 	}
 	if scope, _ := data["billing_scope"].(string); scope != "token" {
-		return 0, false
+		// A New API group ratio alone is not a token-scope price contract.
+		// Its explicit, fixed-group extension is consumed again per final
+		// request; this account-only price check never grants scope eligibility.
+		if data["provider"] != "new_api" || data["object"] != "new_api.group_billing" || scope != "group" {
+			return 0, false
+		}
+		declaration, present := upstreamBillingApplicabilityFromData(data)
+		if !present || declaration == nil || now.Before(declaration.ObservedAt) || !now.Before(declaration.ExpiresAt) {
+			return 0, false
+		}
 	}
 	base, ok := resolveAccountExtraNumber(data, "resolved_rate_multiplier")
 	if !ok || base < 0 || math.IsNaN(base) || math.IsInf(base, 0) {

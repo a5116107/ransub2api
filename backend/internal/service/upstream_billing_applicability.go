@@ -26,15 +26,19 @@ func parseUpstreamBillingApplicabilityResponse(body []byte, data map[string]any,
 		if declaration != nil {
 			// Conclusions are generated once when observing the declaration,
 			// not O(entries²) on every request that consumes the snapshot.
-			for i := range declaration.Entries {
-				entry := &declaration.Entries[i]
-				entry.Conclusion = declaration.verdict(&AvailabilityRequestScope{
-					Model: entry.Model, Protocol: entry.Protocol, ServiceTier: entry.ServiceTier,
-					ReasoningEffort: entry.ReasoningEffort, Capability: "text",
-				}, observedAt)
-			}
+			declaration.setConclusions(observedAt)
 		}
 		data[upstreamBillingApplicabilityKey] = declaration
+	}
+}
+
+func (d *upstreamBillingApplicability) setConclusions(at time.Time) {
+	for i := range d.Entries {
+		entry := &d.Entries[i]
+		entry.Conclusion = d.verdict(&AvailabilityRequestScope{
+			Model: entry.Model, Protocol: entry.Protocol, ServiceTier: entry.ServiceTier,
+			ReasoningEffort: entry.ReasoningEffort, Capability: "text",
+		}, at)
 	}
 }
 
@@ -129,7 +133,11 @@ func upstreamBillingApplicabilityFromData(data map[string]any) (*upstreamBilling
 	if err != nil || parseErr != nil {
 		return nil, true
 	}
-	return decodeUpstreamBillingApplicability(raw, at), true
+	declaration := decodeUpstreamBillingApplicability(raw, at)
+	if declaration != nil && data["provider"] == "new_api" && data["object"] == "new_api.group_billing" {
+		declaration.Source = "new_api.pricing"
+	}
+	return declaration, true
 }
 
 // Unknown is scoped to the requested combination, never to an entire account.
@@ -287,7 +295,7 @@ func upstreamBillingApplicabilityReplay(previous, next map[string]any) bool {
 		}
 		// Applicability and the price it qualifies are one observation. The
 		// same timestamp must not silently acquire another price or group pin.
-		for _, key := range []string{"group_rate_multiplier", "user_rate_multiplier", "resolved_rate_multiplier", "peak_rate_enabled", "peak_start", "peak_end", "peak_rate_multiplier", "applied_peak_multiplier", "effective_rate_multiplier", "timezone", "selected_group_id"} {
+		for _, key := range []string{"group_rate_multiplier", "user_rate_multiplier", "resolved_rate_multiplier", "peak_rate_enabled", "peak_start", "peak_end", "peak_rate_multiplier", "applied_peak_multiplier", "effective_rate_multiplier", "timezone", "selected_group_id", "provider", "object", "billing_scope", "group"} {
 			if !reflect.DeepEqual(previous[key], next[key]) {
 				return true
 			}

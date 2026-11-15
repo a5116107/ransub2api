@@ -339,7 +339,14 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 		if !verified {
 			return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_bound_key_not_owned", nil)
 		}
-		snap = newAPISnapshot(*matched, data, interval, now)
+		snap = newAPISnapshot(*matched, data, interval, s.currentTime().UTC())
+		if previous := decodeUpstreamBillingProbeSnapshot(a.Extra); previous != nil &&
+			upstreamBillingApplicabilityReplay(previous.Data, snap.Data) {
+			failed := upstreamBillingProbeFailureSnapshot(a, interval, now, 0, "applicability_declaration_replayed", 0)
+			failed.ReceivedAt, failed.FreshUntil = nil, nil
+			failed.Balance = snap.Balance // The independently verified wallet remains usable.
+			snap = failed
+		}
 	}
 	return s.persistNewAPISnapshot(ctx, a, b, snap)
 }
@@ -356,6 +363,14 @@ func (s *UpstreamBillingProbeService) persistNewAPIFailure(ctx context.Context, 
 	}
 	snap := upstreamBillingProbeFailureSnapshot(a, interval, now, status, reason, delay)
 	snap.Data = nil
+	// Retain only the previous sanitized declaration as a replay floor. Failed
+	// evidence never authorizes routing, but a transient error must not permit
+	// an older response or a silently removed contract on the following probe.
+	if previous := decodeUpstreamBillingProbeSnapshot(a.Extra); previous != nil {
+		if _, declared := previous.Data[upstreamBillingApplicabilityKey]; declared {
+			snap.Data = previous.Data
+		}
+	}
 	snap.ReceivedAt = nil
 	snap.FreshUntil = nil
 	snap.Balance = &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusFailed, LastAttemptAt: now, LastError: reason}

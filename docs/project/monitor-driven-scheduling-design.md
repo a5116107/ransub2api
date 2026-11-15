@@ -526,7 +526,7 @@ U(attemptAt) = max(accounts.rate_multiplier,
 ```
 
 保存倍率作为保守下限，声明值仍使用原同步写回的合法值域和四位精度检查；拒绝 0、舍入为 0、超出同步上限及非有限声明。
-`upstreamBillingRateAt` 复用原时区与峰时段算法，只接收确定单组的 token 范围；不以 multi_group 的最低倍率或 New API 的 group 范围声明代替。
+`upstreamBillingRateAt` 复用原时区与峰时段算法，sub2api只接收确定单组的token范围；不以multi_group最低倍率或New API裸group倍率代替。New API仅在5.3.4固定组精确适用合同有效时接入同一价格门，最终scope仍须单独通过。
 `effective_rate_multiplier` 是探测当时的值，不用它冻结高峰；U 使用当前尝试时刻，D 继续冻结于请求/WS turn 的 pricingAt。
 
 快照须为 OK，received_at 与 last_attempt_at 必须存在、非零且不晚于本次尝试，fresh_until 必须严格晚于本次尝试。
@@ -607,7 +607,7 @@ profit-preview 输入需导出 group_rate_multiplier，输出 rejected_account_s
 - 同精确scope互相矛盾是`conflict`，其他scope不受该冲突牵连。重复字段冲突无效，字段名按精确大小写白名单解析，不接收供应商自带结论、来源URL或额外凭据；本地生成`covered/excluded/unknown/conflict`及固定来源`sub2api.key_billing`。明确0仍保留展示，但沿旧自动写回规则不把0同步为免计账号额度。
 - 已自动同步的API Key在原利润门HTTP终检消费声明；OpenAI物理代理重试在等待后重读权威账号并复核。WS握手只确认目标，不授权生成；每个`response.create`沿原逐轮绑定校验消费实际payload。拒绝仍为本地pre-send类型，不计供应商故障，不因下游无输出就授权重放此前已执行的工作。
 - 后台原账号倍率单元增加原生可键盘展开的模型/fast声明卡片，逐项彩色结论、来源版本及独立到期；父探测失败/过期不会继续显示为有效适用。旧上游未声明与显式无效分开。此处是声明适用性，不是模型验真、实付扣费或受管池资格；下游缓存面板不改变。
-- 未声明的旧供应商、New API现有组倍率及手工账号保留兼容路径，**不获得新的严格池资格**。原利润预演仅有账号倍率，没有最终协议/档位/effort/context，返回`probe_request_scope_not_evaluated`提醒，不将其账号准入计数当scope资格。精确scope预演和限期手工合同已分别补于5.3.2/5.3.3；New API可核对的模型例外来源、运行候选资格消费及实际供应商验证仍属D2.6/D4.3剩余；不更名关闭父项。
+- 未声明的旧供应商、New API现有裸组倍率及手工账号保留兼容路径，**不获得新的严格池资格**。原利润预演仅有账号倍率，没有最终协议/档位/effort/context，返回`probe_request_scope_not_evaluated`提醒，不将其账号准入计数当scope资格。精确scope预演、限期手工合同及New API显式来源分别见5.3.2–5.3.4；运行候选资格消费及实际供应商验证仍属D2.6/D4.3剩余；不更名关闭父项。
 
 #### 5.3.2 精确scope离线预演（D2.6.2）
 
@@ -640,7 +640,39 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 - 绑定包含账号、Key/路由、映射、自动/手工模式、固定组观测和有效U；变更立即失配。原账号编辑、凭据更新、批量路径及探测写回观测到的绑定/倍率变化保留失效标记，恢复旧Key不自动复活。价格/组实时变化尚未观测时，手工声明的信任上限仍为确认时刻到声明期限，不冒称供应商实时监测。
 - 原账号编辑页提供结构化表单、显式确认和撤销；倍率单元按项显示彩色适用结论、来源/依据/期限与`active/expired/invalid/binding_changed/unavailable/superseded/revoked`状态。列表后台刷新沿原接口返回安全投影；私有绑定不进入DTO、浏览器或下游缓存面板。前端到期立即撤绿，后端再次按发送时刻判断。
 
-本地保存/SQL往返、冲突、失效/恢复、实际发送和浏览器操作各自验证，状态以STATE为准。离线预演必须具备同一原始绑定输入才可消费手工声明，脱敏导出缺绑定事实时仍拒绝严格准入。New API可核对模型例外、受管池候选接线、真实供应商与生产验收仍开放，不新增原28项分母。
+本地保存/SQL往返、冲突、失效/恢复、实际发送和浏览器操作各自验证，状态以STATE为准。离线预演必须具备同一原始绑定输入才可消费手工声明，脱敏导出缺绑定事实时仍拒绝严格准入。New API适用声明适配见5.3.4；受管池候选接线、真实供应商与生产验收仍开放，不新增原28项分母。
+
+#### 5.3.4 New API固定分组适用来源（D2.6.4，本地适配）
+
+源码核对基线为本地avoding-newapi `49297389d` 的 `controller.GetPricing`、`model.Pricing` 与 `projectModelPricing`：`group_ratio`按管理用户可用组/用户组覆盖过滤，模型行有独立`quota_type/model_ratio/model_price/billing_mode/enable_groups/supported_endpoint_types`。这些字段**没有**声明完整的协议、fast/tier、effort及上下文适用性，`pricing_version`本身也不是验真结论。不得从模型在目录、组倍率存在或端点列表推导严格适用。
+
+原管理授权和`GET /api/pricing`读取原位扩展一个**可选供应商合同**，不新建请求、采集器或并行价格算法：
+
+```json
+{
+  "success": true,
+  "group_ratio": {"FIXED_GROUP": 0.5},
+  "pricing_version": "SUPPLIER_REVISION",
+  "rate_applicability": {
+    "FIXED_GROUP": {
+      "schema_version": 1,
+      "source_version": "SUPPLIER_REVISION",
+      "group_rate_multiplier": 0.5,
+      "observed_at": "2026-11-16T00:00:00Z",
+      "expires_at": "2026-11-16T01:00:00Z",
+      "entries": [{"model":"WIRE_MODEL","protocol":"responses_http","service_tier":"unspecified","reasoning_effort":"unspecified","context":"all","group_rate_applies":true}]
+    }
+  }
+}
+```
+
+- 仅完整验证为当前Key、固定组且无跨组重试的绑定可取对应组；不借其他组声明。版本须与同一pricing响应一致，声明倍率须与该组值一致，时间不晚于本地完成读取/Key核验的时刻，TTL仍≤24小时。复用原白名单、精确scope和结论生成，来源固定为`new_api.pricing`，原始pricing正文/凭据/自报来源URL不落快照。
+- `rate_applicability`缺失表示原生未声明，兼容旧路由但不获严格资格；显式null、缺本组、重复选择键、版本/倍率不符等保留无效证据，不能退回手工许可。目录和额外未知字段不增加许可。原有Key别名校验、管理鉴权/代理、体积/分页/30秒总限和429等待保持。
+- 自动模式沿原保存U与新鲜观测U的保守较大值和利润阈值消费；仅有组倍率仍不是scope准入，声明存在时才开放这个固定组价格来源，最终协议/模型/tier/effort仍逐请求检查。观察此来源不自动写低成本额度或变更上游Key组；本地账户同步开关仍须明确启用。
+- 旧观测、同观测改价/改组或撤掉合同均拒绝。失败保留已白名单化的声明作为重放下界并撤销新鲜期；连续失败不能抹掉下界，再次看到真正更新的合法声明才恢复。价格适用性失败不抹除此次独立验证成功的钱包，管理请求失败则余额也标失败。
+- SQL仍复用原账号身份/快照CAS、授权revision和outbox。管理员原倍率明细显示新来源及逐scope结论；下游用户面板和计费缓存统计不变。HTTP物理发送与WS每轮消费同一合同，不以握手成功授权后续fast轮次。
+
+这是本地适配合同，**不是声称现有New API供应商已实现该扩展**。缺扩展时可关闭自动倍率同步、手动核对有效U后沿5.3.3做有期限的显式声明，或保持严格范围未知；保留自动模式却没有新鲜价格合同，不由手工声明越过价格门。模型/缓存独立验真、运行候选资格和供应商实际合同验收继续开放。
 
 ### 5.4 采购分桶、产品组合与自动重归类（提案）
 
@@ -1689,7 +1721,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 
 | 范围 | 当前源码证据 | 尚缺什么 / 不能据此宣称什么 |
 | --- | --- | --- |
-| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 已有绑定、版本失效、同步和有效倍率；尚无覆盖模型/effort/fast/上下文档的完整声明契约及有期限人工声明。D2.6 |
+| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.4。真实来源及候选消费仍未闭合，D2.6父验收保留 |
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
@@ -1709,7 +1741,7 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 
 | ID / 优先级 | 原位工作与依赖 | 可验收结果 / 外部边界 |
 | --- | --- | --- |
-| D2.6 / P0 | D2.6.1自动声明/HTTP/WS逐轮消费、D2.6.2精确scope预演及D2.6.3限期手工声明已本地完成，见5.3.1–5.3.3；余New API可核对模型例外来源和运行候选接线；依赖D2.1–D2.5 | 手工声明已验SQL创建/普通保存/撤销/409、Key/映射/手动及自动倍率变化的失效与重新确认、HTTP发送/WS终检及前端190项和中英390px操作。自动与scope原证据继续保留；实际站点合同及运行候选资格仍验；旧兼容不算严格资格，不增加原分母 |
+| D2.6 / P0 | D2.6.1–.4自动声明、精确预演、限期手工和New API显式固定组来源已本地完成，见5.3.1–5.3.4；余运行候选接线；依赖D2.1–D2.5 | 原手工/预演证据保留；New API同源版本/倍率/组、过期/重放/失败恢复、HTTP物理发送/WS终检、SQL CAS与安全投影经race688/SQL78双轮及前端28/type/ESLint/vet/增量lint/Linux本地验证。原生目录不声明完整scope，实际站点合同及运行候选资格仍验；旧兼容不算严格资格，不增加原分母 |
 | D5.3 / P0 | 沿timing/usage及原运维入口建立上游原始缓存和同层指标聚合；依赖D2.5/D5.1 | 按最终Key摘要/实际组/模型/协议/档位/线路版本和窗口汇总，身份未知单列；请求命中、Token加权、覆盖、样本/新鲜度及业务/合成来源分开；复用TTFB/TTFS/首推理/首文本、输出停顿、完整成功与物理attempt的同scope口径，不把最终成功掩盖前序失败。与下游本人面板/计费桶隔离，30天边界/查询成本/权限验证；不以当前账号配置补历史 |
 | D3.2 / P0 | 扩展原quality/judge的分维度证据、独立参考、测量/策略版本和漂移；依赖D2.6 | 功能质量/模型身份/系统判题故障分开；独立TTL、覆盖、原因和配置变更失效，晚到不复活；夹具可先验合同，真实身份结论须实际独立基线，不因缺运行数据停做本地合同 |
 | D8.1 / P0 | 在原runner/计划/租约内完成多周期预算和覆盖编译；依赖D2.6/D5.3的scope定义 | 物理调用含分页、token、判题、全局/站点/共享Key并发、恢复预留与公平性统一计数；100绑定含故障不饥饿，补生产周期锁/多节点覆盖观察，耗尽不续绿；保存前预览并拒绝不可能周期。已有100绑定测试继续保留，不能用其替代预算总体验收 |

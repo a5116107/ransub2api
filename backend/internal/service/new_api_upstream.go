@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 const UpstreamBillingProviderExtraKey = "upstream_billing_provider"
@@ -112,9 +114,10 @@ type NewAPIToken struct {
 	RouteGroups     []string `json:"route_groups"`
 }
 type newAPIData struct {
-	wallet float64
-	ratios map[string]float64
-	tokens []NewAPIToken
+	wallet  float64
+	ratios  map[string]float64
+	tokens  []NewAPIToken
+	pricing json.RawMessage
 }
 
 func matchNewAPITokens(a *Account, tokens []NewAPIToken) []NewAPIToken {
@@ -221,14 +224,17 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 	}
 	result := &newAPIData{wallet: wallet, ratios: map[string]float64{}, tokens: []NewAPIToken{}}
 	// A missing pricing endpoint does not erase a successfully verified wallet.
-	var pricing struct {
-		Success bool                `json:"success"`
-		Ratios  map[string]*float64 `json:"group_ratio"`
-	}
-	if e := s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/pricing", &pricing); e == nil && pricing.Success {
-		for g, r := range pricing.Ratios {
-			if r != nil && validNewAPIGroupRate(g, *r) {
-				result.ratios[g] = *r
+	var pricing json.RawMessage
+	if e := s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/pricing", &pricing); e == nil {
+		fields, valid := availabilityJSONObject(gjson.ParseBytes(pricing))
+		_, ratiosValid := availabilityJSONObject(fields["group_ratio"])
+		var ratios map[string]*float64
+		if valid && fields["success"].Type == gjson.True && ratiosValid && json.Unmarshal([]byte(fields["group_ratio"].Raw), &ratios) == nil {
+			result.pricing = pricing
+			for g, r := range ratios {
+				if r != nil && validNewAPIGroupRate(g, *r) {
+					result.ratios[g] = *r
+				}
 			}
 		}
 	} else if newAPIRequestRequiresWait(e) {
@@ -349,6 +355,50 @@ func newAPISnapshot(t NewAPIToken, d *newAPIData, interval int, now time.Time) *
 			snap.Data[k] = rate
 		}
 		snap.Data["peak_rate_enabled"] = false
+		applyNewAPIBillingApplicability(snap.Data, d.pricing, t.Group, rate, now)
 	}
 	return snap
+}
+
+// Native pricing catalogs do not declare tier/effort/context applicability.
+// Only an explicit extension for this verified fixed group can fill that gap.
+// Bind its version and rate to the same pricing response, never another group
+// or a model's unrelated ratio. Raw pricing bodies remain request-local.
+func applyNewAPIBillingApplicability(data map[string]any, pricing []byte, group string, rate float64, now time.Time) {
+	fields, valid := availabilityJSONObject(gjson.ParseBytes(pricing))
+	if !valid {
+		return
+	}
+	groups, present := fields[upstreamBillingApplicabilityKey]
+	if !present {
+		return
+	}
+	data[upstreamBillingApplicabilityKey] = nil
+	declarations, valid := availabilityJSONObject(groups)
+	if !valid || len(declarations) > 1024 {
+		return
+	}
+	selected, present := declarations[group]
+	if !present {
+		return
+	}
+	entryFields, valid := availabilityJSONObject(selected)
+	version := fields["pricing_version"]
+	boundRate := entryFields["group_rate_multiplier"]
+	if !valid || version.Type != gjson.String || !billingDeclarationToken(version.String(), 128) ||
+		boundRate.Type != gjson.Number || !equalBillingMultiplier(boundRate.Float(), rate) {
+		return
+	}
+	observed, err := time.Parse(time.RFC3339Nano, entryFields["observed_at"].String())
+	if err != nil || observed.IsZero() || observed.After(now) {
+		return
+	}
+	declaration := decodeUpstreamBillingApplicability([]byte(selected.Raw), observed)
+	if declaration == nil || declaration.SourceVersion != version.String() {
+		return
+	}
+	declaration.Source = "new_api.pricing"
+	declaration.setConclusions(now)
+	data["observed_at"] = observed.UTC().Format(time.RFC3339Nano)
+	data[upstreamBillingApplicabilityKey] = declaration
 }

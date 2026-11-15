@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/require"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -177,6 +179,286 @@ func TestNewAPIProbeRechecksUniqueMaskedKeyAndRecovers(t *testing.T) {
 			require.Nil(t, stored.FreshUntil)
 		}
 	}
+}
+
+func newAPIPricingApplicabilityFixture(t *testing.T, at time.Time) map[string]any {
+	t.Helper()
+	declaration := billingApplicabilityFixture(at,
+		billingApplicabilityEntry("responses_http", "unspecified", true),
+		billingApplicabilityEntry("responses_http", "priority", false))
+	declaration["group_rate_multiplier"] = 0.5
+	return map[string]any{"success": true, "group_ratio": map[string]any{"vip": 0.5},
+		"pricing_version": "fixture-1", "rate_applicability": map[string]any{"vip": declaration}}
+}
+
+func TestNewAPIBillingApplicabilityExactSourceAndFinalSend(t *testing.T) {
+	s, repo, upstream, accounts := newAPIConfigFixture()
+	at := time.Now().UTC().Add(-time.Minute)
+	pricing := newAPIPricingApplicabilityFixture(t, at)
+	body, err := json.Marshal(pricing)
+	require.NoError(t, err)
+	upstream.bodies["GET /api/pricing"] = string(body)
+	_, err = s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	account := accounts.accounts[1]
+	rate := 0.5
+	account.RateMultiplier = &rate
+	account.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true, UpstreamBillingRateSyncEnabledExtraKey: true}
+	snapshot, err := s.probeNewAPIAccount(t.Context(), account, repo.bindings[1], 30)
+	require.NoError(t, err)
+	require.Equal(t, "ok", snapshot.Status)
+	declaration, present := upstreamBillingApplicabilityFromData(snapshot.Data)
+	require.True(t, present, "the verified fixed group must retain its own explicit supplier contract")
+	require.NotNil(t, declaration)
+	require.Equal(t, "new_api.pricing", declaration.Source)
+	require.Equal(t, "fixture-1", declaration.SourceVersion)
+	require.Equal(t, "vip", snapshot.Data["group"])
+	for _, tc := range []struct {
+		payload, verdict string
+	}{
+		{`{"model":"gpt-fixture","input":"hello"}`, "covered"},
+		{`{"model":"gpt-fixture","input":"hello","service_tier":"priority"}`, "excluded"},
+		{`{"model":"gpt-fixture","input":"hello","reasoning":{"effort":"high"}}`, "unknown"},
+	} {
+		request, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", strings.NewReader(tc.payload))
+		require.NoError(t, err)
+		scope := availabilityScopeForRequest(request, []byte(tc.payload))
+		verdict, _ := upstreamBillingScopeVerdictAt(account, scope, time.Now())
+		require.Equal(t, tc.verdict, verdict)
+		_, err = guardUpstreamBillingRequest(t.Context(), account, request)
+		if tc.verdict == "covered" {
+			require.NoError(t, err)
+		} else {
+			require.True(t, IsOpenAITurnAdmissionError(err))
+		}
+	}
+	// Full snapshot JSON is an admin-facing projection, not management access.
+	projection, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	require.NotContains(t, string(projection), "fixture-secret")
+	require.NotContains(t, string(projection), "abcd123456789wxyz")
+}
+
+func TestNewAPIBillingApplicabilityBindingValidation(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute)
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{"matching source", func(map[string]any) {}, "covered"},
+		{"other group is not borrowed", func(p map[string]any) {
+			p["rate_applicability"] = map[string]any{"other": p["rate_applicability"].(map[string]any)["vip"]}
+		}, "invalid"},
+		{"explicit null", func(p map[string]any) { p["rate_applicability"] = nil }, "invalid"},
+		{"source version required", func(p map[string]any) { delete(p, "pricing_version") }, "invalid"},
+		{"source version mismatch", func(p map[string]any) { p["pricing_version"] = "changed" }, "invalid"},
+		{"rate changed", func(p map[string]any) { p["group_ratio"] = map[string]any{"vip": 0.6} }, "invalid"},
+		{"future observation", func(p map[string]any) {
+			d := p["rate_applicability"].(map[string]any)["vip"].(map[string]any)
+			d["observed_at"] = at.Add(time.Hour)
+			d["expires_at"] = at.Add(2 * time.Hour)
+		}, "invalid"},
+		{"expired observation", func(p map[string]any) {
+			p["rate_applicability"].(map[string]any)["vip"].(map[string]any)["expires_at"] = at.Add(time.Second)
+		}, "expired"},
+		{"untrusted source stripped", func(p map[string]any) {
+			p["rate_applicability"].(map[string]any)["vip"].(map[string]any)["source"] = "https://credential.example/TOKEN"
+		}, "covered"},
+		{"native catalog is not a declaration", func(p map[string]any) {
+			delete(p, "rate_applicability")
+			p["data"] = []any{map[string]any{"model_name": "gpt-fixture", "quota_type": 0, "enable_groups": []string{"vip"}}}
+		}, "not_declared"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, repo, upstream, accounts := newAPIConfigFixture()
+			pricing := newAPIPricingApplicabilityFixture(t, at)
+			tc.mutate(pricing)
+			body, err := json.Marshal(pricing)
+			require.NoError(t, err)
+			upstream.bodies["GET /api/pricing"] = string(body)
+			_, err = s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+			require.NoError(t, err)
+			account := accounts.accounts[1]
+			rate := 0.5
+			account.RateMultiplier = &rate
+			account.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true, UpstreamBillingRateSyncEnabledExtraKey: true}
+			snapshot, err := s.probeNewAPIAccount(t.Context(), account, repo.bindings[1], 30)
+			require.NoError(t, err)
+			declaration, present := upstreamBillingApplicabilityFromData(snapshot.Data)
+			if tc.want == "not_declared" {
+				require.False(t, present)
+				require.Nil(t, guardUpstreamBillingApplicability(account, nil), "native catalog keeps legacy compatibility, not strict eligibility")
+				return
+			}
+			require.True(t, present)
+			scope := &AvailabilityRequestScope{Model: "gpt-fixture", Protocol: "responses_http", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}
+			require.Equal(t, tc.want, declaration.verdict(scope, time.Now()))
+			encoded, err := json.Marshal(snapshot)
+			require.NoError(t, err)
+			require.NotContains(t, string(encoded), "credential.example")
+		})
+	}
+}
+
+func TestNewAPIBillingApplicabilityReplayFailureAndRecovery(t *testing.T) {
+	s, repo, upstream, accounts := newAPIConfigFixture()
+	at := time.Now().UTC().Add(-time.Minute)
+	setPricing := func(when time.Time, mutate func(map[string]any)) {
+		t.Helper()
+		pricing := newAPIPricingApplicabilityFixture(t, when)
+		if mutate != nil {
+			mutate(pricing)
+		}
+		body, err := json.Marshal(pricing)
+		require.NoError(t, err)
+		upstream.bodies["GET /api/pricing"] = string(body)
+	}
+	setPricing(at, nil)
+	_, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	probe := func(want string) *UpstreamBillingProbeSnapshot {
+		t.Helper()
+		snapshot, err := s.probeNewAPIAccount(t.Context(), accounts.accounts[1], repo.bindings[1], 30)
+		require.NoError(t, err)
+		require.Equal(t, want, snapshot.Status)
+		return snapshot
+	}
+	probe("ok")
+	probe("ok") // An unchanged observation may be read again; its TTL is not renewed.
+	setPricing(at.Add(-time.Second), nil)
+	for range 2 {
+		snapshot := probe("failed")
+		require.Equal(t, "applicability_declaration_replayed", snapshot.LastError)
+		require.Nil(t, snapshot.FreshUntil)
+		require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Balance.Status)
+	}
+	setPricing(at, func(p map[string]any) { delete(p, "rate_applicability") })
+	probe("failed")
+	setPricing(at.Add(time.Second), nil)
+	probe("ok")
+	setPricing(at.Add(time.Second), func(p map[string]any) {
+		p["group_ratio"] = map[string]any{"vip": 0.6}
+		p["rate_applicability"].(map[string]any)["vip"].(map[string]any)["group_rate_multiplier"] = 0.6
+	})
+	probe("failed") // Same observation cannot acquire another price.
+	setPricing(at.Add(2*time.Second), nil)
+	probe("ok")
+	delete(upstream.bodies, "GET /api/pricing")
+	probe("failed") // HTTP/pricing loss cannot erase the declaration floor.
+	setPricing(at.Add(time.Second), nil)
+	probe("failed")
+	setPricing(at.Add(3*time.Second), nil)
+	probe("ok")
+}
+
+func TestNewAPIBillingApplicabilityObservationDuringFetch(t *testing.T) {
+	s, repo, upstream, accounts := newAPIConfigFixture()
+	_, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	start := time.Now().UTC().Add(-time.Minute)
+	now := start
+	s.now = func() time.Time { return now }
+	pricing := newAPIPricingApplicabilityFixture(t, start.Add(time.Second))
+	body, err := json.Marshal(pricing)
+	require.NoError(t, err)
+	upstream.bodies["GET /api/pricing"] = string(body)
+	upstream.check = func(request *http.Request) {
+		if request.URL.Path == "/api/pricing" {
+			now = start.Add(2 * time.Second)
+		}
+	}
+	snapshot, err := s.probeNewAPIAccount(t.Context(), accounts.accounts[1], repo.bindings[1], 30)
+	require.NoError(t, err)
+	declaration, present := upstreamBillingApplicabilityFromData(snapshot.Data)
+	require.True(t, present)
+	require.NotNil(t, declaration, "the supplier may observe after the request starts but before the verified response completes")
+	require.Equal(t, now, *snapshot.ReceivedAt)
+}
+
+func TestNewAPIBillingApplicabilityRejectsDuplicateSelectors(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute)
+	for _, mutate := range []func(string) string{
+		func(raw string) string {
+			return strings.Replace(raw, `"pricing_version":"fixture-1"`, `"pricing_version":"fixture-1","pricing_version":"other"`, 1)
+		},
+		func(raw string) string { return strings.Replace(raw, `"vip":0.5`, `"vip":0.6,"vip":0.5`, 1) },
+		func(raw string) string {
+			return strings.Replace(raw, `"group_rate_applies":true`, `"group_rate_applies":false,"group_rate_applies":true`, 1)
+		},
+	} {
+		s, repo, upstream, accounts := newAPIConfigFixture()
+		_, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+		require.NoError(t, err)
+		body, err := json.Marshal(newAPIPricingApplicabilityFixture(t, at))
+		require.NoError(t, err)
+		upstream.bodies["GET /api/pricing"] = mutate(string(body))
+		account := accounts.accounts[1]
+		rate := 0.5
+		account.RateMultiplier = &rate
+		account.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true, UpstreamBillingRateSyncEnabledExtraKey: true}
+		_, err = s.probeNewAPIAccount(t.Context(), account, repo.bindings[1], 30)
+		require.NoError(t, err)
+		scope := &AvailabilityRequestScope{Model: "gpt-fixture", Protocol: "responses_http", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}
+		verdict, reason := upstreamBillingScopeVerdictAt(account, scope, time.Now())
+		require.NotEqual(t, "covered", verdict)
+		require.NotEmpty(t, reason)
+	}
+}
+
+func TestNewAPIBillingApplicabilityPhysicalSendAndWS(t *testing.T) {
+	var sends atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	s, repo, upstream, accounts := newAPIConfigFixture()
+	account := accounts.accounts[1]
+	account.Credentials["base_url"] = server.URL + "/v1"
+	at := time.Now().UTC().Add(-time.Minute)
+	pricing := newAPIPricingApplicabilityFixture(t, at)
+	declaration := pricing["rate_applicability"].(map[string]any)["vip"].(map[string]any)
+	declaration["entries"] = append(declaration["entries"].([]map[string]any),
+		billingApplicabilityEntry("responses_ws_v2", "unspecified", true),
+		billingApplicabilityEntry("responses_ws_v2", "priority", false))
+	body, err := json.Marshal(pricing)
+	require.NoError(t, err)
+	upstream.bodies["GET /api/pricing"] = string(body)
+	_, err = s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	rate := 0.5
+	account.RateMultiplier = &rate
+	account.GroupIDs = []int64{41}
+	account.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true, UpstreamBillingRateSyncEnabledExtraKey: true}
+	_, err = s.probeNewAPIAccount(t.Context(), account, repo.bindings[1], 30)
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: 41, threshold: 1})
+	for _, payload := range []string{`{"model":"gpt-fixture","input":"hello"}`, `{"model":"gpt-fixture","input":"hello","service_tier":"priority"}`} {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/responses", strings.NewReader(payload))
+		require.NoError(t, err)
+		guarded, err := (&OpenAIGatewayService{}).guardOpenAIProfitRequest(request, account)
+		if strings.Contains(payload, "priority") {
+			require.True(t, IsOpenAITurnAdmissionError(err))
+			continue
+		}
+		require.NoError(t, err)
+		response, err := server.Client().Do(guarded)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+	}
+	require.EqualValues(t, 1, sends.Load(), "only the covered physical request reaches the upstream")
+	svc := &OpenAIGatewayService{}
+	target := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	headers := http.Header{"Authorization": {"Bearer " + account.GetCredential("api_key")}}
+	binding := svc.bindOpenAIWSHandshake(account, "gpt-fixture", headers, target)
+	guardedCtx, err := guardOpenAIWSBillingHandshake(ctx, account, target, headers)
+	require.NoError(t, err)
+	binding.billingHandshake = newOpenAIWSBillingHandshake(guardedCtx, target, headers)
+	require.NoError(t, svc.checkOpenAIWSBinding(guardedCtx, account, "gpt-fixture", binding,
+		[]byte(`{"type":"response.create","model":"gpt-fixture","input":"hello"}`)))
+	require.True(t, IsOpenAITurnAdmissionError(svc.checkOpenAIWSBinding(guardedCtx, account, "gpt-fixture", binding,
+		[]byte(`{"type":"response.create","model":"gpt-fixture","input":"hello","service_tier":"priority"}`))))
 }
 
 func TestNewAPIPreviewAndProbeUseSameFixedGroupRule(t *testing.T) {

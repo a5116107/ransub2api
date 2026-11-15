@@ -94,6 +94,59 @@ func TestNewAPIIntegrationSharedEncryptedRotationAndUnbind(t *testing.T) {
 	require.NoError(t, e)
 	require.NotContains(t, updated.Extra, service.UpstreamBillingProviderExtraKey)
 }
+
+func TestNewAPIIntegrationApplicabilitySnapshotCASAndRotation(t *testing.T) {
+	ctx := t.Context()
+	a, _, site := newAPIIntegrationAccounts(t)
+	r := NewNewAPIAuthorizationRepository(integrationDB)
+	p := &service.NewAPISiteAuthorization{SiteURL: site, UserID: 7, Ciphertext: "fixture-encrypted"}
+	require.NoError(t, r.Save(ctx, p, []service.NewAPIBindingSave{{Account: a, TokenID: 3, Group: "vip"}}))
+	binding, err := r.GetBinding(ctx, a.ID)
+	require.NoError(t, err)
+	ar := newAccountRepositoryWithSQL(testEntClient(t), integrationDB, nil)
+	loaded, err := ar.GetByID(ctx, a.ID)
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	fresh := now.Add(time.Hour)
+	snapshot := &service.UpstreamBillingProbeSnapshot{Status: "ok", LastAttemptAt: now, ReceivedAt: &now, FreshUntil: &fresh, NextProbeAt: fresh,
+		Data: map[string]any{"provider": "new_api", "object": "new_api.group_billing", "billing_scope": "group", "group": "vip", "token_id": 3,
+			"resolved_rate_multiplier": 0.5, "observed_at": now.Format(time.RFC3339Nano), "rate_applicability": map[string]any{
+				"schema_version": 1, "source": "new_api.pricing", "source_version": "fixture-1", "observed_at": now, "expires_at": fresh,
+				"entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "priority",
+					"reasoning_effort": "unspecified", "context": "all", "group_rate_applies": false, "conclusion": "excluded"}},
+			}}}
+	require.NoError(t, r.WriteSnapshot(ctx, loaded, binding, snapshot))
+	updated, err := ar.GetByID(ctx, a.ID)
+	require.NoError(t, err)
+	projection, err := json.Marshal(service.BuildUpstreamBillingRateSnapshotItems([]service.Account{*updated}))
+	require.NoError(t, err)
+	require.Contains(t, string(projection), `"source":"new_api.pricing"`)
+	require.Contains(t, string(projection), `"conclusion":"excluded"`)
+	require.NotContains(t, string(projection), "fixture-encrypted")
+	require.NotContains(t, string(projection), "sk-first")
+	// The losing probe loaded before the stored observation cannot overwrite it.
+	require.ErrorIs(t, r.WriteSnapshot(ctx, loaded, binding, snapshot), service.ErrUpstreamBillingProbeIdentityChanged)
+	failed := *snapshot
+	failed.Status, failed.FreshUntil, failed.ReceivedAt = "failed", nil, nil
+	require.NoError(t, r.WriteSnapshot(ctx, updated, binding, &failed))
+	updated, err = ar.GetByID(ctx, a.ID)
+	require.NoError(t, err)
+	projection, err = json.Marshal(service.BuildUpstreamBillingRateSnapshotItems([]service.Account{*updated}))
+	require.NoError(t, err)
+	require.Contains(t, string(projection), `"status":"failed"`)
+	require.Contains(t, string(projection), `"source":"new_api.pricing"`, "a failure retains the sanitized replay floor")
+	require.NoError(t, r.WriteSnapshot(ctx, updated, binding, snapshot))
+	updated, err = ar.GetByID(ctx, a.ID)
+	require.NoError(t, err)
+	p, err = r.GetProfile(ctx, site, 7)
+	require.NoError(t, err)
+	p.Ciphertext = "fixture-rotated"
+	require.NoError(t, r.Save(ctx, p, []service.NewAPIBindingSave{{Account: updated, TokenID: 3, Group: "vip"}}))
+	updated, err = ar.GetByID(ctx, a.ID)
+	require.NoError(t, err)
+	require.NotContains(t, updated.Extra, service.UpstreamBillingProbeExtraKey)
+	require.ErrorIs(t, r.WriteSnapshot(ctx, updated, binding, snapshot), service.ErrUpstreamBillingProbeIdentityChanged)
+}
 func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	ctx := t.Context()
 	db, client := newBillingAuditDatabase(t)

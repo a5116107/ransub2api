@@ -1144,12 +1144,12 @@ export interface UpstreamBillingApplicabilityEntry {
   reasoning_effort: string
   context: string
   group_rate_applies: boolean | null
-  conclusion: 'covered' | 'excluded' | 'unknown' | 'conflict'
+  conclusion: 'covered' | 'excluded' | 'unknown' | 'conflict' | 'expired'
 }
 
 export interface UpstreamBillingApplicability {
   schema_version: 1
-  source: 'sub2api.key_billing'
+  source: 'sub2api.key_billing' | 'new_api.pricing'
   source_version: string
   observed_at: string
   expires_at: string
