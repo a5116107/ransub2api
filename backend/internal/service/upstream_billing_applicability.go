@@ -313,6 +313,14 @@ func stringMapValue(data map[string]any, key string) string {
 // keeping a second list of accepted tier/effort options. This constructs no
 // generation request and supplies no evidence of a real upstream send.
 func billingApplicabilityScopeShapeKnown(scope AvailabilityRequestScope) bool {
+	request, payload := billingApplicabilityScopeRequest(scope)
+	parsed := availabilityScopeForRequest(request, payload)
+	return parsed != nil && *parsed == scope
+}
+
+// Construct only scope metadata for preview and conservative candidate checks.
+// The returned request is never sent and is not physical upstream evidence.
+func billingApplicabilityScopeRequest(scope AvailabilityRequestScope) (*http.Request, []byte) {
 	body := map[string]any{"model": scope.Model, "stream": scope.Stream}
 	method, scheme, path := http.MethodPost, "https", "/v1/responses"
 	switch scope.Protocol {
@@ -323,7 +331,7 @@ func billingApplicabilityScopeShapeKnown(scope AvailabilityRequestScope) bool {
 	case "chat_http":
 		path = "/v1/chat/completions"
 	default:
-		return false
+		return nil, nil
 	}
 	if scope.ServiceTier != "unspecified" {
 		body["service_tier"] = scope.ServiceTier
@@ -337,8 +345,7 @@ func billingApplicabilityScopeShapeKnown(scope AvailabilityRequestScope) bool {
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return false
+		return nil, nil
 	}
-	parsed := availabilityScopeForRequest(&http.Request{Method: method, URL: &url.URL{Scheme: scheme, Host: "preview.invalid", Path: path}, Header: make(http.Header)}, payload)
-	return parsed != nil && *parsed == scope
+	return &http.Request{Method: method, URL: &url.URL{Scheme: scheme, Host: "preview.invalid", Path: path}, Header: make(http.Header)}, payload
 }

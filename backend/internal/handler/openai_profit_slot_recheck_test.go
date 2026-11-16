@@ -10,6 +10,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
@@ -77,6 +78,59 @@ func profitSlotTestContext(t *testing.T, gw *service.OpenAIGatewayService, group
 	ctx, pricingAt := gw.WithOpenAIRequestPricingContext(base, &groupID)
 	require.False(t, pricingAt.IsZero())
 	return ctx
+}
+
+func TestAcquireResponsesAccountSlotBillingScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, acquired := range []bool{false, true} {
+		for _, covered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("acquired=%v/covered=%v", acquired, covered), func(t *testing.T) {
+				gw := &service.OpenAIGatewayService{}
+				cache := &profitCountingConcurrencyCache{}
+				h := &OpenAIGatewayHandler{gatewayService: gw,
+					concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatClaude, 0)}
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				groupID := int64(50)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				ctx := profitSlotTestContext(t, gw, groupID, false)
+				ctx = gw.WithUpstreamBillingCandidateRequest(ctx, c.Request, []byte(`{"model":"gpt-fixture","service_tier":"priority"}`))
+				c.Request = c.Request.WithContext(ctx)
+				account := profitSlotTestAccount(91, 0.3)
+				account.Credentials = map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"}
+				account.Extra["openai_passthrough"] = true
+				account.Extra[service.UpstreamBillingProbeEnabledExtraKey] = true
+				account.Extra[service.UpstreamBillingRateSyncEnabledExtraKey] = true
+				snapshot := account.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)
+				data := snapshot["data"].(map[string]any)
+				at := time.Now().UTC().Add(-time.Minute)
+				data["observed_at"] = at.Format(time.RFC3339Nano)
+				data["rate_applicability"] = map[string]any{
+					"schema_version": 1, "source_version": "fixture-1", "observed_at": data["observed_at"], "expires_at": at.Add(10 * time.Minute).Format(time.RFC3339Nano),
+					"entries": []map[string]any{{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "priority", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": covered}},
+				}
+				selection := &service.AccountSelectionResult{Account: account, Acquired: acquired,
+					WaitPlan: &service.AccountWaitPlan{AccountID: account.ID, MaxConcurrency: 2, Timeout: time.Second, MaxWaiting: 2}}
+				if acquired {
+					selection.ReleaseFunc = func() { cache.accountReleases.Add(1) }
+				}
+				streamStarted := false
+				release, result := h.acquireResponsesAccountSlot(c, &groupID, "", selection, false, &streamStarted, zap.NewNop())
+				if covered {
+					require.Equal(t, openAISlotAcquireOK, result)
+					require.NotNil(t, release)
+					require.Zero(t, cache.accountReleases.Load())
+					release()
+				} else {
+					require.Equal(t, openAISlotAcquireProfitVetoed, result)
+					require.Nil(t, release)
+				}
+				require.Equal(t, int64(1), cache.accountReleases.Load())
+				require.Zero(t, w.Body.Len())
+				require.False(t, streamStarted)
+			})
+		}
+	}
 }
 
 func TestAcquireResponsesAccountSlotProfitRecheck(t *testing.T) {

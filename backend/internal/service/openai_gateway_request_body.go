@@ -2052,10 +2052,11 @@ func openAIFastPolicyUserMatches(ruleUserIDs []int64, userID int64) bool {
 	return false
 }
 
-// openAIFastPolicyCtxKey 是 context 中预取的 OpenAIFastPolicySettings 缓存
-// 键，仅用于 WebSocket 长会话内多帧复用同一份策略快照，避免每帧 DB 命中。
+// openAIFastPolicyCtxKey caches a policy snapshot for a WS session or an HTTP
+// request with scope-aware candidate filtering. Candidate and send checks share
+// it without per-candidate or per-frame settings reads.
 //
-// Trade-off：策略变更不会影响当前 WS session（只影响新 session）。这是
+// Trade-off：策略变更不会影响当前 WS session或已冻结的HTTP请求。这是
 // 有意为之 —— 对长会话来说，"策略一致性"比"立刻生效"更重要，且 Claude
 // BetaPolicy 的 gin.Context 缓存也是同样取舍。需要 hot-reload 时管理员
 // 可以通过踢断 session 强制刷新。
@@ -2106,6 +2107,14 @@ func openAIGroupForcesFast(ctx context.Context, account *Account) bool {
 // 入口没有这一前置步骤，pass 路径下若不在此处归一化，"fast" 就会被原样
 // 透传到 OpenAI 上游导致 400/拒绝。把归一化收敛到本函数，所有入口行为一致。
 func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, account *Account, model string, body []byte) ([]byte, error) {
+	return applyOpenAIFastPolicyBody(ctx, account, model, body, func(tier string) (string, string) {
+		return s.evaluateOpenAIFastPolicy(ctx, account, model, tier)
+	})
+}
+
+// Share actual tier rewrites with candidate metadata checks. The evaluator is
+// request-scoped, so candidate iteration never reads settings or calls upstream.
+func applyOpenAIFastPolicyBody(ctx context.Context, account *Account, model string, body []byte, evaluate func(string) (string, string)) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
 	}
@@ -2118,7 +2127,10 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 	}
 	rawTier := gjson.GetBytes(body, "service_tier").String()
 	if rawTier == "" {
-		if s.shouldForceOpenAIFastPriorityForMissingTier(ctx, account, model) {
+		if account == nil || account.Platform != PlatformOpenAI {
+			return body, nil
+		}
+		if action, _ := evaluate(OpenAIFastTierMissing); action == OpenAIFastPolicyActionForcePriority {
 			updated, err := sjson.SetBytes(body, "service_tier", OpenAIFastTierPriority)
 			if err != nil {
 				return body, fmt.Errorf("force missing service_tier priority on body: %w", err)
@@ -2131,7 +2143,7 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 	if normTier == "" {
 		return body, nil
 	}
-	action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, model, normTier)
+	action, errMsg := evaluate(normTier)
 	switch action {
 	case BetaPolicyActionBlock:
 		msg := errMsg

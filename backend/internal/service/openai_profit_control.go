@@ -69,6 +69,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -166,8 +167,8 @@ func profitControlAccountRateAt(account *Account, attemptAt time.Time) (float64,
 	return math.Max(saved, current), ""
 }
 
-// openAIProfitControlGate 是一个请求的利润准入门。除 pricingAt 外全部为预计算
-// 标量：候选过滤热路径上每账号只做一次快照解码与一次浮点比较。
+// openAIProfitControlGate stores the request's precomputed price threshold.
+// Candidate checks also consume any applicable, fresh scope declaration.
 type openAIProfitControlGate struct {
 	// groupID 是门配置来源的被调度分组；请求内按分组复用（failover 阈值稳定），
 	// composite 等跨分组调度切换分组时重新解析。
@@ -384,7 +385,8 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonGroupConfigUnavailable)
 		return true, openAIProfitFilterReasonGroupConfigUnavailable
 	}
-	upstream, reason := profitControlAccountRateAt(account, timezone.Now())
+	attemptAt := timezone.Now()
+	upstream, reason := profitControlAccountRateAt(account, attemptAt)
 	if reason != "" {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
 		return true, reason
@@ -392,6 +394,10 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 	if profitControlOverThreshold(upstream, gate.threshold) {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonThreshold)
 		return true, openAIProfitFilterReasonThreshold
+	}
+	if reason := upstreamBillingCandidateVetoReason(ctx, account, attemptAt); reason != "" {
+		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
+		return true, reason
 	}
 	return false, ""
 }
@@ -465,6 +471,7 @@ type openAIProfitControlGroupStats struct {
 	vetoGroupConfig  atomic.Int64
 	vetoUpstreamRate atomic.Int64
 	vetoSaleRate     atomic.Int64
+	vetoScope        atomic.Int64
 	refreshFailures  atomic.Int64
 	lastLogUnixMilli atomic.Int64
 }
@@ -513,6 +520,10 @@ func (o *openAIProfitControlObserver) recordVeto(groupID int64, platform string,
 		s.vetoUpstreamRate.Add(1)
 	case openAIProfitFilterReasonAccountSaleRateMismatch:
 		s.vetoSaleRate.Add(1)
+	default:
+		if strings.HasPrefix(reason, "profit_upstream_scope_") {
+			s.vetoScope.Add(1)
+		}
 	}
 	o.maybeLog(groupID, platform, threshold, s)
 }
@@ -544,6 +555,7 @@ func (o *openAIProfitControlObserver) maybeLog(groupID int64, platform string, t
 		"veto_group_config_unavailable_total", s.vetoGroupConfig.Load(),
 		"veto_upstream_rate_unavailable_total", s.vetoUpstreamRate.Load(),
 		"veto_account_sale_rate_mismatch_total", s.vetoSaleRate.Load(),
+		"veto_upstream_scope_total", s.vetoScope.Load(),
 		"refresh_failure_total", s.refreshFailures.Load(),
 	)
 }
