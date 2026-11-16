@@ -107,6 +107,73 @@ func physicalUpstreamFixture() Snapshot {
 	return Snapshot{Version: 1, TotalMS: 100, Status: 200, Terminal: "completed", Outcome: "success", Attempts: []Attempt{a, b}}
 }
 
+func TestPhysicalUpstreamOutputKeepsAttemptScopeAndDeliverySeparate(t *testing.T) {
+	for _, mode := range []string{"complete", "downstream_failed", "failed", "single", "zero_gap", "missing", "truncated", "cross_next_send", "ws"} {
+		t.Run(mode, func(t *testing.T) {
+			s := physicalUpstreamFixture()
+			a := &s.Attempts[1]
+			a.Events = map[string]float64{"first_visible_text": 10}
+			a.TextStream = &TextStreamTiming{Chunks: 3, FirstMS: 10, LastMS: 310, MaxGapMS: 200, Terminal: "completed", TerminalMS: 410}
+			a.OutputUsage = &OutputUsage{Status: "observed", ContentStatus: "text_and_reasoning", OutputTokens: 120, ReasoningTokens: 20}
+			end := 450.0
+			a.EndMS, s.TotalMS, s.Terminal = &end, 500, "completed"
+			switch mode {
+			case "downstream_failed":
+				s.DownstreamError, s.Status, s.Outcome, s.Terminal = true, 502, "failed", "failed"
+			case "failed":
+				a.Terminal, a.TextStream.Terminal = "failed", "failed"
+			case "single":
+				a.TextStream.Chunks, a.TextStream.LastMS, a.TextStream.MaxGapMS = 1, 10, 0
+			case "zero_gap":
+				a.TextStream.Chunks, a.TextStream.LastMS, a.TextStream.MaxGapMS = 2, 10, 0
+			case "missing":
+				a.TextStream = nil
+			case "truncated":
+				a.TextStream.Truncated = true
+			case "cross_next_send":
+				s.Attempts = append(s.Attempts, Attempt{Number: 3, Kind: "http", StartMS: 300})
+			case "ws":
+				s.Attempts, s.TTFTMode, s.Status = s.Attempts[1:], "ws_turn", 0
+				a.Number, a.Kind, a.Status, a.UpstreamCredential.Source = 1, "ws_turn", 0, "websocket_handshake_credentials"
+			}
+			var projected struct {
+				Output struct {
+					Version int
+					Stream  TextStreamObservation `json:"text_stream"`
+					Rate    OutputRateObservation `json:"rate"`
+				} `json:"output"`
+			}
+			physical := DerivePhysicalUpstream(s)
+			index := len(physical.Attempts) - 1
+			if mode == "cross_next_send" {
+				index = 1
+			}
+			raw, err := json.Marshal(physical.Attempts[index])
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(raw, &projected))
+			require.Equal(t, 1, projected.Output.Version)
+			if mode == "complete" || mode == "downstream_failed" || mode == "ws" {
+				require.Equal(t, "observed", projected.Output.Stream.Status)
+				require.Equal(t, 200.0, *projected.Output.Stream.MaxGapMS)
+				require.Equal(t, 100.0, *projected.Output.Stream.TailWaitMS)
+				require.Equal(t, "estimated", projected.Output.Rate.Status)
+				require.Equal(t, 250.0, *projected.Output.Rate.TokensPerSecond)
+			} else if mode == "failed" || mode == "truncated" {
+				require.Equal(t, "partial", projected.Output.Stream.Status)
+				require.Equal(t, 200.0, *projected.Output.Stream.MaxGapMS)
+				require.Nil(t, projected.Output.Rate.TokensPerSecond)
+			} else if mode == "single" {
+				require.Nil(t, projected.Output.Stream.MaxGapMS)
+			} else if mode == "zero_gap" {
+				require.Equal(t, 0.0, *projected.Output.Stream.MaxGapMS)
+			} else {
+				require.Nil(t, projected.Output.Stream.MaxGapMS)
+				require.Nil(t, projected.Output.Rate.TokensPerSecond)
+			}
+		})
+	}
+}
+
 func TestPhysicalUpstreamKeepsFailuresBeforeSuccess(t *testing.T) {
 	s := physicalUpstreamFixture()
 	out := DerivePhysicalUpstream(s)

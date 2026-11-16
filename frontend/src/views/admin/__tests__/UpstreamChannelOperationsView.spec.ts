@@ -4,7 +4,7 @@ import { readOperations, type OperationsSnapshot } from '@/api/admin/upstreamOpe
 import UpstreamChannelOperationsView from '../UpstreamChannelOperationsView.vue'
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => key === 'upstreamOps.rawCache.waitSamples' ? `${key} ${values?.samples} ${values?.unknown} ${values?.coverage}` : key }) }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => ['upstreamOps.rawCache.waitSamples','upstreamOps.output.samples'].includes(key) ? `${key} ${values?.samples} ${values?.unknown} ${values?.coverage}` : key === 'upstreamOps.output.distribution' ? `${key} ${values?.mean} ${values?.p95} ${values?.max}` : key === 'upstreamOps.output.partial' ? `${key} ${values?.count} ${values?.max}` : key }) }))
 vi.mock('@/api/admin/upstreamOperations', () => ({ readOperations: vi.fn() }))
 describe('upstream channel definition', () => {
  it.each([
@@ -234,6 +234,60 @@ describe('all retained upstream attempts', () => {
   const w=mount(UpstreamChannelOperationsView);await flushPromises()
   expect(w.find('[data-testid="upstream-attempt-waits"]').exists()).toBe(false)
   expect(w.find('[data-testid="upstream-attempt-row"]').exists()).toBe(true)
+  w.unmount()
+ })
+})
+
+
+describe('per-attempt output diagnostics', () => {
+ const metric={samples:2,unknown_samples:2,partial_samples:1,coverage:0.5,mean_ms:300,p95_ms:390,max_ms:400,partial_max_ms:600,latest_sample_at:'2026-11-16T01:00:00Z',latest_partial_at:'2026-11-16T01:00:00Z'}
+ const output={version:1,source:'canonical_physical_attempt_output',attempts:4,max_gap:metric,tail_wait:{...metric,mean_ms:150,p95_ms:195,max_ms:200,partial_max_ms:100},rate:{samples:2,unknown_samples:2,coverage:0.5,tokens_per_second:200/1.2,non_reasoning_tokens:200,window_ms:1200,latest_sample_at:'2026-11-16T01:00:00Z'}}
+ const summary={attempts:4,logical_requests:4,succeeded:2,failed:1,interrupted:0,unknown:1,unattributed_attempts:0,confirmed_success_rate:2/3,outcome_coverage:0.75,attempts_per_request:1,latest_sample_at:null}
+ const base={scope:{},usage:{summary:{},rows:[],accounts:[],members:[],total:0,catalog:[]},quality:{status:'unsupported_scope'},errors:{status:'query_failed'}}
+ async function render(value: unknown=output,transport='http') {
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{version:1,source:'retained_physical_transport_attempts',summary,capture:{traces:4,complete_traces:4,unknown_traces:0,coverage:1},total:1,rows:[{...summary,account_id:42,transport,protocol:'responses',public_model:'alias',output:value}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises();return w
+ }
+ it.each(['http','ws_turn'])('shows %s complete distributions and separate partial lower bounds with weighted throughput',async transport=>{
+  const w=await render(output,transport)
+  const gap=w.get('[data-testid="attempt-output-max_gap"]')
+  expect(gap.text()).toContain('300.0 ms 390.0 ms 400.0 ms')
+  expect(gap.text()).toContain('upstreamOps.rawCache.partial')
+  expect(gap.text()).toContain('2 2 50.0%')
+  expect(gap.get('[data-testid="output-partial"]').text()).toContain('1 600.0 ms')
+  expect(w.get('[data-testid="attempt-output-tail_wait"]').text()).toContain('150.0 ms 195.0 ms 200.0 ms')
+  expect(w.get('[data-testid="output-rate-value"]').text()).toContain('166.7 Token/s')
+  expect(w.get('[data-testid="upstream-attempt-output"]').text()).toContain('upstreamOps.output.scope')
+  expect(w.get('[data-testid="attempt-output-rate"]').text()).toContain('upstreamOps.output.rateScope')
+  expect(w.get('[data-testid="attempt-count-failed"]').text()).toBe('1')
+  w.unmount()
+ })
+ it.each(['missing','future','source','attempt_count','negative','nonfinite','counts','coverage','rate_window','rate_mismatch','rate_fractional','rate_unsafe'])('keeps invalid %s evidence unknown',async mode=>{
+  const changed=structuredClone(output)
+  switch(mode){
+   case 'future':changed.version=9;break
+   case 'source':changed.source='legacy_tps';break
+   case 'attempt_count':changed.attempts=5;break
+   case 'negative':changed.max_gap.mean_ms=-1;break
+   case 'nonfinite':changed.max_gap.max_ms=Infinity;break
+   case 'counts':changed.max_gap.samples=9;break
+   case 'coverage':changed.max_gap.coverage=0.9;break
+   case 'rate_window':changed.rate.window_ms=0;break
+   case 'rate_mismatch':changed.rate.tokens_per_second=999;break
+   case 'rate_fractional':changed.rate.non_reasoning_tokens=200.5;changed.rate.tokens_per_second=200.5/1.2;break
+   case 'rate_unsafe':changed.rate.non_reasoning_tokens=2**53;changed.rate.tokens_per_second=2**53/1.2;break
+  }
+  const w=await render(mode==='missing'?null:changed)
+  if(mode.startsWith('rate'))expect(w.get('[data-testid="output-rate-value"]').text()).toContain('upstreamOps.unknown')
+  else expect(w.get('[data-testid="attempt-output-max_gap"]').get('[data-testid="output-distribution"]').text()).toContain('upstreamOps.unknown')
+  w.unmount()
+ })
+ it('separates a measured zero from unknown and keeps partial samples outside complete coverage',async()=>{
+  const changed=structuredClone(output)
+  changed.max_gap={...metric,mean_ms:0,p95_ms:0,max_ms:0}
+  const w=await render(changed)
+  expect(w.get('[data-testid="attempt-output-max_gap"]').text()).toContain('0.0 ms 0.0 ms 0.0 ms')
+  expect(w.get('[data-testid="attempt-output-max_gap"]').text()).toContain('2 2 50.0%')
   w.unmount()
  })
 })

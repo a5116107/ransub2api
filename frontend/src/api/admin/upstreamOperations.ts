@@ -35,6 +35,16 @@ export interface UpstreamAttemptCacheMetrics {
  hit_attempts: number; input_tokens: number; read_tokens: number; coverage: number | null
  attempt_hit_rate: number | null; token_read_rate: number | null; latest_sample_at: string | null
 }
+export interface UpstreamOutputDistribution {
+ samples: number; unknown_samples: number; partial_samples: number; coverage: number | null
+ mean_ms: number | null; p95_ms: number | null; max_ms: number | null; partial_max_ms: number | null
+ latest_sample_at: string | null; latest_partial_at: string | null
+}
+export interface UpstreamAttemptOutputMetrics {
+ version: number; source: string; attempts: number
+ max_gap: UpstreamOutputDistribution; tail_wait: UpstreamOutputDistribution
+ rate: { samples: number; unknown_samples: number; coverage: number | null; tokens_per_second: number | null; non_reasoning_tokens: number | null; window_ms: number | null; latest_sample_at: string | null }
+}
 export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  account_id: number; credential_fingerprint: string | null; route_fingerprint: string | null
  transport: string; protocol: string | null; public_model: string; stream: boolean
@@ -42,6 +52,7 @@ export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  upstream_model?: string | null; upstream_protocol?: string | null; service_tier?: string | null
  reasoning_effort?: string | null; upstream_stream?: boolean | null
  raw_cache?: UpstreamAttemptCacheMetrics
+ output?: UpstreamAttemptOutputMetrics
  waits?: UpstreamWaitSet
 }
 export interface UpstreamAttempts {

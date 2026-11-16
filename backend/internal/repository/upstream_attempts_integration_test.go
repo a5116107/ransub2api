@@ -229,7 +229,8 @@ type upstreamAttemptWaitReport struct {
 		UpstreamModel string `json:"upstream_model"`
 		Transport     string
 		Attempts      int
-		RawCache      upstreamAttemptCacheMetrics `json:"raw_cache"`
+		RawCache      upstreamAttemptCacheMetrics  `json:"raw_cache"`
+		Output        upstreamAttemptOutputMetrics `json:"output"`
 		Waits         struct {
 			Version        int
 			Source         string
@@ -702,4 +703,282 @@ func TestUpstreamAttemptsWaitsHundredCredentialScopesBoundedPage(t *testing.T) {
 		require.Equal(t, 40.0, *row.Waits.FirstByte.MeanMS)
 	}
 	t.Logf("1000 retained failures / 100 credential scopes / 20 returned rows: %s (service budget 25s)", time.Since(started))
+}
+
+type upstreamAttemptOutputDistribution struct {
+	Samples    int
+	Unknown    int      `json:"unknown_samples"`
+	Partial    int      `json:"partial_samples"`
+	Mean       *float64 `json:"mean_ms"`
+	P95        *float64 `json:"p95_ms"`
+	Max        *float64 `json:"max_ms"`
+	PartialMax *float64 `json:"partial_max_ms"`
+	Coverage   *float64
+	Latest     *time.Time `json:"latest_sample_at"`
+}
+type upstreamAttemptOutputMetrics struct {
+	Version  int
+	Source   string
+	Attempts int
+	Gap      upstreamAttemptOutputDistribution `json:"max_gap"`
+	Tail     upstreamAttemptOutputDistribution `json:"tail_wait"`
+	Rate     struct {
+		Samples  int
+		Unknown  int      `json:"unknown_samples"`
+		TPS      *float64 `json:"tokens_per_second"`
+		Tokens   *int64   `json:"non_reasoning_tokens"`
+		Window   *float64 `json:"window_ms"`
+		Coverage *float64
+		Latest   *time.Time `json:"latest_sample_at"`
+	}
+}
+
+func upstreamAttemptOutputFixture(account int64) requesttiming.Attempt {
+	a := upstreamAttemptWaitFixture(account)
+	end := 450.0
+	a.Status, a.Terminal, a.EndMS = 200, "completed", &end
+	a.Events["first_visible_text"] = 10
+	a.TextStream = &requesttiming.TextStreamTiming{Chunks: 3, FirstMS: 10, LastMS: 310, MaxGapMS: 200, Terminal: "completed", TerminalMS: 410}
+	a.OutputUsage = &requesttiming.OutputUsage{Status: "observed", ContentStatus: "text_and_reasoning", OutputTokens: 120, ReasoningTokens: 20}
+	return a
+}
+
+func TestUpstreamAttemptsOutputPerScopeCompletePartialAndWeightedRate(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, kind := range []string{"first", "second", "partial", "missing", "other_model", "ws"} {
+		a := upstreamAttemptOutputFixture(f.account)
+		s := requesttiming.Snapshot{TotalMS: 1500, Attempts: []requesttiming.Attempt{a}}
+		switch kind {
+		case "second":
+			a.TextStream.LastMS, a.TextStream.MaxGapMS, a.TextStream.TerminalMS = 610, 400, 810
+			end := 850.0
+			a.EndMS = &end
+		case "partial":
+			a.Terminal, a.Error = "failed", "timeout"
+			a.TextStream.LastMS, a.TextStream.MaxGapMS, a.TextStream.TerminalMS, a.TextStream.Terminal = 910, 600, 1010, "failed"
+			end := 1100.0
+			a.EndMS = &end
+		case "missing":
+			a.TextStream, a.OutputUsage = nil, nil
+		case "other_model":
+			a.UpstreamRequest.Model = "wire-b"
+		case "ws":
+			a.Kind, a.Status, a.UpstreamCredential.Source = "ws_turn", 0, "websocket_handshake_credentials"
+			a.UpstreamRequest.Source = "websocket_generation_payload"
+			s.TTFTMode = "ws_turn"
+		}
+		s.Attempts[0] = a
+		writeUpstreamAttemptWaits(t, f, now, s)
+	}
+	data := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, 6, data.Summary.Attempts)
+	require.Len(t, data.Rows, 3)
+	for _, row := range data.Rows {
+		m := row.Output
+		require.Equal(t, 1, m.Version)
+		require.Equal(t, "canonical_physical_attempt_output", m.Source)
+		require.Equal(t, row.Attempts, m.Attempts)
+		if row.Transport == "ws_turn" || row.UpstreamModel == "wire-b" {
+			require.Equal(t, 1, m.Gap.Samples)
+			require.Zero(t, m.Gap.Unknown)
+			require.Equal(t, 250.0, *m.Rate.TPS)
+			continue
+		}
+		require.Equal(t, 2, m.Gap.Samples)
+		require.Equal(t, 2, m.Gap.Unknown)
+		require.Equal(t, 1, m.Gap.Partial)
+		require.Equal(t, 300.0, *m.Gap.Mean)
+		require.InDelta(t, 390, *m.Gap.P95, 0.000001)
+		require.Equal(t, 400.0, *m.Gap.Max)
+		require.Equal(t, 600.0, *m.Gap.PartialMax)
+		require.Equal(t, 0.5, *m.Gap.Coverage)
+		require.NotNil(t, m.Gap.Latest)
+		require.Equal(t, 150.0, *m.Tail.Mean)
+		require.InDelta(t, 195, *m.Tail.P95, 0.000001)
+		require.Equal(t, 2, m.Rate.Samples)
+		require.Equal(t, 2, m.Rate.Unknown)
+		require.EqualValues(t, 200, *m.Rate.Tokens)
+		require.Equal(t, 1200.0, *m.Rate.Window)
+		require.InDelta(t, 200.0/1.2, *m.Rate.TPS, 0.000001)
+	}
+}
+
+func TestUpstreamAttemptsOutputRejectsHistoricalCrossScopeAndMalformedReports(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tc := range []struct {
+		name, mutation     string
+		gap, partial, rate int
+	}{
+		{"valid", `detail`, 1, 0, 1},
+		{"missing", `detail #- '{physical_upstream,attempts,0,output}'`, 0, 0, 0},
+		{"final_is_not_fallback", `jsonb_set(detail #- '{physical_upstream,attempts,0,output}','{output_rate}',detail->'physical_upstream'->'attempts'->0->'output')`, 0, 0, 0},
+		{"future", `jsonb_set(detail,'{physical_upstream,attempts,0,output,version}','9')`, 0, 0, 0},
+		{"string_version", `jsonb_set(detail,'{physical_upstream,attempts,0,output,version}','"1"')`, 0, 0, 0},
+		{"foreign_source", `jsonb_set(detail,'{physical_upstream,attempts,0,output,text_stream,source}','"typed_responses_ws"')`, 0, 0, 0},
+		{"final_scope", `jsonb_set(detail,'{physical_upstream,attempts,0,output,text_stream,scope}','"final_physical_http_responses_text_deltas_at_parser"')`, 0, 0, 0},
+		{"wrong_route", `jsonb_set(detail,'{attempts,0,route_fingerprint}',to_jsonb(repeat('c',64)))`, 0, 0, 0},
+		{"wrong_key", `jsonb_set(detail,'{attempts,0,upstream_credential,fingerprint}',to_jsonb(repeat('c',64)))`, 0, 0, 0},
+		{"wrong_model", `jsonb_set(detail,'{attempts,0,upstream_request,model}','"wire-b"')`, 0, 0, 0},
+		{"wrong_protocol", `jsonb_set(detail,'{attempts,0,route,endpoint}','"messages"')`, 0, 0, 0},
+		{"raw_protocol", `jsonb_set(detail,'{attempts,0,text_stream,protocol}','"chat_completions"')`, 0, 0, 0},
+		{"missing_identity", `jsonb_set(detail,'{physical_upstream,attempts,0,identity_known}','false')`, 0, 0, 0},
+		{"missing_scope", `detail #- '{physical_upstream,attempts,0,upstream_request}'`, 0, 0, 0},
+		{"physical_duplicate", `jsonb_set(detail,'{attempts}',(detail->'attempts')||(detail->'attempts'))`, 0, 0, 0},
+		{"physical_object", `jsonb_set(detail,'{attempts}','{}')`, 0, 0, 0},
+		{"capture_truncated", `jsonb_set(detail,'{truncated}','true')`, 0, 0, 0},
+		{"parser_gap", `jsonb_set(detail,'{attempts,0,events,typed_content_truncated}','100')`, 0, 0, 0},
+		{"invalid", `jsonb_set(detail,'{attempts,0,text_stream,invalid}','true')`, 0, 0, 0},
+		{"truncated_cannot_complete", `jsonb_set(detail,'{attempts,0,text_stream,truncated}','true')`, 0, 0, 0},
+		{"failed_cannot_complete", `jsonb_set(detail,'{attempts,0,terminal}','"failed"')`, 0, 0, 0},
+		{"no_end", `detail #- '{attempts,0,end_ms}'`, 0, 0, 0},
+		{"end_after_capture", `jsonb_set(detail,'{attempts,0,end_ms}','1501')`, 0, 0, 0},
+		{"string_chunks", `jsonb_set(detail,'{attempts,0,text_stream,chunks}','"3"')`, 0, 0, 0},
+		{"fractional_chunks", `jsonb_set(detail,'{attempts,0,text_stream,chunks}','3.5')`, 0, 0, 0},
+		{"negative_gap", `jsonb_set(detail,'{attempts,0,text_stream,max_gap_ms}','-1')`, 0, 0, 0},
+		{"impossible_gap", `jsonb_set(detail,'{attempts,0,text_stream,max_gap_ms}','10')`, 0, 0, 0},
+		{"unmatched_gap", `jsonb_set(detail,'{physical_upstream,attempts,0,output,text_stream,max_gap_ms}','201')`, 0, 0, 0},
+		{"unmatched_tail", `jsonb_set(detail,'{physical_upstream,attempts,0,output,text_stream,tail_wait_ms}','101')`, 0, 0, 0},
+		{"unmatched_span", `jsonb_set(detail,'{physical_upstream,attempts,0,output,text_stream,span_ms}','301')`, 0, 0, 0},
+		{"terminal_after_capture", `jsonb_set(detail,'{attempts,0,text_stream,terminal_ms}','1501')`, 0, 0, 0},
+		{"cross_next_send", `jsonb_set(detail,'{attempts}',(detail->'attempts')||'[{"number":2,"kind":"http","start_ms":300}]')`, 0, 0, 0},
+		{"next_missing_start", `jsonb_set(detail,'{attempts}',(detail->'attempts')||'[{"number":2,"kind":"http"}]')`, 0, 0, 0},
+		{"next_null_start", `jsonb_set(detail,'{attempts}',(detail->'attempts')||'[{"number":2,"kind":"http","start_ms":null}]')`, 0, 0, 0},
+		{"next_bad_number", `jsonb_set(detail,'{attempts}',(detail->'attempts')||'[{"number":"2","kind":"http","start_ms":300}]')`, 0, 0, 0},
+		{"past_span", `jsonb_set(jsonb_set(detail,'{attempts,0,text_stream,max_gap_ms}','301'),'{physical_upstream,attempts,0,output,text_stream,max_gap_ms}','301')`, 0, 0, 0},
+		{"rate_source", `jsonb_set(detail,'{physical_upstream,attempts,0,output,rate,source}','"legacy_tps"')`, 1, 0, 0},
+		{"rate_scope", `jsonb_set(detail,'{physical_upstream,attempts,0,output,rate,scope}','"final_physical_http_responses_text_at_parser"')`, 1, 0, 0},
+		{"rate_method", `jsonb_set(detail,'{physical_upstream,attempts,0,output,rate,method}','"billable_tokens"')`, 1, 0, 0},
+		{"rate_zero_window", `jsonb_set(detail,'{physical_upstream,attempts,0,output,rate,window_ms}','0')`, 1, 0, 0},
+		{"rate_string_window", `jsonb_set(detail,'{physical_upstream,attempts,0,output,rate,window_ms}','"400"')`, 1, 0, 0},
+		{"rate_mismatch", `jsonb_set(detail,'{physical_upstream,attempts,0,output,rate,tokens_per_second}','251')`, 1, 0, 0},
+		{"rate_tokens", `jsonb_set(detail,'{attempts,0,output_usage,output_tokens}','121')`, 1, 0, 0},
+		{"rate_unsafe", `jsonb_set(detail,'{attempts,0,output_usage,output_tokens}','9007199254740992')`, 1, 0, 0},
+		{"rate_tool", `jsonb_set(detail,'{attempts,0,text_stream,non_text_output}','true')`, 1, 0, 0},
+		{"rate_multiple", `jsonb_set(detail,'{attempts,0,events,typed_output_multiple_candidates}','1')`, 1, 0, 0},
+		{"rate_no_usage", `detail #- '{attempts,0,output_usage}'`, 1, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := upstreamAttemptOutputFixture(f.account)
+			trace := writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 1500, Attempts: []requesttiming.Attempt{a}})
+			_, err := integrationDB.Exec(`UPDATE request_connection_traces SET detail=`+tc.mutation+` WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+			var before, after string
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&before))
+			data := readUpstreamAttemptWaits(t, f, now)
+			require.Equal(t, 1, data.Summary.Attempts)
+			require.Len(t, data.Rows, 1)
+			m := data.Rows[0].Output
+			require.Equal(t, tc.gap, m.Gap.Samples)
+			require.Equal(t, tc.partial, m.Gap.Partial)
+			require.Equal(t, tc.rate, m.Rate.Samples)
+			require.Equal(t, 1-tc.gap, m.Gap.Unknown)
+			require.Equal(t, 1-tc.rate, m.Rate.Unknown)
+			if tc.gap == 0 {
+				require.Nil(t, m.Gap.Mean)
+				require.Nil(t, m.Gap.P95)
+				require.Nil(t, m.Gap.Latest)
+			}
+			if tc.rate == 0 {
+				require.Nil(t, m.Rate.TPS)
+				require.Nil(t, m.Rate.Latest)
+			}
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&after))
+			require.Equal(t, before, after)
+			_, err = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestUpstreamAttemptsOutputZeroSinglePartialAndIndependentWS(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, mode := range []string{"zero", "single", "partial", "truncated", "no_terminal", "short", "no_reasoning", "buffered", "fractional_clock_negative", "fractional_clock_positive", "chat", "chat_missing_final", "messages_unattributed", "ws", "ws_handshake", "ws_other_turn"} {
+		t.Run(mode, func(t *testing.T) {
+			a := upstreamAttemptOutputFixture(f.account)
+			s := requesttiming.Snapshot{TotalMS: 1500}
+			gap, partial, tail, rate := 1, 0, 1, 1
+			switch mode {
+			case "zero":
+				a.TextStream.LastMS, a.TextStream.MaxGapMS = 10, 0
+				rate = 0
+			case "single":
+				a.TextStream.Chunks, a.TextStream.LastMS, a.TextStream.MaxGapMS = 1, 10, 0
+				gap, rate = 0, 0
+			case "partial":
+				a.Terminal, a.Error, a.TextStream.Terminal = "failed", "timeout", "failed"
+				gap, partial, tail, rate = 0, 1, 0, 0
+			case "truncated":
+				a.TextStream.Truncated = true
+				gap, partial, tail, rate = 0, 1, 0, 0
+			case "no_terminal":
+				a.Terminal, a.TextStream.Terminal, a.TextStream.TerminalMS = "", "", 0
+				gap, partial, tail, rate = 0, 1, 0, 0
+			case "short":
+				a.OutputUsage.OutputTokens = 30
+				rate = 0
+			case "no_reasoning":
+				a.OutputUsage.Status = "not_reported"
+				rate = 0
+			case "fractional_clock_negative", "fractional_clock_positive":
+				a.TextStream.Chunks, a.TextStream.FirstMS, a.TextStream.LastMS = 2, 0.1, 300.2
+				if mode == "fractional_clock_positive" {
+					a.TextStream.FirstMS, a.TextStream.LastMS = 0.0001, 300.1
+				}
+				a.Events["first_visible_text"] = a.TextStream.FirstMS
+				a.TextStream.MaxGapMS = a.TextStream.LastMS - a.TextStream.FirstMS
+
+			case "buffered":
+				end := 20.0
+				a.EndMS = &end
+			}
+			if mode == "chat" || mode == "chat_missing_final" {
+				a.Route.Endpoint, a.UpstreamRequest.Protocol, a.TextStream.Protocol = "chat_completions", "chat_completions", "chat_completions"
+				a.OutputUsage.Protocol, a.OutputUsage.ContentStatus, a.OutputUsage.Final = "chat_completions", "chat_completions_text_and_reasoning", mode == "chat"
+				if mode == "chat_missing_final" {
+					rate = 0
+				}
+			}
+			if mode == "messages_unattributed" {
+				a.Route.Endpoint, a.UpstreamRequest.Protocol, a.TextStream.Protocol = "messages", "messages", "messages"
+				a.OutputUsage.Protocol, a.OutputUsage.ContentStatus, a.OutputUsage.Final = "messages", "messages_text_and_reasoning", true
+				gap, partial, tail, rate = 0, 0, 0, 0
+			}
+			if strings.HasPrefix(mode, "ws") {
+				a.Kind, a.Status, a.UpstreamCredential.Source = "ws_turn", 0, "websocket_handshake_credentials"
+				a.UpstreamRequest.Source = "websocket_generation_payload"
+				s.TTFTMode = "ws_turn"
+			}
+			s.Attempts = []requesttiming.Attempt{a}
+			trace := writeUpstreamAttemptWaits(t, f, now, s)
+			if mode == "ws_handshake" || mode == "ws_other_turn" {
+				mutation := `jsonb_set(detail,'{attempts,0,status}','101')`
+				if mode == "ws_other_turn" {
+					mutation = `jsonb_set(detail,'{attempts}',(detail->'attempts')||'[{"number":2,"kind":"http","start_ms":1000}]')`
+				}
+				_, err := integrationDB.Exec(`UPDATE request_connection_traces SET detail=`+mutation+` WHERE trace_id=$1`, trace)
+				require.NoError(t, err)
+				gap, partial, tail, rate = 0, 0, 0, 0
+			}
+			data := readUpstreamAttemptWaits(t, f, now)
+			require.Len(t, data.Rows, 1)
+			m := data.Rows[0].Output
+			require.Equal(t, gap, m.Gap.Samples)
+			require.Equal(t, partial, m.Gap.Partial)
+			require.Equal(t, tail, m.Tail.Samples)
+			require.Equal(t, rate, m.Rate.Samples)
+			if mode == "zero" {
+				require.NotNil(t, m.Gap.Mean)
+				require.Zero(t, *m.Gap.Mean)
+			}
+			if partial > 0 {
+				require.Equal(t, 200.0, *m.Gap.PartialMax)
+				require.Nil(t, m.Gap.Mean)
+			}
+			_, err := integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+		})
+	}
 }

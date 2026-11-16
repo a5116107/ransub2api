@@ -26,6 +26,130 @@ const upstreamAttemptCacheAggregate = `jsonb_build_object('version',1,'source','
  'token_read_rate',sum(raw_read) FILTER (WHERE cache_observed)/NULLIF(sum(raw_input) FILTER (WHERE cache_observed),0)::numeric,
  'latest_sample_at',max(created_at) FILTER (WHERE cache_observed))`
 
+// Numeric JSON is bounded before casts so malformed retained diagnostics stay
+// unknown instead of breaking the entire administrator query.
+func upstreamOutputNumber(path string) string {
+	return `CASE WHEN jsonb_typeof(` + path + `)='number' AND length((` + path + `)::text)<=24 THEN (` + path + `)::text::numeric END`
+}
+
+func upstreamOutputDistribution(value, partial string) string {
+	return `jsonb_build_object('samples',count(` + value + `),'unknown_samples',count(*)-count(` + value + `),
+ 'partial_samples',count(` + partial + `),'coverage',count(` + value + `)::numeric/NULLIF(count(*),0),
+ 'mean_ms',avg(` + value + `),'p95_ms',percentile_cont(0.95) WITHIN GROUP (ORDER BY ` + value + `),
+ 'max_ms',max(` + value + `),'partial_max_ms',max(` + partial + `),
+ 'latest_sample_at',max(created_at) FILTER (WHERE ` + value + ` IS NOT NULL),
+ 'latest_partial_at',max(created_at) FILTER (WHERE ` + partial + ` IS NOT NULL))`
+}
+
+var upstreamAttemptOutputAggregate = `jsonb_build_object('version',1,'source','canonical_physical_attempt_output',
+ 'attempts',count(*),'max_gap',` + upstreamOutputDistribution("output_gap", "partial_gap") + `,
+ 'tail_wait',` + upstreamOutputDistribution("output_tail", "partial_tail") + `,
+ 'rate',jsonb_build_object('samples',count(output_tokens),'unknown_samples',count(*)-count(output_tokens),
+ 'coverage',count(output_tokens)::numeric/NULLIF(count(*),0),
+ 'tokens_per_second',sum(output_tokens)*1000/NULLIF(sum(output_window),0),
+ 'non_reasoning_tokens',sum(output_tokens),'window_ms',sum(output_window),
+ 'latest_sample_at',max(created_at) FILTER (WHERE output_tokens IS NOT NULL)))`
+
+var upstreamAttemptOutputCTEs = `, output_fields AS (
+ SELECT c.*,item->'output'->'text_stream' AS output_stream,item->'output'->'rate' AS output_rate,
+ raw_attempt->'text_stream' AS raw_stream,raw_attempt->'output_usage' AS raw_output,
+ ` + upstreamOutputNumber("detail->'total_ms'") + ` total_ms,
+ ` + upstreamOutputNumber("raw_attempt->'start_ms'") + ` output_start,
+ ` + upstreamOutputNumber("raw_attempt->'end_ms'") + ` output_end,
+ ` + upstreamOutputNumber("raw_attempt->'text_stream'->'chunks'") + ` output_chunks,
+ ` + upstreamOutputNumber("raw_attempt->'text_stream'->'first_ms'") + ` output_first,
+ ` + upstreamOutputNumber("raw_attempt->'text_stream'->'last_ms'") + ` output_last,
+ ` + upstreamOutputNumber("raw_attempt->'text_stream'->'max_gap_ms'") + ` raw_gap,
+ ` + upstreamOutputNumber("raw_attempt->'text_stream'->'terminal_ms'") + ` output_terminal,
+ ` + upstreamOutputNumber("item->'output'->'text_stream'->'span_ms'") + ` stream_span,
+ ` + upstreamOutputNumber("item->'output'->'text_stream'->'tail_wait_ms'") + ` stream_tail,
+ ` + upstreamOutputNumber("item->'output'->'rate'->'window_ms'") + ` rate_window,
+ ` + upstreamOutputNumber("item->'output'->'rate'->'tokens_per_second'") + ` rate_value,
+ ` + upstreamOutputNumber("raw_attempt->'output_usage'->'output_tokens'") + ` raw_output_tokens,
+ ` + upstreamOutputNumber("raw_attempt->'output_usage'->'reasoning_tokens'") + ` raw_reasoning_tokens,
+ next_send.boundary AS next_send_ms,next_send.valid AS next_send_valid
+ FROM cache_samples c
+ LEFT JOIN LATERAL (
+  SELECT min(` + upstreamOutputNumber("n->'start_ms'") + `) boundary,
+  bool_and(COALESCE(jsonb_typeof(n->'number')='number' AND n->>'number' ~ '^([1-9]|[12][0-9]|3[0-2])$'
+   AND jsonb_typeof(n->'start_ms')='number' AND length((n->'start_ms')::text)<=24,false)) valid
+  FROM jsonb_array_elements(CASE jsonb_typeof(detail->'attempts') WHEN 'array' THEN CASE WHEN jsonb_array_length(detail->'attempts')<=32 THEN detail->'attempts' ELSE '[]'::jsonb END ELSE '[]'::jsonb END) n
+  WHERE n->>'kind'='http' AND (NOT COALESCE(jsonb_typeof(n->'number')='number'
+   AND n->>'number' ~ '^([1-9]|[12][0-9]|3[0-2])$',false)
+   OR ` + upstreamOutputNumber("n->'number'") + `>` + upstreamOutputNumber("item->'number'") + `)
+ ) next_send ON item->>'transport'='http'
+), output_validity AS (
+ SELECT *,COALESCE(identity_known AND request_scope_known AND raw_attempt IS NOT NULL
+ AND jsonb_typeof(item->'account_id')='number' AND item->'output'->'version'='1'::jsonb
+ AND request_scope->'stream'='true'::jsonb
+ AND item->>'protocol'=CASE request_scope->>'protocol' WHEN 'responses_compact' THEN 'responses' ELSE request_scope->>'protocol' END
+ AND COALESCE(raw_stream->>'protocol','responses')=item->>'protocol'
+ AND ((item->>'transport'='http' AND raw_attempt->'route'->>'endpoint'=request_scope->>'protocol'
+   AND output_stream->>'scope'='physical_http_'||(item->>'protocol')||'_text_deltas_at_parser'
+   AND output_stream->>'source'='typed_'||(item->>'protocol')||'_sse')
+  OR (item->>'transport'='ws_turn' AND ws_wait IS NOT NULL
+   AND output_stream->>'scope'='physical_websocket_turn_text_deltas_at_parser' AND output_stream->>'source'='typed_responses_ws'))
+ AND output_stream->>'status' IN ('observed','partial')
+ AND NOT COALESCE(raw_attempt->'events' ? 'typed_content_truncated',false)
+ AND COALESCE(raw_stream->'invalid','false'::jsonb)='false'::jsonb
+ AND total_ms>=0 AND output_start>=0 AND output_end BETWEEN output_start AND total_ms
+ AND output_chunks BETWEEN 1 AND 1000000 AND trunc(output_chunks)=output_chunks
+ AND output_first>=output_start AND output_last BETWEEN output_first AND total_ms
+ AND (next_send_ms IS NULL OR output_last<=next_send_ms)
+ AND COALESCE(next_send_valid,true)
+ -- float64 differences are serialized independently of their operands.
+ -- Match the parser's 1e-9 gap tolerance across decimal JSON arithmetic.
+ AND raw_gap>=0 AND raw_gap<=output_last-output_first+0.000000001
+ AND ((output_chunks=1 AND output_last=output_first AND raw_gap=0)
+  OR (output_chunks>1 AND raw_gap+0.000000001>=(output_last-output_first)/NULLIF(output_chunks-1,0)))
+ AND output_stream->'chunks'=raw_stream->'chunks'
+ AND output_stream->'gap_samples'=to_jsonb(output_chunks-1)
+ AND ((output_chunks=1 AND output_stream->'max_gap_ms'='null'::jsonb AND output_stream->'span_ms'='null'::jsonb)
+  OR (output_chunks>1 AND output_stream->'max_gap_ms'=raw_stream->'max_gap_ms'
+   AND abs(stream_span-(output_last-output_first))<=0.000001))
+ AND ((COALESCE(raw_stream->>'terminal','')='' AND COALESCE(output_terminal,0)=0)
+  OR (raw_stream->>'terminal' IN ('completed','failed','incomplete')
+   AND output_terminal BETWEEN output_last AND total_ms AND (next_send_ms IS NULL OR output_terminal<=next_send_ms)))
+ AND ((raw_stream->>'terminal' IN ('completed','failed','incomplete')
+   AND COALESCE(raw_stream->'truncated','false'::jsonb)='false'::jsonb
+   AND abs(stream_tail-(output_terminal-output_last))<=0.000001)
+  OR output_stream->'tail_wait_ms'='null'::jsonb),false) output_valid,
+ COALESCE(item->>'outcome'='succeeded' AND raw_attempt->>'terminal'='completed'
+ AND COALESCE(raw_attempt->>'error','')='' AND raw_stream->>'terminal'='completed'
+ AND COALESCE(raw_stream->'truncated','false'::jsonb)='false'::jsonb
+ AND ((item->>'transport'='http' AND jsonb_typeof(raw_attempt->'status')='number' AND raw_attempt->>'status' ~ '^2[0-9]{2}$')
+  OR (item->>'transport'='ws_turn' AND ws_wait IS NOT NULL)),false) output_complete
+ FROM output_fields
+), output_samples AS (
+ SELECT *,CASE WHEN output_valid AND output_complete AND output_stream->>'status'='observed' AND output_chunks>1 THEN raw_gap END output_gap,
+ CASE WHEN output_valid AND output_complete AND output_stream->>'status'='observed' THEN stream_tail END output_tail,
+ CASE WHEN output_valid AND NOT output_complete AND output_stream->>'status'='partial' AND output_chunks>1 THEN raw_gap END partial_gap,
+ CASE WHEN output_valid AND NOT output_complete AND output_stream->>'status'='partial' THEN stream_tail END partial_tail,
+ CASE WHEN output_valid AND output_complete AND output_stream->>'status'='observed'
+ AND output_rate->>'status'='estimated' AND output_rate->>'method'='non_reasoning_tokens_over_first_text_to_terminal'
+ AND output_rate->>'source'=CASE item->>'protocol' WHEN 'responses' THEN 'canonical_responses_terminal_usage_and_text_events'
+  ELSE 'canonical_'||(item->>'protocol')||'_usage_and_text_events' END
+ AND output_rate->>'scope'=CASE item->>'transport' WHEN 'ws_turn' THEN 'physical_websocket_turn_responses_text_at_parser'
+  ELSE 'physical_http_'||(item->>'protocol')||'_text_at_parser' END
+ AND raw_output->>'status'='observed' AND COALESCE(raw_output->>'protocol','responses')=item->>'protocol'
+ AND raw_output->>'content_status'=CASE item->>'protocol' WHEN 'responses' THEN 'text_and_reasoning' ELSE item->>'protocol'||'_text_and_reasoning' END
+ AND (item->>'protocol'='responses' OR raw_output->'final'='true'::jsonb)
+ AND NOT COALESCE(raw_attempt->'events' ? 'typed_output_multiple_candidates',false)
+ AND COALESCE(raw_stream->'non_text_output','false'::jsonb)='false'::jsonb
+ AND raw_output_tokens BETWEEN 0 AND 9007199254740991 AND trunc(raw_output_tokens)=raw_output_tokens
+ AND raw_reasoning_tokens BETWEEN 0 AND raw_output_tokens AND trunc(raw_reasoning_tokens)=raw_reasoning_tokens
+ AND raw_output_tokens-raw_reasoning_tokens>=32 AND output_chunks>=2 AND stream_span>=250
+ AND output_rate->'output_tokens'=raw_output->'output_tokens' AND output_rate->'reasoning_tokens'=raw_output->'reasoning_tokens'
+ AND output_rate->'non_reasoning_tokens'=to_jsonb(raw_output_tokens-raw_reasoning_tokens)
+ AND ` + upstreamOutputNumber("raw_attempt->'events'->'first_visible_text'") + `=output_first
+ AND rate_window>=250 AND abs(rate_window-(output_terminal-output_first))<=0.000001
+ AND rate_value>0 AND abs(rate_value-(raw_output_tokens-raw_reasoning_tokens)*1000/NULLIF(rate_window,0))<=greatest(0.000001,rate_value*0.000000001)
+ THEN raw_output_tokens-raw_reasoning_tokens END AS output_tokens
+ FROM output_validity
+), output_observed AS (
+ SELECT *,CASE WHEN output_tokens IS NOT NULL THEN rate_window END output_window FROM output_samples
+) `
+
 var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retained AS (
  SELECT trace_id,started_at,account_id,group_id,model AS public_model,stream,detail
  FROM request_connection_traces
@@ -172,9 +296,10 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
    OR (raw_attempt->'cache_usage'->'write_reported'='true'::jsonb AND cache->'write_tokens'=raw_attempt->'cache_usage'->'write_tokens'))
   AND ` + rawCacheValidCounters + `,false) AS cache_observed
  FROM cache_candidates ` + rawCacheCounterJoins + `
-), attributed AS (
+ ) ` + upstreamAttemptOutputCTEs + `, attributed AS (
  SELECT trace_id,started_at,created_at,physical_account_id AS account_id,public_model,stream,outcome,identity_known,
  wait_first_byte,wait_first_event,wait_first_reasoning,wait_first_text,cache_observed,raw_input,raw_read,
+ output_gap,output_tail,partial_gap,partial_tail,output_tokens,output_window,
  item->>'transport' AS transport,
  CASE WHEN item->>'protocol' IN ('responses','messages','gemini','chat_completions') THEN item->>'protocol' END protocol,
  CASE WHEN identity_known THEN item->>'credential_fingerprint' END credential_fingerprint,
@@ -185,7 +310,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  CASE WHEN request_scope_known THEN request_scope->>'reasoning_effort' END reasoning_effort,
  CASE WHEN request_scope_known THEN (request_scope->>'stream')::boolean END upstream_stream,
  CASE WHEN request_scope_known THEN 'observed' ELSE 'not_observed' END upstream_model_status
- FROM cache_samples
+ FROM output_observed
  WHERE ($7='' OR $8<>'upstream' OR request_scope_known AND request_scope->>'model'=$7)
 ), eligible_traces AS (
  SELECT * FROM traces t WHERE (($5::bigint=0 OR account_id=$5) AND ($4='' OR account_id IN (SELECT id FROM cohort)))
@@ -195,6 +320,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  upstream_model,upstream_protocol,service_tier,reasoning_effort,upstream_stream,upstream_model_status,
  'not_observed'::text AS upstream_group_status,
  ` + upstreamAttemptsAggregate + `,` + upstreamAttemptCacheAggregate + ` raw_cache,
+ ` + upstreamAttemptOutputAggregate + ` output,
  jsonb_build_object('version',1,'source',CASE transport WHEN 'ws_turn' THEN 'canonical_physical_ws_turn_generation_start'
  ELSE 'canonical_physical_http_attempt' END,
  'first_byte',` + upstreamWaitAggregate("wait_first_byte") + `,

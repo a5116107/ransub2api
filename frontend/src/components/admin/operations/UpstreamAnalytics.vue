@@ -61,6 +61,7 @@
                 <p v-else class="text-xs text-amber-700 dark:text-amber-400" data-testid="attempt-request-scope-unknown">{{ t('upstreamOps.attempts.physicalScopeUnknown') }}</p>
                 <UpstreamWaitMetrics :transport="row.transport" :waits="row.waits" scope="attempts" />
                 <UpstreamAttemptCacheMetrics :cache="row.raw_cache" :attempts="row.attempts" />
+                <UpstreamOutputMetrics :output="row.output" :attempts="row.attempts" />
                 <p class="text-xs text-gray-500">{{ t('upstreamOps.attempts.supplierScopeUnknown') }}</p>
                 <details class="text-xs"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('upstreamOps.rawCache.route') }}</summary><p class="mt-2 break-all">{{ row.route_fingerprint ?? t('upstreamOps.unknown') }}</p><p class="mt-1 break-words">{{ row.latest_sample_at ?? t('upstreamOps.unknown') }}</p></details>
               </li>
@@ -117,6 +118,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import SmartOpsNav from './SmartOpsNav.vue'
 import QualityRoundAssessment from './QualityRoundAssessment.vue'
 import UpstreamWaitMetrics from './UpstreamWaitMetrics.vue'
+import UpstreamOutputMetrics from './UpstreamOutputMetrics.vue'
 import UpstreamAttemptCacheMetrics from './UpstreamAttemptCacheMetrics.vue'
 import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics } from '@/api/admin/upstreamOperations'
 const { t } = useI18n()

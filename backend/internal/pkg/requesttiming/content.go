@@ -458,15 +458,31 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 	if !plugin && !websocket {
 		out.ResponseByteFirstMS = read("first_byte")
 	}
-	if stream := a.TextStream; !incompleteCapture && stream != nil && stream.Chunks > 0 {
-		if out.TextStream.Source == "none" {
-			out.TextStream.Source = "typed_responses_sse"
+	upper := s.TotalMS
+	if a.EndMS != nil && finite(*a.EndMS) {
+		upper = math.Max(upper, *a.EndMS)
+	}
+	out.TextStream = deriveTextStream(a, out.TextStream, upper, contentAttemptSucceeded(s, a))
+	if out.ReasoningFirstMS != nil || out.VisibleTextFirstMS != nil || out.ResponseByteFirstMS != nil || out.SSEEventFirstMS != nil || out.SemanticFirstMS != nil {
+		out.Status = "observed"
+	}
+	out.OutputRate = deriveOutputRate(a, out.TextStream, contentAttemptSucceeded(s, a) && s.Terminal == "completed")
+	return out
+}
+
+// deriveTextStream reuses the bounded parser aggregate for final-delivery and
+// per-generation observations. The caller owns the time boundary and success
+// contract; partial maxima stay diagnostic lower bounds.
+func deriveTextStream(a Attempt, out TextStreamObservation, upper float64, succeeded bool) TextStreamObservation {
+	if _, lost := a.Events["typed_content_truncated"]; lost {
+		out.Status = "incomplete_capture"
+		return out
+	}
+	if stream := a.TextStream; stream != nil && stream.Chunks > 0 {
+		if out.Source == "none" {
+			out.Source = "typed_responses_sse"
 		}
-		out.TextStream.Status = "invalid_boundary"
-		upper := s.TotalMS
-		if a.EndMS != nil && finite(*a.EndMS) {
-			upper = math.Max(upper, *a.EndMS)
-		}
+		out.Status = "invalid_boundary"
 		span := stream.LastMS - stream.FirstMS
 		terminalValid := stream.Terminal == "" && stream.TerminalMS == 0
 		if stream.Terminal == "completed" || stream.Terminal == "failed" || stream.Terminal == "incomplete" {
@@ -480,24 +496,20 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 			((stream.Chunks == 1 && span == 0 && stream.MaxGapMS == 0) ||
 				(stream.Chunks > 1 && stream.MaxGapMS+1e-9 >= span/float64(stream.Chunks-1))) {
 			chunks, gaps, maxGap := stream.Chunks, stream.Chunks-1, stream.MaxGapMS
-			out.TextStream.Chunks, out.TextStream.GapSamples = &chunks, &gaps
+			out.Chunks, out.GapSamples = &chunks, &gaps
 			if gaps > 0 {
-				out.TextStream.SpanMS, out.TextStream.MaxGapMS = &span, &maxGap
+				out.SpanMS, out.MaxGapMS = &span, &maxGap
 			}
 			if stream.Terminal != "" && !stream.Truncated {
 				tail := stream.TerminalMS - stream.LastMS
-				out.TextStream.TailWaitMS = &tail
+				out.TailWaitMS = &tail
 			}
-			out.TextStream.Status = "partial"
-			if !stream.Truncated && stream.Terminal == "completed" && contentAttemptSucceeded(s, a) {
-				out.TextStream.Status = "observed"
+			out.Status = "partial"
+			if !stream.Truncated && stream.Terminal == "completed" && succeeded {
+				out.Status = "observed"
 			}
 		}
 	}
-	if out.ReasoningFirstMS != nil || out.VisibleTextFirstMS != nil || out.ResponseByteFirstMS != nil || out.SSEEventFirstMS != nil || out.SemanticFirstMS != nil {
-		out.Status = "observed"
-	}
-	out.OutputRate = deriveOutputRate(s, a, out.TextStream)
 	return out
 }
 

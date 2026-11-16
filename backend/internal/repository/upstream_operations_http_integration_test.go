@@ -3,6 +3,7 @@
 package repository_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -145,7 +146,14 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"fixture transient failure"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":75}}}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture first text\"}\n\n")
+		w.(http.Flusher).Flush()
+		time.Sleep(300 * time.Millisecond)
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture second text\"}\n\n")
+		w.(http.Flusher).Flush()
+		time.Sleep(10 * time.Millisecond)
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"fixture complete text"}]}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":75},"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}}}`+"\n\n")
 	}))
 	defer upstream.Close()
 	usage := repository.NewUsageLogRepository(nil, db)
@@ -157,7 +165,7 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 	gateway.POST("/v1/responses", func(c *gin.Context) {
 		c.Set("ops_model", "public-model")
 		for _, model := range []string{"first-wire-model", "second-wire-model"} {
-			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"`+model+`","service_tier":"priority","reasoning":{"effort":"high"},"input":"fixture"}`))
+			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"`+model+`","stream":true,"service_tier":"priority","reasoning":{"effort":"high"},"input":"fixture"}`))
 			if err != nil {
 				c.AbortWithStatus(500)
 				return
@@ -170,20 +178,26 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 				c.AbortWithStatus(500)
 				return
 			}
-			body, readErr := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if readErr != nil {
-				c.AbortWithStatus(500)
-				return
-			}
 			if resp.StatusCode >= 400 {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
 				continue
 			}
 			responseCtx := requesttiming.ResponseContext(c.Request.Context(), resp)
-			requesttiming.Content(responseCtx, body)
+			scanner := bufio.NewScanner(resp.Body)
+			for scanner.Scan() {
+				if data, ok := strings.CutPrefix(scanner.Text(), "data: "); ok {
+					requesttiming.Content(responseCtx, []byte(data))
+				}
+			}
+			_ = resp.Body.Close()
+			if scanner.Err() != nil {
+				c.AbortWithStatus(500)
+				return
+			}
 			requesttiming.Output(responseCtx, false, false, "completed")
 			requesttiming.Outcome(c.Request.Context(), "success", false)
-			c.Data(200, "application/json", body)
+			c.Data(200, "application/json", []byte(`{"ok":true}`))
 			return
 		}
 		c.AbortWithStatus(502)
@@ -219,6 +233,14 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 						LogicalRequests             int `json:"logical_requests"`
 					}
 					Rows []struct {
+						Output struct {
+							Gap  struct{ Samples int } `json:"max_gap"`
+							Tail struct{ Samples int } `json:"tail_wait"`
+							Rate struct {
+								Samples int
+								TPS     *float64 `json:"tokens_per_second"`
+							}
+						}
 						Waits struct {
 							Version   int
 							Source    string
@@ -274,8 +296,21 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 		require.Equal(t, 1, waits.FirstByte.Samples, "both the failed and recovered physical request retain their own byte wait")
 		require.NotNil(t, waits.FirstByte.MeanMS)
 		require.GreaterOrEqual(t, *waits.FirstByte.MeanMS, 0.0)
-		require.Zero(t, waits.FirstText.Samples)
-		require.Equal(t, 1, waits.FirstText.Unknown)
+		output := body.Data.Attempts.Data.Rows[0].Output
+		if model == "first-wire-model" {
+			require.Zero(t, waits.FirstText.Samples)
+			require.Equal(t, 1, waits.FirstText.Unknown)
+			require.Zero(t, output.Gap.Samples)
+			require.Zero(t, output.Rate.Samples)
+			require.Nil(t, output.Rate.TPS)
+		} else {
+			require.Equal(t, 1, waits.FirstText.Samples)
+			require.Zero(t, waits.FirstText.Unknown)
+			require.Equal(t, 1, output.Gap.Samples)
+			require.Equal(t, 1, output.Tail.Samples)
+			require.Equal(t, 1, output.Rate.Samples)
+			require.Greater(t, *output.Rate.TPS, 0.0)
+		}
 	}
 	var billed int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM usage_logs WHERE account_id=$1`, account).Scan(&billed))

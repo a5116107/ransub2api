@@ -258,9 +258,9 @@ func outputContentStatus(envelope map[string]json.RawMessage) string {
 	return "text_and_reasoning"
 }
 
-func deriveOutputRate(s Snapshot, a Attempt, stream TextStreamObservation) OutputRateObservation {
+func deriveOutputRate(a Attempt, stream TextStreamObservation, succeeded bool) OutputRateObservation {
 	out := unknownOutputRate()
-	if a.Kind == "ws_turn" && s.TTFTMode == "ws_turn" {
+	if a.Kind == "ws_turn" {
 		out.Scope = "physical_websocket_turn_responses_text_at_parser"
 	}
 	raw := a.OutputUsage
@@ -297,7 +297,7 @@ func deriveOutputRate(s Snapshot, a Attempt, stream TextStreamObservation) Outpu
 		out.Status = "incomplete_capture"
 		return out
 	}
-	if !contentAttemptSucceeded(s, a) || s.Terminal != "completed" {
+	if !succeeded {
 		out.Status = "partial"
 		return out
 	}

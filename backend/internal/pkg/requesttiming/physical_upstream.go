@@ -1,6 +1,9 @@
 package requesttiming
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // PhysicalCacheObservation is this generation's canonical report. It does not
 // assert downstream delivery, cache retention, or a supplier cache domain.
@@ -18,7 +21,16 @@ type PhysicalUpstreamObservation struct {
 	Attempts []PhysicalUpstreamAttempt `json:"attempts"`
 }
 
+// PhysicalOutputObservation describes one generation, independently of whether
+// its result was delivered downstream. It never borrows a later retry's usage.
+type PhysicalOutputObservation struct {
+	Version    int                   `json:"version"`
+	TextStream TextStreamObservation `json:"text_stream"`
+	Rate       OutputRateObservation `json:"rate"`
+}
+
 type PhysicalUpstreamAttempt struct {
+	Output                PhysicalOutputObservation   `json:"output"`
 	RawCache              PhysicalCacheObservation    `json:"raw_cache"`
 	UpstreamRequest       *UpstreamRequestObservation `json:"upstream_request,omitempty"`
 	Number                int                         `json:"number"`
@@ -78,6 +90,7 @@ func DerivePhysicalUpstream(s Snapshot) PhysicalUpstreamObservation {
 			continue
 		}
 		item := PhysicalUpstreamAttempt{Number: a.Number, AccountID: a.AccountID, Transport: a.Kind, Outcome: physicalUpstreamOutcome(s, a)}
+		item.Output = derivePhysicalOutput(s, a, item.Outcome == "succeeded")
 		cache := deriveCacheObservation(s, a, item.Outcome == "succeeded")
 		cache.Scope = strings.TrimPrefix(cache.Scope, "final_")
 		item.RawCache = PhysicalCacheObservation{Version: 1, CacheObservation: cache}
@@ -148,4 +161,42 @@ func physicalHandshake(a Attempt, byNumber map[int]Attempt, numbers map[int]int)
 		previous, parent = parent, p.Parent
 	}
 	return false, true
+}
+
+// Buffered parsing may finish after a transport body closes, but it must never
+// consume the observation window of a subsequent physical request.
+func derivePhysicalOutput(s Snapshot, a Attempt, succeeded bool) PhysicalOutputObservation {
+	stream := TextStreamObservation{Status: "not_collected", Source: "typed_responses_sse", Scope: "physical_http_responses_text_deltas_at_parser"}
+	if a.Kind == "ws_turn" {
+		stream.Source, stream.Scope = "typed_responses_ws", "physical_websocket_turn_text_deltas_at_parser"
+	} else if a.TextStream != nil && a.TextStream.Protocol != "" && a.TextStream.Protocol != "responses" {
+		protocol := a.TextStream.Protocol
+		stream.Source = "typed_" + protocol + "_sse"
+		stream.Scope = "physical_http_" + protocol + "_text_deltas_at_parser"
+		if protocol == "gemini" {
+			stream.Source, stream.Scope = "typed_gemini_content", "physical_http_gemini_primary_text_chunks_at_parser"
+		}
+	}
+	upper := s.TotalMS
+	valid := finite(upper) && upper >= 0 && finite(a.StartMS) && a.StartMS >= 0 && a.EndMS != nil && finite(*a.EndMS) && *a.EndMS >= a.StartMS && *a.EndMS <= upper
+	if a.Kind == "http" {
+		for _, next := range s.Attempts {
+			if next.Kind != "http" || next.Number <= a.Number {
+				continue
+			}
+			if !finite(next.StartMS) || next.StartMS < a.StartMS {
+				valid = false
+				break
+			}
+			upper = math.Min(upper, next.StartMS)
+		}
+	}
+	if valid {
+		stream = deriveTextStream(a, stream, upper, succeeded && !s.Truncated)
+	} else {
+		stream.Status = "invalid_boundary"
+	}
+	rate := deriveOutputRate(a, stream, succeeded && !s.Truncated)
+	rate.Scope = strings.TrimPrefix(rate.Scope, "final_")
+	return PhysicalOutputObservation{Version: 1, TextStream: stream, Rate: rate}
 }

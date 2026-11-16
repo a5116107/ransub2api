@@ -83,6 +83,18 @@ export default {
       "waitScope": "Measured from this request's completed upload across retained failed, interrupted and successful attempts in this scope. Stage samples and unknown counts are independent; timing out before a byte or text arrives is not zero wait. Never borrowed from the final successful route or another retry. Capture can be incomplete; not a complete site success rate or scheduler score.",
       "wsWaitScope": "Measured from this generation send attempt, including local writes and retained failed, interrupted and successful turns in this scope. Stage coverage is independent; excludes handshakes and other turns. No HTTP first-byte evidence or mixed HTTP average; not a scheduler score."
   },
+  "output": {
+    "title": "Same-scope output pauses and throughput",
+    "scope": "Kept separate by this row's credential, route, sent model, protocol, tier, effort and transport. Pauses are per-complete-generation maximum text-chunk gaps; P95 is not a percentile over all chunks. Tail wait runs from the last chunk to upstream completion. Partial output provides a diagnostic lower bound and remains unknown, excluded from complete samples. Missing or single-chunk output is not zero pause. Upstream completion does not prove downstream delivery.",
+    "max_gap": "Per-generation maximum chunk gap",
+    "tail_wait": "Tail wait",
+    "distribution": "Mean {mean} · P95 {p95} · Max {max}",
+    "samples": "Valid {samples} · Unknown {unknown} · Coverage {coverage}",
+    "partial": "Unknown includes {count} partial outputs · Largest observed lower bound {max}",
+    "rate": "Estimated non-reasoning text throughput",
+    "estimate": "Weighted valid tokens / windows; not a token clock",
+    "rateScope": "The window spans first text chunk to upstream completion. Missing separable counters, short output and insufficient windows remain unknown. This is neither downstream receive speed nor a model quality conclusion."
+  },
   "rawCache": {
     "title": "Upstream raw cache reports",
     "scope": "Final transport credential and route, recorded model/tier/effort, and protocol are kept separate. Totals use canonical wire usage from uniquely attributed, retained billed requests, not rewritten billing buckets. Missing or duplicate traces remain unknown; this excludes unbilled failures and does not prove supplier cache retention or model identity. Current account configuration only selects inventory. Old records are not backfilled; the diagnostic retention is 30 days.",
