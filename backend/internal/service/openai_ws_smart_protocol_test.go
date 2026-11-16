@@ -5,10 +5,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestSmartProtocolDecision(t *testing.T) {
@@ -57,7 +59,7 @@ func TestSmartProtocolHistory(t *testing.T) {
 	var h openAISmartProtocolHistory
 	a := &Account{ID: 1}
 	payload := []byte(`{"model":"synthetic","reasoning":{"effort":"max"}}`)
-	key := smartProtocolKey(a, payload, "ws")
+	key := parseOpenAISmartProtocolRequest(payload).historyKey(a, "ws")
 	now := time.Now()
 	for i := 1; i <= 19; i++ {
 		h.observe(key, i*100, now)
@@ -132,7 +134,7 @@ func TestSmartProtocolPredictionSources(t *testing.T) {
 	require.Equal(t, "heuristic_context", d.Source)
 	require.Zero(t, d.PredictedOutput)
 	small := []byte(`{"model":"synthetic","store":true,"reasoning":{"effort":"xhigh"},"input":"small"}`)
-	key := smartProtocolKey(a, small, "ws")
+	key := parseOpenAISmartProtocolRequest(small).historyKey(a, "ws")
 	for i := 0; i < 19; i++ {
 		svc.smartProtocolHistory.observe(key, 8000, time.Now())
 	}
@@ -144,4 +146,37 @@ func TestSmartProtocolPredictionSources(t *testing.T) {
 	require.Equal(t, "http", d.Protocol)
 	require.Equal(t, "empirical_p90", d.Source)
 	require.Equal(t, 8000, d.PredictedOutput)
+}
+
+func TestSmartProtocolRoutingMetadata(t *testing.T) {
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"model_mapping": map[string]any{"public": "gpt-5.4"}}}
+	for _, body := range []string{
+		`{"model":"public","reasoning":{"effort":" max "},"reasoning_effort":"low","store":true,"input":"\u4e2d"}`,
+		`{"model":"public","reasoning":{"effort":" "},"reasoning_effort":" high ","store":"true","input":[ {"role":"user","content":"private"} ]}`,
+		`{"model":"gpt-5.4-xhigh","store":false,"max_output_tokens":8000,"previous_response_id":"resp_private"}`,
+		`{"model":"public","reasoning":{"effort":"future"},"max_output_tokens":-1}`,
+	} {
+		request := parseOpenAISmartProtocolRequest([]byte(body))
+		model := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(gjson.Get(body, "model").String()))
+		effort := ""
+		if value := extractOpenAIReasoningEffortFromBody([]byte(body), model, model); value != nil {
+			effort = *value
+		}
+		require.Equal(t, openAISmartProtocolHistoryKey{AccountID: account.ID, Model: model, Effort: effort, Protocol: "ws"}, request.historyKey(account, "ws"))
+		require.Equal(t, len(gjson.Get(body, "input").Raw), request.inputBytes)
+		require.Equal(t, gjson.Get(body, "store").Type == gjson.True, request.store)
+		require.Equal(t, gjson.Get(body, "previous_response_id").String() != "", request.hasPrevious)
+	}
+	// Parsing must detach even the small raw labels from the request backing.
+	const body = `{"model":"public","reasoning":{"effort":"high"},"input":"private prompt"}`
+	payload := []byte(body)
+	request := parseOpenAISmartProtocolRequest(payload)
+	for _, value := range []struct{ original, stored string }{
+		{gjson.GetBytes(payload, "model").String(), request.model},
+		{gjson.GetBytes(payload, "reasoning.effort").String(), request.reasoningEffort},
+	} {
+		require.Equal(t, value.original, value.stored)
+		require.False(t, unsafe.StringData(value.original) == unsafe.StringData(value.stored), "routing labels must not retain the request backing")
+	}
 }

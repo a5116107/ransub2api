@@ -37,7 +37,7 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "responses_ws_smart_http"}, {"false", "responses_ws_smart_http"}, {"true", "responses_ws_smart_ws"}, {"false", "responses_ws_smart_ws"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -46,10 +46,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				if tc.protocol == "responses_native" {
 					entry["protocol"] = "responses_http"
 				}
-				if tc.protocol == "responses_ws_ctx_pool" {
+				if tc.protocol == "responses_ws_ctx_pool" || tc.protocol == "responses_ws_smart_ws" {
 					entry["protocol"] = "responses_ws_v2"
 				}
-				if tc.protocol == "responses_ws_http_bridge" || tc.protocol == "responses_ws_size_bridge" {
+				if tc.protocol == "responses_ws_http_bridge" || tc.protocol == "responses_ws_size_bridge" || tc.protocol == "responses_ws_smart_http" {
 					entry["protocol"] = "responses_http"
 				}
 				if tc.protocol == "chat_ingress" {
@@ -73,6 +73,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				}
 				if tc.protocol == "responses_ws_size_bridge" {
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+				}
+				if strings.HasPrefix(tc.protocol, "responses_ws_smart_") {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+					account.Extra["openai_responses_supported"] = true
 				}
 				if tc.protocol != "responses_http" {
 					if tc.protocol == "chat_http" || tc.protocol == "chat_ingress" {
@@ -105,7 +109,14 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
 					svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
 				}
-				ctx = billingWSCandidateContext(t, svc, group, `{"type":"response.create","model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`, "gpt-fixture", nil)
+				if strings.HasPrefix(tc.protocol, "responses_ws_smart_") {
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+					svc.cfg.Gateway.OpenAIWS.SmartProtocol = config.GatewayOpenAIWSSmartProtocolConfig{Enabled: true, Mode: "ws"}
+					if tc.protocol == "responses_ws_smart_http" {
+						svc.cfg.Gateway.OpenAIWS.SmartProtocol.Mode = "http"
+					}
+				}
+				ctx = billingWSCandidateContext(t, svc, group, `{"type":"response.create","model":"gpt-fixture","input":"private prompt","store":true,"service_tier":"priority"}`, "gpt-fixture", nil)
 			}
 			for _, session := range []string{"", "scope-sticky"} {
 				selection, _, err := svc.SelectAccountWithScheduler(ctx, &group.ID, "", session, "gpt-fixture", nil, OpenAIUpstreamTransportAny, false)

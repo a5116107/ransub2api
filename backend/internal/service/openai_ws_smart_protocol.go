@@ -65,7 +65,38 @@ func smartProtocolHTTPSupported(a *Account) bool {
 	return a.Type == AccountTypeOAuth && (a.GetCredential("client_id") == "" || a.GetCredential("client_id") == openai.ClientID) && !a.IsOpenAIPersonalAccessToken() && !a.IsOpenAIAgentIdentity()
 }
 
+// openAISmartProtocolRequest contains only routing scalars from the original
+// frame, before reasoning policy and channel mapping. It never retains input,
+// instructions, response IDs or a slice backed by the complete request.
+type openAISmartProtocolRequest struct {
+	model           string
+	reasoningEffort string
+	store           bool
+	hasPrevious     bool
+	maxOutputTokens int64
+	inputBytes      int
+}
+
+func parseOpenAISmartProtocolRequest(payload []byte) openAISmartProtocolRequest {
+	effort := strings.TrimSpace(gjson.GetBytes(payload, "reasoning.effort").String())
+	if effort == "" {
+		effort = strings.TrimSpace(gjson.GetBytes(payload, "reasoning_effort").String())
+	}
+	return openAISmartProtocolRequest{
+		model:           strings.Clone(gjson.GetBytes(payload, "model").String()),
+		reasoningEffort: strings.Clone(effort),
+		store:           gjson.GetBytes(payload, "store").Type == gjson.True,
+		hasPrevious:     strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "",
+		maxOutputTokens: gjson.GetBytes(payload, "max_output_tokens").Int(),
+		inputBytes:      len(gjson.GetBytes(payload, "input").Raw),
+	}
+}
+
 func (s *OpenAIGatewayService) decideOpenAIWSUpstreamProtocol(a *Account, payload []byte) openAISmartProtocolDecision {
+	return s.decideOpenAIWSUpstreamProtocolForRequest(a, parseOpenAISmartProtocolRequest(payload))
+}
+
+func (s *OpenAIGatewayService) decideOpenAIWSUpstreamProtocolForRequest(a *Account, request openAISmartProtocolRequest) openAISmartProtocolDecision {
 	cfg := s.cfg.Gateway.OpenAIWS.SmartProtocol
 	mode := cfg.Mode
 	if mode == "" {
@@ -87,11 +118,11 @@ func (s *OpenAIGatewayService) decideOpenAIWSUpstreamProtocol(a *Account, payloa
 	// Native Codex HTTP normalizes store=false; its ordinary HTTP forwarder
 	// removes previous_response_id. Endpoint support is not chain support.
 	// Stateless CN adapters also delete previous IDs at their final send boundary.
-	if a.Type != AccountTypeAPIKey || a.UsesNativeCNResponses() || gjson.GetBytes(payload, "store").Type != gjson.True {
+	if a.Type != AccountTypeAPIKey || a.UsesNativeCNResponses() || !request.store {
 		d.Reason = "http_chain_unconfirmed"
 		return d
 	}
-	if strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
+	if request.hasPrevious {
 		d.Reason = "existing_chain"
 		return d
 	}
@@ -113,7 +144,7 @@ func (s *OpenAIGatewayService) decideOpenAIWSUpstreamProtocol(a *Account, payloa
 	if longBytes == 0 {
 		longBytes = 200000
 	}
-	key := smartProtocolKey(a, payload, "ws")
+	key := request.historyKey(a, "ws")
 	if p90, n := s.smartProtocolHistory.p90(key, time.Now()); n >= 20 {
 		d.PredictedOutput, d.Samples, d.Source = p90, n, "empirical_p90"
 		if p90 >= threshold {
@@ -123,12 +154,12 @@ func (s *OpenAIGatewayService) decideOpenAIWSUpstreamProtocol(a *Account, payloa
 		d.Samples = n
 	}
 	// A requested cap is an upper bound, not an observed output distribution.
-	if d.Candidate != "http" && gjson.GetBytes(payload, "max_output_tokens").Int() >= int64(threshold) {
+	if d.Candidate != "http" && request.maxOutputTokens >= int64(threshold) {
 		d.Candidate, d.Reason = "http", "large_output_cap"
 		d.Source = "heuristic_cap"
 	}
 	effort := key.Effort
-	if d.Candidate != "http" && (effort == "max" || effort == "xhigh") && len(gjson.GetBytes(payload, "input").Raw) >= longBytes {
+	if d.Candidate != "http" && (effort == "max" || effort == "xhigh") && request.inputBytes >= longBytes {
 		d.Candidate, d.Reason = "http", "high_effort_long_context"
 		d.Source = "heuristic_context"
 	}
@@ -147,13 +178,13 @@ type openAISmartProtocolHistoryKey struct {
 	Protocol     string
 }
 
-func smartProtocolKey(a *Account, payload []byte, protocol string) openAISmartProtocolHistoryKey {
-	model := gjson.GetBytes(payload, "model").String()
+func (request openAISmartProtocolRequest) historyKey(a *Account, protocol string) openAISmartProtocolHistoryKey {
+	model := request.model
 	if a != nil {
 		model = normalizeOpenAIModelForUpstream(a, a.GetMappedModel(model))
 	}
 	effort := ""
-	if v := extractOpenAIReasoningEffortFromBody(payload, model, model); v != nil {
+	if v := extractOpenAIReasoningEffortValue(request.reasoningEffort, model, model); v != nil {
 		effort = *v
 	}
 	return openAISmartProtocolHistoryKey{a.ID, a.AuthConnectionID, a.AuthConnectionRevision, model, effort, protocol}

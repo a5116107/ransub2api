@@ -3036,3 +3036,15 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 三包`go vet -tags unit,integration -p 1 ./internal/pkg/requesttiming ./internal/repository ./internal/handler`退出0；项目工具链运行golangci-lint/v2@v2.9.0，fast-only/allow-parallel-runners/concurrency1/build-tags unit,integration/new-from-rev=122e4532633ba6c08cf4bb5068a263841eaa254a，同三包退出0、实际`0 issues.`；同三包GOOS=linux/GOARCH=amd64/CGO_ENABLED=0 `go build -p 1`退出0。是范围内/增量静态检查及编译，不代表全仓全规则清零或生产加载。
 - 证据复用`H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/gemini-scope-*`；verification.json绑定源码/锁文件LF SHA256及真实输出。沿原唯一工作树与自有功能分支提交同步，不运行CI/新建PR/整分支上线。原28项20done/8部分不变；D2.6其余合同、实际组/受信检测/其他scope/严格资格、缓存域/基线及旧完整历史等仍待各自验收。旧读取者不识别Gemini新scope时归未知，可选JSON无需schema回退。
 - 本次本地PG fast和Redis nosave退出0，预览按进程/命令身份停止，55441/56441/18441监听0；浏览器脚本在内存执行，仅保留压缩可复用脚本、两张代表视口和最小证据。本轮未重试历史被拒绝删除的文件，原12PNG/1164bytes和其他宿主拒删资源保持原位、原owner及释放条件。
+
+
+## 2026-11-17：D2.6.13智能分流WS候选与逐轮物理范围（本地）
+
+- 基线为唯一H盘功能分支`feat/automated-upstream-supply@7386a954a`。原候选函数在smart启用时整体延后精确scope，即使实际分流已确定HTTP/WS，仍可能先选入仅声明另一协议的账号。沿原分流器抽取无正文路由标量，实际入口与候选共享同一决策实现；reasoning推导共用原规则，原smartProtocolKey被替换并删除，未留测试专用生产包装或第二算法。
+- 捕获原始模型/显式effort、严格store布尔、previous存在标记、输出上限及input原始JSON字节数，短字符串复制，不保留正文/响应ID/请求/hooks。分流在policy/channel改写前取值，实际声明scope在原reasoning/channel/account/fast/bridge变换后计算；捕获后到达的历史仍按当前账号/连接修订/原始映射模型/effort读取。smart关闭时不额外捕获标量；显式桥和透传原始长度旧桥仍优先。
+- 透传的手动HTTP/WS、auto输出上限/长上下文/历史及shadow实际WS可提前筛选；池模式smart确定HTTP时也参与，smart为WS或shadow且自动桥启用仍依赖规范化载荷长度，继续延后。原生传输前提、能力未知、缺失/false/字符串store、工具/媒体/历史/Lite及未知scope均保留原边界；不授予严格受管或缓存/模型真实性资格，最终逐轮检查保留。
+- 红测`go test -json -tags unit -race -vet=off -p 1 ./internal/service -run '^TestBillingWSCandidateSmartDispatch$' -count=1 -timeout=4m`退出1：28个新增有效叶例及父项失败，24叶例通过，0race。初轮聚焦退出1（535pass/37fail）：35个严格smart网络叶例在首两轮成功、撤销后无第三次发送，但误断言内部admission错误；原实现有意包为1011/no-replay，改为精确断言既有close代码和reason，未改转发错误或重放语义。另一个指针隔离断言误用reflect深比较，改用实际指针地址相等判断；原字符串复制仍保留。初轮父项失败计入37；两份失败日志保留，不作终版通过证据。
+- 终版三包命令详`smart-candidate-verification.json`：`go test -json -tags unit -race -vet=off -p 1 ./internal/service ./internal/handler ./cmd/profit-preview -run <绑定的完整表达式> -count=2 -timeout=8m`退出0；6876条test pass、0fail/skip/race/坏JSON行，包200.924/1.492/1.187秒。11类真实本地HTTP/WS逐轮叶例186条pass事件，涵盖首轮scope、同连接换模型、旧模型撤销拒发；两调度器/黏性不删绑定/排除恢复/槽后最新声明、动态历史和原始effort与策略区分均通过。事件含子例/重复轮次，不相加为独立场景；不是生产加载/恢复证据。
+- 三包`go vet -tags unit -p 1 ./internal/service ./internal/handler ./cmd/profit-preview`退出0（213.561s）；兼容工具golangci-lint-v2.15.0-go1.27.4.exe fast-only/allow-serial-runners/concurrency1/build-tags unit/new-from-rev=7386a954a三包退出0（20.143s），实际`0 issues.`；GOOS=linux/GOARCH=amd64/CGO_ENABLED=0同三包`go build -p 1`退出0（73.142s）。8项最终源码/锁文件LF SHA256 drift0；SQL/API/UI没有变化，本次不重跑PG或浏览器，不将旧结果称新验收。无新增TODO/FIXME/XXX、迁移、路由、评分或平行实现。
+- 证据沿`H:/Root/DevCache/evidence/sub2api-billing-applicability/smart-candidate-*`，原设计5.3.7/5.3.9/5.3.12及审计行原位更新，STATE保持唯一实时状态。子项本地done，原28项20done/8部分不变；其他转换/规范化池桥、受管合同/真实供应商scope、D3/D4/D5/D6/D7/D8/D9剩余保持，不以此闭合生产父项。旧应用可原位回退该代码提交，无数据schema变更。
+- 本次仅httptest服务，命令正常退出且自有Go工作目录自动移除；继承两个go-build目录、12个测试PNG/1164bytes及历史宿主拒删路径原位保留。另有非本轮Go测试进程正在运行，命令身份与本轮不同，未停止或回收其资源。自有功能分支提交同步，不运行CI/新增PR/发布整个功能分支。PR3首次GitHub mergeable=UNKNOWN，后续REST核验open/mergeable=false/dirty，历史冲突等待仍成立。

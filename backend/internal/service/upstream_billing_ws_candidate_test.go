@@ -147,7 +147,7 @@ func TestBillingWSCandidateBridgeDispatchBoundaries(t *testing.T) {
 		{name: "legacy bridge overrides smart HTTP", mode: OpenAIWSIngressModePassthrough, smartMode: "http", wantHTTP: true},
 		{name: "legacy bridge overrides smart WS", mode: OpenAIWSIngressModePassthrough, smartMode: "ws", wantHTTP: true},
 		{name: "legacy bridge overrides smart shadow", mode: OpenAIWSIngressModePassthrough, smartMode: "shadow", wantHTTP: true},
-		{name: "smart nonlegacy stays deferred", mode: OpenAIWSIngressModePassthrough, smartMode: "http", thresholdDelta: 1, deferred: true},
+		{name: "smart without storage remains WS", mode: OpenAIWSIngressModePassthrough, smartMode: "http", thresholdDelta: 1},
 		{name: "passthrough still requires native transport", mode: OpenAIWSIngressModePassthrough, forceHTTP: true, deferred: true},
 		{name: "pooled normalized length stays deferred", mode: OpenAIWSIngressModeCtxPool, deferred: true},
 	} {
@@ -194,8 +194,72 @@ func TestBillingWSCandidateBridgeDispatchBoundaries(t *testing.T) {
 	}
 }
 
+func TestBillingWSCandidateSmartDispatch(t *testing.T) {
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
+		for _, tc := range []struct {
+			name, smartMode, options         string
+			wantHTTP, bridgeOff, unknownHTTP bool
+			history                          int
+			hooks                            *OpenAIWSIngressHooks
+			effort                           string
+		}{
+			{name: "manual HTTP", smartMode: "http", options: `,"store":true`, wantHTTP: true},
+			{name: "manual WS", smartMode: "ws", options: `,"store":true,"max_output_tokens":8000`},
+			{name: "shadow stays WS", smartMode: "shadow", options: `,"store":true,"max_output_tokens":8000`},
+			{name: "auto cap", smartMode: "auto", options: `,"store":true,"max_output_tokens":8000`, wantHTTP: true},
+			{name: "auto raw effort before ceiling", smartMode: "auto", options: `,"store":true,"reasoning":{"effort":"xhigh"}`, wantHTTP: true, effort: "low", hooks: &OpenAIWSIngressHooks{MaxReasoningEffort: "low"}},
+			{name: "forced effort does not change dispatch", smartMode: "auto", options: `,"store":true,"reasoning":{"effort":"low"}`, effort: "xhigh", hooks: &OpenAIWSIngressHooks{ForcedReasoningEffort: "xhigh"}},
+			{name: "history uses original model and effort", smartMode: "auto", options: `,"store":true,"reasoning":{"effort":"high"}`, history: 20, wantHTTP: true, effort: "low", hooks: &OpenAIWSIngressHooks{MaxReasoningEffort: "low"}},
+			{name: "history below minimum", smartMode: "auto", options: `,"store":true`, history: 19},
+			{name: "missing store", smartMode: "http"},
+			{name: "false store", smartMode: "http", options: `,"store":false`},
+			{name: "string store", smartMode: "http", options: `,"store":"true"`},
+			{name: "unknown HTTP", smartMode: "http", options: `,"store":true`, unknownHTTP: true},
+			{name: "bridge disabled", smartMode: "http", options: `,"store":true,"max_output_tokens":8000`, bridgeOff: true},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
+				svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = !tc.bridgeOff
+				svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1 << 20
+				svc.cfg.Gateway.OpenAIWS.SmartProtocol = config.GatewayOpenAIWSSmartProtocolConfig{Enabled: true, Mode: tc.smartMode, LongContextBytes: 16}
+				body := `{"type":"response.create","model":"public-fixture","input":"private prompt longer than threshold"` + tc.options + `}`
+				protocol, wireModel, effort := "responses_ws_v2", "gpt-fixture", tc.effort
+				if effort == "" {
+					effort = "unspecified"
+				}
+				if tc.wantHTTP {
+					protocol = "responses_http"
+				}
+				if mode != OpenAIWSIngressModePassthrough || tc.wantHTTP {
+					wireModel = "wire-fixture"
+				}
+				entry := billingApplicabilityEntry(protocol, "unspecified", false)
+				entry["model"], entry["reasoning_effort"] = wireModel, effort
+				account := billingCandidateAccount(t, 924, entry)
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+				account.Extra["openai_responses_supported"] = !tc.unknownHTTP
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture", "public-fixture": "history-fixture"}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				ctx := billingWSCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), body, "gpt-fixture", tc.hooks)
+				// Samples arrive after capture: selection must use the current history,
+				// keyed by the raw model/effort, before channel and group rewriting.
+				for i := 0; i < tc.history; i++ {
+					svc.smartProtocolHistory.observe(parseOpenAISmartProtocolRequest([]byte(body)).historyKey(account, "ws"), 8000, time.Now())
+				}
+				decision := svc.decideOpenAIWSUpstreamProtocol(account, []byte(body))
+				require.Equal(t, tc.wantHTTP, decision.Protocol == "http")
+				deferred := mode != OpenAIWSIngressModePassthrough && !tc.bridgeOff && !tc.wantHTTP
+				require.Equal(t, map[bool]string{true: "", false: "profit_upstream_scope_excluded"}[deferred], upstreamBillingCandidateVetoReason(ctx, account, at))
+				require.Equal(t, "profit_upstream_scope_expired", upstreamBillingCandidateVetoReason(ctx, account, at.Add(2*time.Hour)))
+			})
+		}
+	}
+}
+
 func TestBillingWSCandidateDeferredPaths(t *testing.T) {
-	for _, name := range []string{"ctx pool bridge enabled", "ctx pool image model", "smart protocol", "global force http", "account off", "mode router off", "lite", "tools", "missing type", "query", "reasoning denied", "fast blocked", "unknown policy", "gate disabled", "suppressed", "not upgraded"} {
+	for _, name := range []string{"ctx pool bridge enabled", "ctx pool image model", "ctx pool smart WS", "global force http", "account off", "mode router off", "lite", "tools", "missing type", "query", "reasoning denied", "fast blocked", "unknown policy", "gate disabled", "suppressed", "not upgraded"} {
 		t.Run(name, func(t *testing.T) {
 			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
 			group := profitControlTestGroup(7, 0.5, 0)
@@ -212,7 +276,9 @@ func TestBillingWSCandidateDeferredPaths(t *testing.T) {
 			case "ctx pool image model":
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
 				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-image-1"}
-			case "smart protocol":
+			case "ctx pool smart WS":
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+				svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
 				svc.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled = true
 			case "global force http":
 				svc.cfg.Gateway.OpenAIWS.ForceHTTP = true
@@ -261,6 +327,7 @@ func TestBillingWSCandidateDeferredPaths(t *testing.T) {
 func TestBillingWSCandidateLifetimeAndPolicySnapshot(t *testing.T) {
 	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
 	svc.cfg = passthroughLifecycleConfig()
+	svc.cfg.Gateway.OpenAIWS.SmartProtocol = config.GatewayOpenAIWSSmartProtocolConfig{Enabled: true, Mode: "ws"}
 	repo := &billingCandidateSettingRepo{SettingRepository: svc.settingService.settingRepo}
 	svc.settingService = NewSettingService(repo, svc.cfg)
 	entry := billingApplicabilityEntry("responses_ws_v2", "unspecified", false)
@@ -277,11 +344,14 @@ func TestBillingWSCandidateLifetimeAndPolicySnapshot(t *testing.T) {
 	}
 	stored := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
 	require.Equal(t, "gpt-fixture", stored.scope.Model)
+	require.NotNil(t, stored.wsSmartRequest)
+	require.Equal(t, "gpt-fixture", stored.wsSmartRequest.model)
 	require.Same(t, stored.fastPolicy, openAIFastPolicySettingsFromContext(ctx))
 	turnCtx := WithoutUpstreamBillingCandidateRequest(ctx)
 	cleared := turnCtx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
 	require.Nil(t, cleared.scope)
 	require.Nil(t, cleared.gateway)
+	require.Nil(t, cleared.wsSmartRequest)
 	_, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(turnCtx, account, "gpt-fixture", []byte(`{"type":"response.create","model":"gpt-fixture","service_tier":"priority"}`))
 	require.NoError(t, err)
 	require.Nil(t, blocked)
@@ -292,24 +362,26 @@ func TestBillingWSCandidateLifetimeAndPolicySnapshot(t *testing.T) {
 	request.Header.Set("Upgrade", "websocket")
 	unknown := svc.WithUpstreamBillingWSCandidateRequest(ctx, request, []byte(`{"type":"response.create","model":"gpt-fixture","tools":[{"type":"web_search"}]}`), "gpt-fixture", nil)
 	require.Nil(t, unknown.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate).scope)
+	require.Nil(t, unknown.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate).wsSmartRequest)
 	vetoed, reason = openAIProfitControlVetoReason(unknown, account)
 	require.False(t, vetoed, reason)
 }
 
 func TestBillingWSCandidatePostSlotRecheck(t *testing.T) {
-	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge"} {
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge", "smart_http", "smart_ws"} {
 		t.Run(mode, func(t *testing.T) {
 			makeAccount := func(covered bool) *Account {
 				protocol := "responses_ws_v2"
-				if mode == OpenAIWSIngressModeHTTPBridge || mode == "passthrough_size_bridge" {
+				if mode == OpenAIWSIngressModeHTTPBridge || mode == "passthrough_size_bridge" || mode == "smart_http" {
 					protocol = "responses_http"
 				}
 				entry := billingApplicabilityEntry(protocol, "unspecified", covered)
 				account := billingCandidateAccount(t, 915, entry)
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
-				if mode == "passthrough_size_bridge" {
+				if mode == "passthrough_size_bridge" || strings.HasPrefix(mode, "smart_") {
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
 				}
+				account.Extra["openai_responses_supported"] = true
 				at := time.Now().UTC().Add(-time.Second)
 				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
 				require.NoError(t, err)
@@ -321,7 +393,11 @@ func TestBillingWSCandidatePostSlotRecheck(t *testing.T) {
 				svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
 				svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
 			}
-			ctx := billingWSCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), `{"type":"response.create","model":"gpt-fixture"}`, "gpt-fixture", nil)
+			if strings.HasPrefix(mode, "smart_") {
+				svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+				svc.cfg.Gateway.OpenAIWS.SmartProtocol = config.GatewayOpenAIWSSmartProtocolConfig{Enabled: true, Mode: strings.TrimPrefix(mode, "smart_")}
+			}
+			ctx := billingWSCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), `{"type":"response.create","model":"gpt-fixture","store":true}`, "gpt-fixture", nil)
 			vetoed, reason := openAIProfitControlVetoReason(ctx, selected)
 			require.False(t, vetoed, reason)
 			svc.schedulerSnapshot = NewSchedulerSnapshotService(&gatewayProfitSnapshotCache{account: replacement}, nil, gatewayProfitAccountRepo{}, nil, nil)
@@ -360,7 +436,20 @@ func (r *billingWSCandidateAccountRepo) GetOpenAITurnAdmission(context.Context, 
 
 func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge"} {
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge", "smart_passthrough_http", "smart_pool_http", "smart_passthrough_ws", "smart_shadow_ws", "smart_auto_http"} {
+		ingressMode, smartMode := mode, ""
+		switch mode {
+		case "smart_passthrough_http":
+			ingressMode, smartMode = OpenAIWSIngressModePassthrough, "http"
+		case "smart_pool_http":
+			ingressMode, smartMode = OpenAIWSIngressModeCtxPool, "http"
+		case "smart_passthrough_ws":
+			ingressMode, smartMode = OpenAIWSIngressModePassthrough, "ws"
+		case "smart_shadow_ws":
+			ingressMode, smartMode = OpenAIWSIngressModePassthrough, "shadow"
+		case "smart_auto_http":
+			ingressMode, smartMode = OpenAIWSIngressModePassthrough, "auto"
+		}
 		for _, tc := range []struct {
 			name, options, tier, effort, summary string
 			encrypted                            bool
@@ -379,17 +468,17 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 			{name: "group priority", tier: "priority", effort: "unspecified", force: true},
 			{name: "priority filtered", options: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
 		} {
-			if tc.compatibleBridge && mode != OpenAIWSIngressModeHTTPBridge && mode != "passthrough_size_bridge" {
+			bridge := mode == OpenAIWSIngressModeHTTPBridge || mode == "passthrough_size_bridge" || smartMode == "http" || smartMode == "auto"
+			if tc.compatibleBridge && !bridge {
 				continue
 			}
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				bridge := mode == OpenAIWSIngressModeHTTPBridge || mode == "passthrough_size_bridge"
 				protocol := "responses_ws_v2"
 				if bridge {
 					protocol = "responses_http"
 				}
 				wireModel := func(model string) string {
-					if mode != OpenAIWSIngressModePassthrough {
+					if ingressMode != OpenAIWSIngressModePassthrough || bridge {
 						return "wire-" + model
 					}
 					return model
@@ -446,10 +535,11 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				makeAccount := func(entries ...map[string]any) *Account {
 					account := billingCandidateAccount(t, 914, entries...)
 					account.Extra["openai_passthrough"] = !tc.compatibleBridge
+					account.Extra["openai_responses_supported"] = true
 					account.Credentials["base_url"] = upstream.URL
 					account.Credentials["api_key"] = "sk-test"
 					account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-gpt-fixture", "gpt-next": "wire-gpt-next"}
-					account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = ingressMode
 					if mode == "passthrough_size_bridge" {
 						account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
 					}
@@ -467,6 +557,10 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
 					svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
 				}
+				if smartMode != "" {
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+					svc.cfg.Gateway.OpenAIWS.SmartProtocol = config.GatewayOpenAIWSSmartProtocolConfig{Enabled: true, Mode: smartMode}
+				}
 				svc.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
 				svc.cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds = 5
 				defer svc.getOpenAIWSConnPool().Close()
@@ -483,7 +577,7 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				svc.settingService = NewSettingService(settingsRepo, svc.cfg)
 				group := profitControlTestGroup(7, 0.5, 0)
 				group.ForceOpenAIFast = tc.force
-				body := `{"type":"response.create","model":"public-fixture","input":"private prompt","stream":false` + tc.options + `}`
+				body := `{"type":"response.create","model":"public-fixture","input":"private prompt","store":true,"max_output_tokens":8000,"stream":false` + tc.options + `}`
 				controlCtx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", &tc.hooks)
 				vetoed, reason := openAIProfitControlVetoReason(controlCtx, selected)
 				require.False(t, vetoed, reason)
@@ -539,7 +633,7 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 						vetoed, reason = openAIProfitControlVetoReason(controlCtx, replacement)
 						require.True(t, vetoed)
 						require.Equal(t, "profit_upstream_scope_excluded", reason)
-						next := `{"type":"response.create","model":"gpt-next","input":"next turn","stream":false` + tc.options + `}`
+						next := `{"type":"response.create","model":"gpt-next","input":"next turn","store":true,"stream":false` + tc.options + `}`
 						require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(next)))
 					}
 				}
@@ -548,7 +642,16 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(body)))
 				select {
 				case err := <-done:
-					require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+					if smartMode != "" && smartMode != "shadow" {
+						// Strict smart sessions intentionally hide the internal admission
+						// error behind the original close/no-replay contract.
+						var closeErr *OpenAIWSClientCloseError
+						require.ErrorAs(t, err, &closeErr)
+						require.Equal(t, coderws.StatusInternalError, closeErr.StatusCode())
+						require.Equal(t, "upstream session ended; request was not replayed", closeErr.Reason())
+					} else {
+						require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+					}
 				case <-time.After(3 * time.Second):
 					t.Fatal("excluded turn did not terminate the relay")
 				}

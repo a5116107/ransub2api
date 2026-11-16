@@ -22,6 +22,7 @@ type upstreamBillingCandidate struct {
 	chatHasText         bool
 	chatHasAssistant    bool
 	wsPassthroughBridge bool
+	wsSmartRequest      *openAISmartProtocolRequest
 	gateway             *OpenAIGatewayService
 }
 
@@ -65,8 +66,8 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 // Reasoning policy uses the client model before the handler's channel mapping.
 // No payload or hooks survive in the descriptor. Passthrough bridge dispatch
 // uses original payload size, captured only as a routing boolean. Fixed HTTP
-// bridge and native modes share their original wire transformers. Pooled size
-// dispatch and smart predictions retain the final-send guard.
+// bridge and native modes share their original wire transformers and smart
+// dispatcher. Pooled normalized-size decisions retain the final-send guard.
 func (s *OpenAIGatewayService) WithUpstreamBillingWSCandidateRequest(ctx context.Context, request *http.Request, body []byte, forwardModel string, hooks *OpenAIWSIngressHooks) context.Context {
 	candidate := upstreamBillingCandidate{}
 	if upstreamBillingCandidateMayFilter(ctx) && s != nil && s.cfg != nil &&
@@ -82,6 +83,10 @@ func (s *OpenAIGatewayService) WithUpstreamBillingWSCandidateRequest(ctx context
 		wsRequest.URL = &wsURL
 		if scope := availabilityScopeForRequest(&wsRequest, body); scope != nil && scope.Protocol == "responses_ws_v2" {
 			candidate.wsPassthroughBridge = s.shouldBridgeOpenAIWSPassthroughFirstMessage(nil, body)
+			if s.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled {
+				smartRequest := parseOpenAISmartProtocolRequest(body)
+				candidate.wsSmartRequest = &smartRequest
+			}
 			if normalized, err := applyOpenAIWSReasoningEffortPolicy(body, hooks, hooks.forcedReasoningEffort()); err == nil {
 				if forwardModel = strings.TrimSpace(forwardModel); forwardModel != "" {
 					normalized = s.ReplaceModelInBody(normalized, forwardModel)
@@ -129,7 +134,7 @@ func WithoutUpstreamBillingCandidateRequest(ctx context.Context) context.Context
 	return context.WithValue(ctx, upstreamBillingCandidateKey{}, upstreamBillingCandidate{})
 }
 
-func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Context, account *Account, scope AvailabilityRequestScope, passthroughBridge bool) *AvailabilityRequestScope {
+func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Context, account *Account, scope AvailabilityRequestScope, passthroughBridge bool, smartRequest *openAISmartProtocolRequest) *AvailabilityRequestScope {
 	if s == nil || s.cfg == nil {
 		return nil
 	}
@@ -140,22 +145,28 @@ func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Conte
 	if !httpBridge && s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return nil
 	}
+	smartHTTP := false
+	if s.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled && !httpBridge && !(mode == OpenAIWSIngressModePassthrough && passthroughBridge) {
+		if smartRequest == nil {
+			return nil
+		}
+		// Reuse the dispatch algorithm with original routing scalars and current
+		// account/history. Policy-rewritten scope is only for the final wire.
+		decision := s.decideOpenAIWSUpstreamProtocolForRequest(account, *smartRequest)
+		smartHTTP = decision.Mode != "shadow" && decision.Protocol == "http"
+	}
 	switch mode {
 	case OpenAIWSIngressModePassthrough:
-		httpBridge = passthroughBridge
+		httpBridge = passthroughBridge || smartHTTP
 	case OpenAIWSIngressModeHTTPBridge:
 	case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
 		// Native dispatch compares the fully normalized payload size, not the
 		// original frame or this prompt-free skeleton. Never guess that size.
-		if s.openAIWSHTTPBridgeEnabled() {
+		if s.openAIWSHTTPBridgeEnabled() && !smartHTTP {
 			return nil
 		}
+		httpBridge = smartHTTP
 	default:
-		return nil
-	}
-	if s.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled && !httpBridge {
-		// A legacy bridge override has priority over smart protocol. Other
-		// decisions depend on current history/full input and stay unresolved.
 		return nil
 	}
 	request, body := billingApplicabilityScopeRequest(scope)
@@ -201,7 +212,7 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		!account.routesByModel() && !account.IsAdaptiveAPIProtocol() && !account.UsesNativeCNResponses() &&
 		controlledMode(ctx) == nil {
 		if candidate.scope.Protocol == "responses_ws_v2" {
-			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope, candidate.wsPassthroughBridge)
+			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope, candidate.wsPassthroughBridge, candidate.wsSmartRequest)
 		} else if candidate.scope.Protocol == "chat_http" {
 			protocol := resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil)
 			if protocol == APIProtocolChatCompletions || protocol == APIProtocolResponses && candidate.gateway != nil {

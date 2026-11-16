@@ -1772,6 +1772,10 @@ func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
 	}
+	return extractOpenAIReasoningEffortValue(reasoningEffort, modelCandidates...)
+}
+
+func extractOpenAIReasoningEffortValue(reasoningEffort string, modelCandidates ...string) *string {
 	if reasoningEffort != "" {
 		normalized := normalizeOpenAIReasoningEffortForModel(reasoningEffort, firstNonEmpty(modelCandidates...))
 		if normalized == "" {
