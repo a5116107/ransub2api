@@ -3074,3 +3074,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 统一证据沿`H:/Root/DevCache/evidence/sub2api-billing-applicability/messages-responses-*`；原设计增加5.3.15并原位修订已过时的parallel_tool_calls说明。无新增schema/路由/第二调度器/平行计费和TODO/FIXME/XXX；历史受宿主保护的12张测试PNG及拒删资源保持原路径，不再次删除或移动绕过。生产最后已验仍为.7，本轮不将功能分支提升生产，原28项20done/8部分及原供应商、缓存域、旧完整历史和PR3/v2.21.5等待保持。
 
 - 四包终版`go test -json -tags unit -race -vet=off -p 1 ./internal/service ./internal/handler ./cmd/profit-preview ./internal/pkg/apicompat -run <messages-responses-final-clean-result.json原完整表达式> -count=2 -timeout=8m`退出0（234.750s）：7936条含父子/双轮test pass、0fail/skip/race/坏JSON行；service/handler/CLI/apicompat为206.391/1.978/1.201/1.872秒。Messages→Responses物理HTTP叶例48条、原11类WS物理叶例208条通过事件，均属本地夹具。24项源码/锁文件LF输入drift0，最终命令与计数绑定于messages-responses-verification.json。D2.6.15本地子验收done，原28项20done/8部分不变；其余规范化池桥/状态相关转换、受管资格与真实来源保持开放。
+
+
+### 2026-11-17：D2.6.16 规范化池桥可达协议集合及明确拒绝归因
+
+- 唯一H盘工作树续接`feat/automated-upstream-supply@c18d2d6ba`。原ctx_pool/shared/dedicated在HTTPBridge启用且smart未确定HTTP时直接放弃scope候选过滤，导致WS和HTTP均不符合的账号仍可占用选择/等待。原位将既有私有scope函数改为可达协议集合，复用原兼容规范化、模型映射、Fast及HTTP桥转换；所有可达scope均拒绝才候选拒绝，任一允许则继续原流程，但不授予严格受管资格。形状无法确认继续原最终物理检查，不存正文或预测规范化字节长度，不增加schema/路由/评分/第二调度器。
+- 新红测`go test -json -tags unit -race -vet=off -p 1 ./internal/service -run '^TestBillingWSCandidatePoolProtocolSet$' -count=1 -timeout=3m`真实退出1：36条pass、28条fail（27叶例与1父项），141.204秒，原`pool-protocol-set-red*`保留。扩展原调度/槽后/物理帧矩阵首轮退出1：407pass/31fail，30叶均为桥协议明确excluded却优先报告另一协议unknown，原focus失败保留。原位优先保留明确拒绝，新增反向缺覆盖用例；未弱化原物理断言或删除失败模式。
+- 最终四包双轮`go test -json -tags unit -race -vet=off -p 1 ./internal/service ./internal/handler ./cmd/profit-preview ./internal/pkg/apicompat -run <pool-protocol-set-final-result.json完整表达式> -count=2 -timeout=8m`退出0，总579.906秒（包含编译）；8214条含父子/双轮test pass、0fail/skip/race/坏JSON行，四包230.899/2.088/1.223/1.956秒。新增池桥矩阵146条pass事件（72叶×2轮加父项），新增三种池模式阈值两侧HTTP/WS物理叶例114条pass事件（57叶×2轮）；全部17类物理转发还验证下一轮模型/声明更新及撤销后零发送。不将事件数当独立场景数，不把本地HTTP/WS夹具当生产或真实供应商证据。
+- 三包`go vet -tags unit -p 1 ./internal/service ./internal/handler ./cmd/profit-preview`退出0（292.813秒）；兼容golangci-lint v2.15.0，fast-only/allow-parallel-runners/concurrency1/unit/new-from-rev=c18d2d6ba，同三包退出0（74.312秒）、实际`0 issues.`；同三包GOOS=linux/amd64/CGO0构建退出0（74.484秒），不是全仓全规则清零。GOMAXPROCS2/GOMEMLIMIT6GiB、共享Go缓存、两个本轮检查进程；无CI。
+- 先前24项源码/锁文件输入仅本轮三份Go文件变化；UI35/SQL54/中英四视口对应实现未变，复用既有证据，不重启PG/Redis或预览。五项Go源码/依赖LF摘要在终验前后drift0；75个本地文档链接通过。旧私有单scope符号及无条件池桥延后说明已原位替换，无新增TODO/FIXME/XXX、平行实现或临时垫片。证据统一沿`H:/Root/DevCache/evidence/sub2api-billing-applicability/pool-protocol-set-*`。
+- 本地子项done，原28项20done/8部分及D2等父验收保持；其余状态相关转换、受管产品/真实供应商合同、旧完整历史与PR3/v2.21.5仍待原验收。按既有授权仅提交同步自有功能分支，不新建工作树/PR、不提升生产；生产上次已验仍为.7/fd83f6c91。本轮未更改数据库/Redis/生产账号，既有12文件1164bytes及受宿主保护的历史资源保留原路径，不重试删除或以ignore伪装清理。

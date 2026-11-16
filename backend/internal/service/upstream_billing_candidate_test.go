@@ -37,7 +37,7 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "responses_ws_smart_http"}, {"false", "responses_ws_smart_http"}, {"true", "responses_ws_smart_ws"}, {"false", "responses_ws_smart_ws"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}, {"true", "messages_chat"}, {"false", "messages_chat"}, {"true", "messages_responses"}, {"false", "messages_responses"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "responses_ws_smart_http"}, {"false", "responses_ws_smart_http"}, {"true", "responses_ws_smart_ws"}, {"false", "responses_ws_smart_ws"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}, {"true", "messages_chat"}, {"false", "messages_chat"}, {"true", "messages_responses"}, {"false", "messages_responses"}, {"true", "responses_ws_ctx_pool_normalized_bridge"}, {"false", "responses_ws_ctx_pool_normalized_bridge"}, {"true", "responses_ws_shared_normalized_bridge"}, {"false", "responses_ws_shared_normalized_bridge"}, {"true", "responses_ws_dedicated_normalized_bridge"}, {"false", "responses_ws_dedicated_normalized_bridge"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -65,6 +65,9 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 					entry["protocol"], entry["service_tier"], entry["reasoning_effort"] = "responses_http", "unspecified", "medium"
 					entry["reasoning_summary"], entry["include_encrypted_content"], entry["text_verbosity"] = "auto", true, "medium"
 				}
+				if strings.HasSuffix(tc.protocol, "_normalized_bridge") {
+					entry["protocol"] = "responses_ws_v2"
+				}
 				account := billingCandidateAccount(t, id, entry)
 				if tc.protocol == "responses_native" {
 					account.Extra["openai_passthrough"] = false
@@ -85,12 +88,17 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
 					account.Extra["openai_responses_supported"] = true
 				}
+				entries := []map[string]any{entry}
+				if strings.HasSuffix(tc.protocol, "_normalized_bridge") {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = strings.TrimSuffix(strings.TrimPrefix(tc.protocol, "responses_ws_"), "_normalized_bridge")
+					entries = append(entries, billingApplicabilityEntry("responses_http", "priority", covered))
+				}
 				if tc.protocol != "responses_http" {
 					if tc.protocol == "chat_http" || tc.protocol == "chat_ingress" || tc.protocol == "messages_chat" {
 						account.Extra["openai_responses_mode"] = "force_chat_completions"
 					}
 					at := time.Now().UTC().Add(-time.Second)
-					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entries...), at)
 					require.NoError(t, err)
 				}
 				return account
@@ -115,7 +123,7 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 			}
 			if strings.HasPrefix(tc.protocol, "responses_ws_") {
 				svc.cfg = passthroughLifecycleConfig()
-				if tc.protocol == "responses_ws_size_bridge" {
+				if tc.protocol == "responses_ws_size_bridge" || strings.HasSuffix(tc.protocol, "_normalized_bridge") {
 					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
 					svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
 				}

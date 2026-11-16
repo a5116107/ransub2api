@@ -698,7 +698,7 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 仅对传输可确定的OpenAI API Key Responses WSv2透传首帧，沿5.3.5同一利润门、声明评估器和原调度器提前过滤。收到GET升级后，复用原scope parser验证完整载荷；先按客户端模型应用原Key/组effort规则，再采用渠道映射模型。候选只保存scope与原fast策略快照，不保存正文、帧、hooks或其闭包；模型/tier/effort字符串复制为独立元数据，避免解析子串经长连接上下文间接留住完整输入缓冲。
 
 - 候选复用原WS协议解析器、账号透传模式、兼容处理和WS fast改写。透传发送渠道映射后的模型，不额外应用普通账号model_mapping或非透传none过滤；ctx_pool的账号映射规则不外推到透传。原设置快照供候选循环、WS入口与逐帧转发复用；未知设置、策略block/effort deny沿原实际发送错误语义处理，不伪造严格资格或空池原因。
-- 透传的HTTP bridge分流按**原始完整首帧长度**决定，不用小型元数据骨架长度代替；确定旧桥见5.3.12。smart确定分流见5.3.13；仍依赖规范化长度的池模式、off、旧模式、Lite、工具/媒体/历史及未知scope继续延后到原物理检查。固定池见5.3.9，其bridge判断使用规范化后完整载荷，与透传不同。不仅凭入站是WS便假定实际调用也是WS，亦不增加跨协议重放。
+- 透传的HTTP bridge分流按**原始完整首帧长度**决定，不用小型元数据骨架长度代替；确定旧桥见5.3.12。smart确定分流见5.3.13；规范化长度池模式按5.3.16检查可达协议集合；off、旧模式、Lite、工具/媒体/历史及未知scope仍延后到原物理检查。固定池见5.3.9，其bridge判断使用规范化后完整载荷，与透传不同。不仅凭入站是WS便假定实际调用也是WS，亦不增加跨协议重放。
 - 首帧描述只用于选号、黏性复用、排除重选和抢槽后最新账号复核。handler在准入后、构建连接hooks前清除它；service入口再次清除，覆盖直接嵌入调用。每次真正可重试的首帧选号重新捕获当前描述。后续turn不读取首帧描述，仍按当前映射模型/载荷、最新声明及原准入/定价/并发机制复核。
 - 账号声明中旧模型撤销而新模型仍合格时，新轮不得被旧scope误拦；再请求已撤销模型则必须在物理写入前被拒。保留原会话/缓存归属与不可重放边界，最终准入失败不升级成换账号重发许可。
 
@@ -714,9 +714,9 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 
 #### 5.3.9 固定ctx_pool WS首帧候选（D2.6.9，本地子验收）
 
-在同一`upstreamBillingWSCandidateScope`扩展固定OpenAI API Key的ctx_pool及原有shared/dedicated兼容值，不新增调度器、转发器或第二套声明解析。候选必须与原生WS逐轮发送一致：客户端模型上的effort策略→渠道映射→兼容处理→账号模型映射/归一化→最终模型的fast策略→原声明评估器。WS保留`none`/`minimal`，不套HTTP非透传的effort改写；透传仍不使用普通账号映射。
+在同一`upstreamBillingWSCandidateScopes`扩展固定OpenAI API Key的ctx_pool及原有shared/dedicated兼容值，不新增调度器、转发器或第二套声明解析。候选必须与原生WS逐轮发送一致：客户端模型上的effort策略→渠道映射→兼容处理→账号模型映射/归一化→最终模型的fast策略→原声明评估器。WS保留`none`/`minimal`，不套HTTP非透传的effort改写；透传仍不使用普通账号映射。
 
-- 原协议解析器确定WSv2且关闭HTTPBridge时可提前评估池模式；smart确定HTTP的补充见5.3.13。原生池按**规范化后完整载荷**判断自动bridge，元数据骨架没有足够信息；启用bridge且smart未确定HTTP即延后，不拿原始长度或骨架长度猜测最终协议。映射为图片模型同样延后，不把文本声明外推为媒体资格。
+- 原协议解析器确定WSv2且关闭HTTPBridge时可提前评估池模式；smart确定HTTP的补充见5.3.13。原生池按**规范化后完整载荷**判断自动bridge，元数据骨架没有足够信息；启用bridge且smart未确定HTTP时使用5.3.16的可达协议集合，不拿原始长度或骨架长度猜测最终协议。映射为图片模型同样延后，不把文本声明外推为媒体资格。
 - 首帧描述仍在选号后清除，原槽后最新账号、逐轮及物理写入前检查保留。声明撤销后仅阻止相应scope，不污染下一轮新模型；不因无输出或本地候选失败增加重放权限。有效声明的策略block沿原错误语义处理，延后路径仍复核通用过期/绑定有效性。
 - 验收覆盖四模式模型/effort/tier变换、两调度器的黏性/重选/恢复、槽后声明刷新，以及真实本地WebSocket两次不同模型的发送和第三次撤销scope的拒发；不以内存骨架或模拟写入代替网络发送。双轮race为1588条test pass、0fail/skip/race，vet/增量fast lint/Linux构建退出0，8项源码/依赖摘要drift0；含子例与双轮，非1588个独立场景。最终命令、结果与源码身份见DECISIONS；实际供应商合同、全部动态转换及受管资格继续开放。
 
@@ -752,7 +752,7 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 
 在原WS候选函数中补齐显式`http_bridge`和透传首帧按原始长度确定切桥的路径，不创建第二转发器。后者在捕获首帧时仅保存原桥判定的布尔值，不保存原文或用骨架长度代替真实长度。普通透传保持渠道模型，进入HTTP桥后则遵循原生入口的账号模型映射，再调用原桥body转换得到最终`responses_http`、强制stream及兼容effort；WS声明不借给HTTP桥。
 
-- 保留原分流先后：显式HTTP桥不要求原生WS传输；透传在首帧切桥之前仍要求原解析器允许WSv2；旧桥优先级高于smart protocol。仍依赖完整规范化载荷长度的池模式及未知形状延后精确判断，继续通用声明有效性与最终物理检查；智能首帧的确定分流扩展见5.3.13。
+- 保留原分流先后：显式HTTP桥不要求原生WS传输；透传在首帧切桥之前仍要求原解析器允许WSv2；旧桥优先级高于smart protocol。池模式依赖规范化长度时按5.3.16检查可达协议集合，未知形状仍延后精确判断，继续通用声明有效性与最终物理检查；智能首帧的确定分流扩展见5.3.13。
 - 验收覆盖原始字节阈值边界和模型长度变化、smart开启时的确定旧桥覆盖、none按原HTTP桥兼容规则处理、普通/黏性/重选及抢槽后最新值。原真实WS逐轮用例扩展HTTP桥网络对照：第一轮、换模型第二轮和撤销后第三轮拒发，不能拿首帧预测替代逐轮实际scope。
 - 本地双轮race为6568条test pass、0fail/skip/race；六类路径共100条逐轮网络叶例通过事件，含子例和重复轮次，不等于独立场景数。vet/增量fast lint/Linux构建退出0，10项源码/依赖输入drift0；SQL/UI合同15项未变，复用5.3.11证据，不冒称重新运行。原始失败、命令与剩余边界见STATE/DECISIONS；不增加原任务分母，不代表生产加载或完整动态WS已覆盖。
 
@@ -761,7 +761,7 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 原智能分流器改为消费无正文路由标量，实际入口与候选筛选复用同一个决策实现。候选保存首帧原始模型、显式effort、严格store布尔、历史存在标记、输出上限及input原始JSON字节数；只复制允许的短字符串，不持有正文、历史ID、请求或hooks。分流使用策略改写前的原始模型/effort和当前账号映射/历史，最终声明scope仍使用原reasoning/channel/account/fast/bridge变换，二者不可混用。
 
 - 透传在满足原WS传输前提后，可筛选手动HTTP/WS、auto历史/上限/长上下文及shadow实际WS；shadow的预测HTTP不作为真实协议。历史样本按原账号/连接修订/模型/effort取当前值，捕获后到达的样本也参与；首帧预测不能替代物理发送复核。
-- 显式桥及透传原始长度旧桥优先级保持。池模式smart明确HTTP时可提前筛选；smart为WS/shadow且自动桥仍启用时，规范化长度依赖继续延后。无正向HTTP/链支持不推断HTTP；缺失/false/字符串store不等同true。工具、媒体、历史、Lite及未知形状仍无新资格。
+- 显式桥及透传原始长度旧桥优先级保持。池模式smart明确HTTP时可提前筛选；smart为WS/shadow且自动桥仍启用时，使用5.3.16的可达协议集合，仍不预测规范化长度。无正向HTTP/链支持不推断HTTP；缺失/false/字符串store不等同true。工具、媒体、历史、Lite及未知形状仍无新资格。
 - 本地已验两调度器/黏性保留/排除和恢复、槽后最新声明、网络逐轮最终scope、后续换模型及撤销拒发。三包双轮race6876条test pass、0fail/skip/race；11类网络路径186条叶例pass事件；vet/增量fast lint/Linux退出0，8项源码/依赖输入drift0。计数含子例/重复轮次，不累计为独立场景；SQL/API/UI未改，本次不重跑其验收。不加调度器、评分、表或迁移；不将分流元数据当模型真实性/缓存/严格受管资格或生产恢复，原父项及原28项分母保持。
 
 #### 5.3.14 Messages转Chat候选（D2.6.14，本地子验收）
@@ -781,9 +781,18 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 - 候选复用正式模型映射、dispatch兜底、模型后缀/思考/effort策略及原转换器。该桥对上游固定stream=true；入站stream只决定下游展示。Messages body的service_tier不被沿用，Fast beta、分组强制和过滤/拒绝以既有Fast策略快照求值；直接Messages转Chat仍保持不消费Fast的原合同。
 - 原桥固定生成reasoning.summary、include中的加密输出请求和text.verbosity=medium，必须作为独立精确范围，不能借用普通文本或不同verbosity的声明。新增可选text_verbosity仅接受low/medium/high；有该维度的倍率声明使用schema_version=3，观测scope使用version=4，旧读者不把新输出形态降格成旧的已验范围。原v1/v2和scope v2/v3仍按原合同读取，无数据库迁移。
 - 纯文本Responses HTTP/WS仅放行没有工具/活动tool_choice时的布尔parallel_tool_calls；非法类型、冲突重复字段、未知text扩展、结构化格式和实际工具仍未知。原生非透传若按正式模型规则移除verbosity，候选也移除；因此留下的空text仍按原保守范围延后，不伪造支持。
-- 会从实时会话状态附加previous_response_id的Messages模型继续延后候选精确判断，实际物理发送仍逐次校验；不以合成文本预测隐藏历史。托管凭据、规范化大小触发的池桥及真实供应商合同仍待D2.6原父验收。
+- 会从实时会话状态附加previous_response_id的Messages模型继续延后候选精确判断，实际物理发送仍逐次校验；不以合成文本预测隐藏历史。规范化池桥的可达协议集合见5.3.16；托管凭据、状态相关转换及真实供应商合同仍待D2.6原父验收。
 - 原限期手工声明编辑器和倍率详情增加精确verbosity选择/结果；普通保存不提交声明命令、不续TTL，切到Chat时不发送Responses输出维度；刷新/重开保留已保存值与原CAS、撤销和失效语义。此处展示倍率适用结论，管理端上游缓存和下游本人Key缓存口径保持分开。
 - 验收覆盖两调度器、健康粘性、排除/恢复、等待后重读、发送前撤销、真实本地HTTP流式/非流式与HTTP/WS出站范围，以及SQL持久化和中英桌面/手机编辑器；实际命令/结果和当前状态见STATE/DECISIONS。本地夹具不证明实际供应商、严格受管池、缓存收益或生产加载，原28项分母保持。
+
+#### 5.3.16 规范化池桥的可达协议集合（D2.6.16，本地子验收）
+
+ctx_pool/shared/dedicated启用按规范化大小自动桥接，且smart未确定HTTP时，候选不再无条件跳过scope判断。沿原模型映射、兼容规范化、Fast策略和HTTP桥转换分别计算WS/HTTP两个可达scope，只有每一条可达scope都被原声明门拒绝才提前排除账号。
+
+- 不保存完整请求、不以元数据骨架或原始字节数预测规范化长度、不新增路由算法。实际协议仍由原转发器确定；确定协议的模式保持只检查实际那一种。
+- 任一可达scope被允许时继续原候选流程，这不授予严格受管资格，也不保证最后选中的实际协议必然通过。转换失败或形状未知仍延后精确判断；已过期、绑定变化等通用声明失效始终即时生效。已声明账号中缺少该已知scope的覆盖条目仍按原合同拒绝；未声明旧账号继续原兼容路径，不获得严格资格。
+- 健康粘性、成本门、共享Key并发、等待后重读和实际发送终检保持。首帧候选描述在连接后清除；后续帧使用本轮模型/档位/声明，撤销后不会因首帧旧资格继续发送。
+- 本地回归覆盖两调度器的排除/恢复/粘性、槽位后配置撤销，以及三种池模式在阈值两侧的物理HTTP/WS帧；实际结果见STATE/DECISIONS。范围限定为已有可预测纯文本转换，状态相关转换、受管产品和真实供应商合同仍待原父验收。
 
 ### 5.4 采购分桶、产品组合与自动重归类（提案）
 
@@ -1840,7 +1849,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 
 | 范围 | 当前源码证据 | 尚缺什么 / 不能据此宣称什么 |
 | --- | --- | --- |
-| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.15。原生透传/非透传、固定转换、Chat及Messages双转换入站、透传/固定池WS、确定HTTP桥及智能分流候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
+| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.16。原生透传/非透传、固定转换、Chat及Messages双转换入站、透传/固定池WS、确定HTTP桥及智能分流候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
@@ -1860,7 +1869,7 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 
 | ID / 优先级 | 原位工作与依赖 | 可验收结果 / 外部边界 |
 | --- | --- | --- |
-| D2.6 / P0 | D2.6.1–.15声明/预演/来源、原生Responses/Chat、Messages双转换、透传/固定池WS及确定桥/智能分流候选已有本地证据，见5.3.1–5.3.15；余状态相关转换、规范化池桥、受管资格与真实来源；依赖D2.1–D2.5 | .15四包双轮race7936条test pass、0fail/skip/race，Messages→Responses物理HTTP48及11类WS208叶例pass事件；两调度器/粘性/槽后/撤销、映射/dispatch/beta与verbosity精确范围已验。最终vet/增量fast lint/Linux退出0，SQL54/UI35与中英四视口按未变输入复用，24项输入drift0；原失败保留，非生产。计数含子例/双轮，不累计为独立场景；其余状态转换/池桥、实际合同与严格资格仍开放，原分母不变 |
+| D2.6 / P0 | D2.6.1–.16声明/预演/来源、原生Responses/Chat、Messages双转换、透传/固定池WS、确定桥/智能分流及规范化池桥协议集合已有本地证据，见5.3.1–5.3.16；余状态相关转换、受管资格与真实来源；依赖D2.1–D2.5 | .16四包双轮race8214条test pass、0fail/skip/race，池桥矩阵146、新增物理HTTP/WS叶例114条pass事件（含双轮）；双调度/粘性/槽后/撤销、映射与Fast均已验。三包vet/增量fast lint/Linux退出0；SQL54/UI35按未变输入复用。原RED和拒绝原因失败保留，非生产；状态相关转换/实际合同与严格资格仍开放，原分母不变 |
 | D5.3 / P0 | 沿timing/usage及原运维入口建立上游原始缓存和同层指标聚合；依赖D2.5/D5.1 | 按最终Key摘要/实际组/模型/协议/档位/线路版本和窗口汇总，身份未知单列；请求命中、Token加权、覆盖、样本/新鲜度及业务/合成来源分开；复用TTFB/TTFS/首推理/首文本、输出停顿、完整成功与物理attempt的同scope口径，不把最终成功掩盖前序失败。与下游本人面板/计费桶隔离，30天边界/查询成本/权限验证；不以当前账号配置补历史。逐尝试发送元数据子项见D5.3.6，未代替完整父验收 |
 | D3.2 / P0 | 扩展原quality/judge的分维度证据、独立参考、测量/策略版本和漂移；依赖D2.6 | 功能质量/模型身份/系统判题故障分开；独立TTL、覆盖、原因和配置变更失效，晚到不复活；夹具可先验合同，真实身份结论须实际独立基线，不因缺运行数据停做本地合同 |
 | D8.1 / P0 | 在原runner/计划/租约内完成多周期预算和覆盖编译；依赖D2.6/D5.3的scope定义 | 物理调用含分页、token、判题、全局/站点/共享Key并发、恢复预留与公平性统一计数；100绑定含故障不饥饿，补生产周期锁/多节点覆盖观察，耗尽不续绿；保存前预览并拒绝不可能周期。已有100绑定测试继续保留，不能用其替代预算总体验收 |
