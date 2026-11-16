@@ -2899,3 +2899,37 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 命令go test -json -tags unit -race -vet=off -p 1 ./internal/service ./internal/handler ./internal/repository -run '^Test(EncryptedHTTP|OpenAI.*(Sticky|EncryptedSticky|HeaderTimeout|Admission|ServerFailure)|OpenAILegacySticky|StickySessionRebind|PR612|Responses.*(Retry|Admission|Failover)|.*NonStreaming.*|.*SSEToJSON.*)' -count=2 -timeout=8m退出0；1206条test pass、0fail/skip/race，三包13.812/57.866/8.653秒。计数含子例和双轮，不是1206种独立场景。同三包go vet -tags unit -p 1退出0；兼容golangci fast/serial/concurrency1、new-from-rev=d8f9387f1退出0，0 issues.。证据encrypted-binding-{final.jsonl,checks.json,vet.log,lint.log}位于原生产failover evidence目录。
 - 当轮18:29只读核线上仍.5/dddb2ef1f，实例时序709 success/completed、6 client_disconnected/completed，新增错误3条独立保留。此窗口不是旧完整历史恢复证明；旧错误历史不采集/重放。当前本地修复尚待生产分支独立构建、隔离快照升级/回退和16场景运行验证后发布.6；不把功能分支全部带入生产，不运行构建/测试CI。
 - 原28项20done/8部分不变；D9.1本地补丁已验，生产加载与旧失败会话仍分别开放。现有12PNG/1164bytes不暂存；同一H盘工作树，复用共享Go缓存，不新增worktree。
+
+
+## 2026-11-16：D9.1 .6生产候选
+
+- 功能分支53a6c6f6f的9文件补丁原样提取为生产c50f61a2b，自动机械合入，无新schema。仅覆盖加密HTTP成功后CAS绑定与非流式SSE完成状态传递，不带入其他自动供应池候选/UI/schema。feature本地双轮1206条test pass、0fail/skip/race，vet0、增量fast lint0；生产提取须独立验证，不继承为生产运行证据。
+- 版本准备2.21.0-ransub.6；线上仍.5。现有生产快照/旧二进制/固定镜像作为回退，计划在隔离恢复库先验证旧→新→旧→新并增加16种密文历史场景，之后才发行和排空升级。账号人工启停、分组、倍率、健康5/3/1和PG/Redis身份保持；原28项20done/8部分不变。
+
+### 2026-11-16：D9.1旧负载调度遗漏与.7候选
+
+- .6源14ac377c4的旧→新→旧→新四阶段均通过，迁移保持432、账号10、实际程序哈希和登录/性能API相符；后续真实HTTP/Redis历史场景失败，候选未发布、生产未改。补充诊断复用四阶段证据，只恢复一次候选副本：普通非流式请求的原账号11先成功，再502换到12，12返回400拒绝加密历史后，Redis绑定仍从11变为12。原始失败保留在encrypted-health-rehearse.json，带具体路径的失败在encrypted-health-history.json，夹具容器/网络均按标签和ID清理。
+- 原因是selectAccountWithLoadAwareness的负载正常及缓存故障回退直接调用CAS写入，未经过此前bindOpenAIStickySessionDuringSelection的延迟条件。原位在既有canBindSticky统一条件排除待提交的加密HTTP会话，沿用原TTL、并发释放、组别/利润门与成功后CAS；不增第二套绑定实现，不改普通请求的eager绑定。
+- 新增TestEncryptedHTTPLegacySelectionWaitsForSuccessfulHistoryAcceptance覆盖三种选择分支和有/无原绑定。旧代码真实退出1，负载正常/故障回退合计4个子例失败；修复后三轮定向race退出0，39顶层/126含子例，0失败/跳过。扩大至原.6命名测试及旧调度/Redis准入回归，三包race退出0，240顶层/648含子例，service7.694s/handler29.673s/repository4.927s，0失败/跳过；不与三轮子集累加。准确选择器与源码输入摘要在encrypted-legacy-checks.json，输出在encrypted-legacy-expanded.jsonl。
+- 预装golangci-lint由Go1.26构建，拒绝项目1.27.4；使用现有模块缓存以项目工具链运行v2.9.0源码。第一次遇到其他本地任务持有全局lint锁，未停止其他进程；仅用官方allow-parallel-runners解除互斥，增量fast原规则最终退出0、0 issues.，失败日志一并保留。三包go vet -p 1 -tags unit退出0；新产物/副本/生产仍分别验收，不用源码通过替代运行加载。
+- .6标签及草稿保留不发布，不强推重写；补齐代码的独立候选改用2.21.0-ransub.7。Release自动发行暂时仍禁用，待合格候选发行后恢复；不运行编译/测试CI。原28项20done/8部分及旧失败会话完整恢复等外部验收保持。
+
+
+### 2026-11-16：D9.1 .7生产验收与发布收尾
+
+- 最终发行源码fd83f6c91ccb4438a1adb60e0e03da51a4858fe7已非强推至自有production；v2.21.0-ransub.7同源、stable/latest公开，.6因真实加密历史失败保持未发布。Linux amd64归档85831180bytes、SHA256 a03ecfb1e0a8903b77ad40e7f37333f3b7047aa52d3964914bd86af8b04b7280；程序SHA256 bea1c3964bc3c087a66e4cb5c37447e3158e9578db6157a66d955b0c7857dbc7。local-build退出0；648节点race、vet和增量fast lint对应输入未变，复用已有证据。
+- 恢复生产副本的旧.5→.7→旧版回退→重升四阶段及16种加密历史场景全部通过：普通/透传、流式/非流式、拒绝/完整成功/部分后失败/截断，均保留历史，只有替补真正成功才提交绑定；失败仍归原账号。432迁移、10账号及原业务字段保持，7个容器和1网络按身份清理。证据encrypted-legacy-health-rehearse.json，不外推真实供应商旧会话的完整恢复。
+- 生产备份168186083bytes已校验。Release run43862053541仅publish-prebuilt-image成功，其余7项跳过；Release及Sync upstream当前active，原CI禁用。固定镜像ghcr.io/a5116107/ransub2api:2.21.0-ransub.7@sha256:9c3ae43c134d71a3ffa9e990142625ae430e536cec5e539c990aeaa8a32a05e9。2026-11-16 20:08香港时间排空升级与同镜像重建均加载上述程序，PG/Redis身份及432迁移不变，无新增迁移，维护路由已移除。
+- 公网Responses SSE200、唯一response.completed、2字符正文，总3.734秒、首文本3.609秒（包含本机网络），client_request_id=7136dfba-82a2-4879-934f-a3cbdfc59057唯一关联usage74763/账号7。Chromium实际登录、版本菜单强刷均current/latest=.7、has_update=false，页面/HTTP/请求错误0；截图encrypted-legacy-health-production-version.png。未为重复验账再次发计费请求。
+- 本次续接独立运行ops.py verify，REMOTE_PHASE_EXIT verify 0；实际哈希/current/latest/管理API及数据库身份均匹配。SOCKS路径先在SSH认证阶段遇transport shut down/EOF，未更改凭据或跳过主机校验；同一已存主机的原生SSH严格校验连接成功，保留失败事实。随后ops.py cleanup退出0，最近50条落库时序usage74783–74832全部200/success/completed、downstream_error/client_disconnect均false；仅代表短观察窗口，未宣称此窗口发生自然换号。
+- 原账号status/schedulable/concurrency/rate_multiplier、组绑定及5/3/1逐项与排空快照一致。当前只有账号7允许调度，其余人工停调或错误未自动恢复，快照单成员不据此判作漏调。删除无容器/网络/挂载/进程引用的.6/.7候选程序各321605792bytes及一次性字段快照13206bytes，实际释放643224790bytes；数据库/程序/镜像回滚材料保留。证据encrypted-legacy-health-cleanup.json。
+- 本地原策略拒删目录和12张历史PNG保持原路径，本轮不换工具重试删除。检查点原先仍写镜像打包中，已按实际后验更新；设计移除过时不推送/未授权部署及重复的.2线上进度，以STATE为唯一状态。原28项20done/8部分、旧失败会话完整历史恢复、供应商契约、非文本/缓存净收益及PR3/v2.21.5冲突整合保持待验。 续接只读计数：DevCache/tmp下sub2api-production-failover现3文件31929bytes、sub2api-release-build 2文件20172bytes、sub2api-stream-health 3文件21252bytes，均沿既有策略拒删记录保留；本轮未再次删除或移动。
+
+
+### 2026-11-16：D9.1 .7回合开发分支与冲突闭环
+
+- 在唯一H盘工作树从feat/automated-upstream-supply@40553a421合入production@988fc9fda，5处冲突按行为解决：VERSION保留开发已整合上游2.21.1，测试纳入旧负载三分支/有无绑定六子例，DECISIONS追加两边历史，STATE保留较新的全局任务矩阵，设计保留完整11.4与全部86个标题并统一授权/更新链。没有用生产旧任务表覆盖开发分支，生产仍为.7/fd83f6c91，无整功能分支上线。
+- 唯一应用差异是原canBindSticky新增3行延迟条件，测试新增37行；两份代码文件与生产.7逐字相等。复用encrypted-legacy-checks.json中完整240顶层选择器执行三包race：648条含子例test pass、0fail/0skip，service7.438s、handler29.398s、repository4.941s；包含首次依赖/编译总348.047秒。随后go vet -p 1 -tags unit ./internal/service ./internal/handler ./internal/repository退出0，135.016秒。
+- 项目Go1.27.4运行缓存中的golangci-lint/v2@v2.9.0，run --fast-only --allow-parallel-runners --concurrency=1 --build-tags=unit --new-from-rev=40553a421及上述三包，退出0、0 issues.、51.672秒；不是全仓全规则清零。最小命令/结果/四份源码输入摘要在encrypted-legacy-feature-merge.json，lint日志11bytes；未保存另一套完整百万字节测试日志。
+- 文档70个本地链接通过，原设计86个标题及28项20done/8部分保留；修复旧授权和重复线上版本说明，不增加平行规划。无新增待办或临时垫片；12张既有PNG仍1164bytes且未暂存，源码目录未新增测试文件产物，已有共享缓存复用。Go测试自行回收当前构建scratch，不删除其他任务的进程或资源，不运行CI，不新增PR/发行/部署。
+- 对上述停调来源作精确限定：只读证据证明当前仅账号7允许调度、其余schedulable=false或status=error，并与本次排空基线一致；未调阅逐项审计事件，不将所有停调一概归为人工。源码既有OpenAI429阈值策略也可持久SetSchedulable(false)，区别于仅设置期限的5/3/1临时冷却；本轮未修改这些策略、恢复全部账号或将其全部归因于调度器漏选。
