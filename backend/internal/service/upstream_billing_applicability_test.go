@@ -56,6 +56,42 @@ func TestBillingApplicabilityResponsesOutputScope(t *testing.T) {
 	}
 }
 
+func TestBillingApplicabilityResponsesVerbosityDeclaration(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Second)
+	for _, version := range []int{1, 2, 3} {
+		for _, verbosity := range []any{"low", "medium", "high", "", "future", nil, 1, true} {
+			t.Run(fmt.Sprintf("v%d/%v", version, verbosity), func(t *testing.T) {
+				entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+				entry["text_verbosity"] = verbosity
+				fixture := billingApplicabilityFixture(at, entry)
+				fixture["schema_version"] = version
+				raw, err := json.Marshal(fixture)
+				require.NoError(t, err)
+				declaration := decodeUpstreamBillingApplicability(raw, at)
+				valid := version == 3 && (verbosity == "low" || verbosity == "medium" || verbosity == "high")
+				if !valid {
+					require.Nil(t, declaration, "invalid/old declarations must not erase an explicit verbosity")
+					return
+				}
+				require.NotNil(t, declaration)
+				for _, requested := range []string{"", "low", "medium", "high"} {
+					body := `{"model":"gpt-fixture","input":"hi"`
+					if requested != "" {
+						body += `,"text":{"verbosity":"` + requested + `"}`
+					}
+					scope := availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), []byte(body+`}`))
+					require.NotNil(t, scope)
+					want := "unknown"
+					if requested == verbosity {
+						want = "covered"
+					}
+					require.Equal(t, want, declaration.verdict(scope, at.Add(time.Second)))
+				}
+			})
+		}
+	}
+}
+
 func TestBillingApplicabilityResponsesOutputDeclaration(t *testing.T) {
 	at := time.Now().UTC().Add(-time.Second)
 	entry := billingApplicabilityEntry("responses_http", "unspecified", true)
@@ -247,7 +283,8 @@ func TestBillingApplicabilityContract(t *testing.T) {
 		{"tier not normalized", func(d map[string]any) { d["entries"].([]map[string]any)[0]["service_tier"] = "default" }, "unknown"},
 		{"effort not inherited", func(d map[string]any) { d["entries"].([]map[string]any)[0]["reasoning_effort"] = "high" }, "unknown"},
 		{"expired exact boundary", func(d map[string]any) { d["expires_at"] = at.Add(time.Second).Format(time.RFC3339Nano) }, "expired"},
-		{"version unsupported", func(d map[string]any) { d["schema_version"] = 3 }, "invalid"},
+		{"v3 plain remains compatible", func(d map[string]any) { d["schema_version"] = 3 }, "covered"},
+		{"version unsupported", func(d map[string]any) { d["schema_version"] = 4 }, "invalid"},
 		{"source version absent", func(d map[string]any) { delete(d, "source_version") }, "invalid"},
 		{"observation mismatch", func(d map[string]any) { d["observed_at"] = at.Add(-time.Second).Format(time.RFC3339Nano) }, "invalid"},
 		{"expiry missing", func(d map[string]any) { delete(d, "expires_at") }, "invalid"},

@@ -299,6 +299,8 @@ export default {
           tier: "服务档位（未指定填 unspecified）",
           effort: "推理强度（未指定填 unspecified）",
           summary: "推理摘要输出（精确匹配）",
+          verbosity: "文本详略 text.verbosity（精确匹配）",
+          verbosityAbsent: "未指定（与 medium 不同）",
           summaryAbsent: "未指定（与 none 不同）",
           encrypted: "包含加密推理输出 reasoning.encrypted_content（不代表可重放加密历史）",
           applies: "是否适用当前分组倍率（所有上下文）",

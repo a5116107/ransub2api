@@ -45,14 +45,16 @@ describe('manual rate applicability editor', () => {
     await wrapper.get('[data-testid="manual-reason"]').setValue('reviewed encrypted output and summary')
     await wrapper.get('[data-testid="manual-model"]').setValue('wire-fixture')
     await wrapper.get('[data-testid="manual-summary"]').setValue('auto')
+    await wrapper.get('[data-testid="manual-verbosity"]').setValue('medium')
     await wrapper.get('[data-testid="manual-encrypted"]').setValue(true)
     await wrapper.get('[data-testid="manual-confirm"]').setValue(true)
-    expect(build(wrapper)).toMatchObject({ entries: [{ reasoning_summary: 'auto', include_encrypted_content: true }] })
+    expect(build(wrapper)).toMatchObject({ entries: [{ reasoning_summary: 'auto', text_verbosity: 'medium', include_encrypted_content: true }] })
     await wrapper.get('[data-testid="manual-protocol"]').setValue('chat_http')
     expect(wrapper.find('[data-testid="manual-summary"]').exists()).toBe(false)
     const update = build(wrapper)
     expect(update && 'entries' in update && update.entries[0]).not.toHaveProperty('reasoning_summary')
     expect(update && 'entries' in update && update.entries[0]).not.toHaveProperty('include_encrypted_content')
+    expect(update && 'entries' in update && update.entries[0]).not.toHaveProperty('text_verbosity')
   })
 
   it('keeps the opened revision when a background refresh changes the account', async () => {
@@ -72,14 +74,15 @@ describe('manual rate applicability editor', () => {
     const extra = { upstream_billing_manual_applicability: {
       revision: 'output-1', status: 'active', source_version: 'contract-output-1', reason: 'reviewed',
       expires_at: new Date(Date.now() + 3600000).toISOString(),
-      entries: [{ model: 'wire-fixture', protocol: 'responses_http', service_tier: 'priority', reasoning_effort: 'high', context: 'all', group_rate_applies: true, conclusion: 'covered', reasoning_summary: 'auto', include_encrypted_content: true }]
+      entries: [{ model: 'wire-fixture', protocol: 'responses_http', service_tier: 'priority', reasoning_effort: 'high', context: 'all', group_rate_applies: true, conclusion: 'covered', reasoning_summary: 'auto', include_encrypted_content: true, text_verbosity: 'medium' }]
     } } as Account['extra']
     const wrapper = mount(UpstreamBillingManualApplicabilityForm, { props: { account: account(extra), show: true } })
     expect(build(wrapper)).toBeUndefined()
     await wrapper.get('[data-testid="manual-edit"]').setValue(true)
     expect((wrapper.get('[data-testid="manual-summary"]').element as HTMLSelectElement).value).toBe('auto')
+    expect((wrapper.get('[data-testid="manual-verbosity"]').element as HTMLSelectElement).value).toBe('medium')
     expect((wrapper.get('[data-testid="manual-encrypted"]').element as HTMLInputElement).checked).toBe(true)
     await wrapper.get('[data-testid="manual-confirm"]').setValue(true)
-    expect(build(wrapper)).toMatchObject({ expected_revision: 'output-1', entries: [{ reasoning_summary: 'auto', include_encrypted_content: true }] })
+    expect(build(wrapper)).toMatchObject({ expected_revision: 'output-1', entries: [{ reasoning_summary: 'auto', include_encrypted_content: true, text_verbosity: 'medium' }] })
   })
 })

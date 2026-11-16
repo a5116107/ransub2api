@@ -163,7 +163,7 @@ func TestAcquireResponsesAccountSlotBillingScope(t *testing.T) {
 
 func TestBillingCandidateHTTPHandlersFilterBeforeSlot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, ingress := range []string{"chat", "messages", "messages_dispatch", "messages_account_mapping"} {
+	for _, ingress := range []string{"chat", "messages", "messages_dispatch", "messages_account_mapping", "messages_responses", "messages_responses_dispatch", "messages_responses_account_mapping"} {
 		for _, covered := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/available=%v", ingress, covered), func(t *testing.T) {
 				repo := &initialAdmissionRepo{}
@@ -174,24 +174,31 @@ func TestBillingCandidateHTTPHandlersFilterBeforeSlot(t *testing.T) {
 				h.maxAccountSwitches = 0
 				groupID := int64(3131)
 				requestedModel, wireModel := "gpt-fixture", "wire-fixture"
-				dispatch := ingress == "messages_dispatch" || ingress == "messages_account_mapping"
+				dispatch := strings.HasSuffix(ingress, "_dispatch") || strings.HasSuffix(ingress, "_account_mapping")
+				responses := strings.Contains(ingress, "responses")
+				wireProtocol, wirePath := "chat_http", "/v1/chat/completions"
+				if responses {
+					wireProtocol, wirePath = "responses_http", "/v1/responses"
+				}
 				if dispatch {
 					requestedModel = "claude-sonnet-fixture"
-					if ingress == "messages_dispatch" {
+					if strings.HasSuffix(ingress, "_dispatch") {
 						wireModel = "dispatch-fixture"
 					}
 				}
 				repo.accounts = nil
 				for id := int64(1); id <= 2; id++ {
-					account := profitBillingScopeTestAccount(id, wireModel, "chat_http", covered && id == 2)
+					account := profitBillingScopeTestAccount(id, wireModel, wireProtocol, covered && id == 2)
 					account.Priority, account.GroupIDs = int(id), []int64{groupID}
-					account.Extra["openai_responses_mode"] = "force_chat_completions"
+					if !responses {
+						account.Extra["openai_responses_mode"] = "force_chat_completions"
+					}
 					mapping := map[string]any{requestedModel: wireModel}
 					if dispatch {
 						// The scheduling model is only a supported routing alias;
 						// forwarding resolves the original model with a fallback.
 						mapping["dispatch-fixture"] = "scheduling-only-fixture"
-						if ingress == "messages_dispatch" {
+						if strings.HasSuffix(ingress, "_dispatch") {
 							delete(mapping, requestedModel)
 						}
 					}
@@ -200,6 +207,10 @@ func TestBillingCandidateHTTPHandlersFilterBeforeSlot(t *testing.T) {
 						data := account.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)["data"].(map[string]any)
 						entry := data["rate_applicability"].(map[string]any)["entries"].([]map[string]any)[0]
 						entry["service_tier"], entry["reasoning_effort"] = "unspecified", "medium"
+						if responses {
+							data["rate_applicability"].(map[string]any)["schema_version"] = 3
+							entry["reasoning_summary"], entry["include_encrypted_content"], entry["text_verbosity"] = "auto", true, "medium"
+						}
 					}
 					repo.accounts = append(repo.accounts, *account)
 				}
@@ -236,7 +247,7 @@ func TestBillingCandidateHTTPHandlersFilterBeforeSlot(t *testing.T) {
 					require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 					require.Contains(t, rec.Body.String(), "done")
 					require.Equal(t, 1, calls)
-					require.Equal(t, "/v1/chat/completions", upstream.paths[0])
+					require.Equal(t, wirePath, upstream.paths[0])
 					require.Equal(t, wireModel, gjson.GetBytes(upstream.bodies[0], "model").String())
 					require.NotEmpty(t, repo.initialReads)
 					for _, id := range repo.initialReads {

@@ -50,13 +50,17 @@ func TestAvailabilityResponsesOutputNeverBorrowsPlainTextObservation(t *testing.
 	require.NotEqual(t, oldReader, *availabilityScopeForRequest(request(plain), plain))
 }
 
-func TestAvailabilityChatTextParallelToolCalls(t *testing.T) {
-	for _, protocol := range []string{"chat_http", "responses_http"} {
+func TestAvailabilityTextParallelToolCalls(t *testing.T) {
+	for _, protocol := range []string{"chat_http", "responses_http", "responses_ws_v2"} {
 		path, text := "/v1/chat/completions", `"messages":[{"role":"user","content":"hello"}]`
-		if protocol == "responses_http" {
+		if protocol != "chat_http" {
 			path, text = "/v1/responses", `"input":"hello"`
 		}
 		request := httptest.NewRequest(http.MethodPost, path, nil)
+		if protocol == "responses_ws_v2" {
+			request.Method, request.URL.Scheme = http.MethodGet, "wss"
+			text += `,"type":"response.create"`
+		}
 		base := []byte(`{"model":"gpt-fixture",` + text + `}`)
 		plain := availabilityScopeForRequest(request, base)
 		require.NotNil(t, plain)
@@ -81,14 +85,70 @@ func TestAvailabilityChatTextParallelToolCalls(t *testing.T) {
 			t.Run(protocol+"/"+tc.name, func(t *testing.T) {
 				body := []byte(`{"model":"gpt-fixture",` + text + `,` + tc.options + `}`)
 				scope := availabilityScopeForRequest(request, body)
-				if protocol == "chat_http" && tc.textOnly {
+				if tc.textOnly {
 					require.Equal(t, plain, scope, "an inert flag must preserve the exact observed text scope")
 				} else {
-					require.Nil(t, scope, "do not grant unobserved tools or broaden Responses capability")
+					require.Nil(t, scope, "do not grant unobserved tools or malformed flags")
 				}
 			})
 		}
 	}
+}
+
+func TestAvailabilityResponsesTextVerbosity(t *testing.T) {
+	for _, protocol := range []string{"responses_http", "responses_ws_v2"} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		extra := ""
+		if protocol == "responses_ws_v2" {
+			request.Method, request.URL.Scheme, extra = http.MethodGet, "wss", `,"type":"response.create"`
+		}
+		for _, verbosity := range []string{"low", "medium", "high"} {
+			t.Run(protocol+"/"+verbosity, func(t *testing.T) {
+				body := []byte(`{"model":"gpt-fixture","input":"private prompt","text":{"verbosity":"` + verbosity + `"},"parallel_tool_calls":true` + extra + `}`)
+				scope := availabilityScopeForRequest(request, body)
+				require.NotNil(t, scope)
+				raw, err := json.Marshal(scope)
+				require.NoError(t, err)
+				require.Contains(t, string(raw), `"text_verbosity":"`+verbosity+`"`)
+				require.Equal(t, 4, scope.Version, "old readers must not drop the verbosity dimension and borrow plain output evidence")
+				require.True(t, billingApplicabilityScopeShapeKnown(*scope))
+				require.NotContains(t, string(raw), "private prompt")
+			})
+		}
+	}
+	for _, text := range []string{`null`, `"medium"`, `{}`, `{"verbosity":null}`, `{"verbosity":""}`, `{"verbosity":"future"}`, `{"verbosity":"Medium"}`, `{"verbosity":true}`, `{"verbosity":"low","verbosity":"high"}`, `{"verbosity":"medium","format":{"type":"json_schema"}}`, `{"verbosity":"medium","unknown":true}`} {
+		body := []byte(`{"model":"gpt-fixture","input":"hello","text":` + text + `}`)
+		require.Nil(t, availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), body), text)
+	}
+	for _, path := range []string{"/v1/chat/completions", "/v1/messages"} {
+		body := []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"hello"}],"text":{"verbosity":"medium"}}`)
+		require.Nil(t, availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, path, nil), body))
+	}
+}
+
+func TestAvailabilityResponsesVerbosityNeverBorrowsObservation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "https://fixture.invalid/v1/responses", nil)
+	plain := []byte(`{"model":"gpt-fixture","input":"hi","include":["reasoning.encrypted_content"]}`)
+	extended := []byte(`{"model":"gpt-fixture","input":"hi","include":["reasoning.encrypted_content"],"text":{"verbosity":"medium"}}`)
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	report := availabilityAdmissionPass(account.ID, "gpt-fixture")
+	report.Models[0].Decision.Scope = availabilityScopeForRequest(request, plain)
+	svc := &OpenAIGatewayService{availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}}
+	physical := func(payload []byte) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, request.URL.String(), bytes.NewReader(payload))
+		require.NoError(t, err)
+		return req
+	}
+	require.NoError(t, svc.admitAvailabilityRequest(t.Context(), physical(plain), account))
+	require.ErrorContains(t, svc.admitAvailabilityRequest(t.Context(), physical(extended), account), "availability_scope_unconfirmed")
+	scope := availabilityScopeForRequest(request, extended)
+	require.NotNil(t, scope)
+	report.Models[0].Decision.Scope = scope
+	require.NoError(t, svc.admitAvailabilityRequest(t.Context(), physical(extended), account))
+	require.ErrorContains(t, svc.admitAvailabilityRequest(t.Context(), physical(plain), account), "availability_scope_unconfirmed")
+	oldReader := *scope
+	oldReader.TextVerbosity = ""
+	require.NotEqual(t, oldReader, *availabilityScopeForRequest(request, plain), "version 4 must isolate readers which drop verbosity")
 }
 
 func TestAvailabilityMessagesScopeMatchesOnlyObservedCapabilities(t *testing.T) {

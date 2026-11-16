@@ -24,6 +24,9 @@
             <select v-model="entry.reasoning_summary" class="input mt-1" data-testid="manual-summary"><option value="">{{ t(`${prefix}.summaryAbsent`) }}</option><option value="none">none</option><option value="auto">auto</option><option value="concise">concise</option><option value="detailed">detailed</option></select>
           </label>
           <label class="flex items-start gap-2 text-xs"><input v-model="entry.include_encrypted_content" type="checkbox" class="mt-0.5" data-testid="manual-encrypted" />{{ t(`${prefix}.encrypted`) }}</label>
+          <label class="block text-xs">{{ t(`${prefix}.verbosity`) }}
+            <select v-model="entry.text_verbosity" class="input mt-1" data-testid="manual-verbosity"><option value="">{{ t(`${prefix}.verbosityAbsent`) }}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select>
+          </label>
         </div>
         <label class="block text-xs">{{ t(`${prefix}.applies`) }}
           <select v-model="entry.group_rate_applies" class="input mt-1" data-testid="manual-applies"><option :value="true">{{ t('admin.accounts.upstreamBilling.applicability.covered') }}</option><option :value="false">{{ t('admin.accounts.upstreamBilling.applicability.excluded') }}</option><option :value="null">{{ t('admin.accounts.upstreamBilling.applicability.unknown') }}</option></select>
@@ -46,8 +49,8 @@ const props = defineProps<{ account: Account; show: boolean }>()
 const { t } = useI18n()
 const prefix = 'admin.accounts.upstreamBilling.manualApplicability'
 const current = ref(props.account.extra?.upstream_billing_manual_applicability)
-type Entry = Omit<UpstreamBillingApplicabilityEntry, 'conclusion' | 'reasoning_summary'> & { reasoning_summary: NonNullable<UpstreamBillingApplicabilityEntry['reasoning_summary']> | '' }
-const emptyEntry = (): Entry => ({ model: '', protocol: 'responses_http', service_tier: 'unspecified', reasoning_effort: 'unspecified', context: 'all', group_rate_applies: true, reasoning_summary: '', include_encrypted_content: false })
+type Entry = Omit<UpstreamBillingApplicabilityEntry, 'conclusion' | 'reasoning_summary' | 'text_verbosity'> & { reasoning_summary: NonNullable<UpstreamBillingApplicabilityEntry['reasoning_summary']> | ''; text_verbosity: NonNullable<UpstreamBillingApplicabilityEntry['text_verbosity']> | '' }
+const emptyEntry = (): Entry => ({ model: '', protocol: 'responses_http', service_tier: 'unspecified', reasoning_effort: 'unspecified', context: 'all', group_rate_applies: true, reasoning_summary: '', include_encrypted_content: false, text_verbosity: '' })
 const editing = ref(false), revoke = ref(false), confirmed = ref(false)
 const version = ref(''), reason = ref(''), expiry = ref('')
 const entries = ref<Entry[]>([emptyEntry()])
@@ -61,7 +64,7 @@ watch([() => props.account.id, () => props.show], () => {
   const date = new Date(current.value?.expires_at ?? Date.now() + 3600000)
   expiry.value = Number.isFinite(date.getTime()) ? new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ''
   entries.value = current.value?.entries?.length
-    ? current.value.entries.map(({ conclusion: _conclusion, ...entry }) => ({ ...entry, reasoning_summary: entry.reasoning_summary ?? '' }))
+    ? current.value.entries.map(({ conclusion: _conclusion, ...entry }) => ({ ...entry, reasoning_summary: entry.reasoning_summary ?? '', text_verbosity: entry.text_verbosity ?? '' }))
     : [emptyEntry()]
 }, { immediate: true })
 
@@ -73,10 +76,11 @@ function buildUpdate(): UpstreamBillingManualApplicabilityUpdate | undefined {
   if (!confirmed.value || !version.value.trim() || !reason.value.trim() || !Number.isFinite(duration) || duration <= 0 || duration > 86400000 || entries.value.some(entry => !entry.model.trim())) {
     throw new Error(t(`${prefix}.invalid`))
   }
-  return { expected_revision, confirm_current_binding: true, source_version: version.value.trim(), reason: reason.value.trim(), expires_at: new Date(end).toISOString(), entries: entries.value.map(({ reasoning_summary, include_encrypted_content, ...entry }) => ({
+  return { expected_revision, confirm_current_binding: true, source_version: version.value.trim(), reason: reason.value.trim(), expires_at: new Date(end).toISOString(), entries: entries.value.map(({ reasoning_summary, include_encrypted_content, text_verbosity, ...entry }) => ({
     ...entry,
     ...(entry.protocol !== 'chat_http' && reasoning_summary ? { reasoning_summary } : {}),
-    ...(entry.protocol !== 'chat_http' && include_encrypted_content ? { include_encrypted_content: true } : {})
+    ...(entry.protocol !== 'chat_http' && include_encrypted_content ? { include_encrypted_content: true } : {}),
+    ...(entry.protocol !== 'chat_http' && text_verbosity ? { text_verbosity } : {})
   })) }
 }
 defineExpose({ buildUpdate })

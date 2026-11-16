@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -22,6 +23,7 @@ type upstreamBillingCandidate struct {
 	chatHasText           bool
 	chatHasAssistant      bool
 	messagesDispatchModel string
+	messagesFast          bool
 	wsPassthroughBridge   bool
 	wsSmartRequest        *openAISmartProtocolRequest
 	gateway               *OpenAIGatewayService
@@ -59,6 +61,9 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 		}
 		if candidate.scope.Protocol == "messages_http" && len(messagesDispatchModel) > 0 {
 			candidate.messagesDispatchModel = strings.Clone(strings.TrimSpace(messagesDispatchModel[0]))
+		}
+		if candidate.scope.Protocol == "messages_http" {
+			candidate.messagesFast = containsBetaToken(request.Header.Get("Anthropic-Beta"), claude.BetaFastMode)
 		}
 		conversation.ForEach(func(_, message gjson.Result) bool {
 			candidate.chatHasAssistant = message.Get("role").String() == "assistant"
@@ -114,6 +119,7 @@ func (s *OpenAIGatewayService) withUpstreamBillingCandidatePolicy(ctx context.Co
 		candidate.scope.ReasoningEffort = strings.Clone(candidate.scope.ReasoningEffort)
 		candidate.scope.ThinkingMode = strings.Clone(candidate.scope.ThinkingMode)
 		candidate.scope.ProtocolOptions = strings.Clone(candidate.scope.ProtocolOptions)
+		candidate.scope.TextVerbosity = strings.Clone(candidate.scope.TextVerbosity)
 		candidate.policyKnown = s == nil || s.settingService == nil
 		if !candidate.policyKnown {
 			candidate.fastPolicy = openAIFastPolicySettingsFromContext(ctx)
@@ -222,42 +228,7 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		if candidate.scope.Protocol == "responses_ws_v2" {
 			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope, candidate.wsPassthroughBridge, candidate.wsSmartRequest)
 		} else if candidate.scope.Protocol == "messages_http" {
-			if resolveUpstreamProtocol(account, APIProtocolAnthropic, "", nil) == APIProtocolChatCompletions && candidate.gateway != nil {
-				// Reuse the direct Messages converter with detached options and
-				// synthetic text. No prompt, metadata or header is retained here.
-				anthropic := apicompat.AnthropicRequest{
-					Model: candidate.scope.Model, Stream: candidate.scope.Stream,
-					Messages: []apicompat.AnthropicMessage{{Role: "user", Content: json.RawMessage(`""`)}},
-				}
-				if candidate.scope.ThinkingMode != "" {
-					anthropic.Thinking = &apicompat.AnthropicThinking{Type: candidate.scope.ThinkingMode, BudgetTokens: int(candidate.scope.ThinkingBudget)}
-				}
-				if candidate.scope.ReasoningEffort != "unspecified" {
-					anthropic.OutputConfig = &apicompat.AnthropicOutputConfig{Effort: candidate.scope.ReasoningEffort}
-				}
-				applyOpenAICompatModelNormalization(&anthropic)
-				chat, err := apicompat.AnthropicToChatCompletionsRequestWithMinOutputTokens(&anthropic, configuredMinOutputTokens(candidate.gateway.cfg))
-				if err == nil {
-					model := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, anthropic.Model, candidate.messagesDispatchModel))
-					if !isOpenAIImageGenerationModel(model) {
-						chat.Model = model
-						chat.ReasoningEffort = openAICompatAnthropicReasoningEffort(&anthropic, model, chat.ReasoningEffort)
-						body, err := json.Marshal(chat)
-						if err == nil {
-							if normalized, changed := NormalizeGLMOpenAIReasoningEffort(body, model); changed {
-								body = normalized
-							}
-							body, _, err = applyOpenAIReasoningEffortPolicyForGLMFromContext(ctx, body, model)
-							if err == nil {
-								// The existing direct bridge deliberately skips Fast policy
-								// and drops Messages service_tier, including group forcing.
-								request, _ := billingApplicabilityScopeRequest(AvailabilityRequestScope{Protocol: "chat_http", ServiceTier: "unspecified", ReasoningEffort: "unspecified"})
-								scope = availabilityScopeForRequest(request, body)
-							}
-						}
-					}
-				}
-			}
+			scope = candidate.messagesScope(ctx, account)
 		} else if candidate.scope.Protocol == "chat_http" {
 			protocol := resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil)
 			if protocol == APIProtocolChatCompletions || protocol == APIProtocolResponses && candidate.gateway != nil {
@@ -338,6 +309,9 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 					if normalized := normalizeOpenAIResponsesMinimalEffort(effort); normalized != effort {
 						body, err = sjson.SetBytes(body, "reasoning.effort", normalized)
 					}
+					if err == nil && !SupportsVerbosity(model) && candidate.scope.TextVerbosity != "" {
+						body, err = sjson.DeleteBytes(body, "text.verbosity")
+					}
 				}
 				if err != nil {
 					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
@@ -363,6 +337,89 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		}
 	}
 	return upstreamBillingCandidateScopeVetoReason(account, scope, at)
+}
+
+func (candidate upstreamBillingCandidate) messagesScope(ctx context.Context, account *Account) *AvailabilityRequestScope {
+	if candidate.gateway == nil {
+		return nil
+	}
+	// Both original converters see detached options and synthetic text only.
+	// Empty text is omitted from Responses content parts by their JSON encoder.
+	anthropic := apicompat.AnthropicRequest{
+		Model: candidate.scope.Model, Stream: candidate.scope.Stream,
+		Messages: []apicompat.AnthropicMessage{{Role: "user", Content: json.RawMessage(`"scope"`)}},
+	}
+	if candidate.scope.ThinkingMode != "" {
+		anthropic.Thinking = &apicompat.AnthropicThinking{Type: candidate.scope.ThinkingMode, BudgetTokens: int(candidate.scope.ThinkingBudget)}
+	}
+	if candidate.scope.ReasoningEffort != "unspecified" {
+		anthropic.OutputConfig = &apicompat.AnthropicOutputConfig{Effort: candidate.scope.ReasoningEffort}
+	}
+	applyOpenAICompatModelNormalization(&anthropic)
+	model := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, anthropic.Model, candidate.messagesDispatchModel))
+	if isOpenAIImageGenerationModel(model) {
+		return nil
+	}
+	protocol := resolveUpstreamProtocol(account, APIProtocolAnthropic, "", nil)
+	var body []byte
+	var err error
+	var wireProtocol string
+	switch protocol {
+	case APIProtocolChatCompletions:
+		chat, convertErr := apicompat.AnthropicToChatCompletionsRequestWithMinOutputTokens(&anthropic, configuredMinOutputTokens(candidate.gateway.cfg))
+		if convertErr != nil {
+			return nil
+		}
+		chat.Model = model
+		chat.ReasoningEffort = openAICompatAnthropicReasoningEffort(&anthropic, model, chat.ReasoningEffort)
+		body, err = json.Marshal(chat)
+		if err == nil {
+			if normalized, changed := NormalizeGLMOpenAIReasoningEffort(body, model); changed {
+				body = normalized
+			}
+			body, _, err = applyOpenAIReasoningEffortPolicyForGLMFromContext(ctx, body, model)
+		}
+		// The direct Chat bridge drops tier and skips even group Fast policy.
+		wireProtocol = "chat_http"
+	case APIProtocolResponses:
+		// These models can attach cached previous_response_id based on live
+		// session history. A prompt-free descriptor cannot attest that shape.
+		if openAICompatContinuationEnabled(account, model) {
+			return nil
+		}
+		anthropic.Model = model
+		responses, convertErr := apicompat.AnthropicToResponsesWithOptions(&anthropic, apicompat.AnthropicToResponsesOptions{
+			MinOutputTokens: configuredMinOutputTokens(candidate.gateway.cfg), DeferReasoningEffortValidation: true,
+		})
+		if convertErr != nil {
+			return nil
+		}
+		responses.Stream = true // The original bridge streams even for buffered clients.
+		responses.Reasoning.Effort = openAICompatAnthropicReasoningEffort(&anthropic, model, responses.Reasoning.Effort)
+		tierBody := []byte(`{}`)
+		if candidate.messagesFast {
+			tierBody = []byte(`{"service_tier":"priority"}`)
+		}
+		tierBody, err = applyOpenAIFastPolicyBody(ctx, account, model, tierBody, func(tier string) (string, string) {
+			return evaluateOpenAIFastPolicyWithSettings(candidate.fastPolicy, openAIFastPolicyUserID(ctx), account, model, tier)
+		})
+		if err != nil {
+			return nil
+		}
+		responses.ServiceTier = normalizedOpenAIServiceTierValue(gjson.GetBytes(tierBody, "service_tier").String())
+		body, err = json.Marshal(responses)
+		if err == nil {
+			body, _, err = ApplyOpenAIReasoningEffortPolicyFromContext(ctx, body)
+		}
+		wireProtocol = "responses_http"
+	default:
+		return nil
+	}
+	if err != nil {
+		return nil // Keep the original converter or policy error at forwarding.
+	}
+	request, _ := billingApplicabilityScopeRequest(AvailabilityRequestScope{Protocol: wireProtocol, ServiceTier: "unspecified", ReasoningEffort: "unspecified"})
+	return availabilityScopeForRequest(request, body)
 }
 
 func upstreamBillingCandidateScopeVetoReason(account *Account, scope *AvailabilityRequestScope, at time.Time) string {

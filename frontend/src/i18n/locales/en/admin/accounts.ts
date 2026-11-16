@@ -462,6 +462,8 @@ export default {
           tier: "Service tier (unspecified if absent)",
           effort: "Reasoning effort (unspecified if absent)",
           summary: "Reasoning summary output (exact match)",
+          verbosity: "Text verbosity (exact match)",
+          verbosityAbsent: "Absent (distinct from medium)",
           summaryAbsent: "Absent (distinct from none)",
           encrypted: "Include reasoning.encrypted_content output (does not authorize encrypted history replay)",
           applies: "Current group rate applies (all contexts)",

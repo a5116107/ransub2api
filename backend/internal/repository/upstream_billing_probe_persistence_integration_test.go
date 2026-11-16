@@ -5,7 +5,6 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
@@ -66,8 +65,8 @@ func TestManualApplicabilityLockedSaveRevokeAndBindingInvalidation(t *testing.T)
 }
 
 func TestManualApplicabilityAdminSQLLifecycle(t *testing.T) {
-	for _, output := range []bool{false, true} {
-		t.Run(fmt.Sprintf("extended-output=%v", output), func(t *testing.T) {
+	for _, output := range []string{"plain", "summary", "verbosity"} {
+		t.Run("extended-output="+output, func(t *testing.T) {
 			tx := testEntTx(t)
 			repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
 			rate := 0.4
@@ -75,8 +74,11 @@ func TestManualApplicabilityAdminSQLLifecycle(t *testing.T) {
 				Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"}, RateMultiplier: &rate})
 			svc := service.NewAdminService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, tx.Client(), nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			entry := map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}
-			if output {
+			if output != "plain" {
 				entry["reasoning_summary"], entry["include_encrypted_content"] = "auto", true
+			}
+			if output == "verbosity" {
+				entry["text_verbosity"] = "medium"
 			}
 			command, err := json.Marshal(map[string]any{"expected_revision": "", "confirm_current_binding": true, "source_version": "sql-review-1", "reason": "supplier terms reviewed",
 				"expires_at": time.Now().Add(time.Hour), "entries": []any{entry}})
@@ -93,8 +95,13 @@ func TestManualApplicabilityAdminSQLLifecycle(t *testing.T) {
 			require.Equal(t, revision, service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["revision"])
 			stored := loaded.Extra[service.UpstreamBillingManualApplicabilityExtraKey].(map[string]any)
 			storedEntry := stored["entries"].([]any)[0].(map[string]any)
-			if output {
-				require.Equal(t, float64(2), stored["schema_version"])
+			if output != "plain" {
+				version := float64(2)
+				if output == "verbosity" {
+					version = 3
+					require.Equal(t, "medium", storedEntry["text_verbosity"])
+				}
+				require.Equal(t, version, stored["schema_version"])
 				require.Equal(t, "auto", storedEntry["reasoning_summary"])
 				require.Equal(t, true, storedEntry["include_encrypted_content"])
 			} else {

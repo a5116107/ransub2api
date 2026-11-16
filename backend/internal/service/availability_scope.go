@@ -22,6 +22,7 @@ import (
 const (
 	availabilityRequestScopeVersion         = 2
 	availabilityResponsesOutputScopeVersion = 3
+	availabilityResponsesTextScopeVersion   = 4
 )
 
 // AvailabilityRequestScope describes only observed wire capabilities. It stores
@@ -36,6 +37,7 @@ type AvailabilityRequestScope struct {
 	ReasoningEffort         string `json:"reasoning_effort"`
 	ReasoningSummary        string `json:"reasoning_summary,omitempty"`
 	IncludeEncryptedContent bool   `json:"include_encrypted_content,omitempty"`
+	TextVerbosity           string `json:"text_verbosity,omitempty"`
 	Capability              string `json:"capability"`
 	ThinkingMode            string `json:"thinking_mode,omitempty"`
 	ThinkingBudget          int64  `json:"thinking_budget,omitempty"`
@@ -428,10 +430,18 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 				scope.IncludeEncryptedContent = true
 			}
 		case "parallel_tool_calls":
-			// The direct Messages-to-Chat converter always emits this flag.
-			// With no tools it does not extend the observed text capability;
-			// non-empty tools and active tool_choice remain rejected below.
-			if scope.Protocol != "chat_http" || value.Type != gjson.True && value.Type != gjson.False {
+			// With no tools this boolean does not extend text capability.
+			// Non-empty tools and active tool_choice remain rejected below.
+			if value.Type != gjson.True && value.Type != gjson.False {
+				return nil
+			}
+		case "text":
+			text, ok := availabilityJSONObject(value)
+			if scope.Protocol == "chat_http" || !ok || len(text) != 1 {
+				return nil
+			}
+			scope.TextVerbosity, valid = availabilityOption(text["verbosity"], "low", "medium", "high")
+			if !valid || scope.TextVerbosity == "unspecified" {
 				return nil
 			}
 		case "tools":
@@ -450,6 +460,9 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 		// Older readers ignore the new JSON fields but compare Version. Never
 		// let their plain-text observations authorize an extended output shape.
 		scope.Version = availabilityResponsesOutputScopeVersion
+	}
+	if scope.TextVerbosity != "" {
+		scope.Version = availabilityResponsesTextScopeVersion
 	}
 	return scope
 }

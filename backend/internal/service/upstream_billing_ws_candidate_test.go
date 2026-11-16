@@ -29,16 +29,17 @@ func billingWSCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *G
 func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge"} {
 		for _, tc := range []struct {
-			name, options, tier, effort, summary string
-			encrypted                            bool
-			hooks                                *OpenAIWSIngressHooks
-			policy                               *OpenAIFastPolicySettings
-			force                                bool
-			compatibleBridge                     bool
+			name, options, tier, effort, summary, verbosity string
+			encrypted                                       bool
+			hooks                                           *OpenAIWSIngressHooks
+			policy                                          *OpenAIFastPolicySettings
+			force                                           bool
+			compatibleBridge                                bool
 		}{
 			{name: "plain", tier: "unspecified", effort: "unspecified"},
 			{name: "encrypted output", options: `,"include":["reasoning.encrypted_content"]`, tier: "unspecified", effort: "unspecified", encrypted: true},
 			{name: "summary and encrypted output", options: `,"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}`, tier: "unspecified", effort: "high", summary: "auto", encrypted: true},
+			{name: "text verbosity", options: `,"text":{"verbosity":"medium"}`, tier: "unspecified", effort: "unspecified", verbosity: "medium"},
 			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
 			{name: "compatible bridge strips none", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "unspecified", compatibleBridge: true},
 			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
@@ -63,6 +64,9 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 				}
 				entry := billingApplicabilityEntry(protocol, tc.tier, true)
 				entry["reasoning_effort"] = tc.effort
+				if tc.verbosity != "" {
+					entry["text_verbosity"] = tc.verbosity
+				}
 				if tc.summary != "" {
 					entry["reasoning_summary"] = tc.summary
 				}
@@ -117,6 +121,7 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 				require.Equal(t, tc.effort, scope.ReasoningEffort)
 				require.Equal(t, tc.summary, scope.ReasoningSummary)
 				require.Equal(t, tc.encrypted, scope.IncludeEncryptedContent)
+				require.Equal(t, tc.verbosity, scope.TextVerbosity)
 				require.NoError(t, guardUpstreamBillingApplicability(account, scope))
 				entry["group_rate_applies"] = false
 				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
@@ -412,12 +417,13 @@ func TestBillingWSCandidatePostSlotRecheck(t *testing.T) {
 func TestBillingCandidateMetadataDoesNotRetainInputBacking(t *testing.T) {
 	backing := "gpt-fixturepriorityhigh" + strings.Repeat("private prompt", 1024)
 	model, tier, effort := backing[:11], backing[11:19], backing[19:23]
-	scope := &AvailabilityRequestScope{Model: model, ServiceTier: tier, ReasoningEffort: effort, ThinkingMode: model, ProtocolOptions: tier}
+	scope := &AvailabilityRequestScope{Model: model, ServiceTier: tier, ReasoningEffort: effort, ThinkingMode: model, ProtocolOptions: tier, TextVerbosity: effort}
 	ctx := (&OpenAIGatewayService{}).withUpstreamBillingCandidatePolicy(t.Context(), upstreamBillingCandidate{scope: scope})
 	stored := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate).scope
 	for _, tc := range []struct{ name, original, stored string }{
 		{"model", model, stored.Model}, {"tier", tier, stored.ServiceTier}, {"effort", effort, stored.ReasoningEffort},
 		{"thinking", model, stored.ThinkingMode}, {"protocol options", tier, stored.ProtocolOptions},
+		{"text verbosity", effort, stored.TextVerbosity},
 	} {
 		require.Equal(t, tc.original, tc.stored)
 		if unsafe.StringData(tc.original) == unsafe.StringData(tc.stored) {
@@ -429,9 +435,11 @@ func TestBillingCandidateMetadataDoesNotRetainInputBacking(t *testing.T) {
 	ctx, _ = svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
 	body := []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"thinking":{"type":"enabled","budget_tokens":4096}}`)
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	request.Header.Set("Anthropic-Beta", "fast-mode-2026-02-01")
 	ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body, model)
 	candidate := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
 	require.NotNil(t, candidate.scope)
+	require.True(t, candidate.messagesFast)
 	require.Equal(t, model, candidate.messagesDispatchModel)
 	if unsafe.StringData(model) == unsafe.StringData(candidate.messagesDispatchModel) {
 		t.Error("Messages dispatch model retains the complete input backing")
@@ -445,6 +453,7 @@ func TestBillingCandidateMetadataDoesNotRetainInputBacking(t *testing.T) {
 	candidate = ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
 	require.Nil(t, candidate.scope, "invalid next request must discard the previous descriptor")
 	require.Empty(t, candidate.messagesDispatchModel)
+	require.False(t, candidate.messagesFast)
 }
 
 type billingWSCandidateAccountRepo struct {
@@ -473,16 +482,17 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 			ingressMode, smartMode = OpenAIWSIngressModePassthrough, "auto"
 		}
 		for _, tc := range []struct {
-			name, options, tier, effort, summary string
-			encrypted                            bool
-			policy                               *OpenAIFastPolicySettings
-			force                                bool
-			compatibleBridge                     bool
-			hooks                                OpenAIWSIngressHooks
+			name, options, tier, effort, summary, verbosity string
+			encrypted                                       bool
+			policy                                          *OpenAIFastPolicySettings
+			force                                           bool
+			compatibleBridge                                bool
+			hooks                                           OpenAIWSIngressHooks
 		}{
 			{name: "plain", tier: "unspecified", effort: "unspecified"},
 			{name: "encrypted output", options: `,"include":["reasoning.encrypted_content"]`, tier: "unspecified", effort: "unspecified", encrypted: true},
 			{name: "summary and encrypted output", options: `,"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}`, tier: "unspecified", effort: "high", summary: "auto", encrypted: true},
+			{name: "text verbosity", options: `,"text":{"verbosity":"low"}`, tier: "unspecified", effort: "unspecified", verbosity: "low"},
 			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
 			{name: "compatible bridge strips none", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "unspecified", compatibleBridge: true},
 			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
@@ -547,6 +557,9 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				secondEntry := billingApplicabilityEntry(protocol, tc.tier, true)
 				secondEntry["model"], secondEntry["reasoning_effort"] = wireModel("gpt-next"), tc.effort
 				for _, entry := range []map[string]any{firstEntry, secondEntry} {
+					if tc.verbosity != "" {
+						entry["text_verbosity"] = tc.verbosity
+					}
 					if tc.summary != "" {
 						entry["reasoning_summary"] = tc.summary
 					}
@@ -629,7 +642,10 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 						if tc.summary != "" || tc.encrypted {
 							version = availabilityResponsesOutputScopeVersion
 						}
-						require.Equal(t, AvailabilityRequestScope{Version: version, Protocol: protocol, Stream: bridge, Model: wireModel(model), Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, ReasoningSummary: tc.summary, IncludeEncryptedContent: tc.encrypted}, *scope)
+						if tc.verbosity != "" {
+							version = availabilityResponsesTextScopeVersion
+						}
+						require.Equal(t, AvailabilityRequestScope{Version: version, Protocol: protocol, Stream: bridge, Model: wireModel(model), Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, ReasoningSummary: tc.summary, IncludeEncryptedContent: tc.encrypted, TextVerbosity: tc.verbosity}, *scope)
 					case <-time.After(3 * time.Second):
 						select {
 						case err := <-done:

@@ -79,6 +79,34 @@ func TestBillingManualApplicabilityResponsesOutputLifecycle(t *testing.T) {
 	require.Equal(t, "expired", UpstreamBillingManualApplicabilityView(account, at.Add(2*time.Hour))["status"])
 }
 
+func TestBillingManualApplicabilityVerbosityLifecycle(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Second)
+	for _, verbosity := range []string{"low", "medium", "high"} {
+		t.Run(verbosity, func(t *testing.T) {
+			account := billingManualAccount()
+			entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+			entry["text_verbosity"], entry["reasoning_summary"], entry["include_encrypted_content"] = verbosity, "auto", true
+			// A later v2 entry must not downgrade the v3 declaration.
+			other := billingApplicabilityEntry("responses_http", "priority", true)
+			other["include_encrypted_content"] = true
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry, other), at)
+			require.NoError(t, err)
+			view := UpstreamBillingManualApplicabilityView(account, at.Add(time.Second))
+			require.Equal(t, 3, view["schema_version"])
+			entries := view["entries"].([]upstreamBillingApplicabilityEntry)
+			require.Equal(t, verbosity, entries[0].TextVerbosity)
+			require.Equal(t, "covered", entries[0].Conclusion)
+			raw, err := json.Marshal(account.Extra)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(raw, &account.Extra))
+			require.Equal(t, "active", UpstreamBillingManualApplicabilityView(account, at.Add(time.Second))["status"])
+			require.Equal(t, "expired", UpstreamBillingManualApplicabilityView(account, at.Add(2*time.Hour))["status"])
+			account.Credentials["api_key"] = "changed-fixture-key"
+			require.Equal(t, "binding_changed", UpstreamBillingManualApplicabilityView(account, at.Add(time.Second))["status"])
+		})
+	}
+}
+
 func TestBillingManualApplicabilityBindingAndSourcePrecedence(t *testing.T) {
 	at := time.Now().UTC().Add(-time.Second)
 	for _, change := range []string{"key", "base", "rate", "mapping", "sync", "account"} {

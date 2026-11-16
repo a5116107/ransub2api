@@ -37,7 +37,7 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "responses_ws_smart_http"}, {"false", "responses_ws_smart_http"}, {"true", "responses_ws_smart_ws"}, {"false", "responses_ws_smart_ws"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}, {"true", "messages_chat"}, {"false", "messages_chat"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "responses_ws_smart_http"}, {"false", "responses_ws_smart_http"}, {"true", "responses_ws_smart_ws"}, {"false", "responses_ws_smart_ws"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}, {"true", "messages_chat"}, {"false", "messages_chat"}, {"true", "messages_responses"}, {"false", "messages_responses"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -60,6 +60,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				}
 				if tc.protocol == "messages_chat" {
 					entry["protocol"], entry["service_tier"], entry["reasoning_effort"] = "chat_http", "unspecified", "medium"
+				}
+				if tc.protocol == "messages_responses" {
+					entry["protocol"], entry["service_tier"], entry["reasoning_effort"] = "responses_http", "unspecified", "medium"
+					entry["reasoning_summary"], entry["include_encrypted_content"], entry["text_verbosity"] = "auto", true, "medium"
 				}
 				account := billingCandidateAccount(t, id, entry)
 				if tc.protocol == "responses_native" {
@@ -106,7 +110,7 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"service_tier":"priority"}`))
 			}
-			if tc.protocol == "messages_chat" {
+			if tc.protocol == "messages_chat" || tc.protocol == "messages_responses" {
 				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, httptest.NewRequest(http.MethodPost, "/v1/messages", nil), []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}]}`))
 			}
 			if strings.HasPrefix(tc.protocol, "responses_ws_") {
@@ -248,7 +252,7 @@ func TestBillingCandidateMessagesChatScope(t *testing.T) {
 
 func TestBillingCandidateMessagesDeferredScopeAndValidity(t *testing.T) {
 	for _, tc := range []struct{ name, options string }{
-		{name: "Responses conversion"},
+		{name: "stateful Responses conversion"},
 		{name: "tools", options: `,"tools":[{"name":"private_tool","input_schema":{"type":"object"}}]`},
 		{name: "media", options: `,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://private.invalid/image"}}]}]`},
 		{name: "unknown thinking", options: `,"thinking":{"type":"future"}`},
@@ -263,8 +267,10 @@ func TestBillingCandidateMessagesDeferredScopeAndValidity(t *testing.T) {
 			entry := billingApplicabilityEntry("chat_http", "unspecified", false)
 			entry["reasoning_effort"] = "medium"
 			account := billingCandidateAccount(t, 926, entry)
-			if tc.name != "Responses conversion" {
+			if tc.name != "stateful Responses conversion" {
 				account.Extra["openai_responses_mode"] = "force_chat_completions"
+			} else {
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-5.4"}
 			}
 			if tc.name == "image model" {
 				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-image-1"}
@@ -292,29 +298,136 @@ func TestBillingCandidateMessagesDeferredScopeAndValidity(t *testing.T) {
 	}
 }
 
-func TestBillingCandidateMessagesPostSlotRefresh(t *testing.T) {
-	newAccount := func(covered bool) *Account {
-		entry := billingApplicabilityEntry("chat_http", "unspecified", covered)
-		entry["reasoning_effort"] = "medium"
-		account := billingCandidateAccount(t, 927, entry)
-		account.Extra["openai_responses_mode"] = "force_chat_completions"
-		at := time.Now().UTC().Add(-time.Second)
-		_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
-		require.NoError(t, err)
-		return account
+func TestBillingCandidateMessagesResponsesScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, options, effort, tier, summary, beta, dispatch, requested, ceiling string
+		force, filter                                                            bool
+	}{
+		{name: "default", effort: "medium", summary: "auto"},
+		{name: "thinking disabled", options: `,"thinking":{"type":"disabled"}`, effort: "none"},
+		{name: "thinking budget", options: `,"thinking":{"type":"enabled","budget_tokens":4096}`, effort: "medium", summary: "auto"},
+		{name: "max effort", options: `,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}`, effort: "xhigh", summary: "auto"},
+		{name: "suffix", requested: "gpt-5.4-high", effort: "high", summary: "auto"},
+		{name: "explicit beats suffix", requested: "gpt-5.4-high", options: `,"output_config":{"effort":"low"}`, effort: "low", summary: "auto"},
+		{name: "effort cap", options: `,"output_config":{"effort":"high"}`, ceiling: "low", effort: "low", summary: "auto"},
+		{name: "body tier is dropped", options: `,"service_tier":"standard_only"`, effort: "medium", summary: "auto"},
+		{name: "beta priority", beta: "fast-mode-2026-02-01", effort: "medium", summary: "auto", tier: "priority"},
+		{name: "beta filtered", beta: "fast-mode-2026-02-01", filter: true, effort: "medium", summary: "auto"},
+		{name: "group forces priority", force: true, effort: "medium", summary: "auto", tier: "priority"},
+		{name: "filter beats group force", force: true, filter: true, effort: "medium", summary: "auto"},
+		{name: "dispatch", dispatch: "wire-fixture", effort: "medium", summary: "auto"},
+		{name: "mapping beats dispatch", dispatch: "never-sent", requested: "mapped-fixture", effort: "medium", summary: "auto"},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				tier := tc.tier
+				if tier == "" {
+					tier = "unspecified"
+				}
+				entry := billingApplicabilityEntry("responses_http", tier, false)
+				entry["model"], entry["reasoning_effort"], entry["include_encrypted_content"], entry["text_verbosity"] = "wire-fixture", tc.effort, true, "medium"
+				if tc.summary != "" {
+					entry["reasoning_summary"] = tc.summary
+				}
+				account := billingCandidateAccount(t, 928, entry)
+				requested := tc.requested
+				if requested == "" {
+					requested = "gpt-fixture"
+				}
+				if tc.dispatch == "" || tc.requested != "" {
+					account.Credentials["model_mapping"] = map[string]any{NormalizeOpenAICompatRequestedModel(requested): "wire-fixture"}
+				}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				var settings *OpenAIFastPolicySettings
+				if tc.filter {
+					settings = openAIFastFilterPriorityPolicy()
+				}
+				svc := newOpenAIGatewayServiceWithSettings(t, settings)
+				group := profitControlTestGroup(7, .5, 0)
+				group.ForceOpenAIFast = tc.force
+				ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+				if tc.ceiling != "" {
+					ctx = WithOpenAIReasoningEffortPolicy(ctx, tc.ceiling, nil, "")
+				}
+				ctx = WithOpenAIForwardModel(ctx, "scheduling-only-fixture", false)
+				request := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+				request.Header.Set("Anthropic-Beta", tc.beta)
+				body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"private prompt"}],"stream":%v%s}`, requested, stream, tc.options))
+				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body, tc.dispatch)
+				require.Equal(t, "profit_upstream_scope_excluded", upstreamBillingCandidateVetoReason(ctx, account, at))
+				entry["group_rate_applies"] = true
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				require.Empty(t, upstreamBillingCandidateVetoReason(ctx, account, at))
+				require.Equal(t, "profit_upstream_scope_expired", upstreamBillingCandidateVetoReason(ctx, account, at.Add(2*time.Hour)))
+			})
+		}
 	}
-	selected, replacement := newAccount(true), newAccount(false)
-	svc := &OpenAIGatewayService{}
-	group := profitControlTestGroup(7, .5, 0)
-	ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
-	ctx = svc.WithUpstreamBillingCandidateRequest(ctx, httptest.NewRequest(http.MethodPost, "/v1/messages", nil), []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}]}`))
-	_, vetoed, reason := svc.ProfitControlVetoLatest(ctx, selected)
-	require.False(t, vetoed, reason)
-	svc.schedulerSnapshot = NewSchedulerSnapshotService(&gatewayProfitSnapshotCache{account: replacement}, nil, gatewayProfitAccountRepo{}, nil, nil)
-	latest, vetoed, reason := svc.ProfitControlVetoLatest(ctx, selected)
-	require.Same(t, replacement, latest)
-	require.True(t, vetoed)
-	require.Equal(t, "profit_upstream_scope_excluded", reason)
+}
+
+func TestBillingCandidateResponsesVerbosityNormalization(t *testing.T) {
+	for _, tc := range []struct {
+		name, model           string
+		passthrough, deferred bool
+	}{
+		{"passthrough preserves", "gpt-fixture", true, false},
+		{"native supported", "gpt-5.4", false, false},
+		{"native drops unsupported", "gpt-fixture", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := billingApplicabilityEntry("responses_http", "unspecified", false)
+			entry["model"], entry["text_verbosity"] = tc.model, "medium"
+			account := billingCandidateAccount(t, 930, entry)
+			account.Extra["openai_passthrough"] = tc.passthrough
+			at := time.Now().UTC().Add(-time.Second)
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+			ctx := billingCandidateContext(t, svc, profitControlTestGroup(7, .5, 0), fmt.Sprintf(`{"model":%q,"input":"private prompt","text":{"verbosity":"medium"}}`, tc.model))
+			want := "profit_upstream_scope_excluded"
+			if tc.deferred {
+				want = ""
+			}
+			require.Equal(t, want, upstreamBillingCandidateVetoReason(ctx, account, at))
+			require.Equal(t, "profit_upstream_scope_expired", upstreamBillingCandidateVetoReason(ctx, account, at.Add(2*time.Hour)))
+		})
+	}
+}
+
+func TestBillingCandidateMessagesPostSlotRefresh(t *testing.T) {
+	for _, protocol := range []string{"chat_http", "responses_http"} {
+		t.Run(protocol, func(t *testing.T) {
+			newAccount := func(covered bool) *Account {
+				entry := billingApplicabilityEntry(protocol, "unspecified", covered)
+				entry["reasoning_effort"] = "medium"
+				if protocol == "responses_http" {
+					entry["reasoning_summary"], entry["include_encrypted_content"], entry["text_verbosity"] = "auto", true, "medium"
+				}
+				account := billingCandidateAccount(t, 927, entry)
+				if protocol == "chat_http" {
+					account.Extra["openai_responses_mode"] = "force_chat_completions"
+				}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				return account
+			}
+			selected, replacement := newAccount(true), newAccount(false)
+			svc := &OpenAIGatewayService{}
+			group := profitControlTestGroup(7, .5, 0)
+			ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+			ctx = svc.WithUpstreamBillingCandidateRequest(ctx, httptest.NewRequest(http.MethodPost, "/v1/messages", nil), []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}]}`))
+			_, vetoed, reason := svc.ProfitControlVetoLatest(ctx, selected)
+			require.False(t, vetoed, reason)
+			svc.schedulerSnapshot = NewSchedulerSnapshotService(&gatewayProfitSnapshotCache{account: replacement}, nil, gatewayProfitAccountRepo{}, nil, nil)
+			latest, vetoed, reason := svc.ProfitControlVetoLatest(ctx, selected)
+			require.Same(t, replacement, latest)
+			require.True(t, vetoed)
+			require.Equal(t, "profit_upstream_scope_excluded", reason)
+		})
+	}
 }
 
 func TestBillingCandidateChatResponsesPostSlotRefresh(t *testing.T) {

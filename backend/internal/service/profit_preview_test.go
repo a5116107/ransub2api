@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -246,6 +247,34 @@ func TestPreviewProfitAdmissionResponsesOutputExactScope(t *testing.T) {
 			tc.mutate(&requestScope)
 			group := profitControlTestGroup(7, 0.5, 0)
 			input := ProfitPreviewGroupInput{Group: group, Accounts: []*Account{account}, RequestScopes: []ProfitPreviewRequestScope{{AccountID: account.ID, PublicModel: "gpt-fixture", Scope: requestScope}}}
+			verdict := PreviewProfitAdmission([]ProfitPreviewGroupInput{input}, at.Add(time.Second))[0].ScopeVerdicts[0]
+			require.Equal(t, tc.want, verdict.Applicability)
+			require.Equal(t, tc.want == "covered", verdict.Admitted)
+		})
+	}
+}
+
+func TestPreviewProfitAdmissionResponsesVerbosityExactScope(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Second)
+	entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+	entry["text_verbosity"] = "medium"
+	declaration := billingApplicabilityFixture(at, entry)
+	declaration["schema_version"] = 3
+	account := billingApplicabilityAccount(t, at, declaration)
+	for _, tc := range []struct {
+		verbosity string
+		version   int
+		want      string
+	}{
+		{"medium", availabilityResponsesTextScopeVersion, "covered"},
+		{"medium", availabilityResponsesOutputScopeVersion, "unknown"},
+		{"low", availabilityResponsesTextScopeVersion, "unknown"},
+		{"high", availabilityResponsesTextScopeVersion, "unknown"},
+		{"", availabilityRequestScopeVersion, "unknown"},
+	} {
+		t.Run(fmt.Sprintf("%s/v%d", tc.verbosity, tc.version), func(t *testing.T) {
+			scope := AvailabilityRequestScope{Version: tc.version, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", TextVerbosity: tc.verbosity, Capability: "text"}
+			input := ProfitPreviewGroupInput{Group: profitControlTestGroup(7, .5, 0), Accounts: []*Account{account}, RequestScopes: []ProfitPreviewRequestScope{{AccountID: account.ID, PublicModel: "gpt-fixture", Scope: scope}}}
 			verdict := PreviewProfitAdmission([]ProfitPreviewGroupInput{input}, at.Add(time.Second))[0].ScopeVerdicts[0]
 			require.Equal(t, tc.want, verdict.Applicability)
 			require.Equal(t, tc.want == "covered", verdict.Admitted)

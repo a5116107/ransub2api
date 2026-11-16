@@ -3,14 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.14 Messages→Chat候选本地done；基线3a8d8edc9。
-授权：唯一H盘工作树；自有仓库同步/已验热修复发行部署；不运行编译/测试CI。
-生产上次实测：.7/fd83f6c91，latest同版，程序bea1c3964bc3；本轮未部署。
-实证：.14四包双轮race7652pass、0fail/skip/race；vet/增量lint0issues/Linux过。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/messages-candidate-*；原失败保留，非生产。
-下一动作：其余Messages→Responses/规范化池桥与受管声明；不提升生产。
-等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域和旧完整历史恢复保留。
-Attempt：35
+任务：D2.6.15 Messages→Responses精确候选本地done；当前身份见HEAD。
+授权：唯一H盘工作树；自有分支同步/已验热修复部署；不运行编译/测试CI。
+生产上次实测：.7/fd83f6c91，程序bea1c3964bc3；本轮未部署。
+实证：四包双轮race7936pass/0fail/skip/race；最终vet/增量lint0/Linux退出0。
+复用：UI35/SQL54/中英四视口；24项输入drift0。原失败记录保留。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/messages-responses-verification.json。
+下一动作：D2.6规范化池桥/状态相关转换及受管合同，保留物理终检；不提升生产。
+等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域和旧完整历史保留。
+Attempt：37
 <!-- resume:end -->
 
 ## 目标与入口
@@ -26,7 +27,7 @@ Attempt：35
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.6.1–.14已本地验；其余Messages→Responses/规范化池桥、受管产品与真实来源仍缺；D2.7待供应商 |
+| D2 | in_progress | D2.6.1–.15已本地验；其余状态转换/规范化池桥、受管产品与真实来源仍缺；D2.7待供应商 |
 | D2.1 | done | 同步新鲜度/高峰及同源预演、CLI已验 |
 | D2.2 | done | 固定组/null/明确0及SQL失效恢复已验 |
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
@@ -36,6 +37,7 @@ Attempt：35
 | D2.6.5–.12 | done | 原生/固定转换、四WS及两类HTTP桥候选本地已验；.12 race6568/静态/构建通过；SQL58/UI35复用未变合同，非生产 |
 | D2.6.13 | done | 复用smart原始标量/当前历史，确定HTTP/WS候选、两调度器/粘性/槽后及11类逐轮路径本地已验；race6876/静态/Linux过，非生产 |
 | D2.6.14 | done | Messages→Chat映射/dispatch、effort/Fast边界、两调度器/黏性/槽后/真实HTTP已验；四包race7652/静态/Linux过；非生产 |
+| D2.6.15 | done | Messages→Responses/verbosity精确合同及UI、beta/槽后/撤销/物理HTTP/11类WS已验；race7936、SQL54/UI35及静态/Linux过，非生产 |
 | D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；多维/基线、非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
@@ -58,7 +60,7 @@ Attempt：35
 
 ## 剩余执行顺序与等待
 
-- 本地可执行：D2.6其余转换/规范化池桥/受管合同与D5.3实际组/受信外部检测/资格→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.4仍缺。
+- 本地可执行：D2.6状态转换/规范化池桥/受管合同与D5.3实际组/受信外部检测/资格→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.4仍缺。
 - D9.1的.7生产四阶段/16历史及上线已验；旧调度遗漏已回合，648竞态/三包vet/增量lint0。PR3/v2.21.5仍有冲突，不整分支发布未验功能。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。

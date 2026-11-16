@@ -371,6 +371,140 @@ func TestBillingCandidateChatResponsesConversionExactOutputScope(t *testing.T) {
 	}
 }
 
+func TestBillingCandidateMessagesResponsesPhysicalScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, stream := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, options, requested, dispatch, effort, summary, tier, ceiling string
+			fast, force, filter                                                bool
+		}{
+			{name: "plain", effort: "medium", summary: "auto"},
+			{name: "beta fast", fast: true, effort: "medium", summary: "auto", tier: "priority"},
+			{name: "group fast", force: true, effort: "medium", summary: "auto", tier: "priority"},
+			{name: "filtered beta", fast: true, filter: true, effort: "medium", summary: "auto"},
+			{name: "filtered group", force: true, filter: true, effort: "medium", summary: "auto"},
+			{name: "body tier dropped", options: `,"service_tier":"standard_only"`, effort: "medium", summary: "auto"},
+			{name: "disabled thinking", options: `,"thinking":{"type":"disabled"},"output_config":{"effort":"high"}`, effort: "none"},
+			{name: "explicit max", options: `,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}`, effort: "xhigh", summary: "auto"},
+			{name: "model suffix", requested: "gpt-5.4-high", effort: "high", summary: "auto"},
+			{name: "policy cap", options: `,"output_config":{"effort":"high"}`, ceiling: "low", effort: "low", summary: "auto"},
+			{name: "dispatch", dispatch: "wire-fixture", effort: "medium", summary: "auto"},
+			{name: "mapping wins", requested: "mapped-fixture", dispatch: "never-sent", effort: "medium", summary: "auto"},
+		} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				observed := make(chan []byte, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					payload, err := io.ReadAll(request.Body)
+					if err != nil || request.URL.Path != "/v1/responses" {
+						t.Errorf("unexpected physical Messages bridge: path=%s err=%v", request.URL.Path, err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					observed <- payload
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_messages_scope\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"wire-fixture\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\ndata: [DONE]\n\n")
+				}))
+				t.Cleanup(server.Close)
+				tier := tc.tier
+				if tier == "" {
+					tier = "unspecified"
+				}
+				entry := billingApplicabilityEntry("responses_http", tier, true)
+				entry["model"], entry["reasoning_effort"], entry["text_verbosity"], entry["include_encrypted_content"] = "wire-fixture", tc.effort, "low", true
+				if tc.summary != "" {
+					entry["reasoning_summary"] = tc.summary
+				}
+				account := billingCandidateAccount(t, 929, entry)
+				account.Credentials["base_url"] = server.URL
+				requested := tc.requested
+				if requested == "" {
+					requested = "gpt-fixture"
+				}
+				if tc.dispatch == "" || tc.requested != "" {
+					account.Credentials["model_mapping"] = map[string]any{NormalizeOpenAICompatRequestedModel(requested): "wire-fixture"}
+				}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				repo := &turnAdmissionRepo{account: account}
+				var settings *OpenAIFastPolicySettings
+				if tc.filter {
+					settings = openAIFastFilterPriorityPolicy()
+				}
+				svc := newOpenAIGatewayServiceWithSettings(t, settings)
+				svc.cfg, svc.accountRepo, svc.requireLatestTurnAdmission = rawChatCompletionsTestConfig(), repo, true
+				svc.httpUpstream = &codexModelsHTTPUpstreamStub{do: func(request *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+					if err := CheckHTTPUpstreamSendGuard(request.Context()); err != nil {
+						return nil, err
+					}
+					return server.Client().Do(request)
+				}}
+				group := profitControlTestGroup(7, .5, 0)
+				group.ForceOpenAIFast = tc.force
+				ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+				if tc.ceiling != "" {
+					ctx = WithOpenAIReasoningEffortPolicy(ctx, tc.ceiling, nil, "")
+				}
+				body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":1024,"stream":%v%s}`, requested, stream, tc.options))
+				request := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+				if tc.fast {
+					request.Header.Set("Anthropic-Beta", "fast-mode-2026-02-01")
+				}
+				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body, tc.dispatch)
+				forward := func(selected *Account) (*OpenAIForwardResult, error) {
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = request.Clone(ctx)
+					return svc.ForwardAsAnthropic(ctx, c, selected, body, "", tc.dispatch)
+				}
+				require.Equal(t, "profit_upstream_scope_unknown", upstreamBillingCandidateVetoReason(ctx, account, at), "a different verbosity must not qualify")
+				result, err := forward(account)
+				require.Nil(t, result)
+				require.ErrorContains(t, err, "profit_upstream_scope_unknown")
+				require.Empty(t, observed)
+
+				legacy := *account
+				legacy.Extra = maps.Clone(account.Extra)
+				delete(legacy.Extra, UpstreamBillingManualApplicabilityExtraKey)
+				repo.account = &legacy
+				result, err = forward(&legacy)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotEmpty(t, observed)
+				payload := <-observed
+				scope := availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), payload)
+				require.Equal(t, &AvailabilityRequestScope{Version: availabilityResponsesTextScopeVersion, Protocol: "responses_http", Stream: true,
+					Model: "wire-fixture", ServiceTier: tier, ReasoningEffort: tc.effort, ReasoningSummary: tc.summary,
+					IncludeEncryptedContent: true, TextVerbosity: "medium", Capability: "text"}, scope)
+				require.True(t, gjson.GetBytes(payload, "parallel_tool_calls").Bool())
+				require.NotContains(t, string(payload), "previous_response_id")
+
+				repo.account = account
+				entry["text_verbosity"] = "medium"
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				require.Empty(t, upstreamBillingCandidateVetoReason(ctx, account, at))
+				result, err = forward(account)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotEmpty(t, observed)
+				payload = <-observed
+				require.NoError(t, guardUpstreamBillingApplicability(account, availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), payload)))
+
+				entry["group_rate_applies"] = false
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				require.Equal(t, "profit_upstream_scope_excluded", upstreamBillingCandidateVetoReason(ctx, account, at))
+				ctx = WithoutUpstreamBillingCandidateRequest(ctx)
+				result, err = forward(account)
+				require.Nil(t, result)
+				require.True(t, IsOpenAITurnAdmissionError(err))
+				require.ErrorContains(t, err, "profit_upstream_scope_excluded")
+				require.Empty(t, observed, "revocation must prevent physical sends even without a candidate descriptor")
+			})
+		}
+	}
+}
+
 func TestForwardResponses_ForceChatCompletionsRoutesNonStreamingToChatCompletions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

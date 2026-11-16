@@ -753,15 +753,17 @@ describe('UpstreamBillingRateCell', () => {
 describe('manual applicability conclusions', () => {
   it('distinguishes exact output options in supplier and manual conclusions', () => {
     const now = Date.now()
-    const entry = { model: 'wire-fixture', protocol: 'responses_http', service_tier: 'priority', reasoning_effort: 'high', reasoning_summary: 'auto' as const, include_encrypted_content: true, context: 'all', group_rate_applies: true, conclusion: 'covered' as const }
+    const entry = { model: 'wire-fixture', protocol: 'responses_http', service_tier: 'priority', reasoning_effort: 'high', reasoning_summary: 'auto' as const, include_encrypted_content: true, text_verbosity: 'medium' as const, context: 'all', group_rate_applies: true, conclusion: 'covered' as const }
     const account = makeAccount({ extra: {
-      upstream_billing_probe: { status: 'ok', fresh_until: new Date(now + 3600000).toISOString(), received_at: new Date(now).toISOString(), data: { ...billingData, rate_applicability: { schema_version: 2, source: 'sub2api.key_billing', source_version: 'output-1', observed_at: new Date(now).toISOString(), expires_at: new Date(now + 3600000).toISOString(), entries: [entry] } } },
+      upstream_billing_probe: { status: 'ok', fresh_until: new Date(now + 3600000).toISOString(), received_at: new Date(now).toISOString(), data: { ...billingData, rate_applicability: { schema_version: 3, source: 'sub2api.key_billing', source_version: 'output-1', observed_at: new Date(now).toISOString(), expires_at: new Date(now + 3600000).toISOString(), entries: [entry] } } },
       upstream_billing_manual_applicability: { revision: 'output-1', status: 'active', expires_at: new Date(now + 3600000).toISOString(), entries: [entry] }
     } })
     const wrapper = mount(UpstreamBillingRateCell, { props: { account, now } })
     expect(wrapper.findAll('[data-testid="upstream-scope-summary"]')).toHaveLength(2)
     expect(wrapper.findAll('[data-testid="upstream-scope-summary"]').every(item => item.text().includes('auto'))).toBe(true)
     expect(wrapper.findAll('[data-testid="upstream-scope-encrypted"]')).toHaveLength(2)
+    expect(wrapper.findAll('[data-testid="upstream-scope-verbosity"]')).toHaveLength(2)
+    expect(wrapper.findAll('[data-testid="upstream-scope-verbosity"]').every(item => item.text().includes('medium'))).toBe(true)
   })
 
   it('shows manual status separately from supplier probes and expires without a refresh', async () => {

@@ -146,7 +146,9 @@ func prepareUpstreamBillingManualApplicability(ctx context.Context, account *Acc
 	}
 	version := 1
 	value.Get("entries").ForEach(func(_, entry gjson.Result) bool {
-		if entry.Get("reasoning_summary").Exists() || entry.Get("include_encrypted_content").Exists() {
+		if entry.Get("text_verbosity").Exists() {
+			version = 3
+		} else if version < 2 && (entry.Get("reasoning_summary").Exists() || entry.Get("include_encrypted_content").Exists()) {
 			version = 2
 		}
 		return true
@@ -160,9 +162,12 @@ func prepareUpstreamBillingManualApplicability(ctx context.Context, account *Acc
 	for _, entry := range declaration.Entries {
 		scope := AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: entry.Protocol,
 			Stream: entry.Protocol == "responses_ws_v2", Model: entry.Model, ServiceTier: entry.ServiceTier, ReasoningEffort: entry.ReasoningEffort,
-			ReasoningSummary: entry.ReasoningSummary, IncludeEncryptedContent: entry.IncludeEncryptedContent, Capability: "text"}
+			ReasoningSummary: entry.ReasoningSummary, IncludeEncryptedContent: entry.IncludeEncryptedContent, TextVerbosity: entry.TextVerbosity, Capability: "text"}
 		if scope.ReasoningSummary != "" || scope.IncludeEncryptedContent {
 			scope.Version = availabilityResponsesOutputScopeVersion
+		}
+		if scope.TextVerbosity != "" {
+			scope.Version = availabilityResponsesTextScopeVersion
 		}
 		if !billingApplicabilityScopeShapeKnown(scope) {
 			return ctx, ErrUpstreamBillingManualApplicability
@@ -279,7 +284,7 @@ func UpstreamBillingManualApplicabilityView(account *Account, at time.Time) map[
 		if status == "active" {
 			entry.Conclusion = stored.verdict(&AvailabilityRequestScope{Model: entry.Model, Protocol: entry.Protocol,
 				ServiceTier: entry.ServiceTier, ReasoningEffort: entry.ReasoningEffort, ReasoningSummary: entry.ReasoningSummary,
-				IncludeEncryptedContent: entry.IncludeEncryptedContent, Capability: "text"}, at)
+				IncludeEncryptedContent: entry.IncludeEncryptedContent, TextVerbosity: entry.TextVerbosity, Capability: "text"}, at)
 		}
 	}
 	return map[string]any{"schema_version": stored.SchemaVersion, "source": "manual.admin", "source_version": stored.SourceVersion, "observed_at": stored.ObservedAt,
