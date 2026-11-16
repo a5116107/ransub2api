@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,15 +35,20 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "chat_http"}, {"false", "chat_http"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			newAccount := func(id int64, covered bool) *Account {
 				entry := billingApplicabilityEntry(tc.protocol, "priority", covered)
 				account := billingCandidateAccount(t, id, entry)
-				if tc.protocol == "chat_http" {
-					account.Extra["openai_responses_mode"] = "force_chat_completions"
+				if tc.protocol == "responses_ws_v2" {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+				}
+				if tc.protocol != "responses_http" {
+					if tc.protocol == "chat_http" {
+						account.Extra["openai_responses_mode"] = "force_chat_completions"
+					}
 					at := time.Now().UTC().Add(-time.Second)
 					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
 					require.NoError(t, err)
@@ -60,6 +66,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				rateLimitService: newOpenAIAdvancedSchedulerRateLimitService(tc.engine), concurrencyService: NewConcurrencyService(concurrency)}
 			group := profitControlTestGroup(7, 0.5, 0)
 			ctx := billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`)
+			if tc.protocol == "responses_ws_v2" {
+				svc.cfg = passthroughLifecycleConfig()
+				ctx = billingWSCandidateContext(t, svc, group, `{"type":"response.create","model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`, "gpt-fixture", nil)
+			}
 			for _, session := range []string{"", "scope-sticky"} {
 				selection, _, err := svc.SelectAccountWithScheduler(ctx, &group.ID, "", session, "gpt-fixture", nil, OpenAIUpstreamTransportAny, false)
 				require.NoError(t, err)
@@ -287,11 +297,15 @@ func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
 
 type billingCandidateSettingRepo struct {
 	SettingRepository
-	reads int
+	reads     atomic.Int64
+	fastReads atomic.Int64
 }
 
 func (r *billingCandidateSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
-	r.reads++
+	r.reads.Add(1)
+	if key == SettingKeyOpenAIFastPolicySettings {
+		r.fastReads.Add(1)
+	}
 	if r.SettingRepository == nil {
 		return "", errors.New("fixture settings unavailable")
 	}
@@ -353,5 +367,5 @@ func TestBillingCandidatePolicySnapshotAndPromptIsolation(t *testing.T) {
 	}
 	_, err := svc.applyOpenAIFastPolicyToBody(ctx, account, "gpt-fixture", []byte(`{"model":"gpt-fixture","service_tier":"priority"}`))
 	require.NoError(t, err)
-	require.Equal(t, 1, repo.reads, "candidate iteration and final forwarding reuse one request policy read")
+	require.EqualValues(t, 1, repo.reads.Load(), "candidate iteration and final forwarding reuse one request policy read")
 }

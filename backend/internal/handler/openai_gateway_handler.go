@@ -3392,6 +3392,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	ctx = service.WithOpenAIEncryptedReasoningAffinity(wsPricingCtx, firstMessage)
 
 	for {
+		candidateMaxEffort, candidateEffortMappings, candidateOverLimit, _ := openAIReasoningEffortPolicyForRequest(c, apiKey)
+		candidateForcedEffort := ""
+		if effectiveAPIKeyPlatform(c, apiKey) == service.PlatformOpenAI {
+			candidateForcedEffort = apiKey.ReasoningEffort
+		}
+		ctx = h.gatewayService.WithUpstreamBillingWSCandidateRequest(ctx, c.Request, firstMessage, wsForwardModel, &service.OpenAIWSIngressHooks{
+			MaxReasoningEffort: candidateMaxEffort, ReasoningEffortMappings: candidateEffortMappings,
+			MaxReasoningEffortOverLimit: candidateOverLimit, ForcedReasoningEffort: candidateForcedEffort,
+		})
 		if !service.OpenAIWSIngressCanFailover(ctx, c) {
 			return
 		}
@@ -3522,7 +3531,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			return
 		}
 		// 准入完成：门并入连接 ctx，turn 级复核与 failover 重选共用。
-		ctx = admissionCtx
+		ctx = service.WithoutUpstreamBillingCandidateRequest(admissionCtx)
 		c.Request = c.Request.WithContext(service.ContextWithSelectionPriorityRequest(c.Request.Context(), selection))
 		retryRPM, rpmErr := rpmAdmission.acquire(ctx, h.gatewayService, account, accountReleaseFunc, failedAccountIDs)
 		if retryRPM {
