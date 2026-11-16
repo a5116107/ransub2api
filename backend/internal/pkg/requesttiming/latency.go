@@ -9,14 +9,18 @@ type Measurement struct {
 }
 
 type AttemptLatency struct {
-	Number       int         `json:"number"`
-	Transition   string      `json:"transition"`
-	Upload       Measurement `json:"body_upload"`
-	SemanticWait Measurement `json:"post_upload_first_content_wait"`
-	VisibleWait  Measurement `json:"post_upload_first_visible_wait"`
-	ResponseWait Measurement `json:"post_upload_response_wait"`
-	RequestBytes int64       `json:"request_bytes"`
-	Failed       bool        `json:"failed"`
+	Number             int         `json:"number"`
+	Transition         string      `json:"transition"`
+	Upload             Measurement `json:"body_upload"`
+	SemanticWait       Measurement `json:"post_upload_first_content_wait"`
+	VisibleWait        Measurement `json:"post_upload_first_visible_wait"`
+	FirstByteWait      Measurement `json:"post_upload_first_byte_wait"`
+	FirstEventWait     Measurement `json:"post_upload_first_event_wait"`
+	FirstReasoningWait Measurement `json:"post_upload_first_reasoning_wait"`
+	FirstTextWait      Measurement `json:"post_upload_first_text_wait"`
+	ResponseWait       Measurement `json:"post_upload_response_wait"`
+	RequestBytes       int64       `json:"request_bytes"`
+	Failed             bool        `json:"failed"`
 }
 
 type LatencySummary struct {
@@ -86,22 +90,45 @@ func DeriveLatency(s Snapshot) LatencySummary {
 		if _, failed := a.Events["request_write_failed"]; failed {
 			item.Upload = Measurement{Status: "write_failed"}
 		}
-		item.SemanticWait = attemptInterval(*a, written, "first_semantic")
-		item.VisibleWait = attemptInterval(*a, written, "first_visible")
 		// Network EOF can precede parsing buffered SSE data. Parser timestamps
-		// remain bounded by the completed request, not the transport read EOF.
+		// may extend to request completion, but never borrow the next physical
+		// request's lifetime. Network first-byte evidence stays bounded by EOF.
+		parsed := *a
 		if a.EndMS != nil && finite(*a.EndMS) && finite(s.TotalMS) && s.TotalMS > *a.EndMS {
-			parsed := *a
 			end := s.TotalMS
-			parsed.EndMS = &end
-			item.SemanticWait = attemptInterval(parsed, written, "first_semantic")
-			item.VisibleWait = attemptInterval(parsed, written, "first_visible")
+			for _, next := range s.Attempts[i+1:] {
+				if next.Kind == "http" {
+					if !finite(next.StartMS) || next.StartMS < 0 {
+						end = *a.EndMS
+						break
+					}
+					end = min(end, next.StartMS)
+				}
+			}
+			if end > *a.EndMS {
+				parsed.EndMS = &end
+			}
 		}
+		item.SemanticWait = attemptInterval(parsed, written, "first_semantic")
+		item.VisibleWait = attemptInterval(parsed, written, "first_visible")
+		item.FirstByteWait = attemptInterval(*a, written, "first_byte")
+		item.FirstEventWait = attemptInterval(parsed, written, "first_sse_event_flush")
+		item.FirstReasoningWait = attemptInterval(parsed, written, "first_reasoning")
+		item.FirstTextWait = attemptInterval(parsed, written, "first_visible_text")
 		item.ResponseWait = attemptInterval(*a, written, "response_headers")
+		if _, incomplete := a.Events["typed_content_truncated"]; incomplete {
+			item.FirstEventWait = Measurement{Status: "incomplete_capture"}
+			item.FirstReasoningWait = Measurement{Status: "incomplete_capture"}
+			item.FirstTextWait = Measurement{Status: "incomplete_capture"}
+		}
 		if item.Upload.Status != "measured" {
 			item.SemanticWait = Measurement{Status: item.Upload.Status}
 			item.VisibleWait = Measurement{Status: item.Upload.Status}
 			item.ResponseWait = Measurement{Status: item.Upload.Status}
+			item.FirstByteWait = Measurement{Status: item.Upload.Status}
+			item.FirstEventWait = Measurement{Status: item.Upload.Status}
+			item.FirstReasoningWait = Measurement{Status: item.Upload.Status}
+			item.FirstTextWait = Measurement{Status: item.Upload.Status}
 		}
 		if previous != nil {
 			switch {

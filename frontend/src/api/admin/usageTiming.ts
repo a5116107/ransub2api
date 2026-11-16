@@ -1,6 +1,7 @@
 import { apiClient } from '../client'
 import type { OutputRateObservation } from '@/types'
 export interface TimingSpan { name: string; start_ms: number; end_ms: number; attempt?: number }
+export interface TimingMeasurement { ms: number | null; status: string }
 export interface CacheMigrationObservation {
   status: string; source: string; scope: string; method: string; cache_status: string
   route_switches: number; unknown_transitions: number
@@ -21,7 +22,8 @@ export interface RequestTiming {
     version: number; status: string; account_switches: number; same_account_retries: number; unknown_transitions: number
     large_body: boolean; cost_status: string; extra_upload_component_ms: number | null; extra_wait_component_ms: number | null
     cache_migration?: CacheMigrationObservation
-    attempts: { number: number; transition: string; failed: boolean; body_upload: { ms: number | null; status: string }; post_upload_first_content_wait: { ms: number | null; status: string }; post_upload_first_visible_wait: { ms: number | null; status: string } }[]
+    attempts: { number: number; transition: string; failed: boolean; body_upload: TimingMeasurement; post_upload_first_content_wait: TimingMeasurement; post_upload_first_visible_wait: TimingMeasurement
+      post_upload_first_byte_wait?: TimingMeasurement; post_upload_first_event_wait?: TimingMeasurement; post_upload_first_reasoning_wait?: TimingMeasurement; post_upload_first_text_wait?: TimingMeasurement }[]
   }
   identity_source?: string
   auth_rejection?: string

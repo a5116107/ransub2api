@@ -82,6 +82,13 @@ func TestIssue605NativeLoopbackSSETypedContentAndByte(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 	collector.Finish(200, false)
 	collector.WhenFinished(func(s requesttiming.Snapshot) {
+		waits := requesttiming.DeriveLatency(s).Attempts
+		require.Len(t, waits, 1)
+		for _, value := range []requesttiming.Measurement{waits[0].FirstByteWait, waits[0].FirstEventWait, waits[0].FirstReasoningWait, waits[0].FirstTextWait} {
+			require.Equal(t, "measured", value.Status)
+			require.NotNil(t, value.MS)
+			require.GreaterOrEqual(t, *value.MS, 0.0)
+		}
 		v := requesttiming.DeriveContentObservation(s)
 		require.NotNil(t, v.ResponseByteFirstMS)
 		require.NotNil(t, v.ReasoningFirstMS, "native mixed SSE must record the typed reasoning item")

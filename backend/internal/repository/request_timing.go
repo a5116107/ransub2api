@@ -105,6 +105,39 @@ func (r *usageLogRepository) RequestTimings(ctx context.Context, id int64) ([]js
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
+		// Old retained traces already contain the physical event boundaries.
+		// Derive the current known contract at read time, without rewriting DB
+		// evidence or borrowing today's account/route/model configuration.
+		var recorded requesttiming.Snapshot
+		if json.Unmarshal(raw, &recorded) == nil && recorded.Version == 1 && len(recorded.Attempts) <= 32 &&
+			(recorded.Latency == nil || recorded.Latency.Version == 1) {
+			var envelope map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				return nil, fmt.Errorf("decode timing projection: %w", err)
+			}
+			latency := make(map[string]json.RawMessage)
+			if recorded.Latency != nil {
+				if err := json.Unmarshal(envelope["latency"], &latency); err != nil {
+					return nil, fmt.Errorf("decode latency projection: %w", err)
+				}
+			}
+			derived, err := json.Marshal(requesttiming.DeriveLatency(recorded))
+			if err != nil {
+				return nil, fmt.Errorf("derive timing projection: %w", err)
+			}
+			// Unmarshal overlays the canonical fields and retains extensions.
+			if err := json.Unmarshal(derived, &latency); err != nil {
+				return nil, fmt.Errorf("merge latency projection: %w", err)
+			}
+			envelope["latency"], err = json.Marshal(latency)
+			if err != nil {
+				return nil, fmt.Errorf("encode latency projection: %w", err)
+			}
+			raw, err = json.Marshal(envelope)
+			if err != nil {
+				return nil, fmt.Errorf("encode timing projection: %w", err)
+			}
+		}
 		out = append(out, json.RawMessage(raw))
 	}
 	return out, rows.Err()

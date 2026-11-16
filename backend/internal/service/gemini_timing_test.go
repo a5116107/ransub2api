@@ -3,6 +3,7 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,15 +59,12 @@ func TestGeminiTimingLoopback(t *testing.T) {
 					}
 					send(`{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"private reasoning"}]}}]}}`)
 					send(`{"response":{"candidates":[{"content":{"parts":[{"text":"first"}]}}]}}`)
-					time.Sleep(40 * time.Millisecond)
 					_, _ = io.WriteString(w, ": heartbeat\n\n")
 					_ = http.NewResponseController(w).Flush()
-					time.Sleep(30 * time.Millisecond)
 					if ending == "malformed" {
 						send(`{"response":`)
 					}
 					send(`{"response":{"candidates":[{"content":{"parts":[{"text":"last"}]}}]}}`)
-					time.Sleep(20 * time.Millisecond)
 					switch ending {
 					case "eof":
 					case "done_marker":
@@ -91,6 +89,7 @@ func TestGeminiTimingLoopback(t *testing.T) {
 				account := &Account{ID: 702, Platform: PlatformGemini, Type: AccountTypeOAuth, Credentials: map[string]any{"project_id": "fixture"}}
 				resp, err := svc.doGeminiUpstream(upstreamReq, "", account)
 				require.NoError(t, err)
+				resp.Body = &timingSSEStepBody{ReadCloser: resp.Body, reader: bufio.NewReader(resp.Body), delay: 60 * time.Millisecond}
 				defer func() { _ = resp.Body.Close() }()
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 				c.Request = req
@@ -112,6 +111,9 @@ func TestGeminiTimingLoopback(t *testing.T) {
 					require.Len(t, s.Attempts, 2, "logical send and physical HTTP attempt must stay separate")
 					require.Nil(t, s.Attempts[0].TextStream)
 					require.NotEmpty(t, s.Attempts[1].RouteFingerprint)
+					waits := requesttiming.DeriveLatency(s).Attempts
+					require.Len(t, waits, 1, "parent and physical HTTP waits must not be counted twice")
+					require.Equal(t, "measured", waits[0].FirstByteWait.Status)
 					v := requesttiming.DeriveContentObservation(s)
 					if ending == "write_error" && path == "chat" {
 						require.NotEqual(t, "observed", v.TextStream.Status)
@@ -123,11 +125,15 @@ func TestGeminiTimingLoopback(t *testing.T) {
 						require.Equal(t, "incomplete_capture", v.TextStream.Status)
 						require.Nil(t, v.VisibleTextFirstMS)
 						require.Nil(t, v.TextStream.Chunks)
+						require.Equal(t, "incomplete_capture", waits[0].FirstReasoningWait.Status)
+						require.Equal(t, "incomplete_capture", waits[0].FirstTextWait.Status)
 						return
 					}
 					require.NotNil(t, v.ResponseByteFirstMS)
 					require.NotNil(t, v.ReasoningFirstMS)
 					require.NotNil(t, v.VisibleTextFirstMS)
+					require.Equal(t, "measured", waits[0].FirstReasoningWait.Status)
+					require.Equal(t, "measured", waits[0].FirstTextWait.Status)
 					require.NotNil(t, v.TextStream.Chunks)
 					require.Equal(t, 2, *v.TextStream.Chunks)
 					require.GreaterOrEqual(t, *v.TextStream.MaxGapMS, 50.0)

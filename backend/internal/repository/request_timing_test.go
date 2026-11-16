@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,42 @@ func TestTimingWriteJoinsBillingIdentityAndKeepsDistinctTraces(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRequestTimingsRebuildsKnownLatencyWithoutChangingStoredEvidence(t *testing.T) {
+	for _, version := range []int{1, 9} {
+		t.Run(strconv.Itoa(version), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer func() { _ = db.Close() }()
+			raw := `{"version":1,"trace_id":"legacy","total_ms":600,"future_diagnostic":{"kept":true},"latency":{"version":` + strconv.Itoa(version) + `,"future_latency_flag":true,"attempts":[]},"attempts":[{"number":1,"kind":"http","start_ms":100,"end_ms":500,"events":{"headers_written":120,"request_written":150,"first_byte":200,"first_visible_text":300}}]}`
+			mock.ExpectQuery("SELECT detail FROM request_timing_details WHERE usage_log_id").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"detail"}).AddRow(raw))
+			repo := newUsageLogRepositoryWithSQL(nil, db)
+			rows, err := repo.RequestTimings(t.Context(), 9)
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			var envelope map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rows[0], &envelope))
+			require.JSONEq(t, `{"kept":true}`, string(envelope["future_diagnostic"]))
+			if version == 1 {
+				var latency struct {
+					Future   bool `json:"future_latency_flag"`
+					Attempts []struct {
+						FirstByte requesttiming.Measurement `json:"post_upload_first_byte_wait"`
+						FirstText requesttiming.Measurement `json:"post_upload_first_text_wait"`
+					} `json:"attempts"`
+				}
+				require.NoError(t, json.Unmarshal(envelope["latency"], &latency))
+				require.True(t, latency.Future)
+				require.Len(t, latency.Attempts, 1)
+				require.Equal(t, 50.0, *latency.Attempts[0].FirstByte.MS)
+				require.Equal(t, 150.0, *latency.Attempts[0].FirstText.MS)
+			} else {
+				require.JSONEq(t, raw, string(rows[0]), "unknown timing contract stays unchanged")
+			}
+			require.NoError(t, mock.ExpectationsWereMet(), "reading a projection must never rewrite diagnostic storage")
+		})
 	}
 }
 

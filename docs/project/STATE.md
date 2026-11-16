@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.8原生非透传候选本地已验；继续D5.3物理attempt/延迟，父任务保持开放。
+任务：D5.3.2逐物理HTTP等待本地已验；D5.3同scope汇总仍开放。
 授权：统一H盘工作树；本地代码/测试/文档及功能分支提交同步；不CI/部署。
-验证：.8最终双轮race3764、0fail/skip/race；12份输入drift0，vet/增量lint/Linux退出0。
-实证：原生HTTP/SSE与候选同scope、撤销后物理拒发；两调度器/黏性/重选；非生产证明。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/native-candidate-final*及source-inputs。
-下一动作：D5.3原计时链逐attempt首字节/事件/推理/文字等待；再同scope汇总。
+验证：双轮race包1276/服务1774/边界权限134/PG70通过，UI71；15份输入drift0，vet/lint/Linux退出0。
+实证：真HTTP失败后重试隔离、缓冲/截断未知、PG新旧记录只读；中英390/1440；非生产证明。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/physical-wait-final*及postgres/browser。
+下一动作：D5.3同最终Key/线路/模型scope的原始等待汇总与原上游面板接线。
 等待：供应商实际scope/基线/缓存域；历史fixture/scratch拒删见末节。
-Attempt：8
+Attempt：9
 <!-- resume:end -->
 
 ## 目标与入口
@@ -42,12 +42,13 @@ Attempt：8
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |
 | D4 | in_progress | 固定售价/新鲜策略/多平台最终门已有本地证据；D4.3采购桶/受管资格/模式与重归类仍未闭环 |
-| D5 | in_progress | D5.3.1最终Key/线路/模型原始缓存聚合已验；实际组及同scope物理attempt/延迟仍缺，D5.4缓存域/定向能力待补 |
+| D5 | in_progress | D5.3.1缓存聚合/.2逐HTTP等待已本地验；实际组及同scope物理attempt/延迟汇总仍缺，D5.4缓存域/定向能力待补 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
 | D7 | in_progress | 历史结论/下游原始面板及409已有证据；D7.3真实多维结论、D7.4三步产品配置/监控/预算解释仍缺 |
 | D5.1/D6.1 | done | 上下游/账单合同；同run粘性/跨run隔离、Messages独立前缀，race40/vet |
 | D5.2 | done | 最终原始摘要、唯一逻辑计数/覆盖、本人筛选/30天与中英390px；非生产证据 |
 | D5.3.1 | done | 最终凭据/线路/模型/协议/档位分桶，原始加权/覆盖/未知/30天；SQL202、权限29、前端24及中英390px；仅本地 |
+| D5.3.2 | done | 逐HTTP首字节/事件/推理/正文等待、缓冲/重试/截断未知、PG新旧只读及原详情已验；非完整同scope汇总/生产 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 三页历史徽标/冻结集合/列表详情兼容已验；真实向量、基线/指纹和当前资格消费未完成 |
@@ -57,7 +58,7 @@ Attempt：8
 
 ## 剩余执行顺序与等待
 
-- 本地可执行：D2.6其余转换/WS提前范围→D5.3物理attempt/延迟→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；高缓存产品仍等D5.4。不因缺供应商数据停做本地合同。
+- 本地可执行：D5.3同scope等待汇总→D2.6其余转换/WS提前范围→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；高缓存产品仍等D5.4。不因缺供应商数据停做本地合同。
 - 独立发布：D9.1先核当前生产/可部署差异，按原发布边界交付冷却补丁；不可整分支带入未验功能。本轮不发布。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。
@@ -72,6 +73,6 @@ Attempt：8
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 历史拒删候选/overlay/pyc及空目录按DECISIONS保留原owner/路径；不换工具重试/移动，.1包保留。
 - H:/Root/DevCache/tmp/sub2api-cooldown-recovery同被blocked by policy；已有0文件/0字节、非重解析点证据，删除0，待拥有者清理。
-- D5.3旧timing证据复用；PATH旧lint不使用。本轮独立PG/Redis/预览已停，三端口无监听；raw-cache原scratch仍待删除策略解除。
+- D5.3旧timing/UI证据匹配输入复用，PATH旧lint不使用。独立PG55441/Redis56441供本轮后续测试，owner本任务；完成后停；原scratch仍待删除策略解除。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。
 - D2.6.3旧日志及D2.6.4九份newapi日志压缩/删除命令均被策略拒绝，执行/删除0；原evidence待宿主/拥有者清理，不换工具重试。

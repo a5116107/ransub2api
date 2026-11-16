@@ -35,6 +35,55 @@ const migrationTrace = (observation: CacheMigrationObservation): RequestTiming =
   }
 })
 describe('Usage timing details', () => {
+  it('shows validated waits for each physical attempt and keeps absent retry events unknown', async () => {
+    const trace = migrationTrace(migrationObservation())
+    const measurement = (ms: number | null, status = 'measured') => ({ ms, status })
+    const attempt = (number: number, start: number) => ({ number, kind: 'http', parent: 0, account_id: number, proxy_id: 0, start_ms: start, end_ms: start + 500, status: number === 1 ? 502 : 200, reused: false, request_bytes: 0, response_bytes: 0, body_eof: true, events: { request_written: start + 30, first_byte: start + 99999 } })
+    trace.attempts = [attempt(1, 100), attempt(2, 1000)]
+    trace.latency!.attempts = trace.attempts.map(a => ({
+      number: a.number, transition: a.number === 1 ? 'initial' : 'account_switch', failed: a.number === 1,
+      body_upload: measurement(30), post_upload_first_content_wait: measurement(null, 'not_collected'), post_upload_first_visible_wait: measurement(null, 'not_collected'),
+      post_upload_first_byte_wait: measurement(a.number === 1 ? 70 : 20),
+      post_upload_first_event_wait: measurement(a.number === 1 ? null : 30, a.number === 1 ? 'not_collected' : 'measured'),
+      post_upload_first_reasoning_wait: measurement(a.number === 1 ? null : 40, a.number === 1 ? 'not_collected' : 'measured'),
+      post_upload_first_text_wait: measurement(a.number === 1 ? null : 0, a.number === 1 ? 'not_collected' : 'measured')
+    }))
+    mocks.get.mockResolvedValue({ traces: [trace, { ...trace, trace_id: 'old', latency: undefined }], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    const waits = (index: number, field: string) => wrapper.findAll('[data-testid="timing-attempt"]')[index]!.findAll('span').find(node => node.text() === `requestTiming.fields.${field}`)!.element.parentElement!.textContent
+    expect(waits(0, 'wait_first_byte')).toContain('70ms')
+    expect(waits(1, 'wait_first_byte')).toContain('20ms')
+    expect(waits(0, 'wait_first_event')).toContain('requestTiming.missing')
+    expect(waits(1, 'wait_first_event')).toContain('30ms')
+    expect(waits(0, 'wait_first_reasoning')).toContain('requestTiming.missing')
+    expect(waits(1, 'wait_first_reasoning')).toContain('40ms')
+    expect(waits(0, 'wait_first_text')).toContain('requestTiming.missing')
+    expect(waits(1, 'wait_first_text')).toContain('<1ms')
+    await wrapper.get('select').setValue('1')
+    expect(waits(1, 'wait_first_byte')).toContain('requestTiming.missing')
+    wrapper.unmount()
+  })
+
+  it.each(['wrong version', 'failed measurement', 'duplicate attempt', 'negative', 'nonfinite', 'missing attempt array', 'null attempt array'])('does not turn %s into a measured physical wait', async state => {
+    const trace = migrationTrace(migrationObservation())
+    trace.attempts = [{ number: 1, kind: 'http', account_id: 7, proxy_id: 0, start_ms: 100, end_ms: 500, status: 200, reused: true, request_bytes: 0, response_bytes: 0, body_eof: true, events: {} }]
+    trace.latency!.attempts = [{ number: 1, transition: 'initial', failed: false, body_upload: { ms: 10, status: 'measured' }, post_upload_first_content_wait: { ms: null, status: 'not_collected' }, post_upload_first_visible_wait: { ms: null, status: 'not_collected' }, post_upload_first_text_wait: { ms: 30, status: 'measured' } }]
+    if (state === 'wrong version') trace.latency!.version = 9
+    if (state === 'failed measurement') trace.latency!.attempts[0]!.post_upload_first_text_wait!.status = 'invalid_boundary'
+    if (state === 'duplicate attempt') trace.latency!.attempts.push(trace.latency!.attempts[0]!)
+    if (state === 'negative') trace.latency!.attempts[0]!.post_upload_first_text_wait!.ms = -1
+    if (state === 'nonfinite') trace.latency!.attempts[0]!.post_upload_first_text_wait!.ms = Infinity
+    if (state === 'missing attempt array') delete (trace.latency as unknown as { attempts?: unknown }).attempts
+    if (state === 'null attempt array') (trace.latency as unknown as { attempts: unknown }).attempts = null
+    mocks.get.mockResolvedValue({ traces: [trace], retention_days: 30 })
+    const wrapper = mount(UsageTimingDialog, { props: { record: row(1) }, ...options })
+    await flushPromises()
+    const label = wrapper.findAll('[data-testid="timing-attempt"]')[0]!.findAll('span').find(node => node.text() === 'requestTiming.fields.wait_first_text')!
+    expect(label.element.parentElement!.textContent).toContain('requestTiming.missing')
+    wrapper.unmount()
+  })
+
   it.each(['trace', 'latency'])('does not interpret an unknown %s version as an HTTP cache boundary', async scope => {
     const trace = migrationTrace(migrationObservation())
     if (scope === 'trace') trace.version = 2

@@ -86,7 +86,7 @@
             <div class="mt-1 h-2 overflow-hidden rounded bg-gray-100 dark:bg-dark-700"><div class="h-full rounded" :class="TIMING_BAR[spanHealth(span)]" :style="bar(span)" /></div>
           </div>
         </section>
-        <section v-for="attempt in trace.attempts" :key="attempt.number" class="rounded-xl border border-gray-200 p-4 dark:border-dark-600">
+        <section v-for="attempt in trace.attempts" :key="attempt.number" class="rounded-xl border border-gray-200 p-4 dark:border-dark-600" data-testid="timing-attempt">
           <h4 class="font-semibold">{{ attemptTitle(attempt) }} · {{ t('requestTiming.account') }} #{{ attempt.account_id }} · {{ attempt.proxy_id > 0 ? `${t('requestTiming.proxy')} #${attempt.proxy_id}` : t('requestTiming.direct') }}</h4>
           <div class="mt-3 grid gap-x-8 gap-y-3 text-sm md:grid-cols-2">
             <div v-for="row in attemptRows(attempt)" :key="row.name" class="flex justify-between gap-4"><span class="text-gray-500">{{ row.name }}</span><span class="text-right font-medium tabular-nums" :class="TIMING_TEXT[row.health]">{{ row.value }}<span v-if="row.health !== 'neutral'" class="mt-0.5 block text-[10px] font-normal">{{ healthLabel(row.health) }}</span></span></div>
@@ -108,7 +108,7 @@ import type { AdminUsageLog } from '@/types'
 import { formatDateTime } from '@/utils/format'
 import { formatUsageOutputTps } from '@/utils/usageTps'
 import { timingHealth, stageScale, TIMING_TEXT, TIMING_SURFACE, TIMING_BAR, type TimingHealth, type TimingScale } from '@/utils/requestTimingHealth'
-import { getUsageTiming, type RequestTiming, type TimingAttempt, type TimingSpan } from '@/api/admin/usageTiming'
+import { getUsageTiming, type RequestTiming, type TimingAttempt, type TimingMeasurement, type TimingSpan } from '@/api/admin/usageTiming'
 import { observerUsageAPI } from '@/api/observerUsage'
 import { observerUsageContext } from './observerUsageContext'
 const observerMode = inject(observerUsageContext, false)
@@ -265,13 +265,19 @@ function attemptTitle(a: TimingAttempt): string {
 }
 function attemptRows(a: TimingAttempt): DetailRow[] {
   const e = a.events
+  const candidates = trace.value?.version === 1 && trace.value?.latency?.version === 1 && a.kind === 'http' && Array.isArray(trace.value.latency.attempts) ? trace.value.latency.attempts.filter(item => item?.number === a.number) : []
+  const waits = candidates.length === 1 ? candidates[0] : undefined
+  const measured = (value?: TimingMeasurement) => value?.status === 'measured' && typeof value.ms === 'number' && Number.isFinite(value.ms) && value.ms >= 0 ? value.ms : undefined
   return [
     timed('attempt_total', a.end_ms == null ? undefined : a.end_ms - a.start_ms, 'neutral'), row('status', a.status > 0 ? String(a.status) : t('requestTiming.missing'), statusHealth(a.status)),
     row('transport_result', a.cleanup_canceled ? t('requestTiming.health.normalClose') : a.error === 'canceled' && !a.terminal ? t('requestTiming.health.legacyCancel') : a.error ? t(`requestTiming.${a.error}`) : t('requestTiming.health.noTransportError'), a.error ? (a.error === 'canceled' ? 'warn' : 'critical') : a.cleanup_canceled ? 'good' : 'neutral'),
     // A new connection and closing after the terminal event without EOF are normal.
     row('reused', yes(a.reused), a.reused === true ? 'good' : 'neutral'), timed('connection', delta(e, 'connection_start', 'connection_ready')),
     ...['dns', 'tcp', 'tls'].map(name => ({ name: name.toUpperCase(), value: ms(delta(e, `${name}_start`, `${name}_end`)), health: timingHealth(delta(e, `${name}_start`, `${name}_end`), 'stage') })),
-    timed('request_write', delta(e, 'connection_ready', 'request_written')), timed('wait_first_byte', delta(e, 'request_written', 'first_byte'), 'first'),
+    timed('request_write', delta(e, 'connection_ready', 'request_written')), timed('wait_first_byte', measured(waits?.post_upload_first_byte_wait), 'first'),
+    timed('wait_first_event', measured(waits?.post_upload_first_event_wait), 'first'),
+    timed('wait_first_reasoning', measured(waits?.post_upload_first_reasoning_wait), 'first'),
+    timed('wait_first_text', measured(waits?.post_upload_first_text_wait), 'first'),
     row('content_encoding', a.content_encoding || t('requestTiming.missing')),
     row('auto_decompressed', a.content_encoding ? yes(a.auto_decompressed ?? false) : t('requestTiming.missing')),
     ...['raw_body_first', 'decoded_body_first', 'sse_parsed_first', 'sse_visible_first', 'tool_converted_first', 'tool_visible_first'].map(name => timed(name, e[name], 'neutral')),
