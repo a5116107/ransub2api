@@ -69,6 +69,54 @@ func TestUpstreamOperationsHTTPPostgresWithoutModelChannelBinding(t *testing.T) 
 		require.Equal(t, "https://http.example:8443/tenant/v1", body.Data.Usage.Rows[0].Key)
 		require.Contains(t, body.Data.Attribution, "estimate")
 	}
+	// The same existing administrator endpoint exposes a WS generation's origin
+	// explicitly, never an HTTP first-byte/SSE timing inferred from the handshake.
+	_, err = db.Exec(`UPDATE request_timing_details SET detail=detail || jsonb_build_object(
+ 'ttft_mode','ws_turn','status',0,'total_ms',100,'terminal','completed','outcome','success',
+ 'raw_upstream',(detail->'raw_upstream') || jsonb_build_object('transport','ws_turn',
+   'credential_source','websocket_handshake_credentials','attempt_number',1),
+ 'attempts',jsonb_build_array(jsonb_build_object('number',1,'kind','ws_turn','account_id',$1::bigint,
+   'status',0,'start_ms',0,'end_ms',100,'events','{}'::jsonb,'route_fingerprint',repeat('b',64),
+   'upstream_credential',jsonb_build_object('status','observed','source','websocket_handshake_credentials','fingerprint',repeat('a',64)))),
+ 'latency',jsonb_build_object('version',1,'ws_turn',jsonb_build_object('number',1,'source','physical_ws_turn_generation_start',
+   'first_event',jsonb_build_object('status','measured','ms',0),
+   'first_reasoning',jsonb_build_object('status','not_collected','ms',NULL),
+   'first_text',jsonb_build_object('status','measured','ms',20))))
+ WHERE usage_log_id IN (SELECT id FROM usage_logs WHERE account_id=$1)`, account)
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", fmt.Sprintf("/upstream-operations/snapshot?account_id=%d&from=%s&until=%s", account, now.Add(-24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)), nil))
+	require.Equal(t, 200, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), `"source":"canonical_physical_ws_turn_generation_start"`)
+	require.Contains(t, w.Body.String(), `"transport":"ws_turn"`)
+	var wsBody struct {
+		Data struct {
+			RawCache struct {
+				Data struct {
+					Rows []struct {
+						Waits struct {
+							FirstByte struct {
+								Samples int
+								MeanMS  *float64 `json:"mean_ms"`
+							} `json:"first_byte"`
+							FirstEvent struct {
+								Samples int
+								MeanMS  *float64 `json:"mean_ms"`
+							} `json:"first_event"`
+						}
+					}
+				}
+			} `json:"raw_cache"`
+		}
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &wsBody))
+	require.Len(t, wsBody.Data.RawCache.Data.Rows, 1)
+	require.Equal(t, 1, wsBody.Data.RawCache.Data.Rows[0].Waits.FirstEvent.Samples)
+	require.NotNil(t, wsBody.Data.RawCache.Data.Rows[0].Waits.FirstEvent.MeanMS)
+	require.Zero(t, *wsBody.Data.RawCache.Data.Rows[0].Waits.FirstEvent.MeanMS)
+	require.Zero(t, wsBody.Data.RawCache.Data.Rows[0].Waits.FirstByte.Samples)
+	require.Nil(t, wsBody.Data.RawCache.Data.Rows[0].Waits.FirstByte.MeanMS)
+	require.NotContains(t, w.Body.String(), "fixture-do-not-return")
 	var after string
 	require.NoError(t, db.QueryRowContext(context.Background(), `SELECT row_to_json(u)::text FROM usage_logs u WHERE account_id=$1`, account).Scan(&after))
 	require.Equal(t, before, after, "the channel endpoint is read-only")

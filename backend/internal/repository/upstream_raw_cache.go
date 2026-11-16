@@ -22,12 +22,12 @@ func upstreamWaitAggregate(column string) string {
  'latest_sample_at',max(created_at) FILTER (WHERE ` + column + ` IS NOT NULL))`
 }
 
-func upstreamWaitValue(key string) string {
-	return `CASE WHEN latency.item->'` + key + `'->>'status'='measured'
- AND jsonb_typeof(latency.item->'` + key + `'->'ms')='number'
+func upstreamWaitValue(item, key string) string {
+	return `CASE WHEN ` + item + `->'` + key + `'->>'status'='measured'
+ AND jsonb_typeof(` + item + `->'` + key + `'->'ms')='number'
  AND jsonb_typeof(timing_detail->'total_ms')='number'
- THEN CASE WHEN (latency.item->'` + key + `'->>'ms')::numeric BETWEEN 0 AND (timing_detail->>'total_ms')::numeric
- THEN (latency.item->'` + key + `'->>'ms')::numeric END END`
+ THEN CASE WHEN (` + item + `->'` + key + `'->>'ms')::numeric BETWEEN 0 AND (timing_detail->>'total_ms')::numeric
+ THEN (` + item + `->'` + key + `'->>'ms')::numeric END END`
 }
 
 var upstreamOperationsRawCache = upstreamOperationsBase + `, cache_traces AS (
@@ -56,13 +56,16 @@ var upstreamOperationsRawCache = upstreamOperationsBase + `, cache_traces AS (
  WHEN 'canonical_chat_completions_usage' THEN 'chat_completions' END protocol
  FROM raw_samples
 ), wait_samples AS (
- SELECT attributed.*,` + upstreamWaitValue("post_upload_first_byte_wait") + ` wait_first_byte,
+ SELECT attributed.*,` + upstreamWaitValue("latency.item", "post_upload_first_byte_wait") + ` wait_first_byte,
  CASE WHEN NOT COALESCE(physical.item->'events' ? 'typed_content_truncated',false)
- THEN ` + upstreamWaitValue("post_upload_first_event_wait") + ` END wait_first_event,
+ THEN CASE transport WHEN 'ws_turn' THEN ` + upstreamWaitValue("ws_latency.item", "first_event") + `
+ ELSE ` + upstreamWaitValue("latency.item", "post_upload_first_event_wait") + ` END END wait_first_event,
  CASE WHEN NOT COALESCE(physical.item->'events' ? 'typed_content_truncated',false)
- THEN ` + upstreamWaitValue("post_upload_first_reasoning_wait") + ` END wait_first_reasoning,
+ THEN CASE transport WHEN 'ws_turn' THEN ` + upstreamWaitValue("ws_latency.item", "first_reasoning") + `
+ ELSE ` + upstreamWaitValue("latency.item", "post_upload_first_reasoning_wait") + ` END END wait_first_reasoning,
  CASE WHEN NOT COALESCE(physical.item->'events' ? 'typed_content_truncated',false)
- THEN ` + upstreamWaitValue("post_upload_first_text_wait") + ` END wait_first_text
+ THEN CASE transport WHEN 'ws_turn' THEN ` + upstreamWaitValue("ws_latency.item", "first_text") + `
+ ELSE ` + upstreamWaitValue("latency.item", "post_upload_first_text_wait") + ` END END wait_first_text
  FROM attributed
  LEFT JOIN LATERAL (
   SELECT (array_agg(expanded.item))[1] item FROM jsonb_array_elements(
@@ -70,7 +73,7 @@ var upstreamOperationsRawCache = upstreamOperationsBase + `, cache_traces AS (
     CASE WHEN jsonb_array_length(timing_detail->'attempts')<=32 THEN timing_detail->'attempts' ELSE '[]'::jsonb END
    ELSE '[]'::jsonb END) AS expanded(item)
   WHERE expanded.item->>'number'=identity->>'attempt_number' HAVING count(*)=1
- ) physical ON identity_known AND transport='http' AND identity->>'attempt_number' ~ '^([1-9]|[12][0-9]|3[0-2])$'
+ ) physical ON identity_known AND identity->>'attempt_number' ~ '^([1-9]|[12][0-9]|3[0-2])$'
   AND jsonb_typeof(identity->'attempt_number')='number' AND COALESCE(timing_detail->>'truncated','false')='false'
  LEFT JOIN LATERAL (
   SELECT (array_agg(expanded.item))[1] item FROM jsonb_array_elements(
@@ -78,17 +81,33 @@ var upstreamOperationsRawCache = upstreamOperationsBase + `, cache_traces AS (
     CASE WHEN jsonb_array_length(timing_detail->'latency'->'attempts')<=32 THEN timing_detail->'latency'->'attempts' ELSE '[]'::jsonb END
    ELSE '[]'::jsonb END) AS expanded(item)
   WHERE expanded.item->>'number'=identity->>'attempt_number' HAVING count(*)=1
- ) latency ON timing_detail->'latency'->>'version'='1' AND physical.item->>'kind'='http'
+ ) latency ON transport='http' AND timing_detail->'latency'->>'version'='1' AND physical.item->>'kind'='http'
   AND physical.item->>'account_id'=identity->>'account_id'
   AND physical.item->>'route_fingerprint'=route_fingerprint
   AND physical.item->'upstream_credential'->>'status'='observed'
   AND physical.item->'upstream_credential'->>'source'='http_transport_handoff'
   AND physical.item->'upstream_credential'->>'fingerprint'=credential_fingerprint
+ LEFT JOIN LATERAL (SELECT timing_detail->'latency'->'ws_turn' item) ws_latency
+ ON transport='ws_turn' AND timing_detail->>'ttft_mode'='ws_turn' AND timing_detail->>'status'='0'
+  AND timing_detail->'latency'->>'version'='1'
+  AND timing_detail->'latency'->'ws_turn'->>'source'='physical_ws_turn_generation_start'
+  AND timing_detail->'latency'->'ws_turn'->>'number'='1'
+  AND jsonb_typeof(timing_detail->'latency'->'ws_turn'->'number')='number'
+  AND COALESCE(timing_detail->>'final_response_attempt','0') IN ('0','1')
+  AND CASE jsonb_typeof(timing_detail->'attempts') WHEN 'array' THEN jsonb_array_length(timing_detail->'attempts')=1 ELSE false END
+  AND physical.item->>'kind'='ws_turn' AND physical.item->>'number'='1'
+  AND physical.item->>'status'='0' AND COALESCE(physical.item->>'parent','0')='0'
+  AND physical.item->>'account_id'=identity->>'account_id'
+  AND physical.item->>'route_fingerprint'=route_fingerprint
+  AND physical.item->'upstream_credential'->>'status'='observed'
+  AND physical.item->'upstream_credential'->>'source'='websocket_handshake_credentials'
+  AND physical.item->'upstream_credential'->>'fingerprint'=credential_fingerprint
 ), buckets AS (
  SELECT account_id,credential_fingerprint,route_fingerprint,transport,protocol,
  public_model,upstream_model,service_tier,reasoning_effort,stream,
  'not_observed'::text AS upstream_group_status,` + upstreamRawCacheAggregate + `,
- jsonb_build_object('version',1,'source','canonical_final_physical_http_attempt',
+ jsonb_build_object('version',1,'source',CASE transport WHEN 'ws_turn' THEN 'canonical_physical_ws_turn_generation_start'
+ ELSE 'canonical_final_physical_http_attempt' END,
  'first_byte',` + upstreamWaitAggregate("wait_first_byte") + `,
  'first_event',` + upstreamWaitAggregate("wait_first_event") + `,
  'first_reasoning',` + upstreamWaitAggregate("wait_first_reasoning") + `,

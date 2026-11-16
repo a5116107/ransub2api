@@ -66,6 +66,8 @@ export default {
     "rowCounts": "有效 {observed} / {total} · 缓存读取 {read} / 总输入 {input} Token",
     "waitTitle": "同范围上游等待均值",
     "waitScope": "自请求写完计时，仅取本范围已记用量请求的最终物理HTTP尝试。各阶段样本与覆盖独立；不含前次重试或未记用量失败，不作为全量成功率或调度评分。",
+    "wsWaitScope": "自本轮生成发送尝试开始计时，包含本地写入耗时；仅取本范围已记用量的独立 WebSocket 生成轮次，不含连接握手、排队和前次轮次。各阶段样本、覆盖独立；缺失保持未知。不观测首字节或 SSE 写出，不代表全量成功率或调度评分。",
+    "wsFirstEvent": "首个上游 WebSocket 事件等待",
     "waitSamples": "样本 {samples} · 未知 {unknown} · 覆盖 {coverage}",
     "waitLatest": "最近有效样本：{at}",
     "first_byte": "首字节等待",

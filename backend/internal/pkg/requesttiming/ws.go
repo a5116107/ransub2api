@@ -58,7 +58,10 @@ func (w *WSTurnCapture) Content(data []byte) {
 	}
 	if !Content(w.ctx, data) {
 		Stage(w.ctx, "typed_content_truncated")
+		return
 	}
+	// A parsed upstream frame is not a socket first byte or a downstream flush.
+	Stage(w.ctx, "first_upstream_event")
 }
 
 // DownstreamWrite keeps delivery failures separate from upstream completion.

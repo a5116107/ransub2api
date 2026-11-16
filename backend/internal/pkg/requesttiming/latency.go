@@ -23,7 +23,18 @@ type AttemptLatency struct {
 	Failed             bool        `json:"failed"`
 }
 
+// WSTurnLatency deliberately has no HTTP upload, socket-byte or SSE boundary.
+// Its origin is the independent generation capture just before the send attempt.
+type WSTurnLatency struct {
+	Number         int         `json:"number"`
+	Source         string      `json:"source"`
+	FirstEvent     Measurement `json:"first_event"`
+	FirstReasoning Measurement `json:"first_reasoning"`
+	FirstText      Measurement `json:"first_text"`
+}
+
 type LatencySummary struct {
+	WSTurn                 *WSTurnLatency            `json:"ws_turn,omitempty"`
 	CacheMigration         CacheMigrationObservation `json:"cache_migration"`
 	Version                int                       `json:"version"`
 	Status                 string                    `json:"status"`
@@ -53,11 +64,44 @@ func attemptInterval(a Attempt, start, end string) Measurement {
 	return Measurement{MS: &v, Status: "measured"}
 }
 
-// DeriveLatency uses only physical HTTP attempts, never the request-wide event
-// map or enclosing egress parents. Component sums are not elapsed wall time.
+func deriveWSTurnLatency(s Snapshot) *WSTurnLatency {
+	if s.Version != 1 || s.TTFTMode != "ws_turn" || s.Status != 0 || len(s.Attempts) != 1 ||
+		(s.FinalResponseAttempt != 0 && s.FinalResponseAttempt != 1) {
+		return nil
+	}
+	a := s.Attempts[0]
+	if a.Kind != "ws_turn" || a.Number != 1 || a.Parent != 0 || a.Status != 0 {
+		return nil
+	}
+	read := func(event string) Measurement {
+		if _, gap := a.Events["typed_content_truncated"]; s.Truncated || gap {
+			return Measurement{Status: "incomplete_capture"}
+		}
+		if event != "first_upstream_event" && a.TextStream != nil && (a.TextStream.Invalid || a.TextStream.Truncated) {
+			return Measurement{Status: "invalid_boundary"}
+		}
+		value, ok := a.Events[event]
+		if !ok {
+			return Measurement{Status: "not_collected"}
+		}
+		if !finite(s.TotalMS) || !finite(a.StartMS) || a.StartMS < 0 || !finite(value) || value < a.StartMS ||
+			a.EndMS == nil || !finite(*a.EndMS) || *a.EndMS > s.TotalMS || value > *a.EndMS {
+			return Measurement{Status: "invalid_boundary"}
+		}
+		ms := value - a.StartMS
+		return Measurement{MS: &ms, Status: "measured"}
+	}
+	return &WSTurnLatency{Number: a.Number, Source: "physical_ws_turn_generation_start",
+		FirstEvent: read("first_upstream_event"), FirstReasoning: read("first_reasoning"), FirstText: read("first_visible_text")}
+}
+
+// DeriveLatency keeps HTTP attempts and a physical WS generation independent,
+// never borrowing the request-wide event map or enclosing egress parents.
+// HTTP component sums are not elapsed wall time.
 // It also supports the #599 request_written name and the wrote_request alias.
 func DeriveLatency(s Snapshot) LatencySummary {
 	out := LatencySummary{Version: 1, Status: "measured", Attempts: []AttemptLatency{}, CostStatus: "not_applicable", LargeBody: s.BodyBytes > 1<<20}
+	out.WSTurn = deriveWSTurnLatency(s)
 	var previous *Attempt
 	var upload, wait float64
 	costComplete, overlap := true, false

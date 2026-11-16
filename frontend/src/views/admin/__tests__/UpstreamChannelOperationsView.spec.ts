@@ -54,6 +54,32 @@ describe('upstream raw cache monitoring', () => {
   expect(w.get('[data-testid="upstream-waits"]').text()).toContain('upstreamOps.rawCache.waitScope')
   w.unmount()
  })
+ it('shows WS generation waits without fabricating HTTP first-byte or SSE timing', async () => {
+  const metric=(mean: number|null,samples: number)=>({mean_ms:mean,samples,unknown_samples:4-samples,coverage:samples/4,latest_sample_at:null})
+  const waits={version:1,source:'canonical_physical_ws_turn_generation_start',first_byte:metric(1,4),first_event:metric(0,2),first_reasoning:metric(null,0),first_text:metric(30,3)}
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',transport:'ws_turn',waits}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="upstream-wait-first_byte"]').exists()).toBe(false)
+  expect(w.get('[data-testid="upstream-wait-first_event"]').text()).toContain('0.0 ms')
+  expect(w.get('[data-testid="upstream-wait-first_event"]').text()).toContain('upstreamOps.rawCache.wsFirstEvent')
+  expect(w.get('[data-testid="upstream-wait-first_event"]').text()).toContain('2 2 50.0%')
+  expect(w.get('[data-testid="upstream-wait-first_reasoning"]').text()).toContain('upstreamOps.unknown')
+  expect(w.get('[data-testid="upstream-wait-first_text"]').text()).toContain('30.0 ms')
+  expect(w.get('[data-testid="upstream-waits"]').text()).toContain('upstreamOps.rawCache.wsWaitScope')
+  w.unmount()
+ })
+ it.each([
+  ['http','canonical_physical_ws_turn_generation_start'],
+  ['ws_turn','canonical_final_physical_http_attempt'],
+  ['ws_turn','legacy_ttft'],
+ ])('rejects mismatched transport %s and source %s', async (transport,source) => {
+  const metric={mean_ms:20,samples:1,unknown_samples:0,coverage:1,latest_sample_at:null}
+  const waits={version:1,source,first_byte:metric,first_event:metric,first_reasoning:metric,first_text:metric}
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',transport,waits}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="upstream-waits"]').exists()).toBe(false)
+  w.unmount()
+ })
  it.each(['future','wrong source','negative','no samples','nonfinite'])('keeps %s waits unknown rather than fast or healthy',async state=>{
   const metric={mean_ms:20,samples:1,unknown_samples:0,coverage:1,latest_sample_at:null}
   const waits={version:state==='future'?9:1,source:state==='wrong source'?'legacy_ttft':'canonical_final_physical_http_attempt',first_byte:metric,first_event:metric,first_reasoning:metric,first_text:{...metric,mean_ms:state==='negative'?-1:state==='nonfinite'?Infinity:20,samples:state==='no samples'?0:1}}

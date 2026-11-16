@@ -66,6 +66,8 @@ export default {
     "rowCounts": "{observed} / {total} observed · {read} / {input} input tokens read from cache",
     "waitTitle": "Mean upstream waits in this scope",
     "waitScope": "Measured from request upload completion, using only the final physical HTTP attempt of retained usage records in this scope. Each stage has its own samples and coverage. Earlier retries and unbilled failures are excluded; these are neither a complete success rate nor scheduling scores.",
+    "wsWaitScope": "Measured from this generation's send-attempt capture, including local write time. Only independent WebSocket turns with retained usage in this scope are included, excluding handshake, queueing and prior turns. Each stage has its own samples and coverage; missing values stay unknown. Socket first bytes and SSE delivery are not observed. These are neither complete success rates nor scheduling scores.",
+    "wsFirstEvent": "Wait for first upstream WebSocket event",
     "waitSamples": "Samples {samples} · Unknown {unknown} · Coverage {coverage}",
     "waitLatest": "Latest valid sample: {at}",
     "first_byte": "Wait for first byte",

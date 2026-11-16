@@ -3,6 +3,8 @@
 package repository
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,124 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUpstreamRawWaitsWSGenerationKeepsScopeAndUnknowns(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	repo := newUsageLogRepositoryWithSQL(integrationEntClient, integrationDB)
+	now := time.Now().UTC()
+	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	write := func(model, credential, route string, text float64) *service.UsageLog {
+		log := &service.UsageLog{UserID: f.user, APIKeyID: f.key, AccountID: f.account,
+			Model: "ws-fixture", RequestedModel: model, RequestID: uuid.NewString(), CreatedAt: now, Stream: true}
+		_, err := repo.Create(t.Context(), log)
+		require.NoError(t, err)
+		end := 500.0
+		s := requesttiming.Snapshot{Version: 1, TraceID: uuid.NewString(), TTFTMode: "ws_turn", TotalMS: 600,
+			Terminal: "completed", Outcome: "success", Attempts: []requesttiming.Attempt{
+				{Number: 1, Kind: "ws_turn", AccountID: f.account, EndMS: &end, Terminal: "completed",
+					RouteFingerprint: route, UpstreamCredential: &requesttiming.UpstreamCredentialObservation{Status: "observed", Source: "websocket_handshake_credentials", Fingerprint: credential},
+					CacheUsage: &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 50},
+					Events:     map[string]float64{"first_upstream_event": 20, "first_reasoning": 40, "first_visible_text": text}},
+			}}
+		require.NoError(t, repo.writeTiming(t.Context(), timingWrite{requestID: log.RequestID, apiKeyID: f.key, data: s}))
+		return log
+	}
+	q := service.UpstreamOperationsFilter{From: now.Add(-time.Hour), Until: now.Add(time.Minute), AccountID: f.account,
+		ModelScope: "public", Model: "same-scope", Dimension: "model", Sort: "requests", Direction: "desc", Page: 1, PageSize: 100}
+	write(q.Model, a, b, 100)
+	write(q.Model, a, b, 0)
+	missing := write(q.Model, a, b, 200)
+	_, err := integrationDB.ExecContext(t.Context(), `UPDATE request_timing_details SET detail=detail #- '{latency,ws_turn}' WHERE usage_log_id=$1`, missing.ID)
+	require.NoError(t, err)
+	write(q.Model, strings.Repeat("c", 64), b, 300)
+	write(q.Model, a, strings.Repeat("d", 64), 400)
+	got := readUpstreamCache(t, f, q)
+	require.Equal(t, 5, got.Summary.Requests)
+	require.Len(t, got.Rows, 3)
+	waits := got.Rows[0].Waits
+	require.Equal(t, "ws_turn", got.Rows[0].Transport)
+	require.Equal(t, "canonical_physical_ws_turn_generation_start", waits.Source)
+	require.Equal(t, 0, waits.FirstByte.Samples, "frames do not establish socket first-byte timing")
+	require.Nil(t, waits.FirstByte.MeanMS)
+	require.Equal(t, 2, waits.FirstText.Samples)
+	require.Equal(t, 1, waits.FirstText.Unknown)
+	require.Equal(t, 50.0, *waits.FirstText.MeanMS)
+	require.InDelta(t, 2.0/3.0, *waits.FirstText.Coverage, 1e-12)
+	require.NotNil(t, waits.FirstText.LatestSampleAt)
+	for _, value := range []upstreamWaitMetrics{waits.FirstEvent, waits.FirstReasoning} {
+		require.Equal(t, 2, value.Samples)
+		require.Equal(t, 1, value.Unknown)
+	}
+	httpLog := write(q.Model, a, b, 100)
+	var raw []byte
+	require.NoError(t, integrationDB.QueryRowContext(t.Context(), `SELECT detail FROM request_timing_details WHERE usage_log_id=$1`, httpLog.ID).Scan(&raw))
+	var httpSample requesttiming.Snapshot
+	require.NoError(t, json.Unmarshal(raw, &httpSample))
+	httpSample.TTFTMode, httpSample.Status = "", 200
+	httpSample.Attempts[0].Kind, httpSample.Attempts[0].Status = "http", 200
+	httpSample.Attempts[0].UpstreamCredential.Source = "http_transport_handoff"
+	httpSample.Attempts[0].Events = map[string]float64{"headers_written": 10, "request_written": 20, "first_byte": 25, "first_sse_event_flush": 30, "first_visible_text": 50}
+	require.NoError(t, repo.writeTiming(t.Context(), timingWrite{requestID: httpLog.RequestID, apiKeyID: f.key, data: httpSample}))
+	mixed := readUpstreamCache(t, f, q)
+	require.Equal(t, 6, mixed.Summary.Requests)
+	require.Len(t, mixed.Rows, 4, "HTTP and WS origins remain separate even for the same credential, route and model")
+	for _, row := range mixed.Rows {
+		if row.Transport == "http" {
+			require.Equal(t, "canonical_final_physical_http_attempt", row.Waits.Source)
+			require.Equal(t, 5.0, *row.Waits.FirstByte.MeanMS)
+			require.Equal(t, 30.0, *row.Waits.FirstText.MeanMS)
+		}
+	}
+	for _, tc := range []struct {
+		name, mutation            string
+		eventSamples, textSamples int
+	}{
+		{"missing_ws", `detail #- '{latency,ws_turn}'`, 0, 0},
+		{"future_version", `jsonb_set(detail,'{latency,version}','9')`, 0, 0},
+		{"wrong_origin", `jsonb_set(detail,'{latency,ws_turn,source}','"http_upload"')`, 0, 0},
+		{"no_mode", `detail-'ttft_mode'`, 0, 0},
+		{"http_status", `jsonb_set(detail,'{status}','200')`, 0, 0},
+		{"handshake_status", `jsonb_set(detail,'{attempts,0,status}','101')`, 0, 0},
+		{"wrong_final", `jsonb_set(detail,'{final_response_attempt}','2')`, 0, 0},
+		{"wrong_number", `jsonb_set(detail,'{latency,ws_turn,number}','2')`, 0, 0},
+		{"string_number", `jsonb_set(detail,'{latency,ws_turn,number}','"1"')`, 0, 0},
+		{"missing_number", `detail #- '{raw_upstream,attempt_number}'`, 0, 0},
+		{"different_route", `jsonb_set(detail,'{attempts,0,route_fingerprint}',to_jsonb(repeat('e',64)))`, 0, 0},
+		{"different_key", `jsonb_set(detail,'{attempts,0,upstream_credential,fingerprint}',to_jsonb(repeat('e',64)))`, 0, 0},
+		{"different_account", `jsonb_set(detail,'{attempts,0,account_id}','0')`, 0, 0},
+		{"wrong_kind", `jsonb_set(detail,'{attempts,0,kind}','"http"')`, 0, 0},
+		{"cross_transport", `jsonb_set(jsonb_set(jsonb_set(detail,'{attempts,0,kind}','"http"'),'{attempts,0,upstream_credential,source}','"http_transport_handoff"'),'{latency,attempts}','[{"number":1,"post_upload_first_byte_wait":{"status":"measured","ms":5}}]')`, 0, 0},
+		{"wrong_source", `jsonb_set(detail,'{attempts,0,upstream_credential,source}','"http_transport_handoff"')`, 0, 0},
+		{"wrong_parent", `jsonb_set(detail,'{attempts,0,parent}','1')`, 0, 0},
+		{"two_turns", `jsonb_set(detail,'{attempts}',(detail->'attempts')||(detail->'attempts'))`, 0, 0},
+		{"truncated_trace", `jsonb_set(detail,'{truncated}','true')`, 0, 0},
+		{"lost_event", `jsonb_set(detail,'{attempts,0,events,typed_content_truncated}','40')`, 0, 0},
+		{"negative_text", `jsonb_set(detail,'{latency,ws_turn,first_text,ms}','-1')`, 1, 0},
+		{"string_text", `jsonb_set(detail,'{latency,ws_turn,first_text,ms}','"10"')`, 1, 0},
+		{"after_request", `jsonb_set(detail,'{latency,ws_turn,first_text,ms}','601')`, 1, 0},
+		{"invalid_text", `jsonb_set(detail,'{latency,ws_turn,first_text,status}','"invalid_boundary"')`, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			filter := q
+			filter.Model = fmt.Sprintf("ws-%s", tc.name)
+			log := write(filter.Model, a, b, 100)
+			_, err := integrationDB.ExecContext(t.Context(), `UPDATE request_timing_details SET detail=`+tc.mutation+` WHERE usage_log_id=$1`, log.ID)
+			require.NoError(t, err)
+			var before, after string
+			require.NoError(t, integrationDB.QueryRowContext(t.Context(), `SELECT detail::text FROM request_timing_details WHERE usage_log_id=$1`, log.ID).Scan(&before))
+			result := readUpstreamCache(t, f, filter)
+			require.Len(t, result.Rows, 1)
+			require.Equal(t, 1, result.Summary.ObservedRequests, "missing waits never erases independent canonical cache counts")
+			require.Equal(t, tc.eventSamples, result.Rows[0].Waits.FirstEvent.Samples)
+			require.Equal(t, tc.textSamples, result.Rows[0].Waits.FirstText.Samples)
+			require.Zero(t, result.Rows[0].Waits.FirstByte.Samples, "WS never borrows HTTP latency even from contradictory stored projections")
+			require.Nil(t, result.Rows[0].Waits.FirstByte.MeanMS)
+			require.Nil(t, result.Rows[0].Waits.FirstText.MeanMS)
+			require.NoError(t, integrationDB.QueryRowContext(t.Context(), `SELECT detail::text FROM request_timing_details WHERE usage_log_id=$1`, log.ID).Scan(&after))
+			require.Equal(t, before, after, "aggregates cannot backfill historical evidence")
+		})
+	}
+}
 
 type upstreamWaitMetrics struct {
 	Samples        int

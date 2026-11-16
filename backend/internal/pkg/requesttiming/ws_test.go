@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,117 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestWSTurnWaitsUseGenerationStartWithoutHTTPBoundaries(t *testing.T) {
+	for turn := range 3 {
+		w := NewWSTurn(time.Now().Add(time.Duration(turn)*time.Hour), 17, 3, [32]byte{1})
+		now := w.start
+		w.now = func() time.Time { return now }
+		for _, event := range []struct {
+			ms  int
+			raw string
+		}{
+			{0, `{"type":"ping"}`},
+			{turn * 10, `{"type":"response.created"}`},
+			{20, `{"type":"response.reasoning_summary_text.delta","delta":"private-thought"}`},
+			{30, `{"type":"response.output_text.delta","delta":"private-answer"}`},
+			{40, `{"type":"response.completed"}`},
+		} {
+			now = w.start.Add(time.Duration(event.ms) * time.Millisecond)
+			w.Content([]byte(event.raw))
+		}
+		now = w.start.Add(50 * time.Millisecond)
+		w.Finish(nil, false, false)
+		w.WhenFinished(func(s Snapshot) {
+			raw, err := json.Marshal(s.Latency)
+			require.NoError(t, err)
+			var latency struct {
+				WSTurn *struct {
+					Number         int
+					Source         string
+					FirstEvent     Measurement `json:"first_event"`
+					FirstReasoning Measurement `json:"first_reasoning"`
+					FirstText      Measurement `json:"first_text"`
+				} `json:"ws_turn"`
+			}
+			require.NoError(t, json.Unmarshal(raw, &latency))
+			require.NotNil(t, latency.WSTurn, "a generation has its own scope, not a socket or HTTP attempt")
+			require.Equal(t, 1, latency.WSTurn.Number)
+			require.Equal(t, "physical_ws_turn_generation_start", latency.WSTurn.Source)
+			for _, want := range []struct {
+				value Measurement
+				ms    float64
+			}{{latency.WSTurn.FirstEvent, float64(turn * 10)}, {latency.WSTurn.FirstReasoning, 20}, {latency.WSTurn.FirstText, 30}} {
+				require.Equal(t, "measured", want.value.Status)
+				require.NotNil(t, want.value.MS)
+				require.Equal(t, want.ms, *want.value.MS)
+			}
+			require.Equal(t, "not_collected", s.Latency.Status, "HTTP upload/first byte remain unobserved")
+			require.Empty(t, s.Latency.Attempts)
+			require.NotContains(t, string(raw), "private-")
+		})
+	}
+}
+
+func TestWSTurnWaitsValidatePhysicalGenerationAndBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Snapshot)
+		absent bool
+		status string
+	}{
+		{"measured_zero", func(s *Snapshot) { s.Attempts[0].Events["first_visible_text"] = 0 }, false, "measured"},
+		{"missing_text", func(s *Snapshot) { delete(s.Attempts[0].Events, "first_visible_text") }, false, "not_collected"},
+		{"missing_end", func(s *Snapshot) { s.Attempts[0].EndMS = nil }, false, "invalid_boundary"},
+		{"before_start", func(s *Snapshot) { s.Attempts[0].StartMS = 31 }, false, "invalid_boundary"},
+		{"after_end", func(s *Snapshot) { s.Attempts[0].Events["first_visible_text"] = 51 }, false, "invalid_boundary"},
+		{"after_request", func(s *Snapshot) { s.TotalMS = 20 }, false, "invalid_boundary"},
+		{"nonfinite_total", func(s *Snapshot) { s.TotalMS = math.Inf(1) }, false, "invalid_boundary"},
+		{"nonfinite_event", func(s *Snapshot) { s.Attempts[0].Events["first_visible_text"] = math.NaN() }, false, "invalid_boundary"},
+		{"nonfinite_start", func(s *Snapshot) { s.Attempts[0].StartMS = math.Inf(-1) }, false, "invalid_boundary"},
+		{"nonfinite_end", func(s *Snapshot) { end := math.NaN(); s.Attempts[0].EndMS = &end }, false, "invalid_boundary"},
+		{"failed_after_text", func(s *Snapshot) { s.Outcome, s.Attempts[0].Terminal = "failed", "failed" }, false, "measured"},
+		{"canceled_after_text", func(s *Snapshot) { s.Canceled = true }, false, "measured"},
+		{"truncated", func(s *Snapshot) { s.Truncated = true }, false, "incomplete_capture"},
+		{"lost_event", func(s *Snapshot) { s.Attempts[0].Events["typed_content_truncated"] = 35 }, false, "incomplete_capture"},
+		{"invalid_content", func(s *Snapshot) { s.Attempts[0].TextStream = &TextStreamTiming{Invalid: true} }, false, "invalid_boundary"},
+		{"unknown_trace", func(s *Snapshot) { s.Version = 9 }, true, ""},
+		{"http_mode", func(s *Snapshot) { s.TTFTMode = "" }, true, ""},
+		{"http_status", func(s *Snapshot) { s.Status = 200 }, true, ""},
+		{"handshake_status", func(s *Snapshot) { s.Attempts[0].Status = 101 }, true, ""},
+		{"http_attempt", func(s *Snapshot) { s.Attempts[0].Kind = "http" }, true, ""},
+		{"two_generations", func(s *Snapshot) { s.Attempts = append(s.Attempts, s.Attempts[0]) }, true, ""},
+		{"child_attempt", func(s *Snapshot) { s.Attempts[0].Parent = 1 }, true, ""},
+		{"wrong_number", func(s *Snapshot) { s.Attempts[0].Number = 2 }, true, ""},
+		{"wrong_final", func(s *Snapshot) { s.FinalResponseAttempt = 2 }, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			end := 50.0
+			s := Snapshot{Version: 1, TTFTMode: "ws_turn", TotalMS: 60, Attempts: []Attempt{{Number: 1, Kind: "ws_turn", EndMS: &end,
+				Events: map[string]float64{"first_upstream_event": 10, "first_reasoning": 20, "first_visible_text": 30}}}}
+			tc.change(&s)
+			latency := DeriveLatency(s)
+			// Marshal only finite measurements, including when the source is invalid.
+			raw, err := json.Marshal(latency)
+			require.NoError(t, err)
+			var envelope struct {
+				WSTurn *struct {
+					FirstText Measurement `json:"first_text"`
+				} `json:"ws_turn"`
+			}
+			require.NoError(t, json.Unmarshal(raw, &envelope))
+			if tc.absent {
+				require.Nil(t, envelope.WSTurn)
+				return
+			}
+			require.NotNil(t, envelope.WSTurn)
+			require.Equal(t, tc.status, envelope.WSTurn.FirstText.Status)
+			if tc.status != "measured" {
+				require.Nil(t, envelope.WSTurn.FirstText.MS, "unknown is not zero or evidence of success")
+			}
+		})
+	}
+}
 
 func TestWSTurnTimingIndependentGenerationAndTypedContent(t *testing.T) {
 	start := time.Now()
