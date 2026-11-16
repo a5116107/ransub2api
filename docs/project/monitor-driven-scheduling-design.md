@@ -1815,7 +1815,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
-| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.5已接最终Key/线路/模型/协议/档位原始缓存、HTTP四阶段/独立WS三阶段等待及留存物理失败观测；实际组、逐模型/来源同scope完整失败分母与资格消费仍缺。D5.3继续开放；历史配置不得反推请求时身份 |
+| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.7已接最终Key/线路原始缓存、逐尝试发送模型/协议/档位及全部留存尝试的HTTP四阶段/独立WS三阶段等待；失败、中断和未知均保留覆盖分母。实际组、业务/合成来源、完整缓存及资格消费仍缺。D5.3继续开放；不以当前配置补历史身份 |
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
@@ -1909,6 +1909,16 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 - 原面板显示“已观测发送元数据·不等于模型验真”和未知状态、模型及档位/effort；实际上游组、业务/合成来源和完整能力仍未确认。管理员观测与下游本人缓存面板保持隔离；本人/观察员timing同时剥离逐attempt元数据及管理投影，存储不变。30天/下闭上开/去重/分页/局部查询故障及权限恢复沿原合同。
 - 验收为真实HTTP/TLS双模型失败记录、HTTP→PostgreSQL→原管理API、原生WS逐轮实际网络载荷对照、完整/不完整/超限/重复/晚到/并发Read/Close及权限、SQL未知与模型筛选、原UI中英/手机/恢复/键盘和兼容回归；运行结果记录于STATE/DECISIONS。回退旧应用忽略可选JSON字段，无schema回退；旧二进制的上游模型筛选能力仍按旧合同，不承诺新功能在旧版本可用。
 - 本地子验收已通过：六包双轮race 304条test pass、真实PG双轮266条test pass，均0fail/skip；六包vet、增量fast lint与Linux编译退出0。前端29项及中英390/1440px原面板检查通过；这些计数含子例/重复轮次，不是独立场景数。实际组/业务来源、同scope全部失败的等待/缓存及生产加载继续归原D5.3/D9验收，原28项分母保持。
+
+#### D5.3.7 全部留存物理尝试的同scope等待
+
+沿D5.3.5/.6同一物理attempt查询和管理面板，复用原计时语义及等待统计，不新建路由、表或调度评分。已完成、失败、中断及结果未知的留存尝试都进入各阶段覆盖分母，未等到首字节或内容不显示为零；没有样本的均值为null。
+
+- 仅当逐尝试发送scope、凭据及线路已知，原attempt与投影的唯一编号、账号、来源、线路和发送元数据一致，才匹配对应版本的latency；不借最终成功用量或相邻重试。HTTP自请求写完计时，独立WS自本轮生成发送尝试开始计时，包含本地写入；两者按传输分桶，不合并成同一起点的均值。WS没有HTTP首字节指标。
+- 原始/latency重复或超限、旧模型未采集、未来版本、截断、边界倒置/越界/非数值保持未知。保留明确零、阶段独立样本/覆盖/新鲜度，以及失败前已观测到的等待；查询不改历史JSON，原始缓存和下游计费统计独立。
+- 原等待展示提取成有两个真实调用点的共享组件，原最终用量缓存面板保持其原含义，全部尝试使用独立来源和说明。管理员权限、30天留存、窗口/分页/模型筛选及局部查询失败恢复沿原合同。
+- 验收：真实PG覆盖失败→换号成功、独立无账单超时、WS失败及模型/线路隔离；真实HTTP→PG→管理API检查等待，旧/重复/未知/0/截断边界和只读性；原UI中英390/1440px、键盘/错误/空/恢复及回归。仅本地观测，不作为严格供应池放行或生产加载证明；回退旧应用忽略新增返回字段，无schema回退。
+- 本地子验收已通过：真实PG双轮race350条test pass、0fail/skip，含1000留存失败/100凭据桶/20行分页约129–137ms；原页面34项与i18n3项通过，ESLint/类型/构建及中英390/1440px、键盘/未知/故障恢复通过。旧查询对照在同一正向夹具明确失败。计数含父子和双轮，不是350个独立场景；D5父验收与原28项分母不变。
 
 D5.2、D6.1、D7.1/D7.2、D3.1及D2.1–D2.5/D4.1/D4.2的已验子范围继续保留；不存在“把旧任务换名字重新做”的要求。13.3新ID只是原父验收的缺口定位，不能凭新增子任务完成数提高原28项完成率。
 

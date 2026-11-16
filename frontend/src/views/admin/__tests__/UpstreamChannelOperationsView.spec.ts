@@ -43,7 +43,7 @@ describe('upstream raw cache monitoring', () => {
  it('shows per-scope phase means, independent coverage and a measured zero without using legacy TTFT', async () => {
   const metric=(mean: number|null,samples: number)=>({mean_ms:mean,samples,unknown_samples:4-samples,coverage:samples/4,latest_sample_at:null})
   const waits={version:1,source:'canonical_final_physical_http_attempt',first_byte:metric(20,4),first_event:metric(30,3),first_reasoning:metric(null,0),first_text:metric(0,2)}
-  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',waits}]}}} as unknown as OperationsSnapshot)
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',transport:'http',waits}]}}} as unknown as OperationsSnapshot)
   const w=mount(UpstreamChannelOperationsView);await flushPromises()
   expect(w.get('[data-testid="upstream-wait-first_byte"]').text()).toContain('20.0 ms')
   expect(w.get('[data-testid="upstream-wait-first_byte"]').text()).toContain('upstreamOps.rawCache.waitObserved')
@@ -83,7 +83,7 @@ describe('upstream raw cache monitoring', () => {
  it.each(['future','wrong source','negative','no samples','nonfinite'])('keeps %s waits unknown rather than fast or healthy',async state=>{
   const metric={mean_ms:20,samples:1,unknown_samples:0,coverage:1,latest_sample_at:null}
   const waits={version:state==='future'?9:1,source:state==='wrong source'?'legacy_ttft':'canonical_final_physical_http_attempt',first_byte:metric,first_event:metric,first_reasoning:metric,first_text:{...metric,mean_ms:state==='negative'?-1:state==='nonfinite'?Infinity:20,samples:state==='no samples'?0:1}}
-  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',waits}]}}} as unknown as OperationsSnapshot)
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',transport:'http',waits}]}}} as unknown as OperationsSnapshot)
   const w=mount(UpstreamChannelOperationsView);await flushPromises()
   if(state==='future'||state==='wrong source') expect(w.find('[data-testid="upstream-waits"]').exists()).toBe(false)
   else expect(w.get('[data-testid="upstream-wait-first_text"]').text()).toContain('upstreamOps.unknown')
@@ -173,6 +173,44 @@ describe('all retained upstream attempts', () => {
   const w=mount(UpstreamChannelOperationsView);await flushPromises()
   expect(w.find('[data-testid="attempt-request-scope"]').exists()).toBe(false)
   expect(w.text()).not.toContain('unverified-wire-model')
+  w.unmount()
+ })
+ it('shows all-attempt HTTP waits with measured zero and independent unknown stages',async()=>{
+  const known={samples:1,unknown_samples:6,mean_ms:0,coverage:1/7,latest_sample_at:'2026-11-16T12:00:00Z'}
+  const unknown={samples:0,unknown_samples:7,mean_ms:null,coverage:0,latest_sample_at:null}
+  const row={...data.rows[0],waits:{version:1,source:'canonical_physical_http_attempt',first_byte:known,first_event:known,first_reasoning:unknown,first_text:unknown}}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="upstream-attempt-waits"]').text()).toContain('upstreamOps.attempts.waitScope')
+  expect(w.get('[data-testid="upstream-attempt-wait-first_byte"]').text()).toContain('0.0 ms')
+  expect(w.get('[data-testid="upstream-attempt-wait-first_byte"]').text()).toContain('upstreamOps.rawCache.partial')
+  expect(w.get('[data-testid="upstream-attempt-wait-first_text"]').text()).toContain('upstreamOps.unknown')
+  expect(w.get('[data-testid="upstream-attempt-wait-first_text"]').text()).not.toContain('0.0 ms')
+  w.unmount()
+ })
+ it('keeps WS generation waits separate and excludes HTTP first-byte evidence',async()=>{
+  const known={samples:1,unknown_samples:0,mean_ms:40,coverage:1,latest_sample_at:'2026-11-16T12:00:00Z'}
+  const row={...data.rows[0],transport:'ws_turn',waits:{version:1,source:'canonical_physical_ws_turn_generation_start',first_byte:known,first_event:known,first_reasoning:known,first_text:known}}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="upstream-attempt-waits"]').text()).toContain('upstreamOps.attempts.wsWaitScope')
+  expect(w.get('[data-testid="upstream-attempt-wait-first_event"]').text()).toContain('upstreamOps.rawCache.wsFirstEvent')
+  expect(w.find('[data-testid="upstream-attempt-wait-first_byte"]').exists()).toBe(false)
+  w.unmount()
+ })
+ it.each([{version:9,source:'canonical_physical_http_attempt'},{version:1,source:'canonical_final_physical_http_attempt'},{version:1,source:'future_source'}])('rejects unsupported attempt wait evidence %j',async waits=>{
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[{...data.rows[0],waits}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="upstream-attempt-waits"]').exists()).toBe(false)
+  w.unmount()
+ })
+ it.each([undefined,null,'unknown_transport'])('keeps missing or unsupported transport %s unknown',async transport=>{
+  const metric={samples:1,unknown_samples:0,mean_ms:0,coverage:1,latest_sample_at:null}
+  const waits={version:1,source:'canonical_physical_http_attempt',first_byte:metric,first_event:metric,first_reasoning:metric,first_text:metric}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[{...data.rows[0],transport,waits}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="upstream-attempt-waits"]').exists()).toBe(false)
+  expect(w.find('[data-testid="upstream-attempt-row"]').exists()).toBe(true)
   w.unmount()
  })
 })

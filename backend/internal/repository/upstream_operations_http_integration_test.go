@@ -213,6 +213,20 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 						Attempts, Failed, Succeeded int
 						LogicalRequests             int `json:"logical_requests"`
 					}
+					Rows []struct {
+						Waits struct {
+							Version   int
+							Source    string
+							FirstByte struct {
+								Samples int
+								MeanMS  *float64 `json:"mean_ms"`
+							} `json:"first_byte"`
+							FirstText struct {
+								Samples int
+								Unknown int `json:"unknown_samples"`
+							} `json:"first_text"`
+						}
+					}
 				}
 			}
 		}
@@ -242,6 +256,15 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 		require.Contains(t, filtered.Body.String(), `"service_tier":"priority"`)
 		require.Contains(t, filtered.Body.String(), `"reasoning_effort":"high"`)
 		require.Contains(t, filtered.Body.String(), `"unknown_attempts":0`)
+		require.Len(t, body.Data.Attempts.Data.Rows, 1)
+		waits := body.Data.Attempts.Data.Rows[0].Waits
+		require.Equal(t, 1, waits.Version)
+		require.Equal(t, "canonical_physical_http_attempt", waits.Source)
+		require.Equal(t, 1, waits.FirstByte.Samples, "both the failed and recovered physical request retain their own byte wait")
+		require.NotNil(t, waits.FirstByte.MeanMS)
+		require.GreaterOrEqual(t, *waits.FirstByte.MeanMS, 0.0)
+		require.Zero(t, waits.FirstText.Samples)
+		require.Equal(t, 1, waits.FirstText.Unknown)
 	}
 	var billed int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM usage_logs WHERE account_id=$1`, account).Scan(&billed))

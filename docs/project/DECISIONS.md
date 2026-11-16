@@ -2959,3 +2959,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 证据复用`H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/scope-*`，`scope-source-inputs.json`绑定27项源码/依赖LF摘要且drift0，最终命令及退出在`scope-final-checks.json`和`scope-sql-check.json`。正式源码无新增待办或临时垫片，未增加迁移、表、调度器或平行统计路由。旧应用可忽略可选JSON字段；回退不清数据，不承诺旧版具备新模型筛选能力。
 - 本轮本地PG fast停止0、Redis shutdown nosave停止0、原预览node按身份停止，18441/18442/55441/56441无监听。首次Redis关闭使用了错误的假定CLI目录，命令未执行；随后按正在运行的redis-server真实目录找到CLI并成功关闭，`scope-resources.json`保留这次更正，不将初次继承的LASTEXITCODE=0当作关闭证明。历史12PNG/1164bytes与既有拒删scratch保持原路径，不换工具重试；共享缓存和可复用隔离数据不清除，不触及其他任务。
 - D5.3.6仅本地子验收done；发送元数据不证明模型验真、实际上游组、供应商价格、缓存域或完整能力。D5.3同scope全部失败的等待/原始缓存及业务/合成来源继续开放；全局仍原28项20done/8部分。统一设计和STATE原位更新，自有功能分支按既有授权提交同步，不运行CI、不新增PR/发行/整分支部署，生产本轮未改。
+
+
+## 2026-11-16：D5.3.7全部留存物理尝试的同scope等待与原面板
+
+- 原位扩展`upstreamOperationsAttempts`，不新建表、迁移、路由或调度评分。仅在物理attempt和投影的唯一编号、账号、实际凭据/线路摘要及已观测发送scope一致时连接原latency；按原Key/线路/模型/协议/档位/effort/传输分桶。全部留存成功、失败、中断和未知尝试均参与各阶段覆盖分母，不借最终用量或相邻重试；未知/超时前未到达不显示零。HTTP从写完请求计时，独立WS从本轮生成发送尝试计时；WS不产生HTTP首字节。
+- 版本、来源、类型、唯一性、最多32项、原始/latency重复、截断、负值/越界/无采集及只读性均有真实PG断言；明确零与未知分开。实际供应商分组、业务/合成来源及完整缓存仍未闭环，不将局部同scope等待当严格产品准入或全站完整成功率。
+- 最终真实PG命令：`go test -json -tags unit,integration -race -p 1 -overlay H:/Root/DevCache/tmp/sub2api-upstream-raw-cache/overlay.json ./internal/repository -run '^(TestUpstreamAttempts|TestUpstreamRawCache|TestConnections|TestConnectionTrace|TestLatencyCache|TestLatencyOutputRate|TestTiming|TestIssue605|TestUpstreamOperationsHTTP)' -count=2 -timeout=6m`，退出0；350条test pass、0fail/skip，包15.318秒。计数含父子和双轮，不是350个独立场景。覆盖失败→换号成功、无账单超时/WS失败、中断/结果未知、HTTP真实传输→PG→原管理员API、原始缓存及故障恢复。沿既有native harness overlay，本地PG17/Redis5，不外推生产或其他版本。
+- 新增1000留存失败/100凭据范围/20行分页，真实两轮137.1918ms及129.3904ms；原10000已记用量/100范围查询1.3094069s及1.4697226s，均在原服务25s预算内。旧查询通过只替换查询文件的overlay，对同一正向夹具真实退出1（等待版本期望1/实际0）；当前查询同夹具通过。初轮夹具漏latency、SQL造数作用域/必填列及一次修正的工作目录错误均已纠正，旧失败日志保留，不当作产品根因或有效全绿。
+- `UpstreamWaitMetrics`只有原缓存和全部尝试两处真实调用，替换原`waitRows`及重复模板；来源/版本/传输不符不渲染等待，WS排除HTTP首字节。原缓存与下游本人统计含义保持，未新增用户侧入口。`pnpm exec vitest run src/views/admin/__tests__/UpstreamChannelOperationsView.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts`为37/37；六文件ESLint退出0，`pnpm run build`内含i18n/vue-tsc/Vite退出0，既有500kB分包提示保留。
+- 构建页Chromium中英390/1440px、两传输与最终缓存来源独立、阶段样本/覆盖、零/未知、空/错误/未来版本/错误来源、恢复、模型筛选及键盘分页均通过；console/pageerror/失败请求0，目视核对手机图。浏览器API为夹具，真实HTTP/PG另有分层证明。首次浏览器fixture在语言切换重载时重写中文，修正为仅首次初始化后通过，不改产品i18n。
+- repository的`go vet -tags unit,integration -p 1`退出0；最后容量夹具改动后复跑vet退出0（33.671秒）。项目Go1.27.4执行缓存的golangci-lint/v2@v2.9.0，fast-only/allow-parallel-runners/concurrency1/build-tags unit,integration/new-from-rev=6d8380dca；生产Go源的Linux amd64/CGO0 `go build -p 1 ./internal/repository`退出0（213.109秒）。最后容量夹具SQL修改后增量lint再跑退出0（87.291秒、`0 issues.`）。最终静态结果绑定`physical-waits-*`证据；不是全仓全规则lint或完整生产验收。
+- 证据沿`H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/physical-waits-*`，源码/锁文件LF摘要绑定13项。本轮PG fast与Redis nosave停止均0、预览按身份停止，三个任务端口最终监听0；旧查询overlay/副本和本轮浏览器脚本已移除。首次停止后的瞬时监听1已另查消失，再更新最终资源记录；共享缓存/隔离数据保留复用。历史12PNG/1164bytes及既有宿主拒删资源不重试、不隐藏，不将其混入提交。
+- D5.3.7仅本地子验收done；父D5/原28项20done、8部分不变。更新原设计和STATE，自有功能分支提交同步，继续单完整功能PR边界；不运行CI、不新增PR或发行、不提升整分支生产。旧应用忽略新增JSON返回字段，无schema回退；生产本轮未改，实际组/来源、完整缓存、质量向量/预算、旧失败会话和供应商真实证据仍沿原验收。

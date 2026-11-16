@@ -75,7 +75,9 @@ export default {
       "physicalScopeUnknown": "The sent model, service tier or effort is unobserved. Historical, incomplete or oversized requests are not backfilled.",
       "requestMetadataObserved": "Sent metadata observed · Not model verification",
       "requestScopeCoverage": "Sent metadata observed {observed} / {total} · Unknown {unknown} · Coverage {coverage}. Coverage uses the selected account/ingress cohort; upstream-model filters do not assign unknown attempts to that model.",
-      "supplierScopeUnknown": "Actual supplier group, business/synthetic source and full capability scope remain unconfirmed; this is not strict product admission evidence."
+      "supplierScopeUnknown": "Actual supplier group, business/synthetic source and full capability scope remain unconfirmed; this is not strict product admission evidence.",
+      "waitScope": "Measured from this request's completed upload across retained failed, interrupted and successful attempts in this scope. Stage samples and unknown counts are independent; timing out before a byte or text arrives is not zero wait. Never borrowed from the final successful route or another retry. Capture can be incomplete; not a complete site success rate or scheduler score.",
+      "wsWaitScope": "Measured from this generation send attempt, including local writes and retained failed, interrupted and successful turns in this scope. Stage coverage is independent; excludes handshakes and other turns. No HTTP first-byte evidence or mixed HTTP average; not a scheduler score."
   },
   "rawCache": {
     "title": "Upstream raw cache reports",

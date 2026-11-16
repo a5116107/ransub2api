@@ -13,13 +13,14 @@ export interface UpstreamRawCacheRow extends UpstreamRawCacheMetrics {
  account_id: number; credential_fingerprint: string | null; route_fingerprint: string | null
  public_model: string; upstream_model: string | null; service_tier: string | null; reasoning_effort: string | null
  protocol: string | null; transport: string | null; stream: boolean; upstream_group_status: 'not_observed'
- waits?: {
-  version: number; source: string
-  first_byte: UpstreamWaitMetric; first_event: UpstreamWaitMetric
-  first_reasoning: UpstreamWaitMetric; first_text: UpstreamWaitMetric
- }
+ waits?: UpstreamWaitSet
 }
 export interface UpstreamWaitMetric { samples: number; unknown_samples: number; mean_ms: number | null; coverage: number | null; latest_sample_at: string | null }
+export interface UpstreamWaitSet {
+ version: number; source: string
+ first_byte: UpstreamWaitMetric; first_event: UpstreamWaitMetric
+ first_reasoning: UpstreamWaitMetric; first_text: UpstreamWaitMetric
+}
 export interface UpstreamRawCache {
  source: string; scope: string; retention_days: number; summary: UpstreamRawCacheMetrics
  total: number; rows: UpstreamRawCacheRow[]
@@ -35,6 +36,7 @@ export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  upstream_model_status: 'observed' | 'not_observed'; upstream_group_status: 'not_observed'
  upstream_model?: string | null; upstream_protocol?: string | null; service_tier?: string | null
  reasoning_effort?: string | null; upstream_stream?: boolean | null
+ waits?: UpstreamWaitSet
 }
 export interface UpstreamAttempts {
  version: number; source: string; scope: string; retention_days: number

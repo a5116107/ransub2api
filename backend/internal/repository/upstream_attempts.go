@@ -15,7 +15,7 @@ const upstreamAttemptsAggregate = `count(*) AS attempts,
  count(*)::numeric/NULLIF(count(DISTINCT trace_id),0) AS attempts_per_request,
  max(started_at) AS latest_sample_at`
 
-const upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retained AS (
+var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retained AS (
  SELECT trace_id,started_at,account_id,group_id,model AS public_model,stream,detail
  FROM request_connection_traces
  WHERE source='application' AND started_at >= $1 AND started_at < $2
@@ -69,8 +69,61 @@ const upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retai
  AND item->'upstream_request'->>'reasoning_effort' IN ('unspecified','none','minimal','low','medium','high','xhigh','max')
  AND jsonb_typeof(item->'upstream_request'->'stream')='boolean',false) request_scope_known
  FROM identities
+), wait_candidates AS (
+ SELECT s.*,s.started_at AS created_at,s.detail AS timing_detail,
+ physical.item AS raw_attempt,latency.item AS http_wait,ws_latency.item AS ws_wait
+ FROM selected s
+ LEFT JOIN LATERAL (
+  SELECT (array_agg(expanded.item))[1] item FROM jsonb_array_elements(
+   CASE jsonb_typeof(s.detail->'attempts') WHEN 'array' THEN
+    CASE WHEN jsonb_array_length(s.detail->'attempts')<=32 THEN s.detail->'attempts' ELSE '[]'::jsonb END
+   ELSE '[]'::jsonb END) AS expanded(item)
+  WHERE expanded.item->>'number'=s.item->>'number' HAVING count(*)=1
+ ) physical ON s.identity_known AND s.request_scope_known
+  AND (NOT s.detail ? 'truncated' OR s.detail->'truncated'='false'::jsonb)
+  AND jsonb_typeof(physical.item->'number')='number'
+  AND jsonb_typeof(physical.item->'account_id')='number'
+  AND physical.item->>'kind'=s.item->>'transport'
+  AND physical.item->>'account_id'=s.item->>'account_id'
+  AND physical.item->>'route_fingerprint'=s.item->>'route_fingerprint'
+  AND physical.item->'upstream_credential'->>'status'='observed'
+  AND physical.item->'upstream_credential'->>'source'=CASE s.item->>'transport'
+   WHEN 'http' THEN 'http_transport_handoff' ELSE 'websocket_handshake_credentials' END
+  AND physical.item->'upstream_credential'->>'fingerprint'=s.item->>'credential_fingerprint'
+  AND physical.item->'upstream_request'=s.request_scope
+ LEFT JOIN LATERAL (
+  SELECT (array_agg(expanded.item))[1] item FROM jsonb_array_elements(
+   CASE jsonb_typeof(s.detail->'latency'->'attempts') WHEN 'array' THEN
+    CASE WHEN jsonb_array_length(s.detail->'latency'->'attempts')<=32 THEN s.detail->'latency'->'attempts' ELSE '[]'::jsonb END
+   ELSE '[]'::jsonb END) AS expanded(item)
+  WHERE expanded.item->>'number'=s.item->>'number' HAVING count(*)=1
+ ) latency ON s.item->>'transport'='http' AND physical.item IS NOT NULL
+  AND s.detail->'latency'->'version'='1'::jsonb AND jsonb_typeof(latency.item->'number')='number'
+ LEFT JOIN LATERAL (SELECT s.detail->'latency'->'ws_turn' item) ws_latency
+ ON s.item->>'transport'='ws_turn' AND physical.item IS NOT NULL
+  AND s.detail->>'ttft_mode'='ws_turn' AND s.detail->'status'='0'::jsonb
+  AND s.detail->'latency'->'version'='1'::jsonb
+  AND ws_latency.item->>'source'='physical_ws_turn_generation_start'
+  AND ws_latency.item->'number'='1'::jsonb
+  AND COALESCE(s.detail->>'final_response_attempt','0') IN ('0','1')
+  AND CASE jsonb_typeof(s.detail->'attempts') WHEN 'array' THEN jsonb_array_length(s.detail->'attempts')=1 ELSE false END
+  AND physical.item->'number'='1'::jsonb AND physical.item->'status'='0'::jsonb
+  AND COALESCE(physical.item->>'parent','0')='0'
+), wait_samples AS (
+ SELECT *,` + upstreamWaitValue("http_wait", "post_upload_first_byte_wait") + ` AS wait_first_byte,
+ CASE WHEN NOT COALESCE(raw_attempt->'events' ? 'typed_content_truncated',false) THEN
+  CASE item->>'transport' WHEN 'ws_turn' THEN ` + upstreamWaitValue("ws_wait", "first_event") + `
+  ELSE ` + upstreamWaitValue("http_wait", "post_upload_first_event_wait") + ` END END AS wait_first_event,
+ CASE WHEN NOT COALESCE(raw_attempt->'events' ? 'typed_content_truncated',false) THEN
+  CASE item->>'transport' WHEN 'ws_turn' THEN ` + upstreamWaitValue("ws_wait", "first_reasoning") + `
+  ELSE ` + upstreamWaitValue("http_wait", "post_upload_first_reasoning_wait") + ` END END AS wait_first_reasoning,
+ CASE WHEN NOT COALESCE(raw_attempt->'events' ? 'typed_content_truncated',false) THEN
+  CASE item->>'transport' WHEN 'ws_turn' THEN ` + upstreamWaitValue("ws_wait", "first_text") + `
+  ELSE ` + upstreamWaitValue("http_wait", "post_upload_first_text_wait") + ` END END AS wait_first_text
+ FROM wait_candidates
 ), attributed AS (
- SELECT trace_id,started_at,physical_account_id AS account_id,public_model,stream,outcome,identity_known,
+ SELECT trace_id,started_at,created_at,physical_account_id AS account_id,public_model,stream,outcome,identity_known,
+ wait_first_byte,wait_first_event,wait_first_reasoning,wait_first_text,
  item->>'transport' AS transport,
  CASE WHEN item->>'protocol' IN ('responses','messages','gemini','chat_completions') THEN item->>'protocol' END protocol,
  CASE WHEN identity_known THEN item->>'credential_fingerprint' END credential_fingerprint,
@@ -81,7 +134,7 @@ const upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retai
  CASE WHEN request_scope_known THEN request_scope->>'reasoning_effort' END reasoning_effort,
  CASE WHEN request_scope_known THEN (request_scope->>'stream')::boolean END upstream_stream,
  CASE WHEN request_scope_known THEN 'observed' ELSE 'not_observed' END upstream_model_status
- FROM selected
+ FROM wait_samples
  WHERE ($7='' OR $8<>'upstream' OR request_scope_known AND request_scope->>'model'=$7)
 ), eligible_traces AS (
  SELECT * FROM traces t WHERE (($5::bigint=0 OR account_id=$5) AND ($4='' OR account_id IN (SELECT id FROM cohort)))
@@ -90,7 +143,13 @@ const upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retai
  SELECT account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,
  upstream_model,upstream_protocol,service_tier,reasoning_effort,upstream_stream,upstream_model_status,
  'not_observed'::text AS upstream_group_status,
- ` + upstreamAttemptsAggregate + ` FROM attributed
+ ` + upstreamAttemptsAggregate + `,
+ jsonb_build_object('version',1,'source',CASE transport WHEN 'ws_turn' THEN 'canonical_physical_ws_turn_generation_start'
+ ELSE 'canonical_physical_http_attempt' END,
+ 'first_byte',` + upstreamWaitAggregate("wait_first_byte") + `,
+ 'first_event',` + upstreamWaitAggregate("wait_first_event") + `,
+ 'first_reasoning',` + upstreamWaitAggregate("wait_first_reasoning") + `,
+ 'first_text',` + upstreamWaitAggregate("wait_first_text") + `) waits FROM attributed
  GROUP BY account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,
  upstream_model,upstream_protocol,service_tier,reasoning_effort,upstream_stream,upstream_model_status
 ), summary AS (SELECT ` + upstreamAttemptsAggregate + ` FROM attributed)
