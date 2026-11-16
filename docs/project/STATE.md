@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5.3.3最终HTTP同scope等待汇总已本地验证，准备同步。
+任务：D5.3.3已同步f0387970f；D2.6转换/fast失败通用校验已本地验证。
 授权：统一H盘工作树；本地代码/测试/文档及功能分支提交同步；不CI/部署。
-验证：本轮双轮race计时1278/PG134通过；前端16，vet/增量lint/Linux/生产构建退出0。
-实证：同scope四阶段样本/均值/覆盖/新鲜度，歧义和旧记录未知、SQL只读；中英390/1440浏览器errors=[]。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/scoped-wait-*；仅本地非生产。
-下一动作：D2.6其余转换/WS提前范围；D5.3完整物理失败/WS及来源仍开放。
+验证：候选链双轮race1342，vet/增量lint/Linux退出0；同scope计时1278/PG134/UI16与构建/浏览器通过。
+实证：fast阻断时过期/绑定变更仍拒绝，有效声明保留原策略错误；同scope四阶段独立覆盖，非生产。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/{scoped-wait,candidate-deferred}-*。
+下一动作：D2.6其余转换/WS范围→D3.2/D8.1；D5.3完整物理失败/WS仍开放。
 等待：供应商实际scope/基线/缓存域；历史fixture/scratch拒删见末节。
-Attempt：10
+Attempt：11
 <!-- resume:end -->
 
 ## 目标与入口
@@ -33,7 +33,7 @@ Attempt：10
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
 | D2.6.1–.4 | done | 自动/手工声明、精确预演、New API同源绑定/TTL/重放、SQL CAS、HTTP/WS/UI本地已验；逐项证据见DECISIONS |
-| D2.6.5–.8 | done | HTTP透传/固定Chat转换/WS透传/原生非透传候选、失效及物理发送已验；分层race/静态/双平台证据见DECISIONS；其余动态范围开放 |
+| D2.6.5–.8 | done | 四类候选/物理发送及错误出口通用校验已验；新增红测后双轮race1342/vet/增量lint/Linux通过；其余动态范围开放 |
 | D3 | in_progress | .3漏计/重选及5/3/1历史已上线；本地冷却回池双轮646pass待发布；D3.2多维/基线仍缺，D3.3非文本待scope |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
@@ -71,6 +71,6 @@ Attempt：10
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 历史拒删候选/overlay/pyc及空目录按DECISIONS保留原owner/路径；不换工具重试/移动，.1包保留。
 - H:/Root/DevCache/tmp/sub2api-cooldown-recovery同被blocked by policy；已有0文件/0字节、非重解析点证据，删除0，待拥有者清理。
-- D5.3旧timing/UI证据匹配输入复用，PATH旧lint不使用。独立PG55441/Redis56441供本轮后续测试，owner本任务；完成后停；原scratch仍待删除策略解除。
+- D5.3旧timing/UI证据匹配输入复用，PATH旧lint不使用。独立PG55441/Redis56441及预览18441/18442已停，四端口无监听；本轮脚本已回收，原scratch仍待删除策略解除。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。
 - D2.6.3旧日志及D2.6.4九份newapi日志压缩/删除命令均被策略拒绝，执行/删除0；原evidence待宿主/拥有者清理，不换工具重试。

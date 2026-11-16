@@ -171,19 +171,19 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 				// compatible non-passthrough drops none, passthrough preserves it.
 				body, err := filterOpenAIResponsesNoneReasoningEffortForAccount(account, body)
 				if err != nil {
-					return ""
+					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
 				}
 				if protocol == APIProtocolChatCompletions {
 					var responses apicompat.ResponsesRequest
 					if json.Unmarshal(body, &responses) != nil {
-						return ""
+						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
 					}
 					// Only the existence of validated text was retained, never its
 					// contents. The same converter carries scope options to Chat.
 					responses.Input = json.RawMessage(`""`)
 					chat, convertErr := apicompat.ResponsesToChatCompletionsRequest(&responses)
 					if convertErr != nil {
-						return ""
+						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
 					}
 					model = normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, model, ""))
 					chat.Model = model
@@ -198,19 +198,24 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 					}
 				}
 				if err != nil {
-					return ""
+					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
 				}
 				body, err = applyOpenAIFastPolicyBody(ctx, account, model, body, func(tier string) (string, string) {
 					return evaluateOpenAIFastPolicyWithSettings(candidate.fastPolicy, openAIFastPolicyUserID(ctx), account, model, tier)
 				})
 				if err != nil {
-					// Preserve the original policy 403 instead of reporting an empty pool.
-					return ""
+					// Valid declarations retain the original policy error. A failed
+					// prediction never bypasses expiry or binding validity checks.
+					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
 				}
 				scope = availabilityScopeForRequest(request, body)
 			}
 		}
 	}
+	return upstreamBillingCandidateScopeVetoReason(account, scope, at)
+}
+
+func upstreamBillingCandidateScopeVetoReason(account *Account, scope *AvailabilityRequestScope, at time.Time) string {
 	status, reason := upstreamBillingScopeVerdictAt(account, scope, at)
 	if scope != nil || status != "unknown" && status != "not_declared" {
 		// Invalid, expired or binding-changed declarations are unusable for

@@ -400,6 +400,37 @@ func TestBillingCandidateDeferredMediaKeepsDeclarationValidity(t *testing.T) {
 	}
 }
 
+func TestBillingCandidateDeferredPolicyKeepsDeclarationValidity(t *testing.T) {
+	for _, protocol := range []string{"responses_http", "chat_http"} {
+		for _, state := range []string{"active", "expired", "binding_changed"} {
+			t.Run(protocol+"/"+state, func(t *testing.T) {
+				entry := billingApplicabilityEntry(protocol, "priority", true)
+				account := billingCandidateAccount(t, 917, entry)
+				if protocol == "chat_http" {
+					account.Extra["openai_responses_mode"] = "force_chat_completions"
+				}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				svc := newOpenAIGatewayServiceWithSettings(t, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+					ServiceTier: OpenAIFastTierPriority, Action: BetaPolicyActionBlock, Scope: BetaPolicyScopeAll,
+				}}})
+				ctx := billingCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`)
+				expected := ""
+				if state == "expired" {
+					at = at.Add(2 * time.Hour)
+				} else if state == "binding_changed" {
+					account.Credentials["api_key"] = "changed-fixture-key"
+				}
+				if state != "active" {
+					expected = "profit_upstream_scope_" + state
+				}
+				require.Equal(t, expected, upstreamBillingCandidateVetoReason(ctx, account, at), "policy error defers only precise scope, not declaration validity")
+			})
+		}
+	}
+}
+
 func TestBillingCandidateGlobalDeclarationValidity(t *testing.T) {
 	for _, tc := range []struct{ name, reason string }{
 		{"unresolved valid scope", ""},
