@@ -2822,3 +2822,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 设计5.3.11/13.3及STATE原位更新，D2.6.11本地子验收完成；原28项仍20done/8部分、13.2仍6/7，不增加分母或用子例数替代父验收。沿唯一H盘功能分支提交同步，包含前一未同步测试提交527f540fc，不新建PR、触发CI、发行或部署。其余转换/动态WS、受管产品、完整物理失败与WS观测、质量/预算/缓存域和生产加载仍开放。
 
 - 交付源码`9c894f88c810cc2bb8a4c53fc63e9d3f86374417`已推送`origin/feat/automated-upstream-supply`，`git ls-remote --heads`返回同SHA；仅此功能分支，官方upstream禁推，production未改。再次只读解析原日志和25项输入得到drift0、5918/58条test pass、0fail/skip/race；STATE为77行、7724bytes，检查点在首2048bytes内，本地文档链接无缺失，新增债务标记0、diff --check退出0。初次收尾脚本读取Git差异时因Python默认GBK解码失败，改为显式UTF-8后成功，未改源码或掩盖验证失败。唯一worktree无新建；已跟踪源码干净，历史data/仍未跟踪，不计作已回收资源。
+
+## 2026-11-16：D2.6.12 确定HTTP桥的候选与物理逐轮一致性
+
+- 沿a64caf326唯一H盘功能分支继续原D2.6。根因是候选捕获提前跳过按长度确定切桥的透传帧，而候选scope函数也仅接受WSv2传输；显式http_bridge在真实入口不要求原生WSv2，故最终HTTP门虽拒发，提前选号仍可能挑中不适用账号。原位增加首帧桥判定布尔值，复用原始完整payload的桥判定；不保存正文/完整帧、不用映射后或骨架长度替代。显式/透传确定旧桥均复用兼容处理、账号映射、fast及prepareOpenAIWSHTTPBridgeSessionBody，按最终responses_http/stream/effort精确匹配原声明。
+- 保持原分流合同：透传切桥之前仍须原解析器允许WSv2，显式HTTP桥不依赖它；确定旧桥优先于smart配置。池模式启用bridge时长度取完整规范化body，纯smart选择取完整输入/历史，仍延后精确预测并保留通用声明过期/绑定检查；未知形状清除描述、不增加重放或严格资格。只扩展原候选，不改转发路径、定价、缓存面板、共享额度或账号限制。
+- 红测`go test -json -tags unit -race -vet=off -p 1 ./internal/service -run '^TestBillingWSCandidateScopeTransforms$' -count=1 -timeout=4m`退出1，48pass/25fail事件；24个新增桥叶例及父例失败，原四WS模式通过。终版匹配`http-bridge-candidate-checks.json`完整表达式的service/handler/profit-preview双轮命令退出0：6568条test pass、0fail/skip/race/坏JSON，三个明确package pass，耗时198.386/1.534/1.221秒。计数含子例/双轮，不等于6568种独立场景。
+- 原真实WS网络回归原位扩成四原生模式加显式桥/透传长度桥：每种按原转换发两个不同模型，再撤销原模型并断言第三次未到上游。合计100条网络叶例pass事件，四原生各16、两桥各18（包括HTTP兼容端省略none对照）；HTTP桥用真实POST/SSE，不用模拟写入代替。阈值精确边界、渠道模型变长/缩短不改变原始判定、smart四模式的确定旧桥优先、强制HTTP与显式桥、原生传输不足和池长度未知均有断言；两调度器普通/黏性/排除重选/恢复及槽后刷新扩展桥维度，首帧描述后续清除。
+- `go vet -tags unit -p 1 ./internal/service ./internal/handler`退出0（286.523s）；Go1.27.4兼容golangci-lint v2.15.0 run --fast-only --allow-serial-runners --concurrency 1 --build-tags unit --new-from-rev=a64caf326 --timeout 6m同两包退出0（164.415s），实际`0 issues.`；GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1同两包退出0（81.206s），宿主句柄44557已终态。10项源码/依赖LF摘要drift0；SQL/UI/声明合同15项未变，复用.11的58条SQL与35条UI证据，不重跑无关检查或冒称全规则lint/生产通过。
+- 仅本轮已被终版覆盖的http-bridge-candidate-focused.jsonl拟原生PowerShell精确清理，命令在CreateProcess前被宿主拒绝，预检/执行/删除均0；只读核对286472bytes，原路径保留，owner宿主/拥有者，解除限制后清理。不换工具、移动或gitignore隐藏；历史12PNG/1164bytes及其他拒删路径不重试。未启动独立PG/Redis/预览、未新建worktree，共享缓存保持。
+- 唯一设计5.3.12/13.3与STATE原位更新，本地子验收done；原28项20done/8部分、13.2六done/一部分不变。无schema迁移，回退前一应用恢复仅原四WS候选行为、原实际HTTP终检继续；本轮不执行回退/部署。沿原功能分支提交同步，不CI、另建PR、发行或提升production；D2其余协议/动态预测/受管与真实来源及D5.3完整物理失败/WS同scope统计仍开放。

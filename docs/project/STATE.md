@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.11已提交同步9c894f88c；原28项20done/8部分，13.2仍6/7。
+任务：D2.6.12本地闭环；原28项20done/8部分，13.2仍6/7。
 授权：统一H盘工作树；本地代码/测试/文档及功能分支提交同步；不CI/部署。
-验证：双轮race5918/SQL58、0fail/skip/race；vet/增量lint/Linux及UI35/构建通过；25项LF输入drift0。
-实证：Chat精确输出HTTP/SSE、WS四模式逐轮、粘性/槽后及版本不借用；非生产。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/responses-output-*。
-下一动作：其他D2.6转换/动态WS→D3.2/D8.1；保持原单功能分支/单PR。
+验证：双轮race6568，0fail/skip/race；vet/增量lint/Linux通过；10项输入drift0，SQL/UI15项复用.11。
+实证：四WS模式及两类HTTP桥逐轮、撤销拒发、阈值/粘性/槽后；非生产。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/http-bridge-candidate-*。
+下一动作：D5.3核对完整物理attempt/WS同scope分母并接原监控；其他D2.6合同仍开放。
 等待：供应商scope/基线/缓存域；宿主拒删中间日志及历史fixture/scratch。
-Attempt：17
+Attempt：18
 <!-- resume:end -->
 
 ## 目标与入口
@@ -26,14 +26,14 @@ Attempt：17
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.6.1–.11已本地验；其他入站转换/动态WS、受管产品与真实来源仍缺；D2.7待供应商 |
+| D2 | in_progress | D2.6.1–.12已本地验；其他入站转换/动态WS、受管产品与真实来源仍缺；D2.7待供应商 |
 | D2.1 | done | 同步新鲜度/高峰及同源预演、CLI已验 |
 | D2.2 | done | 固定组/null/明确0及SQL失效恢复已验 |
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
 | D2.6.1–.4 | done | 自动/手工声明、精确预演、New API同源绑定/TTL/重放、SQL CAS、HTTP/WS/UI本地已验；逐项证据见DECISIONS |
-| D2.6.5–.11 | done | Responses/Chat/固定双向转换及透传/池WS候选，精确输出/版本隔离；race5918/SQL58/UI35、静态/构建/中英390px已验；仅本地 |
+| D2.6.5–.12 | done | 原生/固定转换、四WS及两类HTTP桥候选本地已验；.12 race6568/静态/构建通过；SQL58/UI35复用未变合同，非生产 |
 | D3 | in_progress | .3漏计/重选及5/3/1历史已上线；本地冷却回池双轮646pass待发布；D3.2多维/基线仍缺，D3.3非文本待scope |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
@@ -56,7 +56,7 @@ Attempt：17
 
 ## 剩余执行顺序与等待
 
-- 本地可执行：D2.6其余转换/动态WS合同→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.3完整物理失败/WS与D5.4仍缺。不因缺供应商数据停做本地合同。
+- 本地可执行：D2.6其余合同与D5.3完整物理失败/WS→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.4仍缺。不因缺供应商数据停做本地合同。
 - 独立发布：D9.1先核当前生产/可部署差异，按原发布边界交付冷却补丁；不可整分支带入未验功能。本轮不发布。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。
@@ -75,3 +75,4 @@ Attempt：17
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。
 - D2.6.3/.4历史日志及候选/Chat专项精确清理均被宿主拦截；执行/删除0，原evidence待拥有者解除限制。
 - 本轮responses-output的7份旧/重复日志3578727bytes同被宿主启动前拦截；预检/压缩/删除0，未换工具或移动；精确清单见DECISIONS。
+- .12专项旧日志http-bridge-candidate-focused.jsonl/286472bytes同被宿主启动前拦截，预检/删除0；原路径等待拥有者解除策略。

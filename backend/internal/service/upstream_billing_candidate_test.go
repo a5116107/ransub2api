@@ -37,7 +37,7 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -48,6 +48,9 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				}
 				if tc.protocol == "responses_ws_ctx_pool" {
 					entry["protocol"] = "responses_ws_v2"
+				}
+				if tc.protocol == "responses_ws_http_bridge" || tc.protocol == "responses_ws_size_bridge" {
+					entry["protocol"] = "responses_http"
 				}
 				if tc.protocol == "chat_ingress" {
 					entry["protocol"] = "chat_http"
@@ -64,6 +67,12 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				}
 				if tc.protocol == "responses_ws_ctx_pool" {
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+				}
+				if tc.protocol == "responses_ws_http_bridge" {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeHTTPBridge
+				}
+				if tc.protocol == "responses_ws_size_bridge" {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
 				}
 				if tc.protocol != "responses_http" {
 					if tc.protocol == "chat_http" || tc.protocol == "chat_ingress" {
@@ -92,6 +101,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 			}
 			if strings.HasPrefix(tc.protocol, "responses_ws_") {
 				svc.cfg = passthroughLifecycleConfig()
+				if tc.protocol == "responses_ws_size_bridge" {
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
+				}
 				ctx = billingWSCandidateContext(t, svc, group, `{"type":"response.create","model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`, "gpt-fixture", nil)
 			}
 			for _, session := range []string{"", "scope-sticky"} {

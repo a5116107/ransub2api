@@ -16,12 +16,13 @@ import (
 type upstreamBillingCandidateKey struct{}
 
 type upstreamBillingCandidate struct {
-	scope            *AvailabilityRequestScope
-	fastPolicy       *OpenAIFastPolicySettings
-	policyKnown      bool
-	chatHasText      bool
-	chatHasAssistant bool
-	gateway          *OpenAIGatewayService
+	scope               *AvailabilityRequestScope
+	fastPolicy          *OpenAIFastPolicySettings
+	policyKnown         bool
+	chatHasText         bool
+	chatHasAssistant    bool
+	wsPassthroughBridge bool
+	gateway             *OpenAIGatewayService
 }
 
 func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
@@ -63,16 +64,16 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 // WithUpstreamBillingWSCandidateRequest describes only first-frame selection.
 // Reasoning policy uses the client model before the handler's channel mapping.
 // No payload or hooks survive in the descriptor. Passthrough bridge dispatch
-// uses original payload size; pooled mode is predictable only with bridging
-// disabled. Dynamic transports and unsupported shapes retain the send guard.
+// uses original payload size, captured only as a routing boolean. Fixed HTTP
+// bridge and native modes share their original wire transformers. Pooled size
+// dispatch and smart predictions retain the final-send guard.
 func (s *OpenAIGatewayService) WithUpstreamBillingWSCandidateRequest(ctx context.Context, request *http.Request, body []byte, forwardModel string, hooks *OpenAIWSIngressHooks) context.Context {
 	candidate := upstreamBillingCandidate{}
 	if upstreamBillingCandidateMayFilter(ctx) && s != nil && s.cfg != nil &&
-		s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled && !s.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled &&
+		s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled &&
 		request != nil && request.URL != nil && request.Method == http.MethodGet &&
 		(strings.EqualFold(request.Header.Get("Upgrade"), "websocket") || request.URL.Scheme == "ws" || request.URL.Scheme == "wss") &&
-		!isOpenAIResponsesLiteHeader(request.Header.Get(responsesLiteHeader)) && !isOpenAIResponsesLiteWebSocketPayload(body) &&
-		!s.shouldBridgeOpenAIWSPassthroughFirstMessage(nil, body) {
+		!isOpenAIResponsesLiteHeader(request.Header.Get(responsesLiteHeader)) && !isOpenAIResponsesLiteWebSocketPayload(body) {
 		// Server-side upgrade requests normally have an http(s) URL. Keep the
 		// original path, query and header validation when describing WS ingress.
 		wsRequest := *request
@@ -80,6 +81,7 @@ func (s *OpenAIGatewayService) WithUpstreamBillingWSCandidateRequest(ctx context
 		wsURL.Scheme = "wss"
 		wsRequest.URL = &wsURL
 		if scope := availabilityScopeForRequest(&wsRequest, body); scope != nil && scope.Protocol == "responses_ws_v2" {
+			candidate.wsPassthroughBridge = s.shouldBridgeOpenAIWSPassthroughFirstMessage(nil, body)
 			if normalized, err := applyOpenAIWSReasoningEffortPolicy(body, hooks, hooks.forcedReasoningEffort()); err == nil {
 				if forwardModel = strings.TrimSpace(forwardModel); forwardModel != "" {
 					normalized = s.ReplaceModelInBody(normalized, forwardModel)
@@ -127,14 +129,21 @@ func WithoutUpstreamBillingCandidateRequest(ctx context.Context) context.Context
 	return context.WithValue(ctx, upstreamBillingCandidateKey{}, upstreamBillingCandidate{})
 }
 
-func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Context, account *Account, scope AvailabilityRequestScope) *AvailabilityRequestScope {
-	if s == nil || s.cfg == nil ||
-		s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Context, account *Account, scope AvailabilityRequestScope, passthroughBridge bool) *AvailabilityRequestScope {
+	if s == nil || s.cfg == nil {
 		return nil
 	}
 	mode := account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
+	httpBridge := mode == OpenAIWSIngressModeHTTPBridge
+	// Passthrough validates native WS transport before its first-frame bridge
+	// override. Explicit HTTP bridge mode has no such native prerequisite.
+	if !httpBridge && s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+		return nil
+	}
 	switch mode {
 	case OpenAIWSIngressModePassthrough:
+		httpBridge = passthroughBridge
+	case OpenAIWSIngressModeHTTPBridge:
 	case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
 		// Native dispatch compares the fully normalized payload size, not the
 		// original frame or this prompt-free skeleton. Never guess that size.
@@ -142,6 +151,11 @@ func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Conte
 			return nil
 		}
 	default:
+		return nil
+	}
+	if s.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled && !httpBridge {
+		// A legacy bridge override has priority over smart protocol. Other
+		// decisions depend on current history/full input and stay unresolved.
 		return nil
 	}
 	request, body := billingApplicabilityScopeRequest(scope)
@@ -152,7 +166,7 @@ func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Conte
 	if err != nil {
 		return nil
 	}
-	if mode != OpenAIWSIngressModePassthrough {
+	if mode != OpenAIWSIngressModePassthrough || httpBridge {
 		// Native ingress applies channel mapping first, then account mapping
 		// after compatibility. It does not use HTTP's minimal/none rewrites.
 		model = normalizeOpenAIModelForUpstream(account, account.GetMappedModel(scope.Model))
@@ -164,6 +178,13 @@ func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Conte
 	body, blocked, err := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, body)
 	if err != nil || blocked != nil {
 		return nil // Preserve the original policy error and close semantics.
+	}
+	if httpBridge {
+		body, err = prepareOpenAIWSHTTPBridgeSessionBody(account, body, false)
+		if err != nil {
+			return nil
+		}
+		request.Method, request.URL.Scheme = http.MethodPost, "https"
 	}
 	return availabilityScopeForRequest(request, body)
 }
@@ -180,7 +201,7 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		!account.routesByModel() && !account.IsAdaptiveAPIProtocol() && !account.UsesNativeCNResponses() &&
 		controlledMode(ctx) == nil {
 		if candidate.scope.Protocol == "responses_ws_v2" {
-			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope)
+			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope, candidate.wsPassthroughBridge)
 		} else if candidate.scope.Protocol == "chat_http" {
 			protocol := resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil)
 			if protocol == APIProtocolChatCompletions || protocol == APIProtocolResponses && candidate.gateway != nil {

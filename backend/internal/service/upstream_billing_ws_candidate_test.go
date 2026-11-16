@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,18 +27,20 @@ func billingWSCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *G
 }
 
 func TestBillingWSCandidateScopeTransforms(t *testing.T) {
-	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge"} {
 		for _, tc := range []struct {
 			name, options, tier, effort, summary string
 			encrypted                            bool
 			hooks                                *OpenAIWSIngressHooks
 			policy                               *OpenAIFastPolicySettings
 			force                                bool
+			compatibleBridge                     bool
 		}{
 			{name: "plain", tier: "unspecified", effort: "unspecified"},
 			{name: "encrypted output", options: `,"include":["reasoning.encrypted_content"]`, tier: "unspecified", effort: "unspecified", encrypted: true},
 			{name: "summary and encrypted output", options: `,"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}`, tier: "unspecified", effort: "high", summary: "auto", encrypted: true},
 			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
+			{name: "compatible bridge strips none", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "unspecified", compatibleBridge: true},
 			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
 			{name: "ceiling", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: &OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
 			{name: "forced effort", tier: "unspecified", effort: "high", hooks: &OpenAIWSIngressHooks{ForcedReasoningEffort: "high"}},
@@ -46,10 +50,18 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 			{name: "filter overrides group", tier: "unspecified", effort: "unspecified", force: true, policy: openAIFastFilterPriorityPolicy()},
 			{name: "missing forces priority", tier: "priority", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}},
 		} {
+			if tc.compatibleBridge && mode != OpenAIWSIngressModeHTTPBridge && mode != "passthrough_size_bridge" {
+				continue
+			}
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
 				svc.cfg = passthroughLifecycleConfig()
-				entry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
+				bridge := mode == OpenAIWSIngressModeHTTPBridge || mode == "passthrough_size_bridge"
+				protocol := "responses_ws_v2"
+				if bridge {
+					protocol = "responses_http"
+				}
+				entry := billingApplicabilityEntry(protocol, tc.tier, true)
 				entry["reasoning_effort"] = tc.effort
 				if tc.summary != "" {
 					entry["reasoning_summary"] = tc.summary
@@ -63,7 +75,13 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 				}
 				entry["model"] = model
 				account := billingCandidateAccount(t, 911, entry)
+				account.Extra["openai_passthrough"] = !tc.compatibleBridge
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+				if mode == "passthrough_size_bridge" {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
+				}
 				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
 				at := time.Now().UTC().Add(-time.Second)
 				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
@@ -80,13 +98,18 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 				wire = svc.ReplaceModelInBody(wire, "gpt-fixture")
 				wire, _, err = normalizeOpenAIResponsesWebSocketCompatibilityBodyWithConfig(svc.cfg, wire, account, false)
 				require.NoError(t, err)
-				if mode != OpenAIWSIngressModePassthrough {
+				if mode != OpenAIWSIngressModePassthrough || bridge {
 					wire = svc.ReplaceModelInBody(wire, normalizeOpenAIModelForUpstream(account, account.GetMappedModel("gpt-fixture")))
 				}
 				wire, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, wire)
 				require.NoError(t, err)
 				require.Nil(t, blocked)
 				request := httptest.NewRequest(http.MethodGet, "wss://relay.example/v1/responses", nil)
+				if bridge {
+					wire, err = prepareOpenAIWSHTTPBridgeSessionBody(account, wire, false)
+					require.NoError(t, err)
+					request = httptest.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+				}
 				scope := availabilityScopeForRequest(request, wire)
 				require.NotNil(t, scope)
 				require.Equal(t, model, scope.Model)
@@ -106,8 +129,73 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 	}
 }
 
+func TestBillingWSCandidateBridgeDispatchBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, channelModel, smartMode string
+		thresholdDelta                      int64
+		forceHTTP, disabledWS, deferred     bool
+		wantHTTP                            bool
+	}{
+		{name: "fixed bridge native disabled", mode: OpenAIWSIngressModeHTTPBridge, disabledWS: true, wantHTTP: true},
+		{name: "fixed bridge forced HTTP", mode: OpenAIWSIngressModeHTTPBridge, forceHTTP: true, wantHTTP: true},
+		{name: "fixed bridge overrides smart WS", mode: OpenAIWSIngressModeHTTPBridge, smartMode: "ws", wantHTTP: true},
+		{name: "original length exact threshold", mode: OpenAIWSIngressModePassthrough, wantHTTP: true},
+		{name: "original length minus threshold", mode: OpenAIWSIngressModePassthrough, thresholdDelta: 1},
+		{name: "mapped model shrinking does not cancel bridge", mode: OpenAIWSIngressModePassthrough, channelModel: "g", wantHTTP: true},
+		{name: "mapped model growing does not cause bridge", mode: OpenAIWSIngressModePassthrough, channelModel: strings.Repeat("g", 100), thresholdDelta: 1},
+		{name: "legacy bridge overrides smart auto", mode: OpenAIWSIngressModePassthrough, smartMode: "auto", wantHTTP: true},
+		{name: "legacy bridge overrides smart HTTP", mode: OpenAIWSIngressModePassthrough, smartMode: "http", wantHTTP: true},
+		{name: "legacy bridge overrides smart WS", mode: OpenAIWSIngressModePassthrough, smartMode: "ws", wantHTTP: true},
+		{name: "legacy bridge overrides smart shadow", mode: OpenAIWSIngressModePassthrough, smartMode: "shadow", wantHTTP: true},
+		{name: "smart nonlegacy stays deferred", mode: OpenAIWSIngressModePassthrough, smartMode: "http", thresholdDelta: 1, deferred: true},
+		{name: "passthrough still requires native transport", mode: OpenAIWSIngressModePassthrough, forceHTTP: true, deferred: true},
+		{name: "pooled normalized length stays deferred", mode: OpenAIWSIngressModeCtxPool, deferred: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
+			svc.cfg.Gateway.OpenAIWS.ForceHTTP = tc.forceHTTP
+			svc.cfg.Gateway.OpenAIWS.Enabled = !tc.disabledWS
+			svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+			svc.cfg.Gateway.OpenAIWS.SmartProtocol = config.GatewayOpenAIWSSmartProtocolConfig{Enabled: tc.smartMode != "", Mode: tc.smartMode}
+			body := []byte(` {"type":"response.create","model":"public-fixture","input":"private prompt"} `)
+			svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = int64(len(body)) + tc.thresholdDelta
+			channelModel := tc.channelModel
+			if channelModel == "" {
+				channelModel = "gpt-fixture"
+			}
+			wsEntry := billingApplicabilityEntry("responses_ws_v2", "unspecified", tc.wantHTTP)
+			wsEntry["model"] = channelModel
+			httpEntry := billingApplicabilityEntry("responses_http", "unspecified", !tc.wantHTTP)
+			httpEntry["model"] = "wire-fixture"
+			account := billingCandidateAccount(t, 920, wsEntry, httpEntry)
+			account.Credentials["model_mapping"] = map[string]any{channelModel: "wire-fixture"}
+			account.Extra["openai_apikey_responses_websockets_v2_mode"] = tc.mode
+			at := time.Now().UTC().Add(-time.Second)
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, wsEntry, httpEntry), at)
+			require.NoError(t, err)
+			ctx := billingWSCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), string(body), channelModel, nil)
+			stored := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
+			require.NotNil(t, stored.scope)
+			require.Equal(t, tc.thresholdDelta <= 0, stored.wsPassthroughBridge)
+			vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+			require.Equal(t, !tc.deferred, vetoed, reason)
+			if !tc.deferred {
+				require.Equal(t, "profit_upstream_scope_excluded", reason)
+			}
+			require.Equal(t, "profit_upstream_scope_expired", upstreamBillingCandidateVetoReason(ctx, account, at.Add(2*time.Hour)))
+			cleared := WithoutUpstreamBillingCandidateRequest(ctx).Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
+			require.False(t, cleared.wsPassthroughBridge)
+			request := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			request.Header.Set("Upgrade", "websocket")
+			unknown := svc.WithUpstreamBillingWSCandidateRequest(ctx, request, []byte(`{"type":"response.create","model":"gpt-fixture","tools":[{"type":"web_search"}]}`), channelModel, nil)
+			require.Nil(t, unknown.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate).scope)
+			require.False(t, unknown.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate).wsPassthroughBridge)
+		})
+	}
+}
+
 func TestBillingWSCandidateDeferredPaths(t *testing.T) {
-	for _, name := range []string{"ctx pool bridge enabled", "ctx pool image model", "http bridge", "original byte size bridge", "smart protocol", "global force http", "account off", "mode router off", "lite", "tools", "missing type", "query", "reasoning denied", "fast blocked", "unknown policy", "gate disabled", "suppressed", "not upgraded"} {
+	for _, name := range []string{"ctx pool bridge enabled", "ctx pool image model", "smart protocol", "global force http", "account off", "mode router off", "lite", "tools", "missing type", "query", "reasoning denied", "fast blocked", "unknown policy", "gate disabled", "suppressed", "not upgraded"} {
 		t.Run(name, func(t *testing.T) {
 			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
 			group := profitControlTestGroup(7, 0.5, 0)
@@ -124,13 +212,6 @@ func TestBillingWSCandidateDeferredPaths(t *testing.T) {
 			case "ctx pool image model":
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
 				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-image-1"}
-			case "http bridge":
-				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeHTTPBridge
-			case "original byte size bridge":
-				svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
-				svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 100
-				body = `{"type":"response.create","model":"gpt-fixture","input":"` + strings.Repeat("x", 200) + `"}`
-				require.True(t, svc.shouldBridgeOpenAIWSPassthroughFirstMessage(account, []byte(body)))
 			case "smart protocol":
 				svc.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled = true
 			case "global force http":
@@ -216,12 +297,19 @@ func TestBillingWSCandidateLifetimeAndPolicySnapshot(t *testing.T) {
 }
 
 func TestBillingWSCandidatePostSlotRecheck(t *testing.T) {
-	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge"} {
 		t.Run(mode, func(t *testing.T) {
 			makeAccount := func(covered bool) *Account {
-				entry := billingApplicabilityEntry("responses_ws_v2", "unspecified", covered)
+				protocol := "responses_ws_v2"
+				if mode == OpenAIWSIngressModeHTTPBridge || mode == "passthrough_size_bridge" {
+					protocol = "responses_http"
+				}
+				entry := billingApplicabilityEntry(protocol, "unspecified", covered)
 				account := billingCandidateAccount(t, 915, entry)
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+				if mode == "passthrough_size_bridge" {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+				}
 				at := time.Now().UTC().Add(-time.Second)
 				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
 				require.NoError(t, err)
@@ -229,6 +317,10 @@ func TestBillingWSCandidatePostSlotRecheck(t *testing.T) {
 			}
 			selected, replacement := makeAccount(true), makeAccount(false)
 			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
+			if mode == "passthrough_size_bridge" {
+				svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+				svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
+			}
 			ctx := billingWSCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), `{"type":"response.create","model":"gpt-fixture"}`, "gpt-fixture", nil)
 			vetoed, reason := openAIProfitControlVetoReason(ctx, selected)
 			require.False(t, vetoed, reason)
@@ -268,24 +360,34 @@ func (r *billingWSCandidateAccountRepo) GetOpenAITurnAdmission(context.Context, 
 
 func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated, OpenAIWSIngressModeHTTPBridge, "passthrough_size_bridge"} {
 		for _, tc := range []struct {
 			name, options, tier, effort, summary string
 			encrypted                            bool
 			policy                               *OpenAIFastPolicySettings
 			force                                bool
+			compatibleBridge                     bool
 			hooks                                OpenAIWSIngressHooks
 		}{
 			{name: "plain", tier: "unspecified", effort: "unspecified"},
 			{name: "encrypted output", options: `,"include":["reasoning.encrypted_content"]`, tier: "unspecified", effort: "unspecified", encrypted: true},
 			{name: "summary and encrypted output", options: `,"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}`, tier: "unspecified", effort: "high", summary: "auto", encrypted: true},
 			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
+			{name: "compatible bridge strips none", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "unspecified", compatibleBridge: true},
 			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
 			{name: "effort capped", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
 			{name: "group priority", tier: "priority", effort: "unspecified", force: true},
 			{name: "priority filtered", options: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
 		} {
+			if tc.compatibleBridge && mode != OpenAIWSIngressModeHTTPBridge && mode != "passthrough_size_bridge" {
+				continue
+			}
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				bridge := mode == OpenAIWSIngressModeHTTPBridge || mode == "passthrough_size_bridge"
+				protocol := "responses_ws_v2"
+				if bridge {
+					protocol = "responses_http"
+				}
 				wireModel := func(model string) string {
 					if mode != OpenAIWSIngressModePassthrough {
 						return "wire-" + model
@@ -294,6 +396,18 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				}
 				observed := make(chan *AvailabilityRequestScope, 3)
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					if bridge {
+						payload, err := io.ReadAll(request.Body)
+						if err != nil {
+							t.Errorf("read physical bridge request: %v", err)
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
+						observed <- availabilityScopeForRequest(request, payload)
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":2}}}\n\ndata: [DONE]\n\n")
+						return
+					}
 					conn, err := coderws.Accept(w, request, nil)
 					if err != nil {
 						t.Errorf("accept physical upstream: %v", err)
@@ -316,10 +430,10 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 					}
 				}))
 				defer upstream.Close()
-				firstEntry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
+				firstEntry := billingApplicabilityEntry(protocol, tc.tier, true)
 				firstEntry["model"] = wireModel("gpt-fixture")
 				firstEntry["reasoning_effort"] = tc.effort
-				secondEntry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
+				secondEntry := billingApplicabilityEntry(protocol, tc.tier, true)
 				secondEntry["model"], secondEntry["reasoning_effort"] = wireModel("gpt-next"), tc.effort
 				for _, entry := range []map[string]any{firstEntry, secondEntry} {
 					if tc.summary != "" {
@@ -331,10 +445,14 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				}
 				makeAccount := func(entries ...map[string]any) *Account {
 					account := billingCandidateAccount(t, 914, entries...)
+					account.Extra["openai_passthrough"] = !tc.compatibleBridge
 					account.Credentials["base_url"] = upstream.URL
 					account.Credentials["api_key"] = "sk-test"
 					account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-gpt-fixture", "gpt-next": "wire-gpt-next"}
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+					if mode == "passthrough_size_bridge" {
+						account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+					}
 					at := time.Now().UTC().Add(-time.Second)
 					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entries...), at)
 					require.NoError(t, err)
@@ -345,12 +463,22 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				repo.account.Store(selected)
 				svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
 				svc.cfg = passthroughLifecycleConfig()
+				if mode == "passthrough_size_bridge" {
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+					svc.cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
+				}
 				svc.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
 				svc.cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds = 5
 				defer svc.getOpenAIWSConnPool().Close()
 				svc.cache = &stubGatewayCache{}
 				svc.toolCorrector = NewCodexToolCorrector()
 				svc.accountRepo, svc.requireLatestTurnAdmission = repo, true
+				svc.httpUpstream = &codexModelsHTTPUpstreamStub{do: func(request *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+					if err := CheckHTTPUpstreamSendGuard(request.Context()); err != nil {
+						return nil, err
+					}
+					return upstream.Client().Do(request)
+				}}
 				settingsRepo := &billingCandidateSettingRepo{SettingRepository: svc.settingService.settingRepo}
 				svc.settingService = NewSettingService(settingsRepo, svc.cfg)
 				group := profitControlTestGroup(7, 0.5, 0)
@@ -385,7 +513,7 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 						if tc.summary != "" || tc.encrypted {
 							version = availabilityResponsesOutputScopeVersion
 						}
-						require.Equal(t, AvailabilityRequestScope{Version: version, Protocol: "responses_ws_v2", Model: wireModel(model), Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, ReasoningSummary: tc.summary, IncludeEncryptedContent: tc.encrypted}, *scope)
+						require.Equal(t, AvailabilityRequestScope{Version: version, Protocol: protocol, Stream: bridge, Model: wireModel(model), Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, ReasoningSummary: tc.summary, IncludeEncryptedContent: tc.encrypted}, *scope)
 					case <-time.After(3 * time.Second):
 						select {
 						case err := <-done:
