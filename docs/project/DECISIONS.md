@@ -2890,3 +2890,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 用户补充截图定位14:53–15:28九条HTTP400加密历史错误，均落账号4；4545先账号7响应头超时再换4拒绝；4547先5返回500再换4，同账号确认密文恢复尝试一次后仍400。4556等后续直接命中4。说明存在“确实换线后历史不兼容”和“下一请求继续命中拒绝线路”，不是仅没有候选。原错误诊断已脱敏、请求体未留存，旧时序也缺；不重新采集用户历史或把TTFT空当未输出。
 - 本轮最新历史4567/17:23为账号5裸服务器错误，其stream_failed只在已提交输出分支记录；不能由它证明前输出分类仍失效。截图中的cyber_policy是独立策略分类，不通过改换上游绕过。新截图对应加密历史与粘性提交时机继续D9.1，不改原28项20done/8部分。
 - 最小脱敏证据沿H:/Root/DevCache/evidence/sub2api-production-failover/{current-production-recheck,current-last-error-analysis,encrypted-screenshot-diagnosis}.json。Paramiko两次开channel超时后改用已登记srv-hk2的OpenSSH密钥/known_hosts，读同机同库成功，未绕过主机密钥校验；数据库/Redis/账号启停和生产程序均未变。
+
+
+## 2026-11-16：D9.1加密HTTP替补只在完整成功后提交绑定
+
+- 沿截图14:53–15:28已脱敏链路，7响应头超时或5服务器故障后切4，4拒绝历史而后续连续落4。最小服务回归先得到2个叶例失败（新/已有会话的选号即覆盖），保留encrypted-binding-red.log。原位在HTTP Responses安装一次不可变黏性观察：选号、槽准入、重选和临时不合格不提交或清除原绑定；完整成功且客户端仍连接时复用原利润门和Redis CAS双格式发布，不让慢完成覆盖较新成功。明文、其他会话、WS及原归属/策略边界保持。
+- 扩HTTP真实handler/HTTPUpstream夹具为拒绝、成功、部分输出失败、截断×普通/透传×流式/非流式16叶例，逐次断言失败上游后切替补、下一轮路由、原始两段密文均保留及槽位释放。首轮夹具3次槽不足4次，修正夹具后揭示真实额外缺口：非流式SSE截断被报告成功，2叶例失败。沿两个现有聚合结果把streamReadIncomplete传给OpenAIForwardResult，缺少成功终态或非成功终态不再清除失败/提交绑定；已收内容仍原样交付，不增加重放或第二路径。
+- 命令go test -json -tags unit -race -vet=off -p 1 ./internal/service ./internal/handler ./internal/repository -run '^Test(EncryptedHTTP|OpenAI.*(Sticky|EncryptedSticky|HeaderTimeout|Admission|ServerFailure)|OpenAILegacySticky|StickySessionRebind|PR612|Responses.*(Retry|Admission|Failover)|.*NonStreaming.*|.*SSEToJSON.*)' -count=2 -timeout=8m退出0；1206条test pass、0fail/skip/race，三包13.812/57.866/8.653秒。计数含子例和双轮，不是1206种独立场景。同三包go vet -tags unit -p 1退出0；兼容golangci fast/serial/concurrency1、new-from-rev=d8f9387f1退出0，0 issues.。证据encrypted-binding-{final.jsonl,checks.json,vet.log,lint.log}位于原生产failover evidence目录。
+- 当轮18:29只读核线上仍.5/dddb2ef1f，实例时序709 success/completed、6 client_disconnected/completed，新增错误3条独立保留。此窗口不是旧完整历史恢复证明；旧错误历史不采集/重放。当前本地修复尚待生产分支独立构建、隔离快照升级/回退和16场景运行验证后发布.6；不把功能分支全部带入生产，不运行构建/测试CI。
+- 原28项20done/8部分不变；D9.1本地补丁已验，生产加载与旧失败会话仍分别开放。现有12PNG/1164bytes不暂存；同一H盘工作树，复用共享Go缓存，不新增worktree。
