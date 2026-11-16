@@ -2433,3 +2433,9 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 释放.4/.5无挂载、无进程引用的候选程序各321601696bytes及两份一次性cutover-fields明文比较快照各13203bytes，实际643229798bytes；旧程序/镜像、数据库与数据备份继续保留。证据为ops-health-cleanup.json，包含50条最小终态字段，不保存用户历史或生成内容。
 - 本机新任务scratch `H:/Root/DevCache/tmp/sub2api-production-failover` 与 `H:/Root/DevCache/tmp/sub2api-release-build` 的原生PowerShell路径/引用核对、WhatIf及删除组合在CreateProcess前被策略拦截，整条未执行，实际删除0；未换工具/移动/重试。独立只读核验前者0文件，后者2文件20172bytes，均0链接/0活跃引用。历史拒删的`H:/Root/DevCache/tmp/sub2api-stream-health`本轮复用后3文件21252bytes、0活跃引用，不再次删/移动；交工作区拥有者处理。原12PNG/1164bytes保留，不暂存；可复用Go缓存和正式归档不当垃圾删。
 - 本轮可执行生产修复/发布子验收已完成，原28项20done/8部分不变。旧失败会话完整历史的连续恢复、并行混版/非文本/供应商契约/缓存域与迁移净收益、v2.21.1/PR3整合仍保留各自原验收。后续仅文档收尾提交，不改变.5应用代码或重复发行。
+
+
+## 2026-11-16：D9.1 .6生产候选
+
+- 功能分支53a6c6f6f的9文件补丁原样提取为生产c50f61a2b，自动机械合入，无新schema。仅覆盖加密HTTP成功后CAS绑定与非流式SSE完成状态传递，不带入其他自动供应池候选/UI/schema。feature本地双轮1206条test pass、0fail/skip/race，vet0、增量fast lint0；生产提取须独立验证，不继承为生产运行证据。
+- 版本准备2.21.0-ransub.6；线上仍.5。现有生产快照/旧二进制/固定镜像作为回退，计划在隔离恢复库先验证旧→新→旧→新并增加16种密文历史场景，之后才发行和排空升级。账号人工启停、分组、倍率、健康5/3/1和PG/Redis身份保持；原28项20done/8部分不变。
