@@ -233,25 +233,82 @@ func TestPR612NativeUpstreamWSIgnoresHTTPHeaderTimeout(t *testing.T) {
 }
 
 func TestPR612HeaderTimeoutFailoverSucceedsWithSecondAccount(t *testing.T) {
-	var submissions atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		if submissions.Add(1) == 1 {
-			// First account: read the complete POST but never send headers.
-			<-r.Context().Done()
-			return
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{"responses", "chat", "passthrough"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", mode, stream), func(t *testing.T) {
+				setupOpsErrorLogTestQueue(t, 2)
+				var submissions atomic.Int32
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					if submissions.Add(1) == 1 {
+						// Read the complete first POST, then wait for transport cancellation.
+						<-r.Context().Done()
+						return
+					}
+					body := `{"id":"resp_synthetic","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+					if mode == "chat" {
+						body = `{"id":"chatcmpl_synthetic","object":"chat.completion","model":"gpt-5.1","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						if mode == "chat" {
+							body = "data: " + `{"id":"chatcmpl_synthetic","object":"chat.completion.chunk","model":"gpt-5.1","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}` + "\n\n" +
+								"data: " + `{"id":"chatcmpl_synthetic","object":"chat.completion.chunk","model":"gpt-5.1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\ndata: [DONE]\n\n"
+						} else {
+							body = "data: " + `{"type":"response.output_text.delta","delta":"OK"}` + "\n\n" +
+								"data: {\"type\":\"response.completed\",\"response\":" + body + "}\n\n"
+						}
+					}
+					_, _ = io.WriteString(w, body)
+				}))
+				defer upstream.Close()
+
+				cfg := pr612HTTPConfig()
+				// Native Responses and passthrough emit a header-wait heartbeat;
+				// the Chat bridge retains its existing no-heartbeat behavior.
+				cfg.Gateway.StreamKeepaliveInterval = 1
+				cfg.Gateway.OpenAIResponseHeaderTimeout = 2
+				h := pr612HTTPHandler(t, cfg, upstream.URL, mode)
+				h.maxAccountSwitches = 2
+				template, _ := newOpenAIResponsesFailoverTestContext(t, t.Context())
+				ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				router := gin.New()
+				router.Use(OpsErrorLoggerMiddleware(ops))
+				var final *gin.Context
+				router.POST("/v1/responses", func(c *gin.Context) {
+					for key, value := range template.Keys {
+						c.Set(key, value)
+					}
+					h.Responses(c)
+					final = c
+				})
+				req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":"gpt-5.1","stream":%t,"input":"synthetic"}`, stream)))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+
+				require.Equal(t, int32(2), submissions.Load(), "only the failed account and one healthy account may be submitted")
+				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+				require.Contains(t, rec.Body.String(), "OK")
+				require.Empty(t, service.GetOpsStreamErrors(final), "a recovered timeout is not a downstream failure")
+				if stream {
+					if mode != "chat" {
+						require.Contains(t, rec.Body.String(), ": keepalive\n\n")
+					} else {
+						require.NotContains(t, rec.Body.String(), ": keepalive\n\n")
+					}
+					require.Equal(t, 1, strings.Count(rec.Body.String(), `"type":"response.completed"`))
+					require.NotContains(t, rec.Body.String(), `"type":"response.failed"`)
+				}
+				require.Equal(t, int64(1), OpsErrorLogQueueLength(), "retain one recovered provider-health record")
+				job := <-opsErrorLogQueue
+				require.Equal(t, http.StatusOK, job.entry.StatusCode, "recovery must not pollute downstream request SLA")
+				require.Equal(t, int64(1), *job.entry.AccountID, "attribute the attempt failure to the failed account")
+				require.Equal(t, http.StatusGatewayTimeout, *job.entry.UpstreamStatusCode)
+				require.Contains(t, job.entry.ErrorMessage, "Recovered upstream error")
+			})
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"resp_synthetic","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
-	}))
-	defer upstream.Close()
-
-	h := pr612HTTPHandler(t, pr612HTTPConfig(), upstream.URL, "responses")
-	h.maxAccountSwitches = 2
-	c, rec := newOpenAIResponsesFailoverTestContext(t, t.Context())
-	c.Request.Body = io.NopCloser(strings.NewReader(`{"model":"gpt-5.1","stream":false,"input":"synthetic"}`))
-	h.Responses(c)
-
-	require.Equal(t, int32(2), submissions.Load(), "first header timeout should fail over to the second account")
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	}
 }

@@ -317,9 +317,9 @@ func handleOpenAIHTTPPhaseError(c *gin.Context, account *Account, err error) err
 	StopOpenAICompactSSEKeepaliveCommitted(c)
 	if phaseErr.phase == "response_header_timeout" && !IsResponseCommitted(c) {
 		written := c.Writer.Written()
-		if written {
-			MarkOpsStreamFailure(c, phaseErr.phase, phaseErr.phase, phaseErr.Error(), http.StatusGatewayTimeout)
-		}
+		// A heartbeat commits the wire status, not the request outcome. Retain
+		// this attempt above; only exhaustion or a terminal stream failure may
+		// mark the downstream request as failed.
 		// Replay is deliberately allowed here: the caller has chosen to pay the
 		// first attempt's possible upstream cost and charge it back 1:1.
 		const replayMessage = "OpenAI upstream response header timeout; retrying another account (first attempt may be billed)"

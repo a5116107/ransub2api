@@ -2402,3 +2402,22 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 选择性移植功能分支c9688a439的backend冷却回池补丁（其父版本相关文件与production无差异）：快照保留持久成员、读时过滤动态期限，异步重试同样保留；未重启/放行手动停用或跨组账号，未移植其他供应池功能/文档。
 - RED原样回归退出1，13fail/9pass事件；修复专项双轮70pass，广双轮service/handler928pass，真实隔离PG17/Redis7双轮30pass，均有明确package pass、0fail/skip/race。含子例/重复轮次，不称独立场景。原handler新增账号1失败→账号2成功、旧metadata不泄漏、已输出/策略不换线和槽位释放回归。三包go vet与兼容golangci-lint增量fast退出0、0 issues.，非全仓全规则清零。
 - 最小证据H:/Root/DevCache/evidence/sub2api-production-failover/{production-diagnosis,checks,source-inputs}.json及原jsonl；统一H盘当前工作树热修复，原12PNG未跟踪且不计交付。不CI，未新增表/迁移，回退.3程序及镜像保留当前数据；构建、演练、公开Release/镜像及实际加载和业务观测仍分别待验。原28项20done/8部分不变。
+
+### 2026-11-16：D9.1 补丁发行与整机边界验证
+
+- 已提交热修复 `cfb049ba265cadde02e74748733b2834efd70877`，本地 `local-build --simple` 退出0，前端类型检查及Vite构建47.34秒通过，保留大分包提示。`.4`归档85830282bytes、SHA256 `081cb24da6a7393ae109467c74459517386ce57b7789b3705ba5e4b893f31834`，内嵌前端与Linux程序同源，程序SHA256 `aaeb3fc641ae2e68cd3d1377150e31fd123d1494aab1436b8a32475d6475ad84`。22份既有测试输入与当前源码在Git行尾归一化后全部匹配，复用专项70、广回归928、真实SQL30及vet/lint证据，不重复构建或把CRLF视为逻辑变更。
+- 隔离本机Docker整机请求10/10通过：普通/透传分别覆盖流式、非流式服务器故障账号1→2及成功终态；策略错误不换线、已输出正文不重放。此前失败保留：首个夹具未等outbox消费完成而只看到一个账号，错误终态断言遗漏裸`error`，两轮复用同一session导致成功粘性直接选健康账号，异步工具探测也被夹具错误地当成业务请求。修正夹具协议、等待对应水位和独立session后通过，未据此修改生产分类或放宽策略/输出边界。四阶段基线→候选→旧版回退→重升均核对实际程序哈希、登录和原字段；合成库428迁移保持。这不替代生产432迁移副本或真实失败会话。
+- Release暂时停用以避免push触发重复编译；热修复非强推至自有production，标签`v2.21.0-ransub.4`同源；四项资产逐项digest核对后公开并设latest，再恢复Release自动化。手动预构建封装run[43828671688](https://github.com/a5116107/ransub2api/actions/runs/43828671688)成功，只有publish-prebuilt-image运行，其余7个job跳过，未运行编译/测试CI。线上旧程序独立强制更新检查已实返current=.3、latest=.4、has_update=true、warning=null，证明更新渠道可达，尚不等于已安装。
+- 生产备份163242738bytes、SHA256 `a84d1b54d98fa8bce8a0dbd82d376cfabb130dd5b6a44c53975d3143641a7f1a`，数据/Compose/旧程序均留在原主机`.4`回滚目录。原账号10/分组2/用户1/Key1/迁移432；SQL和Redis身份不替换。首次直连SSH开通道超时，改用既有SOCKS路由成功，未绕过主机密钥校验。生产副本演练、排空安装与公网业务观测继续执行，原父验收20done/8部分不变。
+
+
+### 2026-11-16：D9.1 公网换号实证及恢复误报504
+
+- .4已完成生产副本旧版→候选→回退→重升，432条迁移、原账号/组别/健康设置及原PG/Redis身份保持；排空后安装与同镜像重建均加载`aaeb3fc641ae2e68cd3d1377150e31fd123d1494aab1436b8a32475d6475ad84`。公网管理API与Chromium登录/强制刷新实返current/latest均`2.21.0-ransub.4`、has_update=false、warning=null，界面实际显示.4，无页面/网络错误（stream-health-verify.json、stream-health-public-smoke.json及production-version.png）。
+- 公网Responses SSE实返200、唯一response.completed、文本OK；7.828秒总耗时、首文本7.719秒（含本机网络，不作上游TTFT），client_request_id=42e8b517-4404-40b8-9870-625c940a9725唯一关联usage72532/账号7。另自然业务client_request_id=3b90ccf1-07f7-4552-8ba3-625c3d9940af的真实时序显示账号7响应头超时→账号5，最终200/completed/success、未断开，唯一usage72534；不是向生产注入故障的结果。
+- 同一自然请求仍有ops_error_logs4564/504，错误归到最终账号5。根因：handleOpenAIHTTPPhaseError在仅心跳写入、原规则仍允许恢复时提前调用MarkOpsStreamFailure；后续账号完成后残留的请求级失败标记覆盖了最终成功。原位去掉此恢复分支中的提前终结标记，保留attempt事件、上游状态、健康窗口、原换号/重放边界及全部终结分支；不改60秒等任何超时、计费或人工配置，不回写/删除历史4564。
+- 原service红测实际失败：keepalive叶失败、unwritten叶通过（含父节点2fail/1pass），ops-red.jsonl保留。扩大真实loopback/handler/中间件竞态回归先548节点中546pass/2fail：唯一失败叶是Chat桥接按原设计不发header-wait心跳而夹具误要求发心跳；保留ops-regression.jsonl。按实际协议修正夹具预期、保留Responses/透传的真实心跳断言后，同命令最终548pass/0fail/0skip，service1.531s、handler31.115s（ops-regression-final.jsonl）。6种适配器/流式组合均实际提交失败账号1及健康账号2各一次、完成且仅保留一条200恢复行，504健康证据归于账号1；另覆盖耗尽、取消、终态与健康排除规则。
+- 最终命令：`go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^Test(OpenAIHTTP|OpenAIUpload|OpenAIPreOutput|SIWCEgress|OpenAIHeaderWait|PR612|OpsRecovered|Ops.*Stream|OpenAI.*Failover|ResponsesFailover|ClassifyOpenAIAPIKeyHealth|OpenAIAPIKeyHealth)' -count=1 -timeout=8m -json`，退出0。两包vet退出0；夹具最终变更后handler vet再次0。首轮增量fast lint为0 issues；最终复查遇其他任务共享lint锁退出3，未抢锁/停他人进程，沿同缓存串行等锁重验。原规则全包历史62诊断仍不称清零。
+- .5待本地同源构建、自有公开Release与镜像、生产副本回退/排空加载及公网验收；无迁移。原28项20done/8部分保持，不把这次文本换号和错误归因关闭非文本、缓存迁移或上游v2.21.1整合父项。
+
+- 最终串行增量fast lint退出0、`0 issues.`，未改变规则或创建第二缓存；两包vet及最终handler复验均0。Windows→香港2号的SOCKS连接在SSH开通道处超时，直连以已存主机密钥验证后成功；只读预检剩余约16GiB、无遗留运行演练容器。后续.5使用该直连路径，不绕过身份校验。
