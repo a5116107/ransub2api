@@ -150,14 +150,10 @@ func TestSchedulerFullRebuildCapturesAllRegistryTokensBeforeDBLoad(t *testing.T)
 	cache := newRetirementRaceCache(first, queued)
 	dbStarted := make(chan struct{})
 	releaseDB := make(chan struct{})
-	var firstDB sync.Once
-	repo := &mockAccountRepoForPlatform{
-		listPlatformFunc: func(context.Context, string) ([]Account, error) {
-			firstDB.Do(func() {
-				close(dbStarted)
-				<-releaseDB
-			})
-			return []Account{{ID: 6101, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}}, nil
+	repo := &fullRebuildAccountRepo{
+		beforeFirst: func() {
+			close(dbStarted)
+			<-releaseDB
 		},
 	}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, &retirementGroupRepo{groups: []Group{{ID: 61, Status: StatusActive}}}, &config.Config{
@@ -201,10 +197,9 @@ func TestSchedulerRebuildRetireAfterDBLoadFencesPublish(t *testing.T) {
 		close(setEntered)
 		<-releaseSet
 	}
-	repo := &mockAccountRepoForPlatform{
-		listPlatformFunc: func(context.Context, string) ([]Account, error) {
+	repo := &fullRebuildAccountRepo{
+		beforeFirst: func() {
 			close(dbReturned)
-			return []Account{{ID: 6201, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}}, nil
 		},
 	}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
@@ -242,9 +237,7 @@ func TestSchedulerFallbackReturnsDBAccountsWhenBucketRetired(t *testing.T) {
 	bucket := SchedulerBucket{GroupID: 63, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
 	cache := newRetirementRaceCache()
 	require.NoError(t, cache.RetireBucket(context.Background(), bucket))
-	repo := &mockAccountRepoForPlatform{
-		accounts: []Account{{ID: 6301, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}},
-	}
+	repo := &fullRebuildAccountRepo{}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
 		RunMode: config.RunModeStandard,
 		Gateway: config.GatewayConfig{Scheduling: config.GatewaySchedulingConfig{

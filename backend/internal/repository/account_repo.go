@@ -2727,8 +2727,8 @@ func (r *accountRepository) ListSchedulableByGroupIDAndPlatforms(ctx context.Con
 }
 
 // ListModelAvailabilityCandidates returns the persistently configured account
-// pool used to decide whether a model is supported. Unlike scheduling queries,
-// it intentionally ignores transient runtime state (rate limits, overload,
+// pool for model-support diagnosis and cached scheduler membership. Unlike live
+// scheduling queries, it intentionally ignores transient runtime state (rate limits, overload,
 // temporary unschedulability, and expiry windows).
 func (r *accountRepository) ListModelAvailabilityCandidates(
 	ctx context.Context,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -67,7 +68,7 @@ func TestSchedulerSnapshotReaderUsesHitsAndFailsClosedOnMissOrFailure(t *testing
 		err      error
 		success  bool
 	}{
-		{name: "hit", hit: true, accounts: []*Account{{ID: 1}}, success: true},
+		{name: "hit", hit: true, accounts: []*Account{{ID: 1, Status: StatusActive, Schedulable: true}}, success: true},
 		{name: "miss"},
 		{name: "cache_error", err: errors.New("cache unavailable")},
 	} {
@@ -110,6 +111,46 @@ func TestSchedulerSnapshotReaderPreservesRequestAccountFeedback(t *testing.T) {
 	account := &Account{ID: 1, Status: "error"}
 	require.NoError(t, svc.UpdateAccountInCache(context.Background(), account))
 	require.Same(t, account, cache.feedback)
+}
+
+func TestSchedulerSnapshotReaderChecksLiveEligibilityWithoutMutatingCache(t *testing.T) {
+	past, future := time.Now().Add(-time.Minute), time.Now().Add(time.Minute)
+	for _, tc := range []struct {
+		name   string
+		change func(*Account)
+		allow  bool
+	}{
+		{"healthy", func(*Account) {}, true},
+		{"temporary_cooldown", func(a *Account) { a.TempUnschedulableUntil = &future }, false},
+		{"temporary_recovered", func(a *Account) { a.TempUnschedulableUntil = &past }, true},
+		{"overloaded", func(a *Account) { a.OverloadUntil = &future }, false},
+		{"overload_recovered", func(a *Account) { a.OverloadUntil = &past }, true},
+		{"rate_limited", func(a *Account) { a.RateLimitResetAt = &future }, false},
+		{"rate_limit_recovered", func(a *Account) { a.RateLimitResetAt = &past }, true},
+		{"expired", func(a *Account) { a.ExpiresAt, a.AutoPauseOnExpired = &past, true }, false},
+		{"expiry_pause_disabled", func(a *Account) { a.ExpiresAt = &past }, true},
+		{"manual_pause", func(a *Account) { a.Schedulable = false }, false},
+		{"disabled", func(a *Account) { a.Status = StatusDisabled }, false},
+		{"performance_paused", func(a *Account) { a.PerformancePaused = true }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := &Account{ID: 1, Status: StatusActive, Schedulable: true}
+			tc.change(account)
+			cache := &snapshotReaderCache{accounts: []*Account{account}, hit: true}
+			svc := NewSchedulerSnapshotService(cache, nil, nil, nil, snapshotReaderConfig())
+			for range 2 {
+				accounts, _, err := svc.ListSchedulableAccounts(t.Context(), nil, PlatformOpenAI, false)
+				require.NoError(t, err)
+				if tc.allow {
+					require.Len(t, accounts, 1)
+				} else {
+					require.Empty(t, accounts)
+				}
+				require.Len(t, cache.accounts, 1, "request filtering must not delete the stored member")
+				require.Same(t, account, cache.accounts[0])
+			}
+		})
+	}
 }
 
 func TestSchedulerSnapshotReaderRequiresAllRequestedAccountDetails(t *testing.T) {

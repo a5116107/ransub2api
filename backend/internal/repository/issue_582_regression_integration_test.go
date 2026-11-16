@@ -143,10 +143,13 @@ func TestIssue582OutboxMakesNewMemberSchedulable(t *testing.T) {
 	groups := newGroupRepositoryWithSQL(client, integrationDB)
 	group := &service.Group{Name: "issue-582", Platform: service.PlatformOpenAI, Status: service.StatusActive, RateMultiplier: 1, SubscriptionType: service.SubscriptionTypeStandard}
 	require.NoError(t, groups.Create(ctx, group))
+	t.Cleanup(func() { require.NoError(t, groups.Delete(context.Background(), group.ID)) })
 	old := issue582Account(0, service.PlatformOpenAI)
 	added := issue582Account(0, service.PlatformOpenAI)
 	require.NoError(t, accounts.Create(ctx, &old))
+	t.Cleanup(func() { require.NoError(t, accounts.Delete(context.Background(), old.ID)) })
 	require.NoError(t, accounts.Create(ctx, &added))
+	t.Cleanup(func() { require.NoError(t, accounts.Delete(context.Background(), added.ID)) })
 	require.NoError(t, accounts.AddToGroup(ctx, old.ID, group.ID, 1))
 	cache := NewSchedulerCache(rdb)
 	bucket := service.SchedulerBucket{GroupID: group.ID, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}

@@ -2394,3 +2394,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - production实跑同一命令67/67通过，差异为功能分支已有9项新版演练回归未提升；bash -n/diff通过。工作流内容与已通过actionlint的功能分支相同，未重复工具编译。
 - 工具提交eb0b6243a36fac28f1e8eef98db2ae898f18cafa已非强推至自有production，真实push run43618719372成功，publish-production为27秒；其他7个构建/发行/版本同步job均skipped，该SHA只有此Release运行，无测试CI。日志实值publish=false、reason=published application source is unchanged；Image latest already matches v2.21.0-ransub.3。git diff应用源码退出0，公开最新仍.3，未为工具/文档制造新应用版本，未连接或重启生产。首次gh日志下载被本机代理断开，随后仅子进程去除代理变量读取同一run成功，未改全局代理。
 - R1配置/自动触发/无重复发行/镜像对齐验收闭环；新应用第一次自动实发与线上实际加载属于D9后续应用推广验收，保留原父项20done/8部分。停用自动发行可在GitHub禁用Release工作流，或回退本工具提交；应用回滚仍用原归档/镜像/备份。
+
+## 2026-11-16：D9.1生产bare SSE服务器故障换线与冷却回池热修复
+
+- 新截图后SSH/数据库核对生产仍为2.21.0-ransub.3/5ce1d1892，公开latest亦为.3。自有production仅工具与文档提升，功能分支没有自动进入生产；保持此隔离，不整分支发布未验收供应池。四个active/schedulable账号均在组2；失败4540/4544为账号6返回type:error、server_error/internal_server_error、siwc executor缺终态。另有已换线成功与换线后400加密历史失败，故不把所有故障归为没有换线。旧请求缺精确timing详情，TTFT空不证明未输出。
+- 根因是bare error分类器只认认证/限流/过载及重试文字，不认明确的server_error或5xx。原位补充结构化服务器故障，复用原failed分类器否决历史/策略/参数错误；未知仍保守，不根据默认502推断。原HTTP/SSE和JSON转换继续共用分类，无第二调度器；只有未输出阶段可以进入原有界换账号，已输出正文/工具/历史和原NoReplay约束保持。
+- 选择性移植功能分支c9688a439的backend冷却回池补丁（其父版本相关文件与production无差异）：快照保留持久成员、读时过滤动态期限，异步重试同样保留；未重启/放行手动停用或跨组账号，未移植其他供应池功能/文档。
+- RED原样回归退出1，13fail/9pass事件；修复专项双轮70pass，广双轮service/handler928pass，真实隔离PG17/Redis7双轮30pass，均有明确package pass、0fail/skip/race。含子例/重复轮次，不称独立场景。原handler新增账号1失败→账号2成功、旧metadata不泄漏、已输出/策略不换线和槽位释放回归。三包go vet与兼容golangci-lint增量fast退出0、0 issues.，非全仓全规则清零。
+- 最小证据H:/Root/DevCache/evidence/sub2api-production-failover/{production-diagnosis,checks,source-inputs}.json及原jsonl；统一H盘当前工作树热修复，原12PNG未跟踪且不计交付。不CI，未新增表/迁移，回退.3程序及镜像保留当前数据；构建、演练、公开Release/镜像及实际加载和业务观测仍分别待验。原28项20done/8部分不变。
