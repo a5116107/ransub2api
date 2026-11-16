@@ -2,11 +2,48 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 )
+
+func TestEncryptedHTTPLegacySelectionWaitsForSuccessfulHistoryAcceptance(t *testing.T) {
+	for _, mode := range []string{"priority-lru", "load-batch", "load-fallback"} {
+		for _, initiallyBound := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/initially-bound=%t", mode, initiallyBound), func(t *testing.T) {
+				groupID := int64(38100)
+				const session = "legacy-encrypted-http"
+				concurrency := schedulerTestConcurrencyCache{}
+				if mode == "load-fallback" {
+					concurrency.loadBatchErr = errors.New("fixture load cache unavailable")
+				}
+				svc := newLegacySchedulerDecisionTestService(newLegacySchedulerDecisionTestAccounts(groupID, true), mode != "priority-lru", concurrency)
+				cache := &schedulerTestGatewayCache{}
+				svc.cache = cache
+				want := int64(0)
+				if initiallyBound {
+					want = 38101
+					require.NoError(t, svc.setStickySessionAccountID(t.Context(), &groupID, session, want, time.Hour))
+				}
+				ctx := WithOpenAIEncryptedReasoningAffinity(t.Context(), []byte(`{"input":[{"type":"reasoning","encrypted_content":"fixture-history"}]}`))
+				ctx = svc.WithOpenAIEncryptedSessionBinding(ctx, &groupID, session)
+				selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, session, "gpt-5.1", map[int64]struct{}{38101: {}})
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				t.Cleanup(func() { releaseLegacySchedulerDecisionSelection(selection) })
+				require.Equal(t, int64(38102), selection.Account.ID)
+				require.Equal(t, want, cache.sessionBindings["openai:"+session], "selection must not commit a replacement before its response succeeds")
+				require.NoError(t, svc.BindStickySessionAfterProfitAdmission(ctx, &groupID, session, selection.Account.ID))
+				require.Equal(t, want, cache.sessionBindings["openai:"+session])
+				require.NoError(t, svc.BindOpenAIEncryptedSessionAfterSuccess(ctx, &groupID, session, selection.Account.ID))
+				require.Equal(t, selection.Account.ID, cache.sessionBindings["openai:"+session])
+			})
+		}
+	}
+}
 
 func TestEncryptedHTTPBindingWaitsForSuccessfulHistoryAcceptance(t *testing.T) {
 	for _, initiallyBound := range []bool{false, true} {

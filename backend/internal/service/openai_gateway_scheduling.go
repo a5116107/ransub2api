@@ -1242,6 +1242,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	// not publish that candidate: its write would make the final account conflict
 	// with this selection's original CAS snapshot. Slot release stays with the caller.
 	canBindSticky := func(account *Account) bool {
+		if openAIEncryptedSessionBindingDeferred(ctx, groupID, sessionHash) {
+			return false
+		}
 		return len(stickyBindingAllowed) == 0 || stickyBindingAllowed[0] == nil || stickyBindingAllowed[0](account)
 	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {

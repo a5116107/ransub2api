@@ -2439,3 +2439,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 
 - 功能分支53a6c6f6f的9文件补丁原样提取为生产c50f61a2b，自动机械合入，无新schema。仅覆盖加密HTTP成功后CAS绑定与非流式SSE完成状态传递，不带入其他自动供应池候选/UI/schema。feature本地双轮1206条test pass、0fail/skip/race，vet0、增量fast lint0；生产提取须独立验证，不继承为生产运行证据。
 - 版本准备2.21.0-ransub.6；线上仍.5。现有生产快照/旧二进制/固定镜像作为回退，计划在隔离恢复库先验证旧→新→旧→新并增加16种密文历史场景，之后才发行和排空升级。账号人工启停、分组、倍率、健康5/3/1和PG/Redis身份保持；原28项20done/8部分不变。
+
+### 2026-11-16：D9.1旧负载调度遗漏与.7候选
+
+- .6源14ac377c4的旧→新→旧→新四阶段均通过，迁移保持432、账号10、实际程序哈希和登录/性能API相符；后续真实HTTP/Redis历史场景失败，候选未发布、生产未改。补充诊断复用四阶段证据，只恢复一次候选副本：普通非流式请求的原账号11先成功，再502换到12，12返回400拒绝加密历史后，Redis绑定仍从11变为12。原始失败保留在encrypted-health-rehearse.json，带具体路径的失败在encrypted-health-history.json，夹具容器/网络均按标签和ID清理。
+- 原因是selectAccountWithLoadAwareness的负载正常及缓存故障回退直接调用CAS写入，未经过此前bindOpenAIStickySessionDuringSelection的延迟条件。原位在既有canBindSticky统一条件排除待提交的加密HTTP会话，沿用原TTL、并发释放、组别/利润门与成功后CAS；不增第二套绑定实现，不改普通请求的eager绑定。
+- 新增TestEncryptedHTTPLegacySelectionWaitsForSuccessfulHistoryAcceptance覆盖三种选择分支和有/无原绑定。旧代码真实退出1，负载正常/故障回退合计4个子例失败；修复后三轮定向race退出0，39顶层/126含子例，0失败/跳过。扩大至原.6命名测试及旧调度/Redis准入回归，三包race退出0，240顶层/648含子例，service7.694s/handler29.673s/repository4.927s，0失败/跳过；不与三轮子集累加。准确选择器与源码输入摘要在encrypted-legacy-checks.json，输出在encrypted-legacy-expanded.jsonl。
+- 预装golangci-lint由Go1.26构建，拒绝项目1.27.4；使用现有模块缓存以项目工具链运行v2.9.0源码。第一次遇到其他本地任务持有全局lint锁，未停止其他进程；仅用官方allow-parallel-runners解除互斥，增量fast原规则最终退出0、0 issues.，失败日志一并保留。三包go vet -p 1 -tags unit退出0；新产物/副本/生产仍分别验收，不用源码通过替代运行加载。
+- .6标签及草稿保留不发布，不强推重写；补齐代码的独立候选改用2.21.0-ransub.7。Release自动发行暂时仍禁用，待合格候选发行后恢复；不运行编译/测试CI。原28项20done/8部分及旧失败会话完整恢复等外部验收保持。
