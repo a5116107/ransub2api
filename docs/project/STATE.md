@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D9.1旧负载调度直写修复已验；构建.7并验证历史副本。
+任务：D9.1的.7/fd83f6c91已上线验收；收尾及回合开发分支。
 授权：唯一H盘工作树；自有production热修复发行部署；不运行编译测试CI。
-生产：仍.5/dddb2ef1f，公开latest同版；不把未验功能分支提升上线。
-根因：旧调度负载选择及负载缓存故障回退直接写绑定，绕过密文历史成功后提交。
-验证：旧版4子例复现；修复三轮126节点及扩大648节点全过、零失败/跳过，三包vet0/增量fastlint0。
-下一动作：完成.7源码验证/构建及副本16历史场景，再发行/镜像/排空部署；.6不发布，Release工作流仍禁用。
-证据：H:/Root/DevCache/evidence/sub2api-production-failover/encrypted-binding-*。
-等待：原28项20done/8部分；旧失败会话完整恢复、PR3/v2.21.5及供应商契约仍保留。
-Attempt：22
+生产：.7/fd83f6c91；自有latest同版，实际程序bea1c3964bc3；.6未发布。
+根因：旧负载选择及缓存故障回退直写绑定，绕过密文历史成功后提交。
+验证：648节点race零失败/跳过，三包vet/增量lint0；四阶段/16历史、公网/唯一账单及UI通过。
+下一动作：同步后验文档，合回feat/automated-upstream-supply并验旧调度，保持单工作树。
+证据：H:/Root/DevCache/evidence/sub2api-production-failover/encrypted-legacy-*；部署/重建哈希一致。
+等待：原28项20done/8部分；旧失败会话完整恢复、PR3/v2.21.5及供应商契约保留。
+Attempt：23
 <!-- resume:end -->
 
 ## 目标与入口
@@ -52,8 +52,8 @@ Attempt：22
 | D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
 | D7 | in_progress | 并发保存/409、重算及候选缺失/无效延迟已验；UI112+支付21、类型/lint/构建/中英390px刷新通过；完整解释待契约 |
 | D8 | in_progress | CLI/额度与统一性能已验；生产副本410→432四阶段、旧程序回退及重升通过；并行混版及其他能力待验 |
-| D9 | in_progress | .4真实7→5换号、.5恢复归因/发行/副本回退/排空加载/重建/公网SSE与界面已验；50条时序成功，原父验收保留 |
-| R1 | done | 自动push运行43618719372 success，源码未变不重发，镜像匹配；新应用实发/生产加载留D9 |
+| D9 | in_progress | .7四阶段/16历史、排空加载/重建/公网SSE/唯一账单/UI已验；50条时序成功，旧失败会话完整恢复待观测 |
+| R1 | done | .7自有latest/固定镜像/线上同源fd83f6c91；43862053541仅封装预构建镜像，无编译测试CI |
 
 ## 工作区与验证约定
 
@@ -64,16 +64,16 @@ Attempt：22
 
 ## 下一项工作
 
-原28项20 done、8部分（D2–D9）。生产/自有latest均.5/dddb2ef1f；本轮发布/业务子项已验，5/3/1保留。上游v2.21.1在[PR#3](https://github.com/a5116107/ransub2api/pull/3)待冲突整合，不称已集成最新上游；原外部验收保留。
+原28项20 done、8部分（D2–D9）。生产/自有latest均.7/fd83f6c91；5/3/1及人工停调保持。上游v2.21.5在[PR#3](https://github.com/a5116107/ransub2api/pull/3)待冲突整合；先将.7旧调度补丁回合开发分支，原验收保留。
 
 ## 外部等待与清理
 
 - D2/D4：供应商或接入方补unknown关联查询及模型/fast倍率来源契约；不恢复真实采购价格任务。
-- D9.1发布子项已验；旧失败会话完整历史恢复须真实观测，并行混版/非文本/缓存净收益仍按原D8依赖验收。
+- D9.1的.7上线已验；仅账号7允许调度，其他人工停调/错误不恢复。旧失败会话完整历史、混版/非文本/缓存净收益保留。
 - D3由用户确认首批非文本的上游/模型/能力组合，再定义独立观测和成功条件；已异步询问，现有文本通过不授权工具/媒体/语音。
 - D5/D6待供应商/接入方补可信前缀、候选缓存共享/存活证据；验证迁移净收益后恢复D7/D8依赖验收。
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
-- Windows完整 repository 测试缺 `SeCreateSymbolicLinkPrivilege`，Linux 同例已通过；由系统管理员提供可创建符号链接的进程后重跑，未改 skip。
+- Windows完整repository缺`SeCreateSymbolicLinkPrivilege`，Linux同例已过；管理员提供权限后重跑，未改skip。
 - 历史拒删的候选、overlay、pyc和运维脚本完整路径/大小/证据见DECISIONS；均保留由拥有者处理，不重试或移动；正式.1包仍在-final。
 - `H:/Root/DevCache/tmp/sub2api-stream-health`历史拒删，本轮复用后3文件21252bytes；不再次删/移动。新production-failover空目录及release-build的2文件20172bytes删除亦在进程创建前被拦截，实际删除0、无活跃引用；完整路径见DECISIONS，由拥有者处理。
 - 本轮原规则全包lint为62项既存诊断（61项未改文件、1项原行），增量0；保留失败输出，不称整包全绿。
