@@ -8,6 +8,86 @@ import (
 	"time"
 )
 
+func TestEncryptedHTTPBindingWaitsForSuccessfulHistoryAcceptance(t *testing.T) {
+	for _, initiallyBound := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new-session", true: "existing-session"}[initiallyBound], func(t *testing.T) {
+			f := newStickyEscapeRebindFixture()
+			if !initiallyBound {
+				delete(f.cache.sessionBindings, "openai:rebind-session")
+			}
+			ctx := WithOpenAIEncryptedReasoningAffinity(t.Context(), []byte(`{"input":[{"type":"reasoning","encrypted_content":"synthetic-history"}]}`))
+			ctx = f.service.WithOpenAIEncryptedSessionBinding(ctx, f.request.GroupID, f.request.SessionHash)
+			f.request.EncryptedReasoning = true
+			selected, _, err := f.scheduler.Select(ctx, f.request)
+			require.NoError(t, err)
+			t.Cleanup(func() { releaseStickyEscapeRebindSelection(selected) })
+			require.NotNil(t, selected)
+			require.Equal(t, int64(947102), selected.Account.ID)
+			want := int64(0)
+			if initiallyBound {
+				want = 947101
+			}
+			require.Equal(t, want, f.cache.sessionBindings["openai:rebind-session"], "selection does not prove the replacement accepts the encrypted history")
+			require.NoError(t, f.service.BindStickySessionAfterProfitAdmission(ctx, f.request.GroupID, f.request.SessionHash, selected.Account.ID))
+			require.Equal(t, want, f.cache.sessionBindings["openai:rebind-session"], "slot admission is not a successful response either")
+			require.NoError(t, f.service.BindOpenAIEncryptedSessionAfterSuccess(ctx, f.request.GroupID, f.request.SessionHash, selected.Account.ID))
+			require.Equal(t, selected.Account.ID, f.cache.sessionBindings["openai:rebind-session"], "only successful acceptance commits the replacement")
+		})
+	}
+}
+
+func TestEncryptedHTTPBindingKeepsOriginalObservationAcrossRetries(t *testing.T) {
+	for _, state := range []string{"original", "newer-success", "expired", "canceled", "profit-gate"} {
+		t.Run(state, func(t *testing.T) {
+			f := newStickyEscapeRebindFixture()
+			ctx := WithOpenAIEncryptedReasoningAffinity(t.Context(), []byte(`{"input":[{"type":"reasoning","encrypted_content":"synthetic-history"}]}`))
+			if state == "profit-gate" {
+				ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{groupID: *f.request.GroupID, platform: PlatformOpenAI, threshold: .5})
+			}
+			ctx = f.service.WithOpenAIEncryptedSessionBinding(ctx, f.request.GroupID, f.request.SessionHash)
+			require.NoError(t, f.service.deleteStickySessionAccountID(ctx, f.request.GroupID, f.request.SessionHash))
+			require.Equal(t, int64(947101), f.cache.sessionBindings["openai:rebind-session"], "temporary ineligibility must not erase history affinity")
+			if state == "newer-success" {
+				f.cache.sessionBindings["openai:rebind-session"] = 947103
+			}
+			if state == "expired" {
+				delete(f.cache.sessionBindings, "openai:rebind-session")
+			}
+			// Reselection and a new cache observation must not replace the
+			// original compare-and-swap baseline after a concurrent success.
+			retry := withOpenAIStickyBindingSnapshot(ctx, f.request.GroupID, f.request.SessionHash, 947103, true)
+			observeOpenAIStickyBinding(retry, f.request.GroupID, f.request.SessionHash, 947103, nil)
+			require.Same(t, openAIStickyBindingSnapshotFromContext(ctx, f.request.GroupID, f.request.SessionHash), openAIStickyBindingSnapshotFromContext(retry, f.request.GroupID, f.request.SessionHash))
+			if state == "canceled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			require.NoError(t, f.service.BindOpenAIEncryptedSessionAfterSuccess(ctx, f.request.GroupID, f.request.SessionHash, 947102))
+			want := int64(947102)
+			if state == "newer-success" {
+				want = 947103
+			}
+			if state == "canceled" || state == "profit-gate" {
+				want = 947101
+			}
+			require.Equal(t, want, f.cache.sessionBindings["openai:rebind-session"])
+		})
+	}
+}
+
+func TestEncryptedHTTPBindingDoesNotChangeOtherSessionsOrPlainRequests(t *testing.T) {
+	f := newStickyEscapeRebindFixture()
+	ctx := WithOpenAIEncryptedReasoningAffinity(t.Context(), []byte(`{"input":"plaintext"}`))
+	ctx = f.service.WithOpenAIEncryptedSessionBinding(ctx, f.request.GroupID, f.request.SessionHash)
+	require.NoError(t, f.service.BindStickySessionAfterProfitAdmission(ctx, f.request.GroupID, f.request.SessionHash, 947102))
+	require.Equal(t, int64(947102), f.cache.sessionBindings["openai:rebind-session"], "ordinary requests retain the original eager binding")
+	ctx = WithOpenAIEncryptedReasoningAffinity(t.Context(), []byte(`{"input":[{"type":"reasoning","encrypted_content":"synthetic"}]}`))
+	ctx = f.service.WithOpenAIEncryptedSessionBinding(ctx, f.request.GroupID, f.request.SessionHash)
+	require.NoError(t, f.service.BindStickySessionAfterProfitAdmission(ctx, f.request.GroupID, "different-session", 947103))
+	require.Equal(t, int64(947103), f.cache.sessionBindings["openai:different-session"])
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_EncryptedStickyKeepsTTFT(t *testing.T) {
 	ctx := WithOpenAIEncryptedReasoningAffinity(context.Background(), []byte(`{"input":[{"type":"reasoning","encrypted_content":"synthetic"}]}`))
 	groupID := int64(10101)

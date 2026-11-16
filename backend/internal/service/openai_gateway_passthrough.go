@@ -372,6 +372,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	var usage *OpenAIUsage
 	var firstTokenMs *int
 	var clientDisconnected bool
+	var streamReadIncomplete bool
 	responseID := ""
 	imageCount := 0
 	var imageOutputSizes []string
@@ -570,6 +571,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			}
 			usage = result.usage
 			responseID = strings.TrimSpace(result.responseID)
+			streamReadIncomplete = result.streamReadIncomplete
 			imageCount = result.imageCount
 			imageOutputSizes = result.imageOutputSizes
 		}
@@ -609,6 +611,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		Duration:                      time.Since(startTime),
 		FirstTokenMs:                  firstTokenMs,
 		ClientDisconnect:              clientDisconnected,
+		streamReadIncomplete:          streamReadIncomplete,
 	}
 	if imageCount > 0 {
 		forwardResult.ImageCount = imageCount
@@ -1172,6 +1175,7 @@ type openaiStreamingResultPassthrough struct {
 }
 
 type openaiNonStreamingResultPassthrough struct {
+	streamReadIncomplete bool
 	*OpenAIUsage
 	usage            *OpenAIUsage
 	responseID       string
@@ -2947,11 +2951,12 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	}
 
 	return &openaiNonStreamingResultPassthrough{
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
-		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		OpenAIUsage:          usage,
+		usage:                usage,
+		responseID:           extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:           countOpenAIImageOutputsFromSSEBody(bodyText),
+		imageOutputSizes:     collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		streamReadIncomplete: !terminalOK || (terminalType != "response.completed" && terminalType != "response.done"),
 	}, nil
 }
 

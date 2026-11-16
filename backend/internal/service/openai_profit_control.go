@@ -416,10 +416,10 @@ func (s *OpenAIGatewayService) ProfitControlVetoLatest(ctx context.Context, sele
 
 // bindOpenAIStickySessionDuringSelection preserves the official eager binding
 // behavior for requests without a profit gate. Profit-controlled requests bind
-// only after the terminal post-slot check, so an account rejected after a rate
-// refresh cannot become the new sticky target.
+// only after the terminal post-slot check. HTTP encrypted-history affinity
+// waits further, until a complete successful response accepts that history.
 func (s *OpenAIGatewayService) bindOpenAIStickySessionDuringSelection(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
-	if gatewayProfitControlGateActive(ctx) || preserveOpenAIGuardianParentBinding(ctx, sessionHash) {
+	if gatewayProfitControlGateActive(ctx) || preserveOpenAIGuardianParentBinding(ctx, sessionHash) || openAIEncryptedSessionBindingDeferred(ctx, groupID, sessionHash) {
 		return nil
 	}
 	return s.BindStickySession(ctx, groupID, sessionHash, accountID)
@@ -427,11 +427,19 @@ func (s *OpenAIGatewayService) bindOpenAIStickySessionDuringSelection(ctx contex
 
 // BindStickySessionAfterProfitAdmission records the terminally admitted
 // account. Without a profit gate it preserves the pre-existing eager binding
-// behavior at the handler bind points. With a gate it never overwrites a
+// behavior at the handler bind points, except provisional HTTP encrypted-history
+// requests. With a gate it never overwrites a
 // different binding that already exists, so a temporarily ineligible account
 // remains sticky and becomes eligible again automatically after its rate
 // recovers.
 func (s *OpenAIGatewayService) BindStickySessionAfterProfitAdmission(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+	if openAIEncryptedSessionBindingDeferred(ctx, groupID, sessionHash) {
+		return nil
+	}
+	return s.bindOpenAIStickySessionAfterAdmission(ctx, groupID, sessionHash, accountID)
+}
+
+func (s *OpenAIGatewayService) bindOpenAIStickySessionAfterAdmission(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
 	if sessionHash == "" || accountID <= 0 {
 		return nil
 	}

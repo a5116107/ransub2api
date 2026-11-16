@@ -11,17 +11,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
 type initialAdmissionRepo struct {
 	excelBPSFailoverAccountRepo
+	cache        service.GatewayCache
 	changed      map[int64]bool
 	disabled     map[int64]bool
 	readErr      error
@@ -62,7 +66,7 @@ func newInitialAdmissionHandler(t *testing.T, repo *initialAdmissionRepo, upstre
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	repo.slots = &helperConcurrencyCacheStub{accountSeq: []bool{true, true, true}}
 	concurrency := service.NewConcurrencyService(repo.slots)
-	gw := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, nil, cfg,
+	gw := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, repo.cache, cfg,
 		nil, concurrency, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billing.Stop)
@@ -70,6 +74,133 @@ func newInitialAdmissionHandler(t *testing.T, repo *initialAdmissionRepo, upstre
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	h.maxAccountSwitches = 2
 	return h
+}
+
+type encryptedHTTPBindingCache struct {
+	testutil.StubGatewayCache
+	mu       sync.Mutex
+	bindings map[string]int64
+}
+
+func (s *encryptedHTTPBindingCache) GetSessionAccountID(_ context.Context, groupID int64, key string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id := s.bindings[fmt.Sprintf("%d:%s", groupID, key)]; id > 0 {
+		return id, nil
+	}
+	return 0, service.ErrStickySessionNotFound
+}
+
+func (s *encryptedHTTPBindingCache) SetSessionAccountID(_ context.Context, groupID int64, key string, id int64, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bindings == nil {
+		s.bindings = make(map[string]int64)
+	}
+	s.bindings[fmt.Sprintf("%d:%s", groupID, key)] = id
+	return nil
+}
+
+func (s *encryptedHTTPBindingCache) DeleteSessionAccountID(_ context.Context, groupID int64, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.bindings, fmt.Sprintf("%d:%s", groupID, key))
+	return nil
+}
+
+func (s *encryptedHTTPBindingCache) snapshot() map[string]int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.bindings)
+}
+
+func TestEncryptedHTTPFailoverOnlyCommitsSuccessfulReplacement(t *testing.T) {
+	for _, outcome := range []string{"rejected", "completed", "partial-failed", "truncated"} {
+		for _, passthrough := range []bool{false, true} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/passthrough=%t/stream=%t", outcome, passthrough, stream), func(t *testing.T) {
+					cache := &encryptedHTTPBindingCache{}
+					repo := &initialAdmissionRepo{cache: cache}
+					upstream := &excelBPSFailoverUpstream{answer: func(call int) *http.Response {
+						switch call {
+						case 1:
+							return &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"server_error","message":"fixture upstream unavailable"}}`))}
+						case 2:
+							if outcome == "rejected" {
+								return &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_encrypted_content","message":"fixture encrypted history rejected"}}`))}
+							}
+							if outcome != "completed" {
+								wire := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n"
+								if outcome == "partial-failed" {
+									wire += "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"fixture failure after output\"}}}\n\n"
+								}
+								return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}
+							}
+							return excelBPSCompleted()
+						default:
+							return excelBPSCompleted()
+						}
+					}}
+					h := newInitialAdmissionHandler(t, repo, upstream)
+					repo.slots.accountSeq = []bool{true, true, true, true}
+					for i := range repo.accounts {
+						a := &repo.accounts[i]
+						a.Type = service.AccountTypeAPIKey
+						a.Credentials = map[string]any{"api_key": fmt.Sprintf("fixture-key-%d", a.ID), "base_url": "https://fixture.example.test"}
+						a.Extra = map[string]any{"openai_passthrough": passthrough}
+					}
+					request := func(encrypted bool) string {
+						c, rec := newExcelBPSFailoverTestContext(t.Context(), stream)
+						c.Request.Header.Set("session_id", "history-affinity-regression")
+						input := `[{"role":"user","content":"hello"}]`
+						if encrypted {
+							// Two unlocated opaque items must not be discarded to
+							// manufacture recovery. Only the binding timing changes.
+							input = `[{"type":"reasoning","encrypted_content":"fixture-one"},{"type":"reasoning","encrypted_content":"fixture-two"},{"role":"user","content":"continue"}]`
+						}
+						body := fmt.Sprintf(`{"model":"gpt-6-astra","stream":%t,"input":%s}`, stream, input)
+						c.Request.Body = io.NopCloser(strings.NewReader(body))
+						c.Request.ContentLength = int64(len(body))
+						h.Responses(c)
+						return rec.Body.String()
+					}
+					require.Contains(t, request(false), "resp_bps_failover")
+					original := cache.snapshot()
+					require.Len(t, original, 1)
+					for _, id := range original {
+						require.Equal(t, int64(1), id)
+					}
+					upstream.onDo = func(_ int) {
+						require.Equal(t, original, cache.snapshot(), "dispatch does not prove that the replacement completed successfully")
+					}
+					replacement := request(true)
+					upstream.onDo = nil
+					require.Equal(t, []int64{1, 1, 2}, upstream.calls())
+					for _, body := range upstream.bodies[1:] {
+						require.Contains(t, string(body), "fixture-one")
+						require.Contains(t, string(body), "fixture-two")
+					}
+					wantAccount := int64(1)
+					if outcome == "completed" {
+						require.Contains(t, replacement, "resp_bps_failover")
+						wantAccount = 2
+						for key := range original {
+							original[key] = wantAccount
+						}
+					} else {
+						require.NotContains(t, replacement, "resp_bps_failover", "the replacement must really fail")
+					}
+					require.Equal(t, original, cache.snapshot(), "only a successful replacement becomes the next turn's sticky target")
+					require.Contains(t, request(true), "resp_bps_failover")
+					require.Equal(t, []int64{1, 1, 2, wantAccount}, upstream.calls(), "the next turn returns to the last successfully bound route")
+					require.Equal(t, original, cache.snapshot())
+					repo.slots.mu.Lock()
+					defer repo.slots.mu.Unlock()
+					require.Equal(t, repo.slots.accountAcquireCalls, repo.slots.accountReleaseCalls)
+				})
+			}
+		}
+	}
 }
 
 func TestOpenAIInitialAdmissionReselectsBeforeSending(t *testing.T) {

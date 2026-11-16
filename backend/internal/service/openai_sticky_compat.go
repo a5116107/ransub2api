@@ -26,6 +26,9 @@ type openAIStickyBindingSnapshot struct {
 }
 
 func withOpenAIStickyBindingSnapshot(ctx context.Context, groupID *int64, sessionHash string, accountID int64, known bool) context.Context {
+	if openAIEncryptedSessionBindingDeferred(ctx, groupID, sessionHash) {
+		return ctx
+	}
 	if strings.TrimSpace(sessionHash) == "" {
 		return ctx
 	}
@@ -43,6 +46,9 @@ func openAIStickyBindingSnapshotFromContext(ctx context.Context, groupID *int64,
 }
 
 func observeOpenAIStickyBinding(ctx context.Context, groupID *int64, sessionHash string, accountID int64, err error) {
+	if openAIEncryptedSessionBindingDeferred(ctx, groupID, sessionHash) {
+		return
+	}
 	if snapshot := openAIStickyBindingSnapshotFromContext(ctx, groupID, sessionHash); snapshot != nil {
 		snapshot.accountID = accountID
 		snapshot.known = err == nil || errors.Is(err, ErrStickySessionNotFound)
@@ -280,6 +286,9 @@ func (s *OpenAIGatewayService) refreshStickySessionTTL(ctx context.Context, grou
 }
 
 func (s *OpenAIGatewayService) deleteStickySessionAccountID(ctx context.Context, groupID *int64, sessionHash string) error {
+	if openAIEncryptedSessionBindingDeferred(ctx, groupID, sessionHash) {
+		return nil
+	}
 	if s == nil || s.cache == nil {
 		return nil
 	}

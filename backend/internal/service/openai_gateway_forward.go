@@ -1565,6 +1565,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		var usage *OpenAIUsage
 		var firstTokenMs *int
 		var clientDisconnected bool
+		var streamReadIncomplete bool
 		var downstreamDeliveryErr error
 		agentCompleted := false
 		responseID := ""
@@ -1689,6 +1690,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, err
 			}
 			usage = nonStreamResult.usage
+			streamReadIncomplete = nonStreamResult.streamReadIncomplete
 			agentCompleted = nonStreamResult.agentCompleted
 			responseID = strings.TrimSpace(nonStreamResult.responseID)
 			imageCount = nonStreamResult.imageCount
@@ -1730,6 +1732,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  firstTokenMs,
 			ClientDisconnect:              clientDisconnected,
+			streamReadIncomplete:          streamReadIncomplete,
 		}
 		if imageCount > 0 {
 			forwardResult.ImageCount = imageCount
