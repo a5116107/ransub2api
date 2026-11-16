@@ -19,22 +19,27 @@ import (
 
 // Version 2 requires upstream identity association as well as address and body
 // evidence. Version 1 observations must be reprobed before they authorize sends.
-const availabilityRequestScopeVersion = 2
+const (
+	availabilityRequestScopeVersion         = 2
+	availabilityResponsesOutputScopeVersion = 3
+)
 
 // AvailabilityRequestScope describes only observed wire capabilities. It stores
 // no prompt, URL, credential or arbitrary request option. Unknown capabilities
 // are deliberately not inferred from a successful text probe.
 type AvailabilityRequestScope struct {
-	Version         int    `json:"version"`
-	Protocol        string `json:"protocol"`
-	Stream          bool   `json:"stream"`
-	Model           string `json:"model"`
-	ServiceTier     string `json:"service_tier"`
-	ReasoningEffort string `json:"reasoning_effort"`
-	Capability      string `json:"capability"`
-	ThinkingMode    string `json:"thinking_mode,omitempty"`
-	ThinkingBudget  int64  `json:"thinking_budget,omitempty"`
-	ProtocolOptions string `json:"protocol_options,omitempty"`
+	Version                 int    `json:"version"`
+	Protocol                string `json:"protocol"`
+	Stream                  bool   `json:"stream"`
+	Model                   string `json:"model"`
+	ServiceTier             string `json:"service_tier"`
+	ReasoningEffort         string `json:"reasoning_effort"`
+	ReasoningSummary        string `json:"reasoning_summary,omitempty"`
+	IncludeEncryptedContent bool   `json:"include_encrypted_content,omitempty"`
+	Capability              string `json:"capability"`
+	ThinkingMode            string `json:"thinking_mode,omitempty"`
+	ThinkingBudget          int64  `json:"thinking_budget,omitempty"`
+	ProtocolOptions         string `json:"protocol_options,omitempty"`
 	// Stored separately inside the repository's private state, never in API or history JSON.
 	ConnectionScope string `json:"-"`
 }
@@ -219,6 +224,13 @@ func availabilityOption(value gjson.Result, options ...string) (string, bool) {
 	return "", false
 }
 
+func availabilityResponsesReasoningSummary(value gjson.Result) (string, bool) {
+	if !value.Exists() {
+		return "", true
+	}
+	return availabilityOption(value, "none", "auto", "concise", "detailed")
+}
+
 func availabilityTextContent(value gjson.Result, messages bool) bool {
 	if value.Type == gjson.String {
 		return true
@@ -393,7 +405,7 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 				return nil
 			}
 			for option := range reasoning {
-				if option != "effort" {
+				if option != "effort" && option != "summary" {
 					return nil
 				}
 			}
@@ -401,7 +413,21 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 			if !valid {
 				return nil
 			}
-		case "tools", "include":
+			scope.ReasoningSummary, valid = availabilityResponsesReasoningSummary(reasoning["summary"])
+			if !valid {
+				return nil
+			}
+		case "include":
+			if !value.IsArray() {
+				return nil
+			}
+			for _, item := range value.Array() {
+				if scope.Protocol == "chat_http" || scope.IncludeEncryptedContent || item.Type != gjson.String || item.String() != "reasoning.encrypted_content" {
+					return nil
+				}
+				scope.IncludeEncryptedContent = true
+			}
+		case "tools":
 			if !value.IsArray() || len(value.Array()) != 0 {
 				return nil
 			}
@@ -412,6 +438,11 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 		default:
 			return nil
 		}
+	}
+	if scope.ReasoningSummary != "" || scope.IncludeEncryptedContent {
+		// Older readers ignore the new JSON fields but compare Version. Never
+		// let their plain-text observations authorize an extended output shape.
+		scope.Version = availabilityResponsesOutputScopeVersion
 	}
 	return scope
 }

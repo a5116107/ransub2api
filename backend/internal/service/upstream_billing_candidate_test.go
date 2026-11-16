@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -36,7 +37,7 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -50,6 +51,9 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				}
 				if tc.protocol == "chat_ingress" {
 					entry["protocol"] = "chat_http"
+				}
+				if tc.protocol == "chat_responses" {
+					entry["protocol"], entry["include_encrypted_content"] = "responses_http", true
 				}
 				account := billingCandidateAccount(t, id, entry)
 				if tc.protocol == "responses_native" {
@@ -82,7 +86,7 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				rateLimitService: newOpenAIAdvancedSchedulerRateLimitService(tc.engine), concurrencyService: NewConcurrencyService(concurrency)}
 			group := profitControlTestGroup(7, 0.5, 0)
 			ctx := billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`)
-			if tc.protocol == "chat_ingress" {
+			if tc.protocol == "chat_ingress" || tc.protocol == "chat_responses" {
 				request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"service_tier":"priority"}`))
 			}
@@ -118,6 +122,62 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBillingCandidateChatResponsesOutputScope(t *testing.T) {
+	for _, effort := range []string{"", "none", "minimal", "high"} {
+		t.Run("effort="+effort, func(t *testing.T) {
+			entry := billingApplicabilityEntry("responses_http", "priority", true)
+			entry["model"], entry["include_encrypted_content"] = "wire-fixture", true
+			if effort != "" {
+				entry["reasoning_effort"], entry["reasoning_summary"] = effort, "auto"
+			}
+			account := billingCandidateAccount(t, 922, entry)
+			account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
+			at := time.Now().UTC().Add(-time.Second)
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			options := ""
+			if effort != "" {
+				options = fmt.Sprintf(`,"reasoning_effort":%q`, effort)
+			}
+			svc := newOpenAIGatewayServiceWithSettings(t, nil)
+			group := profitControlTestGroup(7, .5, 0)
+			ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+			body := []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"service_tier":"priority"` + options + `}`)
+			ctx = svc.WithUpstreamBillingCandidateRequest(ctx, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), body)
+			require.Empty(t, upstreamBillingCandidateVetoReason(ctx, account, at))
+			entry["group_rate_applies"] = false
+			_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			require.Equal(t, "profit_upstream_scope_excluded", upstreamBillingCandidateVetoReason(ctx, account, at))
+		})
+	}
+}
+
+func TestBillingCandidateChatResponsesPostSlotRefresh(t *testing.T) {
+	makeAccount := func(covered bool) *Account {
+		entry := billingApplicabilityEntry("responses_http", "unspecified", covered)
+		entry["include_encrypted_content"] = true
+		return billingCandidateAccount(t, 923, entry)
+	}
+	selected, replacement := makeAccount(true), makeAccount(false)
+	svc := &OpenAIGatewayService{}
+	group := profitControlTestGroup(7, .5, 0)
+	ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+	// Install the gate before attaching an account-only snapshot. A snapshot
+	// lacking group data must not masquerade as a successful pricing refresh.
+	svc.schedulerSnapshot = NewSchedulerSnapshotService(&gatewayProfitSnapshotCache{account: replacement}, nil, gatewayProfitAccountRepo{}, nil, nil)
+	body := []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}]}`)
+	ctx = svc.WithUpstreamBillingCandidateRequest(ctx, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), body)
+	require.Empty(t, upstreamBillingCandidateVetoReason(ctx, selected, time.Now()))
+	latest, vetoed, reason := svc.ProfitControlVetoLatest(ctx, selected)
+	require.Same(t, replacement, latest)
+	require.True(t, vetoed)
+	require.Equal(t, "profit_upstream_scope_excluded", reason)
+	request, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", strings.NewReader(`{"model":"gpt-fixture","stream":true,"input":"hi","include":["reasoning.encrypted_content"]}`))
+	require.NoError(t, err)
+	require.ErrorContains(t, guardUpstreamBillingHTTPApplicability(replacement, request), "profit_upstream_scope_excluded")
 }
 
 func TestBillingCandidateUsesActualTierAndEffortTransforms(t *testing.T) {
@@ -616,6 +676,11 @@ func TestBillingCandidateChatIngressDeferredAndMetadata(t *testing.T) {
 				return
 			}
 			vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+			if name == "responses conversion" {
+				require.True(t, vetoed)
+				require.Equal(t, "profit_upstream_scope_unknown", reason)
+				return
+			}
 			require.False(t, vetoed, reason)
 			if name != "disabled" && name != "suppressed" {
 				require.Equal(t, "profit_upstream_scope_expired", upstreamBillingCandidateVetoReason(ctx, account, at.Add(2*time.Hour)), "deferred scope retains declaration validity")

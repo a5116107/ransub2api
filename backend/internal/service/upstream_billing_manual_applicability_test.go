@@ -56,6 +56,29 @@ func TestBillingManualApplicabilityLifecycle(t *testing.T) {
 	require.JSONEq(t, string(before), string(after))
 }
 
+func TestBillingManualApplicabilityResponsesOutputLifecycle(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Second)
+	account := billingManualAccount()
+	entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+	entry["reasoning_summary"], entry["include_encrypted_content"] = "auto", true
+	_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+	require.NoError(t, err)
+	view := UpstreamBillingManualApplicabilityView(account, at.Add(time.Second))
+	require.Equal(t, 2, view["schema_version"])
+	entries := view["entries"].([]upstreamBillingApplicabilityEntry)
+	require.Equal(t, "auto", entries[0].ReasoningSummary)
+	require.True(t, entries[0].IncludeEncryptedContent)
+	require.Equal(t, "covered", entries[0].Conclusion)
+	// Persistence through JSON must preserve the exact output contract.
+	raw, err := json.Marshal(account.Extra)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &account.Extra))
+	require.Equal(t, "active", UpstreamBillingManualApplicabilityView(account, at.Add(time.Second))["status"])
+	account.Credentials["api_key"] = "changed-fixture-key"
+	require.Equal(t, "binding_changed", UpstreamBillingManualApplicabilityView(account, at.Add(time.Second))["status"])
+	require.Equal(t, "expired", UpstreamBillingManualApplicabilityView(account, at.Add(2*time.Hour))["status"])
+}
+
 func TestBillingManualApplicabilityBindingAndSourcePrecedence(t *testing.T) {
 	at := time.Now().UTC().Add(-time.Second)
 	for _, change := range []string{"key", "base", "rate", "mapping", "sync", "account"} {

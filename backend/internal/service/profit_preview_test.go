@@ -222,3 +222,33 @@ func TestPreviewProfitAdmissionScopeGateAndProtocolBoundaries(t *testing.T) {
 	require.Equal(t, "account_unavailable", result.Reason)
 	require.False(t, result.Admitted)
 }
+
+func TestPreviewProfitAdmissionResponsesOutputExactScope(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Second)
+	entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+	entry["reasoning_summary"], entry["include_encrypted_content"] = "auto", true
+	declaration := billingApplicabilityFixture(at, entry)
+	declaration["schema_version"] = 2
+	account := billingApplicabilityAccount(t, at, declaration)
+	scope := AvailabilityRequestScope{Version: availabilityResponsesOutputScopeVersion, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", ReasoningSummary: "auto", IncludeEncryptedContent: true, Capability: "text"}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*AvailabilityRequestScope)
+		want   string
+	}{
+		{"exact", func(*AvailabilityRequestScope) {}, "covered"},
+		{"old version", func(s *AvailabilityRequestScope) { s.Version = availabilityRequestScopeVersion }, "unknown"},
+		{"different summary", func(s *AvailabilityRequestScope) { s.ReasoningSummary = "none" }, "unknown"},
+		{"encrypted output absent", func(s *AvailabilityRequestScope) { s.IncludeEncryptedContent = false }, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requestScope := scope
+			tc.mutate(&requestScope)
+			group := profitControlTestGroup(7, 0.5, 0)
+			input := ProfitPreviewGroupInput{Group: group, Accounts: []*Account{account}, RequestScopes: []ProfitPreviewRequestScope{{AccountID: account.ID, PublicModel: "gpt-fixture", Scope: requestScope}}}
+			verdict := PreviewProfitAdmission([]ProfitPreviewGroupInput{input}, at.Add(time.Second))[0].ScopeVerdicts[0]
+			require.Equal(t, tc.want, verdict.Applicability)
+			require.Equal(t, tc.want == "covered", verdict.Admitted)
+		})
+	}
+}

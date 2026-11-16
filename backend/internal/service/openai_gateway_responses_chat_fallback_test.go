@@ -204,7 +204,7 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 	}
 }
 
-func TestBillingCandidateChatResponsesConversionKeepsUnknownWire(t *testing.T) {
+func TestBillingCandidateChatResponsesConversionExactOutputScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, stream := range []bool{false, true} {
 		for _, effort := range []string{"", "high"} {
@@ -262,7 +262,8 @@ func TestBillingCandidateChatResponsesConversionKeepsUnknownWire(t *testing.T) {
 				request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body)
 				vetoed, reason := openAIProfitControlVetoReason(ctx, account)
-				require.False(t, vetoed, "the excluded Chat declaration must not describe the actual Responses conversion: %s", reason)
+				require.True(t, vetoed, "a plain-text declaration must not grant converted output options")
+				require.Equal(t, "profit_upstream_scope_unknown", reason)
 				forward := func(selected *Account) (*OpenAIForwardResult, error) {
 					c, _ := gin.CreateTestContext(httptest.NewRecorder())
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body)).WithContext(ctx)
@@ -294,7 +295,9 @@ func TestBillingCandidateChatResponsesConversionKeepsUnknownWire(t *testing.T) {
 						require.Equal(t, effort, gjson.GetBytes(payload, "reasoning.effort").String())
 						require.Equal(t, "auto", gjson.GetBytes(payload, "reasoning.summary").String())
 					}
-					require.Nil(t, availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), payload))
+					scope := availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), payload)
+					require.NotNil(t, scope)
+					require.True(t, scope.IncludeEncryptedContent)
 				default:
 					t.Fatal("legacy control did not send the converted request")
 				}
@@ -303,6 +306,37 @@ func TestBillingCandidateChatResponsesConversionKeepsUnknownWire(t *testing.T) {
 				require.Nil(t, result)
 				require.ErrorContains(t, err, "profit_upstream_scope_unknown")
 				require.Empty(t, observed, "restoring the declaration must restore pre-send rejection")
+
+				outgoing["include_encrypted_content"] = true
+				if effort != "" {
+					outgoing["reasoning_summary"] = "auto"
+				}
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, outgoing, ingress), at)
+				require.NoError(t, err)
+				vetoed, reason = openAIProfitControlVetoReason(ctx, account)
+				require.False(t, vetoed, "the exact output declaration authorizes the actual converted scope: %s", reason)
+				result, err = forward(account)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				select {
+				case payload := <-observed:
+					scope := availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), payload)
+					require.NotNil(t, scope)
+					status, _ := upstreamBillingScopeVerdictAt(account, scope, time.Now())
+					require.Equal(t, "covered", status)
+					require.True(t, scope.Stream)
+					require.Equal(t, "wire-fixture", scope.Model)
+					require.True(t, scope.IncludeEncryptedContent)
+				default:
+					t.Fatal("exact output declaration did not send the converted request")
+				}
+				outgoing["group_rate_applies"] = false
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, outgoing, ingress), at)
+				require.NoError(t, err)
+				result, err = forward(account)
+				require.Nil(t, result)
+				require.ErrorContains(t, err, "profit_upstream_scope_excluded")
+				require.Empty(t, observed, "revoked output applicability must stop before network send")
 			})
 		}
 	}

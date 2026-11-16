@@ -611,7 +611,7 @@ profit-preview 输入需导出 group_rate_multiplier，输出 rejected_account_s
 
 #### 5.3.2 精确scope离线预演（D2.6.2）
 
-原`profit-preview`增加每组可选的`request_scopes`（最多4096项），不创建第二工具。指定账号ID、公开模型和**最终出站scope**；scope采用现有`AvailabilityRequestScope` v2文本结构，不含提示词、地址、凭据或请求正文。解析拒绝未知scope字段或不存在的目标账号，原账号级JSON/CLI输入保持兼容。
+原`profit-preview`增加每组可选的`request_scopes`（最多4096项），不创建第二工具。指定账号ID、公开模型和**最终出站scope**；scope采用现有`AvailabilityRequestScope`文本结构（普通文本v2，精确Responses输出选项v3，见5.3.11），不含提示词、地址、凭据或请求正文。解析拒绝未知scope字段或不存在的目标账号，原账号级JSON/CLI输入保持兼容。
 
 ```json
 {
@@ -725,8 +725,28 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 原Chat handler在Key/组effort规则及渠道模型映射之后，沿同一个`WithUpstreamBillingCandidateRequest`捕获文本scope；在普通选号、黏性、重选及抢槽后消费原倍率适用声明，不另建调度器或转发路径。原生Chat→Chat只对固定OpenAI API Key路由提前预测，复用实际转发中的账号模型映射/归一化、GLM effort归一化及fast策略快照；`none`/`minimal`按原Chat语义保留，不套Responses的过滤规则。
 
 - 候选不保存正文、messages或提示词闭包；复制独立模型/tier/effort元数据，仅另外保存是否包含assistant历史的布尔值。原Chat发送会对DeepSeek语义的assistant历史补入`reasoning_content`；原生Chat与固定Responses→Chat都延后这种隐藏历史的精确预测，不把纯文本声明外推到新增字段。普通Chat历史及DeepSeek仅user输入保持原过滤；通用声明有效性与最终实际body终检仍保留。未知设置、策略block和未知scope只延后精确预测；关闭/抑制利润门维持兼容。
-- Chat→Responses转换会增加`include=reasoning.encrypted_content`，显式effort还会增加`reasoning.summary=auto`；这些不是现有纯文本scope已观察的能力。当前只用真实HTTP对照证明：Chat声明不会误授权转换，旧兼容账号仍能按原路径发送，恢复声明后再次拒发；不把转换新增字段伪装成已覆盖。Chat→Anthropic、Mistral/CN等其他平台、Responses形状的Chat入站、工具/媒体与动态路由仍延后，不把入站URL当实际协议证据，保留原物理发送终检。
+- Chat→Responses转换新增的加密输出和推理摘要须独立精确声明，合同与验收见5.3.11；旧纯文本/入站Chat声明不继承这两项输出能力。Chat→Anthropic、Mistral/CN等其他平台、Responses形状的Chat入站、工具/媒体与动态路由仍延后，不把入站URL当实际协议证据，保留原物理发送终检。
 - 验收覆盖两调度器的普通/黏性/排除重选/恢复、槽已取得与等待后复核、完整Chat handler的渠道与账号双映射，以及实际转发路径在本地真实HTTP/SSE网络中的最终模型/tier/effort。撤销适用声明后须在实际网络写入前拒发；健康原绑定不被候选否决删除，不扩大跨线路重放权限。最终双轮race为2218条test pass、0fail/skip/race，vet/增量fast lint/Linux构建退出0，7项输入drift0；计数含子例与双轮，非2218个独立场景。具体命令及原失败见STATE/DECISIONS；本项不是生产加载或严格产品闭环证明。
+
+#### 5.3.11 Chat→Responses精确输出选项（D2.6.11，本地子验收）
+
+在原文本scope、声明解析器、利润候选和真实发送终检中增加两个独立维度：`reasoning_summary`（缺省与`none`不同）及`include_encrypted_content`。它们只描述输出能力；不授权加密历史、previous_response_id、工具、媒体或跨线路重放。Chat转换使用原转换器产生的实际输出选项，不将入站Chat声明当成出站Responses合同。
+
+- 旧纯文本声明保持schema v1，扩展选项使用schema v2；手工确认自动选版本。v1不得携带非缺省扩展，v2逐项精确匹配；旧应用拒绝v2，而不是忽略字段后错误放行。新增输出选项的可用性scope使用version 3，旧的version 2观测不能借用；未扩展scope维持原版本，不废弃已有纯文本证据。
+
+```json
+{
+  "schema_version": 2,
+  "source_version": "supplier-output-contract-1",
+  "observed_at": "2026-11-16T00:00:00Z",
+  "expires_at": "2026-11-16T00:10:00Z",
+  "entries": [{"model":"WIRE_MODEL","protocol":"responses_http","service_tier":"priority","reasoning_effort":"high","reasoning_summary":"auto","include_encrypted_content":true,"context":"all","group_rate_applies":true}]
+}
+```
+
+- 原账号编辑器显式选择推理摘要和加密输出，账号结论同时展示两者；切换为Chat协议时不提交Responses专属字段，普通保存不续期。供应商声明仍优先于手工声明，Key/线路/模型映射/倍率变更及TTL继续失效。精确预演、候选、抢槽后和实际HTTP/逐WS轮复核共用原解析器和评估器。
+- 验收要求原两调度器/黏性/重选与后置复核、实际HTTP/SSE的“原声明拒绝→兼容对照发送→精确声明发送→明确排除拒发”，并覆盖输出组合/未知/错误形状、旧版本不借用、中英UI保存重开/过期/撤销。结果与未闭合边界在STATE/DECISIONS记录；不是供应商合同实证或生产加载。
+- 回退前一应用不需要schema迁移或清空数据；其原解析器拒绝schema v2、原scope比较拒绝version 3，因此扩展线路会保持拒发，不能承诺新能力在旧版继续可用。恢复新版后仍须满足原TTL与绑定，回退不续期、不降低人工限制。
 
 ### 5.4 采购分桶、产品组合与自动重归类（提案）
 
@@ -1775,7 +1795,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 
 | 范围 | 当前源码证据 | 尚缺什么 / 不能据此宣称什么 |
 | --- | --- | --- |
-| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.10。原生透传/非透传、固定转换、原生Chat入站及透传/固定池WS首帧候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
+| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.11。原生透传/非透传、固定转换、原生Chat入站及透传/固定池WS首帧候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
@@ -1795,7 +1815,7 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 
 | ID / 优先级 | 原位工作与依赖 | 可验收结果 / 外部边界 |
 | --- | --- | --- |
-| D2.6 / P0 | D2.6.1–.10声明/预演/来源、原生Responses/Chat、固定Responses转Chat及透传/固定池WS首帧候选已有本地证据，见5.3.1–5.3.10；余其他入站转换、动态WS路径、受管资格与真实来源；依赖D2.1–D2.5 | .10候选/WS/Chat双轮race2218条test pass、0fail/skip/race；覆盖实际HTTP/SSE、两调度器/黏性/重选、槽后刷新及DeepSeek隐藏历史的未知/物理拒发边界，详见5.3.10及DECISIONS。历史.1–.9 SQL/UI/WS与静态证据保留，不累加为独立场景总数。最终vet/增量fast lint/Linux退出0、7项输入drift0；实际站点合同、其余转换/WS与严格资格仍开放，不增加原分母 |
+| D2.6 / P0 | D2.6.1–.11声明/预演/来源、原生Responses/Chat、固定双向文本转换及透传/固定池WS首帧候选已有本地证据，见5.3.1–5.3.11；余其他入站转换、动态WS、受管资格与真实来源；依赖D2.1–D2.5 | .11双轮race5918条test pass、SQL58、UI35，0fail/skip/race；实际HTTP/SSE、四WS模式、两调度器/粘性/重选、槽后及版本不借用已验，详见5.3.11/DECISIONS。vet/增量fast lint/Linux和前端构建退出0，中英390px错误0，25项输入drift0。计数含子例/双轮，旧证据不累加为独立场景；实际合同、其余转换/WS与严格资格仍开放，原分母不变 |
 | D5.3 / P0 | 沿timing/usage及原运维入口建立上游原始缓存和同层指标聚合；依赖D2.5/D5.1 | 按最终Key摘要/实际组/模型/协议/档位/线路版本和窗口汇总，身份未知单列；请求命中、Token加权、覆盖、样本/新鲜度及业务/合成来源分开；复用TTFB/TTFS/首推理/首文本、输出停顿、完整成功与物理attempt的同scope口径，不把最终成功掩盖前序失败。与下游本人面板/计费桶隔离，30天边界/查询成本/权限验证；不以当前账号配置补历史 |
 | D3.2 / P0 | 扩展原quality/judge的分维度证据、独立参考、测量/策略版本和漂移；依赖D2.6 | 功能质量/模型身份/系统判题故障分开；独立TTL、覆盖、原因和配置变更失效，晚到不复活；夹具可先验合同，真实身份结论须实际独立基线，不因缺运行数据停做本地合同 |
 | D8.1 / P0 | 在原runner/计划/租约内完成多周期预算和覆盖编译；依赖D2.6/D5.3的scope定义 | 物理调用含分页、token、判题、全局/站点/共享Key并发、恢复预留与公平性统一计数；100绑定含故障不饥饿，补生产周期锁/多节点覆盖观察，耗尽不续绿；保存前预览并拒绝不可能周期。已有100绑定测试继续保留，不能用其替代预算总体验收 |

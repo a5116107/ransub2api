@@ -23,6 +23,33 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestAvailabilityResponsesOutputNeverBorrowsPlainTextObservation(t *testing.T) {
+	plain := []byte(`{"model":"gpt-fixture","input":"hello"}`)
+	extended := []byte(`{"model":"gpt-fixture","input":"hello","include":["reasoning.encrypted_content"],"reasoning":{"summary":"auto"}}`)
+	request := func(body []byte) *http.Request {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://fixture.invalid/v1/responses", bytes.NewReader(body))
+		require.NoError(t, err)
+		return req
+	}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	report := availabilityAdmissionPass(account.ID, "gpt-fixture")
+	report.Models[0].Decision.Scope = availabilityScopeForRequest(request(plain), plain)
+	svc := &OpenAIGatewayService{availabilityReader: &availabilityAdmissionRepo{reports: []*AvailabilityReport{report}}}
+	require.NoError(t, svc.admitAvailabilityRequest(t.Context(), request(plain), account))
+	require.ErrorContains(t, svc.admitAvailabilityRequest(t.Context(), request(extended), account), "availability_scope_unconfirmed")
+	scope := availabilityScopeForRequest(request(extended), extended)
+	require.NotNil(t, scope)
+	require.NotEqual(t, report.Models[0].Decision.Scope.Version, scope.Version)
+	report.Models[0].Decision.Scope = scope
+	require.NoError(t, svc.admitAvailabilityRequest(t.Context(), request(extended), account))
+	require.ErrorContains(t, svc.admitAvailabilityRequest(t.Context(), request(plain), account), "availability_scope_unconfirmed")
+	// Emulate an older JSON reader losing the extension fields. Version 3
+	// still prevents its new observation from matching a plain Version 2 send.
+	oldReader := *scope
+	oldReader.ReasoningSummary, oldReader.IncludeEncryptedContent = "", false
+	require.NotEqual(t, oldReader, *availabilityScopeForRequest(request(plain), plain))
+}
+
 func TestAvailabilityMessagesScopeMatchesOnlyObservedCapabilities(t *testing.T) {
 	payload, err := createPelicanClaudePayload("claude-opus-4-6", "probe", "high")
 	require.NoError(t, err)

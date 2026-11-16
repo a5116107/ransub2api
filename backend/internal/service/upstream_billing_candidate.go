@@ -33,8 +33,7 @@ func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
 
 // WithUpstreamBillingCandidateRequest records prompt-free ingress metadata
 // after channel mapping. Predictable native HTTP Responses/Chat and fixed
-// Responses to Chat text conversions share the original wire transformers. All routes
-// keep their original final-send checks.
+// text conversions share the original wire transformers and final-send checks.
 // Unknown metadata/policy defers scope-specific filtering, never qualifies
 // supply. Declaration expiry, validity and binding still apply to every route.
 func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.Context, request *http.Request, body []byte) context.Context {
@@ -183,14 +182,31 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		if candidate.scope.Protocol == "responses_ws_v2" {
 			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope)
 		} else if candidate.scope.Protocol == "chat_http" {
-			// Chat ingress may also convert to Responses/Anthropic. Only the
-			// fixed raw Chat route is predictable under this text descriptor.
-			if resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil) == APIProtocolChatCompletions {
+			protocol := resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil)
+			if protocol == APIProtocolChatCompletions || protocol == APIProtocolResponses && candidate.gateway != nil {
 				request, body := billingApplicabilityScopeRequest(*candidate.scope)
 				model := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, candidate.scope.Model, ""))
 				if !isOpenAIImageGenerationModel(model) {
 					body = ReplaceModelInBody(body, model)
-					if normalized, changed := NormalizeGLMOpenAIReasoningEffort(body, model); changed {
+					if protocol == APIProtocolResponses {
+						var chat apicompat.ChatCompletionsRequest
+						if json.Unmarshal(body, &chat) != nil {
+							return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+						}
+						// The converter sees only detached scope metadata and synthetic
+						// text, never the actual conversation or encrypted history.
+						chat.Messages = []apicompat.ChatMessage{{Role: "user", Content: json.RawMessage(`""`)}}
+						responses, err := chatCompletionsToResponses(candidate.gateway.cfg, &chat)
+						if err != nil {
+							return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+						}
+						normalizeResponsesRequestServiceTier(responses)
+						body, err = json.Marshal(responses)
+						if err != nil {
+							return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+						}
+						request.URL.Path = "/v1/responses"
+					} else if normalized, changed := NormalizeGLMOpenAIReasoningEffort(body, model); changed {
 						body = normalized
 					}
 					var err error

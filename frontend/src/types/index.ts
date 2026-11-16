@@ -1142,13 +1142,15 @@ export interface UpstreamBillingApplicabilityEntry {
   protocol: string
   service_tier: string
   reasoning_effort: string
+  reasoning_summary?: 'none' | 'auto' | 'concise' | 'detailed'
+  include_encrypted_content?: boolean
   context: string
   group_rate_applies: boolean | null
   conclusion: 'covered' | 'excluded' | 'unknown' | 'conflict' | 'expired'
 }
 
 export interface UpstreamBillingApplicability {
-  schema_version: 1
+  schema_version: 1 | 2
   source: 'sub2api.key_billing' | 'new_api.pricing'
   source_version: string
   observed_at: string

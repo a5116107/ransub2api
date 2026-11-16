@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,119 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestBillingApplicabilityResponsesOutputScope(t *testing.T) {
+	for _, protocol := range []string{"responses_http", "responses_ws_v2"} {
+		for _, summary := range []string{"", "none", "auto", "concise", "detailed"} {
+			for _, encrypted := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/summary=%s/encrypted=%v", protocol, summary, encrypted), func(t *testing.T) {
+					body := map[string]any{"model": "gpt-fixture", "input": "private prompt", "reasoning": map[string]any{"effort": "high"}}
+					method, target := http.MethodPost, "https://fixture.invalid/v1/responses"
+					if protocol == "responses_ws_v2" {
+						method, target = http.MethodGet, "wss://fixture.invalid/v1/responses"
+						body["type"] = "response.create"
+					}
+					if summary != "" {
+						body["reasoning"].(map[string]any)["summary"] = summary
+					}
+					if encrypted {
+						body["include"] = []string{"reasoning.encrypted_content"}
+					}
+					payload, err := json.Marshal(body)
+					require.NoError(t, err)
+					request := httptest.NewRequest(method, target, nil)
+					scope := availabilityScopeForRequest(request, payload)
+					require.NotNil(t, scope)
+					raw, err := json.Marshal(scope)
+					require.NoError(t, err)
+					require.Equal(t, summary, gjson.GetBytes(raw, "reasoning_summary").String())
+					require.Equal(t, encrypted, gjson.GetBytes(raw, "include_encrypted_content").Bool())
+					version := int64(2)
+					if summary != "" || encrypted {
+						version = 3 // An older reader must not erase the new scope dimensions.
+					}
+					require.Equal(t, version, gjson.GetBytes(raw, "version").Int())
+					require.NotContains(t, string(raw), "private prompt")
+					require.True(t, billingApplicabilityScopeShapeKnown(*scope))
+				})
+			}
+		}
+	}
+}
+
+func TestBillingApplicabilityResponsesOutputDeclaration(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Second)
+	entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+	entry["reasoning_effort"], entry["reasoning_summary"], entry["include_encrypted_content"] = "high", "auto", true
+	fixture := billingApplicabilityFixture(at, entry)
+	fixture["schema_version"] = 2
+	for _, tc := range []struct{ name, body, want string }{
+		{"exact", `{"model":"gpt-fixture","input":"hi","include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}}`, "covered"},
+		{"no summary", `{"model":"gpt-fixture","input":"hi","include":["reasoning.encrypted_content"],"reasoning":{"effort":"high"}}`, "unknown"},
+		{"no encrypted output", `{"model":"gpt-fixture","input":"hi","reasoning":{"effort":"high","summary":"auto"}}`, "unknown"},
+		{"other summary", `{"model":"gpt-fixture","input":"hi","include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"detailed"}}`, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := billingApplicabilityAccount(t, at, fixture)
+			scope := availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), []byte(tc.body))
+			require.NotNil(t, scope)
+			status, _ := upstreamBillingScopeVerdictAt(account, scope, at.Add(time.Second))
+			require.Equal(t, tc.want, status)
+		})
+	}
+	// Reusing v1 would let an old decoder discard the output fields and grant
+	// a different request. Extended declarations require a fail-closed version.
+	fixture["schema_version"] = 1
+	raw, err := json.Marshal(fixture)
+	require.NoError(t, err)
+	require.Nil(t, decodeUpstreamBillingApplicability(raw, at))
+}
+
+func TestBillingApplicabilityResponsesOutputRejectsUnprovenShapes(t *testing.T) {
+	for _, options := range []string{
+		`"include":null`, `"include":"reasoning.encrypted_content"`,
+		`"include":["reasoning.encrypted_content","reasoning.encrypted_content"]`,
+		`"include":["reasoning.encrypted_content", "other"]`,
+		`"include":[null]`, `"include":["Reasoning.encrypted_content"]`,
+		`"reasoning":{"summary":""}`, `"reasoning":{"summary":null}`,
+		`"reasoning":{"summary":"Auto"}`, `"reasoning":{"summary":true}`,
+		`"reasoning":{"summary":"auto","summary":"none"}`,
+		`"reasoning":{"summary":"auto","other":true}`,
+		`"input":[{"type":"reasoning","encrypted_content":"private-history"}],"include":["reasoning.encrypted_content"]`,
+	} {
+		t.Run(options, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-fixture",` + options + `}`)
+			require.Nil(t, availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), body))
+		})
+	}
+	at := time.Now().UTC().Add(-time.Second)
+	for _, tc := range []struct {
+		name, field string
+		value       any
+	}{
+		{"unknown summary", "reasoning_summary", "other"},
+		{"empty summary", "reasoning_summary", ""},
+		{"null summary", "reasoning_summary", nil},
+		{"numeric summary", "reasoning_summary", 1},
+		{"null encrypted flag", "include_encrypted_content", nil},
+		{"numeric encrypted flag", "include_encrypted_content", 1},
+		{"string encrypted flag", "include_encrypted_content", "true"},
+		{"Chat output not inferred", "protocol", "chat_http"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+			entry["include_encrypted_content"] = true
+			entry[tc.field] = tc.value
+			fixture := billingApplicabilityFixture(at, entry)
+			fixture["schema_version"] = 2
+			raw, err := json.Marshal(fixture)
+			require.NoError(t, err)
+			require.Nil(t, decodeUpstreamBillingApplicability(raw, at))
+		})
+	}
+}
 
 func billingApplicabilityFixture(at time.Time, entries ...map[string]any) map[string]any {
 	return map[string]any{
@@ -134,7 +247,7 @@ func TestBillingApplicabilityContract(t *testing.T) {
 		{"tier not normalized", func(d map[string]any) { d["entries"].([]map[string]any)[0]["service_tier"] = "default" }, "unknown"},
 		{"effort not inherited", func(d map[string]any) { d["entries"].([]map[string]any)[0]["reasoning_effort"] = "high" }, "unknown"},
 		{"expired exact boundary", func(d map[string]any) { d["expires_at"] = at.Add(time.Second).Format(time.RFC3339Nano) }, "expired"},
-		{"version unsupported", func(d map[string]any) { d["schema_version"] = 2 }, "invalid"},
+		{"version unsupported", func(d map[string]any) { d["schema_version"] = 3 }, "invalid"},
 		{"source version absent", func(d map[string]any) { delete(d, "source_version") }, "invalid"},
 		{"observation mismatch", func(d map[string]any) { d["observed_at"] = at.Add(-time.Second).Format(time.RFC3339Nano) }, "invalid"},
 		{"expiry missing", func(d map[string]any) { delete(d, "expires_at") }, "invalid"},

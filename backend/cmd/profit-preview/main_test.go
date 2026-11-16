@@ -21,6 +21,14 @@ func TestParsePreviewInputsPreservesFinalRequestScopes(t *testing.T) {
 	require.NotEmpty(t, report["scope_verdicts"], "explicit final scopes must not disappear into account-only counts")
 }
 
+func TestParsePreviewInputsPreservesResponsesOutputScope(t *testing.T) {
+	input := `{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":1,"profit_control_enabled":true},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.2}],"request_scopes":[{"account_id":2,"public_model":"public-fixture","scope":{"version":3,"protocol":"responses_http","model":"wire-fixture","stream":true,"service_tier":"priority","reasoning_effort":"high","reasoning_summary":"auto","include_encrypted_content":true,"capability":"text"}}]}]}`
+	inputs, err := parsePreviewInputs([]byte(input), false)
+	require.NoError(t, err)
+	require.Equal(t, "auto", inputs[0].RequestScopes[0].Scope.ReasoningSummary)
+	require.True(t, inputs[0].RequestScopes[0].Scope.IncludeEncryptedContent)
+}
+
 func TestParsePreviewInputsRejectsAmbiguousRequestScopes(t *testing.T) {
 	for _, scope := range []string{
 		`{"account_id":2,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"wire","service_tier":"priority","reasoning_effort":"high","capability":"text","unknown_price_option":true}}`,

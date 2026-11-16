@@ -27,12 +27,15 @@ func billingWSCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *G
 func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
 		for _, tc := range []struct {
-			name, options, tier, effort string
-			hooks                       *OpenAIWSIngressHooks
-			policy                      *OpenAIFastPolicySettings
-			force                       bool
+			name, options, tier, effort, summary string
+			encrypted                            bool
+			hooks                                *OpenAIWSIngressHooks
+			policy                               *OpenAIFastPolicySettings
+			force                                bool
 		}{
 			{name: "plain", tier: "unspecified", effort: "unspecified"},
+			{name: "encrypted output", options: `,"include":["reasoning.encrypted_content"]`, tier: "unspecified", effort: "unspecified", encrypted: true},
+			{name: "summary and encrypted output", options: `,"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}`, tier: "unspecified", effort: "high", summary: "auto", encrypted: true},
 			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
 			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
 			{name: "ceiling", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: &OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
@@ -48,6 +51,12 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 				svc.cfg = passthroughLifecycleConfig()
 				entry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
 				entry["reasoning_effort"] = tc.effort
+				if tc.summary != "" {
+					entry["reasoning_summary"] = tc.summary
+				}
+				if tc.encrypted {
+					entry["include_encrypted_content"] = true
+				}
 				model := "gpt-fixture"
 				if mode != OpenAIWSIngressModePassthrough {
 					model = "wire-fixture"
@@ -83,6 +92,8 @@ func TestBillingWSCandidateScopeTransforms(t *testing.T) {
 				require.Equal(t, model, scope.Model)
 				require.Equal(t, tc.tier, scope.ServiceTier)
 				require.Equal(t, tc.effort, scope.ReasoningEffort)
+				require.Equal(t, tc.summary, scope.ReasoningSummary)
+				require.Equal(t, tc.encrypted, scope.IncludeEncryptedContent)
 				require.NoError(t, guardUpstreamBillingApplicability(account, scope))
 				entry["group_rate_applies"] = false
 				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
@@ -259,12 +270,15 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
 		for _, tc := range []struct {
-			name, options, tier, effort string
-			policy                      *OpenAIFastPolicySettings
-			force                       bool
-			hooks                       OpenAIWSIngressHooks
+			name, options, tier, effort, summary string
+			encrypted                            bool
+			policy                               *OpenAIFastPolicySettings
+			force                                bool
+			hooks                                OpenAIWSIngressHooks
 		}{
 			{name: "plain", tier: "unspecified", effort: "unspecified"},
+			{name: "encrypted output", options: `,"include":["reasoning.encrypted_content"]`, tier: "unspecified", effort: "unspecified", encrypted: true},
+			{name: "summary and encrypted output", options: `,"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}`, tier: "unspecified", effort: "high", summary: "auto", encrypted: true},
 			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
 			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
 			{name: "effort capped", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
@@ -307,6 +321,14 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 				firstEntry["reasoning_effort"] = tc.effort
 				secondEntry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
 				secondEntry["model"], secondEntry["reasoning_effort"] = wireModel("gpt-next"), tc.effort
+				for _, entry := range []map[string]any{firstEntry, secondEntry} {
+					if tc.summary != "" {
+						entry["reasoning_summary"] = tc.summary
+					}
+					if tc.encrypted {
+						entry["include_encrypted_content"] = true
+					}
+				}
 				makeAccount := func(entries ...map[string]any) *Account {
 					account := billingCandidateAccount(t, 914, entries...)
 					account.Credentials["base_url"] = upstream.URL
@@ -359,7 +381,11 @@ func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 						if turn == 2 {
 							model = "gpt-next"
 						}
-						require.Equal(t, AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: "responses_ws_v2", Model: wireModel(model), Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort}, *scope)
+						version := availabilityRequestScopeVersion
+						if tc.summary != "" || tc.encrypted {
+							version = availabilityResponsesOutputScopeVersion
+						}
+						require.Equal(t, AvailabilityRequestScope{Version: version, Protocol: "responses_ws_v2", Model: wireModel(model), Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, ReasoningSummary: tc.summary, IncludeEncryptedContent: tc.encrypted}, *scope)
 					case <-time.After(3 * time.Second):
 						select {
 						case err := <-done:

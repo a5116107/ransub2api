@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -65,39 +66,58 @@ func TestManualApplicabilityLockedSaveRevokeAndBindingInvalidation(t *testing.T)
 }
 
 func TestManualApplicabilityAdminSQLLifecycle(t *testing.T) {
-	tx := testEntTx(t)
-	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
-	rate := 0.4
-	account := mustCreateAccount(t, tx.Client(), &service.Account{Name: "manual-admin-lifecycle", Platform: service.PlatformOpenAI,
-		Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"}, RateMultiplier: &rate})
-	svc := service.NewAdminService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, tx.Client(), nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	command, err := json.Marshal(map[string]any{"expected_revision": "", "confirm_current_binding": true, "source_version": "sql-review-1", "reason": "supplier terms reviewed",
-		"expires_at": time.Now().Add(time.Hour), "entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}}})
-	require.NoError(t, err)
-	updated, err := svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
-	require.NoError(t, err)
-	view := service.UpstreamBillingManualApplicabilityView(updated, time.Now())
-	require.Equal(t, "active", view["status"])
-	revision := view["revision"]
-	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
-	require.ErrorIs(t, err, service.ErrUpstreamBillingManualApplicabilityConflict)
-	loaded, err := repo.GetByID(t.Context(), account.ID)
-	require.NoError(t, err)
-	require.Equal(t, revision, service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["revision"])
-	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{Extra: map[string]any{service.UpstreamBillingManualApplicabilityExtraKey: "forged"}})
-	require.NoError(t, err)
-	loaded, err = repo.GetByID(t.Context(), account.ID)
-	require.NoError(t, err)
-	require.Equal(t, revision, service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["revision"])
-	revoke, err := json.Marshal(map[string]any{"revoke": true, "expected_revision": revision})
-	require.NoError(t, err)
-	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: revoke})
-	require.NoError(t, err)
-	loaded, err = repo.GetByID(t.Context(), account.ID)
-	require.NoError(t, err)
-	require.Equal(t, "revoked", service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["status"])
-	_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
-	require.ErrorIs(t, err, service.ErrUpstreamBillingManualApplicabilityConflict, "revocation retains an ABA-safe revision")
+	for _, output := range []bool{false, true} {
+		t.Run(fmt.Sprintf("extended-output=%v", output), func(t *testing.T) {
+			tx := testEntTx(t)
+			repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+			rate := 0.4
+			account := mustCreateAccount(t, tx.Client(), &service.Account{Name: "manual-admin-lifecycle", Platform: service.PlatformOpenAI,
+				Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture-key"}, RateMultiplier: &rate})
+			svc := service.NewAdminService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, tx.Client(), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			entry := map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}
+			if output {
+				entry["reasoning_summary"], entry["include_encrypted_content"] = "auto", true
+			}
+			command, err := json.Marshal(map[string]any{"expected_revision": "", "confirm_current_binding": true, "source_version": "sql-review-1", "reason": "supplier terms reviewed",
+				"expires_at": time.Now().Add(time.Hour), "entries": []any{entry}})
+			require.NoError(t, err)
+			updated, err := svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
+			require.NoError(t, err)
+			view := service.UpstreamBillingManualApplicabilityView(updated, time.Now())
+			require.Equal(t, "active", view["status"])
+			revision := view["revision"]
+			_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
+			require.ErrorIs(t, err, service.ErrUpstreamBillingManualApplicabilityConflict)
+			loaded, err := repo.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, revision, service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["revision"])
+			stored := loaded.Extra[service.UpstreamBillingManualApplicabilityExtraKey].(map[string]any)
+			storedEntry := stored["entries"].([]any)[0].(map[string]any)
+			if output {
+				require.Equal(t, float64(2), stored["schema_version"])
+				require.Equal(t, "auto", storedEntry["reasoning_summary"])
+				require.Equal(t, true, storedEntry["include_encrypted_content"])
+			} else {
+				require.Equal(t, float64(1), stored["schema_version"])
+				require.NotContains(t, storedEntry, "reasoning_summary")
+				require.NotContains(t, storedEntry, "include_encrypted_content")
+			}
+			_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{Extra: map[string]any{service.UpstreamBillingManualApplicabilityExtraKey: "forged"}})
+			require.NoError(t, err)
+			loaded, err = repo.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, revision, service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["revision"])
+			revoke, err := json.Marshal(map[string]any{"revoke": true, "expected_revision": revision})
+			require.NoError(t, err)
+			_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: revoke})
+			require.NoError(t, err)
+			loaded, err = repo.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, "revoked", service.UpstreamBillingManualApplicabilityView(loaded, time.Now())["status"])
+			_, err = svc.UpdateAccount(t.Context(), account.ID, &service.UpdateAccountInput{ManualRateApplicability: command})
+			require.ErrorIs(t, err, service.ErrUpstreamBillingManualApplicabilityConflict, "revocation retains an ABA-safe revision")
+		})
+	}
 }
 
 func TestManualApplicabilityAdminSQLMutationRecovery(t *testing.T) {
@@ -623,6 +643,15 @@ func TestProxyIdentityUpdateInvalidatesProbeAndRejectsInFlightSnapshot(t *testin
 
 			proxyToUpdate, err := proxyRepo.GetByID(ctx, proxy.ID)
 			require.NoError(t, err)
+			// This transaction can see committed events from previous fixtures.
+			// Keep exact event-count/payload assertions, but scope them to the
+			// operation under test instead of requiring an empty shared outbox.
+			var beforeEventID int64
+			rows, err := tx.QueryContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM scheduler_outbox`)
+			require.NoError(t, err)
+			require.True(t, rows.Next())
+			require.NoError(t, rows.Scan(&beforeEventID))
+			require.NoError(t, rows.Close())
 			proxyToUpdate.Host = "new.example"
 			require.NoError(t, proxyRepo.Update(ctx, proxyToUpdate))
 
@@ -643,11 +672,11 @@ func TestProxyIdentityUpdateInvalidatesProbeAndRejectsInFlightSnapshot(t *testin
 			}, nil)
 			require.ErrorIs(t, err, service.ErrUpstreamBillingProbeIdentityChanged)
 
-			rows, err := tx.QueryContext(ctx, `
+			rows, err = tx.QueryContext(ctx, `
 				SELECT COUNT(*), COALESCE(MAX(payload::text), '')
 				FROM scheduler_outbox
-				WHERE event_type = $1
-			`, service.SchedulerOutboxEventAccountBulkChanged)
+				WHERE event_type = $1 AND id > $2
+			`, service.SchedulerOutboxEventAccountBulkChanged, beforeEventID)
 			require.NoError(t, err)
 			require.True(t, rows.Next())
 			var (

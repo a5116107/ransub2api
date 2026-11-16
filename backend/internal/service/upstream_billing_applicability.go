@@ -38,6 +38,7 @@ func (d *upstreamBillingApplicability) setConclusions(at time.Time) {
 		entry.Conclusion = d.verdict(&AvailabilityRequestScope{
 			Model: entry.Model, Protocol: entry.Protocol, ServiceTier: entry.ServiceTier,
 			ReasoningEffort: entry.ReasoningEffort, Capability: "text",
+			ReasoningSummary: entry.ReasoningSummary, IncludeEncryptedContent: entry.IncludeEncryptedContent,
 		}, at)
 	}
 }
@@ -54,20 +55,22 @@ type upstreamBillingApplicability struct {
 }
 
 type upstreamBillingApplicabilityEntry struct {
-	Model            string `json:"model"`
-	Protocol         string `json:"protocol"`
-	ServiceTier      string `json:"service_tier"`
-	ReasoningEffort  string `json:"reasoning_effort"`
-	Context          string `json:"context"`
-	GroupRateApplies *bool  `json:"group_rate_applies"`
-	Conclusion       string `json:"conclusion"`
+	Model                   string `json:"model"`
+	Protocol                string `json:"protocol"`
+	ServiceTier             string `json:"service_tier"`
+	ReasoningEffort         string `json:"reasoning_effort"`
+	ReasoningSummary        string `json:"reasoning_summary,omitempty"`
+	IncludeEncryptedContent bool   `json:"include_encrypted_content,omitempty"`
+	Context                 string `json:"context"`
+	GroupRateApplies        *bool  `json:"group_rate_applies"`
+	Conclusion              string `json:"conclusion"`
 }
 
 func decodeUpstreamBillingApplicability(raw []byte, observedAt time.Time) *upstreamBillingApplicability {
 	var declaration upstreamBillingApplicability
 	value := gjson.ParseBytes(raw)
 	if !gjson.ValidBytes(raw) || !decodeBillingApplicabilityFields(value, &declaration,
-		"schema_version", "source_version", "observed_at", "expires_at") || declaration.SchemaVersion != 1 ||
+		"schema_version", "source_version", "observed_at", "expires_at") || (declaration.SchemaVersion != 1 && declaration.SchemaVersion != 2) ||
 		!billingDeclarationToken(declaration.SourceVersion, 128) || !declaration.ObservedAt.Equal(observedAt) ||
 		!declaration.ExpiresAt.After(observedAt) || declaration.ExpiresAt.Sub(observedAt) > 24*time.Hour {
 		return nil
@@ -78,11 +81,24 @@ func decodeUpstreamBillingApplicability(raw []byte, observedAt time.Time) *upstr
 	}
 	for _, rawEntry := range entries.Array() {
 		var entry upstreamBillingApplicabilityEntry
-		if !decodeBillingApplicabilityFields(rawEntry, &entry, "model", "protocol", "service_tier", "reasoning_effort", "context", "group_rate_applies") ||
+		if !decodeBillingApplicabilityFields(rawEntry, &entry, "model", "protocol", "service_tier", "reasoning_effort", "reasoning_summary", "include_encrypted_content", "context", "group_rate_applies") ||
 			!billingDeclarationToken(entry.Model, 200) || !billingDeclarationToken(entry.Protocol, 64) ||
 			!billingDeclarationToken(entry.ServiceTier, 64) || !billingDeclarationToken(entry.ReasoningEffort, 64) ||
 			!billingDeclarationToken(entry.Context, 64) {
 			return nil
+		}
+		if _, valid := availabilityResponsesReasoningSummary(rawEntry.Get("reasoning_summary")); !valid {
+			return nil
+		}
+		if encrypted := rawEntry.Get("include_encrypted_content"); encrypted.Exists() && encrypted.Type != gjson.True && encrypted.Type != gjson.False {
+			return nil
+		}
+		if entry.ReasoningSummary != "" || entry.IncludeEncryptedContent {
+			// V1 readers discard new fields. V2 makes them reject the whole
+			// declaration instead of silently authorizing a different scope.
+			if declaration.SchemaVersion != 2 || (entry.Protocol != "responses_http" && entry.Protocol != "responses_ws_v2") {
+				return nil
+			}
 		}
 		declaration.Entries = append(declaration.Entries, entry)
 	}
@@ -156,7 +172,8 @@ func (d *upstreamBillingApplicability) verdict(scope *AvailabilityRequestScope, 
 	verdict, matched, limitedContext := "unknown", false, false
 	for _, entry := range d.Entries {
 		if entry.Model != scope.Model || entry.Protocol != scope.Protocol || entry.ServiceTier != scope.ServiceTier ||
-			entry.ReasoningEffort != scope.ReasoningEffort {
+			entry.ReasoningEffort != scope.ReasoningEffort || entry.ReasoningSummary != scope.ReasoningSummary ||
+			entry.IncludeEncryptedContent != scope.IncludeEncryptedContent {
 			continue
 		}
 		if entry.Context != "all" {
@@ -336,12 +353,20 @@ func billingApplicabilityScopeRequest(scope AvailabilityRequestScope) (*http.Req
 	if scope.ServiceTier != "unspecified" {
 		body["service_tier"] = scope.ServiceTier
 	}
-	if scope.ReasoningEffort != "unspecified" {
-		if scope.Protocol == "chat_http" {
-			body["reasoning_effort"] = scope.ReasoningEffort
-		} else {
-			body["reasoning"] = map[string]any{"effort": scope.ReasoningEffort}
+	if scope.Protocol != "chat_http" && (scope.ReasoningEffort != "unspecified" || scope.ReasoningSummary != "") {
+		reasoning := make(map[string]any)
+		if scope.ReasoningEffort != "unspecified" {
+			reasoning["effort"] = scope.ReasoningEffort
 		}
+		if scope.ReasoningSummary != "" {
+			reasoning["summary"] = scope.ReasoningSummary
+		}
+		body["reasoning"] = reasoning
+	} else if scope.Protocol == "chat_http" && scope.ReasoningEffort != "unspecified" {
+		body["reasoning_effort"] = scope.ReasoningEffort
+	}
+	if scope.IncludeEncryptedContent {
+		body["include"] = []string{"reasoning.encrypted_content"}
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

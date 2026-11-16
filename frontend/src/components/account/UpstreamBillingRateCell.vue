@@ -122,6 +122,8 @@
         <div v-for="(entry, index) in applicability.entries" :key="index" class="mt-2 rounded bg-gray-50 p-2 dark:bg-dark-800" data-testid="upstream-scope-entry">
           <p class="break-all font-medium text-gray-800 dark:text-gray-200">{{ entry.model }}</p>
           <p class="break-all">{{ entry.protocol }} · {{ entry.service_tier }} · {{ entry.reasoning_effort }} · {{ entry.context }}</p>
+          <p v-if="entry.reasoning_summary" class="break-all" data-testid="upstream-scope-summary">{{ t('admin.accounts.upstreamBilling.manualApplicability.summary') }}: {{ entry.reasoning_summary }}</p>
+          <p v-if="entry.include_encrypted_content" class="break-all" data-testid="upstream-scope-encrypted">{{ t('admin.accounts.upstreamBilling.manualApplicability.encrypted') }}</p>
           <span class="mt-1 inline-flex rounded px-1.5 py-0.5 font-medium" :class="scopeStatus(entry.conclusion) === 'covered' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300'" data-testid="upstream-scope-conclusion">{{ scopeLabel(scopeStatus(entry.conclusion)) }}</span>
         </div>
       </template>
@@ -136,6 +138,8 @@
       <div v-for="(entry, index) in manualApplicability.entries" :key="index" class="mt-2 rounded bg-gray-50 p-2 dark:bg-dark-800" data-testid="upstream-manual-entry">
         <p class="break-all font-medium">{{ entry.model }}</p>
         <p class="break-all">{{ entry.protocol }} · {{ entry.service_tier }} · {{ entry.reasoning_effort }} · {{ entry.context }}</p>
+        <p v-if="entry.reasoning_summary" class="break-all" data-testid="upstream-scope-summary">{{ t('admin.accounts.upstreamBilling.manualApplicability.summary') }}: {{ entry.reasoning_summary }}</p>
+        <p v-if="entry.include_encrypted_content" class="break-all" data-testid="upstream-scope-encrypted">{{ t('admin.accounts.upstreamBilling.manualApplicability.encrypted') }}</p>
         <span :class="manualStatus === 'active' && entry.conclusion === 'covered' ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">{{ manualStatus === 'active' ? scopeLabel(entry.conclusion) : t(`admin.accounts.upstreamBilling.manualApplicability.${manualStatus}`) }}</span>
       </div>
     </details>

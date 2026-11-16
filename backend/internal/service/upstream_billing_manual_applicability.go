@@ -144,15 +144,27 @@ func prepareUpstreamBillingManualApplicability(ctx context.Context, account *Acc
 	if reason != "" {
 		return ctx, ErrUpstreamBillingManualApplicability
 	}
-	declarationRaw, _ := json.Marshal(map[string]any{"schema_version": 1, "source_version": command.SourceVersion,
+	version := 1
+	value.Get("entries").ForEach(func(_, entry gjson.Result) bool {
+		if entry.Get("reasoning_summary").Exists() || entry.Get("include_encrypted_content").Exists() {
+			version = 2
+		}
+		return true
+	})
+	declarationRaw, _ := json.Marshal(map[string]any{"schema_version": version, "source_version": command.SourceVersion,
 		"observed_at": at, "expires_at": command.ExpiresAt, "entries": json.RawMessage(value.Get("entries").Raw)})
 	declaration := decodeUpstreamBillingApplicability(declarationRaw, at)
 	if declaration == nil {
 		return ctx, ErrUpstreamBillingManualApplicability
 	}
 	for _, entry := range declaration.Entries {
-		if !billingApplicabilityScopeShapeKnown(AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: entry.Protocol,
-			Stream: entry.Protocol == "responses_ws_v2", Model: entry.Model, ServiceTier: entry.ServiceTier, ReasoningEffort: entry.ReasoningEffort, Capability: "text"}) {
+		scope := AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: entry.Protocol,
+			Stream: entry.Protocol == "responses_ws_v2", Model: entry.Model, ServiceTier: entry.ServiceTier, ReasoningEffort: entry.ReasoningEffort,
+			ReasoningSummary: entry.ReasoningSummary, IncludeEncryptedContent: entry.IncludeEncryptedContent, Capability: "text"}
+		if scope.ReasoningSummary != "" || scope.IncludeEncryptedContent {
+			scope.Version = availabilityResponsesOutputScopeVersion
+		}
+		if !billingApplicabilityScopeShapeKnown(scope) {
 			return ctx, ErrUpstreamBillingManualApplicability
 		}
 	}
@@ -266,9 +278,10 @@ func UpstreamBillingManualApplicabilityView(account *Account, at time.Time) map[
 		entry.Conclusion = status
 		if status == "active" {
 			entry.Conclusion = stored.verdict(&AvailabilityRequestScope{Model: entry.Model, Protocol: entry.Protocol,
-				ServiceTier: entry.ServiceTier, ReasoningEffort: entry.ReasoningEffort, Capability: "text"}, at)
+				ServiceTier: entry.ServiceTier, ReasoningEffort: entry.ReasoningEffort, ReasoningSummary: entry.ReasoningSummary,
+				IncludeEncryptedContent: entry.IncludeEncryptedContent, Capability: "text"}, at)
 		}
 	}
-	return map[string]any{"schema_version": 1, "source": "manual.admin", "source_version": stored.SourceVersion, "observed_at": stored.ObservedAt,
+	return map[string]any{"schema_version": stored.SchemaVersion, "source": "manual.admin", "source_version": stored.SourceVersion, "observed_at": stored.ObservedAt,
 		"expires_at": stored.ExpiresAt, "entries": entries, "revision": stored.Revision, "reason": stored.Reason, "rate_multiplier": stored.Rate, "status": status}
 }
