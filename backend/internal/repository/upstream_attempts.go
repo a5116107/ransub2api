@@ -15,6 +15,17 @@ const upstreamAttemptsAggregate = `count(*) AS attempts,
  count(*)::numeric/NULLIF(count(DISTINCT trace_id),0) AS attempts_per_request,
  max(started_at) AS latest_sample_at`
 
+const upstreamAttemptCacheAggregate = `jsonb_build_object('version',1,'source','canonical_physical_attempt_cache_reports',
+ 'attempts',count(*),'observed_attempts',count(*) FILTER (WHERE cache_observed),
+ 'unknown_attempts',count(*) FILTER (WHERE NOT cache_observed),
+ 'hit_attempts',count(*) FILTER (WHERE cache_observed AND raw_read>0),
+ 'input_tokens',COALESCE(sum(raw_input) FILTER (WHERE cache_observed),0),
+ 'read_tokens',COALESCE(sum(raw_read) FILTER (WHERE cache_observed),0),
+ 'coverage',count(*) FILTER (WHERE cache_observed)::numeric/NULLIF(count(*),0),
+ 'attempt_hit_rate',count(*) FILTER (WHERE cache_observed AND raw_read>0)::numeric/NULLIF(count(*) FILTER (WHERE cache_observed),0),
+ 'token_read_rate',sum(raw_read) FILTER (WHERE cache_observed)/NULLIF(sum(raw_input) FILTER (WHERE cache_observed),0)::numeric,
+ 'latest_sample_at',max(created_at) FILTER (WHERE cache_observed))`
+
 var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retained AS (
  SELECT trace_id,started_at,account_id,group_id,model AS public_model,stream,detail
  FROM request_connection_traces
@@ -121,9 +132,49 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
   CASE item->>'transport' WHEN 'ws_turn' THEN ` + upstreamWaitValue("ws_wait", "first_text") + `
   ELSE ` + upstreamWaitValue("http_wait", "post_upload_first_text_wait") + ` END END AS wait_first_text
  FROM wait_candidates
+), cache_candidates AS (
+ SELECT *,item->'raw_cache' AS cache FROM wait_samples
+), cache_samples AS (
+ SELECT *,COALESCE(identity_known AND request_scope_known AND raw_attempt IS NOT NULL
+  AND jsonb_typeof(item->'account_id')='number'
+  AND item->>'protocol'=CASE request_scope->>'protocol' WHEN 'responses_compact' THEN 'responses' ELSE request_scope->>'protocol' END
+  AND item->>'outcome'='succeeded' AND cache->'version'='1'::jsonb AND cache->>'status'='observed'
+  AND raw_attempt->>'terminal'='completed' AND COALESCE(raw_attempt->>'error','')=''
+  AND NOT COALESCE(raw_attempt->'events' ? 'typed_content_truncated',false)
+  AND COALESCE(raw_attempt->'text_stream'->'invalid','false'::jsonb)='false'::jsonb
+  AND COALESCE(raw_attempt->'text_stream'->'truncated','false'::jsonb)='false'::jsonb
+  AND jsonb_typeof(detail->'total_ms')='number' AND jsonb_typeof(raw_attempt->'start_ms')='number'
+  AND jsonb_typeof(raw_attempt->'end_ms')='number'
+  AND CASE WHEN jsonb_typeof(detail->'total_ms')='number' AND jsonb_typeof(raw_attempt->'start_ms')='number'
+   AND jsonb_typeof(raw_attempt->'end_ms')='number' THEN
+   (raw_attempt->>'start_ms')::numeric>=0 AND (raw_attempt->>'end_ms')::numeric
+   BETWEEN (raw_attempt->>'start_ms')::numeric AND (detail->>'total_ms')::numeric ELSE false END
+  AND ((item->>'transport'='http' AND jsonb_typeof(raw_attempt->'status')='number' AND raw_attempt->>'status' ~ '^2[0-9]{2}$'
+   AND raw_attempt->'route'->>'endpoint'=request_scope->>'protocol'
+   AND ((request_scope->>'protocol' IN ('responses','responses_compact')
+    AND cache->>'source'='canonical_responses_terminal_usage' AND cache->>'scope'='physical_http_responses_terminal_usage'
+    AND COALESCE(raw_attempt->'text_stream'->>'protocol','responses')='responses'
+    AND COALESCE(raw_attempt->'cache_usage'->>'protocol','responses')='responses')
+   OR (request_scope->>'protocol'='chat_completions' AND raw_attempt->'text_stream'->>'protocol'='chat_completions'
+    AND raw_attempt->'cache_usage'->>'protocol'='chat_completions'
+    AND cache->>'source'='canonical_chat_completions_usage' AND cache->>'scope'='physical_http_chat_completions_usage')))
+  OR (item->>'transport'='ws_turn' AND detail->>'ttft_mode'='ws_turn' AND detail->'status'='0'::jsonb
+   AND raw_attempt->'status'='0'::jsonb AND raw_attempt->'number'='1'::jsonb
+   AND COALESCE(raw_attempt->>'parent','0')='0'
+   AND CASE jsonb_typeof(detail->'attempts') WHEN 'array' THEN jsonb_array_length(detail->'attempts')=1 ELSE false END
+   AND COALESCE(raw_attempt->'cache_usage'->>'protocol','responses')='responses'
+   AND COALESCE(raw_attempt->'text_stream'->>'protocol','responses')='responses'
+   AND cache->>'source'='canonical_responses_terminal_usage' AND cache->>'scope'='physical_websocket_turn_responses_terminal_usage'))
+  AND raw_attempt->'cache_usage'->>'status'='observed'
+  AND cache->'input_tokens'=raw_attempt->'cache_usage'->'input_tokens'
+  AND cache->'read_tokens'=raw_attempt->'cache_usage'->'read_tokens'
+  AND ((cache->'write_tokens'='null'::jsonb AND raw_attempt->'cache_usage'->'write_reported'='false'::jsonb)
+   OR (raw_attempt->'cache_usage'->'write_reported'='true'::jsonb AND cache->'write_tokens'=raw_attempt->'cache_usage'->'write_tokens'))
+  AND ` + rawCacheValidCounters + `,false) AS cache_observed
+ FROM cache_candidates ` + rawCacheCounterJoins + `
 ), attributed AS (
  SELECT trace_id,started_at,created_at,physical_account_id AS account_id,public_model,stream,outcome,identity_known,
- wait_first_byte,wait_first_event,wait_first_reasoning,wait_first_text,
+ wait_first_byte,wait_first_event,wait_first_reasoning,wait_first_text,cache_observed,raw_input,raw_read,
  item->>'transport' AS transport,
  CASE WHEN item->>'protocol' IN ('responses','messages','gemini','chat_completions') THEN item->>'protocol' END protocol,
  CASE WHEN identity_known THEN item->>'credential_fingerprint' END credential_fingerprint,
@@ -134,7 +185,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  CASE WHEN request_scope_known THEN request_scope->>'reasoning_effort' END reasoning_effort,
  CASE WHEN request_scope_known THEN (request_scope->>'stream')::boolean END upstream_stream,
  CASE WHEN request_scope_known THEN 'observed' ELSE 'not_observed' END upstream_model_status
- FROM wait_samples
+ FROM cache_samples
  WHERE ($7='' OR $8<>'upstream' OR request_scope_known AND request_scope->>'model'=$7)
 ), eligible_traces AS (
  SELECT * FROM traces t WHERE (($5::bigint=0 OR account_id=$5) AND ($4='' OR account_id IN (SELECT id FROM cohort)))
@@ -143,7 +194,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  SELECT account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,
  upstream_model,upstream_protocol,service_tier,reasoning_effort,upstream_stream,upstream_model_status,
  'not_observed'::text AS upstream_group_status,
- ` + upstreamAttemptsAggregate + `,
+ ` + upstreamAttemptsAggregate + `,` + upstreamAttemptCacheAggregate + ` raw_cache,
  jsonb_build_object('version',1,'source',CASE transport WHEN 'ws_turn' THEN 'canonical_physical_ws_turn_generation_start'
  ELSE 'canonical_physical_http_attempt' END,
  'first_byte',` + upstreamWaitAggregate("wait_first_byte") + `,
@@ -156,6 +207,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  SELECT jsonb_build_object('version',1,'source','retained_physical_transport_attempts',
  'scope','connection_trace_or_unique_usage_fallback; public_model_is_ingress; upstream_request_metadata_from_complete_transport_body_or_final_ws_payload; supplier_group_and_business_source_not_observed',
  'retention_days',30,'summary',(SELECT to_jsonb(s) FROM summary s),
+ 'raw_cache',(SELECT ` + upstreamAttemptCacheAggregate + ` FROM attributed),
  'request_scope',(SELECT jsonb_build_object('attempts',count(*),
   'observed_attempts',count(*) FILTER (WHERE request_scope_known),
   'unknown_attempts',count(*) FILTER (WHERE NOT request_scope_known),

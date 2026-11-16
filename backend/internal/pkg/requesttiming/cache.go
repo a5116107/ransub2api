@@ -341,7 +341,7 @@ func updateProtocolCache(a *Attempt, next *CacheUsage) {
 	}
 }
 
-func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
+func deriveCacheObservation(s Snapshot, a Attempt, succeeded bool) CacheObservation {
 	out := unknownCacheObservation()
 	protocol := "responses"
 	if a.TextStream != nil && a.TextStream.Protocol != "" {
@@ -400,7 +400,7 @@ func deriveCacheObservation(s Snapshot, a Attempt) CacheObservation {
 			out.Status = "invalid_counters"
 			return out
 		}
-		if !contentAttemptSucceeded(s, a) {
+		if !succeeded {
 			out.Status = "partial"
 			return out
 		}

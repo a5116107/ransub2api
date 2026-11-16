@@ -1,5 +1,14 @@
 package requesttiming
 
+import "strings"
+
+// PhysicalCacheObservation is this generation's canonical report. It does not
+// assert downstream delivery, cache retention, or a supplier cache domain.
+type PhysicalCacheObservation struct {
+	Version int `json:"version"`
+	CacheObservation
+}
+
 // PhysicalUpstreamObservation is independent of usage/billing. It counts
 // transport handoffs, not supplier receipt, socket handshakes or egress parents.
 // Missing historical model/group/source evidence is deliberately not inferred.
@@ -10,6 +19,7 @@ type PhysicalUpstreamObservation struct {
 }
 
 type PhysicalUpstreamAttempt struct {
+	RawCache              PhysicalCacheObservation    `json:"raw_cache"`
 	UpstreamRequest       *UpstreamRequestObservation `json:"upstream_request,omitempty"`
 	Number                int                         `json:"number"`
 	AccountID             int64                       `json:"account_id"`
@@ -68,6 +78,9 @@ func DerivePhysicalUpstream(s Snapshot) PhysicalUpstreamObservation {
 			continue
 		}
 		item := PhysicalUpstreamAttempt{Number: a.Number, AccountID: a.AccountID, Transport: a.Kind, Outcome: physicalUpstreamOutcome(s, a)}
+		cache := deriveCacheObservation(s, a, item.Outcome == "succeeded")
+		cache.Scope = strings.TrimPrefix(cache.Scope, "final_")
+		item.RawCache = PhysicalCacheObservation{Version: 1, CacheObservation: cache}
 		if observed := a.UpstreamRequest; observed != nil && observed.Version == 1 && observed.Status == "observed" &&
 			(a.Kind == "http" && observed.Source == "http_transport_body" || a.Kind == "ws_turn" && observed.Source == "websocket_generation_payload") {
 			value := *observed

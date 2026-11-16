@@ -30,18 +30,25 @@ export interface UpstreamAttemptMetrics {
  unattributed_attempts: number; outcome_coverage: number | null; confirmed_success_rate: number | null
  attempts_per_request: number | null; latest_sample_at: string | null
 }
+export interface UpstreamAttemptCacheMetrics {
+ version: number; source: string; attempts: number; observed_attempts: number; unknown_attempts: number
+ hit_attempts: number; input_tokens: number; read_tokens: number; coverage: number | null
+ attempt_hit_rate: number | null; token_read_rate: number | null; latest_sample_at: string | null
+}
 export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  account_id: number; credential_fingerprint: string | null; route_fingerprint: string | null
  transport: string; protocol: string | null; public_model: string; stream: boolean
  upstream_model_status: 'observed' | 'not_observed'; upstream_group_status: 'not_observed'
  upstream_model?: string | null; upstream_protocol?: string | null; service_tier?: string | null
  reasoning_effort?: string | null; upstream_stream?: boolean | null
+ raw_cache?: UpstreamAttemptCacheMetrics
  waits?: UpstreamWaitSet
 }
 export interface UpstreamAttempts {
  version: number; source: string; scope: string; retention_days: number
  summary: UpstreamAttemptMetrics; capture: { traces: number; complete_traces: number; unknown_traces: number; coverage: number | null }
  request_scope?: { attempts: number; observed_attempts: number; unknown_attempts: number; coverage: number | null }
+ raw_cache?: UpstreamAttemptCacheMetrics
  total: number; rows: UpstreamAttemptRow[]
 }
 export interface OperationsSnapshot { scope: OperationsQuery; queried_at: string; attribution: string; usage: { summary: UpstreamMetrics; rows: OperationsRow[]; total: number; accounts: AccountBasis[]; members: AccountBasis[]; member_total: number; capacity: {accounts: number; schedulable: number; configured_concurrency: number}; catalog: Array<{key: string; name: string; accounts: number}>; catalog_total: number; account_details_limit: number }; attempts?: Section<UpstreamAttempts>; raw_cache?: Section<UpstreamRawCache>; quality: Section<Quality & { total: number }>; errors: Section<ErrorLogs> }

@@ -1,6 +1,7 @@
 package requesttiming
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -8,6 +9,93 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/transportdiag"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPhysicalUpstreamRawCacheIsPerAttemptNotDownstreamDelivery(t *testing.T) {
+	s := physicalUpstreamFixture()
+	s.Attempts[0].CacheUsage = &CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 99}
+	s.Attempts[1].CacheUsage = &CacheUsage{Status: "observed", InputTokens: 200, ReadTokens: 40}
+	s.Status, s.Outcome, s.Terminal = 502, "failed", "failed"
+	s.DownstreamError, s.ClientDisconnect, s.Canceled = true, true, true
+	for i, a := range DerivePhysicalUpstream(s).Attempts {
+		var report struct {
+			Cache struct {
+				Version int `json:"version"`
+				CacheObservation
+			} `json:"raw_cache"`
+		}
+		raw, err := json.Marshal(a)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(raw, &report))
+		require.Equal(t, 1, report.Cache.Version)
+		require.Equal(t, "physical_http_responses_terminal_usage", report.Cache.Scope)
+		if i == 0 {
+			require.Equal(t, "partial", report.Cache.Status)
+			require.Nil(t, report.Cache.InputTokens, "failed attempts never become cache misses or borrow final usage")
+		} else {
+			require.Equal(t, "observed", report.Cache.Status, "upstream completion and downstream delivery are different observations")
+			require.EqualValues(t, 200, *report.Cache.InputTokens)
+			require.EqualValues(t, 40, *report.Cache.ReadTokens)
+			require.InDelta(t, 0.2, *report.Cache.ReadRatio, 0.000001)
+		}
+	}
+}
+
+func TestPhysicalUpstreamRawCacheBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Snapshot, *Attempt)
+		status string
+	}{
+		{"hit", func(*Snapshot, *Attempt) {}, "observed"},
+		{"explicit_zero", func(_ *Snapshot, a *Attempt) { a.CacheUsage.ReadTokens = 0 }, "observed"},
+		{"missing", func(_ *Snapshot, a *Attempt) { a.CacheUsage = nil }, "not_collected"},
+		{"missing_counter", func(_ *Snapshot, a *Attempt) { a.CacheUsage.Status = "not_reported" }, "not_reported"},
+		{"invalid_counter", func(_ *Snapshot, a *Attempt) { a.CacheUsage.ReadTokens = 101 }, "invalid_counters"},
+		{"unsafe_input", func(_ *Snapshot, a *Attempt) { a.CacheUsage.InputTokens = 1 << 53 }, "invalid_counters"},
+		{"empty", func(_ *Snapshot, a *Attempt) { a.CacheUsage.InputTokens, a.CacheUsage.ReadTokens = 0, 0 }, "empty_input"},
+		{"failed", func(_ *Snapshot, a *Attempt) { a.Terminal = "failed" }, "partial"},
+		{"timeout", func(_ *Snapshot, a *Attempt) { a.Error = "timeout" }, "partial"},
+		{"interrupted", func(_ *Snapshot, a *Attempt) { a.Error = "canceled" }, "partial"},
+		{"unknown", func(_ *Snapshot, a *Attempt) { a.Terminal = "" }, "partial"},
+		{"no_end", func(_ *Snapshot, a *Attempt) { a.EndMS = nil }, "partial"},
+		{"snapshot_gap", func(s *Snapshot, _ *Attempt) { s.Truncated = true }, "partial"},
+		{"parser_gap", func(_ *Snapshot, a *Attempt) { a.Events = map[string]float64{"typed_content_truncated": 1} }, "incomplete_capture"},
+		{"foreign_protocol", func(_ *Snapshot, a *Attempt) { a.CacheUsage.Protocol = "gemini" }, "invalid_protocol"},
+		{"ws_turn", func(s *Snapshot, a *Attempt) {
+			s.Attempts, s.TTFTMode, s.Status = s.Attempts[1:], "ws_turn", 0
+			a.Number, a.Kind, a.Status, a.UpstreamCredential.Source = 1, "ws_turn", 0, "websocket_handshake_credentials"
+		}, "observed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := physicalUpstreamFixture()
+			s.Attempts[1].CacheUsage = &CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 90}
+			tc.change(&s, &s.Attempts[1])
+			var report struct {
+				Cache struct {
+					Version int
+					CacheObservation
+				} `json:"raw_cache"`
+			}
+			attempts := DerivePhysicalUpstream(s).Attempts
+			raw, err := json.Marshal(attempts[len(attempts)-1])
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(raw, &report))
+			require.Equal(t, 1, report.Cache.Version)
+			require.Equal(t, tc.status, report.Cache.Status)
+			if tc.status != "observed" {
+				require.Nil(t, report.Cache.ReadTokens)
+				require.Nil(t, report.Cache.Hit)
+			}
+			if tc.name == "explicit_zero" {
+				require.False(t, *report.Cache.Hit)
+				require.Zero(t, *report.Cache.ReadRatio)
+			}
+			if tc.name == "ws_turn" {
+				require.Equal(t, "physical_websocket_turn_responses_terminal_usage", report.Cache.Scope)
+			}
+		})
+	}
+}
 
 func physicalUpstreamFixture() Snapshot {
 	end := 100.0

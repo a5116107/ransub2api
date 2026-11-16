@@ -395,7 +395,7 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 		out.TextStream.Source = "typed_responses_ws"
 		out.TextStream.Scope = "physical_websocket_turn_text_deltas_at_parser"
 	}
-	out.Cache = deriveCacheObservation(s, a)
+	out.Cache = deriveCacheObservation(s, a, contentAttemptSucceeded(s, a))
 	if plugin {
 		out.Source = "host_plugin_body_parser"
 		out.Scope = "final_plugin_egress_attempt_offsets_from_application_entry"

@@ -46,6 +46,7 @@
             </dl>
             <p class="text-xs text-gray-500" data-testid="attempt-capture-coverage">{{ t('upstreamOps.attempts.capture', { complete: number(snapshot.attempts.data.capture.complete_traces, 0), total: number(snapshot.attempts.data.capture.traces, 0), unknown: number(snapshot.attempts.data.capture.unknown_traces, 0), coverage: percent(snapshot.attempts.data.capture.coverage) }) }}</p>
             <p v-if="snapshot.attempts.data.request_scope" class="text-xs leading-5 text-gray-500" data-testid="attempt-request-scope-coverage">{{ t('upstreamOps.attempts.requestScopeCoverage', { observed: number(snapshot.attempts.data.request_scope.observed_attempts, 0), total: number(snapshot.attempts.data.request_scope.attempts, 0), unknown: number(snapshot.attempts.data.request_scope.unknown_attempts, 0), coverage: percent(snapshot.attempts.data.request_scope.coverage) }) }}</p>
+            <div data-testid="attempt-cache-summary"><UpstreamAttemptCacheMetrics :cache="snapshot.attempts.data.raw_cache" :attempts="snapshot.attempts.data.summary.attempts" /></div>
             <p v-if="!snapshot.attempts.data.summary.attempts" data-testid="attempt-empty">{{ t('upstreamOps.attempts.empty') }}</p>
             <ul class="grid min-w-0 gap-3 lg:grid-cols-2">
               <li v-for="(row, index) in snapshot.attempts.data.rows" :key="index" class="min-w-0 space-y-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="upstream-attempt-row">
@@ -59,6 +60,7 @@
                 </div>
                 <p v-else class="text-xs text-amber-700 dark:text-amber-400" data-testid="attempt-request-scope-unknown">{{ t('upstreamOps.attempts.physicalScopeUnknown') }}</p>
                 <UpstreamWaitMetrics :transport="row.transport" :waits="row.waits" scope="attempts" />
+                <UpstreamAttemptCacheMetrics :cache="row.raw_cache" :attempts="row.attempts" />
                 <p class="text-xs text-gray-500">{{ t('upstreamOps.attempts.supplierScopeUnknown') }}</p>
                 <details class="text-xs"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('upstreamOps.rawCache.route') }}</summary><p class="mt-2 break-all">{{ row.route_fingerprint ?? t('upstreamOps.unknown') }}</p><p class="mt-1 break-words">{{ row.latest_sample_at ?? t('upstreamOps.unknown') }}</p></details>
               </li>
@@ -115,6 +117,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import SmartOpsNav from './SmartOpsNav.vue'
 import QualityRoundAssessment from './QualityRoundAssessment.vue'
 import UpstreamWaitMetrics from './UpstreamWaitMetrics.vue'
+import UpstreamAttemptCacheMetrics from './UpstreamAttemptCacheMetrics.vue'
 import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics } from '@/api/admin/upstreamOperations'
 const { t } = useI18n()
 const attemptKeys = ['attempts', 'logical_requests', 'succeeded', 'failed', 'interrupted', 'unknown'] as const

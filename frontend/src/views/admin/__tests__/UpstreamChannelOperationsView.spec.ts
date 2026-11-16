@@ -123,6 +123,29 @@ describe('all retained upstream attempts', () => {
  const base = { scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], total: 0, catalog: [] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} }
  const summary={attempts:4,logical_requests:2,succeeded:1,failed:2,interrupted:0,unknown:1,unattributed_attempts:1,confirmed_success_rate:1/3,outcome_coverage:0.75,attempts_per_request:2,latest_sample_at:null}
  const data={version:1,source:'retained_physical_transport_attempts',summary,capture:{traces:3,complete_traces:2,unknown_traces:1,coverage:2/3},total:41,rows:[{...summary,account_id:42,credential_fingerprint:'a'.repeat(64),route_fingerprint:'b'.repeat(64),public_model:'request-alias',transport:'http',protocol:'responses'}]}
+ it('separates per-attempt cache coverage, token weighting and final downstream statistics',async()=>{
+  const raw={version:1,source:'canonical_physical_attempt_cache_reports',attempts:4,observed_attempts:2,unknown_attempts:2,hit_attempts:1,input_tokens:1000,read_tokens:100,coverage:0.5,attempt_hit_rate:0.5,token_read_rate:0.1,latest_sample_at:'2026-11-16T01:00:00Z'}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,raw_cache:raw,rows:[{...data.rows[0],raw_cache:raw}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  const cache=w.get('[data-testid="attempt-cache-summary"]')
+  expect(cache.text()).toContain('upstreamOps.attempts.cacheScope')
+  expect(cache.text()).toContain('upstreamOps.rawCache.partial')
+  expect(cache.get('[data-testid="attempt-cache-token-rate"]').text()).toBe('10.0%')
+  expect(cache.get('[data-testid="attempt-cache-hit-rate"]').text()).toBe('50.0%')
+  expect(cache.get('[data-testid="attempt-cache-coverage"]').text()).toBe('50.0%')
+  expect(w.findAll('[data-testid="upstream-attempt-cache"]')).toHaveLength(2)
+  expect(w.find('[data-testid="upstream-raw-cache"]').exists()).toBe(false)
+  w.unmount()
+ })
+ it.each(['missing','future','wrong-source','count-mismatch','all-unknown','explicit-zero'])('keeps %s attempt-cache evidence distinct from a cache miss',async state=>{
+  const raw={version:state==='future'?9:1,source:state==='wrong-source'?'canonical_final_transport_cache_reports':'canonical_physical_attempt_cache_reports',attempts:state==='count-mismatch'?5:4,observed_attempts:state==='all-unknown'?0:2,unknown_attempts:state==='all-unknown'?4:2,hit_attempts:0,input_tokens:state==='all-unknown'?0:1000,read_tokens:0,coverage:state==='all-unknown'?0:0.5,attempt_hit_rate:state==='all-unknown'?null:0,token_read_rate:state==='all-unknown'?null:0,latest_sample_at:null}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,raw_cache:state==='missing'?undefined:raw}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  const cache=w.get('[data-testid="attempt-cache-summary"]')
+  expect(cache.get('[data-testid="attempt-cache-token-rate"]').text()).toBe(state==='explicit-zero'?'0.0%':'upstreamOps.unknown')
+  expect(cache.text()).toContain(state==='explicit-zero'?'upstreamOps.rawCache.partial':'upstreamOps.rawCache.unknown')
+  w.unmount()
+ })
  it('shows earlier failures and retry amplification separately from the final cache observation',async()=>{
   vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data}} as unknown as OperationsSnapshot)
   const w=mount(UpstreamChannelOperationsView);await flushPromises()

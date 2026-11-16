@@ -38,7 +38,7 @@ func deriveCacheMigration(s Snapshot, latencyStatus string) CacheMigrationObserv
 		out.Status = "partial"
 		return out
 	}
-	cache := deriveCacheObservation(s, last)
+	cache := deriveCacheObservation(s, last, contentAttemptSucceeded(s, last))
 	out.Source, out.CacheStatus = cache.Source, cache.Status
 	if cache.Status != "observed" || cache.InputTokens == nil || cache.ReadTokens == nil {
 		out.Status = "cache_usage_unavailable"

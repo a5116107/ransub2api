@@ -145,7 +145,7 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"fixture transient failure"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"type":"response.completed","response":{"status":"completed","output":[]}}`))
+		_, _ = w.Write([]byte(`{"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":75}}}}`))
 	}))
 	defer upstream.Close()
 	usage := repository.NewUsageLogRepository(nil, db)
@@ -209,6 +209,11 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 			Attempts struct {
 				Status string
 				Data   struct {
+					RawCache struct {
+						Observed int      `json:"observed_attempts"`
+						Unknown  int      `json:"unknown_attempts"`
+						Rate     *float64 `json:"token_read_rate"`
+					} `json:"raw_cache"`
 					Summary struct {
 						Attempts, Failed, Succeeded int
 						LogicalRequests             int `json:"logical_requests"`
@@ -248,9 +253,15 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 		if model == "first-wire-model" {
 			require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
 			require.Zero(t, body.Data.Attempts.Data.Summary.Succeeded)
+			require.Zero(t, body.Data.Attempts.Data.RawCache.Observed)
+			require.Equal(t, 1, body.Data.Attempts.Data.RawCache.Unknown)
+			require.Nil(t, body.Data.Attempts.Data.RawCache.Rate)
 		} else {
 			require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
 			require.Zero(t, body.Data.Attempts.Data.Summary.Failed)
+			require.Equal(t, 1, body.Data.Attempts.Data.RawCache.Observed)
+			require.Zero(t, body.Data.Attempts.Data.RawCache.Unknown)
+			require.InDelta(t, 0.75, *body.Data.Attempts.Data.RawCache.Rate, 0.000001)
 		}
 		require.Contains(t, filtered.Body.String(), `"upstream_model":"`+model+`"`)
 		require.Contains(t, filtered.Body.String(), `"service_tier":"priority"`)

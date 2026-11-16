@@ -64,6 +64,54 @@ func TestWSTurnWaitsUseGenerationStartWithoutHTTPBoundaries(t *testing.T) {
 	}
 }
 
+func TestWSTurnPhysicalCacheParsesOwnTerminalAndSeparatesDelivery(t *testing.T) {
+	for _, mode := range []string{"completed", "delivery_failure", "upstream_error", "missing_report", "malformed_frame"} {
+		t.Run(mode, func(t *testing.T) {
+			w := NewWSTurn(time.Now(), 17, 3, [32]byte{1})
+			now := w.start
+			w.now = func() time.Time { return now }
+			w.RecordUpstreamCredentials([]string{strings.Repeat("a", 64)})
+			w.Content([]byte(`{"type":"response.created"}`))
+			if mode == "malformed_frame" {
+				w.Content([]byte(`{"invalid`))
+			}
+			now = w.start.Add(10 * time.Millisecond)
+			terminal := `{"type":"response.completed","response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80}}}}`
+			if mode == "missing_report" {
+				terminal = `{"type":"response.completed"}`
+			}
+			w.Content([]byte(terminal))
+			if mode == "delivery_failure" {
+				w.DownstreamWrite(errors.New("fixture delivery error"))
+			}
+			var upstreamErr error
+			if mode == "upstream_error" {
+				upstreamErr = context.DeadlineExceeded
+			}
+			now = w.start.Add(20 * time.Millisecond)
+			w.Finish(upstreamErr, false, false)
+			w.WhenFinished(func(s Snapshot) {
+				physical := DerivePhysicalUpstream(s)
+				require.Len(t, physical.Attempts, 1)
+				cache := physical.Attempts[0].RawCache
+				require.Equal(t, 1, cache.Version)
+				require.Equal(t, "physical_websocket_turn_responses_terminal_usage", cache.Scope)
+				if mode == "completed" || mode == "delivery_failure" {
+					require.Equal(t, "observed", cache.Status)
+					require.EqualValues(t, 80, *cache.ReadTokens)
+					require.InDelta(t, .8, *cache.ReadRatio, .000001)
+					if mode == "delivery_failure" {
+						require.NotEqual(t, "observed", DeriveContentObservation(s).Cache.Status)
+					}
+				} else {
+					require.NotEqual(t, "observed", cache.Status)
+					require.Nil(t, cache.ReadTokens)
+				}
+			})
+		})
+	}
+}
+
 func TestWSTurnWaitsValidatePhysicalGenerationAndBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

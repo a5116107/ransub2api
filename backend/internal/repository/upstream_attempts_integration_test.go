@@ -222,12 +222,14 @@ func TestUpstreamAttemptsRequestMetadataBucketsAndModelFilter(t *testing.T) {
 }
 
 type upstreamAttemptWaitReport struct {
-	Summary struct{ Attempts, Failed, Succeeded, Interrupted, Unknown int }
-	Rows    []struct {
+	Summary  struct{ Attempts, Failed, Succeeded, Interrupted, Unknown int }
+	RawCache upstreamAttemptCacheMetrics `json:"raw_cache"`
+	Rows     []struct {
 		AccountID     int64  `json:"account_id"`
 		UpstreamModel string `json:"upstream_model"`
 		Transport     string
 		Attempts      int
+		RawCache      upstreamAttemptCacheMetrics `json:"raw_cache"`
 		Waits         struct {
 			Version        int
 			Source         string
@@ -236,6 +238,213 @@ type upstreamAttemptWaitReport struct {
 			FirstReasoning upstreamWaitMetrics `json:"first_reasoning"`
 			FirstText      upstreamWaitMetrics `json:"first_text"`
 		}
+	}
+}
+
+type upstreamAttemptCacheMetrics struct {
+	Version  int
+	Source   string
+	Attempts int
+	Observed int   `json:"observed_attempts"`
+	Unknown  int   `json:"unknown_attempts"`
+	Hits     int   `json:"hit_attempts"`
+	Input    int64 `json:"input_tokens"`
+	Read     int64 `json:"read_tokens"`
+	Coverage *float64
+	HitRate  *float64   `json:"attempt_hit_rate"`
+	ReadRate *float64   `json:"token_read_rate"`
+	Latest   *time.Time `json:"latest_sample_at"`
+}
+
+func TestUpstreamAttemptsCacheIncludesUnbilledAndRecoveredScopes(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	first, second := upstreamAttemptWaitFixture(f.account), upstreamAttemptWaitFixture(f.outsider)
+	first.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 99}
+	second.Number, second.Status, second.Terminal = 2, 200, "completed"
+	second.UpstreamRequest.Model = "wire-b"
+	second.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 100}
+	writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 100, Status: 502, DownstreamError: true, Attempts: []requesttiming.Attempt{first, second}})
+	second.Number = 1
+	second.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 900, ReadTokens: 0}
+	writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 100, Status: 200, Attempts: []requesttiming.Attempt{second}})
+	for _, failure := range []string{"timeout", "canceled", ""} {
+		a := upstreamAttemptWaitFixture(f.outsider)
+		a.Status, a.Error, a.UpstreamRequest.Model = 0, failure, "wire-b"
+		a.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 100}
+		writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 100, Status: 502, Attempts: []requesttiming.Attempt{a}})
+	}
+	ws := upstreamAttemptWaitFixture(f.account)
+	ws.Kind, ws.Status, ws.Terminal = "ws_turn", 0, "completed"
+	ws.UpstreamRequest.Model, ws.UpstreamRequest.Source, ws.UpstreamCredential.Source = "wire-ws", "websocket_generation_payload", "websocket_handshake_credentials"
+	ws.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 200, ReadTokens: 80}
+	writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 100, TTFTMode: "ws_turn", Attempts: []requesttiming.Attempt{ws}})
+	data := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, 7, data.Summary.Attempts)
+	require.Equal(t, 1, data.RawCache.Version)
+	require.Equal(t, "canonical_physical_attempt_cache_reports", data.RawCache.Source)
+	require.Equal(t, 7, data.RawCache.Attempts)
+	require.Equal(t, 3, data.RawCache.Observed)
+	require.Equal(t, 4, data.RawCache.Unknown)
+	require.Equal(t, 2, data.RawCache.Hits)
+	require.EqualValues(t, 1200, data.RawCache.Input)
+	require.EqualValues(t, 180, data.RawCache.Read)
+	require.InDelta(t, 0.15, *data.RawCache.ReadRate, 0.000001)
+	require.InDelta(t, 2.0/3, *data.RawCache.HitRate, 0.000001)
+	require.InDelta(t, 3.0/7, *data.RawCache.Coverage, 0.000001)
+	for _, row := range data.Rows {
+		require.Equal(t, row.Attempts, row.RawCache.Attempts)
+		switch row.UpstreamModel {
+		case "wire-a":
+			require.Zero(t, row.RawCache.Observed)
+			require.Nil(t, row.RawCache.HitRate)
+		case "wire-b":
+			require.Equal(t, f.outsider, row.AccountID)
+			require.Equal(t, 2, row.RawCache.Observed)
+			require.Equal(t, 3, row.RawCache.Unknown)
+			require.InDelta(t, 0.1, *row.RawCache.ReadRate, 0.000001)
+			require.InDelta(t, 0.5, *row.RawCache.HitRate, 0.000001)
+		case "wire-ws":
+			require.Equal(t, "ws_turn", row.Transport)
+			require.Equal(t, 1, row.RawCache.Observed)
+		default:
+			t.Fatalf("unexpected scope: %+v", row)
+		}
+	}
+	var billed int
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM usage_logs WHERE api_key_id=$1`, f.key).Scan(&billed))
+	require.Zero(t, billed, "observation must not manufacture downstream usage or billing")
+}
+
+func TestUpstreamAttemptsCacheRejectsHistoricalInvalidAndCrossScopeReports(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tc := range []struct {
+		name, mutation string
+		observed       int
+	}{
+		{"valid", `detail`, 1},
+		{"missing_report", `detail #- '{physical_upstream,attempts,0,raw_cache}'`, 0},
+		{"final_report_is_not_fallback", `jsonb_set(detail #- '{physical_upstream,attempts,0,raw_cache}','{raw_cache}',detail->'physical_upstream'->'attempts'->0->'raw_cache')`, 0},
+		{"future_report", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,version}','9')`, 0},
+		{"string_version", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,version}','"1"')`, 0},
+		{"final_scope", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,scope}','"final_physical_http_responses_terminal_usage"')`, 0},
+		{"foreign_source", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,source}','"canonical_gemini_usage_metadata"')`, 0},
+		{"unknown_status", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,status}','"partial"')`, 0},
+		{"wrong_route", `jsonb_set(detail,'{attempts,0,route_fingerprint}',to_jsonb(repeat('c',64)))`, 0},
+		{"wrong_key", `jsonb_set(detail,'{attempts,0,upstream_credential,fingerprint}',to_jsonb(repeat('c',64)))`, 0},
+		{"wrong_model", `jsonb_set(detail,'{attempts,0,upstream_request,model}','"wire-b"')`, 0},
+		{"missing_scope", `detail #- '{physical_upstream,attempts,0,upstream_request}'`, 0},
+		{"missing_identity", `jsonb_set(detail,'{physical_upstream,attempts,0,identity_known}','false')`, 0},
+		{"projection_protocol", `jsonb_set(detail,'{physical_upstream,attempts,0,protocol}','"messages"')`, 0},
+		{"string_account", `jsonb_set(detail,'{physical_upstream,attempts,0,account_id}',to_jsonb(detail->'physical_upstream'->'attempts'->0->>'account_id'))`, 0},
+		{"physical_duplicate", `jsonb_set(detail,'{attempts}',(detail->'attempts')||(detail->'attempts'))`, 0},
+		{"physical_object", `jsonb_set(detail,'{attempts}','{}')`, 0},
+		{"truncated", `jsonb_set(detail,'{truncated}','true')`, 0},
+		{"wrong_protocol", `jsonb_set(detail,'{attempts,0,route,endpoint}','"messages"')`, 0},
+		{"raw_protocol", `jsonb_set(detail,'{attempts,0,cache_usage,protocol}','"chat_completions"')`, 0},
+		{"failed_attempt", `jsonb_set(detail,'{attempts,0,terminal}','"failed"')`, 0},
+		{"failed_outcome", `jsonb_set(detail,'{physical_upstream,attempts,0,outcome}','"failed"')`, 0},
+		{"transport_error", `jsonb_set(detail,'{attempts,0,error}','"timeout"')`, 0},
+		{"parser_gap", `jsonb_set(detail,'{attempts,0,events,typed_content_truncated}','50')`, 0},
+		{"no_end", `detail #- '{attempts,0,end_ms}'`, 0},
+		{"end_after_capture", `jsonb_set(detail,'{attempts,0,end_ms}','101')`, 0},
+		{"string_counter", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,read_tokens}','"90"')`, 0},
+		{"negative_counter", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,read_tokens}','-1')`, 0},
+		{"unsafe_counter", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,input_tokens}','9007199254740992')`, 0},
+		{"fractional_counter", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,read_tokens}','0.5')`, 0},
+		{"unmatched_raw_counter", `jsonb_set(detail,'{attempts,0,cache_usage,read_tokens}','89')`, 0},
+		{"missing_write_presence", `detail #- '{attempts,0,cache_usage,write_reported}'`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := upstreamAttemptWaitFixture(f.account)
+			a.Status, a.Terminal = 200, "completed"
+			a.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 90}
+			trace := writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 100, Status: 200, Attempts: []requesttiming.Attempt{a}})
+			_, err := integrationDB.Exec(`UPDATE request_connection_traces SET detail=`+tc.mutation+` WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+			var before, after string
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&before))
+			data := readUpstreamAttemptWaits(t, f, now)
+			require.Equal(t, 1, data.Summary.Attempts, "invalid cache evidence must not erase retained attempts")
+			require.Equal(t, tc.observed, data.RawCache.Observed)
+			require.Equal(t, 1-tc.observed, data.RawCache.Unknown)
+			if tc.observed == 0 {
+				require.Nil(t, data.RawCache.ReadRate)
+				require.Nil(t, data.RawCache.HitRate)
+				require.Nil(t, data.RawCache.Latest)
+			}
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&after))
+			require.Equal(t, before, after, "historical JSON must not be backfilled")
+			_, err = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestUpstreamAttemptsCacheUniqueFallbackIsReadOnlyAndNotDoubleCounted(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	a := upstreamAttemptWaitFixture(f.account)
+	a.Status, a.Terminal = 200, "completed"
+	a.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 90}
+	trace := writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 100, Status: 200, Attempts: []requesttiming.Attempt{a}})
+	var requestID string
+	var stored []byte
+	require.NoError(t, integrationDB.QueryRow(`SELECT request_id,detail FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&requestID, &stored))
+	var snapshot requesttiming.Snapshot
+	require.NoError(t, json.Unmarshal(stored, &snapshot))
+	repo := newUsageLogRepositoryWithSQL(integrationEntClient, integrationDB)
+	_, err := repo.Create(t.Context(), &service.UsageLog{UserID: f.user, APIKeyID: f.key, AccountID: f.account, GroupID: &f.group, Model: "bill-only", RequestedModel: "public-waits", RequestID: requestID, CreatedAt: now, CacheReadTokens: 99999})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = integrationDB.Exec(`DELETE FROM request_timing_details WHERE trace_id=$1`, trace) })
+	require.NoError(t, repo.writeTiming(t.Context(), timingWrite{requestID: requestID, apiKeyID: f.key, data: snapshot}))
+	_, err = integrationDB.Exec(`UPDATE request_timing_details SET created_at=$2 WHERE trace_id=$1`, trace, now)
+	require.NoError(t, err)
+	first := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, 1, first.RawCache.Observed)
+	require.EqualValues(t, 90, first.RawCache.Read, "rewritten billing cache must not replace wire counters")
+	_, err = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+	require.NoError(t, err)
+	var before, after string
+	require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_timing_details WHERE trace_id=$1`, trace).Scan(&before))
+	fallback := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, first.RawCache, fallback.RawCache)
+	require.Equal(t, 1, fallback.Summary.Attempts)
+	require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_timing_details WHERE trace_id=$1`, trace).Scan(&after))
+	require.Equal(t, before, after)
+}
+
+func TestUpstreamAttemptsWSCacheRequiresIndependentCompletedTurn(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tc := range []struct {
+		name, mutation string
+		observed       int
+	}{
+		{"valid", `detail`, 1},
+		{"http_scope", `jsonb_set(detail,'{physical_upstream,attempts,0,raw_cache,scope}','"physical_http_responses_terminal_usage"')`, 0},
+		{"http_mode", `jsonb_set(detail,'{ttft_mode}','"upstream"')`, 0},
+		{"http_status", `jsonb_set(detail,'{status}','200')`, 0},
+		{"parent", `jsonb_set(detail,'{attempts,0,parent}','2')`, 0},
+		{"http_credential", `jsonb_set(detail,'{attempts,0,upstream_credential,source}','"http_transport_handoff"')`, 0},
+		{"extra_turn", `jsonb_set(detail,'{attempts}',(detail->'attempts')||jsonb_build_array(jsonb_set(detail->'attempts'->0,'{number}','2')))`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := upstreamAttemptWaitFixture(f.account)
+			a.Kind, a.Status, a.Terminal = "ws_turn", 0, "completed"
+			a.UpstreamCredential.Source, a.UpstreamRequest.Source = "websocket_handshake_credentials", "websocket_generation_payload"
+			a.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 90}
+			trace := writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 100, TTFTMode: "ws_turn", Attempts: []requesttiming.Attempt{a}})
+			_, err := integrationDB.Exec(`UPDATE request_connection_traces SET detail=`+tc.mutation+` WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+			data := readUpstreamAttemptWaits(t, f, now)
+			require.Equal(t, 1, data.Summary.Attempts)
+			require.Equal(t, tc.observed, data.RawCache.Observed)
+			require.Equal(t, 1-tc.observed, data.RawCache.Unknown)
+			_, err = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+		})
 	}
 }
 
