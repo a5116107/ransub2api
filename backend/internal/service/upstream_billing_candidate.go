@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/tidwall/gjson"
 )
 
 type upstreamBillingCandidateKey struct{}
@@ -14,11 +18,13 @@ type upstreamBillingCandidate struct {
 	scope       *AvailabilityRequestScope
 	fastPolicy  *OpenAIFastPolicySettings
 	policyKnown bool
+	chatHasText bool
 }
 
 // WithUpstreamBillingCandidateRequest records prompt-free ingress metadata
-// after channel mapping. Only native HTTP Responses passthrough is predictable
-// here; conversions and WebSocket turns keep their original final-send checks.
+// after channel mapping. Native HTTP Responses passthrough and fixed Responses
+// to Chat text conversions share the original wire transformers. Other routes
+// and WebSocket turns keep their original final-send checks.
 // Unknown metadata/policy defers scope-specific filtering, never qualifies
 // supply. Declaration expiry, validity and binding still apply to every route.
 func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.Context, request *http.Request, body []byte) context.Context {
@@ -35,6 +41,9 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 		}
 	}
 	if candidate.scope != nil {
+		input := gjson.GetBytes(body, "input")
+		candidate.chatHasText = input.Type == gjson.String || input.IsArray() && input.Get("#").Int() > 0 ||
+			strings.TrimSpace(gjson.GetBytes(body, "instructions").String()) != ""
 		candidate.policyKnown = s == nil || s.settingService == nil
 		if !candidate.policyKnown {
 			candidate.fastPolicy = openAIFastPolicySettingsFromContext(ctx)
@@ -60,25 +69,51 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 	candidate, _ := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
 	var scope *AvailabilityRequestScope
 	if candidate.scope != nil && candidate.policyKnown && account.IsOpenAIApiKey() &&
-		account.IsOpenAIPassthroughEnabled() && !account.IsCopilotSDKEnabled() &&
+		!account.IsCopilotSDKEnabled() &&
 		!account.HasManagedOpenAIConnections() && !account.IsShadow() &&
 		!account.routesByModel() && !account.IsAdaptiveAPIProtocol() && !account.UsesNativeCNResponses() &&
-		controlledMode(ctx) == nil && resolveUpstreamProtocol(account, APIProtocolResponses, "", nil) == APIProtocolResponses {
-		// Passthrough preserves the channel-mapped body model. Applying the
-		// account mapping here would invent a model this path never sends.
-		request, body := billingApplicabilityScopeRequest(*candidate.scope)
-		body, err := filterOpenAIResponsesNoneReasoningEffortForAccount(account, body)
-		if err != nil {
-			return ""
+		controlledMode(ctx) == nil {
+		protocol := resolveUpstreamProtocol(account, APIProtocolResponses, "", nil)
+		predictable := protocol == APIProtocolResponses && account.IsOpenAIPassthroughEnabled() ||
+			protocol == APIProtocolChatCompletions && candidate.chatHasText
+		if predictable {
+			request, body := billingApplicabilityScopeRequest(*candidate.scope)
+			model := candidate.scope.Model
+			// Forward applies this before choosing native or converted output;
+			// compatible non-passthrough drops none, passthrough preserves it.
+			body, err := filterOpenAIResponsesNoneReasoningEffortForAccount(account, body)
+			if err != nil {
+				return ""
+			}
+			if protocol == APIProtocolChatCompletions {
+				var responses apicompat.ResponsesRequest
+				if json.Unmarshal(body, &responses) != nil {
+					return ""
+				}
+				// Only the existence of validated text was retained, never its
+				// contents. The same converter carries scope options to Chat.
+				responses.Input = json.RawMessage(`""`)
+				chat, convertErr := apicompat.ResponsesToChatCompletionsRequest(&responses)
+				if convertErr != nil {
+					return ""
+				}
+				model = normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, model, ""))
+				chat.Model = model
+				body, err = json.Marshal(chat)
+				request.URL.Path = "/v1/chat/completions"
+			}
+			if err != nil {
+				return ""
+			}
+			body, err = applyOpenAIFastPolicyBody(ctx, account, model, body, func(tier string) (string, string) {
+				return evaluateOpenAIFastPolicyWithSettings(candidate.fastPolicy, openAIFastPolicyUserID(ctx), account, model, tier)
+			})
+			if err != nil {
+				// Preserve the original policy 403 instead of reporting an empty pool.
+				return ""
+			}
+			scope = availabilityScopeForRequest(request, body)
 		}
-		body, err = applyOpenAIFastPolicyBody(ctx, account, candidate.scope.Model, body, func(tier string) (string, string) {
-			return evaluateOpenAIFastPolicyWithSettings(candidate.fastPolicy, openAIFastPolicyUserID(ctx), account, candidate.scope.Model, tier)
-		})
-		if err != nil {
-			// Preserve the original policy 403 instead of reporting an empty pool.
-			return ""
-		}
-		scope = availabilityScopeForRequest(request, body)
 	}
 	status, reason := upstreamBillingScopeVerdictAt(account, scope, at)
 	if scope != nil || status != "unknown" && status != "not_declared" {

@@ -34,19 +34,30 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, engine := range []string{"true", "false"} {
-		t.Run("advanced="+engine, func(t *testing.T) {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "chat_http"}, {"false", "chat_http"}} {
+		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
-			excluded := billingCandidateAccount(t, 901, billingApplicabilityEntry("responses_http", "priority", false))
-			covered := billingCandidateAccount(t, 902, billingApplicabilityEntry("responses_http", "priority", true))
+			newAccount := func(id int64, covered bool) *Account {
+				entry := billingApplicabilityEntry(tc.protocol, "priority", covered)
+				account := billingCandidateAccount(t, id, entry)
+				if tc.protocol == "chat_http" {
+					account.Extra["openai_responses_mode"] = "force_chat_completions"
+					at := time.Now().UTC().Add(-time.Second)
+					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+					require.NoError(t, err)
+				}
+				return account
+			}
+			excluded := newAccount(901, false)
+			covered := newAccount(902, true)
 			cache := &stubGatewayCache{sessionBindings: map[string]int64{"scope-sticky": excluded.ID}}
 			concurrency := &upstreamCostTrackingConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{
 				excluded.ID: {AccountID: excluded.ID}, covered.ID: {AccountID: covered.ID},
 			}}
 			svc := &OpenAIGatewayService{cfg: &config.Config{}, cache: cache,
 				accountRepo:      schedulerTestOpenAIAccountRepo{accounts: []Account{*excluded, *covered}},
-				rateLimitService: newOpenAIAdvancedSchedulerRateLimitService(engine), concurrencyService: NewConcurrencyService(concurrency)}
+				rateLimitService: newOpenAIAdvancedSchedulerRateLimitService(tc.engine), concurrencyService: NewConcurrencyService(concurrency)}
 			group := profitControlTestGroup(7, 0.5, 0)
 			ctx := billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`)
 			for _, session := range []string{"", "scope-sticky"} {
@@ -63,10 +74,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 			selection, _, err := svc.SelectAccountWithScheduler(ctx, &group.ID, "", "", "gpt-fixture", map[int64]struct{}{covered.ID: {}}, OpenAIUpstreamTransportAny, false)
 			require.Nil(t, selection, "failover must not readmit the excluded scope")
 			require.ErrorIs(t, err, ErrNoAvailableAccounts)
-			if engine == "true" {
+			if tc.engine == "true" {
 				require.Contains(t, err.Error(), "profit_upstream_scope_excluded=1")
 			}
-			recovered := billingCandidateAccount(t, excluded.ID, billingApplicabilityEntry("responses_http", "priority", true))
+			recovered := newAccount(excluded.ID, true)
 			svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: []Account{*recovered, *covered}}
 			selection, _, err = svc.SelectAccountWithScheduler(ctx, &group.ID, "", "scope-sticky", "gpt-fixture", map[int64]struct{}{covered.ID: {}}, OpenAIUpstreamTransportAny, false)
 			require.NoError(t, err)
@@ -153,8 +164,66 @@ func TestBillingCandidatePostSlotRefreshAndFinalSend(t *testing.T) {
 	require.True(t, IsOpenAITurnAdmissionError(guardUpstreamBillingHTTPApplicability(selected, request)))
 }
 
+func TestBillingCandidateResponsesToChatScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, model, tier, effort string
+		policy                          *OpenAIFastPolicySettings
+		covered, force, deferScope      bool
+		passthrough, official           bool
+	}{
+		{name: "covered", body: `{"model":"gpt-fixture","input":"private prompt"}`, covered: true},
+		{name: "excluded", body: `{"model":"gpt-fixture","input":"private prompt"}`},
+		{name: "mapped model", body: `{"model":"gpt-fixture","input":[{"role":"user","content":"private prompt"}]}`, model: "wire-fixture"},
+		{name: "mapped model covered", body: `{"model":"gpt-fixture","input":"private prompt"}`, model: "wire-fixture", covered: true},
+		{name: "compatible none omitted", body: `{"model":"gpt-fixture","input":"private prompt","stream":true,"reasoning":{"effort":"none"}}`},
+		{name: "passthrough none preserved", body: `{"model":"gpt-fixture","input":"private prompt","reasoning":{"effort":"none"}}`, effort: "none", passthrough: true},
+		{name: "official none preserved", body: `{"model":"gpt-fixture","input":"private prompt","reasoning":{"effort":"none"}}`, effort: "none", official: true},
+		{name: "explicit high", body: `{"model":"gpt-fixture","input":"private prompt","reasoning":{"effort":"high"}}`, effort: "high"},
+		{name: "group priority", body: `{"model":"gpt-fixture","input":"private prompt"}`, force: true, tier: "priority"},
+		{name: "priority filtered", body: `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`, policy: openAIFastFilterPriorityPolicy()},
+		{name: "policy block retains original error", body: `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`, tier: "priority", deferScope: true, policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierPriority, Action: BetaPolicyActionBlock, Scope: BetaPolicyScopeAll}}}},
+		{name: "instructions only", body: `{"model":"gpt-fixture","instructions":"private system"}`},
+		{name: "missing content deferred", body: `{"model":"gpt-fixture"}`, deferScope: true},
+		{name: "empty array deferred", body: `{"model":"gpt-fixture","input":[]}`, deferScope: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := billingApplicabilityEntry("chat_http", "unspecified", tc.covered)
+			if tc.model != "" {
+				entry["model"] = tc.model
+			}
+			if tc.tier != "" {
+				entry["service_tier"] = tc.tier
+			}
+			if tc.effort != "" {
+				entry["reasoning_effort"] = tc.effort
+			}
+			account := billingCandidateAccount(t, 909, entry)
+			account.Extra["openai_responses_mode"] = "force_chat_completions"
+			account.Extra["openai_passthrough"] = tc.passthrough
+			if tc.official {
+				account.Credentials["base_url"] = "https://api.openai.com"
+			}
+			if tc.model != "" {
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": tc.model}
+			}
+			at := time.Now().UTC().Add(-time.Second)
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
+			group := profitControlTestGroup(7, 0.5, 0)
+			group.ForceOpenAIFast = tc.force
+			ctx := billingCandidateContext(t, svc, group, tc.body)
+			vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+			require.Equal(t, !tc.covered && !tc.deferScope, vetoed, reason)
+			if vetoed {
+				require.Equal(t, "profit_upstream_scope_excluded", reason)
+			}
+		})
+	}
+}
+
 func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
-	for _, name := range []string{"legacy", "gate disabled", "suppressed", "non passthrough", "chat conversion", "managed credentials", "shadow credentials", "websocket", "tools", "lite", "compact", "conflicting fields", "reset unknown", "policy block", "policy unavailable"} {
+	for _, name := range []string{"legacy", "gate disabled", "suppressed", "non passthrough", "chat without text", "managed credentials", "shadow credentials", "websocket", "tools", "lite", "compact", "conflicting fields", "reset unknown", "policy block", "policy unavailable"} {
 		t.Run(name, func(t *testing.T) {
 			account := billingCandidateAccount(t, 905, billingApplicabilityEntry("responses_http", "unspecified", false))
 			svc := &OpenAIGatewayService{}
@@ -170,7 +239,7 @@ func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
 				ctx = WithOpenAIProfitControlSuppressed(ctx)
 			case "non passthrough":
 				account.Extra["openai_passthrough"] = false
-			case "chat conversion":
+			case "chat without text":
 				account.Extra["openai_responses_mode"] = "force_chat_completions"
 			case "managed credentials", "shadow credentials":
 				at := time.Now().UTC().Add(-time.Second)
@@ -196,7 +265,7 @@ func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
 			case "policy unavailable":
 				svc.settingService = NewSettingService(&billingCandidateSettingRepo{}, &config.Config{})
 			}
-			if name == "non passthrough" || name == "chat conversion" {
+			if name == "non passthrough" || name == "chat without text" {
 				at := time.Now().UTC().Add(-time.Second)
 				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, billingApplicabilityEntry("responses_http", "unspecified", false)), at)
 				require.NoError(t, err)

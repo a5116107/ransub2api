@@ -48,6 +48,96 @@ func TestForwardResponses_ChatFallbackPreservesProvidedStartTime(t *testing.T) {
 	}
 }
 
+func TestBillingCandidateChatConversionMatchesPhysicalHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, stream := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, inputOptions, tier, effort string
+			policy                           *OpenAIFastPolicySettings
+			force, passthrough               bool
+		}{
+			{name: "default", tier: "unspecified", effort: "unspecified"},
+			{name: "compatible none omitted", inputOptions: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "unspecified"},
+			{name: "passthrough none preserved", inputOptions: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none", passthrough: true},
+			{name: "priority high", inputOptions: `,"service_tier":"priority","reasoning":{"effort":"high"}`, tier: "priority", effort: "high"},
+			{name: "group force", tier: "priority", effort: "unspecified", force: true},
+			{name: "filter", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
+			{name: "missing tier forces priority", tier: "priority", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}},
+		} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				observed := make(chan *AvailabilityRequestScope, 2)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					payload, err := io.ReadAll(request.Body)
+					if err != nil {
+						t.Errorf("read physical request: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					observed <- availabilityScopeForRequest(request, payload)
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl_scope\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, `{"id":"chatcmpl_scope","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+					}
+				}))
+				t.Cleanup(server.Close)
+				entry := billingApplicabilityEntry("chat_http", tc.tier, true)
+				entry["model"], entry["reasoning_effort"] = "wire-fixture", tc.effort
+				account := billingCandidateAccount(t, 910, entry)
+				account.Extra["openai_responses_mode"] = "force_chat_completions"
+				account.Extra["openai_passthrough"] = tc.passthrough
+				account.Credentials["base_url"] = server.URL
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
+				svc.cfg = rawChatCompletionsTestConfig()
+				svc.accountRepo, svc.requireLatestTurnAdmission = &turnAdmissionRepo{account: account}, true
+				svc.httpUpstream = &codexModelsHTTPUpstreamStub{do: func(request *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+					if err := CheckHTTPUpstreamSendGuard(request.Context()); err != nil {
+						return nil, err
+					}
+					return server.Client().Do(request)
+				}}
+				body := []byte(fmt.Sprintf(`{"model":"gpt-fixture","input":"private prompt","stream":%v%s}`, stream, tc.inputOptions))
+				group := profitControlTestGroup(7, 0.5, 0)
+				group.ForceOpenAIFast = tc.force
+				ctx := billingCandidateContext(t, svc, group, string(body))
+				vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+				require.False(t, vetoed, reason)
+				forward := func() (*OpenAIForwardResult, error) {
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
+					return svc.Forward(ctx, c, account, body)
+				}
+				result, err := forward()
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				select {
+				case scope := <-observed:
+					require.NotNil(t, scope)
+					require.Equal(t, AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: "chat_http", Model: "wire-fixture", Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, Stream: stream}, *scope)
+				default:
+					t.Fatal("physical upstream did not receive the covered converted request")
+				}
+				entry["group_rate_applies"] = false
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				vetoed, reason = openAIProfitControlVetoReason(ctx, account)
+				require.True(t, vetoed)
+				require.Equal(t, "profit_upstream_scope_excluded", reason)
+				result, err = forward()
+				require.Nil(t, result)
+				require.True(t, IsOpenAITurnAdmissionError(err), "changed scope must still stop at the original final admission")
+				require.Empty(t, observed, "an excluded converted scope must not produce a physical send")
+			})
+		}
+	}
+}
+
 func TestForwardResponses_ForceChatCompletionsRoutesNonStreamingToChatCompletions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
