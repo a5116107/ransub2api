@@ -55,7 +55,7 @@
                 <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words text-xs text-gray-500">{{ row.transport }} / {{ row.protocol ?? t('upstreamOps.unknown') }} · {{ t('upstreamOps.attempts.ingressModel') }} {{ row.public_model || t('upstreamOps.unknown') }}</p>
                 <dl class="grid grid-cols-3 gap-2 tabular-nums"><div v-for="key in attemptKeys" :key="key"><dt class="text-xs text-gray-500">{{ t(`upstreamOps.attempts.${key}`) }}</dt><dd>{{ number(row[key], 0) }}</dd></div></dl>
-                <div v-if="row.upstream_model_status === 'observed' && row.upstream_model && row.upstream_protocol && row.service_tier && row.reasoning_effort && typeof row.upstream_stream === 'boolean' && validMessagesScope(row)" class="space-y-1" data-testid="attempt-request-scope">
+                <div v-if="row.upstream_model_status === 'observed' && row.upstream_model && row.upstream_protocol && row.service_tier && row.reasoning_effort && typeof row.upstream_stream === 'boolean' && validRequestScope(row)" class="space-y-1" data-testid="attempt-request-scope">
                   <p class="text-xs font-medium text-green-700 dark:text-green-400">{{ t('upstreamOps.attempts.requestMetadataObserved') }}</p>
                   <p class="break-all font-medium">{{ row.upstream_model }}</p>
                   <p class="break-words text-xs text-gray-500">{{ row.upstream_protocol }} · {{ row.service_tier }} · {{ row.reasoning_effort }} · {{ row.upstream_stream ? t('upstreamOps.rawCache.streaming') : t('upstreamOps.rawCache.nonStreaming') }}</p>
@@ -63,6 +63,12 @@
                     <p class="break-words text-xs text-gray-500" data-testid="attempt-messages-speed">{{ t('upstreamOps.attempts.messagesSpeed', { value: row.speed }) }}</p>
                     <p class="break-words text-xs text-gray-500" data-testid="attempt-messages-thinking">{{ t('upstreamOps.attempts.messagesThinking', { value: row.thinking_mode }) }}</p>
                     <p v-if="row.thinking_mode === 'enabled'" class="break-words text-xs text-gray-500" data-testid="attempt-messages-budget">{{ t('upstreamOps.attempts.messagesBudget', { value: number(row.thinking_budget_tokens, 0) }) }}</p>
+                  </template>
+                  <template v-if="row.upstream_protocol === 'gemini_generate_content' || row.upstream_protocol === 'gemini_stream_generate_content'">
+                    <p class="break-words text-xs text-gray-500" data-testid="attempt-gemini-thinking">{{ t('upstreamOps.attempts.geminiThinking') }} {{ t(`upstreamOps.attempts.geminiModes.${row.thinking_mode}`) }}</p>
+                    <p v-if="row.thinking_mode === 'budget_fixed'" class="break-words text-xs text-gray-500" data-testid="attempt-gemini-budget">{{ t('upstreamOps.attempts.messagesBudget', { value: number(row.thinking_budget_tokens, 0) }) }}</p>
+                    <p v-if="row.thinking_mode === 'level'" class="break-words text-xs text-gray-500" data-testid="attempt-gemini-level">{{ t('upstreamOps.attempts.geminiLevel', { value: row.thinking_level }) }}</p>
+                    <p class="break-words text-xs text-gray-500" data-testid="attempt-gemini-thoughts">{{ t('upstreamOps.attempts.geminiThoughts') }} {{ t(`upstreamOps.attempts.geminiThoughtOptions.${row.include_thoughts}`) }}</p>
                   </template>
                 </div>
                 <p v-else class="text-xs text-amber-700 dark:text-amber-400" data-testid="attempt-request-scope-unknown">{{ t('upstreamOps.attempts.physicalScopeUnknown') }}</p>
@@ -147,8 +153,16 @@ function number(v: number|null|undefined, decimals=6) { return v==null || !Numbe
 function percent(value: number | null | undefined) { return value != null && Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : t('upstreamOps.unknown') }
 function cacheStatus(value: UpstreamRawCacheMetrics) { return value.requests === 0 ? 'empty' : value.observed_requests === 0 ? 'unknown' : value.observed_requests < value.requests ? 'partial' : 'observed' }
 function trafficSource(source: string | undefined) { return source === 'gateway_ingress' || source === 'account_connection_test' ? source : 'unknown' }
-function validMessagesScope(row: UpstreamAttemptRow) {
+function validRequestScope(row: UpstreamAttemptRow) {
+ if(row.upstream_protocol === 'gemini_generate_content' || row.upstream_protocol === 'gemini_stream_generate_content') {
+  if(row.service_tier !== 'unspecified' || row.reasoning_effort !== 'unspecified' || row.speed != null || !['unspecified','enabled','disabled'].includes(row.include_thoughts ?? '') || row.upstream_stream !== (row.upstream_protocol === 'gemini_stream_generate_content')) return false
+  if(row.thinking_mode === 'level') return ['minimal','low','medium','high','MINIMAL','LOW','MEDIUM','HIGH'].includes(row.thinking_level ?? '') && row.thinking_budget_tokens == null
+  if(row.thinking_level != null) return false
+  if(row.thinking_mode === 'budget_fixed') return Number.isSafeInteger(row.thinking_budget_tokens) && row.thinking_budget_tokens! > 0
+  return ['unspecified','budget_dynamic','budget_zero'].includes(row.thinking_mode ?? '') && row.thinking_budget_tokens == null
+ }
  if(row.upstream_protocol !== 'messages') return true
+ if(row.thinking_level != null || row.include_thoughts != null) return false
  if(!['unspecified','auto','standard_only'].includes(row.service_tier ?? '') || !['unspecified','low','medium','high','max'].includes(row.reasoning_effort ?? '') || !['unspecified','standard','fast'].includes(row.speed ?? '')) return false
  if(row.thinking_mode === 'enabled') return Number.isSafeInteger(row.thinking_budget_tokens) && row.thinking_budget_tokens! > 0
  return ['unspecified','disabled','adaptive'].includes(row.thinking_mode ?? '') && row.thinking_budget_tokens == null

@@ -1815,7 +1815,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
-| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.11已接最终Key/线路原始缓存、逐尝试发送scope、HTTP四阶段/独立WS三阶段等待及输出停顿/吞吐，按服务端入口来源分桶；Messages已知模式另按速度/思考模式及预算分桶。失败、中断和未知保留覆盖分母。实际组、受信外部检测、Gemini等其余scope及资格消费仍缺，D5.3继续开放；不以当前配置补历史 |
+| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.12已接最终Key/线路原始缓存、逐尝试发送scope、HTTP四阶段/独立WS三阶段等待及输出停顿/吞吐，按服务端入口来源分桶；Messages按速度/思考模式与预算，Gemini按原生action/预算模式/等级与思考输出开关分桶。失败、中断和未知保留覆盖分母。实际组、受信外部检测、其余scope与完整资格消费仍缺，D5.3继续开放；不以当前配置补历史 |
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
@@ -1962,6 +1962,16 @@ D5.2、D6.1、D7.1/D7.2、D3.1及D2.1–D2.5/D4.1/D4.2的已验子范围继续�
 - 逐尝试结果、缓存、等待及输出增加速度、模式和预算的独立分桶与稳定分页；HTTP/独立WS及旧OpenAI统计不混用。原Messages累计usage按未缓存输入+缓存读取+缓存写入校验总输入，原始presence位齐备才纳入缓存样本；合法零未缓存字段可因原JSON的omitempty缺省，明确null或不守恒仍拒绝。失败/中断/无报告保留未知覆盖，不借最终成功或账单回填。
 - 管理员原卡片显示发送速度、思考模式和精确预算，缓存结论、覆盖及等待/输出仍各自保留原分母。旧字段缺失或非法scope显示未知；下游本人/观察员不获得此管理员元数据，原计费与最终用量缓存合同不变。
 - 验收覆盖真实HTTP失败后重试、不同发送模型→PostgreSQL→原管理API，已知模式/预算隔离、原始缓存/等待/停顿及吞吐、非法/历史/只读/权限和中英390/1440px布局/错误恢复/键盘筛选分页。具体命令和结果见DECISIONS/STATE；测试夹具不证明供应商真实模型/分组、生产加载或严格产品资格。可选JSON无需schema迁移，旧应用忽略新增字段、Messages发送scope退为未知即可回退。
+
+#### D5.3.12 Gemini实际发送范围与同范围观测
+
+沿原最终HTTP请求读取器、物理attempt、原SQL/API和管理员渠道运维页补齐原生Gemini及Code Assist/Antigravity信封；不新增表、迁移、路由、采集器或调度评分，原计费、下游本人及最终用量缓存合同保持。
+
+- 原生模型从最终URL的`/models/{model}:generateContent`或`:streamGenerateContent`提取，仅保留安全模型标识，来源为`http_transport_url_body`；Vertex项目/位置/发布者路径、主机和认证查询均不保存为发送元数据。内部`v1internal`仅读取一层`model`和`request`信封，来源仍为`http_transport_body`。stream由实际action决定，不借入站stream或强制流转非流后的下游形态。
+- 从实际消费的完整有界JSON读取`generationConfig.thinkingConfig`。未指定为`unspecified`；预算`-1`为`budget_dynamic`，明确`0`为`budget_zero`，正安全整数为`budget_fixed`并保留精确Token值；`thinkingLevel`独立为`level`并保留已知大小写值，不换算为预算或通用effort。`includeThoughts`按未指定/请求返回/请求不返回独立记录。未指定不推断供应商默认，零预算不承诺模型执行效果；预算与等级同时设置、未知/重复/冲突/非法参数、不完整或超限请求均保持未知。
+- 在同Key/线路/模型/实际action/传输/入口来源下，预算模式、精确预算、等级及思考输出设置分别分桶，并加入稳定分页顺序。协议投影统一为`gemini`，原始action保留；缓存仅使用本次原始`promptTokenCount`与`cachedContentTokenCount`，不制造缓存写入量。原始协议、投影与唯一attempt仍须一致，失败/中断/缺失保留覆盖分母。不同action不混算流式吞吐，非流式不获流式TPS。
+- 输出仅接受Gemini原有`typed_gemini_content`及主候选文本chunk范围，沿原停顿、尾段等待和非推理Token推导；不把协议chunk当网络包/Token，不将candidates计数再次扣除thoughts。原始JSON/一层响应信封由既有解析器处理，转换后的内容不重复观测。
+- 原管理员卡片显示明确模式、预算/等级、思考输出及未知结论；旧数据不回填，非法范围不冒认已观测。验收包括原生/内部真实HTTP失败→不同发送模型重试→PG→管理API，同范围隔离、零/未知/非法、原始缓存/等待/输出、只读/权限及中英390/1440px、失败恢复和键盘分页。模型元数据不代替供应商实际分组、缓存域/存活、模型验真或严格产品资格。生产与D5原父验收保持独立；可选JSON无需schema迁移，旧读取者把未支持的Gemini发送范围归未知即可回退。
 
 #### 执行顺序与解除条件
 

@@ -60,6 +60,90 @@ func TestUpstreamRequestMetadataParsing(t *testing.T) {
 	}
 }
 
+func TestUpstreamRequestGeminiMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, payload, mode, level, thoughts, source string
+		budget                                             int64
+		stream, valid                                      bool
+	}{
+		{name: "native_unspecified", path: "/v1beta/models/wire-gemini:generateContent", payload: `{}`, mode: "unspecified", thoughts: "unspecified", source: "http_transport_url_body", valid: true},
+		{name: "vertex_level", path: "/v1/projects/private-project/locations/private-region/publishers/google/models/wire-gemini:streamGenerateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"minimal","includeThoughts":false}}}`, mode: "level", level: "minimal", thoughts: "disabled", source: "http_transport_url_body", stream: true, valid: true},
+		{name: "dynamic", path: "/v1beta/models/wire-gemini:streamGenerateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":-1,"includeThoughts":true}}}`, mode: "budget_dynamic", thoughts: "enabled", source: "http_transport_url_body", stream: true, valid: true},
+		{name: "explicit_zero", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`, mode: "budget_zero", thoughts: "unspecified", source: "http_transport_url_body", valid: true},
+		{name: "fixed_budget", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":4096}}}`, mode: "budget_fixed", budget: 4096, thoughts: "unspecified", source: "http_transport_url_body", valid: true},
+		{name: "uppercase_level", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"HIGH"}}}`, mode: "level", level: "HIGH", thoughts: "unspecified", source: "http_transport_url_body", valid: true},
+		{name: "empty_thinking", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{}}}`, mode: "unspecified", thoughts: "unspecified", source: "http_transport_url_body", valid: true},
+		{name: "internal", path: "/v1internal:streamGenerateContent", payload: `{"project":"private-project","model":"wire-gemini","request":{"contents":[{"parts":[{"text":"private-prompt"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}}`, mode: "level", level: "high", thoughts: "unspecified", source: "http_transport_body", stream: true, valid: true},
+		{name: "internal_missing_request", path: "/v1internal:generateContent", payload: `{"model":"wire-gemini"}`},
+		{name: "internal_nested_envelope", path: "/v1internal:generateContent", payload: `{"model":"wire-gemini","request":{"request":{}}}`},
+		{name: "internal_conflicting_model", path: "/v1internal:generateContent", payload: `{"model":"wire-gemini","request":{"model":"other"}}`},
+		{name: "internal_outer_config", path: "/v1internal:generateContent", payload: `{"model":"wire-gemini","generationConfig":{},"request":{}}`},
+		{name: "duplicate_model", path: "/v1internal:generateContent", payload: `{"model":"wire-gemini","model":"other","request":{}}`},
+		{name: "native_body_model", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"model":"other"}`},
+		{name: "body_stream", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"stream":true}`},
+		{name: "bad_model_path", path: "/v1beta/models/private-project/wire-gemini:generateContent", payload: `{}`},
+		{name: "encoded_model_path", path: "/v1beta/models/wire%2Fgemini:generateContent", payload: `{}`},
+		{name: "control_model", path: "/v1internal:generateContent", payload: `{"model":"wire\ngemini","request":{}}`},
+		{name: "resource_model", path: "/v1internal:generateContent", payload: `{"model":"projects/private-project/models/wire-gemini","request":{}}`},
+		{name: "duplicate_config", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{},"generationConfig":{}}`},
+		{name: "null_config", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":null}`},
+		{name: "null_thinking", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":null}}`},
+		{name: "duplicate_budget", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":0,"thinkingBudget":-1}}}`},
+		{name: "both_modes", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":4096,"thinkingLevel":"high"}}}`},
+		{name: "fraction", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":1.5}}}`},
+		{name: "unsafe_integer", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":9007199254740992}}}`},
+		{name: "negative", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":-2}}}`},
+		{name: "null_budget", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":null}}}`},
+		{name: "unknown_level", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"extreme"}}}`},
+		{name: "bad_thoughts", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"includeThoughts":"true"}}}`},
+		{name: "unknown_thinking_field", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"generationConfig":{"thinkingConfig":{"future":true}}}`},
+		{name: "foreign_config", path: "/v1beta/models/wire-gemini:generateContent", payload: `{"thinking":{"type":"disabled"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(time.Now(), 0)
+			req, err := http.NewRequestWithContext(With(t.Context(), c), "POST", "https://fixture.invalid"+tc.path+"?key=private-key", strings.NewReader(tc.payload))
+			require.NoError(t, err)
+			req, _ = StartAttempt(req, 7, 0)
+			req, _ = StartTransport(req)
+			observed := ObserveUpstreamRequest(req)
+			RecordUpstreamCredentials(observed.Context(), []string{strings.Repeat("a", 64)})
+			wire, err := io.ReadAll(observed.Body)
+			require.NoError(t, err)
+			require.Equal(t, tc.payload, string(wire))
+			require.NoError(t, observed.Body.Close())
+			c.Finish(200, false)
+			c.WhenFinished(func(s Snapshot) {
+				got := s.Attempts[1].UpstreamRequest
+				if !tc.valid {
+					require.Nil(t, got)
+					return
+				}
+				require.NotNil(t, got)
+				require.Equal(t, "wire-gemini", got.Model)
+				require.Equal(t, tc.source, got.Source)
+				require.Equal(t, tc.stream, got.Stream)
+				require.Equal(t, tc.mode, got.ThinkingMode)
+				require.Equal(t, tc.budget, got.ThinkingBudgetTokens)
+				raw, err := json.Marshal(got)
+				require.NoError(t, err)
+				var metadata map[string]any
+				require.NoError(t, json.Unmarshal(raw, &metadata))
+				require.Equal(t, tc.thoughts, metadata["include_thoughts"])
+				if tc.level != "" {
+					require.Equal(t, tc.level, metadata["thinking_level"])
+				} else {
+					require.NotContains(t, metadata, "thinking_level")
+				}
+				physical := DerivePhysicalUpstream(s)
+				require.Equal(t, got, physical.Attempts[0].UpstreamRequest)
+				for _, secret := range []string{"private-prompt", "private-project", "private-region", "private-key", "fixture.invalid"} {
+					require.NotContains(t, string(raw), secret)
+				}
+			})
+		})
+	}
+}
+
 type upstreamScopeReader struct {
 	io.Reader
 	reads, closes int

@@ -236,6 +236,8 @@ type upstreamAttemptWaitReport struct {
 		Speed                string `json:"speed"`
 		ThinkingMode         string `json:"thinking_mode"`
 		ThinkingBudgetTokens *int64 `json:"thinking_budget_tokens"`
+		ThinkingLevel        string `json:"thinking_level"`
+		IncludeThoughts      string `json:"include_thoughts"`
 		Transport            string
 		Attempts             int
 		RawCache             upstreamAttemptCacheMetrics  `json:"raw_cache"`
@@ -813,6 +815,127 @@ func upstreamAttemptMessagesFixture(account int64) requesttiming.Attempt {
 	a.OutputUsage.Protocol, a.OutputUsage.ContentStatus, a.OutputUsage.Final = "messages", "messages_text_and_reasoning", true
 	a.CacheUsage = &requesttiming.CacheUsage{Protocol: "messages", Status: "observed", InputTokens: 100, ReadTokens: 75, WriteTokens: 5, UncachedTokens: 20, InputReported: true, ReadReported: true, WriteReported: true}
 	return a
+}
+
+func upstreamAttemptGeminiFixture(account int64) requesttiming.Attempt {
+	a := upstreamAttemptOutputFixture(account)
+	a.Route.Endpoint, a.TextStream.Protocol = "gemini_stream_generate_content", "gemini"
+	a.UpstreamRequest = &requesttiming.UpstreamRequestObservation{Version: 1, Status: "observed", Source: "http_transport_url_body", Protocol: a.Route.Endpoint, Model: "wire-a", ServiceTier: "unspecified", ReasoningEffort: "unspecified", ThinkingMode: "unspecified", IncludeThoughts: "unspecified", Stream: true}
+	a.OutputUsage.Protocol, a.OutputUsage.ContentStatus, a.OutputUsage.Final = "gemini", "gemini_text_and_reasoning", true
+	a.CacheUsage = &requesttiming.CacheUsage{Protocol: "gemini", Status: "observed", InputTokens: 100, ReadTokens: 75}
+	return a
+}
+
+func TestUpstreamAttemptsGeminiScopeBucketsAndMetrics(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, variant := range []string{"base", "dynamic", "zero", "budget4096", "budget8192", "levelLow", "levelHigh", "thoughtsOn", "thoughtsOff", "nonstream", "other_model", "internal"} {
+		a := upstreamAttemptGeminiFixture(f.account)
+		switch variant {
+		case "dynamic":
+			a.UpstreamRequest.ThinkingMode = "budget_dynamic"
+		case "zero":
+			a.UpstreamRequest.ThinkingMode = "budget_zero"
+		case "budget4096", "budget8192":
+			a.UpstreamRequest.ThinkingMode, a.UpstreamRequest.ThinkingBudgetTokens = "budget_fixed", 4096
+			if variant == "budget8192" {
+				a.UpstreamRequest.ThinkingBudgetTokens = 8192
+			}
+		case "levelLow", "levelHigh":
+			a.UpstreamRequest.ThinkingMode, a.UpstreamRequest.ThinkingLevel = "level", "low"
+			if variant == "levelHigh" {
+				a.UpstreamRequest.ThinkingLevel = "HIGH"
+			}
+		case "thoughtsOn":
+			a.UpstreamRequest.IncludeThoughts = "enabled"
+		case "thoughtsOff":
+			a.UpstreamRequest.IncludeThoughts = "disabled"
+		case "nonstream":
+			a.Route.Endpoint, a.UpstreamRequest.Protocol, a.UpstreamRequest.Stream = "gemini_generate_content", "gemini_generate_content", false
+		case "other_model":
+			a.UpstreamRequest.Model = "wire-b"
+		case "internal":
+			a.UpstreamRequest.Source = "http_transport_body"
+		}
+		writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 500, Status: 200, Attempts: []requesttiming.Attempt{a}})
+	}
+	data := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, 12, data.Summary.Attempts)
+	require.Equal(t, 12, data.RequestScope.Observed)
+	require.Zero(t, data.RequestScope.Unknown)
+	require.Len(t, data.Rows, 11, "native and envelope requests with identical sent parameters share a scope; distinct modes never collapse")
+	require.Equal(t, 12, data.RawCache.Observed)
+	require.InDelta(t, 0.75, *data.RawCache.ReadRate, 0.000001)
+	rateSamples := 0
+	seen := map[string]bool{}
+	for _, row := range data.Rows {
+		budget := int64(0)
+		if row.ThinkingBudgetTokens != nil {
+			budget = *row.ThinkingBudgetTokens
+		}
+		seen[fmt.Sprintf("%s:%s:%d:%s:%s", row.UpstreamModel, row.ThinkingMode, budget, row.ThinkingLevel, row.IncludeThoughts)] = true
+		require.Equal(t, row.Attempts, row.RawCache.Observed)
+		require.Equal(t, row.Attempts, row.Waits.FirstByte.Samples)
+		rateSamples += row.Output.Rate.Samples
+		if row.Output.Rate.Samples > 0 {
+			require.InDelta(t, 250.0, *row.Output.Rate.TPS, 0.000001)
+		}
+	}
+	require.Equal(t, 11, rateSamples, "nonstream responses do not acquire a streaming throughput estimate")
+	for _, scope := range []string{"wire-a:budget_dynamic:0::unspecified", "wire-a:budget_zero:0::unspecified", "wire-a:budget_fixed:4096::unspecified", "wire-a:budget_fixed:8192::unspecified", "wire-a:level:0:low:unspecified", "wire-a:level:0:HIGH:unspecified", "wire-a:unspecified:0::enabled", "wire-a:unspecified:0::disabled"} {
+		require.True(t, seen[scope], scope)
+	}
+}
+
+func TestUpstreamAttemptsGeminiRejectInvalidScopeAndCounters(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tc := range []struct {
+		name, patch          string
+		scope, cache, output int
+	}{
+		{"valid", `detail`, 1, 1, 1},
+		{"missing_thoughts", `detail #- '{physical_upstream,attempts,0,upstream_request,include_thoughts}'`, 0, 0, 0},
+		{"bad_thoughts", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,include_thoughts}','true')`, 0, 0, 0},
+		{"unknown_mode", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"future"')`, 0, 0, 0},
+		{"unexpected_level", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_level}','"low"')`, 0, 0, 0},
+		{"missing_level", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"level"')`, 0, 0, 0},
+		{"unexpected_budget", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','4096')`, 0, 0, 0},
+		{"missing_fixed_budget", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"budget_fixed"')`, 0, 0, 0},
+		{"zero_fixed_budget", `jsonb_set(jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"budget_fixed"'),'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','0')`, 0, 0, 0},
+		{"fraction_fixed_budget", `jsonb_set(jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"budget_fixed"'),'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','1.5')`, 0, 0, 0},
+		{"unsafe_fixed_budget", `jsonb_set(jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"budget_fixed"'),'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','9007199254740992')`, 0, 0, 0},
+		{"string_fixed_budget", `jsonb_set(jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"budget_fixed"'),'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','"4096"')`, 0, 0, 0},
+		{"native_stream_mismatch", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,stream}','false')`, 0, 0, 0},
+		{"foreign_speed", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,speed}','"fast"')`, 0, 0, 0},
+		{"foreign_tier", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,service_tier}','"priority"')`, 0, 0, 0},
+		{"private_resource_model", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,model}','"projects/private/models/wire-a"')`, 0, 0, 0},
+		{"wrong_cache_protocol", `jsonb_set(detail,'{attempts,0,cache_usage,protocol}','"responses"')`, 1, 0, 1},
+		{"foreign_cache_write", `jsonb_set(detail,'{attempts,0,cache_usage,write_reported}','true')`, 1, 0, 1},
+		{"wrong_output_protocol", `jsonb_set(detail,'{attempts,0,output_usage,protocol}','"responses"')`, 1, 1, 0},
+		{"wrong_chunk_source", `jsonb_set(detail,'{physical_upstream,attempts,0,output,text_stream,source}','"typed_gemini_sse"')`, 1, 1, 0},
+		{"wrong_chunk_scope", `jsonb_set(detail,'{physical_upstream,attempts,0,output,text_stream,scope}','"physical_http_gemini_text_deltas_at_parser"')`, 1, 1, 0},
+		{"historical_missing_scope", `detail #- '{physical_upstream,attempts,0,upstream_request}'`, 0, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := upstreamAttemptGeminiFixture(f.account)
+			trace := writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 500, Status: 200, Attempts: []requesttiming.Attempt{a}})
+			_, err := integrationDB.Exec(`UPDATE request_connection_traces SET detail=`+tc.patch+` WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+			var before, after string
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&before))
+			data := readUpstreamAttemptWaits(t, f, now)
+			require.Equal(t, 1, data.Summary.Attempts)
+			require.Equal(t, tc.scope, data.RequestScope.Observed)
+			require.Equal(t, tc.cache, data.RawCache.Observed)
+			require.Len(t, data.Rows, 1)
+			require.Equal(t, tc.output, data.Rows[0].Output.Rate.Samples)
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&after))
+			require.Equal(t, before, after)
+			_, err = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestUpstreamAttemptsMessagesRejectInvalidScopeAndCounters(t *testing.T) {

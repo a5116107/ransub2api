@@ -60,6 +60,7 @@ export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  upstream_model?: string | null; upstream_protocol?: string | null; service_tier?: string | null
  reasoning_effort?: string | null; upstream_stream?: boolean | null
  speed?: string | null; thinking_mode?: string | null; thinking_budget_tokens?: number | null
+ thinking_level?: string | null; include_thoughts?: string | null
  raw_cache?: UpstreamAttemptCacheMetrics
  output?: UpstreamAttemptOutputMetrics
  waits?: UpstreamWaitSet

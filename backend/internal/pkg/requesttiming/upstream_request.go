@@ -26,6 +26,8 @@ type UpstreamRequestObservation struct {
 	Speed                string `json:"speed,omitempty"`
 	ThinkingMode         string `json:"thinking_mode,omitempty"`
 	ThinkingBudgetTokens int64  `json:"thinking_budget_tokens,omitempty"`
+	ThinkingLevel        string `json:"thinking_level,omitempty"`
+	IncludeThoughts      string `json:"include_thoughts,omitempty"`
 	Stream               bool   `json:"stream"`
 }
 
@@ -53,24 +55,39 @@ func ObserveUpstreamRequest(req *http.Request) *http.Request {
 		return req
 	}
 	protocol := transportdiag.HTTPRoute(req).Endpoint
-	if protocol != "responses" && protocol != "responses_compact" && protocol != "chat_completions" && protocol != "messages" {
+	gemini := protocol == "gemini_generate_content" || protocol == "gemini_stream_generate_content"
+	if protocol != "responses" && protocol != "responses_compact" && protocol != "chat_completions" && protocol != "messages" && !gemini {
 		return req
+	}
+	model, envelope := "", false
+	if gemini {
+		prefix, _, _ := strings.Cut(req.URL.Path, ":")
+		envelope = strings.HasSuffix(prefix, "/v1internal")
+		if !envelope {
+			index := strings.LastIndex(prefix, "/models/")
+			if index < 0 || !geminiScopeModel(prefix[index+len("/models/"):]) {
+				return req
+			}
+			model = strings.Clone(prefix[index+len("/models/"):])
+		}
 	}
 	clone := new(http.Request)
 	*clone = *req
-	clone.Body = &upstreamRequestBody{ReadCloser: req.Body, ctx: req.Context(), protocol: protocol, expected: req.ContentLength}
+	clone.Body = &upstreamRequestBody{ReadCloser: req.Body, ctx: req.Context(), protocol: protocol, expected: req.ContentLength, geminiModel: model, geminiEnvelope: envelope}
 	return clone
 }
 
 type upstreamRequestBody struct {
 	io.ReadCloser
-	mu       sync.Mutex
-	ctx      context.Context
-	protocol string
-	expected int64
-	data     []byte
-	done     bool
-	readErr  bool
+	mu             sync.Mutex
+	ctx            context.Context
+	protocol       string
+	expected       int64
+	data           []byte
+	done           bool
+	readErr        bool
+	geminiModel    string
+	geminiEnvelope bool
 }
 
 func (b *upstreamRequestBody) Read(p []byte) (int, error) {
@@ -94,7 +111,11 @@ func (b *upstreamRequestBody) Read(p []byte) (int, error) {
 
 func (b *upstreamRequestBody) finish() {
 	if !b.done && !b.readErr && (b.expected <= 0 || int64(len(b.data)) == b.expected) {
-		recordUpstreamRequest(b.ctx, parseUpstreamRequest(b.protocol, b.data, false))
+		if b.protocol == "gemini_generate_content" || b.protocol == "gemini_stream_generate_content" {
+			recordUpstreamRequest(b.ctx, parseGeminiUpstreamRequest(b.protocol, b.geminiModel, b.geminiEnvelope, b.data))
+		} else {
+			recordUpstreamRequest(b.ctx, parseUpstreamRequest(b.protocol, b.data, false))
+		}
 	}
 	b.done, b.data = true, nil
 }
@@ -137,6 +158,98 @@ func requestScopeOption(value gjson.Result, allowed ...string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// Keep only a model identifier, never a Vertex project/location resource path.
+func geminiScopeModel(model string) bool {
+	if model == "" || len(model) > 200 {
+		return false
+	}
+	for _, r := range model {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return model != "." && model != ".."
+}
+
+func parseGeminiUpstreamRequest(protocol, model string, envelope bool, payload []byte) *UpstreamRequestObservation {
+	if len(payload) > maxUpstreamRequestScopeBytes || !gjson.ValidBytes(payload) {
+		return nil
+	}
+	fields, valid := requestScopeFields(gjson.ParseBytes(payload))
+	if !valid {
+		return nil
+	}
+	source := "http_transport_url_body"
+	if envelope {
+		if fields["model"].Type != gjson.String || !geminiScopeModel(fields["model"].Str) || fields["generationConfig"].Exists() || fields["stream"].Exists() {
+			return nil
+		}
+		model, source = strings.Clone(fields["model"].Str), "http_transport_body"
+		fields, valid = requestScopeFields(fields["request"])
+		if !valid {
+			return nil
+		}
+	}
+	for _, key := range []string{"model", "request", "stream", "thinking", "thinkingConfig", "reasoning", "reasoning_effort", "service_tier", "speed", "output_config"} {
+		if fields[key].Exists() {
+			return nil
+		}
+	}
+	out := &UpstreamRequestObservation{Version: 1, Status: "observed", Source: source, Protocol: protocol, Model: model,
+		ServiceTier: "unspecified", ReasoningEffort: "unspecified", ThinkingMode: "unspecified", IncludeThoughts: "unspecified", Stream: protocol == "gemini_stream_generate_content"}
+	if config := fields["generationConfig"]; config.Exists() {
+		values, ok := requestScopeFields(config)
+		if !ok {
+			return nil
+		}
+		if thinking := values["thinkingConfig"]; thinking.Exists() {
+			options, ok := requestScopeFields(thinking)
+			if !ok {
+				return nil
+			}
+			for key := range options {
+				if key != "thinkingBudget" && key != "thinkingLevel" && key != "includeThoughts" {
+					return nil
+				}
+			}
+			if thoughts := options["includeThoughts"]; thoughts.Exists() {
+				if thoughts.Type != gjson.True && thoughts.Type != gjson.False {
+					return nil
+				}
+				out.IncludeThoughts = "disabled"
+				if thoughts.Bool() {
+					out.IncludeThoughts = "enabled"
+				}
+			}
+			budget, level := options["thinkingBudget"], options["thinkingLevel"]
+			if budget.Exists() && level.Exists() {
+				return nil
+			}
+			if budget.Exists() {
+				n, err := strconv.ParseInt(budget.Raw, 10, 64)
+				if budget.Type != gjson.Number || err != nil || n < -1 || n > 1<<53-1 {
+					return nil
+				}
+				switch n {
+				case -1:
+					out.ThinkingMode = "budget_dynamic"
+				case 0:
+					out.ThinkingMode = "budget_zero"
+				default:
+					out.ThinkingMode, out.ThinkingBudgetTokens = "budget_fixed", n
+				}
+			} else if level.Exists() {
+				out.ThinkingLevel, valid = requestScopeOption(level, "minimal", "low", "medium", "high", "MINIMAL", "LOW", "MEDIUM", "HIGH")
+				if !valid {
+					return nil
+				}
+				out.ThinkingMode = "level"
+			}
+		}
+	}
+	return out
 }
 
 func parseUpstreamRequest(protocol string, payload []byte, ws bool) *UpstreamRequestObservation {

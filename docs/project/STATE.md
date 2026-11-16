@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5.3.11本地验收done；交付身份以当前分支Git/origin为准。
+任务：D5.3.12本地验收done；交付身份以当前分支Git/origin为准。
 授权：唯一H盘工作树；自有仓库同步/已验热修复发行部署；不运行编译/测试CI。
 生产上次实测：.7/fd83f6c91，latest同版，程序bea1c3964bc3；本轮未部署。
-实证：.11 PG双轮614/两包644/计时788/UI87全过；vet/lint/Linux/四视口过。
-证据：H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/messages-scope-*；非生产。
-下一动作：补D2.6其余合同与D5.3 Gemini等scope、实际组/受信检测；不提升生产。
+实证：.12 PG双轮666/两包1074/计时821/UI115全过；vet/lint/Linux/四视口过。
+证据：H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/gemini-scope-*；非生产。
+下一动作：补D2.6其余合同、D5.3实际组/受信检测/资格，再D3.2/D8.1；不提升生产。
 等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域和旧完整历史恢复保留。
-Attempt：32
+Attempt：33
 <!-- resume:end -->
 
 ## 目标与入口
@@ -46,6 +46,7 @@ Attempt：32
 | D5.2 | done | 最终原始摘要、唯一逻辑计数/覆盖、本人筛选/30天与中英390px；非生产证据 |
 | D5.3.1–.10 | done | 最终Key/发送scope、HTTP与独立WS等待、逐尝试缓存/输出及来源分桶已本地验；逐项证据见DECISIONS；非实际组/资格/生产 |
 | D5.3.11 | done | Messages模型/tier/速度/effort/思考模式及预算独立分桶；PG614/竞态644/计时788/UI87及静态/Linux/四视口通过；仅本地 |
+| D5.3.12 | done | Gemini URL/信封模型、实际action/预算模式/等级/思考输出独立分桶；PG666/竞态1074/计时821/UI115及静态/Linux/四视口通过；仅本地 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 三页历史徽标/冻结集合/列表详情兼容已验；真实向量、基线/指纹和当前资格消费未完成 |
@@ -55,7 +56,7 @@ Attempt：32
 
 ## 剩余执行顺序与等待
 
-- 本地可执行：D2.6其余合同与D5.3实际组/受信外部检测/未支持scope/资格→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.4仍缺。
+- 本地可执行：D2.6其余合同与D5.3实际组/受信外部检测/其余scope/资格→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.4仍缺。
 - D9.1的.7生产四阶段/16历史及上线已验；旧调度遗漏已回合，648竞态/三包vet/增量lint0。PR3/v2.21.5仍有冲突，不整分支发布未验功能。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。
@@ -68,6 +69,6 @@ Attempt：32
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- 本轮PG55441/Redis56441及预览18441均已按身份停止，监听0；本轮3个scratch及8个冗余证据在创建进程前被宿主拒删，回收0；路径见DECISIONS，不触及生产。
+- .12 PG55441/Redis56441及预览18441按身份停止，监听0；浏览器脚本内存执行，未新增scratch。历史.11的3个scratch及8个冗余证据仍因宿主拒删原位保留，回收0；路径见DECISIONS，不触及生产。
 - 历史宿主拒删资源（620274603bytes及D2.6日志）原位保留；精确路径/命令/owner见DECISIONS，待宿主拥有者解除策略，不换工具或移动绕过。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。

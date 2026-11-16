@@ -130,7 +130,7 @@ func TestUpstreamOperationsHTTPPostgresWithoutModelChannelBinding(t *testing.T) 
 }
 
 func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
-	for _, protocol := range []string{"responses", "messages"} {
+	for _, protocol := range []string{"responses", "messages", "gemini_native", "gemini_internal"} {
 		t.Run(protocol, func(t *testing.T) {
 			db := repository.ChannelOperationsTestDatabase()
 			var account int64
@@ -149,6 +149,21 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
+				if strings.HasPrefix(protocol, "gemini_") {
+					write := func(chunk string) {
+						if protocol == "gemini_internal" {
+							chunk = `{"response":` + chunk + `}`
+						}
+						_, _ = fmt.Fprint(w, "data: "+chunk+"\n\n")
+						w.(http.Flusher).Flush()
+					}
+					write(`{"candidates":[{"content":{"parts":[{"text":"fixture first text"}]}}]}`)
+					time.Sleep(300 * time.Millisecond)
+					write(`{"candidates":[{"content":{"parts":[{"text":"fixture second text"}]}}]}`)
+					time.Sleep(10 * time.Millisecond)
+					write(`{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":75,"candidatesTokenCount":100,"thoughtsTokenCount":20}}`)
+					return
+				}
 				if protocol == "messages" {
 					_, _ = fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":75,\"cache_creation_input_tokens\":5}}}\n\n")
 					_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture first text\"}}\n\n")
@@ -175,14 +190,27 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 			client := repository.NewHTTPUpstream(nil)
 			gateway := gin.New()
 			gateway.Use(middleware.RequestLogger(), middleware.RequestTiming(recorder))
-			gateway.POST("/v1/"+protocol, func(c *gin.Context) {
+			ingressPath := "/v1/" + protocol
+			if strings.HasPrefix(protocol, "gemini_") {
+				ingressPath = "/v1beta/models/public-model:streamGenerateContent"
+			}
+			gateway.POST(ingressPath, func(c *gin.Context) {
 				c.Set("ops_model", "public-model")
+				c.Set("ops_stream", true)
 				for _, model := range []string{"first-wire-model", "second-wire-model"} {
+					path := "/v1/" + protocol
 					payload := `{"model":"` + model + `","stream":true,"service_tier":"priority","reasoning":{"effort":"high"},"input":"fixture"}`
 					if protocol == "messages" {
 						payload = `{"model":"` + model + `","stream":true,"service_tier":"standard_only","speed":"fast","thinking":{"type":"enabled","budget_tokens":4096},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"fixture"}]}`
 					}
-					req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/"+protocol, strings.NewReader(payload))
+					if strings.HasPrefix(protocol, "gemini_") {
+						path = "/v1beta/models/" + model + ":streamGenerateContent"
+						payload = `{"contents":[{"parts":[{"text":"fixture"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":4096,"includeThoughts":true}}}`
+						if protocol == "gemini_internal" {
+							path, payload = "/v1internal:streamGenerateContent", `{"model":"`+model+`","project":"private-project","request":`+payload+`}`
+						}
+					}
+					req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+path, strings.NewReader(payload))
 					if err != nil {
 						c.AbortWithStatus(500)
 						return
@@ -204,7 +232,11 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 					scanner := bufio.NewScanner(resp.Body)
 					for scanner.Scan() {
 						if data, ok := strings.CutPrefix(scanner.Text(), "data: "); ok {
-							requesttiming.Content(responseCtx, []byte(data))
+							if strings.HasPrefix(protocol, "gemini_") {
+								requesttiming.GeminiContent(responseCtx, []byte(data), true)
+							} else {
+								requesttiming.Content(responseCtx, []byte(data))
+							}
 						}
 					}
 					_ = resp.Body.Close()
@@ -220,7 +252,7 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 				c.AbortWithStatus(502)
 			})
 			w := httptest.NewRecorder()
-			gateway.ServeHTTP(w, httptest.NewRequest("POST", "/v1/"+protocol, strings.NewReader(`{}`)))
+			gateway.ServeHTTP(w, httptest.NewRequest("POST", ingressPath, strings.NewReader(`{}`)))
 			require.Equal(t, 200, w.Code, w.Body.String())
 			require.EqualValues(t, 2, calls.Load())
 			require.Eventually(t, func() bool {
@@ -305,7 +337,14 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 					require.InDelta(t, 0.75, *body.Data.Attempts.Data.RawCache.Rate, 0.000001)
 				}
 				require.Contains(t, filtered.Body.String(), `"upstream_model":"`+model+`"`)
-				if protocol == "messages" {
+				if strings.HasPrefix(protocol, "gemini_") {
+					require.Contains(t, filtered.Body.String(), `"upstream_protocol":"gemini_stream_generate_content"`)
+					require.Contains(t, filtered.Body.String(), `"thinking_mode":"budget_fixed"`)
+					require.Contains(t, filtered.Body.String(), `"thinking_budget_tokens":4096`)
+					require.Contains(t, filtered.Body.String(), `"include_thoughts":"enabled"`)
+					require.Contains(t, filtered.Body.String(), `"reasoning_effort":"unspecified"`)
+					require.NotContains(t, filtered.Body.String(), "private-project")
+				} else if protocol == "messages" {
 					require.Contains(t, filtered.Body.String(), `"service_tier":"standard_only"`)
 					require.Contains(t, filtered.Body.String(), `"speed":"fast"`)
 					require.Contains(t, filtered.Body.String(), `"thinking_mode":"enabled"`)
@@ -313,7 +352,9 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 				} else {
 					require.Contains(t, filtered.Body.String(), `"service_tier":"priority"`)
 				}
-				require.Contains(t, filtered.Body.String(), `"reasoning_effort":"high"`)
+				if !strings.HasPrefix(protocol, "gemini_") {
+					require.Contains(t, filtered.Body.String(), `"reasoning_effort":"high"`)
+				}
 				require.Contains(t, filtered.Body.String(), `"traffic_source":"gateway_ingress"`)
 				require.Contains(t, filtered.Body.String(), `"unknown_attempts":0`)
 				require.Len(t, body.Data.Attempts.Data.Rows, 1)

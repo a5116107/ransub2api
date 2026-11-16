@@ -82,11 +82,14 @@ var upstreamAttemptOutputCTEs = `, output_fields AS (
  SELECT *,COALESCE(identity_known AND request_scope_known AND raw_attempt IS NOT NULL
  AND jsonb_typeof(item->'account_id')='number' AND item->'output'->'version'='1'::jsonb
  AND request_scope->'stream'='true'::jsonb
- AND item->>'protocol'=CASE request_scope->>'protocol' WHEN 'responses_compact' THEN 'responses' ELSE request_scope->>'protocol' END
+ AND item->>'protocol'=CASE request_scope->>'protocol' WHEN 'responses_compact' THEN 'responses'
+  WHEN 'gemini_generate_content' THEN 'gemini' WHEN 'gemini_stream_generate_content' THEN 'gemini' ELSE request_scope->>'protocol' END
  AND COALESCE(raw_stream->>'protocol','responses')=item->>'protocol'
  AND ((item->>'transport'='http' AND raw_attempt->'route'->>'endpoint'=request_scope->>'protocol'
-   AND output_stream->>'scope'='physical_http_'||(item->>'protocol')||'_text_deltas_at_parser'
-   AND output_stream->>'source'='typed_'||(item->>'protocol')||'_sse')
+   AND output_stream->>'scope'=CASE item->>'protocol' WHEN 'gemini' THEN 'physical_http_gemini_primary_text_chunks_at_parser'
+    ELSE 'physical_http_'||(item->>'protocol')||'_text_deltas_at_parser' END
+   AND output_stream->>'source'=CASE item->>'protocol' WHEN 'gemini' THEN 'typed_gemini_content'
+    ELSE 'typed_'||(item->>'protocol')||'_sse' END)
   OR (item->>'transport'='ws_turn' AND ws_wait IS NOT NULL
    AND output_stream->>'scope'='physical_websocket_turn_text_deltas_at_parser' AND output_stream->>'source'='typed_responses_ws'))
  AND output_stream->>'status' IN ('observed','partial')
@@ -194,13 +197,17 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  COALESCE(item->'upstream_request'->>'version'='1'
  AND jsonb_typeof(item->'upstream_request'->'version')='number'
  AND item->'upstream_request'->>'status'='observed'
- AND ((item->>'transport'='http' AND item->'upstream_request'->>'source'='http_transport_body'
+ AND ((item->>'transport'='http' AND ((item->'upstream_request'->>'source'='http_transport_body'
   AND item->'upstream_request'->>'protocol' IN ('responses','responses_compact','chat_completions','messages'))
+  OR (item->'upstream_request'->>'source' IN ('http_transport_body','http_transport_url_body')
+   AND item->'upstream_request'->>'protocol' IN ('gemini_generate_content','gemini_stream_generate_content'))))
  OR (item->>'transport'='ws_turn' AND item->'upstream_request'->>'source'='websocket_generation_payload'
   AND item->'upstream_request'->>'protocol'='responses'))
  AND jsonb_typeof(item->'upstream_request'->'model')='string'
  AND item->'upstream_request'->>'model' ~ '^[!-~]{1,200}$'
  AND CASE WHEN item->'upstream_request'->>'protocol'='messages' THEN
+  NOT (item->'upstream_request' ?| array['thinking_level','include_thoughts'])
+  AND
   item->'upstream_request'->>'service_tier' IN ('unspecified','auto','standard_only')
   AND item->'upstream_request'->>'reasoning_effort' IN ('unspecified','low','medium','high','max')
   AND item->'upstream_request'->>'speed' IN ('unspecified','standard','fast')
@@ -210,9 +217,25 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
     AND CASE WHEN jsonb_typeof(item->'upstream_request'->'thinking_budget_tokens')='number'
      AND item->'upstream_request'->>'thinking_budget_tokens' ~ '^[1-9][0-9]{0,15}$'
      THEN (item->'upstream_request'->>'thinking_budget_tokens')::numeric<=9007199254740991 ELSE false END))
+ WHEN item->'upstream_request'->>'protocol' IN ('gemini_generate_content','gemini_stream_generate_content') THEN
+  item->'upstream_request'->>'model' ~ '^[A-Za-z0-9_.-]{1,200}$'
+  AND item->'upstream_request'->>'model' NOT IN ('.','..')
+  AND item->'upstream_request'->>'service_tier'='unspecified'
+  AND item->'upstream_request'->>'reasoning_effort'='unspecified'
+  AND NOT (item->'upstream_request' ? 'speed')
+  AND item->'upstream_request'->>'include_thoughts' IN ('unspecified','enabled','disabled')
+  AND item->'upstream_request'->'stream'=to_jsonb(item->'upstream_request'->>'protocol'='gemini_stream_generate_content')
+  AND ((item->'upstream_request'->>'thinking_mode' IN ('unspecified','budget_dynamic','budget_zero')
+    AND NOT (item->'upstream_request' ?| array['thinking_budget_tokens','thinking_level']))
+   OR (item->'upstream_request'->>'thinking_mode'='budget_fixed' AND NOT (item->'upstream_request' ? 'thinking_level')
+    AND CASE WHEN jsonb_typeof(item->'upstream_request'->'thinking_budget_tokens')='number'
+     AND item->'upstream_request'->>'thinking_budget_tokens' ~ '^[1-9][0-9]{0,15}$'
+     THEN (item->'upstream_request'->>'thinking_budget_tokens')::numeric<=9007199254740991 ELSE false END)
+   OR (item->'upstream_request'->>'thinking_mode'='level' AND NOT (item->'upstream_request' ? 'thinking_budget_tokens')
+    AND item->'upstream_request'->>'thinking_level' IN ('minimal','low','medium','high','MINIMAL','LOW','MEDIUM','HIGH')))
  ELSE item->'upstream_request'->>'service_tier' IN ('unspecified','auto','default','priority','flex','scale')
   AND item->'upstream_request'->>'reasoning_effort' IN ('unspecified','none','minimal','low','medium','high','xhigh','max')
-  AND NOT (item->'upstream_request' ?| array['speed','thinking_mode','thinking_budget_tokens']) END
+  AND NOT (item->'upstream_request' ?| array['speed','thinking_mode','thinking_budget_tokens','thinking_level','include_thoughts']) END
  AND jsonb_typeof(item->'upstream_request'->'stream')='boolean',false) request_scope_known
  FROM identities
 ), wait_candidates AS (
@@ -272,7 +295,8 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
 ), cache_samples AS (
  SELECT *,COALESCE(identity_known AND request_scope_known AND raw_attempt IS NOT NULL
   AND jsonb_typeof(item->'account_id')='number'
-  AND item->>'protocol'=CASE request_scope->>'protocol' WHEN 'responses_compact' THEN 'responses' ELSE request_scope->>'protocol' END
+  AND item->>'protocol'=CASE request_scope->>'protocol' WHEN 'responses_compact' THEN 'responses'
+   WHEN 'gemini_generate_content' THEN 'gemini' WHEN 'gemini_stream_generate_content' THEN 'gemini' ELSE request_scope->>'protocol' END
   AND item->>'outcome'='succeeded' AND cache->'version'='1'::jsonb AND cache->>'status'='observed'
   AND raw_attempt->>'terminal'='completed' AND COALESCE(raw_attempt->>'error','')=''
   AND NOT COALESCE(raw_attempt->'events' ? 'typed_content_truncated',false)
@@ -301,7 +325,11 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
     AND CASE WHEN jsonb_typeof(COALESCE(raw_attempt->'cache_usage'->'uncached_tokens','0'::jsonb))='number'
      AND COALESCE(raw_attempt->'cache_usage'->>'uncached_tokens','0') ~ '^(0|[1-9][0-9]{0,15})$' THEN
      COALESCE(raw_attempt->'cache_usage'->>'uncached_tokens','0')::numeric+raw_read+raw_write=raw_input ELSE false END
-    AND cache->>'source'='canonical_messages_cumulative_usage' AND cache->>'scope'='physical_http_messages_cumulative_usage')))
+    AND cache->>'source'='canonical_messages_cumulative_usage' AND cache->>'scope'='physical_http_messages_cumulative_usage')
+   OR (request_scope->>'protocol' IN ('gemini_generate_content','gemini_stream_generate_content')
+    AND raw_attempt->'text_stream'->>'protocol'='gemini' AND raw_attempt->'cache_usage'->>'protocol'='gemini'
+    AND raw_attempt->'cache_usage'->'write_reported'='false'::jsonb
+    AND cache->>'source'='canonical_gemini_usage_metadata' AND cache->>'scope'='physical_http_gemini_usage_metadata')))
   OR (item->>'transport'='ws_turn' AND detail->>'ttft_mode'='ws_turn' AND detail->'status'='0'::jsonb
    AND raw_attempt->'status'='0'::jsonb AND raw_attempt->'number'='1'::jsonb
    AND COALESCE(raw_attempt->>'parent','0')='0'
@@ -331,6 +359,8 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  CASE WHEN request_scope_known THEN request_scope->>'speed' END speed,
  CASE WHEN request_scope_known THEN request_scope->>'thinking_mode' END thinking_mode,
  CASE WHEN request_scope_known THEN request_scope->'thinking_budget_tokens' END thinking_budget_tokens,
+ CASE WHEN request_scope_known THEN request_scope->>'thinking_level' END thinking_level,
+ CASE WHEN request_scope_known THEN request_scope->>'include_thoughts' END include_thoughts,
  CASE WHEN request_scope_known THEN (request_scope->>'stream')::boolean END upstream_stream,
  CASE WHEN request_scope_known THEN 'observed' ELSE 'not_observed' END upstream_model_status
  FROM output_observed
@@ -340,7 +370,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  OR EXISTS (SELECT 1 FROM selected s WHERE s.trace_id=t.trace_id)
 ), buckets AS (
  SELECT account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,traffic_source,
- upstream_model,upstream_protocol,service_tier,reasoning_effort,speed,thinking_mode,thinking_budget_tokens,upstream_stream,upstream_model_status,
+ upstream_model,upstream_protocol,service_tier,reasoning_effort,speed,thinking_mode,thinking_budget_tokens,thinking_level,include_thoughts,upstream_stream,upstream_model_status,
  'not_observed'::text AS upstream_group_status,
  ` + upstreamAttemptsAggregate + `,` + upstreamAttemptCacheAggregate + ` raw_cache,
  ` + upstreamAttemptOutputAggregate + ` output,
@@ -351,10 +381,10 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  'first_reasoning',` + upstreamWaitAggregate("wait_first_reasoning") + `,
  'first_text',` + upstreamWaitAggregate("wait_first_text") + `) waits FROM attributed
  GROUP BY account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,traffic_source,
- upstream_model,upstream_protocol,service_tier,reasoning_effort,speed,thinking_mode,thinking_budget_tokens,upstream_stream,upstream_model_status
+ upstream_model,upstream_protocol,service_tier,reasoning_effort,speed,thinking_mode,thinking_budget_tokens,thinking_level,include_thoughts,upstream_stream,upstream_model_status
 ), summary AS (SELECT ` + upstreamAttemptsAggregate + ` FROM attributed)
  SELECT jsonb_build_object('version',1,'source','retained_physical_transport_attempts',
- 'scope','connection_trace_or_unique_usage_fallback; public_model_is_ingress; upstream_request_metadata_from_complete_transport_body_or_final_ws_payload; supplier_group_not_observed; traffic_is_server_entrypoint_not_caller_intent',
+ 'scope','connection_trace_or_unique_usage_fallback; public_model_is_ingress; upstream_request_metadata_from_complete_transport_body_and_allowlisted_model_path_or_final_ws_payload; supplier_group_not_observed; traffic_is_server_entrypoint_not_caller_intent',
  'retention_days',30,'summary',(SELECT to_jsonb(s) FROM summary s),
  'traffic',` + upstreamTrafficSummary + `,
  'raw_cache',(SELECT ` + upstreamAttemptCacheAggregate + ` FROM attributed),
@@ -369,5 +399,5 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  'total',(SELECT count(*) FROM buckets),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(b)) FROM (
  SELECT * FROM buckets ORDER BY attempts DESC,account_id,credential_fingerprint NULLS LAST,route_fingerprint NULLS LAST,
  transport,protocol NULLS LAST,public_model,stream,upstream_model NULLS LAST,upstream_protocol NULLS LAST,
- service_tier NULLS LAST,reasoning_effort NULLS LAST,speed NULLS LAST,thinking_mode NULLS LAST,thinking_budget_tokens NULLS LAST,
+ service_tier NULLS LAST,reasoning_effort NULLS LAST,speed NULLS LAST,thinking_mode NULLS LAST,thinking_budget_tokens NULLS LAST,thinking_level NULLS LAST,include_thoughts NULLS LAST,
  upstream_stream NULLS LAST,traffic_source LIMIT $9 OFFSET $10)b),'[]'::jsonb))`

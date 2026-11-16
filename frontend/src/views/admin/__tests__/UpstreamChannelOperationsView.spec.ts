@@ -243,6 +243,33 @@ describe('all retained upstream attempts', () => {
   expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('upstreamOps.attempts.supplierScopeUnknown')
   w.unmount()
  })
+ it.each(['unspecified','budget_dynamic','budget_zero','budget_fixed','level'])('shows Gemini %s with a distinct sent setting',async mode=>{
+  const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'wire-gemini',upstream_protocol:'gemini_stream_generate_content',service_tier:'unspecified',reasoning_effort:'unspecified',upstream_stream:true,thinking_mode:mode,include_thoughts:'enabled',thinking_budget_tokens:mode==='budget_fixed'?4096:null,thinking_level:mode==='level'?'HIGH':null}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="attempt-request-scope"]').text()).toContain('wire-gemini')
+  expect(w.get('[data-testid="attempt-gemini-thinking"]').text()).toContain(`upstreamOps.attempts.geminiModes.${mode}`)
+  expect(w.get('[data-testid="attempt-gemini-thoughts"]').text()).toContain('geminiThoughtOptions.enabled')
+  expect(w.find('[data-testid="attempt-gemini-budget"]').exists()).toBe(mode==='budget_fixed')
+  expect(w.find('[data-testid="attempt-gemini-level"]').exists()).toBe(mode==='level')
+  expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('upstreamOps.attempts.supplierScopeUnknown')
+  w.unmount()
+ })
+ it.each([
+  {include_thoughts:undefined},{include_thoughts:true},{thinking_mode:'future'},{thinking_mode:'budget_fixed'},
+  {thinking_mode:'budget_fixed',thinking_budget_tokens:0},{thinking_mode:'budget_fixed',thinking_budget_tokens:1024.5},
+  {thinking_mode:'budget_fixed',thinking_budget_tokens:2**53},{thinking_mode:'level'},{thinking_level:'high'},
+  {thinking_mode:'level',thinking_level:'future'},{thinking_budget_tokens:4096},{upstream_stream:false},{speed:'fast'},
+  {service_tier:'priority'},{reasoning_effort:'high'}
+ ])('keeps malformed Gemini scope %j unknown',async patch=>{
+  const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'unverified-wire-gemini',upstream_protocol:'gemini_stream_generate_content',service_tier:'unspecified',reasoning_effort:'unspecified',upstream_stream:true,thinking_mode:'unspecified',include_thoughts:'unspecified',...patch}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="attempt-request-scope"]').exists()).toBe(false)
+  expect(w.get('[data-testid="attempt-request-scope-unknown"]').exists()).toBe(true)
+  expect(w.text()).not.toContain('unverified-wire-gemini')
+  w.unmount()
+ })
  it.each([
   {speed:undefined},{speed:'turbo'},{thinking_mode:undefined},{thinking_mode:'future'},
   {thinking_mode:'enabled'},{thinking_mode:'enabled',thinking_budget_tokens:0},
