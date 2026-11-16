@@ -135,6 +135,7 @@ deploy/docker-compose.override.yml
 vite.config.js
 user-traffic-pending/
 docs/*
+!docs/openai-totp-factor-recovery.md
 !docs/ai-ops-codex.md
 !docs/reauth-identity-validation.md
 !docs/openai-context-limit-errors.md
@@ -246,3 +247,6 @@ tools/local-worker/
 !/.github/scripts/free-fast-cost-evidence.py
 !/.github/scripts/test_free_fast_cost_evidence.py
 /.github/scripts/__pycache__/
+
+!docs/free-ultrafast-billing.md
+!/.github/scripts/free-ultrafast-browser.mjs
