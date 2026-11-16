@@ -993,6 +993,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	pricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	pricingCtx = h.gatewayService.WithUpstreamBillingCandidateRequest(pricingCtx, c.Request, forwardBody)
 	c.Request = c.Request.WithContext(service.WithOpenAIEncryptedReasoningAffinity(pricingCtx, body))
+	c.Request = c.Request.WithContext(h.gatewayService.WithOpenAIEncryptedSessionBinding(c.Request.Context(), apiKey.GroupID, sessionHash))
 	c.Request = c.Request.WithContext(h.gatewayService.WithOpenAIAgentMessageRecovery(c.Request.Context(), c, body, sessionHash, forwardModel))
 
 	for {
@@ -1390,6 +1391,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				}
 				reqLog.Error("openai.forward_failed", fields...)
 				return
+			}
+		}
+		if err == nil && result != nil && !result.ClientDisconnect && openAIForwardSucceededForScheduling(result) {
+			if bindErr := h.gatewayService.BindOpenAIEncryptedSessionAfterSuccess(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
+				reqLog.Warn("openai.bind_encrypted_session_after_success_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
 			}
 		}
 		if result != nil {

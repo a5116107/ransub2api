@@ -41,7 +41,8 @@ type openaiStreamingResult struct {
 }
 
 type openaiNonStreamingResult struct {
-	agentCompleted bool
+	streamReadIncomplete bool
+	agentCompleted       bool
 	*OpenAIUsage
 	usage            *OpenAIUsage
 	responseID       string
@@ -2263,13 +2264,14 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 
 	result := &openaiNonStreamingResult{
-		agentCompleted:   terminalOK && terminalType == "response.completed" && openAIAgentCompletedResponse(terminalPayload, true),
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
-		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
-		searchCount:      countGrokNativeSearchCallsFromSSEBody(bodyText),
+		agentCompleted:       terminalOK && terminalType == "response.completed" && openAIAgentCompletedResponse(terminalPayload, true),
+		streamReadIncomplete: !terminalOK || (terminalType != "response.completed" && terminalType != "response.done"),
+		OpenAIUsage:          usage,
+		usage:                usage,
+		responseID:           extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:           countOpenAIImageOutputsFromSSEBody(bodyText),
+		imageOutputSizes:     collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		searchCount:          countGrokNativeSearchCallsFromSSEBody(bodyText),
 	}
 	if deliveryErr != nil {
 		result.agentCompleted = false
