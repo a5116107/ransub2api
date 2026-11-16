@@ -54,9 +54,9 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 
 // WithUpstreamBillingWSCandidateRequest describes only first-frame selection.
 // Reasoning policy uses the client model before the handler's channel mapping.
-// Original payload size determines bridge dispatch; no payload or hooks survive
-// in the descriptor. Dynamic transports and unsupported shapes defer to the
-// actual send guard, without granting strict qualification.
+// No payload or hooks survive in the descriptor. Passthrough bridge dispatch
+// uses original payload size; pooled mode is predictable only with bridging
+// disabled. Dynamic transports and unsupported shapes retain the send guard.
 func (s *OpenAIGatewayService) WithUpstreamBillingWSCandidateRequest(ctx context.Context, request *http.Request, body []byte, forwardModel string, hooks *OpenAIWSIngressHooks) context.Context {
 	candidate := upstreamBillingCandidate{}
 	if upstreamBillingCandidateMayFilter(ctx) && s != nil && s.cfg != nil &&
@@ -121,8 +121,19 @@ func WithoutUpstreamBillingCandidateRequest(ctx context.Context) context.Context
 
 func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Context, account *Account, scope AvailabilityRequestScope) *AvailabilityRequestScope {
 	if s == nil || s.cfg == nil ||
-		account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault) != OpenAIWSIngressModePassthrough ||
 		s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+		return nil
+	}
+	mode := account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
+	switch mode {
+	case OpenAIWSIngressModePassthrough:
+	case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
+		// Native dispatch compares the fully normalized payload size, not the
+		// original frame or this prompt-free skeleton. Never guess that size.
+		if s.openAIWSHTTPBridgeEnabled() {
+			return nil
+		}
+	default:
 		return nil
 	}
 	request, body := billingApplicabilityScopeRequest(scope)
@@ -132,6 +143,15 @@ func (s *OpenAIGatewayService) upstreamBillingWSCandidateScope(ctx context.Conte
 	body, _, err := normalizeOpenAIResponsesWebSocketCompatibilityBodyWithConfig(s.cfg, body, account, false)
 	if err != nil {
 		return nil
+	}
+	if mode != OpenAIWSIngressModePassthrough {
+		// Native ingress applies channel mapping first, then account mapping
+		// after compatibility. It does not use HTTP's minimal/none rewrites.
+		model = normalizeOpenAIModelForUpstream(account, account.GetMappedModel(scope.Model))
+		if isOpenAIImageGenerationModel(model) {
+			return nil
+		}
+		body = ReplaceModelInBody(body, model)
 	}
 	body, blocked, err := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, body)
 	if err != nil || blocked != nil {

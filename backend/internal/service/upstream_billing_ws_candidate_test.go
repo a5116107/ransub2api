@@ -25,67 +25,78 @@ func billingWSCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *G
 }
 
 func TestBillingWSCandidateScopeTransforms(t *testing.T) {
-	for _, tc := range []struct {
-		name, options, tier, effort string
-		hooks                       *OpenAIWSIngressHooks
-		policy                      *OpenAIFastPolicySettings
-		force                       bool
-	}{
-		{name: "plain", tier: "unspecified", effort: "unspecified"},
-		{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
-		{name: "ceiling", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: &OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
-		{name: "forced effort", tier: "unspecified", effort: "high", hooks: &OpenAIWSIngressHooks{ForcedReasoningEffort: "high"}},
-		{name: "client model policy before mapping", options: `,"reasoning":{"effort":"low"}`, tier: "unspecified", effort: "high", hooks: &OpenAIWSIngressHooks{ReasoningEffortMappings: []ReasoningEffortMapping{{From: "low", To: "high", MatchType: "exact", Model: "public-fixture"}}}},
-		{name: "group priority", tier: "priority", effort: "unspecified", force: true},
-		{name: "priority filtered", options: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
-		{name: "filter overrides group", tier: "unspecified", effort: "unspecified", force: true, policy: openAIFastFilterPriorityPolicy()},
-		{name: "missing forces priority", tier: "priority", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
-			svc.cfg = passthroughLifecycleConfig()
-			entry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
-			entry["reasoning_effort"] = tc.effort
-			account := billingCandidateAccount(t, 911, entry)
-			account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
-			account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "never-sent"}
-			at := time.Now().UTC().Add(-time.Second)
-			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
-			require.NoError(t, err)
-			group := profitControlTestGroup(7, 0.5, 0)
-			group.ForceOpenAIFast = tc.force
-			body := `{"type":"response.create","model":"public-fixture","input":"private prompt"` + tc.options + `}`
-			ctx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", tc.hooks)
-			vetoed, reason := openAIProfitControlVetoReason(ctx, account)
-			require.False(t, vetoed, reason)
-			// Independently follow the original first-frame transformation order.
-			wire, err := applyOpenAIWSReasoningEffortPolicy([]byte(body), tc.hooks, tc.hooks.forcedReasoningEffort())
-			require.NoError(t, err)
-			wire = svc.ReplaceModelInBody(wire, "gpt-fixture")
-			wire, _, err = normalizeOpenAIResponsesWebSocketCompatibilityBodyWithConfig(svc.cfg, wire, account, false)
-			require.NoError(t, err)
-			wire, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, "gpt-fixture", wire)
-			require.NoError(t, err)
-			require.Nil(t, blocked)
-			request := httptest.NewRequest(http.MethodGet, "wss://relay.example/v1/responses", nil)
-			scope := availabilityScopeForRequest(request, wire)
-			require.NotNil(t, scope)
-			require.Equal(t, "gpt-fixture", scope.Model)
-			require.Equal(t, tc.tier, scope.ServiceTier)
-			require.Equal(t, tc.effort, scope.ReasoningEffort)
-			require.NoError(t, guardUpstreamBillingApplicability(account, scope))
-			entry["group_rate_applies"] = false
-			_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
-			require.NoError(t, err)
-			vetoed, reason = openAIProfitControlVetoReason(ctx, account)
-			require.True(t, vetoed)
-			require.Equal(t, "profit_upstream_scope_excluded", reason)
-		})
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
+		for _, tc := range []struct {
+			name, options, tier, effort string
+			hooks                       *OpenAIWSIngressHooks
+			policy                      *OpenAIFastPolicySettings
+			force                       bool
+		}{
+			{name: "plain", tier: "unspecified", effort: "unspecified"},
+			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
+			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
+			{name: "ceiling", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: &OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
+			{name: "forced effort", tier: "unspecified", effort: "high", hooks: &OpenAIWSIngressHooks{ForcedReasoningEffort: "high"}},
+			{name: "client model policy before mapping", options: `,"reasoning":{"effort":"low"}`, tier: "unspecified", effort: "high", hooks: &OpenAIWSIngressHooks{ReasoningEffortMappings: []ReasoningEffortMapping{{From: "low", To: "high", MatchType: "exact", Model: "public-fixture"}}}},
+			{name: "group priority", tier: "priority", effort: "unspecified", force: true},
+			{name: "priority filtered", options: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
+			{name: "filter overrides group", tier: "unspecified", effort: "unspecified", force: true, policy: openAIFastFilterPriorityPolicy()},
+			{name: "missing forces priority", tier: "priority", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
+				svc.cfg = passthroughLifecycleConfig()
+				entry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
+				entry["reasoning_effort"] = tc.effort
+				model := "gpt-fixture"
+				if mode != OpenAIWSIngressModePassthrough {
+					model = "wire-fixture"
+				}
+				entry["model"] = model
+				account := billingCandidateAccount(t, 911, entry)
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				group := profitControlTestGroup(7, 0.5, 0)
+				group.ForceOpenAIFast = tc.force
+				body := `{"type":"response.create","model":"public-fixture","input":"private prompt"` + tc.options + `}`
+				ctx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", tc.hooks)
+				vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+				require.False(t, vetoed, reason)
+				// Independently follow the original first-frame transformation order.
+				wire, err := applyOpenAIWSReasoningEffortPolicy([]byte(body), tc.hooks, tc.hooks.forcedReasoningEffort())
+				require.NoError(t, err)
+				wire = svc.ReplaceModelInBody(wire, "gpt-fixture")
+				wire, _, err = normalizeOpenAIResponsesWebSocketCompatibilityBodyWithConfig(svc.cfg, wire, account, false)
+				require.NoError(t, err)
+				if mode != OpenAIWSIngressModePassthrough {
+					wire = svc.ReplaceModelInBody(wire, normalizeOpenAIModelForUpstream(account, account.GetMappedModel("gpt-fixture")))
+				}
+				wire, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, wire)
+				require.NoError(t, err)
+				require.Nil(t, blocked)
+				request := httptest.NewRequest(http.MethodGet, "wss://relay.example/v1/responses", nil)
+				scope := availabilityScopeForRequest(request, wire)
+				require.NotNil(t, scope)
+				require.Equal(t, model, scope.Model)
+				require.Equal(t, tc.tier, scope.ServiceTier)
+				require.Equal(t, tc.effort, scope.ReasoningEffort)
+				require.NoError(t, guardUpstreamBillingApplicability(account, scope))
+				entry["group_rate_applies"] = false
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				vetoed, reason = openAIProfitControlVetoReason(ctx, account)
+				require.True(t, vetoed)
+				require.Equal(t, "profit_upstream_scope_excluded", reason)
+			})
+		}
 	}
 }
 
 func TestBillingWSCandidateDeferredPaths(t *testing.T) {
-	for _, name := range []string{"ctx pool", "http bridge", "original byte size bridge", "smart protocol", "global force http", "account off", "mode router off", "lite", "tools", "missing type", "query", "reasoning denied", "fast blocked", "unknown policy", "gate disabled", "suppressed", "not upgraded"} {
+	for _, name := range []string{"ctx pool bridge enabled", "ctx pool image model", "http bridge", "original byte size bridge", "smart protocol", "global force http", "account off", "mode router off", "lite", "tools", "missing type", "query", "reasoning denied", "fast blocked", "unknown policy", "gate disabled", "suppressed", "not upgraded"} {
 		t.Run(name, func(t *testing.T) {
 			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
 			group := profitControlTestGroup(7, 0.5, 0)
@@ -96,8 +107,12 @@ func TestBillingWSCandidateDeferredPaths(t *testing.T) {
 			request.Header.Set("Upgrade", "websocket")
 			var hooks *OpenAIWSIngressHooks
 			switch name {
-			case "ctx pool":
+			case "ctx pool bridge enabled":
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+				svc.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+			case "ctx pool image model":
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-image-1"}
 			case "http bridge":
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeHTTPBridge
 			case "original byte size bridge":
@@ -190,25 +205,29 @@ func TestBillingWSCandidateLifetimeAndPolicySnapshot(t *testing.T) {
 }
 
 func TestBillingWSCandidatePostSlotRecheck(t *testing.T) {
-	makeAccount := func(covered bool) *Account {
-		entry := billingApplicabilityEntry("responses_ws_v2", "unspecified", covered)
-		account := billingCandidateAccount(t, 915, entry)
-		account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
-		at := time.Now().UTC().Add(-time.Second)
-		_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
-		require.NoError(t, err)
-		return account
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
+		t.Run(mode, func(t *testing.T) {
+			makeAccount := func(covered bool) *Account {
+				entry := billingApplicabilityEntry("responses_ws_v2", "unspecified", covered)
+				account := billingCandidateAccount(t, 915, entry)
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				return account
+			}
+			selected, replacement := makeAccount(true), makeAccount(false)
+			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
+			ctx := billingWSCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), `{"type":"response.create","model":"gpt-fixture"}`, "gpt-fixture", nil)
+			vetoed, reason := openAIProfitControlVetoReason(ctx, selected)
+			require.False(t, vetoed, reason)
+			svc.schedulerSnapshot = NewSchedulerSnapshotService(&gatewayProfitSnapshotCache{account: replacement}, nil, gatewayProfitAccountRepo{}, nil, nil)
+			latest, vetoed, reason := svc.ProfitControlVetoLatest(ctx, selected)
+			require.Same(t, replacement, latest)
+			require.True(t, vetoed)
+			require.Equal(t, "profit_upstream_scope_excluded", reason)
+		})
 	}
-	selected, replacement := makeAccount(true), makeAccount(false)
-	svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
-	ctx := billingWSCandidateContext(t, svc, profitControlTestGroup(7, 0.5, 0), `{"type":"response.create","model":"gpt-fixture"}`, "gpt-fixture", nil)
-	vetoed, reason := openAIProfitControlVetoReason(ctx, selected)
-	require.False(t, vetoed, reason)
-	svc.schedulerSnapshot = NewSchedulerSnapshotService(&gatewayProfitSnapshotCache{account: replacement}, nil, gatewayProfitAccountRepo{}, nil, nil)
-	latest, vetoed, reason := svc.ProfitControlVetoLatest(ctx, selected)
-	require.Same(t, replacement, latest)
-	require.True(t, vetoed)
-	require.Equal(t, "profit_upstream_scope_excluded", reason)
 }
 
 func TestBillingCandidateMetadataDoesNotRetainInputBacking(t *testing.T) {
@@ -238,139 +257,150 @@ func (r *billingWSCandidateAccountRepo) GetOpenAITurnAdmission(context.Context, 
 
 func TestBillingWSCandidateMatchesPhysicalFramesAndRefresh(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, tc := range []struct {
-		name, options, tier, effort string
-		policy                      *OpenAIFastPolicySettings
-		force                       bool
-		hooks                       OpenAIWSIngressHooks
-	}{
-		{name: "plain", tier: "unspecified", effort: "unspecified"},
-		{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
-		{name: "effort capped", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
-		{name: "group priority", tier: "priority", effort: "unspecified", force: true},
-		{name: "priority filtered", options: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			observed := make(chan *AvailabilityRequestScope, 3)
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				conn, err := coderws.Accept(w, request, nil)
-				if err != nil {
-					t.Errorf("accept physical upstream: %v", err)
-					return
+	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated} {
+		for _, tc := range []struct {
+			name, options, tier, effort string
+			policy                      *OpenAIFastPolicySettings
+			force                       bool
+			hooks                       OpenAIWSIngressHooks
+		}{
+			{name: "plain", tier: "unspecified", effort: "unspecified"},
+			{name: "none preserved", options: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "none"},
+			{name: "minimal preserved", options: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "minimal"},
+			{name: "effort capped", options: `,"reasoning":{"effort":"xhigh"}`, tier: "unspecified", effort: "medium", hooks: OpenAIWSIngressHooks{MaxReasoningEffort: "medium"}},
+			{name: "group priority", tier: "priority", effort: "unspecified", force: true},
+			{name: "priority filtered", options: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				wireModel := func(model string) string {
+					if mode != OpenAIWSIngressModePassthrough {
+						return "wire-" + model
+					}
+					return model
 				}
-				defer func() { _ = conn.CloseNow() }()
-				wsRequest := request.Clone(request.Context())
-				address := *request.URL
-				address.Scheme = "ws"
-				wsRequest.URL = &address
-				for {
-					_, payload, err := conn.Read(request.Context())
+				observed := make(chan *AvailabilityRequestScope, 3)
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					conn, err := coderws.Accept(w, request, nil)
 					if err != nil {
+						t.Errorf("accept physical upstream: %v", err)
 						return
 					}
-					observed <- availabilityScopeForRequest(wsRequest, payload)
-					if err := conn.Write(request.Context(), coderws.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_fixture","usage":{"input_tokens":4,"output_tokens":2}}}`)); err != nil {
-						return
+					defer func() { _ = conn.CloseNow() }()
+					wsRequest := request.Clone(request.Context())
+					address := *request.URL
+					address.Scheme = "ws"
+					wsRequest.URL = &address
+					for {
+						_, payload, err := conn.Read(request.Context())
+						if err != nil {
+							return
+						}
+						observed <- availabilityScopeForRequest(wsRequest, payload)
+						if err := conn.Write(request.Context(), coderws.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_fixture","usage":{"input_tokens":4,"output_tokens":2}}}`)); err != nil {
+							return
+						}
 					}
+				}))
+				defer upstream.Close()
+				firstEntry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
+				firstEntry["model"] = wireModel("gpt-fixture")
+				firstEntry["reasoning_effort"] = tc.effort
+				secondEntry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
+				secondEntry["model"], secondEntry["reasoning_effort"] = wireModel("gpt-next"), tc.effort
+				makeAccount := func(entries ...map[string]any) *Account {
+					account := billingCandidateAccount(t, 914, entries...)
+					account.Credentials["base_url"] = upstream.URL
+					account.Credentials["api_key"] = "sk-test"
+					account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-gpt-fixture", "gpt-next": "wire-gpt-next"}
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+					at := time.Now().UTC().Add(-time.Second)
+					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entries...), at)
+					require.NoError(t, err)
+					return account
 				}
-			}))
-			defer upstream.Close()
-			firstEntry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
-			firstEntry["reasoning_effort"] = tc.effort
-			secondEntry := billingApplicabilityEntry("responses_ws_v2", tc.tier, true)
-			secondEntry["model"], secondEntry["reasoning_effort"] = "gpt-next", tc.effort
-			makeAccount := func(entries ...map[string]any) *Account {
-				account := billingCandidateAccount(t, 914, entries...)
-				account.Credentials["base_url"] = upstream.URL
-				account.Credentials["api_key"] = "sk-test"
-				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "never-sent", "gpt-next": "gpt-next"}
-				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
-				at := time.Now().UTC().Add(-time.Second)
-				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entries...), at)
-				require.NoError(t, err)
-				return account
-			}
-			selected := makeAccount(firstEntry)
-			repo := &billingWSCandidateAccountRepo{}
-			repo.account.Store(selected)
-			svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
-			svc.cfg = passthroughLifecycleConfig()
-			svc.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
-			svc.cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds = 5
-			svc.cache = &stubGatewayCache{}
-			svc.toolCorrector = NewCodexToolCorrector()
-			svc.accountRepo, svc.requireLatestTurnAdmission = repo, true
-			settingsRepo := &billingCandidateSettingRepo{SettingRepository: svc.settingService.settingRepo}
-			svc.settingService = NewSettingService(settingsRepo, svc.cfg)
-			group := profitControlTestGroup(7, 0.5, 0)
-			group.ForceOpenAIFast = tc.force
-			body := `{"type":"response.create","model":"public-fixture","input":"private prompt","stream":false` + tc.options + `}`
-			controlCtx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", &tc.hooks)
-			vetoed, reason := openAIProfitControlVetoReason(controlCtx, selected)
-			require.False(t, vetoed, reason)
-			settled := make(chan int, 3)
-			hooks := tc.hooks
-			hooks.InitialRequestModel = "public-fixture"
-			hooks.MapRequestModel = func(_ int, original string) (string, error) {
-				if original == "public-fixture" {
-					return "gpt-fixture", nil
-				}
-				return original, nil
-			}
-			hooks.AfterTurn = func(turn int, _ *OpenAIForwardResult, _ error) { settled <- turn }
-			server, done := startPassthroughLifecycleServer(t, controlCtx, svc, selected, &hooks)
-			defer server.Close()
-			client := dialPassthroughLifecycleClientWithPayload(t, server, body)
-			defer func() { _ = client.CloseNow() }()
-			for turn := 1; turn <= 2; turn++ {
-				select {
-				case scope := <-observed:
-					require.NotNil(t, scope)
-					model := "gpt-fixture"
-					if turn == 2 {
-						model = "gpt-next"
+				selected := makeAccount(firstEntry)
+				repo := &billingWSCandidateAccountRepo{}
+				repo.account.Store(selected)
+				svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
+				svc.cfg = passthroughLifecycleConfig()
+				svc.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
+				svc.cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds = 5
+				defer svc.getOpenAIWSConnPool().Close()
+				svc.cache = &stubGatewayCache{}
+				svc.toolCorrector = NewCodexToolCorrector()
+				svc.accountRepo, svc.requireLatestTurnAdmission = repo, true
+				settingsRepo := &billingCandidateSettingRepo{SettingRepository: svc.settingService.settingRepo}
+				svc.settingService = NewSettingService(settingsRepo, svc.cfg)
+				group := profitControlTestGroup(7, 0.5, 0)
+				group.ForceOpenAIFast = tc.force
+				body := `{"type":"response.create","model":"public-fixture","input":"private prompt","stream":false` + tc.options + `}`
+				controlCtx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", &tc.hooks)
+				vetoed, reason := openAIProfitControlVetoReason(controlCtx, selected)
+				require.False(t, vetoed, reason)
+				settled := make(chan int, 3)
+				hooks := tc.hooks
+				hooks.InitialRequestModel = "public-fixture"
+				hooks.MapRequestModel = func(_ int, original string) (string, error) {
+					if original == "public-fixture" {
+						return "gpt-fixture", nil
 					}
-					require.Equal(t, AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: "responses_ws_v2", Model: model, Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort}, *scope)
-				case <-time.After(3 * time.Second):
+					return original, nil
+				}
+				hooks.AfterTurn = func(turn int, _ *OpenAIForwardResult, _ error) { settled <- turn }
+				server, done := startPassthroughLifecycleServer(t, controlCtx, svc, selected, &hooks)
+				defer server.Close()
+				client := dialPassthroughLifecycleClientWithPayload(t, server, body)
+				defer func() { _ = client.CloseNow() }()
+				for turn := 1; turn <= 2; turn++ {
 					select {
-					case err := <-done:
-						t.Fatalf("relay ended before physical turn %d: %v", turn, err)
-					default:
-						t.Fatalf("missing physical upstream turn %d", turn)
+					case scope := <-observed:
+						require.NotNil(t, scope)
+						model := "gpt-fixture"
+						if turn == 2 {
+							model = "gpt-next"
+						}
+						require.Equal(t, AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: "responses_ws_v2", Model: wireModel(model), Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort}, *scope)
+					case <-time.After(3 * time.Second):
+						select {
+						case err := <-done:
+							t.Fatalf("relay ended before physical turn %d: %v", turn, err)
+						default:
+							t.Fatalf("missing physical upstream turn %d", turn)
+						}
+					}
+					_, err := readPassthroughLifecycleFrame(t, client, 3*time.Second)
+					require.NoError(t, err)
+					select {
+					case got := <-settled:
+						require.Equal(t, turn, got)
+					case <-time.After(3 * time.Second):
+						t.Fatal("turn settlement did not complete")
+					}
+					if turn == 1 {
+						firstEntry["group_rate_applies"] = false
+						replacement := makeAccount(firstEntry, secondEntry)
+						repo.account.Store(replacement)
+						// The captured selection descriptor now vetoes the old model.
+						// It must not leak into admission for the next physical frame.
+						vetoed, reason = openAIProfitControlVetoReason(controlCtx, replacement)
+						require.True(t, vetoed)
+						require.Equal(t, "profit_upstream_scope_excluded", reason)
+						next := `{"type":"response.create","model":"gpt-next","input":"next turn","stream":false` + tc.options + `}`
+						require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(next)))
 					}
 				}
-				_, err := readPassthroughLifecycleFrame(t, client, 3*time.Second)
-				require.NoError(t, err)
+				// The final guard still rejects the revoked scope on a later turn;
+				// clearing selection metadata must never authorize replay or bypass.
+				require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(body)))
 				select {
-				case got := <-settled:
-					require.Equal(t, turn, got)
+				case err := <-done:
+					require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
 				case <-time.After(3 * time.Second):
-					t.Fatal("turn settlement did not complete")
+					t.Fatal("excluded turn did not terminate the relay")
 				}
-				if turn == 1 {
-					firstEntry["group_rate_applies"] = false
-					replacement := makeAccount(firstEntry, secondEntry)
-					repo.account.Store(replacement)
-					// The captured selection descriptor now vetoes the old model.
-					// It must not leak into admission for the next physical frame.
-					vetoed, reason = openAIProfitControlVetoReason(controlCtx, replacement)
-					require.True(t, vetoed)
-					require.Equal(t, "profit_upstream_scope_excluded", reason)
-					next := `{"type":"response.create","model":"gpt-next","input":"next turn","stream":false` + tc.options + `}`
-					require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(next)))
-				}
-			}
-			// The final guard still rejects the revoked scope on a later turn;
-			// clearing selection metadata must never authorize replay or bypass.
-			require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(body)))
-			select {
-			case err := <-done:
-				require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
-			case <-time.After(3 * time.Second):
-				t.Fatal("excluded turn did not terminate the relay")
-			}
-			require.Empty(t, observed, "excluded third turn must never reach the physical upstream")
-			require.EqualValues(t, 1, settingsRepo.fastReads.Load(), "WS entry and frames must reuse the captured fast-policy snapshot")
-		})
+				require.Empty(t, observed, "excluded third turn must never reach the physical upstream")
+				require.EqualValues(t, 1, settingsRepo.fastReads.Load(), "WS entry and frames must reuse the captured fast-policy snapshot")
+			})
+		}
 	}
 }

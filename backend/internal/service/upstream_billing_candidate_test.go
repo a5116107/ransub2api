@@ -35,7 +35,7 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -44,12 +44,18 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				if tc.protocol == "responses_native" {
 					entry["protocol"] = "responses_http"
 				}
+				if tc.protocol == "responses_ws_ctx_pool" {
+					entry["protocol"] = "responses_ws_v2"
+				}
 				account := billingCandidateAccount(t, id, entry)
 				if tc.protocol == "responses_native" {
 					account.Extra["openai_passthrough"] = false
 				}
 				if tc.protocol == "responses_ws_v2" {
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+				}
+				if tc.protocol == "responses_ws_ctx_pool" {
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
 				}
 				if tc.protocol != "responses_http" {
 					if tc.protocol == "chat_http" {
@@ -72,7 +78,7 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				rateLimitService: newOpenAIAdvancedSchedulerRateLimitService(tc.engine), concurrencyService: NewConcurrencyService(concurrency)}
 			group := profitControlTestGroup(7, 0.5, 0)
 			ctx := billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`)
-			if tc.protocol == "responses_ws_v2" {
+			if strings.HasPrefix(tc.protocol, "responses_ws_") {
 				svc.cfg = passthroughLifecycleConfig()
 				ctx = billingWSCandidateContext(t, svc, group, `{"type":"response.create","model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`, "gpt-fixture", nil)
 			}
