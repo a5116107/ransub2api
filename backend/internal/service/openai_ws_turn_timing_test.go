@@ -99,13 +99,17 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 			account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 			results := make(chan *OpenAIForwardResult, 4)
 			diagnostics := make(chan requesttiming.Snapshot, 4)
+			independent := make(chan requesttiming.Snapshot, 4)
+			ctx := requesttiming.WithIndependentTurnObserver(t.Context(), func(collector *requesttiming.Collector) {
+				collector.WhenFinished(func(s requesttiming.Snapshot) { independent <- s })
+			})
 			hooks := &OpenAIWSIngressHooks{AfterTurn: func(_ int, result *OpenAIForwardResult, _ error) {
 				results <- result
 				if result != nil && result.requestTiming != nil {
 					result.requestTiming.WhenFinished(func(s requesttiming.Snapshot) { diagnostics <- s })
 				}
 			}}
-			gateway, ended := startPassthroughLifecycleServer(t, t.Context(), svc, account, hooks)
+			gateway, ended := startPassthroughLifecycleServer(t, ctx, svc, account, hooks)
 			defer gateway.Close()
 			client := dialOpenAIWSExecutionScopeClient(t, gateway.URL, "")
 			defer func() { _ = client.CloseNow() }()
@@ -141,6 +145,19 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 				}
 				select {
 				case s := <-diagnostics:
+					select {
+					case observed := <-independent:
+						require.Equal(t, s.TraceID, observed.TraceID, "the independent sink must receive this generation without billing")
+						physical := requesttiming.DerivePhysicalUpstream(observed)
+						require.Len(t, physical.Attempts, 1)
+						want := "succeeded"
+						if turn == 3 {
+							want = "failed"
+						}
+						require.Equal(t, want, physical.Attempts[0].Outcome)
+					case <-time.After(3 * time.Second):
+						t.Fatal("independent turn trace missing")
+					}
 					require.False(t, ids[s.TraceID])
 					ids[s.TraceID] = true
 					require.Equal(t, "ws_turn", s.TTFTMode)
@@ -211,7 +228,7 @@ func TestWSTurnTimingUsageBindingSurvivesBillingContext(t *testing.T) {
 	parent := requesttiming.New(time.Now(), 0)
 	ctx := requesttiming.With(t.Context(), parent)
 	for i := range 2 {
-		capture := newOpenAIWSTurnTiming(&Account{ID: 3}, time.Now(), nil)
+		capture := newOpenAIWSTurnTiming(ctx, &Account{ID: 3}, time.Now(), nil)
 		result := &OpenAIForwardResult{RequestID: fmt.Sprintf("resp_timing_%d", i), Model: "gpt-5.1", Usage: OpenAIUsage{InputTokens: 10, OutputTokens: 5}}
 		finishOpenAIWSTurnTiming(capture, ctx, result, nil)
 		require.NoError(t, svc.RecordUsage(ctx, &OpenAIRecordUsageInput{Result: result, APIKey: &APIKey{ID: 1}, User: &User{ID: 2}, Account: &Account{ID: 3}}))
@@ -234,7 +251,7 @@ func TestWSTurnTimingRetainsHandshakeCredentialIdentity(t *testing.T) {
 		{"not_provided", nil, "no_credential", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			capture := newOpenAIWSTurnTiming(account, time.Now(), tc.fingerprints)
+			capture := newOpenAIWSTurnTiming(t.Context(), account, time.Now(), tc.fingerprints)
 			capture.Finish(nil, false, false)
 			capture.WhenFinished(func(s requesttiming.Snapshot) {
 				require.Equal(t, &requesttiming.UpstreamCredentialObservation{Status: tc.status, Source: "websocket_handshake_credentials", Fingerprint: tc.fingerprint}, s.Attempts[0].UpstreamCredential)

@@ -102,6 +102,23 @@ func (w *WSTurnCapture) Finish(err error, canceled, disconnected bool) {
 
 type usageTurnKey struct{}
 
+type independentTurnKey struct{}
+
+// WithIndependentTurnObserver attaches the request's diagnostic sink. The
+// observer freezes metadata synchronously; no gin context enters async storage.
+func WithIndependentTurnObserver(ctx context.Context, observe func(*Collector)) context.Context {
+	return context.WithValue(ctx, independentTurnKey{}, observe)
+}
+
+func ObserveIndependentTurn(ctx context.Context, collector *Collector) {
+	if ctx == nil || collector == nil {
+		return
+	}
+	if observe, _ := ctx.Value(independentTurnKey{}).(func(*Collector)); observe != nil {
+		observe(collector)
+	}
+}
+
 // WithUsageTurn preserves independent HTTP diagnostics, but a usage row must
 // select only its physical turn, never the enclosing request or socket session.
 func WithUsageTurn(ctx context.Context, turn *Collector) context.Context {

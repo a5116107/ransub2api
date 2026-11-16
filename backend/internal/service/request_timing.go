@@ -13,13 +13,14 @@ import (
 
 const maxSSETimingBytes = 16 * 1024 * 1024
 
-func newOpenAIWSTurnTiming(account *Account, start time.Time, fingerprints []string) *requesttiming.WSTurnCapture {
+func newOpenAIWSTurnTiming(ctx context.Context, account *Account, start time.Time, fingerprints []string) *requesttiming.WSTurnCapture {
 	proxyID := int64(0)
 	if account.ProxyID != nil {
 		proxyID = *account.ProxyID
 	}
 	capture := requesttiming.NewWSTurn(start, account.ID, proxyID, AccountRouteFingerprint(account))
 	capture.RecordUpstreamCredentials(fingerprints)
+	requesttiming.ObserveIndependentTurn(ctx, capture.Collector)
 	return capture
 }
 

@@ -120,6 +120,7 @@ func (h *UsageHandler) ObserverTiming(c *gin.Context) {
 			return
 		}
 		delete(trace, "raw_upstream")
+		delete(trace, "physical_upstream")
 		if attemptsRaw, exists := trace["attempts"]; exists {
 			var attempts []map[string]json.RawMessage
 			if err := json.Unmarshal(attemptsRaw, &attempts); err != nil {

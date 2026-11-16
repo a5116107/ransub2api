@@ -28,7 +28,12 @@ func TestTimingWriteReplacesUntrustedCacheMigrationProjection(t *testing.T) {
 	s.Latency = &requesttiming.LatencySummary{CacheMigration: requesttiming.CacheMigrationObservation{Status: "forged"}}
 	s.RawCache = &requesttiming.CacheObservation{Status: "observed", Source: "billing"}
 	s.RawUpstream = &requesttiming.CacheUpstreamObservation{Status: "observed", CredentialFingerprint: "forged"}
+	s.PhysicalUpstream = &requesttiming.PhysicalUpstreamObservation{Version: 99, Complete: true}
 	want := s
+	physical := requesttiming.DerivePhysicalUpstream(s)
+	require.False(t, physical.Complete)
+	require.Len(t, physical.Attempts, 1)
+	want.PhysicalUpstream = &physical
 	derived := requesttiming.DeriveLatency(s)
 	require.Equal(t, "bounded_attribution_unknown", derived.CacheMigration.Status)
 	want.Latency = &derived

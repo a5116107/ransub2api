@@ -1815,7 +1815,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
-| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.4已接最终Key/线路/模型/协议/档位的原始缓存、最终物理HTTP四阶段及独立WS生成轮次三阶段等待均值/覆盖与原管理员面板；实际组、全部物理失败分母与资格消费仍缺。D5.3继续开放；历史配置不得反推请求时身份 |
+| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.5已接最终Key/线路/模型/协议/档位原始缓存、HTTP四阶段/独立WS三阶段等待及留存物理失败观测；实际组、逐模型/来源同scope完整失败分母与资格消费仍缺。D5.3继续开放；历史配置不得反推请求时身份 |
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
@@ -1887,6 +1887,17 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 - SQL继续按范围已记用量数作各阶段覆盖分母，仅接独立`ws_turn`投影；WS与HTTP来源互斥，伪造交叉latency不借用。旧留存JSON的详情只读派生已存在事件，缺首WS事件不拿HTTP首字节/SSE或其他轮次补齐；原始数据库JSON和扩展字段保持。
 - 本地验收含双轮race计时/真实WS转发、真实PG17原聚合和管理HTTP、旧记录只读回投影、源/身份/版本/截断/0/未知边界；原面板中英390/1440px、键盘筛选/分页、错误/空/加载/恢复及浏览器错误检查。证据见DECISIONS；不代表生产加载。
 - 此子项仍不覆盖未记用量的WS失败、完整物理attempt分母、实际供应商分组或严格产品资格；D5父项及原28项分母不变。无schema迁移；回退前一应用忽略新增JSON即可，保留原数据。
+
+#### D5.3.5 留存内全部物理尝试与无账单失败
+
+复用`request_connection_traces`、原计时采集和管理员`/admin/upstream-operations/snapshot`及渠道运维页，不新增表、迁移、统计路由或调度器。这里的“全部”限定于成功留存且未截断的诊断；异步队列/数据库失败、采集上限和更早历史仍有覆盖边界，不声称全站完整失败分母。
+
+- HTTP按真实传输交接凭据记录物理尝试，保留最终成功前的502、超时和传输失败；排除egress父项、WebSocket握手及未交接的本地拒绝。WS在原发送前注册独立轮次的诊断回调，成功/失败都落原连接表，不再依赖账单创建；本地恢复准入完成后才启动计时，不把拒发算上游失败。
+- 写入时从原始attempt重建`physical_upstream` v1，覆盖预填投影；边缘导入剥离该投影。逐尝试的账号、握手/HTTP凭据摘要及线路摘要不借最终账号或当前配置。确认失败、确认完整成功、取消中断、未知分别计数；HTTP200/首字/不完整输出不推断成功。缺少计时不抹除已经确认的HTTP失败；结束边界非法、解析标记异常或截断不产生成功。
+- 原查询优先连接trace，按trace ID排除重复账单副本；仅无连接记录且唯一的用量诊断可回源。实际尝试账号参与筛选，不能先用最终成功账号筛掉前次失败。窗口下闭上开、最多保留30天，稳定分页；无样本比例为null，零成功与未知不同。`confirmed_success_rate`分母仅为确认成功+确认失败，另给结果覆盖、完整/未知诊断覆盖及每请求/独立生成轮次的尝试数。
+- 当前入口请求模型只是入站标签，**不是逐尝试上游模型**；实际组、服务档、effort、业务/合成来源和WS逐轮公开别名均未观测，缺失保持未知。非空的账单模型/上游模型筛选返回`unsupported_scope`，不借最终用量模型补历史；不会将不同物理scope的计数授权给严格产品。完整同scope失败/阶段等待、来源归类和资格消费继续属于D5.3剩余。
+- 管理页单独显示结果数量、确认成功占比、结果/采集覆盖和重试放大；原始缓存命中率与下游本人缓存统计保持原含义。摘要仅管理员可见；观察员通过本人记录归属检查后仍剥离整个`physical_upstream`，原存储及其余兼容字段不改。未来/缺失版本、查询失败和不支持筛选不显示健康零值；SQL小节失败回滚到原SAVEPOINT，不中断其余统计，权限恢复后可重新读取。回退前一应用忽略新增JSON即可，原记录保留，无schema回退。
+- 回归入口：[投影边界](../../backend/internal/pkg/requesttiming/physical_upstream_test.go)、[无账单WS入口](../../backend/internal/server/middleware/request_connections_test.go)、[真实WS](../../backend/internal/service/openai_ws_turn_timing_test.go)、[PostgreSQL/去重/未知](../../backend/internal/repository/upstream_attempts_integration_test.go)、[真实HTTP至管理接口](../../backend/internal/repository/upstream_operations_http_integration_test.go)、[原面板](../../frontend/src/views/admin/__tests__/UpstreamChannelOperationsView.spec.ts)。运行结果与生产边界在DECISIONS/STATE；原28项分母不变。
 
 D5.2、D6.1、D7.1/D7.2、D3.1及D2.1–D2.5/D4.1/D4.2的已验子范围继续保留；不存在“把旧任务换名字重新做”的要求。13.3新ID只是原父验收的缺口定位，不能凭新增子任务完成数提高原28项完成率。
 

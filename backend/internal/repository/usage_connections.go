@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
@@ -62,6 +63,14 @@ func (r *usageLogRepository) runConnectionWriter() {
 }
 
 func (r *usageLogRepository) writeConnectionTrace(ctx context.Context, v service.ConnectionTrace) error {
+	// Recompute from physical observations, never from billing or a caller's
+	// supplied projection. Edge imports are not application upstream evidence.
+	if v.Source == "application" {
+		physical := requesttiming.DerivePhysicalUpstream(v.Detail)
+		v.Detail.PhysicalUpstream = &physical
+	} else {
+		v.Detail.PhysicalUpstream = nil
+	}
 	raw, err := json.Marshal(v.Detail)
 	if err != nil {
 		return err

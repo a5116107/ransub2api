@@ -117,3 +117,40 @@ describe('upstream raw cache monitoring', () => {
   w.unmount()
  })
 })
+
+
+describe('all retained upstream attempts', () => {
+ const base = { scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], total: 0, catalog: [] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} }
+ const summary={attempts:4,logical_requests:2,succeeded:1,failed:2,interrupted:0,unknown:1,unattributed_attempts:1,confirmed_success_rate:1/3,outcome_coverage:0.75,attempts_per_request:2,latest_sample_at:null}
+ const data={version:1,source:'retained_physical_transport_attempts',summary,capture:{traces:3,complete_traces:2,unknown_traces:1,coverage:2/3},total:41,rows:[{...summary,account_id:42,credential_fingerprint:'a'.repeat(64),route_fingerprint:'b'.repeat(64),public_model:'request-alias',transport:'http',protocol:'responses'}]}
+ it('shows earlier failures and retry amplification separately from the final cache observation',async()=>{
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="attempt-count-failed"]').text()).toBe('2')
+  expect(w.get('[data-testid="attempt-count-succeeded"]').text()).toBe('1')
+  expect(w.get('[data-testid="attempt-count-unknown"]').text()).toBe('1')
+  expect(w.get('[data-testid="attempt-success-rate"]').text()).toBe('33.3%')
+  expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('request-alias')
+  expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('upstreamOps.attempts.physicalScopeUnknown')
+  expect(w.find('[data-testid="upstream-raw-cache"]').exists()).toBe(false)
+  expect(w.get('[data-testid="operations-next"]').attributes('disabled')).toBeUndefined()
+  await w.get('[data-testid="operations-next"]').trigger('click');await flushPromises()
+  expect(readOperations).toHaveBeenLastCalledWith(expect.objectContaining({page:2}),expect.anything())
+  w.unmount()
+ })
+ it.each(['query_failed','unsupported_scope','future','wrong_source'])('preserves %s as missing evidence',async state=>{
+  const response={status:state==='query_failed'||state==='unsupported_scope'?state:'ready',data:state==='query_failed'||state==='unsupported_scope'?null:{...data,version:state==='future'?9:1,source:state==='wrong_source'?'other':data.source}}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:response} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="attempt-success-rate"]').exists()).toBe(false)
+  expect(w.get('[data-testid="upstream-attempts"]').text()).toContain(state==='unsupported_scope'?'upstreamOps.attempts.unsupported':'upstreamOps.queryFailed')
+  w.unmount()
+ })
+ it('keeps an empty capture distinct from a perfect success rate',async()=>{
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,summary:{...summary,attempts:0,confirmed_success_rate:null,outcome_coverage:null,attempts_per_request:null},total:0,rows:[]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="attempt-success-rate"]').text()).toBe('upstreamOps.unknown')
+  expect(w.get('[data-testid="attempt-empty"]').text()).toContain('upstreamOps.attempts.empty')
+  w.unmount()
+ })
+})

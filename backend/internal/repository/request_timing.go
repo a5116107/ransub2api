@@ -66,6 +66,8 @@ func (r *usageLogRepository) runTimingWriter() {
 	}
 }
 func (r *usageLogRepository) writeTiming(ctx context.Context, job timingWrite) error {
+	physical := requesttiming.DerivePhysicalUpstream(job.data)
+	job.data.PhysicalUpstream = &physical
 	derived := requesttiming.DeriveLatency(job.data)
 	job.data.Latency = &derived
 	// Freeze only the final response's canonical counters. Never reuse a supplied

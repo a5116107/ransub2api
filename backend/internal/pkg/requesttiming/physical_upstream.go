@@ -1,0 +1,132 @@
+package requesttiming
+
+// PhysicalUpstreamObservation is independent of usage/billing. It counts
+// transport handoffs, not supplier receipt, socket handshakes or egress parents.
+// Missing historical model/group/source evidence is deliberately not inferred.
+type PhysicalUpstreamObservation struct {
+	Version  int                       `json:"version"`
+	Complete bool                      `json:"complete"`
+	Attempts []PhysicalUpstreamAttempt `json:"attempts"`
+}
+
+type PhysicalUpstreamAttempt struct {
+	Number                int    `json:"number"`
+	AccountID             int64  `json:"account_id"`
+	Transport             string `json:"transport"`
+	Protocol              string `json:"protocol,omitempty"`
+	CredentialFingerprint string `json:"credential_fingerprint,omitempty"`
+	RouteFingerprint      string `json:"route_fingerprint,omitempty"`
+	IdentityKnown         bool   `json:"identity_known"`
+	Outcome               string `json:"outcome"`
+}
+
+func DerivePhysicalUpstream(s Snapshot) PhysicalUpstreamObservation {
+	out := PhysicalUpstreamObservation{Version: 1, Complete: s.Version == 1 && !s.Truncated && len(s.Attempts) <= 32,
+		Attempts: []PhysicalUpstreamAttempt{}}
+	if s.Version != 1 || len(s.Attempts) > 32 {
+		return out
+	}
+	byNumber := make(map[int]Attempt, len(s.Attempts))
+	numbers := make(map[int]int, len(s.Attempts))
+	for _, a := range s.Attempts {
+		byNumber[a.Number] = a
+		numbers[a.Number]++
+	}
+	for _, a := range s.Attempts {
+		if a.Number < 1 || a.Number > 32 || numbers[a.Number] != 1 {
+			out.Complete = false
+			continue
+		}
+		if a.Kind != "http" && a.Kind != "ws_turn" {
+			// An egress without a physical child has no observed handoff. It
+			// may be a local rejection, so do not invent an upstream failure.
+			if a.Kind == "egress" && a.Route.Upstream != "websocket" {
+				child := false
+				for _, candidate := range s.Attempts {
+					child = child || (candidate.Kind == "http" && candidate.Parent == a.Number)
+				}
+				out.Complete = out.Complete && child
+			}
+			continue
+		}
+		if a.Kind == "http" {
+			handshake, validParents := physicalHandshake(a, byNumber, numbers)
+			if !validParents {
+				out.Complete = false
+				continue
+			}
+			if a.Status == 101 || handshake || a.Route.Endpoint == "other" {
+				continue
+			}
+			if a.UpstreamCredential == nil {
+				out.Complete = false
+				continue
+			}
+		} else if s.TTFTMode != "ws_turn" || len(s.Attempts) != 1 || a.Parent != 0 || a.Status != 0 {
+			out.Complete = false
+			continue
+		}
+		item := PhysicalUpstreamAttempt{Number: a.Number, AccountID: a.AccountID, Transport: a.Kind, Outcome: physicalUpstreamOutcome(s, a)}
+		switch a.Route.Endpoint {
+		case "responses", "responses_compact":
+			item.Protocol = "responses"
+		case "messages":
+			item.Protocol = "messages"
+		case "chat_completions":
+			item.Protocol = "chat_completions"
+		case "gemini_generate_content", "gemini_stream_generate_content":
+			item.Protocol = "gemini"
+		}
+		if a.Kind == "ws_turn" {
+			item.Protocol = "responses"
+		}
+		identity := DeriveCacheUpstream(Snapshot{Version: 1, TTFTMode: s.TTFTMode, Attempts: []Attempt{a}})
+		if identity.Status == "observed" {
+			item.IdentityKnown = true
+			item.CredentialFingerprint, item.RouteFingerprint = identity.CredentialFingerprint, identity.RouteFingerprint
+		}
+		out.Attempts = append(out.Attempts, item)
+	}
+	return out
+}
+
+func physicalUpstreamOutcome(s Snapshot, a Attempt) string {
+	if a.Status >= 400 && a.Status <= 599 || a.Terminal == "failed" || a.Terminal == "incomplete" || a.Error == "timeout" || a.Error == "transport_error" {
+		return "failed"
+	}
+	if a.Error == "canceled" {
+		return "interrupted"
+	}
+	if !finite(s.TotalMS) || s.TotalMS < 0 || !finite(a.StartMS) || a.StartMS < 0 || a.EndMS == nil ||
+		!finite(*a.EndMS) || *a.EndMS < a.StartMS || *a.EndMS > s.TotalMS {
+		return "unknown"
+	}
+	if a.Error != "" || s.Truncated {
+		return "unknown"
+	}
+	if _, lost := a.Events["typed_content_truncated"]; lost {
+		return "unknown"
+	}
+	if a.TextStream != nil && (a.TextStream.Invalid || a.TextStream.Truncated) {
+		return "unknown"
+	}
+	if a.Terminal == "completed" && (a.Kind == "ws_turn" || a.Status >= 200 && a.Status < 300) {
+		return "succeeded"
+	}
+	return "unknown"
+}
+
+func physicalHandshake(a Attempt, byNumber map[int]Attempt, numbers map[int]int) (bool, bool) {
+	previous := a.Number
+	for parent := a.Parent; parent != 0; {
+		p, exists := byNumber[parent]
+		if !exists || parent < 1 || parent >= previous || numbers[parent] != 1 {
+			return false, false
+		}
+		if p.Route.Upstream == "websocket" || p.Kind == "ws_turn" {
+			return true, true
+		}
+		previous, parent = parent, p.Parent
+	}
+	return false, true
+}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
@@ -66,4 +67,43 @@ func TestFailedSSEConnectionRecordedWithNoUsage(t *testing.T) {
 	require.Equal(t, "failed", got.Detail.Outcome)
 	require.True(t, got.Detail.BodyComplete)
 	require.Equal(t, "client-one", got.ClientRequestID)
+}
+
+func TestIndependentWSTurnsRecordedWithoutUsageAndFreezeIdentity(t *testing.T) {
+	for _, method := range []string{"GET", "POST"} {
+		t.Run(method, func(t *testing.T) {
+			recorder := &connectionRecorderTest{}
+			r := gin.New()
+			r.Use(RequestLogger(), RequestTiming(recorder))
+			r.Handle(method, "/v1/responses", func(c *gin.Context) {
+				group := int64(13)
+				c.Set(string(ContextKeyAPIKey), &service.APIKey{ID: 7, UserID: 9, GroupID: &group})
+				c.Set("ops_model", "initial-alias-is-not-per-turn-evidence")
+				for range 2 {
+					turn := requesttiming.NewWSTurn(time.Now(), 11, 0, [32]byte{})
+					requesttiming.ObserveIndependentTurn(c.Request.Context(), turn.Collector)
+					// Mutation after registration cannot change the frozen identity.
+					c.Set(string(ContextKeyAPIKey), &service.APIKey{ID: 8, UserID: 10})
+					turn.Finish(context.DeadlineExceeded, false, false)
+					c.Set(string(ContextKeyAPIKey), &service.APIKey{ID: 7, UserID: 9, GroupID: &group})
+				}
+			})
+			r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "/v1/responses", strings.NewReader("{}")))
+			want := 2
+			if method == "POST" {
+				want++
+			}
+			require.Len(t, recorder.records, want)
+			require.NotEqual(t, recorder.records[0].TraceID, recorder.records[1].TraceID)
+			for _, got := range recorder.records[:2] {
+				require.EqualValues(t, 7, got.APIKeyID)
+				require.EqualValues(t, 9, got.UserID)
+				require.EqualValues(t, 13, got.GroupID)
+				require.Equal(t, "failed", got.Detail.Outcome)
+				require.Equal(t, "ws_turn", got.Detail.TTFTMode)
+				require.Empty(t, got.Model)
+				require.True(t, got.Stream)
+			}
+		})
+	}
 }

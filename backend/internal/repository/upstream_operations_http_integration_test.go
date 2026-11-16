@@ -7,11 +7,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -120,4 +126,105 @@ func TestUpstreamOperationsHTTPPostgresWithoutModelChannelBinding(t *testing.T) 
 	var after string
 	require.NoError(t, db.QueryRowContext(context.Background(), `SELECT row_to_json(u)::text FROM usage_logs u WHERE account_id=$1`, account).Scan(&after))
 	require.Equal(t, before, after, "the channel endpoint is read-only")
+}
+
+func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
+	db := repository.ChannelOperationsTestDatabase()
+	var account int64
+	require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,credentials) VALUES('attempt transport fixture','openai','apikey','{}') RETURNING id`).Scan(&account))
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM request_connection_traces WHERE detail->'attempts' @> jsonb_build_array(jsonb_build_object('account_id',$1::bigint))`, account)
+		_, _ = db.Exec(`DELETE FROM accounts WHERE id=$1`, account)
+	})
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if calls.Add(1) == 1 {
+			w.WriteHeader(502)
+			_, _ = w.Write([]byte(`{"error":"fixture transient failure"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"response.completed","response":{"status":"completed","output":[]}}`))
+	}))
+	defer upstream.Close()
+	usage := repository.NewUsageLogRepository(nil, db)
+	recorder, ok := usage.(middleware.ConnectionTraceRecorder)
+	require.True(t, ok)
+	client := repository.NewHTTPUpstream(nil)
+	gateway := gin.New()
+	gateway.Use(middleware.RequestLogger(), middleware.RequestTiming(recorder))
+	gateway.POST("/v1/responses", func(c *gin.Context) {
+		c.Set("ops_model", "public-model")
+		for range 2 {
+			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"wire-model","input":"fixture"}`))
+			if err != nil {
+				c.AbortWithStatus(500)
+				return
+			}
+			req.Header.Set("Authorization", "Bearer diagnostic-transport-fixture")
+			req, _ = requesttiming.StartAttempt(req, account, 0)
+			requesttiming.RecordAccountRoute(req.Context(), [32]byte{1})
+			resp, err := client.Do(req, "", account, 1)
+			if err != nil {
+				c.AbortWithStatus(500)
+				return
+			}
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				c.AbortWithStatus(500)
+				return
+			}
+			if resp.StatusCode >= 400 {
+				continue
+			}
+			responseCtx := requesttiming.ResponseContext(c.Request.Context(), resp)
+			requesttiming.Content(responseCtx, body)
+			requesttiming.Output(responseCtx, false, false, "completed")
+			requesttiming.Outcome(c.Request.Context(), "success", false)
+			c.Data(200, "application/json", body)
+			return
+		}
+		c.AbortWithStatus(502)
+	})
+	w := httptest.NewRecorder()
+	gateway.ServeHTTP(w, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{}`)))
+	require.Equal(t, 200, w.Code, w.Body.String())
+	require.EqualValues(t, 2, calls.Load())
+	require.Eventually(t, func() bool {
+		var count int
+		err := db.QueryRow(`SELECT count(*) FROM request_connection_traces WHERE detail->'attempts' @> jsonb_build_array(jsonb_build_object('account_id',$1::bigint))`, account).Scan(&count)
+		return err == nil && count == 1
+	}, 3*time.Second, 10*time.Millisecond)
+	h := admin.NewChannelHandler(service.NewChannelService(repository.NewChannelRepository(db), nil, nil, nil, nil), nil, nil)
+	r := gin.New()
+	r.GET("/snapshot", h.UpstreamOperations)
+	result := httptest.NewRecorder()
+	now := time.Now().UTC()
+	r.ServeHTTP(result, httptest.NewRequest("GET", fmt.Sprintf("/snapshot?account_id=%d&from=%s&until=%s", account, now.Add(-time.Minute).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339)), nil))
+	require.Equal(t, 200, result.Code, result.Body.String())
+	var body struct {
+		Data struct {
+			Attempts struct {
+				Status string
+				Data   struct {
+					Summary struct {
+						Attempts, Failed, Succeeded int
+						LogicalRequests             int `json:"logical_requests"`
+					}
+				}
+			}
+		}
+	}
+	require.NoError(t, json.Unmarshal(result.Body.Bytes(), &body))
+	require.Equal(t, "ready", body.Data.Attempts.Status)
+	require.Equal(t, 2, body.Data.Attempts.Data.Summary.Attempts)
+	require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
+	require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
+	require.Equal(t, 1, body.Data.Attempts.Data.Summary.LogicalRequests)
+	require.NotContains(t, result.Body.String(), "diagnostic-transport-fixture")
+	var billed int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM usage_logs WHERE account_id=$1`, account).Scan(&billed))
+	require.Zero(t, billed)
 }

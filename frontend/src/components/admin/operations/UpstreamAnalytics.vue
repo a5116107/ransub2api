@@ -28,7 +28,35 @@
           <p v-if="!snapshot.usage.rows.length">{{ t('upstreamOps.empty') }}</p>
           <div v-else class="overflow-x-auto"><table class="w-full min-w-[1000px] text-left text-sm"><thead><tr><th class="p-2">{{ t(`upstreamOps.${applied.dimension}`) }}</th><th v-for="key in amountKeys" :key="key" class="p-2">{{ t(`upstreamOps.${key}`) }}</th><th>P50 / P90 / P95 (ms)</th><th>{{ t('upstreamOps.duration') }}</th></tr></thead><tbody><tr v-for="row in snapshot.usage.rows" :key="row.key" class="border-t dark:border-dark-700"><td class="max-w-80 break-all p-2"><button v-if="applied.dimension !== 'model'" class="text-primary-600 underline" data-testid="drill-row" @click="drill(row)">{{ row.name }}</button><span v-else>{{ row.name }}</span></td><td v-for="key in amountKeys" :key="key" class="p-2">{{ key === 'requests' ? row.requests : formatMetric(row,key) }}</td><td>{{ number(row.p50_ms, 0) }} / {{ number(row.p90_ms, 0) }} / {{ number(row.p95_ms, 0) }}<span class="block text-xs">{{ t('upstreamOps.samples') }} {{ row.samples }} / {{ t('upstreamOps.unknown') }} {{ row.unknown_samples }}</span></td><td>{{ number(row.duration_p90_ms,0) }}</td></tr></tbody></table></div>
           <p class="text-xs text-gray-500">{{ t('upstreamOps.latencyNote') }}</p>
-          <div class="flex flex-wrap items-center gap-3"><button class="btn btn-secondary" :disabled="loading || applied.page <= 1" @click="page(-1)">{{ t('upstreamOps.previous') }}</button><span>{{ applied.page }} · {{ snapshot.usage.total }}</span><button class="btn btn-secondary" data-testid="operations-next" :disabled="loading || applied.page * applied.page_size >= Math.max(snapshot.usage.total, snapshot.usage.catalog_total || 0, snapshot.quality.data?.total || 0, snapshot.raw_cache?.data?.total || 0, applied.upstream || applied.account_id ? snapshot.usage.member_total || 0 : 0)" @click="page(1)">{{ t('upstreamOps.next') }}</button></div>
+          <div class="flex flex-wrap items-center gap-3"><button class="btn btn-secondary" :disabled="loading || applied.page <= 1" @click="page(-1)">{{ t('upstreamOps.previous') }}</button><span>{{ applied.page }} · {{ snapshot.usage.total }}</span><button class="btn btn-secondary" data-testid="operations-next" :disabled="loading || applied.page * applied.page_size >= Math.max(snapshot.usage.total, snapshot.usage.catalog_total || 0, snapshot.quality.data?.total || 0, snapshot.raw_cache?.data?.total || 0, snapshot.attempts?.data?.total || 0, applied.upstream || applied.account_id ? snapshot.usage.member_total || 0 : 0)" @click="page(1)">{{ t('upstreamOps.next') }}</button></div>
+        </section>
+        <section v-if="snapshot.attempts" class="card min-w-0 space-y-4 p-4" data-testid="upstream-attempts" aria-labelledby="upstream-attempts-title">
+          <h2 id="upstream-attempts-title" class="font-semibold">{{ t('upstreamOps.attempts.title') }}</h2>
+          <p class="text-xs leading-5 text-gray-500">{{ t('upstreamOps.attempts.scope') }}</p>
+          <p v-if="snapshot.attempts.status === 'unsupported_scope'" role="status">{{ t('upstreamOps.attempts.unsupported') }}</p>
+          <p v-else-if="snapshot.attempts.status !== 'ready' || !validAttempts" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ t('upstreamOps.queryFailed') }}</p>
+          <template v-else-if="snapshot.attempts.data">
+            <dl class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6" data-testid="upstream-attempt-counts">
+              <div v-for="key in attemptKeys" :key="key"><dt class="text-xs text-gray-500">{{ t(`upstreamOps.attempts.${key}`) }}</dt><dd :data-testid="`attempt-count-${key}`" class="text-xl font-semibold tabular-nums" :class="key === 'failed' ? 'text-red-600 dark:text-red-400' : key === 'succeeded' ? 'text-green-700 dark:text-green-400' : ''">{{ number(snapshot.attempts.data.summary[key], 0) }}</dd></div>
+            </dl>
+            <dl class="grid gap-3 sm:grid-cols-3">
+              <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.attempts.confirmedRate') }}</dt><dd class="text-xl font-semibold tabular-nums" data-testid="attempt-success-rate">{{ percent(snapshot.attempts.data.summary.confirmed_success_rate) }}</dd></div>
+              <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.attempts.outcomeCoverage') }}</dt><dd class="text-xl font-semibold tabular-nums">{{ percent(snapshot.attempts.data.summary.outcome_coverage) }}</dd></div>
+              <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.attempts.amplification') }}</dt><dd class="text-xl font-semibold tabular-nums">{{ number(snapshot.attempts.data.summary.attempts_per_request, 2) }}</dd></div>
+            </dl>
+            <p class="text-xs text-gray-500" data-testid="attempt-capture-coverage">{{ t('upstreamOps.attempts.capture', { complete: number(snapshot.attempts.data.capture.complete_traces, 0), total: number(snapshot.attempts.data.capture.traces, 0), unknown: number(snapshot.attempts.data.capture.unknown_traces, 0), coverage: percent(snapshot.attempts.data.capture.coverage) }) }}</p>
+            <p v-if="!snapshot.attempts.data.summary.attempts" data-testid="attempt-empty">{{ t('upstreamOps.attempts.empty') }}</p>
+            <ul class="grid min-w-0 gap-3 lg:grid-cols-2">
+              <li v-for="(row, index) in snapshot.attempts.data.rows" :key="index" class="min-w-0 space-y-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="upstream-attempt-row">
+                <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
+                <p class="break-words text-xs text-gray-500">{{ row.transport }} / {{ row.protocol ?? t('upstreamOps.unknown') }} · {{ t('upstreamOps.attempts.ingressModel') }} {{ row.public_model || t('upstreamOps.unknown') }}</p>
+                <dl class="grid grid-cols-3 gap-2 tabular-nums"><div v-for="key in attemptKeys" :key="key"><dt class="text-xs text-gray-500">{{ t(`upstreamOps.attempts.${key}`) }}</dt><dd>{{ number(row[key], 0) }}</dd></div></dl>
+                <p class="text-xs text-amber-700 dark:text-amber-400">{{ t('upstreamOps.attempts.physicalScopeUnknown') }}</p>
+                <details class="text-xs"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('upstreamOps.rawCache.route') }}</summary><p class="mt-2 break-all">{{ row.route_fingerprint ?? t('upstreamOps.unknown') }}</p><p class="mt-1 break-words">{{ row.latest_sample_at ?? t('upstreamOps.unknown') }}</p></details>
+              </li>
+            </ul>
+            <p class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.page', { page: applied.page, total: snapshot.attempts.data.total }) }}</p>
+          </template>
         </section>
         <section v-if="snapshot.raw_cache" class="card min-w-0 space-y-4 p-4" data-testid="upstream-raw-cache" aria-labelledby="upstream-raw-cache-title">
           <div class="flex flex-wrap items-center justify-between gap-2">
@@ -84,13 +112,15 @@
   </AppLayout>
 </template>
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import SmartOpsNav from './SmartOpsNav.vue'
 import QualityRoundAssessment from './QualityRoundAssessment.vue'
 import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics, type UpstreamRawCacheRow } from '@/api/admin/upstreamOperations'
 const { t } = useI18n()
+const attemptKeys = ['attempts', 'logical_requests', 'succeeded', 'failed', 'interrupted', 'unknown'] as const
+const validAttempts = computed(() => snapshot.value?.attempts?.data?.version === 1 && snapshot.value?.attempts?.data?.source === 'retained_physical_transport_attempts')
 const amountKeys = ['requests'] as const
 const sortKeys = [...amountKeys, 'name']
 const at = new Date(), start = new Date(at.getTime()-86400000)

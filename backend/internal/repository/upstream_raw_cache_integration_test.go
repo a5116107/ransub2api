@@ -283,10 +283,12 @@ func TestUpstreamRawCacheSectionFailureRecovery(t *testing.T) {
 	tx, err := conn.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	args := []any{q.From, q.Until, "[]", "", f.account, int64(0), "", "public", 20, 0}
-	failed := readUpstreamSection(t.Context(), tx, upstreamOperationsRawCache, args...)
-	require.Equal(t, "query_failed", failed.Status)
-	require.JSONEq(t, "null", string(failed.Data))
-	require.NotContains(t, failed.Error, role)
+	for _, query := range []string{upstreamOperationsRawCache, upstreamOperationsAttempts} {
+		failed := readUpstreamSection(t.Context(), tx, query, args...)
+		require.Equal(t, "query_failed", failed.Status)
+		require.JSONEq(t, "null", string(failed.Data))
+		require.NotContains(t, failed.Error, role)
+	}
 	var alive int
 	require.NoError(t, tx.QueryRowContext(t.Context(), `SELECT 1`).Scan(&alive), "failed cache query must not abort the remaining snapshot")
 	require.Equal(t, 1, alive)
@@ -296,7 +298,9 @@ func TestUpstreamRawCacheSectionFailureRecovery(t *testing.T) {
 	tx, err = conn.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
-	recovered := readUpstreamSection(t.Context(), tx, upstreamOperationsRawCache, args...)
-	require.Equal(t, "ready", recovered.Status)
-	require.Empty(t, recovered.Error)
+	for _, query := range []string{upstreamOperationsRawCache, upstreamOperationsAttempts} {
+		recovered := readUpstreamSection(t.Context(), tx, query, args...)
+		require.Equal(t, "ready", recovered.Status)
+		require.Empty(t, recovered.Error)
+	}
 }

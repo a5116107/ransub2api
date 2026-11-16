@@ -108,18 +108,21 @@ func TestObserverUsageScopeAndProjection(t *testing.T) {
 func TestObserverTimingRedactsUpstreamCredential(t *testing.T) {
 	r := &observerUsageRepo{
 		record:     &service.UsageLog{ID: 1, UserID: 42},
-		timingRows: []json.RawMessage{json.RawMessage(`{"trace_id":"own-trace","future_field":true,"raw_upstream":{"credential_fingerprint":"supplier-private-identity"},"attempts":[{"kind":"http","upstream_credential":{"status":"observed","fingerprint":"supplier-private-identity"},"cache_usage":{"read_tokens":80},"future_attempt_field":7}]}`)},
+		timingRows: []json.RawMessage{json.RawMessage(`{"trace_id":"own-trace","future_field":true,"raw_upstream":{"credential_fingerprint":"supplier-private-identity"},"physical_upstream":{"version":1,"complete":true,"attempts":[{"credential_fingerprint":"supplier-private-identity","route_fingerprint":"private-route-identity"}]},"attempts":[{"kind":"http","upstream_credential":{"status":"observed","fingerprint":"supplier-private-identity"},"cache_usage":{"read_tokens":80},"future_attempt_field":7}]}`)},
 	}
 	w := usageGET(observerUsageRouter(r, service.RoleObserver), "/usage/1/timing")
 	require.Equal(t, 200, w.Code, w.Body.String())
 	require.NotContains(t, w.Body.String(), "supplier-private-identity")
 	require.NotContains(t, w.Body.String(), "upstream_credential")
 	require.NotContains(t, w.Body.String(), "raw_upstream")
+	require.NotContains(t, w.Body.String(), "physical_upstream")
+	require.NotContains(t, w.Body.String(), "private-route-identity")
 	require.Contains(t, w.Body.String(), "own-trace")
 	require.Contains(t, w.Body.String(), `"read_tokens":80`)
 	require.Contains(t, w.Body.String(), `"future_field":true`)
 	require.Contains(t, w.Body.String(), `"future_attempt_field":7`)
 	require.Contains(t, string(r.timingRows[0]), "supplier-private-identity", "projection must not mutate stored admin diagnostics")
+	require.Contains(t, string(r.timingRows[0]), "physical_upstream", "admin projection must remain in stored evidence")
 }
 
 func TestObserverTimingMalformedEvidenceFailsClosed(t *testing.T) {
