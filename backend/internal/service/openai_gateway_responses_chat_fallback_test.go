@@ -54,10 +54,13 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 	for _, protocol := range []string{"chat_http", "responses_http"} {
 		for _, stream := range []bool{false, true} {
 			for _, tc := range []struct {
-				name, inputOptions, tier, effort, model     string
-				policy                                      *OpenAIFastPolicySettings
-				force, passthrough, nativeOnly, chatIngress bool
-				history                                     bool
+				name, inputOptions, tier, effort, model                      string
+				policy                                                       *OpenAIFastPolicySettings
+				force, passthrough, nativeOnly, chatIngress, messagesIngress bool
+				ceiling                                                      string
+				history                                                      bool
+				dispatch                                                     string
+				mappingWins                                                  bool
 			}{
 				{name: "default", tier: "unspecified", effort: "unspecified"},
 				{name: "compatible none omitted", inputOptions: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "unspecified"},
@@ -79,11 +82,24 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 				{name: "chat ingress group force", tier: "priority", effort: "unspecified", force: true, chatIngress: true},
 				{name: "chat ingress filter", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy(), chatIngress: true},
 				{name: "chat ingress mapped filter", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierPriority, Action: BetaPolicyActionFilter, Scope: BetaPolicyScopeAll, ModelWhitelist: []string{"wire-fixture"}, FallbackAction: BetaPolicyActionPass}}}, chatIngress: true},
+				{name: "messages default", tier: "unspecified", effort: "medium", messagesIngress: true},
+				{name: "messages disabled", inputOptions: `,"thinking":{"type":"disabled"}`, tier: "unspecified", effort: "none", messagesIngress: true},
+				{name: "messages budget", inputOptions: `,"thinking":{"type":"enabled","budget_tokens":4096}`, tier: "unspecified", effort: "medium", messagesIngress: true},
+				{name: "messages adaptive max", inputOptions: `,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}`, tier: "unspecified", effort: "xhigh", messagesIngress: true},
+				{name: "messages GPT56 max", inputOptions: `,"output_config":{"effort":"max"}`, model: "gpt-5.6-luna", tier: "unspecified", effort: "max", messagesIngress: true},
+				{name: "messages GLM max", inputOptions: `,"output_config":{"effort":"max"}`, model: "glm-4.7", tier: "unspecified", effort: "max", messagesIngress: true},
+				{name: "messages policy ceiling", inputOptions: `,"output_config":{"effort":"high"}`, ceiling: "low", tier: "unspecified", effort: "low", messagesIngress: true},
+				{name: "messages fast not applied", tier: "unspecified", effort: "medium", force: true, policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}, messagesIngress: true},
+				{name: "messages own tier not forwarded", inputOptions: `,"service_tier":"standard_only"`, tier: "unspecified", effort: "medium", messagesIngress: true},
+				{name: "messages dispatch fallback", model: "dispatch-fixture", dispatch: "dispatch-fixture", tier: "unspecified", effort: "medium", messagesIngress: true},
+				{name: "messages mapping before dispatch", dispatch: "dispatch-fixture", mappingWins: true, tier: "unspecified", effort: "medium", messagesIngress: true},
+				{name: "messages deepseek user only", model: "deepseek-v4-flash", tier: "unspecified", effort: "medium", messagesIngress: true},
+				{name: "messages deepseek hidden history", model: "deepseek-v4-flash", tier: "unspecified", effort: "medium", messagesIngress: true, history: true},
 			} {
 				if tc.nativeOnly && protocol != "responses_http" {
 					continue
 				}
-				if tc.chatIngress && protocol != "chat_http" {
+				if (tc.chatIngress || tc.messagesIngress) && protocol != "chat_http" {
 					continue
 				}
 				t.Run(fmt.Sprintf("%s/%s/stream=%v", protocol, tc.name, stream), func(t *testing.T) {
@@ -133,6 +149,9 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 					account.Extra["openai_passthrough"] = tc.passthrough
 					account.Credentials["base_url"] = server.URL
 					account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": mappedModel}
+					if tc.dispatch != "" && !tc.mappingWins {
+						account.Credentials["model_mapping"] = map[string]any{tc.dispatch: "scheduling-only-fixture"}
+					}
 					at := time.Now().UTC().Add(-time.Second)
 					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
 					require.NoError(t, err)
@@ -147,23 +166,33 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 					}}
 					body := []byte(fmt.Sprintf(`{"model":"gpt-fixture","input":"private prompt","stream":%v%s}`, stream, tc.inputOptions))
 					path := "/v1/responses"
-					if tc.chatIngress {
+					if tc.chatIngress || tc.messagesIngress {
 						path = "/v1/chat/completions"
 						body = []byte(fmt.Sprintf(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"stream":%v%s}`, stream, tc.inputOptions))
 						if tc.history {
 							body = []byte(fmt.Sprintf(`{"model":"gpt-fixture","messages":[{"role":"assistant","content":"private previous answer"},{"role":"user","content":"private continuation"}],"stream":%v%s}`, stream, tc.inputOptions))
 						}
+						if tc.messagesIngress {
+							path = "/v1/messages"
+						}
 					}
 					group := profitControlTestGroup(7, 0.5, 0)
 					group.ForceOpenAIFast = tc.force
 					ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+					if tc.ceiling != "" {
+						ctx = WithOpenAIReasoningEffortPolicy(ctx, tc.ceiling, nil, "")
+					}
 					request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
-					ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body)
+					ctx = WithOpenAIForwardModel(ctx, "scheduling-context-fixture", false)
+					ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body, tc.dispatch)
 					vetoed, reason := openAIProfitControlVetoReason(ctx, account)
 					require.False(t, vetoed, reason)
 					forward := func() (*OpenAIForwardResult, error) {
 						c, _ := gin.CreateTestContext(httptest.NewRecorder())
 						c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)).WithContext(ctx)
+						if tc.messagesIngress {
+							return svc.ForwardAsAnthropic(ctx, c, account, body, "", tc.dispatch)
+						}
 						if tc.chatIngress {
 							return svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
 						}

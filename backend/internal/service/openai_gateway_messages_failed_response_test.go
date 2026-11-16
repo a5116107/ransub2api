@@ -155,31 +155,49 @@ func TestForwardAsAnthropic_StreamingBareErrorBeforeOutputFailsOver(t *testing.T
 	require.Empty(t, rec.Body.String(), "failover path must not commit downstream output")
 }
 
-func TestForwardAsAnthropic_StreamingGenericBareErrorBeforeOutputIsNotHiddenByFailover(t *testing.T) {
+func TestForwardAsAnthropic_StreamingBareErrorBeforeOutputRequiresFailureEvidence(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, fields string
+		failover     bool
+	}{
+		{"explicit server failure", `"type":"server_error","code":"upstream_error",`, true},
+		{"internal server failure", `"type":"internal_server_error",`, true},
+		{"unknown error", ``, false},
+		{"generic API error", `"type":"api_error","code":"upstream_error",`, false},
+		{"explicit client status", `"type":"server_error","status":400,`, false},
+		{"invalid request", `"type":"invalid_request_error","code":"server_error",`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":true}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
 
-	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":true}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
+			// Preserve the formerly contradictory server_error payload as a
+			// positive case; the same message alone is not failure evidence.
+			ssePayload := "event: error\n" +
+				`data: {"type":"error","error":{` + tc.fields + `"message":"mixed tools failed"}}` + "\n\n" +
+				"data: [DONE]\n\n"
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(ssePayload)),
+			}}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			_, err := svc.ForwardAsAnthropic(context.Background(), c, rawChatCompletionsTestAccount(), body, "", "")
 
-	ssePayload := "event: error\n" +
-		`data: {"type":"error","error":{"type":"server_error","code":"upstream_error","message":"mixed tools failed"}}` + "\n\n" +
-		"data: [DONE]\n\n"
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader(ssePayload)),
-	}}
-	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-
-	_, err := svc.ForwardAsAnthropic(context.Background(), c, rawChatCompletionsTestAccount(), body, "", "")
-
-	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.False(t, errors.As(err, &failoverErr))
-	require.Contains(t, rec.Body.String(), "mixed tools failed")
+			require.Error(t, err)
+			var failoverErr *UpstreamFailoverError
+			require.Equal(t, tc.failover, errors.As(err, &failoverErr), "%T: %v", err, err)
+			if tc.failover {
+				require.Empty(t, rec.Body.String(), "only an uncommitted stream permits failover")
+			} else {
+				require.Contains(t, rec.Body.String(), "mixed tools failed")
+			}
+		})
+	}
 }
 
 func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {

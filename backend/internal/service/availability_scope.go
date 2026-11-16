@@ -427,6 +427,13 @@ func availabilityScopeForRequest(request *http.Request, payload []byte) *Availab
 				}
 				scope.IncludeEncryptedContent = true
 			}
+		case "parallel_tool_calls":
+			// The direct Messages-to-Chat converter always emits this flag.
+			// With no tools it does not extend the observed text capability;
+			// non-empty tools and active tool_choice remain rejected below.
+			if scope.Protocol != "chat_http" || value.Type != gjson.True && value.Type != gjson.False {
+				return nil
+			}
 		case "tools":
 			if !value.IsArray() || len(value.Array()) != 0 {
 				return nil

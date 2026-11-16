@@ -16,14 +16,15 @@ import (
 type upstreamBillingCandidateKey struct{}
 
 type upstreamBillingCandidate struct {
-	scope               *AvailabilityRequestScope
-	fastPolicy          *OpenAIFastPolicySettings
-	policyKnown         bool
-	chatHasText         bool
-	chatHasAssistant    bool
-	wsPassthroughBridge bool
-	wsSmartRequest      *openAISmartProtocolRequest
-	gateway             *OpenAIGatewayService
+	scope                 *AvailabilityRequestScope
+	fastPolicy            *OpenAIFastPolicySettings
+	policyKnown           bool
+	chatHasText           bool
+	chatHasAssistant      bool
+	messagesDispatchModel string
+	wsPassthroughBridge   bool
+	wsSmartRequest        *openAISmartProtocolRequest
+	gateway               *OpenAIGatewayService
 }
 
 func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
@@ -36,13 +37,15 @@ func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
 // WithUpstreamBillingCandidateRequest records prompt-free ingress metadata
 // after channel mapping. Predictable native HTTP Responses/Chat and fixed
 // text conversions share the original wire transformers and final-send checks.
+// Messages accepts only its explicit dispatch fallback, not the scheduling
+// context's routing model, which can differ from the forwarded body.
 // Unknown metadata/policy defers scope-specific filtering, never qualifies
 // supply. Declaration expiry, validity and binding still apply to every route.
-func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.Context, request *http.Request, body []byte) context.Context {
+func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.Context, request *http.Request, body []byte, messagesDispatchModel ...string) context.Context {
 	candidate := upstreamBillingCandidate{}
 	if upstreamBillingCandidateMayFilter(ctx) && request != nil && !isOpenAIResponsesLiteHeader(request.Header.Get(responsesLiteHeader)) {
 		candidate.scope = availabilityScopeForRequest(request, body)
-		if candidate.scope != nil && candidate.scope.Protocol != "responses_http" && candidate.scope.Protocol != "chat_http" {
+		if candidate.scope != nil && candidate.scope.Protocol != "responses_http" && candidate.scope.Protocol != "chat_http" && candidate.scope.Protocol != "messages_http" {
 			candidate.scope = nil
 		}
 	}
@@ -51,8 +54,11 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 		candidate.chatHasText = input.Type == gjson.String || input.IsArray() && input.Get("#").Int() > 0 ||
 			strings.TrimSpace(gjson.GetBytes(body, "instructions").String()) != ""
 		conversation := input
-		if candidate.scope.Protocol == "chat_http" {
+		if candidate.scope.Protocol == "chat_http" || candidate.scope.Protocol == "messages_http" {
 			conversation = gjson.GetBytes(body, "messages")
+		}
+		if candidate.scope.Protocol == "messages_http" && len(messagesDispatchModel) > 0 {
+			candidate.messagesDispatchModel = strings.Clone(strings.TrimSpace(messagesDispatchModel[0]))
 		}
 		conversation.ForEach(func(_, message gjson.Result) bool {
 			candidate.chatHasAssistant = message.Get("role").String() == "assistant"
@@ -106,6 +112,8 @@ func (s *OpenAIGatewayService) withUpstreamBillingCandidatePolicy(ctx context.Co
 		candidate.scope.Model = strings.Clone(candidate.scope.Model)
 		candidate.scope.ServiceTier = strings.Clone(candidate.scope.ServiceTier)
 		candidate.scope.ReasoningEffort = strings.Clone(candidate.scope.ReasoningEffort)
+		candidate.scope.ThinkingMode = strings.Clone(candidate.scope.ThinkingMode)
+		candidate.scope.ProtocolOptions = strings.Clone(candidate.scope.ProtocolOptions)
 		candidate.policyKnown = s == nil || s.settingService == nil
 		if !candidate.policyKnown {
 			candidate.fastPolicy = openAIFastPolicySettingsFromContext(ctx)
@@ -213,6 +221,43 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		controlledMode(ctx) == nil {
 		if candidate.scope.Protocol == "responses_ws_v2" {
 			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope, candidate.wsPassthroughBridge, candidate.wsSmartRequest)
+		} else if candidate.scope.Protocol == "messages_http" {
+			if resolveUpstreamProtocol(account, APIProtocolAnthropic, "", nil) == APIProtocolChatCompletions && candidate.gateway != nil {
+				// Reuse the direct Messages converter with detached options and
+				// synthetic text. No prompt, metadata or header is retained here.
+				anthropic := apicompat.AnthropicRequest{
+					Model: candidate.scope.Model, Stream: candidate.scope.Stream,
+					Messages: []apicompat.AnthropicMessage{{Role: "user", Content: json.RawMessage(`""`)}},
+				}
+				if candidate.scope.ThinkingMode != "" {
+					anthropic.Thinking = &apicompat.AnthropicThinking{Type: candidate.scope.ThinkingMode, BudgetTokens: int(candidate.scope.ThinkingBudget)}
+				}
+				if candidate.scope.ReasoningEffort != "unspecified" {
+					anthropic.OutputConfig = &apicompat.AnthropicOutputConfig{Effort: candidate.scope.ReasoningEffort}
+				}
+				applyOpenAICompatModelNormalization(&anthropic)
+				chat, err := apicompat.AnthropicToChatCompletionsRequestWithMinOutputTokens(&anthropic, configuredMinOutputTokens(candidate.gateway.cfg))
+				if err == nil {
+					model := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, anthropic.Model, candidate.messagesDispatchModel))
+					if !isOpenAIImageGenerationModel(model) {
+						chat.Model = model
+						chat.ReasoningEffort = openAICompatAnthropicReasoningEffort(&anthropic, model, chat.ReasoningEffort)
+						body, err := json.Marshal(chat)
+						if err == nil {
+							if normalized, changed := NormalizeGLMOpenAIReasoningEffort(body, model); changed {
+								body = normalized
+							}
+							body, _, err = applyOpenAIReasoningEffortPolicyForGLMFromContext(ctx, body, model)
+							if err == nil {
+								// The existing direct bridge deliberately skips Fast policy
+								// and drops Messages service_tier, including group forcing.
+								request, _ := billingApplicabilityScopeRequest(AvailabilityRequestScope{Protocol: "chat_http", ServiceTier: "unspecified", ReasoningEffort: "unspecified"})
+								scope = availabilityScopeForRequest(request, body)
+							}
+						}
+					}
+				}
+			}
 		} else if candidate.scope.Protocol == "chat_http" {
 			protocol := resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil)
 			if protocol == APIProtocolChatCompletions || protocol == APIProtocolResponses && candidate.gateway != nil {

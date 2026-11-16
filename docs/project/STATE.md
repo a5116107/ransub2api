@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.13智能WS候选本地验收done；交付身份以当前分支Git/origin为准。
+任务：D2.6.14 Messages→Chat候选本地done；基线3a8d8edc9。
 授权：唯一H盘工作树；自有仓库同步/已验热修复发行部署；不运行编译/测试CI。
 生产上次实测：.7/fd83f6c91，latest同版，程序bea1c3964bc3；本轮未部署。
-实证：.13三包双轮race6876pass、0fail/skip/race；vet/lint0issues/Linux退出0。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/smart-candidate-*；原失败保留，非生产。
-下一动作：D2.6其余转换/规范化池桥/受管合同，D5.3实际组/受信检测/资格；不提升生产。
+实证：.14四包双轮race7652pass、0fail/skip/race；vet/增量lint0issues/Linux过。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/messages-candidate-*；原失败保留，非生产。
+下一动作：其余Messages→Responses/规范化池桥与受管声明；不提升生产。
 等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域和旧完整历史恢复保留。
-Attempt：34
+Attempt：35
 <!-- resume:end -->
 
 ## 目标与入口
@@ -26,7 +26,7 @@ Attempt：34
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.6.1–.13已本地验；其他入站转换/规范化池桥、受管产品与真实来源仍缺；D2.7待供应商 |
+| D2 | in_progress | D2.6.1–.14已本地验；其余Messages→Responses/规范化池桥、受管产品与真实来源仍缺；D2.7待供应商 |
 | D2.1 | done | 同步新鲜度/高峰及同源预演、CLI已验 |
 | D2.2 | done | 固定组/null/明确0及SQL失效恢复已验 |
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
@@ -35,6 +35,7 @@ Attempt：34
 | D2.6.1–.4 | done | 自动/手工声明、精确预演、New API同源绑定/TTL/重放、SQL CAS、HTTP/WS/UI本地已验；逐项证据见DECISIONS |
 | D2.6.5–.12 | done | 原生/固定转换、四WS及两类HTTP桥候选本地已验；.12 race6568/静态/构建通过；SQL58/UI35复用未变合同，非生产 |
 | D2.6.13 | done | 复用smart原始标量/当前历史，确定HTTP/WS候选、两调度器/粘性/槽后及11类逐轮路径本地已验；race6876/静态/Linux过，非生产 |
+| D2.6.14 | done | Messages→Chat映射/dispatch、effort/Fast边界、两调度器/黏性/槽后/真实HTTP已验；四包race7652/静态/Linux过；非生产 |
 | D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；多维/基线、非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
@@ -70,6 +71,6 @@ Attempt：34
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- .12 PG/Redis/预览已停止；.13仅httptest，Go工作目录自动回收，无新增scratch。历史.11的3个scratch/8个冗余证据仍拒删原位保留，路径见DECISIONS；不触及生产及其他运行中的Go验证。
+- PG/Redis/预览已停；.14仅httptest。空目录H:/Root/DevCache/tmp/sub2api-messages-candidate删除被宿主策略拦截，0文件/回收0；历史拒删资源保留，路径/owner见DECISIONS。
 - 历史宿主拒删资源（620274603bytes及D2.6日志）原位保留；精确路径/命令/owner见DECISIONS，待宿主拥有者解除策略，不换工具或移动绕过。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。

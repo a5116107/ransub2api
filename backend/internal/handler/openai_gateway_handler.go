@@ -1739,6 +1739,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		c.Request = c.Request.WithContext(service.WithOpenAIForwardModel(c.Request.Context(), currentRoutingModel, false))
+		// Reuse the exact channel-mapped body and explicit dispatch fallback
+		// that this attempt will forward. Candidate metadata retains no prompt.
+		msgCandidateCtx := h.gatewayService.WithUpstreamBillingCandidateRequest(c.Request.Context(), c.Request,
+			mappedBodyForMessages(channelMappingMsg.Mapped, channelMappingMsg.MappedModel), effectiveMappedModel)
+		c.Request = c.Request.WithContext(msgCandidateCtx)
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			apiKey.GroupID,

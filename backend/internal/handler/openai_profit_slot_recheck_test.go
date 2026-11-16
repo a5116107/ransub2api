@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -101,7 +102,7 @@ func profitBillingScopeTestAccount(id int64, model, protocol string, covered boo
 
 func TestAcquireResponsesAccountSlotBillingScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, protocol := range []string{"responses_http", "chat_http"} {
+	for _, protocol := range []string{"responses_http", "chat_http", "messages_chat"} {
 		for _, acquired := range []bool{false, true} {
 			for _, covered := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/acquired=%v/covered=%v", protocol, acquired, covered), func(t *testing.T) {
@@ -113,16 +114,27 @@ func TestAcquireResponsesAccountSlotBillingScope(t *testing.T) {
 					c, _ := gin.CreateTestContext(w)
 					groupID := int64(50)
 					path := "/v1/responses"
+					body := `{"model":"gpt-fixture","service_tier":"priority"}`
+					wireProtocol := protocol
 					if protocol == "chat_http" {
 						path = "/v1/chat/completions"
 					}
+					if protocol == "messages_chat" {
+						path, wireProtocol = "/v1/messages", "chat_http"
+						body = `{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}]}`
+					}
 					c.Request = httptest.NewRequest(http.MethodPost, path, nil)
 					ctx := profitSlotTestContext(t, gw, groupID, false)
-					ctx = gw.WithUpstreamBillingCandidateRequest(ctx, c.Request, []byte(`{"model":"gpt-fixture","service_tier":"priority"}`))
+					ctx = gw.WithUpstreamBillingCandidateRequest(ctx, c.Request, []byte(body))
 					c.Request = c.Request.WithContext(ctx)
-					account := profitBillingScopeTestAccount(91, "gpt-fixture", protocol, covered)
-					if protocol == "chat_http" {
+					account := profitBillingScopeTestAccount(91, "gpt-fixture", wireProtocol, covered)
+					if wireProtocol == "chat_http" {
 						account.Extra["openai_responses_mode"] = "force_chat_completions"
+					}
+					if protocol == "messages_chat" {
+						data := account.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)["data"].(map[string]any)
+						entry := data["rate_applicability"].(map[string]any)["entries"].([]map[string]any)[0]
+						entry["service_tier"], entry["reasoning_effort"] = "unspecified", "medium"
 					}
 					selection := &service.AccountSelectionResult{Account: account, Acquired: acquired,
 						WaitPlan: &service.AccountWaitPlan{AccountID: account.ID, MaxConcurrency: 2, Timeout: time.Second, MaxWaiting: 2}}
@@ -149,59 +161,94 @@ func TestAcquireResponsesAccountSlotBillingScope(t *testing.T) {
 	}
 }
 
-func TestBillingCandidateChatHandlerFiltersBeforeSlot(t *testing.T) {
+func TestBillingCandidateHTTPHandlersFilterBeforeSlot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, covered := range []bool{false, true} {
-		t.Run(fmt.Sprintf("available=%v", covered), func(t *testing.T) {
-			repo := &initialAdmissionRepo{}
-			upstream := &apiKeyPolicyForwardingUpstream{}
-			h := newInitialAdmissionHandler(t, repo, upstream)
-			t.Cleanup(h.gatewayService.StopOpenAICodexTicketHarvester)
-			t.Cleanup(h.gatewayService.CloseOpenAIWSPool)
-			h.maxAccountSwitches = 0
-			groupID := int64(3131)
-			repo.accounts = nil
-			for id := int64(1); id <= 2; id++ {
-				account := profitBillingScopeTestAccount(id, "wire-fixture", "chat_http", covered && id == 2)
-				account.Priority, account.GroupIDs = int(id), []int64{groupID}
-				account.Extra["openai_responses_mode"] = "force_chat_completions"
-				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
-				repo.accounts = append(repo.accounts, *account)
-			}
-			ctx := profitSlotTestContext(t, h.gatewayService, groupID, false)
-			group := ctx.Value(ctxkey.Group).(*service.Group)
-			router := gin.New()
-			router.Use(func(c *gin.Context) {
-				c.Request = c.Request.WithContext(ctx)
-				c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 17, GroupID: &groupID, Group: group,
-					User: &service.User{ID: 19, Status: service.StatusActive}, AllowLongContext: true,
-					ModelMapping: map[string]string{"public-fixture": "gpt-fixture"}})
-				c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 19})
-				c.Next()
-			})
-			router.Use(middleware2.APIKeyModelPolicy())
-			router.POST("/v1/chat/completions", h.ChatCompletions)
-			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"public-fixture","messages":[{"role":"user","content":"private prompt"}],"service_tier":"priority"}`))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-			upstream.mu.Lock()
-			calls := len(upstream.bodies)
-			upstream.mu.Unlock()
-			if covered {
-				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-				require.Contains(t, rec.Body.String(), "done")
-				require.Equal(t, 1, calls)
-				require.NotEmpty(t, repo.initialReads)
-				for _, id := range repo.initialReads {
-					require.EqualValues(t, 2, id, "excluded scope must not reach slot/forward admission")
+	for _, ingress := range []string{"chat", "messages", "messages_dispatch", "messages_account_mapping"} {
+		for _, covered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/available=%v", ingress, covered), func(t *testing.T) {
+				repo := &initialAdmissionRepo{}
+				upstream := &apiKeyPolicyForwardingUpstream{}
+				h := newInitialAdmissionHandler(t, repo, upstream)
+				t.Cleanup(h.gatewayService.StopOpenAICodexTicketHarvester)
+				t.Cleanup(h.gatewayService.CloseOpenAIWSPool)
+				h.maxAccountSwitches = 0
+				groupID := int64(3131)
+				requestedModel, wireModel := "gpt-fixture", "wire-fixture"
+				dispatch := ingress == "messages_dispatch" || ingress == "messages_account_mapping"
+				if dispatch {
+					requestedModel = "claude-sonnet-fixture"
+					if ingress == "messages_dispatch" {
+						wireModel = "dispatch-fixture"
+					}
 				}
-			} else {
-				require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-				require.Zero(t, calls)
-				require.Empty(t, repo.initialReads)
-			}
-		})
+				repo.accounts = nil
+				for id := int64(1); id <= 2; id++ {
+					account := profitBillingScopeTestAccount(id, wireModel, "chat_http", covered && id == 2)
+					account.Priority, account.GroupIDs = int(id), []int64{groupID}
+					account.Extra["openai_responses_mode"] = "force_chat_completions"
+					mapping := map[string]any{requestedModel: wireModel}
+					if dispatch {
+						// The scheduling model is only a supported routing alias;
+						// forwarding resolves the original model with a fallback.
+						mapping["dispatch-fixture"] = "scheduling-only-fixture"
+						if ingress == "messages_dispatch" {
+							delete(mapping, requestedModel)
+						}
+					}
+					account.Credentials["model_mapping"] = mapping
+					if ingress != "chat" {
+						data := account.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)["data"].(map[string]any)
+						entry := data["rate_applicability"].(map[string]any)["entries"].([]map[string]any)[0]
+						entry["service_tier"], entry["reasoning_effort"] = "unspecified", "medium"
+					}
+					repo.accounts = append(repo.accounts, *account)
+				}
+				ctx := profitSlotTestContext(t, h.gatewayService, groupID, false)
+				group := ctx.Value(ctxkey.Group).(*service.Group)
+				group.AllowMessagesDispatch = ingress != "chat"
+				if dispatch {
+					group.MessagesDispatchModelConfig.SonnetMappedModel = "dispatch-fixture"
+				}
+				router := gin.New()
+				router.Use(func(c *gin.Context) {
+					c.Request = c.Request.WithContext(ctx)
+					c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 17, GroupID: &groupID, Group: group,
+						User: &service.User{ID: 19, Status: service.StatusActive}, AllowLongContext: true,
+						ModelMapping: map[string]string{"public-fixture": requestedModel}})
+					c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 19})
+					c.Next()
+				})
+				router.Use(middleware2.APIKeyModelPolicy())
+				router.POST("/v1/chat/completions", h.ChatCompletions)
+				router.POST("/v1/messages", h.Messages)
+				path, body := "/v1/chat/completions", `{"model":"public-fixture","messages":[{"role":"user","content":"private prompt"}],"service_tier":"priority"}`
+				if ingress != "chat" {
+					path, body = "/v1/messages", `{"model":"public-fixture","messages":[{"role":"user","content":"private prompt"}],"max_tokens":1024}`
+				}
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				upstream.mu.Lock()
+				calls := len(upstream.bodies)
+				upstream.mu.Unlock()
+				if covered {
+					require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+					require.Contains(t, rec.Body.String(), "done")
+					require.Equal(t, 1, calls)
+					require.Equal(t, "/v1/chat/completions", upstream.paths[0])
+					require.Equal(t, wireModel, gjson.GetBytes(upstream.bodies[0], "model").String())
+					require.NotEmpty(t, repo.initialReads)
+					for _, id := range repo.initialReads {
+						require.EqualValues(t, 2, id, "excluded scope must not reach slot/forward admission")
+					}
+				} else {
+					require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+					require.Zero(t, calls)
+					require.Empty(t, repo.initialReads)
+				}
+			})
+		}
 	}
 }
 

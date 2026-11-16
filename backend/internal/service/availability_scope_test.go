@@ -50,6 +50,47 @@ func TestAvailabilityResponsesOutputNeverBorrowsPlainTextObservation(t *testing.
 	require.NotEqual(t, oldReader, *availabilityScopeForRequest(request(plain), plain))
 }
 
+func TestAvailabilityChatTextParallelToolCalls(t *testing.T) {
+	for _, protocol := range []string{"chat_http", "responses_http"} {
+		path, text := "/v1/chat/completions", `"messages":[{"role":"user","content":"hello"}]`
+		if protocol == "responses_http" {
+			path, text = "/v1/responses", `"input":"hello"`
+		}
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		base := []byte(`{"model":"gpt-fixture",` + text + `}`)
+		plain := availabilityScopeForRequest(request, base)
+		require.NotNil(t, plain)
+		for _, tc := range []struct {
+			name, options string
+			textOnly      bool
+		}{
+			{"enabled", `"parallel_tool_calls":true`, true},
+			{"disabled", `"parallel_tool_calls":false`, true},
+			{"empty tools", `"parallel_tool_calls":true,"tools":[]`, true},
+			{"no tool choice", `"parallel_tool_calls":false,"tool_choice":"none"`, true},
+			{"string", `"parallel_tool_calls":"true"`, false},
+			{"null", `"parallel_tool_calls":null`, false},
+			{"number", `"parallel_tool_calls":1`, false},
+			{"object", `"parallel_tool_calls":{}`, false},
+			{"array", `"parallel_tool_calls":[]`, false},
+			{"tools", `"parallel_tool_calls":true,"tools":[{"type":"function","function":{"name":"tool"}}]`, false},
+			{"active tool choice", `"parallel_tool_calls":true,"tool_choice":"auto"`, false},
+			{"conflict", `"parallel_tool_calls":true,"parallel_tool_calls":false`, false},
+			{"unknown extension", `"parallel_tool_calls":true,"unknown_capability":true`, false},
+		} {
+			t.Run(protocol+"/"+tc.name, func(t *testing.T) {
+				body := []byte(`{"model":"gpt-fixture",` + text + `,` + tc.options + `}`)
+				scope := availabilityScopeForRequest(request, body)
+				if protocol == "chat_http" && tc.textOnly {
+					require.Equal(t, plain, scope, "an inert flag must preserve the exact observed text scope")
+				} else {
+					require.Nil(t, scope, "do not grant unobserved tools or broaden Responses capability")
+				}
+			})
+		}
+	}
+}
+
 func TestAvailabilityMessagesScopeMatchesOnlyObservedCapabilities(t *testing.T) {
 	payload, err := createPelicanClaudePayload("claude-opus-4-6", "probe", "high")
 	require.NoError(t, err)

@@ -764,6 +764,16 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 - 显式桥及透传原始长度旧桥优先级保持。池模式smart明确HTTP时可提前筛选；smart为WS/shadow且自动桥仍启用时，规范化长度依赖继续延后。无正向HTTP/链支持不推断HTTP；缺失/false/字符串store不等同true。工具、媒体、历史、Lite及未知形状仍无新资格。
 - 本地已验两调度器/黏性保留/排除和恢复、槽后最新声明、网络逐轮最终scope、后续换模型及撤销拒发。三包双轮race6876条test pass、0fail/skip/race；11类网络路径186条叶例pass事件；vet/增量fast lint/Linux退出0，8项源码/依赖输入drift0。计数含子例/重复轮次，不累计为独立场景；SQL/API/UI未改，本次不重跑其验收。不加调度器、评分、表或迁移；不将分流元数据当模型真实性/缓存/严格受管资格或生产恢复，原父项及原28项分母保持。
 
+#### 5.3.14 Messages转Chat候选（D2.6.14，本地子验收）
+
+在原Messages选号循环记录渠道映射后的无正文scope及显式dispatch兜底；普通模型映射优先于兜底，不借调度上下文的模型推断发送模型。候选调用原Messages→Chat转换器、模型规范化、effort转换与GLM策略，再交原适用性门判断；不新增转换器、价格算法或调度器。
+
+- 保留原直接桥的客户端stream选择、thinking/output_config及模型后缀推导。Messages的service_tier被转换器丢弃，原桥不执行Fast策略（含分组强制），候选不得凭普通Responses/Chat策略假设priority。策略拒绝仍保留原错误语义。
+- 原转换器固定生成的布尔parallel_tool_calls，在纯文本且没有工具、没有活动tool_choice时视为无作用参数；原scope parser仅对此Chat形态放行，不扩张Responses、工具、媒体或隐藏推理历史的观测能力。非法值、冲突重复字段与未知扩展仍未知；最终物理发送门保留，不因候选预测而跳过。
+- 元数据仅留分离的短字符串和枚举/预算，不保存正文、原始协议头或请求；后续未知请求清除前次描述。未知转换/平台、托管凭据、Lite、复杂历史及Responses池桥继续延后精确判断，但到期/绑定变化等通用声明失效仍即时生效。
+- 验收包含两调度器、健康黏性保留、排除与恢复、槽后重读、API Key模型映射/dispatch优先级，以及流式/非流式真实本地HTTP与声明撤销拒发；证据和当前完成状态见STATE/DECISIONS。此子项不证明供应商实际组、模型质量、缓存域、受管池或生产恢复，不增加原28项分母；无schema迁移，旧解析器回退后仍会将含新识别标志的桥请求判未知。
+- 本地终版四包双轮race7652条test pass、0fail/skip/race，含Messages真实HTTP叶例52条、原11类WS叶例186条及bare-error证据正反例12条通过事件；计数含父子与重复轮次，不相加为独立场景数。vet/增量fast lint/Linux编译退出0，12项源码/锁文件输入drift0。旧server_error断言原位替换为六类正反例，保留原错误载荷及首轮失败记录；未修改已验收的生产换线规则。
+
 ### 5.4 采购分桶、产品组合与自动重归类（提案）
 
 **采购桶是库存分类，产品是销售合同。** 一个scope在某一采购桶内唯一归类；同一合格scope可被多个产品允许，但额度仍只算一次。
@@ -1819,7 +1829,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 
 | 范围 | 当前源码证据 | 尚缺什么 / 不能据此宣称什么 |
 | --- | --- | --- |
-| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.13。原生透传/非透传、固定转换、原生Chat入站、透传/固定池WS、确定HTTP桥及智能分流候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
+| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.14。原生透传/非透传、固定转换、Chat及Messages转Chat入站、透传/固定池WS、确定HTTP桥及智能分流候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
@@ -1839,7 +1849,7 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 
 | ID / 优先级 | 原位工作与依赖 | 可验收结果 / 外部边界 |
 | --- | --- | --- |
-| D2.6 / P0 | D2.6.1–.13声明/预演/来源、原生Responses/Chat、固定双向文本转换、透传/固定池WS、确定HTTP桥及智能分流候选已有本地证据，见5.3.1–5.3.13；余其他入站转换、规范化池桥、受管资格与真实来源；依赖D2.1–D2.5 | .13三包双轮race6876条test pass、0fail/skip/race，11类逐轮网络路径186叶例pass事件、原始智能标量/当前历史、两调度器/粘性/重选和槽后已验；vet/增量fast lint/Linux退出0，8项输入drift0。SQL/API/UI本次未改未重跑；历史证据按各子项保留，非生产。计数含子例/双轮，不累计为独立场景；实际合同、其余转换/WS与严格资格仍开放，原分母不变 |
+| D2.6 / P0 | D2.6.1–.14声明/预演/来源、原生Responses/Chat、固定双向文本转换、Messages转Chat、透传/固定池WS及确定桥/智能分流候选已有本地证据，见5.3.1–5.3.14；余入站转换、规范化池桥、受管资格与真实来源；依赖D2.1–D2.5 | .14四包双轮race7652条test pass、0fail/skip/race，Messages HTTP52及原11类WS186叶例pass事件；两调度器/粘性/重选/槽后、映射/dispatch与实际scope已验，旧错误断言改成证据正反例。vet/增量fast lint/Linux退出0，12项输入drift0。SQL/API/UI未改未重跑；历史证据保留，非生产。计数含子例/双轮，不累计为独立场景；其余转换/WS、实际合同与严格资格仍开放，原分母不变 |
 | D5.3 / P0 | 沿timing/usage及原运维入口建立上游原始缓存和同层指标聚合；依赖D2.5/D5.1 | 按最终Key摘要/实际组/模型/协议/档位/线路版本和窗口汇总，身份未知单列；请求命中、Token加权、覆盖、样本/新鲜度及业务/合成来源分开；复用TTFB/TTFS/首推理/首文本、输出停顿、完整成功与物理attempt的同scope口径，不把最终成功掩盖前序失败。与下游本人面板/计费桶隔离，30天边界/查询成本/权限验证；不以当前账号配置补历史。逐尝试发送元数据子项见D5.3.6，未代替完整父验收 |
 | D3.2 / P0 | 扩展原quality/judge的分维度证据、独立参考、测量/策略版本和漂移；依赖D2.6 | 功能质量/模型身份/系统判题故障分开；独立TTL、覆盖、原因和配置变更失效，晚到不复活；夹具可先验合同，真实身份结论须实际独立基线，不因缺运行数据停做本地合同 |
 | D8.1 / P0 | 在原runner/计划/租约内完成多周期预算和覆盖编译；依赖D2.6/D5.3的scope定义 | 物理调用含分页、token、判题、全局/站点/共享Key并发、恢复预留与公平性统一计数；100绑定含故障不饥饿，补生产周期锁/多节点覆盖观察，耗尽不续绿；保存前预览并拒绝不可能周期。已有100绑定测试继续保留，不能用其替代预算总体验收 |

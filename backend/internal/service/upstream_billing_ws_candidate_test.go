@@ -412,17 +412,39 @@ func TestBillingWSCandidatePostSlotRecheck(t *testing.T) {
 func TestBillingCandidateMetadataDoesNotRetainInputBacking(t *testing.T) {
 	backing := "gpt-fixturepriorityhigh" + strings.Repeat("private prompt", 1024)
 	model, tier, effort := backing[:11], backing[11:19], backing[19:23]
-	scope := &AvailabilityRequestScope{Model: model, ServiceTier: tier, ReasoningEffort: effort}
+	scope := &AvailabilityRequestScope{Model: model, ServiceTier: tier, ReasoningEffort: effort, ThinkingMode: model, ProtocolOptions: tier}
 	ctx := (&OpenAIGatewayService{}).withUpstreamBillingCandidatePolicy(t.Context(), upstreamBillingCandidate{scope: scope})
 	stored := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate).scope
 	for _, tc := range []struct{ name, original, stored string }{
 		{"model", model, stored.Model}, {"tier", tier, stored.ServiceTier}, {"effort", effort, stored.ReasoningEffort},
+		{"thinking", model, stored.ThinkingMode}, {"protocol options", tier, stored.ProtocolOptions},
 	} {
 		require.Equal(t, tc.original, tc.stored)
 		if unsafe.StringData(tc.original) == unsafe.StringData(tc.stored) {
 			t.Errorf("%s retains the complete input backing", tc.name)
 		}
 	}
+	svc := &OpenAIGatewayService{}
+	group := profitControlTestGroup(7, .5, 0)
+	ctx, _ = svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+	body := []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"thinking":{"type":"enabled","budget_tokens":4096}}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body, model)
+	candidate := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
+	require.NotNil(t, candidate.scope)
+	require.Equal(t, model, candidate.messagesDispatchModel)
+	if unsafe.StringData(model) == unsafe.StringData(candidate.messagesDispatchModel) {
+		t.Error("Messages dispatch model retains the complete input backing")
+	}
+	for index := range body {
+		body[index] = 'x'
+	}
+	require.Equal(t, "gpt-fixture", candidate.scope.Model)
+	require.Equal(t, "enabled", candidate.scope.ThinkingMode)
+	ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body)
+	candidate = ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
+	require.Nil(t, candidate.scope, "invalid next request must discard the previous descriptor")
+	require.Empty(t, candidate.messagesDispatchModel)
 }
 
 type billingWSCandidateAccountRepo struct {
