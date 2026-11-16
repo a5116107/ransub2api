@@ -2421,3 +2421,15 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - .5待本地同源构建、自有公开Release与镜像、生产副本回退/排空加载及公网验收；无迁移。原28项20done/8部分保持，不把这次文本换号和错误归因关闭非文本、缓存迁移或上游v2.21.1整合父项。
 
 - 最终串行增量fast lint退出0、`0 issues.`，未改变规则或创建第二缓存；两包vet及最终handler复验均0。Windows→香港2号的SOCKS连接在SSH开通道处超时，直连以已存主机密钥验证后成功；只读预检剩余约16GiB、无遗留运行演练容器。后续.5使用该直连路径，不绕过身份校验。
+
+
+### 2026-11-16：D9.1 .5发行、生产与业务后验完成
+
+- 修复来源`dddb2ef1f6240876b170081d03bf52b03f75fc3e`已非强推至自有production，标签v2.21.0-ransub.5同源。local-build --simple退出0，Vue类型检查/Vite47.20秒通过，保留500kB分包提示。Linux amd64归档85830241bytes、SHA256 `acd580f923f8a67c399d7996b8ef02c358ff58b40b5e343a4bc0a71ec908abb5`；程序SHA256 `04870aebc407ea3aa37c6ed900f8971d3d2e9d890c90cf4583d7b1bb6428b86d`。4项公开Release资产的GitHub digest/大小均独立对上；未改公开旧包。临时禁用Release避免重复编译，公开后已恢复active；run[43837961808](https://github.com/a5116107/ransub2api/actions/runs/43837961808)成功，仅publish-prebuilt-image运行，其余7个job跳过，无编译/测试CI。旧生产独立强制更新检查实返current=.4/latest=.5/has_update=true/warning=null。
+- .5生产备份164886274bytes、SHA256 `3673b18d3da3625410690ea7955e9070e937c0ddd44d01955540765a579ad3b3`。同一副本旧.4→.5→旧版回退→再升.5四阶段均核对实际进程哈希、登录/性能API、账号/分组/健康设置、432条旧迁移校验和；6容器/1网络按标签和ID回收。只在副本禁用后台billing probe，不改生产开关/账号状态。正式镜像固定`ghcr.io/a5116107/ransub2api:2.21.0-ransub.5@sha256:48b9e1cdb338ab44b7fedcb61fb3d86888d879fce810fa35750f77797124f01a`，公开pull及程序哈希匹配归档。
+- 17:26–17:27排空升级及同镜像重建均通过，实际容器`bdfb0590e5c72388d69b10cfdfd474e0654e9241b3ec388913784c690daa8043`加载上述.5程序；原PG/Redis容器及挂载保持。旧进程正常退出时只有异步结算余额变化；退出后建立保护基线，字段断言未放宽。切换备份database.cutover-6022266ccbea.dump的SHA256 `e03b4ebffb42cba9a2e50586cf051e196401303fb7718558863d1c4608adba37`。无新迁移，维护路由已移除。
+- 公网/管理/Chromium强制刷新实返current/latest均2.21.0-ransub.5、has_update=false、warning=null，版本按钮实际显示.5，页面/HTTP/请求失败均0。公网Responses SSE 200/唯一response.completed/文本OK，无error/failed/incomplete，总3.110秒、首文本2.969秒（含本机网络，不当作纯上游TTFT）；client_request_id `371b9001-f068-49f9-860a-90d8f698565e`唯一关联usage73197/账号7、输入12/输出5。成功后未为查账重发请求。
+- 后验新实例最近50条已落库请求时序（usage73191–73240）全部200/success/completed，client_disconnect/downstream_error均false，来自账号5/6/7；这是短观测窗口而非全部会话SLA。此窗口未观察到新的自然故障换号；真实7→5故障恢复证据仍来自上述.4请求，.5的响应头超时换号/归因依靠548节点本地竞态回归，不伪装为在生产制造故障。账号status/schedulable/concurrency/rate_multiplier、组绑定与5/3/1逐项保持，10仍人工停用，未按历史快照重启停用账号。
+- 释放.4/.5无挂载、无进程引用的候选程序各321601696bytes及两份一次性cutover-fields明文比较快照各13203bytes，实际643229798bytes；旧程序/镜像、数据库与数据备份继续保留。证据为ops-health-cleanup.json，包含50条最小终态字段，不保存用户历史或生成内容。
+- 本机新任务scratch `H:/Root/DevCache/tmp/sub2api-production-failover` 与 `H:/Root/DevCache/tmp/sub2api-release-build` 的原生PowerShell路径/引用核对、WhatIf及删除组合在CreateProcess前被策略拦截，整条未执行，实际删除0；未换工具/移动/重试。独立只读核验前者0文件，后者2文件20172bytes，均0链接/0活跃引用。历史拒删的`H:/Root/DevCache/tmp/sub2api-stream-health`本轮复用后3文件21252bytes、0活跃引用，不再次删/移动；交工作区拥有者处理。原12PNG/1164bytes保留，不暂存；可复用Go缓存和正式归档不当垃圾删。
+- 本轮可执行生产修复/发布子验收已完成，原28项20done/8部分不变。旧失败会话完整历史的连续恢复、并行混版/非文本/供应商契约/缓存域与迁移净收益、v2.21.1/PR3整合仍保留各自原验收。后续仅文档收尾提交，不改变.5应用代码或重复发行。
