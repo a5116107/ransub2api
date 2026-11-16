@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.7本地验收完成；本提交在原功能分支交付，父任务继续。
+任务：D2.6.8原生非透传候选本地已验；继续D5.3物理attempt/延迟，父任务保持开放。
 授权：统一H盘工作树；本地代码/测试/文档及功能分支提交同步；不CI/部署。
-验证：.7广回归race3676、最终候选/元数据race212，均双轮0fail/skip/race；vet/lint/Linux退出0。
-实证：两调度器/黏性/槽后复核、真实WS换模型/撤销、桥/智能协议；非供应商或生产证明。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/ws-candidate-*；两版source-inputs分开。
-下一动作：其余转换/WS候选→D5.3同scope物理attempt/延迟，不扩大重放；原实际合同待验。
+验证：.8最终双轮race3764、0fail/skip/race；12份输入drift0，vet/增量lint/Linux退出0。
+实证：原生HTTP/SSE与候选同scope、撤销后物理拒发；两调度器/黏性/重选；非生产证明。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/native-candidate-final*及source-inputs。
+下一动作：D5.3原计时链逐attempt首字节/事件/推理/文字等待；再同scope汇总。
 等待：供应商实际scope/基线/缓存域；历史fixture/scratch拒删见末节。
-Attempt：7
+Attempt：8
 <!-- resume:end -->
 
 ## 目标与入口
@@ -26,7 +26,7 @@ Attempt：7
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.6.1–.7已本地验；其他转换/WS非透传提前范围、受管产品与真实来源仍缺；D2.7待供应商 |
+| D2 | in_progress | D2.6.1–.8已本地验；其他转换/WS非透传提前范围、受管产品与真实来源仍缺；D2.7待供应商 |
 | D2.1 | done | 同步新鲜度/高峰及同源预演、CLI已验 |
 | D2.2 | done | 固定组/null/明确0及SQL失效恢复已验 |
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
@@ -36,6 +36,7 @@ Attempt：7
 | D2.6.5 | done | 原生HTTP透传候选/通用声明失效、高级/legacy/黏性/槽释放；race1224、NewAPI276、vet/增量lint/Linux通过；仅本地 |
 | D2.6.6 | done | 固定Responses转Chat候选/映射/effort/fast、HTTP/SSE及失效；race1612/vet/增量lint/Linux通过；非全部转换/WS资格 |
 | D2.6.7 | done | 透传WS候选/清首帧描述/原始长度分流/独立元数据；真WS换模型/撤销，广race3676/定向212及vet/lint/Linux通过；仅本地 |
+| D2.6.8 | done | 原生非透传模型/effort/fast与HTTP/SSE一致、动态/媒体延后仍验声明；双轮race3764及vet/lint/Linux通过；仅本地 |
 | D3 | in_progress | .3漏计/重选及5/3/1历史已上线；本地冷却回池双轮646pass待发布；D3.2多维/基线仍缺，D3.3非文本待scope |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |

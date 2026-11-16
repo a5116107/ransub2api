@@ -35,13 +35,19 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			newAccount := func(id int64, covered bool) *Account {
 				entry := billingApplicabilityEntry(tc.protocol, "priority", covered)
+				if tc.protocol == "responses_native" {
+					entry["protocol"] = "responses_http"
+				}
 				account := billingCandidateAccount(t, id, entry)
+				if tc.protocol == "responses_native" {
+					account.Extra["openai_passthrough"] = false
+				}
 				if tc.protocol == "responses_ws_v2" {
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
 				}
@@ -232,8 +238,60 @@ func TestBillingCandidateResponsesToChatScope(t *testing.T) {
 	}
 }
 
+func TestBillingCandidateNativeResponsesScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, model, tier, effort string
+		policy                          *OpenAIFastPolicySettings
+		covered, force, official        bool
+	}{
+		{name: "covered", body: `{"model":"gpt-fixture","input":"private prompt"}`, covered: true},
+		{name: "excluded", body: `{"model":"gpt-fixture","input":"private prompt"}`},
+		{name: "mapped excluded", body: `{"model":"gpt-fixture","input":"private prompt"}`, model: "wire-fixture"},
+		{name: "mapped covered", body: `{"model":"gpt-fixture","input":"private prompt"}`, model: "wire-fixture", covered: true},
+		{name: "compatible none omitted", body: `{"model":"gpt-fixture","input":"private prompt","reasoning":{"effort":"none"}}`},
+		{name: "official none preserved", body: `{"model":"gpt-fixture","input":"private prompt","reasoning":{"effort":"none"}}`, effort: "none", official: true},
+		{name: "minimal normalized to none", body: `{"model":"gpt-fixture","input":"private prompt","reasoning":{"effort":"minimal"}}`, effort: "none"},
+		{name: "high retained", body: `{"model":"gpt-fixture","input":"private prompt","reasoning":{"effort":"high"}}`, effort: "high"},
+		{name: "group priority", body: `{"model":"gpt-fixture","input":"private prompt"}`, force: true, tier: "priority"},
+		{name: "priority filtered", body: `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`, policy: openAIFastFilterPriorityPolicy()},
+		{name: "missing forces priority", body: `{"model":"gpt-fixture","input":"private prompt"}`, tier: "priority", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.model == "" {
+				tc.model = "gpt-fixture"
+			}
+			if tc.tier == "" {
+				tc.tier = "unspecified"
+			}
+			if tc.effort == "" {
+				tc.effort = "unspecified"
+			}
+			entry := billingApplicabilityEntry("responses_http", tc.tier, tc.covered)
+			entry["model"], entry["reasoning_effort"] = tc.model, tc.effort
+			account := billingCandidateAccount(t, 915, entry)
+			account.Extra["openai_passthrough"] = false
+			account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": tc.model}
+			if tc.official {
+				account.Credentials["base_url"] = "https://api.openai.com"
+			}
+			at := time.Now().UTC().Add(-time.Second)
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
+			group := profitControlTestGroup(7, 0.5, 0)
+			group.ForceOpenAIFast = tc.force
+			ctx := billingCandidateContext(t, svc, group, tc.body)
+			vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+			require.Equal(t, !tc.covered, vetoed, reason)
+			if vetoed {
+				require.Equal(t, "profit_upstream_scope_excluded", reason)
+			}
+		})
+	}
+}
+
 func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
-	for _, name := range []string{"legacy", "gate disabled", "suppressed", "non passthrough", "chat without text", "managed credentials", "shadow credentials", "websocket", "tools", "lite", "compact", "conflicting fields", "reset unknown", "policy block", "policy unavailable"} {
+	for _, name := range []string{"legacy", "gate disabled", "suppressed", "native dynamic transport", "native mapped media", "chat without text", "managed credentials", "shadow credentials", "websocket", "tools", "lite", "compact", "conflicting fields", "reset unknown", "policy block", "policy unavailable"} {
 		t.Run(name, func(t *testing.T) {
 			account := billingCandidateAccount(t, 905, billingApplicabilityEntry("responses_http", "unspecified", false))
 			svc := &OpenAIGatewayService{}
@@ -247,8 +305,13 @@ func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
 				group.ProfitControlEnabled = false
 			case "suppressed":
 				ctx = WithOpenAIProfitControlSuppressed(ctx)
-			case "non passthrough":
+			case "native dynamic transport":
 				account.Extra["openai_passthrough"] = false
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+				svc.cfg = passthroughLifecycleConfig()
+			case "native mapped media":
+				account.Extra["openai_passthrough"] = false
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-image-1"}
 			case "chat without text":
 				account.Extra["openai_responses_mode"] = "force_chat_completions"
 			case "managed credentials", "shadow credentials":
@@ -275,7 +338,7 @@ func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
 			case "policy unavailable":
 				svc.settingService = NewSettingService(&billingCandidateSettingRepo{}, &config.Config{})
 			}
-			if name == "non passthrough" || name == "chat without text" {
+			if strings.HasPrefix(name, "native ") || name == "chat without text" {
 				at := time.Now().UTC().Add(-time.Second)
 				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, billingApplicabilityEntry("responses_http", "unspecified", false)), at)
 				require.NoError(t, err)
@@ -310,6 +373,31 @@ func (r *billingCandidateSettingRepo) GetValue(ctx context.Context, key string) 
 		return "", errors.New("fixture settings unavailable")
 	}
 	return r.SettingRepository.GetValue(ctx, key)
+}
+
+func TestBillingCandidateDeferredMediaKeepsDeclarationValidity(t *testing.T) {
+	for _, state := range []string{"active", "expired", "binding_changed"} {
+		t.Run(state, func(t *testing.T) {
+			at := time.Now().UTC().Add(-time.Second)
+			entry := billingApplicabilityEntry("responses_http", "unspecified", true)
+			account := billingCandidateAccount(t, 916, entry)
+			account.Extra["openai_passthrough"] = false
+			account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-image-1"}
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			expected := ""
+			if state == "expired" {
+				at = at.Add(2 * time.Hour)
+			} else if state == "binding_changed" {
+				account.Credentials["api_key"] = "changed-fixture-key"
+			}
+			if state != "active" {
+				expected = "profit_upstream_scope_" + state
+			}
+			ctx := billingCandidateContext(t, &OpenAIGatewayService{}, profitControlTestGroup(7, 0.5, 0), `{"model":"gpt-fixture","input":"private prompt"}`)
+			require.Equal(t, expected, upstreamBillingCandidateVetoReason(ctx, account, at), "deferring a media scope must retain generic declaration rejection")
+		})
+	}
 }
 
 func TestBillingCandidateGlobalDeclarationValidity(t *testing.T) {

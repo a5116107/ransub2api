@@ -612,7 +612,9 @@ func TestOpenAIWSConnPool_AcquireIdleHealthCheckStillAppliesWithoutReaderLoop(t 
 	pool := newOpenAIWSConnPool(cfg)
 	defer pool.Close()
 	dialer := &openAIWSQueueDialer{conns: []openAIWSClientConn{
-		&openAIWSSlowPingConn{pingDelay: 2200 * time.Millisecond},
+		// No pong within the test's lifetime. A near-deadline timer could
+		// become ready together with ctx.Done under scheduler contention.
+		&openAIWSSlowPingConn{pingDelay: time.Hour},
 		&openAIWSFakeConn{},
 	}}
 	pool.setClientDialerForTest(dialer)

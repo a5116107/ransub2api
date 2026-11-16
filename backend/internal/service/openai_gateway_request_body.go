@@ -90,6 +90,15 @@ func shouldPreserveOpenAIResponsesNoneReasoningEffort(account *Account) bool {
 	return baseURL == "" || isOfficialOpenAIModelsBaseURL(baseURL)
 }
 
+// Native non-passthrough Responses rewrites minimal after the none placeholder
+// filter. Keep that order shared with candidate scope prediction.
+func normalizeOpenAIResponsesMinimalEffort(effort string) string {
+	if strings.TrimSpace(effort) == "minimal" {
+		return "none"
+	}
+	return effort
+}
+
 // Codex 0.149.0 needs a single advertised effort to directly select a visible
 // non-reasoning model. Treat that catalog-only "none" value as omission for
 // compatible upstreams, while preserving official OpenAI request semantics.

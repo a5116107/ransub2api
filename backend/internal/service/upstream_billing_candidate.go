@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type upstreamBillingCandidateKey struct{}
@@ -19,7 +20,7 @@ type upstreamBillingCandidate struct {
 	fastPolicy  *OpenAIFastPolicySettings
 	policyKnown bool
 	chatHasText bool
-	wsService   *OpenAIGatewayService
+	gateway     *OpenAIGatewayService
 }
 
 func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
@@ -30,9 +31,9 @@ func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
 }
 
 // WithUpstreamBillingCandidateRequest records prompt-free ingress metadata
-// after channel mapping. Native HTTP Responses passthrough and fixed Responses
-// to Chat text conversions share the original wire transformers. Other routes
-// and WebSocket turns keep their original final-send checks.
+// after channel mapping. Predictable native HTTP Responses and fixed Responses
+// to Chat text conversions share the original wire transformers. All routes
+// keep their original final-send checks.
 // Unknown metadata/policy defers scope-specific filtering, never qualifies
 // supply. Declaration expiry, validity and binding still apply to every route.
 func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.Context, request *http.Request, body []byte) context.Context {
@@ -76,7 +77,6 @@ func (s *OpenAIGatewayService) WithUpstreamBillingWSCandidateRequest(ctx context
 					normalized = s.ReplaceModelInBody(normalized, forwardModel)
 				}
 				candidate.scope = availabilityScopeForRequest(&wsRequest, normalized)
-				candidate.wsService = s
 			}
 		}
 	}
@@ -85,6 +85,7 @@ func (s *OpenAIGatewayService) WithUpstreamBillingWSCandidateRequest(ctx context
 
 func (s *OpenAIGatewayService) withUpstreamBillingCandidatePolicy(ctx context.Context, candidate upstreamBillingCandidate) context.Context {
 	if candidate.scope != nil {
+		candidate.gateway = s
 		// Parsed strings can be slices of the complete input JSON. Detach the
 		// supported Responses fields before a long-lived context retains them.
 		candidate.scope.Model = strings.Clone(candidate.scope.Model)
@@ -151,10 +152,17 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		!account.routesByModel() && !account.IsAdaptiveAPIProtocol() && !account.UsesNativeCNResponses() &&
 		controlledMode(ctx) == nil {
 		if candidate.scope.Protocol == "responses_ws_v2" {
-			scope = candidate.wsService.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope)
+			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope)
 		} else {
 			protocol := resolveUpstreamProtocol(account, APIProtocolResponses, "", nil)
-			predictable := protocol == APIProtocolResponses && account.IsOpenAIPassthroughEnabled() ||
+			nativeHTTP := protocol == APIProtocolResponses &&
+				candidate.gateway.getOpenAIWSProtocolResolver().Resolve(account).Transport == OpenAIUpstreamTransportHTTPSSE
+			nativeModel := candidate.scope.Model
+			if nativeHTTP && !account.IsOpenAIPassthroughEnabled() {
+				_, nativeModel = resolveOpenAIForwardMappedModels(account, nativeModel, false)
+				nativeHTTP = !isOpenAIImageGenerationModel(nativeModel)
+			}
+			predictable := protocol == APIProtocolResponses && (account.IsOpenAIPassthroughEnabled() || nativeHTTP) ||
 				protocol == APIProtocolChatCompletions && candidate.chatHasText
 			if predictable {
 				request, body := billingApplicabilityScopeRequest(*candidate.scope)
@@ -181,6 +189,13 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 					chat.Model = model
 					body, err = json.Marshal(chat)
 					request.URL.Path = "/v1/chat/completions"
+				} else if !account.IsOpenAIPassthroughEnabled() {
+					model = nativeModel
+					body = ReplaceModelInBody(body, model)
+					effort := gjson.GetBytes(body, "reasoning.effort").String()
+					if normalized := normalizeOpenAIResponsesMinimalEffort(effort); normalized != effort {
+						body, err = sjson.SetBytes(body, "reasoning.effort", normalized)
+					}
 				}
 				if err != nil {
 					return ""

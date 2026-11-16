@@ -174,7 +174,7 @@ func TestBillingWSCandidateLifetimeAndPolicySnapshot(t *testing.T) {
 	turnCtx := WithoutUpstreamBillingCandidateRequest(ctx)
 	cleared := turnCtx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
 	require.Nil(t, cleared.scope)
-	require.Nil(t, cleared.wsService)
+	require.Nil(t, cleared.gateway)
 	_, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(turnCtx, account, "gpt-fixture", []byte(`{"type":"response.create","model":"gpt-fixture","service_tier":"priority"}`))
 	require.NoError(t, err)
 	require.Nil(t, blocked)

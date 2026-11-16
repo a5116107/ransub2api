@@ -423,6 +423,7 @@ func TestOpenAIWSConnPool_EnsureTargetIdleAsyncCooldown(t *testing.T) {
 	cfg.Gateway.OpenAIWS.PrewarmCooldownMS = 500
 
 	pool := newOpenAIWSConnPool(cfg)
+	defer pool.Close()
 	dialer := &openAIWSCountingDialer{}
 	pool.setClientDialerForTest(dialer)
 
@@ -454,17 +455,32 @@ func TestOpenAIWSConnPool_EnsureTargetIdleAsyncCooldown(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, ap)
 	ap.mu.Lock()
-	for id := range ap.conns {
+	initialCooldown := ap.prewarmUntil
+	// Control the existing deadline directly: scheduler pauses must not
+	// accidentally expire the cooldown before the rejection is observed.
+	ap.prewarmUntil = time.Now().Add(time.Hour)
+	var removed *openAIWSConn
+	for id, conn := range ap.conns {
+		removed = conn
 		delete(ap.conns, id)
 		break
 	}
 	ap.mu.Unlock()
+	require.False(t, initialCooldown.IsZero(), "prewarming must install a cooldown")
+	require.NotNil(t, removed)
+	removed.close()
 
 	pool.ensureTargetIdleAsync(accountID)
-	time.Sleep(120 * time.Millisecond)
+	ap.mu.Lock()
+	active, creating := ap.prewarmActive, ap.creating
+	ap.mu.Unlock()
 	require.Equal(t, firstDialCount, dialer.DialCount(), "cooldown 窗口内不应再次触发预热")
+	require.False(t, active, "cooldown must reject before launching an async prewarm")
+	require.Zero(t, creating)
 
-	time.Sleep(450 * time.Millisecond)
+	ap.mu.Lock()
+	ap.prewarmUntil = time.Now().Add(-time.Second)
+	ap.mu.Unlock()
 	pool.ensureTargetIdleAsync(accountID)
 	require.Eventually(t, func() bool {
 		return dialer.DialCount() > firstDialCount
