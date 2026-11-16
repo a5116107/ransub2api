@@ -4,7 +4,7 @@ import { readOperations, type OperationsSnapshot } from '@/api/admin/upstreamOpe
 import UpstreamChannelOperationsView from '../UpstreamChannelOperationsView.vue'
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => key === 'upstreamOps.rawCache.waitSamples' ? `${key} ${values?.samples} ${values?.unknown} ${values?.coverage}` : key }) }))
 vi.mock('@/api/admin/upstreamOperations', () => ({ readOperations: vi.fn() }))
 describe('upstream channel definition', () => {
  it.each([
@@ -40,6 +40,29 @@ describe('upstream channel definition', () => {
 describe('upstream raw cache monitoring', () => {
  const base = { scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], total: 0, catalog: [] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} }
  const summary = { requests:4, observed_requests:2, unknown_requests:2,unattributed_requests:1,hit_requests:1,input_tokens:1000,read_tokens:100,coverage:0.5,request_hit_rate:0.5,token_read_rate:0.1,latest_sample_at:'2026-11-15T00:00:00Z' }
+ it('shows per-scope phase means, independent coverage and a measured zero without using legacy TTFT', async () => {
+  const metric=(mean: number|null,samples: number)=>({mean_ms:mean,samples,unknown_samples:4-samples,coverage:samples/4,latest_sample_at:null})
+  const waits={version:1,source:'canonical_final_physical_http_attempt',first_byte:metric(20,4),first_event:metric(30,3),first_reasoning:metric(null,0),first_text:metric(0,2)}
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',waits}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="upstream-wait-first_byte"]').text()).toContain('20.0 ms')
+  expect(w.get('[data-testid="upstream-wait-first_byte"]').text()).toContain('upstreamOps.rawCache.waitObserved')
+  expect(w.get('[data-testid="upstream-wait-first_event"]').text()).toContain('upstreamOps.rawCache.partial')
+  expect(w.get('[data-testid="upstream-wait-first_event"]').text()).toContain('3 1 75.0%')
+  expect(w.get('[data-testid="upstream-wait-first_reasoning"]').text()).toContain('upstreamOps.unknown')
+  expect(w.get('[data-testid="upstream-wait-first_text"]').text()).toContain('0.0 ms')
+  expect(w.get('[data-testid="upstream-waits"]').text()).toContain('upstreamOps.rawCache.waitScope')
+  w.unmount()
+ })
+ it.each(['future','wrong source','negative','no samples','nonfinite'])('keeps %s waits unknown rather than fast or healthy',async state=>{
+  const metric={mean_ms:20,samples:1,unknown_samples:0,coverage:1,latest_sample_at:null}
+  const waits={version:state==='future'?9:1,source:state==='wrong source'?'legacy_ttft':'canonical_final_physical_http_attempt',first_byte:metric,first_event:metric,first_reasoning:metric,first_text:{...metric,mean_ms:state==='negative'?-1:state==='nonfinite'?Infinity:20,samples:state==='no samples'?0:1}}
+  vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,rows:[{...summary,account_id:42,public_model:'model',waits}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  if(state==='future'||state==='wrong source') expect(w.find('[data-testid="upstream-waits"]').exists()).toBe(false)
+  else expect(w.get('[data-testid="upstream-wait-first_text"]').text()).toContain('upstreamOps.unknown')
+  w.unmount()
+ })
  it('separates weighted raw token, request hit and coverage from historical billing', async () => {
   vi.mocked(readOperations).mockResolvedValue({...base,raw_cache:{status:'ready',data:{summary,total:1,retention_days:30,rows:[{...summary,account_id:42,credential_fingerprint:'a'.repeat(64),route_fingerprint:'b'.repeat(64),public_model:'requested',upstream_model:'wire-model',protocol:'responses',transport:'http',upstream_group_status:'not_observed',service_tier:'priority',reasoning_effort:'high'}]}}} as unknown as OperationsSnapshot)
   const w=mount(UpstreamChannelOperationsView);await flushPromises()

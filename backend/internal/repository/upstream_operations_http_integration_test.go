@@ -51,6 +51,7 @@ func TestUpstreamOperationsHTTPPostgresWithoutModelChannelBinding(t *testing.T) 
 		require.NotContains(t, w.Body.String(), `"credentials"`)
 		require.Contains(t, w.Body.String(), `"token_read_rate":0.7`)
 		require.Contains(t, w.Body.String(), `"upstream_group_status":"not_observed"`)
+		require.Contains(t, w.Body.String(), `"source":"canonical_final_physical_http_attempt"`)
 		var body struct {
 			Data struct {
 				Attribution string

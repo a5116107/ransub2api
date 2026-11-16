@@ -2755,3 +2755,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 最终源码go vet -tags unit -p 1及golangci-lint v2.15.0 --fast-only --new-from-rev=932872de1（含已暂存新测试）针对pkg/requesttiming、repository、service、handler、handler/admin退出0，实际0 issues.；同五包GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1退出0。源码/锁文件15份LF哈希drift0，证据为原目录physical-wait-final-{source-inputs,boundaries,service,package,vet,lint,linux,static}及physical-wait-postgres。
 - 前端未变输入复用physical-wait-ui-final/typecheck/eslint/build-final：原pnpm exec vitest run诊断与i18n共71pass，vue-tsc/eslint成功、Vite生产构建完成；保留原Browserslist过旧/大chunk告警。local Vue+客户端API的中英1440/390共6次检查、错误恢复/键盘/trace隔离和0值，browser JSON的errors=[]，本轮复看390px截图。路由夹具不等于真实前后端或生产用户流。
 - 原12个97bytes PNG总1164bytes均最后写入2026-11-02，未发现本轮新增；对应现有图片测试已有DATA_DIR/t.TempDir及Close，未凭历史残留断言仍有源代码泄漏。原拒删路径/owner/解除条件保留，不换工具重试、不隐藏进gitignore。D5.3.2本地子验收done，D5.3/D5/D7原完整分母、同scope汇总与供应商实际组/缓存域/生产仍开放，原28项20done/8部分不变。
+
+
+## 2026-11-16：D5.3.3最终物理HTTP同scope等待汇总
+
+- 接续51fe40bc9上的未提交改动，同一H盘功能分支，本地实现并同步自有origin，不CI/PR/发行/部署。原raw_upstream仅增可选的唯一attempt_number；原统计SQL和渠道运维卡片直接扩展，不新增表、路由、调度评分或第二套指标服务。缓存及逻辑请求计数保持，旧编号缺失不回填。
+- 恢复时scoped-wait-postgres.jsonl已失败：两个LATERAL的JSON展开均名为item，第二处array_agg(item)错误绑定外层physical.item，PG报aggregate functions are not allowed in FROM clause of their own query level。改用显式expanded(item)并限定expanded.item后，原缓存和新等待专项首次固定版退出0。随后新增两个超长数组夹具构造自身报aggregate functions are not allowed in UPDATE；通过generate_series本地列参与CASE修正夹具，未放宽生产断言，失败日志保留scoped-wait-postgres-final.jsonl。
+- 原分桶独立返回首字节/宿主SSE事件/首推理/首正文的样本、未知、算术均值、覆盖与最近有效时间；实测0参与均值，旧/未来/重复/非法/超32attempt、错Key/账号/线路/来源以及截断保持未知。仅语义截断仍保留网络首字节。真实PG验证读取前后JSON一致、重试不放大用量计数、Key/线路/模型隔离、原权限/失败恢复/30天与100范围分页。
+- 最终命令go test -json -tags unit -race -vet=off -p 1 ./internal/pkg/requesttiming -count=2 -timeout=3m退出0：1278条test pass，包2.963秒。go test -json -tags unit,integration -race -vet=off -p 1 -overlay H:/Root/DevCache/tmp/sub2api-upstream-raw-cache/overlay.json ./internal/repository -run '^Test(UpstreamRaw|UpstreamOperations|RequestTimings|TimingWrite|TimingBinding|RawCache)' -count=2 -timeout=4m退出0：134条test pass，包8.613秒；均0fail/skip/race。测试计数包含子例和重复轮次，不等于独立场景数。复用隔离PG17/Redis5及原harness overlay，不冒充容器/生产证明。
+- go vet -tags unit,integration -p 1两包退出0；兼容golangci-lint v2.15.0 --fast-only --build-tags unit,integration --new-from-rev=51fe40bc9 --concurrency 1两包退出0，0 issues.；同两包GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1退出0。frontend的pnpm exec vitest run原面板/i18n共16pass；定点ESLint及pnpm run build退出0（含vue-tsc）；保留Browserslist过旧、大chunk及shell deprecation告警。
+- 首次开发及预览浏览器功能断言均通过但console检查失败；新增HTTP状态记录确认500来自夹具未拦截独立/setup/status，非运维接口。补齐本地setup状态后，用真实构建产物在18442完成中英390/1440、阶段均值/真实0/未知/覆盖/新鲜度、普通筛选、键盘分页和错误恢复，最终errors=[]。原failed JSON保留，最终scoped-wait-browser.json及4张截图/复现脚本保留原evidence目录；API为浏览器夹具，真实SQL/HTTP由独立专项证明，不称全栈生产用户流。
+- 14份源码/依赖LF摘要保存在scoped-wait-source-inputs.json；D5.3.3本地子验收done，设计13.3及STATE同步。原28项20done/8部分不变；全部物理失败分母、WS逐轮、真实供应商scope/缓存域和产品资格仍开放。旧程序忽略新增JSON，回退前一应用即可，无schema迁移。历史data/已拒删scratch不换工具重试，不将其混入提交或声称全工作区干净。

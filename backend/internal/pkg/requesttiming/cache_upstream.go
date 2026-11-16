@@ -13,6 +13,7 @@ type CacheUpstreamObservation struct {
 	CredentialSource      string `json:"credential_source,omitempty"`
 	RouteFingerprint      string `json:"route_fingerprint,omitempty"`
 	AccountID             int64  `json:"account_id,omitempty"`
+	AttemptNumber         int    `json:"attempt_number,omitempty"`
 	ProxyID               int64  `json:"proxy_id"`
 	Transport             string `json:"transport,omitempty"`
 	UpstreamGroupStatus   string `json:"upstream_group_status"`
@@ -54,5 +55,16 @@ func DeriveCacheUpstream(s Snapshot) CacheUpstreamObservation {
 	out.Status = "observed"
 	out.CredentialFingerprint, out.CredentialSource = credential.Fingerprint, credential.Source
 	out.RouteFingerprint, out.AccountID, out.ProxyID, out.Transport = a.RouteFingerprint, a.AccountID, a.ProxyID, a.Kind
+	if a.Number > 0 && a.Number <= 32 {
+		matches := 0
+		for _, candidate := range s.Attempts {
+			if candidate.Number == a.Number {
+				matches++
+			}
+		}
+		if matches == 1 {
+			out.AttemptNumber = a.Number
+		}
+	}
 	return out
 }

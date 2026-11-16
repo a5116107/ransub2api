@@ -18,8 +18,16 @@ func TestFinalCacheUpstreamAttribution(t *testing.T) {
 	require.Equal(t, credential, got.CredentialFingerprint)
 	require.Equal(t, route, got.RouteFingerprint)
 	require.EqualValues(t, 7, got.AccountID)
+	require.Equal(t, 2, got.AttemptNumber)
 	require.Equal(t, "http", got.Transport)
 	require.Equal(t, "not_observed", got.UpstreamGroupStatus)
+	t.Run("ambiguous_physical_number", func(t *testing.T) {
+		s := original
+		s.Attempts = append(append([]Attempt(nil), original.Attempts...), physical)
+		v := DeriveCacheUpstream(s)
+		require.Equal(t, "observed", v.Status, "legacy cache attribution stays unchanged")
+		require.Zero(t, v.AttemptNumber, "ambiguous physical metrics must not be joined")
+	})
 	for _, tc := range []struct {
 		name   string
 		change func(*Snapshot)

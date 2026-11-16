@@ -50,12 +50,25 @@
                 <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words">{{ row.public_model }} → {{ row.upstream_model ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words text-xs text-gray-500">{{ row.protocol ?? t('upstreamOps.unknown') }} / {{ row.transport ?? t('upstreamOps.unknown') }} · {{ row.service_tier || t('upstreamOps.unknown') }} · {{ row.reasoning_effort || t('upstreamOps.unknown') }}</p>
+                <p class="text-xs text-gray-500">{{ row.stream === true ? t('upstreamOps.rawCache.streaming') : row.stream === false ? t('upstreamOps.rawCache.nonStreaming') : t('upstreamOps.unknown') }}</p>
                 <dl class="grid grid-cols-3 gap-2 tabular-nums">
                   <div><dt class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.tokenRate') }}</dt><dd>{{ percent(row.token_read_rate) }}</dd></div>
                   <div><dt class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.requestRate') }}</dt><dd>{{ percent(row.request_hit_rate) }}</dd></div>
                   <div><dt class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.coverage') }}</dt><dd>{{ percent(row.coverage) }}</dd></div>
                 </dl>
                 <p class="text-xs text-gray-500">{{ t('upstreamOps.rawCache.rowCounts', { observed: number(row.observed_requests, 0), total: number(row.requests, 0), read: number(row.read_tokens, 0), input: number(row.input_tokens, 0) }) }}</p>
+                <section v-if="waitRows(row).length" class="space-y-2 border-t border-gray-100 pt-2 dark:border-dark-700" data-testid="upstream-waits">
+                  <h3 class="text-sm font-medium">{{ t('upstreamOps.rawCache.waitTitle') }}</h3>
+                  <p class="text-xs leading-5 text-gray-500">{{ t('upstreamOps.rawCache.waitScope') }}</p>
+                  <dl class="grid min-w-0 gap-3 sm:grid-cols-2">
+                    <div v-for="metric in waitRows(row)" :key="metric.key" :data-testid="`upstream-wait-${metric.key}`" class="min-w-0 space-y-1">
+                      <dt class="text-xs text-gray-500">{{ t(`upstreamOps.rawCache.${metric.key}`) }}</dt>
+                      <dd class="break-words font-medium tabular-nums">{{ metric.mean == null ? t('upstreamOps.unknown') : `${number(metric.mean, 1)} ms` }} <span class="text-xs font-normal text-gray-500">{{ t(`upstreamOps.rawCache.${metric.status}`) }}</span></dd>
+                      <dd class="break-words text-xs text-gray-500">{{ t('upstreamOps.rawCache.waitSamples', { samples: number(metric.samples, 0), unknown: number(metric.unknown, 0), coverage: percent(metric.coverage) }) }}</dd>
+                      <dd class="break-words text-xs text-gray-500">{{ t('upstreamOps.rawCache.waitLatest', { at: metric.latest ?? t('upstreamOps.unknown') }) }}</dd>
+                    </div>
+                  </dl>
+                </section>
                 <p class="text-xs text-amber-700 dark:text-amber-400">{{ t('upstreamOps.rawCache.groupUnknown') }}</p>
                 <details class="text-xs"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('upstreamOps.rawCache.route') }}</summary><p class="mt-2 break-all">{{ row.route_fingerprint ?? t('upstreamOps.unknown') }}</p><p class="mt-1 break-words">{{ row.latest_sample_at ?? t('upstreamOps.unknown') }}</p></details>
               </li>
@@ -76,7 +89,7 @@ import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import SmartOpsNav from './SmartOpsNav.vue'
 import QualityRoundAssessment from './QualityRoundAssessment.vue'
-import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics } from '@/api/admin/upstreamOperations'
+import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics, type UpstreamRawCacheRow } from '@/api/admin/upstreamOperations'
 const { t } = useI18n()
 const amountKeys = ['requests'] as const
 const sortKeys = [...amountKeys, 'name']
@@ -90,6 +103,16 @@ let request=0, alive=true, controller: AbortController|undefined
 function number(v: number|null|undefined, decimals=6) { return v==null || !Number.isFinite(v) ? t('upstreamOps.unknown') : v.toLocaleString(undefined,{minimumFractionDigits:decimals,maximumFractionDigits:decimals}) }
 function percent(value: number | null | undefined) { return value != null && Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : t('upstreamOps.unknown') }
 function cacheStatus(value: UpstreamRawCacheMetrics) { return value.requests === 0 ? 'empty' : value.observed_requests === 0 ? 'unknown' : value.observed_requests < value.requests ? 'partial' : 'observed' }
+function waitRows(row: UpstreamRawCacheRow) {
+ const waits = row.waits
+ if (waits?.version !== 1 || waits.source !== 'canonical_final_physical_http_attempt') return []
+ return (['first_byte', 'first_event', 'first_reasoning', 'first_text'] as const).map(key => {
+  const metric = waits[key]
+  const mean = metric?.samples > 0 && typeof metric.mean_ms === 'number' && Number.isFinite(metric.mean_ms) && metric.mean_ms >= 0 ? metric.mean_ms : null
+  return { key, mean, samples: metric?.samples, unknown: metric?.unknown_samples, coverage: metric?.coverage, latest: mean == null ? null : metric.latest_sample_at,
+   status: mean == null ? 'unknown' : metric.unknown_samples > 0 ? 'partial' : 'waitObserved' }
+ })
+}
 function formatMetric(m:UpstreamMetrics,key:typeof amountKeys[number]) {return number(m[key],0)}
 async function load() {
  const id=++request; controller?.abort(); controller=new AbortController(); loading.value=true; error.value=''; snapshot.value=null

@@ -38,6 +38,14 @@ type upstreamCacheResult struct {
 		Group      string `json:"upstream_group_status"`
 		Protocol   string
 		Transport  string
+		Waits      struct {
+			Version        int
+			Source         string
+			FirstByte      upstreamWaitMetrics `json:"first_byte"`
+			FirstEvent     upstreamWaitMetrics `json:"first_event"`
+			FirstReasoning upstreamWaitMetrics `json:"first_reasoning"`
+			FirstText      upstreamWaitMetrics `json:"first_text"`
+		}
 	}
 }
 
