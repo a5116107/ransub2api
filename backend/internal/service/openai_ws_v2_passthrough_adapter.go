@@ -1467,7 +1467,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		cancelFirstWrite()
 		return openAIWSAgentRecoveryClose(err)
 	}
-	activeTiming.Store(newOpenAIWSTurnTiming(ctx, account, time.Now(), keyTurn.fingerprints))
+	activeTiming.Store(newOpenAIWSTurnTiming(ctx, account, time.Now(), keyTurn.fingerprints, firstClientMessage))
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 	cancelFirstWrite()
 	if firstWriteErr != nil {
@@ -1537,7 +1537,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if err := agentRecovery.beginSocket(latest, pendingAgentSource, payload, wsURL, headers, "passthrough"); err != nil {
 					return openAIWSAgentRecoveryClose(err)
 				}
-				activeTiming.Store(newOpenAIWSTurnTiming(ctx, account, time.Now(), keyTurn.fingerprints))
+				activeTiming.Store(newOpenAIWSTurnTiming(ctx, account, time.Now(), keyTurn.fingerprints, payload))
 				return nil
 			},
 			FirstTurnStartedAt: firstTurnStartedAt,

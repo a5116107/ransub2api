@@ -59,7 +59,7 @@ export default {
   "attempts": {
       "title": "All upstream attempt observations",
       "scope": "Retained physical HTTP send attempts and independent WebSocket generations include unbilled failures and failures before recovery. Egress parents, handshakes and billing copies are not counted twice. Interruptions and unknown outcomes remain separate. Success share uses confirmed successes and failures only; asynchronous diagnostics can be lost, so this is neither a complete site-wide success rate nor a quality admission signal. Retained for 30 days.",
-      "unsupported": "This filter requires the billing or upstream model of every attempt. That evidence is missing; the final successful route model is not reused. Select the request model or clear the model filter.",
+      "unsupported": "Physical attempts have no independent billing alias; the final successful route alias is not reused. Select the ingress model, an observed upstream model, or clear the filter.",
       "attempts": "Physical attempts",
       "logical_requests": "Requests / generations",
       "succeeded": "Confirmed success",
@@ -72,7 +72,10 @@ export default {
       "capture": "Complete captures {complete} / {total} · Unknown or incomplete {unknown} · Retained coverage {coverage}",
       "empty": "No physical attempts captured. Missing capture does not mean there were no upstream failures.",
       "ingressModel": "Ingress request model:",
-      "physicalScopeUnknown": "Per-attempt upstream model, supplier group, service tier and business/synthetic source are not observed; these rows are not strict scope evidence."
+      "physicalScopeUnknown": "The sent model, service tier or effort is unobserved. Historical, incomplete or oversized requests are not backfilled.",
+      "requestMetadataObserved": "Sent metadata observed · Not model verification",
+      "requestScopeCoverage": "Sent metadata observed {observed} / {total} · Unknown {unknown} · Coverage {coverage}. Coverage uses the selected account/ingress cohort; upstream-model filters do not assign unknown attempts to that model.",
+      "supplierScopeUnknown": "Actual supplier group, business/synthetic source and full capability scope remain unconfirmed; this is not strict product admission evidence."
   },
   "rawCache": {
     "title": "Upstream raw cache reports",

@@ -129,6 +129,7 @@ func (h *UsageHandler) ObserverTiming(c *gin.Context) {
 			}
 			for _, attempt := range attempts {
 				delete(attempt, "upstream_credential")
+				delete(attempt, "upstream_request")
 			}
 			trace["attempts"], err = json.Marshal(attempts)
 			if err != nil {

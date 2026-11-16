@@ -1955,7 +1955,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if err := agentRecovery.beginSocket(latest, clientPayload, payload, wsURL, lease.conn.agentRecoveryHeaders, "ctx_pool"); err != nil {
 			return nil, openAIWSAgentRecoveryClose(err)
 		}
-		timing = newOpenAIWSTurnTiming(ctx, account, time.Now(), lease.conn.upstreamKeyFingerprints)
+		timing = newOpenAIWSTurnTiming(ctx, account, time.Now(), lease.conn.upstreamKeyFingerprints, payload)
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
 				"write_upstream",

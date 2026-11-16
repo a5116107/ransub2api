@@ -13,13 +13,43 @@ import (
 
 const maxSSETimingBytes = 16 * 1024 * 1024
 
-func newOpenAIWSTurnTiming(ctx context.Context, account *Account, start time.Time, fingerprints []string) *requesttiming.WSTurnCapture {
+func newOpenAIWSTurnTiming(ctx context.Context, account *Account, start time.Time, fingerprints []string, payload any) *requesttiming.WSTurnCapture {
 	proxyID := int64(0)
 	if account.ProxyID != nil {
 		proxyID = *account.ProxyID
 	}
 	capture := requesttiming.NewWSTurn(start, account.ID, proxyID, AccountRouteFingerprint(account))
 	capture.RecordUpstreamCredentials(fingerprints)
+	switch value := payload.(type) {
+	case []byte:
+		capture.RecordRequest(value)
+	case json.RawMessage:
+		capture.RecordRequest(value)
+	case openAIWSPreparedJSON:
+		capture.RecordRequest(value)
+	case map[string]any:
+		// Native HTTP->WS prepares a typed map and encodes it once at write.
+		// Copy just observed metadata, never marshal or retain the prompt twice.
+		metadata := make(map[string]any, 6)
+		for _, name := range []string{"type", "model", "service_tier", "stream", "reasoning_effort"} {
+			if item, exists := value[name]; exists {
+				metadata[name] = item
+			}
+		}
+		if reasoning, exists := value["reasoning"]; exists {
+			if options, ok := reasoning.(map[string]any); ok {
+				metadata["reasoning"] = map[string]any{}
+				if effort, exists := options["effort"]; exists {
+					metadata["reasoning"] = map[string]any{"effort": effort}
+				}
+			} else {
+				metadata["reasoning"] = nil
+			}
+		}
+		if data, err := json.Marshal(metadata); err == nil {
+			capture.RecordRequest(data)
+		}
+	}
 	requesttiming.ObserveIndependentTurn(ctx, capture.Collector)
 	return capture
 }

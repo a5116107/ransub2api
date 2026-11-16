@@ -43,6 +43,14 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			parsedFirstText := make(chan struct{}, 1)
+			type sentScope struct {
+				Model       string `json:"model"`
+				ServiceTier string `json:"service_tier"`
+				Reasoning   struct {
+					Effort string `json:"effort"`
+				} `json:"reasoning"`
+			}
+			upstreamRequests := make(chan sentScope, 4)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.Equal(t, "Bearer sk-test", r.Header.Get("Authorization"))
 				conn, err := coderws.Accept(w, r, nil)
@@ -51,9 +59,13 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 				}
 				defer func() { _ = conn.CloseNow() }()
 				for turn := 1; ; turn++ {
-					if _, _, err = conn.Read(r.Context()); err != nil {
+					_, payload, readErr := conn.Read(r.Context())
+					if readErr != nil {
 						return
 					}
+					var sent sentScope
+					require.NoError(t, json.Unmarshal(payload, &sent))
+					upstreamRequests <- sent
 					terminal := "completed"
 					if turn == 3 {
 						terminal = "incomplete"
@@ -115,7 +127,11 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 			defer func() { _ = client.CloseNow() }()
 			ids := map[string]bool{}
 			for turn := 1; turn <= 3; turn++ {
-				writeOpenAIWSExecutionScopeRequest(t, client, `{"type":"response.create","model":"gpt-5.1","stream":true,"input":[{"role":"user","content":"fixture"}]}`)
+				effort := "high"
+				if turn == 2 {
+					effort = "low"
+				}
+				writeOpenAIWSExecutionScopeRequest(t, client, fmt.Sprintf(`{"type":"response.create","model":"gpt-5.1","stream":true,"reasoning":{"effort":"%s"},"input":[{"role":"user","content":"fixture"}]}`, effort))
 				acknowledged := false
 				for {
 					ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
@@ -155,6 +171,17 @@ func TestWSTurnTimingNativeIngressWithoutSmartProtocol(t *testing.T) {
 							want = "failed"
 						}
 						require.Equal(t, want, physical.Attempts[0].Outcome)
+						require.NotNil(t, physical.Attempts[0].UpstreamRequest)
+						require.Equal(t, "gpt-5.1", physical.Attempts[0].UpstreamRequest.Model)
+						require.Equal(t, "websocket_generation_payload", physical.Attempts[0].UpstreamRequest.Source)
+						select {
+						case sent := <-upstreamRequests:
+							require.Equal(t, sent.Model, physical.Attempts[0].UpstreamRequest.Model)
+							require.Equal(t, sent.Reasoning.Effort, physical.Attempts[0].UpstreamRequest.ReasoningEffort)
+							require.Equal(t, effort, physical.Attempts[0].UpstreamRequest.ReasoningEffort)
+						case <-time.After(time.Second):
+							t.Fatal("upstream request metadata missing")
+						}
 					case <-time.After(3 * time.Second):
 						t.Fatal("independent turn trace missing")
 					}
@@ -228,7 +255,7 @@ func TestWSTurnTimingUsageBindingSurvivesBillingContext(t *testing.T) {
 	parent := requesttiming.New(time.Now(), 0)
 	ctx := requesttiming.With(t.Context(), parent)
 	for i := range 2 {
-		capture := newOpenAIWSTurnTiming(ctx, &Account{ID: 3}, time.Now(), nil)
+		capture := newOpenAIWSTurnTiming(ctx, &Account{ID: 3}, time.Now(), nil, nil)
 		result := &OpenAIForwardResult{RequestID: fmt.Sprintf("resp_timing_%d", i), Model: "gpt-5.1", Usage: OpenAIUsage{InputTokens: 10, OutputTokens: 5}}
 		finishOpenAIWSTurnTiming(capture, ctx, result, nil)
 		require.NoError(t, svc.RecordUsage(ctx, &OpenAIRecordUsageInput{Result: result, APIKey: &APIKey{ID: 1}, User: &User{ID: 2}, Account: &Account{ID: 3}}))
@@ -251,11 +278,29 @@ func TestWSTurnTimingRetainsHandshakeCredentialIdentity(t *testing.T) {
 		{"not_provided", nil, "no_credential", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			capture := newOpenAIWSTurnTiming(t.Context(), account, time.Now(), tc.fingerprints)
+			capture := newOpenAIWSTurnTiming(t.Context(), account, time.Now(), tc.fingerprints, nil)
 			capture.Finish(nil, false, false)
 			capture.WhenFinished(func(s requesttiming.Snapshot) {
 				require.Equal(t, &requesttiming.UpstreamCredentialObservation{Status: tc.status, Source: "websocket_handshake_credentials", Fingerprint: tc.fingerprint}, s.Attempts[0].UpstreamCredential)
 				require.NotEqual(t, config.UpstreamKeyFingerprint("new-account-config-fixture"), s.Attempts[0].UpstreamCredential.Fingerprint)
+			})
+		})
+	}
+}
+
+func TestWSTurnTimingFinalRequestShapes(t *testing.T) {
+	const raw = `{"type":"response.create","model":"wire-model","service_tier":"priority","reasoning":{"effort":"high"},"input":"private-prompt"}`
+	for _, value := range []any{[]byte(raw), json.RawMessage(raw), openAIWSPreparedJSON(raw), map[string]any{
+		"type": "response.create", "model": "wire-model", "service_tier": "priority", "reasoning": map[string]any{"effort": "high"}, "input": make(chan int),
+	}} {
+		t.Run(fmt.Sprintf("%T", value), func(t *testing.T) {
+			capture := newOpenAIWSTurnTiming(t.Context(), &Account{ID: 7}, time.Now(), nil, value)
+			capture.Finish(nil, false, false)
+			capture.WhenFinished(func(s requesttiming.Snapshot) {
+				require.Equal(t, &requesttiming.UpstreamRequestObservation{Version: 1, Status: "observed", Source: "websocket_generation_payload", Protocol: "responses", Model: "wire-model", ServiceTier: "priority", ReasoningEffort: "high", Stream: true}, s.Attempts[0].UpstreamRequest)
+				data, err := json.Marshal(s)
+				require.NoError(t, err)
+				require.NotContains(t, string(data), "private-prompt")
 			})
 		})
 	}

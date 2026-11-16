@@ -19,6 +19,7 @@ type Span struct {
 	Attempt int     `json:"attempt,omitempty"`
 }
 type Attempt struct {
+	UpstreamRequest    *UpstreamRequestObservation    `json:"upstream_request,omitempty"`
 	UpstreamCredential *UpstreamCredentialObservation `json:"upstream_credential,omitempty"`
 	OutputUsage        *OutputUsage                   `json:"output_usage,omitempty"`
 	RouteFingerprint   string                         `json:"route_fingerprint,omitempty"`
@@ -232,6 +233,10 @@ func (c *Collector) snapshot() Snapshot {
 		if d.Attempts[i].UpstreamCredential != nil {
 			credential := *d.Attempts[i].UpstreamCredential
 			d.Attempts[i].UpstreamCredential = &credential
+		}
+		if d.Attempts[i].UpstreamRequest != nil {
+			request := *d.Attempts[i].UpstreamRequest
+			d.Attempts[i].UpstreamRequest = &request
 		}
 		if d.Attempts[i].CacheUsage != nil {
 			usage := *d.Attempts[i].CacheUsage

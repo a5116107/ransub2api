@@ -143,8 +143,8 @@ func (r *channelRepository) ReadUpstreamOperations(ctx context.Context, f servic
 	}
 	out.Errors = readUpstreamSection(ctx, tx, upstreamOperationsErrors, args[:8]...)
 	out.RawCache = readUpstreamSection(ctx, tx, upstreamOperationsRawCache, args...)
-	if f.Model != "" && f.ModelScope != "public" {
-		out.Attempts = service.ChannelOperationsSection{Status: "unsupported_scope", Data: json.RawMessage("null"), Error: "Per-attempt upstream/billing model is not observed; final usage aliases cannot be borrowed", QueriedAt: out.QueriedAt}
+	if f.Model != "" && f.ModelScope == "recorded" {
+		out.Attempts = service.ChannelOperationsSection{Status: "unsupported_scope", Data: json.RawMessage("null"), Error: "Per-attempt billing model is not observed; final usage aliases cannot be borrowed", QueriedAt: out.QueriedAt}
 	} else {
 		out.Attempts = readUpstreamSection(ctx, tx, upstreamOperationsAttempts, args...)
 	}

@@ -156,8 +156,8 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 	gateway.Use(middleware.RequestLogger(), middleware.RequestTiming(recorder))
 	gateway.POST("/v1/responses", func(c *gin.Context) {
 		c.Set("ops_model", "public-model")
-		for range 2 {
-			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"wire-model","input":"fixture"}`))
+		for _, model := range []string{"first-wire-model", "second-wire-model"} {
+			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"`+model+`","service_tier":"priority","reasoning":{"effort":"high"},"input":"fixture"}`))
 			if err != nil {
 				c.AbortWithStatus(500)
 				return
@@ -224,6 +224,25 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 	require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
 	require.Equal(t, 1, body.Data.Attempts.Data.Summary.LogicalRequests)
 	require.NotContains(t, result.Body.String(), "diagnostic-transport-fixture")
+	for _, model := range []string{"first-wire-model", "second-wire-model"} {
+		filtered := httptest.NewRecorder()
+		r.ServeHTTP(filtered, httptest.NewRequest("GET", fmt.Sprintf("/snapshot?account_id=%d&model_scope=upstream&model=%s&from=%s&until=%s", account, model, now.Add(-time.Minute).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339)), nil))
+		require.Equal(t, 200, filtered.Code, filtered.Body.String())
+		require.NoError(t, json.Unmarshal(filtered.Body.Bytes(), &body))
+		require.Equal(t, "ready", body.Data.Attempts.Status)
+		require.Equal(t, 1, body.Data.Attempts.Data.Summary.Attempts)
+		if model == "first-wire-model" {
+			require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
+			require.Zero(t, body.Data.Attempts.Data.Summary.Succeeded)
+		} else {
+			require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
+			require.Zero(t, body.Data.Attempts.Data.Summary.Failed)
+		}
+		require.Contains(t, filtered.Body.String(), `"upstream_model":"`+model+`"`)
+		require.Contains(t, filtered.Body.String(), `"service_tier":"priority"`)
+		require.Contains(t, filtered.Body.String(), `"reasoning_effort":"high"`)
+		require.Contains(t, filtered.Body.String(), `"unknown_attempts":0`)
+	}
 	var billed int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM usage_logs WHERE account_id=$1`, account).Scan(&billed))
 	require.Zero(t, billed)

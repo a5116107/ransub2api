@@ -45,13 +45,20 @@
               <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.attempts.amplification') }}</dt><dd class="text-xl font-semibold tabular-nums">{{ number(snapshot.attempts.data.summary.attempts_per_request, 2) }}</dd></div>
             </dl>
             <p class="text-xs text-gray-500" data-testid="attempt-capture-coverage">{{ t('upstreamOps.attempts.capture', { complete: number(snapshot.attempts.data.capture.complete_traces, 0), total: number(snapshot.attempts.data.capture.traces, 0), unknown: number(snapshot.attempts.data.capture.unknown_traces, 0), coverage: percent(snapshot.attempts.data.capture.coverage) }) }}</p>
+            <p v-if="snapshot.attempts.data.request_scope" class="text-xs leading-5 text-gray-500" data-testid="attempt-request-scope-coverage">{{ t('upstreamOps.attempts.requestScopeCoverage', { observed: number(snapshot.attempts.data.request_scope.observed_attempts, 0), total: number(snapshot.attempts.data.request_scope.attempts, 0), unknown: number(snapshot.attempts.data.request_scope.unknown_attempts, 0), coverage: percent(snapshot.attempts.data.request_scope.coverage) }) }}</p>
             <p v-if="!snapshot.attempts.data.summary.attempts" data-testid="attempt-empty">{{ t('upstreamOps.attempts.empty') }}</p>
             <ul class="grid min-w-0 gap-3 lg:grid-cols-2">
               <li v-for="(row, index) in snapshot.attempts.data.rows" :key="index" class="min-w-0 space-y-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="upstream-attempt-row">
                 <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words text-xs text-gray-500">{{ row.transport }} / {{ row.protocol ?? t('upstreamOps.unknown') }} · {{ t('upstreamOps.attempts.ingressModel') }} {{ row.public_model || t('upstreamOps.unknown') }}</p>
                 <dl class="grid grid-cols-3 gap-2 tabular-nums"><div v-for="key in attemptKeys" :key="key"><dt class="text-xs text-gray-500">{{ t(`upstreamOps.attempts.${key}`) }}</dt><dd>{{ number(row[key], 0) }}</dd></div></dl>
-                <p class="text-xs text-amber-700 dark:text-amber-400">{{ t('upstreamOps.attempts.physicalScopeUnknown') }}</p>
+                <div v-if="row.upstream_model_status === 'observed' && row.upstream_model && row.upstream_protocol && row.service_tier && row.reasoning_effort && typeof row.upstream_stream === 'boolean'" class="space-y-1" data-testid="attempt-request-scope">
+                  <p class="text-xs font-medium text-green-700 dark:text-green-400">{{ t('upstreamOps.attempts.requestMetadataObserved') }}</p>
+                  <p class="break-all font-medium">{{ row.upstream_model }}</p>
+                  <p class="break-words text-xs text-gray-500">{{ row.upstream_protocol }} · {{ row.service_tier }} · {{ row.reasoning_effort }} · {{ row.upstream_stream ? t('upstreamOps.rawCache.streaming') : t('upstreamOps.rawCache.nonStreaming') }}</p>
+                </div>
+                <p v-else class="text-xs text-amber-700 dark:text-amber-400" data-testid="attempt-request-scope-unknown">{{ t('upstreamOps.attempts.physicalScopeUnknown') }}</p>
+                <p class="text-xs text-gray-500">{{ t('upstreamOps.attempts.supplierScopeUnknown') }}</p>
                 <details class="text-xs"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('upstreamOps.rawCache.route') }}</summary><p class="mt-2 break-all">{{ row.route_fingerprint ?? t('upstreamOps.unknown') }}</p><p class="mt-1 break-words">{{ row.latest_sample_at ?? t('upstreamOps.unknown') }}</p></details>
               </li>
             </ul>

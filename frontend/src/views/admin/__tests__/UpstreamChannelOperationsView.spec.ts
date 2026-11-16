@@ -153,4 +153,26 @@ describe('all retained upstream attempts', () => {
   expect(w.get('[data-testid="attempt-empty"]').text()).toContain('upstreamOps.attempts.empty')
   w.unmount()
  })
+ it('shows sent model and tier while keeping unknown attempts in cohort coverage',async()=>{
+  const requestScope={attempts:7,observed_attempts:3,unknown_attempts:4,coverage:3/7}
+  const observed={...data.rows[0],upstream_model_status:'observed',upstream_model:'actual-wire-model',upstream_protocol:'responses',service_tier:'priority',reasoning_effort:'high',upstream_stream:true}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,request_scope:requestScope,rows:[observed,data.rows[0]]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="attempt-request-scope"]').text()).toContain('actual-wire-model')
+  expect(w.get('[data-testid="attempt-request-scope"]').text()).toContain('priority')
+  expect(w.get('[data-testid="attempt-request-scope"]').text()).toContain('high')
+  expect(w.get('[data-testid="attempt-request-scope"]').text()).toContain('upstreamOps.attempts.requestMetadataObserved')
+  expect(w.get('[data-testid="attempt-request-scope-coverage"]').text()).toContain('upstreamOps.attempts.requestScopeCoverage')
+  expect(w.get('[data-testid="attempt-request-scope-unknown"]').text()).toContain('upstreamOps.attempts.physicalScopeUnknown')
+  expect(w.findAll('[data-testid="upstream-attempt-row"]')).toHaveLength(2)
+  expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('upstreamOps.attempts.supplierScopeUnknown')
+  w.unmount()
+ })
+ it.each(['not_observed',undefined])('keeps %s scope unknown even if a stale model label exists',async status=>{
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[{...data.rows[0],upstream_model_status:status,upstream_model:'unverified-wire-model'}]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="attempt-request-scope"]').exists()).toBe(false)
+  expect(w.text()).not.toContain('unverified-wire-model')
+  w.unmount()
+ })
 })

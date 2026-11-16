@@ -3,12 +3,12 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5.3.5留存物理尝试/无账单失败及权限闭环本地done；功能分支交付。
+任务：D5.3.6逐物理尝试模型/档位/effort及原管理面板本地完整已验。
 授权：唯一H盘工作树；自有仓库同步/已验热修复发行部署；不运行编译/测试CI。
 生产：.7/fd83f6c91，latest同版，程序bea1c3964bc3；功能分支仍2.21.1未整体上线。
-实证：D5.3.5竞态252/SQL264/权限142通过，六包vet/增量lint/Linux编译0；UI26/四视口复用。
-证据：H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/attempts-*；非生产。
-下一动作：D2.6其余合同/D5.3同scope完整分母→D3.2/D8.1；PR3另待整合。
+实证：D5.3.6竞态304/SQL266通过；六包vet/增量lint/Linux编译0；UI29/中英四视口通过。
+证据：H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/scope-*；27项输入drift0，非生产。
+下一动作：继续D5.3同scope全部尝试的等待/原始缓存及来源归类；复用当前已验输入，不回填历史。
 等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域和旧完整历史恢复保留。
 Attempt：25
 <!-- resume:end -->
@@ -49,6 +49,7 @@ Attempt：25
 | D5.3.3 | done | 最终HTTP同scope四阶段等待均值/样本/覆盖/新鲜度及原面板；PG134/race计时1278/UI16/中英浏览器已验；非完整失败分母或生产 |
 | D5.3.4 | done | 独立WS三阶段/原SQL面板/HTTP互斥/旧JSON只读；计时1330/转发42/PG188、UI20/中英浏览器已验；非完整分母或生产 |
 | D5.3.5 | done | 留存HTTP/独立WS与无账单失败、去重/覆盖、管理面板和权限已验；252/264/142双轮，非同scope完整分母/生产 |
+| D5.3.6 | done | 实际HTTP/WS逐轮发送模型/档位/effort与原面板已验；竞态304/SQL266/UI29、六包静态/编译及中英四视口通过；非生产 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 三页历史徽标/冻结集合/列表详情兼容已验；真实向量、基线/指纹和当前资格消费未完成 |
@@ -68,13 +69,9 @@ Attempt：25
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
 - 历史153包/本轮证据见DECISIONS；并发1–2、共享Go缓存。
-- 12个2×3测试PNG/1164bytes已由源码生成匹配SHA256；data/删除被执行策略拦截，保留原路径不换工具。
+- 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- 历史拒删overlay/pyc/空目录及.1包沿DECISIONS保留原owner/路径，不绕过删除限制。
-- H:/Root/DevCache/tmp/sub2api-cooldown-recovery同被blocked by policy；已有0文件/0字节、非重解析点证据，删除0，待拥有者清理。
-- 独立PG55441/Redis56441及预览18441/18442已停；新ws-waits-browser.mjs精确删除也被宿主启动前拦截、删除0，待拥有者解除策略；旧scratch原位。
-- 本轮两个go-build目录620274603bytes删除被宿主启动前拦截、删除0；精确路径见DECISIONS，待拥有者解除策略。
+- 本轮复用独立PG55441/Redis56441及预览18441；验证后按进程身份停止，不触及生产。
+- 历史拒删overlay/pyc/空目录/.1包、空cooldown目录、ws-waits-browser脚本、两go-build共620274603bytes及D2.6日志保留原位；执行/删除0。精确路径/命令/字节及owner见DECISIONS，待宿主拥有者解除策略，不换工具或移动绕过。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。
-- D2.6.3/.4历史日志及候选/Chat专项精确清理均被宿主拦截；执行/删除0，原evidence待拥有者解除限制。
-- responses-output七份旧日志3578727bytes及.12旧日志286472bytes均被宿主启动前拦截、删除0；原路径/清单见DECISIONS，待拥有者解除策略。

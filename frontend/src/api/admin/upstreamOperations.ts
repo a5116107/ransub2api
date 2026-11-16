@@ -32,11 +32,14 @@ export interface UpstreamAttemptMetrics {
 export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  account_id: number; credential_fingerprint: string | null; route_fingerprint: string | null
  transport: string; protocol: string | null; public_model: string; stream: boolean
- upstream_model_status: 'not_observed'; upstream_group_status: 'not_observed'
+ upstream_model_status: 'observed' | 'not_observed'; upstream_group_status: 'not_observed'
+ upstream_model?: string | null; upstream_protocol?: string | null; service_tier?: string | null
+ reasoning_effort?: string | null; upstream_stream?: boolean | null
 }
 export interface UpstreamAttempts {
  version: number; source: string; scope: string; retention_days: number
  summary: UpstreamAttemptMetrics; capture: { traces: number; complete_traces: number; unknown_traces: number; coverage: number | null }
+ request_scope?: { attempts: number; observed_attempts: number; unknown_attempts: number; coverage: number | null }
  total: number; rows: UpstreamAttemptRow[]
 }
 export interface OperationsSnapshot { scope: OperationsQuery; queried_at: string; attribution: string; usage: { summary: UpstreamMetrics; rows: OperationsRow[]; total: number; accounts: AccountBasis[]; members: AccountBasis[]; member_total: number; capacity: {accounts: number; schedulable: number; configured_concurrency: number}; catalog: Array<{key: string; name: string; accounts: number}>; catalog_total: number; account_details_limit: number }; attempts?: Section<UpstreamAttempts>; raw_cache?: Section<UpstreamRawCache>; quality: Section<Quality & { total: number }>; errors: Section<ErrorLogs> }

@@ -3,9 +3,11 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,53 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAccountHTTPResponseCapturesPhysicalRequestScope(t *testing.T) {
+	for _, tlsMode := range []bool{false, true} {
+		t.Run(fmt.Sprint(tlsMode), func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				require.Contains(t, string(body), "private-fixture-prompt")
+				w.WriteHeader(502)
+			}))
+			defer server.Close()
+			_, send := lifecycleClient(t, server, tlsMode)
+			collector := requesttiming.New(time.Now(), 0)
+			for _, model := range []string{"first-wire-model", "second-wire-model"} {
+				req, err := http.NewRequestWithContext(requesttiming.With(t.Context(), collector), "POST", server.URL+"/v1/responses", strings.NewReader(`{"model":"`+model+`","stream":true,"service_tier":"priority","reasoning":{"effort":"high"},"input":"private-fixture-prompt"}`))
+				require.NoError(t, err)
+				req.Header.Set("Authorization", "Bearer private-fixture-credential")
+				req, _ = requesttiming.StartAttempt(req, 1, 0)
+				requesttiming.RecordAccountRoute(req.Context(), [32]byte{1})
+				resp, err := send(req)
+				require.NoError(t, err)
+				require.NoError(t, resp.Body.Close())
+			}
+			collector.Finish(502, false)
+			collector.WhenFinished(func(s requesttiming.Snapshot) {
+				physical := requesttiming.DerivePhysicalUpstream(s)
+				raw, err := json.Marshal(physical)
+				require.NoError(t, err)
+				require.NotContains(t, string(raw), "private-fixture")
+				var out struct {
+					Attempts []struct {
+						UpstreamRequest requesttiming.UpstreamRequestObservation `json:"upstream_request"`
+					}
+				}
+				require.NoError(t, json.Unmarshal(raw, &out))
+				require.Len(t, out.Attempts, 2)
+				for i, model := range []string{"first-wire-model", "second-wire-model"} {
+					require.Equal(t, "observed", out.Attempts[i].UpstreamRequest.Status)
+					require.Equal(t, model, out.Attempts[i].UpstreamRequest.Model)
+					require.Equal(t, "priority", out.Attempts[i].UpstreamRequest.ServiceTier)
+					require.Equal(t, "high", out.Attempts[i].UpstreamRequest.ReasoningEffort)
+					require.True(t, out.Attempts[i].UpstreamRequest.Stream)
+				}
+			})
+		})
+	}
+}
 
 func TestAccountHTTPResponseNativeAndTLSFilters(t *testing.T) {
 	original := upstreamstats.Default

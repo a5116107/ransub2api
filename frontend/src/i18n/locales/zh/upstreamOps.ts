@@ -59,7 +59,7 @@ export default {
   "attempts": {
       "title": "上游全部尝试观测",
       "scope": "统计保留的 HTTP 物理发送尝试与独立 WebSocket 生成轮次，包括无账单失败及成功前的失败；不重复计算 egress 父项、握手或账单副本。中断、未知独立展示。成功占比只以已确认成功与失败为分母；异步诊断可能丢失，不代表全站完整成功率，也不用于质量放行。保留30天。",
-      "unsupported": "该筛选要求每次尝试的账单或上游模型；现有记录缺少该证据，未借用最终成功线路的模型。请选择请求模型或清空模型筛选。",
+      "unsupported": "每次物理尝试没有独立账单模型，未借用最终成功线路的计费别名。请选择请求模型、已观测上游模型或清空模型筛选。",
       "attempts": "物理尝试",
       "logical_requests": "请求 / 生成轮次",
       "succeeded": "确认成功",
@@ -72,7 +72,10 @@ export default {
       "capture": "采集完整 {complete} / {total} · 未知或不完整 {unknown} · 留存内覆盖 {coverage}",
       "empty": "暂无已捕获物理尝试；未采集不等于上游没有故障。",
       "ingressModel": "入站请求模型：",
-      "physicalScopeUnknown": "逐尝试的上游模型、实际组、服务档及业务/合成来源：尚未观测，不作为严格范围证据。"
+      "physicalScopeUnknown": "本次发送的模型、服务档或 effort 尚未观测；历史记录、不完整或超限请求不回填。",
+      "requestMetadataObserved": "已观测发送元数据 · 不等于模型验真",
+      "requestScopeCoverage": "发送元数据已观测 {observed} / {total} · 未知 {unknown} · 覆盖 {coverage}。此覆盖按所选账号/入站范围统计；筛选上游模型后未知尝试仍单列，不计入该模型。",
+      "supplierScopeUnknown": "实际供应商分组、业务/合成来源及完整能力范围仍未确认，不作为严格产品放行证据。"
   },
   "rawCache": {
     "title": "上游原始缓存观测",

@@ -108,12 +108,14 @@ func TestObserverUsageScopeAndProjection(t *testing.T) {
 func TestObserverTimingRedactsUpstreamCredential(t *testing.T) {
 	r := &observerUsageRepo{
 		record:     &service.UsageLog{ID: 1, UserID: 42},
-		timingRows: []json.RawMessage{json.RawMessage(`{"trace_id":"own-trace","future_field":true,"raw_upstream":{"credential_fingerprint":"supplier-private-identity"},"physical_upstream":{"version":1,"complete":true,"attempts":[{"credential_fingerprint":"supplier-private-identity","route_fingerprint":"private-route-identity"}]},"attempts":[{"kind":"http","upstream_credential":{"status":"observed","fingerprint":"supplier-private-identity"},"cache_usage":{"read_tokens":80},"future_attempt_field":7}]}`)},
+		timingRows: []json.RawMessage{json.RawMessage(`{"trace_id":"own-trace","future_field":true,"raw_upstream":{"credential_fingerprint":"supplier-private-identity"},"physical_upstream":{"version":1,"complete":true,"attempts":[{"credential_fingerprint":"supplier-private-identity","route_fingerprint":"private-route-identity"}]},"attempts":[{"kind":"http","upstream_credential":{"status":"observed","fingerprint":"supplier-private-identity"},"upstream_request":{"model":"supplier-private-model"},"cache_usage":{"read_tokens":80},"future_attempt_field":7}]}`)},
 	}
 	w := usageGET(observerUsageRouter(r, service.RoleObserver), "/usage/1/timing")
 	require.Equal(t, 200, w.Code, w.Body.String())
 	require.NotContains(t, w.Body.String(), "supplier-private-identity")
 	require.NotContains(t, w.Body.String(), "upstream_credential")
+	require.NotContains(t, w.Body.String(), "upstream_request")
+	require.NotContains(t, w.Body.String(), "supplier-private-model")
 	require.NotContains(t, w.Body.String(), "raw_upstream")
 	require.NotContains(t, w.Body.String(), "physical_upstream")
 	require.NotContains(t, w.Body.String(), "private-route-identity")

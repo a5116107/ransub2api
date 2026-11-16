@@ -10,14 +10,15 @@ type PhysicalUpstreamObservation struct {
 }
 
 type PhysicalUpstreamAttempt struct {
-	Number                int    `json:"number"`
-	AccountID             int64  `json:"account_id"`
-	Transport             string `json:"transport"`
-	Protocol              string `json:"protocol,omitempty"`
-	CredentialFingerprint string `json:"credential_fingerprint,omitempty"`
-	RouteFingerprint      string `json:"route_fingerprint,omitempty"`
-	IdentityKnown         bool   `json:"identity_known"`
-	Outcome               string `json:"outcome"`
+	UpstreamRequest       *UpstreamRequestObservation `json:"upstream_request,omitempty"`
+	Number                int                         `json:"number"`
+	AccountID             int64                       `json:"account_id"`
+	Transport             string                      `json:"transport"`
+	Protocol              string                      `json:"protocol,omitempty"`
+	CredentialFingerprint string                      `json:"credential_fingerprint,omitempty"`
+	RouteFingerprint      string                      `json:"route_fingerprint,omitempty"`
+	IdentityKnown         bool                        `json:"identity_known"`
+	Outcome               string                      `json:"outcome"`
 }
 
 func DerivePhysicalUpstream(s Snapshot) PhysicalUpstreamObservation {
@@ -67,6 +68,11 @@ func DerivePhysicalUpstream(s Snapshot) PhysicalUpstreamObservation {
 			continue
 		}
 		item := PhysicalUpstreamAttempt{Number: a.Number, AccountID: a.AccountID, Transport: a.Kind, Outcome: physicalUpstreamOutcome(s, a)}
+		if observed := a.UpstreamRequest; observed != nil && observed.Version == 1 && observed.Status == "observed" &&
+			(a.Kind == "http" && observed.Source == "http_transport_body" || a.Kind == "ws_turn" && observed.Source == "websocket_generation_payload") {
+			value := *observed
+			item.UpstreamRequest = &value
+		}
 		switch a.Route.Endpoint {
 		case "responses", "responses_compact":
 			item.Protocol = "responses"

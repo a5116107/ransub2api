@@ -118,6 +118,8 @@ func TestUpstreamAttemptsDeduplicateFallbackAndKeepUnknownCapture(t *testing.T) 
 	require.NoError(t, err)
 	fallback := read()
 	require.Equal(t, first["summary"], fallback["summary"])
+	var originalDetail string
+	require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_timing_details WHERE trace_id=$1`, s.TraceID).Scan(&originalDetail))
 	// Missing versions/capture never turn into zero failures with full coverage.
 	for _, patch := range []string{`{"physical_upstream":null}`, `{"physical_upstream":{"version":9,"complete":true,"attempts":[]}}`,
 		`{"physical_upstream":{"version":1,"complete":true,"attempts":{}}}`, `{"physical_upstream":{"version":1,"complete":false,"attempts":[]}}`} {
@@ -133,8 +135,18 @@ func TestUpstreamAttemptsDeduplicateFallbackAndKeepUnknownCapture(t *testing.T) 
 		require.Nil(t, metrics["confirmed_success_rate"])
 	}
 	// The physical model is not the final billing alias.
+	_, err = integrationDB.Exec(`UPDATE request_timing_details SET detail=$2::jsonb WHERE trace_id=$1`, s.TraceID, originalDetail)
+	require.NoError(t, err)
 	q.ModelScope = "upstream"
 	out, err := f.repo.ReadUpstreamOperations(t.Context(), q)
+	require.NoError(t, err)
+	require.Equal(t, "ready", out.Attempts.Status)
+	var filtered map[string]any
+	require.NoError(t, json.Unmarshal(out.Attempts.Data, &filtered))
+	require.Equal(t, 0.0, filtered["summary"].(map[string]any)["attempts"], "unobserved historical aliases cannot match a physical model")
+	require.Equal(t, 1.0, filtered["request_scope"].(map[string]any)["unknown_attempts"])
+	q.ModelScope = "recorded"
+	out, err = f.repo.ReadUpstreamOperations(t.Context(), q)
 	require.NoError(t, err)
 	require.Equal(t, "unsupported_scope", out.Attempts.Status)
 	q.ModelScope = "public"
@@ -143,4 +155,68 @@ func TestUpstreamAttemptsDeduplicateFallbackAndKeepUnknownCapture(t *testing.T) 
 	metrics, ok := empty["summary"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, 0.0, metrics["attempts"])
+}
+
+func TestUpstreamAttemptsRequestMetadataBucketsAndModelFilter(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	repo := newUsageLogRepositoryWithSQL(integrationEntClient, integrationDB)
+	now := time.Now().UTC().Truncate(time.Second)
+	end := 100.0
+	observation := func(model, tier, effort string) *requesttiming.UpstreamRequestObservation {
+		return &requesttiming.UpstreamRequestObservation{Version: 1, Status: "observed", Source: "http_transport_body", Protocol: "responses", Model: model, ServiceTier: tier, ReasoningEffort: effort, Stream: true}
+	}
+	future, wrongSource, invalid := observation("wire-a", "priority", "high"), observation("wire-a", "priority", "high"), observation("wire-a", "future-tier", "high")
+	future.Version, wrongSource.Source = 9, "websocket_generation_payload"
+	for i, request := range []*requesttiming.UpstreamRequestObservation{
+		observation("wire-a", "priority", "high"), observation("wire-b", "default", "low"), observation("wire-a", "default", "high"), nil, future, wrongSource, invalid,
+	} {
+		s := requesttiming.Snapshot{Version: 1, TraceID: uuid.NewString(), StartedAt: now, TotalMS: 100,
+			Attempts: []requesttiming.Attempt{{Number: 1, Kind: "http", AccountID: f.account, EndMS: &end, Status: 502,
+				UpstreamRequest: request, RouteFingerprint: strings.Repeat("b", 64),
+				UpstreamCredential: &requesttiming.UpstreamCredentialObservation{Status: "observed", Source: "http_transport_handoff", Fingerprint: strings.Repeat("a", 64)}}}}
+		if i == 1 || i == 2 {
+			s.Attempts[0].Status = 200
+			s.Attempts[0].Terminal = "completed"
+		}
+		t.Cleanup(func() {
+			_, _ = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, s.TraceID)
+		})
+		require.NoError(t, repo.writeConnectionTrace(t.Context(), service.ConnectionTrace{Source: "application", TraceID: s.TraceID, StartedAt: now, RequestID: uuid.NewString(), APIKeyID: f.key, UserID: f.user, AccountID: f.account, GroupID: f.group, Model: "public-alias", Path: "/v1/responses", Detail: s}))
+	}
+	q := service.UpstreamOperationsFilter{From: now.Add(-time.Minute), Until: now.Add(time.Minute), GroupID: f.group, AccountID: f.account, ModelScope: "upstream", Dimension: "account", Sort: "requests", Direction: "desc", Page: 1, PageSize: 20}
+	read := func() map[string]any {
+		t.Helper()
+		out, err := f.repo.ReadUpstreamOperations(t.Context(), q)
+		require.NoError(t, err)
+		require.Equal(t, "ready", out.Attempts.Status, out.Attempts.Error)
+		var data map[string]any
+		require.NoError(t, json.Unmarshal(out.Attempts.Data, &data))
+		return data
+	}
+	all := read()
+	require.Equal(t, 7.0, all["summary"].(map[string]any)["attempts"])
+	require.Equal(t, 3.0, all["request_scope"].(map[string]any)["observed_attempts"])
+	require.Equal(t, 4.0, all["request_scope"].(map[string]any)["unknown_attempts"])
+	require.Equal(t, 4.0, all["total"], "model/tier/effort and unknown metadata must not merge")
+	q.Model = "wire-a"
+	filtered := read()
+	summary := filtered["summary"].(map[string]any)
+	require.Equal(t, 2.0, summary["attempts"])
+	require.Equal(t, 1.0, summary["failed"])
+	require.Equal(t, 1.0, summary["succeeded"])
+	require.Equal(t, 0.5, summary["confirmed_success_rate"])
+	require.Equal(t, all["request_scope"], filtered["request_scope"], "unknown model attempts remain visible in the cohort coverage rather than being assigned to the selected model")
+	for _, value := range filtered["rows"].([]any) {
+		row := value.(map[string]any)
+		require.Equal(t, "wire-a", row["upstream_model"])
+		require.Equal(t, "observed", row["upstream_model_status"])
+		require.Equal(t, "responses", row["upstream_protocol"])
+		require.Equal(t, true, row["upstream_stream"])
+		require.Equal(t, "not_observed", row["upstream_group_status"])
+	}
+	q.ModelScope = "public"
+	q.Model = "public-alias"
+	require.Equal(t, all["summary"], read()["summary"])
+	q.Model = "wire-a"
+	require.Equal(t, 0.0, read()["summary"].(map[string]any)["attempts"], "wire and public model scopes are distinct")
 }

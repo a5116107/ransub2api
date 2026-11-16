@@ -11,13 +11,14 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 )
 
-// Passive header-only observation shared by native HTTP transports (including
-// TLS and regional egress). No body reads, retries, logging or storage IO.
+// Passive observation shared by native HTTP transports (including TLS and
+// regional egress). No pre-reading, retries, logging or storage IO.
 type accountResponseTransport struct{ base http.RoundTripper }
 
 func (t *accountResponseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if requesttiming.From(req.Context()) != nil {
 		requesttiming.RecordUpstreamCredentials(req.Context(), config.UpstreamCredentialFingerprints(req))
+		req = requesttiming.ObserveUpstreamRequest(req)
 	}
 	resp, err := t.base.RoundTrip(req)
 	if err == nil && resp != nil && req.Context().Err() == nil && isAccountInferenceRequest(req) {
