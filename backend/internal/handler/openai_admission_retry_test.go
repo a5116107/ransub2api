@@ -115,6 +115,61 @@ func TestOpenAIInitialAdmissionReselectsBeforeSending(t *testing.T) {
 	}
 }
 
+func TestOpenAIBareServerFailureSwitchesOnlyBeforeOutput(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			for _, outcome := range []string{"server_error", "partial_output", "policy"} {
+				t.Run(fmt.Sprintf("passthrough=%t/stream=%t/%s", passthrough, stream, outcome), func(t *testing.T) {
+					repo := &initialAdmissionRepo{}
+					upstream := &excelBPSFailoverUpstream{answer: func(call int) *http.Response {
+						if call > 0 {
+							return excelBPSCompleted()
+						}
+						body := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_failed\"}}\n\n"
+						if outcome == "partial_output" && stream {
+							body += "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n"
+						}
+						code := "internal_server_error"
+						if outcome == "policy" {
+							code = "content_policy_violation"
+						}
+						body += fmt.Sprintf("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"code\":%q,\"message\":\"siwc executor: stream ended without terminal event\"}}\n\n", code)
+						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}
+					}}
+					h := newInitialAdmissionHandler(t, repo, upstream)
+					for i := range repo.accounts {
+						a := &repo.accounts[i]
+						a.Type = service.AccountTypeAPIKey
+						a.Credentials = map[string]any{"api_key": fmt.Sprintf("fixture-key-%d", a.ID), "base_url": "https://api.example.test"}
+						a.Extra = map[string]any{"openai_passthrough": passthrough}
+					}
+					c, rec := newExcelBPSFailoverTestContext(context.Background(), stream)
+					body := fmt.Sprintf(`{"model":"gpt-6-astra","input":"hello","stream":%t}`, stream)
+					c.Request.Body = io.NopCloser(strings.NewReader(body))
+					c.Request.ContentLength = int64(len(body))
+					h.Responses(c)
+					if outcome == "policy" || (outcome == "partial_output" && stream) {
+						require.Equal(t, []int64{1}, upstream.calls())
+						require.NotContains(t, rec.Body.String(), "resp_bps_failover")
+						if stream && outcome == "partial_output" {
+							require.Contains(t, rec.Body.String(), "partial answer")
+						}
+					} else {
+						require.Equal(t, []int64{1, 2}, upstream.calls(), rec.Body.String())
+						require.Equal(t, http.StatusOK, rec.Code)
+						require.Contains(t, rec.Body.String(), "resp_bps_failover")
+						require.NotContains(t, rec.Body.String(), "resp_failed")
+						require.NotContains(t, rec.Body.String(), "internal_server_error")
+					}
+					repo.slots.mu.Lock()
+					defer repo.slots.mu.Unlock()
+					require.Equal(t, repo.slots.accountAcquireCalls, repo.slots.accountReleaseCalls)
+				})
+			}
+		}
+	}
+}
+
 func TestOpenAIInitialAdmissionReselectsDisabledAccountBeforeSending(t *testing.T) {
 	for _, chat := range []bool{false, true} {
 		t.Run(fmt.Sprintf("chat=%t", chat), func(t *testing.T) {

@@ -27,6 +27,33 @@ func phaseGuardTestRequest(t *testing.T, svc *OpenAIGatewayService, c *gin.Conte
 	return req
 }
 
+func TestOpenAIHTTPRecoverableHeaderTimeoutRetainsAttemptNotFinalFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, keepalive := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unwritten", true: "keepalive"}[keepalive], func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			if keepalive {
+				c.Header("Content-Type", "text/event-stream")
+				_, err := c.Writer.Write([]byte(": keepalive\n\n"))
+				require.NoError(t, err)
+			}
+			before := rec.Body.String()
+			err := handleOpenAIHTTPPhaseError(c, &Account{ID: 7, Platform: PlatformOpenAI}, &openAIHTTPPhaseTimeout{phase: "response_header_timeout"})
+			var failover *UpstreamFailoverError
+			require.ErrorAs(t, err, &failover)
+			require.True(t, failover.HeaderTimeoutSubmitted)
+			require.Equal(t, keepalive, failover.SafeToFailoverAfterWrite)
+			require.Equal(t, before, rec.Body.String(), "a recoverable attempt must not emit a failure")
+			require.Empty(t, GetOpsStreamErrors(c), "a later successful account must not inherit a final request failure")
+			events, exists := c.Get(OpsUpstreamErrorsKey)
+			require.True(t, exists)
+			require.Len(t, events, 1, "retain the timed-out account's provider-health evidence")
+		})
+	}
+}
+
 func TestOpenAIUploadDeadlineSurvivesDetachAndDoesNotAuthorizeReplay(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{OpenAIUploadTimeoutSeconds: 1}}}

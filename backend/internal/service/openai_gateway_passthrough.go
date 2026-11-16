@@ -1827,6 +1827,29 @@ func openAIStreamErrorEventShouldFailover(payload []byte, message string) bool {
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
 	}
+	// Compatible relays can terminate an HTTP 200 stream with a bare error
+	// carrying an explicit server failure, without any "please retry" wording.
+	// Keep request/history/policy vetoes authoritative, and do not infer a
+	// server failure merely from the classifier's default 502 for unknown errors.
+	if openAIStreamFailedEventShouldFailover(payload, message) {
+		serverFailure := false
+		for _, path := range openAIStreamErrorStatusPaths {
+			status := int(gjson.GetBytes(payload, path).Int())
+			if status >= 400 && status < 500 {
+				return false
+			}
+			serverFailure = serverFailure || (status >= 500 && status <= 599)
+		}
+		for _, path := range []string{"response.error.type", "error.type", "response.error.code", "error.code"} {
+			switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, path).String())) {
+			case "server_error", "internal_server_error":
+				serverFailure = true
+			}
+		}
+		if serverFailure {
+			return true
+		}
+	}
 	combined := strings.ToLower(strings.TrimSpace(message + " " +
 		gjson.GetBytes(payload, "error.message").String() + " " +
 		gjson.GetBytes(payload, "response.error.message").String()))
