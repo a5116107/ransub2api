@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6错误出口06feec672及固定池WS源码285add374已验证并同步。
+任务：D2.6.10本地验收done；原28项20done/8部分保持。
 授权：统一H盘工作树；本地代码/测试/文档及功能分支提交同步；不CI/部署。
-验证：候选/WS双轮race1588，vet/增量lint/Linux退出0；同scope计时/PG/UI历史证据保留。
-实证：四模式真实WS两模型与撤销拒发、黏性/重选/槽后刷新通过；动态bridge保持未知，非生产。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/ctx-candidate-*（8项源码摘要）。
-下一动作：D2.6其他入站转换/动态WS→D3.2/D8.1；D5.3全物理失败/WS仍缺。
-等待：供应商实际scope/基线/缓存域；历史fixture/scratch拒删见末节。
-Attempt：12
+验证：候选/WS/Chat双轮race2208，vet/增量lint/Linux退出0；7项输入drift0。
+实证：原生Chat HTTP/SSE映射/fast、黏性/槽后复核及隐藏历史未知/拒发；非生产。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/chat-ingress-*。
+下一动作：其余D2.6转换/动态WS合同→D3.2/D8.1；沿单分支不拆PR。
+等待：供应商scope/基线/缓存域；宿主拒删中间日志及历史fixture/scratch。
+Attempt：14
 <!-- resume:end -->
 
 ## 目标与入口
@@ -26,15 +26,14 @@ Attempt：12
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.6.1–.9已本地验；其他入站转换/动态WS、受管产品与真实来源仍缺；D2.7待供应商 |
+| D2 | in_progress | D2.6.1–.10已本地验；其他入站转换/动态WS、受管产品与真实来源仍缺；D2.7待供应商 |
 | D2.1 | done | 同步新鲜度/高峰及同源预演、CLI已验 |
 | D2.2 | done | 固定组/null/明确0及SQL失效恢复已验 |
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
 | D2.6.1–.4 | done | 自动/手工声明、精确预演、New API同源绑定/TTL/重放、SQL CAS、HTTP/WS/UI本地已验；逐项证据见DECISIONS |
-| D2.6.5–.8 | done | 四类候选/物理发送及错误出口通用校验已验；新增红测后双轮race1342/vet/增量lint/Linux通过；其余动态范围开放 |
-| D2.6.9 | done | 固定ctx_pool/shared/dedicated候选；四模式真实WS逐轮/撤销、两调度器/槽后刷新；race1588/vet/lint/Linux已验，仅本地 |
+| D2.6.5–.10 | done | Responses/原生Chat/固定转Chat及透传/池WS候选；HTTP/SSE/WS、隐藏历史、黏性/重选/槽后刷新；race2208/vet/增量lint/Linux，仅本地 |
 | D3 | in_progress | .3漏计/重选及5/3/1历史已上线；本地冷却回池双轮646pass待发布；D3.2多维/基线仍缺，D3.3非文本待scope |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
@@ -57,7 +56,7 @@ Attempt：12
 
 ## 剩余执行顺序与等待
 
-- 本地可执行：D2.6其他入站转换/动态WS→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.3完整物理失败/WS与D5.4仍缺。不因缺供应商数据停做本地合同。
+- 本地可执行：D2.6其他入站转换/动态WS的精确输出scope合同→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.3完整物理失败/WS与D5.4仍缺。不因缺供应商数据停做本地合同。
 - 独立发布：D9.1先核当前生产/可部署差异，按原发布边界交付冷却补丁；不可整分支带入未验功能。本轮不发布。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。
@@ -75,4 +74,4 @@ Attempt：12
 - D5.3旧timing/UI证据匹配输入复用，PATH旧lint不使用。独立PG55441/Redis56441及预览18441/18442已停，四端口无监听；本轮脚本已回收，原scratch仍待删除策略解除。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。
 - D2.6.3旧日志及D2.6.4九份newapi日志压缩/删除命令均被策略拒绝，执行/删除0；原evidence待宿主/拥有者清理，不换工具重试。
-- 本轮ctx-candidate-focused.jsonl重复中间日志精确删除同被宿主策略拦截、执行0；仍在上述evidence目录，待拥有者解除删除限制。
+- ctx-candidate-focused.jsonl及本轮chat-ingress-focused-final.jsonl的精确删除均在进程启动前被宿主拦截，预检/删除0；原evidence路径保留，owner宿主/拥有者，解除限制后清理。

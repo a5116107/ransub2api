@@ -53,9 +53,10 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 	for _, protocol := range []string{"chat_http", "responses_http"} {
 		for _, stream := range []bool{false, true} {
 			for _, tc := range []struct {
-				name, inputOptions, tier, effort string
-				policy                           *OpenAIFastPolicySettings
-				force, passthrough, nativeOnly   bool
+				name, inputOptions, tier, effort, model     string
+				policy                                      *OpenAIFastPolicySettings
+				force, passthrough, nativeOnly, chatIngress bool
+				history                                     bool
 			}{
 				{name: "default", tier: "unspecified", effort: "unspecified"},
 				{name: "compatible none omitted", inputOptions: `,"reasoning":{"effort":"none"}`, tier: "unspecified", effort: "unspecified"},
@@ -66,12 +67,30 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 				{name: "missing tier forces priority", tier: "priority", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}},
 				{name: "native minimal becomes none", inputOptions: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "none", nativeOnly: true},
 				{name: "mapped model fast policy", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", nativeOnly: true, policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierPriority, Action: BetaPolicyActionFilter, Scope: BetaPolicyScopeAll, ModelWhitelist: []string{"wire-fixture"}, FallbackAction: BetaPolicyActionPass}}}},
+				{name: "chat ingress plain", tier: "unspecified", effort: "unspecified", chatIngress: true},
+				{name: "chat ingress none", inputOptions: `,"reasoning_effort":"none"`, tier: "unspecified", effort: "none", chatIngress: true},
+				{name: "chat ingress minimal", inputOptions: `,"reasoning_effort":"minimal"`, tier: "unspecified", effort: "minimal", chatIngress: true},
+				{name: "chat ingress glm xhigh", inputOptions: `,"reasoning_effort":"xhigh"`, tier: "unspecified", effort: "max", model: "glm-4.7", chatIngress: true},
+				{name: "chat ingress glm medium", inputOptions: `,"reasoning_effort":"medium"`, tier: "unspecified", effort: "high", model: "glm-4.7", chatIngress: true},
+				{name: "chat ingress deepseek user only", tier: "unspecified", effort: "unspecified", model: "deepseek-v4-flash", chatIngress: true},
+				{name: "chat ingress deepseek hidden history", tier: "unspecified", effort: "unspecified", model: "deepseek-v4-flash", chatIngress: true, history: true},
+				{name: "chat ingress priority high", inputOptions: `,"service_tier":"priority","reasoning_effort":"high"`, tier: "priority", effort: "high", chatIngress: true},
+				{name: "chat ingress group force", tier: "priority", effort: "unspecified", force: true, chatIngress: true},
+				{name: "chat ingress filter", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy(), chatIngress: true},
+				{name: "chat ingress mapped filter", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierPriority, Action: BetaPolicyActionFilter, Scope: BetaPolicyScopeAll, ModelWhitelist: []string{"wire-fixture"}, FallbackAction: BetaPolicyActionPass}}}, chatIngress: true},
 			} {
 				if tc.nativeOnly && protocol != "responses_http" {
 					continue
 				}
+				if tc.chatIngress && protocol != "chat_http" {
+					continue
+				}
 				t.Run(fmt.Sprintf("%s/%s/stream=%v", protocol, tc.name, stream), func(t *testing.T) {
-					model := "wire-fixture"
+					mappedModel := "wire-fixture"
+					if tc.model != "" {
+						mappedModel = tc.model
+					}
+					model := mappedModel
 					if protocol == "responses_http" && tc.passthrough {
 						model = "gpt-fixture"
 					}
@@ -112,7 +131,7 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 					}
 					account.Extra["openai_passthrough"] = tc.passthrough
 					account.Credentials["base_url"] = server.URL
-					account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
+					account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": mappedModel}
 					at := time.Now().UTC().Add(-time.Second)
 					_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
 					require.NoError(t, err)
@@ -126,17 +145,37 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 						return server.Client().Do(request)
 					}}
 					body := []byte(fmt.Sprintf(`{"model":"gpt-fixture","input":"private prompt","stream":%v%s}`, stream, tc.inputOptions))
+					path := "/v1/responses"
+					if tc.chatIngress {
+						path = "/v1/chat/completions"
+						body = []byte(fmt.Sprintf(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"stream":%v%s}`, stream, tc.inputOptions))
+						if tc.history {
+							body = []byte(fmt.Sprintf(`{"model":"gpt-fixture","messages":[{"role":"assistant","content":"private previous answer"},{"role":"user","content":"private continuation"}],"stream":%v%s}`, stream, tc.inputOptions))
+						}
+					}
 					group := profitControlTestGroup(7, 0.5, 0)
 					group.ForceOpenAIFast = tc.force
-					ctx := billingCandidateContext(t, svc, group, string(body))
+					ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+					request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+					ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body)
 					vetoed, reason := openAIProfitControlVetoReason(ctx, account)
 					require.False(t, vetoed, reason)
 					forward := func() (*OpenAIForwardResult, error) {
 						c, _ := gin.CreateTestContext(httptest.NewRecorder())
-						c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
+						c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)).WithContext(ctx)
+						if tc.chatIngress {
+							return svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
+						}
 						return svc.Forward(ctx, c, account, body)
 					}
 					result, err := forward()
+					if tc.history {
+						require.Nil(t, result)
+						require.True(t, IsOpenAITurnAdmissionError(err))
+						require.ErrorContains(t, err, "profit_upstream_scope_unknown")
+						require.Empty(t, observed, "hidden history without its own declaration must never reach the physical server")
+						return
+					}
 					require.NoError(t, err)
 					require.NotNil(t, result)
 					select {

@@ -16,11 +16,12 @@ import (
 type upstreamBillingCandidateKey struct{}
 
 type upstreamBillingCandidate struct {
-	scope       *AvailabilityRequestScope
-	fastPolicy  *OpenAIFastPolicySettings
-	policyKnown bool
-	chatHasText bool
-	gateway     *OpenAIGatewayService
+	scope            *AvailabilityRequestScope
+	fastPolicy       *OpenAIFastPolicySettings
+	policyKnown      bool
+	chatHasText      bool
+	chatHasAssistant bool
+	gateway          *OpenAIGatewayService
 }
 
 func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
@@ -31,8 +32,8 @@ func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
 }
 
 // WithUpstreamBillingCandidateRequest records prompt-free ingress metadata
-// after channel mapping. Predictable native HTTP Responses and fixed Responses
-// to Chat text conversions share the original wire transformers. All routes
+// after channel mapping. Predictable native HTTP Responses/Chat and fixed
+// Responses to Chat text conversions share the original wire transformers. All routes
 // keep their original final-send checks.
 // Unknown metadata/policy defers scope-specific filtering, never qualifies
 // supply. Declaration expiry, validity and binding still apply to every route.
@@ -40,7 +41,7 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 	candidate := upstreamBillingCandidate{}
 	if upstreamBillingCandidateMayFilter(ctx) && request != nil && !isOpenAIResponsesLiteHeader(request.Header.Get(responsesLiteHeader)) {
 		candidate.scope = availabilityScopeForRequest(request, body)
-		if candidate.scope != nil && candidate.scope.Protocol != "responses_http" {
+		if candidate.scope != nil && candidate.scope.Protocol != "responses_http" && candidate.scope.Protocol != "chat_http" {
 			candidate.scope = nil
 		}
 	}
@@ -48,6 +49,14 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 		input := gjson.GetBytes(body, "input")
 		candidate.chatHasText = input.Type == gjson.String || input.IsArray() && input.Get("#").Int() > 0 ||
 			strings.TrimSpace(gjson.GetBytes(body, "instructions").String()) != ""
+		conversation := input
+		if candidate.scope.Protocol == "chat_http" {
+			conversation = gjson.GetBytes(body, "messages")
+		}
+		conversation.ForEach(func(_, message gjson.Result) bool {
+			candidate.chatHasAssistant = message.Get("role").String() == "assistant"
+			return !candidate.chatHasAssistant
+		})
 	}
 	return s.withUpstreamBillingCandidatePolicy(ctx, candidate)
 }
@@ -87,7 +96,7 @@ func (s *OpenAIGatewayService) withUpstreamBillingCandidatePolicy(ctx context.Co
 	if candidate.scope != nil {
 		candidate.gateway = s
 		// Parsed strings can be slices of the complete input JSON. Detach the
-		// supported Responses fields before a long-lived context retains them.
+		// supported scope fields before a long-lived context retains them.
 		candidate.scope.Model = strings.Clone(candidate.scope.Model)
 		candidate.scope.ServiceTier = strings.Clone(candidate.scope.ServiceTier)
 		candidate.scope.ReasoningEffort = strings.Clone(candidate.scope.ReasoningEffort)
@@ -173,6 +182,26 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		controlledMode(ctx) == nil {
 		if candidate.scope.Protocol == "responses_ws_v2" {
 			scope = candidate.gateway.upstreamBillingWSCandidateScope(ctx, account, *candidate.scope)
+		} else if candidate.scope.Protocol == "chat_http" {
+			// Chat ingress may also convert to Responses/Anthropic. Only the
+			// fixed raw Chat route is predictable under this text descriptor.
+			if resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil) == APIProtocolChatCompletions {
+				request, body := billingApplicabilityScopeRequest(*candidate.scope)
+				model := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, candidate.scope.Model, ""))
+				if !isOpenAIImageGenerationModel(model) {
+					body = ReplaceModelInBody(body, model)
+					if normalized, changed := NormalizeGLMOpenAIReasoningEffort(body, model); changed {
+						body = normalized
+					}
+					var err error
+					body, err = applyOpenAIFastPolicyBody(ctx, account, model, body, func(tier string) (string, string) {
+						return evaluateOpenAIFastPolicyWithSettings(candidate.fastPolicy, openAIFastPolicyUserID(ctx), account, model, tier)
+					})
+					if err == nil {
+						scope = availabilityScopeForRequest(request, body)
+					}
+				}
+			}
 		} else {
 			protocol := resolveUpstreamProtocol(account, APIProtocolResponses, "", nil)
 			nativeHTTP := protocol == APIProtocolResponses &&
@@ -230,6 +259,14 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 				}
 				scope = availabilityScopeForRequest(request, body)
 			}
+		}
+	}
+	if scope != nil && scope.Protocol == "chat_http" && candidate.chatHasAssistant {
+		_, body := billingApplicabilityScopeRequest(*scope)
+		if requiresDeepSeekChatReasoning(account, body) {
+			// The actual CC pipeline adds reasoning_content to assistant history.
+			// Do not attest that hidden-history wire shape with a plain-text scope.
+			scope = nil
 		}
 	}
 	return upstreamBillingCandidateScopeVetoReason(account, scope, at)

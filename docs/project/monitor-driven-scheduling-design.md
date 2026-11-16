@@ -680,7 +680,7 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 
 - 首批提前过滤只覆盖可确定的OpenAI API Key原生HTTP Responses自动透传。该路径发送渠道映射后的body模型，不再次套用账号model_mapping；复用原effort规则，自动透传保留显式`none`，不将其误作省略。请求中的fast策略使用原改写函数与同一请求快照，包含用户规则、强制priority、缺省档位规则和filter，选号循环不逐账号读设置或发探测。设置读取失败不假定普通档位，也不改变原发送阶段的错误行为。
 - 原高级/legacy过滤、会话黏性与failover、等待及最新账号复核共享否决原因。范围不合格时保留原会话绑定；其他合格线路可继续提供服务，恢复后的绑定按原策略参与复用，不靠删除绑定换线。所有合格线路用尽时沿原空池语义返回，不越过倍率、组权限、人工停用或共享Key并发限制。
-- 关闭利润门或显式抑制请求不新增资格过滤。声明无效、到期或绑定失配对所有scope提前拒绝；有效声明遇到尚未覆盖的协议转换、按模型/入站分流、受管/影子凭据、Copilot/CN特殊路径、动态WS、compact、Lite和无法解析的工具/媒体scope时仍是“候选范围未确定”，继续原最终HTTP/逐WS轮终检。固定Responses转Chat文本见5.3.6，原生Responses非透传见5.3.8，WS透传/固定池首帧分别见5.3.7/5.3.9；不将局部覆盖等同全部路径或严格资格闭合。fast策略明确block时保留原403，不将策略拒绝伪装成供应商空池。
+- 关闭利润门或显式抑制请求不新增资格过滤。声明无效、到期或绑定失配对所有scope提前拒绝；有效声明遇到尚未覆盖的协议转换、按模型/入站分流、受管/影子凭据、Copilot/CN特殊路径、动态WS、compact、Lite和无法解析的工具/媒体scope时仍是“候选范围未确定”，继续原最终HTTP/逐WS轮终检。固定Responses转Chat文本见5.3.6，原生Responses非透传见5.3.8，WS透传/固定池首帧分别见5.3.7/5.3.9，原生Chat入站见5.3.10；不将局部覆盖等同全部路径或严格资格闭合。fast策略明确block时保留原403，不将策略拒绝伪装成供应商空池。
 - 选号推断不是物理发送证据。实际地址/凭据、固定组、模型/tier/effort及声明到期仍由发送前检查重新核对；等待后声明或账号变化必须失效。观测沿原按组有界计数增加`veto_upstream_scope_total`，不保存请求正文、凭据或逐请求日志，不流入下游缓存命中率。
 
 本地回归、来源对照与交付结果以STATE/DECISIONS为准；其他转换和尚未覆盖WS路径的提前资格、供应商真实合同、完整受管产品和生产加载仍开放。原28项总数保持。
@@ -719,6 +719,14 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 - 仅当原协议解析器确定WSv2、关闭smart protocol且关闭HTTPBridge时提前评估池模式。原生池按**规范化后完整载荷**判断自动bridge，元数据骨架没有足够信息；启用bridge即延后，不拿原始长度或骨架长度猜测最终协议。映射为图片模型同样延后，不把文本声明外推为媒体资格。
 - 首帧描述仍在选号后清除，原槽后最新账号、逐轮及物理写入前检查保留。声明撤销后仅阻止相应scope，不污染下一轮新模型；不因无输出或本地候选失败增加重放权限。有效声明的策略block沿原错误语义处理，延后路径仍复核通用过期/绑定有效性。
 - 验收覆盖四模式模型/effort/tier变换、两调度器的黏性/重选/恢复、槽后声明刷新，以及真实本地WebSocket两次不同模型的发送和第三次撤销scope的拒发；不以内存骨架或模拟写入代替网络发送。双轮race为1588条test pass、0fail/skip/race，vet/增量fast lint/Linux构建退出0，8项源码/依赖摘要drift0；含子例与双轮，非1588个独立场景。最终命令、结果与源码身份见DECISIONS；实际供应商合同、全部动态转换及受管资格继续开放。
+
+#### 5.3.10 原生Chat Completions入站候选（D2.6.10，本地子验收）
+
+原Chat handler在Key/组effort规则及渠道模型映射之后，沿同一个`WithUpstreamBillingCandidateRequest`捕获文本scope；在普通选号、黏性、重选及抢槽后消费原倍率适用声明，不另建调度器或转发路径。原生Chat→Chat只对固定OpenAI API Key路由提前预测，复用实际转发中的账号模型映射/归一化、GLM effort归一化及fast策略快照；`none`/`minimal`按原Chat语义保留，不套Responses的过滤规则。
+
+- 候选不保存正文、messages或提示词闭包；复制独立模型/tier/effort元数据，仅另外保存是否包含assistant历史的布尔值。原Chat发送会对DeepSeek语义的assistant历史补入`reasoning_content`；原生Chat与固定Responses→Chat都延后这种隐藏历史的精确预测，不把纯文本声明外推到新增字段。普通Chat历史及DeepSeek仅user输入保持原过滤；通用声明有效性与最终实际body终检仍保留。未知设置、策略block和未知scope只延后精确预测；关闭/抑制利润门维持兼容。
+- Chat→Responses转换会增加`include=reasoning.encrypted_content`，显式effort还会增加`reasoning.summary=auto`；这些不是现有纯文本scope已观察的能力。Chat→Anthropic、Mistral/CN等其他平台、Responses形状的Chat入站、工具/媒体与动态路由仍延后，不把入站URL当实际协议证据，保留原物理发送终检。
+- 验收覆盖两调度器的普通/黏性/排除重选/恢复、槽已取得与等待后复核、完整Chat handler的渠道与账号双映射，以及实际转发路径在本地真实HTTP/SSE网络中的最终模型/tier/effort。撤销适用声明后须在实际网络写入前拒发；健康原绑定不被候选否决删除，不扩大跨线路重放权限。最终双轮race为2208条test pass、0fail/skip/race，vet/增量fast lint/Linux构建退出0，7项输入drift0；计数含子例与双轮，非2208个独立场景。具体命令及原失败见STATE/DECISIONS；本项不是生产加载或严格产品闭环证明。
 
 ### 5.4 采购分桶、产品组合与自动重归类（提案）
 
@@ -1767,7 +1775,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 
 | 范围 | 当前源码证据 | 尚缺什么 / 不能据此宣称什么 |
 | --- | --- | --- |
-| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.9。原生透传/非透传、固定转换及透传/固定池WS首帧候选已有本地证据；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
+| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.10。原生透传/非透传、固定转换、原生Chat入站及透传/固定池WS首帧候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
@@ -1787,7 +1795,7 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 
 | ID / 优先级 | 原位工作与依赖 | 可验收结果 / 外部边界 |
 | --- | --- | --- |
-| D2.6 / P0 | D2.6.1–.9声明/预演/来源、原生透传/非透传/固定Responses转Chat及透传/固定池WS首帧候选已有本地证据，见5.3.1–5.3.9；余其他入站转换、动态WS路径、受管资格与真实来源；依赖D2.1–D2.5 | .9四模式实际WS及候选链双轮race1588、vet/增量lint/Linux退出0，8项输入drift0；详见5.3.9。历史.8最终双轮race3764条test pass、0fail/skip/race，12份源码/依赖输入drift0；HTTP/SSE真实发送、撤销后物理拒发、两调度器/黏性/重选及媒体延后的通用声明检查已验。vet/增量fast lint/Linux退出0；历史.1–.7 SQL/UI及WS分层证据保留，不累加为独立场景总数。实际站点合同、其余转换/WS与严格资格仍开放，不增加原分母 |
+| D2.6 / P0 | D2.6.1–.10声明/预演/来源、原生Responses/Chat、固定Responses转Chat及透传/固定池WS首帧候选已有本地证据，见5.3.1–5.3.10；余其他入站转换、动态WS路径、受管资格与真实来源；依赖D2.1–D2.5 | .10候选/WS/Chat双轮race2208条test pass、0fail/skip/race；覆盖实际HTTP/SSE、两调度器/黏性/重选、槽后刷新及DeepSeek隐藏历史的未知/物理拒发边界，详见5.3.10及DECISIONS。历史.1–.9 SQL/UI/WS与静态证据保留，不累加为独立场景总数。最终vet/增量fast lint/Linux退出0、7项输入drift0；实际站点合同、其余转换/WS与严格资格仍开放，不增加原分母 |
 | D5.3 / P0 | 沿timing/usage及原运维入口建立上游原始缓存和同层指标聚合；依赖D2.5/D5.1 | 按最终Key摘要/实际组/模型/协议/档位/线路版本和窗口汇总，身份未知单列；请求命中、Token加权、覆盖、样本/新鲜度及业务/合成来源分开；复用TTFB/TTFS/首推理/首文本、输出停顿、完整成功与物理attempt的同scope口径，不把最终成功掩盖前序失败。与下游本人面板/计费桶隔离，30天边界/查询成本/权限验证；不以当前账号配置补历史 |
 | D3.2 / P0 | 扩展原quality/judge的分维度证据、独立参考、测量/策略版本和漂移；依赖D2.6 | 功能质量/模型身份/系统判题故障分开；独立TTL、覆盖、原因和配置变更失效，晚到不复活；夹具可先验合同，真实身份结论须实际独立基线，不因缺运行数据停做本地合同 |
 | D8.1 / P0 | 在原runner/计划/租约内完成多周期预算和覆盖编译；依赖D2.6/D5.3的scope定义 | 物理调用含分页、token、判题、全局/站点/共享Key并发、恢复预留与公平性统一计数；100绑定含故障不饥饿，补生产周期锁/多节点覆盖观察，耗尽不续绿；保存前预览并拒绝不可能周期。已有100绑定测试继续保留，不能用其替代预算总体验收 |
