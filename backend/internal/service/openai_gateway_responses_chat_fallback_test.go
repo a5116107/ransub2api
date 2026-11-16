@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -199,6 +200,110 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 					require.Empty(t, observed, "an excluded scope must not produce a physical send")
 				})
 			}
+		}
+	}
+}
+
+func TestBillingCandidateChatResponsesConversionKeepsUnknownWire(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, stream := range []bool{false, true} {
+		for _, effort := range []string{"", "high"} {
+			t.Run(fmt.Sprintf("stream=%v/effort=%s", stream, effort), func(t *testing.T) {
+				observed := make(chan []byte, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					payload, err := io.ReadAll(request.Body)
+					if err != nil {
+						t.Errorf("read converted request: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if request.URL.Path != "/v1/responses" {
+						t.Errorf("conversion used unexpected path %s", request.URL.Path)
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					observed <- payload
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_scope\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"wire-fixture\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\ndata: [DONE]\n\n")
+				}))
+				t.Cleanup(server.Close)
+				outgoing := billingApplicabilityEntry("responses_http", "priority", true)
+				ingress := billingApplicabilityEntry("chat_http", "priority", false)
+				for _, entry := range []map[string]any{outgoing, ingress} {
+					entry["model"] = "wire-fixture"
+					if effort != "" {
+						entry["reasoning_effort"] = effort
+					}
+				}
+				account := billingCandidateAccount(t, 921, outgoing, ingress)
+				account.Credentials["base_url"] = server.URL
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, outgoing, ingress), at)
+				require.NoError(t, err)
+				require.Equal(t, APIProtocolResponses, resolveUpstreamProtocol(account, APIProtocolChatCompletions, "", nil))
+				repo := &turnAdmissionRepo{account: account}
+				svc := newOpenAIGatewayServiceWithSettings(t, nil)
+				svc.cfg = rawChatCompletionsTestConfig()
+				svc.accountRepo, svc.requireLatestTurnAdmission = repo, true
+				svc.httpUpstream = &codexModelsHTTPUpstreamStub{do: func(request *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+					if err := CheckHTTPUpstreamSendGuard(request.Context()); err != nil {
+						return nil, err
+					}
+					return server.Client().Do(request)
+				}}
+				options := ""
+				if effort != "" {
+					options = fmt.Sprintf(`,"reasoning_effort":%q`, effort)
+				}
+				body := []byte(fmt.Sprintf(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"service_tier":"priority","stream":%v%s}`, stream, options))
+				group := profitControlTestGroup(7, 0.5, 0)
+				ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+				request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body)
+				vetoed, reason := openAIProfitControlVetoReason(ctx, account)
+				require.False(t, vetoed, "the excluded Chat declaration must not describe the actual Responses conversion: %s", reason)
+				forward := func(selected *Account) (*OpenAIForwardResult, error) {
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body)).WithContext(ctx)
+					return svc.ForwardAsChatCompletions(ctx, c, selected, body, "", "")
+				}
+				result, err := forward(account)
+				require.Nil(t, result)
+				require.True(t, IsOpenAITurnAdmissionError(err))
+				require.ErrorContains(t, err, "profit_upstream_scope_unknown")
+				require.Empty(t, observed)
+
+				// A legacy snapshot is a differential control, not strict supply.
+				// It proves the conversion and destination work without granting the
+				// encrypted output options a plain-text applicability contract.
+				legacy := *account
+				legacy.Extra = maps.Clone(account.Extra)
+				delete(legacy.Extra, UpstreamBillingManualApplicabilityExtraKey)
+				repo.account = &legacy
+				result, err = forward(&legacy)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				select {
+				case payload := <-observed:
+					require.Equal(t, "wire-fixture", gjson.GetBytes(payload, "model").String())
+					require.True(t, gjson.GetBytes(payload, "stream").Bool(), "Responses conversion always streams upstream")
+					require.Equal(t, "priority", gjson.GetBytes(payload, "service_tier").String())
+					require.Equal(t, "reasoning.encrypted_content", gjson.GetBytes(payload, "include.0").String())
+					if effort != "" {
+						require.Equal(t, effort, gjson.GetBytes(payload, "reasoning.effort").String())
+						require.Equal(t, "auto", gjson.GetBytes(payload, "reasoning.summary").String())
+					}
+					require.Nil(t, availabilityScopeForRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil), payload))
+				default:
+					t.Fatal("legacy control did not send the converted request")
+				}
+				repo.account = account
+				result, err = forward(account)
+				require.Nil(t, result)
+				require.ErrorContains(t, err, "profit_upstream_scope_unknown")
+				require.Empty(t, observed, "restoring the declaration must restore pre-send rejection")
+			})
 		}
 	}
 }

@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.10本地验收done；原28项20done/8部分保持。
+任务：D2.6.10及Chat→Responses未知边界本地已验；原28项20done/8部分。
 授权：统一H盘工作树；本地代码/测试/文档及功能分支提交同步；不CI/部署。
-验证：候选/WS/Chat双轮race2208，vet/增量lint/Linux退出0；7项输入drift0。
+验证：候选/WS/Chat双轮race2218，Chat→Responses对照10pass；vet/增量lint退出0，7项输入drift0；Linux复用同生产源码0。
 实证：原生Chat HTTP/SSE映射/fast、黏性/槽后复核及隐藏历史未知/拒发；非生产。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/chat-ingress-*。
-下一动作：其余D2.6转换/动态WS合同→D3.2/D8.1；沿单分支不拆PR。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/chat-{ingress,conversion}-*。
+下一动作：其余D2.6转换/动态WS的精确输出scope合同→D3.2/D8.1；不拆PR。
 等待：供应商scope/基线/缓存域；宿主拒删中间日志及历史fixture/scratch。
-Attempt：14
+Attempt：16
 <!-- resume:end -->
 
 ## 目标与入口
@@ -33,7 +33,7 @@ Attempt：14
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
 | D2.6.1–.4 | done | 自动/手工声明、精确预演、New API同源绑定/TTL/重放、SQL CAS、HTTP/WS/UI本地已验；逐项证据见DECISIONS |
-| D2.6.5–.10 | done | Responses/原生Chat/固定转Chat及透传/池WS候选；HTTP/SSE/WS、隐藏历史、黏性/重选/槽后刷新；race2208/vet/增量lint/Linux，仅本地 |
+| D2.6.5–.10 | done | Responses/原生Chat/固定转Chat及透传/池WS候选；HTTP/SSE/WS、隐藏历史、黏性/重选/槽后刷新；race2218/vet/增量lint/Linux，仅本地 |
 | D3 | in_progress | .3漏计/重选及5/3/1历史已上线；本地冷却回池双轮646pass待发布；D3.2多维/基线仍缺，D3.3非文本待scope |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
