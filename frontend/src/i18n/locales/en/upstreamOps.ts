@@ -75,13 +75,21 @@ export default {
       "physicalScopeUnknown": "The sent model, service tier or effort is unobserved. Historical, incomplete or oversized requests are not backfilled.",
       "requestMetadataObserved": "Sent metadata observed · Not model verification",
       "requestScopeCoverage": "Sent metadata observed {observed} / {total} · Unknown {unknown} · Coverage {coverage}. Coverage uses the selected account/ingress cohort; upstream-model filters do not assign unknown attempts to that model.",
-      "supplierScopeUnknown": "Actual supplier group, business/synthetic source and full capability scope remain unconfirmed; this is not strict product admission evidence.",
+      "supplierScopeUnknown": "Actual supplier group and full capability scope remain unconfirmed; this is not strict product admission evidence.",
       "cacheTitle": "Raw cache reports per attempt",
       "cacheScope": "Only completed upstream generations with valid raw counters provide cache samples. Failed, interrupted, unreported or unattributed attempts remain unknown in coverage. Token share is input-weighted; attempt hit share uses valid samples only. Separate from final billing and downstream Key request hit rates; not proof of cache retention or model identity.",
       "cacheHitRate": "Hit share of observed physical attempts",
       "cacheCounts": "Observed {observed} / {total} attempts · Unknown {unknown} · Cache read {read} / Total input {input} tokens",
       "waitScope": "Measured from this request's completed upload across retained failed, interrupted and successful attempts in this scope. Stage samples and unknown counts are independent; timing out before a byte or text arrives is not zero wait. Never borrowed from the final successful route or another retry. Capture can be incomplete; not a complete site success rate or scheduler score.",
       "wsWaitScope": "Measured from this generation send attempt, including local writes and retained failed, interrupted and successful turns in this scope. Stage coverage is independent; excludes handshakes and other turns. No HTTP first-byte evidence or mixed HTTP average; not a scheduler score."
+  },
+  "traffic": {
+    "title": "Traffic sources included above · separate buckets below",
+    "gateway_ingress": "Gateway entry point",
+    "account_connection_test": "Synthetic · account test",
+    "unknown": "Unknown / historical source missing",
+    "coverage": "Source recorded {known} / {total} · coverage {coverage}",
+    "scope": "Recorded by server entry points. Gateway traffic may include key-authenticated cache tests or other undeclared probes; it does not prove real business intent. Client headers, session names and current configuration are not attribution evidence. Missing history stays unknown. Retained observations do not cover all background probes and do not grant strict product admission."
   },
   "output": {
     "title": "Same-scope output pauses and throughput",

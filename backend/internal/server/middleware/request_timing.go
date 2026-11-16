@@ -25,7 +25,10 @@ func RequestTiming(recorders ...ConnectionTraceRecorder) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := strings.TrimRight(c.Request.URL.Path, "/")
 		endpoint := transportdiag.EndpointCategory(path)
-		if endpoint != "other" && len(recorders) > 0 && recorders[0] != nil {
+		if endpoint != "other" {
+			c.Request = c.Request.WithContext(requesttiming.WithTrafficSource(c.Request.Context(), requesttiming.TrafficGateway))
+		}
+		if len(recorders) > 0 && recorders[0] != nil {
 			recorder := recorders[0]
 			ctx := requesttiming.WithIndependentTurnObserver(c.Request.Context(), func(turn *requesttiming.Collector) {
 				bindConnectionTiming(c, path, recorder, turn)

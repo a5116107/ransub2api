@@ -1815,7 +1815,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
-| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.7已接最终Key/线路原始缓存、逐尝试发送模型/协议/档位及全部留存尝试的HTTP四阶段/独立WS三阶段等待；失败、中断和未知均保留覆盖分母。实际组、业务/合成来源、完整缓存及资格消费仍缺。D5.3继续开放；不以当前配置补历史身份 |
+| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.10已接最终Key/线路原始缓存、逐尝试发送scope、HTTP四阶段/独立WS三阶段等待及输出停顿/吞吐，并按服务端入口来源分桶；失败、中断和未知保留覆盖分母。实际组、受信外部检测来源、其余发送scope与资格消费仍缺，D5.3继续开放；不以当前配置补历史身份 |
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
@@ -1943,6 +1943,16 @@ D5.2、D6.1、D7.1/D7.2、D3.1及D2.1–D2.5/D4.1/D4.2的已验子范围继续�
 - 真实PG双轮race568条test pass、无fail/skip，计时包race761、观察员权限9；真实HTTP→PG→管理接口另连续10轮通过，UI/i18n59项及中英390/1440px、失败/未知/恢复/键盘分页已验。计数包含父子和重复轮次，非568个独立场景。1000失败/100凭据/20行分页约169–175ms，仍在原25s管理查询预算内。
 - 真实小数计时暴露JSON独立float64差值与PG十进制运算的上界误差，固定上/下舍入对照复现后将间隔上界容差与解析器1e-9约定对齐；倒序、缺失/错误下一次发送时间及编号仍拒绝，未放宽非数值、范围/身份或终态要求。旧查询同夹具缺少该结果而失败，当前通过；完整命令及边界见DECISIONS。
 - 支持已验证发送元数据的HTTP Responses/Chat Completions及独立WS；Messages/Gemini的解析器支持不外推为已知发送scope。实际供应商分组、业务/合成来源、完整能力范围及资格消费仍待原D5.3/D2.6等验收；本子项不提升生产、不建立第二套调度评分。旧应用忽略新增可选output JSON即可回退，无schema回退。
+
+#### D5.3.10 留存请求的服务端入口来源
+
+在原采集、连接诊断、用量诊断和两类上游统计中保留版本化的`traffic_source`，不增加表、迁移、路由、调度评分或计费规则。HTTP物理重试沿所属请求来源，独立WS生成轮次从原请求上下文继承；账号检测入口建立`account_connection_test/synthetic`，原网关入口建立`gateway_ingress/gateway`。来源在采集器首次绑定时冻结，快照复制隔离，检测子请求不得重标外层网关来源。
+
+- 这证明**服务端经过哪个入口**，不是客户端真实意图认证。当前分组缓存测试在浏览器中持下游Key走普通网关，也可能存在其他外部检测；仍列入网关入口，不按`X-Session-Id`、任意请求头、提示词、当前账号配置或账单回填“合成”或“真实业务”。受信的外部检测归类及全量后台探测分母继续归父验收，不以入口标记关闭它们。
+- 显式经过原独立诊断观察者的账号检测可复用原异步连接留存；未挂载观察者的后台检测仍只有原检测记录，不补造连接/用量。普通管理/健康请求不因挂载观察者自动生成诊断。账号检测不创建下游账单，也不继承下游售价组。
+- 同一凭据/线路/发送模型/协议/档位/effort/传输的逐尝试结果、等待、缓存及输出按来源再次分桶；最终用量缓存也独立按来源分桶，二者的样本分母保持不同。合计明确包含全部来源，分别返回来源构成、样本和覆盖，不能用合成检测的高命中填业务结果。
+- 旧记录、缺失、未来版本、错误类型、未知来源或来源/类别不匹配均保持未知；只读取原始留存JSON，不补写历史。唯一用量回源与连接去重沿原合同，来源分桶加入稳定分页顺序。实际供应商分组、模型身份、缓存域及当前严格产品资格不由该标记证明。
+- 原管理员渠道运维页展示三类来源计数/覆盖和逐行结论，使用原中英及手机布局。缺失/错误版本或不守恒数据按未知展示；下游本人/观察员时序裁剪管理员来源字段，数据库与原始缓存计数不变。旧应用忽略可选JSON即可回退，无schema回退；真实PG/API、HTTP/WS与权限/前端证据通过后才记本地done，生产独立验收。
 
 #### 执行顺序与解除条件
 

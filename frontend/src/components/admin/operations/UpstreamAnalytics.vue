@@ -47,9 +47,11 @@
             <p class="text-xs text-gray-500" data-testid="attempt-capture-coverage">{{ t('upstreamOps.attempts.capture', { complete: number(snapshot.attempts.data.capture.complete_traces, 0), total: number(snapshot.attempts.data.capture.traces, 0), unknown: number(snapshot.attempts.data.capture.unknown_traces, 0), coverage: percent(snapshot.attempts.data.capture.coverage) }) }}</p>
             <p v-if="snapshot.attempts.data.request_scope" class="text-xs leading-5 text-gray-500" data-testid="attempt-request-scope-coverage">{{ t('upstreamOps.attempts.requestScopeCoverage', { observed: number(snapshot.attempts.data.request_scope.observed_attempts, 0), total: number(snapshot.attempts.data.request_scope.attempts, 0), unknown: number(snapshot.attempts.data.request_scope.unknown_attempts, 0), coverage: percent(snapshot.attempts.data.request_scope.coverage) }) }}</p>
             <div data-testid="attempt-cache-summary"><UpstreamAttemptCacheMetrics :cache="snapshot.attempts.data.raw_cache" :attempts="snapshot.attempts.data.summary.attempts" /></div>
+            <UpstreamTrafficSources :traffic="snapshot.attempts.data.traffic" :samples="snapshot.attempts.data.summary.attempts" />
             <p v-if="!snapshot.attempts.data.summary.attempts" data-testid="attempt-empty">{{ t('upstreamOps.attempts.empty') }}</p>
             <ul class="grid min-w-0 gap-3 lg:grid-cols-2">
               <li v-for="(row, index) in snapshot.attempts.data.rows" :key="index" class="min-w-0 space-y-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="upstream-attempt-row">
+                <p class="text-xs font-medium" data-testid="attempt-traffic-source">{{ t(`upstreamOps.traffic.${trafficSource(row.traffic_source)}`) }}</p>
                 <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words text-xs text-gray-500">{{ row.transport }} / {{ row.protocol ?? t('upstreamOps.unknown') }} · {{ t('upstreamOps.attempts.ingressModel') }} {{ row.public_model || t('upstreamOps.unknown') }}</p>
                 <dl class="grid grid-cols-3 gap-2 tabular-nums"><div v-for="key in attemptKeys" :key="key"><dt class="text-xs text-gray-500">{{ t(`upstreamOps.attempts.${key}`) }}</dt><dd>{{ number(row[key], 0) }}</dd></div></dl>
@@ -83,9 +85,11 @@
               <div><dt class="text-sm text-gray-500">{{ t('upstreamOps.rawCache.coverage') }}</dt><dd class="text-2xl font-semibold tabular-nums" data-testid="upstream-cache-coverage">{{ percent(snapshot.raw_cache.data.summary.coverage) }}</dd></div>
             </dl>
             <p class="text-sm">{{ t('upstreamOps.rawCache.counts', { observed: number(snapshot.raw_cache.data.summary.observed_requests, 0), total: number(snapshot.raw_cache.data.summary.requests, 0), unknown: number(snapshot.raw_cache.data.summary.unknown_requests, 0), unattributed: number(snapshot.raw_cache.data.summary.unattributed_requests, 0) }) }}</p>
+            <UpstreamTrafficSources :traffic="snapshot.raw_cache.data.traffic" :samples="snapshot.raw_cache.data.summary.requests" />
             <p v-if="!snapshot.raw_cache.data.summary.requests" class="text-sm text-gray-500">{{ t('upstreamOps.empty') }}</p>
             <ul v-else class="grid min-w-0 gap-3 lg:grid-cols-2">
               <li v-for="(row, index) in snapshot.raw_cache.data.rows" :key="index" class="min-w-0 space-y-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="upstream-cache-row">
+                <p class="text-xs font-medium" data-testid="cache-traffic-source">{{ t(`upstreamOps.traffic.${trafficSource(row.traffic_source)}`) }}</p>
                 <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words">{{ row.public_model }} → {{ row.upstream_model ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words text-xs text-gray-500">{{ row.protocol ?? t('upstreamOps.unknown') }} / {{ row.transport ?? t('upstreamOps.unknown') }} · {{ row.service_tier || t('upstreamOps.unknown') }} · {{ row.reasoning_effort || t('upstreamOps.unknown') }}</p>
@@ -120,6 +124,7 @@ import QualityRoundAssessment from './QualityRoundAssessment.vue'
 import UpstreamWaitMetrics from './UpstreamWaitMetrics.vue'
 import UpstreamOutputMetrics from './UpstreamOutputMetrics.vue'
 import UpstreamAttemptCacheMetrics from './UpstreamAttemptCacheMetrics.vue'
+import UpstreamTrafficSources from './UpstreamTrafficSources.vue'
 import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics } from '@/api/admin/upstreamOperations'
 const { t } = useI18n()
 const attemptKeys = ['attempts', 'logical_requests', 'succeeded', 'failed', 'interrupted', 'unknown'] as const
@@ -136,6 +141,7 @@ let request=0, alive=true, controller: AbortController|undefined
 function number(v: number|null|undefined, decimals=6) { return v==null || !Number.isFinite(v) ? t('upstreamOps.unknown') : v.toLocaleString(undefined,{minimumFractionDigits:decimals,maximumFractionDigits:decimals}) }
 function percent(value: number | null | undefined) { return value != null && Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : t('upstreamOps.unknown') }
 function cacheStatus(value: UpstreamRawCacheMetrics) { return value.requests === 0 ? 'empty' : value.observed_requests === 0 ? 'unknown' : value.observed_requests < value.requests ? 'partial' : 'observed' }
+function trafficSource(source: string | undefined) { return source === 'gateway_ingress' || source === 'account_connection_test' ? source : 'unknown' }
 function formatMetric(m:UpstreamMetrics,key:typeof amountKeys[number]) {return number(m[key],0)}
 async function load() {
  const id=++request; controller?.abort(); controller=new AbortController(); loading.value=true; error.value=''; snapshot.value=null

@@ -2,10 +2,50 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi } from 'vitest'
 import { readOperations, type OperationsSnapshot } from '@/api/admin/upstreamOperations'
 import UpstreamChannelOperationsView from '../UpstreamChannelOperationsView.vue'
+import UpstreamTrafficSources from '@/components/admin/operations/UpstreamTrafficSources.vue'
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => ['upstreamOps.rawCache.waitSamples','upstreamOps.output.samples'].includes(key) ? `${key} ${values?.samples} ${values?.unknown} ${values?.coverage}` : key === 'upstreamOps.output.distribution' ? `${key} ${values?.mean} ${values?.p95} ${values?.max}` : key === 'upstreamOps.output.partial' ? `${key} ${values?.count} ${values?.max}` : key }) }))
 vi.mock('@/api/admin/upstreamOperations', () => ({ readOperations: vi.fn() }))
+
+describe('server-recorded traffic source composition', () => {
+ const traffic = { version: 1, source: 'server_recorded_entrypoints', samples: 10, known_samples: 2, unknown_samples: 8, coverage: .2,
+  rows: [{traffic_source:'gateway_ingress',samples:1},{traffic_source:'account_connection_test',samples:1},{traffic_source:'unknown',samples:8}] }
+ it('shows gateway, synthetic and unknown as separate counts with an explicit scope boundary',()=>{
+  const w=mount(UpstreamTrafficSources,{props:{traffic:traffic as never,samples:10}})
+  expect(w.get('[data-testid="traffic-gateway_ingress"] dd').text()).toBe('1')
+  expect(w.get('[data-testid="traffic-account_connection_test"] dd').text()).toBe('1')
+  expect(w.get('[data-testid="traffic-unknown"] dd').text()).toBe('8')
+  expect(w.text()).toContain('upstreamOps.traffic.scope')
+  w.unmount()
+ })
+ it.each(['missing','future','wrong_source','total_mismatch','counts','duplicate','unknown_source','negative','unsafe','coverage','nonfinite'])('keeps %s composition unknown',mode=>{
+  const changed=structuredClone(traffic)
+  switch(mode){
+   case 'future':changed.version=9;break
+   case 'wrong_source':changed.source='client_request_header';break
+   case 'total_mismatch':changed.samples=11;break
+   case 'counts':changed.known_samples=10;break
+   case 'duplicate':changed.rows[2]={traffic_source:'gateway_ingress',samples:8};break
+   case 'unknown_source':changed.rows[0].traffic_source='browser_declared';break
+   case 'negative':changed.rows[0].samples=-1;break
+   case 'unsafe':changed.known_samples=2**53;break
+   case 'coverage':changed.coverage=.9;break
+   case 'nonfinite':changed.coverage=Infinity;break
+  }
+  const w=mount(UpstreamTrafficSources,{props:{traffic:mode==='missing'?undefined:changed as never,samples:10}})
+  expect(w.get('[data-testid="traffic-gateway_ingress"] dd').text()).toBe('0')
+  expect(w.get('[data-testid="traffic-account_connection_test"] dd').text()).toBe('0')
+  expect(w.get('[data-testid="traffic-unknown"] dd').text()).toBe('10')
+  w.unmount()
+ })
+ it('does not claim full source coverage for an empty denominator',()=>{
+  const w=mount(UpstreamTrafficSources,{props:{traffic:{...traffic,samples:0,known_samples:0,unknown_samples:0,coverage:null,rows:[]},samples:0}})
+  expect(w.get('[data-testid="traffic-unknown"] dd').text()).toBe('0')
+  expect(w.text()).not.toContain('100.0%')
+  w.unmount()
+ })
+})
 describe('upstream channel definition', () => {
  it.each([
   { complete: true, outcome: 'passed', expected: 'channelOps.passed' },

@@ -377,6 +377,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, opts ...AccountTestOptions) (testErr error) {
 	collector, start := beginAccountConnectionTiming(c)
 	initAccountTestLogger(c, accountID, modelID, mode)
+	requesttiming.ObserveIndependentTurn(c.Request.Context(), collector)
 	ctx := context.WithValue(c.Request.Context(), qualityProbeContextKey{}, true)
 	c.Request = c.Request.WithContext(ctx)
 	// 测试可能在响应头或正文到来前长时间等待；所有协议共用同一段下游保活生命周期。

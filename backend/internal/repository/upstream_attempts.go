@@ -166,7 +166,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  AND ($6::bigint=0 OR min(u.group_id)=$6)
  AND ($7='' OR $8<>'public' OR min(COALESCE(NULLIF(u.requested_model,''),u.model))=$7)
 ), traces AS (
- SELECT *,detail->'physical_upstream' projection,
+ SELECT *,detail->'physical_upstream' projection,` + upstreamTrafficSource("detail") + ` AS traffic_source,
  COALESCE(detail->>'version'='1' AND detail->'physical_upstream'->>'version'='1'
   AND CASE WHEN jsonb_typeof(detail->'physical_upstream'->'attempts')='array'
    THEN jsonb_array_length(detail->'physical_upstream'->'attempts')<=32 ELSE false END
@@ -297,7 +297,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
   AND ` + rawCacheValidCounters + `,false) AS cache_observed
  FROM cache_candidates ` + rawCacheCounterJoins + `
  ) ` + upstreamAttemptOutputCTEs + `, attributed AS (
- SELECT trace_id,started_at,created_at,physical_account_id AS account_id,public_model,stream,outcome,identity_known,
+ SELECT trace_id,started_at,created_at,physical_account_id AS account_id,public_model,stream,outcome,identity_known,traffic_source,
  wait_first_byte,wait_first_event,wait_first_reasoning,wait_first_text,cache_observed,raw_input,raw_read,
  output_gap,output_tail,partial_gap,partial_tail,output_tokens,output_window,
  item->>'transport' AS transport,
@@ -316,7 +316,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  SELECT * FROM traces t WHERE (($5::bigint=0 OR account_id=$5) AND ($4='' OR account_id IN (SELECT id FROM cohort)))
  OR EXISTS (SELECT 1 FROM selected s WHERE s.trace_id=t.trace_id)
 ), buckets AS (
- SELECT account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,
+ SELECT account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,traffic_source,
  upstream_model,upstream_protocol,service_tier,reasoning_effort,upstream_stream,upstream_model_status,
  'not_observed'::text AS upstream_group_status,
  ` + upstreamAttemptsAggregate + `,` + upstreamAttemptCacheAggregate + ` raw_cache,
@@ -327,12 +327,13 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  'first_event',` + upstreamWaitAggregate("wait_first_event") + `,
  'first_reasoning',` + upstreamWaitAggregate("wait_first_reasoning") + `,
  'first_text',` + upstreamWaitAggregate("wait_first_text") + `) waits FROM attributed
- GROUP BY account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,
+ GROUP BY account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,traffic_source,
  upstream_model,upstream_protocol,service_tier,reasoning_effort,upstream_stream,upstream_model_status
 ), summary AS (SELECT ` + upstreamAttemptsAggregate + ` FROM attributed)
  SELECT jsonb_build_object('version',1,'source','retained_physical_transport_attempts',
- 'scope','connection_trace_or_unique_usage_fallback; public_model_is_ingress; upstream_request_metadata_from_complete_transport_body_or_final_ws_payload; supplier_group_and_business_source_not_observed',
+ 'scope','connection_trace_or_unique_usage_fallback; public_model_is_ingress; upstream_request_metadata_from_complete_transport_body_or_final_ws_payload; supplier_group_not_observed; traffic_is_server_entrypoint_not_caller_intent',
  'retention_days',30,'summary',(SELECT to_jsonb(s) FROM summary s),
+ 'traffic',` + upstreamTrafficSummary + `,
  'raw_cache',(SELECT ` + upstreamAttemptCacheAggregate + ` FROM attributed),
  'request_scope',(SELECT jsonb_build_object('attempts',count(*),
   'observed_attempts',count(*) FILTER (WHERE request_scope_known),
@@ -345,4 +346,4 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  'total',(SELECT count(*) FROM buckets),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(b)) FROM (
  SELECT * FROM buckets ORDER BY attempts DESC,account_id,credential_fingerprint NULLS LAST,route_fingerprint NULLS LAST,
  transport,protocol NULLS LAST,public_model,stream,upstream_model NULLS LAST,upstream_protocol NULLS LAST,
- service_tier NULLS LAST,reasoning_effort NULLS LAST,upstream_stream NULLS LAST LIMIT $9 OFFSET $10)b),'[]'::jsonb))`
+ service_tier NULLS LAST,reasoning_effort NULLS LAST,upstream_stream NULLS LAST,traffic_source LIMIT $9 OFFSET $10)b),'[]'::jsonb))`

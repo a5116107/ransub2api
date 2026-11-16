@@ -7,18 +7,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/stretchr/testify/require"
 )
 
-// This regression deliberately uses only pre-existing APIs so CI can run the
-// same test against the unmodified production baseline in a separate directory.
+// Exercise the account-test entry point and its existing SSE timing lifecycle.
 func TestAccountConnectionTimingLifecycle(t *testing.T) {
 	for _, kind := range []string{AccountTypeAPIKey, AccountTypeOAuth} {
 		t.Run(kind, func(t *testing.T) {
 			account := &Account{ID: 1, Platform: PlatformAnthropic, Type: kind, Extra: map[string]any{"synthetic_ui_test": true}}
 			svc := &AccountTestService{accountRepo: &openAIAccountTestRepo{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{1: account}}}}
 			c, rec := newTestContext()
+			var captured requesttiming.Snapshot
+			c.Request = c.Request.WithContext(requesttiming.WithIndependentTurnObserver(c.Request.Context(), func(collector *requesttiming.Collector) {
+				collector.WhenFinished(func(snapshot requesttiming.Snapshot) { captured = snapshot })
+			}))
 			require.NoError(t, svc.TestAccountConnection(c, 1, "synthetic-model", "", ""))
+			require.NotNil(t, captured.TrafficSource)
+			require.Equal(t, requesttiming.TrafficAccountTest, captured.TrafficSource.Source)
+			require.Equal(t, "synthetic", captured.TrafficSource.Kind)
 			var timings []map[string]any
 			for _, line := range strings.Split(rec.Body.String(), "\n") {
 				if !strings.HasPrefix(line, "data: ") {

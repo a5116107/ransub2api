@@ -264,6 +264,8 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 	require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
 	require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
 	require.Equal(t, 1, body.Data.Attempts.Data.Summary.LogicalRequests)
+	require.Contains(t, result.Body.String(), `"traffic_source":"gateway_ingress"`)
+	require.Contains(t, result.Body.String(), `"source":"server_recorded_entrypoints"`)
 	require.NotContains(t, result.Body.String(), "diagnostic-transport-fixture")
 	for _, model := range []string{"first-wire-model", "second-wire-model"} {
 		filtered := httptest.NewRecorder()
@@ -288,6 +290,7 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 		require.Contains(t, filtered.Body.String(), `"upstream_model":"`+model+`"`)
 		require.Contains(t, filtered.Body.String(), `"service_tier":"priority"`)
 		require.Contains(t, filtered.Body.String(), `"reasoning_effort":"high"`)
+		require.Contains(t, filtered.Body.String(), `"traffic_source":"gateway_ingress"`)
 		require.Contains(t, filtered.Body.String(), `"unknown_attempts":0`)
 		require.Len(t, body.Data.Attempts.Data.Rows, 1)
 		waits := body.Data.Attempts.Data.Rows[0].Waits

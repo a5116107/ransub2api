@@ -46,6 +46,7 @@ type Attempt struct {
 	Events             map[string]float64             `json:"events"`
 }
 type Snapshot struct {
+	TrafficSource        *TrafficSourceObservation    `json:"traffic_source,omitempty"`
 	PhysicalUpstream     *PhysicalUpstreamObservation `json:"physical_upstream,omitempty"`
 	RawUpstream          *CacheUpstreamObservation    `json:"raw_upstream,omitempty"`
 	RawCache             *CacheObservation            `json:"raw_cache,omitempty"`
@@ -100,6 +101,7 @@ func With(ctx context.Context, c *Collector) context.Context {
 	if c == nil {
 		return ctx
 	}
+	inheritTrafficSource(ctx, c)
 	return context.WithValue(ctx, key{}, c)
 }
 func From(ctx context.Context) *Collector {
@@ -208,6 +210,10 @@ func Mode(ctx context.Context, mode string) {
 }
 func (c *Collector) snapshot() Snapshot {
 	d := c.data
+	if d.TrafficSource != nil {
+		source := *d.TrafficSource
+		d.TrafficSource = &source
+	}
 	if d.ProtocolDecision != nil {
 		decision := *d.ProtocolDecision
 		d.ProtocolDecision = &decision

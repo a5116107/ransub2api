@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +19,59 @@ import (
 
 type connectionRecorderTest struct{ records []service.ConnectionTrace }
 
+func TestRequestTimingRetainsServerTrafficSource(t *testing.T) {
+	for _, method := range []string{"POST", "GET"} {
+		t.Run(method, func(t *testing.T) {
+			recorder := &connectionRecorderTest{}
+			router := gin.New()
+			router.Use(RequestTiming(recorder))
+			router.Handle(method, "/v1/responses", func(c *gin.Context) {
+				if method == "GET" {
+					turn := requesttiming.NewWSTurn(time.Now(), 11, 0, [32]byte{})
+					requesttiming.ObserveIndependentTurn(c.Request.Context(), turn.Collector)
+					turn.Finish(nil, false, false)
+				}
+				c.Status(200)
+			})
+			request := httptest.NewRequest(method, "/v1/responses", strings.NewReader("{}"))
+			request.Header.Set("X-Sub2API-Traffic-Source", "account_connection_test")
+			request.Header.Set("X-Session-Id", "cache-test:untrusted-name")
+			router.ServeHTTP(httptest.NewRecorder(), request)
+			require.Len(t, recorder.records, 1)
+			encoded, err := json.Marshal(recorder.records[0].Detail)
+			require.NoError(t, err)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(encoded, &got))
+			require.Equal(t, map[string]any{"version": float64(1), "source": "gateway_ingress", "kind": "gateway"}, got["traffic_source"])
+		})
+	}
+}
+
 func (r *connectionRecorderTest) RecordConnectionTrace(record service.ConnectionTrace) {
 	r.records = append(r.records, record)
+}
+
+func TestRequestTimingOtherRoutesRequireAnExplicitObservation(t *testing.T) {
+	recorder := &connectionRecorderTest{}
+	router := gin.New()
+	router.Use(RequestTiming(recorder))
+	router.GET("/health", func(c *gin.Context) { c.Status(200) })
+	router.POST("/api/v1/admin/accounts/:id/test", func(c *gin.Context) {
+		collector := requesttiming.New(time.Now(), 0)
+		ctx := requesttiming.WithTrafficSource(c.Request.Context(), requesttiming.TrafficAccountTest)
+		ctx = requesttiming.With(ctx, collector)
+		requesttiming.ObserveIndependentTurn(ctx, collector)
+		collector.Finish(200, false)
+		c.Status(200)
+	})
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/health", nil))
+	require.Empty(t, recorder.records, "ordinary non-gateway routes must not create diagnostics")
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/v1/admin/accounts/11/test", nil))
+	require.Len(t, recorder.records, 1)
+	require.Equal(t, requesttiming.TrafficAccountTest, recorder.records[0].Detail.TrafficSource.Source)
+	require.Equal(t, "synthetic", recorder.records[0].Detail.TrafficSource.Kind)
+	require.Zero(t, recorder.records[0].APIKeyID, "operator tests do not claim a downstream key or sale group")
+	require.Zero(t, recorder.records[0].GroupID)
 }
 
 func TestConnectionMetadataWithoutBillingOrAuthentication(t *testing.T) {

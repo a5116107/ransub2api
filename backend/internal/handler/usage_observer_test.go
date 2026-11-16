@@ -108,7 +108,7 @@ func TestObserverUsageScopeAndProjection(t *testing.T) {
 func TestObserverTimingRedactsUpstreamCredential(t *testing.T) {
 	r := &observerUsageRepo{
 		record:     &service.UsageLog{ID: 1, UserID: 42},
-		timingRows: []json.RawMessage{json.RawMessage(`{"trace_id":"own-trace","future_field":true,"raw_upstream":{"credential_fingerprint":"supplier-private-identity"},"physical_upstream":{"version":1,"complete":true,"attempts":[{"credential_fingerprint":"supplier-private-identity","route_fingerprint":"private-route-identity","raw_cache":{"version":1,"status":"observed","input_tokens":777,"read_tokens":700},"output":{"version":1,"rate":{"source":"private-attempt-output","tokens_per_second":777}}}]},"attempts":[{"kind":"http","upstream_credential":{"status":"observed","fingerprint":"supplier-private-identity"},"upstream_request":{"model":"supplier-private-model"},"cache_usage":{"read_tokens":80},"future_attempt_field":7}]}`)},
+		timingRows: []json.RawMessage{json.RawMessage(`{"trace_id":"own-trace","traffic_source":{"version":1,"source":"account_connection_test","kind":"synthetic"},"future_field":true,"raw_upstream":{"credential_fingerprint":"supplier-private-identity"},"physical_upstream":{"version":1,"complete":true,"attempts":[{"credential_fingerprint":"supplier-private-identity","route_fingerprint":"private-route-identity","raw_cache":{"version":1,"status":"observed","input_tokens":777,"read_tokens":700},"output":{"version":1,"rate":{"source":"private-attempt-output","tokens_per_second":777}}}]},"attempts":[{"kind":"http","upstream_credential":{"status":"observed","fingerprint":"supplier-private-identity"},"upstream_request":{"model":"supplier-private-model"},"cache_usage":{"read_tokens":80},"future_attempt_field":7}]}`)},
 	}
 	w := usageGET(observerUsageRouter(r, service.RoleObserver), "/usage/1/timing")
 	require.Equal(t, 200, w.Code, w.Body.String())
@@ -118,6 +118,7 @@ func TestObserverTimingRedactsUpstreamCredential(t *testing.T) {
 	require.NotContains(t, w.Body.String(), "supplier-private-model")
 	require.NotContains(t, w.Body.String(), "raw_upstream")
 	require.NotContains(t, w.Body.String(), "physical_upstream")
+	require.NotContains(t, w.Body.String(), "traffic_source")
 	require.NotContains(t, w.Body.String(), "private-attempt-output")
 	require.NotContains(t, w.Body.String(), "private-route-identity")
 	require.NotContains(t, w.Body.String(), `"read_tokens":700`, "per-attempt supplier aggregates must not leak into the downstream view")
@@ -129,6 +130,7 @@ func TestObserverTimingRedactsUpstreamCredential(t *testing.T) {
 	require.Contains(t, string(r.timingRows[0]), "physical_upstream", "admin projection must remain in stored evidence")
 	require.Contains(t, string(r.timingRows[0]), `"read_tokens":700`)
 	require.Contains(t, string(r.timingRows[0]), "private-attempt-output")
+	require.Contains(t, string(r.timingRows[0]), "traffic_source")
 }
 
 func TestObserverTimingMalformedEvidenceFailsClosed(t *testing.T) {

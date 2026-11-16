@@ -114,6 +114,7 @@ func ObserveIndependentTurn(ctx context.Context, collector *Collector) {
 	if ctx == nil || collector == nil {
 		return
 	}
+	inheritTrafficSource(ctx, collector)
 	if observe, _ := ctx.Value(independentTurnKey{}).(func(*Collector)); observe != nil {
 		observe(collector)
 	}

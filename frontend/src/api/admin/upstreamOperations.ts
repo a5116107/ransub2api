@@ -4,12 +4,18 @@ export interface OperationsQuery { from: string; until: string; upstream: string
 export interface UpstreamMetrics { requests: number; attributed_requests: number; unknown_upstream_requests: number; samples: number; unknown_samples: number; p50_ms: number|null; p90_ms: number|null; p95_ms: number|null; duration_p90_ms: number|null; latest_config_updated_at: string|null; oldest_config_updated_at: string|null }
 export interface OperationsRow extends UpstreamMetrics { key: string; name: string }
 export interface AccountBasis { id: number; name: string; key: string; attribution: string; updated_at: string; deleted: boolean }
+export type UpstreamTrafficSource = 'gateway_ingress' | 'account_connection_test' | 'unknown'
+export interface UpstreamTrafficSummary {
+ version: number; source: string; samples: number; known_samples: number; unknown_samples: number; coverage: number | null
+ rows: Array<{ traffic_source: UpstreamTrafficSource; samples: number }>
+}
 export interface UpstreamRawCacheMetrics {
  requests: number; observed_requests: number; unknown_requests: number; unattributed_requests: number
  hit_requests: number; input_tokens: number; read_tokens: number
  coverage: number | null; request_hit_rate: number | null; token_read_rate: number | null; latest_sample_at: string | null
 }
 export interface UpstreamRawCacheRow extends UpstreamRawCacheMetrics {
+ traffic_source?: UpstreamTrafficSource
  account_id: number; credential_fingerprint: string | null; route_fingerprint: string | null
  public_model: string; upstream_model: string | null; service_tier: string | null; reasoning_effort: string | null
  protocol: string | null; transport: string | null; stream: boolean; upstream_group_status: 'not_observed'
@@ -22,6 +28,7 @@ export interface UpstreamWaitSet {
  first_reasoning: UpstreamWaitMetric; first_text: UpstreamWaitMetric
 }
 export interface UpstreamRawCache {
+ traffic?: UpstreamTrafficSummary
  source: string; scope: string; retention_days: number; summary: UpstreamRawCacheMetrics
  total: number; rows: UpstreamRawCacheRow[]
 }
@@ -46,6 +53,7 @@ export interface UpstreamAttemptOutputMetrics {
  rate: { samples: number; unknown_samples: number; coverage: number | null; tokens_per_second: number | null; non_reasoning_tokens: number | null; window_ms: number | null; latest_sample_at: string | null }
 }
 export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
+ traffic_source?: UpstreamTrafficSource
  account_id: number; credential_fingerprint: string | null; route_fingerprint: string | null
  transport: string; protocol: string | null; public_model: string; stream: boolean
  upstream_model_status: 'observed' | 'not_observed'; upstream_group_status: 'not_observed'
@@ -56,6 +64,7 @@ export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  waits?: UpstreamWaitSet
 }
 export interface UpstreamAttempts {
+ traffic?: UpstreamTrafficSummary
  version: number; source: string; scope: string; retention_days: number
  summary: UpstreamAttemptMetrics; capture: { traces: number; complete_traces: number; unknown_traces: number; coverage: number | null }
  request_scope?: { attempts: number; observed_attempts: number; unknown_attempts: number; coverage: number | null }
