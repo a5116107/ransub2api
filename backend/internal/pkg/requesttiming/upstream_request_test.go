@@ -132,7 +132,7 @@ func TestUpstreamRequestBoundedAndUnsupportedBodiesRemainUnknown(t *testing.T) {
 		{"bound", "POST", "/v1/responses", "", maxUpstreamRequestScopeBytes + 1},
 		{"compressed", "POST", "/v1/responses", "gzip", -1},
 		{"handshake", "GET", "/v1/responses", "", -1},
-		{"messages_not_covered", "POST", "/v1/messages", "", -1},
+		{"unknown_endpoint", "POST", "/v1/unknown", "", -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := New(time.Now(), 0)
@@ -208,4 +208,74 @@ func TestUpstreamRequestConcurrentReadClose(t *testing.T) {
 	_ = w.Close()
 	c.Finish(502, false)
 	c.WhenFinished(func(s Snapshot) { require.Nil(t, s.Attempts[1].UpstreamRequest) })
+}
+
+func TestUpstreamRequestMessagesMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields, tier, effort, speed, thinking string
+		budget                                      int64
+		valid                                       bool
+	}{
+		{name: "unspecified", tier: "unspecified", effort: "unspecified", speed: "unspecified", thinking: "unspecified", valid: true},
+		{name: "fast_adaptive", fields: `,"service_tier":"standard_only","speed":"fast","thinking":{"type":"adaptive"},"output_config":{"effort":"max"}`, tier: "standard_only", effort: "max", speed: "fast", thinking: "adaptive", valid: true},
+		{name: "budget", fields: `,"thinking":{"type":"enabled","budget_tokens":4096}`, tier: "unspecified", effort: "unspecified", speed: "unspecified", thinking: "enabled", budget: 4096, valid: true},
+		{name: "disabled", fields: `,"thinking":{"type":"disabled"},"speed":"standard","service_tier":"auto","output_config":{"effort":"high"}`, tier: "auto", effort: "high", speed: "standard", thinking: "disabled", valid: true},
+		{name: "bad_tier", fields: `,"service_tier":"priority"`},
+		{name: "null_speed", fields: `,"speed":null`},
+		{name: "unknown_speed", fields: `,"speed":"turbo"`},
+		{name: "unknown_thinking", fields: `,"thinking":{"type":"turbo"}`},
+		{name: "null_thinking", fields: `,"thinking":null`},
+		{name: "missing_thinking_type", fields: `,"thinking":{}`},
+		{name: "duplicate_thinking", fields: `,"thinking":{"type":"adaptive","type":"disabled"}`},
+		{name: "missing_budget", fields: `,"thinking":{"type":"enabled"}`},
+		{name: "zero_budget", fields: `,"thinking":{"type":"enabled","budget_tokens":0}`},
+		{name: "fraction_budget", fields: `,"thinking":{"type":"enabled","budget_tokens":1024.5}`},
+		{name: "unsafe_budget", fields: `,"thinking":{"type":"enabled","budget_tokens":9007199254740992}`},
+		{name: "irrelevant_budget", fields: `,"thinking":{"type":"adaptive","budget_tokens":4096}`},
+		{name: "duplicate_effort", fields: `,"output_config":{"effort":"low","effort":"max"}`},
+		{name: "unknown_effort", fields: `,"output_config":{"effort":"turbo"}`},
+		{name: "null_output_config", fields: `,"output_config":null`},
+		{name: "foreign_effort", fields: `,"reasoning_effort":"high"`},
+		{name: "foreign_reasoning", fields: `,"reasoning":{"effort":"high"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := `{"model":"wire-messages","stream":true,"messages":[{"role":"user","content":"private-prompt"}]` + tc.fields + `}`
+			c := New(time.Now(), 0)
+			req, err := http.NewRequestWithContext(With(t.Context(), c), "POST", "https://fixture.invalid/v1/messages?beta=true", strings.NewReader(payload))
+			require.NoError(t, err)
+			req, _ = StartAttempt(req, 7, 0)
+			req, _ = StartTransport(req)
+			observed := ObserveUpstreamRequest(req)
+			wire, err := io.ReadAll(observed.Body)
+			require.NoError(t, err)
+			require.Equal(t, payload, string(wire))
+			require.NoError(t, observed.Body.Close())
+			c.Finish(502, false)
+			c.WhenFinished(func(s Snapshot) {
+				got := s.Attempts[1].UpstreamRequest
+				if !tc.valid {
+					require.Nil(t, got)
+					return
+				}
+				require.NotNil(t, got)
+				require.Equal(t, "messages", got.Protocol)
+				require.Equal(t, "wire-messages", got.Model)
+				require.Equal(t, tc.tier, got.ServiceTier)
+				require.Equal(t, tc.effort, got.ReasoningEffort)
+				require.True(t, got.Stream)
+				raw, err := json.Marshal(got)
+				require.NoError(t, err)
+				var metadata map[string]any
+				require.NoError(t, json.Unmarshal(raw, &metadata))
+				require.Equal(t, tc.speed, metadata["speed"])
+				require.Equal(t, tc.thinking, metadata["thinking_mode"])
+				if tc.budget > 0 {
+					require.Equal(t, float64(tc.budget), metadata["thinking_budget_tokens"])
+				} else {
+					require.NotContains(t, metadata, "thinking_budget_tokens")
+				}
+				require.NotContains(t, string(raw), "private-prompt")
+			})
+		})
+	}
 }

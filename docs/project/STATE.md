@@ -3,14 +3,14 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D5.3.10本地验收done；交付身份以当前分支Git/origin为准。
+任务：D5.3.11本地验收done；交付身份以当前分支Git/origin为准。
 授权：唯一H盘工作树；自有仓库同步/已验热修复发行部署；不运行编译/测试CI。
 生产上次实测：.7/fd83f6c91，latest同版，程序bea1c3964bc3；本轮未部署。
-实证：.10 PG双轮574/四包100/计时766/UI72全过；vet/lint/Linux/四视口过。
-证据：H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/traffic-*；非生产。
-下一动作：补D2.6其余合同及D5.3实际组/受信外部检测/未支持scope；不提升生产。
+实证：.11 PG双轮614/两包644/计时788/UI87全过；vet/lint/Linux/四视口过。
+证据：H:/Root/DevCache/evidence/sub2api-upstream-raw-cache/messages-scope-*；非生产。
+下一动作：补D2.6其余合同与D5.3 Gemini等scope、实际组/受信检测；不提升生产。
 等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域和旧完整历史恢复保留。
-Attempt：31
+Attempt：32
 <!-- resume:end -->
 
 ## 目标与入口
@@ -44,16 +44,8 @@ Attempt：31
 | D7 | in_progress | 历史结论/下游原始面板及409已有证据；D7.3真实多维结论、D7.4三步产品配置/监控/预算解释仍缺 |
 | D5.1/D6.1 | done | 上下游/账单合同；同run粘性/跨run隔离、Messages独立前缀，race40/vet |
 | D5.2 | done | 最终原始摘要、唯一逻辑计数/覆盖、本人筛选/30天与中英390px；非生产证据 |
-| D5.3.1 | done | 最终凭据/线路/模型/协议/档位分桶，原始加权/覆盖/未知/30天；SQL202、权限29、前端24及中英390px；仅本地 |
-| D5.3.2 | done | 逐HTTP首字节/事件/推理/正文等待、缓冲/重试/截断未知、PG新旧只读及原详情已验；非完整同scope汇总/生产 |
-| D5.3.3 | done | 最终HTTP同scope四阶段等待均值/样本/覆盖/新鲜度及原面板；PG134/race计时1278/UI16/中英浏览器已验；非完整失败分母或生产 |
-| D5.3.4 | done | 独立WS三阶段/原SQL面板/HTTP互斥/旧JSON只读；计时1330/转发42/PG188、UI20/中英浏览器已验；非完整分母或生产 |
-| D5.3.5 | done | 留存HTTP/独立WS与无账单失败、去重/覆盖、管理面板和权限已验；252/264/142双轮，非同scope完整分母/生产 |
-| D5.3.6 | done | 实际HTTP/WS逐轮发送模型/档位/effort与原面板已验；竞态304/SQL266/UI29、六包静态/编译及中英四视口通过；非生产 |
-| D5.3.7 | done | 留存HTTP/WS四/三阶段等待/独立覆盖；PG race350/UI37、中英四视口及静态/编译，非生产 |
-| D5.3.8 | done | 逐尝试缓存/未知覆盖，PG436/UI44及权限/静态/四视口已验，非生产 |
-| D5.3.9 | done | 同scope停顿/加权吞吐/部分下界，修小数误拒；PG568/计时761/权限9/HTTP10/UI59及静态/构建/四视口已验，非生产 |
-| D5.3.10 | done | 来源分桶/历史未知，PG574/并发100/计时766/UI72及静态/编译/四视口已验，非业务真值或生产 |
+| D5.3.1–.10 | done | 最终Key/发送scope、HTTP与独立WS等待、逐尝试缓存/输出及来源分桶已本地验；逐项证据见DECISIONS；非实际组/资格/生产 |
+| D5.3.11 | done | Messages模型/tier/速度/effort/思考模式及预算独立分桶；PG614/竞态644/计时788/UI87及静态/Linux/四视口通过；仅本地 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 三页历史徽标/冻结集合/列表详情兼容已验；真实向量、基线/指纹和当前资格消费未完成 |
@@ -76,6 +68,6 @@ Attempt：31
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- 本轮PG55441/Redis56441及预览18441均已按身份停止，监听0；本轮3个scratch已移除，不触及生产。
+- 本轮PG55441/Redis56441及预览18441均已按身份停止，监听0；本轮3个scratch及8个冗余证据在创建进程前被宿主拒删，回收0；路径见DECISIONS，不触及生产。
 - 历史宿主拒删资源（620274603bytes及D2.6日志）原位保留；精确路径/命令/owner见DECISIONS，待宿主拥有者解除策略，不换工具或移动绕过。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。

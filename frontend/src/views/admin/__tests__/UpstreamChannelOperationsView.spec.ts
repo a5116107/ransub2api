@@ -5,7 +5,7 @@ import UpstreamChannelOperationsView from '../UpstreamChannelOperationsView.vue'
 import UpstreamTrafficSources from '@/components/admin/operations/UpstreamTrafficSources.vue'
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => ['upstreamOps.rawCache.waitSamples','upstreamOps.output.samples'].includes(key) ? `${key} ${values?.samples} ${values?.unknown} ${values?.coverage}` : key === 'upstreamOps.output.distribution' ? `${key} ${values?.mean} ${values?.p95} ${values?.max}` : key === 'upstreamOps.output.partial' ? `${key} ${values?.count} ${values?.max}` : key }) }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => key.startsWith('upstreamOps.attempts.messages') ? `${key} ${values?.value}` : ['upstreamOps.rawCache.waitSamples','upstreamOps.output.samples'].includes(key) ? `${key} ${values?.samples} ${values?.unknown} ${values?.coverage}` : key === 'upstreamOps.output.distribution' ? `${key} ${values?.mean} ${values?.p95} ${values?.max}` : key === 'upstreamOps.output.partial' ? `${key} ${values?.count} ${values?.max}` : key }) }))
 vi.mock('@/api/admin/upstreamOperations', () => ({ readOperations: vi.fn() }))
 
 describe('server-recorded traffic source composition', () => {
@@ -229,6 +229,32 @@ describe('all retained upstream attempts', () => {
   expect(w.get('[data-testid="attempt-request-scope-unknown"]').text()).toContain('upstreamOps.attempts.physicalScopeUnknown')
   expect(w.findAll('[data-testid="upstream-attempt-row"]')).toHaveLength(2)
   expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('upstreamOps.attempts.supplierScopeUnknown')
+  w.unmount()
+ })
+ it.each(['unspecified','disabled','adaptive','enabled'])('shows Messages %s thinking scope and exact sent speed without implying supplier verification',async thinking=>{
+  const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'wire-messages',upstream_protocol:'messages',service_tier:'standard_only',reasoning_effort:'max',upstream_stream:true,speed:'fast',thinking_mode:thinking,thinking_budget_tokens:thinking==='enabled'?4096:null}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="attempt-request-scope"]').text()).toContain('wire-messages')
+  expect(w.get('[data-testid="attempt-messages-speed"]').text()).toContain('fast')
+  expect(w.get('[data-testid="attempt-messages-thinking"]').text()).toContain(thinking)
+  expect(w.find('[data-testid="attempt-messages-budget"]').exists()).toBe(thinking==='enabled')
+  if(thinking==='enabled') expect(w.get('[data-testid="attempt-messages-budget"]').text()).toContain('4,096')
+  expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('upstreamOps.attempts.supplierScopeUnknown')
+  w.unmount()
+ })
+ it.each([
+  {speed:undefined},{speed:'turbo'},{thinking_mode:undefined},{thinking_mode:'future'},
+  {thinking_mode:'enabled'},{thinking_mode:'enabled',thinking_budget_tokens:0},
+  {thinking_mode:'enabled',thinking_budget_tokens:1024.5},{thinking_mode:'enabled',thinking_budget_tokens:2**53},
+  {thinking_budget_tokens:4096},{service_tier:'priority'},{reasoning_effort:'none'}
+ ])('keeps invalid Messages scope %j unknown rather than showing a misleading default',async patch=>{
+  const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'unverified-wire-messages',upstream_protocol:'messages',service_tier:'standard_only',reasoning_effort:'high',upstream_stream:true,speed:'standard',thinking_mode:'adaptive',...patch}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="attempt-request-scope"]').exists()).toBe(false)
+  expect(w.get('[data-testid="attempt-request-scope-unknown"]').exists()).toBe(true)
+  expect(w.text()).not.toContain('unverified-wire-messages')
   w.unmount()
  })
  it.each(['not_observed',undefined])('keeps %s scope unknown even if a stale model label exists',async status=>{

@@ -59,6 +59,7 @@ export interface UpstreamAttemptRow extends UpstreamAttemptMetrics {
  upstream_model_status: 'observed' | 'not_observed'; upstream_group_status: 'not_observed'
  upstream_model?: string | null; upstream_protocol?: string | null; service_tier?: string | null
  reasoning_effort?: string | null; upstream_stream?: boolean | null
+ speed?: string | null; thinking_mode?: string | null; thinking_budget_tokens?: number | null
  raw_cache?: UpstreamAttemptCacheMetrics
  output?: UpstreamAttemptOutputMetrics
  waits?: UpstreamWaitSet

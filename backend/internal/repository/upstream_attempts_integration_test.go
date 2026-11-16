@@ -4,6 +4,7 @@ package repository
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -222,16 +223,24 @@ func TestUpstreamAttemptsRequestMetadataBucketsAndModelFilter(t *testing.T) {
 }
 
 type upstreamAttemptWaitReport struct {
+	Total        int
+	RequestScope struct {
+		Observed int `json:"observed_attempts"`
+		Unknown  int `json:"unknown_attempts"`
+	} `json:"request_scope"`
 	Summary  struct{ Attempts, Failed, Succeeded, Interrupted, Unknown int }
 	RawCache upstreamAttemptCacheMetrics `json:"raw_cache"`
 	Rows     []struct {
-		AccountID     int64  `json:"account_id"`
-		UpstreamModel string `json:"upstream_model"`
-		Transport     string
-		Attempts      int
-		RawCache      upstreamAttemptCacheMetrics  `json:"raw_cache"`
-		Output        upstreamAttemptOutputMetrics `json:"output"`
-		Waits         struct {
+		AccountID            int64  `json:"account_id"`
+		UpstreamModel        string `json:"upstream_model"`
+		Speed                string `json:"speed"`
+		ThinkingMode         string `json:"thinking_mode"`
+		ThinkingBudgetTokens *int64 `json:"thinking_budget_tokens"`
+		Transport            string
+		Attempts             int
+		RawCache             upstreamAttemptCacheMetrics  `json:"raw_cache"`
+		Output               upstreamAttemptOutputMetrics `json:"output"`
+		Waits                struct {
 			Version        int
 			Source         string
 			FirstByte      upstreamWaitMetrics `json:"first_byte"`
@@ -741,6 +750,117 @@ func upstreamAttemptOutputFixture(account int64) requesttiming.Attempt {
 	a.TextStream = &requesttiming.TextStreamTiming{Chunks: 3, FirstMS: 10, LastMS: 310, MaxGapMS: 200, Terminal: "completed", TerminalMS: 410}
 	a.OutputUsage = &requesttiming.OutputUsage{Status: "observed", ContentStatus: "text_and_reasoning", OutputTokens: 120, ReasoningTokens: 20}
 	return a
+}
+
+func TestUpstreamAttemptsMessagesScopeBucketsAndMetrics(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, variant := range []string{"base", "fast", "standard", "budget4096", "budget8192", "adaptive", "disabled", "effort", "tier", "other_model"} {
+		a := upstreamAttemptMessagesFixture(f.account)
+		switch variant {
+		case "fast":
+			a.UpstreamRequest.Speed = "fast"
+		case "standard":
+			a.UpstreamRequest.Speed = "standard"
+		case "budget4096", "budget8192":
+			a.UpstreamRequest.ThinkingMode, a.UpstreamRequest.ThinkingBudgetTokens = "enabled", 4096
+			if variant == "budget8192" {
+				a.UpstreamRequest.ThinkingBudgetTokens = 8192
+			}
+		case "adaptive", "disabled":
+			a.UpstreamRequest.ThinkingMode = variant
+		case "effort":
+			a.UpstreamRequest.ReasoningEffort = "max"
+		case "tier":
+			a.UpstreamRequest.ServiceTier = "standard_only"
+		case "other_model":
+			a.UpstreamRequest.Model = "wire-b"
+		}
+		writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 500, Status: 200, Attempts: []requesttiming.Attempt{a}})
+	}
+	data := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, 10, data.Summary.Attempts)
+	require.Equal(t, 10, data.RequestScope.Observed)
+	require.Zero(t, data.RequestScope.Unknown)
+	require.Len(t, data.Rows, 10, "speed, mode and exact budget must not collapse distinct performance/cache scopes")
+	require.Equal(t, 10, data.RawCache.Observed)
+	require.EqualValues(t, 1000, data.RawCache.Input)
+	require.EqualValues(t, 750, data.RawCache.Read)
+	require.InDelta(t, 0.75, *data.RawCache.ReadRate, 0.000001)
+	seen := map[string]bool{}
+	for _, row := range data.Rows {
+		budget := int64(0)
+		if row.ThinkingBudgetTokens != nil {
+			budget = *row.ThinkingBudgetTokens
+		}
+		seen[fmt.Sprintf("%s:%s:%s:%d", row.UpstreamModel, row.Speed, row.ThinkingMode, budget)] = true
+		require.Equal(t, 1, row.RawCache.Observed)
+		require.Equal(t, 1, row.Waits.FirstByte.Samples)
+		require.Equal(t, 1, row.Waits.FirstText.Samples)
+		require.Equal(t, 1, row.Output.Gap.Samples)
+		require.Equal(t, 1, row.Output.Rate.Samples)
+		require.InDelta(t, 250.0, *row.Output.Rate.TPS, 0.000001)
+	}
+	require.True(t, seen["wire-a:unspecified:enabled:4096"])
+	require.True(t, seen["wire-a:unspecified:enabled:8192"])
+	require.True(t, seen["wire-a:fast:unspecified:0"])
+}
+
+func upstreamAttemptMessagesFixture(account int64) requesttiming.Attempt {
+	a := upstreamAttemptOutputFixture(account)
+	a.Route.Endpoint, a.TextStream.Protocol = "messages", "messages"
+	a.UpstreamRequest = &requesttiming.UpstreamRequestObservation{Version: 1, Status: "observed", Source: "http_transport_body", Protocol: "messages", Model: "wire-a", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Speed: "unspecified", ThinkingMode: "unspecified", Stream: true}
+	a.OutputUsage.Protocol, a.OutputUsage.ContentStatus, a.OutputUsage.Final = "messages", "messages_text_and_reasoning", true
+	a.CacheUsage = &requesttiming.CacheUsage{Protocol: "messages", Status: "observed", InputTokens: 100, ReadTokens: 75, WriteTokens: 5, UncachedTokens: 20, InputReported: true, ReadReported: true, WriteReported: true}
+	return a
+}
+
+func TestUpstreamAttemptsMessagesRejectInvalidScopeAndCounters(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tc := range []struct {
+		name, patch          string
+		scope, cache, output int
+	}{
+		{"valid", `detail`, 1, 1, 1},
+		{"missing_speed", `detail #- '{physical_upstream,attempts,0,upstream_request,speed}'`, 0, 0, 0},
+		{"bad_tier", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,service_tier}','"priority"')`, 0, 0, 0},
+		{"bad_effort", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,reasoning_effort}','"turbo"')`, 0, 0, 0},
+		{"unknown_mode", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"future"')`, 0, 0, 0},
+		{"unexpected_budget", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','4096')`, 0, 0, 0},
+		{"null_budget", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','null')`, 0, 0, 0},
+		{"missing_enabled_budget", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"enabled"')`, 0, 0, 0},
+		{"fraction_budget", `jsonb_set(jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"enabled"'),'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','1024.5')`, 0, 0, 0},
+		{"unsafe_budget", `jsonb_set(jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"enabled"'),'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','9007199254740992')`, 0, 0, 0},
+		{"string_budget", `jsonb_set(jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,thinking_mode}','"enabled"'),'{physical_upstream,attempts,0,upstream_request,thinking_budget_tokens}','"4096"')`, 0, 0, 0},
+		{"bad_uncached", `jsonb_set(detail,'{attempts,0,cache_usage,uncached_tokens}','21')`, 1, 0, 1},
+		{"missing_read_presence", `detail #- '{attempts,0,cache_usage,read_reported}'`, 1, 0, 1},
+		{"wrong_cache_protocol", `jsonb_set(detail,'{attempts,0,cache_usage,protocol}','"responses"')`, 1, 0, 1},
+		{"wrong_output_protocol", `jsonb_set(detail,'{attempts,0,output_usage,protocol}','"responses"')`, 1, 1, 0},
+		{"zero_uncached_omitted", `detail`, 1, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := upstreamAttemptMessagesFixture(f.account)
+			if tc.name == "zero_uncached_omitted" {
+				a.CacheUsage.UncachedTokens, a.CacheUsage.ReadTokens = 0, 95
+			}
+			trace := writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 500, Status: 200, Attempts: []requesttiming.Attempt{a}})
+			_, err := integrationDB.Exec(`UPDATE request_connection_traces SET detail=`+tc.patch+` WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+			var before, after string
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&before))
+			data := readUpstreamAttemptWaits(t, f, now)
+			require.Equal(t, 1, data.Summary.Attempts)
+			require.Equal(t, tc.scope, data.RequestScope.Observed)
+			require.Equal(t, tc.cache, data.RawCache.Observed)
+			require.Len(t, data.Rows, 1)
+			require.Equal(t, tc.output, data.Rows[0].Output.Rate.Samples)
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&after))
+			require.Equal(t, before, after, "observation must not rewrite old evidence")
+			_, err = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestUpstreamAttemptsOutputPerScopeCompletePartialAndWeightedRate(t *testing.T) {

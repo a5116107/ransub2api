@@ -130,192 +130,218 @@ func TestUpstreamOperationsHTTPPostgresWithoutModelChannelBinding(t *testing.T) 
 }
 
 func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
-	db := repository.ChannelOperationsTestDatabase()
-	var account int64
-	require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,credentials) VALUES('attempt transport fixture','openai','apikey','{}') RETURNING id`).Scan(&account))
-	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM request_connection_traces WHERE detail->'attempts' @> jsonb_build_array(jsonb_build_object('account_id',$1::bigint))`, account)
-		_, _ = db.Exec(`DELETE FROM accounts WHERE id=$1`, account)
-	})
-	var calls atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		if calls.Add(1) == 1 {
-			w.WriteHeader(502)
-			_, _ = w.Write([]byte(`{"error":"fixture transient failure"}`))
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture first text\"}\n\n")
-		w.(http.Flusher).Flush()
-		time.Sleep(300 * time.Millisecond)
-		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture second text\"}\n\n")
-		w.(http.Flusher).Flush()
-		time.Sleep(10 * time.Millisecond)
-		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"fixture complete text"}]}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":75},"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}}}`+"\n\n")
-	}))
-	defer upstream.Close()
-	usage := repository.NewUsageLogRepository(nil, db)
-	recorder, ok := usage.(middleware.ConnectionTraceRecorder)
-	require.True(t, ok)
-	client := repository.NewHTTPUpstream(nil)
-	gateway := gin.New()
-	gateway.Use(middleware.RequestLogger(), middleware.RequestTiming(recorder))
-	gateway.POST("/v1/responses", func(c *gin.Context) {
-		c.Set("ops_model", "public-model")
-		for _, model := range []string{"first-wire-model", "second-wire-model"} {
-			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"`+model+`","stream":true,"service_tier":"priority","reasoning":{"effort":"high"},"input":"fixture"}`))
-			if err != nil {
-				c.AbortWithStatus(500)
-				return
-			}
-			req.Header.Set("Authorization", "Bearer diagnostic-transport-fixture")
-			req, _ = requesttiming.StartAttempt(req, account, 0)
-			requesttiming.RecordAccountRoute(req.Context(), [32]byte{1})
-			resp, err := client.Do(req, "", account, 1)
-			if err != nil {
-				c.AbortWithStatus(500)
-				return
-			}
-			if resp.StatusCode >= 400 {
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-				continue
-			}
-			responseCtx := requesttiming.ResponseContext(c.Request.Context(), resp)
-			scanner := bufio.NewScanner(resp.Body)
-			for scanner.Scan() {
-				if data, ok := strings.CutPrefix(scanner.Text(), "data: "); ok {
-					requesttiming.Content(responseCtx, []byte(data))
+	for _, protocol := range []string{"responses", "messages"} {
+		t.Run(protocol, func(t *testing.T) {
+			db := repository.ChannelOperationsTestDatabase()
+			var account int64
+			require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,credentials) VALUES('attempt transport fixture','openai','apikey','{}') RETURNING id`).Scan(&account))
+			t.Cleanup(func() {
+				_, _ = db.Exec(`DELETE FROM request_connection_traces WHERE detail->'attempts' @> jsonb_build_array(jsonb_build_object('account_id',$1::bigint))`, account)
+				_, _ = db.Exec(`DELETE FROM accounts WHERE id=$1`, account)
+			})
+			var calls atomic.Int64
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				if calls.Add(1) == 1 {
+					w.WriteHeader(502)
+					_, _ = w.Write([]byte(`{"error":"fixture transient failure"}`))
+					return
 				}
-			}
-			_ = resp.Body.Close()
-			if scanner.Err() != nil {
-				c.AbortWithStatus(500)
-				return
-			}
-			requesttiming.Output(responseCtx, false, false, "completed")
-			requesttiming.Outcome(c.Request.Context(), "success", false)
-			c.Data(200, "application/json", []byte(`{"ok":true}`))
-			return
-		}
-		c.AbortWithStatus(502)
-	})
-	w := httptest.NewRecorder()
-	gateway.ServeHTTP(w, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{}`)))
-	require.Equal(t, 200, w.Code, w.Body.String())
-	require.EqualValues(t, 2, calls.Load())
-	require.Eventually(t, func() bool {
-		var count int
-		err := db.QueryRow(`SELECT count(*) FROM request_connection_traces WHERE detail->'attempts' @> jsonb_build_array(jsonb_build_object('account_id',$1::bigint))`, account).Scan(&count)
-		return err == nil && count == 1
-	}, 3*time.Second, 10*time.Millisecond)
-	h := admin.NewChannelHandler(service.NewChannelService(repository.NewChannelRepository(db), nil, nil, nil, nil), nil, nil)
-	r := gin.New()
-	r.GET("/snapshot", h.UpstreamOperations)
-	result := httptest.NewRecorder()
-	now := time.Now().UTC()
-	r.ServeHTTP(result, httptest.NewRequest("GET", fmt.Sprintf("/snapshot?account_id=%d&from=%s&until=%s", account, now.Add(-time.Minute).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339)), nil))
-	require.Equal(t, 200, result.Code, result.Body.String())
-	var body struct {
-		Data struct {
-			Attempts struct {
-				Status string
-				Data   struct {
-					RawCache struct {
-						Observed int      `json:"observed_attempts"`
-						Unknown  int      `json:"unknown_attempts"`
-						Rate     *float64 `json:"token_read_rate"`
-					} `json:"raw_cache"`
-					Summary struct {
-						Attempts, Failed, Succeeded int
-						LogicalRequests             int `json:"logical_requests"`
+				w.Header().Set("Content-Type", "text/event-stream")
+				if protocol == "messages" {
+					_, _ = fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":75,\"cache_creation_input_tokens\":5}}}\n\n")
+					_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture first text\"}}\n\n")
+					w.(http.Flusher).Flush()
+					time.Sleep(300 * time.Millisecond)
+					_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture second text\"}}\n\n")
+					w.(http.Flusher).Flush()
+					time.Sleep(10 * time.Millisecond)
+					_, _ = fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":120,\"output_tokens_details\":{\"thinking_tokens\":20}}}\n\ndata: {\"type\":\"message_stop\"}\n\n")
+					return
+				}
+				_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture first text\"}\n\n")
+				w.(http.Flusher).Flush()
+				time.Sleep(300 * time.Millisecond)
+				_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture second text\"}\n\n")
+				w.(http.Flusher).Flush()
+				time.Sleep(10 * time.Millisecond)
+				_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"fixture complete text"}]}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":75},"output_tokens":120,"output_tokens_details":{"reasoning_tokens":20}}}}`+"\n\n")
+			}))
+			defer upstream.Close()
+			usage := repository.NewUsageLogRepository(nil, db)
+			recorder, ok := usage.(middleware.ConnectionTraceRecorder)
+			require.True(t, ok)
+			client := repository.NewHTTPUpstream(nil)
+			gateway := gin.New()
+			gateway.Use(middleware.RequestLogger(), middleware.RequestTiming(recorder))
+			gateway.POST("/v1/"+protocol, func(c *gin.Context) {
+				c.Set("ops_model", "public-model")
+				for _, model := range []string{"first-wire-model", "second-wire-model"} {
+					payload := `{"model":"` + model + `","stream":true,"service_tier":"priority","reasoning":{"effort":"high"},"input":"fixture"}`
+					if protocol == "messages" {
+						payload = `{"model":"` + model + `","stream":true,"service_tier":"standard_only","speed":"fast","thinking":{"type":"enabled","budget_tokens":4096},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"fixture"}]}`
 					}
-					Rows []struct {
-						Output struct {
-							Gap  struct{ Samples int } `json:"max_gap"`
-							Tail struct{ Samples int } `json:"tail_wait"`
-							Rate struct {
-								Samples int
-								TPS     *float64 `json:"tokens_per_second"`
+					req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstream.URL+"/v1/"+protocol, strings.NewReader(payload))
+					if err != nil {
+						c.AbortWithStatus(500)
+						return
+					}
+					req.Header.Set("Authorization", "Bearer diagnostic-transport-fixture")
+					req, _ = requesttiming.StartAttempt(req, account, 0)
+					requesttiming.RecordAccountRoute(req.Context(), [32]byte{1})
+					resp, err := client.Do(req, "", account, 1)
+					if err != nil {
+						c.AbortWithStatus(500)
+						return
+					}
+					if resp.StatusCode >= 400 {
+						_, _ = io.Copy(io.Discard, resp.Body)
+						_ = resp.Body.Close()
+						continue
+					}
+					responseCtx := requesttiming.ResponseContext(c.Request.Context(), resp)
+					scanner := bufio.NewScanner(resp.Body)
+					for scanner.Scan() {
+						if data, ok := strings.CutPrefix(scanner.Text(), "data: "); ok {
+							requesttiming.Content(responseCtx, []byte(data))
+						}
+					}
+					_ = resp.Body.Close()
+					if scanner.Err() != nil {
+						c.AbortWithStatus(500)
+						return
+					}
+					requesttiming.Output(responseCtx, false, false, "completed")
+					requesttiming.Outcome(c.Request.Context(), "success", false)
+					c.Data(200, "application/json", []byte(`{"ok":true}`))
+					return
+				}
+				c.AbortWithStatus(502)
+			})
+			w := httptest.NewRecorder()
+			gateway.ServeHTTP(w, httptest.NewRequest("POST", "/v1/"+protocol, strings.NewReader(`{}`)))
+			require.Equal(t, 200, w.Code, w.Body.String())
+			require.EqualValues(t, 2, calls.Load())
+			require.Eventually(t, func() bool {
+				var count int
+				err := db.QueryRow(`SELECT count(*) FROM request_connection_traces WHERE detail->'attempts' @> jsonb_build_array(jsonb_build_object('account_id',$1::bigint))`, account).Scan(&count)
+				return err == nil && count == 1
+			}, 3*time.Second, 10*time.Millisecond)
+			h := admin.NewChannelHandler(service.NewChannelService(repository.NewChannelRepository(db), nil, nil, nil, nil), nil, nil)
+			r := gin.New()
+			r.GET("/snapshot", h.UpstreamOperations)
+			result := httptest.NewRecorder()
+			now := time.Now().UTC()
+			r.ServeHTTP(result, httptest.NewRequest("GET", fmt.Sprintf("/snapshot?account_id=%d&from=%s&until=%s", account, now.Add(-time.Minute).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339)), nil))
+			require.Equal(t, 200, result.Code, result.Body.String())
+			var body struct {
+				Data struct {
+					Attempts struct {
+						Status string
+						Data   struct {
+							RawCache struct {
+								Observed int      `json:"observed_attempts"`
+								Unknown  int      `json:"unknown_attempts"`
+								Rate     *float64 `json:"token_read_rate"`
+							} `json:"raw_cache"`
+							Summary struct {
+								Attempts, Failed, Succeeded int
+								LogicalRequests             int `json:"logical_requests"`
+							}
+							Rows []struct {
+								Output struct {
+									Gap  struct{ Samples int } `json:"max_gap"`
+									Tail struct{ Samples int } `json:"tail_wait"`
+									Rate struct {
+										Samples int
+										TPS     *float64 `json:"tokens_per_second"`
+									}
+								}
+								Waits struct {
+									Version   int
+									Source    string
+									FirstByte struct {
+										Samples int
+										MeanMS  *float64 `json:"mean_ms"`
+									} `json:"first_byte"`
+									FirstText struct {
+										Samples int
+										Unknown int `json:"unknown_samples"`
+									} `json:"first_text"`
+								}
 							}
 						}
-						Waits struct {
-							Version   int
-							Source    string
-							FirstByte struct {
-								Samples int
-								MeanMS  *float64 `json:"mean_ms"`
-							} `json:"first_byte"`
-							FirstText struct {
-								Samples int
-								Unknown int `json:"unknown_samples"`
-							} `json:"first_text"`
-						}
 					}
 				}
 			}
-		}
-	}
-	require.NoError(t, json.Unmarshal(result.Body.Bytes(), &body))
-	require.Equal(t, "ready", body.Data.Attempts.Status)
-	require.Equal(t, 2, body.Data.Attempts.Data.Summary.Attempts)
-	require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
-	require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
-	require.Equal(t, 1, body.Data.Attempts.Data.Summary.LogicalRequests)
-	require.Contains(t, result.Body.String(), `"traffic_source":"gateway_ingress"`)
-	require.Contains(t, result.Body.String(), `"source":"server_recorded_entrypoints"`)
-	require.NotContains(t, result.Body.String(), "diagnostic-transport-fixture")
-	for _, model := range []string{"first-wire-model", "second-wire-model"} {
-		filtered := httptest.NewRecorder()
-		r.ServeHTTP(filtered, httptest.NewRequest("GET", fmt.Sprintf("/snapshot?account_id=%d&model_scope=upstream&model=%s&from=%s&until=%s", account, model, now.Add(-time.Minute).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339)), nil))
-		require.Equal(t, 200, filtered.Code, filtered.Body.String())
-		require.NoError(t, json.Unmarshal(filtered.Body.Bytes(), &body))
-		require.Equal(t, "ready", body.Data.Attempts.Status)
-		require.Equal(t, 1, body.Data.Attempts.Data.Summary.Attempts)
-		if model == "first-wire-model" {
+			require.NoError(t, json.Unmarshal(result.Body.Bytes(), &body))
+			require.Equal(t, "ready", body.Data.Attempts.Status)
+			require.Equal(t, 2, body.Data.Attempts.Data.Summary.Attempts)
 			require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
-			require.Zero(t, body.Data.Attempts.Data.Summary.Succeeded)
-			require.Zero(t, body.Data.Attempts.Data.RawCache.Observed)
-			require.Equal(t, 1, body.Data.Attempts.Data.RawCache.Unknown)
-			require.Nil(t, body.Data.Attempts.Data.RawCache.Rate)
-		} else {
 			require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
-			require.Zero(t, body.Data.Attempts.Data.Summary.Failed)
-			require.Equal(t, 1, body.Data.Attempts.Data.RawCache.Observed)
-			require.Zero(t, body.Data.Attempts.Data.RawCache.Unknown)
-			require.InDelta(t, 0.75, *body.Data.Attempts.Data.RawCache.Rate, 0.000001)
-		}
-		require.Contains(t, filtered.Body.String(), `"upstream_model":"`+model+`"`)
-		require.Contains(t, filtered.Body.String(), `"service_tier":"priority"`)
-		require.Contains(t, filtered.Body.String(), `"reasoning_effort":"high"`)
-		require.Contains(t, filtered.Body.String(), `"traffic_source":"gateway_ingress"`)
-		require.Contains(t, filtered.Body.String(), `"unknown_attempts":0`)
-		require.Len(t, body.Data.Attempts.Data.Rows, 1)
-		waits := body.Data.Attempts.Data.Rows[0].Waits
-		require.Equal(t, 1, waits.Version)
-		require.Equal(t, "canonical_physical_http_attempt", waits.Source)
-		require.Equal(t, 1, waits.FirstByte.Samples, "both the failed and recovered physical request retain their own byte wait")
-		require.NotNil(t, waits.FirstByte.MeanMS)
-		require.GreaterOrEqual(t, *waits.FirstByte.MeanMS, 0.0)
-		output := body.Data.Attempts.Data.Rows[0].Output
-		if model == "first-wire-model" {
-			require.Zero(t, waits.FirstText.Samples)
-			require.Equal(t, 1, waits.FirstText.Unknown)
-			require.Zero(t, output.Gap.Samples)
-			require.Zero(t, output.Rate.Samples)
-			require.Nil(t, output.Rate.TPS)
-		} else {
-			require.Equal(t, 1, waits.FirstText.Samples)
-			require.Zero(t, waits.FirstText.Unknown)
-			require.Equal(t, 1, output.Gap.Samples)
-			require.Equal(t, 1, output.Tail.Samples)
-			require.Equal(t, 1, output.Rate.Samples)
-			require.Greater(t, *output.Rate.TPS, 0.0)
-		}
+			require.Equal(t, 1, body.Data.Attempts.Data.Summary.LogicalRequests)
+			require.Contains(t, result.Body.String(), `"traffic_source":"gateway_ingress"`)
+			require.Contains(t, result.Body.String(), `"source":"server_recorded_entrypoints"`)
+			require.NotContains(t, result.Body.String(), "diagnostic-transport-fixture")
+			for _, model := range []string{"first-wire-model", "second-wire-model"} {
+				filtered := httptest.NewRecorder()
+				r.ServeHTTP(filtered, httptest.NewRequest("GET", fmt.Sprintf("/snapshot?account_id=%d&model_scope=upstream&model=%s&from=%s&until=%s", account, model, now.Add(-time.Minute).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339)), nil))
+				require.Equal(t, 200, filtered.Code, filtered.Body.String())
+				require.NoError(t, json.Unmarshal(filtered.Body.Bytes(), &body))
+				require.Equal(t, "ready", body.Data.Attempts.Status)
+				require.Equal(t, 1, body.Data.Attempts.Data.Summary.Attempts)
+				if model == "first-wire-model" {
+					require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
+					require.Zero(t, body.Data.Attempts.Data.Summary.Succeeded)
+					require.Zero(t, body.Data.Attempts.Data.RawCache.Observed)
+					require.Equal(t, 1, body.Data.Attempts.Data.RawCache.Unknown)
+					require.Nil(t, body.Data.Attempts.Data.RawCache.Rate)
+				} else {
+					require.Equal(t, 1, body.Data.Attempts.Data.Summary.Succeeded)
+					require.Zero(t, body.Data.Attempts.Data.Summary.Failed)
+					require.Equal(t, 1, body.Data.Attempts.Data.RawCache.Observed)
+					require.Zero(t, body.Data.Attempts.Data.RawCache.Unknown)
+					require.InDelta(t, 0.75, *body.Data.Attempts.Data.RawCache.Rate, 0.000001)
+				}
+				require.Contains(t, filtered.Body.String(), `"upstream_model":"`+model+`"`)
+				if protocol == "messages" {
+					require.Contains(t, filtered.Body.String(), `"service_tier":"standard_only"`)
+					require.Contains(t, filtered.Body.String(), `"speed":"fast"`)
+					require.Contains(t, filtered.Body.String(), `"thinking_mode":"enabled"`)
+					require.Contains(t, filtered.Body.String(), `"thinking_budget_tokens":4096`)
+				} else {
+					require.Contains(t, filtered.Body.String(), `"service_tier":"priority"`)
+				}
+				require.Contains(t, filtered.Body.String(), `"reasoning_effort":"high"`)
+				require.Contains(t, filtered.Body.String(), `"traffic_source":"gateway_ingress"`)
+				require.Contains(t, filtered.Body.String(), `"unknown_attempts":0`)
+				require.Len(t, body.Data.Attempts.Data.Rows, 1)
+				waits := body.Data.Attempts.Data.Rows[0].Waits
+				require.Equal(t, 1, waits.Version)
+				require.Equal(t, "canonical_physical_http_attempt", waits.Source)
+				require.Equal(t, 1, waits.FirstByte.Samples, "both the failed and recovered physical request retain their own byte wait")
+				require.NotNil(t, waits.FirstByte.MeanMS)
+				require.GreaterOrEqual(t, *waits.FirstByte.MeanMS, 0.0)
+				output := body.Data.Attempts.Data.Rows[0].Output
+				if model == "first-wire-model" {
+					require.Zero(t, waits.FirstText.Samples)
+					require.Equal(t, 1, waits.FirstText.Unknown)
+					require.Zero(t, output.Gap.Samples)
+					require.Zero(t, output.Rate.Samples)
+					require.Nil(t, output.Rate.TPS)
+				} else {
+					require.Equal(t, 1, waits.FirstText.Samples)
+					require.Zero(t, waits.FirstText.Unknown)
+					require.Equal(t, 1, output.Gap.Samples)
+					require.Equal(t, 1, output.Tail.Samples)
+					require.Equal(t, 1, output.Rate.Samples)
+					require.Greater(t, *output.Rate.TPS, 0.0)
+				}
+			}
+			var billed int
+			require.NoError(t, db.QueryRow(`SELECT count(*) FROM usage_logs WHERE account_id=$1`, account).Scan(&billed))
+			require.Zero(t, billed)
+		})
 	}
-	var billed int
-	require.NoError(t, db.QueryRow(`SELECT count(*) FROM usage_logs WHERE account_id=$1`, account).Scan(&billed))
-	require.Zero(t, billed)
 }

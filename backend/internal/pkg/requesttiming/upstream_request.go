@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -15,14 +16,17 @@ import (
 // transport, not a response model, billing alias or mutable account setting.
 // It is metadata only: it attests neither model quality nor supplier grouping.
 type UpstreamRequestObservation struct {
-	Version         int    `json:"version"`
-	Status          string `json:"status"`
-	Source          string `json:"source"`
-	Protocol        string `json:"protocol,omitempty"`
-	Model           string `json:"model,omitempty"`
-	ServiceTier     string `json:"service_tier,omitempty"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	Stream          bool   `json:"stream"`
+	Version              int    `json:"version"`
+	Status               string `json:"status"`
+	Source               string `json:"source"`
+	Protocol             string `json:"protocol,omitempty"`
+	Model                string `json:"model,omitempty"`
+	ServiceTier          string `json:"service_tier,omitempty"`
+	ReasoningEffort      string `json:"reasoning_effort,omitempty"`
+	Speed                string `json:"speed,omitempty"`
+	ThinkingMode         string `json:"thinking_mode,omitempty"`
+	ThinkingBudgetTokens int64  `json:"thinking_budget_tokens,omitempty"`
+	Stream               bool   `json:"stream"`
 }
 
 const maxUpstreamRequestScopeBytes = 1024 * 1024
@@ -49,7 +53,7 @@ func ObserveUpstreamRequest(req *http.Request) *http.Request {
 		return req
 	}
 	protocol := transportdiag.HTTPRoute(req).Endpoint
-	if protocol != "responses" && protocol != "responses_compact" && protocol != "chat_completions" {
+	if protocol != "responses" && protocol != "responses_compact" && protocol != "chat_completions" && protocol != "messages" {
 		return req
 	}
 	clone := new(http.Request)
@@ -161,6 +165,53 @@ func parseUpstreamRequest(protocol string, payload []byte, ws bool) *UpstreamReq
 			return nil
 		}
 		out.Stream = stream.Bool()
+	}
+	if protocol == "messages" {
+		if ws || fields["reasoning"].Exists() || fields["reasoning_effort"].Exists() {
+			return nil
+		}
+		out.ServiceTier, valid = requestScopeOption(fields["service_tier"], "auto", "standard_only")
+		if !valid {
+			return nil
+		}
+		out.Speed, valid = requestScopeOption(fields["speed"], "standard", "fast")
+		if !valid {
+			return nil
+		}
+		out.ThinkingMode = "unspecified"
+		if thinking := fields["thinking"]; thinking.Exists() {
+			values, ok := requestScopeFields(thinking)
+			if !ok {
+				return nil
+			}
+			out.ThinkingMode, ok = requestScopeOption(values["type"], "enabled", "disabled", "adaptive")
+			if !ok || out.ThinkingMode == "unspecified" {
+				return nil
+			}
+			budget := values["budget_tokens"]
+			if out.ThinkingMode == "enabled" {
+				n, err := strconv.ParseInt(budget.Raw, 10, 64)
+				if budget.Type != gjson.Number || err != nil || n <= 0 || n > 1<<53-1 {
+					return nil
+				}
+				out.ThinkingBudgetTokens = n
+			} else if budget.Exists() {
+				return nil
+			}
+		}
+		effort := gjson.Result{}
+		if config := fields["output_config"]; config.Exists() {
+			values, ok := requestScopeFields(config)
+			if !ok {
+				return nil
+			}
+			effort = values["effort"]
+		}
+		out.ReasoningEffort, valid = requestScopeOption(effort, "low", "medium", "high", "max")
+		if !valid {
+			return nil
+		}
+		return out
 	}
 	out.ServiceTier, valid = requestScopeOption(fields["service_tier"], "auto", "default", "priority", "flex", "scale")
 	if !valid {

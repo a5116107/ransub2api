@@ -55,10 +55,15 @@
                 <p class="break-all font-medium">#{{ row.account_id }} · {{ t('upstreamOps.rawCache.credential') }} {{ row.credential_fingerprint?.slice(0, 12) ?? t('upstreamOps.unknown') }}</p>
                 <p class="break-words text-xs text-gray-500">{{ row.transport }} / {{ row.protocol ?? t('upstreamOps.unknown') }} · {{ t('upstreamOps.attempts.ingressModel') }} {{ row.public_model || t('upstreamOps.unknown') }}</p>
                 <dl class="grid grid-cols-3 gap-2 tabular-nums"><div v-for="key in attemptKeys" :key="key"><dt class="text-xs text-gray-500">{{ t(`upstreamOps.attempts.${key}`) }}</dt><dd>{{ number(row[key], 0) }}</dd></div></dl>
-                <div v-if="row.upstream_model_status === 'observed' && row.upstream_model && row.upstream_protocol && row.service_tier && row.reasoning_effort && typeof row.upstream_stream === 'boolean'" class="space-y-1" data-testid="attempt-request-scope">
+                <div v-if="row.upstream_model_status === 'observed' && row.upstream_model && row.upstream_protocol && row.service_tier && row.reasoning_effort && typeof row.upstream_stream === 'boolean' && validMessagesScope(row)" class="space-y-1" data-testid="attempt-request-scope">
                   <p class="text-xs font-medium text-green-700 dark:text-green-400">{{ t('upstreamOps.attempts.requestMetadataObserved') }}</p>
                   <p class="break-all font-medium">{{ row.upstream_model }}</p>
                   <p class="break-words text-xs text-gray-500">{{ row.upstream_protocol }} · {{ row.service_tier }} · {{ row.reasoning_effort }} · {{ row.upstream_stream ? t('upstreamOps.rawCache.streaming') : t('upstreamOps.rawCache.nonStreaming') }}</p>
+                  <template v-if="row.upstream_protocol === 'messages'">
+                    <p class="break-words text-xs text-gray-500" data-testid="attempt-messages-speed">{{ t('upstreamOps.attempts.messagesSpeed', { value: row.speed }) }}</p>
+                    <p class="break-words text-xs text-gray-500" data-testid="attempt-messages-thinking">{{ t('upstreamOps.attempts.messagesThinking', { value: row.thinking_mode }) }}</p>
+                    <p v-if="row.thinking_mode === 'enabled'" class="break-words text-xs text-gray-500" data-testid="attempt-messages-budget">{{ t('upstreamOps.attempts.messagesBudget', { value: number(row.thinking_budget_tokens, 0) }) }}</p>
+                  </template>
                 </div>
                 <p v-else class="text-xs text-amber-700 dark:text-amber-400" data-testid="attempt-request-scope-unknown">{{ t('upstreamOps.attempts.physicalScopeUnknown') }}</p>
                 <UpstreamWaitMetrics :transport="row.transport" :waits="row.waits" scope="attempts" />
@@ -125,7 +130,7 @@ import UpstreamWaitMetrics from './UpstreamWaitMetrics.vue'
 import UpstreamOutputMetrics from './UpstreamOutputMetrics.vue'
 import UpstreamAttemptCacheMetrics from './UpstreamAttemptCacheMetrics.vue'
 import UpstreamTrafficSources from './UpstreamTrafficSources.vue'
-import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics } from '@/api/admin/upstreamOperations'
+import { readOperations, type OperationsQuery, type OperationsSnapshot, type OperationsRow, type UpstreamMetrics, type UpstreamRawCacheMetrics, type UpstreamAttemptRow } from '@/api/admin/upstreamOperations'
 const { t } = useI18n()
 const attemptKeys = ['attempts', 'logical_requests', 'succeeded', 'failed', 'interrupted', 'unknown'] as const
 const validAttempts = computed(() => snapshot.value?.attempts?.data?.version === 1 && snapshot.value?.attempts?.data?.source === 'retained_physical_transport_attempts')
@@ -142,6 +147,12 @@ function number(v: number|null|undefined, decimals=6) { return v==null || !Numbe
 function percent(value: number | null | undefined) { return value != null && Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : t('upstreamOps.unknown') }
 function cacheStatus(value: UpstreamRawCacheMetrics) { return value.requests === 0 ? 'empty' : value.observed_requests === 0 ? 'unknown' : value.observed_requests < value.requests ? 'partial' : 'observed' }
 function trafficSource(source: string | undefined) { return source === 'gateway_ingress' || source === 'account_connection_test' ? source : 'unknown' }
+function validMessagesScope(row: UpstreamAttemptRow) {
+ if(row.upstream_protocol !== 'messages') return true
+ if(!['unspecified','auto','standard_only'].includes(row.service_tier ?? '') || !['unspecified','low','medium','high','max'].includes(row.reasoning_effort ?? '') || !['unspecified','standard','fast'].includes(row.speed ?? '')) return false
+ if(row.thinking_mode === 'enabled') return Number.isSafeInteger(row.thinking_budget_tokens) && row.thinking_budget_tokens! > 0
+ return ['unspecified','disabled','adaptive'].includes(row.thinking_mode ?? '') && row.thinking_budget_tokens == null
+}
 function formatMetric(m:UpstreamMetrics,key:typeof amountKeys[number]) {return number(m[key],0)}
 async function load() {
  const id=++request; controller?.abort(); controller=new AbortController(); loading.value=true; error.value=''; snapshot.value=null

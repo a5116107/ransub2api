@@ -3,7 +3,7 @@
 | 属性 | 内容 |
 | --- | --- |
 | 状态 | 部分已实现；自动供应池闭环未完成；本轮源码审计与剩余任务见13.3，实时进度见STATE |
-| 更新日期 | 2026-11-16 |
+| 更新日期 | 2026-11-17 |
 | 项目 | sub2api |
 | 本轮核对基线 | sub2api `c03a72245`、`feat/automated-upstream-supply`；avoding-newapi沿用`3c85af256`历史对照，本轮未重新审计；源码核对不等于生产能力 |
 | 状态入口 | [STATE.md](STATE.md) |
@@ -1815,7 +1815,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
-| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.10已接最终Key/线路原始缓存、逐尝试发送scope、HTTP四阶段/独立WS三阶段等待及输出停顿/吞吐，并按服务端入口来源分桶；失败、中断和未知保留覆盖分母。实际组、受信外部检测来源、其余发送scope与资格消费仍缺，D5.3继续开放；不以当前配置补历史身份 |
+| 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.11已接最终Key/线路原始缓存、逐尝试发送scope、HTTP四阶段/独立WS三阶段等待及输出停顿/吞吐，按服务端入口来源分桶；Messages已知模式另按速度/思考模式及预算分桶。失败、中断和未知保留覆盖分母。实际组、受信外部检测、Gemini等其余scope及资格消费仍缺，D5.3继续开放；不以当前配置补历史 |
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
@@ -1953,6 +1953,15 @@ D5.2、D6.1、D7.1/D7.2、D3.1及D2.1–D2.5/D4.1/D4.2的已验子范围继续�
 - 同一凭据/线路/发送模型/协议/档位/effort/传输的逐尝试结果、等待、缓存及输出按来源再次分桶；最终用量缓存也独立按来源分桶，二者的样本分母保持不同。合计明确包含全部来源，分别返回来源构成、样本和覆盖，不能用合成检测的高命中填业务结果。
 - 旧记录、缺失、未来版本、错误类型、未知来源或来源/类别不匹配均保持未知；只读取原始留存JSON，不补写历史。唯一用量回源与连接去重沿原合同，来源分桶加入稳定分页顺序。实际供应商分组、模型身份、缓存域及当前严格产品资格不由该标记证明。
 - 原管理员渠道运维页展示三类来源计数/覆盖和逐行结论，使用原中英及手机布局。缺失/错误版本或不守恒数据按未知展示；下游本人/观察员时序裁剪管理员来源字段，数据库与原始缓存计数不变。旧应用忽略可选JSON即可回退，无schema回退；真实PG/API、HTTP/WS与权限/前端证据通过后才记本地done，生产独立验收。
+
+#### D5.3.11 原生Messages发送参数与同范围观测
+
+沿原HTTP最终传输消费的有界请求体、物理attempt、同一SQL/API及管理员渠道运维页接入Messages；不预读、重放、改变载荷或保存正文，不新增表、迁移、统计入口或调度评分。
+
+- 从实际读取的完整JSON记录模型、stream、服务档（未指定/auto/standard_only）、速度（未指定/standard/fast）、output_config.effort及thinking。已知思考模式分未指定、disabled、adaptive和enabled；enabled保留精确正整数budget_tokens，不换算为effort或采用当前账号配置。未知枚举、重复/冲突参数、缺失/错误预算、压缩、超限或未完整消费仍保持未知；未指定不推断供应商默认。其他尚未确认的Messages扩展不因此获得完整能力认证。
+- 逐尝试结果、缓存、等待及输出增加速度、模式和预算的独立分桶与稳定分页；HTTP/独立WS及旧OpenAI统计不混用。原Messages累计usage按未缓存输入+缓存读取+缓存写入校验总输入，原始presence位齐备才纳入缓存样本；合法零未缓存字段可因原JSON的omitempty缺省，明确null或不守恒仍拒绝。失败/中断/无报告保留未知覆盖，不借最终成功或账单回填。
+- 管理员原卡片显示发送速度、思考模式和精确预算，缓存结论、覆盖及等待/输出仍各自保留原分母。旧字段缺失或非法scope显示未知；下游本人/观察员不获得此管理员元数据，原计费与最终用量缓存合同不变。
+- 验收覆盖真实HTTP失败后重试、不同发送模型→PostgreSQL→原管理API，已知模式/预算隔离、原始缓存/等待/停顿及吞吐、非法/历史/只读/权限和中英390/1440px布局/错误恢复/键盘筛选分页。具体命令和结果见DECISIONS/STATE；测试夹具不证明供应商真实模型/分组、生产加载或严格产品资格。可选JSON无需schema迁移，旧应用忽略新增字段、Messages发送scope退为未知即可回退。
 
 #### 执行顺序与解除条件
 
