@@ -1009,6 +1009,55 @@ func TestUpstreamBillingProbeUnsupportedDelayIsStretchedAndBounded(t *testing.T)
 	require.GreaterOrEqual(t, unsupportedProbeDelay(30, time.Hour), time.Hour)
 }
 
+func TestUpstreamBillingProbeRunnerDoesNotStarveDueRecoveryWithNewInventory(t *testing.T) {
+	now := time.Date(2026, time.November, 18, 8, 0, 0, 0, time.UTC)
+	for _, kind := range []string{"supplier_failure", "budget_deferral", "invalid_snapshot", "zero_snapshot", "unknown_status"} {
+		t.Run(kind, func(t *testing.T) {
+			repo := &upstreamBillingProbeAccountRepo{accounts: make(map[int64]*Account)}
+			for id := int64(1); id <= upstreamBillingProbeMaxPerCycle+1; id++ {
+				repo.accounts[id] = &Account{
+					ID: id, Name: fmt.Sprintf("fairness-%d", id), Platform: PlatformOpenAI,
+					Type: AccountTypeAPIKey, Status: StatusActive, Concurrency: 1,
+					Credentials: map[string]any{"api_key": fmt.Sprintf("fixture-fairness-%d", id), "base_url": "https://upstream.example"},
+					CreatedAt:   now.Add(-time.Minute),
+					Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+				}
+			}
+			recovery := repo.accounts[upstreamBillingProbeMaxPerCycle+1]
+			recovery.CreatedAt = now.Add(-time.Hour)
+			switch kind {
+			case "supplier_failure":
+				recovery.Extra[UpstreamBillingProbeExtraKey] = &UpstreamBillingProbeSnapshot{
+					Status: UpstreamBillingProbeStatusFailed, NextProbeAt: now.Add(-10 * time.Minute), FailureCount: 3,
+				}
+			case "budget_deferral":
+				recovery.Extra[UpstreamBillingProbeDeferralExtraKey] = &MonitoringProbeBudgetDenial{
+					Reason: "request_limit", Scope: "global_minute", RetryAt: now.Add(-5 * time.Minute),
+				}
+			case "invalid_snapshot":
+				recovery.Extra[UpstreamBillingProbeExtraKey] = map[string]any{"status": "ok", "next_probe_at": "invalid"}
+			case "zero_snapshot":
+				recovery.Extra[UpstreamBillingProbeExtraKey] = &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusOK}
+			case "unknown_status":
+				recovery.Extra[UpstreamBillingProbeExtraKey] = map[string]any{"status": "future-status", "next_probe_at": now.Add(time.Hour)}
+			}
+			upstream := &upstreamBillingProbeHTTPStub{}
+			runner := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+			runner.now = func() time.Time { return now }
+
+			require.NoError(t, runner.RunDue(t.Context()))
+			snapshot := decodeUpstreamBillingProbeSnapshot(recovery.Extra)
+			require.NotNil(t, snapshot, "eligible recovery must not be displaced by a full batch of newer inventory")
+			require.Equal(t, now, snapshot.LastAttemptAt)
+			require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+			require.EqualValues(t, upstreamBillingProbeMaxPerCycle, upstream.calls.Load())
+			require.EqualValues(t, upstreamBillingProbeMaxPerCycle, upstream.balanceCalls.Load())
+			require.NotContains(t, repo.accounts[upstreamBillingProbeMaxPerCycle].Extra, UpstreamBillingProbeExtraKey,
+				"the youngest equal-age account waits its turn instead of displacing older recovery")
+		})
+	}
+}
+
 // 加长退避只把 unsupported 账号移出周期性热队列，手动探测不受影响。
 func TestUpstreamBillingProbeUnsupportedBackoffDefersRunnerButNotManualProbe(t *testing.T) {
 	// Ollama Cloud 形态：官方域，不发请求直接落 unsupported。

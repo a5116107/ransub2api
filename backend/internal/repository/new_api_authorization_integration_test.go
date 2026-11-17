@@ -252,6 +252,13 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	auth := NewNewAPIAuthorizationRepository(db)
 	settings := service.NewSettingService(NewSettingRepository(client), cfg)
 	require.NoError(t, settings.SetUpstreamBillingProbeSettings(ctx, &service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}))
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerMinute, policy.RequestsPerDay = 2000, 2000
+	policy.SiteRequestsPerMinute, policy.KeyRequestsPerMinute = 2000, 2000
+	policy.Concurrency, policy.SiteConcurrency, policy.KeyConcurrency = 4, 4, 4
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
 	ids := make([]int64, len(calls))
 	for i := range ids {
 		site := fmt.Sprintf("%s/line-%d", server.URL, i)
@@ -279,6 +286,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		tester := service.NewAccountTestService(repo, nil, nil, nil, nil, upstream, cfg, nil)
 		runner := service.NewUpstreamBillingProbeService(repo, tester, settings)
 		runner.SetNewAPIAuthorization(NewNewAPIAuthorizationRepository(db), encryptor, true)
+		runner.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
 		defer runner.Stop()
 		require.NoError(t, runner.RunDue(ctx))
 	}
@@ -393,6 +401,10 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		}
 	}
 	require.Equal(t, int64(1280), physicalCalls)
+	summary, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.Equal(t, physicalCalls, summary.DayUsed, "each management page and raw-key proof is charged across reconstructed runners")
+	require.Zero(t, summary.ActiveRequests)
 	require.Greater(t, maximum.Load(), int64(1), "exercise concurrent physical requests")
 	require.LessOrEqual(t, maximum.Load(), int64(4), "management pagination and key verification share the existing probe slots")
 	require.Zero(t, unexpected.Load())
@@ -506,6 +518,16 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		}
 		t.Logf("shared network deadline exhausted after %s; failure/backoff persisted in SQL and recovered after expiry", elapsed.Round(time.Millisecond))
 	})
+	physicalCalls = 0
+	for i := range calls {
+		for step := range calls[i] {
+			physicalCalls += calls[i][step].Load()
+		}
+	}
+	summary, err = NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+	require.NoError(t, err)
+	require.Equal(t, physicalCalls, summary.DayUsed, "timeouts and final recovery retain every actual physical call")
+	require.Zero(t, summary.ActiveRequests)
 	require.Zero(t, unexpected.Load())
 }
 

@@ -458,6 +458,14 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	}
 	sort.SliceStable(due, func(i, j int) bool {
 		left, right := upstreamBillingProbeDueAt(&due[i]), upstreamBillingProbeDueAt(&due[j])
+		// New inventory joins at its creation time, not year zero. An endless
+		// stream of new accounts must not displace already-due recovery.
+		if left.IsZero() {
+			left = due[i].CreatedAt
+		}
+		if right.IsZero() {
+			right = due[j].CreatedAt
+		}
 		if left.Equal(right) {
 			return due[i].ID < due[j].ID
 		}

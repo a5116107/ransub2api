@@ -38,10 +38,10 @@ func TestListDueUpstreamBillingProbeAccountsHandlesInvalidCalendarDate(t *testin
 			"upstream_billing_probe": {"status": "ok", "next_probe_at": %q}
 		}`, nextProbeAt)
 		err := scanSingleRow(ctx, tx, `
-			INSERT INTO accounts (name, platform, type, status, extra)
-			VALUES ($1, 'openai', $2, 'active', $3::jsonb)
+			INSERT INTO accounts (name, platform, type, status, extra, created_at)
+			VALUES ($1, 'openai', $2, 'active', $3::jsonb, $4)
 			RETURNING id
-		`, []any{name, service.AccountTypeAPIKey, extra}, &id)
+		`, []any{name, service.AccountTypeAPIKey, extra, now.Add(-time.Hour)}, &id)
 		require.NoError(t, err)
 		return id
 	}
@@ -212,11 +212,58 @@ func TestListDueUpstreamBillingProbeAccountsIncludesAllAPIKeyPlatforms(t *testin
 	require.Equal(t, grokDue, accounts[2].ID)
 }
 
+func TestListDueUpstreamBillingProbeAccountsDoesNotStarveRecoveryWithNewInventory(t *testing.T) {
+	for _, kind := range []string{"supplier_failure", "budget_deferral", "invalid_snapshot", "zero_snapshot", "unknown_status"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := t.Context()
+			tx := testEntTx(t)
+			repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			_, err := tx.ExecContext(ctx, `UPDATE accounts SET extra=extra-'upstream_billing_probe_enabled'`)
+			require.NoError(t, err)
+			for i := 0; i < service.UpstreamBillingProbeMaxBatchSize; i++ {
+				_, err := tx.ExecContext(ctx, `INSERT INTO accounts(name,platform,type,status,extra,created_at)
+ VALUES($1,'openai','apikey','active','{"upstream_billing_probe_enabled":true}'::jsonb,$2)`,
+					fmt.Sprintf("fairness-new-%d", i), now.Add(-time.Minute))
+				require.NoError(t, err)
+			}
+			extra := map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true}
+			switch kind {
+			case "supplier_failure":
+				extra[service.UpstreamBillingProbeExtraKey] = map[string]any{
+					"status": "failed", "next_probe_at": now.Add(-10 * time.Minute), "failure_count": 3,
+				}
+			case "budget_deferral":
+				extra[service.UpstreamBillingProbeDeferralExtraKey] = map[string]any{
+					"reason": "request_limit", "scope": "global_minute", "retry_at": now.Add(-5 * time.Minute),
+				}
+			case "invalid_snapshot":
+				extra[service.UpstreamBillingProbeExtraKey] = map[string]any{"status": "ok", "next_probe_at": "invalid"}
+			case "zero_snapshot":
+				extra[service.UpstreamBillingProbeExtraKey] = &service.UpstreamBillingProbeSnapshot{Status: service.UpstreamBillingProbeStatusOK}
+			case "unknown_status":
+				extra[service.UpstreamBillingProbeExtraKey] = map[string]any{"status": "future-status", "next_probe_at": now.Add(time.Hour)}
+			}
+			raw, err := json.Marshal(extra)
+			require.NoError(t, err)
+			var recoveryID int64
+			require.NoError(t, scanSingleRow(ctx, tx, `INSERT INTO accounts(name,platform,type,status,extra,created_at)
+ VALUES('fairness-recovery','openai','apikey','active',$1::jsonb,$2) RETURNING id`,
+				[]any{raw, now.Add(-time.Hour)}, &recoveryID))
+
+			accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, service.UpstreamBillingProbeMaxBatchSize)
+			require.NoError(t, err)
+			require.Len(t, accounts, service.UpstreamBillingProbeMaxBatchSize)
+			require.Equal(t, recoveryID, accounts[0].ID, "expired recovery must precede newer unobserved inventory before LIMIT")
+		})
+	}
+}
+
 func TestUpstreamBillingProbeHundredAccountsRoundTripFairness(t *testing.T) {
 	ctx := t.Context()
 	db, client := newBillingAuditDatabase(t)
 	repo := newAccountRepositoryWithSQL(client, db, nil)
-	var rateCalls, balanceCalls [103]atomic.Int64
+	var rateCalls, balanceCalls [123]atomic.Int64
 	var active, maximum, unexpected atomic.Int64
 	var recovered atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,8 +319,15 @@ func TestUpstreamBillingProbeHundredAccountsRoundTripFairness(t *testing.T) {
 	})
 	settings := service.NewSettingService(NewSettingRepository(client), cfg)
 	require.NoError(t, settings.SetUpstreamBillingProbeSettings(ctx, &service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}))
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerMinute, policy.RequestsPerDay, policy.SiteRequestsPerMinute = 220, 220, 220
+	policy.KeyRequestsPerMinute = 3
+	policy.Concurrency, policy.SiteConcurrency, policy.KeyConcurrency = 4, 4, 1
+	policy, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
 	ids := make([]int64, len(rateCalls))
-	for i := range ids {
+	for i := 0; i < 103; i++ {
 		credentials, err := json.Marshal(map[string]string{"api_key": fmt.Sprintf("fixture-probe-%d", i), "base_url": server.URL})
 		require.NoError(t, err)
 		accountType, status, enabled := service.AccountTypeAPIKey, service.StatusActive, i != 100
@@ -286,15 +340,20 @@ func TestUpstreamBillingProbeHundredAccountsRoundTripFairness(t *testing.T) {
 		extra := fmt.Sprintf(`{"upstream_billing_probe_enabled":%t,"upstream_billing_rate_sync_enabled":false}`, enabled)
 		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra,rate_multiplier) VALUES($1,'openai',$2,$3,$4::jsonb,$5::jsonb,1) RETURNING id`, fmt.Sprintf("probe-fairness-%d", i), accountType, status, string(credentials), extra).Scan(&ids[i]))
 	}
-	run := func(t *testing.T) {
+	newRunner := func(t *testing.T) *service.UpstreamBillingProbeService {
 		t.Helper()
 		// A new service and repository on each cycle must use persisted due
-		// times, rather than a process-local cursor or the previous object.
+		// times and shared physical budget, not a process-local cursor/counter.
 		freshRepo := newAccountRepositoryWithSQL(client, db, nil)
 		tester := service.NewAccountTestService(freshRepo, nil, nil, nil, nil, upstream, cfg, nil)
 		runner := service.NewUpstreamBillingProbeService(freshRepo, tester, service.NewSettingService(NewSettingRepository(client), cfg))
-		defer runner.Stop()
-		require.NoError(t, runner.RunDue(ctx))
+		runner.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+		t.Cleanup(runner.Stop)
+		return runner
+	}
+	run := func(t *testing.T) {
+		t.Helper()
+		require.NoError(t, newRunner(t).RunDue(ctx))
 	}
 	readSnapshot := func(t *testing.T, index int) service.UpstreamBillingProbeSnapshot {
 		t.Helper()
@@ -345,6 +404,13 @@ func TestUpstreamBillingProbeHundredAccountsRoundTripFairness(t *testing.T) {
 	})
 	t.Run("expired_failures_recover_without_reprobing_healthy_accounts", func(t *testing.T) {
 		recovered.Store(true)
+		for i := 103; i < len(ids); i++ {
+			credentials, err := json.Marshal(map[string]string{"api_key": fmt.Sprintf("fixture-probe-%d", i), "base_url": server.URL})
+			require.NoError(t, err)
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra,rate_multiplier)
+ VALUES($1,'openai','apikey','active',$2::jsonb,'{"upstream_billing_probe_enabled":true}'::jsonb,1) RETURNING id`,
+				fmt.Sprintf("probe-new-inventory-%d", i), credentials).Scan(&ids[i]))
+		}
 		for i := 0; i < 20; i++ {
 			// Use the writer's nanosecond format at the SQL scheduling boundary.
 			at := time.Now().Add(-time.Minute).Truncate(time.Second).Add(123456789 * time.Nanosecond)
@@ -366,9 +432,58 @@ func TestUpstreamBillingProbeHundredAccountsRoundTripFairness(t *testing.T) {
 		}
 		due, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, time.Now(), 101)
 		require.NoError(t, err)
-		require.Empty(t, due)
+		require.Len(t, due, 20, "new inventory waits behind already-due supplier recovery")
+		for i := 103; i < len(ids); i++ {
+			require.Zero(t, rateCalls[i].Load(), "new inventory must not displace overdue recovery")
+		}
 	})
-	for i := 100; i < len(rateCalls); i++ {
+	t.Run("shared_budget_exhaustion_and_persisted_recovery", func(t *testing.T) {
+		before := make([]service.UpstreamBillingProbeSnapshot, 100)
+		for i := range before {
+			before[i] = readSnapshot(t, i)
+		}
+		run(t)
+		for i := range before {
+			require.Equal(t, before[i], readSnapshot(t, i), "budget denial must not renew or invalidate existing evidence")
+		}
+		for i := 103; i < len(ids); i++ {
+			require.Zero(t, rateCalls[i].Load())
+			require.Zero(t, balanceCalls[i].Load())
+			account, err := repo.GetByID(ctx, ids[i])
+			require.NoError(t, err)
+			require.NotNil(t, account.Extra[service.UpstreamBillingProbeDeferralExtraKey])
+			require.NotContains(t, account.Extra, service.UpstreamBillingProbeExtraKey)
+		}
+		summary, err := NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, 220, summary.DayUsed, "physical rate and balance calls share one budget across service rebuilds")
+		require.Zero(t, summary.ActiveRequests)
+		run(t)
+		policy.RequestsPerMinute, policy.RequestsPerDay, policy.SiteRequestsPerMinute = 260, 260, 260
+		_, err = budget.SaveSettings(ctx, policy)
+		require.NoError(t, err)
+		for i := 103; i < len(ids); i++ {
+			// Advance only the private fixture's retry state, as in the original
+			// supplier-backoff case; this is not a production wall-clock SLA.
+			_, err := db.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_set(extra,'{upstream_billing_probe_deferral,retry_at}',to_jsonb($1::text)) WHERE id=$2`,
+				time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), ids[i])
+			require.NoError(t, err)
+		}
+		run(t)
+		for i := 103; i < len(ids); i++ {
+			require.EqualValues(t, 1, rateCalls[i].Load())
+			require.EqualValues(t, 1, balanceCalls[i].Load())
+			require.Equal(t, service.UpstreamBillingProbeStatusOK, readSnapshot(t, i).Status)
+			account, err := repo.GetByID(ctx, ids[i])
+			require.NoError(t, err)
+			require.Nil(t, account.Extra[service.UpstreamBillingProbeDeferralExtraKey])
+		}
+		summary, err = budget.Summary(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, 260, summary.DayUsed)
+		require.Zero(t, summary.ActiveRequests)
+	})
+	for i := 100; i < 103; i++ {
 		require.Zero(t, rateCalls[i].Load(), "disabled and OAuth accounts must remain excluded")
 		require.Zero(t, balanceCalls[i].Load())
 	}

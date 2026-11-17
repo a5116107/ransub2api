@@ -4422,6 +4422,7 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 		WITH candidates AS (
 			SELECT
 				id,
+				created_at,
 				extra #>> '{upstream_billing_probe,status}' AS probe_status,
 				extra #>> '{upstream_billing_probe,next_probe_at}' AS next_probe_at,
 				extra #>> '{upstream_billing_probe_deferral,retry_at}' AS deferred_until
@@ -4433,6 +4434,7 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 		), parsed AS MATERIALIZED (
 			SELECT
 				id,
+				created_at,
 				probe_status,
 				next_probe_at,
 				CASE WHEN deferred_until ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' THEN
@@ -4457,6 +4459,7 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 		), normalized AS (
 			SELECT
 				id,
+				created_at,
 				probe_status,
 				next_probe_at,
 				parsed_next_probe_at,
@@ -4473,16 +4476,11 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 			OR NOT valid_next_probe_at
 			OR CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz <= $1 ELSE FALSE END)
 		ORDER BY
-			CASE
-				WHEN parsed_deferred_until IS NOT NULL THEN 1
-				WHEN probe_status NOT IN ('ok', 'unsupported', 'failed')
-					OR probe_status IS NULL
-					OR next_probe_at IS NULL
-					OR NOT valid_next_probe_at
-				THEN 0
-				ELSE 1
-			END ASC,
-			GREATEST(CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz END, parsed_deferred_until::timestamptz) ASC NULLS FIRST,
+			COALESCE(NULLIF(GREATEST(
+				CASE WHEN probe_status IN ('ok', 'unsupported', 'failed') AND valid_next_probe_at
+					THEN parsed_next_probe_at::timestamptz END,
+				parsed_deferred_until::timestamptz
+			), TIMESTAMPTZ '0001-01-01 00:00:00+00'), created_at) ASC,
 			id ASC
 		LIMIT $2
 	`, now.UTC(), limit)
