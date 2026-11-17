@@ -708,7 +708,7 @@ JSON`scope_verdicts`逐项输出`applicability`、`price_class`、默认D和最�
 
 沿原候选门补齐可预测的OpenAI API Key原生Responses非透传路径。验收要求：候选复用原模型映射、兼容上游none过滤、非透传minimal归一化及fast改写；HTTP和SSE的实际出站模型/协议/档位/effort与候选一致。槽后更新与物理发送前仍重验最新声明；终检拒绝不授权换线或重放。
 
-传输可动态变化、受管/影子凭据、BPS/SIWC、按模型分流、CN特殊路径及未知工具/媒体scope继续延后精确预测；延后不能跳过声明过期、无效或绑定变更的通用检查，没有证据的路径不获得严格受管资格。原生透传与非透传各自的模型/effort规则保持，不能为复用候选而改变实际转发语义。最终双轮race为3764条test pass、0fail/skip/race，vet/增量fast lint/Linux构建退出0；身份与原失败见DECISIONS。记录含子例与双轮，不是3764个独立场景；本地证据不代替供应商或生产验收。
+HTTP转原生WS的可预测范围按5.3.17处理；其余状态相关传输、受管/影子凭据、BPS/SIWC、按模型分流、CN特殊路径及未知工具/媒体scope继续延后精确预测；延后不能跳过声明过期、无效或绑定变更的通用检查，没有证据的路径不获得严格受管资格。原生透传与非透传各自的模型/effort规则保持，不能为复用候选而改变实际转发语义。最终双轮race为3764条test pass、0fail/skip/race，vet/增量fast lint/Linux构建退出0；身份与原失败见DECISIONS。记录含子例与双轮，不是3764个独立场景；本地证据不代替供应商或生产验收。
 
 候选骨架过滤、解析、协议转换、编码或fast策略失败，同样经唯一`upstreamBillingCandidateScopeVetoReason`按当前时刻复核声明。有效声明只延后精确scope、保留原实际转发/策略错误；过期、无效、绑定改变及倍率不可用仍拒绝。正常精确候选复用同一出口，不额外解析第二次声明，不增加设置读取或改变原物理发送检查。对应回归包含Responses与Chat在策略block时的有效、过期和绑定变更；本地命令结果与源码身份见DECISIONS。
 
@@ -793,6 +793,15 @@ ctx_pool/shared/dedicated启用按规范化大小自动桥接，且smart未确�
 - 任一可达scope被允许时继续原候选流程，这不授予严格受管资格，也不保证最后选中的实际协议必然通过。转换失败或形状未知仍延后精确判断；已过期、绑定变化等通用声明失效始终即时生效。已声明账号中缺少该已知scope的覆盖条目仍按原合同拒绝；未声明旧账号继续原兼容路径，不获得严格资格。
 - 健康粘性、成本门、共享Key并发、等待后重读和实际发送终检保持。首帧候选描述在连接后清除；后续帧使用本轮模型/档位/声明，撤销后不会因首帧旧资格继续发送。
 - 本地回归覆盖两调度器的排除/恢复/粘性、槽位后配置撤销，以及三种池模式在阈值两侧的物理HTTP/WS帧；实际结果见STATE/DECISIONS。范围限定为已有可预测纯文本转换，状态相关转换、受管产品和真实供应商合同仍待原父验收。
+
+#### 5.3.17 HTTP Responses转原生WS的候选范围（D2.6.17，本地子验收）
+
+HTTP入站、非透传OpenAI API Key最终走原生WS v2时，候选沿原HTTP模型映射、none/minimal归一化、输出选项及Fast策略处理，再调用正式`buildOpenAIWSCreatePayload`构造无正文的scope骨架。不能拿HTTP的适用声明代替实际WS协议，也不能套用WS入站的规范化规则。
+
+- 描述符仅新增“显式stream”和“存在turn metadata”两个布尔值；不保存正文、续接ID或原始请求头。省略stream时复用正式帧构造器的默认值，显式false保持。
+- 每次评估使用当前账号的传输模式；候选、粘性、重试及等待后重读共用原利润门。实际发送仍按真实帧独立终检，撤销声明后零生成帧发送，不新增调度器或并行转换器。
+- 透传HTTP路径保持原含义。turn metadata、previous_response_id、加密历史、媒体、托管凭据或未知变换不借骨架证明为普通文本；继续原最终检查，并立即消费声明过期/绑定变化。实际供应商合同与严格受管资格仍须原D2.6/D4.3验收。
+- 本地回归与运行结果见STATE/DECISIONS；不以候选过滤或本地WS服务代替生产加载、实际供应商模型/倍率/缓存证明。
 
 ### 5.4 采购分桶、产品组合与自动重归类（提案）
 
@@ -1849,7 +1858,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 
 | 范围 | 当前源码证据 | 尚缺什么 / 不能据此宣称什么 |
 | --- | --- | --- |
-| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.16。原生透传/非透传、固定转换、Chat及Messages双转换入站、透传/固定池WS、确定HTTP桥及智能分流候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
+| 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.17。原生透传/非透传、固定转换、Chat及Messages双转换入站、透传/固定池WS、确定HTTP桥及智能分流候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
 | 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 现有利润门和人工关联不是采购桶/受管产品编译器。Group及现有归组API未提供允许采购桶、统一资格、自动/审核/手动及关系拥有者的完整闭环；不能承诺倍率变化后自动迁入正确产品。D4.3 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 可用状态、规则隔离、冻结题和复测已存在；缺统一分维度测量/策略版本、独立模型参考与漂移结论及相应资格消费。历史单题/同群结果不是模型身份认证。D3.2 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
@@ -1869,7 +1878,7 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 
 | ID / 优先级 | 原位工作与依赖 | 可验收结果 / 外部边界 |
 | --- | --- | --- |
-| D2.6 / P0 | D2.6.1–.16声明/预演/来源、原生Responses/Chat、Messages双转换、透传/固定池WS、确定桥/智能分流及规范化池桥协议集合已有本地证据，见5.3.1–5.3.16；余状态相关转换、受管资格与真实来源；依赖D2.1–D2.5 | .16四包双轮race8214条test pass、0fail/skip/race，池桥矩阵146、新增物理HTTP/WS叶例114条pass事件（含双轮）；双调度/粘性/槽后/撤销、映射与Fast均已验。三包vet/增量fast lint/Linux退出0；SQL54/UI35按未变输入复用。原RED和拒绝原因失败保留，非生产；状态相关转换/实际合同与严格资格仍开放，原分母不变 |
+| D2.6 / P0 | D2.6.1–.17声明/预演/来源、原生Responses HTTP/WS及Chat、Messages双转换、透传/固定池WS、确定桥/智能分流和规范化池桥协议集合已有本地证据，见5.3.1–5.3.17；余状态相关转换、受管资格与真实来源；依赖D2.1–D2.5 | .17四包双轮race8378条test pass、0fail/skip/race，新增HTTP转WS物理叶例34条pass事件（含双轮）；双调度/粘性/槽后/撤销、映射/Fast/stream均已验。service vet及三包增量fast lint/Linux退出0；SQL54/UI35按未变输入复用。基线红测6fail及两次夹具失败保留，非生产；状态相关转换/实际合同与严格资格仍开放，原分母不变 |
 | D5.3 / P0 | 沿timing/usage及原运维入口建立上游原始缓存和同层指标聚合；依赖D2.5/D5.1 | 按最终Key摘要/实际组/模型/协议/档位/线路版本和窗口汇总，身份未知单列；请求命中、Token加权、覆盖、样本/新鲜度及业务/合成来源分开；复用TTFB/TTFS/首推理/首文本、输出停顿、完整成功与物理attempt的同scope口径，不把最终成功掩盖前序失败。与下游本人面板/计费桶隔离，30天边界/查询成本/权限验证；不以当前账号配置补历史。逐尝试发送元数据子项见D5.3.6，未代替完整父验收 |
 | D3.2 / P0 | 扩展原quality/judge的分维度证据、独立参考、测量/策略版本和漂移；依赖D2.6 | 功能质量/模型身份/系统判题故障分开；独立TTL、覆盖、原因和配置变更失效，晚到不复活；夹具可先验合同，真实身份结论须实际独立基线，不因缺运行数据停做本地合同 |
 | D8.1 / P0 | 在原runner/计划/租约内完成多周期预算和覆盖编译；依赖D2.6/D5.3的scope定义 | 物理调用含分页、token、判题、全局/站点/共享Key并发、恢复预留与公平性统一计数；100绑定含故障不饥饿，补生产周期锁/多节点覆盖观察，耗尽不续绿；保存前预览并拒绝不可能周期。已有100绑定测试继续保留，不能用其替代预算总体验收 |

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -51,7 +52,7 @@ func TestForwardResponses_ChatFallbackPreservesProvidedStartTime(t *testing.T) {
 
 func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, protocol := range []string{"chat_http", "responses_http"} {
+	for _, protocol := range []string{"chat_http", "responses_http", "responses_ws_v2"} {
 		for _, stream := range []bool{false, true} {
 			for _, tc := range []struct {
 				name, inputOptions, tier, effort, model                      string
@@ -59,6 +60,7 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 				force, passthrough, nativeOnly, chatIngress, messagesIngress bool
 				ceiling                                                      string
 				history                                                      bool
+				omitStream                                                   bool
 				dispatch                                                     string
 				mappingWins                                                  bool
 			}{
@@ -70,6 +72,7 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 				{name: "filter", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", policy: openAIFastFilterPriorityPolicy()},
 				{name: "missing tier forces priority", tier: "priority", effort: "unspecified", policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}},
 				{name: "native minimal becomes none", inputOptions: `,"reasoning":{"effort":"minimal"}`, tier: "unspecified", effort: "none", nativeOnly: true},
+				{name: "native WS default stream", tier: "unspecified", effort: "unspecified", omitStream: true},
 				{name: "mapped model fast policy", inputOptions: `,"service_tier":"priority"`, tier: "unspecified", effort: "unspecified", nativeOnly: true, policy: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierPriority, Action: BetaPolicyActionFilter, Scope: BetaPolicyScopeAll, ModelWhitelist: []string{"wire-fixture"}, FallbackAction: BetaPolicyActionPass}}}},
 				{name: "chat ingress plain", tier: "unspecified", effort: "unspecified", chatIngress: true},
 				{name: "chat ingress none", inputOptions: `,"reasoning_effort":"none"`, tier: "unspecified", effort: "none", chatIngress: true},
@@ -96,7 +99,10 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 				{name: "messages deepseek user only", model: "deepseek-v4-flash", tier: "unspecified", effort: "medium", messagesIngress: true},
 				{name: "messages deepseek hidden history", model: "deepseek-v4-flash", tier: "unspecified", effort: "medium", messagesIngress: true, history: true},
 			} {
-				if tc.nativeOnly && protocol != "responses_http" {
+				if tc.nativeOnly && protocol == "chat_http" || tc.passthrough && protocol == "responses_ws_v2" {
+					continue
+				}
+				if tc.omitStream && (protocol != "responses_ws_v2" || stream) {
 					continue
 				}
 				if (tc.chatIngress || tc.messagesIngress) && protocol != "chat_http" {
@@ -113,6 +119,33 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 					}
 					observed := make(chan *AvailabilityRequestScope, 2)
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+						if protocol == "responses_ws_v2" {
+							conn, err := coderws.Accept(w, request, nil)
+							if err != nil {
+								t.Errorf("accept physical WS request: %v", err)
+								return
+							}
+							defer func() { _ = conn.CloseNow() }()
+							_, payload, err := conn.Read(request.Context())
+							if err != nil {
+								// Final admission can reject a revoked declaration after
+								// the handshake but before any generation frame is sent.
+								if coderws.CloseStatus(err) != coderws.StatusNormalClosure {
+									t.Errorf("read physical WS request: %v", err)
+								}
+								return
+							}
+							wsRequest := request.Clone(request.Context())
+							address := *request.URL
+							address.Scheme = "ws"
+							wsRequest.URL = &address
+							observed <- availabilityScopeForRequest(wsRequest, payload)
+							response := fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_scope","status":"completed","model":%q,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`, model)
+							if err := conn.Write(request.Context(), coderws.MessageText, []byte(response)); err != nil {
+								t.Errorf("write physical WS response: %v", err)
+							}
+							return
+						}
 						payload, err := io.ReadAll(request.Body)
 						if err != nil {
 							t.Errorf("read physical request: %v", err)
@@ -147,6 +180,9 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 						account.Extra["openai_responses_mode"] = "force_chat_completions"
 					}
 					account.Extra["openai_passthrough"] = tc.passthrough
+					if protocol == "responses_ws_v2" {
+						account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+					}
 					account.Credentials["base_url"] = server.URL
 					account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": mappedModel}
 					if tc.dispatch != "" && !tc.mappingWins {
@@ -157,6 +193,10 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 					require.NoError(t, err)
 					svc := newOpenAIGatewayServiceWithSettings(t, tc.policy)
 					svc.cfg = rawChatCompletionsTestConfig()
+					if protocol == "responses_ws_v2" {
+						svc.cfg = passthroughLifecycleConfig()
+						t.Cleanup(func() { svc.getOpenAIWSConnPool().Close() })
+					}
 					svc.accountRepo, svc.requireLatestTurnAdmission = &turnAdmissionRepo{account: account}, true
 					svc.httpUpstream = &codexModelsHTTPUpstreamStub{do: func(request *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
 						if err := CheckHTTPUpstreamSendGuard(request.Context()); err != nil {
@@ -165,6 +205,9 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 						return server.Client().Do(request)
 					}}
 					body := []byte(fmt.Sprintf(`{"model":"gpt-fixture","input":"private prompt","stream":%v%s}`, stream, tc.inputOptions))
+					if tc.omitStream {
+						body = []byte(strings.Replace(string(body), `,"stream":false`, "", 1))
+					}
 					path := "/v1/responses"
 					if tc.chatIngress || tc.messagesIngress {
 						path = "/v1/chat/completions"
@@ -211,7 +254,8 @@ func TestBillingCandidateHTTPMatchesPhysicalWire(t *testing.T) {
 					select {
 					case scope := <-observed:
 						require.NotNil(t, scope)
-						require.Equal(t, AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: protocol, Model: model, Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, Stream: stream}, *scope)
+						wireStream := stream || tc.omitStream
+						require.Equal(t, AvailabilityRequestScope{Version: availabilityRequestScopeVersion, Protocol: protocol, Model: model, Capability: "text", ServiceTier: tc.tier, ReasoningEffort: tc.effort, Stream: wireStream}, *scope)
 					default:
 						t.Fatal("physical upstream did not receive the covered request")
 					}

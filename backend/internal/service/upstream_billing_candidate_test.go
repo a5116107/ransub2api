@@ -37,7 +37,7 @@ func billingCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *Gro
 }
 
 func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
-	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "responses_ws_smart_http"}, {"false", "responses_ws_smart_http"}, {"true", "responses_ws_smart_ws"}, {"false", "responses_ws_smart_ws"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}, {"true", "messages_chat"}, {"false", "messages_chat"}, {"true", "messages_responses"}, {"false", "messages_responses"}, {"true", "responses_ws_ctx_pool_normalized_bridge"}, {"false", "responses_ws_ctx_pool_normalized_bridge"}, {"true", "responses_ws_shared_normalized_bridge"}, {"false", "responses_ws_shared_normalized_bridge"}, {"true", "responses_ws_dedicated_normalized_bridge"}, {"false", "responses_ws_dedicated_normalized_bridge"}} {
+	for _, tc := range []struct{ engine, protocol string }{{"true", "responses_http"}, {"false", "responses_http"}, {"true", "responses_native"}, {"false", "responses_native"}, {"true", "responses_native_ws"}, {"false", "responses_native_ws"}, {"true", "chat_http"}, {"false", "chat_http"}, {"true", "responses_ws_v2"}, {"false", "responses_ws_v2"}, {"true", "responses_ws_ctx_pool"}, {"false", "responses_ws_ctx_pool"}, {"true", "responses_ws_http_bridge"}, {"false", "responses_ws_http_bridge"}, {"true", "responses_ws_size_bridge"}, {"false", "responses_ws_size_bridge"}, {"true", "responses_ws_smart_http"}, {"false", "responses_ws_smart_http"}, {"true", "responses_ws_smart_ws"}, {"false", "responses_ws_smart_ws"}, {"true", "chat_ingress"}, {"false", "chat_ingress"}, {"true", "chat_responses"}, {"false", "chat_responses"}, {"true", "messages_chat"}, {"false", "messages_chat"}, {"true", "messages_responses"}, {"false", "messages_responses"}, {"true", "responses_ws_ctx_pool_normalized_bridge"}, {"false", "responses_ws_ctx_pool_normalized_bridge"}, {"true", "responses_ws_shared_normalized_bridge"}, {"false", "responses_ws_shared_normalized_bridge"}, {"true", "responses_ws_dedicated_normalized_bridge"}, {"false", "responses_ws_dedicated_normalized_bridge"}} {
 		t.Run("advanced="+tc.engine+"/"+tc.protocol, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -45,6 +45,9 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				entry := billingApplicabilityEntry(tc.protocol, "priority", covered)
 				if tc.protocol == "responses_native" {
 					entry["protocol"] = "responses_http"
+				}
+				if tc.protocol == "responses_native_ws" {
+					entry["protocol"] = "responses_ws_v2"
 				}
 				if tc.protocol == "responses_ws_ctx_pool" || tc.protocol == "responses_ws_smart_ws" {
 					entry["protocol"] = "responses_ws_v2"
@@ -71,6 +74,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				account := billingCandidateAccount(t, id, entry)
 				if tc.protocol == "responses_native" {
 					account.Extra["openai_passthrough"] = false
+				}
+				if tc.protocol == "responses_native_ws" {
+					account.Extra["openai_passthrough"] = false
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
 				}
 				if tc.protocol == "responses_ws_v2" {
 					account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
@@ -114,6 +121,10 @@ func TestBillingCandidateSchedulerFiltersAndPreservesSticky(t *testing.T) {
 				rateLimitService: newOpenAIAdvancedSchedulerRateLimitService(tc.engine), concurrencyService: NewConcurrencyService(concurrency)}
 			group := profitControlTestGroup(7, 0.5, 0)
 			ctx := billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`)
+			if tc.protocol == "responses_native_ws" {
+				svc.cfg = passthroughLifecycleConfig()
+				ctx = billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"private prompt","service_tier":"priority"}`)
+			}
 			if tc.protocol == "chat_ingress" || tc.protocol == "chat_responses" {
 				request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 				ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, []byte(`{"model":"gpt-fixture","messages":[{"role":"user","content":"private prompt"}],"service_tier":"priority"}`))
@@ -668,7 +679,7 @@ func TestBillingCandidateNativeResponsesScope(t *testing.T) {
 }
 
 func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
-	for _, name := range []string{"legacy", "gate disabled", "suppressed", "native dynamic transport", "native mapped media", "chat without text", "managed credentials", "shadow credentials", "websocket", "tools", "lite", "compact", "conflicting fields", "reset unknown", "policy block", "policy unavailable"} {
+	for _, name := range []string{"legacy", "gate disabled", "suppressed", "native WS turn metadata", "native mapped media", "chat without text", "managed credentials", "shadow credentials", "websocket", "tools", "lite", "compact", "conflicting fields", "reset unknown", "policy block", "policy unavailable"} {
 		t.Run(name, func(t *testing.T) {
 			account := billingCandidateAccount(t, 905, billingApplicabilityEntry("responses_http", "unspecified", false))
 			svc := &OpenAIGatewayService{}
@@ -682,7 +693,7 @@ func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
 				group.ProfitControlEnabled = false
 			case "suppressed":
 				ctx = WithOpenAIProfitControlSuppressed(ctx)
-			case "native dynamic transport":
+			case "native WS turn metadata":
 				account.Extra["openai_passthrough"] = false
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
 				svc.cfg = passthroughLifecycleConfig()
@@ -722,6 +733,9 @@ func TestBillingCandidateDeferredPathsAndCompatibility(t *testing.T) {
 			}
 			ctx, _ = svc.WithOpenAIRequestPricingContext(ctx, &group.ID)
 			request := httptest.NewRequest(method, path, strings.NewReader(body))
+			if name == "native WS turn metadata" {
+				request.Header.Set(openAIWSTurnMetadataHeader, "private-window")
+			}
 			if name == "lite" {
 				request.Header.Set(responsesLiteHeader, "true")
 			}

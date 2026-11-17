@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +25,96 @@ func billingWSCandidateContext(t *testing.T, svc *OpenAIGatewayService, group *G
 	request := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 	request.Header.Set("Upgrade", "websocket")
 	return svc.WithUpstreamBillingWSCandidateRequest(ctx, request, []byte(body), model, hooks)
+}
+
+func TestBillingCandidateHTTPToWSNativeScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, options, effort string
+	}{
+		{name: "plain", effort: "unspecified"},
+		{name: "none removed", options: `,"reasoning":{"effort":"none"}`, effort: "unspecified"},
+		{name: "minimal normalized", options: `,"reasoning":{"effort":"minimal"}`, effort: "none"},
+		{name: "high", options: `,"reasoning":{"effort":"high"}`, effort: "high"},
+		{name: "output options", options: `,"reasoning":{"effort":"high","summary":"auto"},"include":["reasoning.encrypted_content"]`, effort: "high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := billingApplicabilityEntry("responses_ws_v2", "priority", false)
+			entry["model"], entry["reasoning_effort"] = "wire-fixture", tc.effort
+			if tc.name == "output options" {
+				entry["reasoning_summary"], entry["include_encrypted_content"] = "auto", true
+			}
+			account := billingCandidateAccount(t, 931, entry)
+			account.Extra["openai_passthrough"] = false
+			account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+			account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "wire-fixture"}
+			at := time.Now().UTC().Add(-time.Second)
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
+			group := profitControlTestGroup(7, .5, 0)
+			group.ForceOpenAIFast = true
+			ctx := billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"private prompt","stream":false`+tc.options+`}`)
+			require.Equal(t, "profit_upstream_scope_excluded", upstreamBillingCandidateVetoReason(ctx, account, at))
+			entry["group_rate_applies"] = true
+			_, err = prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+			require.NoError(t, err)
+			require.Empty(t, upstreamBillingCandidateVetoReason(ctx, account, at))
+			require.Equal(t, "profit_upstream_scope_expired", upstreamBillingCandidateVetoReason(ctx, account, at.Add(2*time.Hour)))
+			// Re-read the account after a slot wait; an old candidate must not
+			// keep the account's former HTTP transport or declaration alive.
+			replacement := *account
+			replacement.Extra = maps.Clone(account.Extra)
+			entry["group_rate_applies"] = false
+			_, err = prepareUpstreamBillingManualApplicability(t.Context(), &replacement, billingManualCommand(t, &replacement, at, entry), at)
+			require.NoError(t, err)
+			svc.schedulerSnapshot = NewSchedulerSnapshotService(&gatewayProfitSnapshotCache{account: &replacement}, nil, gatewayProfitAccountRepo{}, nil, nil)
+			latest, vetoed, reason := svc.ProfitControlVetoLatest(ctx, account)
+			require.Same(t, &replacement, latest)
+			require.True(t, vetoed)
+			require.Equal(t, "profit_upstream_scope_excluded", reason)
+		})
+	}
+}
+
+func TestBillingCandidateHTTPToWSUnresolvedHistory(t *testing.T) {
+	for _, name := range []string{"turn metadata", "previous response", "hidden reasoning", "client metadata", "mapped media", "passthrough keeps HTTP"} {
+		t.Run(name, func(t *testing.T) {
+			wsEntry := billingApplicabilityEntry("responses_ws_v2", "unspecified", false)
+			httpEntry := billingApplicabilityEntry("responses_http", "unspecified", true)
+			account := billingCandidateAccount(t, 932, wsEntry, httpEntry)
+			account.Extra["openai_passthrough"] = name == "passthrough keeps HTTP"
+			account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+			if name == "mapped media" {
+				account.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-image-1"}
+			}
+			at := time.Now().UTC().Add(-time.Second)
+			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, wsEntry, httpEntry), at)
+			require.NoError(t, err)
+			options := ""
+			switch name {
+			case "previous response":
+				options = `,"previous_response_id":"private-response"`
+			case "client metadata":
+				options = `,"client_metadata":{"private":"history"}`
+			}
+			body := []byte(`{"model":"gpt-fixture","input":"private prompt"` + options + `}`)
+			if name == "hidden reasoning" {
+				body = []byte(`{"model":"gpt-fixture","input":[{"type":"reasoning","encrypted_content":"private-history"}]}`)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			if name == "turn metadata" {
+				request.Header.Set(openAIWSTurnMetadataHeader, "private-window")
+			}
+			svc := &OpenAIGatewayService{cfg: passthroughLifecycleConfig()}
+			group := profitControlTestGroup(7, .5, 0)
+			ctx, _ := svc.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+			ctx = svc.WithUpstreamBillingCandidateRequest(ctx, request, body)
+			require.Empty(t, upstreamBillingCandidateVetoReason(ctx, account, at))
+			require.Equal(t, "profit_upstream_scope_expired", upstreamBillingCandidateVetoReason(ctx, account, at.Add(2*time.Hour)))
+			account.Credentials["api_key"] = "changed-fixture-key"
+			require.Equal(t, "profit_upstream_scope_binding_changed", upstreamBillingCandidateVetoReason(ctx, account, at))
+		})
+	}
 }
 
 func TestBillingWSCandidatePoolProtocolSet(t *testing.T) {

@@ -3,15 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.16池桥可达协议集合本地done；当前身份见HEAD。
+任务：D2.6.17 HTTP转原生WS候选本地done；基线bbc20513c。
 授权：唯一H盘工作树；自有分支同步/已验热修复部署；不运行编译/测试CI。
+实证：四包双轮race8378pass/0fail/skip/race；service vet/增量lint/Linux0。
+反例：基线6fail（5叶）；first40fail/focused-before36fail保留。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/http-native-ws-verification.json。
+复用：24项输入仅本轮4份Go变化，SQL54/UI35/四视口不重跑。
+下一：原D2.6状态相关/受管合同、D5.3来源及D3.2版本/多维证据；不提升功能分支。
 生产上次实测：.7/fd83f6c91，程序bea1c3964bc3；本轮未部署。
-实证：四包双轮race8214pass/0fail/skip/race；三包vet/增量lint/Linux退出0。
-复用：UI35/SQL54/中英四视口输入未改；新旧失败记录均保留。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/pool-protocol-set-verification.json。
-下一动作：D2.6其余状态相关转换/受管合同，D5.3实际组/资格；保留终检，不提升生产。
-等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域和旧完整历史保留。
-Attempt：38
+等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域/旧历史。
+Attempt：39
 <!-- resume:end -->
 
 ## 目标与入口
@@ -27,7 +28,7 @@ Attempt：38
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.6.1–.16已本地验；其余状态转换、受管产品与真实来源仍缺；D2.7待供应商 |
+| D2 | in_progress | D2.6.1–.17已本地验；其余状态转换、受管产品与真实来源仍缺；D2.7待供应商 |
 | D2.1 | done | 同步新鲜度/高峰及同源预演、CLI已验 |
 | D2.2 | done | 固定组/null/明确0及SQL失效恢复已验 |
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
@@ -39,6 +40,7 @@ Attempt：38
 | D2.6.14 | done | Messages→Chat映射/dispatch与effort/Fast、调度/真实HTTP本地已验；race7652/静态/Linux过，非生产 |
 | D2.6.15 | done | Messages→Responses/verbosity、UI与物理HTTP/11类WS本地已验；race7936、SQL54/UI35/静态/Linux过，非生产 |
 | D2.6.16 | done | 池桥协议集合/拒绝归因、双调度/粘性/槽后/17类物理帧已验；race8214/静态/Linux过，非生产 |
+| D2.6.17 | done | HTTP转原生WS映射/Fast/stream及物理帧、双调度/粘性/槽后/拒发已验；race8378/静态/Linux过，非生产 |
 | D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；多维/基线、非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |

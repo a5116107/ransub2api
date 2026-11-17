@@ -24,6 +24,8 @@ type upstreamBillingCandidate struct {
 	chatHasAssistant      bool
 	messagesDispatchModel string
 	messagesFast          bool
+	httpStreamSpecified   bool
+	httpWSTurnMetadata    bool
 	wsPassthroughBridge   bool
 	wsSmartRequest        *openAISmartProtocolRequest
 	gateway               *OpenAIGatewayService
@@ -37,8 +39,8 @@ func upstreamBillingCandidateMayFilter(ctx context.Context) bool {
 }
 
 // WithUpstreamBillingCandidateRequest records prompt-free ingress metadata
-// after channel mapping. Predictable native HTTP Responses/Chat and fixed
-// text conversions share the original wire transformers and final-send checks.
+// after channel mapping. Predictable native HTTP/WS Responses, native Chat and
+// fixed text conversions share the original wire builders and final checks.
 // Messages accepts only its explicit dispatch fallback, not the scheduling
 // context's routing model, which can differ from the forwarded body.
 // Unknown metadata/policy defers scope-specific filtering, never qualifies
@@ -52,6 +54,8 @@ func (s *OpenAIGatewayService) WithUpstreamBillingCandidateRequest(ctx context.C
 		}
 	}
 	if candidate.scope != nil {
+		candidate.httpStreamSpecified = gjson.GetBytes(body, "stream").Exists()
+		candidate.httpWSTurnMetadata = strings.TrimSpace(request.Header.Get(openAIWSTurnMetadataHeader)) != ""
 		input := gjson.GetBytes(body, "input")
 		candidate.chatHasText = input.Type == gjson.String || input.IsArray() && input.Get("#").Int() > 0 ||
 			strings.TrimSpace(gjson.GetBytes(body, "instructions").String()) != ""
@@ -295,14 +299,17 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 			}
 		} else {
 			protocol := resolveUpstreamProtocol(account, APIProtocolResponses, "", nil)
-			nativeHTTP := protocol == APIProtocolResponses &&
-				candidate.gateway.getOpenAIWSProtocolResolver().Resolve(account).Transport == OpenAIUpstreamTransportHTTPSSE
+			transport := candidate.gateway.getOpenAIWSProtocolResolver().Resolve(account).Transport
+			nativeHTTP := protocol == APIProtocolResponses && transport == OpenAIUpstreamTransportHTTPSSE
+			nativeWS := protocol == APIProtocolResponses && transport == OpenAIUpstreamTransportResponsesWebsocketV2 &&
+				!account.IsOpenAIPassthroughEnabled() && !account.UsesOpenAICodexProtocol() && !candidate.httpWSTurnMetadata
+			nativeResponses := nativeHTTP || nativeWS
 			nativeModel := candidate.scope.Model
-			if nativeHTTP && !account.IsOpenAIPassthroughEnabled() {
+			if nativeResponses && !account.IsOpenAIPassthroughEnabled() {
 				_, nativeModel = resolveOpenAIForwardMappedModels(account, nativeModel, false)
-				nativeHTTP = !isOpenAIImageGenerationModel(nativeModel)
+				nativeResponses = !isOpenAIImageGenerationModel(nativeModel)
 			}
-			predictable := protocol == APIProtocolResponses && (account.IsOpenAIPassthroughEnabled() || nativeHTTP) ||
+			predictable := protocol == APIProtocolResponses && (account.IsOpenAIPassthroughEnabled() || nativeResponses) ||
 				protocol == APIProtocolChatCompletions && candidate.chatHasText
 			if predictable {
 				request, body := billingApplicabilityScopeRequest(*candidate.scope)
@@ -350,6 +357,22 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 					// Valid declarations retain the original policy error. A failed
 					// prediction never bypasses expiry or binding validity checks.
 					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+				}
+				if nativeWS {
+					// HTTP ingress uses the original WS frame builder after HTTP's
+					// model/effort/Fast rewrites, not WS-ingress normalization.
+					var payload map[string]any
+					if json.Unmarshal(body, &payload) != nil {
+						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+					}
+					if !candidate.httpStreamSpecified {
+						delete(payload, "stream")
+					}
+					body, err = json.Marshal(candidate.gateway.buildOpenAIWSCreatePayload(payload, account))
+					if err != nil {
+						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+					}
+					request.Method, request.URL.Scheme = http.MethodGet, "wss"
 				}
 				scope = availabilityScopeForRequest(request, body)
 			}
