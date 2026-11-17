@@ -26,6 +26,7 @@ const monitoringProbeTokenMax = int64(1<<53 - 1)
 type monitoringProbeTokenCollector struct {
 	mu                     sync.Mutex
 	stream, overflow       bool
+	imageJSON              *monitoringProbeImageJSONFilter
 	buffer, event          []byte
 	input, output, total   int64
 	read, write            int64
@@ -36,12 +37,63 @@ type monitoringProbeTokenCollector struct {
 	gemini                 bool
 }
 
+// Image data is already consumed by the real adapter. Remove only safe string
+// content from b64_json values before the existing bounded usage parser sees
+// it; preserve keys, escapes and control bytes so malformed JSON stays invalid.
+// This is a lexical filter, not a second usage or JSON validation algorithm.
+type monitoringProbeImageJSONFilter struct {
+	inString, escaped, discard bool
+	field, value               bool
+	unicode                    int
+	start                      int
+}
+
+func (f *monitoringProbeImageJSONFilter) append(dst, data []byte) ([]byte, bool) {
+	for _, b := range data {
+		if f.inString && f.discard && !f.escaped && f.unicode == 0 && b >= 0x20 && b != '"' && b != '\\' {
+			continue
+		}
+		if len(dst) >= monitoringProbeUsageMaxBytes {
+			return nil, true
+		}
+		dst = append(dst, b)
+		if f.inString {
+			switch {
+			case f.unicode > 0:
+				f.unicode--
+			case f.escaped:
+				f.escaped = false
+				if b == 'u' {
+					f.unicode = 4
+				}
+			case b == '\\':
+				f.escaped = true
+			case b == '"':
+				f.inString, f.field = false, false
+				if !f.discard && len(dst)-f.start <= 128 {
+					var name string
+					f.field = json.Unmarshal(dst[f.start:], &name) == nil && name == "b64_json"
+				}
+				f.discard = false
+			}
+		} else if b == '"' {
+			f.inString, f.discard, f.start = true, f.value, len(dst)-1
+			f.field, f.value = false, false
+		} else if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+			f.value = b == ':' && f.field
+			f.field = false
+		}
+	}
+	return dst, false
+}
+
 func monitoringProbeGenerationPath(path string) bool {
 	path = strings.TrimRight(path, "/")
 	return strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/chat/completions") ||
 		strings.HasSuffix(path, "/responses/compact") || strings.HasSuffix(path, "/completions") ||
 		strings.HasSuffix(path, "/messages") || strings.HasSuffix(path, ":generateContent") ||
-		strings.HasSuffix(path, ":streamGenerateContent")
+		strings.HasSuffix(path, ":streamGenerateContent") || strings.HasSuffix(path, "/images/generations") ||
+		strings.HasSuffix(path, "/images/edits")
 }
 
 func (c *monitoringProbeTokenCollector) setStream(stream bool) {
@@ -59,11 +111,17 @@ func (c *monitoringProbeTokenCollector) feed(data []byte, eof bool) {
 		return
 	}
 	if !c.stream {
-		if len(c.buffer)+len(data) > monitoringProbeUsageMaxBytes {
-			c.overflow, c.invalid, c.buffer = true, true, nil
+		if c.imageJSON != nil {
+			c.buffer, c.overflow = c.imageJSON.append(c.buffer, data)
+		} else if len(c.buffer)+len(data) > monitoringProbeUsageMaxBytes {
+			c.overflow = true
+		} else {
+			c.buffer = append(c.buffer, data...)
+		}
+		if c.overflow {
+			c.invalid, c.buffer = true, nil
 			return
 		}
-		c.buffer = append(c.buffer, data...)
 		if eof {
 			c.observe(c.buffer)
 			c.buffer = nil

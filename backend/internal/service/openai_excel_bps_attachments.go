@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -43,6 +44,9 @@ func excelBPSAttachmentFailure(stage, kind string, upstreamStatus int, cause err
 }
 
 func (s *OpenAIGatewayService) uploadExcelBPSAttachment(ctx context.Context, account *Account, token, accountID, proxyURL string, img basispoints.InlineAttachment) (string, error) {
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		return "", local
+	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	ctx = WithHTTPUpstreamRedirectsDisabled(WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileExcelBPS))
@@ -75,15 +79,23 @@ func (s *OpenAIGatewayService) uploadExcelBPSAttachment(ctx context.Context, acc
 	}
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
+		if monitoringProbeDeferral(err, time.Now()) != nil {
+			return "", err
+		}
 		return "", excelBPSAttachmentFailure("attachment_transport", transportdiag.Classify(err), 0, err)
 	}
 	if resp == nil || resp.Body == nil {
 		return "", excelBPSAttachmentFailure("attachment_response", "missing_response", 0, nil)
 	}
 	// Release the account's upstream connection slot before starting Responses.
-	defer func() { _ = resp.Body.Close() }()
+	closeBody := sync.OnceFunc(func() { _ = resp.Body.Close() })
+	defer closeBody()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		closeBody()
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			return "", local
+		}
 		s.handleExcelBPSUnauthorized(ctx, account, resp.StatusCode, resp.Header, raw, token)
 		status := resp.StatusCode
 		if status < 400 || status > 599 {
@@ -94,6 +106,10 @@ func (s *OpenAIGatewayService) uploadExcelBPSAttachment(ctx context.Context, acc
 		return "", failure
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
+	closeBody()
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		return "", local
+	}
 	if err != nil {
 		return "", excelBPSAttachmentFailure("attachment_response", transportdiag.Classify(err), resp.StatusCode, err)
 	}

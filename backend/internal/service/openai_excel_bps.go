@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -275,17 +274,7 @@ func newExcelBPSRequestTo(ctx context.Context, targetURL, accept string, body []
 // BPS deliberately bypasses Codex ticket/cookie injection and OAuth plugins:
 // only the selected account's bearer and ChatGPT account ID belong on this host.
 func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Context, account *Account, body []byte, start time.Time) (forwardResult *OpenAIForwardResult, forwardErr error) {
-	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok && probe.accountTest {
-		// This adapter has a fixed destination, independent of the account's
-		// optional native Codex base URL. Keep the same per-test error owner.
-		endpoint, err := url.Parse(basispoints.ResponsesURL)
-		if err != nil {
-			probe.local.record(ErrMonitoringProbeBudgetUnavailable)
-			return nil, ErrMonitoringProbeBudgetUnavailable
-		}
-		probe.sites = []string{endpoint.Scheme + "://" + endpoint.Host}
-		ctx = context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
-	}
+	ctx = withAccountTestMonitoringSite(ctx, "https://bps.openai.com")
 	defer func() {
 		// A budget can be lost while an adapter reads or closes an otherwise
 		// complete response. Keep that local outcome after all body cleanup.
@@ -596,6 +585,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return id, nil
 		})
 		if err != nil {
+			if monitoringProbeDeferral(err, time.Now()) != nil {
+				return nil, err
+			}
 			if isExcelBPSClientCancellation(c, err) {
 				return clientCanceled()
 			}

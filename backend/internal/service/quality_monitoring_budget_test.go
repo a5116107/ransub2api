@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/service/basispoints"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -983,6 +984,336 @@ func TestQualityMonitoringBudgetBPSPhysicalAttempts(t *testing.T) {
 			require.True(t, account.IsExcelBPSEnabled())
 			require.True(t, account.Schedulable)
 		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSImages(t *testing.T) {
+	for _, denied := range []bool{false, true} {
+		t.Run(strconv.FormatBool(denied), func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			if denied {
+				repo.denyAt, repo.err = 1, &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			}
+			upstream := &httpUpstreamRecorder{resp: openAIImagesJSONResponse()}
+			gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+			account := excelBPSImagesAccount()
+			account.Credentials["base_url"] = "https://native.example/tenant"
+			tests := &AccountTestService{cfg: gateway.cfg, accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: gateway.httpUpstream, openaiGatewayService: gateway}
+			tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+			c, output := newTestContext()
+			err := tests.TestPelicanAccountConnection(c, account.ID, "gpt-image-2", "draw", "")
+			if denied {
+				require.ErrorIs(t, err, repo.err)
+				require.Empty(t, upstream.requests, "a local image deferral must not fall back to native Codex")
+				require.NotContains(t, output.Body.String(), `"success":true`)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, upstream.requests, 1)
+				require.Equal(t, basispoints.ImagesGenerationsURL, upstream.requests[0].URL.String())
+				require.True(t, HTTPUpstreamRedirectsDisabled(upstream.requests[0].Context()))
+				require.Equal(t, []MonitoringProbeTokenUsage{{Tokens: 30, Reported: true}}, repo.usages)
+				require.Contains(t, output.Body.String(), `"success":true`)
+			}
+			require.Len(t, repo.requests, 1)
+			require.Equal(t, monitoringProbeHash("https://bps.openai.com"), repo.requests[0].SiteHash)
+			require.Equal(t, []string{config.UpstreamKeyFingerprint("test-token")}, repo.requests[0].KeyHashes)
+			require.True(t, repo.requests[0].MeterTokens)
+			require.False(t, repo.requests[0].Recovery)
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSAccountImageFormatFallback(t *testing.T) {
+	repo := &monitoringBudgetRepoStub{}
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		newJSONResponse(http.StatusUnprocessableEntity, `{"error":{"message":"unsupported format"}}`), openAIImagesJSONResponse(),
+	}}
+	gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+	account := excelBPSImagesAccount()
+	account.Credentials["base_url"] = "https://native.example/tenant"
+	tests := &AccountTestService{cfg: gateway.cfg, accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: gateway.httpUpstream, openaiGatewayService: gateway}
+	tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+	c, output := newTestContext()
+	require.NoError(t, tests.TestPelicanAccountConnection(c, account.ID, "gpt-image-2", "draw", ""))
+	require.Contains(t, output.Body.String(), `"success":true`)
+	require.Len(t, repo.requests, 2)
+	require.Equal(t, monitoringProbeHash("https://bps.openai.com"), repo.requests[0].SiteHash)
+	require.Equal(t, monitoringProbeHash("https://chatgpt.com"), repo.requests[1].SiteHash)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, []MonitoringProbeTokenUsage{{}, {Tokens: 30, Reported: true}}, repo.usages)
+}
+
+func TestQualityMonitoringBudgetBPSAccountImageFallbackLocalFailure(t *testing.T) {
+	for _, phase := range []string{"read", "close", "settlement"} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				repo := &monitoringBudgetRepoStub{}
+				response := openAIImagesJSONResponse()
+				body := qualityBudgetCloseBody{ReadCloser: response.Body, close: func() {}}
+				if phase == "settlement" {
+					body.close = func() { repo.releaseErr = errors.New("private settlement failure") }
+				} else {
+					repo.renew = func(context.Context) (bool, error) { return false, nil }
+					lost := sync.OnceFunc(func() { time.Sleep(41 * time.Second); synctest.Wait() })
+					if phase == "read" {
+						body.read = lost
+					} else {
+						body.close = lost
+					}
+				}
+				response.Body = body
+				upstream := &httpUpstreamRecorder{responses: []*http.Response{
+					newJSONResponse(http.StatusUnprocessableEntity, `{"error":{"message":"unsupported format"}}`), response,
+				}}
+				gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+				account := excelBPSImagesAccount()
+				account.Credentials["base_url"] = "https://native.example/tenant"
+				tests := &AccountTestService{cfg: gateway.cfg, accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: gateway.httpUpstream, openaiGatewayService: gateway}
+				tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+				c, output := newTestContext()
+				err := tests.TestPelicanAccountConnection(c, account.ID, "gpt-image-2", "draw", "")
+				require.NotNil(t, monitoringProbeDeferral(err, time.Now()))
+				require.NotContains(t, output.Body.String(), `"success":true`)
+				require.NotContains(t, output.Body.String(), `"type":"image"`)
+				require.Len(t, upstream.requests, 2)
+				require.Equal(t, 2, repo.released)
+			})
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSLargeImageUsage(t *testing.T) {
+	image := `"data":[{"b64_json":"` + strings.Repeat("YQ==", monitoringProbeUsageMaxBytes/4+1) + `"}]`
+	for _, tc := range []struct {
+		name, body string
+		want       MonitoringProbeTokenUsage
+	}{
+		{"usage_last", `{` + image + `,"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`, MonitoringProbeTokenUsage{Tokens: 30, Reported: true}},
+		{"usage_first", `{"usage":{"input_tokens":10,"output_tokens":20},` + image + `}`, MonitoringProbeTokenUsage{Tokens: 30, Reported: true}},
+		{"zero", `{` + image + `,"usage":{"total_tokens":0}}`, MonitoringProbeTokenUsage{Reported: true}},
+		{"duplicate_usage", `{` + image + `,"usage":{"total_tokens":30},"usage":{"total_tokens":0}}`, MonitoringProbeTokenUsage{}},
+		{"duplicate_counter", `{` + image + `,"usage":{"total_tokens":30,"total_tokens":0}}`, MonitoringProbeTokenUsage{}},
+		{"nested_usage", `{` + image + `,"extra":{"usage":{"total_tokens":30}}}`, MonitoringProbeTokenUsage{}},
+		{"missing", `{` + image + `}`, MonitoringProbeTokenUsage{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			upstream := &httpUpstreamRecorder{resp: newJSONResponse(http.StatusOK, tc.body)}
+			gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+			ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
+			c, _ := newTestContext()
+			c.Request = c.Request.WithContext(ctx)
+			parsed := &OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2", Prompt: "draw", N: 1}
+			_, fallback, err := gateway.forwardExcelBPSImages(ctx, c, excelBPSImagesAccount(), parsed, parsed.Model, parsed.Model, time.Now())
+			require.NoError(t, err)
+			require.False(t, fallback)
+			require.Equal(t, []MonitoringProbeTokenUsage{tc.want}, repo.usages)
+			require.Equal(t, 1, repo.released)
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSImagesLocalFailure(t *testing.T) {
+	for _, status := range []int{200, 401, 403, 422, 429, 503} {
+		for _, phase := range []string{"read", "close", "settlement"} {
+			t.Run(fmt.Sprintf("%d/%s", status, phase), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					repo := &monitoringBudgetRepoStub{}
+					response := openAIImagesJSONResponse()
+					response.StatusCode = status
+					if phase == "settlement" {
+						repo.releaseErr = errors.New("private settlement failure")
+					} else {
+						repo.renew = func(context.Context) (bool, error) { return false, nil }
+						lost := sync.OnceFunc(func() { time.Sleep(41 * time.Second); synctest.Wait() })
+						body := qualityBudgetCloseBody{ReadCloser: response.Body, close: func() {}}
+						if phase == "read" {
+							body.read = lost
+						} else {
+							body.close = lost
+						}
+						response.Body = body
+					}
+					upstream := &httpUpstreamRecorder{resp: response}
+					gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+					ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
+					c, _ := newTestContext()
+					c.Request = c.Request.WithContext(ctx)
+					parsed := &OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2", Prompt: "draw", N: 1}
+					_, fallback, err := gateway.forwardExcelBPSImages(ctx, c, excelBPSImagesAccount(), parsed, parsed.Model, parsed.Model, time.Now())
+					require.NotNil(t, monitoringProbeDeferral(err, time.Now()))
+					require.False(t, fallback)
+					require.Len(t, upstream.requests, 1)
+					require.Equal(t, 1, repo.released)
+					_, recorded := c.Get(OpsUpstreamErrorsKey)
+					require.False(t, recorded, "a local interruption must not become an image upstream failure")
+					require.NoError(t, ctx.Err())
+				})
+			})
+		}
+	}
+}
+
+func TestQualityMonitoringBudgetBPSImageEditsAndFallback(t *testing.T) {
+	for _, mode := range []string{"edits", "format_fallback", "format_fallback_denied", "provider_error_text"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			if mode == "format_fallback_denied" {
+				repo.denyAt, repo.err = 2, &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			}
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{openAIImagesJSONResponse()}}
+			if strings.HasPrefix(mode, "format_fallback") {
+				upstream.responses = []*http.Response{newJSONResponse(http.StatusUnprocessableEntity, `{"error":{"message":"unsupported format"}}`), openAIImagesJSONResponse()}
+			} else if mode == "provider_error_text" {
+				upstream.responses = []*http.Response{newJSONResponse(http.StatusServiceUnavailable, `{"error":{"message":"monitoring probe deferred: token_limit"}}`)}
+			}
+			gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+			account := excelBPSImagesAccount()
+			account.Credentials["base_url"] = "https://native.example/tenant"
+			ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
+			ctx = withPelicanTestOptions(ctx, pelicanTestOptions{observeOnly: true})
+			probe := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+			probe.sites = []string{"https://native.example/tenant"}
+			ctx = context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
+			c, _ := newTestContext()
+			c.Request = c.Request.WithContext(ctx)
+			parsed := &OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2", Prompt: "draw", N: 1}
+			if mode == "edits" {
+				parsed.Endpoint = openAIImagesEditsEndpoint
+				parsed.Uploads = []OpenAIImagesUpload{{FileName: "fixture.png", ContentType: "image/png", Data: []byte("fixture")}}
+			}
+			_, err := gateway.ForwardImages(ctx, c, account, nil, parsed, "")
+			switch mode {
+			case "format_fallback_denied":
+				require.ErrorIs(t, err, repo.err)
+				require.Len(t, upstream.requests, 1)
+				require.Len(t, repo.requests, 2)
+			case "provider_error_text":
+				require.Error(t, err)
+				require.Nil(t, monitoringProbeDeferral(err, time.Now()), "supplier text is not a local budget identity")
+				require.Nil(t, monitoringProbeLocalError(ctx))
+				require.Len(t, upstream.requests, 1)
+			default:
+				require.NoError(t, err)
+				if mode == "edits" {
+					require.Len(t, upstream.requests, 1)
+					require.Equal(t, basispoints.ImagesEditsURL, upstream.requests[0].URL.String())
+					require.Contains(t, upstream.requests[0].Header.Get("Content-Type"), "multipart/form-data")
+				} else {
+					require.Len(t, upstream.requests, 2)
+					require.Equal(t, "chatgpt.com", upstream.requests[1].URL.Host)
+					require.Equal(t, monitoringProbeHash("https://chatgpt.com"), repo.requests[1].SiteHash)
+				}
+			}
+			require.Equal(t, monitoringProbeHash("https://bps.openai.com"), repo.requests[0].SiteHash)
+			for _, request := range repo.requests {
+				require.True(t, request.MeterTokens)
+				require.False(t, request.Recovery)
+			}
+			require.Equal(t, len(upstream.requests), repo.released)
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSAttachments(t *testing.T) {
+	for _, denyAt := range []int{0, 1, 2} {
+		t.Run(strconv.Itoa(denyAt), func(t *testing.T) {
+			t.Setenv("DATA_DIR", t.TempDir())
+			repo := &monitoringBudgetRepoStub{denyAt: denyAt, err: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}}
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{
+				newJSONResponse(http.StatusOK, `{"openai_file_id":"file-budget123"}`), qualityBudgetReply("21"),
+			}}
+			gateway := openAIClientToolsTestService(upstream)
+			enableNativeAttachments(gateway)
+			gateway.httpUpstream = monitoringBudgetHTTP{base: upstream}
+			ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
+			ctx = withPelicanTestOptions(ctx, pelicanTestOptions{observeOnly: true})
+			c, _ := newTestContext()
+			c.Request = c.Request.WithContext(ctx)
+			body, _ := nativeGatewayBody(t)
+			_, err := gateway.Forward(ctx, c, excelAccount(), body)
+			if denyAt > 0 {
+				require.ErrorIs(t, err, repo.err)
+				require.Len(t, upstream.requests, denyAt-1)
+				require.Len(t, repo.requests, denyAt)
+				require.Equal(t, denyAt-1, repo.released)
+				_, recorded := c.Get(OpsUpstreamErrorsKey)
+				require.False(t, recorded, "an attachment budget deferral must not create a provider error")
+			} else {
+				require.NoError(t, err)
+				require.Len(t, upstream.requests, 2, "duplicate inline images share an upload, not a generation budget")
+				require.Len(t, repo.requests, 2)
+				require.Equal(t, 2, repo.released)
+			}
+			for i, request := range repo.requests {
+				require.Equal(t, monitoringProbeHash("https://bps.openai.com"), request.SiteHash)
+				require.Equal(t, []string{config.UpstreamKeyFingerprint("test-token")}, request.KeyHashes)
+				require.Equal(t, i > 0, request.MeterTokens, "upload counts as a call, only generation meters tokens")
+				require.False(t, request.Recovery)
+			}
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSAttachmentLocalFailure(t *testing.T) {
+	for _, status := range []int{200, 401, 429, 503} {
+		for _, phase := range []string{"read", "close", "settlement"} {
+			t.Run(fmt.Sprintf("%d/%s", status, phase), func(t *testing.T) {
+				t.Setenv("DATA_DIR", t.TempDir())
+				synctest.Test(t, func(t *testing.T) {
+					repo := &monitoringBudgetRepoStub{}
+					response := newJSONResponse(http.StatusOK, `{"openai_file_id":"file-budget123"}`)
+					response.StatusCode = status
+					if phase == "settlement" {
+						repo.releaseErr = errors.New("private settlement failure")
+					} else {
+						repo.renew = func(context.Context) (bool, error) { return false, nil }
+						lost := sync.OnceFunc(func() { time.Sleep(41 * time.Second); synctest.Wait() })
+						body := qualityBudgetCloseBody{ReadCloser: response.Body, close: func() {}}
+						if phase == "read" {
+							body.read = lost
+						} else {
+							body.close = lost
+						}
+						response.Body = body
+					}
+					upstream := &httpUpstreamRecorder{resp: response}
+					gateway := openAIClientToolsTestService(upstream)
+					enableNativeAttachments(gateway)
+					gateway.httpUpstream = monitoringBudgetHTTP{base: upstream}
+					ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
+					ctx = withPelicanTestOptions(ctx, pelicanTestOptions{observeOnly: true})
+					c, _ := newTestContext()
+					c.Request = c.Request.WithContext(ctx)
+					c.Request.Header.Set("Session-Id", "attachment-budget-fixture")
+					body, _ := nativeGatewayBody(t)
+					_, err := gateway.Forward(ctx, c, excelAccount(), body)
+					require.NotNil(t, monitoringProbeDeferral(err, time.Now()))
+					require.Len(t, upstream.requests, 1, "a locally interrupted upload must not start generation")
+					require.Len(t, repo.requests, 1)
+					require.Equal(t, 1, repo.released)
+					_, recorded := c.Get(OpsUpstreamErrorsKey)
+					require.False(t, recorded)
+					require.NoError(t, ctx.Err())
+					// A returned file ID from a locally interrupted upload is not
+					// remembered as a usable session attachment. Explicit recovery
+					// must upload again before starting generation.
+					repo.renew, repo.releaseErr = nil, nil
+					upstream.responses = []*http.Response{newJSONResponse(http.StatusOK, `{"openai_file_id":"file-recovered123"}`), qualityBudgetReply("21")}
+					fresh := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
+					fresh = withPelicanTestOptions(fresh, pelicanTestOptions{observeOnly: true})
+					recovered, _ := newTestContext()
+					recovered.Request = recovered.Request.WithContext(fresh)
+					recovered.Request.Header.Set("Session-Id", "attachment-budget-fixture")
+					_, err = gateway.Forward(fresh, recovered, excelAccount(), body)
+					require.NoError(t, err)
+					require.Len(t, upstream.requests, 3)
+					require.Equal(t, basispoints.AttachmentsURL, upstream.requests[1].URL.String())
+					require.Equal(t, basispoints.ResponsesURL, upstream.requests[2].URL.String())
+					require.Equal(t, 3, repo.released)
+				})
+			})
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"testing"
@@ -140,5 +141,73 @@ func TestMonitoringProbeBudgetActualUsageLifecycle(t *testing.T) {
 			require.Equal(t, expected, repo.usages[0])
 			require.NoError(t, original.Context().Err())
 		})
+	}
+}
+
+func TestMonitoringProbeBudgetImageJSONFiltering(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       MonitoringProbeTokenUsage
+	}{
+		{"escaped_key", `{"data":[{"b64_\u006ason":"image"}],"usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{Tokens: 7, Reported: true}},
+		{"string_escapes", `{"data":[{"b64_json":"\u0061\/\\\\\""}],"usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{Tokens: 7, Reported: true}},
+		{"whitespace", "{\"data\":[{\"b64_json\" \t:\r\n\"image\"}],\"usage\":{\"total_tokens\":7}}", MonitoringProbeTokenUsage{Tokens: 7, Reported: true}},
+		{"array_string_is_not_key", `{"data":["b64_json","anything"],"usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{Tokens: 7, Reported: true}},
+		{"usage_string_is_invalid", `{"b64_json":"image","usage":{"total_tokens":"7"}}`, MonitoringProbeTokenUsage{}},
+		{"fake_embedded_usage", `{"b64_json":"\"usage\":{\"total_tokens\":7}"}`, MonitoringProbeTokenUsage{}},
+		{"invalid_escape", `{"b64_json":"image\q","usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{}},
+		{"invalid_unicode", `{"b64_json":"image\u00xz","usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{}},
+		{"truncated_unicode", `{"b64_json":"image\u0","usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{}},
+		{"control_byte", "{\"b64_json\":\"image\n\",\"usage\":{\"total_tokens\":7}}", MonitoringProbeTokenUsage{}},
+		{"truncated_value", `{"usage":{"total_tokens":7},"b64_json":"image`, MonitoringProbeTokenUsage{}},
+		{"trailing_document", `{"b64_json":"image","usage":{"total_tokens":7}}{}`, MonitoringProbeTokenUsage{}},
+		{"bounded_metadata", `{"extra":"` + strings.Repeat("x", monitoringProbeUsageMaxBytes) + `","b64_json":"image","usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{}},
+		{"bounded_escapes", `{"b64_json":"` + strings.Repeat(`\u0061`, monitoringProbeUsageMaxBytes/6+1) + `","usage":{"total_tokens":7}}`, MonitoringProbeTokenUsage{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, size := range []int{1, 7, len(tc.body)} {
+				meter := &monitoringProbeTokenCollector{imageJSON: &monitoringProbeImageJSONFilter{}}
+				peak := 0
+				for start := 0; start < len(tc.body); start += size {
+					end := start + size
+					if end > len(tc.body) {
+						end = len(tc.body)
+					}
+					meter.feed([]byte(tc.body[start:end]), false)
+					if len(meter.buffer) > peak {
+						peak = len(meter.buffer)
+					}
+				}
+				require.LessOrEqual(t, peak, monitoringProbeUsageMaxBytes)
+				meter.feed(nil, true)
+				require.Equal(t, tc.want, meter.snapshot(), "chunk=%d", size)
+			}
+		})
+	}
+}
+
+func TestMonitoringProbeBudgetImageJSONGrammar(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 11))
+	alphabet := []byte("abc012{}[],:\"\\\r\n\t\x00\x1f\xff")
+	for n := 0; n < 2048; n++ {
+		content := make([]byte, rng.IntN(80))
+		for i := range content {
+			content[i] = alphabet[rng.IntN(len(alphabet))]
+		}
+		body := []byte(`{"data":[{"b64_json":"` + string(content) + `"}],"usage":{"total_tokens":7}}`)
+		for _, size := range []int{1, 7, len(body)} {
+			filter := &monitoringProbeImageJSONFilter{}
+			var compact []byte
+			for start := 0; start < len(body); start += size {
+				end := start + size
+				if end > len(body) {
+					end = len(body)
+				}
+				var overflow bool
+				compact, overflow = filter.append(compact, body[start:end])
+				require.False(t, overflow)
+			}
+			require.Equal(t, json.Valid(body), json.Valid(compact), "case=%d chunk=%d raw=%q filtered=%q", n, size, body, compact)
+		}
 	}
 }

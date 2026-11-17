@@ -11,6 +11,7 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -219,7 +220,13 @@ func excelBPSImagesFallbackStatus(status int) bool {
 // means BPS rejected the format before generating anything; the caller then
 // uses Codex. BPS failures never write Codex account state, and a request that
 // may have reached BPS is never replayed.
-func (s *OpenAIGatewayService) forwardExcelBPSImages(ctx context.Context, c *gin.Context, account *Account, parsed *OpenAIImagesRequest, requestModel, upstreamModel string, startTime time.Time) (*OpenAIForwardResult, bool, error) {
+func (s *OpenAIGatewayService) forwardExcelBPSImages(ctx context.Context, c *gin.Context, account *Account, parsed *OpenAIImagesRequest, requestModel, upstreamModel string, startTime time.Time) (forwardResult *OpenAIForwardResult, fallback bool, forwardErr error) {
+	ctx = withAccountTestMonitoringSite(ctx, "https://bps.openai.com")
+	defer func() {
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			forwardResult, fallback, forwardErr = nil, false, local
+		}
+	}()
 	endpoint, upstreamURL := excelBPSImagesEndpoint, basispoints.ImagesGenerationsURL
 	if parsed.IsEdits() {
 		endpoint, upstreamURL = excelBPSImagesEditsEndpoint, basispoints.ImagesEditsURL
@@ -262,6 +269,9 @@ func (s *OpenAIGatewayService) forwardExcelBPSImages(ctx context.Context, c *gin
 	resp, lease, _, err := s.doExcelBPSRequestTo(requestCtx, c, account, scope, upstreamURL, build, s.excelBPSAcquireFor(account))
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(sent).Milliseconds())
 	if err != nil {
+		if monitoringProbeDeferral(err, time.Now()) != nil {
+			return nil, false, err
+		}
 		if isExcelBPSClientCancellation(c, err) {
 			MarkOpsClientCancellation(c, false)
 			return nil, false, context.Canceled
@@ -277,13 +287,18 @@ func (s *OpenAIGatewayService) forwardExcelBPSImages(ctx context.Context, c *gin
 	if lease != nil {
 		defer lease.Release()
 	}
-	defer func() { _ = resp.Body.Close() }()
+	closeBody := sync.OnceFunc(func() { _ = resp.Body.Close() })
+	defer closeBody()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+		closeBody()
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			return nil, false, local
+		}
 		if lease != nil && resp.StatusCode >= 500 && ctx.Err() == nil {
 			lease.ReportUpstreamFailure()
 		}
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
 		upstreamMessage, upstreamDetail := s.excelBPSUpstreamErrorDetails(resp.StatusCode, raw, token, account)
 		event := OpsUpstreamErrorEvent{
 			Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
@@ -335,6 +350,10 @@ func (s *OpenAIGatewayService) forwardExcelBPSImages(ctx context.Context, c *gin
 
 	SetActualOpenAIUpstreamEndpoint(c, endpoint)
 	usage, imageCount, imageOutputSizes, err := s.handleCodexDirectImagesNonStreamingResponse(resp, c, parsed)
+	closeBody()
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		return nil, false, local
+	}
 	if err != nil {
 		if _, _, ok := OpenAIUpstreamStreamReadErrorDetails(err); ok {
 			if lease != nil && ctx.Err() == nil {

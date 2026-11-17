@@ -197,6 +197,16 @@ func (s *MonitoringProbeBudgetService) qualityContext(ctx context.Context) conte
 	})
 }
 
+// Fixed-provider adapters bind their actual destination, not an optional base
+// for a different native protocol. Explicit non-account probes keep their scope.
+func withAccountTestMonitoringSite(ctx context.Context, site string) context.Context {
+	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok && probe.accountTest {
+		probe.sites = []string{site}
+		return context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
+	}
+	return ctx
+}
+
 func (s *AccountTestService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
 	s.monitoringBudget = budget
 	if s.openaiGatewayService != nil {
@@ -331,6 +341,10 @@ func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys [
 	var usage *monitoringProbeTokenCollector
 	if meterTokens {
 		usage = &monitoringProbeTokenCollector{}
+		path := strings.TrimRight(target.Path, "/")
+		if strings.HasSuffix(path, "/images/generations") || strings.HasSuffix(path, "/images/edits") {
+			usage.imageJSON = &monitoringProbeImageJSONFilter{}
+		}
 	}
 	// A nested handshake must not inherit the parent's generation meter.
 	ctx = context.WithValue(ctx, monitoringProbeTokenKey{}, usage)

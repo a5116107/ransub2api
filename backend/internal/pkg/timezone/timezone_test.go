@@ -161,3 +161,49 @@ func TestStartOfWeek_Boundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestInitLocationPreservesProcessClock(t *testing.T) {
+	previousLocal := time.Local
+	previousName := Name()
+	t.Cleanup(func() {
+		if err := InitLocation(previousName); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	ticker := time.NewTicker(time.Nanosecond)
+	defer ticker.Stop()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				_ = time.Now()
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+
+	for _, name := range []string{"UTC", "America/New_York", "Asia/Shanghai"} {
+		if err := InitLocation(name); err != nil {
+			t.Fatal(err)
+		}
+		if time.Local != previousLocal {
+			t.Fatal("application timezone initialization changed time.Local")
+		}
+		if Location().String() != name || Name() != name || Now().Location() != Location() {
+			t.Fatalf("application timezone was not configured: %s", name)
+		}
+	}
+	previousLocation := Location()
+	if err := InitLocation("Invalid/Timezone"); err == nil {
+		t.Fatal("invalid application timezone was accepted")
+	}
+	if Location() != previousLocation || time.Local != previousLocal {
+		t.Fatal("invalid configuration changed an existing clock")
+	}
+}

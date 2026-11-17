@@ -3620,6 +3620,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	} else {
 		s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("Calling Codex /responses image tool; driver: %s; image model: %s\n", openAIImagesResponsesMainModelValue(), upstreamModel)})
 	}
+	ctx = withAccountTestMonitoringSite(ctx, "https://chatgpt.com")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(responsesBody))
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create request")
@@ -3666,13 +3667,14 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Image upstream request failed: %s", err.Error()))
 	}
-	defer func() {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-	}()
+	closeBody := sync.OnceFunc(func() { _ = resp.Body.Close() })
+	defer closeBody()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		closeBody()
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			return local
+		}
 		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
 		message := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if message == "" {
@@ -3682,6 +3684,10 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}
 
 	body, err := io.ReadAll(resp.Body)
+	closeBody()
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		return local
+	}
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to read image response: %s", err.Error()))
 	}

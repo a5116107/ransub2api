@@ -17,8 +17,8 @@ func init() {
 	if name == "" {
 		name = "UTC"
 	}
-	// Initialize before tests start timers; timezone.Init is startup-only.
-	if err := timezone.Init(name); err != nil {
+	// Imported dependencies may already run timers that read time.Local.
+	if err := timezone.InitLocation(name); err != nil {
 		panic(err)
 	}
 }

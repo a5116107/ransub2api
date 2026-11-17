@@ -1787,7 +1787,12 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	account *Account,
 	parsed *OpenAIImagesRequest,
 	channelMappedModel string,
-) (*OpenAIForwardResult, error) {
+) (forwardResult *OpenAIForwardResult, forwardErr error) {
+	defer func() {
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			forwardResult, forwardErr = nil, local
+		}
+	}()
 	startTime := time.Now()
 	requestModel := strings.TrimSpace(parsed.Model)
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
@@ -1856,6 +1861,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if err != nil {
 		return nil, err
 	}
+	upstreamCtx = withAccountTestMonitoringSite(upstreamCtx, "https://chatgpt.com")
 	upstreamCtx = withOpenAIImagesSelfBuiltRequest(upstreamCtx)
 	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
 	if err != nil {
@@ -1885,6 +1891,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if monitoringProbeDeferral(err, time.Now()) != nil {
+			return nil, err
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -1903,6 +1912,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
+		if local := monitoringProbeLocalError(upstreamCtx); local != nil {
+			return nil, local
+		}
 		respBody = s.redactAgentIdentitySensitiveBody(upstreamCtx, account, respBody)
 		if direct && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed) {
 			return s.forwardOpenAIImagesOAuth(withOpenAIImagesForceResponses(ctx), c, account, parsed, channelMappedModel)
@@ -2095,6 +2107,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthResponseError(
 	writerSizeBeforeResponse int,
 	err error,
 ) error {
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		return local
+	}
 	responseWritten := c != nil && c.Writer != nil && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeResponse
 	if code, message, ok := OpenAIUpstreamStreamReadErrorDetails(err); ok {
 		// A body transport failure after a successful HTTP status is retryable only

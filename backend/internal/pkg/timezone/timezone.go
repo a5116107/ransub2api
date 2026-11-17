@@ -24,6 +24,19 @@ var (
 // This should be called once at application startup.
 // Example timezone values: "Asia/Shanghai", "America/New_York", "UTC"
 func Init(tz string) error {
+	if err := InitLocation(tz); err != nil {
+		return err
+	}
+	// Process-wide compatibility is startup-only: time.Now reads time.Local
+	// without synchronization. Tests with dependency timers use InitLocation.
+	time.Local = Location()
+	return nil
+}
+
+// InitLocation configures the application timezone without changing time.Local.
+// Call it once before application work starts; unlike Init, it is compatible
+// with dependencies that already use the process's local clock.
+func InitLocation(tz string) error {
 	if tz == "" {
 		tz = "Asia/Shanghai" // Default timezone
 	}
@@ -33,9 +46,6 @@ func Init(tz string) error {
 		return fmt.Errorf("invalid timezone %q: %w", tz, err)
 	}
 
-	// Set the global Go time.Local to our timezone
-	// This affects time.Now() throughout the application
-	time.Local = loc
 	location = loc
 	tzName = tz
 

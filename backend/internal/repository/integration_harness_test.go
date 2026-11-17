@@ -45,9 +45,9 @@ var (
 )
 
 func init() {
-	// TestMain runs after testing has started timers that read time.Local.
-	// Configure this startup-only global before the test runner is initialized.
-	if err := timezone.Init("UTC"); err != nil {
+	// Dependencies can start timers before package init; leave time.Local
+	// untouched and configure only the application timezone.
+	if err := timezone.InitLocation("UTC"); err != nil {
 		panic(err)
 	}
 }

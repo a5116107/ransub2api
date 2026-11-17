@@ -621,6 +621,7 @@ func TestModelTraceMonitoringBudgetPostgresSharedKeyAndRecovery(t *testing.T) {
 }
 
 func TestQualityMonitoringBudgetPostgresBPSAndRestart(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
 	db, client := newBillingAuditDatabase(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -632,13 +633,27 @@ func TestQualityMonitoringBudgetPostgresBPSAndRestart(t *testing.T) {
 	}))
 	t.Cleanup(target.Close)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Host != "bps.openai.com" || r.URL.Path != "/basispoints/api/responses" || r.Header.Get("Authorization") != "Bearer bps-budget-fixture" {
+		if r.Host != "bps.openai.com" || r.Header.Get("Authorization") != "Bearer bps-budget-fixture" {
 			http.Error(w, "invalid BPS budget fixture", http.StatusBadRequest)
 			return
 		}
 		n := calls.Add(1)
 		if redirect.Load() {
 			http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+			return
+		}
+		switch r.URL.Path {
+		case "/basispoints/api/images/generations", "/basispoints/api/images/edits":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"b64_json":"` + strings.Repeat("a", (1<<20)+4) + `"}],"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`))
+			return
+		case "/basispoints/api/attachments":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"openai_file_id":"file-budget123"}`))
+			return
+		case "/basispoints/api/responses":
+		default:
+			http.Error(w, "invalid BPS budget fixture path", http.StatusBadRequest)
 			return
 		}
 		answer := "21"
@@ -680,24 +695,25 @@ func TestQualityMonitoringBudgetPostgresBPSAndRestart(t *testing.T) {
 	policy.RequestsPerDay = 2
 	policy, err = budget.SaveSettings(ctx, policy)
 	require.NoError(t, err)
-	newServices := func() (*service.AccountTestService, *service.QualityJudgeService) {
-		gateway := service.NewOpenAIGatewayService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+	newServices := func() (*service.AccountTestService, *service.QualityJudgeService, *service.OpenAIGatewayService) {
+		settings := service.NewSettingService(NewSettingRepository(client), cfg)
+		gateway := service.NewOpenAIGatewayService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, settings, nil)
 		t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 		t.Cleanup(gateway.CloseOpenAIWSPool)
 		tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
 		tests.SetOpenAIGatewayService(gateway)
 		tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
-		return tests, service.NewQualityJudgeService(accounts, NewGroupRepository(client, db), service.NewConcurrencyService(nil), tests, nil, NewMonitoringProbeBudgetRepository(db))
+		return tests, service.NewQualityJudgeService(accounts, NewGroupRepository(client, db), service.NewConcurrencyService(nil), tests, nil, NewMonitoringProbeBudgetRepository(db)), gateway
 	}
 	question := &service.PelicanTestConfig{QuestionKind: "candy", TestChannel: "bps", Prompt: "Return 21", Quality: &service.QualityPolicy{ExpectedAnswer: "21", Action: service.QualityActionObserveOnly,
 		Judge: &service.QualityJudgeConfig{GroupID: group, ModelID: "gpt-6-astra", Prompt: "grade"}}}
-	firstTests, firstJudge := newServices()
+	firstTests, firstJudge, _ := newServices()
 	answer, err := firstTests.RunPelicanBackground(ctx, account.ID, "gpt-6-astra", question)
 	require.NoError(t, err)
 	require.Equal(t, "success", answer.Status, "%+v", answer)
 	judged := firstJudge.Judge(ctx, account.ID+1, question, "21")
 	require.Equal(t, "correct", judged.Verdict, "%+v", judged)
-	secondTests, secondJudge := newServices()
+	secondTests, secondJudge, _ := newServices()
 	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "gpt-6-astra", question)
 	require.NoError(t, err)
 	require.Equal(t, "answer_budget_deferred", answer.ErrorMessage)
@@ -706,7 +722,7 @@ func TestQualityMonitoringBudgetPostgresBPSAndRestart(t *testing.T) {
 	require.Equal(t, "judge_budget_deferred", judged.Reason)
 	require.EqualValues(t, 2, calls.Load(), "independent exhausted instances must not send BPS requests")
 	policy.Enabled = false
-	_, err = budget.SaveSettings(ctx, policy)
+	policy, err = budget.SaveSettings(ctx, policy)
 	require.NoError(t, err)
 	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "gpt-6-astra", question)
 	require.NoError(t, err)
@@ -722,6 +738,81 @@ func TestQualityMonitoringBudgetPostgresBPSAndRestart(t *testing.T) {
 	require.EqualValues(t, 4, calls.Load())
 	require.EqualValues(t, 4, usage.DayUsed)
 	require.Zero(t, usage.ActiveRequests)
+
+	t.Run("media-shared-usage-and-restart", func(t *testing.T) {
+		redirect.Store(false)
+		alias := mustCreateAccount(t, client, &service.Account{Name: "bps-media-budget", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+			Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"access_token": "bps-budget-fixture", "chatgpt_account_id": "fixture-account", "base_url": "https://native.example/tenant"},
+			Extra: map[string]any{"openai_excel_bps": true, "openai_passthrough": true, "openai_excel_bps_models": []string{"gpt-image-2", "gpt-6-astra"}}})
+		_, err := db.ExecContext(ctx, `UPDATE accounts SET concurrency=0 WHERE id=$1`, alias.ID)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,'true'),($2,'native')`, service.SettingKeyExcelBPSImageRelayEnabled, service.SettingKeyExcelBPSImageMode)
+		require.NoError(t, err)
+		snapshot := func() string {
+			var raw string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id)::text FROM accounts a`).Scan(&raw))
+			return raw
+		}
+		before := snapshot()
+		policy.Enabled, policy.TokensPerDay, policy.RequestsPerDay = true, 30, 100
+		policy, err = budget.SaveSettings(ctx, policy)
+		require.NoError(t, err)
+		thirdTests, _, _ := newServices()
+		image := func(tests *service.AccountTestService) error {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/test-pelican", nil).WithContext(ctx)
+			return tests.TestPelicanAccountConnection(c, alias.ID, "gpt-image-2", "draw", "")
+		}
+		require.NoError(t, image(thirdTests))
+		fourthTests, _, gateway := newServices()
+		var denial *service.MonitoringProbeBudgetDenial
+		require.ErrorAs(t, image(fourthTests), &denial)
+		require.Equal(t, "token_limit", denial.Reason)
+		require.EqualValues(t, 5, calls.Load(), "rebuilt services share the same actual-token budget")
+		usage, err := budget.Summary(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, 30, usage.DayTokens)
+		require.EqualValues(t, 1, usage.UsageReported)
+		require.Zero(t, usage.UsagePending)
+
+		// A non-generating upload is still counted after Token exhaustion,
+		// but the following Responses generation must not be sent.
+		body := []byte(`{"model":"gpt-6-astra","input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAFElEQVR4nGJiYGBgYGBgYgADAgAA//8AOgAFpUq8lwAAAABJRU5ErkJggg=="}]}]}`)
+		forward := func() error {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			probeCtx := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)).Context(ctx, "https://bps.openai.com", false)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body))).WithContext(probeCtx)
+			_, err := gateway.Forward(probeCtx, c, account, body)
+			return err
+		}
+		require.ErrorAs(t, forward(), &denial)
+		require.Equal(t, "token_limit", denial.Reason)
+		require.EqualValues(t, 6, calls.Load(), "upload and generation have independent physical admissions")
+		usage, err = budget.Summary(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, 6, usage.DayUsed)
+		require.EqualValues(t, 30, usage.DayTokens)
+		require.EqualValues(t, 1, usage.UsageReported, "an upload is not missing generation usage")
+		require.Zero(t, usage.ActiveRequests)
+		require.Zero(t, usage.UsagePending)
+
+		policy.TokensPerDay = 0
+		_, err = budget.SaveSettings(ctx, policy)
+		require.NoError(t, err)
+		require.NoError(t, forward(), "explicitly lifting the Token limit restores the same service")
+		require.EqualValues(t, 8, calls.Load())
+		usage, err = budget.Summary(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, 8, usage.DayUsed)
+		require.EqualValues(t, 30, usage.DayTokens)
+		require.EqualValues(t, 1, usage.UsageReported)
+		require.GreaterOrEqual(t, usage.UsageUnknown, int64(1), "unreported Responses usage remains unknown")
+		require.Zero(t, usage.ActiveRequests)
+		require.Equal(t, before, snapshot(), "diagnostics must not alter persisted account state")
+		require.Zero(t, redirected.Load())
+	})
 }
 
 func TestQualityMonitoringBudgetPostgresNativeHTTPAndRestart(t *testing.T) {
