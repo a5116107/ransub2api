@@ -10,14 +10,15 @@ import (
 )
 
 // fakeLeaderLockCache is an in-memory LeaderLockCache for unit tests. It models the
-// compare-and-delete release semantics of the real Redis-backed implementation.
+// TTL and compare-and-delete semantics of the real Redis-backed implementation.
 type fakeLeaderLockCache struct {
 	mu         sync.Mutex
 	owners     map[string]string
+	expires    map[string]time.Time
 	acquireErr error
 }
 
-func (f *fakeLeaderLockCache) TryAcquireLeaderLock(_ context.Context, key, owner string, _ time.Duration) (bool, error) {
+func (f *fakeLeaderLockCache) TryAcquireLeaderLock(_ context.Context, key, owner string, ttl time.Duration) (bool, error) {
 	if f.acquireErr != nil {
 		return false, f.acquireErr
 	}
@@ -25,11 +26,26 @@ func (f *fakeLeaderLockCache) TryAcquireLeaderLock(_ context.Context, key, owner
 	defer f.mu.Unlock()
 	if f.owners == nil {
 		f.owners = map[string]string{}
+		f.expires = map[string]time.Time{}
+	}
+	if !time.Now().Before(f.expires[key]) {
+		delete(f.owners, key)
 	}
 	if _, held := f.owners[key]; held {
 		return false, nil
 	}
 	f.owners[key] = owner
+	f.expires[key] = time.Now().Add(ttl)
+	return true, nil
+}
+
+func (f *fakeLeaderLockCache) RenewLeaderLock(_ context.Context, key, owner string, ttl time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.owners[key] != owner || !time.Now().Before(f.expires[key]) {
+		return false, nil
+	}
+	f.expires[key] = time.Now().Add(ttl)
 	return true, nil
 }
 

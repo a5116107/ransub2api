@@ -1240,7 +1240,7 @@ func TestUpstreamBillingProbeRunnerOnlyScansOnLeader(t *testing.T) {
 	peer := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
 	peer.instanceID = "peer"
 	peer.SetLeaderLock(cache, nil)
-	_, acquired, err := peer.tryAcquireLeaderLock(context.Background(), lockKey)
+	_, acquired, err := peer.tryAcquireLeaderLock(context.Background(), lockKey, peer.instanceID)
 	require.NoError(t, err)
 	require.True(t, acquired)
 	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
@@ -1258,7 +1258,7 @@ func TestUpstreamBillingProbeLeaderLockFailsClosedOnCacheError(t *testing.T) {
 	svc := newUpstreamBillingProbeTestService(&upstreamBillingProbeAccountRepo{}, &upstreamBillingProbeHTTPStub{}, &upstreamBillingProbeSettingRepo{})
 	svc.SetLeaderLock(&fakeLeaderLockCache{acquireErr: context.DeadlineExceeded}, nil)
 
-	release, acquired, err := svc.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(time.Now()))
+	release, acquired, err := svc.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(time.Now()), svc.instanceID)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.False(t, acquired)
@@ -1274,10 +1274,10 @@ func TestUpstreamBillingProbeLeaderLockUsesCadenceBuckets(t *testing.T) {
 	beforeBoundary := time.Unix(59, 0)
 	afterBoundary := beforeBoundary.Add(time.Second)
 
-	releaseFirst, acquired, err := first.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(beforeBoundary))
+	releaseFirst, acquired, err := first.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(beforeBoundary), first.instanceID)
 	require.NoError(t, err)
 	require.True(t, acquired)
-	releaseSecond, acquired, err := second.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(afterBoundary))
+	releaseSecond, acquired, err := second.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(afterBoundary), second.instanceID)
 	require.NoError(t, err)
 	require.True(t, acquired, "the prior cadence lock must not suppress the next cadence")
 	releaseFirst()
@@ -1499,7 +1499,7 @@ func TestUpstreamBillingProbeLeaderLockCoversStaggeredInstancesInCadenceWindow(t
 
 	require.NoError(t, first.RunDue(context.Background()))
 	require.Equal(t, int64(1), upstream.calls.Load())
-	require.Equal(t, first.instanceID, cache.heldBy(upstreamBillingProbeLeaderLockKeyAt(time.Now())))
+	require.True(t, strings.HasPrefix(cache.heldBy(upstreamBillingProbeLeaderLockKeyAt(time.Now())), first.instanceID+":"))
 
 	repo.mu.Lock()
 	repo.accounts[42] = account(42)

@@ -378,6 +378,9 @@ func (s *UpstreamBillingProbeService) persistNewAPIFailure(ctx context.Context, 
 }
 
 func (s *UpstreamBillingProbeService) persistNewAPISnapshot(ctx context.Context, a *Account, b *NewAPIAccountBinding, snap *UpstreamBillingProbeSnapshot) (*UpstreamBillingProbeSnapshot, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, upstreamBillingProbeRequestTimeout)
 	defer cancel()
 	if err := s.newAPIRepo.WriteSnapshot(ctx, a, b, snap); err != nil {

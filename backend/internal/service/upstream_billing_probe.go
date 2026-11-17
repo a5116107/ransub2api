@@ -72,7 +72,8 @@ const UpstreamBillingProbeMaxBatchSize = upstreamBillingProbeMaxPerCycle
 const upstreamBillingRateSyncMaxMultiplier = 100.0
 
 var (
-	ErrUpstreamBillingProbeUnavailable = infraerrors.ServiceUnavailable(
+	errUpstreamBillingProbeLeaderLockLost = errors.New("upstream billing probe leader lock lost")
+	ErrUpstreamBillingProbeUnavailable    = infraerrors.ServiceUnavailable(
 		"UPSTREAM_BILLING_PROBE_UNAVAILABLE", "upstream billing probe is unavailable",
 	)
 	ErrUpstreamBillingProbeAccountInvalid = infraerrors.BadRequest(
@@ -384,7 +385,13 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	if !settings.Enabled {
 		return nil
 	}
-	runRelease, acquired, lockErr := s.tryAcquireLeaderLock(ctx, upstreamBillingProbeLeaderLockKey)
+	ctx, cancelRun := context.WithCancelCause(ctx)
+	defer cancelRun(nil)
+	// Each batch owns a distinct token, including successive batches on the same
+	// process. A delayed renewal or release must not affect a successor batch.
+	owner := s.instanceID + ":" + uuid.NewString()
+	lockStarted := time.Now()
+	runRelease, acquired, lockErr := s.tryAcquireLeaderLock(ctx, upstreamBillingProbeLeaderLockKey, owner)
 	if lockErr != nil {
 		return fmt.Errorf("acquire upstream billing probe leader lock: %w", lockErr)
 	}
@@ -392,9 +399,13 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 		return nil
 	}
 	defer runRelease()
+	if s.lockCache != nil {
+		stopRenewal := s.keepLeaderLock(ctx, cancelRun, owner, lockStarted)
+		defer stopRenewal()
+	}
 
 	lockNow := time.Now()
-	cadenceRelease, acquired, lockErr := s.tryAcquireLeaderLock(ctx, upstreamBillingProbeLeaderLockKeyAt(lockNow))
+	cadenceRelease, acquired, lockErr := s.tryAcquireLeaderLock(ctx, upstreamBillingProbeLeaderLockKeyAt(lockNow), owner)
 	if lockErr != nil {
 		return fmt.Errorf("acquire upstream billing probe cadence lock: %w", lockErr)
 	}
@@ -444,13 +455,14 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	for i := range due {
 		accountID := due[i].ID
 		group.Go(func() error {
-			if _, probeErr := s.probeScheduledAccount(ctx, accountID, settings.IntervalMinutes); probeErr != nil {
+			if _, probeErr := s.probeScheduledAccount(ctx, accountID, settings.IntervalMinutes); probeErr != nil && ctx.Err() == nil {
 				logger.LegacyPrintf("service.upstream_billing_probe", "probe_due_failed: account_id=%d err=%v", accountID, probeErr)
 			}
 			return nil
 		})
 	}
-	return group.Wait()
+	_ = group.Wait()
+	return context.Cause(ctx)
 }
 
 func (s *UpstreamBillingProbeService) listDueAccounts(ctx context.Context, now time.Time) ([]Account, error) {
@@ -503,11 +515,17 @@ func (s *UpstreamBillingProbeService) probeScheduledAccount(ctx context.Context,
 func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, accountID int64, intervalMinutes int, requireEnabled bool) (*UpstreamBillingProbeSnapshot, error) {
 	key := strconv.FormatInt(accountID, 10)
 	value, err, _ := s.probeGroup.Do(key, func() (any, error) {
+		if err := context.Cause(ctx); err != nil {
+			return nil, err
+		}
 		select {
 		case s.probeSlots <- struct{}{}:
 			defer func() { <-s.probeSlots }()
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		}
+		if err := context.Cause(ctx); err != nil {
+			return nil, err
 		}
 		account, loadErr := s.accountRepo.GetByID(ctx, accountID)
 		if loadErr != nil {
@@ -581,11 +599,11 @@ func upstreamBillingProbeLeaderLockKeyAt(now time.Time) string {
 	return fmt.Sprintf("%s:%d", upstreamBillingProbeLeaderLockKey, now.Unix()/int64(upstreamBillingProbeCycleInterval/time.Second))
 }
 
-func (s *UpstreamBillingProbeService) tryAcquireLeaderLock(ctx context.Context, key string) (func(), bool, error) {
+func (s *UpstreamBillingProbeService) tryAcquireLeaderLock(ctx context.Context, key, owner string) (func(), bool, error) {
 	lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if s.lockCache != nil {
-		acquired, err := s.lockCache.TryAcquireLeaderLock(lockCtx, key, s.instanceID, upstreamBillingProbeLeaderLockTTL)
+		acquired, err := s.lockCache.TryAcquireLeaderLock(lockCtx, key, owner, upstreamBillingProbeLeaderLockTTL)
 		if err != nil {
 			return nil, false, err
 		}
@@ -595,13 +613,78 @@ func (s *UpstreamBillingProbeService) tryAcquireLeaderLock(ctx context.Context, 
 		return func() {
 			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer releaseCancel()
-			_ = s.lockCache.ReleaseLeaderLock(releaseCtx, key, s.instanceID)
+			_ = s.lockCache.ReleaseLeaderLock(releaseCtx, key, owner)
 		}, true, nil
 	}
 	if s.db != nil {
 		return tryAcquireDBAdvisoryLockWithError(lockCtx, s.db, hashAdvisoryLockID(key))
 	}
 	return func() {}, true, nil
+}
+
+// Renewal is specific to the potentially long billing batch; unrelated periodic
+// jobs retain their existing TTL policy. The watchdog is independent of Redis
+// I/O and leaves one third of the acknowledged TTL for transport cancellation.
+func (s *UpstreamBillingProbeService) keepLeaderLock(ctx context.Context, cancelRun context.CancelCauseFunc, owner string, acquiredAt time.Time) func() {
+	validFor := upstreamBillingProbeLeaderLockTTL * 2 / 3
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var mu sync.Mutex
+	stopped := false
+	validUntil := acquiredAt.Add(validFor)
+	lose := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !stopped {
+			stopped = true
+			cancelRun(errUpstreamBillingProbeLeaderLockLost)
+			cancelWorker()
+		}
+	}
+	watchdog := time.AfterFunc(time.Until(validUntil), lose)
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(upstreamBillingProbeLeaderLockTTL / 3)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+				if workerCtx.Err() != nil {
+					return
+				}
+				started := time.Now()
+				opCtx, cancel := context.WithTimeout(workerCtx, 2*time.Second)
+				owned, err := s.lockCache.RenewLeaderLock(opCtx, upstreamBillingProbeLeaderLockKey, owner, upstreamBillingProbeLeaderLockTTL)
+				cancel()
+				if err != nil || !owned {
+					lose()
+					return
+				}
+				mu.Lock()
+				now := time.Now()
+				late := !now.Before(validUntil) || !now.Before(started.Add(validFor))
+				if !stopped && !late && workerCtx.Err() == nil {
+					validUntil = started.Add(validFor)
+					watchdog.Reset(time.Until(validUntil))
+				}
+				mu.Unlock()
+				if late {
+					lose()
+					return
+				}
+			}
+		}
+	}()
+	return sync.OnceFunc(func() {
+		mu.Lock()
+		stopped = true
+		watchdog.Stop()
+		mu.Unlock()
+		cancelWorker()
+		<-done
+	})
 }
 
 func releaseUpstreamBillingProbeLeaderLock(release func(), releaseAt time.Time) {
@@ -747,6 +830,9 @@ func (s *UpstreamBillingProbeService) fetchUpstreamProbeBody(
 	requestURL string,
 	maxBodyBytes int,
 ) upstreamBillingProbeHTTPResult {
+	if ctx.Err() != nil {
+		return upstreamBillingProbeHTTPResult{failure: "request_canceled"}
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, upstreamBillingProbeRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, requestURL, bytes.NewReader(nil))
@@ -918,6 +1004,9 @@ func (s *UpstreamBillingProbeService) updateSnapshot(
 	snapshot *UpstreamBillingProbeSnapshot,
 	rateMultiplier *float64,
 ) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	writer, ok := s.accountRepo.(upstreamBillingProbeSnapshotWriter)
 	if !ok {
 		return ErrUpstreamBillingProbeUnavailable

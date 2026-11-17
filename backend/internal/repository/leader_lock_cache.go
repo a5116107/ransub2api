@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -10,6 +11,13 @@ import (
 )
 
 const leaderLockKeyPrefix = "leader:lock:"
+
+var leaderLockRenewScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+`)
 
 // leaderLockReleaseScript releases a leader lock only when the caller still owns
 // it (compare-and-delete by owner token). This prevents a previous holder whose
@@ -39,4 +47,12 @@ func (c *leaderLockCache) TryAcquireLeaderLock(ctx context.Context, key, owner s
 
 func (c *leaderLockCache) ReleaseLeaderLock(ctx context.Context, key, owner string) error {
 	return leaderLockReleaseScript.Run(ctx, c.rdb, []string{leaderLockKeyPrefix + key}, owner).Err()
+}
+
+func (c *leaderLockCache) RenewLeaderLock(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+	if ttl < time.Millisecond {
+		return false, errors.New("leader lock renewal TTL must be at least one millisecond")
+	}
+	result, err := leaderLockRenewScript.Run(ctx, c.rdb, []string{leaderLockKeyPrefix + key}, owner, ttl.Milliseconds()).Int64()
+	return result == 1, err
 }

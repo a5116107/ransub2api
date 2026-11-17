@@ -14,6 +14,9 @@ type LeaderLockCache interface {
 	// TryAcquireLeaderLock sets key=owner with the given TTL iff key is absent.
 	// It returns true when the caller becomes the owner.
 	TryAcquireLeaderLock(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
+	// RenewLeaderLock extends an unexpired lock iff it is still owned by owner.
+	// It never creates a missing lock or changes its owner.
+	RenewLeaderLock(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
 	// ReleaseLeaderLock deletes key iff it is still owned by owner.
 	ReleaseLeaderLock(ctx context.Context, key, owner string) error
 }

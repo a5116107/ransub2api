@@ -135,6 +135,9 @@ func matchNewAPITokens(a *Account, tokens []NewAPIToken) []NewAPIToken {
 // User credentials are applied last, so account relay-key header overrides
 // cannot impersonate a different management user.
 func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Account, site string, userID int64, secret, method, path string, out any) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
 		return newAPIError("transport_unavailable")
 	}

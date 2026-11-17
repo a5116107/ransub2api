@@ -1535,6 +1535,9 @@ New API管理观察沿原状态→钱包→定价→完整Key分页→必要的�
 原New API持久化组合用例已原位扩展至100个启用的独立租户授权绑定，另设关闭探测、人工停用、OAuth和未来到期四个对照账号。初始扫描与含故障的扫描各五批、每批20个，每批重建runner/Repository；前10个绑定在定价阶段503，后10个在第二页429，余下80个不饥饿。成功/失败/下次到期均经真实SQL；无到期项时零调用，SQL调整原失败项到期后仅这20个恢复，人工成本及账号计费倍率保持。两轮race均按阶段断言恢复前1160次、恢复后合计1280次物理管理HTTP调用，最大并发4；无部分有效倍率或凭据/错误正文落库，四个对照账号零调用。该证据为本地加密授权仓库/HTTP adapter与分页链交互，不含生产周期锁、五分钟墙钟、多节点覆盖、模型/判题/token预算或真实供应商全周期SLA，原吞吐上限及这些验收仍保留。
 原夹具另用真实HTTP让前三步各耗时7秒，库存请求耗尽共享30秒网络期限；期限结束后仍可沿独立持久化上下文写入SQL失败/退避，无部分有效倍率。重建runner后未到期零调用，到期仅原失败绑定恢复，其他99个及四个对照不重探。原测试14叶双轮28次通过（216.70秒），该观测补齐本地网络预算耗尽后的落库/恢复，不替代完整吞吐预算或生产验收。
 
+倍率定时批次的主锁现沿[原runner](../../backend/internal/service/upstream_billing_probe.go)按批次唯一令牌续租；[Redis条件续租](../../backend/internal/repository/leader_lock_cache.go)只延长尚存且属于该令牌的锁，不创建丢失的锁、不续租或释放后继批次。120秒TTL每40秒续租，本地看门狗从最后成功操作的开始时刻计算80秒有效窗口，独立于Redis调用执行。续租报错、失去所有权或未及时取得新确认时取消旧批次，等待执行者退出后再释放主锁；取消后的待执行请求不出站，两个模板均不再把取消结果写成成功/失败快照或延长旧证据。分钟节拍锁、每批20/并发4、New API独立持久化预算与DB-only会话锁保持原约束，Redis故障不偷偷切到另一协调后端。
+原复现以虚拟时钟模拟20账号五波、每账号28秒的合法慢链，整批140秒跨过旧120秒TTL，旧实现让第二竞争者取得主锁。修复后服务层五轮1675个通过事件覆盖续租、五类失锁、恢复、调用方取消及同进程新批次隔离；私有SQL/Redis两轮100个通过事件含原100绑定/轮转与真实Redis的20竞争者、实际过期和旧令牌保护，均无失败/跳过/竞态告警。该证据是本地调度与存储边界，不是生产多节点周期SLA；任意进程停顿、Redis丢键/重建及已提交写入仍不能靠TTL证明瞬时分布式排他。D8.1完整预算/覆盖编译与D8.2严格混版验收保持开放。
+
 
 若100Key×2模型×6题×3轮每天一次质量复核，原始样本就有3600次/天；预算必须与实际目标相容，不随意给低预算产品标“已全面验真”。
 默认以请求/token预算控制，本期不引入真实采购价格来估算花费；UI同时显示保守调用数与预计检测完成时间。
@@ -1898,7 +1901,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
-| 检测调度与预算 | [固定20/分钟与4并发](../../backend/internal/service/upstream_billing_probe.go#L38)、[RunDue锁与到期排序](../../backend/internal/service/upstream_billing_probe.go#L370) | 两模板各100账号轮转/退避/SQL恢复已有用例；上限仍固定，尚无统一物理调用/token/判题/每站预算、恢复预留与保存前可实现性预览。现有局部限流不能当完整预算。D8.1 |
+| 检测调度与预算 | [固定20/批与4并发](../../backend/internal/service/upstream_billing_probe.go#L38)、[RunDue锁与到期排序](../../backend/internal/service/upstream_billing_probe.go#L374) | 两模板100账号轮转/退避/SQL恢复及慢批次续租/失锁恢复已有本地证据；上限仍固定，慢批次不保证20/分钟，尚无统一物理调用/token/判题/每站预算、恢复预留与保存前可实现性预览。现有局部限流不能当完整预算或生产周期SLA。D8.1 |
 | 未确认异步提交 | [按member绑定/释放入口](../../backend/internal/service/async_video_key_handoff.go#L255) | 已有不重放与持久额度保护、终态释放恢复；缺无远端task ID时按原请求唯一关联的自动核实。需要实际中转协议合同，不可套MiniMax原生API；不阻塞文本供应池本地开发。D2.7 |
 | 升级与生产 | [冷却读时过滤](../../backend/internal/service/scheduler_snapshot_service.go#L239)、[自有自动发行](../../.github/workflows/release.yml#L4)、[原演练入口](../../.github/release-tools/release_matrix.py#L398) | 审计时冷却回池在功能分支、生产记录为.3/5ce1d189；后续独立.7发布及加载已有验证，实时状态见STATE。串行升级、同候选恢复与旧新严格混版分开；后者原失败及完整新功能发布验收仍保留。D8.2/D9.1/D9.2 |
 
