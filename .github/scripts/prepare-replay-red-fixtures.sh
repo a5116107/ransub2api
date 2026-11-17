@@ -5,6 +5,8 @@ set -euo pipefail
 tree="${2:-.}"
 baseline=$(git -C "$tree" rev-parse "$1^{commit}")
 candidate=$(git -C "$tree" rev-parse "${3:-HEAD}^{commit}")
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$script_dir/prepare-upstream-v0222-red-fixtures.py" "$baseline" "$tree" "$candidate"
 
 exclude_absent_fixture() {
   local target="$1" contract="$2"
@@ -31,6 +33,15 @@ exclude_absent_fixture() {
   rm -- "$tree/$target"
   test ! -e "$tree/$target"
 }
+
+# Full historical overlays restore the old APIKeyListFilters as well. Preserve
+# the later usage tests in selective overlays and every candidate GREEN; only
+# the exact old contract can justify excluding this independent fixture.
+usage_contract=backend/internal/service/api_key.go
+if ! git -C "$tree" grep -q 'UsageStartTime' "$baseline" -- "$usage_contract" &&
+   test "$(git -C "$tree" hash-object "$usage_contract")" = "$(git -C "$tree" rev-parse "$baseline:$usage_contract")"; then
+  bash "$(dirname "${BASH_SOURCE[0]}")/prepare-usage-sort-red-fixture.sh" "$baseline" "$tree" "$candidate"
+fi
 
 # Full old-source overlays remove the unit-only OAuth dial seam alongside
 # later production files. This separate, later Issue842 matrix is not selected
