@@ -204,6 +204,9 @@ func (s *QualityJudgeService) judgeJev(ctx context.Context, cfg *PelicanTestConf
 			client = &copy
 		}
 		value, status, err := typesafe.EvaluateChoice(attemptCtx, client, baseURL, key, input, "quality")
+		if local := monitoringProbeLocalError(attemptCtx); local != nil {
+			err = local
+		}
 		attemptCanceled := attemptCtx.Err() != nil
 		cancelAttempt()
 		if denial := monitoringProbeDeferral(err, time.Now()); denial != nil {

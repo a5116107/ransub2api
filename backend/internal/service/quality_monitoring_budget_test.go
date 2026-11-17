@@ -533,6 +533,140 @@ func TestQualityMonitoringBudgetUnavailableAndUnmarkedConnection(t *testing.T) {
 	}
 }
 
+func TestQualityMonitoringBudgetNativeInvocation(t *testing.T) {
+	for _, provider := range []string{"vertex", "bedrock_apikey", "bedrock_sigv4"} {
+		for _, outcome := range []string{"usage", "token_limit", "settlement_failure", "unmarked"} {
+			t.Run(provider+"/"+outcome, func(t *testing.T) {
+				account := &Account{ID: 512, Platform: PlatformAnthropic, Type: AccountTypeBedrock, Status: StatusActive, Concurrency: 1,
+					Credentials: map[string]any{"auth_mode": "apikey", "api_key": "fixture-bedrock-key", "aws_region": "us-east-1"}}
+				body := `{"type":"message","content":[{"type":"text","text":"answer"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":5,"cache_creation_input_tokens":4}}`
+				response := newJSONResponse(http.StatusOK, body)
+				if provider == "vertex" {
+					account.Type = AccountTypeServiceAccount
+					account.Credentials = map[string]any{
+						"service_account_json": `{"type":"service_account","project_id":"vertex-proj","private_key_id":"kid","private_key":"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n","client_email":"svc@vertex-proj.iam.gserviceaccount.com"}`,
+						"location":             "global",
+					}
+					response.Header.Set("Content-Type", "text/event-stream")
+					response.Body = io.NopCloser(strings.NewReader("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":0,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":4}}}\n\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\ndata: {\"type\":\"message_stop\"}\n\n"))
+				} else if provider == "bedrock_sigv4" {
+					account.Credentials = map[string]any{"aws_access_key_id": "AKIAFIXTUREBUDGET1234", "aws_secret_access_key": "fixture-secret", "aws_region": "us-east-1"}
+				}
+				upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{response}}
+				tests := pelicanClaudeTestService(account, monitoringBudgetHTTP{base: upstream})
+				if provider == "vertex" {
+					key, err := parseVertexServiceAccountKey(account)
+					require.NoError(t, err)
+					cache := newClaudeTokenCacheStub()
+					cache.tokens[vertexServiceAccountCacheKey(account, key)] = "fixture-vertex-token"
+					tests.claudeTokenProvider = NewClaudeTokenProvider(nil, cache, nil)
+				}
+				denial := &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+				repo := &monitoringBudgetRepoStub{}
+				if outcome == "token_limit" || outcome == "unmarked" {
+					repo.acquire = func(request MonitoringProbeBudgetRequest, _ int) (string, error) {
+						if request.MeterTokens {
+							return "", denial
+						}
+						return "fixture-lease", nil
+					}
+				} else if outcome == "settlement_failure" {
+					repo.releaseErr = errors.New("fixture SQL failure")
+				}
+				tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+				c, _ := newTestContext()
+				var err error
+				if outcome == "unmarked" {
+					err = tests.TestAccountConnection(c, account.ID, "claude-sonnet-4-5", "hi", AccountTestModeDefault)
+				} else {
+					err = tests.TestPelicanAccountConnection(c, account.ID, "claude-sonnet-4-5", "answer", "high")
+				}
+				switch outcome {
+				case "token_limit":
+					require.ErrorIs(t, err, denial)
+					require.Zero(t, upstream.callCount, "token exhaustion must reject before physical generation")
+					require.Zero(t, repo.released)
+				case "unmarked":
+					require.NoError(t, err)
+					require.Equal(t, 1, upstream.callCount)
+					require.Empty(t, repo.requests, "wiring must not put normal tests into monitoring budgets")
+				default:
+					if outcome == "settlement_failure" {
+						require.ErrorIs(t, err, ErrMonitoringProbeBudgetUnavailable)
+					} else {
+						require.NoError(t, err)
+					}
+					require.Equal(t, 1, upstream.callCount)
+					require.Len(t, repo.requests, 1)
+					require.True(t, repo.requests[0].MeterTokens)
+					require.False(t, repo.requests[0].Recovery)
+					require.Equal(t, []MonitoringProbeTokenUsage{{Tokens: 14, Reported: true}}, repo.usages)
+				}
+			})
+		}
+	}
+}
+
+func TestQualityMonitoringBudgetJevActualUsage(t *testing.T) {
+	for _, outcome := range []string{"reported", "zero", "missing", "partial", "token_limit", "settlement_failure"} {
+		t.Run(outcome, func(t *testing.T) {
+			usage := `,"usage":{"input_tokens":3,"output_tokens":2}`
+			want := MonitoringProbeTokenUsage{Tokens: 5, Reported: true}
+			switch outcome {
+			case "zero":
+				usage, want = `,"usage":{"input_tokens":0,"output_tokens":0}`, MonitoringProbeTokenUsage{Reported: true}
+			case "missing":
+				usage, want = "", MonitoringProbeTokenUsage{}
+			case "partial":
+				usage, want = `,"usage":{"input_tokens":3}`, MonitoringProbeTokenUsage{Tokens: 3}
+			}
+			calls := 0
+			svc, cfg, audit, _ := qualityJevFixture(t, func(req *http.Request) (*http.Response, error) {
+				calls++
+				require.Equal(t, "/v1/systemone", req.URL.Path)
+				body := strings.TrimSuffix(qualityJevReply("correct", .99), "}") + usage + "}"
+				return newJSONResponse(http.StatusOK, body), nil
+			})
+			repo := &monitoringBudgetRepoStub{}
+			denial := &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			if outcome == "token_limit" {
+				repo.acquire = func(request MonitoringProbeBudgetRequest, _ int) (string, error) {
+					if request.MeterTokens {
+						return "", denial
+					}
+					return "fixture-lease", nil
+				}
+			} else if outcome == "settlement_failure" {
+				repo.releaseErr = errors.New("PRIVATE_FIXTURE_SQL_FAILURE")
+			}
+			svc.monitoringBudget = NewMonitoringProbeBudgetService(repo)
+			got := svc.Judge(t.Context(), 1, cfg, "21")
+			if outcome == "token_limit" || outcome == "settlement_failure" {
+				require.Equal(t, "judge_budget_deferred", got.Reason)
+				require.Equal(t, "unknown", got.Verdict)
+				require.NotNil(t, got.BudgetDeferral)
+				if outcome == "token_limit" {
+					require.Zero(t, calls)
+					require.Zero(t, repo.released)
+				} else {
+					require.Equal(t, "budget_unavailable", got.BudgetDeferral.Reason)
+					require.Equal(t, []MonitoringProbeTokenUsage{want}, repo.usages)
+				}
+			} else {
+				require.Equal(t, "correct", got.Verdict)
+				require.Nil(t, got.BudgetDeferral)
+				require.Equal(t, 1, calls)
+				require.Equal(t, []MonitoringProbeTokenUsage{want}, repo.usages)
+			}
+			require.Len(t, repo.requests, 1)
+			require.True(t, repo.requests[0].MeterTokens)
+			require.False(t, repo.requests[0].Recovery)
+			require.Empty(t, audit.keyHealth)
+			require.Empty(t, svc.jev.slots)
+		})
+	}
+}
+
 func TestQualityMonitoringBudgetDeferralNeverChangesAccountQuality(t *testing.T) {
 	for _, phase := range []string{"answer", "llm"} {
 		t.Run(phase, func(t *testing.T) {

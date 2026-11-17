@@ -144,6 +144,48 @@ func TestMonitoringProbeBudgetActualUsageLifecycle(t *testing.T) {
 	}
 }
 
+func TestMonitoringProbeBudgetNativeGenerationPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, method string
+		generation         bool
+	}{
+		{"vertex_stream", "/tenant/v1/projects/project/locations/global/publishers/anthropic/models/claude:streamRawPredict", http.MethodPost, true},
+		{"vertex_json", "/tenant/v1/projects/project/locations/global/publishers/anthropic/models/claude:rawPredict", http.MethodPost, true},
+		{"bedrock_json", "/tenant/model/anthropic.claude:0/invoke", http.MethodPost, true},
+		{"bedrock_stream", "/tenant/model/anthropic.claude:0/invoke-with-response-stream", http.MethodPost, true},
+		{"bedrock_arn", "/tenant/model/arn:aws:bedrock:us-east-1:123456789012:inference-profile/fixture/invoke", http.MethodPost, true},
+		{"jev", "/tenant/v1/systemone", http.MethodPost, true},
+		{"vertex_count", "/tenant/v1/projects/project/locations/global/publishers/anthropic/models/claude:countTokens", http.MethodPost, false},
+		{"bedrock_count", "/tenant/model/anthropic.claude:0/count-tokens", http.MethodPost, false},
+		{"inventory", "/tenant/v1/models", http.MethodGet, false},
+		{"management_invoke", "/tenant/api/invoke", http.MethodPost, false},
+		{"generation_get", "/tenant/model/anthropic.claude:0/invoke", http.MethodGet, false},
+		{"jev_get", "/tenant/v1/systemone", http.MethodGet, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			original := monitoringBudgetRequest(t, repo)
+			original.Method, original.URL.Path = tc.method, tc.path
+			req, finish, err := BeginMonitoringProbeRequest(original)
+			require.NoError(t, err)
+			t.Cleanup(finish)
+			require.Len(t, repo.requests, 1)
+			require.Equal(t, tc.generation, repo.requests[0].MeterTokens)
+			response := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"type":"message","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":5,"cache_creation_input_tokens":4}}`))}
+			require.NoError(t, FinishMonitoringProbeResponse(req.Context(), response, nil, finish))
+			_, err = io.Copy(io.Discard, response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Len(t, repo.usages, 1)
+			want := MonitoringProbeTokenUsage{}
+			if tc.generation {
+				want = MonitoringProbeTokenUsage{Tokens: 14, Reported: true}
+			}
+			require.Equal(t, want, repo.usages[0])
+		})
+	}
+}
+
 func TestMonitoringProbeBudgetImageJSONFiltering(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string

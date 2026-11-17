@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 )
 
 // Reported distinguishes complete zero usage from absent/invalid usage. Tokens
@@ -92,8 +94,11 @@ func monitoringProbeGenerationPath(path string) bool {
 	return strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/chat/completions") ||
 		strings.HasSuffix(path, "/responses/compact") || strings.HasSuffix(path, "/completions") ||
 		strings.HasSuffix(path, "/messages") || strings.HasSuffix(path, ":generateContent") ||
-		strings.HasSuffix(path, ":streamGenerateContent") || strings.HasSuffix(path, "/images/generations") ||
-		strings.HasSuffix(path, "/images/edits")
+		strings.HasSuffix(path, ":streamGenerateContent") || strings.HasSuffix(path, ":rawPredict") ||
+		strings.HasSuffix(path, ":streamRawPredict") ||
+		strings.Contains(path, "/model/") && (strings.HasSuffix(path, "/invoke") || strings.HasSuffix(path, "/invoke-with-response-stream")) ||
+		strings.HasSuffix(path, "/images/generations") ||
+		strings.HasSuffix(path, "/images/edits") || strings.HasSuffix(path, typesafe.SystemOnePath)
 }
 
 func (c *monitoringProbeTokenCollector) setStream(stream bool) {

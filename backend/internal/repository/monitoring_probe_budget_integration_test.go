@@ -39,45 +39,83 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 
 func TestMonitoringProbeBudgetActualTokenStop(t *testing.T) {
 	db, _ := newBillingAuditDatabase(t)
-	policy := monitoringBudgetPolicy()
-	// Use the wire contract so this test also exercises old policy JSON.
-	require.NoError(t, json.Unmarshal([]byte(`{"tokens_per_day":5}`), &policy))
-	repo := NewMonitoringProbeBudgetRepository(db)
-	_, err := repo.SaveSettings(t.Context(), policy)
-	require.NoError(t, err)
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`))
-	}))
-	t.Cleanup(server.Close)
-	client := &http.Client{Transport: &accountResponseTransport{base: http.DefaultTransport}}
-	send := func() error {
-		ctx := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)).Context(t.Context(), server.URL, false)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{}`))
-		require.NoError(t, err)
-		req.Header.Set("Authorization", "Bearer token-budget-fixture")
-		resp, err := client.Do(req)
-		if err == nil {
-			_, err = io.Copy(io.Discard, resp.Body)
-			require.NoError(t, resp.Body.Close())
-		}
-		return err
+	for _, protocol := range []string{"chat", "vertex_json", "vertex_stream", "bedrock_apikey", "bedrock_sigv4"} {
+		t.Run(protocol, func(t *testing.T) {
+			_, err := db.ExecContext(t.Context(), `TRUNCATE monitoring_probe_budget_counters,monitoring_probe_budget_leases; DELETE FROM settings WHERE key='monitoring_probe_budget'`)
+			require.NoError(t, err)
+			policy := monitoringBudgetPolicy()
+			// Use the wire contract so this test also exercises old policy JSON.
+			require.NoError(t, json.Unmarshal([]byte(`{"tokens_per_day":5}`), &policy))
+			repo := NewMonitoringProbeBudgetRepository(db)
+			policy, err = repo.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			path, tokens := "/v1/chat/completions", int64(7)
+			contentType := "application/json"
+			body := `{"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`
+			if protocol != "chat" {
+				path, tokens = "/model/anthropic.claude:0/invoke", 14
+				body = `{"type":"message","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":5,"cache_creation_input_tokens":4}}`
+			}
+			if strings.HasPrefix(protocol, "vertex_") {
+				path = "/v1/projects/fixture/locations/global/publishers/anthropic/models/claude:rawPredict"
+				if protocol == "vertex_stream" {
+					path = strings.TrimSuffix(path, ":rawPredict") + ":streamRawPredict"
+					contentType = "text/event-stream"
+					body = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":0,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":4}}}\n\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+				}
+			}
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				require.Equal(t, path, r.URL.Path)
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(server.Close)
+			client := &http.Client{Transport: &accountResponseTransport{base: http.DefaultTransport}}
+			send := func() error {
+				ctx := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)).Context(t.Context(), server.URL, false)
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+path, strings.NewReader(`{}`))
+				require.NoError(t, err)
+				if protocol == "bedrock_sigv4" {
+					signer := service.NewBedrockSigner("AKIAFIXTUREBUDGET1234", "fixture-secret", "", "us-east-1")
+					require.NoError(t, signer.SignRequest(ctx, req, []byte(`{}`)))
+				} else {
+					req.Header.Set("Authorization", "Bearer token-budget-fixture")
+				}
+				resp, err := client.Do(req)
+				if err == nil {
+					_, err = io.Copy(io.Discard, resp.Body)
+					require.NoError(t, resp.Body.Close())
+				}
+				return err
+			}
+			require.NoError(t, send(), "the in-flight response may exceed the budget")
+			var denial *service.MonitoringProbeBudgetDenial
+			require.ErrorAs(t, send(), &denial, "actual upstream usage must stop later sends after service reconstruction")
+			require.Equal(t, "token_limit", denial.Reason)
+			require.Equal(t, "global_day", denial.Scope)
+			require.EqualValues(t, 1, calls.Load())
+			usage, err := repo.Summary(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, tokens, usage.DayTokens)
+			require.EqualValues(t, 1, usage.UsageReported)
+			require.Zero(t, usage.UsageUnknown)
+			require.Zero(t, usage.ActiveRequests)
+			require.Zero(t, usage.UsagePending)
+			policy.TokensPerDay = 50
+			_, err = repo.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			require.NoError(t, send(), "an explicit policy change restores future detection")
+			require.EqualValues(t, 2, calls.Load())
+			usage, err = repo.Summary(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, 2*tokens, usage.DayTokens)
+			require.EqualValues(t, 2, usage.UsageReported)
+			require.Zero(t, usage.ActiveRequests)
+			require.Zero(t, usage.UsagePending)
+		})
 	}
-	require.NoError(t, send(), "the in-flight response may exceed the budget")
-	var denial *service.MonitoringProbeBudgetDenial
-	require.ErrorAs(t, send(), &denial, "actual upstream usage must stop later sends")
-	require.Equal(t, "token_limit", denial.Reason)
-	require.Equal(t, "global_day", denial.Scope)
-	require.EqualValues(t, 1, calls.Load())
-	usage, err := repo.Summary(t.Context())
-	require.NoError(t, err)
-	require.EqualValues(t, 7, usage.DayTokens)
-	require.EqualValues(t, 1, usage.UsageReported)
-	require.Zero(t, usage.UsageUnknown)
-	require.Zero(t, usage.ActiveRequests)
-	require.Zero(t, usage.UsagePending)
 }
 
 func TestMonitoringProbeBudgetActualTokenSharedSettlement(t *testing.T) {
@@ -1069,7 +1107,7 @@ func TestQualityJevMonitoringBudgetPostgresAndHTTP(t *testing.T) {
 			http.Error(w, "invalid fixture request", 400)
 			return
 		}
-		_, _ = w.Write([]byte(`{"model":"jev-latest","answers":{"quality":{"type":"choice","choice":"correct","confidence":0.95,"probabilities":{"correct":0.96,"incorrect":0.02,"unknown":0.02}}}}`))
+		_, _ = w.Write([]byte(`{"model":"jev-latest","answers":{"quality":{"type":"choice","choice":"correct","confidence":0.95,"probabilities":{"correct":0.96,"incorrect":0.02,"unknown":0.02}}},"usage":{"input_tokens":3,"output_tokens":2}}`))
 	}))
 	defer server.Close()
 	settings := NewSettingRepository(client)
@@ -1099,11 +1137,15 @@ func TestQualityJevMonitoringBudgetPostgresAndHTTP(t *testing.T) {
 	usage, err := budget.Summary(ctx)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, usage.DayUsed)
+	require.EqualValues(t, 5, usage.DayTokens)
+	require.EqualValues(t, 1, usage.UsageReported)
+	require.Zero(t, usage.UsageUnknown)
+	require.Zero(t, usage.UsagePending)
 	require.Zero(t, usage.ActiveRequests)
 	// Disabling enforcement does not disable shared accounting or mutate the
 	// moderation pool. A second real request is now admitted and still counted.
 	policy.Enabled = false
-	_, err = budget.SaveSettings(ctx, policy)
+	policy, err = budget.SaveSettings(ctx, policy)
 	require.NoError(t, err)
 	got = second.Judge(ctx, 1, question, "21")
 	require.Equal(t, "correct", got.Verdict)
@@ -1112,6 +1154,32 @@ func TestQualityJevMonitoringBudgetPostgresAndHTTP(t *testing.T) {
 	usage, err = budget.Summary(ctx)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, usage.DayUsed)
+	require.EqualValues(t, 10, usage.DayTokens)
+	require.EqualValues(t, 2, usage.UsageReported)
+	require.Zero(t, usage.ActiveRequests)
+	policy.Enabled, policy.RequestsPerDay, policy.TokensPerDay = true, 100, 10
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	got = second.Judge(ctx, 1, question, "21")
+	require.Equal(t, "unknown", got.Verdict)
+	require.Equal(t, "judge_budget_deferred", got.Reason)
+	require.NotNil(t, got.BudgetDeferral)
+	require.Equal(t, "token_limit", got.BudgetDeferral.Reason)
+	require.Equal(t, "global_day", got.BudgetDeferral.Scope)
+	require.EqualValues(t, 2, calls.Load(), "JEV token limits must be independent of the request allowance")
+	policy.TokensPerDay = 50
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	got = first.Judge(ctx, 1, question, "21")
+	require.Equal(t, "correct", got.Verdict)
+	require.Nil(t, got.BudgetDeferral)
+	require.EqualValues(t, 3, calls.Load())
+	usage, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 15, usage.DayTokens)
+	require.EqualValues(t, 3, usage.UsageReported)
+	require.Zero(t, usage.UsageUnknown)
+	require.Zero(t, usage.UsagePending)
 	require.Zero(t, usage.ActiveRequests)
 }
 
@@ -1125,6 +1193,20 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		_, err = repo.SaveSettings(ctx, settings)
 		require.NoError(t, err)
+		// Limit assertions below require one UTC minute. Leave enough room
+		// for their physical SQL calls; rollover has its own explicit test.
+		var now time.Time
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now))
+		remaining := now.UTC().Truncate(time.Minute).Add(time.Minute).Sub(now)
+		if remaining < 5*time.Second {
+			timer := time.NewTimer(remaining + 100*time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				require.NoError(t, ctx.Err())
+			case <-timer.C:
+			}
+		}
 	}
 	request := service.MonitoringProbeBudgetRequest{SiteHash: "fixture-site", KeyHashes: []string{"fixture-key", "fixture-key"}}
 	t.Run("migration-replay", func(t *testing.T) {
