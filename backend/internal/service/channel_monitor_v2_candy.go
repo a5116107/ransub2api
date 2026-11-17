@@ -33,14 +33,15 @@ func (p ChannelMonitorV2CandyProbe) key() string {
 }
 
 type ChannelMonitorV2CandyResult struct {
-	ID            int64     `json:"-"`
-	GroupID       int64     `json:"-"`
-	ConfigKey     string    `json:"-"`
-	CheckedAt     time.Time `json:"checked_at"`
-	Verdict       string    `json:"verdict"`
-	LatencyMs     int64     `json:"latency_ms"`
-	AnswerPreview string    `json:"answer_preview,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
+	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	ID             int64                        `json:"-"`
+	GroupID        int64                        `json:"-"`
+	ConfigKey      string                       `json:"-"`
+	CheckedAt      time.Time                    `json:"checked_at"`
+	Verdict        string                       `json:"verdict"`
+	LatencyMs      int64                        `json:"latency_ms"`
+	AnswerPreview  string                       `json:"answer_preview,omitempty"`
+	Reason         string                       `json:"reason,omitempty"`
 }
 
 type ChannelMonitorV2CandyHistory struct {
@@ -242,6 +243,10 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 	plan := &PelicanGroupTestPlan{GroupID: probe.GroupID, ModelID: probe.Model, PelicanConfig: &PelicanTestConfig{QuestionKind: "candy", Prompt: CandyPrompt, ReasoningEffort: probe.ReasoningEffort, ParallelCount: 1, ModelID: probe.Model}}
 	sample := s.groups.runSample(runCtx, plan, group)
 	result.LatencyMs = s.now().Sub(result.CheckedAt).Milliseconds()
+	if sample != nil && sample.BudgetDeferral != nil {
+		result.Verdict, result.Reason, result.BudgetDeferral = "deferred", "monitoring_budget_deferred", sample.BudgetDeferral
+		return
+	}
 	if runCtx.Err() != nil {
 		result.Reason = "timeout"
 		return
@@ -312,6 +317,7 @@ func (s *ChannelMonitorV2CandyService) attachHistory(ctx context.Context, matrix
 		if !admin {
 			r.AnswerPreview = ""
 			r.Reason = ""
+			r.BudgetDeferral = nil
 		}
 		byProbe[key] = append(byProbe[key], r)
 	}

@@ -100,6 +100,23 @@ afterEach(() => {
 })
 
 describe('PelicanTestsView', () => {
+  it('keeps budget deferrals neutral in the overview and history without exposing an artwork', async () => {
+    const deferred = result({ status: 'deferred', error_message: 'must not render as supplier failure', budget_deferral: { reason: 'token_limit', scope: 'global_day', retry_at: '2026-11-19T00:00:00Z' } })
+    api.listPlans.mockResolvedValue([plan({ last_result: deferred })])
+    api.listResults.mockResolvedValue({ items: [deferred], total: 1 })
+    wrapper = mountView()
+    await flushPromises()
+    const last = wrapper.get('[data-testid="pelican-plan-last-7"]')
+    expect(last.text()).toContain('admin.scheduledTests.deferred')
+    expect(last.find('.dot-bad').exists()).toBe(false)
+    const row = wrapper.get('[data-testid="pelican-result-90"]')
+    expect(row.find('[data-testid="pelican-group-budget-deferral"]').exists()).toBe(true)
+    expect(row.text()).toContain('admin.settings.upstreamBillingProbe.budget.token_limit')
+    expect(row.text()).not.toContain('must not render as supplier failure')
+    expect(row.find('.badge-bad').exists()).toBe(false)
+    expect(row.find('[data-testid="pelican-result-view-90"]').exists()).toBe(false)
+    expect(api.getResult).not.toHaveBeenCalled()
+  })
   it('shows USD totals beside group names and preserves unknown, zero and partial costs', async () => {
     api.listPlans.mockResolvedValue([plan(), plan({ id: 8, today_cost_usd: 0, total_cost_usd: 0.4, total_cost_incomplete: true })])
     api.listResults.mockResolvedValue({ items: [result(), result({ id: 89, cost_usd: null }), result({ id: 88, cost_usd: 0 }), result({ id: 87, cost_usd: 0.0000001 }), result({ id: 86, cost_usd: 0.2, cost_incomplete: true })], total: 5 })

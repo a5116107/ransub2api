@@ -232,6 +232,7 @@ export default {
         lastProbe: 'Last: {time} · {result}',
         lastSuccess: 'OK in {seconds} s',
         lastFailure: 'failed ({reason})',
+        deferredCount: 'Last 24 h: {count} budget deferrals (neither successes nor failures)',
         last24h: 'Last 24 h: {probes} probes · {failures} failed · about ${cost}',
         noProbes: 'No probes yet',
         configIssue: 'The probe settings may be wrong; this result does not count: {error}',

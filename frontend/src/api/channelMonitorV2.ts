@@ -192,7 +192,8 @@ export interface MonitorCandyProbe {
 }
 export interface MonitorCandyResult {
   checked_at: string
-  verdict: 'correct' | 'incorrect' | 'error'
+  verdict: 'correct' | 'incorrect' | 'error' | 'deferred'
+  budget_deferral?: import('@/types/monitoringProbeBudget').MonitoringProbeBudgetDeferral
   latency_ms: number
   answer_preview?: string
   reason?: string

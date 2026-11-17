@@ -119,12 +119,13 @@
                   <p class="plan-last" :data-testid="`pelican-plan-last-${plan.id}`">
                     <span class="text-gray-400">{{ t('pelicanTests.plans.lastRun') }}</span>
                     <template v-if="plan.last_result">
-                      <span class="result-dot" :class="plan.last_result.status === 'success' ? 'dot-ok' : 'dot-bad'" />
+                      <span class="result-dot" :class="plan.last_result.budget_deferral || plan.last_result.status === 'deferred' ? 'dot-neutral' : plan.last_result.status === 'success' ? 'dot-ok' : 'dot-bad'" />
                       <span>{{ formatDateTimeToMinute(plan.last_result.started_at) }}</span>
                       <span v-if="plan.last_result.account_id">{{ t('pelicanTests.plans.routedTo', { name: accountName(plan.last_result) }) }}</span>
                       <span v-else>{{ t('pelicanTests.plans.noAccount') }}</span>
                       <span v-if="plan.last_result.attempts.length" class="text-amber-600 dark:text-amber-400">{{ t('pelicanTests.plans.failedOver', { count: plan.last_result.attempts.length }) }}</span>
-                      <span v-if="plan.last_result.status !== 'success'" class="truncate text-red-500" :title="plan.last_result.error_message">{{ plan.last_result.error_message }}</span>
+                      <span v-if="plan.last_result.budget_deferral || plan.last_result.status === 'deferred'">{{ t('admin.scheduledTests.deferred') }}</span>
+                      <span v-else-if="plan.last_result.status !== 'success'" class="truncate text-red-500" :title="plan.last_result.error_message">{{ plan.last_result.error_message }}</span>
                     </template>
                     <span v-else>{{ t('pelicanTests.plans.never') }}</span>
                   </p>
@@ -186,15 +187,17 @@
                   </small>
                 </td>
                 <td>
-                  <span class="result-badge" :class="result.status === 'success' ? 'badge-ok' : 'badge-bad'">
+                  <MonitoringProbeBudgetNotice v-if="result.budget_deferral" :deferral="result.budget_deferral" :title="t('modelTrace.budgetPaused')" class="min-w-56 max-w-sm" data-testid="pelican-group-budget-deferral" />
+                  <span v-else-if="result.status === 'deferred'" class="result-badge badge-neutral">{{ t('admin.scheduledTests.deferred') }}</span>
+                  <span v-else class="result-badge" :class="result.status === 'success' ? 'badge-ok' : 'badge-bad'">
                     {{ t(result.status === 'success' ? 'pelicanTests.history.success' : 'pelicanTests.history.failed') }}
                   </span>
-                  <small v-if="result.status !== 'success'" class="error-text" :title="result.error_message">{{ result.error_message }}</small>
+                  <small v-if="result.status === 'failed' && !result.budget_deferral" class="error-text" :title="result.error_message">{{ result.error_message }}</small>
                 </td>
                 <td class="whitespace-nowrap tabular-nums">{{ pelicanDurationLabel(t, result.latency_ms) }}</td>
                 <td class="whitespace-nowrap tabular-nums" :title="t('pelicanTests.cost.hint')" :data-testid="`pelican-result-cost-${result.id}`">{{ costLabel(result.cost_usd, result.cost_incomplete) }}</td>
                 <td class="whitespace-nowrap text-right">
-                  <button v-if="result.status === 'success'" class="link-button" :data-testid="`pelican-result-view-${result.id}`" @click="openPreview(result)">
+                  <button v-if="result.status === 'success' && !result.budget_deferral" class="link-button" :data-testid="`pelican-result-view-${result.id}`" @click="openPreview(result)">
                     {{ t('pelicanTests.history.view') }}
                   </button>
                 </td>
@@ -336,6 +339,7 @@
 <script setup lang="ts">
 import PelicanPromptMode from '@/components/admin/account/PelicanPromptMode.vue'
 import PelicanQuestionSnapshot from '@/components/admin/account/PelicanQuestionSnapshot.vue'
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -746,6 +750,7 @@ onBeforeUnmount(() => {
 .result-dot { @apply inline-block h-2 w-2 rounded-full; }
 .dot-ok { @apply bg-emerald-500; }
 .dot-bad { @apply bg-red-500; }
+.dot-neutral { @apply bg-gray-400; }
 .plan-actions { @apply ml-auto flex shrink-0 flex-wrap items-center gap-1; }
 .plan-actions button { @apply inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-800; }
 .plan-actions button.danger { @apply text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30; }
@@ -760,6 +765,7 @@ td small { @apply mt-1 block text-[11px]; }
 .result-badge { @apply inline-block rounded-md px-2 py-0.5 text-[11px] font-medium; }
 .badge-ok { @apply bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300; }
 .badge-bad { @apply bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-300; }
+.badge-neutral { @apply bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300; }
 .link-button { @apply text-primary-600 hover:underline dark:text-primary-400; }
 .empty-state { @apply flex min-h-48 flex-col items-center justify-center gap-3 p-6 text-center text-sm text-gray-400; }
 .scope-note { @apply mt-5 flex items-start gap-2 text-xs leading-6 text-gray-400; }

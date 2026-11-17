@@ -23,8 +23,9 @@ import (
 // only for slots whose real traffic is too thin to judge.
 
 const (
-	ChannelMonitorV3ProbeSuccess = "success"
-	ChannelMonitorV3ProbeFailure = "failure"
+	ChannelMonitorV3ProbeSuccess  = "success"
+	ChannelMonitorV3ProbeFailure  = "failure"
+	ChannelMonitorV3ProbeDeferred = "deferred"
 
 	// ChannelMonitorV3ProbeQuestionKind marks the arithmetic probe on the
 	// Pelican account-test path, which then only requires a non-empty answer.
@@ -93,21 +94,24 @@ type ChannelMonitorV3ProbeFact struct {
 
 // ChannelMonitorV3ProbeResult is what a finished probe writes back.
 type ChannelMonitorV3ProbeResult struct {
-	ID           int64
-	Outcome      string
-	LatencyMs    int64
-	Category     string
-	ErrorMessage string
-	AccountID    int64
-	CostUSD      *float64
+	BudgetDeferral *MonitoringProbeBudgetDenial
+	ID             int64
+	Outcome        string
+	LatencyMs      int64
+	Category       string
+	ErrorMessage   string
+	AccountID      int64
+	CostUSD        *float64
 }
 
 // ChannelMonitorV3IdleProbeStat summarises one group's recent probes for the admin.
 type ChannelMonitorV3IdleProbeStat struct {
-	GroupID  int64   `json:"group_id"`
-	Probes   int64   `json:"probes"`
-	Failures int64   `json:"failures"`
-	CostUSD  float64 `json:"cost_usd"`
+	Deferred           int64                        `json:"deferred"`
+	LastBudgetDeferral *MonitoringProbeBudgetDenial `json:"last_budget_deferral,omitempty"`
+	GroupID            int64                        `json:"group_id"`
+	Probes             int64                        `json:"probes"`
+	Failures           int64                        `json:"failures"`
+	CostUSD            float64                      `json:"cost_usd"`
 	// Last* describe the newest finished probe, which may be older than a day.
 	LastAt        *time.Time `json:"last_at"`
 	LastModel     string     `json:"last_model,omitempty"`
@@ -352,7 +356,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 		}
 		result.LatencyMs = p.now().Sub(started).Milliseconds()
 		result.ErrorMessage = channelMonitorV3Truncate(result.ErrorMessage, channelMonitorV3ProbeMessage)
-		if result.Outcome != ChannelMonitorV3ProbeSuccess {
+		if result.Outcome == ChannelMonitorV3ProbeFailure {
 			result.Category = channelMonitorV3ProbeCategory(result.ErrorMessage)
 		}
 		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -375,6 +379,11 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 	}
 	if sample != nil {
 		result.AccountID, result.CostUSD = sample.AccountID, sample.CostUSD
+		if sample.BudgetDeferral != nil {
+			result.Outcome, result.Category, result.ErrorMessage = ChannelMonitorV3ProbeDeferred, "monitoring_budget_deferred", ""
+			result.BudgetDeferral = sample.BudgetDeferral
+			return
+		}
 	}
 	result.Outcome, result.ErrorMessage = channelMonitorV3ProbeVerdict(runCtx.Err(), sample, challenge.Expected)
 }

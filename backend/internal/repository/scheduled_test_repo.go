@@ -229,7 +229,7 @@ func insertScheduledTestResult(ctx context.Context, q planRowQuerier, result *se
 		INSERT INTO scheduled_test_results (plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id, budget_deferral)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11, $12)
 		RETURNING id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id, budget_deferral
-	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt, marshalQualityResultConfig(result), result.QualityAction, marshalQualityJudgment(result.QualityJudgment), result.QualityRoundID, marshalScheduledBudgetDeferral(result.BudgetDeferral))
+	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt, marshalQualityResultConfig(result), result.QualityAction, marshalQualityJudgment(result.QualityJudgment), result.QualityRoundID, marshalMonitoringProbeBudgetDeferral(result.BudgetDeferral))
 
 	out := &service.ScheduledTestResult{}
 	var judgment []byte
@@ -732,7 +732,7 @@ func marshalQualityJudgment(judgment *service.QualityJudgment) any {
 	return string(data)
 }
 
-func marshalScheduledBudgetDeferral(deferral *service.MonitoringProbeBudgetDenial) any {
+func marshalMonitoringProbeBudgetDeferral(deferral *service.MonitoringProbeBudgetDenial) any {
 	if deferral == nil {
 		return nil
 	}

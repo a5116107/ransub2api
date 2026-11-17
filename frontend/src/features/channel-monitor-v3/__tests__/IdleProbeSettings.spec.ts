@@ -50,6 +50,20 @@ beforeEach(() => {
 })
 
 describe('idle probe settings', () => {
+  it('shows budget deferrals separately from successes and failures', () => {
+    const wrapper = render({ enabled: true, groups: [{ group_id: 7, model: 'gpt-test', reasoning_effort: 'low' }] }, [{
+      group_id: 7, probes: 2, failures: 1, deferred: 3, cost_usd: 0, last_at: '2026-11-18T00:00:00Z', last_outcome: 'deferred',
+      last_budget_deferral: { reason: 'token_limit', scope: 'global_day', retry_at: '2026-11-19T00:00:00Z' }, last_error: 'not a supplier error',
+    }])
+    const row = rows(wrapper)[0]
+    expect(row.text()).toContain('admin.scheduledTests.deferred')
+    expect(row.text()).toContain('channelMonitorV3.admin.idleProbe.deferredCount:{"count":3}')
+    expect(row.find('[data-testid="monitor-v3-budget-deferral"]').exists()).toBe(true)
+    expect(row.text()).not.toContain('lastFailure')
+    expect(row.text()).not.toContain('not a supplier error')
+    expect(mocks.updateIdleProbe).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('lists each group the components use once', () => {
     const wrapper = render({ enabled: false, groups: [] })
     expect(rows(wrapper).map((row) => row.attributes('data-group'))).toEqual(['7', '8', '9'])

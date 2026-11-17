@@ -124,7 +124,7 @@ export function monitorCardTimeline(row: MonitorMatrixRow, coverage: MonitorCove
   return mode === 'samples' ? monitorCardSampleTimeline(row, coverage) : monitorCardWindowTimeline(row, coverage)
 }
 
-export function candyDisplayState(history: MonitorCandyHistory, now: number): 'correct' | 'incorrect' | 'error' | 'unknown' | 'stale' {
+export function candyDisplayState(history: MonitorCandyHistory, now: number): MonitorCandyHistory['results'][number]['verdict'] | 'unknown' | 'stale' {
   const latest = history.results.at(-1)
   if (!latest) return 'unknown'
   const age = now - Date.parse(latest.checked_at)

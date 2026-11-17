@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -22,7 +23,7 @@ func (r *channelMonitorV2Repository) ClaimCandyProbe(ctx context.Context, probe 
 }
 
 func (r *channelMonitorV2Repository) FinishCandyProbe(ctx context.Context, result service.ChannelMonitorV2CandyResult) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE channel_monitor_v2_candy_results SET verdict=$2,latency_ms=$3,answer_preview=$4,reason=$5,finished_at=NOW() WHERE id=$1 AND verdict='running'`, result.ID, result.Verdict, result.LatencyMs, result.AnswerPreview, result.Reason)
+	_, err := r.db.ExecContext(ctx, `UPDATE channel_monitor_v2_candy_results SET verdict=$2,latency_ms=$3,answer_preview=$4,reason=$5,budget_deferral=$6::jsonb,finished_at=NOW() WHERE id=$1 AND verdict='running'`, result.ID, result.Verdict, result.LatencyMs, result.AnswerPreview, result.Reason, marshalMonitoringProbeBudgetDeferral(result.BudgetDeferral))
 	return err
 }
 
@@ -48,7 +49,7 @@ func (r *channelMonitorV2Repository) CandyHistory(ctx context.Context, scopes []
 	}
 	// Rank inside each active group/config key. A second model, or an obsolete
 	// configuration, must not consume this probe's history allowance.
-	rows, err := r.db.QueryContext(ctx, `SELECT id,group_id,config_key,checked_at,verdict,latency_ms,answer_preview,reason
+	rows, err := r.db.QueryContext(ctx, `SELECT id,group_id,config_key,checked_at,verdict,latency_ms,answer_preview,reason,budget_deferral
  FROM (SELECT r.*,ROW_NUMBER() OVER (PARTITION BY r.group_id, r.config_key ORDER BY r.checked_at DESC,r.id DESC) AS rn
  FROM channel_monitor_v2_candy_results r
  JOIN unnest($1::bigint[], $2::text[]) AS wanted(group_id,config_key)
@@ -61,8 +62,14 @@ func (r *channelMonitorV2Repository) CandyHistory(ctx context.Context, scopes []
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var item service.ChannelMonitorV2CandyResult
-		if err := rows.Scan(&item.ID, &item.GroupID, &item.ConfigKey, &item.CheckedAt, &item.Verdict, &item.LatencyMs, &item.AnswerPreview, &item.Reason); err != nil {
+		var deferral []byte
+		if err := rows.Scan(&item.ID, &item.GroupID, &item.ConfigKey, &item.CheckedAt, &item.Verdict, &item.LatencyMs, &item.AnswerPreview, &item.Reason, &deferral); err != nil {
 			return nil, err
+		}
+		if len(deferral) > 0 {
+			if err := json.Unmarshal(deferral, &item.BudgetDeferral); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, item)
 	}

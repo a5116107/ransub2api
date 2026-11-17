@@ -42,11 +42,12 @@ export default {
         "cadence": "每 {minutes} 分钟检测",
         "window": "近 24 小时 · 最近 {count} 次检测",
         "waiting": "等待检测",
-        "legend": "21 绿 · 其他黄 · 检测失败红 · 未检测灰",
+        "legend": "21 绿 · 其他黄 · 检测失败红 · 未检测/预算延期灰",
         "states": {
             "correct": "正常",
             "incorrect": "答案异常",
             "error": "检测失败",
+            "deferred": "预算延期",
             "unknown": "暂无检测",
             "stale": "检测已过期"
         },

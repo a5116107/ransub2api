@@ -232,6 +232,7 @@ export default {
         lastProbe: '最近一次：{time} · {result}',
         lastSuccess: '正常 {seconds} 秒',
         lastFailure: '失败（{reason}）',
+        deferredCount: '近 24 小时预算延期 {count} 次（不计入成功或失败）',
         last24h: '近 24 小时 {probes} 次 · 失败 {failures} 次 · 约 ${cost}',
         noProbes: '还没有探测记录',
         configIssue: '探测设置可能有误，这次结果不计入状态：{error}',

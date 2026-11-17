@@ -43,6 +43,119 @@ func newPelicanGroupTestPlan(groupID int64, enabled bool, next time.Time) *servi
 	}
 }
 
+func TestPelicanGroupMonitoringBudgetPostgresHistoryAndMonitorIsolation(t *testing.T) {
+	ctx := t.Context()
+	group := createPelicanGroupTestGroups(t, "budget-deferral")[0]
+	repo := NewPelicanGroupTestRepository(integrationDB)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	plan, err := repo.CreatePlan(ctx, newPelicanGroupTestPlan(group.ID, true, now.Add(time.Hour)))
+	require.NoError(t, err)
+	zero := 0.0
+	legacy, err := repo.CreateResult(ctx, &service.PelicanGroupTestResult{PlanID: plan.ID, Status: "success", ResponseText: "<svg>old result</svg>", CostUSD: &zero, StartedAt: now, FinishedAt: now})
+	require.NoError(t, err)
+	denial := &service.MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: now.Add(24 * time.Hour)}
+	deferred, err := repo.CreateResult(ctx, &service.PelicanGroupTestResult{PlanID: plan.ID, AccountID: 77, Status: "deferred", ResponseText: "partial answer", CostUSD: &zero, BudgetDeferral: denial, StartedAt: now, FinishedAt: now})
+	require.NoError(t, err)
+	// Rebuild the repository as a different reader; the deferral is not held in memory.
+	reader := NewPelicanGroupTestRepository(integrationDB)
+	detail, err := reader.GetResult(ctx, deferred.ID)
+	require.NoError(t, err)
+	require.Equal(t, denial, detail.BudgetDeferral)
+	require.Equal(t, "partial answer", detail.ResponseText)
+	history, total, err := reader.ListResults(ctx, plan.ID, 0, 20)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, total)
+	require.Equal(t, denial, history[0].BudgetDeferral)
+	require.Empty(t, history[0].ResponseText, "list reads keep the original lazy-content contract")
+	require.Nil(t, history[1].BudgetDeferral)
+	savedPlan, err := reader.GetPlan(ctx, plan.ID)
+	require.NoError(t, err)
+	require.Equal(t, denial, savedPlan.LastResult.BudgetDeferral)
+	require.Equal(t, plan.PelicanConfig, savedPlan.PelicanConfig, "result metadata must not become a rule setting")
+	require.Zero(t, savedPlan.TotalCostUSD)
+	old, err := reader.GetResult(ctx, legacy.ID)
+	require.NoError(t, err)
+	require.Nil(t, old.BudgetDeferral)
+
+	v2 := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository)
+	original, err := v2.GetConfig(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		current, loadErr := v2.GetConfig(context.Background())
+		require.NoError(t, loadErr)
+		_, restoreErr := v2.UpdateConfig(context.Background(), *original, current.Version)
+		require.NoError(t, restoreErr)
+	})
+	cfg := *original
+	cfg.Enabled = true
+	cfgUpdated, err := v2.UpdateConfig(ctx, cfg, cfg.Version)
+	require.NoError(t, err)
+	probe := service.ChannelMonitorV2CandyProbe{GroupID: group.ID, Enabled: true, Model: "budget-model", ReasoningEffort: "low", IntervalMinutes: 1}
+	candyID, err := v2.ClaimCandyProbe(ctx, probe, "fixture-budget-key", now.Truncate(time.Minute), cfgUpdated.Version)
+	require.NoError(t, err)
+	require.Positive(t, candyID)
+	require.NoError(t, v2.FinishCandyProbe(ctx, service.ChannelMonitorV2CandyResult{ID: candyID, Verdict: "deferred", Reason: "monitoring_budget_deferred", BudgetDeferral: denial}))
+	// An old or late worker cannot replace a completed local deferral with green.
+	require.NoError(t, v2.FinishCandyProbe(ctx, service.ChannelMonitorV2CandyResult{ID: candyID, Verdict: "correct"}))
+	candy, err := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository).CandyHistory(ctx, []service.ChannelMonitorV2CandyScope{{GroupID: group.ID, ConfigKey: "fixture-budget-key"}}, now.Add(-time.Hour), 20)
+	require.NoError(t, err)
+	require.Len(t, candy, 1)
+	require.Equal(t, "deferred", candy[0].Verdict)
+	require.Equal(t, denial, candy[0].BudgetDeferral)
+	again, err := v2.ClaimCandyProbe(ctx, probe, "fixture-budget-key", now.Truncate(time.Minute), cfgUpdated.Version)
+	require.NoError(t, err)
+	require.Zero(t, again)
+
+	v3 := NewChannelMonitorV3Repository(integrationDB)
+	slot := now.Truncate(5 * time.Minute).Add(-5 * time.Minute)
+	for i, outcome := range []string{service.ChannelMonitorV3ProbeSuccess, service.ChannelMonitorV3ProbeFailure, service.ChannelMonitorV3ProbeDeferred} {
+		id, claimErr := v3.ClaimProbe(ctx, group.ID, fmt.Sprintf("budget-model-%d", i), slot, 5)
+		require.NoError(t, claimErr)
+		result := service.ChannelMonitorV3ProbeResult{ID: id, Outcome: outcome, LatencyMs: 100, CostUSD: &zero}
+		if i == 1 {
+			result.Category = "timeout"
+		}
+		if i == 2 {
+			result.BudgetDeferral, result.Category = denial, "monitoring_budget_deferred"
+		}
+		require.NoError(t, v3.FinishProbe(ctx, result))
+		if i == 2 {
+			require.NoError(t, v3.FinishProbe(ctx, service.ChannelMonitorV3ProbeResult{ID: id, Outcome: service.ChannelMonitorV3ProbeSuccess}))
+		}
+	}
+	facts, err := v3.ProbeFacts(ctx, []int64{group.ID}, slot.Add(-time.Hour), now.Add(time.Hour), 5*time.Minute)
+	require.NoError(t, err)
+	require.Len(t, facts, 2, "local budget deferrals cannot affect availability, latency, incidents or green status")
+	for _, fact := range facts {
+		require.NotEqual(t, "budget-model-2", fact.Model)
+	}
+	stats, err := NewChannelMonitorV3Repository(integrationDB).ProbeStats(ctx, now.Add(-time.Hour))
+	require.NoError(t, err)
+	var stat *service.ChannelMonitorV3IdleProbeStat
+	for i := range stats {
+		if stats[i].GroupID == group.ID {
+			stat = &stats[i]
+		}
+	}
+	require.NotNil(t, stat)
+	require.EqualValues(t, 2, stat.Probes)
+	require.EqualValues(t, 1, stat.Failures)
+	require.EqualValues(t, 1, stat.Deferred)
+	require.Equal(t, service.ChannelMonitorV3ProbeDeferred, stat.LastOutcome)
+	require.Equal(t, denial, stat.LastBudgetDeferral)
+
+	migration, err := dbmigrations.FS.ReadFile("347_group_monitor_budget_deferral.sql")
+	require.NoError(t, err)
+	for range 2 {
+		_, err = integrationDB.ExecContext(ctx, string(migration))
+		require.NoError(t, err)
+	}
+	detail, err = reader.GetResult(ctx, deferred.ID)
+	require.NoError(t, err)
+	require.Equal(t, denial, detail.BudgetDeferral, "reapplying migration preserves history for rollback")
+	t.Log("real PostgreSQL: group overview/list/detail and V2/V3 deferrals survive repository rebuild and migration replay; no production traffic")
+}
+
 func TestPelicanGroupTestRepo_PlansDueAndLease(t *testing.T) {
 	ctx := context.Background()
 	repo := NewPelicanGroupTestRepository(integrationDB)

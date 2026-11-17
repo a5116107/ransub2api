@@ -42,11 +42,12 @@ export default {
         "cadence": "Every {minutes} min",
         "window": "Last 24 hours · latest {count} checks",
         "waiting": "Waiting for a check",
-        "legend": "21 green · other yellow · probe failure red · not checked gray",
+        "legend": "21 green · other yellow · probe failure red · not checked/budget deferred gray",
         "states": {
             "correct": "Correct",
             "incorrect": "Wrong answer",
             "error": "Probe failed",
+            "deferred": "Budget deferred",
             "unknown": "Not checked",
             "stale": "Check expired"
         },

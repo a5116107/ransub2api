@@ -72,23 +72,24 @@ type PelicanGroupTestAttempt struct {
 // PelicanGroupTestResult is one sample. AccountID is the account that gave the final
 // answer (0 when the scheduler found none); only admins see it.
 type PelicanGroupTestResult struct {
-	ID             int64                     `json:"id"`
-	PlanID         int64                     `json:"plan_id"`
-	GroupID        int64                     `json:"group_id"`
-	GroupName      string                    `json:"group_name,omitempty"`
-	AccountID      int64                     `json:"account_id"`
-	AccountName    string                    `json:"account_name"`
-	Attempts       []PelicanGroupTestAttempt `json:"attempts"`
-	Status         string                    `json:"status"`
-	ResponseText   string                    `json:"response_text,omitempty"`
-	ErrorMessage   string                    `json:"error_message"`
-	LatencyMs      int64                     `json:"latency_ms"`
-	CostUSD        *float64                  `json:"cost_usd"`
-	CostIncomplete bool                      `json:"cost_incomplete"`
-	PelicanConfig  *PelicanTestConfig        `json:"pelican_config,omitempty"`
-	StartedAt      time.Time                 `json:"started_at"`
-	FinishedAt     time.Time                 `json:"finished_at"`
-	CreatedAt      time.Time                 `json:"created_at"`
+	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	ID             int64                        `json:"id"`
+	PlanID         int64                        `json:"plan_id"`
+	GroupID        int64                        `json:"group_id"`
+	GroupName      string                       `json:"group_name,omitempty"`
+	AccountID      int64                        `json:"account_id"`
+	AccountName    string                       `json:"account_name"`
+	Attempts       []PelicanGroupTestAttempt    `json:"attempts"`
+	Status         string                       `json:"status"`
+	ResponseText   string                       `json:"response_text,omitempty"`
+	ErrorMessage   string                       `json:"error_message"`
+	LatencyMs      int64                        `json:"latency_ms"`
+	CostUSD        *float64                     `json:"cost_usd"`
+	CostIncomplete bool                         `json:"cost_incomplete"`
+	PelicanConfig  *PelicanTestConfig           `json:"pelican_config,omitempty"`
+	StartedAt      time.Time                    `json:"started_at"`
+	FinishedAt     time.Time                    `json:"finished_at"`
+	CreatedAt      time.Time                    `json:"created_at"`
 }
 
 // PelicanGroupTestPlanInput is what an admin edits; the question is always the HTML drawing kind.
@@ -476,14 +477,19 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 		}()
 		if err != nil || sample == nil {
 			sample = &ScheduledTestResult{Status: "failed", ErrorMessage: fmt.Sprint(err)}
+			sample.BudgetDeferral = monitoringProbeDeferral(err, s.now())
 			if err == nil {
 				sample.ErrorMessage = "pelican_group_test_empty_result: account test returned no result"
 			}
 		}
-		if ctx.Err() != nil || !pelicanGroupTestRetryable(sample) || len(attempts)+1 >= PelicanGroupTestMaxAttempts {
+		denial := pelicanGroupTestBudgetDeferral(sample)
+		if denial != nil || ctx.Err() != nil || !pelicanGroupTestRetryable(sample) || len(attempts)+1 >= PelicanGroupTestMaxAttempts {
 			result = s.newResult(plan, started, s.now(), sample.ErrorMessage)
 			result.Status = sample.Status
 			result.ResponseText = sample.ResponseText
+			if denial != nil {
+				result.Status, result.ErrorMessage, result.BudgetDeferral = "deferred", "", denial
+			}
 			if len(attempts) == 0 {
 				result.LatencyMs = sample.LatencyMs
 			}
@@ -523,7 +529,7 @@ func (s *PelicanGroupTestService) newResult(plan *PelicanGroupTestPlan, started,
 // transient upstream/stream failures to discard partial output and start a fresh answer.
 // This applies only to buffered group tests, not streams already sent to API clients.
 func pelicanGroupTestRetryable(result *ScheduledTestResult) bool {
-	if result.Status != "failed" {
+	if result.Status != "failed" || pelicanGroupTestBudgetDeferral(result) != nil {
 		return false
 	}
 	switch result.ErrorMessage {
@@ -548,6 +554,16 @@ func pelicanGroupTestRetryable(result *ScheduledTestResult) bool {
 	}
 	return strings.HasPrefix(result.ErrorMessage, "Stream read error: ") ||
 		strings.HasPrefix(result.ErrorMessage, "Chat Completions stream read error from /v1/chat/completions: ")
+}
+
+func pelicanGroupTestBudgetDeferral(result *ScheduledTestResult) *MonitoringProbeBudgetDenial {
+	if result.BudgetDeferral != nil {
+		return result.BudgetDeferral
+	}
+	if result.QualityJudgment != nil {
+		return result.QualityJudgment.BudgetDeferral
+	}
+	return nil
 }
 
 func (s *PelicanGroupTestService) ListResults(ctx context.Context, planID int64, page, pageSize int) ([]*PelicanGroupTestResult, int64, error) {

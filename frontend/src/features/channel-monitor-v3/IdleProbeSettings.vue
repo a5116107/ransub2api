@@ -79,6 +79,8 @@
             <template v-if="statOf(row.groupId)?.last_at">
               <p>{{ t('channelMonitorV3.admin.idleProbe.lastProbe', { time: formatMonitorV3Short(statOf(row.groupId)!.last_at!), result: lastResult(statOf(row.groupId)!) }) }}</p>
               <p>{{ t('channelMonitorV3.admin.idleProbe.last24h', { probes: statOf(row.groupId)!.probes, failures: statOf(row.groupId)!.failures, cost: formatCost(statOf(row.groupId)!.cost_usd) }) }}</p>
+              <p v-if="statOf(row.groupId)!.deferred">{{ t('channelMonitorV3.admin.idleProbe.deferredCount', { count: statOf(row.groupId)!.deferred }) }}</p>
+              <MonitoringProbeBudgetNotice v-if="statOf(row.groupId)!.last_budget_deferral" :deferral="statOf(row.groupId)!.last_budget_deferral!" :title="t('modelTrace.budgetPaused')" data-testid="monitor-v3-budget-deferral" />
               <p v-if="configIssue(statOf(row.groupId)!)" class="text-amber-600 dark:text-amber-400" data-testid="monitor-v3-idle-probe-issue">
                 {{ t('channelMonitorV3.admin.idleProbe.configIssue', { error: statOf(row.groupId)!.last_error }) }}
               </p>
@@ -102,6 +104,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Toggle from '@/components/common/Toggle.vue'
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 import {
   MONITOR_V3_PROBE_EFFORTS,
   updateIdleProbe,
@@ -190,6 +193,7 @@ function reason(category: string | undefined) {
 }
 
 function lastResult(stat: MonitorV3IdleProbeStat) {
+  if (stat.last_budget_deferral || stat.last_outcome === 'deferred') return t('admin.scheduledTests.deferred')
   if (stat.last_outcome === 'success') {
     return t('channelMonitorV3.admin.idleProbe.lastSuccess', { seconds: formatMonitorV3Seconds(stat.last_latency_ms || 0) })
   }

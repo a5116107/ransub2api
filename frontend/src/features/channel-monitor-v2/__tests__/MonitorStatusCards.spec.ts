@@ -71,6 +71,21 @@ function hoverFixture() {
 }
 const tooltip = () => document.querySelector<HTMLElement>('[role="tooltip"]')
 
+it('renders a budget deferral as a neutral check and shows structured details on keyboard focus', async () => {
+  const { wrapper, row } = hoverFixture()
+  row.candy!.results = [{ checked_at: new Date().toISOString(), verdict: 'deferred', latency_ms: 0,
+    budget_deferral: { reason: 'token_limit', scope: 'key_minute', retry_at: '2026-11-19T00:00:00Z' } }]
+  await wrapper.setProps({ items: [{ ...row }] })
+  const bar = wrapper.get('[data-testid="candy-history-bar"]')
+  expect(bar.classes()).toContain('bg-gray-400')
+  expect(bar.classes()).not.toContain('bg-red-400')
+  expect(bar.attributes('aria-label')).toContain('channelMonitorV2.candy.states.deferred')
+  await bar.trigger('focus')
+  expect(tooltip()?.textContent).toContain('admin.settings.upstreamBillingProbe.budget.token_limit')
+  await bar.trigger('keydown', { key: 'Escape' })
+  expect(tooltip()).toBeNull()
+})
+
 it('shows each original bucket on hover, with rates and P50 but no absolute volume', async () => {
   const { wrapper } = hoverFixture()
   const bar = wrapper.findAll('[data-testid="traffic-history-bar"]')[1]

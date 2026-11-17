@@ -5,6 +5,7 @@
 
 import { apiClient } from '../client'
 import type { PaginatedResponse, PelicanQuestion } from '@/types'
+import type { MonitoringProbeBudgetDeferral } from '@/types/monitoringProbeBudget'
 
 export interface PelicanGroupTestConfig {
   prompt_mode?: 'custom' | 'random'
@@ -33,7 +34,8 @@ export interface PelicanGroupTestResult {
   account_id: number
   account_name: string
   attempts: PelicanGroupTestAttempt[]
-  status: 'success' | 'failed'
+  status: 'success' | 'failed' | 'deferred'
+  budget_deferral?: MonitoringProbeBudgetDeferral
   /** Raw model output; only getResult returns it. */
   response_text?: string
   error_message: string

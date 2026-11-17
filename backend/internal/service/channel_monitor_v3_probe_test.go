@@ -209,6 +209,20 @@ func monitorV3Answer(prompt string) string {
 
 type monitorV3AccountRun func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error)
 
+func TestChannelMonitorV3MonitoringBudgetIsNeutral(t *testing.T) {
+	router := &groupTestRouterFake{steps: []routeStep{{account: account(77, "chosen")}, {account: account(88, "unused")}}}
+	denial := &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: groupTestNow.Add(time.Hour)}
+	prober, repo, _ := monitorV3ProberFixture(router, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+		return &ScheduledTestResult{Status: "failed", QualityJudgment: &QualityJudgment{Verdict: "unknown", BudgetDeferral: denial}}, nil
+	})
+	prober.runOne(t.Context(), channelMonitorV3ProbeTarget{GroupID: 4, Model: "gpt-probe"}, groupTestNow, 5)
+	require.Len(t, repo.finished, 1)
+	require.Equal(t, "deferred", repo.finished[0].Outcome)
+	require.Equal(t, "monitoring_budget_deferred", repo.finished[0].Category)
+	require.Empty(t, repo.finished[0].ErrorMessage)
+	require.Len(t, router.excluded, 1)
+}
+
 func monitorV3ProberFixture(router *groupTestRouterFake, run monitorV3AccountRun) (*ChannelMonitorV3Prober, *monitorV3RepoFake, *PelicanGroupTestService) {
 	repo := &monitorV3RepoFake{config: monitorV3Config()}
 	repo.config.IdleProbe = ChannelMonitorV3IdleProbe{Enabled: true, Groups: []ChannelMonitorV3IdleProbeGroup{{GroupID: 4, Model: "gpt-probe", ReasoningEffort: "low"}}}

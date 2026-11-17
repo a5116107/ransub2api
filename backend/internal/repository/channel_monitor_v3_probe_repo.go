@@ -78,9 +78,9 @@ func (r *channelMonitorV3Repository) FinishProbe(ctx context.Context, result ser
 	if _, err := r.db.ExecContext(ctx, `
 		UPDATE channel_monitor_v3_probe_results
 		SET outcome = $2, latency_ms = $3, error_category = $4, error_message = $5, account_id = $6,
-		    cost_usd = $7, finished_at = NOW()
-		WHERE id = $1`,
-		result.ID, result.Outcome, result.LatencyMs, result.Category, result.ErrorMessage, accountID, result.CostUSD); err != nil {
+		    cost_usd = $7, budget_deferral = $8::jsonb, finished_at = NOW()
+		WHERE id = $1 AND outcome = 'running'`,
+		result.ID, result.Outcome, result.LatencyMs, result.Category, result.ErrorMessage, accountID, result.CostUSD, marshalMonitoringProbeBudgetDeferral(result.BudgetDeferral)); err != nil {
 		return fmt.Errorf("finish channel monitor v3 probe: %w", err)
 	}
 	return nil
@@ -106,7 +106,7 @@ func (r *channelMonitorV3Repository) ProbeFacts(ctx context.Context, groupIDs []
 		SELECT p.group_id, p.model, `+slot+`, p.error_category, COUNT(*),
 		       COALESCE(percentile_disc(0.5) WITHIN GROUP (ORDER BY p.latency_ms), 0)
 		FROM channel_monitor_v3_probe_results p
-		WHERE p.group_id = ANY($1) AND p.outcome <> 'running'
+		WHERE p.group_id = ANY($1) AND p.outcome IN ('success','failure') AND p.budget_deferral IS NULL
 		  AND p.slot_start >= $2::timestamptz - INTERVAL '1 hour' AND p.slot_start < $3
 		  AND `+channelMonitorV3ProbeAtSQL+` >= $2 AND `+channelMonitorV3ProbeAtSQL+` < $3
 		GROUP BY 1, 2, 3, 4`, args...)
@@ -132,19 +132,21 @@ func (r *channelMonitorV3Repository) ProbeFacts(ctx context.Context, groupIDs []
 func (r *channelMonitorV3Repository) ProbeStats(ctx context.Context, since time.Time) ([]service.ChannelMonitorV3IdleProbeStat, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		WITH latest AS (
-			SELECT DISTINCT ON (group_id) group_id, started_at, model, outcome, latency_ms, error_category, error_message
+			SELECT DISTINCT ON (group_id) group_id, started_at, model, outcome, latency_ms, error_category, error_message, budget_deferral
 			FROM channel_monitor_v3_probe_results
 			WHERE outcome <> 'running'
 			ORDER BY group_id, slot_start DESC, id DESC
 		), recent AS (
-			SELECT group_id, COUNT(*) AS probes, COUNT(*) FILTER (WHERE outcome = 'failure') AS failures,
+			SELECT group_id, COUNT(*) FILTER (WHERE outcome IN ('success','failure') AND budget_deferral IS NULL) AS probes,
+			       COUNT(*) FILTER (WHERE outcome = 'failure' AND budget_deferral IS NULL) AS failures,
+			       COUNT(*) FILTER (WHERE outcome = 'deferred' OR budget_deferral IS NOT NULL) AS deferred,
 			       COALESCE(SUM(cost_usd), 0)::float8 AS cost
 			FROM channel_monitor_v3_probe_results
 			WHERE outcome <> 'running' AND started_at >= $1
 			GROUP BY group_id
 		)
 		SELECT l.group_id, COALESCE(r.probes, 0), COALESCE(r.failures, 0), COALESCE(r.cost, 0),
-		       l.started_at, l.model, l.outcome, l.latency_ms, l.error_category, l.error_message
+		       l.started_at, l.model, l.outcome, l.latency_ms, l.error_category, l.error_message, l.budget_deferral, COALESCE(r.deferred, 0)
 		FROM latest l LEFT JOIN recent r ON r.group_id = l.group_id
 		ORDER BY l.group_id`, since)
 	if err != nil {
@@ -155,9 +157,15 @@ func (r *channelMonitorV3Repository) ProbeStats(ctx context.Context, since time.
 		var stat service.ChannelMonitorV3IdleProbeStat
 		var at time.Time
 		var latency sql.NullInt64
+		var deferral []byte
 		if err := rows.Scan(&stat.GroupID, &stat.Probes, &stat.Failures, &stat.CostUSD, &at, &stat.LastModel,
-			&stat.LastOutcome, &latency, &stat.LastCategory, &stat.LastError); err != nil {
+			&stat.LastOutcome, &latency, &stat.LastCategory, &stat.LastError, &deferral, &stat.Deferred); err != nil {
 			return err
+		}
+		if len(deferral) > 0 {
+			if err := json.Unmarshal(deferral, &stat.LastBudgetDeferral); err != nil {
+				return err
+			}
 		}
 		at = at.UTC()
 		stat.LastAt = &at

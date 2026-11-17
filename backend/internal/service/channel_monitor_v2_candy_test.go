@@ -64,6 +64,27 @@ func candyServiceFixture(repo *candyRepoFake, groups *PelicanGroupTestService) *
 	return s
 }
 
+func TestChannelMonitorV2CandyMonitoringBudgetIsNeutral(t *testing.T) {
+	repo := &candyRepoFake{channelMonitorV2RepoStub: channelMonitorV2RepoStub{config: candyConfigFixture()}}
+	router := &groupTestRouterFake{steps: []routeStep{{account: account(77, "chosen")}, {account: account(88, "unused")}}}
+	denial := &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "key_minute", RetryAt: groupTestNow.Add(time.Minute)}
+	groups, _ := newGroupTestService(newGroupTestRepoFake(), router, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+		return &ScheduledTestResult{Status: "failed", ResponseText: "21", QualityJudgment: &QualityJudgment{Verdict: "unknown", BudgetDeferral: denial}}, nil
+	})
+	s := candyServiceFixture(repo, groups)
+	s.RunDue(t.Context(), groupTestNow)
+	require.Len(t, repo.results, 1)
+	require.Equal(t, "deferred", repo.results[0].Verdict, "even a correct partial answer is not a completed probe")
+	require.Equal(t, "monitoring_budget_deferred", repo.results[0].Reason)
+	require.Empty(t, repo.results[0].AnswerPreview)
+	require.Len(t, router.excluded, 1)
+	raw, err := json.Marshal(repo.results[0])
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"budget_deferral":`)
+	s.RunDue(t.Context(), groupTestNow)
+	require.Len(t, repo.results, 1, "refresh/tick must not repeat a claimed probe")
+}
+
 func TestChannelMonitorV2CandyGroupVerdictsAndNoCherryPicking(t *testing.T) {
 	for _, tc := range []struct{ name, output, status, message, want string }{
 		{"unit answer", "21个", "success", "", "correct"},
@@ -160,7 +181,7 @@ func TestChannelMonitorV2CandyHistoryScopeAndRedaction(t *testing.T) {
 	other := p
 	other.GroupID = 99
 	repo := &candyRepoFake{history: []ChannelMonitorV2CandyResult{
-		{GroupID: 4, ConfigKey: p.key(), Verdict: "correct", AnswerPreview: "private answer", Reason: "private reason"},
+		{GroupID: 4, ConfigKey: p.key(), Verdict: "deferred", AnswerPreview: "private answer", Reason: "private reason", BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "key_minute", RetryAt: groupTestNow.Add(time.Minute)}},
 		{GroupID: 4, ConfigKey: second.key(), Verdict: "incorrect", AnswerPreview: "second private", Reason: "second reason"},
 		{GroupID: 4, ConfigKey: "obsolete model", Verdict: "incorrect"},
 		{GroupID: 99, ConfigKey: other.key(), Verdict: "incorrect", AnswerPreview: "other group"},
@@ -185,8 +206,11 @@ func TestChannelMonitorV2CandyHistoryScopeAndRedaction(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "private")
 	require.NotContains(t, string(encoded), "other group")
+	require.NotContains(t, string(encoded), "budget_deferral", "user-facing group keys must not receive admin monitoring budget details")
+	require.Contains(t, string(encoded), `"verdict":"deferred"`)
 	require.NoError(t, s.attachHistory(context.Background(), matrix, &cfg, true))
 	require.Equal(t, "private answer", matrix.Items[0].Candy.Results[0].AnswerPreview)
+	require.NotNil(t, matrix.Items[0].Candy.Results[0].BudgetDeferral)
 	require.Equal(t, "second private", matrix.Items[0].CandyChecks[1].Results[0].AnswerPreview)
 	redactChannelMonitorV2PublicConfig(&cfg)
 	require.Nil(t, cfg.CandyProbes)
