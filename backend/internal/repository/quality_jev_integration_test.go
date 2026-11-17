@@ -20,10 +20,12 @@ func TestQualityJevPersistenceAndIsolationSafety(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, f.plan.PelicanConfig.Quality.Judge, reloaded.PelicanConfig.Quality.Judge)
 	// Editing the profile invalidates the earlier claimed rule version. Prove
-	// stale evidence cannot isolate, then use the saved version for new evidence.
+	// stale evidence cannot isolate, then claim the saved version for new evidence.
 	require.Equal(t, "stale_run", isolationRound(f, "failed", "failed"))
 	require.Equal(t, 2, f.count(`SELECT count(*) FROM account_groups WHERE account_id=$1`))
-	f.plan = reloaded
+	require.NoError(t, f.plans.FinishPelican(ctx, f.plan.ID, f.until, time.Now()))
+	f.claim()
+	require.NotNil(t, f.plan.QualityAccountFingerprint, "new evidence needs the claim's runtime-only route fence")
 	results := NewScheduledTestResultRepository(integrationDB)
 	result, err := results.Create(ctx, &service.ScheduledTestResult{PlanID: f.plan.ID, Status: "failed", ResponseText: "21", ErrorMessage: "judge_inconclusive", LatencyMs: 12, StartedAt: time.Now(), FinishedAt: time.Now(), PelicanConfig: f.plan.PelicanConfig, QualityRoundID: "jev-synthetic-round", QualityJudgment: &service.QualityJudgment{Kind: "jev", ModelID: "jev-latest", Verdict: "unknown", Reason: "judge_jev_credentials_rejected", RulesVersion: "quality-choice-v1", LatencyMS: 53}})
 	require.NoError(t, err)

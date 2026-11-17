@@ -3,16 +3,17 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D2.6.17 HTTP转原生WS候选本地done；基线bbc20513c。
-授权：唯一H盘工作树；自有分支同步/已验热修复部署；不运行编译/测试CI。
-实证：四包双轮race8378pass/0fail/skip/race；service vet/增量lint/Linux0。
-反例：基线6fail（5叶）；first40fail/focused-before36fail保留。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/http-native-ws-verification.json。
-复用：24项输入仅本轮4份Go变化，SQL54/UI35/四视口不重跑。
-下一：原D2.6状态相关/受管合同、D5.3来源及D3.2版本/多维证据；不提升功能分支。
-生产上次实测：.7/fd83f6c91，程序bea1c3964bc3；本轮未部署。
-等待：原28项20done/8部分；PR3/v2.21.5、供应商scope/基线/缓存域/旧历史。
-Attempt：39
+任务：D3.2.1判题来源隔离本地done；基线0e61f866e。
+授权：唯一H盘/自有分支同步；不CI、不提升功能分支。
+已验：unit双轮1726、SQL双轮156pass，均0fail/skip/race/输入漂移。
+静态：两包vet0、增量fast lint为0 issues、Linux编译0。
+修复：结果来源入比较键，LLM写规则版本；缺身份保持未知，原判题不改。
+解除：Jev旧夹具租约/claim生命周期；保留基线失败与14fail红测。
+下一：D3.2原结果/规则内补多维测量及版本/当前性合同；不借夹具认证模型。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-runtime-*。
+生产上次实测：.7/fd83f6c91；本轮未部署。
+等待：原28项20done/8部分；独立基线/实际scope/缓存域、PR3及旧历史。
+Attempt：41
 <!-- resume:end -->
 
 ## 目标与入口
@@ -41,7 +42,7 @@ Attempt：39
 | D2.6.15 | done | Messages→Responses/verbosity、UI与物理HTTP/11类WS本地已验；race7936、SQL54/UI35/静态/Linux过，非生产 |
 | D2.6.16 | done | 池桥协议集合/拒绝归因、双调度/粘性/槽后/17类物理帧已验；race8214/静态/Linux过，非生产 |
 | D2.6.17 | done | HTTP转原生WS映射/Fast/stream及物理帧、双调度/粘性/槽后/拒发已验；race8378/静态/Linux过，非生产 |
-| D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；多维/基线、非文本仍待 |
+| D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；D3.2.1判题来源本地已验；多维/基线、非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |

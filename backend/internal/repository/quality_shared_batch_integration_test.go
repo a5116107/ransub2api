@@ -15,8 +15,9 @@ import (
 
 // Disposable migrated PostgreSQL only. No real model calls or production data.
 func TestQualitySharedBatchPostgresFinalizationAndRestart(t *testing.T) {
-	for _, scenario := range []string{"all-wrong", "passing-peer-finishes-last", "peer-paused", "target-edited", "mapping-edited", "late-peer"} {
+	for _, scenario := range []string{"all-wrong", "passing-peer-finishes-last", "peer-paused", "target-edited", "mapping-edited", "late-peer", "different-grader-rules", "missing-grader-rules", "different-grader-model", "different-grader-kind", "different-grader-group", "both-missing-grader-rules", "rotated-grader-account", "different-grader-explanation", "different-grader-latency"} {
 		t.Run(scenario, func(t *testing.T) {
+			isolates := scenario == "passing-peer-finishes-last" || scenario == "rotated-grader-account" || scenario == "different-grader-explanation" || scenario == "different-grader-latency"
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			start := now.Add(-time.Minute)
@@ -65,9 +66,30 @@ func TestQualitySharedBatchPostgresFinalizationAndRestart(t *testing.T) {
 				sampleStarted := time.Now().UTC().Truncate(time.Microsecond)
 				result := &service.ScheduledTestResult{PlanID: plan.ID, Status: "failed", ErrorMessage: "answer_mismatch", ResponseText: "41",
 					StartedAt: sampleStarted, FinishedAt: sampleStarted.Add(time.Millisecond), QualityRoundID: until.Format(time.RFC3339Nano), QualityAction: "comparison_pending",
-					PelicanConfig: &cfg, QualityJudgment: &service.QualityJudgment{Verdict: "incorrect"}}
+					PelicanConfig: &cfg, QualityJudgment: &service.QualityJudgment{Kind: "jev", ModelID: "jev-latest", RulesVersion: "quality-choice-v1", Verdict: "incorrect"}}
 				if i == 1 && scenario != "all-wrong" {
 					result.Status, result.ErrorMessage, result.ResponseText, result.QualityJudgment.Verdict = "success", "", "42", "correct"
+					switch scenario {
+					case "different-grader-rules":
+						result.QualityJudgment.RulesVersion = "quality-choice-v2"
+					case "missing-grader-rules":
+						result.QualityJudgment.RulesVersion = ""
+					case "different-grader-model":
+						result.QualityJudgment.ModelID = "other-judge"
+					case "different-grader-kind":
+						result.QualityJudgment.Kind = "llm"
+					case "different-grader-group":
+						result.QualityJudgment.GroupID = 99
+					case "rotated-grader-account":
+						result.QualityJudgment.AccountID = 99
+					case "different-grader-explanation":
+						result.QualityJudgment.Reason = "different explanation"
+					case "different-grader-latency":
+						result.QualityJudgment.LatencyMS = 250
+					}
+				}
+				if scenario == "both-missing-grader-rules" {
+					result.QualityJudgment.RulesVersion = ""
 				}
 				if i == 1 && scenario == "late-peer" {
 					result.StartedAt, result.FinishedAt = batch.StartDeadline, batch.StartDeadline.Add(time.Second)
@@ -101,22 +123,32 @@ func TestQualitySharedBatchPostgresFinalizationAndRestart(t *testing.T) {
 			require.NoError(t, restarted.FinalizeQualityBatches(ctx), "finalization is idempotent")
 			var enabled bool
 			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT schedulable FROM accounts WHERE id=$1`, runs[0].Plan.AccountID).Scan(&enabled))
-			require.Equal(t, scenario != "passing-peer-finishes-last", enabled)
-			var status, verdict, action string
+			require.Equal(t, !isolates, enabled)
+			var status, verdict, rulesVersion, action string
 			var raw []byte
-			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT status,quality_judgment->>'verdict',quality_action,pelican_config FROM scheduled_test_results WHERE plan_id=$1`, runs[0].Plan.ID).Scan(&status, &verdict, &action, &raw))
+			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT status,quality_judgment->>'verdict',COALESCE(quality_judgment->>'rules_version',''),quality_action,pelican_config FROM scheduled_test_results WHERE plan_id=$1`, runs[0].Plan.ID).Scan(&status, &verdict, &rulesVersion, &action, &raw))
 			require.Equal(t, "failed", status)
 			require.Equal(t, "incorrect", verdict, "raw verdicts are never rewritten as passes")
+			if scenario == "both-missing-grader-rules" {
+				require.Empty(t, rulesVersion, "missing provenance is never backfilled from the current process")
+			} else {
+				require.Equal(t, "quality-choice-v1", rulesVersion, "raw grading provenance survives collection and restart")
+			}
 			var cfg service.PelicanTestConfig
 			require.NoError(t, json.Unmarshal(raw, &cfg))
-			if scenario == "passing-peer-finishes-last" {
+			if isolates {
 				require.Equal(t, "scheduling_disabled", action)
 				require.Equal(t, "peer_passed", cfg.QualityBatch.Decision)
 			} else if scenario == "target-edited" || scenario == "mapping-edited" {
 				require.Equal(t, "stale_run", action)
 			} else {
 				require.Equal(t, "inconclusive", action)
-				require.Equal(t, "no_passing_peer", cfg.QualityBatch.Decision)
+				if scenario == "both-missing-grader-rules" {
+					require.Equal(t, "inconclusive", cfg.QualityBatch.Decision)
+					require.Empty(t, cfg.QualityBatch.ComparisonKey)
+				} else {
+					require.Equal(t, "no_passing_peer", cfg.QualityBatch.Decision)
+				}
 				metrics, err := readAccountPerformance(ctx, integrationDB, []int64{runs[0].Plan.AccountID}, time.Now().Add(time.Second), nil)
 				require.NoError(t, err)
 				require.Zero(t, metrics[runs[0].Plan.AccountID].QualitySamples, "uncalibrated wrong answers cannot penalize the performance monitor")

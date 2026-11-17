@@ -61,6 +61,24 @@ func TestQualityJudgeSemanticAnswerAndConfiguredGroupModel(t *testing.T) {
 	require.Equal(t, "passed", qualityOutcome([]*ScheduledTestResult{result}))
 	require.Equal(t, "21个。", result.ResponseText)
 }
+
+func TestQualityJudgeRuntimeIdentity(t *testing.T) {
+	for _, kind := range []string{"", "llm"} {
+		for _, output := range []string{`{"verdict":"correct","reason":"equal"}`, `{"verdict":"unknown","reason":"ambiguous"}`, "invalid"} {
+			t.Run(kind+"/"+output, func(t *testing.T) {
+				svc, cfg, _, _ := judgeFixture()
+				cfg.Quality.Judge.Kind = kind
+				svc.request = func(context.Context, int64, string, string) (string, error) { return output, nil }
+				got := svc.Judge(t.Context(), 1, cfg, "21")
+				require.Equal(t, "llm", got.Kind)
+				require.Equal(t, "quality-llm-v1", got.RulesVersion)
+				require.Equal(t, cfg.Quality.Judge.GroupID, got.GroupID)
+				require.Equal(t, cfg.Quality.Judge.ModelID, got.ModelID)
+			})
+		}
+	}
+}
+
 func TestQualityJudgeFailoverAndFailClosed(t *testing.T) {
 	svc, cfg, _, slots := judgeFixture()
 	calls := 0

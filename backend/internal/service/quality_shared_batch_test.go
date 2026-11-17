@@ -88,6 +88,84 @@ func TestSharedQualityPassingControlDoesNotDependOnFinishOrder(t *testing.T) {
 	}
 }
 
+func TestSharedQualityRuntimeGraderIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		comparable bool
+		change     func(*QualityJudgment)
+	}{
+		{name: "same runtime", comparable: true},
+		{name: "different rules", change: func(j *QualityJudgment) { j.RulesVersion += "-next" }},
+		{name: "missing rules", change: func(j *QualityJudgment) { j.RulesVersion = "" }},
+		{name: "different kind", change: func(j *QualityJudgment) { j.Kind = "llm" }},
+		{name: "different model", change: func(j *QualityJudgment) { j.ModelID = "other-judge" }},
+		{name: "different group", change: func(j *QualityJudgment) { j.GroupID = 99 }},
+		{name: "reason is not identity", comparable: true, change: func(j *QualityJudgment) { j.Reason = "different explanation" }},
+		{name: "latency is not identity", comparable: true, change: func(j *QualityJudgment) { j.LatencyMS = 250 }},
+		{name: "rotated judge account", comparable: true, change: func(j *QualityJudgment) { j.AccountID = 99 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			batch, err := newQualitySharedBatch(time.Now())
+			require.NoError(t, err)
+			wrong, control := sharedBatchFixture(t, batch, 1, "incorrect"), sharedBatchFixture(t, batch, 2, "correct")
+			for _, run := range []*QualityBatchRun{wrong, control} {
+				cfg := run.Results[0].PelicanConfig
+				cfg.Quality.Judge = &QualityJudgeConfig{Kind: "jev", Prompt: "Compare the answers"}
+				judgment := run.Results[0].QualityJudgment
+				judgment.Kind, judgment.RulesVersion, judgment.ModelID = "jev", qualityJevRulesVersion, "jev-latest"
+			}
+			if tc.change != nil {
+				tc.change(control.Results[0].QualityJudgment)
+			}
+			want, decision, passed := "inconclusive", "no_passing_peer", 0
+			if tc.comparable {
+				want, decision, passed = "failed", "peer_passed", 1
+			}
+			require.Equal(t, want, EvaluateQualityBatch(wrong, []*QualityBatchRun{wrong, control}))
+			require.Equal(t, decision, wrong.Results[0].PelicanConfig.QualityBatch.Decision)
+			require.Equal(t, passed, wrong.Results[0].PelicanConfig.QualityBatch.PeerPassed)
+			require.Equal(t, "incorrect", wrong.Results[0].QualityJudgment.Verdict)
+			require.Equal(t, "failed", wrong.Results[0].Status)
+		})
+	}
+}
+
+func TestSharedQualityExternalGraderRequiresRuntimeIdentity(t *testing.T) {
+	for _, kind := range []string{"jev", "llm"} {
+		for _, tc := range []struct {
+			name   string
+			change func(*QualityJudgment)
+		}{
+			{name: "missing kind", change: func(j *QualityJudgment) { j.Kind = "" }},
+			{name: "missing rules", change: func(j *QualityJudgment) { j.RulesVersion = "" }},
+			{name: "missing model", change: func(j *QualityJudgment) { j.ModelID = "" }},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				batch, err := newQualitySharedBatch(time.Now())
+				require.NoError(t, err)
+				wrong, control := sharedBatchFixture(t, batch, 1, "incorrect"), sharedBatchFixture(t, batch, 2, "correct")
+				for _, run := range []*QualityBatchRun{wrong, control} {
+					cfg := run.Results[0].PelicanConfig
+					cfg.Quality.Judge = &QualityJudgeConfig{Kind: kind, Prompt: "Compare the answers"}
+					j := run.Results[0].QualityJudgment
+					j.Kind, j.RulesVersion, j.ModelID = kind, "grading-v1", "judge-model"
+					if kind == "llm" {
+						cfg.Quality.Judge.GroupID, cfg.Quality.Judge.ModelID = 8, "judge-model"
+						j.GroupID = 8
+					}
+					tc.change(j)
+				}
+				require.Equal(t, "inconclusive", EvaluateQualityBatch(wrong, []*QualityBatchRun{wrong, control}))
+				require.Equal(t, "inconclusive", wrong.Results[0].PelicanConfig.QualityBatch.Decision)
+				require.Zero(t, wrong.Results[0].PelicanConfig.QualityBatch.PeerPassed)
+				require.Empty(t, wrong.Results[0].PelicanConfig.QualityBatch.ComparisonKey)
+				require.Equal(t, "incorrect", wrong.Results[0].QualityJudgment.Verdict)
+				require.Equal(t, "success", control.Results[0].Status)
+			})
+		}
+	}
+}
+
 func TestSharedQualityRejectsIncomparableOrIncompleteControls(t *testing.T) {
 	changes := map[string]func(*QualityBatchRun){
 		"same-account-alias": func(p *QualityBatchRun) { p.Plan.AccountID = 1 },

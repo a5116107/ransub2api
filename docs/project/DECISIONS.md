@@ -3095,3 +3095,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - `go vet -tags unit -p 1 ./internal/service`退出0（182.640秒）；三包golangci-lint v2.15.0 fast-only/unit/allow-parallel-runners/concurrency1/new-from-rev=bbc20513c退出0（24.954秒），实际`0 issues.`；三包GOOS=linux/amd64/CGO0构建退出0（36.844秒），源码LF摘要不漂移。先前另外两包vet无改动，沿原证据复用；不是全仓全规则lint清零，也未运行CI。
 - 六项终验源码/锁文件LF摘要drift0。先前24项输入只有本轮四份Go文件变化，SQL54/UI35与中英四视口的实现输入未改，复用原验证，不重启PG/Redis/预览。原设计5.3.8的宽泛动态传输延后说明改为引用5.3.17，审计与STATE就地更新；本地子项done，原28项20done/8部分不变。其余状态相关转换、受管产品/真实供应商合同、D3/D4/D5/D6/D7/D8/D9、PR3/v2.21.5及旧完整历史继续原验收。代码回退不需要数据迁移；本轮只提交同步自有功能分支，不提升整分支生产，生产上次已验仍.7/fd83f6c91。
 - 证据统一沿`H:/Root/DevCache/evidence/sub2api-billing-applicability/http-native-ws-*`。本轮仅httptest及本地检查，退出后自有Go工作文件回收；保留原受宿主保护的空目录及12张PNG/1164bytes，不重试删除、不移动绕过、不加ignore伪装干净。没有新增TODO/FIXME/XXX、路由、临时垫片或第二评分实现。
+
+
+### 2026-11-17：D3.2.1 共享质量对照的判题来源隔离
+
+- 唯一H盘工作树续接`feat/automated-upstream-supply@0e61f866e`。原共享批次比较键只含题目/参考答案、被测模型/effort/渠道/线路和判题配置，同配置但判题器的Kind、规则版本、调用模型或分组不同仍可互作通过对照。原位改为使用结果中的运行时来源，3处调用同步替换；不按当前配置补历史，不以判题调用标签或同群通过认证被测模型身份。
+- 补齐原普通LLM判题路径的本地`quality-llm-v1`版本及`llm`类型；成功解析与不确定/异常结果均保留本地来源，外部JSON仍只准verdict/reason。Jev保留原`quality-choice-v1`。配置了外部判题却缺类型/版本/模型或LLM分组时，比较键为空、动作证据不确定，即使双方都缺也不互证。解释、耗时和判题账号轮换不拆分同一判题合同；原始incorrect/failed与正确答案历史不改写。
+- 继承的基线红测4pass/6fail及原命令保留于`quality-runtime-red-result.json`。续接新增`go test -json -tags unit -race -vet=off -p 1 ./internal/service -run '^Test(QualityJudgeRuntimeIdentity|SharedQualityExternalGraderRequiresRuntimeIdentity)$' -count=1 -timeout=3m`真实退出1（145.390秒），14条含父项失败事件，覆盖普通LLM缺版本与双方均缺来源；日志`quality-runtime-provenance-red.jsonl`保留。产品修复后扩大回归仍包含这些根测试，没有过滤失败断言。
+- SQL旧Jev夹具在原基线overlay同样失败（应隔离1组，实为2组）；直接将GetByID结果当新执行计划，丢失领取时的运行时线路指纹。第一修正重新领取又被原运行中租约拒绝，SQL双轮144pass/2fail保留。按正式FinishPelican释放原租约，再重新claim并断言指纹存在；保留旧配置stale_run、unknown不隔离/不恢复、失败隔离及原结果持久化断言。该处只改测试生命周期，未放宽生产租约或线路围栏。
+- 终版unit命令及完整212个既有根测试扩展表达式见`quality-runtime-unit-complete-result.json`（加入本轮两个根后共214）：service、unit/race/vet=off/p1、count2/timeout6m，退出0（172.922秒，包31.360秒），1726条含父子及双轮重复的test pass、0fail/skip/race/坏JSON行。终版SQL命令见`quality-runtime-sql-complete-result.json`：repository、unit/integration/race/vet=off/p1、count2/timeout6m，退出0（107.640秒，包14.931秒），156条test pass、0fail/skip/race/坏JSON行；覆盖15种批次情景的收集幂等、两次终结、进程重建、旧配置/映射、晚到及来源不同/缺失，不确定结果不惩罚性能监控。
+- 八项Go源码/依赖LF SHA256在终版unit与SQL前后均drift0。以上是本地合成判题/私有迁移PostgreSQL证据，不包含真实供应商或生产请求；不同判题规则的可比性不等同独立模型基线、分维度当前资格或严格混版通过。沿用`H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-runtime-*`，未另建工作树、调度器、评分链或数据库迁移。
+- 同步整理原设计13.3三处生产状态：保留2026-11-15的.3审计身份，注明后续.7独立热修复已有证据，将旧“待发布”执行说明改为已发布热修复/旧失败完整恢复/完整功能分支验收分开。实时状态仍由STATE负责，未借文档修正提升生产或关闭原D9验收。
+- 最终静态：`go vet -tags unit,integration -p 1 ./internal/service ./internal/repository`退出0（182.515秒）；兼容golangci-lint v2.15.0、fast-only/allow-parallel-runners/concurrency1/unit,integration/new-from-rev=0e61f866e两包退出0（21.141秒），实际`0 issues.`；同两包GOOS=linux/amd64/CGO0的`go build -p 1`退出0（52.125秒）。三项记录及八项源码/依赖drift0见`quality-runtime-static-complete-result.json`，不是全仓全规则lint清零；无CI。
+- D3.2.1本地子验收done，原28项20done/8部分不变。D3.2的多维测量、当前策略/独立参考及D2/D4/D5/D6/D7/D8/D9原剩余验收继续保留；本轮仅按既有授权提交同步自有功能分支，不新建PR或提升生产，代码回退无需数据迁移。Go自有工作文件已随命令退出回收；继承12张PNG/1164bytes、历史拒删目录和受保护资源原位保留，未换工具绕过、不加ignore伪装工作区干净。

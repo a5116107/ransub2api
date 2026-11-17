@@ -14,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const qualityLLMRulesVersion = "quality-llm-v1"
+
 // The provider/model is supplied by the operator, never inferred from a model name.
 type QualityJudgeConfig struct {
 	// Empty preserves the ordinary LLM path used by existing plans.
@@ -69,6 +71,7 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 		result.Reason = "judge_invalid_config"
 		return result
 	}
+	result.Kind, result.RulesVersion = "llm", qualityLLMRulesVersion
 	result.GroupID = judge.GroupID
 	result.ModelID = judge.ModelID
 	if len(answer) > 64000 {
@@ -122,6 +125,7 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 		} else {
 			verdict, parseErr := parseQualityJudgment(output)
 			if parseErr == nil {
+				verdict.Kind, verdict.RulesVersion = result.Kind, result.RulesVersion
 				verdict.AccountID = account.ID
 				verdict.GroupID = judge.GroupID
 				verdict.ModelID = judge.ModelID

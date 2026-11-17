@@ -121,19 +121,43 @@ func sharedQualitySamples(cfg *PelicanTestConfig, batch *QualitySharedBatch) ([]
 	return samples, nil
 }
 
-func qualityComparisonKey(cfg *PelicanTestConfig) string {
+func qualityComparisonKey(result *ScheduledTestResult) string {
+	if result == nil {
+		return ""
+	}
+	cfg := result.PelicanConfig
 	if cfg == nil || cfg.RandomQuestion == nil || cfg.Quality == nil || cfg.QualityBatch == nil {
 		return ""
+	}
+	if judge := cfg.Quality.Judge; judge != nil {
+		kind := judge.Kind
+		if kind == "" {
+			kind = "llm"
+		}
+		j := result.QualityJudgment
+		if j == nil || j.Kind != kind || j.RulesVersion == "" || j.ModelID == "" || (kind == "llm" && j.GroupID <= 0) {
+			return "" // Missing runtime provenance cannot calibrate another account.
+		}
 	}
 	channel := cfg.TestChannel
 	if channel == "" {
 		channel = "account"
 	}
+	// Runtime grading provenance can differ even when plan configuration is
+	// identical. Verdict, explanation, latency and the chosen judge account do
+	// not define the grading contract and must not split comparable samples.
+	grader := struct {
+		Kind, RulesVersion, ModelID string
+		GroupID                     int64
+	}{}
+	if j := result.QualityJudgment; j != nil {
+		grader.Kind, grader.RulesVersion, grader.ModelID, grader.GroupID = j.Kind, j.RulesVersion, j.ModelID, j.GroupID
+	}
 	// Include statement, oracle and rubric as well as model/effort/channel;
-	// different grading policies cannot supply a passing control for each other.
+	// different configured or observed grading policies cannot share a control.
 	value, _ := json.Marshal([]any{cfg.QualityBatch.ID, cfg.RandomQuestion, cfg.Prompt,
 		cfg.Quality.ExpectedAnswer, cfg.ModelID, cfg.QualityBatch.MappedModel, cfg.QualityBatch.Route,
-		cfg.ReasoningEffort, channel, cfg.Quality.Judge})
+		cfg.ReasoningEffort, channel, cfg.Quality.Judge, grader})
 	return fmt.Sprintf("%x", sha256.Sum256(value))
 }
 
@@ -144,7 +168,7 @@ func qualityBatchSampleEligible(result *ScheduledTestResult) bool {
 	b := result.PelicanConfig.QualityBatch
 	return b.Route != "" && b.MappedModel != "" && !result.FinishedAt.Before(result.StartedAt) &&
 		!result.StartedAt.Before(b.StartedAt) && result.StartedAt.Before(b.StartDeadline) &&
-		!result.FinishedAt.After(b.ClosesAt) && qualityComparisonKey(result.PelicanConfig) != ""
+		!result.FinishedAt.After(b.ClosesAt) && qualityComparisonKey(result) != ""
 }
 
 // EvaluateQualityBatch preserves original verdicts while reducing only the
@@ -163,7 +187,7 @@ func EvaluateQualityBatch(run *QualityBatchRun, peers []*QualityBatchRun) string
 			continue
 		}
 		evidence := *cfg.QualityBatch
-		evidence.ComparisonKey = qualityComparisonKey(cfg)
+		evidence.ComparisonKey = qualityComparisonKey(result)
 		evidence.PeerAccounts, evidence.PeerPassed, evidence.PeerFailed, evidence.PeerInconclusive = 0, 0, 0, 0
 		byAccount := map[int64][]*ScheduledTestResult{}
 		for _, peer := range peers {
@@ -171,7 +195,7 @@ func EvaluateQualityBatch(run *QualityBatchRun, peers []*QualityBatchRun) string
 				continue
 			}
 			for _, sample := range peer.Results {
-				if qualityBatchSampleEligible(sample) && qualityComparisonKey(sample.PelicanConfig) == evidence.ComparisonKey {
+				if qualityBatchSampleEligible(sample) && qualityComparisonKey(sample) == evidence.ComparisonKey {
 					byAccount[peer.Plan.AccountID] = append(byAccount[peer.Plan.AccountID], sample)
 				}
 			}
@@ -191,7 +215,7 @@ func EvaluateQualityBatch(run *QualityBatchRun, peers []*QualityBatchRun) string
 		case !run.Apply:
 			evidence.Decision = "inconclusive"
 			copy.Status, copy.QualityJudgment = "failed", nil
-		case evidence.Route == "" || evidence.MappedModel == "":
+		case evidence.Route == "" || evidence.MappedModel == "" || evidence.ComparisonKey == "":
 			evidence.Decision = "inconclusive"
 			copy.Status, copy.QualityJudgment = "failed", nil
 		case !qualityBatchSampleEligible(result):
