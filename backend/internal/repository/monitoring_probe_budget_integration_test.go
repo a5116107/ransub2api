@@ -4,8 +4,11 @@ package repository
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
@@ -28,6 +32,110 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	s.SiteRequestsPerMinute, s.KeyRequestsPerMinute = 1000, 1000
 	s.Concurrency, s.SiteConcurrency, s.KeyConcurrency = 100, 100, 100
 	return s
+}
+
+func TestQualityMonitoringBudgetPostgresBPSAndRestart(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	var calls, redirected atomic.Int32
+	var redirect atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "bps.openai.com" || r.URL.Path != "/basispoints/api/responses" || r.Header.Get("Authorization") != "Bearer bps-budget-fixture" {
+			http.Error(w, "invalid BPS budget fixture", http.StatusBadRequest)
+			return
+		}
+		n := calls.Add(1)
+		if redirect.Load() {
+			http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+			return
+		}
+		answer := "21"
+		if n == 2 {
+			answer = `{"verdict":"correct","reason":"equal"}`
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_budget\",\"status\":\"completed\",\"output\":[]}}\n\n", answer)
+	}))
+	t.Cleanup(server.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	// Keep the final URL, Host and credentials unchanged. Only TCP goes to
+	// this fixture, using trusted TLS and the production budget transport.
+	httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	upstream := gatewayPinDelegate{call: func(r *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+		return httpClient.Do(r)
+	}}
+	cfg := &config.Config{}
+	cfg.Default.RateMultiplier = 1
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	account := mustCreateAccount(t, client, &service.Account{Name: "bps-quality-budget", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"access_token": "bps-budget-fixture", "chatgpt_account_id": "fixture-account"},
+		Extra: map[string]any{"openai_excel_bps": true, "openai_passthrough": true}})
+	_, err := db.ExecContext(ctx, `UPDATE accounts SET concurrency=0 WHERE id=$1`, account.ID)
+	require.NoError(t, err)
+	var group int64
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform,status) VALUES('bps-quality-budget','openai','active') RETURNING id`).Scan(&group))
+	_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, account.ID, group)
+	require.NoError(t, err)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 2
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	newServices := func() (*service.AccountTestService, *service.QualityJudgeService) {
+		gateway := service.NewOpenAIGatewayService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+		t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+		t.Cleanup(gateway.CloseOpenAIWSPool)
+		tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+		tests.SetOpenAIGatewayService(gateway)
+		tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+		return tests, service.NewQualityJudgeService(accounts, NewGroupRepository(client, db), service.NewConcurrencyService(nil), tests, nil, NewMonitoringProbeBudgetRepository(db))
+	}
+	question := &service.PelicanTestConfig{QuestionKind: "candy", TestChannel: "bps", Prompt: "Return 21", Quality: &service.QualityPolicy{ExpectedAnswer: "21", Action: service.QualityActionObserveOnly,
+		Judge: &service.QualityJudgeConfig{GroupID: group, ModelID: "gpt-6-astra", Prompt: "grade"}}}
+	firstTests, firstJudge := newServices()
+	answer, err := firstTests.RunPelicanBackground(ctx, account.ID, "gpt-6-astra", question)
+	require.NoError(t, err)
+	require.Equal(t, "success", answer.Status, "%+v", answer)
+	judged := firstJudge.Judge(ctx, account.ID+1, question, "21")
+	require.Equal(t, "correct", judged.Verdict, "%+v", judged)
+	secondTests, secondJudge := newServices()
+	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "gpt-6-astra", question)
+	require.NoError(t, err)
+	require.Equal(t, "answer_budget_deferred", answer.ErrorMessage)
+	require.Equal(t, "unknown", answer.QualityJudgment.Verdict)
+	judged = secondJudge.Judge(ctx, account.ID+1, question, "21")
+	require.Equal(t, "judge_budget_deferred", judged.Reason)
+	require.EqualValues(t, 2, calls.Load(), "independent exhausted instances must not send BPS requests")
+	policy.Enabled = false
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "gpt-6-astra", question)
+	require.NoError(t, err)
+	require.Equal(t, "success", answer.Status, "%+v", answer)
+	redirect.Store(true)
+	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "gpt-6-astra", question)
+	require.NoError(t, err)
+	require.Equal(t, "failed", answer.Status)
+	require.Nil(t, answer.QualityJudgment)
+	require.Zero(t, redirected.Load(), "BPS must not forward credentials through redirects")
+	usage, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 4, calls.Load())
+	require.EqualValues(t, 4, usage.DayUsed)
+	require.Zero(t, usage.ActiveRequests)
 }
 
 func TestQualityMonitoringBudgetPostgresNativeHTTPAndRestart(t *testing.T) {

@@ -219,6 +219,9 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 			var phaseErr *openAIHTTPPhaseTimeout
 			include := errors.As(context.Cause(req.Context()), &phaseErr) || !errors.Is(err, context.Canceled) && errors.As(err, &netErr)
 			scope.complete(observation, func(disconnected, forced bool) {
+				if monitoringProbeDeferral(err, stats.currentTime()) != nil || monitoringProbeLocalError(req.Context()) != nil {
+					return
+				}
 				if !disconnected && scope.ctx.Err() == nil && !IsUpstreamKeyAdmissionFailure(err) && !IsOpenAITurnAdmissionError(err) && (include || forced) {
 					stats.attempts.report(key, false, stats.currentTime())
 				}
@@ -246,6 +249,12 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 
 // Used by HTTP adapters whose physical sends bypass the native proxy pipeline.
 func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy string, account *Account, evidence ...*excelBPSWriteEvidence) (*http.Response, error) {
+	if local := monitoringProbeLocalError(req.Context()); local != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, local
+	}
 	var err error
 	req, err = s.preparePriorityLatencyHTTPSend(req, account)
 	if err != nil {
@@ -481,6 +490,9 @@ func (b *priorityAttemptBody) Close() error {
 	b.buf = nil
 	b.metricEvent.reset()
 	report := func(disconnected, forced bool) {
+		if monitoringProbeDeferral(b.readErr, b.stats.currentTime()) != nil || monitoringProbeLocalError(b.ctx) != nil {
+			return
+		}
 		if (include || forced) && !disconnected && b.ctx.Err() == nil {
 			if b.firstSemanticMS != nil && success && !forced {
 				b.stats.attempts.report(b.key, true, b.stats.currentTime(), *b.firstSemanticMS)

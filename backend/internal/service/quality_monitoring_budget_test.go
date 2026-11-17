@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -234,6 +235,14 @@ func TestQualityMonitoringBudgetDeferralNeverChangesAccountQuality(t *testing.T)
 type qualityBudgetCloseBody struct {
 	io.ReadCloser
 	close func()
+	read  func()
+}
+
+func (b qualityBudgetCloseBody) Read(p []byte) (int, error) {
+	if b.read != nil {
+		b.read()
+	}
+	return b.ReadCloser.Read(p)
 }
 
 func (b qualityBudgetCloseBody) Close() error {
@@ -587,5 +596,130 @@ func TestQualityMonitoringBudgetNativeWSBackgroundPrewarm(t *testing.T) {
 				require.Equal(t, 2, repo.released)
 			}
 		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSPhysicalAttempts(t *testing.T) {
+	for _, denied := range []bool{false, true} {
+		t.Run(strconv.FormatBool(denied), func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			if denied {
+				repo.denyAt, repo.err = 1, &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			}
+			upstream := &httpUpstreamRecorder{resp: qualityBudgetReply("21")}
+			gateway := openAIClientToolsTestService(upstream)
+			gateway.httpUpstream = monitoringBudgetHTTP{base: upstream}
+			account := excelAccount()
+			// A native Codex base does not change the fixed BPS destination.
+			account.Credentials["base_url"] = "https://native.example/tenant"
+			tests := &AccountTestService{cfg: gateway.cfg, accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: gateway.httpUpstream, openaiGatewayService: gateway}
+			tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+			result, err := tests.RunPelicanBackground(t.Context(), account.ID, "gpt-6-astra", bpsObservationConfig())
+			require.NoError(t, err)
+			if denied {
+				require.Equal(t, "answer_budget_deferred", result.ErrorMessage)
+				require.Equal(t, "unknown", result.QualityJudgment.Verdict)
+				require.Equal(t, repo.err, result.QualityJudgment.BudgetDeferral)
+				require.Empty(t, upstream.requests)
+				require.Zero(t, repo.released)
+			} else {
+				require.Equal(t, "success", result.Status, result.ErrorMessage)
+				require.Equal(t, "21", result.ResponseText)
+				require.Len(t, upstream.requests, 1)
+				require.True(t, HTTPUpstreamRedirectsDisabled(upstream.requests[0].Context()))
+				require.Equal(t, []string{config.UpstreamKeyFingerprint("test-token")}, repo.requests[0].KeyHashes)
+				require.Equal(t, 1, repo.released)
+			}
+			require.Len(t, repo.requests, 1)
+			require.Equal(t, monitoringProbeHash("https://bps.openai.com"), repo.requests[0].SiteHash)
+			require.False(t, repo.requests[0].Recovery)
+			require.True(t, account.IsExcelBPSEnabled())
+			require.True(t, account.Schedulable)
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSLeaseLossIsLocal(t *testing.T) {
+	for _, phase := range []string{"read", "close"} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				repo := &monitoringBudgetRepoStub{renew: func(context.Context) (bool, error) { return false, nil }}
+				response := qualityBudgetReply("21")
+				delay := sync.OnceFunc(func() { time.Sleep(41 * time.Second); synctest.Wait() })
+				body := qualityBudgetCloseBody{ReadCloser: response.Body, close: func() {}}
+				if phase == "read" {
+					body.read = delay
+				} else {
+					body.close = delay
+				}
+				response.Body = body
+				upstream := &httpUpstreamRecorder{resp: response}
+				gateway := openAIClientToolsTestService(upstream)
+				gateway.httpUpstream = monitoringBudgetHTTP{base: upstream}
+				ctx := NewMonitoringProbeBudgetService(repo).Context(t.Context(), "https://bps.openai.com", false)
+				ctx = withPelicanTestOptions(ctx, pelicanTestOptions{observeOnly: true})
+				c, _ := newTestContext()
+				c.Request = c.Request.WithContext(ctx)
+				_, err := gateway.Forward(ctx, c, excelAccount(), []byte(`{"model":"gpt-6-astra","stream":true,"input":"Return 21"}`))
+				require.ErrorIs(t, err, ErrMonitoringProbeBudgetLeaseLost)
+				require.ErrorIs(t, monitoringProbeLocalError(ctx), ErrMonitoringProbeBudgetLeaseLost)
+				require.NoError(t, ctx.Err(), "lease loss only cancels its budget child")
+				_, fault := c.Get(OpsUpstreamErrorsKey)
+				require.False(t, fault, "local lease loss must not be recorded as an upstream stream failure")
+				require.Len(t, upstream.requests, 1)
+				require.Len(t, repo.requests, 1)
+				require.Equal(t, 1, repo.released)
+			})
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetBPSRetriesAndRepairs(t *testing.T) {
+	for _, phase := range []string{"encrypted_retry", "tool_repair", "unknown_tool"} {
+		for _, denied := range []bool{false, true} {
+			t.Run(phase+"/denied="+strconv.FormatBool(denied), func(t *testing.T) {
+				repo := &monitoringBudgetRepoStub{}
+				if denied {
+					repo.denyAt, repo.err = 2, &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+				}
+				first := newJSONResponse(http.StatusOK, excelBPSRepairWire(t, "original", "Run client tool", "text(42);"))
+				second := newJSONResponse(http.StatusOK, excelBPSRepairWire(t, "fixed", "codex2api.custom/functions.exec", "text(42);"))
+				body := []byte(`{"model":"gpt-6-astra","stream":true,"input":"Return a tool call","tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec"}]}]}`)
+				switch phase {
+				case "encrypted_retry":
+					body = excelBPSEncryptedHistoryRequest(true)
+					first = newJSONResponse(http.StatusBadRequest, excelBPSInvalidCiphertext)
+					second = qualityBudgetReply("21")
+				case "unknown_tool":
+					body = []byte(`{"model":"gpt-6-astra","stream":false,"input":"Return a tool call","tools":[{"type":"function","name":"shell"}]}`)
+					first = newJSONResponse(http.StatusOK, excelBPSRepairWire(t, "original", "Run", `{"name":"missing","arguments":{}}`))
+					second = newJSONResponse(http.StatusOK, excelBPSRepairWire(t, "fixed", "Run", `{"name":"shell","arguments":{"cmd":"fixture"}}`))
+				}
+				upstream := &httpUpstreamRecorder{responses: []*http.Response{first, second}}
+				gateway := openAIClientToolsTestService(upstream)
+				gateway.httpUpstream = monitoringBudgetHTTP{base: upstream}
+				ctx := NewMonitoringProbeBudgetService(repo).Context(t.Context(), "https://bps.openai.com", false)
+				ctx = withPelicanTestOptions(ctx, pelicanTestOptions{observeOnly: true})
+				c, recorder := newTestContext()
+				c.Request = c.Request.WithContext(ctx)
+				_, err := gateway.Forward(ctx, c, excelAccount(), body)
+				if denied {
+					require.ErrorIs(t, err, repo.err)
+					require.Len(t, upstream.requests, 1, "a deferred correction must not send or try another route")
+					require.Equal(t, 1, repo.released)
+					require.NotContains(t, recorder.Body.String(), "response.completed")
+				} else {
+					require.NoError(t, err)
+					require.Len(t, upstream.requests, 2)
+					require.Equal(t, 2, repo.released)
+				}
+				require.Len(t, repo.requests, 2, "each original and retry/correction is a physical attempt")
+				for _, request := range repo.requests {
+					require.Equal(t, monitoringProbeHash("https://bps.openai.com"), request.SiteHash)
+					require.Equal(t, []string{config.UpstreamKeyFingerprint("test-token")}, request.KeyHashes)
+					require.False(t, request.Recovery)
+				}
+			})
+		}
 	}
 }

@@ -227,7 +227,7 @@ func (s *OpenAIGatewayService) doExcelBPSRequestTo(ctx context.Context, c *gin.C
 		if err == nil {
 			return resp, lease, proxy, nil
 		}
-		if IsOpenAITurnAdmissionError(err) {
+		if IsOpenAITurnAdmissionError(err) || monitoringProbeDeferral(err, time.Now()) != nil {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}

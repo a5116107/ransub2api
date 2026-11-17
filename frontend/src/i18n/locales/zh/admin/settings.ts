@@ -535,7 +535,7 @@ export default {
       upstreamBillingProbe: {
         budget: {
           title: '倍率、余额与质量检测调用预算',
-          scopeHint: '同库已升级实例共用预算，执行限额前须排空旧版探测实例。逐次计数：Sub2API 倍率/余额、New API 管理请求和分页（含预览）、JEV 判题、原生 HTTP 质量答题和 LLM 判题，以及原生 WebSocket 质量答题的握手、预热和生成。复用连接仍按生成次数计数。不含业务流量、其他检测通道或 token 用量。',
+          scopeHint: '同库已升级实例共用预算，执行限额前须排空旧版探测实例。逐次计数：Sub2API 倍率/余额、New API 管理请求和分页（含预览）、JEV 判题、原生 HTTP 质量答题和 LLM 判题、原生 WebSocket 质量答题的握手/预热/生成，以及 BPS 文本答题/判题（含重试和工具纠正）。复用连接仍按生成次数计数。不含业务流量、其他检测通道或 token 用量。',
           enabled: '执行共享限额', enforced: '限额已生效', observeOnly: '仅观测：尚未执行限额',
           requests_per_minute: '全局每分钟请求数（UTC）', requests_per_day: '全局每日请求数（UTC）',
           site_requests_per_minute: '每站每分钟请求数', key_requests_per_minute: '每个实际凭据每分钟请求数',

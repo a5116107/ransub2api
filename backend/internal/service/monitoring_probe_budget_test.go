@@ -273,13 +273,28 @@ func TestMonitoringProbeBudgetLeaseLossCancelsTransportAndReleases(t *testing.T)
 }
 
 type monitoringBudgetHTTP struct {
-	HTTPUpstream
 	base HTTPUpstream
+}
+
+func (h monitoringBudgetHTTP) Do(req *http.Request, proxy string, id int64, concurrency int) (*http.Response, error) {
+	req, finish, err := BeginMonitoringProbeRequest(req)
+	if err != nil {
+		if req != nil && req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, err
+	}
+	response, err := h.base.Do(req, proxy, id, concurrency)
+	err = FinishMonitoringProbeResponse(req.Context(), response, err, finish)
+	return response, err
 }
 
 func (h monitoringBudgetHTTP) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	req, finish, err := BeginMonitoringProbeRequest(req)
 	if err != nil {
+		if req != nil && req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
 	response, err := h.base.DoWithTLS(req, proxy, id, concurrency, profile)

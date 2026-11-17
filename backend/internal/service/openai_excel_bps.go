@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -274,6 +275,24 @@ func newExcelBPSRequestTo(ctx context.Context, targetURL, accept string, body []
 // BPS deliberately bypasses Codex ticket/cookie injection and OAuth plugins:
 // only the selected account's bearer and ChatGPT account ID belong on this host.
 func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Context, account *Account, body []byte, start time.Time) (forwardResult *OpenAIForwardResult, forwardErr error) {
+	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok && probe.accountTest {
+		// This adapter has a fixed destination, independent of the account's
+		// optional native Codex base URL. Keep the same per-test error owner.
+		endpoint, err := url.Parse(basispoints.ResponsesURL)
+		if err != nil {
+			probe.local.record(ErrMonitoringProbeBudgetUnavailable)
+			return nil, ErrMonitoringProbeBudgetUnavailable
+		}
+		probe.sites = []string{endpoint.Scheme + "://" + endpoint.Host}
+		ctx = context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
+	}
+	defer func() {
+		// A budget can be lost while an adapter reads or closes an otherwise
+		// complete response. Keep that local outcome after all body cleanup.
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			forwardErr = local
+		}
+	}()
 	var compactUsage OpenAIUsage
 	var compactID string
 	originalImagePolicyModel := gjson.GetBytes(body, "model").String()
@@ -630,6 +649,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			defer cl.Release()
 		}
 		if compactErr != nil {
+			if monitoringProbeDeferral(compactErr, time.Now()) != nil {
+				return nil, compactErr
+			}
 			if IsOpenAITurnAdmissionError(compactErr) {
 				return fail(503, "admission_unavailable", "Excel BPS request admission is unavailable; retry later")
 			}
@@ -706,6 +728,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	resp, lease, proxyURL, err := s.doExcelBPSRequest(requestCtx, c, account, sessionScope, upstreamBody, token, accountID, requestAcquire)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(sent).Milliseconds())
 	if err != nil {
+		if monitoringProbeDeferral(err, time.Now()) != nil {
+			return nil, err
+		}
 		if isExcelBPSClientCancellation(c, err) {
 			return clientCanceled()
 		}
@@ -734,6 +759,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 		const maxRejectionBytes = 512 << 10
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRejectionBytes+1))
 		_ = resp.Body.Close()
+		if local := monitoringProbeLocalError(requestCtx); local != nil {
+			return nil, local
+		}
 		resp.Body = io.NopCloser(bytes.NewReader(raw))
 		if retryBody, retry := prepareExcelBPSInvalidEncryptedRetry(upstreamBody, raw); !isControlledExperiment(ctx) && retry && readErr == nil && len(raw) <= maxRejectionBytes && ctx.Err() == nil {
 			retryReq, retryErr := newExcelBPSRequest(requestCtx, retryBody, token, accountID)
@@ -756,6 +784,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			}
 			SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(sent).Milliseconds())
 			if err != nil {
+				if monitoringProbeDeferral(err, time.Now()) != nil {
+					return nil, err
+				}
 				if isExcelBPSClientCancellation(c, err) {
 					return clientCanceled()
 				}
@@ -876,6 +907,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			s.guardExcelBPSProgress(repairCtx, repairResp)
 		}
 		if err != nil {
+			if monitoringProbeDeferral(err, time.Now()) != nil {
+				return nil, err
+			}
 			if repairCtx.Err() != nil {
 				return nil, repairCtx.Err()
 			}
@@ -925,6 +959,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			s.guardExcelBPSProgress(repairCtx, repaired)
 		}
 		if err != nil {
+			if monitoringProbeDeferral(err, time.Now()) != nil {
+				return nil, err
+			}
 			return nil, fmt.Errorf("excel BPS tool correction transport failed")
 		}
 		if repaired.StatusCode >= 200 && repaired.StatusCode < 300 {
@@ -980,6 +1017,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	terminalSuccessful := false
 	cacheCreationAsInput := account.IsExcelBPSCacheCreationAsInputEnabled()
 	for scanner.Next(ctx, 0, heartbeat.C, keepalive) {
+		if local := monitoringProbeLocalError(requestCtx); local != nil {
+			return result, local
+		}
 		line := scanner.Text()
 		if strings.HasPrefix(line, "data: ") {
 			payload := []byte(strings.TrimPrefix(line, "data: "))
@@ -1085,6 +1125,9 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	}
 	result.Duration = time.Since(start)
 	result.UpstreamTerminalEvent = terminal
+	if local := monitoringProbeLocalError(requestCtx); local != nil {
+		return result, local
+	}
 	if err = scanner.Err(); err != nil || terminal == "" {
 		if ctx.Err() != nil {
 			if isExcelBPSClientCancellation(c, ctx.Err()) {

@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,51 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestPriorityMonitoringBudgetDeferralsAreNotSupplierFailures(t *testing.T) {
+	for _, local := range []error{
+		&MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day"},
+		ErrMonitoringProbeBudgetUnavailable,
+		ErrMonitoringProbeBudgetLeaseLost,
+	} {
+		for _, forced := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/forced=%t", local.Error(), forced), func(t *testing.T) {
+				for _, phase := range []string{"transport", "close"} {
+					t.Run(phase, func(t *testing.T) {
+						account := excelAccount()
+						ctx := NewMonitoringProbeBudgetService(nil).Context(t.Context(), "https://bps.openai.com", false)
+						ctx, scope := withPriorityAttemptScope(ctx, "budget-fixture", "/v1/responses")
+						request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://bps.openai.com/basispoints/api/responses", strings.NewReader(`{"stream":true}`))
+						require.NoError(t, err)
+						gateway := openAIClientToolsTestService(&httpUpstreamRecorder{})
+						observe := gateway.observePriorityAttempt(request, account)
+						if phase == "transport" {
+							// http.Client wraps even a local admission refusal in a
+							// url.Error, which implements net.Error without networking.
+							observe(nil, &url.Error{Op: "Post", URL: request.URL.String(), Err: local})
+						} else {
+							probe := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+							response := qualityBudgetReply("21")
+							response.Body = qualityBudgetCloseBody{ReadCloser: response.Body, close: func() { probe.local.record(local) }}
+							observe(response, nil)
+							_, err = io.ReadAll(response.Body)
+							require.NoError(t, err)
+							require.NoError(t, response.Body.Close())
+						}
+						if forced {
+							markPriorityAttemptFailure(ctx)
+						}
+						scope.finish(nil)
+						key := priorityAttemptKey{accountID: account.ID, route: priorityAccountObservationRoute(account), model: "budget-fixture", endpoint: "/v1/responses"}
+						sample := gateway.openaiAccountStats.attempts.snapshot(key, time.Now(), 10, 5)
+						require.Zero(t, sample.Successes)
+						require.Zero(t, sample.Failures)
+					})
+				}
+			})
+		}
+	}
+}
 
 func TestPriorityErrorRateWindowScopeAndPrior(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()

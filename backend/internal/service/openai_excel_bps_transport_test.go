@@ -40,6 +40,47 @@ func (u *bpsTestUpstream) Do(r *http.Request, proxy string, _ int64, _ int) (*ht
 	return u.send(r, proxy)
 }
 
+func TestExcelBPSMonitoringBudgetDeferralDoesNotPenalizeProxy(t *testing.T) {
+	for _, local := range []error{
+		&MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day"},
+		ErrMonitoringProbeBudgetUnavailable,
+		ErrMonitoringProbeBudgetLeaseLost,
+	} {
+		for _, started := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/started=%t", local.Error(), started), func(t *testing.T) {
+				c, _ := newTestContext()
+				account := excelAccount()
+				account.Extra["openai_excel_bps_mihomo"] = true
+				proxyLease := &bpsTestLease{}
+				acquired, calls := 0, 0
+				upstream := &bpsTestUpstream{send: func(r *http.Request, _ string) (*http.Response, error) {
+					calls++
+					defer func() { _ = r.Body.Close() }()
+					if started {
+						httptrace.ContextClientTrace(r.Context()).GetConn("bps.openai.com:443")
+					}
+					return nil, local
+				}}
+				gateway := &OpenAIGatewayService{httpUpstream: upstream}
+				acquire := func(context.Context, string, ...string) (string, excelBPSLease, error) {
+					acquired++
+					return "http://127.0.0.1:19000", proxyLease, nil
+				}
+				response, lease, _, err := gateway.doExcelBPSRequest(t.Context(), c, account, "budget-fixture", []byte("body"), "fixture-token", "fixture-account", acquire)
+				require.ErrorIs(t, err, local)
+				require.Nil(t, response)
+				require.Nil(t, lease)
+				require.Equal(t, 1, calls, "a local deferral is not a replayable transport failure")
+				require.Equal(t, 1, acquired)
+				require.Equal(t, 1, proxyLease.releases)
+				require.Zero(t, proxyLease.failures, "local monitoring limits must not lower exit health")
+				_, recorded := c.Get(OpsUpstreamErrorsKey)
+				require.False(t, recorded, "local budgets must not fabricate an upstream transport failure")
+			})
+		}
+	}
+}
+
 func TestExcelBPSProxyFailoverOnlyBeforeRequestSent(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
