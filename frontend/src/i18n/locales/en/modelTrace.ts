@@ -23,8 +23,8 @@ export default {
   retryUnknown: 'Retry time is unknown. Check the monitoring budget status.',
   budgetRemaining: '{count} remaining questions were not sent; no automatic replacement requests. Completed samples are retained; deferred or lease-lost samples are excluded. The retry time does not guarantee immediate capacity.',
   budgetScopes: {
-    global_minute: 'Global per-minute request budget', global_day: 'Global daily request budget (UTC)',
-    site_minute: 'Site per-minute request budget', key_minute: 'Upstream key per-minute request budget',
+    global_minute: 'Global per-minute budget', global_day: 'Global daily budget (UTC)',
+    site_minute: 'Site per-minute budget', key_minute: 'Upstream key per-minute budget',
     global: 'Global probe concurrency', site: 'Site probe concurrency', key: 'Upstream key probe concurrency',
     system: 'Budget coordination system', unknown: 'Unknown budget scope'
   },

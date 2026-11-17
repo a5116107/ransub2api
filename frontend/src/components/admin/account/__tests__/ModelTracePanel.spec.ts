@@ -31,6 +31,8 @@ beforeEach(() => { localStorage.clear(); runModelTrace.mockReset() })
 describe('ModelTracePanel', () => {
   it.each([
     ['request_limit', 'global_minute'], ['recovery_reserve', 'global_day'],
+    ['token_limit', 'global_minute'], ['token_limit', 'global_day'],
+    ['token_limit', 'site_minute'], ['token_limit', 'key_minute'],
     ['request_limit', 'site_minute'], ['request_limit', 'key_minute'],
     ['concurrency_limit', 'global'], ['concurrency_limit', 'site'], ['concurrency_limit', 'key'],
     ['budget_unavailable', 'system']

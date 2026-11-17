@@ -133,6 +133,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		}
 
 		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(message)
+		observeMonitoringProbeWSUsage(ctx, message)
 		if eventType == "" {
 			continue
 		}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,227 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	s.SiteRequestsPerMinute, s.KeyRequestsPerMinute = 1000, 1000
 	s.Concurrency, s.SiteConcurrency, s.KeyConcurrency = 100, 100, 100
 	return s
+}
+
+func TestMonitoringProbeBudgetActualTokenStop(t *testing.T) {
+	db, _ := newBillingAuditDatabase(t)
+	policy := monitoringBudgetPolicy()
+	// Use the wire contract so this test also exercises old policy JSON.
+	require.NoError(t, json.Unmarshal([]byte(`{"tokens_per_day":5}`), &policy))
+	repo := NewMonitoringProbeBudgetRepository(db)
+	_, err := repo.SaveSettings(t.Context(), policy)
+	require.NoError(t, err)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`))
+	}))
+	t.Cleanup(server.Close)
+	client := &http.Client{Transport: &accountResponseTransport{base: http.DefaultTransport}}
+	send := func() error {
+		ctx := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)).Context(t.Context(), server.URL, false)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{}`))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer token-budget-fixture")
+		resp, err := client.Do(req)
+		if err == nil {
+			_, err = io.Copy(io.Discard, resp.Body)
+			require.NoError(t, resp.Body.Close())
+		}
+		return err
+	}
+	require.NoError(t, send(), "the in-flight response may exceed the budget")
+	var denial *service.MonitoringProbeBudgetDenial
+	require.ErrorAs(t, send(), &denial, "actual upstream usage must stop later sends")
+	require.Equal(t, "token_limit", denial.Reason)
+	require.Equal(t, "global_day", denial.Scope)
+	require.EqualValues(t, 1, calls.Load())
+	usage, err := repo.Summary(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 7, usage.DayTokens)
+	require.EqualValues(t, 1, usage.UsageReported)
+	require.Zero(t, usage.UsageUnknown)
+	require.Zero(t, usage.ActiveRequests)
+	require.Zero(t, usage.UsagePending)
+}
+
+func TestMonitoringProbeBudgetActualTokenSharedSettlement(t *testing.T) {
+	db, _ := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	repo := NewMonitoringProbeBudgetRepository(db)
+	for _, scope := range []string{"global_minute", "global_day", "site_minute", "key_minute"} {
+		t.Run(scope, func(t *testing.T) {
+			_, err := db.ExecContext(ctx, `TRUNCATE monitoring_probe_budget_counters,monitoring_probe_budget_leases; DELETE FROM settings WHERE key='monitoring_probe_budget'`)
+			require.NoError(t, err)
+			policy := monitoringBudgetPolicy()
+			switch scope {
+			case "global_minute":
+				policy.TokensPerMinute = 5
+			case "global_day":
+				policy.TokensPerDay = 5
+			case "site_minute":
+				policy.SiteTokensPerMinute = 5
+			case "key_minute":
+				policy.KeyTokensPerMinute = 5
+			}
+			policy, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			req := service.MonitoringProbeBudgetRequest{SiteHash: "token-site", KeyHashes: []string{"same-actual-key", "same-actual-key"}, MeterTokens: true}
+			first, err := repo.Acquire(ctx, req)
+			require.NoError(t, err)
+			peer := NewMonitoringProbeBudgetRepository(db)
+			second, err := peer.Acquire(ctx, req)
+			require.NoError(t, err, "no guessed token reservation before sending")
+			pending, err := peer.Summary(ctx)
+			require.NoError(t, err)
+			require.EqualValues(t, 2, pending.UsagePending)
+			for _, lease := range []string{first, second} {
+				require.NoError(t, peer.Release(ctx, lease, service.MonitoringProbeTokenUsage{Tokens: 4, Reported: true}))
+			}
+			// Reconstruct a repository and concurrently replay the same receipts.
+			var wg sync.WaitGroup
+			for range 8 {
+				wg.Go(func() {
+					require.NoError(t, NewMonitoringProbeBudgetRepository(db).Release(ctx, first, service.MonitoringProbeTokenUsage{Tokens: 4, Reported: true}))
+				})
+			}
+			wg.Wait()
+			usage, err := peer.Summary(ctx)
+			require.NoError(t, err)
+			require.EqualValues(t, 8, usage.DayTokens, "in-flight excess is actual usage, not truncated to the cap")
+			require.EqualValues(t, 2, usage.UsageReported)
+			require.Zero(t, usage.ActiveRequests)
+			require.Zero(t, usage.UsagePending)
+			_, err = NewMonitoringProbeBudgetRepository(db).Acquire(ctx, req)
+			var denied *service.MonitoringProbeBudgetDenial
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, "token_limit", denied.Reason)
+			require.Equal(t, scope, denied.Scope)
+			require.True(t, denied.RetryAt.After(usage.ObservedAt))
+			// Non-generating management observations are not starved by tokens.
+			req.MeterTokens = false
+			management, err := peer.Acquire(ctx, req)
+			require.NoError(t, err)
+			require.NoError(t, peer.Release(ctx, management, service.MonitoringProbeTokenUsage{}))
+			policy.TokensPerMinute, policy.TokensPerDay, policy.SiteTokensPerMinute, policy.KeyTokensPerMinute = 50, 50, 50, 50
+			policy, err = peer.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			req.MeterTokens = true
+			restored, err := NewMonitoringProbeBudgetRepository(db).Acquire(ctx, req)
+			require.NoError(t, err)
+			require.NoError(t, repo.Release(ctx, restored, service.MonitoringProbeTokenUsage{}))
+			zero, err := repo.Acquire(ctx, req)
+			require.NoError(t, err)
+			require.NoError(t, repo.Release(ctx, zero, service.MonitoringProbeTokenUsage{Reported: true}))
+			partial, err := repo.Acquire(ctx, req)
+			require.NoError(t, err)
+			require.NoError(t, repo.Release(ctx, partial, service.MonitoringProbeTokenUsage{Tokens: 2}))
+			usage, err = repo.Summary(ctx)
+			require.NoError(t, err)
+			require.EqualValues(t, 10, usage.DayTokens)
+			require.EqualValues(t, 3, usage.UsageReported, "explicit zero counts as reported")
+			require.EqualValues(t, 2, usage.UsageUnknown, "missing and partial are unknown, never reported zero")
+			policy.Enabled = false
+			_, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			observe, err := repo.Acquire(ctx, req)
+			require.NoError(t, err)
+			require.NoError(t, repo.Release(ctx, observe, service.MonitoringProbeTokenUsage{Tokens: 60, Reported: true}))
+			usage, err = repo.Summary(ctx)
+			require.NoError(t, err)
+			require.EqualValues(t, 70, usage.DayTokens, "observe-only also records actual usage")
+		})
+	}
+}
+
+func TestMonitoringProbeBudgetActualTokenExpiryAndMigration(t *testing.T) {
+	db, _ := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	repo := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.TokensPerDay, policy.RecoveryReservePercent = 10, 20
+	_, err := repo.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	req := service.MonitoringProbeBudgetRequest{SiteHash: "token-site", KeyHashes: []string{"token-key"}, MeterTokens: true}
+	id, err := repo.Acquire(ctx, req)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE monitoring_probe_budget_leases SET expires_at=clock_timestamp()-INTERVAL '1 day' WHERE id=$1`, id)
+	require.NoError(t, err)
+	other, err := repo.Acquire(ctx, req)
+	require.NoError(t, err, "expired leases no longer occupy capacity")
+	usage, err := repo.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, usage.UsagePending, "expired unsettled usage remains visible across pruning/restart")
+	require.NoError(t, NewMonitoringProbeBudgetRepository(db).Release(ctx, id, service.MonitoringProbeTokenUsage{Tokens: 8, Reported: true}))
+	require.NoError(t, repo.Release(ctx, other, service.MonitoringProbeTokenUsage{Reported: true}))
+	_, err = repo.Acquire(ctx, req)
+	var denied *service.MonitoringProbeBudgetDenial
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "recovery_reserve", denied.Reason)
+	req.Recovery = true
+	recovery, err := repo.Acquire(ctx, req)
+	require.NoError(t, err)
+	require.NoError(t, repo.Release(ctx, recovery, service.MonitoringProbeTokenUsage{Tokens: 3, Reported: true}))
+	_, err = repo.Acquire(ctx, req)
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "token_limit", denied.Reason, "recovery still obeys the total actual token limit")
+	ddl, err := os.ReadFile("../../migrations/345_monitoring_probe_token_usage.sql")
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, string(ddl))
+	require.NoError(t, err)
+	// Old SQL writers/readers still work after the additive migration.
+	_, err = db.ExecContext(ctx, `INSERT INTO monitoring_probe_budget_leases(id,site_hash,key_hashes,recovery,expires_at)
+ VALUES('00000000-0000-0000-0000-000000000001','old-site',ARRAY['old-key'],false,clock_timestamp()+INTERVAL '1 minute')`)
+	require.NoError(t, err)
+	var oldCount int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM monitoring_probe_budget_leases WHERE expires_at>clock_timestamp()`).Scan(&oldCount))
+	require.Positive(t, oldCount)
+	_, err = db.ExecContext(ctx, `UPDATE settings SET value=$2 WHERE key=$1`, service.MonitoringProbeBudgetSettingKey, `{"enabled":false,"revision":5,"requests_per_minute":600,"requests_per_day":100000,"site_requests_per_minute":600,"key_requests_per_minute":200,"concurrency":16,"site_concurrency":4,"key_concurrency":2,"recovery_reserve_percent":20}`)
+	require.NoError(t, err)
+	oldPolicy, err := NewMonitoringProbeBudgetRepository(db).GetSettings(ctx)
+	require.NoError(t, err)
+	require.Zero(t, oldPolicy.TokensPerDay, "old policy JSON must not silently enable a new token cap")
+	usage, err = repo.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 11, usage.DayTokens)
+}
+
+func TestMonitoringProbeBudgetActualTokenSettlementRollbackAndWindow(t *testing.T) {
+	db, _ := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	repo := NewMonitoringProbeBudgetRepository(db)
+	_, err := repo.SaveSettings(ctx, monitoringBudgetPolicy())
+	require.NoError(t, err)
+	req := service.MonitoringProbeBudgetRequest{SiteHash: "token-site", KeyHashes: []string{"token-key"}, MeterTokens: true}
+	id, err := repo.Acquire(ctx, req)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `CREATE FUNCTION fixture_token_settlement_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN RAISE EXCEPTION 'fixture settlement unavailable'; END $$;
+ CREATE TRIGGER fixture_token_settlement_fail BEFORE INSERT OR UPDATE ON monitoring_probe_budget_counters
+ FOR EACH ROW EXECUTE FUNCTION fixture_token_settlement_fail()`)
+	require.NoError(t, err)
+	returned := service.MonitoringProbeTokenUsage{Tokens: 7, Reported: true}
+	require.Error(t, repo.Release(ctx, id, returned))
+	usage, err := repo.Summary(ctx)
+	require.NoError(t, err)
+	require.Zero(t, usage.DayTokens, "failed settlement must not partially charge one dimension")
+	require.EqualValues(t, 1, usage.UsagePending)
+	_, err = db.ExecContext(ctx, `DROP TRIGGER fixture_token_settlement_fail ON monitoring_probe_budget_counters; DROP FUNCTION fixture_token_settlement_fail()`)
+	require.NoError(t, err)
+	require.NoError(t, NewMonitoringProbeBudgetRepository(db).Release(ctx, id, returned))
+	// Freeze the old accounting windows in the past, then settle a live call.
+	_, err = db.ExecContext(ctx, `UPDATE monitoring_probe_budget_counters SET bucket_start=bucket_start-INTERVAL '2 day'`)
+	require.NoError(t, err)
+	next, err := repo.Acquire(ctx, req)
+	require.NoError(t, err)
+	require.NoError(t, repo.Release(ctx, next, service.MonitoringProbeTokenUsage{Tokens: 3, Reported: true}))
+	require.NoError(t, repo.Release(ctx, id, returned), "old receipt replay must not charge the new day")
+	usage, err = repo.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, usage.DayTokens)
+	require.EqualValues(t, 1, usage.UsageReported)
+	require.Zero(t, usage.UsagePending)
 }
 
 func TestAstraGatewayMonitoringBudgetPostgresSharedKeyAndHistory(t *testing.T) {
@@ -707,6 +929,21 @@ func TestQualityMonitoringBudgetPostgresNativeWSAndRestart(t *testing.T) {
 	usage, err = budget.Summary(ctx)
 	require.NoError(t, err)
 	require.Zero(t, usage.ActiveRequests)
+	require.EqualValues(t, 4, usage.DayTokens, "prewarm and answer each returned two actual tokens; the handshake returned none")
+	require.EqualValues(t, 2, usage.UsageReported)
+	require.Zero(t, usage.UsageUnknown)
+	require.Zero(t, usage.UsagePending)
+	// Remove the request-count constraint: the already pooled connection must
+	// still stop at the actual token threshold, without sending another turn.
+	policy.RequestsPerDay, policy.TokensPerDay = 30, 4
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	answer, err = first.RunPelicanBackground(ctx, account.ID, "target", question)
+	require.NoError(t, err)
+	require.Equal(t, "answer_budget_deferred", answer.ErrorMessage)
+	require.Equal(t, "token_limit", answer.QualityJudgment.BudgetDeferral.Reason)
+	require.Equal(t, "global_day", answer.QualityJudgment.BudgetDeferral.Scope)
+	require.EqualValues(t, 2, frames.Load(), "a reused WS socket is not exempt from token admission")
 	policy.Enabled = false
 	_, err = budget.SaveSettings(ctx, policy)
 	require.NoError(t, err)
@@ -836,7 +1073,7 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 			for range 2 {
 				id, err := repo.Acquire(ctx, request)
 				require.NoError(t, err)
-				require.NoError(t, repo.Release(ctx, id))
+				require.NoError(t, repo.Release(ctx, id, service.MonitoringProbeTokenUsage{}))
 			}
 			_, err := NewMonitoringProbeBudgetRepository(db).Acquire(ctx, request)
 			var denial *service.MonitoringProbeBudgetDenial
@@ -861,7 +1098,7 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 		reset(t, settings)
 		id, err := repo.Acquire(ctx, request)
 		require.NoError(t, err)
-		require.NoError(t, repo.Release(ctx, id))
+		require.NoError(t, repo.Release(ctx, id, service.MonitoringProbeTokenUsage{}))
 		_, err = repo.Acquire(ctx, request)
 		var denial *service.MonitoringProbeBudgetDenial
 		require.ErrorAs(t, err, &denial)
@@ -872,7 +1109,7 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		id, err = NewMonitoringProbeBudgetRepository(db).Acquire(ctx, request)
 		require.NoError(t, err)
-		require.NoError(t, repo.Release(ctx, id))
+		require.NoError(t, repo.Release(ctx, id, service.MonitoringProbeTokenUsage{}))
 		summary, err := repo.Summary(ctx)
 		require.NoError(t, err)
 		require.EqualValues(t, 1, summary.MinuteUsed)
@@ -887,7 +1124,7 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 		for range 3 {
 			id, err := repo.Acquire(ctx, request)
 			require.NoError(t, err)
-			require.NoError(t, repo.Release(ctx, id))
+			require.NoError(t, repo.Release(ctx, id, service.MonitoringProbeTokenUsage{}))
 		}
 		_, err := repo.Acquire(ctx, request)
 		var denial *service.MonitoringProbeBudgetDenial
@@ -898,7 +1135,7 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 		for range 2 {
 			id, err := repo.Acquire(ctx, recovery)
 			require.NoError(t, err)
-			require.NoError(t, repo.Release(ctx, id))
+			require.NoError(t, repo.Release(ctx, id, service.MonitoringProbeTokenUsage{}))
 		}
 		_, err = repo.Acquire(ctx, recovery)
 		require.ErrorAs(t, err, &denial)
@@ -936,12 +1173,12 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 				recovery.Recovery = true
 				id, err := repo.Acquire(ctx, recovery)
 				require.NoError(t, err)
-				require.NoError(t, repo.Release(ctx, id))
+				require.NoError(t, repo.Release(ctx, id, service.MonitoringProbeTokenUsage{}))
 			} else {
 				require.Equal(t, scope, denial.Scope)
 			}
-			require.NoError(t, repo.Release(ctx, first))
-			require.NoError(t, repo.Release(ctx, second))
+			require.NoError(t, repo.Release(ctx, first, service.MonitoringProbeTokenUsage{}))
+			require.NoError(t, repo.Release(ctx, second, service.MonitoringProbeTokenUsage{}))
 			next, err := repo.Acquire(ctx, request)
 			require.NoError(t, err)
 			renewed, err := repo.Renew(ctx, next)
@@ -984,7 +1221,7 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 4, summary.ActiveRequests)
 		for id := range leases {
-			require.NoError(t, repo.Release(ctx, id))
+			require.NoError(t, repo.Release(ctx, id, service.MonitoringProbeTokenUsage{}))
 		}
 		summary, err = repo.Summary(ctx)
 		require.NoError(t, err)

@@ -18,13 +18,15 @@ import (
 
 type monitoringBudgetRepoStub struct {
 	MonitoringProbeBudgetRepository
-	mu       sync.Mutex
-	requests []MonitoringProbeBudgetRequest
-	denyAt   int
-	err      error
-	acquire  func(MonitoringProbeBudgetRequest, int) (string, error)
-	renew    func(context.Context) (bool, error)
-	released int
+	mu         sync.Mutex
+	requests   []MonitoringProbeBudgetRequest
+	denyAt     int
+	err        error
+	acquire    func(MonitoringProbeBudgetRequest, int) (string, error)
+	renew      func(context.Context) (bool, error)
+	released   int
+	usages     []MonitoringProbeTokenUsage
+	releaseErr error
 }
 
 func (r *monitoringBudgetRepoStub) Acquire(_ context.Context, request MonitoringProbeBudgetRequest) (string, error) {
@@ -45,11 +47,12 @@ func (r *monitoringBudgetRepoStub) Renew(ctx context.Context, _ string) (bool, e
 	}
 	return true, nil
 }
-func (r *monitoringBudgetRepoStub) Release(context.Context, string) error {
+func (r *monitoringBudgetRepoStub) Release(_ context.Context, _ string, usage MonitoringProbeTokenUsage) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.released++
-	return nil
+	r.usages = append(r.usages, usage)
+	return r.releaseErr
 }
 
 func monitoringBudgetRequest(t *testing.T, repo *monitoringBudgetRepoStub) *http.Request {
@@ -212,7 +215,7 @@ func TestMonitoringProbeBudgetWSBoundaries(t *testing.T) {
 				lease := &openAIWSConnLease{conn: &openAIWSConn{upstreamKeyFingerprints: keys, billingHandshake: &openAIWSBillingHandshake{target: target}}}
 				turnCtx, finish, err = lease.beginMonitoringProbeRequest(ctx)
 			} else {
-				turnCtx, finish, err = beginMonitoringProbeWSRequest(ctx, target, keys)
+				turnCtx, finish, err = beginMonitoringProbeWSRequest(ctx, target, keys, true)
 			}
 			switch mode {
 			case "wss", "ws":

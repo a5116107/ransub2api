@@ -23,8 +23,8 @@ export default {
   retryUnknown: '重试时间未知，请检查检测预算状态。',
   budgetRemaining: '剩余 {count} 题未发送；不会自动补题。已正常完成的样本保留，延期或失租样本不参与归因。到达重试时间也不保证立即获得额度。',
   budgetScopes: {
-    global_minute: '全局每分钟请求预算', global_day: '全局每日请求预算（UTC）',
-    site_minute: '该站点每分钟请求预算', key_minute: '该上游 Key 每分钟请求预算',
+    global_minute: '全局每分钟预算', global_day: '全局每日预算（UTC）',
+    site_minute: '该站点每分钟预算', key_minute: '该上游 Key 每分钟预算',
     global: '全局检测并发', site: '该站点检测并发', key: '该上游 Key 检测并发',
     system: '预算协调系统', unknown: '预算范围未知'
   },

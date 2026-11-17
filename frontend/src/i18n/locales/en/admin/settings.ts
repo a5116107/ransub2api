@@ -542,9 +542,14 @@ export default {
       upstreamBillingProbe: {
         budget: {
           title: 'Declaration, balance and quality detection request budget',
-          scopeHint: 'Shared by upgraded instances on this database; drain older monitoring instances before enforcement. Counts each Sub2API declaration/balance request, New API management request or page (including previews), JEV grading attempt, native HTTP quality answer or LLM grading attempt, native WebSocket quality handshake, prewarm or generation, BPS text answer or grading request (including retries and tool corrections), state probes, legacy two-shot gateway diagnostics, admin two-turn WS validation, and background candy observation. Reused sockets still count each generation. Excludes business traffic, unified stored-ticket collection/automatic borrowing, other detection transports and token usage.',
+          scopeHint: 'Shared by upgraded instances on this database; drain older monitoring instances before enforcement. Counts each Sub2API declaration/balance request, New API management request or page (including previews), JEV grading attempt, native HTTP quality answer or LLM grading attempt, native WebSocket quality handshake, prewarm or generation, BPS text answer or grading request (including retries and tool corrections), state probes, legacy two-shot gateway diagnostics, admin two-turn WS validation, and background candy observation. Reused sockets still count each generation. Excludes business traffic, unified stored-ticket collection/automatic borrowing, other detection transports. Generation tokens count only returned usage.',
           enabled: 'Enforce shared limits', enforced: 'Limits enforced', observeOnly: 'Observe only — limits are not enforced',
           requests_per_minute: 'Global requests / UTC minute', requests_per_day: 'Global requests / UTC day',
+          tokens_per_minute: 'Reported tokens / minute (0 = unlimited)', tokens_per_day: 'Reported tokens / UTC day (0 = unlimited)',
+          site_tokens_per_minute: 'Reported tokens / site / minute (0 = unlimited)', key_tokens_per_minute: 'Reported tokens / credential / minute (0 = unlimited)',
+          tokenHint: 'Count only returned upstream usage, including cached input and output; never estimate or reserve tokens. Settle into UTC windows at completion. Reaching a limit stops later generation probes; in-flight calls may exceed it. Declaration and balance queries remain eligible. Missing, invalid or partial usage is shown as unknown; reported partial counters still count. Interrupted or failed settlements remain pending, never assumed free. Zero disables that dimension.',
+          minuteTokens: 'Reported tokens this minute', dayTokens: 'Reported tokens today (UTC)', unlimited: 'Unlimited', unknownUsage: 'Unknown',
+          usageCoverage: 'Generation probes today: {reported} complete usage · {unknown} unknown/partial usage; {pending} unsettled across windows (in-flight or disconnected). Unknown is not zero consumption. Refresh does not send probes.',
           site_requests_per_minute: 'Requests / site / minute', key_requests_per_minute: 'Requests / actual credential / minute',
           concurrency: 'Global active requests', site_concurrency: 'Active requests / site', key_concurrency: 'Active requests / actual credential',
           recovery_reserve_percent: 'Global recovery reserve (%)',
@@ -557,6 +562,7 @@ export default {
           conflict: 'Another administrator changed the budget. Refresh before saving again.', summaryFailed: 'Settings saved; usage refresh failed. Refresh to read the current observation.',
           deferred: 'Detection deferred', retryAt: 'Eligible to retry after: {value}',
           request_limit: 'The request budget for this window is exhausted.', recovery_reserve: 'Remaining global capacity is reserved for recovery.',
+          token_limit: 'The reported token budget for this window is exhausted; in-flight calls may finish.',
           concurrency_limit: 'Probe concurrency is full.', budget_unavailable: 'Budget coordination is unavailable; detection is deferred.'
         },
         title: 'Upstream Declaration Auto Detection',

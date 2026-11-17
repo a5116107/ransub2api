@@ -766,6 +766,11 @@ func TestQualityMonitoringBudgetNativeWSPhysicalAttempts(t *testing.T) {
 			require.Equal(t, tc.frames, frames.Load())
 			require.Len(t, repo.requests, tc.acquires)
 			require.Equal(t, tc.releases, repo.released)
+			var returnedTokens int64
+			for _, usage := range repo.usages {
+				returnedTokens += usage.Tokens
+			}
+			require.Equal(t, int64(tc.frames)*2, returnedTokens, "handshakes have no generation usage; prewarm and answer each return their own actual usage")
 			for _, request := range repo.requests {
 				require.Equal(t, monitoringProbeHash(server.URL), request.SiteHash)
 				require.Equal(t, []string{config.UpstreamKeyFingerprint("fixture")}, request.KeyHashes)

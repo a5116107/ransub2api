@@ -9,10 +9,12 @@ enableAutoUnmount(afterEach)
 const api = vi.hoisted(() => ({ getMonitoringProbeBudget: vi.fn(), updateMonitoringProbeBudget: vi.fn() }))
 vi.mock('@/api', () => ({ adminAPI: { accounts: api } }))
 const settings = () => ({ enabled: false, revision: 3, requests_per_minute: 600, requests_per_day: 100000,
+  tokens_per_minute: 0, tokens_per_day: 0, site_tokens_per_minute: 0, key_tokens_per_minute: 0,
   site_requests_per_minute: 600, key_requests_per_minute: 200, concurrency: 16,
   site_concurrency: 4, key_concurrency: 2, recovery_reserve_percent: 20 })
 const summary = () => ({ observed_at: '2026-11-17T12:00:00Z', settings: settings(), minute_used: 17,
-  minute_regular: 10, day_used: 123, day_regular: 100, active_requests: 2, active_regular: 1 })
+  minute_regular: 10, day_used: 123, day_regular: 100, active_requests: 2, active_regular: 1,
+  minute_tokens: 17, day_tokens: 1234, usage_reported: 8, usage_unknown: 3, usage_pending: 2 })
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -26,6 +28,33 @@ async function open(locale = 'en') {
 }
 
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('shows actual usage, unknown coverage and overshoot separately in %s', async locale => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), settings: { ...settings(), tokens_per_day: 1000 } })
+    const wrapper = await open(locale)
+    expect(wrapper.get('[data-testid="probe-budget-tokens"]').text()).toContain('1234 / 1000')
+    expect(wrapper.get('[data-testid="probe-budget-coverage"]').text()).toContain(locale === 'zh' ? '用量未知/不完整 3 次' : '3 unknown/partial usage')
+    expect(wrapper.get('[data-testid="probe-budget-coverage"]').text()).toContain(locale === 'zh' ? '待结算 2 次' : '2 unsettled')
+    await wrapper.get('#probe-budget-tokens_per_day').setValue('2000')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).toHaveBeenCalledWith({ ...settings(), tokens_per_day: 2000 })
+    expect(api.getMonitoringProbeBudget).toHaveBeenCalledTimes(2)
+  })
+  it('does not display missing legacy token fields as observed zero', async () => {
+    const legacy = summary() as Partial<ReturnType<typeof summary>>
+    delete legacy.day_tokens
+    delete legacy.usage_unknown
+    api.getMonitoringProbeBudget.mockResolvedValue(legacy)
+    const wrapper = await open()
+    expect(wrapper.get('[data-testid="probe-budget-tokens"]').text()).toContain('Unknown / Unlimited')
+    expect(wrapper.get('[data-testid="probe-budget-coverage"]').text()).toContain('Unknown unknown/partial usage')
+  })
+  it.each(['-1', '1.5', '1000000000001', ''])('rejects invalid token limit %s', async value => {
+    const wrapper = await open()
+    await wrapper.get('#probe-budget-tokens_per_day').setValue(value)
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+  })
   it.each(['en', 'zh'])('reads counters and saves a revisioned policy in %s', async locale => {
     const wrapper = await open(locale)
     expect(wrapper.get('[data-testid="probe-budget-usage"]').text()).toContain('17 / 600')

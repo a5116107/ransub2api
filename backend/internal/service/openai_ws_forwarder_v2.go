@@ -905,6 +905,9 @@ readLoop:
 		if errors.Is(context.Cause(ctx), ErrUpstreamKeyLease) {
 			return resultWithUsage(), ErrUpstreamKeyLease
 		}
+		if readErr == nil {
+			observeMonitoringProbeWSUsage(ctx, message)
+		}
 		if readErr == nil && !json.Valid(message) {
 			eventType, _, _ := parseOpenAIWSEventEnvelope(message)
 			if eventType == "" {

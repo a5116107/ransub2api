@@ -17,7 +17,7 @@ const props = defineProps<{ deferral: MonitoringProbeBudgetDeferral; title: stri
 const { t } = useI18n()
 const reasonKey = computed(() => {
   const reason = props.deferral.reason
-  return ['request_limit', 'recovery_reserve', 'concurrency_limit', 'budget_unavailable'].includes(reason)
+  return ['request_limit', 'token_limit', 'recovery_reserve', 'concurrency_limit', 'budget_unavailable'].includes(reason)
     ? `admin.settings.upstreamBillingProbe.budget.${reason}` : 'modelTrace.budgetReasonUnknown'
 })
 const scope = computed(() => ['global_minute', 'global_day', 'site_minute', 'key_minute', 'global', 'site', 'key', 'system'].includes(props.deferral.scope) ? props.deferral.scope : 'unknown')

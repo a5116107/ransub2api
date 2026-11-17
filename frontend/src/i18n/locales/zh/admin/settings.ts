@@ -535,9 +535,14 @@ export default {
       upstreamBillingProbe: {
         budget: {
           title: '倍率、余额与质量检测调用预算',
-          scopeHint: '同库已升级实例共用预算，执行限额前须排空旧版探测实例。逐次计数：Sub2API 倍率/余额、New API 管理请求和分页（含预览）、JEV 判题、原生 HTTP 质量答题和 LLM 判题、原生 WebSocket 质量答题的握手/预热/生成、BPS 文本答题/判题（含重试和工具纠正），以及门票探针、原两发网关诊断、管理员双轮 WS 验证及后台糖果观察。复用连接仍按生成次数计数。不含业务流量、统一门票存票采集/自动借票、其他检测通道或 token 用量。',
+          scopeHint: '同库已升级实例共用预算，执行限额前须排空旧版探测实例。逐次计数：Sub2API 倍率/余额、New API 管理请求和分页（含预览）、JEV 判题、原生 HTTP 质量答题和 LLM 判题、原生 WebSocket 质量答题的握手/预热/生成、BPS 文本答题/判题（含重试和工具纠正），以及门票探针、原两发网关诊断、管理员双轮 WS 验证及后台糖果观察。复用连接仍按生成次数计数。不含业务流量、统一门票存票采集/自动借票、其他检测通道。生成检测的 Token 仅按实际返回的 usage 累计。',
           enabled: '执行共享限额', enforced: '限额已生效', observeOnly: '仅观测：尚未执行限额',
           requests_per_minute: '全局每分钟请求数（UTC）', requests_per_day: '全局每日请求数（UTC）',
+          tokens_per_minute: '全局每分钟实际 Token（0 为不限）', tokens_per_day: '全局每日实际 Token（UTC，0 为不限）',
+          site_tokens_per_minute: '每站每分钟实际 Token（0 为不限）', key_tokens_per_minute: '每个实际凭据每分钟 Token（0 为不限）',
+          tokenHint: '只累计上游实际回传的 usage（含缓存输入与输出），不估算或预留 Token。按结算时刻进入 UTC 窗口，达到额度后停止后续生成检测，允许在途调用超额；倍率/余额等非生成查询仍可执行。缺失、非法或不完整 usage 单列为未知，已报告部分仍累计；进程中断或结算失败保留待结算，不猜测为零。0 表示该维度不限制。',
+          minuteTokens: '本分钟已报告 Token', dayTokens: '今日已报告 Token（UTC）', unlimited: '不限', unknownUsage: '未知',
+          usageCoverage: '今日生成检测：完整 usage {reported} 次 · 用量未知/不完整 {unknown} 次；跨周期待结算 {pending} 次（含在途与失联）。未知不是零消耗，刷新不重发检测。',
           site_requests_per_minute: '每站每分钟请求数', key_requests_per_minute: '每个实际凭据每分钟请求数',
           concurrency: '全局探测并发', site_concurrency: '每站探测并发', key_concurrency: '每个实际凭据探测并发',
           recovery_reserve_percent: '全局恢复预留（%）',
@@ -550,6 +555,7 @@ export default {
           conflict: '预算已被其他管理员修改，请刷新后重新保存。', summaryFailed: '配置已保存，用量刷新失败，请刷新读取当前观测。',
           deferred: '检测已延期', retryAt: '最早重试时间：{value}',
           request_limit: '当前周期的请求预算已耗尽。', recovery_reserve: '剩余全局名额已为故障恢复预留。',
+          token_limit: '当前周期已报告的 Token 预算已耗尽；在途调用仍可完成。',
           concurrency_limit: '探测并发已满。', budget_unavailable: '预算协调暂不可用，检测已延期。'
         },
         title: '上游渠道声明自动探测',

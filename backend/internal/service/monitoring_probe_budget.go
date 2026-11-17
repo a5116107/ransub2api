@@ -25,8 +25,8 @@ var ErrMonitoringProbeBudgetConflict = infraerrors.Conflict("MONITORING_PROBE_BU
 var ErrMonitoringProbeBudgetUnavailable = infraerrors.ServiceUnavailable("MONITORING_PROBE_BUDGET_UNAVAILABLE", "monitoring probe budget unavailable")
 var ErrMonitoringProbeBudgetLeaseLost = errors.New("monitoring probe budget lease lost")
 
-// Limits refer to physical transport attempts in PostgreSQL's UTC calendar
-// windows, not logical tasks, tokens, monetary cost, or downstream requests.
+// Request limits count physical attempts. Token limits count only returned
+// usage at completion in PostgreSQL's UTC windows, never estimated cost.
 type MonitoringProbeBudgetSettings struct {
 	Enabled                bool  `json:"enabled"`
 	Revision               int64 `json:"revision"`
@@ -34,6 +34,10 @@ type MonitoringProbeBudgetSettings struct {
 	RequestsPerDay         int64 `json:"requests_per_day"`
 	SiteRequestsPerMinute  int64 `json:"site_requests_per_minute"`
 	KeyRequestsPerMinute   int64 `json:"key_requests_per_minute"`
+	TokensPerMinute        int64 `json:"tokens_per_minute"`
+	TokensPerDay           int64 `json:"tokens_per_day"`
+	SiteTokensPerMinute    int64 `json:"site_tokens_per_minute"`
+	KeyTokensPerMinute     int64 `json:"key_tokens_per_minute"`
 	Concurrency            int   `json:"concurrency"`
 	SiteConcurrency        int   `json:"site_concurrency"`
 	KeyConcurrency         int   `json:"key_concurrency"`
@@ -51,6 +55,10 @@ func (s MonitoringProbeBudgetSettings) Validate() error {
 		s.RequestsPerDay < 1 || s.RequestsPerDay > 1000000000 ||
 		s.SiteRequestsPerMinute < 1 || s.SiteRequestsPerMinute > 1000000 ||
 		s.KeyRequestsPerMinute < 1 || s.KeyRequestsPerMinute > 1000000 ||
+		s.TokensPerMinute < 0 || s.TokensPerMinute > 1000000000000 ||
+		s.TokensPerDay < 0 || s.TokensPerDay > 1000000000000 ||
+		s.SiteTokensPerMinute < 0 || s.SiteTokensPerMinute > 1000000000000 ||
+		s.KeyTokensPerMinute < 0 || s.KeyTokensPerMinute > 1000000000000 ||
 		s.Concurrency < 1 || s.Concurrency > 1024 || s.SiteConcurrency < 1 || s.SiteConcurrency > 1024 ||
 		s.KeyConcurrency < 1 || s.KeyConcurrency > 1024 || s.RecoveryReservePercent < 0 || s.RecoveryReservePercent > 80 {
 		return infraerrors.BadRequest("INVALID_MONITORING_PROBE_BUDGET", "invalid monitoring budget limits")
@@ -77,12 +85,18 @@ type MonitoringProbeBudgetSummary struct {
 	DayRegular     int64                         `json:"day_regular"`
 	ActiveRequests int                           `json:"active_requests"`
 	ActiveRegular  int                           `json:"active_regular"`
+	MinuteTokens   int64                         `json:"minute_tokens"`
+	DayTokens      int64                         `json:"day_tokens"`
+	UsageReported  int64                         `json:"usage_reported"`
+	UsageUnknown   int64                         `json:"usage_unknown"`
+	UsagePending   int64                         `json:"usage_pending"`
 }
 
 type MonitoringProbeBudgetRequest struct {
-	SiteHash  string
-	KeyHashes []string
-	Recovery  bool
+	SiteHash    string
+	KeyHashes   []string
+	Recovery    bool
+	MeterTokens bool
 }
 
 type MonitoringProbeBudgetRepository interface {
@@ -91,7 +105,7 @@ type MonitoringProbeBudgetRepository interface {
 	Summary(context.Context) (*MonitoringProbeBudgetSummary, error)
 	Acquire(context.Context, MonitoringProbeBudgetRequest) (string, error)
 	Renew(context.Context, string) (bool, error)
-	Release(context.Context, string) error
+	Release(context.Context, string, MonitoringProbeTokenUsage) error
 }
 
 type MonitoringProbeBudgetService struct {
@@ -199,7 +213,7 @@ func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, rel
 	if _, ok := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); !ok {
 		return req, nil, nil
 	}
-	ctx, finish, err := beginMonitoringProbeRequest(req.Context(), req.URL, config.UpstreamCredentialFingerprints(req))
+	ctx, finish, err := beginMonitoringProbeRequest(req.Context(), req.URL, config.UpstreamCredentialFingerprints(req), req.URL != nil && req.Method == http.MethodPost && monitoringProbeGenerationPath(req.URL.Path))
 	if finish == nil {
 		return req, nil, err
 	}
@@ -209,7 +223,7 @@ func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, rel
 // WS handshakes and response.create turns share the HTTP accounting rules.
 // Turn callers supply the fingerprints frozen at the successful handshake,
 // never credentials reloaded from a potentially edited account.
-func beginMonitoringProbeWSRequest(ctx context.Context, target string, keys []string) (context.Context, func(), error) {
+func beginMonitoringProbeWSRequest(ctx context.Context, target string, keys []string, generation bool) (context.Context, func(), error) {
 	probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
 	if !ok {
 		return ctx, nil, nil
@@ -229,7 +243,11 @@ func beginMonitoringProbeWSRequest(ctx context.Context, target string, keys []st
 		probe.local.record(ErrMonitoringProbeBudgetUnavailable)
 		return ctx, nil, ErrMonitoringProbeBudgetUnavailable
 	}
-	return beginMonitoringProbeRequest(ctx, u, keys)
+	budgetCtx, finish, err := beginMonitoringProbeRequest(ctx, u, keys, generation)
+	if usage, _ := budgetCtx.Value(monitoringProbeTokenKey{}).(*monitoringProbeTokenCollector); usage != nil {
+		usage.setStream(true)
+	}
+	return budgetCtx, finish, err
 }
 
 func (l *openAIWSConnLease) beginMonitoringProbeRequest(ctx context.Context) (context.Context, func(), error) {
@@ -241,7 +259,7 @@ func (l *openAIWSConnLease) beginMonitoringProbeRequest(ctx context.Context) (co
 			target = l.conn.billingHandshake.target
 		}
 	}
-	return beginMonitoringProbeWSRequest(ctx, target, keys)
+	return beginMonitoringProbeWSRequest(ctx, target, keys, true)
 }
 
 // Releasing a handshake or completed turn cancels only its budget child, not
@@ -256,10 +274,10 @@ func finishMonitoringProbeWSRequest(ctx context.Context, finish func()) error {
 		probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
 		return ErrMonitoringProbeBudgetLeaseLost
 	}
-	return nil
+	return monitoringProbeLocalError(ctx)
 }
 
-func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys []string) (budgetCtx context.Context, release func(), resultErr error) {
+func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys []string, meterTokens bool) (budgetCtx context.Context, release func(), resultErr error) {
 	probe, ok := parent.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
 	if !ok {
 		return parent, nil, nil
@@ -296,7 +314,7 @@ func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys [
 	started := time.Now()
 	acquireCtx, cancelAcquire := context.WithTimeout(parent, 2*time.Second)
 	id, err := probe.service.repo.Acquire(acquireCtx, MonitoringProbeBudgetRequest{
-		SiteHash: monitoringProbeHash(site), KeyHashes: keys, Recovery: probe.recovery,
+		SiteHash: monitoringProbeHash(site), KeyHashes: keys, Recovery: probe.recovery, MeterTokens: meterTokens,
 	})
 	cancelAcquire()
 	if err != nil {
@@ -310,6 +328,12 @@ func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys [
 		return parent, nil, ErrMonitoringProbeBudgetUnavailable
 	}
 	ctx, cancel := context.WithCancelCause(parent)
+	var usage *monitoringProbeTokenCollector
+	if meterTokens {
+		usage = &monitoringProbeTokenCollector{}
+	}
+	// A nested handshake must not inherit the parent's generation meter.
+	ctx = context.WithValue(ctx, monitoringProbeTokenKey{}, usage)
 	stop := keepRenewedLease(ctx, started, MonitoringProbeBudgetLeaseTTL,
 		func(ctx context.Context) (bool, error) { return probe.service.repo.Renew(ctx, id) },
 		func() { cancel(ErrMonitoringProbeBudgetLeaseLost) })
@@ -318,7 +342,9 @@ func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys [
 		cancel(nil)
 		ctx, cancelRelease := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancelRelease()
-		_ = probe.service.repo.Release(ctx, id)
+		if err := probe.service.repo.Release(ctx, id, usage.snapshot()); err != nil {
+			probe.local.record(ErrMonitoringProbeBudgetUnavailable)
+		}
 	})
 	return ctx, finish, nil
 }
@@ -352,6 +378,9 @@ type monitoringProbeBudgetBody struct {
 // Keep local lease loss recognizable through stream/body wrappers.
 func (b *monitoringProbeBudgetBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
+	if usage, _ := b.ctx.Value(monitoringProbeTokenKey{}).(*monitoringProbeTokenCollector); usage != nil {
+		usage.feed(p[:n], err == io.EOF)
+	}
 	if errors.Is(context.Cause(b.ctx), ErrMonitoringProbeBudgetLeaseLost) {
 		probe, _ := b.ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
 		probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
@@ -367,6 +396,9 @@ func (b *monitoringProbeBudgetBody) Close() error {
 		probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
 	}
 	b.finish()
+	if local := monitoringProbeLocalError(b.ctx); errors.Is(local, ErrMonitoringProbeBudgetUnavailable) {
+		return local
+	}
 	return err
 }
 
@@ -387,6 +419,9 @@ func FinishMonitoringProbeResponse(ctx context.Context, response *http.Response,
 		return err
 	}
 	response.Body = &monitoringProbeBudgetBody{ReadCloser: response.Body, ctx: ctx, finish: finish}
+	if usage, _ := ctx.Value(monitoringProbeTokenKey{}).(*monitoringProbeTokenCollector); usage != nil {
+		usage.setStream(strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream"))
+	}
 	return nil
 }
 

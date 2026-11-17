@@ -32,7 +32,10 @@ func (r *astraDiagnosticBudgetRepo) Acquire(context.Context, service.MonitoringP
 	return "diagnostic-fixture", nil
 }
 func (*astraDiagnosticBudgetRepo) Renew(context.Context, string) (bool, error) { return true, nil }
-func (r *astraDiagnosticBudgetRepo) Release(context.Context, string) error     { r.released++; return nil }
+func (r *astraDiagnosticBudgetRepo) Release(context.Context, string, service.MonitoringProbeTokenUsage) error {
+	r.released++
+	return nil
+}
 
 func TestAstraGatewayMonitoringBudgetPreservesRouteEvidence(t *testing.T) {
 	for _, denyAt := range []int{1, 2} {

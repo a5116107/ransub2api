@@ -2225,7 +2225,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	if req.BindAgentPublicKey != nil {
 		credentialRequest = req.BindAgentPublicKey(credentialRequest)
 	}
-	ctx, finishBudget, err := beginMonitoringProbeWSRequest(ctx, req.WSURL, config.UpstreamCredentialFingerprints(credentialRequest))
+	ctx, finishBudget, err := beginMonitoringProbeWSRequest(ctx, req.WSURL, config.UpstreamCredentialFingerprints(credentialRequest), false)
 	if err != nil {
 		return nil, err
 	}

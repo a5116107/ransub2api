@@ -17,6 +17,14 @@
           <progress class="h-2 w-full accent-blue-600" :aria-label="t(`${prefix}.${counter.label}`)" :value="counter.used" :max="counter.limit" />
         </div>
       </div>
+      <div class="grid gap-4 sm:grid-cols-2" data-testid="probe-budget-tokens">
+        <div v-for="counter in tokenCounters" :key="counter.label" class="min-w-0">
+          <p class="text-sm text-gray-700 dark:text-gray-200">{{ t(`${prefix}.${counter.label}`) }}</p>
+          <p class="font-mono text-sm text-gray-900 dark:text-white">{{ displayUsage(counter.used) }} / {{ counter.limit > 0 ? counter.limit : t(`${prefix}.unlimited`) }}</p>
+          <progress v-if="counter.limit > 0 && counter.used !== undefined" class="h-2 w-full accent-blue-600" :aria-label="t(`${prefix}.${counter.label}`)" :value="counter.used" :max="counter.limit" />
+        </div>
+      </div>
+      <p class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" data-testid="probe-budget-coverage">{{ t(`${prefix}.usageCoverage`, { reported: displayUsage(summary.usage_reported), unknown: displayUsage(summary.usage_unknown), pending: displayUsage(summary.usage_pending) }) }}</p>
       <p class="text-xs text-gray-600 dark:text-gray-300">{{ t(`${prefix}.observedAt`, { value: summary.observed_at }) }}</p>
     </template>
     <fieldset v-if="loaded" :disabled="loading || saving" class="space-y-4">
@@ -31,6 +39,7 @@
         </div>
       </div>
       <p class="text-sm text-gray-600 dark:text-gray-300">{{ t(`${prefix}.reserveHint`) }}</p>
+      <p class="text-sm text-gray-600 dark:text-gray-300">{{ t(`${prefix}.tokenHint`) }}</p>
       <p class="text-sm text-gray-600 dark:text-gray-300">{{ t(`${prefix}.deferralHint`) }}</p>
       <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
         <button type="button" class="btn btn-primary btn-sm" data-testid="probe-budget-save" @click="save">{{ saving ? t('common.saving') : t('common.save') }}</button>
@@ -49,6 +58,7 @@ import type { MonitoringProbeBudgetSummary } from '@/types/monitoringProbeBudget
 const { t } = useI18n()
 const prefix = 'admin.settings.upstreamBillingProbe.budget'
 const form = reactive({ enabled: false, revision: 0, requests_per_minute: 600, requests_per_day: 100000,
+  tokens_per_minute: 0, tokens_per_day: 0, site_tokens_per_minute: 0, key_tokens_per_minute: 0,
   site_requests_per_minute: 600, key_requests_per_minute: 200, concurrency: 16,
   site_concurrency: 4, key_concurrency: 2, recovery_reserve_percent: 20 })
 const fields = [
@@ -56,6 +66,10 @@ const fields = [
   { key: 'requests_per_day', min: 1, max: 1000000000 },
   { key: 'site_requests_per_minute', min: 1, max: 1000000 },
   { key: 'key_requests_per_minute', min: 1, max: 1000000 },
+  { key: 'tokens_per_minute', min: 0, max: 1000000000000 },
+  { key: 'tokens_per_day', min: 0, max: 1000000000000 },
+  { key: 'site_tokens_per_minute', min: 0, max: 1000000000000 },
+  { key: 'key_tokens_per_minute', min: 0, max: 1000000000000 },
   { key: 'concurrency', min: 1, max: 1024 },
   { key: 'site_concurrency', min: 1, max: 1024 },
   { key: 'key_concurrency', min: 1, max: 1024 },
@@ -72,6 +86,13 @@ const counters = computed(() => summary.value ? [
   { label: 'dayUsage', used: summary.value.day_used, limit: summary.value.settings.requests_per_day },
   { label: 'activeUsage', used: summary.value.active_requests, limit: summary.value.settings.concurrency },
 ] : [])
+const tokenCounters = computed(() => summary.value ? [
+  { label: 'minuteTokens', used: summary.value.minute_tokens, limit: summary.value.settings.tokens_per_minute ?? 0 },
+  { label: 'dayTokens', used: summary.value.day_tokens, limit: summary.value.settings.tokens_per_day ?? 0 },
+] : [])
+function displayUsage(value: number | undefined) {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? value : t(`${prefix}.unknownUsage`)
+}
 
 async function load() {
   if (loading.value || saving.value) return
