@@ -4993,6 +4993,7 @@
                   </button>
                 </div>
               </template>
+              <MonitoringProbeBudgetSettings />
             </div>
           </div>
 
@@ -9674,6 +9675,7 @@ import GroupBadge from "@/components/common/GroupBadge.vue";
 import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import RequestTimezoneSettings from "@/components/settings/RequestTimezoneSettings.vue";
 import AccountPerformanceSettings from "@/components/settings/AccountPerformanceSettings.vue";
+import MonitoringProbeBudgetSettings from "@/components/settings/MonitoringProbeBudgetSettings.vue";
 import OpenAIAPIKeyHealthBreakerSettings from "@/components/settings/OpenAIAPIKeyHealthBreakerSettings.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";

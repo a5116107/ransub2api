@@ -9,18 +9,27 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamstats"
 	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// Passive observation shared by native HTTP transports (including TLS and
-// regional egress). No pre-reading, retries, logging or storage IO.
+// Shared physical HTTP boundary, including TLS and regional egress. Ordinary
+// traffic remains passive; internally marked billing probes acquire a budget.
 type accountResponseTransport struct{ base http.RoundTripper }
 
 func (t *accountResponseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req, finish, err := service.BeginMonitoringProbeRequest(req)
+	if err != nil {
+		if req != nil && req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, err
+	}
 	if requesttiming.From(req.Context()) != nil {
 		requesttiming.RecordUpstreamCredentials(req.Context(), config.UpstreamCredentialFingerprints(req))
 		req = requesttiming.ObserveUpstreamRequest(req)
 	}
 	resp, err := t.base.RoundTrip(req)
+	err = service.FinishMonitoringProbeResponse(req.Context(), resp, err, finish)
 	if err == nil && resp != nil && req.Context().Err() == nil && isAccountInferenceRequest(req) {
 		upstreamstats.Default.Record(requestcapture.AccountFromContext(req.Context()), resp.StatusCode, time.Now())
 	}

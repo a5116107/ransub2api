@@ -111,7 +111,7 @@ func (r *newAPIAuthorizationRepository) Save(ctx context.Context, p *service.New
 		return e
 	}
 	// Every rotation invalidates snapshots for other bindings on this profile.
-	rows, e := tx.QueryContext(ctx, `UPDATE accounts a SET extra=COALESCE(a.extra,'{}'::jsonb)-'upstream_billing_probe',updated_at=NOW() FROM new_api_account_bindings b WHERE a.id=b.account_id AND b.authorization_id=$1 RETURNING a.id`, id)
+	rows, e := tx.QueryContext(ctx, `UPDATE accounts a SET extra=COALESCE(a.extra,'{}'::jsonb)-'upstream_billing_probe'-'upstream_billing_probe_deferral',updated_at=NOW() FROM new_api_account_bindings b WHERE a.id=b.account_id AND b.authorization_id=$1 RETURNING a.id`, id)
 	if e != nil {
 		return e
 	}
@@ -137,7 +137,7 @@ func (r *newAPIAuthorizationRepository) Save(ctx context.Context, p *service.New
 		if e != nil {
 			return e
 		}
-		_, e = tx.ExecContext(ctx, `UPDATE accounts SET extra=(COALESCE(extra,'{}'::jsonb)-'upstream_billing_probe') || jsonb_build_object('upstream_billing_provider','new_api','upstream_billing_site',$2::text,'upstream_billing_user_id',$3::bigint,'upstream_billing_probe_enabled',true,'upstream_billing_rate_sync_enabled',false),updated_at=NOW() WHERE id=$1`, b.Account.ID, p.SiteURL, p.UserID)
+		_, e = tx.ExecContext(ctx, `UPDATE accounts SET extra=(COALESCE(extra,'{}'::jsonb)-'upstream_billing_probe'-'upstream_billing_probe_deferral') || jsonb_build_object('upstream_billing_provider','new_api','upstream_billing_site',$2::text,'upstream_billing_user_id',$3::bigint,'upstream_billing_probe_enabled',true,'upstream_billing_rate_sync_enabled',false),updated_at=NOW() WHERE id=$1`, b.Account.ID, p.SiteURL, p.UserID)
 		if e != nil {
 			return e
 		}
@@ -156,7 +156,7 @@ func (r *newAPIAuthorizationRepository) Unbind(ctx context.Context, id int64) er
 		return e
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, e = tx.ExecContext(ctx, `UPDATE accounts SET extra=COALESCE(extra,'{}'::jsonb)-'upstream_billing_provider'-'upstream_billing_site'-'upstream_billing_user_id'-'upstream_billing_probe',updated_at=NOW() WHERE id=$1 AND deleted_at IS NULL`, id); e != nil {
+	if _, e = tx.ExecContext(ctx, `UPDATE accounts SET extra=COALESCE(extra,'{}'::jsonb)-'upstream_billing_provider'-'upstream_billing_site'-'upstream_billing_user_id'-'upstream_billing_probe'-'upstream_billing_probe_deferral',updated_at=NOW() WHERE id=$1 AND deleted_at IS NULL`, id); e != nil {
 		return e
 	}
 	if _, e = tx.ExecContext(ctx, `DELETE FROM new_api_account_bindings WHERE account_id=$1`, id); e != nil {
@@ -195,7 +195,7 @@ func (r *newAPIAuthorizationRepository) WriteSnapshot(ctx context.Context, a *se
 	if e != nil {
 		return e
 	}
-	result, e := tx.ExecContext(ctx, `UPDATE accounts a SET extra=COALESCE(extra,'{}'::jsonb)||jsonb_build_object('upstream_billing_probe',$1::jsonb),updated_at=NOW() WHERE a.id=$2 AND COALESCE(extra->'upstream_billing_probe','null'::jsonb)=$3::jsonb AND COALESCE(extra->'upstream_billing_probe_enabled','null'::jsonb)=$4::jsonb AND EXISTS(SELECT 1 FROM new_api_account_bindings b WHERE b.account_id=a.id AND b.authorization_id=$5 AND b.upstream_token_id=$6 AND b.account_fingerprint=$7)`, string(payload), a.ID, string(old), string(enabled), b.Profile.ID, b.TokenID, b.Fingerprint)
+	result, e := tx.ExecContext(ctx, `UPDATE accounts a SET extra=COALESCE(extra,'{}'::jsonb)||jsonb_build_object('upstream_billing_probe',$1::jsonb,'upstream_billing_probe_deferral',NULL),updated_at=NOW() WHERE a.id=$2 AND COALESCE(extra->'upstream_billing_probe','null'::jsonb)=$3::jsonb AND COALESCE(extra->'upstream_billing_probe_enabled','null'::jsonb)=$4::jsonb AND EXISTS(SELECT 1 FROM new_api_account_bindings b WHERE b.account_id=a.id AND b.authorization_id=$5 AND b.upstream_token_id=$6 AND b.account_fingerprint=$7)`, string(payload), a.ID, string(old), string(enabled), b.Profile.ID, b.TokenID, b.Fingerprint)
 	if e != nil {
 		return e
 	}

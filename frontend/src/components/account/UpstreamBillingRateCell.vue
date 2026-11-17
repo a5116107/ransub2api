@@ -99,6 +99,12 @@
         <Icon name="refresh" size="xs" :class="{ 'animate-spin': probing }" />
       </button>
     </div>
+    <details v-if="deferral" class="my-1 max-w-sm text-xs text-amber-800 dark:text-amber-300" data-testid="upstream-billing-deferral">
+      <summary class="cursor-pointer">{{ t('admin.settings.upstreamBillingProbe.budget.deferred') }}</summary>
+      <p class="mt-1">{{ t(`admin.settings.upstreamBillingProbe.budget.${deferralReason}`) }}</p>
+      <p>{{ t('admin.settings.upstreamBillingProbe.budget.retryAt', { value: formatDate(deferral.retry_at) }) }}</p>
+      <p>{{ t('admin.settings.upstreamBillingProbe.budget.deferralHint') }}</p>
+    </details>
     <details v-if="isMultiGroup" class="my-1 max-w-sm text-xs" data-testid="upstream-billing-groups">
       <summary class="cursor-pointer text-blue-600 dark:text-blue-400">{{ t('admin.accounts.upstreamBilling.multiGroupCount', { count: declaredGroups.length }) }}</summary>
       <p class="mt-1 text-gray-500">{{ t('admin.accounts.upstreamBilling.multiGroupSyncPaused') }}</p>
@@ -244,6 +250,8 @@ const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000
 // 探测资格已放宽到全部 API-key 平台（上游是 sub2api 即可应答）。
 const eligible = computed(() => props.account.type === 'apikey')
 const snapshot = computed<UpstreamBillingProbeSnapshot | undefined>(() => props.account.extra?.upstream_billing_probe)
+const deferral = computed(() => props.account.extra?.upstream_billing_probe_deferral)
+const deferralReason = computed(() => ['request_limit', 'recovery_reserve', 'concurrency_limit', 'budget_unavailable'].includes(deferral.value?.reason ?? '') ? deferral.value!.reason : 'budget_unavailable')
 const data = computed(() => snapshot.value?.data)
 const applicability = computed(() => data.value?.rate_applicability)
 const manualApplicability = computed(() => props.account.extra?.upstream_billing_manual_applicability)

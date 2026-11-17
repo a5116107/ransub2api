@@ -17,6 +17,8 @@ import {
   saveNewAPIUpstreamConfig,
   deleteNewAPIUpstreamConfig,
   getUpstreamBillingProbeSettings,
+  getMonitoringProbeBudget,
+  updateMonitoringProbeBudget,
   probeUpstreamBilling,
   probeUpstreamBillingBatch,
   setUpstreamBillingProbeEnabled,
@@ -24,6 +26,16 @@ import {
 } from '@/api/admin/accounts'
 
 describe('admin account upstream billing probe API', () => {
+  it('uses the shared budget endpoints and preserves the CAS revision', async () => {
+    const policy = { enabled: true, revision: 3, requests_per_minute: 90, requests_per_day: 1000, site_requests_per_minute: 50, key_requests_per_minute: 20, concurrency: 4, site_concurrency: 2, key_concurrency: 1, recovery_reserve_percent: 20 }
+    const summary = { settings: policy, minute_used: 10 }
+    get.mockResolvedValueOnce({ data: summary })
+    put.mockResolvedValueOnce({ data: { ...policy, revision: 4 } })
+    await expect(getMonitoringProbeBudget()).resolves.toEqual(summary)
+    await expect(updateMonitoringProbeBudget(policy)).resolves.toEqual({ ...policy, revision: 4 })
+    expect(get).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget')
+    expect(put).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget', policy)
+  })
   beforeEach(() => {
     get.mockReset()
     post.mockReset()

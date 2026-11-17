@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1慢批次主锁子验收本地done；基线f209b8fea。
+任务：D8.1倍率物理预算子验收本地done；基线ff7326aee。
 范围：唯一H盘/自有分支同步；不CI、不提升功能分支。
-已验：race服务1675/SQL及Redis100pass，0fail/skip/race；含五类失锁及恢复。
-静态：两包vet/Linux过、增量fast lint0；本轮不改UI。
-修复：140秒批次穿透120秒锁；40秒续租/80秒看门狗、批次令牌与取消写入保护。
-源码：Go终版3ed0f12bd4d6a818；证据billing-lease-*；原红灯保留。
-下一：D8.1两出站口的物理调用/分页及共享预算，再补覆盖预览；未授予严格资格。
+已验：服务race710、SQL/Redis376、接口/权限172pass；0fail/skip/race。
+终树：cd95bbb4ad3c9646；终SQL/接口/vet/lint/Linux无漂移；服务源码沿未变证据。
+实施：倍率/余额/分页物理额度、跨节点并发/预留、独立延期及管理UI；迟到写入已修。
+前端：221pass；类型/lint/build和中英390/1440px浏览器通过；非生产。
+下一：原位完成质量/token/判题预算和覆盖编译、公平性及多节点周期；自有分支交付。
 生产最后实测：.7/fd83f6c91；本轮未部署或重验。
 等待：原28项20done/8部分；基线/scope/缓存域、PR3/旧历史。
-Attempt：51
+Attempt：54
 <!-- resume:end -->
 
 ## 目标与入口
@@ -21,7 +21,7 @@ Attempt：51
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)：13.3保留审计基线，5.3.1补自动适用声明边界。
 - [决策与验证历史](DECISIONS.md)；功能分支未整体验证上线，独立生产热修复已加载。
 - 原28项20done/8部分；13.2子项6/7done；新缺口不增分母；单分支/单完整PR。
-- R1自动发行仅消费production，不自动提升功能分支；新截图线上问题按D9.1独立处理，真实采购价延期。
+- R1仅发行production；线上问题按D9.1处理，真实采购价延期。
 
 ## 任务进度
 
@@ -57,14 +57,15 @@ Attempt：51
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
-| D8 | in_progress | 两模板100轮转/分页/SQL及30秒耗尽、慢批次续租/失锁恢复已本地验；完整预算/生产周期/严格混版仍缺 |
+| D8 | in_progress | 两模板100轮转/分页/SQL及主锁恢复、倍率物理共享额度/恢复预留/UI已本地验；质量/token/判题/覆盖编译、生产周期/严格混版仍缺 |
+| D8.1倍率物理预算 | done | 两模板/配置预览逐调用、SQL共享并发/预留、延期不续证据、配置409及迟到写入均本地已验；非完整D8.1/生产 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
 
 ## 剩余执行顺序与等待
 
 - 本地可执行：D2.6其余状态转换/受管合同与D5.3实际组/受信外部检测/资格→D3.2其余线路/跨规则及D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.4仍缺。
-- D9.1的.7生产四阶段/16历史及上线已验；旧调度遗漏已回合，648竞态/三包vet/增量lint0。PR3/v2.21.5仍有冲突，不整分支发布未验功能。
+- D9.1生产.7已验；PR3/v2.21.5冲突未解，未验功能不发布，历史证据见DECISIONS。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。
 - D8.2旧版重订阅对照已失败，同候选恢复通过不算严格混版；统一排空升级是另一交付路径，不更名关闭原验收。D9.2仍依赖完整本地与实际启用范围证据。
@@ -72,10 +73,11 @@ Attempt：51
 ## 工作区与既有环境限制
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
-- 153包历史与本轮专项证据见DECISIONS；并发1–2、共享Go缓存。
+- 验证历史见DECISIONS；并发1–2、共享Go缓存。
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 私有PG55441/PID10868、Redis56441/PID46228及原tmp下quality-batch-{build,runner.py}清理仍被宿主拦截；路径见DECISIONS。新增`H:/Root/DevCache/tmp/sub2api-quality-validity`删除同被拒（blocked by policy），预览已停；owner宿主用户，解除后清理。
 - 历史宿主拒删资源（620274603bytes及D2.6日志）原位保留；精确路径/命令/owner见DECISIONS，待宿主拥有者解除策略，不换工具或移动绕过。
-- 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。
+- 全规则lint历史超预算；本轮增量fast+vet通过。
+- 预算构建文件213260543bytes被宿主拒删；原路径见DECISIONS，owner宿主用户，解除后清理，回收0。

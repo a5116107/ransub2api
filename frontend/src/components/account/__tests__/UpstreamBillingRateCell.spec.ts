@@ -59,6 +59,15 @@ const billingData = {
 }
 
 describe('UpstreamBillingRateCell', () => {
+  it('shows local budget deferral without changing or refreshing the last supplier evidence', () => {
+    const account = makeAccount({ extra: { upstream_billing_probe_deferral: { reason: 'recovery_reserve', scope: 'global_minute', retry_at: '2026-07-13T01:00:00Z' },
+      upstream_billing_probe: { status: 'ok', last_attempt_at: '2026-07-13T00:00:00Z', received_at: '2026-07-13T00:00:00Z', fresh_until: '2026-07-13T00:30:00Z', next_probe_at: '2026-07-13T00:15:00Z', data: billingData } } })
+    const wrapper = mount(UpstreamBillingRateCell, { props: { account, now: Date.parse('2026-07-13T00:40:00Z') } })
+    expect(wrapper.get('[data-testid="upstream-billing-deferral"]').text()).toContain('recovery_reserve')
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toContain('stale')
+    expect(account.extra!.upstream_billing_probe!.fresh_until).toBe('2026-07-13T00:30:00Z')
+    wrapper.unmount()
+  })
   const scopeAccount = (conclusion: 'covered' | 'excluded' | 'unknown' | 'conflict' = 'covered'): Account => makeAccount({ extra: {
     upstream_billing_probe: {
       status: 'ok', received_at: '2026-07-13T00:00:00Z', fresh_until: '2026-07-13T01:00:00Z',

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,36 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+type responseMonitoringBudgetRepo struct {
+	service.MonitoringProbeBudgetRepository
+	err error
+}
+
+func (r responseMonitoringBudgetRepo) Acquire(context.Context, service.MonitoringProbeBudgetRequest) (string, error) {
+	return "", r.err
+}
+
+func TestAccountHTTPResponseMonitoringBudgetStopsPhysicalSend(t *testing.T) {
+	denial := &service.MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute", RetryAt: time.Now().Add(time.Minute)}
+	budget := service.NewMonitoringProbeBudgetService(responseMonitoringBudgetRepo{err: denial})
+	var sent int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sent++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	transport := &accountResponseTransport{base: server.Client().Transport}
+	req, err := http.NewRequestWithContext(budget.Context(t.Context(), server.URL, false), http.MethodGet, server.URL+"/api/status", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer fixture-budget-key")
+	resp, err := transport.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.True(t, errors.Is(err, denial), "budget denial must reach the scheduling caller: %v", err)
+	require.Zero(t, sent, "an exhausted probe budget must stop the physical request")
+}
 
 func TestAccountHTTPResponseCapturesPhysicalRequestScope(t *testing.T) {
 	for _, tlsMode := range []bool{false, true} {

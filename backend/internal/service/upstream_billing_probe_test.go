@@ -153,6 +153,20 @@ func (r *upstreamBillingProbeAccountRepo) FindByExtraField(_ context.Context, ke
 	return result, nil
 }
 
+func (r *upstreamBillingProbeAccountRepo) DeferUpstreamBillingProbe(_ context.Context, account *Account, denial *MonitoringProbeBudgetDenial) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.accounts[account.ID]
+	if current == nil || !reflect.DeepEqual(current.Credentials, account.Credentials) {
+		return ErrUpstreamBillingProbeIdentityChanged
+	}
+	if current.Extra == nil {
+		current.Extra = make(map[string]any)
+	}
+	current.Extra[UpstreamBillingProbeDeferralExtraKey] = denial
+	return nil
+}
+
 type upstreamBillingProbeSettingRepo struct {
 	SettingRepository
 	mu     sync.Mutex
@@ -281,6 +295,7 @@ func TestUpstreamBillingPinnedGroupConfirmation(t *testing.T) {
 				require.Nil(t, snapshot.SyncedRateMultiplier)
 			}
 			account.Extra[UpstreamBillingProbeExtraKey] = snapshot
+			account.Extra[UpstreamBillingProbeDeferralExtraKey] = nil
 			_, reason := profitControlAccountRateAt(account, now)
 			if tc.valid {
 				require.Empty(t, reason)

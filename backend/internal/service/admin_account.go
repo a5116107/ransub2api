@@ -445,6 +445,7 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingProbeExtraKey)
+	delete(accountExtra, UpstreamBillingProbeDeferralExtraKey)
 	delete(accountExtra, UpstreamBillingManualApplicabilityExtraKey)
 	delete(accountExtra, UpstreamBillingProviderExtraKey)
 	delete(accountExtra, OllamaCloudUsageSessionExtraKey)
@@ -770,6 +771,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, UpstreamBillingProbeEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingRateSyncEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingProbeExtraKey)
+		delete(normalizedExtra, UpstreamBillingProbeDeferralExtraKey)
 		delete(normalizedExtra, UpstreamBillingManualApplicabilityExtraKey)
 		delete(normalizedExtra, UpstreamBillingProviderExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageSessionExtraKey)
@@ -795,6 +797,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			UpstreamBillingProbeEnabledExtraKey,
 			UpstreamBillingRateSyncEnabledExtraKey,
 			UpstreamBillingProbeExtraKey,
+			UpstreamBillingProbeDeferralExtraKey,
 			UpstreamBillingManualApplicabilityExtraKey,
 			OllamaCloudUsageSessionExtraKey,
 			OllamaCloudUsageAutoRefreshExtraKey,
@@ -886,6 +889,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	if !reflect.DeepEqual(previousProbeIdentity, upstreamBillingProbeIdentity(account)) && account.Extra != nil {
 		delete(account.Extra, UpstreamBillingProbeExtraKey)
+		delete(account.Extra, UpstreamBillingProbeDeferralExtraKey)
 		delete(account.Extra, UpstreamBillingProviderExtraKey)
 		if !isUpstreamBillingProbeAccount(account) {
 			delete(account.Extra, UpstreamBillingProbeEnabledExtraKey)
@@ -1096,6 +1100,7 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(updates, UpstreamBillingProbeExtraKey)
+	delete(updates, UpstreamBillingProbeDeferralExtraKey)
 	delete(updates, UpstreamBillingManualApplicabilityExtraKey)
 	delete(updates, UpstreamBillingProviderExtraKey)
 	delete(updates, OllamaCloudUsageSessionExtraKey)
@@ -1133,6 +1138,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	delete(input.Extra, UpstreamBillingProbeEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingProbeExtraKey)
+	delete(input.Extra, UpstreamBillingProbeDeferralExtraKey)
 	delete(input.Extra, UpstreamBillingManualApplicabilityExtraKey)
 	delete(input.Extra, UpstreamBillingProviderExtraKey)
 	delete(input.Extra, OllamaCloudUsageSessionExtraKey)
@@ -1377,6 +1383,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		// JSON null makes every reader treat the old snapshot as absent and lets the
 		// next enabled runner cycle probe the new upstream identity immediately.
 		repoUpdates.Extra[UpstreamBillingProbeExtraKey] = nil
+		repoUpdates.Extra[UpstreamBillingProbeDeferralExtraKey] = nil
 	}
 	if input.Name != "" {
 		repoUpdates.Name = &input.Name

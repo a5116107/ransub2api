@@ -1,0 +1,243 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/stretchr/testify/require"
+)
+
+type monitoringBudgetRepoStub struct {
+	MonitoringProbeBudgetRepository
+	mu       sync.Mutex
+	requests []MonitoringProbeBudgetRequest
+	denyAt   int
+	err      error
+	renew    func(context.Context) (bool, error)
+	released int
+}
+
+func (r *monitoringBudgetRepoStub) Acquire(_ context.Context, request MonitoringProbeBudgetRequest) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requests = append(r.requests, request)
+	if r.denyAt > 0 && len(r.requests) >= r.denyAt {
+		return "", r.err
+	}
+	return "fixture-lease", nil
+}
+func (r *monitoringBudgetRepoStub) Renew(ctx context.Context, _ string) (bool, error) {
+	if r.renew != nil {
+		return r.renew(ctx)
+	}
+	return true, nil
+}
+func (r *monitoringBudgetRepoStub) Release(context.Context, string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.released++
+	return nil
+}
+
+func monitoringBudgetRequest(t *testing.T, repo *monitoringBudgetRepoStub) *http.Request {
+	t.Helper()
+	svc := NewMonitoringProbeBudgetService(repo)
+	req, err := http.NewRequestWithContext(svc.Context(t.Context(), "https://example.com/tenant/v1", true), http.MethodGet, "https://example.com/tenant/api/status", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer private-budget-fixture")
+	return req
+}
+
+func TestMonitoringProbeBudgetTransportLifecycle(t *testing.T) {
+	for _, outcome := range []string{"body", "transport_error", "empty_response"} {
+		t.Run(outcome, func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			original := monitoringBudgetRequest(t, repo)
+			req, finish, err := BeginMonitoringProbeRequest(original)
+			require.NoError(t, err)
+			require.Len(t, repo.requests, 1)
+			require.Equal(t, config.UpstreamCredentialFingerprints(original), repo.requests[0].KeyHashes)
+			require.Equal(t, monitoringProbeHash("https://example.com/tenant"), repo.requests[0].SiteHash)
+			require.True(t, repo.requests[0].Recovery)
+			require.NotContains(t, repo.requests[0].SiteHash, "example.com")
+			var response *http.Response
+			var transportErr error
+			if outcome == "body" {
+				response = &http.Response{Body: io.NopCloser(strings.NewReader("fixture"))}
+			}
+			if outcome == "transport_error" {
+				transportErr = errors.New("fixture transport error")
+			}
+			require.ErrorIs(t, FinishMonitoringProbeResponse(req.Context(), response, transportErr, finish), transportErr)
+			if response != nil {
+				require.Zero(t, repo.released)
+				data, readErr := io.ReadAll(response.Body)
+				require.NoError(t, readErr)
+				require.Equal(t, "fixture", string(data))
+				require.NoError(t, response.Body.Close())
+				require.NoError(t, response.Body.Close())
+			}
+			finish()
+			require.Equal(t, 1, repo.released)
+		})
+	}
+}
+
+func TestMonitoringProbeBudgetRejectsChangedSiteAndUnverifiedCredentials(t *testing.T) {
+	for _, change := range []string{"host", "scheme", "tenant", "no_credentials", "unknown_credentials", "cancelled"} {
+		t.Run(change, func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			req := monitoringBudgetRequest(t, repo)
+			switch change {
+			case "host":
+				req.URL.Host = "other.example"
+			case "scheme":
+				req.URL.Scheme = "http"
+			case "tenant":
+				req.URL.Path = "/tenant-other/api/status"
+			case "no_credentials":
+				req.Header.Del("Authorization")
+			case "unknown_credentials":
+				req.Header.Set("Authorization", "Custom opaque")
+			case "cancelled":
+				ctx, cancel := context.WithCancel(req.Context())
+				cancel()
+				req = req.WithContext(ctx)
+			}
+			_, finish, err := BeginMonitoringProbeRequest(req)
+			require.Error(t, err)
+			require.Nil(t, finish)
+			require.Empty(t, repo.requests)
+		})
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	require.NoError(t, err)
+	got, finish, err := BeginMonitoringProbeRequest(req)
+	require.NoError(t, err)
+	require.Same(t, req, got)
+	require.Nil(t, finish)
+}
+
+func TestMonitoringProbeBudgetLeaseLossCancelsTransportAndReleases(t *testing.T) {
+	for _, mode := range []string{"error", "lost", "blocked", "late_ack"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				repo := &monitoringBudgetRepoStub{renew: func(ctx context.Context) (bool, error) {
+					switch mode {
+					case "error":
+						return false, errors.New("fixture database unavailable")
+					case "lost":
+						return false, nil
+					case "blocked":
+						<-ctx.Done()
+						return false, ctx.Err()
+					default:
+						time.Sleep(50 * time.Second)
+						return true, nil
+					}
+				}}
+				req, finish, err := BeginMonitoringProbeRequest(monitoringBudgetRequest(t, repo))
+				require.NoError(t, err)
+				response := &http.Response{Body: io.NopCloser(strings.NewReader("fixture"))}
+				require.NoError(t, FinishMonitoringProbeResponse(req.Context(), response, nil, finish))
+				time.Sleep(81 * time.Second)
+				synctest.Wait()
+				require.ErrorIs(t, context.Cause(req.Context()), ErrMonitoringProbeBudgetLeaseLost)
+				_, err = io.ReadAll(response.Body)
+				require.ErrorIs(t, err, ErrMonitoringProbeBudgetLeaseLost)
+				require.NoError(t, response.Body.Close())
+				require.Equal(t, 1, repo.released)
+			})
+		})
+	}
+}
+
+type monitoringBudgetHTTP struct {
+	HTTPUpstream
+	base HTTPUpstream
+}
+
+func (h monitoringBudgetHTTP) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	req, finish, err := BeginMonitoringProbeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	response, err := h.base.DoWithTLS(req, proxy, id, concurrency, profile)
+	err = FinishMonitoringProbeResponse(req.Context(), response, err, finish)
+	return response, err
+}
+
+func TestUpstreamBillingProbeBudgetPreservesEvidenceAndDefers(t *testing.T) {
+	for _, at := range []int{1, 2} {
+		t.Run(string(rune('0'+at)), func(t *testing.T) {
+			now := time.Now().UTC()
+			old := &UpstreamBillingProbeSnapshot{Status: "failed", FailureCount: 4, LastAttemptAt: now.Add(-time.Hour), NextProbeAt: now.Add(-time.Minute)}
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+				Credentials: map[string]any{"api_key": "fixture-key", "base_url": "https://example.com"},
+				Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true, UpstreamBillingProbeExtraKey: old}}
+			accounts := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{1: account}}
+			denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute", RetryAt: now.Add(time.Minute)}
+			budget := &monitoringBudgetRepoStub{denyAt: at, err: denial}
+			svc := newUpstreamBillingProbeTestService(accounts, monitoringBudgetHTTP{base: &upstreamBillingProbeHTTPStub{}}, nil)
+			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+			_, err := svc.ProbeAccount(t.Context(), 1)
+			var got *MonitoringProbeBudgetDenial
+			require.ErrorAs(t, err, &got)
+			require.Equal(t, denial, got)
+			require.Same(t, old, account.Extra[UpstreamBillingProbeExtraKey])
+			require.Equal(t, 4, old.FailureCount)
+			require.Equal(t, denial.RetryAt, upstreamBillingProbeDueAt(account))
+			for _, request := range budget.requests {
+				require.True(t, request.Recovery)
+			}
+			before := len(budget.requests)
+			_, err = svc.probeScheduledAccount(t.Context(), 1, 5)
+			require.NoError(t, err)
+			require.Len(t, budget.requests, before)
+		})
+	}
+}
+
+func TestNewAPIMonitoringBudgetPricingDenialStopsInventoryWithoutFailure(t *testing.T) {
+	svc, auth, upstream, accounts := newAPIConfigFixture()
+	_, err := svc.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
+	require.NoError(t, err)
+	old := accounts.accounts[1].Extra[UpstreamBillingProbeExtraKey]
+	denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "key_minute", RetryAt: time.Now().Add(time.Minute)}
+	budget := &monitoringBudgetRepoStub{denyAt: 3, err: denial}
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+	svc.accountTestService.httpUpstream = monitoringBudgetHTTP{base: upstream}
+	writes := 0
+	auth.writeCheck = func(context.Context) { writes++ }
+	_, err = svc.ProbeAccount(t.Context(), 1)
+	var got *MonitoringProbeBudgetDenial
+	require.ErrorAs(t, err, &got)
+	require.Equal(t, denial, got)
+	require.Zero(t, writes)
+	require.Equal(t, old, accounts.accounts[1].Extra[UpstreamBillingProbeExtraKey])
+	require.Len(t, budget.requests, 3)
+	for _, req := range budget.requests {
+		require.False(t, req.Recovery)
+	}
+}
+
+func TestNewAPIMonitoringBudgetPreviewStopsOnKeyProofDenial(t *testing.T) {
+	svc, auth, upstream, _ := newAPIConfigFixture()
+	denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute", RetryAt: time.Now().Add(time.Minute)}
+	budget := &monitoringBudgetRepoStub{denyAt: 5, err: denial}
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+	svc.accountTestService.httpUpstream = monitoringBudgetHTTP{base: upstream}
+	_, err := svc.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1, 2}})
+	require.ErrorIs(t, err, denial)
+	require.Zero(t, auth.saves, "a deferred proof must not save a partial account binding")
+	require.Len(t, budget.requests, 5, "do not continue to another selected account after a deferred proof")
+}

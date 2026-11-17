@@ -1457,13 +1457,16 @@ const applyUpstreamBillingRateSnapshots = async (
     if (!item) return account
     const nextSnapshot = item.snapshot ?? null
     const previousSnapshot = account.extra?.upstream_billing_probe ?? null
+    const hasDeferral = Object.prototype.hasOwnProperty.call(item, 'deferred')
+    const deferralChanged = hasDeferral && JSON.stringify(account.extra?.upstream_billing_probe_deferral ?? null) !== JSON.stringify(item.deferred ?? null)
     const costChanged = isValidAccountCostMultiplier(item.cost_multiplier)
       && account.extra?.cost_multiplier !== item.cost_multiplier
     const hasManual = Object.prototype.hasOwnProperty.call(item, 'manual_applicability')
     const manualChanged = hasManual && JSON.stringify(account.extra?.upstream_billing_manual_applicability ?? null) !== JSON.stringify(item.manual_applicability ?? null)
-    if (!costChanged && !manualChanged && JSON.stringify(previousSnapshot) === JSON.stringify(nextSnapshot)) return account
+    if (!costChanged && !manualChanged && !deferralChanged && JSON.stringify(previousSnapshot) === JSON.stringify(nextSnapshot)) return account
 
     const nextExtra = { ...(account.extra ?? {}) }
+    if (hasDeferral) nextExtra.upstream_billing_probe_deferral = item.deferred ?? null
     if (costChanged) nextExtra.cost_multiplier = item.cost_multiplier
     if (hasManual) {
       if (item.manual_applicability) nextExtra.upstream_billing_manual_applicability = item.manual_applicability
@@ -2599,7 +2602,7 @@ const patchUpstreamBillingSnapshot = (accountID: number, snapshot: UpstreamBilli
     ...(typeof snapshot.synced_rate_multiplier === 'number'
       ? { rate_multiplier: snapshot.synced_rate_multiplier }
       : {}),
-    extra: { ...account.extra, upstream_billing_probe: snapshot }
+    extra: { ...account.extra, upstream_billing_probe: snapshot, upstream_billing_probe_deferral: null }
   })
 }
 const refreshAccountsAfterUpstreamBillingProbe = async () => {
@@ -2612,6 +2615,11 @@ const handleProbeUpstreamBilling = async (account: Account) => {
   probingUpstreamBilling.add(account.id)
   try {
     const result = await adminAPI.accounts.probeUpstreamBilling(account.id)
+    if (result.deferred) {
+      const current = accounts.value.find(item => item.id === account.id)
+      if (current) patchAccountInList({ ...current, extra: { ...current.extra, upstream_billing_probe_deferral: result.deferred } })
+      appStore.showInfo(t('admin.settings.upstreamBillingProbe.budget.deferred'))
+    }
     if (result.snapshot) {
       patchUpstreamBillingSnapshot(account.id, result.snapshot)
       await refreshAccountsAfterUpstreamBillingProbe()

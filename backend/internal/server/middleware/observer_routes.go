@@ -19,6 +19,7 @@ var observerAccountRoutes = map[string]struct{}{
 	"GET /api/v1/admin/accounts":                                     {},
 	"GET /api/v1/admin/accounts/upstream-billing-rates":              {},
 	"GET /api/v1/admin/accounts/upstream-billing-probe/settings":     {},
+	"GET /api/v1/admin/accounts/upstream-billing-probe/budget":       {},
 	"POST /api/v1/admin/accounts/upstream-billing-probe/batch":       {},
 	"GET /api/v1/admin/accounts/ollama-cloud-usage/settings":         {},
 	"PUT /api/v1/admin/accounts/:id/codex-skip-harvest":              {},

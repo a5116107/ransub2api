@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,59 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type handlerMonitoringBudgetRepo struct {
+	service.MonitoringProbeBudgetRepository
+	settings service.MonitoringProbeBudgetSettings
+}
+
+func (r *handlerMonitoringBudgetRepo) Summary(context.Context) (*service.MonitoringProbeBudgetSummary, error) {
+	return &service.MonitoringProbeBudgetSummary{Settings: r.settings, MinuteUsed: 7}, nil
+}
+func (r *handlerMonitoringBudgetRepo) SaveSettings(_ context.Context, s service.MonitoringProbeBudgetSettings) (service.MonitoringProbeBudgetSettings, error) {
+	if s.Revision != r.settings.Revision {
+		return s, service.ErrMonitoringProbeBudgetConflict
+	}
+	s.Revision++
+	r.settings = s
+	return s, nil
+}
+
+func TestAccountHandlerMonitoringProbeBudgetPolicyAndConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := &AccountHandler{}
+	probe := service.NewUpstreamBillingProbeService(nil, nil, nil)
+	probe.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(&handlerMonitoringBudgetRepo{settings: service.DefaultMonitoringProbeBudgetSettings()}))
+	handler.SetUpstreamBillingProbeService(probe)
+	router := gin.New()
+	router.GET("/budget", handler.GetMonitoringProbeBudget)
+	router.PUT("/budget", handler.UpdateMonitoringProbeBudget)
+	read := httptest.NewRecorder()
+	router.ServeHTTP(read, httptest.NewRequest("GET", "/budget", nil))
+	require.Equal(t, 200, read.Code)
+	require.Contains(t, read.Body.String(), `"minute_used":7`)
+	body, err := json.Marshal(service.DefaultMonitoringProbeBudgetSettings())
+	require.NoError(t, err)
+	for _, status := range []int{200, 409} {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest("PUT", "/budget", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, req)
+		require.Equal(t, status, recorder.Code)
+	}
+	bad := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/budget", bytes.NewBufferString(`{"requests_per_minute":0}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(bad, req)
+	require.Equal(t, 400, bad.Code)
+	read = httptest.NewRecorder()
+	router.ServeHTTP(read, httptest.NewRequest("GET", "/budget", nil))
+	require.Contains(t, read.Body.String(), `"revision":1`)
+	handler.SetUpstreamBillingProbeService(nil)
+	read = httptest.NewRecorder()
+	router.ServeHTTP(read, httptest.NewRequest("GET", "/budget", nil))
+	require.Equal(t, 503, read.Code)
+}
 
 func setupUpstreamBillingProbeRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)

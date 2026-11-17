@@ -216,6 +216,27 @@ describe('admin AccountsView lite account list', () => {
     wrapper.unmount()
   })
 
+  it('preserves an account edited while a deferred probe is pending', async () => {
+    const snapshot = { status: 'ok', data: { effective_rate_multiplier: 0.14 } }
+    const row = { ...listRow, type: 'apikey', extra: { upstream_billing_probe: snapshot } }
+    listAccounts.mockResolvedValue({ items: [row], total: 1, page: 1, page_size: 20, pages: 1 })
+    let finishProbe: (value: unknown) => void = () => {}
+    probeUpstreamBilling.mockReturnValue(new Promise(resolve => { finishProbe = resolve }))
+    const wrapper = mountView()
+    await flushPromises()
+    wrapper.findComponent(UpstreamBillingRateCell).vm.$emit('probe')
+    await flushPromises()
+    wrapper.getComponent(EditAccountModalStub).vm.$emit('updated', { ...row, name: 'edited during probe', extra: { ...row.extra, detail_only: true } })
+    const deferred = { reason: 'request_limit', scope: 'global_minute', retry_at: '2026-11-17T12:01:00Z' }
+    finishProbe({ account_id: row.id, deferred })
+    await flushPromises()
+    const account = wrapper.findComponent(UpstreamBillingRateCell).props('account')
+    expect(account.name).toBe('edited during probe')
+    expect(account.extra).toMatchObject({ detail_only: true, upstream_billing_probe: snapshot, upstream_billing_probe_deferral: deferred })
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('refreshes performance evidence every 30 seconds independently of unchanged list ETags', async () => {
     vi.useFakeTimers()
     const wrapper = mountView()

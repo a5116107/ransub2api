@@ -247,7 +247,7 @@ func (s *UpstreamBillingProbeService) verifyNewAPIConfig(ctx context.Context, id
 			}
 		} else {
 			verified, verifyErr := s.verifyNewAPITokenKey(ctx, a, site, req.UserID, secret, *token)
-			if newAPIRequestRequiresWait(verifyErr) {
+			if newAPIRequestRequiresWait(verifyErr) || monitoringProbeDeferral(verifyErr, s.currentTime()) != nil {
 				return nil, nil, nil, verifyErr
 			}
 			if !verified {
@@ -316,6 +316,7 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 	if e != nil {
 		return nil, newAPIError("authorization_unavailable")
 	}
+	probeCtx = s.monitoringBudget.Context(probeCtx, site, upstreamBillingProbeRecovery(a))
 	now := s.currentTime().UTC()
 	data, e := s.fetchNewAPI(probeCtx, a, site, b.Profile.UserID, secret)
 	var snap *UpstreamBillingProbeSnapshot
@@ -352,6 +353,9 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 }
 
 func (s *UpstreamBillingProbeService) persistNewAPIFailure(ctx context.Context, a *Account, b *NewAPIAccountBinding, interval int, now time.Time, reason string, cause error) (*UpstreamBillingProbeSnapshot, error) {
+	if monitoringProbeDeferral(cause, now) != nil {
+		return nil, cause
+	}
 	var responseErr *newAPIHTTPError
 	var status int
 	var delay time.Duration

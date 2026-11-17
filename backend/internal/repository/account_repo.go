@@ -953,6 +953,7 @@ func lockAndMergeAccountProbeExtra(
 		service.UpstreamBillingProbeEnabledExtraKey,
 		service.UpstreamBillingRateSyncEnabledExtraKey,
 		service.UpstreamBillingProbeExtraKey,
+		service.UpstreamBillingProbeDeferralExtraKey,
 		service.OllamaCloudUsageSessionExtraKey,
 		service.OllamaCloudUsageAutoRefreshExtraKey,
 		service.OllamaCloudUsageSnapshotExtraKey,
@@ -1015,6 +1016,9 @@ func lockAndMergeAccountProbeExtra(
 	}
 	probeExplicitlyDisabled := probeEnabledPresent && !probeEnabled
 	if identityUnchanged && !probeExplicitlyDisabled {
+		if deferred, exists := currentExtra[service.UpstreamBillingProbeDeferralExtraKey]; exists {
+			extra[service.UpstreamBillingProbeDeferralExtraKey] = deferred
+		}
 		if snapshot, ok, err := decodeAccountExtraJSON(currentSnapshot); err != nil {
 			return nil, err
 		} else if ok {
@@ -1164,7 +1168,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 							AND (`+opencodeGoBaseURLMatchSQLPrefix+`$1::jsonb ->> 'base_url'`+opencodeGoBaseURLMatchSQLSuffix+`) IS NOT TRUE)
 					)
 				THEN COALESCE(extra, '{}'::jsonb)
-					- 'upstream_billing_probe'
+					- 'upstream_billing_probe' - 'upstream_billing_probe_deferral'
 					- 'opencode_go_usage_auto_refresh'
 					- 'opencode_go_usage_snapshot'
 					- 'ollama_cloud_usage_session'
@@ -1183,7 +1187,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 						)
 					)
 				THEN COALESCE(extra, '{}'::jsonb)
-					- 'upstream_billing_probe'
+					- 'upstream_billing_probe' - 'upstream_billing_probe_deferral'
 					- 'ollama_cloud_usage_session'
 					- 'ollama_cloud_usage_auto_refresh'
 					- 'ollama_cloud_usage_snapshot'
@@ -1191,7 +1195,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 				-- 身份变化，丢弃 stale 快照。
 				WHEN type = 'apikey'
 					AND credentials IS DISTINCT FROM $1::jsonb
-				THEN COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe'
+				THEN COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe' - 'upstream_billing_probe_deferral'
 				ELSE extra
 			END || `+manualApplicabilityInvalidationPatchSQL("type = 'apikey' AND credentials IS DISTINCT FROM $1::jsonb")+`,
 			updated_at = NOW()
@@ -3313,7 +3317,7 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	}
 	extraExpression := "COALESCE(extra, '{}'::jsonb) || $1::jsonb"
 	if clearProbeSnapshot {
-		extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
+		extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe' - 'upstream_billing_probe_deferral'"
 	}
 	if service.ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
 		extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
@@ -3402,7 +3406,7 @@ func (r *accountRepository) updateUpstreamBillingProbeSnapshotInTx(
 	snapshot *service.UpstreamBillingProbeSnapshot,
 	rateMultiplier *float64,
 ) error {
-	updates := map[string]any{service.UpstreamBillingProbeExtraKey: snapshot}
+	updates := map[string]any{service.UpstreamBillingProbeExtraKey: snapshot, service.UpstreamBillingProbeDeferralExtraKey: nil}
 	if service.IsUpstreamBillingProbeIdentity(account.Platform, account.Type) {
 		if cost, ok := snapshot.CostMultiplierToSync(); ok {
 			updates[service.AccountCostMultiplierExtraKey] = cost
@@ -3745,7 +3749,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 				}
 			}
 			if upstreamBillingProbeExplicitlyDisabled(updates.Extra) || upstreamBillingProbeSnapshotClearRequested(updates.Extra) {
-				extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
+				extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe' - 'upstream_billing_probe_deferral'"
 			}
 			if ollamaCloudUsageSnapshotClearRequested(updates.Extra) {
 				extraExpression = "(" + extraExpression + ") - 'ollama_cloud_usage_snapshot'"
@@ -4419,7 +4423,8 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 			SELECT
 				id,
 				extra #>> '{upstream_billing_probe,status}' AS probe_status,
-				extra #>> '{upstream_billing_probe,next_probe_at}' AS next_probe_at
+				extra #>> '{upstream_billing_probe,next_probe_at}' AS next_probe_at,
+				extra #>> '{upstream_billing_probe_deferral,retry_at}' AS deferred_until
 			FROM accounts
 			WHERE deleted_at IS NULL
 				AND status = 'active'
@@ -4430,6 +4435,10 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 				id,
 				probe_status,
 				next_probe_at,
+				CASE WHEN deferred_until ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' THEN
+				 jsonb_path_query_first_tz(jsonb_build_object('value',replace(regexp_replace(regexp_replace(deferred_until,
+				 '(\.[0-9]{6})[0-9]+(Z|[+-][0-9]{2}:[0-9]{2})$', '\1\2'), 'Z$', '+00:00'), 'T', ' ')),
+				 '$.value.datetime()', '{}'::jsonb, true) #>> '{}' END AS parsed_deferred_until,
 				next_probe_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' AS rfc3339_shape,
 				jsonb_path_query_first_tz(
 					jsonb_build_object(
@@ -4451,18 +4460,21 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 				probe_status,
 				next_probe_at,
 				parsed_next_probe_at,
+				parsed_deferred_until,
 				rfc3339_shape AND parsed_next_probe_at IS NOT NULL AS valid_next_probe_at
 			FROM parsed
 		)
 		SELECT id
 		FROM normalized
-		WHERE probe_status NOT IN ('ok', 'unsupported', 'failed')
+		WHERE (parsed_deferred_until IS NULL OR parsed_deferred_until::timestamptz <= $1)
+		AND (probe_status NOT IN ('ok', 'unsupported', 'failed')
 			OR probe_status IS NULL
 			OR next_probe_at IS NULL
 			OR NOT valid_next_probe_at
-			OR CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz <= $1 ELSE FALSE END
+			OR CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz <= $1 ELSE FALSE END)
 		ORDER BY
 			CASE
+				WHEN parsed_deferred_until IS NOT NULL THEN 1
 				WHEN probe_status NOT IN ('ok', 'unsupported', 'failed')
 					OR probe_status IS NULL
 					OR next_probe_at IS NULL
@@ -4470,7 +4482,7 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 				THEN 0
 				ELSE 1
 			END ASC,
-			CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz END ASC NULLS FIRST,
+			GREATEST(CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz END, parsed_deferred_until::timestamptz) ASC NULLS FIRST,
 			id ASC
 		LIMIT $2
 	`, now.UTC(), limit)
@@ -4707,7 +4719,7 @@ func (r *accountRepository) RevertProxyFallback(ctx context.Context, accountID i
 	res, err := r.sql.ExecContext(ctx, `
 		UPDATE accounts SET
 			extra=CASE WHEN type='apikey' AND proxy_id IS DISTINCT FROM proxy_fallback_origin_id
-				THEN extra - 'upstream_billing_probe' ELSE extra END,
+				THEN extra - 'upstream_billing_probe' - 'upstream_billing_probe_deferral' ELSE extra END,
 			proxy_id=proxy_fallback_origin_id, proxy_fallback_origin_id=NULL, updated_at=NOW()
 		WHERE id=$1 AND proxy_fallback_origin_id IS NOT NULL AND deleted_at IS NULL`, accountID)
 	if err != nil {

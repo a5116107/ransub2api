@@ -135,6 +135,9 @@ func matchNewAPITokens(a *Account, tokens []NewAPIToken) []NewAPIToken {
 // User credentials are applied last, so account relay-key header overrides
 // cannot impersonate a different management user.
 func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Account, site string, userID int64, secret, method, path string, out any) error {
+	if _, marked := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); !marked {
+		ctx = s.monitoringBudget.Context(ctx, site, false)
+	}
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
@@ -172,6 +175,9 @@ func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Acco
 	}
 	resp, e := s.accountTestService.httpUpstream.DoWithTLS(req, proxy, a.ID, a.Concurrency, tlsProfile)
 	if e != nil {
+		if monitoringProbeDeferral(e, s.currentTime()) != nil {
+			return e
+		}
 		return newAPIError("request_failed")
 	}
 	if resp == nil || resp.Body == nil {
@@ -183,6 +189,9 @@ func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Acco
 		return &newAPIHTTPError{error: newAPIError("http_error"), statusCode: resp.StatusCode, retryAfter: retryAfter(resp.Header, now), observedAt: now}
 	}
 	b, e := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
+	if monitoringProbeDeferral(e, s.currentTime()) != nil {
+		return e
+	}
 	if e != nil || len(b) > 2*1024*1024 {
 		return newAPIError("invalid_body")
 	}
@@ -240,7 +249,7 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 				}
 			}
 		}
-	} else if newAPIRequestRequiresWait(e) {
+	} else if newAPIRequestRequiresWait(e) || monitoringProbeDeferral(e, s.currentTime()) != nil {
 		return nil, e
 	}
 	seen := map[int64]bool{}

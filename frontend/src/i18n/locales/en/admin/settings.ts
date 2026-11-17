@@ -540,6 +540,25 @@ export default {
         accountSchedulingThresholdsRangeHint: 'Integer 1–100 (percent). OpenAI/Anthropic/Grok only.'
       },
       upstreamBillingProbe: {
+        budget: {
+          title: 'Declaration and balance probe budget',
+          scopeHint: 'Shared across upgraded instances using this database; drain older monitoring instances before enforcement. Counts each Sub2API declaration/balance request and each New API management request or page, including previews. Excludes business traffic, quality questions, tokens and judging.',
+          enabled: 'Enforce shared limits', enforced: 'Limits enforced', observeOnly: 'Observe only — limits are not enforced',
+          requests_per_minute: 'Global requests / UTC minute', requests_per_day: 'Global requests / UTC day',
+          site_requests_per_minute: 'Requests / site / minute', key_requests_per_minute: 'Requests / actual credential / minute',
+          concurrency: 'Global active requests', site_concurrency: 'Active requests / site', key_concurrency: 'Active requests / actual credential',
+          recovery_reserve_percent: 'Global recovery reserve (%)',
+          reserveHint: 'Only retries of previously failed declaration probes may use the global reserve. Site and credential limits still apply. Fractional capacity is rounded so at least one ordinary probe remains possible. New accounts and previews use the ordinary budget.',
+          deferralHint: 'Budget pressure defers detection without penalizing the upstream, publishing a partial declaration, or extending previous evidence. A released slot is available again; consumed request quota is not refunded.',
+          minuteUsage: 'Requests this minute', dayUsage: 'Requests today (UTC)', activeUsage: 'Active requests',
+          observedAt: 'Database observation: {value}', saved: 'Probe budget saved.',
+          invalid: 'Enter whole numbers within the displayed limits; the reserve must be 0–80%.',
+          loadFailed: 'Budget read failed. Refresh before editing.', saveFailed: 'Budget save failed; your edits are retained.',
+          conflict: 'Another administrator changed the budget. Refresh before saving again.', summaryFailed: 'Settings saved; usage refresh failed. Refresh to read the current observation.',
+          deferred: 'Detection deferred', retryAt: 'Eligible to retry after: {value}',
+          request_limit: 'The request budget for this window is exhausted.', recovery_reserve: 'Remaining global capacity is reserved for recovery.',
+          concurrency_limit: 'Probe concurrency is full.', budget_unavailable: 'Budget coordination is unavailable; detection is deferred.'
+        },
         title: 'Upstream Declaration Auto Detection',
         description: 'Periodically retrieve the rates and balances declared by upstream Sub2API sites. Account rates change only when the separate sync switch is enabled.',
         enabled: 'Enable global auto detection',

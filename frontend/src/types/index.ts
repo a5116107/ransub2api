@@ -1310,10 +1310,12 @@ export interface UpstreamBillingProbeSettings {
 export interface UpstreamBillingProbeResult {
   account_id: number
   snapshot?: UpstreamBillingProbeSnapshot
+  deferred?: import('./monitoringProbeBudget').MonitoringProbeBudgetDeferral
   error?: string
 }
 
 export interface UpstreamBillingRateSnapshotItem {
+  deferred?: import('./monitoringProbeBudget').MonitoringProbeBudgetDeferral | null
   cost_multiplier?: number
   account_id: number
   snapshot?: UpstreamBillingProbeSnapshot | null
@@ -1491,6 +1493,7 @@ export interface Account {
     upstream_billing_rate_sync_enabled?: boolean
     upstream_billing_manual_applicability?: UpstreamBillingManualApplicability
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
+    upstream_billing_probe_deferral?: import('./monitoringProbeBudget').MonitoringProbeBudgetDeferral | null
     codex_reset_credit_snapshot?: {
       available_count?: number
       credits?: { expires_at?: string }[]

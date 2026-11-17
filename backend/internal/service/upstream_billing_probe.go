@@ -32,6 +32,7 @@ import (
 const (
 	// These values live in accounts.extra so PR2 does not require a schema migration.
 	UpstreamBillingProbeExtraKey           = "upstream_billing_probe"
+	UpstreamBillingProbeDeferralExtraKey   = "upstream_billing_probe_deferral"
 	UpstreamBillingProbeEnabledExtraKey    = "upstream_billing_probe_enabled"
 	UpstreamBillingRateSyncEnabledExtraKey = "upstream_billing_rate_sync_enabled"
 
@@ -131,6 +132,7 @@ type UpstreamBillingProbeSnapshot struct {
 type UpstreamBillingProbeResult struct {
 	AccountID int64                         `json:"account_id"`
 	Snapshot  *UpstreamBillingProbeSnapshot `json:"snapshot,omitempty"`
+	Deferred  *MonitoringProbeBudgetDenial  `json:"deferred,omitempty"`
 	Error     string                        `json:"error,omitempty"`
 }
 
@@ -138,6 +140,7 @@ type UpstreamBillingProbeResult struct {
 // account table's background refresh. It intentionally excludes credentials,
 // runtime counters, and usage data from the response.
 type UpstreamBillingRateSnapshotItem struct {
+	Deferred            *MonitoringProbeBudgetDenial  `json:"deferred"`
 	ManualApplicability map[string]any                `json:"manual_applicability"`
 	CostMultiplier      float64                       `json:"cost_multiplier"`
 	AccountID           int64                         `json:"account_id"`
@@ -158,6 +161,7 @@ func BuildUpstreamBillingRateSnapshotItems(accounts []Account) []UpstreamBilling
 			snapshot = decodeUpstreamBillingProbeSnapshot(account.Extra)
 		}
 		items = append(items, UpstreamBillingRateSnapshotItem{
+			Deferred:            upstreamBillingProbeDeferral(&account),
 			AccountID:           account.ID,
 			CostMultiplier:      account.CostMultiplier(),
 			Snapshot:            snapshot,
@@ -249,6 +253,7 @@ func normalizeUpstreamBillingProbeSettings(settings *UpstreamBillingProbeSetting
 
 // UpstreamBillingProbeService discovers a remote Sub2API billing snapshot.
 type UpstreamBillingProbeService struct {
+	monitoringBudget   *MonitoringProbeBudgetService
 	newAPIRepo         NewAPIAuthorizationRepository
 	newAPIEncryptor    SecretEncryptor
 	newAPIFixedKey     bool
@@ -277,6 +282,21 @@ type upstreamBillingProbeSnapshotWriter interface {
 
 type upstreamBillingProbeDueAccountLister interface {
 	ListDueUpstreamBillingProbeAccounts(context.Context, time.Time, int) ([]Account, error)
+}
+
+type upstreamBillingProbeDeferralWriter interface {
+	DeferUpstreamBillingProbe(context.Context, *Account, *MonitoringProbeBudgetDenial) error
+}
+
+func (s *UpstreamBillingProbeService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
+	s.monitoringBudget = budget
+}
+
+func (s *UpstreamBillingProbeService) MonitoringBudget() *MonitoringProbeBudgetService {
+	if s == nil {
+		return nil
+	}
+	return s.monitoringBudget
 }
 
 func NewUpstreamBillingProbeService(
@@ -315,9 +335,11 @@ func ProvideUpstreamBillingProbeService(
 	cfg *config.Config,
 	newAPIRepo NewAPIAuthorizationRepository,
 	encryptor SecretEncryptor,
+	budgetRepo MonitoringProbeBudgetRepository,
 ) *UpstreamBillingProbeService {
 	svc := NewUpstreamBillingProbeService(accountRepo, accountTestService, settingService)
 	svc.SetLeaderLock(lockCache, db)
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))
 	svc.SetNewAPIAuthorization(newAPIRepo, encryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
 	startBackgroundService(cfg, svc)
 	return svc
@@ -400,7 +422,11 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	}
 	defer runRelease()
 	if s.lockCache != nil {
-		stopRenewal := s.keepLeaderLock(ctx, cancelRun, owner, lockStarted)
+		stopRenewal := keepRenewedLease(ctx, lockStarted, upstreamBillingProbeLeaderLockTTL,
+			func(ctx context.Context) (bool, error) {
+				return s.lockCache.RenewLeaderLock(ctx, upstreamBillingProbeLeaderLockKey, owner, upstreamBillingProbeLeaderLockTTL)
+			},
+			func() { cancelRun(errUpstreamBillingProbeLeaderLockLost) })
 		defer stopRenewal()
 	}
 
@@ -425,27 +451,17 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 		if !isUpstreamBillingProbeAccount(&account) || !account.IsActive() || !upstreamBillingProbeEnabled(&account) {
 			continue
 		}
-		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-		if snapshot != nil && !snapshot.NextProbeAt.IsZero() && now.Before(snapshot.NextProbeAt) {
+		if now.Before(upstreamBillingProbeDueAt(&account)) {
 			continue
 		}
 		due = append(due, account)
 	}
 	sort.SliceStable(due, func(i, j int) bool {
-		left := decodeUpstreamBillingProbeSnapshot(due[i].Extra)
-		right := decodeUpstreamBillingProbeSnapshot(due[j].Extra)
-		leftUnset := left == nil || left.NextProbeAt.IsZero()
-		rightUnset := right == nil || right.NextProbeAt.IsZero()
-		if leftUnset && rightUnset {
+		left, right := upstreamBillingProbeDueAt(&due[i]), upstreamBillingProbeDueAt(&due[j])
+		if left.Equal(right) {
 			return due[i].ID < due[j].ID
 		}
-		if leftUnset {
-			return true
-		}
-		if rightUnset {
-			return false
-		}
-		return left.NextProbeAt.Before(right.NextProbeAt)
+		return left.Before(right)
 	})
 	if len(due) > upstreamBillingProbeMaxPerCycle {
 		due = due[:upstreamBillingProbeMaxPerCycle]
@@ -456,6 +472,9 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 		accountID := due[i].ID
 		group.Go(func() error {
 			if _, probeErr := s.probeScheduledAccount(ctx, accountID, settings.IntervalMinutes); probeErr != nil && ctx.Err() == nil {
+				if monitoringProbeDeferral(probeErr, s.currentTime()) != nil {
+					return nil
+				}
 				logger.LegacyPrintf("service.upstream_billing_probe", "probe_due_failed: account_id=%d err=%v", accountID, probeErr)
 			}
 			return nil
@@ -538,12 +557,27 @@ func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, 
 			if !account.IsActive() || !upstreamBillingProbeEnabled(account) {
 				return nil, nil
 			}
-			if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil &&
-				!snapshot.NextProbeAt.IsZero() && s.currentTime().Before(snapshot.NextProbeAt) {
+			if s.currentTime().Before(upstreamBillingProbeDueAt(account)) {
 				return nil, nil
 			}
 		}
-		return s.probeLoadedAccount(ctx, account, intervalMinutes)
+		snapshot, probeErr := s.probeLoadedAccount(ctx, account, intervalMinutes)
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
+		}
+		if denial := monitoringProbeDeferral(probeErr, s.currentTime().UTC()); denial != nil {
+			writer, ok := s.accountRepo.(upstreamBillingProbeDeferralWriter)
+			if !ok {
+				return nil, ErrMonitoringProbeBudgetUnavailable
+			}
+			persistCtx, cancel := context.WithTimeout(ctx, upstreamBillingProbeRequestTimeout)
+			defer cancel()
+			if err := writer.DeferUpstreamBillingProbe(persistCtx, account, denial); err != nil {
+				return nil, err
+			}
+			return nil, denial
+		}
+		return snapshot, probeErr
 	})
 	if err != nil {
 		return nil, err
@@ -584,6 +618,9 @@ func (s *UpstreamBillingProbeService) ProbeAccounts(ctx context.Context, account
 		group.Go(func() error {
 			snapshot, err := s.probeAccount(ctx, accountID, settings.IntervalMinutes)
 			if err != nil {
+				if errors.As(err, &results[i].Deferred) {
+					return nil
+				}
 				results[i].Error = safeProbeError(err)
 				return nil
 			}
@@ -620,71 +657,6 @@ func (s *UpstreamBillingProbeService) tryAcquireLeaderLock(ctx context.Context, 
 		return tryAcquireDBAdvisoryLockWithError(lockCtx, s.db, hashAdvisoryLockID(key))
 	}
 	return func() {}, true, nil
-}
-
-// Renewal is specific to the potentially long billing batch; unrelated periodic
-// jobs retain their existing TTL policy. The watchdog is independent of Redis
-// I/O and leaves one third of the acknowledged TTL for transport cancellation.
-func (s *UpstreamBillingProbeService) keepLeaderLock(ctx context.Context, cancelRun context.CancelCauseFunc, owner string, acquiredAt time.Time) func() {
-	validFor := upstreamBillingProbeLeaderLockTTL * 2 / 3
-	workerCtx, cancelWorker := context.WithCancel(ctx)
-	done := make(chan struct{})
-	var mu sync.Mutex
-	stopped := false
-	validUntil := acquiredAt.Add(validFor)
-	lose := func() {
-		mu.Lock()
-		defer mu.Unlock()
-		if !stopped {
-			stopped = true
-			cancelRun(errUpstreamBillingProbeLeaderLockLost)
-			cancelWorker()
-		}
-	}
-	watchdog := time.AfterFunc(time.Until(validUntil), lose)
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(upstreamBillingProbeLeaderLockTTL / 3)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-workerCtx.Done():
-				return
-			case <-ticker.C:
-				if workerCtx.Err() != nil {
-					return
-				}
-				started := time.Now()
-				opCtx, cancel := context.WithTimeout(workerCtx, 2*time.Second)
-				owned, err := s.lockCache.RenewLeaderLock(opCtx, upstreamBillingProbeLeaderLockKey, owner, upstreamBillingProbeLeaderLockTTL)
-				cancel()
-				if err != nil || !owned {
-					lose()
-					return
-				}
-				mu.Lock()
-				now := time.Now()
-				late := !now.Before(validUntil) || !now.Before(started.Add(validFor))
-				if !stopped && !late && workerCtx.Err() == nil {
-					validUntil = started.Add(validFor)
-					watchdog.Reset(time.Until(validUntil))
-				}
-				mu.Unlock()
-				if late {
-					lose()
-					return
-				}
-			}
-		}
-	}()
-	return sync.OnceFunc(func() {
-		mu.Lock()
-		stopped = true
-		watchdog.Stop()
-		mu.Unlock()
-		cancelWorker()
-		<-done
-	})
 }
 
 func releaseUpstreamBillingProbeLeaderLock(release func(), releaseAt time.Time) {
@@ -763,6 +735,7 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	if err != nil {
 		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "invalid_base_url", 0)
 	}
+	ctx = s.monitoringBudget.Context(ctx, normalizedBaseURL, upstreamBillingProbeRecovery(account))
 	proxyURL := ""
 	if account.ProxyID != nil {
 		if account.Proxy == nil {
@@ -776,11 +749,17 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	target := upstreamBillingProbeTarget{apiKey: apiKey, proxyURL: proxyURL}
 	rateResult := s.fetchUpstreamProbeBody(ctx, account, target,
 		buildOpenAIEndpointURL(normalizedBaseURL, "/v1/sub2api/billing"), upstreamBillingProbeMaxBodyBytes)
+	if rateResult.budgetErr != nil {
+		return nil, rateResult.budgetErr
+	}
 	previousRate := account.BillingRateMultiplier()
 	snapshot, syncRate := upstreamBillingRateSnapshotFromResult(account, intervalMinutes, now, rateResult, previousRate)
 	if upstreamBalanceProbeAllowed(normalizedBaseURL, rateResult) {
 		balanceResult := s.fetchUpstreamProbeBody(ctx, account, target,
 			upstreamBalanceProbeURL(normalizedBaseURL, now), upstreamBalanceProbeMaxBodyBytes)
+		if balanceResult.budgetErr != nil {
+			return nil, balanceResult.budgetErr
+		}
 		snapshot.Balance = upstreamBalanceSnapshotFromResult(balanceResult, snapshot.Balance, intervalMinutes, now)
 		// Sub2API upstreams that predate /v1/sub2api/billing still answer
 		// /v1/usage. The stretched unsupported delay is for upstreams that return
@@ -817,6 +796,7 @@ type upstreamBillingProbeTarget struct {
 // complete body was read; statusCode and header are kept whenever the
 // upstream answered at all.
 type upstreamBillingProbeHTTPResult struct {
+	budgetErr  error
 	statusCode int
 	header     http.Header
 	body       []byte
@@ -855,6 +835,9 @@ func (s *UpstreamBillingProbeService) fetchUpstreamProbeBody(
 	}
 	resp, err := s.accountTestService.httpUpstream.DoWithTLS(req, target.proxyURL, account.ID, account.Concurrency, tlsProfile)
 	if err != nil {
+		if monitoringProbeDeferral(err, s.currentTime()) != nil {
+			return upstreamBillingProbeHTTPResult{budgetErr: err}
+		}
 		return upstreamBillingProbeHTTPResult{failure: "request_failed"}
 	}
 	if resp == nil || resp.Body == nil {
@@ -864,6 +847,9 @@ func (s *UpstreamBillingProbeService) fetchUpstreamProbeBody(
 	result := upstreamBillingProbeHTTPResult{statusCode: resp.StatusCode, header: resp.Header}
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(maxBodyBytes)+1))
 	if readErr != nil {
+		if monitoringProbeDeferral(readErr, s.currentTime()) != nil {
+			return upstreamBillingProbeHTTPResult{budgetErr: readErr}
+		}
 		result.failure = "response_read_failed"
 		return result
 	}

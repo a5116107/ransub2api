@@ -1,4 +1,5 @@
 import type { AccountPerformance, PerformanceConfig, PerformanceEvent } from '@/types/accountPerformance'
+import type { MonitoringProbeBudgetSettings, MonitoringProbeBudgetSummary } from '@/types/monitoringProbeBudget'
 /**
  * Admin Accounts API endpoints
  * Handles AI platform account management for administrators
@@ -1090,6 +1091,16 @@ export async function deleteNewAPIUpstreamConfig(id: number): Promise<{ account_
   return data
 }
 
+export async function getMonitoringProbeBudget(): Promise<MonitoringProbeBudgetSummary> {
+  const { data } = await apiClient.get<MonitoringProbeBudgetSummary>('/admin/accounts/upstream-billing-probe/budget')
+  return data
+}
+
+export async function updateMonitoringProbeBudget(settings: MonitoringProbeBudgetSettings): Promise<MonitoringProbeBudgetSettings> {
+  const { data } = await apiClient.put<MonitoringProbeBudgetSettings>('/admin/accounts/upstream-billing-probe/budget', settings)
+  return data
+}
+
 export async function getUpstreamBillingProbeSettings(): Promise<UpstreamBillingProbeSettings> {
   const { data } = await apiClient.get<UpstreamBillingProbeSettings>('/admin/accounts/upstream-billing-probe/settings')
   return data
@@ -1542,6 +1553,8 @@ export const accountsAPI = {
   saveNewAPIUpstreamConfig,
   deleteNewAPIUpstreamConfig,
   getUpstreamBillingProbeSettings,
+  getMonitoringProbeBudget,
+  updateMonitoringProbeBudget,
   updateUpstreamBillingProbeSettings,
   setUpstreamBillingProbeEnabled,
   probeUpstreamBilling,

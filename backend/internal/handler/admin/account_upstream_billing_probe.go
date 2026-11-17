@@ -1,12 +1,36 @@
 package admin
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+func (h *AccountHandler) GetMonitoringProbeBudget(c *gin.Context) {
+	result, err := h.upstreamBillingProbe.MonitoringBudget().Summary(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *AccountHandler) UpdateMonitoringProbeBudget(c *gin.Context) {
+	var req service.MonitoringProbeBudgetSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid monitoring budget settings")
+		return
+	}
+	result, err := h.upstreamBillingProbe.MonitoringBudget().SaveSettings(c.Request.Context(), req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
 
 type upstreamBillingProbeEnabledRequest struct {
 	Enabled *bool `json:"enabled" binding:"required"`
@@ -85,6 +109,11 @@ func (h *AccountHandler) ProbeUpstreamBilling(c *gin.Context) {
 	}
 	snapshot, err := h.upstreamBillingProbe.ProbeAccount(c.Request.Context(), accountID)
 	if err != nil {
+		var denial *service.MonitoringProbeBudgetDenial
+		if errors.As(err, &denial) {
+			response.Success(c, service.UpstreamBillingProbeResult{AccountID: accountID, Deferred: denial})
+			return
+		}
 		response.ErrorFrom(c, err)
 		return
 	}

@@ -176,6 +176,7 @@ var ProviderSet = wire.NewSet(
 	// Encryptors
 	NewAESEncryptor,
 	NewNewAPIAuthorizationRepository,
+	NewMonitoringProbeBudgetRepository,
 	NewOpenAICredentialEncryptor,
 
 	// Backup infrastructure
