@@ -394,6 +394,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		ProxyURL:           proxyURL,
 	})
 	if err != nil {
+		if monitoringProbeDeferral(err, time.Now()) != nil {
+			return nil, err
+		}
 		if IsOpenAITurnAdmissionError(err) {
 			return nil, err
 		}
@@ -576,13 +579,29 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if errors.Is(context.Cause(ctx), ErrUpstreamKeyLease) {
 				return nil, ErrUpstreamKeyLease
 			}
-			cleanExit = errors.Is(err, errOpenAIWSSSEPayloadTooLarge)
+			cleanExit = errors.Is(err, errOpenAIWSSSEPayloadTooLarge) || monitoringProbeDeferral(err, time.Now()) != nil
 			return nil, err
 		}
 	}
 	if err := checkBeforeWrite(); err != nil {
 		return nil, err
 	}
+	var finishBudget func()
+	budgetParentCtx := ctx
+	defer func() {
+		interrupted := finishBudget != nil && context.Cause(ctx) != nil
+		err := finishMonitoringProbeWSRequest(ctx, finishBudget)
+		if err != nil {
+			forwardErr = err
+		}
+		if interrupted || err != nil {
+			lease.conn.abort()
+			lease.MarkBroken()
+		}
+		// Budget cleanup must not turn a successful attempt's timing into a
+		// canceled downstream request.
+		ctx = budgetParentCtx
+	}()
 	sendRequest := func(value any) error {
 		if err := s.guardOpenAIResponseContinuation(ctx, account); err != nil {
 			return err
@@ -609,6 +628,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if err := s.admitAvailabilityWS(ctx, account, lease.conn.turnBinding, value); err != nil {
 				return err
 			}
+		}
+		ctx, finishBudget, err = lease.beginMonitoringProbeRequest(ctx)
+		if err != nil {
+			cleanExit = true
+			return err
 		}
 		timing = newOpenAIWSTurnTiming(ctx, account, time.Now(), lease.conn.upstreamKeyFingerprints, value)
 		if err := lease.WriteJSONWithContextTimeout(ctx, value, s.openAIWSWriteTimeout()); err != nil {
@@ -834,6 +858,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 readLoop:
 	for {
+		if finishBudget != nil && context.Cause(ctx) != nil {
+			return partialResultWithUsage(), context.Cause(ctx)
+		}
 		markClientRequestCanceled()
 		if errors.Is(context.Cause(ctx), ErrUpstreamKeyLease) {
 			return resultWithUsage(), ErrUpstreamKeyLease
@@ -870,6 +897,9 @@ readLoop:
 					pendingJSONDocuments = append(pendingJSONDocuments, documents[1:]...)
 				}
 			}
+		}
+		if finishBudget != nil && context.Cause(ctx) != nil {
+			return partialResultWithUsage(), context.Cause(ctx)
 		}
 		markClientRequestCanceled()
 		if errors.Is(context.Cause(ctx), ErrUpstreamKeyLease) {

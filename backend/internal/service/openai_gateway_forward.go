@@ -1134,6 +1134,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsErr == nil {
 				break
 			}
+			if monitoringProbeDeferral(wsErr, time.Now()) != nil {
+				return nil, wsErr
+			}
 			var capacityFailover *UpstreamFailoverError
 			if errors.As(wsErr, &capacityFailover) && !c.Writer.Written() {
 				return nil, capacityFailover

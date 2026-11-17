@@ -7,13 +7,16 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -332,6 +335,257 @@ func TestQualityMonitoringBudgetAdaptiveDenialStopsAnswer(t *testing.T) {
 			require.Len(t, upstream.requests, at-1)
 			require.Len(t, repo.requests, at, "local deferral must not restart the multi-protocol answer")
 			require.Equal(t, at-1, repo.released)
+		})
+	}
+}
+
+func qualityBudgetWSServer(t *testing.T, beforeReply ...func(int32)) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	handshakes, frames := &atomic.Int32{}, &atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes.Add(1)
+		if r.Header.Get("Authorization") != "Bearer fixture" {
+			http.Error(w, "invalid quality budget fixture credential", http.StatusUnauthorized)
+			return
+		}
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		for {
+			_, _, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			n := frames.Add(1)
+			if len(beforeReply) != 0 {
+				beforeReply[0](n)
+			}
+			if err := conn.Write(r.Context(), coderws.MessageText, []byte(`{"type":"response.output_text.delta","delta":"21"}`)); err != nil {
+				return
+			}
+			message := `{"type":"response.completed","response":{"id":"resp_budget_` + strconv.Itoa(int(n)) + `","status":"completed","model":"target","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"21"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}`
+			if err := conn.Write(r.Context(), coderws.MessageText, []byte(message)); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, handshakes, frames
+}
+
+func TestQualityMonitoringBudgetNativeWSPhysicalAttempts(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		denyAt             int
+		prewarm            bool
+		handshakes, frames int32
+		acquires, releases int
+	}{
+		{"denied_handshake", 1, false, 0, 0, 1, 0},
+		{"denied_answer", 2, false, 1, 0, 2, 1},
+		{"answer", 0, false, 1, 1, 2, 2},
+		{"denied_prewarm", 2, true, 1, 0, 2, 1},
+		{"denied_after_prewarm", 3, true, 1, 1, 3, 2},
+		{"prewarm_and_answer", 0, true, 1, 2, 3, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, handshakes, frames := qualityBudgetWSServer(t)
+			tests, gateway, account := availabilityWSTestServices(t, server)
+			gateway.cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = tc.prewarm
+			denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			repo := &monitoringBudgetRepoStub{denyAt: tc.denyAt, err: denial}
+			tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+			result, err := tests.RunPelicanBackground(t.Context(), account.ID, "target", &PelicanTestConfig{
+				QuestionKind: "candy", Prompt: CandyPrompt, ReasoningEffort: "high", ParallelCount: 1,
+				Availability: &AvailabilityPolicy{ValidForSeconds: 60},
+			})
+			require.NoError(t, err)
+			if tc.denyAt > 0 {
+				require.Equal(t, "answer_budget_deferred", result.ErrorMessage)
+				require.Equal(t, "unknown", result.QualityJudgment.Verdict)
+				require.Equal(t, denial, result.QualityJudgment.BudgetDeferral)
+				require.Equal(t, "inconclusive", result.PelicanConfig.AvailabilityResult.Status)
+			} else {
+				require.Equal(t, "success", result.Status, result.ErrorMessage)
+				require.Nil(t, result.QualityJudgment)
+			}
+			require.Equal(t, tc.handshakes, handshakes.Load())
+			require.Equal(t, tc.frames, frames.Load())
+			require.Len(t, repo.requests, tc.acquires)
+			require.Equal(t, tc.releases, repo.released)
+			for _, request := range repo.requests {
+				require.Equal(t, monitoringProbeHash(server.URL), request.SiteHash)
+				require.Equal(t, []string{config.UpstreamKeyFingerprint("fixture")}, request.KeyHashes)
+				require.False(t, request.Recovery)
+			}
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetNativeWSHoldsTurnSlot(t *testing.T) {
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	server, handshakes, frames := qualityBudgetWSServer(t, func(int32) { close(entered); <-proceed })
+	defer close(proceed)
+	tests, _, account := availabilityWSTestServices(t, server)
+	repo := &monitoringBudgetRepoStub{}
+	tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan *ScheduledTestResult, 1)
+	go func() {
+		result, _ := tests.RunPelicanBackground(ctx, account.ID, "target", &PelicanTestConfig{QuestionKind: "candy", Prompt: CandyPrompt})
+		done <- result
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the admitted turn did not reach the upstream")
+	}
+	repo.mu.Lock()
+	acquired, released := len(repo.requests), repo.released
+	repo.mu.Unlock()
+	require.Equal(t, 2, acquired, "one handshake plus one generation attempt")
+	require.Equal(t, 1, released, "the handshake is complete; the generation slot must still be held")
+	require.EqualValues(t, 1, handshakes.Load())
+	require.EqualValues(t, 1, frames.Load())
+	cancel()
+	select {
+	case result := <-done:
+		require.NotEqual(t, "success", result.Status)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a canceled monitoring request must stop without detached draining")
+	}
+	repo.mu.Lock()
+	released = repo.released
+	repo.mu.Unlock()
+	require.Equal(t, 2, released, "cancellation returns the remaining generation slot")
+}
+
+type qualityBudgetWSDialer func(context.Context, string, http.Header, string) (openAIWSClientConn, int, http.Header, error)
+
+func (dial qualityBudgetWSDialer) Dial(ctx context.Context, target string, headers http.Header, proxy string) (openAIWSClientConn, int, http.Header, error) {
+	return dial(ctx, target, headers, proxy)
+}
+
+func TestQualityMonitoringBudgetNativeWSLeaseLoss(t *testing.T) {
+	for _, phase := range []string{"handshake", "prewarm", "answer"} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				tests, gateway, account := availabilityWSTestServices(t, &httptest.Server{URL: "https://fixture.invalid"})
+				gateway.cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = phase == "prewarm"
+				gateway.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 300
+				gateway.cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 300
+				repo := &monitoringBudgetRepoStub{renew: func(context.Context) (bool, error) { return false, nil }}
+				tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+				conn := &openAIWSCaptureConn{events: [][]byte{[]byte(`{"type":"response.completed"}`)}, readDelays: []time.Duration{100 * time.Second}}
+				dials := 0
+				gateway.getOpenAIWSConnPool().setClientDialerForTest(qualityBudgetWSDialer(func(ctx context.Context, _ string, _ http.Header, _ string) (openAIWSClientConn, int, http.Header, error) {
+					dials++
+					require.True(t, HTTPUpstreamRedirectsDisabled(ctx))
+					if phase == "handshake" {
+						// Even a dialer that returns a connection after losing its
+						// lease must not publish that socket or a passing result.
+						time.Sleep(41 * time.Second)
+					}
+					return conn, 0, nil, nil
+				}))
+				started := time.Now()
+				result, err := tests.RunPelicanBackground(t.Context(), account.ID, "target", &PelicanTestConfig{QuestionKind: "candy", Prompt: CandyPrompt})
+				require.NoError(t, err)
+				require.Equal(t, "answer_budget_deferred", result.ErrorMessage)
+				require.Equal(t, "unknown", result.QualityJudgment.Verdict)
+				require.Equal(t, "budget_unavailable", result.QualityJudgment.BudgetDeferral.Reason)
+				require.Equal(t, "inconclusive", result.PelicanConfig.AvailabilityResult.Status)
+				require.Less(t, time.Since(started), 45*time.Second, "local lease loss must not enter the business drain/reconnect path")
+				require.NoError(t, t.Context().Err(), "the downstream parent is still valid")
+				require.Equal(t, 1, dials)
+				require.True(t, conn.closed)
+				require.Equal(t, len(repo.requests), repo.released)
+			})
+		})
+	}
+}
+
+func TestQualityMonitoringBudgetNativeWSFrozenCredentialsAndReuse(t *testing.T) {
+	repo := &monitoringBudgetRepoStub{}
+	ctx := NewMonitoringProbeBudgetService(repo).Context(t.Context(), "https://fixture.invalid/tenant", false)
+	pool := newOpenAIWSConnPool(newOpenAIWSExecutionScopeTestConfig())
+	t.Cleanup(pool.Close)
+	dialer := &openAIWSCaptureDialer{conn: &openAIWSCaptureConn{}}
+	pool.setClientDialerForTest(dialer)
+	req := openAIWSAcquireRequest{Account: &Account{ID: 42}, WSURL: "wss://fixture.invalid/tenant/v1/responses?key=query-fixture",
+		Headers: http.Header{"Authorization": {"Bearer old-fixture"}},
+		HeadersFactory: func(_ context.Context, h http.Header) (http.Header, error) {
+			h.Set("Authorization", "Bearer final-fixture")
+			return h, nil
+		}}
+	lease, err := pool.Acquire(ctx, req)
+	require.NoError(t, err)
+	connID := lease.ConnID()
+	for turn := 0; turn < 2; turn++ {
+		turnCtx, finish, err := lease.beginMonitoringProbeRequest(ctx)
+		require.NoError(t, err)
+		require.NoError(t, finishMonitoringProbeWSRequest(turnCtx, finish))
+		require.NoError(t, ctx.Err())
+		require.False(t, lease.conn.isClosed(), "finishing a turn must not close the reusable socket")
+		lease.Release()
+		if turn == 0 {
+			lease, err = pool.Acquire(ctx, req)
+			require.NoError(t, err)
+			require.Equal(t, connID, lease.ConnID())
+		}
+	}
+	require.Equal(t, 1, dialer.DialCount())
+	require.Len(t, repo.requests, 3, "one handshake and two independently accounted turns")
+	require.Equal(t, 3, repo.released)
+	for _, request := range repo.requests {
+		require.Equal(t, monitoringProbeHash("https://fixture.invalid/tenant"), request.SiteHash)
+		require.ElementsMatch(t, []string{config.UpstreamKeyFingerprint("final-fixture"), config.UpstreamKeyFingerprint("query-fixture")}, request.KeyHashes)
+		require.NotContains(t, request.KeyHashes, config.UpstreamKeyFingerprint("old-fixture"))
+	}
+}
+
+func TestQualityMonitoringBudgetNativeWSBackgroundPrewarm(t *testing.T) {
+	for _, denied := range []bool{false, true} {
+		t.Run(strconv.FormatBool(denied), func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			ctx, cancel := context.WithCancel(NewMonitoringProbeBudgetService(repo).Context(t.Context(), "https://fixture.invalid/tenant", false))
+			defer cancel()
+			pool := newOpenAIWSConnPool(newOpenAIWSExecutionScopeTestConfig())
+			t.Cleanup(pool.Close)
+			dialer := qualityBudgetWSDialer(func(ctx context.Context, _ string, _ http.Header, _ string) (openAIWSClientConn, int, http.Header, error) {
+				require.True(t, HTTPUpstreamRedirectsDisabled(ctx))
+				return &openAIWSCaptureConn{}, 0, nil, nil
+			})
+			pool.setClientDialerForTest(dialer)
+			req := openAIWSAcquireRequest{Account: &Account{ID: 42}, WSURL: "wss://fixture.invalid/tenant/v1/responses", Headers: http.Header{"Authorization": {"Bearer final-fixture"}}}
+			lease, err := pool.Acquire(ctx, req)
+			require.NoError(t, err)
+			lease.Release()
+			ap, ok := pool.getAccountPool(42)
+			require.True(t, ok)
+			ap.mu.Lock()
+			background := cloneOpenAIWSAcquireRequest(*ap.lastAcquire)
+			generation := ap.generation
+			ap.mu.Unlock()
+			if denied {
+				repo.denyAt, repo.err = 2, &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			}
+			cancel()
+			pool.prewarmConns(42, background, 1, generation)
+			require.Len(t, repo.requests, 2, "the delayed dial must retain its originating budget")
+			require.Nil(t, monitoringProbeLocalError(ctx), "background results must not mutate an already completed quality test")
+			ap.mu.Lock()
+			failures := ap.prewarmFails
+			ap.mu.Unlock()
+			require.Zero(t, failures, "a local deferral is not an upstream failure")
+			if denied {
+				require.Equal(t, 1, repo.released)
+			} else {
+				require.Equal(t, 2, repo.released)
+			}
 		})
 	}
 }

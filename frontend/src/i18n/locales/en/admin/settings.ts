@@ -542,7 +542,7 @@ export default {
       upstreamBillingProbe: {
         budget: {
           title: 'Declaration, balance and quality detection request budget',
-          scopeHint: 'Shared by upgraded instances on this database; drain older monitoring instances before enforcement. Counts each Sub2API declaration/balance request, New API management request or page (including previews), JEV grading attempt, and native HTTP quality answer or LLM grading attempt. Excludes business traffic, other detection transports and token usage.',
+          scopeHint: 'Shared by upgraded instances on this database; drain older monitoring instances before enforcement. Counts each Sub2API declaration/balance request, New API management request or page (including previews), JEV grading attempt, native HTTP quality answer or LLM grading attempt, and native WebSocket quality handshake, prewarm or generation. Reused sockets still count each generation. Excludes business traffic, other detection transports and token usage.',
           enabled: 'Enforce shared limits', enforced: 'Limits enforced', observeOnly: 'Observe only — limits are not enforced',
           requests_per_minute: 'Global requests / UTC minute', requests_per_day: 'Global requests / UTC day',
           site_requests_per_minute: 'Requests / site / minute', key_requests_per_minute: 'Requests / actual credential / minute',

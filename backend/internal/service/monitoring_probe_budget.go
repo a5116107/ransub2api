@@ -193,41 +193,105 @@ func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, rel
 	if req == nil {
 		return req, nil, nil
 	}
-	probe, ok := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
-	if !ok {
+	if _, ok := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); !ok {
 		return req, nil, nil
+	}
+	ctx, finish, err := beginMonitoringProbeRequest(req.Context(), req.URL, config.UpstreamCredentialFingerprints(req))
+	if finish == nil {
+		return req, nil, err
+	}
+	return req.WithContext(ctx), finish, err
+}
+
+// WS handshakes and response.create turns share the HTTP accounting rules.
+// Turn callers supply the fingerprints frozen at the successful handshake,
+// never credentials reloaded from a potentially edited account.
+func beginMonitoringProbeWSRequest(ctx context.Context, target string, keys []string) (context.Context, func(), error) {
+	probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	if !ok {
+		return ctx, nil, nil
+	}
+	u, err := url.Parse(target)
+	if err == nil {
+		switch u.Scheme {
+		case "ws":
+			u.Scheme = "http"
+		case "wss":
+			u.Scheme = "https"
+		default:
+			err = ErrMonitoringProbeBudgetUnavailable
+		}
+	}
+	if err != nil {
+		probe.local.record(ErrMonitoringProbeBudgetUnavailable)
+		return ctx, nil, ErrMonitoringProbeBudgetUnavailable
+	}
+	return beginMonitoringProbeRequest(ctx, u, keys)
+}
+
+func (l *openAIWSConnLease) beginMonitoringProbeRequest(ctx context.Context) (context.Context, func(), error) {
+	target := ""
+	var keys []string
+	if l != nil && l.conn != nil {
+		keys = l.conn.upstreamKeyFingerprints
+		if l.conn.billingHandshake != nil && l.conn.billingHandshake.redirectsDisabled {
+			target = l.conn.billingHandshake.target
+		}
+	}
+	return beginMonitoringProbeWSRequest(ctx, target, keys)
+}
+
+// Releasing a handshake or completed turn cancels only its budget child, not
+// the pooled socket or the parent that will send the next turn.
+func finishMonitoringProbeWSRequest(ctx context.Context, finish func()) error {
+	if finish == nil {
+		return nil
+	}
+	finish()
+	if errors.Is(context.Cause(ctx), ErrMonitoringProbeBudgetLeaseLost) {
+		probe, _ := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+		probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
+		return ErrMonitoringProbeBudgetLeaseLost
+	}
+	return nil
+}
+
+func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys []string) (budgetCtx context.Context, release func(), resultErr error) {
+	probe, ok := parent.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	if !ok {
+		return parent, nil, nil
 	}
 	defer func() { probe.local.record(resultErr) }()
 	if probe.service == nil || probe.service.repo == nil {
-		return req, nil, ErrMonitoringProbeBudgetUnavailable
+		return parent, nil, ErrMonitoringProbeBudgetUnavailable
 	}
-	if err := context.Cause(req.Context()); err != nil {
-		return req, nil, err
+	if err := context.Cause(parent); err != nil {
+		return parent, nil, err
 	}
 	var site string
 	for _, siteURL := range probe.sites {
 		// Native OAuth/default-provider routes have no configured base URL.
 		// Explicit protocol bases must never fall back to a different origin.
-		if siteURL == "" && probe.accountTest && len(probe.sites) == 1 && req.URL != nil {
-			siteURL = req.URL.Scheme + "://" + req.URL.Host
+		if siteURL == "" && probe.accountTest && len(probe.sites) == 1 && target != nil {
+			siteURL = target.Scheme + "://" + target.Host
 		}
 		candidate, err := CanonicalNewAPISite(siteURL)
-		if err == nil && monitoringProbeSiteContains(candidate, req.URL) && len(candidate) > len(site) {
+		if err == nil && monitoringProbeSiteContains(candidate, target) && len(candidate) > len(site) {
 			// Prefer the most specific configured tenant when bases overlap.
 			site = candidate
 		}
 	}
 	if site == "" {
-		return req, nil, ErrMonitoringProbeBudgetUnavailable
+		return parent, nil, ErrMonitoringProbeBudgetUnavailable
 	}
-	keys := config.UpstreamCredentialFingerprints(req)
 	if len(keys) == 0 || slices.Contains(keys, config.UnverifiedUpstreamCredential) {
-		return req, nil, ErrMonitoringProbeBudgetUnavailable
+		return parent, nil, ErrMonitoringProbeBudgetUnavailable
 	}
+	keys = slices.Clone(keys)
 	slices.Sort(keys)
 	keys = slices.Compact(keys)
 	started := time.Now()
-	acquireCtx, cancelAcquire := context.WithTimeout(req.Context(), 2*time.Second)
+	acquireCtx, cancelAcquire := context.WithTimeout(parent, 2*time.Second)
 	id, err := probe.service.repo.Acquire(acquireCtx, MonitoringProbeBudgetRequest{
 		SiteHash: monitoringProbeHash(site), KeyHashes: keys, Recovery: probe.recovery,
 	})
@@ -235,14 +299,14 @@ func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, rel
 	if err != nil {
 		var denial *MonitoringProbeBudgetDenial
 		if errors.As(err, &denial) {
-			return req, nil, denial
+			return parent, nil, denial
 		}
-		return req, nil, ErrMonitoringProbeBudgetUnavailable
+		return parent, nil, ErrMonitoringProbeBudgetUnavailable
 	}
 	if id == "" {
-		return req, nil, ErrMonitoringProbeBudgetUnavailable
+		return parent, nil, ErrMonitoringProbeBudgetUnavailable
 	}
-	ctx, cancel := context.WithCancelCause(req.Context())
+	ctx, cancel := context.WithCancelCause(parent)
 	stop := keepRenewedLease(ctx, started, MonitoringProbeBudgetLeaseTTL,
 		func(ctx context.Context) (bool, error) { return probe.service.repo.Renew(ctx, id) },
 		func() { cancel(ErrMonitoringProbeBudgetLeaseLost) })
@@ -253,7 +317,7 @@ func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, rel
 		defer cancelRelease()
 		_ = probe.service.repo.Release(ctx, id)
 	})
-	return req.WithContext(ctx), finish, nil
+	return ctx, finish, nil
 }
 
 func monitoringProbeSiteContains(site string, target *url.URL) bool {

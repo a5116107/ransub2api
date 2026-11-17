@@ -17,6 +17,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -123,6 +124,138 @@ func TestQualityMonitoringBudgetPostgresNativeHTTPAndRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 4, calls.Load())
 	require.EqualValues(t, 4, usage.DayUsed, "count the redirect response as one physical attempt")
+	require.Zero(t, usage.ActiveRequests)
+}
+
+func TestQualityMonitoringBudgetPostgresNativeWSAndRestart(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	var handshakes, frames, redirectCalls atomic.Int32
+	var redirect atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(proceed) })
+	defer release()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes.Add(1)
+		if redirect.Load() {
+			http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+			return
+		}
+		if r.URL.Path != "/tenant/v1/responses" || r.Header.Get("Authorization") != "Bearer ws-budget-fixture" {
+			http.Error(w, "invalid WS budget fixture request", 400)
+			return
+		}
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+			n := frames.Add(1)
+			if n == 2 {
+				close(entered)
+				select {
+				case <-proceed:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			for _, event := range []string{`{"type":"response.output_text.delta","delta":"21"}`, `{"type":"response.completed","response":{"id":"resp_budget","status":"completed","model":"target","usage":{"input_tokens":1,"output_tokens":1}}}`} {
+				if err := conn.Write(r.Context(), coderws.MessageText, []byte(event)); err != nil {
+					return
+				}
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	cfg.Default.RateMultiplier = 1
+	cfg.Gateway.OpenAIWS.Enabled, cfg.Gateway.OpenAIWS.APIKeyEnabled, cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true, true, true
+	cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = true
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount, cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1, 1
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds, cfg.Gateway.OpenAIWS.ReadTimeoutSeconds, cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3, 3, 3
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	account := mustCreateAccount(t, client, &service.Account{Name: "native-ws-budget", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "ws-budget-fixture", "base_url": server.URL + "/tenant"}, Extra: map[string]any{"responses_websockets_v2_enabled": true}})
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay, policy.Concurrency, policy.SiteConcurrency, policy.KeyConcurrency = 3, 1, 1, 1
+	policy, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	newServices := func() *service.AccountTestService {
+		upstream := NewHTTPUpstream(cfg)
+		gateway := service.NewOpenAIGatewayService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+		t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+		t.Cleanup(gateway.CloseOpenAIWSPool)
+		tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+		tests.SetOpenAIGatewayService(gateway)
+		tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+		return tests
+	}
+	question := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 21", ReasoningEffort: "high", ParallelCount: 1}
+	first, second := newServices(), newServices()
+	done := make(chan *service.ScheduledTestResult, 1)
+	go func() {
+		answer, _ := first.RunPelicanBackground(ctx, account.ID, "target", question)
+		done <- answer
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the final WS generation did not reach the upstream")
+	}
+	usage, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, usage.DayUsed, "handshake, prewarm and generation each consume one attempt")
+	require.Equal(t, 1, usage.ActiveRequests, "only the unfinished generation still holds a shared slot")
+	release()
+	select {
+	case answer := <-done:
+		require.Equal(t, "success", answer.Status, "%+v", answer)
+	case <-ctx.Done():
+		t.Fatal("the completed WS answer was not returned")
+	}
+	answer, err := second.RunPelicanBackground(ctx, account.ID, "target", question)
+	require.NoError(t, err)
+	require.Equal(t, "answer_budget_deferred", answer.ErrorMessage)
+	require.Equal(t, "global_day", answer.QualityJudgment.BudgetDeferral.Scope)
+	require.Equal(t, "inconclusive", answer.PelicanConfig.AvailabilityResult.Status)
+	require.EqualValues(t, 1, handshakes.Load(), "the independent exhausted instance must not open a socket")
+	require.EqualValues(t, 2, frames.Load())
+	usage, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.Zero(t, usage.ActiveRequests)
+	policy.Enabled = false
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	answer, err = second.RunPelicanBackground(ctx, account.ID, "target", question)
+	require.NoError(t, err)
+	require.Equal(t, "success", answer.Status, "%+v", answer)
+	usage, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 6, usage.DayUsed, "observe-only mode still accounts for all three attempts")
+	require.Zero(t, usage.ActiveRequests)
+	beforeRedirect := handshakes.Load()
+	redirect.Store(true)
+	answer, err = newServices().RunPelicanBackground(ctx, account.ID, "target", question)
+	require.NoError(t, err)
+	require.Equal(t, "failed", answer.Status)
+	require.Nil(t, answer.QualityJudgment, "a rejected upstream redirect is not a local budget deferral")
+	require.Zero(t, redirectCalls.Load(), "WS monitoring must not follow a redirect or repeat it as HTTP")
+	usage, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.Greater(t, handshakes.Load(), beforeRedirect)
+	require.EqualValues(t, 6+handshakes.Load()-beforeRedirect, usage.DayUsed, "each original WS retry must be counted as another handshake")
 	require.Zero(t, usage.ActiveRequests)
 }
 

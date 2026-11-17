@@ -30,7 +30,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	account *Account,
 	stateStore OpenAIWSStateStore,
 	groupID int64,
-) error {
+) (resultErr error) {
 	if s == nil {
 		return nil
 	}
@@ -89,6 +89,17 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
 		return err
 	}
+	var finishBudget func()
+	ctx, finishBudget, resultErr = lease.beginMonitoringProbeRequest(ctx)
+	if resultErr != nil {
+		return resultErr
+	}
+	defer func() {
+		if err := finishMonitoringProbeWSRequest(ctx, finishBudget); err != nil {
+			lease.MarkBroken()
+			resultErr = err
+		}
+	}()
 	if err := lease.WriteJSONWithContextTimeout(ctx, prewarmPayload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(

@@ -176,6 +176,68 @@ func TestMonitoringProbeBudgetQualitySiteBoundaries(t *testing.T) {
 	}
 }
 
+func TestMonitoringProbeBudgetWSBoundaries(t *testing.T) {
+	for _, mode := range []string{"wss", "ws", "changed_host", "changed_tenant", "changed_scheme", "invalid_url", "http_url", "missing_keys", "unverified_keys", "unfenced_socket", "unmarked"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			ctx := NewMonitoringProbeBudgetService(repo).Context(t.Context(), "https://example.com/tenant", false)
+			target := "wss://example.com/tenant/v1/responses"
+			keys := []string{"key-b", "key-a", "key-a"}
+			switch mode {
+			case "ws":
+				ctx = NewMonitoringProbeBudgetService(repo).Context(t.Context(), "http://example.com/tenant", false)
+				target = "ws://example.com/tenant/v1/responses"
+			case "changed_host":
+				target = "wss://other.example/tenant/v1/responses"
+			case "changed_tenant":
+				target = "wss://example.com/other/v1/responses"
+			case "changed_scheme":
+				target = "ws://example.com/tenant/v1/responses"
+			case "invalid_url":
+				target = "wss://example.com/%zz"
+			case "http_url":
+				target = "https://example.com/tenant/v1/responses"
+			case "missing_keys":
+				keys = nil
+			case "unverified_keys":
+				keys = []string{config.UnverifiedUpstreamCredential}
+			case "unmarked":
+				ctx = t.Context()
+			}
+			original := append([]string(nil), keys...)
+			var turnCtx context.Context
+			var finish func()
+			var err error
+			if mode == "unfenced_socket" {
+				lease := &openAIWSConnLease{conn: &openAIWSConn{upstreamKeyFingerprints: keys, billingHandshake: &openAIWSBillingHandshake{target: target}}}
+				turnCtx, finish, err = lease.beginMonitoringProbeRequest(ctx)
+			} else {
+				turnCtx, finish, err = beginMonitoringProbeWSRequest(ctx, target, keys)
+			}
+			switch mode {
+			case "wss", "ws":
+				require.NoError(t, err)
+				require.Len(t, repo.requests, 1)
+				require.Equal(t, []string{"key-a", "key-b"}, repo.requests[0].KeyHashes)
+				require.Equal(t, original, keys, "admission must not sort shared pooled-connection fingerprints in place")
+				require.NoError(t, finishMonitoringProbeWSRequest(turnCtx, finish))
+				require.NoError(t, finishMonitoringProbeWSRequest(turnCtx, finish))
+				require.Equal(t, 1, repo.released)
+				require.NoError(t, ctx.Err())
+			case "unmarked":
+				require.NoError(t, err)
+				require.Nil(t, finish)
+				require.Empty(t, repo.requests)
+			default:
+				require.ErrorIs(t, err, ErrMonitoringProbeBudgetUnavailable)
+				require.ErrorIs(t, monitoringProbeLocalError(ctx), ErrMonitoringProbeBudgetUnavailable)
+				require.Empty(t, repo.requests)
+				require.Nil(t, finish)
+			}
+		})
+	}
+}
+
 func TestMonitoringProbeBudgetLeaseLossCancelsTransportAndReleases(t *testing.T) {
 	for _, mode := range []string{"error", "lost", "blocked", "late_ack"} {
 		t.Run(mode, func(t *testing.T) {

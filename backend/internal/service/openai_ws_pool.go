@@ -72,6 +72,7 @@ func (e *openAIWSDialError) Unwrap() error {
 
 type openAIWSAcquireRequest struct {
 	billingGate       *openAIProfitControlGate
+	monitoringBudget  *monitoringProbeBudgetContext
 	timezoneBinding   *requestTimezoneBinding
 	timezoneMode      string
 	continuationScope OpenAIWSContinuationScope
@@ -1138,6 +1139,10 @@ func (p *openAIWSConnPool) Acquire(ctx context.Context, req openAIWSAcquireReque
 	if ctx != nil {
 		req.billingGate, _ = ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
 		req.timezoneBinding, _ = ctx.Value(requestTimezoneEgressKey{}).(*requestTimezoneBinding)
+		if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok {
+			probe.sites = append([]string(nil), probe.sites...)
+			req.monitoringBudget = &probe
+		}
 	}
 	if b := req.timezoneBinding; b != nil && b.service.settingService.GetOpenAIRequestTimezoneEnabled(ctx, false) {
 		req.timezoneMode = "manual"
@@ -1479,8 +1484,10 @@ retryAcquire:
 			return nil, errOpenAIWSConnClosed
 		}
 		if dialErr != nil {
-			ap.prewarmFails++
-			ap.prewarmFailAt = time.Now()
+			if monitoringProbeDeferral(dialErr, time.Now()) == nil {
+				ap.prewarmFails++
+				ap.prewarmFailAt = time.Now()
+			}
 			ap.signalChangedLocked()
 			ap.mu.Unlock()
 			return nil, dialErr
@@ -2021,8 +2028,10 @@ func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequ
 			ap.creating--
 		}
 		if err != nil {
-			ap.prewarmFails++
-			ap.prewarmFailAt = time.Now()
+			if monitoringProbeDeferral(err, time.Now()) == nil {
+				ap.prewarmFails++
+				ap.prewarmFailAt = time.Now()
+			}
 			ap.signalChangedLocked()
 			ap.mu.Unlock()
 			continue
@@ -2184,6 +2193,18 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	if req.billingGate != nil {
 		ctx = context.WithValue(ctx, openAIProfitControlGateCtxKey{}, req.billingGate)
 	}
+	if req.monitoringBudget != nil {
+		if _, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); !ok {
+			probe := *req.monitoringBudget
+			// A delayed background dial has its own result. It must not change
+			// the originating quality test after that test has completed.
+			probe.local = &monitoringProbeBudgetError{}
+			ctx = context.WithValue(WithHTTPUpstreamRedirectsDisabled(ctx), monitoringProbeBudgetKey{}, probe)
+		}
+	}
+	if _, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok {
+		ctx = WithHTTPUpstreamRedirectsDisabled(ctx)
+	}
 	headers := cloneHeader(req.Headers)
 	var err error
 	if req.HeadersFactory != nil {
@@ -2204,6 +2225,13 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	if req.BindAgentPublicKey != nil {
 		credentialRequest = req.BindAgentPublicKey(credentialRequest)
 	}
+	ctx, finishBudget, err := beginMonitoringProbeWSRequest(ctx, req.WSURL, config.UpstreamCredentialFingerprints(credentialRequest))
+	if err != nil {
+		return nil, err
+	}
+	if finishBudget != nil {
+		defer finishBudget()
+	}
 	if req.Account != nil {
 		ctx = upstreamroute.WithAccountID(ctx, req.Account.ID)
 	}
@@ -2217,6 +2245,16 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	finishCapture := captureOpenAIWSHandshake(ctx, accountIDForCapture, req.WSURL)
 	ctx, networkStarted := availabilityTransportContext(ctx)
 	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, headers, req.ProxyURL)
+	if budgetErr := finishMonitoringProbeWSRequest(ctx, finishBudget); budgetErr != nil {
+		if conn != nil {
+			if closer, ok := conn.(openAIWSForceCloser); ok {
+				_ = closer.CloseNow()
+			} else {
+				_ = conn.Close()
+			}
+		}
+		err = budgetErr
+	}
 	captureErr := err
 	if captureErr == nil && conn == nil {
 		captureErr = errors.New("openai ws dialer returned nil connection")
