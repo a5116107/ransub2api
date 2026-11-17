@@ -156,6 +156,240 @@ func TestQualityMeasurementPersistenceAndLegacyHistory(t *testing.T) {
 	require.Equal(t, "correct", old.QualityJudgment.Verdict)
 }
 
+func TestQualityMeasurementRoundCurrentness(t *testing.T) {
+	for _, scenario := range []string{"complete", "wrong-answer", "partial", "missing-model", "duplicate-model", "conflicting-config", "running", "expired-lease", "pending-comparison", "late-old-result", "legacy", "future-marker", "legacy-finish", "untracked-finish", "untracked-running", "untracked-result", "finished-before-samples", "paused", "edited", "pruned", "quota-skip", "lost-claim"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := t.Context()
+			var account int64
+			require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status) VALUES('round-fixture','openai','apikey','active') RETURNING id`).Scan(&account))
+			t.Cleanup(func() {
+				_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM accounts WHERE id=$1`, account)
+			})
+			plans, results := NewScheduledTestPlanRepository(integrationDB), NewScheduledTestResultRepository(integrationDB)
+			cfg := &service.PelicanTestConfig{QuestionKind: "candy", ModelID: "model-a", Prompt: "42", ReasoningEffort: "high", ParallelCount: 1,
+				Quality: &service.QualityPolicy{Action: service.QualityActionObserveOnly, ExpectedAnswer: "42", EvidenceValidForSeconds: 60}}
+			if scenario == "partial" || scenario == "conflicting-config" || scenario == "pruned" {
+				cfg.ParallelCount = 2
+			}
+			if scenario == "missing-model" || scenario == "duplicate-model" {
+				cfg.ModelIDs = []string{"model-a", "model-b"}
+			}
+			plan, err := service.NewScheduledTestService(plans, results).CreatePlan(ctx, &service.ScheduledTestPlan{AccountID: account, ModelID: cfg.ModelID, Enabled: true, CronExpression: "*/5 * * * *", MaxResults: 20, PelicanConfig: cfg})
+			require.NoError(t, err)
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			until := now.Add(15 * time.Minute)
+			exec := func(query string, args ...any) {
+				t.Helper()
+				_, err := integrationDB.ExecContext(ctx, query, args...)
+				require.NoError(t, err)
+			}
+			claim := func(at, lease time.Time) {
+				t.Helper()
+				due := at.Add(-time.Second)
+				exec(`UPDATE scheduled_test_plans SET running_until=NULL,next_run_at=$2 WHERE id=$1`, plan.ID, due)
+				plan.NextRunAt = &due
+				ok, err := plans.ClaimPelican(ctx, plan, at, lease, at.Add(30*time.Minute))
+				require.NoError(t, err)
+				require.True(t, ok)
+			}
+			claim(now.Add(-20*time.Second), until)
+			save := func(round time.Time, verdict, action string) *service.ScheduledTestResult {
+				t.Helper()
+				config := *plan.PelicanConfig
+				observed := now.Add(-5 * time.Second)
+				started, completed := observed.Add(-time.Second), observed.Add(time.Second)
+				deadline := observed.Add(time.Minute)
+				config.AvailabilityResult = &service.AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: started, FinishedAt: observed}
+				raw, err := json.Marshal([]any{1, config.Quality, config.ModelIDs, config.ParallelCount})
+				require.NoError(t, err)
+				score, status, reason := 1.0, "pass", "graded_correct"
+				if verdict == "incorrect" {
+					score, status, reason = 0, "fail", "graded_incorrect"
+				}
+				one := 1.0
+				config.QualityMeasurement = &service.QualityMeasurement{Version: 1, MeasurementHash: strings.Repeat("a", 64), PolicyHash: fmt.Sprintf("%x", sha256.Sum256(raw)), RuleVersion: plan.UpdatedAt,
+					RequestedModel: config.ModelID, QuestionKind: config.QuestionKind, ObservedAt: observed, CompletedAt: completed, ValidForSeconds: 60, ValidUntil: &deadline,
+					Dimensions: map[string]service.QualityDimensionMeasurement{"answer_correctness": {Status: status, Reason: reason, Score: &score, SampleCount: 1}, "grading": {Status: "pass", Reason: "grading_completed", Score: &one, SampleCount: 1}}}
+				result := &service.ScheduledTestResult{PlanID: plan.ID, Status: "success", StartedAt: started, FinishedAt: completed, PelicanConfig: &config, QualityRoundID: round.Format(time.RFC3339Nano), QualityAction: action, QualityJudgment: &service.QualityJudgment{Verdict: verdict}}
+				if verdict == "incorrect" {
+					result.Status, result.ErrorMessage = "failed", "answer_mismatch"
+				}
+				created, err := results.Create(ctx, result)
+				require.NoError(t, err)
+				return created
+			}
+			verdict := "correct"
+			if scenario == "wrong-answer" {
+				verdict = "incorrect"
+			}
+			action := "no_change"
+			if scenario == "pending-comparison" {
+				action = "comparison_pending"
+			}
+			created := save(until, verdict, action)
+			want, reason, count, expected := "latest_complete", "latest_complete", int64(1), int64(1)
+			if scenario != "running" && scenario != "expired-lease" && scenario != "legacy-finish" {
+				require.NoError(t, plans.FinishPelican(ctx, plan.ID, until, now.Add(-time.Second)))
+			}
+			switch scenario {
+			case "partial", "missing-model":
+				want, reason, expected = "incomplete", "round_incomplete", 2
+			case "duplicate-model":
+				save(until, "correct", "no_change")
+				want, reason, count, expected = "incomplete", "round_incomplete", 2, 2
+			case "conflicting-config":
+				plan.PelicanConfig.ParallelCount = 1
+				save(until, "correct", "no_change")
+				want, reason, count, expected = "incomplete", "round_incomplete", 2, 0
+			case "running":
+				want, reason = "running", "round_running"
+			case "expired-lease":
+				// Preserve the same registered identity, but make its lease expire.
+				exec(`UPDATE scheduled_test_plans SET running_until=$2,pelican_config=jsonb_set(pelican_config,'{_quality_latest_round,lease_until}',to_jsonb($2::timestamptz)) WHERE id=$1`, plan.ID, now.Add(-time.Second))
+				exec(`UPDATE scheduled_test_results SET quality_round_id=$2 WHERE id=$1`, created.ID, now.Add(-time.Second).Format(time.RFC3339Nano))
+				want, reason = "incomplete", "lease_expired"
+			case "pending-comparison":
+				want, reason = "incomplete", "comparison_pending"
+			case "late-old-result":
+				newer := until.Add(time.Second)
+				claim(now.Add(-10*time.Second), newer)
+				newResult := save(newer, "incorrect", "inconclusive")
+				require.NoError(t, plans.FinishTriggeredQuality(ctx, plan, newer, now.Add(-time.Second), now.Add(time.Minute)))
+				created = save(until, "correct", "no_change")
+				require.Greater(t, created.ID, newResult.ID, "old result arrives after the new failure")
+				fresh, err := results.GetResult(ctx, plan.ID, newResult.ID)
+				require.NoError(t, err)
+				require.Equal(t, "latest_complete", fresh.QualityMeasurementValidity.Round.Status)
+				require.Equal(t, "within_window", fresh.QualityMeasurementValidity.Status)
+				require.Equal(t, "incorrect", fresh.QualityJudgment.Verdict)
+				want, reason, count, expected = "superseded", "different_claim", 2, 1
+			case "legacy":
+				exec(`UPDATE scheduled_test_plans SET pelican_config=pelican_config-'_quality_latest_round' WHERE id=$1`, plan.ID)
+				want, reason = "unknown", "round_not_tracked"
+			case "future-marker":
+				exec(`UPDATE scheduled_test_plans SET pelican_config=jsonb_set(pelican_config,'{_quality_latest_round,version}','99') WHERE id=$1`, plan.ID)
+				want, reason = "unknown", "round_not_tracked"
+			case "legacy-finish", "untracked-finish":
+				exec(`UPDATE scheduled_test_plans SET running_until=NULL,last_run_at=$2 WHERE id=$1`, plan.ID, now)
+				want, reason = "incomplete", "round_not_finished"
+				if scenario == "untracked-finish" {
+					want, reason = "unknown", "untracked_run"
+				}
+			case "paused":
+				exec(`UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan.ID)
+				want, reason = "unknown", "rule_paused"
+			case "untracked-running", "untracked-result":
+				exec(`UPDATE scheduled_test_plans SET running_until=$2 WHERE id=$1`, plan.ID, until.Add(time.Second))
+				if scenario == "untracked-result" {
+					created = save(until.Add(time.Second), "correct", "no_change")
+				}
+				want, reason = "unknown", "untracked_run"
+			case "finished-before-samples":
+				exec(`UPDATE scheduled_test_plans SET last_run_at=$2,pelican_config=jsonb_set(pelican_config,'{_quality_latest_round,completed_at}',to_jsonb($2::timestamptz)) WHERE id=$1`, plan.ID, now.Add(-10*time.Second))
+				want, reason = "unknown", "untracked_run"
+			case "edited":
+				exec(`UPDATE scheduled_test_plans SET updated_at=updated_at+interval '1 microsecond' WHERE id=$1`, plan.ID)
+				want, reason = "unknown", "rule_changed"
+			case "pruned":
+				save(until, "correct", "no_change")
+				require.NoError(t, results.PruneOldResults(ctx, plan.ID, 1))
+				latest, listErr := results.ListByPlanID(ctx, plan.ID, 1)
+				require.NoError(t, listErr)
+				created = latest[0]
+				want, reason, expected = "incomplete", "round_incomplete", 2
+			case "quota-skip":
+				newer := until.Add(time.Second)
+				claim(now.Add(-10*time.Second), newer)
+				require.NoError(t, plans.(service.QualityQuotaSkipRepository).FinishQuotaSkippedPelican(ctx, plan, newer, now.Add(-time.Second)))
+				want, reason = "superseded", "different_claim"
+			case "lost-claim":
+				plan.NextRunAt = &now
+				ok, claimErr := plans.ClaimPelican(ctx, plan, now, until.Add(time.Second), now.Add(time.Hour))
+				require.NoError(t, claimErr)
+				require.False(t, ok)
+			}
+			read, err := NewScheduledTestResultRepository(integrationDB).GetResult(ctx, plan.ID, created.ID)
+			require.NoError(t, err)
+			require.NotNil(t, read.QualityMeasurementValidity.Round)
+			round := read.QualityMeasurementValidity.Round
+			require.Equal(t, want, round.Status)
+			require.Equal(t, reason, round.Reason)
+			require.Equal(t, count, round.SampleCount)
+			if expected == 0 {
+				require.Nil(t, round.ExpectedSampleCount)
+			} else {
+				require.Equal(t, &expected, round.ExpectedSampleCount)
+			}
+			require.Equal(t, created.PelicanConfig.QualityMeasurement, read.PelicanConfig.QualityMeasurement, "read assessment must not rewrite frozen evidence")
+			storedPlan, err := plans.GetByID(ctx, plan.ID)
+			require.NoError(t, err)
+			raw, err := json.Marshal(storedPlan)
+			require.NoError(t, err)
+			require.NotContains(t, string(raw), "_quality_latest_round", "claim marker is repository-private, not rule input/output")
+			var saved []byte
+			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT pelican_config FROM scheduled_test_results WHERE id=$1`, created.ID).Scan(&saved))
+			require.NotContains(t, string(saved), "quality_measurement_validity")
+			require.NotContains(t, string(saved), "_quality_latest_round")
+		})
+	}
+}
+
+func TestQualityMeasurementConcurrentClaims(t *testing.T) {
+	ctx := t.Context()
+	var account int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status) VALUES('claim-fixture','openai','apikey','active') RETURNING id`).Scan(&account))
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM accounts WHERE id=$1`, account)
+	})
+	plans := NewScheduledTestPlanRepository(integrationDB)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	due := now.Add(-time.Minute)
+	plan, err := plans.Create(ctx, &service.ScheduledTestPlan{AccountID: account, ModelID: "fixture", Enabled: true, NextRunAt: &due, CronExpression: "*/5 * * * *", MaxResults: 20,
+		PelicanConfig: &service.PelicanTestConfig{ParallelCount: 1, Quality: &service.QualityPolicy{Action: service.QualityActionObserveOnly}}})
+	require.NoError(t, err)
+	type claimResult struct {
+		until time.Time
+		ok    bool
+		err   error
+	}
+	start, outcomes := make(chan struct{}), make(chan claimResult, 2)
+	for index := range 2 {
+		go func() {
+			local := *plan
+			until := now.Add(15*time.Minute + time.Duration(index)*time.Microsecond)
+			<-start
+			ok, err := plans.ClaimPelican(ctx, &local, now, until, now.Add(time.Hour))
+			outcomes <- claimResult{until, ok, err}
+		}()
+	}
+	close(start)
+	var winner, loser time.Time
+	winners := 0
+	for range 2 {
+		result := <-outcomes
+		require.NoError(t, result.err)
+		if result.ok {
+			winner = result.until
+			winners++
+		} else {
+			loser = result.until
+		}
+	}
+	require.Equal(t, 1, winners)
+	// A stale completion must not finish or replace the winning claim marker.
+	require.NoError(t, plans.FinishPelican(ctx, plan.ID, loser, now))
+	var lease time.Time
+	var completed bool
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT (pelican_config->'_quality_latest_round'->>'lease_until')::timestamptz,
+ pelican_config->'_quality_latest_round' ? 'completed_at' FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&lease, &completed))
+	require.Equal(t, winner, lease)
+	require.False(t, completed)
+	require.NoError(t, plans.FinishPelican(ctx, plan.ID, winner, now))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT (pelican_config->'_quality_latest_round'->>'completed_at')::timestamptz=last_run_at
+ FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&completed))
+	require.True(t, completed)
+}
+
 func TestPelicanSchedulePersistenceLeaseAndRetention(t *testing.T) {
 	ctx := context.Background()
 	var account int64

@@ -2964,7 +2964,17 @@ export interface ScheduledTestPlan {
 }
 
 export interface ScheduledTestResult {
-  quality_measurement_validity?: { status: 'within_window' | 'expired' | 'unknown'; reason: string; evaluated_at: string }
+  quality_measurement_validity?: {
+    status: 'within_window' | 'expired' | 'unknown'
+    reason: string
+    evaluated_at: string
+    round?: {
+      status: 'latest_complete' | 'superseded' | 'running' | 'incomplete' | 'unknown'
+      reason: string
+      sample_count: number
+      expected_sample_count: number | null
+    }
+  }
   quality_judgment?: QualityJudgment
   quality_round_id?: string
   quality_action?: string

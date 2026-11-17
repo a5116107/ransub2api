@@ -313,6 +313,7 @@ func (r *scheduledTestPlanRepository) finalizeQualityBatchRun(ctx context.Contex
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET running_until=NULL,last_run_at=$3,
+ pelican_config=`+finishQualityRoundMarker+`,
  next_run_at=CASE WHEN $4 AND updated_at=$5 AND next_run_at=$6 AND next_run_at<=$3 THEN $7 ELSE next_run_at END
  WHERE id=$1 AND running_until=$2`, planID, run.Until, finished, run.Trigger == "upstream_5xx", run.Plan.UpdatedAt, run.Plan.NextRunAt, following); err != nil {
 		return err

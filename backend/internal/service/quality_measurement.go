@@ -29,12 +29,22 @@ type QualityMeasurement struct {
 	Dimensions      map[string]QualityDimensionMeasurement `json:"dimensions"`
 }
 
-// QualityMeasurementValidity describes one detail read's evidence window and
-// rule version only. It is not route, model identity or scheduling admission.
+// QualityMeasurementValidity describes one detail read's window/rule assessment
+// and registered round separately, never current route or scheduling admission.
 type QualityMeasurementValidity struct {
-	Status      string    `json:"status"`
-	Reason      string    `json:"reason"`
-	EvaluatedAt time.Time `json:"evaluated_at"`
+	Status      string                           `json:"status"`
+	Reason      string                           `json:"reason"`
+	EvaluatedAt time.Time                        `json:"evaluated_at"`
+	Round       *QualityMeasurementRoundValidity `json:"round,omitempty"`
+}
+
+// QualityMeasurementRoundValidity compares a sample with the last registered
+// quality claim. Completeness is not a passing answer or current route admission.
+type QualityMeasurementRoundValidity struct {
+	Status              string `json:"status"`
+	Reason              string `json:"reason"`
+	SampleCount         int64  `json:"sample_count"`
+	ExpectedSampleCount *int64 `json:"expected_sample_count"`
 }
 
 func validQualityEvidenceLifetime(seconds int) bool {

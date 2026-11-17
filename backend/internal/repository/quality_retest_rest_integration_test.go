@@ -81,6 +81,8 @@ func TestQualityRetestRestUsesIndependentModelVerdicts(t *testing.T) {
 	require.NoError(t, err)
 	f.plan, err = f.plans.GetByID(context.Background(), f.plan.ID)
 	require.NoError(t, err)
+	require.NoError(t, f.plans.FinishPelican(context.Background(), f.plan.ID, f.until, time.Now()))
+	f.claim() // Re-reading configuration does not restore a worker's route fence.
 	f.plan.QualityModelOutcomes = map[string]string{"sol": "failed", "astra": "passed"}
 	require.Equal(t, "models_isolated", f.apply("inconclusive"))
 	deadline := qualityRestDeadline(t, f.plan.ID)

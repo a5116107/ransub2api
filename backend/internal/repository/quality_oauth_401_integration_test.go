@@ -118,7 +118,14 @@ func TestQualityOAuth401SixRoundsSurvivePruningAndDeleteOnlyRule(t *testing.T) {
 	var before []byte
 	require.NoError(t, integrationDB.QueryRow(`SELECT to_jsonb(a) FROM accounts a WHERE id=$1`, f.account).Scan(&before))
 	results := NewScheduledTestResultRepository(integrationDB)
+	var configRevision string
 	for round := 1; round <= 6; round++ {
+		var revision string
+		require.NoError(t, integrationDB.QueryRow(`SELECT config_revision FROM quality_oauth_401_streaks WHERE plan_id=$1`, f.plan.ID).Scan(&revision))
+		if round == 1 {
+			configRevision = revision
+		}
+		require.Equal(t, configRevision, revision, "runtime claim/completion markers are not configuration edits")
 		// History retains a single row, much less than the cleanup threshold.
 		_, err := results.Create(ctx, &service.ScheduledTestResult{PlanID: f.plan.ID, Status: "failed", ErrorMessage: "API returned 401: synthetic",
 			StartedAt: time.Now(), FinishedAt: time.Now(), QualityRoundID: f.until.Format(time.RFC3339Nano), PelicanConfig: f.plan.PelicanConfig})

@@ -280,6 +280,7 @@
                 </table>
                 <p class="mt-2 text-amber-700 dark:text-amber-400" data-testid="quality-measurement-current">{{ t('qualityOps.measurement.currentUnknown') }}</p>
                 <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-validity" :data-status="measurement.validity.status" role="status">{{ t('qualityOps.measurement.validityAtRead') }} · {{ t(`qualityOps.measurement.validityStates.${measurement.validity.status}`) }}<span class="block text-xs">{{ t(`qualityOps.measurement.validityReasons.${measurement.validity.reason}`) }}</span></p>
+                <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-round" :data-status="measurement.round.status" role="status">{{ t('qualityOps.measurement.roundAtRead') }} · {{ t(`qualityOps.measurement.roundStates.${measurement.round.status}`) }}<span class="block text-xs">{{ t(`qualityOps.measurement.roundReasons.${measurement.round.reason}`) }}</span><span v-if="measurement.round.samples !== null" class="block text-xs">{{ t('qualityOps.measurement.roundCoverage', { count: measurement.round.samples, expected: measurement.round.expected ?? '—' }) }}</span></p>
                 <details class="mt-3 min-w-0"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('qualityOps.measurement.details') }}</summary><dl class="mt-2 grid min-w-0 grid-cols-1 gap-2 text-xs sm:grid-cols-2"><div v-for="fact in measurement.facts" :key="fact.key" class="min-w-0"><dt class="text-gray-500">{{ t(`qualityOps.measurement.${fact.key}`) }}</dt><dd class="break-all">{{ fact.value }}</dd></div></dl></details>
               </section>
               <div v-if="selectedResult.quality_judgment && !isProbeResult(selectedResult)" class="judge-reason"><h5>{{ t('qualityOps.judgeReason') }}</h5><p>{{ judgmentReason(selectedResult) }}</p><span>{{ selectedResult.quality_judgment.model_id || '—' }} · {{ selectedResult.quality_judgment.kind === 'jev' ? t('qualityOps.judgeJev') : groupNames[selectedResult.quality_judgment.group_id || 0] || selectedResult.quality_judgment.group_id || '—' }}</span><p v-if="selectedResult.quality_judgment.kind === 'jev'">{{ t('qualityOps.judgeJevLatency', { ms: selectedResult.quality_judgment.latency_ms ?? '—' }) }} · {{ selectedResult.quality_judgment.rules_version }}</p></div>
@@ -484,6 +485,23 @@ const measurement = computed(() => {
       }
     }
   }
+  const readRound = assessment?.round
+  let round: { status: string; reason: string; samples: number | null; expected: number | null } = { status: 'unknown', reason: 'round_assessment_not_observed', samples: null, expected: null }
+  if (readRound) {
+    round.reason = 'invalid_round_assessment'
+    const reasons: Record<string, string[]> = {
+      latest_complete: ['latest_complete'], superseded: ['different_claim'], running: ['round_running'],
+      incomplete: ['lease_expired', 'round_not_finished', 'round_incomplete', 'comparison_pending'],
+      unknown: ['round_not_tracked', 'rule_changed', 'rule_paused', 'untracked_run'],
+    }
+    const count = readRound.sample_count, expected = readRound.expected_sample_count
+    const validCount = Number.isInteger(count) && count >= 0 && count <= 400 &&
+      (expected === null || (Number.isInteger(expected) && expected >= 1 && expected <= 400))
+    if (supported && Number.isFinite(evaluated) && evaluated >= completed && validCount && reasons[readRound.status]?.includes(readRound.reason) &&
+      (readRound.status !== 'latest_complete' || (count > 0 && count === expected))) {
+      round = { status: readRound.status, reason: readRound.reason, samples: count, expected }
+    }
+  }
   const facts = [
     { key: 'requestedModel', value: safe(value.requested_model) },
     { key: 'wireModel', value: supported ? safe(value.scope?.model) : '—' },
@@ -502,7 +520,7 @@ const measurement = computed(() => {
     { key: 'measurementHash', value: hash(value.measurement_hash) ? value.measurement_hash : '—' },
     { key: 'policyHash', value: hash(value.policy_hash) ? value.policy_hash : '—' },
   ]
-  return { supported, dimensions, facts, validity }
+  return { supported, dimensions, facts, validity, round }
 })
 const detailsLoading = ref(false), answerLoading = ref(false), detailsError = ref('')
 const loadedAnswers = new Map<number, ScheduledTestResult>()

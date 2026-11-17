@@ -567,6 +567,24 @@ export default {
   "evidenceValidityHint": "Blank or 0 leaves it undeclared; use 60–604800 seconds. Starts when the upstream observation ends, independently of availability. Existing isolation, recovery and admission stay unchanged.",
   "invalidEvidenceValidity": "Quality evidence lifetime must be 0 or an integer from 60 to 604800 seconds.",
   "measurement": {
+    "roundAtRead": "Round assessment at read",
+    "roundCoverage": "Retained samples {count} / configured samples {expected}; record completeness only.",
+    "roundStates": { "latest_complete": "Latest registered round · Complete records", "superseded": "Another round registered", "running": "Round running", "incomplete": "Round incomplete", "unknown": "Undetermined" },
+    "roundReasons": {
+      "latest_complete": "This sample belongs to the latest registered, completed round with all configured records. This does not certify answer correctness, the current route or admission.",
+      "different_claim": "The rule registered another quality round. A late older sample does not become the latest result.",
+      "round_running": "The latest registered round still holds its running lease; current records are not a completed round.",
+      "lease_expired": "The lease expired without confirmed completion. Existing samples remain historical.",
+      "round_not_finished": "The round has no completion marker, so completion remains unconfirmed.",
+      "round_incomplete": "Samples are missing, duplicated, inconsistent or pruned. Completeness remains unconfirmed.",
+      "comparison_pending": "Configured samples are recorded, but cross-account comparison or final classification is pending.",
+      "round_not_tracked": "The claim marker is missing, legacy or an unknown version. The current round is not inferred.",
+      "rule_changed": "The rule version changed; the historical round does not represent the current rule.",
+      "rule_paused": "The rule is paused. Historical rounds are retained.",
+      "untracked_run": "The running lease or completion time differs from the registered marker. The assessment remains unknown.",
+      "round_assessment_not_observed": "This response has no database round assessment. The assessment remains unknown.",
+      "invalid_round_assessment": "The round conclusion, sample counts or evaluation time are inconsistent. The assessment remains unknown."
+    },
     "validityAtRead": "Evidence window at read time",
     "validUntil": "Quality evidence expires",
     "evaluatedAt": "Database assessment time",
@@ -606,7 +624,7 @@ export default {
     "title": "Independent sample measurements",
     "historical": "Historical evidence for this question and request only; not current admission.",
     "unsupported": "Old, damaged or unsupported evidence: every dimension remains unknown.",
-    "currentUnknown": "Current admission is unknown: an evidence window does not verify the route, latest round or eligibility.",
+    "currentUnknown": "Current admission unknown: the evidence window and registered round do not replace checks for the current route, new faults, model identity and admission.",
     "states": {
       "pass": "Pass",
       "fail": "Fail",

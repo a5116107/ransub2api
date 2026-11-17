@@ -49,7 +49,7 @@ func (r *scheduledTestPlanRepository) FinishQuotaSkippedPelican(ctx context.Cont
  SET claimed_until=COALESCE(last_round_until,claimed_until) WHERE plan_id=$1 AND claimed_until=$2`, plan.ID, until); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET running_until=NULL,last_run_at=$3
+	if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET running_until=NULL,last_run_at=$3,pelican_config=`+finishQualityRoundMarker+`
  WHERE id=$1 AND running_until=$2`, plan.ID, until, finished); err != nil {
 		return err
 	}

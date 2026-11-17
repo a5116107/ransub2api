@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -58,6 +59,8 @@ func TestQualityIsolationGroupsFollowIndependentModelRecovery(t *testing.T) {
 	reloaded, err := f.plans.GetByID(context.Background(), f.plan.ID)
 	require.NoError(t, err)
 	f.plan = reloaded
+	require.NoError(t, f.plans.FinishPelican(context.Background(), f.plan.ID, f.until, time.Now()))
+	f.claim() // A restarted worker obtains a fresh execution and route fence.
 	require.Equal(t, "groups_restored_models_isolated", isolationRound(f, "failed", "passed"))
 	require.Equal(t, 1, countGroup(group))
 	require.NotContains(t, f.extra()[service.QualityModelIsolationKey], "astra")

@@ -20,9 +20,10 @@ var qualityAccount401Pattern = regexp.MustCompile(`(^|[^0-9])401([^0-9]|$)`)
 // identity or saved rule version starts a fresh streak after a process restart.
 // Equality markers stay in this runtime table, never in snapshots or responses.
 func claimQualityOAuth401Tx(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, until time.Time) error {
+	// Runtime round markers must not restart an unchanged rule's 401 streak.
 	_, err := tx.ExecContext(ctx, `INSERT INTO quality_oauth_401_streaks
  (plan_id,config_updated_at,config_revision,credentials_revision,claimed_until)
- SELECT $1,$2,md5(jsonb_build_array(p.pelican_config,p.model_id,p.cron_expression)::text),
+ SELECT $1,$2,md5(jsonb_build_array(p.pelican_config-'_quality_latest_round',p.model_id,p.cron_expression)::text),
  md5(COALESCE(a.credentials,'{}'::jsonb)::text),$3 FROM accounts a JOIN scheduled_test_plans p ON p.id=$1
  WHERE a.id=$4 AND a.type='oauth' AND a.deleted_at IS NULL
  ON CONFLICT(plan_id) DO UPDATE SET

@@ -376,7 +376,10 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		return false, nil
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE scheduled_test_plans
- SET running_until = $3, next_run_at = $4, pelican_config = pelican_config - '_manual_quality_run'
+ SET running_until = $3, next_run_at = $4, pelican_config = (pelican_config - '_manual_quality_run') ||
+ CASE WHEN NOT $9 AND jsonb_typeof(pelican_config->'quality')='object' THEN
+ jsonb_build_object('_quality_latest_round',jsonb_build_object('version',1,'lease_until',$3::timestamptz,'rule_version',updated_at))
+ ELSE '{}'::jsonb END
  WHERE id = $1 AND enabled = true
  AND (next_run_at <= $2 OR ($7 AND (pelican_config->'quality'->>'trigger_on_upstream_5xx'='true' OR jsonb_typeof(pelican_config->'availability')='object')) OR ($9 AND jsonb_typeof(pelican_config->'availability')='object'))
  AND (NOT $7 OR ((pelican_config->'quality'->>'trigger_on_upstream_5xx'='true' OR jsonb_typeof(pelican_config->'availability')='object')
@@ -463,8 +466,15 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	return n == 1, nil
 }
 
+// All native quality finish paths use the same marker. Legacy finishers leave
+// it incomplete, or change last_run_at without its completion time; neither can
+// certify an old result as the latest completed quality round.
+const finishQualityRoundMarker = `CASE WHEN pelican_config->'_quality_latest_round'->'lease_until'=to_jsonb($2::timestamptz)
+ THEN jsonb_set(pelican_config,'{_quality_latest_round,completed_at}',to_jsonb($3::timestamptz)) ELSE pelican_config END`
+
 func (r *scheduledTestPlanRepository) FinishPelican(ctx context.Context, id int64, until, finished time.Time) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE scheduled_test_plans SET running_until = NULL, last_run_at = $3,
+ pelican_config=`+finishQualityRoundMarker+`,
  next_run_at=CASE WHEN pelican_config->'quality'->>'action'='openai_two_fa_admission'
  THEN $3::timestamptz+make_interval(secs => (pelican_config->'quality'->'admission'->>'wait_seconds')::int) ELSE next_run_at END
  WHERE id = $1 AND running_until = $2`, id, until, finished)
@@ -490,6 +500,7 @@ func (r *scheduledTestPlanRepository) FinishAvailabilityCoverage(ctx context.Con
 
 func (r *scheduledTestPlanRepository) FinishTriggeredQuality(ctx context.Context, plan *service.ScheduledTestPlan, until, finished, next time.Time) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE scheduled_test_plans SET running_until=NULL,last_run_at=$3,
+ pelican_config=`+finishQualityRoundMarker+`,
  next_run_at=CASE WHEN updated_at=$4 AND next_run_at=$5 AND next_run_at<=$3 THEN $6 ELSE next_run_at END
  WHERE id=$1 AND running_until=$2`, plan.ID, until, finished, plan.UpdatedAt, plan.NextRunAt, next)
 	return err
@@ -511,15 +522,26 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 	var config []byte
 	var evaluatedAt, ruleVersion time.Time
 	var ruleEnabled bool
+	var round qualityMeasurementRoundRead
 	err := r.db.QueryRowContext(ctx, `WITH detail AS (
- SELECT r.*,p.updated_at AS current_rule_version,p.enabled AS current_rule_enabled
+ SELECT r.*,p.account_id,p.updated_at AS current_rule_version,p.enabled AS current_rule_enabled,
+ p.pelican_config->'_quality_latest_round' AS latest_round,p.running_until,p.last_run_at
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
  WHERE r.plan_id=$1 AND r.id=$2
+ ), scoped AS (
+ SELECT d.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,`+qualityMeasuredModel+` AS measured_model
+ FROM scheduled_test_results r JOIN detail d ON d.plan_id=r.plan_id AND d.quality_round_id=r.quality_round_id
+ WHERE jsonb_typeof(r.pelican_config->'quality')='object'
+ `+qualityRoundClassification+`, integrity AS (
+ SELECT COALESCE(bool_and(round_complete),false) AS complete,COALESCE(max(round_probes),0)::bigint AS probes,max(round_expected)::bigint AS expected,
+ (SELECT COALESCE(bool_and(COALESCE(quality_action NOT IN ('','comparison_pending'),false)),false) FROM scoped) AS finalized,
+ (SELECT max(r.finished_at) FROM scheduled_test_results r JOIN detail d ON d.plan_id=r.plan_id AND d.quality_round_id=r.quality_round_id) AS samples_finished_at
+ FROM quality_classified
  ) SELECT id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id,
- clock_timestamp(),current_rule_version,current_rule_enabled FROM detail`, planID, resultID).Scan(
+ clock_timestamp(),current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
 		&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
 		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID,
-		&evaluatedAt, &ruleVersion, &ruleEnabled)
+		&evaluatedAt, &ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -534,7 +556,82 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 		}
 	}
 	out.QualityMeasurementValidity = service.AssessQualityMeasurementValidity(out, ruleVersion, ruleEnabled, evaluatedAt)
+	if out.QualityMeasurementValidity != nil {
+		out.QualityMeasurementValidity.Round = round.assess(out, ruleVersion, ruleEnabled, evaluatedAt)
+	}
 	return out, nil
+}
+
+type qualityMeasurementRoundRead struct {
+	marker                  []byte
+	runningUntil, lastRunAt sql.NullTime
+	samplesFinishedAt       sql.NullTime
+	complete, finalized     bool
+	probes                  int64
+	expected                sql.NullInt64
+}
+
+func (read *qualityMeasurementRoundRead) assess(result *service.ScheduledTestResult, ruleVersion time.Time, enabled bool, now time.Time) *service.QualityMeasurementRoundValidity {
+	out := &service.QualityMeasurementRoundValidity{Status: "unknown", Reason: "round_not_tracked", SampleCount: read.probes}
+	if read.expected.Valid {
+		out.ExpectedSampleCount = &read.expected.Int64
+	}
+	var marker struct {
+		Version     int        `json:"version"`
+		LeaseUntil  time.Time  `json:"lease_until"`
+		RuleVersion time.Time  `json:"rule_version"`
+		CompletedAt *time.Time `json:"completed_at"`
+	}
+	if len(read.marker) == 0 || json.Unmarshal(read.marker, &marker) != nil || marker.Version != 1 || marker.LeaseUntil.IsZero() || marker.RuleVersion.IsZero() {
+		return out
+	}
+	if !marker.RuleVersion.Equal(ruleVersion) || !result.PelicanConfig.QualityMeasurement.RuleVersion.Equal(ruleVersion) {
+		out.Reason = "rule_changed"
+		return out
+	}
+	if !enabled {
+		out.Reason = "rule_paused"
+		return out
+	}
+	// A legacy/foreign finisher can update the lease or last_run_at without
+	// updating our marker. Check that coherence before comparing sample IDs.
+	if (read.runningUntil.Valid && !read.runningUntil.Time.Equal(marker.LeaseUntil)) ||
+		(marker.CompletedAt != nil && (read.runningUntil.Valid || marker.CompletedAt.IsZero() || marker.CompletedAt.After(now) || !read.lastRunAt.Valid || !marker.CompletedAt.Equal(read.lastRunAt.Time))) {
+		out.Reason = "untracked_run"
+		return out
+	}
+	round, err := time.Parse(time.RFC3339Nano, result.QualityRoundID)
+	if err != nil {
+		return out
+	}
+	if !round.Equal(marker.LeaseUntil) {
+		// Never order by insertion ID or a late result's completion time.
+		out.Status, out.Reason = "superseded", "different_claim"
+		return out
+	}
+	if read.runningUntil.Valid {
+		out.Status, out.Reason = "incomplete", "lease_expired"
+		if now.Before(read.runningUntil.Time) {
+			out.Status, out.Reason = "running", "round_running"
+		}
+		return out
+	}
+	if marker.CompletedAt == nil {
+		out.Status, out.Reason = "incomplete", "round_not_finished"
+		return out
+	}
+	if !read.samplesFinishedAt.Valid || read.samplesFinishedAt.Time.After(*marker.CompletedAt) {
+		out.Reason = "untracked_run"
+		return out
+	}
+	out.Status, out.Reason = "incomplete", "round_incomplete"
+	if read.complete {
+		out.Reason = "comparison_pending"
+		if read.finalized {
+			out.Status, out.Reason = "latest_complete", "latest_complete"
+		}
+	}
+	return out
 }
 
 // ListPelicanHistory lists every retained output, including failures and paused plans.

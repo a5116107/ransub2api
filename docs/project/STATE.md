@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3.2.4独立样本期限/读取规则核对本地done；基线2e2ef6d6b。
+任务：D3.2.5登记轮次核对本地done；基线eac9ce000。
 授权：唯一H盘/自有分支同步；不CI、不提升功能分支。
-已验：unit双轮1060、SQL双轮192及专项20轮120pass，0fail/skip/race；UI255pass。
-静态：两包vet/Linux过、增量fast lint0；原表单/详情中英1440/390px已验。
-实现：60–604800秒自上游观测起算；SQL时间/规则投影不改历史、隔离或准入。
-下一：D3.2线路/轮次/故障当前性、独立参考及D8.1；期限内不代表当前资格。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-validity-*。
+已验：unit1060/SQL1188/专项480pass，0fail/skip/race；UI274pass。
+静态：两包vet/Linux过、增量fast lint0；中英1440/390px九态浏览器过。
+实现：同快照核对领取/完成与冻结集合；修401摘要/旧围栏夹具。
+下一：D3.2线路/故障/跨规则当前性、独立参考及D8.1；未授予资格。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-round-*。
 生产上次实测：.7/fd83f6c91；本轮未部署。
 等待：原28项20done/8部分；基线/scope/缓存域、PR3/旧历史。
-Attempt：45
+Attempt：46
 <!-- resume:end -->
 
 ## 目标与入口
@@ -41,7 +41,7 @@ Attempt：45
 | D2.6.15 | done | Messages→Responses/verbosity、UI与物理HTTP/11类WS本地已验；race7936、SQL54/UI35/静态/Linux过，非生产 |
 | D2.6.16 | done | 池桥协议集合/拒绝归因、双调度/粘性/槽后/17类物理帧已验；race8214/静态/Linux过，非生产 |
 | D2.6.17 | done | HTTP转原生WS映射/Fast/stream及物理帧、双调度/粘性/槽后/拒发已验；race8378/静态/Linux过，非生产 |
-| D3 | in_progress | .7流内换号/冷却回池/密文绑定已验，5/3/1保持；D3.2.1–.4来源/围栏/多维历史/独立期限已验；线路/轮次当前性、基线/非文本仍待 |
+| D3 | in_progress | .7流内换号/冷却回池/密文绑定已验，5/3/1保持；D3.2.1–.5来源/围栏/测量/期限/登记轮次已本地验；线路/故障/跨规则/独立基线/非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |
@@ -56,7 +56,7 @@ Attempt：45
 | D5.3.12 | done | Gemini URL/信封模型、实际action/预算模式/等级/思考输出独立分桶；PG666/竞态1074/计时821/UI115及静态/Linux/四视口通过；仅本地 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
-| D7.3 | in_progress | 三页历史/冻结集合、多维详情及期限/读取规则核对已验；独立基线/指纹、线路/轮次/故障与当前资格消费仍缺 |
+| D7.3 | in_progress | 三页历史/冻结集合、多维详情、期限/规则/登记轮次已验；独立基线/指纹、线路/跨规则/故障与资格消费仍缺 |
 | D8 | in_progress | 两模板各100账号轮转、分页/等待/SQL及30秒网络耗尽恢复已验；D8.1完整预算、D8.2组合矩阵/严格混版仍缺 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |

@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,10 @@ func TestQualityIsolationSwitchRestoresLegacyAccountActionAtomically(t *testing.
 			require.NoError(t, err)
 			require.Equal(t, "stale_run", got)
 			f.plan = updated
+			// A new policy starts a new execution; API reads do not carry the
+			// previous worker's private route fence into a restarted worker.
+			require.NoError(t, f.plans.FinishPelican(ctx, f.plan.ID, f.until, time.Now()))
+			f.claim()
 			require.Equal(t, "models_isolated", isolationRound(f, "failed", "passed"))
 			require.Equal(t, 2, f.count(`SELECT count(*) FROM account_groups WHERE account_id=$1`))
 		})

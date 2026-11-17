@@ -184,6 +184,12 @@ func TestQualitySharedBatchPostgresFinalizationAndRestart(t *testing.T) {
 				restarted := NewScheduledTestPlanRepository(integrationDB).(*scheduledTestPlanRepository)
 				require.NoError(t, restarted.FinalizeQualityBatches(ctx))
 				require.NoError(t, restarted.FinalizeQualityBatches(ctx), "finalization is idempotent")
+				if scenario == "all-wrong" || scenario == "passing-peer-finishes-last" {
+					var completed bool
+					require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT (pelican_config->'_quality_latest_round'->>'completed_at')::timestamptz=last_run_at
+ FROM scheduled_test_plans WHERE id=$1`, runs[0].Plan.ID).Scan(&completed))
+					require.True(t, completed, "restarted batch finalization completes the same registered round")
+				}
 				var enabled bool
 				require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT schedulable FROM accounts WHERE id=$1`, runs[0].Plan.AccountID).Scan(&enabled))
 				require.Equal(t, action != "disable_scheduling" || !isolates, enabled)

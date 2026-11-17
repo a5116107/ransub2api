@@ -143,6 +143,9 @@ func TestAvailabilityManagedCoverageClaimsDistinctGrantsWithPostgres(t *testing.
 	future := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
 	_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, plan.ID, future)
 	require.NoError(t, err)
+	// Availability-only coverage must preserve the last quality claim verbatim.
+	_, err = repo.db.Exec(`UPDATE scheduled_test_plans SET pelican_config=pelican_config||'{"_quality_latest_round":{"version":99}}'::jsonb WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
 	var seen []string
 	for range ids {
 		plan, err = repo.GetByID(t.Context(), plan.ID)
@@ -154,6 +157,9 @@ func TestAvailabilityManagedCoverageClaimsDistinctGrantsWithPostgres(t *testing.
 		claimed, claimErr := repo.ClaimPelican(t.Context(), plan, now, until, *plan.NextRunAt)
 		require.NoError(t, claimErr)
 		require.True(t, claimed)
+		var marker []byte
+		require.NoError(t, repo.db.QueryRow(`SELECT pelican_config->'_quality_latest_round' FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&marker))
+		require.JSONEq(t, `{"version":99}`, string(marker))
 		require.Equal(t, len(ids), plan.AvailabilityEligibleConnections)
 		require.NotContains(t, seen, plan.AvailabilityProbeConnectionID)
 		seen = append(seen, plan.AvailabilityProbeConnectionID)

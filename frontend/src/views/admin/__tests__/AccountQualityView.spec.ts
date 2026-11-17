@@ -1806,6 +1806,43 @@ describe('quality operations', () => {
     expect(wrapper.get('[data-testid="quality-measurement-current"]').text()).toBe('qualityOps.measurement.currentUnknown')
     wrapper.unmount()
   })
+  it.each([
+    ['latest_complete', 'latest_complete', 2, 2], ['superseded', 'different_claim', 1, 1], ['running', 'round_running', 1, 2],
+    ['incomplete', 'round_incomplete', 1, 2], ['incomplete', 'comparison_pending', 2, 2], ['incomplete', 'lease_expired', 1, 2],
+    ['incomplete', 'round_not_finished', 1, 1], ['unknown', 'round_not_tracked', 1, 1], ['unknown', 'untracked_run', 1, 1],
+    ['unknown', 'rule_changed', 1, 1], ['unknown', 'rule_paused', 1, 1],
+  ] as const)('shows registered-round evidence independently (%s/%s)', async (status, reason, count, expected) => {
+    const wrapper = await openMeasurement(measurementSample(), { status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z',
+      round: { status, reason, sample_count: count, expected_sample_count: expected } })
+    const panel = wrapper.get('[data-testid="quality-measurement-round"]')
+    expect(panel.attributes('data-status')).toBe(status)
+    expect(panel.text()).toContain(`qualityOps.measurement.roundReasons.${reason}`)
+    expect(wrapper.get('[data-testid="quality-measurement-validity"]').attributes('data-status')).toBe('unknown')
+    expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')
+    expect(wrapper.get('[data-testid="quality-measurement-current"]').text()).toBe('qualityOps.measurement.currentUnknown')
+    wrapper.unmount()
+  })
+  it.each([
+    { status: 'latest_complete', reason: 'latest_complete', sample_count: 0, expected_sample_count: 0 },
+    { status: 'latest_complete', reason: 'latest_complete', sample_count: 1, expected_sample_count: 2 },
+    { status: 'latest_complete', reason: 'latest_complete', sample_count: 1, expected_sample_count: null },
+    { status: 'latest_complete', reason: 'different_claim', sample_count: 1, expected_sample_count: 1 },
+    { status: 'running', reason: 'round_running', sample_count: 0.5, expected_sample_count: 2 },
+    { status: 'latest_complete', reason: 'latest_complete', sample_count: 401, expected_sample_count: 401 },
+    { status: 'future', reason: 'latest_complete', sample_count: 1, expected_sample_count: 1 },
+  ])('keeps malformed round assessments unknown (%j)', async round => {
+    const wrapper = await openMeasurement(measurementSample(), { status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z', round } as any)
+    const panel = wrapper.get('[data-testid="quality-measurement-round"]')
+    expect(panel.attributes('data-status')).toBe('unknown')
+    expect(panel.text()).toContain('qualityOps.measurement.roundReasons.invalid_round_assessment')
+    wrapper.unmount()
+  })
+  it('keeps a missing round assessment unknown for older servers', async () => {
+    const wrapper = await openMeasurement(measurementSample())
+    expect(wrapper.get('[data-testid="quality-measurement-round"]').attributes('data-status')).toBe('unknown')
+    expect(wrapper.get('[data-testid="quality-measurement-round"]').text()).toContain('qualityOps.measurement.roundReasons.round_assessment_not_observed')
+    wrapper.unmount()
+  })
   it('re-reads measured details instead of reusing an old window assessment', async () => {
     const value = measurementSample()
     const wrapper = await openMeasurement(value)
