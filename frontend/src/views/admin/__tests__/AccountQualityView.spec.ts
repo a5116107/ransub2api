@@ -1843,6 +1843,37 @@ describe('quality operations', () => {
     expect(wrapper.get('[data-testid="quality-measurement-round"]').text()).toContain('qualityOps.measurement.roundReasons.round_assessment_not_observed')
     wrapper.unmount()
   })
+  it.each([
+    ['matching', 'route_matches'], ['changed', 'route_changed'], ['changed', 'connection_changed'],
+    ['unavailable', 'account_unavailable'], ['unavailable', 'connection_unavailable'],
+    ['unknown', 'route_not_observed'], ['unknown', 'invalid_route_evidence'],
+  ] as const)('shows configured-route evidence independently (%s/%s)', async (status, reason) => {
+    const wrapper = await openMeasurement(measurementSample(), { status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z', route: { status, reason } })
+    const panel = wrapper.get('[data-testid="quality-measurement-route"]')
+    expect(panel.attributes('data-status')).toBe(status)
+    expect(panel.text()).toContain(`qualityOps.measurement.routeReasons.${reason}`)
+    expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')
+    expect(wrapper.get('[data-testid="quality-measurement-current"]').text()).toBe('qualityOps.measurement.currentUnknown')
+    wrapper.unmount()
+  })
+  it.each([
+    { status: 'matching', reason: 'route_changed' }, { status: 'matching', reason: 'future-reason' },
+    { status: 'future', reason: 'route_matches' }, { status: null, reason: null },
+  ])('keeps malformed route assessments unknown (%j)', async route => {
+    const wrapper = await openMeasurement(measurementSample(), { status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z', route } as any)
+    const panel = wrapper.get('[data-testid="quality-measurement-route"]')
+    expect(panel.attributes('data-status')).toBe('unknown')
+    expect(panel.text()).toContain('qualityOps.measurement.routeReasons.invalid_route_assessment')
+    wrapper.unmount()
+  })
+  it('keeps an older server or an invalid read time from asserting a matching route', async () => {
+    let wrapper = await openMeasurement(measurementSample())
+    expect(wrapper.get('[data-testid="quality-measurement-route"]').text()).toContain('qualityOps.measurement.routeReasons.route_assessment_not_observed')
+    wrapper.unmount()
+    wrapper = await openMeasurement(measurementSample(), { status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T00:00:00Z', route: { status: 'matching', reason: 'route_matches' } })
+    expect(wrapper.get('[data-testid="quality-measurement-route"]').attributes('data-status')).toBe('unknown')
+    wrapper.unmount()
+  })
   it('re-reads measured details instead of reusing an old window assessment', async () => {
     const value = measurementSample()
     const wrapper = await openMeasurement(value)

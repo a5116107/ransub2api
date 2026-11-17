@@ -547,6 +547,8 @@ func availabilityMessagesScope(request *http.Request, fields map[string]gjson.Re
 // A binding remembers only a target and an irreversible grant revision. The
 // actual handshake's credentials are checked at construction, never persisted.
 type availabilityWSBinding struct {
+	route           *QualityRouteEvidence
+	proxy           string
 	target          *url.URL
 	connectionScope string
 	requestHash     [32]byte
@@ -566,7 +568,12 @@ func bindAvailabilityWS(account *Account, target string, headers http.Header) *a
 	if requestHash == ([32]byte{}) {
 		return nil
 	}
-	return &availabilityWSBinding{target: request.URL, connectionScope: scope.ConnectionScope, requestHash: requestHash}
+	proxy := ""
+	if account != nil && account.Proxy != nil {
+		proxy = account.Proxy.URL()
+	}
+	return &availabilityWSBinding{target: request.URL, connectionScope: scope.ConnectionScope, requestHash: requestHash,
+		route: qualityRouteForRequest(account, request, proxy), proxy: proxy}
 }
 
 // coder/websocket uses HTTP(S) on the handshake response. Canonicalize only the
@@ -658,12 +665,12 @@ func availabilityRequestPayload(request *http.Request) ([]byte, bool) {
 	return payload, err == nil && bytes.Equal(payload, replay)
 }
 
-func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming.Trace, account *Account) func(*http.Response) {
+func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming.Trace, account *Account, proxy string) func(*http.Response) {
 	observation, _ := request.Context().Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation)
 	if observation == nil || trace.Number() == 0 {
 		return func(*http.Response) {}
 	}
-	observation.scope, observation.scopeAttempt, observation.semanticStatus = nil, trace.Number(), 0
+	observation.scope, observation.scopeAttempt, observation.semanticStatus, observation.route = nil, trace.Number(), 0, nil
 	identity, valid := availabilityRequestIdentity(request)
 	if !valid {
 		return func(*http.Response) {}
@@ -674,6 +681,7 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		return func(*http.Response) {}
 	}
 	method, host, address := request.Method, request.Host, request.URL.String()
+	route := qualityRouteForRequest(account, request, proxy)
 	return func(response *http.Response) {
 		if response == nil || response.Request == nil {
 			return
@@ -705,6 +713,7 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 		}
 		if err == nil && closeErr == nil && bytes.Equal(sent, payload) && actualScope != nil && *scope == *actualScope {
 			observation.scope = scope
+			observation.route = route
 		}
 	}
 }

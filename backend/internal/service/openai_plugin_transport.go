@@ -237,7 +237,7 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		observeScope := func(*http.Response) {}
 		if request.Context().Value(availabilityProbeSnapshotKey{}) != nil {
 			request, probeTrace = requesttiming.StartAttempt(request, account.ID, 0)
-			observeScope = observeAvailabilityProbeRequest(request, probeTrace, account)
+			observeScope = observeAvailabilityProbeRequest(request, probeTrace, account, proxyURL)
 		}
 		resp, err := s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
 		observeScope(resp)

@@ -99,6 +99,10 @@ func TestAvailabilityWSProbeUsesConfiguredTransport(t *testing.T) {
 	require.Zero(t, httpSends.Load(), "an ordinary HTTP pass is not WebSocket evidence")
 	probe := result.PelicanConfig.AvailabilityResult
 	require.Equal(t, "pass", probe.Status)
+	result.PelicanConfig.Quality = &QualityPolicy{Action: QualityActionObserveOnly, ExpectedAnswer: "42"}
+	recordQualityMeasurement(&ScheduledTestPlan{AccountID: account.ID, PelicanConfig: result.PelicanConfig}, result)
+	require.NotNil(t, result.QualityRouteEvidence, "the concrete socket and accepted frame prove the configured API-key route")
+	require.True(t, result.QualityRouteEvidence.MatchesResult(result))
 	require.Equal(t, "responses_ws_v2", probe.Scope.Protocol)
 	require.Equal(t, "target", probe.Scope.Model)
 	require.Equal(t, "high", probe.Scope.ReasoningEffort)

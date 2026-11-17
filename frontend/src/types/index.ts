@@ -2968,6 +2968,10 @@ export interface ScheduledTestResult {
     status: 'within_window' | 'expired' | 'unknown'
     reason: string
     evaluated_at: string
+    route?: {
+      status: 'matching' | 'changed' | 'unavailable' | 'unknown'
+      reason: string
+    }
     round?: {
       status: 'latest_complete' | 'superseded' | 'running' | 'incomplete' | 'unknown'
       reason: string

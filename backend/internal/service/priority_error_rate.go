@@ -279,7 +279,7 @@ func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy s
 	observeScope := func(*http.Response) {}
 	if req.Context().Value(availabilityProbeSnapshotKey{}) != nil {
 		req, trace = requesttiming.StartAttempt(req, account.ID, 0)
-		observeScope = observeAvailabilityProbeRequest(req, trace, account)
+		observeScope = observeAvailabilityProbeRequest(req, trace, account, proxy)
 	}
 	if len(evidence) > 0 && evidence[0] != nil {
 		req = evidence[0].request(req)

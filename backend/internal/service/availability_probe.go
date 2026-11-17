@@ -13,6 +13,7 @@ import (
 // It is evidence for a future latest-state decision, not scheduling permission.
 // The allowlist excludes trace IDs, credentials, routes and upstream error text.
 type AvailabilityProbeResult struct {
+	route          *QualityRouteEvidence
 	Version        int                       `json:"version"`
 	Status         string                    `json:"status"`
 	Reason         string                    `json:"reason"`
@@ -40,6 +41,7 @@ func withAvailabilityProbeConnection(ctx context.Context, accountID int64, conne
 }
 
 type availabilityProbeObservation struct {
+	route          *QualityRouteEvidence
 	snapshot       *requesttiming.Snapshot
 	semanticStatus int
 	scope          *AvailabilityRequestScope
@@ -65,7 +67,7 @@ func beginAvailabilityWSProbe(ctx context.Context, account *Account, target stri
 		return ctx, func(*openAIWSConn, any) {}, func(error) {}
 	}
 	request, trace := requesttiming.StartAttempt(request, account.ID, 0)
-	observation.scope, observation.scopeAttempt, observation.semanticStatus = nil, trace.Number(), 0
+	observation.scope, observation.scopeAttempt, observation.semanticStatus, observation.route = nil, trace.Number(), 0, nil
 	ctx = request.Context()
 	sent := false
 	return ctx, func(conn *openAIWSConn, payload any) {
@@ -86,6 +88,9 @@ func beginAvailabilityWSProbe(ctx context.Context, account *Account, target stri
 				return
 			}
 			observation.scope = binding.scope(account, payload)
+			if observation.scope != nil && binding.route != nil && wire.timezoneProxy == binding.proxy {
+				observation.route = binding.route
+			}
 		}, func(err error) {
 			if sent {
 				trace.Response(&http.Response{StatusCode: http.StatusSwitchingProtocols}, err)
@@ -127,6 +132,10 @@ func availabilityProbeResult(started, finished time.Time, observation *availabil
 	if observation.scopeAttempt == last.Number && observation.scope != nil {
 		scope := *observation.scope
 		result.Scope = &scope
+		if observation.route != nil && observation.route.AccountID == last.AccountID && qualityRouteAttemptObserved(snapshot, last, scope.Protocol) {
+			copy := *observation.route
+			result.route = &copy
+		}
 	}
 	result.HTTPStatus = last.Status
 	status := last.Status
@@ -192,4 +201,17 @@ func availabilityProbeResult(started, finished time.Time, observation *availabil
 		result.Status, result.Reason = "pass", "completed_response"
 	}
 	return result
+}
+
+func qualityRouteAttemptObserved(snapshot *requesttiming.Snapshot, last *requesttiming.Attempt, protocol string) bool {
+	physical := last
+	for _, attempt := range snapshot.Attempts {
+		if protocol != "responses_ws_v2" && attempt.Kind == "http" && attempt.Parent == last.Number {
+			copy := attempt
+			physical = &copy
+		}
+	}
+	_, written := physical.Events["request_written"]
+	_, received := physical.Events["first_byte"]
+	return written && (received || protocol == "responses_ws_v2")
 }

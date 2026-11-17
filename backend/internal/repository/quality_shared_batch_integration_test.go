@@ -135,6 +135,11 @@ func TestQualitySharedBatchPostgresFinalizationAndRestart(t *testing.T) {
 					}
 					require.NoError(t, repo.CollectQualityBatch(ctx, run))
 					require.NoError(t, repo.CollectQualityBatch(ctx, run), "collection is idempotent")
+					// Private result evidence is independent of the public batch
+					// ledger. Finalization/restart must preserve even an unknown
+					// version verbatim rather than drop or backfill it.
+					_, routeErr := integrationDB.ExecContext(ctx, `UPDATE scheduled_test_results SET pelican_config=jsonb_set(pelican_config,'{_quality_observed_route}','{"version":99,"fingerprint":"private-round-fixture"}') WHERE plan_id=$1`, plan.ID)
+					require.NoError(t, routeErr)
 					require.NoError(t, repo.FinalizeQualityBatches(ctx), "start window still open")
 					var enabled bool
 					require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT schedulable FROM accounts WHERE id=$1`, runs[0].Plan.AccountID).Scan(&enabled))
@@ -197,6 +202,7 @@ func TestQualitySharedBatchPostgresFinalizationAndRestart(t *testing.T) {
 				var raw []byte
 				require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT status,quality_judgment->>'verdict',COALESCE(quality_judgment->>'rules_version',''),quality_action,pelican_config FROM scheduled_test_results WHERE plan_id=$1`, runs[0].Plan.ID).Scan(&status, &verdict, &rulesVersion, &recordedAction, &raw))
 				require.Equal(t, "failed", status)
+				require.Contains(t, string(raw), `"fingerprint": "private-round-fixture"`, "shared finalization preserves the original private result envelope across restart")
 				require.Equal(t, "incorrect", verdict, "raw verdicts are never rewritten as passes")
 				if scenario == "both-missing-grader-rules" {
 					require.Empty(t, rulesVersion, "missing provenance is never backfilled from the current process")

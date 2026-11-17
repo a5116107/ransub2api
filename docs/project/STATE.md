@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3.2.5登记轮次核对本地done；基线eac9ce000。
+任务：D3.2.6 API-Key配置线路本地done，交付当前自有功能分支；基线a47d85733。
 授权：唯一H盘/自有分支同步；不CI、不提升功能分支。
-已验：unit1060/SQL1188/专项480pass，0fail/skip/race；UI274pass。
+已验：unit4754/SQL1250/线路专项620pass，0fail/skip/race；UI286pass。
 静态：两包vet/Linux过、增量fast lint0；中英1440/390px九态浏览器过。
-实现：同快照核对领取/完成与冻结集合；修401摘要/旧围栏夹具。
-下一：D3.2线路/故障/跨规则当前性、独立参考及D8.1；未授予资格。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-round-*。
+实现：最终HTTP/WS线路冻结、私有落库/共享保留、详情同快照和末端时钟。
+下一：D3.2其余线路/故障/跨规则当前性、独立参考及D8.1；未授予资格。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-route-*。
 生产上次实测：.7/fd83f6c91；本轮未部署。
 等待：原28项20done/8部分；基线/scope/缓存域、PR3/旧历史。
-Attempt：46
+Attempt：48
 <!-- resume:end -->
 
 ## 目标与入口
@@ -36,12 +36,12 @@ Attempt：46
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
 | D2.6.1–.4 | done | 自动/手工声明、精确预演、New API同源绑定/TTL/重放、SQL CAS、HTTP/WS/UI本地已验；逐项证据见DECISIONS |
 | D2.6.5–.12 | done | 原生/固定转换、四WS/两HTTP桥候选已本地验；静态/构建及未变SQL/UI证据见DECISIONS，非生产 |
-| D2.6.13 | done | smart按原标量/当前历史分流及11类逐轮路径本地已验；race6876/静态/Linux过，非生产 |
-| D2.6.14 | done | Messages→Chat映射/dispatch与effort/Fast、调度/真实HTTP本地已验；race7652/静态/Linux过，非生产 |
-| D2.6.15 | done | Messages→Responses/verbosity、UI与物理HTTP/11类WS本地已验；race7936、SQL54/UI35/静态/Linux过，非生产 |
-| D2.6.16 | done | 池桥协议集合/拒绝归因、双调度/粘性/槽后/17类物理帧已验；race8214/静态/Linux过，非生产 |
-| D2.6.17 | done | HTTP转原生WS映射/Fast/stream及物理帧、双调度/粘性/槽后/拒发已验；race8378/静态/Linux过，非生产 |
-| D3 | in_progress | .7流内换号/冷却回池/密文绑定已验，5/3/1保持；D3.2.1–.5来源/围栏/测量/期限/登记轮次已本地验；线路/故障/跨规则/独立基线/非文本仍待 |
+| D2.6.13 | done | smart原标量/历史及11类逐轮路径已验；race6876，非生产 |
+| D2.6.14 | done | Messages→Chat映射/effort/Fast与调度/HTTP已验；race7652，非生产 |
+| D2.6.15 | done | Messages→Responses/verbosity、UI及HTTP/11WS已验；race7936，非生产 |
+| D2.6.16 | done | 池桥协议、双调度/黏性/槽后与17类物理帧已验；race8214，非生产 |
+| D2.6.17 | done | HTTP→原生WS映射/Fast/流式、双调度/槽后/拒发已验；race8378，非生产 |
+| D3 | in_progress | .7流内换号/冷却回池/密文绑定已验，5/3/1保持；D3.2.1–.6本地done；其余线路/故障/跨规则/独立基线/非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |
@@ -56,7 +56,7 @@ Attempt：46
 | D5.3.12 | done | Gemini URL/信封模型、实际action/预算模式/等级/思考输出独立分桶；PG666/竞态1074/计时821/UI115及静态/Linux/四视口通过；仅本地 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
-| D7.3 | in_progress | 三页历史/冻结集合、多维详情、期限/规则/登记轮次已验；独立基线/指纹、线路/跨规则/故障与资格消费仍缺 |
+| D7.3 | in_progress | 历史/冻结集合、多维详情、期限/规则/登记轮次与API-Key线路核对已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
 | D8 | in_progress | 两模板各100账号轮转、分页/等待/SQL及30秒网络耗尽恢复已验；D8.1完整预算、D8.2组合矩阵/严格混版仍缺 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |

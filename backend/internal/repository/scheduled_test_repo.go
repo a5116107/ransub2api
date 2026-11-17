@@ -229,7 +229,7 @@ func insertScheduledTestResult(ctx context.Context, q planRowQuerier, result *se
 		INSERT INTO scheduled_test_results (plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)
 		RETURNING id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id
-	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt, marshalPelicanConfig(result.PelicanConfig), result.QualityAction, marshalQualityJudgment(result.QualityJudgment), result.QualityRoundID)
+	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt, marshalQualityResultConfig(result), result.QualityAction, marshalQualityJudgment(result.QualityJudgment), result.QualityRoundID)
 
 	out := &service.ScheduledTestResult{}
 	var judgment []byte
@@ -517,13 +517,20 @@ func (r *scheduledTestResultRepository) PruneExpiredPelican(ctx context.Context,
 }
 
 func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, resultID int64) (*service.ScheduledTestResult, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
 	out := &service.ScheduledTestResult{}
 	var judgment []byte
 	var config []byte
 	var evaluatedAt, ruleVersion time.Time
 	var ruleEnabled bool
 	var round qualityMeasurementRoundRead
-	err := r.db.QueryRowContext(ctx, `WITH detail AS (
+	var accountID int64
+	var routeJSON []byte
+	err = tx.QueryRowContext(ctx, `WITH detail AS (
  SELECT r.*,p.account_id,p.updated_at AS current_rule_version,p.enabled AS current_rule_enabled,
  p.pelican_config->'_quality_latest_round' AS latest_round,p.running_until,p.last_run_at
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
@@ -538,10 +545,10 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
  (SELECT max(r.finished_at) FROM scheduled_test_results r JOIN detail d ON d.plan_id=r.plan_id AND d.quality_round_id=r.quality_round_id) AS samples_finished_at
  FROM quality_classified
  ) SELECT id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id,
- clock_timestamp(),current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
+ current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at,account_id,pelican_config->'_quality_observed_route' FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
 		&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
 		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID,
-		&evaluatedAt, &ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt)
+		&ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt, &accountID, &routeJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -555,9 +562,25 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 			return nil, err
 		}
 	}
+	var route *qualityRouteRead
+	if out.PelicanConfig != nil && out.PelicanConfig.QualityMeasurement != nil {
+		route, err = readQualityRoute(ctx, tx, accountID, out, routeJSON)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Use the database clock after all snapshot reads. Slow route/connection
+	// reads must not extend either the evidence window or connection cooldown.
+	if err = tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&evaluatedAt); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
 	out.QualityMeasurementValidity = service.AssessQualityMeasurementValidity(out, ruleVersion, ruleEnabled, evaluatedAt)
 	if out.QualityMeasurementValidity != nil {
 		out.QualityMeasurementValidity.Round = round.assess(out, ruleVersion, ruleEnabled, evaluatedAt)
+		out.QualityMeasurementValidity.Route = route.assess(evaluatedAt)
 	}
 	return out, nil
 }

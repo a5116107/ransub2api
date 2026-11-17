@@ -567,6 +567,19 @@ export default {
   "evidenceValidityHint": "留空或 0 表示未声明；可设 60–604800 秒。自上游观测完成起计算，独立于可用性期限；不改变既有隔离、恢复或调度资格。",
   "invalidEvidenceValidity": "质量证据有效期须为 0 或 60–604800 的整数秒。",
   "measurement": {
+    "routeAtRead": "读取时的配置线路核对",
+    "routeStates": { "matching": "本次所用线路仍一致", "changed": "线路已变化", "unavailable": "原线路当前不可用", "unknown": "待确定" },
+    "routeReasons": {
+      "route_matches": "本次请求使用的账号配置及受管连接版本仍一致；不代表实际网络出口、当前健康、模型身份或调度资格。",
+      "route_changed": "账号的 Key、地址、代理或转发配置已变化，需要新检测；历史答案保留。",
+      "connection_changed": "原授权连接已移除、切换或升级版本，旧检测不代表新连接。",
+      "account_unavailable": "原账号或其代理已删除，本次证据不代表其他账号。",
+      "connection_unavailable": "原受管连接已停用、正在刷新、冷却中或不再支持本请求。",
+      "route_not_observed": "缺少可核对的最终请求线路；旧记录、OAuth、父账号组合或不透明路径保持未知。",
+      "invalid_route_evidence": "私有线路证据与本次测量、时间或账号不一致，保持未知。",
+      "route_assessment_not_observed": "本次响应未提供数据库线路核对，保持未知。",
+      "invalid_route_assessment": "线路结论或核对时间不一致，保持未知。"
+    },
     "roundAtRead": "读取时的轮次核对",
     "roundCoverage": "本轮保留样本 {count} / 配置样本 {expected}；仅指记录完整性。",
     "roundStates": { "latest_complete": "最新登记轮次 · 样本完整", "superseded": "已有其他领取轮次", "running": "本轮仍在运行", "incomplete": "本轮未完整完成", "unknown": "待确定" },

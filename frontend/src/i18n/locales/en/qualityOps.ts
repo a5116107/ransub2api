@@ -567,6 +567,19 @@ export default {
   "evidenceValidityHint": "Blank or 0 leaves it undeclared; use 60–604800 seconds. Starts when the upstream observation ends, independently of availability. Existing isolation, recovery and admission stay unchanged.",
   "invalidEvidenceValidity": "Quality evidence lifetime must be 0 or an integer from 60 to 604800 seconds.",
   "measurement": {
+    "routeAtRead": "Configured route at read time",
+    "routeStates": { "matching": "Observed route still matches", "changed": "Route changed", "unavailable": "Original route unavailable", "unknown": "Undetermined" },
+    "routeReasons": {
+      "route_matches": "The observed account configuration and managed connection revision still match. This does not certify the network exit, current health, model identity or admission.",
+      "route_changed": "The key, address, proxy or forwarding configuration changed. A new probe is needed; the historical answer is preserved.",
+      "connection_changed": "The original grant was removed, switched or revised. Its old probe does not attest to a new grant.",
+      "account_unavailable": "The original account or proxy was deleted. This evidence does not describe another account.",
+      "connection_unavailable": "The original managed grant is disabled, refreshing, cooling down or no longer supports this request.",
+      "route_not_observed": "No verifiable final-request route. Legacy records, OAuth, parent chains and opaque paths remain unknown.",
+      "invalid_route_evidence": "Private route evidence does not match this measurement, timestamp or account.",
+      "route_assessment_not_observed": "This response has no database route assessment; the route remains unknown.",
+      "invalid_route_assessment": "The route conclusion or assessment time is inconsistent; the route remains unknown."
+    },
     "roundAtRead": "Round assessment at read",
     "roundCoverage": "Retained samples {count} / configured samples {expected}; record completeness only.",
     "roundStates": { "latest_complete": "Latest registered round · Complete records", "superseded": "Another round registered", "running": "Round running", "incomplete": "Round incomplete", "unknown": "Undetermined" },

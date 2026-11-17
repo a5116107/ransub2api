@@ -29,13 +29,14 @@ type QualityMeasurement struct {
 	Dimensions      map[string]QualityDimensionMeasurement `json:"dimensions"`
 }
 
-// QualityMeasurementValidity describes one detail read's window/rule assessment
-// and registered round separately, never current route or scheduling admission.
+// QualityMeasurementValidity keeps a detail read's rule/window, registered round
+// and configured route assessments separate. None certifies current admission.
 type QualityMeasurementValidity struct {
 	Status      string                           `json:"status"`
 	Reason      string                           `json:"reason"`
 	EvaluatedAt time.Time                        `json:"evaluated_at"`
 	Round       *QualityMeasurementRoundValidity `json:"round,omitempty"`
+	Route       *QualityMeasurementRouteValidity `json:"route,omitempty"`
 }
 
 // QualityMeasurementRoundValidity compares a sample with the last registered
@@ -159,6 +160,7 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 	if result == nil || result.PelicanConfig == nil {
 		return
 	}
+	result.QualityRouteEvidence = nil
 	// Never retain metadata supplied by an execution adapter or reusable rule.
 	cfg := *result.PelicanConfig
 	cfg.QualityMeasurement = nil
@@ -233,6 +235,13 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 		cfg.Prompt, cfg.ActualPrompt, cfg.RandomQuestion, cfg.PelicanQuestion, cfg.ReasoningEffort, cfg.TestChannel,
 		cfg.Quality.ExpectedAnswer, cfg.Quality.Judge, grader, m.Scope})
 	m.PolicyHash = qualityMeasurementHash([]any{qualityMeasurementVersion, cfg.Quality, cfg.ModelIDs, cfg.ParallelCount})
+	if probe := qualityMeasurementProbe(result); probe != nil && probe.route != nil && probe.route.AccountID == plan.AccountID {
+		evidence := *probe.route
+		evidence.MeasurementHash, evidence.ObservedAt = m.MeasurementHash, m.ObservedAt
+		if evidence.MatchesResult(result) {
+			result.QualityRouteEvidence = &evidence
+		}
+	}
 	if result.StartedAt.IsZero() || result.FinishedAt.Before(result.StartedAt) || m.MeasurementHash == "" || m.PolicyHash == "" {
 		for dimension := range m.Dimensions {
 			m.Dimensions[dimension] = QualityDimensionMeasurement{Status: "unknown", Reason: "invalid_measurement"}

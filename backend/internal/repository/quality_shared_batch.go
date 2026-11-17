@@ -295,7 +295,9 @@ func (r *scheduledTestPlanRepository) finalizeQualityBatchRun(ctx context.Contex
 		if action == "restore_conflict" {
 			cfg.QualityRestoreDiagnostic = run.Plan.QualityRestoreDiagnostic
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_results SET quality_action=$2,pelican_config=$3 WHERE id=$1`, result.ID, action, marshalPelicanConfig(cfg)); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_results SET quality_action=$2,pelican_config=$3::jsonb ||
+ CASE WHEN pelican_config ? '_quality_observed_route' THEN jsonb_build_object('_quality_observed_route',pelican_config->'_quality_observed_route') ELSE '{}'::jsonb END
+ WHERE id=$1`, result.ID, action, marshalPelicanConfig(cfg)); err != nil {
 			return err
 		}
 	}
