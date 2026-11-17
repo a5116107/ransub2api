@@ -29,6 +29,103 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	return s
 }
 
+func TestQualityMonitoringBudgetPostgresNativeHTTPAndRestart(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	var calls atomic.Int32
+	var redirect atomic.Bool
+	var redirectCalls atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		if redirect.Load() {
+			http.Redirect(w, req, target.URL+"/responses", http.StatusTemporaryRedirect)
+			return
+		}
+		if req.URL.Path != "/tenant/v1/responses" || req.Header.Get("Authorization") != "Bearer native-budget-fixture" {
+			http.Error(w, "invalid quality fixture request", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"verdict\\\":\\\"correct\\\",\\\"reason\\\":\\\"equal\\\"}\"}\n\ndata: {\"type\":\"response.completed\"}\n\n"))
+	}))
+	defer server.Close()
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	account := mustCreateAccount(t, client, &service.Account{Name: "native-quality-budget", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "native-budget-fixture", "base_url": server.URL + "/tenant/v1"}})
+	var group int64
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform,status) VALUES('native-quality-budget','openai','active') RETURNING id`).Scan(&group))
+	_, err := db.ExecContext(ctx, `UPDATE accounts SET concurrency=0 WHERE id=$1`, account.ID)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, account.ID, group)
+	require.NoError(t, err)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 2
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	newServices := func() (*service.AccountTestService, *service.QualityJudgeService) {
+		repo := NewMonitoringProbeBudgetRepository(db)
+		tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, NewHTTPUpstream(cfg), cfg, nil)
+		tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(repo))
+		judge := service.NewQualityJudgeService(accounts, NewGroupRepository(client, db), service.NewConcurrencyService(nil), tests, nil, repo)
+		return tests, judge
+	}
+	firstTests, firstJudge := newServices()
+	question := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "compare fixture", Quality: &service.QualityPolicy{ExpectedAnswer: "21", Action: service.QualityActionObserveOnly,
+		Judge: &service.QualityJudgeConfig{GroupID: group, ModelID: "fixture-model", Prompt: "compare values"}}}
+	judged := firstJudge.Judge(ctx, account.ID+1, question, "21")
+	require.Equal(t, "correct", judged.Verdict, "%+v", judged)
+	answer, err := firstTests.RunPelicanBackground(ctx, account.ID, "fixture-model", question)
+	require.NoError(t, err)
+	require.Equal(t, "success", answer.Status, "%+v", answer)
+	require.EqualValues(t, 2, calls.Load())
+	// Independent instances share the exact same physical-request budget.
+	secondTests, secondJudge := newServices()
+	judged = secondJudge.Judge(ctx, account.ID+1, question, "21")
+	require.Equal(t, "judge_budget_deferred", judged.Reason)
+	require.Equal(t, "global_day", judged.BudgetDeferral.Scope)
+	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "fixture-model", question)
+	require.NoError(t, err)
+	require.Equal(t, "answer_budget_deferred", answer.ErrorMessage)
+	require.Equal(t, "unknown", answer.QualityJudgment.Verdict)
+	require.Equal(t, "global_day", answer.QualityJudgment.BudgetDeferral.Scope)
+	require.Equal(t, "inconclusive", answer.PelicanConfig.AvailabilityResult.Status)
+	require.EqualValues(t, 2, calls.Load(), "both exhausted paths must send zero physical requests")
+	usage, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, usage.DayUsed)
+	require.Zero(t, usage.ActiveRequests)
+	policy.Enabled = false
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "fixture-model", question)
+	require.NoError(t, err)
+	require.Equal(t, "success", answer.Status)
+	require.Nil(t, answer.QualityJudgment)
+	usage, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, calls.Load())
+	require.EqualValues(t, 3, usage.DayUsed)
+	require.Zero(t, usage.ActiveRequests)
+	redirect.Store(true)
+	answer, err = secondTests.RunPelicanBackground(ctx, account.ID, "fixture-model", question)
+	require.NoError(t, err)
+	require.Equal(t, "failed", answer.Status)
+	require.Nil(t, answer.QualityJudgment, "an upstream redirect is not a local budget deferral")
+	require.Zero(t, redirectCalls.Load(), "quality requests must not forward credentials across redirects")
+	usage, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 4, calls.Load())
+	require.EqualValues(t, 4, usage.DayUsed, "count the redirect response as one physical attempt")
+	require.Zero(t, usage.ActiveRequests)
+}
+
 func TestQualityJevMonitoringBudgetPostgresAndHTTP(t *testing.T) {
 	db, client := newBillingAuditDatabase(t)
 	ctx := t.Context()

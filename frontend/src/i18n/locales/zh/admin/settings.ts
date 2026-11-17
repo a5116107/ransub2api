@@ -534,14 +534,14 @@ export default {
       },
       upstreamBillingProbe: {
         budget: {
-          title: '倍率、余额与 JEV 判题预算',
-          scopeHint: '同库已升级实例共用预算，执行限额前须排空旧版探测实例。Sub2API 倍率/余额、New API 管理接口及每页请求（含预览）、JEV 判题的每次尝试分别计数；不含业务、质量答题、普通 LLM 判题或 token 用量。',
+          title: '倍率、余额与质量检测调用预算',
+          scopeHint: '同库已升级实例共用预算，执行限额前须排空旧版探测实例。逐次计数：Sub2API 倍率/余额、New API 管理请求和分页（含预览）、JEV 判题，以及原生 HTTP 质量答题和 LLM 判题。不含业务流量、其他检测通道或 token 用量。',
           enabled: '执行共享限额', enforced: '限额已生效', observeOnly: '仅观测：尚未执行限额',
           requests_per_minute: '全局每分钟请求数（UTC）', requests_per_day: '全局每日请求数（UTC）',
           site_requests_per_minute: '每站每分钟请求数', key_requests_per_minute: '每个实际凭据每分钟请求数',
           concurrency: '全局探测并发', site_concurrency: '每站探测并发', key_concurrency: '每个实际凭据探测并发',
           recovery_reserve_percent: '全局恢复预留（%）',
-          reserveHint: '仅上次倍率探测失败的账号复测可使用全局预留，仍受站点和凭据上限约束。小数容量取整时至少保留一个普通探测名额。新账号、配置预览及 JEV 判题（含重试）使用普通预算。',
+          reserveHint: '仅上次倍率探测失败的账号复测可使用全局预留，仍受站点和凭据上限约束。小数容量取整时至少保留一个普通探测名额。新账号、配置预览、质量答题及所有判题（含重试）使用普通预算。',
           deferralHint: '预算不足会延期，不处罚上游、不发布部分声明、不延长旧证据。并发槽释放后可复用，已消耗的请求额度不退还。',
           minuteUsage: '本分钟调用', dayUsage: '今日调用（UTC）', activeUsage: '进行中请求',
           observedAt: '数据库观测时间：{value}', saved: '探测预算已保存。',

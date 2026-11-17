@@ -128,9 +128,39 @@ func (s *MonitoringProbeBudgetService) Summary(ctx context.Context) (*Monitoring
 
 type monitoringProbeBudgetKey struct{}
 type monitoringProbeBudgetContext struct {
-	service  *MonitoringProbeBudgetService
-	site     string
-	recovery bool
+	service     *MonitoringProbeBudgetService
+	sites       []string
+	recovery    bool
+	accountTest bool
+	local       *monitoringProbeBudgetError
+}
+
+// Preserve local admission/lease errors across adapters that emit SSE error
+// strings. This is request-owned and is never accepted from stored rule JSON.
+type monitoringProbeBudgetError struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (e *monitoringProbeBudgetError) record(err error) {
+	if e == nil || monitoringProbeDeferral(err, time.Now()) == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.err == nil {
+		e.err = err
+	}
+}
+
+func monitoringProbeLocalError(ctx context.Context) error {
+	probe, _ := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	if probe.local == nil {
+		return nil
+	}
+	probe.local.mu.Lock()
+	defer probe.local.mu.Unlock()
+	return probe.local.err
 }
 
 // Apply only to internally owned probes. Business requests never opt into this
@@ -139,12 +169,27 @@ func (s *MonitoringProbeBudgetService) Context(ctx context.Context, site string,
 	if s == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, monitoringProbeBudgetKey{}, monitoringProbeBudgetContext{s, site, recovery})
+	return context.WithValue(ctx, monitoringProbeBudgetKey{}, monitoringProbeBudgetContext{
+		service: s, sites: []string{site}, recovery: recovery, local: &monitoringProbeBudgetError{},
+	})
+}
+
+func (s *MonitoringProbeBudgetService) qualityContext(ctx context.Context) context.Context {
+	if s == nil {
+		return ctx
+	}
+	return context.WithValue(WithHTTPUpstreamRedirectsDisabled(ctx), monitoringProbeBudgetKey{}, monitoringProbeBudgetContext{
+		service: s, accountTest: true, local: &monitoringProbeBudgetError{},
+	})
+}
+
+func (s *AccountTestService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
+	s.monitoringBudget = budget
 }
 
 // BeginMonitoringProbeRequest is called once per physical RoundTrip, after
 // credential/capacity checks. The returned finish must run after body closure.
-func BeginMonitoringProbeRequest(req *http.Request) (*http.Request, func(), error) {
+func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, release func(), resultErr error) {
 	if req == nil {
 		return req, nil, nil
 	}
@@ -152,14 +197,27 @@ func BeginMonitoringProbeRequest(req *http.Request) (*http.Request, func(), erro
 	if !ok {
 		return req, nil, nil
 	}
+	defer func() { probe.local.record(resultErr) }()
 	if probe.service == nil || probe.service.repo == nil {
 		return req, nil, ErrMonitoringProbeBudgetUnavailable
 	}
 	if err := context.Cause(req.Context()); err != nil {
 		return req, nil, err
 	}
-	site, err := CanonicalNewAPISite(probe.site)
-	if err != nil || !monitoringProbeSiteContains(site, req.URL) {
+	var site string
+	for _, siteURL := range probe.sites {
+		// Native OAuth/default-provider routes have no configured base URL.
+		// Explicit protocol bases must never fall back to a different origin.
+		if siteURL == "" && probe.accountTest && len(probe.sites) == 1 && req.URL != nil {
+			siteURL = req.URL.Scheme + "://" + req.URL.Host
+		}
+		candidate, err := CanonicalNewAPISite(siteURL)
+		if err == nil && monitoringProbeSiteContains(candidate, req.URL) && len(candidate) > len(site) {
+			// Prefer the most specific configured tenant when bases overlap.
+			site = candidate
+		}
+	}
+	if site == "" {
 		return req, nil, ErrMonitoringProbeBudgetUnavailable
 	}
 	keys := config.UpstreamCredentialFingerprints(req)
@@ -228,6 +286,8 @@ type monitoringProbeBudgetBody struct {
 func (b *monitoringProbeBudgetBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if errors.Is(context.Cause(b.ctx), ErrMonitoringProbeBudgetLeaseLost) {
+		probe, _ := b.ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+		probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
 		return n, ErrMonitoringProbeBudgetLeaseLost
 	}
 	return n, err
@@ -235,6 +295,10 @@ func (b *monitoringProbeBudgetBody) Read(p []byte) (int, error) {
 
 func (b *monitoringProbeBudgetBody) Close() error {
 	err := b.ReadCloser.Close()
+	if errors.Is(context.Cause(b.ctx), ErrMonitoringProbeBudgetLeaseLost) {
+		probe, _ := b.ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+		probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
+	}
 	b.finish()
 	return err
 }
@@ -249,6 +313,8 @@ func FinishMonitoringProbeResponse(ctx context.Context, response *http.Response,
 		}
 		finish()
 		if errors.Is(context.Cause(ctx), ErrMonitoringProbeBudgetLeaseLost) {
+			probe, _ := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+			probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
 			return ErrMonitoringProbeBudgetLeaseLost
 		}
 		return err

@@ -789,6 +789,7 @@ function resultTone(result: ScheduledTestResult) {
 }
 function resultContent(result: ScheduledTestResult) {
   if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogSkipHelp' : result.error_message === 'model_unavailable' ? 'qualityOps.modelUnavailableSkipHelp' : 'qualityOps.unsupportedSkipHelp')
+  if (!result.response_text && isJudgeBudgetDeferred(result)) return t('qualityOps.budgetNoAnswer')
   return result.response_text || result.error_message || t('qualityOps.noAnswer')
 }
 function defaults() {
@@ -1329,7 +1330,8 @@ function judgmentReason(result: ScheduledTestResult) {
   return t(`qualityOps.jevReasons.${known.includes(reason) ? reason : 'uncertain'}`)
 }
 function isJudgeBudgetDeferred(result: ScheduledTestResult) {
-  return result.quality_judgment?.kind === 'jev' && result.quality_judgment.verdict === 'unknown' && result.quality_judgment.reason === 'judge_budget_deferred'
+  const judgment = result.quality_judgment
+  return judgment?.verdict === 'unknown' && (judgment.reason === 'judge_budget_deferred' || judgment.reason === 'answer_budget_deferred')
 }
 function judgeBudgetExplanation(result: ScheduledTestResult) {
   const denial = result.quality_judgment?.budget_deferral

@@ -100,7 +100,13 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 	snapshot.ModelID = model
 	snapshot.AvailabilityResult = availability
 	snapshot.ActualPrompt = intelligenceTestPrompt(cfg)
-	return &ScheduledTestResult{DirectOAuth401: directOAuth401, DirectOAuthRevoked401: directOAuthRevoked401, Status: status, ResponseText: output, ErrorMessage: message, LatencyMs: finished.Sub(started).Milliseconds(), StartedAt: started, FinishedAt: finished, PelicanConfig: &snapshot}, nil
+	var judgment *QualityJudgment
+	if denial := monitoringProbeDeferral(err, finished); denial != nil {
+		status, message = "failed", "answer_budget_deferred"
+		judgment = &QualityJudgment{Verdict: "unknown", Reason: message, BudgetDeferral: denial}
+		availability.Status, availability.Reason = "inconclusive", "monitoring_budget_deferred"
+	}
+	return &ScheduledTestResult{DirectOAuth401: directOAuth401, DirectOAuthRevoked401: directOAuthRevoked401, Status: status, ResponseText: output, ErrorMessage: message, LatencyMs: finished.Sub(started).Milliseconds(), StartedAt: started, FinishedAt: finished, PelicanConfig: &snapshot, QualityJudgment: judgment}, nil
 }
 
 func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *ScheduledTestPlan) bool {

@@ -130,12 +130,26 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 			// A slow route must leave time for another candidate within the overall deadline.
 			attemptCtx, cancelAttempt := context.WithTimeout(ctx, 30*time.Second)
 			defer cancelAttempt()
+			attemptCtx = s.monitoringBudget.qualityContext(attemptCtx)
 			return s.request(attemptCtx, account.ID, judge.ModelID, prompt)
 		}()
 		result.AccountID = account.ID
 		if requestErr != nil {
+			if denial := monitoringProbeDeferral(requestErr, time.Now()); denial != nil {
+				result.Reason, result.BudgetDeferral = "judge_budget_deferred", denial
+				// Site/key limits can leave another independent route usable;
+				// global exhaustion or coordination failure cannot.
+				switch denial.Scope {
+				case "key", "key_minute", "site", "site_minute":
+					continue
+				default:
+					return result
+				}
+			}
+			result.BudgetDeferral = nil
 			result.Reason = "judge_request_failed"
 		} else {
+			result.BudgetDeferral = nil
 			verdict, parseErr := parseQualityJudgment(output)
 			if parseErr == nil {
 				verdict.Kind, verdict.RulesVersion = result.Kind, result.RulesVersion

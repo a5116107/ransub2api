@@ -322,6 +322,7 @@ func ProvideAccountTestService(
 	openAIGatewayService *OpenAIGatewayService,
 	settingService *SettingService,
 	pluginManager *PluginManager,
+	budgetRepo MonitoringProbeBudgetRepository,
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
@@ -337,6 +338,7 @@ func ProvideAccountTestService(
 	service.SetOpenAIGatewayService(openAIGatewayService)
 	service.SetSettingService(settingService)
 	service.SetPluginManager(pluginManager)
+	service.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))
 	if p, ok := httpUpstream.(AstraGatewayRuntimeProvider); ok {
 		p.SetAstraGatewayPreparer(service.prepareAstraGatewaySource)
 	}

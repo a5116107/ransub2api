@@ -60,6 +60,7 @@ func isQualityObservation(ctx context.Context) bool {
 // Pelican UI. The existing /test endpoint deliberately keeps its historical
 // probe payload; only this endpoint opts into the user prompt and reasoning.
 func (s *AccountTestService) TestPelicanAccountConnection(c *gin.Context, accountID int64, modelID, prompt, reasoningEffort string) error {
+	c.Request = c.Request.WithContext(s.monitoringBudget.qualityContext(c.Request.Context()))
 	options, _ := pelicanTestOptionsFromContext(c.Request.Context())
 	options.prompt = strings.TrimSpace(prompt)
 	options.reasoningEffort = normalizePelicanReasoningEffort(reasoningEffort)

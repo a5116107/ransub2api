@@ -22,6 +22,7 @@ type monitoringBudgetRepoStub struct {
 	requests []MonitoringProbeBudgetRequest
 	denyAt   int
 	err      error
+	acquire  func(MonitoringProbeBudgetRequest, int) (string, error)
 	renew    func(context.Context) (bool, error)
 	released int
 }
@@ -30,6 +31,9 @@ func (r *monitoringBudgetRepoStub) Acquire(_ context.Context, request Monitoring
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.requests = append(r.requests, request)
+	if r.acquire != nil {
+		return r.acquire(request, len(r.requests))
+	}
 	if r.denyAt > 0 && len(r.requests) >= r.denyAt {
 		return "", r.err
 	}
@@ -125,6 +129,51 @@ func TestMonitoringProbeBudgetRejectsChangedSiteAndUnverifiedCredentials(t *test
 	require.NoError(t, err)
 	require.Same(t, req, got)
 	require.Nil(t, finish)
+}
+
+func TestMonitoringProbeBudgetQualitySiteBoundaries(t *testing.T) {
+	for _, mode := range []string{"configured", "overlapping_tenants", "default_origin", "changed_host", "changed_tenant", "changed_scheme", "unbound"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := &monitoringBudgetRepoStub{}
+			ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
+			probe := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+			probe.sites = []string{"https://example.com/tenant/v1"}
+			target, expectedSite := "https://example.com/tenant/v1/responses", "https://example.com/tenant"
+			switch mode {
+			case "overlapping_tenants":
+				probe.sites = []string{"https://example.com", "https://example.com/tenant/v1"}
+			case "default_origin":
+				probe.sites = []string{""}
+				target, expectedSite = "https://chatgpt.com/backend-api/codex/responses", "https://chatgpt.com"
+			case "changed_host":
+				target = "https://other.example/tenant/v1/responses"
+			case "changed_tenant":
+				target = "https://example.com/tenant-other/v1/responses"
+			case "changed_scheme":
+				target = "http://example.com/tenant/v1/responses"
+			case "unbound":
+				probe.sites = nil
+			}
+			ctx = context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
+			require.True(t, HTTPUpstreamRedirectsDisabled(ctx))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer final-budget-fixture")
+			_, finish, err := BeginMonitoringProbeRequest(req)
+			switch mode {
+			case "changed_host", "changed_tenant", "changed_scheme", "unbound":
+				require.ErrorIs(t, err, ErrMonitoringProbeBudgetUnavailable)
+				require.Empty(t, repo.requests)
+				require.Nil(t, finish)
+			default:
+				require.NoError(t, err)
+				require.Len(t, repo.requests, 1)
+				require.Equal(t, monitoringProbeHash(expectedSite), repo.requests[0].SiteHash)
+				finish()
+				require.Equal(t, 1, repo.released)
+			}
+		})
+	}
 }
 
 func TestMonitoringProbeBudgetLeaseLossCancelsTransportAndReleases(t *testing.T) {

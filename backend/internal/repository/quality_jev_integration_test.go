@@ -37,13 +37,18 @@ func TestQualityJevPersistenceAndIsolationSafety(t *testing.T) {
 	require.Equal(t, "jev", listed[0].PelicanConfig.Quality.Judge.Kind)
 	deferred := *result
 	deferred.ID = 0
-	deferred.QualityJudgment = &service.QualityJudgment{Kind: "jev", ModelID: "jev-latest", Verdict: "unknown", Reason: "judge_budget_deferred", RulesVersion: "quality-choice-v1",
-		BudgetDeferral: &service.MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)}}
-	saved, err := results.Create(ctx, &deferred)
-	require.NoError(t, err)
-	persisted, err := results.GetResult(ctx, f.plan.ID, saved.ID)
-	require.NoError(t, err)
-	require.Equal(t, deferred.QualityJudgment, persisted.QualityJudgment)
+	for _, kind := range []string{"jev", "llm", ""} {
+		deferred.QualityJudgment = &service.QualityJudgment{Kind: kind, Verdict: "unknown", Reason: "judge_budget_deferred",
+			BudgetDeferral: &service.MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)}}
+		if kind == "" {
+			deferred.QualityJudgment.Reason = "answer_budget_deferred"
+		}
+		saved, err := results.Create(ctx, &deferred)
+		require.NoError(t, err)
+		persisted, err := results.GetResult(ctx, f.plan.ID, saved.ID)
+		require.NoError(t, err)
+		require.Equal(t, deferred.QualityJudgment, persisted.QualityJudgment)
+	}
 	// Inconclusive Jev evidence neither isolates nor restores either model.
 	isolationRound(f, "inconclusive", "inconclusive")
 	require.Equal(t, 2, f.count(`SELECT count(*) FROM account_groups WHERE account_id=$1`))

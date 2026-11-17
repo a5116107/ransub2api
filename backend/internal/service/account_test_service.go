@@ -156,6 +156,7 @@ type AccountTestService struct {
 	grokTokenProvider         *GrokTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
 	httpUpstream              HTTPUpstream
+	monitoringBudget          *MonitoringProbeBudgetService
 	cfg                       *config.Config
 	settingService            *SettingService
 	tlsFPProfileService       *TLSFingerprintProfileService
@@ -383,6 +384,12 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	// 测试可能在响应头或正文到来前长时间等待；所有协议共用同一段下游保活生命周期。
 	stopKeepalive := startAccountTestSSEKeepalive(c, 10*time.Second)
 	defer func() {
+		if local := monitoringProbeLocalError(c.Request.Context()); local != nil {
+			// Stream adapters can return a cancellation after emitting their
+			// completion event. Always finish the SSE with the local deferral.
+			_ = s.sendErrorAndEnd(c, "Monitoring probe deferred by local budget")
+			testErr = local
+		}
 		// 即使完成事件写入失败，也不能把已断开的请求判成成功测试。
 		if testErr == nil {
 			testErr = c.Request.Context().Err()
@@ -429,6 +436,24 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 				return s.sendErrorAndEnd(c, "Availability probe connection changed")
 			}
 		}
+	}
+	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok && probe.accountTest {
+		// Bind after managed credential selection and account reload. Physical
+		// transport still fingerprints the actual outgoing credential.
+		probe.sites = []string{upstreamBillingProbeBaseURL(account)}
+		if account.IsMultiProtocolAPIKey() && account.IsAdaptiveAPIProtocol() {
+			// An adaptive account can use distinct hosts or tenant paths for
+			// each native protocol. Bind only its supported effective bases;
+			// the transport selects the matching site for each physical send.
+			probe.sites = nil
+			for _, protocol := range []string{APIProtocolChatCompletions, APIProtocolAnthropic, APIProtocolResponses} {
+				if account.providerSupportsProtocol(protocol) {
+					probe.sites = append(probe.sites, account.GetCNProtocolBaseURL(protocol))
+				}
+			}
+		}
+		ctx = context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
+		c.Request = c.Request.WithContext(ctx)
 	}
 	recordQualityBatchRoute(c, account, modelID, account.Platform+":"+account.GetAPIProtocol())
 	if expected, ok := ctx.Value(modelTraceContextKey{}).(modelTraceEnvironment); ok {

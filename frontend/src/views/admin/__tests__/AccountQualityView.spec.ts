@@ -2057,12 +2057,14 @@ describe('quality operations', () => {
     expect(vm.judgmentReason(result)).toBe('qualityOps.jevReasons.uncertain')
     wrapper.unmount()
   })
-  it('renders local Jev budget deferral with bounded reasons and a separate retry time', async () => {
+  it.each([['jev', 'judge_budget_deferred'], ['llm', 'judge_budget_deferred'], ['', 'answer_budget_deferred']])('renders local %s %s with bounded reasons and a separate retry time', async (kind, reason) => {
     const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any
-    const result = { id: 42, status: 'failed', error_message: 'judge_inconclusive', quality_judgment: { kind: 'jev', verdict: 'unknown', reason: 'judge_budget_deferred', budget_deferral: { reason: 'request_limit', scope: 'global_day', retry_at: '2026-11-18T00:00:00Z' } } }
+    const result = { id: 42, status: 'failed', error_message: 'judge_inconclusive', quality_judgment: { kind, verdict: 'unknown', reason, budget_deferral: { reason: 'request_limit', scope: 'global_day', retry_at: '2026-11-18T00:00:00Z' } } }
     expect(vm.resultLabel(result)).toBe('qualityOps.judgeBudgetDeferred')
     expect(vm.resultTone(result)).toBe('tone-neutral')
     expect(vm.resultTextClass(result)).not.toContain('rose')
+    expect(vm.resultContent(result)).toBe('qualityOps.budgetNoAnswer')
+    expect(vm.resultContent({ ...result, response_text: 'existing answer' })).toBe('existing answer')
     expect(vm.judgmentReason(result)).toBe('qualityOps.judgeBudgetDeferredHint')
     expect(vm.judgeBudgetExplanation(result)).toContain('admin.settings.upstreamBillingProbe.budget.request_limit')
     expect(vm.judgeBudgetExplanation(result)).toContain('admin.settings.upstreamBillingProbe.budget.retryAt')
