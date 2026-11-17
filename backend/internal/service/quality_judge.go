@@ -35,6 +35,17 @@ type QualityJudgment struct {
 	ModelID      string `json:"model_id,omitempty"`
 }
 
+func qualityJudgeRuntimeIdentityKnown(cfg *PelicanTestConfig, result *QualityJudgment) bool {
+	if cfg == nil || cfg.Quality == nil || cfg.Quality.Judge == nil || result == nil {
+		return false
+	}
+	kind := cfg.Quality.Judge.Kind
+	if kind == "" {
+		kind = "llm"
+	}
+	return result.Kind == kind && result.RulesVersion != "" && result.ModelID != "" && (kind != "llm" || result.GroupID > 0)
+}
+
 type qualityJudgeAccounts interface {
 	ListSchedulableByGroupID(context.Context, int64) ([]Account, error)
 }

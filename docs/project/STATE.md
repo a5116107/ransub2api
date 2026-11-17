@@ -3,21 +3,21 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3.2.2共享批次模型线路围栏本地done；基线4226dec3d。
+任务：D3.2.3分维度历史测量本地done；基线59184789f。
 授权：唯一H盘/自有分支同步；不CI、不提升功能分支。
-已验：原unit双轮1726+API双轮2、SQL双轮240pass，0fail/skip/race。
-静态：两包vet0、增量fast lint0 issues、Linux编译0，消费源码无漂移。
-修复：私有批次快照保存claim摘要，收集不可替换；旧缺失/换Key仍拒绝。
-下一：D3.2原结果/规则补多维测量、版本/当前性；不借夹具认证模型。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-batch-fence-*。
+已验：unit双轮1782、SQL双轮244pass，0fail/skip/race；UI234pass。
+静态：两包vet/Linux过、增量fast lint0；详情中英1440/390px已验。
+实现：正确性/传输/判题/身份分开，版本摘要与scope入原JSON；旧历史不回填。
+下一：D3.2当前性/独立参考、D8.1统一预算；历史测量不授予当前资格。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-measurement-*。
 生产上次实测：.7/fd83f6c91；本轮未部署。
 等待：原28项20done/8部分；基线/scope/缓存域、PR3/旧历史。
-Attempt：42
+Attempt：44
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新日期：2026-11-17。倍率内多供应商自动调度，保护质量、响应体验和会话缓存，保留自研并便于同步原仓库。
+更新：2026-11-17。倍率内多供应商自动调度，保护质量、响应和会话缓存，保留自研并同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)：13.3保留审计基线，5.3.1补自动适用声明边界。
 - [决策与验证历史](DECISIONS.md)；功能分支未整体验证上线，独立生产热修复已加载。
 - 原28项20done/8部分；13.2子项6/7done；新缺口不增分母；单分支/单完整PR。
@@ -41,7 +41,7 @@ Attempt：42
 | D2.6.15 | done | Messages→Responses/verbosity、UI与物理HTTP/11类WS本地已验；race7936、SQL54/UI35/静态/Linux过，非生产 |
 | D2.6.16 | done | 池桥协议集合/拒绝归因、双调度/粘性/槽后/17类物理帧已验；race8214/静态/Linux过，非生产 |
 | D2.6.17 | done | HTTP转原生WS映射/Fast/stream及物理帧、双调度/粘性/槽后/拒发已验；race8378/静态/Linux过，非生产 |
-| D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；D3.2.1来源/.2批次围栏本地已验；多维/基线、非文本仍待 |
+| D3 | in_progress | .7流内换号/冷却回池/密文成功绑定已验，5/3/1保持；D3.2.1–.3来源/围栏/多维历史本地已验；当前性/基线/非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |
@@ -56,7 +56,7 @@ Attempt：42
 | D5.3.12 | done | Gemini URL/信封模型、实际action/预算模式/等级/思考输出独立分桶；PG666/竞态1074/计时821/UI115及静态/Linux/四视口通过；仅本地 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
-| D7.3 | in_progress | 三页历史徽标/冻结集合/列表详情兼容已验；真实向量、基线/指纹和当前资格消费未完成 |
+| D7.3 | in_progress | 三页历史/冻结集合与原详情多维测量已验；独立基线/指纹、有效期及当前资格消费仍缺 |
 | D8 | in_progress | 两模板各100账号轮转、分页/等待/SQL及30秒网络耗尽恢复已验；D8.1完整预算、D8.2组合矩阵/严格混版仍缺 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
@@ -72,7 +72,7 @@ Attempt：42
 ## 工作区与既有环境限制
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
-- 历史153包/本轮证据见DECISIONS；并发1–2、共享Go缓存。
+- 153包历史与本轮专项证据见DECISIONS；并发1–2、共享Go缓存。
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。

@@ -2813,6 +2813,22 @@ export interface QualityJudgeConfig {
   model_id: string
   prompt: string
 }
+export type QualityMeasurementDimension = 'answer_correctness' | 'transport' | 'grading' | 'model_identity'
+export interface QualityMeasurement {
+  version: number
+  measurement_hash: string
+  policy_hash: string
+  rule_version: string
+  requested_model: string
+  question_kind: string
+  question_version?: string
+  observed_at: string
+  completed_at: string
+  valid_until: string | null
+  scope: { version: number; model: string; protocol: string; stream: boolean; service_tier: string; reasoning_effort: string; capability: string } | null
+  dimensions: Record<QualityMeasurementDimension, { status: 'pass' | 'fail' | 'unknown'; reason: string; score: number | null; sample_count: number }>
+}
+
 export interface QualityJudgment {
   kind?: 'llm' | 'jev'
   rules_version?: string
@@ -2891,6 +2907,7 @@ export interface PelicanQuestion {
 }
 
 export interface PelicanTestConfig {
+  quality_measurement?: QualityMeasurement
   prompt_mode?: 'custom' | 'random'
   pelican_question?: PelicanQuestion
   actual_prompt?: string

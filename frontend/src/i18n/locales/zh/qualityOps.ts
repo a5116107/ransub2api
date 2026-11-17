@@ -562,5 +562,57 @@ export default {
   "modelRemovalReadbackFailed": "确认可能已经提交，请重新预览并核对规则模型范围，再继续编辑；不要重复解除。",
   "editPreset": "编辑检测模板",
   "invalidMaxResults": "保留结果数必须为 1–200。",
-  "retentionTooSmall": "保留结果数必须容纳本轮全部模型与样本。"
+  "retentionTooSmall": "保留结果数必须容纳本轮全部模型与样本。",
+  "measurement": {
+    "title": "本次样本的独立测量",
+    "historical": "历史测量，仅覆盖本次题目和请求，不代表当前准入。",
+    "unsupported": "旧版、损坏或未知版本证据，各维度保持未知。",
+    "currentUnknown": "当前准入未知：尚无独立有效期与当前资格校验。",
+    "dimension": "维度",
+    "result": "结果",
+    "score": "分值",
+    "samples": "样本",
+    "details": "范围、版本与时间",
+    "requestedModel": "请求模型",
+    "wireModel": "实际上送模型",
+    "protocol": "实际协议",
+    "stream": "响应方式",
+    "streaming": "流式",
+    "nonStreaming": "非流式",
+    "serviceTier": "服务档位",
+    "reasoningEffort": "推理强度",
+    "capability": "能力范围",
+    "questionKind": "题目类型",
+    "questionVersion": "题目版本",
+    "observedAt": "上游观测完成",
+    "completedAt": "判题／样本完成",
+    "ruleVersion": "领取规则版本",
+    "measurementHash": "测量合同摘要",
+    "policyHash": "动作策略摘要",
+    "states": {
+      "pass": "通过",
+      "fail": "失败",
+      "unknown": "未知"
+    },
+    "dimensions": {
+      "answer_correctness": "答题正确性",
+      "transport": "请求完成",
+      "grading": "判题完成",
+      "model_identity": "模型身份"
+    },
+    "reasons": {
+      "grading_not_observed": "未观测到判题",
+      "transport_not_observed": "未观测到传输",
+      "independent_baseline_not_observed": "没有独立模型基线",
+      "completed_response": "已观测完整响应",
+      "request_failed": "已观测请求失败",
+      "graded_correct": "答案判定正确",
+      "graded_incorrect": "答案判定错误",
+      "grading_completed": "已取得明确判题",
+      "grading_inconclusive": "判题未得出结论",
+      "grading_failed": "判题系统故障",
+      "grader_identity_not_observed": "缺少判题来源",
+      "invalid_measurement": "测量合同无效"
+    }
+  }
 }

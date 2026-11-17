@@ -4,12 +4,85 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestQualityMeasurementPersistenceAndLegacyHistory(t *testing.T) {
+	ctx := t.Context()
+	var account int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status)
+ VALUES('measurement-fixture','openai','apikey','active') RETURNING id`).Scan(&account))
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM accounts WHERE id=$1`, account)
+	})
+	plans := NewScheduledTestPlanRepository(integrationDB)
+	results := NewScheduledTestResultRepository(integrationDB)
+	svc := service.NewScheduledTestService(plans, results)
+	config := &service.PelicanTestConfig{Prompt: "fixture", ReasoningEffort: "high", ParallelCount: 1,
+		QualityMeasurement: &service.QualityMeasurement{Version: 999, MeasurementHash: "forged"}}
+	plan, err := svc.CreatePlan(ctx, &service.ScheduledTestPlan{AccountID: account, ModelID: "public-model",
+		CronExpression: "*/5 * * * *", MaxResults: 20, PelicanConfig: config})
+	require.NoError(t, err)
+	require.Nil(t, plan.PelicanConfig.QualityMeasurement, "management inputs cannot configure measured results")
+	storedPlan, err := plans.GetByID(ctx, plan.ID)
+	require.NoError(t, err)
+	require.Nil(t, storedPlan.PelicanConfig.QualityMeasurement)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	zero, one := 0.0, 1.0
+	measurement := &service.QualityMeasurement{Version: 1, MeasurementHash: strings.Repeat("a", 64), PolicyHash: strings.Repeat("b", 64),
+		RuleVersion: now.Add(-time.Hour), RequestedModel: "public-model", QuestionKind: "candy",
+		ObservedAt: now, CompletedAt: now.Add(time.Second),
+		Scope: &service.AvailabilityRequestScope{Version: 4, Model: "wire-model", Protocol: "responses", ServiceTier: "priority", ReasoningEffort: "high", Capability: "text"},
+		Dimensions: map[string]service.QualityDimensionMeasurement{
+			"answer_correctness": {Status: "fail", Reason: "graded_incorrect", Score: &zero, SampleCount: 1},
+			"transport":          {Status: "pass", Reason: "completed_response", Score: &one, SampleCount: 1},
+			"grading":            {Status: "pass", Reason: "grading_completed", Score: &one, SampleCount: 1},
+			"model_identity":     {Status: "unknown", Reason: "independent_baseline_not_observed"},
+		}}
+	cfg := *plan.PelicanConfig
+	cfg.Quality = &service.QualityPolicy{Action: service.QualityActionObserveOnly, ExpectedAnswer: "42"}
+	cfg.ModelID, cfg.QualityMeasurement = "public-model", measurement
+	result, err := results.Create(ctx, &service.ScheduledTestResult{PlanID: plan.ID, Status: "failed", ResponseText: "41",
+		ErrorMessage: "answer_mismatch", StartedAt: now.Add(-time.Second), FinishedAt: measurement.CompletedAt,
+		PelicanConfig: &cfg, QualityJudgment: &service.QualityJudgment{Verdict: "incorrect"}})
+	require.NoError(t, err)
+	// Reconstruct the repository to exercise persisted JSON, not the original pointers.
+	restarted := NewScheduledTestResultRepository(integrationDB)
+	detail, err := restarted.GetResult(ctx, plan.ID, result.ID)
+	require.NoError(t, err)
+	require.Equal(t, measurement, detail.PelicanConfig.QualityMeasurement)
+	require.Equal(t, "incorrect", detail.QualityJudgment.Verdict)
+	require.Equal(t, "failed", detail.Status)
+	require.Nil(t, detail.PelicanConfig.QualityMeasurement.ValidUntil)
+	summaries, err := restarted.ListByPlanID(ctx, plan.ID, 20, false)
+	require.NoError(t, err)
+	require.Len(t, summaries, 1)
+	require.Empty(t, summaries[0].ResponseText)
+	require.Equal(t, measurement, summaries[0].PelicanConfig.QualityMeasurement)
+	operations, err := restarted.ListQualityHistory(ctx, 0, 100)
+	require.NoError(t, err)
+	var operationFound bool
+	for _, operation := range operations {
+		if operation.ID == result.ID {
+			operationFound = true
+			require.Equal(t, measurement, operation.PelicanConfig.QualityMeasurement)
+		}
+	}
+	require.True(t, operationFound)
+	cfg.QualityMeasurement = nil
+	legacy, err := results.Create(ctx, &service.ScheduledTestResult{PlanID: plan.ID, Status: "success", ResponseText: "42",
+		StartedAt: now, FinishedAt: now, PelicanConfig: &cfg, QualityJudgment: &service.QualityJudgment{Verdict: "correct"}})
+	require.NoError(t, err)
+	old, err := restarted.GetResult(ctx, plan.ID, legacy.ID)
+	require.NoError(t, err)
+	require.Nil(t, old.PelicanConfig.QualityMeasurement, "old history is never backfilled from current config")
+	require.Equal(t, "correct", old.QualityJudgment.Verdict)
+}
 
 func TestPelicanSchedulePersistenceLeaseAndRetention(t *testing.T) {
 	ctx := context.Background()

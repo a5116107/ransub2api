@@ -12,6 +12,7 @@ type PelicanTestConfig struct {
 	RuleName string `json:"rule_name,omitempty"`
 	// Filled only on saved result snapshots, never used to configure a rule.
 	AvailabilityResult       *AvailabilityProbeResult  `json:"availability_result,omitempty"`
+	QualityMeasurement       *QualityMeasurement       `json:"quality_measurement,omitempty"`
 	QualityRestoreDiagnostic *QualityRestoreDiagnostic `json:"quality_restore_diagnostic,omitempty"`
 	QualityModelOutcomes     map[string]string         `json:"quality_model_outcomes,omitempty"`
 	QualityModelActions      map[string]string         `json:"quality_model_actions,omitempty"`

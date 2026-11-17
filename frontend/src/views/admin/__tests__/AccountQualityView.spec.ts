@@ -9,7 +9,7 @@ import scheduledTests from '@/api/admin/scheduledTests'
 import { updateQualityPreset, previewQualityOwnership, restoreQualityOwnership, removeQualityOwnedModel, createQualityPreset, listQualityPresets, type QualityRulePreset, createQualityTemplate, deleteQualityTemplate, listQualityPlans, listQualityOperations, listQualityTemplates, runQualityPlan, updateQualityTemplate, type QualityRuleTemplate } from '@/api/admin/accountQuality'
 import { useAccountQualityStore } from '@/stores/accountQuality'
 import { useAuthStore } from '@/stores/auth'
-import type { ScheduledTestPlan } from '@/types'
+import type { QualityMeasurement, ScheduledTestPlan } from '@/types'
 import { defaultQualityBPS, qualityRuleFields } from '@/utils/qualityRulePatch'
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('@/stores/auth', async () => {
@@ -1719,6 +1719,83 @@ describe('quality operations', () => {
     await vm.save(); expect(vm.selectedAccounts).toEqual([2]); expect(vm.showForm).toBe(true)
     await vm.save()
     expect(vi.mocked(scheduledTests.create).mock.calls.map(([request]) => request.account_id)).toEqual([1, 2, 2])
+    wrapper.unmount()
+  })
+  const measurementSample = (): QualityMeasurement => ({
+    version: 1, measurement_hash: 'a'.repeat(64), policy_hash: 'b'.repeat(64), rule_version: '2026-11-17T00:00:00Z',
+    requested_model: 'public-model', question_kind: 'random_reasoning', question_version: 'fixture-v1',
+    observed_at: '2026-11-17T01:00:00Z', completed_at: '2026-11-17T01:00:03Z', valid_until: null,
+    scope: { version: 4, model: 'wire-model', protocol: 'responses', stream: false, service_tier: 'priority', reasoning_effort: 'high', capability: 'text' },
+    dimensions: {
+      answer_correctness: { status: 'fail', reason: 'graded_incorrect', score: 0, sample_count: 1 },
+      transport: { status: 'pass', reason: 'completed_response', score: 1, sample_count: 1 },
+      grading: { status: 'pass', reason: 'grading_completed', score: 1, sample_count: 1 },
+      model_identity: { status: 'unknown', reason: 'independent_baseline_not_observed', score: null, sample_count: 0 },
+    },
+  })
+  const openMeasurement = async (value?: QualityMeasurement) => {
+    const operation = { id: 101, plan_id: 4, account_id: 1, account_name: 'Synthetic account', status: 'failed',
+      error_message: 'answer_mismatch', quality_action: 'inconclusive', passed_count: 0, total_count: 1, result_ids: [101] }
+    vi.mocked(scheduledTests.getResult).mockResolvedValue({ ...operation, response_text: '41',
+      pelican_config: { quality_measurement: value }, quality_judgment: { verdict: 'incorrect', reason: 'Different answer' } } as any)
+    const wrapper = mountView(); await flushPromises()
+    await (wrapper.vm as any).operationDetails(operation); await flushPromises()
+    return wrapper
+  }
+  it('shows independent historical dimensions, real wire scope and no current admission', async () => {
+    const wrapper = await openMeasurement(measurementSample())
+    expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')
+    expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').text()).toContain('0/1')
+    for (const dimension of ['transport', 'grading']) {
+      expect(wrapper.get(`[data-testid="quality-measurement-${dimension}"]`).attributes('data-status')).toBe('pass')
+    }
+    expect(wrapper.get('[data-testid="quality-measurement-model_identity"]').attributes('data-status')).toBe('unknown')
+    const panel = wrapper.get('[data-testid="quality-measurement"]')
+    expect(panel.text()).toContain('qualityOps.measurement.currentUnknown')
+    for (const fact of ['public-model', 'wire-model', 'responses', 'priority', 'high', 'text', 'fixture-v1', 'qualityOps.measurement.nonStreaming']) {
+      expect(panel.text()).toContain(fact)
+    }
+    expect(wrapper.text()).toContain('Different answer')
+    wrapper.unmount()
+  })
+  it.each([
+    ['future version', (m: QualityMeasurement) => { m.version = 99 }],
+    ['missing hash', (m: QualityMeasurement) => { m.measurement_hash = '' }],
+    ['bad policy hash', (m: QualityMeasurement) => { m.policy_hash = 'forged' }],
+    ['invalid observation time', (m: QualityMeasurement) => { m.observed_at = 'bad-time' }],
+    ['inverted times', (m: QualityMeasurement) => { m.completed_at = '2026-11-17T00:00:00Z' }],
+    ['missing dimension', (m: QualityMeasurement) => { delete (m.dimensions as any).transport }],
+    ['fractional count', (m: QualityMeasurement) => { m.dimensions.transport.sample_count = 0.5 }],
+    ['infinite score', (m: QualityMeasurement) => { m.dimensions.transport.score = Infinity }],
+    ['contradictory score', (m: QualityMeasurement) => { m.dimensions.transport.score = 0 }],
+    ['contradictory reason', (m: QualityMeasurement) => { m.dimensions.transport.reason = 'request_failed' }],
+    ['foreign reason', (m: QualityMeasurement) => { m.dimensions.transport.reason = 'graded_correct' }],
+    ['untrusted reason', (m: QualityMeasurement) => { m.dimensions.transport.reason = 'SYNTHETIC_PROVIDER_SECRET' }],
+  ])('keeps malformed evidence unknown: %s', async (_name, mutate) => {
+    const value = measurementSample(); mutate(value)
+    const wrapper = await openMeasurement(value)
+    const transport = wrapper.get('[data-testid="quality-measurement-transport"]')
+    expect(transport.attributes('data-status')).toBe('unknown')
+    expect(transport.text()).not.toContain('1/1')
+    expect(transport.text()).toContain('qualityOps.measurement.reasons.invalid_measurement')
+    expect(wrapper.text()).not.toContain('SYNTHETIC_PROVIDER_SECRET')
+    wrapper.unmount()
+  })
+  it('does not turn a supplied model identity pass or expiry into admission', async () => {
+    const value = measurementSample()
+    value.valid_until = '2099-01-01T00:00:00Z'
+    value.dimensions.model_identity = { status: 'pass', reason: 'graded_correct', score: 1, sample_count: 1 }
+    const wrapper = await openMeasurement(value)
+    const identity = wrapper.get('[data-testid="quality-measurement-model_identity"]')
+    expect(identity.attributes('data-status')).toBe('unknown')
+    expect(identity.text()).not.toContain('1/1')
+    expect(wrapper.get('[data-testid="quality-measurement-current"]').text()).toBe('qualityOps.measurement.currentUnknown')
+    wrapper.unmount()
+  })
+  it('leaves old history without measurement evidence unchanged', async () => {
+    const wrapper = await openMeasurement()
+    expect(wrapper.find('[data-testid="quality-measurement"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('41')
     wrapper.unmount()
   })
   it.each([false, true])('keeps wrong answers separate from missing shared controls (legacy=%s)', async legacy => {

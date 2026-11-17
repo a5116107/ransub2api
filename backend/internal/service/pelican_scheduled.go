@@ -301,6 +301,9 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		}()
 	}
 	wg.Wait()
+	for _, result := range results {
+		recordQualityMeasurement(plan, result)
+	}
 	// Persist timeout failures with a fresh context even after the request deadline.
 	saveCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()

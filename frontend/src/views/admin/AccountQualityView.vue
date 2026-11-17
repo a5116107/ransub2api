@@ -265,6 +265,17 @@
               <div v-if="selectedResult.status !== 'skipped' && !isProbeResult(selectedResult)" class="answer-reference"><span>{{ t('qualityOps.answer') }}</span><p>{{ selectedResult.pelican_config?.quality?.expected_answer || detailOperation?.pelican_config?.quality?.expected_answer || '—' }}</p></div>
               <div class="response-heading">{{ t(selectedResult.status === 'skipped' ? 'qualityOps.skipReason' : isProbeResult(selectedResult) ? 'qualityOps.probeDetail' : 'qualityOps.actualAnswer') }}<span v-if="selectedResult.latency_ms">{{ (selectedResult.latency_ms / 1000).toFixed(1) }}s</span></div>
               <pre class="response-content">{{ resultContent(selectedResult) }}</pre>
+              <section v-if="measurement" class="judge-reason min-w-0" data-testid="quality-measurement">
+                <h5>{{ t('qualityOps.measurement.title') }}</h5>
+                <p>{{ t('qualityOps.measurement.historical') }}</p>
+                <p v-if="!measurement.supported" class="text-amber-700 dark:text-amber-400" role="status">{{ t('qualityOps.measurement.unsupported') }}</p>
+                <table class="w-full table-fixed text-left text-xs">
+                  <thead><tr><th scope="col" class="w-1/3 break-words py-2">{{ t('qualityOps.measurement.dimension') }}</th><th scope="col" class="break-words py-2">{{ t('qualityOps.measurement.result') }}</th><th scope="col" class="w-14 break-words py-2 text-right">{{ t('qualityOps.measurement.score') }}</th><th scope="col" class="w-14 break-words py-2 text-right">{{ t('qualityOps.measurement.samples') }}</th></tr></thead>
+                  <tbody><tr v-for="dimension in measurement.dimensions" :key="dimension.key" :data-testid="`quality-measurement-${dimension.key}`" :data-status="dimension.status" class="border-t border-gray-200 align-top dark:border-gray-700"><th scope="row" class="break-words py-2 pr-2 font-medium">{{ t(`qualityOps.measurement.dimensions.${dimension.key}`) }}</th><td class="break-words py-2 pr-1"><span :class="dimension.status === 'pass' ? 'text-emerald-700 dark:text-emerald-400' : dimension.status === 'fail' ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'">{{ t(`qualityOps.measurement.states.${dimension.status}`) }}</span><p class="mt-1 text-gray-500">{{ t(`qualityOps.measurement.reasons.${dimension.reason}`) }}</p></td><td class="py-2 text-right tabular-nums">{{ dimension.score == null ? '—' : `${dimension.score}/1` }}</td><td class="py-2 text-right tabular-nums">{{ dimension.samples }}</td></tr></tbody>
+                </table>
+                <p class="mt-2 text-amber-700 dark:text-amber-400" data-testid="quality-measurement-current">{{ t('qualityOps.measurement.currentUnknown') }}</p>
+                <details class="mt-3 min-w-0"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('qualityOps.measurement.details') }}</summary><dl class="mt-2 grid min-w-0 grid-cols-1 gap-2 text-xs sm:grid-cols-2"><div v-for="fact in measurement.facts" :key="fact.key" class="min-w-0"><dt class="text-gray-500">{{ t(`qualityOps.measurement.${fact.key}`) }}</dt><dd class="break-all">{{ fact.value }}</dd></div></dl></details>
+              </section>
               <div v-if="selectedResult.quality_judgment && !isProbeResult(selectedResult)" class="judge-reason"><h5>{{ t('qualityOps.judgeReason') }}</h5><p>{{ judgmentReason(selectedResult) }}</p><span>{{ selectedResult.quality_judgment.model_id || '—' }} · {{ selectedResult.quality_judgment.kind === 'jev' ? t('qualityOps.judgeJev') : groupNames[selectedResult.quality_judgment.group_id || 0] || selectedResult.quality_judgment.group_id || '—' }}</span><p v-if="selectedResult.quality_judgment.kind === 'jev'">{{ t('qualityOps.judgeJevLatency', { ms: selectedResult.quality_judgment.latency_ms ?? '—' }) }} · {{ selectedResult.quality_judgment.rules_version }}</p></div>
             </template><div v-else-if="!detailsError" class="panel-empty">{{ t('qualityOps.noResults') }}</div>
           </section>
@@ -421,6 +432,53 @@ let alive = true, poll: ReturnType<typeof setInterval> | undefined
 const historyPlan = ref<ScheduledTestPlan | null>(null), detailOperation = ref<QualityOperation | null>(null)
 const results = ref<ScheduledTestResult[]>([]), selectedResultId = ref<number | null>(null)
 const selectedResult = ref<ScheduledTestResult | null>(null)
+const measurement = computed(() => {
+  const value = selectedResult.value?.pelican_config?.quality_measurement
+  if (!value) return null
+  const hash = (candidate: unknown) => typeof candidate === 'string' && /^[a-f0-9]{64}$/.test(candidate)
+  const observed = Date.parse(value.observed_at), completed = Date.parse(value.completed_at)
+  const supported = value.version === 1 && hash(value.measurement_hash) && hash(value.policy_hash) &&
+    Number.isFinite(observed) && Number.isFinite(completed) && observed <= completed
+  const keys = ['answer_correctness', 'transport', 'grading', 'model_identity'] as const
+  const contracts = {
+    answer_correctness: { pass: 'graded_correct', fail: 'graded_incorrect', unknown: ['grading_not_observed', 'grading_inconclusive', 'invalid_measurement'] },
+    transport: { pass: 'completed_response', fail: 'request_failed', unknown: ['transport_not_observed', 'invalid_measurement'] },
+    grading: { pass: 'grading_completed', fail: 'grading_failed', unknown: ['grading_not_observed', 'grader_identity_not_observed', 'invalid_measurement'] },
+    model_identity: { pass: '', fail: '', unknown: ['independent_baseline_not_observed'] },
+  }
+  const dimensions = keys.map(key => {
+    const dimension = value.dimensions?.[key]
+    const contract = contracts[key]
+    // Version 1 has no independent model identity baseline or current lease.
+    // A malformed score/count must never color an unverified dimension green.
+    const definite = supported && key !== 'model_identity' && dimension?.sample_count === 1 &&
+      ((dimension.status === 'pass' && dimension.score === 1 && dimension.reason === contract.pass) ||
+        (dimension.status === 'fail' && dimension.score === 0 && dimension.reason === contract.fail))
+    const unknown = supported && dimension?.status === 'unknown' && dimension.score === null && dimension.sample_count === 0 &&
+      contract.unknown.includes(dimension.reason)
+    return { key, status: definite ? dimension.status : 'unknown', score: definite ? dimension.score : null,
+      samples: definite ? 1 : 0,
+      reason: key === 'model_identity' ? 'independent_baseline_not_observed' : definite || unknown ? dimension.reason : 'invalid_measurement' }
+  })
+  const safe = (candidate: unknown) => typeof candidate === 'string' && candidate.trim() ? candidate : '—'
+  const facts = [
+    { key: 'requestedModel', value: safe(value.requested_model) },
+    { key: 'wireModel', value: supported ? safe(value.scope?.model) : '—' },
+    { key: 'protocol', value: supported ? safe(value.scope?.protocol) : '—' },
+    { key: 'stream', value: supported && typeof value.scope?.stream === 'boolean' ? t(`qualityOps.measurement.${value.scope.stream ? 'streaming' : 'nonStreaming'}`) : '—' },
+    { key: 'serviceTier', value: supported ? safe(value.scope?.service_tier) : '—' },
+    { key: 'reasoningEffort', value: supported ? safe(value.scope?.reasoning_effort) : '—' },
+    { key: 'capability', value: supported ? safe(value.scope?.capability) : '—' },
+    { key: 'questionKind', value: safe(value.question_kind) },
+    { key: 'questionVersion', value: safe(value.question_version) },
+    { key: 'observedAt', value: Number.isFinite(observed) ? date(value.observed_at) : '—' },
+    { key: 'completedAt', value: Number.isFinite(completed) ? date(value.completed_at) : '—' },
+    { key: 'ruleVersion', value: safe(value.rule_version) },
+    { key: 'measurementHash', value: hash(value.measurement_hash) ? value.measurement_hash : '—' },
+    { key: 'policyHash', value: hash(value.policy_hash) ? value.policy_hash : '—' },
+  ]
+  return { supported, dimensions, facts }
+})
 const detailsLoading = ref(false), answerLoading = ref(false), detailsError = ref('')
 const loadedAnswers = new Map<number, ScheduledTestResult>()
 const identity = () => auth.user ? `${auth.user.id}:${auth.user.role}` : ''

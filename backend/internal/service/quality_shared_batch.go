@@ -130,12 +130,7 @@ func qualityComparisonKey(result *ScheduledTestResult) string {
 		return ""
 	}
 	if judge := cfg.Quality.Judge; judge != nil {
-		kind := judge.Kind
-		if kind == "" {
-			kind = "llm"
-		}
-		j := result.QualityJudgment
-		if j == nil || j.Kind != kind || j.RulesVersion == "" || j.ModelID == "" || (kind == "llm" && j.GroupID <= 0) {
+		if !qualityJudgeRuntimeIdentityKnown(cfg, result.QualityJudgment) {
 			return "" // Missing runtime provenance cannot calibrate another account.
 		}
 	}

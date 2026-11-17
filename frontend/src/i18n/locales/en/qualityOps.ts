@@ -562,5 +562,57 @@ export default {
   "modelRemovalReadbackFailed": "Confirmation may have committed. Preview again and check the saved model scope before editing; do not repeat the release.",
   "editPreset": "Edit saved template",
   "invalidMaxResults": "Retain 1–200 results.",
-  "retentionTooSmall": "Retention must hold all model samples in a round."
+  "retentionTooSmall": "Retention must hold all model samples in a round.",
+  "measurement": {
+    "dimension": "Dimension",
+    "result": "Result",
+    "score": "Score",
+    "samples": "Samples",
+    "details": "Scope, versions and time",
+    "requestedModel": "Requested model",
+    "wireModel": "Model sent upstream",
+    "protocol": "Wire protocol",
+    "stream": "Response mode",
+    "streaming": "Streaming",
+    "nonStreaming": "Non-streaming",
+    "serviceTier": "Service tier",
+    "reasoningEffort": "Reasoning effort",
+    "capability": "Capability scope",
+    "questionKind": "Question kind",
+    "questionVersion": "Question version",
+    "observedAt": "Upstream observation completed",
+    "completedAt": "Grading / sample completed",
+    "ruleVersion": "Claimed rule version",
+    "measurementHash": "Measurement contract hash",
+    "policyHash": "Action policy hash",
+    "title": "Independent sample measurements",
+    "historical": "Historical evidence for this question and request only; not current admission.",
+    "unsupported": "Old, damaged or unsupported evidence: every dimension remains unknown.",
+    "currentUnknown": "Current admission is unknown: independent validity and current qualification checks are not yet present.",
+    "states": {
+      "pass": "Pass",
+      "fail": "Fail",
+      "unknown": "Unknown"
+    },
+    "dimensions": {
+      "answer_correctness": "Answer correctness",
+      "transport": "Request completion",
+      "grading": "Grading completion",
+      "model_identity": "Model identity"
+    },
+    "reasons": {
+      "grading_not_observed": "Grading not observed",
+      "transport_not_observed": "Transport not observed",
+      "independent_baseline_not_observed": "No independent model baseline",
+      "completed_response": "Complete response observed",
+      "request_failed": "Request failure observed",
+      "graded_correct": "Answer graded correct",
+      "graded_incorrect": "Answer graded incorrect",
+      "grading_completed": "Definite grading result",
+      "grading_inconclusive": "No definite grading result",
+      "grading_failed": "Grading system failed",
+      "grader_identity_not_observed": "Grader provenance missing",
+      "invalid_measurement": "Invalid measurement contract"
+    }
+  }
 }
