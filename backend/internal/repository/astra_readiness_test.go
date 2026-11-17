@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -95,6 +96,89 @@ func TestAstraGatewayMonitoringBudgetSourcePreparationNeutral(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestAstraGatewayMonitoringBudgetSourcePreparationStopsAndRecovers(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%t", parallel), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				wrapper, _, leases := rotationFixture(t, 3, "good")
+				wrapper.cfg.Gateway.CodexGatewayPin.SourceAccountIDs = []int64{299, 301}
+				if parallel {
+					wrapper.cfg.Gateway.CodexGatewayPin.SourceAccountIDs = []int64{299, 301, 302}
+				}
+				denial := &service.MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+				entered := make(chan struct{}, 2)
+				finished := make(chan error, 2)
+				calls := make(chan int64, 3)
+				wrapper.preparer = func(ctx context.Context, id int64) error {
+					calls <- id
+					if id == 299 {
+						if parallel {
+							<-entered
+							<-entered
+						}
+						return denial
+					}
+					if !parallel {
+						return denial
+					}
+					entered <- struct{}{}
+					<-ctx.Done()
+					finished <- ctx.Err()
+					return ctx.Err()
+				}
+				require.ErrorIs(t, wrapper.PrepareAstraGateway(t.Context()), denial)
+				if parallel {
+					require.Len(t, calls, 3)
+					require.ErrorIs(t, <-finished, context.Canceled, "siblings stop on local admission, not their 45-second timeout")
+					require.ErrorIs(t, <-finished, context.Canceled)
+				} else {
+					require.Len(t, calls, 1, "a deferred attempt must not start a replacement source")
+				}
+				pool := wrapper.current(t.Context())
+				require.Empty(t, pool.statuses)
+				require.True(t, wrapper.retryAfter.IsZero())
+				require.True(t, pool.rotationRetryAfter.IsZero())
+				require.False(t, wrapper.preparing.Load())
+				require.Zero(t, *leases)
+				require.NoError(t, t.Context().Err())
+				wrapper.preparer = func(_ context.Context, id int64) error {
+					pool.recordSource(id, time.Now(), &codexGatewayRoute{
+						cookie:  http.Cookie{Name: "__oailb", Value: "recovered", Path: "/", Secure: true},
+						expires: time.Now().Add(time.Minute),
+					}, true)
+					return nil
+				}
+				require.NoError(t, wrapper.PrepareAstraGateway(t.Context()), "an explicit later preparation can recover on the same service")
+				require.False(t, wrapper.preparing.Load())
+				require.Zero(t, *leases)
+			})
+		})
+	}
+}
+
+func TestAstraGatewayMonitoringBudgetSourcePreparationDoesNotTrustProviderText(t *testing.T) {
+	wrapper, _, leases := rotationFixture(t, 3, "good")
+	wrapper.cfg.Gateway.CodexGatewayPin.SourceAccountIDs = []int64{299, 301}
+	pool := wrapper.current(t.Context())
+	calls := 0
+	wrapper.preparer = func(_ context.Context, id int64) error {
+		calls++
+		if id == 299 {
+			return errors.New((&service.MonitoringProbeBudgetDenial{Reason: "request_limit"}).Error())
+		}
+		pool.recordSource(id, time.Now(), &codexGatewayRoute{
+			cookie:  http.Cookie{Name: "__oailb", Value: "real-next-source", Path: "/", Secure: true},
+			expires: time.Now().Add(time.Minute),
+		}, true)
+		return nil
+	}
+	require.NoError(t, wrapper.PrepareAstraGateway(t.Context()))
+	require.Equal(t, 2, calls, "real supplier errors still permit the original fallback")
+	require.Equal(t, "source_test_failed", pool.statuses[299].Reason)
+	require.Zero(t, *leases)
+	require.NoError(t, t.Context().Err())
 }
 
 func TestAstraReadinessRequiresCurrentTargetPass(t *testing.T) {

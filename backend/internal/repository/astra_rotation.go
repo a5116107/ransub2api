@@ -114,6 +114,8 @@ func (s *astraRoutingUpstream) prepareRotatedSource(ctx context.Context, pool *c
 		}
 		success := func() bool {
 			defer release()
+			probeCtx, cancelAll := context.WithCancel(ctx)
+			defer cancelAll()
 			probe := func(id int64, probeCtx context.Context) bool {
 				if probeCtx.Err() != nil {
 					return false
@@ -129,6 +131,10 @@ func (s *astraRoutingUpstream) prepareRotatedSource(ctx context.Context, pool *c
 						localDeferral.err = err
 					}
 					localDeferral.Unlock()
+					// A local deferral ends this preparation, not the caller or
+					// supplier health. Stop pending siblings before releasing
+					// their shared exit; later explicit preparation can retry.
+					cancelAll()
 					return false
 				}
 				if probeCtx.Err() != nil {
@@ -169,12 +175,12 @@ func (s *astraRoutingUpstream) prepareRotatedSource(ctx context.Context, pool *c
 			// two-account configurations retain their deterministic serial order.
 			if len(pool.config.SourceAccountIDs) <= 2 {
 				for _, id := range pool.config.SourceAccountIDs {
-					if ctx.Err() != nil || s.current(ctx) != pool {
+					if probeCtx.Err() != nil || s.current(ctx) != pool {
 						return false
 					}
-					probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-					probeCtx = context.WithValue(probeCtx, astraSourceEgressKey{}, astraSourceEgress{node: node, proxy: proxy})
-					ok := probe(id, probeCtx)
+					child, cancel := context.WithTimeout(probeCtx, 45*time.Second)
+					child = context.WithValue(child, astraSourceEgressKey{}, astraSourceEgress{node: node, proxy: proxy})
+					ok := probe(id, child)
 					cancel()
 					if ok {
 						return true
@@ -182,8 +188,6 @@ func (s *astraRoutingUpstream) prepareRotatedSource(ctx context.Context, pool *c
 				}
 				return false
 			}
-			probeCtx, cancelAll := context.WithCancel(ctx)
-			defer cancelAll()
 			results := make(chan bool, len(pool.config.SourceAccountIDs))
 			var wg sync.WaitGroup
 			for _, id := range pool.config.SourceAccountIDs {
