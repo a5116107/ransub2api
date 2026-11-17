@@ -194,7 +194,13 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  AND number_count=1
 ), selected AS (
  SELECT *,item->'upstream_request' AS request_scope,
- COALESCE(item->'upstream_request'->>'version'='1'
+ COALESCE(((item->'upstream_request'->>'version'='1'
+  AND NOT (item->'upstream_request' ?| array['reasoning_summary','encrypted_content','text_verbosity']))
+ OR (item->'upstream_request'->>'version'='2'
+  AND item->'upstream_request'->>'protocol' IN ('responses','responses_compact')
+  AND item->'upstream_request'->>'reasoning_summary' IN ('unspecified','none','auto','concise','detailed')
+  AND item->'upstream_request'->>'encrypted_content' IN ('not_requested','requested')
+  AND item->'upstream_request'->>'text_verbosity' IN ('unspecified','low','medium','high')))
  AND jsonb_typeof(item->'upstream_request'->'version')='number'
  AND item->'upstream_request'->>'status'='observed'
  AND ((item->>'transport'='http' AND ((item->'upstream_request'->>'source'='http_transport_body'
@@ -356,6 +362,9 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  CASE WHEN request_scope_known THEN request_scope->>'protocol' END upstream_protocol,
  CASE WHEN request_scope_known THEN request_scope->>'service_tier' END service_tier,
  CASE WHEN request_scope_known THEN request_scope->>'reasoning_effort' END reasoning_effort,
+ CASE WHEN request_scope_known THEN request_scope->>'reasoning_summary' END reasoning_summary,
+ CASE WHEN request_scope_known THEN request_scope->>'encrypted_content' END encrypted_content,
+ CASE WHEN request_scope_known THEN request_scope->>'text_verbosity' END text_verbosity,
  CASE WHEN request_scope_known THEN request_scope->>'speed' END speed,
  CASE WHEN request_scope_known THEN request_scope->>'thinking_mode' END thinking_mode,
  CASE WHEN request_scope_known THEN request_scope->'thinking_budget_tokens' END thinking_budget_tokens,
@@ -370,7 +379,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  OR EXISTS (SELECT 1 FROM selected s WHERE s.trace_id=t.trace_id)
 ), buckets AS (
  SELECT account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,traffic_source,
- upstream_model,upstream_protocol,service_tier,reasoning_effort,speed,thinking_mode,thinking_budget_tokens,thinking_level,include_thoughts,upstream_stream,upstream_model_status,
+ upstream_model,upstream_protocol,service_tier,reasoning_effort,reasoning_summary,encrypted_content,text_verbosity,speed,thinking_mode,thinking_budget_tokens,thinking_level,include_thoughts,upstream_stream,upstream_model_status,
  'not_observed'::text AS upstream_group_status,
  ` + upstreamAttemptsAggregate + `,` + upstreamAttemptCacheAggregate + ` raw_cache,
  ` + upstreamAttemptOutputAggregate + ` output,
@@ -381,7 +390,7 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  'first_reasoning',` + upstreamWaitAggregate("wait_first_reasoning") + `,
  'first_text',` + upstreamWaitAggregate("wait_first_text") + `) waits FROM attributed
  GROUP BY account_id,credential_fingerprint,route_fingerprint,transport,protocol,public_model,stream,traffic_source,
- upstream_model,upstream_protocol,service_tier,reasoning_effort,speed,thinking_mode,thinking_budget_tokens,thinking_level,include_thoughts,upstream_stream,upstream_model_status
+ upstream_model,upstream_protocol,service_tier,reasoning_effort,reasoning_summary,encrypted_content,text_verbosity,speed,thinking_mode,thinking_budget_tokens,thinking_level,include_thoughts,upstream_stream,upstream_model_status
 ), summary AS (SELECT ` + upstreamAttemptsAggregate + ` FROM attributed)
  SELECT jsonb_build_object('version',1,'source','retained_physical_transport_attempts',
  'scope','connection_trace_or_unique_usage_fallback; public_model_is_ingress; upstream_request_metadata_from_complete_transport_body_and_allowlisted_model_path_or_final_ws_payload; supplier_group_not_observed; traffic_is_server_entrypoint_not_caller_intent',
@@ -399,5 +408,6 @@ var upstreamOperationsAttempts = `WITH ` + upstreamOperationsCohort + `, retaine
  'total',(SELECT count(*) FROM buckets),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(b)) FROM (
  SELECT * FROM buckets ORDER BY attempts DESC,account_id,credential_fingerprint NULLS LAST,route_fingerprint NULLS LAST,
  transport,protocol NULLS LAST,public_model,stream,upstream_model NULLS LAST,upstream_protocol NULLS LAST,
- service_tier NULLS LAST,reasoning_effort NULLS LAST,speed NULLS LAST,thinking_mode NULLS LAST,thinking_budget_tokens NULLS LAST,thinking_level NULLS LAST,include_thoughts NULLS LAST,
+ service_tier NULLS LAST,reasoning_effort NULLS LAST,reasoning_summary NULLS LAST,encrypted_content NULLS LAST,text_verbosity NULLS LAST,
+ speed NULLS LAST,thinking_mode NULLS LAST,thinking_budget_tokens NULLS LAST,thinking_level NULLS LAST,include_thoughts NULLS LAST,
  upstream_stream NULLS LAST,traffic_source LIMIT $9 OFFSET $10)b),'[]'::jsonb))`

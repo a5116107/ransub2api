@@ -60,6 +60,97 @@ func TestUpstreamRequestMetadataParsing(t *testing.T) {
 	}
 }
 
+func TestUpstreamRequestResponsesOutputOptions(t *testing.T) {
+	for _, protocol := range []string{"responses", "responses_compact", "ws"} {
+		for _, tc := range []struct{ name, options, summary, encrypted, verbosity string }{
+			{"omitted", ``, "unspecified", "not_requested", "unspecified"},
+			{"empty", `,"reasoning":{},"include":[],"text":{}`, "unspecified", "not_requested", "unspecified"},
+			{"summary", `,"reasoning":{"effort":"high","summary":"concise"}`, "concise", "not_requested", "unspecified"},
+			{"encrypted", `,"include":["reasoning.encrypted_content"]`, "unspecified", "requested", "unspecified"},
+			{"verbosity", `,"text":{"verbosity":"low"}`, "unspecified", "not_requested", "low"},
+			{"combined", `,"reasoning":{"summary":"detailed"},"include":["reasoning.encrypted_content"],"text":{"verbosity":"high"}`, "detailed", "requested", "high"},
+		} {
+			t.Run(protocol+"/"+tc.name, func(t *testing.T) {
+				wireProtocol := protocol
+				if protocol == "ws" {
+					wireProtocol = "responses"
+				}
+				payload := []byte(`{"type":"response.create","model":"wire-model","input":"private-prompt"` + tc.options + `}`)
+				got := parseUpstreamRequest(wireProtocol, payload, protocol == "ws")
+				require.NotNil(t, got)
+				raw, err := json.Marshal(got)
+				require.NoError(t, err)
+				var fields map[string]any
+				require.NoError(t, json.Unmarshal(raw, &fields))
+				require.EqualValues(t, 2, fields["version"])
+				require.Equal(t, tc.summary, fields["reasoning_summary"])
+				require.Equal(t, tc.encrypted, fields["encrypted_content"])
+				require.Equal(t, tc.verbosity, fields["text_verbosity"])
+				require.NotContains(t, string(raw), "private-prompt")
+			})
+		}
+	}
+}
+
+func TestUpstreamRequestResponsesInvalidOutputOptions(t *testing.T) {
+	for _, options := range []string{
+		`"reasoning":{"summary":null}`, `"reasoning":{"summary":true}`, `"reasoning":{"summary":"future"}`,
+		`"reasoning":{"summary":"none","summary":"auto"}`, `"reasoning":{"future":"private-option"}`,
+		`"include":null`, `"include":true`, `"include":[null]`, `"include":["private-option"]`,
+		`"include":["reasoning.encrypted_content","reasoning.encrypted_content"]`,
+		`"text":null`, `"text":[]`, `"text":{"verbosity":null}`, `"text":{"verbosity":1}`,
+		`"text":{"verbosity":"future"}`, `"text":{"verbosity":"low","verbosity":"high"}`,
+		`"text":{"format":{"type":"json_schema","schema":{"private-schema":true}}}`,
+	} {
+		t.Run(options, func(t *testing.T) {
+			payload := []byte(`{"type":"response.create","model":"wire-model",` + options + `}`)
+			require.Nil(t, parseUpstreamRequest("responses", payload, false))
+			require.Nil(t, parseUpstreamRequest("responses_compact", payload, false))
+			require.Nil(t, parseUpstreamRequest("responses", payload, true))
+		})
+	}
+}
+
+func TestUpstreamRequestResponsesOutputPhysicalCapture(t *testing.T) {
+	const payload = `{"model":"wire-model","stream":true,"reasoning":{"summary":"auto"},"include":["reasoning.encrypted_content"],"text":{"verbosity":"medium"},"input":"private-prompt"}`
+	c := New(time.Now(), 0)
+	req, err := http.NewRequestWithContext(With(t.Context(), c), http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(payload))
+	require.NoError(t, err)
+	req, _ = StartAttempt(req, 7, 0)
+	req, _ = StartTransport(req)
+	observed := ObserveUpstreamRequest(req)
+	RecordUpstreamCredentials(observed.Context(), []string{strings.Repeat("a", 64)})
+	actual, err := io.ReadAll(observed.Body)
+	require.NoError(t, err)
+	require.Equal(t, payload, string(actual), "observation must preserve the exact outgoing bytes")
+	require.NoError(t, observed.Body.Close())
+	c.Finish(200, false)
+	c.WhenFinished(func(s Snapshot) {
+		got := DerivePhysicalUpstream(s)
+		require.Len(t, got.Attempts, 1)
+		metadata := got.Attempts[0].UpstreamRequest
+		require.NotNil(t, metadata)
+		require.Equal(t, 2, metadata.Version)
+		require.Equal(t, "auto", metadata.ReasoningSummary)
+		require.Equal(t, "requested", metadata.EncryptedContent)
+		require.Equal(t, "medium", metadata.TextVerbosity)
+		raw, err := json.Marshal(s)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "private-prompt")
+	})
+	for _, verbosity := range []string{"low", "high"} {
+		w := NewWSTurn(time.Now(), 7, 0, [32]byte{1})
+		w.RecordRequest([]byte(`{"type":"response.create","model":"wire-model","text":{"verbosity":"` + verbosity + `"}}`))
+		w.Finish(nil, false, false)
+		w.WhenFinished(func(s Snapshot) {
+			got := DerivePhysicalUpstream(s)
+			require.Len(t, got.Attempts, 1)
+			require.NotNil(t, got.Attempts[0].UpstreamRequest)
+			require.Equal(t, verbosity, got.Attempts[0].UpstreamRequest.TextVerbosity)
+		})
+	}
+}
+
 func TestUpstreamRequestGeminiMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, payload, mode, level, thoughts, source string

@@ -23,6 +23,9 @@ type UpstreamRequestObservation struct {
 	Model                string `json:"model,omitempty"`
 	ServiceTier          string `json:"service_tier,omitempty"`
 	ReasoningEffort      string `json:"reasoning_effort,omitempty"`
+	ReasoningSummary     string `json:"reasoning_summary,omitempty"`
+	EncryptedContent     string `json:"encrypted_content,omitempty"`
+	TextVerbosity        string `json:"text_verbosity,omitempty"`
 	Speed                string `json:"speed,omitempty"`
 	ThinkingMode         string `json:"thinking_mode,omitempty"`
 	ThinkingBudgetTokens int64  `json:"thinking_budget_tokens,omitempty"`
@@ -340,7 +343,44 @@ func parseUpstreamRequest(protocol string, payload []byte, ws bool) *UpstreamReq
 			if !ok {
 				return nil
 			}
+			for key := range values {
+				if key != "effort" && key != "summary" {
+					return nil
+				}
+			}
+			out.ReasoningSummary, valid = requestScopeOption(values["summary"], "none", "auto", "concise", "detailed")
+			if !valid {
+				return nil
+			}
 			effort = values["effort"]
+		}
+		// V1 did not observe these options. Do not recast historical omissions
+		// as a known default or let an old reader silently merge new scopes.
+		out.Version, out.EncryptedContent = 2, "not_requested"
+		if out.ReasoningSummary == "" {
+			out.ReasoningSummary = "unspecified"
+		}
+		if include := fields["include"]; include.Exists() {
+			if !include.IsArray() {
+				return nil
+			}
+			for _, option := range include.Array() {
+				if option.Type != gjson.String || option.Str != "reasoning.encrypted_content" || out.EncryptedContent == "requested" {
+					return nil
+				}
+				out.EncryptedContent = "requested"
+			}
+		}
+		out.TextVerbosity = "unspecified"
+		if text := fields["text"]; text.Exists() {
+			values, ok := requestScopeFields(text)
+			if !ok || len(values) > 1 || len(values) == 1 && !values["verbosity"].Exists() {
+				return nil
+			}
+			out.TextVerbosity, valid = requestScopeOption(values["verbosity"], "low", "medium", "high")
+			if !valid {
+				return nil
+			}
 		}
 	} else if fields["reasoning"].Exists() {
 		return nil

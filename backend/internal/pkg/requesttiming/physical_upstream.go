@@ -94,7 +94,8 @@ func DerivePhysicalUpstream(s Snapshot) PhysicalUpstreamObservation {
 		cache := deriveCacheObservation(s, a, item.Outcome == "succeeded")
 		cache.Scope = strings.TrimPrefix(cache.Scope, "final_")
 		item.RawCache = PhysicalCacheObservation{Version: 1, CacheObservation: cache}
-		if observed := a.UpstreamRequest; observed != nil && observed.Version == 1 && observed.Status == "observed" &&
+		if observed := a.UpstreamRequest; observed != nil && (observed.Version == 1 || observed.Version == 2 &&
+			(observed.Protocol == "responses" || observed.Protocol == "responses_compact")) && observed.Status == "observed" &&
 			(a.Kind == "http" && (observed.Source == "http_transport_body" || observed.Source == "http_transport_url_body" &&
 				(observed.Protocol == "gemini_generate_content" || observed.Protocol == "gemini_stream_generate_content")) || a.Kind == "ws_turn" && observed.Source == "websocket_generation_payload") {
 			value := *observed

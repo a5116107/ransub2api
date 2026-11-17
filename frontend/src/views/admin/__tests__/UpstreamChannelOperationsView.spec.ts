@@ -231,6 +231,38 @@ describe('all retained upstream attempts', () => {
   expect(w.get('[data-testid="upstream-attempt-row"]').text()).toContain('upstreamOps.attempts.supplierScopeUnknown')
   w.unmount()
  })
+ it.each(['responses','responses_compact'])('shows exact %s output options separately from model verification',async protocol=>{
+  const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'wire-responses',upstream_protocol:protocol,service_tier:'priority',reasoning_effort:'high',upstream_stream:true,reasoning_summary:'concise',encrypted_content:'requested',text_verbosity:'low'}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  const output=w.get('[data-testid="attempt-responses-output"]')
+  expect(output.text()).toContain('upstreamOps.attempts.responsesSummaryOptions.concise')
+  expect(output.text()).toContain('upstreamOps.attempts.responsesEncryptedOptions.requested')
+  expect(output.text()).toContain('upstreamOps.attempts.responsesVerbosityOptions.low')
+  expect(w.find('[data-testid="attempt-responses-output-unknown"]').exists()).toBe(false)
+  expect(w.text()).toContain('upstreamOps.attempts.supplierScopeUnknown')
+  w.unmount()
+ })
+ it('does not fill historical Responses output options from current defaults',async()=>{
+  const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'historical-wire',upstream_protocol:'responses',service_tier:'priority',reasoning_effort:'high',upstream_stream:true}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="attempt-responses-output-unknown"]').text()).toContain('upstreamOps.attempts.responsesOutputUnknown')
+  expect(w.find('[data-testid="attempt-responses-output"]').exists()).toBe(false)
+  w.unmount()
+ })
+ it.each([
+  {reasoning_summary:'future'},{reasoning_summary:null},{encrypted_content:true},{encrypted_content:undefined},
+  {text_verbosity:'future'},{text_verbosity:null},{upstream_protocol:'chat_completions'},
+  {upstream_protocol:'messages'},{upstream_protocol:'gemini_generate_content'},
+ ])('keeps malformed or cross-protocol Responses options unknown: %j',async patch=>{
+  const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'unverified-response',upstream_protocol:'responses',service_tier:'priority',reasoning_effort:'high',upstream_stream:true,reasoning_summary:'auto',encrypted_content:'not_requested',text_verbosity:'medium',...patch}
+  vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.find('[data-testid="attempt-responses-output"]').exists()).toBe(false)
+  expect(w.get('[data-testid="attempt-request-scope-unknown"]').text()).toContain('upstreamOps.attempts.physicalScopeUnknown')
+  w.unmount()
+ })
  it.each(['unspecified','disabled','adaptive','enabled'])('shows Messages %s thinking scope and exact sent speed without implying supplier verification',async thinking=>{
   const row={...data.rows[0],upstream_model_status:'observed',upstream_model:'wire-messages',upstream_protocol:'messages',service_tier:'standard_only',reasoning_effort:'max',upstream_stream:true,speed:'fast',thinking_mode:thinking,thinking_budget_tokens:thinking==='enabled'?4096:null}
   vi.mocked(readOperations).mockResolvedValue({...base,attempts:{status:'ready',data:{...data,rows:[row]}}} as unknown as OperationsSnapshot)

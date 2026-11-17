@@ -59,6 +59,14 @@
                   <p class="text-xs font-medium text-green-700 dark:text-green-400">{{ t('upstreamOps.attempts.requestMetadataObserved') }}</p>
                   <p class="break-all font-medium">{{ row.upstream_model }}</p>
                   <p class="break-words text-xs text-gray-500">{{ row.upstream_protocol }} · {{ row.service_tier }} · {{ row.reasoning_effort }} · {{ row.upstream_stream ? t('upstreamOps.rawCache.streaming') : t('upstreamOps.rawCache.nonStreaming') }}</p>
+                  <template v-if="row.upstream_protocol === 'responses' || row.upstream_protocol === 'responses_compact'">
+                    <div v-if="row.reasoning_summary != null" class="space-y-1 text-xs text-gray-500" data-testid="attempt-responses-output">
+                      <p>{{ t('upstreamOps.attempts.responsesSummary') }} {{ t(`upstreamOps.attempts.responsesSummaryOptions.${row.reasoning_summary}`) }}</p>
+                      <p>{{ t('upstreamOps.attempts.responsesEncrypted') }} {{ t(`upstreamOps.attempts.responsesEncryptedOptions.${row.encrypted_content}`) }}</p>
+                      <p>{{ t('upstreamOps.attempts.responsesVerbosity') }} {{ t(`upstreamOps.attempts.responsesVerbosityOptions.${row.text_verbosity}`) }}</p>
+                    </div>
+                    <p v-else class="text-xs text-amber-700 dark:text-amber-400" data-testid="attempt-responses-output-unknown">{{ t('upstreamOps.attempts.responsesOutputUnknown') }}</p>
+                  </template>
                   <template v-if="row.upstream_protocol === 'messages'">
                     <p class="break-words text-xs text-gray-500" data-testid="attempt-messages-speed">{{ t('upstreamOps.attempts.messagesSpeed', { value: row.speed }) }}</p>
                     <p class="break-words text-xs text-gray-500" data-testid="attempt-messages-thinking">{{ t('upstreamOps.attempts.messagesThinking', { value: row.thinking_mode }) }}</p>
@@ -154,6 +162,13 @@ function percent(value: number | null | undefined) { return value != null && Num
 function cacheStatus(value: UpstreamRawCacheMetrics) { return value.requests === 0 ? 'empty' : value.observed_requests === 0 ? 'unknown' : value.observed_requests < value.requests ? 'partial' : 'observed' }
 function trafficSource(source: string | undefined) { return source === 'gateway_ingress' || source === 'account_connection_test' ? source : 'unknown' }
 function validRequestScope(row: UpstreamAttemptRow) {
+ const responseOptions = [row.reasoning_summary, row.encrypted_content, row.text_verbosity]
+ if(responseOptions.some(value => value != null)) {
+  if(!['responses','responses_compact'].includes(row.upstream_protocol ?? '') ||
+   !['unspecified','none','auto','concise','detailed'].includes(row.reasoning_summary ?? '') ||
+   !['not_requested','requested'].includes(row.encrypted_content ?? '') ||
+   !['unspecified','low','medium','high'].includes(row.text_verbosity ?? '')) return false
+ }
  if(row.upstream_protocol === 'gemini_generate_content' || row.upstream_protocol === 'gemini_stream_generate_content') {
   if(row.service_tier !== 'unspecified' || row.reasoning_effort !== 'unspecified' || row.speed != null || !['unspecified','enabled','disabled'].includes(row.include_thoughts ?? '') || row.upstream_stream !== (row.upstream_protocol === 'gemini_stream_generate_content')) return false
   if(row.thinking_mode === 'level') return ['minimal','low','medium','high','MINIMAL','LOW','MEDIUM','HIGH'].includes(row.thinking_level ?? '') && row.thinking_budget_tokens == null

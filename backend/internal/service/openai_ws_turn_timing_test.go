@@ -297,7 +297,7 @@ func TestWSTurnTimingFinalRequestShapes(t *testing.T) {
 			capture := newOpenAIWSTurnTiming(t.Context(), &Account{ID: 7}, time.Now(), nil, value)
 			capture.Finish(nil, false, false)
 			capture.WhenFinished(func(s requesttiming.Snapshot) {
-				require.Equal(t, &requesttiming.UpstreamRequestObservation{Version: 1, Status: "observed", Source: "websocket_generation_payload", Protocol: "responses", Model: "wire-model", ServiceTier: "priority", ReasoningEffort: "high", Stream: true}, s.Attempts[0].UpstreamRequest)
+				require.Equal(t, &requesttiming.UpstreamRequestObservation{Version: 2, Status: "observed", Source: "websocket_generation_payload", Protocol: "responses", Model: "wire-model", ServiceTier: "priority", ReasoningEffort: "high", ReasoningSummary: "unspecified", EncryptedContent: "not_requested", TextVerbosity: "unspecified", Stream: true}, s.Attempts[0].UpstreamRequest)
 				data, err := json.Marshal(s)
 				require.NoError(t, err)
 				require.NotContains(t, string(data), "private-prompt")

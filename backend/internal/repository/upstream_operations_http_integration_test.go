@@ -200,6 +200,13 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 				for _, model := range []string{"first-wire-model", "second-wire-model"} {
 					path := "/v1/" + protocol
 					payload := `{"model":"` + model + `","stream":true,"service_tier":"priority","reasoning":{"effort":"high"},"input":"fixture"}`
+					if protocol == "responses" {
+						verbosity := "low"
+						if model == "second-wire-model" {
+							verbosity = "high"
+						}
+						payload = `{"model":"` + model + `","stream":true,"service_tier":"priority","reasoning":{"effort":"high","summary":"auto"},"include":["reasoning.encrypted_content"],"text":{"verbosity":"` + verbosity + `"},"input":"private-output-scope-prompt"}`
+					}
 					if protocol == "messages" {
 						payload = `{"model":"` + model + `","stream":true,"service_tier":"standard_only","speed":"fast","thinking":{"type":"enabled","budget_tokens":4096},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"fixture"}]}`
 					}
@@ -282,7 +289,10 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 								LogicalRequests             int `json:"logical_requests"`
 							}
 							Rows []struct {
-								Output struct {
+								ReasoningSummary string `json:"reasoning_summary"`
+								EncryptedContent string `json:"encrypted_content"`
+								TextVerbosity    string `json:"text_verbosity"`
+								Output           struct {
 									Gap  struct{ Samples int } `json:"max_gap"`
 									Tail struct{ Samples int } `json:"tail_wait"`
 									Rate struct {
@@ -323,6 +333,18 @@ func TestUpstreamAttemptsHTTPTransportToPostgresToAdmin(t *testing.T) {
 				require.NoError(t, json.Unmarshal(filtered.Body.Bytes(), &body))
 				require.Equal(t, "ready", body.Data.Attempts.Status)
 				require.Equal(t, 1, body.Data.Attempts.Data.Summary.Attempts)
+				if protocol == "responses" {
+					require.Len(t, body.Data.Attempts.Data.Rows, 1)
+					row := body.Data.Attempts.Data.Rows[0]
+					require.Equal(t, "auto", row.ReasoningSummary)
+					require.Equal(t, "requested", row.EncryptedContent)
+					verbosity := "low"
+					if model == "second-wire-model" {
+						verbosity = "high"
+					}
+					require.Equal(t, verbosity, row.TextVerbosity)
+					require.NotContains(t, filtered.Body.String(), "private-output-scope-prompt")
+				}
 				if model == "first-wire-model" {
 					require.Equal(t, 1, body.Data.Attempts.Data.Summary.Failed)
 					require.Zero(t, body.Data.Attempts.Data.Summary.Succeeded)

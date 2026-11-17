@@ -238,6 +238,9 @@ type upstreamAttemptWaitReport struct {
 		ThinkingBudgetTokens *int64 `json:"thinking_budget_tokens"`
 		ThinkingLevel        string `json:"thinking_level"`
 		IncludeThoughts      string `json:"include_thoughts"`
+		ReasoningSummary     string `json:"reasoning_summary"`
+		EncryptedContent     string `json:"encrypted_content"`
+		TextVerbosity        string `json:"text_verbosity"`
 		Transport            string
 		Attempts             int
 		RawCache             upstreamAttemptCacheMetrics  `json:"raw_cache"`
@@ -815,6 +818,125 @@ func upstreamAttemptMessagesFixture(account int64) requesttiming.Attempt {
 	a.OutputUsage.Protocol, a.OutputUsage.ContentStatus, a.OutputUsage.Final = "messages", "messages_text_and_reasoning", true
 	a.CacheUsage = &requesttiming.CacheUsage{Protocol: "messages", Status: "observed", InputTokens: 100, ReadTokens: 75, WriteTokens: 5, UncachedTokens: 20, InputReported: true, ReadReported: true, WriteReported: true}
 	return a
+}
+
+func TestUpstreamAttemptsResponsesOutputOptionBuckets(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, variant := range []string{"historical", "unspecified", "none", "auto", "concise", "detailed", "encrypted", "low", "medium", "high"} {
+		a := upstreamAttemptOutputFixture(f.account)
+		a.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 90}
+		if variant != "historical" {
+			a.UpstreamRequest.Version = 2
+			a.UpstreamRequest.ReasoningSummary = "unspecified"
+			a.UpstreamRequest.EncryptedContent = "not_requested"
+			a.UpstreamRequest.TextVerbosity = "unspecified"
+		}
+		switch variant {
+		case "none", "auto", "concise", "detailed":
+			a.UpstreamRequest.ReasoningSummary = variant
+		case "encrypted":
+			a.UpstreamRequest.EncryptedContent = "requested"
+		case "low", "medium", "high":
+			a.UpstreamRequest.TextVerbosity = variant
+		}
+		writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 500, Status: 200, Attempts: []requesttiming.Attempt{a}})
+	}
+	data := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, 10, data.Summary.Attempts)
+	require.Equal(t, 10, data.RequestScope.Observed)
+	require.Zero(t, data.RequestScope.Unknown)
+	require.Len(t, data.Rows, 10, "historical unknown output and every explicit option must remain separate")
+	seen := make(map[string]bool)
+	for _, row := range data.Rows {
+		seen[row.ReasoningSummary+":"+row.EncryptedContent+":"+row.TextVerbosity] = true
+		require.Equal(t, 1, row.Attempts)
+		require.Equal(t, 1, row.RawCache.Observed)
+		require.Equal(t, 1, row.Waits.FirstByte.Samples)
+		require.Equal(t, 1, row.Waits.FirstText.Samples)
+		require.Equal(t, 1, row.Output.Gap.Samples)
+		require.Equal(t, 1, row.Output.Rate.Samples)
+	}
+	require.True(t, seen["::"])
+	require.True(t, seen["unspecified:not_requested:unspecified"])
+	require.True(t, seen["concise:not_requested:unspecified"])
+	require.True(t, seen["unspecified:requested:unspecified"])
+	require.True(t, seen["unspecified:not_requested:high"])
+}
+
+func TestUpstreamAttemptsResponsesOutputScopeValidation(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tc := range []struct {
+		name, patch string
+		observed    int
+	}{
+		{"valid", `detail`, 1},
+		{"missing_summary", `detail #- '{physical_upstream,attempts,0,upstream_request,reasoning_summary}'`, 0},
+		{"null_summary", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,reasoning_summary}','null')`, 0},
+		{"unknown_summary", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,reasoning_summary}','"future"')`, 0},
+		{"missing_encrypted", `detail #- '{physical_upstream,attempts,0,upstream_request,encrypted_content}'`, 0},
+		{"boolean_encrypted", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,encrypted_content}','true')`, 0},
+		{"unknown_verbosity", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,text_verbosity}','"future"')`, 0},
+		{"v1_with_new_fields", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,version}','1')`, 0},
+		{"future_version", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,version}','3')`, 0},
+		{"cross_protocol", `jsonb_set(detail,'{physical_upstream,attempts,0,upstream_request,protocol}','"chat_completions"')`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := upstreamAttemptOutputFixture(f.account)
+			a.UpstreamRequest.Version, a.UpstreamRequest.ReasoningSummary = 2, "auto"
+			a.UpstreamRequest.EncryptedContent, a.UpstreamRequest.TextVerbosity = "requested", "medium"
+			a.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 90}
+			trace := writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 500, Status: 200, Attempts: []requesttiming.Attempt{a}})
+			_, err := integrationDB.Exec(`UPDATE request_connection_traces SET detail=`+tc.patch+` WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+			var before, after string
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&before))
+			data := readUpstreamAttemptWaits(t, f, now)
+			require.Equal(t, 1, data.Summary.Attempts)
+			require.Equal(t, tc.observed, data.RequestScope.Observed)
+			require.Equal(t, 1-tc.observed, data.RequestScope.Unknown)
+			require.Equal(t, tc.observed, data.RawCache.Observed)
+			require.Len(t, data.Rows, 1)
+			require.Equal(t, tc.observed, data.Rows[0].Waits.FirstText.Samples)
+			require.Equal(t, tc.observed, data.Rows[0].Output.Rate.Samples)
+			require.NoError(t, integrationDB.QueryRow(`SELECT detail::text FROM request_connection_traces WHERE trace_id=$1`, trace).Scan(&after))
+			require.Equal(t, before, after, "read-only aggregation never rewrites old scope evidence")
+			_, err = integrationDB.Exec(`DELETE FROM request_connection_traces WHERE trace_id=$1`, trace)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestUpstreamAttemptsResponsesWSOutputScopes(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, verbosity := range []string{"low", "high"} {
+		a := upstreamAttemptOutputFixture(f.account)
+		a.Kind, a.Status, a.UpstreamCredential.Source = "ws_turn", 0, "websocket_handshake_credentials"
+		a.UpstreamRequest.Version, a.UpstreamRequest.Source = 2, "websocket_generation_payload"
+		a.UpstreamRequest.ReasoningSummary, a.UpstreamRequest.EncryptedContent, a.UpstreamRequest.TextVerbosity = "auto", "requested", verbosity
+		a.CacheUsage = &requesttiming.CacheUsage{Status: "observed", InputTokens: 100, ReadTokens: 90}
+		writeUpstreamAttemptWaits(t, f, now, requesttiming.Snapshot{TotalMS: 500, TTFTMode: "ws_turn", Attempts: []requesttiming.Attempt{a}})
+	}
+	data := readUpstreamAttemptWaits(t, f, now)
+	require.Equal(t, 2, data.RequestScope.Observed)
+	require.Zero(t, data.RequestScope.Unknown)
+	require.Len(t, data.Rows, 2)
+	seen := make(map[string]bool)
+	for _, row := range data.Rows {
+		seen[row.TextVerbosity] = true
+		require.Equal(t, "auto", row.ReasoningSummary)
+		require.Equal(t, "requested", row.EncryptedContent)
+		require.Equal(t, "ws_turn", row.Transport)
+		require.Equal(t, 1, row.Attempts)
+		require.Equal(t, 1, row.RawCache.Observed)
+		require.Zero(t, row.Waits.FirstByte.Samples)
+		require.Equal(t, 1, row.Waits.FirstText.Samples)
+		require.Equal(t, 1, row.Output.Rate.Samples)
+	}
+	require.True(t, seen["low"])
+	require.True(t, seen["high"])
 }
 
 func upstreamAttemptGeminiFixture(account int64) requesttiming.Attempt {

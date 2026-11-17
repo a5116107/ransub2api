@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 BPS文本检测预算本地完成；基线52e9c83d5。
+任务：D5.3.13实际输出参数分桶本地验收完成；基线3d26bcae8。
 范围：唯一H盘/自有功能分支交付；不CI/PR/生产提升。
-已验：服务/BPS双轮race11742、SQL78；前端253及中英四视口。
-终树：283a2babe631a0ef；vet/lint/Linux退出0，五份回执无漂移。
-本轮：本地延期不误罚/重放；失租不假成功；两处测试竞态已修。
-句柄：本轮验证均退出；预览已停，18441无监听。
-下一：D2.6其余受管状态合同/D5.3 scope；D8.1其余预算仍开放。
+已验：计时race1718/服务5526/SQL428，前端119及中英四视口。
+终树：93f2b62d5db79690；vet/lint/Linux退出0；测试文件差异见DECISIONS。
+本轮：推理摘要/加密输出请求/verbosity逐尝试分桶，历史未知不回填。
+句柄：验证已退出；预览已停，18442无监听。
+下一：D2.6状态/受管合同与D5.3实际组/受信外部scope；D8.1其余预算。
 等待：原28项20done/8部分；生产/scope/基线/缓存域及PR3仍开放。
 生产最后记录.7/fd83f6c91；本轮未重验或部署。
-Attempt：60
+Attempt：61
 <!-- resume:end -->
 
 ## 目标与入口
@@ -20,7 +20,7 @@ Attempt：60
 更新：2026-11-17。倍率内多供应商自动调度，保护质量、响应和会话缓存，保留自研并同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)：13.3保留审计基线，5.3.1补自动适用声明边界。
 - [决策与验证历史](DECISIONS.md)；功能分支未整体验证上线，独立生产热修复已加载。
-- 原28项20done/8部分；13.2子项6/7done；新缺口不增分母；单分支/单完整PR。
+- 原28项20done/8部分；13.2子项6/7done；分母保持，单分支/单PR。
 - R1仅发行production；线上问题按D9.1处理，真实采购价延期。
 
 ## 任务进度
@@ -44,7 +44,7 @@ Attempt：60
 | D3 | in_progress | .7流内换号/冷却回池/密文绑定已验，5/3/1保持；D3.2.1–.7本地done；其余线路/故障/跨规则/独立基线/非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
-| M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |
+| M1–M13 | done | 死代码/假成功/重复入口、分页/依赖已修；WinSock/原子持久化已验。原设计保留，race/vet/lint/双平台证据见DECISIONS |
 | D4 | in_progress | 固定售价/新鲜策略/多平台最终门已有本地证据；D4.3采购桶/受管资格/模式与重归类仍未闭环 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/入口来源已本地验；实际组/受信外部检测/其余scope/资格及D5.4仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
@@ -54,11 +54,12 @@ Attempt：60
 | D5.3.1–.10 | done | 最终Key/发送scope、HTTP与独立WS等待、逐尝试缓存/输出及来源分桶已本地验；逐项证据见DECISIONS；非实际组/资格/生产 |
 | D5.3.11 | done | Messages模型/tier/速度/effort/思考模式及预算独立分桶；PG614/竞态644/计时788/UI87及静态/Linux/四视口通过；仅本地 |
 | D5.3.12 | done | Gemini URL/信封模型、实际action/预算模式/等级/思考输出独立分桶；PG666/竞态1074/计时821/UI115及静态/Linux/四视口通过；仅本地 |
+| D5.3.13 | done | Responses摘要/加密输出请求/verbosity分桶，旧/非法未知；计时1718/服务5526/SQL428/UI119、静态/四视口已验；非生产 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
 | D8 | in_progress | 两模板轮转/分页/SQL、主锁恢复与倍率/JEV/原生HTTP/WS/BPS文本质量预算及UI本地已验；其余通道/token/覆盖编译/公平性/生产周期/严格混版仍缺 |
-| D8.1倍率/JEV/原生HTTP/WS/BPS文本物理预算 | done | 两模板/预览/答题/判题、WS逐调用及BPS重试/工具纠正、本地延期/失租/SQL共享预算与UI本地已验；非完整D8.1/生产 |
+| D8.1物理预算子项 | done | 倍率/JEV/原生HTTP/WS/BPS文本、重试/工具纠正、本地延期/失租、SQL共享预算与UI本地已验；非完整D8.1/生产 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
 
@@ -73,11 +74,11 @@ Attempt：60
 ## 工作区与既有环境限制
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
-- 验证历史见DECISIONS；并发1–2、共享Go缓存。
+- 并发1–2，复用共享Go缓存。
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- 私有PG55441/PID10868、Redis56441/PID46228及原tmp下quality-batch-{build,runner.py}清理仍被宿主拦截；路径见DECISIONS。新增`H:/Root/DevCache/tmp/sub2api-quality-validity`删除同被拒（blocked by policy），预览已停；owner宿主用户，解除后清理。
-- 历史宿主拒删资源（620274603bytes及D2.6日志）原位保留；精确路径/命令/owner见DECISIONS，待宿主拥有者解除策略，不换工具或移动绕过。
+- 私有PG55441/PID10868、Redis56441/PID46228、quality-batch-{build,runner.py}及`H:/Root/DevCache/tmp/sub2api-quality-validity`受宿主拒删；预览已停；owner宿主用户，路径/解除条件见DECISIONS。
+- 历史拒删620274603bytes及D2.6日志原位保留；路径/命令/owner见DECISIONS，待宿主解除策略，不绕过。
 - 全规则lint历史超预算；本轮增量fast+vet通过。
-- 预算构建文件213260543bytes被宿主拒删；原路径见DECISIONS，owner宿主用户，解除后清理，回收0。
+- 历史构建213260543bytes拒删；路径见DECISIONS，owner宿主用户，解除后清理，回收0。
