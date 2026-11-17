@@ -2,12 +2,31 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestSharedQualityPlanFingerprintIsNotAPIJSON(t *testing.T) {
+	fingerprint := [32]byte{1, 2, 3}
+	plan := &ScheduledTestPlan{ID: 7, QualityAccountFingerprint: &fingerprint}
+	raw, err := json.Marshal(plan)
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &fields))
+	for _, name := range []string{"account_fingerprint", "quality_account_fingerprint", "QualityAccountFingerprint"} {
+		require.NotContains(t, fields, name)
+		var supplied ScheduledTestPlan
+		input, marshalErr := json.Marshal(map[string]any{"id": 7, name: fingerprint})
+		require.NoError(t, marshalErr)
+		require.NoError(t, json.Unmarshal(input, &supplied))
+		require.EqualValues(t, 7, supplied.ID)
+		require.Nil(t, supplied.QualityAccountFingerprint, "API input cannot supply a claim fence")
+	}
+}
 
 type sharedBatchPlanRepo struct {
 	*qualityPlanRepo

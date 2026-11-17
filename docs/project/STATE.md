@@ -3,17 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D3.2.1判题来源隔离本地done；基线0e61f866e。
+任务：D3.2.2共享批次模型线路围栏本地done；基线4226dec3d。
 授权：唯一H盘/自有分支同步；不CI、不提升功能分支。
-已验：unit双轮1726、SQL双轮156pass，均0fail/skip/race/输入漂移。
-静态：两包vet0、增量fast lint为0 issues、Linux编译0。
-修复：结果来源入比较键，LLM写规则版本；缺身份保持未知，原判题不改。
-解除：Jev旧夹具租约/claim生命周期；保留基线失败与14fail红测。
-下一：D3.2原结果/规则内补多维测量及版本/当前性合同；不借夹具认证模型。
-证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-runtime-*。
+已验：原unit双轮1726+API双轮2、SQL双轮240pass，0fail/skip/race。
+静态：两包vet0、增量fast lint0 issues、Linux编译0，消费源码无漂移。
+修复：私有批次快照保存claim摘要，收集不可替换；旧缺失/换Key仍拒绝。
+下一：D3.2原结果/规则补多维测量、版本/当前性；不借夹具认证模型。
+证据：H:/Root/DevCache/evidence/sub2api-billing-applicability/quality-batch-fence-*。
 生产上次实测：.7/fd83f6c91；本轮未部署。
-等待：原28项20done/8部分；独立基线/实际scope/缓存域、PR3及旧历史。
-Attempt：41
+等待：原28项20done/8部分；基线/scope/缓存域、PR3/旧历史。
+Attempt：42
 <!-- resume:end -->
 
 ## 目标与入口
@@ -42,7 +41,7 @@ Attempt：41
 | D2.6.15 | done | Messages→Responses/verbosity、UI与物理HTTP/11类WS本地已验；race7936、SQL54/UI35/静态/Linux过，非生产 |
 | D2.6.16 | done | 池桥协议集合/拒绝归因、双调度/粘性/槽后/17类物理帧已验；race8214/静态/Linux过，非生产 |
 | D2.6.17 | done | HTTP转原生WS映射/Fast/stream及物理帧、双调度/粘性/槽后/拒发已验；race8378/静态/Linux过，非生产 |
-| D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；D3.2.1判题来源本地已验；多维/基线、非文本仍待 |
+| D3 | in_progress | .7含流内故障换号、冷却回池/恢复归因及密文成功后绑定，5/3/1保持；D3.2.1来源/.2批次围栏本地已验；多维/基线、非文本仍待 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 未用/假成功/重复入口、分页聚合及依赖边界已修；WinSock/原子持久化已验。原任务定义保留于设计，逐项race/vet/lint/双平台证据见DECISIONS |
@@ -77,6 +76,6 @@ Attempt：41
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- PG/Redis/预览已停；本轮仅httptest。空目录H:/Root/DevCache/tmp/sub2api-messages-candidate删除被宿主策略拦截，0文件/回收0；历史拒删资源保留，路径/owner见DECISIONS。
+- 本轮私有PG55441/PID10868、Redis56441/PID46228及`H:/Root/DevCache/tmp/sub2api-upstream-raw-cache/quality-batch-{build,runner.py}`清理被宿主拦截（blocked by policy）；owner宿主用户，解除后处理。预览停；旧messages-candidate空目录保留。
 - 历史宿主拒删资源（620274603bytes及D2.6日志）原位保留；精确路径/命令/owner见DECISIONS，待宿主拥有者解除策略，不换工具或移动绕过。
 - 历史全规则lint超预算未过；本轮为增量fast+vet，见DECISIONS。

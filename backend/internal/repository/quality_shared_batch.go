@@ -12,6 +12,13 @@ import (
 
 var _ service.QualitySharedBatchRepository = (*scheduledTestPlanRepository)(nil)
 
+// The claim's route fence belongs only to the internal batch ledger. Keep the
+// plan's API JSON contract unchanged, including rejection of supplied fences.
+type qualityBatchSnapshot struct {
+	service.QualityBatchRun
+	AccountFingerprint *[32]byte `json:"account_fingerprint,omitempty"`
+}
+
 func (r *scheduledTestPlanRepository) StartQualityBatch(ctx context.Context, candidate *service.QualitySharedBatch, plan *service.ScheduledTestPlan, until time.Time) (*service.QualitySharedBatch, error) {
 	questions, err := json.Marshal(candidate.Questions)
 	if err != nil {
@@ -40,7 +47,7 @@ func (r *scheduledTestPlanRepository) StartQualityBatch(ctx context.Context, can
 	}
 	run := &service.QualityBatchRun{Plan: plan, Until: until, Episode: plan.Quality5xxEpisode,
 		Trigger: plan.TriggerSource, ObservedAt: plan.TriggerObservedAt}
-	snapshot, err := json.Marshal(run)
+	snapshot, err := json.Marshal(qualityBatchSnapshot{QualityBatchRun: *run, AccountFingerprint: plan.QualityAccountFingerprint})
 	if err != nil {
 		return nil, err
 	}
@@ -77,13 +84,20 @@ func (r *scheduledTestPlanRepository) CollectQualityBatch(ctx context.Context, r
 		return err
 	}
 	var status string
-	if err = tx.QueryRowContext(ctx, `SELECT status FROM quality_probe_batch_runs WHERE batch_id=$1 AND plan_id=$2 AND lease_until=$3 FOR UPDATE`, batchID, run.Plan.ID, run.Until).Scan(&status); err != nil {
+	var raw []byte
+	if err = tx.QueryRowContext(ctx, `SELECT status,snapshot FROM quality_probe_batch_runs WHERE batch_id=$1 AND plan_id=$2 AND lease_until=$3 FOR UPDATE`, batchID, run.Plan.ID, run.Until).Scan(&status, &raw); err != nil {
 		return err
 	}
 	if status != "pending" {
 		return nil // The complete collection was already committed; never replay it.
 	}
-	stored := *run
+	var stored qualityBatchSnapshot
+	if err = json.Unmarshal(raw, &stored); err != nil {
+		return err
+	}
+	// Collection may lose or replace its in-memory plan. Only the original
+	// persisted claim can authorize model actions after finalization/restart.
+	stored.QualityBatchRun = *run
 	stored.OAuth401 = service.QualityOAuth401Evidence(run.Plan, run.Results)
 	stored.Results = nil
 	for _, sample := range run.Results {
@@ -134,14 +148,15 @@ func readQualityBatchResults(ctx context.Context, tx *sql.Tx, batchID string, pl
 	var runs []*service.QualityBatchRun
 	for rows.Next() {
 		var raw []byte
-		var run service.QualityBatchRun
+		var snapshot qualityBatchSnapshot
 		if err = rows.Scan(&raw); err == nil {
-			err = json.Unmarshal(raw, &run)
+			err = json.Unmarshal(raw, &snapshot)
 		}
 		if err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
+		run := &snapshot.QualityBatchRun
 		if run.Plan == nil || run.Plan.PelicanConfig == nil || run.Plan.PelicanConfig.Quality == nil || len(run.Results) == 0 || len(run.Results) > 100 {
 			_ = rows.Close()
 			return nil, fmt.Errorf("quality batch snapshot incomplete")
@@ -153,7 +168,8 @@ func readQualityBatchResults(ctx context.Context, tx *sql.Tx, batchID string, pl
 			}
 		}
 		run.Plan.Quality5xxEpisode, run.Plan.TriggerSource, run.Plan.TriggerObservedAt = run.Episode, run.Trigger, run.ObservedAt
-		runs = append(runs, &run)
+		run.Plan.QualityAccountFingerprint = snapshot.AccountFingerprint
+		runs = append(runs, run)
 	}
 	err = rows.Err()
 	_ = rows.Close()
