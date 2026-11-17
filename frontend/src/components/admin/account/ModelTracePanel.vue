@@ -28,6 +28,13 @@
         <h3 class="font-semibold text-gray-900 dark:text-gray-100">{{ t(`modelTrace.status.${result.status}`) }}</h3>
         <span class="text-xs text-gray-500">{{ result.analysis?.used_outputs || 0 }} / 3 · {{ result.requested_model }} · {{ result.reasoning_effort || t('modelTrace.providerDefault') }}</span>
       </div>
+      <div v-if="result.budget_deferral" class="space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" role="status" data-testid="modeltrace-budget-deferral">
+        <p class="font-semibold">{{ t('modelTrace.budgetPaused') }}</p>
+        <p>{{ t(budgetReasonKey) }} · {{ t(`modelTrace.budgetScopes.${budgetScope}`) }}</p>
+        <p v-if="budgetRetryAt">{{ t('modelTrace.retryAfter') }} <time :datetime="budgetRetryAt">{{ new Date(budgetRetryAt).toLocaleString() }}</time></p>
+        <p v-else>{{ t('modelTrace.retryUnknown') }}</p>
+        <p>{{ t('modelTrace.budgetRemaining', { count: Math.max(0, 3 - result.samples.length) }) }}</p>
+      </div>
       <p v-if="result.analysis" class="text-sm text-gray-800 dark:text-gray-200">
         {{ t('modelTrace.prediction') }} <strong>{{ result.analysis.prediction }}</strong> · {{ percent(result.analysis.probability) }}
       </p>
@@ -73,7 +80,7 @@
         <button type="button" class="text-xs text-gray-500" :disabled="running" @click="clearHistory">{{ t('modelTrace.clear') }}</button>
       </div>
       <p class="text-xs text-gray-500">{{ t('modelTrace.historyHint') }}</p>
-      <button v-for="record in history" :key="record.created_at" type="button" :disabled="running" class="flex w-full flex-wrap justify-between gap-2 rounded-lg border border-gray-200 p-3 text-left text-xs text-gray-700 disabled:opacity-50 dark:border-dark-600 dark:text-gray-300" @click="showRecord(record)">
+      <button v-for="record in history" :key="record.created_at" type="button" :disabled="running" data-testid="modeltrace-history-record" class="flex w-full flex-wrap justify-between gap-2 rounded-lg border border-gray-200 p-3 text-left text-xs text-gray-700 disabled:opacity-50 dark:border-dark-600 dark:text-gray-300" @click="showRecord(record)">
         <span>{{ new Date(record.created_at).toLocaleString() }} · {{ record.requested_model }}</span>
         <span>{{ record.analysis?.prediction || t('modelTrace.status.insufficient') }} · {{ record.analysis?.used_outputs || 0 }}/3</span>
       </button>
@@ -110,6 +117,19 @@ const storageKey = computed(() => `sub2api-modeltrace-test:${props.account.id}`)
 const supported = computed(() => ['openai', 'anthropic'].includes(props.account.platform) && ['apikey', 'oauth', 'setup-token'].includes(props.account.type))
 const effortOptions = computed(() => [{ value: '', label: t('modelTrace.providerDefault') }, ...props.reasoningLevels.map(value => ({ value, label: value }))])
 const percent = (value: number) => `${(value * 100).toFixed(1)}%`
+const budgetReasonKey = computed(() => {
+  const reason = result.value?.budget_deferral?.reason
+  return reason && ['request_limit', 'recovery_reserve', 'concurrency_limit', 'budget_unavailable'].includes(reason)
+    ? `admin.settings.upstreamBillingProbe.budget.${reason}` : 'modelTrace.budgetReasonUnknown'
+})
+const budgetScope = computed(() => {
+  const scope = result.value?.budget_deferral?.scope
+  return scope && ['global_minute', 'global_day', 'site_minute', 'key_minute', 'global', 'site', 'key', 'system'].includes(scope) ? scope : 'unknown'
+})
+const budgetRetryAt = computed(() => {
+  const value = result.value?.budget_deferral?.retry_at
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : undefined
+})
 
 function showRecord(record: ModelTraceResult) {
   result.value = record

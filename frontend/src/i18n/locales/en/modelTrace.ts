@@ -17,6 +17,17 @@ export default {
   families: 'Model families:',
   disagreement: 'Individual predictions differ. Sampling variation or routing differences may contribute; inspect the samples before drawing conclusions.',
   partialHint: 'Fewer than three valid answers: attribution is preliminary. Failed, truncated and insufficient answers were excluded.',
+  budgetPaused: 'Round paused by the monitoring budget, not an upstream quality failure',
+  budgetReasonUnknown: 'Deferred by the local budget; the reason is unrecognized.',
+  retryAfter: 'Earliest retry:',
+  retryUnknown: 'Retry time is unknown. Check the monitoring budget status.',
+  budgetRemaining: '{count} remaining questions were not sent; no automatic replacement requests. Completed samples are retained; deferred or lease-lost samples are excluded. The retry time does not guarantee immediate capacity.',
+  budgetScopes: {
+    global_minute: 'Global per-minute request budget', global_day: 'Global daily request budget (UTC)',
+    site_minute: 'Site per-minute request budget', key_minute: 'Upstream key per-minute request budget',
+    global: 'Global probe concurrency', site: 'Site probe concurrency', key: 'Upstream key probe concurrency',
+    system: 'Budget coordination system', unknown: 'Unknown budget scope'
+  },
   bank: 'Bank version and candidate models',
   sample: 'Sample {index}',
   accepted: 'Valid',
@@ -42,6 +53,7 @@ export default {
     output_limit: 'Output limit exceeded',
     timeout: 'Request timed out',
     generation_failed: 'Generation failed or incomplete',
+    monitoring_budget_deferred: 'Local monitoring budget deferred (not a quality failure)',
     too_few_numbers: 'Too few valid numbers',
     analysis_failed: 'Analysis failed'
   }

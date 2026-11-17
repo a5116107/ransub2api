@@ -17,6 +17,17 @@ export default {
   families: '模型家族：',
   disagreement: '单题归因存在分歧，可能受采样波动或路由差异影响；请查看各题结果，不能据此直接认定混用模型。',
   partialHint: '不足三份有效回答，当前归因仅供初步参考。失败、截断和数字不足的回答未计入。',
+  budgetPaused: '本轮因检测预算暂停，并非上游质量失败',
+  budgetReasonUnknown: '本地预算延期，具体原因未识别。',
+  retryAfter: '最早可重试时间：',
+  retryUnknown: '重试时间未知，请检查检测预算状态。',
+  budgetRemaining: '剩余 {count} 题未发送；不会自动补题。已正常完成的样本保留，延期或失租样本不参与归因。到达重试时间也不保证立即获得额度。',
+  budgetScopes: {
+    global_minute: '全局每分钟请求预算', global_day: '全局每日请求预算（UTC）',
+    site_minute: '该站点每分钟请求预算', key_minute: '该上游 Key 每分钟请求预算',
+    global: '全局检测并发', site: '该站点检测并发', key: '该上游 Key 检测并发',
+    system: '预算协调系统', unknown: '预算范围未知'
+  },
   bank: '指纹库版本与候选模型',
   sample: '样本 {index}',
   accepted: '有效',
@@ -42,6 +53,7 @@ export default {
     output_limit: '输出超过限制',
     timeout: '请求超时',
     generation_failed: '生成失败或未正常完成',
+    monitoring_budget_deferred: '本地检测预算延期（非质量失败）',
     too_few_numbers: '有效数字不足',
     analysis_failed: '归因失败'
   }

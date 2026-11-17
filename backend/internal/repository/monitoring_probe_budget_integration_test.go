@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,6 +34,104 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	s.SiteRequestsPerMinute, s.KeyRequestsPerMinute = 1000, 1000
 	s.Concurrency, s.SiteConcurrency, s.KeyConcurrency = 100, 100, 100
 	return s
+}
+
+func TestModelTraceMonitoringBudgetPostgresSharedKeyAndRecovery(t *testing.T) {
+	for _, scope := range []string{"global_day", "key_minute"} {
+		t.Run(scope, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.URL.Path != "/tenant/v1/responses" || r.Header.Get("Authorization") != "Bearer modeltrace-budget-fixture" {
+					http.Error(w, "unexpected fingerprint request", http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\ndata: {\"type\":\"response.completed\"}\n\n", strings.Repeat("17,83,247,", 100))
+			}))
+			defer server.Close()
+			cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+			accounts := newAccountRepositoryWithSQL(client, db, nil)
+			createAccount := func(name string) *service.Account {
+				return mustCreateAccount(t, client, &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+					Status: service.StatusActive, Schedulable: true, Concurrency: 2,
+					Credentials: map[string]any{"api_key": "modeltrace-budget-fixture", "base_url": server.URL + "/tenant/v1"}})
+			}
+			first, alias := createAccount("modeltrace-budget"), createAccount("modeltrace-same-key")
+			accountSnapshot := func(id int64) string {
+				var raw string
+				require.NoError(t, db.QueryRowContext(t.Context(), `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&raw))
+				return raw
+			}
+			before := map[int64]string{first.ID: accountSnapshot(first.ID), alias.ID: accountSnapshot(alias.ID)}
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			if scope == "global_day" {
+				policy.RequestsPerDay = 1
+			} else {
+				policy.KeyRequestsPerMinute = 1
+			}
+			policy, err := budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			run := func(accountID int64) service.ModelTraceResult {
+				// A fresh service and repository cannot bypass SQL counters, even
+				// when the same credential is represented by another account.
+				tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, NewHTTPUpstream(cfg), cfg, nil)
+				tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest(http.MethodPost, "/admin/accounts/test/modeltrace-test", nil).WithContext(t.Context())
+				require.NoError(t, tests.TestModelTraceAccountConnection(c, accountID, "fixture-model", ""))
+				require.NotContains(t, w.Body.String(), "modeltrace-budget-fixture")
+				for _, line := range strings.Split(w.Body.String(), "\n") {
+					var event struct {
+						Type string                   `json:"type"`
+						Data service.ModelTraceResult `json:"data"`
+					}
+					if data, ok := strings.CutPrefix(line, "data:"); ok && json.Unmarshal([]byte(data), &event) == nil && event.Type == "modeltrace_complete" {
+						return event.Data
+					}
+				}
+				t.Fatal("completed fingerprint event missing")
+				return service.ModelTraceResult{}
+			}
+			partial := run(first.ID)
+			require.EqualValues(t, 1, calls.Load())
+			require.Equal(t, "partial", partial.Status)
+			require.Len(t, partial.Samples, 2)
+			require.Equal(t, "monitoring_budget_deferred", partial.Samples[1].Error)
+			require.Equal(t, partial.BudgetDeferral, partial.Samples[1].BudgetDeferral)
+			require.Equal(t, scope, partial.BudgetDeferral.Scope)
+			require.Equal(t, 1, partial.Analysis.UsedOutputs)
+			deferred := run(alias.ID)
+			require.EqualValues(t, 1, calls.Load())
+			require.Equal(t, "insufficient", deferred.Status)
+			require.Len(t, deferred.Samples, 1)
+			require.Nil(t, deferred.Analysis)
+			require.Equal(t, scope, deferred.BudgetDeferral.Scope)
+			usage, err := budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.EqualValues(t, 1, usage.DayUsed)
+			require.Zero(t, usage.ActiveRequests, "normal completion and refusal leave no active lease")
+			policy.RequestsPerDay, policy.KeyRequestsPerMinute = 100, 100
+			_, err = budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			recovered := run(alias.ID)
+			require.Equal(t, "complete", recovered.Status)
+			require.Len(t, recovered.Samples, 3)
+			require.Nil(t, recovered.BudgetDeferral)
+			require.Equal(t, 3, recovered.Analysis.UsedOutputs)
+			require.EqualValues(t, 4, calls.Load())
+			usage, err = budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.EqualValues(t, 4, usage.DayUsed)
+			require.Zero(t, usage.ActiveRequests)
+			for id, snapshot := range before {
+				require.True(t, snapshot == accountSnapshot(id), "fingerprint diagnostics must not modify any persisted account field")
+			}
+		})
+	}
 }
 
 func TestQualityMonitoringBudgetPostgresBPSAndRestart(t *testing.T) {

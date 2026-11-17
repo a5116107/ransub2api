@@ -1,5 +1,6 @@
 import { buildApiUrl } from '@/api/client'
 import { ADMIN_UI_REQUEST_HEADER } from '@/api/adminUIRequest'
+import type { MonitoringProbeBudgetDeferral } from '@/types/monitoringProbeBudget'
 
 export interface ModelTraceChallenge {
   id: string
@@ -38,6 +39,7 @@ export interface ModelTraceSample {
   minimum_numbers: number
   accepted: boolean
   error?: string
+  budget_deferral?: MonitoringProbeBudgetDeferral
   analysis?: ModelTraceAnalysis
   started_at: string
   latency_ms: number
@@ -52,6 +54,7 @@ export interface ModelTraceResult {
   status: 'complete' | 'partial' | 'insufficient'
   disagreement: boolean
   created_at: string
+  budget_deferral?: MonitoringProbeBudgetDeferral
 }
 
 type ModelTraceEvent =

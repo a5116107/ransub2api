@@ -24,28 +24,30 @@ type modelTraceEnvironment struct {
 }
 
 type ModelTraceSample struct {
-	Challenge      modeltrace.Challenge  `json:"challenge"`
-	Text           string                `json:"text"`
-	MappedModel    string                `json:"mapped_model"`
-	Environment    modelTraceEnvironment `json:"environment"`
-	ParsedNumbers  int                   `json:"parsed_numbers"`
-	MinimumNumbers int                   `json:"minimum_numbers"`
-	Accepted       bool                  `json:"accepted"`
-	Error          string                `json:"error,omitempty"`
-	Analysis       *modeltrace.Analysis  `json:"analysis,omitempty"`
-	StartedAt      time.Time             `json:"started_at"`
-	LatencyMs      int64                 `json:"latency_ms"`
+	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	Challenge      modeltrace.Challenge         `json:"challenge"`
+	Text           string                       `json:"text"`
+	MappedModel    string                       `json:"mapped_model"`
+	Environment    modelTraceEnvironment        `json:"environment"`
+	ParsedNumbers  int                          `json:"parsed_numbers"`
+	MinimumNumbers int                          `json:"minimum_numbers"`
+	Accepted       bool                         `json:"accepted"`
+	Error          string                       `json:"error,omitempty"`
+	Analysis       *modeltrace.Analysis         `json:"analysis,omitempty"`
+	StartedAt      time.Time                    `json:"started_at"`
+	LatencyMs      int64                        `json:"latency_ms"`
 }
 
 type ModelTraceResult struct {
-	RequestedModel  string               `json:"requested_model"`
-	ReasoningEffort string               `json:"reasoning_effort"`
-	Bank            modeltrace.Metadata  `json:"bank"`
-	Samples         []ModelTraceSample   `json:"samples"`
-	Analysis        *modeltrace.Analysis `json:"analysis,omitempty"`
-	Status          string               `json:"status"`
-	Disagreement    bool                 `json:"disagreement"`
-	CreatedAt       time.Time            `json:"created_at"`
+	BudgetDeferral  *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	RequestedModel  string                       `json:"requested_model"`
+	ReasoningEffort string                       `json:"reasoning_effort"`
+	Bank            modeltrace.Metadata          `json:"bank"`
+	Samples         []ModelTraceSample           `json:"samples"`
+	Analysis        *modeltrace.Analysis         `json:"analysis,omitempty"`
+	Status          string                       `json:"status"`
+	Disagreement    bool                         `json:"disagreement"`
+	CreatedAt       time.Time                    `json:"created_at"`
 }
 
 func modelTraceEnvironmentForAccount(account *Account, model string) (modelTraceEnvironment, error) {
@@ -106,7 +108,7 @@ func applyModelTracePayload(ctx context.Context, payload map[string]any) {
 	}
 }
 
-// TestModelTraceAccountConnection runs exactly three independent prompts, with
+// TestModelTraceAccountConnection runs at most three independent prompts, with
 // no attribution-driven retries, failover, recovery or scheduling decisions.
 // Validation happens before committing SSE headers so normal HTTP errors work.
 func (s *AccountTestService) TestModelTraceAccountConnection(c *gin.Context, accountID int64, model, effort string) error {
@@ -164,6 +166,11 @@ func runModelTraceSamples(ctx context.Context, challenges []modeltrace.Challenge
 			return err
 		}
 		emit(sample)
+		if sample.BudgetDeferral != nil {
+			// All questions target the same account. A local refusal or lost
+			// lease ends this round, rather than producing more failed samples.
+			return nil
+		}
 	}
 	return nil
 }
@@ -171,7 +178,15 @@ func runModelTraceSamples(ctx context.Context, challenges []modeltrace.Challenge
 func completeModelTraceResult(result *ModelTraceResult) {
 	var outputs []modeltrace.Output
 	predictions := make(map[string]bool)
+	result.BudgetDeferral = nil
 	for _, sample := range result.Samples {
+		if sample.BudgetDeferral != nil {
+			if result.BudgetDeferral == nil {
+				denial := *sample.BudgetDeferral
+				result.BudgetDeferral = &denial
+			}
+			continue
+		}
 		if sample.Accepted {
 			outputs = append(outputs, modeltrace.Output{Text: sample.Text, ExpectedCount: sample.Challenge.ExpectedCount})
 			if sample.Analysis != nil {
@@ -214,8 +229,14 @@ func (s *AccountTestService) runModelTraceSample(ctx context.Context, accountID 
 	c.Request = (&http.Request{Header: make(http.Header)}).WithContext(ctx)
 	err = s.TestPelicanAccountConnection(c, accountID, model, challenge.Prompt, effort)
 	text, message := parsePelicanOutput(w.Body.String())
+	// SSE adapters intentionally expose only a neutral message. Recover the
+	// request-owned error from the final context, never from provider strings.
+	sample.BudgetDeferral = monitoringProbeDeferral(monitoringProbeLocalError(c.Request.Context()), time.Now())
 	if w.overflow || len(text) > 64<<10 {
 		sample.Error = "output_limit"
+		if sample.BudgetDeferral != nil {
+			sample.Error = "monitoring_budget_deferred"
+		}
 		return sample
 	}
 	// Only normal completion is eligible; partial output remains visible but
@@ -229,6 +250,8 @@ func (s *AccountTestService) runModelTraceSample(ctx context.Context, accountID 
 	}
 	sample.ParsedNumbers = len(modeltrace.ParseNumbers(text))
 	switch {
+	case sample.BudgetDeferral != nil:
+		sample.Error = "monitoring_budget_deferred"
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		sample.Error = "timeout"
 	case err != nil || message != "":

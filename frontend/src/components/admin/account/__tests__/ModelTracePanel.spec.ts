@@ -29,6 +29,60 @@ function mountPanel(account = {}) {
 beforeEach(() => { localStorage.clear(); runModelTrace.mockReset() })
 
 describe('ModelTracePanel', () => {
+  it.each([
+    ['request_limit', 'global_minute'], ['recovery_reserve', 'global_day'],
+    ['request_limit', 'site_minute'], ['request_limit', 'key_minute'],
+    ['concurrency_limit', 'global'], ['concurrency_limit', 'site'], ['concurrency_limit', 'key'],
+    ['budget_unavailable', 'system']
+  ])('labels the backend budget reason %s and scope %s', async (reason, scope) => {
+    runModelTrace.mockResolvedValue({ ...record, budget_deferral: { reason, scope, retry_at: '2026-11-18T00:00:00Z' } })
+    const wrapper = mountPanel()
+    await wrapper.get('[data-testid="modeltrace-start"]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.get('[data-testid="modeltrace-budget-deferral"]')
+    expect(notice.text()).toContain(`admin.settings.upstreamBillingProbe.budget.${reason}`)
+    expect(notice.text()).toContain(`modelTrace.budgetScopes.${scope}`)
+    expect(notice.text()).not.toContain('modelTrace.budgetReasonUnknown')
+    wrapper.unmount()
+  })
+
+  it('explains a budget pause independently of preliminary attribution and restores it from history', async () => {
+    const deferredRecord = { ...record, budget_deferral: { reason: 'request_limit', scope: 'global_day', retry_at: '2026-11-18T00:00:00Z' } }
+    runModelTrace.mockResolvedValue(deferredRecord)
+    const wrapper = mountPanel()
+    await wrapper.get('[data-testid="modeltrace-start"]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.get('[data-testid="modeltrace-budget-deferral"]')
+    expect(notice.attributes('role')).toBe('status')
+    expect(notice.text()).toContain('modelTrace.budgetPaused')
+    expect(notice.text()).toContain('admin.settings.upstreamBillingProbe.budget.request_limit')
+    expect(notice.text()).toContain('modelTrace.budgetScopes.global_day')
+    expect(notice.get('time').attributes('datetime')).toBe(deferredRecord.budget_deferral.retry_at)
+    expect(wrapper.get('[data-testid="modeltrace-result"]').text()).toContain('modelTrace.status.partial')
+    expect(wrapper.text()).toContain('modelTrace.partialHint')
+    expect(wrapper.text()).not.toContain('modelTrace.errors.generation_failed')
+    wrapper.unmount()
+    const restored = mountPanel()
+    await restored.get('[data-testid="modeltrace-history-record"]').trigger('click')
+    expect(restored.get('[data-testid="modeltrace-budget-deferral"]').text()).toContain('modelTrace.budgetPaused')
+    expect(runModelTrace).toHaveBeenCalledTimes(1)
+    restored.unmount()
+  })
+
+  it.each(['constructor', '__proto__', 'future_reason'])('uses neutral labels for an unrecognized budget reason or scope: %s', async value => {
+    runModelTrace.mockResolvedValue({ ...record, budget_deferral: { reason: value, scope: value, retry_at: 'invalid' } })
+    const wrapper = mountPanel()
+    await wrapper.get('[data-testid="modeltrace-start"]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.get('[data-testid="modeltrace-budget-deferral"]')
+    expect(notice.text()).toContain('modelTrace.budgetReasonUnknown')
+    expect(notice.text()).toContain('modelTrace.budgetScopes.unknown')
+    expect(notice.text()).toContain('modelTrace.retryUnknown')
+    expect(notice.find('time').exists()).toBe(false)
+    expect(notice.text()).not.toContain(value)
+    wrapper.unmount()
+  })
+
   it('displays partial attribution and restores browser history without making a model request', async () => {
     runModelTrace.mockResolvedValue(record)
     const wrapper = mountPanel()
@@ -37,6 +91,7 @@ describe('ModelTracePanel', () => {
     expect(wrapper.get('[data-testid="modeltrace-result"]').text()).toContain('modelTrace.status.partial')
     expect(wrapper.text()).toContain('modelTrace.partialHint')
     expect(wrapper.text()).toContain('gpt-6-astra')
+    expect(wrapper.find('[data-testid="modeltrace-budget-deferral"]').exists()).toBe(false)
     expect(JSON.parse(localStorage.getItem('sub2api-modeltrace-test:42')!)).toEqual([record])
     wrapper.unmount()
     const restored = mountPanel()
