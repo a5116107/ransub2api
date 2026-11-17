@@ -1530,6 +1530,12 @@ OAuth 刷新在启动 provider、接受结果和持久化边界检查实际 Dead
 所需任务吞吐 ≥ Σ(待维持scope数 / 目标周期)；另预留失败、分页和执行延迟余量
 ```
 
+倍率/余额的本地保存前预检已接入[原预算仓库](../../backend/internal/repository/monitoring_probe_coverage.go)和[容量编译器](../../backend/internal/service/monitoring_probe_coverage.go)，入口仍在原设置页的调用预算面板。读取当前启用、活跃的API Key账号，使用原生效基址和New API绑定指纹判断每轮物理调用下界：普通中转倍率/余额至少2次；有效New API绑定至少4次（状态、钱包、定价、首库存页），额外分页及原文Key核验不假装已计入；官方OpenAI首请求和缺配置/不支持目标分开保留。失败/退避目标不从待维持库存中消失。单次最多读取10000个候选，超量标明不完整；不向界面返回站点、凭据或绑定指纹。
+
+预览只读、无HTTP出站、无调用/Token记账或租约。展示每轮/目标日最少调用量、最少领取批次、普通分钟/UTC日额度及恢复预留后的容量；100账号/5分钟正好占满20/批×每分钟一批时只给“无余量”警告，不标已保证覆盖。超出原runner理论上限、周期内普通分钟额度或普通UTC日额度时列明结构化原因。预算启用保存会在原共享短事务锁内重新读取库存/已保存周期并拒绝已证明不相容的配置；生产原周期保存沿同一锁核验，避免两次单独有效的改动并发合成无效组合。预览修订号过旧返回409，草稿保留；显式关闭预算仍可处理已知容量短缺。账号后续增减、授权/基址或周期变化会使旧预览失效，不能把一次保存视为持续容量保证。
+
+该结果是乐观下界，不是覆盖证书或探测完成时间承诺。原设置页明确显示“未发现已证明的超限；仍不是全覆盖保证”，未确认目标不当作免费。质量/模型/判题/分组计划、其他检测通道、站点/最终共享Key限制、执行延迟、额外分页、重试和生产多节点周期尚未整体编译，D8.1原父验收保持开放。Token继续只累计实际usage、耗尽止发、允许在途超额，不用请求前估算的Token关闭覆盖缺口。新增可选摘要/只读预览接口，无schema迁移；应用回退保留原设置/计数，旧应用不执行容量预检，不能据此关闭严格混版验收。
+
 例如100Key×3模型每1分钟单次主动可用检测即432000次/天；每5分钟也为86400次/天，尚不含质量、缓存与判题。
 100个倍率绑定每5分钟全覆盖恰好占满现有20任务/分钟的理论上限，没有任何失败或执行余量；本PR必须支持预算内扩容/分层，或在配置预览降低承诺覆盖，不能沿旧上限伪称实时全覆盖。
 既有倍率观察器的本地SQL/HTTP组合回归覆盖100个启用的独立合成Key账号：每轮20个、五轮全部获得一次机会，每轮重建服务与Repository仍按持久化到期时间推进；前20个分别返回429/503并遵守Retry-After，不挤占后80个账号。503携带有效的秒数或未来HTTP日期等待指令时，不紧接余额请求，旧余额及其时间戳保持；无效/已过期指令、无该指令的503，以及404/405/502仍可独立查询余额。倍率与余额合计180次物理HTTP调用，最大并发4；无到期项时零新增调用，SQL中到期后原失败账号恢复且不重探健康账号，关闭/停用/OAuth账号保持排除。该检查使用私有迁移数据库和本地HTTP，不经过生产周期锁、不模拟五分钟墙钟，不证明100个供应商授权绑定的分页、模型/判题/token预算或全节点覆盖SLA；原吞吐上限及这些待验边界保持。
@@ -1951,7 +1957,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 缓存接口与探测对象 | [本仓billing DTO](../../backend/internal/handler/gateway_key_billing.go#L17)、[New API接入](../../backend/internal/service/new_api_upstream.go#L226)、[缓存测试请求](../../frontend/src/api/groupCacheTest.ts#L101) | 本仓billing接口返回倍率、不返回命中率；现New API接入读取价格/钱包/库存，不等于已接上游逐Key缓存日志。分组缓存测试实际持下游Key走本项目路由；不能把其结果当指定上游Key检测。D5.3/D5.4 |
 | 健康黏性与迁移 | [保护开关与适用范围](../../backend/internal/service/priority_observation.go#L141)、[关闭软重平衡](../../backend/internal/service/priority_scheduling_fairness.go#L109)、[冷输入观测](../../backend/internal/pkg/requesttiming/cache_migration.go#L5) | 健康保留、故障迁移/恢复不抢回已有本地证据；缺高缓存产品的自动策略接线。冷输入区间是非因果边界，缺可信前缀、候选缓存域/存活及净收益；软迁移继续关闭。D6.2/D5.4/D6.3 |
 | 可视化结论 | [质量API合同](../../frontend/src/api/admin/channelOperations.ts#L11)、[历史结论组件](../../frontend/src/components/admin/operations/QualityRoundAssessment.vue#L1)、[现有总览](../../frontend/src/components/admin/operations/UpstreamAnalytics.vue#L21) | 历史结论/覆盖率可读，模型身份明确未知；缺实时分维度资格、基线/指纹、采购桶/产品影响、预算及共享容量解释。D7.3/D7.4；不重新制作第二个总览 |
-| 检测调度与预算 | [原runner](../../backend/internal/service/upstream_billing_probe.go)、[物理请求预算](../../backend/internal/service/monitoring_probe_budget.go)、[共享记账仓库](../../backend/internal/repository/monitoring_probe_budget.go) | 两模板100账号轮转/退避/SQL及主锁恢复、倍率/余额/分页/预览/JEV及原生HTTP/WebSocket/BPS文本答题/LLM判题物理预算、全局/站点/凭据并发、恢复预留、门票及原两发网关/双轮WS/后台糖果预算和延期UI已实现，见10.3.1；20/批和4并发仍固定，慢批次不保证20/分钟。实际Token共享/去重/未知展示、BPS媒体、原生/JEV/旧定时连接及分组检测延期/停止换号/V2/V3中性历史已补；其他检测通道、完整公平性、保存前覆盖编译及生产多节点周期仍缺，不宣称完整预算或SLA。D8.1 |
+| 检测调度与预算 | [原runner](../../backend/internal/service/upstream_billing_probe.go)、[物理请求预算](../../backend/internal/service/monitoring_probe_budget.go)、[共享记账仓库](../../backend/internal/repository/monitoring_probe_budget.go) | 两模板100账号轮转/退避/SQL及主锁恢复、倍率/余额/分页/预览/JEV及原生HTTP/WebSocket/BPS文本答题/LLM判题物理预算、全局/站点/凭据并发、恢复预留、门票及原两发网关/双轮WS/后台糖果预算和延期UI已实现，见10.3.1；20/批和4并发仍固定，慢批次不保证20/分钟。实际Token共享/去重/未知展示、BPS媒体、原生/JEV/旧定时连接及分组检测延期/停止换号/V2/V3中性历史已补；倍率/余额保存前已有库存/周期调用下界预览及拒存，见10.3。其他检测通道、完整公平性、质量/分组计划等完整覆盖编译及生产多节点周期仍缺，不宣称完整预算或SLA。D8.1 |
 | 未确认异步提交 | [按member绑定/释放入口](../../backend/internal/service/async_video_key_handoff.go#L255) | 已有不重放与持久额度保护、终态释放恢复；缺无远端task ID时按原请求唯一关联的自动核实。需要实际中转协议合同，不可套MiniMax原生API；不阻塞文本供应池本地开发。D2.7 |
 | 升级与生产 | [冷却读时过滤](../../backend/internal/service/scheduler_snapshot_service.go#L239)、[自有自动发行](../../.github/workflows/release.yml#L4)、[原演练入口](../../.github/release-tools/release_matrix.py#L398) | 审计时冷却回池在功能分支、生产记录为.3/5ce1d189；后续独立.7发布及加载已有验证，实时状态见STATE。串行升级、同候选恢复与旧新严格混版分开；后者原失败及完整新功能发布验收仍保留。D8.2/D9.1/D9.2 |
 

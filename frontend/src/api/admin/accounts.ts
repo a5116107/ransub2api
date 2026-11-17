@@ -1,5 +1,5 @@
 import type { AccountPerformance, PerformanceConfig, PerformanceEvent } from '@/types/accountPerformance'
-import type { MonitoringProbeBudgetDeferral, MonitoringProbeBudgetSettings, MonitoringProbeBudgetSummary } from '@/types/monitoringProbeBudget'
+import type { MonitoringProbeBudgetDeferral, MonitoringProbeBudgetSettings, MonitoringProbeBudgetSummary, MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 /**
  * Admin Accounts API endpoints
  * Handles AI platform account management for administrators
@@ -1101,6 +1101,11 @@ export async function updateMonitoringProbeBudget(settings: MonitoringProbeBudge
   return data
 }
 
+export async function previewMonitoringProbeCoverage(settings: MonitoringProbeBudgetSettings): Promise<MonitoringProbeCoverage> {
+  const { data } = await apiClient.post<MonitoringProbeCoverage>('/admin/accounts/upstream-billing-probe/budget/preview', settings)
+  return data
+}
+
 export async function getUpstreamBillingProbeSettings(): Promise<UpstreamBillingProbeSettings> {
   const { data } = await apiClient.get<UpstreamBillingProbeSettings>('/admin/accounts/upstream-billing-probe/settings')
   return data
@@ -1557,6 +1562,7 @@ export const accountsAPI = {
   getUpstreamBillingProbeSettings,
   getMonitoringProbeBudget,
   updateMonitoringProbeBudget,
+  previewMonitoringProbeCoverage,
   updateUpstreamBillingProbeSettings,
   setUpstreamBillingProbeEnabled,
   probeUpstreamBilling,

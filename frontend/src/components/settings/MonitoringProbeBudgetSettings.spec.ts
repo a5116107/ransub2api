@@ -6,7 +6,7 @@ import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
 
 enableAutoUnmount(afterEach)
-const api = vi.hoisted(() => ({ getMonitoringProbeBudget: vi.fn(), updateMonitoringProbeBudget: vi.fn() }))
+const api = vi.hoisted(() => ({ getMonitoringProbeBudget: vi.fn(), updateMonitoringProbeBudget: vi.fn(), previewMonitoringProbeCoverage: vi.fn() }))
 vi.mock('@/api', () => ({ adminAPI: { accounts: api } }))
 const settings = () => ({ enabled: false, revision: 3, requests_per_minute: 600, requests_per_day: 100000,
   tokens_per_minute: 0, tokens_per_day: 0, site_tokens_per_minute: 0, key_tokens_per_minute: 0,
@@ -15,10 +15,16 @@ const settings = () => ({ enabled: false, revision: 3, requests_per_minute: 600,
 const summary = () => ({ observed_at: '2026-11-17T12:00:00Z', settings: settings(), minute_used: 17,
   minute_regular: 10, day_used: 123, day_regular: 100, active_requests: 2, active_regular: 1,
   minute_tokens: 17, day_tokens: 1234, usage_reported: 8, usage_unknown: 3, usage_pending: 2 })
+const coverage = () => ({ observed_at: '2026-11-18T12:00:00Z', budget_revision: 3, billing_enabled: true,
+  interval_minutes: 5, accounts: 100, new_api_accounts: 20, unresolved_accounts: 2, inventory_complete: true,
+  minimum_requests_per_sweep: 240, minimum_requests_per_day: 69120, minimum_sweep_batches: 5,
+  runner_accounts_per_minute: 20, regular_minute_capacity: 480, regular_day_capacity: 80000,
+  enforced: false, can_save: true, blocking_reasons: [] as string[], warnings: ['runner_no_headroom'] })
 
 beforeEach(() => {
   vi.resetAllMocks()
   api.getMonitoringProbeBudget.mockResolvedValue(summary())
+  api.previewMonitoringProbeCoverage.mockResolvedValue(coverage())
   api.updateMonitoringProbeBudget.mockImplementation(async value => ({ ...value, revision: value.revision + 1 }))
 })
 async function open(locale = 'en') {
@@ -28,6 +34,58 @@ async function open(locale = 'en') {
 }
 
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('previews lower bounds, invalidates on edits and blocks an impossible save in %s', async locale => {
+    const wrapper = await open(locale)
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="probe-budget-capacity"]').text()).toContain('≥ 240')
+    expect(wrapper.get('[data-testid="probe-budget-capacity-reasons"]').text()).toContain(locale === 'zh' ? '没有失败' : 'no room for failures')
+    expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain(locale === 'zh' ? '仍不是全覆盖保证' : 'still unverified')
+    await wrapper.get('#probe-budget-requests_per_day').setValue('100')
+    expect(wrapper.find('[data-testid="probe-budget-capacity-stale"]').exists()).toBe(true)
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), enforced: true, can_save: false, blocking_reasons: ['day_capacity'] })
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.previewMonitoringProbeCoverage).toHaveBeenCalledTimes(2)
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain(locale === 'zh' ? '未保存' : 'Nothing saved')
+    expect(wrapper.get<HTMLInputElement>('#probe-budget-requests_per_day').element.value).toBe('100')
+  })
+  it('does not save on a failed preview, and permits an explicit observe-only preview', async () => {
+    const wrapper = await open()
+    api.previewMonitoringProbeCoverage.mockRejectedValueOnce(new Error('storage offline'))
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+    api.previewMonitoringProbeCoverage.mockResolvedValueOnce({ ...coverage(), blocking_reasons: ['runner_capacity'], can_save: true })
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).toHaveBeenCalledTimes(1)
+  })
+  it('preserves drafts on a stale preview revision and labels bounded/unknown results', async () => {
+    const wrapper = await open()
+    api.previewMonitoringProbeCoverage.mockRejectedValueOnce({ status: 409 })
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Another administrator')
+    api.previewMonitoringProbeCoverage.mockResolvedValueOnce({ ...coverage(), inventory_complete: false, warnings: ['future-reason'] })
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="probe-budget-capacity"]').text()).toContain('remaining targets are not evaluated')
+    expect(wrapper.get('[data-testid="probe-budget-capacity-reasons"]').text()).toContain('unrecognized')
+  })
+  it('invalidates the earlier preview when backend inventory revalidation rejects a save', async () => {
+    const wrapper = await open()
+    await wrapper.get('#probe-budget-requests_per_day').setValue('800')
+    api.updateMonitoringProbeBudget.mockRejectedValueOnce({ status: 400, reason: 'MONITORING_PROBE_COVERAGE_IMPOSSIBLE' })
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Nothing saved')
+    expect(wrapper.find('[data-testid="probe-budget-capacity-stale"]').exists()).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('#probe-budget-requests_per_day').element.value).toBe('800')
+    expect(api.getMonitoringProbeBudget).toHaveBeenCalledTimes(1)
+  })
   it.each(['en', 'zh'])('shows actual usage, unknown coverage and overshoot separately in %s', async locale => {
     api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), settings: { ...settings(), tokens_per_day: 1000 } })
     const wrapper = await open(locale)

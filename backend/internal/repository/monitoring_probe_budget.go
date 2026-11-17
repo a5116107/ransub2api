@@ -68,6 +68,13 @@ func (r *monitoringProbeBudgetRepository) SaveSettings(ctx context.Context, sett
 	if current.Revision != settings.Revision || current.Revision == math.MaxInt64 {
 		return settings, service.ErrMonitoringProbeBudgetConflict
 	}
+	coverage, err := loadMonitoringProbeCoverage(ctx, tx, settings)
+	if err != nil {
+		return settings, err
+	}
+	if err := coverage.ValidateSave(); err != nil {
+		return settings, err
+	}
 	settings.Revision++
 	raw, err := json.Marshal(settings)
 	if err != nil {
@@ -91,6 +98,10 @@ func (r *monitoringProbeBudgetRepository) Summary(ctx context.Context) (*service
 		return nil, err
 	}
 	result := &service.MonitoringProbeBudgetSummary{Settings: settings}
+	result.Coverage, err = loadMonitoringProbeCoverage(ctx, tx, settings)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&result.ObservedAt); err != nil {
 		return nil, err
 	}

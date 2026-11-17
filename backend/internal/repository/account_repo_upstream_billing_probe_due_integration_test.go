@@ -461,6 +461,16 @@ func TestUpstreamBillingProbeHundredAccountsRoundTripFairness(t *testing.T) {
 		run(t)
 		policy.RequestsPerMinute, policy.RequestsPerDay, policy.SiteRequestsPerMinute = 260, 260, 260
 		_, err = budget.SaveSettings(ctx, policy)
+		require.ErrorContains(t, err, "day_capacity", "new inventory made the old five-minute promise impossible")
+		// The existing under-provisioned configuration stays enforceable at
+		// runtime. Repair it through the real admin contract: observe-only,
+		// relax cadence, then re-enable without resetting the shared counters.
+		policy.Enabled = false
+		policy, err = budget.SaveSettings(ctx, policy)
+		require.NoError(t, err)
+		require.NoError(t, budget.SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 1440}))
+		policy.Enabled = true
+		_, err = budget.SaveSettings(ctx, policy)
 		require.NoError(t, err)
 		for i := 103; i < len(ids); i++ {
 			// Advance only the private fixture's retry state, as in the original

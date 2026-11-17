@@ -32,6 +32,20 @@ func (h *AccountHandler) UpdateMonitoringProbeBudget(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *AccountHandler) PreviewMonitoringProbeCoverage(c *gin.Context) {
+	var req service.MonitoringProbeBudgetSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid monitoring budget settings")
+		return
+	}
+	result, err := h.upstreamBillingProbe.MonitoringBudget().PreviewCoverage(c.Request.Context(), req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 type upstreamBillingProbeEnabledRequest struct {
 	Enabled *bool `json:"enabled" binding:"required"`
 }

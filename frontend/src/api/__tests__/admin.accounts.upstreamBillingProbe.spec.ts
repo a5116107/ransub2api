@@ -19,6 +19,7 @@ import {
   getUpstreamBillingProbeSettings,
   getMonitoringProbeBudget,
   updateMonitoringProbeBudget,
+  previewMonitoringProbeCoverage,
   probeUpstreamBilling,
   probeUpstreamBillingBatch,
   setUpstreamBillingProbeEnabled,
@@ -41,6 +42,15 @@ describe('admin account upstream billing probe API', () => {
     post.mockReset()
     put.mockReset()
     del.mockReset()
+  })
+
+  it('previews a draft without writing or sending probes', async () => {
+    const policy = { enabled: true, revision: 3 } as Parameters<typeof previewMonitoringProbeCoverage>[0]
+    const result = { can_save: false, blocking_reasons: ['day_capacity'] }
+    post.mockResolvedValueOnce({ data: result })
+    await expect(previewMonitoringProbeCoverage(policy)).resolves.toEqual(result)
+    expect(post).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget/preview', policy)
+    expect(put).not.toHaveBeenCalled()
   })
 
   it('uses the config endpoints and preserves explicit account and token selections', async () => {

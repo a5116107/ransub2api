@@ -154,13 +154,26 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	var phase atomic.Int32
 	var calls [enabledAccounts + 4][6]atomic.Int64
 	var active, maximum, unexpected atomic.Int64
+	var overlapStarted atomic.Int64
+	overlap := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current := active.Add(1)
 		defer active.Add(-1)
 		for previous := maximum.Load(); current > previous && !maximum.CompareAndSwap(previous, current); previous = maximum.Load() {
 		}
-		// Observe overlap between independent slots without extending network deadlines.
-		time.Sleep(3 * time.Millisecond)
+		// Hold the first independent request until the second is physically
+		// admitted. A sleep does not prove overlap on a loaded host.
+		arrival := overlapStarted.Add(1)
+		if arrival == 2 {
+			close(overlap)
+		}
+		if arrival <= 2 {
+			select {
+			case <-overlap:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/line-"), "/", 2)
 		if len(parts) != 2 {
 			unexpected.Add(1)

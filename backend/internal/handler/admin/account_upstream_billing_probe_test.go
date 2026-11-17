@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,48 @@ type handlerMonitoringBudgetRepo struct {
 
 func (r *handlerMonitoringBudgetRepo) Summary(context.Context) (*service.MonitoringProbeBudgetSummary, error) {
 	return &service.MonitoringProbeBudgetSummary{Settings: r.settings, MinuteUsed: 7}, nil
+}
+
+func (r *handlerMonitoringBudgetRepo) PreviewCoverage(_ context.Context, s service.MonitoringProbeBudgetSettings) (*service.MonitoringProbeCoverage, error) {
+	if s.Revision != r.settings.Revision {
+		return nil, service.ErrMonitoringProbeBudgetConflict
+	}
+	return service.CompileMonitoringProbeCoverage(s, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, nil, true, time.Now()), nil
+}
+
+func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	probe := service.NewUpstreamBillingProbeService(nil, nil, nil)
+	repo := &handlerMonitoringBudgetRepo{settings: service.DefaultMonitoringProbeBudgetSettings()}
+	probe.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(repo))
+	h := &AccountHandler{}
+	h.SetUpstreamBillingProbeService(probe)
+	router := gin.New()
+	router.POST("/preview", h.PreviewMonitoringProbeCoverage)
+	raw, err := json.Marshal(repo.settings)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		body   []byte
+		status int
+	}{
+		{[]byte(`{`), 400}, {[]byte(`{"requests_per_minute":0}`), 400}, {raw, 200},
+	} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/preview", bytes.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		require.Equal(t, tc.status, w.Code)
+		if tc.status == 200 {
+			require.Contains(t, w.Body.String(), `"inventory_complete":true`)
+		}
+	}
+	require.EqualValues(t, 0, repo.settings.Revision, "preview is not a settings write")
+	h.SetUpstreamBillingProbeService(nil)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/preview", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+	require.Equal(t, 503, w.Code)
 }
 func (r *handlerMonitoringBudgetRepo) SaveSettings(_ context.Context, s service.MonitoringProbeBudgetSettings) (service.MonitoringProbeBudgetSettings, error) {
 	if s.Revision != r.settings.Revision {

@@ -16,6 +16,7 @@ export interface MonitoringProbeBudgetSettings {
 }
 
 export interface MonitoringProbeBudgetSummary {
+  coverage?: MonitoringProbeCoverage | null
   observed_at: string
   settings: MonitoringProbeBudgetSettings
   minute_used: number
@@ -29,6 +30,27 @@ export interface MonitoringProbeBudgetSummary {
   usage_reported: number
   usage_unknown: number
   usage_pending: number
+}
+
+export interface MonitoringProbeCoverage {
+  observed_at: string
+  budget_revision: number
+  billing_enabled: boolean
+  interval_minutes: number
+  accounts: number
+  new_api_accounts: number
+  unresolved_accounts: number
+  inventory_complete: boolean
+  minimum_requests_per_sweep: number
+  minimum_requests_per_day: number
+  minimum_sweep_batches: number
+  runner_accounts_per_minute: number
+  regular_minute_capacity: number
+  regular_day_capacity: number
+  enforced: boolean
+  can_save: boolean
+  blocking_reasons: string[]
+  warnings: string[]
 }
 
 export interface MonitoringProbeBudgetDeferral {

@@ -2,7 +2,7 @@
   <section class="space-y-4 border-t border-gray-100 pt-5 dark:border-dark-700" data-testid="monitoring-probe-budget">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <h3 class="font-semibold text-gray-900 dark:text-white">{{ t(`${prefix}.title`) }}</h3>
-      <button type="button" class="btn btn-secondary btn-sm" :disabled="loading || saving" data-testid="probe-budget-refresh" @click="load">{{ t('common.refresh') }}</button>
+      <button type="button" class="btn btn-secondary btn-sm" :disabled="loading || saving || previewing" data-testid="probe-budget-refresh" @click="load">{{ t('common.refresh') }}</button>
     </div>
     <p class="text-sm text-gray-600 dark:text-gray-300">{{ t(`${prefix}.scopeHint`) }}</p>
     <p v-if="loading" class="text-sm text-gray-500" role="status">{{ t('common.loading') }}</p>
@@ -27,7 +27,7 @@
       <p class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" data-testid="probe-budget-coverage">{{ t(`${prefix}.usageCoverage`, { reported: displayUsage(summary.usage_reported), unknown: displayUsage(summary.usage_unknown), pending: displayUsage(summary.usage_pending) }) }}</p>
       <p class="text-xs text-gray-600 dark:text-gray-300">{{ t(`${prefix}.observedAt`, { value: summary.observed_at }) }}</p>
     </template>
-    <fieldset v-if="loaded" :disabled="loading || saving" class="space-y-4">
+    <fieldset v-if="loaded" :disabled="loading || saving || previewing" class="space-y-4">
       <div class="flex items-center justify-between gap-4">
         <label id="probe-budget-enabled-label" class="font-medium text-gray-900 dark:text-white">{{ t(`${prefix}.enabled`) }}</label>
         <Toggle v-model="form.enabled" aria-labelledby="probe-budget-enabled-label" data-testid="probe-budget-enabled" />
@@ -41,7 +41,30 @@
       <p class="text-sm text-gray-600 dark:text-gray-300">{{ t(`${prefix}.reserveHint`) }}</p>
       <p class="text-sm text-gray-600 dark:text-gray-300">{{ t(`${prefix}.tokenHint`) }}</p>
       <p class="text-sm text-gray-600 dark:text-gray-300">{{ t(`${prefix}.deferralHint`) }}</p>
-      <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+      <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" data-testid="probe-budget-capacity" aria-live="polite">
+        <h4 class="font-semibold">{{ t(`${prefix}.capacityTitle`) }}</h4>
+        <template v-if="coverage && coverageMatches">
+          <p class="mt-2 font-medium" data-testid="probe-budget-capacity-verdict">{{ t(`${prefix}.${!coverage.billing_enabled ? 'capacityInactive' : coverage.blocking_reasons.length ? 'capacityExceeded' : 'capacityPartial'}`) }}</p>
+          <dl class="mt-3 grid gap-3 sm:grid-cols-2">
+            <div><dt>{{ t(`${prefix}.capacityTargets`) }}</dt><dd class="font-mono">{{ coverage.inventory_complete ? '' : '≥ ' }}{{ coverage.accounts }} / {{ coverage.interval_minutes }} {{ t(`${prefix}.capacityMinutes`) }}</dd></div>
+            <div><dt>{{ t(`${prefix}.capacitySweep`) }}</dt><dd class="font-mono">≥ {{ coverage.minimum_requests_per_sweep }}</dd></div>
+            <div><dt>{{ t(`${prefix}.capacityDay`) }}</dt><dd class="font-mono">≥ {{ coverage.minimum_requests_per_day }}</dd></div>
+            <div><dt>{{ t(`${prefix}.capacityRegular`) }}</dt><dd class="font-mono">{{ coverage.regular_minute_capacity }} / {{ coverage.regular_day_capacity }}</dd></div>
+          </dl>
+          <p class="mt-3">{{ t(`${prefix}.capacityBatches`, { batches: coverage.minimum_sweep_batches, rate: coverage.runner_accounts_per_minute }) }}</p>
+          <p class="mt-2">{{ t(`${prefix}.capacityInventory`, { newapi: coverage.new_api_accounts, unknown: coverage.unresolved_accounts }) }}</p>
+          <ul v-if="coverage.blocking_reasons.length || coverage.warnings.length" class="mt-2 list-inside list-disc space-y-1" data-testid="probe-budget-capacity-reasons">
+            <li v-for="reason in [...coverage.blocking_reasons, ...coverage.warnings]" :key="reason">{{ capacityReason(reason) }}</li>
+          </ul>
+          <p v-if="!coverage.enforced" class="mt-2 font-medium">{{ t(`${prefix}.capacityObserve`) }}</p>
+          <p v-if="!coverage.inventory_complete" class="mt-2">{{ t(`${prefix}.capacityTruncated`) }}</p>
+          <p class="mt-2 text-xs">{{ t(`${prefix}.observedAt`, { value: coverage.observed_at }) }}</p>
+        </template>
+        <p v-else class="mt-2" data-testid="probe-budget-capacity-stale">{{ t(`${prefix}.capacityStale`) }}</p>
+        <p class="mt-3">{{ t(`${prefix}.capacityLimits`) }}</p>
+      </div>
+      <div class="flex flex-wrap justify-end gap-3 border-t border-gray-100 pt-4 dark:border-dark-700">
+        <button type="button" class="btn btn-secondary btn-sm" data-testid="probe-budget-preview" @click="preview">{{ previewing ? t('common.loading') : t(`${prefix}.capacityPreview`) }}</button>
         <button type="button" class="btn btn-primary btn-sm" data-testid="probe-budget-save" @click="save">{{ saving ? t('common.saving') : t('common.save') }}</button>
       </div>
     </fieldset>
@@ -53,7 +76,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api'
 import Toggle from '@/components/common/Toggle.vue'
-import type { MonitoringProbeBudgetSummary } from '@/types/monitoringProbeBudget'
+import type { MonitoringProbeBudgetSummary, MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 
 const { t } = useI18n()
 const prefix = 'admin.settings.upstreamBillingProbe.budget'
@@ -79,6 +102,10 @@ const summary = ref<MonitoringProbeBudgetSummary | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const loaded = ref(false)
+const previewing = ref(false)
+const coverage = ref<MonitoringProbeCoverage | null>(null)
+const coverageKey = ref('')
+const coverageMatches = computed(() => coverageKey.value === JSON.stringify(form))
 const error = ref('')
 const notice = ref('')
 const counters = computed(() => summary.value ? [
@@ -94,13 +121,46 @@ function displayUsage(value: number | undefined) {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? value : t(`${prefix}.unknownUsage`)
 }
 
+function capacityReason(reason: string) {
+  const known = ['runner_capacity', 'minute_capacity', 'day_capacity', 'runner_no_headroom', 'invalid_interval']
+  return t(`${prefix}.capacityReason.${known.includes(reason) ? reason : 'unknown'}`)
+}
+
+function validateForm() {
+  if (fields.some(({ key, min, max }) => !Number.isInteger(form[key]) || form[key] < min || form[key] > max)) {
+    error.value = t(`${prefix}.invalid`)
+    return false
+  }
+  return true
+}
+
+async function compileCoverage() {
+  const draft = { ...form }
+  coverage.value = await adminAPI.accounts.previewMonitoringProbeCoverage(draft)
+  coverageKey.value = JSON.stringify(draft)
+  return coverage.value
+}
+
+async function preview() {
+  if (!loaded.value || loading.value || saving.value || previewing.value || !validateForm()) return
+  previewing.value = true
+  error.value = notice.value = ''
+  try { await compileCoverage() }
+  catch (cause: unknown) {
+    coverage.value = null
+    error.value = t(`${prefix}.${(cause as { status?: number })?.status === 409 ? 'conflict' : 'capacityPreviewFailed'}`)
+  } finally { previewing.value = false }
+}
+
 async function load() {
-  if (loading.value || saving.value) return
+  if (loading.value || saving.value || previewing.value) return
   loading.value = true
   error.value = notice.value = ''
   try {
     summary.value = await adminAPI.accounts.getMonitoringProbeBudget()
     Object.assign(form, summary.value.settings)
+    coverage.value = summary.value.coverage ?? null
+    coverageKey.value = JSON.stringify(form)
     loaded.value = true
   } catch {
     error.value = t(`${prefix}.loadFailed`)
@@ -110,23 +170,33 @@ async function load() {
 }
 
 async function save() {
-  if (!loaded.value || loading.value || saving.value) return
+  if (!loaded.value || loading.value || saving.value || previewing.value) return
   notice.value = ''
-  if (fields.some(({ key, min, max }) => !Number.isInteger(form[key]) || form[key] < min || form[key] > max)) {
-    error.value = t(`${prefix}.invalid`)
-    return
-  }
+  if (!validateForm()) return
   saving.value = true
   error.value = ''
+  let previewCompleted = false
   try {
+    const capacity = await compileCoverage()
+    previewCompleted = true
+    if (!capacity.can_save) {
+      error.value = t(`${prefix}.capacityBlocked`)
+      return
+    }
     Object.assign(form, await adminAPI.accounts.updateMonitoringProbeBudget({ ...form }))
     notice.value = t(`${prefix}.saved`)
     // A failed read must not turn a completed policy write into a failed save.
-    try { summary.value = await adminAPI.accounts.getMonitoringProbeBudget() }
+    try {
+      summary.value = await adminAPI.accounts.getMonitoringProbeBudget()
+      coverage.value = summary.value.coverage ?? null
+      coverageKey.value = JSON.stringify(form)
+    }
     catch { error.value = t(`${prefix}.summaryFailed`) }
   } catch (cause: unknown) {
-    const status = (cause as { status?: number })?.status
-    error.value = t(`${prefix}.${status === 409 ? 'conflict' : 'saveFailed'}`)
+    const failure = cause as { status?: number; reason?: string }
+    const changedCapacity = failure?.reason === 'MONITORING_PROBE_COVERAGE_IMPOSSIBLE'
+    if (changedCapacity || !previewCompleted) coverage.value = null
+    error.value = t(`${prefix}.${failure?.status === 409 ? 'conflict' : changedCapacity ? 'capacityBlocked' : !previewCompleted ? 'capacityPreviewFailed' : 'saveFailed'}`)
   } finally {
     saving.value = false
   }

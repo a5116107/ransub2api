@@ -77,6 +77,7 @@ type MonitoringProbeBudgetDenial struct {
 func (e *MonitoringProbeBudgetDenial) Error() string { return "monitoring probe deferred: " + e.Reason }
 
 type MonitoringProbeBudgetSummary struct {
+	Coverage       *MonitoringProbeCoverage      `json:"coverage"`
 	ObservedAt     time.Time                     `json:"observed_at"`
 	Settings       MonitoringProbeBudgetSettings `json:"settings"`
 	MinuteUsed     int64                         `json:"minute_used"`
@@ -102,6 +103,8 @@ type MonitoringProbeBudgetRequest struct {
 type MonitoringProbeBudgetRepository interface {
 	GetSettings(context.Context) (MonitoringProbeBudgetSettings, error)
 	SaveSettings(context.Context, MonitoringProbeBudgetSettings) (MonitoringProbeBudgetSettings, error)
+	PreviewCoverage(context.Context, MonitoringProbeBudgetSettings) (*MonitoringProbeCoverage, error)
+	SaveBillingProbeSettings(context.Context, UpstreamBillingProbeSettings) error
 	Summary(context.Context) (*MonitoringProbeBudgetSummary, error)
 	Acquire(context.Context, MonitoringProbeBudgetRequest) (string, error)
 	Renew(context.Context, string) (bool, error)

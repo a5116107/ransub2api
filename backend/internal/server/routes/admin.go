@@ -456,6 +456,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.GET("/upstream-billing-probe/settings", h.Admin.Account.GetUpstreamBillingProbeSettings)
 		accounts.GET("/upstream-billing-probe/budget", h.Admin.Account.GetMonitoringProbeBudget)
 		accounts.PUT("/upstream-billing-probe/budget", h.Admin.Account.UpdateMonitoringProbeBudget)
+		accounts.POST("/upstream-billing-probe/budget/preview", h.Admin.Account.PreviewMonitoringProbeCoverage)
 		accounts.PUT("/upstream-billing-probe/settings", h.Admin.Account.UpdateUpstreamBillingProbeSettings)
 		accounts.POST("/upstream-billing-probe/batch", h.Admin.Account.ProbeUpstreamBillingBatch)
 		accounts.GET("/ollama-cloud-usage/settings", h.Admin.Account.GetOllamaCloudUsageSettings)

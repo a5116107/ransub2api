@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,22 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	s.SiteRequestsPerMinute, s.KeyRequestsPerMinute = 1000, 1000
 	s.Concurrency, s.SiteConcurrency, s.KeyConcurrency = 100, 100, 100
 	return s
+}
+
+// Preflight does not retroactively discard valid legacy policy JSON or invent
+// capacity after inventory grows. Reproduce that old writer only in fixtures;
+// the current admin save is independently asserted to reject the shortfall.
+func persistLegacyMonitoringProbeBudget(t *testing.T, db *sql.DB, policy service.MonitoringProbeBudgetSettings) service.MonitoringProbeBudgetSettings {
+	t.Helper()
+	_, err := NewMonitoringProbeBudgetRepository(db).SaveSettings(t.Context(), policy)
+	require.ErrorContains(t, err, "MONITORING_PROBE_COVERAGE_IMPOSSIBLE")
+	policy.Revision++
+	raw, err := json.Marshal(policy)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW())
+ ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at`, service.MonitoringProbeBudgetSettingKey, string(raw))
+	require.NoError(t, err)
+	return policy
 }
 
 func TestMonitoringProbeBudgetActualTokenStop(t *testing.T) {
@@ -1498,8 +1515,7 @@ func TestMonitoringProbeBudgetPhysicalBillingDeferralAndRecovery(t *testing.T) {
 	budgetRepo := NewMonitoringProbeBudgetRepository(db)
 	policy := monitoringBudgetPolicy()
 	policy.RequestsPerDay = 1
-	policy, err := budgetRepo.SaveSettings(t.Context(), policy)
-	require.NoError(t, err)
+	policy = persistLegacyMonitoringProbeBudget(t, db, policy)
 	run := func() *service.UpstreamBillingProbeService {
 		tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
 		runner := service.NewUpstreamBillingProbeService(accounts, tester, service.NewSettingService(NewSettingRepository(client), cfg))
@@ -1581,8 +1597,7 @@ func TestMonitoringProbeBudgetNewAPIPhysicalPaginationRecovery(t *testing.T) {
 	calls.Store(0)
 	policy := monitoringBudgetPolicy()
 	policy.RequestsPerDay = 4
-	policy, err = budget.SaveSettings(t.Context(), policy)
-	require.NoError(t, err)
+	policy = persistLegacyMonitoringProbeBudget(t, db, policy)
 	before, err := accounts.GetByID(t.Context(), account.ID)
 	require.NoError(t, err)
 	_, err = runner.ProbeAccount(t.Context(), account.ID)
@@ -1593,7 +1608,7 @@ func TestMonitoringProbeBudgetNewAPIPhysicalPaginationRecovery(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, before.Extra[service.UpstreamBillingProbeExtraKey], deferred.Extra[service.UpstreamBillingProbeExtraKey])
 	require.NotNil(t, deferred.Extra[service.UpstreamBillingProbeDeferralExtraKey])
-	policy.RequestsPerDay = 100
+	policy.RequestsPerDay = 200
 	_, err = budget.SaveSettings(t.Context(), policy)
 	require.NoError(t, err)
 	snapshot, err := runner.ProbeAccount(t.Context(), account.ID)

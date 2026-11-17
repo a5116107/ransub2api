@@ -202,6 +202,13 @@ func (s *SettingService) GetUpstreamBillingProbeSettings(ctx context.Context) (*
 		}
 		return nil, fmt.Errorf("get upstream billing probe settings: %w", err)
 	}
+	return ParseUpstreamBillingProbeSettings(value)
+}
+
+// ParseUpstreamBillingProbeSettings preserves the original missing/legacy
+// defaults for both the runner and its read-only capacity compiler.
+func ParseUpstreamBillingProbeSettings(value string) (*UpstreamBillingProbeSettings, error) {
+	defaults := defaultUpstreamBillingProbeSettings()
 	if strings.TrimSpace(value) == "" {
 		return defaults, nil
 	}
@@ -221,6 +228,17 @@ func (s *SettingService) SetUpstreamBillingProbeSettings(ctx context.Context, se
 	if s == nil || s.settingRepo == nil {
 		return fmt.Errorf("setting repository is unavailable")
 	}
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal upstream billing probe settings: %w", err)
+	}
+	return s.settingRepo.Set(ctx, SettingKeyUpstreamBillingProbeSettings, string(data))
+}
+
+func (settings *UpstreamBillingProbeSettings) Validate() error {
 	if settings == nil {
 		return infraerrors.BadRequest("INVALID_UPSTREAM_BILLING_PROBE_SETTINGS", "settings cannot be nil")
 	}
@@ -230,12 +248,7 @@ func (s *SettingService) SetUpstreamBillingProbeSettings(ctx context.Context, se
 			fmt.Sprintf("interval_minutes must be between %d and %d", upstreamBillingProbeMinIntervalMinutes, upstreamBillingProbeMaxIntervalMinutes),
 		)
 	}
-	normalizeUpstreamBillingProbeSettings(settings)
-	data, err := json.Marshal(settings)
-	if err != nil {
-		return fmt.Errorf("marshal upstream billing probe settings: %w", err)
-	}
-	return s.settingRepo.Set(ctx, SettingKeyUpstreamBillingProbeSettings, string(data))
+	return nil
 }
 
 func defaultUpstreamBillingProbeSettings() *UpstreamBillingProbeSettings {
@@ -515,6 +528,12 @@ func (s *UpstreamBillingProbeService) GetSettings(ctx context.Context) (*Upstrea
 func (s *UpstreamBillingProbeService) UpdateSettings(ctx context.Context, settings *UpstreamBillingProbeSettings) error {
 	if s == nil || s.settingService == nil {
 		return ErrUpstreamBillingProbeUnavailable
+	}
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	if s.monitoringBudget != nil && s.monitoringBudget.repo != nil {
+		return s.monitoringBudget.repo.SaveBillingProbeSettings(ctx, *settings)
 	}
 	return s.settingService.SetUpstreamBillingProbeSettings(ctx, settings)
 }
