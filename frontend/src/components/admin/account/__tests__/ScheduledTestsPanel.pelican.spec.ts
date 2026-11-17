@@ -124,4 +124,22 @@ describe('shared scheduled test plans for Pelican', () => {
     expect(vm.newPlan.max_results).toBe('100')
     wrapper.unmount()
   })
+  it('shows deferred connectivity history without a failure badge or quality conclusion', async () => {
+    vi.mocked(adminAPI.scheduledTests.listByAccount).mockResolvedValue([{ ...plan, pelican_config: undefined }] as any)
+    vi.mocked(adminAPI.scheduledTests.listResults).mockResolvedValue([{
+      id: 17, plan_id: 4, status: 'deferred', error_message: 'monitoring_budget_deferred',
+      budget_deferral: { reason: 'token_limit', scope: 'global_day', retry_at: '2026-11-19T00:00:00Z' }
+    }] as any)
+    const wrapper = mountPanel(false); await flushPromises()
+    await (wrapper.vm as any).toggleExpand(4); await flushPromises()
+    const badge = wrapper.get('[data-testid="result-status"]')
+    expect(badge.text()).toBe('admin.scheduledTests.deferred')
+    expect(badge.classes()).not.toContain('text-red-700')
+    const notice = wrapper.get('[data-testid="scheduled-budget-deferral"]')
+    expect(notice.text()).toContain('admin.settings.upstreamBillingProbe.budget.token_limit')
+    expect(notice.get('time').attributes('datetime')).toBe('2026-11-19T00:00:00Z')
+    expect(wrapper.text()).not.toContain('admin.scheduledTests.errorMessage')
+    expect(wrapper.text()).not.toContain('monitoring_budget_deferred')
+    wrapper.unmount()
+  })
 })

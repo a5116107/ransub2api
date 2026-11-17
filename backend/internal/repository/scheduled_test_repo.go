@@ -226,17 +226,18 @@ func (r *scheduledTestResultRepository) Create(ctx context.Context, result *serv
 
 func insertScheduledTestResult(ctx context.Context, q planRowQuerier, result *service.ScheduledTestResult) (*service.ScheduledTestResult, error) {
 	row := q.QueryRowContext(ctx, `
-		INSERT INTO scheduled_test_results (plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)
-		RETURNING id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id
-	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt, marshalQualityResultConfig(result), result.QualityAction, marshalQualityJudgment(result.QualityJudgment), result.QualityRoundID)
+		INSERT INTO scheduled_test_results (plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id, budget_deferral)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11, $12)
+		RETURNING id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, pelican_config, quality_action, quality_judgment, quality_round_id, budget_deferral
+	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt, marshalQualityResultConfig(result), result.QualityAction, marshalQualityJudgment(result.QualityJudgment), result.QualityRoundID, marshalScheduledBudgetDeferral(result.BudgetDeferral))
 
 	out := &service.ScheduledTestResult{}
 	var judgment []byte
 	var config []byte
+	var deferral []byte
 	if err := row.Scan(
 		&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
-		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID,
+		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID, &deferral,
 	); err != nil {
 		return nil, err
 	}
@@ -250,12 +251,17 @@ func insertScheduledTestResult(ctx context.Context, q planRowQuerier, result *se
 			return nil, err
 		}
 	}
+	if len(deferral) > 0 {
+		if err := json.Unmarshal(deferral, &out.BudgetDeferral); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 
 func (r *scheduledTestResultRepository) ListByPlanID(ctx context.Context, planID int64, limit int, includeContent ...bool) ([]*service.ScheduledTestResult, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, plan_id, status, CASE WHEN $3 THEN response_text ELSE '' END, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id
+		SELECT id, plan_id, status, CASE WHEN $3 THEN response_text ELSE '' END, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id, budget_deferral
 		FROM scheduled_test_results
 		WHERE plan_id = $1
 		ORDER BY created_at DESC, id DESC
@@ -271,9 +277,10 @@ func (r *scheduledTestResultRepository) ListByPlanID(ctx context.Context, planID
 		r := &service.ScheduledTestResult{}
 		var judgment []byte
 		var config []byte
+		var deferral []byte
 		if err := rows.Scan(
 			&r.ID, &r.PlanID, &r.Status, &r.ResponseText, &r.ErrorMessage,
-			&r.LatencyMs, &r.StartedAt, &r.FinishedAt, &r.CreatedAt, &config, &r.QualityAction, &judgment, &r.QualityRoundID,
+			&r.LatencyMs, &r.StartedAt, &r.FinishedAt, &r.CreatedAt, &config, &r.QualityAction, &judgment, &r.QualityRoundID, &deferral,
 		); err != nil {
 			return nil, err
 		}
@@ -284,6 +291,11 @@ func (r *scheduledTestResultRepository) ListByPlanID(ctx context.Context, planID
 		}
 		if len(judgment) > 0 {
 			if err := json.Unmarshal(judgment, &r.QualityJudgment); err != nil {
+				return nil, err
+			}
+		}
+		if len(deferral) > 0 {
+			if err := json.Unmarshal(deferral, &r.BudgetDeferral); err != nil {
 				return nil, err
 			}
 		}
@@ -536,6 +548,7 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 	out := &service.ScheduledTestResult{}
 	var judgment []byte
 	var config []byte
+	var deferral []byte
 	var evaluatedAt, ruleVersion time.Time
 	var ruleEnabled bool
 	var round qualityMeasurementRoundRead
@@ -557,10 +570,10 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
  (SELECT max(r.finished_at) FROM scheduled_test_results r JOIN detail d ON d.plan_id=r.plan_id AND d.quality_round_id=r.quality_round_id) AS samples_finished_at
  FROM quality_classified
  ) SELECT id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id,
- current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at,account_id,pelican_config->'_quality_observed_route',availability_fault_version FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
+ current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at,account_id,pelican_config->'_quality_observed_route',availability_fault_version,budget_deferral FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
 		&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
 		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID,
-		&ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt, &accountID, &routeJSON, &faultVersion)
+		&ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt, &accountID, &routeJSON, &faultVersion, &deferral)
 	if err != nil {
 		return nil, err
 	}
@@ -571,6 +584,11 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 	}
 	if len(judgment) > 0 {
 		if err := json.Unmarshal(judgment, &out.QualityJudgment); err != nil {
+			return nil, err
+		}
+	}
+	if len(deferral) > 0 {
+		if err := json.Unmarshal(deferral, &out.BudgetDeferral); err != nil {
 			return nil, err
 		}
 	}
@@ -711,5 +729,13 @@ func marshalQualityJudgment(judgment *service.QualityJudgment) any {
 		return nil
 	}
 	data, _ := json.Marshal(judgment)
+	return string(data)
+}
+
+func marshalScheduledBudgetDeferral(deferral *service.MonitoringProbeBudgetDenial) any {
+	if deferral == nil {
+		return nil
+	}
+	data, _ := json.Marshal(deferral)
 	return string(data)
 }

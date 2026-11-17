@@ -3815,6 +3815,7 @@ func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) er
 // capturing SSE output via httptest.NewRecorder, then parses the result.
 func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error) {
 	startedAt := time.Now()
+	ctx = s.monitoringBudget.qualityContext(ctx)
 
 	w := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(w)
@@ -3835,14 +3836,20 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 		}
 	}
 
-	return &ScheduledTestResult{
+	result := &ScheduledTestResult{
 		Status:       status,
 		ResponseText: responseText,
 		ErrorMessage: errMsg,
 		LatencyMs:    finishedAt.Sub(startedAt).Milliseconds(),
 		StartedAt:    startedAt,
 		FinishedAt:   finishedAt,
-	}, nil
+	}
+	if denial := monitoringProbeDeferral(testErr, finishedAt); denial != nil {
+		result.Status = "deferred"
+		result.ErrorMessage = "monitoring_budget_deferred"
+		result.BudgetDeferral = denial
+	}
+	return result, nil
 }
 
 // parseTestSSEOutput extracts response text and error message from captured SSE output.

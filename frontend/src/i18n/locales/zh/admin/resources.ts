@@ -21,6 +21,7 @@ export default {
       errorMessage: '错误',
       success: '成功',
       failed: '失败',
+      deferred: '检测已延期',
       running: '运行中',
       schedule: '定时测试',
       cronHelp: '标准 5 字段 cron 表达式（例如 */30 * * * *）',

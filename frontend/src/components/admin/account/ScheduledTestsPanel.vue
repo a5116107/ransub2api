@@ -408,9 +408,9 @@
                 <button v-if="pelicanConfig" type="button" class="mt-2 text-xs text-primary-600" :disabled="disabled" @click="previewResult(result)">
                   {{ t('admin.accounts.pelicanTest.preview') }}
                 </button>
-                <MonitoringProbeBudgetNotice v-if="result.quality_judgment?.budget_deferral" :deferral="result.quality_judgment.budget_deferral" :title="t('modelTrace.budgetPaused')" class="mt-2" data-testid="scheduled-budget-deferral" />
+                <MonitoringProbeBudgetNotice v-if="resultBudgetDeferral(result)" :deferral="resultBudgetDeferral(result)!" :title="t('modelTrace.budgetPaused')" class="mt-2" data-testid="scheduled-budget-deferral" />
                 <!-- Response / Error (collapsible) -->
-                <div v-if="result.error_message && stateProbeVerdict(result) !== 'degraded' && !result.quality_judgment?.budget_deferral" class="mt-2">
+                <div v-if="result.error_message && stateProbeVerdict(result) !== 'degraded' && !resultBudgetDeferral(result)" class="mt-2">
                   <div
                     class="cursor-pointer text-xs font-medium text-red-600 dark:text-red-400"
                     @click="toggleResultDetail(result.id)"
@@ -499,9 +499,11 @@ const probeVerdictClass: Record<StateProbeVerdict, string> = {
   degraded: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400',
   inconclusive: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
 }
+const resultBudgetDeferral = (result: ScheduledTestResult) => result.budget_deferral ?? result.quality_judgment?.budget_deferral
 const statusClass = (result: ScheduledTestResult) => {
   const verdict = stateProbeVerdict(result)
   if (verdict) return probeVerdictClass[verdict]
+  if (resultBudgetDeferral(result)) return probeVerdictClass.inconclusive
   if (result.status === 'success') return 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-400'
   if (result.status === 'running') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400'
   return 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400'
@@ -509,6 +511,7 @@ const statusClass = (result: ScheduledTestResult) => {
 const statusLabel = (result: ScheduledTestResult) => {
   const verdict = stateProbeVerdict(result)
   if (verdict) return t(`admin.accounts.pelicanTest.probe.${probeVerdictLabel[verdict]}`)
+  if (resultBudgetDeferral(result)) return t('admin.scheduledTests.deferred')
   if (result.status === 'success') return t('admin.scheduledTests.success')
   if (result.status === 'running') return t('admin.scheduledTests.running')
   return t('admin.scheduledTests.failed')

@@ -2969,6 +2969,7 @@ export interface ScheduledTestPlan {
 }
 
 export interface ScheduledTestResult {
+  budget_deferral?: MonitoringProbeBudgetDeferral
   quality_measurement_validity?: {
     status: 'within_window' | 'expired' | 'unknown'
     reason: string

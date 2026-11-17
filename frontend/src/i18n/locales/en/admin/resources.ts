@@ -21,6 +21,7 @@ export default {
       errorMessage: 'Error',
       success: 'Success',
       failed: 'Failed',
+      deferred: 'Deferred',
       running: 'Running',
       schedule: 'Schedule',
       cronHelp: 'Standard 5-field cron expression (e.g., */30 * * * *)',
