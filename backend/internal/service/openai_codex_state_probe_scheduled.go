@@ -69,6 +69,10 @@ func (s *AccountTestService) runOpenAICodexStateProbeScheduled(ctx context.Conte
 	if cfg.Quality != nil {
 		result.QualityJudgment = &QualityJudgment{Verdict: openAICodexStateQualityVerdict(probe.Verdict), Reason: probe.Reason, AccountID: accountID}
 	}
+	if probe.BudgetDeferral != nil {
+		result.Status, result.ErrorMessage = "failed", "answer_budget_deferred"
+		result.QualityJudgment = &QualityJudgment{Verdict: "unknown", Reason: "answer_budget_deferred", AccountID: accountID, BudgetDeferral: probe.BudgetDeferral}
+	}
 	return result, nil
 }
 

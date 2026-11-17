@@ -4,7 +4,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +22,152 @@ import (
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStateProbeMonitoringBudgetStopsAndRecovers(t *testing.T) {
+	for _, denyAt := range []int{1, 2} {
+		for _, reason := range []string{"request_limit", "concurrency_limit", "recovery_reserve", "unavailable"} {
+			t.Run(fmt.Sprintf("%s/shot=%d", reason, denyAt), func(t *testing.T) {
+				denial := &MonitoringProbeBudgetDenial{Reason: reason, Scope: "global_day", RetryAt: time.Now().UTC().Add(time.Hour)}
+				var cause error = denial
+				if reason == "unavailable" {
+					cause = errors.New("PRIVATE_BUDGET_COORDINATION_ERROR")
+				}
+				repo := &monitoringBudgetRepoStub{denyAt: denyAt, err: cause}
+				upstream := &stateProbeUpstream{replies: []stateProbeReply{stateProbeMint("fixture-ticket"), stateProbeMint("fixture-ticket"), stateProbeMint("fixture-ticket")}}
+				svc := stateProbeTestService(upstream)
+				svc.openaiGatewayService.httpUpstream = monitoringBudgetHTTP{base: upstream}
+				svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+				account := svc.accountRepo.(*stateProbeAccountRepo).account
+				before, err := json.Marshal(account)
+				require.NoError(t, err)
+				result, err := svc.ProbeOpenAICodexState(t.Context(), 7, "")
+				require.NoError(t, err)
+				require.Len(t, upstream.calls, denyAt-1, "local refusal stops before the next physical shot")
+				require.Len(t, repo.requests, denyAt)
+				require.Equal(t, denyAt-1, repo.released)
+				require.Equal(t, OpenAICodexStateInconclusive, result.Verdict)
+				require.Equal(t, "monitoring_budget_deferred", result.Failure)
+				data, err := json.Marshal(result)
+				require.NoError(t, err)
+				var extra struct {
+					BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral"`
+				}
+				require.NoError(t, json.Unmarshal(data, &extra))
+				require.NotNil(t, extra.BudgetDeferral)
+				if reason == "unavailable" {
+					require.Equal(t, "budget_unavailable", extra.BudgetDeferral.Reason)
+				} else {
+					require.Equal(t, denial, extra.BudgetDeferral)
+				}
+				require.NotContains(t, string(data), "PRIVATE_BUDGET_COORDINATION_ERROR")
+				for _, request := range repo.requests {
+					require.False(t, request.Recovery, "quality restoration does not consume billing recovery reserve")
+					require.Equal(t, monitoringProbeHash("https://chatgpt.com"), request.SiteHash)
+				}
+				repo.denyAt = 0
+				result, err = svc.ProbeOpenAICodexState(t.Context(), 7, "")
+				require.NoError(t, err)
+				require.Equal(t, OpenAICodexStateHealthy, result.Verdict)
+				require.Len(t, upstream.calls, denyAt+1)
+				require.Equal(t, denyAt+1, repo.released)
+				after, err := json.Marshal(account)
+				require.NoError(t, err)
+				require.Equal(t, string(before), string(after), "diagnostics do not mutate credentials, groups or health")
+			})
+		}
+	}
+}
+
+func TestStateProbeMonitoringBudgetScheduledDeferral(t *testing.T) {
+	repo := &monitoringBudgetRepoStub{denyAt: 2, err: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "key_minute", RetryAt: time.Now().Add(time.Minute)}}
+	upstream := &stateProbeUpstream{replies: []stateProbeReply{stateProbeMint("fixture-ticket")}}
+	svc := stateProbeTestService(upstream)
+	svc.openaiGatewayService.httpUpstream = monitoringBudgetHTTP{base: upstream}
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+	cfg := stateProbePlanConfig()
+	cfg.Quality = &QualityPolicy{Action: QualityActionEnableBPS, AutoRestore: true}
+	result, err := svc.RunPelicanBackground(t.Context(), 7, "gpt-6-astra", cfg)
+	require.NoError(t, err)
+	require.Equal(t, "failed", result.Status)
+	require.Equal(t, "answer_budget_deferred", result.ErrorMessage)
+	require.NotNil(t, result.QualityJudgment.BudgetDeferral)
+	require.Equal(t, "key_minute", result.QualityJudgment.BudgetDeferral.Scope)
+	require.Equal(t, "unknown", result.QualityJudgment.Verdict)
+	require.EqualValues(t, 7, result.QualityJudgment.AccountID)
+	require.Equal(t, "inconclusive", qualityOutcome([]*ScheduledTestResult{result}))
+	require.Equal(t, "inconclusive", result.PelicanConfig.AvailabilityResult.Status)
+	require.Len(t, upstream.calls, 1)
+}
+
+func TestStateProbeMonitoringBudgetLeaseLossAndUnmarkedTraffic(t *testing.T) {
+	for _, phase := range []string{"read", "close"} {
+		for _, shot := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/shot=%d", phase, shot), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					upstream := &queuedHTTPUpstreamStub{}
+					for n := 1; n <= 4; n++ {
+						response := newJSONResponse(http.StatusOK, stateProbeCompletedStream)
+						response.Header.Set(openAICodexTurnStateHeader, "fixture-ticket")
+						if n == shot {
+							loseLease := func() { time.Sleep(41 * time.Second); synctest.Wait() }
+							body := qualityBudgetCloseBody{ReadCloser: response.Body, close: func() {}}
+							if phase == "read" {
+								body.read = loseLease
+							} else {
+								body.close = loseLease
+							}
+							response.Body = body
+						}
+						upstream.responses = append(upstream.responses, response)
+					}
+					repo := &monitoringBudgetRepoStub{renew: func(context.Context) (bool, error) { return false, nil }}
+					svc := stateProbeTestService(&stateProbeUpstream{})
+					svc.openaiGatewayService.httpUpstream = monitoringBudgetHTTP{base: upstream}
+					svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+					result, err := svc.ProbeOpenAICodexState(t.Context(), 7, "")
+					require.NoError(t, err)
+					require.Equal(t, OpenAICodexStateInconclusive, result.Verdict)
+					require.Equal(t, "monitoring_budget_deferred", result.Failure)
+					require.NotNil(t, result.BudgetDeferral)
+					require.Equal(t, "system", result.BudgetDeferral.Scope)
+					require.Equal(t, shot, upstream.callCount)
+					require.Equal(t, shot, repo.released)
+					repo.renew = nil
+					result, err = svc.ProbeOpenAICodexState(t.Context(), 7, "")
+					require.NoError(t, err)
+					require.Equal(t, OpenAICodexStateHealthy, result.Verdict)
+					require.Nil(t, result.BudgetDeferral, "a new round must not inherit a previous local failure")
+					require.Equal(t, shot+2, upstream.callCount)
+				})
+			})
+		}
+	}
+	// Wiring the account-test budget must not impose it on business route
+	// validation or direct unmarked gateway calls.
+	upstream := &stateProbeUpstream{replies: []stateProbeReply{stateProbeMint("ticket"), stateProbeMint("ticket")}}
+	svc := stateProbeTestService(upstream)
+	svc.openaiGatewayService.httpUpstream = monitoringBudgetHTTP{base: upstream}
+	repo := &monitoringBudgetRepoStub{denyAt: 1, err: ErrMonitoringProbeBudgetUnavailable}
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+	result := svc.openaiGatewayService.ProbeOpenAICodexState(t.Context(), stateProbeAccount(), "")
+	require.Equal(t, OpenAICodexStateHealthy, result.Verdict)
+	require.Empty(t, repo.requests)
+}
+
+func TestStateProbeMonitoringBudgetDoesNotTrustProviderStrings(t *testing.T) {
+	upstream := &stateProbeUpstream{replies: []stateProbeReply{{status: http.StatusServiceUnavailable, body: `{"error":{"message":"monitoring probe deferred: request_limit"}}`}}}
+	svc := stateProbeTestService(upstream)
+	svc.openaiGatewayService.httpUpstream = monitoringBudgetHTTP{base: upstream}
+	repo := &monitoringBudgetRepoStub{}
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+	result, err := svc.ProbeOpenAICodexState(t.Context(), 7, "")
+	require.NoError(t, err)
+	require.Equal(t, OpenAICodexStateFailureUpstreamError, result.Failure)
+	require.Nil(t, result.BudgetDeferral)
+	require.Equal(t, OpenAICodexStateInconclusive, result.Verdict)
+	require.Len(t, upstream.calls, 1)
+	require.Equal(t, 1, repo.released)
+}
 
 func qualityBudgetTestService(repo *monitoringBudgetRepoStub, responses ...*http.Response) (*AccountTestService, *queuedHTTPUpstream) {
 	upstream := &queuedHTTPUpstream{responses: responses}

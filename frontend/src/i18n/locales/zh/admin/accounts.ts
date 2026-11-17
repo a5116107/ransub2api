@@ -2176,7 +2176,9 @@ export default {
           finishedAt: '完成时间',
           limitation: '判据只看门票头（x-codex-turn-state），不看回报的模型名——降到 luna 时它仍会显示 astra。单次结果受当次上游波动影响，建议结合多次结果或题目测试一起看。',
           requestFailed: '探针请求失败',
+          budgetPaused: '探针因本地检测预算暂停，并非上游质量失败；不会自动补发，到达重试时间也不保证获得额度。',
           failures: {
+            monitoring_budget_deferred: '本地检测预算延期',
             unsupported: '账号不适用',
             account_error: '账号认证异常',
             rate_limited: '被上游限流',

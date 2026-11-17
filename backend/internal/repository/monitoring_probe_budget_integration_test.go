@@ -36,6 +36,144 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	return s
 }
 
+func TestStateProbeMonitoringBudgetPostgresSharedKeyRestartAndRecovery(t *testing.T) {
+	for _, scope := range []string{"global_day", "key_minute"} {
+		t.Run(scope, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			var calls, redirected atomic.Int32
+			var redirect atomic.Bool
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				redirected.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(target.Close)
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Host != "chatgpt.com" || r.URL.Path != "/backend-api/codex/responses" || r.Header.Get("Authorization") != "Bearer state-budget-fixture" {
+					http.Error(w, "unexpected state probe request", http.StatusBadRequest)
+					return
+				}
+				calls.Add(1)
+				if redirect.Load() {
+					http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("x-codex-turn-state", "fixture-ticket")
+				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+			}))
+			t.Cleanup(server.Close)
+			roots := x509.NewCertPool()
+			roots.AddCert(server.Certificate())
+			transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}}
+			transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+			}
+			t.Cleanup(transport.CloseIdleConnections)
+			httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			upstream := gatewayPinDelegate{call: func(r *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+				require.True(t, service.HTTPUpstreamRedirectsDisabled(r.Context()))
+				return httpClient.Do(r)
+			}}
+			accounts := newAccountRepositoryWithSQL(client, db, nil)
+			makeAccount := func(name string) *service.Account {
+				return mustCreateAccount(t, client, &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+					Status: service.StatusActive, Schedulable: true, Concurrency: 2,
+					Credentials: map[string]any{"access_token": "state-budget-fixture", "chatgpt_account_id": "state-fixture-account", "base_url": "https://unused.invalid/tenant"}})
+			}
+			first, alias := makeAccount("state-budget"), makeAccount("state-budget-alias")
+			accountSnapshot := func(id int64) string {
+				var snapshot string
+				require.NoError(t, db.QueryRowContext(t.Context(), `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&snapshot))
+				return snapshot
+			}
+			before := map[int64]string{first.ID: accountSnapshot(first.ID), alias.ID: accountSnapshot(alias.ID)}
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			if scope == "global_day" {
+				policy.RequestsPerDay = 1
+			} else {
+				policy.KeyRequestsPerMinute = 1
+			}
+			policy, err := budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			cfg := &config.Config{}
+			run := func(accountID int64, scheduled bool) *service.OpenAICodexStateProbeResult {
+				gateway := service.NewOpenAIGatewayService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+				t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+				t.Cleanup(gateway.CloseOpenAIWSPool)
+				tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+				tests.SetOpenAIGatewayService(gateway)
+				tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+				if scheduled {
+					result, err := tests.RunPelicanBackground(t.Context(), accountID, "gpt-6-astra", &service.PelicanTestConfig{QuestionKind: service.OpenAICodexStateProbeQuestionKind,
+						ParallelCount: 1, Quality: &service.QualityPolicy{Action: service.QualityActionEnableBPS, AutoRestore: true}})
+					require.NoError(t, err)
+					require.Equal(t, "answer_budget_deferred", result.ErrorMessage)
+					require.Equal(t, "unknown", result.QualityJudgment.Verdict)
+					require.Equal(t, scope, result.QualityJudgment.BudgetDeferral.Scope)
+					raw, err := json.Marshal(result)
+					require.NoError(t, err)
+					var stored service.ScheduledTestResult
+					require.NoError(t, json.Unmarshal(raw, &stored))
+					require.Equal(t, result.QualityJudgment.BudgetDeferral, stored.QualityJudgment.BudgetDeferral)
+					plan, err := NewScheduledTestPlanRepository(db).Create(t.Context(), &service.ScheduledTestPlan{AccountID: accountID,
+						ModelID: "gpt-6-astra", CronExpression: "*/5 * * * *", Enabled: true, MaxResults: 20, PelicanConfig: result.PelicanConfig})
+					require.NoError(t, err)
+					result.PlanID = plan.ID
+					saved, err := NewScheduledTestResultRepository(db).Create(t.Context(), result)
+					require.NoError(t, err)
+					read, err := NewScheduledTestResultRepository(db).GetResult(t.Context(), plan.ID, saved.ID)
+					require.NoError(t, err)
+					require.Equal(t, "answer_budget_deferred", read.ErrorMessage)
+					require.Equal(t, result.QualityJudgment, read.QualityJudgment)
+					require.Equal(t, "inconclusive", read.PelicanConfig.AvailabilityResult.Status)
+					return nil
+				}
+				result, err := tests.ProbeOpenAICodexState(t.Context(), accountID, "")
+				require.NoError(t, err)
+				return result
+			}
+			deferred := run(first.ID, false)
+			require.EqualValues(t, 1, calls.Load())
+			require.Equal(t, service.OpenAICodexStateInconclusive, deferred.Verdict)
+			require.Equal(t, "monitoring_budget_deferred", deferred.Failure)
+			require.Equal(t, scope, deferred.BudgetDeferral.Scope)
+			_ = run(alias.ID, true)
+			require.EqualValues(t, 1, calls.Load(), "fresh services and duplicate accounts cannot reset SQL credential counters")
+			usage, err := budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.EqualValues(t, 1, usage.DayUsed)
+			require.Zero(t, usage.ActiveRequests)
+			policy.RequestsPerDay, policy.KeyRequestsPerMinute = 100, 100
+			policy, err = budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			recovered := run(alias.ID, false)
+			require.Equal(t, service.OpenAICodexStateHealthy, recovered.Verdict)
+			require.Nil(t, recovered.BudgetDeferral)
+			require.EqualValues(t, 3, calls.Load())
+			policy.Enabled = false
+			_, err = budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			recovered = run(first.ID, false)
+			require.Equal(t, service.OpenAICodexStateHealthy, recovered.Verdict)
+			require.EqualValues(t, 5, calls.Load(), "observe-only still accounts both physical shots")
+			redirect.Store(true)
+			rejected := run(first.ID, false)
+			require.Equal(t, service.OpenAICodexStateInconclusive, rejected.Verdict)
+			require.Nil(t, rejected.BudgetDeferral, "an upstream redirect is not local budget exhaustion")
+			require.Zero(t, redirected.Load())
+			usage, err = budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.EqualValues(t, 6, usage.DayUsed)
+			require.Zero(t, usage.ActiveRequests)
+			for id, snapshot := range before {
+				require.True(t, snapshot == accountSnapshot(id), "budget diagnostic and recovery do not modify the account")
+			}
+		})
+	}
+}
+
 func TestModelTraceMonitoringBudgetPostgresSharedKeyAndRecovery(t *testing.T) {
 	for _, scope := range []string{"global_day", "key_minute"} {
 		t.Run(scope, func(t *testing.T) {
@@ -591,6 +729,30 @@ func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 			}
 		})
 	}
+	t.Run("minute-rollover-retains-day-usage", func(t *testing.T) {
+		settings := monitoringBudgetPolicy()
+		settings.RequestsPerMinute = 1
+		reset(t, settings)
+		id, err := repo.Acquire(ctx, request)
+		require.NoError(t, err)
+		require.NoError(t, repo.Release(ctx, id))
+		_, err = repo.Acquire(ctx, request)
+		var denial *service.MonitoringProbeBudgetDenial
+		require.ErrorAs(t, err, &denial)
+		require.Equal(t, "global_minute", denial.Scope)
+		// Move only the minute windows into the past; do not erase the
+		// physical attempts or wait on a real wall-clock boundary.
+		_, err = db.ExecContext(ctx, `UPDATE monitoring_probe_budget_counters SET bucket_start=bucket_start-INTERVAL '1 minute' WHERE dimension<>'global_day'`)
+		require.NoError(t, err)
+		id, err = NewMonitoringProbeBudgetRepository(db).Acquire(ctx, request)
+		require.NoError(t, err)
+		require.NoError(t, repo.Release(ctx, id))
+		summary, err := repo.Summary(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, summary.MinuteUsed)
+		require.EqualValues(t, 2, summary.DayUsed)
+		require.Zero(t, summary.ActiveRequests)
+	})
 	t.Run("recovery-reserve-and-hard-cap", func(t *testing.T) {
 		settings := monitoringBudgetPolicy()
 		settings.RequestsPerMinute = 5
@@ -799,7 +961,7 @@ func TestMonitoringProbeBudgetPhysicalBillingDeferralAndRecovery(t *testing.T) {
 		Extra:       map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true, service.UpstreamBillingProbeExtraKey: map[string]any{"status": "failed", "failure_count": 3, "last_attempt_at": old, "next_probe_at": old}}})
 	budgetRepo := NewMonitoringProbeBudgetRepository(db)
 	policy := monitoringBudgetPolicy()
-	policy.RequestsPerMinute = 1
+	policy.RequestsPerDay = 1
 	policy, err := budgetRepo.SaveSettings(t.Context(), policy)
 	require.NoError(t, err)
 	run := func() *service.UpstreamBillingProbeService {
@@ -820,7 +982,7 @@ func TestMonitoringProbeBudgetPhysicalBillingDeferralAndRecovery(t *testing.T) {
 	require.NotNil(t, deferred.Extra[service.UpstreamBillingProbeDeferralExtraKey])
 	require.NoError(t, run().RunDue(t.Context()))
 	require.EqualValues(t, 1, calls.Load(), "restart honors persisted deferral")
-	policy.RequestsPerMinute = 100
+	policy.RequestsPerDay = 100
 	_, err = budgetRepo.SaveSettings(t.Context(), policy)
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), `UPDATE accounts SET extra=jsonb_set(extra,'{upstream_billing_probe_deferral,retry_at}',to_jsonb($1::text)) WHERE id=$2`, old.Format(time.RFC3339Nano), account.ID)
@@ -834,7 +996,7 @@ func TestMonitoringProbeBudgetPhysicalBillingDeferralAndRecovery(t *testing.T) {
 	require.ErrorIs(t, accounts.DeferUpstreamBillingProbe(t.Context(), before, denial), service.ErrUpstreamBillingProbeIdentityChanged, "late deferral cannot overwrite a newer snapshot")
 	summary, err := budgetRepo.Summary(t.Context())
 	require.NoError(t, err)
-	require.EqualValues(t, 3, summary.MinuteUsed)
+	require.EqualValues(t, 3, summary.DayUsed)
 	require.Zero(t, summary.ActiveRequests)
 }
 
@@ -877,12 +1039,12 @@ func TestMonitoringProbeBudgetNewAPIPhysicalPaginationRecovery(t *testing.T) {
 	require.NoError(t, err)
 	summary, err := budget.Summary(t.Context())
 	require.NoError(t, err)
-	require.EqualValues(t, 6, summary.MinuteUsed, "previews count every management request and page")
+	require.EqualValues(t, 6, summary.DayUsed, "previews count every management request and page, including across a minute boundary")
 	_, err = db.ExecContext(t.Context(), `TRUNCATE monitoring_probe_budget_counters,monitoring_probe_budget_leases`)
 	require.NoError(t, err)
 	calls.Store(0)
 	policy := monitoringBudgetPolicy()
-	policy.RequestsPerMinute = 4
+	policy.RequestsPerDay = 4
 	policy, err = budget.SaveSettings(t.Context(), policy)
 	require.NoError(t, err)
 	before, err := accounts.GetByID(t.Context(), account.ID)
@@ -895,7 +1057,7 @@ func TestMonitoringProbeBudgetNewAPIPhysicalPaginationRecovery(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, before.Extra[service.UpstreamBillingProbeExtraKey], deferred.Extra[service.UpstreamBillingProbeExtraKey])
 	require.NotNil(t, deferred.Extra[service.UpstreamBillingProbeDeferralExtraKey])
-	policy.RequestsPerMinute = 100
+	policy.RequestsPerDay = 100
 	_, err = budget.SaveSettings(t.Context(), policy)
 	require.NoError(t, err)
 	snapshot, err := runner.ProbeAccount(t.Context(), account.ID)
@@ -907,6 +1069,6 @@ func TestMonitoringProbeBudgetNewAPIPhysicalPaginationRecovery(t *testing.T) {
 	require.Nil(t, restored.Extra[service.UpstreamBillingProbeDeferralExtraKey])
 	summary, err = budget.Summary(t.Context())
 	require.NoError(t, err)
-	require.EqualValues(t, 10, summary.MinuteUsed)
+	require.EqualValues(t, 10, summary.DayUsed)
 	require.Zero(t, summary.ActiveRequests)
 }

@@ -97,6 +97,25 @@ describe('shared scheduled test plans for Pelican', () => {
     expect(wrapper.text().split('admin.scheduledTests.errorMessage')).toHaveLength(2)
     wrapper.unmount()
   })
+  it('shows the stored local budget conclusion instead of an upstream error for deferred state probes', async () => {
+    const probe = { prompt: '', reasoning_effort: 'medium', parallel_count: 1, question_kind: 'state_probe' }
+    vi.mocked(adminAPI.scheduledTests.listByAccount).mockResolvedValue([{ ...plan, auto_recover: false, pelican_config: probe }] as any)
+    vi.mocked(adminAPI.scheduledTests.listResults).mockResolvedValue([{
+      id: 9, plan_id: 4, status: 'failed', error_message: 'answer_budget_deferred', pelican_config: probe,
+      quality_judgment: { verdict: 'unknown', reason: 'answer_budget_deferred', budget_deferral: {
+        reason: 'request_limit', scope: 'global_day', retry_at: '2026-11-18T00:00:00Z'
+      } }
+    }] as any)
+    const wrapper = mountPanel(); await flushPromises()
+    expect(wrapper.get('[data-testid="result-status"]').text()).toBe('admin.accounts.pelicanTest.probe.verdictInconclusive')
+    const notice = wrapper.get('[data-testid="scheduled-budget-deferral"]')
+    expect(notice.text()).toContain('modelTrace.budgetPaused')
+    expect(notice.text()).toContain('modelTrace.budgetScopes.global_day')
+    expect(notice.get('time').attributes('datetime')).toBe('2026-11-18T00:00:00Z')
+    expect(wrapper.text()).not.toContain('admin.scheduledTests.errorMessage')
+    expect(wrapper.text()).not.toContain('answer_budget_deferred')
+    wrapper.unmount()
+  })
   it('keeps ordinary connection tests free of Pelican options', async () => {
     const wrapper = mountPanel(false); await flushPromises()
     const vm = wrapper.vm as any

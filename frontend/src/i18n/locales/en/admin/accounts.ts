@@ -2090,7 +2090,9 @@ export default {
           finishedAt: 'Finished at',
           limitation: 'The verdict only uses the turn-state header (x-codex-turn-state), not the reported model name, which still says astra after a downgrade to luna. A single result can be affected by upstream noise; compare several runs or the question test.',
           requestFailed: 'Probe request failed',
+          budgetPaused: 'Probe paused by the local monitoring budget, not an upstream quality failure. No automatic replacement shots; the retry time does not guarantee capacity.',
           failures: {
+            monitoring_budget_deferred: 'Local monitoring budget deferred',
             unsupported: 'Account not supported',
             account_error: 'Account authentication error',
             rate_limited: 'Rate limited upstream',

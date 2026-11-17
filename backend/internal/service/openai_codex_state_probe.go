@@ -58,11 +58,12 @@ var ErrOpenAICodexStateProbeBusy = infraerrors.Conflict("STATE_PROBE_BUSY", "该
 
 // OpenAICodexStateProbeResult 是一次门票探针的完整结果，可直接作为接口 JSON 返回。
 type OpenAICodexStateProbeResult struct {
-	AccountID int64                   `json:"account_id"`
-	Model     string                  `json:"model"`
-	Verdict   OpenAICodexStateVerdict `json:"verdict"`
-	Reason    string                  `json:"reason"`
-	Failure   string                  `json:"failure,omitempty"`
+	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	AccountID      int64                        `json:"account_id"`
+	Model          string                       `json:"model"`
+	Verdict        OpenAICodexStateVerdict      `json:"verdict"`
+	Reason         string                       `json:"reason"`
+	Failure        string                       `json:"failure,omitempty"`
 	// Detail 是脱敏截断后的上游报错原文，便于看出「模型不支持」之类的具体原因。
 	Detail string `json:"detail,omitempty"`
 
@@ -255,6 +256,17 @@ func (r *OpenAICodexStateProbeResult) fail(kind, reason, detail string) {
 
 // shotUsable 判断一发是否干净跑通；没跑通时写好失败分类并返回 false。
 func (r *OpenAICodexStateProbeResult) shotUsable(ctx context.Context, step string, shot openAICodexStateShot, err error) bool {
+	// Reading or closing a stream can lose the lease after the adapter has
+	// already received a completed event. Only the request-owned observer, not
+	// provider error text, can establish that local interruption.
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		err = local
+	}
+	if denial := monitoringProbeDeferral(err, time.Now()); denial != nil {
+		r.BudgetDeferral = denial
+		r.fail("monitoring_budget_deferred", "本地检测预算延期，本轮未取得完整探针结论", "")
+		return false
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			r.fail(OpenAICodexStateFailureCancelled, step+"请求被取消或超时", "")
@@ -546,6 +558,10 @@ func (s *AccountTestService) probeOpenAICodexState(ctx context.Context, accountI
 		return nil, ErrOpenAICodexStateProbeBusy
 	}
 	defer release()
+	// These two diagnostic shots use the fixed Codex origin, never the
+	// account's optional API base. Each physical transport extracts the final
+	// credential and acquires the existing shared budget independently.
+	ctx = s.monitoringBudget.Context(WithHTTPUpstreamRedirectsDisabled(ctx), "https://chatgpt.com", false)
 	return s.openaiGatewayService.probeOpenAICodexState(ctx, account, model, ignoreBPS), nil
 }
 

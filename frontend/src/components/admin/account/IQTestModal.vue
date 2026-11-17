@@ -81,6 +81,7 @@
             </span>
           </header>
           <p class="mt-3 text-sm text-gray-800 dark:text-gray-100" data-testid="probe-reason">{{ result.reason }}</p>
+          <MonitoringProbeBudgetNotice v-if="result.budget_deferral" :deferral="result.budget_deferral" :title="t('admin.accounts.pelicanTest.probe.budgetPaused')" class="mt-3" data-testid="probe-budget-deferral" />
           <pre v-if="result.detail" class="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-2 text-xs text-gray-600 dark:bg-dark-900 dark:text-gray-300" data-testid="probe-detail">{{ t('admin.accounts.pelicanTest.probe.detail') }}：{{ result.detail }}</pre>
           <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
             <div>
@@ -316,6 +317,7 @@ import ScheduledTestsPanel from './ScheduledTestsPanel.vue'
 import PelicanRecordsDashboard from './PelicanRecordsDashboard.vue'
 import TestModelSelect from './TestModelSelect.vue'
 import ModelTracePanel from './ModelTracePanel.vue'
+import MonitoringProbeBudgetNotice from './MonitoringProbeBudgetNotice.vue'
 
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -323,7 +325,7 @@ const auth = useAuthStore()
 const STORAGE_PREFIX = 'sub2api-pelican-test:'
 const PROBE_CONTROLLER_KEY = 'state-probe'
 const PROBE_RESULT_LIMIT = 5
-const PROBE_FAILURE_KINDS = new Set(['unsupported', 'account_error', 'rate_limited', 'model_unsupported', 'upstream_error', 'network_error', 'stream_error', 'no_ticket', 'cancelled'])
+const PROBE_FAILURE_KINDS = new Set(['unsupported', 'account_error', 'rate_limited', 'model_unsupported', 'upstream_error', 'network_error', 'stream_error', 'no_ticket', 'cancelled', 'monitoring_budget_deferred'])
 
 type TestMode = 'question' | 'probe' | 'modeltrace'
 const testModes: TestMode[] = ['question', 'probe', 'modeltrace']

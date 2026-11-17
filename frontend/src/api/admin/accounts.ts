@@ -1,5 +1,5 @@
 import type { AccountPerformance, PerformanceConfig, PerformanceEvent } from '@/types/accountPerformance'
-import type { MonitoringProbeBudgetSettings, MonitoringProbeBudgetSummary } from '@/types/monitoringProbeBudget'
+import type { MonitoringProbeBudgetDeferral, MonitoringProbeBudgetSettings, MonitoringProbeBudgetSummary } from '@/types/monitoringProbeBudget'
 /**
  * Admin Accounts API endpoints
  * Handles AI platform account management for administrators
@@ -1136,6 +1136,7 @@ export async function probeUpstreamBillingBatch(accountIds: number[]): Promise<U
 export type OpenAICodexStateVerdict = 'healthy' | 'degraded' | 'inconclusive'
 
 export interface OpenAICodexStateProbeResult {
+  budget_deferral?: MonitoringProbeBudgetDeferral
   account_id: number
   model: string
   verdict: OpenAICodexStateVerdict

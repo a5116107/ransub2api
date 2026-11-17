@@ -378,6 +378,35 @@ describe('IQTestModal state probe mode', () => {
     global.fetch = vi.fn() as any
   })
 
+  it.each([
+    ['request_limit', 'key_minute', '2026-11-18T00:00:00Z'],
+    ['budget_unavailable', 'system', 'invalid-date'],
+    ['toString', 'constructor', 'invalid-date']
+  ])('explains local probe deferral %s without a quality verdict or automatic retry', async (reason, scope, retryAt) => {
+    probeOpenAICodexState.mockResolvedValueOnce(probeResult({
+      verdict: 'inconclusive', failure: 'monitoring_budget_deferred', reason: 'Local pause',
+      budget_deferral: { reason, scope, retry_at: retryAt },
+      continue_status: 0, new_ticket: false
+    }))
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="mode-probe"]').trigger('click')
+    await wrapper.get('[data-testid="probe-start"]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.get('[data-testid="probe-budget-deferral"]')
+    expect(notice.text()).toContain('admin.accounts.pelicanTest.probe.budgetPaused')
+    expect(wrapper.get('[data-testid="probe-failure"]').text()).toBe('admin.accounts.pelicanTest.probe.failures.monitoring_budget_deferred')
+    expect(wrapper.get('[data-testid="probe-verdict"]').text()).toBe('admin.accounts.pelicanTest.probe.verdictInconclusive')
+    expect(notice.text()).toContain(`modelTrace.budgetScopes.${scope === 'constructor' ? 'unknown' : scope}`)
+    if (reason === 'toString') expect(notice.text()).toContain('modelTrace.budgetReasonUnknown')
+    if (retryAt === 'invalid-date') {
+      expect(notice.text()).toContain('modelTrace.retryUnknown')
+      expect(notice.find('time').exists()).toBe(false)
+    } else expect(notice.get('time').attributes('datetime')).toBe(retryAt)
+    expect(probeOpenAICodexState).toHaveBeenCalledTimes(1)
+    expect(global.fetch).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('defaults to the question test and hides the probe panel', () => {
     const wrapper = mountModal()
     expect((wrapper.vm as any).testMode).toBe('question')

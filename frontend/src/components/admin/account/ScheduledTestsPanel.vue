@@ -408,8 +408,9 @@
                 <button v-if="pelicanConfig" type="button" class="mt-2 text-xs text-primary-600" :disabled="disabled" @click="previewResult(result)">
                   {{ t('admin.accounts.pelicanTest.preview') }}
                 </button>
+                <MonitoringProbeBudgetNotice v-if="result.quality_judgment?.budget_deferral" :deferral="result.quality_judgment.budget_deferral" :title="t('modelTrace.budgetPaused')" class="mt-2" data-testid="scheduled-budget-deferral" />
                 <!-- Response / Error (collapsible) -->
-                <div v-if="result.error_message && stateProbeVerdict(result) !== 'degraded'" class="mt-2">
+                <div v-if="result.error_message && stateProbeVerdict(result) !== 'degraded' && !result.quality_judgment?.budget_deferral" class="mt-2">
                   <div
                     class="cursor-pointer text-xs font-medium text-red-600 dark:text-red-400"
                     @click="toggleResultDetail(result.id)"
@@ -484,6 +485,7 @@ import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
 import { formatDateTime } from '@/utils/format'
 import PelicanTestFields from './PelicanTestFields.vue'
+import MonitoringProbeBudgetNotice from './MonitoringProbeBudgetNotice.vue'
 import { STATE_PROBE_QUESTION, stateProbeVerdict, type StateProbeVerdict } from '@/utils/intelligenceTest'
 import { validAvailability } from '@/utils/availability'
 import type { PelicanTestConfig, ScheduledTestPlan, ScheduledTestResult } from '@/types'
