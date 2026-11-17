@@ -285,7 +285,11 @@
                 <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-fault" :data-status="measurement.fault.status" role="status">{{ t('qualityOps.measurement.faultAtRead') }} · <span class="font-medium" :class="measurement.fault.status === 'invalidated' ? 'text-red-600 dark:text-red-400' : ''">{{ t(`qualityOps.measurement.faultStates.${measurement.fault.status}`) }}</span><span class="block text-xs">{{ t(`qualityOps.measurement.faultReasons.${measurement.fault.reason}`) }}</span></p>
                 <details class="mt-3 min-w-0"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('qualityOps.measurement.details') }}</summary><dl class="mt-2 grid min-w-0 grid-cols-1 gap-2 text-xs sm:grid-cols-2"><div v-for="fact in measurement.facts" :key="fact.key" class="min-w-0"><dt class="text-gray-500">{{ t(`qualityOps.measurement.${fact.key}`) }}</dt><dd class="break-all">{{ fact.value }}</dd></div></dl></details>
               </section>
-              <div v-if="selectedResult.quality_judgment && !isProbeResult(selectedResult)" class="judge-reason"><h5>{{ t('qualityOps.judgeReason') }}</h5><p>{{ judgmentReason(selectedResult) }}</p><span>{{ selectedResult.quality_judgment.model_id || '—' }} · {{ selectedResult.quality_judgment.kind === 'jev' ? t('qualityOps.judgeJev') : groupNames[selectedResult.quality_judgment.group_id || 0] || selectedResult.quality_judgment.group_id || '—' }}</span><p v-if="selectedResult.quality_judgment.kind === 'jev'">{{ t('qualityOps.judgeJevLatency', { ms: selectedResult.quality_judgment.latency_ms ?? '—' }) }} · {{ selectedResult.quality_judgment.rules_version }}</p></div>
+              <div v-if="selectedResult.quality_judgment && !isProbeResult(selectedResult)" class="judge-reason">
+                <h5>{{ t('qualityOps.judgeReason') }}</h5><p>{{ judgmentReason(selectedResult) }}</p>
+                <p v-if="isJudgeBudgetDeferred(selectedResult)" role="status" data-testid="quality-judge-budget-deferral">{{ judgeBudgetExplanation(selectedResult) }}</p>
+                <span>{{ selectedResult.quality_judgment.model_id || '—' }} · {{ selectedResult.quality_judgment.kind === 'jev' ? t('qualityOps.judgeJev') : groupNames[selectedResult.quality_judgment.group_id || 0] || selectedResult.quality_judgment.group_id || '—' }}</span><p v-if="selectedResult.quality_judgment.kind === 'jev'">{{ t('qualityOps.judgeJevLatency', { ms: selectedResult.quality_judgment.latency_ms ?? '—' }) }} · {{ selectedResult.quality_judgment.rules_version }}</p>
+              </div>
             </template><div v-else-if="!detailsError" class="panel-empty">{{ t('qualityOps.noResults') }}</div>
           </section>
         </div>
@@ -762,6 +766,7 @@ const probeLabels: Record<StateProbeVerdict, string> = { healthy: 'qualityOps.pr
 function isProbePlan(plan: ScheduledTestPlan) { return plan.pelican_config?.question_kind === STATE_PROBE_QUESTION }
 function isProbeResult(result: ScheduledTestResult) { return result.pelican_config?.question_kind === STATE_PROBE_QUESTION }
 function resultLabel(result: ScheduledTestResult) {
+  if (isJudgeBudgetDeferred(result)) return t('qualityOps.judgeBudgetDeferred')
   if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogUnavailable' : result.error_message === 'model_unavailable' ? 'qualityOps.modelUnavailableSkipped' : 'qualityOps.modelUnsupportedSkipped')
   if (!result.status) return t('qualityOps.notLoaded')
   const verdict = stateProbeVerdict(result)
@@ -770,12 +775,14 @@ function resultLabel(result: ScheduledTestResult) {
 }
 // 探针「无法判断」不是账号问题，用中性色，避免和降智混在一起。
 function resultTextClass(result: ScheduledTestResult) {
+  if (isJudgeBudgetDeferred(result)) return 'text-gray-500 dark:text-gray-400'
   if (!result.status) return 'text-gray-400'
   if (result.status === 'skipped') return 'text-gray-500 dark:text-gray-400'
   if (stateProbeVerdict(result) === 'inconclusive') return 'text-gray-500'
   return result.status === 'success' ? 'text-emerald-600' : 'text-rose-600'
 }
 function resultTone(result: ScheduledTestResult) {
+  if (isJudgeBudgetDeferred(result)) return 'tone-neutral'
   if (result.status === 'skipped') return 'tone-neutral'
   if (stateProbeVerdict(result) === 'inconclusive') return 'tone-neutral'
   return result.status === 'success' ? 'tone-success' : 'tone-danger'
@@ -1315,10 +1322,22 @@ async function confirmDelete() {
 }
 function judgmentReason(result: ScheduledTestResult) {
   const judgment = result.quality_judgment
+  if (isJudgeBudgetDeferred(result)) return t('qualityOps.judgeBudgetDeferredHint')
   if (judgment?.kind !== 'jev') return judgment?.reason || '—'
   const reason = judgment.reason.replace(/^judge_jev_/, '')
   const known = ['not_configured', 'config_unavailable', 'disabled', 'invalid_config', 'invalid_input', 'capacity', 'canceled', 'keys_unavailable', 'invalid_endpoint', 'transport_unavailable', 'timeout', 'credentials_rejected', 'rate_limited', 'invalid_response', 'request_failed', 'uncertain', 'correct', 'incorrect']
   return t(`qualityOps.jevReasons.${known.includes(reason) ? reason : 'uncertain'}`)
+}
+function isJudgeBudgetDeferred(result: ScheduledTestResult) {
+  return result.quality_judgment?.kind === 'jev' && result.quality_judgment.verdict === 'unknown' && result.quality_judgment.reason === 'judge_budget_deferred'
+}
+function judgeBudgetExplanation(result: ScheduledTestResult) {
+  const denial = result.quality_judgment?.budget_deferral
+  const reasons = ['request_limit', 'recovery_reserve', 'concurrency_limit', 'budget_unavailable']
+  const reason = denial && reasons.includes(denial.reason) ? denial.reason : 'budget_unavailable'
+  const prefix = 'admin.settings.upstreamBillingProbe.budget'
+  const retryAt = typeof denial?.retry_at === 'string' ? Date.parse(denial.retry_at) : NaN
+  return `${t(`${prefix}.${reason}`)} ${Number.isFinite(retryAt) ? t(`${prefix}.retryAt`, { value: new Date(retryAt).toISOString() }) : t('qualityOps.judgeBudgetRetryUnknown')}`
 }
 function selectJudgeKind(event: Event) {
   const judge = form.value.pelican_config.quality.judge

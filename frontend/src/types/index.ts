@@ -1,6 +1,7 @@
 /**
  * Core Type Definitions for Sub2API Frontend
  */
+import type { MonitoringProbeBudgetDeferral } from './monitoringProbeBudget'
 
 // ==================== Common Types ====================
 
@@ -2834,6 +2835,7 @@ export interface QualityMeasurement {
 }
 
 export interface QualityJudgment {
+  budget_deferral?: MonitoringProbeBudgetDeferral
   kind?: 'llm' | 'jev'
   rules_version?: string
   latency_ms?: number

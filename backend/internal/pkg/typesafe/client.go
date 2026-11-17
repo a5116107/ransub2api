@@ -50,6 +50,16 @@ type SystemOneResponse struct {
 	Usage Usage
 }
 
+// Preserve internal cancellation/admission identity without putting transport
+// URLs, credentials or provider messages into errors displayed by callers.
+type requestError struct {
+	message string
+	cause   error
+}
+
+func (e *requestError) Error() string { return e.message }
+func (e *requestError) Unwrap() error { return e.cause }
+
 // SystemOneURL accepts a server root, API base or full System One endpoint.
 // Host allowlists, private-network access and HTTP policy remain the caller's
 // responsibility; this only validates URL syntax and normalizes the API path.
@@ -103,7 +113,7 @@ var ErrSystemOneResponseTooLarge = errors.New("typesafe response exceeds size li
 func DecodeSystemOneResponse(r io.Reader) (*SystemOneResponse, error) {
 	body, err := io.ReadAll(io.LimitReader(r, MaxSystemOneResponseBytes+1))
 	if err != nil {
-		return nil, errors.New("typesafe invalid response")
+		return nil, &requestError{message: "typesafe invalid response", cause: err}
 	}
 	// A truncated body would otherwise surface as a misleading "invalid JSON".
 	if len(body) > MaxSystemOneResponseBytes {

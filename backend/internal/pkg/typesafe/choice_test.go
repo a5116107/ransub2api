@@ -2,10 +2,12 @@ package typesafe
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/stretchr/testify/require"
 )
@@ -13,6 +15,25 @@ import (
 type choiceTransport func(*http.Request) (*http.Response, error)
 
 func (f choiceTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestTypeSafeQualityChoiceKeepsLocalCausesRedacted(t *testing.T) {
+	input := Request{Model: JevLatestModel, State: "fixture", Questions: map[string]Question{"quality": {Type: "choice", Criteria: map[string]string{"correct": "same", "incorrect": "different", "unknown": "uncertain"}}}}
+	for _, stage := range []string{"transport", "body"} {
+		t.Run(stage, func(t *testing.T) {
+			cause := errors.New("PRIVATE_LOCAL_CAUSE")
+			client := &http.Client{Transport: choiceTransport(func(*http.Request) (*http.Response, error) {
+				if stage == "transport" {
+					return nil, cause
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(iotest.ErrReader(cause))}, nil
+			})}
+			_, _, err := EvaluateChoice(t.Context(), client, "https://example.com", "fixture-key", input, "quality")
+			require.ErrorIs(t, err, cause)
+			require.NotContains(t, err.Error(), "PRIVATE")
+			require.NotContains(t, err.Error(), "example.com")
+		})
+	}
+}
 
 func TestTypeSafeQualityChoiceStrictProtocol(t *testing.T) {
 	criteria := map[string]string{"correct": "equivalent", "incorrect": "different", "unknown": "uncertain"}

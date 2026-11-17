@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -130,6 +132,101 @@ func TestQualityJevDisabledAndMissingConfigNeverCalls(t *testing.T) {
 	}
 }
 
+func TestQualityJevMonitoringBudgetUnavailableAndConstructorWiring(t *testing.T) {
+	for _, unavailable := range []string{"database", "missing_repository"} {
+		t.Run(unavailable, func(t *testing.T) {
+			fixture, cfg, audit, _ := qualityJevFixture(t, func(*http.Request) (*http.Response, error) {
+				t.Error("local budget failure must not reach Jev")
+				return nil, errors.New("unexpected request")
+			})
+			var repo MonitoringProbeBudgetRepository
+			if unavailable == "database" {
+				repo = &monitoringBudgetRepoStub{denyAt: 1, err: errors.New("PRIVATE_DATABASE_FAILURE")}
+			}
+			svc := NewQualityJudgeService(nil, nil, nil, &AccountTestService{cfg: &config.Config{}}, audit, repo)
+			svc.jev = fixture.jev
+			got := svc.Judge(t.Context(), 1, cfg, "21")
+			require.Equal(t, "unknown", got.Verdict)
+			require.Equal(t, "judge_budget_deferred", got.Reason)
+			require.NotNil(t, got.BudgetDeferral)
+			require.Equal(t, "budget_unavailable", got.BudgetDeferral.Reason)
+			require.True(t, got.BudgetDeferral.RetryAt.After(time.Now()))
+			raw, err := json.Marshal(got)
+			require.NoError(t, err)
+			require.NotContains(t, string(raw), "PRIVATE")
+			require.Empty(t, audit.keyHealth)
+			require.Empty(t, svc.jev.profile.keyHealth)
+		})
+	}
+}
+
+func TestQualityJevMonitoringBudgetCountsRotatedFinalCredentials(t *testing.T) {
+	calls := 0
+	shared := &http.Client{Transport: qualityJevTransport(func(req *http.Request) (*http.Response, error) {
+		calls++
+		status, body := 200, qualityJevReply("correct", .99)
+		if calls == 1 {
+			status, body = 401, "fixture rejected"
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	svc, cfg, audit, _ := qualityJevFixture(t, nil)
+	svc.jev.client = func(context.Context, *ContentModerationConfig) (*http.Client, error) { return shared, nil }
+	repo := &monitoringBudgetRepoStub{}
+	svc.monitoringBudget = NewMonitoringProbeBudgetService(repo)
+	got := svc.Judge(t.Context(), 1, cfg, "21")
+	require.Equal(t, "correct", got.Verdict)
+	require.Nil(t, got.BudgetDeferral)
+	require.Equal(t, 2, calls)
+	require.Len(t, repo.requests, 2)
+	require.Equal(t, 2, repo.released)
+	require.Equal(t, monitoringProbeHash("https://first.example"), repo.requests[0].SiteHash)
+	require.Equal(t, []string{config.UpstreamKeyFingerprint("synthetic-first")}, repo.requests[0].KeyHashes)
+	require.Equal(t, []string{config.UpstreamKeyFingerprint("synthetic-second")}, repo.requests[1].KeyHashes)
+	for _, request := range repo.requests {
+		require.False(t, request.Recovery, "judge retry must not consume billing recovery reserve")
+	}
+	require.IsType(t, qualityJevTransport(nil), shared.Transport, "do not wrap the shared cached client in place")
+	require.Nil(t, shared.CheckRedirect)
+	require.Empty(t, audit.keyHealth)
+}
+
+func TestQualityJevMonitoringBudgetRealHTTPDoesNotFollowRedirects(t *testing.T) {
+	var targetCalls atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetCalls.Add(1) }))
+	defer target.Close()
+	for _, redirect := range []bool{false, true} {
+		t.Run(fmt.Sprint(redirect), func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				require.Equal(t, "/v1/systemone", r.URL.Path)
+				if redirect {
+					http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+					return
+				}
+				_, _ = io.WriteString(w, qualityJevReply("correct", .99))
+			}))
+			defer server.Close()
+			svc, cfg, _, _ := qualityJevFixture(t, nil)
+			svc.jev.validateURL = func(string) (string, error) { return server.URL + "/v1/systemone", nil }
+			svc.jev.client = func(context.Context, *ContentModerationConfig) (*http.Client, error) { return server.Client(), nil }
+			repo := &monitoringBudgetRepoStub{}
+			svc.monitoringBudget = NewMonitoringProbeBudgetService(repo)
+			got := svc.Judge(t.Context(), 1, cfg, "21")
+			if redirect {
+				require.Equal(t, "unknown", got.Verdict)
+			} else {
+				require.Equal(t, "correct", got.Verdict)
+			}
+			require.EqualValues(t, 1, calls.Load())
+			require.Zero(t, targetCalls.Load())
+			require.Len(t, repo.requests, 1)
+			require.Equal(t, 1, repo.released)
+		})
+	}
+}
+
 func TestQualityJevErrorsRetryRotationAndRedaction(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -162,6 +259,68 @@ func TestQualityJevErrorsRetryRotationAndRedaction(t *testing.T) {
 			require.NotContains(t, got.Reason, "SENSITIVE")
 			require.Empty(t, svc.jev.slots)
 		})
+	}
+}
+
+func TestQualityJevMonitoringBudgetDenialIsLocal(t *testing.T) {
+	for _, denyAt := range []int{1, 2} {
+		t.Run(fmt.Sprint(denyAt), func(t *testing.T) {
+			calls := 0
+			svc, cfg, audit, _ := qualityJevFixture(t, func(req *http.Request) (*http.Response, error) {
+				calls++
+				if denyAt == 2 {
+					return &http.Response{StatusCode: 429, Body: io.NopCloser(strings.NewReader("fixture rejection"))}, nil
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(qualityJevReply("correct", .99)))}, nil
+			})
+			denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			repo := &monitoringBudgetRepoStub{denyAt: denyAt, err: denial}
+			svc.monitoringBudget = NewMonitoringProbeBudgetService(repo)
+			got := svc.Judge(t.Context(), 1, cfg, "21")
+			require.Equal(t, "judge_budget_deferred", got.Reason)
+			require.Equal(t, "unknown", got.Verdict)
+			require.Equal(t, denial, got.BudgetDeferral)
+			require.Equal(t, denyAt-1, calls)
+			require.Len(t, repo.requests, denyAt)
+			require.Equal(t, denyAt-1, repo.released)
+			require.Empty(t, audit.keyHealth)
+			require.Empty(t, svc.jev.slots)
+			result := &ScheduledTestResult{Status: "success"}
+			applyQualityJudgment(result, got)
+			require.Equal(t, "inconclusive", qualityOutcome([]*ScheduledTestResult{result}))
+		})
+	}
+}
+
+func TestQualityJevMonitoringBudgetDeferralDoesNotRenewOrMutateQuality(t *testing.T) {
+	plan, result := qualityMeasurementFixture()
+	plan.PelicanConfig.Quality.EvidenceValidForSeconds = 120
+	plan.PelicanConfig.Quality.Judge = &QualityJudgeConfig{Kind: "jev", Prompt: "compare"}
+	judgment := &QualityJudgment{Kind: "jev", ModelID: "jev-latest", RulesVersion: qualityJevRulesVersion, Verdict: "unknown", Reason: "judge_budget_deferred",
+		BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "recovery_reserve", Scope: "global_minute", RetryAt: time.Now().Add(time.Minute)}}
+	applyQualityJudgment(result, judgment)
+	recordQualityMeasurement(plan, result)
+	require.Equal(t, "inconclusive", qualityOutcome([]*ScheduledTestResult{result}))
+	measurement := result.PelicanConfig.QualityMeasurement
+	require.Nil(t, measurement.ValidUntil, "local budget denial cannot mint or renew passing evidence")
+	require.Equal(t, "unknown", measurement.Dimensions["answer_correctness"].Status)
+	require.Equal(t, "unknown", measurement.Dimensions["grading"].Status)
+	require.Equal(t, "pass", measurement.Dimensions["transport"].Status, "a completed generation remains a transport observation")
+	plans, results := &qualityPlanRepo{}, &pelicanResults{}
+	runner := &ScheduledTestRunnerService{planRepo: plans, scheduledSvc: NewScheduledTestService(plans, results)}
+	runner.runPelican = func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+		return &ScheduledTestResult{Status: "success", ResponseText: "42"}, nil
+	}
+	runner.judgeQuality = func(context.Context, int64, *PelicanTestConfig, string) *QualityJudgment { return judgment }
+	scheduled := pelicanPlan()
+	scheduled.PelicanConfig.QuestionKind = "candy"
+	scheduled.PelicanConfig.Quality = plan.PelicanConfig.Quality
+	require.True(t, runner.runOnePlan(t.Context(), scheduled))
+	require.Equal(t, []string{"inconclusive"}, plans.outcomes, "do not pass a budget denial to failure or restoration actions")
+	require.NotEmpty(t, results.results)
+	for _, saved := range results.results {
+		require.Equal(t, judgment.BudgetDeferral, saved.QualityJudgment.BudgetDeferral)
+		require.Equal(t, "unknown", saved.QualityJudgment.Verdict)
 	}
 }
 

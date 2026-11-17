@@ -25,14 +25,15 @@ type QualityJudgeConfig struct {
 	Prompt  string `json:"prompt"`
 }
 type QualityJudgment struct {
-	Kind         string `json:"kind,omitempty"`
-	RulesVersion string `json:"rules_version,omitempty"`
-	LatencyMS    int64  `json:"latency_ms,omitempty"`
-	Verdict      string `json:"verdict"`
-	Reason       string `json:"reason"`
-	AccountID    int64  `json:"account_id,omitempty"`
-	GroupID      int64  `json:"group_id,omitempty"`
-	ModelID      string `json:"model_id,omitempty"`
+	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	Kind           string                       `json:"kind,omitempty"`
+	RulesVersion   string                       `json:"rules_version,omitempty"`
+	LatencyMS      int64                        `json:"latency_ms,omitempty"`
+	Verdict        string                       `json:"verdict"`
+	Reason         string                       `json:"reason"`
+	AccountID      int64                        `json:"account_id,omitempty"`
+	GroupID        int64                        `json:"group_id,omitempty"`
+	ModelID        string                       `json:"model_id,omitempty"`
 }
 
 func qualityJudgeRuntimeIdentityKnown(cfg *PelicanTestConfig, result *QualityJudgment) bool {
@@ -57,15 +58,16 @@ type qualityJudgeSlots interface {
 }
 
 type QualityJudgeService struct {
-	accounts qualityJudgeAccounts
-	groups   qualityJudgeGroups
-	slots    qualityJudgeSlots
-	request  func(context.Context, int64, string, string) (string, error)
-	jev      *qualityJevJudge
+	accounts         qualityJudgeAccounts
+	groups           qualityJudgeGroups
+	slots            qualityJudgeSlots
+	request          func(context.Context, int64, string, string) (string, error)
+	jev              *qualityJevJudge
+	monitoringBudget *MonitoringProbeBudgetService
 }
 
-func NewQualityJudgeService(accounts AccountRepository, groups GroupRepository, slots *ConcurrencyService, tests *AccountTestService, moderation *ContentModerationService) *QualityJudgeService {
-	return &QualityJudgeService{accounts: accounts, groups: groups, slots: slots, request: tests.runQualityJudgeRequest, jev: newQualityJevJudge(moderation, tests)}
+func NewQualityJudgeService(accounts AccountRepository, groups GroupRepository, slots *ConcurrencyService, tests *AccountTestService, moderation *ContentModerationService, budgetRepo MonitoringProbeBudgetRepository) *QualityJudgeService {
+	return &QualityJudgeService{accounts: accounts, groups: groups, slots: slots, request: tests.runQualityJudgeRequest, jev: newQualityJevJudge(moderation, tests), monitoringBudget: NewMonitoringProbeBudgetService(budgetRepo)}
 }
 
 func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cfg *PelicanTestConfig, answer string) *QualityJudgment {

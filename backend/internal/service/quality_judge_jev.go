@@ -24,6 +24,23 @@ type qualityJevJudge struct {
 	slots       chan struct{}
 }
 
+// Jev uses an independent client rather than accountResponseTransport. Delegate
+// to the same physical-request budget without mutating the cached HTTP client.
+type qualityJevBudgetTransport struct{ base http.RoundTripper }
+
+func (t qualityJevBudgetTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req, finish, err := BeginMonitoringProbeRequest(req)
+	if err != nil {
+		if req != nil && req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, err
+	}
+	response, err := t.base.RoundTrip(req)
+	err = FinishMonitoringProbeResponse(req.Context(), response, err, finish)
+	return response, err
+}
+
 func newQualityJevJudge(moderation *ContentModerationService, tests *AccountTestService) *qualityJevJudge {
 	if moderation == nil || tests == nil || tests.cfg == nil {
 		return nil
@@ -173,9 +190,26 @@ func (s *QualityJudgeService) judgeJev(ctx context.Context, cfg *PelicanTestConf
 			return result
 		}
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
+		if s.monitoringBudget != nil {
+			// Only the last failed billing observation can use recovery reserves;
+			// a judge retry is still an ordinary probe, even for a recovery plan.
+			attemptCtx = s.monitoringBudget.Context(attemptCtx, strings.TrimSuffix(baseURL, typesafe.SystemOnePath), false)
+			copy := *client
+			base := copy.Transport
+			if base == nil {
+				base = http.DefaultTransport
+			}
+			copy.Transport = qualityJevBudgetTransport{base: base}
+			copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+			client = &copy
+		}
 		value, status, err := typesafe.EvaluateChoice(attemptCtx, client, baseURL, key, input, "quality")
 		attemptCanceled := attemptCtx.Err() != nil
 		cancelAttempt()
+		if denial := monitoringProbeDeferral(err, time.Now()); denial != nil {
+			result.Reason, result.BudgetDeferral = "judge_budget_deferred", denial
+			return result
+		}
 		if ctx.Err() != nil {
 			result.Reason = "judge_jev_canceled"
 			return result

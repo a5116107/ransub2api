@@ -37,7 +37,7 @@ func EvaluateChoice(ctx context.Context, client *http.Client, baseURL, key strin
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, errors.New("typesafe transport unavailable")
+		return nil, 0, &requestError{message: "typesafe transport unavailable", cause: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -45,7 +45,7 @@ func EvaluateChoice(ctx context.Context, client *http.Client, baseURL, key strin
 	}
 	decoded, err := DecodeSystemOneResponse(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, errors.New("typesafe invalid response")
+		return nil, resp.StatusCode, &requestError{message: "typesafe invalid response", cause: err}
 	}
 	result, err := decodeChoice(decoded.Body, input.Questions[id].Criteria, id)
 	return result, resp.StatusCode, err

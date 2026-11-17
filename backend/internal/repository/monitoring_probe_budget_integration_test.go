@@ -29,6 +29,62 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	return s
 }
 
+func TestQualityJevMonitoringBudgetPostgresAndHTTP(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		if req.URL.Path != "/v1/systemone" || req.Header.Get("Authorization") != "Bearer jev-budget-fixture" {
+			http.Error(w, "invalid fixture request", 400)
+			return
+		}
+		_, _ = w.Write([]byte(`{"model":"jev-latest","answers":{"quality":{"type":"choice","choice":"correct","confidence":0.95,"probabilities":{"correct":0.96,"incorrect":0.02,"unknown":0.02}}}}`))
+	}))
+	defer server.Close()
+	settings := NewSettingRepository(client)
+	require.NoError(t, settings.Set(ctx, service.SettingKeyContentModerationConfig, fmt.Sprintf(`{"enabled":true,"mode":"observe","typesafe":{"base_url":%q,"model":"jev-latest","api_keys":["jev-budget-fixture"],"timeout_ms":5000,"retry_count":1}}`, server.URL)))
+	require.NoError(t, settings.Set(ctx, service.SettingKeyRiskControlEnabled, "true"))
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.AllowInsecureHTTP, cfg.Security.URLAllowlist.AllowPrivateHosts = true, true
+	tests := service.NewAccountTestService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	audit := service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 1
+	policy, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	first := service.NewQualityJudgeService(nil, nil, nil, tests, audit, budget)
+	second := service.NewQualityJudgeService(nil, nil, nil, tests, audit, NewMonitoringProbeBudgetRepository(db))
+	question := &service.PelicanTestConfig{QuestionKind: "candy", Prompt: "compare fixture", Quality: &service.QualityPolicy{ExpectedAnswer: "21", Judge: &service.QualityJudgeConfig{Kind: "jev", Prompt: "compare values"}}}
+	got := first.Judge(ctx, 1, question, "21")
+	require.Equal(t, "correct", got.Verdict, "real Jev request must complete before exhausting quota: %+v", got)
+	require.EqualValues(t, 1, calls.Load())
+	got = second.Judge(ctx, 1, question, "21")
+	require.Equal(t, "unknown", got.Verdict)
+	require.Equal(t, "judge_budget_deferred", got.Reason)
+	require.NotNil(t, got.BudgetDeferral)
+	require.Equal(t, "global_day", got.BudgetDeferral.Scope)
+	require.EqualValues(t, 1, calls.Load(), "another service instance must not send an over-budget request")
+	usage, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, usage.DayUsed)
+	require.Zero(t, usage.ActiveRequests)
+	// Disabling enforcement does not disable shared accounting or mutate the
+	// moderation pool. A second real request is now admitted and still counted.
+	policy.Enabled = false
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	got = second.Judge(ctx, 1, question, "21")
+	require.Equal(t, "correct", got.Verdict)
+	require.Nil(t, got.BudgetDeferral)
+	require.EqualValues(t, 2, calls.Load())
+	usage, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, usage.DayUsed)
+	require.Zero(t, usage.ActiveRequests)
+}
+
 func TestMonitoringProbeBudgetPostgresLimitsAndLifecycle(t *testing.T) {
 	db, _ := newBillingAuditDatabase(t)
 	ctx := t.Context()

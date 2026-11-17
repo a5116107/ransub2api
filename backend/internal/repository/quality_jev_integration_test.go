@@ -35,6 +35,15 @@ func TestQualityJevPersistenceAndIsolationSafety(t *testing.T) {
 	require.Equal(t, result.QualityJudgment, listed[0].QualityJudgment)
 	require.Equal(t, int64(12), listed[0].LatencyMs)
 	require.Equal(t, "jev", listed[0].PelicanConfig.Quality.Judge.Kind)
+	deferred := *result
+	deferred.ID = 0
+	deferred.QualityJudgment = &service.QualityJudgment{Kind: "jev", ModelID: "jev-latest", Verdict: "unknown", Reason: "judge_budget_deferred", RulesVersion: "quality-choice-v1",
+		BudgetDeferral: &service.MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)}}
+	saved, err := results.Create(ctx, &deferred)
+	require.NoError(t, err)
+	persisted, err := results.GetResult(ctx, f.plan.ID, saved.ID)
+	require.NoError(t, err)
+	require.Equal(t, deferred.QualityJudgment, persisted.QualityJudgment)
 	// Inconclusive Jev evidence neither isolates nor restores either model.
 	isolationRound(f, "inconclusive", "inconclusive")
 	require.Equal(t, 2, f.count(`SELECT count(*) FROM account_groups WHERE account_id=$1`))

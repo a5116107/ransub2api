@@ -541,14 +541,14 @@ export default {
       },
       upstreamBillingProbe: {
         budget: {
-          title: 'Declaration and balance probe budget',
-          scopeHint: 'Shared across upgraded instances using this database; drain older monitoring instances before enforcement. Counts each Sub2API declaration/balance request and each New API management request or page, including previews. Excludes business traffic, quality questions, tokens and judging.',
+          title: 'Declaration, balance and JEV grading budget',
+          scopeHint: 'Shared by upgraded instances on this database; drain older monitoring instances before enforcement. Counts each Sub2API declaration/balance request, New API management request or page (including previews), and every JEV grading attempt. Excludes business traffic, quality answer generation, ordinary LLM grading and token usage.',
           enabled: 'Enforce shared limits', enforced: 'Limits enforced', observeOnly: 'Observe only — limits are not enforced',
           requests_per_minute: 'Global requests / UTC minute', requests_per_day: 'Global requests / UTC day',
           site_requests_per_minute: 'Requests / site / minute', key_requests_per_minute: 'Requests / actual credential / minute',
           concurrency: 'Global active requests', site_concurrency: 'Active requests / site', key_concurrency: 'Active requests / actual credential',
           recovery_reserve_percent: 'Global recovery reserve (%)',
-          reserveHint: 'Only retries of previously failed declaration probes may use the global reserve. Site and credential limits still apply. Fractional capacity is rounded so at least one ordinary probe remains possible. New accounts and previews use the ordinary budget.',
+          reserveHint: 'Only retries of previously failed declaration probes may use the global reserve. Site and credential limits still apply. Fractional capacity leaves at least one ordinary probe. New accounts, previews and JEV grading (including retries) use the ordinary budget.',
           deferralHint: 'Budget pressure defers detection without penalizing the upstream, publishing a partial declaration, or extending previous evidence. A released slot is available again; consumed request quota is not refunded.',
           minuteUsage: 'Requests this minute', dayUsage: 'Requests today (UTC)', activeUsage: 'Active requests',
           observedAt: 'Database observation: {value}', saved: 'Probe budget saved.',
