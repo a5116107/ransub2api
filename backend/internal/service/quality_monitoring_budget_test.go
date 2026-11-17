@@ -23,6 +23,200 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAstraGatewayMonitoringBudgetDiagnostics(t *testing.T) {
+	denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "key_minute", RetryAt: time.Now().UTC().Add(time.Minute)}
+	cfg := &config.Config{}
+	cfg.Gateway.CodexGatewayPin = config.CodexGatewayPinConfig{Enabled: true, TargetAccountIDs: []int64{7}}
+	a := stateProbeAccount()
+	a.Status = StatusActive
+	provider := &astraTargetProbeStub{astraSetupUpstream: &astraSetupUpstream{}, err: denial}
+	svc := &AccountTestService{cfg: cfg, accountRepo: &stateProbeAccountRepo{account: a}, httpUpstream: provider, openaiGatewayService: &OpenAIGatewayService{}}
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(&monitoringBudgetRepoStub{}))
+	result, err := svc.TestAstraGateway(t.Context(), "verify", a.ID, 1)
+	require.NoError(t, err)
+	_, marked := provider.request.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	require.True(t, marked, "the explicit two-shot diagnostic must opt into physical accounting")
+	require.False(t, result.Success)
+	require.Equal(t, "monitoring_budget_deferred", result.Reason)
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	var decoded struct {
+		BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral"`
+	}
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, denial, decoded.BudgetDeferral)
+}
+
+func TestAstraGatewayMonitoringBudgetUnifiedAcquisitionUnchanged(t *testing.T) {
+	gateway, accounts, _ := unifiedAstraFixture(t)
+	provider := &astraTargetProbeStub{astraSetupUpstream: &astraSetupUpstream{}}
+	svc := &AccountTestService{cfg: gateway.cfg, accountRepo: accounts, openaiGatewayService: gateway, httpUpstream: provider}
+	budget := &monitoringBudgetRepoStub{denyAt: 1, err: ErrMonitoringProbeBudgetUnavailable}
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+	result, err := svc.TestAstraGateway(t.Context(), "verify", 2, 1)
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Reason)
+	_, marked := provider.request.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	require.False(t, marked, "the separate stored-ticket collector is not this two-shot diagnostic")
+	require.Empty(t, budget.requests)
+	// The original construction order and its inverse both wire observation.
+	other := &AccountTestService{}
+	other.SetMonitoringBudget(svc.monitoringBudget)
+	otherGateway := &OpenAIGatewayService{}
+	other.SetOpenAIGatewayService(otherGateway)
+	require.Same(t, svc.monitoringBudget, otherGateway.monitoringBudget)
+}
+
+func TestScheduledAstraCandyMonitoringBudgetLeaseLossAndRecovery(t *testing.T) {
+	for _, phase := range []string{"read", "close"} {
+		t.Run(phase, func(t *testing.T) {
+			wallTime := time.Now()
+			synctest.Test(t, func(t *testing.T) {
+				// Ticket timestamps intentionally reject pre-2020 claims; advance
+				// synctest's epoch before constructing a valid current fixture.
+				if delta := wallTime.Sub(time.Now()); delta > 0 {
+					time.Sleep(delta)
+				}
+				s, accounts, account, ticket, headers := candyFixture(t)
+				before, err := json.Marshal(accounts.accounts)
+				require.NoError(t, err)
+				repo := &monitoringBudgetRepoStub{renew: func(context.Context) (bool, error) { return false, nil }}
+				calls := 0
+				s.httpUpstream = monitoringBudgetHTTP{base: &harvestProxyUpstream{do: func(_ *http.Request, _ string) (*http.Response, error) {
+					calls++
+					body := qualityBudgetCloseBody{ReadCloser: io.NopCloser(strings.NewReader(candyStream("21"))), close: func() {}}
+					if calls == 1 {
+						lost := func() { time.Sleep(41 * time.Second); synctest.Wait() }
+						if phase == "read" {
+							body.read = lost
+						} else {
+							body.close = lost
+						}
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: body}, nil
+				}}}
+				tests := &AccountTestService{openaiGatewayService: s}
+				tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+				reason, deferred := s.runScheduledAstraCandy(t.Context(), headers, account.ID, ticket)
+				require.Equal(t, "candy_budget_deferred", reason)
+				require.Equal(t, "budget_unavailable", deferred.Reason)
+				repo.renew = nil
+				reason, deferred = s.runScheduledAstraCandy(t.Context(), headers, account.ID, ticket)
+				require.Equal(t, "candy_passed", reason)
+				require.Nil(t, deferred)
+				require.Equal(t, 2, repo.released)
+				after, err := json.Marshal(accounts.accounts)
+				require.NoError(t, err)
+				require.Equal(t, string(before), string(after))
+				require.NoError(t, t.Context().Err())
+			})
+		})
+	}
+}
+
+func TestAstraGatewayMonitoringBudgetWSPhysicalAttempts(t *testing.T) {
+	for _, denyAt := range []int{0, 1, 2, 3} {
+		t.Run(strconv.Itoa(denyAt), func(t *testing.T) {
+			var handshakes, frames atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handshakes.Add(1)
+				conn, err := coderws.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.CloseNow() }()
+				for {
+					_, _, err := conn.Read(r.Context())
+					if err != nil {
+						return
+					}
+					n := frames.Add(1)
+					event := fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_astra_%d","model":"gpt-6-astra","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"21"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}`, n)
+					if conn.Write(r.Context(), coderws.MessageText, []byte(event)) != nil {
+						return
+					}
+				}
+			}))
+			t.Cleanup(server.Close)
+			gateway, account := anchorTestService()
+			account.Credentials["base_url"] = "https://unused.invalid/tenant"
+			account.Status, account.Schedulable, account.GroupIDs = StatusActive, true, []int64{11}
+			accounts := &astraValidationAccountRepo{turnAdmissionRepo: &turnAdmissionRepo{account: account}}
+			gateway.accountRepo, gateway.requireLatestTurnAdmission = accounts, true
+			gateway.cache, gateway.toolCorrector = &stubGatewayCache{}, NewCodexToolCorrector()
+			gateway.cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+			gateway.cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 2
+			pool := newOpenAIWSConnPool(gateway.cfg)
+			dialer := newDefaultOpenAIWSClientDialer()
+			pool.setClientDialerForTest(qualityBudgetWSDialer(func(ctx context.Context, _ string, headers http.Header, _ string) (openAIWSClientConn, int, http.Header, error) {
+				return dialer.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), headers, "")
+			}))
+			gateway.openaiWSPool = pool
+			t.Cleanup(pool.Close)
+			svc := &AccountTestService{cfg: gateway.cfg, accountRepo: accounts, openaiGatewayService: gateway}
+			denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			repo := &monitoringBudgetRepoStub{denyAt: denyAt, err: denial}
+			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+			result, err := svc.TestAstraGateway(t.Context(), "ws", account.ID, 1)
+			require.NoError(t, err)
+			if denyAt == 0 {
+				require.True(t, result.Success, result.Reason)
+				require.EqualValues(t, 2, frames.Load())
+				require.Len(t, repo.requests, 3)
+			} else {
+				require.False(t, result.Success)
+				require.Equal(t, "monitoring_budget_deferred", result.Reason)
+				require.Len(t, repo.requests, denyAt)
+				require.EqualValues(t, max(0, denyAt-2), frames.Load())
+			}
+			require.EqualValues(t, min(1, max(0, len(repo.requests)-1)), handshakes.Load())
+			require.Equal(t, int(frames.Load()+handshakes.Load()), repo.released)
+			for _, request := range repo.requests {
+				require.False(t, request.Recovery)
+				require.Equal(t, monitoringProbeHash("https://chatgpt.com"), request.SiteHash)
+				require.Equal(t, []string{config.UpstreamKeyFingerprint("test-token")}, request.KeyHashes)
+			}
+			require.NoError(t, t.Context().Err())
+		})
+	}
+}
+
+func TestScheduledAstraCandyMonitoringBudgetDefersLocally(t *testing.T) {
+	resetCodexHarvestFlow()
+	t.Cleanup(resetCodexHarvestFlow)
+	s, accounts, account, ticket, headers := candyFixture(t)
+	before, err := json.Marshal(accounts.accounts)
+	require.NoError(t, err)
+	denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+	repo := &monitoringBudgetRepoStub{denyAt: 1, err: denial}
+	var calls atomic.Int32
+	s.httpUpstream = monitoringBudgetHTTP{base: &harvestProxyUpstream{do: func(_ *http.Request, _ string) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(candyStream("21")))}, nil
+	}}}
+	tests := &AccountTestService{openaiGatewayService: s}
+	tests.SetMonitoringBudget(NewMonitoringProbeBudgetService(repo))
+	s.observeScheduledAstraCandy(t.Context(), headers, account, ticket)
+	waitCandy(t, s)
+	require.Zero(t, calls.Load())
+	require.Len(t, repo.requests, 1)
+	snapshot := BuildCodexHarvestFlow(t.Context(), s.cfg, nil, []Account{*account})
+	require.Equal(t, "candy_deferred", snapshot.Events[0].Kind)
+	require.Equal(t, "warn", snapshot.Stages[4].Status)
+	require.Zero(t, snapshot.Counts.SelectFail)
+	data, err := json.Marshal(snapshot.Events[0])
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"budget_deferral"`)
+	// A later business completion must not spin on the same deferred ticket.
+	s.observeScheduledAstraCandy(t.Context(), headers, account, ticket)
+	waitCandy(t, s)
+	require.Len(t, repo.requests, 1)
+	after, err := json.Marshal(accounts.accounts)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+	require.False(t, s.ticketProbeCoolingDown(account.ID, ticket.Model, time.Now()))
+}
+
 func TestStateProbeMonitoringBudgetStopsAndRecovers(t *testing.T) {
 	for _, denyAt := range []int{1, 2} {
 		for _, reason := range []string{"request_limit", "concurrency_limit", "recovery_reserve", "unavailable"} {

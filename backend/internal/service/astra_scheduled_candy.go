@@ -60,41 +60,47 @@ func (s *OpenAIGatewayService) observeScheduledAstraCandy(ctx context.Context, h
 			s.astraCandyMu.Unlock()
 			return
 		}
-		reason := s.runScheduledAstraCandy(probeCtx, h, id, &copy)
+		reason, deferred := s.runScheduledAstraCandy(probeCtx, h, id, &copy)
 		kind := "candy_fail"
 		if reason == "candy_passed" {
 			kind = "candy_pass"
+		} else if deferred != nil {
+			kind = "candy_deferred"
 		}
-		recordCodexHarvestFlow(CodexHarvestFlowEvent{Stage: "select", Kind: kind, AccountID: id, AccountName: name, Model: copy.Model, Reason: reason, Result: reason, Detail: reason})
+		recordCodexHarvestFlow(CodexHarvestFlowEvent{Stage: "select", Kind: kind, AccountID: id, AccountName: name, Model: copy.Model, Reason: reason, Result: reason, Detail: reason, BudgetDeferral: deferred})
 	}()
 }
 
 // Exactly one SSE request with the captured account/ticket/cookies and its own
 // lease for the recorded exit. Never pass the result through ticket response
 // observation, cooldown handling, harvest persistence or failover.
-func (s *OpenAIGatewayService) runScheduledAstraCandy(ctx context.Context, headers http.Header, id int64, ticket *openAICodexTicket) string {
+func (s *OpenAIGatewayService) runScheduledAstraCandy(ctx context.Context, headers http.Header, id int64, ticket *openAICodexTicket) (string, *MonitoringProbeBudgetDenial) {
 	if !s.settingService.CodexTicketCandyObservation(ctx) {
-		return "candy_disabled"
+		return "candy_disabled", nil
 	}
 	if s.accountRepo == nil || s.httpUpstream == nil {
-		return "candy_unavailable"
+		return "candy_unavailable", nil
 	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil || !astraTicketAccountEligible(ctx, account) || !ticketIdentityMatches(account, ticket) || headers.Get("Authorization") == "" || headers.Get("ChatGPT-Account-ID") != account.GetCredential("chatgpt_account_id") || !s.openAICodexTicketEnabledContext(ctx) {
-		return "candy_stale"
+		return "candy_stale", nil
 	}
 	proxy, release, err := s.pinStoredCodexTicketEgress(ctx, ticket, openAIAccountProxyURL(account))
 	if err != nil {
 		release()
-		return "candy_unavailable"
+		return "candy_unavailable", nil
 	}
 	defer release()
 	if !s.settingService.CodexTicketCandyObservation(ctx) {
-		return "candy_disabled"
+		return "candy_disabled", nil
 	}
 	if !ticket.valid(time.Now(), 780) {
-		return "candy_stale"
+		return "candy_stale", nil
 	}
+	// The business stream may carry a completed diagnostic observer. Start a
+	// fresh, ordinary-budget observation so its outcome cannot rewrite that
+	// caller, and keep the captured final credential/ticket/exit unchanged.
+	ctx = s.monitoringBudget.Context(WithHTTPUpstreamRedirectsDisabled(ctx), "https://chatgpt.com", false)
 	routeChanged := false
 	shot, err := fireOpenAICodexPromptShotRequest(ctx, headers, ticket.Model, ticket.State, strings.Join(ticket.HarvestCookies, "; "), "只输出最终答案数字，不要解释。", CandyPrompt, func(req *http.Request) (*http.Response, error) {
 		req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(context.WithValue(req.Context(), boundAstraTicketContextKey{}, true)))
@@ -113,21 +119,27 @@ func (s *OpenAIGatewayService) runScheduledAstraCandy(ctx context.Context, heade
 		}
 		return resp, err
 	})
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		err = local
+	}
+	if denial := monitoringProbeDeferral(err, time.Now()); denial != nil {
+		return "candy_budget_deferred", denial
+	}
 	switch {
 	case ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded):
-		return "candy_timeout"
+		return "candy_timeout", nil
 	case err != nil || shot.status != http.StatusOK || shot.streamErr != nil:
-		return "candy_error"
+		return "candy_error", nil
 	case routeChanged:
-		return "candy_route_changed"
+		return "candy_route_changed", nil
 	case shot.state != "" && shot.state != ticket.State:
-		return "candy_ticket_changed"
+		return "candy_ticket_changed", nil
 	case shot.model != ticket.Model:
-		return "candy_model_mismatch"
+		return "candy_model_mismatch", nil
 	case !CandyAnswerCorrect(shot.answer):
-		return "candy_incorrect"
+		return "candy_incorrect", nil
 	default:
-		return "candy_passed"
+		return "candy_passed", nil
 	}
 }
 

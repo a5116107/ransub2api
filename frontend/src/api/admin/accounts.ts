@@ -1276,6 +1276,7 @@ export interface CodexHarvestFlowStage {
 }
 
 export interface CodexHarvestFlowEvent {
+  budget_deferral?: MonitoringProbeBudgetDeferral
   id: string
   at: string
   stage: string

@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1门票探针物理预算本地验收完成；基线d8bba3c1c。
-范围：唯一H盘/自有功能分支交付；不CI/PR/生产提升。
-已验：服务race双轮5054/SQL双轮66，0fail/skip/race；UI57及中英四视口。
-终树：048a8035975143e5；vet/lint/Linux退出0；证据见DECISIONS。
-本轮：两发独立计数、延期/失租止发、共享Key重建恢复与历史UI已验。
-句柄：验证已退出；预览已停，18442无监听。
-下一：D2.6状态/受管合同与D5.3受信scope；D8.1其余通道/token/覆盖。
-等待：原28项20done/8部分；生产/scope/基线/缓存域及PR3仍开放。
-生产最后记录.7/fd83f6c91；本轮未重验或部署。
-Attempt：64
+任务：D8.1网关两发/双轮WS/后台糖果预算子验收本地done；基线bee4fcd91。
+范围：唯一H盘/自有功能分支提交同步；不CI/PR/生产，不改业务/自动借票。
+已验：服务race双轮6484、PG244+旧版兼容2、UI59及中英四视口通过。
+终验：vet/增量fast lint/Linux退出0；终稿Go/SQL树a59981b6a0b3695d。
+修正：虚拟票据时钟、路由夹具缺凭据；两次原失败保留，生产守卫未放宽。
+资源：本轮句柄均结束，预览24388已停/18442关闭；历史拒删原位保留。
+下一：D8.1其余检测通道/token/覆盖编译/公平性；沿原父验收继续。
+等待：原28项20done/8部分；生产/scope/独立基线/缓存域/PR3仍开放。
+生产最后记录.7/fd83f6c91；本轮未连接或部署。
+Attempt：65
 <!-- resume:end -->
 
 ## 目标与入口
@@ -58,8 +58,8 @@ Attempt：64
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
-| D8 | in_progress | 两模板轮转/SQL、主锁恢复与倍率/JEV/HTTP/WS/BPS文本/门票预算、指纹延期及UI本地已验；其余通道/token/覆盖编译/公平性/生产周期/严格混版仍缺 |
-| D8.1物理预算子项 | done | 倍率/JEV/HTTP/WS/BPS文本/门票、重试/工具纠正及指纹延期止发、SQL共享Key/重建/恢复和UI已验；非完整D8.1/生产 |
+| D8 | in_progress | 两模板轮转/SQL、主锁恢复与倍率/JEV/HTTP/WS/BPS/门票及网关/糖果预算、延期UI已验；其余通道/token/覆盖编译/公平性/生产周期/严格混版仍缺 |
+| D8.1物理预算子项 | done | 原物理门、网关两发/双轮WS/糖果延期止发、SQL共享/重建/恢复及UI已验；非完整D8.1/生产 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
 
@@ -74,11 +74,10 @@ Attempt：64
 ## 工作区与既有环境限制
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
-- 并发1–2，复用共享Go缓存。
 - 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 私有PG55441/PID10868、Redis56441/PID46228、quality-batch-{build,runner.py}及`H:/Root/DevCache/tmp/sub2api-quality-validity`受宿主拒删；预览已停；owner宿主用户，路径/解除条件见DECISIONS。
 - 历史拒删620274603bytes及D2.6日志原位保留；路径/命令/owner见DECISIONS，待宿主解除策略，不绕过。
-- 全规则lint历史超预算；本轮增量fast+vet通过。
+- 本轮增量fast+vet通过，非全仓全规则lint。
 - 历史构建213260543bytes拒删；路径见DECISIONS，owner宿主用户，解除后清理，回收0。

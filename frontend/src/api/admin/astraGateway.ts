@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import type { MonitoringProbeBudgetDeferral } from '@/types/monitoringProbeBudget'
 
 export interface AstraGatewaySettings {
   ticket_pool_scheduling?: boolean
@@ -47,6 +48,7 @@ export interface AstraWSStatus {
   expires_at?: string; remaining_seconds: number
 }
 export interface AstraTestResult {
+  budget_deferral?: MonitoringProbeBudgetDeferral
   action: string; account_id: number; success: boolean; reason: string
   duration_ms: number; checked_at: string; output_chars: number; test_kind?: string; answer?: string; expected?: string; html?: string
 }

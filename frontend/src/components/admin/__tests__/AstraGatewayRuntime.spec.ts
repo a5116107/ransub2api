@@ -9,6 +9,17 @@ function snapshot() { return { generated_at: new Date().toISOString(), revision:
 beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); mocks.get.mockResolvedValue(snapshot()); mocks.test.mockResolvedValue({ action: 'prepare', success: true, reason: 'success', duration_ms: 1000 }) })
 afterEach(() => vi.useRealTimers())
 describe('Astra gateway runtime', () => {
+  it('shows a neutral structured budget deferral and reloads it without re-testing', async () => {
+    const deferral = { reason: 'request_limit', scope: 'global_day', retry_at: '2026-11-17T10:00:00Z' }
+    mocks.get.mockResolvedValue({ ...snapshot(), last_test: { action: 'verify', account_id: 300, success: false, reason: 'monitoring_budget_deferred', duration_ms: 1000, budget_deferral: deferral } })
+    const w = mount(AstraGatewayRuntime, { props: { settings, dirty: false } }); await flushPromises()
+    expect(w.text()).toContain('modelTrace.budgetScopes.global_day')
+    expect(w.get('time').attributes('datetime')).toBe(deferral.retry_at)
+    expect(w.find('.bg-amber-50').exists()).toBe(true)
+    await vi.advanceTimersByTimeAsync(5000); await flushPromises()
+    expect(mocks.test).not.toHaveBeenCalled()
+    w.unmount()
+  })
   it('never shows a countdown for failed or unverified routes', async () => {
     const data = snapshot(); data.sources[0].state = 'candidate'; data.sources[0].reason = 'source_passed_target_failed'; data.ready_routes = 0
     mocks.get.mockResolvedValue(data)

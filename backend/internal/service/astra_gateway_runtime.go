@@ -73,17 +73,18 @@ type AstraGatewayObservation struct {
 	LastSeen         time.Time `json:"last_seen"`
 }
 type AstraGatewayTestResult struct {
-	TestKind    string    `json:"test_kind"`
-	Answer      string    `json:"answer,omitempty"`
-	Expected    string    `json:"expected,omitempty"`
-	HTML        string    `json:"html,omitempty"`
-	Action      string    `json:"action"`
-	AccountID   int64     `json:"account_id"`
-	Success     bool      `json:"success"`
-	Reason      string    `json:"reason"`
-	DurationMS  int64     `json:"duration_ms"`
-	CheckedAt   time.Time `json:"checked_at"`
-	OutputChars int       `json:"output_chars"`
+	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	TestKind       string                       `json:"test_kind"`
+	Answer         string                       `json:"answer,omitempty"`
+	Expected       string                       `json:"expected,omitempty"`
+	HTML           string                       `json:"html,omitempty"`
+	Action         string                       `json:"action"`
+	AccountID      int64                        `json:"account_id"`
+	Success        bool                         `json:"success"`
+	Reason         string                       `json:"reason"`
+	DurationMS     int64                        `json:"duration_ms"`
+	CheckedAt      time.Time                    `json:"checked_at"`
+	OutputChars    int                          `json:"output_chars"`
 }
 type AstraGatewayRuntimeProvider interface {
 	AstraGatewaySnapshot(context.Context) AstraGatewayRuntime
@@ -238,6 +239,10 @@ func (s *AccountTestService) TestAstraGateway(ctx context.Context, action string
 	}
 	if err != nil {
 		result.Reason = err.Error()
+		if denial := monitoringProbeDeferral(err, time.Now()); denial != nil {
+			result.Reason = "monitoring_budget_deferred"
+			result.BudgetDeferral = denial
+		}
 	}
 	result.DurationMS = time.Since(start).Milliseconds()
 	s.astraGatewayTestMu.Lock()
@@ -279,6 +284,13 @@ func (s *AccountTestService) verifyAstraGatewayTarget(ctx context.Context, id in
 		return errors.New("account_unavailable")
 	}
 	applyOpenAICodexTicketHarvestIdentity(req.Header, "gpt-6-astra")
+	// Unified target preparation acquires a stored bundle through the original
+	// collector. Its acquisition limits are separate from this two-shot probe;
+	// do not accidentally change automatic borrowing or collector health here.
+	if !s.openaiGatewayService.UnifiedAstraTicketsEnabled(ctx) {
+		ctx = s.monitoringBudget.Context(WithHTTPUpstreamRedirectsDisabled(ctx), "https://chatgpt.com", false)
+		req = req.WithContext(ctx)
+	}
 	return verifier.VerifyAstraGatewayTarget(ctx, req, openAIAccountProxyURL(account), id, account.Concurrency)
 }
 
@@ -298,6 +310,15 @@ func (s *AccountTestService) testAstraWS(ctx context.Context, id, adminID int64,
 	}
 	ctx, cancel := context.WithTimeout(ctx, 240*time.Second)
 	defer cancel()
+	// Each handshake and generation is accounted by the existing WS pool and
+	// forwarder. Bind the actual account endpoint, not the gateway's public URL.
+	site := a.GetOpenAIBaseURL()
+	if a.IsOpenAIOAuthLike() {
+		site = "https://chatgpt.com"
+	} else if a.UsesNativeCNResponses() && a.IsAdaptiveAPIProtocol() {
+		site = a.GetCNProtocolBaseURL(APIProtocolResponses)
+	}
+	ctx = s.monitoringBudget.Context(WithHTTPUpstreamRedirectsDisabled(ctx), site, false)
 	session := "astra-admin-test-" + uuid.NewString()
 	defer s.openaiGatewayService.clearAstraAdminTestSession(adminID, session, id)
 	previous := ""
@@ -324,7 +345,13 @@ func (s *AccountTestService) testAstraWS(ctx context.Context, id, adminID int64,
 			body = strings.TrimSuffix(body, "}") + `,"previous_response_id":` + string(encoded) + `}`
 		}
 		r, err := s.openaiGatewayService.Forward(ctx, c, a, []byte(body))
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			return "", local
+		}
 		if err != nil {
+			if monitoringProbeDeferral(err, time.Now()) != nil {
+				return "", err
+			}
 			return "", errors.New(astraWSTestFailureReason(err))
 		}
 		if r == nil {
@@ -380,6 +407,9 @@ func (s *AccountTestService) runAstraQuestionHTTP(ctx context.Context, id int64,
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/astra-test", nil).WithContext(ctx)
 	err = s.TestPelicanAccountConnection(c, id, "gpt-6-astra", q.Prompt, "medium")
+	if local := monitoringProbeLocalError(c.Request.Context()); local != nil {
+		return "", local
+	}
 	output, msg := parseTestSSEOutput(w.Body.String())
 	if err != nil || msg != "" {
 		for _, code := range []string{"astra_rotation_cooling", "astra_rotation_unavailable", "astra_rotation_use_once", "astra_rotation_no_nodes", "astra_rotation_node_unavailable", "astra_rotation_exhausted", "target_probe_degraded", "target_route_changed", "target_probe_failed", "target_validation_in_progress", "preparation_in_progress", "source_probe_cooldown", "no_qualified_source_route", "configuration_changed"} {

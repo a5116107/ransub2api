@@ -36,6 +36,132 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	return s
 }
 
+func TestAstraGatewayMonitoringBudgetPostgresSharedKeyAndHistory(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "chatgpt.com" || r.Header.Get("Authorization") != "Bearer astra-diagnostic-fixture" {
+			http.Error(w, "unexpected diagnostic fixture", http.StatusBadRequest)
+			return
+		}
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-codex-turn-state", "fixture-ticket")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+		}}
+	t.Cleanup(transport.CloseIdleConnections)
+	httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	delegate := gatewayPinDelegate{call: func(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+		return httpClient.Do(req)
+	}}
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	create := func(name string) *service.Account {
+		return mustCreateAccount(t, client, &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+			Status: service.StatusActive, Schedulable: true, Concurrency: 2,
+			Credentials: map[string]any{"access_token": "astra-diagnostic-fixture", "chatgpt_account_id": "fixture-workspace"}})
+	}
+	source, first, alias := create("diagnostic-source"), create("diagnostic-target"), create("diagnostic-alias")
+	var accountBefore string
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT json_agg(a ORDER BY id)::text FROM accounts a`).Scan(&accountBefore))
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 1
+	policy, err := budget.SaveSettings(t.Context(), policy)
+	require.NoError(t, err)
+	run := func(id int64) service.AstraGatewayTestResult {
+		cfg := &config.Config{}
+		cfg.Gateway.CodexGatewayPin = config.CodexGatewayPinConfig{Enabled: true, SourceAccountIDs: []int64{source.ID}, TargetAccountIDs: []int64{first.ID, alias.ID}, TTLSeconds: 240}
+		wrapper := &astraRoutingUpstream{cfg: cfg, delegate: delegate}
+		pool := wrapper.current(t.Context())
+		pool.recordSource(source.ID, time.Now(), &codexGatewayRoute{cookie: http.Cookie{Name: "__oailb", Value: "fixture-route", Path: "/", Secure: true}, expires: time.Now().Add(3 * time.Minute)}, true)
+		var observations int
+		pool.historyRecorder = func(service.AstraGatewayHistoryRecord, bool) { observations++ }
+		gateway := service.NewOpenAIGatewayService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, wrapper, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+		t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
+		t.Cleanup(gateway.CloseOpenAIWSPool)
+		tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, wrapper, cfg, nil)
+		tests.SetOpenAIGatewayService(gateway)
+		tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+		result, err := tests.TestAstraGateway(t.Context(), "verify", id, 1)
+		require.NoError(t, err)
+		if result.BudgetDeferral != nil {
+			require.Zero(t, observations)
+		}
+		return result
+	}
+	deferred := run(first.ID)
+	require.False(t, deferred.Success)
+	require.Equal(t, "global_day", deferred.BudgetDeferral.Scope)
+	require.EqualValues(t, 1, calls.Load())
+	aliasResult := run(alias.ID)
+	require.Equal(t, "monitoring_budget_deferred", aliasResult.Reason)
+	require.EqualValues(t, 1, calls.Load(), "independent services and repeated credentials share SQL limits")
+	policy.RequestsPerDay = 20
+	policy, err = budget.SaveSettings(t.Context(), policy)
+	require.NoError(t, err)
+	require.True(t, run(alias.ID).Success)
+	require.EqualValues(t, 3, calls.Load())
+	policy.Enabled = false
+	_, err = budget.SaveSettings(t.Context(), policy)
+	require.NoError(t, err)
+	require.True(t, run(first.ID).Success)
+	usage, err := budget.Summary(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 5, usage.DayUsed)
+	require.Zero(t, usage.ActiveRequests)
+	var accountAfter string
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT json_agg(a ORDER BY id)::text FROM accounts a`).Scan(&accountAfter))
+	require.Equal(t, accountBefore, accountAfter)
+	// The original event repository, reconstructed independently, retains local
+	// deferral metadata while historical/older-writer rows remain SQL NULL.
+	flow := NewCodexHarvestFlowRepository(db)
+	event := service.CodexHarvestFlowEvent{ID: "local-budget-fixture", At: time.Now().UTC(), Stage: "select", Kind: "candy_deferred", Reason: "candy_budget_deferred", BudgetDeferral: deferred.BudgetDeferral}
+	require.NoError(t, flow.Append(t.Context(), event))
+	// Exercise the pre-344 writer exactly: omit the optional column rather
+	// than passing SQL NULL through the new repository implementation.
+	_, err = db.ExecContext(t.Context(), `INSERT INTO codex_harvest_flow_events
+ (event_id, at, stage, kind, account_id, account_name, model, node, http_status, length, blocks,
+ expected_length, expected_blocks, accepted, standby, result, reason, detail)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		"old-writer-fixture", event.At, "select", "candy_pass", int64(0), "", "", "", 0, 0, 0, 0, 0, false, false, "candy_passed", "", "")
+	require.NoError(t, err)
+	// A rolled-back reader still projects its original 18 columns when the
+	// same row carries the new optional scheduling metadata.
+	var oldReader service.CodexHarvestFlowEvent
+	err = db.QueryRowContext(t.Context(), `SELECT event_id, at, stage, kind, account_id, account_name, model, node,
+ http_status, length, blocks, expected_length, expected_blocks, accepted, standby, result, reason, detail
+ FROM codex_harvest_flow_events WHERE event_id = $1`, event.ID).Scan(
+		&oldReader.ID, &oldReader.At, &oldReader.Stage, &oldReader.Kind, &oldReader.AccountID, &oldReader.AccountName,
+		&oldReader.Model, &oldReader.Node, &oldReader.HTTPStatus, &oldReader.Length, &oldReader.Blocks,
+		&oldReader.ExpectedLength, &oldReader.ExpectedBlocks, &oldReader.Accepted, &oldReader.Standby,
+		&oldReader.Result, &oldReader.Reason, &oldReader.Detail)
+	require.NoError(t, err)
+	require.Equal(t, event.ID, oldReader.ID)
+	require.Nil(t, oldReader.BudgetDeferral)
+	rows, err := NewCodexHarvestFlowRepository(db).List(t.Context(), 200)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		if row.ID == event.ID {
+			require.Equal(t, deferred.BudgetDeferral, row.BudgetDeferral)
+		} else {
+			require.Nil(t, row.BudgetDeferral)
+		}
+	}
+	ddl, err := os.ReadFile("../../migrations/344_codex_harvest_flow_budget_deferral.sql")
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), string(ddl))
+	require.NoError(t, err, "additive migration is idempotent and retains evidence for rollback")
+}
+
 func TestStateProbeMonitoringBudgetPostgresSharedKeyRestartAndRecovery(t *testing.T) {
 	for _, scope := range []string{"global_day", "key_minute"} {
 		t.Run(scope, func(t *testing.T) {

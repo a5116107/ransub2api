@@ -17,7 +17,7 @@ func TestHarvestFlowAppendInsertsThenCaps(t *testing.T) {
 	at := time.Date(2026, 9, 21, 4, 0, 0, 0, time.UTC)
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO codex_harvest_flow_events").
-		WithArgs("evt-1", at, "probe", "probe_hit", int64(2), "20x", "gpt-6-astra", "japan-08", 200, 292, 10, 292, 10, true, false, "success", "", "").
+		WithArgs("evt-1", at, "probe", "probe_hit", int64(2), "20x", "gpt-6-astra", "japan-08", 200, 292, 10, 292, 10, true, false, "success", "", "", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("DELETE FROM codex_harvest_flow_events").
 		WithArgs(harvestFlowPersistCap).
@@ -41,14 +41,16 @@ func TestHarvestFlowListReturnsChronological(t *testing.T) {
 		WithArgs(harvestFlowPersistCap).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"event_id", "at", "stage", "kind", "account_id", "account_name", "model", "node",
-			"http_status", "length", "blocks", "expected_length", "expected_blocks", "accepted", "standby", "result", "reason", "detail",
-		}).AddRow("evt-2", newer, "select", "selected", int64(2), "20x", "gpt-6-astra", "japan-08", 0, 0, 0, 0, 0, false, false, "", "", "").
-			AddRow("evt-1", older, "probe", "probe_hit", int64(2), "20x", "gpt-6-astra", "japan-08", 200, 292, 10, 292, 10, true, false, "success", "", ""))
+			"http_status", "length", "blocks", "expected_length", "expected_blocks", "accepted", "standby", "result", "reason", "detail", "budget_deferral",
+		}).AddRow("evt-2", newer, "select", "candy_deferred", int64(2), "20x", "gpt-6-astra", "japan-08", 0, 0, 0, 0, 0, false, false, "", "", "", `{"reason":"request_limit","scope":"key","retry_at":"2026-09-21T04:02:00Z"}`).
+			AddRow("evt-1", older, "probe", "probe_hit", int64(2), "20x", "gpt-6-astra", "japan-08", 200, 292, 10, 292, 10, true, false, "success", "", "", nil))
 	events, err := NewCodexHarvestFlowRepository(db).List(context.Background(), 200)
 	require.NoError(t, err)
 	require.Len(t, events, 2)
 	require.Equal(t, "evt-1", events[0].ID)
 	require.Equal(t, "evt-2", events[1].ID)
+	require.Nil(t, events[0].BudgetDeferral)
+	require.Equal(t, "key", events[1].BudgetDeferral.Scope)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

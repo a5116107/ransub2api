@@ -31,24 +31,25 @@ const (
 
 // CodexHarvestFlowEvent is a redacted breadcrumb for the admin harvest pipeline.
 type CodexHarvestFlowEvent struct {
-	ID             string    `json:"id"`
-	At             time.Time `json:"at"`
-	Stage          string    `json:"stage"`
-	Kind           string    `json:"kind"`
-	AccountID      int64     `json:"account_id,omitempty"`
-	AccountName    string    `json:"account_name,omitempty"`
-	Model          string    `json:"model,omitempty"`
-	Node           string    `json:"node,omitempty"`
-	HTTPStatus     int       `json:"http_status,omitempty"`
-	Length         int       `json:"length,omitempty"`
-	Blocks         int       `json:"blocks,omitempty"`
-	ExpectedLength int       `json:"expected_length,omitempty"`
-	ExpectedBlocks int       `json:"expected_blocks,omitempty"`
-	Accepted       bool      `json:"accepted,omitempty"`
-	Standby        bool      `json:"standby,omitempty"`
-	Result         string    `json:"result,omitempty"`
-	Reason         string    `json:"reason,omitempty"`
-	Detail         string    `json:"detail,omitempty"`
+	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	ID             string                       `json:"id"`
+	At             time.Time                    `json:"at"`
+	Stage          string                       `json:"stage"`
+	Kind           string                       `json:"kind"`
+	AccountID      int64                        `json:"account_id,omitempty"`
+	AccountName    string                       `json:"account_name,omitempty"`
+	Model          string                       `json:"model,omitempty"`
+	Node           string                       `json:"node,omitempty"`
+	HTTPStatus     int                          `json:"http_status,omitempty"`
+	Length         int                          `json:"length,omitempty"`
+	Blocks         int                          `json:"blocks,omitempty"`
+	ExpectedLength int                          `json:"expected_length,omitempty"`
+	ExpectedBlocks int                          `json:"expected_blocks,omitempty"`
+	Accepted       bool                         `json:"accepted,omitempty"`
+	Standby        bool                         `json:"standby,omitempty"`
+	Result         string                       `json:"result,omitempty"`
+	Reason         string                       `json:"reason,omitempty"`
+	Detail         string                       `json:"detail,omitempty"`
 }
 
 type CodexHarvestFlowStage struct {
@@ -777,7 +778,7 @@ func BuildCodexHarvestFlow(ctx context.Context, cfg *config.Config, settings *Se
 	rawEvents := listCodexHarvestFlowEvents()
 	events := make([]CodexHarvestFlowEvent, 0, len(rawEvents))
 	for _, event := range rawEvents {
-		if event.Stage == "select" && event.Kind != "schedule_join" && event.Kind != "schedule_leave" && event.Kind != "candy_pass" && event.Kind != "candy_fail" {
+		if event.Stage == "select" && event.Kind != "schedule_join" && event.Kind != "schedule_leave" && event.Kind != "candy_pass" && event.Kind != "candy_fail" && event.Kind != "candy_deferred" {
 			continue
 		}
 		events = append(events, event)
@@ -992,7 +993,7 @@ func buildCodexHarvestFlowStages(snapshot CodexHarvestFlowSnapshot) []CodexHarve
 		switch event.Kind {
 		case "schedule_join", "candy_pass":
 			selectStage.Status = "ok"
-		case "schedule_leave":
+		case "schedule_leave", "candy_deferred":
 			selectStage.Status = "warn"
 		default:
 			selectStage.Status = "fail"

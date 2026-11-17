@@ -177,6 +177,7 @@ export default {
     kinds: {
       candy_pass: 'Beta candy passed',
       candy_fail: 'Beta candy failed',
+      candy_deferred: 'Beta candy deferred',
       schedule_join: 'Added to pool',
       schedule_leave: 'Removed from pool',
       schedule_enable: 'Scheduling restored',
@@ -193,6 +194,7 @@ export default {
     },
     reasons: {
       candy_disabled: 'Beta candy observation disabled',
+      candy_budget_deferred: 'Beta candy deferred by local monitoring budget (scheduling unchanged)',
       candy_passed: 'Beta candy passed (scheduling unchanged)',
       candy_incorrect: 'Beta candy answer incorrect (scheduling unchanged)',
       candy_error: 'Beta candy request failed',

@@ -431,6 +431,9 @@ func (s *astraRoutingUpstream) prepareAstraGateway(ctx context.Context) error {
 		}
 		probeStart := time.Now()
 		if err := s.preparer(ctx, id); err != nil {
+			if service.IsMonitoringProbeBudgetFailure(err) {
+				return err
+			}
 			reason := "source_test_failed"
 			if err.Error() == "answer_mismatch" {
 				reason = "candy_answer_mismatch"

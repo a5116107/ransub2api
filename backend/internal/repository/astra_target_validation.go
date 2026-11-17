@@ -167,6 +167,12 @@ func (s *astraRoutingUpstream) targetRouteOnce(req *http.Request, proxy string, 
 	probe := req.Clone(service.WithHTTPUpstreamRedirectsDisabled(ctx))
 	replaceCodexGatewayCookie(probe, cookie)
 	result := service.ProbeOpenAICodexStateRoute(ctx, s.delegate, probe, proxy, id, n, profile)
+	if result.BudgetDeferral != nil {
+		// This is local admission, not a new supplier observation. Keep the
+		// previous evidence and its original expiry; do not record a failure,
+		// cool a node, rotate a route or publish another passing observation.
+		return nil, key, proxy, release, result.BudgetDeferral
+	}
 	passed := result.Verdict == service.OpenAICodexStateHealthy
 	reason := "target_probe_failed"
 	if result.Verdict == service.OpenAICodexStateDegraded {

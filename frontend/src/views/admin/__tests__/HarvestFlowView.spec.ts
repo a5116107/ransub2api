@@ -49,6 +49,19 @@ function response() {
 }
 
 describe('HarvestFlowView nullable API lists', () => {
+  it('shows candy budget deferrals as warnings, not upstream failures', async () => {
+    getFlow.mockResolvedValue({ ...response(),
+      stages: [{ id: 'select', status: 'warn', detail: 'candy_budget_deferred' }],
+      events: [{ id: 'candy-deferred', stage: 'select', kind: 'candy_deferred', reason: 'candy_budget_deferred', budget_deferral: { reason: 'concurrency_limit', scope: 'key', retry_at: '2026-11-17T10:00:00Z' } }]
+    })
+    const w = mount(HarvestFlowView, { global: { stubs: { Icon: true, LoadingSpinner: true } } })
+    await flushPromises()
+    expect(w.text()).toContain('modelTrace.budgetScopes.key')
+    expect(w.findAll('.bg-amber-500').length).toBeGreaterThan(0)
+    expect(w.get('time').attributes('datetime')).toBe('2026-11-17T10:00:00Z')
+    expect(w.find('.bg-rose-500').exists()).toBe(false)
+    w.unmount()
+  })
   it('shows beta candy outcomes without marking the account unschedulable', async () => {
     getFlow.mockResolvedValue({ ...response(),
       stages: [{ id: 'select', status: 'fail', detail: 'candy_incorrect' }],

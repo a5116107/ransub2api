@@ -53,6 +53,7 @@
       </div>
       <div v-if="runtime.last_test" role="status" class="space-y-3 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-700">
         <p>{{ clock(runtime.last_test.checked_at) }} · {{ runtime.last_test.action }} <span v-if="runtime.last_test.account_id">#{{ runtime.last_test.account_id }}</span> · {{ reason(runtime.last_test.reason) }} · {{ (runtime.last_test.duration_ms / 1000).toFixed(1) }} s</p>
+        <MonitoringProbeBudgetNotice v-if="runtime.last_test.budget_deferral" :deferral="runtime.last_test.budget_deferral" :title="t('admin.accounts.pelicanTest.probe.budgetPaused')" />
       </div>
     </template>
   </section>
@@ -61,6 +62,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getAstraGatewayRuntime, testAstraGateway, type AstraGatewayRuntime, type AstraGatewaySettings } from '@/api/admin/astraGateway'
+import MonitoringProbeBudgetNotice from './account/MonitoringProbeBudgetNotice.vue'
 defineProps<{ settings?: AstraGatewaySettings; dirty: boolean }>()
 const { t, te } = useI18n()
 const p = 'admin.astraGateway'

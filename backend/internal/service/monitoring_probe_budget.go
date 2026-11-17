@@ -185,6 +185,9 @@ func (s *MonitoringProbeBudgetService) qualityContext(ctx context.Context) conte
 
 func (s *AccountTestService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
 	s.monitoringBudget = budget
+	if s.openaiGatewayService != nil {
+		s.openaiGatewayService.monitoringBudget = budget
+	}
 }
 
 // BeginMonitoringProbeRequest is called once per physical RoundTrip, after
@@ -400,6 +403,12 @@ func monitoringProbeDeferral(err error, now time.Time) *MonitoringProbeBudgetDen
 		return &MonitoringProbeBudgetDenial{Reason: "budget_unavailable", Scope: "system", RetryAt: now.Add(time.Minute)}
 	}
 	return nil
+}
+
+// IsMonitoringProbeBudgetFailure distinguishes local scheduling from provider
+// failures in repository routing adapters. Error text is never evidence.
+func IsMonitoringProbeBudgetFailure(err error) bool {
+	return monitoringProbeDeferral(err, time.Now()) != nil
 }
 
 func upstreamBillingProbeRecovery(account *Account) bool {

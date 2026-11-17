@@ -108,6 +108,10 @@ func (s *astraRoutingUpstream) prepareRotatedSource(ctx context.Context, pool *c
 			continue
 		}
 		var repeatedCoolingHost atomic.Bool
+		var localDeferral struct {
+			sync.Mutex
+			err error
+		}
 		success := func() bool {
 			defer release()
 			probe := func(id int64, probeCtx context.Context) bool {
@@ -119,6 +123,14 @@ func (s *astraRoutingUpstream) prepareRotatedSource(ctx context.Context, pool *c
 				}
 				started := time.Now()
 				err := s.preparer(probeCtx, id)
+				if service.IsMonitoringProbeBudgetFailure(err) {
+					localDeferral.Lock()
+					if localDeferral.err == nil {
+						localDeferral.err = err
+					}
+					localDeferral.Unlock()
+					return false
+				}
 				if probeCtx.Err() != nil {
 					return false
 				}
@@ -197,6 +209,12 @@ func (s *astraRoutingUpstream) prepareRotatedSource(ctx context.Context, pool *c
 			}
 			return ok
 		}()
+		localDeferral.Lock()
+		deferred := localDeferral.err
+		localDeferral.Unlock()
+		if !success && deferred != nil {
+			return deferred
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

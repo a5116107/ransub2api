@@ -590,6 +590,7 @@ type OpenAIGatewayService struct {
 	channelService         *ChannelService
 	balanceNotifyService   *BalanceNotifyService
 	settingService         *SettingService
+	monitoringBudget       *MonitoringProbeBudgetService
 	userPlatformQuotaRepo  UserPlatformQuotaRepository
 	liveAttestation        liveattestation.Provider
 	liveAttestationCipher  SecretEncryptor

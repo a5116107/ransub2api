@@ -224,6 +224,7 @@
                   <p v-if="event.reason || event.detail || event.result" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                     {{ eventDetail(event) }}
                   </p>
+                  <MonitoringProbeBudgetNotice v-if="event.budget_deferral" :deferral="event.budget_deferral" :title="t('admin.accounts.pelicanTest.probe.budgetPaused')" class="mt-2" />
                 </div>
               </li>
             </ol>
@@ -248,6 +249,7 @@ import HarvestControlsPanel from '@/components/admin/HarvestControlsPanel.vue'
 import HarvestNodeRecords from '@/components/admin/HarvestNodeRecords.vue'
 import { getCodexHarvestFlow, updateCodexSkipHarvest, type CodexHarvestFlowAccount, type CodexHarvestFlowEvent, type CodexHarvestFlowSnapshot, type CodexHarvestFlowStage, type CodexHarvestFlowTicket } from '@/api/admin/accounts'
 import { harvestAvailabilityClass, harvestAvailabilityRecoverClock, resolveHarvestAvailability } from '@/utils/harvestAvailability'
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 
 const { t } = useI18n()
 const snapshot = ref<CodexHarvestFlowSnapshot | null>(null)
@@ -337,7 +339,7 @@ function eventDotClass(kind: string) {
   if (kind === 'candy_pass' || kind === 'probe_hit' || kind === 'accept' || kind === 'schedule_join' || kind === 'rotate') {
     return 'bg-emerald-500'
   }
-  if (kind === 'schedule_leave' || kind === 'probe_miss') {
+  if (kind === 'schedule_leave' || kind === 'probe_miss' || kind === 'candy_deferred') {
     return 'bg-amber-500'
   }
   return 'bg-rose-500'

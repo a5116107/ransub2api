@@ -191,6 +191,9 @@ func (s *AccountTestService) SetPluginManager(pluginManager *PluginManager) {
 func (s *AccountTestService) SetOpenAIGatewayService(gateway *OpenAIGatewayService) {
 	if s != nil {
 		s.openaiGatewayService = gateway
+		if gateway != nil {
+			gateway.monitoringBudget = s.monitoringBudget
+		}
 	}
 }
 

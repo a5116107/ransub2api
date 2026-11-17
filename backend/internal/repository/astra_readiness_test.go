@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -13,6 +14,88 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+type astraDiagnosticBudgetRepo struct {
+	service.MonitoringProbeBudgetRepository
+	requests int
+	denyAt   int
+	err      error
+	released int
+}
+
+func (r *astraDiagnosticBudgetRepo) Acquire(context.Context, service.MonitoringProbeBudgetRequest) (string, error) {
+	r.requests++
+	if r.requests == r.denyAt {
+		return "", r.err
+	}
+	return "diagnostic-fixture", nil
+}
+func (*astraDiagnosticBudgetRepo) Renew(context.Context, string) (bool, error) { return true, nil }
+func (r *astraDiagnosticBudgetRepo) Release(context.Context, string) error     { r.released++; return nil }
+
+func TestAstraGatewayMonitoringBudgetPreservesRouteEvidence(t *testing.T) {
+	for _, denyAt := range []int{1, 2} {
+		t.Run(fmt.Sprint(denyAt), func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Gateway.CodexGatewayPin = pinConfig()
+			denial := &service.MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
+			budget := &astraDiagnosticBudgetRepo{denyAt: denyAt, err: denial}
+			calls, history := 0, 0
+			wrapper := &astraRoutingUpstream{cfg: cfg}
+			wrapper.delegate = gatewayPinDelegate{call: func(req *http.Request, _ string, id int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+				bound, finish, err := service.BeginMonitoringProbeRequest(req)
+				if err != nil {
+					return nil, err
+				}
+				calls++
+				resp := pinResponse("")
+				if id == 299 {
+					resp = pinResponse("__oailb=route; Path=/; Secure; Max-Age=230")
+				}
+				return resp, service.FinishMonitoringProbeResponse(bound.Context(), resp, nil, finish)
+			}}
+			resp, err := wrapper.Do(pinRequest(t), "", 299, 1)
+			consumeAffinityResponse(t, resp, err)
+			target := pinRequest(t)
+			target.Header.Set("Authorization", "Bearer diagnostic-fixture")
+			require.NoError(t, wrapper.VerifyAstraGatewayTarget(t.Context(), target, "", 300, 1))
+			pool := wrapper.current(t.Context())
+			before := pool.targetChecks[300]
+			pool.historyRecorder = func(service.AstraGatewayHistoryRecord, bool) { history++ }
+			previousCalls := calls
+			ctx := service.NewMonitoringProbeBudgetService(budget).Context(t.Context(), "https://chatgpt.com", false)
+			err = wrapper.VerifyAstraGatewayTarget(ctx, target, "", 300, 1)
+			var deferred *service.MonitoringProbeBudgetDenial
+			require.ErrorAs(t, err, &deferred)
+			require.Equal(t, denial, deferred)
+			require.Equal(t, previousCalls+denyAt-1, calls)
+			require.Equal(t, before, pool.targetChecks[300], "a local postponement neither renews nor revokes the previous observation")
+			require.Zero(t, history, "no provider failure or success is persisted")
+			require.Equal(t, denyAt-1, budget.released)
+		})
+	}
+}
+
+func TestAstraGatewayMonitoringBudgetSourcePreparationNeutral(t *testing.T) {
+	for _, sources := range []int{1, 2, 3} {
+		for _, rotate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("sources=%d/rotate=%t", sources, rotate), func(t *testing.T) {
+				wrapper, _, leases := rotationFixture(t, 3, "good")
+				wrapper.cfg.Gateway.CodexGatewayPin.RotateNodes = rotate
+				wrapper.cfg.Gateway.CodexGatewayPin.SourceAccountIDs = []int64{299, 301, 302}[:sources]
+				denial := &service.MonitoringProbeBudgetDenial{Reason: "concurrency_limit", Scope: "global", RetryAt: time.Now().Add(time.Minute)}
+				wrapper.preparer = func(context.Context, int64) error { return denial }
+				err := wrapper.PrepareAstraGateway(t.Context())
+				require.ErrorIs(t, err, denial)
+				pool := wrapper.current(t.Context())
+				require.Empty(t, pool.statuses, "a locally deferred source is not a failed provider")
+				require.True(t, wrapper.retryAfter.IsZero())
+				require.True(t, pool.rotationRetryAfter.IsZero())
+				require.Zero(t, *leases)
+			})
+		}
+	}
+}
 
 func TestAstraReadinessRequiresCurrentTargetPass(t *testing.T) {
 	cfg := &config.Config{}
