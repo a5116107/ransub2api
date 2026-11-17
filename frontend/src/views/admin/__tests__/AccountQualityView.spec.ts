@@ -1883,6 +1883,63 @@ describe('quality operations', () => {
     wrapper.unmount()
   })
   it.each([
+    ['unchanged', 'no_new_registered_fault'], ['invalidated', 'business_fault_recorded'],
+    ['unknown', 'fault_not_tracked'], ['unknown', 'invalid_fault_evidence'],
+    ['unknown', 'fault_tracking_not_current'], ['unknown', 'route_not_current'],
+  ] as const)('keeps registered-fault evidence separate from answer correctness (%s/%s)', async (status, reason) => {
+    const wrapper = await openMeasurement(measurementSample(), {
+      status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z',
+      route: { status: 'matching', reason: 'route_matches' }, fault: { status, reason },
+    })
+    const panel = wrapper.get('[data-testid="quality-measurement-fault"]')
+    expect(panel.attributes('data-status')).toBe(status)
+    expect(panel.text()).toContain(`qualityOps.measurement.faultReasons.${reason}`)
+    expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')
+    expect(wrapper.get('[data-testid="quality-measurement-current"]').text()).toBe('qualityOps.measurement.currentUnknown')
+    wrapper.unmount()
+  })
+  it.each([
+    { status: 'unchanged', reason: 'business_fault_recorded' }, { status: 'invalidated', reason: 'no_new_registered_fault' },
+    { status: 'healthy', reason: 'no_new_registered_fault' }, { status: 'unchanged', reason: 'future-reason' },
+    { status: null, reason: null },
+  ])('keeps malformed fault assessments unknown (%j)', async fault => {
+    const wrapper = await openMeasurement(measurementSample(), {
+      status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z',
+      route: { status: 'matching', reason: 'route_matches' }, fault,
+    } as any)
+    expect(wrapper.get('[data-testid="quality-measurement-fault"]').attributes('data-status')).toBe('unknown')
+    expect(wrapper.get('[data-testid="quality-measurement-fault"]').text()).toContain('qualityOps.measurement.faultReasons.invalid_fault_assessment')
+    wrapper.unmount()
+  })
+  it.each(['missing', 'old-read-time', 'changed-route', 'unknown-route'])('does not certify fault continuity with %s', async scenario => {
+    const assessment: any = {
+      status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z',
+      route: { status: 'matching', reason: 'route_matches' }, fault: { status: 'unchanged', reason: 'no_new_registered_fault' },
+    }
+    if (scenario === 'missing') delete assessment.fault
+    if (scenario === 'old-read-time') assessment.evaluated_at = '2026-11-17T00:00:00Z'
+    if (scenario === 'changed-route') assessment.route = { status: 'changed', reason: 'route_changed' }
+    if (scenario === 'unknown-route') delete assessment.route
+    const wrapper = await openMeasurement(measurementSample(), assessment)
+    expect(wrapper.get('[data-testid="quality-measurement-fault"]').attributes('data-status')).toBe('unknown')
+    wrapper.unmount()
+  })
+  it.each(['round', 'route', 'fault'] as const)('keeps inherited object names unknown in %s assessments', async field => {
+    for (const status of ['constructor', '__proto__', 'toString']) {
+      const assessment: any = {
+        status: 'unknown', reason: 'validity_not_declared', evaluated_at: '2026-11-17T01:00:30Z',
+        round: { status: 'latest_complete', reason: 'latest_complete', sample_count: 1, expected_sample_count: 1 },
+        route: { status: 'matching', reason: 'route_matches' },
+        fault: { status: 'unchanged', reason: 'no_new_registered_fault' },
+      }
+      assessment[field].status = status
+      const wrapper = await openMeasurement(measurementSample(), assessment)
+      expect(wrapper.get(`[data-testid="quality-measurement-${field}"]`).attributes('data-status')).toBe('unknown')
+      expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')
+      wrapper.unmount()
+    }
+  })
+  it.each([
     ['future version', (m: QualityMeasurement) => { m.version = 99 }],
     ['missing hash', (m: QualityMeasurement) => { m.measurement_hash = '' }],
     ['bad policy hash', (m: QualityMeasurement) => { m.policy_hash = 'forged' }],

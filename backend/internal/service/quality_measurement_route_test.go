@@ -217,3 +217,42 @@ func TestQualityMeasurementRouteManagedSocket(t *testing.T) {
 		})
 	}
 }
+
+func TestQualityMeasurementFaultFenceUsesOnlyMatchingClaim(t *testing.T) {
+	for _, scenario := range []string{"claimed", "legacy", "different-round", "negative", "undeclared", "transport-forgery"} {
+		t.Run(scenario, func(t *testing.T) {
+			plan, result := qualityMeasurementFixture()
+			plan.AccountID = 901
+			plan.PelicanConfig.Quality.EvidenceValidForSeconds = 60
+			version, forged := int64(2), int64(99)
+			round := time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano)
+			plan.QualityFaultVersion, plan.QualityFaultRound, result.QualityRoundID = &version, round, round
+			result.PelicanConfig.AvailabilityResult.route = &QualityRouteEvidence{Version: 1, AccountID: 901, Fingerprint: strings.Repeat("a", 64), FaultVersion: &forged, FaultRound: "transport-forged-round"}
+			switch scenario {
+			case "legacy", "transport-forgery":
+				plan.QualityFaultVersion = nil
+			case "different-round":
+				result.QualityRoundID = "other-round"
+			case "negative":
+				version = -1
+			case "undeclared":
+				plan.PelicanConfig.Quality.EvidenceValidForSeconds = 0
+			}
+			recordQualityMeasurement(plan, result)
+			require.NotNil(t, result.QualityRouteEvidence)
+			if scenario == "claimed" {
+				require.EqualValues(t, 2, *result.QualityRouteEvidence.FaultVersion)
+				require.Equal(t, round, result.QualityRouteEvidence.FaultRound)
+				version++
+				require.EqualValues(t, 2, *result.QualityRouteEvidence.FaultVersion, "freeze the value instead of aliasing a reusable plan pointer")
+			} else {
+				require.Nil(t, result.QualityRouteEvidence.FaultVersion)
+				require.Empty(t, result.QualityRouteEvidence.FaultRound)
+			}
+			raw, err := json.Marshal(result)
+			require.NoError(t, err)
+			require.NotContains(t, string(raw), "fault_version")
+			require.NotContains(t, string(raw), "fault_round")
+		})
+	}
+}

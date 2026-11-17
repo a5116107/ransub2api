@@ -45,7 +45,7 @@ func (r *accountRepository) applyObservedAccountFault(ctx context.Context, accou
 	}
 	changed := false
 	for _, p := range candidates {
-		if !p.Enabled || p.PelicanConfig == nil || (p.PelicanConfig.Availability == nil && (!quality5xx || !p.PelicanConfig.TriggersOnUpstream5xx())) {
+		if !p.Enabled || p.PelicanConfig == nil || (p.PelicanConfig.Availability == nil && !p.PelicanConfig.TracksQualityFaults() && (!quality5xx || !p.PelicanConfig.TriggersOnUpstream5xx())) {
 			continue
 		}
 		applied, e := plans.applyImmediateAccountFault(ctx, p.ID, accountID, quality5xx, account)
@@ -80,7 +80,8 @@ func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Con
 	policy := plan.PelicanConfig.Quality
 	qualityProtection := quality5xx && policy != nil && policy.TriggerOnUpstream5xx && policy.Action == service.QualityActionRemoveModel
 	availability := plan.PelicanConfig.Availability != nil
-	if !availability && !qualityProtection {
+	qualityEvidence := plan.PelicanConfig.TracksQualityFaults()
+	if !availability && !qualityProtection && !qualityEvidence {
 		return false, nil
 	}
 	var accountType, status string
@@ -92,18 +93,24 @@ func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Con
 	if accountType != service.AccountTypeOAuth && accountType != service.AccountTypeAPIKey {
 		return false, nil
 	}
-	if availability && prepared != nil {
+	if (availability || qualityEvidence) && prepared != nil {
 		var fingerprint [32]byte
 		fingerprint, err = accountRouteFingerprintWithBinding(ctx, tx, accountID, true, prepared)
 		if errors.Is(err, service.ErrAvailabilityRouteChanged) || errors.Is(err, sql.ErrNoRows) {
 			// The response belongs to an old parent route, not the current one.
 			availability = false
+			err = nil
 		} else if err != nil {
 			return false, err
-		} else if err = fenceManagedAvailabilityFault(ctx, tx, plan, prepared, fingerprint); err != nil {
+		} else if availability {
+			err = fenceManagedAvailabilityFault(ctx, tx, plan, prepared, fingerprint)
+		} else {
+			_, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, planID)
+		}
+		if err != nil {
 			return false, err
 		}
-	} else if availability {
+	} else if availability || qualityEvidence {
 		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, planID); err != nil {
 			return false, err
 		}
@@ -117,7 +124,8 @@ func (r *scheduledTestPlanRepository) applyImmediateAccountFault(ctx context.Con
 		changed = changed || applied
 	}
 	if !changed {
-		return false, nil
+		// A quality-only evidence fence changes neither membership nor due time.
+		return false, tx.Commit()
 	}
 	// Durable fallback if Redis publication fails; a running lease stays intact.
 	if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET next_run_at=$2 WHERE id=$1`, planID, time.Now().UTC()); err != nil {

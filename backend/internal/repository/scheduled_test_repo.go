@@ -363,6 +363,8 @@ func marshalPelicanConfig(config *service.PelicanTestConfig) any {
 
 // Compare the saved version as well as the due time: a concurrent pause/edit wins.
 func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *service.ScheduledTestPlan, now, until, next time.Time) (bool, error) {
+	plan.QualityFaultVersion = nil
+	plan.QualityFaultRound = ""
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -433,9 +435,14 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		}
 	}
 	var currentNext time.Time
-	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Availability != nil {
+	var qualityFaultVersion *int64
+	if n == 1 && plan.PelicanConfig != nil && (plan.PelicanConfig.Availability != nil || plan.PelicanConfig.TracksQualityFaults()) {
 		if err := tx.QueryRowContext(ctx, `SELECT next_run_at,availability_fault_version FROM scheduled_test_plans WHERE id=$1`, plan.ID).Scan(&currentNext, &plan.AvailabilityFaultVersion); err != nil {
 			return false, err
+		}
+		if plan.PelicanConfig.TracksQualityFaults() && plan.TriggerSource != service.AvailabilityCoverageSource {
+			version := plan.AvailabilityFaultVersion
+			qualityFaultVersion = &version
 		}
 		if plan.TriggerSource == service.AvailabilityCoverageSource && plan.AvailabilityFaultVersion != plan.AvailabilityExpectedFault {
 			return false, nil // A newer business fault owns the next probe.
@@ -455,6 +462,10 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		plan.PelicanConfig = &config
 	}
 	if n == 1 {
+		plan.QualityFaultVersion = qualityFaultVersion
+		if qualityFaultVersion != nil {
+			plan.QualityFaultRound = until.Format(time.RFC3339Nano)
+		}
 		plan.QualityAccountFingerprint = accountFingerprint
 		plan.AvailabilityAccountFingerprint = accountFingerprint
 		plan.AvailabilityProbeConnectionID = availabilityProbeConnectionID
@@ -529,10 +540,11 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 	var ruleEnabled bool
 	var round qualityMeasurementRoundRead
 	var accountID int64
+	var faultVersion int64
 	var routeJSON []byte
 	err = tx.QueryRowContext(ctx, `WITH detail AS (
  SELECT r.*,p.account_id,p.updated_at AS current_rule_version,p.enabled AS current_rule_enabled,
- p.pelican_config->'_quality_latest_round' AS latest_round,p.running_until,p.last_run_at
+ p.pelican_config->'_quality_latest_round' AS latest_round,p.running_until,p.last_run_at,p.availability_fault_version
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
  WHERE r.plan_id=$1 AND r.id=$2
  ), scoped AS (
@@ -545,10 +557,10 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
  (SELECT max(r.finished_at) FROM scheduled_test_results r JOIN detail d ON d.plan_id=r.plan_id AND d.quality_round_id=r.quality_round_id) AS samples_finished_at
  FROM quality_classified
  ) SELECT id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id,
- current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at,account_id,pelican_config->'_quality_observed_route' FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
+ current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at,account_id,pelican_config->'_quality_observed_route',availability_fault_version FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
 		&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
 		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID,
-		&ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt, &accountID, &routeJSON)
+		&ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt, &accountID, &routeJSON, &faultVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -581,6 +593,7 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 	if out.QualityMeasurementValidity != nil {
 		out.QualityMeasurementValidity.Round = round.assess(out, ruleVersion, ruleEnabled, evaluatedAt)
 		out.QualityMeasurementValidity.Route = route.assess(evaluatedAt)
+		out.QualityMeasurementValidity.Fault = route.assessFault(out, ruleVersion, ruleEnabled, faultVersion, evaluatedAt)
 	}
 	return out, nil
 }

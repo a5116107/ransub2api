@@ -567,6 +567,18 @@ export default {
   "evidenceValidityHint": "留空或 0 表示未声明；可设 60–604800 秒。自上游观测完成起计算，独立于可用性期限；不改变既有隔离、恢复或调度资格。",
   "invalidEvidenceValidity": "质量证据有效期须为 0 或 60–604800 的整数秒。",
   "measurement": {
+    "faultAtRead": "读取时的故障核对",
+    "faultStates": { "unchanged": "本轮开始后未登记新故障", "invalidated": "已有新故障", "unknown": "待确定" },
+    "faultReasons": {
+      "no_new_registered_fault": "仅表示该规则领取本轮后，现有故障通道未登记新故障；不代表无故障、当前健康或调度资格。",
+      "business_fault_recorded": "本轮领取后已登记业务故障；旧样本不证明故障后质量恢复，需要后续检测。",
+      "fault_not_tracked": "缺少领取时故障版本；旧记录不从当前配置补造。",
+      "invalid_fault_evidence": "故障版本、样本或核对时间不一致，保持未知。",
+      "fault_tracking_not_current": "规则已变化、暂停或未声明质量证据期限，缺少当前追踪边界。",
+      "route_not_current": "原配置线路当前未核对一致，故障证据不转移给其他线路。",
+      "fault_assessment_not_observed": "本次响应未提供数据库故障核对，保持未知。",
+      "invalid_fault_assessment": "故障结论、线路或核对时间不一致，保持未知。"
+    },
     "routeAtRead": "读取时的配置线路核对",
     "routeStates": { "matching": "本次所用线路仍一致", "changed": "线路已变化", "unavailable": "原线路当前不可用", "unknown": "待确定" },
     "routeReasons": {

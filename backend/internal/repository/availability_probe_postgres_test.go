@@ -11,8 +11,8 @@ import (
 )
 
 func TestAvailabilityProbePostgresHistoryRetainsIndependentEvidence(t *testing.T) {
-	db := quality5xxPostgresDB(t)
-	_, plan := quality5xxPostgresPlan(t, db, service.AccountTypeAPIKey)
+	plans, plan := availabilityPostgresPlan(t)
+	db := plans.db
 	_, err := db.Exec(`CREATE TABLE scheduled_test_results (
  id BIGSERIAL PRIMARY KEY,plan_id BIGINT NOT NULL REFERENCES scheduled_test_plans(id),
  status TEXT,response_text TEXT,error_message TEXT,latency_ms BIGINT,

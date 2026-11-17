@@ -302,6 +302,9 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	}
 	wg.Wait()
 	for _, result := range results {
+		if plan.PelicanConfig.Quality != nil && !coverageOnly {
+			result.QualityRoundID = until.Format(time.RFC3339Nano)
+		}
 		recordQualityMeasurement(plan, result)
 	}
 	// Persist timeout failures with a fresh context even after the request deadline.
@@ -333,7 +336,6 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	if sharedBatch != nil && randomQuestionErr == nil {
 		for _, result := range results {
 			result.PlanID = plan.ID
-			result.QualityRoundID = until.Format(time.RFC3339Nano)
 			result.QualityAction = "comparison_pending"
 		}
 		applyBatch := applyTriggeredQuality
@@ -392,7 +394,6 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 			result.QualityRoundID = ""
 		}
 		if plan.PelicanConfig.Quality != nil && !coverageOnly {
-			result.QualityRoundID = until.Format(time.RFC3339Nano)
 			result.PelicanConfig.QualityModelOutcomes = plan.QualityModelOutcomes
 			result.PelicanConfig.QualityRestoreDiagnostic = nil
 			if qualityAction == "restore_conflict" {

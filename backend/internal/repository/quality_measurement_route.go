@@ -30,9 +30,11 @@ func marshalQualityResultConfig(result *service.ScheduledTestResult) any {
 }
 
 type qualityRouteRead struct {
-	assessment *service.QualityMeasurementRouteValidity
-	cooldown   sql.NullTime
-	observedAt time.Time
+	assessment   *service.QualityMeasurementRouteValidity
+	cooldown     sql.NullTime
+	observedAt   time.Time
+	faultVersion *int64
+	faultRound   string
 }
 
 func readQualityRoute(ctx context.Context, tx *sql.Tx, accountID int64, result *service.ScheduledTestResult, raw []byte) (*qualityRouteRead, error) {
@@ -46,6 +48,8 @@ func readQualityRoute(ctx context.Context, tx *sql.Tx, accountID int64, result *
 		return out, nil
 	}
 	out.observedAt = evidence.ObservedAt
+	out.faultVersion = evidence.FaultVersion
+	out.faultRound = evidence.FaultRound
 	fingerprint, err := accountRouteFingerprint(ctx, tx, accountID, false)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.assessment.Status, out.assessment.Reason = "unavailable", "account_unavailable"
@@ -102,4 +106,29 @@ func (read *qualityRouteRead) assess(now time.Time) *service.QualityMeasurementR
 		return &service.QualityMeasurementRouteValidity{Status: "unavailable", Reason: "connection_unavailable"}
 	}
 	return read.assessment
+}
+
+func (read *qualityRouteRead) assessFault(result *service.ScheduledTestResult, ruleVersion time.Time, enabled bool, current int64, now time.Time) *service.QualityMeasurementFaultValidity {
+	out := &service.QualityMeasurementFaultValidity{Status: "unknown", Reason: "fault_not_tracked"}
+	if read.faultVersion == nil {
+		return out
+	}
+	claim, err := time.Parse(time.RFC3339Nano, read.faultRound)
+	if *read.faultVersion < 0 || current < *read.faultVersion || err != nil || claim.IsZero() || read.faultRound != result.QualityRoundID {
+		out.Reason = "invalid_fault_evidence"
+		return out
+	}
+	if read.assess(now).Status != "matching" {
+		out.Reason = "route_not_current"
+		return out
+	}
+	if !enabled || !result.PelicanConfig.TracksQualityFaults() || !result.PelicanConfig.QualityMeasurement.RuleVersion.Equal(ruleVersion) {
+		out.Reason = "fault_tracking_not_current"
+		return out
+	}
+	out.Status, out.Reason = "unchanged", "no_new_registered_fault"
+	if current > *read.faultVersion {
+		out.Status, out.Reason = "invalidated", "business_fault_recorded"
+	}
+	return out
 }

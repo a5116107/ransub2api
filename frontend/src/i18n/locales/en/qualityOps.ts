@@ -567,6 +567,18 @@ export default {
   "evidenceValidityHint": "Blank or 0 leaves it undeclared; use 60–604800 seconds. Starts when the upstream observation ends, independently of availability. Existing isolation, recovery and admission stay unchanged.",
   "invalidEvidenceValidity": "Quality evidence lifetime must be 0 or an integer from 60 to 604800 seconds.",
   "measurement": {
+    "faultAtRead": "Fault check at read time",
+    "faultStates": { "unchanged": "No new fault registered since this round began", "invalidated": "A newer fault was registered", "unknown": "Unknown" },
+    "faultReasons": {
+      "no_new_registered_fault": "The existing fault channel registered no new fault for this rule since its claim. This does not certify fault absence, current health or routing eligibility.",
+      "business_fault_recorded": "A business fault was registered after this round was claimed. The old sample does not prove recovery; a later test is required.",
+      "fault_not_tracked": "No claim-time fault version was recorded. Current configuration never backfills old evidence.",
+      "invalid_fault_evidence": "The fault version, sample or assessment time is inconsistent; the result stays unknown.",
+      "fault_tracking_not_current": "The rule changed, was paused or has no declared quality evidence lifetime; a current tracking boundary is missing.",
+      "route_not_current": "The original configured route is not currently verified as matching. Fault evidence does not transfer to another route.",
+      "fault_assessment_not_observed": "This response contains no database fault assessment; the result stays unknown.",
+      "invalid_fault_assessment": "The fault conclusion, route or assessment time is inconsistent; the result stays unknown."
+    },
     "routeAtRead": "Configured route at read time",
     "routeStates": { "matching": "Observed route still matches", "changed": "Route changed", "unavailable": "Original route unavailable", "unknown": "Undetermined" },
     "routeReasons": {

@@ -37,6 +37,14 @@ type QualityMeasurementValidity struct {
 	EvaluatedAt time.Time                        `json:"evaluated_at"`
 	Round       *QualityMeasurementRoundValidity `json:"round,omitempty"`
 	Route       *QualityMeasurementRouteValidity `json:"route,omitempty"`
+	Fault       *QualityMeasurementFaultValidity `json:"fault,omitempty"`
+}
+
+// Fault validity describes the existing registered business-fault fence, not
+// fault absence, current health, or permission to schedule this account.
+type QualityMeasurementFaultValidity struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
 }
 
 // QualityMeasurementRoundValidity compares a sample with the last registered
@@ -50,6 +58,13 @@ type QualityMeasurementRoundValidity struct {
 
 func validQualityEvidenceLifetime(seconds int) bool {
 	return seconds >= 60 && seconds <= 604800
+}
+
+// TracksQualityFaults opts declared answer evidence into the existing durable
+// fault counter without changing probe scheduling or quarantine actions.
+func (cfg *PelicanTestConfig) TracksQualityFaults() bool {
+	return cfg != nil && cfg.Quality != nil && isQualityAnswerQuestion(cfg.QuestionKind) &&
+		validQualityEvidenceLifetime(cfg.Quality.EvidenceValidForSeconds)
 }
 
 // Frozen JSON retains nanoseconds; PostgreSQL timestamps use microseconds and
@@ -237,6 +252,14 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 	m.PolicyHash = qualityMeasurementHash([]any{qualityMeasurementVersion, cfg.Quality, cfg.ModelIDs, cfg.ParallelCount})
 	if probe := qualityMeasurementProbe(result); probe != nil && probe.route != nil && probe.route.AccountID == plan.AccountID {
 		evidence := *probe.route
+		evidence.FaultVersion = nil // The transport cannot supply claim evidence.
+		evidence.FaultRound = ""
+		if plan.PelicanConfig.TracksQualityFaults() && cfg.TracksQualityFaults() && plan.QualityFaultVersion != nil && *plan.QualityFaultVersion >= 0 &&
+			plan.QualityFaultRound != "" && plan.QualityFaultRound == result.QualityRoundID {
+			version := *plan.QualityFaultVersion
+			evidence.FaultVersion = &version
+			evidence.FaultRound = plan.QualityFaultRound
+		}
 		evidence.MeasurementHash, evidence.ObservedAt = m.MeasurementHash, m.ObservedAt
 		if evidence.MatchesResult(result) {
 			result.QualityRouteEvidence = &evidence

@@ -20,6 +20,8 @@ type QualityRouteEvidence struct {
 	ConnectionRevision int64     `json:"connection_revision,omitempty"`
 	MeasurementHash    string    `json:"measurement_hash"`
 	ObservedAt         time.Time `json:"observed_at"`
+	FaultVersion       *int64    `json:"fault_version,omitempty"`
+	FaultRound         string    `json:"fault_round,omitempty"`
 }
 
 type QualityMeasurementRouteValidity struct {

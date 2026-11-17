@@ -282,6 +282,7 @@
                 <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-validity" :data-status="measurement.validity.status" role="status">{{ t('qualityOps.measurement.validityAtRead') }} · {{ t(`qualityOps.measurement.validityStates.${measurement.validity.status}`) }}<span class="block text-xs">{{ t(`qualityOps.measurement.validityReasons.${measurement.validity.reason}`) }}</span></p>
                 <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-round" :data-status="measurement.round.status" role="status">{{ t('qualityOps.measurement.roundAtRead') }} · {{ t(`qualityOps.measurement.roundStates.${measurement.round.status}`) }}<span class="block text-xs">{{ t(`qualityOps.measurement.roundReasons.${measurement.round.reason}`) }}</span><span v-if="measurement.round.samples !== null" class="block text-xs">{{ t('qualityOps.measurement.roundCoverage', { count: measurement.round.samples, expected: measurement.round.expected ?? '—' }) }}</span></p>
                 <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-route" :data-status="measurement.route.status" role="status">{{ t('qualityOps.measurement.routeAtRead') }} · <span class="font-medium">{{ t(`qualityOps.measurement.routeStates.${measurement.route.status}`) }}</span><span class="block text-xs">{{ t(`qualityOps.measurement.routeReasons.${measurement.route.reason}`) }}</span></p>
+                <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-fault" :data-status="measurement.fault.status" role="status">{{ t('qualityOps.measurement.faultAtRead') }} · <span class="font-medium" :class="measurement.fault.status === 'invalidated' ? 'text-red-600 dark:text-red-400' : ''">{{ t(`qualityOps.measurement.faultStates.${measurement.fault.status}`) }}</span><span class="block text-xs">{{ t(`qualityOps.measurement.faultReasons.${measurement.fault.reason}`) }}</span></p>
                 <details class="mt-3 min-w-0"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('qualityOps.measurement.details') }}</summary><dl class="mt-2 grid min-w-0 grid-cols-1 gap-2 text-xs sm:grid-cols-2"><div v-for="fact in measurement.facts" :key="fact.key" class="min-w-0"><dt class="text-gray-500">{{ t(`qualityOps.measurement.${fact.key}`) }}</dt><dd class="break-all">{{ fact.value }}</dd></div></dl></details>
               </section>
               <div v-if="selectedResult.quality_judgment && !isProbeResult(selectedResult)" class="judge-reason"><h5>{{ t('qualityOps.judgeReason') }}</h5><p>{{ judgmentReason(selectedResult) }}</p><span>{{ selectedResult.quality_judgment.model_id || '—' }} · {{ selectedResult.quality_judgment.kind === 'jev' ? t('qualityOps.judgeJev') : groupNames[selectedResult.quality_judgment.group_id || 0] || selectedResult.quality_judgment.group_id || '—' }}</span><p v-if="selectedResult.quality_judgment.kind === 'jev'">{{ t('qualityOps.judgeJevLatency', { ms: selectedResult.quality_judgment.latency_ms ?? '—' }) }} · {{ selectedResult.quality_judgment.rules_version }}</p></div>
@@ -498,7 +499,7 @@ const measurement = computed(() => {
     const count = readRound.sample_count, expected = readRound.expected_sample_count
     const validCount = Number.isInteger(count) && count >= 0 && count <= 400 &&
       (expected === null || (Number.isInteger(expected) && expected >= 1 && expected <= 400))
-    if (supported && Number.isFinite(evaluated) && evaluated >= completed && validCount && reasons[readRound.status]?.includes(readRound.reason) &&
+    if (supported && Number.isFinite(evaluated) && evaluated >= completed && validCount && Array.isArray(reasons[readRound.status]) && reasons[readRound.status]!.includes(readRound.reason) &&
       (readRound.status !== 'latest_complete' || (count > 0 && count === expected))) {
       round = { status: readRound.status, reason: readRound.reason, samples: count, expected }
     }
@@ -511,8 +512,21 @@ const measurement = computed(() => {
       unavailable: ['account_unavailable', 'connection_unavailable'], unknown: ['route_not_observed', 'invalid_route_evidence'],
     }
     const candidate = assessment.route
-    if (supported && Number.isFinite(evaluated) && evaluated >= completed && reasons[candidate.status]?.includes(candidate.reason)) {
+    if (supported && Number.isFinite(evaluated) && evaluated >= completed && Array.isArray(reasons[candidate.status]) && reasons[candidate.status]!.includes(candidate.reason)) {
       route = { status: candidate.status, reason: candidate.reason }
+    }
+  }
+  let fault = { status: 'unknown', reason: 'fault_assessment_not_observed' }
+  if (assessment?.fault) {
+    fault.reason = 'invalid_fault_assessment'
+    const reasons: Record<string, string[]> = {
+      unchanged: ['no_new_registered_fault'], invalidated: ['business_fault_recorded'],
+      unknown: ['fault_not_tracked', 'invalid_fault_evidence', 'fault_tracking_not_current', 'route_not_current'],
+    }
+    const candidate = assessment.fault
+    if (supported && Number.isFinite(evaluated) && evaluated >= completed && Array.isArray(reasons[candidate.status]) && reasons[candidate.status]!.includes(candidate.reason) &&
+      (candidate.status === 'unknown' || route.status === 'matching')) {
+      fault = { status: candidate.status, reason: candidate.reason }
     }
   }
   const facts = [
@@ -533,7 +547,7 @@ const measurement = computed(() => {
     { key: 'measurementHash', value: hash(value.measurement_hash) ? value.measurement_hash : '—' },
     { key: 'policyHash', value: hash(value.policy_hash) ? value.policy_hash : '—' },
   ]
-  return { supported, dimensions, facts, validity, round, route }
+  return { supported, dimensions, facts, validity, round, route, fault }
 })
 const detailsLoading = ref(false), answerLoading = ref(false), detailsError = ref('')
 const loadedAnswers = new Map<number, ScheduledTestResult>()

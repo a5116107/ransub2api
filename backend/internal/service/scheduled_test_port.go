@@ -50,6 +50,8 @@ type ScheduledTestPlan struct {
 	AvailabilityExpectedFault       int64    `json:"-"`
 	// Captured transactionally at claim, never accepted from configuration JSON.
 	QualityAccountFingerprint *[32]byte         `json:"-"`
+	QualityFaultVersion       *int64            `json:"-"`
+	QualityFaultRound         string            `json:"-"`
 	QualityBatchEvaluated     bool              `json:"-"`
 	QualityBatchModels        map[string]string `json:"-"`
 	// Populated only from the repository's one-shot manual trigger marker.

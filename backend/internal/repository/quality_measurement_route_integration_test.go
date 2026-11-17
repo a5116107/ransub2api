@@ -205,9 +205,10 @@ func TestQualityMeasurementRouteSnapshotAndForgedInput(t *testing.T) {
 }
 
 func TestQualityMeasurementRouteDetailSnapshotAndCancellation(t *testing.T) {
-	for _, scenario := range []string{"snapshot", "cancel"} {
+	for _, scenario := range []string{"snapshot", "fault-snapshot", "cancel"} {
 		t.Run(scenario, func(t *testing.T) {
 			plan, sample := qualityRouteFixture(t, false)
+			plan, sample = claimQualityFaultSample(t, plan, sample)
 			created, err := NewScheduledTestResultRepository(integrationDB).Create(t.Context(), sample)
 			require.NoError(t, err)
 			db, err := sql.Open("postgres", integrationPostgresDSN)
@@ -246,6 +247,10 @@ func TestQualityMeasurementRouteDetailSnapshotAndCancellation(t *testing.T) {
 			var changedAt time.Time
 			if scenario == "cancel" {
 				cancel()
+			} else if scenario == "fault-snapshot" {
+				require.NoError(t, gate.QueryRowContext(ctx, `UPDATE scheduled_test_plans
+ SET availability_fault_version=availability_fault_version+1 WHERE id=$1 RETURNING clock_timestamp()`, plan.ID).Scan(&changedAt))
+				require.NoError(t, gate.Commit())
 			} else {
 				require.NoError(t, gate.QueryRowContext(ctx, `UPDATE accounts SET credentials='{"api_key":"changed-during-read"}'
  WHERE id=$1 RETURNING clock_timestamp()`, plan.AccountID).Scan(&changedAt))
@@ -265,15 +270,23 @@ func TestQualityMeasurementRouteDetailSnapshotAndCancellation(t *testing.T) {
 			} else {
 				require.NoError(t, read.err)
 				require.Equal(t, "matching", read.result.QualityMeasurementValidity.Route.Status, "all detail reads share the original snapshot")
+				require.Equal(t, "unchanged", read.result.QualityMeasurementValidity.Fault.Status, "the fault version belongs to the same frozen detail snapshot")
 				require.False(t, read.result.QualityMeasurementValidity.EvaluatedAt.Before(changedAt), "evaluate the clock after the blocked route read, never before it")
 			}
 			recovered, err := repo.GetResult(t.Context(), plan.ID, created.ID)
 			require.NoError(t, err, "the same pool must recover without a leaked transaction")
 			want := "changed"
-			if scenario == "cancel" {
+			if scenario == "cancel" || scenario == "fault-snapshot" {
 				want = "matching"
 			}
 			require.Equal(t, want, recovered.QualityMeasurementValidity.Route.Status)
+			wantFault := "unchanged"
+			if scenario == "fault-snapshot" {
+				wantFault = "invalidated"
+			} else if scenario == "snapshot" {
+				wantFault = "unknown"
+			}
+			require.Equal(t, wantFault, recovered.QualityMeasurementValidity.Fault.Status)
 		})
 	}
 }
