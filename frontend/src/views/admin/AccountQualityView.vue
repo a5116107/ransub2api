@@ -159,6 +159,11 @@
           </template>
         </div>
         <AvailabilityFields v-if="editsField('test')" v-model="form.pelican_config.availability" :supported="!isProbe && form.pelican_config.test_channel !== 'bps'" />
+        <div v-if="editsField('test') && !isProbe" class="space-y-1">
+          <label for="quality-evidence-validity">{{ t('qualityOps.evidenceValidity') }}</label>
+          <input id="quality-evidence-validity" v-model.number="form.pelican_config.quality.evidence_valid_for_seconds" type="number" min="0" max="604800" step="1" class="input" aria-describedby="quality-evidence-validity-hint" data-testid="quality-evidence-validity" />
+          <p id="quality-evidence-validity-hint" class="text-xs text-gray-500 dark:text-gray-400">{{ t('qualityOps.evidenceValidityHint') }}</p>
+        </div>
         <template v-if="editsField('test') && !isProbe">
         <p v-if="isRandom" class="text-sm text-gray-500" data-testid="quality-random-hint">{{ t('qualityOps.randomHint') }}</p>
         <template v-else>
@@ -274,6 +279,7 @@
                   <tbody><tr v-for="dimension in measurement.dimensions" :key="dimension.key" :data-testid="`quality-measurement-${dimension.key}`" :data-status="dimension.status" class="border-t border-gray-200 align-top dark:border-gray-700"><th scope="row" class="break-words py-2 pr-2 font-medium">{{ t(`qualityOps.measurement.dimensions.${dimension.key}`) }}</th><td class="break-words py-2 pr-1"><span :class="dimension.status === 'pass' ? 'text-emerald-700 dark:text-emerald-400' : dimension.status === 'fail' ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'">{{ t(`qualityOps.measurement.states.${dimension.status}`) }}</span><p class="mt-1 text-gray-500">{{ t(`qualityOps.measurement.reasons.${dimension.reason}`) }}</p></td><td class="py-2 text-right tabular-nums">{{ dimension.score == null ? '—' : `${dimension.score}/1` }}</td><td class="py-2 text-right tabular-nums">{{ dimension.samples }}</td></tr></tbody>
                 </table>
                 <p class="mt-2 text-amber-700 dark:text-amber-400" data-testid="quality-measurement-current">{{ t('qualityOps.measurement.currentUnknown') }}</p>
+                <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-validity" :data-status="measurement.validity.status" role="status">{{ t('qualityOps.measurement.validityAtRead') }} · {{ t(`qualityOps.measurement.validityStates.${measurement.validity.status}`) }}<span class="block text-xs">{{ t(`qualityOps.measurement.validityReasons.${measurement.validity.reason}`) }}</span></p>
                 <details class="mt-3 min-w-0"><summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('qualityOps.measurement.details') }}</summary><dl class="mt-2 grid min-w-0 grid-cols-1 gap-2 text-xs sm:grid-cols-2"><div v-for="fact in measurement.facts" :key="fact.key" class="min-w-0"><dt class="text-gray-500">{{ t(`qualityOps.measurement.${fact.key}`) }}</dt><dd class="break-all">{{ fact.value }}</dd></div></dl></details>
               </section>
               <div v-if="selectedResult.quality_judgment && !isProbeResult(selectedResult)" class="judge-reason"><h5>{{ t('qualityOps.judgeReason') }}</h5><p>{{ judgmentReason(selectedResult) }}</p><span>{{ selectedResult.quality_judgment.model_id || '—' }} · {{ selectedResult.quality_judgment.kind === 'jev' ? t('qualityOps.judgeJev') : groupNames[selectedResult.quality_judgment.group_id || 0] || selectedResult.quality_judgment.group_id || '—' }}</span><p v-if="selectedResult.quality_judgment.kind === 'jev'">{{ t('qualityOps.judgeJevLatency', { ms: selectedResult.quality_judgment.latency_ms ?? '—' }) }} · {{ selectedResult.quality_judgment.rules_version }}</p></div>
@@ -461,6 +467,23 @@ const measurement = computed(() => {
       reason: key === 'model_identity' ? 'independent_baseline_not_observed' : definite || unknown ? dimension.reason : 'invalid_measurement' }
   })
   const safe = (candidate: unknown) => typeof candidate === 'string' && candidate.trim() ? candidate : '—'
+  const assessment = selectedResult.value?.quality_measurement_validity
+  const evaluated = Date.parse(assessment?.evaluated_at || '')
+  const deadline = Date.parse(value.valid_until || '')
+  const seconds = value.valid_for_seconds
+  const knownWindow = supported && Number.isInteger(seconds) && seconds! >= 60 && seconds! <= 604800 && deadline === observed + seconds! * 1000
+  let validity = { status: 'unknown', reason: 'assessment_not_observed' }
+  if (assessment) {
+    const unknownReasons = ['invalid_measurement', 'rule_version_unknown', 'rule_changed', 'rule_paused', 'validity_not_declared', 'answer_not_observed']
+    validity = { status: 'unknown', reason: 'invalid_measurement' }
+    if (supported && Number.isFinite(evaluated) && evaluated >= completed) {
+      if (assessment.status === 'unknown' && unknownReasons.includes(assessment.reason)) validity.reason = assessment.reason
+      else if (knownWindow && assessment.status === assessment.reason &&
+        ((assessment.status === 'within_window' && evaluated < deadline) || (assessment.status === 'expired' && evaluated >= deadline))) {
+        validity = { status: assessment.status, reason: assessment.reason }
+      }
+    }
+  }
   const facts = [
     { key: 'requestedModel', value: safe(value.requested_model) },
     { key: 'wireModel', value: supported ? safe(value.scope?.model) : '—' },
@@ -473,11 +496,13 @@ const measurement = computed(() => {
     { key: 'questionVersion', value: safe(value.question_version) },
     { key: 'observedAt', value: Number.isFinite(observed) ? date(value.observed_at) : '—' },
     { key: 'completedAt', value: Number.isFinite(completed) ? date(value.completed_at) : '—' },
+    { key: 'validUntil', value: knownWindow ? date(value.valid_until!) : '—' },
+    { key: 'evaluatedAt', value: Number.isFinite(evaluated) ? date(assessment!.evaluated_at) : '—' },
     { key: 'ruleVersion', value: safe(value.rule_version) },
     { key: 'measurementHash', value: hash(value.measurement_hash) ? value.measurement_hash : '—' },
     { key: 'policyHash', value: hash(value.policy_hash) ? value.policy_hash : '—' },
   ]
-  return { supported, dimensions, facts }
+  return { supported, dimensions, facts, validity }
 })
 const detailsLoading = ref(false), answerLoading = ref(false), detailsError = ref('')
 const loadedAnswers = new Map<number, ScheduledTestResult>()
@@ -535,6 +560,7 @@ function reuseFieldSummary(rule: Pick<ScheduledTestPlan, 'model_id' | 'cron_expr
   const question = cfg?.question_kind === 'state_probe' ? 'qualityOps.questionStateProbe' : cfg?.question_kind === 'random_reasoning' ? 'qualityOps.questionRandom' : 'qualityOps.questionCandy'
   return [t(question), t(cfg?.test_channel === 'bps' ? 'qualityOps.bpsChannel' : 'qualityOps.accountChannel'),
     `${t('admin.accounts.pelicanTest.availabilityTitle')}: ${cfg?.availability ? `${cfg.availability.valid_for_seconds}s / ${t('admin.accounts.pelicanTest.availabilityBudget')}: ${cfg.availability.max_extra_samples ?? 0}` : t('qualityOps.off')}`,
+    `${t('qualityOps.evidenceValidity')}: ${q?.evidence_valid_for_seconds ? `${q.evidence_valid_for_seconds}s` : t('qualityOps.off')}`,
     `${t('qualityOps.effort')}: ${cfg?.reasoning_effort || '—'}`, `${t('qualityOps.parallel')}: ${cfg?.parallel_count || 1}`,
     cfg?.prompt, q?.expected_answer ? `${t('qualityOps.answer')}: ${q.expected_answer}` : '',
     q?.judge && cfg?.question_kind !== 'state_probe' ? `${t('qualityOps.judgeTitle')}: ${q.judge.kind === 'jev' ? t('qualityOps.judgeJev') : `#${q.judge.group_id} / ${q.judge.model_id}`}\n${q.judge.prompt}` : ''].filter(Boolean).join('\n')
@@ -716,7 +742,7 @@ function resultContent(result: ScheduledTestResult) {
 function defaults() {
   return { model_id: 'gpt-6-astra', cron_expression: '*/30 * * * *', enabled: true, max_results: 100, auto_recover: false,
     pelican_config: { rule_name: '', question_kind: 'candy' as 'candy' | 'random_reasoning' | typeof STATE_PROBE_QUESTION, test_channel: 'account' as 'account' | 'bps', prompt: CANDY_PROMPT, reasoning_effort: 'high', parallel_count: 1, model_ids: [] as string[], availability: undefined as AvailabilityPolicy | undefined,
-      quality: { trigger_on_upstream_5xx: false, oauth_401_max_rounds: 6, expected_answer: '21', action: 'remove_groups' as QualityPolicy['action'], remove_group_ids: [] as number[], remove_models: [] as string[], recovery_concurrency: 5, retest_rest_minutes: 0, auto_restore: false, judge: { group_id: 0, model_id: '', prompt: t('qualityOps.defaultJudgePrompt') } as QualityJudgeConfig, bps: defaultQualityBPS() } } }
+      quality: { evidence_valid_for_seconds: undefined as number | undefined, trigger_on_upstream_5xx: false, oauth_401_max_rounds: 6, expected_answer: '21', action: 'remove_groups' as QualityPolicy['action'], remove_group_ids: [] as number[], remove_models: [] as string[], recovery_concurrency: 5, retest_rest_minutes: 0, auto_restore: false, judge: { group_id: 0, model_id: '', prompt: t('qualityOps.defaultJudgePrompt') } as QualityJudgeConfig, bps: defaultQualityBPS() } } }
 }
 const form = ref(defaults())
 const removeModelsInput = ref('')
@@ -979,7 +1005,7 @@ function payload() {
   const max_results = Math.max(form.value.max_results, model_ids.length * form.value.pelican_config.parallel_count)
   const quality = form.value.pelican_config.quality
   let nextQuality: QualityPolicy
-  try { nextQuality = qualityActionPayload(quality) } catch (cause) {
+  try { nextQuality = qualityActionPayload(isProbe.value ? { ...quality, evidence_valid_for_seconds: 0 } : quality) } catch (cause) {
     throw new Error(t(cause instanceof Error ? cause.message : 'qualityOps.error'))
   }
   if (nextQuality.action === 'isolate_models' && isProbe.value) throw new Error(t('qualityOps.isolationRequiresCandy'))
@@ -1286,7 +1312,8 @@ async function selectResult(result: ScheduledTestResult) {
   const request = ++answerRequest, planId = historyPlan.value.id
   selectedResultId.value = result.id; selectedResult.value = null; detailsError.value = ''
   const cached = loadedAnswers.get(result.id)
-  if (cached) { selectedResult.value = cached; answerLoading.value = false; return }
+  // Re-read validity against database time and the current rule on every open.
+  if (cached && !cached.pelican_config?.quality_measurement) { selectedResult.value = cached; answerLoading.value = false; return }
   answerLoading.value = true
   try {
     const answer = await scheduledTests.getResult(planId, result.id)

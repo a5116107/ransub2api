@@ -9,7 +9,7 @@ import scheduledTests from '@/api/admin/scheduledTests'
 import { updateQualityPreset, previewQualityOwnership, restoreQualityOwnership, removeQualityOwnedModel, createQualityPreset, listQualityPresets, type QualityRulePreset, createQualityTemplate, deleteQualityTemplate, listQualityPlans, listQualityOperations, listQualityTemplates, runQualityPlan, updateQualityTemplate, type QualityRuleTemplate } from '@/api/admin/accountQuality'
 import { useAccountQualityStore } from '@/stores/accountQuality'
 import { useAuthStore } from '@/stores/auth'
-import type { QualityMeasurement, ScheduledTestPlan } from '@/types'
+import type { QualityMeasurement, ScheduledTestPlan, ScheduledTestResult } from '@/types'
 import { defaultQualityBPS, qualityRuleFields } from '@/utils/qualityRulePatch'
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('@/stores/auth', async () => {
@@ -27,6 +27,36 @@ vi.mock('@/api/admin/groups', () => ({ getModelAllowlistCandidates: vi.fn().mock
 vi.mock('@/components/account/ModelWhitelistSelector.vue', () => ({ default: { props: ['modelValue'], template: '<div data-testid="model-selector">{{ modelValue.join(",") }}</div>' } }))
 const mountView = () => mount(AccountQualityView, { global: { plugins: [createPinia()], stubs: { Teleport: true, AppLayout: { template: '<main><slot /></main>' } } } })
 describe('quality operations', () => {
+  it('edits the independent quality lifetime without changing availability', async () => {
+    const rule = rules()[0]
+    Object.assign(rule.pelican_config!, { question_kind: 'candy', prompt: 'Return 21', availability: { valid_for_seconds: 120 } })
+    Object.assign(rule.pelican_config!.quality!, { expected_answer: '21', evidence_valid_for_seconds: 3600, judge: { group_id: 9, model_id: 'judge', prompt: 'grade' } })
+    vi.mocked(listQualityPlans).mockResolvedValue([rule])
+    const wrapper = mountView(); await flushPromises()
+    ;(wrapper.vm as any).edit(rule); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[data-testid="quality-evidence-validity"]').element.value).toBe('3600')
+    await wrapper.get('[data-testid="quality-evidence-validity"]').setValue('7200')
+    await (wrapper.vm as any).save()
+    expect(scheduledTests.update).toHaveBeenCalledWith(1, expect.objectContaining({ pelican_config: expect.objectContaining({
+      availability: { valid_for_seconds: 120 }, quality: expect.objectContaining({ evidence_valid_for_seconds: 7200 }) }) }))
+    wrapper.unmount()
+  })
+  it('rejects a too-short answer lifetime and hides it for account-state probes', async () => {
+    const rule = rules()[0]
+    Object.assign(rule.pelican_config!, { question_kind: 'candy', prompt: 'Return 21' })
+    Object.assign(rule.pelican_config!.quality!, { expected_answer: '21', judge: { group_id: 9, model_id: 'judge', prompt: 'grade' } })
+    vi.mocked(listQualityPlans).mockResolvedValue([rule])
+    const wrapper = mountView(); await flushPromises()
+    ;(wrapper.vm as any).edit(rule); await flushPromises()
+    await wrapper.get('[data-testid="quality-evidence-validity"]').setValue('59')
+    await (wrapper.vm as any).save()
+    expect(scheduledTests.update).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('qualityOps.invalidEvidenceValidity')
+    ;(wrapper.vm as any).form.pelican_config.question_kind = 'state_probe'
+    await flushPromises()
+    expect(wrapper.find('[data-testid="quality-evidence-validity"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('edits and saves availability budgets on an existing quality rule', async () => {
     const rule = rules()[0]
     rule.pelican_config!.question_kind = 'candy'
@@ -1733,10 +1763,10 @@ describe('quality operations', () => {
       model_identity: { status: 'unknown', reason: 'independent_baseline_not_observed', score: null, sample_count: 0 },
     },
   })
-  const openMeasurement = async (value?: QualityMeasurement) => {
+  const openMeasurement = async (value?: QualityMeasurement, validity?: ScheduledTestResult['quality_measurement_validity']) => {
     const operation = { id: 101, plan_id: 4, account_id: 1, account_name: 'Synthetic account', status: 'failed',
       error_message: 'answer_mismatch', quality_action: 'inconclusive', passed_count: 0, total_count: 1, result_ids: [101] }
-    vi.mocked(scheduledTests.getResult).mockResolvedValue({ ...operation, response_text: '41',
+    vi.mocked(scheduledTests.getResult).mockResolvedValue({ ...operation, response_text: '41', quality_measurement_validity: validity,
       pelican_config: { quality_measurement: value }, quality_judgment: { verdict: 'incorrect', reason: 'Different answer' } } as any)
     const wrapper = mountView(); await flushPromises()
     await (wrapper.vm as any).operationDetails(operation); await flushPromises()
@@ -1756,6 +1786,32 @@ describe('quality operations', () => {
       expect(panel.text()).toContain(fact)
     }
     expect(wrapper.text()).toContain('Different answer')
+    wrapper.unmount()
+  })
+  it.each(['within_window', 'expired', 'rule_changed', 'rule_paused', 'assessment_not_observed', 'contradiction'] as const)('shows the database window separately from admission (%s)', async state => {
+    const value = measurementSample()
+    value.valid_for_seconds = 60
+    value.valid_until = '2026-11-17T01:01:00Z'
+    const status = state === 'expired' || state === 'within_window' ? state : 'unknown'
+    const validity = state === 'assessment_not_observed' ? undefined : {
+      status: state === 'contradiction' ? 'within_window' as const : status,
+      reason: state === 'contradiction' ? 'within_window' : state,
+      evaluated_at: state === 'within_window' ? '2026-11-17T01:00:30Z' : '2026-11-17T01:01:00Z',
+    }
+    const wrapper = await openMeasurement(value, validity)
+    const panel = wrapper.get('[data-testid="quality-measurement-validity"]')
+    expect(panel.attributes('data-status')).toBe(status)
+    expect(panel.text()).toContain(`qualityOps.measurement.validityReasons.${state === 'contradiction' ? 'invalid_measurement' : state}`)
+    expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')
+    expect(wrapper.get('[data-testid="quality-measurement-current"]').text()).toBe('qualityOps.measurement.currentUnknown')
+    wrapper.unmount()
+  })
+  it('re-reads measured details instead of reusing an old window assessment', async () => {
+    const value = measurementSample()
+    const wrapper = await openMeasurement(value)
+    const before = vi.mocked(scheduledTests.getResult).mock.calls.length
+    await (wrapper.vm as any).selectResult({ id: 101 }); await flushPromises()
+    expect(vi.mocked(scheduledTests.getResult).mock.calls.length).toBe(before + 1)
     wrapper.unmount()
   })
   it.each([

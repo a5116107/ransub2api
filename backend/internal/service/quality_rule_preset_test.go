@@ -55,9 +55,11 @@ func TestQualityPresetKeepsIndependentAvailabilityLimits(t *testing.T) {
 	svc := ProvideScheduledTestService(nil, nil, repo, nil)
 	input := presetInput()
 	input.PelicanConfig.Availability = &AvailabilityPolicy{ValidForSeconds: 120, MaxExtraSamples: 4}
+	input.PelicanConfig.Quality.EvidenceValidForSeconds = 7200
 	saved, err := svc.CreateQualityPreset(t.Context(), input)
 	require.NoError(t, err)
 	require.Equal(t, input.PelicanConfig.Availability, saved.PelicanConfig.Availability)
+	require.Equal(t, 7200, saved.PelicanConfig.Quality.EvidenceValidForSeconds)
 	saved.PelicanConfig.Availability.MaxExtraSamples = 2
 	require.Equal(t, 4, input.PelicanConfig.Availability.MaxExtraSamples)
 	input.PelicanConfig.Availability.MaxExtraSamples = 65

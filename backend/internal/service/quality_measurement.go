@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -23,8 +24,106 @@ type QualityMeasurement struct {
 	ObservedAt      time.Time                              `json:"observed_at"`
 	CompletedAt     time.Time                              `json:"completed_at"`
 	ValidUntil      *time.Time                             `json:"valid_until"`
+	ValidForSeconds int                                    `json:"valid_for_seconds,omitempty"`
 	Scope           *AvailabilityRequestScope              `json:"scope"`
 	Dimensions      map[string]QualityDimensionMeasurement `json:"dimensions"`
+}
+
+// QualityMeasurementValidity describes one detail read's evidence window and
+// rule version only. It is not route, model identity or scheduling admission.
+type QualityMeasurementValidity struct {
+	Status      string    `json:"status"`
+	Reason      string    `json:"reason"`
+	EvaluatedAt time.Time `json:"evaluated_at"`
+}
+
+func validQualityEvidenceLifetime(seconds int) bool {
+	return seconds >= 60 && seconds <= 604800
+}
+
+// Frozen JSON retains nanoseconds; PostgreSQL timestamps use microseconds and
+// round exact half-microseconds to even. Go's Time.Round rounds those ties up.
+func qualityMeasurementSQLTime(value time.Time) time.Time {
+	base := value.Truncate(time.Microsecond)
+	remainder := value.Nanosecond() % 1000
+	if remainder > 500 || (remainder == 500 && (base.Nanosecond()/1000)%2 != 0) {
+		return base.Add(time.Microsecond)
+	}
+	return base
+}
+
+func qualityMeasurementProbe(result *ScheduledTestResult) *AvailabilityProbeResult {
+	if result == nil || result.PelicanConfig == nil || result.StartedAt.IsZero() || qualityMeasurementSQLTime(result.FinishedAt).Before(qualityMeasurementSQLTime(result.StartedAt)) {
+		return nil
+	}
+	probe := result.PelicanConfig.AvailabilityResult
+	if probe == nil || probe.Version != 1 || probe.StartedAt.IsZero() || probe.FinishedAt.Before(probe.StartedAt) ||
+		qualityMeasurementSQLTime(probe.StartedAt).Before(qualityMeasurementSQLTime(result.StartedAt)) || qualityMeasurementSQLTime(probe.FinishedAt).After(qualityMeasurementSQLTime(result.FinishedAt)) {
+		return nil
+	}
+	return probe
+}
+
+func qualityMeasuredAnswer(m *QualityMeasurement) bool {
+	answer, grading := m.Dimensions["answer_correctness"], m.Dimensions["grading"]
+	return answer.SampleCount == 1 && answer.Score != nil && grading.SampleCount == 1 && grading.Score != nil &&
+		grading.Status == "pass" && grading.Reason == "grading_completed" && *grading.Score == 1 &&
+		((answer.Status == "pass" && answer.Reason == "graded_correct" && *answer.Score == 1) ||
+			(answer.Status == "fail" && answer.Reason == "graded_incorrect" && *answer.Score == 0))
+}
+
+// AssessQualityMeasurementValidity never mutates or extends frozen evidence.
+// The repository supplies the current rule and database time in the same read.
+func AssessQualityMeasurementValidity(result *ScheduledTestResult, ruleVersion time.Time, enabled bool, now time.Time) *QualityMeasurementValidity {
+	if result == nil || result.PelicanConfig == nil || result.PelicanConfig.QualityMeasurement == nil {
+		return nil
+	}
+	out := &QualityMeasurementValidity{Status: "unknown", Reason: "invalid_measurement", EvaluatedAt: now}
+	cfg, m := result.PelicanConfig, result.PelicanConfig.QualityMeasurement
+	validHash := func(value string) bool {
+		decoded, err := hex.DecodeString(value)
+		return err == nil && len(value) == sha256.Size*2 && len(decoded) == sha256.Size
+	}
+	if m.Version != qualityMeasurementVersion || !validHash(m.MeasurementHash) || !validHash(m.PolicyHash) ||
+		now.IsZero() || m.ObservedAt.IsZero() || m.CompletedAt.Before(m.ObservedAt) || now.Before(m.CompletedAt) ||
+		!qualityMeasurementSQLTime(m.CompletedAt).Equal(qualityMeasurementSQLTime(result.FinishedAt)) {
+		return out
+	}
+	if m.RuleVersion.IsZero() || ruleVersion.IsZero() {
+		out.Reason = "rule_version_unknown"
+		return out
+	}
+	if !m.RuleVersion.Equal(ruleVersion) {
+		out.Reason = "rule_changed"
+		return out
+	}
+	if !enabled {
+		out.Reason = "rule_paused"
+		return out
+	}
+	if m.ValidForSeconds == 0 && m.ValidUntil == nil {
+		out.Reason = "validity_not_declared"
+		return out
+	}
+	if cfg.Quality == nil || !isQualityAnswerQuestion(cfg.QuestionKind) || !validQualityEvidenceLifetime(m.ValidForSeconds) ||
+		cfg.Quality.EvidenceValidForSeconds != m.ValidForSeconds ||
+		m.PolicyHash != qualityMeasurementHash([]any{qualityMeasurementVersion, cfg.Quality, cfg.ModelIDs, cfg.ParallelCount}) {
+		return out
+	}
+	if !qualityMeasuredAnswer(m) {
+		out.Reason = "answer_not_observed"
+		return out
+	}
+	probe := qualityMeasurementProbe(result)
+	if probe == nil || !m.ObservedAt.Equal(probe.FinishedAt) || m.ValidUntil == nil ||
+		!m.ValidUntil.Equal(m.ObservedAt.Add(time.Duration(m.ValidForSeconds)*time.Second)) {
+		return out
+	}
+	out.Status, out.Reason = "within_window", "within_window"
+	if !now.Before(*m.ValidUntil) {
+		out.Status, out.Reason = "expired", "expired"
+	}
+	return out
 }
 
 type QualityDimensionMeasurement struct {
@@ -60,7 +159,8 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 	}
 	m := &QualityMeasurement{Version: qualityMeasurementVersion, RuleVersion: plan.UpdatedAt,
 		RequestedModel: cfg.ModelID, QuestionKind: cfg.QuestionKind,
-		ObservedAt: result.FinishedAt, CompletedAt: result.FinishedAt,
+		ValidForSeconds: cfg.Quality.EvidenceValidForSeconds,
+		ObservedAt:      result.FinishedAt, CompletedAt: result.FinishedAt,
 		Dimensions: map[string]QualityDimensionMeasurement{
 			"answer_correctness": {Status: "unknown", Reason: "grading_not_observed"},
 			"transport":          {Status: "unknown", Reason: "transport_not_observed"},
@@ -71,9 +171,7 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 	if cfg.RandomQuestion != nil {
 		m.QuestionVersion = cfg.RandomQuestion.Version
 	}
-	if probe := cfg.AvailabilityResult; probe != nil && probe.Version == 1 &&
-		!probe.StartedAt.IsZero() && !probe.FinishedAt.Before(probe.StartedAt) &&
-		!probe.StartedAt.Before(result.StartedAt) && !probe.FinishedAt.After(result.FinishedAt) {
+	if probe := qualityMeasurementProbe(result); probe != nil {
 		m.ObservedAt = probe.FinishedAt // Grading time must not refresh answer evidence.
 		if probe.Scope != nil {
 			scope := *probe.Scope
@@ -129,6 +227,10 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 		for dimension := range m.Dimensions {
 			m.Dimensions[dimension] = QualityDimensionMeasurement{Status: "unknown", Reason: "invalid_measurement"}
 		}
+	}
+	if validQualityEvidenceLifetime(m.ValidForSeconds) && qualityMeasurementProbe(result) != nil && qualityMeasuredAnswer(m) {
+		deadline := m.ObservedAt.Add(time.Duration(m.ValidForSeconds) * time.Second)
+		m.ValidUntil = &deadline
 	}
 }
 

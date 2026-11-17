@@ -2825,6 +2825,7 @@ export interface QualityMeasurement {
   observed_at: string
   completed_at: string
   valid_until: string | null
+  valid_for_seconds?: number
   scope: { version: number; model: string; protocol: string; stream: boolean; service_tier: string; reasoning_effort: string; capability: string } | null
   dimensions: Record<QualityMeasurementDimension, { status: 'pass' | 'fail' | 'unknown'; reason: string; score: number | null; sample_count: number }>
 }
@@ -2861,6 +2862,7 @@ export interface QualityBPSPolicy {
   hold_on_usage: boolean
 }
 export interface QualityPolicy {
+  evidence_valid_for_seconds?: number
   trigger_on_upstream_5xx?: boolean
   // OAuth quality rules only: 0 or missing disables automatic rule cleanup.
   oauth_401_max_rounds?: number
@@ -2962,6 +2964,7 @@ export interface ScheduledTestPlan {
 }
 
 export interface ScheduledTestResult {
+  quality_measurement_validity?: { status: 'within_window' | 'expired' | 'unknown'; reason: string; evaluated_at: string }
   quality_judgment?: QualityJudgment
   quality_round_id?: string
   quality_action?: string

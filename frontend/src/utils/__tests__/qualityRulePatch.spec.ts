@@ -29,6 +29,33 @@ const probePlan = () => {
 }
 
 describe('OAuth 401 rule cleanup settings', () => {
+  it('preserves an independent evidence lifetime through copying and only the bulk test field', () => {
+    const current = plan(), source = draft()
+    current.pelican_config!.quality!.evidence_valid_for_seconds = 3600
+    source.pelican_config.quality.evidence_valid_for_seconds = 7200
+    expect(copyQualityRuleConfig(source.pelican_config).quality.evidence_valid_for_seconds).toBe(7200)
+    expect(qualityRuleFieldValue(current, 'test')).not.toEqual(qualityRuleFieldValue({ ...current, pelican_config: { ...current.pelican_config!, quality: { ...current.pelican_config!.quality!, evidence_valid_for_seconds: 7200 } } }, 'test'))
+    expect(buildQualityRulePatch(current, source, ['restore']).pelican_config!.quality!.evidence_valid_for_seconds).toBe(3600)
+    expect(buildQualityRulePatch(current, source, ['test']).pelican_config!.quality!.evidence_valid_for_seconds).toBe(7200)
+    source.pelican_config.quality.evidence_valid_for_seconds = 0
+    expect(buildQualityRulePatch(current, source, ['test']).pelican_config!.quality).not.toHaveProperty('evidence_valid_for_seconds')
+    expect(qualityActionPayload(source.pelican_config.quality)).not.toHaveProperty('evidence_valid_for_seconds')
+    source.pelican_config.quality.evidence_valid_for_seconds = '' as unknown as number
+    expect(qualityActionPayload(source.pelican_config.quality)).not.toHaveProperty('evidence_valid_for_seconds')
+  })
+  it.each([-1, 1, 59, 604801, 60.5, NaN, Infinity])('rejects invalid quality evidence lifetime %s', seconds => {
+    const source = draft()
+    source.pelican_config.quality.evidence_valid_for_seconds = seconds
+    expect(() => qualityActionPayload(source.pelican_config.quality)).toThrow('qualityOps.invalidEvidenceValidity')
+    expect(() => buildQualityRulePatch(plan(), source, ['test'])).toThrow('qualityOps.invalidEvidenceValidity')
+  })
+  it('clears answer lifetimes when the bulk test switches to an account-state probe', () => {
+    const current = plan(), source = draft()
+    current.pelican_config!.quality!.evidence_valid_for_seconds = 3600
+    source.pelican_config.question_kind = 'state_probe'
+    source.pelican_config.quality.evidence_valid_for_seconds = 3600
+    expect(buildQualityRulePatch(current, source, ['test']).pelican_config!.quality).not.toHaveProperty('evidence_valid_for_seconds')
+  })
   it('copies the explicit limit and keeps legacy rules disabled instead of applying new-rule defaults', () => {
     const source = draft().pelican_config
     expect(copyQualityRuleConfig(source).quality.oauth_401_max_rounds).toBe(0)

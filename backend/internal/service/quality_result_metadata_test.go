@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -170,10 +171,158 @@ func qualityMeasurementFixture() (*ScheduledTestPlan, *ScheduledTestResult) {
 		QualityJudgment: &QualityJudgment{Kind: "llm", RulesVersion: qualityLLMRulesVersion, ModelID: "judge-model", GroupID: 9, Verdict: "correct"}}
 }
 
+func TestQualityMeasurementValidityPolicyAndObservationDeadline(t *testing.T) {
+	for _, seconds := range []int{-1, 1, 59, 60, 86400, 604800, 604801} {
+		t.Run(fmt.Sprint(seconds), func(t *testing.T) {
+			plan, result := qualityMeasurementFixture()
+			plan.PelicanConfig.Quality.EvidenceValidForSeconds = seconds
+			err := validateQualityPolicy(plan)
+			if seconds < 60 || seconds > 604800 {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			recordQualityMeasurement(plan, result)
+			measurement := result.PelicanConfig.QualityMeasurement
+			require.Equal(t, seconds, measurement.ValidForSeconds)
+			require.Equal(t, measurement.ObservedAt.Add(time.Duration(seconds)*time.Second), *measurement.ValidUntil)
+			require.True(t, measurement.ValidUntil.Before(measurement.CompletedAt.Add(time.Duration(seconds)*time.Second)), "grading cannot renew upstream evidence")
+		})
+	}
+	plan, _ := qualityMeasurementFixture()
+	plan.PelicanConfig.QuestionKind = OpenAICodexStateProbeQuestionKind
+	plan.PelicanConfig.Quality.EvidenceValidForSeconds = 60
+	plan.PelicanConfig.Quality.ExpectedAnswer = ""
+	require.Error(t, validateQualityPolicy(plan), "account-state probes do not measure answer quality")
+}
+
+func TestQualityMeasurementValidityDoesNotInventEvidence(t *testing.T) {
+	for _, scenario := range []string{"legacy", "no-probe", "bad-probe-time", "unknown-answer", "invalid-time", "wrong-answer", "slow-grading"} {
+		t.Run(scenario, func(t *testing.T) {
+			plan, result := qualityMeasurementFixture()
+			plan.PelicanConfig.Quality.EvidenceValidForSeconds = 60
+			switch scenario {
+			case "legacy":
+				plan.PelicanConfig.Quality.EvidenceValidForSeconds = 0
+			case "no-probe":
+				result.PelicanConfig.AvailabilityResult = nil
+			case "bad-probe-time":
+				result.PelicanConfig.AvailabilityResult.FinishedAt = result.FinishedAt.Add(time.Second)
+			case "unknown-answer":
+				result.QualityJudgment.Verdict = "unknown"
+			case "invalid-time":
+				result.StartedAt = result.FinishedAt.Add(time.Second)
+			case "wrong-answer":
+				result.Status, result.ErrorMessage, result.QualityJudgment.Verdict = "failed", "answer_mismatch", "incorrect"
+			case "slow-grading":
+				result.FinishedAt = result.StartedAt.Add(2 * time.Minute)
+			}
+			recordQualityMeasurement(plan, result)
+			m := result.PelicanConfig.QualityMeasurement
+			if scenario == "wrong-answer" || scenario == "slow-grading" {
+				require.NotNil(t, m.ValidUntil)
+				if scenario == "slow-grading" {
+					require.True(t, m.ValidUntil.Before(m.CompletedAt))
+				}
+			} else {
+				require.Nil(t, m.ValidUntil)
+			}
+			require.Equal(t, "unknown", m.Dimensions["model_identity"].Status)
+		})
+	}
+}
+
+func TestQualityMeasurementValidityReadAssessment(t *testing.T) {
+	for _, scenario := range []string{"within", "database-precision", "database-half-even", "database-half-odd", "boundary", "expired", "rule-changed", "paused", "missing-rule-version", "future", "legacy", "extended-deadline", "missing-grading", "invalid-hash", "unknown-version", "wrong-answer", "policy-changed"} {
+		t.Run(scenario, func(t *testing.T) {
+			plan, result := qualityMeasurementFixture()
+			plan.PelicanConfig.Quality.EvidenceValidForSeconds = 60
+			if scenario == "database-precision" || scenario == "database-half-even" || scenario == "database-half-odd" {
+				fraction := 123456789 * time.Nanosecond
+				if scenario == "database-half-even" {
+					fraction = 123456500 * time.Nanosecond
+				}
+				if scenario == "database-half-odd" {
+					fraction = 123457500 * time.Nanosecond
+				}
+				started := time.Now().UTC().Add(-time.Minute).Truncate(time.Second).Add(fraction)
+				result.StartedAt, result.FinishedAt = started, started.Add(4*time.Second)
+				result.PelicanConfig.AvailabilityResult.StartedAt = started
+				result.PelicanConfig.AvailabilityResult.FinishedAt = started.Add(time.Second)
+			}
+			recordQualityMeasurement(plan, result)
+			m := result.PelicanConfig.QualityMeasurement
+			now, version, enabled := m.ObservedAt.Add(30*time.Second), plan.UpdatedAt, true
+			status, reason := "within_window", "within_window"
+			switch scenario {
+			case "database-precision", "database-half-odd":
+				result.StartedAt = result.StartedAt.Round(time.Microsecond)
+				result.FinishedAt = result.FinishedAt.Round(time.Microsecond)
+			case "database-half-even":
+				result.StartedAt = result.StartedAt.Truncate(time.Microsecond)
+				result.FinishedAt = result.FinishedAt.Truncate(time.Microsecond)
+			case "boundary", "expired":
+				now = *m.ValidUntil
+				if scenario == "expired" {
+					now = now.Add(time.Second)
+				}
+				status, reason = "expired", "expired"
+			case "rule-changed":
+				version = version.Add(time.Microsecond)
+				status, reason = "unknown", "rule_changed"
+			case "paused":
+				enabled = false
+				status, reason = "unknown", "rule_paused"
+			case "missing-rule-version":
+				m.RuleVersion = time.Time{}
+				status, reason = "unknown", "rule_version_unknown"
+			case "future":
+				now = m.CompletedAt.Add(-time.Nanosecond)
+				status, reason = "unknown", "invalid_measurement"
+			case "legacy":
+				m.ValidForSeconds, m.ValidUntil = 0, nil
+				status, reason = "unknown", "validity_not_declared"
+			case "extended-deadline":
+				deadline := m.ValidUntil.Add(time.Second)
+				m.ValidUntil = &deadline
+				status, reason = "unknown", "invalid_measurement"
+			case "missing-grading":
+				delete(m.Dimensions, "grading")
+				status, reason = "unknown", "answer_not_observed"
+			case "invalid-hash":
+				m.MeasurementHash = "forged"
+				status, reason = "unknown", "invalid_measurement"
+			case "unknown-version":
+				m.Version = 99
+				status, reason = "unknown", "invalid_measurement"
+			case "wrong-answer":
+				m.Dimensions["answer_correctness"] = measuredQualityDimension("fail", "graded_incorrect", 0)
+			case "policy-changed":
+				result.PelicanConfig.Quality.EvidenceValidForSeconds++
+				status, reason = "unknown", "invalid_measurement"
+			}
+			before, err := json.Marshal(result)
+			require.NoError(t, err)
+			assessment := AssessQualityMeasurementValidity(result, version, enabled, now)
+			require.Equal(t, status, assessment.Status)
+			require.Equal(t, reason, assessment.Reason)
+			require.Equal(t, now, assessment.EvaluatedAt)
+			after, err := json.Marshal(result)
+			require.NoError(t, err)
+			require.Equal(t, before, after, "reading validity cannot rewrite historical evidence or renew its deadline")
+		})
+	}
+}
+
 func TestQualityMeasurementHashesTrackContractNotVerdict(t *testing.T) {
 	plan, result := qualityMeasurementFixture()
 	recordQualityMeasurement(plan, result)
 	original := result.PelicanConfig.QualityMeasurement
+	result.PelicanConfig.Quality.EvidenceValidForSeconds = 3600
+	recordQualityMeasurement(plan, result)
+	require.Equal(t, original.MeasurementHash, result.PelicanConfig.QualityMeasurement.MeasurementHash)
+	require.NotEqual(t, original.PolicyHash, result.PelicanConfig.QualityMeasurement.PolicyHash, "evidence lifetime is a policy, not a new measurement algorithm")
+	result.PelicanConfig.Quality.EvidenceValidForSeconds = 0
 	require.Len(t, original.MeasurementHash, 64)
 	require.Len(t, original.PolicyHash, 64)
 	require.Equal(t, result.PelicanConfig.AvailabilityResult.FinishedAt, original.ObservedAt)

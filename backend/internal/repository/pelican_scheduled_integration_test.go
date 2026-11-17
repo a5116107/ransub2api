@@ -4,6 +4,9 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,75 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestQualityMeasurementValidityReadsDatabaseTimeAndRule(t *testing.T) {
+	ctx := t.Context()
+	var account int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status) VALUES('validity-fixture','openai','apikey','active') RETURNING id`).Scan(&account))
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM accounts WHERE id=$1`, account)
+	})
+	plans, results := NewScheduledTestPlanRepository(integrationDB), NewScheduledTestResultRepository(integrationDB)
+	svc := service.NewScheduledTestService(plans, results)
+	for _, scenario := range []string{"within", "expired", "paused", "edited", "unknown-answer"} {
+		t.Run(scenario, func(t *testing.T) {
+			cfg := &service.PelicanTestConfig{QuestionKind: "candy", ModelID: "fixture-model", Prompt: "42", ReasoningEffort: "high", ParallelCount: 1,
+				Quality: &service.QualityPolicy{Action: service.QualityActionObserveOnly, ExpectedAnswer: "42", EvidenceValidForSeconds: 60}}
+			plan, err := svc.CreatePlan(ctx, &service.ScheduledTestPlan{AccountID: account, ModelID: cfg.ModelID, Enabled: true, CronExpression: "*/5 * * * *", MaxResults: 20, PelicanConfig: cfg})
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM scheduled_test_plans WHERE id=$1`, plan.ID)
+			})
+			now := time.Now().UTC()
+			observed := now.Add(-10 * time.Second)
+			if scenario == "expired" {
+				observed = now.Add(-61 * time.Second)
+			}
+			started, completed := observed.Add(-time.Second), observed.Add(time.Second)
+			deadline := observed.Add(time.Minute)
+			cfg = plan.PelicanConfig
+			cfg.AvailabilityResult = &service.AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: started, FinishedAt: observed}
+			policyJSON, err := json.Marshal([]any{1, cfg.Quality, cfg.ModelIDs, cfg.ParallelCount})
+			require.NoError(t, err)
+			zero, one := 0.0, 1.0
+			measurement := &service.QualityMeasurement{Version: 1, MeasurementHash: strings.Repeat("a", 64), PolicyHash: fmt.Sprintf("%x", sha256.Sum256(policyJSON)), RuleVersion: plan.UpdatedAt,
+				RequestedModel: cfg.ModelID, QuestionKind: cfg.QuestionKind, ObservedAt: observed, CompletedAt: completed, ValidForSeconds: 60, ValidUntil: &deadline,
+				Dimensions: map[string]service.QualityDimensionMeasurement{
+					"answer_correctness": {Status: "fail", Reason: "graded_incorrect", Score: &zero, SampleCount: 1},
+					"grading":            {Status: "pass", Reason: "grading_completed", Score: &one, SampleCount: 1},
+				}}
+			want, reason := "within_window", "within_window"
+			switch scenario {
+			case "expired":
+				want, reason = "expired", "expired"
+			case "paused":
+				_, err = integrationDB.ExecContext(ctx, `UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan.ID)
+				want, reason = "unknown", "rule_paused"
+			case "edited":
+				_, err = integrationDB.ExecContext(ctx, `UPDATE scheduled_test_plans SET updated_at=updated_at+interval '1 microsecond' WHERE id=$1`, plan.ID)
+				want, reason = "unknown", "rule_changed"
+			case "unknown-answer":
+				measurement.Dimensions["answer_correctness"] = service.QualityDimensionMeasurement{Status: "unknown", Reason: "grading_inconclusive"}
+				measurement.ValidUntil = nil
+				want, reason = "unknown", "answer_not_observed"
+			}
+			require.NoError(t, err)
+			cfg.QualityMeasurement = measurement
+			created, err := results.Create(ctx, &service.ScheduledTestResult{PlanID: plan.ID, Status: "failed", ErrorMessage: "answer_mismatch", StartedAt: started, FinishedAt: completed, PelicanConfig: cfg})
+			require.NoError(t, err)
+			read, err := NewScheduledTestResultRepository(integrationDB).GetResult(ctx, plan.ID, created.ID)
+			require.NoError(t, err)
+			require.Equal(t, want, read.QualityMeasurementValidity.Status, "reason=%s observed=%s completed=%s sql-start=%s sql-finish=%s", read.QualityMeasurementValidity.Reason, observed.Format(time.RFC3339Nano), completed.Format(time.RFC3339Nano), read.StartedAt.Format(time.RFC3339Nano), read.FinishedAt.Format(time.RFC3339Nano))
+			require.Equal(t, reason, read.QualityMeasurementValidity.Reason, "observed=%s completed=%s sql-start=%s sql-finish=%s", observed.Format(time.RFC3339Nano), completed.Format(time.RFC3339Nano), read.StartedAt.Format(time.RFC3339Nano), read.FinishedAt.Format(time.RFC3339Nano))
+			require.WithinDuration(t, time.Now(), read.QualityMeasurementValidity.EvaluatedAt, 3*time.Second)
+			require.Equal(t, measurement, read.PelicanConfig.QualityMeasurement, "read-only assessment preserves frozen JSON")
+			require.Equal(t, "failed", read.Status, "an unexpired wrong answer stays wrong")
+			var raw []byte
+			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT pelican_config FROM scheduled_test_results WHERE id=$1`, created.ID).Scan(&raw))
+			require.NotContains(t, string(raw), "quality_measurement_validity", "read assessments are never persisted as evidence")
+		})
+	}
+}
 
 func TestQualityMeasurementPersistenceAndLegacyHistory(t *testing.T) {
 	ctx := t.Context()

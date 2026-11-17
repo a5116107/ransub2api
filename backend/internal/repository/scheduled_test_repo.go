@@ -509,10 +509,17 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 	out := &service.ScheduledTestResult{}
 	var judgment []byte
 	var config []byte
-	err := r.db.QueryRowContext(ctx, `SELECT id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id
- FROM scheduled_test_results WHERE plan_id = $1 AND id = $2`, planID, resultID).Scan(
+	var evaluatedAt, ruleVersion time.Time
+	var ruleEnabled bool
+	err := r.db.QueryRowContext(ctx, `WITH detail AS (
+ SELECT r.*,p.updated_at AS current_rule_version,p.enabled AS current_rule_enabled
+ FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
+ WHERE r.plan_id=$1 AND r.id=$2
+ ) SELECT id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id,
+ clock_timestamp(),current_rule_version,current_rule_enabled FROM detail`, planID, resultID).Scan(
 		&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
-		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID)
+		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID,
+		&evaluatedAt, &ruleVersion, &ruleEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -526,6 +533,7 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
 			return nil, err
 		}
 	}
+	out.QualityMeasurementValidity = service.AssessQualityMeasurementValidity(out, ruleVersion, ruleEnabled, evaluatedAt)
 	return out, nil
 }
 

@@ -47,6 +47,7 @@ export function copyQualityRuleConfig(source: PelicanTestConfig): PelicanTestCon
     quality: {
       trigger_on_upstream_5xx: policy.trigger_on_upstream_5xx ?? false,
       oauth_401_max_rounds: policy.oauth_401_max_rounds ?? 0,
+      ...(policy.evidence_valid_for_seconds !== undefined ? { evidence_valid_for_seconds: policy.evidence_valid_for_seconds } : {}),
       expected_answer: source.question_kind === 'random_reasoning' ? '' : policy.expected_answer,
       action,
       remove_group_ids: qualityUsesGroups(action) ? [...(policy.remove_group_ids || [])] : [],
@@ -116,7 +117,9 @@ function oauth401MaxRounds(value?: number): number {
 // and validation belong here so all entry points preserve the same semantics.
 export function qualityActionPayload(policy: QualityPolicy): QualityPolicy {
   oauth401MaxRounds(policy.oauth_401_max_rounds)
+  const validity = qualityEvidenceValidity(policy.evidence_valid_for_seconds)
   const next = { ...policy, remove_group_ids: qualityUsesGroups(policy.action) ? [...policy.remove_group_ids] : [] }
+  if (!validity) delete next.evidence_valid_for_seconds
   const rest = qualityUsesRetestRest(next.action) ? policy.retest_rest_minutes ?? 0 : 0
   if (!Number.isInteger(rest) || rest < 0 || rest > 10080) throw new Error('qualityOps.invalidRetestRest')
   if (rest > 0) next.retest_rest_minutes = rest
@@ -137,6 +140,12 @@ export function qualityActionPayload(policy: QualityPolicy): QualityPolicy {
   } else delete next.bps
   if (next.action === 'observe_only') next.auto_restore = false
   return next
+}
+
+function qualityEvidenceValidity(value: unknown): number {
+  const seconds = value === '' || value == null ? 0 : value
+  if (typeof seconds !== 'number' || !Number.isInteger(seconds) || (seconds !== 0 && (seconds < 60 || seconds > 604800))) throw new Error('qualityOps.invalidEvidenceValidity')
+  return seconds
 }
 
 export const qualityRuleFields = ['model', 'schedule', 'test', 'action', 'restore', 'retention', 'trigger', 'oauth401', 'enabled'] as const
@@ -160,7 +169,7 @@ export function qualityRuleFieldValue(rule: Pick<ScheduledTestPlan, 'model_id' |
     case 'retention': return rule.max_results
     case 'trigger': return q?.trigger_on_upstream_5xx ?? false
     case 'oauth401': return q?.oauth_401_max_rounds ?? 0
-    case 'test': return [cfg?.question_kind, cfg?.test_channel || 'account', cfg?.prompt, cfg?.reasoning_effort, cfg?.parallel_count, cfg?.availability || null,
+    case 'test': return [cfg?.question_kind, cfg?.test_channel || 'account', cfg?.prompt, cfg?.reasoning_effort, cfg?.parallel_count, cfg?.availability || null, q?.evidence_valid_for_seconds ?? 0,
       q?.expected_answer, q?.judge?.kind || 'llm', q?.judge?.group_id, q?.judge?.model_id, q?.judge?.prompt]
     case 'restore': return [q?.auto_restore, b?.pass_threshold, b?.hold_on_usage]
     case 'action': return [q?.action, q?.remove_group_ids || [], q?.remove_models || [], q?.recovery_concurrency, q?.retest_rest_minutes ?? 0,
@@ -212,6 +221,9 @@ export function buildQualityRulePatch(
     else delete config.test_channel
     config.reasoning_effort = source.reasoning_effort
     const probe = source.question_kind === STATE_PROBE_QUESTION
+    const validity = probe ? 0 : qualityEvidenceValidity(source.quality.evidence_valid_for_seconds)
+    if (!probe && validity) config.quality.evidence_valid_for_seconds = validity
+    else delete config.quality.evidence_valid_for_seconds
     const random = source.question_kind === 'random_reasoning'
     delete config.random_question
     config.prompt = probe || random ? '' : source.prompt

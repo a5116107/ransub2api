@@ -46,6 +46,9 @@ func (q *QualityPolicy) UsesModelResults() bool {
 
 // QualityPolicy is opt-in. Legacy connectivity/HTML tests never modify membership.
 type QualityPolicy struct {
+	// Zero leaves the answer evidence lifetime undeclared. This is independent
+	// of connectivity validity and never grants current routing admission.
+	EvidenceValidForSeconds int `json:"evidence_valid_for_seconds,omitempty"`
 	// OAuth401MaxRounds removes only an OAuth quality rule after this many
 	// consecutive authentication-failure rounds. Zero preserves legacy behavior.
 	OAuth401MaxRounds    int                         `json:"oauth_401_max_rounds,omitempty"`
@@ -68,6 +71,9 @@ func validateQualityPolicy(plan *ScheduledTestPlan) error {
 	q := plan.PelicanConfig.Quality
 	if q == nil {
 		return nil
+	}
+	if q.EvidenceValidForSeconds != 0 && (!validQualityEvidenceLifetime(q.EvidenceValidForSeconds) || !isQualityAnswerQuestion(plan.PelicanConfig.QuestionKind)) {
+		return fmt.Errorf("quality evidence validity requires an answer test and 60-604800 seconds (0 leaves it undeclared)")
 	}
 	if q.OAuth401MaxRounds < 0 || q.OAuth401MaxRounds > 100 {
 		return fmt.Errorf("OAuth 401 cleanup must be 0-100 rounds")
