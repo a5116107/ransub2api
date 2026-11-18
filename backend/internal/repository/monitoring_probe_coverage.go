@@ -104,33 +104,94 @@ func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings
 	if err != nil {
 		return nil, err
 	}
+	active, activeComplete, err := loadMonitoringCoverageActive(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	var now time.Time
 	if err := scanSingleRow(ctx, tx, `SELECT clock_timestamp()`, nil, &now); err != nil {
 		return nil, err
 	}
-	return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, candy, candyComplete, now), nil
+	return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, candy, candyComplete, active, activeComplete, now), nil
 }
 
-func loadMonitoringCoverageCandy(ctx context.Context, tx sqlQueryer) ([]service.ChannelMonitorV2CandyProbe, bool, error) {
+func loadMonitoringCoverageRuntime(ctx context.Context, tx sqlQueryer) (service.ChannelMonitorRuntime, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT key,value FROM settings WHERE key IN ($1,$2)`,
 		service.SettingKeyChannelMonitorEnabled, service.SettingKeyChannelMonitorMode)
 	if err != nil {
-		return nil, false, err
+		return service.ChannelMonitorRuntime{}, err
 	}
 	values := make(map[string]string, 2)
 	for rows.Next() {
 		var key, value string
 		if err := rows.Scan(&key, &value); err != nil {
 			_ = rows.Close()
-			return nil, false, err
+			return service.ChannelMonitorRuntime{}, err
 		}
 		values[key] = value
 	}
 	err = errors.Join(rows.Err(), rows.Close())
+	return service.ParseChannelMonitorRuntime(values), err
+}
+
+func loadMonitoringCoverageActive(ctx context.Context, tx sqlQueryer) ([]service.ChannelMonitor, bool, error) {
+	runtime, err := loadMonitoringCoverageRuntime(ctx, tx)
+	if err != nil || !runtime.ActiveProbesAllowed() {
+		return nil, err == nil, err
+	}
+	// Only scheduling inputs, never encrypted/raw credentials or endpoints,
+	// enter the compiler or administrator capacity response.
+	rows, err := tx.QueryContext(ctx, `SELECT provider,check_mode,primary_model,extra_models,interval_seconds,jitter_seconds
+ FROM channel_monitors WHERE enabled ORDER BY id LIMIT $1`, monitoringCoverageInventoryLimit+1)
 	if err != nil {
 		return nil, false, err
 	}
-	if !service.ParseChannelMonitorRuntime(values).V2Active() {
+	defer func() { _ = rows.Close() }()
+	monitors := make([]service.ChannelMonitor, 0)
+	complete := true
+	for rows.Next() {
+		if len(monitors) == monitoringCoverageInventoryLimit {
+			complete = false
+			break
+		}
+		var monitor service.ChannelMonitor
+		var models []byte
+		if err := rows.Scan(&monitor.Provider, &monitor.CheckMode, &monitor.PrimaryModel, &models, &monitor.IntervalSeconds, &monitor.JitterSeconds); err != nil {
+			return nil, false, err
+		}
+		if err := json.Unmarshal(models, &monitor.ExtraModels); err != nil {
+			return nil, false, err
+		}
+		monitor.Enabled = true
+		monitors = append(monitors, monitor)
+	}
+	return monitors, complete, rows.Err()
+}
+
+func validateMonitoringCoverageActiveWrite(ctx context.Context, tx sqlQueryer, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	monitors, complete, err := loadMonitoringCoverageActive(ctx, tx)
+	if err != nil || (len(monitors) == 0 && complete) {
+		return err
+	}
+	return validateMonitoringCoveragePlanWrite(ctx, tx, true)
+}
+
+func validateMonitoringCoverageRuntimeWrite(ctx context.Context, tx sqlQueryer) error {
+	if err := validateMonitoringCoverageActiveWrite(ctx, tx, true); err != nil {
+		return err
+	}
+	return validateMonitoringCoverageCandyWrite(ctx, tx)
+}
+
+func loadMonitoringCoverageCandy(ctx context.Context, tx sqlQueryer) ([]service.ChannelMonitorV2CandyProbe, bool, error) {
+	runtime, err := loadMonitoringCoverageRuntime(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
+	if !runtime.V2Active() {
 		return nil, true, nil
 	}
 	var cfg service.ChannelMonitorV2Config
@@ -163,7 +224,7 @@ func loadMonitoringCoverageCandy(ctx context.Context, tx sqlQueryer) ([]service.
 	if len(ids) == 0 {
 		return nil, complete, nil
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT id,platform,status FROM groups WHERE id=ANY($1) AND deleted_at IS NULL`, pq.Array(ids))
+	rows, err := tx.QueryContext(ctx, `SELECT id,platform,status FROM groups WHERE id=ANY($1) AND deleted_at IS NULL`, pq.Array(ids))
 	if err != nil {
 		return nil, false, err
 	}

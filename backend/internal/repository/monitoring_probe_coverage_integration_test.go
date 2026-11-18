@@ -60,6 +60,139 @@ func TestMonitoringProbeCoverageCountsScheduledQualityAndGroups(t *testing.T) {
 	}
 }
 
+func TestMonitoringProbeCoverageSerializesV1AndBudget(t *testing.T) {
+	for _, operation := range []string{"create", "update", "enable", "mode", "bulk", "delete_mode", "delete_enabled"} {
+		t.Run(operation, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			settings := NewSettingRepository(client)
+			mode, enabled := "v1", "true"
+			if operation == "mode" || operation == "bulk" || operation == "delete_mode" {
+				mode = "v2"
+			}
+			if operation == "delete_enabled" {
+				enabled = "false"
+			}
+			require.NoError(t, settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorMode: mode, service.SettingKeyChannelMonitorEnabled: enabled}))
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			policy.RequestsPerDay, policy.RecoveryReservePercent = 5000, 0
+			policy, err := budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			monitor := &service.ChannelMonitor{Name: "serialize-v1", Provider: service.MonitorProviderOpenAI,
+				Endpoint: "https://coverage.invalid/v1", APIKey: "private-fixture", PrimaryModel: "model-a", ExtraModels: []string{"model-b"},
+				IntervalSeconds: 60, Enabled: operation != "enable"}
+			if operation == "update" {
+				monitor.IntervalSeconds = 120
+			}
+			if operation != "create" {
+				require.NoError(t, NewChannelMonitorRepository(client, db).Create(ctx, monitor))
+			}
+			start, results := make(chan struct{}), make(chan error, 2)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				candidate := policy
+				candidate.RequestsPerDay = 3000
+				_, err := NewMonitoringProbeBudgetRepository(db).SaveSettings(ctx, candidate)
+				results <- err
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				var err error
+				switch operation {
+				case "create":
+					err = NewChannelMonitorRepository(client, db).Create(ctx, monitor)
+				case "update", "enable":
+					monitor.IntervalSeconds, monitor.Enabled = 60, true
+					err = NewChannelMonitorRepository(client, db).Update(ctx, monitor)
+				case "mode":
+					err = NewSettingRepository(client).Set(ctx, service.SettingKeyChannelMonitorMode, "v1")
+				case "bulk":
+					err = NewSettingRepository(client).SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorMode: "v1", "v1_atomic_marker": "committed"})
+				case "delete_mode":
+					err = NewSettingRepository(client).Delete(ctx, service.SettingKeyChannelMonitorMode)
+				case "delete_enabled":
+					err = NewSettingRepository(client).Delete(ctx, service.SettingKeyChannelMonitorEnabled)
+				}
+				results <- err
+			}()
+			close(start)
+			wg.Wait()
+			close(results)
+			var successes int
+			for err := range results {
+				if err == nil {
+					successes++
+				} else {
+					require.ErrorContains(t, err, "day_capacity")
+				}
+			}
+			require.Equal(t, 1, successes, "concurrent individually valid edits must not create an impossible combination")
+			stored, err := budget.GetSettings(ctx)
+			require.NoError(t, err)
+			coverage, err := NewMonitoringProbeBudgetRepository(db).PreviewCoverage(ctx, stored)
+			require.NoError(t, err)
+			require.True(t, coverage.CanSave)
+			require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, "false"))
+			stored.RequestsPerDay = 1
+			_, err = budget.SaveSettings(ctx, stored)
+			require.NoError(t, err, "disabling active probes remains a repair path")
+		})
+	}
+}
+
+func TestMonitoringProbeCoverageV1InventoryModesAndUnknown(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	repo := NewChannelMonitorRepository(client, db)
+	for _, mode := range []string{service.MonitorCheckModeProbe, service.MonitorCheckModeQuota, service.MonitorCheckModeQuotaProbe} {
+		require.NoError(t, repo.Create(ctx, &service.ChannelMonitor{Name: mode, Provider: service.MonitorProviderOpenAI,
+			APIKey: "private-fixture", PrimaryModel: "model-a", ExtraModels: []string{"model-b"}, Enabled: true, CheckMode: mode, IntervalSeconds: 60}))
+	}
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy, err := budget.GetSettings(ctx)
+	require.NoError(t, err)
+	coverage, err := budget.PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, coverage.ActiveMonitors, "absent runtime settings preserve the original default-on V1")
+	require.EqualValues(t, 2, coverage.ActiveQuotaMonitors)
+	require.EqualValues(t, 8640, coverage.MinimumActiveRequests)
+	require.EqualValues(t, 2880, coverage.ActiveMonitorRuns)
+	require.Contains(t, coverage.Warnings, "active_quota_unestimated")
+	raw, err := json.Marshal(coverage)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "private-fixture")
+	settings := NewSettingRepository(client)
+	for _, mode := range []string{"v2", "v3"} {
+		require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, mode))
+		coverage, err = budget.PreviewCoverage(ctx, policy)
+		require.NoError(t, err)
+		require.True(t, coverage.ActiveInventoryComplete)
+		require.Zero(t, coverage.ActiveMonitors)
+		require.Zero(t, coverage.MinimumActiveRequests)
+	}
+	require.NoError(t, settings.Delete(ctx, service.SettingKeyChannelMonitorMode))
+	_, err = db.ExecContext(ctx, `UPDATE channel_monitors SET primary_model=' ' WHERE check_mode='probe'`)
+	require.NoError(t, err)
+	coverage, err = budget.PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, coverage.UnresolvedActiveMonitors)
+	require.EqualValues(t, 4320, coverage.MinimumActiveRequests)
+	require.Contains(t, coverage.Warnings, "active_unresolved")
+	_, err = db.ExecContext(ctx, `INSERT INTO channel_monitors(name,provider,endpoint,api_key_encrypted,primary_model,extra_models,enabled,interval_seconds,created_by)
+ SELECT 'bounded-v1','openai','https://coverage.invalid/v1','private-fixture','model-a','[]'::jsonb,true,3600,0 FROM generate_series(1,$1)`, monitoringCoverageInventoryLimit)
+	require.NoError(t, err)
+	coverage, err = budget.PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.False(t, coverage.ActiveInventoryComplete)
+	require.EqualValues(t, monitoringCoverageInventoryLimit, coverage.ActiveMonitors)
+	require.Contains(t, coverage.Warnings, "active_inventory_truncated")
+}
+
 func TestMonitoringProbeCoverageIncludesActiveCandy(t *testing.T) {
 	db, client := newBillingAuditDatabase(t)
 	ctx := t.Context()

@@ -44,6 +44,12 @@ type MonitoringProbeCoverage struct {
 	UnresolvedCandyProbes      int64     `json:"unresolved_candy_probes"`
 	CandyInventoryComplete     bool      `json:"candy_inventory_complete"`
 	MinimumCandyRequests       int64     `json:"minimum_candy_requests"`
+	ActiveMonitors             int64     `json:"active_monitors"`
+	ActiveQuotaMonitors        int64     `json:"active_quota_monitors"`
+	UnresolvedActiveMonitors   int64     `json:"unresolved_active_monitors"`
+	ActiveInventoryComplete    bool      `json:"active_inventory_complete"`
+	ActiveMonitorRuns          int64     `json:"active_monitor_runs"`
+	MinimumActiveRequests      int64     `json:"minimum_active_requests"`
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
 }
 
@@ -61,7 +67,7 @@ type MonitoringProbeCoveragePlan struct {
 
 func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billing UpstreamBillingProbeSettings,
 	accounts []MonitoringProbeCoverageAccount, complete bool, plans []MonitoringProbeCoveragePlan, plansComplete bool,
-	candy []ChannelMonitorV2CandyProbe, candyComplete bool, now time.Time) *MonitoringProbeCoverage {
+	candy []ChannelMonitorV2CandyProbe, candyComplete bool, active []ChannelMonitor, activeComplete bool, now time.Time) *MonitoringProbeCoverage {
 	result := &MonitoringProbeCoverage{
 		ObservedAt: now.UTC(), BudgetRevision: policy.Revision, BillingEnabled: billing.Enabled,
 		IntervalMinutes: billing.IntervalMinutes, InventoryComplete: complete,
@@ -70,7 +76,8 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		RegularDayCapacity:      policy.RequestsPerDay * int64(100-policy.RecoveryReservePercent) / 100,
 		Enforced:                policy.Enabled, CanSave: true, BlockingReasons: []string{}, Warnings: []string{},
 		PlanInventoryComplete: plansComplete, CandyInventoryComplete: candyComplete,
-		ScheduleWindowStart: now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour),
+		ActiveInventoryComplete: activeComplete,
+		ScheduleWindowStart:     now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour),
 	}
 	result.ScheduleWindowEnd = result.ScheduleWindowStart.Add(24 * time.Hour)
 	if result.RegularMinuteCapacity < 1 {
@@ -131,13 +138,60 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 	}
 	result.compileSchedules(plans)
 	result.compileCandy(candy)
+	result.compileActive(active)
 	result.MinimumScheduledRequests = result.ScheduledSamples + result.MinimumJudgeRequests
-	result.MinimumTotalRequestsPerDay = result.MinimumRequestsPerDay + result.MinimumScheduledRequests + result.MinimumCandyRequests
+	result.MinimumTotalRequestsPerDay = result.MinimumRequestsPerDay + result.MinimumScheduledRequests + result.MinimumCandyRequests + result.MinimumActiveRequests
 	if policy.Enabled && result.MinimumTotalRequestsPerDay > result.RegularDayCapacity {
 		result.BlockingReasons = append(result.BlockingReasons, "day_capacity")
 	}
 	result.CanSave = !policy.Enabled || len(result.BlockingReasons) == 0
 	return result
+}
+
+func (c *MonitoringProbeCoverage) compileActive(monitors []ChannelMonitor) {
+	for _, monitor := range monitors {
+		if !monitor.Enabled {
+			continue
+		}
+		c.ActiveMonitors++
+		mode := defaultCheckMode(monitor.CheckMode)
+		if monitorCheckModeUsesQuota(mode) {
+			// Cached/coalesced/passive usage queries have no fixed physical
+			// call count. Never forecast them as free or predict their tokens.
+			c.ActiveQuotaMonitors++
+		}
+		if validateProvider(monitor.Provider) != nil || validateCheckMode(monitor.Provider, mode) != nil ||
+			validateInterval(monitor.IntervalSeconds) != nil || validateJitter(monitor.JitterSeconds, monitor.IntervalSeconds) != nil {
+			c.UnresolvedActiveMonitors++
+			continue
+		}
+		if mode == MonitorCheckModeQuota {
+			continue
+		}
+		valid := strings.TrimSpace(monitor.PrimaryModel) != ""
+		for _, model := range monitor.ExtraModels {
+			valid = valid && strings.TrimSpace(model) != ""
+		}
+		if !valid {
+			c.UnresolvedActiveMonitors++
+			continue
+		}
+		// The runner has unknown phase and ± jitter. A successful-check
+		// target uses the longest timer interval as an optimistic lower
+		// bound, without startup, retries, overlap skips or worker headroom.
+		runs := int64(86400 / (monitor.IntervalSeconds + monitor.JitterSeconds))
+		c.ActiveMonitorRuns += runs
+		c.MinimumActiveRequests += runs * int64(2+len(monitor.ExtraModels)) // primary + extras + one HEAD
+	}
+	if c.ActiveQuotaMonitors > 0 {
+		c.Warnings = append(c.Warnings, "active_quota_unestimated")
+	}
+	if c.UnresolvedActiveMonitors > 0 {
+		c.Warnings = append(c.Warnings, "active_unresolved")
+	}
+	if !c.ActiveInventoryComplete {
+		c.Warnings = append(c.Warnings, "active_inventory_truncated")
+	}
 }
 
 func (c *MonitoringProbeCoverage) compileCandy(probes []ChannelMonitorV2CandyProbe) {
@@ -263,7 +317,7 @@ func (c *MonitoringProbeCoverage) ValidateSave() error {
 		return nil
 	}
 	return infraerrors.BadRequest("MONITORING_PROBE_COVERAGE_IMPOSSIBLE",
-		fmt.Sprintf("configured monitoring coverage exceeds capacity (%v): %d billing accounts, %d minutes, at least %d calls/sweep and %d calls/day including %d scheduled and %d candy calls; regular day capacity is %d; increase capacity or relax the cadence", c.BlockingReasons, c.Accounts, c.IntervalMinutes, c.MinimumRequestsPerSweep, c.MinimumTotalRequestsPerDay, c.MinimumScheduledRequests, c.MinimumCandyRequests, c.RegularDayCapacity))
+		fmt.Sprintf("configured monitoring coverage exceeds capacity (%v): %d billing accounts, %d minutes, at least %d calls/sweep and %d calls/day including %d scheduled, %d candy and %d V1 model/HEAD calls; quota demand is unestimated; regular day capacity is %d; increase capacity or relax the cadence", c.BlockingReasons, c.Accounts, c.IntervalMinutes, c.MinimumRequestsPerSweep, c.MinimumTotalRequestsPerDay, c.MinimumScheduledRequests, c.MinimumCandyRequests, c.MinimumActiveRequests, c.RegularDayCapacity))
 }
 
 func (s *MonitoringProbeBudgetService) PreviewCoverage(ctx context.Context, settings MonitoringProbeBudgetSettings) (*MonitoringProbeCoverage, error) {

@@ -65,6 +65,12 @@ export interface MonitoringProbeCoverage {
   unresolved_candy_probes?: number
   candy_inventory_complete?: boolean
   minimum_candy_requests?: number
+  active_monitors?: number
+  active_quota_monitors?: number
+  unresolved_active_monitors?: number
+  active_inventory_complete?: boolean
+  active_monitor_runs?: number
+  minimum_active_requests?: number
   minimum_total_requests_per_day?: number
 }
 

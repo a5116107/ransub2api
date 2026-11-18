@@ -4,18 +4,99 @@ package repository_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMonitoringProbeCoverageActiveHTTPPostgresRecovery(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	settings := repository.NewSettingRepository(client)
+	require.NoError(t, settings.SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1"}))
+	budget := repository.NewMonitoringProbeBudgetRepository(db)
+	policy := service.DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.RecoveryReservePercent, policy.RequestsPerDay = true, 0, 1000
+	policy, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	monitors := repository.NewChannelMonitorRepository(client, db)
+	monitor := &service.ChannelMonitor{Name: "active-coverage", Provider: service.MonitorProviderOpenAI,
+		Endpoint: "https://coverage.invalid/v1", APIKey: "coverage-fixture", PrimaryModel: "model-a",
+		ExtraModels: []string{"model-b"}, IntervalSeconds: 60, Enabled: true}
+	err = monitors.Create(ctx, monitor)
+	require.ErrorContains(t, err, "MONITORING_PROBE_COVERAGE_IMPOSSIBLE",
+		"two models plus HEAD need at least 4320 calls; V1 creation must not bypass the daily budget")
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM channel_monitors`).Scan(&count))
+	require.Zero(t, count, "rejected creation must roll back its row")
+	monitor.Enabled = false
+	require.NoError(t, monitors.Create(ctx, monitor))
+	run := func(payload any) *httptest.ResponseRecorder {
+		t.Helper()
+		svc := service.ProvideChannelMonitorService(repository.NewChannelMonitorRepository(client, db), v1BudgetMonitorEncryptor{},
+			service.NewSettingService(repository.NewSettingRepository(client), nil), nil, nil,
+			repository.NewMonitoringProbeBudgetRepository(db))
+		router := gin.New()
+		router.PUT("/monitors/:id", admin.NewChannelMonitorHandler(svc).Update)
+		body, err := json.Marshal(payload)
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/monitors/%d", monitor.ID), strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	rejected := run(map[string]any{"enabled": true})
+	require.Equal(t, http.StatusBadRequest, rejected.Code, rejected.Body.String())
+	require.Contains(t, rejected.Body.String(), "MONITORING_PROBE_COVERAGE_IMPOSSIBLE")
+	stored, err := monitors.GetByID(ctx, monitor.ID)
+	require.NoError(t, err)
+	require.False(t, stored.Enabled)
+	policy.RequestsPerDay = 10000
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	repaired := run(map[string]any{"enabled": true})
+	require.Equal(t, http.StatusOK, repaired.Code, repaired.Body.String())
+	coverage, err := repository.NewMonitoringProbeBudgetRepository(db).PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.EqualValues(t, 4320, coverage.MinimumTotalRequestsPerDay)
+	rejected = run(map[string]any{"interval_seconds": 15})
+	require.Equal(t, http.StatusBadRequest, rejected.Code, rejected.Body.String())
+	stored, err = monitors.GetByID(ctx, monitor.ID)
+	require.NoError(t, err)
+	require.Equal(t, 60, stored.IntervalSeconds)
+	require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, "false"))
+	repaired = run(map[string]any{"interval_seconds": 15})
+	require.Equal(t, http.StatusOK, repaired.Code, repaired.Body.String())
+	require.ErrorContains(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, "true"), "MONITORING_PROBE_COVERAGE_IMPOSSIBLE")
+	require.ErrorContains(t, settings.SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", "v1_capacity_atomic_fixture": "not-committed"}), "MONITORING_PROBE_COVERAGE_IMPOSSIBLE")
+	require.ErrorContains(t, settings.Delete(ctx, service.SettingKeyChannelMonitorEnabled), "MONITORING_PROBE_COVERAGE_IMPOSSIBLE",
+		"deleting the switch restores default-on and must recheck capacity")
+	require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v2"))
+	require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, "true"))
+	require.ErrorContains(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v1"), "MONITORING_PROBE_COVERAGE_IMPOSSIBLE")
+	runtime := service.NewSettingService(settings, nil).GetChannelMonitorRuntime(ctx)
+	require.True(t, runtime.Enabled)
+	require.Equal(t, "v2", runtime.Mode)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM settings WHERE key='v1_capacity_atomic_fixture'`).Scan(&count))
+	require.Zero(t, count)
+	for _, table := range []string{"channel_monitor_histories", "monitoring_probe_budget_counters", "monitoring_probe_budget_leases"} {
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+		require.Zero(t, count, "capacity validation must not run probes or update observations")
+	}
+}
 
 func TestMonitoringProbeCoverageCandyHTTPPostgresRecovery(t *testing.T) {
 	db, client := repository.UpstreamChannelsTestDatabase(t)

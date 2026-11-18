@@ -181,7 +181,7 @@ func (r *settingRepository) SetMultiple(ctx context.Context, settings map[string
 	_, enabled := settings[service.SettingKeyChannelMonitorEnabled]
 	_, mode := settings[service.SettingKeyChannelMonitorMode]
 	if enabled || mode {
-		return r.withMonitoringCoverageWrite(ctx, write)
+		return withMonitoringCoverageWrite(ctx, r.client, write, validateMonitoringCoverageRuntimeWrite)
 	}
 	return write(r.client)
 }
@@ -201,21 +201,21 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 
 func (r *settingRepository) Delete(ctx context.Context, key string) error {
 	if key == service.SettingKeyChannelMonitorEnabled || key == service.SettingKeyChannelMonitorMode {
-		return r.withMonitoringCoverageWrite(ctx, func(client *ent.Client) error {
+		return withMonitoringCoverageWrite(ctx, r.client, func(client *ent.Client) error {
 			_, err := client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 			return err
-		})
+		}, validateMonitoringCoverageRuntimeWrite)
 	}
 	_, err := r.client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 	return err
 }
 
-func (r *settingRepository) withMonitoringCoverageWrite(ctx context.Context, write func(*ent.Client) error) error {
-	tx, err := r.client.Tx(ctx)
+func withMonitoringCoverageWrite(ctx context.Context, client *ent.Client, write func(*ent.Client) error, validate func(context.Context, sqlQueryer) error) error {
+	client = clientFromContext(ctx, client)
+	tx, err := client.Tx(ctx)
 	if err != nil && !errors.Is(err, ent.ErrTxStarted) {
 		return err
 	}
-	client := r.client
 	if err == nil {
 		defer func() { _ = tx.Rollback() }()
 		client = tx.Client()
@@ -226,7 +226,7 @@ func (r *settingRepository) withMonitoringCoverageWrite(ctx context.Context, wri
 	if err := write(client); err != nil {
 		return err
 	}
-	if err := validateMonitoringCoverageCandyWrite(ctx, client); err != nil {
+	if err := validate(ctx, client); err != nil {
 		return err
 	}
 	if tx != nil {

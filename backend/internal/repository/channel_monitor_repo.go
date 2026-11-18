@@ -38,36 +38,42 @@ func NewChannelMonitorRepository(client *dbent.Client, db *sql.DB) service.Chann
 // ---------- CRUD ----------
 
 func (r *channelMonitorRepository) Create(ctx context.Context, m *service.ChannelMonitor) error {
-	client := clientFromContext(ctx, r.client)
-	builder := client.ChannelMonitor.Create().
-		SetName(m.Name).
-		SetProvider(channelmonitor.Provider(m.Provider)).
-		SetAPIMode(defaultAPIModeRepo(m.APIMode)).
-		SetEndpoint(m.Endpoint).
-		SetAPIKeyEncrypted(m.APIKey). // 调用方传入的已是密文
-		SetPrimaryModel(m.PrimaryModel).
-		SetExtraModels(emptySliceIfNil(m.ExtraModels)).
-		SetGroupName(m.GroupName).
-		SetEnabled(m.Enabled).
-		SetIntervalSeconds(m.IntervalSeconds).
-		SetJitterSeconds(m.JitterSeconds).
-		SetCreatedBy(m.CreatedBy).
-		SetExtraHeaders(channelMonitorHeadersForPersistence(m)).
-		SetBodyOverrideMode(defaultBodyModeRepo(m.BodyOverrideMode)).
-		SetCheckMode(defaultCheckModeRepo(m.CheckMode))
-	if m.TemplateID != nil {
-		builder = builder.SetTemplateID(*m.TemplateID)
-	}
-	if m.AccountID != nil {
-		builder = builder.SetAccountID(*m.AccountID)
-	}
-	if m.BodyOverride != nil {
-		builder = builder.SetBodyOverride(m.BodyOverride)
-	}
+	var created *dbent.ChannelMonitor
+	err := withMonitoringCoverageWrite(ctx, clientFromContext(ctx, r.client), func(client *dbent.Client) error {
+		builder := client.ChannelMonitor.Create().
+			SetName(m.Name).
+			SetProvider(channelmonitor.Provider(m.Provider)).
+			SetAPIMode(defaultAPIModeRepo(m.APIMode)).
+			SetEndpoint(m.Endpoint).
+			SetAPIKeyEncrypted(m.APIKey). // 调用方传入的已是密文
+			SetPrimaryModel(m.PrimaryModel).
+			SetExtraModels(emptySliceIfNil(m.ExtraModels)).
+			SetGroupName(m.GroupName).
+			SetEnabled(m.Enabled).
+			SetIntervalSeconds(m.IntervalSeconds).
+			SetJitterSeconds(m.JitterSeconds).
+			SetCreatedBy(m.CreatedBy).
+			SetExtraHeaders(channelMonitorHeadersForPersistence(m)).
+			SetBodyOverrideMode(defaultBodyModeRepo(m.BodyOverrideMode)).
+			SetCheckMode(defaultCheckModeRepo(m.CheckMode))
+		if m.TemplateID != nil {
+			builder = builder.SetTemplateID(*m.TemplateID)
+		}
+		if m.AccountID != nil {
+			builder = builder.SetAccountID(*m.AccountID)
+		}
+		if m.BodyOverride != nil {
+			builder = builder.SetBodyOverride(m.BodyOverride)
+		}
 
-	created, err := builder.Save(ctx)
-	if err != nil {
+		var err error
+		created, err = builder.Save(ctx)
 		return translatePersistenceError(err, service.ErrChannelMonitorNotFound, nil)
+	}, func(ctx context.Context, tx sqlQueryer) error {
+		return validateMonitoringCoverageActiveWrite(ctx, tx, m.Enabled)
+	})
+	if err != nil {
+		return err
 	}
 	m.ID = created.ID
 	m.CreatedAt = created.CreatedAt
@@ -110,41 +116,47 @@ func (r *channelMonitorRepository) GetByID(ctx context.Context, id int64) (*serv
 }
 
 func (r *channelMonitorRepository) Update(ctx context.Context, m *service.ChannelMonitor) error {
-	client := clientFromContext(ctx, r.client)
-	updater := client.ChannelMonitor.UpdateOneID(m.ID).
-		SetName(m.Name).
-		SetProvider(channelmonitor.Provider(m.Provider)).
-		SetAPIMode(defaultAPIModeRepo(m.APIMode)).
-		SetEndpoint(m.Endpoint).
-		SetAPIKeyEncrypted(m.APIKey).
-		SetPrimaryModel(m.PrimaryModel).
-		SetExtraModels(emptySliceIfNil(m.ExtraModels)).
-		SetGroupName(m.GroupName).
-		SetEnabled(m.Enabled).
-		SetIntervalSeconds(m.IntervalSeconds).
-		SetJitterSeconds(m.JitterSeconds).
-		SetExtraHeaders(channelMonitorHeadersForPersistence(m)).
-		SetBodyOverrideMode(defaultBodyModeRepo(m.BodyOverrideMode)).
-		SetCheckMode(defaultCheckModeRepo(m.CheckMode))
-	if m.TemplateID != nil {
-		updater = updater.SetTemplateID(*m.TemplateID)
-	} else {
-		updater = updater.ClearTemplateID()
-	}
-	if m.AccountID != nil {
-		updater = updater.SetAccountID(*m.AccountID)
-	} else {
-		updater = updater.ClearAccountID()
-	}
-	if m.BodyOverride != nil {
-		updater = updater.SetBodyOverride(m.BodyOverride)
-	} else {
-		updater = updater.ClearBodyOverride()
-	}
+	var updated *dbent.ChannelMonitor
+	err := withMonitoringCoverageWrite(ctx, clientFromContext(ctx, r.client), func(client *dbent.Client) error {
+		updater := client.ChannelMonitor.UpdateOneID(m.ID).
+			SetName(m.Name).
+			SetProvider(channelmonitor.Provider(m.Provider)).
+			SetAPIMode(defaultAPIModeRepo(m.APIMode)).
+			SetEndpoint(m.Endpoint).
+			SetAPIKeyEncrypted(m.APIKey).
+			SetPrimaryModel(m.PrimaryModel).
+			SetExtraModels(emptySliceIfNil(m.ExtraModels)).
+			SetGroupName(m.GroupName).
+			SetEnabled(m.Enabled).
+			SetIntervalSeconds(m.IntervalSeconds).
+			SetJitterSeconds(m.JitterSeconds).
+			SetExtraHeaders(channelMonitorHeadersForPersistence(m)).
+			SetBodyOverrideMode(defaultBodyModeRepo(m.BodyOverrideMode)).
+			SetCheckMode(defaultCheckModeRepo(m.CheckMode))
+		if m.TemplateID != nil {
+			updater = updater.SetTemplateID(*m.TemplateID)
+		} else {
+			updater = updater.ClearTemplateID()
+		}
+		if m.AccountID != nil {
+			updater = updater.SetAccountID(*m.AccountID)
+		} else {
+			updater = updater.ClearAccountID()
+		}
+		if m.BodyOverride != nil {
+			updater = updater.SetBodyOverride(m.BodyOverride)
+		} else {
+			updater = updater.ClearBodyOverride()
+		}
 
-	updated, err := updater.Save(ctx)
-	if err != nil {
+		var err error
+		updated, err = updater.Save(ctx)
 		return translatePersistenceError(err, service.ErrChannelMonitorNotFound, nil)
+	}, func(ctx context.Context, tx sqlQueryer) error {
+		return validateMonitoringCoverageActiveWrite(ctx, tx, m.Enabled)
+	})
+	if err != nil {
+		return err
 	}
 	m.UpdatedAt = updated.UpdatedAt
 	return nil
