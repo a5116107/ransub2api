@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
@@ -53,16 +55,39 @@ type MonitoringProbeCoverage struct {
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
 	UnestimatedDemandSources   []string  `json:"unestimated_demand_sources"`
 
+	BillingScopes       *MonitoringProbeCoverageBillingScopes `json:"billing_scopes,omitempty"`
 	CNQuotaCycle        *CNMonitoringRuntime                  `json:"cn_quota_cycle,omitempty"`
 	OllamaUsage         *OllamaMonitoringRuntime              `json:"ollama_usage,omitempty"`
 	ResponsesCapability *ResponsesCapabilityMonitoringRuntime `json:"responses_capability,omitempty"`
 }
 
-// Only account identity required by the original runner is read. Neither raw
-// credentials, site names nor binding fingerprints enter the admin response.
+// Each bucket is a confirmed sharing lower bound, not a unique-key census.
+// Management authorization IDs may refer to the same secret as another ID or
+// inference key. Without decrypting them, that overlap remains unknown.
+type MonitoringProbeCoverageBillingScopes struct {
+	Version                        int   `json:"version"`
+	Sites                          int64 `json:"sites"`
+	CredentialGroups               int64 `json:"credential_groups"`
+	NewAPIAuthorizationGroups      int64 `json:"new_api_authorization_groups"`
+	MaxSiteRequestsPerSweep        int64 `json:"max_site_requests_per_sweep"`
+	MaxCredentialRequestsPerSweep  int64 `json:"max_credential_requests_per_sweep"`
+	SiteSweepCapacity              int64 `json:"site_sweep_capacity"`
+	CredentialSweepCapacity        int64 `json:"credential_sweep_capacity"`
+	OverLimitSites                 int64 `json:"over_limit_sites"`
+	OverLimitCredentialGroups      int64 `json:"over_limit_credential_groups"`
+	UnresolvedSites                int64 `json:"unresolved_sites"`
+	UnresolvedCredentials          int64 `json:"unresolved_credentials"`
+	UnresolvedNewAPIAuthorizations int64 `json:"unresolved_new_api_authorizations"`
+}
+
+// Inventory inputs stay internal. No credentials, site names, authorization
+// IDs or binding/credential fingerprints enter the administrator response.
 type MonitoringProbeCoverageAccount struct {
-	Account               Account
-	NewAPIBindingIdentity string
+	Account                   Account
+	NewAPIBindingIdentity     string
+	NewAPIAuthorizationID     int64
+	NewAPIAuthorizationSite   string
+	NewAPIAuthorizationUserID int64
 }
 
 type MonitoringProbeCoveragePlan struct {
@@ -94,6 +119,11 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 	if result.RegularDayCapacity < 1 {
 		result.RegularDayCapacity = 1
 	}
+	scopes := monitoringProbeCoverageBillingDemand{
+		view:  &MonitoringProbeCoverageBillingScopes{Version: 1},
+		sites: make(map[string]int64), credentials: make(map[string]int64),
+		management: make(map[int64]struct{}),
+	}
 	for _, target := range accounts {
 		account := &target.Account
 		if !isUpstreamBillingProbeAccount(account) || !account.IsActive() || !upstreamBillingProbeEnabled(account) {
@@ -105,6 +135,7 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 			// verification and any additional pages can only increase this.
 			result.NewAPIAccounts++
 			result.MinimumRequestsPerSweep += 4
+			scopes.addNewAPI(target)
 			continue
 		}
 		base := upstreamBillingProbeBaseURL(account)
@@ -113,18 +144,32 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		}
 		if account.GetCredential("api_key") == "" || (account.Platform != PlatformOpenAI && upstreamBillingProbeTargetIsOfficialAPI(base)) {
 			result.UnresolvedAccounts++
+			if account.GetCredential("api_key") == "" {
+				scopes.view.UnresolvedCredentials++
+				if _, err := CanonicalNewAPISite(base); err != nil {
+					scopes.view.UnresolvedSites++
+				}
+			}
 			continue
 		}
-		if _, err := CanonicalNewAPISite(base); err != nil {
+		site, err := CanonicalNewAPISite(base)
+		if err != nil {
 			result.UnresolvedAccounts++
+			scopes.view.UnresolvedSites++
 			continue
 		}
-		result.MinimumRequestsPerSweep++
+		requests := int64(1)
 		if !upstreamBillingProbeTargetIsOfficialAPI(base) {
 			// A completed relay declaration read is followed by the balance read.
-			result.MinimumRequestsPerSweep++
+			requests++
 		}
+		result.MinimumRequestsPerSweep += requests
+		scopes.sites[site] += requests
+		headers := make(http.Header)
+		applyUpstreamBillingProbeHeaders(headers, account, account.GetCredential("api_key"))
+		scopes.addCredentials(headers, requests, false)
 	}
+	scopes.finish(result, policy, billing)
 	result.MinimumSweepBatches = (result.Accounts + upstreamBillingProbeMaxPerCycle - 1) / upstreamBillingProbeMaxPerCycle
 	if billing.IntervalMinutes < upstreamBillingProbeMinIntervalMinutes || billing.IntervalMinutes > upstreamBillingProbeMaxIntervalMinutes {
 		result.BlockingReasons = append(result.BlockingReasons, "invalid_interval")
@@ -154,6 +199,89 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 	}
 	result.CanSave = !policy.Enabled || len(result.BlockingReasons) == 0
 	return result
+}
+
+type monitoringProbeCoverageBillingDemand struct {
+	view               *MonitoringProbeCoverageBillingScopes
+	sites, credentials map[string]int64
+	management         map[int64]struct{}
+}
+
+func (d *monitoringProbeCoverageBillingDemand) addNewAPI(target MonitoringProbeCoverageAccount) {
+	site, err := NewAPIAccountSite(&target.Account)
+	if err != nil || site != target.NewAPIAuthorizationSite || target.NewAPIAuthorizationID <= 0 || target.NewAPIAuthorizationUserID <= 0 {
+		d.view.UnresolvedNewAPIAuthorizations++
+		d.view.UnresolvedCredentials++
+		if err != nil || site != target.NewAPIAuthorizationSite {
+			d.view.UnresolvedSites++
+		}
+		return
+	}
+	d.sites[site] += 4
+	d.credentials[fmt.Sprintf("new_api_authorization:%d", target.NewAPIAuthorizationID)] += 4
+	d.management[target.NewAPIAuthorizationID] = struct{}{}
+	// The management secret is deliberately never loaded/decrypted. Reuse the
+	// real builder to retain additional final credentials, excluding the known
+	// management Authorization header which is represented by the ID group.
+	headers := make(http.Header)
+	applyNewAPIManagementHeaders(headers, &target.Account, target.NewAPIAuthorizationUserID, "")
+	headers.Del("Authorization")
+	d.addCredentials(headers, 4, true)
+}
+
+func (d *monitoringProbeCoverageBillingDemand) addCredentials(headers http.Header, requests int64, primaryKnown bool) {
+	keys := config.UpstreamCredentialFingerprints(&http.Request{Header: headers})
+	unresolved := len(keys) == 0 && !primaryKnown
+	for _, key := range keys {
+		if key == config.UnverifiedUpstreamCredential {
+			unresolved = true
+			continue
+		}
+		d.credentials[key] += requests
+	}
+	if unresolved {
+		d.view.UnresolvedCredentials++
+	}
+}
+
+func (d *monitoringProbeCoverageBillingDemand) finish(c *MonitoringProbeCoverage, policy MonitoringProbeBudgetSettings, billing UpstreamBillingProbeSettings) {
+	v := d.view
+	v.Sites, v.CredentialGroups, v.NewAPIAuthorizationGroups = int64(len(d.sites)), int64(len(d.credentials)), int64(len(d.management))
+	validInterval := billing.IntervalMinutes >= upstreamBillingProbeMinIntervalMinutes && billing.IntervalMinutes <= upstreamBillingProbeMaxIntervalMinutes
+	if validInterval {
+		// Unlike the global regular allowance, per-site and per-key counters do
+		// not subtract recovery reserve at physical admission.
+		v.SiteSweepCapacity = policy.SiteRequestsPerMinute * int64(billing.IntervalMinutes)
+		v.CredentialSweepCapacity = policy.KeyRequestsPerMinute * int64(billing.IntervalMinutes)
+	}
+	for _, calls := range d.sites {
+		if calls > v.MaxSiteRequestsPerSweep {
+			v.MaxSiteRequestsPerSweep = calls
+		}
+		if validInterval && calls > v.SiteSweepCapacity {
+			v.OverLimitSites++
+		}
+	}
+	for _, calls := range d.credentials {
+		if calls > v.MaxCredentialRequestsPerSweep {
+			v.MaxCredentialRequestsPerSweep = calls
+		}
+		if validInterval && calls > v.CredentialSweepCapacity {
+			v.OverLimitCredentialGroups++
+		}
+	}
+	if policy.Enabled && billing.Enabled {
+		if v.OverLimitSites > 0 {
+			c.BlockingReasons = append(c.BlockingReasons, "site_capacity")
+		}
+		if v.OverLimitCredentialGroups > 0 {
+			c.BlockingReasons = append(c.BlockingReasons, "key_capacity")
+		}
+	}
+	if v.UnresolvedSites+v.UnresolvedCredentials+v.UnresolvedNewAPIAuthorizations > 0 {
+		c.Warnings = append(c.Warnings, "billing_scope_unresolved")
+	}
+	c.BillingScopes = v
 }
 
 func (c *MonitoringProbeCoverage) compileActive(monitors []ChannelMonitor) {

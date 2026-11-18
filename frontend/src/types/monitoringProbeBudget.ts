@@ -76,6 +76,23 @@ export interface MonitoringProbeCoverage {
   cn_quota_cycle?: CNMonitoringRuntime | null
   ollama_usage?: OllamaMonitoringRuntime | null
   responses_capability?: ResponsesCapabilityMonitoringRuntime | null
+  billing_scopes?: MonitoringProbeCoverageBillingScopes | null
+}
+
+export interface MonitoringProbeCoverageBillingScopes {
+  version: number
+  sites: number
+  credential_groups: number
+  new_api_authorization_groups: number
+  max_site_requests_per_sweep: number
+  max_credential_requests_per_sweep: number
+  site_sweep_capacity: number
+  credential_sweep_capacity: number
+  over_limit_sites: number
+  over_limit_credential_groups: number
+  unresolved_sites: number
+  unresolved_credentials: number
+  unresolved_new_api_authorizations: number
 }
 
 export interface ResponsesCapabilityMonitoringRuntime {

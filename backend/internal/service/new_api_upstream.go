@@ -160,15 +160,7 @@ func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Acco
 	if e != nil {
 		return newAPIError("request_build_failed")
 	}
-	a.ApplyHeaderOverrides(req.Header)
-	for key := range req.Header {
-		if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "New-Api-User") || strings.EqualFold(key, "Cookie") {
-			delete(req.Header, key)
-		}
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+secret)
-	req.Header.Set("New-Api-User", strconv.FormatInt(userID, 10))
+	applyNewAPIManagementHeaders(req.Header, a, userID, secret)
 	var tlsProfile *tlsfingerprint.Profile
 	if s.accountTestService.tlsFPProfileService != nil {
 		tlsProfile = s.accountTestService.tlsFPProfileService.ResolveTLSProfile(a)
@@ -199,6 +191,18 @@ func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Acco
 		return newAPIError("invalid_response")
 	}
 	return nil
+}
+
+func applyNewAPIManagementHeaders(headers http.Header, a *Account, userID int64, secret string) {
+	a.ApplyHeaderOverrides(headers)
+	for key := range headers {
+		if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "New-Api-User") || strings.EqualFold(key, "Cookie") {
+			delete(headers, key)
+		}
+	}
+	headers.Set("Accept", "application/json")
+	headers.Set("Authorization", "Bearer "+secret)
+	headers.Set("New-Api-User", strconv.FormatInt(userID, 10))
 }
 func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Account, site string, userID int64, secret string) (*newAPIData, error) {
 	if userID <= 0 || secret == "" {

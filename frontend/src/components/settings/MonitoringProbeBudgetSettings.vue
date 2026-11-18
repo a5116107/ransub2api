@@ -53,6 +53,19 @@
           </dl>
           <p class="mt-3">{{ t(`${prefix}.capacityBatches`, { batches: coverage.minimum_sweep_batches, rate: coverage.runner_accounts_per_minute }) }}</p>
           <p class="mt-2">{{ t(`${prefix}.capacityInventory`, { newapi: coverage.new_api_accounts, unknown: coverage.unresolved_accounts }) }}</p>
+          <div class="mt-4 border-t border-amber-300 pt-3 dark:border-amber-800" data-testid="probe-budget-billing-scopes">
+            <h5 class="font-semibold">{{ t(`${prefix}.billingScopesTitle`) }}</h5>
+            <template v-if="billingScopes">
+              <p class="mt-2 font-medium" data-testid="billing-scopes-verdict">{{ t(`${prefix}.${billingScopes.over_limit_sites || billingScopes.over_limit_credential_groups ? 'billingScopesExceeded' : 'billingScopesPartial'}`) }}</p>
+              <dl class="mt-3 grid gap-3 sm:grid-cols-2">
+                <div data-testid="billing-scopes-sites"><dt>{{ t(`${prefix}.billingScopesSites`, { count: billingScopes.sites, exceeded: billingScopes.over_limit_sites }) }}</dt><dd class="font-mono">≥ {{ billingScopes.max_site_requests_per_sweep }} / {{ billingScopes.site_sweep_capacity }}</dd></div>
+                <div data-testid="billing-scopes-credentials"><dt>{{ t(`${prefix}.billingScopesCredentials`, { count: billingScopes.credential_groups, exceeded: billingScopes.over_limit_credential_groups }) }}</dt><dd class="font-mono">≥ {{ billingScopes.max_credential_requests_per_sweep }} / {{ billingScopes.credential_sweep_capacity }}</dd></div>
+              </dl>
+              <p class="mt-2">{{ t(`${prefix}.billingScopesUnknown`, { management: billingScopes.new_api_authorization_groups, sites: billingScopes.unresolved_sites, credentials: billingScopes.unresolved_credentials, authorizations: billingScopes.unresolved_new_api_authorizations }) }}</p>
+            </template>
+            <p v-else class="mt-2 font-medium">{{ t(`${prefix}.billingScopesUnavailable`) }}</p>
+            <p class="mt-2 text-xs">{{ t(`${prefix}.billingScopesHint`) }}</p>
+          </div>
           <div class="mt-4 border-t border-amber-300 pt-3 dark:border-amber-800" data-testid="probe-budget-scheduled-capacity">
             <h5 class="font-semibold">{{ t(`${prefix}.capacitySchedules`) }}</h5>
             <p class="mt-2">{{ t(`${prefix}.capacityPlanInventory`, { accounts: displayUsage(coverage.account_plans), groups: displayUsage(coverage.group_plans), unknown: displayUsage(coverage.unresolved_plans) }) }}</p>
@@ -189,6 +202,17 @@ const previewing = ref(false)
 const coverage = ref<MonitoringProbeCoverage | null>(null)
 const coverageKey = ref('')
 const coverageMatches = computed(() => coverageKey.value === JSON.stringify(form))
+const billingScopes = computed(() => {
+  const s = coverage.value?.billing_scopes
+  if (!s || s.version !== 1) return null
+  const counts = [s.sites, s.credential_groups, s.new_api_authorization_groups,
+    s.max_site_requests_per_sweep, s.max_credential_requests_per_sweep, s.site_sweep_capacity,
+    s.credential_sweep_capacity, s.over_limit_sites, s.over_limit_credential_groups,
+    s.unresolved_sites, s.unresolved_credentials, s.unresolved_new_api_authorizations]
+  if (!counts.every(n => Number.isSafeInteger(n) && n >= 0) || s.over_limit_sites > s.sites ||
+    s.over_limit_credential_groups > s.credential_groups || s.new_api_authorization_groups > s.credential_groups) return null
+  return s
+})
 const knownScopesInactive = computed(() => {
   const c = coverage.value
   return c && c.inventory_complete === true && c.plan_inventory_complete === true &&
@@ -298,7 +322,7 @@ function displayUsage(value: number | undefined) {
 }
 
 function capacityReason(reason: string) {
-  const known = ['runner_capacity', 'minute_capacity', 'day_capacity', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated']
+  const known = ['runner_capacity', 'minute_capacity', 'day_capacity', 'site_capacity', 'key_capacity', 'billing_scope_unresolved', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated']
   return t(`${prefix}.capacityReason.${known.includes(reason) ? reason : 'unknown'}`)
 }
 

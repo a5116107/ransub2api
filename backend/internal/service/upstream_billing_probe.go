@@ -858,9 +858,7 @@ func (s *UpstreamBillingProbeService) fetchUpstreamProbeBody(
 	}
 	reqCtx := WithHTTPUpstreamProfile(req.Context(), profile)
 	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(reqCtx))
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+target.apiKey)
-	account.ApplyHeaderOverrides(req.Header)
+	applyUpstreamBillingProbeHeaders(req.Header, account, target.apiKey)
 	var tlsProfile *tlsfingerprint.Profile
 	if s.accountTestService.tlsFPProfileService != nil {
 		tlsProfile = s.accountTestService.tlsFPProfileService.ResolveTLSProfile(account)
@@ -891,6 +889,12 @@ func (s *UpstreamBillingProbeService) fetchUpstreamProbeBody(
 	}
 	result.body = body
 	return result
+}
+
+func applyUpstreamBillingProbeHeaders(headers http.Header, account *Account, apiKey string) {
+	headers.Set("Accept", "application/json")
+	headers.Set("Authorization", "Bearer "+apiKey)
+	account.ApplyHeaderOverrides(headers)
 }
 
 // upstreamBillingRateSnapshotFromResult turns one /v1/sub2api/billing response

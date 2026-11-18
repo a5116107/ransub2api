@@ -37,6 +37,67 @@ async function open(locale = 'en') {
   return wrapper
 }
 
+function billingScopes() {
+  return { version: 1, sites: 2, credential_groups: 3, new_api_authorization_groups: 1,
+    max_site_requests_per_sweep: 8, max_credential_requests_per_sweep: 6,
+    site_sweep_capacity: 5, credential_sweep_capacity: 5, over_limit_sites: 1,
+    over_limit_credential_groups: 1, unresolved_sites: 0, unresolved_credentials: 1,
+    unresolved_new_api_authorizations: 1 }
+}
+
+describe('billing shared-scope coverage', () => {
+  it.each(['en', 'zh'])('shows anonymous scope lower bounds and unknowns without changing total demand in %s', async locale => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), billing_scopes: {
+      ...billingScopes(), site: 'PRIVATE_SITE', credential: 'PRIVATE_CREDENTIAL' } } })
+    const wrapper = await open(locale)
+    const panel = wrapper.get('[data-testid="probe-budget-billing-scopes"]')
+    expect(panel.text()).toContain(locale === 'zh' ? '倍率周期：站点与共享凭据下界' : 'Billing sweep: site and shared-credential lower bounds')
+    expect(panel.get('[data-testid="billing-scopes-sites"]').text()).toContain('8 / 5')
+    expect(panel.get('[data-testid="billing-scopes-credentials"]').text()).toContain('6 / 5')
+    expect(panel.get('[data-testid="billing-scopes-verdict"]').text()).toContain(locale === 'zh' ? '已证明存在超限' : 'Proven scope shortfall')
+    expect(panel.text()).toContain(locale === 'zh' ? '管理授权组 1' : '1 management authorization groups')
+    expect(panel.text()).toContain(locale === 'zh' ? '未确认管理授权 1' : '1 unresolved management authorizations')
+    expect(panel.text()).toContain(locale === 'zh' ? '不得相加' : 'Do not sum')
+    expect(panel.text()).not.toContain('PRIVATE_')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toContain('69456')
+  })
+
+  it.each([undefined, { ...billingScopes(), version: 2 }, { ...billingScopes(), sites: -1 }, { ...billingScopes(), credential_groups: 1.5 }, { ...billingScopes(), over_limit_sites: 3 }])('keeps legacy or malformed scope evidence unknown: %j', async scopes => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), billing_scopes: scopes } })
+    const wrapper = await open()
+    const panel = wrapper.get('[data-testid="probe-budget-billing-scopes"]')
+    expect(panel.text()).toContain('Unknown')
+    expect(panel.find('[data-testid="billing-scopes-sites"]').exists()).toBe(false)
+  })
+
+  it.each(['site_capacity', 'key_capacity'])('blocks a proven %s shortfall and keeps disabling available', async reason => {
+    api.previewMonitoringProbeCoverage.mockImplementation(async draft => ({ ...coverage(), enforced: draft.enabled,
+      can_save: !draft.enabled, blocking_reasons: draft.enabled ? [reason] : [], billing_scopes: billingScopes() }))
+    const wrapper = await open()
+    await wrapper.get('[role="switch"]').trigger('click')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="probe-budget-capacity-reasons"]').text()).not.toContain('unrecognized')
+    await wrapper.get('[role="switch"]').trigger('click')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).toHaveBeenCalledOnce()
+  })
+
+  it('clears scope evidence after a draft change and preview failure', async () => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), billing_scopes: billingScopes() } })
+    const wrapper = await open()
+    expect(wrapper.get('[data-testid="billing-scopes-sites"]').text()).toContain('8 / 5')
+    await wrapper.get('#probe-budget-key_requests_per_minute').setValue(1)
+    expect(wrapper.find('[data-testid="probe-budget-billing-scopes"]').exists()).toBe(false)
+    api.previewMonitoringProbeCoverage.mockRejectedValueOnce(new Error('unavailable'))
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="probe-budget-billing-scopes"]').exists()).toBe(false)
+  })
+})
+
 function ollamaRuntime() {
   return { version: 1, scope: 'responding_process', instance_id: 'fixture-ollama', state: 'running', periodic_state: 'enabled',
     observed_at: '2026-11-19T12:00:00Z', scan_interval_seconds: 60, scan_limit: 20,

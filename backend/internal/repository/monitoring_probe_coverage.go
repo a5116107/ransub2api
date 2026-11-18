@@ -56,8 +56,9 @@ func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings
 		billing = override
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT a.id,a.platform,a.type,a.status,a.credentials,a.extra,a.proxy_id,
- COALESCE(b.account_fingerprint,'') FROM accounts a
+ COALESCE(b.account_fingerprint,''),COALESCE(p.id,0),COALESCE(p.site_url,''),COALESCE(p.upstream_user_id,0) FROM accounts a
  LEFT JOIN new_api_account_bindings b ON b.account_id=a.id
+ LEFT JOIN new_api_site_authorizations p ON p.id=b.authorization_id
  WHERE a.deleted_at IS NULL AND a.status='active' AND a.type='apikey'
  AND a.extra @> '{"upstream_billing_probe_enabled":true}'::jsonb
  ORDER BY a.id LIMIT $1`, monitoringCoverageInventoryLimit+1)
@@ -76,7 +77,8 @@ func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings
 		var credentials, extra []byte
 		var proxyID sql.NullInt64
 		a := &target.Account
-		if err := rows.Scan(&a.ID, &a.Platform, &a.Type, &a.Status, &credentials, &extra, &proxyID, &target.NewAPIBindingIdentity); err != nil {
+		if err := rows.Scan(&a.ID, &a.Platform, &a.Type, &a.Status, &credentials, &extra, &proxyID, &target.NewAPIBindingIdentity,
+			&target.NewAPIAuthorizationID, &target.NewAPIAuthorizationSite, &target.NewAPIAuthorizationUserID); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(credentials, &a.Credentials); err != nil {

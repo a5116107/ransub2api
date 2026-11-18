@@ -19,6 +19,93 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMonitoringProbeCoverageBillingScopesHTTPPostgresRecovery(t *testing.T) {
+	db, _ := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra)
+ SELECT 'scope-http-'||n,'openai','apikey','active',jsonb_build_object('api_key','stored-key-'||n,
+ 'base_url','https://scope-'||n||'.invalid/v1','header_override_enabled',true,
+ 'header_overrides',jsonb_build_object('api-key','scope-http-private-key')),
+ '{"upstream_billing_probe_enabled":true}'::jsonb FROM generate_series(1,3) n`)
+	require.NoError(t, err)
+	accountSnapshot := func() string {
+		t.Helper()
+		var raw string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(a) ORDER BY id)::text FROM accounts a`).Scan(&raw))
+		return raw
+	}
+	before := accountSnapshot()
+	budget := repository.NewMonitoringProbeBudgetRepository(db)
+	require.NoError(t, budget.SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}))
+	policy := service.DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.KeyRequestsPerMinute = true, 1
+	request := func(method, path string, payload any) *httptest.ResponseRecorder {
+		t.Helper()
+		probe := service.NewUpstreamBillingProbeService(nil, nil, nil)
+		probe.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(repository.NewMonitoringProbeBudgetRepository(db)))
+		h := &admin.AccountHandler{}
+		h.SetUpstreamBillingProbeService(probe)
+		r := gin.New()
+		r.POST("/budget/preview", h.PreviewMonitoringProbeCoverage)
+		r.PUT("/budget", h.UpdateMonitoringProbeBudget)
+		r.GET("/budget", h.GetMonitoringProbeBudget)
+		body, err := json.Marshal(payload)
+		require.NoError(t, err)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		return w
+	}
+	preview := request(http.MethodPost, "/budget/preview", policy)
+	require.Equal(t, http.StatusOK, preview.Code)
+	var envelope struct {
+		Data service.MonitoringProbeCoverage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(preview.Body.Bytes(), &envelope))
+	require.False(t, envelope.Data.CanSave)
+	require.EqualValues(t, 6, envelope.Data.BillingScopes.MaxCredentialRequestsPerSweep)
+	require.EqualValues(t, 4, envelope.Data.BillingScopes.CredentialGroups, "three distinct stored keys plus the shared allowed final Api-Key header")
+	require.EqualValues(t, 3, envelope.Data.BillingScopes.Sites)
+	for _, private := range []string{"scope-http-private-key", "stored-key-", ".invalid", "scope-http-"} {
+		require.NotContains(t, preview.Body.String(), private)
+	}
+	rejected := request(http.MethodPut, "/budget", policy)
+	require.Equal(t, http.StatusBadRequest, rejected.Code)
+	require.Contains(t, rejected.Body.String(), "MONITORING_PROBE_COVERAGE_IMPOSSIBLE")
+	require.Contains(t, rejected.Body.String(), "key_capacity")
+	current, err := budget.GetSettings(ctx)
+	require.NoError(t, err)
+	require.Zero(t, current.Revision)
+	policy.KeyRequestsPerMinute = 2
+	repaired := request(http.MethodPut, "/budget", policy)
+	require.Equal(t, http.StatusOK, repaired.Code)
+	read := request(http.MethodGet, "/budget", nil)
+	require.Equal(t, http.StatusOK, read.Code)
+	var summary struct {
+		Data service.MonitoringProbeBudgetSummary `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(read.Body.Bytes(), &summary))
+	require.True(t, summary.Data.Coverage.CanSave)
+	require.EqualValues(t, 10, summary.Data.Coverage.BillingScopes.CredentialSweepCapacity)
+	require.EqualValues(t, 1, summary.Data.Settings.Revision)
+	require.Equal(t, http.StatusConflict, request(http.MethodPut, "/budget", policy).Code)
+	require.Equal(t, http.StatusConflict, request(http.MethodPost, "/budget/preview", policy).Code)
+	policy = summary.Data.Settings
+	policy.Enabled, policy.KeyRequestsPerMinute = false, 1
+	require.Equal(t, http.StatusOK, request(http.MethodPut, "/budget", policy).Code, "disabling enforcement remains a repair path")
+	current, err = repository.NewMonitoringProbeBudgetRepository(db).GetSettings(ctx)
+	require.NoError(t, err)
+	require.False(t, current.Enabled)
+	require.EqualValues(t, 2, current.Revision)
+	require.Equal(t, before, accountSnapshot(), "preflight/save must preserve all account fields")
+	for _, table := range []string{"monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "usage_logs"} {
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+		require.Zero(t, count)
+	}
+}
+
 func TestMonitoringProbeCoverageActiveHTTPPostgresRecovery(t *testing.T) {
 	db, client := repository.UpstreamChannelsTestDatabase(t)
 	ctx := t.Context()

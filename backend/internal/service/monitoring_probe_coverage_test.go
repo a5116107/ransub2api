@@ -85,6 +85,186 @@ func TestMonitoringProbeCoverageReserveAndLimits(t *testing.T) {
 	require.True(t, c.CanSave)
 }
 
+func TestMonitoringProbeCoverageBillingSharedScopeLimits(t *testing.T) {
+	for _, scope := range []string{"site", "key"} {
+		t.Run(scope, func(t *testing.T) {
+			policy := DefaultMonitoringProbeBudgetSettings()
+			policy.Enabled = true
+			if scope == "site" {
+				policy.SiteRequestsPerMinute = 1
+			} else {
+				policy.KeyRequestsPerMinute = 1
+			}
+			items := coverageAccounts(3)
+			if scope == "site" {
+				for i := range items {
+					items[i].Account.Credentials["api_key"] = fmt.Sprintf("independent-key-%d", i)
+				}
+			} else {
+				for i := range items {
+					items[i].Account.Credentials["base_url"] = fmt.Sprintf("https://relay-%d.invalid/v1", i)
+				}
+			}
+			coverage := CompileMonitoringProbeCoverage(policy, UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}, items, true, nil, true, nil, true, nil, true, time.Now())
+			require.False(t, coverage.CanSave, "six calls sharing a five-call scope must be rejected even with spare global capacity")
+			require.Contains(t, coverage.BlockingReasons, scope+"_capacity")
+			require.Error(t, coverage.ValidateSave())
+		})
+	}
+}
+
+func TestMonitoringProbeCoverageBillingFinalWireScopes(t *testing.T) {
+	for _, scenario := range []string{"blocked_auth_override", "additional", "duplicate", "disabled_override", "unknown", "adaptive", "canonical"} {
+		t.Run(scenario, func(t *testing.T) {
+			items := coverageAccounts(3)
+			policy := DefaultMonitoringProbeBudgetSettings()
+			policy.Enabled, policy.KeyRequestsPerMinute = true, 1
+			groups, maximum, unknown := int64(4), int64(6), int64(0)
+			for i := range items {
+				a := &items[i].Account
+				a.Credentials["api_key"] = fmt.Sprintf("stored-%d", i)
+				a.Credentials[credKeyHeaderOverrideEnabled] = true
+				headers := map[string]any{"api-key": "final-shared-fixture"}
+				switch scenario {
+				case "blocked_auth_override":
+					headers = map[string]any{"authorization": "Bearer final-shared-fixture", "x-api-key": "final-shared-fixture"}
+					groups, maximum = 3, 2
+				case "additional":
+					headers["x-custom"] = "unmetered-header"
+				case "duplicate":
+					a.Credentials["api_key"] = "final-shared-fixture"
+					groups = 1
+				case "disabled_override":
+					a.Credentials[credKeyHeaderOverrideEnabled] = false
+					groups, maximum = 3, 2
+				case "unknown":
+					a.Credentials["api_key"] = "ambiguous credential with spaces"
+					groups = 1
+					unknown = 3
+				case "adaptive":
+					a.Platform = PlatformKimi
+					a.Credentials["api_protocol"] = APIProtocolAdaptive
+					a.Credentials["base_url"] = fmt.Sprintf("https://unused-%d.invalid/v1", i)
+					a.Credentials["api_base_urls"] = map[string]any{APIProtocolChatCompletions: "https://relay.invalid/v1"}
+				case "canonical":
+					a.Credentials["base_url"] = []string{"https://RELAY.invalid:443/tenant/v1/", "https://relay.invalid/tenant", "https://relay.invalid:8443/tenant/v1"}[i]
+				}
+				a.Credentials[credKeyHeaderOverrides] = headers
+			}
+			c := CompileMonitoringProbeCoverage(policy, UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}, items, true, nil, true, nil, true, nil, true, time.Now())
+			s := c.BillingScopes
+			require.NotNil(t, s)
+			require.Equal(t, groups, s.CredentialGroups)
+			require.Equal(t, maximum, s.MaxCredentialRequestsPerSweep)
+			require.Equal(t, unknown, s.UnresolvedCredentials)
+			require.Equal(t, maximum <= 5, c.CanSave)
+			require.EqualValues(t, 6, c.MinimumRequestsPerSweep, "multiple credential buckets must not multiply physical calls")
+			if scenario == "canonical" {
+				require.EqualValues(t, 2, s.Sites, "tenant path and non-default port remain distinct")
+				require.EqualValues(t, 4, s.MaxSiteRequestsPerSweep)
+			} else {
+				require.EqualValues(t, 1, s.Sites)
+			}
+			raw, err := json.Marshal(c)
+			require.NoError(t, err)
+			for _, private := range []string{"final-shared-fixture", "stored-", "relay.invalid", "unused-"} {
+				require.NotContains(t, string(raw), private)
+			}
+		})
+	}
+}
+
+func TestMonitoringProbeCoverageBillingManagementScopes(t *testing.T) {
+	for _, scenario := range []string{"shared_authorization", "separate_authorizations", "extra_shared_credential", "missing_profile", "changed_site", "stale_binding"} {
+		t.Run(scenario, func(t *testing.T) {
+			items := coverageAccounts(3)
+			for i := 0; i < 2; i++ {
+				a := &items[i].Account
+				a.Credentials[credKeyHeaderOverrideEnabled] = true
+				headers := map[string]any{"authorization": "Bearer ignored-management-override", "cookie": "ignored-cookie"}
+				if scenario == "extra_shared_credential" {
+					headers["api-key"] = "private-coverage-fixture"
+				}
+				a.Credentials[credKeyHeaderOverrides] = headers
+				items[i].NewAPIBindingIdentity = NewAPIAccountFingerprint(a)
+				items[i].NewAPIAuthorizationID, items[i].NewAPIAuthorizationUserID = 7, 42
+				items[i].NewAPIAuthorizationSite = "https://relay.invalid"
+				if scenario == "separate_authorizations" {
+					items[i].NewAPIAuthorizationID += int64(i)
+				}
+				if scenario == "missing_profile" {
+					items[i].NewAPIAuthorizationID = 0
+				}
+				if scenario == "changed_site" {
+					items[i].NewAPIAuthorizationSite = "https://old.invalid"
+				}
+				if scenario == "stale_binding" {
+					items[i].NewAPIBindingIdentity = "stale"
+				}
+			}
+			policy := DefaultMonitoringProbeBudgetSettings()
+			policy.Enabled, policy.KeyRequestsPerMinute = true, 1
+			c := CompileMonitoringProbeCoverage(policy, UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}, items, true, nil, true, nil, true, nil, true, time.Now())
+			s := c.BillingScopes
+			switch scenario {
+			case "shared_authorization":
+				require.EqualValues(t, 8, s.MaxCredentialRequestsPerSweep)
+				require.EqualValues(t, 2, s.CredentialGroups, "management traffic must not use the inference-key bucket")
+				require.EqualValues(t, 1, s.NewAPIAuthorizationGroups)
+				require.False(t, c.CanSave)
+			case "separate_authorizations":
+				require.EqualValues(t, 4, s.MaxCredentialRequestsPerSweep)
+				require.EqualValues(t, 3, s.CredentialGroups, "separate opaque authorizations are not proven identical")
+				require.True(t, c.CanSave)
+			case "extra_shared_credential":
+				require.EqualValues(t, 10, s.MaxCredentialRequestsPerSweep, "additional final auth headers still share the relay's credential bucket")
+				require.EqualValues(t, 2, s.CredentialGroups)
+				require.False(t, c.CanSave)
+			case "missing_profile", "changed_site":
+				require.EqualValues(t, 2, s.UnresolvedNewAPIAuthorizations)
+				require.EqualValues(t, 2, s.UnresolvedCredentials)
+				require.EqualValues(t, 2, s.MaxCredentialRequestsPerSweep)
+				require.Contains(t, c.Warnings, "billing_scope_unresolved")
+				require.True(t, c.CanSave, "unknowns alone do not prove a shortfall")
+			case "stale_binding":
+				require.Zero(t, c.NewAPIAccounts)
+				require.Zero(t, s.NewAPIAuthorizationGroups)
+				require.EqualValues(t, 6, s.MaxCredentialRequestsPerSweep, "blocked auth overrides do not change the fallback relay credential")
+				require.EqualValues(t, 6, c.MinimumRequestsPerSweep)
+				require.False(t, c.CanSave)
+			}
+			raw, err := json.Marshal(c)
+			require.NoError(t, err)
+			for _, private := range []string{"authorization:7", "ignored-management", "ignored-cookie", "relay.invalid", "old.invalid", "private-coverage-fixture", items[0].NewAPIBindingIdentity} {
+				if private != "stale" {
+					require.NotContains(t, string(raw), private)
+				}
+			}
+		})
+	}
+}
+
+func TestMonitoringProbeCoverageBillingScopeBoundaryAndDisable(t *testing.T) {
+	policy := DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.KeyRequestsPerMinute, policy.SiteRequestsPerMinute = true, 1, 1
+	policy.RecoveryReservePercent = 80
+	items := coverageAccounts(3)
+	items[0].Account.Credentials["base_url"] = "https://api.openai.com/v1" // one official call + two relay pairs = five shared-key calls
+	billing := UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}
+	c := CompileMonitoringProbeCoverage(policy, billing, items, true, nil, true, nil, true, nil, true, time.Now())
+	require.True(t, c.CanSave, "scope limits do not subtract global recovery reserve")
+	require.EqualValues(t, 5, c.BillingScopes.CredentialSweepCapacity)
+	require.EqualValues(t, 5, c.BillingScopes.MaxCredentialRequestsPerSweep)
+	items[0].Account.Credentials["base_url"] = "https://relay.invalid/v1"
+	c = CompileMonitoringProbeCoverage(policy, billing, items, false, nil, true, nil, true, nil, true, time.Now())
+	require.ElementsMatch(t, []string{"site_capacity", "key_capacity"}, c.BlockingReasons)
+	require.False(t, c.CanSave, "incomplete inventory cannot hide a proven lower-bound shortfall")
+	policy.Enabled = false
+	require.True(t, CompileMonitoringProbeCoverage(policy, billing, items, true, nil, true, nil, true, nil, true, time.Now()).CanSave)
+	policy.Enabled, billing.Enabled = true, false
+	require.True(t, CompileMonitoringProbeCoverage(policy, billing, items, true, nil, true, nil, true, nil, true, time.Now()).CanSave)
+}
+
 func coveragePlan(now time.Time, group bool, cron string, models, parallel int, judge string) MonitoringProbeCoveragePlan {
 	cfg := &PelicanTestConfig{QuestionKind: "candy", ParallelCount: parallel}
 	for i := 0; i < models; i++ {

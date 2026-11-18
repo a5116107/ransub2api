@@ -758,6 +758,174 @@ func TestMonitoringProbeCoverageRejectsImpossibleBudget(t *testing.T) {
 	require.False(t, stored.Enabled)
 }
 
+func TestMonitoringProbeCoverageBillingScopesPostgres(t *testing.T) {
+	for _, scope := range []string{"site", "key", "additional_header"} {
+		t.Run(scope, func(t *testing.T) {
+			db, _ := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			for i := 0; i < 3; i++ {
+				credentials := map[string]any{"api_key": "shared-coverage-key", "base_url": "https://coverage.invalid/tenant/v1"}
+				if scope == "site" {
+					credentials["api_key"] = fmt.Sprintf("independent-%d", i)
+				} else {
+					credentials["base_url"] = fmt.Sprintf("https://coverage-%d.invalid/tenant/v1", i)
+				}
+				if scope == "additional_header" {
+					credentials["api_key"] = fmt.Sprintf("unused-stored-%d", i)
+					credentials["header_override_enabled"] = true
+					credentials["header_overrides"] = map[string]string{"api-key": "shared-coverage-key"}
+				}
+				raw, err := json.Marshal(credentials)
+				require.NoError(t, err)
+				_, err = db.ExecContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra)
+ VALUES($1,'openai','apikey','active',$2,'{"upstream_billing_probe_enabled":true}')`, fmt.Sprintf("scope-%d", i), string(raw))
+				require.NoError(t, err)
+			}
+			repo := NewMonitoringProbeBudgetRepository(db)
+			require.NoError(t, repo.SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}))
+			policy := monitoringBudgetPolicy()
+			reason := "key_capacity"
+			if scope == "site" {
+				policy.SiteRequestsPerMinute, reason = 1, "site_capacity"
+			} else {
+				policy.KeyRequestsPerMinute = 1
+			}
+			preview, err := repo.PreviewCoverage(ctx, policy)
+			require.NoError(t, err)
+			require.False(t, preview.CanSave)
+			require.Equal(t, []string{reason}, preview.BlockingReasons)
+			_, err = repo.SaveSettings(ctx, policy)
+			require.ErrorContains(t, err, reason)
+			stored, err := repo.GetSettings(ctx)
+			require.NoError(t, err)
+			require.Zero(t, stored.Revision, "rejected preflight must not write or increment revision")
+			policy.SiteRequestsPerMinute, policy.KeyRequestsPerMinute = 2, 2
+			policy, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			summary, err := NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+			require.NoError(t, err)
+			require.True(t, summary.Coverage.CanSave)
+			require.EqualValues(t, 6, summary.Coverage.MinimumRequestsPerSweep)
+			require.EqualValues(t, 10, summary.Coverage.BillingScopes.CredentialSweepCapacity)
+			raw, err := json.Marshal(summary)
+			require.NoError(t, err)
+			for _, private := range []string{"shared-coverage-key", "coverage.invalid", "unused-stored-", "coverage-0.invalid"} {
+				require.NotContains(t, string(raw), private)
+			}
+			for _, table := range []string{"monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "usage_logs"} {
+				var count int
+				require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+				require.Zero(t, count, "capacity preview/save must not probe, reserve, bill or consume tokens")
+			}
+		})
+	}
+}
+
+func TestMonitoringProbeCoverageBillingManagementProfilesPostgres(t *testing.T) {
+	for _, shared := range []bool{true, false} {
+		t.Run(fmt.Sprintf("shared=%t", shared), func(t *testing.T) {
+			db, _ := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			var firstID int64
+			for i := 0; i < 2; i++ {
+				a := &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+					Credentials: map[string]any{"api_key": "inference-fixture", "base_url": "https://coverage.invalid/v1"}}
+				raw, err := json.Marshal(a.Credentials)
+				require.NoError(t, err)
+				require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra)
+ VALUES($1,'openai','apikey','active',$2,'{"upstream_billing_probe_enabled":true}') RETURNING id`, fmt.Sprintf("management-%d", i), string(raw)).Scan(&a.ID))
+				authID := firstID
+				if i == 0 || !shared {
+					require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO new_api_site_authorizations(site_url,upstream_user_id,access_token_ciphertext)
+ VALUES('https://coverage.invalid',$1,'intentionally-identical-opaque-ciphertext') RETURNING id`, 40+i).Scan(&authID))
+					firstID = authID
+				}
+				_, err = db.ExecContext(ctx, `INSERT INTO new_api_account_bindings(account_id,authorization_id,upstream_token_id,account_fingerprint)
+ VALUES($1,$2,$3,$4)`, a.ID, authID, 20+i, service.NewAPIAccountFingerprint(a))
+				require.NoError(t, err)
+			}
+			repo := NewMonitoringProbeBudgetRepository(db)
+			require.NoError(t, repo.SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}))
+			policy := monitoringBudgetPolicy()
+			policy.KeyRequestsPerMinute = 1
+			preview, err := repo.PreviewCoverage(ctx, policy)
+			require.NoError(t, err)
+			require.EqualValues(t, 8, preview.MinimumRequestsPerSweep)
+			require.Zero(t, preview.BillingScopes.UnresolvedNewAPIAuthorizations)
+			if shared {
+				require.EqualValues(t, 1, preview.BillingScopes.NewAPIAuthorizationGroups)
+				require.EqualValues(t, 8, preview.BillingScopes.MaxCredentialRequestsPerSweep)
+				require.False(t, preview.CanSave)
+				_, err = repo.SaveSettings(ctx, policy)
+				require.ErrorContains(t, err, "key_capacity")
+				policy.Enabled = false
+			} else {
+				require.EqualValues(t, 2, preview.BillingScopes.NewAPIAuthorizationGroups)
+				require.EqualValues(t, 4, preview.BillingScopes.MaxCredentialRequestsPerSweep)
+				require.True(t, preview.CanSave, "opaque ciphertext equality is not credential identity")
+			}
+			_, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestMonitoringProbeCoverageBillingScopesSerializePolicyCadence(t *testing.T) {
+	for _, scope := range []string{"site", "key"} {
+		t.Run(scope, func(t *testing.T) {
+			db, _ := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			_, err := db.ExecContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra)
+ SELECT 'scope-race-'||n,'openai','apikey','active',
+ '{"api_key":"scope-race-key","base_url":"https://scope-race.invalid/v1"}'::jsonb,
+ '{"upstream_billing_probe_enabled":true}'::jsonb FROM generate_series(1,3) n`)
+			require.NoError(t, err)
+			repo := NewMonitoringProbeBudgetRepository(db)
+			require.NoError(t, repo.SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 10}))
+			policy := monitoringBudgetPolicy()
+			policy.SiteRequestsPerMinute, policy.KeyRequestsPerMinute = 2, 2
+			policy, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			if scope == "site" {
+				policy.SiteRequestsPerMinute = 1
+			} else {
+				policy.KeyRequestsPerMinute = 1
+			}
+			start, results := make(chan struct{}), make(chan error, 2)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := NewMonitoringProbeBudgetRepository(db).SaveSettings(ctx, policy)
+				results <- err
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				results <- NewMonitoringProbeBudgetRepository(db).SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5})
+			}()
+			close(start)
+			wg.Wait()
+			close(results)
+			successes := 0
+			for err := range results {
+				if err == nil {
+					successes++
+				} else {
+					require.ErrorContains(t, err, scope+"_capacity")
+				}
+			}
+			require.Equal(t, 1, successes, "individually valid changes must not commit an incompatible pair")
+			current, err := repo.GetSettings(ctx)
+			require.NoError(t, err)
+			preview, err := repo.PreviewCoverage(ctx, current)
+			require.NoError(t, err)
+			require.True(t, preview.CanSave)
+		})
+	}
+}
+
 func TestMonitoringProbeCoveragePreviewAndRevalidation(t *testing.T) {
 	db, _ := newBillingAuditDatabase(t)
 	ctx := t.Context()
