@@ -4,6 +4,7 @@
  */
 
 import { apiClient } from '../client'
+import type { MonitoringProbeBudgetDeferral } from '@/types/monitoringProbeBudget'
 
 export type Provider =
   | 'openai'
@@ -163,6 +164,7 @@ export interface CheckResult {
   status: MonitorStatus
   /** 本地准入失败，未记录供应商状态。 */
   skipped?: boolean
+  budget_deferral?: MonitoringProbeBudgetDeferral
   latency_ms: number | null
   ping_latency_ms: number | null
   message: string

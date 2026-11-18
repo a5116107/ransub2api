@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 	"github.com/tidwall/gjson"
 )
@@ -79,6 +80,11 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 	res.LatencyMs = &latencyMs
 
 	if err != nil {
+		if deferral := monitoringProbeDeferral(err, time.Now()); deferral != nil {
+			res.Skipped, res.LatencyMs, res.BudgetDeferral = true, nil, deferral
+			res.Message = "monitoring_budget_deferred"
+			return res
+		}
 		if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
 			res.Skipped = true
 			res.LatencyMs = nil
@@ -141,8 +147,8 @@ func bodyOverrideMode(opts *CheckOptions) string {
 
 // pingEndpointOrigin 对 endpoint 的 origin (scheme://host) 发起 HEAD 请求，返回耗时。
 // 失败时返回 nil（不影响主状态判定）。
-func pingEndpointOrigin(ctx context.Context, endpoint string) *int {
-	origin, err := extractOrigin(endpoint)
+func pingEndpointOrigin(ctx context.Context, monitor *ChannelMonitor, opts *CheckOptions) *int {
+	origin, err := extractOrigin(monitor.Endpoint)
 	if err != nil || origin == "" {
 		return nil
 	}
@@ -150,13 +156,43 @@ func pingEndpointOrigin(ctx context.Context, endpoint string) *int {
 	if err != nil {
 		return nil
 	}
+	var finish func()
+	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok {
+		adapter, _, supported := providerAdapterFor(monitor.Provider, checkAPIMode(opts))
+		if !supported {
+			return nil
+		}
+		// Attribute this optional, unauthenticated origin ping to the final
+		// configured probe credentials, without ever sending them to the origin.
+		identity := &http.Request{Header: make(http.Header)}
+		for key, value := range mergeHeaders(adapter.buildHeaders(monitor.APIKey), opts) {
+			identity.Header.Set(key, value)
+		}
+		probe.sites = []string{origin}
+		pingCtx := context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
+		pingCtx, finish, err = beginMonitoringProbeRequest(pingCtx, req.URL, config.UpstreamCredentialFingerprints(identity), false)
+		if err != nil {
+			return nil
+		}
+		req = req.WithContext(pingCtx)
+	}
 	start := time.Now()
-	resp, err := monitorPingHTTPClient.Do(req)
+	client := monitorPingHTTPClient
+	if finish != nil {
+		copy := *client
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copy
+	}
+	resp, err := client.Do(req)
+	err = FinishMonitoringProbeResponse(req.Context(), resp, err, finish)
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, monitorPingDiscardMaxBytes))
+	_, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, monitorPingDiscardMaxBytes))
+	_ = resp.Body.Close()
+	if readErr != nil || monitoringProbeLocalError(req.Context()) != nil {
+		return nil
+	}
 	ms := int(time.Since(start) / time.Millisecond)
 	return &ms
 }
@@ -581,8 +617,15 @@ func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers ma
 			return nil, 0, ErrUpstreamKeyPolicy
 		}
 	}
+	req, budgetFinish, err := BeginMonitoringProbeRequest(req)
+	if err != nil {
+		if finish != nil {
+			finish(nil, err)
+		}
+		return nil, 0, err
+	}
 	client := monitorHTTPClient
-	if opts != nil && opts.requireKeyAdmission {
+	if budgetFinish != nil || opts != nil && opts.requireKeyAdmission {
 		// A redirect can change the credential or target after the slot was
 		// acquired. Keep the existing SSRF-safe transport, but do not follow it.
 		copy := *client
@@ -593,15 +636,21 @@ func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers ma
 	if finish != nil {
 		finish(resp, err)
 	}
+	err = FinishMonitoringProbeResponse(req.Context(), resp, err, budgetFinish)
 	if err != nil {
+		if local := monitoringProbeLocalError(req.Context()); local != nil {
+			return nil, 0, local
+		}
 		if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {
 			return nil, 0, ErrUpstreamKeyLease
 		}
 		return nil, 0, fmt.Errorf("do request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, monitorResponseMaxBytes))
+	_ = resp.Body.Close()
+	if local := monitoringProbeLocalError(req.Context()); local != nil {
+		return nil, resp.StatusCode, local
+	}
 	// A transport may deliver an already-buffered response successfully even
 	// after the shared lease was lost. Such bytes are not a valid observation.
 	if errors.Is(context.Cause(req.Context()), ErrUpstreamKeyLease) {

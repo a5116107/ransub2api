@@ -130,7 +130,8 @@ func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 				repo.monitor.APIKey = "unused-default-fixture"
 				repo.monitor.ExtraHeaders = map[string]string{"authorization": authorization}
 			}
-			svc := service.ProvideChannelMonitorService(repo, monitorIntegrationEncryptor{}, nil, cfg, transport)
+			svc := service.ProvideChannelMonitorService(repo, monitorIntegrationEncryptor{}, nil, cfg, transport, nil)
+			svc.SetMonitoringBudget(nil) // This fixture isolates the Redis shared-Key contract.
 			svc.SetRuntimeReader(monitorIntegrationRuntime{})
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/held", strings.NewReader("{}"))
 			require.NoError(t, err)
@@ -226,7 +227,8 @@ func TestChannelMonitorSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 				Endpoint: server.URL, APIKey: "unused-default-fixture", PrimaryModel: "fixture-model", BodyOverrideMode: service.MonitorBodyOverrideModeReplace,
 				BodyOverride: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "test"}}},
 				ExtraHeaders: map[string]string{"authorization": authorization}}}
-			svc := service.ProvideChannelMonitorService(repo, monitorIntegrationEncryptor{}, nil, cfg, transport)
+			svc := service.ProvideChannelMonitorService(repo, monitorIntegrationEncryptor{}, nil, cfg, transport, nil)
+			svc.SetMonitoringBudget(nil) // This fixture isolates the Redis shared-Key contract.
 			svc.SetRuntimeReader(monitorIntegrationRuntime{})
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/held", strings.NewReader("{}"))
 			require.NoError(t, err)

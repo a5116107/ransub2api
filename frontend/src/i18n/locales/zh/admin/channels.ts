@@ -721,7 +721,7 @@ export default {
       },
       runResultTitle: '检测结果',
       runResultSkipped: '本次跳过',
-      runResultSkippedHint: '本地共享上游 Key 的额度或租约不可用，本次未更新上游状态。',
+      runResultSkippedHint: '本地检测预算、共享上游 Key 额度或租约不可用，本次未更新上游状态。',
       noMonitorsYet: '暂无监控',
       createFirstMonitor: '创建第一个监控来跟踪渠道可用性',
       advanced: {

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -75,6 +74,7 @@ type ChannelMonitorService struct {
 	encryptor                   SecretEncryptor
 	upstreamKeyAdmission        UpstreamKeyRequestAdmission
 	requireUpstreamKeyAdmission bool
+	monitoringBudget            *MonitoringProbeBudgetService
 	// settings is optional; when nil, RunCheck fails closed for active probes
 	// (mode defaults to v2 / retired) so tests without settings never hit upstream.
 	settings channelMonitorRuntimeReader
@@ -108,6 +108,12 @@ func (s *ChannelMonitorService) SetUpstreamKeyAuthority(cfg *config.Config, upst
 	}
 	s.requireUpstreamKeyAdmission = upstreamKeyAdmissionRequired(cfg)
 	s.upstreamKeyAdmission, _ = upstream.(UpstreamKeyRequestAdmission)
+}
+
+func (s *ChannelMonitorService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
+	if s != nil {
+		s.monitoringBudget = budget
+	}
 }
 
 // SetRuntimeReader injects the settings reader used to gate active probes.
@@ -718,9 +724,6 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 	models := append([]string{m.PrimaryModel}, m.ExtraModels...)
 	results := make([]*CheckResult, len(models))
 
-	// ping 共享一次，所有模型记录同一个 ping 延迟。
-	pingMs := pingEndpointOrigin(ctx, m.Endpoint)
-
 	// 所有模型共用同一份 CheckOptions（来自监控的快照字段）。
 	opts := &CheckOptions{
 		APIMode:             m.APIMode,
@@ -730,17 +733,18 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 		keyAdmission:        s.upstreamKeyAdmission,
 		requireKeyAdmission: s.requireUpstreamKeyAdmission,
 	}
+	// Ping and each model own their local error state. A skipped sibling must
+	// not invalidate a different model's fully completed observation.
+	pingMs := pingEndpointOrigin(s.monitoringBudget.Context(ctx, m.Endpoint, false), m, opts)
 
 	var eg errgroup.Group
-	var mu sync.Mutex
 	for i, model := range models {
 		i, model := i, model
 		eg.Go(func() error {
-			r := runCheckForModel(ctx, m.Provider, m.Endpoint, m.APIKey, model, opts)
+			probeCtx := s.monitoringBudget.Context(ctx, m.Endpoint, false)
+			r := runCheckForModel(probeCtx, m.Provider, m.Endpoint, m.APIKey, model, opts)
 			r.PingLatencyMs = pingMs
-			mu.Lock()
 			results[i] = r
-			mu.Unlock()
 			return nil
 		})
 	}

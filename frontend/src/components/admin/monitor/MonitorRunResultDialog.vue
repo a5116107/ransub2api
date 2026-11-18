@@ -15,6 +15,12 @@
           <span class="font-medium text-gray-900 dark:text-white">{{ formatMonitorModel(r.model) }}</span>
           <span v-if="r.skipped" class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.channelMonitor.runResultSkippedHint') }}</span>
           <span v-else-if="r.message" class="text-xs text-gray-500 dark:text-gray-400">{{ r.message }}</span>
+          <MonitoringProbeBudgetNotice
+            v-if="r.skipped && r.budget_deferral"
+            :deferral="r.budget_deferral"
+            :title="t('admin.channelMonitor.runResultSkipped')"
+            class="mt-2"
+          />
           <MonitorQuotaView :snapshot="r.quota" class="mt-1" />
         </div>
         <div class="flex items-center gap-2">
@@ -43,6 +49,7 @@ import { useI18n } from 'vue-i18n'
 import type { CheckResult } from '@/api/admin/channelMonitor'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import MonitorQuotaView from '@/components/common/MonitorQuotaView.vue'
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 
 defineProps<{
