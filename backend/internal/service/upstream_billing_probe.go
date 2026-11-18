@@ -349,10 +349,12 @@ func ProvideUpstreamBillingProbeService(
 	newAPIRepo NewAPIAuthorizationRepository,
 	encryptor SecretEncryptor,
 	budgetRepo MonitoringProbeBudgetRepository,
+	cnQuotaCycle *CNProviderBalanceCheckService,
 ) *UpstreamBillingProbeService {
 	svc := NewUpstreamBillingProbeService(accountRepo, accountTestService, settingService)
 	svc.SetLeaderLock(lockCache, db)
 	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))
+	svc.MonitoringBudget().SetCNQuotaCycle(cnQuotaCycle)
 	svc.SetNewAPIAuthorization(newAPIRepo, encryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
 	startBackgroundService(cfg, svc)
 	return svc

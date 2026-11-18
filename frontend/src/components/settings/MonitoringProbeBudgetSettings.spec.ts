@@ -38,6 +38,77 @@ async function open(locale = 'en') {
 }
 
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('shows the responding CN process and its observed inventory without forecasting calls in %s', async locale => {
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), cn_quota_cycle: {
+      version: 1, scope: 'responding_process', instance_id: 'fixture-process', state: 'running', interval_seconds: 600,
+      observed_at: '2026-11-19T12:00:00Z', last_scan: {
+        observed_at: '2026-11-19T11:59:00Z', complete: false, targets: 12, balance_targets: 2, quota_targets: 10
+      }
+    } })
+    const wrapper = await open(locale)
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="probe-budget-cn-runtime"]')
+    expect(panel.text()).toContain(locale === 'zh' ? '本次响应进程' : 'Responding process')
+    expect(panel.get('[data-testid="cn-runtime-state"]').text()).toBe(locale === 'zh' ? '运行中' : 'Running')
+    expect(panel.text()).toContain('600')
+    expect(panel.get('[data-testid="cn-runtime-inventory"]').text()).toContain('12')
+    expect(panel.text()).toContain(locale === 'zh' ? '部分读取' : 'Partial scan')
+    expect(panel.text()).toContain(locale === 'zh' ? '不代表其他节点' : 'does not cover other nodes')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toBe('69456 / 80000')
+  })
+
+  it.each(['en', 'zh'])('keeps unobserved or unrecognized CN runtime unknown in %s', async locale => {
+    for (const runtime of [undefined, { version: 1, scope: 'future', state: 'running' }, { version: 2, scope: 'responding_process', state: 'running' }, {
+      version: 1, scope: 'responding_process', state: 'future', interval_seconds: null, last_scan: null
+    }]) {
+      api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), cn_quota_cycle: runtime })
+      const wrapper = await open(locale)
+      await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+      await flushPromises()
+      const panel = wrapper.get('[data-testid="probe-budget-cn-runtime"]')
+      expect(panel.get('[data-testid="cn-runtime-state"]').text()).toBe(locale === 'zh' ? '未知' : 'Unknown')
+      expect(panel.find('[data-testid="cn-runtime-inventory"]').exists()).toBe(false)
+      expect(panel.text()).toContain(locale === 'zh' ? '未观察到库存扫描' : 'No inventory scan observed')
+      wrapper.unmount()
+    }
+  })
+
+  it.each(['en', 'zh'])('preserves lifecycle, explicit empty scans and malformed-scan unknowns in %s', async locale => {
+    const states = ['running', 'stopping', 'stopped', 'disabled', 'role_disabled', 'not_started', 'unavailable']
+    const labels = locale === 'zh'
+      ? ['运行中', '停止中（等待在途收尾）', '已停止', '配置停用', '本节点角色不执行周期任务', '尚未启动', '运行依赖未接入']
+      : ['Running', 'Stopping (waiting for in-flight work)', 'Stopped', 'Disabled by configuration', 'Node role excludes periodic jobs', 'Not started', 'Runtime dependencies unavailable']
+    const scan = { observed_at: '2026-11-19T11:59:00Z', complete: true, targets: 0, balance_targets: 0, quota_targets: 0 }
+    const runtime = { version: 1, scope: 'responding_process', instance_id: 'fixture-process', state: 'running', interval_seconds: 600, observed_at: scan.observed_at, last_scan: scan }
+    for (const [index, state] of states.entries()) {
+      api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), cn_quota_cycle: { ...runtime, state } } })
+      const wrapper = await open(locale)
+      expect(wrapper.get('[data-testid="cn-runtime-state"]').text()).toBe(labels[index])
+      expect(wrapper.get('[data-testid="cn-runtime-inventory"]').text()).toContain(locale === 'zh' ? '0 个目标' : '0 targets')
+      wrapper.unmount()
+    }
+    for (const last_scan of [{ ...scan, targets: -1 }, { ...scan, targets: 1 }, { ...scan, complete: undefined }, { ...scan, observed_at: 'invalid' }]) {
+      api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), cn_quota_cycle: { ...runtime, last_scan } } })
+      const wrapper = await open(locale)
+      expect(wrapper.find('[data-testid="cn-runtime-inventory"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+
+  it('invalidates the runtime projection along with a changed draft, without sending a probe', async () => {
+    api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), cn_quota_cycle: {
+      version: 1, scope: 'responding_process', instance_id: 'fixture-process', state: 'running', interval_seconds: 600,
+      observed_at: '2026-11-19T12:00:00Z', last_scan: null
+    } } })
+    const wrapper = await open()
+    expect(wrapper.find('[data-testid="probe-budget-cn-runtime"]').exists()).toBe(true)
+    await wrapper.get('#probe-budget-requests_per_day').setValue(12345)
+    expect(wrapper.find('[data-testid="probe-budget-cn-runtime"]').exists()).toBe(false)
+    expect(api.previewMonitoringProbeCoverage).not.toHaveBeenCalled()
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+  })
+
   it.each(['en', 'zh'])('discloses unestimated runtime and event demand without forecasting it in %s', async locale => {
     api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,
       account_plans: 0, group_plans: 0, candy_probes: 0, candy_inventory_complete: true,

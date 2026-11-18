@@ -52,6 +52,8 @@ type MonitoringProbeCoverage struct {
 	MinimumActiveRequests      int64     `json:"minimum_active_requests"`
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
 	UnestimatedDemandSources   []string  `json:"unestimated_demand_sources"`
+
+	CNQuotaCycle *CNMonitoringRuntime `json:"cn_quota_cycle,omitempty"`
 }
 
 // Only account identity required by the original runner is read. Neither raw
@@ -331,5 +333,11 @@ func (s *MonitoringProbeBudgetService) PreviewCoverage(ctx context.Context, sett
 	if s == nil || s.repo == nil {
 		return nil, ErrMonitoringProbeBudgetUnavailable
 	}
-	return s.repo.PreviewCoverage(ctx, settings)
+	coverage, err := s.repo.PreviewCoverage(ctx, settings)
+	if err != nil || coverage == nil {
+		return coverage, err
+	}
+	view := *coverage
+	view.CNQuotaCycle = s.cnQuotaCycle.MonitoringRuntime()
+	return &view, nil
 }

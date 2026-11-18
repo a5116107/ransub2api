@@ -3,20 +3,20 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1计划执行器停机子验收本地done。
+任务：D8.1响应进程CN运行库存子验收本地done。
 范围：唯一H盘功能分支提交同步；不CI/PR/生产，不改业务与探测判据。
 已决：实际usage、插件自动延期与手动隔离保持，不借票/续绿。
-来源：68b48bf04起点；终稿70500074，红测/命令见DECISIONS。
-已验：服务5290/SQL7pass；0fail/skip/race；vet/lint/Linux退出0。
-下一：D8.1节点运行库存/全scope覆盖编译；跨节点/生产仍开放。
-等待：原28项20done/8部分；运行库存/全scope/跨节点/生产/PR3待。
+来源：7c1a7726c起点；终稿7da9d5bc，命令/边界见DECISIONS。
+已验：服务5540/SQL44/UI49pass；0fail/skip/race；静态/Linux/四视口过。
+下一：D8.1其余来源运行观测/全scope覆盖编译；跨节点/生产仍待。
+等待：原28项20done/8部分；其余库存/全scope/跨节点/生产/PR3待。
 生产最后记录.7/fd83f6c91；本轮不部署；历史拒删保持、不重复试删。
-Attempt：89
+Attempt：90
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新：2026-11-18。倍率内多供应商自动调度，保护质量、响应和会话缓存，保留自研并同步原仓库。
+更新：2026-11-19。倍率内多供应商自动调度，保护质量、响应和会话缓存，保留自研并同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)：13.3保留审计基线，5.3.1补自动适用声明边界。
 - [决策与验证历史](DECISIONS.md)；功能分支未整体验证上线，独立生产热修复已加载。
 - 原28项20done/8部分；13.2子项6/7done；分母保持，单分支/单PR。
@@ -58,7 +58,7 @@ Attempt：89
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
 | D8 | in_progress | 物理/Token/100队列及倍率、账号/分组计划、初始建号容量拒存已本地验；完整scope/其余通道/公平性/生产/严格混版仍缺 |
-| D8.1本地子项 | in_progress | 原预算/容量、配额/CN/Ollama/插件延期及来源已验；CN队列公平及计划停机/收尾/重建恢复本地done；库存/全scope/多节点/生产仍缺 |
+| D8.1本地子项 | in_progress | 预算/计量/延期、队列公平与计划停机已本地验；CN本机寿命/周期/最近库存/API/UI本地done；其余库存/全scope/多节点/生产仍缺 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
 
@@ -78,5 +78,5 @@ Attempt：89
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 私有PG55441/PID10868、Redis56441/PID46228、quality-batch-{build,runner.py}及`H:/Root/DevCache/tmp/sub2api-quality-validity`受宿主拒删；预览已停；owner宿主用户，路径/解除条件见DECISIONS。
 - 历史拒删620274603bytes及D2.6日志原位保留；路径/命令/owner见DECISIONS，待宿主解除策略，不绕过。
-- 本轮四包vet/增量fast/Linux及前端构建通过，非全仓全规则lint。
-- 历史构建213260543bytes拒删；路径见DECISIONS，owner宿主用户，解除后清理，回收0。
+- 本轮四包vet/增量fast/Linux及前端类型/lint/构建通过；非全仓lint。
+- 历史构建213260543bytes及本轮临时产物9279228bytes受宿主拒删；路径/owner/解除条件见DECISIONS；未绕行，回收0。

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -355,6 +356,51 @@ func TestCNProviderQueueBudgetHTTPPostgresCyclesAndStop(t *testing.T) {
 		service.NewCNProviderBalanceService(accounts, nil, repository.NewHTTPUpstream(cfg), cfg), nil, cfg, time.Millisecond)
 	svc.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(budget))
 	t.Cleanup(svc.Stop)
+	viewBudget := service.NewMonitoringProbeBudgetService(budget)
+	viewBudget.SetCNQuotaCycle(svc)
+	probe := service.NewUpstreamBillingProbeService(nil, nil, nil)
+	t.Cleanup(probe.Stop)
+	probe.SetMonitoringBudget(viewBudget)
+	accountHandler := &admin.AccountHandler{}
+	accountHandler.SetUpstreamBillingProbeService(probe)
+	router := gin.New()
+	router.GET("/budget", accountHandler.GetMonitoringProbeBudget)
+	router.POST("/preview", accountHandler.PreviewMonitoringProbeCoverage)
+	readRuntime := func(preview bool) *service.CNMonitoringRuntime {
+		t.Helper()
+		method, path, payload := http.MethodGet, "/budget", ""
+		if preview {
+			body, marshalErr := json.Marshal(policy)
+			require.NoError(t, marshalErr)
+			method, path, payload = http.MethodPost, "/preview", string(body)
+		}
+		request := httptest.NewRequest(method, path, strings.NewReader(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		require.NotContains(t, response.Body.String(), "queue-http-fixture-")
+		require.NotContains(t, response.Body.String(), upstream.URL)
+		var result struct {
+			Data json.RawMessage `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+		var coverage *service.MonitoringProbeCoverage
+		if preview {
+			require.NoError(t, json.Unmarshal(result.Data, &coverage))
+		} else {
+			var summary service.MonitoringProbeBudgetSummary
+			require.NoError(t, json.Unmarshal(result.Data, &summary))
+			coverage = summary.Coverage
+		}
+		require.NotNil(t, coverage)
+		require.Contains(t, coverage.UnestimatedDemandSources, "account_quota_cycle")
+		require.Zero(t, coverage.MinimumTotalRequestsPerDay, "runtime targets must not turn into invented physical demand")
+		require.NotNil(t, coverage.CNQuotaCycle)
+		return coverage.CNQuotaCycle
+	}
+	require.Equal(t, "not_started", readRuntime(false).State)
+	require.Nil(t, readRuntime(true).LastScan, "reading previews must not collect inventory")
 	nextBoundary := func() {
 		t.Helper()
 		select {
@@ -399,9 +445,20 @@ func TestCNProviderQueueBudgetHTTPPostgresCyclesAndStop(t *testing.T) {
 	}
 	svc.Start()
 	nextBoundary()
+	require.Equal(t, "running", readRuntime(false).State)
+	require.Nil(t, readRuntime(true).LastScan, "the first scan is still blocked")
 	runCycle()
 	assertProgress(4)
-	runCycle() // Exhausted SQL budget: no new HTTP request or account snapshot.
+	firstScan := readRuntime(false)
+	require.True(t, firstScan.LastScan.Complete)
+	require.EqualValues(t, 12, firstScan.LastScan.Targets)
+	require.EqualValues(t, 12, firstScan.LastScan.BalanceTargets)
+	require.Zero(t, firstScan.LastScan.QuotaTargets)
+	preview := readRuntime(true)
+	require.Equal(t, firstScan.InstanceID, preview.InstanceID)
+	require.Equal(t, firstScan.LastScan.ObservedAt, preview.LastScan.ObservedAt, "refresh does not renew the inventory observation")
+	assertProgress(4) // Both reads must leave counters, HTTP traffic and account observations intact.
+	runCycle()        // Exhausted SQL budget: no new HTTP request or account snapshot.
 	assertProgress(4)
 	for _, limit := range []int64{8, 12} {
 		policy.RequestsPerDay = limit
@@ -417,6 +474,18 @@ func TestCNProviderQueueBudgetHTTPPostgresCyclesAndStop(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Stop did not cancel the blocked inventory collection")
 	}
+	assertProgress(12)
+	lastScan := readRuntime(false)
+	require.Equal(t, "stopped", lastScan.State)
+	for range 3 {
+		require.Equal(t, lastScan.LastScan.ObservedAt, readRuntime(true).LastScan.ObservedAt)
+	}
+	rebuilt := service.NewCNProviderBalanceCheckService(gate, service.NewCNProviderBalanceService(accounts, nil, nil, cfg), nil, cfg, time.Minute)
+	viewBudget.SetCNQuotaCycle(rebuilt)
+	restarted := readRuntime(false)
+	require.NotEqual(t, lastScan.InstanceID, restarted.InstanceID)
+	require.Equal(t, "not_started", restarted.State)
+	require.Nil(t, restarted.LastScan, "a new process must not inherit old inventory as a new observation")
 	assertProgress(12)
 	var downstreamUsage int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&downstreamUsage))

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/google/uuid"
 )
 
 // cnQuotaProber 抽象额度探测（*CNProviderQuotaService 实现，测试可替换）。
@@ -41,6 +42,9 @@ type CNProviderBalanceCheckService struct {
 	lifecycleMu      sync.Mutex
 	started          bool
 	stopped          bool
+	drained          bool
+	instanceID       string
+	lastScan         *CNMonitoringInventory
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	cycleMu          sync.Mutex
@@ -63,6 +67,7 @@ func NewCNProviderBalanceCheckService(
 		quotaService:   quotaService,
 		cfg:            cfg,
 		interval:       interval,
+		instanceID:     uuid.NewString(),
 	}
 }
 
@@ -133,6 +138,9 @@ func (s *CNProviderBalanceCheckService) Stop() {
 	}
 	s.lifecycleMu.Unlock()
 	s.wg.Wait()
+	s.lifecycleMu.Lock()
+	s.drained = true
+	s.lifecycleMu.Unlock()
 }
 
 // Local scheduling age, not evidence freshness or a distributed reservation.
@@ -165,6 +173,9 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	collectCtx, cancelCollect := context.WithTimeout(ctx, 30*time.Second)
 	targets, complete := s.collectProbeTargets(collectCtx)
 	cancelCollect()
+	if ctx.Err() == nil {
+		s.observeMonitoringInventory(targets, complete)
+	}
 	if ctx.Err() != nil || len(targets) == 0 {
 		if complete {
 			s.turns = nil

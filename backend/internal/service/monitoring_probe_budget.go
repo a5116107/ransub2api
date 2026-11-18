@@ -112,11 +112,17 @@ type MonitoringProbeBudgetRepository interface {
 }
 
 type MonitoringProbeBudgetService struct {
-	repo MonitoringProbeBudgetRepository
+	repo         MonitoringProbeBudgetRepository
+	cnQuotaCycle *CNProviderBalanceCheckService
 }
 
 func NewMonitoringProbeBudgetService(repo MonitoringProbeBudgetRepository) *MonitoringProbeBudgetService {
 	return &MonitoringProbeBudgetService{repo: repo}
+}
+
+// Set during construction; runtime reads use the runner's own lifecycle lock.
+func (s *MonitoringProbeBudgetService) SetCNQuotaCycle(runner *CNProviderBalanceCheckService) {
+	s.cnQuotaCycle = runner
 }
 
 func (s *MonitoringProbeBudgetService) GetSettings(ctx context.Context) (MonitoringProbeBudgetSettings, error) {
@@ -140,7 +146,15 @@ func (s *MonitoringProbeBudgetService) Summary(ctx context.Context) (*Monitoring
 	if s == nil || s.repo == nil {
 		return nil, ErrMonitoringProbeBudgetUnavailable
 	}
-	return s.repo.Summary(ctx)
+	summary, err := s.repo.Summary(ctx)
+	if err != nil || summary == nil || summary.Coverage == nil {
+		return summary, err
+	}
+	view := *summary
+	coverage := *summary.Coverage
+	coverage.CNQuotaCycle = s.cnQuotaCycle.MonitoringRuntime()
+	view.Coverage = &coverage
+	return &view, nil
 }
 
 type monitoringProbeBudgetKey struct{}

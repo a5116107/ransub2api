@@ -87,6 +87,21 @@
                 <dd class="mt-1 text-xs">{{ t(`${prefix}.capacitySourceHints.${source}`) }}</dd>
               </div>
             </dl>
+            <div class="mt-4 rounded-lg border border-amber-300 p-3 dark:border-amber-800" data-testid="probe-budget-cn-runtime">
+              <h5 class="font-semibold">{{ t(`${prefix}.cnRuntimeTitle`) }}</h5>
+              <p class="mt-2 text-xs">{{ t(`${prefix}.cnRuntimeHint`) }}</p>
+              <dl class="mt-3 grid gap-3 sm:grid-cols-2">
+                <div><dt>{{ t(`${prefix}.cnRuntimeState`) }}</dt><dd class="font-medium" data-testid="cn-runtime-state">{{ t(`${prefix}.cnRuntimeStates.${cnRuntimeState}`) }}</dd></div>
+                <div><dt>{{ t(`${prefix}.cnRuntimeInterval`) }}</dt><dd class="font-mono">{{ cnRuntimeInterval }} {{ t(`${prefix}.cnRuntimeSeconds`) }}</dd></div>
+                <div class="min-w-0"><dt>{{ t(`${prefix}.cnRuntimeInstance`) }}</dt><dd class="break-all font-mono text-xs">{{ cnRuntime?.instance_id || t(`${prefix}.unknownUsage`) }}</dd></div>
+                <div><dt>{{ t(`${prefix}.cnRuntimeObservedAt`) }}</dt><dd class="break-words text-xs">{{ displayWindow(cnRuntime?.observed_at) }}</dd></div>
+              </dl>
+              <template v-if="cnInventory">
+                <p class="mt-3 font-medium" data-testid="cn-runtime-inventory">{{ t(`${prefix}.${cnInventory.complete ? 'cnRuntimeComplete' : 'cnRuntimePartial'}`, { targets: cnInventory.targets, balance: cnInventory.balance_targets, quota: cnInventory.quota_targets }) }}</p>
+                <p class="mt-1 text-xs">{{ t(`${prefix}.cnRuntimeScanAt`, { value: cnInventory.observed_at }) }}</p>
+              </template>
+              <p v-else class="mt-3 text-xs">{{ t(`${prefix}.cnRuntimeUnobserved`) }}</p>
+            </div>
           </div>
           <ul v-if="coverage.blocking_reasons.length || coverage.warnings.length" class="mt-2 list-inside list-disc space-y-1" data-testid="probe-budget-capacity-reasons">
             <li v-for="reason in [...coverage.blocking_reasons, ...coverage.warnings]" :key="reason">{{ capacityReason(reason) }}</li>
@@ -153,6 +168,24 @@ const unestimatedSources = computed(() => {
   if (!Array.isArray(sources) || sources.length === 0) return ['unknown']
   const known = new Set(['account_quota_cycle', 'ollama_usage', 'responses_capability', 'event_diagnostics'])
   return [...new Set(sources.map(source => typeof source === 'string' && known.has(source) ? source : 'unknown'))]
+})
+const cnRuntime = computed(() => {
+  const runtime = coverage.value?.cn_quota_cycle
+  return runtime?.version === 1 && runtime.scope === 'responding_process' ? runtime : null
+})
+const cnRuntimeState = computed(() => {
+  const state = cnRuntime.value?.state
+  return state && ['running', 'stopping', 'stopped', 'disabled', 'role_disabled', 'not_started', 'unavailable'].includes(state) ? state : 'unknown'
+})
+const cnRuntimeInterval = computed(() => {
+  const value = cnRuntime.value?.interval_seconds
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : t(`${prefix}.unknownUsage`)
+})
+const cnInventory = computed(() => {
+  const scan = cnRuntime.value?.last_scan
+  return scan && typeof scan.complete === 'boolean' && Number.isFinite(Date.parse(scan.observed_at)) &&
+    [scan.targets, scan.balance_targets, scan.quota_targets].every(value => Number.isSafeInteger(value) && value >= 0) &&
+    scan.targets === scan.balance_targets + scan.quota_targets ? scan : null
 })
 const error = ref('')
 const notice = ref('')

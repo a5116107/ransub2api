@@ -546,13 +546,28 @@ export default {
             unknown: '需求覆盖未知'
           },
           capacitySourceHints: {
-            account_quota_cycle: '开关与周期来自节点配置；本次数据库预览未观察各实例的实际运行配置。',
+            account_quota_cycle: '当前响应进程的运行快照见下方；其他节点与完整物理调用需求尚未观察，最近队列不是全节点实时库存。',
             ollama_usage: '受活动、429、会话状态、缓存与合并影响；刷新间隔不是未来实际调用次数。',
             responses_capability: '由建号与凭据变更触发；未来事件数量尚未预测。',
             event_diagnostics: '已计量的网关、门票、重试及手动诊断仍缺完整未来工作量清单，不代表全部通道均已计量。',
             unknown: '缺失、空白或未识别的覆盖信息保留未知，不据此认定未启用或零调用。'
           },
           capacityExceeded: '存在明确超限；目标周期不能完整覆盖',
+          cnRuntimeTitle: 'CN 周期检测 · 本次响应进程',
+          cnRuntimeHint: '只读内存快照，不触发扫描或探测；不代表其他节点。目标数不是物理请求数、Token 预算或覆盖保证。',
+          cnRuntimeState: '执行器状态',
+          cnRuntimeInterval: '实际配置周期',
+          cnRuntimeSeconds: '秒',
+          cnRuntimeInstance: '进程实例（重启后变化）',
+          cnRuntimeObservedAt: '运行状态读取时间',
+          cnRuntimeComplete: '最近完整扫描：{targets} 个目标 · 余额 {balance} · 配额 {quota}',
+          cnRuntimePartial: '最近部分读取：至少 {targets} 个目标 · 余额 {balance} · 配额 {quota}；其余未知',
+          cnRuntimeScanAt: '库存扫描时间：{value}；刷新面板不延长此观测时间。',
+          cnRuntimeUnobserved: '未观察到库存扫描或数据不完整；不按零目标计算。',
+          cnRuntimeStates: {
+            running: '运行中', stopping: '停止中（等待在途收尾）', stopped: '已停止', disabled: '配置停用',
+            role_disabled: '本节点角色不执行周期任务', not_started: '尚未启动', unavailable: '运行依赖未接入', unknown: '未知'
+          },
           capacityPartial: '未发现已证明的超限；仍不是全覆盖保证',
           capacityTargets: '启用账号 / 已保存周期',
           capacityMinutes: '分钟',

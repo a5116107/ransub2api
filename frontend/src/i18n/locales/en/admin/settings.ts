@@ -553,13 +553,28 @@ export default {
             unknown: 'Unknown demand coverage'
           },
           capacitySourceHints: {
-            account_quota_cycle: 'Enablement and cadence come from node configuration, which this database preview has not observed across instances.',
+            account_quota_cycle: 'The responding process snapshot is below. Other nodes and complete physical demand remain unobserved; the last queue is not a live fleet inventory.',
             ollama_usage: 'Depends on activity, 429 events, session state, caching and coalescing; refresh intervals are not guaranteed future call counts.',
             responses_capability: 'Account creation and credential changes trigger checks; future event counts have not been forecast.',
             event_diagnostics: 'Metered gateway, ticket, retry and manual diagnostics have no complete future workload inventory. This does not imply every transport is metered.',
             unknown: 'Missing, empty or unrecognized coverage data is unknown, not evidence of inactivity or zero calls.'
           },
           capacityExceeded: 'Proven capacity shortfall; full target coverage is not achievable',
+          cnRuntimeTitle: 'CN periodic monitoring · Responding process',
+          cnRuntimeHint: 'Read-only memory snapshot; no scan or probe is triggered. It does not cover other nodes. Targets are not physical requests, token budgets or a coverage guarantee.',
+          cnRuntimeState: 'Runner state',
+          cnRuntimeInterval: 'Effective configured interval',
+          cnRuntimeSeconds: 'seconds',
+          cnRuntimeInstance: 'Process instance (changes after restart)',
+          cnRuntimeObservedAt: 'Runtime read at',
+          cnRuntimeComplete: 'Last complete scan: {targets} targets · Balance {balance} · Quota {quota}',
+          cnRuntimePartial: 'Partial scan: at least {targets} targets · Balance {balance} · Quota {quota}; remainder unknown',
+          cnRuntimeScanAt: 'Inventory scanned at: {value}; refreshing this panel does not renew the observation.',
+          cnRuntimeUnobserved: 'No inventory scan observed, or data is incomplete; not treated as zero targets.',
+          cnRuntimeStates: {
+            running: 'Running', stopping: 'Stopping (waiting for in-flight work)', stopped: 'Stopped', disabled: 'Disabled by configuration',
+            role_disabled: 'Node role excludes periodic jobs', not_started: 'Not started', unavailable: 'Runtime dependencies unavailable', unknown: 'Unknown'
+          },
           capacityPartial: 'No proven shortfall found; full coverage is still unverified',
           capacityTargets: 'Enabled accounts / saved interval',
           capacityMinutes: 'minutes',

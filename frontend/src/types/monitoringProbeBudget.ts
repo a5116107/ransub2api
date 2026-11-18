@@ -73,6 +73,23 @@ export interface MonitoringProbeCoverage {
   minimum_active_requests?: number
   minimum_total_requests_per_day?: number
   unestimated_demand_sources?: string[]
+  cn_quota_cycle?: CNMonitoringRuntime | null
+}
+
+export interface CNMonitoringRuntime {
+  version: number
+  scope: string
+  instance_id: string
+  state: string
+  interval_seconds: number | null
+  observed_at: string
+  last_scan: {
+    observed_at: string
+    complete: boolean
+    targets: number
+    balance_targets: number
+    quota_targets: number
+  } | null
 }
 
 export interface MonitoringProbeBudgetDeferral {
