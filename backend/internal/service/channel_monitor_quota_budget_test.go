@@ -18,6 +18,125 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func accountQuotaBudgetFixture(t *testing.T, platform string) (*Account, *commandCodeAlphaUpstream, int, int) {
+	t.Helper()
+	switch platform {
+	case PlatformCommandCode:
+		return commandCodeUsageAccount(), newCommandCodeAlphaUpstream(`{"user":{"userName":"alice"},"org":null}`), 3, 4
+	case PlatformCline:
+		return clineTestAccount(4420), newClineAccountUpstream(commandCodeAlphaResponse{status: http.StatusOK, body: clineUsageLimitsBody}, `{"balance":12340000,"userId":"u-1"}`), 2, 3
+	case PlatformMistral:
+		return mistralUsageTestAccount(4421, ""), newMistralBillingUpstream(mistralTestBudgetBody, mistralTestSubscriptionBody), 2, 2
+	default:
+		t.Fatalf("unsupported fixture platform %s", platform)
+		return nil, nil, 0, 0
+	}
+}
+
+func TestCNProviderBalanceCheckMonitoringBudgetDispatchAndRecovery(t *testing.T) {
+	for _, platform := range []string{PlatformCommandCode, PlatformCline, PlatformMistral, PlatformDeepseek, PlatformKimi} {
+		t.Run(platform, func(t *testing.T) {
+			var account *Account
+			var upstream *commandCodeAlphaUpstream
+			complete := 1
+			if platform == PlatformDeepseek || platform == PlatformKimi {
+				account = newDeepSeekBalanceProbeAccount()
+				account.Platform = platform
+				path, body := "/user/balance", `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"10"}]}`
+				if platform == PlatformKimi {
+					account.Credentials["account_mode"] = AccountModeCoding
+					delete(account.Credentials, "base_url")
+					target, err := http.NewRequest(http.MethodGet, kimiQuotaURL(account.GetOpenAIBaseURL()), nil)
+					require.NoError(t, err)
+					path, body = target.URL.Path, `{"limits":[]}`
+				}
+				upstream = &commandCodeAlphaUpstream{responses: map[string]commandCodeAlphaResponse{path: {status: http.StatusOK, body: body}}}
+			} else {
+				account, upstream, _, complete = accountQuotaBudgetFixture(t, platform)
+			}
+			account.Schedulable = true
+			accounts := &cnBalanceProbeRepo{account: account}
+			httpUpstream := monitoringBudgetHTTP{base: upstream}
+			cfg := &config.Config{}
+			svc := NewCNProviderBalanceCheckService(&fakeCNCheckRepo{byPlatform: map[string][]Account{platform: {*account}}},
+				NewCNProviderBalanceService(accounts, nil, httpUpstream, cfg), NewCNProviderQuotaService(accounts, nil, httpUpstream, cfg), cfg, time.Minute)
+			budget := &monitoringBudgetRepoStub{denyAt: 1, err: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}}
+			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+
+			svc.runOnce()
+
+			require.Len(t, budget.requests, 1, "each background dispatch must install the shared policy")
+			require.Empty(t, upstream.requests)
+			require.Empty(t, accounts.extraWrites)
+			budget.denyAt = 0
+			svc.runOnce()
+			require.Len(t, upstream.requests, complete)
+			require.Len(t, budget.requests, complete+1)
+			require.Equal(t, complete, budget.released)
+			require.Len(t, accounts.extraWrites, 1, "the next original cycle must recover without inheriting the first cycle's local error")
+			for _, request := range budget.requests {
+				require.False(t, request.Recovery)
+				require.False(t, request.MeterTokens)
+			}
+		})
+	}
+}
+
+func TestProvideCNProviderBalanceCheckInstallsMonitoringBudget(t *testing.T) {
+	budget := &monitoringBudgetRepoStub{}
+	svc := ProvideCNProviderBalanceCheckService(nil, nil, nil, &config.Config{}, budget)
+	require.Same(t, budget, svc.monitoringBudget.repo)
+}
+
+func TestChannelMonitorQuotaBudgetAccountAdaptersSettleBeforePublishing(t *testing.T) {
+	for _, platform := range []string{PlatformCommandCode, PlatformCline, PlatformMistral} {
+		for _, failure := range []string{"deny_first", "deny_primary", "deny_optional", "deny_last", "settle_first", "settle_primary", "settle_optional", "settle_last"} {
+			t.Run(platform+"/"+failure, func(t *testing.T) {
+				account, upstream, optionalAt, complete := accountQuotaBudgetFixture(t, platform)
+				accounts := &cnBalanceProbeRepo{account: account}
+				budget := &monitoringBudgetRepoStub{}
+				at := 1
+				if strings.HasSuffix(failure, "optional") {
+					at = optionalAt
+				} else if strings.HasSuffix(failure, "last") {
+					at = complete
+				} else if strings.HasSuffix(failure, "primary") {
+					at = 2
+				}
+				if strings.HasPrefix(failure, "deny") {
+					budget.denyAt, budget.err = at, &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "key_minute", RetryAt: time.Now().Add(time.Minute)}
+				} else {
+					budget.acquire = func(_ MonitoringProbeBudgetRequest, n int) (string, error) {
+						if n == at {
+							budget.releaseErr = errors.New("fixture settlement failure")
+						}
+						return "fixture-lease", nil
+					}
+				}
+				ctx := withAccountTestMonitoringSite(NewMonitoringProbeBudgetService(budget).qualityContext(t.Context()), "")
+				svc := NewCNProviderQuotaService(accounts, nil, monitoringBudgetHTTP{base: upstream}, &config.Config{})
+
+				result, err := svc.QueryUsage(ctx, account.ID)
+
+				require.Nil(t, result)
+				require.True(t, IsMonitoringProbeBudgetFailure(err), "local budget failures must remain typed: %v", err)
+				require.Empty(t, accounts.extraWrites, "optional quota requests cannot publish partial state after a local budget failure")
+				require.Len(t, budget.requests, at)
+				physical := at
+				if strings.HasPrefix(failure, "deny") {
+					physical--
+				}
+				require.Len(t, upstream.requests, physical)
+				require.Equal(t, physical, budget.released)
+				for _, request := range budget.requests {
+					require.False(t, request.MeterTokens, "quota metadata is not generation usage")
+					require.False(t, request.Recovery)
+				}
+			})
+		}
+	}
+}
+
 func TestChannelMonitorQuotaBudgetRejectsDetachedCNFetch(t *testing.T) {
 	for _, platform := range []string{PlatformKimi, PlatformZhipu, PlatformMiniMax, PlatformOpenCodeGo, PlatformDeepseek} {
 		t.Run(platform, func(t *testing.T) {

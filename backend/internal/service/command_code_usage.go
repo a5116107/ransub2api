@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -186,10 +185,15 @@ func (c *commandCodeUsageClient) get(ctx context.Context, path string, query url
 
 	resp, err := c.httpUpstream.Do(req, c.proxyURL, c.account.ID, maxInt(c.account.Concurrency, 1))
 	if err != nil {
+		if local := monitoringProbeLocalError(callCtx); local != nil {
+			return local
+		}
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, cnQuotaMaxBodyBytes))
+	body, err := ReadMonitoringProbeResponse(callCtx, resp, cnQuotaMaxBodyBytes)
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &commandCodeHTTPError{status: resp.StatusCode, body: truncate(strings.TrimSpace(string(body)), 240)}
 	}
@@ -229,7 +233,7 @@ func (c *commandCodeUsageClient) fetch(ctx context.Context, withPeriod bool) (*c
 
 	var subscription commandCodeSubscriptionPayload
 	if err := c.get(ctx, "/alpha/billing/subscriptions", query, &subscription); err != nil {
-		if isCommandCodeAuthError(err) {
+		if IsMonitoringProbeBudgetFailure(err) || isCommandCodeAuthError(err) {
 			return nil, err
 		}
 		slog.Warn("command_code_subscription_failed", "account_id", c.account.ID, "error", err)
@@ -248,7 +252,7 @@ func (c *commandCodeUsageClient) fetch(ctx context.Context, withPeriod bool) (*c
 	summaryQuery.Set("since", periodStart)
 	var summary commandCodeSummaryPayload
 	if err := c.get(ctx, "/alpha/usage/summary", summaryQuery, &summary); err != nil {
-		if isCommandCodeAuthError(err) {
+		if IsMonitoringProbeBudgetFailure(err) || isCommandCodeAuthError(err) {
 			return nil, err
 		}
 		slog.Warn("command_code_usage_summary_failed", "account_id", c.account.ID, "error", err)

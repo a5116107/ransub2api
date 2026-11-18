@@ -54,6 +54,118 @@ func persistLegacyMonitoringProbeBudget(t *testing.T, db *sql.DB, policy service
 	return policy
 }
 
+func TestAccountQuotaMonitoringBudgetPostgresOptionalFailureAndRecovery(t *testing.T) {
+	for _, platform := range []string{service.PlatformCommandCode, service.PlatformCline, service.PlatformMistral} {
+		t.Run(platform, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			var calls atomic.Int32
+			responses := map[string]string{}
+			allowed, complete := int64(1), int64(2)
+			site := "https://api.mistral.ai"
+			switch platform {
+			case service.PlatformCommandCode:
+				site = "https://api.commandcode.ai"
+				allowed, complete = 2, 4
+				responses = map[string]string{
+					"/alpha/whoami":                `{"user":{"userName":"fixture"},"org":null}`,
+					"/alpha/billing/credits":       `{"credits":{"belowThreshold":false,"monthlyCredits":35,"purchasedCredits":0,"freeCredits":0},"windowLimits":{"limited":true,"fiveHour":{"used":1,"cap":14},"weekly":{"used":3,"cap":35}}}`,
+					"/alpha/billing/subscriptions": `{"data":{"planId":"individual-goat","status":"active","currentPeriodStart":"2026-11-01T00:00:00Z","currentPeriodEnd":"2026-12-01T00:00:00Z"}}`,
+					"/alpha/usage/summary":         `{"totalCost":4,"totalMonthlyCredits":35}`,
+				}
+			case service.PlatformCline:
+				site = "https://api.cline.bot"
+				complete = 3
+				responses = map[string]string{
+					"/api/v1/users/me/plan/usage-limits": `{"success":true,"data":{"limits":[{"type":"five_hour","percentUsed":12.5,"resetsAt":"2099-01-01T00:00:00Z"}]}}`,
+					"/api/v1/users/me":                   `{"success":true,"data":{"id":"u-fixture"}}`,
+					"/api/v1/users/u-fixture/balance":    `{"balance":12340000}`,
+				}
+			case service.PlatformMistral:
+				responses = map[string]string{
+					"/v1/billing/budget":       `{"vibe_budget":{"usage_percentage":10,"initial_budget":300,"currency":"USD","reset_at":"2099-01-01T00:00:00Z","payg_enabled":false}}`,
+					"/v1/billing/subscription": `{"plan_name":"INDIVIDUAL","vibe_payg_enabled":false}`,
+				}
+			}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer mstrl_quota_fixture" {
+					http.Error(w, "unexpected quota request", http.StatusBadRequest)
+					return
+				}
+				body, ok := responses[r.URL.Path]
+				if !ok {
+					http.NotFound(w, r)
+					return
+				}
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, body)
+			}))
+			t.Cleanup(server.Close)
+			roots := x509.NewCertPool()
+			roots.AddCert(server.Certificate())
+			transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12},
+				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+				}}
+			t.Cleanup(transport.CloseIdleConnections)
+			httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			upstream := gatewayPinDelegate{call: func(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+				return httpClient.Do(req)
+			}}
+			account := mustCreateAccount(t, client, &service.Account{Name: "quota-account-budget", Platform: platform, Type: service.AccountTypeAPIKey,
+				Status: service.StatusActive, Schedulable: true, Concurrency: 2, Credentials: map[string]any{"api_key": "mstrl_quota_fixture", "api_protocol": service.APIProtocolAdaptive}})
+			alias := mustCreateAccount(t, client, &service.Account{Name: "quota-account-alias", Platform: platform, Type: account.Type,
+				Status: account.Status, Schedulable: true, Concurrency: 2, Credentials: account.Credentials})
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			policy.KeyRequestsPerMinute = allowed
+			policy, err := budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			before := func(id int64) string {
+				var raw string
+				require.NoError(t, db.QueryRowContext(t.Context(), `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&raw))
+				return raw
+			}
+			accountBefore, aliasBefore := before(account.ID), before(alias.ID)
+			run := func(id int64) (*service.CNProviderQuotaProbeResult, error) {
+				accounts := newAccountRepositoryWithSQL(client, db, nil)
+				ctx := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)).Context(t.Context(), site, false)
+				return service.NewCNProviderQuotaService(accounts, nil, upstream, &config.Config{}).QueryUsage(ctx, id)
+			}
+			result, err := run(account.ID)
+			require.Nil(t, result)
+			var denial *service.MonitoringProbeBudgetDenial
+			require.ErrorAs(t, err, &denial)
+			require.Equal(t, "key_minute", denial.Scope)
+			require.Equal(t, "request_limit", denial.Reason)
+			require.Equal(t, allowed, int64(calls.Load()))
+			require.Equal(t, accountBefore, before(account.ID), "an optional local failure must not publish primary snapshots or clear cooldowns")
+			result, err = run(alias.ID)
+			require.Nil(t, result)
+			require.ErrorAs(t, err, &denial)
+			require.Equal(t, "key_minute", denial.Scope)
+			require.Equal(t, aliasBefore, before(alias.ID))
+			require.Equal(t, allowed, int64(calls.Load()), "an alias and fresh adapter must not reset the final credential's allowance")
+			policy.KeyRequestsPerMinute = 100
+			_, err = budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			result, err = run(alias.ID)
+			require.NoError(t, err)
+			require.True(t, result.Success)
+			require.True(t, result.Persisted)
+			require.Equal(t, allowed+complete, int64(calls.Load()))
+			stats, err := budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, allowed+complete, stats.DayUsed)
+			require.Zero(t, stats.DayTokens)
+			require.Zero(t, stats.UsageUnknown, "quota GETs must not create unknown generation usage")
+			require.Zero(t, stats.UsagePending)
+			require.Zero(t, stats.ActiveRequests)
+		})
+	}
+}
+
 func TestResponsesSupportMonitoringBudgetPostgresSharedKeyAndRecovery(t *testing.T) {
 	for _, scope := range []string{"global_day", "key_tokens", "key_requests"} {
 		t.Run(scope, func(t *testing.T) {

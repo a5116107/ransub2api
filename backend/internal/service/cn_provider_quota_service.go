@@ -114,7 +114,11 @@ func (s *CNProviderQuotaService) QueryUsageForAccount(ctx context.Context, accou
 	resultCh := s.flight.DoChan(key, func() (any, error) {
 		probeCtx, cancel := context.WithTimeout(monitoringProbeSharedContext(ctx), cnQuotaUpstreamTimeout+5*time.Second)
 		defer cancel()
-		return s.queryUsageForAccount(probeCtx, account)
+		result, err := s.queryUsageForAccount(probeCtx, account)
+		if local := monitoringProbeLocalError(probeCtx); local != nil {
+			return nil, local
+		}
+		return result, err
 	})
 	select {
 	case <-ctx.Done():

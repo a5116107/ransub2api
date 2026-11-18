@@ -103,7 +103,11 @@ func (s *CNProviderBalanceService) QueryBalanceForAccount(ctx context.Context, a
 	resultCh := s.flight.DoChan(key, func() (any, error) {
 		probeCtx, cancel := context.WithTimeout(monitoringProbeSharedContext(ctx), cnBalanceUpstreamTimeout+5*time.Second)
 		defer cancel()
-		return s.queryBalanceForAccount(probeCtx, account)
+		result, err := s.queryBalanceForAccount(probeCtx, account)
+		if local := monitoringProbeLocalError(probeCtx); local != nil {
+			return nil, local
+		}
+		return result, err
 	})
 	select {
 	case <-ctx.Done():

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -150,10 +149,15 @@ func (c *mistralUsageClient) get(ctx context.Context, path string, out any) erro
 
 	resp, err := c.httpUpstream.Do(req, c.proxyURL, c.account.ID, maxInt(c.account.Concurrency, 1))
 	if err != nil {
+		if local := monitoringProbeLocalError(callCtx); local != nil {
+			return local
+		}
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, cnQuotaMaxBodyBytes))
+	body, err := ReadMonitoringProbeResponse(callCtx, resp, cnQuotaMaxBodyBytes)
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &mistralHTTPError{status: resp.StatusCode, body: truncate(strings.TrimSpace(string(body)), 240)}
 	}
@@ -179,6 +183,9 @@ func (c *mistralUsageClient) fetch(ctx context.Context, withSubscription bool) (
 	}
 	var subscription mistralSubscriptionPayload
 	if err := c.get(ctx, "/v1/billing/subscription", &subscription); err != nil {
+		if IsMonitoringProbeBudgetFailure(err) {
+			return nil, err
+		}
 		slog.Warn("mistral_subscription_probe_failed", "account_id", c.account.ID, "error", err)
 		return usage, nil
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -30,14 +31,15 @@ const cnQuotaProbeConcurrency = 4
 // Command Code 账号一次探测同时刷新窗口快照与积分余额，积分低于阈值时同样临时停调。
 // Cline 账号同样一次探测刷新 ClinePass 窗口与积分，只冷却用完的一边（见 cline_usage.go）。
 type CNProviderBalanceCheckService struct {
-	accountRepo    AccountRepository
-	balanceService *CNProviderBalanceService
-	quotaService   cnQuotaProber
-	cfg            *config.Config
-	interval       time.Duration
-	stopCh         chan struct{}
-	stopOnce       sync.Once
-	wg             sync.WaitGroup
+	accountRepo      AccountRepository
+	balanceService   *CNProviderBalanceService
+	quotaService     cnQuotaProber
+	monitoringBudget *MonitoringProbeBudgetService
+	cfg              *config.Config
+	interval         time.Duration
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	wg               sync.WaitGroup
 }
 
 // NewCNProviderBalanceCheckService 构造周期余额/额度检测服务。
@@ -57,6 +59,26 @@ func NewCNProviderBalanceCheckService(
 		interval:       interval,
 		stopCh:         make(chan struct{}),
 	}
+}
+
+func (s *CNProviderBalanceCheckService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
+	s.monitoringBudget = budget
+}
+
+// Give every account its own local error state. Detached provider flights keep
+// that policy, while ordinary manual quota queries remain unmetered.
+func (s *CNProviderBalanceCheckService) probeContext(ctx context.Context) context.Context {
+	return withAccountTestMonitoringSite(s.monitoringBudget.qualityContext(ctx), "")
+}
+
+func logCNMonitoringBudgetDeferral(accountID int64, err error) bool {
+	denial := monitoringProbeDeferral(err, time.Now())
+	if denial == nil {
+		return false
+	}
+	slog.Info("cn_provider_monitoring_budget_deferred", "account_id", accountID,
+		"reason", denial.Reason, "scope", denial.Scope, "retry_at", denial.RetryAt)
+	return true
 }
 
 func (s *CNProviderBalanceCheckService) Start() {
@@ -264,9 +286,12 @@ func (s *CNProviderBalanceCheckService) collectAccountProbeTargets() []accountPr
 
 // checkCommandCode 探测 Command Code 窗口与积分；手动可调度的账号再按积分余额停调 / 恢复。
 func (s *CNProviderBalanceCheckService) checkCommandCode(ctx context.Context, account *Account, threshold float64) cnBalanceCheckOutcome {
+	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, account.ID)
 	if err != nil {
-		log.Printf("[CNBalance] command code usage account %d failed: %v", account.ID, err)
+		if !logCNMonitoringBudgetDeferral(account.ID, err) {
+			log.Printf("[CNBalance] command code usage account %d failed: %v", account.ID, err)
+		}
 		return cnBalanceNoChange
 	}
 	if result == nil || !result.Success || result.Balance == nil {
@@ -283,9 +308,12 @@ func (s *CNProviderBalanceCheckService) checkCommandCode(ctx context.Context, ac
 
 // checkCline 探测 Cline 窗口与积分；钱包冷却在探测中按结果设置或解除，不停整个账号。
 func (s *CNProviderBalanceCheckService) checkCline(ctx context.Context, account *Account, _ float64) cnBalanceCheckOutcome {
+	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, account.ID)
 	if err != nil {
-		log.Printf("[CNBalance] cline usage account %d failed: %v", account.ID, err)
+		if !logCNMonitoringBudgetDeferral(account.ID, err) {
+			log.Printf("[CNBalance] cline usage account %d failed: %v", account.ID, err)
+		}
 	} else if result != nil && !result.Success && result.Error != "" {
 		log.Printf("[CNBalance] cline usage account %d error: %s", account.ID, result.Error)
 	}
@@ -295,9 +323,12 @@ func (s *CNProviderBalanceCheckService) checkCline(ctx context.Context, account 
 // checkMistral 探测 Mistral 月度预算窗口与剩余额度；手动可调度的账号再按剩余额度停调 / 恢复。
 // 开启按量付费（payg_enabled）的账号不受包月预算余额阈值限制。
 func (s *CNProviderBalanceCheckService) checkMistral(ctx context.Context, account *Account, threshold float64) cnBalanceCheckOutcome {
+	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, account.ID)
 	if err != nil {
-		log.Printf("[CNBalance] mistral usage account %d failed: %v", account.ID, err)
+		if !logCNMonitoringBudgetDeferral(account.ID, err) {
+			log.Printf("[CNBalance] mistral usage account %d failed: %v", account.ID, err)
+		}
 		return cnBalanceNoChange
 	}
 	if result == nil || !result.Success || result.Balance == nil {
@@ -322,9 +353,12 @@ func (s *CNProviderBalanceCheckService) probeQuota(ctx context.Context, accountI
 	if s.quotaService == nil {
 		return
 	}
+	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, accountID)
 	if err != nil {
-		log.Printf("[CNBalance] quota probe account %d (%s) failed: %v", accountID, platform, err)
+		if !logCNMonitoringBudgetDeferral(accountID, err) {
+			log.Printf("[CNBalance] quota probe account %d (%s) failed: %v", accountID, platform, err)
+		}
 		return
 	}
 	if result != nil && !result.Success && result.Error != "" {
@@ -343,7 +377,11 @@ const (
 // checkOne 探测单账号余额并决定停调/恢复。探测失败时不动现状（避免瞬时网络抖动
 // 误解除或误停调）。
 func (s *CNProviderBalanceCheckService) checkOne(ctx context.Context, account *Account, threshold float64) cnBalanceCheckOutcome {
+	ctx = s.probeContext(ctx)
 	result, err := s.balanceService.QueryBalance(ctx, account.ID)
+	if err != nil {
+		logCNMonitoringBudgetDeferral(account.ID, err)
+	}
 	if err != nil || result == nil || !result.Success {
 		return cnBalanceNoChange
 	}

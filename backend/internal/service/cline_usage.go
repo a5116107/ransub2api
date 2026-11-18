@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -83,10 +82,15 @@ func (c *clineAccountClient) get(ctx context.Context, path string) (gjson.Result
 
 	resp, err := c.httpUpstream.Do(req, c.proxyURL, c.account.ID, maxInt(c.account.Concurrency, 1))
 	if err != nil {
+		if local := monitoringProbeLocalError(callCtx); local != nil {
+			return gjson.Result{}, local
+		}
 		return gjson.Result{}, fmt.Errorf("upstream request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, cnQuotaMaxBodyBytes))
+	body, err := ReadMonitoringProbeResponse(callCtx, resp, cnQuotaMaxBodyBytes)
+	if err != nil {
+		return gjson.Result{}, err
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return gjson.Result{}, &clineHTTPError{status: resp.StatusCode, body: truncate(strings.TrimSpace(string(body)), 240)}
 	}
@@ -265,6 +269,9 @@ func (s *CNProviderQuotaService) queryClineUsage(ctx context.Context, account *A
 		}
 	}
 	if usd, err := client.balance(ctx); err != nil {
+		if IsMonitoringProbeBudgetFailure(err) {
+			return nil, err
+		}
 		slog.Warn("cline_balance_probe_failed", "account_id", account.ID, "error", err)
 	} else {
 		result.Balance = clineBalanceResult(usd, now)
