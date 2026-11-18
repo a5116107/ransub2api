@@ -170,6 +170,15 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 	if account == nil {
 		return service.ErrAccountNilInput
 	}
+	// Both callers already use a transaction when an initial plan is present.
+	// Serialize with ordinary plan and budget saves before inserting any rows.
+	hasEnabledPlan := (account.InitialQualityPlan != nil && account.InitialQualityPlan.Enabled) ||
+		(account.InitialAdmissionPlan != nil && account.InitialAdmissionPlan.Enabled)
+	if hasEnabledPlan {
+		if err := lockMonitoringCoveragePlanWrite(ctx, client); err != nil {
+			return err
+		}
+	}
 
 	account.Extra = copyJSONMap(account.Extra)
 	delete(account.Extra, service.OAuthDegradationActionExtraKey)
@@ -262,6 +271,9 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 		if err != nil {
 			return err
 		}
+	}
+	if err := validateMonitoringCoveragePlanWrite(ctx, client, hasEnabledPlan); err != nil {
+		return err
 	}
 	if account.InitialAdmissionPlan != nil {
 		rows, err := client.QueryContext(ctx, `SELECT id FROM scheduled_test_plans WHERE account_id=$1 AND pelican_config->'quality'->>'action'=$2`, created.ID, service.QualityActionOpenAITwoFAAdmission)

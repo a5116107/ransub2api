@@ -19,7 +19,11 @@ const coverage = () => ({ observed_at: '2026-11-18T12:00:00Z', budget_revision: 
   interval_minutes: 5, accounts: 100, new_api_accounts: 20, unresolved_accounts: 2, inventory_complete: true,
   minimum_requests_per_sweep: 240, minimum_requests_per_day: 69120, minimum_sweep_batches: 5,
   runner_accounts_per_minute: 20, regular_minute_capacity: 480, regular_day_capacity: 80000,
-  enforced: false, can_save: true, blocking_reasons: [] as string[], warnings: ['runner_no_headroom'] })
+  enforced: false, can_save: true, blocking_reasons: [] as string[], warnings: ['runner_no_headroom'],
+  schedule_window_start: '2026-11-19T00:00:00Z', schedule_window_end: '2026-11-20T00:00:00Z',
+  account_plans: 1, group_plans: 1, unresolved_plans: 0, plan_inventory_complete: true,
+  scheduled_runs: 48, scheduled_samples: 192, minimum_judge_requests: 144,
+  minimum_scheduled_requests: 336, minimum_total_requests_per_day: 69456 })
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -34,6 +38,33 @@ async function open(locale = 'en') {
 }
 
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('separates scheduled samples, grading and combined capacity in %s', async locale => {
+    const wrapper = await open(locale)
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,
+      minimum_requests_per_day: 0, minimum_total_requests_per_day: 336, enforced: true,
+      can_save: false, blocking_reasons: ['day_capacity'] })
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="probe-budget-scheduled-capacity"]')
+    for (const value of ['192', '144', '336', '2026-11-19T00:00:00Z']) expect(panel.text()).toContain(value)
+    expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain(locale === 'zh' ? '明确超限' : 'shortfall')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toBe('336 / 80000')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+  })
+  it('keeps missing legacy schedule data unknown instead of displaying zero', async () => {
+    const old = { ...coverage(), account_plans: undefined, group_plans: undefined,
+      scheduled_samples: undefined, minimum_judge_requests: undefined, minimum_scheduled_requests: undefined,
+      minimum_total_requests_per_day: undefined, plan_inventory_complete: undefined, schedule_window_start: 'bad-date' }
+    api.previewMonitoringProbeCoverage.mockResolvedValue(old)
+    const wrapper = await open()
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="probe-budget-scheduled-capacity"]').text()).toContain('older server')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toContain('Unknown')
+    expect(wrapper.get('[data-testid="probe-budget-scheduled-capacity"]').text()).not.toContain('bad-date')
+  })
   it.each(['en', 'zh'])('previews lower bounds, invalidates on edits and blocks an impossible save in %s', async locale => {
     const wrapper = await open(locale)
     await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')

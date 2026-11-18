@@ -44,7 +44,7 @@
       <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" data-testid="probe-budget-capacity" aria-live="polite">
         <h4 class="font-semibold">{{ t(`${prefix}.capacityTitle`) }}</h4>
         <template v-if="coverage && coverageMatches">
-          <p class="mt-2 font-medium" data-testid="probe-budget-capacity-verdict">{{ t(`${prefix}.${!coverage.billing_enabled ? 'capacityInactive' : coverage.blocking_reasons.length ? 'capacityExceeded' : 'capacityPartial'}`) }}</p>
+          <p class="mt-2 font-medium" data-testid="probe-budget-capacity-verdict">{{ t(`${prefix}.${coverage.blocking_reasons.length ? 'capacityExceeded' : !coverage.billing_enabled && coverage.account_plans === 0 && coverage.group_plans === 0 ? 'capacityInactive' : 'capacityPartial'}`) }}</p>
           <dl class="mt-3 grid gap-3 sm:grid-cols-2">
             <div><dt>{{ t(`${prefix}.capacityTargets`) }}</dt><dd class="font-mono">{{ coverage.inventory_complete ? '' : '≥ ' }}{{ coverage.accounts }} / {{ coverage.interval_minutes }} {{ t(`${prefix}.capacityMinutes`) }}</dd></div>
             <div><dt>{{ t(`${prefix}.capacitySweep`) }}</dt><dd class="font-mono">≥ {{ coverage.minimum_requests_per_sweep }}</dd></div>
@@ -53,6 +53,19 @@
           </dl>
           <p class="mt-3">{{ t(`${prefix}.capacityBatches`, { batches: coverage.minimum_sweep_batches, rate: coverage.runner_accounts_per_minute }) }}</p>
           <p class="mt-2">{{ t(`${prefix}.capacityInventory`, { newapi: coverage.new_api_accounts, unknown: coverage.unresolved_accounts }) }}</p>
+          <div class="mt-4 border-t border-amber-300 pt-3 dark:border-amber-800" data-testid="probe-budget-scheduled-capacity">
+            <h5 class="font-semibold">{{ t(`${prefix}.capacitySchedules`) }}</h5>
+            <p class="mt-2">{{ t(`${prefix}.capacityPlanInventory`, { accounts: displayUsage(coverage.account_plans), groups: displayUsage(coverage.group_plans), unknown: displayUsage(coverage.unresolved_plans) }) }}</p>
+            <p class="mt-2 break-words text-xs">{{ t(`${prefix}.capacityScheduleWindow`, { start: displayWindow(coverage.schedule_window_start), end: displayWindow(coverage.schedule_window_end) }) }}</p>
+            <dl class="mt-3 grid gap-3 sm:grid-cols-2">
+              <div><dt>{{ t(`${prefix}.capacityScheduleRuns`) }}</dt><dd class="font-mono">{{ displayUsage(coverage.scheduled_runs) }}</dd></div>
+              <div><dt>{{ t(`${prefix}.capacityScheduleSamples`) }}</dt><dd class="font-mono">{{ displayUsage(coverage.scheduled_samples) }}</dd></div>
+              <div><dt>{{ t(`${prefix}.capacityJudgeCalls`) }}</dt><dd class="font-mono">{{ displayUsage(coverage.minimum_judge_requests) }}</dd></div>
+              <div><dt>{{ t(`${prefix}.capacityScheduleCalls`) }}</dt><dd class="font-mono">{{ displayUsage(coverage.minimum_scheduled_requests) }}</dd></div>
+              <div class="font-semibold sm:col-span-2"><dt>{{ t(`${prefix}.capacityTotalCalls`) }}</dt><dd class="font-mono" data-testid="probe-budget-total-calls">{{ displayUsage(coverage.minimum_total_requests_per_day) }} / {{ coverage.regular_day_capacity }}</dd></div>
+            </dl>
+            <p v-if="coverage.plan_inventory_complete !== true" class="mt-2">{{ t(`${prefix}.capacityPlansUnknown`) }}</p>
+          </div>
           <ul v-if="coverage.blocking_reasons.length || coverage.warnings.length" class="mt-2 list-inside list-disc space-y-1" data-testid="probe-budget-capacity-reasons">
             <li v-for="reason in [...coverage.blocking_reasons, ...coverage.warnings]" :key="reason">{{ capacityReason(reason) }}</li>
           </ul>
@@ -122,8 +135,12 @@ function displayUsage(value: number | undefined) {
 }
 
 function capacityReason(reason: string) {
-  const known = ['runner_capacity', 'minute_capacity', 'day_capacity', 'runner_no_headroom', 'invalid_interval']
+  const known = ['runner_capacity', 'minute_capacity', 'day_capacity', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated']
   return t(`${prefix}.capacityReason.${known.includes(reason) ? reason : 'unknown'}`)
+}
+
+function displayWindow(value: string | undefined) {
+  return value && Number.isFinite(Date.parse(value)) ? value : t(`${prefix}.unknownUsage`)
 }
 
 function validateForm() {

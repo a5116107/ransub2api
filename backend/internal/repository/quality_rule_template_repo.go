@@ -240,6 +240,9 @@ func (r *qualityRuleTemplateRepository) CreateLinkedPlan(ctx context.Context, t 
 			_ = tx.Rollback()
 		}
 	}()
+	if err = lockMonitoringCoveragePlanWrite(ctx, tx); err != nil {
+		return nil, err
+	}
 	var current int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT id FROM quality_rule_templates WHERE id = $1 AND enabled AND updated_at = $2 FOR SHARE

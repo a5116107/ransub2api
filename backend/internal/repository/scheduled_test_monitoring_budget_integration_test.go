@@ -135,6 +135,13 @@ func TestScheduledConnectivityMonitoringBudgetPostgresRestartAndHistory(t *testi
 	require.EqualValues(t, 2, usage.UsageReported)
 	require.Zero(t, usage.ActiveRequests)
 	require.Zero(t, usage.UsagePending)
+	// The capacity compiler now treats saved schedules as demand. Disable this
+	// one-minute plan before lowering the request budget so the later assertion
+	// continues to exercise the runtime request-limit path, not configuration
+	// admission.
+	plan.Enabled = false
+	_, err = plans.Update(ctx, plan)
+	require.NoError(t, err)
 	policy.RequestsPerDay = 2
 	_, err = budget.SaveSettings(ctx, policy)
 	require.NoError(t, err)

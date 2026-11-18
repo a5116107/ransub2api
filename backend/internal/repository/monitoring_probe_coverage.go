@@ -37,13 +37,13 @@ func (r *monitoringProbeBudgetRepository) PreviewCoverage(ctx context.Context, s
 
 // Preview and saving read the same inventory/settings contract. No network
 // requests, leases, counters or account observations are changed here.
-func loadMonitoringProbeCoverage(ctx context.Context, tx *sql.Tx, settings service.MonitoringProbeBudgetSettings) (*service.MonitoringProbeCoverage, error) {
+func loadMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings service.MonitoringProbeBudgetSettings) (*service.MonitoringProbeCoverage, error) {
 	return compileMonitoringProbeCoverage(ctx, tx, settings, nil)
 }
 
-func compileMonitoringProbeCoverage(ctx context.Context, tx *sql.Tx, settings service.MonitoringProbeBudgetSettings, override *service.UpstreamBillingProbeSettings) (*service.MonitoringProbeCoverage, error) {
+func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings service.MonitoringProbeBudgetSettings, override *service.UpstreamBillingProbeSettings) (*service.MonitoringProbeCoverage, error) {
 	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, service.SettingKeyUpstreamBillingProbeSettings).Scan(&raw)
+	err := scanSingleRow(ctx, tx, `SELECT value FROM settings WHERE key=$1`, []any{service.SettingKeyUpstreamBillingProbeSettings}, &raw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
@@ -95,11 +95,78 @@ func compileMonitoringProbeCoverage(ctx context.Context, tx *sql.Tx, settings se
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	var now time.Time
-	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+	plans, plansComplete, err := loadMonitoringCoveragePlans(ctx, tx)
+	if err != nil {
 		return nil, err
 	}
-	return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, now), nil
+	var now time.Time
+	if err := scanSingleRow(ctx, tx, `SELECT clock_timestamp()`, nil, &now); err != nil {
+		return nil, err
+	}
+	return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, now), nil
+}
+
+func loadMonitoringCoveragePlans(ctx context.Context, tx sqlQueryer) ([]service.MonitoringProbeCoveragePlan, bool, error) {
+	// Disabled/deleted owners do not become free coverage. Account tests also
+	// run for temporarily disabled accounts as part of their recovery rules.
+	rows, err := tx.QueryContext(ctx, `SELECT p.id,p.model_id,p.cron_expression,p.pelican_config,p.next_run_at,false AS is_group
+ FROM scheduled_test_plans p JOIN accounts a ON a.id=p.account_id
+ WHERE p.enabled AND a.deleted_at IS NULL
+ UNION ALL
+ SELECT p.id,p.model_id,p.cron_expression,p.pelican_config,p.next_run_at,true AS is_group
+ FROM pelican_group_test_plans p JOIN groups g ON g.id=p.group_id
+ WHERE p.enabled AND g.deleted_at IS NULL AND g.status='active'
+ ORDER BY is_group,id LIMIT $1`, monitoringCoverageInventoryLimit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	plans := make([]service.MonitoringProbeCoveragePlan, 0)
+	complete := true
+	for rows.Next() {
+		if len(plans) == monitoringCoverageInventoryLimit {
+			complete = false
+			break
+		}
+		var target service.MonitoringProbeCoveragePlan
+		var config []byte
+		if err := rows.Scan(&target.Plan.ID, &target.Plan.ModelID, &target.Plan.CronExpression, &config, &target.Plan.NextRunAt, &target.Group); err != nil {
+			return nil, false, err
+		}
+		if len(config) > 0 {
+			if err := json.Unmarshal(config, &target.Plan.PelicanConfig); err != nil {
+				return nil, false, err
+			}
+		}
+		target.Plan.Enabled = true
+		plans = append(plans, target)
+	}
+	return plans, complete, rows.Err()
+}
+
+func validateMonitoringCoveragePlanWrite(ctx context.Context, tx sqlQueryer, enabled bool) error {
+	// Disabling a plan remains a valid repair even when other old settings
+	// already exceed capacity. Callers hold the shared lock before writing.
+	if !enabled {
+		return nil
+	}
+	settings, err := loadMonitoringProbeBudgetSettings(ctx, tx, "")
+	if err != nil {
+		return err
+	}
+	if !settings.Enabled {
+		return nil
+	}
+	coverage, err := loadMonitoringProbeCoverage(ctx, tx, settings)
+	if err != nil {
+		return err
+	}
+	return coverage.ValidateSave()
+}
+
+func lockMonitoringCoveragePlanWrite(ctx context.Context, tx sqlExecutor) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, monitoringProbeBudgetLockID)
+	return err
 }
 
 // The production runner's interval write uses the same short lock as policy

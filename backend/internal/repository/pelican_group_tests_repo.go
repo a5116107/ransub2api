@@ -65,18 +65,40 @@ func (r *pelicanGroupTestRepository) GetPlan(ctx context.Context, id int64) (*se
 }
 
 func (r *pelicanGroupTestRepository) CreatePlan(ctx context.Context, plan *service.PelicanGroupTestPlan) (*service.PelicanGroupTestPlan, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockMonitoringCoveragePlanWrite(ctx, tx); err != nil {
+		return nil, err
+	}
 	var id int64
-	if err := r.db.QueryRowContext(ctx, `INSERT INTO pelican_group_test_plans
+	if err := tx.QueryRowContext(ctx, `INSERT INTO pelican_group_test_plans
  (group_id, model_id, cron_expression, enabled, pelican_config, next_run_at)
  VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		plan.GroupID, plan.ModelID, plan.CronExpression, plan.Enabled, marshalPelicanConfig(plan.PelicanConfig), plan.NextRunAt).Scan(&id); err != nil {
+		return nil, err
+	}
+	if err := validateMonitoringCoveragePlanWrite(ctx, tx, plan.Enabled); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return r.GetPlan(ctx, id)
 }
 
 func (r *pelicanGroupTestRepository) UpdatePlan(ctx context.Context, plan *service.PelicanGroupTestPlan) (*service.PelicanGroupTestPlan, error) {
-	result, err := r.db.ExecContext(ctx, `UPDATE pelican_group_test_plans
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockMonitoringCoveragePlanWrite(ctx, tx); err != nil {
+		return nil, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE pelican_group_test_plans
  SET model_id = $2, cron_expression = $3, enabled = $4, pelican_config = $5, next_run_at = $6, updated_at = NOW()
  WHERE id = $1`,
 		plan.ID, plan.ModelID, plan.CronExpression, plan.Enabled, marshalPelicanConfig(plan.PelicanConfig), plan.NextRunAt)
@@ -84,6 +106,12 @@ func (r *pelicanGroupTestRepository) UpdatePlan(ctx context.Context, plan *servi
 		return nil, err
 	}
 	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+		return nil, err
+	}
+	if err := validateMonitoringCoveragePlanWrite(ctx, tx, plan.Enabled); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return r.GetPlan(ctx, plan.ID)

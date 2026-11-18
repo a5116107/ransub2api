@@ -51,6 +51,17 @@ export interface MonitoringProbeCoverage {
   can_save: boolean
   blocking_reasons: string[]
   warnings: string[]
+  schedule_window_start?: string
+  schedule_window_end?: string
+  account_plans?: number
+  group_plans?: number
+  unresolved_plans?: number
+  plan_inventory_complete?: boolean
+  scheduled_runs?: number
+  scheduled_samples?: number
+  minimum_judge_requests?: number
+  minimum_scheduled_requests?: number
+  minimum_total_requests_per_day?: number
 }
 
 export interface MonitoringProbeBudgetDeferral {

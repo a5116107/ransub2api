@@ -25,14 +25,10 @@ func NewMonitoringProbeBudgetRepository(db *sql.DB) service.MonitoringProbeBudge
 	return &monitoringProbeBudgetRepository{db: db}
 }
 
-type monitoringBudgetQueryer interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func loadMonitoringProbeBudgetSettings(ctx context.Context, db monitoringBudgetQueryer, suffix string) (service.MonitoringProbeBudgetSettings, error) {
+func loadMonitoringProbeBudgetSettings(ctx context.Context, db sqlQueryer, suffix string) (service.MonitoringProbeBudgetSettings, error) {
 	settings := service.DefaultMonitoringProbeBudgetSettings()
 	var raw string
-	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1 `+suffix, service.MonitoringProbeBudgetSettingKey).Scan(&raw)
+	err := scanSingleRow(ctx, db, `SELECT value FROM settings WHERE key=$1 `+suffix, []any{service.MonitoringProbeBudgetSettingKey}, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return settings, nil
 	}

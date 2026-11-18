@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,50 @@ type handlerMonitoringBudgetRepo struct {
 	settings service.MonitoringProbeBudgetSettings
 }
 
+type scheduledCoverageDeniedRepo struct{ reusePlanRepo }
+
+func (r *scheduledCoverageDeniedRepo) Create(context.Context, *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
+	return nil, (&service.MonitoringProbeCoverage{Accounts: 999991, MinimumTotalRequestsPerDay: 777773}).ValidateSave()
+}
+func (r *scheduledCoverageDeniedRepo) Update(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
+	return r.Create(ctx, plan)
+}
+
+func TestScheduledMonitoringCoverageErrorKeepsReasonAndScope(t *testing.T) {
+	for _, observer := range []bool{false, true} {
+		for _, method := range []string{http.MethodPost, http.MethodPut} {
+			repo := &scheduledCoverageDeniedRepo{reusePlanRepo{plan: &service.ScheduledTestPlan{ID: 7, AccountID: 42, ModelID: "test", CronExpression: "0 * * * *"}}}
+			h := NewScheduledTestHandler(service.NewScheduledTestService(repo, nil))
+			router := gin.New()
+			if observer {
+				router.Use(func(c *gin.Context) {
+					c.Request = c.Request.WithContext(service.WithObserverScope(c.Request.Context(), []int64{9}))
+					c.Next()
+				})
+			}
+			router.POST("/plans", h.Create)
+			router.PUT("/plans/:id", h.Update)
+			path := "/plans"
+			if method == http.MethodPut {
+				path += "/7"
+			}
+			req := httptest.NewRequest(method, path, strings.NewReader(`{"account_id":42,"model_id":"test","cron_expression":"0 * * * *","enabled":false}`))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, http.StatusBadRequest, w.Code)
+			var body struct {
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+			require.Equal(t, "MONITORING_PROBE_COVERAGE_IMPOSSIBLE", body.Reason)
+			require.Contains(t, body.Message, "999991")
+			require.Contains(t, body.Message, "777773")
+		}
+	}
+}
+
 func (r *handlerMonitoringBudgetRepo) Summary(context.Context) (*service.MonitoringProbeBudgetSummary, error) {
 	return &service.MonitoringProbeBudgetSummary{Settings: r.settings, MinuteUsed: 7}, nil
 }
@@ -27,7 +72,7 @@ func (r *handlerMonitoringBudgetRepo) PreviewCoverage(_ context.Context, s servi
 	if s.Revision != r.settings.Revision {
 		return nil, service.ErrMonitoringProbeBudgetConflict
 	}
-	return service.CompileMonitoringProbeCoverage(s, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, nil, true, time.Now()), nil
+	return service.CompileMonitoringProbeCoverage(s, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, nil, true, nil, true, time.Now()), nil
 }
 
 func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {

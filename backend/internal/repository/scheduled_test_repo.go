@@ -21,7 +21,19 @@ func NewScheduledTestPlanRepository(db *sql.DB) service.ScheduledTestPlanReposit
 }
 
 func (r *scheduledTestPlanRepository) Create(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
-	return insertScheduledTestPlan(ctx, r.db, plan)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockMonitoringCoveragePlanWrite(ctx, tx); err != nil {
+		return nil, err
+	}
+	created, err := insertScheduledTestPlan(ctx, tx, plan)
+	if err != nil {
+		return nil, err
+	}
+	return created, tx.Commit()
 }
 
 type planRowQuerier interface {
@@ -29,7 +41,7 @@ type planRowQuerier interface {
 }
 
 // insertScheduledTestPlan is shared with group rules, which insert inside their own transaction.
-func insertScheduledTestPlan(ctx context.Context, q planRowQuerier, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
+func insertScheduledTestPlan(ctx context.Context, q *sql.Tx, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
 	if err := validateQualityGroupReferences(ctx, q, plan.PelicanConfig); err != nil {
 		return nil, err
 	}
@@ -38,7 +50,14 @@ func insertScheduledTestPlan(ctx context.Context, q planRowQuerier, plan *servic
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8)
 		RETURNING id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, pelican_config, running_until
 	`, plan.AccountID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, marshalPelicanConfig(plan.PelicanConfig))
-	return scanPlan(row)
+	created, err := scanPlan(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMonitoringCoveragePlanWrite(ctx, q, created.Enabled); err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 func (r *scheduledTestPlanRepository) GetByID(ctx context.Context, id int64) (*service.ScheduledTestPlan, error) {
@@ -90,6 +109,9 @@ func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := lockMonitoringCoveragePlanWrite(ctx, tx); err != nil {
+		return nil, err
+	}
 	updated, err := scanPlan(tx.QueryRowContext(ctx, query, args...))
 	if err != nil {
 		return nil, err
@@ -137,6 +159,9 @@ func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.
 		}
 	}
 
+	if err = validateMonitoringCoveragePlanWrite(ctx, tx, updated.Enabled); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
