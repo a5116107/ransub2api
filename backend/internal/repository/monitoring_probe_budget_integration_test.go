@@ -474,6 +474,102 @@ func TestResponsesSupportMonitoringBudgetPostgresInFlightExcess(t *testing.T) {
 	require.Zero(t, stats.ActiveRequests)
 }
 
+type responsesProbeCancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b responsesProbeCancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
+func TestResponsesSupportMonitoringBudgetPostgresCancellationAndRecovery(t *testing.T) {
+	for _, supported := range []bool{true, false} {
+		t.Run(fmt.Sprintf("supported_%t", supported), func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+					http.Error(w, "unexpected capability request", http.StatusBadRequest)
+					return
+				}
+				calls.Add(1)
+				kind := "reasoning"
+				if supported {
+					kind = "function_call"
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"status":"completed","output":[{"type":%q}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}`, kind)
+			}))
+			t.Cleanup(server.Close)
+			accounts := newAccountRepositoryWithSQL(client, db, nil)
+			account := mustCreateAccount(t, client, &service.Account{Name: "responses-cancel-fixture", Platform: service.PlatformOpenAI,
+				Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 4,
+				Credentials: map[string]any{"api_key": "responses-cancel-fixture", "base_url": server.URL},
+				Extra:       map[string]any{"openai_responses_supported": !supported, "manual_note": "preserved"}})
+			snapshot := func() string {
+				var row string
+				require.NoError(t, db.QueryRowContext(t.Context(), `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, account.ID).Scan(&row))
+				return row
+			}
+			before := snapshot()
+			budget := NewMonitoringProbeBudgetRepository(db)
+			_, err := budget.SaveSettings(t.Context(), monitoringBudgetPolicy())
+			require.NoError(t, err)
+			cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+			upstream := NewHTTPUpstream(cfg)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cancelOnClose := gatewayPinDelegate{call: func(req *http.Request, proxy string, id int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+				resp, err := upstream.DoWithTLS(req, proxy, id, concurrency, profile)
+				if err == nil && resp != nil && resp.Body != nil {
+					resp.Body = responsesProbeCancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+				}
+				return resp, err
+			}}
+			tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, cancelOnClose, cfg, nil)
+			tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(budget))
+			require.Nil(t, tests.ProbeOpenAIAPIKeyResponsesSupport(ctx, account.ID), "cancellation is not a supplier or local budget failure")
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			require.Equal(t, before, snapshot(), "neither a late pass nor a late unsupported result may alter the account")
+			stats, err := budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.EqualValues(t, 1, stats.DayUsed)
+			require.EqualValues(t, 7, stats.DayTokens, "settled actual usage is retained despite cancellation")
+			require.EqualValues(t, 1, stats.UsageReported)
+			require.Zero(t, stats.UsageUnknown)
+			require.Zero(t, stats.UsagePending)
+			require.Zero(t, stats.ActiveRequests)
+
+			// A later explicit event works normally; cancellation creates no retry,
+			// supplier penalty, budget refund, or permanent cancellation state.
+			tests = service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+			tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(budget))
+			require.Nil(t, tests.ProbeOpenAIAPIKeyResponsesSupport(t.Context(), account.ID))
+			after, err := accounts.GetByID(t.Context(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, supported, after.Extra["openai_responses_supported"])
+			require.Equal(t, "preserved", after.Extra["manual_note"])
+			require.Equal(t, service.StatusActive, after.Status)
+			require.True(t, after.Schedulable)
+			require.EqualValues(t, 2, calls.Load())
+			stats, err = budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.EqualValues(t, 2, stats.DayUsed)
+			require.EqualValues(t, 14, stats.DayTokens)
+			require.EqualValues(t, 2, stats.UsageReported)
+			require.Zero(t, stats.UsageUnknown)
+			require.Zero(t, stats.UsagePending)
+			require.Zero(t, stats.ActiveRequests)
+			var downstreamUsage int64
+			require.NoError(t, db.QueryRowContext(t.Context(), `SELECT count(*) FROM usage_logs`).Scan(&downstreamUsage))
+			require.Zero(t, downstreamUsage, "capability detection must not produce downstream business usage")
+		})
+	}
+}
+
 func TestMonitoringProbeBudgetActualTokenStop(t *testing.T) {
 	db, _ := newBillingAuditDatabase(t)
 	for _, protocol := range []string{"chat", "vertex_json", "vertex_stream", "bedrock_apikey", "bedrock_sigv4"} {

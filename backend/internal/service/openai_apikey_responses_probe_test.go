@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -370,4 +371,157 @@ func TestSelectResponsesProbeModel(t *testing.T) {
 		"model_mapping": map[string]any{"a": "gpt-*"},
 	}}
 	require.Equal(t, openai.DefaultTestModel, selectResponsesProbeModel(acctAllWild))
+}
+
+// The async admin caller uses Background; storage must therefore inherit a
+// service-owned deadline, not only the HTTP request's nested timeout.
+type responsesProbeLifecycleRepo struct {
+	AccountRepository
+	load func(context.Context, int64) (*Account, error)
+	save func(context.Context, int64, map[string]any) error
+}
+
+func (r responsesProbeLifecycleRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	if r.load != nil {
+		return r.load(ctx, id)
+	}
+	return r.AccountRepository.GetByID(ctx, id)
+}
+func (r responsesProbeLifecycleRepo) UpdateExtra(ctx context.Context, id int64, extra map[string]any) error {
+	if r.save != nil {
+		return r.save(ctx, id, extra)
+	}
+	return r.AccountRepository.UpdateExtra(ctx, id, extra)
+}
+
+func TestProbeOpenAIAPIKeyResponsesLifecycleStorageIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		callerTimeout time.Duration
+		wantDuration  time.Duration
+	}{
+		{name: "background", wantDuration: 30 * time.Second},
+		{name: "earlier_caller", callerTimeout: 7 * time.Second, wantDuration: 7 * time.Second},
+		{name: "later_caller", callerTimeout: time.Minute, wantDuration: 30 * time.Second},
+	} {
+		for _, phase := range []string{"load", "save", "native_save"} {
+			t.Run(tc.name+"/"+phase, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					account := newResponsesProbeAccount(4600)
+					if phase == "native_save" {
+						account.Platform = PlatformDeepseek
+						account.Credentials["api_protocol"] = APIProtocolAdaptive
+					}
+					base := &snapshotUpdateAccountRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, updateExtraCalls: make(chan map[string]any, 1)}
+					repo := responsesProbeLifecycleRepo{AccountRepository: base}
+					deadlineObserved := make(chan bool, 1)
+					wait := func(ctx context.Context) error {
+						_, ok := ctx.Deadline()
+						deadlineObserved <- ok
+						if !ok {
+							return errors.New("fixture: no lifecycle deadline")
+						}
+						<-ctx.Done()
+						return ctx.Err()
+					}
+					if phase == "load" {
+						repo.load = func(ctx context.Context, _ int64) (*Account, error) { return nil, wait(ctx) }
+					} else {
+						repo.save = func(ctx context.Context, _ int64, _ map[string]any) error { return wait(ctx) }
+					}
+					upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"status":"completed","output":[{"type":"function_call"}]}`))}}
+					svc := NewAccountTestService(repo, nil, nil, nil, nil, upstream, &config.Config{}, nil)
+					ctx := context.Background()
+					if tc.callerTimeout > 0 {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, tc.callerTimeout)
+						defer cancel()
+					}
+					started := time.Now()
+					require.Nil(t, svc.ProbeOpenAIAPIKeyResponsesSupport(ctx, account.ID))
+					require.True(t, <-deadlineObserved, "%s storage received an unbounded Background context", phase)
+					require.Equal(t, tc.wantDuration, time.Since(started), "storage uses the whole lifecycle allowance or the earlier caller deadline, not the HTTP-only timeout")
+					require.Empty(t, base.updateExtraCalls)
+					if phase != "save" {
+						require.Nil(t, upstream.lastReq)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestProbeOpenAIAPIKeyResponsesCancellationDuringLoadDoesNotPublish(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformDeepseek} {
+		t.Run(platform, func(t *testing.T) {
+			account := newResponsesProbeAccount(4603)
+			account.Platform = platform
+			account.Credentials["api_protocol"] = APIProtocolAdaptive
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			saves := 0
+			repo := responsesProbeLifecycleRepo{
+				load: func(context.Context, int64) (*Account, error) {
+					cancel()
+					return &account, nil // A late database success must not start work.
+				},
+				save: func(context.Context, int64, map[string]any) error { saves++; return nil },
+			}
+			upstream := &httpUpstreamRecorder{}
+			svc := NewAccountTestService(repo, nil, nil, nil, nil, upstream, &config.Config{}, nil)
+			require.Nil(t, svc.ProbeOpenAIAPIKeyResponsesSupport(ctx, account.ID))
+			require.Nil(t, upstream.lastReq)
+			require.Zero(t, saves, "neither an HTTP result nor fixed native protocol state may publish after cancellation")
+		})
+	}
+}
+
+func TestProbeOpenAIAPIKeyResponsesHTTPTimeoutDoesNotPublishLateSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		account := newResponsesProbeAccount(4604)
+		updates := make(chan map[string]any, 1)
+		repo := &snapshotUpdateAccountRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, updateExtraCalls: updates}
+		upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: responsesProbeClosingBody{
+			Reader: strings.NewReader(`{"status":"completed","output":[{"type":"function_call"}],"usage":{"total_tokens":7}}`),
+			close: func() error {
+				time.Sleep(16 * time.Second)
+				return nil
+			},
+		}}}
+		budget := &monitoringBudgetRepoStub{}
+		svc := NewAccountTestService(repo, nil, nil, nil, nil, monitoringBudgetHTTP{base: upstream}, &config.Config{}, nil)
+		svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+		require.Nil(t, svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID))
+		require.Empty(t, updates, "a completed body is not publishable after the original 15s HTTP deadline")
+		require.Equal(t, 1, budget.released)
+		require.Equal(t, []MonitoringProbeTokenUsage{{Tokens: 7, Reported: true}}, budget.usages)
+	})
+}
+
+func TestProbeOpenAIAPIKeyResponsesCancelledBeforeLoadDoesNoWork(t *testing.T) {
+	account := newResponsesProbeAccount(4601)
+	loads := 0
+	repo := responsesProbeLifecycleRepo{load: func(context.Context, int64) (*Account, error) { loads++; return &account, nil }}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	svc := NewAccountTestService(repo, nil, nil, nil, nil, &httpUpstreamRecorder{}, &config.Config{}, nil)
+	svc.ProbeOpenAIAPIKeyResponsesSupport(ctx, account.ID)
+	require.Zero(t, loads, "an already-cancelled automatic event must not start loading or writing")
+}
+
+func TestProbeOpenAIAPIKeyResponsesCancellationOnCloseDoesNotPublish(t *testing.T) {
+	account := newResponsesProbeAccount(4602)
+	updates := make(chan map[string]any, 1)
+	repo := &snapshotUpdateAccountRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, updateExtraCalls: updates}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	body := `{"status":"completed","output":[{"type":"function_call"}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}`
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: make(http.Header), Body: responsesProbeClosingBody{Reader: strings.NewReader(body), close: func() error { cancel(); return nil }}}}
+	budget := &monitoringBudgetRepoStub{}
+	svc := NewAccountTestService(repo, nil, nil, nil, nil, monitoringBudgetHTTP{base: upstream}, &config.Config{}, nil)
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+	require.Nil(t, svc.ProbeOpenAIAPIKeyResponsesSupport(ctx, account.ID), "caller cancellation is not a fabricated supplier or budget failure")
+	require.Empty(t, updates, "a late success after cancellation must not publish routing capability")
+	require.Equal(t, 1, budget.released)
+	require.Equal(t, []MonitoringProbeTokenUsage{{Tokens: 7, Reported: true}}, budget.usages, "the admitted call still settles actual returned usage")
 }

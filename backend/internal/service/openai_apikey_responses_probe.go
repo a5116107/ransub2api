@@ -23,6 +23,10 @@ import (
 // 先思考再产出 function_call 的往返。超时则保持 unknown,不下结论。
 const openaiResponsesProbeTimeout = 15 * time.Second
 
+// Bound account storage as well as HTTP for the asynchronous admin event.
+// A caller's earlier deadline still wins; the nested HTTP allowance stays 15s.
+const openaiResponsesProbeLifecycleTimeout = 2 * openaiResponsesProbeTimeout
+
 // responsesProbeMaxBodyBytes 限制读取探测响应体的字节数,够判定 output 项类型即可。
 const responsesProbeMaxBodyBytes = 256 * 1024
 
@@ -123,9 +127,17 @@ func selectResponsesProbeModel(account *Account) string {
 // 本地预算或网络/读取故障不阻塞账号创建/更新，也不覆盖旧能力结论。
 // 本地预算延期单独返回供后台调用方记录；供应商响应保持原能力判据。
 func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Context, accountID int64) (deferral *MonitoringProbeBudgetDenial) {
+	ctx, cancelLifecycle := context.WithTimeout(ctx, openaiResponsesProbeLifecycleTimeout)
+	defer cancelLifecycle()
+	if ctx.Err() != nil {
+		return
+	}
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_probe", "probe_load_account_failed: account_id=%d err=%v", accountID, err)
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	if account.Type != AccountTypeAPIKey {
@@ -219,6 +231,11 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	// Never publish a routing capability before that local outcome is known.
 	if local := monitoringProbeLocalError(probeCtx); local != nil {
 		return monitoringProbeDeferral(local, time.Now())
+	}
+	// Closing/settling an admitted call can outlive cancellation. Its actual
+	// usage is still charged, but a late result must not change routing state.
+	if probeCtx.Err() != nil {
+		return
 	}
 	readErr = errors.Join(readErr, drainErr, closeErr)
 	if readErr != nil {
