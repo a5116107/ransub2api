@@ -77,6 +77,21 @@ export interface MonitoringProbeCoverage {
   ollama_usage?: OllamaMonitoringRuntime | null
   responses_capability?: ResponsesCapabilityMonitoringRuntime | null
   billing_scopes?: MonitoringProbeCoverageBillingScopes | null
+  periodic_sites?: MonitoringProbeCoveragePeriodicSites | null
+}
+
+export interface MonitoringProbeCoveragePeriodicSites {
+  version: number
+  scope: string
+  sites: number
+  billing_requests_per_day: number
+  active_model_requests_per_day: number
+  origin_ping_requests_per_day: number
+  max_requests_per_day: number
+  site_day_capacity: number
+  over_limit_sites: number
+  unresolved_billing_targets: number
+  unresolved_active_targets: number
 }
 
 export interface MonitoringProbeCoverageBillingScopes {

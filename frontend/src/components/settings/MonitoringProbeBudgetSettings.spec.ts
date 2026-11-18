@@ -45,6 +45,70 @@ function billingScopes() {
     unresolved_new_api_authorizations: 1 }
 }
 
+function periodicSites() {
+  return { version: 1, scope: 'billing_and_v1', sites: 2, billing_requests_per_day: 96,
+    active_model_requests_per_day: 1440, origin_ping_requests_per_day: 1440,
+    max_requests_per_day: 1536, site_day_capacity: 1440, over_limit_sites: 1,
+    unresolved_billing_targets: 0, unresolved_active_targets: 1 }
+}
+
+describe('periodic shared-site coverage', () => {
+  it.each(['en', 'zh'])('shows cross-family contribution, anonymous site shortfalls and credential unknowns in %s', async locale => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), periodic_sites: {
+      ...periodicSites(), site: 'PRIVATE_PERIODIC_SITE', key: 'PRIVATE_PERIODIC_KEY' } } })
+    const wrapper = await open(locale)
+    const panel = wrapper.get('[data-testid="probe-budget-periodic-sites"]')
+    expect(panel.text()).toContain(locale === 'zh' ? '倍率与 V1：共享站点日下界' : 'Billing and V1: shared-site daily lower bounds')
+    expect(panel.get('[data-testid="periodic-sites-verdict"]').text()).toContain(locale === 'zh' ? '已证明存在共享站点超限' : 'Proven shared-site shortfall')
+    expect(panel.get('[data-testid="periodic-sites-capacity"]').text()).toContain('1536 / 1440')
+    expect(panel.get('[data-testid="periodic-sites-contributions"]').text()).toContain('96')
+    expect(panel.get('[data-testid="periodic-sites-contributions"]').text()).toContain('1440')
+    expect(panel.text()).toContain(locale === 'zh' ? '未归桶 V1 目标 1' : '1 unbucketed V1 targets')
+    expect(panel.text()).toContain(locale === 'zh' ? 'HEAD 归属根域' : 'HEAD belongs to the origin')
+    expect(panel.text()).toContain(locale === 'zh' ? 'V1 最终凭据共享关系仍未编译' : 'V1 final-credential sharing remains uncompiled')
+    expect(panel.text()).not.toContain('PRIVATE_')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toContain('69456')
+  })
+
+  it.each([undefined, { ...periodicSites(), version: 2 }, { ...periodicSites(), scope: 'fleet' },
+    { ...periodicSites(), sites: -1 }, { ...periodicSites(), over_limit_sites: 3 },
+    { ...periodicSites(), active_model_requests_per_day: 1.5 }])('keeps missing or malformed periodic scope evidence unknown: %j', async sites => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), periodic_sites: sites } })
+    const wrapper = await open()
+    const panel = wrapper.get('[data-testid="probe-budget-periodic-sites"]')
+    expect(panel.text()).toContain('Unknown')
+    expect(panel.find('[data-testid="periodic-sites-capacity"]').exists()).toBe(false)
+  })
+
+  it('blocks a combined site shortfall even with billing disabled and keeps disabling enforcement available', async () => {
+    api.previewMonitoringProbeCoverage.mockImplementation(async draft => ({ ...coverage(), billing_enabled: false,
+      enforced: draft.enabled, can_save: !draft.enabled,
+      blocking_reasons: draft.enabled ? ['periodic_site_capacity'] : [], periodic_sites: periodicSites() }))
+    const wrapper = await open()
+    await wrapper.get('[role="switch"]').trigger('click')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="probe-budget-capacity-reasons"]').text()).toContain('shared site')
+    await wrapper.get('[role="switch"]').trigger('click')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).toHaveBeenCalledOnce()
+  })
+
+  it('invalidates periodic site evidence on draft changes and preview failure', async () => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), periodic_sites: periodicSites() } })
+    const wrapper = await open()
+    expect(wrapper.find('[data-testid="periodic-sites-capacity"]').exists()).toBe(true)
+    await wrapper.get('#probe-budget-site_requests_per_minute').setValue(1)
+    expect(wrapper.find('[data-testid="probe-budget-periodic-sites"]').exists()).toBe(false)
+    api.previewMonitoringProbeCoverage.mockRejectedValueOnce(new Error('unavailable'))
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="probe-budget-periodic-sites"]').exists()).toBe(false)
+  })
+})
+
 describe('billing shared-scope coverage', () => {
   it.each(['en', 'zh'])('shows anonymous scope lower bounds and unknowns without changing total demand in %s', async locale => {
     api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), billing_scopes: {

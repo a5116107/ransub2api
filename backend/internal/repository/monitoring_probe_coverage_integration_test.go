@@ -793,7 +793,11 @@ func TestMonitoringProbeCoverageBillingScopesPostgres(t *testing.T) {
 			preview, err := repo.PreviewCoverage(ctx, policy)
 			require.NoError(t, err)
 			require.False(t, preview.CanSave)
-			require.Equal(t, []string{reason}, preview.BlockingReasons)
+			reasons := []string{reason}
+			if scope == "site" {
+				reasons = append(reasons, "periodic_site_capacity")
+			}
+			require.Equal(t, reasons, preview.BlockingReasons)
 			_, err = repo.SaveSettings(ctx, policy)
 			require.ErrorContains(t, err, reason)
 			stored, err := repo.GetSettings(ctx)
@@ -817,6 +821,157 @@ func TestMonitoringProbeCoverageBillingScopesPostgres(t *testing.T) {
 				require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
 				require.Zero(t, count, "capacity preview/save must not probe, reserve, bill or consume tokens")
 			}
+		})
+	}
+}
+
+func TestMonitoringProbeCoveragePeriodicSitesPostgres(t *testing.T) {
+	for _, tc := range []struct {
+		name, billingSite, monitorSite string
+		sites, maximum, excess         int64
+	}{
+		{"same_tenant", "https://coverage.invalid/tenant/v1", "https://COVERAGE.invalid:443/tenant/v1/", 2, 1536, 1},
+		{"head_origin", "https://coverage.invalid/v1", "https://coverage.invalid/tenant/v1", 2, 1536, 1},
+		{"separate_tenant", "https://coverage.invalid/another/v1", "https://coverage.invalid/tenant/v1", 3, 1440, 0},
+		{"separate_port", "https://coverage.invalid:8443/tenant/v1", "https://coverage.invalid/tenant/v1", 3, 1440, 0},
+		{"v1_only", "", "https://coverage.invalid/v1", 1, 2880, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			if tc.billingSite != "" {
+				credentials, err := json.Marshal(map[string]any{"api_key": "private-periodic-key", "base_url": tc.billingSite})
+				require.NoError(t, err)
+				_, err = db.ExecContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra)
+ VALUES('periodic-billing','openai','apikey','active',$1,'{"upstream_billing_probe_enabled":true}')`, string(credentials))
+				require.NoError(t, err)
+			}
+			require.NoError(t, NewSettingRepository(client).SetMultiple(ctx, map[string]string{
+				service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1",
+			}))
+			repo := NewMonitoringProbeBudgetRepository(db)
+			require.NoError(t, repo.SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: tc.billingSite != "", IntervalMinutes: 30}))
+			monitor := &service.ChannelMonitor{Name: "periodic-v1", Provider: service.MonitorProviderOpenAI, Endpoint: tc.monitorSite,
+				APIKey: "private-v1-key", PrimaryModel: "model-a", IntervalSeconds: 60, Enabled: true}
+			require.NoError(t, NewChannelMonitorRepository(client, db).Create(ctx, monitor))
+			var before string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT row_to_json(m)::text FROM channel_monitors m WHERE id=$1`, monitor.ID).Scan(&before))
+			policy := monitoringBudgetPolicy()
+			policy.SiteRequestsPerMinute, policy.RequestsPerDay, policy.RecoveryReservePercent = 1, 10000, 0
+			preview, err := repo.PreviewCoverage(ctx, policy)
+			require.NoError(t, err)
+			require.EqualValues(t, tc.sites, preview.PeriodicSites.Sites)
+			require.EqualValues(t, tc.maximum, preview.PeriodicSites.MaxRequestsPerDay)
+			require.EqualValues(t, tc.excess, preview.PeriodicSites.OverLimitSites)
+			require.Zero(t, preview.PeriodicSites.UnresolvedActiveTargets, "configured endpoints must reach the compiler without credentials")
+			require.Zero(t, preview.PeriodicSites.UnresolvedBillingTargets)
+			_, err = repo.SaveSettings(ctx, policy)
+			if tc.excess > 0 {
+				require.ErrorContains(t, err, "periodic_site_capacity")
+				var count int
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM settings WHERE key=$1`, service.MonitoringProbeBudgetSettingKey).Scan(&count))
+				require.Zero(t, count, "rejected saves do not create a policy or revision")
+			} else {
+				require.NoError(t, err)
+			}
+			policy, err = repo.GetSettings(ctx)
+			require.NoError(t, err)
+			policy.SiteRequestsPerMinute, policy.RequestsPerDay, policy.RecoveryReservePercent, policy.Enabled = 2, 10000, 0, true
+			policy, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err, "increasing site capacity repairs both families without changing cadence")
+			summary, err := NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+			require.NoError(t, err)
+			require.True(t, summary.Coverage.CanSave)
+			require.EqualValues(t, tc.maximum, summary.Coverage.PeriodicSites.MaxRequestsPerDay)
+			raw, err := json.Marshal(summary)
+			require.NoError(t, err)
+			for _, private := range []string{"coverage.invalid", "private-periodic-key", "private-v1-key"} {
+				require.NotContains(t, string(raw), private)
+			}
+			policy.Enabled, policy.SiteRequestsPerMinute = false, 1
+			_, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err, "disabling enforcement remains available")
+			var after string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT row_to_json(m)::text FROM channel_monitors m WHERE id=$1`, monitor.ID).Scan(&after))
+			require.Equal(t, before, after, "preflight does not rewrite monitor credentials, conclusions or cadence")
+			for _, table := range []string{"monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "usage_logs", "channel_monitor_histories"} {
+				var count int
+				require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+				require.Zero(t, count, "preview/save does not execute probes or consume business usage")
+			}
+		})
+	}
+}
+
+func TestMonitoringProbeCoveragePeriodicSitesSerializeWrites(t *testing.T) {
+	for _, operation := range []string{"monitor_interval", "enable_billing", "v1_mode"} {
+		t.Run(operation, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			_, err := db.ExecContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra)
+ VALUES('periodic-race','openai','apikey','active','{"api_key":"periodic-race-key","base_url":"https://periodic-race.invalid/v1"}',
+ '{"upstream_billing_probe_enabled":true}')`)
+			require.NoError(t, err)
+			mode := "v1"
+			if operation == "v1_mode" {
+				mode = "v2"
+			}
+			settings := NewSettingRepository(client)
+			require.NoError(t, settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: mode}))
+			repo := NewMonitoringProbeBudgetRepository(db)
+			require.NoError(t, repo.SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: operation != "enable_billing", IntervalMinutes: 30}))
+			monitor := &service.ChannelMonitor{Name: "periodic-race-v1", Provider: service.MonitorProviderOpenAI,
+				Endpoint: "https://periodic-race.invalid/v1", APIKey: "private-v1-key", PrimaryModel: "model-a", IntervalSeconds: 60, Enabled: true}
+			if operation == "monitor_interval" {
+				monitor.IntervalSeconds = 120
+			}
+			require.NoError(t, NewChannelMonitorRepository(client, db).Create(ctx, monitor))
+			policy := monitoringBudgetPolicy()
+			policy.SiteRequestsPerMinute, policy.RequestsPerDay, policy.RecoveryReservePercent = 3, 10000, 0
+			policy, err = repo.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			start, results := make(chan struct{}), make(chan error, 2)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				policy.SiteRequestsPerMinute = 2
+				_, err := NewMonitoringProbeBudgetRepository(db).SaveSettings(ctx, policy)
+				results <- err
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				var err error
+				switch operation {
+				case "monitor_interval":
+					monitor.IntervalSeconds = 60
+					err = NewChannelMonitorRepository(client, db).Update(ctx, monitor)
+				case "enable_billing":
+					err = NewMonitoringProbeBudgetRepository(db).SaveBillingProbeSettings(ctx, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30})
+				case "v1_mode":
+					err = settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v1")
+				}
+				results <- err
+			}()
+			close(start)
+			wg.Wait()
+			close(results)
+			successes := 0
+			for err := range results {
+				if err == nil {
+					successes++
+				} else {
+					require.ErrorContains(t, err, "periodic_site_capacity")
+				}
+			}
+			require.Equal(t, 1, successes, "two valid changes must not commit an impossible combined demand")
+			current, err := repo.GetSettings(ctx)
+			require.NoError(t, err)
+			preview, err := repo.PreviewCoverage(ctx, current)
+			require.NoError(t, err)
+			require.True(t, preview.CanSave)
 		})
 	}
 }

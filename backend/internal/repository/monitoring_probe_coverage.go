@@ -141,9 +141,9 @@ func loadMonitoringCoverageActive(ctx context.Context, tx sqlQueryer) ([]service
 	if err != nil || !runtime.ActiveProbesAllowed() {
 		return nil, err == nil, err
 	}
-	// Only scheduling inputs, never encrypted/raw credentials or endpoints,
-	// enter the compiler or administrator capacity response.
-	rows, err := tx.QueryContext(ctx, `SELECT provider,check_mode,primary_model,extra_models,interval_seconds,jitter_seconds
+	// Scheduling inputs and configured endpoint stay internal to the compiler.
+	// Never load credentials or expose endpoint identities in the response.
+	rows, err := tx.QueryContext(ctx, `SELECT provider,check_mode,primary_model,extra_models,interval_seconds,jitter_seconds,endpoint
  FROM channel_monitors WHERE enabled ORDER BY id LIMIT $1`, monitoringCoverageInventoryLimit+1)
 	if err != nil {
 		return nil, false, err
@@ -158,7 +158,7 @@ func loadMonitoringCoverageActive(ctx context.Context, tx sqlQueryer) ([]service
 		}
 		var monitor service.ChannelMonitor
 		var models []byte
-		if err := rows.Scan(&monitor.Provider, &monitor.CheckMode, &monitor.PrimaryModel, &models, &monitor.IntervalSeconds, &monitor.JitterSeconds); err != nil {
+		if err := rows.Scan(&monitor.Provider, &monitor.CheckMode, &monitor.PrimaryModel, &models, &monitor.IntervalSeconds, &monitor.JitterSeconds, &monitor.Endpoint); err != nil {
 			return nil, false, err
 		}
 		if err := json.Unmarshal(models, &monitor.ExtraModels); err != nil {

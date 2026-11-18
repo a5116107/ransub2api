@@ -113,6 +113,118 @@ func TestMonitoringProbeCoverageBillingSharedScopeLimits(t *testing.T) {
 	}
 }
 
+func TestMonitoringProbeCoveragePeriodicSitesCombinedShortfall(t *testing.T) {
+	policy := DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.RecoveryReservePercent, policy.SiteRequestsPerMinute = true, 0, 2
+	billing := UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}
+	monitors := []ChannelMonitor{{Enabled: true, Provider: MonitorProviderOpenAI,
+		Endpoint: "https://relay.invalid/v1", PrimaryModel: "model-a", IntervalSeconds: 60}}
+	compile := func(accounts []MonitoringProbeCoverageAccount, active []ChannelMonitor) *MonitoringProbeCoverage {
+		return CompileMonitoringProbeCoverage(policy, billing, accounts, true, nil, true, nil, true, active, true, time.Now())
+	}
+	require.True(t, compile(coverageAccounts(1), nil).CanSave)
+	require.True(t, compile(nil, monitors).CanSave, "2880 V1 calls exactly fit the 2/minute site's full-day capacity")
+	combined := compile(coverageAccounts(1), monitors)
+	require.EqualValues(t, 2976, combined.MinimumTotalRequestsPerDay)
+	require.False(t, combined.CanSave, "independently valid families must not hide a combined same-site shortfall")
+	require.Contains(t, combined.BlockingReasons, "periodic_site_capacity")
+	require.EqualValues(t, 96, combined.PeriodicSites.BillingRequestsPerDay)
+	require.EqualValues(t, 1440, combined.PeriodicSites.ActiveModelRequestsPerDay)
+	require.EqualValues(t, 1440, combined.PeriodicSites.OriginPingRequestsPerDay)
+	require.EqualValues(t, 2976, combined.PeriodicSites.MaxRequestsPerDay)
+	require.EqualValues(t, 2880, combined.PeriodicSites.SiteDayCapacity)
+	require.EqualValues(t, 1, combined.PeriodicSites.OverLimitSites)
+}
+
+func TestMonitoringProbeCoveragePeriodicSitesTenantAndOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name, billingSite, monitorSite string
+		sites, maximum, excess         int64
+	}{
+		{"same_tenant", "https://RELAY.invalid:443/tenant/v1/", "https://relay.invalid/tenant/v1", 2, 1536, 1},
+		{"different_tenant", "https://relay.invalid/tenant-a/v1", "https://relay.invalid/tenant-b/v1", 3, 1440, 0},
+		{"head_shares_origin", "https://relay.invalid/v1", "https://relay.invalid/tenant/v1", 2, 1536, 1},
+		{"different_port", "https://relay.invalid:8443/tenant/v1", "https://relay.invalid/tenant/v1", 3, 1440, 0},
+		{"different_origin", "https://other.invalid/tenant/v1", "https://relay.invalid/tenant/v1", 3, 1440, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := DefaultMonitoringProbeBudgetSettings()
+			policy.Enabled, policy.SiteRequestsPerMinute, policy.RecoveryReservePercent = true, 1, 80
+			accounts := coverageAccounts(1)
+			accounts[0].Account.Credentials["base_url"] = tc.billingSite
+			active := []ChannelMonitor{{Enabled: true, Provider: MonitorProviderOpenAI, Endpoint: tc.monitorSite, PrimaryModel: "model-a", IntervalSeconds: 60}}
+			c := CompileMonitoringProbeCoverage(policy, UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, accounts, true, nil, true, nil, true, active, true, time.Now())
+			require.EqualValues(t, tc.sites, c.PeriodicSites.Sites)
+			require.EqualValues(t, tc.maximum, c.PeriodicSites.MaxRequestsPerDay)
+			require.EqualValues(t, tc.excess, c.PeriodicSites.OverLimitSites)
+			require.EqualValues(t, 1440, c.PeriodicSites.SiteDayCapacity, "global reserve is not subtracted from site counters")
+			require.EqualValues(t, 2976, c.MinimumTotalRequestsPerDay, "per-site contributions must not double global demand")
+			require.Equal(t, tc.excess == 0, c.CanSave)
+			encoded, err := json.Marshal(c)
+			require.NoError(t, err)
+			for _, private := range []string{"relay.invalid", "other.invalid", "tenant-a", "tenant-b", accounts[0].Account.GetCredential("api_key")} {
+				require.NotContains(t, string(encoded), private)
+			}
+		})
+	}
+}
+
+func TestMonitoringProbeCoveragePeriodicSitesUnknownAndDisable(t *testing.T) {
+	policy := DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.SiteRequestsPerMinute, policy.RecoveryReservePercent = true, 1, 0
+	billing := UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}
+	accounts := coverageAccounts(3)
+	accounts[0].Account.Credentials["base_url"] = "invalid"
+	accounts[1].Account.Credentials["api_key"] = ""
+	accounts[2].NewAPIBindingIdentity = NewAPIAccountFingerprint(&accounts[2].Account)
+	active := []ChannelMonitor{
+		{Enabled: true, Provider: MonitorProviderOpenAI, Endpoint: "invalid", PrimaryModel: "model-a", IntervalSeconds: 60},
+		{Enabled: true, Provider: MonitorProviderOpenAI, Endpoint: "https://private.invalid/v1", PrimaryModel: "", IntervalSeconds: 60},
+		{Enabled: true, Provider: MonitorProviderAntigravity, CheckMode: MonitorCheckModeQuota, IntervalSeconds: 60},
+		{Enabled: false, Provider: MonitorProviderOpenAI, Endpoint: "https://private.invalid/v1", PrimaryModel: "model-a", IntervalSeconds: 60},
+	}
+	compile := func() *MonitoringProbeCoverage {
+		return CompileMonitoringProbeCoverage(policy, billing, accounts, false, nil, true, nil, true, active, false, time.Now())
+	}
+	c := compile()
+	require.True(t, c.CanSave, "unknown targets alone do not prove a shortfall")
+	require.EqualValues(t, 3, c.PeriodicSites.UnresolvedBillingTargets)
+	require.EqualValues(t, 2, c.PeriodicSites.UnresolvedActiveTargets)
+	require.Zero(t, c.PeriodicSites.Sites)
+	require.Zero(t, c.PeriodicSites.BillingRequestsPerDay)
+	require.Contains(t, c.Warnings, "periodic_site_unresolved")
+	billing.Enabled = false
+	require.Zero(t, compile().PeriodicSites.UnresolvedBillingTargets)
+	active = []ChannelMonitor{{Enabled: true, Provider: MonitorProviderOpenAI, Endpoint: "https://relay.invalid/v1", PrimaryModel: "model-a", ExtraModels: []string{"model-b"}, IntervalSeconds: 60, JitterSeconds: 30}}
+	c = compile()
+	require.EqualValues(t, 2880, c.PeriodicSites.MaxRequestsPerDay, "longest interval supplies the optimistic lower bound")
+	require.False(t, c.CanSave, "V1-only shortfalls must be rejected even with billing off")
+	require.Equal(t, []string{"periodic_site_capacity"}, c.BlockingReasons)
+	policy.Enabled = false
+	c = compile()
+	require.True(t, c.CanSave, "disabling enforcement remains a repair path")
+	require.EqualValues(t, 1, c.PeriodicSites.OverLimitSites, "observation does not hide the shortfall")
+}
+
+func TestMonitoringProbeCoveragePeriodicSitesManagementAndInvalidCadence(t *testing.T) {
+	accounts := coverageAccounts(1)
+	a := &accounts[0]
+	a.NewAPIBindingIdentity, a.NewAPIAuthorizationID, a.NewAPIAuthorizationUserID = NewAPIAccountFingerprint(&a.Account), 1, 2
+	a.NewAPIAuthorizationSite = "https://relay.invalid"
+	billing := UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}
+	compile := func() *MonitoringProbeCoverage {
+		return CompileMonitoringProbeCoverage(DefaultMonitoringProbeBudgetSettings(), billing, accounts, true, nil, true, nil, true, nil, true, time.Now())
+	}
+	c := compile()
+	require.EqualValues(t, 192, c.PeriodicSites.BillingRequestsPerDay)
+	require.Zero(t, c.PeriodicSites.UnresolvedBillingTargets)
+	billing.IntervalMinutes = 0
+	c = compile()
+	require.Zero(t, c.PeriodicSites.BillingRequestsPerDay)
+	require.EqualValues(t, 1, c.PeriodicSites.UnresolvedBillingTargets)
+	require.Contains(t, c.BlockingReasons, "invalid_interval")
+}
+
 func TestMonitoringProbeCoverageBillingFinalWireScopes(t *testing.T) {
 	for _, scenario := range []string{"blocked_auth_override", "additional", "duplicate", "disabled_override", "unknown", "adaptive", "canonical"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -257,7 +369,7 @@ func TestMonitoringProbeCoverageBillingScopeBoundaryAndDisable(t *testing.T) {
 	require.EqualValues(t, 5, c.BillingScopes.MaxCredentialRequestsPerSweep)
 	items[0].Account.Credentials["base_url"] = "https://relay.invalid/v1"
 	c = CompileMonitoringProbeCoverage(policy, billing, items, false, nil, true, nil, true, nil, true, time.Now())
-	require.ElementsMatch(t, []string{"site_capacity", "key_capacity"}, c.BlockingReasons)
+	require.ElementsMatch(t, []string{"site_capacity", "key_capacity", "periodic_site_capacity"}, c.BlockingReasons)
 	require.False(t, c.CanSave, "incomplete inventory cannot hide a proven lower-bound shortfall")
 	policy.Enabled = false
 	require.True(t, CompileMonitoringProbeCoverage(policy, billing, items, true, nil, true, nil, true, nil, true, time.Now()).CanSave)
@@ -444,8 +556,8 @@ func TestMonitoringProbeCoverageActiveModelsQuotaAndJitter(t *testing.T) {
 	p := DefaultMonitoringProbeBudgetSettings()
 	p.Enabled, p.RecoveryReservePercent, p.RequestsPerDay = true, 0, 8640
 	monitors := []ChannelMonitor{
-		{Enabled: true, Provider: MonitorProviderOpenAI, PrimaryModel: "model-a", ExtraModels: []string{"model-b"}, IntervalSeconds: 60},
-		{Enabled: true, Provider: MonitorProviderAnthropic, CheckMode: MonitorCheckModeQuotaProbe, PrimaryModel: "model-a", IntervalSeconds: 30, JitterSeconds: 10},
+		{Enabled: true, Provider: MonitorProviderOpenAI, Endpoint: "https://relay.invalid/v1", PrimaryModel: "model-a", ExtraModels: []string{"model-b"}, IntervalSeconds: 60},
+		{Enabled: true, Provider: MonitorProviderAnthropic, Endpoint: "https://relay.invalid/v1", CheckMode: MonitorCheckModeQuotaProbe, PrimaryModel: "model-a", IntervalSeconds: 30, JitterSeconds: 10},
 		{Enabled: true, Provider: MonitorProviderAntigravity, CheckMode: MonitorCheckModeQuota, IntervalSeconds: 15},
 		{Enabled: false, Provider: MonitorProviderOpenAI, PrimaryModel: "model-a", IntervalSeconds: 15},
 	}
@@ -497,7 +609,7 @@ func TestMonitoringProbeCoverageActiveUnknownAndBoundaries(t *testing.T) {
 			require.EqualValues(t, 1, c.ActiveMonitors)
 			require.EqualValues(t, 1, c.UnresolvedActiveMonitors)
 			require.Zero(t, c.MinimumActiveRequests)
-			require.ElementsMatch(t, []string{"active_unresolved", "active_inventory_truncated"}, c.Warnings)
+			require.ElementsMatch(t, []string{"active_unresolved", "active_inventory_truncated", "periodic_site_unresolved"}, c.Warnings)
 		})
 	}
 	for _, tc := range []struct{ interval, jitter, runs int }{{15, 0, 5760}, {60, 45, 822}, {3600, 3585, 12}, {59, 0, 1464}} {
