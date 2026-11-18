@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1响应进程CN运行库存子验收本地done。
+任务：D8.1 Ollama活动/429运行来源与停机围栏本地done。
 范围：唯一H盘功能分支提交同步；不CI/PR/生产，不改业务与探测判据。
 已决：实际usage、插件自动延期与手动隔离保持，不借票/续绿。
-来源：7c1a7726c起点；终稿7da9d5bc，命令/边界见DECISIONS。
-已验：服务5540/SQL44/UI49pass；0fail/skip/race；静态/Linux/四视口过。
-下一：D8.1其余来源运行观测/全scope覆盖编译；跨节点/生产仍待。
+来源：1078e2a5b起点；终稿输入7c0231d9；命令/失败见DECISIONS。
+已验：服务1034/SQL100/UI56pass；0fail/skip/race；静态/Linux/四视口过。
+下一：D8.1 Responses/其余事件运行来源与全scope覆盖编译；跨节点/生产仍待。
 等待：原28项20done/8部分；其余库存/全scope/跨节点/生产/PR3待。
-生产最后记录.7/fd83f6c91；本轮不部署；历史拒删保持、不重复试删。
-Attempt：90
+生产最后记录.7/fd83f6c91；本轮不部署；历史及新红测overlay拒删未绕行。
+Attempt：91
 <!-- resume:end -->
 
 ## 目标与入口
@@ -58,7 +58,7 @@ Attempt：90
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
 | D8 | in_progress | 物理/Token/100队列及倍率、账号/分组计划、初始建号容量拒存已本地验；完整scope/其余通道/公平性/生产/严格混版仍缺 |
-| D8.1本地子项 | in_progress | 预算/计量/延期、队列公平与计划停机已本地验；CN本机寿命/周期/最近库存/API/UI本地done；其余库存/全scope/多节点/生产仍缺 |
+| D8.1本地子项 | in_progress | 预算/计量/延期、队列公平与计划停机已本地验；CN/Ollama本机寿命/最近扫描/队列/API/UI本地done；其余库存/全scope/多节点/生产仍缺 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
 
@@ -78,5 +78,5 @@ Attempt：90
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 私有PG55441/PID10868、Redis56441/PID46228、quality-batch-{build,runner.py}及`H:/Root/DevCache/tmp/sub2api-quality-validity`受宿主拒删；预览已停；owner宿主用户，路径/解除条件见DECISIONS。
 - 历史拒删620274603bytes及D2.6日志原位保留；路径/命令/owner见DECISIONS，待宿主解除策略，不绕过。
-- 本轮四包vet/增量fast/Linux及前端类型/lint/构建通过；非全仓lint。
+- 新增旧Stop红测overlay/49259bytes受宿主拒删；路径/owner见DECISIONS，回收0，不绕行。
 - 历史构建213260543bytes及本轮临时产物9279228bytes受宿主拒删；路径/owner/解除条件见DECISIONS；未绕行，回收0。

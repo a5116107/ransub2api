@@ -114,6 +114,7 @@ type MonitoringProbeBudgetRepository interface {
 type MonitoringProbeBudgetService struct {
 	repo         MonitoringProbeBudgetRepository
 	cnQuotaCycle *CNProviderBalanceCheckService
+	ollamaUsage  *OllamaCloudUsageService
 }
 
 func NewMonitoringProbeBudgetService(repo MonitoringProbeBudgetRepository) *MonitoringProbeBudgetService {
@@ -123,6 +124,20 @@ func NewMonitoringProbeBudgetService(repo MonitoringProbeBudgetRepository) *Moni
 // Set during construction; runtime reads use the runner's own lifecycle lock.
 func (s *MonitoringProbeBudgetService) SetCNQuotaCycle(runner *CNProviderBalanceCheckService) {
 	s.cnQuotaCycle = runner
+}
+
+func (s *MonitoringProbeBudgetService) SetOllamaUsage(runner *OllamaCloudUsageService) {
+	s.ollamaUsage = runner
+}
+
+func (s *MonitoringProbeBudgetService) runtimeCoverage(coverage *MonitoringProbeCoverage) *MonitoringProbeCoverage {
+	if coverage == nil {
+		return nil
+	}
+	view := *coverage
+	view.CNQuotaCycle = s.cnQuotaCycle.MonitoringRuntime()
+	view.OllamaUsage = s.ollamaUsage.MonitoringRuntime()
+	return &view
 }
 
 func (s *MonitoringProbeBudgetService) GetSettings(ctx context.Context) (MonitoringProbeBudgetSettings, error) {
@@ -151,9 +166,7 @@ func (s *MonitoringProbeBudgetService) Summary(ctx context.Context) (*Monitoring
 		return summary, err
 	}
 	view := *summary
-	coverage := *summary.Coverage
-	coverage.CNQuotaCycle = s.cnQuotaCycle.MonitoringRuntime()
-	view.Coverage = &coverage
+	view.Coverage = s.runtimeCoverage(summary.Coverage)
 	return &view, nil
 }
 

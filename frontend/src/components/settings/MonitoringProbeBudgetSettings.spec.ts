@@ -37,7 +37,78 @@ async function open(locale = 'en') {
   return wrapper
 }
 
+function ollamaRuntime() {
+  return { version: 1, scope: 'responding_process', instance_id: 'fixture-ollama', state: 'running', periodic_state: 'enabled',
+    observed_at: '2026-11-19T12:00:00Z', scan_interval_seconds: 60, scan_limit: 20,
+    pending_rate_limit_probes: 4, active_rate_limit_probes: 1, active_refreshes: 2,
+    last_scan: { state: 'observed', observed_at: '2026-11-19T11:59:00Z', enabled: true, interval_minutes: 60, debounce_minutes: 1,
+      candidates: 3 as number | null, due_groups: 2 as number | null, limit_reached: false as boolean | null }
+  }
+}
+
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('shows Ollama activity and 429 queues separately from projected call demand in %s', async locale => {
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), ollama_usage: ollamaRuntime() })
+    const wrapper = await open(locale)
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="probe-budget-ollama-runtime"]')
+    expect(panel.get('[data-testid="ollama-runtime-state"]').text()).toBe(locale === 'zh' ? '运行中' : 'Running')
+    expect(panel.get('[data-testid="ollama-periodic-state"]').text()).toBe(locale === 'zh' ? '已启用（活动驱动）' : 'Enabled (activity-driven)')
+    expect(panel.get('[data-testid="ollama-runtime-scan"]').text()).toContain(locale === 'zh' ? '3 个候选' : '3 candidates')
+    expect(panel.get('[data-testid="ollama-runtime-scan"]').text()).toContain(locale === 'zh' ? '2 个到期凭据组' : '2 due credential groups')
+    expect(panel.text()).toContain(locale === 'zh' ? '不是全部上游库存' : 'not the full upstream inventory')
+    expect(panel.get('[data-testid="ollama-runtime-queue"]').text()).toContain('4')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toBe('69456 / 80000')
+  })
+
+  it.each(['en', 'zh'])('keeps missing or future Ollama runtime unknown in %s', async locale => {
+    for (const runtime of [undefined, { ...ollamaRuntime(), version: 2 }, { ...ollamaRuntime(), scope: 'fleet' }]) {
+      api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), ollama_usage: runtime } })
+      const wrapper = await open(locale)
+      expect(wrapper.get('[data-testid="ollama-runtime-state"]').text()).toBe(locale === 'zh' ? '未知' : 'Unknown')
+      expect(wrapper.find('[data-testid="ollama-runtime-scan"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="ollama-runtime-queue"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+
+  it.each(['en', 'zh'])('distinguishes bounded, failed and unobserved Ollama scans without fabricating zero in %s', async locale => {
+    for (const [state, label] of Object.entries(locale === 'zh'
+      ? { observed: '最近到期扫描', disabled: '自动刷新停用', not_leader: '本次未取得周期执行权', settings_unavailable: '配置读取失败', inventory_unavailable: '候选读取失败' }
+      : { observed: 'Last due scan', disabled: 'Automatic refresh disabled', not_leader: 'This cycle did not acquire leadership', settings_unavailable: 'Settings read failed', inventory_unavailable: 'Candidate read failed' })) {
+      const runtime = ollamaRuntime()
+      runtime.last_scan = { ...runtime.last_scan, state, candidates: state === 'observed' ? 0 : null, due_groups: state === 'observed' ? 0 : null, limit_reached: state === 'observed' ? true : null }
+      api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), ollama_usage: runtime } })
+      const wrapper = await open(locale)
+      expect(wrapper.get('[data-testid="ollama-scan-state"]').text()).toBe(label)
+      if (state === 'observed') {
+        expect(wrapper.get('[data-testid="ollama-runtime-scan"]').text()).toContain(locale === 'zh' ? '0 个候选' : '0 candidates')
+        expect(wrapper.text()).toContain(locale === 'zh' ? '达到单次上限' : 'Reached the per-scan limit')
+      } else expect(wrapper.find('[data-testid="ollama-runtime-scan"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+    for (const patch of [{ candidates: -1 }, { due_groups: 9 }, { candidates: null }, { observed_at: 'bad' }]) {
+      const runtime = ollamaRuntime()
+      api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), ollama_usage: { ...runtime, last_scan: { ...runtime.last_scan, ...patch } } } })
+      const wrapper = await open(locale)
+      expect(wrapper.find('[data-testid="ollama-runtime-scan"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+
+  it('clears Ollama runtime along with stale drafts and preview failures', async () => {
+    api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), ollama_usage: ollamaRuntime() } })
+    const wrapper = await open()
+    expect(wrapper.find('[data-testid="probe-budget-ollama-runtime"]').exists()).toBe(true)
+    await wrapper.get('[id="probe-budget-requests_per_day"]').setValue(100001)
+    expect(wrapper.find('[data-testid="probe-budget-ollama-runtime"]').exists()).toBe(false)
+    api.previewMonitoringProbeCoverage.mockRejectedValueOnce(new Error('unavailable'))
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="probe-budget-ollama-runtime"]').exists()).toBe(false)
+  })
+
   it.each(['en', 'zh'])('shows the responding CN process and its observed inventory without forecasting calls in %s', async locale => {
     api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), cn_quota_cycle: {
       version: 1, scope: 'responding_process', instance_id: 'fixture-process', state: 'running', interval_seconds: 600,

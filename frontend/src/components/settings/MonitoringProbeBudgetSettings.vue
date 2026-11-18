@@ -102,6 +102,25 @@
               </template>
               <p v-else class="mt-3 text-xs">{{ t(`${prefix}.cnRuntimeUnobserved`) }}</p>
             </div>
+            <div class="mt-4 rounded-lg border border-amber-300 p-3 dark:border-amber-800" data-testid="probe-budget-ollama-runtime">
+              <h5 class="font-semibold">{{ t(`${prefix}.ollamaRuntimeTitle`) }}</h5>
+              <p class="mt-2 text-xs">{{ t(`${prefix}.ollamaRuntimeHint`) }}</p>
+              <dl class="mt-3 grid gap-3 sm:grid-cols-2">
+                <div><dt>{{ t(`${prefix}.cnRuntimeState`) }}</dt><dd class="font-medium" data-testid="ollama-runtime-state">{{ t(`${prefix}.cnRuntimeStates.${ollamaRuntimeState}`) }}</dd></div>
+                <div><dt>{{ t(`${prefix}.ollamaPeriodicState`) }}</dt><dd class="font-medium" data-testid="ollama-periodic-state">{{ t(`${prefix}.ollamaPeriodicStates.${ollamaPeriodicState}`) }}</dd></div>
+                <div class="min-w-0"><dt>{{ t(`${prefix}.cnRuntimeInstance`) }}</dt><dd class="break-all font-mono text-xs">{{ ollamaRuntime?.instance_id || t(`${prefix}.unknownUsage`) }}</dd></div>
+                <div><dt>{{ t(`${prefix}.cnRuntimeObservedAt`) }}</dt><dd class="break-words text-xs">{{ displayWindow(ollamaRuntime?.observed_at) }}</dd></div>
+              </dl>
+              <p v-if="ollamaQueue" class="mt-3 font-medium" data-testid="ollama-runtime-queue">{{ t(`${prefix}.ollamaQueue`, ollamaQueue) }}</p>
+              <p v-else class="mt-3 text-xs">{{ t(`${prefix}.ollamaQueueUnknown`) }}</p>
+              <p class="mt-3 font-medium" data-testid="ollama-scan-state">{{ t(`${prefix}.ollamaScanStates.${ollamaScanState}`) }}</p>
+              <template v-if="ollamaScan">
+                <p class="mt-1" data-testid="ollama-runtime-scan">{{ t(`${prefix}.ollamaScan`, { candidates: ollamaScan.candidates, groups: ollamaScan.due_groups, limit: ollamaRuntime?.scan_limit }) }}</p>
+                <p v-if="ollamaScan.limit_reached" class="mt-1 font-medium">{{ t(`${prefix}.ollamaScanLimited`) }}</p>
+              </template>
+              <p v-if="ollamaLastScan" class="mt-1 text-xs">{{ t(`${prefix}.ollamaScanAt`, { value: ollamaLastScan.observed_at }) }}</p>
+              <p v-if="ollamaCadence" class="mt-1 text-xs">{{ t(`${prefix}.ollamaCadence`, ollamaCadence) }}</p>
+            </div>
           </div>
           <ul v-if="coverage.blocking_reasons.length || coverage.warnings.length" class="mt-2 list-inside list-disc space-y-1" data-testid="probe-budget-capacity-reasons">
             <li v-for="reason in [...coverage.blocking_reasons, ...coverage.warnings]" :key="reason">{{ capacityReason(reason) }}</li>
@@ -186,6 +205,43 @@ const cnInventory = computed(() => {
   return scan && typeof scan.complete === 'boolean' && Number.isFinite(Date.parse(scan.observed_at)) &&
     [scan.targets, scan.balance_targets, scan.quota_targets].every(value => Number.isSafeInteger(value) && value >= 0) &&
     scan.targets === scan.balance_targets + scan.quota_targets ? scan : null
+})
+const ollamaRuntime = computed(() => {
+  const runtime = coverage.value?.ollama_usage
+  return runtime?.version === 1 && runtime.scope === 'responding_process' ? runtime : null
+})
+const ollamaRuntimeState = computed(() => {
+  const state = ollamaRuntime.value?.state
+  return state && ['running', 'stopping', 'stopped', 'not_started', 'unavailable'].includes(state) ? state : 'unknown'
+})
+const ollamaPeriodicState = computed(() => {
+  const state = ollamaRuntime.value?.periodic_state
+  return state && ['enabled', 'disabled', 'role_disabled', 'not_started', 'stopping', 'stopped'].includes(state) ? state : 'unknown'
+})
+const ollamaQueue = computed(() => {
+  const r = ollamaRuntime.value
+  return r && [r.pending_rate_limit_probes, r.active_rate_limit_probes, r.active_refreshes].every(value => Number.isSafeInteger(value) && value >= 0) &&
+    r.active_rate_limit_probes <= 1 && r.active_refreshes <= 4
+    ? { pending: r.pending_rate_limit_probes, active: r.active_rate_limit_probes, refreshes: r.active_refreshes } : null
+})
+const ollamaLastScan = computed(() => {
+  const scan = ollamaRuntime.value?.last_scan
+  return scan && Number.isFinite(Date.parse(scan.observed_at)) ? scan : null
+})
+const ollamaScanState = computed(() => {
+  const state = ollamaLastScan.value?.state
+  return state && ['observed', 'disabled', 'not_leader', 'settings_unavailable', 'inventory_unavailable'].includes(state) ? state : 'unknown'
+})
+const ollamaScan = computed(() => {
+  const scan = ollamaLastScan.value, limit = ollamaRuntime.value?.scan_limit
+  return scan && ollamaScanState.value === 'observed' && typeof scan.limit_reached === 'boolean' &&
+    [scan.candidates, scan.due_groups, limit].every(value => Number.isSafeInteger(value) && typeof value === 'number' && value >= 0) &&
+    scan.candidates! <= limit! && scan.due_groups! <= scan.candidates! ? scan : null
+})
+const ollamaCadence = computed(() => {
+  const scan = ollamaLastScan.value
+  return scan && [scan.interval_minutes, scan.debounce_minutes].every(value => Number.isSafeInteger(value) && typeof value === 'number' && value > 0) &&
+    scan.debounce_minutes! < scan.interval_minutes! ? { interval: scan.interval_minutes, debounce: scan.debounce_minutes } : null
 })
 const error = ref('')
 const notice = ref('')

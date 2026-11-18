@@ -89,6 +89,34 @@ func TestOllamaCloudUsageMonitoringBudgetHTTPPostgresSessionAndRecovery(t *testi
 		return raw
 	}
 	aliasBefore := row(alias.ID)
+	settingsRepo := NewSettingRepository(client)
+	require.NoError(t, settingsRepo.Set(t.Context(), service.SettingKeyOllamaCloudUsageSettings, `{"enabled":true,"interval_minutes":60,"debounce_minutes":1}`))
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	runtimeRunner := service.NewOllamaCloudUsageService(accounts, upstream, service.NewSettingService(settingsRepo, nil), ollamaBudgetFixtureEncryptor{}, true)
+	t.Cleanup(runtimeRunner.Stop)
+	runtimeBudget := service.NewMonitoringProbeBudgetService(budget)
+	runtimeBudget.SetOllamaUsage(runtimeRunner)
+	runtimeRunner.SetMonitoringBudget(runtimeBudget)
+	readRuntime := func() *service.OllamaMonitoringRuntime {
+		t.Helper()
+		before := calls.Load()
+		preview, previewErr := runtimeBudget.PreviewCoverage(t.Context(), policy)
+		require.NoError(t, previewErr)
+		summary, summaryErr := runtimeBudget.Summary(t.Context())
+		require.NoError(t, summaryErr)
+		require.Equal(t, preview.OllamaUsage.InstanceID, summary.Coverage.OllamaUsage.InstanceID)
+		require.Equal(t, preview.OllamaUsage.LastScan, summary.Coverage.OllamaUsage.LastScan)
+		require.Equal(t, before, calls.Load(), "read-only API projection must not make a supplier request")
+		require.EqualValues(t, before, summary.DayUsed)
+		require.Zero(t, summary.ActiveRequests)
+		raw, marshalErr := json.Marshal(preview.OllamaUsage)
+		require.NoError(t, marshalErr)
+		require.NotContains(t, string(raw), "wos-session")
+		require.NotContains(t, string(raw), "inference-key")
+		require.Contains(t, preview.UnestimatedDemandSources, "ollama_usage")
+		return preview.OllamaUsage
+	}
+	require.Nil(t, readRuntime().LastScan, "constructing or reading the runner is not a due inventory scan")
 	run := func(id int64) service.OllamaCloudUsageState {
 		t.Helper()
 		accounts := newAccountRepositoryWithSQL(client, db, nil)
@@ -118,13 +146,32 @@ func TestOllamaCloudUsageMonitoringBudgetHTTPPostgresSessionAndRecovery(t *testi
 	require.Nil(t, result.BudgetDeferral)
 	require.Equal(t, service.OllamaCloudUsageStatusOK, result.Snapshot.Status)
 	policy.KeyRequestsPerMinute = 3
-	_, err = budget.SaveSettings(t.Context(), policy)
+	policy, err = budget.SaveSettings(t.Context(), policy)
 	require.NoError(t, err)
 	result = run(alias.ID)
 	require.Nil(t, result.BudgetDeferral)
 	require.Equal(t, service.OllamaCloudUsageStatusOK, result.Snapshot.Status)
 	require.NotEqual(t, aliasBefore, row(alias.ID))
 	require.EqualValues(t, 3, calls.Load())
+	// All three real SQL rows are now fresh and idle; a successful due scan is
+	// empty, but says nothing about the total configured inventory or events.
+	require.NoError(t, runtimeRunner.RunDue(t.Context()))
+	scan := readRuntime().LastScan
+	require.Equal(t, "observed", scan.State)
+	require.Zero(t, *scan.Candidates)
+	require.Zero(t, *scan.DueGroups)
+	require.False(t, *scan.LimitReached)
+	for range 3 {
+		require.Equal(t, scan.ObservedAt, readRuntime().LastScan.ObservedAt)
+	}
+	runtimeRunner.Stop()
+	require.Equal(t, "stopped", readRuntime().State)
+	rebuilt := service.NewOllamaCloudUsageService(accounts, upstream, service.NewSettingService(settingsRepo, nil), ollamaBudgetFixtureEncryptor{}, true)
+	t.Cleanup(rebuilt.Stop)
+	runtimeBudget.SetOllamaUsage(rebuilt)
+	restarted := readRuntime()
+	require.NotEqual(t, runtimeRunner.MonitoringRuntime().InstanceID, restarted.InstanceID)
+	require.Nil(t, restarted.LastScan, "process restart must not inherit a prior scan as fresh evidence")
 	summary, err := budget.Summary(t.Context())
 	require.NoError(t, err)
 	require.EqualValues(t, 3, summary.DayUsed)

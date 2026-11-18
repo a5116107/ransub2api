@@ -387,6 +387,9 @@ type OllamaCloudUsageService struct {
 	mu           sync.Mutex
 	started      bool
 	stopped      bool
+	drained      bool
+	background   bool
+	lastScan     *OllamaMonitoringScan
 	cycleMu      sync.Mutex
 	refreshGroup singleflight.Group
 	refreshSlots chan struct{}
@@ -400,10 +403,12 @@ type OllamaCloudUsageService struct {
 	// requests to one controlled refresh per api_key group, reusing the recent
 	// group snapshot for coalesced members so each account still gets its own
 	// result without a second upstream fetch. See ollama_cloud_usage_rate_limit_probe.go.
-	probeMu     sync.Mutex
-	probeQueue  []ollamaCloudUsageProbeRequest
-	probeWake   chan struct{}
-	probeGroups map[string]ollamaCloudUsageProbeGroupEntry
+	probeBatchPending int
+	probeRunning      bool
+	probeMu           sync.Mutex
+	probeQueue        []ollamaCloudUsageProbeRequest
+	probeWake         chan struct{}
+	probeGroups       map[string]ollamaCloudUsageProbeGroupEntry
 }
 
 func NewOllamaCloudUsageService(
@@ -477,6 +482,7 @@ func (s *OllamaCloudUsageService) start(background bool) {
 		return
 	}
 	s.started = true
+	s.background = background
 	s.wg.Add(1)
 	if background {
 		s.wg.Add(1)
@@ -493,14 +499,15 @@ func (s *OllamaCloudUsageService) Stop() {
 		return
 	}
 	s.mu.Lock()
-	if s.stopped {
-		s.mu.Unlock()
-		return
+	if !s.stopped {
+		s.stopped = true
+		s.parentCancel()
 	}
-	s.stopped = true
-	s.parentCancel()
 	s.mu.Unlock()
 	s.wg.Wait()
+	s.mu.Lock()
+	s.drained = true
+	s.mu.Unlock()
 }
 
 func (s *OllamaCloudUsageService) runLoop() {
@@ -756,30 +763,41 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 	}
 	s.cycleMu.Lock()
 	defer s.cycleMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	settings, err := s.GetSettings(ctx)
 	if err != nil {
+		s.observeMonitoringScan(ctx, "settings_unavailable", nil, 0, 0)
 		return err
 	}
 	if !settings.Enabled {
+		s.observeMonitoringScan(ctx, "disabled", settings, 0, 0)
 		return nil
 	}
 	release, acquired := tryAcquireSingletonLeaderLock(ctx, s.lockCache, s.db, ollamaCloudUsageLeaderLockKey, s.instanceID, ollamaCloudUsageLeaderLockTTL)
 	if !acquired {
+		s.observeMonitoringScan(ctx, "not_leader", settings, 0, 0)
 		return nil
 	}
 	defer release()
 
 	writer, ok := s.accountRepo.(ollamaCloudUsageRepository)
 	if !ok {
+		s.observeMonitoringScan(ctx, "inventory_unavailable", settings, 0, 0)
 		return ErrOllamaCloudUsageUnavailable
 	}
 	now := s.currentTime()
 	debounce, maxWait := ollamaCloudUsageDurations(settings)
 	accounts, err := writer.ListDueOllamaCloudUsageAccounts(ctx, now, debounce, maxWait, ollamaCloudUsageMaxPerCycle)
 	if err != nil {
+		s.observeMonitoringScan(ctx, "inventory_unavailable", settings, 0, 0)
 		return fmt.Errorf("list due Ollama Cloud usage accounts: %w", err)
 	}
-	var group errgroup.Group
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	targets := make([]Account, 0, len(accounts))
 	seenGroups := make(map[string]struct{}, len(accounts))
 	for index := range accounts {
 		account := accounts[index]
@@ -795,6 +813,14 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 		// ListDue stamps Account.LastUsedAt with the api_key group MAX(last_used_at).
 		if !ollamaCloudUsageIsAutoRefreshDue(snapshot, account.LastUsedAt, now, debounce, maxWait) {
 			continue
+		}
+		targets = append(targets, account)
+	}
+	s.observeMonitoringScan(ctx, "observed", settings, len(accounts), len(targets))
+	var group errgroup.Group
+	for _, account := range targets {
+		if ctx.Err() != nil {
+			break
 		}
 		accountID := account.ID
 		expected := account

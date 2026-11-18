@@ -74,6 +74,7 @@ export interface MonitoringProbeCoverage {
   minimum_total_requests_per_day?: number
   unestimated_demand_sources?: string[]
   cn_quota_cycle?: CNMonitoringRuntime | null
+  ollama_usage?: OllamaMonitoringRuntime | null
 }
 
 export interface CNMonitoringRuntime {
@@ -96,4 +97,28 @@ export interface MonitoringProbeBudgetDeferral {
   reason: string
   scope: string
   retry_at: string
+}
+
+export interface OllamaMonitoringRuntime {
+  version: number
+  scope: string
+  instance_id: string
+  state: string
+  periodic_state: string
+  observed_at: string
+  scan_interval_seconds: number
+  scan_limit: number
+  pending_rate_limit_probes: number
+  active_rate_limit_probes: number
+  active_refreshes: number
+  last_scan: {
+    observed_at: string
+    state: string
+    enabled: boolean | null
+    interval_minutes: number | null
+    debounce_minutes: number | null
+    candidates: number | null
+    due_groups: number | null
+    limit_reached: boolean | null
+  } | null
 }

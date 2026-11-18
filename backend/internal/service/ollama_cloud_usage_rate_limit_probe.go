@@ -81,9 +81,8 @@ func (s *OllamaCloudUsageService) ScheduleOllamaCloudUsageRateLimitProbe(
 		return false
 	}
 	s.mu.Lock()
-	running := s.started && !s.stopped
-	s.mu.Unlock()
-	if !running {
+	defer s.mu.Unlock()
+	if !s.started || s.stopped {
 		return false
 	}
 
@@ -129,6 +128,13 @@ func (s *OllamaCloudUsageService) wakeProbeLoop() {
 // in-flight probe (including a bounded callback) to finish under its own timeout.
 func (s *OllamaCloudUsageService) probeLoop() {
 	defer s.wg.Done()
+	defer func() {
+		s.probeMu.Lock()
+		s.probeQueue = nil
+		s.probeBatchPending = 0
+		s.probeRunning = false
+		s.probeMu.Unlock()
+	}()
 	for {
 		s.probeMu.Lock()
 		if len(s.probeQueue) == 0 {
@@ -142,15 +148,23 @@ func (s *OllamaCloudUsageService) probeLoop() {
 		}
 		batch := s.probeQueue
 		s.probeQueue = nil
+		s.probeBatchPending = len(batch)
 		s.probeMu.Unlock()
 
 		for _, req := range batch {
 			if s.parentCtx.Err() != nil {
 				return
 			}
+			s.probeMu.Lock()
+			s.probeBatchPending--
+			s.probeRunning = true
+			s.probeMu.Unlock()
 			ctx, cancel := context.WithTimeout(s.parentCtx, ollamaCloudUsageProbeTimeout)
 			s.runOllamaCloudUsageProbe(ctx, req.accountID, req.onExhausted)
 			cancel()
+			s.probeMu.Lock()
+			s.probeRunning = false
+			s.probeMu.Unlock()
 		}
 	}
 }

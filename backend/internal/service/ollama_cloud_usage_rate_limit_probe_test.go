@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -492,4 +493,38 @@ func TestOllamaCloudUsageProbeNewestSuccess(t *testing.T) {
 			require.True(t, got.FetchedAt.Equal(tt.wantFetchedAt), "FetchedAt = %v, want %v", got.FetchedAt, tt.wantFetchedAt)
 		})
 	}
+}
+
+func TestOllamaCloudUsageConcurrentStopWaitsForProbeCallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+		account := ollamaUsageAccount(601)
+		account.Extra[OllamaCloudUsageSessionExtraKey] = "cipher:wos-session=fixture"
+		repo := &ollamaUsageTestRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}}
+		upstream := &ollamaUsageHTTPStub{body: ollamaCloudProbeUsageBody(100, now.Add(time.Hour).Format(time.RFC3339))}
+		svc := NewOllamaCloudUsageService(repo, upstream, NewSettingService(&upstreamBillingProbeSettingRepo{}, nil), ollamaUsageTestEncryptor{}, true)
+		svc.now = func() time.Time { return now }
+		svc.start(false)
+		entered, release := make(chan struct{}), make(chan struct{})
+		require.True(t, svc.ScheduleOllamaCloudUsageRateLimitProbe(account.ID, func(int64, time.Time) { close(entered); <-release }))
+		<-entered
+		done := make(chan struct{}, 2)
+		go func() { svc.Stop(); done <- struct{}{} }()
+		synctest.Wait()
+		go func() { svc.Stop(); done <- struct{}{} }()
+		synctest.Wait()
+		early := 0
+		select {
+		case <-done:
+			early++
+			t.Error("a concurrent Stop returned before the in-flight callback drained")
+		default:
+		}
+		require.False(t, svc.ScheduleOllamaCloudUsageRateLimitProbe(account.ID, func(int64, time.Time) {}))
+		close(release)
+		for range 2 - early {
+			<-done
+		}
+		require.EqualValues(t, 1, upstream.calls.Load())
+	})
 }

@@ -64,8 +64,9 @@ func TestScheduledMonitoringCoverageErrorKeepsReasonAndScope(t *testing.T) {
 	}
 }
 
-func (r *handlerMonitoringBudgetRepo) Summary(context.Context) (*service.MonitoringProbeBudgetSummary, error) {
-	return &service.MonitoringProbeBudgetSummary{Settings: r.settings, MinuteUsed: 7}, nil
+func (r *handlerMonitoringBudgetRepo) Summary(ctx context.Context) (*service.MonitoringProbeBudgetSummary, error) {
+	coverage, err := r.PreviewCoverage(ctx, r.settings)
+	return &service.MonitoringProbeBudgetSummary{Settings: r.settings, MinuteUsed: 7, Coverage: coverage}, err
 }
 
 func (r *handlerMonitoringBudgetRepo) PreviewCoverage(_ context.Context, s service.MonitoringProbeBudgetSettings) (*service.MonitoringProbeCoverage, error) {
@@ -80,10 +81,14 @@ func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
 	probe := service.NewUpstreamBillingProbeService(nil, nil, nil)
 	repo := &handlerMonitoringBudgetRepo{settings: service.DefaultMonitoringProbeBudgetSettings()}
 	probe.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(repo))
+	ollama := service.NewOllamaCloudUsageService(nil, nil, nil, nil, false)
+	t.Cleanup(ollama.Stop)
+	probe.MonitoringBudget().SetOllamaUsage(ollama)
 	h := &AccountHandler{}
 	h.SetUpstreamBillingProbeService(probe)
 	router := gin.New()
 	router.POST("/preview", h.PreviewMonitoringProbeCoverage)
+	router.GET("/budget", h.GetMonitoringProbeBudget)
 	raw, err := json.Marshal(repo.settings)
 	require.NoError(t, err)
 	for _, tc := range []struct {
@@ -99,8 +104,16 @@ func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
 		require.Equal(t, tc.status, w.Code)
 		if tc.status == 200 {
 			require.Contains(t, w.Body.String(), `"inventory_complete":true`)
+			require.Contains(t, w.Body.String(), `"ollama_usage":{`)
+			require.Contains(t, w.Body.String(), ollama.MonitoringRuntime().InstanceID)
+			require.Contains(t, w.Body.String(), `"last_scan":null`)
 		}
 	}
+	wGet := httptest.NewRecorder()
+	router.ServeHTTP(wGet, httptest.NewRequest("GET", "/budget", nil))
+	require.Equal(t, 200, wGet.Code)
+	require.Contains(t, wGet.Body.String(), ollama.MonitoringRuntime().InstanceID)
+	require.Contains(t, wGet.Body.String(), `"last_scan":null`)
 	require.EqualValues(t, 0, repo.settings.Revision, "preview is not a settings write")
 	h.SetUpstreamBillingProbeService(nil)
 	w := httptest.NewRecorder()
