@@ -954,6 +954,17 @@ func (m *PluginManager) RoundTripOpenAIOAuth(ctx context.Context, request *http.
 	if route == nil {
 		return nil, false, nil
 	}
+	if automatic, _ := ctx.Value(automaticMonitoringProbeKey{}).(bool); automatic && monitoringProbeActive(ctx) {
+		// v1 plugins own physical egress, credentials and retries. One RPC is
+		// not a meterable upstream call; defer only automatic probes, without
+		// changing plugin health or falling through to native transport.
+		denial := &MonitoringProbeBudgetDenial{Reason: "plugin_metering_unavailable", Scope: "plugin", RetryAt: time.Now().Add(time.Minute)}
+		recordMonitoringProbeLocalError(ctx, denial)
+		if request != nil && request.Body != nil {
+			_ = request.Body.Close()
+		}
+		return nil, true, denial
+	}
 	requiredByCaller, _ := ctx.Value(pluginUpstreamKeyPolicyContextKey{}).(bool)
 	if (requiredByCaller || upstreamKeyAdmissionRequired(m.cfg)) &&
 		(account.IsOpenAIAgentIdentity() || (request != nil && hasOpenAIAgentAssertion(request.Header))) {

@@ -144,6 +144,15 @@ func (s *MonitoringProbeBudgetService) Summary(ctx context.Context) (*Monitoring
 }
 
 type monitoringProbeBudgetKey struct{}
+
+type automaticMonitoringProbeKey struct{}
+
+// Only scheduler-owned entry points set this marker. Manual tests share the
+// monitoring budget but must retain their existing plugin routing behavior.
+func withAutomaticMonitoringProbe(ctx context.Context) context.Context {
+	return context.WithValue(ctx, automaticMonitoringProbeKey{}, true)
+}
+
 type monitoringProbeBudgetContext struct {
 	service       *MonitoringProbeBudgetService
 	sites         []string

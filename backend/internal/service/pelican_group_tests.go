@@ -304,7 +304,7 @@ func (s *PelicanGroupTestService) RunNow(ctx context.Context, id int64) error {
 	s.runs.Add(1)
 	go func() {
 		defer s.runs.Done()
-		s.execute(plan, until)
+		s.execute(context.Background(), plan, until)
 	}()
 	return nil
 }
@@ -363,13 +363,13 @@ func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *Pelica
 		return
 	}
 	plan.PelicanConfig = freezePelicanQuestion(plan.PelicanConfig, "scheduled:"+roundTime.UTC().Format(time.RFC3339Nano), nil)
-	s.execute(plan, until)
+	s.execute(withAutomaticMonitoringProbe(context.Background()), plan, until)
 }
 
-// execute runs the plan's samples and stores them. It owns its contexts: a run started
-// from an admin request must outlive that request.
-func (s *PelicanGroupTestService) execute(plan *PelicanGroupTestPlan, until time.Time) {
-	runCtx, cancel := context.WithTimeout(context.Background(), pelicanGroupTestRunTimeout)
+// execute runs the plan's samples and stores them. Callers supply a fresh lifetime
+// carrying only internal execution policy, never an admin request's cancellation.
+func (s *PelicanGroupTestService) execute(ctx context.Context, plan *PelicanGroupTestPlan, until time.Time) {
+	runCtx, cancel := context.WithTimeout(ctx, pelicanGroupTestRunTimeout)
 	defer cancel()
 	results := s.runSamples(runCtx, plan)
 	// Persist with a fresh context so timeout failures are still recorded.

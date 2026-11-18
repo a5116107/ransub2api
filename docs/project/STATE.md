@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 Ollama用量预算已本地验证，提交同步中。
+任务：D8.1 插件型自动检测延期本地终验完成。
 范围：唯一H盘/自有功能分支提交同步；不CI/PR/生产，不改业务/自动借票。
-已验：Ollama终稿race466/PG2；扩验1502pass/8skip，原跳过保留。
-已决：仅累计实际usage；耗尽止发、允许在途超额；未知/待结算单列。
-扩验：同Cookie跨推理Key共享；拒绝/结算/失租不改快照，槽释放并恢复。
-来源：19af3c18，drift=false；vet/lint/Linux、UI57/中英四视口通过。
-下一：同步Ollama；插件已决先延期自动检测，保留业务与原结论，沿原边界接线。
+已决：v1插件自动检测先延期；手动/业务不变，保留原结论及原有效期。
+已验：服务race860/SQL15/UI306；vet/lint/Linux/前端构建退出0。
+根因：自动探测进入未计量插件、糖果误记错误；新回归红灯已保留。
+来源：3a12da21c；Go终稿00eb769c/drift=false，插件不伪造物理计量。
+下一：D8.1周期配额/Ollama与事件需求的覆盖预览；其余scope/公平性待。
 等待：原28项20done/8部分；生产/scope/独立基线/缓存域/PR3仍开放。
 生产最后记录.7/fd83f6c91；本轮未连接部署；预览已停/18442关闭。
-Attempt：85
+Attempt：86
 <!-- resume:end -->
 
 ## 目标与入口
@@ -59,7 +59,7 @@ Attempt：85
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
 | D8 | in_progress | 物理/Token/100队列及倍率、账号/分组计划、初始建号容量拒存已本地验；完整scope/其余通道/公平性/生产/严格混版仍缺 |
-| D8.1本地子项 | in_progress | 原预算/容量、Responses、配额/CN周期/Ollama已验；插件先延期接线中，scope/公平性/生产仍缺 |
+| D8.1本地子项 | in_progress | 原预算/容量、Responses、配额/CN周期/Ollama/插件自动延期已本地验；scope/公平性/生产仍缺 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
 
@@ -79,5 +79,5 @@ Attempt：85
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 私有PG55441/PID10868、Redis56441/PID46228、quality-batch-{build,runner.py}及`H:/Root/DevCache/tmp/sub2api-quality-validity`受宿主拒删；预览已停；owner宿主用户，路径/解除条件见DECISIONS。
 - 历史拒删620274603bytes及D2.6日志原位保留；路径/命令/owner见DECISIONS，待宿主解除策略，不绕过。
-- 本轮增量fast+vet通过，非全仓全规则lint。
+- 本轮四包vet/增量fast/Linux及前端构建通过，非全仓全规则lint。
 - 历史构建213260543bytes拒删；路径见DECISIONS，owner宿主用户，解除后清理，回收0。

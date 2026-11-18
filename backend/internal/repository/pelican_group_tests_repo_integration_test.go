@@ -44,6 +44,15 @@ func newPelicanGroupTestPlan(groupID int64, enabled bool, next time.Time) *servi
 }
 
 func TestPelicanGroupMonitoringBudgetPostgresHistoryAndMonitorIsolation(t *testing.T) {
+	for _, tc := range []struct{ reason, scope string }{{"token_limit", "global_day"}, {"plugin_metering_unavailable", "plugin"}} {
+		t.Run(tc.reason, func(t *testing.T) {
+			testPelicanGroupMonitoringBudgetPostgresHistoryAndMonitorIsolation(t, tc.reason, tc.scope)
+		})
+	}
+}
+
+func testPelicanGroupMonitoringBudgetPostgresHistoryAndMonitorIsolation(t *testing.T, reason, scope string) {
+	t.Helper()
 	ctx := t.Context()
 	group := createPelicanGroupTestGroups(t, "budget-deferral")[0]
 	repo := NewPelicanGroupTestRepository(integrationDB)
@@ -53,7 +62,7 @@ func TestPelicanGroupMonitoringBudgetPostgresHistoryAndMonitorIsolation(t *testi
 	zero := 0.0
 	legacy, err := repo.CreateResult(ctx, &service.PelicanGroupTestResult{PlanID: plan.ID, Status: "success", ResponseText: "<svg>old result</svg>", CostUSD: &zero, StartedAt: now, FinishedAt: now})
 	require.NoError(t, err)
-	denial := &service.MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: now.Add(24 * time.Hour)}
+	denial := &service.MonitoringProbeBudgetDenial{Reason: reason, Scope: scope, RetryAt: now.Add(24 * time.Hour)}
 	deferred, err := repo.CreateResult(ctx, &service.PelicanGroupTestResult{PlanID: plan.ID, AccountID: 77, Status: "deferred", ResponseText: "partial answer", CostUSD: &zero, BudgetDeferral: denial, StartedAt: now, FinishedAt: now})
 	require.NoError(t, err)
 	// Rebuild the repository as a different reader; the deferral is not held in memory.

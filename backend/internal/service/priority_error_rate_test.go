@@ -19,6 +19,7 @@ import (
 func TestPriorityMonitoringBudgetDeferralsAreNotSupplierFailures(t *testing.T) {
 	for _, local := range []error{
 		&MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day"},
+		&MonitoringProbeBudgetDenial{Reason: "plugin_metering_unavailable", Scope: "plugin"},
 		ErrMonitoringProbeBudgetUnavailable,
 		ErrMonitoringProbeBudgetLeaseLost,
 	} {

@@ -36,7 +36,7 @@ func TestPelicanGroupMonitoringBudgetDeferralStopsFailover(t *testing.T) {
 					return &ScheduledTestResult{Status: "failed", ErrorMessage: "answer_budget_deferred", ResponseText: "partial output", QualityJudgment: &QualityJudgment{Verdict: "unknown", BudgetDeferral: denial}}, nil
 				}
 			})
-			svc.execute(groupTestPlan(1), groupTestNow)
+			svc.execute(t.Context(), groupTestPlan(1), groupTestNow)
 			require.Len(t, repo.results, 1)
 			result := repo.results[0]
 			require.Empty(t, showcase.published, "deferred samples never enter the public showcase")
@@ -130,7 +130,7 @@ func TestPelicanGroupRetriesPartialTransientFailures(t *testing.T) {
 				11: {Status: "failed", ResponseText: "<html>incomplete", ErrorMessage: message},
 				12: {Status: "success", ResponseText: "<svg>complete</svg>"},
 			}))
-			svc.execute(groupTestPlan(1), groupTestNow)
+			svc.execute(t.Context(), groupTestPlan(1), groupTestNow)
 			require.Len(t, repo.results, 1, "one result is persisted for the scheduled sample")
 			result := repo.results[0]
 			require.Equal(t, "success", result.Status)
@@ -160,7 +160,7 @@ func TestPelicanGroupPartialRetryExhaustionKeepsFailure(t *testing.T) {
 				return &ScheduledTestResult{Status: "failed", ResponseText: "<html>partial", ErrorMessage: "Stream ended before response.completed", LatencyMs: 20000}, nil
 			})
 			svc.now = func() time.Time { return clock }
-			svc.execute(groupTestPlan(1), groupTestNow)
+			svc.execute(t.Context(), groupTestPlan(1), groupTestNow)
 			require.Equal(t, min(available, 3), calls)
 			require.Len(t, repo.results, 1, "exhaustion still records a failure for this interval")
 			result := repo.results[0]

@@ -384,7 +384,7 @@ func TestPelicanGroupTestExecuteSavesPublishesAndFinishes(t *testing.T) {
 		12: {Status: "failed", ResponseText: "not html", ErrorMessage: "Model did not return HTML or SVG"},
 	}))
 	until := groupTestNow.Add(15 * time.Minute)
-	svc.execute(groupTestPlan(2), until)
+	svc.execute(t.Context(), groupTestPlan(2), until)
 
 	require.Len(t, repo.results, 2, "one result per parallel sample")
 	require.Len(t, showcase.published, 1, "only the HTML answer reaches the gallery")
@@ -409,14 +409,14 @@ func TestPelicanGroupTestUnavailableGroupRecordsOneFailure(t *testing.T) {
 	router := &groupTestRouterFake{steps: []routeStep{{account: account(11, "a")}}}
 	svc, showcase := newGroupTestService(repo, router, answers(nil))
 	svc.groups = groupTestGroupsFake{4: {ID: 4, Status: StatusDisabled}}
-	svc.execute(groupTestPlan(3), groupTestNow)
+	svc.execute(t.Context(), groupTestPlan(3), groupTestNow)
 	require.Len(t, repo.results, 1)
 	require.Equal(t, "group_unavailable: group is disabled", repo.results[0].ErrorMessage)
 	require.Empty(t, router.excluded, "the scheduler is not asked for a disabled group")
 	require.Empty(t, showcase.published)
 
 	svc.groups = groupTestGroupsFake{}
-	svc.execute(groupTestPlan(1), groupTestNow)
+	svc.execute(t.Context(), groupTestPlan(1), groupTestNow)
 	require.Contains(t, repo.results[1].ErrorMessage, "group_unavailable")
 }
 

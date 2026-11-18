@@ -467,6 +467,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 // result so an upstream adapter or judge panic cannot kill the process or leave
 // the persistence loop with a nil entry. Panic values may contain request data.
 func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan *ScheduledTestPlan) (result *ScheduledTestResult) {
+	ctx = withAutomaticMonitoringProbe(ctx)
 	started := time.Now()
 	// Keep executor prompt evidence and independent transport observations together.
 	var snapshot PelicanTestConfig

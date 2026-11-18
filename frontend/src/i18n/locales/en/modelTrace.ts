@@ -19,6 +19,9 @@ export default {
   partialHint: 'Fewer than three valid answers: attribution is preliminary. Failed, truncated and insufficient answers were excluded.',
   budgetPaused: 'Round paused by the monitoring budget, not an upstream quality failure',
   budgetReasonUnknown: 'Deferred by the local budget; the reason is unrecognized.',
+  pluginMeteringDeferred: 'Plugin metering not connected; automatic probe deferred',
+  pluginMeteringReason: 'This route uses a v1 plugin. Its physical calls and final credentials are not metered by the host. Business requests and manual tests retain their existing routing.',
+  pluginMeteringResume: 'Deferred until metering is integrated. Earlier verdicts keep their original expiry without renewal; no fallback to native routing.',
   retryAfter: 'Earliest retry:',
   retryUnknown: 'Retry time is unknown. Check the monitoring budget status.',
   budgetRemaining: '{count} remaining questions were not sent; no automatic replacement requests. Completed samples are retained; deferred or lease-lost samples are excluded. The retry time does not guarantee immediate capacity.',
@@ -26,7 +29,7 @@ export default {
     global_minute: 'Global per-minute budget', global_day: 'Global daily budget (UTC)',
     site_minute: 'Site per-minute budget', key_minute: 'Upstream key per-minute budget',
     global: 'Global probe concurrency', site: 'Site probe concurrency', key: 'Upstream key probe concurrency',
-    system: 'Budget coordination system', unknown: 'Unknown budget scope'
+    system: 'Budget coordination system', plugin: 'Plugin physical egress metering', unknown: 'Unknown budget scope'
   },
   bank: 'Bank version and candidate models',
   sample: 'Sample {index}',

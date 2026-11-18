@@ -243,7 +243,7 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 			logger.LegacyPrintf("service.channel_monitor_v2", "candy save group=%d failed: %v", probe.GroupID, err)
 		}
 	}()
-	runCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	runCtx, cancel := context.WithTimeout(withAutomaticMonitoringProbe(ctx), 90*time.Second)
 	defer cancel()
 	plan := &PelicanGroupTestPlan{GroupID: probe.GroupID, ModelID: probe.Model, PelicanConfig: &PelicanTestConfig{QuestionKind: "candy", Prompt: CandyPrompt, ReasoningEffort: probe.ReasoningEffort, ParallelCount: 1, ModelID: probe.Model}}
 	sample := s.groups.runSample(runCtx, plan, group)

@@ -19,6 +19,9 @@ export default {
   partialHint: '不足三份有效回答，当前归因仅供初步参考。失败、截断和数字不足的回答未计入。',
   budgetPaused: '本轮因检测预算暂停，并非上游质量失败',
   budgetReasonUnknown: '本地预算延期，具体原因未识别。',
+  pluginMeteringDeferred: '计量未接入，自动检测已延期',
+  pluginMeteringReason: '该线路使用 v1 插件，实际出站次数和最终凭据尚未纳入宿主计量。业务请求与手动检测仍按原路径执行。',
+  pluginMeteringResume: '计量接入前保持延期；保留原结论及原有效期，不续期，也不回退原生线路。',
   retryAfter: '最早可重试时间：',
   retryUnknown: '重试时间未知，请检查检测预算状态。',
   budgetRemaining: '剩余 {count} 题未发送；不会自动补题。已正常完成的样本保留，延期或失租样本不参与归因。到达重试时间也不保证立即获得额度。',
@@ -26,7 +29,7 @@ export default {
     global_minute: '全局每分钟预算', global_day: '全局每日预算（UTC）',
     site_minute: '该站点每分钟预算', key_minute: '该上游 Key 每分钟预算',
     global: '全局检测并发', site: '该站点检测并发', key: '该上游 Key 检测并发',
-    system: '预算协调系统', unknown: '预算范围未知'
+    system: '预算协调系统', plugin: '插件物理出站计量', unknown: '预算范围未知'
   },
   bank: '指纹库版本与候选模型',
   sample: '样本 {index}',

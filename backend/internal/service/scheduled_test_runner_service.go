@@ -177,7 +177,7 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 			return false
 		}
 	}
-	ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+	ctx = context.WithValue(withAutomaticMonitoringProbe(ctx), qualityProbeContextKey{}, true)
 	// Background plans do not run under the HTTP recovery middleware.
 	defer func() {
 		if recover() != nil {

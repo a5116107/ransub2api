@@ -668,13 +668,17 @@ func TestQualityMonitoringBudgetJevActualUsage(t *testing.T) {
 }
 
 func TestQualityMonitoringBudgetDeferralNeverChangesAccountQuality(t *testing.T) {
-	for _, phase := range []string{"answer", "llm"} {
-		t.Run(phase, func(t *testing.T) {
+	for _, tc := range []struct{ phase, reason, scope string }{
+		{"answer", "request_limit", "global_day"}, {"llm", "request_limit", "global_day"},
+		{"answer", "plugin_metering_unavailable", "plugin"}, {"llm", "plugin_metering_unavailable", "plugin"},
+	} {
+		t.Run(tc.phase+"/"+tc.reason, func(t *testing.T) {
+			phase := tc.phase
 			plan, result := qualityMeasurementFixture()
 			plan.PelicanConfig.Quality.EvidenceValidForSeconds = 120
 			plan.PelicanConfig.Quality.Judge = &QualityJudgeConfig{Kind: "llm", GroupID: 8, ModelID: "fixture-model", Prompt: "compare"}
 			judgment := &QualityJudgment{Verdict: "unknown", Reason: phase + "_budget_deferred",
-				BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Minute)}}
+				BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: tc.reason, Scope: tc.scope, RetryAt: time.Now().Add(time.Minute)}}
 			if phase == "llm" {
 				judgment.Kind, judgment.Reason, judgment.RulesVersion = "llm", "judge_budget_deferred", qualityLLMRulesVersion
 				judgment.GroupID, judgment.ModelID = 8, "fixture-model"
