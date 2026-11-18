@@ -54,6 +54,168 @@ func persistLegacyMonitoringProbeBudget(t *testing.T, db *sql.DB, policy service
 	return policy
 }
 
+func TestResponsesSupportMonitoringBudgetPostgresSharedKeyAndRecovery(t *testing.T) {
+	for _, scope := range []string{"global_day", "key_tokens", "key_requests"} {
+		t.Run(scope, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			var calls, usageMode atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/tenant/v1/responses" {
+					http.Error(w, "unexpected capability request", http.StatusBadRequest)
+					return
+				}
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				usage := `,"usage":{"input_tokens":4,"input_tokens_details":{"cached_tokens":3},"output_tokens":3,"total_tokens":7}`
+				switch usageMode.Load() {
+				case 1:
+					usage = ""
+				case 2:
+					usage = `,"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}`
+				}
+				_, _ = fmt.Fprintf(w, `{"status":"completed","output":[{"type":"function_call","name":"probe_ping"}]%s}`, usage)
+			}))
+			t.Cleanup(server.Close)
+			create := func(name, key string) *service.Account {
+				return mustCreateAccount(t, client, &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+					Status: service.StatusActive, Schedulable: true, Concurrency: 4,
+					Credentials: map[string]any{"api_key": key, "base_url": server.URL + "/tenant/v1"},
+					Extra:       map[string]any{"openai_responses_supported": false, "manual_note": "preserved"}})
+			}
+			first, alias := create("responses-budget", "responses-budget-fixture"), create("responses-alias", "responses-budget-fixture")
+			independent := create("responses-independent", "responses-another-fixture")
+			snapshot := func(id int64) string {
+				var raw string
+				require.NoError(t, db.QueryRowContext(t.Context(), `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&raw))
+				return raw
+			}
+			aliasBefore := snapshot(alias.ID)
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			switch scope {
+			case "global_day":
+				policy.TokensPerDay = 5
+			case "key_tokens":
+				policy.KeyTokensPerMinute = 5
+			case "key_requests":
+				policy.KeyRequestsPerMinute = 1
+			}
+			policy, err := budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+			run := func(id int64) *service.MonitoringProbeBudgetDenial {
+				tests := service.NewAccountTestService(newAccountRepositoryWithSQL(client, db, nil), nil, nil, nil, nil, NewHTTPUpstream(cfg), cfg, nil)
+				tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+				return tests.ProbeOpenAIAPIKeyResponsesSupport(t.Context(), id)
+			}
+			require.Nil(t, run(first.ID), "the 512-output-token payload is not a token reservation; only returned usage is charged")
+			deferred := run(alias.ID)
+			require.NotNil(t, deferred)
+			wantScope, wantReason := "key_minute", "token_limit"
+			if scope == "global_day" {
+				wantScope = "global_day"
+			} else if scope == "key_requests" {
+				wantReason = "request_limit"
+			}
+			require.Equal(t, wantScope, deferred.Scope)
+			require.Equal(t, wantReason, deferred.Reason)
+			require.True(t, deferred.RetryAt.After(time.Now()))
+			require.EqualValues(t, 1, calls.Load(), "same final Key must not gain a new allowance through an alias or service restart")
+			require.Equal(t, aliasBefore, snapshot(alias.ID), "deferral must not refresh capability or account state")
+			if scope == "global_day" {
+				require.NotNil(t, run(independent.ID), "global exhaustion also stops a different credential")
+			} else {
+				require.Nil(t, run(independent.ID), "one credential's hard limit must not stop an independent credential")
+			}
+			completed := int64(calls.Load())
+			stats, err := budget.Summary(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, completed, stats.DayUsed)
+			require.Equal(t, completed*7, stats.DayTokens)
+			require.Equal(t, completed, stats.UsageReported)
+			require.Zero(t, stats.UsageUnknown)
+			require.Zero(t, stats.UsagePending)
+			require.Zero(t, stats.ActiveRequests)
+
+			policy.TokensPerDay, policy.KeyTokensPerMinute, policy.KeyRequestsPerMinute = 100, 100, 100
+			_, err = budget.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			require.Nil(t, run(alias.ID))
+			aliasAfter, err := newAccountRepositoryWithSQL(client, db, nil).GetByID(t.Context(), alias.ID)
+			require.NoError(t, err)
+			require.Equal(t, true, aliasAfter.Extra["openai_responses_supported"])
+			require.Equal(t, "preserved", aliasAfter.Extra["manual_note"])
+			require.True(t, aliasAfter.Schedulable)
+			require.Equal(t, service.StatusActive, aliasAfter.Status)
+			usageMode.Store(1)
+			require.Nil(t, run(alias.ID))
+			usageMode.Store(2)
+			require.Nil(t, run(alias.ID))
+			stats, err = NewMonitoringProbeBudgetRepository(db).Summary(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, completed+3, stats.DayUsed)
+			require.Equal(t, (completed+1)*7, stats.DayTokens, "cache reads are already included in input tokens; absent usage is not an estimated charge")
+			require.Equal(t, completed+2, stats.UsageReported, "explicit zero is a complete report")
+			require.EqualValues(t, 1, stats.UsageUnknown)
+			require.Zero(t, stats.UsagePending)
+			require.Zero(t, stats.ActiveRequests)
+		})
+	}
+}
+
+func TestResponsesSupportMonitoringBudgetPostgresInFlightExcess(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	var calls atomic.Int32
+	ready := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 2 {
+			close(ready)
+		}
+		select {
+		case <-ready:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"completed","output":[{"type":"function_call"}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}`)
+	}))
+	t.Cleanup(server.Close)
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	first := mustCreateAccount(t, client, &service.Account{Name: "responses-concurrent", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true, Concurrency: 4, Credentials: map[string]any{"api_key": "responses-shared-fixture", "base_url": server.URL}})
+	alias := mustCreateAccount(t, client, &service.Account{Name: "responses-concurrent-alias", Platform: first.Platform, Type: first.Type,
+		Status: first.Status, Schedulable: true, Concurrency: 4, Credentials: first.Credentials})
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.TokensPerDay = 5
+	_, err := budget.SaveSettings(t.Context(), policy)
+	require.NoError(t, err)
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	run := func(id int64) *service.MonitoringProbeBudgetDenial {
+		tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, NewHTTPUpstream(cfg), cfg, nil)
+		tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+		return tests.ProbeOpenAIAPIKeyResponsesSupport(t.Context(), id)
+	}
+	results := make(chan *service.MonitoringProbeBudgetDenial, 2)
+	go func() { results <- run(first.ID) }()
+	go func() { results <- run(alias.ID) }()
+	require.Nil(t, <-results)
+	require.Nil(t, <-results)
+	deferred := run(first.ID)
+	require.NotNil(t, deferred)
+	require.Equal(t, "token_limit", deferred.Reason)
+	require.EqualValues(t, 2, calls.Load())
+	stats, err := budget.Summary(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 14, stats.DayTokens, "admitted in-flight calls may exceed the limit; their actual usage must not be clipped")
+	require.EqualValues(t, 2, stats.DayUsed)
+	require.EqualValues(t, 2, stats.UsageReported)
+	require.Zero(t, stats.UsageUnknown)
+	require.Zero(t, stats.UsagePending)
+	require.Zero(t, stats.ActiveRequests)
+}
+
 func TestMonitoringProbeBudgetActualTokenStop(t *testing.T) {
 	db, _ := newBillingAuditDatabase(t)
 	for _, protocol := range []string{"chat", "vertex_json", "vertex_stream", "bedrock_apikey", "bedrock_sigv4"} {

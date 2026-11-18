@@ -1351,7 +1351,10 @@ func (h *AccountHandler) scheduleOpenAIResponsesProbe(account *service.Account) 
 				slog.Error("openai_responses_probe_panic", "account_id", accountID, "recover", r)
 			}
 		}()
-		h.accountTestService.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), accountID)
+		if deferral := h.accountTestService.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), accountID); deferral != nil {
+			slog.Info("openai_responses_probe_budget_deferred", "account_id", accountID,
+				"reason", deferral.Reason, "scope", deferral.Scope, "retry_at", deferral.RetryAt)
+		}
 	}()
 }
 

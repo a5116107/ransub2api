@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -119,9 +120,9 @@ func selectResponsesProbeModel(account *Account) string {
 //
 // 该方法是幂等的：重复调用会以最新探测结果覆盖标记。
 //
-// 关于失败处理：探测本身的失败不应阻塞账号创建——账号能创建/更新成功就够了，
-// 探测结果只影响后续路由优化。所有错误都仅记录日志，不向调用方传播。
-func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Context, accountID int64) {
+// 本地预算或网络/读取故障不阻塞账号创建/更新，也不覆盖旧能力结论。
+// 本地预算延期单独返回供后台调用方记录；供应商响应保持原能力判据。
+func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Context, accountID int64) (deferral *MonitoringProbeBudgetDenial) {
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_probe", "probe_load_account_failed: account_id=%d err=%v", accountID, err)
@@ -179,6 +180,7 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 
 	probeCtx, cancel := context.WithTimeout(ctx, openaiResponsesProbeTimeout)
 	defer cancel()
+	probeCtx = s.monitoringBudget.Context(WithHTTPUpstreamRedirectsDisabled(probeCtx), normalizedBaseURL, false)
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(openaiResponsesProbePayload(probeModel)))
 	if err != nil {
@@ -202,14 +204,23 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		if local := monitoringProbeLocalError(probeCtx); local != nil {
+			return monitoringProbeDeferral(local, time.Now())
+		}
 		// 网络层失败：不写标记，保持 unknown，下次重试或由网关 fallback 处理
 		logger.LegacyPrintf("service.openai_probe", "probe_request_failed: account_id=%d url=%s err=%v", accountID, probeURL, err)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
 	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
 	// 有界排空剩余响应体:既帮助连接复用,又避免行为异常的上游用超大响应体拖住探测。
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	_, drainErr := io.Copy(io.Discard, io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	closeErr := resp.Body.Close()
+	// Body closure settles actual usage and can reveal lease/settlement failure.
+	// Never publish a routing capability before that local outcome is known.
+	if local := monitoringProbeLocalError(probeCtx); local != nil {
+		return monitoringProbeDeferral(local, time.Now())
+	}
+	readErr = errors.Join(readErr, drainErr, closeErr)
 	if readErr != nil {
 		// 响应体读取失败(部分读取/传输错误):按网络层失败处理,保持 unknown,
 		// 不写标记——否则可能给一个 2xx 响应误写 supported=false。
@@ -257,6 +268,7 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		"probe_done: account_id=%d base_url=%s probe_model=%s status=%d supported=%v",
 		accountID, normalizedBaseURL, probeModel, resp.StatusCode, supported,
 	)
+	return
 }
 
 // responsesProbeVerdictIsConclusive 判断本次探测响应是否足以对「上游是否支持带工具的
