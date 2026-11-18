@@ -165,8 +165,9 @@ type monitoringProbeBudgetContext struct {
 // Preserve local admission/lease errors across adapters that emit SSE error
 // strings. This is request-owned and is never accepted from stored rule JSON.
 type monitoringProbeBudgetError struct {
-	mu  sync.Mutex
-	err error
+	mu       sync.Mutex
+	err      error
+	admitted bool // At least one physical admission; not a successful observation.
 }
 
 func (e *monitoringProbeBudgetError) record(err error) {
@@ -448,6 +449,11 @@ func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys [
 	}
 	if id == "" {
 		return parent, nil, ErrMonitoringProbeBudgetUnavailable
+	}
+	if probe.local != nil {
+		probe.local.mu.Lock()
+		probe.local.admitted = true
+		probe.local.mu.Unlock()
 	}
 	ctx, cancel := context.WithCancelCause(parent)
 	var usage *monitoringProbeTokenCollector

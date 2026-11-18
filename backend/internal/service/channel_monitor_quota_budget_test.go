@@ -5,12 +5,16 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -63,13 +67,13 @@ func TestCNProviderBalanceCheckMonitoringBudgetDispatchAndRecovery(t *testing.T)
 			budget := &monitoringBudgetRepoStub{denyAt: 1, err: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}}
 			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
 
-			svc.runOnce()
+			svc.runOnce(t.Context())
 
 			require.Len(t, budget.requests, 1, "each background dispatch must install the shared policy")
 			require.Empty(t, upstream.requests)
 			require.Empty(t, accounts.extraWrites)
 			budget.denyAt = 0
-			svc.runOnce()
+			svc.runOnce(t.Context())
 			require.Len(t, upstream.requests, complete)
 			require.Len(t, budget.requests, complete+1)
 			require.Equal(t, complete, budget.released)
@@ -505,4 +509,338 @@ func TestChannelMonitorQuotaBudgetFlightIsolationFromManualQueries(t *testing.T)
 	require.Empty(t, accounts.extraWrites)
 	finish()
 	require.NoError(t, <-manualDone)
+}
+
+// The queue fixture crosses the real physical budget boundary; it does not
+// assume the runner's intended ordering or manufacture a successful snapshot.
+type cnQueueQuotaProber struct {
+	query func(context.Context, int64) (*CNProviderQuotaProbeResult, error)
+}
+
+func (p cnQueueQuotaProber) QueryUsage(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
+	return p.query(ctx, id)
+}
+
+func cnQueueAccounts(t *testing.T, count int) *fakeCNCheckRepo {
+	t.Helper()
+	repo := &fakeCNCheckRepo{byPlatform: map[string][]Account{}}
+	for i := 1; i <= count; i++ {
+		account := Account{ID: int64(i), Platform: PlatformKimi, Type: AccountTypeAPIKey, Status: StatusActive,
+			Credentials: map[string]any{"account_mode": AccountModeCoding}}
+		if i%3 == 1 {
+			account = *mistralUsageTestAccount(int64(i), "")
+			require.True(t, account.mistralUsageSupported())
+		} else if i%3 == 2 {
+			account = *clineTestAccount(int64(i))
+			require.True(t, account.clineAccountAPISupported())
+		}
+		// Threshold-paused coding accounts still need recovery observations.
+		account.Status, account.Schedulable = StatusActive, i%7 != 0
+		repo.byPlatform[account.Platform] = append(repo.byPlatform[account.Platform], account)
+	}
+	return repo
+}
+
+func TestCNProviderBalanceCheckFairBudgetCycles(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo := cnQueueAccounts(t, 100)
+		var mu sync.Mutex
+		physical := map[int64]int{}
+		budgetUsed := 0
+		budget := &monitoringBudgetRepoStub{acquire: func(_ MonitoringProbeBudgetRequest, _ int) (string, error) {
+			if budgetUsed >= 4 {
+				return "", &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute", RetryAt: time.Now().Add(time.Minute)}
+			}
+			budgetUsed++
+			return "queue-fixture-lease", nil
+		}}
+		prober := cnQueueQuotaProber{query: func(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
+			calls := 1
+			if id == 1 {
+				calls = 6 // Cannot complete inside this cycle; must not starve peers.
+			}
+			for range calls {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://fixture.invalid/usage", nil)
+				if err != nil {
+					return nil, err
+				}
+				req.Header.Set("Authorization", fmt.Sprintf("Bearer fixture-%d", id))
+				req, release, err := BeginMonitoringProbeRequest(req)
+				if err != nil {
+					return nil, err
+				}
+				mu.Lock()
+				physical[id]++
+				mu.Unlock()
+				time.Sleep(time.Millisecond)
+				if err := FinishMonitoringProbeResponse(req.Context(), nil, nil, release); err != nil {
+					return nil, err
+				}
+			}
+			if id%17 == 0 {
+				return nil, errors.New("fixture supplier failure")
+			}
+			return &CNProviderQuotaProbeResult{Success: true}, nil
+		}}
+		svc := &CNProviderBalanceCheckService{accountRepo: repo, quotaService: prober, cfg: &config.Config{}}
+		svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+		for cycle := 0; cycle < 40; cycle++ {
+			// Continuing inventory growth cannot take every older deferred turn.
+			repo.byPlatform[PlatformKimi] = append(repo.byPlatform[PlatformKimi], Account{ID: int64(1000 + cycle), Platform: PlatformKimi,
+				Type: AccountTypeAPIKey, Status: StatusActive, Credentials: map[string]any{"account_mode": AccountModeCoding}})
+			before := len(budget.requests)
+			budgetUsed = 0
+			svc.runOnce(t.Context())
+			if got := len(budget.requests) - before; got > 4+cnQuotaProbeConcurrency {
+				t.Errorf("cycle %d: global exhaustion caused %d admission requests; want at most budget + in-flight workers", cycle, got)
+			}
+		}
+		for id := int64(1); id <= 100; id++ {
+			require.Positive(t, physical[id], "original account %d was starved across multiple cycles", id)
+		}
+		for _, request := range budget.requests {
+			require.False(t, request.Recovery)
+			require.False(t, request.MeterTokens)
+		}
+		require.Equal(t, budget.released, sumCNPhysicalCalls(physical), "every physical acquisition must be released")
+	})
+}
+
+func sumCNPhysicalCalls(calls map[int64]int) int {
+	total := 0
+	for _, count := range calls {
+		total += count
+	}
+	return total
+}
+
+func TestCNProviderBalanceCheckStopCancelsQueue(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Gateway.CNProviders.BalanceCheckEnabled = true
+		var starts atomic.Int32
+		svc := NewCNProviderBalanceCheckService(cnQueueAccounts(t, 100), &CNProviderBalanceService{}, nil, cfg, time.Minute)
+		svc.quotaService = cnQueueQuotaProber{query: func(ctx context.Context, _ int64) (*CNProviderQuotaProbeResult, error) {
+			starts.Add(1)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+		baseline := runtime.NumGoroutine()
+		svc.Start()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		started, goroutines := starts.Load(), runtime.NumGoroutine()-baseline
+		stopping := time.Now()
+		svc.Stop()
+		elapsed := time.Since(stopping)
+		svc.Stop()
+		require.EqualValues(t, cnQuotaProbeConcurrency, started)
+		require.LessOrEqual(t, goroutines, 12, "queued accounts must not own a goroutine each")
+		require.Less(t, elapsed, time.Second, "shutdown must cancel the cycle, not wait for its 300s deadline")
+		require.Equal(t, started, starts.Load(), "shutdown must not start queued accounts with an expired context")
+	})
+}
+
+func TestCNProviderBalanceCheckQueueBudgetScope(t *testing.T) {
+	for _, scope := range []string{"key", "key_minute", "site", "site_minute", "global", "global_minute", "global_day", "system"} {
+		t.Run(scope, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				budget := &monitoringBudgetRepoStub{acquire: func(_ MonitoringProbeBudgetRequest, n int) (string, error) {
+					if n == 1 {
+						return "", &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: scope, RetryAt: time.Now().Add(time.Minute)}
+					}
+					return "scope-fixture-lease", nil
+				}}
+				var completed atomic.Int32
+				prober := cnQueueQuotaProber{query: func(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
+					req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://fixture-%d.invalid/usage", id), nil)
+					if err != nil {
+						return nil, err
+					}
+					req.Header.Set("Authorization", fmt.Sprintf("Bearer fixture-%d", id))
+					req, release, err := BeginMonitoringProbeRequest(req)
+					if err != nil {
+						return nil, err
+					}
+					time.Sleep(time.Millisecond)
+					if err := FinishMonitoringProbeResponse(req.Context(), nil, nil, release); err != nil {
+						return nil, err
+					}
+					completed.Add(1)
+					return &CNProviderQuotaProbeResult{Success: true}, nil
+				}}
+				svc := &CNProviderBalanceCheckService{accountRepo: cnQueueAccounts(t, 100), quotaService: prober, cfg: &config.Config{}}
+				svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+				svc.runOnce(svc.monitoringBudget.qualityContext(t.Context()))
+				switch scope {
+				case "key", "key_minute", "site", "site_minute":
+					require.Len(t, budget.requests, 100, "local denial must not block independent origins/credentials")
+					require.EqualValues(t, 99, completed.Load())
+				default:
+					require.LessOrEqual(t, len(budget.requests), cnQuotaProbeConcurrency, "global/system denial must stop further dispatch")
+				}
+				require.EqualValues(t, completed.Load(), budget.released, "all already-admitted work must settle")
+			})
+		})
+	}
+}
+
+type cnQueueInventoryRepo struct {
+	*fakeCNCheckRepo
+	list func(context.Context, string) ([]Account, error)
+}
+
+func (r cnQueueInventoryRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return r.list(ctx, platform)
+}
+
+func TestCNProviderBalanceCheckQueueInventoryLifecycle(t *testing.T) {
+	base := cnQueueAccounts(t, 12)
+	failed := false
+	repo := cnQueueInventoryRepo{fakeCNCheckRepo: base, list: func(ctx context.Context, platform string) ([]Account, error) {
+		if failed && platform == PlatformCline {
+			return nil, errors.New("fixture inventory unavailable")
+		}
+		return base.ListByPlatform(ctx, platform)
+	}}
+	svc := &CNProviderBalanceCheckService{accountRepo: repo, quotaService: &fakeCNQuotaProber{}, cfg: &config.Config{}}
+	svc.runOnce(t.Context())
+	require.Len(t, svc.turns, 12)
+	clineID := base.byPlatform[PlatformCline][0].ID
+	prior := svc.turns[clineID]
+	failed = true
+	svc.runOnce(t.Context())
+	require.Equal(t, prior, svc.turns[clineID], "partial inventory must preserve absent accounts' deferred age")
+	failed = false
+	delete(base.byPlatform, PlatformCline)
+	svc.runOnce(t.Context())
+	require.Len(t, svc.turns, 8, "complete inventory must reclaim removed targets")
+	clear(base.byPlatform)
+	svc.runOnce(t.Context())
+	require.Empty(t, svc.turns)
+}
+
+func TestCNProviderBalanceCheckQueueCancelsCollection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Gateway.CNProviders.BalanceCheckEnabled = true
+		var lists, probes atomic.Int32
+		repo := cnQueueInventoryRepo{list: func(ctx context.Context, _ string) ([]Account, error) {
+			lists.Add(1)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+		svc := NewCNProviderBalanceCheckService(repo, &CNProviderBalanceService{}, nil, cfg, time.Minute)
+		svc.quotaService = cnQueueQuotaProber{query: func(context.Context, int64) (*CNProviderQuotaProbeResult, error) {
+			probes.Add(1)
+			return &CNProviderQuotaProbeResult{Success: true}, nil
+		}}
+		svc.Start()
+		svc.Start()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		start := time.Now()
+		svc.Stop()
+		svc.Start()
+		time.Sleep(time.Minute)
+		require.Less(t, time.Since(start)-time.Minute, time.Second)
+		require.EqualValues(t, 1, lists.Load(), "duplicate Start and Start after Stop must not create another ticker")
+		require.Zero(t, probes.Load(), "canceled inventory must not dispatch")
+	})
+}
+
+func TestCNProviderBalanceCheckQueueOverlapAndPanicRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var started atomic.Int32
+		proceed := make(chan struct{})
+		svc := &CNProviderBalanceCheckService{accountRepo: cnQueueAccounts(t, 12), cfg: &config.Config{},
+			quotaService: cnQueueQuotaProber{query: func(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
+				started.Add(1)
+				<-proceed
+				if id == 1 {
+					panic("fixture provider panic")
+				}
+				return &CNProviderQuotaProbeResult{Success: true}, nil
+			}}}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			svc.runOnce(t.Context())
+		}()
+		synctest.Wait()
+		require.EqualValues(t, cnQuotaProbeConcurrency, started.Load())
+		svc.runOnce(t.Context())
+		require.EqualValues(t, cnQuotaProbeConcurrency, started.Load(), "an overlapping cycle must not duplicate the queue")
+		close(proceed)
+		<-done
+		require.EqualValues(t, 12, started.Load(), "a failed worker must release its queue slot")
+	})
+}
+
+type cnQueueBalanceRepo struct {
+	AccountRepository
+	load func(context.Context, int64) (*Account, error)
+}
+
+func (r cnQueueBalanceRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	return r.load(ctx, id)
+}
+
+func TestCNProviderBalanceCheckQueuePaygSerialWithoutBlockingQuota(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo := cnQueueAccounts(t, 12)
+		for platform := range repo.byPlatform {
+			for i := range repo.byPlatform[platform] {
+				repo.byPlatform[platform][i].ID += 1000
+			}
+		}
+		for id := int64(101); id <= 105; id++ {
+			repo.byPlatform[PlatformDeepseek] = append(repo.byPlatform[PlatformDeepseek], Account{ID: id, Platform: PlatformDeepseek,
+				Status: StatusActive, Schedulable: true, Type: AccountTypeAPIKey})
+		}
+		var mu sync.Mutex
+		active, maxActive, paygActive, maxPayg, calls, paygCalls := 0, 0, 0, 0, 0, 0
+		quotaWhilePayg := false
+		check := func(payg bool) {
+			mu.Lock()
+			active++
+			calls++
+			if payg {
+				paygActive++
+				paygCalls++
+			} else if paygActive > 0 {
+				quotaWhilePayg = true
+			}
+			maxActive, maxPayg = max(maxActive, active), max(maxPayg, paygActive)
+			mu.Unlock()
+			if payg {
+				time.Sleep(3 * time.Millisecond)
+			} else {
+				time.Sleep(time.Millisecond)
+			}
+			mu.Lock()
+			active--
+			if payg {
+				paygActive--
+			}
+			mu.Unlock()
+		}
+		balanceRepo := cnQueueBalanceRepo{load: func(context.Context, int64) (*Account, error) {
+			check(true)
+			return nil, errors.New("fixture balance unavailable")
+		}}
+		svc := &CNProviderBalanceCheckService{accountRepo: repo, cfg: &config.Config{},
+			balanceService: NewCNProviderBalanceService(balanceRepo, nil, nil, nil),
+			quotaService: cnQueueQuotaProber{query: func(context.Context, int64) (*CNProviderQuotaProbeResult, error) {
+				check(false)
+				return &CNProviderQuotaProbeResult{Success: true}, nil
+			}}}
+		// Older payg IDs run first without relying on platform collection order.
+		svc.runOnce(t.Context())
+		require.Equal(t, 17, calls)
+		require.Equal(t, 5, paygCalls)
+		require.Equal(t, 1, maxPayg)
+		require.Equal(t, cnQuotaProbeConcurrency, maxActive)
+		require.True(t, quotaWhilePayg, "a slow balance check must leave the other slots available")
+	})
 }

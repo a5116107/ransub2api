@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,7 @@ type cnQuotaProber interface {
 	QueryUsage(ctx context.Context, accountID int64) (*CNProviderQuotaProbeResult, error)
 }
 
-// cnQuotaProbeConcurrency 周期任务并发探测额度账号的并发度。
+// cnQuotaProbeConcurrency bounds all periodic checks; payg keeps one in-flight.
 const cnQuotaProbeConcurrency = 4
 
 // CNProviderBalanceCheckService 周期性探测国产供应商账号：
@@ -37,9 +38,14 @@ type CNProviderBalanceCheckService struct {
 	monitoringBudget *MonitoringProbeBudgetService
 	cfg              *config.Config
 	interval         time.Duration
-	stopCh           chan struct{}
-	stopOnce         sync.Once
+	lifecycleMu      sync.Mutex
+	started          bool
+	stopped          bool
+	cancel           context.CancelFunc
 	wg               sync.WaitGroup
+	cycleMu          sync.Mutex
+	turnSequence     uint64
+	turns            map[int64]cnBalanceProbeTurn
 }
 
 // NewCNProviderBalanceCheckService 构造周期余额/额度检测服务。
@@ -57,7 +63,6 @@ func NewCNProviderBalanceCheckService(
 		quotaService:   quotaService,
 		cfg:            cfg,
 		interval:       interval,
-		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -68,42 +73,49 @@ func (s *CNProviderBalanceCheckService) SetMonitoringBudget(budget *MonitoringPr
 // Give every account its own local error state. Detached provider flights keep
 // that policy, while ordinary manual quota queries remain unmetered.
 func (s *CNProviderBalanceCheckService) probeContext(ctx context.Context) context.Context {
+	// The dispatcher owns a fresh state per job. Its adapter must retain that
+	// state so local deferrals and admitted physical work reach the queue.
+	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok && probe.accountTest && probe.service == s.monitoringBudget {
+		return withAccountTestMonitoringSite(ctx, "")
+	}
 	return withAccountTestMonitoringSite(s.monitoringBudget.qualityContext(ctx), "")
 }
 
-func logCNMonitoringBudgetDeferral(accountID int64, err error) bool {
+func logCNMonitoringBudgetDeferral(ctx context.Context, accountID int64, err error) bool {
 	denial := monitoringProbeDeferral(err, time.Now())
 	if denial == nil {
 		return false
 	}
+	recordMonitoringProbeLocalError(ctx, err)
 	slog.Info("cn_provider_monitoring_budget_deferred", "account_id", accountID,
 		"reason", denial.Reason, "scope", denial.Scope, "retry_at", denial.RetryAt)
 	return true
 }
 
 func (s *CNProviderBalanceCheckService) Start() {
-	if s == nil || s.accountRepo == nil || s.balanceService == nil || s.cfg == nil {
+	if s == nil || s.accountRepo == nil || s.balanceService == nil || s.cfg == nil ||
+		!s.cfg.Gateway.CNProviders.BalanceCheckEnabled || s.interval <= 0 {
 		return
 	}
-	if !s.cfg.Gateway.CNProviders.BalanceCheckEnabled {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.started || s.stopped {
 		return
 	}
-	if s.interval <= 0 {
-		return
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel, s.started = cancel, true
 	log.Printf("[CNBalance] started (interval=%s threshold=%.2f)", s.interval, s.cfg.Gateway.CNProviders.BalanceThreshold)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
-
-		// 启动后先等待一个周期再首次探测，避免与进程启动峰重叠。
+		// Wait one period before the first cycle, preserving startup behavior.
 		for {
 			select {
 			case <-ticker.C:
-				s.runOnce()
-			case <-s.stopCh:
+				s.runOnce(ctx)
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -114,174 +126,234 @@ func (s *CNProviderBalanceCheckService) Stop() {
 	if s == nil {
 		return
 	}
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-	})
+	s.lifecycleMu.Lock()
+	s.stopped = true
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.lifecycleMu.Unlock()
 	s.wg.Wait()
 }
 
-func (s *CNProviderBalanceCheckService) runOnce() {
-	// 收集 coding 探测目标（kimi/deepseek + 智谱）与 payg 检查队列。
-	// coding 探测统一在收集完成后按 4 并发执行：单账号探测 15-20s，串行 ×
-	// 多账号会耗尽整体预算（120s 上限），排在后面的账号快照会饥饿，
-	// 连锁影响阈值停调的新鲜度判定。
-	type quotaTarget struct {
-		id       int64
-		platform string
-	}
-	var quotaTargets []quotaTarget
-	var paygTargets []*Account
-	collect := func(platform string, accounts []Account) {
-		for i := range accounts {
-			account := &accounts[i]
-			if !account.IsActive() {
-				continue
-			}
-			// 挂在国产平台下、base_url 指向官方 ollama.com 的账号由 Ollama Cloud
-			// 用量窗口负责：CN 探测端点由 base_url 衍生，ollama.com 会被出站
-			// URL 白名单拒绝（CN_BALANCE_URL_REJECTED），不跳过则每个周期都
-			// 白跑并产生告警噪声。
-			if IsOllamaCloudUsageAccount(account) {
-				continue
-			}
-			// coding 账号：探测滚动窗口并落快照（不要求 Schedulable——已被
-			// 阈值停调的账号也需要新鲜快照决定是否续停）。
-			if account.IsCodingPlan() {
-				quotaTargets = append(quotaTargets, quotaTarget{id: account.ID, platform: account.Platform})
-				continue
-			}
-			// payg 余额探测仅 kimi/deepseek（智谱 / MiniMax 无公开余额端点，
-			// payg 账号依赖响应式 402/429 处理）。
-			if platform != PlatformZhipu && platform != PlatformMiniMax && account.Schedulable {
-				paygTargets = append(paygTargets, account)
-			}
-		}
-	}
-	for _, platform := range s.platforms() {
-		accounts, err := s.accountRepo.ListByPlatform(context.Background(), platform)
-		if err != nil {
-			log.Printf("[CNBalance] list %s accounts failed: %v", platform, err)
-			continue
-		}
-		collect(platform, accounts)
-	}
-	// 智谱 / MiniMax 无余额端点，仅进额度探测。
-	if s.quotaService != nil {
-		for _, platform := range []string{PlatformZhipu, PlatformMiniMax} {
-			accounts, err := s.accountRepo.ListByPlatform(context.Background(), platform)
-			if err != nil {
-				log.Printf("[CNBalance] list %s accounts failed: %v", platform, err)
-				continue
-			}
-			collect(platform, accounts)
-		}
-	}
+// Local scheduling age, not evidence freshness or a distributed reservation.
+// A rejected request keeps its age; an admitted physical attempt (including a
+// partial adapter chain) consumes a turn, so an expensive chain cannot monopolize
+// each renewed budget. tried breaks ties between equally old rejected jobs.
+type cnBalanceProbeTurn struct {
+	served uint64
+	tried  uint64
+}
 
-	// 预算按工作量放大：4 并发 × 15s/批 + payg 每账号 5s，下限 30s 上限 300s。
-	accountTargets := s.collectAccountProbeTargets()
-	batches := (len(quotaTargets) + len(accountTargets) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
-	timeout := 30*time.Second + time.Duration(batches)*15*time.Second + time.Duration(len(paygTargets))*5*time.Second
-	if timeout > 300*time.Second {
-		timeout = 300 * time.Second
+type accountProbeCheck func(ctx context.Context, account *Account, threshold float64) cnBalanceCheckOutcome
+
+type accountProbeTarget struct {
+	account *Account
+	check   accountProbeCheck
+	balance bool
+}
+
+func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
+	// A ticker is serial, but a concurrent invocation must not duplicate its
+	// queue or race the local fairness state.
+	if !s.cycleMu.TryLock() {
+		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer s.cycleMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	collectCtx, cancelCollect := context.WithTimeout(ctx, 30*time.Second)
+	targets, complete := s.collectProbeTargets(collectCtx)
+	cancelCollect()
+	if ctx.Err() != nil || len(targets) == 0 {
+		if complete {
+			s.turns = nil
+		}
+		return
+	}
+	if s.turns == nil {
+		s.turns = make(map[int64]cnBalanceProbeTurn, len(targets))
+	}
+	s.turnSequence++
+	present := make(map[int64]bool, len(targets))
+	for _, target := range targets {
+		id := target.account.ID
+		present[id] = true
+		if _, exists := s.turns[id]; !exists {
+			s.turns[id] = cnBalanceProbeTurn{served: s.turnSequence}
+		}
+	}
+	if complete {
+		for id := range s.turns {
+			if !present[id] {
+				delete(s.turns, id)
+			}
+		}
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		left, right := s.turns[targets[i].account.ID], s.turns[targets[j].account.ID]
+		if left.served != right.served {
+			return left.served < right.served
+		}
+		if left.tried != right.tried {
+			return left.tried < right.tried
+		}
+		return targets[i].account.ID < targets[j].account.ID
+	})
+	var balances, quotas []int
+	for i, target := range targets {
+		if target.balance {
+			balances = append(balances, i)
+		} else {
+			quotas = append(quotas, i)
+		}
+	}
+	// Retain the original workload-derived 30..300s bound. This is not a
+	// promise that every target fits or that a detached flight was withdrawn.
+	batches := (len(quotas) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
+	timeout := min(300*time.Second, 30*time.Second+time.Duration(batches)*15*time.Second+time.Duration(len(balances))*5*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
+	type finished struct {
+		index   int
+		outcome cnBalanceCheckOutcome
+		served  bool
+		stop    bool
+	}
+	done := make(chan finished, cnQuotaProbeConcurrency)
 	threshold := s.cfg.Gateway.CNProviders.BalanceThreshold
-	paused, cleared := 0, 0
-	for _, account := range paygTargets {
-		switch s.checkOne(ctx, account, threshold) {
+	active, nextBalance, nextQuota, paused, cleared := 0, 0, 0, 0, 0
+	balanceBusy, exhausted := false, false
+	for {
+		for !exhausted && runCtx.Err() == nil && active < cnQuotaProbeConcurrency {
+			index := -1
+			if nextQuota < len(quotas) {
+				index = quotas[nextQuota]
+			}
+			if !balanceBusy && nextBalance < len(balances) && (index < 0 || balances[nextBalance] < index) {
+				index = balances[nextBalance]
+			}
+			if index < 0 {
+				break
+			}
+			target := targets[index]
+			if target.balance {
+				nextBalance++
+				balanceBusy = true
+			} else {
+				nextQuota++
+			}
+			s.turnSequence++
+			turn := s.turns[target.account.ID]
+			turn.tried = s.turnSequence
+			s.turns[target.account.ID] = turn
+			active++
+			// Always create job-owned state, even if the caller already carries
+			// this service's policy. Adapters retain it within this job only.
+			jobCtx := withAccountTestMonitoringSite(s.monitoringBudget.qualityContext(runCtx), "")
+			go func() {
+				result := finished{index: index}
+				defer func() {
+					if recover() != nil {
+						log.Printf("[CNBalance] probe account %d panicked", target.account.ID)
+					}
+					local := monitoringProbeLocalError(jobCtx)
+					denial := monitoringProbeDeferral(local, time.Now())
+					result.served = denial == nil && jobCtx.Err() == nil
+					if probe, ok := jobCtx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok && probe.local != nil {
+						probe.local.mu.Lock()
+						result.served = result.served || probe.local.admitted
+						probe.local.mu.Unlock()
+					}
+					if denial != nil {
+						switch denial.Scope {
+						case "key", "key_minute", "site", "site_minute":
+							// Independent credentials/sites may still have capacity.
+						default:
+							result.stop = true
+						}
+					}
+					done <- result
+				}()
+				result.outcome = target.check(jobCtx, target.account, threshold)
+			}()
+		}
+		if active == 0 {
+			break
+		}
+		result := <-done
+		active--
+		target := targets[result.index]
+		if target.balance {
+			balanceBusy = false
+		}
+		if result.served {
+			s.turnSequence++
+			turn := s.turns[target.account.ID]
+			turn.served = s.turnSequence
+			s.turns[target.account.ID] = turn
+		}
+		exhausted = exhausted || result.stop
+		switch result.outcome {
 		case cnBalancePaused:
 			paused++
 		case cnBalanceCleared:
 			cleared++
 		}
 	}
-
-	if len(quotaTargets) > 0 && s.quotaService != nil {
-		sem := make(chan struct{}, cnQuotaProbeConcurrency)
-		var wg sync.WaitGroup
-		for _, target := range quotaTargets {
-			wg.Add(1)
-			go func(t quotaTarget) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				s.probeQuota(ctx, t.id, t.platform)
-			}(target)
-		}
-		wg.Wait()
-	}
-
-	if len(accountTargets) > 0 {
-		sem := make(chan struct{}, cnQuotaProbeConcurrency)
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		for _, target := range accountTargets {
-			wg.Add(1)
-			go func(t accountProbeTarget) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				switch t.check(ctx, t.account, threshold) {
-				case cnBalancePaused:
-					mu.Lock()
-					paused++
-					mu.Unlock()
-				case cnBalanceCleared:
-					mu.Lock()
-					cleared++
-					mu.Unlock()
-				}
-			}(target)
-		}
-		wg.Wait()
-	}
-
 	if paused > 0 || cleared > 0 {
 		log.Printf("[CNBalance] paused=%d cleared=%d (threshold=%.2f)", paused, cleared, threshold)
 	}
 }
 
-// accountProbeCheck 是走账号接口探测的平台的周期检测函数。
-type accountProbeCheck func(ctx context.Context, account *Account, threshold float64) cnBalanceCheckOutcome
-
-// accountProbeTarget 是一个待检测账号与其平台的检测函数。
-type accountProbeTarget struct {
-	account *Account
-	check   accountProbeCheck
-}
-
-// collectAccountProbeTargets 选出走账号接口探测的平台上、官方主机上激活的账号，并配上
-// 该平台的检测函数。一次探测同时刷新窗口快照与积分余额：
-//   - Command Code：手动可调度的账号再按积分余额停调 / 恢复（窗口快照供阈值停调读取）；
-//   - Cline：探测中按结果设置或解除两个钱包的冷却，不停整个账号。
-func (s *CNProviderBalanceCheckService) collectAccountProbeTargets() []accountProbeTarget {
-	if s.quotaService == nil {
-		return nil
-	}
+// Collect only original supported active targets. A partial inventory does not
+// erase absent scheduling ages; a complete one reclaims removed account state.
+func (s *CNProviderBalanceCheckService) collectProbeTargets(ctx context.Context) ([]accountProbeTarget, bool) {
 	var targets []accountProbeTarget
-	for _, p := range []struct {
-		platform  string
-		supported func(*Account) bool
-		check     accountProbeCheck
-	}{
-		{PlatformCommandCode, (*Account).commandCodeUsageSupported, s.checkCommandCode},
-		{PlatformCline, (*Account).clineAccountAPISupported, s.checkCline},
-		{PlatformMistral, (*Account).mistralUsageSupported, s.checkMistral},
-	} {
-		accounts, err := s.accountRepo.ListByPlatform(context.Background(), p.platform)
+	complete := true
+	seen := map[int64]bool{}
+	for _, platform := range []string{PlatformKimi, PlatformDeepseek, PlatformZhipu, PlatformMiniMax, PlatformCommandCode, PlatformCline, PlatformMistral} {
+		if ctx.Err() != nil {
+			return targets, false
+		}
+		if s.quotaService == nil && platform != PlatformKimi && platform != PlatformDeepseek {
+			continue
+		}
+		accounts, err := s.accountRepo.ListByPlatform(ctx, platform)
 		if err != nil {
-			log.Printf("[CNBalance] list %s accounts failed: %v", p.platform, err)
+			complete = false
+			log.Printf("[CNBalance] list %s accounts failed: %v", platform, err)
 			continue
 		}
 		for i := range accounts {
-			if account := &accounts[i]; account.IsActive() && p.supported(account) {
-				targets = append(targets, accountProbeTarget{account: account, check: p.check})
+			account := &accounts[i]
+			if !account.IsActive() || seen[account.ID] || IsOllamaCloudUsageAccount(account) {
+				continue
+			}
+			var check accountProbeCheck
+			balance := false
+			switch {
+			case platform == PlatformCommandCode && account.commandCodeUsageSupported() && s.quotaService != nil:
+				check = s.checkCommandCode
+			case platform == PlatformCline && account.clineAccountAPISupported() && s.quotaService != nil:
+				check = s.checkCline
+			case platform == PlatformMistral && account.mistralUsageSupported() && s.quotaService != nil:
+				check = s.checkMistral
+			case account.IsCodingPlan() && s.quotaService != nil && (platform == PlatformKimi || platform == PlatformDeepseek || platform == PlatformZhipu || platform == PlatformMiniMax):
+				check = func(ctx context.Context, a *Account, _ float64) cnBalanceCheckOutcome {
+					s.probeQuota(ctx, a.ID, a.Platform)
+					return cnBalanceNoChange
+				}
+			case (platform == PlatformKimi || platform == PlatformDeepseek) && !account.IsCodingPlan() && account.Schedulable && s.balanceService != nil:
+				check, balance = s.checkOne, true
+			}
+			if check != nil {
+				seen[account.ID] = true
+				targets = append(targets, accountProbeTarget{account: account, check: check, balance: balance})
 			}
 		}
 	}
-	return targets
+	return targets, complete
 }
 
 // checkCommandCode 探测 Command Code 窗口与积分；手动可调度的账号再按积分余额停调 / 恢复。
@@ -289,7 +361,7 @@ func (s *CNProviderBalanceCheckService) checkCommandCode(ctx context.Context, ac
 	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, account.ID)
 	if err != nil {
-		if !logCNMonitoringBudgetDeferral(account.ID, err) {
+		if !logCNMonitoringBudgetDeferral(ctx, account.ID, err) {
 			log.Printf("[CNBalance] command code usage account %d failed: %v", account.ID, err)
 		}
 		return cnBalanceNoChange
@@ -311,7 +383,7 @@ func (s *CNProviderBalanceCheckService) checkCline(ctx context.Context, account 
 	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, account.ID)
 	if err != nil {
-		if !logCNMonitoringBudgetDeferral(account.ID, err) {
+		if !logCNMonitoringBudgetDeferral(ctx, account.ID, err) {
 			log.Printf("[CNBalance] cline usage account %d failed: %v", account.ID, err)
 		}
 	} else if result != nil && !result.Success && result.Error != "" {
@@ -326,7 +398,7 @@ func (s *CNProviderBalanceCheckService) checkMistral(ctx context.Context, accoun
 	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, account.ID)
 	if err != nil {
-		if !logCNMonitoringBudgetDeferral(account.ID, err) {
+		if !logCNMonitoringBudgetDeferral(ctx, account.ID, err) {
 			log.Printf("[CNBalance] mistral usage account %d failed: %v", account.ID, err)
 		}
 		return cnBalanceNoChange
@@ -356,7 +428,7 @@ func (s *CNProviderBalanceCheckService) probeQuota(ctx context.Context, accountI
 	ctx = s.probeContext(ctx)
 	result, err := s.quotaService.QueryUsage(ctx, accountID)
 	if err != nil {
-		if !logCNMonitoringBudgetDeferral(accountID, err) {
+		if !logCNMonitoringBudgetDeferral(ctx, accountID, err) {
 			log.Printf("[CNBalance] quota probe account %d (%s) failed: %v", accountID, platform, err)
 		}
 		return
@@ -380,7 +452,7 @@ func (s *CNProviderBalanceCheckService) checkOne(ctx context.Context, account *A
 	ctx = s.probeContext(ctx)
 	result, err := s.balanceService.QueryBalance(ctx, account.ID)
 	if err != nil {
-		logCNMonitoringBudgetDeferral(account.ID, err)
+		logCNMonitoringBudgetDeferral(ctx, account.ID, err)
 	}
 	if err != nil || result == nil || !result.Success {
 		return cnBalanceNoChange
@@ -417,10 +489,6 @@ func (s *CNProviderBalanceCheckService) applyBalanceResult(ctx context.Context, 
 		return cnBalanceCleared
 	}
 	return cnBalanceNoChange
-}
-
-func (s *CNProviderBalanceCheckService) platforms() []string {
-	return []string{PlatformKimi, PlatformDeepseek}
 }
 
 // allCNBalancesBelowThreshold 判断全部币种余额是否均低于阈值。

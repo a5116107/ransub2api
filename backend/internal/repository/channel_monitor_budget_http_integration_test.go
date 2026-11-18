@@ -3,11 +3,13 @@
 package repository_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -284,4 +286,139 @@ func TestChannelMonitorQuotaBudgetHTTPPostgresRestartAndRecovery(t *testing.T) {
 	var downstreamUsage int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&downstreamUsage))
 	require.Zero(t, downstreamUsage)
+}
+
+// Gate collection at the existing ticker boundary, not a test-only runner
+// entrypoint. Observations at the next boundary include all prior settlements.
+type cnQueueCycleAccountRepo struct {
+	service.AccountRepository
+	cycles chan struct{}
+	resume chan struct{}
+}
+
+func (r *cnQueueCycleAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	if platform == service.PlatformKimi {
+		select {
+		case r.cycles <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		select {
+		case <-r.resume:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return r.AccountRepository.ListByPlatform(ctx, platform)
+}
+
+func TestCNProviderQueueBudgetHTTPPostgresCyclesAndStop(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	var mu sync.Mutex
+	calls := map[string]int{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		calls[req.Header.Get("Authorization")]++
+		mu.Unlock()
+		require.Equal(t, http.MethodGet, req.Method)
+		require.Equal(t, "/tenant/user/balance", req.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"10"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+		AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	cfg.Gateway.CNProviders.BalanceCheckEnabled = true
+	accounts := repository.NewAccountRepository(client, db, nil)
+	accountRow := func(id int64) string {
+		var row string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&row))
+		return row
+	}
+	rows, keys := map[int64]string{}, map[int64]string{}
+	for i := 0; i < 12; i++ {
+		key := fmt.Sprintf("queue-http-fixture-%d", i)
+		a := &service.Account{Name: key, Platform: service.PlatformDeepseek, Type: service.AccountTypeAPIKey,
+			Status: service.StatusActive, Concurrency: 2, Schedulable: true,
+			Credentials: map[string]any{"api_key": key, "base_url": upstream.URL + "/tenant", "account_mode": service.AccountModePayG}}
+		require.NoError(t, accounts.Create(ctx, a))
+		rows[a.ID], keys[a.ID] = accountRow(a.ID), "Bearer "+key
+	}
+	budget := repository.NewMonitoringProbeBudgetRepository(db)
+	policy := service.DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.RecoveryReservePercent, policy.RequestsPerDay = true, 0, 4
+	policy, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	gate := &cnQueueCycleAccountRepo{AccountRepository: accounts, cycles: make(chan struct{}), resume: make(chan struct{})}
+	svc := service.NewCNProviderBalanceCheckService(gate,
+		service.NewCNProviderBalanceService(accounts, nil, repository.NewHTTPUpstream(cfg), cfg), nil, cfg, time.Millisecond)
+	svc.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(budget))
+	t.Cleanup(svc.Stop)
+	nextBoundary := func() {
+		t.Helper()
+		select {
+		case <-gate.cycles:
+		case <-time.After(10 * time.Second):
+			t.Fatal("CN periodic runner did not reach the next collection boundary")
+		}
+	}
+	runCycle := func() {
+		t.Helper()
+		select {
+		case gate.resume <- struct{}{}:
+		case <-time.After(10 * time.Second):
+			t.Fatal("CN periodic runner did not resume")
+		}
+		nextBoundary()
+	}
+	assertProgress := func(want int) {
+		t.Helper()
+		mu.Lock()
+		snapshot := make(map[string]int, len(calls))
+		for key, count := range calls {
+			snapshot[key] = count
+		}
+		mu.Unlock()
+		require.Len(t, snapshot, want, "renewed capacity must serve deferred peers before already-served accounts")
+		for id, key := range keys {
+			if count := snapshot[key]; count > 0 {
+				require.Equal(t, 1, count, "an account must not monopolize the next budget increment")
+				require.NotEqual(t, rows[id], accountRow(id))
+			} else {
+				require.Equal(t, rows[id], accountRow(id), "deferred and unsent accounts must not get a fresh observation")
+			}
+		}
+		summary, err := repository.NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, want, summary.DayUsed)
+		require.Zero(t, summary.DayTokens)
+		require.Zero(t, summary.UsageUnknown)
+		require.Zero(t, summary.UsagePending)
+		require.Zero(t, summary.ActiveRequests, "all admitted calls must settle before the next cycle")
+	}
+	svc.Start()
+	nextBoundary()
+	runCycle()
+	assertProgress(4)
+	runCycle() // Exhausted SQL budget: no new HTTP request or account snapshot.
+	assertProgress(4)
+	for _, limit := range []int64{8, 12} {
+		policy.RequestsPerDay = limit
+		policy, err = budget.SaveSettings(ctx, policy)
+		require.NoError(t, err)
+		runCycle()
+		assertProgress(int(limit))
+	}
+	stopped := make(chan struct{})
+	go func() { svc.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not cancel the blocked inventory collection")
+	}
+	assertProgress(12)
+	var downstreamUsage int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&downstreamUsage))
+	require.Zero(t, downstreamUsage, "periodic monitoring must not create downstream charges")
 }
