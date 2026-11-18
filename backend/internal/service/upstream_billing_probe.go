@@ -357,6 +357,7 @@ func ProvideUpstreamBillingProbeService(
 	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))
 	svc.MonitoringBudget().SetCNQuotaCycle(cnQuotaCycle)
 	svc.MonitoringBudget().SetOllamaUsage(ollamaUsage)
+	svc.MonitoringBudget().SetResponsesCapability(accountTestService)
 	svc.SetNewAPIAuthorization(newAPIRepo, encryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
 	startBackgroundService(cfg, svc)
 	return svc

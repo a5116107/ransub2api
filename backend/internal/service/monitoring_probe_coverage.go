@@ -53,8 +53,9 @@ type MonitoringProbeCoverage struct {
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
 	UnestimatedDemandSources   []string  `json:"unestimated_demand_sources"`
 
-	CNQuotaCycle *CNMonitoringRuntime     `json:"cn_quota_cycle,omitempty"`
-	OllamaUsage  *OllamaMonitoringRuntime `json:"ollama_usage,omitempty"`
+	CNQuotaCycle        *CNMonitoringRuntime                  `json:"cn_quota_cycle,omitempty"`
+	OllamaUsage         *OllamaMonitoringRuntime              `json:"ollama_usage,omitempty"`
+	ResponsesCapability *ResponsesCapabilityMonitoringRuntime `json:"responses_capability,omitempty"`
 }
 
 // Only account identity required by the original runner is read. Neither raw

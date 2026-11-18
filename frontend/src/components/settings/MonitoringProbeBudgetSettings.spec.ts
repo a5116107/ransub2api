@@ -46,7 +46,75 @@ function ollamaRuntime() {
   }
 }
 
+function responsesRuntime() {
+  return { version: 1, scope: 'responding_process', instance_id: 'fixture-responses', state: 'active',
+    observed_at: '2026-11-19T12:00:00Z', started_events: 5, finished_events: 3, active_events: 2,
+    lifecycle_timeout_seconds: 30, http_timeout_seconds: 15,
+    last_started_at: '2026-11-19T11:59:59Z', last_finished_at: '2026-11-19T11:59:58Z' }
+}
+
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('shows Responses event activity without treating exits as passes or call demand in %s', async locale => {
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), responses_capability: responsesRuntime() })
+    const wrapper = await open(locale)
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="probe-budget-responses-runtime"]')
+    expect(panel.get('[data-testid="responses-runtime-state"]').text()).toBe(locale === 'zh' ? '事件执行中' : 'Processing events')
+    expect(panel.get('[data-testid="responses-runtime-counts"]').text()).toContain(locale === 'zh' ? '5 次启动' : '5 started')
+    expect(panel.get('[data-testid="responses-runtime-counts"]').text()).toContain(locale === 'zh' ? '3 次退出' : '3 exited')
+    expect(panel.get('[data-testid="responses-runtime-counts"]').text()).toContain(locale === 'zh' ? '2 次在途' : '2 in flight')
+    expect(panel.text()).toContain(locale === 'zh' ? '退出不等于检测通过' : 'An exit is not a passing capability result')
+    expect(panel.get('[data-testid="responses-runtime-timeouts"]').text()).toContain('30')
+    expect(panel.get('[data-testid="responses-runtime-timeouts"]').text()).toContain('15')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toBe('69456 / 80000')
+  })
+
+  it.each(['en', 'zh'])('keeps absent, future and invalid Responses runtime unknown in %s', async locale => {
+    for (const runtime of [undefined, { ...responsesRuntime(), version: 2 }, { ...responsesRuntime(), scope: 'fleet' },
+      { ...responsesRuntime(), state: 'future', started_events: -1 },
+      { ...responsesRuntime(), started_events: 4 }, { ...responsesRuntime(), observed_at: 'bad' },
+      { ...responsesRuntime(), instance_id: '' }, { ...responsesRuntime(), finished_events: Number.MAX_SAFE_INTEGER + 1 }]) {
+      api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), responses_capability: runtime } })
+      const wrapper = await open(locale)
+      const panel = wrapper.get('[data-testid="probe-budget-responses-runtime"]')
+      expect(panel.get('[data-testid="responses-runtime-state"]').text()).toBe(locale === 'zh' ? '未知' : 'Unknown')
+      expect(panel.find('[data-testid="responses-runtime-counts"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+
+  it.each(['en', 'zh'])('distinguishes a real empty instance, an unbound source and invalid deadline/time data in %s', async locale => {
+    const runtime = { ...responsesRuntime(), state: 'idle', started_events: 0, finished_events: 0, active_events: 0, last_started_at: null, last_finished_at: null }
+    api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), responses_capability: runtime } })
+    let wrapper = await open(locale)
+    expect(wrapper.get('[data-testid="responses-runtime-state"]').text()).toBe(locale === 'zh' ? '空闲（事件驱动）' : 'Idle (event-driven)')
+    expect(wrapper.text()).toContain(locale === 'zh' ? '本实例尚未观察到事件' : 'No event observed in this instance')
+    wrapper.unmount()
+    api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), responses_capability: { ...runtime, state: 'unavailable', instance_id: '' } } })
+    wrapper = await open(locale)
+    expect(wrapper.get('[data-testid="responses-runtime-state"]').text()).toBe(locale === 'zh' ? '运行依赖未接入' : 'Runtime dependencies unavailable')
+    expect(wrapper.find('[data-testid="responses-runtime-counts"]').exists()).toBe(false)
+    wrapper.unmount()
+    api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), responses_capability: {
+      ...responsesRuntime(), lifecycle_timeout_seconds: -1, http_timeout_seconds: 99, last_started_at: 'bad', last_finished_at: 'bad' } } })
+    wrapper = await open(locale)
+    expect(wrapper.get('[data-testid="responses-runtime-timeouts"]').text()).toContain(locale === 'zh' ? '未知' : 'Unknown')
+    expect(wrapper.get('[data-testid="responses-runtime-times"]').text()).not.toContain('bad')
+  })
+
+  it('invalidates Responses runtime on a changed draft and a failed preview', async () => {
+    api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), responses_capability: responsesRuntime() } })
+    const wrapper = await open()
+    expect(wrapper.find('[data-testid="probe-budget-responses-runtime"]').exists()).toBe(true)
+    await wrapper.get('[id="probe-budget-requests_per_day"]').setValue(100001)
+    expect(wrapper.find('[data-testid="probe-budget-responses-runtime"]').exists()).toBe(false)
+    api.previewMonitoringProbeCoverage.mockRejectedValueOnce(new Error('unavailable'))
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="probe-budget-responses-runtime"]').exists()).toBe(false)
+  })
+
   it.each(['en', 'zh'])('shows Ollama activity and 429 queues separately from projected call demand in %s', async locale => {
     api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), ollama_usage: ollamaRuntime() })
     const wrapper = await open(locale)

@@ -121,6 +121,20 @@
               <p v-if="ollamaLastScan" class="mt-1 text-xs">{{ t(`${prefix}.ollamaScanAt`, { value: ollamaLastScan.observed_at }) }}</p>
               <p v-if="ollamaCadence" class="mt-1 text-xs">{{ t(`${prefix}.ollamaCadence`, ollamaCadence) }}</p>
             </div>
+            <div class="mt-4 rounded-lg border border-amber-300 p-3 dark:border-amber-800" data-testid="probe-budget-responses-runtime">
+              <h5 class="font-semibold">{{ t(`${prefix}.responsesRuntimeTitle`) }}</h5>
+              <p class="mt-2 text-xs">{{ t(`${prefix}.responsesRuntimeHint`) }}</p>
+              <dl class="mt-3 grid gap-3 sm:grid-cols-2">
+                <div><dt>{{ t(`${prefix}.cnRuntimeState`) }}</dt><dd class="font-medium" data-testid="responses-runtime-state">{{ t(`${prefix}.responsesRuntimeStates.${responsesRuntimeState}`) }}</dd></div>
+                <div class="min-w-0"><dt>{{ t(`${prefix}.cnRuntimeInstance`) }}</dt><dd class="break-all font-mono text-xs">{{ responsesRuntime?.instance_id || t(`${prefix}.unknownUsage`) }}</dd></div>
+                <div><dt>{{ t(`${prefix}.cnRuntimeObservedAt`) }}</dt><dd class="break-words text-xs">{{ displayWindow(responsesRuntime?.observed_at) }}</dd></div>
+              </dl>
+              <p v-if="responsesCounts" class="mt-3 font-medium" data-testid="responses-runtime-counts">{{ t(`${prefix}.responsesRuntimeCounts`, responsesCounts) }}</p>
+              <p v-else class="mt-3 text-xs">{{ t(`${prefix}.responsesRuntimeUnknownCounts`) }}</p>
+              <p v-if="responsesCounts?.started === 0" class="mt-1 text-xs">{{ t(`${prefix}.responsesRuntimeUnobserved`) }}</p>
+              <p class="mt-2 text-xs" data-testid="responses-runtime-timeouts">{{ responsesTimeouts ? t(`${prefix}.responsesRuntimeTimeouts`, responsesTimeouts) : t(`${prefix}.unknownUsage`) }}</p>
+              <p class="mt-1 break-words text-xs" data-testid="responses-runtime-times">{{ t(`${prefix}.responsesRuntimeTimes`, { started: displayWindow(responsesLastStarted), finished: displayWindow(responsesLastFinished) }) }}</p>
+            </div>
           </div>
           <ul v-if="coverage.blocking_reasons.length || coverage.warnings.length" class="mt-2 list-inside list-disc space-y-1" data-testid="probe-budget-capacity-reasons">
             <li v-for="reason in [...coverage.blocking_reasons, ...coverage.warnings]" :key="reason">{{ capacityReason(reason) }}</li>
@@ -243,6 +257,31 @@ const ollamaCadence = computed(() => {
   return scan && [scan.interval_minutes, scan.debounce_minutes].every(value => Number.isSafeInteger(value) && typeof value === 'number' && value > 0) &&
     scan.debounce_minutes! < scan.interval_minutes! ? { interval: scan.interval_minutes, debounce: scan.debounce_minutes } : null
 })
+const responsesRuntime = computed(() => {
+  const runtime = coverage.value?.responses_capability
+  return runtime?.version === 1 && runtime.scope === 'responding_process' && Number.isFinite(Date.parse(runtime.observed_at)) ? runtime : null
+})
+const responsesCounts = computed(() => {
+  const r = responsesRuntime.value
+  return r && typeof r.instance_id === 'string' && r.instance_id.trim() !== '' &&
+    [r.started_events, r.finished_events, r.active_events].every(value => Number.isSafeInteger(value) && value >= 0) &&
+    r.started_events === r.finished_events + r.active_events
+    ? { started: r.started_events, finished: r.finished_events, active: r.active_events } : null
+})
+const responsesRuntimeState = computed(() => {
+  const state = responsesRuntime.value?.state, counts = responsesCounts.value
+  if (state === 'unavailable') return state
+  if (counts && (state === 'idle' && counts.active === 0 || state === 'active' && counts.active > 0)) return state
+  return 'unknown'
+})
+const responsesTimeouts = computed(() => {
+  const r = responsesRuntime.value
+  return r && [r.lifecycle_timeout_seconds, r.http_timeout_seconds].every(value => Number.isSafeInteger(value) && value > 0) &&
+    r.http_timeout_seconds <= r.lifecycle_timeout_seconds
+    ? { lifecycle: r.lifecycle_timeout_seconds, http: r.http_timeout_seconds } : null
+})
+const responsesLastStarted = computed(() => responsesCounts.value && responsesCounts.value.started > 0 ? responsesRuntime.value?.last_started_at ?? undefined : undefined)
+const responsesLastFinished = computed(() => responsesCounts.value && responsesCounts.value.finished > 0 ? responsesRuntime.value?.last_finished_at ?? undefined : undefined)
 const error = ref('')
 const notice = ref('')
 const counters = computed(() => summary.value ? [

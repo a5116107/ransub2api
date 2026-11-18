@@ -112,9 +112,10 @@ type MonitoringProbeBudgetRepository interface {
 }
 
 type MonitoringProbeBudgetService struct {
-	repo         MonitoringProbeBudgetRepository
-	cnQuotaCycle *CNProviderBalanceCheckService
-	ollamaUsage  *OllamaCloudUsageService
+	repo                MonitoringProbeBudgetRepository
+	cnQuotaCycle        *CNProviderBalanceCheckService
+	ollamaUsage         *OllamaCloudUsageService
+	responsesCapability *AccountTestService
 }
 
 func NewMonitoringProbeBudgetService(repo MonitoringProbeBudgetRepository) *MonitoringProbeBudgetService {
@@ -130,6 +131,10 @@ func (s *MonitoringProbeBudgetService) SetOllamaUsage(runner *OllamaCloudUsageSe
 	s.ollamaUsage = runner
 }
 
+func (s *MonitoringProbeBudgetService) SetResponsesCapability(tests *AccountTestService) {
+	s.responsesCapability = tests
+}
+
 func (s *MonitoringProbeBudgetService) runtimeCoverage(coverage *MonitoringProbeCoverage) *MonitoringProbeCoverage {
 	if coverage == nil {
 		return nil
@@ -137,6 +142,7 @@ func (s *MonitoringProbeBudgetService) runtimeCoverage(coverage *MonitoringProbe
 	view := *coverage
 	view.CNQuotaCycle = s.cnQuotaCycle.MonitoringRuntime()
 	view.OllamaUsage = s.ollamaUsage.MonitoringRuntime()
+	view.ResponsesCapability = s.responsesCapability.ResponsesCapabilityRuntime()
 	return &view
 }
 

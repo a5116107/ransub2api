@@ -75,6 +75,22 @@ export interface MonitoringProbeCoverage {
   unestimated_demand_sources?: string[]
   cn_quota_cycle?: CNMonitoringRuntime | null
   ollama_usage?: OllamaMonitoringRuntime | null
+  responses_capability?: ResponsesCapabilityMonitoringRuntime | null
+}
+
+export interface ResponsesCapabilityMonitoringRuntime {
+  version: number
+  scope: string
+  instance_id: string
+  state: string
+  observed_at: string
+  started_events: number
+  finished_events: number
+  active_events: number
+  lifecycle_timeout_seconds: number
+  http_timeout_seconds: number
+  last_started_at: string | null
+  last_finished_at: string | null
 }
 
 export interface CNMonitoringRuntime {

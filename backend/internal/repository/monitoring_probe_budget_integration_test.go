@@ -516,21 +516,46 @@ func TestResponsesSupportMonitoringBudgetPostgresCancellationAndRecovery(t *test
 			}
 			before := snapshot()
 			budget := NewMonitoringProbeBudgetRepository(db)
-			_, err := budget.SaveSettings(t.Context(), monitoringBudgetPolicy())
+			policy, err := budget.SaveSettings(t.Context(), monitoringBudgetPolicy())
 			require.NoError(t, err)
 			cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
 			upstream := NewHTTPUpstream(cfg)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			cancelOnCloseEnabled := true
 			cancelOnClose := gatewayPinDelegate{call: func(req *http.Request, proxy string, id int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 				resp, err := upstream.DoWithTLS(req, proxy, id, concurrency, profile)
-				if err == nil && resp != nil && resp.Body != nil {
+				if cancelOnCloseEnabled && err == nil && resp != nil && resp.Body != nil {
 					resp.Body = responsesProbeCancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
 				}
 				return resp, err
 			}}
 			tests := service.NewAccountTestService(accounts, nil, nil, nil, nil, cancelOnClose, cfg, nil)
 			tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(budget))
+			runtimeBudget := service.NewMonitoringProbeBudgetService(budget)
+			runtimeBudget.SetResponsesCapability(tests)
+			readRuntime := func() *service.ResponsesCapabilityMonitoringRuntime {
+				t.Helper()
+				beforeCalls := calls.Load()
+				preview, previewErr := runtimeBudget.PreviewCoverage(t.Context(), policy)
+				require.NoError(t, previewErr)
+				summary, summaryErr := runtimeBudget.Summary(t.Context())
+				require.NoError(t, summaryErr)
+				require.Equal(t, preview.ResponsesCapability.InstanceID, summary.Coverage.ResponsesCapability.InstanceID)
+				require.Equal(t, preview.ResponsesCapability.LastFinishedAt, summary.Coverage.ResponsesCapability.LastFinishedAt)
+				require.Equal(t, beforeCalls, calls.Load(), "preview/summary must not trigger a probe")
+				require.EqualValues(t, beforeCalls, summary.DayUsed)
+				require.Zero(t, summary.ActiveRequests)
+				require.Contains(t, preview.UnestimatedDemandSources, "responses_capability")
+				raw, marshalErr := json.Marshal(preview.ResponsesCapability)
+				require.NoError(t, marshalErr)
+				require.NotContains(t, string(raw), "responses-cancel-fixture")
+				require.NotContains(t, string(raw), server.URL)
+				return preview.ResponsesCapability
+			}
+			initialRuntime := readRuntime()
+			require.Zero(t, initialRuntime.StartedEvents)
+			require.Nil(t, initialRuntime.LastStartedAt)
 			require.Nil(t, tests.ProbeOpenAIAPIKeyResponsesSupport(ctx, account.ID), "cancellation is not a supplier or local budget failure")
 			require.ErrorIs(t, ctx.Err(), context.Canceled)
 			require.Equal(t, before, snapshot(), "neither a late pass nor a late unsupported result may alter the account")
@@ -542,11 +567,17 @@ func TestResponsesSupportMonitoringBudgetPostgresCancellationAndRecovery(t *test
 			require.Zero(t, stats.UsageUnknown)
 			require.Zero(t, stats.UsagePending)
 			require.Zero(t, stats.ActiveRequests)
+			cancelledRuntime := readRuntime()
+			require.EqualValues(t, 1, cancelledRuntime.StartedEvents)
+			require.EqualValues(t, 1, cancelledRuntime.FinishedEvents)
+			require.Zero(t, cancelledRuntime.ActiveEvents)
+			for range 2 {
+				require.Equal(t, cancelledRuntime.LastFinishedAt, readRuntime().LastFinishedAt, "refreshing does not renew the last event")
+			}
 
 			// A later explicit event works normally; cancellation creates no retry,
 			// supplier penalty, budget refund, or permanent cancellation state.
-			tests = service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
-			tests.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(budget))
+			cancelOnCloseEnabled = false
 			require.Nil(t, tests.ProbeOpenAIAPIKeyResponsesSupport(t.Context(), account.ID))
 			after, err := accounts.GetByID(t.Context(), account.ID)
 			require.NoError(t, err)
@@ -555,6 +586,11 @@ func TestResponsesSupportMonitoringBudgetPostgresCancellationAndRecovery(t *test
 			require.Equal(t, service.StatusActive, after.Status)
 			require.True(t, after.Schedulable)
 			require.EqualValues(t, 2, calls.Load())
+			completedRuntime := readRuntime()
+			require.Equal(t, initialRuntime.InstanceID, completedRuntime.InstanceID)
+			require.EqualValues(t, 2, completedRuntime.StartedEvents)
+			require.EqualValues(t, 2, completedRuntime.FinishedEvents)
+			require.Zero(t, completedRuntime.ActiveEvents)
 			stats, err = budget.Summary(t.Context())
 			require.NoError(t, err)
 			require.EqualValues(t, 2, stats.DayUsed)

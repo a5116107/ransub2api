@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
 
@@ -26,6 +27,58 @@ const openaiResponsesProbeTimeout = 15 * time.Second
 // Bound account storage as well as HTTP for the asynchronous admin event.
 // A caller's earlier deadline still wins; the nested HTTP allowance stays 15s.
 const openaiResponsesProbeLifecycleTimeout = 2 * openaiResponsesProbeTimeout
+
+// This is the responding service instance's event activity, not enabled
+// account inventory, supplier capability, physical calls, or future demand.
+type ResponsesCapabilityMonitoringRuntime struct {
+	Version                 int        `json:"version"`
+	Scope                   string     `json:"scope"`
+	InstanceID              string     `json:"instance_id"`
+	State                   string     `json:"state"`
+	ObservedAt              time.Time  `json:"observed_at"`
+	StartedEvents           int64      `json:"started_events"`
+	FinishedEvents          int64      `json:"finished_events"`
+	ActiveEvents            int64      `json:"active_events"`
+	LifecycleTimeoutSeconds int64      `json:"lifecycle_timeout_seconds"`
+	HTTPTimeoutSeconds      int64      `json:"http_timeout_seconds"`
+	LastStartedAt           *time.Time `json:"last_started_at"`
+	LastFinishedAt          *time.Time `json:"last_finished_at"`
+}
+
+func (s *AccountTestService) ResponsesCapabilityRuntime() *ResponsesCapabilityMonitoringRuntime {
+	view := &ResponsesCapabilityMonitoringRuntime{
+		Version: 1, Scope: "responding_process", State: "unavailable", ObservedAt: time.Now().UTC(),
+		LifecycleTimeoutSeconds: int64(openaiResponsesProbeLifecycleTimeout / time.Second),
+		HTTPTimeoutSeconds:      int64(openaiResponsesProbeTimeout / time.Second),
+	}
+	if s == nil {
+		return view
+	}
+	s.responsesProbeRuntimeMu.Lock()
+	defer s.responsesProbeRuntimeMu.Unlock()
+	r := &s.responsesProbeRuntime
+	if r.instanceID == "" {
+		r.instanceID = uuid.NewString()
+	}
+	view.InstanceID = r.instanceID
+	view.ObservedAt = time.Now().UTC()
+	view.StartedEvents, view.FinishedEvents, view.ActiveEvents = r.started, r.finished, r.active
+	if !r.lastStartedAt.IsZero() {
+		started := r.lastStartedAt
+		view.LastStartedAt = &started
+	}
+	if !r.lastFinishedAt.IsZero() {
+		finished := r.lastFinishedAt
+		view.LastFinishedAt = &finished
+	}
+	if s.accountRepo != nil && s.httpUpstream != nil && s.cfg != nil {
+		view.State = "idle"
+		if r.active > 0 {
+			view.State = "active"
+		}
+	}
+	return view
+}
 
 // responsesProbeMaxBodyBytes 限制读取探测响应体的字节数,够判定 output 项类型即可。
 const responsesProbeMaxBodyBytes = 256 * 1024
@@ -132,6 +185,18 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	if ctx.Err() != nil {
 		return
 	}
+	s.responsesProbeRuntimeMu.Lock()
+	s.responsesProbeRuntime.started++
+	s.responsesProbeRuntime.active++
+	s.responsesProbeRuntime.lastStartedAt = time.Now().UTC()
+	s.responsesProbeRuntimeMu.Unlock()
+	defer func() {
+		s.responsesProbeRuntimeMu.Lock()
+		defer s.responsesProbeRuntimeMu.Unlock()
+		s.responsesProbeRuntime.active--
+		s.responsesProbeRuntime.finished++
+		s.responsesProbeRuntime.lastFinishedAt = time.Now().UTC()
+	}()
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_probe", "probe_load_account_failed: account_id=%d err=%v", accountID, err)

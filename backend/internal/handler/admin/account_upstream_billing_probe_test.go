@@ -84,6 +84,8 @@ func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
 	ollama := service.NewOllamaCloudUsageService(nil, nil, nil, nil, false)
 	t.Cleanup(ollama.Stop)
 	probe.MonitoringBudget().SetOllamaUsage(ollama)
+	tests := service.NewAccountTestService(nil, nil, nil, nil, nil, nil, nil, nil)
+	probe.MonitoringBudget().SetResponsesCapability(tests)
 	h := &AccountHandler{}
 	h.SetUpstreamBillingProbeService(probe)
 	router := gin.New()
@@ -107,6 +109,10 @@ func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
 			require.Contains(t, w.Body.String(), `"ollama_usage":{`)
 			require.Contains(t, w.Body.String(), ollama.MonitoringRuntime().InstanceID)
 			require.Contains(t, w.Body.String(), `"last_scan":null`)
+			require.Contains(t, w.Body.String(), `"responses_capability":{`)
+			require.Contains(t, w.Body.String(), tests.ResponsesCapabilityRuntime().InstanceID)
+			require.Contains(t, w.Body.String(), `"last_started_at":null`)
+			require.Contains(t, w.Body.String(), `"started_events":0`)
 		}
 	}
 	wGet := httptest.NewRecorder()
@@ -114,6 +120,8 @@ func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
 	require.Equal(t, 200, wGet.Code)
 	require.Contains(t, wGet.Body.String(), ollama.MonitoringRuntime().InstanceID)
 	require.Contains(t, wGet.Body.String(), `"last_scan":null`)
+	require.Contains(t, wGet.Body.String(), tests.ResponsesCapabilityRuntime().InstanceID)
+	require.Contains(t, wGet.Body.String(), `"last_finished_at":null`)
 	require.EqualValues(t, 0, repo.settings.Revision, "preview is not a settings write")
 	h.SetUpstreamBillingProbeService(nil)
 	w := httptest.NewRecorder()

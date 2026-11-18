@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 Responses后台事件寿命/取消围栏本地done。
+任务：D8.1 Responses事件运行来源/API/UI本地done。
 范围：唯一H盘功能分支提交同步；不CI/PR/生产，不改业务与探测判据。
 已决：实际usage、插件自动延期与手动隔离保持，不借票/续绿。
-来源：8e2eaef47起点；终稿83be3689，详情见DECISIONS。
-已验：服务368/SQL28双轮pass；0fail/skip/race；vet/lint/Linux过。
-下一：Responses事件运行来源→全scope覆盖编译；跨节点/生产仍待。
+来源：f5a98dace起点；终稿69ff684e，详情见DECISIONS。
+已验：服务722/SQL102双轮/UI63pass；0fail/skip/race；静态/Linux/四视口过。
+下一：D8.1其余事件运行来源与全scope编译；跨节点/生产仍待。
 等待：原28项20done/8部分；其余库存/全scope/跨节点/生产/PR3待。
 生产最后记录.7/fd83f6c91；本轮不部署；历史及新红测overlay拒删未绕行。
-Attempt：92
+Attempt：93
 <!-- resume:end -->
 
 ## 目标与入口
@@ -58,7 +58,7 @@ Attempt：92
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
 | D8 | in_progress | 物理/Token/100队列及倍率、账号/分组计划、初始建号容量拒存已本地验；完整scope/其余通道/公平性/生产/严格混版仍缺 |
-| D8.1本地子项 | in_progress | 预算/计量/延期、队列公平与计划停机已本地验；CN/Ollama运行库存及Responses寿命/取消本地done；其余库存/全scope/多节点/生产仍缺 |
+| D8.1本地子项 | in_progress | 预算/计量/延期、队列公平与计划停机已本地验；CN/Ollama/Responses本机观测及API/UI本地done；其余库存/全scope/多节点/生产仍缺 |
 | D9 | in_progress | .7四阶段/16历史、排空/重建、公网SSE/唯一账单/UI已验；旧失败会话完整恢复/D9.2仍待 |
 | R1 | done | .7公开latest/固定镜像/线上同源fd83f6c91；仅预构建镜像封装，无编译测试CI，不自动提升功能分支 |
 

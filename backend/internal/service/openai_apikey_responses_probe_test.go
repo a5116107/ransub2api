@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -524,4 +525,97 @@ func TestProbeOpenAIAPIKeyResponsesCancellationOnCloseDoesNotPublish(t *testing.
 	require.Empty(t, updates, "a late success after cancellation must not publish routing capability")
 	require.Equal(t, 1, budget.released)
 	require.Equal(t, []MonitoringProbeTokenUsage{{Tokens: 7, Reported: true}}, budget.usages, "the admitted call still settles actual returned usage")
+}
+
+func TestResponsesCapabilityRuntimeConcurrentEventsAndCancellation(t *testing.T) {
+	const events = 16
+	entered := make(chan struct{}, events)
+	repo := responsesProbeLifecycleRepo{load: func(ctx context.Context, _ int64) (*Account, error) {
+		entered <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	svc := NewAccountTestService(repo, nil, nil, nil, nil, &httpUpstreamRecorder{}, &config.Config{}, nil)
+	initial := svc.ResponsesCapabilityRuntime()
+	require.Equal(t, "idle", initial.State)
+	require.NotEmpty(t, initial.InstanceID)
+	require.Nil(t, initial.LastStartedAt)
+	require.Nil(t, initial.LastFinishedAt)
+	require.Zero(t, initial.StartedEvents)
+	require.Equal(t, int64(30), initial.LifecycleTimeoutSeconds)
+	require.Equal(t, int64(15), initial.HTTPTimeoutSeconds)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var wg sync.WaitGroup
+	for range events {
+		wg.Go(func() { svc.ProbeOpenAIAPIKeyResponsesSupport(ctx, 4700) })
+	}
+	for range events {
+		<-entered
+	}
+	active := svc.ResponsesCapabilityRuntime()
+	require.Equal(t, "active", active.State)
+	require.EqualValues(t, events, active.StartedEvents)
+	require.EqualValues(t, events, active.ActiveEvents)
+	require.Zero(t, active.FinishedEvents)
+	require.NotNil(t, active.LastStartedAt)
+	require.Nil(t, active.LastFinishedAt)
+	started := *active.LastStartedAt
+	*active.LastStartedAt = time.Time{}
+	require.Equal(t, started, *svc.ResponsesCapabilityRuntime().LastStartedAt, "a caller must not rewrite stored event time")
+	readerDone := make(chan struct{})
+	wg.Go(func() {
+		defer close(readerDone)
+		for range 1000 {
+			view := svc.ResponsesCapabilityRuntime()
+			if view.StartedEvents != view.FinishedEvents+view.ActiveEvents {
+				t.Error("runtime counters must be one locked snapshot")
+			}
+		}
+	})
+	cancel()
+	wg.Wait()
+	<-readerDone
+	after := svc.ResponsesCapabilityRuntime()
+	require.Equal(t, "idle", after.State)
+	require.Equal(t, initial.InstanceID, after.InstanceID)
+	require.EqualValues(t, events, after.StartedEvents)
+	require.EqualValues(t, events, after.FinishedEvents, "finished counts exited events, not successful upstream probes")
+	require.Zero(t, after.ActiveEvents)
+	require.NotNil(t, after.LastFinishedAt)
+	finished := *after.LastFinishedAt
+	*after.LastFinishedAt = time.Time{}
+	require.Equal(t, finished, *svc.ResponsesCapabilityRuntime().LastFinishedAt)
+	svc.ProbeOpenAIAPIKeyResponsesSupport(ctx, 4700)
+	require.EqualValues(t, events, svc.ResponsesCapabilityRuntime().StartedEvents, "already-cancelled calls do not start work")
+	rebuilt := NewAccountTestService(repo, nil, nil, nil, nil, &httpUpstreamRecorder{}, &config.Config{}, nil).ResponsesCapabilityRuntime()
+	require.NotEqual(t, initial.InstanceID, rebuilt.InstanceID)
+	require.Zero(t, rebuilt.StartedEvents)
+	require.Nil(t, rebuilt.LastStartedAt)
+}
+
+func TestResponsesCapabilityRuntimeOriginalBudgetProjectionAndProvider(t *testing.T) {
+	policy := DefaultMonitoringProbeBudgetSettings()
+	coverage := CompileMonitoringProbeCoverage(policy, UpstreamBillingProbeSettings{IntervalMinutes: 30}, nil, true, nil, true, nil, true, nil, true, time.Now())
+	repo := &monitoringRuntimeBudgetRepo{coverage: coverage}
+	tests := NewAccountTestService(responsesProbeLifecycleRepo{}, nil, nil, nil, nil, &httpUpstreamRecorder{}, &config.Config{}, nil)
+	probe := ProvideUpstreamBillingProbeService(nil, tests, nil, nil, nil,
+		&config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}, nil, nil, repo, nil, nil)
+	t.Cleanup(probe.Stop)
+	preview, err := probe.MonitoringBudget().PreviewCoverage(t.Context(), policy)
+	require.NoError(t, err)
+	summary, err := probe.MonitoringBudget().Summary(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, tests.ResponsesCapabilityRuntime().InstanceID, preview.ResponsesCapability.InstanceID)
+	require.Equal(t, preview.ResponsesCapability.InstanceID, summary.Coverage.ResponsesCapability.InstanceID)
+	require.Equal(t, int64(15), preview.ResponsesCapability.HTTPTimeoutSeconds)
+	require.Nil(t, repo.coverage.ResponsesCapability, "do not mutate the repository's reused result")
+	require.Zero(t, preview.MinimumTotalRequestsPerDay, "event counters are not forecasts of physical calls or tokens")
+	require.Contains(t, preview.UnestimatedDemandSources, "responses_capability")
+	unknown, err := NewMonitoringProbeBudgetService(repo).PreviewCoverage(t.Context(), policy)
+	require.NoError(t, err)
+	require.Equal(t, "unavailable", unknown.ResponsesCapability.State)
+	repo.err = ErrMonitoringProbeBudgetConflict
+	_, err = probe.MonitoringBudget().PreviewCoverage(t.Context(), policy)
+	require.ErrorIs(t, err, ErrMonitoringProbeBudgetConflict)
 }
