@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -91,15 +93,21 @@ func (r *groupTestRepoFake) Claim(_ context.Context, plan *PelicanGroupTestPlan,
 	r.claims = append(r.claims, groupTestClaim{plan.ID, until, next})
 	return r.claimOK, nil
 }
-func (r *groupTestRepoFake) Finish(_ context.Context, _ int64, until, _ time.Time) error {
+func (r *groupTestRepoFake) Finish(ctx context.Context, _ int64, until, _ time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.finished = append(r.finished, until)
 	return nil
 }
-func (r *groupTestRepoFake) CreateResult(_ context.Context, result *PelicanGroupTestResult) (*PelicanGroupTestResult, error) {
+func (r *groupTestRepoFake) CreateResult(ctx context.Context, result *PelicanGroupTestResult) (*PelicanGroupTestResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	saved := *result
 	r.nextID++
 	saved.ID = r.nextID
@@ -150,6 +158,7 @@ type groupTestRouterFake struct {
 	steps    []routeStep
 	excluded [][]int64
 	released []int64
+	onRoute  func()
 }
 
 func (r *groupTestRouterFake) route(_ context.Context, _ *Group, model string, excluded map[int64]struct{}) (*pelicanGroupRoute, error) {
@@ -169,6 +178,9 @@ func (r *groupTestRouterFake) route(_ context.Context, _ *Group, model string, e
 		return nil, step.err
 	}
 	id := step.account.ID
+	if r.onRoute != nil {
+		r.onRoute()
+	}
 	return &pelicanGroupRoute{account: step.account, model: model, release: func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -459,6 +471,119 @@ func TestPelicanGroupTestRunNowAndRunDue(t *testing.T) {
 		nilService.RunDue(ctx, groupTestNow)
 		nilService.Cleanup(ctx, groupTestNow)
 	})
+}
+
+func TestPelicanGroupScheduledCancellationKeepsManualIndependent(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		t.Run(map[bool]string{false: "scheduled", true: "manual"}[manual], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				plan := groupTestPlan(1)
+				repo := newGroupTestRepoFake(plan)
+				repo.due = []*PelicanGroupTestPlan{plan}
+				router := &groupTestRouterFake{steps: []routeStep{{account: account(11, "fixture")}}}
+				release := make(chan struct{})
+				var started, canceled atomic.Int32
+				svc, showcase := newGroupTestService(repo, router, func(ctx context.Context, _ int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+					started.Add(1)
+					select {
+					case <-ctx.Done():
+						canceled.Add(1)
+						return nil, ctx.Err()
+					case <-release:
+						return &ScheduledTestResult{Status: "success", ResponseText: "<svg></svg>"}, nil
+					}
+				})
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan struct{})
+				if manual {
+					require.NoError(t, svc.RunNow(ctx, plan.ID))
+					go func() { svc.runs.Wait(); close(done) }()
+				} else {
+					go func() { svc.RunDue(ctx, groupTestNow); close(done) }()
+				}
+				synctest.Wait()
+				require.EqualValues(t, 1, started.Load())
+				cancel()
+				synctest.Wait()
+				gotCanceled := canceled.Load()
+				close(release)
+				<-done
+				if manual {
+					require.Zero(t, gotCanceled, "HTTP cancellation must not abandon a claimed manual run")
+					require.Equal(t, "success", repo.results[0].Status)
+				} else {
+					require.EqualValues(t, 1, gotCanceled, "scheduled runs must retain their runner's cancellation")
+					require.NotEqual(t, "success", repo.results[0].Status)
+					require.Empty(t, showcase.published, "a canceled scheduled sample must not become a showcase success")
+				}
+				require.Len(t, repo.finished, 1, "claimed work must finish its original lease with a fresh save context")
+				require.Len(t, router.released, 1)
+			})
+		})
+	}
+}
+
+func TestPelicanGroupCanceledDueDoesNotClaim(t *testing.T) {
+	plan := groupTestPlan(1)
+	repo := newGroupTestRepoFake(plan)
+	repo.claimOK = false
+	for range 100 {
+		repo.due = append(repo.due, plan)
+	}
+	svc, _ := newGroupTestService(repo, &groupTestRouterFake{}, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	svc.RunDue(ctx, groupTestNow)
+	require.Empty(t, repo.claims, "a canceled due batch must not touch claim or schedule state")
+}
+
+func TestPelicanGroupCancellationDrainsOnlyDispatchedPlans(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo := newGroupTestRepoFake()
+		router := &groupTestRouterFake{}
+		for i := range 100 {
+			plan := groupTestPlan(1)
+			plan.ID = int64(i + 1)
+			repo.due = append(repo.due, plan)
+			router.steps = append(router.steps, routeStep{account: account(int64(i+1), "fixture")})
+		}
+		var started atomic.Int32
+		svc, showcase := newGroupTestService(repo, router, func(ctx context.Context, _ int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+			started.Add(1)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() { svc.RunDue(ctx, groupTestNow); close(done) }()
+		synctest.Wait()
+		require.EqualValues(t, pelicanGroupTestMaxRunning, started.Load())
+		cancel()
+		<-done
+		require.Len(t, repo.claims, pelicanGroupTestMaxRunning)
+		require.Len(t, repo.finished, pelicanGroupTestMaxRunning)
+		require.Len(t, repo.results, pelicanGroupTestMaxRunning)
+		require.Len(t, router.released, pelicanGroupTestMaxRunning)
+		require.Empty(t, showcase.published)
+	})
+}
+
+func TestPelicanGroupCanceledRouteReleasesWithoutProbe(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	router := &groupTestRouterFake{steps: []routeStep{{account: account(11, "fixture")}}, onRoute: cancel}
+	var calls int
+	svc, _ := newGroupTestService(newGroupTestRepoFake(), router, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+		calls++
+		return &ScheduledTestResult{Status: "success"}, nil
+	})
+	result := svc.runSample(ctx, groupTestPlan(1), &Group{ID: 4, Status: StatusActive})
+	require.Zero(t, calls)
+	require.Equal(t, "failed", result.Status)
+	require.Len(t, router.released, 1)
+	require.NotNil(t, result.CostUSD)
+	require.Zero(t, *result.CostUSD)
+	require.False(t, result.CostIncomplete, "a route canceled before calling the adapter has no unknown test charge")
 }
 
 func TestPelicanGroupTestCleanupAndHistoryPaging(t *testing.T) {

@@ -30,8 +30,11 @@ type ScheduledTestRunnerService struct {
 	triggerWG      sync.WaitGroup
 	planSlots      chan struct{}
 	cron           *cron.Cron
-	startOnce      sync.Once
-	stopOnce       sync.Once
+	lifecycleMu    sync.Mutex
+	started        bool
+	stopped        bool
+	cancel         context.CancelFunc
+	stopDone       chan struct{}
 }
 
 // NewScheduledTestRunnerService creates a new runner.
@@ -58,25 +61,30 @@ func (s *ScheduledTestRunnerService) Start() {
 	if s == nil {
 		return
 	}
-	s.startOnce.Do(func() {
-		s.startQualityTriggers()
-		loc := time.Local
-		if s.cfg != nil {
-			if parsed, err := time.LoadLocation(s.cfg.Timezone); err == nil && parsed != nil {
-				loc = parsed
-			}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.started || s.stopped {
+		return
+	}
+	loc := time.Local
+	if s.cfg != nil {
+		if parsed, err := time.LoadLocation(s.cfg.Timezone); err == nil && parsed != nil {
+			loc = parsed
 		}
+	}
 
-		c := cron.New(cron.WithParser(scheduledTestCronParser), cron.WithLocation(loc))
-		_, err := c.AddFunc("* * * * *", func() { s.runScheduled() })
-		if err != nil {
-			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] not started (invalid schedule): %v", err)
-			return
-		}
-		s.cron = c
-		s.cron.Start()
-		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] started (tick=every minute)")
-	})
+	ctx, cancel := context.WithCancel(context.Background())
+	c := cron.New(cron.WithParser(scheduledTestCronParser), cron.WithLocation(loc))
+	_, err := c.AddFunc("* * * * *", func() { s.runScheduled(ctx) })
+	if err != nil {
+		cancel()
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] not started (invalid schedule): %v", err)
+		return
+	}
+	s.cancel, s.cron, s.started = cancel, c, true
+	s.startQualityTriggers()
+	c.Start()
+	logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] started (tick=every minute)")
 }
 
 // Stop gracefully shuts down the cron scheduler.
@@ -84,46 +92,73 @@ func (s *ScheduledTestRunnerService) Stop() {
 	if s == nil {
 		return
 	}
-	s.stopOnce.Do(func() {
-		if s.qualityTrigger != nil && s.qualityTrigger.queue != nil {
-			defer func() { _ = s.qualityTrigger.queue.Close() }()
-		}
-		if s.triggerCancel != nil {
-			s.triggerCancel()
-			s.triggerWG.Wait()
-		}
-		if s.cron != nil {
-			ctx := s.cron.Stop()
-			select {
-			case <-ctx.Done():
-			case <-time.After(3 * time.Second):
-				logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] cron stop timed out")
-			}
-		}
-	})
+	s.lifecycleMu.Lock()
+	if s.stopped {
+		done := s.stopDone
+		s.lifecycleMu.Unlock()
+		<-done
+		return
+	}
+	s.stopped = true
+	s.stopDone = make(chan struct{})
+	done := s.stopDone
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.triggerCancel != nil {
+		s.triggerCancel()
+	}
+	var cronDone <-chan struct{}
+	if s.cron != nil {
+		cronDone = s.cron.Stop().Done()
+	}
+	s.lifecycleMu.Unlock()
+	defer close(done)
+	s.triggerWG.Wait()
+	if cronDone != nil {
+		<-cronDone
+	}
+	if s.qualityTrigger != nil && s.qualityTrigger.queue != nil {
+		_ = s.qualityTrigger.queue.Close()
+	}
 }
 
-func (s *ScheduledTestRunnerService) runScheduled() {
+func (s *ScheduledTestRunnerService) runScheduled(parent context.Context) {
 	// Delay 10s so execution lands at ~:10 of each minute instead of :00.
-	time.Sleep(10 * time.Second)
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-parent.Done():
+		return
+	case <-timer.C:
+	}
+	if parent.Err() != nil {
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
 	defer cancel()
 
 	now := time.Now()
 	s.finalizeQualityBatches(ctx)
+	if ctx.Err() != nil {
+		return
+	}
 	if err := s.scheduledSvc.resultRepo.PruneExpiredPelican(ctx, now.Add(-7*24*time.Hour)); err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "pelican history cleanup failed: %v", err)
 	}
 	s.groupTests.Cleanup(ctx, now)
+	if ctx.Err() != nil {
+		return
+	}
 	// Group tests run beside the account plans rather than after them.
 	var groupRuns sync.WaitGroup
 	groupRuns.Add(2)
-	go func() { defer groupRuns.Done(); s.candyMonitor.RunDue(ctx, now) }()
-	go func() {
+	go func(ctx context.Context) { defer groupRuns.Done(); s.candyMonitor.RunDue(ctx, now) }(ctx)
+	go func(ctx context.Context) {
 		defer groupRuns.Done()
 		s.groupTests.RunDue(ctx, now)
-	}()
+	}(ctx)
 	defer groupRuns.Wait()
 	// Group rules cover accounts that started matching since the last tick.
 	if created, err := s.scheduledSvc.SyncQualityTemplates(ctx); err != nil {
@@ -131,12 +166,15 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 	} else if created > 0 {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] quality templates added %d rules", created)
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	plans, err := s.planRepo.ListDue(ctx, now)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] ListDue error: %v", err)
 		return
 	}
-	if len(plans) == 0 {
+	if ctx.Err() != nil || len(plans) == 0 {
 		return
 	}
 
@@ -153,9 +191,17 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 
 	sem := make(chan struct{}, scheduledTestDefaultMaxWorkers)
 	var wg sync.WaitGroup
+	defer wg.Wait()
 
 	for _, plan := range plans {
-		sem <- struct{}{}
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
 		wg.Add(1)
 		go func(p *ScheduledTestPlan) {
 			defer wg.Done()
@@ -165,10 +211,15 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 	}
 
 	wg.Wait()
-	s.finalizeQualityBatches(ctx)
+	if ctx.Err() == nil {
+		s.finalizeQualityBatches(ctx)
+	}
 }
 
 func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *ScheduledTestPlan) (completed bool) {
+	if ctx.Err() != nil {
+		return false
+	}
 	if s.planSlots != nil {
 		select {
 		case s.planSlots <- struct{}{}:
@@ -176,6 +227,10 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		case <-ctx.Done():
 			return false
 		}
+	}
+	// A free slot and cancellation can both be ready in the select above.
+	if ctx.Err() != nil {
+		return false
 	}
 	ctx = context.WithValue(withAutomaticMonitoringProbe(ctx), qualityProbeContextKey{}, true)
 	// Background plans do not run under the HTTP recovery middleware.
@@ -197,12 +252,17 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		return false
 	}
 
-	if err := s.scheduledSvc.SaveResult(ctx, plan.ID, plan.MaxResults, result); err != nil {
+	if ctx.Err() != nil && result.Status == "success" {
+		result.Status, result.ErrorMessage = "failed", ctx.Err().Error()
+	}
+	saveCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stop()
+	if err := s.scheduledSvc.SaveResult(saveCtx, plan.ID, plan.MaxResults, result); err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d SaveResult error: %v", plan.ID, err)
 	}
 
 	// Auto-recover account if test succeeded and auto_recover is enabled.
-	if result.Status == "success" && result.BudgetDeferral == nil && plan.AutoRecover {
+	if ctx.Err() == nil && result.Status == "success" && result.BudgetDeferral == nil && plan.AutoRecover {
 		s.tryRecoverAccount(ctx, plan.AccountID, plan.ID)
 	}
 
@@ -215,7 +275,7 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		nextRun = result.BudgetDeferral.RetryAt
 	}
 
-	if err := s.planRepo.UpdateAfterRun(ctx, plan.ID, time.Now(), nextRun); err != nil {
+	if err := s.planRepo.UpdateAfterRun(saveCtx, plan.ID, time.Now(), nextRun); err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun error: %v", plan.ID, err)
 	}
 	return true

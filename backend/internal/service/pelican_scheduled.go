@@ -139,6 +139,9 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	// Persisted lease prevents duplicate execution across ticks and server replicas.
 	// It also recovers automatically after a process crash.
 	until := now.Add(15 * time.Minute).Truncate(time.Microsecond)
+	if ctx.Err() != nil {
+		return false
+	}
 	claimed, err := s.planRepo.ClaimPelican(ctx, plan, now, until, next)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d claim failed: %v", plan.ID, err)
@@ -316,7 +319,10 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	// Persist timeout failures with a fresh context even after the request deadline.
 	saveCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
-	if plan.PelicanConfig.Availability != nil {
+	if runCtx.Err() != nil {
+		plan.AvailabilityCoverageStop = true
+	}
+	if plan.PelicanConfig.Availability != nil && runCtx.Err() == nil {
 		outcomes := availabilityRoundOutcomes(plan, results)
 		for _, result := range results {
 			if result != nil && result.PelicanConfig != nil && result.PelicanConfig.AvailabilityResult != nil {
@@ -344,7 +350,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 			result.PlanID = plan.ID
 			result.QualityAction = "comparison_pending"
 		}
-		applyBatch := applyTriggeredQuality
+		applyBatch := applyTriggeredQuality && runCtx.Err() == nil
 		if plan.TriggerSource == quality5xxSource && plan.TriggerObservedAt != nil && s.qualityTrigger != nil {
 			applyBatch = applyBatch && s.qualityTrigger.signalIsCurrent(plan.AccountID, *plan.TriggerObservedAt)
 		}
@@ -368,7 +374,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		if plan.TriggerSource == quality5xxSource && plan.TriggerObservedAt != nil && s.qualityTrigger != nil {
 			freshSignal = s.qualityTrigger.signalIsCurrent(plan.AccountID, *plan.TriggerObservedAt)
 		}
-		if applyTriggeredQuality && freshSignal && (qualityRoundHasResults(results) || plan.PelicanConfig.Quality.Action == QualityActionOpenAITwoFAAdmission) {
+		if runCtx.Err() == nil && applyTriggeredQuality && freshSignal && (qualityRoundHasResults(results) || plan.PelicanConfig.Quality.Action == QualityActionOpenAITwoFAAdmission) {
 			var actionErr error
 			qualityAction, actionErr = s.planRepo.ApplyQualityOutcome(saveCtx, plan, until, qualityRoundOutcome(results))
 			if actionErr != nil {
@@ -422,7 +428,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	}
 	if cleanup, ok := s.planRepo.(QualityOAuth401Repository); ok {
 		evidence := &QualityOAuth401Round{}
-		if allSaved {
+		if allSaved && runCtx.Err() == nil {
 			evidence = QualityOAuth401Evidence(plan, results)
 		}
 		deleted, cleanupErr := cleanup.CompleteQualityOAuth401Round(saveCtx, plan, until, evidence)
@@ -433,7 +439,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 			return true // Native deletion cascaded results; do not write them again.
 		}
 	}
-	if succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && plan.PelicanConfig.Availability == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
+	if runCtx.Err() == nil && succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && plan.PelicanConfig.Availability == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
 		s.tryRecoverAccount(saveCtx, plan.AccountID, plan.ID)
 	}
 	finished := time.Now()
@@ -523,6 +529,13 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 	}
 	result.PelicanConfig = &snapshot
 	availability = snapshot.AvailabilityResult
+	if ctx.Err() != nil {
+		// The adapter may finish concurrently with shutdown. Retain its answer
+		// evidence, but do not start grading or publish a late quality verdict.
+		result.Status, result.ErrorMessage = "failed", ctx.Err().Error()
+		result.QualityJudgment = nil
+		return result
+	}
 	// 探针题型的结果自带 correct/incorrect/unknown 判定，不经过判题模型。
 	if plan.PelicanConfig.Quality != nil && plan.TriggerSource != AvailabilityCoverageSource && result.Status == "success" && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
 		var judgment *QualityJudgment
@@ -539,7 +552,11 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 		} else if s.judgeQuality != nil {
 			judgment = s.judgeQuality(ctx, plan.AccountID, plan.PelicanConfig, result.ResponseText)
 		}
-		applyQualityJudgment(result, judgment)
+		if ctx.Err() != nil {
+			result.Status, result.ErrorMessage, result.QualityJudgment = "failed", ctx.Err().Error(), nil
+		} else {
+			applyQualityJudgment(result, judgment)
+		}
 		result.FinishedAt = time.Now()
 		if judgment == nil || judgment.Kind != "jev" {
 			result.LatencyMs = result.FinishedAt.Sub(result.StartedAt).Milliseconds()

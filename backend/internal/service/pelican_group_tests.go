@@ -311,7 +311,7 @@ func (s *PelicanGroupTestService) RunNow(ctx context.Context, id int64) error {
 
 // RunDue runs every due plan; the scheduled-test runner calls it once a minute.
 func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
-	if s == nil {
+	if s == nil || ctx.Err() != nil {
 		return
 	}
 	plans, err := s.repo.ListDue(ctx, now)
@@ -321,8 +321,16 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 	}
 	sem := make(chan struct{}, pelicanGroupTestMaxRunning)
 	var wg sync.WaitGroup
+	defer wg.Wait()
 	for _, plan := range plans {
-		sem <- struct{}{}
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
 		wg.Add(1)
 		go func(plan *PelicanGroupTestPlan) {
 			defer wg.Done()
@@ -330,10 +338,12 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 			s.runScheduled(ctx, plan, now)
 		}(plan)
 	}
-	wg.Wait()
 }
 
 func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *PelicanGroupTestPlan, now time.Time) {
+	if ctx.Err() != nil {
+		return
+	}
 	defer func() {
 		if recover() != nil {
 			logger.LegacyPrintf("service.pelican_group_test", "plan=%d group=%d panicked", plan.ID, plan.GroupID)
@@ -355,6 +365,9 @@ func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *Pelica
 	// The persisted lease keeps ticks and server replicas from running a plan twice and
 	// expires by itself after a crash.
 	until := now.Add(pelicanGroupTestLease).Truncate(time.Microsecond)
+	if ctx.Err() != nil {
+		return
+	}
 	claimed, err := s.repo.Claim(ctx, plan, now, until, &next)
 	if err != nil {
 		logger.LegacyPrintf("service.pelican_group_test", "plan=%d claim failed: %v", plan.ID, err)
@@ -363,11 +376,11 @@ func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *Pelica
 		return
 	}
 	plan.PelicanConfig = freezePelicanQuestion(plan.PelicanConfig, "scheduled:"+roundTime.UTC().Format(time.RFC3339Nano), nil)
-	s.execute(withAutomaticMonitoringProbe(context.Background()), plan, until)
+	s.execute(withAutomaticMonitoringProbe(ctx), plan, until)
 }
 
-// execute runs the plan's samples and stores them. Callers supply a fresh lifetime
-// carrying only internal execution policy, never an admin request's cancellation.
+// execute runs the plan's samples and stores them. Scheduled work retains its
+// runner's lifetime; manual work receives a lifetime independent of the HTTP request.
 func (s *PelicanGroupTestService) execute(ctx context.Context, plan *PelicanGroupTestPlan, until time.Time) {
 	runCtx, cancel := context.WithTimeout(ctx, pelicanGroupTestRunTimeout)
 	defer cancel()
@@ -448,6 +461,9 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 	attempts := []PelicanGroupTestAttempt{}
 	var lastSample *ScheduledTestResult
 	for {
+		if ctx.Err() != nil {
+			return s.newResult(plan, started, s.now(), ctx.Err().Error())
+		}
 		route, err := s.router.route(ctx, group, plan.ModelID, excluded)
 		if err != nil {
 			if len(attempts) == 0 {
@@ -461,10 +477,13 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 			return result
 		}
 		var sample *ScheduledTestResult
-		attempted = true
 		usage := &pelicanTestUsageCollector{model: route.account.GetMappedModel(route.model)}
 		func() {
 			defer route.release()
+			if err = ctx.Err(); err != nil {
+				return
+			}
+			attempted = true
 			defer func() {
 				cost, partial := usage.cost(s.billing, route.account)
 				incomplete = incomplete || partial
@@ -481,6 +500,9 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 			if err == nil {
 				sample.ErrorMessage = "pelican_group_test_empty_result: account test returned no result"
 			}
+		}
+		if ctx.Err() != nil && sample.Status == "success" {
+			sample.Status, sample.ErrorMessage = "failed", ctx.Err().Error()
 		}
 		denial := pelicanGroupTestBudgetDeferral(sample)
 		if denial != nil || ctx.Err() != nil || !pelicanGroupTestRetryable(sample) || len(attempts)+1 >= PelicanGroupTestMaxAttempts {
