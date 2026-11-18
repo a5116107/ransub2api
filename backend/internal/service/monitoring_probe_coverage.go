@@ -51,6 +51,7 @@ type MonitoringProbeCoverage struct {
 	ActiveMonitorRuns          int64     `json:"active_monitor_runs"`
 	MinimumActiveRequests      int64     `json:"minimum_active_requests"`
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
+	UnestimatedDemandSources   []string  `json:"unestimated_demand_sources"`
 }
 
 // Only account identity required by the original runner is read. Neither raw
@@ -77,7 +78,10 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		Enforced:                policy.Enabled, CanSave: true, BlockingReasons: []string{}, Warnings: []string{},
 		PlanInventoryComplete: plansComplete, CandyInventoryComplete: candyComplete,
 		ActiveInventoryComplete: activeComplete,
-		ScheduleWindowStart:     now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour),
+		// These are source-level omissions, not observed enabled inventory.
+		// Node configuration and future events cannot be inferred from SQL.
+		UnestimatedDemandSources: []string{"account_quota_cycle", "ollama_usage", "responses_capability", "event_diagnostics"},
+		ScheduleWindowStart:      now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour),
 	}
 	result.ScheduleWindowEnd = result.ScheduleWindowStart.Add(24 * time.Hour)
 	if result.RegularMinuteCapacity < 1 {

@@ -543,7 +543,22 @@ export default {
         budget: {
           capacityTitle: 'Monitoring capacity preflight (lower bound)',
           capacityPreview: 'Preview draft capacity',
-          capacityInactive: 'Billing, saved schedules, candy and V1 monitors are inactive; no coverage interval promised',
+          capacityInactive: 'Billing, schedules, candy and V1 in the compiled scopes are inactive; unexamined demand is not free or disabled',
+          capacityUnestimatedTitle: 'Demand outside the compiled minimum',
+          capacityUnestimatedHint: 'These are unestimated source families, not an inventory of enabled monitors. Unknown demand is not zero; saving does not reserve capacity or prove full coverage.',
+          capacityUnestimatedStatus: 'Unestimated',
+          capacitySourceNames: {
+            account_quota_cycle: 'Periodic account balance / quota', ollama_usage: 'Ollama usage refresh',
+            responses_capability: 'Responses capability detection', event_diagnostics: 'Event / manual diagnostics',
+            unknown: 'Unknown demand coverage'
+          },
+          capacitySourceHints: {
+            account_quota_cycle: 'Enablement and cadence come from node configuration, which this database preview has not observed across instances.',
+            ollama_usage: 'Depends on activity, 429 events, session state, caching and coalescing; refresh intervals are not guaranteed future call counts.',
+            responses_capability: 'Account creation and credential changes trigger checks; future event counts have not been forecast.',
+            event_diagnostics: 'Metered gateway, ticket, retry and manual diagnostics have no complete future workload inventory. This does not imply every transport is metered.',
+            unknown: 'Missing, empty or unrecognized coverage data is unknown, not evidence of inactivity or zero calls.'
+          },
           capacityExceeded: 'Proven capacity shortfall; full target coverage is not achievable',
           capacityPartial: 'No proven shortfall found; full coverage is still unverified',
           capacityTargets: 'Enabled accounts / saved interval',

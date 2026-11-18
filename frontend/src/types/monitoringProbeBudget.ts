@@ -72,6 +72,7 @@ export interface MonitoringProbeCoverage {
   active_monitor_runs?: number
   minimum_active_requests?: number
   minimum_total_requests_per_day?: number
+  unestimated_demand_sources?: string[]
 }
 
 export interface MonitoringProbeBudgetDeferral {

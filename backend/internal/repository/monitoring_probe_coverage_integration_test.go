@@ -777,6 +777,8 @@ func TestMonitoringProbeCoveragePreviewAndRevalidation(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, preview.CanSave)
 	require.EqualValues(t, 96, preview.MinimumRequestsPerDay)
+	sources := []string{"account_quota_cycle", "ollama_usage", "responses_capability", "event_diagnostics"}
+	require.ElementsMatch(t, sources, preview.UnestimatedDemandSources)
 	raw, err := json.Marshal(preview)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "coverage-private-key")
@@ -811,9 +813,10 @@ func TestMonitoringProbeCoveragePreviewAndRevalidation(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, preview.NewAPIAccounts)
 	require.EqualValues(t, 2, preview.MinimumRequestsPerSweep)
-	summary, err := repo.Summary(ctx)
+	summary, err := NewMonitoringProbeBudgetRepository(db).Summary(ctx)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, summary.Coverage.MinimumRequestsPerSweep)
+	require.ElementsMatch(t, sources, summary.Coverage.UnestimatedDemandSources, "a fresh reader must preserve the uncompiled-scope contract")
 	for _, table := range []string{"monitoring_probe_budget_counters", "monitoring_probe_budget_leases"} {
 		var count int
 		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))

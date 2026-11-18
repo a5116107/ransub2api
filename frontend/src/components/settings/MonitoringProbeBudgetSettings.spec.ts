@@ -38,6 +38,48 @@ async function open(locale = 'en') {
 }
 
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('discloses unestimated runtime and event demand without forecasting it in %s', async locale => {
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,
+      account_plans: 0, group_plans: 0, candy_probes: 0, candy_inventory_complete: true,
+      active_monitors: 0, active_inventory_complete: true, minimum_total_requests_per_day: 0,
+      unestimated_demand_sources: ['account_quota_cycle', 'ollama_usage', 'responses_capability', 'event_diagnostics'] })
+    const wrapper = await open(locale)
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="probe-budget-unestimated-demand"]')
+    expect(panel.findAll('[data-source]')).toHaveLength(4)
+    expect(panel.text()).toContain('Ollama')
+    expect(panel.text()).toContain('Responses')
+    expect(panel.text()).toContain(locale === 'zh' ? '未估算' : 'Unestimated')
+    expect(panel.text()).toContain(locale === 'zh' ? '不是已启用库存' : 'not an inventory of enabled')
+    expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain(locale === 'zh' ? '已编译范围' : 'compiled scopes')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toBe('0 / 80000')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).toHaveBeenCalledTimes(1)
+  })
+  it.each(['missing', 'empty', 'future'])('keeps %s demand information unknown, sanitized and bounded', async mode => {
+    const sources = mode === 'missing' ? undefined : mode === 'empty' ? [] : ['ollama_usage', 'ollama_usage', 'PRIVATE_SOURCE', 'ANOTHER_PRIVATE_SOURCE']
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), unestimated_demand_sources: sources })
+    const wrapper = await open()
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="probe-budget-unestimated-demand"]')
+    expect(panel.text()).toContain('Unknown')
+    expect(panel.text()).not.toContain('PRIVATE_SOURCE')
+    expect(panel.text()).not.toContain('ANOTHER_PRIVATE_SOURCE')
+    expect(panel.findAll('[data-source="unknown"]')).toHaveLength(1)
+    expect(panel.findAll('[data-source]')).toHaveLength(mode === 'future' ? 2 : 1)
+  })
+  it('does not report known scopes inactive when schedule inventory is incomplete', async () => {
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,
+      account_plans: 0, group_plans: 0, candy_probes: 0, candy_inventory_complete: true,
+      active_monitors: 0, active_inventory_complete: true, plan_inventory_complete: false })
+    const wrapper = await open()
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain('still unverified')
+  })
   it.each(['en', 'zh'])('shows candy demand separately when billing and saved plans are off in %s', async locale => {
     const wrapper = await open(locale)
     api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,

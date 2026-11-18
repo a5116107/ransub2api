@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -325,5 +326,28 @@ func TestMonitoringProbeCoverageActiveUnknownAndBoundaries(t *testing.T) {
 		c := CompileMonitoringProbeCoverage(DefaultMonitoringProbeBudgetSettings(), UpstreamBillingProbeSettings{IntervalMinutes: 30}, nil, true, nil, true, nil, true, []ChannelMonitor{m}, true, time.Now())
 		require.EqualValues(t, tc.runs, c.ActiveMonitorRuns)
 		require.EqualValues(t, 2*tc.runs, c.MinimumActiveRequests)
+	}
+}
+
+// A zero compiled minimum is not an inventory of every running monitor. CN
+// cadence comes from node config; activity/account/diagnostic triggers are not
+// future schedules. Keep these unknown demands separate from known calls.
+func TestMonitoringProbeCoverageUnestimatedSources(t *testing.T) {
+	for _, enforce := range []bool{false, true} {
+		t.Run(fmt.Sprint(enforce), func(t *testing.T) {
+			policy := DefaultMonitoringProbeBudgetSettings()
+			policy.Enabled, policy.RequestsPerDay = enforce, 1
+			coverage := CompileMonitoringProbeCoverage(policy, UpstreamBillingProbeSettings{IntervalMinutes: 30}, nil, true, nil, true, nil, true, nil, true, time.Now())
+			encoded, err := json.Marshal(coverage)
+			require.NoError(t, err)
+			var view struct {
+				Sources []string `json:"unestimated_demand_sources"`
+			}
+			require.NoError(t, json.Unmarshal(encoded, &view))
+			require.ElementsMatch(t, []string{"account_quota_cycle", "ollama_usage", "responses_capability", "event_diagnostics"}, view.Sources)
+			require.Zero(t, coverage.MinimumTotalRequestsPerDay, "do not invent future physical calls or token demand")
+			require.Empty(t, coverage.BlockingReasons, "unestimated demand is not a proved capacity shortfall")
+			require.True(t, coverage.CanSave, "repair and enforcement-disable paths must remain available")
+		})
 	}
 }

@@ -536,7 +536,22 @@ export default {
         budget: {
           capacityTitle: '检测容量预检（调用量下界）',
           capacityPreview: '预览当前草稿容量',
-          capacityInactive: '倍率、定时计划、糖果与 V1 监控均未启用；不承诺覆盖周期',
+          capacityInactive: '已编译范围的倍率、计划、糖果与 V1 均未启用；未检查需求不等于停用或免费',
+          capacityUnestimatedTitle: '未计入已知最低量的需求',
+          capacityUnestimatedHint: '以下是未估算的来源类型，不是已启用库存。未知需求不是零；允许保存不代表预留容量或保证全覆盖。',
+          capacityUnestimatedStatus: '未估算',
+          capacitySourceNames: {
+            account_quota_cycle: '账号周期余额 / 配额', ollama_usage: 'Ollama 用量刷新',
+            responses_capability: 'Responses 能力探测', event_diagnostics: '事件 / 手动诊断',
+            unknown: '需求覆盖未知'
+          },
+          capacitySourceHints: {
+            account_quota_cycle: '开关与周期来自节点配置；本次数据库预览未观察各实例的实际运行配置。',
+            ollama_usage: '受活动、429、会话状态、缓存与合并影响；刷新间隔不是未来实际调用次数。',
+            responses_capability: '由建号与凭据变更触发；未来事件数量尚未预测。',
+            event_diagnostics: '已计量的网关、门票、重试及手动诊断仍缺完整未来工作量清单，不代表全部通道均已计量。',
+            unknown: '缺失、空白或未识别的覆盖信息保留未知，不据此认定未启用或零调用。'
+          },
           capacityExceeded: '存在明确超限；目标周期不能完整覆盖',
           capacityPartial: '未发现已证明的超限；仍不是全覆盖保证',
           capacityTargets: '启用账号 / 已保存周期',

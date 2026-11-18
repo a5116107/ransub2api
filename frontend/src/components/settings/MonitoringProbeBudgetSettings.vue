@@ -44,7 +44,7 @@
       <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" data-testid="probe-budget-capacity" aria-live="polite">
         <h4 class="font-semibold">{{ t(`${prefix}.capacityTitle`) }}</h4>
         <template v-if="coverage && coverageMatches">
-          <p class="mt-2 font-medium" data-testid="probe-budget-capacity-verdict">{{ t(`${prefix}.${coverage.blocking_reasons.length ? 'capacityExceeded' : !coverage.billing_enabled && coverage.account_plans === 0 && coverage.group_plans === 0 && coverage.candy_probes === 0 && coverage.candy_inventory_complete === true && coverage.active_monitors === 0 && coverage.active_inventory_complete === true ? 'capacityInactive' : 'capacityPartial'}`) }}</p>
+          <p class="mt-2 font-medium" data-testid="probe-budget-capacity-verdict">{{ t(`${prefix}.${coverage.blocking_reasons.length ? 'capacityExceeded' : knownScopesInactive ? 'capacityInactive' : 'capacityPartial'}`) }}</p>
           <dl class="mt-3 grid gap-3 sm:grid-cols-2">
             <div><dt>{{ t(`${prefix}.capacityTargets`) }}</dt><dd class="font-mono">{{ coverage.inventory_complete ? '' : '≥ ' }}{{ coverage.accounts }} / {{ coverage.interval_minutes }} {{ t(`${prefix}.capacityMinutes`) }}</dd></div>
             <div><dt>{{ t(`${prefix}.capacitySweep`) }}</dt><dd class="font-mono">≥ {{ coverage.minimum_requests_per_sweep }}</dd></div>
@@ -74,6 +74,19 @@
             <p v-if="coverage.plan_inventory_complete !== true" class="mt-2">{{ t(`${prefix}.capacityPlansUnknown`) }}</p>
             <p v-if="coverage.candy_inventory_complete !== true" class="mt-2">{{ t(`${prefix}.capacityCandyUnknown`) }}</p>
             <p v-if="coverage.active_inventory_complete !== true" class="mt-2">{{ t(`${prefix}.capacityActiveUnknown`) }}</p>
+          </div>
+          <div class="mt-4 border-t border-amber-300 pt-3 dark:border-amber-800" data-testid="probe-budget-unestimated-demand">
+            <h5 class="font-semibold">{{ t(`${prefix}.capacityUnestimatedTitle`) }}</h5>
+            <p class="mt-2 text-xs">{{ t(`${prefix}.capacityUnestimatedHint`) }}</p>
+            <dl class="mt-3 space-y-3">
+              <div v-for="source in unestimatedSources" :key="source" :data-source="source">
+                <dt class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="font-medium">{{ t(`${prefix}.capacitySourceNames.${source}`) }}</span>
+                  <span class="rounded-md bg-amber-100 px-2 py-0.5 text-xs font-medium dark:bg-amber-900/50">{{ t(`${prefix}.${source === 'unknown' ? 'unknownUsage' : 'capacityUnestimatedStatus'}`) }}</span>
+                </dt>
+                <dd class="mt-1 text-xs">{{ t(`${prefix}.capacitySourceHints.${source}`) }}</dd>
+              </div>
+            </dl>
           </div>
           <ul v-if="coverage.blocking_reasons.length || coverage.warnings.length" class="mt-2 list-inside list-disc space-y-1" data-testid="probe-budget-capacity-reasons">
             <li v-for="reason in [...coverage.blocking_reasons, ...coverage.warnings]" :key="reason">{{ capacityReason(reason) }}</li>
@@ -128,6 +141,19 @@ const previewing = ref(false)
 const coverage = ref<MonitoringProbeCoverage | null>(null)
 const coverageKey = ref('')
 const coverageMatches = computed(() => coverageKey.value === JSON.stringify(form))
+const knownScopesInactive = computed(() => {
+  const c = coverage.value
+  return c && c.inventory_complete === true && c.plan_inventory_complete === true &&
+    !c.billing_enabled && c.account_plans === 0 && c.group_plans === 0 &&
+    c.candy_probes === 0 && c.candy_inventory_complete === true &&
+    c.active_monitors === 0 && c.active_inventory_complete === true
+})
+const unestimatedSources = computed(() => {
+  const sources = coverage.value?.unestimated_demand_sources
+  if (!Array.isArray(sources) || sources.length === 0) return ['unknown']
+  const known = new Set(['account_quota_cycle', 'ollama_usage', 'responses_capability', 'event_diagnostics'])
+  return [...new Set(sources.map(source => typeof source === 'string' && known.has(source) ? source : 'unknown'))]
+})
 const error = ref('')
 const notice = ref('')
 const counters = computed(() => summary.value ? [
