@@ -170,6 +170,219 @@ func TestChannelMonitorBudgetHTTPPostgresActualUsageAndRecovery(t *testing.T) {
 	require.Zero(t, downstreamUsage, "monitoring accounting must not create downstream business charges")
 }
 
+func TestChannelMonitorBudgetHTTPPostgresSharedBillingCredentialAndFailureRecovery(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	settings := repository.NewSettingRepository(client)
+	require.NoError(t, settings.SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1",
+	}))
+	budget := repository.NewMonitoringProbeBudgetRepository(db)
+	policy := service.DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.RecoveryReservePercent, policy.KeyConcurrency = true, 0, 2
+	_, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+
+	var calls, generations atomic.Int64
+	var holdBilling atomic.Bool
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBilling := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseBilling()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		require.Empty(t, req.Header.Get(service.ChannelMonitorBudgetCredentialScopeMetadataKey))
+		if req.Method == http.MethodHead {
+			require.Equal(t, "/", req.URL.Path)
+			require.Empty(t, req.Header.Get("Authorization"), "HEAD attribution must not forward the shared credential")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == http.MethodPost {
+			require.Equal(t, "/tenant/v1/chat/completions", req.URL.Path)
+			require.Contains(t, []string{"Bearer cross-source-fixture", "Bearer independent-source-fixture"}, req.Header.Get("Authorization"))
+			generations.Add(1)
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`)
+			return
+		}
+		require.Equal(t, http.MethodGet, req.Method)
+		require.Equal(t, "Bearer cross-source-fixture", req.Header.Get("Authorization"))
+		if holdBilling.Load() {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-req.Context().Done():
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":"fixture_upstream_unavailable"}`)
+			return
+		}
+		if req.URL.Path == "/tenant/v1/usage" {
+			_, _ = io.WriteString(w, `{"mode":"unrestricted","isValid":true,"remaining":12.34,"unit":"USD","balance":12.34}`)
+			return
+		}
+		require.Equal(t, "/tenant/v1/sub2api/billing", req.URL.Path)
+		_, _ = fmt.Fprintf(w, `{"object":"sub2api.key_billing","schema_version":1,"billing_scope":"token","group_rate_multiplier":0.03,"resolved_rate_multiplier":0.03,"peak_rate_enabled":false,"effective_rate_multiplier":0.03,"observed_at":%q}`, time.Now().UTC().Format(time.RFC3339Nano))
+	}))
+	t.Cleanup(upstream.Close)
+	otherUpstream := httptest.NewServer(upstream.Config.Handler)
+	t.Cleanup(otherUpstream.Close)
+	t.Cleanup(service.SetChannelMonitorHTTPClientForTesting(upstream.Client()))
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+		AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	cfg.Totp.EncryptionKey = strings.Repeat("ab", 32)
+	cipher, err := repository.NewAESEncryptor(cfg)
+	require.NoError(t, err)
+	monitors := repository.NewChannelMonitorRepository(client, db)
+	newMonitorNode := func() *service.ChannelMonitorService {
+		return service.ProvideChannelMonitorService(repository.NewChannelMonitorRepository(client, db), cipher,
+			service.NewSettingService(repository.NewSettingRepository(client), cfg), cfg, nil,
+			repository.NewMonitoringProbeBudgetRepository(db))
+	}
+	createMonitor := func(name, key string) *service.ChannelMonitor {
+		t.Helper()
+		storedKey, encryptErr := cipher.Encrypt("not-the-final-credential")
+		require.NoError(t, encryptErr)
+		// The local HTTP fixture is inserted through the repository, as in the
+		// existing transport tests; production endpoint validation stays intact.
+		m := &service.ChannelMonitor{
+			Name: name, Provider: service.MonitorProviderOpenAI, Endpoint: upstream.URL + "/tenant/v1",
+			APIKey: storedKey, ExtraHeaders: map[string]string{"authorization": "Bearer " + key},
+			PrimaryModel: "model-a", Enabled: true, IntervalSeconds: 3600,
+			BodyOverrideMode: service.MonitorBodyOverrideModeReplace,
+			BodyOverride:     map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+		}
+		require.NoError(t, monitors.Create(ctx, m))
+		return m
+	}
+	shared := createMonitor("cross-source-shared", "cross-source-fixture")
+	independent := createMonitor("cross-source-independent", "independent-source-fixture")
+	runMonitor := func(m *service.ChannelMonitor, deferred bool) {
+		t.Helper()
+		results, runErr := newMonitorNode().RunCheck(ctx, m.ID)
+		require.NoError(t, runErr)
+		require.Len(t, results, 1)
+		result := results[0]
+		require.Equal(t, deferred, result.Skipped)
+		if deferred {
+			require.NotNil(t, result.BudgetDeferral)
+			require.Equal(t, "concurrency_limit", result.BudgetDeferral.Reason)
+			require.Equal(t, "key", result.BudgetDeferral.Scope)
+			require.Nil(t, result.LatencyMs)
+		} else {
+			require.Nil(t, result.BudgetDeferral)
+			require.Equal(t, service.MonitorStatusOperational, result.Status)
+		}
+	}
+	runMonitor(shared, false)
+	before, err := monitors.GetByID(ctx, shared.ID)
+	require.NoError(t, err)
+	require.NotNil(t, before.LastCheckedAt)
+	require.Equal(t, []string{config.UpstreamKeyFingerprint("cross-source-fixture")}, service.ValidatedChannelMonitorBudgetCredentials(before))
+
+	accounts := repository.NewAccountRepository(client, db, nil)
+	accountIDs := make([]int64, 3)
+	for i := range accountIDs {
+		baseURL := upstream.URL
+		if i == 1 {
+			baseURL = otherUpstream.URL
+		}
+		a := &service.Account{Name: fmt.Sprintf("cross-source-billing-%d", i), Platform: service.PlatformOpenAI,
+			Type: service.AccountTypeAPIKey, Status: service.StatusActive, Concurrency: 4, Schedulable: true,
+			Credentials: map[string]any{"api_key": "cross-source-fixture", "base_url": baseURL + "/tenant/v1"},
+			Extra:       map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true}}
+		require.NoError(t, accounts.Create(ctx, a))
+		accountIDs[i] = a.ID
+	}
+	newBillingNode := func() *service.UpstreamBillingProbeService {
+		tests := service.NewAccountTestService(repository.NewAccountRepository(client, db, nil), nil, nil, nil, nil,
+			repository.NewHTTPUpstream(cfg), cfg, nil)
+		runner := service.NewUpstreamBillingProbeService(repository.NewAccountRepository(client, db, nil), tests,
+			service.NewSettingService(repository.NewSettingRepository(client), cfg))
+		runner.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(repository.NewMonitoringProbeBudgetRepository(db)))
+		return runner
+	}
+	type billingResult struct {
+		snapshot *service.UpstreamBillingProbeSnapshot
+		err      error
+	}
+	finished := make(chan billingResult, 2)
+	billingCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	var pending sync.WaitGroup
+	t.Cleanup(func() { cancel(); releaseBilling(); pending.Wait() })
+	holdBilling.Store(true)
+	for _, id := range accountIDs[:2] {
+		pending.Add(1)
+		go func() {
+			defer pending.Done()
+			snapshot, probeErr := newBillingNode().ProbeAccount(billingCtx, id)
+			finished <- billingResult{snapshot, probeErr}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-entered:
+		case <-billingCtx.Done():
+			t.Fatal("both independent billing instances must acquire the shared credential slots")
+		}
+	}
+	summary, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, summary.ActiveRequests)
+	physicalBefore := calls.Load()
+	runMonitor(shared, true)
+	_, err = newBillingNode().ProbeAccount(ctx, accountIDs[2])
+	var denial *service.MonitoringProbeBudgetDenial
+	require.ErrorAs(t, err, &denial)
+	require.Equal(t, "key", denial.Scope)
+	require.Equal(t, "concurrency_limit", denial.Reason)
+	require.Equal(t, physicalBefore, calls.Load(), "fresh instances cannot bypass the cross-source shared-key cap")
+	after, err := monitors.GetByID(ctx, shared.ID)
+	require.NoError(t, err)
+	require.Equal(t, before.LastCheckedAt, after.LastCheckedAt, "local contention must not renew the previous passing observation")
+	history, err := monitors.ListHistory(ctx, shared.ID, "model-a", 20)
+	require.NoError(t, err)
+	require.Len(t, history, 1, "budget deferral is not a new supplier failure or a passing measurement")
+	runMonitor(independent, false)
+	require.EqualValues(t, physicalBefore+2, calls.Load(), "the independent final key remains usable at the same site")
+
+	// Fail the two held requests, then let their optional balance reads finish.
+	// Recovery must come from releasing persisted leases, not raising the cap.
+	holdBilling.Store(false)
+	releaseBilling()
+	pending.Wait()
+	for range 2 {
+		result := <-finished
+		require.NoError(t, result.err)
+		require.NotNil(t, result.snapshot)
+		require.Equal(t, service.UpstreamBillingProbeStatusFailed, result.snapshot.Status)
+	}
+	summary, err = repository.NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+	require.NoError(t, err)
+	require.Zero(t, summary.ActiveRequests, "failed upstream responses must release every shared SQL lease")
+	runMonitor(shared, false)
+	recovered, err := newBillingNode().ProbeAccount(ctx, accountIDs[2])
+	require.NoError(t, err)
+	require.Equal(t, service.UpstreamBillingProbeStatusOK, recovered.Status)
+	summary, err = repository.NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, calls.Load(), summary.DayUsed, "denials create no extra physical request charge")
+	require.EqualValues(t, 3, generations.Load())
+	require.EqualValues(t, 21, summary.DayTokens)
+	require.EqualValues(t, 3, summary.UsageReported)
+	require.Zero(t, summary.UsageUnknown)
+	require.Zero(t, summary.UsagePending)
+	require.Zero(t, summary.ActiveRequests)
+	require.Equal(t, policy.KeyConcurrency, summary.Settings.KeyConcurrency)
+	history, err = monitors.ListHistory(ctx, shared.ID, "model-a", 20)
+	require.NoError(t, err)
+	require.Len(t, history, 2)
+	var downstreamUsage int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs").Scan(&downstreamUsage))
+	require.Zero(t, downstreamUsage, "upstream monitoring never creates downstream business charges")
+}
+
 func TestChannelMonitorQuotaBudgetHTTPPostgresRestartAndRecovery(t *testing.T) {
 	db, client := repository.UpstreamChannelsTestDatabase(t)
 	ctx := t.Context()
