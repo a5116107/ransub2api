@@ -26,6 +26,7 @@ type ChannelMonitorRepository interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, params ChannelMonitorListParams) ([]*ChannelMonitor, int64, error)
 	FindByDuplicateOperationID(ctx context.Context, operationID string) (*ChannelMonitor, error)
+	RecordBudgetCredentialScope(ctx context.Context, expected *ChannelMonitor) (bool, error)
 
 	// 调度器辅助
 	ListEnabled(ctx context.Context) ([]*ChannelMonitor, error)
@@ -205,6 +206,7 @@ func (s *ChannelMonitorService) Create(ctx context.Context, p ChannelMonitorCrea
 		CheckMode:        checkMode,
 		AccountID:        cloneInt64Pointer(p.AccountID),
 	}
+	m.setBudgetCredentialScope(p.APIKey)
 	if err := s.repo.Create(ctx, m); err != nil {
 		return nil, fmt.Errorf("create channel monitor: %w", err)
 	}
@@ -273,6 +275,7 @@ func (s *ChannelMonitorService) Duplicate(
 		AccountID:            cloneInt64Pointer(source.AccountID),
 		DuplicateOperationID: operationID,
 	}
+	duplicate.setBudgetCredentialScope(plainAPIKey)
 	if err := s.repo.Create(ctx, duplicate); err != nil {
 		return nil, fmt.Errorf("duplicate channel monitor: %w", err)
 	}
@@ -458,11 +461,12 @@ func (s *ChannelMonitorService) Update(ctx context.Context, id int64, p ChannelM
 		return nil, err
 	}
 
-	newPlainAPIKey, apiKeyUpdated, err := s.applyAPIKeyUpdate(existing, p.APIKey)
+	newPlainAPIKey, err := s.applyAPIKeyUpdate(existing, p.APIKey)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateProbeAPIKey(existing, newPlainAPIKey); err != nil {
+	plainAPIKey, err := s.validateProbeAPIKey(existing, newPlainAPIKey)
+	if err != nil {
 		return nil, err
 	}
 	if p.Provider != nil || p.CheckMode != nil || p.AccountID != nil {
@@ -471,16 +475,13 @@ func (s *ChannelMonitorService) Update(ctx context.Context, id int64, p ChannelM
 		}
 	}
 
+	existing.setBudgetCredentialScope(plainAPIKey)
 	if err := s.repo.Update(ctx, existing); err != nil {
 		return nil, fmt.Errorf("update channel monitor: %w", err)
 	}
 
 	// 不再调 s.Get 重走解密链：避免二次解密带来的"密文被静默清空"风险（与 Create 一致）。
-	if apiKeyUpdated {
-		existing.APIKey = newPlainAPIKey
-	} else {
-		s.decryptInPlace(existing)
-	}
+	existing.APIKey = plainAPIKey
 	if s.scheduler != nil {
 		// Schedule 内部根据 Enabled 自动选择 Unschedule 或重建任务，
 		// IntervalSeconds 变化也会被自然吸收（旧 task 取消 + 新 task 用新 interval）。
@@ -507,24 +508,26 @@ func validateMonitorModeFields(m *ChannelMonitor) error {
 // validateProbeAPIKey 探活模式（probe / quota_probe）必须持有可用明文 key：
 // 存量密文解密为空串（quota 监控切回探活但未重填 key）时拒绝。
 // 密文损坏的情况交给既有 APIKeyDecryptFailed 链路（Get/RunCheck 会显式报错）。
-func (s *ChannelMonitorService) validateProbeAPIKey(m *ChannelMonitor, newPlainKey string) error {
-	if defaultCheckMode(m.CheckMode) == MonitorCheckModeQuota {
-		return nil
-	}
+func (s *ChannelMonitorService) validateProbeAPIKey(m *ChannelMonitor, newPlainKey string) (string, error) {
+	m.APIKeyDecryptFailed = false
 	if strings.TrimSpace(newPlainKey) != "" {
-		return nil
+		return newPlainKey, nil
 	}
 	if strings.TrimSpace(m.APIKey) == "" {
-		return ErrChannelMonitorMissingAPIKey
+		if defaultCheckMode(m.CheckMode) == MonitorCheckModeQuota {
+			return "", nil
+		}
+		return "", ErrChannelMonitorMissingAPIKey
 	}
 	plain, err := s.encryptor.Decrypt(m.APIKey)
 	if err != nil {
-		return nil
+		m.APIKeyDecryptFailed = true
+		return "", nil
 	}
-	if strings.TrimSpace(plain) == "" {
-		return ErrChannelMonitorMissingAPIKey
+	if strings.TrimSpace(plain) == "" && defaultCheckMode(m.CheckMode) != MonitorCheckModeQuota {
+		return "", ErrChannelMonitorMissingAPIKey
 	}
-	return nil
+	return plain, nil
 }
 
 // revalidateLinkedAccount 在 provider/check_mode/account_id 任一变化后复核关联账号：
@@ -569,20 +572,20 @@ func (s *ChannelMonitorService) revalidateLinkedAccount(ctx context.Context, m *
 }
 
 // applyAPIKeyUpdate 处理 Update 中的 APIKey 字段：
-//   - 入参 raw 为 nil 或空白：不修改 existing.APIKey（仍为密文），返回 updated=false
+//   - 入参 raw 为 nil 或空白：不修改 existing.APIKey（仍为密文），返回空明文
 //   - 非空：加密后写入 existing.APIKey；同时把明文返回给调用方，
 //     供写库成功后塞回 existing 避免把密文吐回客户端
-func (s *ChannelMonitorService) applyAPIKeyUpdate(existing *ChannelMonitor, raw *string) (plain string, updated bool, err error) {
+func (s *ChannelMonitorService) applyAPIKeyUpdate(existing *ChannelMonitor, raw *string) (plain string, err error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
-		return "", false, nil
+		return "", nil
 	}
 	plain = strings.TrimSpace(*raw)
 	encrypted, encErr := s.encryptor.Encrypt(plain)
 	if encErr != nil {
-		return "", false, fmt.Errorf("encrypt api key: %w", encErr)
+		return "", fmt.Errorf("encrypt api key: %w", encErr)
 	}
 	existing.APIKey = encrypted
-	return plain, true, nil
+	return plain, nil
 }
 
 // Delete 删除监控（历史通过外键 CASCADE 自动清理）。
@@ -632,10 +635,11 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	if !rt.ActiveProbesAllowed() {
 		return nil, ErrChannelMonitorActiveProbesRetired
 	}
-	m, err := s.Get(ctx, id) // 已解密 APIKey
+	m, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	s.decryptAndPublishBudgetScope(ctx, m)
 	checkMode := defaultCheckMode(m.CheckMode)
 	if checkMode != MonitorCheckModeQuota && m.APIKeyDecryptFailed {
 		return nil, ErrChannelMonitorAPIKeyDecryptFailed
@@ -788,8 +792,12 @@ func (s *ChannelMonitorService) ListEnabledMonitors(ctx context.Context) ([]*Cha
 	if err != nil {
 		return nil, err
 	}
+	// Backfill is best effort for the whole batch, not N independent waits.
+	// Always finish decryption so a slow evidence store cannot stall scheduling.
+	publishCtx, cancel := context.WithTimeout(ctx, channelMonitorBudgetScopePublishTimeout)
+	defer cancel()
 	for _, m := range all {
-		s.decryptInPlace(m)
+		s.decryptAndPublishBudgetScope(publishCtx, m)
 	}
 	return all, nil
 }

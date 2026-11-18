@@ -22,6 +22,10 @@ type quotaModeRepoStub struct {
 	updated   []*ChannelMonitor
 }
 
+func (r *quotaModeRepoStub) RecordBudgetCredentialScope(_ context.Context, _ *ChannelMonitor) (bool, error) {
+	return false, nil
+}
+
 func (r *quotaModeRepoStub) GetByID(_ context.Context, id int64) (*ChannelMonitor, error) {
 	if r.monitor == nil || r.monitor.ID != id {
 		return nil, ErrChannelMonitorNotFound
@@ -596,16 +600,23 @@ func TestValidateProbeAPIKey_QuotaToProbeRequiresFreshKey(t *testing.T) {
 	svc := NewChannelMonitorService(nil, &duplicateChannelMonitorEncryptor{})
 
 	quota := &ChannelMonitor{Provider: MonitorProviderKimi, CheckMode: MonitorCheckModeQuota, APIKey: "NEW:"}
-	require.NoError(t, svc.validateProbeAPIKey(quota, "")) // quota 模式不管 key
+	plain, err := svc.validateProbeAPIKey(quota, "")
+	require.NoError(t, err) // quota 模式不管 key
+	require.Empty(t, plain)
 
 	quota.CheckMode = MonitorCheckModeProbe
 	// 存量密文解出空明文（quota 监控存的加密空串）→ 必须重填 key。
-	require.ErrorIs(t, svc.validateProbeAPIKey(quota, ""), ErrChannelMonitorMissingAPIKey)
+	_, err = svc.validateProbeAPIKey(quota, "")
+	require.ErrorIs(t, err, ErrChannelMonitorMissingAPIKey)
 	// 提供新明文 key → 放行。
-	require.NoError(t, svc.validateProbeAPIKey(quota, "sk-fresh"))
+	plain, err = svc.validateProbeAPIKey(quota, "sk-fresh")
+	require.NoError(t, err)
+	require.Equal(t, "sk-fresh", plain)
 	// 密文解出非空明文 → 放行。
-	require.NoError(t, svc.validateProbeAPIKey(
-		&ChannelMonitor{Provider: MonitorProviderKimi, CheckMode: MonitorCheckModeProbe, APIKey: "OLD:sk-live"}, ""))
+	plain, err = svc.validateProbeAPIKey(
+		&ChannelMonitor{Provider: MonitorProviderKimi, CheckMode: MonitorCheckModeProbe, APIKey: "OLD:sk-live"}, "")
+	require.NoError(t, err)
+	require.Equal(t, "sk-live", plain)
 }
 
 // --- Duplicate：quota 模式空明文重加密 ---

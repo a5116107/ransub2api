@@ -52,6 +52,71 @@ function periodicSites() {
     unresolved_billing_targets: 0, unresolved_active_targets: 1 }
 }
 
+function periodicCredentials() {
+  return { version: 1, scope: 'billing_and_v1', credential_groups: 2, new_api_authorization_groups: 1,
+    billing_attributions_per_day: 96, active_model_attributions_per_day: 1440,
+    origin_ping_attributions_per_day: 1440, max_attributions_per_day: 2976,
+    key_day_capacity: 2880, over_limit_credential_groups: 1,
+    unresolved_billing_targets: 0, unresolved_active_targets: 1 }
+}
+
+describe('periodic shared-credential coverage', () => {
+  it.each(['en', 'zh'])('shows safe final-credential lower bounds and conclusions in %s', async locale => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), periodic_credentials: {
+      ...periodicCredentials(), key: 'PRIVATE_KEY', ciphertext: 'PRIVATE_CIPHER', source: 'PRIVATE_FINGERPRINT' } } })
+    const wrapper = await open(locale)
+    const panel = wrapper.get('[data-testid="probe-budget-periodic-credentials"]')
+    expect(panel.text()).toContain(locale === 'zh' ? '倍率与 V1：共享凭据日下界' : 'Billing and V1: shared-credential daily lower bounds')
+    expect(panel.get('[data-testid="periodic-credentials-verdict"]').text()).toContain(locale === 'zh' ? '已证明存在共享凭据超限' : 'Proven shared-credential shortfall')
+    expect(panel.get('[data-testid="periodic-credentials-capacity"]').text()).toContain('2976 / 2880')
+    expect(panel.get('[data-testid="periodic-credentials-contributions"]').text()).toContain('96 / 1440 / 1440')
+    expect(panel.text()).toContain(locale === 'zh' ? '未归桶 V1 目标 1' : '1 unbucketed V1 targets')
+    expect(panel.text()).toContain(locale === 'zh' ? 'HEAD 不携带认证头' : 'HEAD sends no authentication headers')
+    expect(panel.text()).not.toContain('PRIVATE_')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toContain('69456')
+  })
+
+  it.each([undefined, { ...periodicCredentials(), version: 2 }, { ...periodicCredentials(), scope: 'fleet' },
+    { ...periodicCredentials(), credential_groups: -1 }, { ...periodicCredentials(), over_limit_credential_groups: 3 },
+    { ...periodicCredentials(), new_api_authorization_groups: 3 }, { ...periodicCredentials(), origin_ping_attributions_per_day: 1.5 },
+    { ...periodicCredentials(), max_attributions_per_day: 0 }, { ...periodicCredentials(), over_limit_credential_groups: 0 }])('keeps missing or malformed credential evidence unknown: %j', async credentials => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), periodic_credentials: credentials } })
+    const panel = (await open()).get('[data-testid="probe-budget-periodic-credentials"]')
+    expect(panel.text()).toContain('Unknown')
+    expect(panel.find('[data-testid="periodic-credentials-capacity"]').exists()).toBe(false)
+  })
+
+  it('blocks a combined key shortfall and retains the disabling repair path', async () => {
+    api.previewMonitoringProbeCoverage.mockImplementation(async draft => ({ ...coverage(), billing_enabled: false,
+      enforced: draft.enabled, can_save: !draft.enabled, periodic_credentials: periodicCredentials(),
+      blocking_reasons: draft.enabled ? ['periodic_key_capacity'] : [], warnings: ['periodic_key_unresolved'] }))
+    const wrapper = await open()
+    await wrapper.get('[role="switch"]').trigger('click')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+    const reasons = wrapper.get('[data-testid="probe-budget-capacity-reasons"]').text()
+    expect(reasons).toContain('shared credential')
+    expect(reasons).toContain('unbucketed final-credential demand')
+    await wrapper.get('[role="switch"]').trigger('click')
+    await wrapper.get('[data-testid="probe-budget-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateMonitoringProbeBudget).toHaveBeenCalledOnce()
+  })
+
+  it('clears credential evidence on draft changes and failed previews', async () => {
+    api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), periodic_credentials: periodicCredentials() } })
+    const wrapper = await open()
+    expect(wrapper.find('[data-testid="periodic-credentials-capacity"]').exists()).toBe(true)
+    await wrapper.get('#probe-budget-key_requests_per_minute').setValue(1)
+    expect(wrapper.find('[data-testid="probe-budget-periodic-credentials"]').exists()).toBe(false)
+    api.previewMonitoringProbeCoverage.mockRejectedValueOnce(new Error('unavailable'))
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="probe-budget-periodic-credentials"]').exists()).toBe(false)
+  })
+})
+
 describe('periodic shared-site coverage', () => {
   it.each(['en', 'zh'])('shows cross-family contribution, anonymous site shortfalls and credential unknowns in %s', async locale => {
     api.getMonitoringProbeBudget.mockResolvedValue({ ...summary(), coverage: { ...coverage(), periodic_sites: {
@@ -65,7 +130,7 @@ describe('periodic shared-site coverage', () => {
     expect(panel.get('[data-testid="periodic-sites-contributions"]').text()).toContain('1440')
     expect(panel.text()).toContain(locale === 'zh' ? '未归桶 V1 目标 1' : '1 unbucketed V1 targets')
     expect(panel.text()).toContain(locale === 'zh' ? 'HEAD 归属根域' : 'HEAD belongs to the origin')
-    expect(panel.text()).toContain(locale === 'zh' ? 'V1 最终凭据共享关系仍未编译' : 'V1 final-credential sharing remains uncompiled')
+    expect(panel.text()).toContain(locale === 'zh' ? 'V1 最终凭据共享关系见单独验证的证据' : 'V1 final-credential sharing uses separately validated evidence')
     expect(panel.text()).not.toContain('PRIVATE_')
     expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toContain('69456')
   })

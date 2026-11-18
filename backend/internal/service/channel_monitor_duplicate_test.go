@@ -22,6 +22,10 @@ type duplicateChannelMonitorRepoStub struct {
 	nextID      int64
 }
 
+func (r *duplicateChannelMonitorRepoStub) RecordBudgetCredentialScope(_ context.Context, _ *ChannelMonitor) (bool, error) {
+	return false, nil
+}
+
 func (r *duplicateChannelMonitorRepoStub) GetByID(_ context.Context, id int64) (*ChannelMonitor, error) {
 	if r.source == nil || r.source.ID != id {
 		return nil, ErrChannelMonitorNotFound

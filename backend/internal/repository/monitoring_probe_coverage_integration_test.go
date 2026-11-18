@@ -6,14 +6,255 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMonitoringProbeCoverageV1SharedCredentialPostgres(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	require.NoError(t, NewSettingRepository(client).SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1",
+	}))
+	cfg := &config.Config{}
+	cfg.Totp.EncryptionKey = strings.Repeat("ab", 32)
+	cipher, err := NewAESEncryptor(cfg)
+	require.NoError(t, err)
+	svc := service.NewChannelMonitorService(NewChannelMonitorRepository(client, db), cipher)
+	for i := 1; i <= 2; i++ {
+		_, err := svc.Create(ctx, service.ChannelMonitorCreateParams{
+			Name: fmt.Sprintf("shared-v1-%d", i), Provider: service.MonitorProviderOpenAI,
+			Endpoint: fmt.Sprintf("https://203.0.113.%d/v1", i), APIKey: "same-real-v1-fixture-key",
+			PrimaryModel: "model-a", Enabled: true, IntervalSeconds: 60,
+		})
+		require.NoError(t, err)
+	}
+	var distinctCiphertexts int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(DISTINCT api_key_encrypted) FROM channel_monitors`).Scan(&distinctCiphertexts))
+	require.Equal(t, 2, distinctCiphertexts, "random nonces must not obscure the identical final key")
+	policy := monitoringBudgetPolicy()
+	policy.KeyRequestsPerMinute, policy.RequestsPerDay, policy.RecoveryReservePercent = 2, 10000, 0
+	preview, err := NewMonitoringProbeBudgetRepository(db).PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.False(t, preview.CanSave, "5760 model/HEAD calls sharing one key must not fit 2880 key capacity")
+	require.Contains(t, preview.BlockingReasons, "periodic_key_capacity")
+	require.EqualValues(t, 1, preview.PeriodicCredentials.CredentialGroups)
+	require.EqualValues(t, 5760, preview.PeriodicCredentials.MaxAttributionsPerDay)
+	require.Zero(t, preview.PeriodicCredentials.UnresolvedActiveTargets)
+	_, err = NewMonitoringProbeBudgetRepository(db).SaveSettings(ctx, policy)
+	require.ErrorContains(t, err, "periodic_key_capacity")
+	policy.KeyRequestsPerMinute = 4
+	policy, err = NewMonitoringProbeBudgetRepository(db).SaveSettings(ctx, policy)
+	require.NoError(t, err, "exact equality repairs the shared-key capacity without changing any probe")
+	loaded, err := NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+	require.NoError(t, err)
+	require.True(t, loaded.Coverage.CanSave)
+	require.EqualValues(t, 5760, loaded.Coverage.PeriodicCredentials.KeyDayCapacity)
+	encoded, err := json.Marshal(loaded)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "same-real-v1-fixture-key")
+	require.NotContains(t, string(encoded), config.UpstreamKeyFingerprint("same-real-v1-fixture-key"))
+}
+
+func TestMonitoringProbeCoverageV1CredentialCRUDPostgres(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	require.NoError(t, NewSettingRepository(client).SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1",
+	}))
+	cfg := &config.Config{}
+	cfg.Totp.EncryptionKey = strings.Repeat("ab", 32)
+	cipher, err := NewAESEncryptor(cfg)
+	require.NoError(t, err)
+	monitors := NewChannelMonitorRepository(client, db)
+	svc := service.NewChannelMonitorService(monitors, cipher)
+	policy := monitoringBudgetPolicy()
+	policy.KeyRequestsPerMinute = 2
+	_, err = NewMonitoringProbeBudgetRepository(db).SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	params := service.ChannelMonitorCreateParams{Name: "credential-first", Provider: service.MonitorProviderOpenAI,
+		Endpoint: "https://203.0.113.1/v1", APIKey: "first-fixture", PrimaryModel: "model-a", Enabled: true, IntervalSeconds: 60}
+	first, err := svc.Create(ctx, params)
+	require.NoError(t, err)
+	params.Name, params.Endpoint = "credential-second", "https://203.0.113.2/v1"
+	_, err = svc.Create(ctx, params)
+	require.ErrorContains(t, err, "periodic_key_capacity", "cross-site copies do not multiply one key allowance")
+	params.APIKey = "independent-fixture"
+	second, err := svc.Create(ctx, params)
+	require.NoError(t, err, "independent keys retain their individual capacity")
+	before, err := monitors.GetByID(ctx, second.ID)
+	require.NoError(t, err)
+	key := "first-fixture"
+	_, err = svc.Update(ctx, second.ID, service.ChannelMonitorUpdateParams{APIKey: &key})
+	require.ErrorContains(t, err, "periodic_key_capacity")
+	after, err := monitors.GetByID(ctx, second.ID)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "a rejected credential edit rolls back ciphertext and evidence together")
+	copy, err := svc.Duplicate(ctx, first.ID, 0, "fixture-admin", "credential-copy")
+	require.NoError(t, err)
+	require.False(t, copy.Enabled)
+	storedCopy, err := monitors.GetByID(ctx, copy.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{config.UpstreamKeyFingerprint("first-fixture")}, service.ValidatedChannelMonitorBudgetCredentials(storedCopy))
+	enabled := true
+	_, err = svc.Update(ctx, copy.ID, service.ChannelMonitorUpdateParams{Enabled: &enabled})
+	require.ErrorContains(t, err, "periodic_key_capacity")
+	enabled = false
+	_, err = svc.Update(ctx, first.ID, service.ChannelMonitorUpdateParams{Enabled: &enabled})
+	require.NoError(t, err, "manual disabling stays available")
+	enabled = true
+	_, err = svc.Update(ctx, copy.ID, service.ChannelMonitorUpdateParams{Enabled: &enabled})
+	require.NoError(t, err, "capacity is reusable after the original copy is disabled")
+	for _, table := range []string{"monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "channel_monitor_histories", "usage_logs"} {
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+		require.Zero(t, count, "CRUD/preflight never send probes or create usage")
+	}
+}
+
+func TestMonitoringProbeCoverageV1CredentialEvidencePostgres(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	require.NoError(t, NewSettingRepository(client).SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1",
+	}))
+	cfg := &config.Config{}
+	cfg.Totp.EncryptionKey = strings.Repeat("ab", 32)
+	cipher, err := NewAESEncryptor(cfg)
+	require.NoError(t, err)
+	repo := NewChannelMonitorRepository(client, db)
+	svc := service.NewChannelMonitorService(repo, cipher)
+	m, err := svc.Create(ctx, service.ChannelMonitorCreateParams{Name: "legacy-credential", Provider: service.MonitorProviderOpenAI,
+		Endpoint: "https://203.0.113.1/v1", APIKey: "legacy-fixture", PrimaryModel: "model-a", Enabled: true, IntervalSeconds: 60})
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE channel_monitors SET extra_headers=extra_headers-$1 WHERE id=$2`, service.ChannelMonitorBudgetCredentialScopeMetadataKey, m.ID)
+	require.NoError(t, err)
+	legacy, err := repo.GetByID(ctx, m.ID)
+	require.NoError(t, err)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	preview, err := budget.PreviewCoverage(ctx, monitoringBudgetPolicy())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, preview.PeriodicCredentials.UnresolvedActiveTargets)
+	_, err = svc.Get(ctx, m.ID)
+	require.NoError(t, err)
+	unchanged, err := repo.GetByID(ctx, m.ID)
+	require.NoError(t, err)
+	require.Equal(t, legacy, unchanged, "GET and preview must not decrypt to publish or rewrite legacy evidence")
+	policy := monitoringBudgetPolicy()
+	policy.KeyRequestsPerMinute = 1
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err, "missing identity evidence alone cannot prove a shortfall")
+	_, err = svc.ListEnabledMonitors(ctx)
+	require.NoError(t, err, "original startup decrypts and backfills without an outgoing probe")
+	current, err := repo.GetByID(ctx, m.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{config.UpstreamKeyFingerprint("legacy-fixture")}, service.ValidatedChannelMonitorBudgetCredentials(current))
+	require.NotContains(t, current.ExtraHeaders, service.ChannelMonitorBudgetCredentialScopeMetadataKey)
+	preview, err = budget.PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.False(t, preview.CanSave, "publication must reveal an existing shortfall, not reject the observation")
+	require.Contains(t, preview.BlockingReasons, "periodic_key_capacity")
+	withoutEvidence := *current
+	withoutEvidence.BudgetCredentialScope = nil
+	require.Equal(t, legacy, &withoutEvidence, "backfill changes no ciphertext, cadence, timestamps, manual controls or check result")
+	stale := *current
+	stale.BudgetCredentialScope = nil
+	_, err = db.ExecContext(ctx, `UPDATE channel_monitors SET extra_headers=extra_headers || '{"Api-Key":"rotated-final-fixture"}'::jsonb WHERE id=$1`, m.ID)
+	require.NoError(t, err)
+	updated, err := repo.RecordBudgetCredentialScope(ctx, &stale)
+	require.NoError(t, err)
+	require.False(t, updated, "late observation cannot clear evidence for another header configuration")
+	_, err = budget.PreviewCoverage(ctx, monitoringBudgetPolicy())
+	require.ErrorIs(t, err, service.ErrMonitoringProbeBudgetConflict, "a fresh default must not bypass the saved revision")
+	preview, err = budget.PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, preview.PeriodicCredentials.UnresolvedActiveTargets)
+	_, err = svc.ListEnabledMonitors(ctx)
+	require.NoError(t, err)
+	current, err = repo.GetByID(ctx, m.ID)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{config.UpstreamKeyFingerprint("legacy-fixture"), config.UpstreamKeyFingerprint("rotated-final-fixture")}, service.ValidatedChannelMonitorBudgetCredentials(current))
+	_, err = db.ExecContext(ctx, `UPDATE channel_monitors SET api_key_encrypted='unreadable-fixture' WHERE id=$1`, m.ID)
+	require.NoError(t, err)
+	_, err = svc.ListEnabledMonitors(ctx)
+	require.NoError(t, err)
+	current, err = repo.GetByID(ctx, m.ID)
+	require.NoError(t, err)
+	require.Nil(t, current.BudgetCredentialScope, "failed decryption must not retain or regenerate a known key")
+	for _, table := range []string{"monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "channel_monitor_histories", "usage_logs"} {
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+		require.Zero(t, count)
+	}
+}
+
+func TestMonitoringProbeCoverageV1CredentialSerializeWritesPostgres(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	require.NoError(t, NewSettingRepository(client).SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1",
+	}))
+	cfg := &config.Config{}
+	cfg.Totp.EncryptionKey = strings.Repeat("ab", 32)
+	cipher, err := NewAESEncryptor(cfg)
+	require.NoError(t, err)
+	svc := service.NewChannelMonitorService(NewChannelMonitorRepository(client, db), cipher)
+	var second int64
+	for i := 0; i < 2; i++ {
+		m, err := svc.Create(ctx, service.ChannelMonitorCreateParams{Name: fmt.Sprintf("serialize-key-%d", i),
+			Provider: service.MonitorProviderOpenAI, Endpoint: "https://203.0.113.1/v1", APIKey: fmt.Sprintf("fixture-%d", i),
+			PrimaryModel: "model-a", Enabled: true, IntervalSeconds: 60})
+		require.NoError(t, err)
+		second = m.ID
+	}
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.KeyRequestsPerMinute = 4
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		policy.KeyRequestsPerMinute = 2
+		_, err := budget.SaveSettings(ctx, policy)
+		results <- err
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		key := "fixture-0"
+		_, err := svc.Update(ctx, second, service.ChannelMonitorUpdateParams{APIKey: &key})
+		results <- err
+	}()
+	close(start)
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else {
+			require.ErrorContains(t, err, "periodic_key_capacity")
+		}
+	}
+	require.Equal(t, 1, successes, "individually valid capacity and key changes must not commit an impossible combination")
+	current, err := budget.GetSettings(ctx)
+	require.NoError(t, err)
+	preview, err := budget.PreviewCoverage(ctx, current)
+	require.NoError(t, err)
+	require.True(t, preview.CanSave)
+}
 
 func TestMonitoringProbeCoverageCountsScheduledQualityAndGroups(t *testing.T) {
 	db, _ := newBillingAuditDatabase(t)
@@ -796,6 +1037,8 @@ func TestMonitoringProbeCoverageBillingScopesPostgres(t *testing.T) {
 			reasons := []string{reason}
 			if scope == "site" {
 				reasons = append(reasons, "periodic_site_capacity")
+			} else {
+				reasons = append(reasons, "periodic_key_capacity")
 			}
 			require.Equal(t, reasons, preview.BlockingReasons)
 			_, err = repo.SaveSettings(ctx, policy)

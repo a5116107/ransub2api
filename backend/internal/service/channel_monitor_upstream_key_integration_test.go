@@ -29,6 +29,10 @@ type monitorIntegrationRepo struct {
 	marked  int
 }
 
+func (r *monitorIntegrationRepo) RecordBudgetCredentialScope(_ context.Context, _ *service.ChannelMonitor) (bool, error) {
+	return false, nil
+}
+
 func (r *monitorIntegrationRepo) GetByID(context.Context, int64) (*service.ChannelMonitor, error) {
 	m := *r.monitor
 	return &m, nil

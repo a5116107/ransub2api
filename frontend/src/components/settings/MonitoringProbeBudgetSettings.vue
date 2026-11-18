@@ -79,6 +79,19 @@
             <p v-else class="mt-2 font-medium">{{ t(`${prefix}.periodicSitesUnavailable`) }}</p>
             <p class="mt-2 text-xs">{{ t(`${prefix}.periodicSitesHint`) }}</p>
           </div>
+          <div class="mt-4 border-t border-amber-300 pt-3 dark:border-amber-800" data-testid="probe-budget-periodic-credentials">
+            <h5 class="font-semibold">{{ t(`${prefix}.periodicCredentialsTitle`) }}</h5>
+            <template v-if="periodicCredentials">
+              <p class="mt-2 font-medium" data-testid="periodic-credentials-verdict">{{ t(`${prefix}.${periodicCredentials.over_limit_credential_groups ? 'periodicCredentialsExceeded' : 'periodicCredentialsPartial'}`) }}</p>
+              <dl class="mt-3 grid gap-3 sm:grid-cols-2">
+                <div data-testid="periodic-credentials-capacity"><dt>{{ t(`${prefix}.periodicCredentialsCapacity`, { groups: periodicCredentials.credential_groups, exceeded: periodicCredentials.over_limit_credential_groups }) }}</dt><dd class="font-mono">≥ {{ periodicCredentials.max_attributions_per_day }} / {{ periodicCredentials.key_day_capacity }}</dd></div>
+                <div data-testid="periodic-credentials-contributions"><dt>{{ t(`${prefix}.periodicCredentialsContributions`) }}</dt><dd class="font-mono">{{ periodicCredentials.billing_attributions_per_day }} / {{ periodicCredentials.active_model_attributions_per_day }} / {{ periodicCredentials.origin_ping_attributions_per_day }}</dd></div>
+              </dl>
+              <p class="mt-2">{{ t(`${prefix}.periodicCredentialsUnknown`, { management: periodicCredentials.new_api_authorization_groups, billing: periodicCredentials.unresolved_billing_targets, active: periodicCredentials.unresolved_active_targets }) }}</p>
+            </template>
+            <p v-else class="mt-2 font-medium">{{ t(`${prefix}.periodicCredentialsUnavailable`) }}</p>
+            <p class="mt-2 text-xs">{{ t(`${prefix}.periodicCredentialsHint`) }}</p>
+          </div>
           <div class="mt-4 border-t border-amber-300 pt-3 dark:border-amber-800" data-testid="probe-budget-scheduled-capacity">
             <h5 class="font-semibold">{{ t(`${prefix}.capacitySchedules`) }}</h5>
             <p class="mt-2">{{ t(`${prefix}.capacityPlanInventory`, { accounts: displayUsage(coverage.account_plans), groups: displayUsage(coverage.group_plans), unknown: displayUsage(coverage.unresolved_plans) }) }}</p>
@@ -237,6 +250,18 @@ const periodicSites = computed(() => {
     (s.over_limit_sites > 0) !== (s.max_requests_per_day > s.site_day_capacity)) return null
   return s
 })
+const periodicCredentials = computed(() => {
+  const s = coverage.value?.periodic_credentials
+  if (!s || s.version !== 1 || s.scope !== 'billing_and_v1') return null
+  const counts = [s.credential_groups, s.new_api_authorization_groups, s.billing_attributions_per_day,
+    s.active_model_attributions_per_day, s.origin_ping_attributions_per_day, s.max_attributions_per_day,
+    s.key_day_capacity, s.over_limit_credential_groups, s.unresolved_billing_targets, s.unresolved_active_targets]
+  if (!counts.every(n => Number.isSafeInteger(n) && n >= 0) || s.over_limit_credential_groups > s.credential_groups ||
+    s.new_api_authorization_groups > s.credential_groups ||
+    (s.credential_groups === 0) !== (s.max_attributions_per_day === 0) ||
+    (s.over_limit_credential_groups > 0) !== (s.max_attributions_per_day > s.key_day_capacity)) return null
+  return s
+})
 const knownScopesInactive = computed(() => {
   const c = coverage.value
   return c && c.inventory_complete === true && c.plan_inventory_complete === true &&
@@ -346,7 +371,7 @@ function displayUsage(value: number | undefined) {
 }
 
 function capacityReason(reason: string) {
-  const known = ['runner_capacity', 'minute_capacity', 'day_capacity', 'site_capacity', 'key_capacity', 'billing_scope_unresolved', 'periodic_site_capacity', 'periodic_site_unresolved', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated']
+  const known = ['runner_capacity', 'minute_capacity', 'day_capacity', 'site_capacity', 'key_capacity', 'billing_scope_unresolved', 'periodic_site_capacity', 'periodic_site_unresolved', 'periodic_key_capacity', 'periodic_key_unresolved', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated']
   return t(`${prefix}.capacityReason.${known.includes(reason) ? reason : 'unknown'}`)
 }
 

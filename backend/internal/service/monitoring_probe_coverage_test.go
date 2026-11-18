@@ -369,7 +369,7 @@ func TestMonitoringProbeCoverageBillingScopeBoundaryAndDisable(t *testing.T) {
 	require.EqualValues(t, 5, c.BillingScopes.MaxCredentialRequestsPerSweep)
 	items[0].Account.Credentials["base_url"] = "https://relay.invalid/v1"
 	c = CompileMonitoringProbeCoverage(policy, billing, items, false, nil, true, nil, true, nil, true, time.Now())
-	require.ElementsMatch(t, []string{"site_capacity", "key_capacity", "periodic_site_capacity"}, c.BlockingReasons)
+	require.ElementsMatch(t, []string{"site_capacity", "key_capacity", "periodic_site_capacity", "periodic_key_capacity"}, c.BlockingReasons)
 	require.False(t, c.CanSave, "incomplete inventory cannot hide a proven lower-bound shortfall")
 	policy.Enabled = false
 	require.True(t, CompileMonitoringProbeCoverage(policy, billing, items, true, nil, true, nil, true, nil, true, time.Now()).CanSave)
@@ -572,7 +572,8 @@ func TestMonitoringProbeCoverageActiveModelsQuotaAndJitter(t *testing.T) {
 	require.EqualValues(t, 3600, c.ActiveMonitorRuns)
 	require.EqualValues(t, 8640, c.MinimumActiveRequests, "1440 * (2 models + HEAD) + 2160 * (1 model + HEAD)")
 	require.EqualValues(t, 8640, c.MinimumTotalRequestsPerDay)
-	require.Equal(t, []string{"active_quota_unestimated"}, c.Warnings)
+	require.Equal(t, []string{"active_quota_unestimated", "periodic_key_unresolved"}, c.Warnings)
+	require.EqualValues(t, 2, c.PeriodicCredentials.UnresolvedActiveTargets, "missing final credentials are not zero demand")
 	require.True(t, c.CanSave)
 	p.RequestsPerDay--
 	c = compile()
@@ -609,7 +610,8 @@ func TestMonitoringProbeCoverageActiveUnknownAndBoundaries(t *testing.T) {
 			require.EqualValues(t, 1, c.ActiveMonitors)
 			require.EqualValues(t, 1, c.UnresolvedActiveMonitors)
 			require.Zero(t, c.MinimumActiveRequests)
-			require.ElementsMatch(t, []string{"active_unresolved", "active_inventory_truncated", "periodic_site_unresolved"}, c.Warnings)
+			require.ElementsMatch(t, []string{"active_unresolved", "active_inventory_truncated", "periodic_site_unresolved", "periodic_key_unresolved"}, c.Warnings)
+			require.EqualValues(t, 1, c.PeriodicCredentials.UnresolvedActiveTargets)
 		})
 	}
 	for _, tc := range []struct{ interval, jitter, runs int }{{15, 0, 5760}, {60, 45, 822}, {3600, 3585, 12}, {59, 0, 1464}} {

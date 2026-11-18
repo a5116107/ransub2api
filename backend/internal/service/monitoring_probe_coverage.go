@@ -55,11 +55,12 @@ type MonitoringProbeCoverage struct {
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
 	UnestimatedDemandSources   []string  `json:"unestimated_demand_sources"`
 
-	BillingScopes       *MonitoringProbeCoverageBillingScopes `json:"billing_scopes,omitempty"`
-	PeriodicSites       *MonitoringProbeCoveragePeriodicSites `json:"periodic_sites,omitempty"`
-	CNQuotaCycle        *CNMonitoringRuntime                  `json:"cn_quota_cycle,omitempty"`
-	OllamaUsage         *OllamaMonitoringRuntime              `json:"ollama_usage,omitempty"`
-	ResponsesCapability *ResponsesCapabilityMonitoringRuntime `json:"responses_capability,omitempty"`
+	BillingScopes       *MonitoringProbeCoverageBillingScopes       `json:"billing_scopes,omitempty"`
+	PeriodicSites       *MonitoringProbeCoveragePeriodicSites       `json:"periodic_sites,omitempty"`
+	PeriodicCredentials *MonitoringProbeCoveragePeriodicCredentials `json:"periodic_credentials,omitempty"`
+	CNQuotaCycle        *CNMonitoringRuntime                        `json:"cn_quota_cycle,omitempty"`
+	OllamaUsage         *OllamaMonitoringRuntime                    `json:"ollama_usage,omitempty"`
+	ResponsesCapability *ResponsesCapabilityMonitoringRuntime       `json:"responses_capability,omitempty"`
 }
 
 // Known periodic demand only. Site minute counters are scaled to a full UTC
@@ -76,6 +77,23 @@ type MonitoringProbeCoveragePeriodicSites struct {
 	OverLimitSites            int64  `json:"over_limit_sites"`
 	UnresolvedBillingTargets  int64  `json:"unresolved_billing_targets"`
 	UnresolvedActiveTargets   int64  `json:"unresolved_active_targets"`
+}
+
+// Attributions are per credential, not extra physical requests or a unique-key
+// census. Management authorization IDs remain separate confirmed lower bounds.
+type MonitoringProbeCoveragePeriodicCredentials struct {
+	Version                       int    `json:"version"`
+	Scope                         string `json:"scope"`
+	CredentialGroups              int64  `json:"credential_groups"`
+	NewAPIAuthorizationGroups     int64  `json:"new_api_authorization_groups"`
+	BillingAttributionsPerDay     int64  `json:"billing_attributions_per_day"`
+	ActiveModelAttributionsPerDay int64  `json:"active_model_attributions_per_day"`
+	OriginPingAttributionsPerDay  int64  `json:"origin_ping_attributions_per_day"`
+	MaxAttributionsPerDay         int64  `json:"max_attributions_per_day"`
+	KeyDayCapacity                int64  `json:"key_day_capacity"`
+	OverLimitCredentialGroups     int64  `json:"over_limit_credential_groups"`
+	UnresolvedBillingTargets      int64  `json:"unresolved_billing_targets"`
+	UnresolvedActiveTargets       int64  `json:"unresolved_active_targets"`
 }
 
 // Each bucket is a confirmed sharing lower bound, not a unique-key census.
@@ -185,7 +203,9 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		scopes.bucketedTargets++
 		headers := make(http.Header)
 		applyUpstreamBillingProbeHeaders(headers, account, account.GetCredential("api_key"))
-		scopes.addCredentials(headers, requests, false)
+		if scopes.addCredentials(headers, requests, false) {
+			scopes.credentialTargets++
+		}
 	}
 	scopes.finish(result, policy, billing)
 	result.MinimumSweepBatches = (result.Accounts + upstreamBillingProbeMaxPerCycle - 1) / upstreamBillingProbeMaxPerCycle
@@ -208,11 +228,16 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		}
 	}
 	periodicSites := make(map[string]int64)
+	periodicKeys := make(map[string]int64)
 	result.PeriodicSites = &MonitoringProbeCoveragePeriodicSites{
 		Version: 1, Scope: "billing_and_v1", SiteDayCapacity: policy.SiteRequestsPerMinute * 1440,
 	}
+	result.PeriodicCredentials = &MonitoringProbeCoveragePeriodicCredentials{
+		Version: 1, Scope: "billing_and_v1", KeyDayCapacity: policy.KeyRequestsPerMinute * 1440,
+	}
 	if billing.Enabled {
 		result.PeriodicSites.UnresolvedBillingTargets = result.Accounts
+		result.PeriodicCredentials.UnresolvedBillingTargets = result.Accounts
 		if billing.IntervalMinutes >= upstreamBillingProbeMinIntervalMinutes && billing.IntervalMinutes <= upstreamBillingProbeMaxIntervalMinutes {
 			sweeps := int64(1440 / billing.IntervalMinutes)
 			for site, requests := range scopes.sites {
@@ -220,11 +245,17 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 				result.PeriodicSites.BillingRequestsPerDay += requests * sweeps
 			}
 			result.PeriodicSites.UnresolvedBillingTargets -= scopes.bucketedTargets
+			result.PeriodicCredentials.UnresolvedBillingTargets -= scopes.credentialTargets
+			result.PeriodicCredentials.NewAPIAuthorizationGroups = int64(len(scopes.management))
+			for key, requests := range scopes.credentials {
+				periodicKeys[key] = requests * sweeps
+				result.PeriodicCredentials.BillingAttributionsPerDay += requests * sweeps
+			}
 		}
 	}
 	result.compileSchedules(plans)
 	result.compileCandy(candy)
-	result.compileActive(active, periodicSites)
+	result.compileActive(active, periodicSites, periodicKeys)
 	result.PeriodicSites.Sites = int64(len(periodicSites))
 	for _, requests := range periodicSites {
 		if requests > result.PeriodicSites.MaxRequestsPerDay {
@@ -240,6 +271,21 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 	if result.PeriodicSites.UnresolvedBillingTargets+result.PeriodicSites.UnresolvedActiveTargets > 0 {
 		result.Warnings = append(result.Warnings, "periodic_site_unresolved")
 	}
+	result.PeriodicCredentials.CredentialGroups = int64(len(periodicKeys))
+	for _, requests := range periodicKeys {
+		if requests > result.PeriodicCredentials.MaxAttributionsPerDay {
+			result.PeriodicCredentials.MaxAttributionsPerDay = requests
+		}
+		if requests > result.PeriodicCredentials.KeyDayCapacity {
+			result.PeriodicCredentials.OverLimitCredentialGroups++
+		}
+	}
+	if policy.Enabled && result.PeriodicCredentials.OverLimitCredentialGroups > 0 {
+		result.BlockingReasons = append(result.BlockingReasons, "periodic_key_capacity")
+	}
+	if result.PeriodicCredentials.UnresolvedBillingTargets+result.PeriodicCredentials.UnresolvedActiveTargets > 0 {
+		result.Warnings = append(result.Warnings, "periodic_key_unresolved")
+	}
 	result.MinimumScheduledRequests = result.ScheduledSamples + result.MinimumJudgeRequests
 	result.MinimumTotalRequestsPerDay = result.MinimumRequestsPerDay + result.MinimumScheduledRequests + result.MinimumCandyRequests + result.MinimumActiveRequests
 	if policy.Enabled && result.MinimumTotalRequestsPerDay > result.RegularDayCapacity {
@@ -254,6 +300,7 @@ type monitoringProbeCoverageBillingDemand struct {
 	sites, credentials map[string]int64
 	management         map[int64]struct{}
 	bucketedTargets    int64
+	credentialTargets  int64
 }
 
 func (d *monitoringProbeCoverageBillingDemand) addNewAPI(target MonitoringProbeCoverageAccount) {
@@ -276,10 +323,12 @@ func (d *monitoringProbeCoverageBillingDemand) addNewAPI(target MonitoringProbeC
 	headers := make(http.Header)
 	applyNewAPIManagementHeaders(headers, &target.Account, target.NewAPIAuthorizationUserID, "")
 	headers.Del("Authorization")
-	d.addCredentials(headers, 4, true)
+	if d.addCredentials(headers, 4, true) {
+		d.credentialTargets++
+	}
 }
 
-func (d *monitoringProbeCoverageBillingDemand) addCredentials(headers http.Header, requests int64, primaryKnown bool) {
+func (d *monitoringProbeCoverageBillingDemand) addCredentials(headers http.Header, requests int64, primaryKnown bool) bool {
 	keys := config.UpstreamCredentialFingerprints(&http.Request{Header: headers})
 	unresolved := len(keys) == 0 && !primaryKnown
 	for _, key := range keys {
@@ -292,6 +341,7 @@ func (d *monitoringProbeCoverageBillingDemand) addCredentials(headers http.Heade
 	if unresolved {
 		d.view.UnresolvedCredentials++
 	}
+	return !unresolved
 }
 
 func (d *monitoringProbeCoverageBillingDemand) finish(c *MonitoringProbeCoverage, policy MonitoringProbeBudgetSettings, billing UpstreamBillingProbeSettings) {
@@ -334,7 +384,7 @@ func (d *monitoringProbeCoverageBillingDemand) finish(c *MonitoringProbeCoverage
 	c.BillingScopes = v
 }
 
-func (c *MonitoringProbeCoverage) compileActive(monitors []ChannelMonitor, sites map[string]int64) {
+func (c *MonitoringProbeCoverage) compileActive(monitors []ChannelMonitor, sites, credentials map[string]int64) {
 	for _, monitor := range monitors {
 		if !monitor.Enabled {
 			continue
@@ -350,6 +400,7 @@ func (c *MonitoringProbeCoverage) compileActive(monitors []ChannelMonitor, sites
 			validateInterval(monitor.IntervalSeconds) != nil || validateJitter(monitor.JitterSeconds, monitor.IntervalSeconds) != nil {
 			c.UnresolvedActiveMonitors++
 			c.PeriodicSites.UnresolvedActiveTargets++
+			c.PeriodicCredentials.UnresolvedActiveTargets++
 			continue
 		}
 		if mode == MonitorCheckModeQuota {
@@ -362,6 +413,7 @@ func (c *MonitoringProbeCoverage) compileActive(monitors []ChannelMonitor, sites
 		if !valid {
 			c.UnresolvedActiveMonitors++
 			c.PeriodicSites.UnresolvedActiveTargets++
+			c.PeriodicCredentials.UnresolvedActiveTargets++
 			continue
 		}
 		// The runner has unknown phase and ± jitter. A successful-check
@@ -373,22 +425,33 @@ func (c *MonitoringProbeCoverage) compileActive(monitors []ChannelMonitor, sites
 		// Match physical admission: model calls use the configured tenant;
 		// the unauthenticated HEAD uses extractOrigin, not that tenant path.
 		unresolved := false
+		var modelRequests, headRequests int64
 		if site, err := CanonicalNewAPISite(monitor.Endpoint); err == nil {
-			requests := runs * int64(1+len(monitor.ExtraModels))
-			sites[site] += requests
-			c.PeriodicSites.ActiveModelRequestsPerDay += requests
+			modelRequests = runs * int64(1+len(monitor.ExtraModels))
+			sites[site] += modelRequests
+			c.PeriodicSites.ActiveModelRequestsPerDay += modelRequests
 		} else {
 			unresolved = true
 		}
 		origin, err := extractOrigin(monitor.Endpoint)
 		if site, siteErr := CanonicalNewAPISite(origin); err == nil && siteErr == nil {
 			sites[site] += runs
+			headRequests = runs
 			c.PeriodicSites.OriginPingRequestsPerDay += runs
 		} else {
 			unresolved = true
 		}
 		if unresolved {
 			c.PeriodicSites.UnresolvedActiveTargets++
+		}
+		keys := ValidatedChannelMonitorBudgetCredentials(&monitor)
+		if len(keys) == 0 || unresolved {
+			c.PeriodicCredentials.UnresolvedActiveTargets++
+		}
+		for _, key := range keys {
+			credentials[key] += modelRequests + headRequests
+			c.PeriodicCredentials.ActiveModelAttributionsPerDay += modelRequests
+			c.PeriodicCredentials.OriginPingAttributionsPerDay += headRequests
 		}
 	}
 	if c.ActiveQuotaMonitors > 0 {

@@ -78,6 +78,22 @@ export interface MonitoringProbeCoverage {
   responses_capability?: ResponsesCapabilityMonitoringRuntime | null
   billing_scopes?: MonitoringProbeCoverageBillingScopes | null
   periodic_sites?: MonitoringProbeCoveragePeriodicSites | null
+  periodic_credentials?: MonitoringProbeCoveragePeriodicCredentials | null
+}
+
+export interface MonitoringProbeCoveragePeriodicCredentials {
+  version: number
+  scope: string
+  credential_groups: number
+  new_api_authorization_groups: number
+  billing_attributions_per_day: number
+  active_model_attributions_per_day: number
+  origin_ping_attributions_per_day: number
+  max_attributions_per_day: number
+  key_day_capacity: number
+  over_limit_credential_groups: number
+  unresolved_billing_targets: number
+  unresolved_active_targets: number
 }
 
 export interface MonitoringProbeCoveragePeriodicSites {

@@ -81,6 +81,60 @@ func (r *channelMonitorRepository) Create(ctx context.Context, m *service.Channe
 	return nil
 }
 
+// Observation-only CAS. Hold the same short lock as coverage configuration,
+// but never reject publishing evidence that reveals an existing shortfall.
+// It does not update cadence, credentials, checked_at or user-visible timestamps.
+func (r *channelMonitorRepository) RecordBudgetCredentialScope(ctx context.Context, expected *service.ChannelMonitor) (bool, error) {
+	if expected == nil || expected.ID <= 0 {
+		return false, nil
+	}
+	value := ""
+	if expected.BudgetCredentialScope != nil {
+		if len(service.ValidatedChannelMonitorBudgetCredentials(expected)) == 0 {
+			return false, nil
+		}
+		raw, err := json.Marshal(expected.BudgetCredentialScope)
+		if err != nil {
+			return false, err
+		}
+		value = string(raw)
+	}
+	headers := make(map[string]string, len(expected.ExtraHeaders))
+	for key, val := range expected.ExtraHeaders {
+		if key != service.ChannelMonitorBudgetCredentialScopeMetadataKey && key != service.ChannelMonitorDuplicateOperationIDMetadataKey {
+			headers[key] = val
+		}
+	}
+	rawHeaders, err := json.Marshal(headers)
+	if err != nil {
+		return false, err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, monitoringProbeBudgetLockID); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE channel_monitors SET extra_headers=CASE WHEN $1='' THEN extra_headers-$2
+ ELSE jsonb_set(COALESCE(extra_headers,'{}'::jsonb),ARRAY[$2],to_jsonb($1::text)) END
+ WHERE id=$3 AND provider=$4 AND COALESCE(NULLIF(api_mode,''),'chat_completions')=$5 AND api_key_encrypted=$6
+ AND COALESCE(NULLIF(check_mode,''),'probe')=$7
+ AND (COALESCE(extra_headers,'{}'::jsonb)-$2-$8)=$9::jsonb
+ AND COALESCE(extra_headers->>$2,'') IS DISTINCT FROM $1`, value, service.ChannelMonitorBudgetCredentialScopeMetadataKey,
+		expected.ID, expected.Provider, defaultAPIModeRepo(expected.APIMode), expected.APIKey, defaultCheckModeRepo(expected.CheckMode),
+		service.ChannelMonitorDuplicateOperationIDMetadataKey, string(rawHeaders))
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, tx.Commit()
+}
+
 func (r *channelMonitorRepository) FindByDuplicateOperationID(ctx context.Context, operationID string) (*service.ChannelMonitor, error) {
 	if strings.TrimSpace(operationID) == "" {
 		return nil, nil
@@ -781,28 +835,36 @@ func entToServiceMonitor(row *dbent.ChannelMonitor) *service.ChannelMonitor {
 	}
 	duplicateOperationID := headers[service.ChannelMonitorDuplicateOperationIDMetadataKey]
 	delete(headers, service.ChannelMonitorDuplicateOperationIDMetadataKey)
+	var credentialScope *service.ChannelMonitorBudgetCredentialScope
+	if raw := headers[service.ChannelMonitorBudgetCredentialScopeMetadataKey]; len(raw) <= 4096 && raw != "" {
+		if err := json.Unmarshal([]byte(raw), &credentialScope); err != nil {
+			credentialScope = nil
+		}
+	}
+	delete(headers, service.ChannelMonitorBudgetCredentialScopeMetadataKey)
 	out := &service.ChannelMonitor{
-		ID:                   row.ID,
-		Name:                 row.Name,
-		Provider:             string(row.Provider),
-		APIMode:              defaultAPIModeRepo(row.APIMode),
-		Endpoint:             row.Endpoint,
-		APIKey:               row.APIKeyEncrypted, // 仍为密文，service 层负责解密
-		PrimaryModel:         row.PrimaryModel,
-		ExtraModels:          extras,
-		GroupName:            row.GroupName,
-		Enabled:              row.Enabled,
-		IntervalSeconds:      row.IntervalSeconds,
-		JitterSeconds:        row.JitterSeconds,
-		LastCheckedAt:        row.LastCheckedAt,
-		CreatedBy:            row.CreatedBy,
-		CreatedAt:            row.CreatedAt,
-		UpdatedAt:            row.UpdatedAt,
-		ExtraHeaders:         headers,
-		BodyOverrideMode:     row.BodyOverrideMode,
-		BodyOverride:         row.BodyOverride,
-		CheckMode:            defaultCheckModeRepo(row.CheckMode),
-		DuplicateOperationID: duplicateOperationID,
+		ID:                    row.ID,
+		Name:                  row.Name,
+		Provider:              string(row.Provider),
+		APIMode:               defaultAPIModeRepo(row.APIMode),
+		Endpoint:              row.Endpoint,
+		APIKey:                row.APIKeyEncrypted, // 仍为密文，service 层负责解密
+		PrimaryModel:          row.PrimaryModel,
+		ExtraModels:           extras,
+		GroupName:             row.GroupName,
+		Enabled:               row.Enabled,
+		IntervalSeconds:       row.IntervalSeconds,
+		JitterSeconds:         row.JitterSeconds,
+		LastCheckedAt:         row.LastCheckedAt,
+		CreatedBy:             row.CreatedBy,
+		CreatedAt:             row.CreatedAt,
+		UpdatedAt:             row.UpdatedAt,
+		ExtraHeaders:          headers,
+		BodyOverrideMode:      row.BodyOverrideMode,
+		BodyOverride:          row.BodyOverride,
+		CheckMode:             defaultCheckModeRepo(row.CheckMode),
+		DuplicateOperationID:  duplicateOperationID,
+		BudgetCredentialScope: credentialScope,
 	}
 	if row.TemplateID != nil {
 		id := *row.TemplateID
@@ -821,13 +883,18 @@ func channelMonitorHeadersForPersistence(m *service.ChannelMonitor) map[string]s
 	}
 	headers := make(map[string]string, len(m.ExtraHeaders)+1)
 	for key, value := range m.ExtraHeaders {
-		if key == service.ChannelMonitorDuplicateOperationIDMetadataKey {
+		if key == service.ChannelMonitorDuplicateOperationIDMetadataKey || key == service.ChannelMonitorBudgetCredentialScopeMetadataKey {
 			continue
 		}
 		headers[key] = value
 	}
 	if operationID := strings.TrimSpace(m.DuplicateOperationID); operationID != "" {
 		headers[service.ChannelMonitorDuplicateOperationIDMetadataKey] = operationID
+	}
+	if len(service.ValidatedChannelMonitorBudgetCredentials(m)) > 0 {
+		if raw, err := json.Marshal(m.BudgetCredentialScope); err == nil {
+			headers[service.ChannelMonitorBudgetCredentialScopeMetadataKey] = string(raw)
+		}
 	}
 	return headers
 }

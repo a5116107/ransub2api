@@ -141,9 +141,9 @@ func loadMonitoringCoverageActive(ctx context.Context, tx sqlQueryer) ([]service
 	if err != nil || !runtime.ActiveProbesAllowed() {
 		return nil, err == nil, err
 	}
-	// Scheduling inputs and configured endpoint stay internal to the compiler.
-	// Never load credentials or expose endpoint identities in the response.
-	rows, err := tx.QueryContext(ctx, `SELECT provider,check_mode,primary_model,extra_models,interval_seconds,jitter_seconds,endpoint
+	// Opaque ciphertext binds the internal fingerprint evidence to the same
+	// config. No decryption or credential/endpoint identities enter the response.
+	rows, err := tx.QueryContext(ctx, `SELECT provider,check_mode,primary_model,extra_models,interval_seconds,jitter_seconds,endpoint,api_mode,api_key_encrypted,extra_headers
  FROM channel_monitors WHERE enabled ORDER BY id LIMIT $1`, monitoringCoverageInventoryLimit+1)
 	if err != nil {
 		return nil, false, err
@@ -157,13 +157,24 @@ func loadMonitoringCoverageActive(ctx context.Context, tx sqlQueryer) ([]service
 			break
 		}
 		var monitor service.ChannelMonitor
-		var models []byte
-		if err := rows.Scan(&monitor.Provider, &monitor.CheckMode, &monitor.PrimaryModel, &models, &monitor.IntervalSeconds, &monitor.JitterSeconds, &monitor.Endpoint); err != nil {
+		var models, headers []byte
+		if err := rows.Scan(&monitor.Provider, &monitor.CheckMode, &monitor.PrimaryModel, &models, &monitor.IntervalSeconds, &monitor.JitterSeconds, &monitor.Endpoint,
+			&monitor.APIMode, &monitor.APIKey, &headers); err != nil {
 			return nil, false, err
 		}
 		if err := json.Unmarshal(models, &monitor.ExtraModels); err != nil {
 			return nil, false, err
 		}
+		if err := json.Unmarshal(headers, &monitor.ExtraHeaders); err != nil {
+			return nil, false, err
+		}
+		if raw := monitor.ExtraHeaders[service.ChannelMonitorBudgetCredentialScopeMetadataKey]; len(raw) <= 4096 && raw != "" {
+			if err := json.Unmarshal([]byte(raw), &monitor.BudgetCredentialScope); err != nil {
+				monitor.BudgetCredentialScope = nil
+			}
+		}
+		delete(monitor.ExtraHeaders, service.ChannelMonitorBudgetCredentialScopeMetadataKey)
+		delete(monitor.ExtraHeaders, service.ChannelMonitorDuplicateOperationIDMetadataKey)
 		monitor.Enabled = true
 		monitors = append(monitors, monitor)
 	}

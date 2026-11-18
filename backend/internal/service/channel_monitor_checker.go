@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 	"github.com/tidwall/gjson"
 )
@@ -164,13 +163,9 @@ func pingEndpointOrigin(ctx context.Context, monitor *ChannelMonitor, opts *Chec
 		}
 		// Attribute this optional, unauthenticated origin ping to the final
 		// configured probe credentials, without ever sending them to the origin.
-		identity := &http.Request{Header: make(http.Header)}
-		for key, value := range mergeHeaders(adapter.buildHeaders(monitor.APIKey), opts) {
-			identity.Header.Set(key, value)
-		}
 		probe.sites = []string{origin}
 		pingCtx := context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
-		pingCtx, finish, err = beginMonitoringProbeRequest(pingCtx, req.URL, config.UpstreamCredentialFingerprints(identity), false)
+		pingCtx, finish, err = beginMonitoringProbeRequest(pingCtx, req.URL, monitorCredentialFingerprints(adapter, monitor.APIKey, opts), false)
 		if err != nil {
 			return nil
 		}
