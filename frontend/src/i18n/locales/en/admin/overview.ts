@@ -1199,6 +1199,22 @@ export default {
         multiplierHint: 'Applies to token billing multiplier; image tokens in token billing are also affected. 0 means peak token requests are billed at 0x.'
       },
       profitControl: {
+        procurement: {
+          title: 'Procurement rate range',
+          hint: 'Intersect with the existing profit cap. This limits procurement multipliers without repricing sales or certifying model/cache quality. Up to 8 decimal places; leave a bound blank to omit it.',
+          min: 'Minimum procurement rate (inclusive)',
+          max: 'Maximum procurement rate (exclusive)',
+          unbounded: 'No upper bound',
+          range: 'Allowed interval',
+          format: 'Enter a nonnegative decimal with at most 8 integer and 8 fractional digits, without exponent notation.',
+          emptyRange: 'The maximum procurement rate must exceed the minimum.',
+          unsupported: 'This client does not recognize the procurement policy version; its configuration is preserved.',
+          conflict: 'The procurement range changed elsewhere. Your draft is preserved. Review the latest range, then confirm the new revision.',
+          latestRange: 'Latest saved range',
+          reloadLatest: 'Load latest configuration',
+          useLatestRevision: 'Reviewed; keep my range draft',
+          refreshFailed: 'Loading the latest procurement range failed. Your draft is preserved. Retry from the conflict panel.'
+        },
         enable: 'Enable profit control',
         enabledHint: 'Scheduling only admits accounts whose account multiplier ≤ the request\'s effective downstream multiplier × (1 − min margin − safety buffer). Account multipliers may be maintained manually or synchronized from probes; existing ordering, stickiness and breakers keep working among qualified accounts. Image/video scheduling is not covered yet.',
         disabledHint: 'When disabled, scheduling does no profit filtering: accounts whose account multiplier exceeds the downstream multiplier can still be selected, which may produce loss-making requests.',

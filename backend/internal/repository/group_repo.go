@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -90,6 +91,12 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 	if groupIn == nil {
 		return errors.New("group is nil")
 	}
+	if groupIn.ProcurementPolicy != nil {
+		if groupIn.ProcurementPolicy.Validate() != nil {
+			return service.ErrProcurementPolicyInvalid
+		}
+		groupIn.ProcurementPolicy = groupIn.ProcurementPolicy.WithRevision(1)
+	}
 	modelPricing, err := json.Marshal(groupIn.ModelPricing)
 	if err != nil {
 		return fmt.Errorf("marshal group model pricing: %w", err)
@@ -159,6 +166,9 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetProfitControlEnabled(groupIn.ProfitControlEnabled).
 		SetProfitMinMargin(groupIn.ProfitMinMargin).
 		SetProfitSafetyBuffer(groupIn.ProfitSafetyBuffer)
+	if groupIn.ProcurementPolicy != nil {
+		builder = builder.SetProcurementPolicy(groupIn.ProcurementPolicy)
+	}
 	if groupIn.DuplicateOperationID != "" {
 		builder = builder.SetDuplicateOperationID(groupIn.DuplicateOperationID)
 	}
@@ -287,6 +297,12 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 }
 
 func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) error {
+	if groupIn.ProcurementPolicyExpectedRevision != nil {
+		if groupIn.ProcurementPolicy == nil || groupIn.ProcurementPolicy.Validate() != nil ||
+			groupIn.ProcurementPolicy.Revision != *groupIn.ProcurementPolicyExpectedRevision+1 {
+			return service.ErrProcurementPolicyInvalid
+		}
+	}
 	modelPricing, err := json.Marshal(groupIn.ModelPricing)
 	if err != nil {
 		return fmt.Errorf("marshal group model pricing: %w", err)
@@ -348,6 +364,17 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetProfitControlEnabled(groupIn.ProfitControlEnabled).
 		SetProfitMinMargin(groupIn.ProfitMinMargin).
 		SetProfitSafetyBuffer(groupIn.ProfitSafetyBuffer)
+	if expected := groupIn.ProcurementPolicyExpectedRevision; expected != nil {
+		builder = builder.SetProcurementPolicy(groupIn.ProcurementPolicy).Where(func(s *entsql.Selector) {
+			if *expected == 0 {
+				s.Where(entsql.IsNull(s.C(group.FieldProcurementPolicy)))
+			} else {
+				s.Where(entsql.P(func(b *entsql.Builder) {
+					b.Ident(s.C(group.FieldProcurementPolicy)).WriteString("->>'revision' = ").Arg(strconv.FormatInt(*expected, 10))
+				}))
+			}
+		})
+	}
 
 	// 显式处理可空字段：nil 需要 clear，非 nil 需要 set。
 	if groupIn.DailyLimitUSD != nil {
@@ -452,8 +479,13 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 
 	updated, err := builder.Save(ctx)
 	if err != nil {
+		if groupIn.ProcurementPolicyExpectedRevision != nil && dbent.IsNotFound(err) {
+			return service.ErrProcurementPolicyConflict
+		}
 		return translatePersistenceError(err, service.ErrGroupNotFound, service.ErrGroupExists)
 	}
+	groupIn.ProcurementPolicy = updated.ProcurementPolicy.Clone()
+	groupIn.ProcurementPolicyExpectedRevision = nil
 	groupIn.UpdatedAt = updated.UpdatedAt
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group update failed: group=%d err=%v", groupIn.ID, err)

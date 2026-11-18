@@ -56,10 +56,12 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 	threshold := clampProfitControlThreshold(downstream * (1 - group.ProfitMinMargin - group.ProfitSafetyBuffer))
 
 	gate := &openAIProfitControlGate{
-		groupID:   group.ID,
-		platform:  group.Platform,
-		threshold: threshold,
-		pricingAt: pricingAt,
+		groupID:           group.ID,
+		platform:          group.Platform,
+		threshold:         threshold,
+		pricingAt:         pricingAt,
+		procurementPolicy: group.ProcurementPolicy.Clone(),
+		procurementGroup:  procurementPolicyGroupReader(s.schedulerSnapshot, s.groupRepo, group.ID),
 	}
 	openAIProfitControlObserverInstance.recordInstall(gate.groupID, gate.platform, gate.threshold)
 	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate)
@@ -108,7 +110,7 @@ func profitControlVetoLatest(ctx context.Context, selected *Account, snapshot *S
 			latest = refreshed
 		}
 	}
-	vetoed, reason := openAIProfitControlVetoReason(ctx, latest)
+	vetoed, reason := openAIProfitControlLatestPolicyVetoReason(ctx, latest)
 	return latest, vetoed, reason
 }
 
@@ -171,7 +173,7 @@ func guardGatewayUpstreamRequest(request *http.Request, selected *Account, repo 
 		if (cfg == nil || cfg.RunMode != config.RunModeSimple) && !slices.Contains(latest.GroupIDs, gate.groupID) {
 			return nil, denyOpenAITurn("group_membership_changed")
 		}
-		if vetoed, reason := openAIProfitControlVetoReason(ctx, latest); vetoed {
+		if vetoed, reason := openAIProfitControlLatestPolicyVetoReason(ctx, latest); vetoed {
 			return nil, denyOpenAITurn(reason)
 		}
 		guardedCtx, err := guardUpstreamBillingRequest(ctx, latest, request)

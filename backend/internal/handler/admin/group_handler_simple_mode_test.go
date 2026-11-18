@@ -58,6 +58,7 @@ func TestGroupHandlerSimpleModeSanitizesCommercialFields(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.Code)
 	require.Len(t, svc.createdGroups, 1)
 	created := svc.createdGroups[0]
+	require.Empty(t, created.ProcurementPolicy)
 	require.Equal(t, "basic grouping", created.Description)
 	require.Equal(t, 1.0, created.RateMultiplier)
 	require.False(t, created.IsExclusive)
@@ -80,6 +81,7 @@ func TestGroupHandlerSimpleModeSanitizesCommercialFields(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.Code)
 	require.Len(t, svc.updatedGroups, 1)
 	updated := svc.updatedGroups[0]
+	require.Empty(t, updated.ProcurementPolicy)
 	require.NotNil(t, updated.Description)
 	require.Equal(t, "still basic", *updated.Description)
 	require.Nil(t, updated.RateMultiplier)
@@ -225,7 +227,7 @@ func TestGroupHandlerSimpleModeAllReadAndWriteResponsesUseFieldAllowlist(t *test
 		for _, forbidden := range []string{
 			"rate_multiplier", "rpm_limit", "long_context_pricing_enabled", "model_pricing",
 			"allow_batch_image_generation", "video_price_720p", "web_search_price_per_call",
-			"audio_realtime_price_per_min", "model_routing",
+			"audio_realtime_price_per_min", "model_routing", "procurement_policy",
 		} {
 			_, exposed := item[forbidden]
 			require.Falsef(t, exposed, "simple mode exposed %s", forbidden)

@@ -107,6 +107,7 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		ProfitControlEnabled:            source.ProfitControlEnabled,
 		ProfitMinMargin:                 source.ProfitMinMargin,
 		ProfitSafetyBuffer:              source.ProfitSafetyBuffer,
+		ProcurementPolicy:               source.ProcurementPolicy.Clone(),
 		IsExclusive:                     source.IsExclusive,
 		Status:                          duplicateGroupInactiveStatus,
 		DuplicateOperationID:            operationID,

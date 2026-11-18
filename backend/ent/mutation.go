@@ -22695,6 +22695,7 @@ type GroupMutation struct {
 	addprofit_min_margin                    *float64
 	profit_safety_buffer                    *float64
 	addprofit_safety_buffer                 *float64
+	procurement_policy                      **domain.ProcurementPolicy
 	clearedFields                           map[string]struct{}
 	api_keys                                map[int64]struct{}
 	removedapi_keys                         map[int64]struct{}
@@ -26261,6 +26262,55 @@ func (m *GroupMutation) ResetProfitSafetyBuffer() {
 	m.addprofit_safety_buffer = nil
 }
 
+// SetProcurementPolicy sets the "procurement_policy" field.
+func (m *GroupMutation) SetProcurementPolicy(dp *domain.ProcurementPolicy) {
+	m.procurement_policy = &dp
+}
+
+// ProcurementPolicy returns the value of the "procurement_policy" field in the mutation.
+func (m *GroupMutation) ProcurementPolicy() (r *domain.ProcurementPolicy, exists bool) {
+	v := m.procurement_policy
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldProcurementPolicy returns the old "procurement_policy" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldProcurementPolicy(ctx context.Context) (v *domain.ProcurementPolicy, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldProcurementPolicy is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldProcurementPolicy requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldProcurementPolicy: %w", err)
+	}
+	return oldValue.ProcurementPolicy, nil
+}
+
+// ClearProcurementPolicy clears the value of the "procurement_policy" field.
+func (m *GroupMutation) ClearProcurementPolicy() {
+	m.procurement_policy = nil
+	m.clearedFields[group.FieldProcurementPolicy] = struct{}{}
+}
+
+// ProcurementPolicyCleared returns if the "procurement_policy" field was cleared in this mutation.
+func (m *GroupMutation) ProcurementPolicyCleared() bool {
+	_, ok := m.clearedFields[group.FieldProcurementPolicy]
+	return ok
+}
+
+// ResetProcurementPolicy resets all changes to the "procurement_policy" field.
+func (m *GroupMutation) ResetProcurementPolicy() {
+	m.procurement_policy = nil
+	delete(m.clearedFields, group.FieldProcurementPolicy)
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by ids.
 func (m *GroupMutation) AddAPIKeyIDs(ids ...int64) {
 	if m.api_keys == nil {
@@ -26619,7 +26669,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 71)
+	fields := make([]string, 0, 72)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -26833,6 +26883,9 @@ func (m *GroupMutation) Fields() []string {
 	if m.profit_safety_buffer != nil {
 		fields = append(fields, group.FieldProfitSafetyBuffer)
 	}
+	if m.procurement_policy != nil {
+		fields = append(fields, group.FieldProcurementPolicy)
+	}
 	return fields
 }
 
@@ -26983,6 +27036,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.ProfitMinMargin()
 	case group.FieldProfitSafetyBuffer:
 		return m.ProfitSafetyBuffer()
+	case group.FieldProcurementPolicy:
+		return m.ProcurementPolicy()
 	}
 	return nil, false
 }
@@ -27134,6 +27189,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldProfitMinMargin(ctx)
 	case group.FieldProfitSafetyBuffer:
 		return m.OldProfitSafetyBuffer(ctx)
+	case group.FieldProcurementPolicy:
+		return m.OldProcurementPolicy(ctx)
 	}
 	return nil, fmt.Errorf("unknown Group field %s", name)
 }
@@ -27640,6 +27697,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetProfitSafetyBuffer(v)
 		return nil
+	case group.FieldProcurementPolicy:
+		v, ok := value.(*domain.ProcurementPolicy)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetProcurementPolicy(v)
+		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)
 }
@@ -28063,6 +28127,9 @@ func (m *GroupMutation) ClearedFields() []string {
 	if m.FieldCleared(group.FieldModelRouting) {
 		fields = append(fields, group.FieldModelRouting)
 	}
+	if m.FieldCleared(group.FieldProcurementPolicy) {
+		fields = append(fields, group.FieldProcurementPolicy)
+	}
 	return fields
 }
 
@@ -28142,6 +28209,9 @@ func (m *GroupMutation) ClearField(name string) error {
 		return nil
 	case group.FieldModelRouting:
 		m.ClearModelRouting()
+		return nil
+	case group.FieldProcurementPolicy:
+		m.ClearProcurementPolicy()
 		return nil
 	}
 	return fmt.Errorf("unknown Group nullable field %s", name)
@@ -28363,6 +28433,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldProfitSafetyBuffer:
 		m.ResetProfitSafetyBuffer()
+		return nil
+	case group.FieldProcurementPolicy:
+		m.ResetProcurementPolicy()
 		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)

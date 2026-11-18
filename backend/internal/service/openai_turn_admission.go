@@ -501,7 +501,7 @@ func checkOpenAITurnBindingAndRate(ctx context.Context, selected, latest *Accoun
 		(!latest.HasManagedOpenAIConnections() || selected.AuthConnectionID == "") {
 		return denyOpenAITurn("account_binding_changed")
 	}
-	if vetoed, reason := openAIProfitControlVetoReason(ctx, latest); vetoed {
+	if vetoed, reason := openAIProfitControlLatestPolicyVetoReason(ctx, latest); vetoed {
 		return denyOpenAITurn(reason)
 	}
 	return nil
@@ -543,6 +543,9 @@ func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account
 	if b == nil || AccountRouteFingerprint(account) != b.fingerprint ||
 		time.Since(b.createdAt) >= openAIWSConnMaxAge {
 		return denyOpenAITurn("connection_binding_expired")
+	}
+	if vetoed, reason := openAIProfitControlLatestPolicyVetoReason(ctx, account); vetoed {
+		return denyOpenAITurn(reason)
 	}
 	if err := checkOpenAIWSBillingHandshake(ctx, account, b.billingHandshake); err != nil {
 		return err

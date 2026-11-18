@@ -539,7 +539,7 @@ func TestBillingApplicabilityZeroIsNotMissing(t *testing.T) {
 	require.True(t, IsOpenAITurnAdmissionError(guardUpstreamBillingApplicability(account, &AvailabilityRequestScope{
 		Model: "gpt-fixture", Protocol: "responses_http", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text",
 	})))
-	preview := previewAccountProfitAdmission(account, true, 1, 1, at)
+	preview := previewAccountProfitAdmission(account, true, 1, 1, at, nil)
 	require.Equal(t, ProfitPreviewClassRejectedUpstreamRate, preview.Class)
 	require.Contains(t, preview.Warnings, ProfitPreviewWarningScopeNotEvaluated)
 }

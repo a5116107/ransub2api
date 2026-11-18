@@ -146,9 +146,10 @@ type APIKeyAuthGroupSnapshot struct {
 	// 保留分组利润字段的认证快照投影及往返兼容。生产装门在请求/轮次边界
 	// 从 schedulerSnapshot 读取调度策略，ctx 的认证 Group 继续提供计费快照；
 	// 未接入策略源的内部调用仍可使用这些字段。不要将快照字段删减当作关闭策略。
-	ProfitControlEnabled bool    `json:"profit_control_enabled"`
-	ProfitMinMargin      float64 `json:"profit_min_margin"`
-	ProfitSafetyBuffer   float64 `json:"profit_safety_buffer"`
+	ProfitControlEnabled bool               `json:"profit_control_enabled"`
+	ProfitMinMargin      float64            `json:"profit_min_margin"`
+	ProfitSafetyBuffer   float64            `json:"profit_safety_buffer"`
+	ProcurementPolicy    *ProcurementPolicy `json:"procurement_policy,omitempty"`
 }
 
 // APIKeyAuthCacheEntry 缓存条目，支持负缓存

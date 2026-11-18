@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,18 +20,19 @@ import (
 )
 
 type inputGroup struct {
-	ID                   int64   `json:"id"`
-	Name                 string  `json:"name"`
-	Platform             string  `json:"platform"`
-	RateMultiplier       float64 `json:"rate_multiplier"`
-	SubscriptionType     string  `json:"subscription_type"`
-	ProfitControlEnabled bool    `json:"profit_control_enabled"`
-	ProfitMinMargin      float64 `json:"profit_min_margin"`
-	ProfitSafetyBuffer   float64 `json:"profit_safety_buffer"`
-	PeakRateEnabled      bool    `json:"peak_rate_enabled"`
-	PeakStart            string  `json:"peak_start"`
-	PeakEnd              string  `json:"peak_end"`
-	PeakRateMultiplier   float64 `json:"peak_rate_multiplier"`
+	ProcurementPolicy    *service.ProcurementPolicy `json:"procurement_policy"`
+	ID                   int64                      `json:"id"`
+	Name                 string                     `json:"name"`
+	Platform             string                     `json:"platform"`
+	RateMultiplier       float64                    `json:"rate_multiplier"`
+	SubscriptionType     string                     `json:"subscription_type"`
+	ProfitControlEnabled bool                       `json:"profit_control_enabled"`
+	ProfitMinMargin      float64                    `json:"profit_min_margin"`
+	ProfitSafetyBuffer   float64                    `json:"profit_safety_buffer"`
+	PeakRateEnabled      bool                       `json:"peak_rate_enabled"`
+	PeakStart            string                     `json:"peak_start"`
+	PeakEnd              string                     `json:"peak_end"`
+	PeakRateMultiplier   float64                    `json:"peak_rate_multiplier"`
 }
 
 type inputAccount struct {
@@ -99,16 +101,30 @@ func main() {
 		fmt.Printf("  利润门生效=%v 假定启用=%v | 默认 D=%.4f 阈值=%.4f | 最低有效 D=%.4f 阈值=%.4f\n",
 			report.EffectiveGate, report.AssumedEnabled,
 			report.DefaultD, report.ThresholdDefault, report.MinEffectiveD, report.ThresholdMinD)
+		if policy := report.ProcurementPolicy; policy != nil {
+			if policy.Validate() != nil {
+				fmt.Println("  采购区间：版本未知或配置非法，门生效时拒绝准入")
+			} else {
+				minRate, maxRate := "0", "∞"
+				if policy.MinRate != nil {
+					minRate = *policy.MinRate
+				}
+				if policy.MaxRate != nil {
+					maxRate = *policy.MaxRate
+				}
+				fmt.Printf("  采购区间=[%s, %s) 修订=%d（与利润上限取交集，不代表质量或缓存资格）\n", minRate, maxRate, policy.Revision)
+			}
+		}
 		counts := map[string]int{}
 		for _, v := range report.Verdicts {
 			counts[v.Class]++
 			rate := "-"
 			if v.AccountRate != nil {
-				rate = fmt.Sprintf("%.4f", *v.AccountRate)
+				rate = strconv.FormatFloat(*v.AccountRate, 'f', -1, 64)
 			}
 			effectiveRate := "-"
 			if v.EffectiveRate != nil {
-				effectiveRate = fmt.Sprintf("%.4f", *v.EffectiveRate)
+				effectiveRate = strconv.FormatFloat(*v.EffectiveRate, 'f', -1, 64)
 			}
 			flags := make([]string, 0, 2)
 			if v.RejectedUnderMinD {
@@ -124,12 +140,14 @@ func main() {
 			fmt.Printf("  账号 %-4d %-24s 平台=%-12s 保存倍率=%-8s U=%-8s 来源=%-19s %s%s\n",
 				v.AccountID, v.Name, v.Platform, rate, effectiveRate, v.RateSource, v.Class, suffix)
 		}
-		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d 账号附加售价不符=%d\n",
+		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d 账号附加售价不符=%d 采购区间外=%d 采购策略不可用=%d\n",
 			counts[service.ProfitPreviewClassAdmitted],
 			counts[service.ProfitPreviewClassRejectedThreshold],
 			counts[service.ProfitPreviewClassRejectedInvalidRate],
 			counts[service.ProfitPreviewClassRejectedUpstreamRate],
-			counts[service.ProfitPreviewClassRejectedSaleRate])
+			counts[service.ProfitPreviewClassRejectedSaleRate],
+			counts[service.ProfitPreviewClassRejectedProcurement],
+			counts[service.ProfitPreviewClassUnknownProcurement])
 		models := make([]string, 0, len(report.RemainingByModel))
 		for model := range report.RemainingByModel {
 			models = append(models, model)
@@ -171,6 +189,7 @@ func parsePreviewInputs(raw []byte, assumeEnabled bool) ([]service.ProfitPreview
 			return nil, fmt.Errorf("invalid group at index %d: id and platform are required", i)
 		}
 		group := &service.Group{
+			ProcurementPolicy:    entry.Group.ProcurementPolicy.Clone(),
 			ID:                   entry.Group.ID,
 			Name:                 entry.Group.Name,
 			Platform:             entry.Group.Platform,

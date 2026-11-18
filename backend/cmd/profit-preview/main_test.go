@@ -9,6 +9,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParsePreviewInputsProcurementInterval(t *testing.T) {
+	input := `{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"procurement_policy":{"version":1,"revision":3,"min_rate":"0.02","max_rate":"0.03"}},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.019999999999999997},{"id":3,"platform":"openai","type":"apikey","rate_multiplier":0.02},{"id":4,"platform":"openai","type":"apikey","rate_multiplier":0.03}],"models":["gpt-fixture"]}]}`
+	inputs, err := parsePreviewInputs([]byte(input), false)
+	require.NoError(t, err)
+	require.NotNil(t, inputs[0].Group.ProcurementPolicy, "the real CLI input must not drop procurement before the shared gate")
+	reports := service.PreviewProfitAdmission(inputs, time.Now())
+	require.EqualValues(t, 3, reports[0].ProcurementPolicy.Revision)
+	require.Equal(t, service.ProfitPreviewClassRejectedProcurement, reports[0].Verdicts[0].Class)
+	require.Equal(t, service.ProfitPreviewClassAdmitted, reports[0].Verdicts[1].Class)
+	require.Equal(t, service.ProfitPreviewClassRejectedProcurement, reports[0].Verdicts[2].Class)
+	require.Equal(t, 1, reports[0].RemainingByModel["gpt-fixture"])
+	inputs[0].Group.ProcurementPolicy.Version = 2
+	reports = service.PreviewProfitAdmission(inputs, time.Now())
+	require.Equal(t, service.ProfitPreviewClassUnknownProcurement, reports[0].Verdicts[1].Class)
+}
+
 func TestParsePreviewInputsPreservesFinalRequestScopes(t *testing.T) {
 	input := `{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":1,"profit_control_enabled":true},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.2}],"request_scopes":[{"account_id":2,"public_model":"public-fixture","scope":{"version":2,"protocol":"responses_http","model":"wire-fixture","stream":false,"service_tier":"priority","reasoning_effort":"high","capability":"text"}}]}]}`
 	inputs, err := parsePreviewInputs([]byte(input), false)

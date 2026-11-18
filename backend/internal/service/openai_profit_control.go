@@ -90,6 +90,8 @@ const (
 	openAIProfitFilterReasonGroupConfigUnavailable  = "profit_group_config_unavailable"
 	openAIProfitFilterReasonUpstreamRateUnavailable = "profit_upstream_rate_unavailable"
 	openAIProfitFilterReasonAccountSaleRateMismatch = "profit_account_sale_rate_mismatch"
+	openAIProfitFilterReasonProcurementRange        = "procurement_range"
+	openAIProfitFilterReasonProcurementUnavailable  = "procurement_policy_unavailable"
 
 	// 槽位获取后的账号刷新失败由终检返回，沿用 refresh_failure_total 观测。
 	openAIProfitFilterReasonAccountRefreshFailed = "profit_account_refresh_failed"
@@ -181,6 +183,8 @@ type openAIProfitControlGate struct {
 	pricingAt time.Time
 	// configUnavailable 拒绝未知配置，不能用 threshold=0 代替（那会放行免费账号）。
 	configUnavailable bool
+	procurementPolicy *ProcurementPolicy
+	procurementGroup  func(context.Context) (*Group, error)
 }
 
 func profitControlUnavailableGroupGate(groupID int64, pricingAt time.Time) *openAIProfitControlGate {
@@ -330,10 +334,12 @@ func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Contex
 	deduction := group.ProfitMinMargin + group.ProfitSafetyBuffer
 	threshold := clampProfitControlThreshold(downstream * (1 - deduction))
 	return &openAIProfitControlGate{
-		groupID:   *groupID,
-		platform:  group.Platform,
-		threshold: threshold,
-		pricingAt: pricingAt,
+		groupID:           *groupID,
+		platform:          group.Platform,
+		threshold:         threshold,
+		pricingAt:         pricingAt,
+		procurementPolicy: group.ProcurementPolicy.Clone(),
+		procurementGroup:  procurementPolicyGroupReader(s.schedulerSnapshot, nil, *groupID),
 	}
 }
 
@@ -394,6 +400,10 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 	if profitControlOverThreshold(upstream, gate.threshold) {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonThreshold)
 		return true, openAIProfitFilterReasonThreshold
+	}
+	if reason := procurementPolicyVetoReason(gate.procurementPolicy, upstream); reason != "" {
+		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
+		return true, reason
 	}
 	if reason := upstreamBillingCandidateVetoReason(ctx, account, attemptAt); reason != "" {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
@@ -480,6 +490,8 @@ type openAIProfitControlGroupStats struct {
 	vetoUpstreamRate atomic.Int64
 	vetoSaleRate     atomic.Int64
 	vetoScope        atomic.Int64
+	vetoProcurement  atomic.Int64
+	vetoPolicy       atomic.Int64
 	refreshFailures  atomic.Int64
 	lastLogUnixMilli atomic.Int64
 }
@@ -528,6 +540,10 @@ func (o *openAIProfitControlObserver) recordVeto(groupID int64, platform string,
 		s.vetoUpstreamRate.Add(1)
 	case openAIProfitFilterReasonAccountSaleRateMismatch:
 		s.vetoSaleRate.Add(1)
+	case openAIProfitFilterReasonProcurementRange:
+		s.vetoProcurement.Add(1)
+	case openAIProfitFilterReasonProcurementUnavailable:
+		s.vetoPolicy.Add(1)
 	default:
 		if strings.HasPrefix(reason, "profit_upstream_scope_") {
 			s.vetoScope.Add(1)
@@ -564,6 +580,8 @@ func (o *openAIProfitControlObserver) maybeLog(groupID int64, platform string, t
 		"veto_upstream_rate_unavailable_total", s.vetoUpstreamRate.Load(),
 		"veto_account_sale_rate_mismatch_total", s.vetoSaleRate.Load(),
 		"veto_upstream_scope_total", s.vetoScope.Load(),
+		"veto_procurement_range_total", s.vetoProcurement.Load(),
+		"veto_procurement_policy_unavailable_total", s.vetoPolicy.Load(),
 		"refresh_failure_total", s.refreshFailures.Load(),
 	)
 }

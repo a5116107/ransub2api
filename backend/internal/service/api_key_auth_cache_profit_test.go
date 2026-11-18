@@ -91,3 +91,28 @@ func TestAPIKeyAuthSnapshotOldVersionEvicted(t *testing.T) {
 	require.False(t, used, "版本不匹配的缓存条目必须淘汰并回源重建")
 	require.Nil(t, materialized)
 }
+
+func TestProcurementPolicyAuthSnapshotRoundtrip(t *testing.T) {
+	svc := &APIKeyService{}
+	apiKey := profitAuthTestAPIKey()
+	min, max := "0.02", "0.03"
+	apiKey.Group.ProcurementPolicy = &ProcurementPolicy{Version: 1, Revision: 2, MinRate: &min, MaxRate: &max}
+	snapshot := svc.snapshotFromAPIKey(t.Context(), apiKey)
+	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
+	require.NoError(t, err)
+	var restored APIKeyAuthCacheEntry
+	require.NoError(t, json.Unmarshal(payload, &restored))
+	materialized, used, err := svc.applyAuthCacheEntry(apiKey.Key, &restored)
+	require.NoError(t, err)
+	require.True(t, used)
+	require.Equal(t, apiKey.Group.ProcurementPolicy, materialized.Group.ProcurementPolicy)
+	*apiKey.Group.ProcurementPolicy.MinRate = "0"
+	second := svc.snapshotToAPIKey(apiKey.Key, snapshot)
+	require.Equal(t, "0.02", *second.Group.ProcurementPolicy.MinRate, "auth snapshots own their policy values")
+	*second.Group.ProcurementPolicy.MinRate = "0.01"
+	require.Equal(t, "0.02", *svc.snapshotToAPIKey(apiKey.Key, snapshot).Group.ProcurementPolicy.MinRate)
+	snapshot.Version = 34
+	_, used, err = svc.applyAuthCacheEntry(apiKey.Key, &APIKeyAuthCacheEntry{Snapshot: snapshot})
+	require.NoError(t, err)
+	require.False(t, used, "pre-procurement cached projections must reload")
+}

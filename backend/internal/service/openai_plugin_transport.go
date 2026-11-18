@@ -153,7 +153,7 @@ func (s *OpenAIGatewayService) guardOpenAIProfitRequest(request *http.Request, a
 			if account.excelBPSParentRoute == nil || *account.excelBPSParentRoute != excelBPSParentRouteFingerprint(latest) {
 				return nil, denyOpenAITurn("account_binding_changed")
 			}
-			if vetoed, reason := openAIProfitControlVetoReason(request.Context(), latest); vetoed {
+			if vetoed, reason := openAIProfitControlLatestPolicyVetoReason(request.Context(), latest); vetoed {
 				return nil, denyOpenAITurn(reason)
 			}
 		} else if err := checkOpenAITurnBindingAndRate(request.Context(), account, latest); err != nil {

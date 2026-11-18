@@ -14,6 +14,7 @@ import (
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
 type GroupCodexModelsManifestConfig = domain.GroupCodexModelsManifestConfig
 type ReasoningEffortMapping = domain.ReasoningEffortMapping
+type ProcurementPolicy = domain.ProcurementPolicy
 
 type Group struct {
 	ID             int64
@@ -140,8 +141,12 @@ type Group struct {
 	// D 为请求用户当刻有效下游倍率（用户覆盖 ?? 分组默认，再乘高峰因子）。
 	// 只过滤候选账号，不改变既有排序/评分/粘性/熔断。
 	ProfitControlEnabled bool
-	ProfitMinMargin      float64 // 最低毛利率，小数存储（0.30=30%）
-	ProfitSafetyBuffer   float64 // 安全缓冲，小数，与 margin 相加后从 D 中扣除
+	ProfitMinMargin      float64            // 最低毛利率，小数存储（0.30=30%）
+	ProfitSafetyBuffer   float64            // 安全缓冲，小数，与 margin 相加后从 D 中扣除
+	ProcurementPolicy    *ProcurementPolicy `json:"procurement_policy,omitempty"`
+	// Only explicit administrator commands write the policy column. Ordinary
+	// updates must not replace a concurrently changed policy with an old copy.
+	ProcurementPolicyExpectedRevision *int64 `json:"-"`
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

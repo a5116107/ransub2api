@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1跨来源/跨站共Key运行及实例重建子项本地已验。
+任务：D4.3.1产品采购倍率区间本地闭环已验。
 范围：唯一H盘功能分支提交同步；不CI/PR/生产，不改业务与探测判据。
 已决：实际usage、插件自动延期、手动停用及unknown保持。
-来源：e7f319469已同步；本轮终稿4e099443，分层证据见DECISIONS。
-已验：SQL/HTTP双轮168、0fail/skip/race；repository vet0/lint0。
-下一：其余scope/完整库存与公平性编译；保持原产品/外部验收。
+来源：7181520b3上续接；Go/SQL终稿18970069，证据见DECISIONS。
+已验：race4740/隔离PG108/UI73及中英四视口；409契约与重名区分。
+下一：D4.3桶目录/受管资格/模式及归类；供应商证据等待不变。
 等待：原28项20done/8部分；全scope/跨节点/生产/PR3待。
 生产最后记录.7/fd83f6c91；本轮不部署；历史拒删原位保护。
-Attempt：98
+Attempt：99
 <!-- resume:end -->
 
 ## 目标与入口
@@ -44,7 +44,8 @@ Attempt：98
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 原清理/分页/依赖及双平台验收保持；逐项源码与验证见DECISIONS |
-| D4 | in_progress | 固定售价/新鲜策略/多平台最终门已有本地证据；D4.3采购桶/受管资格/模式与重归类仍未闭环 |
+| D4 | in_progress | 固定售价/新鲜策略/多平台终检及D4.3.1采购区间已本地验；桶/资格/模式/重归类未闭环 |
+| D4.3.1 | done | 版本区间/CAS/旧客户端/预演/槽后与HTTP/WS拒发恢复、PG迁移/认证及中英UI已验；非完整受管资格/生产 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/入口来源已本地验；实际组/受信外部检测/其余scope/资格及D5.4仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
 | D7 | in_progress | 历史结论/下游原始面板及409已有证据；D7.3真实多维结论、D7.4三步产品配置/监控/预算解释仍缺 |
@@ -77,6 +78,4 @@ Attempt：98
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 私有PG55441/PID10868、Redis56441/PID46228、quality-batch-{build,runner.py}及`H:/Root/DevCache/tmp/sub2api-quality-validity`受宿主拒删；预览已停；owner宿主用户，路径/解除条件见DECISIONS。
-- 历史拒删620274603bytes及D2.6日志原位保留；路径/命令/owner见DECISIONS，待宿主解除策略，不绕过。
-- 新增旧Stop红测overlay/49259bytes受宿主拒删；路径/owner见DECISIONS，回收0，不绕行。
-- 历史构建213260543bytes及本轮临时产物9279228bytes受宿主拒删；路径/owner/解除条件见DECISIONS；未绕行，回收0。
+- 历史拒删620274603bytes/D2.6日志、旧Stop overlay49259bytes及构建213260543+临时9279228bytes原位；路径/命令/owner见DECISIONS，待宿主解除策略；不重试/绕行，回收0。

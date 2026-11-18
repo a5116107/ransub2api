@@ -2710,6 +2710,16 @@ func ProfitSafetyBufferLTE(v float64) predicate.Group {
 	return predicate.Group(sql.FieldLTE(FieldProfitSafetyBuffer, v))
 }
 
+// ProcurementPolicyIsNil applies the IsNil predicate on the "procurement_policy" field.
+func ProcurementPolicyIsNil() predicate.Group {
+	return predicate.Group(sql.FieldIsNull(FieldProcurementPolicy))
+}
+
+// ProcurementPolicyNotNil applies the NotNil predicate on the "procurement_policy" field.
+func ProcurementPolicyNotNil() predicate.Group {
+	return predicate.Group(sql.FieldNotNull(FieldProcurementPolicy))
+}
+
 // HasAPIKeys applies the HasEdge predicate on the "api_keys" edge.
 func HasAPIKeys() predicate.Group {
 	return predicate.Group(func(s *sql.Selector) {

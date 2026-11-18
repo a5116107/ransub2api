@@ -15,7 +15,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 34 // v34: per-key input context token ceiling
+const apiKeyAuthSnapshotVersion = 35 // v35: preserve the procurement policy through auth projections
 
 // Local-only generation wrapper. Old entries remain bounded by existing TTL
 // and capacity, but cannot authorize after a subscription recovery checkpoint.
@@ -481,6 +481,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			ProfitControlEnabled:            apiKey.Group.ProfitControlEnabled,
 			ProfitMinMargin:                 apiKey.Group.ProfitMinMargin,
 			ProfitSafetyBuffer:              apiKey.Group.ProfitSafetyBuffer,
+			ProcurementPolicy:               apiKey.Group.ProcurementPolicy.Clone(),
 		}
 	}
 	return snapshot
@@ -594,6 +595,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			ProfitControlEnabled:            snapshot.Group.ProfitControlEnabled,
 			ProfitMinMargin:                 snapshot.Group.ProfitMinMargin,
 			ProfitSafetyBuffer:              snapshot.Group.ProfitSafetyBuffer,
+			ProcurementPolicy:               snapshot.Group.ProcurementPolicy.Clone(),
 		}
 	}
 	s.compileAPIKeyIPRules(apiKey)

@@ -392,7 +392,7 @@
           </template>
 
           <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
+            <div class="flex flex-wrap items-center gap-1">
               <button
                 @click="handleEdit(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400"
@@ -1355,6 +1355,11 @@
             </div>
           </div>
         </div>
+
+        <ProcurementPolicyFields
+          v-if="isProfitControlPlatform(createForm.platform) && createForm.profit_control_enabled"
+          v-model="createProcurementPolicy" id-prefix="create-procurement"
+        />
 
         <!-- 支持的模型系列（仅 antigravity 平台） -->
         <div v-if="createForm.platform === 'antigravity'" class="border-t pt-4">
@@ -3055,6 +3060,12 @@
           </div>
         </div>
 
+        <ProcurementPolicyFields
+          v-if="isProfitControlPlatform(editForm.platform) && editForm.profit_control_enabled"
+          v-model="editProcurementPolicy" id-prefix="edit-procurement"
+          :conflict="editProcurementConflict" :latest-policy="latestProcurementPolicy" :refreshing="refreshingProcurementPolicy"
+          @refresh="refreshProcurementPolicy" @resolve="resolveProcurementConflict"
+        />
         <!-- 支持的模型系列（仅 antigravity 平台） -->
         <div v-if="editForm.platform === 'antigravity'" class="border-t pt-4">
           <div class="mb-1.5 flex items-center gap-1">
@@ -4428,6 +4439,8 @@ import { useOnboardingStore } from "@/stores/onboarding";
 import { adminAPI } from "@/api/admin";
 import type {
   AdminGroup,
+  GroupProcurementPolicy,
+  UpdateGroupRequest,
   CodexModelsManifestConfig,
   CompositeModelRoute,
   CompositeModelRouteInput,
@@ -4457,6 +4470,8 @@ import PlatformIcon from "@/components/common/PlatformIcon.vue";
 import { platformLabel } from "@/utils/platformColors";
 import Icon from "@/components/icons/Icon.vue";
 import GroupI18nField from "@/components/admin/group/GroupI18nField.vue";
+import ProcurementPolicyFields from "@/components/admin/group/ProcurementPolicyFields.vue";
+import { procurementPolicyCommand, validateProcurementPolicy } from "@/utils/procurementPolicy";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
 import GroupAntiDistillationSettings from "@/components/admin/group/GroupAntiDistillationSettings.vue";
@@ -5003,6 +5018,11 @@ const showSortModal = ref(false);
 const submitting = ref(false);
 const sortSubmitting = ref(false);
 const editingGroup = ref<AdminGroup | null>(null);
+const createProcurementPolicy = ref<GroupProcurementPolicy | null>(null);
+const editProcurementPolicy = ref<GroupProcurementPolicy | null>(null);
+const editProcurementConflict = ref(false);
+const latestProcurementPolicy = ref<GroupProcurementPolicy | null>();
+const refreshingProcurementPolicy = ref(false);
 const deletingGroup = ref<AdminGroup | null>(null);
 const duplicatingGroupIds = reactive(new Set<number>());
 const showRateMultipliersModal = ref(false);
@@ -5998,6 +6018,7 @@ const closeCreateModal = () => {
   createForm.peak_end = "";
   createForm.peak_rate_multiplier = 1.0;
   createForm.profit_control_enabled = false;
+  createProcurementPolicy.value = null;
   createForm.profit_min_margin_percent = 0;
   createForm.profit_safety_buffer_percent = 0;
   createForm.claude_code_only = false;
@@ -6076,6 +6097,13 @@ const validateGroupReasoningMultipliers = (pricing: PricingFormEntry[]): boolean
 };
 
 const handleCreateGroup = async () => {
+  const procurement = isProfitControlPlatform(createForm.platform) && createForm.profit_control_enabled
+    ? createProcurementPolicy.value : null;
+  const procurementError = validateProcurementPolicy(procurement);
+  if (procurementError) {
+    appStore.showError(t(`admin.groups.profitControl.procurement.${procurementError}`));
+    return;
+  }
   if (!createForm.name.trim()) {
     appStore.showError(t("admin.groups.nameRequired"));
     return;
@@ -6162,6 +6190,7 @@ const handleCreateGroup = async () => {
       profit_control_enabled:
         isProfitControlPlatform(createForm.platform) &&
         createForm.profit_control_enabled,
+      procurement_policy: procurement ?? undefined,
       profit_min_margin: percentToDecimal(createForm.profit_min_margin_percent),
       profit_safety_buffer: percentToDecimal(
         createForm.profit_safety_buffer_percent,
@@ -6296,6 +6325,9 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.peak_end = group.peak_end ?? "";
   editForm.peak_rate_multiplier = group.peak_rate_multiplier ?? 1.0;
   editForm.profit_control_enabled = group.profit_control_enabled ?? false;
+  editProcurementPolicy.value = group.procurement_policy ? JSON.parse(JSON.stringify(group.procurement_policy)) : null;
+  editProcurementConflict.value = false;
+  latestProcurementPolicy.value = undefined;
   editForm.profit_min_margin_percent = decimalToPercent(
     group.profit_min_margin ?? 0,
   );
@@ -6417,7 +6449,46 @@ const closeEditModal = () => {
   editCodexManifestRef.value?.resetValidation?.();
 };
 
+const refreshProcurementPolicy = async () => {
+  if (!editingGroup.value || refreshingProcurementPolicy.value) return;
+  const owner = editingGroup.value;
+  const id = owner.id;
+  refreshingProcurementPolicy.value = true;
+  latestProcurementPolicy.value = undefined;
+  try {
+    const current = await adminAPI.groups.getById(id);
+    if (editingGroup.value === owner) {
+      latestProcurementPolicy.value = current.procurement_policy
+        ? JSON.parse(JSON.stringify(current.procurement_policy)) : null;
+    }
+  } catch {
+    appStore.showError(t('admin.groups.profitControl.procurement.refreshFailed'));
+  } finally {
+    refreshingProcurementPolicy.value = false;
+  }
+};
+
+const resolveProcurementConflict = () => {
+  const latest = latestProcurementPolicy.value;
+  if (!editingGroup.value || !editProcurementPolicy.value || latest === undefined || validateProcurementPolicy(latest)) return;
+  editingGroup.value = { ...editingGroup.value, procurement_policy: latest };
+  editProcurementPolicy.value = { ...editProcurementPolicy.value, revision: latest?.revision ?? 0 };
+  editProcurementConflict.value = false;
+  latestProcurementPolicy.value = undefined;
+};
+
 const handleUpdateGroup = async () => {
+  const procurementCommand = isProfitControlPlatform(editForm.platform) && editForm.profit_control_enabled
+    ? procurementPolicyCommand(editProcurementPolicy.value, editingGroup.value?.procurement_policy ?? null) : undefined;
+  const procurementError = procurementCommand ? validateProcurementPolicy(procurementCommand) : null;
+  if (procurementCommand && editProcurementConflict.value) {
+    appStore.showError(t('admin.groups.profitControl.procurement.conflict'));
+    return;
+  }
+  if (procurementError) {
+    appStore.showError(t(`admin.groups.profitControl.procurement.${procurementError}`));
+    return;
+  }
   if (!editingGroup.value) return;
   if (!editForm.name.trim()) {
     appStore.showError(t("admin.groups.nameRequired"));
@@ -6585,11 +6656,20 @@ const handleUpdateGroup = async () => {
           i18n: editForm.i18n,
         }
       : payload;
+    if (!authStore.isSimpleMode && procurementCommand) {
+      (requestData as UpdateGroupRequest).procurement_policy = procurementCommand;
+    }
     await adminAPI.groups.update(editingGroup.value.id, requestData);
     appStore.showSuccess(t("admin.groups.groupUpdated"));
     closeEditModal();
     loadGroups();
   } catch (error: any) {
+    if (procurementCommand && error?.status === 409 && error?.reason === 'GROUP_PROCUREMENT_POLICY_CONFLICT') {
+      editProcurementConflict.value = true;
+      appStore.showError(t("admin.groups.profitControl.procurement.conflict"));
+      await refreshProcurementPolicy();
+      return;
+    }
     appStore.showError(
       extractApiErrorMessage(error, t("admin.groups.failedToUpdate")),
     );

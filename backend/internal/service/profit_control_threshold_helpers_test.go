@@ -39,7 +39,7 @@ func TestProfitControlFixedSaleAccountMultiplier(t *testing.T) {
 			ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{threshold: 0.7, pricingAt: now})
 			vetoed, reason := OpenAIProfitControlVeto(ctx, account)
 			require.Equal(t, !tc.admit, vetoed)
-			verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now)
+			verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now, nil)
 			if tc.admit {
 				require.Empty(t, reason)
 				require.Equal(t, ProfitPreviewClassAdmitted, verdict.Class)
@@ -51,7 +51,7 @@ func TestProfitControlFixedSaleAccountMultiplier(t *testing.T) {
 			vetoed, reason = OpenAIProfitControlVeto(context.Background(), account)
 			require.False(t, vetoed)
 			require.Empty(t, reason)
-			require.Equal(t, ProfitPreviewClassAdmitted, previewAccountProfitAdmission(account, false, 0.7, 0.3, now).Class)
+			require.Equal(t, ProfitPreviewClassAdmitted, previewAccountProfitAdmission(account, false, 0.7, 0.3, now, nil).Class)
 			require.Same(t, tc.rate, account.GroupRateMultiplier)
 		})
 	}
@@ -171,7 +171,7 @@ func TestProfitControlSyncedAdmission(t *testing.T) {
 			}
 			require.Equal(t, tt.class != ProfitPreviewClassAdmitted, vetoed)
 			require.Equal(t, wantReason, reason)
-			verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now)
+			verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now, nil)
 			require.Equal(t, tt.class, verdict.Class)
 			if tt.class == rejectedProbe || tt.class == ProfitPreviewClassRejectedInvalidRate {
 				require.Nil(t, verdict.EffectiveRate)
@@ -190,7 +190,7 @@ func TestProfitControlSyncedAdmission(t *testing.T) {
 			vetoed, reason = OpenAIProfitControlVeto(context.Background(), account)
 			require.False(t, vetoed)
 			require.Empty(t, reason)
-			require.Equal(t, ProfitPreviewClassAdmitted, previewAccountProfitAdmission(account, false, 0.7, 0.3, now).Class)
+			require.Equal(t, ProfitPreviewClassAdmitted, previewAccountProfitAdmission(account, false, 0.7, 0.3, now, nil).Class)
 		})
 	}
 }
@@ -216,7 +216,7 @@ func TestProfitControlSyncedPeakUsesAttemptTime(t *testing.T) {
 	vetoed, reason := OpenAIProfitControlVeto(ctx, account)
 	require.True(t, vetoed)
 	require.Equal(t, openAIProfitFilterReasonThreshold, reason)
-	verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now)
+	verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now, nil)
 	require.Equal(t, ProfitPreviewClassRejectedThreshold, verdict.Class)
 	require.Equal(t, 0.4, *verdict.AccountRate)
 	require.InDelta(t, 0.8, *verdict.EffectiveRate, 1e-12)
@@ -241,14 +241,14 @@ func TestProfitControlSyncedSnapshotRecoveryAndObserver(t *testing.T) {
 	require.True(t, vetoed)
 	require.Equal(t, openAIProfitFilterReasonUpstreamRateUnavailable, reason)
 	require.Equal(t, before+1, stats.vetoUpstreamRate.Load())
-	verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now)
+	verdict := previewAccountProfitAdmission(account, true, 0.7, 0.3, now, nil)
 	require.Contains(t, verdict.Warnings, ProfitPreviewWarningProbeFailed)
 	snapshot["status"] = UpstreamBillingProbeStatusOK
 	vetoed, reason = OpenAIProfitControlVeto(ctx, account)
 	require.False(t, vetoed)
 	require.Empty(t, reason)
 	require.Equal(t, before+1, stats.vetoUpstreamRate.Load(), "recovery must not increment rejection counts")
-	verdict = previewAccountProfitAdmission(account, true, 0.7, 0.3, now)
+	verdict = previewAccountProfitAdmission(account, true, 0.7, 0.3, now, nil)
 	require.Equal(t, ProfitPreviewClassAdmitted, verdict.Class)
 	require.Empty(t, verdict.Warnings)
 }

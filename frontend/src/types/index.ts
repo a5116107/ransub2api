@@ -658,6 +658,13 @@ export interface Group {
   updated_at: string
 }
 
+export interface GroupProcurementPolicy {
+  version: number
+  revision: number
+  min_rate: string | null
+  max_rate: string | null
+}
+
 export interface AdminGroup extends Group {
   // 管理端的 name / description 始终是原字段，各语言译文另放在 i18n 里
   i18n?: GroupI18n
@@ -673,6 +680,7 @@ export interface AdminGroup extends Group {
   profit_control_enabled: boolean
   profit_min_margin: number
   profit_safety_buffer: number
+  procurement_policy?: GroupProcurementPolicy | null
 
   // 模型路由配置（仅管理员可见，内部信息）
   model_routing: Record<string, number[]> | null
@@ -897,6 +905,7 @@ export interface CreateGroupRequest {
   profit_control_enabled?: boolean
   profit_min_margin?: number
   profit_safety_buffer?: number
+  procurement_policy?: GroupProcurementPolicy
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
@@ -968,6 +977,7 @@ export interface UpdateGroupRequest {
   profit_control_enabled?: boolean
   profit_min_margin?: number
   profit_safety_buffer?: number
+  procurement_policy?: GroupProcurementPolicy
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null

@@ -106,6 +106,8 @@ func ParseProfitPreviewRequestScope(raw []byte) (ProfitPreviewRequestScope, erro
 const (
 	ProfitPreviewClassAdmitted             = "admitted"
 	ProfitPreviewClassRejectedThreshold    = "rejected_threshold"
+	ProfitPreviewClassRejectedProcurement  = "rejected_procurement_range"
+	ProfitPreviewClassUnknownProcurement   = "rejected_procurement_policy_unavailable"
 	ProfitPreviewClassRejectedInvalidRate  = "rejected_invalid_account_rate"
 	ProfitPreviewClassRejectedUpstreamRate = "rejected_upstream_rate_unavailable"
 	ProfitPreviewClassRejectedSaleRate     = "rejected_account_sale_rate_mismatch"
@@ -131,11 +133,12 @@ type ProfitPreviewAccountVerdict struct {
 
 // ProfitPreviewGroupReport 是单分组的预演报告。
 type ProfitPreviewGroupReport struct {
-	GroupID        int64  `json:"group_id"`
-	GroupName      string `json:"group_name"`
-	Platform       string `json:"platform"`
-	EffectiveGate  bool   `json:"effective_gate"`
-	AssumedEnabled bool   `json:"assumed_enabled,omitempty"`
+	ProcurementPolicy *ProcurementPolicy `json:"procurement_policy,omitempty"`
+	GroupID           int64              `json:"group_id"`
+	GroupName         string             `json:"group_name"`
+	Platform          string             `json:"platform"`
+	EffectiveGate     bool               `json:"effective_gate"`
+	AssumedEnabled    bool               `json:"assumed_enabled,omitempty"`
 	// DefaultD / MinEffectiveD：分组默认 D 与最低有效 D（含 evalAt 高峰因子；
 	// MinEffectiveD = min(分组默认, 全部非空用户覆盖) × 高峰因子）。
 	DefaultD      float64 `json:"default_d"`
@@ -162,6 +165,7 @@ func PreviewProfitAdmission(inputs []ProfitPreviewGroupInput, evalAt time.Time) 
 		group := in.Group
 		effectiveGate := (group.ProfitControlEnabled || in.AssumeEnabled) && profitControlPlatformSupported(group.Platform)
 		report := ProfitPreviewGroupReport{
+			ProcurementPolicy:    group.ProcurementPolicy.Clone(),
 			GroupID:              group.ID,
 			GroupName:            group.Name,
 			Platform:             group.Platform,
@@ -206,7 +210,7 @@ func PreviewProfitAdmission(inputs []ProfitPreviewGroupInput, evalAt time.Time) 
 			if account == nil {
 				continue
 			}
-			verdict := previewAccountProfitAdmission(account, effectiveGate, thresholdDefault, thresholdMinD, evalAt)
+			verdict := previewAccountProfitAdmission(account, effectiveGate, thresholdDefault, thresholdMinD, evalAt, group.ProcurementPolicy)
 			admittedDefault := verdict.Class == ProfitPreviewClassAdmitted
 			admittedMinD := admittedDefault && !verdict.RejectedUnderMinD
 			for _, model := range in.Models {
@@ -225,7 +229,7 @@ func PreviewProfitAdmission(inputs []ProfitPreviewGroupInput, evalAt time.Time) 
 			report.Verdicts = append(report.Verdicts, verdict)
 		}
 		for _, request := range in.RequestScopes {
-			report.ScopeVerdicts = append(report.ScopeVerdicts, previewProfitRequestScope(accountsByID[request.AccountID], request, group.ID, effectiveGate, thresholdDefault, thresholdMinD, evalAt))
+			report.ScopeVerdicts = append(report.ScopeVerdicts, previewProfitRequestScope(accountsByID[request.AccountID], request, group.ID, effectiveGate, thresholdDefault, thresholdMinD, evalAt, group.ProcurementPolicy))
 		}
 		sort.Slice(report.Verdicts, func(i, j int) bool { return report.Verdicts[i].AccountID < report.Verdicts[j].AccountID })
 		reports = append(reports, report)
@@ -233,13 +237,13 @@ func PreviewProfitAdmission(inputs []ProfitPreviewGroupInput, evalAt time.Time) 
 	return reports
 }
 
-func previewProfitRequestScope(account *Account, request ProfitPreviewRequestScope, groupID int64, enabled bool, threshold, minThreshold float64, at time.Time) ProfitPreviewScopeVerdict {
+func previewProfitRequestScope(account *Account, request ProfitPreviewRequestScope, groupID int64, enabled bool, threshold, minThreshold float64, at time.Time, policy *ProcurementPolicy) ProfitPreviewScopeVerdict {
 	result := ProfitPreviewScopeVerdict{ProfitPreviewRequestScope: request, Applicability: "unknown"}
 	if account == nil {
 		result.Reason = "account_unavailable"
 		return result
 	}
-	price := previewAccountProfitAdmission(account, enabled, threshold, minThreshold, at)
+	price := previewAccountProfitAdmission(account, enabled, threshold, minThreshold, at, policy)
 	result.PriceClass = price.Class
 	if !billingApplicabilityScopeShapeKnown(request.Scope) {
 		result.Reason = "profit_upstream_scope_unknown"
@@ -268,6 +272,7 @@ func previewAccountProfitAdmission(
 	thresholdDefault float64,
 	thresholdMinD float64,
 	evalAt time.Time,
+	policy *ProcurementPolicy,
 ) ProfitPreviewAccountVerdict {
 	verdict := ProfitPreviewAccountVerdict{
 		AccountID:  account.ID,
@@ -299,6 +304,7 @@ func previewAccountProfitAdmission(
 	} else if reason == openAIProfitFilterReasonUpstreamRateUnavailable && len(verdict.Warnings) == 0 {
 		verdict.Warnings = append(verdict.Warnings, ProfitPreviewWarningProbeInvalid)
 	}
+	procurementReason := procurementPolicyVetoReason(policy, upstream)
 	switch {
 	case !effectiveGate:
 		verdict.Class = ProfitPreviewClassAdmitted
@@ -310,6 +316,10 @@ func previewAccountProfitAdmission(
 		verdict.Class = ProfitPreviewClassRejectedSaleRate
 	case profitControlOverThreshold(upstream, thresholdDefault):
 		verdict.Class = ProfitPreviewClassRejectedThreshold
+	case procurementReason == openAIProfitFilterReasonProcurementUnavailable:
+		verdict.Class = ProfitPreviewClassUnknownProcurement
+	case procurementReason == openAIProfitFilterReasonProcurementRange:
+		verdict.Class = ProfitPreviewClassRejectedProcurement
 	default:
 		verdict.Class = ProfitPreviewClassAdmitted
 		verdict.RejectedUnderMinD = profitControlOverThreshold(upstream, thresholdMinD)

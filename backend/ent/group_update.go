@@ -1280,6 +1280,18 @@ func (_u *GroupUpdate) AddProfitSafetyBuffer(v float64) *GroupUpdate {
 	return _u
 }
 
+// SetProcurementPolicy sets the "procurement_policy" field.
+func (_u *GroupUpdate) SetProcurementPolicy(v *domain.ProcurementPolicy) *GroupUpdate {
+	_u.mutation.SetProcurementPolicy(v)
+	return _u
+}
+
+// ClearProcurementPolicy clears the value of the "procurement_policy" field.
+func (_u *GroupUpdate) ClearProcurementPolicy() *GroupUpdate {
+	_u.mutation.ClearProcurementPolicy()
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdate) AddAPIKeyIDs(ids ...int64) *GroupUpdate {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -1608,6 +1620,11 @@ func (_u *GroupUpdate) check() error {
 	if v, ok := _u.mutation.MaxReasoningEffortOverLimit(); ok {
 		if err := group.MaxReasoningEffortOverLimitValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort_over_limit", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort_over_limit": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ProcurementPolicy(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "procurement_policy", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_policy": %w`, err)}
 		}
 	}
 	return nil
@@ -1993,6 +2010,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedProfitSafetyBuffer(); ok {
 		_spec.AddField(group.FieldProfitSafetyBuffer, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.ProcurementPolicy(); ok {
+		_spec.SetField(group.FieldProcurementPolicy, field.TypeJSON, value)
+	}
+	if _u.mutation.ProcurementPolicyCleared() {
+		_spec.ClearField(group.FieldProcurementPolicy, field.TypeJSON)
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -3551,6 +3574,18 @@ func (_u *GroupUpdateOne) AddProfitSafetyBuffer(v float64) *GroupUpdateOne {
 	return _u
 }
 
+// SetProcurementPolicy sets the "procurement_policy" field.
+func (_u *GroupUpdateOne) SetProcurementPolicy(v *domain.ProcurementPolicy) *GroupUpdateOne {
+	_u.mutation.SetProcurementPolicy(v)
+	return _u
+}
+
+// ClearProcurementPolicy clears the value of the "procurement_policy" field.
+func (_u *GroupUpdateOne) ClearProcurementPolicy() *GroupUpdateOne {
+	_u.mutation.ClearProcurementPolicy()
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdateOne) AddAPIKeyIDs(ids ...int64) *GroupUpdateOne {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -3892,6 +3927,11 @@ func (_u *GroupUpdateOne) check() error {
 	if v, ok := _u.mutation.MaxReasoningEffortOverLimit(); ok {
 		if err := group.MaxReasoningEffortOverLimitValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort_over_limit", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort_over_limit": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ProcurementPolicy(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "procurement_policy", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_policy": %w`, err)}
 		}
 	}
 	return nil
@@ -4294,6 +4334,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AddedProfitSafetyBuffer(); ok {
 		_spec.AddField(group.FieldProfitSafetyBuffer, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.ProcurementPolicy(); ok {
+		_spec.SetField(group.FieldProcurementPolicy, field.TypeJSON, value)
+	}
+	if _u.mutation.ProcurementPolicyCleared() {
+		_spec.ClearField(group.FieldProcurementPolicy, field.TypeJSON)
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{

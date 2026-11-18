@@ -196,6 +196,7 @@ type AdminGroup struct {
 	ProfitControlEnabled bool                          `json:"profit_control_enabled"`
 	ProfitMinMargin      float64                       `json:"profit_min_margin"`
 	ProfitSafetyBuffer   float64                       `json:"profit_safety_buffer"`
+	ProcurementPolicy    *service.ProcurementPolicy    `json:"procurement_policy"`
 	ModelPricing         []service.ChannelModelPricing `json:"model_pricing"`
 
 	// 模型路由配置（仅 anthropic 平台使用）
