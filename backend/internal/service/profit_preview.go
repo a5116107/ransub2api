@@ -78,7 +78,7 @@ func ParseProfitPreviewRequestScope(raw []byte) (ProfitPreviewRequestScope, erro
 	allowed := map[string]bool{
 		"version": true, "protocol": true, "stream": true, "model": true,
 		"service_tier": true, "reasoning_effort": true, "capability": true,
-		"reasoning_summary": true, "include_encrypted_content": true,
+		"reasoning_summary": true, "include_encrypted_content": true, "text_verbosity": true,
 		"thinking_mode": true, "thinking_budget": true, "protocol_options": true,
 	}
 	if !valid || len(fields) == 0 || len(fields) > len(allowed) {
@@ -90,11 +90,16 @@ func ParseProfitPreviewRequestScope(raw []byte) (ProfitPreviewRequestScope, erro
 		}
 	}
 	if !decodeBillingApplicabilityFields(top.Get("scope"), &request.Scope,
-		"version", "protocol", "stream", "model", "service_tier", "reasoning_effort", "reasoning_summary", "include_encrypted_content", "capability", "thinking_mode", "thinking_budget", "protocol_options") {
+		"version", "protocol", "stream", "model", "service_tier", "reasoning_effort", "reasoning_summary", "include_encrypted_content", "text_verbosity", "capability", "thinking_mode", "thinking_budget", "protocol_options") {
 		return ProfitPreviewRequestScope{}, errors.New("invalid request_scope.scope")
 	}
 	if _, valid := availabilityResponsesReasoningSummary(fields["reasoning_summary"]); !valid {
 		return ProfitPreviewRequestScope{}, errors.New("invalid request_scope.scope reasoning_summary")
+	}
+	if verbosity, present := fields["text_verbosity"]; present {
+		if _, valid := availabilityOption(verbosity, "low", "medium", "high"); !valid {
+			return ProfitPreviewRequestScope{}, errors.New("invalid request_scope.scope text_verbosity")
+		}
 	}
 	if encrypted := fields["include_encrypted_content"]; encrypted.Exists() && encrypted.Type != gjson.True && encrypted.Type != gjson.False {
 		return ProfitPreviewRequestScope{}, errors.New("invalid request_scope.scope include_encrypted_content")

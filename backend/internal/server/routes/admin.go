@@ -1096,6 +1096,9 @@ func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	admin.PUT("/upstream-channel-bindings", h.Admin.Channel.BindUpstreamChannelAccounts)
 	admin.GET("/profit-operations/snapshot", h.Admin.Channel.ProfitOperations)
 	admin.GET("/upstream-operations/snapshot", h.Admin.Channel.UpstreamOperations)
+	admin.GET("/upstream-procurement/catalog", h.Admin.Channel.ProcurementCatalog)
+	admin.PUT("/upstream-procurement/catalog", h.Admin.Channel.ProcurementCatalog)
+	admin.POST("/upstream-procurement/preview", h.Admin.Channel.ProcurementClassificationPreview)
 	channels := admin.Group("/channels")
 	{
 		channels.GET("", h.Admin.Channel.List)

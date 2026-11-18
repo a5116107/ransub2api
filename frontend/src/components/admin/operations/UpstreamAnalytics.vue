@@ -3,6 +3,7 @@
     <div class="min-w-0 space-y-5">
       <header class="flex flex-wrap items-start justify-between gap-3"><div><h1 class="text-2xl font-semibold">{{ t('upstreamOps.title') }}</h1><p class="mt-2 text-sm text-gray-500">{{ t('upstreamOps.description') }}</p></div><button class="btn btn-secondary" data-testid="refresh-operations" :disabled="loading" @click="load">{{ t('upstreamOps.refresh') }}</button></header>
       <SmartOpsNav />
+      <ProcurementCatalogManager />
       <p class="rounded-xl bg-primary-50 p-4 text-sm leading-6 dark:bg-dark-800">{{ t('upstreamOps.attribution') }}</p>
       <form data-testid="upstream-filters" class="card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4" @submit.prevent="apply">
         <label>{{ t('upstreamOps.from') }}<input v-model="from" type="datetime-local" class="input w-full" required /></label>
@@ -139,6 +140,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import SmartOpsNav from './SmartOpsNav.vue'
+import ProcurementCatalogManager from './ProcurementCatalogManager.vue'
 import QualityRoundAssessment from './QualityRoundAssessment.vue'
 import UpstreamWaitMetrics from './UpstreamWaitMetrics.vue'
 import UpstreamOutputMetrics from './UpstreamOutputMetrics.vue'

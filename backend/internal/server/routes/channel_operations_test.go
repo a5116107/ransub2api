@@ -22,6 +22,7 @@ func TestChannelOperationsRoutesRequireExistingAdministratorAuthentication(t *te
 		{"GET", "/upstream-operations/snapshot"}, {"GET", "/channels/7/operations"}, {"POST", "/channels/7/operations"},
 		{"GET", "/channels/operations/snapshot"}, {"POST", "/channels"},
 		{"PUT", "/channels/7"}, {"DELETE", "/channels/7"},
+		{"GET", "/upstream-procurement/catalog"}, {"PUT", "/upstream-procurement/catalog"}, {"POST", "/upstream-procurement/preview"},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			w := httptest.NewRecorder()
@@ -39,7 +40,7 @@ func TestChannelOperationsRoutesDenyScopedObserverManagement(t *testing.T) {
 	})
 	group.Use((&admin.AccountHandler{}).AuthorizeObserver)
 	registerChannelRoutes(group, &handler.Handlers{Admin: &handler.AdminHandlers{Channel: admin.NewChannelHandler(nil, nil, nil)}})
-	for _, tc := range []struct{ method, path string }{{"GET", "/upstream-operations/snapshot"}, {"GET", "/channels/7/operations"}, {"POST", "/channels/7/operations"}, {"GET", "/channels/operations/snapshot"}} {
+	for _, tc := range []struct{ method, path string }{{"GET", "/upstream-operations/snapshot"}, {"GET", "/channels/7/operations"}, {"POST", "/channels/7/operations"}, {"GET", "/channels/operations/snapshot"}, {"GET", "/upstream-procurement/catalog"}, {"PUT", "/upstream-procurement/catalog"}, {"POST", "/upstream-procurement/preview"}} {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, httptest.NewRequest(tc.method, "/api/v1/admin"+tc.path, nil))
 		require.Equal(t, 403, w.Code)

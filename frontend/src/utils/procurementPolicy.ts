@@ -2,7 +2,7 @@ import type { GroupProcurementPolicy } from '@/types'
 
 const ratePattern = /^(0|[1-9]\d{0,7})(?:\.(\d{1,8}))?$/
 
-function decimalUnits(value: string | null): bigint | null {
+export function procurementDecimalUnits(value: string | null): bigint | null {
   if (value === null) return null
   if (typeof value !== 'string' || !ratePattern.test(value)) throw new Error('invalid rate')
   const [whole, fraction = ''] = value.split('.')
@@ -14,8 +14,8 @@ export function validateProcurementPolicy(policy: GroupProcurementPolicy | null)
   if (policy.version !== 1) return 'unsupported'
   if (!Number.isSafeInteger(policy.revision) || policy.revision < 0) return 'format'
   try {
-    const min = decimalUnits(policy.min_rate) ?? 0n
-    const max = decimalUnits(policy.max_rate)
+    const min = procurementDecimalUnits(policy.min_rate) ?? 0n
+    const max = procurementDecimalUnits(policy.max_rate)
     return max !== null && min >= max ? 'emptyRange' : null
   } catch {
     return 'format'
