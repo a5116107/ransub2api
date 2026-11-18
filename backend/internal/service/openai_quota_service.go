@@ -202,7 +202,7 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_CLIENT_ERROR", "failed to build upstream client: %v", err)
 	}
-	client, err = s.prepareQuotaClient(client, accountID)
+	client, err = s.prepareQuotaClient(ctx, client, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +219,7 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 	}
 
 	var payload OpenAIQuotaUsage
+	var recoveryUpdates map[string]any
 	for recovered := false; ; {
 		quotaHeaders, expectedTaskID, headerErr := s.buildCodexQuotaHeaders(callCtx, accountID, accessToken, chatGPTAccountID, fedRAMP)
 		if headerErr != nil {
@@ -230,6 +231,9 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 			SetHeaders(quotaHeaders).
 			SetSuccessResult(&payload).
 			Get(chatGPTUsageURL)
+		if local := monitoringProbeLocalError(callCtx); local != nil {
+			return nil, local
+		}
 		if err != nil {
 			if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
 				return nil, err
@@ -265,14 +269,9 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 			// a later response/header snapshot. Resets use response receipt time.
 			updates["codex_usage_updated_at"] = queryStartedAt.UTC().Format(time.RFC3339Nano)
 			payload.schedulingUpdates = updates
-			written, writeErr := persistCodexUsageUpdates(callCtx, s.accountRepo, accountID, updates)
-			payload.UsageCachePersisted = written && writeErr == nil
-			if writeErr != nil {
-				slog.Warn("openai_quota_usage_snapshot_failed", "account_id", accountID, "error_code", "snapshot_persistence_failed")
-			} else if written && !queriedAccount.IsShadow() {
-				// Recovery still requires the original complete-zero payload and
-				// observed generation; nonzero/partial data never clears a 429.
-				recoverOpenAIQuotaRateLimit(callCtx, s.accountRepo, observed, openAIQuotaRecoveryUsageUpdates(resp.Bytes(), time.Now()))
+			if !queriedAccount.IsShadow() {
+				// Freeze response receipt time before the optional detail request.
+				recoveryUpdates = openAIQuotaRecoveryUsageUpdates(resp.Bytes(), time.Now())
 			}
 		}
 		break
@@ -280,6 +279,21 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 
 	payload.FetchedAt = time.Now().Unix()
 	details := s.queryResetCreditDetails(callCtx, client, accessToken, chatGPTAccountID, fedRAMP, accountID)
+	if local := monitoringProbeLocalError(callCtx); local != nil {
+		return nil, local
+	}
+	// Finish the physical chain before refreshing quota or recovering a 429.
+	// A locally deferred detail request must not publish an earlier partial read.
+	if updates := payload.schedulingUpdates; len(updates) > 0 {
+		written, writeErr := persistCodexUsageUpdates(callCtx, s.accountRepo, accountID, updates)
+		payload.UsageCachePersisted = written && writeErr == nil
+		if writeErr != nil {
+			slog.Warn("openai_quota_usage_snapshot_failed", "account_id", accountID, "error_code", "snapshot_persistence_failed")
+		} else if written {
+			// Only the original complete-zero payload can clear an observed 429.
+			recoverOpenAIQuotaRateLimit(callCtx, s.accountRepo, observed, recoveryUpdates)
+		}
+	}
 	if details != nil {
 		payload.autoResetCandidates = details.AutoResetCandidates
 		hasDetailCount := details.AvailableCount != nil
@@ -451,7 +465,7 @@ func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, c
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_CLIENT_ERROR", "failed to build upstream client: %v", err)
 	}
-	client, err = s.prepareQuotaClient(client, accountID)
+	client, err = s.prepareQuotaClient(ctx, client, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -626,11 +640,11 @@ func (s *OpenAIQuotaService) isAgentIdentityAccount(ctx context.Context, account
 // prepareQuotaClient places the req/v3 privacy client behind the same shared
 // Key authority as HTTPUpstream. req/v3 exposes the final *http.Request only
 // at its Transport boundary, after headers and the AgentAssertion are built.
-func (s *OpenAIQuotaService) prepareQuotaClient(client *req.Client, accountID int64) (*req.Client, error) {
-	if !s.requireUpstreamKeyAdmission {
+func (s *OpenAIQuotaService) prepareQuotaClient(ctx context.Context, client *req.Client, accountID int64) (*req.Client, error) {
+	if !s.requireUpstreamKeyAdmission && !monitoringProbeActive(ctx) {
 		return client, nil
 	}
-	if client == nil || s.upstreamKeyAdmission == nil {
+	if client == nil || s.requireUpstreamKeyAdmission && s.upstreamKeyAdmission == nil {
 		return nil, ErrUpstreamKeyPolicy
 	}
 	pooled := client.GetClient()
@@ -642,7 +656,14 @@ func (s *OpenAIQuotaService) prepareQuotaClient(client *req.Client, accountID in
 	prepared := client.Clone()
 	prepared.SetRedirectPolicy(req.NoRedirectPolicy())
 	prepared.GetClient().Jar = pooled.Jar
+	transport := pooled.Transport
+	if monitoringProbeActive(ctx) {
+		transport = monitoringProbeTransport{base: transport}
+	}
 	prepared.GetClient().Transport = req.HttpRoundTripFunc(func(raw *http.Request) (*http.Response, error) {
+		if !s.requireUpstreamKeyAdmission {
+			return transport.RoundTrip(raw)
+		}
 		bound := raw
 		if hasOpenAIAgentAssertion(raw.Header) {
 			bound = bindOpenAIAgentPublicKey(raw, s.accountRepo, accountByID(s.accountRepo, raw.Context(), accountID))
@@ -660,7 +681,7 @@ func (s *OpenAIQuotaService) prepareQuotaClient(client *req.Client, accountID in
 			}
 			return nil, ErrUpstreamKeyPolicy
 		}
-		resp, roundTripErr := pooled.Transport.RoundTrip(bound)
+		resp, roundTripErr := transport.RoundTrip(bound)
 		finish(resp, roundTripErr)
 		if errors.Is(context.Cause(bound.Context()), ErrUpstreamKeyLease) {
 			if resp != nil && resp.Body != nil {

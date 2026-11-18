@@ -430,7 +430,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 				return nil, ctx.Err()
 			}
 
-			flightKey := fmt.Sprintf("usage:%d", accountID)
+			flightKey := monitoringProbeFlightKey(ctx, fmt.Sprintf("usage:%d", accountID))
 			result, flightErr, _ := s.cache.apiFlight.Do(flightKey, func() (any, error) {
 				// 再次检查缓存（可能在等待 singleflight 期间被其他请求填充）
 				if cached, ok := s.cache.apiCache.Load(accountID); ok {
@@ -445,6 +445,9 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 					}
 				}
 				resp, fetchErr := s.fetchOAuthUsageRaw(ctx, account)
+				if local := monitoringProbeLocalError(ctx); local != nil {
+					return nil, local
+				}
 				if fetchErr != nil {
 					// 负缓存：缓存错误响应，防止后续请求重复触发 429
 					s.cache.apiCache.Store(accountID, &apiUsageCache{
@@ -739,6 +742,10 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 				// but persists only its own bengalfox windows on the shadow row.
 				if s.openAIQuotaService != nil {
 					quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID)
+					if IsMonitoringProbeBudgetFailure(err) {
+						s.retryOpenAICodexSnapshotAfterLocalFailure(account.ID, reservation)
+						return nil, err
+					}
 					if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
 						s.retryOpenAICodexSnapshotAfterLocalFailure(account.ID, reservation)
 					}
@@ -757,6 +764,10 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 				}
 			} else {
 				updates, err := s.probeOpenAICodexSnapshot(ctx, account)
+				if IsMonitoringProbeBudgetFailure(err) {
+					s.retryOpenAICodexSnapshotAfterLocalFailure(account.ID, reservation)
+					return nil, err
+				}
 				if IsUpstreamKeyAdmissionFailure(err) || errors.Is(err, ErrUpstreamKeyLease) {
 					s.retryOpenAICodexSnapshotAfterLocalFailure(account.ID, reservation)
 				}
@@ -939,6 +950,13 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if monitoringProbeActive(ctx) {
+		// This quota refresh is a real generation request. Consume its returned
+		// usage and settle before header observations can recover the account.
+		if _, err := ReadMonitoringProbeResponse(ctx, resp, 8<<20); err != nil {
+			return nil, err
+		}
+	}
 	return s.persistOpenAICodexProbeResponse(account.ID, resp, observed)
 }
 
@@ -1108,7 +1126,7 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 	}
 
 	// 2. singleflight 防止并发击穿
-	flightKey := fmt.Sprintf("ag-usage:%d", account.ID)
+	flightKey := monitoringProbeFlightKey(ctx, fmt.Sprintf("ag-usage:%d", account.ID))
 	result, flightErr, _ := s.cache.antigravityFlight.Do(flightKey, func() (any, error) {
 		// 再次检查缓存（等待期间可能已被填充）
 		if usage, ok := s.cachedAntigravityUsage(account.ID, force); ok {
@@ -1116,11 +1134,17 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 		}
 
 		// 使用独立 context，避免调用方 cancel 导致所有共享 flight 的请求失败
-		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		fetchCtx, fetchCancel := context.WithTimeout(monitoringProbeSharedContext(ctx), 30*time.Second)
 		defer fetchCancel()
 
 		proxyURL := s.antigravityQuotaFetcher.GetProxyURL(fetchCtx, account)
 		fetchResult, err := s.antigravityQuotaFetcher.FetchQuota(fetchCtx, account, proxyURL)
+		if local := monitoringProbeLocalError(fetchCtx); local != nil {
+			return nil, local
+		}
+		if IsMonitoringProbeBudgetFailure(err) {
+			return nil, err
+		}
 		if err != nil {
 			degraded := buildAntigravityDegradedUsage(err)
 			enrichUsageWithAccountError(degraded, account)
@@ -1156,8 +1180,15 @@ func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account
 		return &UsageInfo{UpdatedAt: &now}, nil
 	}
 	var billingProbeResult *GrokQuotaProbeResult
-	if account != nil && account.IsGrokOAuth() && s.grokQuotaService != nil && (force || grokBillingSnapshotNeedsRefresh(account, time.Now())) && s.shouldProbeGrokBilling(account.ID, time.Now(), force) {
+	probeStarted := time.Now()
+	if account != nil && account.IsGrokOAuth() && s.grokQuotaService != nil && (force || grokBillingSnapshotNeedsRefresh(account, probeStarted)) && s.shouldProbeGrokBilling(account.ID, probeStarted, force) {
 		result, err := s.grokQuotaService.ProbeBilling(ctx, account.ID)
+		if IsMonitoringProbeBudgetFailure(err) {
+			if s.cache != nil && !force {
+				s.cache.grokProbeCache.CompareAndDelete(account.ID, probeStarted)
+			}
+			return nil, err
+		}
 		if err == nil && result != nil && result.Billing != nil {
 			billingProbeResult = result
 			mergeAccountExtra(account, map[string]any{grokBillingExtraKey: result.Billing})

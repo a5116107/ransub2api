@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -11,6 +12,24 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestUpstreamRawAuthorizationRequiresInternalAdapterCapability(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://example.test/quota", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "raw-quota-fixture")
+	require.Equal(t, []string{UnverifiedUpstreamCredential}, UpstreamCredentialFingerprints(req))
+	bound := req.WithContext(WithUpstreamRawAuthorization(context.Background()))
+	require.Equal(t, []string{UpstreamKeyFingerprint("raw-quota-fixture")}, UpstreamCredentialFingerprints(bound))
+	bound.Header.Set("Authorization", "final-overridden-fixture")
+	require.Equal(t, []string{UpstreamKeyFingerprint("final-overridden-fixture")}, UpstreamCredentialFingerprints(bound))
+	bound.Header.Set("Authorization", "Unknown scheme-value")
+	require.Equal(t, []string{UnverifiedUpstreamCredential}, UpstreamCredentialFingerprints(bound))
+	bound.Header.Set("Authorization", "two\tkeys")
+	require.Equal(t, []string{UnverifiedUpstreamCredential}, UpstreamCredentialFingerprints(bound))
+	bound.Header.Set("Authorization", "Bearer final-bearer-fixture")
+	require.Equal(t, []string{UpstreamKeyFingerprint("final-bearer-fixture")}, UpstreamCredentialFingerprints(bound))
+	require.Len(t, bound.Header, 1, "capability is never an outgoing header")
+}
 
 func TestUpstreamKeyConcurrencyValidation(t *testing.T) {
 	fingerprint := UpstreamKeyFingerprint("supplier-fixture")

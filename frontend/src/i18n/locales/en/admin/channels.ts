@@ -722,6 +722,7 @@ export default {
       runResultTitle: 'Check Result',
       runResultSkipped: 'Skipped',
       runResultSkippedHint: 'Local monitoring budget, shared upstream Key capacity or lease is unavailable; upstream status was not updated.',
+      runQuotaDeferred: 'Quota query deferred; model observation is retained independently',
       noMonitorsYet: 'No monitors yet',
       createFirstMonitor: 'Create your first monitor to track channel availability',
       advanced: {

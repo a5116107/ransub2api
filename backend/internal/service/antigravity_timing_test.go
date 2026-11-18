@@ -226,6 +226,7 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 			for _, ending := range endings {
 				t.Run(fmt.Sprintf("%s/stream=%v/%s", path, stream, ending), func(t *testing.T) {
 					passthrough := path == "upstream" || path == "legacy_upstream"
+					firstText := make(chan struct{}, 1)
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						_, _ = io.Copy(io.Discard, r.Body)
 						if ending == "http_error" {
@@ -250,6 +251,19 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 						} else {
 							send(`{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"private reasoning"}]}}]}}`)
 							send(`{"response":{"candidates":[{"content":{"parts":[{"text":"first"}]}}]}}`)
+						}
+						if stream && ending != "write_error" {
+							// Start the asserted gap only after the consumer observed
+							// the first text. Loopback writes alone do not prove that
+							// the parser was scheduled before the heartbeat.
+							select {
+							case <-firstText:
+							case <-r.Context().Done():
+								return
+							case <-time.After(5 * time.Second):
+								t.Error("first text did not reach the streaming consumer")
+								return
+							}
 						}
 						time.Sleep(25 * time.Millisecond)
 						_, _ = io.WriteString(w, ": heartbeat\n\n")
@@ -292,7 +306,7 @@ func TestAntigravityTimingPublicForward(t *testing.T) {
 					body := []byte(fmt.Sprintf(`{"model":"claude-sonnet-4-5","stream":%v,"max_tokens":256,"messages":[{"role":"user","content":"fixture-prompt"}]}`, stream))
 					c, _ := newAntigravityCompatContext(http.MethodPost, "/fixture", body)
 					c.Request = c.Request.WithContext(ctx)
-					c.Writer = &geminiTimingWriter{ResponseWriter: c.Writer, collector: collector, fail: ending == "write_error"}
+					c.Writer = &geminiTimingWriter{ResponseWriter: c.Writer, collector: collector, fail: ending == "write_error", firstText: firstText}
 					var result *ForwardResult
 					switch path {
 					case "gemini":

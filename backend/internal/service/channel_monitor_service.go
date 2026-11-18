@@ -113,6 +113,9 @@ func (s *ChannelMonitorService) SetUpstreamKeyAuthority(cfg *config.Config, upst
 func (s *ChannelMonitorService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
 	if s != nil {
 		s.monitoringBudget = budget
+		if s.quotaFetcher != nil {
+			s.quotaFetcher.monitoringBudget = budget
+		}
 	}
 }
 
@@ -644,7 +647,12 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 		results = s.runQuotaOnlyCheck(ctx, m)
 	case MonitorCheckModeQuotaProbe:
 		results = s.runChecksConcurrent(ctx, m)
-		attachQuotaSnapshot(results, s.fetchQuotaSnapshot(ctx, m))
+		snapshot, quotaErr := s.fetchQuotaSnapshot(ctx, m)
+		if deferral := monitoringProbeDeferral(quotaErr, time.Now()); deferral != nil && len(results) > 0 {
+			results[0].QuotaBudgetDeferral = deferral
+		} else {
+			attachQuotaSnapshot(results, snapshot)
+		}
 	default:
 		results = s.runChecksConcurrent(ctx, m)
 	}
@@ -655,20 +663,23 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 // runQuotaOnlyCheck quota 模式：一次配额抓取 → 单条 CheckResult
 // （Model=PrimaryModel，默认 "quota"；无 ping/latency，状态由快照推导）。
 func (s *ChannelMonitorService) runQuotaOnlyCheck(ctx context.Context, m *ChannelMonitor) []*CheckResult {
-	snapshot := s.fetchQuotaSnapshot(ctx, m)
+	snapshot, err := s.fetchQuotaSnapshot(ctx, m)
 	res := deriveQuotaCheckResult(snapshot, m.PrimaryModel, time.Now())
+	if deferral := monitoringProbeDeferral(err, time.Now()); deferral != nil {
+		res.Skipped, res.Message, res.BudgetDeferral = true, "monitoring_budget_deferred", deferral
+	}
 	res.Quota = snapshot
 	return []*CheckResult{res}
 }
 
-// fetchQuotaSnapshot 抓取关联账号配额。未关联账号 / fetcher 未注入时返回
-// 显式错误快照（不返回 error，保证检测周期与历史时间线连续）。
-func (s *ChannelMonitorService) fetchQuotaSnapshot(ctx context.Context, m *ChannelMonitor) *domain.MonitorQuotaSnapshot {
+// fetchQuotaSnapshot keeps supplier/config errors as snapshots and local
+// monitoring deferrals as typed errors without inventing a new observation.
+func (s *ChannelMonitorService) fetchQuotaSnapshot(ctx context.Context, m *ChannelMonitor) (*domain.MonitorQuotaSnapshot, error) {
 	if m.AccountID == nil {
-		return quotaErrorSnapshot("usage", "linked account not found", time.Now())
+		return quotaErrorSnapshot("usage", "linked account not found", time.Now()), nil
 	}
 	if s.quotaFetcher == nil {
-		return quotaErrorSnapshot("usage", "quota fetcher is not configured", time.Now())
+		return quotaErrorSnapshot("usage", "quota fetcher is not configured", time.Now()), nil
 	}
 	return s.quotaFetcher.Fetch(ctx, *m.AccountID)
 }
@@ -766,6 +777,9 @@ func (s *ChannelMonitorService) SetQuotaFetcher(fetcher *ChannelMonitorQuotaFetc
 		return
 	}
 	s.quotaFetcher = fetcher
+	if fetcher != nil {
+		fetcher.monitoringBudget = s.monitoringBudget
+	}
 }
 
 // ListEnabledMonitors 返回所有 enabled=true 的监控（解密后），供 runner 启动时建立任务表。

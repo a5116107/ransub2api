@@ -38,7 +38,7 @@ func doAdmittedOpenAIClientRequest(client *http.Client, req *http.Request, requi
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		client = &copy
 	}
-	resp, err := client.Do(req)
+	resp, err := MonitoringProbeHTTPClient(req.Context(), client).Do(req)
 	if finish != nil {
 		finish(resp, err)
 	}

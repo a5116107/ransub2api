@@ -180,6 +180,81 @@ func monitoringProbeLocalError(ctx context.Context) error {
 	return probe.local.err
 }
 
+func recordMonitoringProbeLocalError(ctx context.Context, err error) {
+	probe, _ := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	probe.local.record(err)
+}
+
+// Detached provider flights retain only internal probe policy, not a waiter's
+// lifetime or unrelated request metadata.
+func monitoringProbeSharedContext(ctx context.Context) context.Context {
+	shared := context.Background()
+	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok {
+		shared = context.WithValue(WithHTTPUpstreamRedirectsDisabled(shared), monitoringProbeBudgetKey{}, probe)
+	}
+	return shared
+}
+
+// A monitored request must not join an unmetered manual/admin flight.
+func monitoringProbeFlightKey(ctx context.Context, key string) string {
+	if _, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok {
+		return key + ":monitoring"
+	}
+	return key
+}
+
+// ReadMonitoringProbeResponse settles before publishing quota observations.
+// Deferred Close could
+// otherwise report success before a lease or settlement failure is known.
+func ReadMonitoringProbeResponse(ctx context.Context, response *http.Response, limit int64) ([]byte, error) {
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, limit))
+	closeErr := response.Body.Close()
+	if err := monitoringProbeLocalError(ctx); err != nil {
+		return nil, err
+	}
+	return body, errors.Join(readErr, closeErr)
+}
+
+func monitoringProbeActive(ctx context.Context) bool {
+	_, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	return ok
+}
+
+type monitoringProbeTransport struct{ base http.RoundTripper }
+
+func (t monitoringProbeTransport) RoundTrip(original *http.Request) (*http.Response, error) {
+	req, finish, err := BeginMonitoringProbeRequest(original)
+	if err != nil {
+		if original.Body != nil {
+			_ = original.Body.Close()
+		}
+		return nil, err
+	}
+	response, err := t.base.RoundTrip(req)
+	err = FinishMonitoringProbeResponse(req.Context(), response, err, finish)
+	if local := monitoringProbeLocalError(req.Context()); local != nil && err != nil {
+		err = local
+	}
+	return response, err
+}
+
+// MonitoringProbeHTTPClient instruments independent provider clients without
+// mutating their shared pool, DNS/TLS/proxy policy, or ordinary admin callers.
+// HTTPUpstream already meters its transport and must not be wrapped again.
+func MonitoringProbeHTTPClient(ctx context.Context, client *http.Client) *http.Client {
+	if !monitoringProbeActive(ctx) || client == nil {
+		return client
+	}
+	copy := *client
+	base := copy.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	copy.Transport = monitoringProbeTransport{base: base}
+	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &copy
+}
+
 // Apply only to internally owned probes. Business requests never opt into this
 // context through headers, JSON parameters, or downstream credentials.
 func (s *MonitoringProbeBudgetService) Context(ctx context.Context, site string, recovery bool) context.Context {
@@ -298,6 +373,9 @@ func beginMonitoringProbeRequest(parent context.Context, target *url.URL, keys [
 	defer func() { probe.local.record(resultErr) }()
 	if probe.service == nil || probe.service.repo == nil {
 		return parent, nil, ErrMonitoringProbeBudgetUnavailable
+	}
+	if local := monitoringProbeLocalError(parent); local != nil {
+		return parent, nil, local
 	}
 	if err := context.Cause(parent); err != nil {
 		return parent, nil, err

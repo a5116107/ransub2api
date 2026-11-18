@@ -205,6 +205,15 @@ func sigV4AccessKeyID(value string) string {
 	return parts[0]
 }
 
+type upstreamRawAuthorizationContextKey struct{}
+
+// WithUpstreamRawAuthorization marks adapters whose documented authentication
+// is an unprefixed Authorization key (for example Zhipu quota GET). It is an
+// internal request capability, never inferred from arbitrary wire headers.
+func WithUpstreamRawAuthorization(ctx context.Context) context.Context {
+	return context.WithValue(ctx, upstreamRawAuthorizationContextKey{}, true)
+}
+
 // UpstreamCredentialFingerprints identifies final wire credentials without
 // retaining plaintext. HTTP and pooled WS use the same extraction rules.
 func UpstreamCredentialFingerprints(req *http.Request) []string {
@@ -274,6 +283,8 @@ func UpstreamCredentialFingerprints(req *http.Request) []string {
 						// Add uses the same hashing and de-duplication path as other
 						// credentials, with a distinct AWS identity namespace.
 						addFingerprint(UpstreamAWSAccessKeyFingerprint(keyID))
+					} else if raw, _ := req.Context().Value(upstreamRawAuthorizationContextKey{}).(bool); raw && !ok && strings.IndexFunc(strings.TrimSpace(value), unicode.IsSpace) < 0 {
+						add(value)
 					} else {
 						addFingerprint(UnverifiedUpstreamCredential)
 					}

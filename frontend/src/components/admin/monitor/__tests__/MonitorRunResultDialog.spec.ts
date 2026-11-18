@@ -58,6 +58,27 @@ describe('MonitorRunResultDialog', () => {
     expect(wrapper.find('time').exists()).toBe(false)
   })
 
+  it('shows a quota-only deferral without discarding the observed model', () => {
+    const wrapper = render([result({
+      status: 'operational', latency_ms: 42,
+      quota_budget_deferral: { reason: 'request_limit', scope: 'global_day', retry_at: '2026-11-19T00:00:00Z' },
+    })])
+    expect(wrapper.text()).toContain('monitorCommon.status.operational')
+    expect(wrapper.text()).toContain('42 ms')
+    expect(wrapper.text()).toContain('admin.channelMonitor.runQuotaDeferred')
+    expect(wrapper.text()).toContain('admin.settings.upstreamBillingProbe.budget.request_limit')
+    expect(wrapper.text()).not.toContain('admin.channelMonitor.runResultSkippedHint')
+  })
+
+  it('does not combine a quota snapshot with a contradictory deferral', () => {
+    const wrapper = render([result({
+      status: 'operational',
+      quota: { source: 'usage', success: true, fetched_at: '2026-11-18T00:00:00Z' },
+      quota_budget_deferral: { reason: 'request_limit', scope: 'global_day', retry_at: '2026-11-19T00:00:00Z' },
+    })])
+    expect(wrapper.text()).not.toContain('admin.channelMonitor.runQuotaDeferred')
+  })
+
   it('does not attribute an observed supplier error to an untrusted budget field', () => {
     const wrapper = render([result({
       status: 'error', message: 'upstream HTTP 503', latency_ms: 12,

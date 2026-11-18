@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -100,9 +99,9 @@ func (s *CNProviderBalanceService) QueryBalanceForAccount(ctx context.Context, a
 	if err := validatePayGAccount(account); err != nil {
 		return nil, err
 	}
-	key := "cn_balance:" + strconv.FormatInt(account.ID, 10)
+	key := monitoringProbeFlightKey(ctx, "cn_balance:"+strconv.FormatInt(account.ID, 10))
 	resultCh := s.flight.DoChan(key, func() (any, error) {
-		probeCtx, cancel := context.WithTimeout(context.Background(), cnBalanceUpstreamTimeout+5*time.Second)
+		probeCtx, cancel := context.WithTimeout(monitoringProbeSharedContext(ctx), cnBalanceUpstreamTimeout+5*time.Second)
 		defer cancel()
 		return s.queryBalanceForAccount(probeCtx, account)
 	})
@@ -163,10 +162,15 @@ func (s *CNProviderBalanceService) queryBalanceForAccount(ctx context.Context, a
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxInt(account.Concurrency, 1))
 	if err != nil {
+		if local := monitoringProbeLocalError(callCtx); local != nil {
+			return nil, local
+		}
 		return nil, infraerrors.Newf(http.StatusBadGateway, "CN_BALANCE_REQUEST_FAILED", "upstream request failed: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, cnBalanceMaxBodyBytes))
+	bodyBytes, err := ReadMonitoringProbeResponse(callCtx, resp, cnBalanceMaxBodyBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	result := &CNProviderBalanceResult{

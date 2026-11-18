@@ -166,3 +166,122 @@ func TestChannelMonitorBudgetHTTPPostgresActualUsageAndRecovery(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs").Scan(&downstreamUsage))
 	require.Zero(t, downstreamUsage, "monitoring accounting must not create downstream business charges")
 }
+
+func TestChannelMonitorQuotaBudgetHTTPPostgresRestartAndRecovery(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	settings := repository.NewSettingRepository(client)
+	require.NoError(t, settings.SetMultiple(ctx, map[string]string{
+		service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1",
+	}))
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		require.Equal(t, http.MethodGet, req.Method)
+		require.Equal(t, "/tenant/user/balance", req.URL.Path)
+		require.Equal(t, "Bearer quota-final-fixture", req.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"10"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+		AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	accounts := repository.NewAccountRepository(client, db, nil)
+	monitors := repository.NewChannelMonitorRepository(client, db)
+	create := func(name string) (*service.Account, *service.ChannelMonitor) {
+		a := &service.Account{Name: name, Platform: service.PlatformDeepseek, Type: service.AccountTypeAPIKey,
+			Status: service.StatusActive, Concurrency: 2, Schedulable: true,
+			Credentials: map[string]any{"api_key": "quota-final-fixture", "base_url": upstream.URL + "/tenant",
+				"account_mode": service.AccountModePayG}}
+		require.NoError(t, accounts.Create(ctx, a))
+		m := &service.ChannelMonitor{Name: name, Provider: service.MonitorProviderDeepseek,
+			Endpoint: upstream.URL, APIKey: "unused-quota-monitor-fixture",
+			CheckMode: service.MonitorCheckModeQuota, AccountID: &a.ID, PrimaryModel: "quota", Enabled: true, IntervalSeconds: 60}
+		require.NoError(t, monitors.Create(ctx, m))
+		return a, m
+	}
+	firstAccount, first := create("quota-budget-first")
+	aliasAccount, alias := create("quota-budget-alias")
+	accountRow := func(id int64) string {
+		var raw string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&raw))
+		return raw
+	}
+	aliasBefore := accountRow(aliasAccount.ID)
+	firstBefore := accountRow(firstAccount.ID)
+	budget := repository.NewMonitoringProbeBudgetRepository(db)
+	policy := service.DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.RecoveryReservePercent, policy.KeyRequestsPerMinute = true, 0, 1
+	policy, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	type quotaResult struct {
+		Status         string                               `json:"status"`
+		Skipped        bool                                 `json:"skipped"`
+		Quota          json.RawMessage                      `json:"quota"`
+		BudgetDeferral *service.MonitoringProbeBudgetDenial `json:"budget_deferral"`
+	}
+	run := func(id int64) quotaResult {
+		t.Helper()
+		// Recreate every adapter and budget reader. SQL, not a process counter,
+		// must coordinate aliases of the same actual outgoing Key.
+		accountRepo := repository.NewAccountRepository(client, db, nil)
+		httpUpstream := repository.NewHTTPUpstream(cfg)
+		svc := service.ProvideChannelMonitorService(repository.NewChannelMonitorRepository(client, db), v1BudgetMonitorEncryptor{},
+			service.NewSettingService(settings, nil), cfg, nil, repository.NewMonitoringProbeBudgetRepository(db))
+		svc.SetQuotaFetcher(service.NewChannelMonitorQuotaFetcher(nil, nil,
+			service.NewCNProviderBalanceService(accountRepo, nil, httpUpstream, cfg), accountRepo, cfg))
+		router := gin.New()
+		router.POST("/monitors/:id/run", admin.NewChannelMonitorHandler(svc).Run)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, fmt.Sprintf("/monitors/%d/run", id), nil))
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		require.NotContains(t, recorder.Body.String(), "quota-final-fixture")
+		var envelope struct {
+			Data struct {
+				Results []quotaResult `json:"results"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &envelope))
+		require.Len(t, envelope.Data.Results, 1)
+		return envelope.Data.Results[0]
+	}
+	result := run(first.ID)
+	require.False(t, result.Skipped)
+	require.Equal(t, service.MonitorStatusOperational, result.Status)
+	require.Contains(t, string(result.Quota), `"balance":10`)
+	require.NotEqual(t, firstBefore, accountRow(firstAccount.ID))
+	result = run(alias.ID)
+	require.True(t, result.Skipped)
+	require.NotNil(t, result.BudgetDeferral)
+	require.Equal(t, "request_limit", result.BudgetDeferral.Reason)
+	require.Equal(t, "key_minute", result.BudgetDeferral.Scope)
+	require.Empty(t, result.Quota)
+	require.Equal(t, aliasBefore, accountRow(aliasAccount.ID), "local budget denial must not write supplier quota state")
+	after, err := monitors.GetByID(ctx, alias.ID)
+	require.NoError(t, err)
+	require.Nil(t, after.LastCheckedAt)
+	history, err := monitors.ListHistory(ctx, alias.ID, "quota", 20)
+	require.NoError(t, err)
+	require.Empty(t, history)
+	require.EqualValues(t, 1, calls.Load())
+	policy.KeyRequestsPerMinute = 3
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	result = run(alias.ID)
+	require.False(t, result.Skipped)
+	require.Equal(t, service.MonitorStatusOperational, result.Status)
+	require.EqualValues(t, 2, calls.Load())
+	history, err = monitors.ListHistory(ctx, alias.ID, "quota", 20)
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	summary, err := repository.NewMonitoringProbeBudgetRepository(db).Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, summary.DayUsed)
+	require.Zero(t, summary.DayTokens)
+	require.Zero(t, summary.UsageUnknown)
+	require.Zero(t, summary.UsagePending)
+	require.Zero(t, summary.ActiveRequests)
+	var downstreamUsage int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&downstreamUsage))
+	require.Zero(t, downstreamUsage)
+}

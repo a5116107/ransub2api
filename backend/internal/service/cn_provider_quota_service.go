@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -111,9 +110,9 @@ func (s *CNProviderQuotaService) QueryUsageForAccount(ctx context.Context, accou
 	if err := validateCodingPlanAccount(account); err != nil {
 		return nil, err
 	}
-	key := "cn_quota:" + strconv.FormatInt(account.ID, 10)
+	key := monitoringProbeFlightKey(ctx, "cn_quota:"+strconv.FormatInt(account.ID, 10))
 	resultCh := s.flight.DoChan(key, func() (any, error) {
-		probeCtx, cancel := context.WithTimeout(context.Background(), cnQuotaUpstreamTimeout+5*time.Second)
+		probeCtx, cancel := context.WithTimeout(monitoringProbeSharedContext(ctx), cnQuotaUpstreamTimeout+5*time.Second)
 		defer cancel()
 		return s.queryUsageForAccount(probeCtx, account)
 	})
@@ -197,6 +196,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "CN_QUOTA_REQUEST_BUILD_FAILED", "build request: %v", err)
 	}
 	req.Header.Set("Authorization", authHeader)
+	if provider == PlatformZhipu {
+		req = req.WithContext(config.WithUpstreamRawAuthorization(req.Context()))
+	}
 	req.Header.Set("Accept", "application/json")
 	if provider == PlatformZhipu || provider == PlatformMiniMax {
 		req.Header.Set("Content-Type", "application/json")
@@ -213,10 +215,15 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxInt(account.Concurrency, 1))
 	if err != nil {
+		if local := monitoringProbeLocalError(callCtx); local != nil {
+			return nil, local
+		}
 		return nil, infraerrors.Newf(http.StatusBadGateway, "CN_QUOTA_REQUEST_FAILED", "upstream request failed: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, cnQuotaMaxBodyBytes))
+	bodyBytes, err := ReadMonitoringProbeResponse(callCtx, resp, cnQuotaMaxBodyBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	result := &CNProviderQuotaProbeResult{

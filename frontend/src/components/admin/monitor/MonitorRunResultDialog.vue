@@ -22,6 +22,12 @@
             class="mt-2"
           />
           <MonitorQuotaView :snapshot="r.quota" class="mt-1" />
+          <MonitoringProbeBudgetNotice
+            v-if="r.quota_budget_deferral && !r.quota"
+            :deferral="r.quota_budget_deferral"
+            :title="t('admin.channelMonitor.runQuotaDeferred')"
+            class="mt-2"
+          />
         </div>
         <div class="flex items-center gap-2">
           <span

@@ -135,13 +135,15 @@ type ChannelMonitorUpdateParams struct {
 // CheckResult 单个模型一次检测的结果。
 type CheckResult struct {
 	BudgetDeferral *MonitoringProbeBudgetDenial
-	Model          string
-	Status         string // operational / degraded / failed / error
-	Skipped        bool
-	LatencyMs      *int
-	PingLatencyMs  *int
-	Message        string
-	CheckedAt      time.Time
+	// A quota-only deferral does not invalidate an independently observed model.
+	QuotaBudgetDeferral *MonitoringProbeBudgetDenial
+	Model               string
+	Status              string // operational / degraded / failed / error
+	Skipped             bool
+	LatencyMs           *int
+	PingLatencyMs       *int
+	Message             string
+	CheckedAt           time.Time
 	// Quota 配额模式附带快照（quota 模式唯一数据；quota_probe 挂在主模型行）。
 	Quota *domain.MonitorQuotaSnapshot
 }

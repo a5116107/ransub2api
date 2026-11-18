@@ -291,6 +291,9 @@ func (s *GrokQuotaService) probeBilling(ctx context.Context, accountID int64) (*
 		monthly.summary, monthly.status, monthly.err = s.fetchBilling(probeCtx, account, token, proxyURL, false)
 	}()
 	wg.Wait()
+	if local := monitoringProbeLocalError(ctx); local != nil {
+		return nil, local
+	}
 
 	weeklyOK := weekly.summary != nil
 	monthlyOK := monthly.summary != nil
@@ -352,8 +355,8 @@ func (s *GrokQuotaService) runProbeFlight(
 	if s == nil {
 		return nil, infraerrors.New(http.StatusInternalServerError, "GROK_QUOTA_NOT_CONFIGURED", "grok quota service is not configured")
 	}
-	resultCh := s.probeFlight.DoChan(key, func() (any, error) {
-		sharedCtx, cancel := context.WithTimeout(context.Background(), grokQuotaUpstreamTimeout+5*time.Second)
+	resultCh := s.probeFlight.DoChan(monitoringProbeFlightKey(ctx, key), func() (any, error) {
+		sharedCtx, cancel := context.WithTimeout(monitoringProbeSharedContext(ctx), grokQuotaUpstreamTimeout+5*time.Second)
 		defer cancel()
 		return probe(sharedCtx)
 	})
@@ -398,8 +401,10 @@ func (s *GrokQuotaService) fetchBilling(
 		var bodyBytes []byte
 		if requestErr == nil {
 			statusCode = resp.StatusCode
-			bodyBytes, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			_ = resp.Body.Close()
+			bodyBytes, requestErr = ReadMonitoringProbeResponse(ctx, resp, 1<<20)
+		}
+		if local := monitoringProbeLocalError(ctx); local != nil {
+			return nil, statusCode, local
 		}
 
 		shouldRetry := requestErr != nil || isRetryableGrokBillingStatus(statusCode)

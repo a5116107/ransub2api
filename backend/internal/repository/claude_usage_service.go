@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -86,21 +85,23 @@ func (s *claudeUsageService) FetchUsageWithOptions(ctx context.Context, opts *se
 			return nil, fmt.Errorf("create http client failed: %w", err)
 		}
 
-		resp, err = client.Do(req)
+		resp, err = service.MonitoringProbeHTTPClient(ctx, client).Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("request failed: %w", err)
 		}
 	}
-	defer func() { _ = resp.Body.Close() }()
+	body, err := service.ReadMonitoringProbeResponse(ctx, resp, 1<<20)
+	if err != nil {
+		return nil, err
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		msg := fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(body))
 		return nil, infraerrors.New(http.StatusInternalServerError, "UPSTREAM_ERROR", msg)
 	}
 
 	var usageResp service.ClaudeUsageResponse
-	if err := json.NewDecoder(resp.Body).Decode(&usageResp); err != nil {
+	if err := json.Unmarshal(body, &usageResp); err != nil {
 		return nil, fmt.Errorf("decode response failed: %w", err)
 	}
 

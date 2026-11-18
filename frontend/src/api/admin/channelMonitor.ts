@@ -165,6 +165,8 @@ export interface CheckResult {
   /** 本地准入失败，未记录供应商状态。 */
   skipped?: boolean
   budget_deferral?: MonitoringProbeBudgetDeferral
+  /** Quota query was deferred; an independently observed model keeps its result. */
+  quota_budget_deferral?: MonitoringProbeBudgetDeferral
   latency_ms: number | null
   ping_latency_ms: number | null
   message: string

@@ -28,6 +28,7 @@ type geminiTimingWriter struct {
 	fail      bool
 	failOn    string
 	cancel    context.CancelFunc
+	firstText chan<- struct{}
 }
 
 func (w *geminiTimingWriter) Write(p []byte) (int, error) {
@@ -38,6 +39,12 @@ func (w *geminiTimingWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.ResponseWriter.Write(p)
 	w.collector.Written(start, n, err, false)
+	if n > 0 && w.firstText != nil && strings.Contains(string(p[:n]), `"first"`) {
+		select {
+		case w.firstText <- struct{}{}:
+		default:
+		}
+	}
 	if w.cancel != nil && strings.Contains(string(p), "last") {
 		w.cancel()
 	}

@@ -277,6 +277,12 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// ConfigureHTTPClient retains provider construction/proxy defaults while an
+// owning service adds request policy. The callback must return a non-nil client.
+func (c *Client) ConfigureHTTPClient(configure func(*http.Client) *http.Client) {
+	c.httpClient = configure(c.httpClient)
+}
+
 const (
 	// proxyDialTimeout 代理 TCP 连接超时（含代理握手），代理不通时快速失败
 	proxyDialTimeout = 5 * time.Second
@@ -782,7 +788,9 @@ func (c *Client) fetchAvailableModels(ctx context.Context, availableURLs []strin
 
 func (c *Client) fetchAvailableModelsHTTPClient() *http.Client {
 	fetchClient := *c.httpClient
-	fetchClient.CheckRedirect = checkFetchAvailableModelsRedirect
+	if fetchClient.CheckRedirect == nil {
+		fetchClient.CheckRedirect = checkFetchAvailableModelsRedirect
+	}
 	return &fetchClient
 }
 

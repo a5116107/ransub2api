@@ -121,15 +121,16 @@ type channelMonitorResponse struct {
 }
 
 type channelMonitorCheckResultResponse struct {
-	BudgetDeferral *service.MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
-	Model          string                               `json:"model"`
-	Status         string                               `json:"status"`
-	Skipped        bool                                 `json:"skipped,omitempty"`
-	LatencyMs      *int                                 `json:"latency_ms"`
-	PingLatencyMs  *int                                 `json:"ping_latency_ms"`
-	Message        string                               `json:"message"`
-	CheckedAt      string                               `json:"checked_at"`
-	Quota          *domain.MonitorQuotaSnapshot         `json:"quota,omitempty"`
+	BudgetDeferral      *service.MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	QuotaBudgetDeferral *service.MonitoringProbeBudgetDenial `json:"quota_budget_deferral,omitempty"`
+	Model               string                               `json:"model"`
+	Status              string                               `json:"status"`
+	Skipped             bool                                 `json:"skipped,omitempty"`
+	LatencyMs           *int                                 `json:"latency_ms"`
+	PingLatencyMs       *int                                 `json:"ping_latency_ms"`
+	Message             string                               `json:"message"`
+	CheckedAt           string                               `json:"checked_at"`
+	Quota               *domain.MonitorQuotaSnapshot         `json:"quota,omitempty"`
 }
 
 type channelMonitorHistoryItemResponse struct {
@@ -198,15 +199,16 @@ func channelMonitorToResponse(m *service.ChannelMonitor) *channelMonitorResponse
 
 func checkResultToResponse(r *service.CheckResult) channelMonitorCheckResultResponse {
 	return channelMonitorCheckResultResponse{
-		BudgetDeferral: r.BudgetDeferral,
-		Model:          r.Model,
-		Status:         r.Status,
-		Skipped:        r.Skipped,
-		LatencyMs:      r.LatencyMs,
-		PingLatencyMs:  r.PingLatencyMs,
-		Message:        r.Message,
-		CheckedAt:      r.CheckedAt.UTC().Format(time.RFC3339),
-		Quota:          r.Quota,
+		BudgetDeferral:      r.BudgetDeferral,
+		QuotaBudgetDeferral: r.QuotaBudgetDeferral,
+		Model:               r.Model,
+		Status:              r.Status,
+		Skipped:             r.Skipped,
+		LatencyMs:           r.LatencyMs,
+		PingLatencyMs:       r.PingLatencyMs,
+		Message:             r.Message,
+		CheckedAt:           r.CheckedAt.UTC().Format(time.RFC3339),
+		Quota:               r.Quota,
 	}
 }
 

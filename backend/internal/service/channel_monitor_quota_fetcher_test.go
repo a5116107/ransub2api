@@ -122,7 +122,8 @@ func TestQuotaFetcher_OverseasAccountUsesUsageService(t *testing.T) {
 		SubscriptionTier: "PRO",
 	}
 
-	snapshot := fetcher.Fetch(context.Background(), 7)
+	snapshot, err := fetcher.Fetch(context.Background(), 7)
+	require.NoError(t, err)
 
 	require.True(t, snapshot.Success)
 	require.Equal(t, "usage", snapshot.Source)
@@ -161,7 +162,8 @@ func TestQuotaFetcher_CodingPlanAccountUsesCNQuota(t *testing.T) {
 		},
 	}
 
-	snapshot := fetcher.Fetch(context.Background(), 9)
+	snapshot, err := fetcher.Fetch(context.Background(), 9)
+	require.NoError(t, err)
 
 	require.True(t, snapshot.Success)
 	require.Equal(t, "cn_quota", snapshot.Source)
@@ -188,7 +190,8 @@ func TestQuotaFetcher_MiniMaxCodingPlanUsesCNQuota(t *testing.T) {
 		},
 	}
 
-	snapshot := fetcher.Fetch(context.Background(), 19)
+	snapshot, err := fetcher.Fetch(context.Background(), 19)
+	require.NoError(t, err)
 
 	require.True(t, snapshot.Success)
 	require.Equal(t, "cn_quota", snapshot.Source)
@@ -215,7 +218,8 @@ func TestQuotaFetcher_PayGAccountUsesCNBalance(t *testing.T) {
 		},
 	}
 
-	snapshot := fetcher.Fetch(context.Background(), 11)
+	snapshot, err := fetcher.Fetch(context.Background(), 11)
+	require.NoError(t, err)
 
 	require.True(t, snapshot.Success)
 	require.Equal(t, "cn_balance", snapshot.Source)
@@ -277,7 +281,8 @@ func TestQuotaFetcher_AccountMissingYieldsLinkedAccountSnapshot(t *testing.T) {
 	fetcher, usage, _, _, accounts := newQuotaFetcherTestSetup(t)
 	accounts.err = errors.New("not found")
 
-	snapshot := fetcher.Fetch(context.Background(), 404)
+	snapshot, err := fetcher.Fetch(context.Background(), 404)
+	require.NoError(t, err)
 
 	require.False(t, snapshot.Success)
 	require.Equal(t, "linked account not found", snapshot.Error)
@@ -289,7 +294,8 @@ func TestQuotaFetcher_UsageAuthErrorMarksCredentialInvalid(t *testing.T) {
 	accounts.accounts[3] = &Account{ID: 3, Platform: domain.PlatformOpenAI}
 	usage.err = errors.New("API returned 401: unauthorized")
 
-	snapshot := fetcher.Fetch(context.Background(), 3)
+	snapshot, err := fetcher.Fetch(context.Background(), 3)
+	require.NoError(t, err)
 
 	require.False(t, snapshot.Success)
 	require.True(t, snapshot.CredentialInvalid)
@@ -304,7 +310,8 @@ func TestQuotaFetcher_UsageValueChannelFailureYieldsFailureSnapshot(t *testing.T
 	// 凭据失效（401 语义）→ failed。
 	accounts.accounts[3] = &Account{ID: 3, Platform: domain.PlatformAnthropic}
 	usage.usage = &UsageInfo{Error: "usage API error: HTTP 401", ErrorCode: errorCodeUnauthenticated, NeedsReauth: true}
-	snapshot := fetcher.Fetch(context.Background(), 3)
+	snapshot, err := fetcher.Fetch(context.Background(), 3)
+	require.NoError(t, err)
 	require.False(t, snapshot.Success)
 	require.True(t, snapshot.CredentialInvalid)
 	require.Contains(t, snapshot.Error, "401")
@@ -313,7 +320,8 @@ func TestQuotaFetcher_UsageValueChannelFailureYieldsFailureSnapshot(t *testing.T
 	// 限流等非凭据失败 → error（而非 operational）。
 	accounts.accounts[13] = &Account{ID: 13, Platform: domain.PlatformAnthropic}
 	usage.usage = &UsageInfo{Error: "usage API error: HTTP 429", ErrorCode: errorCodeRateLimited}
-	snapshot = fetcher.Fetch(context.Background(), 13)
+	snapshot, err = fetcher.Fetch(context.Background(), 13)
+	require.NoError(t, err)
 	require.False(t, snapshot.Success)
 	require.False(t, snapshot.CredentialInvalid)
 	require.Contains(t, snapshot.Error, "429")
@@ -322,7 +330,8 @@ func TestQuotaFetcher_UsageValueChannelFailureYieldsFailureSnapshot(t *testing.T
 	// grok 已知未知态（尚未观测到计费/限流头）不算失败。
 	accounts.accounts[14] = &Account{ID: 14, Platform: domain.PlatformGrok}
 	usage.usage = &UsageInfo{ErrorCode: "quota_unknown", Error: "Grok quota is unknown until billing is probed"}
-	snapshot = fetcher.Fetch(context.Background(), 14)
+	snapshot, err = fetcher.Fetch(context.Background(), 14)
+	require.NoError(t, err)
 	require.True(t, snapshot.Success)
 	require.Empty(t, snapshot.Error)
 	require.Empty(t, snapshot.Tiers)
@@ -392,7 +401,8 @@ func TestQuotaFetcher_CNQuotaCredentialInvalidByStatusCode(t *testing.T) {
 				Error:      "api key expired",
 			}
 
-			snapshot := fetcher.Fetch(context.Background(), tc.accountID)
+			snapshot, err := fetcher.Fetch(context.Background(), tc.accountID)
+			require.NoError(t, err)
 
 			require.False(t, snapshot.Success)
 			require.Equal(t, tc.credentialBad, snapshot.CredentialInvalid)
@@ -406,7 +416,8 @@ func TestQuotaFetcher_CNBalanceHTTP403MarksCredentialInvalid(t *testing.T) {
 	accounts.accounts[6] = &Account{ID: 6, Platform: domain.PlatformKimi}
 	cnBalance.result = &CNProviderBalanceResult{Success: false, StatusCode: 403, Error: "forbidden"}
 
-	snapshot := fetcher.Fetch(context.Background(), 6)
+	snapshot, err := fetcher.Fetch(context.Background(), 6)
+	require.NoError(t, err)
 
 	require.False(t, snapshot.Success)
 	require.True(t, snapshot.CredentialInvalid)
@@ -466,7 +477,8 @@ func TestQuotaFetcher_CNBalanceLowMarksDegraded(t *testing.T) {
 			}
 			cnBalance.result = tc.result
 
-			snapshot := fetcher.Fetch(context.Background(), tc.accountID)
+			snapshot, err := fetcher.Fetch(context.Background(), tc.accountID)
+			require.NoError(t, err)
 
 			require.True(t, snapshot.Success)
 			require.Equal(t, tc.balanceLow, snapshot.BalanceLow)
@@ -495,7 +507,8 @@ func TestNewChannelMonitorQuotaFetcher_ThresholdFromConfig(t *testing.T) {
 func TestQuotaFetcher_NilDependenciesProduceErrorSnapshots(t *testing.T) {
 	// fetcher 本体为 nil：直接降级为错误快照，不 panic。
 	var nilFetcher *ChannelMonitorQuotaFetcher
-	snapshot := nilFetcher.Fetch(context.Background(), 1)
+	snapshot, err := nilFetcher.Fetch(context.Background(), 1)
+	require.NoError(t, err)
 	require.False(t, snapshot.Success)
 	require.Equal(t, "quota fetcher is not configured", snapshot.Error)
 
@@ -503,7 +516,8 @@ func TestQuotaFetcher_NilDependenciesProduceErrorSnapshots(t *testing.T) {
 	fetcher, _, _, _, accounts := newQuotaFetcherTestSetup(t)
 	fetcher.usage = nil
 	accounts.accounts[2] = &Account{ID: 2, Platform: domain.PlatformOpenAI}
-	snapshot = fetcher.Fetch(context.Background(), 2)
+	snapshot, err = fetcher.Fetch(context.Background(), 2)
+	require.NoError(t, err)
 	require.False(t, snapshot.Success)
 	require.Contains(t, snapshot.Error, "not configured")
 }
@@ -516,7 +530,8 @@ func TestQuotaFetcher_CachesSuccessSnapshotPerAccount(t *testing.T) {
 	usage.usage = &UsageInfo{FiveHour: &UsageProgress{Utilization: 10}}
 
 	for i := 0; i < 3; i++ {
-		snapshot := fetcher.Fetch(context.Background(), 8)
+		snapshot, err := fetcher.Fetch(context.Background(), 8)
+		require.NoError(t, err)
 		require.True(t, snapshot.Success)
 	}
 	require.Equal(t, 1, usage.getCalls(), "success snapshots should be served from cache")
@@ -528,7 +543,7 @@ func TestQuotaFetcher_CachesSuccessSnapshotPerAccount(t *testing.T) {
 	fetcher.cache[8] = entry
 	fetcher.mu.Unlock()
 
-	_ = fetcher.Fetch(context.Background(), 8)
+	_, _ = fetcher.Fetch(context.Background(), 8)
 	require.Equal(t, 2, usage.getCalls())
 }
 
@@ -538,7 +553,8 @@ func TestQuotaFetcher_CachesFailureSnapshotWithShortTTL(t *testing.T) {
 	usage.err = errors.New("boom")
 
 	for i := 0; i < 2; i++ {
-		snapshot := fetcher.Fetch(context.Background(), 4)
+		snapshot, err := fetcher.Fetch(context.Background(), 4)
+		require.NoError(t, err)
 		require.False(t, snapshot.Success)
 	}
 	require.Equal(t, 1, usage.getCalls(), "failure snapshots should be served from the short negative cache")
@@ -551,7 +567,7 @@ func TestQuotaFetcher_CachesFailureSnapshotWithShortTTL(t *testing.T) {
 	fetcher.cache[4] = entry
 	fetcher.mu.Unlock()
 
-	_ = fetcher.Fetch(context.Background(), 4)
+	_, _ = fetcher.Fetch(context.Background(), 4)
 	require.Equal(t, 2, usage.getCalls(), "expired negative cache should refetch")
 }
 
@@ -567,7 +583,9 @@ func TestQuotaFetcher_ConcurrentFetchesShareSingleFlight(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			snapshots[idx] = fetcher.Fetch(context.Background(), 12)
+			var err error
+			snapshots[idx], err = fetcher.Fetch(context.Background(), 12)
+			require.NoError(t, err)
 		}(i)
 	}
 
@@ -584,7 +602,7 @@ func TestQuotaFetcher_ConcurrentFetchesShareSingleFlight(t *testing.T) {
 	require.Equal(t, 1, usage.getCalls())
 
 	// 成功快照已缓存：再取一次仍不打上游。
-	_ = fetcher.Fetch(context.Background(), 12)
+	_, _ = fetcher.Fetch(context.Background(), 12)
 	require.Equal(t, 1, usage.getCalls())
 }
 
@@ -601,11 +619,13 @@ func TestQuotaFetcher_SharedFetchCacheRecheckAvoidsDuplicateUpstream(t *testing.
 	accounts.accounts[13] = &Account{ID: 13, Platform: domain.PlatformOpenAI}
 	usage.usage = &UsageInfo{FiveHour: &UsageProgress{Utilization: 10}}
 
-	first := fetcher.Fetch(context.Background(), 13)
+	first, err := fetcher.Fetch(context.Background(), 13)
+	require.NoError(t, err)
 	require.True(t, first.Success)
 	require.Equal(t, 1, usage.getCalls())
 
-	shared := fetcher.fetchShared(13)
+	shared, err := fetcher.fetchShared(13)
+	require.NoError(t, err)
 	require.Equal(t, 1, usage.getCalls(), "重查缓存后不得再打一次上游")
 	require.Same(t, first, shared, "应原样返回已缓存的快照")
 }
@@ -617,7 +637,9 @@ func TestQuotaFetcher_SharedFetchStillRefetchesAfterCacheExpiry(t *testing.T) {
 	accounts.accounts[14] = &Account{ID: 14, Platform: domain.PlatformOpenAI}
 	usage.usage = &UsageInfo{FiveHour: &UsageProgress{Utilization: 10}}
 
-	require.True(t, fetcher.Fetch(context.Background(), 14).Success)
+	snapshot, err := fetcher.Fetch(context.Background(), 14)
+	require.NoError(t, err)
+	require.True(t, snapshot.Success)
 	require.Equal(t, 1, usage.getCalls())
 
 	fetcher.mu.Lock()
@@ -626,7 +648,9 @@ func TestQuotaFetcher_SharedFetchStillRefetchesAfterCacheExpiry(t *testing.T) {
 	fetcher.cache[14] = entry
 	fetcher.mu.Unlock()
 
-	require.True(t, fetcher.fetchShared(14).Success)
+	snapshot, err = fetcher.fetchShared(14)
+	require.NoError(t, err)
+	require.True(t, snapshot.Success)
 	require.Equal(t, 2, usage.getCalls(), "缓存过期后必须回源")
 }
 
