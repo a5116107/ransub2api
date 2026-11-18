@@ -40,6 +40,10 @@ type MonitoringProbeCoverage struct {
 	ScheduledSamples           int64     `json:"scheduled_samples"`
 	MinimumJudgeRequests       int64     `json:"minimum_judge_requests"`
 	MinimumScheduledRequests   int64     `json:"minimum_scheduled_requests"`
+	CandyProbes                int64     `json:"candy_probes"`
+	UnresolvedCandyProbes      int64     `json:"unresolved_candy_probes"`
+	CandyInventoryComplete     bool      `json:"candy_inventory_complete"`
+	MinimumCandyRequests       int64     `json:"minimum_candy_requests"`
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
 }
 
@@ -56,7 +60,8 @@ type MonitoringProbeCoveragePlan struct {
 }
 
 func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billing UpstreamBillingProbeSettings,
-	accounts []MonitoringProbeCoverageAccount, complete bool, plans []MonitoringProbeCoveragePlan, plansComplete bool, now time.Time) *MonitoringProbeCoverage {
+	accounts []MonitoringProbeCoverageAccount, complete bool, plans []MonitoringProbeCoveragePlan, plansComplete bool,
+	candy []ChannelMonitorV2CandyProbe, candyComplete bool, now time.Time) *MonitoringProbeCoverage {
 	result := &MonitoringProbeCoverage{
 		ObservedAt: now.UTC(), BudgetRevision: policy.Revision, BillingEnabled: billing.Enabled,
 		IntervalMinutes: billing.IntervalMinutes, InventoryComplete: complete,
@@ -64,8 +69,8 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		RegularMinuteCapacity:   policy.RequestsPerMinute * int64(100-policy.RecoveryReservePercent) / 100,
 		RegularDayCapacity:      policy.RequestsPerDay * int64(100-policy.RecoveryReservePercent) / 100,
 		Enforced:                policy.Enabled, CanSave: true, BlockingReasons: []string{}, Warnings: []string{},
-		PlanInventoryComplete: plansComplete,
-		ScheduleWindowStart:   now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour),
+		PlanInventoryComplete: plansComplete, CandyInventoryComplete: candyComplete,
+		ScheduleWindowStart: now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour),
 	}
 	result.ScheduleWindowEnd = result.ScheduleWindowStart.Add(24 * time.Hour)
 	if result.RegularMinuteCapacity < 1 {
@@ -125,13 +130,43 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		}
 	}
 	result.compileSchedules(plans)
+	result.compileCandy(candy)
 	result.MinimumScheduledRequests = result.ScheduledSamples + result.MinimumJudgeRequests
-	result.MinimumTotalRequestsPerDay = result.MinimumRequestsPerDay + result.MinimumScheduledRequests
+	result.MinimumTotalRequestsPerDay = result.MinimumRequestsPerDay + result.MinimumScheduledRequests + result.MinimumCandyRequests
 	if policy.Enabled && result.MinimumTotalRequestsPerDay > result.RegularDayCapacity {
 		result.BlockingReasons = append(result.BlockingReasons, "day_capacity")
 	}
 	result.CanSave = !policy.Enabled || len(result.BlockingReasons) == 0
 	return result
+}
+
+func (c *MonitoringProbeCoverage) compileCandy(probes []ChannelMonitorV2CandyProbe) {
+	for _, probe := range probes {
+		if !probe.Enabled {
+			continue
+		}
+		c.CandyProbes++
+		if strings.TrimSpace(probe.Model) == "" || probe.IntervalMinutes < 1 || probe.IntervalMinutes > 1440 {
+			c.UnresolvedCandyProbes++
+			continue
+		}
+		interval := time.Duration(probe.IntervalMinutes) * time.Minute
+		first := c.ScheduleWindowStart.Truncate(interval)
+		if first.Before(c.ScheduleWindowStart) {
+			first = first.Add(interval)
+		}
+		// Match runOne's absolute UTC slots, not a midnight-reset cadence. The
+		// partial slot carried in from the previous day may already be claimed.
+		if first.Before(c.ScheduleWindowEnd) {
+			c.MinimumCandyRequests += 1 + int64(c.ScheduleWindowEnd.Add(-time.Nanosecond).Sub(first)/interval)
+		}
+	}
+	if c.UnresolvedCandyProbes > 0 {
+		c.Warnings = append(c.Warnings, "candy_unresolved")
+	}
+	if !c.CandyInventoryComplete {
+		c.Warnings = append(c.Warnings, "candy_inventory_truncated")
+	}
 }
 
 func (c *MonitoringProbeCoverage) compileSchedules(plans []MonitoringProbeCoveragePlan) {
@@ -228,7 +263,7 @@ func (c *MonitoringProbeCoverage) ValidateSave() error {
 		return nil
 	}
 	return infraerrors.BadRequest("MONITORING_PROBE_COVERAGE_IMPOSSIBLE",
-		fmt.Sprintf("configured monitoring coverage exceeds capacity (%v): %d billing accounts, %d minutes, at least %d calls/sweep and %d calls/day including %d scheduled calls; regular day capacity is %d; increase capacity or relax the cadence", c.BlockingReasons, c.Accounts, c.IntervalMinutes, c.MinimumRequestsPerSweep, c.MinimumTotalRequestsPerDay, c.MinimumScheduledRequests, c.RegularDayCapacity))
+		fmt.Sprintf("configured monitoring coverage exceeds capacity (%v): %d billing accounts, %d minutes, at least %d calls/sweep and %d calls/day including %d scheduled and %d candy calls; regular day capacity is %d; increase capacity or relax the cadence", c.BlockingReasons, c.Accounts, c.IntervalMinutes, c.MinimumRequestsPerSweep, c.MinimumTotalRequestsPerDay, c.MinimumScheduledRequests, c.MinimumCandyRequests, c.RegularDayCapacity))
 }
 
 func (s *MonitoringProbeBudgetService) PreviewCoverage(ctx context.Context, settings MonitoringProbeBudgetSettings) (*MonitoringProbeCoverage, error) {

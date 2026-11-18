@@ -512,6 +512,12 @@ func (s *SettingService) GetChannelMonitorRuntime(ctx context.Context) ChannelMo
 			HideThroughput:         true,
 		}
 	}
+	return ParseChannelMonitorRuntime(vals)
+}
+
+// ParseChannelMonitorRuntime keeps execution and capacity preflight on the same
+// legacy defaults, including the fail-open switch and normalized exclusive mode.
+func ParseChannelMonitorRuntime(vals map[string]string) ChannelMonitorRuntime {
 	return ChannelMonitorRuntime{
 		Enabled:                !isFalseSettingValue(vals[SettingKeyChannelMonitorEnabled]),
 		Mode:                   normalizeChannelMonitorMode(vals[SettingKeyChannelMonitorMode]),

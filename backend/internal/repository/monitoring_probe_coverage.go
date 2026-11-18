@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 const monitoringCoverageInventoryLimit = 10000
@@ -99,11 +100,102 @@ func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings
 	if err != nil {
 		return nil, err
 	}
+	candy, candyComplete, err := loadMonitoringCoverageCandy(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	var now time.Time
 	if err := scanSingleRow(ctx, tx, `SELECT clock_timestamp()`, nil, &now); err != nil {
 		return nil, err
 	}
-	return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, now), nil
+	return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, candy, candyComplete, now), nil
+}
+
+func loadMonitoringCoverageCandy(ctx context.Context, tx sqlQueryer) ([]service.ChannelMonitorV2CandyProbe, bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT key,value FROM settings WHERE key IN ($1,$2)`,
+		service.SettingKeyChannelMonitorEnabled, service.SettingKeyChannelMonitorMode)
+	if err != nil {
+		return nil, false, err
+	}
+	values := make(map[string]string, 2)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			_ = rows.Close()
+			return nil, false, err
+		}
+		values[key] = value
+	}
+	err = errors.Join(rows.Err(), rows.Close())
+	if err != nil {
+		return nil, false, err
+	}
+	if !service.ParseChannelMonitorRuntime(values).V2Active() {
+		return nil, true, nil
+	}
+	var cfg service.ChannelMonitorV2Config
+	var platforms, probes []byte
+	err = scanSingleRow(ctx, tx, `SELECT enabled,platforms,group_ids,candy_probes FROM channel_monitor_v2_config WHERE id=1`,
+		nil, &cfg.Enabled, &platforms, pq.Array(&cfg.GroupIDs), &probes)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !cfg.Enabled {
+		return nil, true, nil
+	}
+	if err := json.Unmarshal(platforms, &cfg.Platforms); err != nil {
+		return nil, false, err
+	}
+	if err := json.Unmarshal(probes, &cfg.CandyProbes); err != nil {
+		return nil, false, err
+	}
+	complete := len(cfg.CandyProbes) <= monitoringCoverageInventoryLimit
+	if !complete {
+		cfg.CandyProbes = cfg.CandyProbes[:monitoringCoverageInventoryLimit]
+	}
+	ids := make([]int64, 0, len(cfg.CandyProbes))
+	for _, probe := range cfg.CandyProbes {
+		ids = append(ids, probe.GroupID)
+	}
+	if len(ids) == 0 {
+		return nil, complete, nil
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT id,platform,status FROM groups WHERE id=ANY($1) AND deleted_at IS NULL`, pq.Array(ids))
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	groups := make(map[int64]*service.Group)
+	for rows.Next() {
+		group := new(service.Group)
+		if err := rows.Scan(&group.ID, &group.Platform, &group.Status); err != nil {
+			return nil, false, err
+		}
+		groups[group.ID] = group
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	active := make([]service.ChannelMonitorV2CandyProbe, 0, len(cfg.CandyProbes))
+	for _, probe := range cfg.CandyProbes {
+		if cfg.CandyProbeAllowed(probe, groups[probe.GroupID]) {
+			active = append(active, probe)
+		}
+	}
+	return active, complete, nil
+}
+
+func validateMonitoringCoverageCandyWrite(ctx context.Context, tx sqlQueryer) error {
+	// Explicitly disabling V2/the site switch or leaving its exclusive mode is
+	// a repair path, even when other legacy schedules already exceed capacity.
+	probes, complete, err := loadMonitoringCoverageCandy(ctx, tx)
+	if err != nil || (len(probes) == 0 && complete) {
+		return err
+	}
+	return validateMonitoringCoveragePlanWrite(ctx, tx, true)
 }
 
 func loadMonitoringCoveragePlans(ctx context.Context, tx sqlQueryer) ([]service.MonitoringProbeCoveragePlan, bool, error) {

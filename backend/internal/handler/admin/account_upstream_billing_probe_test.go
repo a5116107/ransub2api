@@ -72,7 +72,7 @@ func (r *handlerMonitoringBudgetRepo) PreviewCoverage(_ context.Context, s servi
 	if s.Revision != r.settings.Revision {
 		return nil, service.ErrMonitoringProbeBudgetConflict
 	}
-	return service.CompileMonitoringProbeCoverage(s, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, nil, true, nil, true, time.Now()), nil
+	return service.CompileMonitoringProbeCoverage(s, service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, nil, true, nil, true, nil, true, time.Now()), nil
 }
 
 func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {

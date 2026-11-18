@@ -61,6 +61,10 @@ export interface MonitoringProbeCoverage {
   scheduled_samples?: number
   minimum_judge_requests?: number
   minimum_scheduled_requests?: number
+  candy_probes?: number
+  unresolved_candy_probes?: number
+  candy_inventory_complete?: boolean
+  minimum_candy_requests?: number
   minimum_total_requests_per_day?: number
 }
 

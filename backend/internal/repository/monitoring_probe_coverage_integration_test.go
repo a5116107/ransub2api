@@ -60,6 +60,244 @@ func TestMonitoringProbeCoverageCountsScheduledQualityAndGroups(t *testing.T) {
 	}
 }
 
+func TestMonitoringProbeCoverageIncludesActiveCandy(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	_, group := coverageScheduleOwners(t, db)
+	settings := NewSettingRepository(client)
+	require.NoError(t, settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v2"}))
+	v2 := NewChannelMonitorV2Repository(db)
+	cfg, err := v2.GetConfig(ctx)
+	require.NoError(t, err)
+	cfg.Enabled = true
+	cfg.Platforms = []service.ChannelMonitorV2PlatformConfig{{Platform: service.PlatformOpenAI, Enabled: true}}
+	cfg.CandyProbes = []service.ChannelMonitorV2CandyProbe{{GroupID: group, Enabled: true, Model: "model-a", IntervalMinutes: 1}}
+	_, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+	require.NoError(t, err)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 1000
+	_, err = budget.SaveSettings(ctx, policy)
+	require.ErrorContains(t, err, "day_capacity", "one healthy candy sample per minute requires at least 1440 calls/day")
+	policy.RequestsPerDay = 1440
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	preview, err := budget.PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.EqualValues(t, 1440, preview.MinimumTotalRequestsPerDay)
+	require.EqualValues(t, 1, preview.CandyProbes)
+	require.EqualValues(t, 1440, preview.MinimumCandyRequests)
+	require.True(t, preview.CandyInventoryComplete)
+	require.Zero(t, preview.MinimumScheduledRequests, "candy must not masquerade as a saved account/group plan")
+	for _, table := range []string{"channel_monitor_v2_candy_results", "monitoring_probe_budget_counters", "monitoring_probe_budget_leases"} {
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+		require.Zero(t, count, "preflight does not execute or bill a probe")
+	}
+}
+
+func TestMonitoringProbeCoverageSerializesCandyAndBudget(t *testing.T) {
+	for _, operation := range []string{"config", "mode", "bulk", "delete_enabled"} {
+		t.Run(operation, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			_, group := coverageScheduleOwners(t, db)
+			settings := NewSettingRepository(client)
+			require.NoError(t, settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1"}))
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			policy.RequestsPerDay = 2000
+			policy, err := budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			v2 := NewChannelMonitorV2Repository(db)
+			cfg, err := v2.GetConfig(ctx)
+			require.NoError(t, err)
+			cfg.Enabled = operation != "config"
+			cfg.Platforms = []service.ChannelMonitorV2PlatformConfig{{Platform: service.PlatformOpenAI, Enabled: true}}
+			cfg.CandyProbes = []service.ChannelMonitorV2CandyProbe{{GroupID: group, Enabled: true, Model: "model-a", IntervalMinutes: 1}}
+			cfg, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+			require.NoError(t, err)
+			if operation == "config" {
+				require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v2"))
+			}
+			if operation == "delete_enabled" {
+				require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, "false"))
+				require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v2"))
+			}
+			start, results := make(chan struct{}), make(chan error, 2)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				policy.RequestsPerDay = 1000
+				_, err := budget.SaveSettings(ctx, policy)
+				results <- err
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				var err error
+				switch operation {
+				case "config":
+					cfg.Enabled = true
+					_, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+				case "mode":
+					err = settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v2")
+				case "bulk":
+					err = settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorMode: "v2", "coverage_atomic_marker": "committed"})
+				case "delete_enabled":
+					err = settings.Delete(ctx, service.SettingKeyChannelMonitorEnabled)
+				}
+				results <- err
+			}()
+			close(start)
+			wg.Wait()
+			close(results)
+			successes := 0
+			for err := range results {
+				if err == nil {
+					successes++
+				} else {
+					require.ErrorContains(t, err, "day_capacity")
+				}
+			}
+			require.Equal(t, 1, successes, "individually valid edits cannot commit an impossible combination")
+			policy, err = budget.GetSettings(ctx)
+			require.NoError(t, err)
+			preview, err := budget.PreviewCoverage(ctx, policy)
+			require.NoError(t, err)
+			require.True(t, preview.CanSave)
+			// Disabling remains available without changing the usage counters.
+			require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, "false"))
+			cfg, err = v2.GetConfig(ctx)
+			require.NoError(t, err)
+			cfg.Enabled = false
+			_, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+			require.NoError(t, err)
+			policy.RequestsPerDay = 1
+			_, err = budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestMonitoringProbeCoverageCandyReadsExecutableScope(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	_, group := coverageScheduleOwners(t, db)
+	var composite, inactive, deleted, wrongPlatform int64
+	for _, item := range []struct {
+		id       *int64
+		platform string
+		status   string
+	}{{&composite, service.PlatformComposite, "active"}, {&inactive, service.PlatformOpenAI, "inactive"}, {&deleted, service.PlatformOpenAI, "active"}, {&wrongPlatform, service.PlatformAnthropic, "active"}} {
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform,status) VALUES('candy-scope-'||$1||'-'||$2,$1,$2) RETURNING id`, item.platform, item.status).Scan(item.id))
+	}
+	_, err := db.ExecContext(ctx, `UPDATE groups SET deleted_at=NOW() WHERE id=$1`, deleted)
+	require.NoError(t, err)
+	settings := NewSettingRepository(client)
+	require.NoError(t, settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v2"}))
+	v2 := NewChannelMonitorV2Repository(db)
+	cfg, err := v2.GetConfig(ctx)
+	require.NoError(t, err)
+	cfg.Enabled = true
+	cfg.Platforms = []service.ChannelMonitorV2PlatformConfig{{Platform: service.PlatformOpenAI, Enabled: true, Models: []string{"display-only"}}}
+	for _, id := range []int64{group, composite, inactive, deleted, wrongPlatform, -1} {
+		cfg.CandyProbes = append(cfg.CandyProbes, service.ChannelMonitorV2CandyProbe{GroupID: id, Enabled: true, Model: "probe-model", IntervalMinutes: 1})
+	}
+	cfg.CandyProbes = append(cfg.CandyProbes, service.ChannelMonitorV2CandyProbe{GroupID: group, Enabled: false, Model: "disabled", IntervalMinutes: 1})
+	cfg, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+	require.NoError(t, err)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy, err := budget.GetSettings(ctx)
+	require.NoError(t, err)
+	check := func(want int64) {
+		t.Helper()
+		preview, err := NewMonitoringProbeBudgetRepository(db).PreviewCoverage(ctx, policy)
+		require.NoError(t, err)
+		require.Equal(t, want, preview.CandyProbes)
+		require.Equal(t, want*1440, preview.MinimumCandyRequests)
+		require.True(t, preview.CandyInventoryComplete)
+	}
+	check(2)
+	cfg.GroupIDs = []int64{group}
+	cfg, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+	require.NoError(t, err)
+	check(1)
+	require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v3"))
+	check(0)
+	require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, " V2 "))
+	check(1)
+	require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, " off "))
+	check(0)
+	require.NoError(t, settings.Delete(ctx, service.SettingKeyChannelMonitorEnabled))
+	check(1)
+	cfg.CandyProbes[0].IntervalMinutes = 0 // Historical invalid data stays unresolved, not free.
+	cfg, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+	require.NoError(t, err)
+	preview, err := budget.PreviewCoverage(ctx, policy)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, preview.UnresolvedCandyProbes)
+	require.Contains(t, preview.Warnings, "candy_unresolved")
+	require.Zero(t, preview.MinimumCandyRequests)
+}
+
+func TestMonitoringProbeCoverageCandyConfigAndModeRollback(t *testing.T) {
+	for _, mode := range []string{"config", "mode", "bulk", "delete_enabled"} {
+		t.Run(mode, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			_, group := coverageScheduleOwners(t, db)
+			settings := NewSettingRepository(client)
+			require.NoError(t, settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v1"}))
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			policy.RequestsPerDay = 1000
+			_, err := budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			v2 := NewChannelMonitorV2Repository(db)
+			cfg, err := v2.GetConfig(ctx)
+			require.NoError(t, err)
+			cfg.Enabled = mode != "config"
+			cfg.Platforms = []service.ChannelMonitorV2PlatformConfig{{Platform: service.PlatformOpenAI, Enabled: true}}
+			cfg.CandyProbes = []service.ChannelMonitorV2CandyProbe{{GroupID: group, Enabled: true, Model: "model-a", IntervalMinutes: 1}}
+			cfg, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+			require.NoError(t, err, "inactive V2 configuration remains editable")
+			switch mode {
+			case "config":
+				require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v2"))
+				cfg.Enabled = true
+				_, err = v2.UpdateConfig(ctx, *cfg, cfg.Version)
+			case "mode":
+				err = settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v2")
+			case "bulk":
+				err = settings.SetMultiple(ctx, map[string]string{service.SettingKeyChannelMonitorMode: "v2", "coverage_atomic_marker": "must-rollback"})
+			case "delete_enabled":
+				require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorEnabled, "false"))
+				require.NoError(t, settings.Set(ctx, service.SettingKeyChannelMonitorMode, "v2"))
+				err = settings.Delete(ctx, service.SettingKeyChannelMonitorEnabled)
+			}
+			require.ErrorContains(t, err, "day_capacity")
+			read, err := v2.GetConfig(ctx)
+			require.NoError(t, err)
+			require.Equal(t, cfg.Version, read.Version, "a rejected save cannot advance the optimistic version")
+			if mode == "config" {
+				require.False(t, read.Enabled)
+			}
+			values, err := settings.GetMultiple(ctx, []string{service.SettingKeyChannelMonitorMode, service.SettingKeyChannelMonitorEnabled, "coverage_atomic_marker"})
+			require.NoError(t, err)
+			require.Empty(t, values["coverage_atomic_marker"])
+			if mode == "mode" || mode == "bulk" {
+				require.Equal(t, "v1", values[service.SettingKeyChannelMonitorMode])
+			}
+			if mode == "delete_enabled" {
+				require.Equal(t, "false", values[service.SettingKeyChannelMonitorEnabled])
+			}
+		})
+	}
+}
+
 func coverageScheduleOwners(t *testing.T, db *sql.DB) (int64, int64) {
 	t.Helper()
 	var account, group int64

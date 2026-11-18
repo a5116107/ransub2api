@@ -104,6 +104,9 @@ func (r *settingRepository) Set(ctx context.Context, key, value string) error {
 	if key == service.SettingKeyOAuthAutoConfig {
 		return r.saveAutoConfigWithEvent(ctx, value)
 	}
+	if key == service.SettingKeyChannelMonitorEnabled || key == service.SettingKeyChannelMonitorMode {
+		return r.SetMultiple(ctx, map[string]string{key: value})
+	}
 	now := time.Now()
 	return r.client.Setting.
 		Create().
@@ -167,16 +170,20 @@ func (r *settingRepository) SetMultiple(ctx context.Context, settings map[string
 		return nil
 	}
 
-	now := time.Now()
-	builders := make([]*ent.SettingCreate, 0, len(settings))
-	for key, value := range settings {
-		builders = append(builders, r.client.Setting.Create().SetKey(key).SetValue(value).SetUpdatedAt(now))
+	write := func(client *ent.Client) error {
+		now := time.Now()
+		builders := make([]*ent.SettingCreate, 0, len(settings))
+		for key, value := range settings {
+			builders = append(builders, client.Setting.Create().SetKey(key).SetValue(value).SetUpdatedAt(now))
+		}
+		return client.Setting.CreateBulk(builders...).OnConflictColumns(setting.FieldKey).UpdateNewValues().Exec(ctx)
 	}
-	return r.client.Setting.
-		CreateBulk(builders...).
-		OnConflictColumns(setting.FieldKey).
-		UpdateNewValues().
-		Exec(ctx)
+	_, enabled := settings[service.SettingKeyChannelMonitorEnabled]
+	_, mode := settings[service.SettingKeyChannelMonitorMode]
+	if enabled || mode {
+		return r.withMonitoringCoverageWrite(ctx, write)
+	}
+	return write(r.client)
 }
 
 func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, error) {
@@ -193,6 +200,37 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 }
 
 func (r *settingRepository) Delete(ctx context.Context, key string) error {
+	if key == service.SettingKeyChannelMonitorEnabled || key == service.SettingKeyChannelMonitorMode {
+		return r.withMonitoringCoverageWrite(ctx, func(client *ent.Client) error {
+			_, err := client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
+			return err
+		})
+	}
 	_, err := r.client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 	return err
+}
+
+func (r *settingRepository) withMonitoringCoverageWrite(ctx context.Context, write func(*ent.Client) error) error {
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, ent.ErrTxStarted) {
+		return err
+	}
+	client := r.client
+	if err == nil {
+		defer func() { _ = tx.Rollback() }()
+		client = tx.Client()
+	}
+	if err := lockMonitoringCoveragePlanWrite(ctx, client); err != nil {
+		return err
+	}
+	if err := write(client); err != nil {
+		return err
+	}
+	if err := validateMonitoringCoverageCandyWrite(ctx, client); err != nil {
+		return err
+	}
+	if tx != nil {
+		return tx.Commit()
+	}
+	return nil
 }

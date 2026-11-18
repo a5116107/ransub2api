@@ -85,9 +85,17 @@ func (r *channelMonitorV2Repository) UpdateConfig(ctx context.Context, cfg servi
 	if cfg.CandyHistoryLimit == 0 {
 		cfg.CandyHistoryLimit = service.ChannelMonitorV2CandyHistoryDefault
 	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockMonitoringCoveragePlanWrite(ctx, tx); err != nil {
+		return nil, err
+	}
 	var updated service.ChannelMonitorV2Config
 	var raw, rawThresholds, rawProbes []byte
-	err = r.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		UPDATE channel_monitor_v2_config
 		SET version = version + 1, enabled = $1, refresh_interval_seconds = $2,
 		    platforms = $3, group_ids = $4, ignored_error_categories = $5,
@@ -131,6 +139,12 @@ func (r *channelMonitorV2Repository) UpdateConfig(ctx context.Context, cfg servi
 	_ = json.Unmarshal(rawThresholds, &updated.HealthThresholds)
 	updated.HealthThresholds = service.NormalizeChannelMonitorV2HealthThresholds(updated.HealthThresholds)
 	updated.CardTimelineMode = service.NormalizeChannelMonitorV2CardTimelineMode(updated.CardTimelineMode)
+	if err := validateMonitoringCoverageCandyWrite(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
 	return &updated, nil
 }
 

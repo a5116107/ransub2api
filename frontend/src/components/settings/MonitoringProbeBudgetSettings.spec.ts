@@ -38,6 +38,34 @@ async function open(locale = 'en') {
 }
 
 describe('Shared physical probe budgets', () => {
+  it.each(['en', 'zh'])('shows candy demand separately when billing and saved plans are off in %s', async locale => {
+    const wrapper = await open(locale)
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,
+      account_plans: 0, group_plans: 0, candy_probes: 1, unresolved_candy_probes: 0,
+      candy_inventory_complete: true, minimum_candy_requests: 1440, minimum_total_requests_per_day: 1440 })
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="probe-budget-candy-capacity"]').text()).toContain('1440')
+    expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain(locale === 'zh' ? '仍不是全覆盖保证' : 'still unverified')
+    expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toBe('1440 / 80000')
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,
+      account_plans: 0, group_plans: 0, candy_probes: 0, unresolved_candy_probes: 0,
+      candy_inventory_complete: true, minimum_candy_requests: 0, minimum_total_requests_per_day: 0 })
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain(locale === 'zh' ? '均未启用' : 'inactive')
+  })
+  it.each(['en', 'zh'])('keeps missing candy coverage unknown and localizes warnings in %s', async locale => {
+    api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false, account_plans: 0, group_plans: 0,
+      warnings: ['candy_unresolved', 'candy_inventory_truncated'] })
+    const wrapper = await open(locale)
+    await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="probe-budget-candy-capacity"]').text()).toContain(locale === 'zh' ? '未知' : 'Unknown')
+    expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain(locale === 'zh' ? '仍不是全覆盖保证' : 'still unverified')
+    expect(wrapper.get('[data-testid="probe-budget-capacity-reasons"]').text()).not.toContain('candy_unresolved')
+    expect(wrapper.get('[data-testid="probe-budget-scheduled-capacity"]').text()).toContain(locale === 'zh' ? '旧服务' : 'older server')
+  })
   it.each(['en', 'zh'])('separates scheduled samples, grading and combined capacity in %s', async locale => {
     const wrapper = await open(locale)
     api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,

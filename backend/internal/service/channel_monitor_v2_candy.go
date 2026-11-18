@@ -199,22 +199,27 @@ func (s *ChannelMonitorV2CandyService) RunDue(ctx context.Context, now time.Time
 	wg.Wait()
 }
 
+// CandyProbeAllowed is shared by execution and capacity preflight. Display model
+// filters do not suppress a configured candy probe; only its group/platform do.
+func (cfg ChannelMonitorV2Config) CandyProbeAllowed(probe ChannelMonitorV2CandyProbe, group *Group) bool {
+	if !cfg.Enabled || !probe.Enabled || group == nil || group.Status != StatusActive ||
+		(len(cfg.GroupIDs) > 0 && !slices.Contains(cfg.GroupIDs, probe.GroupID)) {
+		return false
+	}
+	for _, platform := range cfg.Platforms {
+		if platform.Enabled && (platform.Platform == group.Platform || group.Platform == PlatformComposite) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe ChannelMonitorV2CandyProbe, cfg *ChannelMonitorV2Config, tick time.Time) {
 	if ctx.Err() != nil || !s.settings.GetChannelMonitorRuntime(ctx).V2Active() {
 		return
 	}
 	group, err := s.groups.groups.GetByID(ctx, probe.GroupID)
-	if err != nil || group == nil || group.Status != StatusActive {
-		return
-	}
-	platformEnabled := false
-	for _, p := range cfg.Platforms {
-		if p.Enabled && (p.Platform == group.Platform || group.Platform == PlatformComposite) {
-			platformEnabled = true
-			break
-		}
-	}
-	if !platformEnabled {
+	if err != nil || !cfg.CandyProbeAllowed(probe, group) {
 		return
 	}
 	slot := tick.UTC().Truncate(time.Duration(probe.IntervalMinutes) * time.Minute)

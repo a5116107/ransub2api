@@ -661,8 +661,12 @@ async function save() {
     original.value = JSON.stringify(normalized)
     appStore.showSuccess(t('channelMonitorV2.settings.saveSuccess'))
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('channelMonitorV2.settings.saveFailed')))
-    await load()
+    if ((error as { reason?: string })?.reason === 'MONITORING_PROBE_COVERAGE_IMPOSSIBLE') {
+      appStore.showError(t('admin.settings.upstreamBillingProbe.budget.capacityBlocked'))
+    } else {
+      appStore.showError(extractApiErrorMessage(error, t('channelMonitorV2.settings.saveFailed')))
+      await load()
+    }
   } finally {
     saving.value = false
   }
