@@ -145,11 +145,12 @@ func (s *MonitoringProbeBudgetService) Summary(ctx context.Context) (*Monitoring
 
 type monitoringProbeBudgetKey struct{}
 type monitoringProbeBudgetContext struct {
-	service     *MonitoringProbeBudgetService
-	sites       []string
-	recovery    bool
-	accountTest bool
-	local       *monitoringProbeBudgetError
+	service       *MonitoringProbeBudgetService
+	sites         []string
+	recovery      bool
+	accountTest   bool
+	ollamaSession bool
+	local         *monitoringProbeBudgetError
 }
 
 // Preserve local admission/lease errors across adapters that emit SSE error
@@ -298,10 +299,31 @@ func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, rel
 	if req == nil {
 		return req, nil, nil
 	}
-	if _, ok := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); !ok {
+	probe, ok := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	if !ok {
 		return req, nil, nil
 	}
-	ctx, finish, err := beginMonitoringProbeRequest(req.Context(), req.URL, config.UpstreamCredentialFingerprints(req), req.URL != nil && req.Method == http.MethodPost && monitoringProbeGenerationPath(req.URL.Path))
+	keys := config.UpstreamCredentialFingerprints(req)
+	if probe.ollamaSession {
+		// Only the internal official settings reader may identify web-session
+		// cookies. Never substitute its unrelated inference API key, or let a
+		// cookie hide another unrecognized final authorization header.
+		var cookies []string
+		for name, values := range req.Header {
+			if strings.EqualFold(name, "Cookie") {
+				cookies = append(cookies, values...)
+			}
+		}
+		cookie, err := normalizeOllamaCloudUsageCookie(strings.Join(cookies, "; "))
+		if err != nil || req.Method != http.MethodGet || !isExactOllamaCloudSettingsURL(req.URL) {
+			keys = append(keys, config.UnverifiedUpstreamCredential)
+		} else {
+			parts := strings.Split(cookie, "; ")
+			slices.Sort(parts)
+			keys = append(keys, monitoringProbeHash("ollama-web-session\x00"+strings.Join(parts, "; ")))
+		}
+	}
+	ctx, finish, err := beginMonitoringProbeRequest(req.Context(), req.URL, keys, req.URL != nil && req.Method == http.MethodPost && monitoringProbeGenerationPath(req.URL.Path))
 	if finish == nil {
 		return req, nil, err
 	}

@@ -23,6 +23,15 @@
       <Icon name="refresh" size="sm" class="animate-spin" />
     </div>
     <template v-else>
+      <MonitoringProbeBudgetNotice
+        v-if="state.budget_deferral"
+        :deferral="state.budget_deferral"
+        :title="t('modelTrace.budgetPaused')"
+        :scope-label="budgetScopeLabel"
+        data-testid="ollama-cloud-budget-deferral"
+      >
+        <p>{{ t('admin.accounts.ollamaCloud.budgetRetained') }}</p>
+      </MonitoringProbeBudgetNotice>
       <div v-if="!state.encryption_key_configured" class="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-200">
         {{ t('admin.accounts.ollamaCloud.encryptionKeyRequired') }}
       </div>
@@ -145,6 +154,7 @@ import type { Account, OllamaCloudUsageState, OllamaCloudUsageWindow } from '@/t
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 
 const props = defineProps<{ account: Account }>()
 const emit = defineEmits<{ updated: [state: OllamaCloudUsageState] }>()
@@ -157,6 +167,12 @@ const saving = ref(false)
 const refreshing = ref(false)
 const showDeleteConfirm = ref(false)
 const snapshot = computed(() => state.value?.snapshot)
+const budgetScopeLabel = computed(() => {
+  const scope = state.value?.budget_deferral?.scope
+  if (scope === 'key_minute') return t('admin.accounts.ollamaCloud.budgetSessionMinute')
+  if (scope === 'key') return t('admin.accounts.ollamaCloud.budgetSessionConcurrent')
+  return undefined
+})
 const statusLabel = computed(() => {
   if (!snapshot.value) return t('admin.accounts.ollamaCloud.notRefreshed')
   if (snapshot.value.status === 'unauthorized') return t('admin.accounts.ollamaCloud.unauthorized')
@@ -244,8 +260,9 @@ const setAutoRefresh = async (enabled: boolean) => {
 const refreshUsage = async () => {
   refreshing.value = true
   try {
-    applyState(await adminAPI.accounts.refreshOllamaCloudUsage(props.account.id))
-    appStore.showSuccess(t('admin.accounts.ollamaCloud.refreshSuccess'))
+    const next = await adminAPI.accounts.refreshOllamaCloudUsage(props.account.id)
+    applyState(next)
+    if (!next.budget_deferral) appStore.showSuccess(t('admin.accounts.ollamaCloud.refreshSuccess'))
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(
       error,

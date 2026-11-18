@@ -253,6 +253,9 @@ func (s *OllamaCloudUsageService) runOllamaCloudUsageProbe(
 	if refreshErr == nil && fetched == nil {
 		return
 	}
+	if s.monitoringDeferral(accountID, refreshErr) != nil {
+		return
+	}
 	// Evaluate against when the fetch actually completed: a reset that rolled over
 	// during a slow fetch must not be reported as still-future, and the group
 	// cooldown must not start before the attempt finished.

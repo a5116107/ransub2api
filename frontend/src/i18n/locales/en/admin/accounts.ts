@@ -400,6 +400,9 @@ export default {
       },
       usageWindowsHint: '"5h / 7d" are the upstream account\'s official rolling usage windows (e.g. OpenAI ChatGPT, Claude). They are imposed by the upstream provider on the account itself — not configured by sub2api, and unrelated to the models you map. Usage resets automatically once each window rolls over, and the limit cannot be lifted from within sub2api.',
       ollamaCloud: {
+        budgetSessionMinute: 'Web-session Cookie per minute',
+        budgetSessionConcurrent: 'Web-session Cookie concurrency',
+        budgetRetained: 'This check did not refresh usage. Existing observations and automatic-refresh settings are unchanged. This credential budget is shared by web-session cookies, not inference API keys.',
         title: 'Ollama Cloud usage',
         sessionSecurityHint: 'The browser session is encrypted at rest and sent only to the fixed official settings URL.',
         configured: 'Configured',

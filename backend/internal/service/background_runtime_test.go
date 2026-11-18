@@ -61,8 +61,10 @@ func TestGatewayRoleStillPersistsRequestObservations(t *testing.T) {
 
 func TestGatewayRoleStillDrainsOllamaRequestProbeWakeups(t *testing.T) {
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
-	svc := ProvideOllamaCloudUsageService(nil, nil, nil, nil, cfg, nil, nil)
+	budget := &monitoringBudgetRepoStub{}
+	svc := ProvideOllamaCloudUsageService(nil, nil, nil, nil, cfg, nil, nil, budget)
 	defer svc.Stop()
+	require.Same(t, budget, svc.monitoringBudget.repo)
 	svc.probeWake <- struct{}{}
 	require.Eventually(t, func() bool { return len(svc.probeWake) == 0 }, time.Second, time.Millisecond)
 }

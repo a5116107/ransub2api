@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"math/rand/v2"
 	"net/http"
@@ -148,12 +147,13 @@ type OllamaCloudUsageSnapshot struct {
 
 // OllamaCloudUsageState is the dedicated DTO exposed to administrators.
 type OllamaCloudUsageState struct {
-	AccountID               int64                     `json:"account_id"`
-	Eligible                bool                      `json:"eligible"`
-	Configured              bool                      `json:"configured"`
-	AutoRefreshEnabled      bool                      `json:"auto_refresh_enabled"`
-	EncryptionKeyConfigured bool                      `json:"encryption_key_configured"`
-	Snapshot                *OllamaCloudUsageSnapshot `json:"snapshot,omitempty"`
+	AccountID               int64                        `json:"account_id"`
+	Eligible                bool                         `json:"eligible"`
+	Configured              bool                         `json:"configured"`
+	AutoRefreshEnabled      bool                         `json:"auto_refresh_enabled"`
+	EncryptionKeyConfigured bool                         `json:"encryption_key_configured"`
+	Snapshot                *OllamaCloudUsageSnapshot    `json:"snapshot,omitempty"`
+	BudgetDeferral          *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
 }
 
 type ollamaCloudUsageRepository interface {
@@ -376,6 +376,7 @@ func scheduleOllamaCloudUsageActivity(deferred *DeferredService, account *Accoun
 type OllamaCloudUsageService struct {
 	accountRepo             AccountRepository
 	httpUpstream            HTTPUpstream
+	monitoringBudget        *MonitoringProbeBudgetService
 	settingService          *SettingService
 	encryptor               SecretEncryptor
 	encryptionKeyConfigured bool
@@ -437,13 +438,28 @@ func ProvideOllamaCloudUsageService(
 	cfg *config.Config,
 	lockCache LeaderLockCache,
 	db *sql.DB,
+	budgetRepo MonitoringProbeBudgetRepository,
 ) *OllamaCloudUsageService {
 	keyConfigured := cfg != nil && cfg.Totp.EncryptionKeyConfigured
 	svc := NewOllamaCloudUsageService(accountRepo, httpUpstream, settingService, encryptor, keyConfigured)
 	svc.lockCache = lockCache
 	svc.db = db
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))
 	svc.start(cfg.RunsBackgroundJobs())
 	return svc
+}
+
+func (s *OllamaCloudUsageService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
+	s.monitoringBudget = budget
+}
+
+func (s *OllamaCloudUsageService) monitoringDeferral(accountID int64, err error) *MonitoringProbeBudgetDenial {
+	denial := monitoringProbeDeferral(err, s.currentTime())
+	if denial != nil {
+		logger.LegacyPrintf("service.ollama_cloud_usage", "monitoring_budget_deferred: account_id=%d reason=%s scope=%s retry_at=%s",
+			accountID, denial.Reason, denial.Scope, denial.RetryAt.Format(time.RFC3339))
+	}
+	return denial
 }
 
 func (s *OllamaCloudUsageService) Start() {
@@ -721,6 +737,14 @@ func (s *OllamaCloudUsageService) Refresh(ctx context.Context, accountID int64) 
 		return nil, err
 	}
 	if _, err := s.refreshAccount(ctx, accountID, settings, false); err != nil {
+		if denial := s.monitoringDeferral(accountID, err); denial != nil {
+			state, stateErr := s.GetState(ctx, accountID)
+			if stateErr != nil {
+				return nil, stateErr
+			}
+			state.BudgetDeferral = denial
+			return state, nil
+		}
 		return nil, err
 	}
 	return s.GetState(ctx, accountID)
@@ -776,6 +800,9 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 		expected := account
 		group.Go(func() error {
 			if _, refreshErr := s.refreshAccount(ctx, accountID, settings, true); refreshErr != nil {
+				if s.monitoringDeferral(accountID, refreshErr) != nil {
+					return nil
+				}
 				if errors.Is(refreshErr, ErrOllamaCloudUsageIdentityChanged) {
 					if disableErr := writer.DisableOllamaCloudUsageAutoRefresh(ctx, &expected); disableErr != nil {
 						logger.LegacyPrintf("service.ollama_cloud_usage", "disable_auto_refresh_failed: account_id=%d err=%v", accountID, disableErr)
@@ -904,6 +931,11 @@ func (s *OllamaCloudUsageService) refreshLoadedAccount(ctx context.Context, acco
 		}
 		proxyURL = account.Proxy.URL()
 	}
+	ctx = withAccountTestMonitoringSite(s.monitoringBudget.qualityContext(ctx), "https://ollama.com")
+	if probe, ok := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok {
+		probe.ollamaSession = true
+		ctx = context.WithValue(ctx, monitoringProbeBudgetKey{}, probe)
+	}
 	requestCtx, cancel := context.WithTimeout(WithHTTPUpstreamRedirectsDisabled(ctx), ollamaCloudUsageRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, ollamaCloudUsageSettingsURL, nil)
@@ -914,13 +946,22 @@ func (s *OllamaCloudUsageService) refreshLoadedAccount(ctx context.Context, acco
 	req.Header.Set("Cookie", cookie)
 	req.Header.Set("User-Agent", "sub2api-ollama-usage/1")
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if local := monitoringProbeLocalError(requestCtx); local != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, local
+	}
 	if err != nil {
 		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "request_failed", 0, false)
 	}
 	if resp == nil || resp.Body == nil {
 		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "empty_response", 0, false)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	body, readErr := ReadMonitoringProbeResponse(requestCtx, resp, ollamaCloudUsageMaxBodyBytes+1)
+	if IsMonitoringProbeBudgetFailure(readErr) {
+		return nil, readErr
+	}
 	if resp.Request != nil && !isExactOllamaCloudSettingsURL(resp.Request.URL) {
 		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_host_mismatch", 0, false)
 	}
@@ -933,7 +974,6 @@ func (s *OllamaCloudUsageService) refreshLoadedAccount(ctx context.Context, acco
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "http_error", retryAfter(resp.Header, now), false)
 	}
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, ollamaCloudUsageMaxBodyBytes+1))
 	if readErr != nil {
 		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_read_failed", 0, false)
 	}

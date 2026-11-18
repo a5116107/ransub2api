@@ -38,6 +38,105 @@ func monitoringBudgetPolicy() service.MonitoringProbeBudgetSettings {
 	return s
 }
 
+type ollamaBudgetFixtureEncryptor struct{}
+
+func (ollamaBudgetFixtureEncryptor) Encrypt(v string) (string, error) { return v, nil }
+func (ollamaBudgetFixtureEncryptor) Decrypt(v string) (string, error) { return v, nil }
+
+func TestOllamaCloudUsageMonitoringBudgetHTTPPostgresSessionAndRecovery(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	var calls atomic.Int32
+	body, err := os.ReadFile("../service/testdata/ollama_settings_usage.html")
+	require.NoError(t, err)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/settings" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") == "" {
+			http.Error(w, "unexpected settings request", http.StatusBadRequest)
+			return
+		}
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+		}}
+	t.Cleanup(transport.CloseIdleConnections)
+	httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	upstream := gatewayPinDelegate{call: func(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+		return httpClient.Do(req)
+	}}
+	create := func(name, cookie string) *service.Account {
+		return mustCreateAccount(t, client, &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+			Status: service.StatusActive, Schedulable: true, Concurrency: 2, Credentials: map[string]any{"api_key": name, "base_url": "https://ollama.com"},
+			Extra: map[string]any{service.OllamaCloudUsageSessionExtraKey: cookie, service.OllamaCloudUsageAutoRefreshExtraKey: true}})
+	}
+	first := create("inference-key-one", "session=second; wos-session=shared")
+	alias := create("different-inference-key", "wos-session=shared; session=second")
+	independent := create("third-inference-key", "wos-session=independent")
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.KeyRequestsPerMinute = 1
+	policy, err = budget.SaveSettings(t.Context(), policy)
+	require.NoError(t, err)
+	row := func(id int64) string {
+		var raw string
+		require.NoError(t, db.QueryRowContext(t.Context(), `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&raw))
+		return raw
+	}
+	aliasBefore := row(alias.ID)
+	run := func(id int64) service.OllamaCloudUsageState {
+		t.Helper()
+		accounts := newAccountRepositoryWithSQL(client, db, nil)
+		svc := service.NewOllamaCloudUsageService(accounts, upstream, service.NewSettingService(NewSettingRepository(client), nil), ollamaBudgetFixtureEncryptor{}, true)
+		defer svc.Stop()
+		svc.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+		state, refreshErr := svc.Refresh(t.Context(), id)
+		require.NoError(t, refreshErr)
+		require.NotNil(t, state)
+		raw, marshalErr := json.Marshal(state)
+		require.NoError(t, marshalErr)
+		require.NotContains(t, string(raw), "wos-session")
+		require.NotContains(t, string(raw), "inference-key")
+		return *state
+	}
+	result := run(first.ID)
+	require.Nil(t, result.BudgetDeferral)
+	require.Equal(t, service.OllamaCloudUsageStatusOK, result.Snapshot.Status)
+	result = run(alias.ID)
+	require.NotNil(t, result.BudgetDeferral)
+	require.Equal(t, "request_limit", result.BudgetDeferral.Reason)
+	require.Equal(t, "key_minute", result.BudgetDeferral.Scope)
+	require.Nil(t, result.Snapshot)
+	require.Equal(t, aliasBefore, row(alias.ID), "a different inference key must not bypass the final web session's limit or publish a failed snapshot")
+	require.EqualValues(t, 1, calls.Load())
+	result = run(independent.ID)
+	require.Nil(t, result.BudgetDeferral)
+	require.Equal(t, service.OllamaCloudUsageStatusOK, result.Snapshot.Status)
+	policy.KeyRequestsPerMinute = 3
+	_, err = budget.SaveSettings(t.Context(), policy)
+	require.NoError(t, err)
+	result = run(alias.ID)
+	require.Nil(t, result.BudgetDeferral)
+	require.Equal(t, service.OllamaCloudUsageStatusOK, result.Snapshot.Status)
+	require.NotEqual(t, aliasBefore, row(alias.ID))
+	require.EqualValues(t, 3, calls.Load())
+	summary, err := budget.Summary(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 3, summary.DayUsed)
+	require.Zero(t, summary.DayTokens)
+	require.Zero(t, summary.UsageUnknown)
+	require.Zero(t, summary.UsagePending)
+	require.Zero(t, summary.ActiveRequests)
+	var downstreamUsage int
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT count(*) FROM usage_logs`).Scan(&downstreamUsage))
+	require.Zero(t, downstreamUsage)
+}
+
 // Preflight does not retroactively discard valid legacy policy JSON or invent
 // capacity after inventory grows. Reproduce that old writer only in fixtures;
 // the current admin save is independently asserted to reject the shortfall.

@@ -237,6 +237,9 @@ export default {
       },
       usageWindowsHint: '“5h / 7d”是上游账号（如 OpenAI ChatGPT、Claude）官方的滚动用量窗口限制，由上游对账号设定，并非 sub2api 配置，也与你映射的模型无关。窗口滚动到期后用量会自动重置，无法在 sub2api 端解除该限制。',
       ollamaCloud: {
+        budgetSessionMinute: '网页会话 Cookie 每分钟',
+        budgetSessionConcurrent: '网页会话 Cookie 并发',
+        budgetRetained: '本次未刷新用量；已有观测与自动刷新设置不变。该凭据预算按网页会话 Cookie 共享，不是推理 API Key。',
         title: 'Ollama Cloud 用量',
         sessionSecurityHint: '浏览器会话会加密落库，且只发送到固定的 Ollama 官方设置页。',
         configured: '已配置',

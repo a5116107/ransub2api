@@ -172,4 +172,31 @@ describe('OllamaCloudUsageSettings', () => {
 
     expect(notifications.showError).toHaveBeenCalledWith('retry in 18 seconds')
   })
+
+  it('shows a neutral budget conclusion without claiming a refresh and clears it on recovery', async () => {
+    api.refreshOllamaCloudUsage.mockResolvedValueOnce({
+      ...detailedState(),
+      budget_deferral: { reason: 'request_limit', scope: 'key_minute', retry_at: '2026-11-18T14:00:00Z' }
+    }).mockResolvedValueOnce(detailedState('pro'))
+    const wrapper = mount(OllamaCloudUsageSettings, { props: { account: account(detailedState()) } })
+
+    await wrapper.get('[data-testid="ollama-cloud-refresh"]').trigger('click')
+    await flushPromises()
+
+    const notice = wrapper.get('[data-testid="ollama-cloud-budget-deferral"]')
+    expect(notice.attributes('role')).toBe('status')
+    expect(notice.text()).toContain('admin.settings.upstreamBillingProbe.budget.request_limit')
+    expect(notice.text()).toContain('admin.accounts.ollamaCloud.budgetSessionMinute')
+    expect(notice.text()).toContain('admin.accounts.ollamaCloud.budgetRetained')
+    expect(notice.get('time').attributes('datetime')).toBe('2026-11-18T14:00:00Z')
+    expect(wrapper.get('[data-testid="ollama-cloud-usage-details"]').text()).toContain('max')
+    expect(notifications.showSuccess).not.toHaveBeenCalled()
+    expect(notifications.showError).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="ollama-cloud-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ollama-cloud-budget-deferral"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="ollama-cloud-usage-details"]').text()).toContain('pro')
+    expect(notifications.showSuccess).toHaveBeenCalledTimes(1)
+  })
 })

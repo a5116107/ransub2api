@@ -1370,6 +1370,7 @@ export interface OllamaCloudUsageState {
   auto_refresh_enabled: boolean
   encryption_key_configured: boolean
   snapshot?: OllamaCloudUsageSnapshot
+  budget_deferral?: MonitoringProbeBudgetDeferral
 }
 
 export interface OllamaCloudUsageSettings {

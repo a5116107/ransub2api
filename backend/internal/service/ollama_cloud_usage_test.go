@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
@@ -312,6 +313,193 @@ func ollamaUsageFixture(t *testing.T) []byte {
 	body, err := os.ReadFile("testdata/ollama_settings_usage.html")
 	require.NoError(t, err)
 	return body
+}
+
+func TestOllamaCloudUsageMonitoringBudgetSettlesBeforeSnapshot(t *testing.T) {
+	for _, failure := range []string{"denial", "settlement", "settlement_unauthorized", "settlement_redirect", "lease_before_body"} {
+		t.Run(failure, func(t *testing.T) {
+			account := ollamaUsageAccount(4410)
+			account.Extra[OllamaCloudUsageSessionExtraKey] = "cipher:wos-session=fixture"
+			account.Extra[OllamaCloudUsageAutoRefreshExtraKey] = true
+			fetched := time.Now().Add(-time.Hour)
+			account.Extra[OllamaCloudUsageSnapshotExtraKey] = &OllamaCloudUsageSnapshot{Status: OllamaCloudUsageStatusOK,
+				Data: &OllamaCloudUsageData{Plan: "previous"}, FetchedAt: &fetched, LastAttemptAt: fetched, NextRefreshAt: time.Now()}
+			repo := &ollamaUsageTestRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}}
+			upstream := &ollamaUsageHTTPStub{body: ollamaUsageFixture(t)}
+			switch failure {
+			case "settlement_unauthorized":
+				upstream.status = http.StatusUnauthorized
+			case "settlement_redirect":
+				upstream.status = http.StatusFound
+			case "lease_before_body":
+				upstream.beforeResponse = func(req *http.Request) {
+					probe := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+					probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
+				}
+			}
+			budget := &monitoringBudgetRepoStub{}
+			if failure == "denial" {
+				budget.denyAt, budget.err = 1, &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "key_minute", RetryAt: time.Now().Add(time.Minute)}
+			} else if failure != "lease_before_body" {
+				budget.releaseErr = errors.New("fixture settlement failure")
+			}
+			svc := newOllamaUsageTestService(t, repo, monitoringBudgetHTTP{base: upstream}, &upstreamBillingProbeSettingRepo{}, true)
+			ctx := NewMonitoringProbeBudgetService(budget).Context(t.Context(), "https://ollama.com", false)
+			before, err := json.Marshal(account)
+			require.NoError(t, err)
+
+			result, err := svc.refreshAccount(ctx, account.ID, nil, false)
+
+			require.Nil(t, result)
+			require.True(t, IsMonitoringProbeBudgetFailure(err), "a local budget failure must remain typed: %v", err)
+			after, marshalErr := json.Marshal(account)
+			require.NoError(t, marshalErr)
+			require.JSONEq(t, string(before), string(after), "a local delay must not publish success, supplier failure or a new retry horizon")
+			require.Len(t, budget.requests, 1)
+			physical := int64(1)
+			if failure == "denial" {
+				physical = 0
+			}
+			require.Equal(t, physical, upstream.calls.Load())
+			require.EqualValues(t, physical, budget.released)
+			require.False(t, budget.requests[0].MeterTokens)
+			require.False(t, budget.requests[0].Recovery)
+		})
+	}
+}
+
+func TestOllamaCloudUsageMonitoringBudgetEventDoesNotNegativeCache(t *testing.T) {
+	fixedNow := time.Now().UTC()
+	account := ollamaUsageAccount(4411)
+	account.Extra[OllamaCloudUsageSessionExtraKey] = "cipher:wos-session=fixture"
+	repo := &ollamaUsageTestRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}}
+	upstream := &ollamaUsageHTTPStub{body: ollamaCloudProbeUsageBody(100, fixedNow.Add(time.Hour).Format(time.RFC3339))}
+	budget := &monitoringBudgetRepoStub{denyAt: 1, err: ErrMonitoringProbeBudgetUnavailable}
+	svc := newOllamaUsageTestService(t, repo, monitoringBudgetHTTP{base: upstream}, &upstreamBillingProbeSettingRepo{}, true)
+	svc.now = func() time.Time { return fixedNow }
+	ctx := NewMonitoringProbeBudgetService(budget).Context(t.Context(), "https://ollama.com", false)
+	callbacks := 0
+	callback := func(id int64, _ time.Time) { require.Equal(t, account.ID, id); callbacks++ }
+
+	svc.runOllamaCloudUsageProbe(ctx, account.ID, callback)
+
+	require.Empty(t, svc.probeGroups, "a local refusal must not suppress the next event for 30 seconds")
+	require.NotContains(t, account.Extra, OllamaCloudUsageSnapshotExtraKey)
+	require.Zero(t, callbacks)
+	budget.denyAt = 0
+	ctx = NewMonitoringProbeBudgetService(budget).Context(t.Context(), "https://ollama.com", false)
+	svc.runOllamaCloudUsageProbe(ctx, account.ID, callback)
+	require.Equal(t, 1, callbacks)
+	require.EqualValues(t, 1, upstream.calls.Load())
+}
+
+func TestOllamaCloudUsageMonitoringBudgetAllEntryPointsRecover(t *testing.T) {
+	for _, entry := range []string{"manual", "cycle", "event"} {
+		t.Run(entry, func(t *testing.T) {
+			account := ollamaUsageAccount(4412)
+			account.Extra[OllamaCloudUsageSessionExtraKey] = "cipher:wos-session=fixture"
+			account.Extra[OllamaCloudUsageAutoRefreshExtraKey] = true
+			repo := &ollamaUsageTestRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}, due: []Account{*account}}
+			upstream := &ollamaUsageHTTPStub{body: ollamaCloudProbeUsageBody(100, time.Now().Add(time.Hour).Format(time.RFC3339))}
+			budget := &monitoringBudgetRepoStub{denyAt: 1, err: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "key_minute", RetryAt: time.Now().Add(time.Minute)}}
+			svc := newOllamaUsageTestService(t, repo, monitoringBudgetHTTP{base: upstream}, &upstreamBillingProbeSettingRepo{values: map[string]string{SettingKeyOllamaCloudUsageSettings: `{"enabled":true,"interval_minutes":60}`}}, true)
+			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+			callbacks := 0
+			run := func(deferred bool) {
+				switch entry {
+				case "manual":
+					state, err := svc.Refresh(t.Context(), account.ID)
+					require.NoError(t, err)
+					require.NotNil(t, state)
+					if deferred {
+						require.NotNil(t, state.BudgetDeferral)
+						require.Equal(t, "key_minute", state.BudgetDeferral.Scope)
+						require.Nil(t, state.Snapshot)
+					} else {
+						require.Nil(t, state.BudgetDeferral)
+						require.Equal(t, OllamaCloudUsageStatusOK, state.Snapshot.Status)
+					}
+				case "cycle":
+					require.NoError(t, svc.RunDue(t.Context()))
+				case "event":
+					svc.runOllamaCloudUsageProbe(t.Context(), account.ID, func(int64, time.Time) { callbacks++ })
+				}
+			}
+			run(true)
+			require.Len(t, budget.requests, 1)
+			require.Zero(t, upstream.calls.Load())
+			require.NotContains(t, account.Extra, OllamaCloudUsageSnapshotExtraKey)
+			require.Empty(t, svc.probeGroups)
+			require.Zero(t, callbacks)
+			require.True(t, ollamaCloudUsageAutoRefreshEnabled(account))
+			budget.denyAt = 0
+			run(false)
+			require.Len(t, budget.requests, 2)
+			require.EqualValues(t, 1, upstream.calls.Load())
+			require.Equal(t, 1, budget.released)
+			require.Equal(t, OllamaCloudUsageStatusOK, decodeOllamaCloudUsageSnapshot(account.Extra).Status)
+			if entry == "event" {
+				require.Equal(t, 1, callbacks)
+			}
+		})
+	}
+}
+
+func TestOllamaCloudUsageMonitoringBudgetFinalCookieIdentity(t *testing.T) {
+	budget := &monitoringBudgetRepoStub{}
+	upstream := &ollamaUsageHTTPStub{body: ollamaUsageFixture(t)}
+	accounts := map[int64]*Account{}
+	for i, cookie := range []string{"session=second; wos-session=shared", "wos-session=shared; session=second", "wos-session=other"} {
+		account := ollamaUsageAccount(int64(4450 + i))
+		account.Extra[OllamaCloudUsageSessionExtraKey] = "cipher:" + cookie
+		accounts[account.ID] = account
+	}
+	svc := newOllamaUsageTestService(t, &ollamaUsageTestRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: accounts}}, monitoringBudgetHTTP{base: upstream}, &upstreamBillingProbeSettingRepo{}, true)
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+	for id := int64(4450); id < 4453; id++ {
+		_, err := svc.Refresh(t.Context(), id)
+		require.NoError(t, err)
+	}
+	require.Len(t, budget.requests, 3)
+	require.Equal(t, budget.requests[0].KeyHashes, budget.requests[1].KeyHashes, "cookie ordering and unrelated inference keys cannot multiply one web session's allowance")
+	require.NotEqual(t, budget.requests[0].KeyHashes, budget.requests[2].KeyHashes)
+	for _, request := range budget.requests {
+		require.Equal(t, monitoringProbeHash("https://ollama.com"), request.SiteHash)
+		require.Len(t, request.KeyHashes, 1)
+		require.Len(t, request.KeyHashes[0], 64)
+		require.NotEqual(t, config.UpstreamKeyFingerprint(accounts[4450].GetOpenAIApiKey()), request.KeyHashes[0])
+		require.False(t, request.MeterTokens)
+		require.False(t, request.Recovery)
+	}
+	for _, invalid := range []string{"unmarked", "other_host", "other_path", "post", "duplicate_cookie", "missing_cookie", "unknown_auth"} {
+		t.Run(invalid, func(t *testing.T) {
+			req := upstream.lastRequest.Clone(NewMonitoringProbeBudgetService(budget).Context(t.Context(), "https://ollama.com", false))
+			req.Header = http.Header{"Cookie": {"wos-session=shared"}}
+			if invalid != "unmarked" {
+				probe := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+				probe.ollamaSession = true
+				req = req.WithContext(context.WithValue(req.Context(), monitoringProbeBudgetKey{}, probe))
+			}
+			switch invalid {
+			case "other_host":
+				req.URL.Host = "fixture.invalid"
+			case "other_path":
+				req.URL.Path = "/api/chat"
+			case "post":
+				req.Method = http.MethodPost
+			case "duplicate_cookie":
+				req.Header["cookie"] = []string{"wos-session=other"}
+			case "missing_cookie":
+				req.Header.Del("Cookie")
+			case "unknown_auth":
+				req.Header.Set("Authorization", "unknown fixture")
+			}
+			_, finish, err := BeginMonitoringProbeRequest(req)
+			require.ErrorIs(t, err, ErrMonitoringProbeBudgetUnavailable)
+			require.Nil(t, finish)
+			require.Len(t, budget.requests, 3)
+		})
+	}
 }
 
 func TestOllamaCloudUsageSettingsDefaultOffAndValidation(t *testing.T) {

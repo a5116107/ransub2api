@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" role="status">
     <p class="font-semibold">{{ title }}</p>
-    <p>{{ t(reasonKey) }} · {{ t(`modelTrace.budgetScopes.${scope}`) }}</p>
+    <p>{{ t(reasonKey) }} · {{ scopeLabel || t(`modelTrace.budgetScopes.${scope}`) }}</p>
     <p v-if="retryAt">{{ t('modelTrace.retryAfter') }} <time :datetime="retryAt">{{ new Date(retryAt).toLocaleString() }}</time></p>
     <p v-else>{{ t('modelTrace.retryUnknown') }}</p>
     <slot />
@@ -13,7 +13,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MonitoringProbeBudgetDeferral } from '@/types/monitoringProbeBudget'
 
-const props = defineProps<{ deferral: MonitoringProbeBudgetDeferral; title: string }>()
+const props = defineProps<{ deferral: MonitoringProbeBudgetDeferral; title: string; scopeLabel?: string }>()
 const { t } = useI18n()
 const reasonKey = computed(() => {
   const reason = props.deferral.reason
