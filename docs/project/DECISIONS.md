@@ -3961,7 +3961,7 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 用户选择仅同步已验证稳定修复，开发在研不提升。构建源 `1171780c7fc5e38def77dba160ac570a827a45bf`；公开Release v2.21.0-ransub.8，GHCR固定摘要291c5bf6dccd，实际程序SHA256 7827288bab15071c6ef62c25fc732697ad044c7b77da200aee5f557d7818db23。
 - 本地UI212、真实PG181父/子用例、service11通过；typecheck/ESLint及unit标签vet通过。无标签vet的既有辅助函数标签错误保留事实，未改skip。中英1440/390浏览器20项通过。
 - 本地及生产数据库副本各四阶段升级/回滚通过。生产副本首轮2GiB tmpfs容量不足，核对资源后改4GiB通过；仅在隔离副本暂停计费探测运行器，线上账号标记与快照未变。开发版混跑脚本的Key policy断言不适用于未提升该功能的稳定版，其失败证据保留，不宣称严格混跑通过。
-- 排空后切换并再次同镜像重建，程序哈希不变；保留15账号/2分组/432迁移及原PG/Redis身份、配置和持久挂载。current/latest=2.21.0-ransub.8，has_update=false。生产UI真实登录/版本徽标、未知结论列表和详情中性展示、中英原因路径及桌面/手机通过；业务公网SSE完成且仅一条账单usage=112497。
+- 排空后切换并再次同镜像重建，程序哈希不变；保留15账号/2分组/432迁移及原PG/Redis身份、配置和持久挂载。current/latest=2.21.0-ransub.8，has_update=false。生产中文UI真实登录/版本徽标、未知结论列表和详情中性展示及桌面/手机通过；中英原因展示另由同源本地构建浏览器验证；业务公网SSE完成且仅一条账单usage=112497。
 - UI核验先遇首次使用引导遮挡、随后等待脚本触发CSP；改为正常关闭引导并用调试器只读观察等待，不修改站点CSP/DOM。SSH间歇EOF改用已保存原生SSH，严格主机校验保留。GitHub仅执行现有预构建封装job 44618043333，云端编译/测试job均skipped；本机构建产物未重编译。
 - 本机Docker拉取先受凭据自动探测/daemon链路EOF影响；代理下匿名拉取20个校验blob并导入，发布摘要291c5bf6dccd及程序哈希与生产完全一致；未更改全局Docker代理或凭据。最小证据位于H:/Root/DevCache/evidence/sub2api-production-failover/stable-quality-sync。
 - 稳定分支仅追加本次文档后验，应用源码相对v2.21.0-ransub.8零差异。旧本地production的规划提交7f846ede7保留为work/production-doc-plan且原已包含于开发历史；不重写任何已发布历史。
