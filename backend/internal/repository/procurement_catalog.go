@@ -13,6 +13,7 @@ import (
 	dbgroup "github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 const procurementCatalogLockID int64 = 0x4250535052434154
@@ -104,6 +105,7 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 			return nil, err
 		}
 		product = groupEntityToService(entity)
+		product.ProcurementSources, _ = loadProcurementSources(ctx, tx, product)
 	}
 	entities, err := observerAccountQuery(ctx, client.Account.Query()).Where(dbaccount.IDIn(ids...), dbaccount.DeletedAtIsNil()).All(ctx)
 	if err != nil {
@@ -149,6 +151,46 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 		out.Results = append(out.Results, result)
 	}
 	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Caller holds the same read-only snapshot as the product policy. A missing,
+// disabled, foreign or self source invalidates the whole selected authority.
+func loadProcurementSources(ctx context.Context, db sqlQueryer, product *service.Group) (*domain.ProcurementSourceSnapshot, error) {
+	policy := product.ProcurementPolicy
+	if policy == nil || policy.Version < 6 || policy.SourceGroupIDs == nil {
+		return nil, nil
+	}
+	if policy.Validate() != nil {
+		return nil, service.ErrProcurementPolicyInvalid
+	}
+	groups := policy.SourceGroupIDs
+	out := &domain.ProcurementSourceSnapshot{Version: 1, ProductGroupID: product.ID, PolicyRevision: policy.Revision, GroupIDs: append([]int64{}, groups...), AccountIDs: []int64{}}
+	var count int
+	if err := scanSingleRow(ctx, db, `SELECT count(*) FROM groups WHERE id=ANY($1) AND id<>$2 AND deleted_at IS NULL AND status='active' AND platform=$3`, []any{pq.Array(groups), product.ID, product.Platform}, &count); err != nil {
+		return nil, err
+	}
+	if count != len(groups) {
+		return nil, service.ErrProcurementPolicyInvalid
+	}
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT a.id FROM account_groups ag JOIN accounts a ON a.id=ag.account_id WHERE ag.group_id=ANY($1) AND a.deleted_at IS NULL AND a.platform=$2 ORDER BY a.id LIMIT 10001`, pq.Array(groups), product.Platform)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out.AccountIDs = append(out.AccountIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := out.ValidateFor(product.ID, policy); err != nil {
 		return nil, err
 	}
 	return out, nil

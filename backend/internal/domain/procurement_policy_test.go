@@ -28,7 +28,7 @@ func TestProcurementPolicyAvailabilityCompleteContract(t *testing.T) {
 		"wrong case":      strings.Replace(valid, `"availability":`, `"Availability":`, 1),
 		"duplicate":       strings.Replace(valid, `"availability":`, `"availability":"current_state","availability":`, 1),
 		"old version":     strings.Replace(valid, `"version":5`, `"version":4`, 1),
-		"future version":  strings.Replace(valid, `"version":5`, `"version":6`, 1),
+		"future version":  strings.Replace(valid, `"version":5`, `"version":7`, 1),
 		"missing quality": strings.Replace(valid, `,"quality":"current_answer"`, "", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -216,4 +216,101 @@ func TestProcurementPolicyBucketsValidationCloneAndRoundtrip(t *testing.T) {
 	require.Error(t, p.Validate())
 	p.Buckets = &ProcurementBuckets{Codes: make([]string, 65)}
 	require.Error(t, p.Validate())
+}
+
+func TestProcurementPolicyApprovedSourceGroupsJSON(t *testing.T) {
+	base := `{"version":6,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"not_required","source_group_ids":GROUPS}`
+	for _, value := range []string{"null", "[]", "[2,3]"} {
+		var policy ProcurementPolicy
+		require.NoError(t, json.Unmarshal([]byte(strings.Replace(base, "GROUPS", value, 1)), &policy))
+		require.NoError(t, policy.Validate())
+		encoded, err := json.Marshal(&policy)
+		require.NoError(t, err)
+		require.Contains(t, string(encoded), `"source_group_ids":`+value)
+	}
+	for _, value := range []string{"[0]", "[-1]", "[2,2]", "[9007199254740992]", "[1.2]", `{}`, `"2"`} {
+		var policy ProcurementPolicy
+		require.Error(t, json.Unmarshal([]byte(strings.Replace(base, "GROUPS", value, 1)), &policy))
+	}
+	var policy ProcurementPolicy
+	require.Error(t, json.Unmarshal([]byte(strings.Replace(base, `,"source_group_ids":GROUPS`, "", 1)), &policy))
+	require.Error(t, json.Unmarshal([]byte(strings.Replace(strings.Replace(base, "GROUPS", "null", 1), `"version":6`, `"version":5`, 1)), &policy))
+	valid := strings.Replace(base, "GROUPS", "[3,2]", 1)
+	for name, raw := range map[string]string{
+		"duplicate":  strings.Replace(valid, `"source_group_ids":`, `"source_group_ids":null,"source_group_ids":`, 1),
+		"case alias": strings.Replace(valid, `"source_group_ids":`, `"Source_Group_Ids":`, 1),
+		"unknown":    strings.Replace(valid, `"source_group_ids":`, `"unknown":true,"source_group_ids":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) { require.Error(t, json.Unmarshal([]byte(raw), &policy)) })
+	}
+	require.NoError(t, json.Unmarshal([]byte(valid), &policy))
+	require.Equal(t, []int64{2, 3}, policy.WithRevision(2).SourceGroupIDs)
+	policy.SourceGroupIDs = make([]int64, 65)
+	for i := range policy.SourceGroupIDs {
+		policy.SourceGroupIDs[i] = int64(i + 1)
+	}
+	require.Error(t, policy.Validate())
+	policy.SourceGroupIDs = policy.SourceGroupIDs[:64]
+	require.NoError(t, policy.Validate())
+	legacy, err := json.Marshal(&ProcurementPolicy{Version: 1, Revision: 1})
+	require.NoError(t, err)
+	require.NotContains(t, string(legacy), "source_group_ids")
+}
+
+func TestProcurementSourceSnapshotAuthorityAndClone(t *testing.T) {
+	var policy ProcurementPolicy
+	require.NoError(t, json.Unmarshal([]byte(`{"version":6,"revision":4,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"not_required","source_group_ids":[2,3]}`), &policy))
+	source := &ProcurementSourceSnapshot{Version: 1, ProductGroupID: 7, PolicyRevision: 4, GroupIDs: []int64{2, 3}, AccountIDs: []int64{10, 11}}
+	allowed, err := policy.AllowsSourceAccount(7, 10, source)
+	require.NoError(t, err)
+	require.True(t, allowed)
+	allowed, err = policy.AllowsSourceAccount(7, 12, source)
+	require.NoError(t, err)
+	require.False(t, allowed)
+	for _, mutate := range []func(*ProcurementSourceSnapshot){
+		func(s *ProcurementSourceSnapshot) { s.Version = 2 }, func(s *ProcurementSourceSnapshot) { s.ProductGroupID = 8 }, func(s *ProcurementSourceSnapshot) { s.PolicyRevision = 3 },
+		func(s *ProcurementSourceSnapshot) { s.GroupIDs = []int64{2} }, func(s *ProcurementSourceSnapshot) { s.AccountIDs = nil }, func(s *ProcurementSourceSnapshot) { s.AccountIDs = []int64{11, 10} }, func(s *ProcurementSourceSnapshot) { s.AccountIDs = []int64{10, 10} },
+	} {
+		broken := source.Clone()
+		mutate(broken)
+		_, err := policy.AllowsSourceAccount(7, 10, broken)
+		require.Error(t, err)
+	}
+	cloned := policy.Clone()
+	cloned.SourceGroupIDs[0] = 8
+	require.Equal(t, int64(2), policy.SourceGroupIDs[0])
+	copy := source.Clone()
+	copy.AccountIDs[0] = 9
+	require.Equal(t, int64(10), source.AccountIDs[0])
+	_, err = policy.AllowsSourceAccount(7, 10, nil)
+	require.Error(t, err)
+	policy.SourceGroupIDs = []int64{}
+	allowed, err = policy.AllowsSourceAccount(7, 10, nil)
+	require.NoError(t, err)
+	require.False(t, allowed)
+	policy.SourceGroupIDs = nil
+	allowed, err = policy.AllowsSourceAccount(7, 10, nil)
+	require.NoError(t, err)
+	require.True(t, allowed)
+	policy.SourceGroupIDs = []int64{7}
+	source.GroupIDs = []int64{7}
+	require.Error(t, source.ValidateFor(7, &policy), "a product cannot approve itself")
+	policy.SourceGroupIDs, source.GroupIDs = []int64{2, 3}, []int64{2, 3}
+	source.AccountIDs = make([]int64, 10001)
+	for i := range source.AccountIDs {
+		source.AccountIDs[i] = int64(i + 1)
+	}
+	require.Error(t, source.ValidateFor(7, &policy))
+	source.AccountIDs = source.AccountIDs[:10000]
+	require.NoError(t, source.ValidateFor(7, &policy))
+	encoded, err := json.Marshal(source)
+	require.NoError(t, err)
+	for _, raw := range []string{
+		strings.Replace(string(encoded), `"account_ids":`, `"account_ids":[],"account_ids":`, 1),
+		strings.Replace(string(encoded), `"group_ids":`, `"Group_Ids":`, 1),
+		strings.Replace(string(encoded), `"version":1`, `"version":1,"unknown":true`, 1),
+	} {
+		var decoded ProcurementSourceSnapshot
+		require.Error(t, json.Unmarshal([]byte(raw), &decoded))
+	}
 }

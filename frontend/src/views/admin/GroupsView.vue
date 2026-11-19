@@ -1358,7 +1358,7 @@
 
         <ProcurementPolicyFields
           v-if="isProfitControlPlatform(createForm.platform) && createForm.profit_control_enabled"
-          v-model="createProcurementPolicy" id-prefix="create-procurement"
+          v-model="createProcurementPolicy" id-prefix="create-procurement" :platform="createForm.platform"
         />
 
         <!-- 支持的模型系列（仅 antigravity 平台） -->
@@ -3062,7 +3062,7 @@
 
         <ProcurementPolicyFields
           v-if="isProfitControlPlatform(editForm.platform) && editForm.profit_control_enabled"
-          v-model="editProcurementPolicy" id-prefix="edit-procurement"
+          v-model="editProcurementPolicy" id-prefix="edit-procurement" :platform="editForm.platform" :product-group-id="editingGroup?.id"
           :conflict="editProcurementConflict" :latest-policy="latestProcurementPolicy" :refreshing="refreshingProcurementPolicy"
           @refresh="refreshProcurementPolicy" @resolve="resolveProcurementConflict"
         />
@@ -6489,8 +6489,11 @@ const resolveProcurementConflict = () => {
   if (latest && latest.version >= 4 && editProcurementPolicy.value.version < 4) {
     editProcurementPolicy.value = { ...editProcurementPolicy.value, version: 4, quality: latest.quality };
   }
-  if (latest?.version === 5 && editProcurementPolicy.value.version < 5) {
+  if (latest && latest.version >= 5 && editProcurementPolicy.value.version < 5) {
     editProcurementPolicy.value = { ...editProcurementPolicy.value, version: 5, availability: latest.availability };
+  }
+  if (latest && latest.version >= 6 && editProcurementPolicy.value.version < 6) {
+    editProcurementPolicy.value = { ...editProcurementPolicy.value, version: 6, source_group_ids: latest.source_group_ids === null ? null : [...(latest.source_group_ids ?? [])] };
   }
   editProcurementPolicy.value = { ...editProcurementPolicy.value, revision: latest?.revision ?? 0 };
   editProcurementConflict.value = false;

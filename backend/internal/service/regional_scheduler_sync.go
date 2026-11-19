@@ -18,11 +18,12 @@ import (
 // An allowlist does not allocate global concurrency for the shared pool.
 // Full Account JSON is sensitive and must only travel in encrypted snapshots.
 type RegionalSchedulerDocument struct {
-	Version            int                           `json:"version"`
-	Buckets            []RegionalSchedulerBucket     `json:"buckets"`
-	Groups             []*Group                      `json:"groups,omitempty"`
-	Availability       []RegionalAccountAvailability `json:"availability"`
-	ProcurementCatalog *domain.ProcurementCatalog    `json:"procurement_catalog,omitempty"`
+	Version            int                                 `json:"version"`
+	Buckets            []RegionalSchedulerBucket           `json:"buckets"`
+	Groups             []*Group                            `json:"groups,omitempty"`
+	Availability       []RegionalAccountAvailability       `json:"availability"`
+	ProcurementCatalog *domain.ProcurementCatalog          `json:"procurement_catalog,omitempty"`
+	ProcurementSources []*domain.ProcurementSourceSnapshot `json:"procurement_sources,omitempty"`
 }
 
 // Reports contain no credentials or private managed-connection identities.
@@ -76,11 +77,21 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return doc, errors.New("trailing regional scheduler data")
 	}
-	if (doc.Version != 1 && doc.Version != 2 && doc.Version != 3) || doc.Buckets == nil || len(doc.Buckets) > 4096 {
+	if (doc.Version < 1 || doc.Version > 4) || doc.Buckets == nil || len(doc.Buckets) > 4096 {
 		return doc, errors.New("invalid regional scheduler version or buckets")
 	}
-	if doc.Version == 3 && doc.ProcurementCatalog.Validate() != nil || doc.Version < 3 && doc.ProcurementCatalog != nil {
+	if doc.Version >= 3 && doc.ProcurementCatalog.Validate() != nil || doc.Version < 3 && doc.ProcurementCatalog != nil {
 		return doc, errors.New("invalid regional procurement catalog")
+	}
+	if doc.Version < 4 && doc.ProcurementSources != nil {
+		return doc, errors.New("unsupported regional source authority")
+	}
+	sourceViews := make(map[int64]*domain.ProcurementSourceSnapshot, len(doc.ProcurementSources))
+	for _, source := range doc.ProcurementSources {
+		if source == nil || sourceViews[source.ProductGroupID] != nil {
+			return doc, errors.New("duplicate or missing regional source authority")
+		}
+		sourceViews[source.ProductGroupID] = source
 	}
 	groups := make(map[int64]bool, len(doc.Groups))
 	for _, g := range doc.Groups {
@@ -92,10 +103,26 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 			if g.ProcurementPolicy.Validate() != nil || g.ProcurementPolicy.Version >= 3 && doc.Version < 3 {
 				return doc, errors.New("invalid regional procurement policy")
 			}
+			if g.ProcurementPolicy.Version >= 6 {
+				if doc.Version < 4 {
+					return doc, errors.New("regional source policy requires version 4")
+				}
+				if g.ProcurementPolicy.SourceGroupIDs != nil {
+					source := sourceViews[g.ID]
+					if source.ValidateFor(g.ID, g.ProcurementPolicy) != nil {
+						return doc, errors.New("invalid regional source authority")
+					}
+					g.ProcurementSources = source.Clone()
+					delete(sourceViews, g.ID)
+				}
+			}
 			if g.ProcurementPolicy.Version >= 3 {
 				g.ProcurementCatalog = doc.ProcurementCatalog.Clone()
 			}
 		}
+	}
+	if len(sourceViews) != 0 {
+		return doc, errors.New("regional source authority without its product policy")
 	}
 	// A repeated account must have identical credentials and policy in every
 	// bucket; otherwise hydration would depend on bucket iteration order.
@@ -270,7 +297,30 @@ func (s *SchedulerSnapshotService) ExportRegionalScheduler(ctx context.Context, 
 						return nil, errors.New("conflicting regional procurement catalogs")
 					}
 				}
-				doc.Version, doc.ProcurementCatalog = 3, catalog
+				if doc.Version < 3 {
+					doc.Version = 3
+				}
+				doc.ProcurementCatalog = catalog
+			}
+			if group != nil && group.ProcurementPolicy != nil && group.ProcurementPolicy.Version >= 6 {
+				doc.Version = 4
+				if group.ProcurementPolicy.SourceGroupIDs != nil {
+					if group.ProcurementSources.ValidateFor(group.ID, group.ProcurementPolicy) != nil {
+						return nil, errors.New("regional export requires procurement source authority")
+					}
+					encoded, _ := json.Marshal(group.ProcurementSources)
+					for _, old := range doc.ProcurementSources {
+						if old.ProductGroupID == group.ID {
+							previous, _ := json.Marshal(old)
+							if !bytes.Equal(previous, encoded) {
+								return nil, errors.New("conflicting regional procurement sources")
+							}
+						}
+					}
+					if !seenGroups[group.ID] {
+						doc.ProcurementSources = append(doc.ProcurementSources, group.ProcurementSources.Clone())
+					}
+				}
 			}
 			if group != nil {
 				encoded, err := json.Marshal(group)

@@ -70,7 +70,7 @@ func TestProcurementPolicyApprovedSourcesGateAndPreview(t *testing.T) {
 			veto, reason := openAIProfitControlVetoReason(ctx, account)
 			require.Equal(t, tc.reason, reason)
 			require.Equal(t, tc.reason != "", veto)
-			verdict := previewAccountProfitAdmission(account, true, 1, 1, time.Now(), group.ProcurementPolicy, nil)
+			verdict := previewAccountProfitAdmission(account, true, 1, 1, time.Now(), &Group{ID: 0, ProcurementPolicy: group.ProcurementPolicy, ProcurementCatalog: nil})
 			want := ProfitPreviewClassAdmitted
 			if veto {
 				want = "rejected_procurement_source"
@@ -218,12 +218,12 @@ func TestProcurementPolicyOfflinePreviewMatchesGate(t *testing.T) {
 	min, max := "0.02", "0.03"
 	policy := &ProcurementPolicy{Version: 1, Revision: 1, MinRate: &min, MaxRate: &max}
 	account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(1), 0.03)
-	verdict := previewAccountProfitAdmission(account, true, 1, 1, time.Now(), policy, nil)
+	verdict := previewAccountProfitAdmission(account, true, 1, 1, time.Now(), &Group{ID: 0, ProcurementPolicy: policy, ProcurementCatalog: nil})
 	require.Equal(t, ProfitPreviewClassRejectedProcurement, verdict.Class)
-	verdict = previewAccountProfitAdmission(account, false, 1, 1, time.Now(), policy, nil)
+	verdict = previewAccountProfitAdmission(account, false, 1, 1, time.Now(), &Group{ID: 0, ProcurementPolicy: policy, ProcurementCatalog: nil})
 	require.Equal(t, ProfitPreviewClassAdmitted, verdict.Class, "disabled original gate preserves compatibility")
 	policy.Version = 2
-	verdict = previewAccountProfitAdmission(account, true, 1, 1, time.Now(), policy, nil)
+	verdict = previewAccountProfitAdmission(account, true, 1, 1, time.Now(), &Group{ID: 0, ProcurementPolicy: policy, ProcurementCatalog: nil})
 	require.Equal(t, ProfitPreviewClassUnknownProcurement, verdict.Class)
 }
 
@@ -329,12 +329,34 @@ func TestProcurementPolicyBothSchedulersAndSticky(t *testing.T) {
 			require.Equal(t, excluded.ID, cache.sessionBindings["procurement-sticky"])
 			require.Zero(t, cache.deletedSessions["procurement-sticky"])
 
+			group.ProcurementPolicy = procurementSourceGroupTestPolicy()
+			group.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{covered.ID})
+			for _, members := range [][]int64{{covered.ID}, {}, {covered.ID}} {
+				group.ProcurementSources.AccountIDs = members
+				ctx = billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"fixture","service_tier":"priority"}`)
+				for _, session := range []string{"", "procurement-sticky"} {
+					selected, _, err := svc.SelectAccountWithScheduler(ctx, &group.ID, "", session, "gpt-fixture", nil, OpenAIUpstreamTransportAny, false)
+					if len(members) == 0 {
+						require.Nil(t, selected)
+						require.ErrorIs(t, err, ErrNoAvailableAccounts)
+					} else {
+						require.NoError(t, err)
+						require.Equal(t, covered.ID, selected.Account.ID)
+						if selected.ReleaseFunc != nil {
+							selected.ReleaseFunc()
+						}
+					}
+				}
+			}
+			require.Equal(t, excluded.ID, cache.sessionBindings["procurement-sticky"])
+			require.Zero(t, cache.deletedSessions["procurement-sticky"])
+
 		})
 	}
 }
 
 func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
-	for _, constraint := range []string{"procurement_range", "procurement_source", "procurement_bucket", "procurement_catalog_unavailable", "procurement_quality_unavailable", "procurement_quality_failed", "procurement_availability_unavailable", "procurement_availability_failed"} {
+	for _, constraint := range []string{"procurement_range", "procurement_source", "procurement_bucket", "procurement_catalog_unavailable", "procurement_quality_unavailable", "procurement_quality_failed", "procurement_availability_unavailable", "procurement_availability_failed", "source_group_removed", "source_group_unavailable"} {
 		for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool} {
 			t.Run(mode+"/"+constraint, func(t *testing.T) {
 				var frames atomic.Int32
@@ -438,11 +460,21 @@ func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
 						replacement.ProcurementCatalog = procurementBucketTestCatalog()
 					}
 				}
+				expectedReason := constraint
+				if strings.HasPrefix(constraint, "source_group_") {
+					replacement.ProcurementPolicy = procurementSourceGroupTestPolicy()
+					replacement.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{})
+					expectedReason = "procurement_source"
+					if constraint == "source_group_unavailable" {
+						replacement.ProcurementSources = nil
+						expectedReason = "procurement_policy_unavailable"
+					}
+				}
 				latest.Store(&replacement)
 				require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(body)))
 				select {
 				case err := <-done:
-					require.ErrorContains(t, err, constraint)
+					require.ErrorContains(t, err, expectedReason)
 				case <-time.After(3 * time.Second):
 					t.Fatal("changed procurement policy did not reject the next physical turn")
 				}
@@ -562,6 +594,15 @@ func TestProcurementPolicyPhysicalHTTPRevisionAndRecovery(t *testing.T) {
 				send("")
 				latest.ProcurementCatalog.Buckets = latest.ProcurementCatalog.Buckets[1:]
 				send("procurement_catalog_unavailable")
+				latest.ProcurementPolicy = procurementSourceGroupTestPolicy()
+				latest.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{account.ID})
+				send("")
+				latest.ProcurementSources.AccountIDs = []int64{}
+				send("procurement_source") // Same policy revision, new source membership.
+				latest.ProcurementSources = nil
+				send("procurement_policy_unavailable")
+				latest.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{account.ID})
+				send("")
 				latest.ProcurementPolicy = nil
 				send("")
 				require.Equal(t, 0.5, gate.threshold, "fresh procurement never reprices an in-flight request")
@@ -608,6 +649,21 @@ func TestProcurementPolicyPostSlotAndPreview(t *testing.T) {
 	group.ProcurementPolicy.Buckets.Codes = []string{"low"}
 	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
 	require.False(t, vetoed, reason)
+	group.ProcurementPolicy = procurementSourceGroupTestPolicy()
+	group.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{account.ID})
+	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
+	require.False(t, vetoed, reason)
+	group.ProcurementSources.AccountIDs = []int64{}
+	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
+	require.True(t, vetoed)
+	require.Equal(t, "procurement_source", reason)
+	group.ProcurementSources = nil
+	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
+	require.True(t, vetoed)
+	require.Equal(t, "procurement_policy_unavailable", reason)
+	group.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{account.ID})
+	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
+	require.False(t, vetoed, reason)
 	require.Equal(t, .5, gate.threshold)
 }
 
@@ -635,4 +691,35 @@ func TestProcurementPolicyObservationsRemainSeparate(t *testing.T) {
 	require.Zero(t, stats.vetoThreshold.Load(), "procurement rejection is not a margin failure")
 	require.Zero(t, stats.vetoScope.Load(), "an interval is not model/fast applicability")
 	require.Zero(t, stats.vetoUpstreamRate.Load(), "policy storage failure is not a supplier price observation")
+}
+
+func TestProcurementPolicySourceGroupsPreviewAndGate(t *testing.T) {
+	group := profitControlTestGroup(7, 0, 0)
+	group.ProcurementPolicy = procurementSourceGroupTestPolicy()
+	account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(901), .025)
+	for _, tc := range []struct {
+		name   string
+		source *domain.ProcurementSourceSnapshot
+		want   string
+	}{
+		{"unknown", nil, "procurement_policy_unavailable"}, {"approved", procurementSourceGroupTestSnapshot(7, []int64{901}), ""}, {"removed", procurementSourceGroupTestSnapshot(7, []int64{}), "procurement_source"}, {"wrong product", procurementSourceGroupTestSnapshot(8, []int64{901}), "procurement_policy_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			group.ProcurementSources = tc.source
+			gate := (&OpenAIGatewayService{}).resolveOpenAIProfitControlGate(profitControlTestCtx(group), &group.ID)
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, gate)
+			veto, reason := openAIProfitControlVetoReason(ctx, account)
+			require.Equal(t, tc.want, reason)
+			require.Equal(t, tc.want != "", veto)
+			verdict := previewAccountProfitAdmission(account, true, 1, 1, time.Now(), group)
+			want := ProfitPreviewClassAdmitted
+			if tc.want == "procurement_source" {
+				want = ProfitPreviewClassRejectedSource
+			}
+			if tc.want == "procurement_policy_unavailable" {
+				want = ProfitPreviewClassUnknownProcurement
+			}
+			require.Equal(t, want, verdict.Class)
+		})
+	}
 }

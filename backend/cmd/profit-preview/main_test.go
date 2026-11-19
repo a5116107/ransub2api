@@ -182,3 +182,19 @@ func TestParsePreviewProcurementBuckets(t *testing.T) {
 	reports = service.PreviewProfitAdmission(inputs, time.Now())
 	require.Equal(t, service.ProfitPreviewClassUnknownCatalog, reports[0].Verdicts[0].Class)
 }
+
+func TestParsePreviewProcurementSourceGroupsMissingAuthority(t *testing.T) {
+	for _, tc := range []struct{ ids, class string }{
+		{"null", service.ProfitPreviewClassAdmitted},
+		{"[]", service.ProfitPreviewClassRejectedSource},
+		{"[3]", service.ProfitPreviewClassUnknownProcurement},
+	} {
+		t.Run(tc.ids, func(t *testing.T) {
+			input := `{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":1,"profit_control_enabled":true,"procurement_policy":{"version":6,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"not_required","source_group_ids":` + tc.ids + `}},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.02}]}]}`
+			inputs, err := parsePreviewInputs([]byte(input), false)
+			require.NoError(t, err)
+			reports := service.PreviewProfitAdmission(inputs, time.Now())
+			require.Equal(t, tc.class, reports[0].Verdicts[0].Class, "offline account membership cannot invent current source-group authority")
+		})
+	}
+}

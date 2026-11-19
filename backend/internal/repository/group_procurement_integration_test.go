@@ -621,3 +621,183 @@ func TestProcurementPolicyAvailabilityPostgresHTTP(t *testing.T) {
 	require.Equal(t, "not_required", read().ProcurementPolicy.Availability)
 	require.Equal(t, .15, read().RateMultiplier)
 }
+
+func TestProcurementSourceGroupsPostgresHTTPAuthority(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	groups := repository.NewAdminGroupRepository(client, db)
+	management := service.NewAdminService(nil, nil, groups, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := admin.NewGroupHandler(management, nil, nil)
+	router := gin.New()
+	router.POST("/groups", handler.Create)
+	router.PUT("/groups/:id", handler.Update)
+	router.GET("/groups/:id", handler.GetByID)
+	var sourceID, otherID, accountID, otherAccountID int64
+	require.NoError(t, db.QueryRow(`INSERT INTO groups(name,platform,rate_multiplier) VALUES('approved-source','openai',0.1) RETURNING id`).Scan(&sourceID))
+	require.NoError(t, db.QueryRow(`INSERT INTO groups(name,platform,rate_multiplier) VALUES('other-source','openai',0.1) RETURNING id`).Scan(&otherID))
+	for index, target := range []*int64{&accountID, &otherAccountID} {
+		require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,credentials,rate_multiplier,status,schedulable) VALUES($1,'openai','apikey','{"api_key":"source-groups-fixture","model_mapping":{"public-model":"wire-model"}}',0.025,'active',true) RETURNING id`, fmt.Sprintf("source-account-%d", index)).Scan(target))
+	}
+	_, err := db.Exec(`INSERT INTO account_groups(account_id,group_id) VALUES($1,$2),($3,$4)`, accountID, sourceID, otherAccountID, otherID)
+	require.NoError(t, err)
+	policy := &domain.ProcurementPolicy{Version: 6, Revision: 0, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "not_required", Availability: "not_required", SourceGroupIDs: []int64{sourceID}}
+	encode := func(v any) string { t.Helper(); b, e := json.Marshal(v); require.NoError(t, e); return string(b) }
+	run := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		return w
+	}
+	response := run("POST", "/groups", `{"name":"source-product","platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"procurement_policy":`+encode(policy)+`}`)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	var envelope struct {
+		Data service.Group `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	productID := envelope.Data.ID
+	path := fmt.Sprintf("/groups/%d", productID)
+	_, err = db.Exec(`INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,7),($3,$2,8)`, accountID, productID, otherAccountID)
+	require.NoError(t, err)
+	read := func() *service.Group {
+		t.Helper()
+		g, e := groups.GetByIDLite(ctx, productID)
+		require.NoError(t, e)
+		return g
+	}
+	check := func(want []int64) {
+		t.Helper()
+		g := read()
+		require.NotNil(t, g.ProcurementSources)
+		require.Equal(t, want, g.ProcurementSources.AccountIDs)
+		require.Equal(t, []int64{sourceID}, g.ProcurementPolicy.SourceGroupIDs)
+		require.Equal(t, .15, g.RateMultiplier)
+	}
+	check([]int64{accountID})
+	response = run("PUT", path, `{"name":"ordinary-source-edit"}`)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	check([]int64{accountID})
+	response = run("GET", path, "")
+	require.Equal(t, 200, response.Code)
+	require.NotContains(t, response.Body.String(), "procurement_sources")
+	require.NotContains(t, response.Body.String(), "source-groups-fixture")
+	_, err = db.Exec(`DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, sourceID)
+	require.NoError(t, err)
+	check([]int64{})
+	_, err = db.Exec(`INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accountID, sourceID)
+	require.NoError(t, err)
+	check([]int64{accountID})
+	for _, change := range []string{`status='inactive'`, `deleted_at=NOW()`, `platform='anthropic'`} {
+		_, err = db.Exec(`UPDATE groups SET `+change+` WHERE id=$1`, sourceID)
+		require.NoError(t, err)
+		require.Nil(t, read().ProcurementSources)
+		_, err = db.Exec(`UPDATE groups SET status='active',deleted_at=NULL,platform='openai' WHERE id=$1`, sourceID)
+		require.NoError(t, err)
+		check([]int64{accountID})
+	}
+	// Existing relation removal is not a permanent exclusion; source membership remains.
+	_, err = db.Exec(`DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, productID)
+	require.NoError(t, err)
+	check([]int64{accountID})
+	_, err = db.Exec(`INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accountID, productID)
+	require.NoError(t, err)
+	old := *policy
+	old.Revision = 1
+	old.Version = 5
+	old.SourceGroupIDs = nil
+	response = run("PUT", path, `{"procurement_policy":`+encode(&old)+`}`)
+	require.Equal(t, 400, response.Code, response.Body.String())
+	check([]int64{accountID})
+	response = run("PUT", path, `{"procurement_policy":`+encode(policy)+`}`)
+	require.Equal(t, 409, response.Code, response.Body.String())
+	check([]int64{accountID})
+	// The preview and authority read consume the same current member set.
+	previewRepo := repository.NewChannelRepository(db).(service.ProcurementCatalogRepository)
+	preview := func() string {
+		t.Helper()
+		out, e := previewRepo.PreviewProcurementClassification(ctx, &service.ProcurementPreviewCommand{ProductGroupID: &productID, Requests: []service.ProfitPreviewRequestScope{{AccountID: accountID, PublicModel: "public-model", Scope: service.AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "wire-model", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}}})
+		require.NoError(t, e)
+		require.Equal(t, "not_evaluated", out.Results[0].Qualification)
+		return out.Results[0].Product.PriceClass
+	}
+	require.Equal(t, service.ProfitPreviewClassAdmitted, preview())
+	_, err = db.Exec(`DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, sourceID)
+	require.NoError(t, err)
+	require.Equal(t, service.ProfitPreviewClassRejectedSource, preview())
+	_, err = db.Exec(`UPDATE groups SET status='inactive' WHERE id=$1`, sourceID)
+	require.NoError(t, err)
+	require.Equal(t, service.ProfitPreviewClassUnknownProcurement, preview())
+	_, err = db.Exec(`UPDATE groups SET status='active' WHERE id=$1`, sourceID)
+	require.NoError(t, err)
+	// Hold the membership table after the read has frozen the policy snapshot.
+	locker, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = locker.Rollback() }()
+	_, err = locker.ExecContext(ctx, `LOCK TABLE account_groups IN ACCESS EXCLUSIVE MODE`)
+	require.NoError(t, err)
+	type result struct {
+		group *service.Group
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() { g, e := groups.GetByIDLite(ctx, productID); done <- result{g, e} }()
+	require.Eventually(t, func() bool {
+		var n int
+		e := db.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT DISTINCT a.id FROM account_groups%'`).Scan(&n)
+		return e == nil && n > 0
+	}, 3*time.Second, 10*time.Millisecond)
+	next := policy.WithRevision(2)
+	next.SourceGroupIDs = []int64{otherID}
+	_, err = locker.Exec(`UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, productID, encode(next))
+	require.NoError(t, err)
+	_, err = locker.Exec(`INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accountID, sourceID)
+	require.NoError(t, err)
+	require.NoError(t, locker.Commit())
+	select {
+	case old := <-done:
+		require.NoError(t, old.err)
+		require.EqualValues(t, 1, old.group.ProcurementPolicy.Revision)
+		require.Empty(t, old.group.ProcurementSources.AccountIDs)
+	case <-time.After(3 * time.Second):
+		t.Fatal("source snapshot read did not finish")
+	}
+	fresh := read()
+	require.EqualValues(t, 2, fresh.ProcurementPolicy.Revision)
+	require.Equal(t, []int64{otherAccountID}, fresh.ProcurementSources.AccountIDs)
+	var priorities int
+	require.NoError(t, db.QueryRow(`SELECT priority FROM account_groups WHERE account_id=$1 AND group_id=$2`, otherAccountID, productID).Scan(&priorities))
+	require.Equal(t, 8, priorities)
+	// Explicit null and empty retain their distinct HTTP and SQL semantics.
+	setSources := func(ids []int64) *service.Group {
+		t.Helper()
+		draft := read().ProcurementPolicy.Clone()
+		draft.SourceGroupIDs = ids
+		response := run("PUT", path, `{"procurement_policy":`+encode(draft)+`}`)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		return read()
+	}
+	require.Equal(t, []int64{accountID, otherAccountID}, setSources([]int64{otherID, sourceID}).ProcurementSources.AccountIDs, "sources form a union, not all accounts")
+	require.Empty(t, setSources([]int64{}).ProcurementSources.AccountIDs)
+	require.Nil(t, setSources(nil).ProcurementSources)
+	require.Nil(t, setSources([]int64{productID}).ProcurementSources, "self-reference cannot approve the product pool")
+	require.Equal(t, []int64{accountID}, setSources([]int64{sourceID}).ProcurementSources.AccountIDs)
+	// Bound the authority without granting a truncated subset on overflow.
+	var bulkSource int64
+	require.NoError(t, db.QueryRow(`INSERT INTO groups(name,platform,rate_multiplier) VALUES('bounded-source','openai',0.1) RETURNING id`).Scan(&bulkSource))
+	_, err = db.Exec(`WITH inserted AS (
+	 INSERT INTO accounts(name,platform,type,credentials,rate_multiplier,status,schedulable)
+	 SELECT 'bounded-source-' || n,'openai','apikey','{}'::jsonb,0.025,'active',true FROM generate_series(1,10001) n RETURNING id
+	) INSERT INTO account_groups(account_id,group_id) SELECT id,$1 FROM inserted`, bulkSource)
+	require.NoError(t, err)
+	require.Nil(t, setSources([]int64{bulkSource}).ProcurementSources)
+	_, err = db.Exec(`DELETE FROM account_groups WHERE group_id=$1 AND account_id=(SELECT max(account_id) FROM account_groups WHERE group_id=$1)`, bulkSource)
+	require.NoError(t, err)
+	require.Len(t, read().ProcurementSources.AccountIDs, 10000)
+	require.Equal(t, .15, read().RateMultiplier)
+	// Cancellation does not publish an incomplete authority.
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = groups.GetByIDLite(canceled, productID)
+	require.Error(t, err)
+}

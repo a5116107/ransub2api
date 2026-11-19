@@ -18,6 +18,32 @@
       </div>
     </div>
     <div v-if="!unsupported" class="space-y-2">
+      <label :for="`${idPrefix}-source-groups-mode`" class="input-label">{{ t(`${p}.sourceGroupsTitle`) }}</label>
+      <select :id="`${idPrefix}-source-groups-mode`" class="input" :value="restrictedSourceGroups ? 'selected' : 'original'" @change="setSourceGroupMode(($event.target as HTMLSelectElement).value)">
+        <option value="original">{{ t(`${p}.sourceGroupsOriginal`) }}</option>
+        <option value="selected">{{ t(`${p}.sourceGroupsSelected`) }}</option>
+      </select>
+      <p class="break-words text-xs text-gray-500 dark:text-gray-400">{{ t(`${p}.sourceGroupsHint`) }}</p>
+      <template v-if="restrictedSourceGroups">
+        <p v-if="sourceGroupsLoading" role="status" class="text-xs">{{ t(`${p}.sourceGroupsLoading`) }}</p>
+        <p v-if="sourceGroupsError" role="alert" class="text-xs text-amber-800 dark:text-amber-300">{{ t(`${p}.sourceGroupsReadFailed`) }}</p>
+        <button type="button" class="btn btn-secondary text-xs" :disabled="sourceGroupsLoading" @click="loadSourceGroups">{{ t(`${p}.sourceGroupsReload`) }}</button>
+        <div class="max-h-60 space-y-2 overflow-y-auto">
+          <label v-for="group in sourceGroups" :key="group.id" class="flex items-start gap-2 break-words text-xs">
+            <input type="checkbox" class="mt-0.5" :data-source-group-id="group.id" :checked="selectedSourceGroups.includes(group.id)" @change="toggleSourceGroup(group.id, ($event.target as HTMLInputElement).checked)" />
+            <span class="min-w-0 break-words">{{ group.name }} · #{{ group.id }}</span>
+          </label>
+        </div>
+        <div v-if="missingSourceGroups.length" class="space-y-2">
+          <p role="alert" class="break-words text-xs text-amber-800 dark:text-amber-300">{{ t(`${p}.sourceGroupsMissing`, { ids: missingSourceGroups.join(', ') }) }}</p>
+          <div class="flex flex-wrap gap-2">
+            <button v-for="id in missingSourceGroups" :key="id" type="button" class="btn btn-secondary break-words text-xs" :data-remove-source-group-id="id" @click="toggleSourceGroup(id, false)">{{ t(`${p}.sourceGroupsRemove`, { id }) }}</button>
+          </div>
+        </div>
+        <p v-if="error !== 'sourceGroupFormat'" role="status" class="break-words text-xs" :class="selectedSourceGroups.length === 0 ? 'text-amber-800 dark:text-amber-300' : 'text-gray-600 dark:text-gray-300'">{{ t(`${p}.${selectedSourceGroups.length ? 'sourceGroupsCount' : 'sourceGroupsEmpty'}`, { count: selectedSourceGroups.length }) }}</p>
+      </template>
+    </div>
+    <div v-if="!unsupported" class="space-y-2">
       <label :for="`${idPrefix}-availability`" class="input-label">{{ t(`${p}.availabilityTitle`) }}</label>
       <select :id="`${idPrefix}-availability`" class="input" :value="modelValue?.availability ?? 'not_required'" :aria-describedby="`${idPrefix}-availability-hint`" @change="setAvailability(($event.target as HTMLSelectElement).value)">
         <option value="not_required">{{ t(`${p}.availabilityOff`) }}</option>
@@ -92,6 +118,7 @@
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestBuckets`) }}: {{ latestPolicy?.buckets?.codes === null || !latestPolicy?.buckets ? t(`${p}.bucketsUnrestricted`) : latestPolicy.buckets.codes.length ? latestPolicy.buckets.codes.join(', ') : t(`${p}.bucketsEmpty`) }}</p>
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestQuality`) }}: {{ t(`${p}.${latestPolicy?.quality === 'current_answer' ? 'qualityRequired' : 'qualityOff'}`) }}</p>
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestAvailability`) }}: {{ t(`${p}.${latestPolicy?.availability === 'current_state' ? 'availabilityRequired' : 'availabilityOff'}`) }}</p>
+      <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.sourceGroupsLatest`) }}: {{ Array.isArray(latestPolicy?.source_group_ids) ? latestPolicy.source_group_ids.length ? latestPolicy.source_group_ids.join(', ') : t(`${p}.sourceGroupsEmpty`) : t(`${p}.sourceGroupsOriginal`) }}</p>
       <div class="flex flex-wrap gap-2">
         <button type="button" class="btn btn-secondary text-xs" :disabled="refreshing" @click="emit('refresh')">
           {{ t('admin.groups.profitControl.procurement.reloadLatest') }}
@@ -107,7 +134,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { GroupProcurementPolicy } from '@/types'
+import type { GroupProcurementPolicy, GroupPlatform } from '@/types'
+import { adminAPI } from '@/api/admin'
 import { cloneProcurementPolicy, parseProcurementSourceIDs, validateProcurementPolicy } from '@/utils/procurementPolicy'
 import { readProcurementCatalog, type ProcurementCatalog } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot } from '@/utils/procurementCatalog'
@@ -115,6 +143,8 @@ import { validProcurementSnapshot } from '@/utils/procurementCatalog'
 const props = defineProps<{
   modelValue: GroupProcurementPolicy | null
   idPrefix: string
+  platform?: GroupPlatform
+  productGroupId?: number
   conflict?: boolean
   latestPolicy?: GroupProcurementPolicy | null
   refreshing?: boolean
@@ -148,6 +178,42 @@ async function loadCatalog() {
 }
 watch(restrictedBuckets, value => { if (value && !catalog.value) void loadCatalog() }, { immediate: true })
 onBeforeUnmount(() => { alive = false; controller.abort() })
+const restrictedSourceGroups = computed(() => Array.isArray(props.modelValue?.source_group_ids))
+const selectedSourceGroups = computed(() => props.modelValue?.source_group_ids ?? [])
+const sourceGroups = ref<{ id: number; name: string }[]>([])
+const sourceGroupsLoading = ref(false), sourceGroupsError = ref(false), sourceGroupsLoaded = ref(false)
+let sourceGeneration = 0
+const missingSourceGroups = computed(() => sourceGroupsLoaded.value ? selectedSourceGroups.value.filter(id => !sourceGroups.value.some(group => group.id === id)) : [])
+async function loadSourceGroups() {
+  const generation = ++sourceGeneration
+  sourceGroupsLoading.value = true; sourceGroupsError.value = false; sourceGroupsLoaded.value = false; sourceGroups.value = []
+  try {
+    const groups = await adminAPI.groups.getAll(props.platform, controller.signal)
+    if (!Array.isArray(groups) || groups.some(group => !Number.isSafeInteger(group.id) || group.id <= 0 || typeof group.name !== 'string')) throw new Error('invalid source groups')
+    if (alive && generation === sourceGeneration) {
+      sourceGroups.value = groups.filter(group => group.id !== props.productGroupId && group.status === 'active' && (!props.platform || group.platform === props.platform)).map(group => ({ id: group.id, name: group.name }))
+      sourceGroupsLoaded.value = true
+    }
+  } catch { if (alive && generation === sourceGeneration) sourceGroupsError.value = true }
+  finally { if (alive && generation === sourceGeneration) sourceGroupsLoading.value = false }
+}
+watch([restrictedSourceGroups, () => props.platform, () => props.productGroupId], ([restricted]) => { if (restricted) void loadSourceGroups() }, { immediate: true })
+function setSourceGroupMode(value: string) {
+  if (unsupported.value) return
+  const next = draft()
+  next.version = 6
+  next.sources ??= { account_ids: null }; next.buckets ??= { codes: null }
+  next.quality ??= 'not_required'; next.availability ??= 'not_required'
+  next.source_group_ids = value === 'selected' ? [] : null
+  emit('update:modelValue', next)
+}
+function toggleSourceGroup(id: number, checked: boolean) {
+  if (unsupported.value) return
+  const next = draft()
+  next.source_group_ids = checked ? [...selectedSourceGroups.value, id].sort((a, b) => a - b) : selectedSourceGroups.value.filter(value => value !== id)
+  emit('update:modelValue', next)
+}
+
 const sourceCount = computed(() => props.modelValue?.sources?.account_ids?.length ?? 0)
 const sourceDraft = ref('')
 watch(() => props.modelValue?.sources?.account_ids, ids => {
@@ -173,7 +239,7 @@ function setQuality(value: string) {
 function setAvailability(value: string) {
   if (unsupported.value) return
   const next = draft()
-  next.version = 5
+  next.version = Math.max(5, next.version)
   next.sources ??= { account_ids: null }
   next.buckets ??= { codes: null }
   next.quality ??= 'not_required'

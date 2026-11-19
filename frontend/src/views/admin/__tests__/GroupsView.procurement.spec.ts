@@ -54,6 +54,65 @@ const procurementToggle = (wrapper: View, form: string) => wrapper.get(form).fin
   .find(label => label.text() === 'admin.groups.profitControl.enable')!.get('input')
 
 describe('product procurement interval in the original Group editor', () => {
+  it('selects approved source groups without self, inactive or foreign-platform sources and preserves other hard gates', async () => {
+    mocks.getAll.mockResolvedValue([{ ...base, id: 701, name: 'Approved source A' }, { ...base, id: 702, name: 'Approved source B' }, base, { ...base, id: 703, status: 'inactive' }, { ...base, id: 704, platform: 'anthropic' }])
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-source-groups-mode').setValue('selected'); await flushPromises()
+    expect(wrapper.find('input[data-source-group-id="42"]').exists()).toBe(false)
+    expect(wrapper.find('input[data-source-group-id="703"]').exists()).toBe(false)
+    expect(wrapper.find('input[data-source-group-id="704"]').exists()).toBe(false)
+    await wrapper.get('input[data-source-group-id="701"]').setValue(true)
+    await wrapper.get('input[data-source-group-id="702"]').setValue(true)
+    await wrapper.get('#edit-procurement-availability').setValue('current_state')
+    await wrapper.get('#edit-procurement-quality').setValue('current_answer')
+    await wrapper.get('#edit-procurement-sources-mode').setValue('approved')
+    await wrapper.get('#edit-procurement-sources').setValue('901')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({ ...savedPolicy, version: 6, source_group_ids: [701, 702], availability: 'current_state', quality: 'current_answer', sources: { account_ids: [901] }, buckets: { codes: null } })
+    expect(mocks.update.mock.calls[0][1].rate_multiplier).toBe(.15)
+  })
+  it('preserves saved source-group restrictions on read failure and shows missing sources after recovery', async () => {
+    mocks.getAll.mockRejectedValue(new Error('fixture source load failure'))
+    const policy = { ...savedPolicy, version: 6, source_group_ids: [701], availability: 'current_state', quality: 'current_answer', sources: { account_ids: null }, buckets: { codes: null } }
+    const wrapper = mountView({ ...base, procurement_policy: policy }); await edit(wrapper)
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.sourceGroupsReadFailed')
+    mocks.getAll.mockResolvedValue([])
+    await button(wrapper, 'admin.groups.profitControl.procurement.sourceGroupsReload').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.sourceGroupsMissing')
+    await wrapper.get('#edit-procurement-max').setValue('0.04'); await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({ ...policy, max_rate: '0.04' })
+  })
+  it('inherits newly added source-group restrictions only after explicit conflict review', async () => {
+    mocks.update.mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
+    const policy = { ...savedPolicy, version: 6, revision: 2, source_group_ids: [701], availability: 'current_state', quality: 'current_answer', sources: { account_ids: [904] }, buckets: { codes: ['low'] } }
+    mocks.getById.mockResolvedValue({ ...base, procurement_policy: policy })
+    const wrapper = mountView(); await edit(wrapper)
+    await wrapper.get('#edit-procurement-max').setValue('0.05'); await submit(wrapper)
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.sourceGroupsLatest')
+    await button(wrapper, 'admin.groups.profitControl.procurement.useLatestRevision').trigger('click'); await flushPromises()
+    await wrapper.get('#edit-procurement-availability').setValue('not_required'); await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...policy, max_rate: '0.05', availability: 'not_required' })
+  })
+  it('explicitly removes one missing source without clearing other approved sources', async () => {
+    mocks.getAll.mockResolvedValue([{ ...base, id: 702, name: 'Still approved source' }])
+    const policy = { ...savedPolicy, version: 6, source_group_ids: [701, 702], availability: 'current_state', quality: 'current_answer', sources: { account_ids: null }, buckets: { codes: null } }
+    const wrapper = mountView({ ...base, procurement_policy: policy }); await edit(wrapper)
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.sourceGroupsMissing')
+    await wrapper.get('button[data-remove-source-group-id="701"]').trigger('click')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({ ...policy, source_group_ids: [702] })
+    expect(mocks.update.mock.calls[0][1].rate_multiplier).toBe(.15)
+  })
+  it('distinguishes explicitly empty approved source groups from explicit null', async () => {
+    const wrapper = mountView(); await edit(wrapper)
+    await wrapper.get('#edit-procurement-source-groups-mode').setValue('selected'); await flushPromises()
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.sourceGroupsEmpty')
+    await submit(wrapper); expect(mocks.update.mock.calls[0][1].procurement_policy.source_group_ids).toEqual([])
+    await edit(wrapper); await wrapper.get('#edit-procurement-source-groups-mode').setValue('original')
+    await submit(wrapper); expect(mocks.update.mock.calls[1][1].procurement_policy.source_group_ids).toBeNull()
+  })
+
   it('preserves v5 latest-state requirements while editing quality, sources and buckets', async () => {
     const wrapper = mountView()
     await edit(wrapper)

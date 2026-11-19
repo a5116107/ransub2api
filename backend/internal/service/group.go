@@ -146,7 +146,8 @@ type Group struct {
 	ProcurementPolicy    *ProcurementPolicy `json:"procurement_policy,omitempty"`
 	// Request-only projection loaded with the policy from one authority snapshot.
 	// Regional documents carry one catalog separately; never persist it per group.
-	ProcurementCatalog *domain.ProcurementCatalog `json:"-"`
+	ProcurementCatalog *domain.ProcurementCatalog        `json:"-"`
+	ProcurementSources *domain.ProcurementSourceSnapshot `json:"-"`
 	// Only explicit administrator commands write the policy column. Ordinary
 	// updates must not replace a concurrently changed policy with an old copy.
 	ProcurementPolicyExpectedRevision *int64 `json:"-"`

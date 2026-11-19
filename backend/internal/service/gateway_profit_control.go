@@ -63,6 +63,7 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 		pricingAt:          pricingAt,
 		procurementPolicy:  group.ProcurementPolicy.Clone(),
 		procurementCatalog: group.ProcurementCatalog.Clone(),
+		procurementSources: group.ProcurementSources.Clone(),
 		procurementGroup:   procurementPolicyGroupReader(s.schedulerSnapshot, s.groupRepo, group.ID),
 		qualityReader:      procurementQualityReader(s.schedulerSnapshot, s.groupRepo),
 		qualityCache:       &sync.Map{},

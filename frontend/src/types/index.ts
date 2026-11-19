@@ -671,6 +671,8 @@ export interface GroupProcurementPolicy {
   quality?: string
   // Version 5 additionally requires an explicit latest availability mode.
   availability?: string
+  // Version 6: null preserves the pool; [] admits no approved source group.
+  source_group_ids?: number[] | null
 }
 
 export interface AdminGroup extends Group {

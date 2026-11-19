@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { GroupProcurementPolicy } from '@/types'
-import { parseProcurementSourceIDs, procurementPolicyCommand, validateProcurementPolicy } from '@/utils/procurementPolicy'
+import { cloneProcurementPolicy, parseProcurementSourceIDs, procurementPolicyCommand, validateProcurementPolicy } from '@/utils/procurementPolicy'
 
 const policy = (min_rate: string | null = '0.02', max_rate: string | null = '0.03'): GroupProcurementPolicy =>
   ({ version: 1, revision: 1, min_rate, max_rate })
@@ -91,4 +91,23 @@ describe('exact procurement interval commands', () => {
     expect(original.sources.account_ids).toEqual([901])
     expect(procurementPolicyCommand({ ...original, sources: { account_ids: null } }, original)).toMatchObject({ sources: { account_ids: null } })
   })
+})
+
+describe('approved source-group contract', () => {
+ const base: GroupProcurementPolicy = { version: 6, revision: 2, min_rate: null, max_rate: null, sources: { account_ids: null }, buckets: { codes: null }, quality: 'not_required', availability: 'not_required', source_group_ids: null }
+ it('retains null, explicit empty and selected groups in changed commands', () => {
+  for (const ids of [null, [], [2, 3]]) expect(validateProcurementPolicy({ ...base, source_group_ids: ids })).toBeNull()
+  expect(procurementPolicyCommand({ ...base, source_group_ids: [] }, base)?.source_group_ids).toEqual([])
+  expect(procurementPolicyCommand(base, base)).toBeUndefined()
+  const selected = { ...base, source_group_ids: [2, 3] }
+  const clone = cloneProcurementPolicy(selected); clone.source_group_ids![0] = 4
+  expect(selected.source_group_ids).toEqual([2, 3])
+ })
+ it('rejects missing, duplicate, unsafe, excess and old-version fields', () => {
+  const { source_group_ids: _omitted, ...missing } = base
+  expect(validateProcurementPolicy(missing)).toBe('unsupported')
+  for (const ids of [[0], [-1], [2, 2], [Number.MAX_SAFE_INTEGER + 1], Array.from({ length: 65 }, (_, i) => i + 1)]) expect(validateProcurementPolicy({ ...base, source_group_ids: ids })).toBe('sourceGroupFormat')
+  expect(validateProcurementPolicy({ ...base, version: 5 })).toBe('sourceGroupFormat')
+  expect(validateProcurementPolicy({ ...base, version: 7 })).toBe('unsupported')
+ })
 })

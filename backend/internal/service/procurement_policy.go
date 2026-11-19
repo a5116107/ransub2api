@@ -11,7 +11,7 @@ import (
 )
 
 var ErrProcurementPolicyConflict = infraerrors.Conflict("GROUP_PROCUREMENT_POLICY_CONFLICT", "procurement policy changed; review the latest policy before saving")
-var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires a complete supported version, the current revision, an exact nonempty interval, explicit sources/buckets, quality for version 4+ and availability for version 5")
+var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires a complete supported version, the current revision, an exact nonempty interval, explicit sources/buckets, quality for version 4+ and availability for version 5+ and explicit source_group_ids for version 6")
 
 func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*ProcurementPolicy, *int64, error) {
 	if len(raw) == 0 {
@@ -43,7 +43,7 @@ func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*
 	return draft.WithRevision(expected + 1), &expected, nil
 }
 
-func procurementPolicyVetoReason(policy *ProcurementPolicy, catalog *domain.ProcurementCatalog, account *Account, rate float64) string {
+func procurementPolicyVetoReason(policy *ProcurementPolicy, catalog *domain.ProcurementCatalog, account *Account, rate float64, sources *domain.ProcurementSourceSnapshot, groupID int64) string {
 	allowed, err := policy.ContainsRate(rate)
 	if err != nil {
 		return openAIProfitFilterReasonProcurementUnavailable
@@ -55,6 +55,13 @@ func procurementPolicyVetoReason(policy *ProcurementPolicy, catalog *domain.Proc
 		return openAIProfitFilterReasonProcurementUnavailable
 	}
 	allowed, err = policy.AllowsAccount(account.ID)
+	if err != nil {
+		return openAIProfitFilterReasonProcurementUnavailable
+	}
+	if !allowed {
+		return openAIProfitFilterReasonProcurementSource
+	}
+	allowed, err = policy.AllowsSourceAccount(groupID, account.ID, sources)
 	if err != nil {
 		return openAIProfitFilterReasonProcurementUnavailable
 	}
@@ -121,6 +128,7 @@ func openAIProfitControlLatestPolicyVetoReason(ctx context.Context, account *Acc
 	latest.availabilityCache = nil
 	latest.procurementPolicy = group.ProcurementPolicy.Clone()
 	latest.procurementCatalog = group.ProcurementCatalog.Clone()
+	latest.procurementSources = group.ProcurementSources.Clone()
 	if latest.procurementPolicy != nil && latest.procurementPolicy.Validate() != nil {
 		return deny()
 	}

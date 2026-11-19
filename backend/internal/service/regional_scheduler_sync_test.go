@@ -272,4 +272,64 @@ func TestRegionalSchedulerProcurementExportRejectsConflictingAuthority(t *testin
 	require.ErrorContains(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets[:1], []int64{1}), "requires procurement catalog authority")
 	group.ProcurementCatalog = procurementBucketTestCatalog().WithRevision(3)
 	require.NoError(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets, []int64{1}))
+	group.ProcurementPolicy = procurementSourceGroupTestPolicy()
+	group.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{1})
+	require.NoError(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets, []int64{1}))
+	before, err = replica.Current()
+	require.NoError(t, err)
+	doc, err = decodeRegionalScheduler(before.Payload)
+	require.NoError(t, err)
+	require.Equal(t, 4, doc.Version)
+	local, err := NewRegionalSchedulerReader(replica)
+	require.NoError(t, err)
+	receiver := NewSchedulerSnapshotService(nil, nil, nil, nil, nil)
+	receiver.SetLocalSnapshotReader(local)
+	current, err := receiver.GetGroupByIDLite(t.Context(), group.ID)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1}, current.ProcurementSources.AccountIDs)
+	group.ProcurementSources = nil
+	require.ErrorContains(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets, []int64{1}), "requires procurement source authority")
+	after, err = replica.Current()
+	require.NoError(t, err)
+	require.Equal(t, before.Revision, after.Revision)
+	require.Equal(t, before.ExpiresAt, after.ExpiresAt)
+	group.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{})
+	require.NoError(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets, []int64{1}))
+	current, err = receiver.GetGroupByIDLite(t.Context(), group.ID)
+	require.NoError(t, err)
+	require.Empty(t, current.ProcurementSources.AccountIDs)
+	newer = *group
+	newer.ProcurementSources = procurementSourceGroupTestSnapshot(group.ID, []int64{1})
+	groups.groups = []*Group{group, &newer}
+	groups.reads = 0
+	require.ErrorContains(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets, []int64{1}), "conflicting regional procurement sources")
+
+}
+
+func TestRegionalSchedulerProcurementSourceGroupsAuthority(t *testing.T) {
+	group := profitControlTestGroup(7, 0, 0)
+	group.ProcurementPolicy = procurementSourceGroupTestPolicy()
+	source := procurementSourceGroupTestSnapshot(7, []int64{901})
+	doc := RegionalSchedulerDocument{Version: 4, Groups: []*Group{group}, ProcurementCatalog: procurementBucketTestCatalog(), ProcurementSources: []*domain.ProcurementSourceSnapshot{source}, Buckets: []RegionalSchedulerBucket{}, Availability: []RegionalAccountAvailability{}}
+	raw, err := json.Marshal(doc)
+	require.NoError(t, err)
+	decoded, err := decodeRegionalScheduler(raw)
+	require.NoError(t, err)
+	require.Equal(t, []int64{901}, decoded.Groups[0].ProcurementSources.AccountIDs)
+	decoded.Groups[0].ProcurementSources.AccountIDs[0] = 999
+	require.Equal(t, int64(901), source.AccountIDs[0])
+	for _, change := range []func(*RegionalSchedulerDocument){
+		func(d *RegionalSchedulerDocument) { d.Version = 3 }, func(d *RegionalSchedulerDocument) { d.ProcurementSources = nil }, func(d *RegionalSchedulerDocument) {
+			d.ProcurementSources = append(d.ProcurementSources, source.Clone())
+		},
+		func(d *RegionalSchedulerDocument) { d.ProcurementSources[0].PolicyRevision++ }, func(d *RegionalSchedulerDocument) { d.ProcurementSources[0].ProductGroupID++ }, func(d *RegionalSchedulerDocument) { d.ProcurementSources[0].GroupIDs = []int64{701} },
+	} {
+		copy := doc
+		copy.ProcurementSources = []*domain.ProcurementSourceSnapshot{source.Clone()}
+		change(&copy)
+		raw, err := json.Marshal(copy)
+		require.NoError(t, err)
+		_, err = decodeRegionalScheduler(raw)
+		require.Error(t, err)
+	}
 }

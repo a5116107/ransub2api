@@ -189,6 +189,7 @@ type openAIProfitControlGate struct {
 	configUnavailable  bool
 	procurementCatalog *domain.ProcurementCatalog
 	procurementPolicy  *ProcurementPolicy
+	procurementSources *domain.ProcurementSourceSnapshot
 	procurementGroup   func(context.Context) (*Group, error)
 	qualityReader      QualityScopeEvidenceReader
 	qualityCache       *sync.Map
@@ -349,6 +350,7 @@ func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Contex
 		pricingAt:          pricingAt,
 		procurementPolicy:  group.ProcurementPolicy.Clone(),
 		procurementCatalog: group.ProcurementCatalog.Clone(),
+		procurementSources: group.ProcurementSources.Clone(),
 		procurementGroup:   procurementPolicyGroupReader(s.schedulerSnapshot, nil, *groupID),
 		qualityReader:      procurementQualityReader(s.schedulerSnapshot, nil),
 		qualityCache:       &sync.Map{},
@@ -415,7 +417,7 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonThreshold)
 		return true, openAIProfitFilterReasonThreshold
 	}
-	if reason := procurementPolicyVetoReason(gate.procurementPolicy, gate.procurementCatalog, account, upstream); reason != "" {
+	if reason := procurementPolicyVetoReason(gate.procurementPolicy, gate.procurementCatalog, account, upstream, gate.procurementSources, gate.groupID); reason != "" {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
 		return true, reason
 	}

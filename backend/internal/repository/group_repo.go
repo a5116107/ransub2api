@@ -320,6 +320,7 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 		// Missing/corrupt catalog is carried as unknown, not an empty unrestricted
 		// catalog. This keeps disabled gates and admin repair reads available.
 		out.ProcurementCatalog, _ = loadProcurementCatalog(ctx, queryer)
+		out.ProcurementSources, _ = loadProcurementSources(ctx, queryer, out)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
