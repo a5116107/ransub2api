@@ -1,5 +1,13 @@
 export default {
   "procurement": {
+    availabilityTitle: '当前范围的最新可用状态',
+    availabilityStates: { pass: '当前通过', fail: '当前失败', unknown: '未知或已过期', not_configured: '未配置可用监测' },
+    availabilityGateTitle: '产品最新可用状态门',
+    availabilityGateStates: { not_required: '保持原有监测准入', pass: '可用门通过（非完整产品资格）', fail: '最新失败，拒绝发送', unknown: '状态未知，要求此门时拒绝发送' },
+    availabilityCoverage: '已确认规则 {confirmed} / {total}',
+    availabilityLegacy: '该响应未取得最新状态证据，不视为通过。',
+    availabilityBoundary: '使用最新有效决定，不使用历史成功率；与答题质量、模型身份和缓存资格独立。证据到期后不再显示通过；预演不会启用检测或变更账号分组。',
+    availabilityReasons: { all_rules_passed: '全部相关规则均有当前同范围通过结论', availability_not_confirmed: '最新决定未确认当前通过', availability_not_configured: '尚未配置可用状态规则', availability_rule_paused: '相关规则已暂停', availability_model_unobserved: '未观测到对应模型', availability_scope_unconfirmed: '请求范围或连接归属未确认', availability_state_unavailable: '最新状态权威未确认', account_unavailable: '账号不可用', expired: '证据已到期，请重新读取最新结论' },
     answerQualityTitle: '产品答题质量门',
     answerQualityStates: { not_required: '未要求', pass: '答题门通过（非完整产品资格）', fail: '答题错误，拒绝发送', unknown: '证据未知，要求此门时拒绝发送' },
   "title": "采购桶目录与范围归类",

@@ -16,11 +16,17 @@ export interface ProcurementClassification extends ProcurementRequestScope {
   state: string; reason?: string; applicability: string; rate_source: string; effective_rate: string | null
   bucket: ProcurementBucket | null; qualification: string
   quality_evidence?: QualityScopeEvidence
+  availability_evidence?: AvailabilityScopeEvidence
   product_procurement?: {
     answer_quality?: { version: number; required: boolean; state: string }
+    availability?: { version: number; required: boolean; state: string }
     version: number; group_id: number; policy_revision: number; price_basis: string; default_d: number; threshold: number
     state: string; price_class: string; reason?: string; catalog_revision?: number
   }
+}
+export interface AvailabilityScopeEvidence {
+  version: number; status: string; reason: string; evaluated_at: string; valid_until: string | null
+  rule_count: number; confirmed_rules: number
 }
 export interface QualityScopeRuleEvidence {
   plan_id: number; status: string; reason: string; samples: number; valid_samples: number; valid_until: string | null

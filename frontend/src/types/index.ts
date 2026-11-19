@@ -669,6 +669,8 @@ export interface GroupProcurementPolicy {
   buckets?: { codes: string[] | null }
   // Version 4 requires an explicit answer quality mode.
   quality?: string
+  // Version 5 additionally requires an explicit latest availability mode.
+  availability?: string
 }
 
 export interface AdminGroup extends Group {

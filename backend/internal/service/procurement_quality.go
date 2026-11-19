@@ -28,7 +28,7 @@ func procurementQualityRequired(gate *openAIProfitControlGate) bool {
 	return gate != nil && gate.procurementPolicy != nil && gate.procurementPolicy.Quality == "current_answer"
 }
 
-type procurementQualityCacheKey struct {
+type procurementEvidenceCacheKey struct {
 	AccountID int64
 	Route     [32]byte
 	Scope     AvailabilityRequestScope
@@ -46,7 +46,7 @@ func procurementQualityScopeVetoReason(ctx context.Context, gate *openAIProfitCo
 	if gate.procurementPolicy.Validate() != nil || account == nil || scope == nil || !billingApplicabilityScopeShapeKnown(*scope) || gate.qualityReader == nil {
 		return "procurement_quality_unavailable"
 	}
-	key := procurementQualityCacheKey{AccountID: account.ID, Route: AccountRouteFingerprint(account), Scope: *scope}
+	key := procurementEvidenceCacheKey{AccountID: account.ID, Route: AccountRouteFingerprint(account), Scope: *scope}
 	var evidence *QualityScopeEvidence
 	var expiresAt time.Time
 	if gate.qualityCache != nil {
@@ -101,10 +101,13 @@ func procurementQualityCandidateVetoReason(ctx context.Context, account *Account
 	if !procurementQualityRequired(gate) {
 		return ""
 	}
-	if actual, present := ctx.Value(procurementQualityActualScopeKey{}).(func() *AvailabilityRequestScope); present {
+	if actual, present := ctx.Value(procurementActualScopeKey{}).(func() *AvailabilityRequestScope); present {
+		if confirmed, ok := ctx.Value(procurementQualityWireConfirmedKey{}).(func() bool); ok && !confirmed() {
+			return "procurement_quality_unavailable"
+		}
 		fresh := *gate
 		fresh.qualityCache = nil
-		prepared, _ := ctx.Value(procurementQualityPreparedAccountKey{}).(*Account)
+		prepared, _ := ctx.Value(procurementPreparedAccountKey{}).(*Account)
 		if prepared != nil {
 			account = prepared
 		}
@@ -143,22 +146,26 @@ func ProcurementAnswerQuality(policy *ProcurementPolicy, evidence *QualityScopeE
 
 // A present nil scope is an unconfirmed physical request, not permission to
 // fall back to candidate metadata or a previous WS turn.
-type procurementQualityActualScopeKey struct{}
-type procurementQualityPreparedAccountKey struct{}
+type procurementActualScopeKey struct{}
+type procurementPreparedAccountKey struct{}
+type procurementQualityWireConfirmedKey struct{}
 
-func withProcurementQualityHTTPRequest(request *http.Request, account *Account) *http.Request {
+func withProcurementHTTPRequest(request *http.Request, account *Account) *http.Request {
 	ctx := request.Context()
 	if !gatewayProfitControlGateActive(ctx) {
 		return request
 	}
-	ctx = context.WithValue(ctx, procurementQualityPreparedAccountKey{}, account)
-	ctx = context.WithValue(ctx, procurementQualityActualScopeKey{}, func() *AvailabilityRequestScope {
+	ctx = context.WithValue(ctx, procurementPreparedAccountKey{}, account)
+	ctx = context.WithValue(ctx, procurementQualityWireConfirmedKey{}, func() bool {
 		proxy := ""
 		if account != nil && account.Proxy != nil {
 			proxy = account.Proxy.URL()
 		}
-		if payload, ok := availabilityRequestPayload(request); ok && qualityRouteForRequest(account, request, proxy) != nil {
-			return availabilityScopeForRequest(request, payload)
+		return qualityRouteForRequest(account, request, proxy) != nil
+	})
+	ctx = context.WithValue(ctx, procurementActualScopeKey{}, func() *AvailabilityRequestScope {
+		if payload, ok := availabilityRequestPayload(request); ok {
+			return availabilityScopeForAccount(availabilityScopeForRequest(request, payload), request, account)
 		}
 		return nil
 	})

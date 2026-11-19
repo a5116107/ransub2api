@@ -11,7 +11,7 @@ import (
 )
 
 var ErrProcurementPolicyConflict = infraerrors.Conflict("GROUP_PROCUREMENT_POLICY_CONFLICT", "procurement policy changed; review the latest policy before saving")
-var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires a complete supported version, the current revision, an exact nonempty interval, explicit sources/buckets and an explicit quality mode for version 4")
+var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires a complete supported version, the current revision, an exact nonempty interval, explicit sources/buckets, quality for version 4+ and availability for version 5")
 
 func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*ProcurementPolicy, *int64, error) {
 	if len(raw) == 0 {
@@ -118,6 +118,7 @@ func openAIProfitControlLatestPolicyVetoReason(ctx context.Context, account *Acc
 	}
 	latest := *gate
 	latest.qualityCache = nil
+	latest.availabilityCache = nil
 	latest.procurementPolicy = group.ProcurementPolicy.Clone()
 	latest.procurementCatalog = group.ProcurementCatalog.Clone()
 	if latest.procurementPolicy != nil && latest.procurementPolicy.Validate() != nil {

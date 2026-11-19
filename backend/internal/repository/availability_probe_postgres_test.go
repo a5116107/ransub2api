@@ -17,7 +17,7 @@ func TestAvailabilityProbePostgresHistoryRetainsIndependentEvidence(t *testing.T
  id BIGSERIAL PRIMARY KEY,plan_id BIGINT NOT NULL REFERENCES scheduled_test_plans(id),
  status TEXT,response_text TEXT,error_message TEXT,latency_ms BIGINT,
  started_at TIMESTAMPTZ,finished_at TIMESTAMPTZ,created_at TIMESTAMPTZ,
- pelican_config JSONB,quality_action TEXT,quality_judgment JSONB,quality_round_id TEXT)`)
+ pelican_config JSONB,quality_action TEXT,quality_judgment JSONB,quality_round_id TEXT,budget_deferral JSONB)`)
 	require.NoError(t, err)
 	repo := NewScheduledTestResultRepository(db)
 	started := time.Now().UTC().Truncate(time.Microsecond)

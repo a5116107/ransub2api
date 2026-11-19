@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,6 +16,17 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProcurementAvailabilityRequiredRejectsMissingAuthority(t *testing.T) {
+	var policy ProcurementPolicy
+	require.NoError(t, json.Unmarshal([]byte(`{"version":5,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"current_state"}`), &policy))
+	account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(901), .025)
+	gate := &openAIProfitControlGate{groupID: 7, platform: PlatformOpenAI, threshold: 1, procurementPolicy: &policy}
+	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, gate)
+	veto, reason := OpenAIProfitControlVeto(ctx, account)
+	require.True(t, veto, "strict availability must not inherit the unconfigured compatibility path")
+	require.Equal(t, "procurement_availability_unavailable", reason)
+}
 
 type procurementQualityTestReader func(context.Context, *Account, AvailabilityRequestScope) (*QualityScopeEvidence, error)
 
@@ -100,10 +112,10 @@ func TestProcurementQualityCandidateCacheNeverAuthorizesActualSend(t *testing.T)
 	require.Empty(t, procurementQualityScopeVetoReason(t.Context(), gate, account, &scope))
 	require.Equal(t, 1, calls)
 	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, gate)
-	ctx = context.WithValue(ctx, procurementQualityActualScopeKey{}, func() *AvailabilityRequestScope { return &scope })
+	ctx = context.WithValue(ctx, procurementActualScopeKey{}, func() *AvailabilityRequestScope { return &scope })
 	require.Equal(t, "procurement_quality_unavailable", procurementQualityCandidateVetoReason(ctx, account))
 	require.Equal(t, 2, calls, "actual generation must load the latest registered fault/rule")
-	ctx = context.WithValue(ctx, procurementQualityActualScopeKey{}, func() *AvailabilityRequestScope { return nil })
+	ctx = context.WithValue(ctx, procurementActualScopeKey{}, func() *AvailabilityRequestScope { return nil })
 	require.Equal(t, "procurement_quality_unavailable", procurementQualityCandidateVetoReason(ctx, account), "unknown wire shape must not borrow a candidate scope")
 }
 
@@ -125,7 +137,7 @@ func TestProcurementQualityActualHTTPAndWSTurnScope(t *testing.T) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, account.GetOpenAIBaseURL()+"/v1/responses", strings.NewReader(body))
 	require.NoError(t, err)
 	request.Header.Set("Authorization", "Bearer "+account.GetCredential("api_key"))
-	physical := withProcurementQualityHTTPRequest(request, account).Context()
+	physical := withProcurementHTTPRequest(request, account).Context()
 	blocked, reason := openAIProfitControlLatestPolicyVetoReason(physical, account)
 	require.False(t, blocked, reason)
 	require.Equal(t, "responses_http", scopes[0].Protocol)
@@ -143,7 +155,7 @@ func TestProcurementQualityActualHTTPAndWSTurnScope(t *testing.T) {
 	require.NotNil(t, binding.availability.route, "the physical handshake must belong to the selected account")
 	ws := binding.availability.scope(account, []byte(`{"type":"response.create","model":"gpt-fixture","input":"fixture","stream":true}`))
 	require.NotNil(t, ws)
-	wsCtx := context.WithValue(ctx, procurementQualityActualScopeKey{}, func() *AvailabilityRequestScope { return ws })
+	wsCtx := context.WithValue(ctx, procurementActualScopeKey{}, func() *AvailabilityRequestScope { return ws })
 	require.NoError(t, (&OpenAIGatewayService{}).checkOpenAIWSBinding(wsCtx, account, "gpt-fixture", binding, []byte(`{"type":"response.create","model":"gpt-fixture","input":"fixture","stream":true}`)))
 	require.Equal(t, "responses_ws_v2", scopes[len(scopes)-1].Protocol)
 	status = "unknown"
@@ -276,7 +288,7 @@ func TestProcurementQualityHTTPDefersBodyReadUntilRequired(t *testing.T) {
 	getBody := request.GetBody
 	reads := 0
 	request.GetBody = func() (io.ReadCloser, error) { reads++; return getBody() }
-	prepared := withProcurementQualityHTTPRequest(request, account)
+	prepared := withProcurementHTTPRequest(request, account)
 	physical := prepared.Context()
 	require.Zero(t, reads, "installing a request scope must not copy its body")
 	blocked, reason := openAIProfitControlLatestPolicyVetoReason(physical, account)

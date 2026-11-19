@@ -1200,6 +1200,12 @@ export default {
       },
       profitControl: {
         procurement: {
+          availabilityTitle: "Latest availability requirement",
+          availabilityOff: "Keep existing monitoring admission",
+          availabilityRequired: "Require a current same-scope pass",
+          availabilityHint: "Unconfigured, paused, missing or expired observations block sending when required. Current rules, credentials, connections and faults are rechecked before generation. Historical success rates do not grant admission. No probes are enabled automatically.",
+          availabilityFormat: "Select an explicit supported latest availability mode; unknown is not disabled.",
+          latestAvailability: "Latest saved availability requirement",
           qualityTitle: "Answer quality gate",
           qualityOff: "No additional answer quality requirement",
           qualityRequired: "Require current passing answers for the exact wire scope",

@@ -110,11 +110,24 @@
               <p v-else class="text-sm">{{ t(`${p}.qualityLegacy`) }}</p>
               <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.qualityBoundary`) }}</p>
             </section>
+            <section class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="availability-scope-evidence">
+              <h4 class="text-sm font-medium">{{ t(`${p}.availabilityTitle`) }}</h4>
+              <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="availabilityState(item.availability_evidence) === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : availabilityState(item.availability_evidence) === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="availability-scope-status">{{ t(`${p}.availabilityStates.${availabilityState(item.availability_evidence)}`) }}</span>
+              <template v-if="item.availability_evidence">
+                <p class="text-sm">{{ t(`${p}.availabilityCoverage`, { confirmed: item.availability_evidence.confirmed_rules, total: item.availability_evidence.rule_count }) }}</p>
+                <p class="break-words text-sm">{{ t(`${p}.availabilityReasons.${availabilityExpired(item.availability_evidence) ? 'expired' : item.availability_evidence.reason}`) }}</p>
+                <p class="break-all text-xs">{{ t(`${p}.qualityEvaluatedAt`) }}: {{ item.availability_evidence.evaluated_at }}</p>
+                <p class="break-all text-xs">{{ t(`${p}.qualityValidUntil`) }}: {{ item.availability_evidence.valid_until ?? t('upstreamOps.unknown') }}</p>
+              </template>
+              <p v-else class="text-sm">{{ t(`${p}.availabilityLegacy`) }}</p>
+              <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.availabilityBoundary`) }}</p>
+            </section>
             <div v-if="item.product_procurement" class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="product-procurement">
               <p class="break-words text-sm font-medium">{{ t(`${p}.productResult`, { id: item.product_procurement.group_id, revision: item.product_procurement.policy_revision }) }}</p>
               <p v-if="item.product_procurement.catalog_revision !== undefined" class="text-xs text-gray-500">{{ t(`${p}.revision`, { revision: item.product_procurement.catalog_revision }) }}</p>
               <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.product_procurement.state === 'constraints_passed' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-procurement-state">{{ t(`${p}.productStates.${item.product_procurement.state}`) }}</span>
               <p class="break-words text-sm" data-testid="product-answer-quality">{{ t(`${p}.answerQualityTitle`) }}: {{ t(`${p}.answerQualityStates.${item.product_procurement.answer_quality?.state ?? 'unknown'}`) }}</p>
+              <p class="break-words text-sm" data-testid="product-availability">{{ t(`${p}.availabilityGateTitle`) }}: {{ t(`${p}.availabilityGateStates.${item.product_procurement.availability?.required && availabilityExpired(item.availability_evidence) ? 'unknown' : item.product_procurement.availability?.state ?? 'unknown'}`) }}</p>
               <dl class="grid gap-3 text-sm sm:grid-cols-2">
                 <div><dt class="text-gray-500">{{ t(`${p}.productSale`) }}</dt><dd>{{ item.product_procurement.default_d }}</dd></div>
                 <div><dt class="text-gray-500">{{ t(`${p}.productThreshold`) }}</dt><dd>{{ item.product_procurement.threshold }}</dd></div>
@@ -133,11 +146,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { readProcurementCatalog, saveProcurementCatalog, previewProcurementScopes, type ProcurementCatalog, type ProcurementCatalogSnapshot, type ProcurementRequestScope, type ProcurementPreview, type QualityScopeEvidence } from '@/api/admin/procurementCatalog'
+import { useNow } from '@vueuse/core'
+import { readProcurementCatalog, saveProcurementCatalog, previewProcurementScopes, type ProcurementCatalog, type ProcurementCatalogSnapshot, type ProcurementRequestScope, type ProcurementPreview, type QualityScopeEvidence, type AvailabilityScopeEvidence } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot, validateProcurementCatalog } from '@/utils/procurementCatalog'
 import qualityMessages from '@/i18n/locales/en/upstreamOps'
 
 const { t } = useI18n(), p = 'upstreamOps.procurement'
+const now = useNow({ interval: 1000 })
 const saved = ref<ProcurementCatalogSnapshot | null>(null), latest = ref<ProcurementCatalogSnapshot | null>(null)
 const busy = ref(false), error = ref(''), conflict = ref(false), success = ref(false), result = ref<ProcurementPreview | null>(null)
 let rowKey = 0, alive = true, generation = 0
@@ -211,7 +226,9 @@ async function preview() {
       !Object.entries(request.scope).every(([key, value]) => next.results[0]!.scope[key as keyof ProcurementRequestScope['scope']] === value) || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
     const projection = next.results[0]!.product_procurement
     const quality = next.results[0]!.quality_evidence
+    const availability = next.results[0]!.availability_evidence
     if (quality !== undefined && !validQualityEvidence(quality, next.observed_at)) throw new Error('unknown quality evidence')
+    if (availability !== undefined && !validAvailabilityEvidence(availability, next.observed_at)) throw new Error('unknown availability evidence')
     if (product === undefined ? projection !== undefined : !projection || projection.version !== 1 || projection.group_id !== product || projection.price_basis !== 'group_default' ||
       projection.catalog_revision !== undefined && (projection.catalog_revision !== next.catalog.revision || !Number.isSafeInteger(projection.catalog_revision)) ||
       !Number.isSafeInteger(projection.policy_revision) || projection.policy_revision < 0 || !Number.isFinite(projection.default_d) || projection.default_d < 0 || !Number.isFinite(projection.threshold) || projection.threshold < 0 ||
@@ -221,11 +238,32 @@ async function preview() {
     if (answerGate !== undefined && (!answerGate || answerGate.version !== 1 || typeof answerGate.required !== 'boolean' ||
       !['not_required', 'pass', 'fail', 'unknown'].includes(answerGate.state) || answerGate.required === (answerGate.state === 'not_required') ||
       answerGate.required && answerGate.state !== 'unknown' && (!quality || quality.status !== answerGate.state))) throw new Error('unknown answer quality gate')
+    const availabilityGate = projection?.availability
+    if (availabilityGate !== undefined && (!availabilityGate || availabilityGate.version !== 1 || typeof availabilityGate.required !== 'boolean' ||
+      !['not_required', 'pass', 'fail', 'unknown'].includes(availabilityGate.state) || availabilityGate.required === (availabilityGate.state === 'not_required') ||
+      availabilityGate.required && availabilityGate.state !== 'unknown' && (!availability || availability.status !== availabilityGate.state))) throw new Error('unknown availability gate')
     if (alive && generation === id) result.value = next
   } catch { if (alive && generation === id) error.value = 'previewFailed' }
   finally { if (alive) busy.value = false }
 }
 function knownState(value: string) { return ['classified','unclassified','scope_unconfirmed','rate_unavailable','account_unavailable','not_configured'].includes(value) ? value : 'unknown' }
+function availabilityExpired(evidence?: AvailabilityScopeEvidence) {
+  return Boolean(evidence?.valid_until && Date.parse(evidence.valid_until) <= now.value.getTime())
+}
+function availabilityState(evidence?: AvailabilityScopeEvidence) {
+  return evidence && !availabilityExpired(evidence) ? evidence.status : 'unknown'
+}
+function validAvailabilityEvidence(e: AvailabilityScopeEvidence, observedAt: string): boolean {
+  if (!e || e.version !== 1 || !['pass', 'fail', 'unknown', 'not_configured'].includes(e.status) ||
+    !Object.prototype.hasOwnProperty.call(qualityMessages.procurement.availabilityReasons, e.reason) || e.reason === 'expired' ||
+    !Number.isFinite(Date.parse(e.evaluated_at)) || Date.parse(e.evaluated_at) !== Date.parse(observedAt) || Date.parse(e.evaluated_at) > Date.now() + 60000 ||
+    !Number.isSafeInteger(e.rule_count) || e.rule_count < 0 || !Number.isSafeInteger(e.confirmed_rules) || e.confirmed_rules < 0 || e.confirmed_rules > e.rule_count ||
+    e.valid_until !== null && (typeof e.valid_until !== 'string' || !Number.isFinite(Date.parse(e.valid_until)))) return false
+  if (e.status === 'pass') return e.reason === 'all_rules_passed' && e.rule_count > 0 && e.confirmed_rules === e.rule_count && e.valid_until !== null && Date.parse(e.valid_until) > Date.parse(e.evaluated_at)
+  if (e.status === 'fail') return e.reason === 'availability_not_confirmed' && e.rule_count > e.confirmed_rules && e.valid_until !== null && Date.parse(e.valid_until) > Date.parse(e.evaluated_at)
+  if (e.status === 'not_configured') return e.reason === 'availability_not_configured' && e.rule_count === 0 && e.confirmed_rules === 0 && e.valid_until === null
+  return !['all_rules_passed', 'availability_not_configured'].includes(e.reason) && (e.rule_count === 0 || e.confirmed_rules < e.rule_count)
+}
 function validQualityEvidence(q: QualityScopeEvidence, observedAt: string): boolean {
   const count = (n: number, max = 4096) => Number.isSafeInteger(n) && n >= 0 && n <= max
   const knownReason = (reason: string) => typeof reason === 'string' && Object.prototype.hasOwnProperty.call(qualityMessages.procurement.qualityReasons, reason)

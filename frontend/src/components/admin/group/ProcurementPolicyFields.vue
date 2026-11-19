@@ -18,6 +18,14 @@
       </div>
     </div>
     <div v-if="!unsupported" class="space-y-2">
+      <label :for="`${idPrefix}-availability`" class="input-label">{{ t(`${p}.availabilityTitle`) }}</label>
+      <select :id="`${idPrefix}-availability`" class="input" :value="modelValue?.availability ?? 'not_required'" :aria-describedby="`${idPrefix}-availability-hint`" @change="setAvailability(($event.target as HTMLSelectElement).value)">
+        <option value="not_required">{{ t(`${p}.availabilityOff`) }}</option>
+        <option value="current_state">{{ t(`${p}.availabilityRequired`) }}</option>
+      </select>
+      <p :id="`${idPrefix}-availability-hint`" class="break-words text-xs text-gray-500 dark:text-gray-400">{{ t(`${p}.availabilityHint`) }}</p>
+    </div>
+    <div v-if="!unsupported" class="space-y-2">
       <label :for="`${idPrefix}-quality`" class="input-label">{{ t(`${p}.qualityTitle`) }}</label>
       <select :id="`${idPrefix}-quality`" class="input" :value="modelValue?.quality ?? 'not_required'" :aria-describedby="`${idPrefix}-quality-hint`" @change="setQuality(($event.target as HTMLSelectElement).value)">
         <option value="not_required">{{ t(`${p}.qualityOff`) }}</option>
@@ -83,6 +91,7 @@
       <p v-else-if="latestError">{{ t(`admin.groups.profitControl.procurement.${latestError}`) }}</p>
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestBuckets`) }}: {{ latestPolicy?.buckets?.codes === null || !latestPolicy?.buckets ? t(`${p}.bucketsUnrestricted`) : latestPolicy.buckets.codes.length ? latestPolicy.buckets.codes.join(', ') : t(`${p}.bucketsEmpty`) }}</p>
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestQuality`) }}: {{ t(`${p}.${latestPolicy?.quality === 'current_answer' ? 'qualityRequired' : 'qualityOff'}`) }}</p>
+      <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestAvailability`) }}: {{ t(`${p}.${latestPolicy?.availability === 'current_state' ? 'availabilityRequired' : 'availabilityOff'}`) }}</p>
       <div class="flex flex-wrap gap-2">
         <button type="button" class="btn btn-secondary text-xs" :disabled="refreshing" @click="emit('refresh')">
           {{ t('admin.groups.profitControl.procurement.reloadLatest') }}
@@ -154,10 +163,21 @@ function draft(): GroupProcurementPolicy {
 function setQuality(value: string) {
   if (unsupported.value) return
   const next = draft()
-  next.version = 4
+  next.version = Math.max(4, next.version)
   next.sources ??= { account_ids: null }
   next.buckets ??= { codes: null }
   next.quality = value
+  emit('update:modelValue', next)
+}
+
+function setAvailability(value: string) {
+  if (unsupported.value) return
+  const next = draft()
+  next.version = 5
+  next.sources ??= { account_ids: null }
+  next.buckets ??= { codes: null }
+  next.quality ??= 'not_required'
+  next.availability = value
   emit('update:modelValue', next)
 }
 

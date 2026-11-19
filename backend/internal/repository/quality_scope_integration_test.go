@@ -457,3 +457,95 @@ func TestProcurementQualityEvidenceRejectsPartiallyMatchingModel(t *testing.T) {
 	require.Equal(t, 2, preview.Results[0].Quality.Samples)
 	require.Equal(t, 1, preview.Results[0].Quality.ValidSamples)
 }
+
+func TestProcurementAvailabilityPreviewSQLSameSnapshot(t *testing.T) {
+	plan, sample := qualityRouteFixture(t, false)
+	plans := NewScheduledTestPlanRepository(integrationDB)
+	plan.PelicanConfig.Availability = &service.AvailabilityPolicy{ValidForSeconds: 60}
+	next := time.Now().UTC().Add(-time.Second)
+	plan.NextRunAt = &next
+	var err error
+	plan, err = plans.Update(t.Context(), plan)
+	require.NoError(t, err)
+	scope := *sample.PelicanConfig.QualityMeasurement.Scope
+	scope.ServiceTier, scope.ReasoningEffort = "unspecified", "unspecified"
+	command := &service.ProcurementPreviewCommand{Requests: []service.ProfitPreviewRequestScope{{AccountID: plan.AccountID, PublicModel: plan.ModelID, Scope: scope}}}
+	policy := &service.ProcurementPolicy{Version: 5, Revision: 1, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "not_required", Availability: "current_state"}
+	product, err := integrationEntClient.Group.Create().SetName("latest-availability-preview").SetPlatform("openai").SetRateMultiplier(.15).SetProfitControlEnabled(true).SetProcurementPolicy(policy).Save(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM groups WHERE id=$1`, product.ID)
+	})
+	command.ProductGroupID = &product.ID
+	repo := NewChannelRepository(integrationDB).(service.ProcurementCatalogRepository)
+	publish := func(status string) {
+		t.Helper()
+		plan, err = plans.GetByID(t.Context(), plan.ID)
+		require.NoError(t, err)
+		require.NotNil(t, plan.NextRunAt)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		until := now.Add(time.Minute)
+		claimed, claimErr := plans.ClaimPelican(t.Context(), plan, now, until, *plan.NextRunAt)
+		require.NoError(t, claimErr)
+		require.True(t, claimed)
+		var finished time.Time
+		require.NoError(t, integrationDB.QueryRowContext(t.Context(), `SELECT clock_timestamp()-interval '1 second'`).Scan(&finished))
+		probe := &service.AvailabilityProbeResult{Version: 1, Status: status, StartedAt: finished.Add(-time.Second), FinishedAt: finished, Scope: &scope}
+		action, writeErr := plans.ApplyAvailabilityOutcomes(t.Context(), plan, until, []service.AvailabilityModelOutcome{{ModelID: plan.ModelID, Probe: probe}})
+		require.NoError(t, writeErr)
+		require.Equal(t, "observed", action)
+		require.NoError(t, plans.FinishPelican(t.Context(), plan.ID, until, time.Now()))
+	}
+	assertState := func(want string) {
+		t.Helper()
+		result, readErr := repo.PreviewProcurementClassification(t.Context(), command)
+		require.NoError(t, readErr)
+		require.Len(t, result.Results, 1)
+		row := result.Results[0]
+		require.Equal(t, want, row.Availability.Status)
+		require.Equal(t, result.ObservedAt, row.Availability.EvaluatedAt)
+		require.Equal(t, want, row.Product.Availability.State)
+		require.Equal(t, "not_required", row.Product.AnswerQuality.State)
+		require.Equal(t, "unknown", row.Quality.ModelIdentity)
+		require.Equal(t, "not_evaluated", row.Qualification)
+		raw, encodeErr := json.Marshal(result)
+		require.NoError(t, encodeErr)
+		for _, private := range []string{"private-route-fixture", "route.invalid", "connection_id", "fingerprint", "response_text"} {
+			require.NotContains(t, string(raw), private)
+		}
+	}
+	assertState("unknown")
+	publish("pass")
+	assertState("pass")
+	publish("fail")
+	assertState("fail")
+	publish("pass")
+	assertState("pass")
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	assertState("unknown")
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE scheduled_test_plans SET enabled=true WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	assertState("pass")
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	assertState("unknown")
+	publish("pass")
+	assertState("pass")
+	// Multiple request scopes share one authoritative account read, never a
+	// duplicated sample or an automatically issued paid detection.
+	original := command.Requests[0]
+	for len(command.Requests) < 100 {
+		command.Requests = append(command.Requests, original)
+	}
+	preview, err := repo.PreviewProcurementClassification(t.Context(), command)
+	require.NoError(t, err)
+	require.Len(t, preview.Results, 100)
+	for _, row := range preview.Results {
+		require.Equal(t, "pass", row.Availability.Status)
+		require.Equal(t, preview.ObservedAt, row.Availability.EvaluatedAt)
+	}
+	var count int
+	require.NoError(t, integrationDB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM scheduled_test_results WHERE plan_id=$1`, plan.ID).Scan(&count))
+	require.Zero(t, count)
+}

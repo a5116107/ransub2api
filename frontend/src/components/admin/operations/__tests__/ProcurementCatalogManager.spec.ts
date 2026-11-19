@@ -32,9 +32,78 @@ beforeEach(() => {
   vi.mocked(saveProcurementCatalog).mockImplementation(async value => ({ catalog: { ...structuredClone(value), revision: value.revision + 1 }, gaps: [] }))
   vi.mocked(previewProcurementScopes).mockImplementation(async ({ requests }) => ({ ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(r => ({ ...r, state: 'classified', applicability: 'covered', rate_source: 'upstream_probe_sync', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated' })) }))
 })
-afterEach(() => { for (const w of wrappers.splice(0)) w.unmount() })
+afterEach(() => { for (const w of wrappers.splice(0)) w.unmount(); vi.useRealTimers() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it('expires a displayed pass and the required product gate without reloading', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    const evidence = { ...availabilityFixture('pass'), valid_until: '2026-11-19T00:00:01Z' }
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: evidence.evaluated_at, results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', availability_evidence: evidence,
+        product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted', availability: { version: 1, required: true, state: 'pass' } }
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="availability-scope-status"]').text()).toContain(prefix + 'availabilityStates.pass')
+    expect(w.get('[data-testid="product-availability"]').text()).toContain(prefix + 'availabilityGateStates.pass')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(w.get('[data-testid="availability-scope-status"]').text()).toContain(prefix + 'availabilityStates.unknown')
+    expect(w.get('[data-testid="product-availability"]').text()).toContain(prefix + 'availabilityGateStates.unknown')
+  })
+
+  it.each(['pass', 'fail', 'unknown', 'not_configured', 'legacy'])('shows independent latest availability conclusions (%s)', async status => {
+    const w = await open(); await setupProbe(w)
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
+        ...(status === 'legacy' ? {} : { availability_evidence: availabilityFixture(status) })
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    const expected = status === 'legacy' || status === 'pass' || status === 'fail' ? 'unknown' : status
+    expect(w.get('[data-testid="availability-scope-status"]').text()).toContain(prefix + 'availabilityStates.' + expected)
+    expect(w.get('[data-testid="availability-scope-evidence"]').text()).toContain(prefix + 'availabilityBoundary')
+    if (status !== 'legacy') expect(w.get('[data-testid="availability-scope-evidence"]').text()).toContain('2026-11-19T00:00:00Z')
+    expect(w.text()).toContain(prefix + 'notQualified')
+  })
+  it.each(['version', 'future', 'count', 'empty-pass', 'missing-deadline', 'expired', 'reason', 'contradictory-fail', 'malformed'])('rejects inconsistent availability evidence (%s)', async kind => {
+    const w = await open(); await setupProbe(w)
+    const evidence = availabilityFixture('pass')
+    if (kind === 'version') evidence.version++
+    if (kind === 'future') evidence.evaluated_at = '2999-01-01T00:00:00Z'
+    if (kind === 'count') evidence.confirmed_rules++
+    if (kind === 'empty-pass') evidence.rule_count = evidence.confirmed_rules = 0
+    if (kind === 'missing-deadline') evidence.valid_until = null
+    if (kind === 'expired') evidence.valid_until = evidence.evaluated_at
+    if (kind === 'reason') evidence.reason = 'toString'
+    if (kind === 'contradictory-fail') evidence.status = 'fail'
+    if (kind === 'malformed') evidence.valid_until = 'not-a-date'
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', availability_evidence: evidence
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+  })
+  it('rejects a product availability pass contradicted by scope failure', async () => {
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', availability_evidence: availabilityFixture('fail'),
+        product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted', availability: { version: 1, required: true, state: 'pass' } }
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+  })
+
   it.each(['pass', 'fail', 'unknown', 'not_required'])('shows the product answer gate independently of price and full qualification (%s)', async state => {
     const w = await open(); await setupProbe(w)
     await w.get('[data-testid="procurement-product"]').setValue('42')
@@ -269,6 +338,10 @@ describe('catalog editing and scope classification in the original operations pa
   })
 })
 
+function availabilityFixture(status: string) {
+  return { version: 1, status, reason: ({ pass: 'all_rules_passed', fail: 'availability_not_confirmed', unknown: 'availability_scope_unconfirmed', not_configured: 'availability_not_configured' } as Record<string, string>)[status]!,
+    evaluated_at: '2026-11-19T00:00:00Z', valid_until: ['pass', 'fail'].includes(status) ? '2026-11-19T00:05:00Z' : null, rule_count: status === 'not_configured' ? 0 : 1, confirmed_rules: status === 'pass' ? 1 : 0 }
+}
 function qualityFixture(status: string) {
   const valid = status === 'pass' || status === 'fail'
   return { version: 1, status, reason: ({ pass: 'all_rules_passed', fail: 'answer_incorrect', unknown: 'rule_unconfirmed', not_configured: 'quality_not_configured' } as Record<string, string>)[status]!,

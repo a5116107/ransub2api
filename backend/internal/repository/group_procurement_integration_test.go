@@ -565,3 +565,59 @@ func TestProcurementPolicyBucketsPostgresHTTPAndAtomicCatalog(t *testing.T) {
 	require.Equal(t, 200, response.Code, response.Body.String())
 	require.Nil(t, read().ProcurementPolicy.Buckets.Codes)
 }
+
+func TestProcurementPolicyAvailabilityPostgresHTTP(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	groups := repository.NewAdminGroupRepository(client, db)
+	management := service.NewAdminService(nil, nil, groups, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := admin.NewGroupHandler(management, nil, nil)
+	router := gin.New()
+	router.POST("/groups", h.Create)
+	router.PUT("/groups/:id", h.Update)
+	router.GET("/groups/:id", h.GetByID)
+	run := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		return response
+	}
+	policy := `{"version":5,"revision":0,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"current_state"}`
+	response := run(http.MethodPost, "/groups", `{"name":"availability-product","platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"procurement_policy":`+policy+`}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data service.Group `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	id := envelope.Data.ID
+	path := fmt.Sprintf("/groups/%d", id)
+	read := func() *service.Group {
+		t.Helper()
+		group, err := groups.GetByIDLite(t.Context(), id)
+		require.NoError(t, err)
+		return group
+	}
+	require.Equal(t, "current_state", read().ProcurementPolicy.Availability)
+	response = run(http.MethodPut, path, `{"name":"ordinary-availability-edit"}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, "current_state", read().ProcurementPolicy.Availability)
+	for _, invalid := range []string{
+		`{"version":4,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required"}`,
+		`{"version":5,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required"}`,
+		`{"version":5,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":null}`,
+	} {
+		response = run(http.MethodPut, path, `{"name":"must-not-write","procurement_policy":`+invalid+`}`)
+		require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+		require.Equal(t, "ordinary-availability-edit", read().Name)
+		require.Equal(t, "current_state", read().ProcurementPolicy.Availability)
+	}
+	response = run(http.MethodPut, path, `{"procurement_policy":`+strings.ReplaceAll(strings.ReplaceAll(policy, `"revision":0`, `"revision":1`), "current_state", "not_required")+`}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, int64(2), read().ProcurementPolicy.Revision)
+	require.Equal(t, "not_required", read().ProcurementPolicy.Availability)
+	response = run(http.MethodPut, path, `{"procurement_policy":`+strings.ReplaceAll(policy, `"revision":0`, `"revision":1`)+`}`)
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Equal(t, "not_required", read().ProcurementPolicy.Availability)
+	require.Equal(t, .15, read().RateMultiplier)
+}

@@ -334,7 +334,7 @@ func TestProcurementPolicyBothSchedulersAndSticky(t *testing.T) {
 }
 
 func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
-	for _, constraint := range []string{"procurement_range", "procurement_source", "procurement_bucket", "procurement_catalog_unavailable", "procurement_quality_unavailable", "procurement_quality_failed"} {
+	for _, constraint := range []string{"procurement_range", "procurement_source", "procurement_bucket", "procurement_catalog_unavailable", "procurement_quality_unavailable", "procurement_quality_failed", "procurement_availability_unavailable", "procurement_availability_failed"} {
 		for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool} {
 			t.Run(mode+"/"+constraint, func(t *testing.T) {
 				var frames atomic.Int32
@@ -380,9 +380,15 @@ func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
 				if strings.HasPrefix(constraint, "procurement_quality_") {
 					group.ProcurementPolicy = procurementAnswerPolicy()
 				}
+				if strings.HasPrefix(constraint, "procurement_availability_") {
+					group.ProcurementPolicy = procurementCurrentAvailabilityPolicy()
+				}
 				var latest atomic.Pointer[Group]
 				latest.Store(group)
 				body := `{"type":"response.create","model":"gpt-fixture","input":"fixture","store":true,"stream":false}`
+				if strings.HasPrefix(constraint, "procurement_availability_") {
+					body = strings.Replace(body, `"stream":false`, `"stream":true`, 1)
+				}
 				ctx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", nil)
 				gate := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
 				gate.procurementGroup = func(context.Context) (*Group, error) { return latest.Load(), nil }
@@ -390,6 +396,12 @@ func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
 					now := time.Now()
 					until := now.Add(time.Minute)
 					return &QualityScopeEvidence{Version: 1, Status: qualityStatus.Load().(string), Reason: "all_rules_passed", EvaluatedAt: now, ValidUntil: &until, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}, nil
+				})
+				gate.availabilityReader = procurementAvailabilityTestReader(func(context.Context, *Account) ([]*AvailabilityReport, error) {
+					report := availabilityAdmissionPass(account.ID, "gpt-fixture")
+					report.Models[0].Decision.Scope.Protocol, report.Models[0].Decision.Scope.Stream = "responses_ws_v2", true
+					report.Models[0].Status, report.Models[0].Decision.Status = qualityStatus.Load().(string), qualityStatus.Load().(string)
+					return []*AvailabilityReport{report}, nil
 				})
 				settled := make(chan int, 3)
 				hooks := &OpenAIWSIngressHooks{AfterTurn: func(turn int, _ *OpenAIForwardResult, _ error) { settled <- turn }}
@@ -408,9 +420,9 @@ func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
 				replacement.ProcurementPolicy = group.ProcurementPolicy.WithRevision(2)
 				newMax := "0.025"
 				replacement.ProcurementPolicy.MaxRate = &newMax
-				if strings.HasPrefix(constraint, "procurement_quality_") {
+				if strings.HasPrefix(constraint, "procurement_quality_") || strings.HasPrefix(constraint, "procurement_availability_") {
 					replacement.ProcurementPolicy.MaxRate = nil
-					if constraint == "procurement_quality_failed" {
+					if strings.HasSuffix(constraint, "_failed") {
 						qualityStatus.Store("fail")
 					} else {
 						qualityStatus.Store("unknown")
@@ -608,9 +620,13 @@ func TestProcurementPolicyObservationsRemainSeparate(t *testing.T) {
 	observer.recordVeto(9, PlatformOpenAI, .5, openAIProfitFilterReasonProcurementCatalog)
 	observer.recordVeto(9, PlatformOpenAI, .5, "procurement_quality_failed")
 	observer.recordVeto(9, PlatformOpenAI, .5, "procurement_quality_unavailable")
+	observer.recordVeto(9, PlatformOpenAI, .5, "procurement_availability_failed")
+	observer.recordVeto(9, PlatformOpenAI, .5, "procurement_availability_unavailable")
 	stats := observer.stats(9, PlatformOpenAI)
 	require.EqualValues(t, 1, stats.vetoQuality.Load())
 	require.EqualValues(t, 1, stats.vetoQualityUnknown.Load())
+	require.EqualValues(t, 1, stats.vetoAvailability.Load())
+	require.EqualValues(t, 1, stats.vetoAvailabilityUnknown.Load())
 	require.EqualValues(t, 1, stats.vetoBucket.Load())
 	require.EqualValues(t, 1, stats.vetoCatalog.Load())
 	require.EqualValues(t, 1, stats.vetoProcurement.Load())

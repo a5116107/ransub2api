@@ -6486,8 +6486,11 @@ const resolveProcurementConflict = () => {
       buckets: { codes: latest.buckets!.codes === null ? null : [...latest.buckets!.codes] }
     };
   }
-  if (latest?.version === 4 && editProcurementPolicy.value.version < 4) {
+  if (latest && latest.version >= 4 && editProcurementPolicy.value.version < 4) {
     editProcurementPolicy.value = { ...editProcurementPolicy.value, version: 4, quality: latest.quality };
+  }
+  if (latest?.version === 5 && editProcurementPolicy.value.version < 5) {
+    editProcurementPolicy.value = { ...editProcurementPolicy.value, version: 5, availability: latest.availability };
   }
   editProcurementPolicy.value = { ...editProcurementPolicy.value, revision: latest?.revision ?? 0 };
   editProcurementConflict.value = false;

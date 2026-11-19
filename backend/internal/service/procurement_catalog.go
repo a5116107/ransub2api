@@ -35,6 +35,7 @@ type ProcurementScopeClassification struct {
 	Bucket        *domain.ProcurementBucket  `json:"bucket"`
 	Qualification string                     `json:"qualification"`
 	Quality       *QualityScopeEvidence      `json:"quality_evidence,omitempty"`
+	Availability  *AvailabilityScopeEvidence `json:"availability_evidence,omitempty"`
 	Product       *ProcurementProductPreview `json:"product_procurement,omitempty"`
 }
 
@@ -47,6 +48,7 @@ type ProcurementPreviewCommand struct {
 // user-specific price quote or a scheduling/quality/cache qualification.
 type ProcurementProductPreview struct {
 	AnswerQuality   *ProcurementAnswerQualityPreview `json:"answer_quality,omitempty"`
+	Availability    *ProcurementAvailabilityPreview  `json:"availability,omitempty"`
 	Version         int                              `json:"version"`
 	GroupID         int64                            `json:"group_id"`
 	PolicyRevision  int64                            `json:"policy_revision"`

@@ -54,6 +54,38 @@ const procurementToggle = (wrapper: View, form: string) => wrapper.get(form).fin
   .find(label => label.text() === 'admin.groups.profitControl.enable')!.get('input')
 
 describe('product procurement interval in the original Group editor', () => {
+  it('preserves v5 latest-state requirements while editing quality, sources and buckets', async () => {
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-availability').setValue('current_state')
+    await wrapper.get('#edit-procurement-quality').setValue('current_answer')
+    await wrapper.get('#edit-procurement-buckets-mode').setValue('selected')
+    await flushPromises()
+    await wrapper.get('input[data-bucket-code="low"]').setValue(true)
+    await wrapper.get('#edit-procurement-sources-mode').setValue('approved')
+    await wrapper.get('#edit-procurement-sources').setValue('901')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({ ...savedPolicy, version: 5, availability: 'current_state', quality: 'current_answer', sources: { account_ids: [901] }, buckets: { codes: ['low'] } })
+  })
+  it('keeps the latest-state constraint on explicit 409 review and only disables it explicitly', async () => {
+    mocks.update.mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
+    const policy = { ...savedPolicy, version: 5, revision: 2, sources: { account_ids: [904] }, buckets: { codes: ['low'] }, quality: 'current_answer', availability: 'current_state' }
+    mocks.getById.mockResolvedValue({ ...base, procurement_policy: policy })
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-max').setValue('0.05')
+    await submit(wrapper)
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.latestAvailability')
+    await button(wrapper, 'admin.groups.profitControl.procurement.useLatestRevision').trigger('click')
+    expect((wrapper.get('#edit-procurement-availability').element as HTMLSelectElement).value).toBe('current_state')
+    await wrapper.get('#edit-procurement-quality').setValue('not_required')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...policy, max_rate: '0.05', quality: 'not_required' })
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-availability').setValue('not_required')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[2][1].procurement_policy.availability).toBe('not_required')
+  })
   it('saves an explicit answer gate without downgrading it when changing buckets or sources', async () => {
     const wrapper = mountView()
     await edit(wrapper)

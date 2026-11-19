@@ -192,6 +192,8 @@ type openAIProfitControlGate struct {
 	procurementGroup   func(context.Context) (*Group, error)
 	qualityReader      QualityScopeEvidenceReader
 	qualityCache       *sync.Map
+	availabilityReader AccountAvailabilityReader
+	availabilityCache  *sync.Map
 }
 
 func profitControlUnavailableGroupGate(groupID int64, pricingAt time.Time) *openAIProfitControlGate {
@@ -350,6 +352,8 @@ func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Contex
 		procurementGroup:   procurementPolicyGroupReader(s.schedulerSnapshot, nil, *groupID),
 		qualityReader:      procurementQualityReader(s.schedulerSnapshot, nil),
 		qualityCache:       &sync.Map{},
+		availabilityReader: procurementAvailabilityReader(s.schedulerSnapshot, s.availabilityReader),
+		availabilityCache:  &sync.Map{},
 	}
 }
 
@@ -416,6 +420,10 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 		return true, reason
 	}
 	if reason := procurementQualityCandidateVetoReason(ctx, account); reason != "" {
+		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
+		return true, reason
+	}
+	if reason := procurementAvailabilityCandidateVetoReason(ctx, account); reason != "" {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
 		return true, reason
 	}
@@ -497,22 +505,24 @@ func (s *OpenAIGatewayService) bindOpenAIStickySessionAfterAdmission(ctx context
 // 构成，不能当作精确的请求数或账号数。
 
 type openAIProfitControlGroupStats struct {
-	installs           atomic.Int64
-	vetoThreshold      atomic.Int64
-	vetoInvalidRate    atomic.Int64
-	vetoGroupConfig    atomic.Int64
-	vetoUpstreamRate   atomic.Int64
-	vetoSaleRate       atomic.Int64
-	vetoScope          atomic.Int64
-	vetoProcurement    atomic.Int64
-	vetoSource         atomic.Int64
-	vetoPolicy         atomic.Int64
-	vetoBucket         atomic.Int64
-	vetoCatalog        atomic.Int64
-	vetoQuality        atomic.Int64
-	vetoQualityUnknown atomic.Int64
-	refreshFailures    atomic.Int64
-	lastLogUnixMilli   atomic.Int64
+	installs                atomic.Int64
+	vetoThreshold           atomic.Int64
+	vetoInvalidRate         atomic.Int64
+	vetoGroupConfig         atomic.Int64
+	vetoUpstreamRate        atomic.Int64
+	vetoSaleRate            atomic.Int64
+	vetoScope               atomic.Int64
+	vetoProcurement         atomic.Int64
+	vetoSource              atomic.Int64
+	vetoPolicy              atomic.Int64
+	vetoBucket              atomic.Int64
+	vetoCatalog             atomic.Int64
+	vetoQuality             atomic.Int64
+	vetoQualityUnknown      atomic.Int64
+	vetoAvailability        atomic.Int64
+	vetoAvailabilityUnknown atomic.Int64
+	refreshFailures         atomic.Int64
+	lastLogUnixMilli        atomic.Int64
 }
 
 type openAIProfitControlObserver struct {
@@ -571,6 +581,10 @@ func (o *openAIProfitControlObserver) recordVeto(groupID int64, platform string,
 		s.vetoQuality.Add(1)
 	case "procurement_quality_unavailable":
 		s.vetoQualityUnknown.Add(1)
+	case "procurement_availability_failed":
+		s.vetoAvailability.Add(1)
+	case "procurement_availability_unavailable":
+		s.vetoAvailabilityUnknown.Add(1)
 	case openAIProfitFilterReasonProcurementUnavailable:
 		s.vetoPolicy.Add(1)
 	default:
@@ -616,6 +630,8 @@ func (o *openAIProfitControlObserver) maybeLog(groupID int64, platform string, t
 		"veto_procurement_policy_unavailable_total", s.vetoPolicy.Load(),
 		"veto_procurement_quality_failed_total", s.vetoQuality.Load(),
 		"veto_procurement_quality_unknown_total", s.vetoQualityUnknown.Load(),
+		"veto_procurement_availability_failed_total", s.vetoAvailability.Load(),
+		"veto_procurement_availability_unknown_total", s.vetoAvailabilityUnknown.Load(),
 		"refresh_failure_total", s.refreshFailures.Load(),
 	)
 }

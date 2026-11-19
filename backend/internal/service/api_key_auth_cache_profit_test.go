@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
@@ -69,6 +70,25 @@ func profitAuthTestAPIKey() *APIKey {
 			ProfitMinMargin:      0.2,
 			ProfitSafetyBuffer:   0.05,
 		},
+	}
+}
+
+func TestProcurementPolicyAvailabilityAuthSnapshot(t *testing.T) {
+	svc := &APIKeyService{}
+	apiKey := profitAuthTestAPIKey()
+	apiKey.Group.ProcurementPolicy = &ProcurementPolicy{Version: 5, Revision: 2, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "not_required", Availability: "current_state"}
+	raw, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: svc.snapshotFromAPIKey(t.Context(), apiKey)})
+	require.NoError(t, err)
+	var entry APIKeyAuthCacheEntry
+	require.NoError(t, json.Unmarshal(raw, &entry))
+	loaded, used, err := svc.applyAuthCacheEntry(apiKey.Key, &entry)
+	require.NoError(t, err)
+	require.True(t, used)
+	require.Equal(t, apiKey.Group.ProcurementPolicy, loaded.Group.ProcurementPolicy)
+	for _, replacement := range []string{`"availability":null`, `"availability":"future"`, `"Availability":"current_state"`} {
+		broken := strings.Replace(string(raw), `"availability":"current_state"`, replacement, 1)
+		require.NotEqual(t, string(raw), broken)
+		require.Error(t, json.Unmarshal([]byte(broken), &entry), "malformed auth cache must not erase a strict requirement")
 	}
 }
 

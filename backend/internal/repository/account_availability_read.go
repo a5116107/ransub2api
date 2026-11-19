@@ -14,7 +14,7 @@ import (
 // ReadAvailability does not reuse a scheduler/process snapshot: rule, account
 // route, event counter and observations belong to one repeatable-read view.
 func (r *scheduledTestPlanRepository) ReadAvailability(ctx context.Context, planID int64) (*service.AvailabilityReport, error) {
-	reports, err := r.readAvailabilityReports(ctx, "id", planID, nil)
+	reports, err := readAvailabilityReports(ctx, r.db, "id", planID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +30,19 @@ func (r *scheduledTestPlanRepository) ReadAccountAvailability(ctx context.Contex
 	if account == nil || account.ID <= 0 {
 		return nil, service.ErrAccountNotFound
 	}
-	return r.readAvailabilityReports(ctx, "account_id", account.ID, account)
+	return readAvailabilityReports(ctx, r.db, "account_id", account.ID, account)
+}
+
+// Product admission consumes the existing authority, including paused rules,
+// current prepared credentials and connection revisions, without running probes.
+func (r *groupRepository) ReadAccountAvailability(ctx context.Context, account *service.Account) ([]*service.AvailabilityReport, error) {
+	db, ok := r.sql.(interface {
+		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+	})
+	if !ok || account == nil || account.ID <= 0 {
+		return nil, service.ErrAccountNotFound
+	}
+	return readAvailabilityReports(ctx, db, "account_id", account.ID, account)
 }
 
 type availabilityPlanRead struct {
@@ -42,8 +54,10 @@ type availabilityPlanRead struct {
 	config       *service.PelicanTestConfig
 }
 
-func (r *scheduledTestPlanRepository) readAvailabilityReports(ctx context.Context, column string, id int64, prepared *service.Account) ([]*service.AvailabilityReport, error) {
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+func readAvailabilityReports(ctx context.Context, db interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}, column string, id int64, prepared *service.Account) ([]*service.AvailabilityReport, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

@@ -531,9 +531,12 @@ func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model str
 }
 
 func (s *OpenAIGatewayService) checkOpenAIWSBinding(ctx context.Context, account *Account, model string, b *openAIWSTurnBinding, payload any) error {
-	ctx = context.WithValue(ctx, procurementQualityPreparedAccountKey{}, account)
-	ctx = context.WithValue(ctx, procurementQualityActualScopeKey{}, func() *AvailabilityRequestScope {
-		if b != nil && b.availability != nil && b.availability.route != nil {
+	ctx = context.WithValue(ctx, procurementPreparedAccountKey{}, account)
+	ctx = context.WithValue(ctx, procurementQualityWireConfirmedKey{}, func() bool {
+		return b != nil && b.availability != nil && b.availability.route != nil
+	})
+	ctx = context.WithValue(ctx, procurementActualScopeKey{}, func() *AvailabilityRequestScope {
+		if b != nil && b.availability != nil {
 			return b.availability.scope(account, payload)
 		}
 		return nil

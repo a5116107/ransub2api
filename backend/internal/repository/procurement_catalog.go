@@ -122,6 +122,18 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 		return nil, err
 	}
 	out := &service.ProcurementClassificationPreview{ProcurementCatalogSnapshot: service.ProcurementCatalogSnapshot{Catalog: catalog, Gaps: catalog.Gaps()}, Results: make([]service.ProcurementScopeClassification, 0, len(requests))}
+	availability := make(map[int64][]*service.AvailabilityReport, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		prepared := account
+		if account.HasManagedOpenAIConnections() && account.AuthConnectionID == "" {
+			prepared = nil // Inventory cannot certify a connection not selected here.
+		}
+		availability[account.ID], err = readAvailabilityReportsInTx(ctx, tx, "account_id", account.ID, prepared)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// Expiry is checked at the end of loading, not at transaction start.
 	if err = tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&out.ObservedAt); err != nil {
 		return nil, err
@@ -130,8 +142,10 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	for _, request := range requests {
 		result := service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt, product)
 		result.Quality = service.AssessQualityScopeEvidence(byID[request.AccountID], request.Scope, qualityRules[request.AccountID], out.ObservedAt, quality.limited)
+		result.Availability = service.AssessAvailabilityScopeEvidence(byID[request.AccountID], &request.Scope, availability[request.AccountID], out.ObservedAt)
 		if result.Product != nil {
 			result.Product.AnswerQuality = service.ProcurementAnswerQuality(product.ProcurementPolicy, result.Quality, out.ObservedAt)
+			result.Product.Availability = service.ProcurementAvailability(product.ProcurementPolicy, result.Availability, out.ObservedAt)
 		}
 		out.Results = append(out.Results, result)
 	}

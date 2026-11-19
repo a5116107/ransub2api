@@ -1,5 +1,13 @@
 export default {
   "procurement": {
+    availabilityTitle: 'Latest availability for this exact scope',
+    availabilityStates: { pass: 'Current pass', fail: 'Current failure', unknown: 'Unknown or expired', not_configured: 'Monitoring not configured' },
+    availabilityGateTitle: 'Product latest availability gate',
+    availabilityGateStates: { not_required: 'Keep existing monitoring admission', pass: 'Availability passed (not full qualification)', fail: 'Latest failure: sending blocked', unknown: 'Unknown: blocked when required' },
+    availabilityCoverage: 'Confirmed rules {confirmed} / {total}',
+    availabilityLegacy: 'No latest-state evidence in this response; not a pass.',
+    availabilityBoundary: 'Latest decisions, not historical success rates. Independent of answer quality, model identity and cache qualification. Expired evidence stops showing a pass; this preview never enables monitoring or changes account groups.',
+    availabilityReasons: { all_rules_passed: 'All relevant rules have a current same-scope pass', availability_not_confirmed: 'The latest decision is not a current pass', availability_not_configured: 'No availability rule configured', availability_rule_paused: 'A relevant rule is paused', availability_model_unobserved: 'No matching model observation', availability_scope_unconfirmed: 'Request scope or connection is unconfirmed', availability_state_unavailable: 'The latest-state authority is unconfirmed', account_unavailable: 'The account is unavailable', expired: 'Evidence expired; read again for the current conclusion' },
     answerQualityTitle: 'Product answer quality gate',
     answerQualityStates: { not_required: 'Not required', pass: 'Answer gate passed (not full product qualification)', fail: 'Incorrect answer: sending blocked', unknown: 'Unknown evidence: blocked when required' },
   "title": "Procurement buckets and scope classification",

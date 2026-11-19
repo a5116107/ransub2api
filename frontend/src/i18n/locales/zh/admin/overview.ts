@@ -1197,6 +1197,12 @@ export default {
       },
       profitControl: {
         procurement: {
+          availabilityTitle: "最新可用状态要求",
+          availabilityOff: "保持原有监测准入",
+          availabilityRequired: "必须有当前同范围通过结论",
+          availabilityHint: "要求此门时，未配置、暂停、缺失或过期均拒绝发送；生成前重核规则、凭据、连接和新故障。历史成功率不授予准入，不会自动启用付费检测。",
+          availabilityFormat: "请选择明确的最新可用要求，未知配置不会被当作关闭。",
+          latestAvailability: "最新保存的可用状态要求",
           qualityTitle: "答题质量硬门",
           qualityOff: "不新增答题质量要求",
           qualityRequired: "必须有当前同范围答题通过证据",

@@ -150,6 +150,7 @@ func TestRegionalSchedulerProcurementCatalogAtomicRefreshAndRestore(t *testing.T
 	defer server.Close()
 	group := profitControlTestGroup(10, 0, 0)
 	group.ProcurementPolicy = &ProcurementPolicy{Version: 3, Revision: 2, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{Codes: []string{"low"}}}
+	group.ProcurementPolicy.Version, group.ProcurementPolicy.Quality, group.ProcurementPolicy.Availability = 5, "not_required", "not_required"
 	account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(1), .025)
 	account.Status, account.Schedulable, account.GroupIDs = StatusActive, true, []int64{group.ID}
 	doc := RegionalSchedulerDocument{Version: 3, Groups: []*Group{group}, ProcurementCatalog: procurementBucketTestCatalog(), Buckets: []RegionalSchedulerBucket{{Bucket: SchedulerBucket{GroupID: group.ID, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}, Accounts: []*Account{account}}}, Availability: []RegionalAccountAvailability{{AccountID: 1, Reports: []*AvailabilityReport{}}}}
@@ -227,6 +228,20 @@ func TestRegionalSchedulerProcurementCatalogAtomicRefreshAndRestore(t *testing.T
 	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
 	require.True(t, veto)
 	require.Equal(t, "procurement_policy_unavailable", reason)
+	publish(time.Minute)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.False(t, veto, reason)
+	// A region keeps the explicit v5 constraint across updates, and consumes
+	// only its own installed authority. Missing observations never use primary.
+	request = context.WithValue(request, procurementActualScopeKey{}, func() *AvailabilityRequestScope {
+		return &AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}
+	})
+	group.ProcurementPolicy.Availability = "current_state"
+	publish(time.Minute)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.True(t, veto)
+	require.Equal(t, "procurement_availability_unavailable", reason)
+	group.ProcurementPolicy.Availability = "not_required"
 	publish(time.Minute)
 	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
 	require.False(t, veto, reason)

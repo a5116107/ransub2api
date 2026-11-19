@@ -6,6 +6,18 @@ const policy = (min_rate: string | null = '0.02', max_rate: string | null = '0.0
   ({ version: 1, revision: 1, min_rate, max_rate })
 
 describe('exact procurement interval commands', () => {
+  it('requires an explicit latest-state mode in v5 and detects mode-only edits', () => {
+    const base = { ...policy(), version: 5, sources: { account_ids: [901] }, buckets: { codes: ['low'] }, quality: 'current_answer' }
+    for (const availability of ['not_required', 'current_state']) {
+      const next = { ...base, availability }
+      expect(validateProcurementPolicy(next)).toBeNull()
+      expect(procurementPolicyCommand(next, next)).toBeUndefined()
+      expect(procurementPolicyCommand({ ...next, availability: availability === 'not_required' ? 'current_state' : 'not_required' }, next)).toBeDefined()
+    }
+    for (const availability of [undefined, '', 'future']) expect(validateProcurementPolicy({ ...base, availability })).toBe('availabilityFormat')
+    expect(validateProcurementPolicy({ ...base, quality: undefined, availability: 'current_state' })).toBe('qualityFormat')
+    expect(validateProcurementPolicy({ ...base, version: 4, availability: 'not_required' })).toBe('availabilityFormat')
+  })
   it('preserves an explicit version 4 answer quality requirement', () => {
     for (const quality of ['not_required', 'current_answer']) {
       const selected = { ...policy(), version: 4, sources: { account_ids: [901] }, buckets: { codes: ['low'] }, quality }

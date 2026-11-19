@@ -3,15 +3,17 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：默认service跨标签夹具及区域导出mock阻塞已解。
-授权：H盘功能分支实现/提交同步；不CI/PR/生产。
-来源：53e806cfc；Go摘要f07f446bc942。
-已验：默认race17413/skip9；unit双轮2872；双profile vet/lint通过。
-已决：实际usage、插件延期、手停/unknown；身份未知。
-下一：D4.3资格/模式/拥有者→D6.2；完整资格不借答题认证。
-等待：原28项20done/8部分；scope/参考/缓存域/多节点/PR3。
-生产记录.7/fd83f6c91；不部署；历史拒删保护。
-Attempt：107；仅测试归属及旧mock替换，证据见DECISIONS。
+任务：D4.3.8本地已验；全局继续。
+授权：统一H盘实现/提交同步；不CI/PR/合并/部署/生产。
+验证来源：feat/automated-upstream-supply；GoLF deb9c0d8956d。
+验证命令：unit双轮race/PG；默认定向；vet/lint；Linux embed；UI。
+验证结果：8892/716/93pass，0fail/race；UI133pass，静态/嵌入0。
+下一动作：D4.3统一资格/模式/拥有者→D6.2，D5.4独立。
+尝试：108
+阻塞：供应商/缓存域/参考/多节点/PR3及清理，原父验收保持。
+责任方：供应商/开发方/宿主用户，详下文。
+解除条件：提供合同/验收环境、解决冲突及解除删除策略。
+生产.7/fd83f6c91未变；新scratch142733451B拒删见DECISIONS。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -34,7 +36,7 @@ Attempt：107；仅测试归属及旧mock替换，证据见DECISIONS。
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
 | D2.6.1–.4 | done | 自动/手工声明、精确预演、New API绑定/TTL/重放、SQL CAS及HTTP/WS/UI本地已验 |
-| D2.6.5–.12 | done | 原生/固定转换、四WS/两HTTP桥候选已本地验；静态/构建及未变SQL/UI证据见DECISIONS，非生产 |
+| D2.6.5–.12 | done | 原生/固定转换、四WS/两HTTP桥及静态/构建已验；SQL/UI见DECISIONS，非生产 |
 | D2.6.13 | done | smart标量/历史及11类逐轮路径已验，非生产 |
 | D2.6.14 | done | Messages→Chat映射/effort/Fast及调度/HTTP已验，非生产 |
 | D2.6.15 | done | Messages→Responses/verbosity、UI及HTTP/11WS已验，非生产 |
@@ -45,7 +47,7 @@ Attempt：107；仅测试归属及旧mock替换，证据见DECISIONS。
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 原清理/分页/依赖及双平台验收保持；逐项源码与验证见DECISIONS |
-| D4 | in_progress | D4.3.1–.7区间/目录/来源/预演/允许桶/JSON及答题门已验；完整资格/模式/重算仍缺 |
+| D4 | in_progress | D4.3.1–.8已本地验；资格/模式/重算仍缺 |
 | D4.3.1 | done | 区间/CAS/预演/终检、PG迁移/权限及中英UI已验；非完整资格/生产 |
 | D4.3.2 | done | 目录/CAS/同快照归类、PG32/UI174/权限/四视口/嵌入已验；非完整资格/生产 |
 | D4.3.3 | done | 本地账号来源/CAS/预演/末端重读、race4876/PG34/UI196及中英四视口；非完整资格/生产 |
@@ -53,6 +55,7 @@ Attempt：107；仅测试归属及旧mock替换，证据见DECISIONS。
 | D4.3.5 | done | 允许桶/变价/终检/区域快照，race4944/PG42/UI198/48浏览器及嵌入已验；非完整资格/生产 |
 | D4.3.6 | done | 原对象严格JSON、PG损坏拒绝/恢复及认证/区域本地已验；race5002/PG54、静态/Linux通过 |
 | D4.3.7 | done | v4/SQL/候选黏性/槽后/HTTP与WS实帧拒发恢复及中英四视口已验；非完整资格/生产 |
+| D4.3.8 | done | v5最新可用门/原生与受管/实帧/SQL及中英UI已验；8892/716/93/UI133；非完整资格/生产 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/入口来源已本地验；实际组/受信外部检测/其余scope/资格及D5.4仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
 | D7 | in_progress | 历史结论/下游原始面板及409已有证据；D7.3真实多维结论、D7.4三步产品配置/监控/预算解释仍缺 |
@@ -80,11 +83,9 @@ Attempt：107；仅测试归属及旧mock替换，证据见DECISIONS。
 
 ## 工作区与环境限制
 
-- 工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
-- 历史12张测试PNG/1164bytes校验匹配；data/删除受宿主拦截，原位保留。
-- backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式153包已验。
+- 工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，无额外worktree。
+- 历史12张PNG/1164bytes及data/拒删原位保留。
+- backend/tmp/availability-non5xx-regression拒删，根go test ./...会误编译；正式153包已验。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 既有PG55441、Redis56441及quality-batch/quality-validity拒删，owner宿主用户；路径/解除条件见DECISIONS。
 - 历史拒删620274603bytes、overlay49259bytes、构建/临时222539771bytes原位；宿主解除后再清理，详DECISIONS；回收0。
-
-- 默认service共享夹具/旧导出mock阻塞已解；17,413pass/9skip，unit双轮2,872pass；仅本地。

@@ -3,10 +3,42 @@ package domain
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestProcurementPolicyAvailabilityCompleteContract(t *testing.T) {
+	const valid = `{"version":5,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","availability":"current_state"}`
+	for _, mode := range []string{"current_state", "not_required"} {
+		raw := strings.Replace(valid, "current_state", mode, 1)
+		var policy ProcurementPolicy
+		require.NoError(t, json.Unmarshal([]byte(raw), &policy))
+		require.NoError(t, policy.Validate())
+		encoded, err := json.Marshal(policy.Clone())
+		require.NoError(t, err)
+		require.JSONEq(t, raw, string(encoded))
+	}
+	for name, raw := range map[string]string{
+		"missing":         strings.Replace(valid, `,"availability":"current_state"`, "", 1),
+		"null":            strings.Replace(valid, `"availability":"current_state"`, `"availability":null`, 1),
+		"empty":           strings.Replace(valid, "current_state", "", 1),
+		"unknown":         strings.Replace(valid, "current_state", "future", 1),
+		"wrong case":      strings.Replace(valid, `"availability":`, `"Availability":`, 1),
+		"duplicate":       strings.Replace(valid, `"availability":`, `"availability":"current_state","availability":`, 1),
+		"old version":     strings.Replace(valid, `"version":5`, `"version":4`, 1),
+		"future version":  strings.Replace(valid, `"version":5`, `"version":6`, 1),
+		"missing quality": strings.Replace(valid, `,"quality":"current_answer"`, "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			policy := ProcurementPolicy{Version: 1, Revision: 9}
+			before := policy.Clone()
+			require.Error(t, json.Unmarshal([]byte(raw), &policy))
+			require.Equal(t, before, &policy, "invalid persistence must not publish a partial policy")
+		})
+	}
+}
 
 func TestProcurementPolicyQualityCompleteContract(t *testing.T) {
 	for _, quality := range []string{`"not_required"`, `"current_answer"`} {

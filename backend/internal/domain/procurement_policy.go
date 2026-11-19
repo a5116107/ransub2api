@@ -13,23 +13,25 @@ import (
 	"strings"
 )
 
-// ProcurementPolicy narrows the original pool by administrator-owned price and
-// source constraints. It does not certify quality/cache or own group bindings.
+// ProcurementPolicy narrows the original pool by administrator-owned price,
+// sources and explicit evidence requirements. It does not certify model/cache
+// quality or own group bindings.
 type ProcurementPolicy struct {
-	Version  int                 `json:"version"`
-	Revision int64               `json:"revision"`
-	MinRate  *string             `json:"min_rate"`
-	MaxRate  *string             `json:"max_rate"`
-	Sources  *ProcurementSources `json:"sources,omitempty"`
-	Buckets  *ProcurementBuckets `json:"buckets,omitempty"`
-	Quality  string              `json:"quality,omitempty"`
+	Version      int                 `json:"version"`
+	Revision     int64               `json:"revision"`
+	MinRate      *string             `json:"min_rate"`
+	MaxRate      *string             `json:"max_rate"`
+	Sources      *ProcurementSources `json:"sources,omitempty"`
+	Buckets      *ProcurementBuckets `json:"buckets,omitempty"`
+	Quality      string              `json:"quality,omitempty"`
+	Availability string              `json:"availability,omitempty"`
 }
 
 // A persisted policy and a command have the same complete JSON contract. Plain
 // struct decoding accepts missing bounds, case aliases and last-value wins,
 // which could turn a damaged snapshot into less restrictive admission.
 func (p *ProcurementPolicy) UnmarshalJSON(raw []byte) error {
-	fields, err := procurementJSONFields(raw, []string{"version", "revision", "min_rate", "max_rate"}, "sources", "buckets", "quality")
+	fields, err := procurementJSONFields(raw, []string{"version", "revision", "min_rate", "max_rate"}, "sources", "buckets", "quality", "availability")
 	if err != nil {
 		return err
 	}
@@ -45,7 +47,7 @@ func (p *ProcurementPolicy) UnmarshalJSON(raw []byte) error {
 	if err := policy.ValidateDraft(); err != nil {
 		return err
 	}
-	if policy.Version == 1 && fields["sources"] != nil || policy.Version < 3 && fields["buckets"] != nil || policy.Version < 4 && fields["quality"] != nil {
+	if policy.Version == 1 && fields["sources"] != nil || policy.Version < 3 && fields["buckets"] != nil || policy.Version < 4 && fields["quality"] != nil || policy.Version < 5 && fields["availability"] != nil {
 		return errors.New("procurement fields do not match the policy version")
 	}
 	*p = policy
@@ -173,7 +175,7 @@ func procurementBound(value *string) (*big.Rat, error) {
 }
 
 func (p *ProcurementPolicy) ValidateDraft() error {
-	if p == nil || p.Version < 1 || p.Version > 4 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
+	if p == nil || p.Version < 1 || p.Version > 5 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
 		return errors.New("invalid procurement policy version or revision")
 	}
 	if p.Version == 1 && p.Sources != nil || p.Version >= 2 && p.Sources == nil {
@@ -182,8 +184,11 @@ func (p *ProcurementPolicy) ValidateDraft() error {
 	if p.Version < 3 && p.Buckets != nil || p.Version >= 3 && p.Buckets == nil {
 		return errors.New("procurement bucket contract does not match its version")
 	}
-	if p.Version < 4 && p.Quality != "" || p.Version == 4 && p.Quality != "not_required" && p.Quality != "current_answer" {
+	if p.Version < 4 && p.Quality != "" || p.Version >= 4 && p.Quality != "not_required" && p.Quality != "current_answer" {
 		return errors.New("procurement quality contract does not match its version")
+	}
+	if p.Version < 5 && p.Availability != "" || p.Version == 5 && p.Availability != "not_required" && p.Availability != "current_state" {
+		return errors.New("procurement availability contract does not match its version")
 	}
 	if p.Buckets != nil {
 		if len(p.Buckets.Codes) > 64 {

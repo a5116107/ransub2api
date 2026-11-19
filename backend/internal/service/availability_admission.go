@@ -126,34 +126,16 @@ func admitAvailabilityScope(ctx context.Context, account *Account, reader Accoun
 	if scope == nil {
 		return denyOpenAITurn("availability_scope_unconfirmed")
 	}
-	matched := false
+	at := time.Time{}
 	for _, report := range reports {
-		if !report.Configured {
-			continue
-		}
-		if report.EvaluatedAt.IsZero() || len(report.Models) == 0 {
-			return denyOpenAITurn("availability_not_confirmed")
-		}
-		for _, state := range report.Models {
-			if AvailabilityModelForAccount(account, state.ModelID) != scope.Model {
-				continue
-			}
-			matched = true
-			if !report.Enabled {
-				return denyOpenAITurn("availability_rule_paused")
-			}
-			// Charge the read and payload parsing time against the database
-			// clock, so latency and local clock skew cannot extend a pass.
-			if state.Status != "pass" || state.StatusAt(report.EvaluatedAt.Add(time.Since(started))) != "pass" {
-				return denyOpenAITurn("availability_not_confirmed")
-			}
-			if state.Decision == nil || state.Decision.Scope == nil || *state.Decision.Scope != *scope {
-				return denyOpenAITurn("availability_scope_unconfirmed")
-			}
+		if report.EvaluatedAt.After(at) {
+			at = report.EvaluatedAt
 		}
 	}
-	if !matched {
-		return denyOpenAITurn("availability_model_unobserved")
+	// Charge both authoritative reads and lazy wire parsing to its clock.
+	evidence := AssessAvailabilityScopeEvidence(account, scope, reports, at.Add(time.Since(started)))
+	if evidence.Status != "pass" {
+		return denyOpenAITurn(evidence.Reason)
 	}
 	return nil
 }
