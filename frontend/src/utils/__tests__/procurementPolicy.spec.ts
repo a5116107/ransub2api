@@ -6,6 +6,18 @@ const policy = (min_rate: string | null = '0.02', max_rate: string | null = '0.0
   ({ version: 1, revision: 1, min_rate, max_rate })
 
 describe('exact procurement interval commands', () => {
+  it('preserves an explicit version 4 answer quality requirement', () => {
+    for (const quality of ['not_required', 'current_answer']) {
+      const selected = { ...policy(), version: 4, sources: { account_ids: [901] }, buckets: { codes: ['low'] }, quality }
+      expect(validateProcurementPolicy(selected)).toBeNull()
+      expect(procurementPolicyCommand(selected, selected)).toBeUndefined()
+      expect(procurementPolicyCommand({ ...selected, quality: quality === 'not_required' ? 'current_answer' : 'not_required' }, selected)).toBeDefined()
+    }
+    for (const quality of [undefined, '', 'future']) {
+      expect(validateProcurementPolicy({ ...policy(), version: 4, sources: { account_ids: null }, buckets: { codes: null }, quality })).toBe('qualityFormat')
+    }
+    expect(validateProcurementPolicy({ ...policy(), quality: 'current_answer' })).toBe('qualityFormat')
+  })
   it('preserves bucket selections, empty and unrestricted modes in complete version 3 commands', () => {
     for (const codes of [null, [], ['low', 'standard']]) {
       const selected = { ...policy(), version: 3, sources: { account_ids: null }, buckets: { codes } }

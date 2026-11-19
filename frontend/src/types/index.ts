@@ -667,6 +667,8 @@ export interface GroupProcurementPolicy {
   sources?: { account_ids: number[] | null }
   // Version 3. null is unrestricted; [] explicitly admits no procurement bucket.
   buckets?: { codes: string[] | null }
+  // Version 4 requires an explicit answer quality mode.
+  quality?: string
 }
 
 export interface AdminGroup extends Group {

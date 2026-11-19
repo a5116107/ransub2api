@@ -342,7 +342,7 @@ func TestProcurementPolicyBothSchedulersAndSticky(t *testing.T) {
 }
 
 func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
-	for _, constraint := range []string{"procurement_range", "procurement_source", "procurement_bucket", "procurement_catalog_unavailable"} {
+	for _, constraint := range []string{"procurement_range", "procurement_source", "procurement_bucket", "procurement_catalog_unavailable", "procurement_quality_unavailable", "procurement_quality_failed"} {
 		for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool} {
 			t.Run(mode+"/"+constraint, func(t *testing.T) {
 				var frames atomic.Int32
@@ -383,12 +383,22 @@ func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
 				group := profitControlTestGroup(7, 0, 0)
 				min, max := "0.02", "0.03"
 				group.ProcurementPolicy = &ProcurementPolicy{Version: 1, Revision: 1, MinRate: &min, MaxRate: &max}
+				var qualityStatus atomic.Value
+				qualityStatus.Store("pass")
+				if strings.HasPrefix(constraint, "procurement_quality_") {
+					group.ProcurementPolicy = procurementAnswerPolicy()
+				}
 				var latest atomic.Pointer[Group]
 				latest.Store(group)
 				body := `{"type":"response.create","model":"gpt-fixture","input":"fixture","store":true,"stream":false}`
 				ctx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", nil)
 				gate := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
 				gate.procurementGroup = func(context.Context) (*Group, error) { return latest.Load(), nil }
+				gate.qualityReader = procurementQualityTestReader(func(context.Context, *Account, AvailabilityRequestScope) (*QualityScopeEvidence, error) {
+					now := time.Now()
+					until := now.Add(time.Minute)
+					return &QualityScopeEvidence{Version: 1, Status: qualityStatus.Load().(string), Reason: "all_rules_passed", EvaluatedAt: now, ValidUntil: &until, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}, nil
+				})
 				settled := make(chan int, 3)
 				hooks := &OpenAIWSIngressHooks{AfterTurn: func(turn int, _ *OpenAIForwardResult, _ error) { settled <- turn }}
 				server, done := startPassthroughLifecycleServer(t, ctx, svc, account, hooks)
@@ -406,6 +416,14 @@ func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
 				replacement.ProcurementPolicy = group.ProcurementPolicy.WithRevision(2)
 				newMax := "0.025"
 				replacement.ProcurementPolicy.MaxRate = &newMax
+				if strings.HasPrefix(constraint, "procurement_quality_") {
+					replacement.ProcurementPolicy.MaxRate = nil
+					if constraint == "procurement_quality_failed" {
+						qualityStatus.Store("fail")
+					} else {
+						qualityStatus.Store("unknown")
+					}
+				}
 				if constraint == "procurement_source" {
 					replacement.ProcurementPolicy = &ProcurementPolicy{Version: 2, Revision: 2, Sources: &domain.ProcurementSources{AccountIDs: []int64{account.ID + 1}}}
 				}
@@ -425,6 +443,7 @@ func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
 					t.Fatal("changed procurement policy did not reject the next physical turn")
 				}
 				require.EqualValues(t, 1, frames.Load())
+				qualityStatus.Store("pass")
 				latest.Store(group)
 				recoveryServer, recovered := startPassthroughLifecycleServer(t, ctx, svc, account, nil)
 				defer recoveryServer.Close()
@@ -595,7 +614,11 @@ func TestProcurementPolicyObservationsRemainSeparate(t *testing.T) {
 	observer.recordVeto(9, PlatformOpenAI, 0.5, openAIProfitFilterReasonProcurementSource)
 	observer.recordVeto(9, PlatformOpenAI, .5, openAIProfitFilterReasonProcurementBucket)
 	observer.recordVeto(9, PlatformOpenAI, .5, openAIProfitFilterReasonProcurementCatalog)
+	observer.recordVeto(9, PlatformOpenAI, .5, "procurement_quality_failed")
+	observer.recordVeto(9, PlatformOpenAI, .5, "procurement_quality_unavailable")
 	stats := observer.stats(9, PlatformOpenAI)
+	require.EqualValues(t, 1, stats.vetoQuality.Load())
+	require.EqualValues(t, 1, stats.vetoQualityUnknown.Load())
 	require.EqualValues(t, 1, stats.vetoBucket.Load())
 	require.EqualValues(t, 1, stats.vetoCatalog.Load())
 	require.EqualValues(t, 1, stats.vetoProcurement.Load())

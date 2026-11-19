@@ -46,16 +46,17 @@ type ProcurementPreviewCommand struct {
 // This is a read-only projection at the group's default sale price, never a
 // user-specific price quote or a scheduling/quality/cache qualification.
 type ProcurementProductPreview struct {
-	Version         int     `json:"version"`
-	GroupID         int64   `json:"group_id"`
-	PolicyRevision  int64   `json:"policy_revision"`
-	CatalogRevision *int64  `json:"catalog_revision,omitempty"`
-	PriceBasis      string  `json:"price_basis"`
-	DefaultD        float64 `json:"default_d"`
-	Threshold       float64 `json:"threshold"`
-	State           string  `json:"state"`
-	PriceClass      string  `json:"price_class"`
-	Reason          string  `json:"reason,omitempty"`
+	AnswerQuality   *ProcurementAnswerQualityPreview `json:"answer_quality,omitempty"`
+	Version         int                              `json:"version"`
+	GroupID         int64                            `json:"group_id"`
+	PolicyRevision  int64                            `json:"policy_revision"`
+	CatalogRevision *int64                           `json:"catalog_revision,omitempty"`
+	PriceBasis      string                           `json:"price_basis"`
+	DefaultD        float64                          `json:"default_d"`
+	Threshold       float64                          `json:"threshold"`
+	State           string                           `json:"state"`
+	PriceClass      string                           `json:"price_class"`
+	Reason          string                           `json:"reason,omitempty"`
 }
 
 type ProcurementClassificationPreview struct {

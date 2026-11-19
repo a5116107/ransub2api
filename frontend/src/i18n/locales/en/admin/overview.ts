@@ -1200,6 +1200,12 @@ export default {
       },
       profitControl: {
         procurement: {
+          qualityTitle: "Answer quality gate",
+          qualityOff: "No additional answer quality requirement",
+          qualityRequired: "Require current passing answers for the exact wire scope",
+          qualityHint: "Unknown, expired, edited rules, route changes and newly registered faults block sending. Every physical generation is rechecked. Answers do not certify model identity or cache quality. Regional nodes without quality snapshots reject these products.",
+          qualityFormat: "Select an explicit supported answer quality mode; unknown is not disabled.",
+          latestQuality: "Latest saved answer quality requirement",
           title: 'Procurement range & sources',
           hint: 'Intersect with the existing profit cap. This limits procurement multipliers without repricing sales or certifying model/cache quality. Up to 8 decimal places; leave a bound blank to omit it.',
           min: 'Minimum procurement rate (inclusive)',

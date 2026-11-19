@@ -8,6 +8,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProcurementPolicyQualityCompleteContract(t *testing.T) {
+	for _, quality := range []string{`"not_required"`, `"current_answer"`} {
+		raw := `{"version":4,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":` + quality + `}`
+		var p ProcurementPolicy
+		require.NoError(t, json.Unmarshal([]byte(raw), &p))
+		require.NoError(t, p.Validate())
+		encoded, err := json.Marshal(p.Clone())
+		require.NoError(t, err)
+		require.JSONEq(t, raw, string(encoded))
+	}
+	for _, quality := range []string{`null`, `true`, `""`, `"future"`} {
+		var p ProcurementPolicy
+		require.Error(t, json.Unmarshal([]byte(`{"version":4,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":`+quality+`}`), &p))
+	}
+	for _, raw := range []string{
+		`{"version":4,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null}}`,
+		`{"version":3,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer"}`,
+		`{"version":4,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"Quality":"current_answer"}`,
+		`{"version":4,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","quality":"not_required"}`,
+	} {
+		var p ProcurementPolicy
+		require.Error(t, json.Unmarshal([]byte(raw), &p))
+	}
+}
+
 func TestProcurementPolicySourcesValidationCloneAndRoundtrip(t *testing.T) {
 	for _, ids := range [][]int64{nil, {}, {901, 902}, {MaxProcurementPolicyRevision}} {
 		p := &ProcurementPolicy{Version: 2, Revision: 1, Sources: &ProcurementSources{AccountIDs: ids}}

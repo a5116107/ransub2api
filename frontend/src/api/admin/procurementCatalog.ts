@@ -17,6 +17,7 @@ export interface ProcurementClassification extends ProcurementRequestScope {
   bucket: ProcurementBucket | null; qualification: string
   quality_evidence?: QualityScopeEvidence
   product_procurement?: {
+    answer_quality?: { version: number; required: boolean; state: string }
     version: number; group_id: number; policy_revision: number; price_basis: string; default_d: number; threshold: number
     state: string; price_class: string; reason?: string; catalog_revision?: number
   }

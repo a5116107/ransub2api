@@ -295,10 +295,10 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 		return nil, translatePersistenceError(err, service.ErrGroupNotFound, nil)
 	}
 	out := groupEntityToService(m)
-	if out.ProcurementPolicy == nil || out.ProcurementPolicy.Version != 3 {
+	if out.ProcurementPolicy == nil || out.ProcurementPolicy.Version < 3 {
 		return out, nil
 	}
-	// The initial read only selects the contract. Re-read v3 policy and catalog
+	// The initial read only selects the contract. Re-read policy and catalog
 	// in one read-only snapshot; never pair an old policy with a new directory.
 	queryer := r.sql
 	if db, ok := r.sql.(interface {
@@ -316,7 +316,7 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 		}
 		out, queryer = groupEntityToService(m), tx
 	}
-	if out.ProcurementPolicy != nil && out.ProcurementPolicy.Version == 3 {
+	if out.ProcurementPolicy != nil && out.ProcurementPolicy.Version >= 3 {
 		// Missing/corrupt catalog is carried as unknown, not an empty unrestricted
 		// catalog. This keeps disabled gates and admin repair reads available.
 		out.ProcurementCatalog, _ = loadProcurementCatalog(ctx, queryer)

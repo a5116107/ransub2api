@@ -6480,11 +6480,14 @@ const resolveProcurementConflict = () => {
       sources: { account_ids: latest.sources!.account_ids === null ? null : [...latest.sources!.account_ids] }
     };
   }
-  if (latest?.version === 3 && editProcurementPolicy.value.version < 3) {
+  if (latest && latest.version >= 3 && editProcurementPolicy.value.version < 3) {
     editProcurementPolicy.value = {
       ...editProcurementPolicy.value, version: 3,
       buckets: { codes: latest.buckets!.codes === null ? null : [...latest.buckets!.codes] }
     };
+  }
+  if (latest?.version === 4 && editProcurementPolicy.value.version < 4) {
+    editProcurementPolicy.value = { ...editProcurementPolicy.value, version: 4, quality: latest.quality };
   }
   editProcurementPolicy.value = { ...editProcurementPolicy.value, revision: latest?.revision ?? 0 };
   editProcurementConflict.value = false;

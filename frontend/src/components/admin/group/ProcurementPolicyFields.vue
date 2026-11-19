@@ -18,6 +18,14 @@
       </div>
     </div>
     <div v-if="!unsupported" class="space-y-2">
+      <label :for="`${idPrefix}-quality`" class="input-label">{{ t(`${p}.qualityTitle`) }}</label>
+      <select :id="`${idPrefix}-quality`" class="input" :value="modelValue?.quality ?? 'not_required'" :aria-describedby="`${idPrefix}-quality-hint`" @change="setQuality(($event.target as HTMLSelectElement).value)">
+        <option value="not_required">{{ t(`${p}.qualityOff`) }}</option>
+        <option value="current_answer">{{ t(`${p}.qualityRequired`) }}</option>
+      </select>
+      <p :id="`${idPrefix}-quality-hint`" class="break-words text-xs text-gray-500 dark:text-gray-400">{{ t(`${p}.qualityHint`) }}</p>
+    </div>
+    <div v-if="!unsupported" class="space-y-2">
       <label :for="`${idPrefix}-buckets-mode`" class="input-label">{{ t(`${p}.bucketsTitle`) }}</label>
       <select :id="`${idPrefix}-buckets-mode`" class="input" :value="restrictedBuckets ? 'selected' : 'original'" :aria-describedby="`${idPrefix}-buckets-hint`" @change="setBucketMode(($event.target as HTMLSelectElement).value)">
         <option value="original">{{ t(`${p}.bucketsUnrestricted`) }}</option>
@@ -74,6 +82,7 @@
       </p>
       <p v-else-if="latestError">{{ t(`admin.groups.profitControl.procurement.${latestError}`) }}</p>
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestBuckets`) }}: {{ latestPolicy?.buckets?.codes === null || !latestPolicy?.buckets ? t(`${p}.bucketsUnrestricted`) : latestPolicy.buckets.codes.length ? latestPolicy.buckets.codes.join(', ') : t(`${p}.bucketsEmpty`) }}</p>
+      <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestQuality`) }}: {{ t(`${p}.${latestPolicy?.quality === 'current_answer' ? 'qualityRequired' : 'qualityOff'}`) }}</p>
       <div class="flex flex-wrap gap-2">
         <button type="button" class="btn btn-secondary text-xs" :disabled="refreshing" @click="emit('refresh')">
           {{ t('admin.groups.profitControl.procurement.reloadLatest') }}
@@ -112,7 +121,7 @@ const error = computed(() => validateProcurementPolicy(props.modelValue))
 const unsupported = computed(() => error.value === 'unsupported')
 const latestError = computed(() => props.latestPolicy === undefined ? null : validateProcurementPolicy(props.latestPolicy))
 const restrictedSources = computed(() => (props.modelValue?.version ?? 0) >= 2 && Array.isArray(props.modelValue?.sources?.account_ids))
-const restrictedBuckets = computed(() => props.modelValue?.version === 3 && Array.isArray(props.modelValue.buckets?.codes))
+const restrictedBuckets = computed(() => (props.modelValue?.version ?? 0) >= 3 && Array.isArray(props.modelValue?.buckets?.codes))
 const selectedBuckets = computed(() => props.modelValue?.buckets?.codes ?? [])
 const catalog = ref<ProcurementCatalog | null>(null), catalogLoading = ref(false), catalogError = ref(false)
 const missingBuckets = computed(() => catalog.value ? selectedBuckets.value.filter(code => !catalog.value!.buckets.some(bucket => bucket.code === code)) : [])
@@ -142,6 +151,16 @@ function draft(): GroupProcurementPolicy {
   return props.modelValue ? cloneProcurementPolicy(props.modelValue) : { version: 1, revision: 0, min_rate: null, max_rate: null }
 }
 
+function setQuality(value: string) {
+  if (unsupported.value) return
+  const next = draft()
+  next.version = 4
+  next.sources ??= { account_ids: null }
+  next.buckets ??= { codes: null }
+  next.quality = value
+  emit('update:modelValue', next)
+}
+
 function setSourceMode(value: string) {
   if (unsupported.value) return
   const next = draft()
@@ -161,7 +180,7 @@ function updateSources(value: string) {
 function setBucketMode(value: string) {
   if (unsupported.value) return
   const next = draft()
-  next.version = 3
+  next.version = Math.max(3, next.version)
   next.sources ??= { account_ids: null }
   next.buckets = { codes: value === 'selected' ? [] : null }
   emit('update:modelValue', next)
@@ -169,7 +188,7 @@ function setBucketMode(value: string) {
 function toggleBucket(code: string, checked: boolean) {
   if (unsupported.value) return
   const next = draft()
-  next.version = 3
+  next.version = Math.max(3, next.version)
   next.sources ??= { account_ids: null }
   next.buckets = { codes: checked ? [...selectedBuckets.value, code].sort() : selectedBuckets.value.filter(value => value !== code) }
   emit('update:modelValue', next)

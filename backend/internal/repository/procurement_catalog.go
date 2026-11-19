@@ -130,6 +130,9 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	for _, request := range requests {
 		result := service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt, product)
 		result.Quality = service.AssessQualityScopeEvidence(byID[request.AccountID], request.Scope, qualityRules[request.AccountID], out.ObservedAt, quality.limited)
+		if result.Product != nil {
+			result.Product.AnswerQuality = service.ProcurementAnswerQuality(product.ProcurementPolicy, result.Quality, out.ObservedAt)
+		}
 		out.Results = append(out.Results, result)
 	}
 	if err = tx.Commit(); err != nil {

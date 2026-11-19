@@ -89,10 +89,10 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 		}
 		groups[g.ID] = true
 		if g.ProcurementPolicy != nil {
-			if g.ProcurementPolicy.Validate() != nil || g.ProcurementPolicy.Version == 3 && doc.Version < 3 {
+			if g.ProcurementPolicy.Validate() != nil || g.ProcurementPolicy.Version >= 3 && doc.Version < 3 {
 				return doc, errors.New("invalid regional procurement policy")
 			}
-			if g.ProcurementPolicy.Version == 3 {
+			if g.ProcurementPolicy.Version >= 3 {
 				g.ProcurementCatalog = doc.ProcurementCatalog.Clone()
 			}
 		}
@@ -258,7 +258,7 @@ func (s *SchedulerSnapshotService) ExportRegionalScheduler(ctx context.Context, 
 			if err != nil {
 				return nil, err
 			}
-			if group != nil && group.ProcurementPolicy != nil && group.ProcurementPolicy.Version == 3 {
+			if group != nil && group.ProcurementPolicy != nil && group.ProcurementPolicy.Version >= 3 {
 				if group.ProcurementCatalog.Validate() != nil {
 					return nil, errors.New("regional export requires procurement catalog authority")
 				}

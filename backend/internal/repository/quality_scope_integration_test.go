@@ -12,13 +12,94 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
-func procurementQualityFixture(t *testing.T) (*service.ScheduledTestPlan, *service.ScheduledTestResult) {
+func TestProcurementQualityAdmissionReadsCurrentSQL(t *testing.T) {
+	plan, sample := procurementQualityFixture(t)
+	saveProcurementQualityRound(t, plan, sample)
+	accounts := NewAccountRepository(integrationEntClient, integrationDB, nil)
+	selected, err := accounts.GetByID(t.Context(), plan.AccountID)
+	require.NoError(t, err)
+	reader := NewGroupRepository(integrationEntClient, integrationDB).(service.QualityScopeEvidenceReader)
+	scope := *sample.PelicanConfig.QualityMeasurement.Scope
+	policy := &service.ProcurementPolicy{Version: 4, Revision: 1, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "current_answer"}
+	assertState := func(want string) {
+		t.Helper()
+		evidence, err := reader.ReadQualityScopeEvidence(t.Context(), selected, scope)
+		require.NoError(t, err)
+		out := service.ProcurementAnswerQuality(policy, evidence, evidence.EvaluatedAt)
+		require.True(t, out.Required)
+		require.Equal(t, want, out.State)
+		require.Equal(t, "unknown", evidence.ModelIdentity)
+	}
+	assertState("pass")
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	assertState("unknown")
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE scheduled_test_plans SET enabled=true WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	assertState("pass")
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	assertState("unknown")
+	// A previously selected object cannot apply its answer evidence to a new key.
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE accounts SET credentials=jsonb_set(credentials,'{api_key}','"changed-local-fixture"') WHERE id=$1`, plan.AccountID)
+	require.NoError(t, err)
+	evidence, err := reader.ReadQualityScopeEvidence(t.Context(), selected, scope)
+	require.Error(t, err)
+	require.Nil(t, evidence)
+	selected, err = accounts.GetByID(t.Context(), plan.AccountID)
+	require.NoError(t, err)
+	assertState("unknown")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	evidence, err = reader.ReadQualityScopeEvidence(ctx, selected, scope)
+	require.Error(t, err)
+	require.Nil(t, evidence)
+	assertState("unknown")
+	var samples int
+	require.NoError(t, integrationDB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM scheduled_test_results WHERE plan_id=$1`, plan.ID).Scan(&samples))
+	require.Equal(t, 1, samples, "admission is read-only and must never send a probe or create a sample")
+}
+
+func TestProcurementQualityAdmissionKeepsManagedConnectionIdentity(t *testing.T) {
+	plan, sample := procurementQualityFixture(t, true)
+	saveProcurementQualityRound(t, plan, sample)
+	selected, err := NewAccountRepository(integrationEntClient, integrationDB, nil).GetByID(t.Context(), plan.AccountID)
+	require.NoError(t, err)
+	reader := NewGroupRepository(integrationEntClient, integrationDB).(service.QualityScopeEvidenceReader)
+	scope := *sample.PelicanConfig.QualityMeasurement.Scope
+	_, err = reader.ReadQualityScopeEvidence(t.Context(), selected, scope)
+	require.Error(t, err, "unprepared parent has no confirmed connection")
+	parent := service.AccountRouteFingerprint(selected)
+	selected.AuthConnectionParentRoute = &parent
+	selected.AuthConnectionID = sample.QualityRouteEvidence.ConnectionID
+	selected.AuthConnectionRevision = sample.QualityRouteEvidence.ConnectionRevision
+	read := func(want string) {
+		t.Helper()
+		evidence, readErr := reader.ReadQualityScopeEvidence(t.Context(), selected, scope)
+		require.NoError(t, readErr)
+		require.Equal(t, want, evidence.Status)
+	}
+	read("pass")
+	selected.AuthConnectionID = "another-local-connection"
+	read("unknown")
+	selected.AuthConnectionID = sample.QualityRouteEvidence.ConnectionID
+	selected.AuthConnectionRevision++
+	read("unknown")
+	selected.AuthConnectionRevision--
+	read("pass")
+	_, err = integrationDB.ExecContext(t.Context(), `UPDATE openai_auth_connections SET revision=revision+1 WHERE id=$1`, selected.AuthConnectionID)
+	require.NoError(t, err)
+	read("unknown")
+}
+
+func procurementQualityFixture(t *testing.T, managed ...bool) (*service.ScheduledTestPlan, *service.ScheduledTestResult) {
 	t.Helper()
-	plan, sample := qualityRouteFixture(t, false)
+	plan, sample := qualityRouteFixture(t, len(managed) > 0 && managed[0])
 	plan, sample = claimQualityFaultSample(t, plan, sample)
 	scope := sample.PelicanConfig.QualityMeasurement.Scope
 	scope.ServiceTier, scope.ReasoningEffort = "unspecified", "unspecified"

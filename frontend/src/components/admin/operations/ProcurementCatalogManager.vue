@@ -114,6 +114,7 @@
               <p class="break-words text-sm font-medium">{{ t(`${p}.productResult`, { id: item.product_procurement.group_id, revision: item.product_procurement.policy_revision }) }}</p>
               <p v-if="item.product_procurement.catalog_revision !== undefined" class="text-xs text-gray-500">{{ t(`${p}.revision`, { revision: item.product_procurement.catalog_revision }) }}</p>
               <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.product_procurement.state === 'constraints_passed' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-procurement-state">{{ t(`${p}.productStates.${item.product_procurement.state}`) }}</span>
+              <p class="break-words text-sm" data-testid="product-answer-quality">{{ t(`${p}.answerQualityTitle`) }}: {{ t(`${p}.answerQualityStates.${item.product_procurement.answer_quality?.state ?? 'unknown'}`) }}</p>
               <dl class="grid gap-3 text-sm sm:grid-cols-2">
                 <div><dt class="text-gray-500">{{ t(`${p}.productSale`) }}</dt><dd>{{ item.product_procurement.default_d }}</dd></div>
                 <div><dt class="text-gray-500">{{ t(`${p}.productThreshold`) }}</dt><dd>{{ item.product_procurement.threshold }}</dd></div>
@@ -216,6 +217,10 @@ async function preview() {
       !Number.isSafeInteger(projection.policy_revision) || projection.policy_revision < 0 || !Number.isFinite(projection.default_d) || projection.default_d < 0 || !Number.isFinite(projection.threshold) || projection.threshold < 0 ||
       !['constraints_passed', 'blocked', 'disabled', 'product_inactive', 'not_associated', 'not_evaluated'].includes(projection.state) ||
       projection.state === 'constraints_passed' && projection.price_class !== 'admitted') throw new Error('unknown product projection')
+    const answerGate = projection?.answer_quality
+    if (answerGate !== undefined && (!answerGate || answerGate.version !== 1 || typeof answerGate.required !== 'boolean' ||
+      !['not_required', 'pass', 'fail', 'unknown'].includes(answerGate.state) || answerGate.required === (answerGate.state === 'not_required') ||
+      answerGate.required && answerGate.state !== 'unknown' && (!quality || quality.status !== answerGate.state))) throw new Error('unknown answer quality gate')
     if (alive && generation === id) result.value = next
   } catch { if (alive && generation === id) error.value = 'previewFailed' }
   finally { if (alive) busy.value = false }

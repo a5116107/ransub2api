@@ -22,13 +22,14 @@ type ProcurementPolicy struct {
 	MaxRate  *string             `json:"max_rate"`
 	Sources  *ProcurementSources `json:"sources,omitempty"`
 	Buckets  *ProcurementBuckets `json:"buckets,omitempty"`
+	Quality  string              `json:"quality,omitempty"`
 }
 
 // A persisted policy and a command have the same complete JSON contract. Plain
 // struct decoding accepts missing bounds, case aliases and last-value wins,
 // which could turn a damaged snapshot into less restrictive admission.
 func (p *ProcurementPolicy) UnmarshalJSON(raw []byte) error {
-	fields, err := procurementJSONFields(raw, []string{"version", "revision", "min_rate", "max_rate"}, "sources", "buckets")
+	fields, err := procurementJSONFields(raw, []string{"version", "revision", "min_rate", "max_rate"}, "sources", "buckets", "quality")
 	if err != nil {
 		return err
 	}
@@ -44,7 +45,7 @@ func (p *ProcurementPolicy) UnmarshalJSON(raw []byte) error {
 	if err := policy.ValidateDraft(); err != nil {
 		return err
 	}
-	if policy.Version == 1 && fields["sources"] != nil || policy.Version < 3 && fields["buckets"] != nil {
+	if policy.Version == 1 && fields["sources"] != nil || policy.Version < 3 && fields["buckets"] != nil || policy.Version < 4 && fields["quality"] != nil {
 		return errors.New("procurement fields do not match the policy version")
 	}
 	*p = policy
@@ -172,14 +173,17 @@ func procurementBound(value *string) (*big.Rat, error) {
 }
 
 func (p *ProcurementPolicy) ValidateDraft() error {
-	if p == nil || p.Version < 1 || p.Version > 3 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
+	if p == nil || p.Version < 1 || p.Version > 4 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
 		return errors.New("invalid procurement policy version or revision")
 	}
 	if p.Version == 1 && p.Sources != nil || p.Version >= 2 && p.Sources == nil {
 		return errors.New("procurement source contract does not match its version")
 	}
-	if p.Version < 3 && p.Buckets != nil || p.Version == 3 && p.Buckets == nil {
+	if p.Version < 3 && p.Buckets != nil || p.Version >= 3 && p.Buckets == nil {
 		return errors.New("procurement bucket contract does not match its version")
+	}
+	if p.Version < 4 && p.Quality != "" || p.Version == 4 && p.Quality != "not_required" && p.Quality != "current_answer" {
+		return errors.New("procurement quality contract does not match its version")
 	}
 	if p.Buckets != nil {
 		if len(p.Buckets.Codes) > 64 {

@@ -54,6 +54,44 @@ const procurementToggle = (wrapper: View, form: string) => wrapper.get(form).fin
   .find(label => label.text() === 'admin.groups.profitControl.enable')!.get('input')
 
 describe('product procurement interval in the original Group editor', () => {
+  it('saves an explicit answer gate without downgrading it when changing buckets or sources', async () => {
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-quality').setValue('current_answer')
+    await wrapper.get('#edit-procurement-buckets-mode').setValue('selected')
+    await flushPromises()
+    await wrapper.get('input[data-bucket-code="low"]').setValue(true)
+    await wrapper.get('#edit-procurement-sources-mode').setValue('approved')
+    await wrapper.get('#edit-procurement-sources').setValue('901')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({ ...savedPolicy, version: 4, quality: 'current_answer', sources: { account_ids: [901] }, buckets: { codes: ['low'] } })
+  })
+
+  it('inherits a concurrent quality constraint only after explicit revision review', async () => {
+    mocks.update.mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
+    mocks.getById.mockResolvedValue({ ...base, procurement_policy: { ...savedPolicy, version: 4, revision: 2, sources: { account_ids: [904] }, buckets: { codes: ['low'] }, quality: 'current_answer' } })
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-max').setValue('0.05')
+    await submit(wrapper)
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.latestQuality')
+    await button(wrapper, 'admin.groups.profitControl.procurement.useLatestRevision').trigger('click')
+    expect((wrapper.get('#edit-procurement-quality').element as HTMLSelectElement).value).toBe('current_answer')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...savedPolicy, version: 4, revision: 2, max_rate: '0.05', sources: { account_ids: [904] }, buckets: { codes: ['low'] }, quality: 'current_answer' })
+  })
+
+  it('ordinary edits preserve v4, and disabling the answer gate is explicit', async () => {
+    const policy = { ...savedPolicy, version: 4, quality: 'current_answer', sources: { account_ids: null }, buckets: { codes: null } }
+    const wrapper = mountView({ ...base, procurement_policy: policy })
+    await edit(wrapper)
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toBeUndefined()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-quality').setValue('not_required')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...policy, quality: 'not_required' })
+  })
   beforeEach(() => {
     localStorage.clear()
     vi.clearAllMocks()

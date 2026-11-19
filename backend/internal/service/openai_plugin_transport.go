@@ -138,6 +138,7 @@ func guardOpenAIWSBillingHandshake(ctx context.Context, account *Account, target
 // guardOpenAIProfitRequest shares the authoritative final account and billing
 // checks with adapters that send outside the ordinary OpenAI transport.
 func (s *OpenAIGatewayService) guardOpenAIProfitRequest(request *http.Request, account *Account) (*http.Request, error) {
+	request = withProcurementQualityHTTPRequest(request, account)
 	if gate, _ := request.Context().Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); gate != nil {
 		if gate.configUnavailable {
 			return nil, denyOpenAITurn(openAIProfitFilterReasonGroupConfigUnavailable)

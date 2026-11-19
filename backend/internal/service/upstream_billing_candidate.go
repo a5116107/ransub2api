@@ -234,6 +234,12 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 	if !upstreamBillingHasApplicability(account) {
 		return "" // Legacy compatibility is not strict qualification.
 	}
+	return upstreamCandidateScopeVetoReason(ctx, account, func(scope *AvailabilityRequestScope) string {
+		return upstreamBillingCandidateScopeVetoReason(account, scope, at)
+	})
+}
+
+func upstreamCandidateScopeVetoReason(ctx context.Context, account *Account, vetoScope func(*AvailabilityRequestScope) string) string {
 	candidate, _ := ctx.Value(upstreamBillingCandidateKey{}).(upstreamBillingCandidate)
 	var scope *AvailabilityRequestScope
 	if candidate.scope != nil && candidate.policyKnown && account.IsOpenAIApiKey() &&
@@ -244,11 +250,11 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 		if candidate.scope.Protocol == "responses_ws_v2" {
 			scopes := candidate.gateway.upstreamBillingWSCandidateScopes(ctx, account, *candidate.scope, candidate.wsPassthroughBridge, candidate.wsSmartRequest)
 			if len(scopes) == 0 {
-				return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+				return vetoScope(nil)
 			}
 			reason := ""
 			for _, scope := range scopes {
-				veto := upstreamBillingCandidateScopeVetoReason(account, scope, at)
+				veto := vetoScope(scope)
 				if veto == "" {
 					return "" // A possible allowed route is not strict qualification.
 				}
@@ -270,19 +276,19 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 					if protocol == APIProtocolResponses {
 						var chat apicompat.ChatCompletionsRequest
 						if json.Unmarshal(body, &chat) != nil {
-							return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+							return vetoScope(nil)
 						}
 						// The converter sees only detached scope metadata and synthetic
 						// text, never the actual conversation or encrypted history.
 						chat.Messages = []apicompat.ChatMessage{{Role: "user", Content: json.RawMessage(`""`)}}
 						responses, err := chatCompletionsToResponses(candidate.gateway.cfg, &chat)
 						if err != nil {
-							return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+							return vetoScope(nil)
 						}
 						normalizeResponsesRequestServiceTier(responses)
 						body, err = json.Marshal(responses)
 						if err != nil {
-							return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+							return vetoScope(nil)
 						}
 						request.URL.Path = "/v1/responses"
 					} else if normalized, changed := NormalizeGLMOpenAIReasoningEffort(body, model); changed {
@@ -318,19 +324,19 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 				// compatible non-passthrough drops none, passthrough preserves it.
 				body, err := filterOpenAIResponsesNoneReasoningEffortForAccount(account, body)
 				if err != nil {
-					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+					return vetoScope(nil)
 				}
 				if protocol == APIProtocolChatCompletions {
 					var responses apicompat.ResponsesRequest
 					if json.Unmarshal(body, &responses) != nil {
-						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+						return vetoScope(nil)
 					}
 					// Only the existence of validated text was retained, never its
 					// contents. The same converter carries scope options to Chat.
 					responses.Input = json.RawMessage(`""`)
 					chat, convertErr := apicompat.ResponsesToChatCompletionsRequest(&responses)
 					if convertErr != nil {
-						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+						return vetoScope(nil)
 					}
 					model = normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, model, ""))
 					chat.Model = model
@@ -348,7 +354,7 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 					}
 				}
 				if err != nil {
-					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+					return vetoScope(nil)
 				}
 				body, err = applyOpenAIFastPolicyBody(ctx, account, model, body, func(tier string) (string, string) {
 					return evaluateOpenAIFastPolicyWithSettings(candidate.fastPolicy, openAIFastPolicyUserID(ctx), account, model, tier)
@@ -356,21 +362,21 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 				if err != nil {
 					// Valid declarations retain the original policy error. A failed
 					// prediction never bypasses expiry or binding validity checks.
-					return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+					return vetoScope(nil)
 				}
 				if nativeWS {
 					// HTTP ingress uses the original WS frame builder after HTTP's
 					// model/effort/Fast rewrites, not WS-ingress normalization.
 					var payload map[string]any
 					if json.Unmarshal(body, &payload) != nil {
-						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+						return vetoScope(nil)
 					}
 					if !candidate.httpStreamSpecified {
 						delete(payload, "stream")
 					}
 					body, err = json.Marshal(candidate.gateway.buildOpenAIWSCreatePayload(payload, account))
 					if err != nil {
-						return upstreamBillingCandidateScopeVetoReason(account, nil, at)
+						return vetoScope(nil)
 					}
 					request.Method, request.URL.Scheme = http.MethodGet, "wss"
 				}
@@ -386,7 +392,7 @@ func upstreamBillingCandidateVetoReason(ctx context.Context, account *Account, a
 			scope = nil
 		}
 	}
-	return upstreamBillingCandidateScopeVetoReason(account, scope, at)
+	return vetoScope(scope)
 }
 
 func (candidate upstreamBillingCandidate) messagesScope(ctx context.Context, account *Account) *AvailabilityRequestScope {

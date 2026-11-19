@@ -4,11 +4,68 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	dbent "github.com/Wei-Shaw/sub2api/ent"
+	dbaccount "github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
+
+// Consume the same complete rule projection as the admin preview, never the
+// preview's caller-facing JSON or a cached account-level green flag.
+func (r *groupRepository) ReadQualityScopeEvidence(ctx context.Context, selected *service.Account, scope service.AvailabilityRequestScope) (*service.QualityScopeEvidence, error) {
+	db, ok := r.sql.(interface {
+		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+	})
+	if !ok || selected == nil {
+		return nil, errors.New("quality evidence authority unavailable")
+	}
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	client := dbent.NewClient(dbent.Driver(entsql.NewDriver(dialect.Postgres, entsql.Conn{ExecQuerier: tx})))
+	entities, err := observerAccountQuery(ctx, client.Account.Query()).Where(dbaccount.IDEQ(selected.ID), dbaccount.DeletedAtIsNil()).All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	accounts, err := newAccountRepositoryWithSQL(client, tx, nil).accountsToService(ctx, entities)
+	if err != nil {
+		return nil, err
+	}
+	expected, confirmed := service.AvailabilityPreparedRouteFingerprint(selected)
+	if len(accounts) != 1 || !confirmed || service.AccountRouteFingerprint(&accounts[0]) != expected {
+		return nil, errors.New("quality account binding changed")
+	}
+	read, err := readQualityScopesInTx(ctx, tx, []int64{selected.ID})
+	if err != nil {
+		return nil, err
+	}
+	var at time.Time
+	if err = tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
+		return nil, err
+	}
+	rules := read.assess(at)
+	if selected.HasManagedOpenAIConnections() {
+		for _, rule := range rules[selected.ID] {
+			for _, sample := range rule.Samples {
+				if observed := sample.QualityRouteEvidence; observed == nil || observed.ConnectionID != selected.AuthConnectionID || observed.ConnectionRevision != selected.AuthConnectionRevision {
+					sample.QualityMeasurementValidity.Route = &service.QualityMeasurementRouteValidity{Status: "unknown", Reason: "connection_changed"}
+				}
+			}
+		}
+	}
+	out := service.AssessQualityScopeEvidence(&accounts[0], scope, rules[selected.ID], at, read.limited)
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 const (
 	qualityScopeMaxRules   = 512
@@ -24,7 +81,7 @@ type qualityScopeRuleRead struct {
 	routes map[int64]*qualityRouteRead
 }
 
-// This projection lives only in the existing procurement preview transaction.
+// Preview and admission share this read-only evidence projection.
 // Rule discovery, frozen-round classification and route/fault reads must finish
 // before the caller supplies the database clock used for every verdict.
 type qualityScopeRead struct {
@@ -209,6 +266,7 @@ func readQualityScopesInTx(ctx context.Context, tx *sql.Tx, accountIDs []int64) 
 		valid := json.Unmarshal(item.raw, &evidence) == nil && evidence.AccountID == read.rule.Plan.AccountID && evidence.MatchesResult(item.sample)
 		var route *qualityRouteRead
 		if valid {
+			item.sample.QualityRouteEvidence = &evidence
 			key := routeKey{Account: evidence.AccountID, Fingerprint: evidence.Fingerprint, Connection: evidence.ConnectionID, Revision: evidence.ConnectionRevision, Protocol: item.sample.PelicanConfig.QualityMeasurement.Scope.Protocol}
 			if cached := cache[key]; cached != nil {
 				clone := *cached

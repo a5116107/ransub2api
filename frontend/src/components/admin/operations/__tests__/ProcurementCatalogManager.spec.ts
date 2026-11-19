@@ -35,6 +35,36 @@ beforeEach(() => {
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it.each(['pass', 'fail', 'unknown', 'not_required'])('shows the product answer gate independently of price and full qualification (%s)', async state => {
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
+        quality_evidence: qualityFixture(state === 'not_required' ? 'unknown' : state),
+        product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted',
+          answer_quality: { version: 1, required: state !== 'not_required', state } }
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-answer-quality"]').text()).toContain(prefix + 'answerQualityStates.' + state)
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.constraints_passed')
+    expect(w.text()).toContain(prefix + 'notQualified')
+  })
+
+  it('rejects a product answer gate that contradicts the same scope evidence', async () => {
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', quality_evidence: qualityFixture('fail'),
+        product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted', answer_quality: { version: 1, required: true, state: 'pass' } }
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+  })
   it.each(['pass', 'fail', 'unknown', 'not_configured', 'legacy'])('shows scope answer evidence separately from model identity (%s)', async status => {
     const w = await open(); await setupProbe(w)
     vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({

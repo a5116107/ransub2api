@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -63,6 +64,8 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 		procurementPolicy:  group.ProcurementPolicy.Clone(),
 		procurementCatalog: group.ProcurementCatalog.Clone(),
 		procurementGroup:   procurementPolicyGroupReader(s.schedulerSnapshot, s.groupRepo, group.ID),
+		qualityReader:      procurementQualityReader(s.schedulerSnapshot, s.groupRepo),
+		qualityCache:       &sync.Map{},
 	}
 	openAIProfitControlObserverInstance.recordInstall(gate.groupID, gate.platform, gate.threshold)
 	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate)
@@ -151,6 +154,7 @@ func (s *GatewayService) doGatewayUpstream(request *http.Request, proxyURL strin
 // guardGatewayUpstreamRequest is shared by native gateway implementations so
 // every protocol consumes the same final account and billing evidence.
 func guardGatewayUpstreamRequest(request *http.Request, selected *Account, repo AccountRepository, cfg *config.Config) (*http.Request, error) {
+	request = withProcurementQualityHTTPRequest(request, selected)
 	ctx := request.Context()
 	if gate, _ := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate); gate != nil {
 		if gate.configUnavailable {

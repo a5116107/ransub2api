@@ -1,5 +1,7 @@
 export default {
   "procurement": {
+    answerQualityTitle: 'Product answer quality gate',
+    answerQualityStates: { not_required: 'Not required', pass: 'Answer gate passed (not full product qualification)', fail: 'Incorrect answer: sending blocked', unknown: 'Unknown evidence: blocked when required' },
   "title": "Procurement buckets and scope classification",
   "scope": "Buckets classify inventory, not sales groups or model/quality/cache qualification. Saving never moves accounts or changes sale prices. Products with explicit bucket filters recheck the new catalog; missing catalogs or removed selected codes block admission.",
   "load": "Read procurement catalog",
