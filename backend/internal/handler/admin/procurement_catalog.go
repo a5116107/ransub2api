@@ -70,14 +70,14 @@ func (h *ChannelHandler) ProcurementClassificationPreview(c *gin.Context) {
 		procurementCatalogError(c, service.ErrProcurementCatalogInvalid)
 		return
 	}
-	requests, err := service.ParseProcurementPreviewCommand(raw)
+	command, err := service.ParseProcurementPreviewCommand(raw)
 	if err != nil {
 		procurementCatalogError(c, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
-	out, err := repo.PreviewProcurementClassification(ctx, requests)
+	out, err := repo.PreviewProcurementClassification(ctx, command)
 	if err != nil {
 		procurementCatalogError(c, err)
 		return

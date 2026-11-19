@@ -3767,3 +3767,19 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 原Edge/Playwright最终中英1440/390四矩阵通过，结构化记录20条：键盘、保存/reload、来源独立409、旧草稿核对、null/[]、503、未来版本保留及无横溢出；预设409/503与客户端错误单列，结果见procurement-sources-browser-result.json，API是合成数据。中文390批准来源截图已目检。随后仅补截图的mobile-visual尝试因harness误拼sources-mobile-visual-mode选择器超时，失败JSON/截图保留，不作产品交互通过或覆盖已完成矩阵。续接已按命令/创建时间核对并停止其遗留预览PID37160，18442无监听；不停止其他浏览器或用户任务。
 - 无新schema迁移、运行器、路由、依赖树或worktree；原ProcurementPolicy/门/表单原位演进，旧版1兼容只作既有合同。回退保留JSONB；仅识别版本1的区间版本拒绝版本2，早于硬门的旧程序可能忽略它，严格产品必须停接/排空回退，不能声称混版保护。原预算、质量、账单数据保持。
 - 证据复用H:/Root/DevCache/evidence/sub2api-billing-applicability/{procurement-sources-*,scheduled-coverage-procurement-sources-*}。原构建/模块缓存与backend/internal/web/dist为可复用缓存，不入提交；未新增独有scratch。原12PNG/1164bytes及STATE历史拒删资源原位保护，不重试/绕行，不以Git状态声称磁盘回收。STATE/唯一设计已更新；剩余D4.3模式/允许桶/拥有者/完整资格、D6.2/D7.4与实际来源/独立参考/缓存域/多节点/严格混版/PR3仍开放。生产最后记录仍.7/fd83f6c91，本轮不部署。
+
+### 2026-11-19 — Attempt 102：D4.3.4 同scope产品采购预演
+
+- 在c043abff6上继续D4.3，先在唯一设计5.4.4记录验收，再原位扩展采购预演；仅本地实现/验证与自有origin同步，不CI/PR/生产。原28项20done/8部分不变，子项不重复计数，也不把只读预演当完整受管产品或生产资格。
+- 原POST /admin/upstream-procurement/preview接受可省略product_group_id，旧requests命令保持；严格拒绝null/非法/超安全整数、未知和重复字段。原仓储方法整体换成命令对象，所有调用方原位更新，无第二接口/实现。目录、产品Group、Account/原关联共用read-only repeatable-read事务，加载后取DB clock_timestamp检查新鲜度；缺产品/读取失败返回原脱敏503，不降级成未选产品。
+- 直接复用PreviewProfitAdmission、现有倍率来源/适用scope/批准来源与区间，不新增价格公式。可选product_procurement版本1返回产品ID、采购策略修订、group_default售价口径（含原高峰）、D/阈值、结构化限制通过/拒绝/关闭或不适用/产品停用/未关联/证据不足。通过仅代表这一默认售价下的采购限制；不检查用户覆盖价、健康、质量、缓存、并发、会话/文件归属，qualification仍not_evaluated。原手动停用、售价和关联不被预演修改，关闭原门不伪装限制已经执行。
+- 原真实PG/HTTP红测退出1、8pass/2fail（含父项），明确新product_group_id被旧接口400拒绝，日志procurement-product-red保留。前端新增场景红测1fail/10因-t过滤未执行，明确缺少产品输入；不将过滤当产品skip通过。初轮126项unit/36项PG虽通过，但期间仅handler局部变量由requests改名command造成全树drift=true，未冒作终稿，随后冻结源码重跑。
+- 终稿Go/SQL/依赖LF摘要40c747c6167f18e7ef4b133a5aef9ee120c7c84b975083f99da7752f844facf4。七包go test -json -tags unit -race -vet=off -p 1（采购/利润/定价/最终发送/槽/认证快照/CLI/路由原命令）-count=2 -timeout=10m退出0、4878pass/0fail/skip/race、121.937秒、drift=false。原repository unit,integration/PG overlay命令同样双轮退出0、36pass/0fail/skip/race、30.516秒，同摘要/drift=false；完整参数在scheduled-coverage-procurement-product-{final,pg-final}.result.json。计数含父子/双轮，不是独立生产场景数。
+- SQL/HTTP新增覆盖来源拒绝而库存仍已归类、显式批准后通过、精确区间拒绝、原门关闭、原关联移除/恢复、缺产品503及不泄漏URL/Key/SQL；下游usage_logs与探测预算计数/租约保持0。以表锁使预演停在账号读取，期间并发改变目录、Group策略7→8及账号倍率；返回旧快照的三者一致，下一次读取新修订与拒绝，不拼接。单位测试保留产品停用、未知账号、默认D/利润上限、旧命令及安全整数/重复字段。仅本地PG/HTTP，非供应商或生产。
+- 三包go vet -tags unit,integration -p 1退出0、247.657秒；golangci-lint v2.15.0-go1.27.4同三包增量fast/new-from-rev=c043abff6退出0、21.532秒，真实0 issues.，同摘要/drift=false；不是全仓全规则lint。旧签名/数组式调用已替换，未新增TODO/FIXME/XXX、依赖、schema、队列、运行器或调度授权。
+- 原运维页增加选填产品ID与独立采购结果卡/默认D/上限/修订及非完整资格说明；ID或scope变化清旧结果，错产品/未来版本/非法数值/未知状态/自相矛盾的通过及旧后端缺投影均显示失败，不补通过。空ID沿原库存模式，不发product_group_id。前端最终8文件vitest退出0、206pass/0fail/skip、14.15秒；typecheck与触及5文件ESLint均退出0。pnpm run build含原i18n检查/完整vue-tsc退出0，Vite51.04秒；保留原大chunk/动态导入、Browserslist与Node弃用提示，不升级无关依赖。
+- 复用并扩展既有procurement-catalog-browser.mjs，不创建平行harness；Edge/Playwright加载同一最终构建，中英×1440/390共16条检查PASS，新增键盘产品输入、库存/产品结论分离、六态、非法ID、错产品/未来响应拒绝、503恢复、默认价说明和空ID兼容；原保存/reload/409仍通过。0未预期page/console错误、0失败请求、0未声明API，16次预设409/503单列。中英390结果卡截图已目检，无横溢出。浏览器API为合成数据，SQL层单独验证，不冒充生产验收。预览session3068已主动Ctrl-C退出，18442无监听。
+- 证据复用H:/Root/DevCache/evidence/sub2api-billing-applicability/{procurement-product-*,scheduled-coverage-procurement-product-*}；旧目录harness原位扩展，新运行制品以产品范围标识。原Go共享缓存与最终backend/internal/web/dist属可复用缓存，不入提交；本轮无独有scratch/clone/worktree。历史12图1164bytes和STATE其余宿主拒删资源原位保护，不重试/绕行，不声称全工作区clean或磁盘回收。
+- 回退此切片无需schema回退且保留c043abff6来源硬门/JSONB；旧客户端省略产品继续库存归类，新UI请求产品但旧后端缺对应合同会显示失败，管理员可明确清空选项回到库存模式，不静默丢失产品限制。D4.3允许桶/模式/拥有者/完整资格与D6.2/D7.4、实际来源/独立参考/缓存域/跨节点/严格混版/PR3等待保持；生产最后记录仍.7/fd83f6c91，本轮不部署。
+
+- 最终UI冻结后显式GOOS=linux/GOARCH=amd64/CGO_ENABLED=0，go build -tags embed -p 1 -o nul ./cmd/server退出0、320.297秒，Go摘要40c747c6、drift=false，包含本轮真实前端资源；不是Linux运行或生产加载。所有已启动验证已退出，预览已停。D4.3.4本地子验收关闭，STATE与唯一设计原位更新；原28项分母及父项/外部等待不变。

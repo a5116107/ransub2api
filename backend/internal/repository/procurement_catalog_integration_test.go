@@ -144,6 +144,66 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification)
 	})
 	attest()
+	t.Run("product policy is evaluated in the original scope preview", func(t *testing.T) {
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=false,procurement_policy=null WHERE id=$1`, groupID)
+			require.NoError(t, err)
+		})
+		policy := &domain.ProcurementPolicy{Version: 2, Revision: 1, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}
+		savePolicy := func(enabled bool) {
+			t.Helper()
+			_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=$2,procurement_policy=$3::jsonb WHERE id=$1`, groupID, enabled, encode(policy))
+			require.NoError(t, err)
+		}
+		readProduct := func(id int64) *service.ProcurementClassificationPreview {
+			t.Helper()
+			out := run(http.MethodPost, "/preview", encode(map[string]any{"product_group_id": id, "requests": []service.ProfitPreviewRequestScope{request}}))
+			require.Equal(t, 200, out.Code, out.Body.String())
+			require.NotContains(t, out.Body.String(), "catalog-fixture-secret")
+			require.NotContains(t, out.Body.String(), "relay.invalid")
+			var response struct {
+				Data service.ProcurementClassificationPreview `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(out.Body.Bytes(), &response))
+			return &response.Data
+		}
+		savePolicy(true)
+		out := readProduct(groupID)
+		require.Equal(t, "classified", out.Results[0].State)
+		require.Equal(t, "blocked", out.Results[0].Product.State)
+		require.Equal(t, service.ProfitPreviewClassRejectedSource, out.Results[0].Product.PriceClass)
+		policy.Sources.AccountIDs = []int64{accountID}
+		policy.Revision++
+		savePolicy(true)
+		out = readProduct(groupID)
+		require.Equal(t, "constraints_passed", out.Results[0].Product.State)
+		require.Equal(t, .15, out.Results[0].Product.DefaultD)
+		require.EqualValues(t, 2, out.Results[0].Product.PolicyRevision)
+		require.Equal(t, "group_default", out.Results[0].Product.PriceBasis)
+		require.Equal(t, "not_evaluated", out.Results[0].Qualification, "manual schedulable=false is not silently upgraded to full eligibility")
+		policy.MinRate, policy.MaxRate = bound("0.03"), bound("0.05")
+		policy.Revision++
+		savePolicy(true)
+		out = readProduct(groupID)
+		require.Equal(t, service.ProfitPreviewClassRejectedProcurement, out.Results[0].Product.PriceClass)
+		savePolicy(false)
+		require.Equal(t, "disabled", readProduct(groupID).Results[0].Product.State)
+		savePolicy(true)
+		_, err := db.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, groupID)
+		require.NoError(t, err)
+		require.Equal(t, "not_associated", readProduct(groupID).Results[0].Product.State)
+		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,7)`, accountID, groupID)
+		require.NoError(t, err)
+		missing := run(http.MethodPost, "/preview", encode(map[string]any{"product_group_id": 99999999, "requests": []service.ProfitPreviewRequestScope{request}}))
+		require.Equal(t, 503, missing.Code)
+		require.Contains(t, missing.Body.String(), "PROCUREMENT_CATALOG_UNAVAILABLE")
+		require.NotContains(t, missing.Body.String(), "SELECT")
+		for _, table := range []string{"usage_logs", "monitoring_probe_budget_counters", "monitoring_probe_budget_leases"} {
+			var count int
+			require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+			require.Zero(t, count)
+		}
+	})
 	t.Run("current authority precise scope and unchanged manual relations", func(t *testing.T) {
 		other := request
 		other.Scope.ServiceTier = "priority"
@@ -192,6 +252,12 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		}
 	})
 	t.Run("catalog and account are read from one snapshot", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=true,procurement_policy=$2::jsonb WHERE id=$1`, groupID, encode(&domain.ProcurementPolicy{Version: 2, Revision: 7, Sources: &domain.ProcurementSources{AccountIDs: []int64{accountID}}}))
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=false,procurement_policy=null WHERE id=$1`, groupID)
+			require.NoError(t, err)
+		})
 		before, err := repo.ReadProcurementCatalog(ctx)
 		require.NoError(t, err)
 		lock, err := db.BeginTx(ctx, nil)
@@ -207,7 +273,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		go func() {
-			out, err := repo.PreviewProcurementClassification(readCtx, []service.ProfitPreviewRequestScope{request})
+			out, err := repo.PreviewProcurementClassification(readCtx, &service.ProcurementPreviewCommand{Requests: []service.ProfitPreviewRequestScope{request}, ProductGroupID: &groupID})
 			pending <- outcome{out, err}
 		}()
 		require.Eventually(t, func() bool {
@@ -219,6 +285,8 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		next.Buckets = next.Buckets[1:]
 		_, err = repo.SaveProcurementCatalog(ctx, next)
 		require.NoError(t, err)
+		_, err = lock.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, groupID, encode(&domain.ProcurementPolicy{Version: 2, Revision: 8, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}))
+		require.NoError(t, err)
 		_, err = lock.ExecContext(ctx, `UPDATE accounts SET rate_multiplier=0.04 WHERE id=$1`, accountID)
 		require.NoError(t, err)
 		require.NoError(t, lock.Commit())
@@ -227,6 +295,12 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, before.Revision, result.out.Catalog.Revision)
 		require.Equal(t, "0.025", *result.out.Results[0].EffectiveRate)
 		require.Equal(t, "low", result.out.Results[0].Bucket.Code)
+		require.EqualValues(t, 7, result.out.Results[0].Product.PolicyRevision)
+		require.Equal(t, "constraints_passed", result.out.Results[0].Product.State)
+		fresh, err := repo.PreviewProcurementClassification(ctx, &service.ProcurementPreviewCommand{Requests: []service.ProfitPreviewRequestScope{request}, ProductGroupID: &groupID})
+		require.NoError(t, err)
+		require.EqualValues(t, 8, fresh.Results[0].Product.PolicyRevision)
+		require.Equal(t, "blocked", fresh.Results[0].Product.State)
 		latest := preview(request)
 		require.Greater(t, latest.Catalog.Revision, before.Revision)
 		require.Equal(t, "scope_unconfirmed", latest.Results[0].State, "new price must not reuse the old attestation")

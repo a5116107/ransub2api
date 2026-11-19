@@ -30,17 +30,65 @@ beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(readProcurementCatalog).mockResolvedValue(fixture())
   vi.mocked(saveProcurementCatalog).mockImplementation(async value => ({ catalog: { ...structuredClone(value), revision: value.revision + 1 }, gaps: [] }))
-  vi.mocked(previewProcurementScopes).mockImplementation(async requests => ({ ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(r => ({ ...r, state: 'classified', applicability: 'covered', rate_source: 'upstream_probe_sync', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated' })) }))
+  vi.mocked(previewProcurementScopes).mockImplementation(async ({ requests }) => ({ ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(r => ({ ...r, state: 'classified', applicability: 'covered', rate_source: 'upstream_probe_sync', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated' })) }))
 })
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it('previews product constraints separately and clears them when the selected product changes', async () => {
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockResolvedValueOnce({ ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: [{
+      account_id: 7, public_model: 'public-model', scope: { version: 2, model: 'wire-model', protocol: 'responses_http', stream: false, service_tier: 'unspecified', reasoning_effort: 'unspecified', capability: 'text' },
+      state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
+      product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: 0.15, threshold: 0.12, state: 'blocked', reason: 'rejected_procurement_source', price_class: 'rejected_procurement_source' }
+    }] })
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.blocked')
+    expect(w.text()).toContain('rejected_procurement_source')
+    expect(w.text()).toContain(prefix + 'productDefaultBasis')
+    await w.get('[data-testid="procurement-product"]').setValue('43')
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+  })
   it('resolves every static catalog label in both languages instead of displaying raw translation keys', () => {
     const labels = [...catalogSource.matchAll(/\$\{p\}\.([a-zA-Z]+)`/g)].map(match => match[1]!)
     expect(labels.length).toBeGreaterThan(30)
     for (const messages of [zhOperations.procurement, enOperations.procurement]) {
       for (const label of labels) expect(typeof (messages as Record<string, unknown>)[label], label).toBe('string')
+      for (const state of ['constraints_passed', 'blocked', 'disabled', 'product_inactive', 'not_associated', 'not_evaluated']) {
+        expect(typeof (messages.productStates as Record<string, unknown>)[state], state).toBe('string')
+      }
     }
+  })
+  it('omits an unselected product and rejects invalid product IDs without sending a preview', async () => {
+    const w = await open(); await setupProbe(w)
+    for (const value of ['0', '-1', '1e2', '1.5', '9007199254740992']) {
+      await w.get('[data-testid="procurement-product"]').setValue(value)
+      await submitPreview(w)
+      expect(previewProcurementScopes).not.toHaveBeenCalled()
+      expect(w.get('[data-testid="catalog-preview"]').attributes('disabled')).toBeDefined()
+    }
+    await w.get('[data-testid="procurement-product"]').setValue('')
+    await submitPreview(w); await flushPromises()
+    expect(vi.mocked(previewProcurementScopes).mock.calls[0]![0]).not.toHaveProperty('product_group_id')
+  })
+  it.each(['missing', 'future', 'wrong_product', 'unknown_state', 'wrong_basis', 'invalid_revision', 'invalid_rate', 'contradictory_pass'])('does not accept unknown product contracts (%s)', async kind => {
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const projection = { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted' }
+      if (kind === 'future') projection.version = 99
+      if (kind === 'wrong_product') projection.group_id = 43
+      if (kind === 'unknown_state') projection.state = 'unknown_future_pass'
+      if (kind === 'wrong_basis') projection.price_basis = 'user_price'
+      if (kind === 'invalid_revision') projection.policy_revision = -1
+      if (kind === 'invalid_rate') projection.default_d = NaN
+      if (kind === 'contradictory_pass') projection.price_class = 'rejected_procurement_source'
+      return { ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request, state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', ...(kind === 'missing' ? {} : { product_procurement: projection }) })) }
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
   })
   it('loads on expansion, displays structured gaps, preserves decimal strings and disables previews for unsaved drafts', async () => {
     const w = await open()
@@ -96,23 +144,23 @@ describe('catalog editing and scope classification in the original operations pa
     const w = await open(); await setupProbe(w)
     await w.get('[data-testid="procurement-verbosity"]').setValue('medium')
     await submitPreview(w); await flushPromises()
-    expect(vi.mocked(previewProcurementScopes).mock.calls[0]![0][0]).toMatchObject({ account_id: 7, public_model: 'public-model', scope: { version: 4, model: 'wire-model', protocol: 'responses_http', stream: false, text_verbosity: 'medium' } })
+    expect(vi.mocked(previewProcurementScopes).mock.calls[0]![0].requests[0]).toMatchObject({ account_id: 7, public_model: 'public-model', scope: { version: 4, model: 'wire-model', protocol: 'responses_http', stream: false, text_verbosity: 'medium' } })
     expect(w.get('[data-testid="catalog-preview-state"]').text()).toBe(prefix + 'states.classified')
     expect(w.get('[data-testid="catalog-preview-result"]').text()).toContain(prefix + 'notQualified')
     await w.get('[data-testid="procurement-tier"]').setValue('priority')
     expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
     await w.get('[data-testid="procurement-protocol"]').setValue('responses_ws_v2')
     await submitPreview(w); await flushPromises()
-    expect(vi.mocked(previewProcurementScopes).mock.calls[1]![0][0]!.scope.stream).toBe(true)
+    expect(vi.mocked(previewProcurementScopes).mock.calls[1]![0].requests[0]!.scope.stream).toBe(true)
     await w.get('[data-testid="procurement-protocol"]').setValue('chat_http')
     await submitPreview(w); await flushPromises()
-    expect(vi.mocked(previewProcurementScopes).mock.calls[2]![0][0]!.scope).not.toHaveProperty('text_verbosity')
+    expect(vi.mocked(previewProcurementScopes).mock.calls[2]![0].requests[0]!.scope).not.toHaveProperty('text_verbosity')
   })
   it('hides late previews and unknown catalog responses instead of treating them as current', async () => {
     const w = await open(); await setupProbe(w)
     let resolve!: (value: ProcurementPreview) => void
     let input!: ProcurementRequestScope[]
-    vi.mocked(previewProcurementScopes).mockImplementationOnce(requests => { input = requests; return new Promise<ProcurementPreview>(done => { resolve = done }) })
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(({ requests }) => { input = requests; return new Promise<ProcurementPreview>(done => { resolve = done }) })
     await submitPreview(w)
     await w.get('[data-testid="procurement-tier"]').setValue('priority')
     resolve({ ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: [{ ...input[0]!, state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated' }] })

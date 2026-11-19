@@ -15,7 +15,12 @@ export interface ProcurementRequestScope {
 export interface ProcurementClassification extends ProcurementRequestScope {
   state: string; reason?: string; applicability: string; rate_source: string; effective_rate: string | null
   bucket: ProcurementBucket | null; qualification: string
+  product_procurement?: {
+    version: number; group_id: number; policy_revision: number; price_basis: string; default_d: number; threshold: number
+    state: string; price_class: string; reason?: string
+  }
 }
+export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number }
 export interface ProcurementPreview extends ProcurementCatalogSnapshot { observed_at: string; results: ProcurementClassification[] }
 
 export async function readProcurementCatalog(signal?: AbortSignal): Promise<ProcurementCatalogSnapshot> {
@@ -24,6 +29,6 @@ export async function readProcurementCatalog(signal?: AbortSignal): Promise<Proc
 export async function saveProcurementCatalog(catalog: ProcurementCatalog, signal?: AbortSignal): Promise<ProcurementCatalogSnapshot> {
   return (await apiClient.put<ProcurementCatalogSnapshot>('/admin/upstream-procurement/catalog', catalog, { signal })).data
 }
-export async function previewProcurementScopes(requests: ProcurementRequestScope[], signal?: AbortSignal): Promise<ProcurementPreview> {
-  return (await apiClient.post<ProcurementPreview>('/admin/upstream-procurement/preview', { requests }, { signal })).data
+export async function previewProcurementScopes(command: ProcurementPreviewCommand, signal?: AbortSignal): Promise<ProcurementPreview> {
+  return (await apiClient.post<ProcurementPreview>('/admin/upstream-procurement/preview', command, { signal })).data
 }

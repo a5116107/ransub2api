@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"time"
 
@@ -26,13 +27,33 @@ type ProcurementCatalogSnapshot struct {
 
 type ProcurementScopeClassification struct {
 	ProfitPreviewRequestScope
-	State         string                    `json:"state"`
-	Reason        string                    `json:"reason,omitempty"`
-	Applicability string                    `json:"applicability"`
-	RateSource    string                    `json:"rate_source"`
-	EffectiveRate *string                   `json:"effective_rate"`
-	Bucket        *domain.ProcurementBucket `json:"bucket"`
-	Qualification string                    `json:"qualification"`
+	State         string                     `json:"state"`
+	Reason        string                     `json:"reason,omitempty"`
+	Applicability string                     `json:"applicability"`
+	RateSource    string                     `json:"rate_source"`
+	EffectiveRate *string                    `json:"effective_rate"`
+	Bucket        *domain.ProcurementBucket  `json:"bucket"`
+	Qualification string                     `json:"qualification"`
+	Product       *ProcurementProductPreview `json:"product_procurement,omitempty"`
+}
+
+type ProcurementPreviewCommand struct {
+	Requests       []ProfitPreviewRequestScope `json:"requests"`
+	ProductGroupID *int64                      `json:"product_group_id,omitempty"`
+}
+
+// This is a read-only projection at the group's default sale price, never a
+// user-specific price quote or a scheduling/quality/cache qualification.
+type ProcurementProductPreview struct {
+	Version        int     `json:"version"`
+	GroupID        int64   `json:"group_id"`
+	PolicyRevision int64   `json:"policy_revision"`
+	PriceBasis     string  `json:"price_basis"`
+	DefaultD       float64 `json:"default_d"`
+	Threshold      float64 `json:"threshold"`
+	State          string  `json:"state"`
+	PriceClass     string  `json:"price_class"`
+	Reason         string  `json:"reason,omitempty"`
 }
 
 type ProcurementClassificationPreview struct {
@@ -44,7 +65,7 @@ type ProcurementClassificationPreview struct {
 type ProcurementCatalogRepository interface {
 	ReadProcurementCatalog(context.Context) (*domain.ProcurementCatalog, error)
 	SaveProcurementCatalog(context.Context, *domain.ProcurementCatalog) (*domain.ProcurementCatalog, error)
-	PreviewProcurementClassification(context.Context, []ProfitPreviewRequestScope) (*ProcurementClassificationPreview, error)
+	PreviewProcurementClassification(context.Context, *ProcurementPreviewCommand) (*ProcurementClassificationPreview, error)
 }
 
 func (s *ChannelService) ProcurementCatalogRepository() (ProcurementCatalogRepository, error) {
@@ -95,9 +116,20 @@ func ParseProcurementCatalogCommand(raw []byte) (*domain.ProcurementCatalog, err
 	return &catalog, nil
 }
 
-func ParseProcurementPreviewCommand(raw []byte) ([]ProfitPreviewRequestScope, error) {
+func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, error) {
 	value := gjson.ParseBytes(raw)
-	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !procurementCatalogObject(value, "requests") || !value.Get("requests").IsArray() {
+	fields, valid := procurementUniqueObject(value)
+	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !valid || (len(fields) != 1 && len(fields) != 2) || !value.Get("requests").IsArray() {
+		return nil, ErrProcurementCatalogInvalid
+	}
+	command := &ProcurementPreviewCommand{}
+	if field, present := fields["product_group_id"]; present {
+		var id int64
+		if json.Unmarshal([]byte(field.Raw), &id) != nil || id < 1 || id > domain.MaxProcurementPolicyRevision {
+			return nil, ErrProcurementCatalogInvalid
+		}
+		command.ProductGroupID = &id
+	} else if len(fields) != 1 {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	items := value.Get("requests").Array()
@@ -118,13 +150,35 @@ func ParseProcurementPreviewCommand(raw []byte) ([]ProfitPreviewRequestScope, er
 		}
 		requests = append(requests, request)
 	}
-	return requests, nil
+	command.Requests = requests
+	return command, nil
 }
 
 // ClassifyProcurementScope consumes the original U_gate and exact applicability
 // contracts. A catalog match is never a quality/cache or product qualification.
-func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Account, request ProfitPreviewRequestScope, at time.Time) ProcurementScopeClassification {
+func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Account, request ProfitPreviewRequestScope, at time.Time, product *Group) ProcurementScopeClassification {
 	result := ProcurementScopeClassification{ProfitPreviewRequestScope: request, State: "scope_unconfirmed", Applicability: "unknown", RateSource: "unknown", Qualification: "not_evaluated"}
+	if product != nil {
+		report := PreviewProfitAdmission([]ProfitPreviewGroupInput{{Group: product, Accounts: []*Account{account}, RequestScopes: []ProfitPreviewRequestScope{request}}}, at)[0]
+		verdict := report.ScopeVerdicts[0]
+		projection := &ProcurementProductPreview{Version: 1, GroupID: product.ID, PriceBasis: "group_default", DefaultD: report.DefaultD, Threshold: report.ThresholdDefault, State: "not_evaluated", PriceClass: verdict.PriceClass, Reason: verdict.Reason}
+		if product.ProcurementPolicy != nil {
+			projection.PolicyRevision = product.ProcurementPolicy.Revision
+		}
+		switch {
+		case product.Status != StatusActive:
+			projection.State, projection.Reason = "product_inactive", "product_inactive"
+		case !report.EffectiveGate:
+			projection.State, projection.Reason = "disabled", "profit_gate_disabled"
+		case account != nil && !slices.Contains(account.GroupIDs, product.ID):
+			projection.State, projection.Reason = "not_associated", "account_not_in_product"
+		case verdict.Admitted:
+			projection.State = "constraints_passed"
+		case verdict.PriceClass != "" && verdict.PriceClass != ProfitPreviewClassAdmitted:
+			projection.State = "blocked"
+		}
+		result.Product = projection
+	}
 	if catalog.Validate() != nil {
 		result.State = "catalog_unavailable"
 		result.Reason = "catalog_unavailable"

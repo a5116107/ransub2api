@@ -10,6 +10,7 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	dbaccount "github.com/Wei-Shaw/sub2api/ent/account"
+	dbgroup "github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -72,10 +73,11 @@ func (r *channelRepository) SaveProcurementCatalog(ctx context.Context, draft *d
 	return next, nil
 }
 
-func (r *channelRepository) PreviewProcurementClassification(ctx context.Context, requests []service.ProfitPreviewRequestScope) (*service.ProcurementClassificationPreview, error) {
-	if len(requests) < 1 || len(requests) > 100 {
+func (r *channelRepository) PreviewProcurementClassification(ctx context.Context, command *service.ProcurementPreviewCommand) (*service.ProcurementClassificationPreview, error) {
+	if command == nil || len(command.Requests) < 1 || len(command.Requests) > 100 || command.ProductGroupID != nil && (*command.ProductGroupID < 1 || *command.ProductGroupID > domain.MaxProcurementPolicyRevision) {
 		return nil, service.ErrProcurementCatalogInvalid
 	}
+	requests := command.Requests
 	ids := make([]int64, 0, len(requests))
 	for _, request := range requests {
 		if request.AccountID < 1 {
@@ -95,6 +97,14 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	// Reuse the original Account projection and group/proxy mapper in this
 	// exact SQL snapshot; no second credential-bearing inventory is persisted.
 	client := dbent.NewClient(dbent.Driver(entsql.NewDriver(dialect.Postgres, entsql.Conn{ExecQuerier: tx})))
+	var product *service.Group
+	if command.ProductGroupID != nil {
+		entity, err := client.Group.Query().Where(dbgroup.IDEQ(*command.ProductGroupID), dbgroup.DeletedAtIsNil()).Only(ctx)
+		if err != nil {
+			return nil, err
+		}
+		product = groupEntityToService(entity)
+	}
 	entities, err := observerAccountQuery(ctx, client.Account.Query()).Where(dbaccount.IDIn(ids...), dbaccount.DeletedAtIsNil()).All(ctx)
 	if err != nil {
 		return nil, err
@@ -113,7 +123,7 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 		return nil, err
 	}
 	for _, request := range requests {
-		out.Results = append(out.Results, service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt))
+		out.Results = append(out.Results, service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt, product))
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err

@@ -66,7 +66,7 @@ func TestProcurementCatalogPreviewScopeAndPriceAuthority(t *testing.T) {
 			a.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-fixture"}
 			r := request
 			tc.mutate(a, &r)
-			result := ClassifyProcurementScope(catalog, a, r, at.Add(time.Second))
+			result := ClassifyProcurementScope(catalog, a, r, at.Add(time.Second), nil)
 			require.Equal(t, tc.state, result.State)
 			require.Equal(t, "not_evaluated", result.Qualification)
 			if tc.code == "" {
@@ -81,9 +81,9 @@ func TestProcurementCatalogPreviewScopeAndPriceAuthority(t *testing.T) {
 			require.NotContains(t, string(raw), "test-api-key")
 		})
 	}
-	result := ClassifyProcurementScope(catalog, nil, request, at)
+	result := ClassifyProcurementScope(catalog, nil, request, at, nil)
 	require.Equal(t, "account_unavailable", result.State)
-	result = ClassifyProcurementScope(&domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}, nil, request, at)
+	result = ClassifyProcurementScope(&domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}, nil, request, at, nil)
 	require.Equal(t, "not_configured", result.State)
 }
 
@@ -91,11 +91,57 @@ func TestProcurementPreviewStrictInputAndResponsesVerbosity(t *testing.T) {
 	raw := `{"requests":[{"account_id":1,"public_model":"gpt-fixture","scope":{"version":4,"protocol":"responses_http","stream":false,"model":"gpt-fixture","service_tier":"unspecified","reasoning_effort":"unspecified","capability":"text","text_verbosity":"medium"}}]}`
 	r, err := ParseProcurementPreviewCommand([]byte(raw))
 	require.NoError(t, err)
-	require.Equal(t, "medium", r[0].Scope.TextVerbosity)
+	require.Equal(t, "medium", r.Requests[0].Scope.TextVerbosity)
+	require.Nil(t, r.ProductGroupID)
+	withProduct := strings.Replace(raw, `{"requests":`, `{"product_group_id":42,"requests":`, 1)
+	r, err = ParseProcurementPreviewCommand([]byte(withProduct))
+	require.NoError(t, err)
+	require.EqualValues(t, 42, *r.ProductGroupID)
+	for _, value := range []string{`null`, `0`, `-1`, `1.1`, `"42"`, `9007199254740992`, `true`} {
+		_, err = ParseProcurementPreviewCommand([]byte(strings.Replace(withProduct, `"product_group_id":42`, `"product_group_id":`+value, 1)))
+		require.ErrorIs(t, err, ErrProcurementCatalogInvalid, value)
+	}
+	_, err = ParseProcurementPreviewCommand([]byte(strings.Replace(withProduct, `"product_group_id":42`, `"product_group_id":42,"product_group_id":42`, 1)))
+	require.ErrorIs(t, err, ErrProcurementCatalogInvalid)
 	for _, invalid := range []string{`{}`, `{"requests":null}`, `{"requests":[]}`, strings.Replace(raw, `"account_id":1`, `"account_id":0`, 1), strings.Replace(raw, `"public_model":"gpt-fixture"`, `"public_model":null`, 1), strings.Replace(raw, `"text_verbosity":"medium"`, `"text_verbosity":"future"`, 1), strings.Replace(raw, `"requests":`, `"confirm":true,"requests":`, 1), strings.Replace(raw, `"model":"gpt-fixture"`, `"model":"gpt-fixture","model":"other"`, 1), strings.Replace(raw, `"account_id":1`, `"account_id":1,"rate":0.02`, 1),
 		strings.Replace(raw, `"account_id":1`, `"account_id":1,"account_id":1`, 1),
 		strings.Replace(raw, `"model":"gpt-fixture"`, `"model":"gpt-fixture","model":"gpt-fixture"`, 1), strings.Replace(raw, `"requests":[`, `"requests":[],"requests":[`, 1)} {
 		_, err := ParseProcurementPreviewCommand([]byte(invalid))
 		require.ErrorIs(t, err, ErrProcurementCatalogInvalid, invalid)
 	}
+}
+
+func TestProcurementProductPreviewUsesOriginalGateWithoutAwardingQualification(t *testing.T) {
+	at := time.Now()
+	a := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(901), .025)
+	a.GroupIDs = []int64{42}
+	request := ProfitPreviewRequestScope{AccountID: a.ID, PublicModel: "fixture", Scope: AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}
+	catalog := &domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}
+	group := &Group{ID: 42, Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: .15, ProfitControlEnabled: true, ProfitMinMargin: .2, ProcurementPolicy: &ProcurementPolicy{Version: 2, Revision: 3, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}}
+	result := ClassifyProcurementScope(catalog, a, request, at, group)
+	require.Equal(t, "not_configured", result.State)
+	require.Equal(t, "blocked", result.Product.State)
+	require.Equal(t, ProfitPreviewClassRejectedSource, result.Product.PriceClass)
+	require.InDelta(t, .12, result.Product.Threshold, 1e-12)
+	require.Equal(t, .15, result.Product.DefaultD)
+	require.EqualValues(t, 3, result.Product.PolicyRevision)
+	require.Equal(t, "group_default", result.Product.PriceBasis)
+	require.Equal(t, "not_evaluated", result.Qualification)
+	group.ProcurementPolicy.Sources.AccountIDs = []int64{901}
+	group.ProfitControlEnabled = false
+	result = ClassifyProcurementScope(catalog, a, request, at, group)
+	require.Equal(t, "disabled", result.Product.State)
+	group.ProfitControlEnabled = true
+	group.Status = StatusDisabled
+	result = ClassifyProcurementScope(catalog, a, request, at, group)
+	require.Equal(t, "product_inactive", result.Product.State)
+	group.Status = StatusActive
+	a.GroupIDs = nil
+	result = ClassifyProcurementScope(catalog, a, request, at, group)
+	require.Equal(t, "not_associated", result.Product.State)
+	result = ClassifyProcurementScope(catalog, nil, request, at, group)
+	require.Equal(t, "not_evaluated", result.Product.State)
+	require.Equal(t, "account_unavailable", result.Product.Reason)
+	result = ClassifyProcurementScope(catalog, a, request, at, nil)
+	require.Nil(t, result.Product, "old inventory-only commands retain their response")
 }

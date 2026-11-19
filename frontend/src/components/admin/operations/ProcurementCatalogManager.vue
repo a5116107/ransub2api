@@ -53,6 +53,7 @@
             <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.previewHint`) }}</p>
             <p v-if="dirty || conflict" class="text-sm text-amber-800 dark:text-amber-300">{{ t(`${p}.saveBeforePreview`) }}</p>
             <div class="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <label class="min-w-0 text-sm">{{ t(`${p}.product`) }}<input v-model="probe.product" inputmode="numeric" maxlength="16" class="input mt-1 w-full" data-testid="procurement-product" aria-describedby="procurement-product-hint" :aria-invalid="Number.isNaN(productID)" /></label>
               <label class="min-w-0 text-sm">{{ t('upstreamOps.account') }}<input v-model.number="probe.account" type="number" min="1" step="1" class="input mt-1 w-full" required data-testid="procurement-account" /></label>
               <label class="min-w-0 text-sm">{{ t('upstreamOps.public') }}<input v-model="probe.publicModel" class="input mt-1 w-full" maxlength="200" required data-testid="procurement-public-model" /></label>
               <label class="min-w-0 text-sm">{{ t(`${p}.wireModel`) }}<input v-model="probe.model" class="input mt-1 w-full" maxlength="200" required data-testid="procurement-wire-model" /></label>
@@ -62,6 +63,7 @@
               <label v-if="responses" class="min-w-0 text-sm">{{ t(`${p}.summary`) }}<select v-model="probe.summary" class="input mt-1 w-full"><option value="">{{ t(`${p}.unspecified`) }}</option><option v-for="value in ['none','auto','concise','detailed']" :key="value" :value="value">{{ value }}</option></select></label>
               <label v-if="responses" class="min-w-0 text-sm">{{ t(`${p}.verbosity`) }}<select v-model="probe.verbosity" class="input mt-1 w-full" data-testid="procurement-verbosity"><option value="">{{ t(`${p}.unspecified`) }}</option><option v-for="value in ['low','medium','high']" :key="value" :value="value">{{ value }}</option></select></label>
             </div>
+            <p id="procurement-product-hint" class="text-xs leading-5 text-gray-500">{{ t(`${p}.productHint`) }}</p>
             <div class="flex flex-wrap gap-4 text-sm">
               <label class="flex items-start gap-2"><input v-model="probe.stream" type="checkbox" class="mt-1" :disabled="probe.protocol === 'responses_ws_v2'" />{{ t(`${p}.stream`) }}</label>
               <label v-if="responses" class="flex items-start gap-2"><input v-model="probe.encrypted" type="checkbox" class="mt-1" />{{ t(`${p}.encrypted`) }}</label>
@@ -81,6 +83,16 @@
               <div><dt class="text-gray-500">{{ t(`${p}.applicability`) }}</dt><dd>{{ item.applicability === 'covered' ? t(`${p}.covered`) : t('upstreamOps.unknown') }}</dd></div>
             </dl>
             <p v-if="item.reason" class="break-all font-mono text-xs">{{ item.reason }}</p>
+            <div v-if="item.product_procurement" class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="product-procurement">
+              <p class="break-words text-sm font-medium">{{ t(`${p}.productResult`, { id: item.product_procurement.group_id, revision: item.product_procurement.policy_revision }) }}</p>
+              <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.product_procurement.state === 'constraints_passed' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-procurement-state">{{ t(`${p}.productStates.${item.product_procurement.state}`) }}</span>
+              <dl class="grid gap-3 text-sm sm:grid-cols-2">
+                <div><dt class="text-gray-500">{{ t(`${p}.productSale`) }}</dt><dd>{{ item.product_procurement.default_d }}</dd></div>
+                <div><dt class="text-gray-500">{{ t(`${p}.productThreshold`) }}</dt><dd>{{ item.product_procurement.threshold }}</dd></div>
+              </dl>
+              <p v-if="item.product_procurement.reason" class="break-all font-mono text-xs">{{ item.product_procurement.reason }}</p>
+              <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.productDefaultBasis`) }}</p>
+            </div>
           </div>
           <p class="text-sm leading-6 text-amber-800 dark:text-amber-300">{{ t(`${p}.notQualified`) }}</p>
         </section>
@@ -101,12 +113,13 @@ const busy = ref(false), error = ref(''), conflict = ref(false), success = ref(f
 let rowKey = 0, alive = true, generation = 0
 const controller = new AbortController()
 const rows = ref<Array<{ key: number; code: string; name: string; min: string; max: string; unbounded: boolean }>>([])
-const probe = ref({ account: 0, publicModel: '', model: '', protocol: 'responses_http', tier: 'unspecified', effort: 'unspecified', stream: false, summary: '', verbosity: '', encrypted: false })
+const probe = ref({ product: '', account: 0, publicModel: '', model: '', protocol: 'responses_http', tier: 'unspecified', effort: 'unspecified', stream: false, summary: '', verbosity: '', encrypted: false })
+const productID = computed(() => probe.value.product.trim() === '' ? undefined : /^[1-9]\d*$/.test(probe.value.product.trim()) && Number.isSafeInteger(Number(probe.value.product)) ? Number(probe.value.product) : NaN)
 const responses = computed(() => probe.value.protocol !== 'chat_http')
 const candidate = computed<ProcurementCatalog>(() => ({ version: 1, revision: saved.value?.catalog.revision ?? 0, buckets: rows.value.map(row => ({ code: row.code, name: row.name, min_rate: row.min === '' ? null : row.min, max_rate: row.unbounded ? null : row.max })) }))
 const validation = computed(() => validateProcurementCatalog(candidate.value))
 const dirty = computed(() => Boolean(saved.value) && JSON.stringify(candidate.value) !== JSON.stringify(saved.value?.catalog))
-const validProbe = computed(() => Number.isSafeInteger(probe.value.account) && probe.value.account > 0 && probe.value.publicModel.trim() !== '' && probe.value.model.trim() !== '' && probe.value.tier !== '' && probe.value.effort !== '')
+const validProbe = computed(() => !Number.isNaN(productID.value) && Number.isSafeInteger(probe.value.account) && probe.value.account > 0 && probe.value.publicModel.trim() !== '' && probe.value.model.trim() !== '' && probe.value.tier !== '' && probe.value.effort !== '')
 watch([rows, probe], () => { generation++; result.value = null; success.value = false }, { deep: true, flush: 'sync' })
 function accept(next: ProcurementCatalogSnapshot) {
   if (!validProcurementSnapshot(next)) throw new Error('unsupported catalog response')
@@ -159,11 +172,18 @@ async function preview() {
     service_tier: probe.value.tier, reasoning_effort: probe.value.effort, capability: 'text', ...options
   } }
   const id = generation
+  const product = productID.value
   busy.value = true; error.value = ''; result.value = null
   try {
-    const next = await previewProcurementScopes([request], controller.signal)
+    const next = await previewProcurementScopes({ requests: [request], ...(product === undefined ? {} : { product_group_id: product }) }, controller.signal)
     if (!validProcurementSnapshot(next) || next.catalog.revision !== saved.value.catalog.revision || !Number.isFinite(Date.parse(next.observed_at)) || !Array.isArray(next.results) || next.results.length !== 1 ||
-      next.results[0]?.account_id !== request.account_id || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
+      next.results[0]?.account_id !== request.account_id || next.results[0]?.public_model !== request.public_model || !next.results[0]?.scope ||
+      !Object.entries(request.scope).every(([key, value]) => next.results[0]!.scope[key as keyof ProcurementRequestScope['scope']] === value) || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
+    const projection = next.results[0]!.product_procurement
+    if (product === undefined ? projection !== undefined : !projection || projection.version !== 1 || projection.group_id !== product || projection.price_basis !== 'group_default' ||
+      !Number.isSafeInteger(projection.policy_revision) || projection.policy_revision < 0 || !Number.isFinite(projection.default_d) || projection.default_d < 0 || !Number.isFinite(projection.threshold) || projection.threshold < 0 ||
+      !['constraints_passed', 'blocked', 'disabled', 'product_inactive', 'not_associated', 'not_evaluated'].includes(projection.state) ||
+      projection.state === 'constraints_passed' && projection.price_class !== 'admitted') throw new Error('unknown product projection')
     if (alive && generation === id) result.value = next
   } catch { if (alive && generation === id) error.value = 'previewFailed' }
   finally { if (alive) busy.value = false }
