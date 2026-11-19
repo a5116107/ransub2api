@@ -39,7 +39,7 @@ export function parseCacheUsage(protocol: CacheProtocol, value: unknown, previou
 }
 
 /** Parse SSE incrementally, including CRLF, split UTF-8, comments, and multi-line data. */
-async function consumeSSE(response: Response, onData: (value: unknown) => boolean, signal: AbortSignal): Promise<void> {
+export async function consumeSSE(response: Response, onData: (value: unknown) => boolean, signal: AbortSignal): Promise<void> {
   if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) throw new ProbeError('invalid_stream')
   const reader = response.body.getReader(), decoder = new TextDecoder()
   let buffer = '', data: string[] = [], done = false

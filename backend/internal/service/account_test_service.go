@@ -416,6 +416,9 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	if err != nil || account == nil {
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
+	if err := validateUpstreamCacheProbeAccount(ctx, account); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
 	target, targeted := ctx.Value(availabilityProbeConnectionKey{}).(availabilityProbeConnection)
 	if targeted && (target.accountID != accountID || target.connectionID == "" || !account.IsOpenAI()) {
 		return s.sendErrorAndEnd(c, "Availability probe connection target is invalid")
@@ -1134,6 +1137,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		payload["tools"] = []any{}
 	}
 	applyModelTracePayload(ctx, payload)
+	applyUpstreamCacheProbePayload(ctx, payload, false)
 	payloadBytes, _ := json.Marshal(payload)
 
 	// Send test_start event once. A task-invalid Agent Identity response may
@@ -1244,6 +1248,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 }
 
 func (s *AccountTestService) recordOpenAIAccountTestUnauthorized(ctx context.Context, account *Account, message string) {
+	if _, observing := ctx.Value(upstreamCacheProbeKey{}).(*upstreamCacheProbeRuntime); observing {
+		return
+	}
 	if account.AuthConnectionID != "" {
 		if s.openaiGatewayService != nil && s.openaiGatewayService.excelOAuthReauth != nil {
 			_ = s.openaiGatewayService.excelOAuthReauth.FailAuthConnection(ctx, account, http.StatusUnauthorized)
@@ -2566,6 +2573,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 		payload["reasoning_effort"] = options.reasoningEffort
 	}
 	applyModelTracePayload(ctx, payload)
+	applyUpstreamCacheProbePayload(ctx, payload, true)
 	payloadBytes, _ := json.Marshal(payload)
 	payloadBytes, err := normalizeMistralChatRequest(account, payloadBytes)
 	if err != nil {
@@ -3333,6 +3341,7 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 
 		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
 		usage.read(jsonStr)
+		observeUpstreamCacheProbeEvent(c.Request.Context(), []byte(jsonStr), true)
 		if jsonStr == "[DONE]" {
 			if modelTraceRequested(c.Request.Context()) && !seenFinish {
 				return s.sendErrorAndEnd(c, "ModelTrace generation ended without a finish reason")
@@ -3418,6 +3427,7 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 
 		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
 		usage.read(jsonStr)
+		observeUpstreamCacheProbeEvent(c.Request.Context(), []byte(jsonStr), false)
 		if jsonStr == "[DONE]" {
 			if seenCompleted {
 				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})

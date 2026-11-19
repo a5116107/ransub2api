@@ -1,5 +1,77 @@
 export default {
   groupCacheTest: {
+  upstream: {
+    "title": "Upstream key / model cache probe",
+    "description": "Probe one upstream account directly, without downstream routing or a downstream key. Reuse its configured native HTTP protocol; never switch accounts within a run.",
+    "account": "Upstream account (local ID)",
+    "selectAccount": "Select a native OpenAI API key account",
+    "intervals": "Warm-round gaps (seconds, comma-separated)",
+    "prefix": "Public prefix blocks (not token counts)",
+    "timeout": "Per-round timeout (seconds)",
+    "search": "Filter accounts (up to 100 results)",
+    "limits": "Sends 2–6 potentially billable calls, capped at 256 output tokens each. Gaps of 0–10 seconds start after the preceding round completes. Every physical call uses the existing budget. Failure, missing usage, route change or budget denial stops the run. Processed work may still be charged after cancellation.",
+    "coverage": "Warm coverage {observed} / {planned}",
+    "requestRate": "Request hit rate",
+    "tokenRate": "Cached-input token share",
+    "boundary": "Source: upstream raw usage from synthetic probes of the selected configured route. Supplier group, model identity, cross-key cache domain and retention remain unverified; results do not grant high-cache eligibility. Downstream tests and billing stay separate.",
+    "interval": "Round gap",
+    "scope": "Actual outbound scope",
+    "source": "Raw counter source / status",
+    "observedAt": "Actual start / finish",
+    "budget": "Budget scope {scope} deferred; retry time: {at}",
+    "loadError": "Account loading failed. Refresh to retry.",
+    "runError": "Probe did not complete. Check supported account types, metering budget and connectivity.",
+    "stopped": "Probe stopped; admitted calls still settle through the existing budget.",
+    "verdict": {
+      "running": "Probing",
+      "insufficient": "Insufficient evidence",
+      "hit_observed": "Cache reads observed",
+      "no_hit_observed": "No cache reads observed"
+    },
+    "cold": {
+      "not_observed": "No valid baseline observation yet",
+      "zero_read_observed": "Baseline reported zero reads, not proof of a cold cache",
+      "cold_not_confirmed": "Baseline already hit; cold state unconfirmed"
+    },
+    "route": {
+      "not_observed": "Route continuity unconfirmed",
+      "same_configured_route": "Same configured route verified"
+    },
+    "states": {
+      "running": "Probing",
+      "completed": "Completed",
+      "unknown": "Unknown",
+      "failed": "Request failed",
+      "deferred": "Deferred",
+      "stopped": "Stopped"
+    },
+    "reasons": {
+      "collecting": "Collecting observations",
+      "completed_observations": "All planned rounds have valid same-route observations",
+      "usage_observed": "Valid raw usage",
+      "usage_not_observed": "Raw cache usage missing or invalid",
+      "route_changed": "Account, credential or route changed; later calls not sent",
+      "scope_or_identity_unconfirmed": "Final credential, scope or physical send unconfirmed",
+      "scope_changed": "Model, protocol or service-tier scope changed",
+      "account_unavailable": "Authoritative account read failed",
+      "additional_send_blocked": "Additional retry blocked",
+      "budget_deferred": "Budget denied or settlement incomplete",
+      "canceled": "Canceled",
+      "timeout": "Round timed out",
+      "unknown": "Observation incomplete; expand raw status for details",
+      "response_not_confirmed": "No complete terminal response",
+      "not_observed": "No physical response observed",
+      "upstream_error": "Upstream service failure",
+      "authentication_rejected": "Upstream authentication rejected",
+      "upstream_timeout": "Upstream timeout",
+      "rate_limited": "Upstream rate limited",
+      "request_rejected": "Upstream rejected request",
+      "conflicting_evidence": "Conflicting response evidence",
+      "capture_limited": "Capture bound exceeded",
+      "truncated_evidence": "Incomplete observation capture",
+      "transport_error": "Upstream transport failed"
+    }
+  },
   "title": "Group cache test",
   "description": "Repeat a long prefix through real group routing to compare cache reads, response latency, and actual charges.",
   "reload": "Refresh",

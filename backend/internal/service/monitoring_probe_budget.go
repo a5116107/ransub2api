@@ -342,6 +342,9 @@ func BeginMonitoringProbeRequest(req *http.Request) (budgeted *http.Request, rel
 	if req == nil {
 		return req, nil, nil
 	}
+	if err := admitUpstreamCacheProbePhysical(req); err != nil {
+		return req, nil, err
+	}
 	probe, ok := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
 	if !ok {
 		return req, nil, nil

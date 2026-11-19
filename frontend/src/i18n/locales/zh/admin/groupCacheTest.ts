@@ -1,5 +1,77 @@
 export default {
   groupCacheTest: {
+  upstream: {
+    "title": "指定上游 Key / 模型缓存探测",
+    "description": "直接检测一个上游账号的原始缓存回报，不经过下游分组调度，不使用下游 Key。协议沿账号现有 HTTP 配置，过程中不换账号。",
+    "account": "上游账号（本地 ID）",
+    "selectAccount": "选择原生 OpenAI API Key 账号",
+    "intervals": "各暖轮间隔（秒，逗号分隔）",
+    "prefix": "公共前缀块数（不是 Token 数）",
+    "timeout": "单轮超时（秒）",
+    "search": "筛选账号（最多显示 100 条）",
+    "limits": "发送 2–6 次可能计费的调用，每轮输出上限 256。间隔从上一轮完成后计时，支持 0–10 秒。每次调用沿原预算计量；失败、缺失 usage、改线或预算不足即停。取消前已处理的调用仍可能计费。",
+    "coverage": "暖轮覆盖 {observed} / {planned}",
+    "requestRate": "请求命中率",
+    "tokenRate": "Token 缓存读取占比",
+    "boundary": "来源：合成探测的上游原始 usage。仅为所选配置线路的本次观测；供应商实际组、模型身份、跨 Key 缓存域和存活期限未验证，不授予高缓存调度资格。原下游测试和账单保持独立。",
+    "interval": "本轮等待",
+    "scope": "实际出站范围",
+    "source": "原始计数来源 / 状态",
+    "observedAt": "实际开始 / 完成",
+    "budget": "预算范围 {scope} 已延期，可重试时间：{at}",
+    "loadError": "账号加载失败，请刷新重试。",
+    "runError": "本次探测未完成，请核对账号支持范围、计量预算和网络后重新探测。",
+    "stopped": "探测已停止；已发生的调用仍按原预算结算。",
+    "verdict": {
+      "running": "检测中",
+      "insufficient": "证据不足",
+      "hit_observed": "观测到缓存读取",
+      "no_hit_observed": "未观测到缓存读取"
+    },
+    "cold": {
+      "not_observed": "冷基线尚无有效观测",
+      "zero_read_observed": "首轮上报读取为 0，不代表已证明冷缓存",
+      "cold_not_confirmed": "首轮已命中，冷基线未确认"
+    },
+    "route": {
+      "not_observed": "同路证据尚未确认",
+      "same_configured_route": "已核对同一配置线路"
+    },
+    "states": {
+      "running": "检测中",
+      "completed": "完成",
+      "unknown": "未知",
+      "failed": "请求失败",
+      "deferred": "检测延期",
+      "stopped": "已停止"
+    },
+    "reasons": {
+      "collecting": "正在采集",
+      "completed_observations": "所有计划轮次已有有效同路观测",
+      "usage_observed": "有效原始 usage",
+      "usage_not_observed": "原始缓存 usage 缺失或无效",
+      "route_changed": "账号、凭据或线路变更，后续未发送",
+      "scope_or_identity_unconfirmed": "最终凭据、范围或物理发送证据未确认",
+      "scope_changed": "模型、协议或档位范围变更",
+      "account_unavailable": "权威账号读取失败",
+      "additional_send_blocked": "已阻止额外重试发送",
+      "budget_deferred": "预算不足或结算未完成",
+      "canceled": "已取消",
+      "timeout": "单轮超时",
+      "unknown": "观测未完成，展开原始状态查看",
+      "response_not_confirmed": "未取得完整终态响应",
+      "not_observed": "未观察到实际响应",
+      "upstream_error": "上游服务失败",
+      "authentication_rejected": "上游认证拒绝",
+      "upstream_timeout": "上游超时",
+      "rate_limited": "上游限流",
+      "request_rejected": "上游拒绝本次请求",
+      "conflicting_evidence": "响应证据矛盾",
+      "capture_limited": "采集超出有界限制",
+      "truncated_evidence": "采集证据不完整",
+      "transport_error": "上游传输失败"
+    }
+  },
   "title": "分组缓存测试",
   "description": "通过真实分组路由，重复发送相同的长前缀，对比缓存读取、响应延迟与实际扣费。",
   "reload": "刷新",

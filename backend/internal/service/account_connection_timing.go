@@ -32,6 +32,9 @@ func timedAccountTestUpstream(upstream HTTPUpstream, account *Account) HTTPUpstr
 }
 
 func (u accountTimingUpstream) Do(req *http.Request, proxy string, account int64, concurrency int) (*http.Response, error) {
+	if err := validateUpstreamCacheProbeEgress(req, u.account, proxy); err != nil {
+		return nil, err
+	}
 	req, trace := requesttiming.StartAttempt(req, account, 0)
 	observeScope := observeAvailabilityProbeRequest(req, trace, u.account, proxy)
 	resp, err := u.upstream.Do(req, proxy, account, concurrency)
@@ -42,6 +45,9 @@ func (u accountTimingUpstream) Do(req *http.Request, proxy string, account int64
 }
 
 func (u accountTimingUpstream) DoWithTLS(req *http.Request, proxy string, account int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	if err := validateUpstreamCacheProbeEgress(req, u.account, proxy); err != nil {
+		return nil, err
+	}
 	req, trace := requesttiming.StartAttempt(req, account, 0)
 	observeScope := observeAvailabilityProbeRequest(req, trace, u.account, proxy)
 	resp, err := u.upstream.DoWithTLS(req, proxy, account, concurrency, profile)

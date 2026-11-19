@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,7 +116,15 @@ func (k *openAICompactSSEKeepalive) beat() bool {
 	if !k.started {
 		header := k.writer.Header()
 		header.Set("Content-Type", "text/event-stream")
-		header.Set("Cache-Control", "no-cache")
+		// Preserve an explicitly stricter no-store response (for example an
+		// administrator probe); the first heartbeat must not relax it.
+		noStore := false
+		for _, directive := range strings.Split(strings.Join(header.Values("Cache-Control"), ","), ",") {
+			noStore = noStore || strings.EqualFold(strings.TrimSpace(directive), "no-store")
+		}
+		if !noStore {
+			header.Set("Cache-Control", "no-cache")
+		}
 		header.Set("Connection", "keep-alive")
 		header.Set("X-Accel-Buffering", "no")
 		k.writer.WriteHeader(http.StatusOK)
