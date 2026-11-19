@@ -663,6 +663,8 @@ export interface GroupProcurementPolicy {
   revision: number
   min_rate: string | null
   max_rate: string | null
+  // Version 2. null keeps the original pool; [] explicitly admits no source.
+  sources?: { account_ids: number[] | null }
 }
 
 export interface AdminGroup extends Group {

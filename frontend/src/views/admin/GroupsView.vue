@@ -6472,6 +6472,14 @@ const resolveProcurementConflict = () => {
   const latest = latestProcurementPolicy.value;
   if (!editingGroup.value || !editProcurementPolicy.value || latest === undefined || validateProcurementPolicy(latest)) return;
   editingGroup.value = { ...editingGroup.value, procurement_policy: latest };
+  if (latest?.version === 2 && editProcurementPolicy.value.version === 1) {
+    // An explicit review preserves newly added sources when rebasing an older
+    // range-only draft; that legacy draft must not erase the source contract.
+    editProcurementPolicy.value = {
+      ...editProcurementPolicy.value, version: 2,
+      sources: { account_ids: latest.sources!.account_ids === null ? null : [...latest.sources!.account_ids] }
+    };
+  }
   editProcurementPolicy.value = { ...editProcurementPolicy.value, revision: latest?.revision ?? 0 };
   editProcurementConflict.value = false;
   latestProcurementPolicy.value = undefined;

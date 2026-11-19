@@ -11,13 +11,13 @@ import (
 )
 
 var ErrProcurementPolicyConflict = infraerrors.Conflict("GROUP_PROCUREMENT_POLICY_CONFLICT", "procurement policy changed; review the latest policy before saving")
-var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires version 1, the current revision, and an exact nonempty decimal interval")
+var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires a complete supported version, the current revision, an exact nonempty interval, and explicit approved sources for version 2")
 
 func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*ProcurementPolicy, *int64, error) {
 	if len(raw) == 0 {
 		return current.Clone(), nil, nil
 	}
-	if len(raw) > 2048 || !json.Valid(raw) {
+	if len(raw) > 32768 || !json.Valid(raw) {
 		return nil, nil, ErrProcurementPolicyInvalid
 	}
 	fields := make(map[string]json.RawMessage, 4)
@@ -31,7 +31,7 @@ func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*
 			return nil, nil, ErrProcurementPolicyInvalid
 		}
 		key, ok := token.(string)
-		if !ok || fields[key] != nil || (key != "version" && key != "revision" && key != "min_rate" && key != "max_rate") {
+		if !ok || fields[key] != nil || (key != "version" && key != "revision" && key != "min_rate" && key != "max_rate" && key != "sources") {
 			return nil, nil, ErrProcurementPolicyInvalid
 		}
 		var value json.RawMessage
@@ -40,13 +40,16 @@ func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*
 		}
 		fields[key] = value
 	}
-	if len(fields) != 4 || bytes.Equal(bytes.TrimSpace(fields["revision"]), []byte("null")) {
+	if (len(fields) != 4 && len(fields) != 5) || fields["version"] == nil || fields["revision"] == nil || fields["min_rate"] == nil || fields["max_rate"] == nil || bytes.Equal(bytes.TrimSpace(fields["revision"]), []byte("null")) {
 		return nil, nil, ErrProcurementPolicyInvalid
 	}
 	var draft *ProcurementPolicy
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&draft); err != nil || draft.ValidateDraft() != nil {
+		return nil, nil, ErrProcurementPolicyInvalid
+	}
+	if draft.Version == 1 && fields["sources"] != nil {
 		return nil, nil, ErrProcurementPolicyInvalid
 	}
 	expected := int64(0)
@@ -59,19 +62,35 @@ func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*
 	if draft.Revision != expected {
 		return nil, nil, ErrProcurementPolicyConflict
 	}
+	// Check concurrency first so an older range-only draft can review the
+	// newly added source contract through the normal 409 recovery flow.
+	// At the current revision, clearing sources still requires explicit v2 null.
+	if current != nil && current.Version == 2 && draft.Version == 1 {
+		return nil, nil, ErrProcurementPolicyInvalid
+	}
 	if expected == domain.MaxProcurementPolicyRevision {
 		return nil, nil, ErrProcurementPolicyInvalid
 	}
 	return draft.WithRevision(expected + 1), &expected, nil
 }
 
-func procurementPolicyVetoReason(policy *ProcurementPolicy, rate float64) string {
+func procurementPolicyVetoReason(policy *ProcurementPolicy, account *Account, rate float64) string {
 	allowed, err := policy.ContainsRate(rate)
 	if err != nil {
 		return openAIProfitFilterReasonProcurementUnavailable
 	}
 	if !allowed {
 		return openAIProfitFilterReasonProcurementRange
+	}
+	if account == nil {
+		return openAIProfitFilterReasonProcurementUnavailable
+	}
+	allowed, err = policy.AllowsAccount(account.ID)
+	if err != nil {
+		return openAIProfitFilterReasonProcurementUnavailable
+	}
+	if !allowed {
+		return openAIProfitFilterReasonProcurementSource
 	}
 	return ""
 }

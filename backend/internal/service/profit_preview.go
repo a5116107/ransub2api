@@ -112,6 +112,7 @@ const (
 	ProfitPreviewClassAdmitted             = "admitted"
 	ProfitPreviewClassRejectedThreshold    = "rejected_threshold"
 	ProfitPreviewClassRejectedProcurement  = "rejected_procurement_range"
+	ProfitPreviewClassRejectedSource       = "rejected_procurement_source"
 	ProfitPreviewClassUnknownProcurement   = "rejected_procurement_policy_unavailable"
 	ProfitPreviewClassRejectedInvalidRate  = "rejected_invalid_account_rate"
 	ProfitPreviewClassRejectedUpstreamRate = "rejected_upstream_rate_unavailable"
@@ -309,7 +310,7 @@ func previewAccountProfitAdmission(
 	} else if reason == openAIProfitFilterReasonUpstreamRateUnavailable && len(verdict.Warnings) == 0 {
 		verdict.Warnings = append(verdict.Warnings, ProfitPreviewWarningProbeInvalid)
 	}
-	procurementReason := procurementPolicyVetoReason(policy, upstream)
+	procurementReason := procurementPolicyVetoReason(policy, account, upstream)
 	switch {
 	case !effectiveGate:
 		verdict.Class = ProfitPreviewClassAdmitted
@@ -325,6 +326,8 @@ func previewAccountProfitAdmission(
 		verdict.Class = ProfitPreviewClassUnknownProcurement
 	case procurementReason == openAIProfitFilterReasonProcurementRange:
 		verdict.Class = ProfitPreviewClassRejectedProcurement
+	case procurementReason == openAIProfitFilterReasonProcurementSource:
+		verdict.Class = ProfitPreviewClassRejectedSource
 	default:
 		verdict.Class = ProfitPreviewClassAdmitted
 		verdict.RejectedUnderMinD = profitControlOverThreshold(upstream, thresholdMinD)

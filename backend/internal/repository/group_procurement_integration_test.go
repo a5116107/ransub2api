@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
@@ -19,6 +20,139 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProcurementPolicySourcesPostgresHTTP(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	groups := repository.NewAdminGroupRepository(client, db)
+	management := service.NewAdminService(nil, nil, groups, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := admin.NewGroupHandler(management, nil, nil)
+	router := gin.New()
+	router.POST("/groups", h.Create)
+	router.PUT("/groups/:id", h.Update)
+	router.GET("/groups/:id", h.GetByID)
+	run := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	response := run(http.MethodPost, "/groups", `{"name":"approved-source-product","platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"procurement_policy":{"version":2,"revision":0,"min_rate":null,"max_rate":null,"sources":{"account_ids":[]}}}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data service.Group `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	id := envelope.Data.ID
+	require.Positive(t, id)
+	path := fmt.Sprintf("/groups/%d", id)
+	read := func() *service.Group {
+		t.Helper()
+		loaded, err := repository.NewAdminGroupRepository(client, db).GetByIDLite(ctx, id)
+		require.NoError(t, err)
+		return loaded
+	}
+	loaded := read()
+	require.NotNil(t, loaded.ProcurementPolicy.Sources.AccountIDs)
+	require.Empty(t, loaded.ProcurementPolicy.Sources.AccountIDs)
+	response = run(http.MethodPut, path, `{"name":"ordinary-legacy-edit"}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, loaded.ProcurementPolicy, read().ProcurementPolicy)
+	for _, invalid := range []string{
+		`{"version":1,"revision":1,"min_rate":null,"max_rate":null}`,
+		`{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{}}`,
+		`{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null,"account_ids":null}}`,
+		`{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":[]},"sources":{"account_ids":[]}}`,
+	} {
+		response = run(http.MethodPut, path, `{"name":"must-not-write","procurement_policy":`+invalid+`}`)
+		require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+		require.Equal(t, "ordinary-legacy-edit", read().Name)
+		require.Equal(t, loaded.ProcurementPolicy, read().ProcurementPolicy)
+	}
+	response = run(http.MethodPut, path, `{"procurement_policy":{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":[902,901]}}}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, []int64{901, 902}, read().ProcurementPolicy.Sources.AccountIDs)
+	response = run(http.MethodPut, path, `{"name":"must-not-write","procurement_policy":{"version":1,"revision":1,"min_rate":null,"max_rate":null}}`)
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "GROUP_PROCUREMENT_POLICY_CONFLICT")
+	response = run(http.MethodPut, path, `{"name":"must-not-write","procurement_policy":{"version":1,"revision":2,"min_rate":null,"max_rate":null}}`)
+	require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+	require.Equal(t, "ordinary-legacy-edit", read().Name)
+	legacy, first, second := read(), read(), read()
+	start, outcomes := make(chan struct{}), make(chan error, 2)
+	var workers sync.WaitGroup
+	for i, input := range []*service.Group{first, second} {
+		expected := int64(2)
+		input.ProcurementPolicyExpectedRevision = &expected
+		input.ProcurementPolicy = input.ProcurementPolicy.WithRevision(3)
+		input.ProcurementPolicy.Sources.AccountIDs = []int64{int64(903 + i)}
+		input.Name = fmt.Sprintf("approved-%d", i)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			outcomes <- repository.NewAdminGroupRepository(client, db).Update(ctx, input)
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(outcomes)
+	successes := 0
+	for err := range outcomes {
+		if err == nil {
+			successes++
+		} else {
+			require.ErrorIs(t, err, service.ErrProcurementPolicyConflict)
+		}
+	}
+	require.Equal(t, 1, successes)
+	winner := read().ProcurementPolicy
+	require.EqualValues(t, 3, winner.Revision)
+	legacy.Name = "legacy-after-approved-change"
+	require.NoError(t, groups.Update(ctx, legacy))
+	require.Equal(t, winner, legacy.ProcurementPolicy)
+	duplicate, err := management.DuplicateGroup(ctx, id, "fixture-admin", "source-copy")
+	require.NoError(t, err)
+	require.Equal(t, winner.Sources, duplicate.ProcurementPolicy.Sources)
+	require.EqualValues(t, 1, duplicate.ProcurementPolicy.Revision)
+	duplicate.ProcurementPolicy.Sources.AccountIDs[0] = 1
+	require.Equal(t, winner, read().ProcurementPolicy)
+	response = run(http.MethodPut, path, `{"procurement_policy":{"version":2,"revision":2,"min_rate":null,"max_rate":null,"sources":{"account_ids":null}}}`)
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	response = run(http.MethodPut, path, `{"procurement_policy":{"version":2,"revision":3,"min_rate":null,"max_rate":null,"sources":{"account_ids":null}}}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	loaded = read()
+	require.Nil(t, loaded.ProcurementPolicy.Sources.AccountIDs)
+	require.Equal(t, 0.15, loaded.RateMultiplier)
+	userDTO, err := json.Marshal(dto.GroupFromService(loaded))
+	require.NoError(t, err)
+	require.NotContains(t, string(userDTO), "procurement_policy")
+	require.NotContains(t, string(userDTO), "account_ids")
+	// Explicitly empty remains empty after another independent SQL read.
+	expected := int64(4)
+	loaded.ProcurementPolicyExpectedRevision = &expected
+	loaded.ProcurementPolicy = &service.ProcurementPolicy{Version: 2, Revision: 5, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}
+	require.NoError(t, groups.Update(ctx, loaded))
+	require.NotNil(t, read().ProcurementPolicy.Sources.AccountIDs)
+	// A malformed persisted object must fail the real Ent projection, rather
+	// than silently interpreting a missing account_ids as an unrestricted pool.
+	backup, err := json.Marshal(loaded.ProcurementPolicy)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=jsonb_set(procurement_policy,'{sources}','{}'::jsonb) WHERE id=$1`, id)
+	require.NoError(t, err)
+	_, err = groups.GetByIDLite(ctx, id)
+	require.Error(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, id, string(backup))
+	require.NoError(t, err)
+	require.NotNil(t, read().ProcurementPolicy.Sources.AccountIDs)
+	for _, table := range []string{"usage_logs", "monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "account_groups"} {
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count))
+		require.Zero(t, count)
+	}
+}
 
 func TestProcurementPolicyPostgresHTTPRevisionAndLegacyClient(t *testing.T) {
 	db, client := repository.UpstreamChannelsTestDatabase(t)

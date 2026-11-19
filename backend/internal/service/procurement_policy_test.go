@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -48,6 +49,64 @@ func TestProcurementPolicyVersionedCommands(t *testing.T) {
 	require.Nil(t, cleared.MinRate)
 	require.Nil(t, cleared.MaxRate)
 	require.EqualValues(t, 2, cleared.Revision)
+}
+
+func TestProcurementPolicyApprovedSourcesGateAndPreview(t *testing.T) {
+	for _, tc := range []struct {
+		name, ids, reason string
+	}{
+		{"original_pool", "null", ""},
+		{"explicit_empty", "[]", "procurement_source"},
+		{"approved", "[901]", ""},
+		{"other_account", "[902]", "procurement_source"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			group := profitControlTestGroup(7, 0, 0)
+			raw := `{"procurement_policy":{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":` + tc.ids + `}}}`
+			require.NoError(t, json.Unmarshal([]byte(raw), group))
+			account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(901), 0.025)
+			gate := (&OpenAIGatewayService{}).resolveOpenAIProfitControlGate(profitControlTestCtx(group), &group.ID)
+			ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, gate)
+			veto, reason := openAIProfitControlVetoReason(ctx, account)
+			require.Equal(t, tc.reason, reason)
+			require.Equal(t, tc.reason != "", veto)
+			verdict := previewAccountProfitAdmission(account, true, 1, 1, time.Now(), group.ProcurementPolicy)
+			want := ProfitPreviewClassAdmitted
+			if veto {
+				want = "rejected_procurement_source"
+			}
+			require.Equal(t, want, verdict.Class)
+		})
+	}
+}
+
+func TestProcurementPolicySourcesCompleteCommandsAndDowngrade(t *testing.T) {
+	command := `{"version":2,"revision":0,"min_rate":null,"max_rate":null,"sources":{"account_ids":[902,901]}}`
+	created, expected, err := procurementPolicyUpdate(json.RawMessage(command), nil)
+	require.NoError(t, err)
+	require.Zero(t, *expected)
+	require.Equal(t, []int64{901, 902}, created.Sources.AccountIDs)
+	kept, expected, err := procurementPolicyUpdate(nil, created)
+	require.NoError(t, err)
+	require.Nil(t, expected)
+	kept.Sources.AccountIDs[0] = 1
+	require.EqualValues(t, 901, created.Sources.AccountIDs[0])
+	for _, sources := range []string{`null`, `{}`, `{"account_ids":[0]}`, `{"account_ids":[1,1]}`, `{"account_ids":[9007199254740992]}`, `{"account_ids":[1.1]}`, `{"account_ids":["1"]}`, `{"account_ids":false}`, `{"account_ids":null,"account_ids":null}`, `{"Account_ids":[1]}`, `{"account_ids":[1],"pass":true}`} {
+		raw := `{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":` + sources + `}`
+		_, _, err = procurementPolicyUpdate(json.RawMessage(raw), created)
+		require.ErrorIs(t, err, ErrProcurementPolicyInvalid, raw)
+	}
+	_, _, err = procurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":1,"min_rate":null,"max_rate":null}`), created)
+	require.ErrorIs(t, err, ErrProcurementPolicyInvalid, "legacy complete edits must not erase sources")
+	_, _, err = procurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":0,"min_rate":null,"max_rate":null}`), created)
+	require.ErrorIs(t, err, ErrProcurementPolicyConflict, "a stale range-only draft must reach explicit review instead of failing as a downgrade")
+	_, _, err = procurementPolicyUpdate(json.RawMessage(command), created)
+	require.ErrorIs(t, err, ErrProcurementPolicyConflict)
+	for _, ids := range []string{`null`, `[]`} {
+		updated, _, err := procurementPolicyUpdate(json.RawMessage(`{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":`+ids+`}}`), created)
+		require.NoError(t, err)
+		require.Equal(t, ids == "null", updated.Sources.AccountIDs == nil)
+	}
 }
 
 func TestProcurementPolicyLatestTerminalBoundary(t *testing.T) {
@@ -164,98 +223,117 @@ func TestProcurementPolicyBothSchedulersAndSticky(t *testing.T) {
 			selected, _, err := svc.SelectAccountWithScheduler(ctx, &group.ID, "", "", "gpt-fixture", map[int64]struct{}{covered.ID: {}}, OpenAIUpstreamTransportAny, false)
 			require.Nil(t, selected)
 			require.ErrorIs(t, err, ErrNoAvailableAccounts, "retry cannot escape the procurement range")
+			group.ProcurementPolicy = &ProcurementPolicy{Version: 2, Revision: 2, Sources: &domain.ProcurementSources{AccountIDs: []int64{covered.ID}}}
+			ctx = billingCandidateContext(t, svc, group, `{"model":"gpt-fixture","input":"fixture","service_tier":"priority"}`)
+			for _, session := range []string{"", "procurement-sticky"} {
+				selected, _, err = svc.SelectAccountWithScheduler(ctx, &group.ID, "", session, "gpt-fixture", nil, OpenAIUpstreamTransportAny, false)
+				require.NoError(t, err)
+				require.Equal(t, covered.ID, selected.Account.ID)
+				if selected.ReleaseFunc != nil {
+					selected.ReleaseFunc()
+				}
+			}
+			selected, _, err = svc.SelectAccountWithScheduler(ctx, &group.ID, "", "", "gpt-fixture", map[int64]struct{}{covered.ID: {}}, OpenAIUpstreamTransportAny, false)
+			require.Nil(t, selected)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts, "a retry must not escape the approved source list")
+			require.Equal(t, excluded.ID, cache.sessionBindings["procurement-sticky"], "source rejection does not erase the original binding")
 		})
 	}
 }
 
 func TestProcurementPolicyPhysicalWSTurnRevisionAndRecovery(t *testing.T) {
-	for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool} {
-		t.Run(mode, func(t *testing.T) {
-			var frames atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				conn, err := coderws.Accept(w, request, nil)
-				if err != nil {
-					return
-				}
-				defer func() { _ = conn.CloseNow() }()
-				for {
-					if _, _, err := conn.Read(request.Context()); err != nil {
+	for _, constraint := range []string{"procurement_range", "procurement_source"} {
+		for _, mode := range []string{OpenAIWSIngressModePassthrough, OpenAIWSIngressModeCtxPool} {
+			t.Run(mode+"/"+constraint, func(t *testing.T) {
+				var frames atomic.Int32
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					conn, err := coderws.Accept(w, request, nil)
+					if err != nil {
 						return
 					}
-					frames.Add(1)
-					if err := conn.Write(request.Context(), coderws.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_procurement","usage":{"input_tokens":4,"output_tokens":2}}}`)); err != nil {
-						return
+					defer func() { _ = conn.CloseNow() }()
+					for {
+						if _, _, err := conn.Read(request.Context()); err != nil {
+							return
+						}
+						frames.Add(1)
+						if err := conn.Write(request.Context(), coderws.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_procurement","usage":{"input_tokens":4,"output_tokens":2}}}`)); err != nil {
+							return
+						}
 					}
+				}))
+				defer upstream.Close()
+				entry := billingApplicabilityEntry("responses_ws_v2", "unspecified", true)
+				account := billingCandidateAccount(t, 914, entry)
+				rate := 0.025
+				account.RateMultiplier = &rate
+				account.Credentials["base_url"] = upstream.URL
+				account.Credentials["api_key"] = "sk-test"
+				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
+				at := time.Now().UTC().Add(-time.Second)
+				_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
+				require.NoError(t, err)
+				repo := &billingWSCandidateAccountRepo{}
+				repo.account.Store(account)
+				svc := newOpenAIGatewayServiceWithSettings(t, nil)
+				svc.cfg = passthroughLifecycleConfig()
+				defer svc.getOpenAIWSConnPool().Close()
+				svc.cache, svc.toolCorrector = &stubGatewayCache{}, NewCodexToolCorrector()
+				svc.accountRepo, svc.requireLatestTurnAdmission = repo, true
+				group := profitControlTestGroup(7, 0, 0)
+				min, max := "0.02", "0.03"
+				group.ProcurementPolicy = &ProcurementPolicy{Version: 1, Revision: 1, MinRate: &min, MaxRate: &max}
+				var latest atomic.Pointer[Group]
+				latest.Store(group)
+				body := `{"type":"response.create","model":"gpt-fixture","input":"fixture","store":true,"stream":false}`
+				ctx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", nil)
+				gate := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+				gate.procurementGroup = func(context.Context) (*Group, error) { return latest.Load(), nil }
+				settled := make(chan int, 3)
+				hooks := &OpenAIWSIngressHooks{AfterTurn: func(turn int, _ *OpenAIForwardResult, _ error) { settled <- turn }}
+				server, done := startPassthroughLifecycleServer(t, ctx, svc, account, hooks)
+				defer server.Close()
+				client := dialPassthroughLifecycleClientWithPayload(t, server, body)
+				defer func() { _ = client.CloseNow() }()
+				_, err = readPassthroughLifecycleFrame(t, client, 3*time.Second)
+				require.NoError(t, err)
+				select {
+				case <-settled:
+				case <-time.After(3 * time.Second):
+					t.Fatal("first turn not settled")
 				}
-			}))
-			defer upstream.Close()
-			entry := billingApplicabilityEntry("responses_ws_v2", "unspecified", true)
-			account := billingCandidateAccount(t, 914, entry)
-			rate := 0.025
-			account.RateMultiplier = &rate
-			account.Credentials["base_url"] = upstream.URL
-			account.Credentials["api_key"] = "sk-test"
-			account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
-			at := time.Now().UTC().Add(-time.Second)
-			_, err := prepareUpstreamBillingManualApplicability(t.Context(), account, billingManualCommand(t, account, at, entry), at)
-			require.NoError(t, err)
-			repo := &billingWSCandidateAccountRepo{}
-			repo.account.Store(account)
-			svc := newOpenAIGatewayServiceWithSettings(t, nil)
-			svc.cfg = passthroughLifecycleConfig()
-			defer svc.getOpenAIWSConnPool().Close()
-			svc.cache, svc.toolCorrector = &stubGatewayCache{}, NewCodexToolCorrector()
-			svc.accountRepo, svc.requireLatestTurnAdmission = repo, true
-			group := profitControlTestGroup(7, 0, 0)
-			min, max := "0.02", "0.03"
-			group.ProcurementPolicy = &ProcurementPolicy{Version: 1, Revision: 1, MinRate: &min, MaxRate: &max}
-			var latest atomic.Pointer[Group]
-			latest.Store(group)
-			body := `{"type":"response.create","model":"gpt-fixture","input":"fixture","store":true,"stream":false}`
-			ctx := billingWSCandidateContext(t, svc, group, body, "gpt-fixture", nil)
-			gate := ctx.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
-			gate.procurementGroup = func(context.Context) (*Group, error) { return latest.Load(), nil }
-			settled := make(chan int, 3)
-			hooks := &OpenAIWSIngressHooks{AfterTurn: func(turn int, _ *OpenAIForwardResult, _ error) { settled <- turn }}
-			server, done := startPassthroughLifecycleServer(t, ctx, svc, account, hooks)
-			defer server.Close()
-			client := dialPassthroughLifecycleClientWithPayload(t, server, body)
-			defer func() { _ = client.CloseNow() }()
-			_, err = readPassthroughLifecycleFrame(t, client, 3*time.Second)
-			require.NoError(t, err)
-			select {
-			case <-settled:
-			case <-time.After(3 * time.Second):
-				t.Fatal("first turn not settled")
-			}
-			replacement := *group
-			replacement.ProcurementPolicy = group.ProcurementPolicy.WithRevision(2)
-			newMax := "0.025"
-			replacement.ProcurementPolicy.MaxRate = &newMax
-			latest.Store(&replacement)
-			require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(body)))
-			select {
-			case err := <-done:
-				require.ErrorContains(t, err, "procurement_range")
-			case <-time.After(3 * time.Second):
-				t.Fatal("changed procurement policy did not reject the next physical turn")
-			}
-			require.EqualValues(t, 1, frames.Load())
-			latest.Store(group)
-			recoveryServer, recovered := startPassthroughLifecycleServer(t, ctx, svc, account, nil)
-			defer recoveryServer.Close()
-			recoveryClient := dialPassthroughLifecycleClientWithPayload(t, recoveryServer, body)
-			_, err = readPassthroughLifecycleFrame(t, recoveryClient, 3*time.Second)
-			require.NoError(t, err)
-			require.EqualValues(t, 2, frames.Load())
-			_ = recoveryClient.CloseNow()
-			select {
-			case <-recovered:
-			case <-time.After(3 * time.Second):
-				t.Fatal("recovered session did not close")
-			}
-			require.False(t, strings.Contains(group.Name, "reprice"))
-		})
+				replacement := *group
+				replacement.ProcurementPolicy = group.ProcurementPolicy.WithRevision(2)
+				newMax := "0.025"
+				replacement.ProcurementPolicy.MaxRate = &newMax
+				if constraint == "procurement_source" {
+					replacement.ProcurementPolicy = &ProcurementPolicy{Version: 2, Revision: 2, Sources: &domain.ProcurementSources{AccountIDs: []int64{account.ID + 1}}}
+				}
+				latest.Store(&replacement)
+				require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(body)))
+				select {
+				case err := <-done:
+					require.ErrorContains(t, err, constraint)
+				case <-time.After(3 * time.Second):
+					t.Fatal("changed procurement policy did not reject the next physical turn")
+				}
+				require.EqualValues(t, 1, frames.Load())
+				latest.Store(group)
+				recoveryServer, recovered := startPassthroughLifecycleServer(t, ctx, svc, account, nil)
+				defer recoveryServer.Close()
+				recoveryClient := dialPassthroughLifecycleClientWithPayload(t, recoveryServer, body)
+				_, err = readPassthroughLifecycleFrame(t, recoveryClient, 3*time.Second)
+				require.NoError(t, err)
+				require.EqualValues(t, 2, frames.Load())
+				_ = recoveryClient.CloseNow()
+				select {
+				case <-recovered:
+				case <-time.After(3 * time.Second):
+					t.Fatal("recovered session did not close")
+				}
+				require.False(t, strings.Contains(group.Name, "reprice"))
+			})
+		}
 	}
 }
 
@@ -326,6 +404,14 @@ func TestProcurementPolicyPhysicalHTTPRevisionAndRecovery(t *testing.T) {
 				send("procurement_policy_unavailable")
 				latest.ProcurementPolicy = group.ProcurementPolicy.Clone()
 				send("")
+				latest.ProcurementPolicy = &ProcurementPolicy{Version: 2, Revision: 3, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}
+				send("procurement_source")
+				latest.ProcurementPolicy.Sources.AccountIDs = []int64{account.ID}
+				send("")
+				latest.ProcurementPolicy.Sources.AccountIDs = []int64{account.ID + 1}
+				send("procurement_source")
+				latest.ProcurementPolicy.Sources.AccountIDs = nil
+				send("")
 				latest.ProcurementPolicy = nil
 				send("")
 				require.Equal(t, 0.5, gate.threshold, "fresh procurement never reprices an in-flight request")
@@ -355,15 +441,26 @@ func TestProcurementPolicyPostSlotAndPreview(t *testing.T) {
 	newMin = "0.02"
 	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
 	require.False(t, vetoed, reason)
+	group.ProcurementPolicy = &ProcurementPolicy{Version: 2, Revision: 3, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}
+	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
+	require.True(t, vetoed)
+	require.Equal(t, "procurement_source", reason)
+	reports = PreviewProfitAdmission([]ProfitPreviewGroupInput{{Group: group, Accounts: []*Account{&account}}}, time.Now())
+	require.Equal(t, ProfitPreviewClassRejectedSource, reports[0].Verdicts[0].Class)
+	group.ProcurementPolicy.Sources.AccountIDs = []int64{account.ID}
+	_, vetoed, reason = profitControlVetoLatest(ctx, &account, nil)
+	require.False(t, vetoed, reason)
 }
 
 func TestProcurementPolicyObservationsRemainSeparate(t *testing.T) {
 	observer := &openAIProfitControlObserver{}
 	observer.recordVeto(9, PlatformOpenAI, 0.5, openAIProfitFilterReasonProcurementRange)
 	observer.recordVeto(9, PlatformOpenAI, 0.5, openAIProfitFilterReasonProcurementUnavailable)
+	observer.recordVeto(9, PlatformOpenAI, 0.5, openAIProfitFilterReasonProcurementSource)
 	stats := observer.stats(9, PlatformOpenAI)
 	require.EqualValues(t, 1, stats.vetoProcurement.Load())
 	require.EqualValues(t, 1, stats.vetoPolicy.Load())
+	require.EqualValues(t, 1, stats.vetoSource.Load())
 	require.Zero(t, stats.vetoThreshold.Load(), "procurement rejection is not a margin failure")
 	require.Zero(t, stats.vetoScope.Load(), "an interval is not model/fast applicability")
 	require.Zero(t, stats.vetoUpstreamRate.Load(), "policy storage failure is not a supplier price observation")

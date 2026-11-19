@@ -91,6 +91,7 @@ const (
 	openAIProfitFilterReasonUpstreamRateUnavailable = "profit_upstream_rate_unavailable"
 	openAIProfitFilterReasonAccountSaleRateMismatch = "profit_account_sale_rate_mismatch"
 	openAIProfitFilterReasonProcurementRange        = "procurement_range"
+	openAIProfitFilterReasonProcurementSource       = "procurement_source"
 	openAIProfitFilterReasonProcurementUnavailable  = "procurement_policy_unavailable"
 
 	// 槽位获取后的账号刷新失败由终检返回，沿用 refresh_failure_total 观测。
@@ -401,7 +402,7 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonThreshold)
 		return true, openAIProfitFilterReasonThreshold
 	}
-	if reason := procurementPolicyVetoReason(gate.procurementPolicy, upstream); reason != "" {
+	if reason := procurementPolicyVetoReason(gate.procurementPolicy, account, upstream); reason != "" {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
 		return true, reason
 	}
@@ -491,6 +492,7 @@ type openAIProfitControlGroupStats struct {
 	vetoSaleRate     atomic.Int64
 	vetoScope        atomic.Int64
 	vetoProcurement  atomic.Int64
+	vetoSource       atomic.Int64
 	vetoPolicy       atomic.Int64
 	refreshFailures  atomic.Int64
 	lastLogUnixMilli atomic.Int64
@@ -542,6 +544,8 @@ func (o *openAIProfitControlObserver) recordVeto(groupID int64, platform string,
 		s.vetoSaleRate.Add(1)
 	case openAIProfitFilterReasonProcurementRange:
 		s.vetoProcurement.Add(1)
+	case openAIProfitFilterReasonProcurementSource:
+		s.vetoSource.Add(1)
 	case openAIProfitFilterReasonProcurementUnavailable:
 		s.vetoPolicy.Add(1)
 	default:
@@ -581,6 +585,7 @@ func (o *openAIProfitControlObserver) maybeLog(groupID int64, platform string, t
 		"veto_account_sale_rate_mismatch_total", s.vetoSaleRate.Load(),
 		"veto_upstream_scope_total", s.vetoScope.Load(),
 		"veto_procurement_range_total", s.vetoProcurement.Load(),
+		"veto_procurement_source_total", s.vetoSource.Load(),
 		"veto_procurement_policy_unavailable_total", s.vetoPolicy.Load(),
 		"refresh_failure_total", s.refreshFailures.Load(),
 	)

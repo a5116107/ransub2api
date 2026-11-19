@@ -857,6 +857,20 @@ HTTP入站、非透传OpenAI API Key最终走原生WS v2时，候选沿原HTTP�
 
 原上游运维页内提供中英响应式桶编辑与结构化空档警告、精确scope归类预演；草稿与查询结果分开，保存/重载或输入变化使旧预演失效，旧结果不得冒充当前目录。UI失败、未知合同和409不得以空目录覆盖现值；未保存草稿不参与权威预演。管理员认证与观察员403沿原路由，采购信息不进入用户面板。验收覆盖精确边界/排序/空档/零/开放上界、格式与并发CAS、真实PG/HTTP、期限/模型隔离/变价/失败恢复、权限、无明文泄漏、中英1440/390与409草稿恢复。本子项只闭环目录和只读归类，不替代受管产品模式/允许桶、拥有者、质量缓存交集、降价确认、关系重算、生产/多节点验收；D4.3仍开放。 回退此切片保留原settings值；旧版忽略目录，不改变现有Group/账号关系，恢复支持版本后可按原revision继续编辑。本切片未接运行时资格，所以不把旧版忽略目录声称为桶资格仍受保护；后续资格启用须另验排空回退。
 
+#### 5.4.3 产品批准来源硬门（D4.3.3，本地已验）
+
+在原Group `procurement_policy`演进版本2，保留区间和revision，增加必填`sources: {account_ids: null | [] | [ID...]}`。null表示沿原账号池、不增加来源限制；空数组表示明确不接纳任何来源；非空数组仅允许列出的本地账号ID，最多1000个不重复的安全正整数。版本1保持原区间含义，不回填旧Group。
+
+这里的来源只表示本系统账号，不是供应商站点/远端分组/Key或独立故障域证明。来源名单只与原候选池取交集，不自动创建账号组关联；同Key多账号仍受原共享并发约束，不因名单重复计算容量。账号原有人工开关、模型支持、适用声明、成本与会话/文件归属等约束全部保持，名单命中不是质量或缓存合格。
+
+完整命令、原JSONB及CAS继续共用采购策略revision。旧客户端省略策略不擦写；版本1完整命令面对更新后的版本2时，修订陈旧先返回原409并允许明确核对，修订相同仍拒绝降级，清除来源限制须显式提交版本2的null名单。保存排序但不去重容错，重复/非法/未知字段拒绝；持久JSON及认证/调度快照中的sources对象也要求显式account_ids，缺失不能默认成null。复制分组深复制名单并从独立revision1开始，不修改原组。
+
+原`procurementPolicyVetoReason`同时被利润预演及原利润门消费；来源拒绝有独立`procurement_source`原因、计数和CLI合计，不混为利润不足、区间外或模型/fast适用失败。双调度的普通、黏性与重试均在原门内求交；槽后及最终HTTP/WS逐轮沿原Group权威重读名单，不依赖选号时旧指针。售价、毛利上限和定价时刻保持请求内固定，名单变化不清会话或重放已发送生成。
+
+原Group创建/编辑表单展示来源模式、账号ID输入及结构化数量/零来源状态，沿用中英/手机、409草稿保留与503恢复。范围草稿遇到新加入的来源合同，管理员核对后继承最新来源而非删除它；原版本2草稿经明确核对可保留自身来源修改。非法草稿不显示批准数量，未知版本不展示默认原池。配置只在原利润门适用且启用时执行，界面明确关闭后的效果。账号ID输入是此硬门切片，不替代D7.4三步来源选择与完整运维监控。
+
+没有数据库迁移或新增运行器；仍通过原Group/outbox/snapshot传播，管理员DTO可见、用户Group DTO不暴露采购配置。回退保留JSONB；仅认识版本1的区间版本会拒绝版本2，早于区间硬门的程序仍可能忽略它，因此严格产品须停接/排空后回退，不声称混版仍有完整保护。D4.3父验收继续保留允许桶、模式/拥有者、质量缓存交集、降价确认、关系重算及多节点/生产观察。
+
 ## 6. 请求决策流程
 
 ```mermaid
@@ -2041,7 +2055,7 @@ D2.5在原timing JSON的物理`http`/`ws_turn` attempt中增加`upstream_credent
 | 范围 | 当前源码证据 | 尚缺什么 / 不能据此宣称什么 |
 | --- | --- | --- |
 | 固定组与倍率 | [探测快照/设置](../../backend/internal/service/upstream_billing_probe.go#L100)、[固定组确认与高峰解析](../../backend/internal/service/upstream_billing_probe.go#L1015)、[New API库存](../../backend/internal/service/new_api_upstream.go#L198) | 审计时已有绑定/版本失效/同步，缺完整适用声明和限期手工声明；后续本地子项见5.3.1–5.3.17。原生透传/非透传、固定转换、Chat及Messages双转换入站、透传/固定池WS、确定HTTP桥及智能分流候选按各子项验收；真实来源及全部候选消费仍未闭合，D2.6父验收保留 |
-| 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 审计时仅利润门/人工关联；后续D4.3.1已实现5.4.1的产品采购区间/API/UI及终检，D4.3.2已有[桶目录与归类](../../backend/internal/service/procurement_catalog.go)、[同SQL快照](../../backend/internal/repository/procurement_catalog.go)及[原运维页配置](../../frontend/src/components/admin/operations/ProcurementCatalogManager.vue)，见5.4.2；仍非受管产品编译器。允许桶、统一资格、模式/拥有者和自动迁入产品继续归D4.3，不能以价格归类代替 |
+| 自动采购分类与产品 | [Group利润门字段](../../backend/ent/schema/group.go#L314)、[固定请求售价与原门](../../backend/internal/service/openai_profit_control.go#L8)、[上游归组对象](../../backend/internal/service/upstream_channels.go#L19) | 审计时仅利润门/人工关联；后续D4.3.1已实现5.4.1的产品采购区间/API/UI及终检，D4.3.2已有[桶目录与归类](../../backend/internal/service/procurement_catalog.go)、[同SQL快照](../../backend/internal/repository/procurement_catalog.go)及[原运维页配置](../../frontend/src/components/admin/operations/ProcurementCatalogManager.vue)，见5.4.2；D4.3.3已补原Group本地账号批准来源与末端重读（5.4.3），非供应商/实际分组证明；仍非受管产品编译器。允许桶、统一资格、模式/拥有者和自动迁入产品继续归D4.3，不能以价格归类代替 |
 | 最新可用及质量 | [最终scope准入](../../backend/internal/service/availability_admission.go#L86)、[质量隔离策略](../../backend/internal/service/account_quality.go#L48)、[共享冻结题集](../../backend/internal/service/quality_shared_batch.go#L24) | 审计时缺分维度测量/策略版本；D3.2.1–.7沿原链补判题来源、批次围栏、多维历史、期限/规则/登记轮次、API-Key配置线路及登记故障版本核对。独立模型参考、其余线路/跨规则有效轮次、未覆盖故障/漂移及资格消费仍缺。历史单题/同群结果不是模型身份认证，D3.2保持开放 |
 | 下游原始缓存 | [本人统计入口](../../backend/internal/handler/usage_handler.go#L475)、[唯一trace聚合](../../backend/internal/repository/usage_log_repo_stats.go#L700)、[用户面板](../../frontend/src/views/user/UsageView.vue#L178) | D5.2已有原始聚合/权限/UI及匹配测试；不再列为待开发。仅覆盖已记用量，不是全部失败率或上游Key统计，也不证明已部署 |
 | 上游Key/模型缓存 | [最终凭据摘要](../../backend/internal/pkg/requesttiming/credential.go)、[原始统计SQL](../../backend/internal/repository/upstream_raw_cache.go)、[面板DTO](../../frontend/src/api/admin/upstreamOperations.ts) | D5.3.1–.12已接最终Key/线路原始缓存、逐尝试发送scope、HTTP四阶段/独立WS三阶段等待及输出停顿/吞吐，按服务端入口来源分桶；Messages按速度/思考模式与预算，Gemini按原生action/预算模式/等级与思考输出开关分桶。失败、中断和未知保留覆盖分母。实际组、受信外部检测、其余scope与完整资格消费仍缺，D5.3继续开放；不以当前配置补历史 |
@@ -2074,6 +2088,7 @@ P0表示文本自动供应池必要本地工作或独立生产缺口，P1表示�
 | D4.3 / P0 | 在原Group/利润门/关系及snapshot/outbox内实现采购桶、受管策略和资格重算；依赖D2.6/D3.2/D5.3 | 站点/故障域只按可核对声明区分；定点下闭上开、拒重叠；涨价先撤旧资格、降价按确认策略；质量/缓存交集、模式/版本/拥有者、人工限制保持，旧客户端/409兼容；预演/候选/等待后/HTTP及WS终检同源。新鲜证据未知不入严格池，不建第二调度器 |
 | D4.3.1 / P0（本地done） | 原Group采购区间JSONB/完整命令/CAS、同源利润门/终检/预演和原管理员表单 | 精确下闭上开/零/未知，旧客户端不擦写、并发仅一笔成功；真实本地PG/HTTP、双调度黏性/重试/槽后及HTTP/WS拒发恢复、认证/用户隔离/幂等迁移与中英1440/390已验，命令见DECISIONS。只完成5.4.1价格边界，不增加原分母，不替代D4.3桶/资格/模式/归类或生产验收 |
 | D4.3.2 / P0（本地done） | 原settings目录/ChannelService、同SQL快照scope归类与原运维页 | 5.4.2精确边界/空档、CAS/重复字段拒存、变价/身份失效、PG/HTTP/权限及中英1440/390已验；归类不是质量/缓存资格，不改人工关系/售价，不代替D4.3/生产。构建与交付终态见STATE/DECISIONS |
+| D4.3.3 / P0（执行中） | 原Group版本化策略加入本地账号批准来源；依赖D4.3.1 | 5.4.3完整命令/CAS/防旧版降级、独立预演/计数、双调度/黏性/等待后及物理HTTP/WS拒发恢复、PG认证/隔离与中英手机UI；不代替桶/模式/完整质量缓存资格/生产，分母不变 |
 | D5.4 / P1 | 扩展原缓存探测为指定上游scope证据及域/存活验证；依赖D2.6/D5.3 | 指定最终Key和固定组/模型、cold/warm同路同前缀、多个间隔、源/覆盖/期限明确；跨Key/组共享必须交叉验证。前缀租户隔离且不存正文；当前下游缓存探测保持其原含义 |
 | D6.2 / P0 | 在原选路入口接产品资格、统一性能、健康黏性及合格新会话分配；依赖D4.3/D3.1/D8.1，高缓存严格产品另依赖D5.4 | 普通/黏性/重试/WS均不越硬门，健康不因排名抖动，恢复不抢回；共享Key/故障域容量不重复放大，空池原因明确；高缓存严格产品依D5.4有效能力与D5.3业务覆盖，不因缺证据放宽 |
 | D6.3 / P2 | 在同入口补可证的软迁移；依赖D5.4/D6.2及可信前缀/候选域 | 持续净收益/冷重建成本及强归属安全有实际证据；无证据保持关闭，不能把冷输入上界或独立历史P90差当因果收益；可先验证拒绝/未知边界，不伪造上线收益 |

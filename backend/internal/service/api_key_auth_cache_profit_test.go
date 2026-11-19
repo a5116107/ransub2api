@@ -116,3 +116,27 @@ func TestProcurementPolicyAuthSnapshotRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, used, "pre-procurement cached projections must reload")
 }
+
+func TestProcurementPolicySourcesAuthSnapshotRoundtrip(t *testing.T) {
+	for _, ids := range []string{"null", "[]", "[901,902]"} {
+		t.Run(ids, func(t *testing.T) {
+			svc := &APIKeyService{}
+			apiKey := profitAuthTestAPIKey()
+			require.NoError(t, json.Unmarshal([]byte(`{"procurement_policy":{"version":2,"revision":2,"min_rate":null,"max_rate":null,"sources":{"account_ids":`+ids+`}}}`), apiKey.Group))
+			snapshot := svc.snapshotFromAPIKey(t.Context(), apiKey)
+			payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
+			require.NoError(t, err)
+			var restored APIKeyAuthCacheEntry
+			require.NoError(t, json.Unmarshal(payload, &restored))
+			materialized, used, err := svc.applyAuthCacheEntry(apiKey.Key, &restored)
+			require.NoError(t, err)
+			require.True(t, used)
+			require.Equal(t, apiKey.Group.ProcurementPolicy, materialized.Group.ProcurementPolicy)
+			if ids == "[901,902]" {
+				materialized.Group.ProcurementPolicy.Sources.AccountIDs[0] = 1
+				require.EqualValues(t, 901, apiKey.Group.ProcurementPolicy.Sources.AccountIDs[0])
+				require.EqualValues(t, 901, svc.snapshotToAPIKey(apiKey.Key, snapshot).Group.ProcurementPolicy.Sources.AccountIDs[0])
+			}
+		})
+	}
+}

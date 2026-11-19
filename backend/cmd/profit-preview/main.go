@@ -95,7 +95,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("利润门预演 @ %s（账号级价格筛选；不代表模型/fast、健康或缓存资格）\n", evalAt.Format(time.RFC3339))
+	fmt.Printf("利润门预演 @ %s（账号级采购筛选：价格与批准来源；不代表模型/fast、健康或缓存资格）\n", evalAt.Format(time.RFC3339))
 	for _, report := range reports {
 		fmt.Printf("\n== 分组 %d %s [%s] ==\n", report.GroupID, report.GroupName, report.Platform)
 		fmt.Printf("  利润门生效=%v 假定启用=%v | 默认 D=%.4f 阈值=%.4f | 最低有效 D=%.4f 阈值=%.4f\n",
@@ -113,6 +113,13 @@ func main() {
 					maxRate = *policy.MaxRate
 				}
 				fmt.Printf("  采购区间=[%s, %s) 修订=%d（与利润上限取交集，不代表质量或缓存资格）\n", minRate, maxRate, policy.Revision)
+				if policy.Sources != nil {
+					if policy.Sources.AccountIDs == nil {
+						fmt.Println("  批准来源：沿用原分组账号池（不新增关联）")
+					} else {
+						fmt.Printf("  批准来源：%d 个本地账号 %v（空名单暂不接纳任何来源）\n", len(policy.Sources.AccountIDs), policy.Sources.AccountIDs)
+					}
+				}
 			}
 		}
 		counts := map[string]int{}
@@ -140,13 +147,14 @@ func main() {
 			fmt.Printf("  账号 %-4d %-24s 平台=%-12s 保存倍率=%-8s U=%-8s 来源=%-19s %s%s\n",
 				v.AccountID, v.Name, v.Platform, rate, effectiveRate, v.RateSource, v.Class, suffix)
 		}
-		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d 账号附加售价不符=%d 采购区间外=%d 采购策略不可用=%d\n",
+		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d 账号附加售价不符=%d 采购区间外=%d 来源未批准=%d 采购策略不可用=%d\n",
 			counts[service.ProfitPreviewClassAdmitted],
 			counts[service.ProfitPreviewClassRejectedThreshold],
 			counts[service.ProfitPreviewClassRejectedInvalidRate],
 			counts[service.ProfitPreviewClassRejectedUpstreamRate],
 			counts[service.ProfitPreviewClassRejectedSaleRate],
 			counts[service.ProfitPreviewClassRejectedProcurement],
+			counts[service.ProfitPreviewClassRejectedSource],
 			counts[service.ProfitPreviewClassUnknownProcurement])
 		models := make([]string, 0, len(report.RemainingByModel))
 		for model := range report.RemainingByModel {
@@ -154,7 +162,7 @@ func main() {
 		}
 		sort.Strings(models)
 		for _, model := range models {
-			fmt.Printf("  模型 %-20s 账号级价格筛选: 默认D=%d 最低有效D=%d（非scope资格）\n",
+			fmt.Printf("  模型 %-20s 账号级采购筛选: 默认D=%d 最低有效D=%d（非scope资格）\n",
 				model, report.RemainingByModel[model], report.RemainingByModelMinD[model])
 		}
 		for _, model := range modelsWithZeroRemaining(report) {

@@ -105,7 +105,10 @@ describe('product procurement interval in the original Group editor', () => {
   it.each([null, { ...savedPolicy, version: 2 }])('keeps legacy or unsupported policy %j on ordinary saves', async procurement_policy => {
     const wrapper = mountView({ ...base, procurement_policy })
     await edit(wrapper)
-    if (procurement_policy) expect(wrapper.get('#edit-procurement-min').attributes('disabled')).toBeDefined()
+    if (procurement_policy) {
+      expect(wrapper.get('#edit-procurement-min').attributes('disabled')).toBeDefined()
+      expect(wrapper.find('#edit-procurement-sources-mode').exists()).toBe(false)
+    }
     await submit(wrapper)
     expect(mocks.update.mock.calls[0][1].procurement_policy).toBeUndefined()
   })
@@ -182,5 +185,80 @@ describe('product procurement interval in the original Group editor', () => {
     await button(wrapper, 'admin.groups.createGroup').trigger('click')
     await procurementToggle(wrapper, '#create-group-form').setValue(true)
     expect((wrapper.get('#create-procurement-min').element as HTMLInputElement).value).toBe('')
+  })
+
+  it('saves approved sources through the original editor without changing the sale price', async () => {
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-sources-mode').setValue('approved')
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.sourcesEmpty')
+    await wrapper.get('#edit-procurement-sources').setValue('901, 902\n903')
+    await wrapper.get('#edit-procurement-max').setValue('0.04')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({ ...savedPolicy, version: 2, max_rate: '0.04', sources: { account_ids: [901, 902, 903] } })
+    expect(mocks.update.mock.calls[0][1].rate_multiplier).toBe(0.15)
+  })
+
+  it('preserves loaded sources during range edits, and requires explicit null to restore the original pool', async () => {
+    const sources = { account_ids: [901, 902] }
+    const wrapper = mountView({ ...base, procurement_policy: { ...savedPolicy, version: 2, sources } })
+    await edit(wrapper)
+    expect((wrapper.get('#edit-procurement-sources').element as HTMLTextAreaElement).value).toBe('901, 902')
+    await wrapper.get('#edit-procurement-max').setValue('0.04')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy.sources).toEqual(sources)
+    expect(sources.account_ids).toEqual([901, 902])
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-sources-mode').setValue('original')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...savedPolicy, version: 2, sources: { account_ids: null } })
+  })
+
+  it('rejects malformed or duplicate IDs without losing input, and persists an intentional empty list', async () => {
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-sources-mode').setValue('approved')
+    for (const text of ['901, 901', '1e2', '9007199254740992', 'not-an-id']) {
+      await wrapper.get('#edit-procurement-sources').setValue(text)
+      expect((wrapper.get('#edit-procurement-sources').element as HTMLTextAreaElement).value).toBe(text)
+      await submit(wrapper)
+      expect(mocks.update).not.toHaveBeenCalled()
+      expect(mocks.showError).toHaveBeenCalledWith('admin.groups.profitControl.procurement.sourceFormat')
+      expect(wrapper.findAll('p[role="status"]').some(p => p.text().includes('procurement.sourcesCount'))).toBe(false)
+    }
+    await wrapper.get('#edit-procurement-sources').setValue('')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy.sources.account_ids).toEqual([])
+  })
+
+  it('keeps sources added by a newer revision when explicitly reviewing an older range-only draft', async () => {
+    mocks.update.mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
+    mocks.getById.mockResolvedValue({ ...base, procurement_policy: { ...savedPolicy, version: 2, revision: 2, sources: { account_ids: [904] } } })
+    const wrapper = mountView()
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-max').setValue('0.05')
+    await submit(wrapper)
+    expect(wrapper.text()).toContain('904')
+    await button(wrapper, 'admin.groups.profitControl.procurement.useLatestRevision').trigger('click')
+    expect((wrapper.get('#edit-procurement-sources').element as HTMLTextAreaElement).value).toBe('904')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...savedPolicy, version: 2, revision: 2, max_rate: '0.05', sources: { account_ids: [904] } })
+  })
+
+  it('keeps an approved-source draft on save failure and explicitly reviewed conflicts', async () => {
+    mocks.update.mockRejectedValueOnce({ status: 503, message: 'fixture_save_unavailable' })
+    const wrapper = mountView({ ...base, procurement_policy: { ...savedPolicy, version: 2, sources: { account_ids: [901] } } })
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-sources').setValue('902, 903')
+    await submit(wrapper)
+    expect((wrapper.get('#edit-procurement-sources').element as HTMLTextAreaElement).value).toBe('902, 903')
+    mocks.update.mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
+    mocks.getById.mockResolvedValue({ ...base, procurement_policy: { ...savedPolicy, version: 2, revision: 2, sources: { account_ids: [905] } } })
+    await submit(wrapper)
+    expect((wrapper.get('#edit-procurement-sources').element as HTMLTextAreaElement).value).toBe('902, 903')
+    expect(wrapper.text()).toContain('905')
+    await button(wrapper, 'admin.groups.profitControl.procurement.useLatestRevision').trigger('click')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[2][1].procurement_policy).toEqual({ ...savedPolicy, version: 2, revision: 2, sources: { account_ids: [902, 903] } })
   })
 })

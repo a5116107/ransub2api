@@ -9,6 +9,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParsePreviewProcurementSources(t *testing.T) {
+	for _, tc := range []struct{ ids, class string }{
+		{"null", service.ProfitPreviewClassAdmitted}, {"[]", service.ProfitPreviewClassRejectedSource},
+		{"[2]", service.ProfitPreviewClassAdmitted}, {"[3]", service.ProfitPreviewClassRejectedSource},
+	} {
+		input := `{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":1,"profit_control_enabled":true,"procurement_policy":{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":` + tc.ids + `}}},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.02}]}]}`
+		inputs, err := parsePreviewInputs([]byte(input), false)
+		require.NoError(t, err)
+		reports := service.PreviewProfitAdmission(inputs, time.Now())
+		require.Equal(t, tc.class, reports[0].Verdicts[0].Class)
+		require.Equal(t, inputs[0].Group.ProcurementPolicy.Sources, reports[0].ProcurementPolicy.Sources)
+	}
+}
+
 func TestParsePreviewInputsProcurementInterval(t *testing.T) {
 	input := `{"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"procurement_policy":{"version":1,"revision":3,"min_rate":"0.02","max_rate":"0.03"}},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.019999999999999997},{"id":3,"platform":"openai","type":"apikey","rate_multiplier":0.02},{"id":4,"platform":"openai","type":"apikey","rate_multiplier":0.03}],"models":["gpt-fixture"]}]}`
 	inputs, err := parsePreviewInputs([]byte(input), false)

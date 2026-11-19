@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -60,4 +61,15 @@ func TestGetByKeyForAuthCarriesProfitControlProjection(t *testing.T) {
 	require.InDelta(t, 0.2, got.Group.ProfitMinMargin, 1e-9)
 	require.InDelta(t, 0.05, got.Group.ProfitSafetyBuffer, 1e-9)
 	require.Equal(t, group.ProcurementPolicy, got.Group.ProcurementPolicy)
+	// The same JSON projection must carry source restrictions, including an
+	// explicitly empty list rather than converting it to the original pool.
+	for _, ids := range [][]int64{nil, {}, {901, 902}} {
+		expected := group.ProcurementPolicy.Revision
+		group.ProcurementPolicy = &service.ProcurementPolicy{Version: 2, Revision: expected + 1, Sources: &domain.ProcurementSources{AccountIDs: ids}}
+		group.ProcurementPolicyExpectedRevision = &expected
+		require.NoError(t, NewAdminGroupRepository(integrationEntClient, integrationDB).Update(ctx, group))
+		got, err = apiKeyRepo.GetByKeyForAuth(ctx, keyValue)
+		require.NoError(t, err)
+		require.Equal(t, group.ProcurementPolicy, got.Group.ProcurementPolicy)
+	}
 }

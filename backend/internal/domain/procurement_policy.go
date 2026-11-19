@@ -1,21 +1,56 @@
 package domain
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"math"
 	"math/big"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// ProcurementPolicy is an administrator-owned price constraint, not a quality
-// or cache qualification. Bounds are exact decimal multipliers, [min, max).
+// ProcurementPolicy narrows the original pool by administrator-owned price and
+// source constraints. It does not certify quality/cache or own group bindings.
 type ProcurementPolicy struct {
-	Version  int     `json:"version"`
-	Revision int64   `json:"revision"`
-	MinRate  *string `json:"min_rate"`
-	MaxRate  *string `json:"max_rate"`
+	Version  int                 `json:"version"`
+	Revision int64               `json:"revision"`
+	MinRate  *string             `json:"min_rate"`
+	MaxRate  *string             `json:"max_rate"`
+	Sources  *ProcurementSources `json:"sources,omitempty"`
+}
+
+// Version 2 requires the object. A null list preserves the original pool; an
+// empty list explicitly admits none. IDs refer only to local upstream accounts.
+type ProcurementSources struct {
+	AccountIDs []int64 `json:"account_ids"`
+}
+
+// Persisted JSON and scheduler/auth snapshots must distinguish an explicit
+// null list from a missing field. Otherwise a damaged object becomes an
+// unrestricted pool before Validate sees it.
+func (s *ProcurementSources) UnmarshalJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') || !decoder.More() {
+		return errors.New("procurement sources require an explicit account_ids field")
+	}
+	if token, err := decoder.Token(); err != nil || token != "account_ids" {
+		return errors.New("unknown procurement sources field")
+	}
+	var ids []int64
+	if err := decoder.Decode(&ids); err != nil {
+		return err
+	}
+	if decoder.More() {
+		return errors.New("duplicate or unknown procurement sources field")
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return errors.New("invalid procurement sources object")
+	}
+	s.AccountIDs = ids
+	return nil
 }
 
 const MaxProcurementPolicyRevision int64 = 9007199254740991
@@ -37,8 +72,23 @@ func procurementBound(value *string) (*big.Rat, error) {
 }
 
 func (p *ProcurementPolicy) ValidateDraft() error {
-	if p == nil || p.Version != 1 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
+	if p == nil || (p.Version != 1 && p.Version != 2) || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
 		return errors.New("invalid procurement policy version or revision")
+	}
+	if p.Version == 1 && p.Sources != nil || p.Version == 2 && p.Sources == nil {
+		return errors.New("procurement source contract does not match its version")
+	}
+	if p.Sources != nil {
+		if len(p.Sources.AccountIDs) > 1000 {
+			return errors.New("too many approved procurement sources")
+		}
+		seen := make(map[int64]bool, len(p.Sources.AccountIDs))
+		for _, id := range p.Sources.AccountIDs {
+			if id < 1 || id > MaxProcurementPolicyRevision || seen[id] {
+				return errors.New("procurement source IDs must be unique positive safe integers")
+			}
+			seen[id] = true
+		}
 	}
 	min, err := procurementBound(p.MinRate)
 	if err != nil {
@@ -72,6 +122,13 @@ func (p *ProcurementPolicy) Clone() *ProcurementPolicy {
 		return nil
 	}
 	next := *p
+	if p.Sources != nil {
+		next.Sources = &ProcurementSources{}
+		if p.Sources.AccountIDs != nil {
+			next.Sources.AccountIDs = make([]int64, len(p.Sources.AccountIDs))
+			copy(next.Sources.AccountIDs, p.Sources.AccountIDs)
+		}
+	}
 	if p.MinRate != nil {
 		min := *p.MinRate
 		next.MinRate = &min
@@ -87,6 +144,9 @@ func (p *ProcurementPolicy) Clone() *ProcurementPolicy {
 func (p *ProcurementPolicy) WithRevision(revision int64) *ProcurementPolicy {
 	next := p.Clone()
 	next.Revision = revision
+	if next.Sources != nil {
+		slices.Sort(next.Sources.AccountIDs)
+	}
 	for _, bound := range []**string{&next.MinRate, &next.MaxRate} {
 		if *bound != nil && strings.Contains(**bound, ".") {
 			value := strings.TrimRight(strings.TrimRight(**bound, "0"), ".")
@@ -94,6 +154,19 @@ func (p *ProcurementPolicy) WithRevision(revision int64) *ProcurementPolicy {
 		}
 	}
 	return next
+}
+
+func (p *ProcurementPolicy) AllowsAccount(id int64) (bool, error) {
+	if p == nil {
+		return true, nil
+	}
+	if err := p.Validate(); err != nil {
+		return false, err
+	}
+	if p.Sources == nil || p.Sources.AccountIDs == nil {
+		return true, nil
+	}
+	return slices.Contains(p.Sources.AccountIDs, id), nil
 }
 
 func (p *ProcurementPolicy) ContainsRate(rate float64) (bool, error) {
