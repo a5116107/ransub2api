@@ -14,6 +14,8 @@ export interface QualityOperation extends ScheduledTestResult {
   passed_count: number
   skipped_count?: number
   total_count: number
+  round_complete?: boolean
+  expected_count?: number | null
   result_ids: number[]
 }
 export async function listQualityOperations(beforeId = 0): Promise<{ items: QualityOperation[]; next_cursor: number }> {

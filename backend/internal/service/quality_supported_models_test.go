@@ -133,12 +133,21 @@ func TestQualitySupportedModelsWildcardDoesNotReenableRejectedModel(t *testing.T
 }
 func TestQualitySupportedModelsHistoryExcludesSkippedSamples(t *testing.T) {
 	for _, passed := range []int{0, 1} {
-		item := &QualityHistoryResult{PassedCount: passed, TotalCount: 2, SkippedCount: 2 - passed}
+		expected := 2
+		item := &QualityHistoryResult{PassedCount: passed, TotalCount: passed, SkippedCount: expected - passed, RoundComplete: true, ExpectedCount: &expected}
+		item.Status = "success"
+		if passed == 0 {
+			item.Status = "skipped"
+		}
 		item.PelicanConfig = multiModelQualityPlan(t, `["gpt-6-astra", "gpt-6-sol"]`).PelicanConfig
 		svc := NewScheduledTestService(nil, &multiModelHistoryRepo{item: item})
 		page, err := svc.ListQualityHistory(context.Background(), 0)
 		require.NoError(t, err)
 		require.Equal(t, passed, page.Items[0].TotalCount)
+		require.Equal(t, expected-passed, page.Items[0].SkippedCount)
+		require.True(t, page.Items[0].RoundComplete)
+		require.NotNil(t, page.Items[0].ExpectedCount)
+		require.Equal(t, expected, *page.Items[0].ExpectedCount)
 		if passed == 0 {
 			require.Equal(t, "skipped", page.Items[0].Status)
 		} else {

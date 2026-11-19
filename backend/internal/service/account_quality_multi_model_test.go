@@ -115,14 +115,18 @@ type multiModelHistoryRepo struct {
 func (r *multiModelHistoryRepo) ListQualityHistory(context.Context, int64, int) ([]*QualityHistoryResult, error) {
 	return []*QualityHistoryResult{r.item}, nil
 }
-func TestQualityMultiModelHistoryDoesNotPassAPartiallySavedRound(t *testing.T) {
+func TestQualityMultiModelHistoryPreservesRepositoryRoundEvidence(t *testing.T) {
 	plan := multiModelQualityPlan(t, `["gpt-6-astra", "gpt-6-sol"]`)
-	item := &QualityHistoryResult{PassedCount: 1, TotalCount: 1}
-	item.Status = "success"
-	item.PelicanConfig = plan.PelicanConfig
-	svc := NewScheduledTestService(nil, &multiModelHistoryRepo{item: item})
-	page, err := svc.ListQualityHistory(context.Background(), 0)
-	require.NoError(t, err)
-	require.Equal(t, 2, page.Items[0].TotalCount)
-	require.Equal(t, "failed", page.Items[0].Status)
+	for _, total := range []int{1, 2} {
+		item := &QualityHistoryResult{PassedCount: 1, TotalCount: total, RoundComplete: false}
+		item.Status = "failed"
+		item.PelicanConfig = plan.PelicanConfig
+		svc := NewScheduledTestService(nil, &multiModelHistoryRepo{item: item})
+		page, err := svc.ListQualityHistory(context.Background(), 0)
+		require.NoError(t, err)
+		require.Equal(t, total, page.Items[0].TotalCount)
+		require.Equal(t, "failed", page.Items[0].Status)
+		require.False(t, page.Items[0].RoundComplete)
+		require.Nil(t, page.Items[0].ExpectedCount)
+	}
 }

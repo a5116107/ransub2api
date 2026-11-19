@@ -317,6 +317,19 @@ export default {
     "incorrect": "Jev 判定完整回答与参考答案明确不符。"
   },
   "judgeGroup": "判题分组",
+  "judgePoolDependencyWarning": "判题分组也是本规则的移出目标。若该分组的可用判题账号都被移出，复检仍会答题，但将没有账号判题，因而也得不到通过结论来自动恢复。请使用不受这些隔离规则影响的独立判题分组，并保留支持判题模型的可用账号；被测账号不会给自己判题。",
+  "llmReasons": {
+    "not_configured": "未配置判题器，本次未判定答案对错。",
+    "invalid_config": "判题器配置不受支持，请核对判题方式。",
+    "input_too_large": "被测回答超出判题输入上限，本次未判定。",
+    "group_unavailable": "判题分组不存在或未启用，请核对分组状态。",
+    "model_not_allowed": "判题模型不在该分组的允许范围内，本次未判定。",
+    "accounts_unavailable": "读取判题账号失败，本次未判定；不代表被测账号答错。",
+    "no_available_account": "没有可用判题账号。候选须属于判题分组、允许调度并支持判题模型，且排除被测账号自身。请检查停调、冷却和分组移除，并使用独立判题池，避免互相隔离后失去判题能力。本次不是答错结论。",
+    "capacity_unavailable": "判题并发协调异常，本次未判定答案对错。",
+    "request_failed": "判题请求失败，本次未判定答案对错。",
+    "invalid_response": "判题响应未包含有效结论，本次未判定答案对错。"
+  },
   "judgeModel": "判题模型",
   "selectJudgeGroup": "请选择判题分组",
   "selectJudgeModel": "选择或输入该分组支持的模型",
@@ -371,6 +384,8 @@ export default {
   "accountAction": "账号处理",
   "roundPassed": "本轮全部通过",
   "roundNotPassed": "本轮未全部通过",
+  "roundIncomplete": "轮次未完成，结论待定",
+  "roundInconclusive": "本轮未得出明确质量结论",
   "openRound": "查看 {account} 在 {time} 的检测详情",
   "filteredEmptyHint": "当前已加载的记录中没有匹配结果；可切换筛选或加载更早记录。",
   "showingLoaded": "显示 {shown} / {loaded} 条已加载记录",

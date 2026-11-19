@@ -28,12 +28,15 @@ const channelOperationsUsageBase = `WITH base AS (
 )`
 
 // Canonical quality history expects len(frozen ModelIDs)*ParallelCount samples
-// across the whole plan round (ScheduledTestService.ListQualityHistory). Model
+// across the whole plan round (ListQualityHistory). Model
 // filtering must happen after this check: an absent peer cannot become a pass.
 // Rows and their outcomes remain per model, matching qualityModelOutcomes;
 // skipped/unknown/partial model samples keep the existing conservative outcome.
+const qualityMeasuredModel = `CASE WHEN jsonb_typeof(r.pelican_config->'model_id')='string'
+ AND (r.pelican_config->>'model_id') ~ '[^[:space:]]' THEN r.pelican_config->>'model_id' END`
+
 const channelOperationsQualityBase = `WITH scoped AS (
- SELECT p.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,NULLIF(r.pelican_config->>'model_id','') AS measured_model
+ SELECT p.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,` + qualityMeasuredModel + ` AS measured_model
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
  WHERE r.created_at >= $1 AND r.created_at < $2
  AND ($3::bigint=0 OR EXISTS (SELECT 1 FROM account_groups ag JOIN channel_groups cg ON cg.group_id=ag.group_id WHERE ag.account_id=p.account_id AND cg.channel_id=$3) OR EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=p.account_id AND m.channel_id=$3))
@@ -41,8 +44,20 @@ const channelOperationsQualityBase = `WITH scoped AS (
  AND ($5::bigint=0 OR p.account_id=$5)
  AND ($6::bigint=0 OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id=p.account_id AND ag.group_id=$6))
  AND jsonb_typeof(r.pelican_config->'quality')='object'
-), model_sets AS (
- SELECT scoped.*,CASE WHEN NOT (pelican_config ? 'model_ids') THEN jsonb_build_array(measured_model)
+` + operationsQualityClassification
+
+// All history views classify the same frozen round before filtering
+// models. Missing or conflicting sample targets must remain unknown; MAX alone
+// can make different execution snapshots look like a complete passing round.
+const operationsQualityClassification = qualityRoundClassification + `, classified AS (
+ SELECT * FROM quality_classified WHERE ($7='' OR measured_model=$7)
+)`
+
+const qualityRoundClassification = `), model_sets AS (
+ SELECT scoped.*,
+ CASE WHEN jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$'
+  THEN (pelican_config->>'parallel_count')::int END AS expected_probes,
+ CASE WHEN NOT (pelican_config ? 'model_ids') THEN jsonb_build_array(measured_model)
   WHEN jsonb_typeof(pelican_config->'model_ids')='array' THEN
    CASE WHEN jsonb_array_length(pelican_config->'model_ids') BETWEEN 1 AND 50 THEN pelican_config->'model_ids' END
   END AS expected_models
@@ -51,34 +66,37 @@ const channelOperationsQualityBase = `WITH scoped AS (
  SELECT account_id,plan_id,COALESCE(NULLIF(quality_round_id,''),'legacy-'||id::text) AS round_key,measured_model,
  max(id) AS id,max(created_at) AS observed_at,count(*) AS probes,
  count(*) FILTER(WHERE status='success' AND quality_judgment->>'verdict'='correct') AS passed_probes,
+ count(*) FILTER(WHERE status='skipped') AS skipped_probes,
  bool_or(COALESCE(status='failed' AND quality_judgment->>'verdict'='incorrect' AND error_message IN ('answer_mismatch','state_degraded')
  AND (COALESCE(pelican_config->>'question_kind','')<>'random_reasoning' OR pelican_config->'quality_batch'->>'decision'='peer_passed')
  AND quality_action NOT IN ('','stale_run','comparison_pending') AND quality_round_id<>'',false)) AS degraded,
  bool_and(COALESCE(status='success' AND quality_judgment->>'verdict'='correct'
  AND (COALESCE(pelican_config->>'question_kind','')<>'random_reasoning' OR pelican_config->'quality_batch'->>'decision'='passed')
  AND quality_action NOT IN ('','stale_run','comparison_pending') AND quality_round_id<>'',false)) AS passed,
- bool_and(COALESCE(jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$',false)) AS valid_count,
- max(CASE WHEN jsonb_typeof(pelican_config->'parallel_count')='number' AND (pelican_config->>'parallel_count') ~ '^[1-8]$' THEN (pelican_config->>'parallel_count')::int END) AS expected,
+ bool_and(expected_probes IS NOT NULL) AND min(expected_probes)=max(expected_probes) AS valid_count,
+ CASE WHEN bool_and(expected_probes IS NOT NULL) AND min(expected_probes)=max(expected_probes)
+  THEN max(expected_probes) END AS expected,
  jsonb_agg(DISTINCT NULLIF(quality_action,'')) AS actions,
  bool_and(COALESCE(quality_round_id<>'',false)) AS valid_round,
  bool_and(COALESCE(expected_models ? measured_model,false) AND NOT EXISTS (
   SELECT 1 FROM jsonb_array_elements(COALESCE(expected_models,'[]'::jsonb)) m(value)
-  WHERE jsonb_typeof(value)<>'string' OR btrim(value#>>'{}')=''
- )) AS valid_models,
+  WHERE jsonb_typeof(value)<>'string' OR (value#>>'{}') !~ '[^[:space:]]'
+ ) AND jsonb_array_length(expected_models)=(SELECT count(DISTINCT value) FROM jsonb_array_elements(expected_models) m(value))) AS valid_models,
  min(expected_models::text) AS model_set_min,max(expected_models::text) AS model_set_max,
  max(jsonb_array_length(expected_models)) AS expected_model_count
  FROM model_sets GROUP BY account_id,plan_id,COALESCE(NULLIF(quality_round_id,''),'legacy-'||id::text),measured_model
 ), round_integrity AS (
- SELECT account_id,plan_id,round_key,sum(probes) AS round_probes,max(expected_model_count*expected) AS round_expected,
+ SELECT account_id,plan_id,round_key,sum(probes) AS round_probes,
+ CASE WHEN bool_and(valid_count AND valid_models) AND min(expected)=max(expected)
+  AND min(model_set_min)=max(model_set_max) THEN max(expected_model_count*expected) END AS round_expected,
  bool_and(valid_round AND valid_count AND valid_models AND probes=expected)
   AND count(*)=max(expected_model_count) AND min(expected_model_count)=max(expected_model_count)
   AND min(model_set_min)=max(model_set_max) AND min(expected)=max(expected) AS complete
  FROM rounds GROUP BY account_id,plan_id,round_key
-), classified AS (
+), quality_classified AS (
  SELECT b.*,COALESCE(i.complete,false) AS round_complete,i.round_probes,i.round_expected,
  CASE WHEN NOT COALESCE(i.complete,false) THEN 'inconclusive' WHEN b.degraded THEN 'degraded' WHEN b.passed THEN 'passed' ELSE 'inconclusive' END AS outcome
  FROM rounds b JOIN round_integrity i USING(account_id,plan_id,round_key)
- WHERE ($7='' OR b.measured_model=$7)
 )`
 
 func (r *channelRepository) operationsSection(ctx context.Context, query string, args ...any) service.ChannelOperationsSection {

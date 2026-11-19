@@ -317,6 +317,19 @@ export default {
     "incorrect": "Jev judged a completed answer clearly inconsistent with the reference."
   },
   "judgeGroup": "Grading group",
+  "judgePoolDependencyWarning": "This rule also removes accounts from its grading group. If all eligible graders are removed, retests can still generate answers but have no grader to certify a pass for automatic recovery. Use a separate grading group unaffected by these isolation rules, with available accounts supporting the grading model. The tested account is excluded from grading itself.",
+  "llmReasons": {
+    "not_configured": "No grader is configured; answer correctness was not determined.",
+    "invalid_config": "The grader configuration is unsupported. Check the grading method.",
+    "input_too_large": "The answer exceeds the grading input limit; correctness was not determined.",
+    "group_unavailable": "The grading group is missing or inactive. Check its status.",
+    "model_not_allowed": "The grading model is not allowed in this group; correctness was not determined.",
+    "accounts_unavailable": "Reading grading accounts failed. This is not evidence of an incorrect answer.",
+    "no_available_account": "No eligible grading account. Candidates must belong to the grading group, be schedulable and support the grading model; the tested account is excluded. Check pauses, cooldowns and removed memberships. Use an independent grading pool to avoid circular isolation. This is not an incorrect-answer verdict.",
+    "capacity_unavailable": "Grading concurrency coordination failed; answer correctness was not determined.",
+    "request_failed": "The grading request failed; answer correctness was not determined.",
+    "invalid_response": "The grading response contained no valid verdict; answer correctness was not determined."
+  },
   "judgeModel": "Grading model",
   "selectJudgeGroup": "Select a grading group",
   "selectJudgeModel": "Select or enter a model supported by this group",
@@ -371,6 +384,8 @@ export default {
   "accountAction": "Account action",
   "roundPassed": "All probes passed",
   "roundNotPassed": "Not all probes passed",
+  "roundIncomplete": "Round incomplete; conclusion pending",
+  "roundInconclusive": "No conclusive round-level quality verdict",
   "openRound": "Open test details for {account} at {time}",
   "filteredEmptyHint": "No matches in the loaded records. Change the filter or load older records.",
   "showingLoaded": "Showing {shown} of {loaded} loaded records",

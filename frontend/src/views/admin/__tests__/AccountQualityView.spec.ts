@@ -1678,6 +1678,44 @@ describe('quality operations', () => {
     expect(wrapper.text()).not.toContain('qualityOps.outcomes.groups_removed')
     wrapper.unmount()
   })
+  it.each([
+    { name: 'incomplete frozen round', status: 'success', round_complete: false, passed_count: 2, total_count: 2, passed: false, label: 'roundIncomplete', neutral: true },
+    { name: 'failed round with equal counts', status: 'failed', round_complete: true, passed_count: 2, total_count: 2, passed: false, label: 'roundInconclusive', neutral: true },
+    { name: 'fractional sample counts', status: 'success', round_complete: true, passed_count: 1.5, total_count: 1.5, passed: false, label: 'roundInconclusive', neutral: true },
+    { name: 'empty round', status: 'skipped', round_complete: false, passed_count: 0, total_count: 0, passed: false, label: 'skipped', neutral: true },
+    { name: 'complete passing round', status: 'success', round_complete: true, passed_count: 2, total_count: 2, passed: true, label: 'roundPassed', neutral: false },
+    { name: 'legacy passing round', status: 'success', round_complete: undefined, passed_count: 2, total_count: 2, passed: true, label: 'roundPassed', neutral: false },
+    { name: 'ungraded round', status: 'failed', round_complete: true, passed_count: 0, total_count: 2, passed: false, label: 'roundInconclusive', neutral: true },
+    { name: 'confirmed incorrect round', status: 'failed', quality_action: 'groups_removed', round_complete: true, passed_count: 1, total_count: 2, passed: false, label: 'roundNotPassed', neutral: false },
+  ])('respects the persisted verdict for $name', async sample => {
+    const operation = { id: 103, plan_id: 4, account_id: 1, account_name: 'Synthetic account',
+      error_message: '', quality_action: 'inconclusive', result_ids: [103, 102], ...sample }
+    vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 0 })
+    const wrapper = mountView(); await flushPromises()
+    expect(wrapper.get('.test-count').classes().includes('test-passed')).toBe(sample.passed)
+    expect(wrapper.get('.test-count').classes().includes('test-neutral')).toBe(sample.neutral)
+    expect(wrapper.text()).toContain(`qualityOps.${sample.label}`)
+    if (sample.neutral) expect(wrapper.get('.test-count').classes()).not.toContain('test-other')
+    wrapper.unmount()
+  })
+  it('keeps an ungraded round neutral in the list, overview and sample details', async () => {
+    const operation = { id: 103, plan_id: 4, account_id: 1, account_name: 'Synthetic account', status: 'failed',
+      round_complete: true, passed_count: 0, total_count: 1, error_message: 'judge_inconclusive', quality_action: 'inconclusive', result_ids: [103],
+      pelican_config: { quality: { action: 'remove_groups', remove_group_ids: [21] } } }
+    const result = { ...operation, response_text: 'Synthetic answer', quality_judgment: { verdict: 'unknown', reason: 'judge_no_available_account' } }
+    vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 0 })
+    vi.mocked(scheduledTests.getResult).mockResolvedValueOnce(result as any)
+    const wrapper = mountView(); await flushPromises()
+    await (wrapper.vm as any).operationDetails(operation); await flushPromises()
+    expect(wrapper.get('[data-testid="quality-round-overview"]').text()).toContain('qualityOps.roundInconclusive')
+    expect(wrapper.get('[data-testid="quality-round-overview"] strong').classes()).toContain('test-neutral')
+    expect(wrapper.get('[data-testid="quality-result-badge"]').text()).toBe('qualityOps.judgeUnknown')
+    expect(wrapper.get('[data-testid="quality-result-badge"]').classes()).toContain('tone-neutral')
+    expect(wrapper.get('.result-navigation button span:last-child').classes()).not.toContain('text-rose-600')
+    expect(wrapper.text()).toContain('qualityOps.llmReasons.no_available_account')
+    expect(wrapper.text()).not.toContain('judge_no_available_account')
+    wrapper.unmount()
+  })
   it('shows one operation row per round and loads response bodies only on demand', async () => {
     const operation = { id: 10, plan_id: 4, account_id: 1, account_name: 'Test account', status: 'success', error_message: '', quality_action: 'restored', passed_count: 2, total_count: 2, result_ids: [10, 9], pelican_config: { quality: { action: 'remove_groups', remove_group_ids: [21] } } }
     vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 10 })

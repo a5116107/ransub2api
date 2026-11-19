@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -523,4 +524,208 @@ func TestChannelOperationsQualityWaitsForAllFrozenModels(t *testing.T) {
 	require.Equal(t, 2, got.Summary.Rounds, "availability-only samples must not inflate quality statistics")
 	require.Equal(t, 2, got.Summary.Passed)
 	require.Equal(t, "success", canonical().Status)
+}
+
+func TestOperationsQualityRequiresUniformFrozenSampleCounts(t *testing.T) {
+	type sample struct {
+		model    any
+		parallel any
+		wrong    bool
+	}
+	cases := []struct {
+		name          string
+		models        any
+		samples       []sample
+		expected      map[string]int
+		roundExpected int
+		complete      bool
+		outcome       string
+	}{
+		{"single", []string{"a"}, []sample{{"a", 1, false}}, map[string]int{"a": 1}, 1, true, "passed"},
+		{"uniform", []string{"a"}, []sample{{"a", 2, false}, {"a", 2, false}}, map[string]int{"a": 2}, 2, true, "passed"},
+		{"mixed_passed", []string{"a"}, []sample{{"a", 1, false}, {"a", 2, false}}, nil, 0, false, "inconclusive"},
+		{"mixed_degraded", []string{"a"}, []sample{{"a", 1, false}, {"a", 2, true}}, nil, 0, false, "inconclusive"},
+		{"missing_count", []string{"a"}, []sample{{"a", nil, false}, {"a", 2, false}}, nil, 0, false, "inconclusive"},
+		{"invalid_count", []string{"a"}, []sample{{"a", "2", false}, {"a", 2, false}}, nil, 0, false, "inconclusive"},
+		{"all_missing", []string{"a"}, []sample{{"a", nil, false}, {"a", nil, false}}, nil, 0, false, "inconclusive"},
+		{"cross_model_mismatch", []string{"a", "b"}, []sample{{"a", 1, false}, {"b", 2, false}, {"b", 2, false}}, map[string]int{"a": 1, "b": 2}, 0, false, "inconclusive"},
+		{"cross_model_match", []string{"a", "b"}, []sample{{"a", 2, false}, {"a", 2, false}, {"b", 2, false}, {"b", 2, false}}, map[string]int{"a": 2, "b": 2}, 4, true, "passed"},
+		{"missing_peer", []string{"a", "b"}, []sample{{"a", 2, false}, {"a", 2, false}}, map[string]int{"a": 2}, 4, false, "inconclusive"},
+		{"partial", []string{"a"}, []sample{{"a", 2, false}}, map[string]int{"a": 2}, 2, false, "inconclusive"},
+		{"uniform_degraded", []string{"a"}, []sample{{"a", 2, false}, {"a", 2, true}}, map[string]int{"a": 2}, 2, true, "degraded"},
+		{"implicit_models", nil, []sample{{"a", 1, false}}, map[string]int{"a": 1}, 1, true, "passed"},
+		{"numeric_measured_model", nil, []sample{{7, 1, false}}, map[string]int{"": 1}, 0, false, "inconclusive"},
+		{"numeric_model_alias", []string{"7"}, []sample{{7, 1, false}}, map[string]int{"": 1}, 0, false, "inconclusive"},
+		{"boolean_measured_model", []string{"true"}, []sample{{true, 1, false}}, map[string]int{"": 1}, 0, false, "inconclusive"},
+		{"blank_measured_model", nil, []sample{{" ", 1, false}}, map[string]int{"": 1}, 0, false, "inconclusive"},
+		{"control_whitespace_model", nil, []sample{{"\t\r\n", 1, false}}, map[string]int{"": 1}, 0, false, "inconclusive"},
+		{"blank_model_set_member", []string{"a", "\t"}, []sample{{"a", 1, false}}, map[string]int{"a": 1}, 0, false, "inconclusive"},
+		{"scalar_model_set", "a", []sample{{"a", 1, false}}, map[string]int{"a": 1}, 0, false, "inconclusive"},
+		{"object_model_set", map[string]string{"model": "a"}, []sample{{"a", 1, false}}, map[string]int{"a": 1}, 0, false, "inconclusive"},
+		{"mixed_model_set", []any{"a", 7}, []sample{{"a", 1, false}}, map[string]int{"a": 1}, 0, false, "inconclusive"},
+		{"duplicate_model_set", []string{"a", "a"}, []sample{{"a", 1, false}}, map[string]int{"a": 1}, 0, false, "inconclusive"},
+		{"empty_model_set", []string{}, []sample{{"a", 1, false}}, map[string]int{"a": 1}, 0, false, "inconclusive"},
+		{"null_model_set", json.RawMessage(`null`), []sample{{"a", 1, false}}, map[string]int{"a": 1}, 0, false, "inconclusive"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newChannelOperationsFixture(t)
+			ctx := context.Background()
+			_, err := integrationDB.Exec(`UPDATE accounts SET type='apikey',credentials='{"base_url":"https://quality-counts.example/v1"}' WHERE id=$1`, f.account)
+			require.NoError(t, err)
+			var plan int64
+			require.NoError(t, integrationDB.QueryRow(`INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,pelican_config) VALUES($1,'current-plan','*/30 * * * *',false,'{"quality":{}}') RETURNING id`, f.account).Scan(&plan))
+			filter := f.filter()
+			filter.AccountID = f.account
+			filter.ModelScope = "upstream"
+			at := filter.From.Add(time.Minute)
+			var resultIDs []int64
+			for _, s := range tc.samples {
+				fields := map[string]any{"quality": map[string]any{}, "model_id": s.model}
+				if tc.models != nil {
+					fields["model_ids"] = tc.models
+				}
+				if s.parallel != nil {
+					fields["parallel_count"] = s.parallel
+				}
+				config, marshalErr := json.Marshal(fields)
+				require.NoError(t, marshalErr)
+				status, verdict, action, message := "success", "correct", "passed", ""
+				if s.wrong {
+					status, verdict, action, message = "failed", "incorrect", "failure_counted:1/2", "answer_mismatch"
+				}
+				judgment, marshalErr := json.Marshal(map[string]string{"verdict": verdict})
+				require.NoError(t, marshalErr)
+				var id int64
+				err = integrationDB.QueryRowContext(ctx, `INSERT INTO scheduled_test_results(plan_id,status,started_at,finished_at,created_at,pelican_config,quality_round_id,quality_action,quality_judgment,error_message,response_text) VALUES($1,$2,$3,$3,$3,$4,'uniform-count-round',$5,$6,$7,'historical answer') RETURNING id`, plan, status, at, string(config), action, string(judgment), message).Scan(&id)
+				require.NoError(t, err)
+				resultIDs = append(resultIDs, id)
+			}
+			var frozenBefore string
+			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT jsonb_agg(pelican_config ORDER BY id)::text FROM scheduled_test_results WHERE plan_id=$1`, plan).Scan(&frozenBefore))
+			upstream := service.UpstreamOperationsFilter{From: filter.From, Until: filter.Until, AccountID: f.account, GroupID: f.group, ModelScope: "upstream", Dimension: "account", Sort: "requests", Direction: "desc", Page: 1, PageSize: 20}
+			readers := []struct {
+				name string
+				read func(*testing.T) service.ChannelOperationsSection
+			}{
+				{"channel", func(*testing.T) service.ChannelOperationsSection {
+					return f.repo.ReadChannelOperations(ctx, filter).Quality
+				}},
+				{"upstream", func(t *testing.T) service.ChannelOperationsSection {
+					snapshot, readErr := f.repo.ReadUpstreamOperations(ctx, upstream)
+					require.NoError(t, readErr)
+					return snapshot.Quality
+				}},
+				{"profit", func(t *testing.T) service.ChannelOperationsSection {
+					snapshot, readErr := f.repo.ReadProfitOperations(ctx, upstream)
+					require.NoError(t, readErr)
+					return snapshot.Quality
+				}},
+			}
+			for _, reader := range readers {
+				t.Run(reader.name, func(t *testing.T) {
+					section := reader.read(t)
+					require.Equal(t, "ready", section.Status)
+					var data struct {
+						Summary struct{ Rounds, Passed, Degraded, Inconclusive int }
+						Rows    []struct {
+							Model         string `json:"measured_model"`
+							Expected      *int
+							RoundExpected *int `json:"round_expected"`
+							Complete      bool `json:"round_complete"`
+							Outcome       string
+						}
+					}
+					require.NoError(t, json.Unmarshal(section.Data, &data))
+					measured := map[string]bool{}
+					for _, s := range tc.samples {
+						model, ok := s.model.(string)
+						if !ok || strings.TrimSpace(model) == "" {
+							model = ""
+						}
+						measured[model] = true
+					}
+					require.Len(t, data.Rows, len(measured))
+					require.Equal(t, len(measured), data.Summary.Rounds)
+					counts := map[string]int{"passed": data.Summary.Passed, "degraded": data.Summary.Degraded, "inconclusive": data.Summary.Inconclusive}
+					require.Equal(t, len(measured), counts[tc.outcome])
+					for _, row := range data.Rows {
+						require.True(t, measured[row.Model])
+						require.Equal(t, tc.complete, row.Complete)
+						require.Equal(t, tc.outcome, row.Outcome)
+						if expected, ok := tc.expected[row.Model]; ok {
+							require.NotNil(t, row.Expected)
+							require.Equal(t, expected, *row.Expected)
+						} else {
+							require.Nil(t, row.Expected, "inconsistent sample counts must not acquire a known target")
+						}
+						if tc.roundExpected > 0 {
+							require.NotNil(t, row.RoundExpected)
+							require.Equal(t, tc.roundExpected, *row.RoundExpected)
+						} else {
+							require.Nil(t, row.RoundExpected, "a round with conflicting configuration has unknown coverage")
+						}
+					}
+				})
+			}
+			t.Run("canonical_history", func(t *testing.T) {
+				page, readErr := service.NewScheduledTestService(nil, NewScheduledTestResultRepository(integrationDB)).ListQualityHistory(ctx, 0)
+				require.NoError(t, readErr)
+				var history *service.QualityHistoryResult
+				for _, item := range page.Items {
+					if item.PlanID == plan {
+						history = item
+					}
+				}
+				require.NotNil(t, history)
+				require.Empty(t, history.ResponseText, "round history must keep response bodies lazy-loaded")
+				require.NotNil(t, history.PelicanConfig)
+				if _, ok := tc.samples[0].model.(string); !ok {
+					require.Empty(t, history.PelicanConfig.ModelID, "invalid identities must not become display model names")
+				}
+				modelsJSON, marshalErr := json.Marshal(tc.models)
+				require.NoError(t, marshalErr)
+				var models []string
+				if json.Unmarshal(modelsJSON, &models) != nil {
+					require.Empty(t, history.PelicanConfig.ModelIDs, "invalid arrays must not break the history page or become partial model lists")
+				} else {
+					require.Equal(t, models, history.PelicanConfig.ModelIDs)
+				}
+				wantStatus := "failed"
+				if tc.complete && tc.outcome == "passed" {
+					wantStatus = "success"
+				}
+				require.Equal(t, wantStatus, history.Status, "canonical history must not pass a conflicting or partial frozen round")
+				require.Equal(t, tc.complete, history.RoundComplete)
+				if tc.roundExpected > 0 {
+					require.NotNil(t, history.ExpectedCount)
+					require.Equal(t, tc.roundExpected, *history.ExpectedCount)
+				} else {
+					require.Nil(t, history.ExpectedCount)
+				}
+			})
+			t.Run("rule_history", func(t *testing.T) {
+				rows, readErr := NewScheduledTestResultRepository(integrationDB).ListByPlanID(ctx, plan, 100, false)
+				require.NoError(t, readErr)
+				require.Len(t, rows, len(tc.samples))
+				for _, row := range rows {
+					require.Contains(t, resultIDs, row.ID)
+					require.Empty(t, row.ResponseText, "summary history must not load response bodies")
+				}
+			})
+			t.Run("result_details", func(t *testing.T) {
+				for _, id := range resultIDs {
+					result, readErr := NewScheduledTestResultRepository(integrationDB).GetResult(ctx, plan, id)
+					require.NoError(t, readErr)
+					require.Equal(t, id, result.ID)
+					require.Equal(t, plan, result.PlanID)
+					require.Equal(t, "historical answer", result.ResponseText)
+					require.Equal(t, "uniform-count-round", result.QualityRoundID)
+				}
+			})
+			var frozenAfter string
+			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT jsonb_agg(pelican_config ORDER BY id)::text FROM scheduled_test_results WHERE plan_id=$1`, plan).Scan(&frozenAfter))
+			require.Equal(t, frozenBefore, frozenAfter, "history projections must not rewrite frozen evidence")
+		})
+	}
 }
