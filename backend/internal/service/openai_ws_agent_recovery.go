@@ -327,6 +327,7 @@ func (r *openAIWSAgentRecovery) begin(account *Account, source, payload []byte, 
 			}
 			snapshot := *r.readable
 			snapshot.apiInputDigest, snapshot.apiControlsDigest = openAIAgentRecoveryInputDigest(projected), openAI409ControlsDigest(projected)
+			snapshot.apiFingerprints = openAI409FingerprintControls(projected)
 			ctx = context.WithValue(ctx, openAIAgentRecoveryContextKey{}, &snapshot)
 		}
 	}
@@ -1264,6 +1265,9 @@ func openAIWSHistoryItemFailure(item gjson.Result) string {
 // carried only as user-supplied data. Callers invoke this exclusively before
 // dispatch and run the normal current-turn authorization/moderation again.
 func (s *OpenAIGatewayService) restartOpenAIWSClientReadableHistory(ctx context.Context, c *gin.Context, body []byte, session, model string, cause error) (context.Context, []byte, bool) {
+	if s.openAILegacyCompatibility() {
+		return ctx, body, false
+	}
 	if s == nil || s.cfg == nil || s.settingService == nil || ctx.Err() != nil {
 		return ctx, body, false
 	}
@@ -1326,6 +1330,7 @@ func (s *OpenAIGatewayService) restartOpenAIWSClientReadableHistory(ctx context.
 	r.omittedSource = nil
 	r.inputDigest = openAIAgentRecoveryInputDigest(clean)
 	r.replayControlsDigest = openAI409ControlsDigest(clean)
+	r.controlFingerprints = openAI409FingerprintControls(clean)
 	return next, clean, true
 }
 

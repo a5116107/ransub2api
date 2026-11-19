@@ -1,6 +1,7 @@
 .PHONY: build build-backend build-frontend test test-backend test-frontend test-frontend-critical
 
 FRONTEND_CRITICAL_VITEST := \
+	src/components/common/__tests__/Select.spec.ts \
 	src/components/account/__tests__/AccountUsageCell.spec.ts \
 	src/views/admin/__tests__/ChannelsView.bedrockCompat.spec.ts \
 	src/views/admin/__tests__/ChannelsView.ultrafastPricing.spec.ts \
@@ -122,6 +123,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/composables/__tests__/useModelWhitelist.spec.ts \
 	src/components/account/__tests__/ModelWhitelistSelector.spec.ts \
 	src/components/account/__tests__/UpstreamBillingRateCell.spec.ts \
+	src/components/account/__tests__/NewAPIUpstreamConfigDialog.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.transport.spec.ts \
 	src/components/account/__tests__/OpenAIQuotaResetCell.spark_shadow.spec.ts \

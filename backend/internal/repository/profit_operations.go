@@ -190,7 +190,7 @@ const profitOperationsBase = `WITH ` + profitOperationsCohort + `, event_rows AS
  u.account_stats_cost,u.input_tokens,u.output_tokens,u.cache_read_tokens,u.cache_creation_tokens,u.duration_ms,u.billing_type,u.created_at,u.queue_timing,u.queue_wait_ms,
  COALESCE('channel:'||owner.channel_id::text,c.url_key,'unknown:account_missing') AS upstream_key,
  CASE WHEN e.channel_id IS NOT NULL OR h.channel_id IS NOT NULL THEN 'historical_channel' WHEN legacy.channel_id IS NOT NULL THEN 'legacy_channel_estimate' WHEN owner.channel_id IS NOT NULL THEN 'provider_url' ELSE COALESCE(c.url_attribution,'account_missing') END AS attribution,
- c.name AS account_name,c.updated_at AS config_updated_at,c.deleted,c.multiplier,owner.channel_id AS explicit_channel_id,ch.name AS channel_name,ch.code AS channel_code,ch.remark AS channel_remark,ch.revision AS channel_revision,pl.provider_id,p.site_type AS provider_site_type,
+ c.name AS account_name,c.updated_at AS config_updated_at,c.deleted,c.multiplier,owner.channel_id AS explicit_channel_id,ch.name AS channel_name,ch.code AS channel_code,ch.remark AS channel_remark,ch.revision AS channel_revision,p.id AS provider_id,p.site_type AS provider_site_type,
  CASE WHEN snap.amount IS NOT NULL THEN snap.amount
       WHEN $18::bool AND jsonb_typeof(p.metrics->'today_spend')='number' AND p.observed_at>=$12::timestamptz AND p.observed_at<$13::timestamptz THEN (p.metrics->>'today_spend')::numeric END AS wallet_spend,
  CASE WHEN snap.amount IS NOT NULL AND snap.currency IN ('USD','CNY','quota_units') THEN snap.currency
@@ -208,7 +208,25 @@ const profitOperationsBase = `WITH ` + profitOperationsCohort + `, event_rows AS
  u.total_cost AS cost_base
  FROM usage_logs u LEFT JOIN accounts_config c ON c.id=u.account_id
  LEFT JOIN provider_profit_charges e ON e.usage_log_id=u.id AND e.account_id=u.account_id AND e.local_created_at=u.created_at
- LEFT JOIN LATERAL provider_profit_account_at(u.account_id,u.created_at) h ON true
+ -- Resolve only channel and assignment here. Joining the timelines directly
+ -- allows PostgreSQL to hash them once for the report window. A manual unlink
+ -- suppresses imported history but can still fall back to the current URL below.
+ -- Preserve the ownership lookup's multiplicity: manual rows retain all source
+ -- and channel matches; imported rows retain only matching source/channel pairs.
+ LEFT JOIN provider_profit_manual_history manual ON manual.account_id=u.account_id
+  AND manual.effective_from<=u.created_at AND (manual.effective_until IS NULL OR u.created_at<manual.effective_until)
+ LEFT JOIN provider_profit_account_source_history manual_src ON manual.account_id IS NOT NULL AND manual_src.account_id=u.account_id
+  AND manual_src.effective_from<=u.created_at AND (manual_src.effective_until IS NULL OR u.created_at<manual_src.effective_until)
+ LEFT JOIN provider_profit_channel_history manual_owner ON manual.account_id IS NOT NULL AND manual_owner.channel_id=manual.channel_id
+  AND manual_owner.effective_from<=u.created_at AND (manual_owner.effective_until IS NULL OR u.created_at<manual_owner.effective_until)
+ LEFT JOIN (provider_profit_account_source_history imported_src
+  JOIN provider_profit_channel_history imported ON imported.provider_id=imported_src.provider_id AND imported.identity_from=imported_src.identity_from)
+  ON manual.account_id IS NULL AND imported_src.account_id=u.account_id
+  AND imported_src.effective_from<=u.created_at AND (imported_src.effective_until IS NULL OR u.created_at<imported_src.effective_until)
+  AND imported.effective_from<=u.created_at AND (imported.effective_until IS NULL OR u.created_at<imported.effective_until)
+ CROSS JOIN LATERAL (SELECT COALESCE(manual.channel_id,imported.channel_id) AS channel_id,
+  CASE WHEN manual.channel_id IS NOT NULL THEN 'explicit' WHEN manual.account_id IS NOT NULL THEN 'manual_unlinked'
+       WHEN imported.channel_id IS NOT NULL THEN 'provider_import' END AS assignment) h
  LEFT JOIN provider_profit_manual_history legacy ON legacy.account_id=u.account_id AND legacy.legacy_at_migration AND u.created_at<legacy.effective_from
  LEFT JOIN provider_profit_account_source_history src ON c.url_channel_id IS NOT NULL AND src.account_id=u.account_id AND src.effective_from<=u.created_at AND (src.effective_until IS NULL OR src.effective_until>u.created_at)
  CROSS JOIN LATERAL (SELECT COALESCE(e.channel_id,h.channel_id,legacy.channel_id,
@@ -219,7 +237,7 @@ const profitOperationsBase = `WITH ` + profitOperationsCohort + `, event_rows AS
    END) AS channel_id) owner
  LEFT JOIN upstream_channels ch ON ch.id=owner.channel_id
  LEFT JOIN provider_profit_links pl ON pl.channel_id=owner.channel_id
- LEFT JOIN mature_providers p ON p.id=pl.provider_id
+ LEFT JOIN mature_providers p ON p.id=pl.provider_id AND pl.cost_mode='wallet'
  LEFT JOIN provider_spend_snapshots snap ON snap.provider_id=p.id AND snap.window_from=$1 AND snap.window_until=$2
  WHERE u.created_at >= $1 AND u.created_at < $2 AND ($5::bigint=0 OR u.account_id=$5) AND ($6::bigint=0 OR u.group_id=$6)
  AND ($7='' OR CASE $8 WHEN 'public' THEN COALESCE(NULLIF(u.requested_model,''),u.model) WHEN 'recorded' THEN u.model WHEN 'upstream' THEN u.upstream_model END=$7)
@@ -302,7 +320,11 @@ func (r *channelRepository) ReadProfitOperations(ctx context.Context, f service.
 	if err != nil {
 		return nil, err
 	}
-	args := []any{f.From, f.Until, string(raw), f.Upstream, f.AccountID, f.GroupID, f.Model, f.ModelScope, f.PageSize, (f.Page - 1) * f.PageSize, f.ChannelID}
+	size, offset := f.PageSize, (f.Page-1)*f.PageSize
+	if service.CollectProfitRows(ctx) {
+		size, offset = 10001, 0
+	}
+	args := []any{f.From, f.Until, string(raw), f.Upstream, f.AccountID, f.GroupID, f.Model, f.ModelScope, size, offset, f.ChannelID}
 	dimension, name := `upstream_key`, `COALESCE(NULLIF(max(channel_name),''),upstream_key)`
 	channelFields := `,COALESCE(max(explicit_channel_id),0) AS channel_id,max(provider_id) AS provider_id,max(provider_site_type) AS provider_site_type,max(channel_code) AS channel_code,max(channel_remark) AS channel_remark,max(channel_revision) AS channel_revision,COALESCE(max(assignment),'unbound_unknown') AS assignment`
 	switch f.Dimension {

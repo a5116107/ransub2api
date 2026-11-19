@@ -23,12 +23,14 @@ describe('NewFeatureBadge', () => {
 
 
   it.each([
+    ['image usage billing', NEW_FEATURE_NOTICES.imageUsageBilling],
     ['channel UltraFast pricing', NEW_FEATURE_NOTICES.channelUltrafastPricing],
     ['user live load', NEW_FEATURE_NOTICES.userLiveLoad],
     ['Free UltraFast', NEW_FEATURE_NOTICES.groupFreeUltrafast],
     ['force UltraFast', NEW_FEATURE_NOTICES.groupForceUltrafast],
     ['passthrough model filter', NEW_FEATURE_NOTICES.passthroughModelFilter],
     ['Vertex multi-region', NEW_FEATURE_NOTICES.vertexMultiRegion],
+    ['OpenAI Videos', NEW_FEATURE_NOTICES.openaiVideos],
     ['BPS account search', NEW_FEATURE_NOTICES.bpsAccountSearch],
     ['mature providers', NEW_FEATURE_NOTICES.matureProviders],
     ['provider key import', NEW_FEATURE_NOTICES.matureProviderImport],
@@ -41,6 +43,7 @@ describe('NewFeatureBadge', () => {
     ['account operations multiple recipients', NEW_FEATURE_NOTICES.accountOpsMultipleEmails],
     ['account operations provider balance', NEW_FEATURE_NOTICES.accountOpsProviderBalance],
     ['account operations OAuth lifecycle', NEW_FEATURE_NOTICES.accountOpsOAuthLifecycle],
+    ['account balance notification', NEW_FEATURE_NOTICES.accountOpsBalanceNotification],
     ['OpenAI cache write TTL', NEW_FEATURE_NOTICES.openaiCacheWriteTTL12h],
     ['EasyPay refund code', NEW_FEATURE_NOTICES.easyPayRefundSuccessCode],
     ['payment provider fees', NEW_FEATURE_NOTICES.paymentProviderFees],
