@@ -16,20 +16,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// clineTestAccount 只带 api_key：端点与测试模型全部来自 provider profile。
-func clineTestAccount(id int64) *Account {
-	return &Account{
-		ID:          id,
-		Name:        "cline",
-		Platform:    PlatformCline,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Credentials: map[string]any{"api_key": "cline_test_key", "api_protocol": APIProtocolAdaptive},
-	}
-}
-
 // withClinePassSnapshot 模拟用量探测写入的 ClinePass 窗口快照。
 func withClinePassSnapshot(account *Account, extra map[string]any) *Account {
 	account.Extra = map[string]any{"cline_5h_used_percent": 10.0, "cline_weekly_used_percent": 20.0, "cline_monthly_used_percent": 30.0}

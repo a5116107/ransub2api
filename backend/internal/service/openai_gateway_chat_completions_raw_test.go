@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
@@ -1213,17 +1212,6 @@ func TestBufferRawChatCompletions_RejectsOversizedResponse(t *testing.T) {
 	require.ErrorIs(t, err, ErrUpstreamResponseBodyTooLarge)
 	require.Nil(t, result)
 	require.Equal(t, http.StatusBadGateway, rec.Code)
-}
-
-func rawChatCompletionsTestConfig() *config.Config {
-	return &config.Config{
-		Security: config.SecurityConfig{
-			URLAllowlist: config.URLAllowlistConfig{
-				Enabled:           false,
-				AllowInsecureHTTP: true,
-			},
-		},
-	}
 }
 
 func rawChatCompletionsTestAccount() *Account {

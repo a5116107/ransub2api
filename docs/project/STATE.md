@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D4.3.7本地完成；显式答题硬门接原采购/调度链。
+任务：默认service跨标签夹具及区域导出mock阻塞已解。
 授权：H盘功能分支实现/提交同步；不CI/PR/生产。
-来源：6280e2905；最终Go摘要be726ea56734。
-已验：race4814/PG460/UI114/浏览器60；vet/lint/Linux退出0。
+来源：53e806cfc；Go摘要f07f446bc942。
+已验：默认race17413/skip9；unit双轮2872；双profile vet/lint通过。
 已决：实际usage、插件延期、手停/unknown；身份未知。
-下一：D4.3资格/模式/拥有者→D6.2；身份/缓存证据不借答题认证。
+下一：D4.3资格/模式/拥有者→D6.2；完整资格不借答题认证。
 等待：原28项20done/8部分；scope/参考/缓存域/多节点/PR3。
 生产记录.7/fd83f6c91；不部署；历史拒删保护。
-Attempt：106；定义见设计5.4.8；证据见DECISIONS。
+Attempt：107；仅测试归属及旧mock替换，证据见DECISIONS。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -87,4 +87,4 @@ Attempt：106；定义见设计5.4.8；证据见DECISIONS。
 - 既有PG55441、Redis56441及quality-batch/quality-validity拒删，owner宿主用户；路径/解除条件见DECISIONS。
 - 历史拒删620274603bytes、overlay49259bytes、构建/临时222539771bytes原位；宿主解除后再清理，详DECISIONS；回收0。
 
-- 默认service未带unit标签时共享夹具编译失败；本项unit/PG/构建已验，原因/原日志见DECISIONS。
+- 默认service共享夹具/旧导出mock阻塞已解；17,413pass/9skip，unit双轮2,872pass；仅本地。

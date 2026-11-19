@@ -57,28 +57,6 @@ const (
 	}`
 )
 
-func mistralUsageTestAccount(id int64, apiKey string) *Account {
-	if apiKey == "" {
-		apiKey = "mstrl_test_key_0123456789abcdef"
-	}
-	return &Account{
-		ID:          id,
-		Name:        "mistral-test",
-		Platform:    PlatformMistral,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"api_key":       apiKey,
-			"base_url":      DefaultMistralBaseURL,
-			"account_mode":  AccountModePayG,
-			"api_protocol":  APIProtocolAdaptive,
-			"api_base_urls": map[string]any{APIProtocolChatCompletions: DefaultMistralBaseURL},
-		},
-	}
-}
-
 func newMistralBillingUpstream(budgetBody, subscriptionBody string) *commandCodeAlphaUpstream {
 	return &commandCodeAlphaUpstream{responses: map[string]commandCodeAlphaResponse{
 		"/v1/billing/budget":       {status: http.StatusOK, body: budgetBody},

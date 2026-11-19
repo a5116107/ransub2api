@@ -511,36 +511,6 @@ func TestChannelMonitorQuotaBudgetFlightIsolationFromManualQueries(t *testing.T)
 	require.NoError(t, <-manualDone)
 }
 
-// The queue fixture crosses the real physical budget boundary; it does not
-// assume the runner's intended ordering or manufacture a successful snapshot.
-type cnQueueQuotaProber struct {
-	query func(context.Context, int64) (*CNProviderQuotaProbeResult, error)
-}
-
-func (p cnQueueQuotaProber) QueryUsage(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
-	return p.query(ctx, id)
-}
-
-func cnQueueAccounts(t *testing.T, count int) *fakeCNCheckRepo {
-	t.Helper()
-	repo := &fakeCNCheckRepo{byPlatform: map[string][]Account{}}
-	for i := 1; i <= count; i++ {
-		account := Account{ID: int64(i), Platform: PlatformKimi, Type: AccountTypeAPIKey, Status: StatusActive,
-			Credentials: map[string]any{"account_mode": AccountModeCoding}}
-		if i%3 == 1 {
-			account = *mistralUsageTestAccount(int64(i), "")
-			require.True(t, account.mistralUsageSupported())
-		} else if i%3 == 2 {
-			account = *clineTestAccount(int64(i))
-			require.True(t, account.clineAccountAPISupported())
-		}
-		// Threshold-paused coding accounts still need recovery observations.
-		account.Status, account.Schedulable = StatusActive, i%7 != 0
-		repo.byPlatform[account.Platform] = append(repo.byPlatform[account.Platform], account)
-	}
-	return repo
-}
-
 func TestCNProviderBalanceCheckFairBudgetCycles(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		repo := cnQueueAccounts(t, 100)
@@ -683,15 +653,6 @@ func TestCNProviderBalanceCheckQueueBudgetScope(t *testing.T) {
 			})
 		})
 	}
-}
-
-type cnQueueInventoryRepo struct {
-	*fakeCNCheckRepo
-	list func(context.Context, string) ([]Account, error)
-}
-
-func (r cnQueueInventoryRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
-	return r.list(ctx, platform)
 }
 
 func TestCNProviderBalanceCheckQueueInventoryLifecycle(t *testing.T) {

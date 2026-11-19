@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -57,54 +56,6 @@ func newJSONResponse(status int, body string) *http.Response {
 }
 
 // --- test functions ---
-
-func newTestContext() (*gin.Context, *httptest.ResponseRecorder) {
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/1/test", nil)
-	return c, rec
-}
-
-type openAIAccountTestRepo struct {
-	mockAccountRepoForGemini
-	updatedExtra       map[string]any
-	bulkUpdatedIDs     []int64
-	bulkUpdatedPayload AccountBulkUpdate
-	rateLimitedID      int64
-	rateLimitedAt      *time.Time
-	clearedErrorID     int64
-	setErrorID         int64
-	setErrorMsg        string
-}
-
-func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
-	r.updatedExtra = updates
-	return nil
-}
-
-func (r *openAIAccountTestRepo) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
-	r.bulkUpdatedIDs = append([]int64(nil), ids...)
-	r.bulkUpdatedPayload = updates
-	return int64(len(ids)), nil
-}
-
-func (r *openAIAccountTestRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
-	r.rateLimitedID = id
-	r.rateLimitedAt = &resetAt
-	return nil
-}
-
-func (r *openAIAccountTestRepo) ClearError(_ context.Context, id int64) error {
-	r.clearedErrorID = id
-	return nil
-}
-
-func (r *openAIAccountTestRepo) SetError(_ context.Context, id int64, errorMsg string) error {
-	r.setErrorID = id
-	r.setErrorMsg = errorMsg
-	return nil
-}
 
 func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)

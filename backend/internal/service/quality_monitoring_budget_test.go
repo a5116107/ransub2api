@@ -829,42 +829,6 @@ func TestQualityMonitoringBudgetAdaptiveDenialStopsAnswer(t *testing.T) {
 	}
 }
 
-func qualityBudgetWSServer(t *testing.T, beforeReply ...func(int32)) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
-	t.Helper()
-	handshakes, frames := &atomic.Int32{}, &atomic.Int32{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handshakes.Add(1)
-		if r.Header.Get("Authorization") != "Bearer fixture" {
-			http.Error(w, "invalid quality budget fixture credential", http.StatusUnauthorized)
-			return
-		}
-		conn, err := coderws.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.CloseNow() }()
-		for {
-			_, _, err := conn.Read(r.Context())
-			if err != nil {
-				return
-			}
-			n := frames.Add(1)
-			if len(beforeReply) != 0 {
-				beforeReply[0](n)
-			}
-			if err := conn.Write(r.Context(), coderws.MessageText, []byte(`{"type":"response.output_text.delta","delta":"21"}`)); err != nil {
-				return
-			}
-			message := `{"type":"response.completed","response":{"id":"resp_budget_` + strconv.Itoa(int(n)) + `","status":"completed","model":"target","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"21"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}`
-			if err := conn.Write(r.Context(), coderws.MessageText, []byte(message)); err != nil {
-				return
-			}
-		}
-	}))
-	t.Cleanup(server.Close)
-	return server, handshakes, frames
-}
-
 func TestQualityMonitoringBudgetNativeWSPhysicalAttempts(t *testing.T) {
 	for _, tc := range []struct {
 		name               string

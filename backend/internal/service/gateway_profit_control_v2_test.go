@@ -488,26 +488,6 @@ func TestGatewayProfitControlStickyVetoKeepsBindingUntilRateRecovers(t *testing.
 	require.Zero(t, cache.deletedSessions["sticky-profit"])
 }
 
-type gatewayProfitSnapshotCache struct {
-	SchedulerCache
-	account *Account
-	err     error
-}
-
-func (c *gatewayProfitSnapshotCache) GetAccount(context.Context, int64) (*Account, error) {
-	return c.account, c.err
-}
-
-type gatewayProfitAccountRepo struct {
-	AccountRepository
-	account *Account
-	err     error
-}
-
-func (r gatewayProfitAccountRepo) GetByID(context.Context, int64) (*Account, error) {
-	return r.account, r.err
-}
-
 func TestGatewayProfitControlTerminalRefreshUsesReplacementObject(t *testing.T) {
 	selected := gatewayProfitTestAccount(141, PlatformGemini, 0.2, 1)
 	replacement := selected

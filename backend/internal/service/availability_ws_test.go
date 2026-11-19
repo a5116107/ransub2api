@@ -16,39 +16,12 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-type availabilityWSHTTPUpstream struct{ client *http.Client }
-
-func (u availabilityWSHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
-	return u.client.Do(req)
-}
-
-func (u availabilityWSHTTPUpstream) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
-	return u.Do(req, proxy, id, concurrency)
-}
-
-func availabilityWSTestServices(t *testing.T, server *httptest.Server) (*AccountTestService, *OpenAIGatewayService, *Account) {
-	t.Helper()
-	account := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
-		Status: StatusActive, Schedulable: true, Concurrency: 1,
-		Credentials: map[string]any{"api_key": "fixture", "base_url": server.URL},
-		Extra:       map[string]any{"responses_websockets_v2_enabled": true}}
-	cfg := newOpenAIWSExecutionScopeTestConfig()
-	upstream := availabilityWSHTTPUpstream{client: server.Client()}
-	gateway := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream, cache: &stubGatewayCache{},
-		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector()}
-	t.Cleanup(gateway.CloseOpenAIWSPool)
-	svc := &AccountTestService{cfg: cfg, httpUpstream: upstream, openaiGatewayService: gateway,
-		accountRepo: &openAIAccountTestRepo{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}}}
-	return svc, gateway, account
-}
 
 func TestAvailabilityWSProbeUsesConfiguredTransport(t *testing.T) {
 	var httpSends, wsSends atomic.Int32

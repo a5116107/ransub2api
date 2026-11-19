@@ -80,14 +80,6 @@ func TestProcurementPolicyApprovedSourcesGateAndPreview(t *testing.T) {
 	}
 }
 
-func procurementBucketTestCatalog() *domain.ProcurementCatalog {
-	bound := func(s string) *string { return &s }
-	return &domain.ProcurementCatalog{Version: 1, Revision: 1, Buckets: []domain.ProcurementBucket{
-		{Code: "low", Name: "Low", MinRate: bound("0.02"), MaxRate: bound("0.03")},
-		{Code: "next", Name: "Next", MinRate: bound("0.03"), MaxRate: bound("0.05")},
-	}}
-}
-
 func TestProcurementPolicyAllowedBucketsGate(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
