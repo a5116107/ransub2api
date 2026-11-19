@@ -47,18 +47,85 @@ type ProcurementPreviewCommand struct {
 // This is a read-only projection at the group's default sale price, never a
 // user-specific price quote or a scheduling/quality/cache qualification.
 type ProcurementProductPreview struct {
-	AnswerQuality   *ProcurementAnswerQualityPreview `json:"answer_quality,omitempty"`
-	Availability    *ProcurementAvailabilityPreview  `json:"availability,omitempty"`
-	Version         int                              `json:"version"`
-	GroupID         int64                            `json:"group_id"`
-	PolicyRevision  int64                            `json:"policy_revision"`
-	CatalogRevision *int64                           `json:"catalog_revision,omitempty"`
-	PriceBasis      string                           `json:"price_basis"`
-	DefaultD        float64                          `json:"default_d"`
-	Threshold       float64                          `json:"threshold"`
-	State           string                           `json:"state"`
-	PriceClass      string                           `json:"price_class"`
-	Reason          string                           `json:"reason,omitempty"`
+	EvaluatedGates  *ProcurementEvaluatedGatesPreview `json:"evaluated_gates,omitempty"`
+	AnswerQuality   *ProcurementAnswerQualityPreview  `json:"answer_quality,omitempty"`
+	Availability    *ProcurementAvailabilityPreview   `json:"availability,omitempty"`
+	Version         int                               `json:"version"`
+	GroupID         int64                             `json:"group_id"`
+	PolicyRevision  int64                             `json:"policy_revision"`
+	CatalogRevision *int64                            `json:"catalog_revision,omitempty"`
+	PriceBasis      string                            `json:"price_basis"`
+	DefaultD        float64                           `json:"default_d"`
+	Threshold       float64                           `json:"threshold"`
+	State           string                            `json:"state"`
+	PriceClass      string                            `json:"price_class"`
+	Reason          string                            `json:"reason,omitempty"`
+}
+
+// Only the explicitly evaluated product constraints are intersected here.
+// This snapshot is never full model/cache qualification or send authorization.
+type ProcurementEvaluatedGatesPreview struct {
+	Version       int        `json:"version"`
+	State         string     `json:"state"`
+	Reason        string     `json:"reason"`
+	PassedGates   int        `json:"passed_gates"`
+	RequiredGates int        `json:"required_gates"`
+	EvaluatedAt   time.Time  `json:"evaluated_at"`
+	ValidUntil    *time.Time `json:"valid_until"`
+}
+
+func (p *ProcurementProductPreview) AssessEvidence(policy *ProcurementPolicy, quality *QualityScopeEvidence, availability *AvailabilityScopeEvidence, at time.Time) {
+	if p == nil {
+		return
+	}
+	p.AnswerQuality = ProcurementAnswerQuality(policy, quality, at)
+	p.Availability = ProcurementAvailability(policy, availability, at)
+	out := &ProcurementEvaluatedGatesPreview{Version: 1, State: "pass", Reason: "all_evaluated_gates_passed", EvaluatedAt: at}
+	add := func(state, reason string, until *time.Time) {
+		out.RequiredGates++
+		if state == "pass" {
+			out.PassedGates++
+		} else if out.State == "pass" || state == "fail" && out.State != "fail" {
+			out.State, out.Reason = state, reason
+		}
+		if (state == "pass" || state == "fail") && until != nil && until.After(at) && (out.ValidUntil == nil || until.Before(*out.ValidUntil)) {
+			deadline := *until
+			out.ValidUntil = &deadline
+		}
+	}
+	switch {
+	case p.State == "constraints_passed":
+		add("pass", "", nil)
+	case p.State == "product_inactive", p.State == "not_associated":
+		add("fail", "price_constraints_failed", nil)
+	case p.State == "blocked" && slices.Contains([]string{ProfitPreviewClassRejectedThreshold, ProfitPreviewClassRejectedProcurement, ProfitPreviewClassRejectedSource, ProfitPreviewClassRejectedBucket, ProfitPreviewClassRejectedSaleRate}, p.PriceClass):
+		add("fail", "price_constraints_failed", nil)
+	default:
+		add("unknown", "price_constraints_unavailable", nil)
+	}
+	if p.AnswerQuality.Required {
+		reason := "answer_quality_unavailable"
+		if p.AnswerQuality.State == "fail" {
+			reason = "answer_quality_failed"
+		}
+		var until *time.Time
+		if quality != nil {
+			until = quality.ValidUntil
+		}
+		add(p.AnswerQuality.State, reason, until)
+	}
+	if p.Availability.Required {
+		reason := "availability_unavailable"
+		if p.Availability.State == "fail" {
+			reason = "availability_failed"
+		}
+		var until *time.Time
+		if availability != nil {
+			until = availability.ValidUntil
+		}
+		add(p.Availability.State, reason, until)
+	}
+	p.EvaluatedGates = out
 }
 
 type ProcurementClassificationPreview struct {
@@ -176,6 +243,7 @@ func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Accou
 		case verdict.PriceClass != "" && verdict.PriceClass != ProfitPreviewClassAdmitted:
 			projection.State = "blocked"
 		}
+		projection.AssessEvidence(product.ProcurementPolicy, nil, nil, at)
 		result.Product = projection
 	}
 	if catalog.Validate() != nil {

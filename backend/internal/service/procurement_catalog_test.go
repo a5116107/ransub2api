@@ -12,6 +12,78 @@ import (
 
 const catalogCommandFixture = `{"version":1,"revision":0,"buckets":[{"code":"b1","name":"First","min_rate":"0.2","max_rate":"0.5"},{"code":"b2","name":"Second","min_rate":"0.5","max_rate":"0.6"}]}`
 
+func TestProcurementEvaluatedGatesIntersection(t *testing.T) {
+	at := time.Now().UTC()
+	qualityUntil, availabilityUntil := at.Add(time.Minute), at.Add(2*time.Minute)
+	for _, tc := range []struct {
+		name, price, quality, availability, state, reason string
+		passed, required                                  int
+	}{
+		{"all passed", "constraints_passed", "pass", "pass", "pass", "all_evaluated_gates_passed", 3, 3},
+		{"price only", "constraints_passed", "not_required", "not_required", "pass", "all_evaluated_gates_passed", 1, 1},
+		{"quality unknown", "constraints_passed", "unknown", "pass", "unknown", "answer_quality_unavailable", 2, 3},
+		{"quality failed", "constraints_passed", "fail", "pass", "fail", "answer_quality_failed", 2, 3},
+		{"availability unknown", "constraints_passed", "pass", "unknown", "unknown", "availability_unavailable", 2, 3},
+		{"availability failed", "constraints_passed", "pass", "fail", "fail", "availability_failed", 2, 3},
+		{"failure beats unknown", "constraints_passed", "unknown", "fail", "fail", "availability_failed", 1, 3},
+		{"price blocked", "blocked", "pass", "pass", "fail", "price_constraints_failed", 2, 3},
+		{"price disabled", "disabled", "not_required", "not_required", "unknown", "price_constraints_unavailable", 0, 1},
+		{"not associated", "not_associated", "pass", "unknown", "fail", "price_constraints_failed", 1, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := &ProcurementPolicy{Quality: "current_answer", Availability: "current_state"}
+			if tc.quality == "not_required" {
+				policy.Quality = "not_required"
+			}
+			if tc.availability == "not_required" {
+				policy.Availability = "not_required"
+			}
+			quality := &QualityScopeEvidence{Version: 1, Status: tc.quality, Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &qualityUntil, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}
+			availability := &AvailabilityScopeEvidence{Version: 1, Status: tc.availability, Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &availabilityUntil, RuleCount: 1, ConfirmedRules: 1}
+			projection := &ProcurementProductPreview{State: tc.price, PriceClass: ProfitPreviewClassRejectedThreshold}
+			projection.AssessEvidence(policy, quality, availability, at)
+			require.Equal(t, tc.state, projection.EvaluatedGates.State)
+			require.Equal(t, tc.reason, projection.EvaluatedGates.Reason)
+			require.Equal(t, tc.passed, projection.EvaluatedGates.PassedGates)
+			require.Equal(t, tc.required, projection.EvaluatedGates.RequiredGates)
+			require.Equal(t, at, projection.EvaluatedGates.EvaluatedAt)
+			if tc.quality == "pass" || tc.quality == "fail" {
+				require.Equal(t, &qualityUntil, projection.EvaluatedGates.ValidUntil)
+			} else if tc.availability == "pass" || tc.availability == "fail" {
+				require.Equal(t, &availabilityUntil, projection.EvaluatedGates.ValidUntil)
+			} else {
+				require.Nil(t, projection.EvaluatedGates.ValidUntil)
+			}
+		})
+	}
+}
+
+func TestProcurementEvaluatedGatesExpiryAndNoCertification(t *testing.T) {
+	at := time.Now().UTC()
+	until := at.Add(time.Second)
+	policy := &ProcurementPolicy{Quality: "current_answer"}
+	quality := &QualityScopeEvidence{Version: 1, Status: "pass", Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &until, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}
+	p := &ProcurementProductPreview{State: "constraints_passed"}
+	p.AssessEvidence(policy, quality, nil, at)
+	require.Equal(t, "pass", p.EvaluatedGates.State)
+	*p.EvaluatedGates.ValidUntil = until.Add(time.Hour)
+	require.Equal(t, at.Add(time.Second), *quality.ValidUntil, "projection must not extend source evidence")
+	p.AssessEvidence(policy, quality, nil, until)
+	require.Equal(t, "unknown", p.EvaluatedGates.State)
+	require.Equal(t, "answer_quality_unavailable", p.EvaluatedGates.Reason)
+	require.Nil(t, p.EvaluatedGates.ValidUntil)
+	p.AssessEvidence(policy, nil, nil, at)
+	require.Equal(t, "unknown", p.EvaluatedGates.State)
+	for _, priceClass := range []string{ProfitPreviewClassUnknownCatalog, ProfitPreviewClassUnknownProcurement, ProfitPreviewClassRejectedUpstreamRate, ProfitPreviewClassRejectedInvalidRate, "future_class"} {
+		p.State, p.PriceClass = "blocked", priceClass
+		p.AssessEvidence(nil, nil, nil, at)
+		require.Equal(t, "unknown", p.EvaluatedGates.State, priceClass)
+		require.Equal(t, "price_constraints_unavailable", p.EvaluatedGates.Reason)
+	}
+	var absent *ProcurementProductPreview
+	absent.AssessEvidence(policy, quality, nil, at)
+}
+
 func TestProcurementCatalogStrictCommand(t *testing.T) {
 	c, err := ParseProcurementCatalogCommand([]byte(catalogCommandFixture))
 	require.NoError(t, err)

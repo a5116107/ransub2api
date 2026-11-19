@@ -35,6 +35,66 @@ beforeEach(() => {
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount(); vi.useRealTimers() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it.each(['pass', 'fail', 'unknown', 'not_required'])('intersects explicitly evaluated product gates (%s)', async state => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => productPreview(requests, state))
+    await submitPreview(w); await flushPromises()
+    const want = state === 'not_required' ? 'pass' : state
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.' + want)
+    expect(w.get('[data-testid="product-evaluated-gates"]').text()).toContain(prefix + 'evaluatedGatesBoundary')
+    expect(w.text()).toContain(prefix + 'notQualified')
+    await vi.advanceTimersByTimeAsync(300000)
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.' + (state === 'not_required' ? 'pass' : 'unknown'))
+  })
+  it.each(['version', 'state', 'reason', 'count', 'required', 'time', 'deadline', 'missing-gate'])('rejects inconsistent product gate intersections (%s)', async kind => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'pass'), product = preview.results[0]!.product_procurement!, gate = product.evaluated_gates!
+      if (kind === 'version') gate.version++
+      if (kind === 'state') gate.state = 'fail'
+      if (kind === 'reason') gate.reason = 'availability_failed'
+      if (kind === 'count') gate.passed_gates++
+      if (kind === 'required') gate.required_gates++
+      if (kind === 'time') gate.evaluated_at = '2999-01-01T00:00:00Z'
+      if (kind === 'deadline') gate.valid_until = '2026-11-19T00:06:00Z'
+      if (kind === 'missing-gate') delete product.availability
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => productPreview(requests, 'pass'))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.pass')
+  })
+  it('expires answer evidence, rules and the required product gate at the deadline', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    const quality = qualityFixture('pass')
+    quality.valid_until = quality.rules[0]!.valid_until = '2026-11-19T00:00:01Z'
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: quality.evaluated_at, results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', quality_evidence: quality,
+        product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted', answer_quality: { version: 1, required: true, state: 'pass' } }
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="quality-scope-status"]').text()).toContain(prefix + 'qualityStates.pass')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(w.get('[data-testid="quality-scope-status"]').text()).toContain(prefix + 'qualityStates.unknown')
+    expect(w.get('[data-testid="product-answer-quality"]').text()).toContain(prefix + 'answerQualityStates.unknown')
+    expect(w.get('[data-testid="quality-scope-rules"]').text()).not.toContain(prefix + 'qualityStates.pass')
+    expect(w.get('[data-testid="quality-scope-rules"]').text()).toContain(prefix + 'qualityReasons.expired')
+  })
+
   it('expires a displayed pass and the required product gate without reloading', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
     vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
@@ -116,7 +176,8 @@ describe('catalog editing and scope classification in the original operations pa
       }))
     }))
     await submitPreview(w); await flushPromises()
-    expect(w.get('[data-testid="product-answer-quality"]').text()).toContain(prefix + 'answerQualityStates.' + state)
+    expect(w.get('[data-testid="product-answer-quality"]').text()).toContain(prefix + 'answerQualityStates.' + (state === 'pass' || state === 'fail' ? 'unknown' : state))
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
     expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.constraints_passed')
     expect(w.text()).toContain(prefix + 'notQualified')
   })
@@ -143,7 +204,7 @@ describe('catalog editing and scope classification in the original operations pa
       }))
     }))
     await submitPreview(w); await flushPromises()
-    expect(w.get('[data-testid="quality-scope-status"]').text()).toContain(prefix + 'qualityStates.' + (status === 'legacy' ? 'unknown' : status))
+    expect(w.get('[data-testid="quality-scope-status"]').text()).toContain(prefix + 'qualityStates.' + (['legacy', 'pass', 'fail'].includes(status) ? 'unknown' : status))
     expect(w.get('[data-testid="quality-scope-evidence"]').text()).toContain(prefix + 'modelIdentityUnknown')
     if (['pass', 'fail', 'unknown'].includes(status)) {
       expect(w.get('[data-testid="quality-scope-rules"]').text()).toContain('#12')
@@ -338,6 +399,18 @@ describe('catalog editing and scope classification in the original operations pa
   })
 })
 
+function productPreview(requests: ProcurementRequestScope[], state: string): ProcurementPreview {
+  const required = state !== 'not_required', resultState = required ? state : 'pass'
+  const until = state === 'pass' || state === 'fail' ? '2026-11-19T00:05:00Z' : null
+  return { ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
+    state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
+    quality_evidence: qualityFixture(required ? state : 'unknown'),
+    product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted',
+      answer_quality: { version: 1, required, state }, availability: { version: 1, required: false, state: 'not_required' },
+      evaluated_gates: { version: 1, state: resultState, reason: resultState === 'pass' ? 'all_evaluated_gates_passed' : state === 'fail' ? 'answer_quality_failed' : 'answer_quality_unavailable', passed_gates: 1 + Number(state === 'pass'), required_gates: 1 + Number(required), evaluated_at: '2026-11-19T00:00:00Z', valid_until: until }
+    }
+  })) }
+}
 function availabilityFixture(status: string) {
   return { version: 1, status, reason: ({ pass: 'all_rules_passed', fail: 'availability_not_confirmed', unknown: 'availability_scope_unconfirmed', not_configured: 'availability_not_configured' } as Record<string, string>)[status]!,
     evaluated_at: '2026-11-19T00:00:00Z', valid_until: ['pass', 'fail'].includes(status) ? '2026-11-19T00:05:00Z' : null, rule_count: status === 'not_configured' ? 0 : 1, confirmed_rules: status === 'pass' ? 1 : 0 }

@@ -85,10 +85,10 @@
             <p v-if="item.reason" class="break-all font-mono text-xs">{{ item.reason }}</p>
             <section class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="quality-scope-evidence">
               <h4 class="text-sm font-medium">{{ t(`${p}.qualityTitle`) }}</h4>
-              <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.quality_evidence?.status === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : item.quality_evidence?.status === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="quality-scope-status">{{ t(`${p}.qualityStates.${item.quality_evidence?.status ?? 'unknown'}`) }}</span>
+              <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="evidenceState(item.quality_evidence) === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : evidenceState(item.quality_evidence) === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="quality-scope-status">{{ t(`${p}.qualityStates.${evidenceState(item.quality_evidence)}`) }}</span>
               <p class="text-sm font-medium text-amber-800 dark:text-amber-300">{{ t(`${p}.modelIdentityUnknown`) }}</p>
               <template v-if="item.quality_evidence">
-                <p class="break-words text-sm">{{ t(`${p}.qualityReasons.${item.quality_evidence.reason}`) }}</p>
+                <p class="break-words text-sm">{{ t(`${p}.qualityReasons.${evidenceExpired(item.quality_evidence) ? 'expired' : item.quality_evidence.reason}`) }}</p>
                 <dl class="grid gap-3 text-sm sm:grid-cols-2">
                   <div><dt class="text-gray-500">{{ t(`${p}.qualityRuleCoverage`) }}</dt><dd>{{ item.quality_evidence.confirmed_rules }} / {{ item.quality_evidence.rule_count }}</dd></div>
                   <div><dt class="text-gray-500">{{ t(`${p}.qualitySampleCoverage`) }}</dt><dd>{{ item.quality_evidence.valid_samples }} / {{ item.quality_evidence.samples }}</dd></div>
@@ -100,7 +100,7 @@
                   <summary class="cursor-pointer">{{ t(`${p}.qualityRules`) }}</summary>
                   <ul class="mt-2 space-y-2">
                     <li v-for="rule in item.quality_evidence.rules" :key="rule.plan_id" class="break-words rounded border border-gray-200 p-2 dark:border-dark-600">
-                      #{{ rule.plan_id }} · {{ t(`${p}.qualityStates.${rule.status}`) }} · {{ t(`${p}.qualityReasons.${rule.reason}`) }}
+                      #{{ rule.plan_id }} · {{ t(`${p}.qualityStates.${evidenceState(rule)}`) }} · {{ t(`${p}.qualityReasons.${evidenceExpired(rule) ? 'expired' : rule.reason}`) }}
                       <p>{{ t(`${p}.qualitySampleCoverage`) }}: {{ rule.valid_samples }} / {{ rule.samples }}</p>
                       <p class="break-all">{{ t(`${p}.qualityValidUntil`) }}: {{ rule.valid_until ?? t('upstreamOps.unknown') }}</p>
                     </li>
@@ -112,10 +112,10 @@
             </section>
             <section class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="availability-scope-evidence">
               <h4 class="text-sm font-medium">{{ t(`${p}.availabilityTitle`) }}</h4>
-              <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="availabilityState(item.availability_evidence) === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : availabilityState(item.availability_evidence) === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="availability-scope-status">{{ t(`${p}.availabilityStates.${availabilityState(item.availability_evidence)}`) }}</span>
+              <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="evidenceState(item.availability_evidence) === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : evidenceState(item.availability_evidence) === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="availability-scope-status">{{ t(`${p}.availabilityStates.${evidenceState(item.availability_evidence)}`) }}</span>
               <template v-if="item.availability_evidence">
                 <p class="text-sm">{{ t(`${p}.availabilityCoverage`, { confirmed: item.availability_evidence.confirmed_rules, total: item.availability_evidence.rule_count }) }}</p>
-                <p class="break-words text-sm">{{ t(`${p}.availabilityReasons.${availabilityExpired(item.availability_evidence) ? 'expired' : item.availability_evidence.reason}`) }}</p>
+                <p class="break-words text-sm">{{ t(`${p}.availabilityReasons.${evidenceExpired(item.availability_evidence) ? 'expired' : item.availability_evidence.reason}`) }}</p>
                 <p class="break-all text-xs">{{ t(`${p}.qualityEvaluatedAt`) }}: {{ item.availability_evidence.evaluated_at }}</p>
                 <p class="break-all text-xs">{{ t(`${p}.qualityValidUntil`) }}: {{ item.availability_evidence.valid_until ?? t('upstreamOps.unknown') }}</p>
               </template>
@@ -126,8 +126,20 @@
               <p class="break-words text-sm font-medium">{{ t(`${p}.productResult`, { id: item.product_procurement.group_id, revision: item.product_procurement.policy_revision }) }}</p>
               <p v-if="item.product_procurement.catalog_revision !== undefined" class="text-xs text-gray-500">{{ t(`${p}.revision`, { revision: item.product_procurement.catalog_revision }) }}</p>
               <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.product_procurement.state === 'constraints_passed' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-procurement-state">{{ t(`${p}.productStates.${item.product_procurement.state}`) }}</span>
-              <p class="break-words text-sm" data-testid="product-answer-quality">{{ t(`${p}.answerQualityTitle`) }}: {{ t(`${p}.answerQualityStates.${item.product_procurement.answer_quality?.state ?? 'unknown'}`) }}</p>
-              <p class="break-words text-sm" data-testid="product-availability">{{ t(`${p}.availabilityGateTitle`) }}: {{ t(`${p}.availabilityGateStates.${item.product_procurement.availability?.required && availabilityExpired(item.availability_evidence) ? 'unknown' : item.product_procurement.availability?.state ?? 'unknown'}`) }}</p>
+              <section class="space-y-2 rounded-lg border border-gray-200 p-3 dark:border-dark-600" data-testid="product-evaluated-gates">
+                <h4 class="text-sm font-medium">{{ t(`${p}.evaluatedGatesTitle`) }}</h4>
+                <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="evaluatedGatesState(item) === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : evaluatedGatesState(item) === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-evaluated-gates-status">{{ t(`${p}.evaluatedGatesStates.${evaluatedGatesState(item)}`) }}</span>
+                <template v-if="item.product_procurement.evaluated_gates">
+                  <p class="text-sm">{{ t(`${p}.evaluatedGatesCoverage`, { passed: item.product_procurement.evaluated_gates.passed_gates, required: item.product_procurement.evaluated_gates.required_gates }) }}</p>
+                  <p class="break-words text-sm">{{ t(`${p}.evaluatedGatesReasons.${evidenceExpired(item.product_procurement.evaluated_gates) ? 'expired' : item.product_procurement.evaluated_gates.reason}`) }}</p>
+                  <p class="break-all text-xs">{{ t(`${p}.qualityEvaluatedAt`) }}: {{ item.product_procurement.evaluated_gates.evaluated_at }}</p>
+                  <p v-if="item.product_procurement.evaluated_gates.valid_until" class="break-all text-xs">{{ t(`${p}.qualityValidUntil`) }}: {{ item.product_procurement.evaluated_gates.valid_until }}</p>
+                </template>
+                <p v-else class="text-sm">{{ t(`${p}.evaluatedGatesLegacy`) }}</p>
+                <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.evaluatedGatesBoundary`) }}</p>
+              </section>
+              <p class="break-words text-sm" data-testid="product-answer-quality">{{ t(`${p}.answerQualityTitle`) }}: {{ t(`${p}.answerQualityStates.${productEvidenceState(item.product_procurement.answer_quality, item.quality_evidence)}`) }}</p>
+              <p class="break-words text-sm" data-testid="product-availability">{{ t(`${p}.availabilityGateTitle`) }}: {{ t(`${p}.availabilityGateStates.${productEvidenceState(item.product_procurement.availability, item.availability_evidence)}`) }}</p>
               <dl class="grid gap-3 text-sm sm:grid-cols-2">
                 <div><dt class="text-gray-500">{{ t(`${p}.productSale`) }}</dt><dd>{{ item.product_procurement.default_d }}</dd></div>
                 <div><dt class="text-gray-500">{{ t(`${p}.productThreshold`) }}</dt><dd>{{ item.product_procurement.threshold }}</dd></div>
@@ -242,16 +254,42 @@ async function preview() {
     if (availabilityGate !== undefined && (!availabilityGate || availabilityGate.version !== 1 || typeof availabilityGate.required !== 'boolean' ||
       !['not_required', 'pass', 'fail', 'unknown'].includes(availabilityGate.state) || availabilityGate.required === (availabilityGate.state === 'not_required') ||
       availabilityGate.required && availabilityGate.state !== 'unknown' && (!availability || availability.status !== availabilityGate.state))) throw new Error('unknown availability gate')
+    if (!validEvaluatedGates(next.results[0]!, next.observed_at)) throw new Error('inconsistent evaluated product gates')
     if (alive && generation === id) result.value = next
   } catch { if (alive && generation === id) error.value = 'previewFailed' }
   finally { if (alive) busy.value = false }
 }
 function knownState(value: string) { return ['classified','unclassified','scope_unconfirmed','rate_unavailable','account_unavailable','not_configured'].includes(value) ? value : 'unknown' }
-function availabilityExpired(evidence?: AvailabilityScopeEvidence) {
+function evidenceExpired(evidence?: { valid_until: string | null }) {
   return Boolean(evidence?.valid_until && Date.parse(evidence.valid_until) <= now.value.getTime())
 }
-function availabilityState(evidence?: AvailabilityScopeEvidence) {
-  return evidence && !availabilityExpired(evidence) ? evidence.status : 'unknown'
+function evidenceState(evidence?: { status: string; valid_until: string | null }) {
+  return evidence && !evidenceExpired(evidence) ? evidence.status : 'unknown'
+}
+function productEvidenceState(gate?: { required: boolean; state: string }, evidence?: { valid_until: string | null }) {
+  return gate?.required && evidenceExpired(evidence) ? 'unknown' : gate?.state ?? 'unknown'
+}
+function evaluatedGatesState(item: ProcurementPreview['results'][number]) {
+  const gates = item.product_procurement?.evaluated_gates
+  return gates && !evidenceExpired(gates) ? gates.state : 'unknown'
+}
+function validEvaluatedGates(item: ProcurementPreview['results'][number], observedAt: string): boolean {
+  const product = item.product_procurement, gates = product?.evaluated_gates
+  if (gates === undefined) return true // Legacy responses grant no aggregate pass.
+  if (!gates || gates.version !== 1 || !product?.answer_quality || !product.availability ||
+    !['pass', 'fail', 'unknown'].includes(gates.state) || Date.parse(gates.evaluated_at) !== Date.parse(observedAt)) return false
+  const price = product.state === 'constraints_passed' ? 'pass' : ['product_inactive', 'not_associated'].includes(product.state) || product.state === 'blocked' && ['rejected_threshold', 'rejected_procurement_range', 'rejected_procurement_source', 'rejected_procurement_bucket', 'rejected_account_sale_rate_mismatch'].includes(product.price_class) ? 'fail' : 'unknown'
+  const checks = [{ state: price, reason: price === 'fail' ? 'price_constraints_failed' : 'price_constraints_unavailable', until: null as string | null }]
+  for (const [gate, evidence, name] of [
+    [product.answer_quality, item.quality_evidence, 'answer_quality'], [product.availability, item.availability_evidence, 'availability']
+  ] as const) {
+    if (gate.required) checks.push({ state: gate.state, reason: `${name}_${gate.state === 'fail' ? 'failed' : 'unavailable'}`, until: ['pass', 'fail'].includes(gate.state) ? evidence?.valid_until ?? null : null })
+  }
+  const veto = checks.find(gate => gate.state === 'fail') ?? checks.find(gate => gate.state !== 'pass')
+  const deadlines = checks.flatMap(gate => gate.until === null ? [] : [Date.parse(gate.until)])
+  return gates.state === (veto?.state ?? 'pass') && gates.reason === (veto?.reason ?? 'all_evaluated_gates_passed') &&
+    gates.required_gates === checks.length && gates.passed_gates === checks.filter(gate => gate.state === 'pass').length &&
+    (deadlines.length ? typeof gates.valid_until === 'string' && Date.parse(gates.valid_until) === Math.min(...deadlines) : gates.valid_until === null)
 }
 function validAvailabilityEvidence(e: AvailabilityScopeEvidence, observedAt: string): boolean {
   if (!e || e.version !== 1 || !['pass', 'fail', 'unknown', 'not_configured'].includes(e.status) ||

@@ -144,8 +144,7 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 		result.Quality = service.AssessQualityScopeEvidence(byID[request.AccountID], request.Scope, qualityRules[request.AccountID], out.ObservedAt, quality.limited)
 		result.Availability = service.AssessAvailabilityScopeEvidence(byID[request.AccountID], &request.Scope, availability[request.AccountID], out.ObservedAt)
 		if result.Product != nil {
-			result.Product.AnswerQuality = service.ProcurementAnswerQuality(product.ProcurementPolicy, result.Quality, out.ObservedAt)
-			result.Product.Availability = service.ProcurementAvailability(product.ProcurementPolicy, result.Availability, out.ObservedAt)
+			result.Product.AssessEvidence(product.ProcurementPolicy, result.Quality, result.Availability, out.ObservedAt)
 		}
 		out.Results = append(out.Results, result)
 	}

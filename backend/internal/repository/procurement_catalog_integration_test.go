@@ -172,6 +172,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, "classified", out.Results[0].State)
 		require.Equal(t, "blocked", out.Results[0].Product.State)
 		require.Equal(t, service.ProfitPreviewClassRejectedSource, out.Results[0].Product.PriceClass)
+		require.Equal(t, "fail", out.Results[0].Product.EvaluatedGates.State)
 		policy.Sources.AccountIDs = []int64{accountID}
 		policy.Revision++
 		savePolicy(true)
@@ -180,6 +181,11 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, .15, out.Results[0].Product.DefaultD)
 		require.EqualValues(t, 2, out.Results[0].Product.PolicyRevision)
 		require.Equal(t, "group_default", out.Results[0].Product.PriceBasis)
+		require.Equal(t, "pass", out.Results[0].Product.EvaluatedGates.State)
+		require.Equal(t, 1, out.Results[0].Product.EvaluatedGates.RequiredGates)
+		require.Equal(t, 1, out.Results[0].Product.EvaluatedGates.PassedGates)
+		require.Equal(t, out.ObservedAt, out.Results[0].Product.EvaluatedGates.EvaluatedAt)
+		require.Nil(t, out.Results[0].Product.EvaluatedGates.ValidUntil)
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification, "manual schedulable=false is not silently upgraded to full eligibility")
 
 		policy.Version = 3
@@ -200,10 +206,22 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		savePolicy(true)
 		out = readProduct(groupID)
 		require.Equal(t, service.ProfitPreviewClassUnknownCatalog, out.Results[0].Product.PriceClass)
+		require.Equal(t, "unknown", out.Results[0].Product.EvaluatedGates.State)
 		policy.Buckets.Codes = nil
 		policy.Revision++
 		savePolicy(true)
 		require.Equal(t, "constraints_passed", readProduct(groupID).Results[0].Product.State)
+		policy.Version, policy.Quality, policy.Availability = 5, "current_answer", "current_state"
+		policy.Revision++
+		savePolicy(true)
+		out = readProduct(groupID)
+		require.Equal(t, "constraints_passed", out.Results[0].Product.State)
+		require.Equal(t, "unknown", out.Results[0].Product.EvaluatedGates.State)
+		require.Equal(t, "answer_quality_unavailable", out.Results[0].Product.EvaluatedGates.Reason)
+		require.Equal(t, 3, out.Results[0].Product.EvaluatedGates.RequiredGates)
+		require.Equal(t, 1, out.Results[0].Product.EvaluatedGates.PassedGates)
+		require.Equal(t, "not_evaluated", out.Results[0].Qualification)
+		policy.Quality, policy.Availability = "not_required", "not_required"
 		policy.MinRate, policy.MaxRate = bound("0.03"), bound("0.05")
 		policy.Revision++
 		savePolicy(true)

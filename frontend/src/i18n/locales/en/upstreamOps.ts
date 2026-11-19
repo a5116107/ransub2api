@@ -1,5 +1,12 @@
 export default {
   "procurement": {
+    evaluatedGatesTitle: 'Intersection of evaluated product gates',
+    evaluatedGatesCoverage: 'Passed at evaluation: {passed} / required: {required}',
+    evaluatedGatesStates: { pass: 'All configured, evaluated gates passed', fail: 'At least one configured gate rejects', unknown: 'Configured gates unconfirmed' },
+    evaluatedGatesReasons: { all_evaluated_gates_passed: 'Price and required evidence gates passed at this evaluation', price_constraints_failed: 'Price, sources, buckets or product membership rejects', price_constraints_unavailable: 'Price gate disabled or not evaluated', answer_quality_failed: 'Current answer gate rejects', answer_quality_unavailable: 'Required answer evidence unconfirmed', availability_failed: 'Latest availability gate rejects', availability_unavailable: 'Required latest state unconfirmed', expired: 'Required evidence expired; read the latest result' },
+    evaluatedGatesLegacy: 'This response has no intersection result; it remains unknown.',
+    evaluatedGatesBoundary: 'Only explicitly evaluated gates are summarized, not full eligibility. This certifies neither model identity nor high cache performance and never replaces final-send checks.',
+
     availabilityTitle: 'Latest availability for this exact scope',
     availabilityStates: { pass: 'Current pass', fail: 'Current failure', unknown: 'Unknown or expired', not_configured: 'Monitoring not configured' },
     availabilityGateTitle: 'Product latest availability gate',
@@ -80,7 +87,7 @@ export default {
   "qualityOtherScopes": "Evidence from {count} other-scope rules is excluded; their conclusions are not borrowed.",
   "qualityRules": "Expand rules and invalidation reasons",
   "qualityLegacy": "This response has no quality evidence. A historical green result is not reused.",
-  "qualityBoundary": "Only answer evidence for this account and actual model, protocol, tier and output options. Sample coverage is not full capability coverage, model authenticity, high cache or scheduling eligibility. Conclusions apply at the displayed evaluation time; preview never triggers probes.",
+  "qualityBoundary": "Only answer evidence for this account and actual model, protocol, tier and output options. Sample coverage is not full capability coverage, model authenticity, high cache or scheduling eligibility. Expired verdicts are withdrawn; sample counts remain the snapshot at the displayed evaluation time. Preview never triggers probes.",
   "qualityStates": { "pass": "Answer evidence passed (not model verification)", "fail": "Answer evidence failed", "unknown": "Answer evidence unconfirmed", "not_configured": "No answer test configured" },
   "qualityReasons": {
     "all_rules_passed": "Current valid answer samples passed every relevant rule",
@@ -122,7 +129,7 @@ export default {
     "fault_tracking_not_current": "Current rule no longer matches the original fault-tracking conditions",
     "business_fault_recorded": "A new business fault was registered after this round began"
   },
-  "notQualified": "Price classification and answer evidence are separate. Independent model authenticity, cache, live availability and full product scheduling eligibility have NOT been evaluated. This result grants no access.",
+  "notQualified": "Price, answer, latest availability and their evaluated gate intersection are shown separately. Independent model authenticity, cache and full eligibility have NOT been evaluated. This result grants no access.",
   "sources": {
     "manual": "Administrator-saved rate",
     "upstream_probe_sync": "Existing upstream sync evidence",

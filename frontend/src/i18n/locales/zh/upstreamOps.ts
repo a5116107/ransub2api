@@ -1,5 +1,12 @@
 export default {
   "procurement": {
+    evaluatedGatesTitle: '已评估配置门交集',
+    evaluatedGatesCoverage: '核对时通过 {passed} / 必需 {required} 项',
+    evaluatedGatesStates: { pass: '已配置且已评估的门均通过', fail: '至少一项配置门拒绝', unknown: '配置门待确认' },
+    evaluatedGatesReasons: { all_evaluated_gates_passed: '本次核对的价格与必需证据门均通过', price_constraints_failed: '价格、来源、采购桶或产品关联不满足', price_constraints_unavailable: '价格门未启用或未完成核对', answer_quality_failed: '当前答题门拒绝', answer_quality_unavailable: '所需答题证据未确认', availability_failed: '最新可用状态门拒绝', availability_unavailable: '所需最新状态未确认', expired: '必需证据已到期，请重新读取' },
+    evaluatedGatesLegacy: '此响应未包含交集结论，保持未知。',
+    evaluatedGatesBoundary: '只汇总当前明确评估的配置门，非完整产品资格；未认证模型身份或高缓存，也不代替实际发送前终检。',
+
     availabilityTitle: '当前范围的最新可用状态',
     availabilityStates: { pass: '当前通过', fail: '当前失败', unknown: '未知或已过期', not_configured: '未配置可用监测' },
     availabilityGateTitle: '产品最新可用状态门',
@@ -80,7 +87,7 @@ export default {
   "qualityOtherScopes": "另有 {count} 条规则的证据属于其他请求范围，未借用其结论。",
   "qualityRules": "展开规则与失效原因",
   "qualityLegacy": "此响应没有质量证据，不沿用历史绿色结果。",
-  "qualityBoundary": "只核对该账号与实际模型、协议、档位及输出选项的答题证据；样本覆盖不是全能力覆盖，不代表模型真实、高缓存或调度资格。结论仅截至本次核对时间，预演不触发检测。",
+  "qualityBoundary": "只核对该账号与实际模型、协议、档位及输出选项的答题证据；样本覆盖不是全能力覆盖，不代表模型真实、高缓存或调度资格。结论仅截至本次核对时间；到期撤下当前结论，样本数保留为核对时快照，预演不触发检测。",
   "qualityStates": { "pass": "答题证据通过（非模型验真）", "fail": "答题证据未通过", "unknown": "答题证据待确定", "not_configured": "未配置答题检测" },
   "qualityReasons": {
     "all_rules_passed": "相关规则的当前有效答题样本均通过",
@@ -122,7 +129,7 @@ export default {
     "fault_tracking_not_current": "当前规则已不满足原故障追踪条件",
     "business_fault_recorded": "本轮开始后已登记新的业务故障"
   },
-  "notQualified": "价格归类与答题证据分别展示。独立模型验真、缓存、实时可用性与完整产品调度资格均未评估，不能据此放行。",
+  "notQualified": "价格、答题和最新可用状态及已评估配置门交集分别展示；独立模型验真、缓存与完整产品资格均未评估，不能据此放行。",
   "sources": {
     "manual": "管理员保存倍率",
     "upstream_probe_sync": "原上游同步证据",
