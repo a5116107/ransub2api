@@ -117,13 +117,20 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	for i := range accounts {
 		byID[accounts[i].ID] = &accounts[i]
 	}
+	quality, err := readQualityScopesInTx(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
 	out := &service.ProcurementClassificationPreview{ProcurementCatalogSnapshot: service.ProcurementCatalogSnapshot{Catalog: catalog, Gaps: catalog.Gaps()}, Results: make([]service.ProcurementScopeClassification, 0, len(requests))}
 	// Expiry is checked at the end of loading, not at transaction start.
 	if err = tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&out.ObservedAt); err != nil {
 		return nil, err
 	}
+	qualityRules := quality.assess(out.ObservedAt)
 	for _, request := range requests {
-		out.Results = append(out.Results, service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt, product))
+		result := service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt, product)
+		result.Quality = service.AssessQualityScopeEvidence(byID[request.AccountID], request.Scope, qualityRules[request.AccountID], out.ObservedAt, quality.limited)
+		out.Results = append(out.Results, result)
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err

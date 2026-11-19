@@ -14,7 +14,20 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestProcurementQualityEvidencePreviewIsExplicit(t *testing.T) {
+	plan, sample := qualityRouteFixture(t, false)
+	repo := NewChannelRepository(integrationDB).(service.ProcurementCatalogRepository)
+	preview, err := repo.PreviewProcurementClassification(t.Context(), &service.ProcurementPreviewCommand{Requests: []service.ProfitPreviewRequestScope{{AccountID: plan.AccountID, PublicModel: plan.ModelID, Scope: *sample.PelicanConfig.QualityMeasurement.Scope}}})
+	require.NoError(t, err)
+	raw, err := json.Marshal(preview)
+	require.NoError(t, err)
+	require.Equal(t, "unknown", gjson.GetBytes(raw, "results.0.quality_evidence.status").String(), "an unmeasured configured rule must be visible, not absent or green")
+	require.Equal(t, "unknown", gjson.GetBytes(raw, "results.0.quality_evidence.model_identity").String())
+	require.Equal(t, "not_evaluated", gjson.GetBytes(raw, "results.0.qualification").String())
+}
 
 func qualityRouteFixture(t *testing.T, managed bool) (*service.ScheduledTestPlan, *service.ScheduledTestResult) {
 	t.Helper()

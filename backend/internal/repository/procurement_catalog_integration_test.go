@@ -355,3 +355,46 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 	})
 	t.Log(fmt.Sprintf("isolated PostgreSQL catalog/HTTP/100 scopes/CAS/expiry binding/snapshot/failure recovery verified for account %d", accountID))
 }
+
+func TestProcurementQualityEvidenceHTTPReadOnlyAndRecovery(t *testing.T) {
+	db, plan, sample := repository.ProcurementQualityTestRound(t)
+	handler := admin.NewChannelHandler(service.NewChannelService(repository.NewChannelRepository(db), nil, nil, nil, nil), nil, nil)
+	router := gin.New()
+	router.POST("/preview", handler.ProcurementClassificationPreview)
+	command := &service.ProcurementPreviewCommand{Requests: []service.ProfitPreviewRequestScope{{AccountID: plan.AccountID, PublicModel: plan.ModelID, Scope: *sample.PelicanConfig.QualityMeasurement.Scope}}}
+	before, err := db.Query(`SELECT count(*) FROM scheduled_test_results WHERE plan_id=$1`, plan.ID)
+	require.NoError(t, err)
+	require.True(t, before.Next())
+	var samples int
+	require.NoError(t, before.Scan(&samples))
+	require.NoError(t, before.Close())
+	preview := func() *service.ProcurementClassificationPreview {
+		t.Helper()
+		raw, err := json.Marshal(command)
+		require.NoError(t, err)
+		request := httptest.NewRequest(http.MethodPost, "/preview", strings.NewReader(string(raw)))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		var envelope struct {
+			Data *service.ProcurementClassificationPreview `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &envelope))
+		require.NotNil(t, envelope.Data)
+		for _, secret := range []string{"private-route-fixture", "measurement_hash", "response_text", "_quality_", "route.invalid", sample.QualityRouteEvidence.Fingerprint} {
+			require.NotContains(t, recorder.Body.String(), secret)
+		}
+		return envelope.Data
+	}
+	require.Equal(t, "pass", preview().Results[0].Quality.Status)
+	_, err = db.Exec(`UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	require.Equal(t, "unknown", preview().Results[0].Quality.Status)
+	_, err = db.Exec(`UPDATE scheduled_test_plans SET enabled=true WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pass", preview().Results[0].Quality.Status)
+	var after int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM scheduled_test_results WHERE plan_id=$1`, plan.ID).Scan(&after))
+	require.Equal(t, samples, after, "preview must never start a probe or save a generated sample")
+}

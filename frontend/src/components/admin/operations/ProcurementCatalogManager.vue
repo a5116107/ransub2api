@@ -83,6 +83,33 @@
               <div><dt class="text-gray-500">{{ t(`${p}.applicability`) }}</dt><dd>{{ item.applicability === 'covered' ? t(`${p}.covered`) : t('upstreamOps.unknown') }}</dd></div>
             </dl>
             <p v-if="item.reason" class="break-all font-mono text-xs">{{ item.reason }}</p>
+            <section class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="quality-scope-evidence">
+              <h4 class="text-sm font-medium">{{ t(`${p}.qualityTitle`) }}</h4>
+              <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.quality_evidence?.status === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : item.quality_evidence?.status === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="quality-scope-status">{{ t(`${p}.qualityStates.${item.quality_evidence?.status ?? 'unknown'}`) }}</span>
+              <p class="text-sm font-medium text-amber-800 dark:text-amber-300">{{ t(`${p}.modelIdentityUnknown`) }}</p>
+              <template v-if="item.quality_evidence">
+                <p class="break-words text-sm">{{ t(`${p}.qualityReasons.${item.quality_evidence.reason}`) }}</p>
+                <dl class="grid gap-3 text-sm sm:grid-cols-2">
+                  <div><dt class="text-gray-500">{{ t(`${p}.qualityRuleCoverage`) }}</dt><dd>{{ item.quality_evidence.confirmed_rules }} / {{ item.quality_evidence.rule_count }}</dd></div>
+                  <div><dt class="text-gray-500">{{ t(`${p}.qualitySampleCoverage`) }}</dt><dd>{{ item.quality_evidence.valid_samples }} / {{ item.quality_evidence.samples }}</dd></div>
+                  <div><dt class="text-gray-500">{{ t(`${p}.qualityEvaluatedAt`) }}</dt><dd class="break-all">{{ item.quality_evidence.evaluated_at }}</dd></div>
+                  <div><dt class="text-gray-500">{{ t(`${p}.qualityValidUntil`) }}</dt><dd class="break-all">{{ item.quality_evidence.valid_until ?? t('upstreamOps.unknown') }}</dd></div>
+                </dl>
+                <p v-if="item.quality_evidence.other_scope_rules" class="text-xs text-gray-500">{{ t(`${p}.qualityOtherScopes`, { count: item.quality_evidence.other_scope_rules }) }}</p>
+                <details v-if="item.quality_evidence.rules.length" class="min-w-0 text-sm" data-testid="quality-scope-rules">
+                  <summary class="cursor-pointer">{{ t(`${p}.qualityRules`) }}</summary>
+                  <ul class="mt-2 space-y-2">
+                    <li v-for="rule in item.quality_evidence.rules" :key="rule.plan_id" class="break-words rounded border border-gray-200 p-2 dark:border-dark-600">
+                      #{{ rule.plan_id }} · {{ t(`${p}.qualityStates.${rule.status}`) }} · {{ t(`${p}.qualityReasons.${rule.reason}`) }}
+                      <p>{{ t(`${p}.qualitySampleCoverage`) }}: {{ rule.valid_samples }} / {{ rule.samples }}</p>
+                      <p class="break-all">{{ t(`${p}.qualityValidUntil`) }}: {{ rule.valid_until ?? t('upstreamOps.unknown') }}</p>
+                    </li>
+                  </ul>
+                </details>
+              </template>
+              <p v-else class="text-sm">{{ t(`${p}.qualityLegacy`) }}</p>
+              <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.qualityBoundary`) }}</p>
+            </section>
             <div v-if="item.product_procurement" class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="product-procurement">
               <p class="break-words text-sm font-medium">{{ t(`${p}.productResult`, { id: item.product_procurement.group_id, revision: item.product_procurement.policy_revision }) }}</p>
               <p v-if="item.product_procurement.catalog_revision !== undefined" class="text-xs text-gray-500">{{ t(`${p}.revision`, { revision: item.product_procurement.catalog_revision }) }}</p>
@@ -105,8 +132,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { readProcurementCatalog, saveProcurementCatalog, previewProcurementScopes, type ProcurementCatalog, type ProcurementCatalogSnapshot, type ProcurementRequestScope, type ProcurementPreview } from '@/api/admin/procurementCatalog'
+import { readProcurementCatalog, saveProcurementCatalog, previewProcurementScopes, type ProcurementCatalog, type ProcurementCatalogSnapshot, type ProcurementRequestScope, type ProcurementPreview, type QualityScopeEvidence } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot, validateProcurementCatalog } from '@/utils/procurementCatalog'
+import qualityMessages from '@/i18n/locales/en/upstreamOps'
 
 const { t } = useI18n(), p = 'upstreamOps.procurement'
 const saved = ref<ProcurementCatalogSnapshot | null>(null), latest = ref<ProcurementCatalogSnapshot | null>(null)
@@ -181,6 +209,8 @@ async function preview() {
       next.results[0]?.account_id !== request.account_id || next.results[0]?.public_model !== request.public_model || !next.results[0]?.scope ||
       !Object.entries(request.scope).every(([key, value]) => next.results[0]!.scope[key as keyof ProcurementRequestScope['scope']] === value) || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
     const projection = next.results[0]!.product_procurement
+    const quality = next.results[0]!.quality_evidence
+    if (quality !== undefined && !validQualityEvidence(quality, next.observed_at)) throw new Error('unknown quality evidence')
     if (product === undefined ? projection !== undefined : !projection || projection.version !== 1 || projection.group_id !== product || projection.price_basis !== 'group_default' ||
       projection.catalog_revision !== undefined && (projection.catalog_revision !== next.catalog.revision || !Number.isSafeInteger(projection.catalog_revision)) ||
       !Number.isSafeInteger(projection.policy_revision) || projection.policy_revision < 0 || !Number.isFinite(projection.default_d) || projection.default_d < 0 || !Number.isFinite(projection.threshold) || projection.threshold < 0 ||
@@ -191,5 +221,32 @@ async function preview() {
   finally { if (alive) busy.value = false }
 }
 function knownState(value: string) { return ['classified','unclassified','scope_unconfirmed','rate_unavailable','account_unavailable','not_configured'].includes(value) ? value : 'unknown' }
+function validQualityEvidence(q: QualityScopeEvidence, observedAt: string): boolean {
+  const count = (n: number, max = 4096) => Number.isSafeInteger(n) && n >= 0 && n <= max
+  const knownReason = (reason: string) => typeof reason === 'string' && Object.prototype.hasOwnProperty.call(qualityMessages.procurement.qualityReasons, reason)
+  const knownStatus = (status: string) => ['pass', 'fail', 'unknown', 'not_configured'].includes(status)
+  if (!q || q.version !== 1 || q.model_identity !== 'unknown' || !knownStatus(q.status) || !knownReason(q.reason) ||
+    typeof q.evaluated_at !== 'string' || !Number.isFinite(Date.parse(q.evaluated_at)) || Date.parse(q.evaluated_at) !== Date.parse(observedAt) || Date.parse(q.evaluated_at) > Date.now() + 60000 ||
+    !count(q.rule_count, 512) || !count(q.confirmed_rules, q.rule_count) || !count(q.other_scope_rules, 512) ||
+    q.rule_count + q.other_scope_rules > 512 || !count(q.samples) || !count(q.valid_samples, q.samples) || !Array.isArray(q.rules) || q.rules.length !== q.rule_count) return false
+  const window = (valid: number, until: string | null) => valid === 0 ? until === null : typeof until === 'string' && Number.isFinite(Date.parse(until)) && Date.parse(until) > Date.parse(q.evaluated_at)
+  const ids = new Set<number>()
+  for (const rule of q.rules) {
+    if (!rule || !Number.isSafeInteger(rule.plan_id) || rule.plan_id < 1 || ids.has(rule.plan_id) || !['pass', 'fail', 'unknown'].includes(rule.status) || !knownReason(rule.reason) ||
+      !count(rule.samples) || !count(rule.valid_samples, rule.samples) || !window(rule.valid_samples, rule.valid_until) ||
+      rule.status === 'unknown' && (['all_rules_passed', 'all_samples_passed', 'answer_incorrect', 'quality_not_configured'].includes(rule.reason) || rule.samples > 0 && rule.valid_samples === rule.samples) ||
+      rule.status === 'pass' && (rule.samples === 0 || rule.valid_samples !== rule.samples || rule.reason !== 'all_samples_passed') ||
+      rule.status === 'fail' && (rule.valid_samples === 0 || rule.reason !== 'answer_incorrect')) return false
+    ids.add(rule.plan_id)
+  }
+  const passes = q.rules.filter(r => r.status === 'pass').length, failed = q.rules.some(r => r.status === 'fail')
+  if (q.confirmed_rules !== passes || q.samples !== q.rules.reduce((sum, r) => sum + r.samples, 0) || q.valid_samples !== q.rules.reduce((sum, r) => sum + r.valid_samples, 0) || !window(q.valid_samples, q.valid_until)) return false
+  const deadlines = q.rules.flatMap(r => r.valid_until === null ? [] : [Date.parse(r.valid_until)])
+  if (deadlines.length && Date.parse(q.valid_until!) !== Math.min(...deadlines)) return false
+  if (q.status === 'pass') return q.rule_count > 0 && passes === q.rule_count && !failed && q.reason === 'all_rules_passed'
+  if (q.status === 'fail') return failed && q.reason === 'answer_incorrect'
+  if (q.status === 'not_configured') return q.rule_count === 0 && q.other_scope_rules === 0 && q.reason === 'quality_not_configured'
+  return !failed && (q.rule_count === 0 || passes < q.rule_count) && ['evidence_not_observed', 'account_unavailable', 'coverage_limit', 'scope_unconfirmed', 'scope_unobserved', 'invalid_rule', 'invalid_sample', 'rule_unconfirmed'].includes(q.reason)
+}
 onBeforeUnmount(() => { alive = false; controller.abort() })
 </script>

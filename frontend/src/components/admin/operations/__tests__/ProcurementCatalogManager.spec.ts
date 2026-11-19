@@ -35,6 +35,52 @@ beforeEach(() => {
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it.each(['pass', 'fail', 'unknown', 'not_configured', 'legacy'])('shows scope answer evidence separately from model identity (%s)', async status => {
+    const w = await open(); await setupProbe(w)
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({
+      ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
+        state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
+        ...(status === 'legacy' ? {} : { quality_evidence: qualityFixture(status) })
+      }))
+    }))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="quality-scope-status"]').text()).toContain(prefix + 'qualityStates.' + (status === 'legacy' ? 'unknown' : status))
+    expect(w.get('[data-testid="quality-scope-evidence"]').text()).toContain(prefix + 'modelIdentityUnknown')
+    if (['pass', 'fail', 'unknown'].includes(status)) {
+      expect(w.get('[data-testid="quality-scope-rules"]').text()).toContain('#12')
+      expect(w.get('[data-testid="quality-scope-evidence"]').text()).toContain('2026-11-19T00:00:00Z')
+    }
+    expect(w.text()).toContain(prefix + 'notQualified')
+  })
+  it.each(['future-version', 'identity-pass', 'future-read', 'stale-read', 'unknown-status', 'unknown-reason', 'counts', 'zero-rules-pass', 'rule-count', 'duplicate-rule', 'unknown-rule', 'invalid-date', 'expired-pass', 'missing-window', 'failed-rule-pass', 'partial-pass', 'unknown-top-pass-reason', 'unknown-rule-pass-reason'])('hides contradictory quality evidence rather than showing green (%s)', async kind => {
+    const w = await open(); await setupProbe(w)
+    const q = qualityFixture('pass')
+    if (kind === 'future-version') q.version++
+    if (kind === 'identity-pass') q.model_identity = 'pass'
+    if (kind === 'future-read') q.evaluated_at = '2999-01-01T00:00:00Z'
+    if (kind === 'stale-read') q.evaluated_at = '2026-11-18T00:00:00Z'
+    if (kind === 'unknown-status') q.status = 'toString'
+    if (kind === 'unknown-reason') q.reason = 'future_passing_reason'
+    if (kind === 'counts') q.valid_samples++
+    if (kind === 'zero-rules-pass') { q.rules = []; q.rule_count = 0; q.confirmed_rules = 0; q.samples = 0; q.valid_samples = 0 }
+    if (kind === 'rule-count') q.rule_count++
+    if (kind === 'duplicate-rule') q.rules.push(q.rules[0]!)
+    if (kind === 'unknown-rule') q.rules[0]!.status = 'constructor'
+    if (kind === 'invalid-date') q.valid_until = 'invalid'
+    if (kind === 'expired-pass') q.valid_until = q.evaluated_at
+    if (kind === 'missing-window') q.rules[0]!.valid_until = null
+    if (kind === 'failed-rule-pass') q.rules[0]!.status = 'fail'
+    if (kind === 'partial-pass') q.rules[0]!.valid_samples = 0
+    if (kind === 'unknown-top-pass-reason' || kind === 'unknown-rule-pass-reason') {
+      Object.assign(q, qualityFixture('unknown'))
+      if (kind === 'unknown-top-pass-reason') q.reason = 'all_rules_passed'
+      else q.rules[0]!.reason = 'all_samples_passed'
+    }
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => ({ ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request, state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', quality_evidence: q })) }))
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+  })
   it('previews product constraints separately and clears them when the selected product changes', async () => {
     const w = await open(); await setupProbe(w)
     await w.get('[data-testid="procurement-product"]').setValue('42')
@@ -192,3 +238,12 @@ describe('catalog editing and scope classification in the original operations pa
     expect(vi.mocked(saveProcurementCatalog).mock.calls[0]![0]).toEqual({ version: 1, revision: 1, buckets: [] })
   })
 })
+
+function qualityFixture(status: string) {
+  const valid = status === 'pass' || status === 'fail'
+  return { version: 1, status, reason: ({ pass: 'all_rules_passed', fail: 'answer_incorrect', unknown: 'rule_unconfirmed', not_configured: 'quality_not_configured' } as Record<string, string>)[status]!,
+    model_identity: 'unknown', evaluated_at: '2026-11-19T00:00:00Z', valid_until: valid ? '2026-11-19T00:05:00Z' : null,
+    rule_count: status === 'not_configured' ? 0 : 1, confirmed_rules: status === 'pass' ? 1 : 0, samples: status === 'not_configured' ? 0 : 1, valid_samples: valid ? 1 : 0, other_scope_rules: 0,
+    rules: status === 'not_configured' ? [] : [{ plan_id: 12, status, reason: status === 'pass' ? 'all_samples_passed' : status === 'fail' ? 'answer_incorrect' : 'expired', samples: 1, valid_samples: valid ? 1 : 0, valid_until: valid ? '2026-11-19T00:05:00Z' : null }]
+  }
+}

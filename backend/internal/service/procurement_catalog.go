@@ -34,6 +34,7 @@ type ProcurementScopeClassification struct {
 	EffectiveRate *string                    `json:"effective_rate"`
 	Bucket        *domain.ProcurementBucket  `json:"bucket"`
 	Qualification string                     `json:"qualification"`
+	Quality       *QualityScopeEvidence      `json:"quality_evidence,omitempty"`
 	Product       *ProcurementProductPreview `json:"product_procurement,omitempty"`
 }
 
