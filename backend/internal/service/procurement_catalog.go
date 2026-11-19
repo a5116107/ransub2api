@@ -101,17 +101,8 @@ func procurementCatalogObject(value gjson.Result, names ...string) bool {
 }
 
 func ParseProcurementCatalogCommand(raw []byte) (*domain.ProcurementCatalog, error) {
-	value := gjson.ParseBytes(raw)
-	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !procurementCatalogObject(value, "version", "revision", "buckets") || value.Get("revision").Type == gjson.Null || !value.Get("buckets").IsArray() {
-		return nil, ErrProcurementCatalogInvalid
-	}
-	for _, bucket := range value.Get("buckets").Array() {
-		if !procurementCatalogObject(bucket, "code", "name", "min_rate", "max_rate") {
-			return nil, ErrProcurementCatalogInvalid
-		}
-	}
 	var catalog domain.ProcurementCatalog
-	if json.Unmarshal(raw, &catalog) != nil || catalog.ValidateDraft() != nil {
+	if len(raw) > 65536 || json.Unmarshal(raw, &catalog) != nil || catalog.ValidateDraft() != nil {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	return &catalog, nil

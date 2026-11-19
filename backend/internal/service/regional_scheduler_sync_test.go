@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,44 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRegionalSchedulerProcurementJSONRejectsPartialPublish(t *testing.T) {
+	group := profitControlTestGroup(7, 0, 0)
+	group.ProcurementPolicy = &ProcurementPolicy{Version: 3, Revision: 1, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{Codes: []string{"low"}}}
+	doc := RegionalSchedulerDocument{Version: 3, Groups: []*Group{group}, ProcurementCatalog: procurementBucketTestCatalog(), Buckets: []RegionalSchedulerBucket{}, Availability: []RegionalAccountAvailability{}}
+	raw, err := json.Marshal(doc)
+	require.NoError(t, err)
+	policy, err := json.Marshal(group.ProcurementPolicy)
+	require.NoError(t, err)
+	replica := regionalTestReplica(t, filepath.Join(t.TempDir(), "strict-json"), true)
+	require.NoError(t, replica.PublishNext(t.Context(), "test", time.Minute, raw))
+	before, err := replica.Current()
+	require.NoError(t, err)
+	for name, broken := range map[string]string{
+		"missing policy bound":      strings.Replace(string(raw), string(policy), strings.Replace(string(policy), `"max_rate":null,`, "", 1), 1),
+		"duplicate policy version":  strings.Replace(string(raw), string(policy), strings.Replace(string(policy), `"version":3`, `"version":1,"version":3`, 1), 1),
+		"overwritten bucket filter": strings.Replace(string(raw), string(policy), strings.Replace(string(policy), `"buckets":{"codes":["low"]}`, `"buckets":{"codes":["low"]},"buckets":{"codes":null}`, 1), 1),
+		"missing catalog bound":     strings.Replace(string(raw), `"max_rate":"0.03"`, `"unused":null`, 1),
+		"overwritten catalog bound": strings.Replace(string(raw), `"max_rate":"0.03"`, `"max_rate":"0.03","max_rate":null`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.NotEqual(t, string(raw), broken)
+			require.Error(t, replica.PublishNext(t.Context(), "test", time.Minute, []byte(broken)))
+			after, err := replica.Current()
+			require.NoError(t, err)
+			require.Equal(t, before.Revision, after.Revision)
+			require.Equal(t, before.ExpiresAt, after.ExpiresAt)
+			require.Equal(t, before.Payload, after.Payload, "a rejected document must leave the last complete view intact")
+		})
+	}
+	require.NoError(t, replica.PublishNext(t.Context(), "test", time.Minute, raw))
+	after, err := replica.Current()
+	require.NoError(t, err)
+	require.Greater(t, after.Revision, before.Revision)
+	loaded, err := decodeRegionalScheduler(after.Payload)
+	require.NoError(t, err)
+	require.Equal(t, []string{"low"}, loaded.Groups[0].ProcurementPolicy.Buckets.Codes)
+}
 
 func regionalTestReplica(t *testing.T, path string, bootstrap bool) *regional.Replica {
 	t.Helper()

@@ -23,6 +23,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProcurementPolicyStoredJSONPostgresRejectsMissingBounds(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	max := "0.03"
+	policy := &domain.ProcurementPolicy{Version: 1, Revision: 1, MaxRate: &max}
+	group, err := client.Group.Create().SetName("strict-policy-json").SetPlatform(service.PlatformOpenAI).SetRateMultiplier(.15).SetProfitControlEnabled(true).SetProcurementPolicy(policy).Save(ctx)
+	require.NoError(t, err)
+	repo := repository.NewAdminGroupRepository(client, db)
+	for name, broken := range map[string]string{
+		"missing maximum": `{"version":1,"revision":1,"min_rate":null}`,
+		"missing minimum": `{"version":1,"revision":1,"max_rate":"0.03"}`,
+		"null revision":   `{"version":1,"revision":null,"min_rate":null,"max_rate":"0.03"}`,
+		"wrong case":      `{"Version":1,"revision":1,"min_rate":null,"max_rate":"0.03"}`,
+		"unknown field":   `{"version":1,"revision":1,"min_rate":null,"max_rate":"0.03","owner":"unknown"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, group.ID, broken)
+			require.NoError(t, err)
+			loaded, err := repo.GetByIDLite(ctx, group.ID)
+			require.Error(t, err, "SQL JSONB reads must not turn damaged constraints into unbounded admission")
+			require.Nil(t, loaded)
+			saved, err := json.Marshal(policy)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, group.ID, string(saved))
+			require.NoError(t, err)
+			loaded, err = repo.GetByIDLite(ctx, group.ID)
+			require.NoError(t, err)
+			require.Equal(t, "0.03", *loaded.ProcurementPolicy.MaxRate)
+			require.Equal(t, .15, loaded.RateMultiplier)
+			require.EqualValues(t, 1, loaded.ProcurementPolicy.Revision)
+		})
+	}
+}
+
 func TestProcurementPolicySourcesPostgresHTTP(t *testing.T) {
 	db, client := repository.UpstreamChannelsTestDatabase(t)
 	ctx := t.Context()

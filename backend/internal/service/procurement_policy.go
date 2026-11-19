@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"slices"
@@ -18,39 +17,8 @@ func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*
 	if len(raw) == 0 {
 		return current.Clone(), nil, nil
 	}
-	if len(raw) > 32768 || !json.Valid(raw) {
-		return nil, nil, ErrProcurementPolicyInvalid
-	}
-	fields := make(map[string]json.RawMessage, 6)
-	fieldDecoder := json.NewDecoder(bytes.NewReader(raw))
-	if token, err := fieldDecoder.Token(); err != nil || token != json.Delim('{') {
-		return nil, nil, ErrProcurementPolicyInvalid
-	}
-	for fieldDecoder.More() {
-		token, err := fieldDecoder.Token()
-		if err != nil {
-			return nil, nil, ErrProcurementPolicyInvalid
-		}
-		key, ok := token.(string)
-		if !ok || fields[key] != nil || (key != "version" && key != "revision" && key != "min_rate" && key != "max_rate" && key != "sources" && key != "buckets") {
-			return nil, nil, ErrProcurementPolicyInvalid
-		}
-		var value json.RawMessage
-		if fieldDecoder.Decode(&value) != nil {
-			return nil, nil, ErrProcurementPolicyInvalid
-		}
-		fields[key] = value
-	}
-	if len(fields) < 4 || len(fields) > 6 || fields["version"] == nil || fields["revision"] == nil || fields["min_rate"] == nil || fields["max_rate"] == nil || bytes.Equal(bytes.TrimSpace(fields["revision"]), []byte("null")) {
-		return nil, nil, ErrProcurementPolicyInvalid
-	}
 	var draft *ProcurementPolicy
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&draft); err != nil || draft.ValidateDraft() != nil {
-		return nil, nil, ErrProcurementPolicyInvalid
-	}
-	if draft.Version == 1 && fields["sources"] != nil || draft.Version < 3 && fields["buckets"] != nil {
+	if len(raw) > 32768 || json.Unmarshal(raw, &draft) != nil || draft.ValidateDraft() != nil {
 		return nil, nil, ErrProcurementPolicyInvalid
 	}
 	expected := int64(0)

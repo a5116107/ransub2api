@@ -76,6 +76,43 @@ func TestProcurementPolicyDecimalBoundaries(t *testing.T) {
 	require.True(t, allowed)
 }
 
+func TestProcurementPolicyStoredJSONRequiresCompleteContract(t *testing.T) {
+	for name, raw := range map[string]string{
+		"missing minimum":     `{"version":1,"revision":1,"max_rate":null}`,
+		"missing maximum":     `{"version":1,"revision":1,"min_rate":null}`,
+		"null revision":       `{"version":1,"revision":null,"min_rate":null,"max_rate":null}`,
+		"duplicate version":   `{"version":1,"version":1,"revision":1,"min_rate":null,"max_rate":null}`,
+		"overwritten maximum": `{"version":1,"revision":1,"min_rate":null,"max_rate":"0.03","max_rate":null}`,
+		"wrong case":          `{"Version":1,"revision":1,"min_rate":null,"max_rate":null}`,
+		"unknown field":       `{"version":1,"revision":1,"min_rate":null,"max_rate":null,"owner":"unknown"}`,
+		"v1 sources null":     `{"version":1,"revision":1,"min_rate":null,"max_rate":null,"sources":null}`,
+		"v2 buckets null":     `{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":null}`,
+		"overwritten sources": `{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":[9]},"sources":{"account_ids":null}}`,
+		"overwritten buckets": `{"version":3,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":["low"]},"buckets":{"codes":null}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := &ProcurementPolicy{Version: 1, Revision: 7}
+			before := p.Clone()
+			require.Error(t, json.Unmarshal([]byte(raw), p), "storage/snapshot reads must not silently remove a constraint")
+			require.Equal(t, before, p, "failed decoding must not publish a partial policy")
+		})
+	}
+	for _, version := range []int{1, 2, 3} {
+		p := &ProcurementPolicy{Version: version, Revision: 0}
+		if version >= 2 {
+			p.Sources = &ProcurementSources{}
+		}
+		if version >= 3 {
+			p.Buckets = &ProcurementBuckets{}
+		}
+		raw, err := json.Marshal(p)
+		require.NoError(t, err)
+		var draft ProcurementPolicy
+		require.NoError(t, json.Unmarshal(raw, &draft), "explicit null and revision-zero commands remain supported")
+		require.Equal(t, p, &draft)
+	}
+}
+
 func TestProcurementPolicyRejectsMalformedBoundaries(t *testing.T) {
 	for _, invalid := range []string{"", "-0.01", "+0.01", ".02", "00.02", "0.123456789", "100000000", "1e-2", "NaN", "Inf", " 0.02", "0.02 "} {
 		p := &ProcurementPolicy{Version: 1, Revision: 1, MinRate: &invalid}

@@ -3,22 +3,22 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D4.3.5允许采购桶运行时接线本地已验。
+任务：D4.3.6采购JSON完整合同本地已验；D4.3.5已同步fb3e78b18。
 范围：唯一H盘功能分支提交同步；不CI/PR/生产，不改业务与探测判据。
 已决：实际usage、插件自动延期、手动停用及unknown保持。
-来源：465a91bdb续接；终稿907ab073846f，证据见DECISIONS Attempt103。
-已验：race4944/PG42/UI198，四包vet/增量lint0、Linux嵌入及48浏览器检查。
-下一：D4.3完整资格/模式/拥有者与D6.2接线；真实供应商等外等保持。
+来源：fb3e78b18→终稿5f3b54ce5b4a，见DECISIONS Attempt104。
+已验：race5002/PG54、四包vet/增量lint0及Linux嵌入；UI沿未变输入证据。
+下一：D4.3完整资格/模式/拥有者→D6.2；供应商/跨节点等验收保持。
 等待：原28项20done/8部分；全scope/跨节点/生产/PR3待。
 生产最后记录.7/fd83f6c91；本轮不部署；历史拒删原位保护。
-Attempt：103
+Attempt：104
 <!-- resume:end -->
 
 ## 目标与入口
 
 更新：2026-11-19。倍率内多供应商自动调度，保护质量、响应和会话缓存，保留自研并同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)：13.3保留审计基线，5.3.1补自动适用声明边界。
-- [决策与验证历史](DECISIONS.md)；功能分支未整体验证上线，独立生产热修复已加载。
+- [决策与验证历史](DECISIONS.md)；功能分支未上线，独立热修复已加载。
 - 原28项20done/8部分；13.2子项6/7done；分母保持，单分支/单PR。
 - R1仅发行production；线上问题按D9.1处理，真实采购价延期。
 
@@ -33,7 +33,7 @@ Attempt：103
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
-| D2.6.1–.4 | done | 自动/手工声明、精确预演、New API同源绑定/TTL/重放、SQL CAS、HTTP/WS/UI本地已验；逐项证据见DECISIONS |
+| D2.6.1–.4 | done | 自动/手工声明、精确预演、New API绑定/TTL/重放、SQL CAS及HTTP/WS/UI本地已验 |
 | D2.6.5–.12 | done | 原生/固定转换、四WS/两HTTP桥候选已本地验；静态/构建及未变SQL/UI证据见DECISIONS，非生产 |
 | D2.6.13 | done | smart原标量/历史及11类逐轮路径已验；race6876，非生产 |
 | D2.6.14 | done | Messages→Chat映射/effort/Fast与调度/HTTP已验；race7652，非生产 |
@@ -44,21 +44,23 @@ Attempt：103
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 原清理/分页/依赖及双平台验收保持；逐项源码与验证见DECISIONS |
-| D4 | in_progress | D4.3.1–.5区间/目录/来源/产品预演/允许桶本地已验；完整资格/模式/重算仍缺 |
+| D4 | in_progress | D4.3.1–.6区间/目录/来源/预演/允许桶/JSON完整性已验；完整资格/模式/重算仍缺 |
 | D4.3.1 | done | 区间/CAS/预演/终检、PG迁移/权限及中英UI已验；非完整资格/生产 |
 | D4.3.2 | done | 目录/CAS/同快照归类、PG32/UI174/权限/四视口/嵌入已验；非完整资格/生产 |
 | D4.3.3 | done | 本地账号来源/CAS/预演/末端重读、race4876/PG34/UI196及中英四视口；非完整资格/生产 |
 | D4.3.4 | done | 同scope产品预演、race4878/PG36/UI206/四视口/嵌入已验；非完整资格/生产 |
 | D4.3.5 | done | 允许桶/变价/终检/区域快照，race4944/PG42/UI198/48浏览器及嵌入已验；非完整资格/生产 |
+| D4.3.6 | done | 原对象严格JSON、PG损坏拒绝/恢复及认证/区域本地已验；race5002/PG54、静态/Linux通过 |
+| D4.3.6 | in_progress | 持久/快照JSON缺字段或重复覆盖可能放宽约束；20叶例红测，统一原解码中 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/入口来源已本地验；实际组/受信外部检测/其余scope/资格及D5.4仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
 | D7 | in_progress | 历史结论/下游原始面板及409已有证据；D7.3真实多维结论、D7.4三步产品配置/监控/预算解释仍缺 |
 | D5.1/D6.1 | done | 上下游/账单合同；同run粘性/跨run隔离、Messages独立前缀，race40/vet |
 | D5.2 | done | 最终原始摘要、唯一逻辑计数/覆盖、本人筛选/30天与中英390px；非生产证据 |
-| D5.3.1–.10 | done | 最终Key/发送scope、HTTP与独立WS等待、逐尝试缓存/输出及来源分桶已本地验；逐项证据见DECISIONS；非实际组/资格/生产 |
-| D5.3.11 | done | Messages模型/tier/速度/effort/思考模式及预算独立分桶；PG614/竞态644/计时788/UI87及静态/Linux/四视口通过；仅本地 |
-| D5.3.12 | done | Gemini URL/信封模型、实际action/预算模式/等级/思考输出独立分桶；PG666/竞态1074/计时821/UI115及静态/Linux/四视口通过；仅本地 |
-| D5.3.13 | done | Responses摘要/加密输出请求/verbosity分桶，旧/非法未知；计时1718/服务5526/SQL428/UI119、静态/四视口已验；非生产 |
+| D5.3.1–.10 | done | 最终Key/scope、HTTP/WS等待、逐尝试缓存/输出/来源已验；非实际组/资格/生产 |
+| D5.3.11 | done | Messages速度/思考与预算独立分桶；PG614/race644/计时788/UI87及静态/Linux/四视口本地已验 |
+| D5.3.12 | done | Gemini模型/action/预算/等级/思考输出分桶；PG666/race1074/计时821/UI115及静态/Linux/四视口本地已验 |
+| D5.3.13 | done | Responses摘要/加密输出/verbosity分桶，非法未知；计时1718/服务5526/SQL428/UI119及静态/四视口本地已验 |
 | D7.1/D7.2 | done | 结构化结论/覆盖/账号一致性，计费标签/开关/CSV；前端测试/类型/lint/构建及中英手机 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/冻结集合、多维详情、期限/轮次/API-Key线路与登记故障已验；独立基线、其余线路/跨规则/故障与资格消费仍缺 |
@@ -70,7 +72,7 @@ Attempt：103
 ## 剩余执行顺序与等待
 
 - 本地顺序：D2.6/D5.3→D3.2/D8.1→D4.3→D6.2→D7.3/D7.4→D8.2；D5.4独立接入，严格高缓存资格仍依赖它。
-- D9.1生产.7已验；PR3/v2.21.5冲突未解，未验功能不发布，历史证据见DECISIONS。
+- D9.1生产.7已验；PR3/v2.21.5冲突未解；未验功能不发布，见DECISIONS。
 - 外部数据owner为供应商/接入方：实际组/模型/fast、独立参考、缓存域/存活和unknown请求唯一关联；开发方接入验证。取得可核对scope/证据后释放相应验收。
 - D3.3首批非文本能力仍待明确供应商/模型/协议；D6.3真实迁移净收益仍待前缀与候选域。文本通过不外推工具/媒体/语音。
 - D8.2旧版重订阅对照已失败，同候选恢复通过不算严格混版；统一排空升级是另一交付路径，不更名关闭原验收。D9.2仍依赖完整本地与实际启用范围证据。
@@ -79,7 +81,7 @@ Attempt：103
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
 - 历史12张测试PNG/1164bytes校验匹配；data/删除受宿主拦截，原位保留。
-- backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
+- backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式153包已验。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- 私有PG55441/PID10868、Redis56441/PID46228及quality-batch/quality-validity受宿主拒删；预览已停。路径/解除条件见DECISIONS，owner宿主用户。
-- 历史拒删620274603bytes/D2.6日志、Stop overlay49259bytes、构建213260543+临时9279228bytes原位；详见DECISIONS，待宿主解除，不重试/绕行，回收0。
+- PG55441/PID10868、Redis56441/PID46228及quality-batch/quality-validity拒删，owner宿主用户；路径/解除条件见DECISIONS。
+- 历史拒删620274603bytes/D2.6日志、Stop overlay49259bytes、构建213260543+临时9279228bytes原位；待宿主解除，详见DECISIONS；回收0，不重试/绕行。

@@ -8,11 +8,39 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProcurementPolicyAuthSnapshotRejectsIncompleteJSON(t *testing.T) {
+	svc := &APIKeyService{}
+	apiKey := profitAuthTestAPIKey()
+	max := "0.03"
+	apiKey.Group.ProcurementPolicy = &ProcurementPolicy{Version: 1, Revision: 2, MaxRate: &max}
+	raw, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: svc.snapshotFromAPIKey(t.Context(), apiKey)})
+	require.NoError(t, err)
+	policy, err := json.Marshal(apiKey.Group.ProcurementPolicy)
+	require.NoError(t, err)
+	for _, replacement := range []string{
+		`{"version":1,"revision":2,"min_rate":null}`,
+		`{"version":1,"revision":2,"min_rate":null,"max_rate":"0.03","max_rate":null}`,
+		`{"version":1,"revision":2,"min_rate":null,"max_rate":"0.03","sources":null}`,
+	} {
+		broken := strings.Replace(string(raw), string(policy), replacement, 1)
+		require.NotEqual(t, string(raw), broken)
+		var entry APIKeyAuthCacheEntry
+		require.Error(t, json.Unmarshal([]byte(broken), &entry), "corrupt L2 policy must be a decode miss, not unrestricted admission")
+	}
+	var entry APIKeyAuthCacheEntry
+	require.NoError(t, json.Unmarshal(raw, &entry))
+	loaded, used, err := svc.applyAuthCacheEntry(apiKey.Key, &entry)
+	require.NoError(t, err)
+	require.True(t, used)
+	require.Equal(t, "0.03", *loaded.Group.ProcurementPolicy.MaxRate)
+}
 
 func profitAuthTestAPIKey() *APIKey {
 	groupID := int64(50)

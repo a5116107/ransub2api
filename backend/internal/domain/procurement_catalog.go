@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"slices"
@@ -15,6 +17,36 @@ type ProcurementCatalog struct {
 	Version  int                 `json:"version"`
 	Revision int64               `json:"revision"`
 	Buckets  []ProcurementBucket `json:"buckets"`
+}
+
+func (c *ProcurementCatalog) UnmarshalJSON(raw []byte) error {
+	fields, err := procurementJSONFields(raw, []string{"version", "revision", "buckets"})
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(bytes.TrimSpace(fields["revision"]), []byte("null")) {
+		return errors.New("procurement catalog requires an explicit revision")
+	}
+	var buckets []json.RawMessage
+	if err := json.Unmarshal(fields["buckets"], &buckets); err != nil {
+		return err
+	}
+	for _, bucket := range buckets {
+		if _, err := procurementJSONFields(bucket, []string{"code", "name", "min_rate", "max_rate"}); err != nil {
+			return err
+		}
+	}
+	type contract ProcurementCatalog
+	var next contract
+	if err := json.Unmarshal(raw, &next); err != nil {
+		return err
+	}
+	catalog := ProcurementCatalog(next)
+	if err := catalog.ValidateDraft(); err != nil {
+		return err
+	}
+	*c = catalog
+	return nil
 }
 
 type ProcurementBucket struct {

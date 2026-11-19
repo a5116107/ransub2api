@@ -1,11 +1,36 @@
 package domain
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestProcurementCatalogStoredJSONRequiresCompleteContract(t *testing.T) {
+	for name, raw := range map[string]string{
+		"missing revision":      `{"version":1,"buckets":[]}`,
+		"null revision":         `{"version":1,"revision":null,"buckets":[]}`,
+		"duplicate revision":    `{"version":1,"revision":1,"revision":0,"buckets":[]}`,
+		"wrong case":            `{"Version":1,"revision":1,"buckets":[]}`,
+		"unknown field":         `{"version":1,"revision":1,"buckets":[],"owner":"unknown"}`,
+		"missing minimum":       `{"version":1,"revision":1,"buckets":[{"code":"low","name":"Low","max_rate":"0.03"}]}`,
+		"missing maximum":       `{"version":1,"revision":1,"buckets":[{"code":"low","name":"Low","min_rate":null}]}`,
+		"overwritten maximum":   `{"version":1,"revision":1,"buckets":[{"code":"low","name":"Low","min_rate":null,"max_rate":"0.03","max_rate":null}]}`,
+		"duplicate bucket list": `{"version":1,"revision":1,"buckets":[{"code":"low","name":"Low","min_rate":null,"max_rate":"0.03"}],"buckets":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			catalog := catalogFixture()
+			before := catalog.Clone()
+			require.Error(t, json.Unmarshal([]byte(raw), catalog), "all readers must preserve the complete catalog contract")
+			require.Equal(t, before, catalog, "failed decoding must not publish a partial catalog")
+		})
+	}
+	var empty ProcurementCatalog
+	require.NoError(t, json.Unmarshal([]byte(`{"version":1,"revision":0,"buckets":[]}`), &empty))
+	require.NoError(t, empty.ValidateDraft())
+}
 
 func catalogBound(v string) *string { return &v }
 

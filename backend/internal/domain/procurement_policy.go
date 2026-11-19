@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"math/big"
 	"regexp"
@@ -21,6 +22,76 @@ type ProcurementPolicy struct {
 	MaxRate  *string             `json:"max_rate"`
 	Sources  *ProcurementSources `json:"sources,omitempty"`
 	Buckets  *ProcurementBuckets `json:"buckets,omitempty"`
+}
+
+// A persisted policy and a command have the same complete JSON contract. Plain
+// struct decoding accepts missing bounds, case aliases and last-value wins,
+// which could turn a damaged snapshot into less restrictive admission.
+func (p *ProcurementPolicy) UnmarshalJSON(raw []byte) error {
+	fields, err := procurementJSONFields(raw, []string{"version", "revision", "min_rate", "max_rate"}, "sources", "buckets")
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(bytes.TrimSpace(fields["revision"]), []byte("null")) {
+		return errors.New("procurement policy requires an explicit revision")
+	}
+	type contract ProcurementPolicy
+	var next contract
+	if err := json.Unmarshal(raw, &next); err != nil {
+		return err
+	}
+	policy := ProcurementPolicy(next)
+	if err := policy.ValidateDraft(); err != nil {
+		return err
+	}
+	if policy.Version == 1 && fields["sources"] != nil || policy.Version < 3 && fields["buckets"] != nil {
+		return errors.New("procurement fields do not match the policy version")
+	}
+	*p = policy
+	return nil
+}
+
+func procurementJSONFields(raw []byte, required []string, optional ...string) (map[string]json.RawMessage, error) {
+	allowed := make(map[string]bool, len(required)+len(optional))
+	for _, name := range required {
+		allowed[name] = true
+	}
+	for _, name := range optional {
+		allowed[name] = true
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return nil, errors.New("procurement configuration must be an object")
+	}
+	fields := make(map[string]json.RawMessage, len(allowed))
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := token.(string)
+		if !ok || !allowed[name] || fields[name] != nil {
+			return nil, errors.New("duplicate or unknown procurement field")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		fields[name] = value
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, errors.New("invalid procurement object")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("trailing procurement data")
+	}
+	for _, name := range required {
+		if fields[name] == nil {
+			return nil, errors.New("missing procurement field")
+		}
+	}
+	return fields, nil
 }
 
 // Version 3 requires an explicit codes list. Nil preserves the original pool;
