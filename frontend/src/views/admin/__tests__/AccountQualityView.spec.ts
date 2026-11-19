@@ -1993,19 +1993,41 @@ describe('quality operations', () => {
     wrapper.unmount()
   })
   it.each([
-    { name: 'incomplete frozen round', status: 'success', round_complete: false, passed_count: 2, total_count: 2, passed: false },
-    { name: 'failed round with equal counts', status: 'failed', round_complete: true, passed_count: 2, total_count: 2, passed: false },
-    { name: 'fractional sample counts', status: 'success', round_complete: true, passed_count: 1.5, total_count: 1.5, passed: false },
-    { name: 'empty round', status: 'skipped', round_complete: false, passed_count: 0, total_count: 0, passed: false },
-    { name: 'complete passing round', status: 'success', round_complete: true, passed_count: 2, total_count: 2, passed: true },
-    { name: 'legacy passing round', status: 'success', round_complete: undefined, passed_count: 2, total_count: 2, passed: true },
+    { name: 'incomplete frozen round', status: 'success', round_complete: false, passed_count: 2, total_count: 2, passed: false, label: 'roundIncomplete', neutral: true },
+    { name: 'failed round with equal counts', status: 'failed', round_complete: true, passed_count: 2, total_count: 2, passed: false, label: 'roundInconclusive', neutral: true },
+    { name: 'fractional sample counts', status: 'success', round_complete: true, passed_count: 1.5, total_count: 1.5, passed: false, label: 'roundInconclusive', neutral: true },
+    { name: 'empty round', status: 'skipped', round_complete: false, passed_count: 0, total_count: 0, passed: false, label: 'skipped', neutral: true },
+    { name: 'complete passing round', status: 'success', round_complete: true, passed_count: 2, total_count: 2, passed: true, label: 'roundPassed', neutral: false },
+    { name: 'legacy passing round', status: 'success', round_complete: undefined, passed_count: 2, total_count: 2, passed: true, label: 'roundPassed', neutral: false },
+    { name: 'ungraded round', status: 'failed', round_complete: true, passed_count: 0, total_count: 2, passed: false, label: 'roundInconclusive', neutral: true },
+    { name: 'confirmed incorrect round', status: 'failed', quality_action: 'groups_removed', round_complete: true, passed_count: 1, total_count: 2, passed: false, label: 'roundNotPassed', neutral: false },
   ])('respects the persisted verdict for $name', async sample => {
     const operation = { id: 103, plan_id: 4, account_id: 1, account_name: 'Synthetic account',
       error_message: '', quality_action: 'inconclusive', result_ids: [103, 102], ...sample }
     vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 0 })
     const wrapper = mountView(); await flushPromises()
     expect(wrapper.get('.test-count').classes().includes('test-passed')).toBe(sample.passed)
-    expect(wrapper.text()).toContain(sample.status === 'skipped' ? 'qualityOps.skipped' : sample.passed ? 'qualityOps.roundPassed' : 'qualityOps.roundNotPassed')
+    expect(wrapper.get('.test-count').classes().includes('test-neutral')).toBe(sample.neutral)
+    expect(wrapper.text()).toContain(`qualityOps.${sample.label}`)
+    if (sample.neutral) expect(wrapper.get('.test-count').classes()).not.toContain('test-other')
+    wrapper.unmount()
+  })
+  it('keeps an ungraded round neutral in the list, overview and sample details', async () => {
+    const operation = { id: 103, plan_id: 4, account_id: 1, account_name: 'Synthetic account', status: 'failed',
+      round_complete: true, passed_count: 0, total_count: 1, error_message: 'judge_inconclusive', quality_action: 'inconclusive', result_ids: [103],
+      pelican_config: { quality: { action: 'remove_groups', remove_group_ids: [21] } } }
+    const result = { ...operation, response_text: 'Synthetic answer', quality_judgment: { verdict: 'unknown', reason: 'judge_no_available_account' } }
+    vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 0 })
+    vi.mocked(scheduledTests.getResult).mockResolvedValueOnce(result as any)
+    const wrapper = mountView(); await flushPromises()
+    await (wrapper.vm as any).operationDetails(operation); await flushPromises()
+    expect(wrapper.get('[data-testid="quality-round-overview"]').text()).toContain('qualityOps.roundInconclusive')
+    expect(wrapper.get('[data-testid="quality-round-overview"] strong').classes()).toContain('test-neutral')
+    expect(wrapper.get('[data-testid="quality-result-badge"]').text()).toBe('qualityOps.judgeUnknown')
+    expect(wrapper.get('[data-testid="quality-result-badge"]').classes()).toContain('tone-neutral')
+    expect(wrapper.get('.result-navigation button span:last-child').classes()).not.toContain('text-rose-600')
+    expect(wrapper.text()).toContain('qualityOps.llmReasons.no_available_account')
+    expect(wrapper.text()).not.toContain('judge_no_available_account')
     wrapper.unmount()
   })
   it('shows one operation row per round and loads response bodies only on demand', async () => {
@@ -2055,6 +2077,54 @@ describe('quality operations', () => {
     expect(vm.judgmentReason(result)).toBe('qualityOps.jevReasons.credentials_rejected')
     result.quality_judgment.reason = 'SYNTHETIC_PROVIDER_SECRET'
     expect(vm.judgmentReason(result)).toBe('qualityOps.jevReasons.uncertain')
+    wrapper.unmount()
+  })
+  it.each(['not_configured', 'invalid_config', 'input_too_large', 'group_unavailable', 'model_not_allowed', 'accounts_unavailable',
+    'no_available_account', 'capacity_unavailable', 'request_failed', 'invalid_response'])('explains ordinary judge %s without treating it as a wrong answer', async reason => {
+    const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any
+    const result = { status: 'failed', error_message: 'judge_inconclusive', quality_judgment: { verdict: 'unknown', reason: `judge_${reason}` } }
+    expect(vm.judgmentReason(result)).toBe(`qualityOps.llmReasons.${reason}`)
+    expect(vm.resultLabel(result)).toBe('qualityOps.judgeUnknown')
+    expect(vm.resultTone(result)).toBe('tone-neutral')
+    expect(vm.resultTextClass(result)).not.toContain('rose')
+    wrapper.unmount()
+  })
+  it('preserves real wrong answers and request failures while keeping legacy judge errors neutral', async () => {
+    const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any
+    for (const result of [
+      { status: 'failed', error_message: 'answer_mismatch', quality_judgment: { verdict: 'incorrect', reason: 'Values differ' } },
+      { status: 'failed', error_message: 'API returned 502' },
+    ]) {
+      expect(vm.resultTone(result)).toBe('tone-danger')
+      expect(vm.resultTextClass(result)).toContain('text-rose-600')
+    }
+    expect(vm.judgmentReason({ quality_judgment: { verdict: 'incorrect', reason: 'Values differ' } })).toBe('Values differ')
+    expect(vm.resultTone({ status: 'failed', error_message: 'judge_inconclusive' })).toBe('tone-neutral')
+    expect(vm.resultTone({})).toBe('tone-neutral')
+    wrapper.unmount()
+  })
+  it('warns when a group-removal rule also uses that group for ordinary grading', async () => {
+    const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any
+    vm.newPlan()
+    vm.form.pelican_config.quality.judge = { group_id: 21, model_id: 'judge', prompt: 'Compare answers' }
+    vm.form.pelican_config.quality.remove_group_ids = [21]
+    await flushPromises()
+    expect(wrapper.get('[data-testid="quality-judge-pool-warning"]').text()).toContain('qualityOps.judgePoolDependencyWarning')
+    vm.form.pelican_config.quality.action = 'isolate_models'; await flushPromises()
+    expect(wrapper.find('[data-testid="quality-judge-pool-warning"]').exists()).toBe(true)
+    vm.form.pelican_config.quality.judge.group_id = 22; await flushPromises()
+    expect(wrapper.find('[data-testid="quality-judge-pool-warning"]').exists()).toBe(false)
+    vm.form.pelican_config.quality.judge.group_id = 21
+    vm.form.pelican_config.quality.action = 'observe_only'; await flushPromises()
+    expect(wrapper.find('[data-testid="quality-judge-pool-warning"]').exists()).toBe(false)
+    vm.form.pelican_config.quality.action = 'remove_groups'
+    vm.form.pelican_config.quality.judge.kind = 'jev'; await flushPromises()
+    expect(wrapper.find('[data-testid="quality-judge-pool-warning"]').exists()).toBe(false)
+    vm.form.pelican_config.quality.judge.kind = 'llm'
+    vm.form.pelican_config.question_kind = 'state_probe'; await flushPromises()
+    expect(wrapper.find('[data-testid="quality-judge-pool-warning"]').exists()).toBe(false)
+    expect(scheduledTests.update).not.toHaveBeenCalled()
+    expect(scheduledTests.create).not.toHaveBeenCalled()
     wrapper.unmount()
   })
   it.each([['jev', 'judge_budget_deferred'], ['llm', 'judge_budget_deferred'], ['', 'answer_budget_deferred']])('renders local %s %s with bounded reasons and a separate retry time', async (kind, reason) => {

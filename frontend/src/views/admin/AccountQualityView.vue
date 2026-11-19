@@ -61,7 +61,7 @@
               <tr v-for="operation in filteredOperations" :key="operation.id" :class="{ 'selected-row': detailOperation?.id === operation.id && !!historyPlan }" :data-operation-id="operation.id">
                 <td class="time-cell" :data-label="t('qualityOps.time')"><strong>{{ clock(operation.started_at) }}</strong><span>{{ day(operation.started_at) }}</span></td>
                 <td class="account-cell"><button :title="operation.account_name" @click="store.selectedPlanId = operation.plan_id"><strong>{{ operation.account_name || `#${operation.account_id}` }}</strong></button><span>{{ t('qualityOps.rule') }} {{ operation.plan_id }}<span class="mx-1">·</span>#{{ operation.account_id }}</span></td>
-                <td :data-label="t('qualityOps.testResult')"><span class="test-count" :class="allPassed(operation) ? 'test-passed' : 'test-other'"><Icon :name="allPassed(operation) ? 'checkCircle' : 'exclamationCircle'" size="xs" />{{ operation.passed_count }} / {{ operation.total_count }}</span><span class="cell-secondary">{{ t(operation.status === 'skipped' ? 'qualityOps.skipped' : allPassed(operation) ? 'qualityOps.roundPassed' : 'qualityOps.roundNotPassed') }}<template v-if="operation.skipped_count"> · {{ t('qualityOps.skippedCount', { n: operation.skipped_count }) }}</template></span></td>
+                <td :data-label="t('qualityOps.testResult')"><span class="test-count" :class="roundResult(operation).className"><Icon :name="roundResult(operation).icon" size="xs" />{{ operation.passed_count }} / {{ operation.total_count }}</span><span class="cell-secondary">{{ roundResult(operation).label }}<template v-if="operation.skipped_count"> · {{ t('qualityOps.skippedCount', { n: operation.skipped_count }) }}</template></span></td>
                 <td class="action-cell" :data-label="t('qualityOps.accountAction')"><button class="outcome-badge" :class="tone(operation.quality_action)" @click="operationDetails(operation)"><span />{{ operationLabel(operation) }}</button><span class="cell-secondary" :title="operationGroups(operation)">{{ operationGroups(operation) }}</span></td>
                 <td class="detail-cell"><button class="detail-button" :aria-label="t('qualityOps.openRound', { account: operation.account_name, time: date(operation.started_at) })" @click="operationDetails(operation)"><span>{{ t('qualityOps.details') }}</span><Icon name="arrowRight" size="sm" /></button></td>
               </tr>
@@ -191,6 +191,7 @@
               <datalist id="quality-judge-models"><option v-for="model in judgeModels" :key="model" :value="model" /></datalist>
             </label>
           </div>
+          <p v-if="judgePoolAtRisk" class="text-sm text-amber-700 dark:text-amber-300" role="note" data-testid="quality-judge-pool-warning">{{ t('qualityOps.judgePoolDependencyWarning') }}</p>
           <label class="block space-y-1"><span>{{ t('qualityOps.judgePrompt') }}</span><textarea v-model="form.pelican_config.quality.judge.prompt" required maxlength="16000" rows="3" class="input text-sm" /></label>
           <p class="text-sm text-gray-500">{{ t(form.pelican_config.quality.judge.kind === 'jev' ? 'qualityOps.jevGrading' : 'qualityOps.grading') }}</p>
         </fieldset>
@@ -240,7 +241,7 @@
     <BaseDialog :show="!!historyPlan" :title="detailOperation ? t('qualityOps.roundDetail') : t('qualityOps.history')" placement="right" width="extra-wide" close-on-click-outside @close="closeDetails">
       <template v-if="historyPlan">
         <div class="detail-heading"><span class="account-avatar">{{ detailAccountName.slice(0, 1) }}</span><div><h3>{{ detailAccountName }}</h3><p>{{ t('qualityOps.rule') }} {{ historyPlan.id }}<span class="mx-2">·</span>{{ detailOperation ? date(detailOperation.started_at) : t('qualityOps.historyHelp') }}</p></div><a class="account-management-link" href="/admin/accounts">{{ t('qualityOps.manageAccount') }}<Icon name="externalLink" size="xs" /></a></div>
-        <div v-if="detailOperation" class="round-overview"><div><span>{{ t('qualityOps.testResult') }}</span><strong :class="allPassed(detailOperation) ? 'text-emerald-600' : 'text-rose-600'">{{ detailOperation.passed_count }} / {{ detailOperation.total_count }} {{ t('qualityOps.passed') }}</strong><span v-if="detailOperation.skipped_count">{{ t('qualityOps.skippedCount', { n: detailOperation.skipped_count }) }}</span></div><div><span>{{ t('qualityOps.accountAction') }}</span><strong>{{ operationLabel(detailOperation) }}</strong></div></div>
+        <div v-if="detailOperation" class="round-overview"><div data-testid="quality-round-overview"><span>{{ t('qualityOps.testResult') }}</span><strong :class="roundResult(detailOperation).className">{{ detailOperation.passed_count }} / {{ detailOperation.total_count }} {{ t('qualityOps.passed') }}</strong><span>{{ roundResult(detailOperation).label }}</span><span v-if="detailOperation.skipped_count">{{ t('qualityOps.skippedCount', { n: detailOperation.skipped_count }) }}</span></div><div><span>{{ t('qualityOps.accountAction') }}</span><strong>{{ operationLabel(detailOperation) }}</strong></div></div>
         <aside v-if="detailAction === 'restore_conflict'" class="conflict-explanation" role="note"><Icon name="exclamationTriangle" size="md" /><div v-if="detailRestoreDiagnostic" data-testid="quality-restore-diagnostic"><h4>{{ t('qualityOps.restoreDiagnosticTitle') }}</h4><p>{{ restoreDiagnosticReason }}</p><p v-if="detailRestoreDiagnostic.disposition === 'external_membership_present'">{{ t('qualityOps.externalMembershipHelp') }}</p><p v-if="detailRestoreDiagnostic.scope === 'isolate_models'">{{ t('qualityOps.isolationRestoreRolledBack') }}</p><details class="conflict-causes"><summary>{{ t('qualityOps.restoreDiagnosticEvidence') }}</summary><pre class="whitespace-pre-wrap break-words text-xs">{{ JSON.stringify(detailRestoreDiagnostic, null, 2) }}</pre></details><strong>{{ t('qualityOps.restoreDiagnosticNextStep') }}</strong><QualityOwnershipReview v-if="historyPlan" :plan-id="historyPlan.id" :disabled="!canCopyRules" @reconciled="store.refreshRules(true)" /></div><div v-else-if="detailBPS"><h4>{{ t('qualityOps.conflictTitle') }}</h4><p>{{ t('qualityOps.bpsConflictExplanation') }}</p><details class="conflict-causes"><summary>{{ t('qualityOps.conflictChecks') }}</summary><ul><li>{{ t('qualityOps.bpsConflictOptions') }}</li><li>{{ t('qualityOps.bpsConflict403') }}</li><li>{{ t('qualityOps.bpsConflictAvailability') }}</li></ul></details><p class="conflict-limit">{{ t('qualityOps.conflictUnknown') }}</p><strong>{{ t('qualityOps.bpsConflictNextStep') }}</strong></div>
           <div v-else><h4>{{ t('qualityOps.conflictTitle') }}</h4><p>{{ t('qualityOps.conflictExplanation') }}</p><details class="conflict-causes"><summary>{{ t('qualityOps.conflictChecks') }}</summary><ul><li>{{ t('qualityOps.conflictAccount') }}</li><li>{{ t('qualityOps.conflictMembership') }}</li><li>{{ t('qualityOps.conflictAvailability') }}</li></ul></details><p class="conflict-limit">{{ t('qualityOps.conflictUnknown') }}</p><strong>{{ t('qualityOps.conflictNextStep') }}</strong></div></aside>
         <div v-else-if="detailAction" class="action-explanation"><Icon name="infoCircle" size="sm" /><p>{{ actionExplanation(detailAction) }}</p></div>
@@ -705,6 +706,13 @@ function allPassed(op: QualityOperation) {
   return op.status === 'success' && op.round_complete !== false && Number.isSafeInteger(op.total_count) &&
     Number.isSafeInteger(op.passed_count) && op.total_count > 0 && op.passed_count === op.total_count
 }
+function roundResult(op: QualityOperation) {
+  const key = op.status === 'skipped' ? 'skipped' : op.round_complete === false ? 'roundIncomplete' :
+    allPassed(op) ? 'roundPassed' : op.quality_action === 'inconclusive' ? 'roundInconclusive' : 'roundNotPassed'
+  return { label: t(`qualityOps.${key}`),
+    className: key === 'roundPassed' ? 'test-passed' : key === 'roundNotPassed' ? 'test-other' : 'test-neutral',
+    icon: key === 'roundPassed' ? 'checkCircle' as const : key === 'roundNotPassed' ? 'exclamationCircle' as const : 'infoCircle' as const }
+}
 function bpsTrigger(policy?: QualityBPSPolicy) {
   const parts = [
     policy?.failure_threshold ? t('qualityOps.bpsTriggerCount', { n: policy.failure_threshold }) : '',
@@ -771,7 +779,10 @@ function resultLabel(result: ScheduledTestResult) {
   if (!result.status) return t('qualityOps.notLoaded')
   const verdict = stateProbeVerdict(result)
   if (verdict) return t(probeLabels[verdict])
-  return t(result.status === 'success' ? 'qualityOps.passed' : result.error_message === 'answer_mismatch' ? 'qualityOps.wrongAnswer' : result.quality_judgment?.verdict === 'unknown' || result.error_message?.startsWith('judge_') ? 'qualityOps.judgeUnknown' : 'qualityOps.requestError')
+  return t(result.status === 'success' ? 'qualityOps.passed' : result.error_message === 'answer_mismatch' ? 'qualityOps.wrongAnswer' : isJudgeInconclusive(result) ? 'qualityOps.judgeUnknown' : 'qualityOps.requestError')
+}
+function isJudgeInconclusive(result: ScheduledTestResult) {
+  return result.status !== 'success' && (result.quality_judgment?.verdict === 'unknown' || !!result.error_message?.startsWith('judge_'))
 }
 // 探针「无法判断」不是账号问题，用中性色，避免和降智混在一起。
 function resultTextClass(result: ScheduledTestResult) {
@@ -779,9 +790,11 @@ function resultTextClass(result: ScheduledTestResult) {
   if (!result.status) return 'text-gray-400'
   if (result.status === 'skipped') return 'text-gray-500 dark:text-gray-400'
   if (stateProbeVerdict(result) === 'inconclusive') return 'text-gray-500'
+  if (isJudgeInconclusive(result)) return 'text-gray-500 dark:text-gray-400'
   return result.status === 'success' ? 'text-emerald-600' : 'text-rose-600'
 }
 function resultTone(result: ScheduledTestResult) {
+  if (!result.status || isJudgeInconclusive(result)) return 'tone-neutral'
   if (isJudgeBudgetDeferred(result)) return 'tone-neutral'
   if (result.status === 'skipped') return 'tone-neutral'
   if (stateProbeVerdict(result) === 'inconclusive') return 'tone-neutral'
@@ -810,6 +823,11 @@ function updateRemoveModelsInput(event: Event) {
   removeModelsInput.value = text
 }
 const isProbe = computed(() => form.value.pelican_config.question_kind === STATE_PROBE_QUESTION)
+const judgePoolAtRisk = computed(() => {
+  const quality = form.value.pelican_config.quality
+  return !isProbe.value && quality.judge.kind !== 'jev' && qualityUsesGroups(quality.action) &&
+    quality.judge.group_id > 0 && quality.remove_group_ids.includes(quality.judge.group_id)
+})
 const selectedTestModels = computed(() => [form.value.model_id, ...(isProbe.value ? [] : form.value.pelican_config.model_ids)].map(model => model.trim()).filter(Boolean))
 const canAddTestModel = computed(() => !form.value.model_id.trim() || form.value.pelican_config.model_ids.some(model => !model.trim()) || form.value.pelican_config.model_ids.length < 49)
 function addTestModel(model: string) {
@@ -1324,7 +1342,12 @@ async function confirmDelete() {
 function judgmentReason(result: ScheduledTestResult) {
   const judgment = result.quality_judgment
   if (isJudgeBudgetDeferred(result)) return t('qualityOps.judgeBudgetDeferredHint')
-  if (judgment?.kind !== 'jev') return judgment?.reason || '—'
+  if (judgment?.kind !== 'jev') {
+    const reason = judgment?.reason?.replace(/^judge_/, '') || ''
+    const known = ['not_configured', 'invalid_config', 'input_too_large', 'group_unavailable', 'model_not_allowed', 'accounts_unavailable',
+      'no_available_account', 'capacity_unavailable', 'request_failed', 'invalid_response']
+    return judgment?.verdict === 'unknown' && known.includes(reason) ? t(`qualityOps.llmReasons.${reason}`) : judgment?.reason || '—'
+  }
   const reason = judgment.reason.replace(/^judge_jev_/, '')
   const known = ['not_configured', 'config_unavailable', 'disabled', 'invalid_config', 'invalid_input', 'capacity', 'canceled', 'keys_unavailable', 'invalid_endpoint', 'transport_unavailable', 'timeout', 'credentials_rejected', 'rate_limited', 'invalid_response', 'request_failed', 'uncertain', 'correct', 'incorrect']
   return t(`qualityOps.jevReasons.${known.includes(reason) ? reason : 'uncertain'}`)
@@ -1507,6 +1530,7 @@ onBeforeUnmount(() => { alive = false; accountSelectionRequest++; detailRequest+
 .test-count { @apply inline-flex items-center gap-1.5 whitespace-nowrap font-medium tabular-nums; }
 .test-passed { @apply text-emerald-600 dark:text-emerald-400; }
 .test-other { @apply text-rose-500 dark:text-rose-400; }
+.test-neutral { @apply text-gray-500 dark:text-gray-400; }
 .cell-secondary { @apply mt-1.5 block truncate text-[10px] text-gray-400; max-width: 170px; }
 .outcome-badge { @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-medium; }
 .tone-success { @apply bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300; }
