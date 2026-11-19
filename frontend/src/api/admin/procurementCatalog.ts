@@ -17,7 +17,7 @@ export interface ProcurementClassification extends ProcurementRequestScope {
   bucket: ProcurementBucket | null; qualification: string
   product_procurement?: {
     version: number; group_id: number; policy_revision: number; price_basis: string; default_d: number; threshold: number
-    state: string; price_class: string; reason?: string
+    state: string; price_class: string; reason?: string; catalog_revision?: number
   }
 }
 export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number }

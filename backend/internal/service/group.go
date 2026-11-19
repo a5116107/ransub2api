@@ -144,6 +144,9 @@ type Group struct {
 	ProfitMinMargin      float64            // 最低毛利率，小数存储（0.30=30%）
 	ProfitSafetyBuffer   float64            // 安全缓冲，小数，与 margin 相加后从 D 中扣除
 	ProcurementPolicy    *ProcurementPolicy `json:"procurement_policy,omitempty"`
+	// Request-only projection loaded with the policy from one authority snapshot.
+	// Regional documents carry one catalog separately; never persist it per group.
+	ProcurementCatalog *domain.ProcurementCatalog `json:"-"`
 	// Only explicit administrator commands write the policy column. Ordinary
 	// updates must not replace a concurrently changed policy with an old copy.
 	ProcurementPolicyExpectedRevision *int64 `json:"-"`

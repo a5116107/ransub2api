@@ -140,3 +140,29 @@ func TestProcurementPolicySourcesAuthSnapshotRoundtrip(t *testing.T) {
 		})
 	}
 }
+
+func TestProcurementPolicyBucketsAuthSnapshotRoundtrip(t *testing.T) {
+	for _, codes := range []string{"null", "[]", `["low"]`} {
+		t.Run(codes, func(t *testing.T) {
+			svc := &APIKeyService{}
+			key := profitAuthTestAPIKey()
+			require.NoError(t, json.Unmarshal([]byte(`{"procurement_policy":{"version":3,"revision":2,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":`+codes+`}}}`), key.Group))
+			key.Group.ProcurementCatalog = procurementBucketTestCatalog()
+			snapshot := svc.snapshotFromAPIKey(t.Context(), key)
+			raw, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
+			require.NoError(t, err)
+			require.NotContains(t, string(raw), "procurement_catalog", "auth is not a catalog authority")
+			var restored APIKeyAuthCacheEntry
+			require.NoError(t, json.Unmarshal(raw, &restored))
+			materialized, used, err := svc.applyAuthCacheEntry(key.Key, &restored)
+			require.NoError(t, err)
+			require.True(t, used)
+			require.Equal(t, key.Group.ProcurementPolicy, materialized.Group.ProcurementPolicy)
+			if len(materialized.Group.ProcurementPolicy.Buckets.Codes) > 0 {
+				materialized.Group.ProcurementPolicy.Buckets.Codes[0] = "other"
+				require.Equal(t, "low", key.Group.ProcurementPolicy.Buckets.Codes[0])
+				require.Equal(t, "low", svc.snapshotToAPIKey(key.Key, snapshot).Group.ProcurementPolicy.Buckets.Codes[0])
+			}
+		})
+	}
+}

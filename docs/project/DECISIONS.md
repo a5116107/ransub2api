@@ -3783,3 +3783,23 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 回退此切片无需schema回退且保留c043abff6来源硬门/JSONB；旧客户端省略产品继续库存归类，新UI请求产品但旧后端缺对应合同会显示失败，管理员可明确清空选项回到库存模式，不静默丢失产品限制。D4.3允许桶/模式/拥有者/完整资格与D6.2/D7.4、实际来源/独立参考/缓存域/跨节点/严格混版/PR3等待保持；生产最后记录仍.7/fd83f6c91，本轮不部署。
 
 - 最终UI冻结后显式GOOS=linux/GOARCH=amd64/CGO_ENABLED=0，go build -tags embed -p 1 -o nul ./cmd/server退出0、320.297秒，Go摘要40c747c6、drift=false，包含本轮真实前端资源；不是Linux运行或生产加载。所有已启动验证已退出，预览已停。D4.3.4本地子验收关闭，STATE与唯一设计原位更新；原28项分母及父项/外部等待不变。
+
+
+### 2026-11-19 — Attempt 103：D4.3.5 允许采购桶接原选路与区域快照
+
+- 从465a91bdb及本轮继承的前端v3草稿/红测恢复，保持唯一H盘工作树与feat/automated-upstream-supply。范围为本地代码/验证/自有功能分支同步；不新建PR、不触发CI、不提升production。原28项20done/8部分、13.2六done/一部分保持；真实采购价继续延期，生产最后记录.7/fd83f6c91未重新核验。
+- 原Group采购策略演进v3，必填sources与buckets.codes；null不增加桶限制、[]明确零桶、非空最多64个不重复合法code。严格完整命令/未知字段/重复字段/格式/安全修订、CAS、防低版本同修订降级与陈旧409、深复制及认证快照均沿原链。旧客户端省略策略不擦写，新复制产品独立revision1。不新增schema、表、路由、调度器或销售关联。
+- 原利润门/预演共用桶否决：按当前U_gate精确归目录唯一桶，区间、来源、利润、适用scope及其他原门仍取交集；已选code任一缺失、目录损坏或读取失败拒绝，不退为原池。分离procurement_bucket与procurement_catalog_unavailable计数、离线分类和可读结论。保持请求内售价/阈值/定价时刻和已有健康粘性，未删除旧绑定或重放已发送生成。
+- 原GetByIDLite识别v3后，在read-only repeatable-read事务内重新读取Group与原settings目录；请求投影json:-，不持久化每组第二份目录，也不暴露到用户/Group DTO。既有区域发布事务复用其绑定SQL，不开启第二事务或回主库。损坏目录保留为unknown投影，允许管理员修复/关闭原门；明确桶限制在运行时仍拒绝。
+- 槽后与HTTP/WS最终发送沿原Group权威重读策略/目录，候选原快照不被回调修改。真实HTTP覆盖OpenAI原9平台及native五平台的变价、改目录、缺目录/删code、拒发和恢复；两种OpenAI调度普通/黏性/排除与两WS模式逐轮保持原约束。目录越界独立于原模型/fast或质量证明，未增加另一评分。
+- 区域完整文档含v3产品时升级文档v3并传单份目录；接收端从同一有效加密文档恢复Group/目录，保留v2的availability全覆盖。目录版本/内容或重复Group视图冲突拒绝发布，不刷新原修订/期限；缺目录、旧文档携带v3、覆盖不全及未知合同拒绝。真实TLS Pull→原reader→门验证目录变化、重启、绝对期限过期及恢复，未回主库。原周期同步/绝对TTL是观察延迟边界，非跨区域即时事务或严格混版证明。
+- 已有红测procurement-buckets-red退出1，明确缺目录应拒绝而旧后端未执行；保留原失败。扩展regional回归时遇旧regionalExportRepo只实现过时ListSchedulableUngroupedByPlatform而当前loadAccountsFromDB已调用ListModelAvailabilityCandidates，实际panic失败；原位替换测试夹具接口，不改产品路径或弱化断言。先前通过但期间源码drift=true的108/4944及vet结果不作终稿；冻结最后TLS/事务回归后复验。
+- 最终Go/SQL/依赖LF摘要907ab073846fb94c5bfc1693f0357fcfac962faeb790ece89c253694468ca25d。七包go test -json -tags unit -race -vet=off -p 1（原采购/利润/定价/发送/槽/认证/CLI/路由及RegionalScheduler选择器）-count=2 -timeout=10m退出0、4944pass/0fail/skip/race、260.484秒、drift=false。原repository unit,integration/PG overlay双轮退出0、42pass/0fail/skip/race、38.437秒、同摘要/drift=false；完整参数见scheduled-coverage-procurement-buckets-{verified,pg-verified}.result.json，计数含父子/重复轮次。
+- PG新增管理员HTTP创建/读回v3、非法原子拒写、陈旧409/低版拒绝、复制独立、null/空及普通保存保留；锁settings后并发变更产品和目录，旧请求仍得到同一旧修订，下一请求得到新修订。原区域Publish事务期间外部改变两者，当前发布保持旧快照、下次读取新值；原产品scope预演分离库存归类与桶拒绝/目录缺失，不写用量/预算/关系。仅本地PG/HTTP，不冒作供应商或生产证明。
+- 四包go vet -tags unit,integration -p 1退出0、113.922秒；golangci-lint v2.15.0-go1.27.4同四包增量fast/new-from-rev=465a91bdb、allow-serial-runners退出0、32.547秒，真实0 issues.；同摘要/drift=false，非全仓全规则lint。显式GOOS=linux/GOARCH=amd64/CGO_ENABLED=0，go build -tags embed -p 1 -o nul ./cmd/server退出0、412.735秒，同摘要/drift=false，嵌入最终前端；非Linux运行/生产加载。
+- 原profit-preview顶层新增可选完整procurement_catalog，各组仍只有原策略；缺目录明确拒绝，不造默认目录。真实go run ./cmd/profit-preview -input procurement-buckets-preview-fixture.json退出0、29.86秒、同摘要/drift=false：U=.025准入，.03排他上界及.01999999未归类拒绝，合计准入1/桶拒绝2，售价D=.15固定，目录修订2。原JSON/命令兼容，模型计数仍只代表账号级采购，不授予完整scope资格。
+- 原Group表单增加按需加载目录/桶勾选、修订/数量/明确空池、读取失败保留与缺失code警告；旧草稿409明确核对继承新增桶约束，source-only草稿保留自己的来源。清除限制必须明确null，改来源不降级v3。原运维产品预演显示同目录修订及桶拒绝/目录失效的中英可读结论，错目录响应隐藏，不仅输出原因码；用户面板不增加采购字段。
+- 最终前端6文件vitest退出0、198pass/0fail/skip、18.86秒；完整typecheck退出0、触及13文件ESLint退出0。pnpm run build含原i18n与完整vue-tsc退出0、Vite65秒；保留既有chunk/Browserslist/Node提示，未升级无关依赖。Edge/Playwright最终构建中英×1440/390：原Group配置harness扩展后28检查PASS、原目录/产品harness扩展后20检查PASS；均0未预期page/console/网络错误和未声明API，预设409/503分别32/16单列。键盘空池/409核对、保存reload、503保留/恢复、缺code警告、目录错版拒显和可读结论已验；中英390配置及中文390结论截图已目检。浏览器API为合成数据，PG另验，不冒充线上。
+- 证据复用H:/Root/DevCache/evidence/sub2api-billing-applicability下procurement-buckets-*与scheduled-coverage-procurement-buckets-*；复用既有harness/缓存/构建目录，无新clone/worktree/依赖服务。预览session77203已Ctrl-C退出、18442无监听，所有本轮验证进程已退出。backend/internal/web/dist及Go共享缓存为可复用缓存，不入提交；历史12PNG/1164bytes和STATE所记拒删资源保护原位，不重试/绕行，不声称全工作区clean或磁盘回收。
+- D4.3.5本地子验收done，唯一设计5.4.5/13.3与STATE原位更新。D4.3统一质量缓存资格/模式/拥有者/降价确认/关系重算、D6.2/D7.4及全scope/独立参考/缓存域/严格混版/生产/PR3继续开放；不把桶准入当模型验真或高缓存资格。回退保留JSONB，旧版不识别v3而拒绝或更早版本可能忽略；严格产品需先停接排空，不执行破坏性Down或生产回退。
+- 恢复交付时重算5856个Go/SQL/依赖文件摘要，仍为907ab073846f，复用上述终稿证据，不重复昂贵回归。原审计表同步允许桶已实现的事实，完整资格等缺口不变；124个本地文档链接有效，STATE为8174bytes/85行、检查点止于第735byte，git diff --check退出0，新增秘密签名与TODO/FIXME/XXX均0。仅自有功能分支提交同步，Git远端实读作为同步证据；历史未跟踪PNG保持原位，不冒称全树无残留。

@@ -3,15 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D4.3.3/.4批准来源及产品采购预演本地已验。
+任务：D4.3.5允许采购桶运行时接线本地已验。
 范围：唯一H盘功能分支提交同步；不CI/PR/生产，不改业务与探测判据。
 已决：实际usage、插件自动延期、手动停用及unknown保持。
-来源：c043abff6上续接；终稿40c747c6，证据见DECISIONS。
-已验：race4878/PG36/UI206、三包vet/lint及最终Linux嵌入；四视口16检查。
-下一：D4.3允许桶/模式/完整资格→D6.2/D7.4；外等不变。
+来源：465a91bdb续接；终稿907ab073846f，证据见DECISIONS Attempt103。
+已验：race4944/PG42/UI198，四包vet/增量lint0、Linux嵌入及48浏览器检查。
+下一：D4.3完整资格/模式/拥有者与D6.2接线；真实供应商等外等保持。
 等待：原28项20done/8部分；全scope/跨节点/生产/PR3待。
 生产最后记录.7/fd83f6c91；本轮不部署；历史拒删原位保护。
-Attempt：102
+Attempt：103
 <!-- resume:end -->
 
 ## 目标与入口
@@ -44,11 +44,12 @@ Attempt：102
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 原清理/分页/依赖及双平台验收保持；逐项源码与验证见DECISIONS |
-| D4 | in_progress | D4.3.1–.4区间/目录/来源/产品预演本地已验；完整资格/模式/重算仍缺 |
+| D4 | in_progress | D4.3.1–.5区间/目录/来源/产品预演/允许桶本地已验；完整资格/模式/重算仍缺 |
 | D4.3.1 | done | 区间/CAS/预演/终检、PG迁移/权限及中英UI已验；非完整资格/生产 |
 | D4.3.2 | done | 目录/CAS/同快照归类、PG32/UI174/权限/四视口/嵌入已验；非完整资格/生产 |
 | D4.3.3 | done | 本地账号来源/CAS/预演/末端重读、race4876/PG34/UI196及中英四视口；非完整资格/生产 |
 | D4.3.4 | done | 同scope产品预演、race4878/PG36/UI206/四视口/嵌入已验；非完整资格/生产 |
+| D4.3.5 | done | 允许桶/变价/终检/区域快照，race4944/PG42/UI198/48浏览器及嵌入已验；非完整资格/生产 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/入口来源已本地验；实际组/受信外部检测/其余scope/资格及D5.4仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
 | D7 | in_progress | 历史结论/下游原始面板及409已有证据；D7.3真实多维结论、D7.4三步产品配置/监控/预算解释仍缺 |
@@ -77,8 +78,8 @@ Attempt：102
 ## 工作区与既有环境限制
 
 - 唯一工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，不建额外worktree。
-- 历史12个2×3测试PNG/1164bytes匹配源码SHA256；data/原生删除被宿主拦截，保留原路径。
+- 历史12张测试PNG/1164bytes校验匹配；data/删除受宿主拦截，原位保留。
 - backend/tmp/availability-non5xx-regression历史overlay拒删，根go test ./...会误编译；正式源码153包已验，未删改目录。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
-- 私有PG55441/PID10868、Redis56441/PID46228、quality-batch-{build,runner.py}及`H:/Root/DevCache/tmp/sub2api-quality-validity`受宿主拒删；预览已停；owner宿主用户，路径/解除条件见DECISIONS。
-- 历史拒删620274603bytes/D2.6日志、旧Stop overlay49259bytes及构建213260543+临时9279228bytes原位；路径/命令/owner见DECISIONS，待宿主解除策略；不重试/绕行，回收0。
+- 私有PG55441/PID10868、Redis56441/PID46228及quality-batch/quality-validity受宿主拒删；预览已停。路径/解除条件见DECISIONS，owner宿主用户。
+- 历史拒删620274603bytes/D2.6日志、Stop overlay49259bytes、构建213260543+临时9279228bytes原位；详见DECISIONS，待宿主解除，不重试/绕行，回收0。

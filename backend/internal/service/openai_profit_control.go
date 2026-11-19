@@ -74,6 +74,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
@@ -92,6 +93,8 @@ const (
 	openAIProfitFilterReasonAccountSaleRateMismatch = "profit_account_sale_rate_mismatch"
 	openAIProfitFilterReasonProcurementRange        = "procurement_range"
 	openAIProfitFilterReasonProcurementSource       = "procurement_source"
+	openAIProfitFilterReasonProcurementBucket       = "procurement_bucket"
+	openAIProfitFilterReasonProcurementCatalog      = "procurement_catalog_unavailable"
 	openAIProfitFilterReasonProcurementUnavailable  = "procurement_policy_unavailable"
 
 	// 槽位获取后的账号刷新失败由终检返回，沿用 refresh_failure_total 观测。
@@ -183,9 +186,10 @@ type openAIProfitControlGate struct {
 	// pricingAt 是本请求的统一定价时刻（D 侧）。
 	pricingAt time.Time
 	// configUnavailable 拒绝未知配置，不能用 threshold=0 代替（那会放行免费账号）。
-	configUnavailable bool
-	procurementPolicy *ProcurementPolicy
-	procurementGroup  func(context.Context) (*Group, error)
+	configUnavailable  bool
+	procurementCatalog *domain.ProcurementCatalog
+	procurementPolicy  *ProcurementPolicy
+	procurementGroup   func(context.Context) (*Group, error)
 }
 
 func profitControlUnavailableGroupGate(groupID int64, pricingAt time.Time) *openAIProfitControlGate {
@@ -335,12 +339,13 @@ func (s *OpenAIGatewayService) resolveOpenAIProfitControlGate(ctx context.Contex
 	deduction := group.ProfitMinMargin + group.ProfitSafetyBuffer
 	threshold := clampProfitControlThreshold(downstream * (1 - deduction))
 	return &openAIProfitControlGate{
-		groupID:           *groupID,
-		platform:          group.Platform,
-		threshold:         threshold,
-		pricingAt:         pricingAt,
-		procurementPolicy: group.ProcurementPolicy.Clone(),
-		procurementGroup:  procurementPolicyGroupReader(s.schedulerSnapshot, nil, *groupID),
+		groupID:            *groupID,
+		platform:           group.Platform,
+		threshold:          threshold,
+		pricingAt:          pricingAt,
+		procurementPolicy:  group.ProcurementPolicy.Clone(),
+		procurementCatalog: group.ProcurementCatalog.Clone(),
+		procurementGroup:   procurementPolicyGroupReader(s.schedulerSnapshot, nil, *groupID),
 	}
 }
 
@@ -402,7 +407,7 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonThreshold)
 		return true, openAIProfitFilterReasonThreshold
 	}
-	if reason := procurementPolicyVetoReason(gate.procurementPolicy, account, upstream); reason != "" {
+	if reason := procurementPolicyVetoReason(gate.procurementPolicy, gate.procurementCatalog, account, upstream); reason != "" {
 		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, reason)
 		return true, reason
 	}
@@ -494,6 +499,8 @@ type openAIProfitControlGroupStats struct {
 	vetoProcurement  atomic.Int64
 	vetoSource       atomic.Int64
 	vetoPolicy       atomic.Int64
+	vetoBucket       atomic.Int64
+	vetoCatalog      atomic.Int64
 	refreshFailures  atomic.Int64
 	lastLogUnixMilli atomic.Int64
 }
@@ -546,6 +553,10 @@ func (o *openAIProfitControlObserver) recordVeto(groupID int64, platform string,
 		s.vetoProcurement.Add(1)
 	case openAIProfitFilterReasonProcurementSource:
 		s.vetoSource.Add(1)
+	case openAIProfitFilterReasonProcurementBucket:
+		s.vetoBucket.Add(1)
+	case openAIProfitFilterReasonProcurementCatalog:
+		s.vetoCatalog.Add(1)
 	case openAIProfitFilterReasonProcurementUnavailable:
 		s.vetoPolicy.Add(1)
 	default:
@@ -586,6 +597,8 @@ func (o *openAIProfitControlObserver) maybeLog(groupID int64, platform string, t
 		"veto_upstream_scope_total", s.vetoScope.Load(),
 		"veto_procurement_range_total", s.vetoProcurement.Load(),
 		"veto_procurement_source_total", s.vetoSource.Load(),
+		"veto_procurement_bucket_total", s.vetoBucket.Load(),
+		"veto_procurement_catalog_unavailable_total", s.vetoCatalog.Load(),
 		"veto_procurement_policy_unavailable_total", s.vetoPolicy.Load(),
 		"refresh_failure_total", s.refreshFailures.Load(),
 	)

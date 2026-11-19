@@ -9,8 +9,8 @@ import (
 	"unicode/utf8"
 )
 
-// ProcurementCatalog classifies inventory, not sales groups or scheduling
-// eligibility. It never owns an account, credential or model-quality result.
+// ProcurementCatalog classifies inventory for explicit product bucket filters.
+// It never owns group membership, credentials or model-quality qualifications.
 type ProcurementCatalog struct {
 	Version  int                 `json:"version"`
 	Revision int64               `json:"revision"`
@@ -102,6 +102,26 @@ func (c *ProcurementCatalog) WithRevision(revision int64) *ProcurementCatalog {
 		next.Buckets = append(next.Buckets, b)
 	}
 	return next
+}
+
+func (c *ProcurementCatalog) Clone() *ProcurementCatalog {
+	if c == nil {
+		return nil
+	}
+	next := *c
+	next.Buckets = slices.Clone(c.Buckets)
+	for i := range next.Buckets {
+		b := &next.Buckets[i]
+		if b.MinRate != nil {
+			value := *b.MinRate
+			b.MinRate = &value
+		}
+		if b.MaxRate != nil {
+			value := *b.MaxRate
+			b.MaxRate = &value
+		}
+	}
+	return &next
 }
 
 func (c *ProcurementCatalog) ClassifyRate(rate float64) (*ProcurementBucket, error) {

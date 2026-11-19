@@ -181,6 +181,29 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.EqualValues(t, 2, out.Results[0].Product.PolicyRevision)
 		require.Equal(t, "group_default", out.Results[0].Product.PriceBasis)
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification, "manual schedulable=false is not silently upgraded to full eligibility")
+
+		policy.Version = 3
+		policy.Buckets = &domain.ProcurementBuckets{Codes: []string{"next"}}
+		policy.Revision++
+		savePolicy(true)
+		out = readProduct(groupID)
+		require.Equal(t, "low", out.Results[0].Bucket.Code)
+		require.Equal(t, "blocked", out.Results[0].Product.State)
+		require.Equal(t, service.ProfitPreviewClassRejectedBucket, out.Results[0].Product.PriceClass)
+		require.Equal(t, out.Catalog.Revision, *out.Results[0].Product.CatalogRevision)
+		policy.Buckets.Codes = []string{"low"}
+		policy.Revision++
+		savePolicy(true)
+		require.Equal(t, "constraints_passed", readProduct(groupID).Results[0].Product.State)
+		policy.Buckets.Codes = []string{"low", "removed"}
+		policy.Revision++
+		savePolicy(true)
+		out = readProduct(groupID)
+		require.Equal(t, service.ProfitPreviewClassUnknownCatalog, out.Results[0].Product.PriceClass)
+		policy.Buckets.Codes = nil
+		policy.Revision++
+		savePolicy(true)
+		require.Equal(t, "constraints_passed", readProduct(groupID).Results[0].Product.State)
 		policy.MinRate, policy.MaxRate = bound("0.03"), bound("0.05")
 		policy.Revision++
 		savePolicy(true)

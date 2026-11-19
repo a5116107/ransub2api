@@ -6,6 +6,17 @@ const policy = (min_rate: string | null = '0.02', max_rate: string | null = '0.0
   ({ version: 1, revision: 1, min_rate, max_rate })
 
 describe('exact procurement interval commands', () => {
+  it('preserves bucket selections, empty and unrestricted modes in complete version 3 commands', () => {
+    for (const codes of [null, [], ['low', 'standard']]) {
+      const selected = { ...policy(), version: 3, sources: { account_ids: null }, buckets: { codes } }
+      expect(validateProcurementPolicy(selected)).toBeNull()
+      expect(procurementPolicyCommand(selected, selected)).toBeUndefined()
+      expect(procurementPolicyCommand(selected, policy())).toEqual(selected)
+    }
+    for (const codes of [['low', 'low'], ['Bad Code'], [''], Array.from({ length: 65 }, (_, i) => `bucket-${i}`)]) {
+      expect(validateProcurementPolicy({ ...policy(), version: 3, sources: { account_ids: null }, buckets: { codes } })).toBe('bucketFormat')
+    }
+  })
   it.each(['', '-0.01', '+0.01', '.02', '00.02', '0.123456789', '100000000', '1e-2', 'NaN', ' 0.02'])('rejects %s without rounding', value => {
     expect(validateProcurementPolicy(policy(value))).toBe('format')
   })

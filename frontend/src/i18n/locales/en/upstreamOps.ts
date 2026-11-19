@@ -1,7 +1,7 @@
 export default {
   "procurement": {
   "title": "Procurement buckets and scope classification",
-  "scope": "Buckets classify inventory, not sales groups or model, quality and cache eligibility. Saving never moves accounts, changes sale prices or grants scheduling access.",
+  "scope": "Buckets classify inventory, not sales groups or model/quality/cache qualification. Saving never moves accounts or changes sale prices. Products with explicit bucket filters recheck the new catalog; missing catalogs or removed selected codes block admission.",
   "load": "Read procurement catalog",
   "reload": "Reload and discard catalog draft",
   "revision": "Catalog revision {revision}",
@@ -32,6 +32,8 @@ export default {
   "productHint": "Leave blank for inventory only. A product checks its original membership, approved sources, range and default-price profit gate in the same snapshot; no configuration is changed.",
   "productResult": "Product #{id} · procurement policy revision {revision}",
   "productSale": "Default sale rate D (including current peak)",
+  "bucketRejected": "The current procurement rate is outside this product’s allowed buckets.",
+  "catalogUnavailable": "The catalog is unavailable or a selected code was removed. Admission pauses; restrictions are not relaxed.",
   "productThreshold": "Procurement ceiling at the default sale price",
   "productDefaultBasis": "Group default price only: user price overrides, live health, quality, cache, concurrency and session ownership are not evaluated. This is not scheduling eligibility.",
   "productStates": {

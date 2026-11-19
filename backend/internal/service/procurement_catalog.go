@@ -45,15 +45,16 @@ type ProcurementPreviewCommand struct {
 // This is a read-only projection at the group's default sale price, never a
 // user-specific price quote or a scheduling/quality/cache qualification.
 type ProcurementProductPreview struct {
-	Version        int     `json:"version"`
-	GroupID        int64   `json:"group_id"`
-	PolicyRevision int64   `json:"policy_revision"`
-	PriceBasis     string  `json:"price_basis"`
-	DefaultD       float64 `json:"default_d"`
-	Threshold      float64 `json:"threshold"`
-	State          string  `json:"state"`
-	PriceClass     string  `json:"price_class"`
-	Reason         string  `json:"reason,omitempty"`
+	Version         int     `json:"version"`
+	GroupID         int64   `json:"group_id"`
+	PolicyRevision  int64   `json:"policy_revision"`
+	CatalogRevision *int64  `json:"catalog_revision,omitempty"`
+	PriceBasis      string  `json:"price_basis"`
+	DefaultD        float64 `json:"default_d"`
+	Threshold       float64 `json:"threshold"`
+	State           string  `json:"state"`
+	PriceClass      string  `json:"price_class"`
+	Reason          string  `json:"reason,omitempty"`
 }
 
 type ProcurementClassificationPreview struct {
@@ -159,9 +160,12 @@ func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, err
 func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Account, request ProfitPreviewRequestScope, at time.Time, product *Group) ProcurementScopeClassification {
 	result := ProcurementScopeClassification{ProfitPreviewRequestScope: request, State: "scope_unconfirmed", Applicability: "unknown", RateSource: "unknown", Qualification: "not_evaluated"}
 	if product != nil {
-		report := PreviewProfitAdmission([]ProfitPreviewGroupInput{{Group: product, Accounts: []*Account{account}, RequestScopes: []ProfitPreviewRequestScope{request}}}, at)[0]
+		productView := *product
+		productView.ProcurementCatalog = catalog.Clone()
+		report := PreviewProfitAdmission([]ProfitPreviewGroupInput{{Group: &productView, Accounts: []*Account{account}, RequestScopes: []ProfitPreviewRequestScope{request}}}, at)[0]
 		verdict := report.ScopeVerdicts[0]
 		projection := &ProcurementProductPreview{Version: 1, GroupID: product.ID, PriceBasis: "group_default", DefaultD: report.DefaultD, Threshold: report.ThresholdDefault, State: "not_evaluated", PriceClass: verdict.PriceClass, Reason: verdict.Reason}
+		projection.CatalogRevision = report.ProcurementCatalogRevision
 		if product.ProcurementPolicy != nil {
 			projection.PolicyRevision = product.ProcurementPolicy.Revision
 		}

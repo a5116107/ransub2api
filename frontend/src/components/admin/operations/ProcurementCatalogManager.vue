@@ -85,12 +85,13 @@
             <p v-if="item.reason" class="break-all font-mono text-xs">{{ item.reason }}</p>
             <div v-if="item.product_procurement" class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="product-procurement">
               <p class="break-words text-sm font-medium">{{ t(`${p}.productResult`, { id: item.product_procurement.group_id, revision: item.product_procurement.policy_revision }) }}</p>
+              <p v-if="item.product_procurement.catalog_revision !== undefined" class="text-xs text-gray-500">{{ t(`${p}.revision`, { revision: item.product_procurement.catalog_revision }) }}</p>
               <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.product_procurement.state === 'constraints_passed' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-procurement-state">{{ t(`${p}.productStates.${item.product_procurement.state}`) }}</span>
               <dl class="grid gap-3 text-sm sm:grid-cols-2">
                 <div><dt class="text-gray-500">{{ t(`${p}.productSale`) }}</dt><dd>{{ item.product_procurement.default_d }}</dd></div>
                 <div><dt class="text-gray-500">{{ t(`${p}.productThreshold`) }}</dt><dd>{{ item.product_procurement.threshold }}</dd></div>
               </dl>
-              <p v-if="item.product_procurement.reason" class="break-all font-mono text-xs">{{ item.product_procurement.reason }}</p>
+              <p v-if="item.product_procurement.reason" class="break-all font-mono text-xs">{{ item.product_procurement.reason === 'rejected_procurement_bucket' ? t(`${p}.bucketRejected`) : item.product_procurement.reason === 'rejected_procurement_catalog_unavailable' ? t(`${p}.catalogUnavailable`) : item.product_procurement.reason }}</p>
               <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.productDefaultBasis`) }}</p>
             </div>
           </div>
@@ -181,6 +182,7 @@ async function preview() {
       !Object.entries(request.scope).every(([key, value]) => next.results[0]!.scope[key as keyof ProcurementRequestScope['scope']] === value) || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
     const projection = next.results[0]!.product_procurement
     if (product === undefined ? projection !== undefined : !projection || projection.version !== 1 || projection.group_id !== product || projection.price_basis !== 'group_default' ||
+      projection.catalog_revision !== undefined && (projection.catalog_revision !== next.catalog.revision || !Number.isSafeInteger(projection.catalog_revision)) ||
       !Number.isSafeInteger(projection.policy_revision) || projection.policy_revision < 0 || !Number.isFinite(projection.default_d) || projection.default_d < 0 || !Number.isFinite(projection.threshold) || projection.threshold < 0 ||
       !['constraints_passed', 'blocked', 'disabled', 'product_inactive', 'not_associated', 'not_evaluated'].includes(projection.state) ||
       projection.state === 'constraints_passed' && projection.price_class !== 'admitted') throw new Error('unknown product projection')

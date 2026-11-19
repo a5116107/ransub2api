@@ -1,7 +1,7 @@
 export default {
   "procurement": {
   "title": "采购桶目录与范围归类",
-  "scope": "采购桶只分类库存，不是销售分组，也不代表模型、质量或缓存合格。保存目录不会迁移账号、修改售价或放行调度。",
+  "scope": "采购桶只分类库存，不是销售分组，也不代表模型、质量或缓存合格。保存目录不迁移账号或修改售价；已明确配置允许桶的产品按新目录复核，目录缺失或移除已选桶将暂停接纳。",
   "load": "读取采购桶目录",
   "reload": "重新读取，放弃当前目录草稿",
   "revision": "目录修订 {revision}",
@@ -32,6 +32,8 @@ export default {
   "productHint": "留空仅归类库存；填写后同一快照核对该产品的原关联、批准来源、区间和默认售价利润门，不修改配置。",
   "productResult": "产品 #{id} · 采购策略修订 {revision}",
   "productSale": "默认销售倍率 D（含当前高峰）",
+  "bucketRejected": "当前采购倍率不在本产品允许的采购桶内。",
+  "catalogUnavailable": "采购目录不可用或已选桶被移除；暂不接纳，未自动放开限制。",
   "productThreshold": "默认售价的采购上限",
   "productDefaultBasis": "仅按分组默认售价计算，不包含用户售价覆盖、实时健康、质量、缓存、并发和会话归属；不是实际调度资格。",
   "productStates": {

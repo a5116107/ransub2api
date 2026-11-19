@@ -3,6 +3,7 @@
 package repository_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
@@ -302,4 +304,174 @@ func TestProcurementPolicyMigrationLegacyPreservation(t *testing.T) {
 	require.Equal(t, 0.15, salesRate, "old-binary sales queries still read the original price; they do not enforce procurement")
 	require.Equal(t, "jsonb", dataType)
 	require.NoError(t, tx.Rollback())
+}
+
+func TestProcurementPolicyBucketsPostgresHTTPAndAtomicCatalog(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	groups := repository.NewAdminGroupRepository(client, db)
+	management := service.NewAdminService(nil, nil, groups, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := admin.NewGroupHandler(management, nil, nil)
+	router := gin.New()
+	router.POST("/groups", handler.Create)
+	router.PUT("/groups/:id", handler.Update)
+	router.GET("/groups/:id", handler.GetByID)
+	run := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		out := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(out, req)
+		return out
+	}
+	command := `{"version":3,"revision":0,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":["low"]}}`
+	response := run("POST", "/groups", `{"name":"bucket-product","platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"procurement_policy":`+command+`}`)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	var envelope struct {
+		Data service.Group `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	id := envelope.Data.ID
+	require.Positive(t, id)
+	path := fmt.Sprintf("/groups/%d", id)
+	read := func() *service.Group {
+		t.Helper()
+		g, err := groups.GetByIDLite(ctx, id)
+		require.NoError(t, err)
+		return g
+	}
+	require.Equal(t, []string{"low"}, read().ProcurementPolicy.Buckets.Codes)
+	require.Empty(t, read().ProcurementCatalog.Buckets, "missing settings is an empty directory, never an invented allowed bucket")
+	catalogs := repository.NewChannelRepository(db).(service.ProcurementCatalogRepository)
+	catalog, err := service.ParseProcurementCatalogCommand([]byte(`{"version":1,"revision":0,"buckets":[{"code":"low","name":"Low","min_rate":"0.02","max_rate":"0.03"},{"code":"next","name":"Next","min_rate":"0.03","max_rate":"0.05"}]}`))
+	require.NoError(t, err)
+	catalog, err = catalogs.SaveProcurementCatalog(ctx, catalog)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, read().ProcurementCatalog.Revision)
+	require.NotContains(t, run("GET", path, "").Body.String(), "procurement_catalog", "the projection must not leak through admin group DTOs")
+	for _, bad := range []string{`{"version":3,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{}}`, strings.Replace(command, `"revision":0`, `"revision":null`, 1), strings.Replace(command, `"codes":["low"]`, `"codes":["low","low"]`, 1)} {
+		response = run("PUT", path, `{"name":"must-not-write","procurement_policy":`+bad+`}`)
+		require.Equal(t, 400, response.Code, response.Body.String())
+		require.Equal(t, "bucket-product", read().Name)
+	}
+	for _, version := range []int{1, 2} {
+		legacy := fmt.Sprintf(`{"version":%d,"revision":0,"min_rate":null,"max_rate":null`, version)
+		if version == 2 {
+			legacy += `,"sources":{"account_ids":null}`
+		}
+		legacy += `}`
+		response = run("PUT", path, `{"procurement_policy":`+legacy+`}`)
+		require.Equal(t, 409, response.Code, response.Body.String())
+		response = run("PUT", path, `{"procurement_policy":`+strings.Replace(legacy, `"revision":0`, `"revision":1`, 1)+`}`)
+		require.Equal(t, 400, response.Code, response.Body.String())
+	}
+	copy, err := management.DuplicateGroup(ctx, id, "fixture-admin", "bucket-copy")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, copy.ProcurementPolicy.Revision)
+	require.Equal(t, []string{"low"}, copy.ProcurementPolicy.Buckets.Codes)
+	copy.ProcurementPolicy.Buckets.Codes[0] = "next"
+	require.Equal(t, []string{"low"}, read().ProcurementPolicy.Buckets.Codes)
+	t.Run("group and catalog share a repeatable read snapshot", func(t *testing.T) {
+		lock, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = lock.Rollback() }()
+		_, err = lock.ExecContext(ctx, `LOCK TABLE settings IN ACCESS EXCLUSIVE MODE`)
+		require.NoError(t, err)
+		type result struct {
+			group *service.Group
+			err   error
+		}
+		pending := make(chan result, 1)
+		readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		go func() { g, err := groups.GetByIDLite(readCtx, id); pending <- result{g, err} }()
+		require.Eventually(t, func() bool {
+			var count int
+			err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT value FROM settings%'`).Scan(&count)
+			return err == nil && count > 0
+		}, 5*time.Second, 20*time.Millisecond)
+		next := catalog.WithRevision(2)
+		next.Buckets = next.Buckets[1:]
+		raw, err := json.Marshal(next)
+		require.NoError(t, err)
+		_, err = lock.ExecContext(ctx, `UPDATE settings SET value=$2 WHERE key=$1`, service.ProcurementCatalogSettingKey, string(raw))
+		require.NoError(t, err)
+		_, err = lock.ExecContext(ctx, `UPDATE groups SET procurement_policy=jsonb_set(jsonb_set(procurement_policy,'{revision}','2'::jsonb),'{buckets,codes}','["next"]'::jsonb) WHERE id=$1`, id)
+		require.NoError(t, err)
+		require.NoError(t, lock.Commit())
+		previous := <-pending
+		require.NoError(t, previous.err)
+		require.EqualValues(t, 1, previous.group.ProcurementPolicy.Revision)
+		require.EqualValues(t, 1, previous.group.ProcurementCatalog.Revision)
+		require.Equal(t, "low", previous.group.ProcurementCatalog.Buckets[0].Code)
+		fresh := read()
+		require.EqualValues(t, 2, fresh.ProcurementPolicy.Revision)
+		require.EqualValues(t, 2, fresh.ProcurementCatalog.Revision)
+		require.Equal(t, []string{"next"}, fresh.ProcurementPolicy.Buckets.Codes)
+		catalog = next
+	})
+
+	t.Run("regional publication uses the transaction catalog without a primary reread", func(t *testing.T) {
+		authority := repository.NewRegionalSchedulerAuthority(db)
+		region := "procurement-fixture"
+		_, err := authority.Restore(ctx, region, true)
+		require.NoError(t, err)
+		original := read().ProcurementPolicy
+		saved, err := json.Marshal(original)
+		require.NoError(t, err)
+		raw, err := json.Marshal(catalog)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, id, string(saved))
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `UPDATE settings SET value=$2 WHERE key=$1`, service.ProcurementCatalogSettingKey, string(raw))
+			require.NoError(t, err)
+		})
+		_, err = authority.Publish(ctx, region, func(txCtx context.Context, revision uint64, _ service.AccountRepository, txGroups service.GroupRepository) ([]byte, error) {
+			before, err := txGroups.GetByIDLite(txCtx, id)
+			require.NoError(t, err)
+			require.EqualValues(t, 2, before.ProcurementPolicy.Revision)
+			require.EqualValues(t, 2, before.ProcurementCatalog.Revision)
+			nextCatalog := catalog.WithRevision(3)
+			nextRaw, err := json.Marshal(nextCatalog)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `UPDATE settings SET value=$2 WHERE key=$1`, service.ProcurementCatalogSettingKey, string(nextRaw))
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=jsonb_set(procurement_policy,'{revision}','3'::jsonb) WHERE id=$1`, id)
+			require.NoError(t, err)
+			after, err := txGroups.GetByIDLite(txCtx, id)
+			require.NoError(t, err)
+			require.EqualValues(t, 2, after.ProcurementPolicy.Revision)
+			require.EqualValues(t, 2, after.ProcurementCatalog.Revision)
+			return []byte("consistent-v3-product"), nil
+		})
+		require.NoError(t, err)
+		_, err = authority.Publish(ctx, region, func(txCtx context.Context, revision uint64, _ service.AccountRepository, txGroups service.GroupRepository) ([]byte, error) {
+			g, err := txGroups.GetByIDLite(txCtx, id)
+			require.NoError(t, err)
+			require.EqualValues(t, 3, g.ProcurementPolicy.Revision)
+			require.EqualValues(t, 3, g.ProcurementCatalog.Revision)
+			return []byte("new-v3-product"), nil
+		})
+		require.NoError(t, err)
+	})
+	response = run("PUT", path, `{"name":"ordinary-update"}`)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	require.EqualValues(t, 2, read().ProcurementPolicy.Revision)
+	_, err = db.ExecContext(ctx, `UPDATE settings SET value='{"version":99,"revision":77,"buckets":[]}' WHERE key=$1`, service.ProcurementCatalogSettingKey)
+	require.NoError(t, err)
+	require.Nil(t, read().ProcurementCatalog, "bad catalog remains unknown without erasing the product policy")
+	raw, err := json.Marshal(catalog)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE settings SET value=$2 WHERE key=$1`, service.ProcurementCatalogSettingKey, string(raw))
+	require.NoError(t, err)
+	require.EqualValues(t, 2, read().ProcurementCatalog.Revision)
+	require.Equal(t, .15, read().RateMultiplier)
+	response = run("PUT", path, `{"procurement_policy":{"version":3,"revision":2,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":[]}}}`)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	require.NotNil(t, read().ProcurementPolicy.Buckets.Codes)
+	require.Empty(t, read().ProcurementPolicy.Buckets.Codes)
+	response = run("PUT", path, `{"procurement_policy":{"version":3,"revision":3,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null}}}`)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	require.Nil(t, read().ProcurementPolicy.Buckets.Codes)
 }

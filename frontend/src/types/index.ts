@@ -665,6 +665,8 @@ export interface GroupProcurementPolicy {
   max_rate: string | null
   // Version 2. null keeps the original pool; [] explicitly admits no source.
   sources?: { account_ids: number[] | null }
+  // Version 3. null is unrestricted; [] explicitly admits no procurement bucket.
+  buckets?: { codes: string[] | null }
 }
 
 export interface AdminGroup extends Group {

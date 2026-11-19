@@ -6,8 +6,9 @@ import GroupsView from '@/views/admin/GroupsView.vue'
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), create: vi.fn(), update: vi.fn(), getById: vi.fn(), showError: vi.fn(), showSuccess: vi.fn(),
-  getAll: vi.fn(), getModelAllowlistCandidates: vi.fn(), getUsageSummary: vi.fn(), getCapacitySummary: vi.fn(), getLiveCapability: vi.fn()
+  getAll: vi.fn(), getModelAllowlistCandidates: vi.fn(), getUsageSummary: vi.fn(), getCapacitySummary: vi.fn(), getLiveCapability: vi.fn(), catalog: vi.fn()
 }))
+vi.mock('@/api/admin/procurementCatalog', () => ({ readProcurementCatalog: mocks.catalog }))
 vi.mock('@/api/admin', () => ({ adminAPI: {
   groups: { list: mocks.list, create: mocks.create, update: mocks.update, getById: mocks.getById,
     getAll: mocks.getAll, getModelAllowlistCandidates: mocks.getModelAllowlistCandidates,
@@ -65,8 +66,54 @@ describe('product procurement interval in the original Group editor', () => {
     mocks.getUsageSummary.mockResolvedValue([])
     mocks.getCapacitySummary.mockResolvedValue([])
     mocks.getLiveCapability.mockResolvedValue({ supported: false })
+    mocks.catalog.mockResolvedValue({ catalog: { version: 1, revision: 4, buckets: [{ code: 'low', name: 'Low', min_rate: '0.02', max_rate: '0.03' }, { code: 'standard', name: 'Standard', min_rate: '0.03', max_rate: '0.05' }] }, gaps: [] })
   })
   afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.restoreAllMocks() })
+
+  it('selects latest catalog buckets through the original editor and preserves source/range constraints', async () => {
+    const wrapper = mountView()
+    await edit(wrapper)
+    expect(mocks.catalog).not.toHaveBeenCalled()
+    await wrapper.get('#edit-procurement-buckets-mode').setValue('selected')
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.bucketsEmpty')
+    await wrapper.get('input[data-bucket-code="low"]').setValue(true)
+    await wrapper.get('#edit-procurement-sources-mode').setValue('approved')
+    await wrapper.get('#edit-procurement-sources').setValue('901')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({ ...savedPolicy, version: 3, sources: { account_ids: [901] }, buckets: { codes: ['low'] } })
+    expect(mocks.update.mock.calls[0][1].rate_multiplier).toBe(.15)
+  })
+
+  it('preserves bucket constraints across catalog read failure and requires explicit null to remove them', async () => {
+    const loaded = { ...savedPolicy, version: 3, sources: { account_ids: [901] }, buckets: { codes: ['low'] } }
+    mocks.catalog.mockRejectedValueOnce(new Error('fixture catalog unavailable'))
+    const wrapper = mountView({ ...base, procurement_policy: loaded })
+    await edit(wrapper)
+    expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.bucketsReadFailed')
+    await wrapper.get('#edit-procurement-max').setValue('0.04')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[0][1].procurement_policy.buckets).toEqual({ codes: ['low'] })
+    expect(loaded.buckets.codes).toEqual(['low'])
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-buckets-mode').setValue('original')
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...loaded, buckets: { codes: null } })
+  })
+
+  it('explicit review preserves bucket constraints added after a source-only draft', async () => {
+    mocks.update.mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
+    mocks.getById.mockResolvedValue({ ...base, procurement_policy: { ...savedPolicy, version: 3, revision: 2, sources: { account_ids: [904] }, buckets: { codes: ['low'] } } })
+    const wrapper = mountView({ ...base, procurement_policy: { ...savedPolicy, version: 2, sources: { account_ids: [901] } } })
+    await edit(wrapper)
+    await wrapper.get('#edit-procurement-max').setValue('0.05')
+    await submit(wrapper)
+    await button(wrapper, 'admin.groups.profitControl.procurement.useLatestRevision').trigger('click')
+    await flushPromises()
+    expect((wrapper.get('input[data-bucket-code="low"]').element as HTMLInputElement).checked).toBe(true)
+    await submit(wrapper)
+    expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...savedPolicy, version: 3, revision: 2, max_rate: '0.05', sources: { account_ids: [901] }, buckets: { codes: ['low'] } })
+  })
 
   it('loads exact bounds and omits the policy on an unchanged save', async () => {
     const wrapper = mountView()

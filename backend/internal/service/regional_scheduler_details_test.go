@@ -6,9 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRegionalSchedulerDetailsNoPrimaryFallback(t *testing.T) {
@@ -135,4 +139,95 @@ func TestRegionalSchedulerPreSendRechecksDoNotUsePrimaryOrAdmissionCache(t *test
 	if primary.reads != 0 {
 		t.Fatal("regional admission fell back after revocation")
 	}
+}
+
+func TestRegionalSchedulerProcurementCatalogAtomicRefreshAndRestore(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "procurement")
+	replica := regionalTestReplica(t, path, true)
+	source := regionalTestReplica(t, filepath.Join(t.TempDir(), "procurement-source"), true)
+	server := httptest.NewTLSServer(source.Handler())
+	defer server.Close()
+	group := profitControlTestGroup(10, 0, 0)
+	group.ProcurementPolicy = &ProcurementPolicy{Version: 3, Revision: 2, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{Codes: []string{"low"}}}
+	account := profitControlTestAccountWithRate(upstreamCostTestOAuthAccount(1), .025)
+	account.Status, account.Schedulable, account.GroupIDs = StatusActive, true, []int64{group.ID}
+	doc := RegionalSchedulerDocument{Version: 3, Groups: []*Group{group}, ProcurementCatalog: procurementBucketTestCatalog(), Buckets: []RegionalSchedulerBucket{{Bucket: SchedulerBucket{GroupID: group.ID, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}, Accounts: []*Account{account}}}, Availability: []RegionalAccountAvailability{{AccountID: 1, Reports: []*AvailabilityReport{}}}}
+	publish := func(lifetime time.Duration) {
+		t.Helper()
+		raw, err := json.Marshal(doc)
+		require.NoError(t, err)
+		require.NoError(t, source.PublishNext(ctx, "test", lifetime, raw))
+		require.NoError(t, replica.Pull(ctx, server.URL, server.Client().Transport))
+	}
+	publish(time.Minute)
+	reader, err := NewRegionalSchedulerReader(replica)
+	require.NoError(t, err)
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, nil)
+	snapshot.SetLocalSnapshotReader(reader)
+	gateway := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	request, _ := gateway.WithOpenAIRequestPricingContext(profitControlTestCtx(group), &group.ID)
+	veto, reason := openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.False(t, veto, reason)
+	loaded, err := snapshot.GetGroupByIDLite(ctx, group.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, loaded.ProcurementCatalog.Revision)
+	*loaded.ProcurementCatalog.Buckets[0].MaxRate = "0.021"
+	loaded, err = snapshot.GetGroupByIDLite(ctx, group.ID)
+	require.NoError(t, err)
+	require.Equal(t, "0.03", *loaded.ProcurementCatalog.Buckets[0].MaxRate)
+	reports, err := reader.ReadAccountAvailability(ctx, account)
+	require.NoError(t, err)
+	require.Empty(t, reports, "v3 retains v2 availability coverage")
+	doc.ProcurementCatalog = doc.ProcurementCatalog.WithRevision(2)
+	upper := "0.025"
+	doc.ProcurementCatalog.Buckets[0].MaxRate = &upper
+	publish(time.Minute)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.True(t, veto)
+	require.Equal(t, "procurement_bucket", reason)
+	original := request.Value(openAIProfitControlGateCtxKey{}).(*openAIProfitControlGate)
+	require.EqualValues(t, 1, original.procurementCatalog.Revision, "terminal refresh never mutates a shared request snapshot")
+	restored := regionalTestReplica(t, path, false)
+	restoredReader, err := NewRegionalSchedulerReader(restored)
+	require.NoError(t, err)
+	snapshot.SetLocalSnapshotReader(restoredReader)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.True(t, veto)
+	require.Equal(t, "procurement_bucket", reason)
+	doc.ProcurementCatalog = procurementBucketTestCatalog().WithRevision(3)
+	publish(time.Minute)
+	snapshot.SetLocalSnapshotReader(reader)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.False(t, veto, reason)
+	raw, err := json.Marshal(doc)
+	require.NoError(t, err)
+	for _, invalid := range []func(*RegionalSchedulerDocument){
+		func(d *RegionalSchedulerDocument) { d.Version = 2 },
+		func(d *RegionalSchedulerDocument) { d.ProcurementCatalog = nil },
+		func(d *RegionalSchedulerDocument) { d.ProcurementCatalog.Version = 99 },
+		func(d *RegionalSchedulerDocument) { d.Availability = nil },
+		func(d *RegionalSchedulerDocument) { d.Groups[0].ProcurementPolicy.Buckets = nil },
+	} {
+		var broken RegionalSchedulerDocument
+		require.NoError(t, json.Unmarshal(raw, &broken))
+		invalid(&broken)
+		payload, err := json.Marshal(broken)
+		require.NoError(t, err)
+		require.Error(t, RegionalSchedulerValidator([]int64{1})(payload))
+	}
+	doc.ProcurementCatalog.Buckets = doc.ProcurementCatalog.Buckets[1:]
+	publish(time.Minute)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.True(t, veto)
+	require.Equal(t, "procurement_catalog_unavailable", reason)
+	doc.ProcurementCatalog = procurementBucketTestCatalog().WithRevision(4)
+	publish(time.Second)
+	require.Eventually(t, func() bool { _, err := snapshot.GetGroupByIDLite(ctx, group.ID); return err != nil }, 2*time.Second, 10*time.Millisecond)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.True(t, veto)
+	require.Equal(t, "procurement_policy_unavailable", reason)
+	publish(time.Minute)
+	veto, reason = openAIProfitControlLatestPolicyVetoReason(request, account)
+	require.False(t, veto, reason)
 }

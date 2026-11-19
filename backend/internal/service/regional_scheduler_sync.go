@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/regional"
 )
 
@@ -17,10 +18,11 @@ import (
 // An allowlist does not allocate global concurrency for the shared pool.
 // Full Account JSON is sensitive and must only travel in encrypted snapshots.
 type RegionalSchedulerDocument struct {
-	Version      int                           `json:"version"`
-	Buckets      []RegionalSchedulerBucket     `json:"buckets"`
-	Groups       []*Group                      `json:"groups,omitempty"`
-	Availability []RegionalAccountAvailability `json:"availability"`
+	Version            int                           `json:"version"`
+	Buckets            []RegionalSchedulerBucket     `json:"buckets"`
+	Groups             []*Group                      `json:"groups,omitempty"`
+	Availability       []RegionalAccountAvailability `json:"availability"`
+	ProcurementCatalog *domain.ProcurementCatalog    `json:"procurement_catalog,omitempty"`
 }
 
 // Reports contain no credentials or private managed-connection identities.
@@ -74,8 +76,11 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return doc, errors.New("trailing regional scheduler data")
 	}
-	if (doc.Version != 1 && doc.Version != 2) || doc.Buckets == nil || len(doc.Buckets) > 4096 {
+	if (doc.Version != 1 && doc.Version != 2 && doc.Version != 3) || doc.Buckets == nil || len(doc.Buckets) > 4096 {
 		return doc, errors.New("invalid regional scheduler version or buckets")
+	}
+	if doc.Version == 3 && doc.ProcurementCatalog.Validate() != nil || doc.Version < 3 && doc.ProcurementCatalog != nil {
+		return doc, errors.New("invalid regional procurement catalog")
 	}
 	groups := make(map[int64]bool, len(doc.Groups))
 	for _, g := range doc.Groups {
@@ -83,6 +88,14 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 			return doc, errors.New("invalid regional group")
 		}
 		groups[g.ID] = true
+		if g.ProcurementPolicy != nil {
+			if g.ProcurementPolicy.Validate() != nil || g.ProcurementPolicy.Version == 3 && doc.Version < 3 {
+				return doc, errors.New("invalid regional procurement policy")
+			}
+			if g.ProcurementPolicy.Version == 3 {
+				g.ProcurementCatalog = doc.ProcurementCatalog.Clone()
+			}
+		}
 	}
 	// A repeated account must have identical credentials and policy in every
 	// bucket; otherwise hydration would depend on bucket iteration order.
@@ -133,7 +146,7 @@ func decodeRegionalScheduler(payload []byte) (RegionalSchedulerDocument, error) 
 	if doc.Version == 1 && len(doc.Availability) != 0 {
 		return doc, errors.New("availability requires regional scheduler version 2")
 	}
-	if doc.Version == 2 {
+	if doc.Version >= 2 {
 		if doc.Availability == nil {
 			return doc, errors.New("regional availability coverage missing")
 		}
@@ -230,6 +243,7 @@ func (s *SchedulerSnapshotService) ExportRegionalScheduler(ctx context.Context, 
 	}
 	doc := RegionalSchedulerDocument{Version: 2, Buckets: make([]RegionalSchedulerBucket, 0, len(buckets)), Availability: []RegionalAccountAvailability{}}
 	seenGroups := make(map[int64]bool)
+	groupViews := make(map[int64][]byte)
 	seenAvailability := make(map[int64]bool)
 	for _, bucket := range buckets {
 		if err := ctx.Err(); err != nil {
@@ -243,6 +257,30 @@ func (s *SchedulerSnapshotService) ExportRegionalScheduler(ctx context.Context, 
 			group, err := s.groupRepo.GetByIDLite(ctx, bucket.GroupID)
 			if err != nil {
 				return nil, err
+			}
+			if group != nil && group.ProcurementPolicy != nil && group.ProcurementPolicy.Version == 3 {
+				if group.ProcurementCatalog.Validate() != nil {
+					return nil, errors.New("regional export requires procurement catalog authority")
+				}
+				catalog := group.ProcurementCatalog.WithRevision(group.ProcurementCatalog.Revision)
+				if doc.ProcurementCatalog != nil {
+					previous, _ := json.Marshal(doc.ProcurementCatalog)
+					current, _ := json.Marshal(catalog)
+					if !bytes.Equal(previous, current) {
+						return nil, errors.New("conflicting regional procurement catalogs")
+					}
+				}
+				doc.Version, doc.ProcurementCatalog = 3, catalog
+			}
+			if group != nil {
+				encoded, err := json.Marshal(group)
+				if err != nil {
+					return nil, errors.New("invalid regional group encoding")
+				}
+				if previous, ok := groupViews[group.ID]; ok && !bytes.Equal(previous, encoded) {
+					return nil, errors.New("conflicting regional group views")
+				}
+				groupViews[group.ID] = encoded
 			}
 			if group != nil && !seenGroups[group.ID] {
 				doc.Groups = append(doc.Groups, group)
@@ -425,7 +463,7 @@ func (r *RegionalSchedulerReader) ReadAccountAvailability(ctx context.Context, a
 	if err != nil {
 		return nil, err
 	}
-	if doc.Version != 2 || account == nil || account.ID <= 0 {
+	if doc.Version < 2 || account == nil || account.ID <= 0 {
 		return nil, ErrLocalSchedulerSnapshotUnavailable
 	}
 	var current *Account

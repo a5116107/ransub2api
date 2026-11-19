@@ -88,3 +88,38 @@ func TestProcurementPolicyRejectsMalformedBoundaries(t *testing.T) {
 	require.NoError(t, (&ProcurementPolicy{Version: 1, Revision: 0}).ValidateDraft())
 	require.Error(t, (&ProcurementPolicy{Version: 1, Revision: MaxProcurementPolicyRevision + 1}).Validate())
 }
+
+func TestProcurementPolicyBucketsValidationCloneAndRoundtrip(t *testing.T) {
+	for _, codes := range [][]string{nil, {}, {"low", "next"}} {
+		p := &ProcurementPolicy{Version: 3, Revision: 1, Sources: &ProcurementSources{}, Buckets: &ProcurementBuckets{Codes: codes}}
+		require.NoError(t, p.Validate())
+		cloned := p.Clone()
+		raw, err := json.Marshal(cloned)
+		require.NoError(t, err)
+		var decoded ProcurementPolicy
+		require.NoError(t, json.Unmarshal(raw, &decoded))
+		require.Equal(t, p, &decoded)
+		if len(codes) > 0 {
+			cloned.Buckets.Codes[0] = "other"
+			require.NotEqual(t, p, cloned)
+		}
+	}
+	for _, raw := range []string{`null`, `{}`, `{"codes":false}`, `{"codes":["LOW"]}`, `{"codes":["low","low"]}`, `{"codes":[""]}`, `{"codes":[1]}`, `{"codes":null,"codes":null}`, `{"Codes":null}`, `{"codes":[],"unknown":true}`} {
+		var decoded ProcurementPolicy
+		err := json.Unmarshal([]byte(`{"version":3,"revision":1,"sources":{"account_ids":null},"buckets":`+raw+`}`), &decoded)
+		require.True(t, err != nil || decoded.Validate() != nil, raw)
+	}
+	p := &ProcurementPolicy{Version: 3, Revision: 1, Sources: &ProcurementSources{}, Buckets: &ProcurementBuckets{Codes: []string{"next", "low"}}}
+	require.Equal(t, []string{"low", "next"}, p.WithRevision(2).Buckets.Codes)
+	require.Equal(t, []string{"next", "low"}, p.Buckets.Codes)
+	p.Version = 2
+	require.Error(t, p.Validate())
+	p.Version = 3
+	p.Sources = nil
+	require.Error(t, p.Validate())
+	p.Sources = &ProcurementSources{}
+	p.Buckets = nil
+	require.Error(t, p.Validate())
+	p.Buckets = &ProcurementBuckets{Codes: make([]string, 65)}
+	require.Error(t, p.Validate())
+}

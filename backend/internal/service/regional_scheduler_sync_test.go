@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/regional"
+	"github.com/stretchr/testify/require"
 )
 
 func regionalTestReplica(t *testing.T, path string, bootstrap bool) *regional.Replica {
@@ -121,7 +123,7 @@ type regionalExportRepo struct {
 	availabilityReads int
 }
 
-func (r *regionalExportRepo) ListSchedulableUngroupedByPlatform(context.Context, string) ([]Account, error) {
+func (r *regionalExportRepo) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]Account, error) {
 	if r.fail {
 		return nil, errors.New("db unavailable")
 	}
@@ -188,4 +190,47 @@ func TestRegionalSchedulerWorkerCancellation(t *testing.T) {
 	if err := RunRegionalSchedulerSync(ctx, r, "https://unused.invalid", nil, time.Second, time.Minute); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
+}
+
+type regionalProcurementGroupRepo struct {
+	GroupRepository
+	groups []*Group
+	reads  int
+}
+
+func (r *regionalProcurementGroupRepo) GetByIDLite(context.Context, int64) (*Group, error) {
+	g := r.groups[r.reads%len(r.groups)]
+	r.reads++
+	return g, nil
+}
+
+func TestRegionalSchedulerProcurementExportRejectsConflictingAuthority(t *testing.T) {
+	group := profitControlTestGroup(7, 0, 0)
+	group.ProcurementPolicy = &ProcurementPolicy{Version: 3, Revision: 1, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{Codes: []string{"low"}}}
+	group.ProcurementCatalog = procurementBucketTestCatalog()
+	newer := *group
+	newer.ProcurementCatalog = group.ProcurementCatalog.WithRevision(2)
+	groups := &regionalProcurementGroupRepo{groups: []*Group{group, &newer}}
+	accounts := &regionalExportRepo{accounts: []Account{{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, GroupIDs: []int64{7}}}}
+	svc := NewSchedulerSnapshotService(nil, nil, accounts, groups, nil)
+	buckets := []SchedulerBucket{{GroupID: 7, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}, {GroupID: 7, Platform: PlatformOpenAI, Mode: SchedulerModeForced}}
+	replica := regionalTestReplica(t, filepath.Join(t.TempDir(), "export"), true)
+	require.NoError(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets[:1], []int64{1}))
+	before, err := replica.Current()
+	require.NoError(t, err)
+	doc, err := decodeRegionalScheduler(before.Payload)
+	require.NoError(t, err)
+	require.Equal(t, 3, doc.Version)
+	require.EqualValues(t, 1, doc.ProcurementCatalog.Revision)
+	groups.reads = 0
+	require.ErrorContains(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets, []int64{1}), "conflicting regional procurement catalogs")
+	after, err := replica.Current()
+	require.NoError(t, err)
+	require.Equal(t, before.Revision, after.Revision)
+	require.Equal(t, before.ExpiresAt, after.ExpiresAt)
+	groups.groups = []*Group{group}
+	group.ProcurementCatalog = nil
+	require.ErrorContains(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets[:1], []int64{1}), "requires procurement catalog authority")
+	group.ProcurementCatalog = procurementBucketTestCatalog().WithRevision(3)
+	require.NoError(t, svc.PublishRegionalScheduler(t.Context(), replica, "test", time.Minute, buckets, []int64{1}))
 }

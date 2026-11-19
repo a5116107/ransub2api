@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"entgo.io/ent/dialect"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -293,7 +294,37 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 	if err != nil {
 		return nil, translatePersistenceError(err, service.ErrGroupNotFound, nil)
 	}
-	return groupEntityToService(m), nil
+	out := groupEntityToService(m)
+	if out.ProcurementPolicy == nil || out.ProcurementPolicy.Version != 3 {
+		return out, nil
+	}
+	// The initial read only selects the contract. Re-read v3 policy and catalog
+	// in one read-only snapshot; never pair an old policy with a new directory.
+	queryer := r.sql
+	if db, ok := r.sql.(interface {
+		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+	}); ok {
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		client := dbent.NewClient(dbent.Driver(entsql.NewDriver(dialect.Postgres, entsql.Conn{ExecQuerier: tx})))
+		m, err = client.Group.Query().Where(group.IDEQ(id)).Only(ctx)
+		if err != nil {
+			return nil, translatePersistenceError(err, service.ErrGroupNotFound, nil)
+		}
+		out, queryer = groupEntityToService(m), tx
+	}
+	if out.ProcurementPolicy != nil && out.ProcurementPolicy.Version == 3 {
+		// Missing/corrupt catalog is carried as unknown, not an empty unrestricted
+		// catalog. This keeps disabled gates and admin repair reads available.
+		out.ProcurementCatalog, _ = loadProcurementCatalog(ctx, queryer)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) error {

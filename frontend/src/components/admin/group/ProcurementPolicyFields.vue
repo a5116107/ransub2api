@@ -18,6 +18,28 @@
       </div>
     </div>
     <div v-if="!unsupported" class="space-y-2">
+      <label :for="`${idPrefix}-buckets-mode`" class="input-label">{{ t(`${p}.bucketsTitle`) }}</label>
+      <select :id="`${idPrefix}-buckets-mode`" class="input" :value="restrictedBuckets ? 'selected' : 'original'" :aria-describedby="`${idPrefix}-buckets-hint`" @change="setBucketMode(($event.target as HTMLSelectElement).value)">
+        <option value="original">{{ t(`${p}.bucketsUnrestricted`) }}</option>
+        <option value="selected">{{ t(`${p}.bucketsSelected`) }}</option>
+      </select>
+      <p :id="`${idPrefix}-buckets-hint`" class="text-xs text-gray-500 dark:text-gray-400">{{ t(`${p}.bucketsHint`) }}</p>
+      <template v-if="restrictedBuckets">
+        <p v-if="catalogLoading" role="status" class="text-xs">{{ t(`${p}.bucketsLoading`) }}</p>
+        <p v-if="catalogError" role="alert" class="text-xs text-amber-800 dark:text-amber-300">{{ t(`${p}.bucketsReadFailed`) }}</p>
+        <button type="button" class="btn btn-secondary text-xs" :disabled="catalogLoading" @click="loadCatalog">{{ t(`${p}.bucketsReload`) }}</button>
+        <p v-if="catalog" class="text-xs text-gray-500">{{ t(`${p}.bucketsRevision`, { revision: catalog.revision }) }}</p>
+        <div class="max-h-60 space-y-2 overflow-y-auto">
+          <label v-for="bucket in catalog?.buckets ?? []" :key="bucket.code" class="flex items-start gap-2 break-words text-xs">
+            <input type="checkbox" class="mt-0.5" :checked="selectedBuckets.includes(bucket.code)" :data-bucket-code="bucket.code" @change="toggleBucket(bucket.code, ($event.target as HTMLInputElement).checked)" />
+            <span class="min-w-0 break-words">{{ bucket.name }} · {{ bucket.code }} [{{ bucket.min_rate ?? '0' }}, {{ bucket.max_rate ?? '∞' }})</span>
+          </label>
+        </div>
+        <p v-if="missingBuckets.length" role="alert" class="break-words text-xs text-amber-800 dark:text-amber-300">{{ t(`${p}.bucketsMissing`, { codes: missingBuckets.join(', ') }) }}</p>
+        <p v-if="error !== 'bucketFormat'" role="status" class="break-words text-xs" :class="selectedBuckets.length === 0 ? 'text-amber-800 dark:text-amber-300' : 'text-gray-600 dark:text-gray-300'">{{ t(`${p}.${selectedBuckets.length === 0 ? 'bucketsEmpty' : 'bucketsCount'}`, { count: selectedBuckets.length }) }}</p>
+      </template>
+    </div>
+    <div v-if="!unsupported" class="space-y-2">
       <label :for="`${idPrefix}-sources-mode`" class="input-label">{{ t('admin.groups.profitControl.procurement.sourcesTitle') }}</label>
       <select :id="`${idPrefix}-sources-mode`" class="input" :value="restrictedSources ? 'approved' : 'original'" :disabled="unsupported"
         :aria-describedby="`${idPrefix}-sources-hint`" @change="setSourceMode(($event.target as HTMLSelectElement).value)">
@@ -51,6 +73,7 @@
         {{ latestPolicy?.sources?.account_ids === null || !latestPolicy?.sources ? t('admin.groups.profitControl.procurement.originalPool') : latestPolicy.sources.account_ids.length ? latestPolicy.sources.account_ids.join(', ') : t('admin.groups.profitControl.procurement.sourcesEmpty') }}
       </p>
       <p v-else-if="latestError">{{ t(`admin.groups.profitControl.procurement.${latestError}`) }}</p>
+      <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestBuckets`) }}: {{ latestPolicy?.buckets?.codes === null || !latestPolicy?.buckets ? t(`${p}.bucketsUnrestricted`) : latestPolicy.buckets.codes.length ? latestPolicy.buckets.codes.join(', ') : t(`${p}.bucketsEmpty`) }}</p>
       <div class="flex flex-wrap gap-2">
         <button type="button" class="btn btn-secondary text-xs" :disabled="refreshing" @click="emit('refresh')">
           {{ t('admin.groups.profitControl.procurement.reloadLatest') }}
@@ -64,10 +87,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { GroupProcurementPolicy } from '@/types'
 import { cloneProcurementPolicy, parseProcurementSourceIDs, validateProcurementPolicy } from '@/utils/procurementPolicy'
+import { readProcurementCatalog, type ProcurementCatalog } from '@/api/admin/procurementCatalog'
+import { validProcurementSnapshot } from '@/utils/procurementCatalog'
 
 const props = defineProps<{
   modelValue: GroupProcurementPolicy | null
@@ -82,10 +107,29 @@ const emit = defineEmits<{
   resolve: []
 }>()
 const { t } = useI18n()
+const p = 'admin.groups.profitControl.procurement'
 const error = computed(() => validateProcurementPolicy(props.modelValue))
 const unsupported = computed(() => error.value === 'unsupported')
 const latestError = computed(() => props.latestPolicy === undefined ? null : validateProcurementPolicy(props.latestPolicy))
-const restrictedSources = computed(() => props.modelValue?.version === 2 && Array.isArray(props.modelValue.sources?.account_ids))
+const restrictedSources = computed(() => (props.modelValue?.version ?? 0) >= 2 && Array.isArray(props.modelValue?.sources?.account_ids))
+const restrictedBuckets = computed(() => props.modelValue?.version === 3 && Array.isArray(props.modelValue.buckets?.codes))
+const selectedBuckets = computed(() => props.modelValue?.buckets?.codes ?? [])
+const catalog = ref<ProcurementCatalog | null>(null), catalogLoading = ref(false), catalogError = ref(false)
+const missingBuckets = computed(() => catalog.value ? selectedBuckets.value.filter(code => !catalog.value!.buckets.some(bucket => bucket.code === code)) : [])
+const controller = new AbortController()
+let alive = true
+async function loadCatalog() {
+  if (catalogLoading.value) return
+  catalogLoading.value = true; catalogError.value = false; catalog.value = null
+  try {
+    const result = await readProcurementCatalog(controller.signal)
+    if (!validProcurementSnapshot(result)) throw new Error('unknown catalog contract')
+    if (alive) catalog.value = result.catalog
+  } catch { if (alive) catalogError.value = true }
+  finally { if (alive) catalogLoading.value = false }
+}
+watch(restrictedBuckets, value => { if (value && !catalog.value) void loadCatalog() }, { immediate: true })
+onBeforeUnmount(() => { alive = false; controller.abort() })
 const sourceCount = computed(() => props.modelValue?.sources?.account_ids?.length ?? 0)
 const sourceDraft = ref('')
 watch(() => props.modelValue?.sources?.account_ids, ids => {
@@ -101,7 +145,7 @@ function draft(): GroupProcurementPolicy {
 function setSourceMode(value: string) {
   if (unsupported.value) return
   const next = draft()
-  next.version = 2
+  next.version = Math.max(2, next.version)
   next.sources = { account_ids: value === 'approved' ? [] : null }
   emit('update:modelValue', next)
 }
@@ -109,8 +153,25 @@ function setSourceMode(value: string) {
 function updateSources(value: string) {
   if (unsupported.value) return
   const next = draft()
-  next.version = 2
+  next.version = Math.max(2, next.version)
   next.sources = { account_ids: parseProcurementSourceIDs(value) }
+  emit('update:modelValue', next)
+}
+
+function setBucketMode(value: string) {
+  if (unsupported.value) return
+  const next = draft()
+  next.version = 3
+  next.sources ??= { account_ids: null }
+  next.buckets = { codes: value === 'selected' ? [] : null }
+  emit('update:modelValue', next)
+}
+function toggleBucket(code: string, checked: boolean) {
+  if (unsupported.value) return
+  const next = draft()
+  next.version = 3
+  next.sources ??= { account_ids: null }
+  next.buckets = { codes: checked ? [...selectedBuckets.value, code].sort() : selectedBuckets.value.filter(value => value !== code) }
   emit('update:modelValue', next)
 }
 

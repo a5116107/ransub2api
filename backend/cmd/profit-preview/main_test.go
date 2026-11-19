@@ -170,3 +170,15 @@ func TestModelsWithZeroRemainingWarnings(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePreviewProcurementBuckets(t *testing.T) {
+	raw := `{"procurement_catalog":{"version":1,"revision":2,"buckets":[{"code":"low","name":"Low","min_rate":"0.02","max_rate":"0.03"}]},"groups":[{"group":{"id":1,"platform":"openai","rate_multiplier":1,"profit_control_enabled":true,"procurement_policy":{"version":3,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":["low"]}}},"accounts":[{"id":2,"platform":"openai","type":"apikey","rate_multiplier":0.025}]}]}`
+	inputs, err := parsePreviewInputs([]byte(raw), false)
+	require.NoError(t, err)
+	reports := service.PreviewProfitAdmission(inputs, time.Now())
+	require.Equal(t, service.ProfitPreviewClassAdmitted, reports[0].Verdicts[0].Class)
+	require.EqualValues(t, 2, *reports[0].ProcurementCatalogRevision)
+	inputs[0].Group.ProcurementCatalog = nil
+	reports = service.PreviewProfitAdmission(inputs, time.Now())
+	require.Equal(t, service.ProfitPreviewClassUnknownCatalog, reports[0].Verdicts[0].Class)
+}

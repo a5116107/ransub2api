@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -55,7 +56,8 @@ type inputEntry struct {
 }
 
 type inputDoc struct {
-	Groups []inputEntry `json:"groups"`
+	ProcurementCatalog *domain.ProcurementCatalog `json:"procurement_catalog"`
+	Groups             []inputEntry               `json:"groups"`
 }
 
 func main() {
@@ -95,7 +97,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("利润门预演 @ %s（账号级采购筛选：价格与批准来源；不代表模型/fast、健康或缓存资格）\n", evalAt.Format(time.RFC3339))
+	fmt.Printf("利润门预演 @ %s（账号级采购筛选：价格、批准来源与采购桶；不代表模型/fast、健康或缓存资格）\n", evalAt.Format(time.RFC3339))
 	for _, report := range reports {
 		fmt.Printf("\n== 分组 %d %s [%s] ==\n", report.GroupID, report.GroupName, report.Platform)
 		fmt.Printf("  利润门生效=%v 假定启用=%v | 默认 D=%.4f 阈值=%.4f | 最低有效 D=%.4f 阈值=%.4f\n",
@@ -118,6 +120,16 @@ func main() {
 						fmt.Println("  批准来源：沿用原分组账号池（不新增关联）")
 					} else {
 						fmt.Printf("  批准来源：%d 个本地账号 %v（空名单暂不接纳任何来源）\n", len(policy.Sources.AccountIDs), policy.Sources.AccountIDs)
+					}
+				}
+				if policy.Buckets != nil {
+					if policy.Buckets.Codes == nil {
+						fmt.Println("  采购桶：不额外限制")
+					} else {
+						fmt.Printf("  允许采购桶：%v（空名单不接纳任何桶；目录未知或缺少code时拒绝）\n", policy.Buckets.Codes)
+					}
+					if report.ProcurementCatalogRevision != nil {
+						fmt.Printf("  采购目录修订=%d\n", *report.ProcurementCatalogRevision)
 					}
 				}
 			}
@@ -147,7 +159,7 @@ func main() {
 			fmt.Printf("  账号 %-4d %-24s 平台=%-12s 保存倍率=%-8s U=%-8s 来源=%-19s %s%s\n",
 				v.AccountID, v.Name, v.Platform, rate, effectiveRate, v.RateSource, v.Class, suffix)
 		}
-		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d 账号附加售价不符=%d 采购区间外=%d 来源未批准=%d 采购策略不可用=%d\n",
+		fmt.Printf("  分类合计: 准入=%d 利润不足=%d 倍率非法=%d 同步倍率不可用=%d 账号附加售价不符=%d 采购区间外=%d 来源未批准=%d 采购策略不可用=%d 采购桶未批准=%d 采购目录不可用=%d\n",
 			counts[service.ProfitPreviewClassAdmitted],
 			counts[service.ProfitPreviewClassRejectedThreshold],
 			counts[service.ProfitPreviewClassRejectedInvalidRate],
@@ -155,7 +167,9 @@ func main() {
 			counts[service.ProfitPreviewClassRejectedSaleRate],
 			counts[service.ProfitPreviewClassRejectedProcurement],
 			counts[service.ProfitPreviewClassRejectedSource],
-			counts[service.ProfitPreviewClassUnknownProcurement])
+			counts[service.ProfitPreviewClassUnknownProcurement],
+			counts[service.ProfitPreviewClassRejectedBucket],
+			counts[service.ProfitPreviewClassUnknownCatalog])
 		models := make([]string, 0, len(report.RemainingByModel))
 		for model := range report.RemainingByModel {
 			models = append(models, model)
@@ -197,6 +211,7 @@ func parsePreviewInputs(raw []byte, assumeEnabled bool) ([]service.ProfitPreview
 			return nil, fmt.Errorf("invalid group at index %d: id and platform are required", i)
 		}
 		group := &service.Group{
+			ProcurementCatalog:   doc.ProcurementCatalog.Clone(),
 			ProcurementPolicy:    entry.Group.ProcurementPolicy.Clone(),
 			ID:                   entry.Group.ID,
 			Name:                 entry.Group.Name,

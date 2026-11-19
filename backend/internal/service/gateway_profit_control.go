@@ -56,12 +56,13 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 	threshold := clampProfitControlThreshold(downstream * (1 - group.ProfitMinMargin - group.ProfitSafetyBuffer))
 
 	gate := &openAIProfitControlGate{
-		groupID:           group.ID,
-		platform:          group.Platform,
-		threshold:         threshold,
-		pricingAt:         pricingAt,
-		procurementPolicy: group.ProcurementPolicy.Clone(),
-		procurementGroup:  procurementPolicyGroupReader(s.schedulerSnapshot, s.groupRepo, group.ID),
+		groupID:            group.ID,
+		platform:           group.Platform,
+		threshold:          threshold,
+		pricingAt:          pricingAt,
+		procurementPolicy:  group.ProcurementPolicy.Clone(),
+		procurementCatalog: group.ProcurementCatalog.Clone(),
+		procurementGroup:   procurementPolicyGroupReader(s.schedulerSnapshot, s.groupRepo, group.ID),
 	}
 	openAIProfitControlObserverInstance.recordInstall(gate.groupID, gate.platform, gate.threshold)
 	return context.WithValue(ctx, openAIProfitControlGateCtxKey{}, gate)

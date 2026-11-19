@@ -20,6 +20,35 @@ type ProcurementPolicy struct {
 	MinRate  *string             `json:"min_rate"`
 	MaxRate  *string             `json:"max_rate"`
 	Sources  *ProcurementSources `json:"sources,omitempty"`
+	Buckets  *ProcurementBuckets `json:"buckets,omitempty"`
+}
+
+// Version 3 requires an explicit codes list. Nil preserves the original pool;
+// an empty list admits no bucket. Codes refer to the shared catalog, not groups.
+type ProcurementBuckets struct {
+	Codes []string `json:"codes"`
+}
+
+func (b *ProcurementBuckets) UnmarshalJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') || !decoder.More() {
+		return errors.New("procurement buckets require an explicit codes field")
+	}
+	if token, err := decoder.Token(); err != nil || token != "codes" {
+		return errors.New("unknown procurement buckets field")
+	}
+	var codes []string
+	if err := decoder.Decode(&codes); err != nil {
+		return err
+	}
+	if decoder.More() {
+		return errors.New("duplicate or unknown procurement buckets field")
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return errors.New("invalid procurement buckets object")
+	}
+	b.Codes = codes
+	return nil
 }
 
 // Version 2 requires the object. A null list preserves the original pool; an
@@ -72,11 +101,26 @@ func procurementBound(value *string) (*big.Rat, error) {
 }
 
 func (p *ProcurementPolicy) ValidateDraft() error {
-	if p == nil || (p.Version != 1 && p.Version != 2) || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
+	if p == nil || p.Version < 1 || p.Version > 3 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
 		return errors.New("invalid procurement policy version or revision")
 	}
-	if p.Version == 1 && p.Sources != nil || p.Version == 2 && p.Sources == nil {
+	if p.Version == 1 && p.Sources != nil || p.Version >= 2 && p.Sources == nil {
 		return errors.New("procurement source contract does not match its version")
+	}
+	if p.Version < 3 && p.Buckets != nil || p.Version == 3 && p.Buckets == nil {
+		return errors.New("procurement bucket contract does not match its version")
+	}
+	if p.Buckets != nil {
+		if len(p.Buckets.Codes) > 64 {
+			return errors.New("too many allowed procurement buckets")
+		}
+		seen := make(map[string]bool, len(p.Buckets.Codes))
+		for _, code := range p.Buckets.Codes {
+			if !procurementBucketCode.MatchString(code) || seen[code] {
+				return errors.New("procurement bucket codes must be valid and unique")
+			}
+			seen[code] = true
+		}
 	}
 	if p.Sources != nil {
 		if len(p.Sources.AccountIDs) > 1000 {
@@ -122,6 +166,9 @@ func (p *ProcurementPolicy) Clone() *ProcurementPolicy {
 		return nil
 	}
 	next := *p
+	if p.Buckets != nil {
+		next.Buckets = &ProcurementBuckets{Codes: slices.Clone(p.Buckets.Codes)}
+	}
 	if p.Sources != nil {
 		next.Sources = &ProcurementSources{}
 		if p.Sources.AccountIDs != nil {
@@ -144,6 +191,9 @@ func (p *ProcurementPolicy) Clone() *ProcurementPolicy {
 func (p *ProcurementPolicy) WithRevision(revision int64) *ProcurementPolicy {
 	next := p.Clone()
 	next.Revision = revision
+	if next.Buckets != nil {
+		slices.Sort(next.Buckets.Codes)
+	}
 	if next.Sources != nil {
 		slices.Sort(next.Sources.AccountIDs)
 	}

@@ -50,6 +50,20 @@ describe('catalog editing and scope classification in the original operations pa
     await w.get('[data-testid="procurement-product"]').setValue('43')
     expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
   })
+  it.each(['rejected_procurement_bucket', 'rejected_procurement_catalog_unavailable'])('shows a readable conclusion and matching catalog revision for %s', async reason => {
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    const request = { account_id: 7, public_model: 'public-model', scope: { version: 2, model: 'wire-model', protocol: 'responses_http', stream: false, service_tier: 'unspecified', reasoning_effort: 'unspecified', capability: 'text' } }
+    const response = { ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: [{ ...request, state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated', product_procurement: { version: 1, group_id: 42, policy_revision: 3, catalog_revision: 1, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'blocked', reason, price_class: reason } }] }
+    vi.mocked(previewProcurementScopes).mockResolvedValueOnce(response)
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-procurement"]').text()).toContain(prefix + (reason === 'rejected_procurement_bucket' ? 'bucketRejected' : 'catalogUnavailable'))
+    response.results[0]!.product_procurement.catalog_revision = 2
+    vi.mocked(previewProcurementScopes).mockResolvedValueOnce(response)
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="product-procurement"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+  })
   it('resolves every static catalog label in both languages instead of displaying raw translation keys', () => {
     const labels = [...catalogSource.matchAll(/\$\{p\}\.([a-zA-Z]+)`/g)].map(match => match[1]!)
     expect(labels.length).toBeGreaterThan(30)
