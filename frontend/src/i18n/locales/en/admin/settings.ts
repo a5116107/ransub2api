@@ -541,6 +541,7 @@ export default {
       },
       upstreamBillingProbe: {
         budget: {
+          searchKeywords: 'shared probe budget monitoring budget detection budget token budget',
           capacityTitle: 'Monitoring capacity preflight (lower bound)',
           capacityPreview: 'Preview draft capacity',
           capacityInactive: 'Billing, schedules, candy and V1 in the compiled scopes are inactive; unexamined demand is not free or disabled',
@@ -1676,6 +1677,7 @@ export default {
       },
       cache_rate: {
         label: 'Show usage cache statistics',
+        searchKeywords: 'cache rate cache hit rate cached token share billed cache share',
         description: 'Billed cached-token shares in usage records and raw cache experience on the user page are shown separately. Billing rules may adjust cache buckets and do not establish raw upstream cache hits. Turning this off hides these displays from admins and users. Enabled by default.',
       },
       cache_rate_to_users: {

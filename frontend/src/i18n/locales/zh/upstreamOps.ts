@@ -27,6 +27,32 @@ export default {
     rejectedAtMin: '默认售价的价格边界通过，最低用户覆盖价下被排除。',
     boundary: '本结果仅检查账号级价格、采购范围与来源边界，不认证模型身份、答题质量、高缓存、健康、额度或可用槽位；也不是精确采购成本或用户报价。C 不会替代 U。实际请求仍须经过精确范围与发送前终检。',
     pages: '价格检查账号分页',
+    review: {
+      title: '交给程序管理前，还需检查什么',
+      legacy: '此服务器尚未返回规则与预算检查；本项保持未检查，不据价格通过推断可自动管理。',
+      manual: '当前仍由人工配置与现有检测规则管理。此次仅检查，未接管分组、清除限制或执行自动迁移。',
+      scope: '已读取 {count} 条相关规则：当前产品成员的账号规则，以及明确移出或恢复本产品的保存目标；不是全部批准来源或完整依赖图。',
+      incomplete: '相关规则超过 1000 条，以下计数仅为已读取下界；完整冲突范围仍未知。',
+      conflicting_rules: '关联写入 / 保留归属待处理', protection_rules: '需保留的其他账号保护',
+      unknown_rules: '配置或归属待核对', judge_dependency_rules: '依赖本产品的判题规则',
+      empty: '此范围内没有读取到相关规则；不代表完整资格通过，也不证明没有其他写入来源。',
+      details: '展开规则及影响', rule: '规则 #{id}', enabled: '计划启用', paused: '计划已暂停', pages: '相关规则分页',
+      retained: '仍有保存的恢复 / 保护归属。暂停计划不会解除归属；请在原归属面板核对，不直接清除历史。',
+      judge: '此规则的判题依赖当前产品；成员被隔离后可能没有判题候选，且此处未证明参考来源独立。',
+      risks: {
+        membership_conflict: '会写本产品关联，或仍保留本产品恢复归属；程序接管前需协调。',
+        account_protection: '其他账号级保护或恢复动作继续保留，不等于本产品关联冲突。',
+        observation: '本次未发现此规则写本产品关联；不是完整无冲突证明。',
+        unknown: '配置或保存归属未能解释，保留原限制并人工核对。'
+      },
+      actions: { connectivity: '连通性检测', remove_groups: '移出分组', isolate_models: '模型与分组隔离', disable_scheduling: '停止账号调度', remove_models: '模型冷却', enable_bps: '启用 BPS', observe_only: '仅观察', openai_two_fa_admission: '2FA 准入', unknown: '动作待确认' },
+      budgetTitle: '共享检测预算 · 已保存计划的全站下界',
+      budgetStates: { not_enforced: '预算限制未启用，不是检测免费或容量充足', insufficient: '已知调用下界已超出至少一项预算 / 调度边界', partial: '已知下界尚未超限，但仍有未估算需求或不完整覆盖', known_lower_bound_fits: '已知调用下界可容纳，不承诺完整周期或 Token 成本' },
+      budgetCounts: '已知最低 {minimum} 次 / 日 · 常规容量 {capacity} 次 / 日 · 未估算来源 {unknown} 类',
+      budgetWindow: '预算版本 {revision} · UTC 窗口 {start} 至 {end}',
+      budgetBoundary: '复用全站原预算编译器，未增加本产品检测、预留额度或估算 Token；新产品额外需求、实际用量、并发和恢复预留仍需原预算面板核对。',
+      qualityLink: '查看质量规则与归属', budgetLink: '查看 / 调整共享检测预算'
+    },
     sources: { manual: 'U 来自账号保存倍率', upstream_probe_sync: 'U 来自当前有效上游探测' },
     estimates: { saved: 'C 来自已保存估算', default: 'C 使用默认估算 0.1', invalid_fallback: 'C 保存值非法，回退默认估算 0.1' },
     classes: {

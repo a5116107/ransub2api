@@ -135,6 +135,16 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		require.Equal(t, "inactive", out.GroupStatus)
 	})
 	t.Run("one snapshot, final evaluation clock and cancellation recovery", func(t *testing.T) {
+		budget := service.DefaultMonitoringProbeBudgetSettings()
+		budget.Revision = 7
+		raw, err := json.Marshal(budget)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2)`, service.MonitoringProbeBudgetSettingKey, string(raw))
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, e := db.ExecContext(ctx, `DELETE FROM settings WHERE key=$1`, service.MonitoringProbeBudgetSettingKey)
+			require.NoError(t, e)
+		})
 		lock, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { _ = lock.Rollback() }()
@@ -162,6 +172,11 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		require.NoError(t, err)
 		_, err = lock.ExecContext(ctx, `UPDATE user_group_rate_multipliers SET rate_multiplier=.25 WHERE group_id=$1`, groupID)
 		require.NoError(t, err)
+		budget.Revision = 8
+		raw, err = json.Marshal(budget)
+		require.NoError(t, err)
+		_, err = lock.ExecContext(ctx, `UPDATE settings SET value=$2 WHERE key=$1`, service.MonitoringProbeBudgetSettingKey, string(raw))
+		require.NoError(t, err)
 		beforeRelease := time.Now()
 		require.NoError(t, lock.Commit())
 		old := <-pending
@@ -171,11 +186,13 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		require.Equal(t, .2, old.out.Report.DefaultD)
 		require.Equal(t, .1, old.out.Report.MinEffectiveD)
 		require.Equal(t, 1.0, *old.out.Report.Verdicts[0].EffectiveRate)
+		require.Equal(t, int64(7), old.out.ManagementReview.Budget.Revision)
 		fresh := read()
 		require.Len(t, fresh.Report.Verdicts, 1)
 		require.Equal(t, .3, fresh.Report.DefaultD)
 		require.Equal(t, .25, fresh.Report.MinEffectiveD)
 		require.Equal(t, .025, *fresh.Report.Verdicts[0].EffectiveRate)
+		require.Equal(t, int64(8), fresh.ManagementReview.Budget.Revision)
 		canceled, stop := context.WithCancel(ctx)
 		stop()
 		_, err = repo.PreviewProcurementProductImpact(canceled, groupID)
@@ -191,6 +208,140 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		_, err = db.ExecContext(ctx, `DELETE FROM settings WHERE key=$1`, service.ProcurementCatalogSettingKey)
 		require.NoError(t, err)
 		require.Equal(t, 200, run(id, "admin").Code)
+	})
+	t.Run("management review is returned without taking over the product", func(t *testing.T) {
+		w := run(id, "admin")
+		require.Equal(t, 200, w.Code)
+		var envelope struct {
+			Data map[string]json.RawMessage `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &envelope))
+		require.Contains(t, envelope.Data, "management_review", "price-only success must not silently imply safe automatic management")
+	})
+	t.Run("saved rule conflicts, paused owners and shared budget remain separate", func(t *testing.T) {
+		var otherID int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,credentials) VALUES('Former member','openai','apikey','{}') RETURNING id`).Scan(&otherID))
+		planIDs := []int64{}
+		t.Cleanup(func() {
+			for _, pid := range planIDs {
+				_, e := db.ExecContext(ctx, `DELETE FROM account_quality_states WHERE plan_id=$1`, pid)
+				require.NoError(t, e)
+				_, e = db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, pid)
+				require.NoError(t, e)
+			}
+			_, e := db.ExecContext(ctx, `DELETE FROM settings WHERE key=$1`, service.MonitoringProbeBudgetSettingKey)
+			require.NoError(t, e)
+		})
+		add := func(aid int64, enabled, recover bool, config, state string) int64 {
+			t.Helper()
+			var pid int64
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,max_results,auto_recover,pelican_config,next_run_at) VALUES($1,'sol','* * * * *',$2,10,$3,$4::jsonb,now()) RETURNING id`, aid, enabled, recover, config).Scan(&pid))
+			planIDs = append(planIDs, pid)
+			if state != "" {
+				_, e := db.ExecContext(ctx, `INSERT INTO account_quality_states(plan_id,state) VALUES($1,$2::jsonb)`, pid, state)
+				require.NoError(t, e)
+			}
+			return pid
+		}
+		remove := fmt.Sprintf(`{"question_kind":"candy","parallel_count":1,"quality":{"action":"remove_groups","remove_group_ids":[%d],"expected_answer":"private-review-prompt"}}`, groupID)
+		live := add(accountID, true, false, remove, "")
+		paused := add(otherID, false, false, `{"quality":{"action":"observe_only"}}`, fmt.Sprintf(`{"action":"remove_groups","removed":[{"group_id":%d}]}`, groupID))
+		composite := add(otherID, false, false, `null`, fmt.Sprintf(`{"action":"isolate_models","groups":{"removed":[{"group_id":%d}]} }`, groupID))
+		unknown := add(accountID, false, false, `null`, `{"future_private_owner":"private-review-state"}`)
+		judge := add(accountID, true, false, fmt.Sprintf(`{"question_kind":"candy","parallel_count":1,"quality":{"action":"observe_only","judge":{"kind":"llm","group_id":%d,"model_id":"sol","prompt":"private-judge-prompt"}}}`, groupID), "")
+		protection := add(accountID, true, true, `null`, "")
+		bps := add(accountID, false, false, `null`, `{"bps_applied":{"bps_enabled":true}}`)
+		ignored := add(otherID, true, false, `{"quality":{"action":"remove_groups","remove_group_ids":[999999]}}`, "")
+		pausedEmpty := add(accountID, false, false, `null`, "")
+		out := read()
+		review := out.ManagementReview
+		require.NotNil(t, review)
+		require.Equal(t, "manual", review.Mode)
+		require.Equal(t, "current_bindings_and_saved_rule_targets", review.Scope)
+		require.True(t, review.InventoryComplete)
+		require.Equal(t, 7, review.RulesExamined)
+		require.Equal(t, 3, review.ConflictingRules)
+		require.Equal(t, 2, review.ProtectionRules)
+		require.Equal(t, 1, review.UnknownRules)
+		require.Equal(t, 1, review.JudgeDependencyRules)
+		rows := map[int64]service.ProcurementManagementRule{}
+		for _, r := range review.Rules {
+			rows[r.PlanID] = r
+		}
+		require.True(t, rows[live].WritesProduct)
+		require.False(t, rows[live].RetainedOwnership)
+		for _, pid := range []int64{paused, composite} {
+			require.False(t, rows[pid].Enabled)
+			require.True(t, rows[pid].RetainedOwnership)
+			require.True(t, rows[pid].SavedProductOwnership)
+			require.Equal(t, "membership_conflict", rows[pid].Risk)
+		}
+		require.Equal(t, "unknown", rows[unknown].Risk)
+		require.True(t, rows[judge].JudgeDependsOnProduct)
+		require.Equal(t, "observation", rows[judge].Risk)
+		require.Equal(t, "account_protection", rows[protection].Risk)
+		require.True(t, rows[bps].RetainedOwnership)
+		require.Equal(t, "account_protection", rows[bps].Risk)
+		require.NotContains(t, rows, ignored)
+		require.NotContains(t, rows, pausedEmpty)
+		for _, marker := range []string{"private-review-prompt", "private-review-state", "private-judge-prompt"} {
+			require.NotContains(t, run(id, "admin").Body.String(), marker)
+		}
+		require.Equal(t, "not_enforced", review.Budget.State)
+		settings := service.DefaultMonitoringProbeBudgetSettings()
+		settings.Enabled = true
+		settings.RequestsPerDay = 1
+		settings.Revision = 2
+		raw, e := json.Marshal(settings)
+		require.NoError(t, e)
+		_, e = db.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2)`, service.MonitoringProbeBudgetSettingKey, string(raw))
+		require.NoError(t, e)
+		budget := read().ManagementReview.Budget
+		require.True(t, budget.Enforced)
+		require.Equal(t, int64(2), budget.Revision)
+		require.Equal(t, "insufficient", budget.State)
+		require.Contains(t, budget.Reasons, "day_capacity")
+		require.Greater(t, budget.MinimumRequestsPerDay, budget.RegularDayCapacity)
+		settings.RequestsPerDay = 100000
+		settings.Revision++
+		raw, e = json.Marshal(settings)
+		require.NoError(t, e)
+		_, e = db.ExecContext(ctx, `UPDATE settings SET value=$2 WHERE key=$1`, service.MonitoringProbeBudgetSettingKey, string(raw))
+		require.NoError(t, e)
+		budget = read().ManagementReview.Budget
+		require.Equal(t, "partial", budget.State)
+		require.Greater(t, budget.UnestimatedSources, 0)
+		require.True(t, budget.WindowEnd.After(budget.WindowStart))
+		require.Equal(t, 24*time.Hour, budget.WindowEnd.Sub(budget.WindowStart))
+		var before string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT jsonb_build_object('states',(SELECT jsonb_agg(state ORDER BY plan_id) FROM account_quality_states),'events',(SELECT count(*) FROM scheduler_outbox),'bindings',(SELECT jsonb_agg(to_jsonb(g) ORDER BY account_id,group_id) FROM account_groups g))::text`).Scan(&before))
+		read()
+		read()
+		var after string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT jsonb_build_object('states',(SELECT jsonb_agg(state ORDER BY plan_id) FROM account_quality_states),'events',(SELECT count(*) FROM scheduler_outbox),'bindings',(SELECT jsonb_agg(to_jsonb(g) ORDER BY account_id,group_id) FROM account_groups g))::text`).Scan(&after))
+		require.JSONEq(t, before, after, "review cannot consume ownership or change scheduling")
+		_, e = db.ExecContext(ctx, `UPDATE settings SET value='{"revision":"private-invalid"}' WHERE key=$1`, service.MonitoringProbeBudgetSettingKey)
+		require.NoError(t, e)
+		w := run(id, "admin")
+		require.Equal(t, 503, w.Code)
+		require.NotContains(t, w.Body.String(), "private-invalid")
+		_, e = db.ExecContext(ctx, `DELETE FROM settings WHERE key=$1`, service.MonitoringProbeBudgetSettingKey)
+		require.NoError(t, e)
+		require.Equal(t, 200, run(id, "admin").Code)
+	})
+	t.Run("rule inventory cap stays incomplete instead of implying safe takeover", func(t *testing.T) {
+		_, e := db.ExecContext(ctx, `WITH added AS (INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,max_results,auto_recover) SELECT $1,'sol','0 * * * *',false,10,false FROM generate_series(1,1001) RETURNING id) INSERT INTO account_quality_states(plan_id,state) SELECT id,'{}'::jsonb FROM added`, accountID)
+		require.NoError(t, e)
+		t.Cleanup(func() {
+			_, e := db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE account_id=$1`, accountID)
+			require.NoError(t, e)
+		})
+		review := read().ManagementReview
+		require.False(t, review.InventoryComplete)
+		require.Equal(t, 1000, review.RulesExamined)
+		require.Len(t, review.Rules, 1000)
+		require.Zero(t, review.ConflictingRules)
+		require.Equal(t, "manual", review.Mode)
 	})
 	t.Run("bounded inventory never silently truncates", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, `WITH added AS (INSERT INTO accounts(name,platform,type,credentials,status,schedulable)

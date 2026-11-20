@@ -27,6 +27,32 @@ export default {
     rejectedAtMin: 'Passes default-price boundaries but is rejected at the lowest user override.',
     boundary: 'Account-level price, procurement-range and source boundaries only. This certifies neither model identity, answer quality, cache, health, quota nor free slots, and is not exact purchase cost or a user quote. C never replaces U. Actual requests still need exact-scope and final-send checks.',
     pages: 'Price-check account pages',
+    review: {
+      title: 'Before handing management to the program',
+      legacy: 'This server returned no rule or budget review. This remains unchecked; a price pass does not imply automatic management is ready.',
+      manual: 'Manual configuration and existing rules still manage this product. This review takes over no membership, clears no restriction and runs no automatic migration.',
+      scope: '{count} related rules read: account rules for current members, plus saved targets that remove or restore this product. Not all approved sources or a complete dependency graph.',
+      incomplete: 'Over 1,000 related rules. These counts are read lower bounds; the complete conflict scope remains unknown.',
+      conflicting_rules: 'Membership writes / retained ownership', protection_rules: 'Other account protections to preserve',
+      unknown_rules: 'Configuration or ownership unconfirmed', judge_dependency_rules: 'Judges depending on this product',
+      empty: 'No related rules were read in this scope. This is not full qualification or proof that no other writer exists.',
+      details: 'Expand rules and effects', rule: 'Rule #{id}', enabled: 'Schedule enabled', paused: 'Schedule paused', pages: 'Related rule pages',
+      retained: 'Saved recovery / protection ownership remains. Pausing does not relinquish it; review the original ownership panel without clearing history.',
+      judge: 'Judging depends on this product. Isolation may exhaust its candidates; independent reference provenance is not established here.',
+      risks: {
+        membership_conflict: 'Writes this membership or retains its recovery ownership. Coordinate before program takeover.',
+        account_protection: 'Other account-level protection or recovery must be preserved; not necessarily a product-membership conflict.',
+        observation: 'No write to this product membership found for this rule in this review; not proof of complete freedom from conflicts.',
+        unknown: 'Configuration or retained ownership could not be interpreted. Preserve restrictions and review manually.'
+      },
+      actions: { connectivity: 'Connectivity check', remove_groups: 'Remove groups', isolate_models: 'Isolate models and groups', disable_scheduling: 'Stop account scheduling', remove_models: 'Model cooldown', enable_bps: 'Enable BPS', observe_only: 'Observe only', openai_two_fa_admission: '2FA admission', unknown: 'Action unconfirmed' },
+      budgetTitle: 'Shared probe budget · site-wide saved-plan lower bound',
+      budgetStates: { not_enforced: 'Budget limits off; probes are not necessarily free or sufficiently provisioned', insufficient: 'Known call lower bound exceeds a budget or scheduling boundary', partial: 'Known lower bound within limits, but demand or coverage remains incomplete', known_lower_bound_fits: 'Known call lower bound fits; full cadence and token cost are not guaranteed' },
+      budgetCounts: 'Known minimum {minimum} calls / day · regular capacity {capacity} / day · {unknown} unestimated source types',
+      budgetWindow: 'Budget revision {revision} · UTC window {start} to {end}',
+      budgetBoundary: 'Uses the original site-wide compiler. No new product probes, capacity reservations or token estimates. Review incremental demand, actual usage, concurrency and recovery reserves in the budget panel.',
+      qualityLink: 'Review quality rules and ownership', budgetLink: 'Review / adjust shared probe budget'
+    },
     sources: { manual: 'U from the saved account rate', upstream_probe_sync: 'U from current upstream probe evidence' },
     estimates: { saved: 'C from the saved estimate', default: 'C uses default estimate 0.1', invalid_fallback: 'Invalid saved C; default estimate 0.1 used' },
     classes: {

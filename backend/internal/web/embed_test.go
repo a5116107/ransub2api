@@ -749,6 +749,7 @@ func TestEmbeddedFrontendBypassesBareAPIAliases(t *testing.T) {
 		"/contents/generations/tasks/task-123",
 		"/v3/contents/generations/tasks",
 		"/v3/contents/generations/tasks/task-123",
+		"/v3/other",
 	} {
 		require.True(t, shouldBypassEmbeddedFrontend(path), "path=%s", path)
 	}
@@ -758,9 +759,43 @@ func TestEmbeddedFrontendBypassesBareAPIAliases(t *testing.T) {
 		"/custom/page-1",
 		"/monitor",
 		"/setup",
-		"/v3/other",
+		"/v30/other",
+		"/v3-page",
 	} {
 		require.False(t, shouldBypassEmbeddedFrontend(path), "path=%s", path)
+	}
+}
+
+// Keep the existing reserved /v3/ API namespace, including unknown endpoints.
+// Neither embedded server may replace an API error with a successful SPA page.
+func TestEmbeddedFrontendV3APINamespace(t *testing.T) {
+	server, err := NewFrontendServer(&mockSettingsProvider{settings: map[string]string{"site_name": "Fixture"}})
+	require.NoError(t, err)
+	for _, entry := range []struct {
+		name       string
+		middleware gin.HandlerFunc
+	}{
+		{"settings", server.Middleware()}, {"legacy", ServeEmbeddedFrontend()},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			router := gin.New()
+			router.Use(entry.middleware)
+			router.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "API_NOT_FOUND"}) })
+			for _, path := range []string{"/v3/other", "/v3/contents/generations/tasks/task-missing"} {
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+				require.Equal(t, http.StatusNotFound, w.Code, path)
+				require.Contains(t, w.Header().Get("Content-Type"), "application/json")
+				require.JSONEq(t, `{"error":"API_NOT_FOUND"}`, w.Body.String())
+			}
+			for _, path := range []string{"/v30/other", "/v3-page"} {
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+				require.Equal(t, http.StatusOK, w.Code, path)
+				require.Contains(t, w.Header().Get("Content-Type"), "text/html")
+				require.NotContains(t, w.Body.String(), "API_NOT_FOUND", "SPA fallback must stop the handler chain")
+			}
+		})
 	}
 }
 

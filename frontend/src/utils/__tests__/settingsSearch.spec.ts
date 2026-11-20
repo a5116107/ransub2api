@@ -57,13 +57,33 @@ describe('settings feature search', () => {
   it('finds the usage cache rate switches from the usage records card', () => {
     for (const [locale, messages, query] of [
       ['zh', zh, '缓存率'],
+      ['zh', zh, '缓存命中率'],
+      ['zh', zh, '缓存读取占比'],
       ['en', en, 'cache rate'],
+      ['en', en, 'cache hit rate'],
+      ['en', en, 'cached token share'],
     ] as const) {
       const entries = buildFeatureSearchEntries(withSettingsSearch([
         { path: '/admin/settings', label: 'Settings' }
       ], key => translate(messages, key), locale))
       expect(searchFeatures(entries, query).some(item => item.path === '/admin/settings?tab=gateway#settings-section-usage-records'), query).toBe(true)
     }
+  })
+
+  it('finds shared probe budget and keeps the activation-review deep link on its real settings card', () => {
+    const path = '/admin/settings?tab=gateway#settings-section-upstream-billing-probe'
+    for (const [locale, messages] of [['zh', zh], ['en', en]] as const) {
+      const entries = buildFeatureSearchEntries(withSettingsSearch([{ path: '/admin/settings', label: 'Settings' }], key => translate(messages, key), locale))
+      for (const key of ['title', 'capacityTitle']) {
+        const query = translate(messages, `admin.settings.upstreamBillingProbe.budget.${key}`)
+        expect(searchFeatures(entries, query).some(item => item.path === path), query).toBe(true)
+      }
+      for (const query of locale === 'zh' ? ['检测预算', '共享检测预算'] : ['shared probe budget', 'monitoring budget']) {
+        expect(searchFeatures(entries, query).some(item => item.path === path), query).toBe(true)
+      }
+      expect(withSettingsSearch([{ path: '/admin/users', label: 'Users' }], key => translate(messages, key), locale).some(item => item.path === path)).toBe(false)
+    }
+    expect(settingsLocation('general', '#settings-section-upstream-billing-probe')).toEqual({ tab: 'gateway', anchor: 'settings-section-upstream-billing-probe', linked: true })
   })
 
   it('validates locations and prefers the target card tab over a conflicting query', () => {

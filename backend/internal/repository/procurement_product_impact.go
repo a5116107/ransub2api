@@ -1,9 +1,12 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"slices"
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
@@ -14,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context, groupID int64) (*service.ProcurementProductImpact, error) {
@@ -61,6 +65,10 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 		return nil, err
 	}
 	out := &service.ProcurementProductImpact{Version: 1, GroupStatus: group.Status, GateEnabled: group.ProfitControlEnabled, BoundAccounts: len(accounts)}
+	out.ManagementReview, err = loadProcurementManagementReview(ctx, tx, groupID, accounts)
+	if err != nil {
+		return nil, err
+	}
 	var minOverride sql.NullFloat64
 	if err = tx.QueryRowContext(ctx, `SELECT min(rate_multiplier)::float8,count(*) FROM user_group_rate_multipliers
 	 WHERE group_id=$1 AND rate_multiplier>=0 AND rate_multiplier NOT IN ('NaN'::numeric,'Infinity'::numeric)`, groupID).Scan(&minOverride, &out.UserOverrideCount); err != nil {
@@ -88,5 +96,117 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+const procurementManagementRuleLimit = 1000
+
+func loadProcurementManagementReview(ctx context.Context, tx sqlQueryer, groupID int64, accounts []service.Account) (*service.ProcurementManagementReview, error) {
+	ids := make([]int64, 0, len(accounts))
+	for i := range accounts {
+		ids = append(ids, accounts[i].ID)
+	}
+	// Saved removals remain relevant even after membership disappears or the
+	// schedule is paused. Do not equate a paused rule with relinquished consent.
+	rows, err := tx.QueryContext(ctx, `SELECT p.id,p.account_id,a.name,p.enabled,p.auto_recover,p.pelican_config,s.state
+ FROM scheduled_test_plans p JOIN accounts a ON a.id=p.account_id
+ LEFT JOIN account_quality_states s ON s.plan_id=p.id
+ WHERE a.deleted_at IS NULL AND (p.enabled OR s.plan_id IS NOT NULL) AND (
+ p.account_id=ANY($1) OR p.pelican_config#>'{quality,remove_group_ids}' @> jsonb_build_array($2::bigint)
+ OR s.state->'removed' @> jsonb_build_array(jsonb_build_object('group_id',$2::bigint))
+ OR s.state#>'{groups,removed}' @> jsonb_build_array(jsonb_build_object('group_id',$2::bigint))
+ OR s.state->'isolation_group_ids' @> jsonb_build_array($2::bigint))
+ ORDER BY p.id LIMIT $3`, pq.Array(ids), groupID, procurementManagementRuleLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := &service.ProcurementManagementReview{Version: 1, Mode: "manual", Scope: "current_bindings_and_saved_rule_targets", InventoryComplete: true, Rules: []service.ProcurementManagementRule{}}
+	for rows.Next() {
+		if out.RulesExamined == procurementManagementRuleLimit {
+			out.InventoryComplete = false
+			break
+		}
+		var rule service.ProcurementManagementRule
+		var autoRecover bool
+		var config, rawState []byte
+		if err := rows.Scan(&rule.PlanID, &rule.AccountID, &rule.AccountName, &rule.Enabled, &autoRecover, &config, &rawState); err != nil {
+			return nil, err
+		}
+		var cfg *service.PelicanTestConfig
+		var state *qualityState
+		invalid := len(config) > 0 && json.Unmarshal(config, &cfg) != nil
+		if len(rawState) > 0 {
+			decoder := json.NewDecoder(bytes.NewReader(rawState))
+			decoder.DisallowUnknownFields()
+			invalid = decoder.Decode(&state) != nil || state == nil || invalid
+		}
+		rule.Action, rule.Risk = "connectivity", "observation"
+		if cfg != nil && cfg.Quality != nil {
+			q := cfg.Quality
+			rule.Action = q.Action
+			switch q.Action {
+			case "remove_groups", service.QualityActionIsolateModels:
+				rule.WritesProduct = rule.Enabled && slices.Contains(q.RemoveGroupIDs, groupID)
+			case "disable_scheduling", service.QualityActionRemoveModel, service.QualityActionEnableBPS, service.QualityActionObserveOnly, service.QualityActionOpenAITwoFAAdmission:
+			default:
+				invalid = true
+			}
+			rule.JudgeDependsOnProduct = rule.Enabled && q.Judge != nil && (q.Judge.Kind == "" || q.Judge.Kind == "llm") && q.Judge.GroupID == groupID
+		}
+		if state != nil {
+			rule.RetainedOwnership = state.Action != "" || len(state.Removed) > 0 || len(state.IsolationGroupIDs) > 0 || len(state.IsolationModels) > 0 ||
+				state.PersistentModels || len(state.BPSPrevious) > 0 || len(state.BPSApplied) > 0 || state.Models != nil || state.Groups != nil || hasQualityCooldownOwnership(state)
+			switch state.Action {
+			case "", "remove_groups", "disable_scheduling", service.QualityActionIsolateModels, service.QualityActionRemoveModel, service.QualityActionEnableBPS:
+			default:
+				invalid = true
+			}
+			rule.SavedProductOwnership = slices.Contains(state.IsolationGroupIDs, groupID) || slices.ContainsFunc(state.Removed, func(g qualityGroup) bool { return g.GroupID == groupID }) ||
+				state.Groups != nil && slices.ContainsFunc(state.Groups.Removed, func(g qualityGroup) bool { return g.GroupID == groupID })
+		}
+		switch {
+		case invalid:
+			rule.Risk = "unknown"
+			rule.Action = "unknown"
+			out.UnknownRules++
+		case rule.WritesProduct || rule.SavedProductOwnership:
+			rule.Risk = "membership_conflict"
+			out.ConflictingRules++
+		case rule.RetainedOwnership || rule.Enabled && (autoRecover || rule.Action != "connectivity" && rule.Action != service.QualityActionObserveOnly):
+			rule.Risk = "account_protection"
+			out.ProtectionRules++
+		}
+		if rule.JudgeDependsOnProduct {
+			out.JudgeDependencyRules++
+		}
+		out.Rules = append(out.Rules, rule)
+		out.RulesExamined++
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	settings, err := loadMonitoringProbeBudgetSettings(ctx, tx, "")
+	if err != nil {
+		return nil, err
+	}
+	coverage, err := loadMonitoringProbeCoverage(ctx, tx, settings)
+	if err != nil {
+		return nil, err
+	}
+	budget := service.ProcurementManagementBudget{State: "known_lower_bound_fits", Revision: settings.Revision, Enforced: settings.Enabled,
+		InventoryComplete:     coverage.InventoryComplete && coverage.PlanInventoryComplete && coverage.CandyInventoryComplete && coverage.ActiveInventoryComplete,
+		MinimumRequestsPerDay: coverage.MinimumTotalRequestsPerDay, RegularDayCapacity: coverage.RegularDayCapacity,
+		UnestimatedSources: len(coverage.UnestimatedDemandSources), Reasons: coverage.BlockingReasons, Warnings: coverage.Warnings,
+		WindowStart: coverage.ScheduleWindowStart, WindowEnd: coverage.ScheduleWindowEnd}
+	switch {
+	case !settings.Enabled:
+		budget.State = "not_enforced"
+	case !coverage.CanSave:
+		budget.State = "insufficient"
+	case !budget.InventoryComplete || budget.UnestimatedSources > 0 || len(budget.Warnings) > 0:
+		budget.State = "partial"
+	}
+	out.Budget = budget
 	return out, nil
 }

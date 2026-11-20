@@ -534,6 +534,7 @@ export default {
       },
       upstreamBillingProbe: {
         budget: {
+          searchKeywords: '共享检测预算 检测预算 探测预算 Token 预算',
           capacityTitle: '检测容量预检（调用量下界）',
           capacityPreview: '预览当前草稿容量',
           capacityInactive: '已编译范围的倍率、计划、糖果与 V1 均未启用；未检查需求不等于停用或免费',
@@ -1670,6 +1671,7 @@ export default {
       },
       cache_rate: {
         label: '显示用量缓存统计',
+        searchKeywords: '缓存率 缓存命中率 缓存读取占比 计费缓存 Token 占比',
         description: '使用记录的计费缓存 Token 占比与用户页的原始缓存体验分别展示。计费规则可能调整缓存桶，不代表上游原始缓存命中率。关闭后管理端和用户端都隐藏相关展示。默认开启。',
       },
       cache_rate_to_users: {

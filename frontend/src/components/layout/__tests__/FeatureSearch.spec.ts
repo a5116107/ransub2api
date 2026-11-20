@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import FeatureSearch from '../FeatureSearch.vue'
 import zhAll from '@/i18n/locales/zh'
+import enAll from '@/i18n/locales/en'
 import { buildFeatureSearchEntries, searchFeatures, type SearchNavItem } from '@/utils/featureSearch'
 
 const items: SearchNavItem[] = [
@@ -45,7 +46,7 @@ function messageFunctions(value: unknown): unknown {
   return typeof value === 'string' ? () => value : Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, messageFunctions(child)]))
 }
 
-async function setup() {
+async function setup(locale = 'zh') {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -59,8 +60,9 @@ async function setup() {
     props: { items }, attachTo: document.body,
     global: {
       stubs: { transition: true },
-      plugins: [router, createI18n({ legacy: false, locale: 'zh', messages: {
-        zh: messageFunctions(zhAll) as typeof zhAll
+      plugins: [router, createI18n({ legacy: false, locale, messages: {
+        zh: messageFunctions(zhAll) as typeof zhAll,
+        en: messageFunctions(enAll) as typeof enAll
       } })]
     }
   })
@@ -75,6 +77,19 @@ async function key(target: EventTarget, value: string, options: KeyboardEventIni
 }
 
 describe('feature search dialog', () => {
+  it.each([
+    ['zh', '缓存率', 'usage-records'], ['en', 'cache hit rate', 'usage-records'],
+    ['zh', '检测预算', 'upstream-billing-probe'], ['en', 'shared probe budget', 'upstream-billing-probe']
+  ])('navigates from the %s %s terminology to the existing card', async (locale, query, anchor) => {
+    const { router } = await setup(locale)
+    await key(document, 'k', { ctrlKey: true })
+    const input = document.querySelector<HTMLInputElement>('[role=combobox]')!
+    input.value = query; input.dispatchEvent(new Event('input', { bubbles: true })); await flushPromises()
+    expect(document.querySelectorAll('[role=option]')).toHaveLength(1)
+    await key(input, 'Enter')
+    expect(router.currentRoute.value.fullPath).toBe(`/admin/settings?tab=gateway#settings-section-${anchor}`)
+    expect(document.querySelector('[role=dialog]')).toBeNull()
+  })
   it('opens from shortcut, focuses input, navigates with arrows and Enter, then closes', async () => {
     const { wrapper, router } = await setup()
     await key(document, 'k', { ctrlKey: true })

@@ -64,6 +64,48 @@
           <button type="button" class="btn btn-secondary" :disabled="page * pageSize >= result.report.verdicts.length" @click="page++">{{ t('upstreamOps.next') }}</button>
         </nav>
       </template>
+      <section class="min-w-0 space-y-3 border-t border-gray-200 pt-4 dark:border-dark-600" aria-labelledby="product-management-title" data-testid="product-management-review">
+        <h3 id="product-management-title" class="font-medium">{{ t(`${p}.review.title`) }}</h3>
+        <p v-if="!result.management_review" class="text-sm text-gray-500">{{ t(`${p}.review.legacy`) }}</p>
+        <template v-else>
+          <p class="rounded-lg bg-gray-50 p-3 text-sm leading-6 dark:bg-dark-800" data-testid="product-management-mode">{{ t(`${p}.review.manual`) }}</p>
+          <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.review.scope`, { count: result.management_review.rules_examined }) }}</p>
+          <p v-if="!result.management_review.inventory_complete" class="text-sm text-amber-800 dark:text-amber-300" data-testid="product-management-incomplete">{{ t(`${p}.review.incomplete`) }}</p>
+          <dl class="grid min-w-0 grid-cols-2 gap-3 lg:grid-cols-4">
+            <div v-for="key in reviewCountKeys" :key="key" class="min-w-0 rounded-lg bg-gray-50 p-3 dark:bg-dark-800"><dt class="text-xs text-gray-500">{{ t(`${p}.review.${key}`) }}</dt><dd class="mt-1 text-xl font-semibold tabular-nums">{{ result.management_review[key] }}</dd></div>
+          </dl>
+          <p v-if="!result.management_review.rules.length" class="text-sm" data-testid="product-management-empty">{{ t(`${p}.review.empty`) }}</p>
+          <details v-else class="min-w-0 space-y-3" data-testid="product-management-rules">
+            <summary class="cursor-pointer text-sm font-medium">{{ t(`${p}.review.details`) }}</summary>
+            <ul class="space-y-3">
+              <li v-for="rule in reviewRows" :key="rule.plan_id" class="min-w-0 space-y-1 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="product-management-rule">
+                <p class="break-words font-medium">{{ rule.account_name }} · {{ t(`${p}.review.rule`, { id: rule.plan_id }) }}</p>
+                <p class="break-words">{{ t(`${p}.review.actions.${rule.action}`) }} · {{ t(`${p}.review.${rule.enabled ? 'enabled' : 'paused'}`) }}</p>
+                <p class="break-words font-medium" :class="rule.risk === 'observation' ? 'text-gray-600 dark:text-gray-300' : 'text-amber-800 dark:text-amber-300'">{{ t(`${p}.review.risks.${rule.risk}`) }}</p>
+                <p v-if="rule.retained_ownership" class="text-xs leading-5">{{ t(`${p}.review.retained`) }}</p>
+                <p v-if="rule.judge_depends_on_product" class="text-xs leading-5 text-amber-800 dark:text-amber-300">{{ t(`${p}.review.judge`) }}</p>
+              </li>
+            </ul>
+            <nav v-if="result.management_review.rules.length > pageSize" class="flex flex-wrap items-center gap-3 text-sm" :aria-label="t(`${p}.review.pages`)">
+              <button type="button" class="btn btn-secondary" :disabled="reviewPage <= 1" @click="reviewPage--">{{ t('upstreamOps.previous') }}</button>
+              <span>{{ reviewPage }} / {{ Math.ceil(result.management_review.rules.length / pageSize) }}</span>
+              <button type="button" class="btn btn-secondary" :disabled="reviewPage * pageSize >= result.management_review.rules.length" @click="reviewPage++">{{ t('upstreamOps.next') }}</button>
+            </nav>
+          </details>
+          <div class="min-w-0 space-y-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="product-management-budget">
+            <h4 class="font-medium">{{ t(`${p}.review.budgetTitle`) }}</h4>
+            <p class="font-medium" data-testid="product-management-budget-state">{{ t(`${p}.review.budgetStates.${result.management_review.budget.state}`) }}</p>
+            <p class="break-words tabular-nums">{{ t(`${p}.review.budgetCounts`, { minimum: result.management_review.budget.minimum_requests_per_day, capacity: result.management_review.budget.regular_day_capacity, unknown: result.management_review.budget.unestimated_sources }) }}</p>
+            <p class="break-words text-xs">{{ t(`${p}.review.budgetWindow`, { revision: result.management_review.budget.revision, start: result.management_review.budget.window_start, end: result.management_review.budget.window_end }) }}</p>
+            <ul v-if="budgetMessages.length" class="list-inside list-disc"><li v-for="reason in budgetMessages" :key="reason">{{ budgetReason(reason) }}</li></ul>
+            <p class="text-xs leading-5">{{ t(`${p}.review.budgetBoundary`) }}</p>
+          </div>
+          <div class="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+            <a href="/admin/account-quality" class="text-primary-600 underline dark:text-primary-400" data-testid="product-management-quality-link">{{ t(`${p}.review.qualityLink`) }}</a>
+            <a href="/admin/settings?tab=gateway#settings-section-upstream-billing-probe" class="text-primary-600 underline dark:text-primary-400" data-testid="product-management-budget-link">{{ t(`${p}.review.budgetLink`) }}</a>
+          </div>
+        </template>
+      </section>
       <p class="rounded-lg bg-gray-50 p-3 text-sm leading-6 dark:bg-dark-800" data-testid="product-impact-boundary">{{ t(`${p}.boundary`) }}</p>
     </section>
   </section>
@@ -81,7 +123,7 @@ import type { AdminGroup } from '@/types'
 const { t } = useI18n(), p = 'upstreamOps.productImpact'
 const productID = ref<number | null>(null), products = ref<AdminGroup[]>([]), productsTotal = ref(0)
 const loadedProducts = ref(false), productsBusy = ref(false), productsError = ref(false)
-const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), pageSize = 20
+const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), pageSize = 20
 let alive = true, productsGeneration = 0, previewGeneration = 0, lastSearch = ''
 let productsController: AbortController | undefined, previewController: AbortController | undefined
 const selected = ref<AdminGroup | null>(null)
@@ -93,6 +135,11 @@ const options = computed(() => {
 const admitted = computed(() => result.value?.report.verdicts.filter(row => row.class === 'admitted').length ?? 0)
 const minAdmitted = computed(() => result.value?.report.verdicts.filter(row => row.class === 'admitted' && !row.rejected_under_min_d).length ?? 0)
 const pageRows = computed(() => result.value?.report.verdicts.slice((page.value - 1) * pageSize, page.value * pageSize) ?? [])
+const reviewRows = computed(() => result.value?.management_review?.rules.slice((reviewPage.value - 1) * pageSize, reviewPage.value * pageSize) ?? [])
+const reviewCountKeys = ['conflicting_rules', 'protection_rules', 'unknown_rules', 'judge_dependency_rules'] as const
+const budgetMessages = computed(() => [...new Set([...(result.value?.management_review?.budget.reasons ?? []), ...(result.value?.management_review?.budget.warnings ?? [])])])
+const budgetReasons = new Set(['runner_capacity', 'minute_capacity', 'day_capacity', 'site_capacity', 'key_capacity', 'billing_scope_unresolved', 'periodic_site_capacity', 'periodic_site_unresolved', 'periodic_key_capacity', 'periodic_key_unresolved', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated'])
+const budgetReason = (reason: string) => t(`admin.settings.upstreamBillingProbe.budget.capacityReason.${budgetReasons.has(reason) ? reason : 'unknown'}`)
 const priceMetrics = computed<Array<[string, number]>>(() => !result.value ? [] : [
   ['saleD', result.value.report.default_d], ['threshold', result.value.report.threshold_default],
   ['minimumD', result.value.report.min_effective_d], ['minimumThreshold', result.value.report.threshold_min_d]
@@ -102,7 +149,7 @@ const knownWarning = (warning: string) => warnings.has(warning) ? warning : 'unk
 const formatRate = (value: number | undefined) => value == null ? t('upstreamOps.unknown') : new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(value)
 watch(productID, id => {
   selected.value = products.value.find(row => row.id === id) ?? (selected.value?.id === id ? selected.value : null)
-  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1
+  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1
 }, { flush: 'sync' })
 function openProducts() { if (!loadedProducts.value && !productsBusy.value) void loadProducts('') }
 async function loadProducts(search: string) {
@@ -122,7 +169,7 @@ async function preview() {
   if (busy.value || !productID.value) return
   const id = productID.value, generation = ++previewGeneration
   previewController?.abort(); previewController = new AbortController()
-  busy.value = true; error.value = ''; result.value = null; page.value = 1
+  busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1
   try {
     const next = await previewProcurementProductImpact(id, previewController.signal)
     if (!validProcurementProductImpact(next, id)) throw new Error('invalid product impact')

@@ -48,6 +48,7 @@ export interface ProcurementProductImpact {
   bound_accounts: number
   considered_accounts: number
   user_override_count: number
+  management_review?: ProcurementManagementReview | null
   report: {
     group_id: number; group_name: string; platform: string; effective_gate: boolean; assumed_enabled?: boolean
     default_d: number; min_effective_d: number; threshold_default: number; threshold_min_d: number; model_counts_scope: string
@@ -56,6 +57,20 @@ export interface ProcurementProductImpact {
       rate_source: string; warnings?: string[]; rejected_under_min_d?: boolean
       estimated_cost_rate: number; estimated_cost_source: string
     }>
+  }
+}
+
+export interface ProcurementManagementReview {
+  version: number; mode: string; scope: string; inventory_complete: boolean
+  rules_examined: number; conflicting_rules: number; protection_rules: number; unknown_rules: number; judge_dependency_rules: number
+  rules: Array<{
+    plan_id: number; account_id: number; account_name: string; enabled: boolean; action: string; risk: string
+    writes_product: boolean; retained_ownership: boolean; saved_product_ownership: boolean; judge_depends_on_product: boolean
+  }>
+  budget: {
+    state: string; revision: number; enforced: boolean; inventory_complete: boolean
+    minimum_requests_per_day: number; regular_day_capacity: number; unestimated_sources: number
+    reasons: string[]; warnings: string[]; window_start: string; window_end: string
   }
 }
 

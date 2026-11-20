@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProcurementProductImpactView from '../ProcurementProductImpact.vue'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
-import { previewProcurementProductImpact, type ProcurementProductImpact } from '@/api/admin/procurementCatalog'
+import { previewProcurementProductImpact, type ProcurementManagementReview, type ProcurementProductImpact } from '@/api/admin/procurementCatalog'
 import { validProcurementProductImpact } from '@/utils/procurementProductImpact'
 import zh from '@/i18n/locales/zh/upstreamOps'
 import en from '@/i18n/locales/en/upstreamOps'
@@ -23,6 +23,17 @@ const fixture = (): ProcurementProductImpact => ({
       account_rate: 1, effective_upstream_rate: 1, rate_source: 'manual', warnings: ['manual_rate_1_suspected_unmaintained'],
       estimated_cost_rate: .1, estimated_cost_source: 'saved' })) }
 })
+const reviewFixture = (): ProcurementManagementReview => ({
+  version: 1, mode: 'manual', scope: 'current_bindings_and_saved_rule_targets', inventory_complete: true,
+  rules_examined: 3, conflicting_rules: 1, protection_rules: 1, unknown_rules: 0, judge_dependency_rules: 1,
+  rules: [
+    { plan_id: 12, account_id: 14, account_name: 'Former supplier', enabled: false, action: 'observe_only', risk: 'membership_conflict', writes_product: false, retained_ownership: true, saved_product_ownership: true, judge_depends_on_product: false },
+    { plan_id: 16, account_id: 9, account_name: 'Current supplier', enabled: true, action: 'disable_scheduling', risk: 'account_protection', writes_product: false, retained_ownership: false, saved_product_ownership: false, judge_depends_on_product: false },
+    { plan_id: 18, account_id: 9, account_name: 'Current supplier', enabled: true, action: 'observe_only', risk: 'observation', writes_product: false, retained_ownership: false, saved_product_ownership: false, judge_depends_on_product: true }
+  ],
+  budget: { state: 'partial', revision: 3, enforced: true, inventory_complete: true, minimum_requests_per_day: 3000,
+    regular_day_capacity: 80000, unestimated_sources: 4, reasons: [], warnings: [], window_start: '2026-11-21T00:00:00Z', window_end: '2026-11-22T00:00:00Z' }
+})
 function view() { const w = mount(ProcurementProductImpactView); wrappers.push(w); return w }
 async function choose(w: ReturnType<typeof mount>, id = 2) {
   w.getComponent(Select).vm.$emit('open'); await flushPromises()
@@ -37,6 +48,78 @@ beforeEach(() => {
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()) })
 
 describe('administrator product price impact in the existing operations journey', () => {
+  it('keeps management readiness unknown on a price-only server', async () => {
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-management-review"]').text()).toContain(p + 'review.legacy')
+  })
+  it('separates paused ownership, current protections and judging dependencies without a takeover action', async () => {
+    const next = fixture(); next.management_review = reviewFixture()
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    const review = w.get('[data-testid="product-management-review"]')
+    expect(review.text()).toContain(p + 'review.manual')
+    expect(review.text()).toContain('Former supplier')
+    expect(review.text()).toContain(p + 'review.paused')
+    expect(review.text()).toContain(p + 'review.retained')
+    expect(review.text()).toContain(p + 'review.risks.account_protection')
+    expect(review.text()).toContain(p + 'review.judge')
+    expect(w.get('[data-testid="product-management-quality-link"]').attributes('href')).toBe('/admin/account-quality')
+    expect(w.get('[data-testid="product-management-budget-link"]').attributes('href')).toBe('/admin/settings?tab=gateway#settings-section-upstream-billing-probe')
+    expect(review.findAll('button')).toHaveLength(0)
+  })
+  it.each(['not_enforced', 'insufficient', 'partial', 'known_lower_bound_fits'])('shows the %s shared budget independently of prices', async state => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    Object.assign(review.budget, { state, enforced: state !== 'not_enforced', unestimated_sources: state === 'partial' ? 4 : 0,
+      reasons: state === 'insufficient' ? ['day_capacity'] : [] })
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    expect(validProcurementProductImpact(next, 2)).toBe(true)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-management-budget-state"]').text()).toContain(p + `review.budgetStates.${state}`)
+    expect(w.get('[data-testid="product-impact-conclusion"]').text()).toContain(p + 'allRejected')
+  })
+  it('keeps empty inventory and a truncated read distinct from no conflicts', async () => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    Object.assign(review, { rules_examined: 0, conflicting_rules: 0, protection_rules: 0, unknown_rules: 0, judge_dependency_rules: 0, rules: [], inventory_complete: false })
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-management-empty"]').text()).toContain(p + 'review.empty')
+    expect(w.get('[data-testid="product-management-incomplete"]').text()).toContain(p + 'review.incomplete')
+  })
+  it.each(['version', 'mode', 'scope', 'counts', 'duplicate', 'action', 'paused-writer', 'missing-owner', 'unknown-risk', 'budget-state', 'missing-budget', 'invalid-window', 'unestimated-pass', 'unknown-pass'])('rejects a contradictory %s management contract', async kind => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    if (kind === 'version') review.version++
+    if (kind === 'mode') review.mode = 'automatic'
+    if (kind === 'scope') review.scope = 'all_approved_suppliers'
+    if (kind === 'counts') review.conflicting_rules++
+    if (kind === 'duplicate') review.rules[1]!.plan_id = 12
+    if (kind === 'action') review.rules[0]!.action = 'future-action'
+    if (kind === 'paused-writer') review.rules[0]!.writes_product = true
+    if (kind === 'missing-owner') review.rules[0]!.retained_ownership = false
+    if (kind === 'unknown-risk') review.rules[0]!.risk = 'qualified'
+    if (kind === 'budget-state') review.budget.state = 'ready'
+    if (kind === 'missing-budget') delete (review as Partial<ProcurementManagementReview>).budget
+    if (kind === 'invalid-window') review.budget.window_end = review.budget.window_start
+    if (kind === 'unestimated-pass') review.budget.state = 'known_lower_bound_fits'
+    if (kind === 'unknown-pass') Object.assign(review.rules[0]!, { risk: 'unknown', action: 'observe_only' })
+    expect(validProcurementProductImpact(next, 2)).toBe(false)
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.find('[data-testid="product-management-review"]').exists()).toBe(false)
+    expect(w.get('[data-testid="product-impact-error"]').text()).toContain(p + 'failed')
+  })
+  it('paginates rule details independently and resets the page after refresh', async () => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    review.rules = Array.from({ length: 21 }, (_, index) => ({ ...review.rules[0]!, plan_id: index + 1 }))
+    Object.assign(review, { rules_examined: 21, conflicting_rules: 21, protection_rules: 0, judge_dependency_rules: 0 })
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    const details = w.get('[data-testid="product-management-rules"]')
+    expect(details.findAll('[data-testid="product-management-rule"]')).toHaveLength(20)
+    await details.get('nav button:last-child').trigger('click')
+    expect(details.findAll('[data-testid="product-management-rule"]')).toHaveLength(1)
+    await preview(w)
+    expect(w.findAll('[data-testid="product-management-rule"]')).toHaveLength(20)
+  })
   it('uses product names, checks read-only activation and separates U from C and D', async () => {
     const w = view()
     expect(listGroups).not.toHaveBeenCalled()

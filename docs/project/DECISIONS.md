@@ -4009,3 +4009,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 原详情前端红测12例缺面板失败；新中英依赖结论/计数、null与0、未来/矛盾/非法合同、旧版/Jev、原多维身份未知保持。另复现旧传输success+判题unknown被显示“通过”，红测明确失败后原位改为中性“判题未完成/不确定”；不改后台结论或旧数据。完整AccountQualityView与i18n最终271pass。首次typecheck发现项目target不支持replaceAll，改原生replace正则后vue-tsc及定向ESLint退出0；本地Vite最终27.16s退出0，嵌入web测试0.735s退出0；既有Browserslist和大chunk提醒保留，原路由injection测试警告未作为失败隐藏。
 - Edge中英1440/390共40项通过、无页面错误/失败请求/未知API路径，全部检查只GET；键盘开详情/ESC/503后重试、未读与零、全忙、判题回应/不确定、旧传输假绿回归及无横向溢出已验。前端浏览器用合成HTTP样本，真PG/认证结果链由上述集成单独证明，不冒充完整生产E2E。截图初版捕获抽屉opacity尚在动画中，采样computed opacity复现后等待面板动画真正结束，重新核对清晰四视口截图；未为截图修改产品CSS。
 - 证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/judge-dependency-*；源码测试/指南为交付，JSONL/截图/浏览器脚本为最小证据，原build与Go缓存复用；PG隔离schema清理回调完成、任务浏览器及18761服务退出。历史data和宿主拒删不动，本次未新增scratch目录。D3/D7.3独立参考与完整资格、D4拥有者/预算/D6.2/完整三步和D8/D9仍开放，.8生产未改。
+
+## 2026-11-20 D4.3.12 接管前置检查及 D7.4 配置发现
+
+- 原产品影响API同一repeatable-read快照读取当前成员规则、明确移组目标及已移出/暂停后保存的恢复归属；独立显示关联冲突、账号保护、未知配置和判题依赖。不清历史、不接管、不改关系、不出站。1000条上限明确下界，未知JSON不认证安全；普通移出不建立永久排除。
+- 原共享检测预算编译器读取已保存全站计划、版本及UTC窗口，区别未限制/超限/部分/已知下界可容纳；未估算需求、Token费用、新产品增量和实际并发不作容量承诺。搜索补齐中英预算与缓存常用词，仍定位原设置tab/锚点并沿用可见导航权限。
+- 真实PG/管理员HTTP扩大交互双轮230pass/0fail/0skip，保留归属增补双轮16pass/0fail/0skip；覆盖同快照版本、已移出与暂停、组合移组、BPS保护、未知/截断、预算不足/恢复、取消/权限/脱敏/零写入。证据product-review-pg-interaction-final.jsonl及product-review-pg-ownership-final.jsonl，复用既有PG/Redis及integration overlay，未建新依赖。
+- 前端价格/接管前检查、预算/质量与搜索、locale合计357pass，vue-tsc、定向ESLint、本地Vite构建退出0；浏览器中英1440/390共44项，0页面错误/失败请求/未识别API。产品/检查及预算来自真实认证HTTP/隔离PG，外壳与旧统计为本地夹具；旧响应/损坏合同/503仅对应场景注入，不冒充完整后台或生产E2E。证据product-review-ui-search-final.txt、product-review-browser-results.json及四视口截图。
+- 嵌入校验发现旧断言要求/v3/other返回SPA，与现有/v3/保留API命名空间矛盾；原位改断言并补两种嵌入入口的未知API JSON404及普通SPA200，删除被/v3/覆盖的重复判断。无生产路由变更；最终embed包140父/子用例通过（日志package pass另计，不混入用例），2.189s，证据product-review-embed-acceptance-final.jsonl。首次错误断言与重现证据保留，不改产品API边界造绿。
+- D4.3.12只完成只读前置检查，不授权自动接管；受管模式/单一拥有者/增量预算、D6.2与完整三步尚开放，原28项20done/8部分不变。生产仍.8，不运行CI/发布，不动历史data或已拒删scratch。
+- 收尾`go vet -tags unit,embed ./internal/service ./internal/repository ./internal/web`退出0；`git diff --check`退出0。沿用唯一H盘工作树，仅提交本任务已验文件，未知service/data及历史拒删不纳入。自有feat分支允许skip-ci同步，现有工作流仅production push/手动触发，不提升稳定线。
