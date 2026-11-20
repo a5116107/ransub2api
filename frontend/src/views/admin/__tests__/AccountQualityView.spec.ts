@@ -1763,15 +1763,68 @@ describe('quality operations', () => {
       model_identity: { status: 'unknown', reason: 'independent_baseline_not_observed', score: null, sample_count: 0 },
     },
   })
-  const openMeasurement = async (value?: QualityMeasurement, validity?: ScheduledTestResult['quality_measurement_validity']) => {
+  const openMeasurement = async (value?: QualityMeasurement, validity?: ScheduledTestResult['quality_measurement_validity'], judgment?: ScheduledTestResult['quality_judgment']) => {
     const operation = { id: 101, plan_id: 4, account_id: 1, account_name: 'Synthetic account', status: 'failed',
       error_message: 'answer_mismatch', quality_action: 'inconclusive', passed_count: 0, total_count: 1, result_ids: [101] }
     vi.mocked(scheduledTests.getResult).mockResolvedValue({ ...operation, response_text: '41', quality_measurement_validity: validity,
-      pelican_config: { quality_measurement: value }, quality_judgment: { verdict: 'incorrect', reason: 'Different answer' } } as any)
+      pelican_config: { quality_measurement: value }, quality_judgment: judgment || { verdict: 'incorrect', reason: 'Different answer' } } as any)
     const wrapper = mountView(); await flushPromises()
     await (wrapper.vm as any).operationDetails(operation); await flushPromises()
     return wrapper
   }
+  it.each(['responded', 'blocked', 'inconclusive'] as const)('separates ordinary grader dependency %s from the answer and model identity', async status => {
+    const dependency = { version: 1, status, reason: status === 'responded' ? 'grading_completed' : status === 'blocked' ? 'all_slots_busy' : 'grading_uncertain',
+      candidate_accounts: 2, slot_checks: status === 'blocked' ? 2 : 1, busy_accounts: status === 'blocked' ? 2 : 0,
+      request_calls: status === 'blocked' ? 0 : 1, failed_calls: 0, budget_deferred_calls: 0,
+      self_grading_excluded: true, rule_removes_grading_group: true, independence: 'not_established' }
+    const wrapper = await openMeasurement(measurementSample(), undefined, { kind: 'llm', verdict: status === 'responded' ? 'incorrect' : 'unknown', reason: 'sample', dependency } as any)
+    const panel = wrapper.get('[data-testid="quality-judge-dependency"]')
+    expect(panel.attributes('data-status')).toBe(status)
+    expect(panel.text()).toContain(`qualityOps.judgeDependency.states.${status}`)
+    expect(panel.text()).toContain('qualityOps.judgeDependency.independence')
+    expect(panel.text()).toContain('qualityOps.judgeDependency.poolRisk')
+    expect(panel.get('[data-testid="judge-candidate-accounts"]').text()).toBe('2')
+    expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')
+    expect(wrapper.get('[data-testid="quality-measurement-model_identity"]').attributes('data-status')).toBe('unknown')
+    wrapper.unmount()
+  })
+  it('does not label a legacy transport success as a passing answer when its grader is unknown', async () => {
+    const operation = { id: 301, plan_id: 4, account_id: 1, account_name: 'Legacy sample', status: 'success',
+      error_message: '', quality_action: 'inconclusive', passed_count: 0, total_count: 1, result_ids: [301] }
+    vi.mocked(scheduledTests.getResult).mockResolvedValue({ ...operation, response_text: '21', pelican_config: { question_kind: 'candy' },
+      quality_judgment: { kind: 'llm', verdict: 'unknown', reason: 'judge_no_available_account' } } as any)
+    const wrapper = mountView(); await flushPromises()
+    await (wrapper.vm as any).operationDetails(operation); await flushPromises()
+    const badge = wrapper.get('[data-testid="quality-result-badge"]')
+    expect(badge.text()).toBe('qualityOps.judgeUnknown')
+    expect(badge.classes()).toContain('tone-neutral')
+    wrapper.unmount()
+  })
+  it.each([null, 0])('does not turn unknown candidate inventory (%s) into zero', async candidates => {
+    const dependency = { version: 1, status: 'blocked', reason: candidates === null ? 'judge_group_unavailable' : 'no_candidates',
+      candidate_accounts: candidates, slot_checks: 0, busy_accounts: 0, request_calls: 0, failed_calls: 0, budget_deferred_calls: 0,
+      self_grading_excluded: true, rule_removes_grading_group: false, independence: 'not_established' }
+    const wrapper = await openMeasurement(undefined, undefined, { kind: 'llm', verdict: 'unknown', reason: 'sample', dependency } as any)
+    expect(wrapper.get('[data-testid="judge-candidate-accounts"]').text()).toBe(candidates === null ? '—' : '0')
+    expect(wrapper.text()).not.toContain('qualityOps.judgeDependency.poolRisk')
+    wrapper.unmount()
+  })
+  it.each(['legacy', 'future', 'invalid-count', 'contradiction', 'forged-independence', 'foreign-reason', 'external'] as const)('keeps %s dependency diagnostics unknown without leaking raw values', async scenario => {
+    const dependency: any = { version: 1, status: 'responded', reason: 'grading_completed', candidate_accounts: 2, slot_checks: 1,
+      busy_accounts: 0, request_calls: 1, failed_calls: 0, budget_deferred_calls: 0,
+      self_grading_excluded: true, rule_removes_grading_group: false, independence: 'not_established' }
+    if (scenario === 'future') dependency.version = 99
+    if (scenario === 'invalid-count') dependency.request_calls = -1
+    if (scenario === 'contradiction') dependency.candidate_accounts = 0
+    if (scenario === 'forged-independence') dependency.independence = 'verified'
+    if (scenario === 'foreign-reason') dependency.reason = 'SYNTHETIC_PRIVATE_REASON'
+    const wrapper = await openMeasurement(undefined, undefined, { kind: scenario === 'external' ? 'jev' : 'llm', verdict: 'incorrect', reason: 'sample', dependency: scenario === 'legacy' ? undefined : dependency } as any)
+    const panel = wrapper.get('[data-testid="quality-judge-dependency"]')
+    expect(panel.attributes('data-status')).toBe('unknown')
+    expect(panel.text()).not.toContain('SYNTHETIC_PRIVATE_REASON')
+    expect(panel.find('[data-testid="judge-candidate-accounts"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('shows independent historical dimensions, real wire scope and no current admission', async () => {
     const wrapper = await openMeasurement(measurementSample())
     expect(wrapper.get('[data-testid="quality-measurement-answer_correctness"]').attributes('data-status')).toBe('fail')

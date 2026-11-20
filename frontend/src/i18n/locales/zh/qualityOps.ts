@@ -1,4 +1,30 @@
 export default {
+  "judgeDependency": {
+    "title": "本轮判题依赖",
+    "states": { "responded": "已取得判题结论", "blocked": "判题受阻", "inconclusive": "判题答复不确定", "unknown": "诊断待确定" },
+    "reasons": {
+      "grading_completed": "判题器给出了明确的对错结论；被测答案结果在上方单独展示。",
+      "grading_uncertain": "判题器已响应，但没有给出明确对错；这不是被测模型答错。",
+      "no_candidates": "本轮读取完成后，没有符合原筛选条件的判题账号（已排除被测账号）。检查判题组的成员、模型权限、停调及冷却。",
+      "all_slots_busy": "本轮候选均未取得账号并发槽位，未调用判题器。保留判题池容量，并检查共享额度。",
+      "judge_group_unavailable": "判题组缺失、停用或读取失败，候选库存尚未取得；不是零库存或答错。",
+      "judge_model_not_allowed": "判题组未允许所选判题模型，未读取候选库存。",
+      "judge_accounts_unavailable": "判题账号读取失败，候选库存未知；不是零库存或答错。",
+      "judge_input_too_large": "回答超过判题输入上限，未读取候选库存。",
+      "judge_capacity_unavailable": "本地并发协调失败，未完成判题；检查并发服务状态。",
+      "judge_request_failed": "判题适配器调用未成功取得结果；不据此判定被测模型答错。",
+      "judge_invalid_response": "判题器未返回合规结论，答案对错待确定。",
+      "judge_budget_deferred": "判题被本地检测预算延期，不计为供应商失败；后续按原计划和预算复测。",
+      "judge_canceled": "本轮判题已取消或整体等待期限已结束，不作为答错结论。",
+      "not_recorded": "旧记录或非普通池判题未记录这些运行计数，不补零、不回填。",
+      "external_grader": "此记录使用独立的 Jev 判题通道，普通账号池诊断不适用；通道结果见判题理由。",
+      "unsupported": "诊断版本或计数关系不受支持，保留未知，不据此判定通过。"
+    },
+    "counts": { "candidate_accounts": "筛选后候选账号", "slot_checks": "账号槽位检查", "busy_accounts": "本轮未取得槽位", "request_calls": "判题适配器调用", "failed_calls": "调用未取得合规结论", "budget_deferred_calls": "本地预算延期调用" },
+    "poolRisk": "依赖风险：本规则的移组动作包含判题组。多人共用该规则时，判题组可能逐渐失去成员，复检答题后仍没有判题器恢复。保留不受这些隔离动作影响的判题来源。",
+    "independence": "参考来源独立性：未证实。不同账号、分组或地址不等于独立来源；判题响应也不认证模型身份。",
+    "boundary": "仅本轮运行记录，非当前容量或完整依赖图。调用数是本地适配器调用，非物理请求数或账单；不改变检测、隔离、恢复和调度。"
+  },
   "oauth401MaxRounds": "OAuth 连续 401 后清理规则（轮）",
   "oauth401MaxRoundsHint": "仅对 OAuth 账号生效，API Key 账号不会自动清理。新规则默认 6 轮，可填 1–100；0 关闭，旧规则默认关闭。自身直连 401 当前支持 OpenAI OAuth，整轮样本均满足时计数；含 model_unavailable 跳过的轮次，还须账号明确 401 且凭据已撤销，其余样本均为自身直连 401。BPS 或借用凭据的 401 不计数，成功或其他错误清零。达到上限后删除检测规则及其历史，保留账号；规则仍持有隔离或冷却状态时会保留规则。",
   "invalidOAuth401MaxRounds": "上限须为 0–100 之间的整数轮数。",
@@ -324,6 +350,7 @@ export default {
   "judgeGroup": "判题分组",
   "judgePoolDependencyWarning": "判题分组也是本规则的移出目标。若该分组的可用判题账号都被移出，复检仍会答题，但将没有账号判题，因而也得不到通过结论来自动恢复。请使用不受这些隔离规则影响的独立判题分组，并保留支持判题模型的可用账号；被测账号不会给自己判题。",
   "llmReasons": {
+    "canceled": "本轮判题已取消或整体等待期限已结束，未判定答案对错。",
     "not_configured": "未配置判题器，本次未判定答案对错。",
     "invalid_config": "判题器配置不受支持，请核对判题方式。",
     "input_too_large": "被测回答超出判题输入上限，本次未判定。",

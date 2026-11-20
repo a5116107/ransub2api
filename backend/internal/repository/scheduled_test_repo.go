@@ -42,6 +42,9 @@ type planRowQuerier interface {
 
 // insertScheduledTestPlan is shared with group rules, which insert inside their own transaction.
 func insertScheduledTestPlan(ctx context.Context, q *sql.Tx, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
+	if err := authorizeScheduledObserverWrite(ctx, q, plan.AccountID); err != nil {
+		return nil, err
+	}
 	if err := validateQualityGroupReferences(ctx, q, plan.PelicanConfig); err != nil {
 		return nil, err
 	}
@@ -61,19 +64,22 @@ func insertScheduledTestPlan(ctx context.Context, q *sql.Tx, plan *service.Sched
 }
 
 func (r *scheduledTestPlanRepository) GetByID(ctx context.Context, id int64) (*service.ScheduledTestPlan, error) {
+	filter, args := scheduledObserverAccountFilter(ctx, "scheduled_test_plans.account_id", []any{id})
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, pelican_config, running_until
 		FROM scheduled_test_plans WHERE id = $1
-	`, id)
+	`+filter, args...)
 	return scanPlan(row)
 }
 
 func (r *scheduledTestPlanRepository) ListByAccountID(ctx context.Context, accountID int64) ([]*service.ScheduledTestPlan, error) {
+	filter, args := scheduledObserverAccountFilter(ctx, "scheduled_test_plans.account_id", []any{accountID})
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, pelican_config, running_until
 		FROM scheduled_test_plans WHERE account_id = $1
+	`+filter+`
 		ORDER BY created_at DESC, id DESC
-	`, accountID)
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +120,9 @@ func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.
 	}
 	updated, err := scanPlan(tx.QueryRowContext(ctx, query, args...))
 	if err != nil {
+		return nil, err
+	}
+	if err = authorizeScheduledObserverWrite(ctx, tx, updated.AccountID); err != nil {
 		return nil, err
 	}
 	state, err := readQualityState(ctx, tx, plan.ID)
@@ -189,6 +198,15 @@ func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) erro
 // The caller holds the plan lock. Manual and automated deletion share exactly
 // the same ownership checks and never restore or modify the account.
 func deleteScheduledTestPlanTx(ctx context.Context, tx *sql.Tx, id int64) error {
+	if _, scoped := service.ObserverGroupIDs(ctx); scoped {
+		var accountID int64
+		if err := tx.QueryRowContext(ctx, `SELECT account_id FROM scheduled_test_plans WHERE id=$1`, id).Scan(&accountID); err != nil {
+			return err
+		}
+		if err := authorizeScheduledObserverWrite(ctx, tx, accountID); err != nil {
+			return err
+		}
+	}
 	state, err := readQualityState(ctx, tx, id)
 	if err != nil {
 		return err
@@ -285,13 +303,18 @@ func insertScheduledTestResult(ctx context.Context, q planRowQuerier, result *se
 }
 
 func (r *scheduledTestResultRepository) ListByPlanID(ctx context.Context, planID int64, limit int, includeContent ...bool) ([]*service.ScheduledTestResult, error) {
+	filter, args := scheduledObserverAccountFilter(ctx, "observer_plan.account_id", []any{planID, limit, len(includeContent) == 0 || includeContent[0]})
+	if filter != "" {
+		filter = ` AND EXISTS(SELECT 1 FROM scheduled_test_plans observer_plan WHERE observer_plan.id=scheduled_test_results.plan_id` + filter + `)`
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, plan_id, status, CASE WHEN $3 THEN response_text ELSE '' END, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id, budget_deferral
 		FROM scheduled_test_results
 		WHERE plan_id = $1
+	`+filter+`
 		ORDER BY created_at DESC, id DESC
 		LIMIT $2
-	`, planID, limit, len(includeContent) == 0 || includeContent[0])
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -565,6 +588,7 @@ func (r *scheduledTestResultRepository) PruneExpiredPelican(ctx context.Context,
 }
 
 func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, resultID int64) (*service.ScheduledTestResult, error) {
+	filter, args := scheduledObserverAccountFilter(ctx, "p.account_id", []any{planID, resultID})
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -584,7 +608,7 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
  SELECT r.*,p.account_id,p.updated_at AS current_rule_version,p.enabled AS current_rule_enabled,
  p.pelican_config->'_quality_latest_round' AS latest_round,p.running_until,p.last_run_at,p.availability_fault_version
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
- WHERE r.plan_id=$1 AND r.id=$2
+ WHERE r.plan_id=$1 AND r.id=$2`+filter+`
  ), scoped AS (
  SELECT d.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,`+qualityMeasuredModel+` AS measured_model
  FROM scheduled_test_results r JOIN detail d ON d.plan_id=r.plan_id AND d.quality_round_id=r.quality_round_id
@@ -595,7 +619,7 @@ func (r *scheduledTestResultRepository) GetResult(ctx context.Context, planID, r
  (SELECT max(r.finished_at) FROM scheduled_test_results r JOIN detail d ON d.plan_id=r.plan_id AND d.quality_round_id=r.quality_round_id) AS samples_finished_at
  FROM quality_classified
  ) SELECT id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at, `+qualityHistoryConfig+`, quality_action, quality_judgment, quality_round_id,
- current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at,account_id,pelican_config->'_quality_observed_route',availability_fault_version,budget_deferral FROM detail CROSS JOIN integrity`, planID, resultID).Scan(
+ current_rule_version,current_rule_enabled,latest_round,running_until,last_run_at,complete,probes,expected,finalized,samples_finished_at,account_id,pelican_config->'_quality_observed_route',availability_fault_version,budget_deferral FROM detail CROSS JOIN integrity`, args...).Scan(
 		&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
 		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &config, &out.QualityAction, &judgment, &out.QualityRoundID,
 		&ruleVersion, &ruleEnabled, &round.marker, &round.runningUntil, &round.lastRunAt, &round.complete, &round.probes, &round.expected, &round.finalized, &round.samplesFinishedAt, &accountID, &routeJSON, &faultVersion, &deferral)

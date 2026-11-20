@@ -2856,6 +2856,20 @@ export interface QualityMeasurement {
 }
 
 export interface QualityJudgment {
+  dependency?: {
+    version: number
+    status: 'responded' | 'blocked' | 'inconclusive'
+    reason: string
+    candidate_accounts: number | null
+    slot_checks: number
+    busy_accounts: number
+    request_calls: number
+    failed_calls: number
+    budget_deferred_calls: number
+    self_grading_excluded: boolean
+    rule_removes_grading_group: boolean
+    independence: 'not_established'
+  }
   budget_deferral?: MonitoringProbeBudgetDeferral
   kind?: 'llm' | 'jev'
   rules_version?: string

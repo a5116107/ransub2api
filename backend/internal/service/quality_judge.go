@@ -25,6 +25,7 @@ type QualityJudgeConfig struct {
 	Prompt  string `json:"prompt"`
 }
 type QualityJudgment struct {
+	Dependency     *QualityJudgeDependency      `json:"dependency,omitempty"`
 	BudgetDeferral *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
 	Kind           string                       `json:"kind,omitempty"`
 	RulesVersion   string                       `json:"rules_version,omitempty"`
@@ -34,6 +35,24 @@ type QualityJudgment struct {
 	AccountID      int64                        `json:"account_id,omitempty"`
 	GroupID        int64                        `json:"group_id,omitempty"`
 	ModelID        string                       `json:"model_id,omitempty"`
+}
+
+// QualityJudgeDependency freezes this ordinary grader execution's local pool
+// observations. Adapter calls are not physical/billed requests. No field proves
+// independent supply, model identity, present-day capacity or full dependencies.
+type QualityJudgeDependency struct {
+	Version                 int    `json:"version"`
+	Status                  string `json:"status"`
+	Reason                  string `json:"reason"`
+	CandidateAccounts       *int   `json:"candidate_accounts"`
+	SlotChecks              int    `json:"slot_checks"`
+	BusyAccounts            int    `json:"busy_accounts"`
+	RequestCalls            int    `json:"request_calls"`
+	FailedCalls             int    `json:"failed_calls"`
+	BudgetDeferredCalls     int    `json:"budget_deferred_calls"`
+	SelfGradingExcluded     bool   `json:"self_grading_excluded"`
+	RuleRemovesGradingGroup bool   `json:"rule_removes_grading_group"`
+	Independence            string `json:"independence"`
 }
 
 func qualityJudgeRuntimeIdentityKnown(cfg *PelicanTestConfig, result *QualityJudgment) bool {
@@ -70,9 +89,9 @@ func NewQualityJudgeService(accounts AccountRepository, groups GroupRepository, 
 	return &QualityJudgeService{accounts: accounts, groups: groups, slots: slots, request: tests.runQualityJudgeRequest, jev: newQualityJevJudge(moderation, tests), monitoringBudget: NewMonitoringProbeBudgetService(budgetRepo)}
 }
 
-func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cfg *PelicanTestConfig, answer string) *QualityJudgment {
-	result := &QualityJudgment{Verdict: "unknown", Reason: "judge_not_configured"}
-	if cfg.Quality == nil || cfg.Quality.Judge == nil {
+func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cfg *PelicanTestConfig, answer string) (result *QualityJudgment) {
+	result = &QualityJudgment{Verdict: "unknown", Reason: "judge_not_configured"}
+	if cfg == nil || cfg.Quality == nil || cfg.Quality.Judge == nil {
 		return result
 	}
 	judge := cfg.Quality.Judge
@@ -87,6 +106,30 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 	result.Kind, result.RulesVersion = "llm", qualityLLMRulesVersion
 	result.GroupID = judge.GroupID
 	result.ModelID = judge.ModelID
+	dependency := &QualityJudgeDependency{Version: 1, Status: "blocked", SelfGradingExcluded: true, Independence: "not_established"}
+	if cfg.Quality.Action == "remove_groups" || cfg.Quality.Action == QualityActionIsolateModels {
+		for _, groupID := range cfg.Quality.RemoveGroupIDs {
+			dependency.RuleRemovesGradingGroup = dependency.RuleRemovesGradingGroup || groupID == judge.GroupID
+		}
+	}
+	responded := false
+	defer func() {
+		// A parsed answer's free-form reason is untrusted and not a dependency
+		// status. Only these runtime observations become diagnostic reasons.
+		dependency.Reason = result.Reason
+		if responded {
+			dependency.Status, dependency.Reason = "responded", "grading_completed"
+			if result.Verdict == "unknown" {
+				dependency.Status, dependency.Reason = "inconclusive", "grading_uncertain"
+			}
+		} else if result.Reason == "judge_no_available_account" && dependency.CandidateAccounts != nil {
+			dependency.Reason = "no_candidates"
+			if *dependency.CandidateAccounts > 0 && dependency.BusyAccounts == *dependency.CandidateAccounts {
+				dependency.Reason = "all_slots_busy"
+			}
+		}
+		result.Dependency = dependency
+	}()
 	if len(answer) > 64000 {
 		result.Reason = "judge_input_too_large"
 		return result
@@ -108,21 +151,27 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 		return result
 	}
 	accounts = qualityJudgeCandidates(accounts, testedAccount, judge)
+	candidates := len(accounts)
+	dependency.CandidateAccounts = &candidates
 	prompt := qualityJudgePrompt(cfg, answer)
 	result.Reason = "judge_no_available_account"
 	for i := range accounts {
 		account := &accounts[i]
 		if ctx.Err() != nil {
+			result.Reason = "judge_canceled"
 			break
 		}
+		dependency.SlotChecks++
 		slot, err := s.slots.AcquireAccountSlot(ctx, account.ID, account.Concurrency)
 		if err != nil {
 			result.Reason = "judge_capacity_unavailable"
 			return result
 		}
 		if slot == nil || !slot.Acquired {
+			dependency.BusyAccounts++
 			continue
 		}
+		dependency.RequestCalls++
 		output, requestErr := func() (string, error) {
 			if slot.ReleaseFunc != nil {
 				defer slot.ReleaseFunc()
@@ -136,6 +185,7 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 		result.AccountID = account.ID
 		if requestErr != nil {
 			if denial := monitoringProbeDeferral(requestErr, time.Now()); denial != nil {
+				dependency.BudgetDeferredCalls++
 				result.Reason, result.BudgetDeferral = "judge_budget_deferred", denial
 				// Site/key limits can leave another independent route usable;
 				// global exhaustion or coordination failure cannot.
@@ -148,10 +198,12 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 			}
 			result.BudgetDeferral = nil
 			result.Reason = "judge_request_failed"
+			dependency.FailedCalls++
 		} else {
 			result.BudgetDeferral = nil
 			verdict, parseErr := parseQualityJudgment(output)
 			if parseErr == nil {
+				responded = true
 				verdict.Kind, verdict.RulesVersion = result.Kind, result.RulesVersion
 				verdict.AccountID = account.ID
 				verdict.GroupID = judge.GroupID
@@ -159,8 +211,10 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 				return verdict
 			}
 			result.Reason = "judge_invalid_response"
+			dependency.FailedCalls++
 		}
 		if ctx.Err() != nil {
+			result.Reason = "judge_canceled"
 			break
 		}
 	}

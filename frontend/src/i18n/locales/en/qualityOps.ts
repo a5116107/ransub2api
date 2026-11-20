@@ -1,4 +1,30 @@
 export default {
+  "judgeDependency": {
+    "title": "Grading dependencies in this run",
+    "states": { "responded": "Grading verdict received", "blocked": "Grading blocked", "inconclusive": "Grading inconclusive", "unknown": "Diagnostics unknown" },
+    "reasons": {
+      "grading_completed": "The grader supplied a definite correctness verdict. The tested answer is assessed separately above.",
+      "grading_uncertain": "The grader responded without a definite verdict. This is not evidence of an incorrect answer.",
+      "no_candidates": "The inventory read completed with no eligible grading accounts, excluding the tested account. Check membership, model permissions, pauses and cooldowns.",
+      "all_slots_busy": "No candidate acquired an account slot in this run; no grading adapter was called. Reserve grading capacity and check shared limits.",
+      "judge_group_unavailable": "The grading group was missing, inactive or its read failed. Candidate inventory was not obtained; this is not a zero count or an incorrect answer.",
+      "judge_model_not_allowed": "The grading group did not allow this model. Candidate inventory was not read.",
+      "judge_accounts_unavailable": "The grading inventory read failed. Its size is unknown, not zero; answer correctness is undetermined.",
+      "judge_input_too_large": "The answer exceeded the grading input limit. Candidate inventory was not read.",
+      "judge_capacity_unavailable": "Local slot coordination failed. Check the concurrency service; grading did not complete.",
+      "judge_request_failed": "The grading adapter did not obtain a result. This does not establish an incorrect tested answer.",
+      "judge_invalid_response": "The grader returned no valid verdict. Answer correctness remains undetermined.",
+      "judge_budget_deferred": "Local monitoring budgets deferred grading, not a provider failure. Retests follow the existing plan and budget.",
+      "judge_canceled": "Grading was canceled or its overall deadline elapsed. This is not an incorrect-answer verdict.",
+      "not_recorded": "Legacy records and non-pool grading have no recorded runtime counts. Missing data is not filled with zero.",
+      "external_grader": "This record uses the separate Jev grading channel, not the ordinary account pool. Its outcome is shown in the grading reason.",
+      "unsupported": "The diagnostic version or count relationships are unsupported. The result stays unknown, not passed."
+    },
+    "counts": { "candidate_accounts": "Eligible candidate accounts", "slot_checks": "Account slot checks", "busy_accounts": "No slot acquired", "request_calls": "Grading adapter calls", "failed_calls": "Calls without a valid verdict", "budget_deferred_calls": "Locally budget-deferred calls" },
+    "poolRisk": "Dependency risk: this rule removes members from its grading group. A shared rule may drain the grader pool, leaving retests without a grader to certify recovery. Preserve grading sources unaffected by these isolation actions.",
+    "independence": "Reference independence: not established. Different accounts, groups or URLs do not prove independent supply. A grading response does not certify model identity.",
+    "boundary": "Historical run observations, not current capacity or a complete dependency graph. Adapter calls are not physical requests or billing counts. Testing, isolation, recovery and scheduling remain unchanged."
+  },
   "oauth401MaxRounds": "Remove rule after consecutive OAuth 401 rounds",
   "oauth401MaxRoundsHint": "Applies only to OAuth accounts; API key accounts are never automatically cleaned up. New rules default to 6 rounds (1–100); 0 disables cleanup, as do missing values on existing rules. Direct 401 evidence currently supports OpenAI OAuth; a round counts when every sample receives a 401 using the account’s own credentials. Rounds containing model_unavailable skips also require an explicit account 401 and revoked credentials, with every remaining sample returning a direct 401. BPS or borrowed-credential 401s do not count; success or other errors reset the count. At the limit, the rule and its history are deleted while the account remains. Rules that still own isolation or cooldown state are retained.",
   "invalidOAuth401MaxRounds": "The limit must be an integer from 0 to 100 rounds.",
@@ -324,6 +350,7 @@ export default {
   "judgeGroup": "Grading group",
   "judgePoolDependencyWarning": "This rule also removes accounts from its grading group. If all eligible graders are removed, retests can still generate answers but have no grader to certify a pass for automatic recovery. Use a separate grading group unaffected by these isolation rules, with available accounts supporting the grading model. The tested account is excluded from grading itself.",
   "llmReasons": {
+    "canceled": "Grading was canceled or its overall deadline elapsed; answer correctness was not determined.",
     "not_configured": "No grader is configured; answer correctness was not determined.",
     "invalid_config": "The grader configuration is unsupported. Check the grading method.",
     "input_too_large": "The answer exceeds the grading input limit; correctness was not determined.",

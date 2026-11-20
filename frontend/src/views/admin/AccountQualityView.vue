@@ -290,6 +290,16 @@
                 <h5>{{ t('qualityOps.judgeReason') }}</h5><p>{{ judgmentReason(selectedResult) }}</p>
                 <p v-if="isJudgeBudgetDeferred(selectedResult)" role="status" data-testid="quality-judge-budget-deferral">{{ judgeBudgetExplanation(selectedResult) }}</p>
                 <span>{{ selectedResult.quality_judgment.model_id || '—' }} · {{ selectedResult.quality_judgment.kind === 'jev' ? t('qualityOps.judgeJev') : groupNames[selectedResult.quality_judgment.group_id || 0] || selectedResult.quality_judgment.group_id || '—' }}</span><p v-if="selectedResult.quality_judgment.kind === 'jev'">{{ t('qualityOps.judgeJevLatency', { ms: selectedResult.quality_judgment.latency_ms ?? '—' }) }} · {{ selectedResult.quality_judgment.rules_version }}</p>
+                <section class="mt-3 min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700" data-testid="quality-judge-dependency" :data-status="judgeDependency.status" aria-labelledby="judge-dependency-title">
+                  <h5 id="judge-dependency-title">{{ t('qualityOps.judgeDependency.title') }} · {{ t(`qualityOps.judgeDependency.states.${judgeDependency.status}`) }}</h5>
+                  <p>{{ t(`qualityOps.judgeDependency.reasons.${judgeDependency.reason}`) }}</p>
+                  <dl v-if="judgeDependency.observation" class="grid min-w-0 grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                    <div v-for="[key, value] in judgeDependency.counts" :key="key" class="min-w-0"><dt class="break-words text-gray-500">{{ t(`qualityOps.judgeDependency.counts.${key}`) }}</dt><dd class="mt-1 break-all font-semibold tabular-nums" :data-testid="`judge-${key.replace(/_/g, '-')}`">{{ value ?? '—' }}</dd></div>
+                  </dl>
+                  <p v-if="judgeDependency.observation?.rule_removes_grading_group" class="text-amber-700 dark:text-amber-300" role="note">{{ t('qualityOps.judgeDependency.poolRisk') }}</p>
+                  <p>{{ t('qualityOps.judgeDependency.independence') }}</p>
+                  <p class="text-xs text-gray-500">{{ t('qualityOps.judgeDependency.boundary') }}</p>
+                </section>
               </div>
             </template><div v-else-if="!detailsError" class="panel-empty">{{ t('qualityOps.noResults') }}</div>
           </section>
@@ -446,6 +456,27 @@ let alive = true, poll: ReturnType<typeof setInterval> | undefined
 const historyPlan = ref<ScheduledTestPlan | null>(null), detailOperation = ref<QualityOperation | null>(null)
 const results = ref<ScheduledTestResult[]>([]), selectedResultId = ref<number | null>(null)
 const selectedResult = ref<ScheduledTestResult | null>(null)
+const judgeDependency = computed(() => {
+  const judgment = selectedResult.value?.quality_judgment, d = judgment?.dependency
+  const unknown = { status: 'unknown', reason: judgment?.kind === 'jev' ? 'external_grader' : 'not_recorded', observation: null, counts: [] } as const
+  if (!d || judgment?.kind !== 'llm') return unknown
+  const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  const keys = ['candidate_accounts', 'slot_checks', 'busy_accounts', 'request_calls', 'failed_calls', 'budget_deferred_calls'] as const
+  const beforeInventory = ['judge_input_too_large', 'judge_group_unavailable', 'judge_model_not_allowed', 'judge_accounts_unavailable']
+  const blockedReasons = ['no_candidates', 'all_slots_busy', 'judge_capacity_unavailable', 'judge_request_failed', 'judge_invalid_response', 'judge_budget_deferred', 'judge_canceled']
+  const known = d.version === 1 && d.independence === 'not_established' && d.self_grading_excluded === true && typeof d.rule_removes_grading_group === 'boolean' &&
+    keys.every(key => key === 'candidate_accounts' && d[key] === null || count(d[key])) &&
+    d.failed_calls + d.budget_deferred_calls <= d.request_calls && d.busy_accounts + d.request_calls <= d.slot_checks &&
+    (d.candidate_accounts === null ? beforeInventory.includes(d.reason) && d.slot_checks === 0 : d.slot_checks <= d.candidate_accounts) &&
+    (d.status === 'blocked' && [...beforeInventory, ...blockedReasons].includes(d.reason) ||
+      d.status === 'responded' && d.reason === 'grading_completed' && ['correct', 'incorrect'].includes(judgment.verdict) && d.request_calls > 0 && d.failed_calls + d.budget_deferred_calls === d.request_calls - 1 ||
+      d.status === 'inconclusive' && d.reason === 'grading_uncertain' && judgment.verdict === 'unknown' && d.request_calls > 0 && d.failed_calls + d.budget_deferred_calls === d.request_calls - 1)
+  if (!known || d.status === 'blocked' && judgment.verdict !== 'unknown' ||
+    beforeInventory.includes(d.reason) && d.candidate_accounts !== null ||
+    d.reason === 'no_candidates' && d.candidate_accounts !== 0 ||
+    d.reason === 'all_slots_busy' && (!d.candidate_accounts || d.busy_accounts !== d.candidate_accounts)) return { ...unknown, reason: 'unsupported' }
+  return { status: d.status, reason: d.reason, observation: d, counts: keys.map(key => [key, d[key]] as const) }
+})
 const measurement = computed(() => {
   const value = selectedResult.value?.pelican_config?.quality_measurement
   if (!value) return null
@@ -779,10 +810,13 @@ function resultLabel(result: ScheduledTestResult) {
   if (!result.status) return t('qualityOps.notLoaded')
   const verdict = stateProbeVerdict(result)
   if (verdict) return t(probeLabels[verdict])
-  return t(result.status === 'success' ? 'qualityOps.passed' : result.error_message === 'answer_mismatch' ? 'qualityOps.wrongAnswer' : isJudgeInconclusive(result) ? 'qualityOps.judgeUnknown' : 'qualityOps.requestError')
+  if (isJudgeInconclusive(result)) return t('qualityOps.judgeUnknown')
+  return t(result.status === 'success' ? 'qualityOps.passed' : result.error_message === 'answer_mismatch' ? 'qualityOps.wrongAnswer' : 'qualityOps.requestError')
 }
 function isJudgeInconclusive(result: ScheduledTestResult) {
-  return result.status !== 'success' && (result.quality_judgment?.verdict === 'unknown' || !!result.error_message?.startsWith('judge_'))
+  // Legacy rows can store transport success alongside an unknown grader.
+  // Transport completion is never sufficient evidence for answer correctness.
+  return result.quality_judgment?.verdict === 'unknown' || result.status !== 'success' && !!result.error_message?.startsWith('judge_')
 }
 // 探针「无法判断」不是账号问题，用中性色，避免和降智混在一起。
 function resultTextClass(result: ScheduledTestResult) {
@@ -1345,7 +1379,7 @@ function judgmentReason(result: ScheduledTestResult) {
   if (judgment?.kind !== 'jev') {
     const reason = judgment?.reason?.replace(/^judge_/, '') || ''
     const known = ['not_configured', 'invalid_config', 'input_too_large', 'group_unavailable', 'model_not_allowed', 'accounts_unavailable',
-      'no_available_account', 'capacity_unavailable', 'request_failed', 'invalid_response']
+      'no_available_account', 'capacity_unavailable', 'request_failed', 'invalid_response', 'canceled']
     return judgment?.verdict === 'unknown' && known.includes(reason) ? t(`qualityOps.llmReasons.${reason}`) : judgment?.reason || '—'
   }
   const reason = judgment.reason.replace(/^judge_jev_/, '')
