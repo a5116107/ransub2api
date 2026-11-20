@@ -1,7 +1,7 @@
 package service
 
-// 分组利润控制离线预演：使用生产只读导出的分组配置、账号倍率、探测状态、
-// 用户覆盖倍率与主力模型清单，复用线上 U/D/epsilon 语义推演准入。
+// 分组利润控制只读预演：后台快照与离线CLI共用分组配置、账号倍率、探测状态、
+// 用户覆盖倍率与主力模型清单，复用线上 U/D/epsilon 语义推演价格准入。
 // 自动同步的 API Key 复用线上快照有效性与实时高峰规则；手工账号使用保存倍率。
 
 import (
@@ -134,6 +134,9 @@ type ProfitPreviewAccountVerdict struct {
 	EffectiveRate *float64 `json:"effective_upstream_rate,omitempty"`
 	RateSource    string   `json:"rate_source"`
 	Warnings      []string `json:"warnings,omitempty"`
+	// C is a reporting estimate, never substituted for admission U.
+	EstimatedCostRate   float64 `json:"estimated_cost_rate"`
+	EstimatedCostSource string  `json:"estimated_cost_source"`
 	// RejectedUnderMinD 表示账号在最低有效 D（用户覆盖最坏口径）下会被排除。
 	RejectedUnderMinD bool `json:"rejected_under_min_d,omitempty"`
 	// SupportedModels 为该账号支持的主力模型子集。
@@ -184,6 +187,7 @@ func PreviewProfitAdmission(inputs []ProfitPreviewGroupInput, evalAt time.Time) 
 			RemainingByModel:     make(map[string]int, len(in.Models)),
 			RemainingByModelMinD: make(map[string]int, len(in.Models)),
 			ModelCountsScope:     "account_price_only",
+			Verdicts:             make([]ProfitPreviewAccountVerdict, 0, len(in.Accounts)),
 		}
 		if group.ProcurementCatalog != nil {
 			revision := group.ProcurementCatalog.Revision
@@ -289,10 +293,17 @@ func previewAccountProfitAdmission(
 	group *Group,
 ) ProfitPreviewAccountVerdict {
 	verdict := ProfitPreviewAccountVerdict{
-		AccountID:  account.ID,
-		Name:       account.Name,
-		Platform:   account.Platform,
-		RateSource: ProfitPreviewRateSourceManual,
+		AccountID:           account.ID,
+		Name:                account.Name,
+		Platform:            account.Platform,
+		RateSource:          ProfitPreviewRateSourceManual,
+		EstimatedCostRate:   account.CostMultiplier(),
+		EstimatedCostSource: "default",
+	}
+	if _, ok := accountCostMultiplierNumber(account.Extra[AccountCostMultiplierExtraKey]); ok {
+		verdict.EstimatedCostSource = "saved"
+	} else if account.Extra[AccountCostMultiplierExtraKey] != nil {
+		verdict.EstimatedCostSource = "invalid_fallback"
 	}
 	if account.Type == AccountTypeAPIKey && upstreamBillingRateSyncEnabled(account) {
 		verdict.RateSource = ProfitPreviewRateSourceUpstreamProbe

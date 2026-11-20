@@ -1100,6 +1100,7 @@ func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	admin.GET("/upstream-procurement/catalog", h.Admin.Channel.ProcurementCatalog)
 	admin.PUT("/upstream-procurement/catalog", h.Admin.Channel.ProcurementCatalog)
 	admin.POST("/upstream-procurement/preview", h.Admin.Channel.ProcurementClassificationPreview)
+	admin.GET("/upstream-procurement/products/:id/impact", h.Admin.Channel.ProcurementProductImpact)
 	channels := admin.Group("/channels")
 	{
 		channels.GET("", h.Admin.Channel.List)

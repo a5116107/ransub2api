@@ -8,6 +8,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProfitPreviewKeepsAdmissionUSeparateFromEstimatedC(t *testing.T) {
+	u := 1.0
+	group := &Group{ID: 2, Name: "fixed-sale", Platform: PlatformOpenAI, RateMultiplier: .2}
+	for _, tc := range []struct {
+		name   string
+		raw    any
+		cost   float64
+		source string
+	}{
+		{"saved", .1, .1, "saved"}, {"explicit zero", 0.0, 0, "saved"},
+		{"missing", nil, .1, "default"}, {"invalid", "0.01", .1, "invalid_fallback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, RateMultiplier: &u,
+				Extra: map[string]any{AccountCostMultiplierExtraKey: tc.raw}}
+			report := PreviewProfitAdmission([]ProfitPreviewGroupInput{{Group: group, Accounts: []*Account{account}, AssumeEnabled: true}}, time.Now())[0]
+			require.True(t, report.AssumedEnabled)
+			require.Equal(t, ProfitPreviewClassRejectedThreshold, report.Verdicts[0].Class)
+			require.Equal(t, 1.0, *report.Verdicts[0].EffectiveRate)
+			require.Equal(t, tc.cost, report.Verdicts[0].EstimatedCostRate)
+			require.Equal(t, tc.source, report.Verdicts[0].EstimatedCostSource)
+			require.False(t, group.ProfitControlEnabled)
+		})
+	}
+	group.Platform = "composite"
+	report := PreviewProfitAdmission([]ProfitPreviewGroupInput{{Group: group, AssumeEnabled: true}}, time.Now())[0]
+	require.False(t, report.EffectiveGate)
+	require.NotNil(t, report.Verdicts, "empty products serialize as an empty result, not missing evidence")
+}
+
 func TestPreviewProfitAdmissionUsesAccountRatesAndPreinitializesModels(t *testing.T) {
 	now := time.Now()
 	group := profitControlTestGroup(50, 0.2, 0)

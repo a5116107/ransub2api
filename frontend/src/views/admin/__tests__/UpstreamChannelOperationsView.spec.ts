@@ -7,7 +7,8 @@ vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<mai
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => key.startsWith('upstreamOps.attempts.messages') ? `${key} ${values?.value}` : ['upstreamOps.rawCache.waitSamples','upstreamOps.output.samples'].includes(key) ? `${key} ${values?.samples} ${values?.unknown} ${values?.coverage}` : key === 'upstreamOps.output.distribution' ? `${key} ${values?.mean} ${values?.p95} ${values?.max}` : key === 'upstreamOps.output.partial' ? `${key} ${values?.count} ${values?.max}` : key }) }))
 vi.mock('@/api/admin/upstreamOperations', () => ({ readOperations: vi.fn() }))
-vi.mock('@/api/admin/procurementCatalog', () => ({ readProcurementCatalog: vi.fn(), saveProcurementCatalog: vi.fn(), previewProcurementScopes: vi.fn() }))
+vi.mock('@/api/admin/procurementCatalog', () => ({ readProcurementCatalog: vi.fn(), saveProcurementCatalog: vi.fn(), previewProcurementScopes: vi.fn(), previewProcurementProductImpact: vi.fn() }))
+vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
 
 describe('server-recorded traffic source composition', () => {
  const traffic = { version: 1, source: 'server_recorded_entrypoints', samples: 10, known_samples: 2, unknown_samples: 8, coverage: .2,

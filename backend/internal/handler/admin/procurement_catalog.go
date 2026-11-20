@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -20,6 +21,34 @@ func procurementCatalogError(c *gin.Context, err error) {
 	}
 	// Never forward SQL errors, account credentials or invalid stored JSON.
 	response.ErrorFrom(c, service.ErrProcurementCatalogUnavailable)
+}
+
+// ProcurementProductImpact only reads saved state; it never enables the gate,
+// sends a probe, mutates membership or publishes scheduler state.
+func (h *ChannelHandler) ProcurementProductImpact(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 {
+		procurementCatalogError(c, service.ErrProcurementCatalogInvalid)
+		return
+	}
+	repo, err := h.channelService.ProcurementCatalogRepository()
+	if err != nil {
+		procurementCatalogError(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	out, err := repo.PreviewProcurementProductImpact(ctx, id)
+	if err != nil {
+		if errors.Is(err, service.ErrGroupNotFound) || errors.Is(err, service.ErrObserverScope) || errors.Is(err, service.ErrProcurementProductImpactTooLarge) {
+			response.ErrorFrom(c, err)
+		} else {
+			procurementCatalogError(c, err)
+		}
+		return
+	}
+	response.Success(c, out)
 }
 
 func (h *ChannelHandler) ProcurementCatalog(c *gin.Context) {

@@ -3,16 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D4.3.11本地done；D7.4价格影响预演验收/交付中。
-授权：本地实施/测试/文档及自有分支同步；不改生产、不运行CI或发布。
-来源：统一H盘/feat分支；生产.8/1171780c7未变。
-验证：D4双轮race144pass；交互147pass/8skip，补DSN后权限29pass/0skip；vet0。
-结果：差量关系/事务outbox/锁后重读已验；D7中英390/1440、真实PG/API验收中。
-入口：方案12.1.7–.8/13.3，生产图册html/md。
-下一动作：收口D7浏览器/本地验证并分任务提交；继续原依赖。
-等待：原28项20done/8部分；独立参考/真实来源与原生产验收仍待。
-责任：供应商提供可核对证据，开发方接入；历史拒删由宿主解除。
-限制：render-input.html及旧scratch拒删见DECISIONS，未规避重试。
+任务：D4.3.11及D7.4价格检查子旅程本地已验，交付同步中。
+授权：本地实施/测试/文档及自有分支同步；不改生产、不运行CI/发布。
+来源：统一H盘/feat分支，D4提交94d38b945；生产.8未变。
+验证：race144/146、PG10/交互147、权限29、UI223通过；浏览器28项/32真实API/0错误；静态/构建0。
+结果：关联事务/普通移出重加，原运维页U/C/D及最低D影响预演已验。
+入口：方案12.1.7–.8/13.3；图册html/md；渠道运维指南。
+下一动作：D3.2/D7.3参考依赖→D4.3拥有者/预算→D6.2→完整三步后台。
+等待：原28项20done/8部分；独立参考/真实来源及原生产验收保持。
+责任：供应商提供证据，开发方接入；宿主解除历史及本轮scratch拒删。
+限制：新scratch为DevCache/tmp/sub2api-product-impact；服务已退出，拒删详情见DECISIONS。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -35,20 +35,20 @@
 | D2.3 | done | 身份统一、证据失效/协议切换/9平台终检已验 |
 | D2.4 | done | 探测/授权/库存/绑定/事务的生效地址已验 |
 | D2.5 | done | 最终凭据HTTP/WS及权限已验；非实际组/缓存域 |
-| D2.6.1–.4 | done | 自动/手工声明、精确预演、New API绑定/TTL/重放、SQL CAS及HTTP/WS/UI本地已验 |
-| D2.6.5–.12 | done | 原生/固定转换、四WS/两HTTP桥及静态/构建已验；SQL/UI见DECISIONS，非生产 |
-| D2.6.13 | done | smart标量/历史及11类逐轮路径已验，非生产 |
-| D2.6.14 | done | Messages→Chat映射/effort/Fast及调度/HTTP已验，非生产 |
-| D2.6.15 | done | Messages→Responses/verbosity、UI及HTTP/11WS已验，非生产 |
+| D2.6.1–.4 | done | 声明/精确预演/TTL/CAS及HTTP/WS/UI已本地验 |
+| D2.6.5–.12 | done | 原生/固定转换及WS/HTTP桥已验；非生产 |
+| D2.6.13 | done | smart/历史及11类逐轮路径已验；非生产 |
+| D2.6.14 | done | Messages→Chat映射/effort/Fast及调度/HTTP已验；非生产 |
+| D2.6.15 | done | Messages→Responses输出分桶、UI及HTTP/WS已验；非生产 |
 | D2.6.16 | done | 池桥/双调度/黏性/终检及17类物理帧已验；非生产 |
 | D2.6.17 | done | HTTP→原生WS映射/Fast/流式及双调度/终检已验；非生产 |
-| D3 | in_progress | .7/5/3/1保持，D3.2.1–.8本地done；判题循环依赖已查/未知UI已修；独立判题池配置、其余scope/独立基线/生产待验 |
+| D3 | in_progress | .2.1–.8已本地验，判题循环/未知UI已修；独立池/基线/其余scope/生产待验 |
 | D3.2.8 | done | 同scope多规则/全样本、SQL/HTTP/有界100范围与中英手机已验；仅答题证据，模型身份/资格未知 |
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 原清理/分页/依赖及双平台验收保持；逐项源码与验证见DECISIONS |
 | D4 | in_progress | .1–.11本地已验；模式/拥有者/重算仍缺 |
-| D4.3.1–.6 | done | 区间/目录/来源/产品预演/允许桶/严格JSON及CAS、SQL/终检/UI已验；逐项见原设计与DECISIONS，非完整资格/生产 |
+| D4.3.1–.6 | done | 区间/目录/来源/桶/严格JSON/CAS与SQL/终检/UI已验；非完整资格/生产 |
 | D4.3.7 | done | v4/SQL/候选黏性/槽后/HTTP与WS实帧拒发恢复及中英四视口已验；非完整资格/生产 |
 | D4.3.8 | done | v5最新可用门/原生与受管/实帧/SQL及中英UI已验；8892/716/93/UI133；非完整资格/生产 |
 | D4.3.9 | done | 配置门交集/独立到期及SQL/UI已本地验；328/148/24/UI143+i18n3/浏览器36，非完整资格/生产 |
@@ -57,10 +57,10 @@
 | D5.4.1 | done | 原生OpenAI Key/模型HTTP同路探测及中英UI本地已验；非缓存域/严格资格 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/来源及同路探测已本地验；实际组/其余scope/缓存域/存活与资格仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
-| D7 | in_progress | 图册/统一设计已交付；D7.4倍率影响预演实施中，完整三步闭环待验 |
+| D7 | in_progress | 产品价格检查已本地验：真实API/PG、中英手机/错误恢复；完整三步/预算/差量仍缺 |
 | D5.1/D6.1 | done | 上下游/账单合同；同run粘性/跨run隔离、Messages独立前缀，race40/vet |
 | D5.2 | done | 最终原始摘要、唯一逻辑计数/覆盖、本人筛选/30天与中英390px；非生产证据 |
-| D5.3.1–.10 | done | 最终Key/scope、HTTP/WS等待、逐尝试缓存/输出/来源已验；非实际组/资格/生产 |
+| D5.3.1–.10 | done | Key/scope/等待/逐尝试缓存与输出已验；非实际组/资格/生产 |
 | D5.3.11 | done | Messages速度/思考/预算分桶，PG/race/计时/UI/静态/Linux/四视口已验 |
 | D5.3.12 | done | Gemini模型/action/预算/等级/思考分桶，PG/race/计时/UI/静态/Linux/四视口已验 |
 | D5.3.13 | done | Responses摘要/加密/verbosity分桶，非法未知；计时/服务/SQL/UI/静态/四视口已验 |
@@ -83,7 +83,7 @@
 ## 工作区与环境限制
 
 - 工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，无额外worktree。
-- 历史12张PNG/1164bytes及data/拒删原位保留。
+- 历史PNG、data/及拒删保留；本轮product-impact三文件拒删，服务已退出，详DECISIONS。
 - backend/tmp/availability-non5xx-regression拒删，根go test ./...会误编译；正式153包已验。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 既有PG55441、Redis56441及quality-batch/quality-validity拒删，owner宿主用户；路径/解除条件见DECISIONS。

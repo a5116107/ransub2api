@@ -40,6 +40,29 @@ export interface QualityScopeEvidence {
 export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number }
 export interface ProcurementPreview extends ProcurementCatalogSnapshot { observed_at: string; results: ProcurementClassification[] }
 
+export interface ProcurementProductImpact {
+  version: number
+  observed_at: string
+  group_status: string
+  gate_enabled: boolean
+  bound_accounts: number
+  considered_accounts: number
+  user_override_count: number
+  report: {
+    group_id: number; group_name: string; platform: string; effective_gate: boolean; assumed_enabled?: boolean
+    default_d: number; min_effective_d: number; threshold_default: number; threshold_min_d: number; model_counts_scope: string
+    verdicts: Array<{
+      account_id: number; name: string; platform: string; class: string; account_rate?: number; effective_upstream_rate?: number
+      rate_source: string; warnings?: string[]; rejected_under_min_d?: boolean
+      estimated_cost_rate: number; estimated_cost_source: string
+    }>
+  }
+}
+
+export async function previewProcurementProductImpact(id: number, signal?: AbortSignal): Promise<ProcurementProductImpact> {
+  return (await apiClient.get<ProcurementProductImpact>(`/admin/upstream-procurement/products/${id}/impact`, { signal })).data
+}
+
 export async function readProcurementCatalog(signal?: AbortSignal): Promise<ProcurementCatalogSnapshot> {
   return (await apiClient.get<ProcurementCatalogSnapshot>('/admin/upstream-procurement/catalog', { signal })).data
 }

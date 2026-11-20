@@ -138,6 +138,7 @@ type ProcurementCatalogRepository interface {
 	ReadProcurementCatalog(context.Context) (*domain.ProcurementCatalog, error)
 	SaveProcurementCatalog(context.Context, *domain.ProcurementCatalog) (*domain.ProcurementCatalog, error)
 	PreviewProcurementClassification(context.Context, *ProcurementPreviewCommand) (*ProcurementClassificationPreview, error)
+	PreviewProcurementProductImpact(context.Context, int64) (*ProcurementProductImpact, error)
 }
 
 func (s *ChannelService) ProcurementCatalogRepository() (ProcurementCatalogRepository, error) {

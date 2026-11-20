@@ -3986,3 +3986,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 补关系/退化/来源/套件交互147pass/0fail/8skip；8项原测试需SCOPED_ADMIN_TEST_DSN，补为同本地PG上的独立schema后重跑ScopedAdmin/CustomAdmin为29pass/0fail/0skip。`go vet -tags unit`四个受影响包退出0。证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/group-bindings-*.jsonl。
 - 初轮71pass/1fail因原生Redis不支持ACL；改用已有Redis8后通过。未关闭测试或改skip。尝试创建另一个Redis时56442已被上述既有实例占用，失败的--rm容器已退出；改为复用该实例，未替换原生56441或停止其他任务服务。
 - D4.3.11仅完成原生关系写入基础，无schema变更，回退应用不需数据库回退；受管模式/拥有者/自动重算、实际来源及生产验收仍开放。未知backend/internal/service/data与历史宿主拒删保留。
+
+## 2026-11-20 D7.4 产品价格影响检查（首个管理员旅程）
+
+- 原`/admin/channel-operations`顶部接入产品名称搜索/选择与只读启用影响检查，保留原高级scope诊断；复用`PreviewProfitAdmission`，没有第二套利润公式。明确区分准入U、报表估算C（默认/非法回退/明确0）、默认销售D及全部有效用户覆盖的最低D。价格通过不显示为模型/质量/缓存/健康/额度/槽位合格；默认价保留但最低D清空、全部排除、停用/空/组合分组分别解释。
+- 新管理员只读API`GET /api/v1/admin/upstream-procurement/products/:id/impact`：原ChannelRepository同一repeatable-read快照加载产品/当前关联/采购目录/来源与覆盖价，最后读取数据库时钟再核时效；1000账号有界且不截断；完整管理员权限，无用户身份/凭据/URL回传，错误脱敏，Cache-Control:no-store。不启用门、不改关系/outbox、不出站。无schema迁移，回退应用保留配置。
+- 红测固定原路由404；新增service及真实PG/管理员HTTP回归覆盖U=1/C=.1/D=.2、明确0/默认/非法C、用户覆盖、关闭/组合/停用/无候选、取消/同快照/末端时间、目录损坏恢复、1000边界及401/403/404。修复夹具一条带参多语句造成的失败与后续断言连锁；未修改产品语义或skip掩盖。最终PG双轮10pass/0fail/0skip；service/CLI/route双轮race146pass/0fail/0skip，CLI完整测试及web嵌入测试退出0，四包vet及后续handler/routes vet退出0。
+- 前端原运维/采购/新检查与i18n四文件223pass；首轮106pass/1套件因新增groups导入遇原有不完整i18n mock失败，补该API mock后通过。严格合同拒绝未知/矛盾结果；请求竞态/取消、分页、错误保留选择/重试、最低覆盖价和中英文案已验。vue-tsc、定向eslint、Vite本地构建均退出0；保留原有Browserslist陈旧与大chunk提醒，不额外改依赖或降阈值造绿。
+- Edge浏览器中英1440/390共28项通过，32次分组/影响请求经真实管理员认证与独立PG数据库，0页面/请求错误/未知API路径。选择、键盘提交、明确0、最低D排除、503恢复、无候选和真实开关读回均走普通控件；仅认证外壳/公开设置/旧统计面板用本地夹具，不宣称完整后台或生产端到端。初次脚本误选迁移自带default组，补名称键盘搜索后通过；截图等待下拉离场并从页顶捕获，已核对无浮层重影和横向溢出。
+- 证据与脚本复用H:/Root/DevCache/evidence/sub2api-production-flow-review：profit-impact-*.jsonl/txt、product-impact-browser-results.json及四张截图；本地构建资产为复用缓存，不作为生产已加载证据。原渠道指南已原位更新，移除其过时独立PR/必须CI和重复任务清单；计划与live状态仍只有主设计及STATE。
+- 无生产配置/检测/发布行为；本子旅程不关闭D7完整三步、模板、预算、统一拥有者/关系差量或D6.2/真实身份/缓存资格验收。原28项20done/8部分保持。
+- 任务自有浏览器、18761 Vite和隔离HTTP/PG夹具均已退出/完成清理回调，既有PG/Redis与共享缓存保留。新scratch H:/Root/DevCache/tmp/sub2api-product-impact（fixture.json、browser_fixture_test.go、overlay.json）在精确路径边界检查的删除命令中被宿主策略拦截，未换工具或移动规避；owner宿主用户，解除条件为允许此精确目录下三文件删除。fixture只含已关闭本地服务/已销毁隔离库的合成令牌，无生产凭据；未计回收。
