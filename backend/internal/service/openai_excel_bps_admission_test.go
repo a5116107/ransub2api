@@ -474,7 +474,7 @@ func TestExcelBPSImagesAdmissionFailureIsNotTransportOrFallback(t *testing.T) {
 	account := excelBPSImagesAccount()
 	repo := &availabilityAdmissionRepo{reports: []*AvailabilityReport{availabilityAdmissionPass(account.ID, "gpt-image-2")}}
 	calls := 0
-	svc := newOpenAIImagesTestService(&bpsTestUpstream{send: func(*http.Request, string) (*http.Response, error) { calls++; return openAIImagesJSONResponse(), nil }})
+	svc := newOpenAIImagesTestService(t, &bpsTestUpstream{send: func(*http.Request, string) (*http.Response, error) { calls++; return openAIImagesJSONResponse(), nil }})
 	svc.availabilityReader = repo
 	body := []byte(`{"model":"gpt-image-2","prompt":"fixture"}`)
 	c, rec := newOpenAIImagesTestContext(t, body)

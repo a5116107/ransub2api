@@ -134,7 +134,7 @@ func TestExcelBPSImagesForwardContract(t *testing.T) {
 	body := []byte(`{"model":"gpt-image-2","prompt":"  draw  ","size":"1024x1024","quality":"low","n":2,"background":"opaque","output_format":"png","moderation":"auto","response_format":"url"}`)
 	c, rec := newOpenAIImagesTestContext(t, body)
 	upstream := &httpUpstreamRecorder{resp: openAIImagesJSONResponse()}
-	svc := newOpenAIImagesTestService(upstream)
+	svc := newOpenAIImagesTestService(t, upstream)
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 	require.NoError(t, err)
 	// Like Codex images, BPS generation must outlive a client disconnect.
@@ -237,7 +237,7 @@ func TestExcelBPSImagesEditsForwardContract(t *testing.T) {
 		base64.StdEncoding.EncodeToString([]byte("RAWPNG")) + `"}]}`)
 	c, _ := newOpenAIImagesEditsTestContext(t, body)
 	upstream := &httpUpstreamRecorder{resp: openAIImagesJSONResponse()}
-	svc := newOpenAIImagesTestService(upstream)
+	svc := newOpenAIImagesTestService(t, upstream)
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 	require.NoError(t, err)
 
@@ -262,7 +262,7 @@ func TestExcelBPSImagesEditsForwardContract(t *testing.T) {
 
 func TestExcelBPSImagesEditsFormatRejectionFallsBackToCodex(t *testing.T) {
 	var urls []string
-	svc := newOpenAIImagesTestService(excelBPSImagesUpstream(http.StatusUnprocessableEntity, &urls))
+	svc := newOpenAIImagesTestService(t, excelBPSImagesUpstream(http.StatusUnprocessableEntity, &urls))
 	body := []byte(`{"model":"gpt-image-2","prompt":"add a red hat","images":[{"image_url":"data:image/png;base64,` +
 		base64.StdEncoding.EncodeToString([]byte("RAWPNG")) + `"}]}`)
 	c, _ := newOpenAIImagesEditsTestContext(t, body)
@@ -280,7 +280,7 @@ func TestExcelBPSImagesFormatRejectionFallsBackToCodex(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			var urls []string
-			svc := newOpenAIImagesTestService(excelBPSImagesUpstream(status, &urls))
+			svc := newOpenAIImagesTestService(t, excelBPSImagesUpstream(status, &urls))
 			body := []byte(`{"model":"gpt-image-2","prompt":"draw"}`)
 			c, rec := newOpenAIImagesTestContext(t, body)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
@@ -312,7 +312,7 @@ func TestExcelBPSImagesStayOnCodexWhenBPSCannotServe(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var urls []string
-			svc := newOpenAIImagesTestService(excelBPSImagesUpstream(http.StatusOK, &urls))
+			svc := newOpenAIImagesTestService(t, excelBPSImagesUpstream(http.StatusOK, &urls))
 			body := []byte(tc.body)
 			c, _ := newOpenAIImagesTestContext(t, body)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
@@ -329,7 +329,7 @@ func TestExcelBPSImagesStayOnCodexWhenBPSCannotServe(t *testing.T) {
 func TestExcelBPSImages429CoolsBPSAndFailsOver(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"30"}},
 		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"PRIVATE_UPSTREAM"}}`))}}
-	svc := newOpenAIImagesTestService(upstream)
+	svc := newOpenAIImagesTestService(t, upstream)
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw"}`)
 	c, rec := newOpenAIImagesTestContext(t, body)
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
@@ -353,7 +353,7 @@ func TestExcelBPSImagesFinalErrorsAreNotReplayed(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError, http.StatusBadGateway} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			var urls []string
-			svc := newOpenAIImagesTestService(excelBPSImagesUpstream(status, &urls))
+			svc := newOpenAIImagesTestService(t, excelBPSImagesUpstream(status, &urls))
 			body := []byte(`{"model":"gpt-image-2","prompt":"draw"}`)
 			c, rec := newOpenAIImagesTestContext(t, body)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
@@ -379,7 +379,7 @@ func TestExcelBPSImagesFinalErrorsAreNotReplayed(t *testing.T) {
 
 func TestExcelBPSImagesTransportErrorIsNotReplayed(t *testing.T) {
 	upstream := &httpUpstreamRecorder{err: errors.New("connection reset by peer")}
-	svc := newOpenAIImagesTestService(upstream)
+	svc := newOpenAIImagesTestService(t, upstream)
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw"}`)
 	c, rec := newOpenAIImagesTestContext(t, body)
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
@@ -414,7 +414,7 @@ func TestExcelBPSImagesAccountTest(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var urls []string
 			upstream := excelBPSImagesUpstream(tc.status, &urls)
-			svc := &AccountTestService{httpUpstream: upstream, openaiGatewayService: newOpenAIImagesTestService(upstream)}
+			svc := &AccountTestService{httpUpstream: upstream, openaiGatewayService: newOpenAIImagesTestService(t, upstream)}
 			c, rec := newOpenAIImagesTestContext(t, nil)
 
 			require.NoError(t, svc.testOpenAIAccountConnection(c, tc.account, "gpt-image-2", "draw", ""))
@@ -433,7 +433,7 @@ func TestExcelBPSImagesAccountTest(t *testing.T) {
 func TestExcelBPSImagesAccountTestReportsRateLimit(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"30"}},
 		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"PRIVATE_UPSTREAM"}}`))}}
-	svc := &AccountTestService{httpUpstream: upstream, openaiGatewayService: newOpenAIImagesTestService(upstream)}
+	svc := &AccountTestService{httpUpstream: upstream, openaiGatewayService: newOpenAIImagesTestService(t, upstream)}
 	c, rec := newOpenAIImagesTestContext(t, nil)
 
 	err := svc.testOpenAIAccountConnection(c, excelBPSImagesAccount(), "gpt-image-2", "draw", "")

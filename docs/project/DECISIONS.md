@@ -4068,3 +4068,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 终稿`pnpm exec vitest run src/components/admin/operations/__tests__/ProcurementProductImpact.spec.ts src/utils/__tests__/procurementCatalog.spec.ts src/utils/__tests__/procurementPolicy.spec.ts src/views/admin/__tests__/GroupsView.procurement.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts`为5套件175pass/0fail，12.46s，组件101条；涵盖迟到成功/失败、写后读失败和未知写响应。vue-tsc、定向ESLint均退出0，Vite49.46s通过；源未改变的后端PG/race、服务及lint证据复用。
 - 既有Edge/API/PG夹具按相同四组合扩展：刻意扣住真实写前影响GET，确认后读取新状态/影响，再释放旧响应，页面仍为审核。共36项/92次真实请求，errors/failed/unexpected均0；写后读失败时确认旧影响节点已移除。HTTP夹具56.702s退出0，浏览器finally停止夹具并清理隔离库。首个重跑因夹具仍在编译而读到旧端口失败，等待原live handle READY后通过，未重建环境。
 - 更新原方案13.3过时的“实施中”行并同步原指南/STATE；只关闭D4.3.16本地子验收，原28项20done/8部分与自动差量/预算/D6.2和生产验收不变。证据继续复用management-review-*，不创建第二任务视图；Linux嵌入构建以本次终稿资产重新核对。
+
+## 2026-11-20 图片测试夹具的存储拥有者与退出清理
+
+- 复核已知service/data遗留时，定位原`newOpenAIImagesTestService`仅构建网关，未为图片中继绑定测试DATA_DIR或Close回调。中继延迟初始化会沿环境/默认`./data`创建会话目录并启动回收goroutine；虽然部分调用当前未走中继，夹具仍存在未来污染工作区/继承运行数据的路径。未据此认定历史12文件均归本轮，不删除、移动或忽略这些历史拒删资源。
+- 原夹具原位增加`t *testing.T`、`t.Helper`、`t.TempDir`/`t.Setenv`和关闭清理，六个测试文件29处调用统一迁移，无第二实现/新环境/生产代码变更。LIFO回调先Close等待中继退出，再恢复环境/回收临时目录。新回归真实启中继，验证子测试结束后原relay已关闭、目录已释放、父DATA_DIR恢复及父哨兵文件内容不变。红测曾真实命中旧夹具继承父存储；没有用ignore/skip掩盖。
+- `go test -json -race -p 1 -tags unit ./internal/service ./internal/service/basispoints -run '^Test(OpenAIImages|ForwardOpenAIImages|Direct.*Images|ExcelBPS|QualityMonitoringBudgetBPS)' -count=2 -timeout=3m`通过2052条test事件/0fail/0skip（service19.104s、basispoints2.032s）。遗漏的真实调用分支另以`-run '^Test(CodexDirectImages|CodexImagesLunaError)' -count=2`补84pass/0fail/0skip，1.435s。终稿生命周期断言再双轮4pass、1.2s；计数含父子/重复，不相加冒充独立场景。原测试请求/错误/预算断言保持。
+- `go vet -p 1 -tags unit ./internal/service ./internal/service/basispoints`终稿退出0；兼容Go1.27.4的golangci-lint同两包`--fast-only --new-from-rev=HEAD --build-tags=unit`退出0、`0 issues.`。旧helper调用形状grep为0，未引入TODO/FIXME/XXX。仅测试/文档变更，生产/前端资产未再变化，复用前一终稿Linux嵌入构建退出0及UI175/浏览器36证据。
+- 本轮新临时目录随测试退出回收，service/data仍12文件/1164bytes、原图片时间戳未变；历史scratch/旧assets拒删未重试或绕行。任务18761预览按repo/vite/preview命令身份停止，端口已关闭；保留原PG/Redis及共享Go缓存，无新增clone/worktree/常驻服务。开发成果仍只同步自有feat，不触发CI/发行/生产。主方案仍原28项20done/8部分，D4.3增量预算/资格执行、D6.2/完整三步及外部事实验收保持开放。

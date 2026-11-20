@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/service/basispoints"
 )
 
 func newOpenAIImagesTestContext(t *testing.T, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
@@ -26,8 +29,10 @@ func newOpenAIImagesTestContext(t *testing.T, body []byte) (*gin.Context, *httpt
 	return c, rec
 }
 
-func newOpenAIImagesTestService(upstream HTTPUpstream) *OpenAIGatewayService {
-	return &OpenAIGatewayService{
+func newOpenAIImagesTestService(t *testing.T, upstream HTTPUpstream) *OpenAIGatewayService {
+	t.Helper()
+	t.Setenv("DATA_DIR", t.TempDir())
+	service := &OpenAIGatewayService{
 		httpUpstream: upstream,
 		cfg: &config.Config{
 			Security: config.SecurityConfig{
@@ -35,6 +40,37 @@ func newOpenAIImagesTestService(upstream HTTPUpstream) *OpenAIGatewayService {
 			},
 		},
 	}
+	t.Cleanup(func() { require.NoError(t, service.CloseExcelBPSImages()) })
+	return service
+}
+
+func TestOpenAIImagesTestServiceOwnsRelayStorage(t *testing.T) {
+	inherited := t.TempDir()
+	t.Setenv("DATA_DIR", inherited)
+	sentinel := filepath.Join(inherited, "preserve-existing-data")
+	require.NoError(t, os.WriteFile(sentinel, []byte("existing data"), 0600))
+	var gateway *OpenAIGatewayService
+	var relay *basispoints.ImageRelay
+	var storage string
+	t.Run("relay lifetime", func(t *testing.T) {
+		gateway = newOpenAIImagesTestService(t, nil)
+		storage = os.Getenv("DATA_DIR")
+		var err error
+		relay, err = gateway.excelBPSImageRelayForSettings(ExcelBPSImageRelaySettings{
+			Enabled: true, Mode: ExcelBPSImageModeRelay, BaseURL: "https://relay.test.invalid", Limits: basispoints.DefaultImageRelayLimits(),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, relay)
+		require.DirExists(t, filepath.Join(storage, "bps-images"))
+	})
+	defer func() { require.NoError(t, gateway.CloseExcelBPSImages()) }()
+	require.NotEqual(t, inherited, storage, "test fixtures must not inherit runtime storage")
+	require.ErrorIs(t, relay.SetPublicOrigin("https://relay.test.invalid"), basispoints.ErrImageRelayStorage, "child cleanup must stop the relay")
+	require.NoDirExists(t, storage, "the child fixture must reclaim its storage")
+	require.Equal(t, inherited, os.Getenv("DATA_DIR"), "the parent environment must be restored")
+	data, err := os.ReadFile(sentinel)
+	require.NoError(t, err)
+	require.Equal(t, "existing data", string(data))
 }
 
 func newOpenAIImagesAPIKeyAccount() *Account {
@@ -72,7 +108,7 @@ func TestForwardOpenAIImagesAPIKey_NonStreamDetachesUpstreamContext(t *testing.T
 	c, _ := newOpenAIImagesTestContext(t, body)
 
 	recorder := &httpUpstreamRecorder{resp: openAIImagesJSONResponse()}
-	svc := newOpenAIImagesTestService(recorder)
+	svc := newOpenAIImagesTestService(t, recorder)
 
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 	require.NoError(t, err)
@@ -109,7 +145,7 @@ func TestForwardOpenAIImagesAPIKey_StreamKeepsDetachedUpstreamContext(t *testing
 				"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}}\n\n",
 		)),
 	}}
-	svc := newOpenAIImagesTestService(recorder)
+	svc := newOpenAIImagesTestService(t, recorder)
 
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 	require.NoError(t, err)

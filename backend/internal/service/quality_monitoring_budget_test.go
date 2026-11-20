@@ -1097,7 +1097,7 @@ func TestQualityMonitoringBudgetBPSImages(t *testing.T) {
 				repo.denyAt, repo.err = 1, &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)}
 			}
 			upstream := &httpUpstreamRecorder{resp: openAIImagesJSONResponse()}
-			gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+			gateway := newOpenAIImagesTestService(t, monitoringBudgetHTTP{base: upstream})
 			account := excelBPSImagesAccount()
 			account.Credentials["base_url"] = "https://native.example/tenant"
 			tests := &AccountTestService{cfg: gateway.cfg, accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: gateway.httpUpstream, openaiGatewayService: gateway}
@@ -1130,7 +1130,7 @@ func TestQualityMonitoringBudgetBPSAccountImageFormatFallback(t *testing.T) {
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
 		newJSONResponse(http.StatusUnprocessableEntity, `{"error":{"message":"unsupported format"}}`), openAIImagesJSONResponse(),
 	}}
-	gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+	gateway := newOpenAIImagesTestService(t, monitoringBudgetHTTP{base: upstream})
 	account := excelBPSImagesAccount()
 	account.Credentials["base_url"] = "https://native.example/tenant"
 	tests := &AccountTestService{cfg: gateway.cfg, accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: gateway.httpUpstream, openaiGatewayService: gateway}
@@ -1167,7 +1167,7 @@ func TestQualityMonitoringBudgetBPSAccountImageFallbackLocalFailure(t *testing.T
 				upstream := &httpUpstreamRecorder{responses: []*http.Response{
 					newJSONResponse(http.StatusUnprocessableEntity, `{"error":{"message":"unsupported format"}}`), response,
 				}}
-				gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+				gateway := newOpenAIImagesTestService(t, monitoringBudgetHTTP{base: upstream})
 				account := excelBPSImagesAccount()
 				account.Credentials["base_url"] = "https://native.example/tenant"
 				tests := &AccountTestService{cfg: gateway.cfg, accountRepo: &stateProbeAccountRepo{account: account}, httpUpstream: gateway.httpUpstream, openaiGatewayService: gateway}
@@ -1201,7 +1201,7 @@ func TestQualityMonitoringBudgetBPSLargeImageUsage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &monitoringBudgetRepoStub{}
 			upstream := &httpUpstreamRecorder{resp: newJSONResponse(http.StatusOK, tc.body)}
-			gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+			gateway := newOpenAIImagesTestService(t, monitoringBudgetHTTP{base: upstream})
 			ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
 			c, _ := newTestContext()
 			c.Request = c.Request.WithContext(ctx)
@@ -1237,7 +1237,7 @@ func TestQualityMonitoringBudgetBPSImagesLocalFailure(t *testing.T) {
 						response.Body = body
 					}
 					upstream := &httpUpstreamRecorder{resp: response}
-					gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+					gateway := newOpenAIImagesTestService(t, monitoringBudgetHTTP{base: upstream})
 					ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())
 					c, _ := newTestContext()
 					c.Request = c.Request.WithContext(ctx)
@@ -1269,7 +1269,7 @@ func TestQualityMonitoringBudgetBPSImageEditsAndFallback(t *testing.T) {
 			} else if mode == "provider_error_text" {
 				upstream.responses = []*http.Response{newJSONResponse(http.StatusServiceUnavailable, `{"error":{"message":"monitoring probe deferred: token_limit"}}`)}
 			}
-			gateway := newOpenAIImagesTestService(monitoringBudgetHTTP{base: upstream})
+			gateway := newOpenAIImagesTestService(t, monitoringBudgetHTTP{base: upstream})
 			account := excelBPSImagesAccount()
 			account.Credentials["base_url"] = "https://native.example/tenant"
 			ctx := NewMonitoringProbeBudgetService(repo).qualityContext(t.Context())

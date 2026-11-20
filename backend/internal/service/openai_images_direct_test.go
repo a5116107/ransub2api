@@ -23,7 +23,7 @@ func TestCodexDirectImagesRouting(t *testing.T) {
 			body := []byte(fmt.Sprintf(`{"model":%q,"prompt":"  原样保留 prompt  ","quality":"max","size":"auto","response_format":"url","extra":{"preserve":true}}`, model))
 			c, rec := newOpenAIImagesTestContext(t, body)
 			upstream := &httpUpstreamRecorder{resp: openAIImagesJSONResponse()}
-			svc := newOpenAIImagesTestService(upstream)
+			svc := newOpenAIImagesTestService(t, upstream)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 			require.NoError(t, err)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -58,7 +58,7 @@ func TestCodexDirectImagesMappingBeforeRouting(t *testing.T) {
 			body := []byte(`{"model":"gpt-image-1","prompt":"draw"}`)
 			c, _ := newOpenAIImagesTestContext(t, body)
 			upstream := &httpUpstreamRecorder{resp: openAIImagesJSONResponse()}
-			svc := newOpenAIImagesTestService(upstream)
+			svc := newOpenAIImagesTestService(t, upstream)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 			require.NoError(t, err)
 			account := directImagesTestAccount()
@@ -95,7 +95,7 @@ func TestCodexDirectImagesHTTPErrorFallbacksOnlyWhenEndpointUnavailable(t *testi
 			}}
 			body := []byte(`{"model":"gpt-image-2.5-sunburst","prompt":"draw"}`)
 			c, _ := newOpenAIImagesTestContext(t, body)
-			svc := newOpenAIImagesTestService(upstream)
+			svc := newOpenAIImagesTestService(t, upstream)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 			require.NoError(t, err)
 			result, err := svc.ForwardImages(context.Background(), c, directImagesTestAccount(), body, parsed, "")
@@ -114,7 +114,7 @@ func TestCodexDirectImagesHTTPErrorFallbacksOnlyWhenEndpointUnavailable(t *testi
 func TestCodexDirectImagesStreamRejectsPlainJSON(t *testing.T) {
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw","stream":true}`)
 	c, _ := newOpenAIImagesTestContext(t, body)
-	svc := newOpenAIImagesTestService(&httpUpstreamRecorder{resp: openAIImagesJSONResponse()})
+	svc := newOpenAIImagesTestService(t, &httpUpstreamRecorder{resp: openAIImagesJSONResponse()})
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 	require.NoError(t, err)
 	result, err := svc.ForwardImages(context.Background(), c, directImagesTestAccount(), body, parsed, "")
@@ -132,7 +132,7 @@ func TestCodexDirectImagesMultipleOutputs(t *testing.T) {
 				response = "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"AA==\"}\n\ndata: {\"type\":\"image_generation.completed\",\"b64_json\":\"AQ==\",\"usage\":{\"input_tokens\":10,\"output_tokens\":40}}\n\n"
 			}
 			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(response))}}
-			svc := newOpenAIImagesTestService(upstream)
+			svc := newOpenAIImagesTestService(t, upstream)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 			require.NoError(t, err)
 			result, err := svc.ForwardImages(context.Background(), c, directImagesTestAccount(), body, parsed, "")
@@ -177,7 +177,7 @@ func TestCodexDirectImagesStreaming(t *testing.T) {
 				fmt.Fprintf(&stream, "data: %s\n\n", frames[event])
 			}
 			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream.String()))}}
-			svc := newOpenAIImagesTestService(upstream)
+			svc := newOpenAIImagesTestService(t, upstream)
 			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 			require.NoError(t, err)
 			result, err := svc.ForwardImages(context.Background(), c, directImagesTestAccount(), body, parsed, "")
