@@ -62,7 +62,9 @@ func TestQualityRetestRestUnknownDoesNotExtendAndZeroKeepsSchedule(t *testing.T)
 	require.Equal(t, "scheduling_disabled", f.apply("failed"))
 	deadline := qualityRestDeadline(t, f.plan.ID)
 	require.Equal(t, "inconclusive", f.apply("inconclusive"))
-	require.Equal(t, deadline, qualityRestDeadline(t, f.plan.ID))
+	after := qualityRestDeadline(t, f.plan.ID)
+	require.NotNil(t, after)
+	require.True(t, deadline.Equal(*after), "same deadline is preserved regardless of the driver's location object")
 	require.Equal(t, "passed", f.apply("passed"))
 	require.Equal(t, 0, f.count(`SELECT count(*) FROM accounts WHERE id=$1 AND schedulable`), "auto restore remains opt-in")
 	require.Equal(t, "already_quarantined", f.apply("failed"))
@@ -94,7 +96,9 @@ func TestQualityRetestRestUsesIndependentModelVerdicts(t *testing.T) {
 	f.plan.PelicanConfig.Quality.AutoRestore = false
 	f.plan.QualityModelOutcomes = map[string]string{"sol": "passed", "astra": "passed"}
 	f.apply("failed") // Per-model evidence takes precedence over the aggregate.
-	require.Equal(t, deadline, qualityRestDeadline(t, f.plan.ID))
+	after := qualityRestDeadline(t, f.plan.ID)
+	require.NotNil(t, after)
+	require.True(t, deadline.Equal(*after), "same deadline is preserved regardless of the driver's location object")
 }
 
 func TestQualityRetestRestLegacyModelCooldown(t *testing.T) {

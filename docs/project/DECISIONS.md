@@ -3967,3 +3967,22 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 稳定分支仅追加本次文档后验，应用源码相对v2.21.0-ransub.8零差异。旧本地production的规划提交7f846ede7保留为work/production-doc-plan且原已包含于开发历史；不重写任何已发布历史。
 - 回合开发分支逐处保留已有预算延期/完整质量详情与中性UI，消除重复helper合并冲突，仅更新VERSION和文档；继承的账号关联重构/未追踪数据不提交、不清理。原28项20done/8部分保持，独立判题池配置、归属恢复冲突和原外部验收不由此次同步关闭。
 - 清理：线上演练容器/网络已释放，.8候选程序164331680bytes已删除，数据库/配置/旧版程序及镜像回滚材料保留。本地已核验scratch路径/进程/依赖junction，但删除命令整体被宿主策略拒绝，未再换工具或移动规避；H:/Root/DevCache/tmp/sub2api-stable-sync保留，owner宿主用户，解除条件为允许该精确目录的删除。开发源码及共享node_modules未动。
+
+## 2026-11-20 D7.4：生产流程图册与低心智方案收敛（文档交付）
+
+- 用户要求结合生产上下游/配置解释监测、检测、验真、利润检查并优化配置负担；本轮只读分析与设计，不改产品代码/生产设置、不触发检测、不发布、不运行CI。快照11:28–11:32 UTC+8；运行镜像仍.8/291c5bf6dccd，源码固定1171780c7。15账号中仅A9/A14调度开启，G2售价0.20；利润门、优先评分、性能阈值暂停与最新可用性规则未启用。A9/A14准入U=1、估算C=.1，直接启利润门会排除主力，不能以报表盈利推断准入已开启。
+- 新增production-observation-flow.md及其离线HTML生成视图；6张生产图还原上下游、观测/动作边界、质量恢复、请求选路、倍率利润与后台配置。P12/P16的11:00同轮sol通过/terra无通过对照，以及P16的10:30答案正确但restore_conflict分开解释；当前判题G2仍是被测产品，独立参考配置未执行。缓存示例为账单Token聚合，不冒充物理尝试或供应商全站复用；V2用户聚合按user_id而非逐下游Key。
+- 原位替换主设计12.1，新增3张目标图和原任务内实施映射：批准供应来源→证据投影→统一硬门→单一受管关系拥有者→原调度器；健康会话优先保留，未知/过期不续绿，恢复不抢回；三步配置与异常处理，不增第二调度器/评分/任务账本。普通移出仍不形成永久排除，真实采购价仍延期。方案是拟议实施，不关闭D3/D4/D5/D6/D7/D8父验收，原28项20done/8部分保持。
+- 校对quality_judge.go与account_quality.go，修正质量文档“最多3个判题账号”和“失败动作二选一”的旧描述：实际90秒总期限/每候选30秒，按剩余时间尝试；动作依题型包含观察、移组、停调、模型冷却/隔离与BPS。D3.2.3旧“UI未发布”同步改为.8已发布，独立池待配置不混作完成。
+- 实际验证：render-docs.py退出0，9/9 SVG、0语法/页面错误、0坏内部锚点，1500px及390px检查通过、手机页面无横向溢出；HTML内联SVG/无外部脚本，可离线查看。15个不可变源码链接本地Git对象/行号核对通过，凭据模式0命中，文档git diff --check退出0；核对目标关系图及手机截图。Agent Browser当前CLI将file协议改写为https，改用任务自有127.0.0.1只读HTTP服务后核验标题/9图/0脚本成功，不修改生产CSP/浏览器资料。
+- 最小脱敏快照与渲染验证在H:/Root/DevCache/evidence/sub2api-production-flow-review；Mermaid10.9.5置于工具缓存，不加产品依赖。继承的账号关联重构及主设计5.4.12保持，不提交/推送本轮只读设计；文档与生成视图本地落盘。旧被拒删目录未重试，未将归档或干净状态宣称为磁盘回收。
+- 收尾：为两份图册交付文件增加精确Git忽略例外，避免被原docs/project/*规则漏掉；未扩大其他文档白名单。STATE首次超出8192bytes后原位精简，未删除原父验收。任务浏览器与127.0.0.1:18761服务已关闭；仅本轮render-input.html草稿3390415bytes在精确边界检查的删除命令中被宿主策略拦截，未改工具/移动规避。该文件位于上述证据目录，owner宿主用户，解除条件为允许该精确文件删除；最终HTML、最小快照、截图/验证JSON为交付或证据，Mermaid为复用工具缓存。
+
+## 2026-11-20 D4.3.11 关联事务与低心智实施顺序
+
+- 最新用户已明确批准本地代码/测试/文档实施；保留统一H盘与单PR，禁止CI，不把开发分支整体发布生产。原28项20done/8部分不变；实施验收细化在原设计12.1.8，未建新账本。
+- 收口继承WIP：Add/Remove/Bind/模型限制及批量加入共享账号行锁，等待后读当前关联；普通保存差量修改并保留关系身份/模型限制，受限管理员保留优先级；重复/无变化不通知。ORM/outbox与外层事务同源，自持事务提交后才刷缓存。删除旧scopedAdminBindGroups、lockOAuthDegradationGroupBindings及重复装载助手；正常移出/重加不生成永久排除，原质量恢复归属冲突仍保持。
+- 真实本地PG55441，Redis8既有sub2api-membership-test-redis/56442：`go test -json -tags unit,integration -overlay H:/Root/DevCache/tmp/sub2api-upstream-raw-cache/overlay.json -race -vet=off -p 1 ./internal/repository -run '^Test(AccountGroupBindings|AccountGroupAllowedModels|OAuthDegradationGroup|QualityRestore|QualityRetestREST|CustomAdminKeyScope|ExcelBPS)' -count=2 -timeout=10m`：144pass/0fail/0skip/0race。
+- 补关系/退化/来源/套件交互147pass/0fail/8skip；8项原测试需SCOPED_ADMIN_TEST_DSN，补为同本地PG上的独立schema后重跑ScopedAdmin/CustomAdmin为29pass/0fail/0skip。`go vet -tags unit`四个受影响包退出0。证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/group-bindings-*.jsonl。
+- 初轮71pass/1fail因原生Redis不支持ACL；改用已有Redis8后通过。未关闭测试或改skip。尝试创建另一个Redis时56442已被上述既有实例占用，失败的--rm容器已退出；改为复用该实例，未替换原生56441或停止其他任务服务。
+- D4.3.11仅完成原生关系写入基础，无schema变更，回退应用不需数据库回退；受管模式/拥有者/自动重算、实际来源及生产验收仍开放。未知backend/internal/service/data与历史宿主拒删保留。

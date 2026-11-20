@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
-	dbent "github.com/Wei-Shaw/sub2api/ent"
 	dbaccount "github.com/Wei-Shaw/sub2api/ent/account"
 	dbaccountgroup "github.com/Wei-Shaw/sub2api/ent/accountgroup"
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
@@ -83,50 +81,6 @@ func (r *accountRepository) ScopedAdminCommitted(ctx context.Context, id int64, 
 		return
 	}
 	r.syncSchedulerAccountSnapshot(ctx, id)
-}
-
-// scopedAdminBindGroups 只增删变化的关联，保留现有关联的优先级和创建时间。
-// 调用者已在受限事务内验权并合并不可操作的分组，不得回退到全量重建。
-func (r *accountRepository) scopedAdminBindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
-	if dbent.TxFromContext(ctx) == nil {
-		return fmt.Errorf("受限分组写入需要数据库事务")
-	}
-	groupIDs, err := lockOAuthDegradationGroupBindings(ctx, r.client, accountID, groupIDs)
-	if err != nil {
-		return err
-	}
-	existing, err := r.loadAccountGroupIDs(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	added, removed := []int64{}, []int64{}
-	for _, id := range groupIDs {
-		if !slices.Contains(existing, id) && !slices.Contains(added, id) {
-			added = append(added, id)
-		}
-	}
-	for _, id := range existing {
-		if !slices.Contains(groupIDs, id) {
-			removed = append(removed, id)
-		}
-	}
-	if len(added) == 0 && len(removed) == 0 {
-		return nil
-	}
-	if err := lockLiveGroups(ctx, r.client, added); err != nil {
-		return err
-	}
-	if len(removed) > 0 {
-		if _, err := r.client.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID), dbaccountgroup.GroupIDIn(removed...)).Exec(ctx); err != nil {
-			return err
-		}
-	}
-	for _, id := range added {
-		if _, err := r.client.AccountGroup.Create().SetAccountID(accountID).SetGroupID(id).SetPriority(slices.Index(groupIDs, id) + 1).Save(ctx); err != nil {
-			return err
-		}
-	}
-	return enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, buildSchedulerGroupPayload(mergeGroupIDs(existing, groupIDs)))
 }
 
 // scopedAdminAccountPredicates 保证读取和导入候选查询使用相同的范围语义。

@@ -140,6 +140,8 @@ docs/project/*
 !docs/project/STATE.md
 !docs/project/DECISIONS.md
 !docs/project/monitor-driven-scheduling-design.md
+!docs/project/production-observation-flow.md
+!docs/project/production-observation-flow.html
 !docs/ai-ops-codex.md
 !docs/reauth-identity-validation.md
 !docs/openai-context-limit-errors.md

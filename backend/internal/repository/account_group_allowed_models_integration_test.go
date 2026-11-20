@@ -4,6 +4,7 @@ package repository
 
 import (
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -53,7 +54,7 @@ func (s *AccountRepoSuite) TestGroupAllowedModels_SetBindAndLoad() {
 	s.Require().NoError(s.repo.SetGroupAllowedModels(s.ctx, account.ID, map[int64][]string{g2.ID: {"gpt-5.5", "gpt-5.3-*"}}))
 	s.Require().Equal(before+1, s.countAccountGroupsOutbox(account.ID))
 
-	// 调整分组时整体删除重建，仍保留的 g2 沿用原有限制，新加入的 g3 不限制
+	// 调整分组时只增删变化的关联，仍保留的 g2 沿用原有限制，新加入的 g3 不限制
 	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g2.ID, g3.ID}))
 	s.Require().Equal(map[int64][]string{g2.ID: {"gpt-5.5", "gpt-5.3-*"}, g3.ID: nil}, s.groupAllowedModelsByGroup(account.ID))
 
@@ -70,6 +71,43 @@ func (s *AccountRepoSuite) TestGroupAllowedModels_SetBindAndLoad() {
 	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g2.ID}))
 	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g2.ID, g3.ID}))
 	s.Require().Equal(map[int64][]string{g2.ID: nil, g3.ID: nil}, s.groupAllowedModelsByGroup(account.ID))
+}
+
+func (s *AccountRepoSuite) TestGroupAllowedModels_BindPreservesMembershipIdentity() {
+	g1 := mustCreateGroup(s.T(), s.client, &service.Group{Name: "identity-g1"})
+	g2 := mustCreateGroup(s.T(), s.client, &service.Group{Name: "identity-g2"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "membership-identity"})
+	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g1.ID, g2.ID}))
+	s.Require().NoError(s.repo.SetGroupAllowedModels(s.ctx, account.ID, map[int64][]string{g2.ID: {"gpt-6-sol"}}))
+	created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	_, err := s.client.ExecContext(s.ctx, "UPDATE account_groups SET created_at=$3 WHERE account_id=$1 AND group_id=$2", account.ID, g2.ID, created)
+	s.Require().NoError(err)
+
+	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g2.ID, g1.ID}))
+	row, err := s.client.AccountGroup.Query().Where(accountgroup.AccountIDEQ(account.ID), accountgroup.GroupIDEQ(g2.ID)).Only(s.ctx)
+	s.Require().NoError(err)
+	s.Require().True(row.CreatedAt.Equal(created), "retained membership must not be deleted and recreated")
+	s.Require().Equal(1, row.Priority, "ordinary form still applies explicit group order")
+	s.Require().Equal([]string{"gpt-6-sol"}, row.AllowedModels)
+}
+
+func (s *AccountRepoSuite) TestGroupAllowedModels_BindNoopAndDuplicateIDs() {
+	g1 := mustCreateGroup(s.T(), s.client, &service.Group{Name: "noop-g1"})
+	g2 := mustCreateGroup(s.T(), s.client, &service.Group{Name: "noop-g2"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "membership-noop"})
+	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g1.ID, g2.ID}))
+	before := s.countAccountGroupsOutbox(account.ID)
+	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g1.ID, g2.ID}))
+	s.Require().Equal(before, s.countAccountGroupsOutbox(account.ID), "a no-op does not publish a new relationship event")
+	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g1.ID, g1.ID, g2.ID, g1.ID}))
+	s.Require().Equal(before, s.countAccountGroupsOutbox(account.ID))
+	rows, err := s.client.AccountGroup.Query().Where(accountgroup.AccountIDEQ(account.ID)).Order(accountgroup.ByPriority()).All(s.ctx)
+	s.Require().NoError(err)
+	s.Require().Len(rows, 2)
+	s.Require().Equal(g1.ID, rows[0].GroupID)
+	s.Require().Equal(1, rows[0].Priority)
+	s.Require().Equal(g2.ID, rows[1].GroupID)
+	s.Require().Equal(2, rows[1].Priority)
 }
 
 func (s *AccountRepoSuite) TestGroupAllowedModels_CreateWithAccountGroups() {

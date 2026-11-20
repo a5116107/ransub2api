@@ -1191,11 +1191,15 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 		return nil
 	}
 
-	tx, err := r.client.Tx(ctx)
+	if err := service.ValidateObserverGroupBindings(ctx, []int64{groupID}); err != nil {
+		return err
+	}
+	client := clientFromContext(ctx, r.client)
+	tx, err := client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
 		return err
 	}
-	exec := sqlExecutor(r.client)
+	exec := sqlExecutor(client)
 	if tx != nil {
 		defer func() { _ = tx.Rollback() }()
 		exec = tx.Client()
@@ -1204,24 +1208,18 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 		return err
 	}
 
-	// Account locks serialize bulk binding with a concurrently committed
-	// degradation action. Use a stable order for overlapping bulk operations.
+	// Account locks serialize all native membership writers and recovery.
+	// Use a stable order for overlapping bulk operations.
 	accountIDs = uniquePositiveInt64s(accountIDs)
 	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
-	allowedAccounts := make([]int64, 0, len(accountIDs))
 	for _, id := range accountIDs {
-		allowed, err := lockOAuthDegradationGroupBindings(ctx, exec, id, []int64{groupID})
-		if err != nil {
+		if err := lockLiveAccountForGroupBindings(ctx, exec, id); err != nil {
 			return err
 		}
-		if len(allowed) > 0 {
-			allowedAccounts = append(allowedAccounts, id)
-		}
 	}
-	accountIDs = allowedAccounts
 
 	// 使用 INSERT ... ON CONFLICT DO NOTHING 忽略已存在的绑定
-	_, err = exec.ExecContext(
+	result, err := exec.ExecContext(
 		ctx,
 		`INSERT INTO account_groups (account_id, group_id, priority, created_at)
 		 SELECT unnest($1::bigint[]), $2, 50, NOW()
@@ -1232,15 +1230,19 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 	if err != nil {
 		return err
 	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed > 0 {
+		if err := enqueueSchedulerOutbox(ctx, exec, service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil); err != nil {
+			return err
+		}
+	}
 	if tx != nil {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-	}
-
-	// 发送调度器事件
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil); err != nil {
-		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue bind accounts to group failed: group=%d err=%v", groupID, err)
 	}
 
 	return nil

@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func expectOAuthDegradationGroupBindingsAccount(mock sqlmock.Sqlmock, id int64, extra string) {
-	mock.ExpectQuery(`SELECT COALESCE\(extra,.*FROM accounts.*FOR NO KEY UPDATE`).WithArgs(id).
-		WillReturnRows(sqlmock.NewRows([]string{"extra"}).AddRow(extra))
+func expectAccountGroupBindingsAccount(mock sqlmock.Sqlmock, id int64) {
+	mock.ExpectQuery(`SELECT id FROM accounts.*FOR NO KEY UPDATE`).WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
 }
 
 func TestOAuthDegradationAuditDoesNotBlockQualityGroupRestore(t *testing.T) {
@@ -20,7 +20,7 @@ func TestOAuthDegradationAuditDoesNotBlockQualityGroupRestore(t *testing.T) {
 	mock.ExpectBegin()
 	tx, err := db.Begin()
 	require.NoError(t, err)
-	expectOAuthDegradationGroupBindingsAccount(mock, 8, `{"oauth_degradation_action":{"limit_models":false,"limit_concurrency":false,"limit_groups":true,"group_ids":[21]}}`)
+	expectAccountGroupBindingsAccount(mock, 8)
 	state := qualityState{Removed: []qualityGroup{{AccountID: 8, GroupID: 21}}}
 	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM groups`).WithArgs(int64(21), int64(8)).
 		WillReturnRows(sqlmock.NewRows([]string{"exists", "replaced"}).AddRow(true, false))

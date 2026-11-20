@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +40,7 @@ func TestOAuthDegradationGroupBindingWritersRestoreNativeMembership(t *testing.T
 				groups := newGroupRepositoryWithSQL(client, tx)
 				require.NoError(t, groups.BindAccountsToGroup(ctx, closed.ID, []int64{account.ID}))
 			case "scoped account form":
-				require.NoError(t, repo.scopedAdminBindGroups(ctx, account.ID, []int64{closed.ID, kept.ID}))
+				require.NoError(t, repo.BindGroups(adminaccess.WithPrincipal(ctx, &adminaccess.Principal{}), account.ID, []int64{closed.ID, kept.ID}))
 			}
 			after, err := repo.GetByID(ctx, account.ID)
 			require.NoError(t, err)
