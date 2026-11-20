@@ -247,17 +247,25 @@ async function managementAction(action: 'read' | 'preview' | 'review' | 'manual'
       }
     } else {
       let written: ProcurementManagementState | undefined
+      let refreshImpact = false
       if (action === 'review' && draft) written = await saveProcurementManagement(id, { version: 1, mode: 'review', expected_revision: draft.state.revision, account_ids: ids, observed_at: draft.observed_at, fingerprint: draft.fingerprint }, signal)
       if (action === 'manual' && state) written = await saveProcurementManagement(id, { version: 1, mode: 'manual', expected_revision: state.revision }, signal)
-      if (written && !validProcurementManagementState(written, id)) throw new Error('invalid review save')
-      saved = !!written
+      saved = action !== 'read'
+      if (saved && alive && generation === managementGeneration) {
+        // A successful write invalidates every pre-save snapshot, including a
+        // still-pending read. Its late response must not restore the old mode.
+        refreshImpact = !!result.value || busy.value
+        previewController?.abort(); previewGeneration++
+        busy.value = false; result.value = null; error.value = ''
+      }
+      if (saved && (!written || !validProcurementManagementState(written, id))) throw new Error('invalid review save')
       const next = await readProcurementManagement(id, signal)
       if (!validProcurementManagementState(next, id)) throw new Error('invalid review state')
       if (alive && generation === managementGeneration) {
         managementState.value = next; managementPreview.value = null; managementConsent.value = false
         managementSaved.value = saved && written?.revision === next.revision && written?.mode === next.mode
         if (saved && !managementSaved.value) managementError.value = 'conflict'
-        if (managementSaved.value && result.value) await preview()
+        if (managementSaved.value && refreshImpact) await preview()
       }
     }
   } catch (e) {

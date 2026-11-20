@@ -114,6 +114,52 @@ describe('explicit review authorization without automatic execution', () => {
     await w.get('[data-testid="management-preview"]').trigger('click'); await flushPromises()
     expect(w.get('[data-testid="management-confirm"]').attributes('disabled')).toBeDefined()
   })
+  it.each(['result', 'error'])('replaces an in-flight pre-save impact read and ignores its late %s', async ending => {
+    const w = view(); await selectedManagement(w)
+    let resolveOld!: (value: ProcurementProductImpact) => void
+    let rejectOld!: (error: unknown) => void
+    let oldSignal: AbortSignal | undefined
+    vi.mocked(previewProcurementProductImpact).mockImplementationOnce((_id, signal) => {
+      oldSignal = signal
+      return new Promise((resolve, reject) => { resolveOld = resolve; rejectOld = reject })
+    })
+    await w.get('form').trigger('submit'); await flushPromises()
+    const saved: ProcurementManagementState = { ...managementStateFixture(), revision: 1, mode: 'review', current_owned: 1, manual_memberships: 2 }
+    const next = fixture(); next.management_review = { ...managementPreviewFixture().review, mode: 'review' }
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    vi.mocked(saveProcurementManagement).mockResolvedValue(saved); vi.mocked(readProcurementManagement).mockResolvedValue(saved)
+    await w.get('[data-testid="management-consent"]').setValue(true)
+    await w.get('[data-testid="management-confirm"]').trigger('click'); await flushPromises()
+    expect(oldSignal?.aborted).toBe(true)
+    expect(previewProcurementProductImpact).toHaveBeenCalledTimes(3)
+    expect(w.get('[data-testid="product-management-mode"]').text()).toContain(p + 'review.reviewMode')
+    const stale = fixture(); stale.management_review = managementPreviewFixture().review
+    if (ending === 'result') resolveOld(stale)
+    else rejectOld({ status: 503 })
+    await flushPromises()
+    expect(w.get('[data-testid="product-management-mode"]').text()).toContain(p + 'review.reviewMode')
+    expect(w.get('[data-testid="management-state"]').text()).toContain(p + 'authorization.modes.review')
+    expect(w.find('[data-testid="product-impact-error"]').exists()).toBe(false)
+  })
+  it('invalidates the old impact when a successful write returns an unreadable body', async () => {
+    const w = view(); await selectedManagement(w)
+    vi.mocked(saveProcurementManagement).mockResolvedValue(undefined as never)
+    await w.get('[data-testid="management-consent"]').setValue(true)
+    await w.get('[data-testid="management-confirm"]').trigger('click'); await flushPromises()
+    expect(w.get('[data-testid="management-error"]').text()).toContain(p + 'authorization.savedReadFailed')
+    expect(w.find('[data-testid="management-saved"]').exists()).toBe(false)
+    expect(w.find('[data-testid="product-impact-result"]').exists()).toBe(false)
+    expect(w.find('[data-testid="management-state"]').exists()).toBe(false)
+  })
+  it('does not retain pre-save impact when the write succeeds but read-back fails', async () => {
+    const w = view(); await selectedManagement(w)
+    vi.mocked(saveProcurementManagement).mockResolvedValue({ ...managementStateFixture(), revision: 1, mode: 'review', current_owned: 1, manual_memberships: 2 })
+    vi.mocked(readProcurementManagement).mockRejectedValue(new Error('read failed'))
+    await w.get('[data-testid="management-consent"]').setValue(true)
+    await w.get('[data-testid="management-confirm"]').trigger('click'); await flushPromises()
+    expect(w.get('[data-testid="management-error"]').text()).toContain(p + 'authorization.savedReadFailed')
+    expect(w.find('[data-testid="product-impact-result"]').exists()).toBe(false)
+  })
   it('does not call a successful write activated when independent read-back fails', async () => {
     const w = view(); await selectedManagement(w)
     vi.mocked(saveProcurementManagement).mockResolvedValue({ ...managementStateFixture(), revision: 1, mode: 'review', current_owned: 1, manual_memberships: 2 })

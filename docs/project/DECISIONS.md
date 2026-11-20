@@ -4060,3 +4060,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 前端原相关五套件169pass后补两条读回/当前状态回归，终稿组件97pass、目录15/分组28/locale3本轮143pass，未改策略28pass复用匹配源码证据，共171条，不重复累计组件运行。vue-tsc、定向ESLint和Go vet退出0；兼容Go1.27.4的golangci-lint终稿`run --fast-only --new-from-rev=HEAD --build-tags=unit,integration ./internal/repository ./internal/service`退出0、`0 issues.`。Linux amd64嵌入构建退出0；Vite终稿47.98s通过，原Browserslist/大chunk提示保留。
 - Edge真实管理员认证API/独立PG，中英1440/390共32项、88次真实请求，页面错误/失败请求/未知API均0。键盘选择→预览→明确确认→独立GET/刷新/重载一致，真实409恢复、503重试、成功写入但读回失败不报生效、人工停调保留及无横向溢出均通过；目检中文手机与英文桌面截图。外壳/旧统计是夹具，不宣称完整生产E2E。首轮英文断言错把实际`Account scheduling switch off`写成首字母大写短语，修正断言后四组合完整通过，未修改产品文案掩盖错误。
 - 证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/management-review-*；源码/测试/原位指南为交付，JSONL/截图为最小证据，原build/依赖为复用缓存。浏览器及认证HTTP夹具已退出并完成清理回调，历史拒删scratch/data未规避重试或加入提交。本子项不关闭自动差量、增量预算、统一资格执行、D6.2、完整三步和原外部验收；原28项20done/8部分保持。仅同步自有feat，不触发CI/PR合并/发行/生产变更。
+
+### D4.3.16 交付复核：写前影响快照的并发失效
+
+- 审核主体54a8d5e4fac7d64740c149f7af00fc11ca21eeae已推送自有feat，远程ls-remote同SHA。最终交互复核发现，原组件只在`result`存在时刷新，而影响检查开始会清空`result`；因而检查在途时确认认领可跳过刷新，旧请求稍后把页面显示回手动。另有成功写入但状态读失败仍保留写前影响结论的问题。两条新增测试分别真实失败，原错误输出保留在management-review-race-red.txt。
+- 原组件在已完成写入后立即abort并推进影响请求代际、清除写前快照，独立读回后按写前是否已显示或正在读取决定重查；旧请求不论成功/失败均不再覆盖新结果。成功写入但响应内容无效或独立读回失败时保持未知、不显示已生效/旧影响；403/409等确认失败仍保留原草稿恢复语义。无并行实现、API/schema或生产变更。
+- 终稿`pnpm exec vitest run src/components/admin/operations/__tests__/ProcurementProductImpact.spec.ts src/utils/__tests__/procurementCatalog.spec.ts src/utils/__tests__/procurementPolicy.spec.ts src/views/admin/__tests__/GroupsView.procurement.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts`为5套件175pass/0fail，12.46s，组件101条；涵盖迟到成功/失败、写后读失败和未知写响应。vue-tsc、定向ESLint均退出0，Vite49.46s通过；源未改变的后端PG/race、服务及lint证据复用。
+- 既有Edge/API/PG夹具按相同四组合扩展：刻意扣住真实写前影响GET，确认后读取新状态/影响，再释放旧响应，页面仍为审核。共36项/92次真实请求，errors/failed/unexpected均0；写后读失败时确认旧影响节点已移除。HTTP夹具56.702s退出0，浏览器finally停止夹具并清理隔离库。首个重跑因夹具仍在编译而读到旧端口失败，等待原live handle READY后通过，未重建环境。
+- 更新原方案13.3过时的“实施中”行并同步原指南/STATE；只关闭D4.3.16本地子验收，原28项20done/8部分与自动差量/预算/D6.2和生产验收不变。证据继续复用management-review-*，不创建第二任务视图；Linux嵌入构建以本次终稿资产重新核对。
