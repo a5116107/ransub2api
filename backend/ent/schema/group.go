@@ -328,6 +328,10 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("Versioned administrator procurement multiplier interval; does not change sales pricing"),
+		field.JSON("procurement_management", &domain.ProcurementManagement{}).
+			Optional().
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("Explicit review authorization; NULL keeps legacy manual management"),
 	}
 }
 

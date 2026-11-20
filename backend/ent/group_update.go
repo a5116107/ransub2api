@@ -1292,6 +1292,18 @@ func (_u *GroupUpdate) ClearProcurementPolicy() *GroupUpdate {
 	return _u
 }
 
+// SetProcurementManagement sets the "procurement_management" field.
+func (_u *GroupUpdate) SetProcurementManagement(v *domain.ProcurementManagement) *GroupUpdate {
+	_u.mutation.SetProcurementManagement(v)
+	return _u
+}
+
+// ClearProcurementManagement clears the value of the "procurement_management" field.
+func (_u *GroupUpdate) ClearProcurementManagement() *GroupUpdate {
+	_u.mutation.ClearProcurementManagement()
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdate) AddAPIKeyIDs(ids ...int64) *GroupUpdate {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -1625,6 +1637,11 @@ func (_u *GroupUpdate) check() error {
 	if v, ok := _u.mutation.ProcurementPolicy(); ok {
 		if err := v.Validate(); err != nil {
 			return &ValidationError{Name: "procurement_policy", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_policy": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ProcurementManagement(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "procurement_management", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_management": %w`, err)}
 		}
 	}
 	return nil
@@ -2016,6 +2033,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.ProcurementPolicyCleared() {
 		_spec.ClearField(group.FieldProcurementPolicy, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.ProcurementManagement(); ok {
+		_spec.SetField(group.FieldProcurementManagement, field.TypeJSON, value)
+	}
+	if _u.mutation.ProcurementManagementCleared() {
+		_spec.ClearField(group.FieldProcurementManagement, field.TypeJSON)
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -3586,6 +3609,18 @@ func (_u *GroupUpdateOne) ClearProcurementPolicy() *GroupUpdateOne {
 	return _u
 }
 
+// SetProcurementManagement sets the "procurement_management" field.
+func (_u *GroupUpdateOne) SetProcurementManagement(v *domain.ProcurementManagement) *GroupUpdateOne {
+	_u.mutation.SetProcurementManagement(v)
+	return _u
+}
+
+// ClearProcurementManagement clears the value of the "procurement_management" field.
+func (_u *GroupUpdateOne) ClearProcurementManagement() *GroupUpdateOne {
+	_u.mutation.ClearProcurementManagement()
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdateOne) AddAPIKeyIDs(ids ...int64) *GroupUpdateOne {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -3932,6 +3967,11 @@ func (_u *GroupUpdateOne) check() error {
 	if v, ok := _u.mutation.ProcurementPolicy(); ok {
 		if err := v.Validate(); err != nil {
 			return &ValidationError{Name: "procurement_policy", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_policy": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ProcurementManagement(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "procurement_management", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_management": %w`, err)}
 		}
 	}
 	return nil
@@ -4340,6 +4380,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.ProcurementPolicyCleared() {
 		_spec.ClearField(group.FieldProcurementPolicy, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.ProcurementManagement(); ok {
+		_spec.SetField(group.FieldProcurementManagement, field.TypeJSON, value)
+	}
+	if _u.mutation.ProcurementManagementCleared() {
+		_spec.ClearField(group.FieldProcurementManagement, field.TypeJSON)
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{

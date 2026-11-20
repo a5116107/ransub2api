@@ -1,10 +1,40 @@
-import type { ProcurementManagementReview, ProcurementProductImpact, ProcurementWriterReview } from '@/api/admin/procurementCatalog'
+import type { ProcurementManagementPreview, ProcurementManagementState, ProcurementManagementReview, ProcurementProductImpact, ProcurementWriterReview } from '@/api/admin/procurementCatalog'
 
 const impactPriceClasses = [
   'admitted', 'rejected_threshold', 'rejected_procurement_range', 'rejected_procurement_source',
   'rejected_procurement_bucket', 'rejected_procurement_catalog_unavailable', 'rejected_procurement_policy_unavailable',
   'rejected_invalid_account_rate', 'rejected_upstream_rate_unavailable', 'rejected_account_sale_rate_mismatch'
 ] as const
+
+export function validProcurementManagementState(value: ProcurementManagementState, groupID: number): boolean {
+  return !!value && value.version === 1 && value.group_id === groupID &&
+    [value.revision, value.current_owned, value.retained_owned, value.manual_memberships].every(count) &&
+    ['manual', 'review'].includes(value.mode) && (value.mode !== 'manual' || value.current_owned === 0) &&
+    (value.revision !== 0 || value.mode === 'manual')
+}
+
+export function validProcurementManagementPreview(value: ProcurementManagementPreview, groupID: number, ids: number[]): boolean {
+  if (!value || value.version !== 1 || !validProcurementManagementState(value.state, groupID) ||
+    !/^[a-f0-9]{64}$/.test(value.fingerprint) || !Number.isFinite(Date.parse(value.observed_at)) ||
+    Date.parse(value.expires_at) - Date.parse(value.observed_at) !== 120000 || typeof value.can_confirm !== 'boolean' ||
+    !Array.isArray(value.memberships) || value.memberships.length !== ids.length || !ids.length || ids.length > 1000 ||
+    new Set(ids).size !== ids.length || !value.review?.source_inventory || !Array.isArray(value.review.source_inventory.accounts) || !value.review.writer_review ||
+    !validManagementReview(value.review, groupID, value.review.source_inventory.accounts.filter(a => a.in_product).length) ||
+    value.review.mode !== value.state.mode) return false
+  const reasons = ['membership_missing', 'source_not_approved', 'inventory_incomplete', 'quality_membership_conflict', 'quality_unknown', 'native_membership_conflict', 'native_unknown', 'ownership_unknown']
+  const protections = ['quality_protection', 'judge_dependency', 'native_protection', 'manual_restriction']
+  const seen = new Set<number>()
+  for (const row of value.memberships) {
+    if (!row || !ids.includes(row.account_id) || seen.has(row.account_id) || typeof row.account_name !== 'string' || typeof row.claimable !== 'boolean' ||
+      !Array.isArray(row.reasons) || row.reasons.some(r => !reasons.includes(r)) || !Array.isArray(row.protections) || row.protections.some(r => !protections.includes(r)) ||
+      row.claimable !== (row.reasons.length === 0)) return false
+    if (row.ownership !== null && (!row.ownership || row.ownership.version !== 1 || row.ownership.kind !== 'procurement' || !count(row.ownership.revision) || !row.ownership.revision)) return false
+    const account = value.review.source_inventory.accounts.find(a => a.account_id === row.account_id)
+    if (row.claimable && (!account?.in_product || account.in_approved_sources !== true || !value.review.inventory_complete || !value.review.writer_review.inventory_complete)) return false
+    seen.add(row.account_id)
+  }
+  return value.can_confirm === value.memberships.every(m => m.claimable)
+}
 const finiteRate = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
 
@@ -43,7 +73,7 @@ function validWriterReview(review: ProcurementWriterReview): boolean {
 }
 
 function validManagementReview(review: ProcurementManagementReview, groupID: number, boundAccounts: number): boolean {
-  if (!review || review.version !== 1 || review.mode !== 'manual' || !['current_bindings_and_saved_rule_targets', 'current_bindings_and_approved_sources_and_saved_rule_targets'].includes(review.scope) ||
+  if (!review || review.version !== 1 || !['manual', 'review'].includes(review.mode) || !['current_bindings_and_saved_rule_targets', 'current_bindings_and_approved_sources_and_saved_rule_targets'].includes(review.scope) ||
     typeof review.inventory_complete !== 'boolean' || !count(review.rules_examined) || review.rules_examined > 1000 ||
     ![review.conflicting_rules, review.protection_rules, review.unknown_rules, review.judge_dependency_rules].every(count) ||
     !Array.isArray(review.rules) || review.rules.length !== review.rules_examined ||

@@ -99,6 +99,30 @@ export async function previewProcurementProductImpact(id: number, signal?: Abort
 export async function readProcurementCatalog(signal?: AbortSignal): Promise<ProcurementCatalogSnapshot> {
   return (await apiClient.get<ProcurementCatalogSnapshot>('/admin/upstream-procurement/catalog', { signal })).data
 }
+
+export interface ProcurementManagementState {
+  version: 1; group_id: number; revision: number; mode: 'manual' | 'review'
+  current_owned: number; retained_owned: number; manual_memberships: number
+}
+export interface ProcurementMembershipReview {
+  account_id: number; account_name: string; ownership: { version: 1; kind: 'procurement'; revision: number } | null
+  claimable: boolean; reasons: string[]; protections: string[]
+}
+export interface ProcurementManagementPreview {
+  version: 1; state: ProcurementManagementState; observed_at: string; expires_at: string; fingerprint: string
+  can_confirm: boolean; memberships: ProcurementMembershipReview[]; review: ProcurementManagementReview
+}
+export type ProcurementManagementCommand = { version: 1; mode: 'manual'; expected_revision: number } |
+  { version: 1; mode: 'review'; expected_revision: number; account_ids: number[]; observed_at: string; fingerprint: string }
+export async function readProcurementManagement(id: number, signal?: AbortSignal): Promise<ProcurementManagementState> {
+  return (await apiClient.get<ProcurementManagementState>(`/admin/upstream-procurement/products/${id}/management`, { signal })).data
+}
+export async function previewProcurementManagement(id: number, account_ids: number[], signal?: AbortSignal): Promise<ProcurementManagementPreview> {
+  return (await apiClient.post<ProcurementManagementPreview>(`/admin/upstream-procurement/products/${id}/management/preview`, { account_ids }, { signal })).data
+}
+export async function saveProcurementManagement(id: number, command: ProcurementManagementCommand, signal?: AbortSignal): Promise<ProcurementManagementState> {
+  return (await apiClient.put<ProcurementManagementState>(`/admin/upstream-procurement/products/${id}/management`, command, { signal })).data
+}
 export async function saveProcurementCatalog(catalog: ProcurementCatalog, signal?: AbortSignal): Promise<ProcurementCatalogSnapshot> {
   return (await apiClient.put<ProcurementCatalogSnapshot>('/admin/upstream-procurement/catalog', catalog, { signal })).data
 }

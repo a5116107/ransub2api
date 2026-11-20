@@ -11,9 +11,38 @@
           :searchable="true" :remote="true" :loading="productsBusy" :empty-text="t(`${p}.noProducts`)" aria-describedby="impact-product-help"
           @open="openProducts" @search="loadProducts" />
       </div>
-      <button type="submit" class="btn btn-secondary" :disabled="busy || !productID" data-testid="product-impact-preview">{{ t(`${p}.${busy ? 'loading' : 'preview'}`) }}</button>
+      <button type="submit" class="btn btn-secondary" :disabled="busy || managementBusy || !productID" data-testid="product-impact-preview">{{ t(`${p}.${busy ? 'loading' : 'preview'}`) }}</button>
     </form>
     <p id="impact-product-help" class="text-xs leading-5 text-gray-500">{{ t(`${p}.readOnly`) }}</p>
+    <section v-if="productID" class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="management-authorization-title" data-testid="management-authorization">
+      <h3 id="management-authorization-title" class="font-medium">{{ t(`${p}.authorization.title`) }}</h3>
+      <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.authorization.boundary`) }}</p>
+      <p v-if="managementState" role="status" data-testid="management-state">{{ t(`${p}.authorization.modes.${managementState.mode}`) }} · {{ t(`${p}.authorization.counts`, { revision: managementState.revision, current: managementState.current_owned, retained: managementState.retained_owned, manual: managementState.manual_memberships }) }}</p>
+      <p v-else class="text-sm">{{ t(`${p}.authorization.unchecked`) }}</p>
+      <p v-if="managementError" role="alert" class="text-sm text-amber-800 dark:text-amber-300" data-testid="management-error">{{ t(`${p}.authorization.${managementError}`) }}</p>
+      <p v-if="managementSaved" role="status" class="text-sm text-primary-700 dark:text-primary-300" data-testid="management-saved">{{ t(`${p}.authorization.saved`) }}</p>
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="btn btn-secondary" :disabled="managementBusy" data-testid="management-refresh" @click="managementAction('read')">{{ t(`${p}.authorization.${managementBusy ? 'loading' : 'refresh'}`) }}</button>
+        <button type="button" class="btn btn-secondary" :disabled="managementBusy || !managementState || !selectedMemberships.length" data-testid="management-preview" @click="managementAction('preview')">{{ t(`${p}.authorization.preview`, { count: selectedMemberships.length }) }}</button>
+        <button v-if="managementState?.mode === 'review'" type="button" class="btn btn-secondary" :disabled="managementBusy" data-testid="management-manual" @click="managementAction('manual')">{{ t(`${p}.authorization.manual`) }}</button>
+      </div>
+      <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.authorization.choose`) }}</p>
+      <div v-if="managementPreview" class="min-w-0 space-y-3 rounded-lg bg-gray-50 p-3 dark:bg-dark-800" data-testid="management-preview-result">
+        <p class="text-sm font-medium">{{ t(`${p}.authorization.${managementPreview.can_confirm ? 'ready' : 'blocked'}`) }}</p>
+        <p class="break-all text-xs">{{ t(`${p}.authorization.expires`, { time: managementPreview.expires_at }) }}</p>
+        <ul class="min-w-0 space-y-2 text-sm">
+          <li v-for="row in managementPreview.memberships" :key="row.account_id" class="break-words" data-testid="management-preview-row">
+            <p class="font-medium">{{ row.account_name }} · #{{ row.account_id }} · {{ t(`${p}.authorization.${row.claimable ? 'claimable' : 'notClaimable'}`) }}</p>
+            <p>{{ t(`${p}.authorization.${row.ownership ? 'retainedOwner' : 'manualOwner'}`, { revision: row.ownership?.revision }) }}</p>
+            <p v-for="reason in row.reasons" :key="reason" class="text-amber-800 dark:text-amber-300">{{ t(`${p}.authorization.reasons.${reason}`) }}</p>
+            <p v-for="protection in row.protections" :key="protection">{{ t(`${p}.authorization.protections.${protection}`) }}</p>
+          </li>
+        </ul>
+        <label class="flex items-start gap-2 text-sm"><input v-model="managementConsent" type="checkbox" class="mt-1" :disabled="managementBusy || !managementPreview.can_confirm || managementExpired" data-testid="management-consent" /><span>{{ t(`${p}.authorization.consent`) }}</span></label>
+        <p v-if="managementExpired" class="text-sm text-amber-800 dark:text-amber-300">{{ t(`${p}.authorization.expired`) }}</p>
+        <button type="button" class="btn btn-primary" :disabled="managementBusy || !managementPreview.can_confirm || !managementConsent || managementExpired" data-testid="management-confirm" @click="managementAction('review')">{{ t(`${p}.authorization.confirm`) }}</button>
+      </div>
+    </section>
     <p v-if="productsTotal > products.length" class="text-xs text-gray-500">{{ t(`${p}.searchMore`, { count: products.length, total: productsTotal }) }}</p>
     <div v-if="productsError" class="flex flex-wrap items-center gap-2 text-sm" role="alert">
       <span class="text-red-600 dark:text-red-400">{{ t(`${p}.productsFailed`) }}</span>
@@ -68,7 +97,7 @@
         <h3 id="product-management-title" class="font-medium">{{ t(`${p}.review.title`) }}</h3>
         <p v-if="!result.management_review" class="text-sm text-gray-500">{{ t(`${p}.review.legacy`) }}</p>
         <template v-else>
-          <p class="rounded-lg bg-gray-50 p-3 text-sm leading-6 dark:bg-dark-800" data-testid="product-management-mode">{{ t(`${p}.review.manual`) }}</p>
+          <p class="rounded-lg bg-gray-50 p-3 text-sm leading-6 dark:bg-dark-800" data-testid="product-management-mode">{{ t(`${p}.review.${result.management_review.mode === 'review' ? 'reviewMode' : 'manual'}`) }}</p>
           <section class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="product-sources-title" data-testid="product-source-inventory">
             <h4 id="product-sources-title" class="text-sm font-medium">{{ t(`${p}.review.sources.title`) }}</h4>
             <p v-if="!sourceInventory" class="text-sm text-gray-500">{{ t(`${p}.review.sources.legacy`) }}</p>
@@ -86,6 +115,7 @@
                     <p class="break-words text-sm font-medium">{{ account.name }} · #{{ account.account_id }}</p>
                     <p class="break-words">{{ t(`${p}.review.sources.${account.in_product ? 'bound' : 'unbound'}`) }} · {{ t(`${p}.review.sources.${account.in_approved_sources === null ? 'unconfirmed' : account.in_approved_sources ? 'approved' : 'outside'}`) }}</p>
                     <p class="break-words text-gray-500">{{ t(`${p}.review.sources.nativeState`, { platform: account.platform, status: nativeStatus(account.status) }) }} · {{ t(`${p}.review.sources.${account.schedulable ? 'schedulingOn' : 'schedulingOff'}`) }}</p>
+                    <label v-if="managementState && account.in_product && account.in_approved_sources === true" class="flex items-start gap-2 text-sm"><input v-model="selectedMemberships" type="checkbox" :value="account.account_id" :disabled="managementBusy" :data-testid="`management-select-${account.account_id}`" /><span>{{ t(`${p}.authorization.select`, { name: account.name }) }}</span></label>
                   </li>
                 </ul>
                 <nav v-if="sourceInventory.accounts.length > pageSize" class="flex flex-wrap items-center gap-3 text-sm" :aria-label="t(`${p}.review.sources.pages`)">
@@ -172,8 +202,8 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
-import { previewProcurementProductImpact, type ProcurementProductImpact } from '@/api/admin/procurementCatalog'
-import { validProcurementProductImpact } from '@/utils/procurementProductImpact'
+import { previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementPreview, type ProcurementManagementState, type ProcurementProductImpact } from '@/api/admin/procurementCatalog'
+import { validProcurementProductImpact, validProcurementManagementState, validProcurementManagementPreview } from '@/utils/procurementProductImpact'
 import type { AdminGroup } from '@/types'
 
 const { t } = useI18n(), p = 'upstreamOps.productImpact'
@@ -183,6 +213,63 @@ const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), er
 let alive = true, productsGeneration = 0, previewGeneration = 0, lastSearch = ''
 let productsController: AbortController | undefined, previewController: AbortController | undefined
 const selected = ref<AdminGroup | null>(null)
+const managementState = ref<ProcurementManagementState | null>(null), managementPreview = ref<ProcurementManagementPreview | null>(null)
+const selectedMemberships = ref<number[]>([]), managementConsent = ref(false), managementBusy = ref(false), managementError = ref(''), managementSaved = ref(false)
+const managementClock = ref(Date.now()), managementReceived = ref(0)
+let managementGeneration = 0, managementController: AbortController | undefined
+const managementExpired = computed(() => managementClock.value >= (managementPreview.value ? managementReceived.value + Date.parse(managementPreview.value.expires_at) - Date.parse(managementPreview.value.observed_at) : Infinity))
+const managementTimer = setInterval(() => { managementClock.value = Date.now() }, 1000)
+watch(selectedMemberships, () => { managementPreview.value = null; managementConsent.value = false; managementSaved.value = false }, { deep: true })
+watch(productID, () => {
+  managementGeneration++; managementController?.abort()
+  managementState.value = null; managementPreview.value = null; selectedMemberships.value = []; managementConsent.value = false
+  managementError.value = ''; managementSaved.value = false; managementBusy.value = false
+  if (productID.value) void managementAction('read')
+})
+async function managementAction(action: 'read' | 'preview' | 'review' | 'manual') {
+  if (!productID.value || managementBusy.value) return
+  const id = productID.value, generation = ++managementGeneration, ids = selectedMemberships.value.slice()
+  const draft = managementPreview.value, state = managementState.value
+  if (action === 'review' && (!draft?.can_confirm || !managementConsent.value || managementExpired.value)) return
+  if (action === 'manual' && !state) return
+  managementController?.abort(); managementController = new AbortController()
+  const signal = managementController.signal
+  managementBusy.value = true; managementError.value = ''; managementSaved.value = false
+  let saved = false
+  try {
+    if (action === 'preview') {
+      managementPreview.value = null; managementConsent.value = false
+      const next = await previewProcurementManagement(id, ids, signal)
+      if (!validProcurementManagementPreview(next, id, ids)) throw new Error('invalid review preview')
+      if (alive && generation === managementGeneration) {
+        managementPreview.value = next; managementState.value = next.state
+        managementReceived.value = Date.now(); managementClock.value = Date.now()
+      }
+    } else {
+      let written: ProcurementManagementState | undefined
+      if (action === 'review' && draft) written = await saveProcurementManagement(id, { version: 1, mode: 'review', expected_revision: draft.state.revision, account_ids: ids, observed_at: draft.observed_at, fingerprint: draft.fingerprint }, signal)
+      if (action === 'manual' && state) written = await saveProcurementManagement(id, { version: 1, mode: 'manual', expected_revision: state.revision }, signal)
+      if (written && !validProcurementManagementState(written, id)) throw new Error('invalid review save')
+      saved = !!written
+      const next = await readProcurementManagement(id, signal)
+      if (!validProcurementManagementState(next, id)) throw new Error('invalid review state')
+      if (alive && generation === managementGeneration) {
+        managementState.value = next; managementPreview.value = null; managementConsent.value = false
+        managementSaved.value = saved && written?.revision === next.revision && written?.mode === next.mode
+        if (saved && !managementSaved.value) managementError.value = 'conflict'
+        if (managementSaved.value && result.value) await preview()
+      }
+    }
+  } catch (e) {
+    if (alive && generation === managementGeneration) {
+      const status = (e as { status?: number })?.status
+      managementError.value = saved ? 'savedReadFailed' : status === 409 ? 'conflict' : status === 403 ? 'forbidden' : 'failed'
+      managementPreview.value = null; managementConsent.value = false
+      if (saved || action === 'read') managementState.value = null
+    }
+  } finally { if (alive && generation === managementGeneration) managementBusy.value = false }
+}
+onBeforeUnmount(() => { clearInterval(managementTimer); managementGeneration++; managementController?.abort() })
 const options = computed(() => {
   const rows = products.value.slice()
   if (selected.value && !rows.some(row => row.id === selected.value?.id)) rows.unshift(selected.value)

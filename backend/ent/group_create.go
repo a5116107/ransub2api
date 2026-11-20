@@ -974,6 +974,12 @@ func (_c *GroupCreate) SetProcurementPolicy(v *domain.ProcurementPolicy) *GroupC
 	return _c
 }
 
+// SetProcurementManagement sets the "procurement_management" field.
+func (_c *GroupCreate) SetProcurementManagement(v *domain.ProcurementManagement) *GroupCreate {
+	_c.mutation.SetProcurementManagement(v)
+	return _c
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_c *GroupCreate) AddAPIKeyIDs(ids ...int64) *GroupCreate {
 	_c.mutation.AddAPIKeyIDs(ids...)
@@ -1526,6 +1532,11 @@ func (_c *GroupCreate) check() error {
 			return &ValidationError{Name: "procurement_policy", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_policy": %w`, err)}
 		}
 	}
+	if v, ok := _c.mutation.ProcurementManagement(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "procurement_management", err: fmt.Errorf(`ent: validator failed for field "Group.procurement_management": %w`, err)}
+		}
+	}
 	return nil
 }
 
@@ -1840,6 +1851,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ProcurementPolicy(); ok {
 		_spec.SetField(group.FieldProcurementPolicy, field.TypeJSON, value)
 		_node.ProcurementPolicy = value
+	}
+	if value, ok := _c.mutation.ProcurementManagement(); ok {
+		_spec.SetField(group.FieldProcurementManagement, field.TypeJSON, value)
+		_node.ProcurementManagement = value
 	}
 	if nodes := _c.mutation.APIKeysIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -3128,6 +3143,24 @@ func (u *GroupUpsert) UpdateProcurementPolicy() *GroupUpsert {
 // ClearProcurementPolicy clears the value of the "procurement_policy" field.
 func (u *GroupUpsert) ClearProcurementPolicy() *GroupUpsert {
 	u.SetNull(group.FieldProcurementPolicy)
+	return u
+}
+
+// SetProcurementManagement sets the "procurement_management" field.
+func (u *GroupUpsert) SetProcurementManagement(v *domain.ProcurementManagement) *GroupUpsert {
+	u.Set(group.FieldProcurementManagement, v)
+	return u
+}
+
+// UpdateProcurementManagement sets the "procurement_management" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateProcurementManagement() *GroupUpsert {
+	u.SetExcluded(group.FieldProcurementManagement)
+	return u
+}
+
+// ClearProcurementManagement clears the value of the "procurement_management" field.
+func (u *GroupUpsert) ClearProcurementManagement() *GroupUpsert {
+	u.SetNull(group.FieldProcurementManagement)
 	return u
 }
 
@@ -4499,6 +4532,27 @@ func (u *GroupUpsertOne) UpdateProcurementPolicy() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearProcurementPolicy() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearProcurementPolicy()
+	})
+}
+
+// SetProcurementManagement sets the "procurement_management" field.
+func (u *GroupUpsertOne) SetProcurementManagement(v *domain.ProcurementManagement) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetProcurementManagement(v)
+	})
+}
+
+// UpdateProcurementManagement sets the "procurement_management" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateProcurementManagement() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateProcurementManagement()
+	})
+}
+
+// ClearProcurementManagement clears the value of the "procurement_management" field.
+func (u *GroupUpsertOne) ClearProcurementManagement() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearProcurementManagement()
 	})
 }
 
@@ -6036,6 +6090,27 @@ func (u *GroupUpsertBulk) UpdateProcurementPolicy() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearProcurementPolicy() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearProcurementPolicy()
+	})
+}
+
+// SetProcurementManagement sets the "procurement_management" field.
+func (u *GroupUpsertBulk) SetProcurementManagement(v *domain.ProcurementManagement) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetProcurementManagement(v)
+	})
+}
+
+// UpdateProcurementManagement sets the "procurement_management" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateProcurementManagement() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateProcurementManagement()
+	})
+}
+
+// ClearProcurementManagement clears the value of the "procurement_management" field.
+func (u *GroupUpsertBulk) ClearProcurementManagement() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearProcurementManagement()
 	})
 }
 

@@ -4050,3 +4050,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 新归属合同18pass；`go test -race ./internal/domain -count=1`通过1.655s；`go test ./migrations -count=1`通过0.452s。真实管理员HTTP另双轮2pass/7.199s，401/403、普通保存保留归属、移出重加不复活均验证；已包含于最终1732回归。真实DDL验证两次应用、旧行内容及ctid/xmin不变、非法值拒绝、事务回滚移除新列且恢复旧行；不是生产迁移或旧二进制运行证明。
 - 终稿Go vet两包退出0、113.9s；补HTTP断言后仓储vet再次退出0、83.14s。兼容golangci-lint v2.15.0-go1.27.4，fast-only/new-from-rev=7fa9d754b/unit,integration/两包终稿退出0、6.23s，真实0 issues.，非全仓lint。显式GOOS=linux/GOARCH=amd64/CGO_ENABLED=0的`go build -p 1 -tags embed -o NUL ./cmd/server`退出0、392.63s；测试断言后续修改不参与该应用构建。前端未改，沿用D4.3.14同源码UI406/浏览器76证据，未重复构建或冒充新浏览器/生产验收。
 - 证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/membership-ownership-*。所有本轮验证进程已退出，任务18761预览已停止、监听0；未新建clone/worktree/依赖树或额外构建目录，原共享服务/缓存保留。历史data及已拒删scratch不重试、不纳入提交。本项仅数据与原路径保全，明确认领/CAS/模式/原保护协调、自动重算、增量预算及D6.2/完整三步仍待；原28项20done/8部分不变，无CI/发布/生产改动。
+
+## 2026-11-20 D4.3.16 审核授权、明确认领与冲突恢复
+
+- 在原Group新增可空`procurement_management`及迁移350，版本化保存manual/review及修订；SQL NULL保持旧产品手动/修订0。原关系ownership只在管理员明确选择已有且批准来源内的关系并确认后更新；非所选关系保留原归属，回手动不抹除归属。拒绝automatic及未知合同；本项不新增/删除成员，不改计划、价格门、保护或检测额度，不发出付费请求。
+- 原产品影响页/管理员API接读取、预览和保存。预览包含原规则/原生写入者冲突、原保护、当前修订、2分钟有效期和配置内容摘要。确认以原产品/账号锁、serializable事务、同修订原内容、数据库时钟复核及事务outbox完成CAS；并发仅一项成功，409保留选择并要求重新预览。摘要覆盖原策略/来源/关系/凭据与规则状态，不向响应泄露凭据；业务用量刷新不无故使审核失效。读取及回手动独立于损坏的目录/来源库存。
+- 真实PG/race专项`go test -json -race -vet=off -p 1 -tags unit,integration -overlay H:/Root/DevCache/tmp/sub2api-upstream-raw-cache/overlay.json ./internal/repository -run '^TestProcurementManagement' -count=2 -timeout=6m`为98条pass/0fail/0skip，包139.368s；含旧行、认领/保留/复制、同修订变更、到期/未来时刻、取消/锁后变更、通知回滚、原规则冲突及DDL幂等/约束/事务回退。服务/handler扩大386条、隔离库仓储扩大1030条pass/0fail/0skip，分别14.143/1.2s及179.861s；父子/重复轮次不冒充独立场景。
+- 扩大回归首轮因旧Redis缺ACL及共享库历史行干扰失败。改用既有Redis8:56442及独立数据库后通过，原断言/skip未改。仅search_path隔离会让原迁移历史表检查失配，记录失败后使用独立数据库；运行后隔离库已释放，不新建生产依赖。原共享服务、历史数据及宿主拒删保留。
+- 前端原相关五套件169pass后补两条读回/当前状态回归，终稿组件97pass、目录15/分组28/locale3本轮143pass，未改策略28pass复用匹配源码证据，共171条，不重复累计组件运行。vue-tsc、定向ESLint和Go vet退出0；兼容Go1.27.4的golangci-lint终稿`run --fast-only --new-from-rev=HEAD --build-tags=unit,integration ./internal/repository ./internal/service`退出0、`0 issues.`。Linux amd64嵌入构建退出0；Vite终稿47.98s通过，原Browserslist/大chunk提示保留。
+- Edge真实管理员认证API/独立PG，中英1440/390共32项、88次真实请求，页面错误/失败请求/未知API均0。键盘选择→预览→明确确认→独立GET/刷新/重载一致，真实409恢复、503重试、成功写入但读回失败不报生效、人工停调保留及无横向溢出均通过；目检中文手机与英文桌面截图。外壳/旧统计是夹具，不宣称完整生产E2E。首轮英文断言错把实际`Account scheduling switch off`写成首字母大写短语，修正断言后四组合完整通过，未修改产品文案掩盖错误。
+- 证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/management-review-*；源码/测试/原位指南为交付，JSONL/截图为最小证据，原build/依赖为复用缓存。浏览器及认证HTTP夹具已退出并完成清理回调，历史拒删scratch/data未规避重试或加入提交。本子项不关闭自动差量、增量预算、统一资格执行、D6.2、完整三步和原外部验收；原28项20done/8部分保持。仅同步自有feat，不触发CI/PR合并/发行/生产变更。

@@ -164,6 +164,8 @@ type Group struct {
 	ProfitSafetyBuffer float64 `json:"profit_safety_buffer,omitempty"`
 	// Versioned administrator procurement multiplier interval; does not change sales pricing
 	ProcurementPolicy *domain.ProcurementPolicy `json:"procurement_policy,omitempty"`
+	// Explicit review authorization; NULL keeps legacy manual management
+	ProcurementManagement *domain.ProcurementManagement `json:"procurement_management,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the GroupQuery when eager-loading is set.
 	Edges        GroupEdges `json:"edges"`
@@ -270,7 +272,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case group.FieldI18n, group.FieldVideoModelPrices, group.FieldModelPricing, group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig, group.FieldModelAllowlist, group.FieldCodexModelsManifestConfig, group.FieldReasoningEffortMappings, group.FieldProcurementPolicy:
+		case group.FieldI18n, group.FieldVideoModelPrices, group.FieldModelPricing, group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig, group.FieldModelAllowlist, group.FieldCodexModelsManifestConfig, group.FieldReasoningEffortMappings, group.FieldProcurementPolicy, group.FieldProcurementManagement:
 			values[i] = new([]byte)
 		case group.FieldPeakRateEnabled, group.FieldIsExclusive, group.FieldAllowImageGeneration, group.FieldAllowBatchImageGeneration, group.FieldImageCountBilling, group.FieldImageRateIndependent, group.FieldVideoRateIndependent, group.FieldLongContextPricingEnabled, group.FieldClaudeCodeOnly, group.FieldBlockSubagents, group.FieldCodexCliOnly, group.FieldStreamOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldAllowLive, group.FieldForceOpenaiFast, group.FieldFreeOpenaiFast, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet, group.FieldProfitControlEnabled:
 			values[i] = new(sql.NullBool)
@@ -774,6 +776,14 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field procurement_policy: %w", err)
 				}
 			}
+		case group.FieldProcurementManagement:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field procurement_management", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.ProcurementManagement); err != nil {
+					return fmt.Errorf("unmarshal field procurement_management: %w", err)
+				}
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -1103,6 +1113,9 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("procurement_policy=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ProcurementPolicy))
+	builder.WriteString(", ")
+	builder.WriteString("procurement_management=")
+	builder.WriteString(fmt.Sprintf("%v", _m.ProcurementManagement))
 	builder.WriteByte(')')
 	return builder.String()
 }

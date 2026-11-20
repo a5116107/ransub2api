@@ -113,3 +113,71 @@ func (h *ChannelHandler) ProcurementClassificationPreview(c *gin.Context) {
 	}
 	response.Success(c, out)
 }
+
+// Separate authorization from price simulation and automatic execution. Error
+// responses never expose stored configuration, SQL details or credentials.
+func (h *ChannelHandler) ProcurementManagement(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 || id > 9007199254740991 {
+		response.ErrorFrom(c, service.ErrProcurementManagementInvalid)
+		return
+	}
+	repo, err := h.channelService.ProcurementManagementRepository()
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	respondError := func(err error) {
+		switch {
+		case errors.Is(err, service.ErrProcurementManagementInvalid), errors.Is(err, service.ErrProcurementManagementConflict),
+			errors.Is(err, service.ErrGroupNotFound), errors.Is(err, service.ErrObserverScope), errors.Is(err, service.ErrProcurementProductImpactTooLarge):
+			response.ErrorFrom(c, err)
+		default:
+			response.ErrorFrom(c, service.ErrProcurementManagementUnavailable)
+		}
+	}
+	if c.Request.Method == http.MethodGet {
+		out, err := repo.ReadProcurementManagement(ctx, id)
+		if err != nil {
+			respondError(err)
+			return
+		}
+		response.Success(c, out)
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 65536))
+	if err != nil {
+		respondError(service.ErrProcurementManagementInvalid)
+		return
+	}
+	if c.Request.Method == http.MethodPost {
+		ids, err := service.ParseProcurementManagementPreview(raw)
+		if err != nil {
+			respondError(err)
+			return
+		}
+		out, err := repo.PreviewProcurementManagement(ctx, id, ids)
+		if err != nil {
+			respondError(err)
+			return
+		}
+		response.Success(c, out)
+		return
+	}
+	command, err := service.ParseProcurementManagementCommand(raw)
+	if err != nil {
+		respondError(err)
+		return
+	}
+	middleware.SetAuditAction(c, "admin.upstream_procurement.management")
+	middleware.SetAuditExtra(c, map[string]any{"group_id": id, "mode": command.Mode, "expected_revision": command.ExpectedRevision, "selected_count": len(command.AccountIDs)})
+	out, err := repo.SaveProcurementManagement(ctx, id, command)
+	if err != nil {
+		respondError(err)
+		return
+	}
+	response.Success(c, out)
+}

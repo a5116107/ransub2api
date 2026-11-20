@@ -32,43 +32,11 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	client := dbent.NewClient(dbent.Driver(entsql.NewDriver(dialect.Postgres, entsql.Conn{ExecQuerier: tx})))
-	entity, err := client.Group.Query().Where(dbgroup.IDEQ(groupID), dbgroup.DeletedAtIsNil()).Only(ctx)
-	if dbent.IsNotFound(err) {
-		return nil, service.ErrGroupNotFound
-	}
+	group, accounts, review, err := loadProcurementProductReview(ctx, tx, groupID)
 	if err != nil {
 		return nil, err
 	}
-	group := groupEntityToService(entity)
-	group.ProcurementCatalog, err = loadProcurementCatalog(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	// Preserve an unavailable source authority as unknown in the original price
-	// verdict, but never suppress database/cancellation errors as empty sources.
-	group.ProcurementSources, err = loadProcurementSources(ctx, tx, group)
-	if err != nil && !errors.Is(err, service.ErrProcurementPolicyInvalid) {
-		return nil, err
-	}
-	entities, err := client.Account.Query().Where(dbaccount.DeletedAtIsNil(),
-		dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(groupID))).Order(dbaccount.ByID()).
-		Limit(service.ProcurementProductImpactAccountLimit + 1).All(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if len(entities) > service.ProcurementProductImpactAccountLimit {
-		return nil, service.ErrProcurementProductImpactTooLarge
-	}
-	accounts, err := newAccountRepositoryWithSQL(client, tx, nil).accountsToService(ctx, entities)
-	if err != nil {
-		return nil, err
-	}
-	out := &service.ProcurementProductImpact{Version: 1, GroupStatus: group.Status, GateEnabled: group.ProfitControlEnabled, BoundAccounts: len(accounts)}
-	out.ManagementReview, err = loadProcurementManagementReview(ctx, tx, group, accounts)
-	if err != nil {
-		return nil, err
-	}
+	out := &service.ProcurementProductImpact{Version: 1, GroupStatus: group.Status, GateEnabled: group.ProfitControlEnabled, BoundAccounts: len(accounts), ManagementReview: review}
 	var minOverride sql.NullFloat64
 	if err = tx.QueryRowContext(ctx, `SELECT min(rate_multiplier)::float8,count(*) FROM user_group_rate_multipliers
 	 WHERE group_id=$1 AND rate_multiplier>=0 AND rate_multiplier NOT IN ('NaN'::numeric,'Infinity'::numeric)`, groupID).Scan(&minOverride, &out.UserOverrideCount); err != nil {
@@ -97,6 +65,49 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 		return nil, err
 	}
 	return out, nil
+}
+
+func loadProcurementProductReview(ctx context.Context, tx *sql.Tx, groupID int64) (*service.Group, []service.Account, *service.ProcurementManagementReview, error) {
+	client := dbent.NewClient(dbent.Driver(entsql.NewDriver(dialect.Postgres, entsql.Conn{ExecQuerier: tx})))
+	entity, err := client.Group.Query().Where(dbgroup.IDEQ(groupID), dbgroup.DeletedAtIsNil()).Only(ctx)
+	if dbent.IsNotFound(err) {
+		return nil, nil, nil, service.ErrGroupNotFound
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	group := groupEntityToService(entity)
+	group.ProcurementCatalog, err = loadProcurementCatalog(ctx, tx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Preserve an unavailable source authority as unknown in the original price
+	// verdict, but never suppress database/cancellation errors as empty sources.
+	group.ProcurementSources, err = loadProcurementSources(ctx, tx, group)
+	if err != nil && !errors.Is(err, service.ErrProcurementPolicyInvalid) {
+		return nil, nil, nil, err
+	}
+	entities, err := client.Account.Query().Where(dbaccount.DeletedAtIsNil(),
+		dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(groupID))).Order(dbaccount.ByID()).
+		Limit(service.ProcurementProductImpactAccountLimit + 1).All(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(entities) > service.ProcurementProductImpactAccountLimit {
+		return nil, nil, nil, service.ErrProcurementProductImpactTooLarge
+	}
+	accounts, err := newAccountRepositoryWithSQL(client, tx, nil).accountsToService(ctx, entities)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	review, err := loadProcurementManagementReview(ctx, tx, group, accounts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if entity.ProcurementManagement != nil {
+		review.Mode = entity.ProcurementManagement.Mode
+	}
+	return group, accounts, review, nil
 }
 
 const procurementManagementRuleLimit = 1000

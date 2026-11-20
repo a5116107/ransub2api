@@ -160,6 +160,8 @@ const (
 	FieldProfitSafetyBuffer = "profit_safety_buffer"
 	// FieldProcurementPolicy holds the string denoting the procurement_policy field in the database.
 	FieldProcurementPolicy = "procurement_policy"
+	// FieldProcurementManagement holds the string denoting the procurement_management field in the database.
+	FieldProcurementManagement = "procurement_management"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
 	EdgeAPIKeys = "api_keys"
 	// EdgeRedeemCodes holds the string denoting the redeem_codes edge name in mutations.
@@ -307,6 +309,7 @@ var Columns = []string{
 	FieldProfitMinMargin,
 	FieldProfitSafetyBuffer,
 	FieldProcurementPolicy,
+	FieldProcurementManagement,
 }
 
 var (

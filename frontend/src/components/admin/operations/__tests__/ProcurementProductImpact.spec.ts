@@ -3,14 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProcurementProductImpactView from '../ProcurementProductImpact.vue'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
-import { previewProcurementProductImpact, type ProcurementManagementReview, type ProcurementProductImpact, type ProcurementSourceInventory, type ProcurementWriterReview } from '@/api/admin/procurementCatalog'
-import { validProcurementProductImpact } from '@/utils/procurementProductImpact'
+import { previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementState, type ProcurementManagementPreview, type ProcurementManagementReview, type ProcurementProductImpact, type ProcurementSourceInventory, type ProcurementWriterReview } from '@/api/admin/procurementCatalog'
+import { validProcurementProductImpact, validProcurementManagementPreview } from '@/utils/procurementProductImpact'
 import zh from '@/i18n/locales/zh/upstreamOps'
 import en from '@/i18n/locales/en/upstreamOps'
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
 vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
-vi.mock('@/api/admin/procurementCatalog', () => ({ previewProcurementProductImpact: vi.fn() }))
+vi.mock('@/api/admin/procurementCatalog', () => ({ previewProcurementProductImpact: vi.fn(), readProcurementManagement: vi.fn(), previewProcurementManagement: vi.fn(), saveProcurementManagement: vi.fn() }))
 const p = 'upstreamOps.productImpact.'
 const wrappers: ReturnType<typeof mount>[] = []
 const product = (id = 2) => ({ id, name: `Sales ${id}`, platform: 'openai', status: 'active' })
@@ -51,6 +51,21 @@ const writerFixture = (): ProcurementWriterReview => ({
     { kind: 'oauth_degradation', account_id: null, account_name: '', enabled: null, risk: 'unknown', writes_product: false, retained_ownership: false, reasons: ['configuration_unreadable'] }
   ]
 })
+const managementStateFixture = (): ProcurementManagementState => ({ version: 1, group_id: 2, revision: 0, mode: 'manual', current_owned: 0, retained_owned: 0, manual_memberships: 3 })
+const managementPreviewFixture = (): ProcurementManagementPreview => {
+  const review = reviewFixture()
+  review.source_inventory = inventoryFixture(); review.scope = 'current_bindings_and_approved_sources_and_saved_rule_targets'
+  review.writer_review = { ...writerFixture(), membership_conflicts: 0, account_protections: 0, historical_only: 0, unknown: 0, writers: [] }
+  return { version: 1, state: managementStateFixture(), observed_at: '2026-11-20T04:30:00Z', expires_at: '2026-11-20T04:32:00Z', fingerprint: 'a'.repeat(64), can_confirm: true,
+    memberships: [{ account_id: 9, account_name: 'Current supplier', ownership: null, claimable: true, reasons: [], protections: ['quality_protection', 'judge_dependency'] }], review }
+}
+async function selectedManagement(w: ReturnType<typeof mount>) {
+  const next = fixture(); next.management_review = managementPreviewFixture().review
+  vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+  await choose(w); await preview(w)
+  await w.get('[data-testid="management-select-9"]').setValue(true)
+  await w.get('[data-testid="management-preview"]').trigger('click'); await flushPromises()
+}
 function view() { const w = mount(ProcurementProductImpactView); wrappers.push(w); return w }
 async function choose(w: ReturnType<typeof mount>, id = 2) {
   w.getComponent(Select).vm.$emit('open'); await flushPromises()
@@ -61,8 +76,98 @@ beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(listGroups).mockResolvedValue({ items: [product()], total: 1 } as never)
   vi.mocked(previewProcurementProductImpact).mockResolvedValue(fixture())
+  vi.mocked(readProcurementManagement).mockResolvedValue(managementStateFixture())
+  vi.mocked(previewProcurementManagement).mockResolvedValue(managementPreviewFixture())
 })
-afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()) })
+afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()); vi.useRealTimers() })
+
+describe('explicit review authorization without automatic execution', () => {
+  it.each([zh, en])('covers all review action and conclusion labels, including the manual button on mobile', locale => {
+    for (const key of ['manual', 'ready', 'blocked', 'choose', 'loading', 'refresh', 'preview', 'consent', 'confirm', 'counts', 'saved', 'conflict', 'expired', 'forbidden', 'failed', 'savedReadFailed']) {
+      expect((locale.productImpact.authorization as Record<string, unknown>)[key]).toBeTypeOf('string')
+    }
+  })
+
+  it('keeps old products manual and requires explicit selection, preview and consent before writing', async () => {
+    const w = view(); await selectedManagement(w)
+    expect(readProcurementManagement).toHaveBeenCalledWith(2, expect.any(AbortSignal))
+    expect(previewProcurementManagement).toHaveBeenCalledWith(2, [9], expect.any(AbortSignal))
+    expect(w.get('[data-testid="management-preview-result"]').text()).toContain(p + 'authorization.ready')
+    expect(w.get('[data-testid="management-confirm"]').attributes('disabled')).toBeDefined()
+    expect(saveProcurementManagement).not.toHaveBeenCalled()
+    const state: ProcurementManagementState = { ...managementStateFixture(), revision: 1, mode: 'review', current_owned: 1, manual_memberships: 2 }
+    vi.mocked(saveProcurementManagement).mockResolvedValue(state); vi.mocked(readProcurementManagement).mockResolvedValue(state)
+    await w.get('[data-testid="management-consent"]').setValue(true)
+    await w.get('[data-testid="management-confirm"]').trigger('click'); await flushPromises()
+    expect(saveProcurementManagement).toHaveBeenCalledWith(2, { version: 1, mode: 'review', expected_revision: 0, account_ids: [9], observed_at: '2026-11-20T04:30:00Z', fingerprint: 'a'.repeat(64) }, expect.any(AbortSignal))
+    expect(w.get('[data-testid="management-saved"]').text()).toContain(p + 'authorization.saved')
+    expect(w.get('[data-testid="management-state"]').text()).toContain(p + 'authorization.modes.review')
+    expect(w.find('[data-testid="management-preview-result"]').exists()).toBe(false)
+  })
+  it('preserves selection on 409, clears consent and requires another preview', async () => {
+    const w = view(); await selectedManagement(w)
+    vi.mocked(saveProcurementManagement).mockRejectedValue({ status: 409 })
+    await w.get('[data-testid="management-consent"]').setValue(true); await w.get('[data-testid="management-confirm"]').trigger('click'); await flushPromises()
+    expect(w.get('[data-testid="management-error"]').text()).toContain(p + 'authorization.conflict')
+    expect(w.get<HTMLInputElement>('[data-testid="management-select-9"]').element.checked).toBe(true)
+    expect(w.find('[data-testid="management-preview-result"]').exists()).toBe(false)
+    await w.get('[data-testid="management-preview"]').trigger('click'); await flushPromises()
+    expect(w.get('[data-testid="management-confirm"]').attributes('disabled')).toBeDefined()
+  })
+  it('does not call a successful write activated when independent read-back fails', async () => {
+    const w = view(); await selectedManagement(w)
+    vi.mocked(saveProcurementManagement).mockResolvedValue({ ...managementStateFixture(), revision: 1, mode: 'review', current_owned: 1, manual_memberships: 2 })
+    vi.mocked(readProcurementManagement).mockRejectedValue(new Error('read failed'))
+    await w.get('[data-testid="management-consent"]').setValue(true); await w.get('[data-testid="management-confirm"]').trigger('click'); await flushPromises()
+    expect(w.get('[data-testid="management-error"]').text()).toContain(p + 'authorization.savedReadFailed')
+    expect(w.find('[data-testid="management-saved"]').exists()).toBe(false)
+    expect(w.find('[data-testid="management-state"]').exists()).toBe(false)
+    vi.mocked(readProcurementManagement).mockResolvedValue({ ...managementStateFixture(), revision: 1, mode: 'review', current_owned: 1, manual_memberships: 2 })
+    await w.get('[data-testid="management-refresh"]').trigger('click'); await flushPromises()
+    expect(w.get('[data-testid="management-state"]').text()).toContain(p + 'authorization.modes.review')
+    expect(saveProcurementManagement).toHaveBeenCalledTimes(1)
+  })
+  it('expires the confirmation locally without assuming the browser clock matches the server', async () => {
+    vi.useFakeTimers(); const w = view(); await selectedManagement(w)
+    await w.get('[data-testid="management-consent"]').setValue(true)
+    expect(w.get('[data-testid="management-confirm"]').attributes('disabled')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(121000)
+    expect(w.get('[data-testid="management-confirm"]').attributes('disabled')).toBeDefined()
+    expect(w.text()).toContain(p + 'authorization.expired')
+    expect(saveProcurementManagement).not.toHaveBeenCalled()
+  })
+  it('returns to manual with revision CAS without clearing retained ownership', async () => {
+    const active: ProcurementManagementState = { ...managementStateFixture(), revision: 4, mode: 'review', current_owned: 1, retained_owned: 1, manual_memberships: 1 }
+    vi.mocked(readProcurementManagement).mockResolvedValue(active)
+    const w = view(); await choose(w)
+    const manual: ProcurementManagementState = { ...active, revision: 5, mode: 'manual', current_owned: 0, retained_owned: 2 }
+    vi.mocked(saveProcurementManagement).mockResolvedValue(manual); vi.mocked(readProcurementManagement).mockResolvedValue(manual)
+    await w.get('[data-testid="management-manual"]').trigger('click'); await flushPromises()
+    expect(saveProcurementManagement).toHaveBeenCalledWith(2, { version: 1, mode: 'manual', expected_revision: 4 }, expect.any(AbortSignal))
+    expect(w.get('[data-testid="management-state"]').text()).toContain('"retained":2')
+  })
+  it.each([403, 503])('shows %s and recovers a state read without requesting a write', async status => {
+    vi.mocked(readProcurementManagement).mockRejectedValue({ status })
+    const w = view(); await choose(w)
+    expect(w.get('[data-testid="management-error"]').text()).toContain(p + `authorization.${status === 403 ? 'forbidden' : 'failed'}`)
+    vi.mocked(readProcurementManagement).mockResolvedValue(managementStateFixture())
+    await w.get('[data-testid="management-refresh"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="management-error"]').exists()).toBe(false)
+    expect(saveProcurementManagement).not.toHaveBeenCalled()
+  })
+  it('blocks malformed, future and contradictory previews rather than displaying a green result', () => {
+    expect(validProcurementManagementPreview(managementPreviewFixture(), 2, [9])).toBe(true)
+    for (const mutate of [
+      (p: ProcurementManagementPreview) => { p.version = 2 as never },
+      (p: ProcurementManagementPreview) => { p.memberships[0]!.reasons = ['future'] },
+      (p: ProcurementManagementPreview) => { p.memberships[0]!.claimable = false },
+      (p: ProcurementManagementPreview) => { p.memberships[0]!.ownership = { version: 2, kind: 'procurement', revision: 1 } as never },
+      (p: ProcurementManagementPreview) => { p.review.source_inventory!.accounts = null as never },
+      (p: ProcurementManagementPreview) => { p.state.mode = 'automatic' as never },
+      (p: ProcurementManagementPreview) => { p.expires_at = p.observed_at }
+    ]) { const p = managementPreviewFixture(); mutate(p); expect(validProcurementManagementPreview(p, 2, [9])).toBe(false) }
+  })
+})
 
 describe('administrator product price impact in the existing operations journey', () => {
   it('keeps non-quality writers unchecked on the previous management response', async () => {

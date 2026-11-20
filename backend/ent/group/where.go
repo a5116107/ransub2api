@@ -2720,6 +2720,16 @@ func ProcurementPolicyNotNil() predicate.Group {
 	return predicate.Group(sql.FieldNotNull(FieldProcurementPolicy))
 }
 
+// ProcurementManagementIsNil applies the IsNil predicate on the "procurement_management" field.
+func ProcurementManagementIsNil() predicate.Group {
+	return predicate.Group(sql.FieldIsNull(FieldProcurementManagement))
+}
+
+// ProcurementManagementNotNil applies the NotNil predicate on the "procurement_management" field.
+func ProcurementManagementNotNil() predicate.Group {
+	return predicate.Group(sql.FieldNotNull(FieldProcurementManagement))
+}
+
 // HasAPIKeys applies the HasEdge predicate on the "api_keys" edge.
 func HasAPIKeys() predicate.Group {
 	return predicate.Group(func(s *sql.Selector) {
