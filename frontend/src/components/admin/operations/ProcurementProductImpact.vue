@@ -69,7 +69,35 @@
         <p v-if="!result.management_review" class="text-sm text-gray-500">{{ t(`${p}.review.legacy`) }}</p>
         <template v-else>
           <p class="rounded-lg bg-gray-50 p-3 text-sm leading-6 dark:bg-dark-800" data-testid="product-management-mode">{{ t(`${p}.review.manual`) }}</p>
-          <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.review.scope`, { count: result.management_review.rules_examined }) }}</p>
+          <section class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="product-sources-title" data-testid="product-source-inventory">
+            <h4 id="product-sources-title" class="text-sm font-medium">{{ t(`${p}.review.sources.title`) }}</h4>
+            <p v-if="!sourceInventory" class="text-sm text-gray-500">{{ t(`${p}.review.sources.legacy`) }}</p>
+            <template v-else>
+              <p class="text-sm font-medium" data-testid="product-source-state">{{ t(`${p}.review.sources.states.${sourceInventory.state}`) }}</p>
+              <p v-if="sourceInventory.state === 'approved_sources'" class="break-words text-sm tabular-nums" data-testid="product-source-counts">{{ t(`${p}.review.sources.counts`, { approved: sourceInventory.approved_accounts, unbound: sourceInventory.unbound_approved_accounts, bound: result.bound_accounts }) }}</p>
+              <p v-if="sourceInventory.state === 'approved_sources' && sourceInventory.approved_accounts === 0" class="text-sm text-amber-800 dark:text-amber-300">{{ t(`${p}.review.sources.empty`) }}</p>
+              <ul v-if="sourceInventory.groups.length" class="flex flex-wrap gap-2 text-xs" data-testid="product-source-groups">
+                <li v-for="group in sourceInventory.groups" :key="group.id" class="min-w-0 max-w-full break-words rounded-lg bg-gray-50 px-2 py-1 dark:bg-dark-800">{{ group.name || t('upstreamOps.unknown') }} · #{{ group.id }} · {{ t(`${p}.review.sources.groupStates.${group.state}`) }}</li>
+              </ul>
+              <details v-if="sourceInventory.accounts.length" class="min-w-0 space-y-3" data-testid="product-source-details">
+                <summary class="cursor-pointer text-sm font-medium">{{ t(`${p}.review.sources.details`) }}</summary>
+                <ul class="grid min-w-0 gap-3 lg:grid-cols-2">
+                  <li v-for="account in sourceRows" :key="account.account_id" class="min-w-0 space-y-1 rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-800" data-testid="product-source-account">
+                    <p class="break-words text-sm font-medium">{{ account.name }} · #{{ account.account_id }}</p>
+                    <p class="break-words">{{ t(`${p}.review.sources.${account.in_product ? 'bound' : 'unbound'}`) }} · {{ t(`${p}.review.sources.${account.in_approved_sources === null ? 'unconfirmed' : account.in_approved_sources ? 'approved' : 'outside'}`) }}</p>
+                    <p class="break-words text-gray-500">{{ t(`${p}.review.sources.nativeState`, { platform: account.platform, status: nativeStatus(account.status) }) }} · {{ t(`${p}.review.sources.${account.schedulable ? 'schedulingOn' : 'schedulingOff'}`) }}</p>
+                  </li>
+                </ul>
+                <nav v-if="sourceInventory.accounts.length > pageSize" class="flex flex-wrap items-center gap-3 text-sm" :aria-label="t(`${p}.review.sources.pages`)">
+                  <button type="button" class="btn btn-secondary" :disabled="sourcePage <= 1" @click="sourcePage--">{{ t('upstreamOps.previous') }}</button>
+                  <span>{{ sourcePage }} / {{ Math.ceil(sourceInventory.accounts.length / pageSize) }}</span>
+                  <button type="button" class="btn btn-secondary" :disabled="sourcePage * pageSize >= sourceInventory.accounts.length" @click="sourcePage++">{{ t('upstreamOps.next') }}</button>
+                </nav>
+              </details>
+              <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.review.sources.boundary`, { revision: sourceInventory.policy_revision }) }}</p>
+            </template>
+          </section>
+          <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.review.${sourceInventory?.state === 'approved_sources' ? 'scopeApproved' : 'scope'}`, { count: result.management_review.rules_examined }) }}</p>
           <p v-if="!result.management_review.inventory_complete" class="text-sm text-amber-800 dark:text-amber-300" data-testid="product-management-incomplete">{{ t(`${p}.review.incomplete`) }}</p>
           <dl class="grid min-w-0 grid-cols-2 gap-3 lg:grid-cols-4">
             <div v-for="key in reviewCountKeys" :key="key" class="min-w-0 rounded-lg bg-gray-50 p-3 dark:bg-dark-800"><dt class="text-xs text-gray-500">{{ t(`${p}.review.${key}`) }}</dt><dd class="mt-1 text-xl font-semibold tabular-nums">{{ result.management_review[key] }}</dd></div>
@@ -123,7 +151,7 @@ import type { AdminGroup } from '@/types'
 const { t } = useI18n(), p = 'upstreamOps.productImpact'
 const productID = ref<number | null>(null), products = ref<AdminGroup[]>([]), productsTotal = ref(0)
 const loadedProducts = ref(false), productsBusy = ref(false), productsError = ref(false)
-const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), pageSize = 20
+const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), sourcePage = ref(1), pageSize = 20
 let alive = true, productsGeneration = 0, previewGeneration = 0, lastSearch = ''
 let productsController: AbortController | undefined, previewController: AbortController | undefined
 const selected = ref<AdminGroup | null>(null)
@@ -136,6 +164,9 @@ const admitted = computed(() => result.value?.report.verdicts.filter(row => row.
 const minAdmitted = computed(() => result.value?.report.verdicts.filter(row => row.class === 'admitted' && !row.rejected_under_min_d).length ?? 0)
 const pageRows = computed(() => result.value?.report.verdicts.slice((page.value - 1) * pageSize, page.value * pageSize) ?? [])
 const reviewRows = computed(() => result.value?.management_review?.rules.slice((reviewPage.value - 1) * pageSize, reviewPage.value * pageSize) ?? [])
+const sourceInventory = computed(() => result.value?.management_review?.source_inventory)
+const sourceRows = computed(() => sourceInventory.value?.accounts.slice((sourcePage.value - 1) * pageSize, sourcePage.value * pageSize) ?? [])
+const nativeStatus = (status: string) => ['active', 'inactive', 'expired', 'error'].includes(status) ? t(`admin.accounts.status.${status}`) : t('upstreamOps.unknown')
 const reviewCountKeys = ['conflicting_rules', 'protection_rules', 'unknown_rules', 'judge_dependency_rules'] as const
 const budgetMessages = computed(() => [...new Set([...(result.value?.management_review?.budget.reasons ?? []), ...(result.value?.management_review?.budget.warnings ?? [])])])
 const budgetReasons = new Set(['runner_capacity', 'minute_capacity', 'day_capacity', 'site_capacity', 'key_capacity', 'billing_scope_unresolved', 'periodic_site_capacity', 'periodic_site_unresolved', 'periodic_key_capacity', 'periodic_key_unresolved', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated'])
@@ -149,7 +180,7 @@ const knownWarning = (warning: string) => warnings.has(warning) ? warning : 'unk
 const formatRate = (value: number | undefined) => value == null ? t('upstreamOps.unknown') : new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(value)
 watch(productID, id => {
   selected.value = products.value.find(row => row.id === id) ?? (selected.value?.id === id ? selected.value : null)
-  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1
+  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1; sourcePage.value = 1
 }, { flush: 'sync' })
 function openProducts() { if (!loadedProducts.value && !productsBusy.value) void loadProducts('') }
 async function loadProducts(search: string) {
@@ -169,7 +200,7 @@ async function preview() {
   if (busy.value || !productID.value) return
   const id = productID.value, generation = ++previewGeneration
   previewController?.abort(); previewController = new AbortController()
-  busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1
+  busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1; sourcePage.value = 1
   try {
     const next = await previewProcurementProductImpact(id, previewController.signal)
     if (!validProcurementProductImpact(next, id)) throw new Error('invalid product impact')

@@ -65,7 +65,7 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 		return nil, err
 	}
 	out := &service.ProcurementProductImpact{Version: 1, GroupStatus: group.Status, GateEnabled: group.ProfitControlEnabled, BoundAccounts: len(accounts)}
-	out.ManagementReview, err = loadProcurementManagementReview(ctx, tx, groupID, accounts)
+	out.ManagementReview, err = loadProcurementManagementReview(ctx, tx, group, accounts)
 	if err != nil {
 		return nil, err
 	}
@@ -101,14 +101,105 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 
 const procurementManagementRuleLimit = 1000
 
-func loadProcurementManagementReview(ctx context.Context, tx sqlQueryer, groupID int64, accounts []service.Account) (*service.ProcurementManagementReview, error) {
+func loadProcurementManagementReview(ctx context.Context, tx sqlQueryer, group *service.Group, accounts []service.Account) (*service.ProcurementManagementReview, error) {
+	groupID := group.ID
 	ids := make([]int64, 0, len(accounts))
+	bound, approved := make(map[int64]bool, len(accounts)), map[int64]bool{}
 	for i := range accounts {
 		ids = append(ids, accounts[i].ID)
+		bound[accounts[i].ID] = true
+	}
+	inventory := &service.ProcurementSourceInventory{Version: 1, State: "original_pool", Groups: []service.ProcurementSourceGroup{}, Accounts: []service.ProcurementSourceAccount{}}
+	if policy := group.ProcurementPolicy; policy != nil {
+		inventory.PolicyRevision = policy.Revision
+		if policy.Version >= 6 && policy.SourceGroupIDs != nil {
+			inventory.State = "unavailable"
+			rows, err := tx.QueryContext(ctx, `SELECT id,name,status,platform,deleted_at IS NULL FROM groups WHERE id=ANY($1)`, pq.Array(policy.SourceGroupIDs))
+			if err != nil {
+				return nil, err
+			}
+			groups := map[int64]service.ProcurementSourceGroup{}
+			for rows.Next() {
+				var entry service.ProcurementSourceGroup
+				var status, platform string
+				var live bool
+				if err := rows.Scan(&entry.ID, &entry.Name, &status, &platform, &live); err != nil {
+					_ = rows.Close()
+					return nil, err
+				}
+				entry.State = "active"
+				switch {
+				case !live:
+					entry.State = "unavailable"
+				case entry.ID == groupID:
+					entry.State = "self_source"
+				case platform != group.Platform:
+					entry.State = "platform_mismatch"
+				case status != service.StatusActive:
+					entry.State = "inactive"
+				}
+				groups[entry.ID] = entry
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				return nil, err
+			}
+			for _, id := range policy.SourceGroupIDs {
+				entry, ok := groups[id]
+				if !ok {
+					entry = service.ProcurementSourceGroup{ID: id, State: "unavailable"}
+				}
+				inventory.Groups = append(inventory.Groups, entry)
+			}
+			// Consume the same authority as the actual procurement gate; do not
+			// infer permission from names, pricing or the existence of an account.
+			if group.ProcurementSources != nil && group.ProcurementSources.ValidateFor(groupID, policy) == nil {
+				inventory.State = "approved_sources"
+				for _, id := range group.ProcurementSources.AccountIDs {
+					allowed, err := policy.AllowsAccount(id)
+					if err != nil {
+						return nil, service.ErrProcurementPolicyInvalid
+					}
+					if allowed {
+						approved[id] = true
+						if !bound[id] {
+							ids = append(ids, id)
+						}
+					}
+				}
+				count, unbound := len(approved), len(ids)-len(bound)
+				inventory.ApprovedAccounts, inventory.UnboundApprovedAccounts = &count, &unbound
+			}
+		}
+	}
+	if len(ids) > service.ProcurementProductImpactAccountLimit {
+		return nil, service.ErrProcurementProductImpactTooLarge
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,name,platform,status,schedulable FROM accounts WHERE id=ANY($1) AND deleted_at IS NULL ORDER BY id`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var entry service.ProcurementSourceAccount
+		if err := rows.Scan(&entry.AccountID, &entry.Name, &entry.Platform, &entry.Status, &entry.Schedulable); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		entry.InProduct = bound[entry.AccountID]
+		if inventory.State == "approved_sources" {
+			value := approved[entry.AccountID]
+			entry.InApprovedSources = &value
+		}
+		inventory.Accounts = append(inventory.Accounts, entry)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	if len(inventory.Accounts) != len(ids) {
+		return nil, service.ErrProcurementPolicyInvalid
 	}
 	// Saved removals remain relevant even after membership disappears or the
 	// schedule is paused. Do not equate a paused rule with relinquished consent.
-	rows, err := tx.QueryContext(ctx, `SELECT p.id,p.account_id,a.name,p.enabled,p.auto_recover,p.pelican_config,s.state
+	rows, err = tx.QueryContext(ctx, `SELECT p.id,p.account_id,a.name,p.enabled,p.auto_recover,p.pelican_config,s.state
  FROM scheduled_test_plans p JOIN accounts a ON a.id=p.account_id
  LEFT JOIN account_quality_states s ON s.plan_id=p.id
  WHERE a.deleted_at IS NULL AND (p.enabled OR s.plan_id IS NOT NULL) AND (
@@ -122,6 +213,10 @@ func loadProcurementManagementReview(ctx context.Context, tx sqlQueryer, groupID
 	}
 	defer func() { _ = rows.Close() }()
 	out := &service.ProcurementManagementReview{Version: 1, Mode: "manual", Scope: "current_bindings_and_saved_rule_targets", InventoryComplete: true, Rules: []service.ProcurementManagementRule{}}
+	out.SourceInventory = inventory
+	if inventory.State == "approved_sources" {
+		out.Scope = "current_bindings_and_approved_sources_and_saved_rule_targets"
+	}
 	for rows.Next() {
 		if out.RulesExamined == procurementManagementRuleLimit {
 			out.InventoryComplete = false

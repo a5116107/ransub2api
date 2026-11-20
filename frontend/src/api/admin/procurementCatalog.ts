@@ -67,11 +67,19 @@ export interface ProcurementManagementReview {
     plan_id: number; account_id: number; account_name: string; enabled: boolean; action: string; risk: string
     writes_product: boolean; retained_ownership: boolean; saved_product_ownership: boolean; judge_depends_on_product: boolean
   }>
+  source_inventory?: ProcurementSourceInventory | null
   budget: {
     state: string; revision: number; enforced: boolean; inventory_complete: boolean
     minimum_requests_per_day: number; regular_day_capacity: number; unestimated_sources: number
     reasons: string[]; warnings: string[]; window_start: string; window_end: string
   }
+}
+
+export interface ProcurementSourceInventory {
+  version: number; state: string; policy_revision: number
+  approved_accounts: number | null; unbound_approved_accounts: number | null
+  groups: Array<{ id: number; name: string; state: string }>
+  accounts: Array<{ account_id: number; name: string; platform: string; status: string; schedulable: boolean; in_product: boolean; in_approved_sources: boolean | null }>
 }
 
 export async function previewProcurementProductImpact(id: number, signal?: AbortSignal): Promise<ProcurementProductImpact> {

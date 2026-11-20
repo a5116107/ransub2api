@@ -8,11 +8,40 @@ const impactPriceClasses = [
 const finiteRate = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
 
-function validManagementReview(review: ProcurementManagementReview): boolean {
-  if (!review || review.version !== 1 || review.mode !== 'manual' || review.scope !== 'current_bindings_and_saved_rule_targets' ||
+function validManagementReview(review: ProcurementManagementReview, groupID: number, boundAccounts: number): boolean {
+  if (!review || review.version !== 1 || review.mode !== 'manual' || !['current_bindings_and_saved_rule_targets', 'current_bindings_and_approved_sources_and_saved_rule_targets'].includes(review.scope) ||
     typeof review.inventory_complete !== 'boolean' || !count(review.rules_examined) || review.rules_examined > 1000 ||
     ![review.conflicting_rules, review.protection_rules, review.unknown_rules, review.judge_dependency_rules].every(count) ||
     !Array.isArray(review.rules) || review.rules.length !== review.rules_examined) return false
+  const inventory = review.source_inventory
+  const includesApproved = inventory?.state === 'approved_sources'
+  if (review.scope !== (includesApproved ? 'current_bindings_and_approved_sources_and_saved_rule_targets' : 'current_bindings_and_saved_rule_targets')) return false
+  if (inventory != null) {
+    if (inventory.version !== 1 || !['original_pool', 'approved_sources', 'unavailable'].includes(inventory.state) || !count(inventory.policy_revision) ||
+      !Array.isArray(inventory.groups) || inventory.groups.length > 64 || !Array.isArray(inventory.accounts) || inventory.accounts.length > 1000) return false
+    const groupIDs = new Set<number>(), accountIDs = new Set<number>()
+    for (const group of inventory.groups) {
+      if (!group || !count(group.id) || !group.id || groupIDs.has(group.id) || typeof group.name !== 'string' ||
+        !['active', 'inactive', 'unavailable', 'self_source', 'platform_mismatch'].includes(group.state) ||
+        includesApproved && (group.state !== 'active' || group.id === groupID)) return false
+      groupIDs.add(group.id)
+    }
+    for (const account of inventory.accounts) {
+      if (!account || !count(account.account_id) || !account.account_id || accountIDs.has(account.account_id) || typeof account.name !== 'string' ||
+        typeof account.platform !== 'string' || typeof account.status !== 'string' || typeof account.schedulable !== 'boolean' || typeof account.in_product !== 'boolean' ||
+        (includesApproved ? typeof account.in_approved_sources !== 'boolean' : account.in_approved_sources !== null) ||
+        !account.in_product && (!includesApproved || !account.in_approved_sources)) return false
+      accountIDs.add(account.account_id)
+    }
+    if (inventory.accounts.filter(a => a.in_product).length !== boundAccounts) return false
+    if (includesApproved) {
+      if (!inventory.policy_revision || !count(inventory.approved_accounts) || !count(inventory.unbound_approved_accounts) ||
+        inventory.approved_accounts > 0 && !inventory.groups.length ||
+        inventory.accounts.filter(a => a.in_approved_sources).length !== inventory.approved_accounts ||
+        inventory.accounts.filter(a => a.in_approved_sources && !a.in_product).length !== inventory.unbound_approved_accounts) return false
+    } else if (inventory.approved_accounts !== null || inventory.unbound_approved_accounts !== null ||
+      inventory.state === 'original_pool' && inventory.groups.length > 0) return false
+  }
   const ids = new Set<number>(), actions = ['connectivity', 'remove_groups', 'isolate_models', 'disable_scheduling', 'remove_models', 'enable_bps', 'observe_only', 'openai_two_fa_admission']
   for (const rule of review.rules) {
     if (!rule || !count(rule.plan_id) || !rule.plan_id || ids.has(rule.plan_id) || !count(rule.account_id) || !rule.account_id || typeof rule.account_name !== 'string' ||
@@ -46,7 +75,7 @@ export function validProcurementProductImpact(value: ProcurementProductImpact, g
     !['active', 'inactive'].includes(value.group_status) || typeof value.gate_enabled !== 'boolean' ||
     !count(value.bound_accounts) || value.bound_accounts > 1000 || !count(value.considered_accounts) ||
     value.considered_accounts > value.bound_accounts || !count(value.user_override_count) ||
-    value.management_review != null && !validManagementReview(value.management_review)) return false
+    value.management_review != null && !validManagementReview(value.management_review, groupID, value.bound_accounts)) return false
   const report = value.report
   if (!report || report.group_id !== groupID || typeof report.group_name !== 'string' || typeof report.platform !== 'string' ||
     typeof report.effective_gate !== 'boolean' || report.assumed_enabled != null && typeof report.assumed_enabled !== 'boolean' || report.model_counts_scope !== 'account_price_only' ||

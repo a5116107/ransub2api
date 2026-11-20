@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProcurementProductImpactView from '../ProcurementProductImpact.vue'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
-import { previewProcurementProductImpact, type ProcurementManagementReview, type ProcurementProductImpact } from '@/api/admin/procurementCatalog'
+import { previewProcurementProductImpact, type ProcurementManagementReview, type ProcurementProductImpact, type ProcurementSourceInventory } from '@/api/admin/procurementCatalog'
 import { validProcurementProductImpact } from '@/utils/procurementProductImpact'
 import zh from '@/i18n/locales/zh/upstreamOps'
 import en from '@/i18n/locales/en/upstreamOps'
@@ -34,6 +34,12 @@ const reviewFixture = (): ProcurementManagementReview => ({
   budget: { state: 'partial', revision: 3, enforced: true, inventory_complete: true, minimum_requests_per_day: 3000,
     regular_day_capacity: 80000, unestimated_sources: 4, reasons: [], warnings: [], window_start: '2026-11-21T00:00:00Z', window_end: '2026-11-22T00:00:00Z' }
 })
+const inventoryFixture = (): ProcurementSourceInventory => ({
+  version: 1, state: 'approved_sources', policy_revision: 4, approved_accounts: 2, unbound_approved_accounts: 1,
+  groups: [{ id: 8, name: 'Approved supply group', state: 'active' }],
+  accounts: [9, 14, 20, 30].map(id => ({ account_id: id, name: id === 30 ? 'Not yet in product' : 'Supplier ' + id,
+    platform: 'openai', status: id === 20 ? 'inactive' : 'active', schedulable: id !== 20, in_product: id !== 30, in_approved_sources: id === 9 || id === 30 }))
+})
 function view() { const w = mount(ProcurementProductImpactView); wrappers.push(w); return w }
 async function choose(w: ReturnType<typeof mount>, id = 2) {
   w.getComponent(Select).vm.$emit('open'); await flushPromises()
@@ -48,6 +54,72 @@ beforeEach(() => {
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()) })
 
 describe('administrator product price impact in the existing operations journey', () => {
+  it('shows approved, unbound and retained outside-source accounts without implying qualified supply', async () => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    review.source_inventory = inventoryFixture(); review.scope = 'current_bindings_and_approved_sources_and_saved_rule_targets'
+    expect(validProcurementProductImpact(next, 2)).toBe(true)
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    const section = w.get('[data-testid="product-source-inventory"]')
+    expect(section.text()).toContain('Approved supply group')
+    expect(section.text()).toContain('Not yet in product')
+    expect(section.text()).toContain(p + 'review.sources.unbound')
+    expect(section.text()).toContain(p + 'review.sources.outside')
+    expect(section.text()).toContain(p + 'review.sources.boundary')
+    expect(section.findAll('[data-testid="product-source-account"]')).toHaveLength(4)
+    expect(w.get('[data-testid="product-management-mode"]').text()).toContain(p + 'review.manual')
+  })
+  it.each(['original_pool', 'unavailable'])('keeps %s approval unknown, not zero or an unrestricted new pool', async state => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    const inventory = inventoryFixture(); review.source_inventory = inventory
+    Object.assign(inventory, { state, approved_accounts: null, unbound_approved_accounts: null })
+    inventory.accounts = inventory.accounts.filter(a => a.in_product).map(a => ({ ...a, in_approved_sources: null }))
+    if (state === 'original_pool') inventory.groups = []
+    expect(validProcurementProductImpact(next, 2)).toBe(true)
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-source-inventory"]').text()).toContain(p + 'review.sources.states.' + state)
+    expect(w.find('[data-testid="product-source-counts"]').exists()).toBe(false)
+  })
+  it('leaves source inventory unchecked on the previous management-review response', async () => {
+    const next = fixture(); next.management_review = reviewFixture(); vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-source-inventory"]').text()).toContain(p + 'review.sources.legacy')
+  })
+  it.each(['version', 'state', 'counts', 'unbound-count', 'duplicate', 'unbound-unapproved', 'unknown-approved', 'group-state', 'scope', 'bound-count', 'missing-groups', 'zero-policy', 'group-empty', 'self-source'])('rejects the inconsistent %s source inventory', kind => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    const inventory = inventoryFixture(); review.source_inventory = inventory; review.scope = 'current_bindings_and_approved_sources_and_saved_rule_targets'
+    if (kind === 'version') inventory.version++
+    if (kind === 'state') inventory.state = 'qualified'
+    if (kind === 'counts') inventory.approved_accounts!++
+    if (kind === 'unbound-count') inventory.unbound_approved_accounts!++
+    if (kind === 'duplicate') inventory.accounts[0]!.account_id = 14
+    if (kind === 'unbound-unapproved') inventory.accounts[3]!.in_approved_sources = false
+    if (kind === 'unknown-approved') inventory.accounts[0]!.in_approved_sources = null
+    if (kind === 'group-state') inventory.groups[0]!.state = 'inactive'
+    if (kind === 'scope') review.scope = 'current_bindings_and_saved_rule_targets'
+    if (kind === 'bound-count') inventory.accounts[2]!.in_product = false
+    if (kind === 'missing-groups') delete (inventory as Partial<ProcurementSourceInventory>).groups
+    if (kind === 'zero-policy') inventory.policy_revision = 0
+    if (kind === 'group-empty') inventory.groups = []
+    if (kind === 'self-source') inventory.groups[0]!.id = 2
+    expect(validProcurementProductImpact(next, 2)).toBe(false)
+  })
+  it('paginates the source union independently and clears its page on refresh', async () => {
+    const next = fixture(), review = reviewFixture(), inventory = inventoryFixture(); next.management_review = review; review.source_inventory = inventory
+    review.scope = 'current_bindings_and_approved_sources_and_saved_rule_targets'
+    inventory.accounts = Array.from({ length: 21 }, (_, index) => ({ ...inventory.accounts[0]!, account_id: index + 100, in_product: index < 3, in_approved_sources: true }))
+    inventory.approved_accounts = 21; inventory.unbound_approved_accounts = 18
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    const details = w.get('[data-testid="product-source-details"]')
+    expect(details.findAll('[data-testid="product-source-account"]')).toHaveLength(20)
+    await details.get('nav button:last-child').trigger('click')
+    expect(details.findAll('[data-testid="product-source-account"]')).toHaveLength(1)
+    expect(w.findAll('[data-testid="product-management-rule"]')).toHaveLength(3)
+    await preview(w)
+    expect(w.findAll('[data-testid="product-source-account"]')).toHaveLength(20)
+  })
   it('keeps management readiness unknown on a price-only server', async () => {
     const w = view(); await choose(w); await preview(w)
     expect(w.get('[data-testid="product-management-review"]').text()).toContain(p + 'review.legacy')

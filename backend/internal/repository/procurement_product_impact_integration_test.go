@@ -135,6 +135,18 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		require.Equal(t, "inactive", out.GroupStatus)
 	})
 	t.Run("one snapshot, final evaluation clock and cancellation recovery", func(t *testing.T) {
+		var sourceID, unboundID int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform) VALUES('Snapshot source before','openai') RETURNING id`).Scan(&sourceID))
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,credentials) VALUES('Snapshot unbound before','openai','apikey','{}') RETURNING id`).Scan(&unboundID))
+		_, err := db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, unboundID, sourceID)
+		require.NoError(t, err)
+		policy := fmt.Sprintf(`{"version":6,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"not_required","source_group_ids":[%d]}`, sourceID)
+		_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, groupID, policy)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, e := db.ExecContext(ctx, `UPDATE groups SET procurement_policy=NULL WHERE id=$1`, groupID)
+			require.NoError(t, e)
+		})
 		budget := service.DefaultMonitoringProbeBudgetSettings()
 		budget.Revision = 7
 		raw, err := json.Marshal(budget)
@@ -172,6 +184,10 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		require.NoError(t, err)
 		_, err = lock.ExecContext(ctx, `UPDATE user_group_rate_multipliers SET rate_multiplier=.25 WHERE group_id=$1`, groupID)
 		require.NoError(t, err)
+		_, err = lock.ExecContext(ctx, `UPDATE groups SET name='Snapshot source after' WHERE id=$1`, sourceID)
+		require.NoError(t, err)
+		_, err = lock.ExecContext(ctx, `UPDATE accounts SET name='Snapshot unbound after' WHERE id=$1`, unboundID)
+		require.NoError(t, err)
 		budget.Revision = 8
 		raw, err = json.Marshal(budget)
 		require.NoError(t, err)
@@ -187,12 +203,16 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		require.Equal(t, .1, old.out.Report.MinEffectiveD)
 		require.Equal(t, 1.0, *old.out.Report.Verdicts[0].EffectiveRate)
 		require.Equal(t, int64(7), old.out.ManagementReview.Budget.Revision)
+		require.Equal(t, "Snapshot source before", old.out.ManagementReview.SourceInventory.Groups[0].Name)
+		require.Equal(t, "Snapshot unbound before", old.out.ManagementReview.SourceInventory.Accounts[1].Name)
 		fresh := read()
 		require.Len(t, fresh.Report.Verdicts, 1)
 		require.Equal(t, .3, fresh.Report.DefaultD)
 		require.Equal(t, .25, fresh.Report.MinEffectiveD)
 		require.Equal(t, .025, *fresh.Report.Verdicts[0].EffectiveRate)
 		require.Equal(t, int64(8), fresh.ManagementReview.Budget.Revision)
+		require.Equal(t, "Snapshot source after", fresh.ManagementReview.SourceInventory.Groups[0].Name)
+		require.Equal(t, "Snapshot unbound after", fresh.ManagementReview.SourceInventory.Accounts[1].Name)
 		canceled, stop := context.WithCancel(ctx)
 		stop()
 		_, err = repo.PreviewProcurementProductImpact(canceled, groupID)
@@ -342,6 +362,161 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 		require.Len(t, review.Rules, 1000)
 		require.Zero(t, review.ConflictingRules)
 		require.Equal(t, "manual", review.Mode)
+	})
+	t.Run("approved source inventory includes unbound accounts and their protections", func(t *testing.T) {
+		var sourceID, secondID, newID, excludedID, ordinaryID int64
+		for i, name := range []string{"Approved source Alpha", "Approved source Beta"} {
+			var id int64
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform) VALUES($1,'openai') RETURNING id`, name).Scan(&id))
+			if i == 0 {
+				sourceID = id
+			} else {
+				secondID = id
+			}
+		}
+		for i, name := range []string{"Not yet in product", "Excluded by account filter", "Ordinary private supplier"} {
+			var id int64
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,credentials) VALUES($1,'openai','apikey','{}') RETURNING id`, name).Scan(&id))
+			switch i {
+			case 0:
+				newID = id
+			case 1:
+				excludedID = id
+			case 2:
+				ordinaryID = id
+			}
+		}
+		_, e := db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$3),($1,$4),($2,$3)`, newID, excludedID, sourceID, secondID)
+		require.NoError(t, e)
+		var planID, ignoredPlanID int64
+		for _, entry := range []struct {
+			id  int64
+			dst *int64
+		}{{newID, &planID}, {ordinaryID, &ignoredPlanID}} {
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,max_results,auto_recover,pelican_config,next_run_at) VALUES($1,'sol','0 * * * *',true,10,false,'{"quality":{"action":"disable_scheduling"}}',now()) RETURNING id`, entry.id).Scan(entry.dst))
+		}
+		policy := fmt.Sprintf(`{"version":6,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":[%d]},"buckets":{"codes":null},"quality":"not_required","availability":"not_required","source_group_ids":[%d,%d]}`, newID, sourceID, secondID)
+		_, e = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, groupID, policy)
+		require.NoError(t, e)
+		t.Cleanup(func() {
+			_, e := db.ExecContext(ctx, `UPDATE groups SET procurement_policy=NULL WHERE id=$1`, groupID)
+			require.NoError(t, e)
+		})
+		get := func() map[string]any {
+			t.Helper()
+			w := run(id, "admin")
+			require.Equal(t, 200, w.Code, w.Body.String())
+			var body struct {
+				Data struct {
+					Review map[string]any `json:"management_review"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+			return body.Data.Review
+		}
+		review := get()
+		require.Contains(t, review, "source_inventory", "approved but unbound supply must not disappear from the handover check")
+		inventory := review["source_inventory"].(map[string]any)
+		require.Equal(t, "approved_sources", inventory["state"])
+		require.Equal(t, float64(1), inventory["approved_accounts"])
+		require.Equal(t, float64(1), inventory["unbound_approved_accounts"])
+		require.Equal(t, "current_bindings_and_approved_sources_and_saved_rule_targets", review["scope"])
+		entries := inventory["accounts"].([]any)
+		require.Len(t, entries, 2, "union must retain the existing member, deduplicate sources and exclude unapproved accounts")
+		seen := map[int64]map[string]any{}
+		for _, row := range entries {
+			r := row.(map[string]any)
+			seen[int64(r["account_id"].(float64))] = r
+		}
+		require.Equal(t, false, seen[newID]["in_product"])
+		require.Equal(t, true, seen[newID]["in_approved_sources"])
+		require.Equal(t, true, seen[accountID]["in_product"])
+		require.Equal(t, false, seen[accountID]["in_approved_sources"])
+		planFound, ignoredFound := false, false
+		for _, row := range review["rules"].([]any) {
+			r := row.(map[string]any)
+			if r["plan_id"] == float64(planID) {
+				planFound = true
+				require.Equal(t, "account_protection", r["risk"])
+			}
+			ignoredFound = ignoredFound || r["plan_id"] == float64(ignoredPlanID)
+		}
+		require.True(t, planFound)
+		require.False(t, ignoredFound)
+		require.Contains(t, run(id, "admin").Body.String(), "Approved source Alpha")
+		// A selected source losing authority invalidates the whole approval. Never
+		// silently fall back to ordinary accounts or report zero as a valid pool.
+		_, e = db.ExecContext(ctx, `UPDATE groups SET status='inactive' WHERE id=$1`, sourceID)
+		require.NoError(t, e)
+		review = get()
+		inventory = review["source_inventory"].(map[string]any)
+		require.Equal(t, "unavailable", inventory["state"])
+		require.Nil(t, inventory["approved_accounts"])
+		require.Nil(t, inventory["unbound_approved_accounts"])
+		require.Equal(t, "current_bindings_and_saved_rule_targets", review["scope"])
+		require.Len(t, inventory["accounts"], 1)
+		// Explicitly empty approval differs from an unconfigured/original pool.
+		_, e = db.ExecContext(ctx, `UPDATE groups SET status='active' WHERE id=$1`, sourceID)
+		require.NoError(t, e)
+		_, e = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=jsonb_set(procurement_policy,'{source_group_ids}','[]'::jsonb) WHERE id=$1`, groupID)
+		require.NoError(t, e)
+		inventory = get()["source_inventory"].(map[string]any)
+		require.Equal(t, "approved_sources", inventory["state"])
+		require.Equal(t, float64(0), inventory["approved_accounts"])
+		_, e = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=jsonb_set(procurement_policy,'{source_group_ids}','null'::jsonb) WHERE id=$1`, groupID)
+		require.NoError(t, e)
+		inventory = get()["source_inventory"].(map[string]any)
+		require.Equal(t, "original_pool", inventory["state"])
+		require.Nil(t, inventory["approved_accounts"])
+		// All review reads, including source faults, leave membership, plans and
+		// saved ownership untouched. Ordinary accounts are never imported.
+		var snapshot string
+		unchanged := func() string {
+			t.Helper()
+			var value string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT jsonb_build_object('accounts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM accounts a),'bindings',(SELECT jsonb_agg(to_jsonb(g) ORDER BY account_id,group_id) FROM account_groups g),'plans',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM scheduled_test_plans p),'states',(SELECT jsonb_agg(to_jsonb(s) ORDER BY plan_id) FROM account_quality_states s),'outbox',(SELECT count(*) FROM scheduler_outbox))::text`).Scan(&value))
+			return value
+		}
+		snapshot = unchanged()
+		get()
+		get()
+		require.JSONEq(t, snapshot, unchanged())
+		// A malformed persisted policy fails the whole read, not an empty or
+		// permissive inventory. The HTTP error never echoes private stored data.
+		_, e = db.ExecContext(ctx, `UPDATE groups SET procurement_policy='{"private-broken-policy":"do-not-leak"}'::jsonb WHERE id=$1`, groupID)
+		require.NoError(t, e)
+		w := run(id, "admin")
+		require.Equal(t, 503, w.Code)
+		require.NotContains(t, w.Body.String(), "do-not-leak")
+		_, e = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, groupID, policy)
+		require.NoError(t, e)
+		require.Equal(t, 200, run(id, "admin").Code)
+	})
+	t.Run("approved union cap rejects excess, preserves exact boundary and account filters", func(t *testing.T) {
+		var sourceID int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform) VALUES('Bounded approved source','openai') RETURNING id`).Scan(&sourceID))
+		_, e := db.ExecContext(ctx, `WITH added AS (INSERT INTO accounts(name,platform,type,credentials) SELECT 'source-cap-'||n,'openai','apikey','{}' FROM generate_series(1,1000) n RETURNING id) INSERT INTO account_groups(account_id,group_id) SELECT id,$1 FROM added`, sourceID)
+		require.NoError(t, e)
+		policy := fmt.Sprintf(`{"version":6,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"not_required","source_group_ids":[%d]}`, sourceID)
+		_, e = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, groupID, policy)
+		require.NoError(t, e)
+		t.Cleanup(func() {
+			_, e := db.ExecContext(ctx, `UPDATE groups SET procurement_policy=NULL WHERE id=$1`, groupID)
+			require.NoError(t, e)
+		})
+		w := run(id, "admin")
+		require.Equal(t, 400, w.Code)
+		require.Contains(t, w.Body.String(), "PROCUREMENT_PRODUCT_IMPACT_TOO_LARGE")
+		_, e = db.ExecContext(ctx, `DELETE FROM account_groups WHERE group_id=$1 AND account_id=(SELECT max(account_id) FROM account_groups WHERE group_id=$1)`, sourceID)
+		require.NoError(t, e)
+		out := read()
+		require.Len(t, out.ManagementReview.SourceInventory.Accounts, 1000)
+		require.Equal(t, 999, *out.ManagementReview.SourceInventory.ApprovedAccounts)
+		_, e = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=jsonb_set(procurement_policy,'{sources,account_ids}','[]'::jsonb) WHERE id=$1`, groupID)
+		require.NoError(t, e)
+		out = read()
+		require.Len(t, out.ManagementReview.SourceInventory.Accounts, 1)
+		require.Zero(t, *out.ManagementReview.SourceInventory.ApprovedAccounts)
 	})
 	t.Run("bounded inventory never silently truncates", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, `WITH added AS (INSERT INTO accounts(name,platform,type,credentials,status,schedulable)

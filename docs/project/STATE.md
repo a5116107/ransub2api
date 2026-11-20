@@ -3,16 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D4.3.12接管前置检查及D7.4配置发现已验，提交同步。
+任务：D4.3.13来源库存/规则覆盖已验；接续模式/拥有者/增量预算。
 授权：本地实施/测试/文档及自有分支同步；不改生产、不运行CI/发布。
-来源：统一H盘/feat分支，提交与同步身份见当前Git；生产.8未变。
-验证：PG230/归属16、UI357/浏览器44/embed140通过；vet/静态/构建0。
-结果：旧规则/保留归属/判题依赖/共享预算可读；未执行接管或上线。
+来源：H盘/feat，交付身份见Git；.12为b346515f2；生产.8未变。
+验证：来源PG20/race、UI376/浏览器56/embed140通过；vet/静态/构建0。
+结果：来源交集/未关联规则可读；未知/空/失效分开，未接管或上线。
 入口：方案12.1.7–.8/13.3；图册html/md；渠道运维指南。
-下一动作：D4.3模式/拥有者与增量预算→D6.2→完整三步后台。
+下一动作：D4.3模式/关系拥有者/增量预算→D6.2→完整三步。
 等待：原28项20done/8部分；独立参考/真实来源及原生产验收保持。
 责任：供应商提供证据，开发方接入；宿主解除历史及本轮scratch拒删。
-限制：新scratch为DevCache/tmp/sub2api-product-impact；服务已退出，拒删详情见DECISIONS。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -47,7 +46,7 @@
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 原清理/分页/依赖及双平台验收保持；逐项源码与验证见DECISIONS |
-| D4 | in_progress | .1–.12本地已验；模式/拥有者/重算仍缺 |
+| D4 | in_progress | .1–.13本地已验；模式/拥有者/重算仍缺 |
 | D4.3.1–.6 | done | 区间/目录/来源/桶/严格JSON/CAS与SQL/终检/UI已验；非完整资格/生产 |
 | D4.3.7 | done | v4/SQL/黏性/槽后/HTTP及WS拒发恢复、中英已验；非完整资格/生产 |
 | D4.3.8 | done | v5最新可用门/原生及受管/实帧/SQL/UI已验，详DECISIONS；非完整资格/生产 |
@@ -55,6 +54,7 @@
 | D4.3.10 | done | v6当前来源/同快照、候选/终检/区域/SQL/UI已验；528/166、UI204/浏览器48，非自动关联/生产 |
 | D4.3.11 | done | 差量关系/事务通知/并发及移出重加已验；144+147pass，权限补DSN29pass；非自动协调器 |
 | D4.3.12 | done | 旧规则/暂停归属/判题依赖和共享预算同快照检查已验；非接管/全量来源/增量预算 |
+| D4.3.13 | done | 批准来源交集/未关联规则/快照与上限、PG/UI已验；非自动关联/完整资格 |
 | D5.4.1 | done | 原生OpenAI Key/模型HTTP同路探测及中英UI本地已验；非缓存域/严格资格 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/来源及同路探测已本地验；实际组/其余scope/缓存域/存活与资格仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
@@ -84,8 +84,8 @@
 ## 工作区与环境限制
 
 - 工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream=ranxi2001/sub2api且禁推。统一H盘，无额外worktree。
-- 历史PNG、data/及拒删保留；本轮product-impact三文件拒删，服务已退出，详DECISIONS。
+- 历史data及拒删保留；product-impact三文件、旧构建635048555bytes拒删，详DECISIONS。
 - backend/tmp/availability-non5xx-regression拒删，根go test ./...会误编译；正式153包已验。
 - Windows完整repository缺SeCreateSymbolicLinkPrivilege；Linux同例通过。owner系统管理员，提供权限进程后重跑，未改skip。
 - 既有PG55441、Redis56441及quality-batch/quality-validity拒删，owner宿主用户；路径/解除条件见DECISIONS。
-- 历史拒删620274603bytes、overlay49259bytes、构建/临时222539771bytes原位；宿主解除后再清理，详DECISIONS；回收0。
+- 历史拒删620274603bytes、overlay49259bytes、构建/临时222539771bytes保留；owner宿主解除后清理，回收0。

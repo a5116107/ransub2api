@@ -38,6 +38,36 @@ type ProcurementManagementReview struct {
 	JudgeDependencyRules int                         `json:"judge_dependency_rules"`
 	Rules                []ProcurementManagementRule `json:"rules"`
 	Budget               ProcurementManagementBudget `json:"budget"`
+	SourceInventory      *ProcurementSourceInventory `json:"source_inventory,omitempty"`
+}
+
+// Saved approval is permission to consider supply, never a statement that its
+// model, health, cache or current capacity has been verified. Unknown approvals
+// keep null counts instead of manufacturing an empty or unrestricted pool.
+type ProcurementSourceInventory struct {
+	Version                 int                        `json:"version"`
+	State                   string                     `json:"state"`
+	PolicyRevision          int64                      `json:"policy_revision"`
+	ApprovedAccounts        *int                       `json:"approved_accounts"`
+	UnboundApprovedAccounts *int                       `json:"unbound_approved_accounts"`
+	Groups                  []ProcurementSourceGroup   `json:"groups"`
+	Accounts                []ProcurementSourceAccount `json:"accounts"`
+}
+
+type ProcurementSourceGroup struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+type ProcurementSourceAccount struct {
+	AccountID         int64  `json:"account_id"`
+	Name              string `json:"name"`
+	Platform          string `json:"platform"`
+	Status            string `json:"status"`
+	Schedulable       bool   `json:"schedulable"`
+	InProduct         bool   `json:"in_product"`
+	InApprovedSources *bool  `json:"in_approved_sources"`
 }
 
 type ProcurementManagementRule struct {

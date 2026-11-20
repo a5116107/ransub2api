@@ -4019,3 +4019,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 嵌入校验发现旧断言要求/v3/other返回SPA，与现有/v3/保留API命名空间矛盾；原位改断言并补两种嵌入入口的未知API JSON404及普通SPA200，删除被/v3/覆盖的重复判断。无生产路由变更；最终embed包140父/子用例通过（日志package pass另计，不混入用例），2.189s，证据product-review-embed-acceptance-final.jsonl。首次错误断言与重现证据保留，不改产品API边界造绿。
 - D4.3.12只完成只读前置检查，不授权自动接管；受管模式/单一拥有者/增量预算、D6.2与完整三步尚开放，原28项20done/8部分不变。生产仍.8，不运行CI/发布，不动历史data或已拒删scratch。
 - 收尾`go vet -tags unit,embed ./internal/service ./internal/repository ./internal/web`退出0；`git diff --check`退出0。沿用唯一H盘工作树，仅提交本任务已验文件，未知service/data及历史拒删不纳入。自有feat分支允许skip-ci同步，现有工作流仅production push/手动触发，不提升稳定线。
+
+## 2026-11-20 D4.3.13 批准来源库存与未关联规则覆盖
+
+- 先交付D4.3.12及搜索修复，b346515f284d0ffcad893adef2da61dd3609f61a已push并ls-remote确认。随后依原计划工作包3补原产品影响API/面板的来源交集：复用同快照v6来源权威与账号名单过滤，保留当前成员，合并尚未关联的批准供应，相关规则也覆盖这些账号。全站普通/专用账号不自动纳入，价格列表仍仅原绑定候选，不借盘点扩大价格或调度资格。
+- 管理员按名称查看来源组/账号，独立区分已关联/尚未关联、是否批准和原生状态/开关；批准/未关联数仅在来源权威有效时给数，原池/未配置与来源失效为null，明确空交集为0。来源停用/删除/错平台/自身无效不回退全站；重复来源去重，账号交集与当前成员合并1000上限，超出拒绝整个读而非截断成功。规则保留原1000条下界标注，账号/规则分别分页；旧响应维持未检查。没有关联写入、模式授权、schema、出站或生产变更。
+- 真PG红测固定原接口没有source_inventory、未关联保护不被检查；前端红测5failed/58passed，缺面板/校验为真实失败。实现后`go test -json -race -tags unit,integration -overlay H:/Root/DevCache/tmp/sub2api-upstream-raw-cache/overlay.json ./internal/repository -run '^TestProcurementProductImpactPostgresAdminHTTP$' -count=2 -timeout=5m`：20父/子用例pass、0fail/skip/race，package8.042s。覆盖分组/未关联账号名称的并发同快照、末端时钟、账号过滤/去重、来源失效/恢复/空/原池、1000精确边界/超限、权限/脱敏/取消/损坏配置恢复、全关系/计划/归属/outbox零写入。
+- 前端7套件376pass；包含当前产品/采购预演/运维/设置/搜索及locale。vue-tsc、定向ESLint、service/repository默认unit及integration-overlay的vet均退出0；本地Vite28.99s退出0，保留原Browserslist/大chunk/Node弃用提示，不升级依赖或改阈值造绿。最终embed包140父/子用例pass，1.907s；编译阶段读取累积旧assets较慢，测试自身未超时。
+- 原Edge脚本/本地PG夹具原位扩展，中英1440/390共56项、72次真实分组/影响GET；0页面错误/失败请求/未识别API。键盘选择/展开、未关联保护/外来源当前成员、失效不补0/不扩大池、恢复/明确空来源、重载/503恢复及无横向溢出已验。产品/规则/预算为真实认证API与隔离PG，外壳/旧统计为夹具；不冒充完整后台或生产E2E。已目检中文390及英文1440截图；证据复用source-inventory-*，不建第二状态账本。
+- 拥有者源码核对：ent关系尚无程序归属字段。原设计12.1.8补实手动→审核→首次接管→自动→回手动/回退的持久关系、CAS、旧规则和区域围栏约束；仅新增模式开关或settings平行账号清单不算完成。D4模式/拥有者/增量预算、D6.2/完整三步及原外部验收继续开放，原28项20done/8部分不变。
+- 本地构建目录积累14399文件/644527944bytes；以本次252项实际Vite输出核对，assets中14145个未由本次构建发出的旧生成资源合计635048555bytes，当前输出全部存在。原生PowerShell在精确根路径、链接及活跃消费核对后执行删除命令，被宿主在创建进程前拒绝；复核原文件均在，回收0。不换工具/移动重试，该精确assets集合由宿主用户解除策略后再清理。未把旧manifest当最新引用依据，当前生成资源/回滚/共享依赖保留。
+- 任务浏览器及隔离HTTP/PG夹具已通过finally退出。核对发现继承的18761预览仍在（原记录退出不准确），随后按原repo/vite/preview命令身份单独停止；最终监听0。未重复删除历史data或拒删scratch，无新clone/worktree/依赖树，不改生产/CI/发布。
