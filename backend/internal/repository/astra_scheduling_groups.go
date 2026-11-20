@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"reflect"
 )
 
 // Before is the membership before this mode took ownership; After is the last
@@ -16,7 +18,7 @@ type astraGroupMembership struct {
 }
 
 func astraSchedulingGroups(ctx context.Context, tx *sql.Tx, id int64) ([]qualityGroup, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT account_id,group_id,priority,created_at,allowed_models
+	rows, err := tx.QueryContext(ctx, `SELECT account_id,group_id,priority,created_at,allowed_models,ownership
  FROM account_groups WHERE account_id=$1 ORDER BY group_id FOR UPDATE`, id)
 	if err != nil {
 		return nil, err
@@ -25,9 +27,14 @@ func astraSchedulingGroups(ctx context.Context, tx *sql.Tx, id int64) ([]quality
 	var groups []qualityGroup
 	for rows.Next() {
 		var g qualityGroup
-		var allowed []byte
-		if err = rows.Scan(&g.AccountID, &g.GroupID, &g.Priority, &g.CreatedAt, &allowed); err != nil {
+		var allowed, ownership []byte
+		if err = rows.Scan(&g.AccountID, &g.GroupID, &g.Priority, &g.CreatedAt, &allowed, &ownership); err != nil {
 			return nil, err
+		}
+		if len(ownership) > 0 {
+			if err = json.Unmarshal(ownership, &g.Ownership); err != nil {
+				return nil, err
+			}
 		}
 		g.AllowedModels = allowed
 		groups = append(groups, g)
@@ -40,7 +47,7 @@ func astraMembershipEqual(a, b *qualityGroup) bool {
 		return a == b
 	}
 	return a.AccountID == b.AccountID && a.GroupID == b.GroupID && a.Priority == b.Priority &&
-		a.CreatedAt.Equal(b.CreatedAt) && astraJSONEqual(a.AllowedModels, b.AllowedModels)
+		a.CreatedAt.Equal(b.CreatedAt) && astraJSONEqual(a.AllowedModels, b.AllowedModels) && reflect.DeepEqual(a.Ownership, b.Ownership)
 }
 
 // Runs inside the settings/account transaction. A conflict rolls back the whole
@@ -109,9 +116,13 @@ func reconcileAstraGroups(ctx context.Context, tx *sql.Tx, id int64, state *astr
 				allowed = string(desired.AllowedModels)
 			}
 			inserted := *desired
-			err = tx.QueryRowContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority,created_at,allowed_models)
- VALUES($1,$2,$3,COALESCE($4::timestamptz,clock_timestamp()),$5)
- ON CONFLICT (account_id,group_id) DO NOTHING RETURNING created_at`, id, m.GroupID, desired.Priority, created, allowed).Scan(&inserted.CreatedAt)
+			ownership, err := desired.ownershipValue()
+			if err != nil {
+				return false, false, err
+			}
+			err = tx.QueryRowContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority,created_at,allowed_models,ownership)
+ VALUES($1,$2,$3,COALESCE($4::timestamptz,clock_timestamp()),$5,$6)
+ ON CONFLICT (account_id,group_id) DO NOTHING RETURNING created_at`, id, m.GroupID, desired.Priority, created, allowed, ownership).Scan(&inserted.CreatedAt)
 			if errors.Is(err, sql.ErrNoRows) {
 				return false, false, errors.New("astra_restore_conflict")
 			}

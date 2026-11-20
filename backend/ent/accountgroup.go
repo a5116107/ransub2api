@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // AccountGroup is the model entity for the AccountGroup schema.
@@ -26,6 +27,8 @@ type AccountGroup struct {
 	Priority int `json:"priority,omitempty"`
 	// AllowedModels holds the value of the "allowed_models" field.
 	AllowedModels []string `json:"allowed_models,omitempty"`
+	// Ownership holds the value of the "ownership" field.
+	Ownership *domain.AccountGroupOwnership `json:"ownership,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
@@ -72,7 +75,7 @@ func (*AccountGroup) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case accountgroup.FieldAllowedModels:
+		case accountgroup.FieldAllowedModels, accountgroup.FieldOwnership:
 			values[i] = new([]byte)
 		case accountgroup.FieldAccountID, accountgroup.FieldGroupID, accountgroup.FieldPriority:
 			values[i] = new(sql.NullInt64)
@@ -117,6 +120,14 @@ func (_m *AccountGroup) assignValues(columns []string, values []any) error {
 			} else if value != nil && len(*value) > 0 {
 				if err := json.Unmarshal(*value, &_m.AllowedModels); err != nil {
 					return fmt.Errorf("unmarshal field allowed_models: %w", err)
+				}
+			}
+		case accountgroup.FieldOwnership:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field ownership", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Ownership); err != nil {
+					return fmt.Errorf("unmarshal field ownership: %w", err)
 				}
 			}
 		case accountgroup.FieldCreatedAt:
@@ -181,6 +192,9 @@ func (_m *AccountGroup) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("allowed_models=")
 	builder.WriteString(fmt.Sprintf("%v", _m.AllowedModels))
+	builder.WriteString(", ")
+	builder.WriteString("ownership=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Ownership))
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

@@ -230,6 +230,7 @@ var (
 	AccountGroupsColumns = []*schema.Column{
 		{Name: "priority", Type: field.TypeInt, Default: 50},
 		{Name: "allowed_models", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "ownership", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "account_id", Type: field.TypeInt64},
 		{Name: "group_id", Type: field.TypeInt64},
@@ -238,17 +239,17 @@ var (
 	AccountGroupsTable = &schema.Table{
 		Name:       "account_groups",
 		Columns:    AccountGroupsColumns,
-		PrimaryKey: []*schema.Column{AccountGroupsColumns[3], AccountGroupsColumns[4]},
+		PrimaryKey: []*schema.Column{AccountGroupsColumns[4], AccountGroupsColumns[5]},
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "account_groups_accounts_account",
-				Columns:    []*schema.Column{AccountGroupsColumns[3]},
+				Columns:    []*schema.Column{AccountGroupsColumns[4]},
 				RefColumns: []*schema.Column{AccountsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "account_groups_groups_group",
-				Columns:    []*schema.Column{AccountGroupsColumns[4]},
+				Columns:    []*schema.Column{AccountGroupsColumns[5]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -257,7 +258,7 @@ var (
 			{
 				Name:    "accountgroup_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{AccountGroupsColumns[4]},
+				Columns: []*schema.Column{AccountGroupsColumns[5]},
 			},
 			{
 				Name:    "accountgroup_priority",

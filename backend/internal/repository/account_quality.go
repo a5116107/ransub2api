@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
@@ -42,11 +43,12 @@ func (r *scheduledTestPlanRepository) TriggerQuality(ctx context.Context, id int
 }
 
 type qualityGroup struct {
-	AccountID     int64           `json:"account_id"`
-	GroupID       int64           `json:"group_id"`
-	Priority      int             `json:"priority"`
-	CreatedAt     time.Time       `json:"created_at"`
-	AllowedModels json.RawMessage `json:"allowed_models"`
+	AccountID     int64                         `json:"account_id"`
+	GroupID       int64                         `json:"group_id"`
+	Priority      int                           `json:"priority"`
+	CreatedAt     time.Time                     `json:"created_at"`
+	AllowedModels json.RawMessage               `json:"allowed_models"`
+	Ownership     *domain.AccountGroupOwnership `json:"ownership,omitempty"`
 }
 type qualityState struct {
 	RetestAfter *time.Time `json:"retest_after,omitempty"`
@@ -412,7 +414,9 @@ func applyQualityOutcomeWithoutRestTx(ctx context.Context, tx *sql.Tx, plan *ser
 }
 func qualityGroups(ctx context.Context, tx *sql.Tx, accountID int64) ([]byte, error) {
 	var raw []byte
-	err := tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(to_jsonb(g) ORDER BY g.group_id),'[]'::jsonb) FROM account_groups g WHERE account_id=$1`, accountID).Scan(&raw)
+	// Keep legacy NULL ownership absent, just as before this column existed.
+	// Otherwise every saved manual Remaining snapshot would falsely conflict.
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(CASE WHEN g.ownership IS NULL THEN to_jsonb(g)-'ownership' ELSE to_jsonb(g) END ORDER BY g.group_id),'[]'::jsonb) FROM account_groups g WHERE account_id=$1`, accountID).Scan(&raw)
 	return raw, err
 }
 

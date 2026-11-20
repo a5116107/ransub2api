@@ -72,12 +72,27 @@ func restoreQualityGroups(ctx context.Context, tx *sql.Tx, accountID int64, stat
 		if len(group.AllowedModels) > 0 && string(group.AllowedModels) != "null" {
 			allowed = string(group.AllowedModels)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority,created_at,allowed_models) VALUES($1,$2,$3,$4,$5)`, accountID, group.GroupID, group.Priority, group.CreatedAt, allowed); err != nil {
+		ownership, err := group.ownershipValue()
+		if err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority,created_at,allowed_models,ownership) VALUES($1,$2,$3,$4,$5,$6)`, accountID, group.GroupID, group.Priority, group.CreatedAt, allowed, ownership); err != nil {
 			return false, err
 		}
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE accounts SET updated_at=clock_timestamp() WHERE id=$1`, accountID)
 	return false, err
+}
+
+func (g qualityGroup) ownershipValue() (any, error) {
+	if g.Ownership == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(g.Ownership)
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
 }
 
 func qualityGroupsChanged(ctx context.Context, tx *sql.Tx, accountID int64, before []byte, removed []qualityGroup) error {

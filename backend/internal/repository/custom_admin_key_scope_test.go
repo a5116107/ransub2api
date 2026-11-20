@@ -99,7 +99,7 @@ func TestScopedAdminAccountListPostgresRulesAndPagination(t *testing.T) {
 		type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', schedulable BOOLEAN NOT NULL DEFAULT true,
 		concurrency INT NOT NULL DEFAULT 1, priority INT NOT NULL DEFAULT 1, credentials JSONB DEFAULT '{}', deleted_at TIMESTAMPTZ
 	);
-	CREATE TABLE account_groups(account_id BIGINT, group_id BIGINT, priority INT DEFAULT 50, allowed_models JSONB, created_at TIMESTAMPTZ DEFAULT NOW());
+	CREATE TABLE account_groups(account_id BIGINT, group_id BIGINT, priority INT DEFAULT 50, allowed_models JSONB, ownership JSONB, created_at TIMESTAMPTZ DEFAULT NOW());
 	INSERT INTO accounts(id,platform,type) VALUES
 	(1,'openai','oauth'), (2,'openai','apikey'), (3,'openai','oauth'),
 	(4,'openai','apikey'), (5,'anthropic','oauth'), (6,'openai','oauth');

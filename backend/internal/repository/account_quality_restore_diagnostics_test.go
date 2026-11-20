@@ -140,7 +140,7 @@ func TestQualityRestoreDiagnosticsIgnoreUnrelatedAccountVersion(t *testing.T) {
 			if action == "remove_groups" {
 				expectAccountGroupBindingsAccount(mock, plan.AccountID)
 				mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM groups").WithArgs(int64(21), plan.AccountID).WillReturnRows(sqlmock.NewRows([]string{"exists", "replaced"}).AddRow(true, false))
-				mock.ExpectExec("INSERT INTO account_groups").WithArgs(plan.AccountID, int64(21), 7, state.Removed[0].CreatedAt, nil).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("INSERT INTO account_groups").WithArgs(plan.AccountID, int64(21), 7, state.Removed[0].CreatedAt, nil, nil).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("UPDATE accounts SET updated_at").WithArgs(plan.AccountID).WillReturnResult(sqlmock.NewResult(0, 1))
 			} else {
 				mock.ExpectExec("UPDATE accounts SET schedulable=true").WithArgs(plan.AccountID).WillReturnResult(sqlmock.NewResult(0, 1))

@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // AccountGroupCreate is the builder for creating a AccountGroup entity.
@@ -53,6 +54,12 @@ func (_c *AccountGroupCreate) SetNillablePriority(v *int) *AccountGroupCreate {
 // SetAllowedModels sets the "allowed_models" field.
 func (_c *AccountGroupCreate) SetAllowedModels(v []string) *AccountGroupCreate {
 	_c.mutation.SetAllowedModels(v)
+	return _c
+}
+
+// SetOwnership sets the "ownership" field.
+func (_c *AccountGroupCreate) SetOwnership(v *domain.AccountGroupOwnership) *AccountGroupCreate {
+	_c.mutation.SetOwnership(v)
 	return _c
 }
 
@@ -136,6 +143,11 @@ func (_c *AccountGroupCreate) check() error {
 	if _, ok := _c.mutation.Priority(); !ok {
 		return &ValidationError{Name: "priority", err: errors.New(`ent: missing required field "AccountGroup.priority"`)}
 	}
+	if v, ok := _c.mutation.Ownership(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "ownership", err: fmt.Errorf(`ent: validator failed for field "AccountGroup.ownership": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "AccountGroup.created_at"`)}
 	}
@@ -175,6 +187,10 @@ func (_c *AccountGroupCreate) createSpec() (*AccountGroup, *sqlgraph.CreateSpec)
 	if value, ok := _c.mutation.AllowedModels(); ok {
 		_spec.SetField(accountgroup.FieldAllowedModels, field.TypeJSON, value)
 		_node.AllowedModels = value
+	}
+	if value, ok := _c.mutation.Ownership(); ok {
+		_spec.SetField(accountgroup.FieldOwnership, field.TypeJSON, value)
+		_node.Ownership = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(accountgroup.FieldCreatedAt, field.TypeTime, value)
@@ -326,6 +342,24 @@ func (u *AccountGroupUpsert) ClearAllowedModels() *AccountGroupUpsert {
 	return u
 }
 
+// SetOwnership sets the "ownership" field.
+func (u *AccountGroupUpsert) SetOwnership(v *domain.AccountGroupOwnership) *AccountGroupUpsert {
+	u.Set(accountgroup.FieldOwnership, v)
+	return u
+}
+
+// UpdateOwnership sets the "ownership" field to the value that was provided on create.
+func (u *AccountGroupUpsert) UpdateOwnership() *AccountGroupUpsert {
+	u.SetExcluded(accountgroup.FieldOwnership)
+	return u
+}
+
+// ClearOwnership clears the value of the "ownership" field.
+func (u *AccountGroupUpsert) ClearOwnership() *AccountGroupUpsert {
+	u.SetNull(accountgroup.FieldOwnership)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -438,6 +472,27 @@ func (u *AccountGroupUpsertOne) UpdateAllowedModels() *AccountGroupUpsertOne {
 func (u *AccountGroupUpsertOne) ClearAllowedModels() *AccountGroupUpsertOne {
 	return u.Update(func(s *AccountGroupUpsert) {
 		s.ClearAllowedModels()
+	})
+}
+
+// SetOwnership sets the "ownership" field.
+func (u *AccountGroupUpsertOne) SetOwnership(v *domain.AccountGroupOwnership) *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.SetOwnership(v)
+	})
+}
+
+// UpdateOwnership sets the "ownership" field to the value that was provided on create.
+func (u *AccountGroupUpsertOne) UpdateOwnership() *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.UpdateOwnership()
+	})
+}
+
+// ClearOwnership clears the value of the "ownership" field.
+func (u *AccountGroupUpsertOne) ClearOwnership() *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.ClearOwnership()
 	})
 }
 
@@ -696,6 +751,27 @@ func (u *AccountGroupUpsertBulk) UpdateAllowedModels() *AccountGroupUpsertBulk {
 func (u *AccountGroupUpsertBulk) ClearAllowedModels() *AccountGroupUpsertBulk {
 	return u.Update(func(s *AccountGroupUpsert) {
 		s.ClearAllowedModels()
+	})
+}
+
+// SetOwnership sets the "ownership" field.
+func (u *AccountGroupUpsertBulk) SetOwnership(v *domain.AccountGroupOwnership) *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.SetOwnership(v)
+	})
+}
+
+// UpdateOwnership sets the "ownership" field to the value that was provided on create.
+func (u *AccountGroupUpsertBulk) UpdateOwnership() *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.UpdateOwnership()
+	})
+}
+
+// ClearOwnership clears the value of the "ownership" field.
+func (u *AccountGroupUpsertBulk) ClearOwnership() *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.ClearOwnership()
 	})
 }
 

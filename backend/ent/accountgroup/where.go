@@ -120,6 +120,16 @@ func AllowedModelsNotNil() predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldNotNull(FieldAllowedModels))
 }
 
+// OwnershipIsNil applies the IsNil predicate on the "ownership" field.
+func OwnershipIsNil() predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldIsNull(FieldOwnership))
+}
+
+// OwnershipNotNil applies the NotNil predicate on the "ownership" field.
+func OwnershipNotNil() predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldNotNull(FieldOwnership))
+}
+
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.
 func CreatedAtEQ(v time.Time) predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldEQ(FieldCreatedAt, v))

@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // AccountGroupUpdate is the builder for updating AccountGroup entities.
@@ -97,6 +98,18 @@ func (_u *AccountGroupUpdate) ClearAllowedModels() *AccountGroupUpdate {
 	return _u
 }
 
+// SetOwnership sets the "ownership" field.
+func (_u *AccountGroupUpdate) SetOwnership(v *domain.AccountGroupOwnership) *AccountGroupUpdate {
+	_u.mutation.SetOwnership(v)
+	return _u
+}
+
+// ClearOwnership clears the value of the "ownership" field.
+func (_u *AccountGroupUpdate) ClearOwnership() *AccountGroupUpdate {
+	_u.mutation.ClearOwnership()
+	return _u
+}
+
 // SetAccount sets the "account" edge to the Account entity.
 func (_u *AccountGroupUpdate) SetAccount(v *Account) *AccountGroupUpdate {
 	return _u.SetAccountID(v.ID)
@@ -153,6 +166,11 @@ func (_u *AccountGroupUpdate) ExecX(ctx context.Context) {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *AccountGroupUpdate) check() error {
+	if v, ok := _u.mutation.Ownership(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "ownership", err: fmt.Errorf(`ent: validator failed for field "AccountGroup.ownership": %w`, err)}
+		}
+	}
 	if _u.mutation.AccountCleared() && len(_u.mutation.AccountIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "AccountGroup.account"`)
 	}
@@ -190,6 +208,12 @@ func (_u *AccountGroupUpdate) sqlSave(ctx context.Context) (_node int, err error
 	}
 	if _u.mutation.AllowedModelsCleared() {
 		_spec.ClearField(accountgroup.FieldAllowedModels, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Ownership(); ok {
+		_spec.SetField(accountgroup.FieldOwnership, field.TypeJSON, value)
+	}
+	if _u.mutation.OwnershipCleared() {
+		_spec.ClearField(accountgroup.FieldOwnership, field.TypeJSON)
 	}
 	if _u.mutation.AccountCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -336,6 +360,18 @@ func (_u *AccountGroupUpdateOne) ClearAllowedModels() *AccountGroupUpdateOne {
 	return _u
 }
 
+// SetOwnership sets the "ownership" field.
+func (_u *AccountGroupUpdateOne) SetOwnership(v *domain.AccountGroupOwnership) *AccountGroupUpdateOne {
+	_u.mutation.SetOwnership(v)
+	return _u
+}
+
+// ClearOwnership clears the value of the "ownership" field.
+func (_u *AccountGroupUpdateOne) ClearOwnership() *AccountGroupUpdateOne {
+	_u.mutation.ClearOwnership()
+	return _u
+}
+
 // SetAccount sets the "account" edge to the Account entity.
 func (_u *AccountGroupUpdateOne) SetAccount(v *Account) *AccountGroupUpdateOne {
 	return _u.SetAccountID(v.ID)
@@ -405,6 +441,11 @@ func (_u *AccountGroupUpdateOne) ExecX(ctx context.Context) {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *AccountGroupUpdateOne) check() error {
+	if v, ok := _u.mutation.Ownership(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "ownership", err: fmt.Errorf(`ent: validator failed for field "AccountGroup.ownership": %w`, err)}
+		}
+	}
 	if _u.mutation.AccountCleared() && len(_u.mutation.AccountIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "AccountGroup.account"`)
 	}
@@ -461,6 +502,12 @@ func (_u *AccountGroupUpdateOne) sqlSave(ctx context.Context) (_node *AccountGro
 	}
 	if _u.mutation.AllowedModelsCleared() {
 		_spec.ClearField(accountgroup.FieldAllowedModels, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Ownership(); ok {
+		_spec.SetField(accountgroup.FieldOwnership, field.TypeJSON, value)
+	}
+	if _u.mutation.OwnershipCleared() {
+		_spec.ClearField(accountgroup.FieldOwnership, field.TypeJSON)
 	}
 	if _u.mutation.AccountCleared() {
 		edge := &sqlgraph.EdgeSpec{

@@ -71,6 +71,7 @@ func sameMembershipRows(t *testing.T, before, after []*dbent.AccountGroup) {
 		require.Equal(t, row.GroupID, after[i].GroupID)
 		require.Equal(t, row.Priority, after[i].Priority)
 		require.Equal(t, row.AllowedModels, after[i].AllowedModels)
+		require.Equal(t, row.Ownership, after[i].Ownership)
 		require.True(t, row.CreatedAt.Equal(after[i].CreatedAt), "membership identity changed for group %d", row.GroupID)
 	}
 }

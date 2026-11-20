@@ -10,10 +10,11 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // AccountGroup holds the edge schema definition for the account_groups relationship.
-// It stores extra fields (priority, allowed_models, created_at) and uses a composite primary key.
+// It stores priority, model restrictions, ownership and creation time on the original edge.
 type AccountGroup struct {
 	ent.Schema
 }
@@ -34,6 +35,9 @@ func (AccountGroup) Fields() []ent.Field {
 			Default(50),
 		// allowed_models: 账号在该分组内可用的模型（支持末尾 * 通配），为空表示不限制
 		field.JSON("allowed_models", []string{}).
+			Optional().
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
+		field.JSON("ownership", &domain.AccountGroupOwnership{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.Time("created_at").

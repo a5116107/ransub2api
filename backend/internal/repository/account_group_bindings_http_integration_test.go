@@ -53,7 +53,8 @@ func TestAccountGroupBindingsPostgresAdminHTTP(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, accounts.SetGroupAllowedModels(ctx, account.ID, map[int64][]string{first.ID: {"gpt-6-sol"}, second.ID: {"gpt-6-*"}}))
 	stamp := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
-	_, err = db.ExecContext(ctx, "UPDATE account_groups SET created_at=$2 WHERE account_id=$1", account.ID, stamp)
+	const owner = `{"version":1,"kind":"procurement","revision":7}`
+	_, err = db.ExecContext(ctx, "UPDATE account_groups SET created_at=$2,ownership=$3::jsonb WHERE account_id=$1", account.ID, stamp, owner)
 	require.NoError(t, err)
 	h := admin.NewAccountHandler(management, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
@@ -86,11 +87,12 @@ func TestAccountGroupBindingsPostgresAdminHTTP(t *testing.T) {
 	require.Equal(t, http.StatusOK, update(body, adminToken))
 	var created time.Time
 	var priority int
-	var models string
-	require.NoError(t, db.QueryRowContext(ctx, "SELECT created_at,priority,allowed_models::text FROM account_groups WHERE account_id=$1 AND group_id=$2", account.ID, second.ID).Scan(&created, &priority, &models))
+	var models, ownership string
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT created_at,priority,allowed_models::text,ownership::text FROM account_groups WHERE account_id=$1 AND group_id=$2", account.ID, second.ID).Scan(&created, &priority, &models, &ownership))
 	require.True(t, stamp.Equal(created))
 	require.Equal(t, 1, priority)
 	require.JSONEq(t, `["gpt-6-*"]`, models)
+	require.JSONEq(t, owner, ownership, "ordinary authenticated edits must preserve the retained relationship owner")
 	var originalExtra string
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT extra::text FROM accounts WHERE id=$1", account.ID).Scan(&originalExtra))
 	require.Equal(t, http.StatusOK, update(fmt.Sprintf(`{"group_ids":[%d]}`, second.ID), adminToken))
@@ -105,5 +107,8 @@ func TestAccountGroupBindingsPostgresAdminHTTP(t *testing.T) {
 	raw, err := json.Marshal(loaded.Extra)
 	require.NoError(t, err)
 	require.JSONEq(t, originalExtra, string(raw), "HTTP removal/re-add creates no persistent exclusion")
-	t.Log("PASS: authenticated real HTTP -> original admin service -> PostgreSQL diff binding; auth denied, identity retained, duplicate IDs normalized, remove/re-add without exclusion")
+	var readded []byte
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT ownership FROM account_groups WHERE account_id=$1 AND group_id=$2", account.ID, first.ID).Scan(&readded))
+	require.Empty(t, readded, "manual re-add must not resurrect the former owner")
+	t.Log("PASS: authenticated real HTTP -> original admin service -> PostgreSQL diff binding; auth denied, identity and owner retained, duplicate IDs normalized, manual remove/re-add without exclusion or former ownership")
 }

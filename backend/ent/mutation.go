@@ -5533,6 +5533,7 @@ type AccountGroupMutation struct {
 	addpriority          *int
 	allowed_models       *[]string
 	appendallowed_models []string
+	ownership            **domain.AccountGroupOwnership
 	created_at           *time.Time
 	clearedFields        map[string]struct{}
 	account              *int64
@@ -5707,6 +5708,38 @@ func (m *AccountGroupMutation) ResetAllowedModels() {
 	delete(m.clearedFields, accountgroup.FieldAllowedModels)
 }
 
+// SetOwnership sets the "ownership" field.
+func (m *AccountGroupMutation) SetOwnership(dgo *domain.AccountGroupOwnership) {
+	m.ownership = &dgo
+}
+
+// Ownership returns the value of the "ownership" field in the mutation.
+func (m *AccountGroupMutation) Ownership() (r *domain.AccountGroupOwnership, exists bool) {
+	v := m.ownership
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearOwnership clears the value of the "ownership" field.
+func (m *AccountGroupMutation) ClearOwnership() {
+	m.ownership = nil
+	m.clearedFields[accountgroup.FieldOwnership] = struct{}{}
+}
+
+// OwnershipCleared returns if the "ownership" field was cleared in this mutation.
+func (m *AccountGroupMutation) OwnershipCleared() bool {
+	_, ok := m.clearedFields[accountgroup.FieldOwnership]
+	return ok
+}
+
+// ResetOwnership resets all changes to the "ownership" field.
+func (m *AccountGroupMutation) ResetOwnership() {
+	m.ownership = nil
+	delete(m.clearedFields, accountgroup.FieldOwnership)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *AccountGroupMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -5814,7 +5847,7 @@ func (m *AccountGroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *AccountGroupMutation) Fields() []string {
-	fields := make([]string, 0, 5)
+	fields := make([]string, 0, 6)
 	if m.account != nil {
 		fields = append(fields, accountgroup.FieldAccountID)
 	}
@@ -5826,6 +5859,9 @@ func (m *AccountGroupMutation) Fields() []string {
 	}
 	if m.allowed_models != nil {
 		fields = append(fields, accountgroup.FieldAllowedModels)
+	}
+	if m.ownership != nil {
+		fields = append(fields, accountgroup.FieldOwnership)
 	}
 	if m.created_at != nil {
 		fields = append(fields, accountgroup.FieldCreatedAt)
@@ -5846,6 +5882,8 @@ func (m *AccountGroupMutation) Field(name string) (ent.Value, bool) {
 		return m.Priority()
 	case accountgroup.FieldAllowedModels:
 		return m.AllowedModels()
+	case accountgroup.FieldOwnership:
+		return m.Ownership()
 	case accountgroup.FieldCreatedAt:
 		return m.CreatedAt()
 	}
@@ -5891,6 +5929,13 @@ func (m *AccountGroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetAllowedModels(v)
+		return nil
+	case accountgroup.FieldOwnership:
+		v, ok := value.(*domain.AccountGroupOwnership)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOwnership(v)
 		return nil
 	case accountgroup.FieldCreatedAt:
 		v, ok := value.(time.Time)
@@ -5947,6 +5992,9 @@ func (m *AccountGroupMutation) ClearedFields() []string {
 	if m.FieldCleared(accountgroup.FieldAllowedModels) {
 		fields = append(fields, accountgroup.FieldAllowedModels)
 	}
+	if m.FieldCleared(accountgroup.FieldOwnership) {
+		fields = append(fields, accountgroup.FieldOwnership)
+	}
 	return fields
 }
 
@@ -5963,6 +6011,9 @@ func (m *AccountGroupMutation) ClearField(name string) error {
 	switch name {
 	case accountgroup.FieldAllowedModels:
 		m.ClearAllowedModels()
+		return nil
+	case accountgroup.FieldOwnership:
+		m.ClearOwnership()
 		return nil
 	}
 	return fmt.Errorf("unknown AccountGroup nullable field %s", name)
@@ -5983,6 +6034,9 @@ func (m *AccountGroupMutation) ResetField(name string) error {
 		return nil
 	case accountgroup.FieldAllowedModels:
 		m.ResetAllowedModels()
+		return nil
+	case accountgroup.FieldOwnership:
+		m.ResetOwnership()
 		return nil
 	case accountgroup.FieldCreatedAt:
 		m.ResetCreatedAt()

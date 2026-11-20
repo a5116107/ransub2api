@@ -20,6 +20,8 @@ const (
 	FieldPriority = "priority"
 	// FieldAllowedModels holds the string denoting the allowed_models field in the database.
 	FieldAllowedModels = "allowed_models"
+	// FieldOwnership holds the string denoting the ownership field in the database.
+	FieldOwnership = "ownership"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// EdgeAccount holds the string denoting the account edge name in mutations.
@@ -54,6 +56,7 @@ var Columns = []string{
 	FieldGroupID,
 	FieldPriority,
 	FieldAllowedModels,
+	FieldOwnership,
 	FieldCreatedAt,
 }
 

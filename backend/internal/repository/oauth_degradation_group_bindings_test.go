@@ -24,7 +24,7 @@ func TestOAuthDegradationAuditDoesNotBlockQualityGroupRestore(t *testing.T) {
 	state := qualityState{Removed: []qualityGroup{{AccountID: 8, GroupID: 21}}}
 	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM groups`).WithArgs(int64(21), int64(8)).
 		WillReturnRows(sqlmock.NewRows([]string{"exists", "replaced"}).AddRow(true, false))
-	mock.ExpectExec(`INSERT INTO account_groups`).WithArgs(int64(8), int64(21), 0, state.Removed[0].CreatedAt, nil).
+	mock.ExpectExec(`INSERT INTO account_groups`).WithArgs(int64(8), int64(21), 0, state.Removed[0].CreatedAt, nil, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE accounts SET updated_at=clock_timestamp\(\)`).WithArgs(int64(8)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
