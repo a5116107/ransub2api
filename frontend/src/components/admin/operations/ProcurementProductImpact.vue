@@ -120,6 +120,34 @@
               <button type="button" class="btn btn-secondary" :disabled="reviewPage * pageSize >= result.management_review.rules.length" @click="reviewPage++">{{ t('upstreamOps.next') }}</button>
             </nav>
           </details>
+          <section class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="product-writers-title" data-testid="product-writer-review">
+            <h4 id="product-writers-title" class="text-sm font-medium">{{ t(`${p}.review.writers.title`) }}</h4>
+            <p v-if="!writerReview" class="text-sm text-gray-500">{{ t(`${p}.review.writers.legacy`) }}</p>
+            <template v-else>
+              <p class="rounded-lg bg-amber-50 p-3 text-sm font-medium text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="product-writer-state">{{ t(`${p}.review.writers.states.${writerState}`) }}</p>
+              <dl class="grid min-w-0 grid-cols-2 gap-3 lg:grid-cols-4">
+                <div v-for="key in writerCountKeys" :key="key" class="min-w-0 rounded-lg bg-gray-50 p-3 dark:bg-dark-800"><dt class="text-xs text-gray-500">{{ t(`${p}.review.writers.${key}`) }}</dt><dd class="mt-1 text-xl font-semibold tabular-nums">{{ writerReview[key] }}</dd></div>
+              </dl>
+              <details v-if="writerReview.writers.length" class="min-w-0 space-y-3" data-testid="product-writer-details">
+                <summary class="cursor-pointer text-sm font-medium">{{ t(`${p}.review.writers.details`) }}</summary>
+                <ul class="min-w-0 space-y-2">
+                  <li v-for="row in writerRows" :key="`${row.kind}:${row.account_id}`" class="min-w-0 space-y-1 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-800" data-testid="product-writer-row">
+                    <p class="break-words font-medium">{{ row.account_id === null ? t(`${p}.review.writers.global`) : `${row.account_name} · #${row.account_id}` }}</p>
+                    <p class="break-words">{{ t(`${p}.review.writers.kinds.${row.kind}`) }} · {{ t(`${p}.review.writers.${row.enabled === null ? 'unconfirmed' : row.enabled ? 'enabled' : 'inactive'}`) }}</p>
+                    <p class="break-words font-medium">{{ t(`${p}.review.writers.risks.${row.risk}`) }}</p>
+                    <ul class="list-inside list-disc text-xs leading-5"><li v-for="reason in row.reasons" :key="reason">{{ t(`${p}.review.writers.reasons.${reason}`) }}</li></ul>
+                    <a :href="writerLink(row.kind)" class="inline-block text-primary-600 underline dark:text-primary-400">{{ t(`${p}.review.writers.configure`) }}</a>
+                  </li>
+                </ul>
+                <nav v-if="writerReview.writers.length > pageSize" class="flex flex-wrap items-center gap-3 text-sm" :aria-label="t(`${p}.review.writers.pages`)">
+                  <button type="button" class="btn btn-secondary" :disabled="writerPage <= 1" @click="writerPage--">{{ t('upstreamOps.previous') }}</button>
+                  <span>{{ writerPage }} / {{ Math.ceil(writerReview.writers.length / pageSize) }}</span>
+                  <button type="button" class="btn btn-secondary" :disabled="writerPage * pageSize >= writerReview.writers.length" @click="writerPage++">{{ t('upstreamOps.next') }}</button>
+                </nav>
+              </details>
+              <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.review.writers.boundary`, { count: writerReview.accounts_examined }) }}</p>
+            </template>
+          </section>
           <div class="min-w-0 space-y-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="product-management-budget">
             <h4 class="font-medium">{{ t(`${p}.review.budgetTitle`) }}</h4>
             <p class="font-medium" data-testid="product-management-budget-state">{{ t(`${p}.review.budgetStates.${result.management_review.budget.state}`) }}</p>
@@ -151,7 +179,7 @@ import type { AdminGroup } from '@/types'
 const { t } = useI18n(), p = 'upstreamOps.productImpact'
 const productID = ref<number | null>(null), products = ref<AdminGroup[]>([]), productsTotal = ref(0)
 const loadedProducts = ref(false), productsBusy = ref(false), productsError = ref(false)
-const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), sourcePage = ref(1), pageSize = 20
+const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), sourcePage = ref(1), writerPage = ref(1), pageSize = 20
 let alive = true, productsGeneration = 0, previewGeneration = 0, lastSearch = ''
 let productsController: AbortController | undefined, previewController: AbortController | undefined
 const selected = ref<AdminGroup | null>(null)
@@ -165,6 +193,19 @@ const minAdmitted = computed(() => result.value?.report.verdicts.filter(row => r
 const pageRows = computed(() => result.value?.report.verdicts.slice((page.value - 1) * pageSize, page.value * pageSize) ?? [])
 const reviewRows = computed(() => result.value?.management_review?.rules.slice((reviewPage.value - 1) * pageSize, reviewPage.value * pageSize) ?? [])
 const sourceInventory = computed(() => result.value?.management_review?.source_inventory)
+const writerReview = computed(() => result.value?.management_review?.writer_review)
+const writerRows = computed(() => writerReview.value?.writers.slice((writerPage.value - 1) * pageSize, writerPage.value * pageSize) ?? [])
+const writerState = computed(() => {
+  const review = writerReview.value
+  if (!review) return 'unknown'
+  return review.membership_conflicts ? 'conflict' : review.unknown || !review.inventory_complete ? 'unknown' : review.account_protections ? 'protected' : 'no_membership_conflict'
+})
+const writerCountKeys = ['membership_conflicts', 'account_protections', 'historical_only', 'unknown'] as const
+function writerLink(kind: string): string {
+  if (kind === 'two_fa_admission') return '/admin/account-quality'
+  if (kind === 'account_configuration' || kind === 'excel_bps_403') return '/admin/accounts'
+  return kind === 'astra_scheduling' ? '/admin/harvest-flow' : '/admin/auto-config'
+}
 const sourceRows = computed(() => sourceInventory.value?.accounts.slice((sourcePage.value - 1) * pageSize, sourcePage.value * pageSize) ?? [])
 const nativeStatus = (status: string) => ['active', 'inactive', 'expired', 'error'].includes(status) ? t(`admin.accounts.status.${status}`) : t('upstreamOps.unknown')
 const reviewCountKeys = ['conflicting_rules', 'protection_rules', 'unknown_rules', 'judge_dependency_rules'] as const
@@ -180,7 +221,7 @@ const knownWarning = (warning: string) => warnings.has(warning) ? warning : 'unk
 const formatRate = (value: number | undefined) => value == null ? t('upstreamOps.unknown') : new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(value)
 watch(productID, id => {
   selected.value = products.value.find(row => row.id === id) ?? (selected.value?.id === id ? selected.value : null)
-  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1; sourcePage.value = 1
+  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1
 }, { flush: 'sync' })
 function openProducts() { if (!loadedProducts.value && !productsBusy.value) void loadProducts('') }
 async function loadProducts(search: string) {
@@ -200,7 +241,7 @@ async function preview() {
   if (busy.value || !productID.value) return
   const id = productID.value, generation = ++previewGeneration
   previewController?.abort(); previewController = new AbortController()
-  busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1; sourcePage.value = 1
+  busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1
   try {
     const next = await previewProcurementProductImpact(id, previewController.signal)
     if (!validProcurementProductImpact(next, id)) throw new Error('invalid product impact')

@@ -87,6 +87,9 @@ func TestProcurementProductImpactPostgresAdminHTTP(t *testing.T) {
 	var eventsBefore int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduler_outbox`).Scan(&eventsBefore))
 	out := read()
+	reviewJSON, reviewErr := json.Marshal(out.ManagementReview)
+	require.NoError(t, reviewErr)
+	require.Contains(t, string(reviewJSON), `"writer_review"`, "non-quality automatic writers must not be omitted from the takeover review")
 	require.Equal(t, 1, out.Version)
 	require.False(t, out.GateEnabled)
 	require.True(t, out.Report.AssumedEnabled)

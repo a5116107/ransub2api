@@ -45,6 +45,16 @@ export default {
         nativeState: '{platform} · 原生状态 {status}', schedulingOn: '账号调度开关开启', schedulingOff: '账号调度开关关闭',
         boundary: '策略版本 {revision}。来源许可、已有关系与账号开关分别展示；不等于价格、质量、真实模型、缓存、额度或槽位合格。仅盘点，未接管或修改关联。'
       },
+      writers: {
+        title: '其他自动写入者与保存状态', legacy: '此服务器尚未检查403移组、OAuth降级、Astra和2FA隔离；相关冲突仍未知。',
+        states: { conflict: '发现关联写入或恢复归属冲突；需先协调原保护，再授权接管', unknown: '存在未确认的配置或覆盖；未认定可以接管', protected: '未发现已覆盖写入者的关联冲突；其他账号保护仍须保留', no_membership_conflict: '当前已覆盖写入者未发现关联冲突；不是自动接管许可' },
+        membership_conflicts: '关联冲突', account_protections: '账号保护', historical_only: '仅历史 / 当前不适用', unknown: '待核对',
+        details: '展开写入者及处理入口', pages: '自动写入者分页', global: '全站保存配置', enabled: '存在启用配置（触发条件另判）', inactive: '当前未运行 / 无后续动作', unconfirmed: '配置状态未确认', configure: '查看原配置 / 归属',
+        kinds: { excel_bps_403: '403自动移组', oauth_degradation: 'OAuth降级动作', astra_scheduling: 'Astra调度与恢复', two_fa_admission: '2FA准入隔离', account_configuration: '账号配置' },
+        risks: { membership_conflict: '可能修改本产品关联或保留相关恢复归属', account_protection: '其他账号保护 / 可恢复的原控制，不应直接清除', historical_only: '不是当前关联拥有者，不构成人工永久排除', unknown: '配置或保存状态未能解释；不按安全接管处理' },
+        reasons: { configuration_unreadable: '保存配置损坏或包含尚未支持的字段。', saved_state_unreadable: '保存状态未能完整解释，保留原记录。', admission_plan_mismatch: '2FA登记与当前计划不一致或计划已缺失。', not_applicable: '按原执行器的账号类型 / 授权条件，当前配置不适用。', moves_all_memberships: '触发时可能替换或清空全部关联；普通移出后也可能再写入。', native_history_not_exclusion: '此为历史标记；当前原生账号设置与人工操作仍权威，历史不禁止重新关联。', removes_product_on_trigger: '降级触发时将移除本产品关联。', native_account_controls: '原控制可能影响账号调度、模型、并发或其他关联；不代表本产品资格通过。', astra_membership_owner: 'Astra配置或保存快照涉及本产品；停用开关不等于放弃恢复归属。', paused_enrollment_can_resume: '计划已暂停但登记保留；恢复原计划后仍可能隔离移组。' },
+        boundary: '同一只读快照检查 {count} 个账号：当前 / 批准供应、明确指向本产品的配置或保存归属。计数为潜在写入影响，不是已执行动作或实时容量；不扫描未知外部程序，不自动停保护、转移拥有者或修改批准来源。'
+      },
       incomplete: '相关规则超过 1000 条，以下计数仅为已读取下界；完整冲突范围仍未知。',
       conflicting_rules: '关联写入 / 保留归属待处理', protection_rules: '需保留的其他账号保护',
       unknown_rules: '配置或归属待核对', judge_dependency_rules: '依赖本产品的判题规则',

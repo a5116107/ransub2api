@@ -68,6 +68,7 @@ export interface ProcurementManagementReview {
     writes_product: boolean; retained_ownership: boolean; saved_product_ownership: boolean; judge_depends_on_product: boolean
   }>
   source_inventory?: ProcurementSourceInventory | null
+  writer_review?: ProcurementWriterReview | null
   budget: {
     state: string; revision: number; enforced: boolean; inventory_complete: boolean
     minimum_requests_per_day: number; regular_day_capacity: number; unestimated_sources: number
@@ -80,6 +81,15 @@ export interface ProcurementSourceInventory {
   approved_accounts: number | null; unbound_approved_accounts: number | null
   groups: Array<{ id: number; name: string; state: string }>
   accounts: Array<{ account_id: number; name: string; platform: string; status: string; schedulable: boolean; in_product: boolean; in_approved_sources: boolean | null }>
+}
+
+export interface ProcurementWriterReview {
+  version: number; scope: string; inventory_complete: boolean; accounts_examined: number
+  membership_conflicts: number; account_protections: number; historical_only: number; unknown: number
+  writers: Array<{
+    kind: string; account_id: number | null; account_name: string; enabled: boolean | null; risk: string
+    writes_product: boolean; retained_ownership: boolean; reasons: string[]
+  }>
 }
 
 export async function previewProcurementProductImpact(id: number, signal?: AbortSignal): Promise<ProcurementProductImpact> {

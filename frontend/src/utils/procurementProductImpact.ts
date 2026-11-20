@@ -1,4 +1,4 @@
-import type { ProcurementManagementReview, ProcurementProductImpact } from '@/api/admin/procurementCatalog'
+import type { ProcurementManagementReview, ProcurementProductImpact, ProcurementWriterReview } from '@/api/admin/procurementCatalog'
 
 const impactPriceClasses = [
   'admitted', 'rejected_threshold', 'rejected_procurement_range', 'rejected_procurement_source',
@@ -8,11 +8,46 @@ const impactPriceClasses = [
 const finiteRate = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
 
+function validWriterReview(review: ProcurementWriterReview): boolean {
+  if (!review || review.version !== 1 || review.scope !== 'supply_candidates_and_explicit_writer_targets' ||
+    typeof review.inventory_complete !== 'boolean' || !count(review.accounts_examined) || review.accounts_examined > 1000 ||
+    ![review.membership_conflicts, review.account_protections, review.historical_only, review.unknown].every(count) ||
+    !Array.isArray(review.writers) || review.writers.length > 4002) return false
+  const keys = new Set<string>(), accounts = new Set<number>()
+  const kinds = ['excel_bps_403', 'oauth_degradation', 'astra_scheduling', 'two_fa_admission', 'account_configuration']
+  const reasons = ['configuration_unreadable', 'saved_state_unreadable', 'admission_plan_mismatch', 'not_applicable',
+    'moves_all_memberships', 'native_history_not_exclusion', 'removes_product_on_trigger', 'native_account_controls',
+    'astra_membership_owner', 'paused_enrollment_can_resume']
+  for (const row of review.writers) {
+    if (!row || !kinds.includes(row.kind) || typeof row.account_name !== 'string' ||
+      row.account_id !== null && (!count(row.account_id) || !row.account_id) ||
+      row.enabled !== null && typeof row.enabled !== 'boolean' ||
+      !['membership_conflict', 'account_protection', 'historical_only', 'unknown'].includes(row.risk) ||
+      ![row.writes_product, row.retained_ownership].every(v => typeof v === 'boolean') ||
+      !Array.isArray(row.reasons) || !row.reasons.length || row.reasons.some(r => !reasons.includes(r)) || new Set(row.reasons).size !== row.reasons.length ||
+      row.risk !== 'unknown' && row.enabled === null || row.enabled !== true && row.writes_product ||
+      row.risk === 'membership_conflict' && !row.writes_product && !row.retained_ownership ||
+      row.risk !== 'membership_conflict' && row.writes_product || row.risk === 'historical_only' && row.retained_ownership ||
+      row.account_id === null && (!['oauth_degradation', 'astra_scheduling'].includes(row.kind) || row.risk !== 'unknown' || row.enabled !== null || row.account_name !== '' || row.retained_ownership) ||
+      row.kind === 'account_configuration' && row.risk !== 'unknown') return false
+    const key = `${row.kind}:${row.account_id}`
+    if (keys.has(key)) return false
+    keys.add(key)
+    if (row.account_id !== null) accounts.add(row.account_id)
+  }
+  return accounts.size <= review.accounts_examined &&
+    review.writers.filter(r => r.risk === 'membership_conflict').length === review.membership_conflicts &&
+    review.writers.filter(r => r.risk === 'account_protection').length === review.account_protections &&
+    review.writers.filter(r => r.risk === 'historical_only').length === review.historical_only &&
+    review.writers.filter(r => r.risk === 'unknown').length === review.unknown
+}
+
 function validManagementReview(review: ProcurementManagementReview, groupID: number, boundAccounts: number): boolean {
   if (!review || review.version !== 1 || review.mode !== 'manual' || !['current_bindings_and_saved_rule_targets', 'current_bindings_and_approved_sources_and_saved_rule_targets'].includes(review.scope) ||
     typeof review.inventory_complete !== 'boolean' || !count(review.rules_examined) || review.rules_examined > 1000 ||
     ![review.conflicting_rules, review.protection_rules, review.unknown_rules, review.judge_dependency_rules].every(count) ||
-    !Array.isArray(review.rules) || review.rules.length !== review.rules_examined) return false
+    !Array.isArray(review.rules) || review.rules.length !== review.rules_examined ||
+    review.writer_review != null && !validWriterReview(review.writer_review)) return false
   const inventory = review.source_inventory
   const includesApproved = inventory?.state === 'approved_sources'
   if (review.scope !== (includesApproved ? 'current_bindings_and_approved_sources_and_saved_rule_targets' : 'current_bindings_and_saved_rule_targets')) return false

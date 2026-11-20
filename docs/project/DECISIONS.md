@@ -4030,3 +4030,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 拥有者源码核对：ent关系尚无程序归属字段。原设计12.1.8补实手动→审核→首次接管→自动→回手动/回退的持久关系、CAS、旧规则和区域围栏约束；仅新增模式开关或settings平行账号清单不算完成。D4模式/拥有者/增量预算、D6.2/完整三步及原外部验收继续开放，原28项20done/8部分不变。
 - 本地构建目录积累14399文件/644527944bytes；以本次252项实际Vite输出核对，assets中14145个未由本次构建发出的旧生成资源合计635048555bytes，当前输出全部存在。原生PowerShell在精确根路径、链接及活跃消费核对后执行删除命令，被宿主在创建进程前拒绝；复核原文件均在，回收0。不换工具/移动重试，该精确assets集合由宿主用户解除策略后再清理。未把旧manifest当最新引用依据，当前生成资源/回滚/共享依赖保留。
 - 任务浏览器及隔离HTTP/PG夹具已通过finally退出。核对发现继承的18761预览仍在（原记录退出不准确），随后按原repo/vite/preview命令身份单独停止；最终监听0。未重复删除历史data或拒删scratch，无新clone/worktree/依赖树，不改生产/CI/发布。
+
+## 2026-11-20 D4.3.14 其他原生写入者的接管冲突
+
+- 沿原产品影响API和管理面板扩展，不另建执行器/拥有者清单：同一repeatable-read只读快照检查403自动移组、OAuth降级、Astra调度/恢复和2FA准入。区分关联冲突、账号保护、仅历史/当前不适用及未知；明确指向本产品的外部目标只参加冲突检查，不进入批准供应或价格候选。最多1000账号，超出整次报错，不截断成功。
+- 真实PG/原生执行器证明403提示对应真实的全部关联替换动作；关闭Astra不清除原恢复归属。终检复现Astra账号/模型模式仍保留分组选择元数据，修复检查器将其误当分组拥有者的问题：只有groups模式的关联快照才算相关拥有者，其余保留账号保护。OAuth已执行审计不成为永久排除；2FA核对账号登记与对应计划，暂停可恢复、计划不匹配为未知。检查本身不改关系、保护状态、计划、账单或outbox。
+- 最终命令：`go test -json -race -vet=off -p 1 -tags unit,integration -overlay H:/Root/DevCache/tmp/sub2api-upstream-raw-cache/overlay.json ./internal/repository -run '^Test(ProcurementProductImpactPostgresAdminHTTP|ProcurementProductLegacyWritersPostgres|ProcurementWriterNativeControls|AccountGroupBindings|ProcurementSourceGroups|ProcurementPolicy|MoveExcelBPSOn403|ExcelBPS403MoveRecord|AstraGroups)' -count=2 -timeout=6m`，206条test pass/0fail/0skip、包62.854s。包含父子及重复轮次，不是206个独立场景；早期122pass不替代终稿，Astra红测3条失败保留。
+- 前端原产品影响、目录、运维、预算、分组表单与i18n六套件`pnpm exec vitest run`：406pass/0fail。typecheck、触及文件ESLint均退出0；构建Vite45.83s通过，Browserslist/大chunk提示保留。原web嵌入包140pass/0fail/0skip。浏览器复用原真实认证管理员API/隔离PG，中文/英文1440和390共76检查、108次真实GET，页面错误/失败请求/未处理API均0；含原配置入口、键盘/分页、未知/旧响应/503恢复、无横向溢出。外壳/旧统计是夹具，不冒充生产E2E；已目检中文手机与英文桌面截图。
+- 证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/legacy-writers-*；源码/测试/原位指南为交付，JSONL/截图为最小证据，原build/Go依赖缓存复用。未重试历史data或拒删scratch，不运行CI/发布，不改生产.8。D4模式/持久关系拥有者/自动协调器和增量预算、D6.2/完整三步及原外部验收仍开放，原28项20done/8部分不变。
+- 收尾已附接原嵌入构建进程取得真实退出0；终稿显式`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1 -tags embed -o NUL ./cmd/server`再次核对退出0、63.45s，随后`go vet -p 1 -tags unit,integration ./internal/service ./internal/repository ./internal/handler/admin ./internal/web`退出0、85.73s。Linux交叉构建不是Linux运行或生产已加载证明。

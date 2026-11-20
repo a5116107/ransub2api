@@ -281,6 +281,10 @@ func loadProcurementManagementReview(ctx context.Context, tx sqlQueryer, group *
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
+	out.WriterReview, err = loadProcurementWriterReview(ctx, tx, group, ids)
+	if err != nil {
+		return nil, err
+	}
 	settings, err := loadMonitoringProbeBudgetSettings(ctx, tx, "")
 	if err != nil {
 		return nil, err

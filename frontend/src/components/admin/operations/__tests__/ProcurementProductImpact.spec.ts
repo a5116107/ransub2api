@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProcurementProductImpactView from '../ProcurementProductImpact.vue'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
-import { previewProcurementProductImpact, type ProcurementManagementReview, type ProcurementProductImpact, type ProcurementSourceInventory } from '@/api/admin/procurementCatalog'
+import { previewProcurementProductImpact, type ProcurementManagementReview, type ProcurementProductImpact, type ProcurementSourceInventory, type ProcurementWriterReview } from '@/api/admin/procurementCatalog'
 import { validProcurementProductImpact } from '@/utils/procurementProductImpact'
 import zh from '@/i18n/locales/zh/upstreamOps'
 import en from '@/i18n/locales/en/upstreamOps'
@@ -40,6 +40,17 @@ const inventoryFixture = (): ProcurementSourceInventory => ({
   accounts: [9, 14, 20, 30].map(id => ({ account_id: id, name: id === 30 ? 'Not yet in product' : 'Supplier ' + id,
     platform: 'openai', status: id === 20 ? 'inactive' : 'active', schedulable: id !== 20, in_product: id !== 30, in_approved_sources: id === 9 || id === 30 }))
 })
+const writerFixture = (): ProcurementWriterReview => ({
+  version: 1, scope: 'supply_candidates_and_explicit_writer_targets', inventory_complete: true, accounts_examined: 3,
+  membership_conflicts: 2, account_protections: 1, historical_only: 1, unknown: 1,
+  writers: [
+    { kind: 'excel_bps_403', account_id: 9, account_name: 'Current supplier', enabled: true, risk: 'membership_conflict', writes_product: true, retained_ownership: false, reasons: ['moves_all_memberships'] },
+    { kind: 'astra_scheduling', account_id: 30, account_name: 'External saved owner', enabled: false, risk: 'membership_conflict', writes_product: false, retained_ownership: true, reasons: ['astra_membership_owner'] },
+    { kind: 'oauth_degradation', account_id: 9, account_name: 'Current supplier', enabled: false, risk: 'historical_only', writes_product: false, retained_ownership: false, reasons: ['native_history_not_exclusion'] },
+    { kind: 'two_fa_admission', account_id: 14, account_name: 'Unbound enrollment', enabled: false, risk: 'account_protection', writes_product: false, retained_ownership: false, reasons: ['paused_enrollment_can_resume'] },
+    { kind: 'oauth_degradation', account_id: null, account_name: '', enabled: null, risk: 'unknown', writes_product: false, retained_ownership: false, reasons: ['configuration_unreadable'] }
+  ]
+})
 function view() { const w = mount(ProcurementProductImpactView); wrappers.push(w); return w }
 async function choose(w: ReturnType<typeof mount>, id = 2) {
   w.getComponent(Select).vm.$emit('open'); await flushPromises()
@@ -54,6 +65,75 @@ beforeEach(() => {
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()) })
 
 describe('administrator product price impact in the existing operations journey', () => {
+  it('keeps non-quality writers unchecked on the previous management response', async () => {
+    const next = fixture(); next.management_review = reviewFixture()
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-writer-review"]').text()).toContain(p + 'review.writers.legacy')
+  })
+  it('separates automatic membership conflicts, native controls, history and unknown settings with original configuration links', async () => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review; review.writer_review = writerFixture()
+    expect(validProcurementProductImpact(next, 2)).toBe(true)
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    const section = w.get('[data-testid="product-writer-review"]')
+    expect(section.get('[data-testid="product-writer-state"]').text()).toContain(p + 'review.writers.states.conflict')
+    expect(section.text()).toContain('External saved owner')
+    expect(section.text()).toContain(p + 'review.writers.reasons.native_history_not_exclusion')
+    expect(section.text()).toContain(p + 'review.writers.reasons.paused_enrollment_can_resume')
+    expect(section.findAll('[data-testid="product-writer-row"]')).toHaveLength(5)
+    expect(section.findAll('a').map(a => a.attributes('href'))).toEqual(['/admin/accounts', '/admin/harvest-flow', '/admin/auto-config', '/admin/account-quality', '/admin/auto-config'])
+    expect(section.findAll('button')).toHaveLength(0)
+  })
+  it.each(['unknown', 'protected', 'no_membership_conflict'])('shows %s without inferring automatic takeover', async state => {
+    const next = fixture(), review = reviewFixture(), writers = writerFixture(); next.management_review = review; review.writer_review = writers
+    Object.assign(writers, { membership_conflicts: 0, historical_only: 0, account_protections: state === 'protected' ? 1 : 0, unknown: state === 'unknown' ? 1 : 0,
+      writers: state === 'unknown' ? writers.writers.slice(4) : state === 'protected' ? writers.writers.slice(3, 4) : [] })
+    expect(validProcurementProductImpact(next, 2)).toBe(true)
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-writer-state"]').text()).toContain(p + `review.writers.states.${state}`)
+  })
+  it('does not call a partial writer read conflict-free', async () => {
+    const next = fixture(), review = reviewFixture(); next.management_review = review
+    review.writer_review = { ...writerFixture(), inventory_complete: false, writers: [], membership_conflicts: 0, account_protections: 0, historical_only: 0, unknown: 0 }
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="product-writer-state"]').text()).toContain(p + 'review.writers.states.unknown')
+  })
+  it.each(['version', 'scope', 'counts', 'duplicate', 'unknown-reason', 'global-kind', 'global-name', 'safe-unknown', 'bad-risk', 'historical-owner', 'disabled-write', 'zero-account', 'missing-reasons', 'inventory-count'])('rejects an inconsistent %s writer review', kind => {
+    const next = fixture(), review = reviewFixture(), writers = writerFixture(); next.management_review = review; review.writer_review = writers
+    if (kind === 'version') writers.version++
+    if (kind === 'scope') writers.scope = 'all_accounts'
+    if (kind === 'counts') writers.membership_conflicts++
+    if (kind === 'duplicate') writers.writers.push(writers.writers[0]!)
+    if (kind === 'unknown-reason') writers.writers[0]!.reasons = ['future']
+    if (kind === 'global-kind') writers.writers[4]!.kind = 'excel_bps_403'
+    if (kind === 'global-name') writers.writers[4]!.account_name = 'private configuration'
+    if (kind === 'safe-unknown') writers.writers[4]!.risk = 'historical_only'
+    if (kind === 'bad-risk') writers.writers[0]!.risk = 'qualified'
+    if (kind === 'historical-owner') writers.writers[2]!.retained_ownership = true
+    if (kind === 'disabled-write') writers.writers[0]!.enabled = false
+    if (kind === 'zero-account') writers.writers[0]!.account_id = 0
+    if (kind === 'missing-reasons') writers.writers[0]!.reasons = []
+    if (kind === 'inventory-count') writers.accounts_examined = 2
+    expect(validProcurementProductImpact(next, 2)).toBe(false)
+  })
+  it('paginates writers separately and clears stale pages on refresh', async () => {
+    const next = fixture(), review = reviewFixture(), writers = writerFixture(); next.management_review = review; review.writer_review = writers
+    Object.assign(writers, { accounts_examined: 21, membership_conflicts: 21, account_protections: 0, historical_only: 0, unknown: 0,
+      writers: Array.from({ length: 21 }, (_, index) => ({ ...writers.writers[0]!, account_id: index + 100 })) })
+    expect(validProcurementProductImpact(next, 2)).toBe(true)
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await preview(w)
+    const details = w.get('[data-testid="product-writer-details"]')
+    expect(details.findAll('[data-testid="product-writer-row"]')).toHaveLength(20)
+    await details.get('nav button:last-child').trigger('click')
+    expect(details.findAll('[data-testid="product-writer-row"]')).toHaveLength(1)
+    expect(w.findAll('[data-testid="product-management-rule"]')).toHaveLength(3)
+    await preview(w)
+    expect(w.findAll('[data-testid="product-writer-row"]')).toHaveLength(20)
+  })
   it('shows approved, unbound and retained outside-source accounts without implying qualified supply', async () => {
     const next = fixture(), review = reviewFixture(); next.management_review = review
     review.source_inventory = inventoryFixture(); review.scope = 'current_bindings_and_approved_sources_and_saved_rule_targets'

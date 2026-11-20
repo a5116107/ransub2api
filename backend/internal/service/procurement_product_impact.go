@@ -39,6 +39,32 @@ type ProcurementManagementReview struct {
 	Rules                []ProcurementManagementRule `json:"rules"`
 	Budget               ProcurementManagementBudget `json:"budget"`
 	SourceInventory      *ProcurementSourceInventory `json:"source_inventory,omitempty"`
+	WriterReview         *ProcurementWriterReview    `json:"writer_review,omitempty"`
+}
+
+// Existing native controls and their saved ownership, not a second executor or
+// consent to transfer memberships. Counts describe this bounded snapshot only.
+type ProcurementWriterReview struct {
+	Version             int                 `json:"version"`
+	Scope               string              `json:"scope"`
+	InventoryComplete   bool                `json:"inventory_complete"`
+	AccountsExamined    int                 `json:"accounts_examined"`
+	MembershipConflicts int                 `json:"membership_conflicts"`
+	AccountProtections  int                 `json:"account_protections"`
+	HistoricalOnly      int                 `json:"historical_only"`
+	Unknown             int                 `json:"unknown"`
+	Writers             []ProcurementWriter `json:"writers"`
+}
+
+type ProcurementWriter struct {
+	Kind              string   `json:"kind"`
+	AccountID         *int64   `json:"account_id"`
+	AccountName       string   `json:"account_name"`
+	Enabled           *bool    `json:"enabled"`
+	Risk              string   `json:"risk"`
+	WritesProduct     bool     `json:"writes_product"`
+	RetainedOwnership bool     `json:"retained_ownership"`
+	Reasons           []string `json:"reasons"`
 }
 
 // Saved approval is permission to consider supply, never a statement that its
