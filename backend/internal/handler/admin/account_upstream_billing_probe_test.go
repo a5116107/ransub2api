@@ -69,7 +69,7 @@ func (r *handlerMonitoringBudgetRepo) Summary(ctx context.Context) (*service.Mon
 	return &service.MonitoringProbeBudgetSummary{Settings: r.settings, MinuteUsed: 7, Coverage: coverage}, err
 }
 
-func (r *handlerMonitoringBudgetRepo) PreviewCoverage(_ context.Context, s service.MonitoringProbeBudgetSettings) (*service.MonitoringProbeCoverage, error) {
+func (r *handlerMonitoringBudgetRepo) PreviewCoverage(_ context.Context, s service.MonitoringProbeBudgetSettings, _ ...*service.MonitoringProbePlanDraft) (*service.MonitoringProbeCoverage, error) {
 	if s.Revision != r.settings.Revision {
 		return nil, service.ErrMonitoringProbeBudgetConflict
 	}

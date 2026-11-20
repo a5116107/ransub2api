@@ -1,3 +1,16 @@
+import type { PelicanTestConfig } from '@/types'
+
+export interface MonitoringProbePlanDraft {
+  plan_id: number
+  account_id: number
+  model_id: string
+  cron_expression: string
+  enabled: boolean
+  auto_recover: boolean
+  max_results: number
+  pelican_config?: PelicanTestConfig
+}
+
 export interface MonitoringProbeBudgetSettings {
   enabled: boolean
   revision: number
@@ -33,6 +46,15 @@ export interface MonitoringProbeBudgetSummary {
 }
 
 export interface MonitoringProbeCoverage {
+  plan_change?: {
+    version: number
+    plan_id: number
+    account_id: number
+    enabled: boolean
+    current_minimum_requests_per_day: number
+    delta_minimum_requests_per_day: number
+    proposed_minimum_requests_per_day: number
+  }
   observed_at: string
   budget_revision: number
   billing_enabled: boolean

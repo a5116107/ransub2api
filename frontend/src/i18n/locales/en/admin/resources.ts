@@ -1,5 +1,18 @@
 export default {
     scheduledTests: {
+      planBudget: {
+        title: 'Check monitoring budget before changing', preview: 'Preview budget', loading: 'Previewing…',
+        singleAccountOnly: 'Budget preview covers single-account rules; select one account. Bulk rules, group templates and automatic product recipes are not included.',
+        completeDraft: 'Complete the required rule fields to preview this account’s monitoring budget.',
+        boundary: 'Read-only global call lower bound after adding or replacing this plan. No plan is saved, budget reserved or probe sent. Site/shared-key peaks, tokens, retries and unestimated demand are outside this delta; saving validates again.',
+        current: 'Current minimum / day', delta: 'Change / day', proposed: 'Proposed minimum / day', capacity: 'Regular capacity / day',
+        fits: 'Known lower bound fits; not complete coverage or a freshness guarantee', partial: 'Known lower bound fits, with unestimated demand or coverage gaps',
+        insufficient: 'Proposed known demand exceeds capacity; relax the cadence or adjust the shared budget', notEnforced: 'Shared limits are off; showing demand lower bounds only',
+        disabledPlan: 'A disabled plan adds no future scheduled demand. Disabling an existing plan remains a repair even when other saved demand exceeds capacity.',
+        snapshot: 'Budget revision {revision} · Read at {time} · UTC window {start} — {end}',
+        conflict: 'Budget changed. Your draft is retained; preview again to read the latest settings.', forbidden: 'Your role has no shared-budget preview access. The plan draft is retained.',
+        invalid: 'Check the model, schedule and test configuration. An edited plan must belong to this account.', failed: 'Budget preview did not complete. No old conclusion is shown. Retry; older servers may not support plan drafts.'
+      },
       title: 'Scheduled Tests',
       addPlan: 'Add Plan',
       editPlan: 'Edit Plan',

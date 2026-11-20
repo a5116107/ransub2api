@@ -34,7 +34,7 @@ describe('admin account upstream billing probe API', () => {
     put.mockResolvedValueOnce({ data: { ...policy, revision: 4 } })
     await expect(getMonitoringProbeBudget()).resolves.toEqual(summary)
     await expect(updateMonitoringProbeBudget(policy)).resolves.toEqual({ ...policy, revision: 4 })
-    expect(get).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget')
+    expect(get).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget', undefined)
     expect(put).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget', policy)
   })
   beforeEach(() => {
@@ -49,8 +49,24 @@ describe('admin account upstream billing probe API', () => {
     const result = { can_save: false, blocking_reasons: ['day_capacity'] }
     post.mockResolvedValueOnce({ data: result })
     await expect(previewMonitoringProbeCoverage(policy)).resolves.toEqual(result)
-    expect(post).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget/preview', policy)
+    expect(post).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget/preview', policy, undefined)
     expect(put).not.toHaveBeenCalled()
+  })
+
+  it('forwards optional cancellation and the exact plan draft without writing', async () => {
+    const signal = new AbortController().signal
+    const policy = { enabled: true, revision: 3, plan_draft: {
+      plan_id: 12, account_id: 7, model_id: 'model-a', cron_expression: '0 * * * *', enabled: false, auto_recover: false, max_results: 100
+    } } as Parameters<typeof previewMonitoringProbeCoverage>[0]
+    get.mockResolvedValueOnce({ data: { settings: policy } })
+    post.mockResolvedValueOnce({ data: { can_save: true } })
+    await getMonitoringProbeBudget({ signal })
+    await previewMonitoringProbeCoverage(policy, { signal })
+    expect(get).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget', { signal })
+    expect(post).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/budget/preview', policy, { signal })
+    expect(put).not.toHaveBeenCalled()
+    expect(del).not.toHaveBeenCalled()
+    expect(post).toHaveBeenCalledTimes(1)
   })
 
   it('uses the config endpoints and preserves explicit account and token selections', async () => {

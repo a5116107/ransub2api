@@ -17,6 +17,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMonitoringProbePlanDraftSameSnapshotPostgres(t *testing.T) {
+	db, _ := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	var account int64
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type) VALUES('Snapshot draft','openai','apikey') RETURNING id`).Scan(&account))
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := service.DefaultMonitoringProbeBudgetSettings()
+	policy.Enabled, policy.RequestsPerDay, policy.RecoveryReservePercent = true, 100, 0
+	policy, err := budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	savedPolicy, err := loadMonitoringProbeBudgetSettings(ctx, tx, "")
+	require.NoError(t, err) // establish the snapshot before the external write
+	native := service.NewScheduledTestService(NewScheduledTestPlanRepository(db), nil)
+	_, err = native.CreatePlan(ctx, &service.ScheduledTestPlan{AccountID: account, ModelID: "other", CronExpression: "0 * * * *", Enabled: true, MaxResults: 50})
+	require.NoError(t, err)
+	draft := &service.MonitoringProbePlanDraft{AccountID: account, ModelID: "new", CronExpression: "0 * * * *", Enabled: true, MaxResults: 50}
+	snapshot, err := compileMonitoringProbeCoverage(ctx, tx, savedPolicy, nil, draft)
+	require.NoError(t, err)
+	require.Zero(t, snapshot.PlanChange.CurrentMinimumRequestsPerDay, "a new external plan must not enter half of the old snapshot")
+	require.EqualValues(t, 24, snapshot.PlanChange.DeltaMinimumRequestsPerDay)
+	require.EqualValues(t, 24, snapshot.MinimumTotalRequestsPerDay)
+	require.NoError(t, tx.Commit())
+	current, err := budget.PreviewCoverage(ctx, policy, draft)
+	require.NoError(t, err)
+	require.EqualValues(t, 24, current.PlanChange.CurrentMinimumRequestsPerDay)
+	require.EqualValues(t, 24, current.PlanChange.DeltaMinimumRequestsPerDay)
+	require.EqualValues(t, 48, current.MinimumTotalRequestsPerDay)
+	for _, bad := range [][]*service.MonitoringProbePlanDraft{{nil}, {draft, draft}} {
+		_, err := budget.PreviewCoverage(ctx, policy, bad...)
+		require.ErrorIs(t, err, service.ErrMonitoringProbePlanDraft)
+	}
+	_, err = budget.PreviewCoverage(service.WithObserverScope(ctx, []int64{1}), policy, draft)
+	require.ErrorIs(t, err, service.ErrObserverScope)
+	// Imported 2FA plans keep their original enrollment boundary even if a
+	// caller proposes a different kind of draft for the same numeric ID.
+	var imported int64
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,pelican_config,next_run_at)
+ VALUES($1,'model-a','0 * * * *',false,'{"quality":{"action":"openai_two_fa_admission"}}',NOW()) RETURNING id`, account).Scan(&imported))
+	draft.PlanID = imported
+	_, err = budget.PreviewCoverage(ctx, policy, draft)
+	require.ErrorIs(t, err, service.ErrMonitoringProbePlanDraft)
+}
+
 func TestMonitoringProbeCoverageV1SharedCredentialPostgres(t *testing.T) {
 	db, client := newBillingAuditDatabase(t)
 	ctx := t.Context()

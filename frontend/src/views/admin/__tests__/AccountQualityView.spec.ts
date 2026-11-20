@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import AccountQualityView from '../AccountQualityView.vue'
 import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import MonitoringProbePlanBudget from '@/components/admin/account/MonitoringProbePlanBudget.vue'
 import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
 import * as accountsAPI from '@/api/admin/accounts'
 import scheduledTests from '@/api/admin/scheduledTests'
@@ -22,7 +23,7 @@ vi.mock('vue-i18n', async () => ({ ...await vi.importActual<typeof import('vue-i
 vi.mock('@/api/admin/accountQuality', () => ({ listQualityPlans: vi.fn(), runQualityPlan: vi.fn(), listQualityOperations: vi.fn().mockResolvedValue({items:[],next_cursor:0}),
   previewQualityOwnership: vi.fn().mockResolvedValue({ plan_id: 1, models: [], group_ids: [], entries: [], action: '', ownership_retained: false, relinquishable_count: 0 }), reconcileQualityOwnership: vi.fn(), restoreQualityOwnership: vi.fn(), removeQualityOwnedModel: vi.fn(), listQualityPresets: vi.fn(), createQualityPreset: vi.fn(), updateQualityPreset: vi.fn(), listQualityTemplates: vi.fn().mockResolvedValue([]), createQualityTemplate: vi.fn(), updateQualityTemplate: vi.fn(), deleteQualityTemplate: vi.fn() }))
 vi.mock('@/api/admin/scheduledTests', () => ({ default: { create: vi.fn(), update: vi.fn(), delete: vi.fn(), listResults: vi.fn(), getResult: vi.fn() } }))
-vi.mock('@/api/admin/accounts', () => ({ list: vi.fn().mockResolvedValue({ items: [{ id: 1, name: 'Test account', platform: 'openai', type: 'oauth' }], total: 1 }) }))
+vi.mock('@/api/admin/accounts', () => ({ list: vi.fn().mockResolvedValue({ items: [{ id: 1, name: 'Test account', platform: 'openai', type: 'oauth' }], total: 1 }), getMonitoringProbeBudget: vi.fn(), previewMonitoringProbeCoverage: vi.fn() }))
 vi.mock('@/api/admin/groups', () => ({ getModelAllowlistCandidates: vi.fn().mockResolvedValue(["test-judge"]), getAllIncludingInactive: vi.fn().mockResolvedValue([{ id: 21, name: 'Quality pool', status:'active', platform: 'openai' }]) }))
 vi.mock('@/components/account/ModelWhitelistSelector.vue', () => ({ default: { props: ['modelValue'], template: '<div data-testid="model-selector">{{ modelValue.join(",") }}</div>' } }))
 const mountView = () => mount(AccountQualityView, { global: { plugins: [createPinia()], stubs: { Teleport: true, AppLayout: { template: '<main><slot /></main>' } } } })
@@ -95,6 +96,64 @@ describe('quality operations', () => {
   const preset = (): QualityRulePreset => ({ id: 17, name: 'Saved probe', model_id: 'preset-model', cron_expression: '0 * * * *', enabled: false, max_results: 75,
     pelican_config: { question_kind: 'state_probe', test_channel: 'account', prompt: '', reasoning_effort: 'high', parallel_count: 1,
       quality: { action: 'observe_only', expected_answer: '', remove_group_ids: [], auto_restore: false } }, created_at: '', updated_at: '' })
+
+  it('previews the normalized single-rule save payload without saving or running it', async () => {
+    const rule = rules()[0]
+    vi.mocked(listQualityPlans).mockResolvedValue([rule])
+    const wrapper = mountView(); await flushPromises()
+    ;(wrapper.vm as any).edit(rule); await flushPromises()
+    const panel = wrapper.getComponent(MonitoringProbePlanBudget)
+    const draft = panel.props('draft')
+    expect(draft).toMatchObject({ plan_id: 1, account_id: 1, model_id: 'model-1', cron_expression: rule.cron_expression,
+      pelican_config: { question_kind: 'state_probe', prompt: '', parallel_count: 1, model_ids: ['model-1'] } })
+    expect(draft.pelican_config?.quality).not.toHaveProperty('judge')
+    expect(accountsAPI.getMonitoringProbeBudget).not.toHaveBeenCalled()
+    vi.mocked(accountsAPI.getMonitoringProbeBudget).mockResolvedValueOnce({ settings: { revision: 7, enabled: true } } as any)
+    vi.mocked(accountsAPI.previewMonitoringProbeCoverage).mockRejectedValueOnce({ response: { status: 409 } })
+    await panel.get('[data-testid="plan-budget-preview"]').trigger('click'); await flushPromises()
+    expect(accountsAPI.previewMonitoringProbeCoverage).toHaveBeenCalledWith({ revision: 7, enabled: true, plan_draft: draft }, { signal: expect.any(AbortSignal) })
+    expect(panel.get('[data-testid="plan-budget-error"]').text()).toBe('admin.scheduledTests.planBudget.conflict')
+    expect(scheduledTests.update).not.toHaveBeenCalled()
+    expect(scheduledTests.create).not.toHaveBeenCalled()
+    expect(runQualityPlan).not.toHaveBeenCalled()
+    await wrapper.get('#quality-rule-form').trigger('submit'); await flushPromises()
+    const { plan_id: _plan, account_id: _account, ...body } = draft
+    expect(scheduledTests.update).toHaveBeenCalledWith(1, body)
+    wrapper.unmount()
+  })
+
+  it('uses the chosen new account and never previews a template or multiple accounts as one plan', async () => {
+    const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any
+    vm.newPlan(); await flushPromises()
+    expect(wrapper.findComponent(MonitoringProbePlanBudget).exists()).toBe(false)
+    expect(wrapper.get('[data-testid="quality-budget-scope-hint"]').text()).toBe('admin.scheduledTests.planBudget.singleAccountOnly')
+    vm.accountScope = 'manual'; vm.selectedAccounts = [4]; vm.form.pelican_config.quality.action = 'observe_only'; await flushPromises()
+    expect(wrapper.getComponent(MonitoringProbePlanBudget).props('draft')).toMatchObject({ plan_id: 0, account_id: 4 })
+    vm.selectedAccounts = [4, 5]; await flushPromises()
+    expect(wrapper.findComponent(MonitoringProbePlanBudget).exists()).toBe(false)
+    vm.selectedAccounts = [5]; await flushPromises()
+    expect(wrapper.getComponent(MonitoringProbePlanBudget).props('draft').account_id).toBe(5)
+    vm.form.model_id = ''; await flushPromises()
+    expect(wrapper.findComponent(MonitoringProbePlanBudget).exists()).toBe(false)
+    expect(wrapper.get('[data-testid="quality-budget-invalid"]').text()).toBe('admin.scheduledTests.planBudget.completeDraft')
+    expect(accountsAPI.getMonitoringProbeBudget).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each(['bulk', 'template', 'preset', 'observer'])('does not advertise a single-plan budget for %s', async kind => {
+    const rule = rules()[0]
+    vi.mocked(listQualityPlans).mockResolvedValue(rules())
+    const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any
+    if (kind === 'bulk') { vm.selectedRuleIds = [1, 2]; vm.editSelectedRules() }
+    if (kind === 'template') vm.editTemplate(groupRule())
+    if (kind === 'preset') vm.saveRuleAsPreset(rule)
+    if (kind === 'observer') { useAuthStore().user!.role = 'observer'; vm.edit(rule) }
+    await flushPromises()
+    expect(wrapper.findComponent(MonitoringProbePlanBudget).exists()).toBe(false)
+    expect(accountsAPI.getMonitoringProbeBudget).not.toHaveBeenCalled()
+    expect(accountsAPI.previewMonitoringProbeCoverage).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
   it('defaults new OAuth cleanup to six rounds and saves a custom limit on a new rule', async () => {
     const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any

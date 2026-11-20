@@ -1,5 +1,18 @@
 export default {
     scheduledTests: {
+      planBudget: {
+        title: '变更前检查检测预算', preview: '预演预算', loading: '正在预演…',
+        singleAccountOnly: '预算预演支持单账号规则；请选择一个账号。批量、分组模板及自动产品配方尚未纳入此预演。',
+        completeDraft: '完成规则必填项后，可预演当前账号的检测预算。',
+        boundary: '只读模拟本计划新增或替换后的全局调用下界，不会保存计划、预留额度或发起检测。站点/共享 Key 峰值、Token、重试和未估算需求不包含在此差额；实际保存仍会重新校验。',
+        current: '当前调用下界 / 日', delta: '本次变更 / 日', proposed: '变更后下界 / 日', capacity: '普通检测容量 / 日',
+        fits: '已知调用下界可容纳；不代表完整覆盖或时效保证', partial: '已知下界可容纳，但仍有未估算需求或覆盖缺口',
+        insufficient: '变更后已知需求超限，请降低频率或调整共享预算', notEnforced: '共享预算限制未启用，仅展示需求下界',
+        disabledPlan: '本计划停用后不计入后续定时需求。即使其他已保存需求超限，仍可停用原计划修复配置。',
+        snapshot: '预算修订 {revision} · 读取于 {time} · UTC 窗口 {start} — {end}',
+        conflict: '预算已变化；保留草稿，请重新预演获取最新配置。', forbidden: '当前权限未开放共享预算预演，计划草稿已保留。',
+        invalid: '请检查模型、周期及检测配置；编辑时必须属于当前账号。', failed: '预算预演未完成，未显示旧结论。请重试；旧版本可能尚未支持计划草稿。'
+      },
       title: '定时测试',
       addPlan: '添加计划',
       editPlan: '编辑计划',

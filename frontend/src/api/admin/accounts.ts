@@ -1,5 +1,5 @@
 import type { AccountPerformance, PerformanceConfig, PerformanceEvent } from '@/types/accountPerformance'
-import type { MonitoringProbeBudgetDeferral, MonitoringProbeBudgetSettings, MonitoringProbeBudgetSummary, MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
+import type { MonitoringProbeBudgetDeferral, MonitoringProbeBudgetSettings, MonitoringProbeBudgetSummary, MonitoringProbeCoverage, MonitoringProbePlanDraft } from '@/types/monitoringProbeBudget'
 /**
  * Admin Accounts API endpoints
  * Handles AI platform account management for administrators
@@ -1091,8 +1091,8 @@ export async function deleteNewAPIUpstreamConfig(id: number): Promise<{ account_
   return data
 }
 
-export async function getMonitoringProbeBudget(): Promise<MonitoringProbeBudgetSummary> {
-  const { data } = await apiClient.get<MonitoringProbeBudgetSummary>('/admin/accounts/upstream-billing-probe/budget')
+export async function getMonitoringProbeBudget(options?: { signal?: AbortSignal }): Promise<MonitoringProbeBudgetSummary> {
+  const { data } = await apiClient.get<MonitoringProbeBudgetSummary>('/admin/accounts/upstream-billing-probe/budget', options)
   return data
 }
 
@@ -1101,8 +1101,8 @@ export async function updateMonitoringProbeBudget(settings: MonitoringProbeBudge
   return data
 }
 
-export async function previewMonitoringProbeCoverage(settings: MonitoringProbeBudgetSettings): Promise<MonitoringProbeCoverage> {
-  const { data } = await apiClient.post<MonitoringProbeCoverage>('/admin/accounts/upstream-billing-probe/budget/preview', settings)
+export async function previewMonitoringProbeCoverage(settings: MonitoringProbeBudgetSettings & { plan_draft?: MonitoringProbePlanDraft }, options?: { signal?: AbortSignal }): Promise<MonitoringProbeCoverage> {
+  const { data } = await apiClient.post<MonitoringProbeCoverage>('/admin/accounts/upstream-billing-probe/budget/preview', settings, options)
   return data
 }
 

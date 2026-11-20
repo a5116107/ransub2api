@@ -235,6 +235,11 @@
         </template>
         <label v-if="editsField('retention')" class="block space-y-1"><span>{{ t('qualityOps.maxResults') }}</span><input v-model.number="form.max_results" type="number" min="1" max="200" required class="input" data-testid="quality-copy-max-results" /></label>
         <label v-if="editsField('enabled')" class="flex items-center gap-2"><input v-model="form.enabled" type="checkbox" data-testid="quality-rule-enabled" />{{ t('qualityOps.enabled') }}</label>
+        <template v-if="planBudgetAccountId">
+          <MonitoringProbePlanBudget v-if="planBudgetDraft" :draft="planBudgetDraft" :disabled="busy || ownershipWorking || selectingAccounts" />
+          <p v-else class="text-sm text-gray-500" data-testid="quality-budget-invalid">{{ t('admin.scheduledTests.planBudget.completeDraft') }}</p>
+        </template>
+        <p v-else-if="canCopyRules && !savingPreset" class="text-xs text-gray-500" data-testid="quality-budget-scope-hint">{{ t('admin.scheduledTests.planBudget.singleAccountOnly') }}</p>
       </fieldset></form>
       <template #footer><div class="w-full"><p v-if="bulkSaveHint" id="quality-bulk-save-hint" class="mb-3 text-sm text-amber-700 dark:text-amber-300" role="status" data-testid="quality-bulk-save-hint">{{ bulkSaveHint }}</p><div class="editor-footer"><button v-if="editing || bulkEditing" type="button" class="delete-rule" data-testid="quality-editor-delete" :disabled="busy || selectingAccounts || (bulkEditing && !bulkRuleIds.length)" @click="requestDelete(bulkEditing ? bulkRuleIds : editing ? [editing] : [])">{{ bulkEditing ? t('qualityOps.bulkDelete') : t('qualityOps.delete') }}</button><button v-else-if="editingTemplate" type="button" class="delete-rule" :disabled="busy" data-testid="quality-delete-template" @click="openTemplateDelete">{{ t('qualityOps.deleteTemplate') }}</button><span class="flex-1" /><button class="btn btn-secondary" :disabled="busy" @click="closeForm">{{ t('qualityOps.cancel') }}</button><button form="quality-rule-form" type="submit" class="btn btn-primary" :aria-describedby="bulkSaveHint ? 'quality-bulk-save-hint' : undefined" :disabled="busy || ownershipWorking || selectingAccounts || (!!editing && ownershipBlocked) || (bulkEditing ? !bulkFields.length || !bulkRuleIds.length || (!!reuseSourceLabel && !reuseConfirmed) : !savingPreset && !editing && !editingTemplate && accountScope !== 'all' && !selectedAccounts.length)">{{ busy ? t('qualityOps.saving') : savingPreset ? t('qualityOps.savePreset') : bulkEditing ? t('qualityOps.applyToRules', { count: bulkRuleIds.length }) : t('qualityOps.save') }}</button></div></div></template>
     </BaseDialog>
@@ -342,6 +347,7 @@ import SmartOpsNav from '@/components/admin/operations/SmartOpsNav.vue'
 import Icon from '@/components/icons/Icon.vue'
 import QualityBPSSettings from '@/components/admin/operations/QualityBPSSettings.vue'
 import AvailabilityFields from '@/components/admin/account/AvailabilityFields.vue'
+import MonitoringProbePlanBudget from '@/components/admin/account/MonitoringProbePlanBudget.vue'
 import QualityBPSRestoreOptions from '@/components/admin/operations/QualityBPSRestoreOptions.vue'
 import { useAccountQualityStore } from '@/stores/accountQuality'
 import { useAuthStore } from '@/stores/auth'
@@ -358,6 +364,7 @@ import QualityModelShortcuts from '@/components/admin/operations/QualityModelSho
 import { qualityAccountStatusOptions, qualityAccountTypeOptions } from '@/utils/qualityAccountFilter'
 import { validAvailability } from '@/utils/availability'
 import type { AccountListItem, AvailabilityPolicy, QualityBPSPolicy, QualityJudgeConfig, QualityPolicy, ScheduledTestPlan, ScheduledTestResult } from '@/types'
+import type { MonitoringProbePlanDraft } from '@/types/monitoringProbeBudget'
 
 const { t, te } = useI18n()
 const store = useAccountQualityStore(), auth = useAuthStore()
@@ -845,6 +852,19 @@ function defaults() {
       quality: { evidence_valid_for_seconds: undefined as number | undefined, trigger_on_upstream_5xx: false, oauth_401_max_rounds: 6, expected_answer: '21', action: 'remove_groups' as QualityPolicy['action'], remove_group_ids: [] as number[], remove_models: [] as string[], recovery_concurrency: 5, retest_rest_minutes: 0, auto_restore: false, judge: { group_id: 0, model_id: '', prompt: t('qualityOps.defaultJudgePrompt') } as QualityJudgeConfig, bps: defaultQualityBPS() } } }
 }
 const form = ref(defaults())
+const planBudgetAccountId = computed(() => {
+  if (!showForm.value || !canCopyRules.value || bulkEditing.value || editingTemplate.value || savingPreset.value) return null
+  if (editing.value) return reuseEditingPlan.value?.account_id ?? null
+  return accountScope.value === 'manual' && selectedAccounts.value.length === 1 ? selectedAccounts.value[0] : null
+})
+const planBudgetDraft = computed<MonitoringProbePlanDraft | null>(() => {
+  if (!planBudgetAccountId.value) return null
+  try {
+    return { ...payload(), plan_id: editing.value ?? 0, account_id: planBudgetAccountId.value }
+  } catch {
+    return null
+  }
+})
 const removeModelsInput = ref('')
 // Keep imported/edit drafts in sync, but render the raw text while typing so
 // trailing delimiters and whitespace survive normalization of the model array.

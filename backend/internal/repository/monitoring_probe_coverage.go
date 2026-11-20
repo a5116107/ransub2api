@@ -7,15 +7,27 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
 
 const monitoringCoverageInventoryLimit = 10000
 
-func (r *monitoringProbeBudgetRepository) PreviewCoverage(ctx context.Context, settings service.MonitoringProbeBudgetSettings) (*service.MonitoringProbeCoverage, error) {
+func (r *monitoringProbeBudgetRepository) PreviewCoverage(ctx context.Context, settings service.MonitoringProbeBudgetSettings, drafts ...*service.MonitoringProbePlanDraft) (*service.MonitoringProbeCoverage, error) {
 	if err := settings.Validate(); err != nil {
 		return nil, err
+	}
+	if len(drafts) > 1 || len(drafts) == 1 && drafts[0] == nil {
+		return nil, service.ErrMonitoringProbePlanDraft
+	}
+	if len(drafts) == 1 {
+		if _, scoped := service.ObserverGroupIDs(ctx); scoped || adminaccess.FromContext(ctx) != nil {
+			return nil, service.ErrObserverScope
+		}
+		if _, err := drafts[0].Plan(time.Now()); err != nil {
+			return nil, err
+		}
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
@@ -29,7 +41,7 @@ func (r *monitoringProbeBudgetRepository) PreviewCoverage(ctx context.Context, s
 	if settings.Revision != current.Revision {
 		return nil, service.ErrMonitoringProbeBudgetConflict
 	}
-	result, err := loadMonitoringProbeCoverage(ctx, tx, settings)
+	result, err := compileMonitoringProbeCoverage(ctx, tx, settings, nil, drafts...)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +54,7 @@ func loadMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings se
 	return compileMonitoringProbeCoverage(ctx, tx, settings, nil)
 }
 
-func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings service.MonitoringProbeBudgetSettings, override *service.UpstreamBillingProbeSettings) (*service.MonitoringProbeCoverage, error) {
+func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings service.MonitoringProbeBudgetSettings, override *service.UpstreamBillingProbeSettings, drafts ...*service.MonitoringProbePlanDraft) (*service.MonitoringProbeCoverage, error) {
 	var raw string
 	err := scanSingleRow(ctx, tx, `SELECT value FROM settings WHERE key=$1`, []any{service.SettingKeyUpstreamBillingProbeSettings}, &raw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -114,7 +126,56 @@ func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings
 	if err := scanSingleRow(ctx, tx, `SELECT clock_timestamp()`, nil, &now); err != nil {
 		return nil, err
 	}
-	return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, candy, candyComplete, active, activeComplete, now), nil
+	compile := func(plans []service.MonitoringProbeCoveragePlan, plansComplete bool) *service.MonitoringProbeCoverage {
+		return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, candy, candyComplete, active, activeComplete, now)
+	}
+	baseline := compile(plans, plansComplete)
+	if len(drafts) == 0 {
+		return baseline, nil
+	}
+	draft := drafts[0]
+	plan, err := draft.Plan(now)
+	if err != nil {
+		return nil, err
+	}
+	var exists bool
+	if err := scanSingleRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND deleted_at IS NULL)`, []any{draft.AccountID}, &exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, service.ErrAccountNotFound
+	}
+	if draft.PlanID != 0 {
+		if err := scanSingleRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM scheduled_test_plans WHERE id=$1 AND account_id=$2)`, []any{draft.PlanID, draft.AccountID}, &exists); err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, service.ErrMonitoringProbePlanDraft
+		}
+		var imported bool
+		if err := scanSingleRow(ctx, tx, `SELECT COALESCE(pelican_config#>>'{quality,action}','')=$2 FROM scheduled_test_plans WHERE id=$1`, []any{draft.PlanID, service.QualityActionOpenAITwoFAAdmission}, &imported); err != nil {
+			return nil, err
+		}
+		if imported {
+			return nil, service.ErrMonitoringProbePlanDraft
+		}
+	}
+	// Replace only this account plan. Numeric group-plan IDs use a different
+	// namespace; paused originals may not be present in the enabled inventory.
+	proposed := make([]service.MonitoringProbeCoveragePlan, 0, len(plans)+1)
+	for _, existing := range plans {
+		if draft.PlanID == 0 || existing.Group || existing.Plan.ID != draft.PlanID {
+			proposed = append(proposed, existing)
+		}
+	}
+	if plan.Enabled {
+		proposed = append(proposed, service.MonitoringProbeCoveragePlan{Plan: *plan})
+	}
+	result := compile(proposed, plansComplete && len(proposed) <= monitoringCoverageInventoryLimit)
+	result.PlanChange = &service.MonitoringProbePlanChange{Version: 1, PlanID: draft.PlanID, AccountID: draft.AccountID, Enabled: draft.Enabled,
+		CurrentMinimumRequestsPerDay: baseline.MinimumTotalRequestsPerDay, ProposedMinimumRequestsPerDay: result.MinimumTotalRequestsPerDay,
+		DeltaMinimumRequestsPerDay: result.MinimumTotalRequestsPerDay - baseline.MinimumTotalRequestsPerDay}
+	return result, nil
 }
 
 func loadMonitoringCoverageRuntime(ctx context.Context, tx sqlQueryer) (service.ChannelMonitorRuntime, error) {

@@ -55,6 +55,7 @@ type MonitoringProbeCoverage struct {
 	MinimumTotalRequestsPerDay int64     `json:"minimum_total_requests_per_day"`
 	UnestimatedDemandSources   []string  `json:"unestimated_demand_sources"`
 
+	PlanChange          *MonitoringProbePlanChange                  `json:"plan_change,omitempty"`
 	BillingScopes       *MonitoringProbeCoverageBillingScopes       `json:"billing_scopes,omitempty"`
 	PeriodicSites       *MonitoringProbeCoveragePeriodicSites       `json:"periodic_sites,omitempty"`
 	PeriodicCredentials *MonitoringProbeCoveragePeriodicCredentials `json:"periodic_credentials,omitempty"`
@@ -591,14 +592,22 @@ func (c *MonitoringProbeCoverage) ValidateSave() error {
 		fmt.Sprintf("configured monitoring coverage exceeds capacity (%v): %d billing accounts, %d minutes, at least %d calls/sweep and %d calls/day including %d scheduled, %d candy and %d V1 model/HEAD calls; quota demand is unestimated; regular day capacity is %d; increase capacity or relax the cadence", c.BlockingReasons, c.Accounts, c.IntervalMinutes, c.MinimumRequestsPerSweep, c.MinimumTotalRequestsPerDay, c.MinimumScheduledRequests, c.MinimumCandyRequests, c.MinimumActiveRequests, c.RegularDayCapacity))
 }
 
-func (s *MonitoringProbeBudgetService) PreviewCoverage(ctx context.Context, settings MonitoringProbeBudgetSettings) (*MonitoringProbeCoverage, error) {
+func (s *MonitoringProbeBudgetService) PreviewCoverage(ctx context.Context, settings MonitoringProbeBudgetSettings, drafts ...*MonitoringProbePlanDraft) (*MonitoringProbeCoverage, error) {
 	if err := settings.Validate(); err != nil {
 		return nil, err
 	}
 	if s == nil || s.repo == nil {
 		return nil, ErrMonitoringProbeBudgetUnavailable
 	}
-	coverage, err := s.repo.PreviewCoverage(ctx, settings)
+	if len(drafts) > 1 || len(drafts) == 1 && drafts[0] == nil {
+		return nil, ErrMonitoringProbePlanDraft
+	}
+	if len(drafts) == 1 {
+		if _, err := drafts[0].Plan(time.Now()); err != nil {
+			return nil, err
+		}
+	}
+	coverage, err := s.repo.PreviewCoverage(ctx, settings, drafts...)
 	if err != nil || coverage == nil {
 		return coverage, err
 	}

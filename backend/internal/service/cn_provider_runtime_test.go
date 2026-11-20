@@ -187,7 +187,7 @@ type monitoringRuntimeBudgetRepo struct {
 	err      error
 }
 
-func (r *monitoringRuntimeBudgetRepo) PreviewCoverage(context.Context, MonitoringProbeBudgetSettings) (*MonitoringProbeCoverage, error) {
+func (r *monitoringRuntimeBudgetRepo) PreviewCoverage(context.Context, MonitoringProbeBudgetSettings, ...*MonitoringProbePlanDraft) (*MonitoringProbeCoverage, error) {
 	return r.coverage, r.err
 }
 

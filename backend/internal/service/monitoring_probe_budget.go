@@ -103,7 +103,7 @@ type MonitoringProbeBudgetRequest struct {
 type MonitoringProbeBudgetRepository interface {
 	GetSettings(context.Context) (MonitoringProbeBudgetSettings, error)
 	SaveSettings(context.Context, MonitoringProbeBudgetSettings) (MonitoringProbeBudgetSettings, error)
-	PreviewCoverage(context.Context, MonitoringProbeBudgetSettings) (*MonitoringProbeCoverage, error)
+	PreviewCoverage(context.Context, MonitoringProbeBudgetSettings, ...*MonitoringProbePlanDraft) (*MonitoringProbeCoverage, error)
 	SaveBillingProbeSettings(context.Context, UpstreamBillingProbeSettings) error
 	Summary(context.Context) (*MonitoringProbeBudgetSummary, error)
 	Acquire(context.Context, MonitoringProbeBudgetRequest) (string, error)

@@ -1,8 +1,13 @@
 package admin
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -33,14 +38,41 @@ func (h *AccountHandler) UpdateMonitoringProbeBudget(c *gin.Context) {
 }
 
 func (h *AccountHandler) PreviewMonitoringProbeCoverage(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if h.upstreamBillingProbe == nil || h.upstreamBillingProbe.MonitoringBudget() == nil {
+		response.ErrorFrom(c, service.ErrMonitoringProbeBudgetUnavailable)
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 65536))
 	var req service.MonitoringProbeBudgetSettings
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err != nil || json.Unmarshal(raw, &req) != nil {
 		response.BadRequest(c, "Invalid monitoring budget settings")
 		return
 	}
-	result, err := h.upstreamBillingProbe.MonitoringBudget().PreviewCoverage(c.Request.Context(), req)
+	if err := req.Validate(); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	draft, err := service.ParseMonitoringProbePlanDraft(raw)
 	if err != nil {
 		response.ErrorFrom(c, err)
+		return
+	}
+	var drafts []*service.MonitoringProbePlanDraft
+	if draft != nil {
+		drafts = append(drafts, draft)
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	result, err := h.upstreamBillingProbe.MonitoringBudget().PreviewCoverage(ctx, req, drafts...)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrMonitoringProbePlanDraft), errors.Is(err, service.ErrMonitoringProbeBudgetConflict),
+			errors.Is(err, service.ErrAccountNotFound), errors.Is(err, service.ErrObserverScope):
+			response.ErrorFrom(c, err)
+		default:
+			response.ErrorFrom(c, service.ErrMonitoringProbeBudgetUnavailable)
+		}
 		return
 	}
 	response.Success(c, result)

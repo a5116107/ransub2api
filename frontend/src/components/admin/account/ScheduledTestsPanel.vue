@@ -113,6 +113,7 @@
           </div>
         </div>
         <PelicanTestFields v-if="pelicanConfig" v-model="newPelican" class="mt-3" />
+        <MonitoringProbePlanBudget :draft="{ plan_id: 0, account_id: accountId || 0, ...newPlan, max_results: Number(newPlan.max_results) || 100, ...(pelicanConfig ? { pelican_config: newPelican } : {}) }" :disabled="disabled || creating" />
         <div class="mt-3 flex justify-end gap-2">
           <button
             @click="showAddForm = false; resetNewPlan()"
@@ -332,6 +333,7 @@
               </div>
             </div>
             <PelicanTestFields v-if="pelicanConfig" v-model="editPelican" class="mt-3" />
+            <MonitoringProbePlanBudget :draft="{ plan_id: editingPlanId || 0, account_id: accountId || 0, ...editForm, max_results: Number(editForm.max_results) || 100, ...(pelicanConfig ? { pelican_config: editPelican } : {}) }" :disabled="disabled || updating" />
             <div class="mt-3 flex justify-end gap-2">
               <button
                 @click="cancelEdit"
@@ -486,6 +488,7 @@ import { useAppStore } from '@/stores/app'
 import { formatDateTime } from '@/utils/format'
 import PelicanTestFields from './PelicanTestFields.vue'
 import MonitoringProbeBudgetNotice from './MonitoringProbeBudgetNotice.vue'
+import MonitoringProbePlanBudget from './MonitoringProbePlanBudget.vue'
 import { STATE_PROBE_QUESTION, stateProbeVerdict, type StateProbeVerdict } from '@/utils/intelligenceTest'
 import { validAvailability } from '@/utils/availability'
 import type { PelicanTestConfig, ScheduledTestPlan, ScheduledTestResult } from '@/types'
