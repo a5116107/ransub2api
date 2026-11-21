@@ -7,9 +7,13 @@ import { previewProcurementProductImpact, readProcurementManagement, previewProc
 import { validProcurementProductImpact, validProcurementManagementPreview } from '@/utils/procurementProductImpact'
 import zh from '@/i18n/locales/zh/upstreamOps'
 import en from '@/i18n/locales/en/upstreamOps'
+import { listQualityPresets, type QualityRulePreset } from '@/api/admin/accountQuality'
+import { observationRecipePreset } from '@/utils/procurementProductImpact'
+import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
 vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
+vi.mock('@/api/admin/accountQuality', () => ({ listQualityPresets: vi.fn() }))
 vi.mock('@/api/admin/procurementCatalog', () => ({ previewProcurementProductImpact: vi.fn(), readProcurementManagement: vi.fn(), previewProcurementManagement: vi.fn(), saveProcurementManagement: vi.fn() }))
 const p = 'upstreamOps.productImpact.'
 const wrappers: ReturnType<typeof mount>[] = []
@@ -78,8 +82,101 @@ beforeEach(() => {
   vi.mocked(previewProcurementProductImpact).mockResolvedValue(fixture())
   vi.mocked(readProcurementManagement).mockResolvedValue(managementStateFixture())
   vi.mocked(previewProcurementManagement).mockResolvedValue(managementPreviewFixture())
+  vi.mocked(listQualityPresets).mockResolvedValue([])
 })
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()); vi.useRealTimers() })
+
+const presetFixture = (): QualityRulePreset => ({ id: 7, name: 'Observe two models', model_id: 'model-a', cron_expression: '0 * * * *', enabled: true, max_results: 100,
+  created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z',
+  pelican_config: { question_kind: 'candy', prompt: 'Private prompt', reasoning_effort: 'medium', parallel_count: 2, quality: { action: 'observe_only' } } })
+const recipeFixture = (): ProcurementProductImpact => {
+  const next = fixture(), review = reviewFixture()
+  review.source_inventory = inventoryFixture(); review.scope = 'current_bindings_and_approved_sources_and_saved_rule_targets'
+  next.management_review = review
+  const coverage = { observed_at: next.observed_at, budget_revision: 3, enforced: true, can_save: true, blocking_reasons: [], warnings: [],
+    inventory_complete: true, plan_inventory_complete: true, candy_inventory_complete: true, active_inventory_complete: true,
+    minimum_total_requests_per_day: 3384, regular_day_capacity: 80000, schedule_window_start: review.budget.window_start, schedule_window_end: review.budget.window_end,
+    unestimated_demand_sources: ['event_demand'] } as unknown as MonitoringProbeCoverage
+  next.monitoring_recipe = { version: 1, preset_id: 7, preset_name: 'Observe two models', preset_updated_at: presetFixture().updated_at, source_policy_revision: 4,
+    state: 'previewed', accounts: 2, demand: { additional_plans: 2, current_minimum_requests_per_day: 3000, delta_minimum_requests_per_day: 384, coverage } }
+  return next
+}
+
+describe('read-only product monitoring recipe', () => {
+  async function selectRecipe(w: ReturnType<typeof mount>) {
+    await w.get('#impact-preset').trigger('focus'); await flushPromises(); await w.get('#impact-preset').setValue('7')
+  }
+  it('loads presets lazily, excludes action/state/BPS/disabled rules, and never writes or displays private questions', async () => {
+    const valid = presetFixture(), action = structuredClone(valid), probe = structuredClone(valid), bps = structuredClone(valid)
+    action.id = 8; action.pelican_config.quality!.action = 'disable_scheduling'
+    probe.id = 9; probe.pelican_config.question_kind = 'state_probe'
+    bps.id = 10; bps.pelican_config.test_channel = 'bps'
+    vi.mocked(listQualityPresets).mockResolvedValue([valid, action, probe, bps, { ...valid, id: 11, enabled: false }])
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(recipeFixture())
+    const w = view(); await choose(w)
+    expect(listQualityPresets).not.toHaveBeenCalled()
+    await selectRecipe(w)
+    expect(w.findAll('#impact-preset option')).toHaveLength(2)
+    await preview(w)
+    expect(previewProcurementProductImpact).toHaveBeenLastCalledWith(2, expect.any(AbortSignal), 7)
+    expect(w.get('[data-testid="recipe-current"]').text()).toBe('3000')
+    expect(w.get('[data-testid="recipe-delta"]').text()).toBe('+384')
+    expect(w.get('[data-testid="recipe-proposed"]').text()).toBe('3384')
+    expect(w.get('[data-testid="recipe-conclusion"]').text()).toContain(p + 'recipe.states.partial')
+    expect(w.text()).not.toContain('Private prompt')
+    expect(saveProcurementManagement).not.toHaveBeenCalled()
+    expect(observationRecipePreset({ ...valid, pelican_config: { ...valid.pelican_config, question_kind: 'random_reasoning' } })).toBe(true)
+  })
+  it('invalidates in-flight and loaded results on recipe changes, and restores legacy requests on clearing', async () => {
+    vi.mocked(listQualityPresets).mockResolvedValue([presetFixture()])
+    const w = view(); await choose(w); await selectRecipe(w)
+    let release!: (value: ProcurementProductImpact) => void
+    vi.mocked(previewProcurementProductImpact).mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    await w.get('form').trigger('submit'); await w.get('#impact-preset option').setSelected()
+    release(recipeFixture()); await flushPromises()
+    expect(w.find('[data-testid="product-impact-result"]').exists()).toBe(false)
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(fixture())
+    await preview(w)
+    expect(previewProcurementProductImpact).toHaveBeenLastCalledWith(2, expect.any(AbortSignal))
+  })
+  it('retries preset and preview failures without losing selection or granting eligibility', async () => {
+    vi.mocked(listQualityPresets).mockRejectedValueOnce(new Error('read failed')).mockResolvedValue([presetFixture()])
+    const w = view(); await choose(w); await w.get('#impact-preset').trigger('focus'); await flushPromises()
+    expect(w.text()).toContain(p + 'recipe.loadFailed')
+    await w.get('#impact-preset').trigger('focus'); await flushPromises(); await w.get('#impact-preset').setValue('7')
+    vi.mocked(previewProcurementProductImpact).mockRejectedValueOnce({ status: 503 }).mockResolvedValue(recipeFixture())
+    await preview(w); expect(w.get('[data-testid="product-impact-error"]').text()).toContain(p + 'failed')
+    expect((w.get('#impact-preset').element as HTMLSelectElement).value).toBe('7')
+    await preview(w); expect(w.find('[data-testid="product-monitoring-recipe"]').exists()).toBe(true)
+    vi.mocked(previewProcurementProductImpact).mockRejectedValue({ status: 400, reason: 'PROCUREMENT_MONITORING_RECIPE_INVALID' })
+    await preview(w); expect(w.get('[data-testid="product-impact-error"]').text()).toContain(p + 'recipe.invalid')
+  })
+  it.each(['not_enforced', 'insufficient', 'lower_bound_fits'])('displays the %s capacity conclusion without a qualification badge', async state => {
+    const next = recipeFixture(), c = next.monitoring_recipe!.demand!.coverage
+    c.enforced = state !== 'not_enforced'; c.can_save = state !== 'insufficient'; c.blocking_reasons = state === 'insufficient' ? ['day_capacity'] : []
+    c.unestimated_demand_sources = []
+    vi.mocked(listQualityPresets).mockResolvedValue([presetFixture()]); vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await selectRecipe(w); await preview(w)
+    expect(w.get('[data-testid="recipe-conclusion"]').text()).toContain(p + `recipe.states.${state}`)
+  })
+  it('rejects missing, future, mismatched or contradictory recipe results rather than falling back to saved-only counts', () => {
+    expect(validProcurementProductImpact(recipeFixture(), 2, 7)).toBe(true)
+    for (const mutate of [
+      (v: ProcurementProductImpact) => { delete v.monitoring_recipe },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.version = 2 },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.preset_id = 8 },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.source_policy_revision++ },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.demand!.delta_minimum_requests_per_day = 0 },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.demand!.coverage.can_save = false },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.accounts = 0 }
+    ]) { const next = recipeFixture(); mutate(next); expect(validProcurementProductImpact(next, 2, 7)).toBe(false) }
+    expect(validProcurementProductImpact(recipeFixture(), 2)).toBe(false)
+  })
+  it.each([zh, en])('provides translated recipe inputs, unknown states and capacity boundaries', locale => {
+    for (const key of ['label', 'none', 'title', 'help', 'loading', 'loadFailed', 'empty', 'configure', 'invalid', 'boundary', 'plans', 'current', 'delta', 'proposed', 'capacity', 'identity', 'window', 'unestimated']) expect(locale.productImpact.recipe[key as keyof typeof locale.productImpact.recipe]).toBeTypeOf('string')
+    for (const value of Object.values(locale.productImpact.recipe.states)) expect(value).toBeTypeOf('string')
+  })
+})
 
 describe('explicit review authorization without automatic execution', () => {
   it.each([zh, en])('covers all review action and conclusion labels, including the manual button on mobile', locale => {

@@ -11,6 +11,8 @@ import (
 const ProcurementProductImpactAccountLimit = 1000
 
 var ErrProcurementProductImpactTooLarge = infraerrors.BadRequest("PROCUREMENT_PRODUCT_IMPACT_TOO_LARGE", "product exceeds 1000 accounts; use explicit scope diagnostics")
+var ErrProcurementMonitoringRecipeInvalid = infraerrors.BadRequest("PROCUREMENT_MONITORING_RECIPE_INVALID", "choose an enabled native answer observation preset")
+var ErrProcurementMonitoringRecipeNotFound = infraerrors.NotFound("PROCUREMENT_MONITORING_RECIPE_NOT_FOUND", "monitoring preset not found")
 
 type ProcurementProductImpact struct {
 	Version            int                          `json:"version"`
@@ -22,6 +24,47 @@ type ProcurementProductImpact struct {
 	UserOverrideCount  int                          `json:"user_override_count"`
 	Report             ProfitPreviewGroupReport     `json:"report"`
 	ManagementReview   *ProcurementManagementReview `json:"management_review,omitempty"`
+	MonitoringRecipe   *ProcurementMonitoringRecipe `json:"monitoring_recipe,omitempty"`
+}
+
+// Read-only additions across the approved inventory. No old plan is adopted,
+// replaced or deduplicated, and the preview never authorizes distribution.
+type ProcurementMonitoringRecipe struct {
+	Version              int                                `json:"version"`
+	PresetID             int64                              `json:"preset_id"`
+	PresetName           string                             `json:"preset_name"`
+	PresetUpdatedAt      time.Time                          `json:"preset_updated_at"`
+	SourcePolicyRevision int64                              `json:"source_policy_revision"`
+	State                string                             `json:"state"`
+	Accounts             *int                               `json:"accounts"`
+	Demand               *ProcurementMonitoringRecipeDemand `json:"demand,omitempty"`
+}
+
+type ProcurementMonitoringRecipeDemand struct {
+	AdditionalPlans              int                      `json:"additional_plans"`
+	CurrentMinimumRequestsPerDay int64                    `json:"current_minimum_requests_per_day"`
+	DeltaMinimumRequestsPerDay   int64                    `json:"delta_minimum_requests_per_day"`
+	Coverage                     *MonitoringProbeCoverage `json:"coverage"`
+}
+
+func ProcurementMonitoringRecipePlan(preset *QualityRulePreset, at time.Time) (*ScheduledTestPlan, error) {
+	if preset == nil || !preset.Enabled || preset.PelicanConfig == nil || preset.PelicanConfig.Quality == nil ||
+		preset.PelicanConfig.Quality.Action != QualityActionObserveOnly ||
+		(preset.PelicanConfig.QuestionKind != "candy" && preset.PelicanConfig.QuestionKind != QualityRandomQuestionKind) ||
+		(preset.PelicanConfig.TestChannel != "" && preset.PelicanConfig.TestChannel != "account") {
+		return nil, ErrProcurementMonitoringRecipeInvalid
+	}
+	config, err := reusableQualityConfig(preset.PelicanConfig)
+	if err != nil {
+		return nil, ErrProcurementMonitoringRecipeInvalid
+	}
+	plan := &ScheduledTestPlan{ModelID: preset.ModelID, CronExpression: preset.CronExpression, Enabled: true, MaxResults: preset.MaxResults, PelicanConfig: config}
+	next, err := nextPlanRun(plan, at)
+	if err != nil {
+		return nil, ErrProcurementMonitoringRecipeInvalid
+	}
+	plan.NextRunAt = &next
+	return plan, nil
 }
 
 // This is a read-only legacy-rule review, not consent to take over a product.

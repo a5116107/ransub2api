@@ -20,12 +20,15 @@ import (
 	"github.com/lib/pq"
 )
 
-func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context, groupID int64) (*service.ProcurementProductImpact, error) {
+func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context, groupID int64, presetIDs ...int64) (*service.ProcurementProductImpact, error) {
 	if groupID < 1 || groupID > domain.MaxProcurementPolicyRevision {
 		return nil, service.ErrProcurementCatalogInvalid
 	}
 	if _, scoped := service.ObserverGroupIDs(ctx); scoped || adminaccess.FromContext(ctx) != nil {
 		return nil, service.ErrObserverScope
+	}
+	if len(presetIDs) > 1 || len(presetIDs) == 1 && (presetIDs[0] < 1 || presetIDs[0] > domain.MaxProcurementPolicyRevision) {
+		return nil, service.ErrProcurementMonitoringRecipeInvalid
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
@@ -37,6 +40,12 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 		return nil, err
 	}
 	out := &service.ProcurementProductImpact{Version: 1, GroupStatus: group.Status, GateEnabled: group.ProfitControlEnabled, BoundAccounts: len(accounts), ManagementReview: review}
+	if len(presetIDs) == 1 {
+		out.MonitoringRecipe, err = loadProcurementMonitoringRecipe(ctx, tx, presetIDs[0], review.SourceInventory)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var minOverride sql.NullFloat64
 	if err = tx.QueryRowContext(ctx, `SELECT min(rate_multiplier)::float8,count(*) FROM user_group_rate_multipliers
 	 WHERE group_id=$1 AND rate_multiplier>=0 AND rate_multiplier NOT IN ('NaN'::numeric,'Infinity'::numeric)`, groupID).Scan(&minOverride, &out.UserOverrideCount); err != nil {

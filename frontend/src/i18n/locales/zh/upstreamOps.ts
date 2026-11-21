@@ -1,5 +1,21 @@
 export default {
   productImpact: {
+    recipe: {
+      label: '模拟新增检测（可选）', none: '仅检查已保存规则', title: '检测需求预演', refresh: '刷新预设',
+      help: '选择观察型答题预设，为每个批准来源账号模拟新增一条计划；保留原规则，不自动复用或下发。',
+      loading: '正在读取预设…', loadFailed: '预设读取失败，原规则检查仍可使用。', empty: '还没有已启用的原生观察型答题预设。', configure: '管理质量预设',
+      invalid: '预设已失效、停用或不属于观察型答题规则，请重新选择。',
+      boundary: '只读测算，不执行检测、不接管旧规则、不改变停调状态或产品关联。日调用为乐观下界，未含完整scope、峰值、Token和检测时效；预算内不代表质量或模型身份通过。',
+      states: {
+        sources_unavailable: '批准来源未确认，未测算；未回退到原池或全站。', no_approved_accounts: '批准来源当前为空，无新增检测计划。',
+        not_enforced: '预算保护未开启：以下是需求测算，不是额度保证。', insufficient: '已发现容量超限，请调整预设频率、来源范围或预算。',
+        partial: '已知需求下界未发现超限；仍有未估算项或覆盖未知。', lower_bound_fits: '已知需求下界在容量内，不代表全部检测可按时完成。'
+      },
+      plans: '模拟新增 {count} 条计划；未关联和暂时停调的批准账号也纳入检测需求。',
+      current: '当前全局调用下界 / 日', delta: '新增调用下界 / 日', proposed: '变更后调用下界 / 日', capacity: '普通日调用容量',
+      identity: '来源策略修订 {revision} · 预设更新 {time}', window: '预算修订 {revision} · UTC窗口 {start} — {end}',
+      unestimated: '部分需求或覆盖仍未知，未估算项不当作免费，也不推算Token用量。'
+    },
     title: '产品价格与启用影响检查',
     intro: '先选择销售分组，查看按已保存配置启用利润门时，哪些绑定账号会被价格边界排除。',
     product: '销售产品 / 分组', choose: '按名称搜索并选择产品', noProducts: '没有匹配的销售分组。', disabledProduct: '已停用',

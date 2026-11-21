@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 
 export interface ProcurementBucket { code: string; name: string; min_rate: string | null; max_rate: string | null }
 export interface ProcurementCatalog { version: number; revision: number; buckets: ProcurementBucket[] }
@@ -49,6 +50,7 @@ export interface ProcurementProductImpact {
   considered_accounts: number
   user_override_count: number
   management_review?: ProcurementManagementReview | null
+  monitoring_recipe?: ProcurementMonitoringRecipe | null
   report: {
     group_id: number; group_name: string; platform: string; effective_gate: boolean; assumed_enabled?: boolean
     default_d: number; min_effective_d: number; threshold_default: number; threshold_min_d: number; model_counts_scope: string
@@ -92,8 +94,19 @@ export interface ProcurementWriterReview {
   }>
 }
 
-export async function previewProcurementProductImpact(id: number, signal?: AbortSignal): Promise<ProcurementProductImpact> {
-  return (await apiClient.get<ProcurementProductImpact>(`/admin/upstream-procurement/products/${id}/impact`, { signal })).data
+export interface ProcurementMonitoringRecipe {
+  version: number; preset_id: number; preset_name: string; preset_updated_at: string; source_policy_revision: number
+  state: string; accounts: number | null
+  demand?: {
+    additional_plans: number; current_minimum_requests_per_day: number; delta_minimum_requests_per_day: number
+    coverage: MonitoringProbeCoverage
+  }
+}
+
+export async function previewProcurementProductImpact(id: number, signal?: AbortSignal, presetID?: number): Promise<ProcurementProductImpact> {
+  return (await apiClient.get<ProcurementProductImpact>(`/admin/upstream-procurement/products/${id}/impact`, {
+    signal, ...(presetID == null ? {} : { params: { monitoring_preset_id: presetID } })
+  })).data
 }
 
 export async function readProcurementCatalog(signal?: AbortSignal): Promise<ProcurementCatalogSnapshot> {

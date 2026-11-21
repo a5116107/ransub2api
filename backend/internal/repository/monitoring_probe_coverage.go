@@ -54,7 +54,24 @@ func loadMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings se
 	return compileMonitoringProbeCoverage(ctx, tx, settings, nil)
 }
 
-func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings service.MonitoringProbeBudgetSettings, override *service.UpstreamBillingProbeSettings, drafts ...*service.MonitoringProbePlanDraft) (*service.MonitoringProbeCoverage, error) {
+type monitoringProbeCoverageInventory struct {
+	billing        service.UpstreamBillingProbeSettings
+	accounts       []service.MonitoringProbeCoverageAccount
+	complete       bool
+	plans          []service.MonitoringProbeCoveragePlan
+	plansComplete  bool
+	candy          []service.ChannelMonitorV2CandyProbe
+	candyComplete  bool
+	active         []service.ChannelMonitor
+	activeComplete bool
+	observedAt     time.Time
+}
+
+func (i *monitoringProbeCoverageInventory) compile(settings service.MonitoringProbeBudgetSettings, plans []service.MonitoringProbeCoveragePlan, complete bool) *service.MonitoringProbeCoverage {
+	return service.CompileMonitoringProbeCoverage(settings, i.billing, i.accounts, i.complete, plans, complete, i.candy, i.candyComplete, i.active, i.activeComplete, i.observedAt)
+}
+
+func loadMonitoringProbeCoverageInventory(ctx context.Context, tx sqlQueryer, override *service.UpstreamBillingProbeSettings) (*monitoringProbeCoverageInventory, error) {
 	var raw string
 	err := scanSingleRow(ctx, tx, `SELECT value FROM settings WHERE key=$1`, []any{service.SettingKeyUpstreamBillingProbeSettings}, &raw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -126,9 +143,19 @@ func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings
 	if err := scanSingleRow(ctx, tx, `SELECT clock_timestamp()`, nil, &now); err != nil {
 		return nil, err
 	}
-	compile := func(plans []service.MonitoringProbeCoveragePlan, plansComplete bool) *service.MonitoringProbeCoverage {
-		return service.CompileMonitoringProbeCoverage(settings, *billing, accounts, complete, plans, plansComplete, candy, candyComplete, active, activeComplete, now)
+	return &monitoringProbeCoverageInventory{billing: *billing, accounts: accounts, complete: complete, plans: plans, plansComplete: plansComplete, candy: candy, candyComplete: candyComplete, active: active, activeComplete: activeComplete, observedAt: now}, nil
+}
+
+func compileMonitoringProbeCoverage(ctx context.Context, tx sqlQueryer, settings service.MonitoringProbeBudgetSettings, override *service.UpstreamBillingProbeSettings, drafts ...*service.MonitoringProbePlanDraft) (*service.MonitoringProbeCoverage, error) {
+	inventory, err := loadMonitoringProbeCoverageInventory(ctx, tx, override)
+	if err != nil {
+		return nil, err
 	}
+	plans, plansComplete, now := inventory.plans, inventory.plansComplete, inventory.observedAt
+	compile := func(plans []service.MonitoringProbeCoveragePlan, complete bool) *service.MonitoringProbeCoverage {
+		return inventory.compile(settings, plans, complete)
+	}
+
 	baseline := compile(plans, plansComplete)
 	if len(drafts) == 0 {
 		return baseline, nil

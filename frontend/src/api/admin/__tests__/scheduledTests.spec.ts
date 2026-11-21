@@ -23,7 +23,7 @@ describe('reusable quality templates API', () => {
     expect(apiClient.post).toHaveBeenCalledTimes(1)
     expect(apiClient.post).toHaveBeenCalledWith('/admin/account-quality-presets', body)
     expect(apiClient.get).toHaveBeenCalledTimes(1)
-    expect(apiClient.get).toHaveBeenCalledWith('/admin/account-quality-presets')
+    expect(apiClient.get).toHaveBeenCalledWith('/admin/account-quality-presets', undefined)
     vi.mocked(apiClient.put).mockResolvedValueOnce({ data: persisted })
     expect(await updateQualityPreset(17, body)).toEqual(persisted)
     expect(apiClient.put).toHaveBeenCalledWith('/admin/account-quality-presets/17', body)

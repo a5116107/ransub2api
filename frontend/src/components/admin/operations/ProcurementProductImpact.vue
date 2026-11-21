@@ -11,6 +11,21 @@
           :searchable="true" :remote="true" :loading="productsBusy" :empty-text="t(`${p}.noProducts`)" aria-describedby="impact-product-help"
           @open="openProducts" @search="loadProducts" />
       </div>
+      <div class="min-w-0 sm:col-start-1">
+        <label for="impact-preset" class="mb-1 block text-sm font-medium">{{ t(`${p}.recipe.label`) }}</label>
+        <select id="impact-preset" v-model="presetID" class="input w-full" :disabled="presetsBusy" aria-describedby="impact-recipe-help" @focus="loadPresets">
+          <option :value="null">{{ t(`${p}.recipe.none`) }}</option>
+          <option v-for="preset in recipePresets" :key="preset.id" :value="preset.id">{{ preset.name }} · #{{ preset.id }}</option>
+        </select>
+        <p id="impact-recipe-help" class="mt-1 text-xs leading-5 text-gray-500">{{ t(`${p}.recipe.help`) }}</p>
+        <p v-if="presetsBusy" role="status" class="text-sm">{{ t(`${p}.recipe.loading`) }}</p>
+        <div v-else-if="presetsError" role="alert" class="text-sm text-amber-800 dark:text-amber-300">
+          {{ t(`${p}.recipe.loadFailed`) }} <button type="button" class="underline" @click="loadPresets(true)">{{ t(`${p}.retry`) }}</button>
+        </div>
+        <p v-else-if="presetsLoaded && !recipePresets.length" class="text-sm">{{ t(`${p}.recipe.empty`) }}</p>
+        <a href="/admin/account-quality" class="text-xs text-primary-600 underline dark:text-primary-400">{{ t(`${p}.recipe.configure`) }}</a>
+        <button type="button" class="ml-3 text-xs underline" :disabled="presetsBusy" @click="loadPresets(true)">{{ t(`${p}.recipe.refresh`) }}</button>
+      </div>
       <button type="submit" class="btn btn-secondary" :disabled="busy || managementBusy || !productID" data-testid="product-impact-preview">{{ t(`${p}.${busy ? 'loading' : 'preview'}`) }}</button>
     </form>
     <p id="impact-product-help" class="text-xs leading-5 text-gray-500">{{ t(`${p}.readOnly`) }}</p>
@@ -59,6 +74,21 @@
         <span class="rounded-full bg-gray-100 px-3 py-1 text-sm dark:bg-dark-700" data-testid="product-impact-gate">{{ t(`${p}.${result.gate_enabled ? 'gateOn' : 'gateOff'}`) }}</span>
       </div>
       <p class="break-words text-xs text-gray-500">{{ t(`${p}.snapshot`, { time: result.observed_at }) }}</p>
+      <section v-if="result.monitoring_recipe" class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="recipe-title" data-testid="product-monitoring-recipe">
+        <h4 id="recipe-title" class="font-medium">{{ t(`${p}.recipe.title`) }} · {{ result.monitoring_recipe.preset_name }}</h4>
+        <p class="rounded-lg bg-amber-50 p-3 text-sm font-medium text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="recipe-conclusion">{{ t(`${p}.recipe.states.${recipeState}`) }}</p>
+        <template v-if="result.monitoring_recipe.demand">
+          <dl class="grid min-w-0 grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div v-for="[key, value] in recipeMetrics" :key="key" class="min-w-0"><dt class="text-xs text-gray-500">{{ t(`${p}.recipe.${key}`) }}</dt><dd class="break-all font-semibold tabular-nums" :data-testid="`recipe-${key}`">{{ key === 'delta' ? '+' : '' }}{{ value }}</dd></div>
+          </dl>
+          <p class="text-sm">{{ t(`${p}.recipe.plans`, { count: result.monitoring_recipe.demand.additional_plans }) }}</p>
+          <p class="break-words text-xs text-gray-500">{{ t(`${p}.recipe.window`, { revision: result.monitoring_recipe.demand.coverage.budget_revision, start: result.monitoring_recipe.demand.coverage.schedule_window_start, end: result.monitoring_recipe.demand.coverage.schedule_window_end }) }}</p>
+          <ul v-if="recipeReasons.length" class="list-inside list-disc text-sm"><li v-for="reason in recipeReasons" :key="reason">{{ budgetReason(reason) }}</li></ul>
+          <p v-if="recipePartial" class="text-xs">{{ t(`${p}.recipe.unestimated`) }}</p>
+        </template>
+        <p class="break-words text-xs text-gray-500">{{ t(`${p}.recipe.identity`, { revision: result.monitoring_recipe.source_policy_revision, time: result.monitoring_recipe.preset_updated_at }) }}</p>
+        <p class="text-xs leading-5">{{ t(`${p}.recipe.boundary`) }}</p>
+      </section>
       <p v-if="result.group_status !== 'active'" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200">{{ t(`${p}.inactive`) }}</p>
       <p v-if="!result.report.effective_gate" class="text-sm" data-testid="product-impact-unsupported">{{ t(`${p}.unsupported`) }}</p>
       <template v-else>
@@ -202,13 +232,31 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
+import { listQualityPresets, type QualityRulePreset } from '@/api/admin/accountQuality'
 import { previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementPreview, type ProcurementManagementState, type ProcurementProductImpact } from '@/api/admin/procurementCatalog'
-import { validProcurementProductImpact, validProcurementManagementState, validProcurementManagementPreview } from '@/utils/procurementProductImpact'
+import { validProcurementProductImpact, validProcurementManagementState, validProcurementManagementPreview, observationRecipePreset } from '@/utils/procurementProductImpact'
 import type { AdminGroup } from '@/types'
 
 const { t } = useI18n(), p = 'upstreamOps.productImpact'
 const productID = ref<number | null>(null), products = ref<AdminGroup[]>([]), productsTotal = ref(0)
 const loadedProducts = ref(false), productsBusy = ref(false), productsError = ref(false)
+const presetID = ref<number | null>(null), presets = ref<QualityRulePreset[]>([]), presetsBusy = ref(false), presetsError = ref(false), presetsLoaded = ref(false)
+const recipePresets = computed(() => presets.value.filter(observationRecipePreset))
+let presetsController: AbortController | undefined
+async function loadPresets(force: boolean | Event = false) {
+  if (presetsBusy.value || presetsLoaded.value && force !== true) return
+  if (force === true) { previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = '' }
+  presetsController = new AbortController(); presetsBusy.value = true; presetsError.value = false
+  try {
+    const next = await listQualityPresets(presetsController.signal)
+    if (!Array.isArray(next)) throw new Error('invalid presets')
+    if (alive) {
+      presets.value = next; presetsLoaded.value = true
+      if (presetID.value != null && !recipePresets.value.some(p => p.id === presetID.value)) presetID.value = null
+    }
+  } catch { if (alive) presetsError.value = true }
+  finally { if (alive) presetsBusy.value = false }
+}
 const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), sourcePage = ref(1), writerPage = ref(1), pageSize = 20
 let alive = true, productsGeneration = 0, previewGeneration = 0, lastSearch = ''
 let productsController: AbortController | undefined, previewController: AbortController | undefined
@@ -307,6 +355,21 @@ const reviewCountKeys = ['conflicting_rules', 'protection_rules', 'unknown_rules
 const budgetMessages = computed(() => [...new Set([...(result.value?.management_review?.budget.reasons ?? []), ...(result.value?.management_review?.budget.warnings ?? [])])])
 const budgetReasons = new Set(['runner_capacity', 'minute_capacity', 'day_capacity', 'site_capacity', 'key_capacity', 'billing_scope_unresolved', 'periodic_site_capacity', 'periodic_site_unresolved', 'periodic_key_capacity', 'periodic_key_unresolved', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated'])
 const budgetReason = (reason: string) => t(`admin.settings.upstreamBillingProbe.budget.capacityReason.${budgetReasons.has(reason) ? reason : 'unknown'}`)
+const recipeCoverage = computed(() => result.value?.monitoring_recipe?.demand?.coverage)
+const recipePartial = computed(() => {
+  const c = recipeCoverage.value
+  return !!c && (c.inventory_complete !== true || c.plan_inventory_complete !== true || c.candy_inventory_complete !== true || c.active_inventory_complete !== true ||
+    c.warnings.length > 0 || !Array.isArray(c.unestimated_demand_sources) || c.unestimated_demand_sources.length > 0)
+})
+const recipeState = computed(() => {
+  const r = result.value?.monitoring_recipe, c = recipeCoverage.value
+  return r?.state !== 'previewed' ? r?.state : !c?.enforced ? 'not_enforced' : !c.can_save ? 'insufficient' : recipePartial.value ? 'partial' : 'lower_bound_fits'
+})
+const recipeReasons = computed(() => [...new Set([...(recipeCoverage.value?.blocking_reasons ?? []), ...(recipeCoverage.value?.warnings ?? [])])])
+const recipeMetrics = computed(() => [
+  ['current', result.value?.monitoring_recipe?.demand?.current_minimum_requests_per_day], ['delta', result.value?.monitoring_recipe?.demand?.delta_minimum_requests_per_day],
+  ['proposed', recipeCoverage.value?.minimum_total_requests_per_day], ['capacity', recipeCoverage.value?.regular_day_capacity]
+] as const)
 const priceMetrics = computed<Array<[string, number]>>(() => !result.value ? [] : [
   ['saleD', result.value.report.default_d], ['threshold', result.value.report.threshold_default],
   ['minimumD', result.value.report.min_effective_d], ['minimumThreshold', result.value.report.threshold_min_d]
@@ -318,6 +381,7 @@ watch(productID, id => {
   selected.value = products.value.find(row => row.id === id) ?? (selected.value?.id === id ? selected.value : null)
   previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1
 }, { flush: 'sync' })
+watch(presetID, () => { previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = '' }, { flush: 'sync' })
 function openProducts() { if (!loadedProducts.value && !productsBusy.value) void loadProducts('') }
 async function loadProducts(search: string) {
   lastSearch = search
@@ -338,15 +402,15 @@ async function preview() {
   previewController?.abort(); previewController = new AbortController()
   busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1
   try {
-    const next = await previewProcurementProductImpact(id, previewController.signal)
-    if (!validProcurementProductImpact(next, id)) throw new Error('invalid product impact')
+    const next = presetID.value == null ? await previewProcurementProductImpact(id, previewController.signal) : await previewProcurementProductImpact(id, previewController.signal, presetID.value)
+    if (!validProcurementProductImpact(next, id, presetID.value ?? undefined)) throw new Error('invalid product impact')
     if (alive && generation === previewGeneration) result.value = next
   } catch (e) {
     if (alive && generation === previewGeneration) {
       const status = (e as { status?: number })?.status, reason = (e as { reason?: string })?.reason
-      error.value = status === 403 ? 'forbidden' : status === 404 ? 'notFound' : reason === 'PROCUREMENT_PRODUCT_IMPACT_TOO_LARGE' ? 'tooLarge' : 'failed'
+      error.value = reason === 'PROCUREMENT_MONITORING_RECIPE_INVALID' || reason === 'PROCUREMENT_MONITORING_RECIPE_NOT_FOUND' ? 'recipe.invalid' : status === 403 ? 'forbidden' : status === 404 ? 'notFound' : reason === 'PROCUREMENT_PRODUCT_IMPACT_TOO_LARGE' ? 'tooLarge' : 'failed'
     }
   } finally { if (alive && generation === previewGeneration) busy.value = false }
 }
-onBeforeUnmount(() => { alive = false; productsController?.abort(); previewController?.abort() })
+onBeforeUnmount(() => { alive = false; productsController?.abort(); previewController?.abort(); presetsController?.abort() })
 </script>

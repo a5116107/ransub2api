@@ -83,8 +83,8 @@ export interface QualityRulePreset extends QualityRulePresetRequest {
   created_at: string
   updated_at: string
 }
-export async function listQualityPresets(): Promise<QualityRulePreset[]> {
-  const { data } = await apiClient.get<QualityRulePreset[]>('/admin/account-quality-presets')
+export async function listQualityPresets(signal?: AbortSignal): Promise<QualityRulePreset[]> {
+  const { data } = await apiClient.get<QualityRulePreset[]>('/admin/account-quality-presets', signal ? { signal } : undefined)
   return data ?? []
 }
 export async function createQualityPreset(body: QualityRulePresetRequest): Promise<QualityRulePreset> {

@@ -32,6 +32,15 @@ func (h *ChannelHandler) ProcurementProductImpact(c *gin.Context) {
 		procurementCatalogError(c, service.ErrProcurementCatalogInvalid)
 		return
 	}
+	var presetIDs []int64
+	if values, exists := c.Request.URL.Query()["monitoring_preset_id"]; exists {
+		presetID, parseErr := strconv.ParseInt(c.Query("monitoring_preset_id"), 10, 64)
+		if parseErr != nil || len(values) != 1 || presetID < 1 || presetID > 9007199254740991 {
+			response.ErrorFrom(c, service.ErrProcurementMonitoringRecipeInvalid)
+			return
+		}
+		presetIDs = append(presetIDs, presetID)
+	}
 	repo, err := h.channelService.ProcurementCatalogRepository()
 	if err != nil {
 		procurementCatalogError(c, err)
@@ -39,9 +48,10 @@ func (h *ChannelHandler) ProcurementProductImpact(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
-	out, err := repo.PreviewProcurementProductImpact(ctx, id)
+	out, err := repo.PreviewProcurementProductImpact(ctx, id, presetIDs...)
 	if err != nil {
-		if errors.Is(err, service.ErrGroupNotFound) || errors.Is(err, service.ErrObserverScope) || errors.Is(err, service.ErrProcurementProductImpactTooLarge) {
+		if errors.Is(err, service.ErrGroupNotFound) || errors.Is(err, service.ErrObserverScope) || errors.Is(err, service.ErrProcurementProductImpactTooLarge) ||
+			errors.Is(err, service.ErrProcurementMonitoringRecipeInvalid) || errors.Is(err, service.ErrProcurementMonitoringRecipeNotFound) {
 			response.ErrorFrom(c, err)
 		} else {
 			procurementCatalogError(c, err)

@@ -1,5 +1,21 @@
 export default {
   productImpact: {
+    recipe: {
+      label: 'Simulate added monitoring (optional)', none: 'Review saved rules only', title: 'Monitoring demand preview', refresh: 'Refresh presets',
+      help: 'Choose an observation-only answer preset to simulate one additional plan per approved account. Existing plans are retained, not reused or distributed.',
+      loading: 'Loading presets…', loadFailed: 'Preset loading failed. Saved-rule review is still available.', empty: 'No enabled native observation-only answer presets.', configure: 'Manage quality presets',
+      invalid: 'The preset is missing, disabled, or not an observation-only answer rule. Select a valid preset.',
+      boundary: 'Read-only: no checks, adoption, scheduling changes or product membership writes. Daily calls are optimistic lower bounds, not full scope, peak, token or timeliness guarantees. Capacity does not prove answer quality or model identity.',
+      states: {
+        sources_unavailable: 'Approved sources are unconfirmed: no estimate or fallback to the original pool or all accounts.', no_approved_accounts: 'Approved sources are currently empty; no additional plans.',
+        not_enforced: 'Budget protection is off. These are demand estimates, not guaranteed capacity.', insufficient: 'A capacity limit is exceeded. Adjust cadence, approved sources, or budget.',
+        partial: 'No proven excess in the known lower bound; unestimated demand or unknown coverage remains.', lower_bound_fits: 'Known lower bound fits capacity, not a guarantee that all checks finish on time.'
+      },
+      plans: '{count} simulated additional plans. Unbound and scheduling-paused approved accounts are included.',
+      current: 'Current global calls/day lower bound', delta: 'Additional calls/day lower bound', proposed: 'Proposed calls/day lower bound', capacity: 'Regular daily call capacity',
+      identity: 'Source policy revision {revision} · Preset updated {time}', window: 'Budget revision {revision} · UTC window {start} — {end}',
+      unestimated: 'Some demand or coverage is unknown, not free. Token usage is not predicted.'
+    },
     title: 'Product price and activation impact',
     intro: 'Choose a sales group to see which bound accounts its saved price rules would reject with the profit gate enabled.',
     product: 'Sales product / group', choose: 'Search products by name', noProducts: 'No matching sales groups.', disabledProduct: 'Disabled',

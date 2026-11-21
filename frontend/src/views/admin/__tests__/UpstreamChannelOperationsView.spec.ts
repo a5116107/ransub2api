@@ -9,6 +9,7 @@ vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<
 vi.mock('@/api/admin/upstreamOperations', () => ({ readOperations: vi.fn() }))
 vi.mock('@/api/admin/procurementCatalog', () => ({ readProcurementCatalog: vi.fn(), saveProcurementCatalog: vi.fn(), previewProcurementScopes: vi.fn(), previewProcurementProductImpact: vi.fn() }))
 vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
+vi.mock('@/api/admin/accountQuality', () => ({ listQualityPresets: vi.fn() }))
 
 describe('server-recorded traffic source composition', () => {
  const traffic = { version: 1, source: 'server_recorded_entrypoints', samples: 10, known_samples: 2, unknown_samples: 8, coverage: .2,

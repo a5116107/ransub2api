@@ -1,4 +1,5 @@
 import type { ProcurementManagementPreview, ProcurementManagementState, ProcurementManagementReview, ProcurementProductImpact, ProcurementWriterReview } from '@/api/admin/procurementCatalog'
+import type { QualityRulePreset } from '@/api/admin/accountQuality'
 
 const impactPriceClasses = [
   'admitted', 'rejected_threshold', 'rejected_procurement_range', 'rejected_procurement_source',
@@ -135,12 +136,40 @@ function validManagementReview(review: ProcurementManagementReview, groupID: num
 
 // Fail closed on an unknown/inconsistent contract; never turn a missing result
 // into a zero-cost supplier or a green eligibility badge.
-export function validProcurementProductImpact(value: ProcurementProductImpact, groupID: number): boolean {
+export function observationRecipePreset(preset: QualityRulePreset): boolean {
+  const config = preset?.pelican_config
+  return !!preset && count(preset.id) && preset.id > 0 && preset.enabled === true && typeof preset.name === 'string' &&
+    !!config && ['candy', 'random_reasoning'].includes(config.question_kind ?? '') &&
+    (!config.test_channel || config.test_channel === 'account') && config.quality?.action === 'observe_only'
+}
+
+function validMonitoringRecipe(value: ProcurementProductImpact, presetID?: number): boolean {
+  const r = value.monitoring_recipe, source = value.management_review?.source_inventory
+  if (presetID == null) return r == null
+  if (!r || r.version !== 1 || r.preset_id !== presetID || typeof r.preset_name !== 'string' ||
+    !Number.isFinite(Date.parse(r.preset_updated_at)) || !count(r.source_policy_revision) || !source ||
+    r.source_policy_revision !== source.policy_revision) return false
+  if (source.state !== 'approved_sources') return r.state === 'sources_unavailable' && r.accounts === null && r.demand == null
+  if (r.accounts !== source.approved_accounts || !count(r.accounts)) return false
+  if (r.accounts === 0) return r.state === 'no_approved_accounts' && r.demand == null
+  const d = r.demand, c = d?.coverage
+  if (r.state !== 'previewed' || !d || !c || d.additional_plans !== r.accounts ||
+    ![d.current_minimum_requests_per_day, d.delta_minimum_requests_per_day, c.minimum_total_requests_per_day, c.regular_day_capacity, c.budget_revision].every(count) ||
+    c.minimum_total_requests_per_day !== d.current_minimum_requests_per_day + d.delta_minimum_requests_per_day ||
+    typeof c.enforced !== 'boolean' || typeof c.can_save !== 'boolean' || !Array.isArray(c.blocking_reasons) || !Array.isArray(c.warnings) ||
+    [...c.blocking_reasons, ...c.warnings].some(v => typeof v !== 'string') ||
+    c.can_save !== (!c.enforced || c.blocking_reasons.length === 0) || !Number.isFinite(Date.parse(c.observed_at)) ||
+    !c.schedule_window_start || !c.schedule_window_end || Date.parse(c.schedule_window_end) - Date.parse(c.schedule_window_start) !== 86400000) return false
+  return true
+}
+
+export function validProcurementProductImpact(value: ProcurementProductImpact, groupID: number, presetID?: number): boolean {
   if (!value || value.version !== 1 || !Number.isFinite(Date.parse(value.observed_at)) ||
     !['active', 'inactive'].includes(value.group_status) || typeof value.gate_enabled !== 'boolean' ||
     !count(value.bound_accounts) || value.bound_accounts > 1000 || !count(value.considered_accounts) ||
     value.considered_accounts > value.bound_accounts || !count(value.user_override_count) ||
-    value.management_review != null && !validManagementReview(value.management_review, groupID, value.bound_accounts)) return false
+    value.management_review != null && !validManagementReview(value.management_review, groupID, value.bound_accounts) ||
+    !validMonitoringRecipe(value, presetID)) return false
   const report = value.report
   if (!report || report.group_id !== groupID || typeof report.group_name !== 'string' || typeof report.platform !== 'string' ||
     typeof report.effective_gate !== 'boolean' || report.assumed_enabled != null && typeof report.assumed_enabled !== 'boolean' || report.model_counts_scope !== 'account_price_only' ||
