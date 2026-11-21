@@ -40,7 +40,7 @@ func TestProcurementEvaluatedGatesIntersection(t *testing.T) {
 			}
 			quality := &QualityScopeEvidence{Version: 1, Status: tc.quality, Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &qualityUntil, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}
 			availability := &AvailabilityScopeEvidence{Version: 1, Status: tc.availability, Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &availabilityUntil, RuleCount: 1, ConfirmedRules: 1}
-			projection := &ProcurementProductPreview{State: tc.price, PriceClass: ProfitPreviewClassRejectedThreshold,
+			projection := &ProcurementProductPreview{State: tc.price, PriceClass: ProfitPreviewClassRejectedThreshold, PriceValidUntil: probeTimePtr(at.Add(ProcurementPreviewTTL)),
 				AccountControls: procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)}
 			projection.AssessEvidence(policy, quality, availability, at)
 			require.Equal(t, tc.state, projection.EvaluatedGates.State)
@@ -48,7 +48,7 @@ func TestProcurementEvaluatedGatesIntersection(t *testing.T) {
 			require.Equal(t, tc.passed+1, projection.EvaluatedGates.PassedGates)
 			require.Equal(t, tc.required+1, projection.EvaluatedGates.RequiredGates)
 			require.Equal(t, at, projection.EvaluatedGates.EvaluatedAt)
-			require.Equal(t, at.Add(ProcurementAccountControlsTTL), *projection.EvaluatedGates.ValidUntil)
+			require.Equal(t, at.Add(ProcurementPreviewTTL), *projection.EvaluatedGates.ValidUntil)
 		})
 	}
 }
@@ -58,18 +58,20 @@ func TestProcurementEvaluatedGatesExpiryAndNoCertification(t *testing.T) {
 	until := at.Add(time.Second)
 	policy := &ProcurementPolicy{Quality: "current_answer"}
 	quality := &QualityScopeEvidence{Version: 1, Status: "pass", Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &until, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}
-	p := &ProcurementProductPreview{State: "constraints_passed"}
+	p := &ProcurementProductPreview{State: "constraints_passed", PriceValidUntil: probeTimePtr(at.Add(ProcurementPreviewTTL))}
 	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)
 	p.AssessEvidence(policy, quality, nil, at)
 	require.Equal(t, "pass", p.EvaluatedGates.State)
 	*p.EvaluatedGates.ValidUntil = until.Add(time.Hour)
 	require.Equal(t, at.Add(time.Second), *quality.ValidUntil, "projection must not extend source evidence")
 	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, until)
+	p.PriceValidUntil = probeTimePtr(until.Add(ProcurementPreviewTTL))
 	p.AssessEvidence(policy, quality, nil, until)
 	require.Equal(t, "unknown", p.EvaluatedGates.State)
 	require.Equal(t, "answer_quality_unavailable", p.EvaluatedGates.Reason)
-	require.Equal(t, until.Add(ProcurementAccountControlsTTL), *p.EvaluatedGates.ValidUntil)
+	require.Equal(t, until.Add(ProcurementPreviewTTL), *p.EvaluatedGates.ValidUntil)
 	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)
+	p.PriceValidUntil = probeTimePtr(at.Add(ProcurementPreviewTTL))
 	p.AssessEvidence(policy, nil, nil, at)
 	require.Equal(t, "unknown", p.EvaluatedGates.State)
 	for _, priceClass := range []string{ProfitPreviewClassUnknownCatalog, ProfitPreviewClassUnknownProcurement, ProfitPreviewClassRejectedUpstreamRate, ProfitPreviewClassRejectedInvalidRate, "future_class"} {
@@ -247,7 +249,7 @@ func TestProcurementAccountControlsDeadlinesAndUnknown(t *testing.T) {
 		require.Equal(t, "unknown", unknown.State)
 		require.Nil(t, unknown.ValidUntil)
 	}
-	p := &ProcurementProductPreview{State: "constraints_passed"}
+	p := &ProcurementProductPreview{State: "constraints_passed", PriceValidUntil: probeTimePtr(at.Add(ProcurementPreviewTTL))}
 	p.AssessEvidence(nil, nil, nil, at)
 	require.Equal(t, "unknown", p.EvaluatedGates.State)
 	require.Equal(t, "account_controls_unavailable", p.EvaluatedGates.Reason)
@@ -289,4 +291,95 @@ func TestProcurementProductPreviewUsesOriginalGateWithoutAwardingQualification(t
 	require.Equal(t, "account_unavailable", result.Product.Reason)
 	result = ClassifyProcurementScope(catalog, a, request, at, nil)
 	require.Nil(t, result.Product, "old inventory-only commands retain their response")
+}
+
+func TestProcurementProductPriceDependenciesExpireBeforeControls(t *testing.T) {
+	at := time.Date(2026, 11, 21, 1, 59, 58, 0, time.UTC)
+	observed := at.Add(-time.Second)
+	for _, name := range []string{"rate snapshot", "supplier applicability", "manual applicability", "peak boundary", "sales peak boundary"} {
+		t.Run(name, func(t *testing.T) {
+			a := billingApplicabilityAccount(t, observed, billingApplicabilityFixture(observed, billingApplicabilityEntry("responses_http", "unspecified", true)))
+			a.ID, a.Status, a.Schedulable, a.GroupIDs = 7, StatusActive, true, []int64{42}
+			snapshot := decodeUpstreamBillingProbeSnapshot(a.Extra)
+			until := at.Add(2 * time.Second)
+			switch name {
+			case "rate snapshot":
+				snapshot.FreshUntil = &until
+			case "supplier applicability":
+				declaration, present := upstreamBillingApplicabilityFromData(snapshot.Data)
+				require.True(t, present)
+				declaration.ExpiresAt = until
+				snapshot.Data[upstreamBillingApplicabilityKey] = declaration
+			case "manual applicability":
+				delete(snapshot.Data, upstreamBillingApplicabilityKey)
+				a.Extra[UpstreamBillingProbeExtraKey] = snapshot
+				var command map[string]any
+				require.NoError(t, json.Unmarshal(billingManualCommand(t, a, observed, billingApplicabilityEntry("responses_http", "unspecified", true)), &command))
+				command["expires_at"] = until
+				raw, err := json.Marshal(command)
+				require.NoError(t, err)
+				_, err = prepareUpstreamBillingManualApplicability(t.Context(), a, raw, observed)
+				require.NoError(t, err)
+			case "peak boundary":
+				snapshot.Data["peak_rate_enabled"], snapshot.Data["peak_start"], snapshot.Data["peak_end"] = true, "02:00", "03:00"
+				snapshot.Data["timezone"], snapshot.Data["peak_rate_multiplier"] = "UTC", 2.0
+			}
+			a.Extra[UpstreamBillingProbeExtraKey] = snapshot
+			r := ProfitPreviewRequestScope{AccountID: a.ID, PublicModel: "gpt-fixture", Scope: AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}
+			catalog := &domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}
+			group := &Group{ID: 42, Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: .6, ProfitControlEnabled: true}
+			if name == "sales peak boundary" {
+				group.SubscriptionType, group.PeakRateEnabled, group.PeakStart, group.PeakEnd, group.PeakRateMultiplier = "subscription", true, "02:00", "03:00", .5
+			}
+			before, err := json.Marshal(a.Extra)
+			require.NoError(t, err)
+			result := ClassifyProcurementScope(catalog, a, r, at, group)
+			require.Equal(t, "constraints_passed", result.Product.State)
+			require.Equal(t, "pass", result.Product.EvaluatedGates.State)
+			require.True(t, until.Equal(*result.Product.EvaluatedGates.ValidUntil), "price evidence must expire before the account snapshot: got %s, want %s", result.Product.EvaluatedGates.ValidUntil, until)
+			later := ClassifyProcurementScope(catalog, a, r, until, group)
+			require.NotEqual(t, "pass", later.Product.EvaluatedGates.State, "expiry or a new peak price requires a fresh decision")
+			after, err := json.Marshal(a.Extra)
+			require.NoError(t, err)
+			require.JSONEq(t, string(before), string(after), "a preview must not extend or rewrite supplier evidence")
+		})
+	}
+}
+
+func TestProcurementPriceDeadlinePrecedenceAndNoExtension(t *testing.T) {
+	at := time.Date(2026, 11, 21, 1, 59, 58, 123456789, time.UTC)
+	observed := at.Add(-time.Second)
+	a := billingApplicabilityAccount(t, observed, billingApplicabilityFixture(observed, billingApplicabilityEntry("responses_http", "unspecified", true)))
+	manualUntil := at.Add(time.Second)
+	var command map[string]any
+	require.NoError(t, json.Unmarshal(billingManualCommand(t, a, observed, billingApplicabilityEntry("responses_http", "unspecified", true)), &command))
+	command["expires_at"] = manualUntil
+	raw, err := json.Marshal(command)
+	require.NoError(t, err)
+	_, err = prepareUpstreamBillingManualApplicability(t.Context(), a, raw, observed)
+	require.NoError(t, err)
+	require.True(t, at.Add(ProcurementPreviewTTL).Equal(*procurementPriceDeadlineAt(a, nil, at)), "an unused manual fallback must not expire supplier evidence")
+	snapshot := decodeUpstreamBillingProbeSnapshot(a.Extra)
+	snapshot.Data[upstreamBillingApplicabilityKey] = nil
+	a.Extra[UpstreamBillingProbeExtraKey] = snapshot
+	scope := AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}
+	status, _ := upstreamBillingScopeVerdictAt(a, &scope, at)
+	require.NotEqual(t, "covered", status, "invalid supplier data never falls back to manual")
+	delete(snapshot.Data, upstreamBillingApplicabilityKey)
+	a.Extra[UpstreamBillingProbeExtraKey] = snapshot
+	until := procurementPriceDeadlineAt(a, nil, at)
+	require.True(t, manualUntil.Equal(*until))
+	*until = at.Add(time.Hour)
+	manual, state := manualBillingApplicabilityAt(a, at)
+	require.Equal(t, "active", state)
+	require.True(t, manualUntil.Equal(manual.ExpiresAt), "projection changes must not extend source evidence")
+	// A local minute boundary is conservative, including fractional seconds
+	// and non-hour timezones. It does not predict a price beyond that minute.
+	snapshot.Data["peak_rate_enabled"], snapshot.Data["peak_start"], snapshot.Data["peak_end"] = true, "08:00", "09:00"
+	snapshot.Data["timezone"], snapshot.Data["peak_rate_multiplier"] = "Asia/Kathmandu", 2.0
+	snapshot.Data[upstreamBillingApplicabilityKey] = billingApplicabilityFixture(observed, billingApplicabilityEntry("responses_http", "unspecified", true))
+	a.Extra[UpstreamBillingProbeExtraKey] = snapshot
+	require.True(t, at.Truncate(time.Minute).Add(time.Minute).Equal(*procurementPriceDeadlineAt(a, nil, at)))
+	require.True(t, at.Add(ProcurementPreviewTTL).Equal(*procurementPriceDeadlineAt(nil, nil, at)))
+	require.Nil(t, procurementPriceDeadlineAt(a, nil, time.Time{}))
 }

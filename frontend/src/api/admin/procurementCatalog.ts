@@ -19,6 +19,7 @@ export interface ProcurementClassification extends ProcurementRequestScope {
   quality_evidence?: QualityScopeEvidence
   availability_evidence?: AvailabilityScopeEvidence
   product_procurement?: {
+    price_valid_until?: string | null
     account_controls?: { version: number; state: string; reason: string; evaluated_at: string; valid_until: string | null }
     evaluated_gates?: { version: number; state: string; reason: string; passed_gates: number; required_gates: number; evaluated_at: string; valid_until: string | null }
     answer_quality?: { version: number; required: boolean; state: string }

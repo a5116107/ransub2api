@@ -111,7 +111,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 	_, err := db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,7)`, accountID, groupID)
 	require.NoError(t, err)
 	management := service.NewAdminService(&config.Config{}, nil, repository.NewAdminGroupRepository(client, db), repository.NewAdminAccountRepository(client, db, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	attest := func() {
+	attest := func(validFor time.Duration) {
 		t.Helper()
 		current, err := repository.NewAccountRepository(client, db, nil).GetByID(ctx, accountID)
 		require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		if stored, ok := current.Extra[service.UpstreamBillingManualApplicabilityExtraKey].(map[string]any); ok {
 			revision, _ = stored["revision"].(string)
 		}
-		command := map[string]any{"source_version": "reviewed-fixture-v1", "reason": "local contract fixture", "expires_at": time.Now().UTC().Add(time.Hour), "confirm_current_binding": true, "expected_revision": revision, "entries": []any{map[string]any{"model": "wire-model", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}}}
+		command := map[string]any{"source_version": "reviewed-fixture-v1", "reason": "local contract fixture", "expires_at": time.Now().UTC().Add(validFor), "confirm_current_binding": true, "expected_revision": revision, "entries": []any{map[string]any{"model": "wire-model", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}}}
 		_, err = management.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{ManualRateApplicability: json.RawMessage(encode(command))})
 		require.NoError(t, err)
 	}
@@ -144,7 +144,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Nil(t, out.Results[0].Bucket)
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification)
 	})
-	attest()
+	attest(time.Hour)
 	t.Run("authenticated preview keeps protected accounts read-only", func(t *testing.T) {
 		users := repository.NewUserRepository(client, db)
 		auth := service.NewAuthService(client, users, nil, nil, &config.Config{JWT: config.JWTConfig{Secret: "controls-local-fixture", ExpireHour: 1}}, nil, nil, nil, nil, nil, nil, nil, nil)
@@ -221,7 +221,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.RequiredGates)
 		require.Equal(t, 1, out.Results[0].Product.EvaluatedGates.PassedGates)
 		require.Equal(t, out.ObservedAt, out.Results[0].Product.EvaluatedGates.EvaluatedAt)
-		require.Equal(t, out.ObservedAt.Add(service.ProcurementAccountControlsTTL), *out.Results[0].Product.EvaluatedGates.ValidUntil)
+		require.Equal(t, out.ObservedAt.Add(service.ProcurementPreviewTTL), *out.Results[0].Product.EvaluatedGates.ValidUntil)
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification, "manual schedulable=false is not silently upgraded to full eligibility")
 		_, err := db.ExecContext(ctx, `UPDATE accounts SET schedulable=true WHERE id=$1`, accountID)
 		require.NoError(t, err)
@@ -232,7 +232,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		out = readProduct(groupID)
 		require.Equal(t, "pass", out.Results[0].Product.EvaluatedGates.State)
 		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.PassedGates)
-		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.Version)
+		require.Equal(t, 3, out.Results[0].Product.EvaluatedGates.Version)
 		for _, tc := range []struct{ name, apply, undo, reason string }{
 			{"manual", `UPDATE accounts SET schedulable=false WHERE id=$1`, `UPDATE accounts SET schedulable=true WHERE id=$1`, "scheduling_disabled"},
 			{"inactive", `UPDATE accounts SET status='disabled' WHERE id=$1`, `UPDATE accounts SET status='active' WHERE id=$1`, "account_inactive"},
@@ -262,7 +262,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 				require.Equal(t, "account_controls_failed", out.Results[0].Product.EvaluatedGates.Reason)
 				require.Equal(t, "constraints_passed", out.Results[0].Product.State)
 				require.True(t, controls.ValidUntil.After(out.ObservedAt))
-				require.False(t, controls.ValidUntil.After(out.ObservedAt.Add(service.ProcurementAccountControlsTTL)))
+				require.False(t, controls.ValidUntil.After(out.ObservedAt.Add(service.ProcurementPreviewTTL)))
 				fingerprint(&after)
 				require.Equal(t, before, after, "preview must preserve saved protection")
 				var effects int
@@ -271,6 +271,36 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 			})
 			require.Equal(t, "pass", readProduct(groupID).Results[0].Product.AccountControls.State, "protection recovery is read again")
 		}
+		t.Run("price deadline expires and refreshes independently of account controls", func(t *testing.T) {
+			attest(3 * time.Second)
+			var expiry string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT extra->'upstream_billing_manual_applicability'->>'expires_at' FROM accounts WHERE id=$1`, accountID).Scan(&expiry))
+			expected, err := time.Parse(time.RFC3339Nano, expiry)
+			require.NoError(t, err)
+			out := readProduct(groupID)
+			product := out.Results[0].Product
+			require.Equal(t, "pass", product.EvaluatedGates.State)
+			require.NotNil(t, product.PriceValidUntil)
+			require.True(t, expected.Equal(*product.PriceValidUntil), "use the original declaration's exact deadline, not a new 30-second lease")
+			require.True(t, product.PriceValidUntil.Before(*product.AccountControls.ValidUntil))
+			require.True(t, expected.Equal(*product.EvaluatedGates.ValidUntil))
+			timer := time.NewTimer(time.Until(expected) + time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			out = readProduct(groupID)
+			require.Equal(t, "unknown", out.Results[0].Product.EvaluatedGates.State)
+			require.Nil(t, out.Results[0].Product.PriceValidUntil)
+			require.Equal(t, "pass", out.Results[0].Product.AccountControls.State, "a fresh account snapshot cannot renew expired price evidence")
+			attest(time.Hour)
+			require.Equal(t, "pass", readProduct(groupID).Results[0].Product.EvaluatedGates.State)
+			var effects int
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM scheduled_test_plans)+(SELECT count(*) FROM scheduled_test_results)+(SELECT count(*) FROM usage_logs)+(SELECT count(*) FROM monitoring_probe_budget_counters)+(SELECT count(*) FROM monitoring_probe_budget_leases)`).Scan(&effects))
+			require.Zero(t, effects)
+		})
 
 		policy.Version = 3
 		policy.Buckets = &domain.ProcurementBuckets{Codes: []string{"next"}}
@@ -357,12 +387,12 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		out := preview(request)
 		require.Equal(t, "scope_unconfirmed", out.Results[0].State)
 		require.Nil(t, out.Results[0].Bucket)
-		attest()
+		attest(time.Hour)
 		out = preview(request)
 		require.Equal(t, "next", out.Results[0].Bucket.Code, "exclusive boundary belongs to the next bucket")
 		_, err = db.ExecContext(ctx, `UPDATE accounts SET rate_multiplier=0.025 WHERE id=$1`, accountID)
 		require.NoError(t, err)
-		attest()
+		attest(time.Hour)
 	})
 	t.Run("bounded 100 scope preview and malformed input", func(t *testing.T) {
 		batch := make([]service.ProfitPreviewRequestScope, 100)

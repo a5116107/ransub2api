@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/tidwall/gjson"
 )
 
@@ -47,6 +48,7 @@ type ProcurementPreviewCommand struct {
 // This is a read-only projection at the group's default sale price, never a
 // user-specific price quote or a scheduling/quality/cache qualification.
 type ProcurementProductPreview struct {
+	PriceValidUntil *time.Time                         `json:"price_valid_until"`
 	AccountControls *ProcurementAccountControlsPreview `json:"account_controls"`
 	EvaluatedGates  *ProcurementEvaluatedGatesPreview  `json:"evaluated_gates,omitempty"`
 	AnswerQuality   *ProcurementAnswerQualityPreview   `json:"answer_quality,omitempty"`
@@ -75,7 +77,7 @@ type ProcurementEvaluatedGatesPreview struct {
 	ValidUntil    *time.Time `json:"valid_until"`
 }
 
-const ProcurementAccountControlsTTL = 30 * time.Second
+const ProcurementPreviewTTL = 30 * time.Second
 
 // A short-lived snapshot of the original account controls, not a capacity
 // reservation, parent credential check or complete product qualification.
@@ -100,7 +102,7 @@ func procurementAccountControlsAt(account *Account, id int64, at time.Time) *Pro
 	if reason := account.schedulingBlockReasonAt(at); reason != "" {
 		out.State, out.Reason = "fail", reason
 	}
-	until := at.Add(ProcurementAccountControlsTTL)
+	until := at.Add(ProcurementPreviewTTL)
 	shorten := func(boundary *time.Time) {
 		if boundary != nil && boundary.After(at) && boundary.Before(until) {
 			until = *boundary
@@ -136,13 +138,80 @@ func procurementAccountControlsAt(account *Account, id int64, at time.Time) *Pro
 	return out
 }
 
+func (p *ProcurementProductPreview) priceState() string {
+	switch {
+	case p.State == "constraints_passed":
+		return "pass"
+	case p.State == "product_inactive", p.State == "not_associated":
+		return "fail"
+	case p.State == "blocked" && slices.Contains([]string{ProfitPreviewClassRejectedThreshold, ProfitPreviewClassRejectedProcurement, ProfitPreviewClassRejectedSource, ProfitPreviewClassRejectedBucket, ProfitPreviewClassRejectedSaleRate}, p.PriceClass):
+		return "fail"
+	default:
+		return "unknown"
+	}
+}
+
+// Bound the already-evaluated original price gate, without calculating a second
+// price. Configuration changes still require a new read/final-send decision.
+func procurementPriceDeadlineAt(account *Account, product *Group, at time.Time) *time.Time {
+	if at.IsZero() {
+		return nil
+	}
+	until := at.Add(ProcurementPreviewTTL)
+	shorten := func(boundary time.Time) {
+		if boundary.After(at) && boundary.Before(until) {
+			until = boundary
+		}
+	}
+	minuteBoundary := func(location *time.Location) {
+		local := at.In(location)
+		// Peak rules have minute precision. Do not predict beyond the next
+		// local minute or timezone transition, even if the price stays equal.
+		shorten(at.Add(time.Minute - time.Duration(local.Second())*time.Second - time.Duration(local.Nanosecond())))
+		_, zoneEnd := local.ZoneBounds()
+		shorten(zoneEnd)
+	}
+	if product != nil && product.IsSubscriptionType() && product.PeakRateEnabled {
+		minuteBoundary(timezone.Location())
+	}
+	if account != nil && account.Type == AccountTypeAPIKey {
+		present := false
+		if upstreamBillingRateSyncEnabled(account) {
+			if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil {
+				if snapshot.FreshUntil != nil {
+					shorten(*snapshot.FreshUntil)
+				}
+				declaration, exists := upstreamBillingApplicabilityFromData(snapshot.Data)
+				present = exists
+				if declaration != nil {
+					shorten(declaration.ExpiresAt)
+				}
+				if peak, _ := snapshot.Data["peak_rate_enabled"].(bool); peak {
+					name, _ := snapshot.Data["timezone"].(string)
+					if location, err := time.LoadLocation(name); err == nil {
+						minuteBoundary(location)
+					}
+				}
+			}
+		}
+		// An explicit supplier declaration, including an exclusion or invalid
+		// one, never inherits the administrator's fallback declaration.
+		if !present {
+			if manual, state := manualBillingApplicabilityAt(account, at); state == "active" {
+				shorten(manual.ExpiresAt)
+			}
+		}
+	}
+	return &until
+}
+
 func (p *ProcurementProductPreview) AssessEvidence(policy *ProcurementPolicy, quality *QualityScopeEvidence, availability *AvailabilityScopeEvidence, at time.Time) {
 	if p == nil {
 		return
 	}
 	p.AnswerQuality = ProcurementAnswerQuality(policy, quality, at)
 	p.Availability = ProcurementAvailability(policy, availability, at)
-	out := &ProcurementEvaluatedGatesPreview{Version: 2, State: "pass", Reason: "all_evaluated_gates_passed", EvaluatedAt: at}
+	out := &ProcurementEvaluatedGatesPreview{Version: 3, State: "pass", Reason: "all_evaluated_gates_passed", EvaluatedAt: at}
 	add := func(state, reason string, until *time.Time) {
 		out.RequiredGates++
 		if state == "pass" {
@@ -155,13 +224,14 @@ func (p *ProcurementProductPreview) AssessEvidence(policy *ProcurementPolicy, qu
 			out.ValidUntil = &deadline
 		}
 	}
+	price := p.priceState()
 	switch {
-	case p.State == "constraints_passed":
-		add("pass", "", nil)
-	case p.State == "product_inactive", p.State == "not_associated":
-		add("fail", "price_constraints_failed", nil)
-	case p.State == "blocked" && slices.Contains([]string{ProfitPreviewClassRejectedThreshold, ProfitPreviewClassRejectedProcurement, ProfitPreviewClassRejectedSource, ProfitPreviewClassRejectedBucket, ProfitPreviewClassRejectedSaleRate}, p.PriceClass):
-		add("fail", "price_constraints_failed", nil)
+	case p.PriceValidUntil == nil || !p.PriceValidUntil.After(at) || p.PriceValidUntil.After(at.Add(ProcurementPreviewTTL)):
+		add("unknown", "price_constraints_unavailable", nil)
+	case price == "pass":
+		add("pass", "", p.PriceValidUntil)
+	case price == "fail":
+		add("fail", "price_constraints_failed", p.PriceValidUntil)
 	default:
 		add("unknown", "price_constraints_unavailable", nil)
 	}
@@ -316,6 +386,9 @@ func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Accou
 			projection.State = "constraints_passed"
 		case verdict.PriceClass != "" && verdict.PriceClass != ProfitPreviewClassAdmitted:
 			projection.State = "blocked"
+		}
+		if projection.priceState() != "unknown" {
+			projection.PriceValidUntil = procurementPriceDeadlineAt(account, product, at)
 		}
 		projection.AssessEvidence(product.ProcurementPolicy, nil, nil, at)
 		result.Product = projection

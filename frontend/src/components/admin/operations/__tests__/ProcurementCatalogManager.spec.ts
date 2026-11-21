@@ -35,6 +35,82 @@ beforeEach(() => {
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount(); vi.useRealTimers() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it.each(['disabled', 'not_evaluated'])('preserves the explicit unevaluated price reason without claiming validity (%s)', async state => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
+      Object.assign(p, { state, price_valid_until: null })
+      Object.assign(p.evaluated_gates!, { state: 'unknown', reason: 'price_constraints_unavailable', passed_gates: 1 })
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.' + state)
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+  })
+  it.each(['pass', 'fail'])('expires price independently of the longer account snapshot (%s)', async state => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
+      p.price_valid_until = '2026-11-19T00:00:02Z'
+      if (state === 'fail') Object.assign(p, { state: 'blocked', price_class: 'rejected_threshold' })
+      Object.assign(p.evaluated_gates!, { state, reason: state === 'fail' ? 'price_constraints_failed' : 'all_evaluated_gates_passed', passed_gates: state === 'fail' ? 1 : 2, valid_until: p.price_valid_until })
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.' + state)
+    expect(w.get('[data-testid="product-price-validity"]').text()).toContain('2026-11-19T00:00:02Z')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.expired')
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+    expect(w.get('[data-testid="product-account-controls"]').text()).toContain(prefix + 'accountControlsStates.pass')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => productPreview(requests, 'not_required'))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.constraints_passed')
+  })
+  it.each(['missing', 'null', 'invalid', 'past', 'too-long', 'mixed'])('rejects an untrusted price deadline and recovers on retry (%s)', async kind => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
+      if (kind === 'missing') delete p.price_valid_until
+      if (kind === 'null') p.price_valid_until = null
+      if (kind === 'invalid') p.price_valid_until = 'unconfirmed'
+      if (kind === 'past') p.price_valid_until = preview.observed_at
+      if (kind === 'too-long') p.price_valid_until = '2026-11-19T00:00:31Z'
+      if (kind === 'mixed') p.evaluated_gates!.version = 2
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => productPreview(requests, 'not_required'))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.pass')
+  })
+  it('keeps legacy v2 price unknown while retaining its checked account result', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
+      delete p.price_valid_until
+      p.evaluated_gates!.version = 2
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.unknown')
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+    expect(w.get('[data-testid="product-account-controls"]').text()).toContain(prefix + 'accountControlsStates.pass')
+  })
   it.each(['pass', 'fail', 'unknown', 'not_required'])('intersects explicitly evaluated product gates (%s)', async state => {
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
     vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
@@ -78,7 +154,7 @@ describe('catalog editing and scope classification in the original operations pa
     vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
       const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
       Object.assign(p.account_controls!, { state: 'unknown', reason, valid_until: null })
-      Object.assign(p.evaluated_gates!, { state: 'unknown', reason: 'account_controls_unavailable', passed_gates: 1, valid_until: null })
+      Object.assign(p.evaluated_gates!, { state: 'unknown', reason: 'account_controls_unavailable', passed_gates: 1, valid_until: '2026-11-19T00:00:30Z' })
       return preview
     })
     await submitPreview(w); await flushPromises()
@@ -94,6 +170,7 @@ describe('catalog editing and scope classification in the original operations pa
     vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
       const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
       delete p.account_controls
+      delete p.price_valid_until
       Object.assign(p.evaluated_gates!, { version: 1, passed_gates: 1, required_gates: 1, valid_until: null })
       return preview
     })
@@ -257,7 +334,7 @@ describe('catalog editing and scope classification in the original operations pa
     await submitPreview(w); await flushPromises()
     expect(w.get('[data-testid="product-answer-quality"]').text()).toContain(prefix + 'answerQualityStates.' + (state === 'pass' || state === 'fail' ? 'unknown' : state))
     expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
-    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.constraints_passed')
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.unknown')
     expect(w.text()).toContain(prefix + 'notQualified')
   })
 
@@ -321,13 +398,16 @@ describe('catalog editing and scope classification in the original operations pa
     expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
   })
   it('previews product constraints separately and clears them when the selected product changes', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
     const w = await open(); await setupProbe(w)
     await w.get('[data-testid="procurement-product"]').setValue('42')
-    vi.mocked(previewProcurementScopes).mockResolvedValueOnce({ ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: [{
-      account_id: 7, public_model: 'public-model', scope: { version: 2, model: 'wire-model', protocol: 'responses_http', stream: false, service_tier: 'unspecified', reasoning_effort: 'unspecified', capability: 'text' },
-      state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
-      product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: 0.15, threshold: 0.12, state: 'blocked', reason: 'rejected_procurement_source', price_class: 'rejected_procurement_source' }
-    }] })
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
+      Object.assign(p, { state: 'blocked', reason: 'rejected_procurement_source', price_class: 'rejected_procurement_source' })
+      Object.assign(p.evaluated_gates!, { state: 'fail', reason: 'price_constraints_failed', passed_gates: 1 })
+      return preview
+    })
     await submitPreview(w); await flushPromises()
     expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.blocked')
     expect(w.text()).toContain('rejected_procurement_source')
@@ -485,9 +565,9 @@ function productPreview(requests: ProcurementRequestScope[], state: string): Pro
     state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
     quality_evidence: qualityFixture(required ? state : 'unknown'),
     product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted',
-      answer_quality: { version: 1, required, state }, availability: { version: 1, required: false, state: 'not_required' },
+      price_valid_until: until, answer_quality: { version: 1, required, state }, availability: { version: 1, required: false, state: 'not_required' },
       account_controls: { version: 1, state: 'pass', reason: 'account_controls_passed', evaluated_at: '2026-11-19T00:00:00Z', valid_until: until },
-      evaluated_gates: { version: 2, state: resultState, reason: resultState === 'pass' ? 'all_evaluated_gates_passed' : state === 'fail' ? 'answer_quality_failed' : 'answer_quality_unavailable', passed_gates: 2 + Number(state === 'pass'), required_gates: 2 + Number(required), evaluated_at: '2026-11-19T00:00:00Z', valid_until: until }
+      evaluated_gates: { version: 3, state: resultState, reason: resultState === 'pass' ? 'all_evaluated_gates_passed' : state === 'fail' ? 'answer_quality_failed' : 'answer_quality_unavailable', passed_gates: 2 + Number(state === 'pass'), required_gates: 2 + Number(required), evaluated_at: '2026-11-19T00:00:00Z', valid_until: until }
     }
   })) }
 }
