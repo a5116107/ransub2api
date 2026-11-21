@@ -47,19 +47,20 @@ type ProcurementPreviewCommand struct {
 // This is a read-only projection at the group's default sale price, never a
 // user-specific price quote or a scheduling/quality/cache qualification.
 type ProcurementProductPreview struct {
-	EvaluatedGates  *ProcurementEvaluatedGatesPreview `json:"evaluated_gates,omitempty"`
-	AnswerQuality   *ProcurementAnswerQualityPreview  `json:"answer_quality,omitempty"`
-	Availability    *ProcurementAvailabilityPreview   `json:"availability,omitempty"`
-	Version         int                               `json:"version"`
-	GroupID         int64                             `json:"group_id"`
-	PolicyRevision  int64                             `json:"policy_revision"`
-	CatalogRevision *int64                            `json:"catalog_revision,omitempty"`
-	PriceBasis      string                            `json:"price_basis"`
-	DefaultD        float64                           `json:"default_d"`
-	Threshold       float64                           `json:"threshold"`
-	State           string                            `json:"state"`
-	PriceClass      string                            `json:"price_class"`
-	Reason          string                            `json:"reason,omitempty"`
+	AccountControls *ProcurementAccountControlsPreview `json:"account_controls"`
+	EvaluatedGates  *ProcurementEvaluatedGatesPreview  `json:"evaluated_gates,omitempty"`
+	AnswerQuality   *ProcurementAnswerQualityPreview   `json:"answer_quality,omitempty"`
+	Availability    *ProcurementAvailabilityPreview    `json:"availability,omitempty"`
+	Version         int                                `json:"version"`
+	GroupID         int64                              `json:"group_id"`
+	PolicyRevision  int64                              `json:"policy_revision"`
+	CatalogRevision *int64                             `json:"catalog_revision,omitempty"`
+	PriceBasis      string                             `json:"price_basis"`
+	DefaultD        float64                            `json:"default_d"`
+	Threshold       float64                            `json:"threshold"`
+	State           string                             `json:"state"`
+	PriceClass      string                             `json:"price_class"`
+	Reason          string                             `json:"reason,omitempty"`
 }
 
 // Only the explicitly evaluated product constraints are intersected here.
@@ -74,13 +75,74 @@ type ProcurementEvaluatedGatesPreview struct {
 	ValidUntil    *time.Time `json:"valid_until"`
 }
 
+const ProcurementAccountControlsTTL = 30 * time.Second
+
+// A short-lived snapshot of the original account controls, not a capacity
+// reservation, parent credential check or complete product qualification.
+type ProcurementAccountControlsPreview struct {
+	Version     int        `json:"version"`
+	State       string     `json:"state"`
+	Reason      string     `json:"reason"`
+	EvaluatedAt time.Time  `json:"evaluated_at"`
+	ValidUntil  *time.Time `json:"valid_until"`
+}
+
+func procurementAccountControlsAt(account *Account, id int64, at time.Time) *ProcurementAccountControlsPreview {
+	out := &ProcurementAccountControlsPreview{Version: 1, State: "unknown", Reason: "account_unavailable", EvaluatedAt: at}
+	if account == nil || account.ID != id || at.IsZero() {
+		return out
+	}
+	if !slices.Contains([]string{StatusActive, StatusDisabled, StatusError}, account.Status) {
+		out.Reason = "account_state_unconfirmed"
+		return out
+	}
+	out.State, out.Reason = "pass", "account_controls_passed"
+	if reason := account.schedulingBlockReasonAt(at); reason != "" {
+		out.State, out.Reason = "fail", reason
+	}
+	until := at.Add(ProcurementAccountControlsTTL)
+	shorten := func(boundary *time.Time) {
+		if boundary != nil && boundary.After(at) && boundary.Before(until) {
+			until = *boundary
+		}
+	}
+	if account.AutoPauseOnExpired {
+		shorten(account.ExpiresAt)
+	}
+	shorten(account.OverloadUntil)
+	shorten(account.RateLimitResetAt)
+	shorten(account.TempUnschedulableUntil)
+	if account.SupportsAccountQuota() {
+		tz, err := time.LoadLocation(account.GetQuotaResetTimezone())
+		if err != nil {
+			tz = time.UTC
+		}
+		if account.GetQuotaDailyLimit() > 0 {
+			boundary := account.getExtraTime("quota_daily_start").Add(24 * time.Hour)
+			if account.GetQuotaDailyResetMode() == "fixed" {
+				boundary = nextFixedDailyReset(account.GetQuotaDailyResetHour(), tz, at)
+			}
+			shorten(&boundary)
+		}
+		if account.GetQuotaWeeklyLimit() > 0 {
+			boundary := account.getExtraTime("quota_weekly_start").Add(7 * 24 * time.Hour)
+			if account.GetQuotaWeeklyResetMode() == "fixed" {
+				boundary = nextFixedWeeklyReset(account.GetQuotaWeeklyResetDay(), account.GetQuotaWeeklyResetHour(), tz, at)
+			}
+			shorten(&boundary)
+		}
+	}
+	out.ValidUntil = &until
+	return out
+}
+
 func (p *ProcurementProductPreview) AssessEvidence(policy *ProcurementPolicy, quality *QualityScopeEvidence, availability *AvailabilityScopeEvidence, at time.Time) {
 	if p == nil {
 		return
 	}
 	p.AnswerQuality = ProcurementAnswerQuality(policy, quality, at)
 	p.Availability = ProcurementAvailability(policy, availability, at)
-	out := &ProcurementEvaluatedGatesPreview{Version: 1, State: "pass", Reason: "all_evaluated_gates_passed", EvaluatedAt: at}
+	out := &ProcurementEvaluatedGatesPreview{Version: 2, State: "pass", Reason: "all_evaluated_gates_passed", EvaluatedAt: at}
 	add := func(state, reason string, until *time.Time) {
 		out.RequiredGates++
 		if state == "pass" {
@@ -102,6 +164,16 @@ func (p *ProcurementProductPreview) AssessEvidence(policy *ProcurementPolicy, qu
 		add("fail", "price_constraints_failed", nil)
 	default:
 		add("unknown", "price_constraints_unavailable", nil)
+	}
+	controls := p.AccountControls
+	if controls == nil || controls.Version != 1 || !controls.EvaluatedAt.Equal(at) || controls.ValidUntil == nil || !controls.ValidUntil.After(at) {
+		add("unknown", "account_controls_unavailable", nil)
+	} else if controls.State == "fail" {
+		add("fail", "account_controls_failed", controls.ValidUntil)
+	} else if controls.State == "pass" && controls.Reason == "account_controls_passed" {
+		add("pass", "", controls.ValidUntil)
+	} else {
+		add("unknown", "account_controls_unavailable", nil)
 	}
 	if p.AnswerQuality.Required {
 		reason := "answer_quality_unavailable"
@@ -228,6 +300,7 @@ func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Accou
 		report := PreviewProfitAdmission([]ProfitPreviewGroupInput{{Group: &productView, Accounts: []*Account{account}, RequestScopes: []ProfitPreviewRequestScope{request}}}, at)[0]
 		verdict := report.ScopeVerdicts[0]
 		projection := &ProcurementProductPreview{Version: 1, GroupID: product.ID, PriceBasis: "group_default", DefaultD: report.DefaultD, Threshold: report.ThresholdDefault, State: "not_evaluated", PriceClass: verdict.PriceClass, Reason: verdict.Reason}
+		projection.AccountControls = procurementAccountControlsAt(account, request.AccountID, at)
 		projection.CatalogRevision = report.ProcurementCatalogRevision
 		if product.ProcurementPolicy != nil {
 			projection.PolicyRevision = product.ProcurementPolicy.Revision

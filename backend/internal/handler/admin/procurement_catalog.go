@@ -99,6 +99,7 @@ func (h *ChannelHandler) ProcurementCatalog(c *gin.Context) {
 }
 
 func (h *ChannelHandler) ProcurementClassificationPreview(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	repo, err := h.channelService.ProcurementCatalogRepository()
 	if err != nil {
 		procurementCatalogError(c, err)

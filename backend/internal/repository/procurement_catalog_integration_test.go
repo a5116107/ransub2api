@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -144,6 +145,39 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification)
 	})
 	attest()
+	t.Run("authenticated preview keeps protected accounts read-only", func(t *testing.T) {
+		users := repository.NewUserRepository(client, db)
+		auth := service.NewAuthService(client, users, nil, nil, &config.Config{JWT: config.JWTConfig{Secret: "controls-local-fixture", ExpireHour: 1}}, nil, nil, nil, nil, nil, nil, nil, nil)
+		protected := router.Group("/api/v1/admin")
+		protected.Use(gin.HandlerFunc(middleware.NewAdminAuthMiddleware(auth, service.NewUserService(users, nil, nil, nil), nil, nil)))
+		protected.Use((&admin.AccountHandler{}).AuthorizeObserver)
+		protected.POST("/upstream-procurement/preview", h.ProcurementClassificationPreview)
+		for role, code := range map[string]int{"": 401, "user": 403, "observer": 403, "admin": 200} {
+			var token string
+			if role != "" {
+				var id int64
+				require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO users(email,password_hash,role) VALUES($1,'fixture',$2) RETURNING id`, "controls-"+role+"@test.invalid", role).Scan(&id))
+				user, err := users.GetByID(ctx, id)
+				require.NoError(t, err)
+				token, err = auth.GenerateToken(ctx, user)
+				require.NoError(t, err)
+			}
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upstream-procurement/preview", strings.NewReader(encode(map[string]any{"product_group_id": groupID, "requests": []service.ProfitPreviewRequestScope{request}})))
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			router.ServeHTTP(w, req)
+			require.Equal(t, code, w.Code, w.Body.String())
+			for _, private := range []string{"catalog-fixture-secret", "relay.invalid", "credentials", "password_hash"} {
+				require.NotContains(t, w.Body.String(), private)
+			}
+			if role == "admin" {
+				require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+				require.Contains(t, w.Body.String(), `"scheduling_disabled"`)
+			}
+		}
+	})
 	t.Run("product policy is evaluated in the original scope preview", func(t *testing.T) {
 		t.Cleanup(func() {
 			_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=false,procurement_policy=null WHERE id=$1`, groupID)
@@ -181,12 +215,62 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, .15, out.Results[0].Product.DefaultD)
 		require.EqualValues(t, 2, out.Results[0].Product.PolicyRevision)
 		require.Equal(t, "group_default", out.Results[0].Product.PriceBasis)
-		require.Equal(t, "pass", out.Results[0].Product.EvaluatedGates.State)
-		require.Equal(t, 1, out.Results[0].Product.EvaluatedGates.RequiredGates)
+		require.Equal(t, "fail", out.Results[0].Product.EvaluatedGates.State)
+		require.Equal(t, "account_controls_failed", out.Results[0].Product.EvaluatedGates.Reason)
+		require.Equal(t, "scheduling_disabled", out.Results[0].Product.AccountControls.Reason)
+		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.RequiredGates)
 		require.Equal(t, 1, out.Results[0].Product.EvaluatedGates.PassedGates)
 		require.Equal(t, out.ObservedAt, out.Results[0].Product.EvaluatedGates.EvaluatedAt)
-		require.Nil(t, out.Results[0].Product.EvaluatedGates.ValidUntil)
+		require.Equal(t, out.ObservedAt.Add(service.ProcurementAccountControlsTTL), *out.Results[0].Product.EvaluatedGates.ValidUntil)
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification, "manual schedulable=false is not silently upgraded to full eligibility")
+		_, err := db.ExecContext(ctx, `UPDATE accounts SET schedulable=true WHERE id=$1`, accountID)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `UPDATE accounts SET schedulable=false WHERE id=$1`, accountID)
+			require.NoError(t, err)
+		})
+		out = readProduct(groupID)
+		require.Equal(t, "pass", out.Results[0].Product.EvaluatedGates.State)
+		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.PassedGates)
+		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.Version)
+		for _, tc := range []struct{ name, apply, undo, reason string }{
+			{"manual", `UPDATE accounts SET schedulable=false WHERE id=$1`, `UPDATE accounts SET schedulable=true WHERE id=$1`, "scheduling_disabled"},
+			{"inactive", `UPDATE accounts SET status='disabled' WHERE id=$1`, `UPDATE accounts SET status='active' WHERE id=$1`, "account_inactive"},
+			{"performance", `INSERT INTO account_performance_monitors(account_id,paused) VALUES($1,true)`, `DELETE FROM account_performance_monitors WHERE account_id=$1`, "performance_paused"},
+			{"AI ops", `INSERT INTO ai_ops_controls(account_id,ai_paused) VALUES($1,true)`, `DELETE FROM ai_ops_controls WHERE account_id=$1`, "performance_paused"},
+			{"expiry", `UPDATE accounts SET auto_pause_on_expired=true,expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, `UPDATE accounts SET auto_pause_on_expired=false,expires_at=null WHERE id=$1`, "account_expired"},
+			{"overload", `UPDATE accounts SET overload_until=clock_timestamp()+interval '5 seconds' WHERE id=$1`, `UPDATE accounts SET overload_until=clock_timestamp()-interval '1 second' WHERE id=$1`, "account_overloaded"},
+			{"rate limit", `UPDATE accounts SET rate_limit_reset_at=clock_timestamp()+interval '5 seconds' WHERE id=$1`, `UPDATE accounts SET rate_limit_reset_at=clock_timestamp()-interval '1 second' WHERE id=$1`, "account_rate_limited"},
+			{"cooldown", `UPDATE accounts SET temp_unschedulable_until=clock_timestamp()+interval '5 seconds' WHERE id=$1`, `UPDATE accounts SET temp_unschedulable_until=clock_timestamp()-interval '1 second' WHERE id=$1`, "account_cooldown"},
+			{"quota", `UPDATE accounts SET extra=extra || '{"quota_limit":1,"quota_used":1}'::jsonb WHERE id=$1`, `UPDATE accounts SET extra=extra-'quota_limit'-'quota_used' WHERE id=$1`, "account_quota_exceeded"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := db.ExecContext(ctx, tc.apply, accountID)
+				require.NoError(t, err)
+				defer func() { _, err := db.ExecContext(ctx, tc.undo, accountID); require.NoError(t, err) }()
+				var before, after string
+				fingerprint := func(dst *string) {
+					t.Helper()
+					require.NoError(t, db.QueryRowContext(ctx, `SELECT md5(row_to_json(a)::text) FROM accounts a WHERE id=$1`, accountID).Scan(dst))
+				}
+				fingerprint(&before)
+				out := readProduct(groupID)
+				controls := out.Results[0].Product.AccountControls
+				require.Equal(t, tc.reason, controls.Reason)
+				require.Equal(t, "fail", controls.State)
+				require.Equal(t, out.ObservedAt, controls.EvaluatedAt)
+				require.Equal(t, "account_controls_failed", out.Results[0].Product.EvaluatedGates.Reason)
+				require.Equal(t, "constraints_passed", out.Results[0].Product.State)
+				require.True(t, controls.ValidUntil.After(out.ObservedAt))
+				require.False(t, controls.ValidUntil.After(out.ObservedAt.Add(service.ProcurementAccountControlsTTL)))
+				fingerprint(&after)
+				require.Equal(t, before, after, "preview must preserve saved protection")
+				var effects int
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM scheduled_test_plans)+(SELECT count(*) FROM scheduled_test_results)+(SELECT count(*) FROM usage_logs)+(SELECT count(*) FROM monitoring_probe_budget_counters)+(SELECT count(*) FROM monitoring_probe_budget_leases)`).Scan(&effects))
+				require.Zero(t, effects, "preview must not create a plan, result, bill, probe usage or lease")
+			})
+			require.Equal(t, "pass", readProduct(groupID).Results[0].Product.AccountControls.State, "protection recovery is read again")
+		}
 
 		policy.Version = 3
 		policy.Buckets = &domain.ProcurementBuckets{Codes: []string{"next"}}
@@ -218,8 +302,8 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, "constraints_passed", out.Results[0].Product.State)
 		require.Equal(t, "unknown", out.Results[0].Product.EvaluatedGates.State)
 		require.Equal(t, "answer_quality_unavailable", out.Results[0].Product.EvaluatedGates.Reason)
-		require.Equal(t, 3, out.Results[0].Product.EvaluatedGates.RequiredGates)
-		require.Equal(t, 1, out.Results[0].Product.EvaluatedGates.PassedGates)
+		require.Equal(t, 4, out.Results[0].Product.EvaluatedGates.RequiredGates)
+		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.PassedGates)
 		require.Equal(t, "not_evaluated", out.Results[0].Qualification)
 		policy.Quality, policy.Availability = "not_required", "not_required"
 		policy.MinRate, policy.MaxRate = bound("0.03"), bound("0.05")
@@ -230,7 +314,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		savePolicy(false)
 		require.Equal(t, "disabled", readProduct(groupID).Results[0].Product.State)
 		savePolicy(true)
-		_, err := db.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, groupID)
+		_, err = db.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, groupID)
 		require.NoError(t, err)
 		require.Equal(t, "not_associated", readProduct(groupID).Results[0].Product.State)
 		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,7)`, accountID, groupID)
@@ -328,7 +412,7 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.NoError(t, err)
 		_, err = lock.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, groupID, encode(&domain.ProcurementPolicy{Version: 2, Revision: 8, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}))
 		require.NoError(t, err)
-		_, err = lock.ExecContext(ctx, `UPDATE accounts SET rate_multiplier=0.04 WHERE id=$1`, accountID)
+		_, err = lock.ExecContext(ctx, `UPDATE accounts SET rate_multiplier=0.04,schedulable=true WHERE id=$1`, accountID)
 		require.NoError(t, err)
 		require.NoError(t, lock.Commit())
 		result := <-pending
@@ -338,10 +422,12 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		require.Equal(t, "low", result.out.Results[0].Bucket.Code)
 		require.EqualValues(t, 7, result.out.Results[0].Product.PolicyRevision)
 		require.Equal(t, "constraints_passed", result.out.Results[0].Product.State)
+		require.Equal(t, "scheduling_disabled", result.out.Results[0].Product.AccountControls.Reason, "same snapshot retains the old account control")
 		fresh, err := repo.PreviewProcurementClassification(ctx, &service.ProcurementPreviewCommand{Requests: []service.ProfitPreviewRequestScope{request}, ProductGroupID: &groupID})
 		require.NoError(t, err)
 		require.EqualValues(t, 8, fresh.Results[0].Product.PolicyRevision)
 		require.Equal(t, "blocked", fresh.Results[0].Product.State)
+		require.Equal(t, "pass", fresh.Results[0].Product.AccountControls.State, "fresh snapshot reads the released account control")
 		latest := preview(request)
 		require.Greater(t, latest.Catalog.Revision, before.Revision)
 		require.Equal(t, "scope_unconfirmed", latest.Results[0].State, "new price must not reuse the old attestation")

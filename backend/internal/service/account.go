@@ -241,26 +241,40 @@ func accountLoadPreferenceRate(account *Account, loadRate int) int {
 }
 
 func (a *Account) IsSchedulable() bool {
-	if !a.IsActive() || !a.Schedulable || a.PerformancePaused {
-		return false
+	return a.schedulingBlockReasonAt(time.Now()) == ""
+}
+
+// Keep scheduling and read-only explanations on the same protection rules.
+// The caller supplies the authority's clock; this does not acquire capacity.
+func (a *Account) schedulingBlockReasonAt(now time.Time) string {
+	if a == nil {
+		return "account_unavailable"
 	}
-	now := time.Now()
+	if !a.IsActive() {
+		return "account_inactive"
+	}
+	if !a.Schedulable {
+		return "scheduling_disabled"
+	}
+	if a.PerformancePaused {
+		return "performance_paused"
+	}
 	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
-		return false
+		return "account_expired"
 	}
 	if a.OverloadUntil != nil && now.Before(*a.OverloadUntil) {
-		return false
+		return "account_overloaded"
 	}
 	if a.RateLimitResetAt != nil && now.Before(*a.RateLimitResetAt) {
-		return false
+		return "account_rate_limited"
 	}
 	if a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
-		return false
+		return "account_cooldown"
 	}
-	if a.SupportsAccountQuota() && a.IsQuotaExceeded() {
-		return false
+	if a.SupportsAccountQuota() && a.isQuotaExceededAt(now) {
+		return "account_quota_exceeded"
 	}
-	return true
+	return ""
 }
 
 // IsCredentialUsableForShadow 报告本账号(作为某 spark 影子的母账号)的凭据/传输是否可被影子透传使用。
@@ -3274,6 +3288,10 @@ func lastFixedWeeklyReset(day, hour int, tz *time.Location, now time.Time) time.
 
 // isFixedDailyPeriodExpired 检查日配额是否在固定时间模式下已过期
 func (a *Account) isFixedDailyPeriodExpired(periodStart time.Time) bool {
+	return a.isFixedDailyPeriodExpiredAt(periodStart, time.Now())
+}
+
+func (a *Account) isFixedDailyPeriodExpiredAt(periodStart, now time.Time) bool {
 	if periodStart.IsZero() {
 		return true
 	}
@@ -3281,12 +3299,16 @@ func (a *Account) isFixedDailyPeriodExpired(periodStart time.Time) bool {
 	if err != nil {
 		tz = time.UTC
 	}
-	lastReset := lastFixedDailyReset(a.GetQuotaDailyResetHour(), tz, time.Now())
+	lastReset := lastFixedDailyReset(a.GetQuotaDailyResetHour(), tz, now)
 	return periodStart.Before(lastReset)
 }
 
 // isFixedWeeklyPeriodExpired 检查周配额是否在固定时间模式下已过期
 func (a *Account) isFixedWeeklyPeriodExpired(periodStart time.Time) bool {
+	return a.isFixedWeeklyPeriodExpiredAt(periodStart, time.Now())
+}
+
+func (a *Account) isFixedWeeklyPeriodExpiredAt(periodStart, now time.Time) bool {
 	if periodStart.IsZero() {
 		return true
 	}
@@ -3294,7 +3316,7 @@ func (a *Account) isFixedWeeklyPeriodExpired(periodStart time.Time) bool {
 	if err != nil {
 		tz = time.UTC
 	}
-	lastReset := lastFixedWeeklyReset(a.GetQuotaWeeklyResetDay(), a.GetQuotaWeeklyResetHour(), tz, time.Now())
+	lastReset := lastFixedWeeklyReset(a.GetQuotaWeeklyResetDay(), a.GetQuotaWeeklyResetHour(), tz, now)
 	return periodStart.Before(lastReset)
 }
 
@@ -3451,10 +3473,14 @@ func (a *Account) HasAnyQuotaLimit() bool {
 
 // isPeriodExpired 检查指定周期（自 periodStart 起经过 dur）是否已过期
 func isPeriodExpired(periodStart time.Time, dur time.Duration) bool {
+	return isPeriodExpiredAt(periodStart, dur, time.Now())
+}
+
+func isPeriodExpiredAt(periodStart time.Time, dur time.Duration, now time.Time) bool {
 	if periodStart.IsZero() {
 		return true // 从未使用过，视为过期（下次 increment 会初始化）
 	}
-	return time.Since(periodStart) >= dur
+	return now.Sub(periodStart) >= dur
 }
 
 // IsDailyQuotaPeriodExpired 检查日配额周期是否已过期（用于显示层判断是否需要将 used 归零）
@@ -3477,6 +3503,10 @@ func (a *Account) IsWeeklyQuotaPeriodExpired() bool {
 
 // IsQuotaExceeded 检查 API Key 账号配额是否已超限（任一维度超限即返回 true）
 func (a *Account) IsQuotaExceeded() bool {
+	return a.isQuotaExceededAt(time.Now())
+}
+
+func (a *Account) isQuotaExceededAt(now time.Time) bool {
 	// 总额度
 	if limit := a.GetQuotaLimit(); limit > 0 && a.GetQuotaUsed() >= limit {
 		return true
@@ -3486,9 +3516,9 @@ func (a *Account) IsQuotaExceeded() bool {
 		start := a.getExtraTime("quota_daily_start")
 		var expired bool
 		if a.GetQuotaDailyResetMode() == "fixed" {
-			expired = a.isFixedDailyPeriodExpired(start)
+			expired = a.isFixedDailyPeriodExpiredAt(start, now)
 		} else {
-			expired = isPeriodExpired(start, 24*time.Hour)
+			expired = isPeriodExpiredAt(start, 24*time.Hour, now)
 		}
 		if !expired && a.GetQuotaDailyUsed() >= limit {
 			return true
@@ -3499,9 +3529,9 @@ func (a *Account) IsQuotaExceeded() bool {
 		start := a.getExtraTime("quota_weekly_start")
 		var expired bool
 		if a.GetQuotaWeeklyResetMode() == "fixed" {
-			expired = a.isFixedWeeklyPeriodExpired(start)
+			expired = a.isFixedWeeklyPeriodExpiredAt(start, now)
 		} else {
-			expired = isPeriodExpired(start, 7*24*time.Hour)
+			expired = isPeriodExpiredAt(start, 7*24*time.Hour, now)
 		}
 		if !expired && a.GetQuotaWeeklyUsed() >= limit {
 			return true

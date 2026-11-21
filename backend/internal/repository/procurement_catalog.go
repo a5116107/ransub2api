@@ -115,8 +115,15 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
+	// Include both native performance and AI-ops pauses in this same snapshot,
+	// as the original final-turn admission reader does.
+	paused, err := performancePaused(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
 	byID := make(map[int64]*service.Account, len(accounts))
 	for i := range accounts {
+		accounts[i].PerformancePaused = paused[accounts[i].ID]
 		byID[accounts[i].ID] = &accounts[i]
 	}
 	quality, err := readQualityScopesInTx(ctx, tx, ids)

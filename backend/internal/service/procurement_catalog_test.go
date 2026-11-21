@@ -40,20 +40,15 @@ func TestProcurementEvaluatedGatesIntersection(t *testing.T) {
 			}
 			quality := &QualityScopeEvidence{Version: 1, Status: tc.quality, Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &qualityUntil, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}
 			availability := &AvailabilityScopeEvidence{Version: 1, Status: tc.availability, Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &availabilityUntil, RuleCount: 1, ConfirmedRules: 1}
-			projection := &ProcurementProductPreview{State: tc.price, PriceClass: ProfitPreviewClassRejectedThreshold}
+			projection := &ProcurementProductPreview{State: tc.price, PriceClass: ProfitPreviewClassRejectedThreshold,
+				AccountControls: procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)}
 			projection.AssessEvidence(policy, quality, availability, at)
 			require.Equal(t, tc.state, projection.EvaluatedGates.State)
 			require.Equal(t, tc.reason, projection.EvaluatedGates.Reason)
-			require.Equal(t, tc.passed, projection.EvaluatedGates.PassedGates)
-			require.Equal(t, tc.required, projection.EvaluatedGates.RequiredGates)
+			require.Equal(t, tc.passed+1, projection.EvaluatedGates.PassedGates)
+			require.Equal(t, tc.required+1, projection.EvaluatedGates.RequiredGates)
 			require.Equal(t, at, projection.EvaluatedGates.EvaluatedAt)
-			if tc.quality == "pass" || tc.quality == "fail" {
-				require.Equal(t, &qualityUntil, projection.EvaluatedGates.ValidUntil)
-			} else if tc.availability == "pass" || tc.availability == "fail" {
-				require.Equal(t, &availabilityUntil, projection.EvaluatedGates.ValidUntil)
-			} else {
-				require.Nil(t, projection.EvaluatedGates.ValidUntil)
-			}
+			require.Equal(t, at.Add(ProcurementAccountControlsTTL), *projection.EvaluatedGates.ValidUntil)
 		})
 	}
 }
@@ -64,14 +59,17 @@ func TestProcurementEvaluatedGatesExpiryAndNoCertification(t *testing.T) {
 	policy := &ProcurementPolicy{Quality: "current_answer"}
 	quality := &QualityScopeEvidence{Version: 1, Status: "pass", Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &until, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}
 	p := &ProcurementProductPreview{State: "constraints_passed"}
+	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)
 	p.AssessEvidence(policy, quality, nil, at)
 	require.Equal(t, "pass", p.EvaluatedGates.State)
 	*p.EvaluatedGates.ValidUntil = until.Add(time.Hour)
 	require.Equal(t, at.Add(time.Second), *quality.ValidUntil, "projection must not extend source evidence")
+	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, until)
 	p.AssessEvidence(policy, quality, nil, until)
 	require.Equal(t, "unknown", p.EvaluatedGates.State)
 	require.Equal(t, "answer_quality_unavailable", p.EvaluatedGates.Reason)
-	require.Nil(t, p.EvaluatedGates.ValidUntil)
+	require.Equal(t, until.Add(ProcurementAccountControlsTTL), *p.EvaluatedGates.ValidUntil)
+	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)
 	p.AssessEvidence(policy, nil, nil, at)
 	require.Equal(t, "unknown", p.EvaluatedGates.State)
 	for _, priceClass := range []string{ProfitPreviewClassUnknownCatalog, ProfitPreviewClassUnknownProcurement, ProfitPreviewClassRejectedUpstreamRate, ProfitPreviewClassRejectedInvalidRate, "future_class"} {
@@ -181,6 +179,81 @@ func TestProcurementPreviewStrictInputAndResponsesVerbosity(t *testing.T) {
 		_, err := ParseProcurementPreviewCommand([]byte(invalid))
 		require.ErrorIs(t, err, ErrProcurementCatalogInvalid, invalid)
 	}
+}
+
+func TestProcurementAccountControlsRejectProtectedAccounts(t *testing.T) {
+	at := time.Now().UTC()
+	for _, tc := range []struct {
+		name    string
+		protect func(*Account)
+	}{
+		{"manual pause", func(a *Account) { a.Schedulable = false }},
+		{"performance pause", func(a *Account) { a.PerformancePaused = true }},
+		{"inactive", func(a *Account) { a.Status = StatusDisabled }},
+		{"expired", func(a *Account) { a.AutoPauseOnExpired = true; a.ExpiresAt = &at }},
+		{"overloaded", func(a *Account) { until := at.Add(time.Minute); a.OverloadUntil = &until }},
+		{"rate limited", func(a *Account) { until := at.Add(time.Minute); a.RateLimitResetAt = &until }},
+		{"temporary cooldown", func(a *Account) { until := at.Add(time.Minute); a.TempUnschedulableUntil = &until }},
+		{"quota exhausted", func(a *Account) { a.Extra["quota_limit"] = 10.; a.Extra["quota_used"] = 10. }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := billingApplicabilityAccount(t, at, billingApplicabilityFixture(at, billingApplicabilityEntry("responses_http", "unspecified", true)))
+			a.ID, a.Status, a.Schedulable, a.GroupIDs = 901, StatusActive, true, []int64{42}
+			a.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-fixture"}
+			tc.protect(a)
+			require.False(t, a.IsSchedulable())
+			request := ProfitPreviewRequestScope{AccountID: a.ID, PublicModel: "gpt-fixture", Scope: AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}
+			group := &Group{ID: 42, Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: 1, ProfitControlEnabled: true}
+			result := ClassifyProcurementScope(&domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}, a, request, at, group)
+			require.Equal(t, "constraints_passed", result.Product.State, "price must remain independent of account protection")
+			require.Equal(t, "fail", result.Product.EvaluatedGates.State, "protected accounts must not receive an aggregate pass")
+			require.Equal(t, "not_evaluated", result.Qualification)
+		})
+	}
+}
+
+func TestProcurementAccountControlsDeadlinesAndUnknown(t *testing.T) {
+	at := time.Date(2031, 1, 6, 0, 0, 0, 0, time.UTC)
+	a := &Account{ID: 7, Status: StatusActive, Type: AccountTypeAPIKey, Schedulable: true}
+	check := procurementAccountControlsAt(a, a.ID, at)
+	require.Equal(t, "pass", check.State)
+	require.Equal(t, "account_controls_passed", check.Reason)
+	require.Equal(t, at.Add(30*time.Second), *check.ValidUntil)
+	soon := at.Add(time.Second)
+	a.AutoPauseOnExpired, a.ExpiresAt = true, &soon
+	check = procurementAccountControlsAt(a, a.ID, at)
+	require.Equal(t, soon, *check.ValidUntil)
+	*check.ValidUntil = at.Add(time.Hour)
+	require.Equal(t, at.Add(time.Second), *a.ExpiresAt, "projection must never mutate source deadlines")
+	require.Equal(t, "account_expired", procurementAccountControlsAt(a, a.ID, soon).Reason)
+	a.AutoPauseOnExpired, a.TempUnschedulableUntil = false, &soon
+	check = procurementAccountControlsAt(a, a.ID, at)
+	require.Equal(t, "account_cooldown", check.Reason)
+	require.Equal(t, soon, *check.ValidUntil)
+	require.Equal(t, "pass", procurementAccountControlsAt(a, a.ID, soon).State, "recovery requires a new evaluation")
+	a.TempUnschedulableUntil = nil
+	a.Extra = map[string]any{"quota_daily_limit": 1, "quota_daily_used": 1, "quota_daily_start": at.Add(-24*time.Hour + time.Second).Format(time.RFC3339Nano)}
+	check = procurementAccountControlsAt(a, a.ID, at)
+	require.Equal(t, "account_quota_exceeded", check.Reason)
+	require.Equal(t, soon, *check.ValidUntil)
+	a.Extra = map[string]any{"quota_daily_limit": 1, "quota_daily_used": 1, "quota_daily_start": at.Add(-9 * time.Hour).Format(time.RFC3339Nano), "quota_daily_reset_mode": "fixed", "quota_reset_timezone": "Asia/Hong_Kong"}
+	check = procurementAccountControlsAt(a, a.ID, at.Add(-8*time.Hour-time.Second))
+	require.True(t, at.Add(-8*time.Hour).Equal(*check.ValidUntil))
+	for _, tc := range []struct {
+		account *Account
+		id      int64
+	}{{nil, 7}, {a, 8}, {&Account{ID: 7, Status: "future-state"}, 7}} {
+		unknown := procurementAccountControlsAt(tc.account, tc.id, at)
+		require.Equal(t, "unknown", unknown.State)
+		require.Nil(t, unknown.ValidUntil)
+	}
+	p := &ProcurementProductPreview{State: "constraints_passed"}
+	p.AssessEvidence(nil, nil, nil, at)
+	require.Equal(t, "unknown", p.EvaluatedGates.State)
+	require.Equal(t, "account_controls_unavailable", p.EvaluatedGates.Reason)
+	p.AccountControls = procurementAccountControlsAt(a, a.ID, at)
+	p.AssessEvidence(nil, nil, nil, at.Add(time.Nanosecond))
+	require.Equal(t, "unknown", p.EvaluatedGates.State, "evidence from a different authority instant must not be reused")
 }
 
 func TestProcurementProductPreviewUsesOriginalGateWithoutAwardingQualification(t *testing.T) {

@@ -47,7 +47,86 @@ describe('catalog editing and scope classification in the original operations pa
     expect(w.get('[data-testid="product-evaluated-gates"]').text()).toContain(prefix + 'evaluatedGatesBoundary')
     expect(w.text()).toContain(prefix + 'notQualified')
     await vi.advanceTimersByTimeAsync(300000)
-    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.' + (state === 'not_required' ? 'pass' : 'unknown'))
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+  })
+  it.each(['scheduling_disabled', 'performance_paused', 'account_inactive', 'account_expired', 'account_overloaded', 'account_rate_limited', 'account_cooldown', 'account_quota_exceeded'])('keeps price and protection independent, then expires the protection snapshot (%s)', async reason => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'unknown'), product = preview.results[0]!.product_procurement!
+      Object.assign(product.account_controls!, { state: 'fail', reason })
+      Object.assign(product.evaluated_gates!, { state: 'fail', reason: 'account_controls_failed', passed_gates: 1 })
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-procurement-state"]').text()).toContain(prefix + 'productStates.constraints_passed')
+    expect(w.get('[data-testid="product-account-controls"]').text()).toContain(prefix + 'accountControlsStates.fail')
+    expect(w.get('[data-testid="product-account-controls-reason"]').text()).toContain(prefix + 'accountControlsReasons.' + reason)
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.fail')
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(w.get('[data-testid="product-account-controls"]').text()).toContain(prefix + 'accountControlsStates.unknown')
+    expect(w.get('[data-testid="product-account-controls-reason"]').text()).toContain(prefix + 'accountControlsReasons.expired')
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+  })
+  it.each(['account_unavailable', 'account_state_unconfirmed'])('keeps missing or future account state unknown (%s)', async reason => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
+      Object.assign(p.account_controls!, { state: 'unknown', reason, valid_until: null })
+      Object.assign(p.evaluated_gates!, { state: 'unknown', reason: 'account_controls_unavailable', passed_gates: 1, valid_until: null })
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-account-controls"]').text()).toContain(prefix + 'accountControlsStates.unknown')
+    expect(w.get('[data-testid="product-account-controls-reason"]').text()).toContain(prefix + 'accountControlsReasons.' + reason)
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+  })
+  it('does not upgrade a legacy price/evidence intersection into checked account controls', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), p = preview.results[0]!.product_procurement!
+      delete p.account_controls
+      Object.assign(p.evaluated_gates!, { version: 1, passed_gates: 1, required_gates: 1, valid_until: null })
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(true)
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+    expect(w.get('[data-testid="product-evaluated-gates"]').text()).toContain(prefix + 'evaluatedGatesLegacy')
+    expect(w.get('[data-testid="product-account-controls-reason"]').text()).toContain(prefix + 'accountControlsReasons.not_checked')
+  })
+  it.each(['missing', 'version', 'time', 'deadline', 'too-long', 'reason', 'contradiction', 'missing-expiry', 'mixed-versions'])('rejects malformed account controls and recovers on retry (%s)', async kind => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'pass'), p = preview.results[0]!.product_procurement!, c = p.account_controls!
+      if (kind === 'missing') delete p.account_controls
+      if (kind === 'version') c.version++
+      if (kind === 'time') c.evaluated_at = '2999-01-01T00:00:00Z'
+      if (kind === 'deadline') c.valid_until = c.evaluated_at
+      if (kind === 'too-long') c.valid_until = '2026-11-19T00:00:31Z'
+      if (kind === 'reason') c.reason = 'toString'
+      if (kind === 'contradiction') c.state = 'fail'
+      if (kind === 'missing-expiry') c.valid_until = null
+      if (kind === 'mixed-versions') p.evaluated_gates!.version = 1
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => productPreview(requests, 'pass'))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-account-controls"]').text()).toContain(prefix + 'accountControlsStates.pass')
   })
   it.each(['version', 'state', 'reason', 'count', 'required', 'time', 'deadline', 'missing-gate'])('rejects inconsistent product gate intersections (%s)', async kind => {
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
@@ -401,13 +480,14 @@ describe('catalog editing and scope classification in the original operations pa
 
 function productPreview(requests: ProcurementRequestScope[], state: string): ProcurementPreview {
   const required = state !== 'not_required', resultState = required ? state : 'pass'
-  const until = state === 'pass' || state === 'fail' ? '2026-11-19T00:05:00Z' : null
+  const until = '2026-11-19T00:00:30Z'
   return { ...fixture(), observed_at: '2026-11-19T00:00:00Z', results: requests.map(request => ({ ...request,
     state: 'classified', applicability: 'covered', rate_source: 'manual', effective_rate: '0.025', bucket: fixture().catalog.buckets[0]!, qualification: 'not_evaluated',
     quality_evidence: qualityFixture(required ? state : 'unknown'),
     product_procurement: { version: 1, group_id: 42, policy_revision: 3, price_basis: 'group_default', default_d: .15, threshold: .12, state: 'constraints_passed', price_class: 'admitted',
       answer_quality: { version: 1, required, state }, availability: { version: 1, required: false, state: 'not_required' },
-      evaluated_gates: { version: 1, state: resultState, reason: resultState === 'pass' ? 'all_evaluated_gates_passed' : state === 'fail' ? 'answer_quality_failed' : 'answer_quality_unavailable', passed_gates: 1 + Number(state === 'pass'), required_gates: 1 + Number(required), evaluated_at: '2026-11-19T00:00:00Z', valid_until: until }
+      account_controls: { version: 1, state: 'pass', reason: 'account_controls_passed', evaluated_at: '2026-11-19T00:00:00Z', valid_until: until },
+      evaluated_gates: { version: 2, state: resultState, reason: resultState === 'pass' ? 'all_evaluated_gates_passed' : state === 'fail' ? 'answer_quality_failed' : 'answer_quality_unavailable', passed_gates: 2 + Number(state === 'pass'), required_gates: 2 + Number(required), evaluated_at: '2026-11-19T00:00:00Z', valid_until: until }
     }
   })) }
 }

@@ -129,7 +129,7 @@
               <section class="space-y-2 rounded-lg border border-gray-200 p-3 dark:border-dark-600" data-testid="product-evaluated-gates">
                 <h4 class="text-sm font-medium">{{ t(`${p}.evaluatedGatesTitle`) }}</h4>
                 <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="evaluatedGatesState(item) === 'pass' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : evaluatedGatesState(item) === 'fail' ? 'bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-evaluated-gates-status">{{ t(`${p}.evaluatedGatesStates.${evaluatedGatesState(item)}`) }}</span>
-                <template v-if="item.product_procurement.evaluated_gates">
+                <template v-if="item.product_procurement.evaluated_gates?.version === 2">
                   <p class="text-sm">{{ t(`${p}.evaluatedGatesCoverage`, { passed: item.product_procurement.evaluated_gates.passed_gates, required: item.product_procurement.evaluated_gates.required_gates }) }}</p>
                   <p class="break-words text-sm">{{ t(`${p}.evaluatedGatesReasons.${evidenceExpired(item.product_procurement.evaluated_gates) ? 'expired' : item.product_procurement.evaluated_gates.reason}`) }}</p>
                   <p class="break-all text-xs">{{ t(`${p}.qualityEvaluatedAt`) }}: {{ item.product_procurement.evaluated_gates.evaluated_at }}</p>
@@ -138,6 +138,9 @@
                 <p v-else class="text-sm">{{ t(`${p}.evaluatedGatesLegacy`) }}</p>
                 <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.evaluatedGatesBoundary`) }}</p>
               </section>
+              <p class="break-words text-sm" data-testid="product-account-controls">{{ t(`${p}.accountControlsTitle`) }}: {{ t(`${p}.accountControlsStates.${accountControlsState(item)}`) }}</p>
+              <p class="break-words text-sm" data-testid="product-account-controls-reason">{{ t(`${p}.accountControlsReasons.${accountControlsReason(item)}`) }}</p>
+              <p v-if="item.product_procurement.account_controls?.valid_until" class="break-all text-xs">{{ t(`${p}.qualityValidUntil`) }}: {{ item.product_procurement.account_controls.valid_until }}</p>
               <p class="break-words text-sm" data-testid="product-answer-quality">{{ t(`${p}.answerQualityTitle`) }}: {{ t(`${p}.answerQualityStates.${productEvidenceState(item.product_procurement.answer_quality, item.quality_evidence)}`) }}</p>
               <p class="break-words text-sm" data-testid="product-availability">{{ t(`${p}.availabilityGateTitle`) }}: {{ t(`${p}.availabilityGateStates.${productEvidenceState(item.product_procurement.availability, item.availability_evidence)}`) }}</p>
               <dl class="grid gap-3 text-sm sm:grid-cols-2">
@@ -239,6 +242,7 @@ async function preview() {
     const projection = next.results[0]!.product_procurement
     const quality = next.results[0]!.quality_evidence
     const availability = next.results[0]!.availability_evidence
+    if (projection?.account_controls !== undefined && !validAccountControls(projection.account_controls, next.observed_at)) throw new Error('unknown account controls')
     if (quality !== undefined && !validQualityEvidence(quality, next.observed_at)) throw new Error('unknown quality evidence')
     if (availability !== undefined && !validAvailabilityEvidence(availability, next.observed_at)) throw new Error('unknown availability evidence')
     if (product === undefined ? projection !== undefined : !projection || projection.version !== 1 || projection.group_id !== product || projection.price_basis !== 'group_default' ||
@@ -271,15 +275,38 @@ function productEvidenceState(gate?: { required: boolean; state: string }, evide
 }
 function evaluatedGatesState(item: ProcurementPreview['results'][number]) {
   const gates = item.product_procurement?.evaluated_gates
-  return gates && !evidenceExpired(gates) ? gates.state : 'unknown'
+  return gates?.version === 2 && !evidenceExpired(gates) ? gates.state : 'unknown'
+}
+function accountControlsState(item: ProcurementPreview['results'][number]) {
+  const controls = item.product_procurement?.account_controls
+  return controls && !evidenceExpired(controls) ? controls.state : 'unknown'
+}
+function accountControlsReason(item: ProcurementPreview['results'][number]) {
+  const controls = item.product_procurement?.account_controls
+  return controls ? evidenceExpired(controls) ? 'expired' : controls.reason : 'not_checked'
+}
+function validAccountControls(controls: NonNullable<ProcurementPreview['results'][number]['product_procurement']>['account_controls'], observedAt: string): boolean {
+  if (!controls || controls.version !== 1 || !['pass', 'fail', 'unknown'].includes(controls.state) ||
+    !Object.prototype.hasOwnProperty.call(qualityMessages.procurement.accountControlsReasons, controls.reason) ||
+    !Number.isFinite(Date.parse(controls.evaluated_at)) || Date.parse(controls.evaluated_at) !== Date.parse(observedAt) || Date.parse(observedAt) > Date.now() + 60000) return false
+  if (controls.state === 'unknown') return ['account_unavailable', 'account_state_unconfirmed'].includes(controls.reason) && controls.valid_until === null
+  if (typeof controls.valid_until !== 'string' || !Number.isFinite(Date.parse(controls.valid_until)) ||
+    Date.parse(controls.valid_until) <= Date.parse(observedAt) || Date.parse(controls.valid_until) > Date.parse(observedAt) + 30000) return false
+  return controls.state === 'pass' ? controls.reason === 'account_controls_passed' :
+    ['account_inactive', 'scheduling_disabled', 'performance_paused', 'account_expired', 'account_overloaded', 'account_rate_limited', 'account_cooldown', 'account_quota_exceeded'].includes(controls.reason)
 }
 function validEvaluatedGates(item: ProcurementPreview['results'][number], observedAt: string): boolean {
   const product = item.product_procurement, gates = product?.evaluated_gates
   if (gates === undefined) return true // Legacy responses grant no aggregate pass.
-  if (!gates || gates.version !== 1 || !product?.answer_quality || !product.availability ||
+  if (!gates || ![1, 2].includes(gates.version) || !product?.answer_quality || !product.availability ||
     !['pass', 'fail', 'unknown'].includes(gates.state) || Date.parse(gates.evaluated_at) !== Date.parse(observedAt)) return false
   const price = product.state === 'constraints_passed' ? 'pass' : ['product_inactive', 'not_associated'].includes(product.state) || product.state === 'blocked' && ['rejected_threshold', 'rejected_procurement_range', 'rejected_procurement_source', 'rejected_procurement_bucket', 'rejected_account_sale_rate_mismatch'].includes(product.price_class) ? 'fail' : 'unknown'
   const checks = [{ state: price, reason: price === 'fail' ? 'price_constraints_failed' : 'price_constraints_unavailable', until: null as string | null }]
+  const controls = product.account_controls
+  if (gates.version === 2) {
+    if (!validAccountControls(controls, observedAt)) return false
+    checks.push({ state: controls!.state, reason: `account_controls_${controls!.state === 'fail' ? 'failed' : 'unavailable'}`, until: controls!.valid_until })
+  } else if (controls !== undefined) return false // Do not mix contracts or infer the missing check.
   for (const [gate, evidence, name] of [
     [product.answer_quality, item.quality_evidence, 'answer_quality'], [product.availability, item.availability_evidence, 'availability']
   ] as const) {
