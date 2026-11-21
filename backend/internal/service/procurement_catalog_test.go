@@ -12,6 +12,64 @@ import (
 
 const catalogCommandFixture = `{"version":1,"revision":0,"buckets":[{"code":"b1","name":"First","min_rate":"0.2","max_rate":"0.5"},{"code":"b2","name":"Second","min_rate":"0.5","max_rate":"0.6"}]}`
 
+func TestProcurementEvaluatedGatesExplainsAllBlockers(t *testing.T) {
+	at := time.Date(2031, 1, 6, 12, 0, 0, 0, time.UTC)
+	priceUntil, qualityUntil, availabilityUntil := at.Add(2*time.Second), at.Add(time.Minute), at.Add(2*time.Minute)
+	policy := &ProcurementPolicy{Quality: "current_answer", Availability: "current_state"}
+	quality := &QualityScopeEvidence{Version: 1, Status: "unknown", Reason: "evidence_missing", EvaluatedAt: at}
+	availability := &AvailabilityScopeEvidence{Version: 1, Status: "fail", Reason: "availability_not_confirmed", EvaluatedAt: at, ValidUntil: &availabilityUntil, RuleCount: 1}
+	p := &ProcurementProductPreview{State: "blocked", PriceClass: ProfitPreviewClassRejectedThreshold, PriceValidUntil: &priceUntil,
+		AccountControls: procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: false}, 1, at)}
+	p.AssessEvidence(policy, quality, availability, at)
+	raw, err := json.Marshal(p.EvaluatedGates)
+	require.NoError(t, err)
+	var contract struct {
+		Version int `json:"version"`
+		Gates   []struct {
+			Key        string     `json:"key"`
+			State      string     `json:"state"`
+			Reason     string     `json:"reason"`
+			ValidUntil *time.Time `json:"valid_until"`
+		} `json:"gates"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &contract))
+	require.Len(t, contract.Gates, 4, "every configured blocker must be explained, not just the first failure")
+	require.Equal(t, 4, contract.Version)
+	for i, expected := range []struct {
+		key, state, reason string
+		until              *time.Time
+	}{
+		{"price", "fail", "price_constraints_failed", &priceUntil},
+		{"account_controls", "fail", "account_controls_failed", p.AccountControls.ValidUntil},
+		{"answer_quality", "unknown", "answer_quality_unavailable", nil},
+		{"availability", "fail", "availability_failed", &availabilityUntil},
+	} {
+		require.Equal(t, expected.key, contract.Gates[i].Key)
+		require.Equal(t, expected.state, contract.Gates[i].State)
+		require.Equal(t, expected.reason, contract.Gates[i].Reason)
+		require.Equal(t, expected.until, contract.Gates[i].ValidUntil)
+	}
+	require.Equal(t, "fail", p.EvaluatedGates.State)
+	require.Equal(t, "price_constraints_failed", p.EvaluatedGates.Reason)
+	require.Zero(t, p.EvaluatedGates.PassedGates)
+	require.Equal(t, 4, p.EvaluatedGates.RequiredGates)
+	require.Equal(t, priceUntil, *p.EvaluatedGates.ValidUntil)
+	*p.EvaluatedGates.ValidUntil = at.Add(time.Hour)
+	require.Equal(t, at.Add(2*time.Second), priceUntil, "summary must not mutate the original price deadline")
+	*contract.Gates[3].ValidUntil = at.Add(time.Hour)
+	require.Equal(t, at.Add(2*time.Minute), *availability.ValidUntil)
+
+	// A new read replaces the whole decision, including every previous blocker.
+	p.State, p.PriceClass = "constraints_passed", ProfitPreviewClassAdmitted
+	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)
+	quality.Status, quality.Reason, quality.ValidUntil = "pass", "all_rules_passed", &qualityUntil
+	quality.RuleCount, quality.ConfirmedRules, quality.Samples, quality.ValidSamples = 1, 1, 1, 1
+	availability.Status, availability.Reason, availability.ConfirmedRules = "pass", "all_rules_passed", 1
+	p.AssessEvidence(policy, quality, availability, at)
+	require.Equal(t, "pass", p.EvaluatedGates.State)
+	require.Equal(t, 4, p.EvaluatedGates.PassedGates)
+}
+
 func TestProcurementEvaluatedGatesIntersection(t *testing.T) {
 	at := time.Now().UTC()
 	qualityUntil, availabilityUntil := at.Add(time.Minute), at.Add(2*time.Minute)
@@ -43,6 +101,16 @@ func TestProcurementEvaluatedGatesIntersection(t *testing.T) {
 			projection := &ProcurementProductPreview{State: tc.price, PriceClass: ProfitPreviewClassRejectedThreshold, PriceValidUntil: probeTimePtr(at.Add(ProcurementPreviewTTL)),
 				AccountControls: procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)}
 			projection.AssessEvidence(policy, quality, availability, at)
+			require.Equal(t, 4, projection.EvaluatedGates.Version)
+			require.Len(t, projection.EvaluatedGates.Gates, tc.required+1)
+			require.Equal(t, "price", projection.EvaluatedGates.Gates[0].Key)
+			require.Equal(t, "account_controls", projection.EvaluatedGates.Gates[1].Key)
+			if policy.Quality == "current_answer" {
+				require.Equal(t, "answer_quality", projection.EvaluatedGates.Gates[2].Key)
+			}
+			if policy.Availability == "current_state" {
+				require.Equal(t, "availability", projection.EvaluatedGates.Gates[len(projection.EvaluatedGates.Gates)-1].Key)
+			}
 			require.Equal(t, tc.state, projection.EvaluatedGates.State)
 			require.Equal(t, tc.reason, projection.EvaluatedGates.Reason)
 			require.Equal(t, tc.passed+1, projection.EvaluatedGates.PassedGates)
@@ -64,11 +132,15 @@ func TestProcurementEvaluatedGatesExpiryAndNoCertification(t *testing.T) {
 	require.Equal(t, "pass", p.EvaluatedGates.State)
 	*p.EvaluatedGates.ValidUntil = until.Add(time.Hour)
 	require.Equal(t, at.Add(time.Second), *quality.ValidUntil, "projection must not extend source evidence")
+	require.Equal(t, at.Add(time.Second), *p.EvaluatedGates.Gates[2].ValidUntil, "aggregate cannot mutate a gate deadline")
+	*p.EvaluatedGates.Gates[2].ValidUntil = until.Add(2 * time.Hour)
+	require.Equal(t, at.Add(time.Second), *quality.ValidUntil, "gate explanation cannot mutate source evidence")
 	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, until)
 	p.PriceValidUntil = probeTimePtr(until.Add(ProcurementPreviewTTL))
 	p.AssessEvidence(policy, quality, nil, until)
 	require.Equal(t, "unknown", p.EvaluatedGates.State)
 	require.Equal(t, "answer_quality_unavailable", p.EvaluatedGates.Reason)
+	require.Nil(t, p.EvaluatedGates.Gates[2].ValidUntil, "expired evidence must not give an unknown gate a new deadline")
 	require.Equal(t, until.Add(ProcurementPreviewTTL), *p.EvaluatedGates.ValidUntil)
 	p.AccountControls = procurementAccountControlsAt(&Account{ID: 1, Status: StatusActive, Schedulable: true}, 1, at)
 	p.PriceValidUntil = probeTimePtr(at.Add(ProcurementPreviewTTL))

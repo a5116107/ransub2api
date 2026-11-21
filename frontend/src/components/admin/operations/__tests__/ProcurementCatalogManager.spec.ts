@@ -35,6 +35,98 @@ beforeEach(() => {
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount(); vi.useRealTimers() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it('shows every configured blocker from one v4 assessment, not just the first rejection', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'unknown'), product = preview.results[0]!.product_procurement!
+      Object.assign(product, { state: 'blocked', price_class: 'rejected_threshold' })
+      Object.assign(product.account_controls!, { state: 'fail', reason: 'scheduling_disabled' })
+      preview.results[0]!.availability_evidence = availabilityFixture('fail')
+      product.availability = { version: 1, required: true, state: 'fail' }
+      Object.assign(product.evaluated_gates!, { state: 'fail', reason: 'price_constraints_failed', passed_gates: 0, required_gates: 4 })
+      return withGateDetails(preview)
+    })
+    await submitPreview(w); await flushPromises()
+    const rows = w.findAll('[data-testid="product-evaluated-gate"]')
+    expect(rows).toHaveLength(4)
+    for (const [index, key, state, reason] of [
+      [0, 'price', 'fail', 'price_constraints_failed'], [1, 'account_controls', 'fail', 'account_controls_failed'],
+      [2, 'answer_quality', 'unknown', 'answer_quality_unavailable'], [3, 'availability', 'fail', 'availability_failed']
+    ] as const) {
+      expect(rows[index]!.text()).toContain(prefix + 'gateNames.' + key)
+      expect(rows[index]!.text()).toContain(prefix + 'gateStates.' + state)
+      expect(rows[index]!.text()).toContain(prefix + 'evaluatedGatesReasons.' + reason)
+    }
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.fail')
+    expect(w.text()).toContain(prefix + 'modelIdentityUnknown')
+  })
+  it('expires each v4 row independently without rebuilding an overall decision from a partial snapshot', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = productPreview(requests, 'not_required'), product = preview.results[0]!.product_procurement!
+      product.price_valid_until = '2026-11-19T00:00:02Z'
+      Object.assign(product.account_controls!, { state: 'fail', reason: 'scheduling_disabled' })
+      Object.assign(product.evaluated_gates!, { state: 'fail', reason: 'account_controls_failed', passed_gates: 1, valid_until: product.price_valid_until })
+      return withGateDetails(preview)
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.findAll('[data-testid="product-evaluated-gate"]')).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(2000)
+    const rows = w.findAll('[data-testid="product-evaluated-gate"]')
+    expect(rows[0]!.text()).toContain(prefix + 'gateStates.unknown')
+    expect(rows[0]!.text()).toContain(prefix + 'evaluatedGatesReasons.expired')
+    expect(rows[1]!.text()).toContain(prefix + 'gateStates.fail')
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+    expect(previewProcurementScopes).toHaveBeenCalledTimes(1)
+  })
+  it.each(['missing', 'null', 'empty', 'extra', 'duplicate', 'order', 'key', 'state', 'reason', 'deadline', 'unknown-deadline', 'extra-field', 'legacy-mixed'])('rejects incoherent or unknown v4 gate details and recovers (%s)', async kind => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const preview = withGateDetails(productPreview(requests, kind === 'unknown-deadline' ? 'unknown' : 'pass'))
+      const summary = preview.results[0]!.product_procurement!.evaluated_gates!, gates = summary.gates!
+      if (kind === 'missing') delete summary.gates
+      if (kind === 'null') Object.assign(summary, { gates: null })
+      if (kind === 'empty') summary.gates = []
+      if (kind === 'extra') gates.push({ ...gates[0]! })
+      if (kind === 'duplicate') gates[1] = { ...gates[0]! }
+      if (kind === 'order') gates.reverse()
+      if (kind === 'key') Object.assign(gates[0]!, { key: 'model_identity' })
+      if (kind === 'state') gates[0]!.state = 'fail'
+      if (kind === 'reason') gates[0]!.reason = 'availability_failed'
+      if (kind === 'deadline') gates[0]!.valid_until = '2026-11-19T00:00:31Z'
+      if (kind === 'unknown-deadline') gates[2]!.valid_until = '2026-11-19T00:00:30Z'
+      if (kind === 'extra-field') Object.assign(gates[0]!, { qualification: 'pass' })
+      if (kind === 'legacy-mixed') summary.version = 3
+      return preview
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+    expect(w.get('[data-testid="procurement-product"]').element).toHaveProperty('value', '42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => withGateDetails(productPreview(requests, 'pass')))
+    await submitPreview(w); await flushPromises()
+    expect(w.findAll('[data-testid="product-evaluated-gate"]')).toHaveLength(3)
+  })
+  it('retains the valid v3 summary while explaining that per-gate detail is missing', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => productPreview(requests, 'pass'))
+    await submitPreview(w); await flushPromises()
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.pass')
+    expect(w.findAll('[data-testid="product-evaluated-gate"]')).toHaveLength(0)
+    expect(w.text()).toContain(prefix + 'gateDetailsLegacy')
+  })
   it.each(['disabled', 'not_evaluated'])('preserves the explicit unevaluated price reason without claiming validity (%s)', async state => {
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
     vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
@@ -570,6 +662,20 @@ function productPreview(requests: ProcurementRequestScope[], state: string): Pro
       evaluated_gates: { version: 3, state: resultState, reason: resultState === 'pass' ? 'all_evaluated_gates_passed' : state === 'fail' ? 'answer_quality_failed' : 'answer_quality_unavailable', passed_gates: 2 + Number(state === 'pass'), required_gates: 2 + Number(required), evaluated_at: '2026-11-19T00:00:00Z', valid_until: until }
     }
   })) }
+}
+function withGateDetails(preview: ProcurementPreview): ProcurementPreview {
+  const item = preview.results[0]!, product = item.product_procurement!, summary = product.evaluated_gates!
+  summary.version = 4
+  summary.gates = [
+    { key: 'price', state: product.state === 'constraints_passed' ? 'pass' : 'fail', reason: product.state === 'constraints_passed' ? 'price_constraints_passed' : 'price_constraints_failed', valid_until: product.price_valid_until ?? null },
+    { key: 'account_controls', state: product.account_controls!.state, reason: product.account_controls!.state === 'pass' ? 'account_controls_passed' : 'account_controls_failed', valid_until: product.account_controls!.valid_until }
+  ]
+  for (const [key, gate, evidence] of [
+    ['answer_quality', product.answer_quality, item.quality_evidence], ['availability', product.availability, item.availability_evidence]
+  ] as const) {
+    if (gate?.required) summary.gates.push({ key, state: gate.state, reason: `${key}_${gate.state === 'pass' ? 'passed' : gate.state === 'fail' ? 'failed' : 'unavailable'}`, valid_until: gate.state === 'unknown' ? null : evidence!.valid_until })
+  }
+  return preview
 }
 function availabilityFixture(status: string) {
   return { version: 1, status, reason: ({ pass: 'all_rules_passed', fail: 'availability_not_confirmed', unknown: 'availability_scope_unconfirmed', not_configured: 'availability_not_configured' } as Record<string, string>)[status]!,

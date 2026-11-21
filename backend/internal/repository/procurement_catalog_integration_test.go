@@ -232,7 +232,10 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 		out = readProduct(groupID)
 		require.Equal(t, "pass", out.Results[0].Product.EvaluatedGates.State)
 		require.Equal(t, 2, out.Results[0].Product.EvaluatedGates.PassedGates)
-		require.Equal(t, 3, out.Results[0].Product.EvaluatedGates.Version)
+		require.Equal(t, 4, out.Results[0].Product.EvaluatedGates.Version)
+		require.Len(t, out.Results[0].Product.EvaluatedGates.Gates, 2)
+		require.Equal(t, "price", out.Results[0].Product.EvaluatedGates.Gates[0].Key)
+		require.Equal(t, "account_controls", out.Results[0].Product.EvaluatedGates.Gates[1].Key)
 		for _, tc := range []struct{ name, apply, undo, reason string }{
 			{"manual", `UPDATE accounts SET schedulable=false WHERE id=$1`, `UPDATE accounts SET schedulable=true WHERE id=$1`, "scheduling_disabled"},
 			{"inactive", `UPDATE accounts SET status='disabled' WHERE id=$1`, `UPDATE accounts SET status='active' WHERE id=$1`, "account_inactive"},
@@ -271,6 +274,39 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 			})
 			require.Equal(t, "pass", readProduct(groupID).Results[0].Product.AccountControls.State, "protection recovery is read again")
 		}
+		t.Run("all blockers are explained in the same read without running probes", func(t *testing.T) {
+			strict := &domain.ProcurementPolicy{Version: 5, Revision: policy.Revision + 1, Sources: &domain.ProcurementSources{AccountIDs: []int64{accountID}}, Buckets: &domain.ProcurementBuckets{}, Quality: "current_answer", Availability: "current_state"}
+			_, err := db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2::jsonb WHERE id=$1`, groupID, encode(strict))
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `UPDATE accounts SET schedulable=false WHERE id=$1`, accountID)
+			require.NoError(t, err)
+			defer func() {
+				savePolicy(true)
+				_, err := db.ExecContext(ctx, `UPDATE accounts SET schedulable=true WHERE id=$1`, accountID)
+				require.NoError(t, err)
+			}()
+			out := readProduct(groupID)
+			gates := out.Results[0].Product.EvaluatedGates
+			require.Equal(t, "fail", gates.State)
+			require.Equal(t, "account_controls_failed", gates.Reason, "a later unknown cannot conceal the native pause")
+			require.Len(t, gates.Gates, 4)
+			for i, expected := range []struct{ key, state, reason string }{
+				{"price", "pass", "price_constraints_passed"}, {"account_controls", "fail", "account_controls_failed"},
+				{"answer_quality", "unknown", "answer_quality_unavailable"}, {"availability", "unknown", "availability_unavailable"},
+			} {
+				require.Equal(t, expected.key, gates.Gates[i].Key)
+				require.Equal(t, expected.state, gates.Gates[i].State)
+				require.Equal(t, expected.reason, gates.Gates[i].Reason)
+			}
+			require.Equal(t, 1, gates.PassedGates)
+			require.Equal(t, 4, gates.RequiredGates)
+			require.Nil(t, gates.Gates[2].ValidUntil)
+			require.Nil(t, gates.Gates[3].ValidUntil)
+			require.Equal(t, "not_evaluated", out.Results[0].Qualification)
+			var writes int
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM scheduled_test_plans)+(SELECT count(*) FROM scheduled_test_results)+(SELECT count(*) FROM usage_logs)+(SELECT count(*) FROM monitoring_probe_budget_counters)+(SELECT count(*) FROM monitoring_probe_budget_leases)`).Scan(&writes))
+			require.Zero(t, writes)
+		})
 		t.Run("price deadline expires and refreshes independently of account controls", func(t *testing.T) {
 			attest(3 * time.Second)
 			var expiry string

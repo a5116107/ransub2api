@@ -68,13 +68,23 @@ type ProcurementProductPreview struct {
 // Only the explicitly evaluated product constraints are intersected here.
 // This snapshot is never full model/cache qualification or send authorization.
 type ProcurementEvaluatedGatesPreview struct {
-	Version       int        `json:"version"`
-	State         string     `json:"state"`
-	Reason        string     `json:"reason"`
-	PassedGates   int        `json:"passed_gates"`
-	RequiredGates int        `json:"required_gates"`
-	EvaluatedAt   time.Time  `json:"evaluated_at"`
-	ValidUntil    *time.Time `json:"valid_until"`
+	Version       int                               `json:"version"`
+	State         string                            `json:"state"`
+	Reason        string                            `json:"reason"`
+	PassedGates   int                               `json:"passed_gates"`
+	RequiredGates int                               `json:"required_gates"`
+	EvaluatedAt   time.Time                         `json:"evaluated_at"`
+	ValidUntil    *time.Time                        `json:"valid_until"`
+	Gates         []ProcurementEvaluatedGatePreview `json:"gates"`
+}
+
+// Only required, configured gates are present, in the original evaluation
+// order. Each deadline is copied from its source, never extended by the summary.
+type ProcurementEvaluatedGatePreview struct {
+	Key        string     `json:"key"`
+	State      string     `json:"state"`
+	Reason     string     `json:"reason"`
+	ValidUntil *time.Time `json:"valid_until"`
 }
 
 const ProcurementPreviewTTL = 30 * time.Second
@@ -211,61 +221,75 @@ func (p *ProcurementProductPreview) AssessEvidence(policy *ProcurementPolicy, qu
 	}
 	p.AnswerQuality = ProcurementAnswerQuality(policy, quality, at)
 	p.Availability = ProcurementAvailability(policy, availability, at)
-	out := &ProcurementEvaluatedGatesPreview{Version: 3, State: "pass", Reason: "all_evaluated_gates_passed", EvaluatedAt: at}
-	add := func(state, reason string, until *time.Time) {
-		out.RequiredGates++
-		if state == "pass" {
-			out.PassedGates++
-		} else if out.State == "pass" || state == "fail" && out.State != "fail" {
-			out.State, out.Reason = state, reason
-		}
-		if (state == "pass" || state == "fail") && until != nil && until.After(at) && (out.ValidUntil == nil || until.Before(*out.ValidUntil)) {
+	out := &ProcurementEvaluatedGatesPreview{Version: 4, State: "pass", Reason: "all_evaluated_gates_passed", EvaluatedAt: at, Gates: make([]ProcurementEvaluatedGatePreview, 0, 4)}
+	add := func(key, state, reason string, until *time.Time) {
+		gate := ProcurementEvaluatedGatePreview{Key: key, State: state, Reason: reason}
+		if (state == "pass" || state == "fail") && until != nil && until.After(at) {
 			deadline := *until
-			out.ValidUntil = &deadline
+			gate.ValidUntil = &deadline
 		}
+		out.Gates = append(out.Gates, gate)
 	}
 	price := p.priceState()
 	switch {
 	case p.PriceValidUntil == nil || !p.PriceValidUntil.After(at) || p.PriceValidUntil.After(at.Add(ProcurementPreviewTTL)):
-		add("unknown", "price_constraints_unavailable", nil)
+		add("price", "unknown", "price_constraints_unavailable", nil)
 	case price == "pass":
-		add("pass", "", p.PriceValidUntil)
+		add("price", "pass", "price_constraints_passed", p.PriceValidUntil)
 	case price == "fail":
-		add("fail", "price_constraints_failed", p.PriceValidUntil)
+		add("price", "fail", "price_constraints_failed", p.PriceValidUntil)
 	default:
-		add("unknown", "price_constraints_unavailable", nil)
+		add("price", "unknown", "price_constraints_unavailable", nil)
 	}
 	controls := p.AccountControls
 	if controls == nil || controls.Version != 1 || !controls.EvaluatedAt.Equal(at) || controls.ValidUntil == nil || !controls.ValidUntil.After(at) {
-		add("unknown", "account_controls_unavailable", nil)
+		add("account_controls", "unknown", "account_controls_unavailable", nil)
 	} else if controls.State == "fail" {
-		add("fail", "account_controls_failed", controls.ValidUntil)
+		add("account_controls", "fail", "account_controls_failed", controls.ValidUntil)
 	} else if controls.State == "pass" && controls.Reason == "account_controls_passed" {
-		add("pass", "", controls.ValidUntil)
+		add("account_controls", "pass", "account_controls_passed", controls.ValidUntil)
 	} else {
-		add("unknown", "account_controls_unavailable", nil)
+		add("account_controls", "unknown", "account_controls_unavailable", nil)
 	}
 	if p.AnswerQuality.Required {
 		reason := "answer_quality_unavailable"
 		if p.AnswerQuality.State == "fail" {
 			reason = "answer_quality_failed"
+		} else if p.AnswerQuality.State == "pass" {
+			reason = "answer_quality_passed"
 		}
 		var until *time.Time
 		if quality != nil {
 			until = quality.ValidUntil
 		}
-		add(p.AnswerQuality.State, reason, until)
+		add("answer_quality", p.AnswerQuality.State, reason, until)
 	}
 	if p.Availability.Required {
 		reason := "availability_unavailable"
 		if p.Availability.State == "fail" {
 			reason = "availability_failed"
+		} else if p.Availability.State == "pass" {
+			reason = "availability_passed"
 		}
 		var until *time.Time
 		if availability != nil {
 			until = availability.ValidUntil
 		}
-		add(p.Availability.State, reason, until)
+		add("availability", p.Availability.State, reason, until)
+	}
+	// The explanation and aggregate have one decision source, including every
+	// simultaneous failure/unknown and the original first-failure precedence.
+	out.RequiredGates = len(out.Gates)
+	for _, gate := range out.Gates {
+		if gate.State == "pass" {
+			out.PassedGates++
+		} else if out.State == "pass" || gate.State == "fail" && out.State != "fail" {
+			out.State, out.Reason = gate.State, gate.Reason
+		}
+		if gate.ValidUntil != nil && (out.ValidUntil == nil || gate.ValidUntil.Before(*out.ValidUntil)) {
+			deadline := *gate.ValidUntil
+			out.ValidUntil = &deadline
+		}
 	}
 	p.EvaluatedGates = out
 }

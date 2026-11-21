@@ -21,12 +21,16 @@ export interface ProcurementClassification extends ProcurementRequestScope {
   product_procurement?: {
     price_valid_until?: string | null
     account_controls?: { version: number; state: string; reason: string; evaluated_at: string; valid_until: string | null }
-    evaluated_gates?: { version: number; state: string; reason: string; passed_gates: number; required_gates: number; evaluated_at: string; valid_until: string | null }
+    evaluated_gates?: { version: number; state: string; reason: string; passed_gates: number; required_gates: number; evaluated_at: string; valid_until: string | null; gates?: ProcurementEvaluatedGate[] }
     answer_quality?: { version: number; required: boolean; state: string }
     availability?: { version: number; required: boolean; state: string }
     version: number; group_id: number; policy_revision: number; price_basis: string; default_d: number; threshold: number
     state: string; price_class: string; reason?: string; catalog_revision?: number
   }
+}
+export interface ProcurementEvaluatedGate {
+  key: 'price' | 'account_controls' | 'answer_quality' | 'availability'
+  state: string; reason: string; valid_until: string | null
 }
 export interface AvailabilityScopeEvidence {
   version: number; status: string; reason: string; evaluated_at: string; valid_until: string | null
