@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '../../client'
 import { listPelicanHistory } from '../scheduledTests'
 import { createQualityPreset, listQualityPresets, updateQualityPreset } from '../accountQuality'
-import { readProcurementSharedMonitoring, previewProcurementSharedMonitoring, applyProcurementSharedMonitoring } from '../procurementCatalog'
+import { configureProcurementSharedMonitoringMaintenance, readProcurementSharedMonitoring, previewProcurementSharedMonitoring, applyProcurementSharedMonitoring } from '../procurementCatalog'
 
 vi.mock('../../client', () => ({ apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }))
 
@@ -53,5 +53,14 @@ describe('shared observation API', () => {
     expect(apiClient.post).toHaveBeenLastCalledWith('/admin/upstream-procurement/monitoring', command)
     await previewProcurementSharedMonitoring([], signal, true)
     expect(apiClient.post).toHaveBeenLastCalledWith('/admin/upstream-procurement/monitoring-preview', { version: 2, products: [], release_ownership: true }, { signal })
+  })
+})
+
+describe('shared observation maintenance API', () => {
+  it.each([true, false])('persists explicit %s mode and the saved revision', async enabled => {
+    vi.mocked(apiClient.put).mockResolvedValue({ data: { revision: 8 } })
+    expect(await configureProcurementSharedMonitoringMaintenance(enabled, 7)).toEqual({ revision: 8 })
+    expect(apiClient.put).toHaveBeenCalledWith('/admin/upstream-procurement/monitoring', { version: 1, enabled, expected_revision: 7, confirm: true })
+    expect(apiClient.post).not.toHaveBeenCalled()
   })
 })

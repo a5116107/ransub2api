@@ -45,17 +45,17 @@ func (r *channelRepository) ApplyProcurementSharedMonitoring(ctx context.Context
 	if err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1 FOR UPDATE`, procurementSharedMonitoringSettingKey).Scan(&raw); err != nil {
 		return nil, err
 	}
-	compiled, err := compileProcurementSharedMonitoring(ctx, tx, &command.ProcurementSharedMonitoringCommand, command.ObservedAt)
+	compiled, err := compileProcurementSharedMonitoring(ctx, tx, &command.ProcurementSharedMonitoringCommand, command.ObservedAt, false)
 	if err != nil {
 		return nil, err
 	}
 	if compiled.saved.Revision != command.Revision || !validProcurementSharedConsent(compiled.preview.ApplicationReview, command) {
 		return nil, service.ErrProcurementSharedMonitoringConflict
 	}
-	if err = lockProcurementSharedInputs(ctx, tx, compiled, command.Products); err != nil {
+	if err = lockProcurementSharedInputs(ctx, tx, compiled); err != nil {
 		return nil, err
 	}
-	compiled, err = compileProcurementSharedMonitoring(ctx, tx, &command.ProcurementSharedMonitoringCommand, command.ObservedAt)
+	compiled, err = compileProcurementSharedMonitoring(ctx, tx, &command.ProcurementSharedMonitoringCommand, command.ObservedAt, false)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,23 @@ func (r *channelRepository) ApplyProcurementSharedMonitoring(ctx context.Context
 	if compiled.saved.Revision != command.Revision || !validProcurementSharedConsent(review, command) || now.Before(command.ObservedAt) || !now.Before(review.ExpiresAt) {
 		return nil, service.ErrProcurementSharedMonitoringConflict
 	}
-	next := &procurementObservationState{Version: 1, Revision: compiled.saved.Revision + 1, Products: append([]service.ProcurementMonitoringProductSelection{}, command.Products...), Plans: []procurementObservationOwner{}}
+	out, err = applyProcurementSharedCompilation(ctx, tx, compiled, command.Products, nil, len(command.Products) > 0)
+	if err != nil {
+		return nil, err
+	}
+	return out, tx.Commit()
+}
+
+// Manual confirmation and continuous maintenance share every native write,
+// coverage check and ownership postcondition in this single transaction helper.
+func applyProcurementSharedCompilation(ctx context.Context, tx *sql.Tx, compiled *procurementSharedMonitoringCompilation, products []service.ProcurementMonitoringProductSelection, maintenance *service.ProcurementSharedMonitoringMaintenance, requireBudget bool) (*service.ProcurementSharedMonitoringState, error) {
+	var err error
+	var now time.Time
+	if err = tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return nil, err
+	}
+	review := compiled.preview.ApplicationReview
+	next := &procurementObservationState{Version: 1, Revision: compiled.saved.Revision + 1, Products: append([]service.ProcurementMonitoringProductSelection{}, products...), Plans: []procurementObservationOwner{}, Maintenance: maintenance}
 	slices.SortFunc(next.Products, func(a, b service.ProcurementMonitoringProductSelection) int {
 		if a.ProductID < b.ProductID {
 			return -1
@@ -126,7 +142,7 @@ func (r *channelRepository) ApplyProcurementSharedMonitoring(ctx context.Context
 			return nil, service.ErrProcurementSharedMonitoringConflict
 		}
 	}
-	if err = validateMonitoringCoveragePlanWrite(ctx, tx, len(command.Products) > 0); err != nil {
+	if err = validateMonitoringCoveragePlanWrite(ctx, tx, requireBudget); err != nil {
 		return nil, err
 	}
 	encoded, err := json.Marshal(next)
@@ -142,11 +158,7 @@ func (r *channelRepository) ApplyProcurementSharedMonitoring(ctx context.Context
 	if !now.Before(review.ExpiresAt) {
 		return nil, service.ErrProcurementSharedMonitoringConflict
 	}
-	out, err = readProcurementSharedMonitoring(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	return out, tx.Commit()
+	return readProcurementSharedMonitoring(ctx, tx)
 }
 
 func validProcurementSharedConsent(review *service.ProcurementSharedMonitoringReview, command *service.ProcurementSharedMonitoringApplyCommand) bool {
@@ -156,20 +168,16 @@ func validProcurementSharedConsent(review *service.ProcurementSharedMonitoringRe
 // The runner also uses plan -> account locks. Product/source and preset share
 // locks fence revocation; account locks plus membership locks fence both the
 // original FK-backed inserts and native deletes for every affected account.
-func lockProcurementSharedInputs(ctx context.Context, tx *sql.Tx, compiled *procurementSharedMonitoringCompilation, products []service.ProcurementMonitoringProductSelection) error {
-	groups := append([]int64{}, compiled.sourceGroups...)
-	presets := []int64{}
-	for _, p := range products {
-		groups = append(groups, p.ProductID)
-		presets = append(presets, p.PresetID)
-	}
+func lockProcurementSharedInputs(ctx context.Context, tx *sql.Tx, compiled *procurementSharedMonitoringCompilation) error {
+	groups := append(append([]int64{}, compiled.sourceGroups...), compiled.productGroups...)
+	presets := append([]int64{}, compiled.presets...)
 	slices.Sort(groups)
 	groups = slices.Compact(groups)
 	slices.Sort(presets)
 	presets = slices.Compact(presets)
 	var found int64
 	for _, id := range groups {
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM groups WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, id).Scan(&found); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM groups WHERE id=$1 FOR SHARE`, id).Scan(&found); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return service.ErrProcurementSharedMonitoringConflict
 			}
@@ -203,7 +211,7 @@ func lockProcurementSharedInputs(ctx context.Context, tx *sql.Tx, compiled *proc
 	}
 	slices.Sort(accounts)
 	for _, id := range accounts {
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&found); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM accounts WHERE id=$1 FOR UPDATE`, id).Scan(&found); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return service.ErrProcurementSharedMonitoringConflict
 			}

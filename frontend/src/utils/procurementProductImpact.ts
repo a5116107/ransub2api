@@ -203,6 +203,19 @@ export function validProcurementSharedMonitoringState(v: ProcurementSharedMonito
   if (!v || v.version !== 1 || !count(v.revision) || !Number.isFinite(Date.parse(v.observed_at)) ||
     !Array.isArray(v.products) || v.products.length > 20 || !Array.isArray(v.plans) || v.plans.length > 1000 ||
     v.revision === 0 && (v.products.length > 0 || v.plans.length > 0)) return false
+  if (v.maintenance !== undefined) {
+    const m = v.maintenance
+    if (!m || typeof m.enabled !== 'boolean' || !['waiting', 'current', 'updated', 'blocked', 'manual'].includes(m.state) ||
+      !['awaiting_tick', 'compatible', 'manual', 'sources_unavailable', 'invalid_preset', 'inputs_changed', 'write_failed', 'budget_disabled', 'budget_exceeded', 'too_many_accounts', 'product_missing', 'managed_plan_missing', 'managed_plan_changed', 'managed_plan_running', 'existing_observation_plan', 'invalid_requirements', 'observation_settings_conflict', 'native_model_limit', 'schedule_timezones_conflict', 'invalid_merged_plan'].includes(m.reason) ||
+      !Number.isFinite(Date.parse(m.changed_at)) || !count(m.created) || !count(m.updated) || !count(m.paused) || m.created + m.updated + m.paused > 1000 ||
+      m.enabled === (m.state === 'manual') || v.revision === 0) return false
+    const changes = m.created + m.updated + m.paused
+    if (m.state === 'manual' && (m.reason !== 'manual' || changes !== 0) ||
+      m.state === 'waiting' && (m.reason !== 'awaiting_tick' || changes !== 0) ||
+      m.state === 'current' && (m.reason !== 'compatible' || changes !== 0) ||
+      m.state === 'updated' && (m.reason !== 'compatible' || changes === 0) ||
+      m.state === 'blocked' && (['manual', 'awaiting_tick', 'compatible'].includes(m.reason) || changes !== 0)) return false
+  }
   let previous = 0
   for (const p of v.products) {
     if (!p || !count(p.product_id) || p.product_id <= previous || !count(p.preset_id) || !p.preset_id) return false

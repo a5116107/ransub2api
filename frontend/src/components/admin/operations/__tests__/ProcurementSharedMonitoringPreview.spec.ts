@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import View from '../ProcurementSharedMonitoringPreview.vue'
 import Select from '@/components/common/Select.vue'
-import { readProcurementSharedMonitoring, applyProcurementSharedMonitoring, previewProcurementSharedMonitoring, type ProcurementSharedMonitoringPreview } from '@/api/admin/procurementCatalog'
+import { configureProcurementSharedMonitoringMaintenance, readProcurementSharedMonitoring, applyProcurementSharedMonitoring, previewProcurementSharedMonitoring, type ProcurementSharedMonitoringPreview } from '@/api/admin/procurementCatalog'
 import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 import { validProcurementSharedMonitoringPreview, validProcurementSharedMonitoringState } from '@/utils/procurementProductImpact'
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
-vi.mock('@/api/admin/procurementCatalog', () => ({ readProcurementSharedMonitoring: vi.fn(), applyProcurementSharedMonitoring: vi.fn(), previewProcurementSharedMonitoring: vi.fn() }))
+vi.mock('@/api/admin/procurementCatalog', () => ({ configureProcurementSharedMonitoringMaintenance: vi.fn(), readProcurementSharedMonitoring: vi.fn(), applyProcurementSharedMonitoring: vi.fn(), previewProcurementSharedMonitoring: vi.fn() }))
 const selections = [{ product_id: 2, preset_id: 7 }, { product_id: 3, preset_id: 8 }]
 const fixture = (): ProcurementSharedMonitoringPreview => ({
   version: 1, scope: 'approved_sources_only', observed_at: '2026-11-21T09:00:00Z', state: 'compatible',
@@ -243,5 +243,59 @@ describe('shared monitoring persistence', () => {
     expect((w.get('[data-testid="shared-consent"]').element as HTMLInputElement).checked).toBe(false)
     vi.mocked(previewProcurementSharedMonitoring).mockResolvedValue(fixture()); await preview(w)
     expect(w.find('[data-testid="shared-save"]').exists()).toBe(false)
+  })
+})
+
+function maintained(enabled = true, state: 'waiting' | 'current' | 'updated' | 'blocked' | 'manual' = 'waiting', reason = 'awaiting_tick') {
+  return { ...saved(), revision: 2, maintenance: { enabled, state, reason, changed_at: '2026-11-21T09:00:02Z', created: 0, updated: 0, paused: 0 } }
+}
+describe('shared continuous maintenance', () => {
+  it('requires consent and independently reads back the saved mode', async () => {
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValueOnce(saved()).mockResolvedValue(maintained())
+    vi.mocked(configureProcurementSharedMonitoringMaintenance).mockResolvedValue(maintained())
+    const w = view(); (w.get('details').element as HTMLDetailsElement).open = true
+    await w.get('details').trigger('toggle'); await flushPromises()
+    expect(w.get('[data-testid="shared-maintenance-toggle"]').attributes('disabled')).toBeDefined()
+    await w.get('[data-testid="shared-maintenance-consent"]').setValue(true)
+    await w.get('[data-testid="shared-maintenance-toggle"]').trigger('click'); await flushPromises()
+    expect(configureProcurementSharedMonitoringMaintenance).toHaveBeenCalledWith(true, 1)
+    expect(w.get('[data-testid="shared-maintenance"]').attributes('data-state')).toBe('waiting')
+    expect(w.get('[data-testid="shared-maintenance-verified"]').exists()).toBe(true)
+    expect(readProcurementSharedMonitoring).toHaveBeenCalledTimes(2)
+  })
+  it('shows a concrete blocked outcome and disables future maintenance without pausing tests', async () => {
+    const disabled = { ...maintained(false, 'manual', 'manual'), revision: 3 }
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValueOnce(maintained(true, 'blocked', 'budget_exceeded')).mockResolvedValue(disabled)
+    vi.mocked(configureProcurementSharedMonitoringMaintenance).mockResolvedValue(disabled)
+    const w = view(); (w.get('details').element as HTMLDetailsElement).open = true
+    await w.get('details').trigger('toggle'); await flushPromises()
+    expect(w.get('[data-testid="shared-maintenance-reason"]').text()).toContain('budget_exceeded')
+    expect(w.find('[data-testid="shared-maintenance-consent"]').exists()).toBe(false)
+    await w.get('[data-testid="shared-maintenance-toggle"]').trigger('click'); await flushPromises()
+    expect(configureProcurementSharedMonitoringMaintenance).toHaveBeenCalledWith(false, 2)
+    expect(w.get('[data-testid="shared-maintenance"]').attributes('data-state')).toBe('manual')
+    expect(applyProcurementSharedMonitoring).not.toHaveBeenCalled()
+  })
+  it.each(['conflict', 'lost', 'read', 'contradiction'])('does not replay or claim success after %s', async mode => {
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValueOnce(saved())
+    vi.mocked(configureProcurementSharedMonitoringMaintenance).mockResolvedValue(maintained())
+    if (mode === 'conflict' || mode === 'lost') vi.mocked(configureProcurementSharedMonitoringMaintenance).mockRejectedValue({ status: mode === 'conflict' ? 409 : 503 })
+    else if (mode === 'read') vi.mocked(readProcurementSharedMonitoring).mockRejectedValue({ status: 503 })
+    else vi.mocked(readProcurementSharedMonitoring).mockResolvedValue(maintained(false, 'manual', 'manual'))
+    const w = view(); (w.get('details').element as HTMLDetailsElement).open = true
+    await w.get('details').trigger('toggle'); await flushPromises()
+    await w.get('[data-testid="shared-maintenance-consent"]').setValue(true)
+    await w.get('[data-testid="shared-maintenance-toggle"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="shared-maintenance-verified"]').exists()).toBe(false)
+    expect(w.get('[data-testid="shared-maintenance-toggle"]').attributes('disabled')).toBeDefined()
+    expect(configureProcurementSharedMonitoringMaintenance).toHaveBeenCalledTimes(1)
+    expect(w.get('[data-testid="shared-error"]').exists()).toBe(true)
+  })
+  it.each([
+    { enabled: 'true' }, { state: 'success' }, { reason: 'secret-upstream-response' }, { changed_at: 'invalid' },
+    { created: -1 }, { updated: null }, { paused: 1001 }, { enabled: false },
+  ])('rejects incompatible maintenance metadata %j', bad => {
+    const v = maintained(); Object.assign(v.maintenance, bad)
+    expect(validProcurementSharedMonitoringState(v)).toBe(false)
   })
 })

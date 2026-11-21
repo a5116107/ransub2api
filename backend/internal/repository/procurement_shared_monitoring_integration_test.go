@@ -68,6 +68,7 @@ func TestProcurementSharedMonitoringPersistencePostgresHTTP(t *testing.T) {
 	routes.Use((&admin.AccountHandler{}).AuthorizeObserver)
 	routes.POST("/upstream-procurement/monitoring-preview", h.ProcurementSharedMonitoringPreview)
 	routes.GET("/upstream-procurement/monitoring", h.ProcurementSharedMonitoring)
+	routes.PUT("/upstream-procurement/monitoring", h.ProcurementSharedMonitoring)
 	routes.POST("/upstream-procurement/monitoring", h.ProcurementSharedMonitoring)
 	call := func(role, method, path string, raw []byte) *httptest.ResponseRecorder {
 		t.Helper()
@@ -105,6 +106,9 @@ func TestProcurementSharedMonitoringPersistencePostgresHTTP(t *testing.T) {
 		}
 		return out
 	}
+	initial := snapshot()
+	require.NoError(t, native.(service.ProcurementSharedMonitoringMaintainer).ReconcileProcurementSharedMonitoring(ctx))
+	require.Equal(t, initial, snapshot(), "old installations do not opt in or create authority")
 	command := service.ProcurementSharedMonitoringCommand{Version: 2, Products: []service.ProcurementMonitoringProductSelection{{ProductID: first, PresetID: preset}, {ProductID: second, PresetID: otherPreset}}}
 	preview := func(c service.ProcurementSharedMonitoringCommand) *service.ProcurementSharedMonitoringPreview {
 		t.Helper()
@@ -373,6 +377,221 @@ func TestProcurementSharedMonitoringPersistencePostgresHTTP(t *testing.T) {
 		_, err = db.ExecContext(ctx, `DROP TRIGGER shared_plan_fault ON scheduled_test_plans; DROP FUNCTION shared_plan_fault()`)
 		require.NoError(t, err)
 		apply(confirmation(command, preview(command)), 200)
+	})
+	t.Run("continuous maintenance needs explicit revision consent", func(t *testing.T) {
+		var originalAuthority string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='upstream_procurement_shared_observation'`).Scan(&originalAuthority))
+		originalPlans := []string{}
+		for _, id := range ids {
+			var raw string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT to_jsonb(p)::text FROM scheduled_test_plans p WHERE id=$1`, id).Scan(&raw))
+			originalPlans = append(originalPlans, raw)
+		}
+		before := snapshot()
+		for _, role := range []string{"", "user", "observer"} {
+			w := call(role, http.MethodPut, "monitoring", []byte(fmt.Sprintf(`{"version":1,"expected_revision":%d,"enabled":true,"confirm":true}`, read().Revision)))
+			require.Contains(t, []int{401, 403}, w.Code)
+		}
+		require.Equal(t, before, snapshot())
+		w := call("admin", http.MethodPut, "monitoring", []byte(fmt.Sprintf(`{"version":1,"expected_revision":%d,"enabled":true,"confirm":true}`, read().Revision)))
+		require.Equal(t, 200, w.Code, w.Body.String())
+		require.Contains(t, w.Body.String(), `"enabled":true`)
+		maintainer := native.(service.ProcurementSharedMonitoringMaintainer)
+		reconcile := func() { t.Helper(); require.NoError(t, maintainer.ReconcileProcurementSharedMonitoring(ctx)) }
+		nativeSnapshot := func() map[string]string {
+			t.Helper()
+			out := snapshot()
+			delete(out, "settings")
+			return out
+		}
+		reconcile()
+		require.Equal(t, "current", read().Maintenance.State)
+		steady := snapshot()
+		reconcile()
+		reconcile()
+		require.Equal(t, steady, snapshot(), "unchanged ticks do not rewrite rows or ownership")
+		budgetLock, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		_, err = budgetLock.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(0x42505350524f4245))
+		require.NoError(t, err)
+		waiting, cancelWait := context.WithTimeout(ctx, 200*time.Millisecond)
+		err = maintainer.ReconcileProcurementSharedMonitoring(waiting)
+		cancelWait()
+		require.Error(t, err)
+		require.NoError(t, budgetLock.Rollback())
+		require.Equal(t, steady, snapshot(), "canceling a blocked tick cannot write")
+		_, err = db.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accounts[0], source)
+		require.NoError(t, err)
+		reconcile()
+		s := read()
+		require.False(t, s.Plans[0].Enabled)
+		require.Equal(t, ids[0], s.Plans[0].PlanID)
+		require.True(t, s.Plans[1].Enabled)
+		require.Equal(t, 1, s.Maintenance.Paused)
+		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accounts[0], source)
+		require.NoError(t, err)
+		reconcile()
+		require.True(t, read().Plans[0].Enabled)
+		require.Equal(t, ids[0], read().Plans[0].PlanID)
+		_, err = db.ExecContext(ctx, `UPDATE groups SET status='inactive' WHERE id IN ($1,$2)`, first, second)
+		require.NoError(t, err)
+		settings.Enabled = false
+		settings, err = budget.SaveSettings(ctx, settings)
+		require.NoError(t, err)
+		reconcile()
+		for _, p := range read().Plans {
+			require.False(t, p.Enabled)
+		}
+		_, err = db.ExecContext(ctx, `UPDATE groups SET status='active' WHERE id IN ($1,$2)`, first, second)
+		require.NoError(t, err)
+		reconcile()
+		require.Equal(t, "budget_disabled", read().Maintenance.Reason)
+		settings.Enabled = true
+		settings, err = budget.SaveSettings(ctx, settings)
+		require.NoError(t, err)
+		reconcile()
+		for _, p := range read().Plans {
+			require.True(t, p.Enabled)
+		}
+		_, err = db.ExecContext(ctx, `UPDATE groups SET deleted_at=clock_timestamp() WHERE id=$1`, first)
+		require.NoError(t, err)
+		reconcile()
+		plan, err := native.GetByID(ctx, ids[0])
+		require.NoError(t, err)
+		require.Equal(t, []string{"model-b"}, plan.PelicanConfig.ModelIDs)
+		_, err = db.ExecContext(ctx, `UPDATE groups SET deleted_at=NULL WHERE id=$1`, first)
+		require.NoError(t, err)
+		reconcile()
+		_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET model_id='model-c',cron_expression='*/5 * * * *' WHERE id=$1`, preset)
+		require.NoError(t, err)
+		reconcile()
+		plan, err = native.GetByID(ctx, ids[0])
+		require.NoError(t, err)
+		require.Contains(t, plan.PelicanConfig.ModelIDs, "model-c")
+		_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET enabled=false WHERE id=$1`, preset)
+		require.NoError(t, err)
+		unchanged := nativeSnapshot()
+		reconcile()
+		require.Equal(t, "invalid_preset", read().Maintenance.Reason)
+		require.Equal(t, unchanged, nativeSnapshot())
+		_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET enabled=true WHERE id=$1`, preset)
+		require.NoError(t, err)
+		reconcile()
+		require.Equal(t, "compatible", read().Maintenance.Reason)
+		_, err = db.ExecContext(ctx, `UPDATE groups SET status='inactive' WHERE id=$1`, source)
+		require.NoError(t, err)
+		unchanged = nativeSnapshot()
+		reconcile()
+		require.Equal(t, "sources_unavailable", read().Maintenance.Reason)
+		require.Equal(t, unchanged, nativeSnapshot())
+		_, err = db.ExecContext(ctx, `UPDATE groups SET status='active' WHERE id=$1`, source)
+		require.NoError(t, err)
+		reconcile()
+		for _, test := range []struct{ sql, reason, restore string }{
+			{`UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, "managed_plan_changed", `UPDATE scheduled_test_plans SET enabled=true WHERE id=$1`},
+			{`UPDATE scheduled_test_plans SET running_until=clock_timestamp()+interval '1 minute' WHERE id=$1`, "managed_plan_running", `UPDATE scheduled_test_plans SET running_until=NULL WHERE id=$1`},
+		} {
+			_, err = db.ExecContext(ctx, test.sql, ids[0])
+			require.NoError(t, err)
+			unchanged = nativeSnapshot()
+			reconcile()
+			require.Equal(t, test.reason, read().Maintenance.Reason)
+			require.Equal(t, unchanged, nativeSnapshot())
+			_, err = db.ExecContext(ctx, test.restore, ids[0])
+			require.NoError(t, err)
+			reconcile()
+		}
+		var beforeMissing string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='upstream_procurement_shared_observation'`).Scan(&beforeMissing))
+		_, err = db.ExecContext(ctx, `UPDATE settings SET value=jsonb_set(value::jsonb,'{plans,0,plan_id}','99999999')::text WHERE key='upstream_procurement_shared_observation'`)
+		require.NoError(t, err)
+		unchanged = nativeSnapshot()
+		reconcile()
+		require.Equal(t, "managed_plan_missing", read().Maintenance.Reason)
+		require.Equal(t, unchanged, nativeSnapshot())
+		_, err = db.ExecContext(ctx, `UPDATE settings SET value=$1 WHERE key='upstream_procurement_shared_observation'`, beforeMissing)
+		require.NoError(t, err)
+		reconcile()
+		p, err := repo.PreviewProcurementSharedMonitoring(ctx, &command)
+		require.NoError(t, err)
+		settings.RequestsPerDay = p.Coverage.MinimumTotalRequestsPerDay
+		settings, err = budget.SaveSettings(ctx, settings)
+		require.NoError(t, err)
+		var extra int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable,credentials,extra) VALUES('New approved supply','openai','apikey','active',false,'{}','{}') RETURNING id`).Scan(&extra))
+		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, extra, source)
+		require.NoError(t, err)
+		unchanged = nativeSnapshot()
+		reconcile()
+		require.Equal(t, "budget_exceeded", read().Maintenance.Reason)
+		require.Len(t, read().Plans, 2)
+		require.Equal(t, unchanged, nativeSnapshot())
+		settings.RequestsPerDay = 10000
+		settings, err = budget.SaveSettings(ctx, settings)
+		require.NoError(t, err)
+		// Two nodes see the same pending new account; exactly one plan is created.
+		results := make(chan error, 2)
+		for range 2 {
+			go func() { results <- maintainer.ReconcileProcurementSharedMonitoring(ctx) }()
+		}
+		for range 2 {
+			require.NoError(t, <-results)
+		}
+		require.Len(t, read().Plans, 3)
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans WHERE account_id=$1`, extra).Scan(&n))
+		require.Equal(t, 1, n)
+		// A later-row error must roll back earlier updates before saving failure.
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`CREATE FUNCTION shared_tick_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id=%d THEN RAISE EXCEPTION 'private tick fault'; END IF; RETURN NEW; END $$`, ids[1]))
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `CREATE TRIGGER shared_tick_fault BEFORE UPDATE ON scheduled_test_plans FOR EACH ROW EXECUTE FUNCTION shared_tick_fault()`)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET cron_expression='*/2 * * * *' WHERE id=$1`, preset)
+		require.NoError(t, err)
+		unchanged = nativeSnapshot()
+		reconcile()
+		require.Equal(t, "write_failed", read().Maintenance.Reason)
+		require.Equal(t, unchanged, nativeSnapshot())
+		_, err = db.ExecContext(ctx, `DROP TRIGGER shared_tick_fault ON scheduled_test_plans; DROP FUNCTION shared_tick_fault()`)
+		require.NoError(t, err)
+		reconcile()
+		require.Equal(t, "updated", read().Maintenance.State)
+		// Disabling takes effect despite stale evidence and preserves native plans.
+		w = call("admin", http.MethodPut, "monitoring", []byte(`{"version":1,"expected_revision":0,"enabled":false,"confirm":true}`))
+		require.Equal(t, 409, w.Code)
+		for _, bad := range []string{`{}`, `{"version":1,"expected_revision":0,"enabled":null,"confirm":true}`, `{"version":1,"expected_revision":0,"enabled":false,"confirm":false}`, `{"version":1,"expected_revision":0,"enabled":false,"confirm":true,"extra":1}`} {
+			require.Equal(t, 400, call("admin", http.MethodPut, "monitoring", []byte(bad)).Code)
+		}
+		unchanged = nativeSnapshot()
+		w = call("admin", http.MethodPut, "monitoring", []byte(fmt.Sprintf(`{"version":1,"expected_revision":%d,"enabled":false,"confirm":true}`, read().Revision)))
+		require.Equal(t, 200, w.Code, w.Body.String())
+		require.False(t, read().Maintenance.Enabled)
+		require.Equal(t, unchanged, nativeSnapshot())
+		steady = snapshot()
+		reconcile()
+		require.Equal(t, steady, snapshot())
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		require.ErrorIs(t, maintainer.ReconcileProcurementSharedMonitoring(canceled), context.Canceled)
+		// Restore the pre-existing two-account scenario for the original manual tests.
+		_, err = db.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, extra, source)
+		require.NoError(t, err)
+		w = call("admin", http.MethodPut, "monitoring", []byte(fmt.Sprintf(`{"version":1,"expected_revision":%d,"enabled":true,"confirm":true}`, read().Revision)))
+		require.Equal(t, 200, w.Code, w.Body.String())
+		reconcile()
+		apply(confirmation(command, preview(command)), 200)
+		require.Nil(t, read().Maintenance, "an explicit manual save disables ongoing maintenance")
+		// Restore this nested fixture's initial authority/definitions, preserving
+		// the original plan IDs and history required by the following assertions.
+		_, err = db.ExecContext(ctx, `UPDATE settings SET value=$1 WHERE key='upstream_procurement_shared_observation'`, originalAuthority)
+		require.NoError(t, err)
+		for _, raw := range originalPlans {
+			_, err = db.ExecContext(ctx, `UPDATE scheduled_test_plans p SET model_id=x.model_id,cron_expression=x.cron_expression,enabled=x.enabled,max_results=x.max_results,auto_recover=x.auto_recover,next_run_at=x.next_run_at,updated_at=x.updated_at,pelican_config=x.pelican_config FROM json_populate_record(NULL::scheduled_test_plans,$1::json) x WHERE p.id=x.id`, raw)
+			require.NoError(t, err)
+		}
+		var extraPlan int64
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT id FROM scheduled_test_plans WHERE account_id=$1`, extra).Scan(&extraPlan))
+		require.NoError(t, native.Delete(ctx, extraPlan))
 	})
 	t.Run("pause orphan requirements, reuse their IDs, then explicitly release all to manual", func(t *testing.T) {
 		empty := service.ProcurementSharedMonitoringCommand{Version: 2, Products: []service.ProcurementMonitoringProductSelection{}}

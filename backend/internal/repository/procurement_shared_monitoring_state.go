@@ -29,10 +29,11 @@ type procurementObservationOwner struct {
 // One durable authority; neither native plan content nor old creation history
 // is evidence that an administrator opted a product into shared management.
 type procurementObservationState struct {
-	Version  int                                             `json:"version"`
-	Revision int64                                           `json:"revision"`
-	Products []service.ProcurementMonitoringProductSelection `json:"products"`
-	Plans    []procurementObservationOwner                   `json:"plans"`
+	Version     int                                             `json:"version"`
+	Revision    int64                                           `json:"revision"`
+	Products    []service.ProcurementMonitoringProductSelection `json:"products"`
+	Plans       []procurementObservationOwner                   `json:"plans"`
+	Maintenance *service.ProcurementSharedMonitoringMaintenance `json:"maintenance,omitempty"`
 }
 
 func loadProcurementObservationState(ctx context.Context, q sqlQueryer) (*procurementObservationState, error) {
@@ -46,8 +47,15 @@ func loadProcurementObservationState(ctx context.Context, q sqlQueryer) (*procur
 		return nil, err
 	}
 	root := gjson.Parse(raw)
-	if len(raw) > 1<<20 || !gjson.Valid(raw) || !procurementObservationJSONKeys(root, "version", "revision", "products", "plans") || root.Get("revision").Type != gjson.Number || !root.Get("products").IsArray() || !root.Get("plans").IsArray() {
+	if len(raw) > 1<<20 || !gjson.Valid(raw) || !(procurementObservationJSONKeys(root, "version", "revision", "products", "plans") || procurementObservationJSONKeys(root, "version", "revision", "products", "plans", "maintenance")) || root.Get("revision").Type != gjson.Number || !root.Get("products").IsArray() || !root.Get("plans").IsArray() {
 		return nil, service.ErrProcurementSharedMonitoringUnavailable
+	}
+	if m := root.Get("maintenance"); m.Exists() {
+		if !procurementObservationJSONKeys(m, "enabled", "state", "reason", "changed_at", "created", "updated", "paused") ||
+			m.Get("enabled").Type != gjson.True && m.Get("enabled").Type != gjson.False ||
+			m.Get("created").Type != gjson.Number || m.Get("updated").Type != gjson.Number || m.Get("paused").Type != gjson.Number {
+			return nil, service.ErrProcurementSharedMonitoringUnavailable
+		}
 	}
 	for _, p := range root.Get("products").Array() {
 		if !procurementObservationJSONKeys(p, "product_id", "preset_id") {
@@ -64,7 +72,10 @@ func loadProcurementObservationState(ctx context.Context, q sqlQueryer) (*procur
 	if decoder.Decode(out) != nil || out.Version != 1 || out.Revision < 0 || out.Revision > domain.MaxProcurementPolicyRevision || out.Plans == nil || len(out.Plans) > service.ProcurementProductImpactAccountLimit || (&service.ProcurementSharedMonitoringCommand{Version: 2, Products: out.Products}).Validate() != nil {
 		return nil, service.ErrProcurementSharedMonitoringUnavailable
 	}
-	if out.Revision == 0 && (len(out.Products) > 0 || len(out.Plans) > 0) {
+	if root.Get("maintenance").Exists() && (out.Maintenance == nil || !validProcurementMaintenance(out.Maintenance)) {
+		return nil, service.ErrProcurementSharedMonitoringUnavailable
+	}
+	if out.Revision == 0 && (len(out.Products) > 0 || len(out.Plans) > 0 || out.Maintenance != nil) {
 		return nil, service.ErrProcurementSharedMonitoringUnavailable
 	}
 	accounts, plans := map[int64]bool{}, map[int64]bool{}
@@ -182,7 +193,7 @@ func readProcurementSharedMonitoring(ctx context.Context, q sqlQueryer) (*servic
 	if err != nil {
 		return nil, err
 	}
-	out := &service.ProcurementSharedMonitoringState{Version: 1, Revision: saved.Revision, Products: saved.Products, Plans: []service.ProcurementSharedMonitoringSavedPlan{}}
+	out := &service.ProcurementSharedMonitoringState{Version: 1, Revision: saved.Revision, Products: saved.Products, Plans: []service.ProcurementSharedMonitoringSavedPlan{}, Maintenance: saved.Maintenance}
 	if err := scanSingleRow(ctx, q, `SELECT clock_timestamp()`, nil, &out.ObservedAt); err != nil {
 		return nil, err
 	}

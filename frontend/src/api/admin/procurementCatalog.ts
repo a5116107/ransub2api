@@ -17,9 +17,14 @@ export interface ProcurementSharedMonitoringPreview {
     changes: Array<{ account_id: number; plan_id?: number; operation: string; reason: string }>
   }
 }
+export interface ProcurementSharedMonitoringMaintenance {
+  enabled: boolean; state: 'waiting' | 'current' | 'updated' | 'blocked' | 'manual'; reason: string; changed_at: string
+  created: number; updated: number; paused: number
+}
 export interface ProcurementSharedMonitoringState {
   version: number; revision: number; observed_at: string; products: ProcurementMonitoringSelection[]
   plans: Array<{ account_id: number; plan_id: number; state: string; enabled: boolean }>
+  maintenance?: ProcurementSharedMonitoringMaintenance
 }
 export interface ProcurementSharedMonitoringApplyCommand {
   version: 2; products: ProcurementMonitoringSelection[]; release_ownership: boolean
@@ -189,4 +194,8 @@ export async function saveProcurementCatalog(catalog: ProcurementCatalog, signal
 }
 export async function previewProcurementScopes(command: ProcurementPreviewCommand, signal?: AbortSignal): Promise<ProcurementPreview> {
   return (await apiClient.post<ProcurementPreview>('/admin/upstream-procurement/preview', command, { signal })).data
+}
+
+export async function configureProcurementSharedMonitoringMaintenance(enabled: boolean, expected_revision: number): Promise<ProcurementSharedMonitoringState> {
+  return (await apiClient.put<ProcurementSharedMonitoringState>('/admin/upstream-procurement/monitoring', { version: 1, enabled, expected_revision, confirm: true })).data
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"time"
 
@@ -27,7 +28,7 @@ func (r *channelRepository) PreviewProcurementSharedMonitoring(ctx context.Conte
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	compiled, err := compileProcurementSharedMonitoring(ctx, tx, command, time.Time{})
+	compiled, err := compileProcurementSharedMonitoring(ctx, tx, command, time.Time{}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -35,13 +36,16 @@ func (r *channelRepository) PreviewProcurementSharedMonitoring(ctx context.Conte
 }
 
 type procurementSharedMonitoringCompilation struct {
-	preview      *service.ProcurementSharedMonitoringPreview
-	saved        *procurementObservationState
-	plans        map[int64]*service.ScheduledTestPlan
-	sourceGroups []int64
+	preview       *service.ProcurementSharedMonitoringPreview
+	saved         *procurementObservationState
+	plans         map[int64]*service.ScheduledTestPlan
+	sourceGroups  []int64
+	productGroups []int64
+	presets       []int64
+	requireBudget bool
 }
 
-func compileProcurementSharedMonitoring(ctx context.Context, tx *sql.Tx, command *service.ProcurementSharedMonitoringCommand, observed time.Time) (*procurementSharedMonitoringCompilation, error) {
+func compileProcurementSharedMonitoring(ctx context.Context, tx *sql.Tx, command *service.ProcurementSharedMonitoringCommand, observed time.Time, maintenance bool) (*procurementSharedMonitoringCompilation, error) {
 	out := &service.ProcurementSharedMonitoringPreview{Version: command.Version, Scope: "approved_sources_only", State: "compatible",
 		Products: []service.ProcurementSharedMonitoringProduct{}, Accounts: []service.ProcurementSharedMonitoringAccount{}}
 	saved := &procurementObservationState{Version: 1, Products: []service.ProcurementMonitoringProductSelection{}, Plans: []procurementObservationOwner{}}
@@ -75,10 +79,27 @@ func compileProcurementSharedMonitoring(ctx context.Context, tx *sql.Tx, command
 	requirements := map[int64][]*service.QualityRulePreset{}
 	accounts := map[int64]*service.ProcurementSharedMonitoringAccount{}
 	for _, selection := range products {
+		compiled.productGroups = append(compiled.productGroups, selection.ProductID)
+		if maintenance {
+			var status, name string
+			var deleted bool
+			if err := tx.QueryRowContext(ctx, `SELECT status,name,deleted_at IS NOT NULL FROM groups WHERE id=$1`, selection.ProductID).Scan(&status, &name, &deleted); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, service.ErrGroupNotFound
+				}
+				return nil, err
+			}
+			if deleted || status != service.StatusActive {
+				fences = append(fences, []any{selection.ProductID, status, deleted})
+				out.Products = append(out.Products, service.ProcurementSharedMonitoringProduct{ProductID: selection.ProductID, Name: name, PresetID: selection.PresetID, State: "product_inactive"})
+				continue
+			}
+		}
 		group, _, review, err := loadProcurementProductReview(ctx, tx, selection.ProductID)
 		if err != nil {
 			return nil, err
 		}
+		compiled.presets = append(compiled.presets, selection.PresetID)
 		preset, err := scanQualityRulePreset(tx.QueryRowContext(ctx, `SELECT `+qualityRulePresetColumns+` FROM quality_rule_presets WHERE id=$1`, selection.PresetID))
 		if err == sql.ErrNoRows {
 			return nil, service.ErrProcurementMonitoringRecipeNotFound
@@ -121,7 +142,7 @@ func compileProcurementSharedMonitoring(ctx context.Context, tx *sql.Tx, command
 		if group.Status != service.StatusActive {
 			entry.State = "product_inactive"
 		}
-		if entry.State != "approved_sources" {
+		if entry.State != "approved_sources" && !(maintenance && entry.State == "no_approved_accounts") {
 			out.State = "incomplete"
 		}
 		out.Products = append(out.Products, entry)
@@ -277,7 +298,8 @@ func compileProcurementSharedMonitoring(ctx context.Context, tx *sql.Tx, command
 		review := &service.ProcurementSharedMonitoringReview{Revision: saved.Revision, ObservedAt: observed, ExpiresAt: observed.Add(2 * time.Minute), ReleaseOwnership: command.ReleaseOwnership, Changes: changes}
 		// Pausing/releasing all requirements remains an available repair when
 		// budget protection is off or unrelated old demand is already excessive.
-		review.CanConfirm = out.State == "compatible" && out.Coverage != nil && (len(products) == 0 || out.Coverage.Enforced && out.Coverage.CanSave)
+		compiled.requireBudget = len(products) > 0 && !(maintenance && len(accounts) == 0)
+		review.CanConfirm = out.State == "compatible" && out.Coverage != nil && (!compiled.requireBudget || out.Coverage.Enforced && out.Coverage.CanSave)
 		definitions := make([]any, 0, len(native))
 		planIDs := make([]int64, 0, len(native))
 		for id := range native {

@@ -139,6 +139,10 @@ func (s *ScheduledTestRunnerService) runScheduled(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
 	defer cancel()
 
+	s.reconcileSharedMonitoring(ctx)
+	if ctx.Err() != nil {
+		return
+	}
 	now := time.Now()
 	s.finalizeQualityBatches(ctx)
 	if ctx.Err() != nil {
@@ -326,5 +330,17 @@ func (s *ScheduledTestRunnerService) tryRecoverAccount(ctx context.Context, acco
 	}
 	if recovery.ClearedRateLimit {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d auto-recover: account=%d cleared rate-limit/runtime state", planID, accountID)
+	}
+}
+
+// Maintenance precedes native plan discovery and shares this runner's lifecycle.
+// A failed maintenance pass leaves original plans and ordinary detection intact.
+func (s *ScheduledTestRunnerService) reconcileSharedMonitoring(parent context.Context) {
+	if maintainer, ok := s.planRepo.(ProcurementSharedMonitoringMaintainer); ok {
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		defer cancel()
+		if err := maintainer.ReconcileProcurementSharedMonitoring(ctx); err != nil && parent.Err() == nil {
+			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] shared observation maintenance incomplete; saved plans preserved")
+		}
 	}
 }

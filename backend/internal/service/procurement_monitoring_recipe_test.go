@@ -82,6 +82,20 @@ func TestProcurementSharedMonitoringPersistentCommands(t *testing.T) {
 	}
 }
 
+func TestProcurementSharedMonitoringMaintenanceCommand(t *testing.T) {
+	raw := `{"version":1,"expected_revision":3,"enabled":true,"confirm":true}`
+	for _, enabled := range []string{"true", "false"} {
+		c, err := ParseProcurementSharedMonitoringMaintenanceCommand([]byte(strings.Replace(raw, `"enabled":true`, `"enabled":`+enabled, 1)))
+		require.NoError(t, err)
+		require.EqualValues(t, 3, c.ExpectedRevision)
+		require.Equal(t, enabled == "true", c.Enabled)
+	}
+	for _, bad := range []string{"null", "{}", raw + `{}`, strings.Replace(raw, `"version":1`, `"version":1,"version":1`, 1), strings.Replace(raw, `"enabled":true`, `"enabled":null`, 1), strings.Replace(raw, `"enabled":true`, `"enabled":"true"`, 1), strings.Replace(raw, `"confirm":true`, `"confirm":false`, 1), strings.Replace(raw, `"expected_revision":3`, `"expected_revision":null`, 1), strings.Replace(raw, `"expected_revision":3`, `"expected_revision":-1`, 1), strings.Replace(raw, `"expected_revision":3`, `"expected_revision":1.5`, 1), strings.Replace(raw, `"expected_revision":3`, `"expected_revision":9007199254740991`, 1), strings.Replace(raw, `"version":1`, `"version":2`, 1), strings.Replace(raw, `"version":1`, `"version":1,"extra":false`, 1)} {
+		_, err := ParseProcurementSharedMonitoringMaintenanceCommand([]byte(bad))
+		require.ErrorIs(t, err, ErrProcurementSharedMonitoringCommand, bad)
+	}
+}
+
 func TestProcurementSharedMonitoringMergePreservesNativeRequirements(t *testing.T) {
 	at := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
 	a := sharedMonitoringPreset([]string{"b", "a"}, "*/10 * * * *")

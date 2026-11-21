@@ -1,5 +1,20 @@
 export default {
   sharedMonitoring: {
+    maintenance: {
+      enable: 'Enable continuous maintenance', disable: 'Disable continuous maintenance', saving: 'Saving and verifying mode…',
+      scope: 'Only saved products and their approved sources are maintained on the original minute tick. Unsaved edits do not apply. Saving the full list manually disables maintenance; disabling leaves existing tests running.',
+      consent: 'Allow ongoing creation, updates and pauses of owned observation plans within the existing budget, including detection costs and recalculation after source, preset or product changes.',
+      verified: 'Maintenance mode and the complete participation list were independently read back and verified.',
+      lastChange: 'Last outcome change {at} · Created {create} · Updated {update} · Paused {pause}. This is not the latest scan time.',
+      states: { waiting: 'Maintenance enabled; awaiting the original scheduler', current: 'Maintenance active; plans match current requirements', updated: 'Maintenance updated the original plans', blocked: 'Maintenance deferred; original plans preserved', manual: 'Maintenance disabled; existing tests continue' },
+      reasons: {
+        awaiting_tick: 'Sources, presets and budget will be checked on the original plan tick.', compatible: 'Shared requirements are compatible; this does not establish model authenticity or product eligibility.', manual: 'Preview and save future source or preset changes manually.',
+        sources_unavailable: 'Approved sources are unknown or unavailable; retry follows recovery.', invalid_preset: 'An observation preset is missing, disabled or invalid; repair the original preset.', inputs_changed: 'Inputs changed during review; the next tick will review again.', write_failed: 'The batch did not complete; plan changes were rolled back and will be retried.',
+        budget_disabled: 'Enable the existing shared budget protection first.', budget_exceeded: 'Changed known demand exceeds budget; plans were not changed.', too_many_accounts: 'Owned and newly required accounts exceed the 1,000-account batch limit.', product_missing: 'A saved product record is missing; review participation.',
+        managed_plan_missing: 'An owned plan is missing; review ownership.', managed_plan_changed: 'An owned plan was modified; preserve the manual change.', managed_plan_running: 'An original plan is running; retry follows completion.', existing_observation_plan: 'A newly approved account already has another observation plan; it will not be adopted.',
+        invalid_requirements: 'Shared requirements are invalid; review product presets.', observation_settings_conflict: 'Question, judging or reasoning settings conflict; align presets.', native_model_limit: 'Merged models or samples exceed native limits.', schedule_timezones_conflict: 'Detection timezones differ; align preset timezones.', invalid_merged_plan: 'The merged plan failed native validation.'
+      }
+    },
     title: 'Shared observation plans', intro: 'Load all saved product participation, edit and preview, then explicitly save the complete batch. Shared accounts combine models and observation times.',
     savedState: 'Saved revision {revision} · {products} products · {plans} managed plans', reload: 'Reload saved configuration',
     readFailed: 'Saved participation could not be read. Reload before editing so other products are retained.', ownershipConflict: 'A managed plan changed, is missing or is running. Check the native plans before previewing again.',
@@ -30,7 +45,7 @@ export default {
       counts: 'Current {current}/day · Lower-bound change {delta} · Proposed {total}/day · Regular capacity {capacity}/day',
       boundary: 'A native cron envelope can add execution times. Budget uses the final models and expression; retries, tokens, complete scopes and peak completion are not guaranteed.', configure: 'View shared monitoring budget'
     },
-    boundary: 'Preview is read-only. Explicit confirmation atomically saves shared participation and native plans; conflicts or budget excess roll back the batch. Existing manual, template and old paused rules are never claimed. Saving makes no upstream calls or product-membership changes; the original executor runs enabled plans. Continuous coordination remains inactive. Compatibility does not establish model identity, cache quality or automatic product eligibility.'
+    boundary: 'Preview is read-only. Explicit confirmation atomically saves shared participation and native plans; conflicts or budget excess roll back the batch. Existing manual, template and old paused rules are never claimed. Saving makes no upstream calls or product-membership changes; the original executor runs enabled plans. Continuous maintenance requires separate explicit opt-in. Compatibility does not establish model identity, cache quality or automatic product eligibility.'
   },
   productImpact: {
     recipe: {

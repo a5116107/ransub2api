@@ -1,5 +1,20 @@
 export default {
   sharedMonitoring: {
+    maintenance: {
+      enable: '开启持续维护', disable: '关闭持续维护', saving: '正在保存并核实开关…',
+      scope: '仅维护已保存产品及其批准来源。原调度器每分钟核对；未保存的编辑不生效。手动保存整份清单会关闭持续维护，关闭不会暂停已有检测。',
+      consent: '同意持续新增、更新和暂停批准来源的自有检测计划，并产生原预算内的检测费用；来源、预设或产品变化后自动重算。',
+      verified: '已独立读回并核实持续维护开关及参与清单。',
+      lastChange: '最近结论变化 {at} · 新增 {create} · 更新 {update} · 暂停 {pause}；此时间不是最近一次巡检时间。',
+      states: { waiting: '持续维护已开启，等待原调度器核对', current: '持续维护中，计划与当前需求一致', updated: '持续维护已更新原计划', blocked: '持续维护暂缓，原计划保留', manual: '持续维护已关闭，现有检测照常运行' },
+      reasons: {
+        awaiting_tick: '将在原计划扫描周期中重新核对来源、预设和预算。', compatible: '当前共享需求相容；这不代表模型验真或产品资格通过。', manual: '后续来源和预设变更须手动预演保存。',
+        sources_unavailable: '批准来源未知或不可用，恢复后自动重试。', invalid_preset: '观察预设已缺失、停用或无效，请修复原预设。', inputs_changed: '核对期间输入发生变化，下一周期重新核对。', write_failed: '整批写入未完成，已回滚计划变更，下一周期重试。',
+        budget_disabled: '原共享预算保护未开启，请先开启预算。', budget_exceeded: '变更后的已知需求超出预算，未修改计划。', too_many_accounts: '受管与新增账号并集超出1000个上限。', product_missing: '已保存产品记录缺失，请核对参与清单。',
+        managed_plan_missing: '受管原计划缺失，请核对归属。', managed_plan_changed: '受管原计划内容发生变化，保留人工修改。', managed_plan_running: '原计划正在运行，结束后自动重试。', existing_observation_plan: '新来源账号已有其他观察计划，不自动接管。',
+        invalid_requirements: '共享需求无效，请检查产品预设。', observation_settings_conflict: '题型、判题或推理配置不相容，请统一预设。', native_model_limit: '合并模型或样本超过原生上限。', schedule_timezones_conflict: '检测时区不同，请统一预设时区。', invalid_merged_plan: '合并结果未通过原生校验。'
+      }
+    },
     title: '多产品共享观察计划', intro: '先读取已保存的全部产品及预设，再编辑并预演。共用账号合并模型和检测时刻，确认后整批保存。',
     savedState: '已保存修订 {revision} · {products} 个参与产品 · {plans} 条受管计划', reload: '重新读取已保存配置',
     readFailed: '已保存参与清单读取失败；请重新读取后再编辑，避免遗漏其他产品。', ownershipConflict: '部分受管计划已变更、缺失或正在运行，请核对原计划后再预演。',
@@ -30,7 +45,7 @@ export default {
       counts: '当前 {current} / 日 · 下界变化 {delta} · 变更后 {total} / 日 · 常规容量 {capacity} / 日',
       boundary: '原生 Cron 的覆盖合并可能增加执行时刻，预算按最终模型和表达式测算；重试、Token、完整 scope 和峰值完成时间没有保证。', configure: '查看共享检测预算'
     },
-    boundary: '预演只读；明确确认才原子保存共享参与及原计划，超预算或冲突整批回滚。已有手工、模板及旧暂停观察计划不接管。保存不调用上游、不改变产品关联或人工停调；计划由原执行器按周期运行。连续自动协调尚未启用；相容不等于模型真实、缓存合格或自动产品资格。'
+    boundary: '预演只读；明确确认才原子保存共享参与及原计划，超预算或冲突整批回滚。已有手工、模板及旧暂停观察计划不接管。保存不调用上游、不改变产品关联或人工停调；计划由原执行器按周期运行。持续维护须单独明确开启；相容不等于模型真实、缓存合格或自动产品资格。'
   },
   productImpact: {
     recipe: {

@@ -177,15 +177,26 @@ func (h *ChannelHandler) ProcurementSharedMonitoring(c *gin.Context) {
 			response.ErrorFrom(c, service.ErrProcurementSharedMonitoringCommand)
 			return
 		}
-		var command *service.ProcurementSharedMonitoringApplyCommand
-		command, err = service.ParseProcurementSharedMonitoringApplyCommand(raw)
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
+		if c.Request.Method == http.MethodPut {
+			command, parseErr := service.ParseProcurementSharedMonitoringMaintenanceCommand(raw)
+			if parseErr != nil {
+				response.ErrorFrom(c, parseErr)
+				return
+			}
+			middleware.SetAuditAction(c, "admin.upstream_procurement.shared_observation.maintenance")
+			middleware.SetAuditExtra(c, map[string]any{"enabled": command.Enabled, "revision": command.ExpectedRevision})
+			out, err = repo.ConfigureProcurementSharedMonitoringMaintenance(ctx, command)
+		} else {
+			var command *service.ProcurementSharedMonitoringApplyCommand
+			command, err = service.ParseProcurementSharedMonitoringApplyCommand(raw)
+			if err != nil {
+				response.ErrorFrom(c, err)
+				return
+			}
+			middleware.SetAuditAction(c, "admin.upstream_procurement.shared_observation")
+			middleware.SetAuditExtra(c, map[string]any{"products": len(command.Products), "revision": command.Revision, "release_ownership": command.ReleaseOwnership})
+			out, err = repo.ApplyProcurementSharedMonitoring(ctx, command)
 		}
-		middleware.SetAuditAction(c, "admin.upstream_procurement.shared_observation")
-		middleware.SetAuditExtra(c, map[string]any{"products": len(command.Products), "revision": command.Revision, "release_ownership": command.ReleaseOwnership})
-		out, err = repo.ApplyProcurementSharedMonitoring(ctx, command)
 	}
 	if err != nil {
 		switch {

@@ -6,6 +6,17 @@
       <p v-if="savedState" data-testid="shared-saved-state">{{ t(`${p}.savedState`, { revision: savedState.revision, products: savedState.products.length, plans: savedState.plans.length }) }}</p>
       <button type="button" class="btn btn-secondary" :disabled="busy || disabled" data-testid="shared-reload" @click="readSaved">{{ t(`${p}.reload`) }}</button>
     </div>
+    <section v-if="savedState && savedState.revision > 0" class="space-y-2 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-800" data-testid="shared-maintenance" :data-state="savedState.maintenance?.state ?? 'manual'">
+      <p class="font-medium" role="status">{{ t(`${p}.maintenance.states.${savedState.maintenance?.state ?? 'manual'}`) }}</p>
+      <template v-if="savedState.maintenance">
+        <p data-testid="shared-maintenance-reason">{{ t(`${p}.maintenance.reasons.${savedState.maintenance.reason}`) }}</p>
+        <p class="break-words tabular-nums">{{ t(`${p}.maintenance.lastChange`, { at: savedState.maintenance.changed_at, create: savedState.maintenance.created, update: savedState.maintenance.updated, pause: savedState.maintenance.paused }) }}</p>
+      </template>
+      <p>{{ t(`${p}.maintenance.scope`) }}</p>
+      <label v-if="!savedState.maintenance?.enabled && savedState.products.length" class="flex items-start gap-2"><input v-model="maintenanceConsent" type="checkbox" :disabled="busy || disabled || !loaded" data-testid="shared-maintenance-consent" class="mt-1" />{{ t(`${p}.maintenance.consent`) }}</label>
+      <button v-if="savedState.products.length || savedState.maintenance?.enabled" type="button" class="btn btn-secondary" :disabled="busy || disabled || !loaded || !savedState.maintenance?.enabled && !maintenanceConsent" data-testid="shared-maintenance-toggle" @click="configureMaintenance">{{ t(`${p}.maintenance.${maintenanceSaving ? 'saving' : savedState.maintenance?.enabled ? 'disable' : 'enable'}`) }}</button>
+      <p v-if="maintenanceVerified" role="status" data-testid="shared-maintenance-verified">{{ t(`${p}.maintenance.verified`) }}</p>
+    </section>
     <p v-if="savedState?.plans.some(plan => !['managed', 'paused'].includes(plan.state))" role="alert" class="text-sm text-amber-800 dark:text-amber-300">{{ t(`${p}.ownershipConflict`) }}</p>
     <p v-if="success" role="status" data-testid="shared-success" class="text-sm text-emerald-700 dark:text-emerald-300">{{ t(`${p}.saved`) }}</p>
     <form class="min-w-0 space-y-3" @submit.prevent="preview">
@@ -89,7 +100,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import type { QualityRulePreset } from '@/api/admin/accountQuality'
-import { applyProcurementSharedMonitoring, readProcurementSharedMonitoring, previewProcurementSharedMonitoring, type ProcurementMonitoringSelection, type ProcurementSharedMonitoringPreview, type ProcurementSharedMonitoringState } from '@/api/admin/procurementCatalog'
+import { configureProcurementSharedMonitoringMaintenance, applyProcurementSharedMonitoring, readProcurementSharedMonitoring, previewProcurementSharedMonitoring, type ProcurementMonitoringSelection, type ProcurementSharedMonitoringPreview, type ProcurementSharedMonitoringState } from '@/api/admin/procurementCatalog'
 import { validProcurementSharedMonitoringPreview, validProcurementSharedMonitoringState } from '@/utils/procurementProductImpact'
 
 const props = defineProps<{ products: Array<{ id: number; name: string }>; presets: QualityRulePreset[]; loading: boolean; loadError: boolean; disabled: boolean; initialProductId?: number | null; initialPresetId?: number | null }>()
@@ -109,7 +120,8 @@ const productOptions = computed(() => props.products.map(p => ({ value: p.id, la
 const duplicate = computed(() => { const ids = rows.value.flatMap(r => r.product_id ? [r.product_id] : []); return new Set(ids).size !== ids.length })
 const selections = computed<ProcurementMonitoringSelection[] | null>(() => duplicate.value || rows.value.some(r => !r.product_id || !r.preset_id) ? null : rows.value.map(r => ({ product_id: r.product_id!, preset_id: r.preset_id! })))
 const previewBusy = ref(false), reading = ref(false), saving = ref(false), loaded = ref(false), success = ref(false)
-const busy = computed(() => previewBusy.value || reading.value || saving.value)
+const maintenanceSaving = ref(false), maintenanceConsent = ref(false), maintenanceVerified = ref(false)
+const busy = computed(() => previewBusy.value || reading.value || saving.value || maintenanceSaving.value)
 const savedState = ref<ProcurementSharedMonitoringState | null>(null), releaseOwnership = ref(false), consent = ref(false)
 const error = ref(''), result = ref<ProcurementSharedMonitoringPreview | null>(null), page = ref(1)
 const clock = ref(performance.now()), started = ref(0)
@@ -131,7 +143,7 @@ const changeCounts = computed(() => {
   const changes = result.value?.application_review?.changes ?? []
   return { create: changes.filter(c => c.operation === 'create').length, update: changes.filter(c => c.operation === 'update').length, pause: changes.filter(c => ['pause', 'release'].includes(c.operation)).length, retain: changes.filter(c => ['retain', 'retain_paused'].includes(c.operation)).length, conflict: changes.filter(c => c.operation === 'conflict').length }
 })
-function invalidate() { generation++; controller?.abort(); previewBusy.value = false; consent.value = false; error.value = ''; success.value = false; result.value = null; page.value = 1 }
+function invalidate() { maintenanceConsent.value = false; maintenanceVerified.value = false; generation++; controller?.abort(); previewBusy.value = false; consent.value = false; error.value = ''; success.value = false; result.value = null; page.value = 1 }
 watch(rows, invalidate, { deep: true, flush: 'sync' })
 watch(releaseOwnership, invalidate, { flush: 'sync' })
 watch(() => rows.value.length, n => { if (n > 0) releaseOwnership.value = false }, { flush: 'sync' })
@@ -190,6 +202,23 @@ async function save() {
   } catch (e) {
     if (alive) { loaded.value = false; result.value = null; error.value = written ? 'savedReadFailed' : (e as { status?: number })?.status === 409 ? 'conflict' : (e as { status?: number })?.status === 403 ? 'forbidden' : 'saveUnknown' }
   } finally { if (alive) saving.value = false }
+}
+async function configureMaintenance() {
+  const saved = savedState.value
+  if (!saved || !loaded.value || busy.value || props.disabled || !saved.maintenance?.enabled && !maintenanceConsent.value) return
+  const enabled = !saved.maintenance?.enabled
+  invalidate(); maintenanceSaving.value = true
+  let written = false
+  try {
+    const receipt = await configureProcurementSharedMonitoringMaintenance(enabled, saved.revision)
+    written = true
+    if (!validProcurementSharedMonitoringState(receipt) || receipt.revision !== saved.revision + 1 || receipt.maintenance?.enabled !== enabled || JSON.stringify(receipt.products) !== JSON.stringify(saved.products)) throw new Error('invalid maintenance receipt')
+    const next = await readProcurementSharedMonitoring()
+    if (!validProcurementSharedMonitoringState(next) || next.revision < receipt.revision || next.maintenance?.enabled !== enabled || JSON.stringify(next.products) !== JSON.stringify(receipt.products)) throw new Error('maintenance not verified')
+    if (alive) { savedState.value = next; maintenanceVerified.value = true }
+  } catch (e) {
+    if (alive) { loaded.value = false; error.value = written ? 'savedReadFailed' : (e as { status?: number })?.status === 409 ? 'conflict' : (e as { status?: number })?.status === 403 ? 'forbidden' : 'saveUnknown' }
+  } finally { if (alive) maintenanceSaving.value = false }
 }
 onBeforeUnmount(() => { alive = false; generation++; readGeneration++; controller?.abort(); readController?.abort(); clearInterval(timer) })
 </script>

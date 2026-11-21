@@ -129,11 +129,47 @@ type ProcurementSharedMonitoringSavedPlan struct {
 }
 
 type ProcurementSharedMonitoringState struct {
-	Version    int                                     `json:"version"`
-	Revision   int64                                   `json:"revision"`
-	ObservedAt time.Time                               `json:"observed_at"`
-	Products   []ProcurementMonitoringProductSelection `json:"products"`
-	Plans      []ProcurementSharedMonitoringSavedPlan  `json:"plans"`
+	Version     int                                     `json:"version"`
+	Revision    int64                                   `json:"revision"`
+	ObservedAt  time.Time                               `json:"observed_at"`
+	Products    []ProcurementMonitoringProductSelection `json:"products"`
+	Plans       []ProcurementSharedMonitoringSavedPlan  `json:"plans"`
+	Maintenance *ProcurementSharedMonitoringMaintenance `json:"maintenance,omitempty"`
+}
+
+// ChangedAt is the time of the last distinct outcome, not a heartbeat or
+// proof of provider health. An unchanged reconciliation performs no writes.
+type ProcurementSharedMonitoringMaintenance struct {
+	Enabled   bool      `json:"enabled"`
+	State     string    `json:"state"`
+	Reason    string    `json:"reason"`
+	ChangedAt time.Time `json:"changed_at"`
+	Created   int       `json:"created"`
+	Updated   int       `json:"updated"`
+	Paused    int       `json:"paused"`
+}
+
+type ProcurementSharedMonitoringMaintenanceCommand struct {
+	Version          int   `json:"version"`
+	ExpectedRevision int64 `json:"expected_revision"`
+	Enabled          bool  `json:"enabled"`
+	Confirm          bool  `json:"confirm"`
+}
+
+func ParseProcurementSharedMonitoringMaintenanceCommand(raw []byte) (*ProcurementSharedMonitoringMaintenanceCommand, error) {
+	root := gjson.ParseBytes(raw)
+	var out ProcurementSharedMonitoringMaintenanceCommand
+	if !gjson.ValidBytes(raw) || !procurementCatalogObject(root, "version", "expected_revision", "enabled", "confirm") ||
+		root.Get("enabled").Type != gjson.True && root.Get("enabled").Type != gjson.False ||
+		root.Get("expected_revision").Type != gjson.Number || json.Unmarshal(raw, &out) != nil ||
+		out.Version != 1 || !out.Confirm || out.ExpectedRevision < 0 || out.ExpectedRevision >= domain.MaxProcurementPolicyRevision {
+		return nil, ErrProcurementSharedMonitoringCommand
+	}
+	return &out, nil
+}
+
+type ProcurementSharedMonitoringMaintainer interface {
+	ReconcileProcurementSharedMonitoring(context.Context) error
 }
 
 type ProcurementSharedMonitoringApplyCommand struct {
@@ -180,6 +216,7 @@ type ProcurementSharedMonitoringRepository interface {
 	PreviewProcurementSharedMonitoring(context.Context, *ProcurementSharedMonitoringCommand) (*ProcurementSharedMonitoringPreview, error)
 	ReadProcurementSharedMonitoring(context.Context) (*ProcurementSharedMonitoringState, error)
 	ApplyProcurementSharedMonitoring(context.Context, *ProcurementSharedMonitoringApplyCommand) (*ProcurementSharedMonitoringState, error)
+	ConfigureProcurementSharedMonitoringMaintenance(context.Context, *ProcurementSharedMonitoringMaintenanceCommand) (*ProcurementSharedMonitoringState, error)
 }
 
 func (s *ChannelService) ProcurementSharedMonitoringRepository() (ProcurementSharedMonitoringRepository, error) {

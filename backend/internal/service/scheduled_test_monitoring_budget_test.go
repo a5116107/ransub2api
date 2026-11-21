@@ -47,6 +47,52 @@ type scheduledLifecycleResults struct {
 	create func(context.Context, *ScheduledTestResult) (*ScheduledTestResult, error)
 }
 
+type scheduledMaintenancePlans struct {
+	*scheduledLifecyclePlans
+	reconcile func(context.Context) error
+}
+
+func (r *scheduledMaintenancePlans) ReconcileProcurementSharedMonitoring(ctx context.Context) error {
+	return r.reconcile(ctx)
+}
+
+func TestScheduledRunnerSharedMaintenanceBeforeInventory(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		order := []string{}
+		plans := &scheduledMaintenancePlans{scheduledLifecyclePlans: &scheduledLifecyclePlans{list: func(context.Context) ([]*ScheduledTestPlan, error) {
+			order = append(order, "inventory")
+			return nil, nil
+		}}, reconcile: func(context.Context) error { order = append(order, "maintenance"); return nil }}
+		runner := NewScheduledTestRunnerService(plans, NewScheduledTestService(plans, &scheduledLifecycleResults{}), &AccountTestService{}, nil, nil)
+		done := make(chan struct{})
+		go func() { defer close(done); runner.runScheduled(t.Context()) }()
+		time.Sleep(11 * time.Second)
+		<-done
+		require.Equal(t, []string{"maintenance", "inventory"}, order)
+	})
+}
+
+func TestScheduledRunnerSharedMaintenanceBoundedAndCanceled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var reached context.Context
+		plans := &scheduledMaintenancePlans{reconcile: func(ctx context.Context) error {
+			reached = ctx
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+		runner := &ScheduledTestRunnerService{planRepo: plans}
+		done := make(chan struct{})
+		go func() { defer close(done); runner.reconcileSharedMonitoring(t.Context()) }()
+		time.Sleep(16 * time.Second)
+		<-done
+		require.ErrorIs(t, reached.Err(), context.DeadlineExceeded)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		runner.reconcileSharedMonitoring(ctx)
+		require.ErrorIs(t, reached.Err(), context.Canceled)
+	})
+}
+
 func (r *scheduledLifecycleResults) Create(ctx context.Context, result *ScheduledTestResult) (*ScheduledTestResult, error) {
 	return r.create(ctx, result)
 }
