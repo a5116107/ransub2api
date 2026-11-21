@@ -146,9 +146,31 @@ export function observationRecipePreset(preset: QualityRulePreset): boolean {
 function validMonitoringRecipe(value: ProcurementProductImpact, presetID?: number): boolean {
   const r = value.monitoring_recipe, source = value.management_review?.source_inventory
   if (presetID == null) return r == null
-  if (!r || r.version !== 1 || r.preset_id !== presetID || typeof r.preset_name !== 'string' ||
+  if (!r || ![1, 2].includes(r.version) || r.preset_id !== presetID || typeof r.preset_name !== 'string' ||
     !Number.isFinite(Date.parse(r.preset_updated_at)) || !count(r.source_policy_revision) || !source ||
     r.source_policy_revision !== source.policy_revision) return false
+  if (r.version === 1) {
+    if (r.distribution_review != null) return false
+  } else {
+    const d = r.distribution_review
+    if (!d || !['ready', 'conflict', 'unknown'].includes(d.state) || !count(d.examined_accounts) || d.examined_accounts > 1000 ||
+      !Array.isArray(d.conflicts) || d.conflicts.length > d.examined_accounts) return false
+    if (d.state === 'unknown') {
+      if (d.examined_accounts !== 0 || d.conflicts.length !== 0) return false
+    } else {
+      if (source.state !== 'approved_sources' || !count(r.accounts) || !r.accounts || d.examined_accounts !== r.accounts ||
+        (d.state === 'conflict') !== (d.conflicts.length > 0)) return false
+      const plans = new Set<number>()
+      let previousAccount = 0
+      for (const row of d.conflicts) {
+        if (!row || !count(row.account_id) || row.account_id <= previousAccount || !count(row.plan_id) || !row.plan_id ||
+          plans.has(row.plan_id) || typeof row.enabled !== 'boolean' ||
+          !source.accounts.some(a => a.account_id === row.account_id && a.in_approved_sources === true)) return false
+        previousAccount = row.account_id
+        plans.add(row.plan_id)
+      }
+    }
+  }
   if (source.state !== 'approved_sources') return r.state === 'sources_unavailable' && r.accounts === null && r.demand == null
   if (r.accounts !== source.approved_accounts || !count(r.accounts)) return false
   if (r.accounts === 0) return r.state === 'no_approved_accounts' && r.demand == null

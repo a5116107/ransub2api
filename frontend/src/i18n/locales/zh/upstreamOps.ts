@@ -1,6 +1,18 @@
 export default {
   productImpact: {
     recipe: {
+      distribution: {
+        title: '原观察计划冲突检查',
+        states: {
+          ready: '已核对 {checked} 个批准账号，未发现原观察计划冲突；不代表已获准下发。',
+          conflict: '{count} 个批准账号已有观察计划，新增会冲突；预算可容纳也不代表可新增。',
+          unknown: '原计划唯一性尚未核对，不作为可下发依据。',
+          legacy: '旧版响应未核对原计划唯一性，不作为可下发依据。'
+        },
+        conflict: '{account} · 账号 #{id} · 原计划 #{plan}', enabled: '已启用', paused: '已暂停，仍占用观察规则位置',
+        boundary: '只检查当前快照的原观察规则位置。暂停旧规则不释放位置；不覆盖、复用、接管或跳过原规则，预算仍按完整新增测算。',
+        manage: '查看账号质量规则', pages: '观察计划冲突分页'
+      },
       label: '模拟新增检测（可选）', none: '仅检查已保存规则', title: '检测需求预演', refresh: '刷新预设',
       help: '选择观察型答题预设，为每个批准来源账号模拟新增一条计划；保留原规则，不自动复用或下发。',
       loading: '正在读取预设…', loadFailed: '预设读取失败，原规则检查仍可使用。', empty: '还没有已启用的原生观察型答题预设。', configure: '管理质量预设',

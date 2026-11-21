@@ -102,10 +102,104 @@ const recipeFixture = (): ProcurementProductImpact => {
   return next
 }
 
+const reviewedRecipeFixture = (): ProcurementProductImpact => {
+  const next = recipeFixture()
+  next.monitoring_recipe!.version = 2
+  next.monitoring_recipe!.distribution_review = { state: 'ready', examined_accounts: 2, conflicts: [] }
+  return next
+}
+
 describe('read-only product monitoring recipe', () => {
   async function selectRecipe(w: ReturnType<typeof mount>) {
     await w.get('#impact-preset').trigger('focus'); await flushPromises(); await w.get('#impact-preset').setValue('7')
   }
+  it.each([true, false])('separates an enabled=%s observation-plan conflict from sufficient budget', async enabled => {
+    const next = reviewedRecipeFixture()
+    next.monitoring_recipe!.demand!.coverage.unestimated_demand_sources = []
+    next.monitoring_recipe!.distribution_review = { state: 'conflict', examined_accounts: 2, conflicts: [{ account_id: 9, plan_id: 18, enabled }] }
+    vi.mocked(listQualityPresets).mockResolvedValue([presetFixture()]); vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await selectRecipe(w); await preview(w)
+    expect(w.get('[data-testid="recipe-conclusion"]').text()).toContain(p + 'recipe.states.lower_bound_fits')
+    expect(w.get('[data-testid="recipe-distribution-conclusion"]').text()).toContain(p + 'recipe.distribution.states.conflict')
+    expect(w.get('[data-testid="recipe-distribution-conflict"]').text()).toContain('Supplier 9')
+    expect(w.get('[data-testid="recipe-distribution-conflict"]').text()).toContain(`"plan":18`)
+    expect(w.get('[data-testid="recipe-distribution-conflict"]').text()).toContain(p + `recipe.distribution.${enabled ? 'enabled' : 'paused'}`)
+    expect(w.get('[data-testid="recipe-distribution"]').find('a').attributes('href')).toBe('/admin/account-quality')
+    expect(saveProcurementManagement).not.toHaveBeenCalled()
+  })
+  it.each(['ready', 'unknown', 'legacy'])('reports %s uniqueness without claiming automatic distribution', async state => {
+    const next = state === 'legacy' ? recipeFixture() : reviewedRecipeFixture()
+    if (state === 'unknown') next.monitoring_recipe!.distribution_review = { state: 'unknown', examined_accounts: 0, conflicts: [] }
+    vi.mocked(listQualityPresets).mockResolvedValue([presetFixture()]); vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await selectRecipe(w); await preview(w)
+    expect(w.get('[data-testid="recipe-distribution-conclusion"]').text()).toContain(p + `recipe.distribution.states.${state}`)
+    expect(w.findAll('[data-testid="recipe-distribution-conflict"]')).toHaveLength(0)
+  })
+  it('rejects incomplete, mismatched or contradictory uniqueness snapshots and recovers without losing the recipe', async () => {
+    expect(validProcurementProductImpact(reviewedRecipeFixture(), 2, 7)).toBe(true)
+    for (const mutate of [
+      (v: ProcurementProductImpact) => { delete v.monitoring_recipe!.distribution_review },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.version = 1 },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.distribution_review!.examined_accounts = 1 },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.distribution_review!.state = 'conflict' },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.distribution_review!.conflicts.push({ account_id: 9, plan_id: 18, enabled: true }) },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.distribution_review = { state: 'unknown', examined_accounts: 2, conflicts: [] } },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.distribution_review = { state: 'conflict', examined_accounts: 2, conflicts: [{ account_id: 20, plan_id: 18, enabled: true }] } },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.distribution_review = { state: 'conflict', examined_accounts: 2, conflicts: [{ account_id: 9, plan_id: 0, enabled: false }] } },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.distribution_review = { state: 'conflict', examined_accounts: 2, conflicts: [{ account_id: 9, plan_id: 18, enabled: true }, { account_id: 9, plan_id: 19, enabled: false }] } }
+    ]) {
+      const next = reviewedRecipeFixture(); mutate(next)
+      expect(validProcurementProductImpact(next, 2, 7)).toBe(false)
+    }
+    const bad = reviewedRecipeFixture(); delete bad.monitoring_recipe!.distribution_review
+    vi.mocked(listQualityPresets).mockResolvedValue([presetFixture()]); vi.mocked(previewProcurementProductImpact).mockResolvedValueOnce(bad).mockResolvedValue(reviewedRecipeFixture())
+    const w = view(); await choose(w); await selectRecipe(w); await preview(w)
+    expect(w.get('[data-testid="product-impact-error"]').text()).toContain(p + 'failed')
+    expect((w.get('#impact-preset').element as HTMLSelectElement).value).toBe('7')
+    await preview(w)
+    expect(w.get('[data-testid="recipe-distribution-conclusion"]').text()).toContain(p + 'recipe.distribution.states.ready')
+  })
+  it('keeps empty or unknown approved inventory unreviewed instead of inventing ready', async () => {
+    for (const state of ['no_approved_accounts', 'sources_unavailable']) {
+      const next = reviewedRecipeFixture(), source = next.management_review!.source_inventory!
+      next.monitoring_recipe!.state = state
+      delete next.monitoring_recipe!.demand
+      next.monitoring_recipe!.distribution_review = { state: 'unknown', examined_accounts: 0, conflicts: [] }
+      source.accounts = source.accounts.filter(a => a.in_product)
+      if (state === 'no_approved_accounts') {
+        source.accounts.forEach(a => { a.in_approved_sources = false })
+        source.approved_accounts = 0; source.unbound_approved_accounts = 0
+        next.monitoring_recipe!.accounts = 0
+      } else {
+        source.state = 'unavailable'; source.groups[0].state = 'inactive'
+        source.accounts.forEach(a => { a.in_approved_sources = null })
+        source.approved_accounts = null; source.unbound_approved_accounts = null
+        next.management_review!.scope = 'current_bindings_and_saved_rule_targets'
+        next.monitoring_recipe!.accounts = null
+      }
+      expect(validProcurementProductImpact(next, 2, 7)).toBe(true)
+      next.monitoring_recipe!.distribution_review = { state: 'ready', examined_accounts: 0, conflicts: [] }
+      expect(validProcurementProductImpact(next, 2, 7)).toBe(false)
+    }
+  })
+  it('paginates many plan conflicts and resets the page on a new snapshot', async () => {
+    const next = reviewedRecipeFixture(), source = next.management_review!.source_inventory!
+    for (let id = 100; id < 121; id++) source.accounts.push({ account_id: id, name: 'Approved ' + id, platform: 'openai', status: 'active', schedulable: false, in_product: false, in_approved_sources: true })
+    source.approved_accounts = 23; source.unbound_approved_accounts = 22
+    const recipe = next.monitoring_recipe!
+    recipe.accounts = 23; recipe.demand!.additional_plans = 23
+    recipe.distribution_review = { state: 'conflict', examined_accounts: 23, conflicts: source.accounts.filter(a => a.account_id >= 100).map(a => ({ account_id: a.account_id, plan_id: a.account_id + 100, enabled: false })) }
+    vi.mocked(listQualityPresets).mockResolvedValue([presetFixture()]); vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    const w = view(); await choose(w); await selectRecipe(w); await preview(w)
+    expect(w.findAll('[data-testid="recipe-distribution-conflict"]')).toHaveLength(20)
+    const navigation = w.get('[data-testid="recipe-distribution"] nav')
+    expect(navigation.text()).toContain('1 / 2')
+    await navigation.findAll('button')[1].trigger('click')
+    expect(w.findAll('[data-testid="recipe-distribution-conflict"]')).toHaveLength(1)
+    expect(w.get('[data-testid="recipe-distribution-conflict"]').text()).toContain('Approved 120')
+    await preview(w)
+    expect(w.get('[data-testid="recipe-distribution"] nav').text()).toContain('1 / 2')
+  })
   it('loads presets lazily, excludes action/state/BPS/disabled rules, and never writes or displays private questions', async () => {
     const valid = presetFixture(), action = structuredClone(valid), probe = structuredClone(valid), bps = structuredClone(valid)
     action.id = 8; action.pelican_config.quality!.action = 'disable_scheduling'
@@ -175,6 +269,8 @@ describe('read-only product monitoring recipe', () => {
   it.each([zh, en])('provides translated recipe inputs, unknown states and capacity boundaries', locale => {
     for (const key of ['label', 'none', 'title', 'help', 'loading', 'loadFailed', 'empty', 'configure', 'invalid', 'boundary', 'plans', 'current', 'delta', 'proposed', 'capacity', 'identity', 'window', 'unestimated']) expect(locale.productImpact.recipe[key as keyof typeof locale.productImpact.recipe]).toBeTypeOf('string')
     for (const value of Object.values(locale.productImpact.recipe.states)) expect(value).toBeTypeOf('string')
+    for (const value of Object.values(locale.productImpact.recipe.distribution.states)) expect(value).toBeTypeOf('string')
+    for (const key of ['title', 'conflict', 'enabled', 'paused', 'boundary', 'manage', 'pages'] as const) expect(locale.productImpact.recipe.distribution[key]).toBeTypeOf('string')
   })
 })
 

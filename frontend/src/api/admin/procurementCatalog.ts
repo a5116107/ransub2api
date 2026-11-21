@@ -103,6 +103,10 @@ export interface ProcurementWriterReview {
 export interface ProcurementMonitoringRecipe {
   version: number; preset_id: number; preset_name: string; preset_updated_at: string; source_policy_revision: number
   state: string; accounts: number | null
+  distribution_review?: {
+    state: 'ready' | 'conflict' | 'unknown'; examined_accounts: number
+    conflicts: Array<{ account_id: number; plan_id: number; enabled: boolean }>
+  }
   demand?: {
     additional_plans: number; current_minimum_requests_per_day: number; delta_minimum_requests_per_day: number
     coverage: MonitoringProbeCoverage

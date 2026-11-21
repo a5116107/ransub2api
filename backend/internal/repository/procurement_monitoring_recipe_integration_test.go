@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -100,6 +101,10 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	out := read()
 	r := out.MonitoringRecipe
 	require.NotNil(t, r)
+	require.Equal(t, 2, r.Version)
+	require.Equal(t, "ready", r.DistributionReview.State)
+	require.Equal(t, 2, r.DistributionReview.ExaminedAccounts)
+	require.Empty(t, r.DistributionReview.Conflicts)
 	require.Equal(t, "previewed", r.State)
 	require.Equal(t, 2, *r.Accounts, "unbound and scheduling-paused approved supply are still detection inventory")
 	require.Equal(t, 2, r.Demand.AdditionalPlans)
@@ -109,6 +114,70 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	require.True(t, r.Demand.Coverage.CanSave)
 	require.EqualValues(t, 1, r.SourcePolicyRevision)
 	require.False(t, r.PresetUpdatedAt.IsZero())
+	t.Run("budget capacity does not override the original observation-plan uniqueness", func(t *testing.T) {
+		for _, test := range []struct {
+			enabled bool
+			channel string
+		}{{true, "account"}, {false, "account"}, {true, "bps"}, {false, "bps"}} {
+			var planID int64
+			oldConfig := fmt.Sprintf(`{"question_kind":"candy","test_channel":%q,"prompt":"old-private-prompt","quality":{"action":"observe_only","expected_answer":"old-private-answer"}}`, test.channel)
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,max_results,pelican_config)
+ VALUES($1,'old-observer','0 * * * *',$2,50,$3) RETURNING id`, accounts[0], test.enabled, oldConfig).Scan(&planID))
+			t.Cleanup(func() {
+				_, err := db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, planID)
+				require.NoError(t, err)
+			})
+			recipe := read().MonitoringRecipe
+			require.True(t, recipe.Demand.Coverage.CanSave, "this fixture has sufficient global lower-bound capacity")
+			// Compare the read-only explanation to the real, unchanged write path.
+			var config service.PelicanTestConfig
+			require.NoError(t, json.Unmarshal([]byte(cfg), &config))
+			plan, err := service.ProcurementMonitoringRecipePlan(&service.QualityRulePreset{Enabled: true, ModelID: "model-a", CronExpression: "0 * * * *", MaxResults: 100, PelicanConfig: &config}, time.Now())
+			require.NoError(t, err)
+			plan.AccountID = accounts[0]
+			_, err = native.CreatePlan(ctx, plan)
+			var unique *pq.Error
+			require.ErrorAs(t, err, &unique)
+			require.Equal(t, pq.ErrorCode("23505"), unique.Code)
+			require.Equal(t, "scheduled_test_quality_account_scope_unique", unique.Constraint)
+			raw, err := json.Marshal(recipe)
+			require.NoError(t, err)
+			require.NotNil(t, recipe.DistributionReview, "a budget pass must not hide the real plan-uniqueness blocker")
+			require.Equal(t, "conflict", recipe.DistributionReview.State)
+			require.Equal(t, 2, recipe.DistributionReview.ExaminedAccounts)
+			require.Equal(t, []service.ProcurementRecipeDistributionConflict{{AccountID: accounts[0], PlanID: planID, Enabled: test.enabled}}, recipe.DistributionReview.Conflicts)
+			require.NotContains(t, string(raw), "old-private")
+			_, err = db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, planID)
+			require.NoError(t, err)
+			require.Equal(t, "ready", read().MonitoringRecipe.DistributionReview.State, "removal of the conflicting plan is visible on a new read")
+		}
+	})
+	t.Run("other native scopes and unapproved accounts do not occupy an approved observation slot", func(t *testing.T) {
+		for _, action := range []string{"disable_scheduling", "isolate_models", "enable_bps", "observe_only"} {
+			id := accounts[0]
+			if action == "observe_only" {
+				id = accounts[2] // Only bound to the product, not approved as supply.
+			}
+			var planID int64
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,max_results,pelican_config)
+ VALUES($1,'existing-rule','0 * * * *',true,50,$2) RETURNING id`, id, fmt.Sprintf(`{"quality":{"action":%q}}`, action)).Scan(&planID))
+			t.Cleanup(func() {
+				_, err := db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, planID)
+				require.NoError(t, err)
+			})
+			require.Equal(t, "ready", read().MonitoringRecipe.DistributionReview.State, action)
+			var config service.PelicanTestConfig
+			require.NoError(t, json.Unmarshal([]byte(cfg), &config))
+			plan, err := service.ProcurementMonitoringRecipePlan(&service.QualityRulePreset{Enabled: true, ModelID: "model-a", CronExpression: "0 * * * *", MaxResults: 100, PelicanConfig: &config}, time.Now())
+			require.NoError(t, err)
+			plan.AccountID = accounts[0]
+			created, err := native.CreatePlan(ctx, plan)
+			require.NoError(t, err, "the preview matches the original writer for non-conflicting scopes")
+			require.NoError(t, native.DeletePlan(ctx, created.ID))
+			_, err = db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, planID)
+			require.NoError(t, err)
+		}
+	})
 	t.Run("one snapshot for preset, source inventory and global capacity", func(t *testing.T) {
 		lock, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
@@ -135,6 +204,13 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 		require.NoError(t, err)
 		_, err = lock.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accounts[1], source)
 		require.NoError(t, err)
+		var observationID int64
+		require.NoError(t, lock.QueryRowContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,max_results,pelican_config)
+ VALUES($1,'concurrent-observer','0 * * * *',false,50,'{"quality":{"action":"observe_only"}}') RETURNING id`, accounts[0]).Scan(&observationID))
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, observationID)
+			require.NoError(t, err)
+		})
 		changed := settings
 		changed.Revision++
 		changed.RequestsPerDay = 1200
@@ -151,6 +227,8 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 		require.EqualValues(t, 384, old.out.MonitoringRecipe.Demand.DeltaMinimumRequestsPerDay)
 		require.Equal(t, settings.Revision, old.out.MonitoringRecipe.Demand.Coverage.BudgetRevision)
 		require.EqualValues(t, 1000, old.out.MonitoringRecipe.Demand.Coverage.RegularDayCapacity)
+		require.Equal(t, "ready", old.out.MonitoringRecipe.DistributionReview.State)
+		require.Equal(t, 2, old.out.MonitoringRecipe.DistributionReview.ExaminedAccounts)
 		fresh := read().MonitoringRecipe
 		require.Equal(t, "Changed preset", fresh.PresetName)
 		require.True(t, fresh.PresetUpdatedAt.After(old.out.MonitoringRecipe.PresetUpdatedAt))
@@ -158,6 +236,11 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 		require.EqualValues(t, 96, fresh.Demand.DeltaMinimumRequestsPerDay)
 		require.Equal(t, changed.Revision, fresh.Demand.Coverage.BudgetRevision)
 		require.EqualValues(t, 1200, fresh.Demand.Coverage.RegularDayCapacity)
+		require.Equal(t, "conflict", fresh.DistributionReview.State)
+		require.Equal(t, 1, fresh.DistributionReview.ExaminedAccounts)
+		require.Equal(t, []service.ProcurementRecipeDistributionConflict{{AccountID: accounts[0], PlanID: observationID, Enabled: false}}, fresh.DistributionReview.Conflicts)
+		_, err = db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, observationID)
+		require.NoError(t, err)
 		settings.Revision = changed.Revision
 		settings, err = budget.SaveSettings(ctx, settings)
 		require.NoError(t, err)
@@ -222,10 +305,14 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	require.Equal(t, "no_approved_accounts", out.MonitoringRecipe.State)
 	require.Zero(t, *out.MonitoringRecipe.Accounts)
 	require.Nil(t, out.MonitoringRecipe.Demand)
+	require.Equal(t, "unknown", out.MonitoringRecipe.DistributionReview.State)
+	require.Zero(t, out.MonitoringRecipe.DistributionReview.ExaminedAccounts)
+	require.Empty(t, out.MonitoringRecipe.DistributionReview.Conflicts)
 	_, err = db.ExecContext(ctx, `UPDATE groups SET status='inactive' WHERE id=$1`, source)
 	require.NoError(t, err)
 	out = read()
 	require.Equal(t, "sources_unavailable", out.MonitoringRecipe.State)
+	require.Equal(t, "unknown", out.MonitoringRecipe.DistributionReview.State)
 	require.Nil(t, out.MonitoringRecipe.Accounts)
 	require.Nil(t, out.MonitoringRecipe.Demand)
 	_, err = db.ExecContext(ctx, `ALTER TABLE quality_rule_presets RENAME TO recipe_fault_presets`)

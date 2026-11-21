@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 func loadProcurementMonitoringRecipe(ctx context.Context, tx *sql.Tx, presetID int64, sources *service.ProcurementSourceInventory) (*service.ProcurementMonitoringRecipe, error) {
@@ -23,7 +24,8 @@ func loadProcurementMonitoringRecipe(ctx context.Context, tx *sql.Tx, presetID i
 	if err := validateQualityGroupReferences(ctx, tx, preset.PelicanConfig); err != nil {
 		return nil, service.ErrProcurementMonitoringRecipeInvalid
 	}
-	out := &service.ProcurementMonitoringRecipe{Version: 1, PresetID: preset.ID, PresetName: preset.Name, PresetUpdatedAt: preset.UpdatedAt, State: "sources_unavailable"}
+	distribution := &service.ProcurementRecipeDistributionReview{State: "unknown", Conflicts: []service.ProcurementRecipeDistributionConflict{}}
+	out := &service.ProcurementMonitoringRecipe{Version: 2, PresetID: preset.ID, PresetName: preset.Name, PresetUpdatedAt: preset.UpdatedAt, State: "sources_unavailable", DistributionReview: distribution}
 	if sources == nil {
 		return out, nil
 	}
@@ -42,6 +44,30 @@ func loadProcurementMonitoringRecipe(ctx context.Context, tx *sql.Tx, presetID i
 	if n == 0 {
 		out.State = "no_approved_accounts"
 		return out, nil
+	}
+	// Match migration 258, including paused and BPS observation rules. The
+	// enabled-only budget inventory cannot establish this native constraint.
+	rows, err := tx.QueryContext(ctx, `SELECT account_id,id,enabled FROM scheduled_test_plans
+ WHERE account_id=ANY($1) AND pelican_config#>>'{quality,action}'=$2 ORDER BY account_id,id LIMIT $3`,
+		pq.Array(ids), service.QualityActionObserveOnly, n+1)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var conflict service.ProcurementRecipeDistributionConflict
+		if err := rows.Scan(&conflict.AccountID, &conflict.PlanID, &conflict.Enabled); err != nil {
+			return nil, err
+		}
+		distribution.Conflicts = append(distribution.Conflicts, conflict)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	distribution.ExaminedAccounts = n
+	distribution.State = "ready"
+	if len(distribution.Conflicts) > 0 {
+		distribution.State = "conflict"
 	}
 	settings, err := loadMonitoringProbeBudgetSettings(ctx, tx, "")
 	if err != nil {

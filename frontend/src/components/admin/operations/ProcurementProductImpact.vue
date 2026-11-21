@@ -76,6 +76,22 @@
       <p class="break-words text-xs text-gray-500">{{ t(`${p}.snapshot`, { time: result.observed_at }) }}</p>
       <section v-if="result.monitoring_recipe" class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="recipe-title" data-testid="product-monitoring-recipe">
         <h4 id="recipe-title" class="font-medium">{{ t(`${p}.recipe.title`) }} · {{ result.monitoring_recipe.preset_name }}</h4>
+        <section class="min-w-0 space-y-2" aria-labelledby="recipe-distribution-title" data-testid="recipe-distribution">
+          <h5 id="recipe-distribution-title" class="text-sm font-medium">{{ t(`${p}.recipe.distribution.title`) }}</h5>
+          <p class="rounded-lg bg-gray-100 p-3 text-sm dark:bg-dark-700" data-testid="recipe-distribution-conclusion">{{ t(`${p}.recipe.distribution.states.${result.monitoring_recipe.distribution_review?.state ?? 'legacy'}`, { checked: result.monitoring_recipe.distribution_review?.examined_accounts, count: recipeConflicts.length }) }}</p>
+          <ul v-if="recipeConflicts.length" class="min-w-0 space-y-2 text-sm">
+            <li v-for="row in recipeConflictRows" :key="row.account_id" class="break-words" data-testid="recipe-distribution-conflict">
+              {{ t(`${p}.recipe.distribution.conflict`, { account: sourceInventory?.accounts.find(a => a.account_id === row.account_id)?.name, id: row.account_id, plan: row.plan_id }) }} · {{ t(`${p}.recipe.distribution.${row.enabled ? 'enabled' : 'paused'}`) }}
+            </li>
+          </ul>
+          <nav v-if="recipeConflicts.length > pageSize" class="flex flex-wrap items-center gap-3 text-sm" :aria-label="t(`${p}.recipe.distribution.pages`)">
+            <button type="button" class="btn btn-secondary" :disabled="recipePage <= 1" @click="recipePage--">{{ t('upstreamOps.previous') }}</button>
+            <span>{{ recipePage }} / {{ Math.ceil(recipeConflicts.length / pageSize) }}</span>
+            <button type="button" class="btn btn-secondary" :disabled="recipePage * pageSize >= recipeConflicts.length" @click="recipePage++">{{ t('upstreamOps.next') }}</button>
+          </nav>
+          <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.recipe.distribution.boundary`) }}</p>
+          <a v-if="recipeConflicts.length" href="/admin/account-quality" class="text-xs text-primary-600 underline dark:text-primary-400">{{ t(`${p}.recipe.distribution.manage`) }}</a>
+        </section>
         <p class="rounded-lg bg-amber-50 p-3 text-sm font-medium text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="recipe-conclusion">{{ t(`${p}.recipe.states.${recipeState}`) }}</p>
         <template v-if="result.monitoring_recipe.demand">
           <dl class="grid min-w-0 grid-cols-2 gap-3 text-sm sm:grid-cols-4">
@@ -257,7 +273,7 @@ async function loadPresets(force: boolean | Event = false) {
   } catch { if (alive) presetsError.value = true }
   finally { if (alive) presetsBusy.value = false }
 }
-const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), sourcePage = ref(1), writerPage = ref(1), pageSize = 20
+const result = ref<ProcurementProductImpact | null>(null), busy = ref(false), error = ref(''), page = ref(1), reviewPage = ref(1), sourcePage = ref(1), writerPage = ref(1), recipePage = ref(1), pageSize = 20
 let alive = true, productsGeneration = 0, previewGeneration = 0, lastSearch = ''
 let productsController: AbortController | undefined, previewController: AbortController | undefined
 const selected = ref<AdminGroup | null>(null)
@@ -356,6 +372,8 @@ const budgetMessages = computed(() => [...new Set([...(result.value?.management_
 const budgetReasons = new Set(['runner_capacity', 'minute_capacity', 'day_capacity', 'site_capacity', 'key_capacity', 'billing_scope_unresolved', 'periodic_site_capacity', 'periodic_site_unresolved', 'periodic_key_capacity', 'periodic_key_unresolved', 'runner_no_headroom', 'invalid_interval', 'scheduled_unresolved', 'scheduled_inventory_truncated', 'candy_unresolved', 'candy_inventory_truncated', 'active_unresolved', 'active_inventory_truncated', 'active_quota_unestimated'])
 const budgetReason = (reason: string) => t(`admin.settings.upstreamBillingProbe.budget.capacityReason.${budgetReasons.has(reason) ? reason : 'unknown'}`)
 const recipeCoverage = computed(() => result.value?.monitoring_recipe?.demand?.coverage)
+const recipeConflicts = computed(() => result.value?.monitoring_recipe?.distribution_review?.conflicts ?? [])
+const recipeConflictRows = computed(() => recipeConflicts.value.slice((recipePage.value - 1) * pageSize, recipePage.value * pageSize))
 const recipePartial = computed(() => {
   const c = recipeCoverage.value
   return !!c && (c.inventory_complete !== true || c.plan_inventory_complete !== true || c.candy_inventory_complete !== true || c.active_inventory_complete !== true ||
@@ -379,7 +397,7 @@ const knownWarning = (warning: string) => warnings.has(warning) ? warning : 'unk
 const formatRate = (value: number | undefined) => value == null ? t('upstreamOps.unknown') : new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(value)
 watch(productID, id => {
   selected.value = products.value.find(row => row.id === id) ?? (selected.value?.id === id ? selected.value : null)
-  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1
+  previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = ''; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1; recipePage.value = 1
 }, { flush: 'sync' })
 watch(presetID, () => { previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = '' }, { flush: 'sync' })
 function openProducts() { if (!loadedProducts.value && !productsBusy.value) void loadProducts('') }
@@ -400,7 +418,7 @@ async function preview() {
   if (busy.value || !productID.value) return
   const id = productID.value, generation = ++previewGeneration
   previewController?.abort(); previewController = new AbortController()
-  busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1
+  busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1; recipePage.value = 1
   try {
     const next = presetID.value == null ? await previewProcurementProductImpact(id, previewController.signal) : await previewProcurementProductImpact(id, previewController.signal, presetID.value)
     if (!validProcurementProductImpact(next, id, presetID.value ?? undefined)) throw new Error('invalid product impact')

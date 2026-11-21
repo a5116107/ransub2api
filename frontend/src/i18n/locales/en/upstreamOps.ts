@@ -1,6 +1,18 @@
 export default {
   productImpact: {
     recipe: {
+      distribution: {
+        title: 'Existing observation-plan conflicts',
+        states: {
+          ready: 'Checked {checked} approved accounts; no existing observation-plan conflicts. This is not permission to distribute.',
+          conflict: '{count} approved accounts already have observation plans. Sufficient budget does not permit duplicate plans.',
+          unknown: 'Observation-plan uniqueness has not been checked; distribution is not established.',
+          legacy: 'This older response does not check observation-plan uniqueness; distribution is not established.'
+        },
+        conflict: '{account} · Account #{id} · Existing plan #{plan}', enabled: 'Enabled', paused: 'Paused; still occupies the observation slot',
+        boundary: 'Checks only native observation slots in this snapshot. Pausing a plan does not release its slot. Existing plans are not replaced, reused, adopted or skipped; budget still assumes all additions.',
+        manage: 'View account quality rules', pages: 'Observation-plan conflict pages'
+      },
       label: 'Simulate added monitoring (optional)', none: 'Review saved rules only', title: 'Monitoring demand preview', refresh: 'Refresh presets',
       help: 'Choose an observation-only answer preset to simulate one additional plan per approved account. Existing plans are retained, not reused or distributed.',
       loading: 'Loading presets…', loadFailed: 'Preset loading failed. Saved-rule review is still available.', empty: 'No enabled native observation-only answer presets.', configure: 'Manage quality presets',

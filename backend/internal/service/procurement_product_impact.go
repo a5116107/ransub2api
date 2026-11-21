@@ -30,14 +30,29 @@ type ProcurementProductImpact struct {
 // Read-only additions across the approved inventory. No old plan is adopted,
 // replaced or deduplicated, and the preview never authorizes distribution.
 type ProcurementMonitoringRecipe struct {
-	Version              int                                `json:"version"`
-	PresetID             int64                              `json:"preset_id"`
-	PresetName           string                             `json:"preset_name"`
-	PresetUpdatedAt      time.Time                          `json:"preset_updated_at"`
-	SourcePolicyRevision int64                              `json:"source_policy_revision"`
-	State                string                             `json:"state"`
-	Accounts             *int                               `json:"accounts"`
-	Demand               *ProcurementMonitoringRecipeDemand `json:"demand,omitempty"`
+	Version              int                                  `json:"version"`
+	PresetID             int64                                `json:"preset_id"`
+	PresetName           string                               `json:"preset_name"`
+	PresetUpdatedAt      time.Time                            `json:"preset_updated_at"`
+	SourcePolicyRevision int64                                `json:"source_policy_revision"`
+	State                string                               `json:"state"`
+	Accounts             *int                                 `json:"accounts"`
+	Demand               *ProcurementMonitoringRecipeDemand   `json:"demand,omitempty"`
+	DistributionReview   *ProcurementRecipeDistributionReview `json:"distribution_review,omitempty"`
+}
+
+// The native per-account observation uniqueness check, independent of budget.
+// Even a ready snapshot is not a reservation or authorization to write plans.
+type ProcurementRecipeDistributionReview struct {
+	State            string                                  `json:"state"`
+	ExaminedAccounts int                                     `json:"examined_accounts"`
+	Conflicts        []ProcurementRecipeDistributionConflict `json:"conflicts"`
+}
+
+type ProcurementRecipeDistributionConflict struct {
+	AccountID int64 `json:"account_id"`
+	PlanID    int64 `json:"plan_id"`
+	Enabled   bool  `json:"enabled"`
 }
 
 type ProcurementMonitoringRecipeDemand struct {
