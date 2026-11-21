@@ -11,7 +11,7 @@ import { listQualityPresets, type QualityRulePreset } from '@/api/admin/accountQ
 import { observationRecipePreset } from '@/utils/procurementProductImpact'
 import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
+vi.mock('vue-i18n', async importOriginal => ({ ...(await importOriginal<typeof import('vue-i18n')>()), useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
 vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
 vi.mock('@/api/admin/accountQuality', () => ({ listQualityPresets: vi.fn() }))
 vi.mock('@/api/admin/procurementCatalog', () => ({ applyProcurementRecipe: vi.fn(), previewProcurementProductImpact: vi.fn(), readProcurementManagement: vi.fn(), previewProcurementManagement: vi.fn(), saveProcurementManagement: vi.fn() }))

@@ -1,10 +1,22 @@
 export default {
   sharedMonitoring: {
+    stateUnknown: 'Saved state has not been reverified. Previous mode, revision and plan conclusions are withdrawn. Reload first; the draft is preserved and the previous write is not replayed.',
+    issuesTitle: '{count} saved plans need review',
+    issuesScope: 'These plan checks come from this independent read, separately from the last maintenance outcome. They exclude new, unmanaged sources and do not represent every blocking cause.',
+    issuesObserved: 'Plans read at:', issueIdentity: 'Account #{account} · Original plan #{plan}',
+    openPlan: 'View original plan #{plan}', issuesPagination: 'Plan issue pages', issuesPage: 'Page {page} / {pages}', issuesPrevious: 'Previous', issuesNext: 'Next',
     maintenance: {
       enable: 'Enable continuous maintenance', disable: 'Disable continuous maintenance', saving: 'Saving and verifying mode…',
       scope: 'Only saved products and their approved sources are maintained on the original minute tick. Unsaved edits do not apply. Saving the full list manually disables maintenance; disabling leaves existing tests running.',
       consent: 'Allow ongoing creation, updates and pauses of owned observation plans within the existing budget, including detection costs and recalculation after source, preset or product changes.',
       verified: 'Maintenance mode and the complete participation list were independently read back and verified.',
+      recovery: {
+        budget: 'Check the existing shared budget switch, capacity and current demand. Budget or demand changes require an explicit save. Reloading reads state without starting detection.', budgetLink: 'Open shared detection budget',
+        preset: 'Review saved product presets, models, question settings and timezones. Preview the complete shared demand after changes; compatibility alone does not establish budget capacity.', presetLink: 'Open quality rules and presets',
+        participation: 'Review saved products, approved sources and account scope. Draft changes take no effect; preview and explicitly save the complete list to change participation.', participationLink: 'Open product and source groups',
+        plan: 'Review the original plans and ownership below. Other rules are not adopted, manual changes are preserved and missing plans are not recreated. Reload after repair; enabled maintenance retries on its normal tick.', planLink: 'Open quality plans',
+        retry: 'Original plans remain. The original scheduler retries on later ticks. Reload to review current state; a read does not replay a write, force-finish running plans or start detection.'
+      },
       lastChange: 'Last outcome change {at} · Created {create} · Updated {update} · Paused {pause}. This is not the latest scan time.',
       states: { waiting: 'Maintenance enabled; awaiting the original scheduler', current: 'Maintenance active; plans match current requirements', updated: 'Maintenance updated the original plans', blocked: 'Maintenance deferred; original plans preserved', manual: 'Maintenance disabled; existing tests continue' },
       reasons: {

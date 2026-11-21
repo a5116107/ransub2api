@@ -6,18 +6,40 @@
       <p v-if="savedState" data-testid="shared-saved-state">{{ t(`${p}.savedState`, { revision: savedState.revision, products: savedState.products.length, plans: savedState.plans.length }) }}</p>
       <button type="button" class="btn btn-secondary" :disabled="busy || disabled" data-testid="shared-reload" @click="readSaved">{{ t(`${p}.reload`) }}</button>
     </div>
+    <p v-if="!loaded && !reading && error" role="status" data-testid="shared-state-unknown" class="text-sm text-amber-800 dark:text-amber-300">{{ t(`${p}.stateUnknown`) }}</p>
     <section v-if="savedState && savedState.revision > 0" class="space-y-2 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-800" data-testid="shared-maintenance" :data-state="savedState.maintenance?.state ?? 'manual'">
       <p class="font-medium" role="status">{{ t(`${p}.maintenance.states.${savedState.maintenance?.state ?? 'manual'}`) }}</p>
       <template v-if="savedState.maintenance">
         <p data-testid="shared-maintenance-reason">{{ t(`${p}.maintenance.reasons.${savedState.maintenance.reason}`) }}</p>
-        <p class="break-words tabular-nums">{{ t(`${p}.maintenance.lastChange`, { at: savedState.maintenance.changed_at, create: savedState.maintenance.created, update: savedState.maintenance.updated, pause: savedState.maintenance.paused }) }}</p>
+        <p class="break-words tabular-nums">{{ t(`${p}.maintenance.lastChange`, { at: formatDateTime(savedState.maintenance.changed_at), create: savedState.maintenance.created, update: savedState.maintenance.updated, pause: savedState.maintenance.paused }) }}</p>
+        <div v-if="recovery" data-testid="shared-maintenance-recovery" class="space-y-1">
+          <p>{{ t(`${p}.maintenance.recovery.${recovery.key}`) }}</p>
+          <a v-if="recovery.href" :href="recovery.href" class="text-primary-600 underline dark:text-primary-400">{{ t(`${p}.maintenance.recovery.${recovery.key}Link`) }}</a>
+        </div>
       </template>
       <p>{{ t(`${p}.maintenance.scope`) }}</p>
       <label v-if="!savedState.maintenance?.enabled && savedState.products.length" class="flex items-start gap-2"><input v-model="maintenanceConsent" type="checkbox" :disabled="busy || disabled || !loaded" data-testid="shared-maintenance-consent" class="mt-1" />{{ t(`${p}.maintenance.consent`) }}</label>
       <button v-if="savedState.products.length || savedState.maintenance?.enabled" type="button" class="btn btn-secondary" :disabled="busy || disabled || !loaded || !savedState.maintenance?.enabled && !maintenanceConsent" data-testid="shared-maintenance-toggle" @click="configureMaintenance">{{ t(`${p}.maintenance.${maintenanceSaving ? 'saving' : savedState.maintenance?.enabled ? 'disable' : 'enable'}`) }}</button>
       <p v-if="maintenanceVerified" role="status" data-testid="shared-maintenance-verified">{{ t(`${p}.maintenance.verified`) }}</p>
     </section>
-    <p v-if="savedState?.plans.some(plan => !['managed', 'paused'].includes(plan.state))" role="alert" class="text-sm text-amber-800 dark:text-amber-300">{{ t(`${p}.ownershipConflict`) }}</p>
+    <section v-if="planIssues.length && savedState" data-testid="shared-plan-issues" class="min-w-0 space-y-2 rounded-lg border border-amber-200 p-3 text-sm dark:border-amber-800">
+      <h4 class="font-medium" role="alert">{{ t(`${p}.issuesTitle`, { count: planIssues.length }) }}</h4>
+      <p>{{ t(`${p}.ownershipConflict`) }}</p>
+      <p>{{ t(`${p}.issuesScope`) }}</p>
+      <p>{{ t(`${p}.issuesObserved`) }} <time :datetime="savedState.observed_at" data-testid="shared-issues-observed" class="tabular-nums">{{ formatDateTime(savedState.observed_at) }}</time></p>
+      <ul class="space-y-2">
+        <li v-for="issue in visiblePlanIssues" :key="issue.plan_id" data-testid="shared-plan-issue" :data-account-id="issue.account_id" :data-state="issue.state" class="min-w-0 space-y-1 rounded bg-amber-50 p-2 dark:bg-amber-950/30">
+          <p class="break-words font-medium">{{ t(`${p}.issueIdentity`, { account: issue.account_id, plan: issue.plan_id }) }}</p>
+          <p>{{ t(`${p}.maintenance.reasons.${issue.state}`) }}</p>
+          <a :href="`/admin/account-quality?plan_id=${issue.plan_id}`" class="inline-block text-primary-600 underline dark:text-primary-400">{{ t(`${p}.openPlan`, { plan: issue.plan_id }) }}</a>
+        </li>
+      </ul>
+      <nav v-if="issuePages > 1" class="flex flex-wrap items-center gap-2" :aria-label="t(`${p}.issuesPagination`)">
+        <button type="button" class="btn btn-secondary" data-testid="shared-issues-prev" :disabled="busy || disabled || issuePage <= 1" @click="issuePage--">{{ t(`${p}.issuesPrevious`) }}</button>
+        <span class="tabular-nums">{{ t(`${p}.issuesPage`, { page: issuePage, pages: issuePages }) }}</span>
+        <button type="button" class="btn btn-secondary" data-testid="shared-issues-next" :disabled="busy || disabled || issuePage >= issuePages" @click="issuePage++">{{ t(`${p}.issuesNext`) }}</button>
+      </nav>
+    </section>
     <p v-if="success" role="status" data-testid="shared-success" class="text-sm text-emerald-700 dark:text-emerald-300">{{ t(`${p}.saved`) }}</p>
     <form class="min-w-0 space-y-3" @submit.prevent="preview">
       <fieldset :disabled="busy || disabled || !loaded" class="min-w-0 space-y-3">
@@ -102,6 +124,7 @@ import Select from '@/components/common/Select.vue'
 import type { QualityRulePreset } from '@/api/admin/accountQuality'
 import { configureProcurementSharedMonitoringMaintenance, applyProcurementSharedMonitoring, readProcurementSharedMonitoring, previewProcurementSharedMonitoring, type ProcurementMonitoringSelection, type ProcurementSharedMonitoringPreview, type ProcurementSharedMonitoringState } from '@/api/admin/procurementCatalog'
 import { validProcurementSharedMonitoringPreview, validProcurementSharedMonitoringState } from '@/utils/procurementProductImpact'
+import { formatDateTime } from '@/utils/format'
 
 const props = defineProps<{ products: Array<{ id: number; name: string }>; presets: QualityRulePreset[]; loading: boolean; loadError: boolean; disabled: boolean; initialProductId?: number | null; initialPresetId?: number | null }>()
 const emit = defineEmits<{ load: []; search: [search: string] }>()
@@ -123,6 +146,19 @@ const previewBusy = ref(false), reading = ref(false), saving = ref(false), loade
 const maintenanceSaving = ref(false), maintenanceConsent = ref(false), maintenanceVerified = ref(false)
 const busy = computed(() => previewBusy.value || reading.value || saving.value || maintenanceSaving.value)
 const savedState = ref<ProcurementSharedMonitoringState | null>(null), releaseOwnership = ref(false), consent = ref(false)
+const issuePage = ref(1)
+const planIssues = computed(() => loaded.value ? savedState.value?.plans.filter(plan => !['managed', 'paused'].includes(plan.state)) ?? [] : [])
+const issuePages = computed(() => Math.max(1, Math.ceil(planIssues.value.length / 20)))
+const visiblePlanIssues = computed(() => planIssues.value.slice((issuePage.value - 1) * 20, issuePage.value * 20))
+const recovery = computed(() => {
+  const maintenance = savedState.value?.maintenance
+  if (!loaded.value || maintenance?.state !== 'blocked') return null
+  if (['budget_disabled', 'budget_exceeded'].includes(maintenance.reason)) return { key: 'budget', href: '/admin/settings?tab=gateway#settings-section-upstream-billing-probe' }
+  if (['invalid_preset', 'observation_settings_conflict', 'native_model_limit', 'schedule_timezones_conflict', 'invalid_merged_plan'].includes(maintenance.reason)) return { key: 'preset', href: '/admin/account-quality' }
+  if (['sources_unavailable', 'product_missing', 'too_many_accounts', 'invalid_requirements'].includes(maintenance.reason)) return { key: 'participation', href: '/admin/groups' }
+  if (['managed_plan_missing', 'managed_plan_changed', 'existing_observation_plan'].includes(maintenance.reason)) return { key: 'plan', href: '/admin/account-quality' }
+  return { key: 'retry', href: null }
+})
 const error = ref(''), result = ref<ProcurementSharedMonitoringPreview | null>(null), page = ref(1)
 const clock = ref(performance.now()), started = ref(0)
 const expired = computed(() => clock.value - started.value >= 30000)
@@ -144,6 +180,7 @@ const changeCounts = computed(() => {
   return { create: changes.filter(c => c.operation === 'create').length, update: changes.filter(c => c.operation === 'update').length, pause: changes.filter(c => ['pause', 'release'].includes(c.operation)).length, retain: changes.filter(c => ['retain', 'retain_paused'].includes(c.operation)).length, conflict: changes.filter(c => c.operation === 'conflict').length }
 })
 function invalidate() { maintenanceConsent.value = false; maintenanceVerified.value = false; generation++; controller?.abort(); previewBusy.value = false; consent.value = false; error.value = ''; success.value = false; result.value = null; page.value = 1 }
+function forgetSavedState() { loaded.value = false; savedState.value = null; issuePage.value = 1; maintenanceConsent.value = false; maintenanceVerified.value = false }
 watch(rows, invalidate, { deep: true, flush: 'sync' })
 watch(releaseOwnership, invalidate, { flush: 'sync' })
 watch(() => rows.value.length, n => { if (n > 0) releaseOwnership.value = false }, { flush: 'sync' })
@@ -157,7 +194,7 @@ function toggle(event: Event) {
 }
 async function readSaved() {
   if (busy.value || props.disabled) return
-  invalidate(); loaded.value = false; reading.value = true
+  invalidate(); forgetSavedState(); reading.value = true
   const current = ++readGeneration; readController = new AbortController()
   try {
     const next = await readProcurementSharedMonitoring(readController.signal)
@@ -169,7 +206,7 @@ async function readSaved() {
       { key: 1, product_id: null, preset_id: props.initialPresetId ?? null }
     ]
     key = Math.max(key, 2); releaseOwnership.value = false; loaded.value = true
-  } catch (e) { if (alive && current === readGeneration) { savedState.value = null; error.value = (e as { status?: number })?.status === 403 ? 'forbidden' : 'readFailed' } }
+  } catch (e) { if (alive && current === readGeneration) { forgetSavedState(); error.value = (e as { status?: number })?.status === 403 ? 'forbidden' : 'readFailed' } }
   finally { if (alive && current === readGeneration) reading.value = false }
 }
 async function preview() {
@@ -200,7 +237,7 @@ async function save() {
     if (!validProcurementSharedMonitoringState(next) || next.revision !== receipt.revision || JSON.stringify(next.products) !== JSON.stringify(receipt.products) || JSON.stringify(next.plans) !== JSON.stringify(receipt.plans) || next.plans.some(p => !['managed', 'paused'].includes(p.state))) throw new Error('saved participation not verified')
     if (alive) { savedState.value = next; loaded.value = true; result.value = null; success.value = true }
   } catch (e) {
-    if (alive) { loaded.value = false; result.value = null; error.value = written ? 'savedReadFailed' : (e as { status?: number })?.status === 409 ? 'conflict' : (e as { status?: number })?.status === 403 ? 'forbidden' : 'saveUnknown' }
+    if (alive) { forgetSavedState(); result.value = null; error.value = written ? 'savedReadFailed' : (e as { status?: number })?.status === 409 ? 'conflict' : (e as { status?: number })?.status === 403 ? 'forbidden' : 'saveUnknown' }
   } finally { if (alive) saving.value = false }
 }
 async function configureMaintenance() {
@@ -217,7 +254,7 @@ async function configureMaintenance() {
     if (!validProcurementSharedMonitoringState(next) || next.revision < receipt.revision || next.maintenance?.enabled !== enabled || JSON.stringify(next.products) !== JSON.stringify(receipt.products)) throw new Error('maintenance not verified')
     if (alive) { savedState.value = next; maintenanceVerified.value = true }
   } catch (e) {
-    if (alive) { loaded.value = false; error.value = written ? 'savedReadFailed' : (e as { status?: number })?.status === 409 ? 'conflict' : (e as { status?: number })?.status === 403 ? 'forbidden' : 'saveUnknown' }
+    if (alive) { forgetSavedState(); error.value = written ? 'savedReadFailed' : (e as { status?: number })?.status === 409 ? 'conflict' : (e as { status?: number })?.status === 403 ? 'forbidden' : 'saveUnknown' }
   } finally { if (alive) maintenanceSaving.value = false }
 }
 onBeforeUnmount(() => { alive = false; generation++; readGeneration++; controller?.abort(); readController?.abort(); clearInterval(timer) })

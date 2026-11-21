@@ -1,10 +1,22 @@
 export default {
   sharedMonitoring: {
+    stateUnknown: '已保存状态尚未重新核实，旧模式、修订和计划结论已撤下。请先重新读取；草稿保留，不会重放上次写入。',
+    issuesTitle: '{count} 条已保存计划需要核对',
+    issuesScope: '以下是本次独立读回的计划检查，与最近持续维护结论时间不同；不包含尚未受管的新来源，也不代表全部阻断原因。',
+    issuesObserved: '计划读回时间：', issueIdentity: '账号 #{account} · 原计划 #{plan}',
+    openPlan: '查看原计划 #{plan}', issuesPagination: '计划问题分页', issuesPage: '第 {page} / {pages} 页', issuesPrevious: '上一页', issuesNext: '下一页',
     maintenance: {
       enable: '开启持续维护', disable: '关闭持续维护', saving: '正在保存并核实开关…',
       scope: '仅维护已保存产品及其批准来源。原调度器每分钟核对；未保存的编辑不生效。手动保存整份清单会关闭持续维护，关闭不会暂停已有检测。',
       consent: '同意持续新增、更新和暂停批准来源的自有检测计划，并产生原预算内的检测费用；来源、预设或产品变化后自动重算。',
       verified: '已独立读回并核实持续维护开关及参与清单。',
+      recovery: {
+        budget: '先核对原共享预算的开关、容量和当前需求；调整预算或需求需明确保存。重新读取只刷新结论，不发起检测。', budgetLink: '打开共享检测预算',
+        preset: '核对已保存产品的观察预设、模型、题型和时区。修改后先预演完整共享需求；相容不等于预算可容纳。', presetLink: '打开质量规则与预设',
+        participation: '核对已保存的产品、批准来源和账号范围。草稿修改不生效；如需调整参与，须重新预演并保存完整清单。', participationLink: '打开产品与来源分组',
+        plan: '先核对下面的原计划与归属；不会自动接管其他规则、覆盖人工修改或重建缺失计划。修复后重新读取，已开启维护按原周期重试。', planLink: '打开质量计划',
+        retry: '原计划保留，原调度器会在后续周期重试。可先重新读取核对当前状态；刷新不会重放写入、强制结束在途计划或发起检测。'
+      },
       lastChange: '最近结论变化 {at} · 新增 {create} · 更新 {update} · 暂停 {pause}；此时间不是最近一次巡检时间。',
       states: { waiting: '持续维护已开启，等待原调度器核对', current: '持续维护中，计划与当前需求一致', updated: '持续维护已更新原计划', blocked: '持续维护暂缓，原计划保留', manual: '持续维护已关闭，现有检测照常运行' },
       reasons: {

@@ -7,7 +7,7 @@ import { configureProcurementSharedMonitoringMaintenance, readProcurementSharedM
 import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 import { validProcurementSharedMonitoringPreview, validProcurementSharedMonitoringState } from '@/utils/procurementProductImpact'
 
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
+vi.mock('vue-i18n', async importOriginal => ({ ...(await importOriginal<typeof import('vue-i18n')>()), useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
 vi.mock('@/api/admin/procurementCatalog', () => ({ configureProcurementSharedMonitoringMaintenance: vi.fn(), readProcurementSharedMonitoring: vi.fn(), applyProcurementSharedMonitoring: vi.fn(), previewProcurementSharedMonitoring: vi.fn() }))
 const selections = [{ product_id: 2, preset_id: 7 }, { product_id: 3, preset_id: 8 }]
 const fixture = (): ProcurementSharedMonitoringPreview => ({
@@ -222,6 +222,8 @@ describe('shared monitoring persistence', () => {
     await w.get('[data-testid="shared-consent"]').setValue(true); await w.get('[data-testid="shared-save"]').trigger('click'); await flushPromises()
     expect(w.find('[data-testid="shared-success"]').exists()).toBe(false)
     expect(w.get('[data-testid="shared-error"]').text()).toContain(mode === 'conflict' ? 'conflict' : mode === 'lost' ? 'saveUnknown' : 'savedReadFailed')
+    expect(w.find('[data-testid="shared-saved-state"]').exists()).toBe(false)
+    expect(w.find('[data-testid="shared-state-unknown"]').exists()).toBe(true)
     await preview(w); expect(applyProcurementSharedMonitoring).toHaveBeenCalledTimes(1)
     expect(previewProcurementSharedMonitoring).toHaveBeenCalledTimes(1)
   })
@@ -287,7 +289,8 @@ describe('shared continuous maintenance', () => {
     await w.get('[data-testid="shared-maintenance-consent"]').setValue(true)
     await w.get('[data-testid="shared-maintenance-toggle"]').trigger('click'); await flushPromises()
     expect(w.find('[data-testid="shared-maintenance-verified"]').exists()).toBe(false)
-    expect(w.get('[data-testid="shared-maintenance-toggle"]').attributes('disabled')).toBeDefined()
+    expect(w.find('[data-testid="shared-maintenance-toggle"]').exists()).toBe(false)
+    expect(w.find('[data-testid="shared-state-unknown"]').exists()).toBe(true)
     expect(configureProcurementSharedMonitoringMaintenance).toHaveBeenCalledTimes(1)
     expect(w.get('[data-testid="shared-error"]').exists()).toBe(true)
   })
@@ -297,5 +300,87 @@ describe('shared continuous maintenance', () => {
   ])('rejects incompatible maintenance metadata %j', bad => {
     const v = maintained(); Object.assign(v.maintenance, bad)
     expect(validProcurementSharedMonitoringState(v)).toBe(false)
+  })
+})
+
+
+describe('shared maintenance diagnosis and uncertain state recovery', () => {
+  async function open(w: ReturnType<typeof mount>) {
+    (w.get('details').element as HTMLDetailsElement).open = true
+    await w.get('details').trigger('toggle'); await flushPromises()
+  }
+  it.each(['lost', 'conflict', 'forbidden', 'read', 'mismatch', 'invalid receipt'])('withdraws the previous current mode after %s and recovers only by reading', async mode => {
+    const before = maintained(true, 'current', 'compatible')
+    const after = { ...maintained(false, 'manual', 'manual'), revision: 3 }
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValueOnce(before).mockResolvedValue(after)
+    vi.mocked(configureProcurementSharedMonitoringMaintenance).mockResolvedValue(after)
+    if (['lost', 'conflict', 'forbidden'].includes(mode)) vi.mocked(configureProcurementSharedMonitoringMaintenance).mockRejectedValue({ status: mode === 'conflict' ? 409 : mode === 'forbidden' ? 403 : 503 })
+    else if (mode === 'read') vi.mocked(readProcurementSharedMonitoring).mockRejectedValueOnce({ status: 503 }).mockResolvedValue(after)
+    else if (mode === 'mismatch') vi.mocked(readProcurementSharedMonitoring).mockResolvedValueOnce(before).mockResolvedValue(after)
+    else vi.mocked(configureProcurementSharedMonitoringMaintenance).mockResolvedValue(before)
+    const w = view(); await open(w)
+    expect(w.get('[data-testid="shared-maintenance"]').attributes('data-state')).toBe('current')
+    await w.findAll('select')[0]!.setValue(8)
+    await w.get('[data-testid="shared-maintenance-toggle"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="shared-maintenance"]').exists()).toBe(false)
+    expect(w.find('[data-testid="shared-saved-state"]').exists()).toBe(false)
+    expect(w.find('[data-testid="shared-state-unknown"]').exists()).toBe(true)
+    expect(w.findAll('select')[0]!.element).toHaveProperty('value', '8')
+    expect(w.get('fieldset').attributes('disabled')).toBeDefined()
+    expect(configureProcurementSharedMonitoringMaintenance).toHaveBeenCalledTimes(1)
+    expect(applyProcurementSharedMonitoring).not.toHaveBeenCalled()
+    expect(previewProcurementSharedMonitoring).not.toHaveBeenCalled()
+    await w.get('[data-testid="shared-reload"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="shared-state-unknown"]').exists()).toBe(false)
+    expect(w.get('[data-testid="shared-maintenance"]').attributes('data-state')).toBe('manual')
+    expect(w.get('[data-testid="shared-saved-state"]').text()).toContain('"revision":3')
+    expect(configureProcurementSharedMonitoringMaintenance).toHaveBeenCalledTimes(1)
+  })
+  it('shows exact conflicting accounts and native plans with bounded pagination and zero writes', async () => {
+    const state = maintained(true, 'blocked', 'managed_plan_changed')
+    state.plans = Array.from({ length: 23 }, (_, i) => ({ account_id: i + 1, plan_id: 100 + i, state: ['managed_plan_changed', 'managed_plan_missing', 'managed_plan_running'][i % 3]!, enabled: i % 3 !== 1 }))
+    state.plans.push({ account_id: 24, plan_id: 123, state: 'managed', enabled: true }, { account_id: 25, plan_id: 124, state: 'paused', enabled: false })
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValueOnce(state).mockResolvedValue({ ...state, plans: [{ account_id: 24, plan_id: 123, state: 'managed', enabled: true }] })
+    const w = view(); await open(w)
+    expect(w.get('[data-testid="shared-plan-issues"]').text()).toContain('"count":23')
+    expect(w.get('[data-testid="shared-issues-observed"]').attributes('datetime')).toBe(state.observed_at)
+    expect(w.findAll('[data-testid="shared-plan-issue"]')).toHaveLength(20)
+    expect(w.get('[data-testid="shared-plan-issue"] a').attributes('href')).toBe('/admin/account-quality?plan_id=100')
+    expect(w.get('[data-testid="shared-plan-issue"]').attributes('data-account-id')).toBe('1')
+    expect(w.get('[data-testid="shared-plan-issue"]').attributes('data-state')).toBe('managed_plan_changed')
+    await w.get('[data-testid="shared-issues-next"]').trigger('click')
+    expect(w.findAll('[data-testid="shared-plan-issue"]')).toHaveLength(3)
+    expect(w.get('[data-testid="shared-plan-issue"]').attributes('data-account-id')).toBe('21')
+    expect(w.get('[data-testid="shared-issues-next"]').attributes('disabled')).toBeDefined()
+    await w.get('[data-testid="shared-issues-prev"]').trigger('click')
+    expect(w.get('[data-testid="shared-plan-issue"]').attributes('data-account-id')).toBe('1')
+    await w.get('[data-testid="shared-reload"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="shared-plan-issues"]').exists()).toBe(false)
+    expect(configureProcurementSharedMonitoringMaintenance).not.toHaveBeenCalled()
+    expect(applyProcurementSharedMonitoring).not.toHaveBeenCalled()
+    expect(previewProcurementSharedMonitoring).not.toHaveBeenCalled()
+  })
+  it.each([
+    ['budget_disabled', '/admin/settings?tab=gateway#settings-section-upstream-billing-probe'],
+    ['budget_exceeded', '/admin/settings?tab=gateway#settings-section-upstream-billing-probe'],
+    ['invalid_preset', '/admin/account-quality'], ['observation_settings_conflict', '/admin/account-quality'],
+    ['native_model_limit', '/admin/account-quality'], ['schedule_timezones_conflict', '/admin/account-quality'],
+    ['sources_unavailable', '/admin/groups'], ['product_missing', '/admin/groups'],
+    ['too_many_accounts', '/admin/groups'], ['invalid_requirements', '/admin/groups'],
+  ])('routes %s to existing recovery configuration', async (reason, href) => {
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValue(maintained(true, 'blocked', reason))
+    const w = view(); await open(w)
+    expect(w.get('[data-testid="shared-maintenance-recovery"] a').attributes('href')).toBe(href)
+    expect(w.get('[data-testid="shared-maintenance-recovery"]').text()).toContain('maintenance.recovery')
+    expect(configureProcurementSharedMonitoringMaintenance).not.toHaveBeenCalled()
+    expect(applyProcurementSharedMonitoring).not.toHaveBeenCalled()
+  })
+  it('explains a transient retry without inventing missing objects or replaying writes', async () => {
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValue(maintained(true, 'blocked', 'inputs_changed'))
+    const w = view(); await open(w)
+    expect(w.get('[data-testid="shared-maintenance-recovery"]').text()).toContain('maintenance.recovery.retry')
+    expect(w.find('[data-testid="shared-maintenance-recovery"] a').exists()).toBe(false)
+    expect(w.find('[data-testid="shared-plan-issues"]').exists()).toBe(false)
+    expect(configureProcurementSharedMonitoringMaintenance).not.toHaveBeenCalled()
   })
 })
