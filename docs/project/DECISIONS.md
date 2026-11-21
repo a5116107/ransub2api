@@ -4172,3 +4172,4 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - Vite原生产目录构建退出0，既有Browserslist/大chunk提示保留。原生嵌入web回归与Linux完整构建仍由原单进程执行，最终结果随后追加，不把运行中当通过。无schema、生产配置、CI/PR/发行或部署变化；原28项20done/8部分保持，完整资格/自动执行、D6.2/完整三步与外部证据验收保持开放。
 - 下发前另识别需确认的业务边界：同一账号可供应多个产品，但原观察规则只有一个位置。不同产品的新自动配方合并模型/严格周期会增加检测需求；保持不兼容冲突则减少可自动接入范围。已向用户提出两种具体效果，尚未收到决定；D4.3.22在原方案定义依赖/原生写入与CAS验收，保持待决，不擅改唯一键、付费频率、旧手工规则归属或将推荐当已批准。
 - 构建收尾：相同终稿输入下，`go test -p 1 -tags unit,embed ./internal/web -count=1 -timeout=3m`为ok 2.021s/退出0；随后显式GOOS=linux GOARCH=amd64 CGO_ENABLED=0的`go build -p 1 -tags embed -o NUL ./cmd/server`退出0。沿原进程/缓存等待结束，没有启动第二构建或生成新二进制残留。只证明终稿嵌入/编译，非Linux运行或生产加载；源码摘要未改变。本项本地验收完成，交付仍沿同一自有feat分支，原父项和外部等待保持。
+- 交付复核：实现提交52fcd1a7c836f58e723f22ca77b32d73f2332d7c已推送a5116107/ransub2api的原feat/automated-upstream-supply，独立ls-remote同SHA；未推官方upstream/production，未触发CI、合并、发行或部署。git worktree list仅原H盘工作树，本批源码/测试/文档已提交；唯一未跟踪项为继承的service/data（12文件/1164bytes），未删除/移动/忽略或混入提交。此后仅本状态与交付记录变化，匹配终稿源码/构建/浏览器证据复用。
