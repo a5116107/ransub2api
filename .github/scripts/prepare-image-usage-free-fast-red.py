@@ -14,7 +14,12 @@ if phase == 'usage':
     marker = 'type UsageLog struct {'
     # Omit nil just as the pre-snapshot DTO did; persistence RED must reach
     # its original missing-snapshot assertion, not a later JSON null mismatch.
-    addition = '\n\tCustomerCostDetails *CustomerCostDetails `json:"CustomerCostDetails,omitempty"`\n'
+    addition = ('\n\tCustomerCostDetails *CustomerCostDetails `json:"CustomerCostDetails,omitempty"`\n'
+                '\tProcurementCostSnapshot *ProcurementCostSnapshot `json:"ProcurementCostSnapshot,omitempty"`\n')
+elif phase == 'admin-usage':
+    name = 'backend/internal/handler/dto/types.go'
+    marker = 'type AdminUsageLog struct {'
+    addition = '\n\tProcurementCostSnapshot *service.ProcurementCostSnapshot `json:"procurement_cost_snapshot,omitempty"`\n'
 elif phase == 'cache':
     name = 'backend/internal/service/customer_cost_details.go'
     marker = 'type CustomerCostDetails struct {'
@@ -23,6 +28,7 @@ elif phase == 'cache':
     # backporting either the cache-price producer or UltraFast behavior.
     addition = ('\n\tImageMinimumCharge float64 `json:"image_minimum_charge,omitempty"`\n'
                 '\tImageMinimumChargeAdjustment float64 `json:"image_minimum_charge_adjustment,omitempty"`\n'
+                '\tProbePenalty *ProbePenaltyReceipt `json:"probe_penalty,omitempty"`\n'
                 '\tFreeUltrafast bool `json:"free_ultrafast,omitempty"`\n'
                 '\tCacheCostDetails []CustomerCacheCostDetail `json:"cache_cost_details,omitempty"`\n')
 else:

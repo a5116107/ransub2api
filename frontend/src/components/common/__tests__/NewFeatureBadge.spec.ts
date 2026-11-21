@@ -23,6 +23,8 @@ describe('NewFeatureBadge', () => {
 
 
   it.each([
+    ['cross-platform gateway accounts', NEW_FEATURE_NOTICES.crossPlatformGatewayAccounts],
+    ['model plaza currency', NEW_FEATURE_NOTICES.modelPlazaCurrency],
     ['image usage billing', NEW_FEATURE_NOTICES.imageUsageBilling],
     ['channel UltraFast pricing', NEW_FEATURE_NOTICES.channelUltrafastPricing],
     ['user live load', NEW_FEATURE_NOTICES.userLiveLoad],
@@ -37,6 +39,7 @@ describe('NewFeatureBadge', () => {
     ['QQ community', NEW_FEATURE_NOTICES.qqCommunity],
     ['QQ reward coupons', NEW_FEATURE_NOTICES.qqRewardCoupons],
     ['moderation upstream scope', NEW_FEATURE_NOTICES.moderationUpstreamAccountScope],
+    ['admin error platform', NEW_FEATURE_NOTICES.adminErrorPlatform],
     ['admin usage platform', NEW_FEATURE_NOTICES.adminUsagePlatform],
     ['user ID copy', NEW_FEATURE_NOTICES.userIdCopy],
     ['Antigravity usage query', NEW_FEATURE_NOTICES.antigravityUsageQuery],
@@ -64,6 +67,7 @@ describe('NewFeatureBadge', () => {
     ['profit operations time ranges', NEW_FEATURE_NOTICES.profitOperationsTimeRanges],
     ['quality retest rest', NEW_FEATURE_NOTICES.qualityRetestRest],
     ['OAuth 401 quality cleanup', NEW_FEATURE_NOTICES.qualityOAuth401Cleanup],
+    ['Ciallo manual greeting test', NEW_FEATURE_NOTICES.ciallo],
     ['AI operations proposal cancellation', NEW_FEATURE_NOTICES.aiOpsProposalCancel],
     ['400 encrypted history recovery', NEW_FEATURE_NOTICES.openai400OmitEncryptedHistory],
   ])('keeps %s dismissal shared and persistent across feature announcements', async (_feature, noticeId) => {
