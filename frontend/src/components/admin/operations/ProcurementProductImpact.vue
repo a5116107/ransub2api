@@ -29,6 +29,7 @@
       <button type="submit" class="btn btn-secondary" :disabled="busy || managementBusy || recipeBusy || !productID" data-testid="product-impact-preview">{{ t(`${p}.${busy ? 'loading' : 'preview'}`) }}</button>
     </form>
     <p id="impact-product-help" class="text-xs leading-5 text-gray-500">{{ t(`${p}.readOnly`) }}</p>
+    <ProcurementSharedMonitoringPreview :products="products" :presets="recipePresets" :loading="productsBusy || presetsBusy" :load-error="productsError || presetsError" :disabled="recipeBusy || managementBusy" :initial-product-id="productID" :initial-preset-id="presetID" @load="openProducts(); loadPresets()" @search="loadProducts" />
     <section v-if="productID" class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="management-authorization-title" data-testid="management-authorization">
       <h3 id="management-authorization-title" class="font-medium">{{ t(`${p}.authorization.title`) }}</h3>
       <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.authorization.boundary`) }}</p>
@@ -262,6 +263,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
+import ProcurementSharedMonitoringPreview from './ProcurementSharedMonitoringPreview.vue'
 import { list as listGroups } from '@/api/admin/groups'
 import { listQualityPresets, type QualityRulePreset } from '@/api/admin/accountQuality'
 import { applyProcurementRecipe, previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementPreview, type ProcurementManagementState, type ProcurementProductImpact, type ProcurementRecipeApplication } from '@/api/admin/procurementCatalog'

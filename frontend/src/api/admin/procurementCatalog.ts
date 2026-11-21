@@ -4,6 +4,18 @@ import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 export interface ProcurementBucket { code: string; name: string; min_rate: string | null; max_rate: string | null }
 export interface ProcurementCatalog { version: number; revision: number; buckets: ProcurementBucket[] }
 export interface ProcurementCatalogSnapshot { catalog: ProcurementCatalog; gaps: Array<{ min_rate: string | null; max_rate: string | null }> }
+export interface ProcurementMonitoringSelection { product_id: number; preset_id: number }
+export interface ProcurementSharedMonitoringPreview {
+  version: number; scope: string; observed_at: string; state: string
+  products: Array<{ product_id: number; name: string; preset_id: number; source_revision: number; state: string; accounts: number | null }>
+  accounts: Array<{ account_id: number; name: string; product_ids: number[]; models: string[]; cron_expression: string; state: string; reason: string; existing_plan_id?: number; existing_enabled?: boolean }>
+  requirements: number; shared_accounts: number
+  current_minimum_requests_per_day: number | null; delta_minimum_requests_per_day: number | null
+  coverage?: MonitoringProbeCoverage
+}
+export async function previewProcurementSharedMonitoring(products: ProcurementMonitoringSelection[], signal?: AbortSignal): Promise<ProcurementSharedMonitoringPreview> {
+  return (await apiClient.post<ProcurementSharedMonitoringPreview>('/admin/upstream-procurement/monitoring-preview', { version: 1, products }, { signal })).data
+}
 export interface ProcurementRequestScope {
   account_id: number
   public_model: string

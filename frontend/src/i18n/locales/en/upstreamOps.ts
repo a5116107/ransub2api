@@ -1,4 +1,25 @@
 export default {
+  sharedMonitoring: {
+    title: 'Shared monitoring across products', intro: 'Select products and observation presets to combine approved supply requirements before reviewing shared accounts and budget.',
+    product: 'Product {n}', preset: 'Observation preset {n}', choosePreset: 'Choose an observation preset', add: 'Add product', remove: 'Remove', removeRow: 'Remove product {n}',
+    preview: 'Preview shared demand', loading: 'Checking…', retry: 'Retry', duplicate: 'Select each product only once.', loadFailed: 'Options failed to load. Please retry.',
+    failed: 'The preview failed or returned an incompatible contract. Selections are retained; check again.', forbidden: 'Full administrator access is required.',
+    products: 'Products', requirements: 'Known product × account requirements', accounts: 'Known distinct accounts', shared: 'Known shared accounts',
+    models: 'Combined models', cron: 'Native cron covering all requirements', accountProducts: 'Products #{ids}', existingPlan: 'Existing native plan #{id}', enabled: 'Enabled', paused: 'Paused; still occupies the rule scope', pages: 'Shared account pages',
+    observed: 'Snapshot: {at}. Preview again after 30 seconds.',
+    states: { compatible: 'Observation settings can be combined. Review budget, existing plans and sources below.', conflict: 'A configuration or existing-plan conflict prevents treating this as an executable merge.', incomplete: 'Some product sources are empty, unavailable or inactive; no complete budget was calculated.', expired: 'This snapshot expired. Preview again; historical results do not establish current state.' },
+    sources: { approved_sources: '{count} approved source accounts', sources_unavailable: 'Approved sources unknown or unavailable', no_approved_accounts: 'No accounts in approved sources', product_inactive: 'Product inactive', expired: 'Snapshot expired; check again' },
+    reasons: {
+      compatible: 'Observation settings compatible', invalid_requirements: 'Invalid requirements', invalid_preset: 'Native preset invalid or disabled', observation_settings_conflict: 'Question, grading, reasoning or other test settings conflict',
+      native_model_limit: 'Merged native model or sample limit exceeded', schedule_timezones_conflict: 'Different schedule time zones; merge not inferred', invalid_merged_plan: 'Merged plan failed native validation', existing_observation_plan: 'Existing observation plan; original ownership retained', expired: 'Snapshot expired; check again'
+    },
+    budget: {
+      fits: 'Known request lower bound fits; token cost and timely completion are not guaranteed.', partial: 'Known lower bound fits, but some monitoring demand remains unestimated.', blocked: 'Known demand exceeds native budget constraints; changes must be blocked.', off: 'Budget enforcement is off; this does not establish executable capacity.', unknown: 'Shared demand is incomplete; no budget total is available.', expired: 'Budget snapshot expired.',
+      counts: 'Current {current}/day · Additional lower bound +{delta} · Proposed {total}/day · Regular capacity {capacity}/day',
+      boundary: 'A native cron envelope can add execution times. Budget uses the final models and expression; retries, tokens, complete scopes and peak completion are not guaranteed.', configure: 'View shared monitoring budget'
+    },
+    boundary: 'Preview only: no plans, product participation, ownership, counters, billing or upstream calls are changed. Existing manual, template and paused observation plans are retained. Shared saving and continuous coordination are not implemented. Source and settings compatibility do not establish model identity, cache quality or automatic product eligibility.'
+  },
   productImpact: {
     recipe: {
       application: {

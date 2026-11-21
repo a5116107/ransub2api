@@ -1,4 +1,25 @@
 export default {
+  sharedMonitoring: {
+    title: '多产品共享检测预演', intro: '选择产品及其观察预设，按批准的供应来源合并模型与检测时刻，先核对共用账号和预算。',
+    product: '产品 {n}', preset: '观察预设 {n}', choosePreset: '选择观察预设', add: '添加产品', remove: '移除', removeRow: '移除产品 {n}',
+    preview: '预演共享需求', loading: '正在核对…', retry: '重试', duplicate: '同一产品只需选择一次。', loadFailed: '选项加载失败，请重试。',
+    failed: '预演未完成或返回了不兼容数据。选择已保留，请重新核对。', forbidden: '需要完整管理员权限。',
+    products: '产品数', requirements: '已识别产品 × 账号需求', accounts: '已识别独立账号', shared: '已识别共用账号',
+    models: '合并模型', cron: '覆盖全部要求的原生 Cron', accountProducts: '产品 #{ids}', existingPlan: '已有原计划 #{id}', enabled: '启用中', paused: '已暂停，仍占用规则位置', pages: '共享账号分页',
+    observed: '读取快照：{at}；30 秒后需重新预演。',
+    states: { compatible: '检测配置可合并；预算、现存计划及来源结论见下方。', conflict: '存在配置或原计划冲突，当前不能作为合并执行依据。', incomplete: '部分产品来源为空、不可用或已停用，未生成完整预算。', expired: '此快照已过期，请重新预演；历史结果不代表当前状态。' },
+    sources: { approved_sources: '{count} 个批准来源账号', sources_unavailable: '批准来源未知或不可用', no_approved_accounts: '批准来源中暂无账号', product_inactive: '产品已停用', expired: '快照过期，待重新核对' },
+    reasons: {
+      compatible: '检测配置可合并', invalid_requirements: '需求无效', invalid_preset: '原预设无效或已停用', observation_settings_conflict: '题型、判题、推理或其他检测设置不相容',
+      native_model_limit: '合并后超过原生模型或样本上限', schedule_timezones_conflict: '检测时区不同，未自动合并', invalid_merged_plan: '合并结果未通过原生校验', existing_observation_plan: '已有观察计划，保留原归属', expired: '快照过期，待重新核对'
+    },
+    budget: {
+      fits: '已知调用下界可容纳；不是 Token 费用或及时完成保证。', partial: '已知下界可容纳，但检测覆盖仍有未估算项。', blocked: '已知需求超过原预算约束，变更应被阻断。', off: '预算保护未开启，不作为可执行依据。', unknown: '共享需求不完整，未提供预算合计。', expired: '预算快照已过期。',
+      counts: '当前 {current} / 日 · 新增下界 +{delta} · 变更后 {total} / 日 · 常规容量 {capacity} / 日',
+      boundary: '原生 Cron 的覆盖合并可能增加执行时刻，预算按最终模型和表达式测算；重试、Token、完整 scope 和峰值完成时间没有保证。', configure: '查看共享检测预算'
+    },
+    boundary: '仅预演，不写计划、产品参与关系、归属、额度或账单，也不请求上游。已有手工、模板和暂停观察计划均保留；当前没有共享合并保存或连续协调。来源和配置相容不等于模型真实、缓存合格或自动产品资格。'
+  },
   productImpact: {
     recipe: {
       application: {

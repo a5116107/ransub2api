@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +73,7 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	protected.Use((&admin.AccountHandler{}).AuthorizeObserver)
 	protected.GET("/upstream-procurement/products/:id/impact", h.ProcurementProductImpact)
 	protected.POST("/upstream-procurement/products/:id/monitoring-recipe", h.ApplyProcurementRecipe)
+	protected.POST("/upstream-procurement/monitoring-preview", h.ProcurementSharedMonitoringPreview)
 	run := func(role, query string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -116,6 +118,179 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	require.True(t, r.Demand.Coverage.CanSave)
 	require.EqualValues(t, 1, r.SourcePolicyRevision)
 	require.False(t, r.PresetUpdatedAt.IsZero())
+	t.Run("shared products compile one native model and cron union with original budget and no writes", func(t *testing.T) {
+		var second, secondSource, secondPreset int64
+		for name, id := range map[string]*int64{"Second sales product": &second, "Second approved inventory": &secondSource} {
+			require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform,rate_multiplier) VALUES($1,'openai',.3) RETURNING id`, name).Scan(id))
+		}
+		secondPolicy := fmt.Sprintf(`{"version":6,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"not_required","source_group_ids":[%d]}`, secondSource)
+		_, err := db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$1 WHERE id=$2`, secondPolicy, second)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2),($3,$4)`, accounts[0], secondSource, accounts[2], second)
+		require.NoError(t, err)
+		secondConfig := strings.Replace(cfg, `["model-a","model-b"]`, `["model-b","model-c"]`, 1)
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO quality_rule_presets(name,model_id,cron_expression,enabled,max_results,pelican_config) VALUES('Second preset','model-b','*/30 * * * *',true,100,$1) RETURNING id`, secondConfig).Scan(&secondPreset))
+		selection := &service.ProcurementSharedMonitoringCommand{Version: 1, Products: []service.ProcurementMonitoringProductSelection{{ProductID: second, PresetID: secondPreset}, {ProductID: product, PresetID: preset}}}
+		hashes := func() map[string]string {
+			t.Helper()
+			out := map[string]string{}
+			for _, table := range []string{"groups", "accounts", "account_groups", "quality_rule_presets", "scheduled_test_plans", "monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "scheduled_test_results", "scheduler_outbox", "usage_logs"} {
+				var digest string
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT md5(COALESCE(string_agg(to_jsonb(t)::text,E'\n' ORDER BY to_jsonb(t)::text),'')) FROM `+table+` t`).Scan(&digest))
+				out[table] = digest
+			}
+			return out
+		}
+		call := func(role string, raw []byte) *httptest.ResponseRecorder {
+			t.Helper()
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upstream-procurement/monitoring-preview", bytes.NewReader(raw))
+			if tokens[role] != "" {
+				req.Header.Set("Authorization", "Bearer "+tokens[role])
+			}
+			router.ServeHTTP(w, req)
+			for _, secret := range []string{"private-", "fixture-private-recipe-key", "pq:", "password_hash"} {
+				require.NotContains(t, w.Body.String(), secret)
+			}
+			return w
+		}
+		readShared := func() service.ProcurementSharedMonitoringPreview {
+			t.Helper()
+			before := hashes()
+			raw, err := json.Marshal(selection)
+			require.NoError(t, err)
+			w := call("admin", raw)
+			require.Equal(t, 200, w.Code, w.Body.String())
+			require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+			require.Equal(t, before, hashes())
+			var reply struct {
+				Data service.ProcurementSharedMonitoringPreview `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &reply))
+			return reply.Data
+		}
+		raw, err := json.Marshal(selection)
+		require.NoError(t, err)
+		for role, status := range map[string]int{"": 401, "user": 403, "observer": 403} {
+			require.Equal(t, status, call(role, raw).Code)
+		}
+		for _, raw := range [][]byte{[]byte(`null`), []byte(`{"version":1,"products":[]}`), []byte(`{"version":1,"version":1,"products":[{"product_id":1,"preset_id":1}]}`), bytes.Repeat([]byte(" "), 8193)} {
+			require.Equal(t, 400, call("admin", raw).Code)
+		}
+		got := readShared()
+		require.Equal(t, "compatible", got.State)
+		require.Equal(t, 3, got.Requirements)
+		require.Equal(t, 1, got.SharedAccounts)
+		require.Len(t, got.Accounts, 2)
+		require.Equal(t, accounts[0], got.Accounts[0].AccountID)
+		require.Equal(t, []string{"model-a", "model-b", "model-c"}, got.Accounts[0].Models)
+		require.Len(t, got.Accounts[0].ProductIDs, 2)
+		require.Nil(t, got.Accounts[0].ExistingPlanID)
+		require.EqualValues(t, 24, *got.CurrentMinimumRequestsPerDay)
+		require.EqualValues(t, 768, *got.DeltaMinimumRequestsPerDay)
+		require.EqualValues(t, 792, got.Coverage.MinimumTotalRequestsPerDay)
+		require.EqualValues(t, 3, got.Coverage.AccountPlans, "one original connectivity plus two distinct account quality plans, not three product-account rules")
+		require.True(t, got.Coverage.CanSave)
+		settings.RequestsPerDay = 500
+		settings, err = budget.SaveSettings(ctx, settings)
+		require.NoError(t, err)
+		got = readShared()
+		require.Equal(t, "compatible", got.State, "compatibility and budget are different conclusions")
+		require.False(t, got.Coverage.CanSave)
+		require.NotEmpty(t, got.Coverage.BlockingReasons)
+		settings.RequestsPerDay = 1000
+		settings, err = budget.SaveSettings(ctx, settings)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET cron_expression='0 * * * *' WHERE id=$1`, secondPreset)
+		require.NoError(t, err)
+		got = readShared()
+		require.EqualValues(t, 480, *got.DeltaMinimumRequestsPerDay, "shared overlap is measured once, not summed across products")
+		var nativeConfig service.PelicanTestConfig
+		require.NoError(t, json.Unmarshal([]byte(cfg), &nativeConfig))
+		old, err := native.CreatePlan(ctx, &service.ScheduledTestPlan{AccountID: accounts[0], ModelID: "model-a", CronExpression: "0 * * * *", Enabled: false, MaxResults: 100, PelicanConfig: &nativeConfig})
+		require.NoError(t, err)
+		got = readShared()
+		require.Equal(t, "conflict", got.State)
+		require.Equal(t, "existing_observation_plan", got.Accounts[0].Reason)
+		require.Equal(t, old.ID, *got.Accounts[0].ExistingPlanID)
+		require.False(t, *got.Accounts[0].ExistingEnabled)
+		require.NotNil(t, got.Coverage, "native conflict never grants permission even when budget can be compiled")
+		require.NoError(t, native.DeletePlan(ctx, old.ID))
+		_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET pelican_config=jsonb_set(pelican_config,'{reasoning_effort}','"high"') WHERE id=$1`, secondPreset)
+		require.NoError(t, err)
+		got = readShared()
+		require.Equal(t, "conflict", got.State)
+		require.Equal(t, "observation_settings_conflict", got.Accounts[0].Reason)
+		require.Nil(t, got.Coverage)
+		require.Nil(t, got.DeltaMinimumRequestsPerDay)
+		_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET pelican_config=$2 WHERE id=$1`, secondPreset, secondConfig)
+		require.NoError(t, err)
+		t.Run("one repeatable read snapshot across all products", func(t *testing.T) {
+			lock, err := db.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			defer func() { _ = lock.Rollback() }()
+			_, err = lock.ExecContext(ctx, `LOCK TABLE quality_rule_presets IN ACCESS EXCLUSIVE MODE`)
+			require.NoError(t, err)
+			type reply struct {
+				out *service.ProcurementSharedMonitoringPreview
+				err error
+			}
+			done := make(chan reply, 1)
+			repo := repository.NewChannelRepository(db).(service.ProcurementSharedMonitoringRepository)
+			go func() { out, err := repo.PreviewProcurementSharedMonitoring(ctx, selection); done <- reply{out, err} }()
+			require.Eventually(t, func() bool {
+				var waiting bool
+				err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE NOT granted AND relation='quality_rule_presets'::regclass)`).Scan(&waiting)
+				return err == nil && waiting
+			}, 3*time.Second, 10*time.Millisecond)
+			_, err = db.ExecContext(ctx, `DELETE FROM account_groups WHERE group_id=$1`, secondSource)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accounts[2], secondSource)
+			require.NoError(t, err)
+			require.NoError(t, lock.Commit())
+			select {
+			case result := <-done:
+				require.NoError(t, result.err)
+				require.Equal(t, 1, result.out.SharedAccounts)
+				require.Len(t, result.out.Accounts, 2)
+				require.Equal(t, accounts[0], result.out.Accounts[0].AccountID)
+			case <-time.After(5 * time.Second):
+				t.Fatal("snapshot preview did not finish")
+			}
+			_, err = db.ExecContext(ctx, `DELETE FROM account_groups WHERE group_id=$1`, secondSource)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accounts[0], secondSource)
+			require.NoError(t, err)
+		})
+		_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=NULL WHERE id=$1`, second)
+		require.NoError(t, err)
+		got = readShared()
+		require.Equal(t, "incomplete", got.State)
+		require.Nil(t, got.Coverage)
+		require.Len(t, got.Accounts, 2, "unknown source must not use the product's old bound extra account")
+		_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2,status='inactive' WHERE id=$1`, second, secondPolicy)
+		require.NoError(t, err)
+		got = readShared()
+		require.Equal(t, "incomplete", got.State)
+		require.Nil(t, got.Coverage)
+		_, err = db.ExecContext(ctx, `UPDATE groups SET status='active' WHERE id=$1`, second)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `DELETE FROM account_groups WHERE group_id=$1`, secondSource)
+		require.NoError(t, err)
+		got = readShared()
+		require.Equal(t, "incomplete", got.State)
+		require.Nil(t, got.Coverage)
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err = repository.NewChannelRepository(db).(service.ProcurementSharedMonitoringRepository).PreviewProcurementSharedMonitoring(canceled, selection)
+		require.ErrorIs(t, err, context.Canceled)
+		_, err = db.ExecContext(ctx, `ALTER TABLE quality_rule_presets RENAME TO shared_fault_presets`)
+		require.NoError(t, err)
+		require.Equal(t, 503, call("admin", raw).Code)
+		_, err = db.ExecContext(ctx, `ALTER TABLE shared_fault_presets RENAME TO quality_rule_presets`)
+		require.NoError(t, err)
+		require.Equal(t, 200, call("admin", raw).Code)
+	})
 	apply := func(role string, raw []byte) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()

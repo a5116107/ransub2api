@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,150 @@ func TestProcurementRecipeConfirmationCommand(t *testing.T) {
 		strings.Replace(raw, strings.Repeat("a", 64), strings.Repeat("z", 64), 1), strings.Replace(raw, `"preset_id":7`, `"preset_id":7,"account_ids":[1]`, 1)} {
 		_, err := ParseProcurementRecipeCommand([]byte(invalid))
 		require.ErrorIs(t, err, ErrProcurementRecipeCommand)
+	}
+}
+
+func sharedMonitoringPreset(models []string, expression string) *QualityRulePreset {
+	return &QualityRulePreset{ModelID: models[0], CronExpression: expression, Enabled: true, MaxResults: 20,
+		PelicanConfig: &PelicanTestConfig{QuestionKind: "candy", Prompt: "Return one", ReasoningEffort: "medium", ParallelCount: 2,
+			ModelIDs: append([]string(nil), models...), Quality: &QualityPolicy{Action: QualityActionObserveOnly, ExpectedAnswer: "1"}}}
+}
+
+func TestProcurementSharedMonitoringCommand(t *testing.T) {
+	raw := `{"version":1,"products":[{"product_id":2,"preset_id":3},{"product_id":4,"preset_id":3}]}`
+	c, err := ParseProcurementSharedMonitoringCommand([]byte(raw))
+	require.NoError(t, err)
+	require.Len(t, c.Products, 2)
+	var missing *ProcurementSharedMonitoringCommand
+	require.ErrorIs(t, missing.Validate(), ErrProcurementSharedMonitoringCommand)
+	for _, bad := range []string{"null", "[]", "{}", raw + "{}", strings.Replace(raw, `"version":1`, `"version":2`, 1),
+		strings.Replace(raw, `"version":1`, `"version":1,"version":1`, 1), strings.Replace(raw, `"product_id":2`, `"product_id":2,"product_id":2`, 1),
+		strings.Replace(raw, `"product_id":4`, `"product_id":2`, 1), strings.Replace(raw, `"preset_id":3`, `"preset_id":null`, 1),
+		strings.Replace(raw, `"product_id":2`, `"product_id":9007199254740992`, 1), strings.Replace(raw, `"product_id":2`, `"product_id":1.5`, 1),
+		`{"version":1,"products":[]}`, `{"version":1,"products":null}`, strings.Replace(raw, `"preset_id":3`, `"preset_id":3,"account_ids":[1]`, 1)} {
+		_, err := ParseProcurementSharedMonitoringCommand([]byte(bad))
+		require.ErrorIs(t, err, ErrProcurementSharedMonitoringCommand, bad)
+	}
+	for i := 0; i < 19; i++ {
+		c.Products = append(c.Products, ProcurementMonitoringProductSelection{ProductID: int64(i + 10), PresetID: 3})
+	}
+	require.ErrorIs(t, c.Validate(), ErrProcurementSharedMonitoringCommand)
+}
+
+func TestProcurementSharedMonitoringMergePreservesNativeRequirements(t *testing.T) {
+	at := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	a := sharedMonitoringPreset([]string{"b", "a"}, "*/10 * * * *")
+	b := sharedMonitoringPreset([]string{"c", "b"}, "*/5 * * * *")
+	a.MaxResults, b.MaxResults = 4, 4
+	inputs := []*QualityRulePreset{a, b}
+	before, err := json.Marshal(inputs)
+	require.NoError(t, err)
+	plan, reason := MergeProcurementMonitoringRecipes(inputs, at)
+	require.Equal(t, "compatible", reason)
+	require.Equal(t, []string{"a", "b", "c"}, plan.PelicanConfig.ModelIDs)
+	require.Equal(t, "a", plan.ModelID)
+	require.Equal(t, 6, plan.MaxResults, "retain the full combined native quality round")
+	require.Equal(t, at.Add(5*time.Minute), *plan.NextRunAt)
+	reversed, reason := MergeProcurementMonitoringRecipes([]*QualityRulePreset{b, a}, at)
+	require.Equal(t, "compatible", reason)
+	require.Equal(t, plan, reversed)
+	after, err := json.Marshal(inputs)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	plan.PelicanConfig.ModelIDs[0] = "changed"
+	after, err = json.Marshal(inputs)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	for _, variant := range []string{"prompt", "effort", "parallel", "question", "lifetime", "timezone", "models", "samples", "invalid", "empty"} {
+		t.Run(variant, func(t *testing.T) {
+			a := sharedMonitoringPreset([]string{"a"}, "0 * * * *")
+			b := sharedMonitoringPreset([]string{"b"}, "*/5 * * * *")
+			inputs := []*QualityRulePreset{a, b}
+			want := "observation_settings_conflict"
+			switch variant {
+			case "prompt":
+				b.PelicanConfig.Prompt = "other"
+			case "effort":
+				b.PelicanConfig.ReasoningEffort = "high"
+			case "parallel":
+				b.PelicanConfig.ParallelCount = 1
+			case "question":
+				b.PelicanConfig.QuestionKind = QualityRandomQuestionKind
+			case "lifetime":
+				b.PelicanConfig.Quality.EvidenceValidForSeconds = 60
+			case "timezone":
+				a.CronExpression = "CRON_TZ=UTC 0 * * * *"
+				b.CronExpression = "CRON_TZ=Asia/Hong_Kong 0 * * * *"
+				want = "schedule_timezones_conflict"
+			case "models":
+				for i := 0; i < 26; i++ {
+					a.PelicanConfig.ModelIDs = append(a.PelicanConfig.ModelIDs, fmt.Sprintf("a-%d", i))
+					b.PelicanConfig.ModelIDs = append(b.PelicanConfig.ModelIDs, fmt.Sprintf("b-%d", i))
+				}
+				a.MaxResults, b.MaxResults = 100, 100
+				want = "native_model_limit"
+			case "samples":
+				for i := 0; i < 7; i++ {
+					a.PelicanConfig.ModelIDs = append(a.PelicanConfig.ModelIDs, fmt.Sprintf("a-%d", i))
+					b.PelicanConfig.ModelIDs = append(b.PelicanConfig.ModelIDs, fmt.Sprintf("b-%d", i))
+				}
+				a.PelicanConfig.ParallelCount, b.PelicanConfig.ParallelCount = 8, 8
+				a.MaxResults, b.MaxResults = 100, 100
+				want = "native_model_limit"
+			case "invalid":
+				b.Enabled = false
+				want = "invalid_preset"
+			case "empty":
+				inputs = nil
+				want = "invalid_requirements"
+			}
+			p, reason := MergeProcurementMonitoringRecipes(inputs, at)
+			require.Nil(t, p)
+			require.Equal(t, want, reason)
+		})
+	}
+}
+
+func TestProcurementSharedMonitoringCronCoversEveryRequiredTick(t *testing.T) {
+	for _, expressions := range [][]string{
+		{"*/10 * * * *", "*/5 * * * *"},
+		{"0 0 * * *", "30 12 * * *"},
+		{"0 0 * * MON", "0 12 * * TUE"},
+		{"0 0 1 * *", "0 12 * * MON"},
+		{"0 0 1 * MON", "0 12 15 * FRI"},
+		{"0 0 */2 * MON", "0 12 */3 * TUE"},
+		{"0 0 */2 * */2", "0 12 */3 * */3"},
+		{"0 0 29 2 *", "0 12 31 1,3,5,7,8,10,12 *"},
+		{"CRON_TZ=America/New_York 30 1 * * *", "CRON_TZ=America/New_York 30 2 * * *"},
+		{"CRON_TZ=Asia/Hong_Kong 0 0 1 * *", "CRON_TZ=Asia/Hong_Kong 0 12 * * MON"},
+	} {
+		t.Run(strings.Join(expressions, "+"), func(t *testing.T) {
+			merged, ok := mergeProcurementMonitoringCron(expressions)
+			require.True(t, ok)
+			schedule, err := scheduledTestCronParser.Parse(merged)
+			require.NoError(t, err)
+			reversed := slices.Clone(expressions)
+			slices.Reverse(reversed)
+			other, ok := mergeProcurementMonitoringCron(reversed)
+			require.True(t, ok)
+			require.Equal(t, merged, other)
+			for _, expr := range expressions {
+				original, err := scheduledTestCronParser.Parse(expr)
+				require.NoError(t, err)
+				at := time.Date(2023, 12, 30, 0, 0, 0, 0, time.UTC)
+				end := at.AddDate(5, 0, 0)
+				ticks := 0
+				for ticks < 20000 {
+					at = original.Next(at)
+					if at.IsZero() || !at.Before(end) {
+						break
+					}
+					ticks++
+					require.Equal(t, at, schedule.Next(at.Add(-time.Nanosecond)), "missing original tick %s of %s in %s", at, expr, merged)
+				}
+				require.Positive(t, ticks)
+			}
+		})
 	}
 }
 

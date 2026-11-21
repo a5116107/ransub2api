@@ -51,21 +51,8 @@ func loadProcurementMonitoringRecipe(ctx context.Context, tx *sql.Tx, group *ser
 	}
 	// Match migration 258, including paused and BPS observation rules. The
 	// enabled-only budget inventory cannot establish this native constraint.
-	rows, err := tx.QueryContext(ctx, `SELECT account_id,id,enabled FROM scheduled_test_plans
- WHERE account_id=ANY($1) AND pelican_config#>>'{quality,action}'=$2 ORDER BY account_id,id LIMIT $3`,
-		pq.Array(ids), service.QualityActionObserveOnly, n+1)
+	distribution.Conflicts, err = loadProcurementObservationConflicts(ctx, tx, ids)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var conflict service.ProcurementRecipeDistributionConflict
-		if err := rows.Scan(&conflict.AccountID, &conflict.PlanID, &conflict.Enabled); err != nil {
-			return nil, err
-		}
-		distribution.Conflicts = append(distribution.Conflicts, conflict)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
 	distribution.ExaminedAccounts = n
@@ -122,6 +109,25 @@ func loadProcurementMonitoringRecipe(ctx context.Context, tx *sql.Tx, group *ser
 	out.ApplicationReview = &service.ProcurementRecipeApplicationReview{ObservedAt: quoteAt, ExpiresAt: quoteAt.Add(service.ProcurementRecipeReviewTTL),
 		Fingerprint: hex.EncodeToString(hash[:]), CanConfirm: group.Status == service.StatusActive && distribution.State == "ready" && proposed.Enforced && proposed.CanSave}
 	return out, nil
+}
+
+func loadProcurementObservationConflicts(ctx context.Context, tx *sql.Tx, ids []int64) ([]service.ProcurementRecipeDistributionConflict, error) {
+	conflicts := []service.ProcurementRecipeDistributionConflict{}
+	rows, err := tx.QueryContext(ctx, `SELECT account_id,id,enabled FROM scheduled_test_plans
+ WHERE account_id=ANY($1) AND pelican_config#>>'{quality,action}'=$2 ORDER BY account_id,id LIMIT $3`,
+		pq.Array(ids), service.QualityActionObserveOnly, len(ids)+1)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var c service.ProcurementRecipeDistributionConflict
+		if err := rows.Scan(&c.AccountID, &c.PlanID, &c.Enabled); err != nil {
+			return nil, err
+		}
+		conflicts = append(conflicts, c)
+	}
+	return conflicts, errors.Join(rows.Err(), rows.Close())
 }
 
 func (r *channelRepository) ApplyProcurementRecipe(ctx context.Context, id int64, command *service.ProcurementRecipeCommand) (out *service.ProcurementRecipeApplication, err error) {

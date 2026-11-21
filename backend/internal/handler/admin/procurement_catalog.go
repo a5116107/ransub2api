@@ -125,6 +125,39 @@ func (h *ChannelHandler) ProcurementClassificationPreview(c *gin.Context) {
 	response.Success(c, out)
 }
 
+func (h *ChannelHandler) ProcurementSharedMonitoringPreview(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 8192))
+	if err != nil {
+		response.ErrorFrom(c, service.ErrProcurementSharedMonitoringCommand)
+		return
+	}
+	command, err := service.ParseProcurementSharedMonitoringCommand(raw)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	repo, err := h.channelService.ProcurementSharedMonitoringRepository()
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	out, err := repo.PreviewProcurementSharedMonitoring(ctx, command)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrProcurementSharedMonitoringCommand), errors.Is(err, service.ErrGroupNotFound), errors.Is(err, service.ErrObserverScope),
+			errors.Is(err, service.ErrProcurementProductImpactTooLarge), errors.Is(err, service.ErrProcurementMonitoringRecipeNotFound), errors.Is(err, service.ErrProcurementMonitoringRecipeInvalid):
+			response.ErrorFrom(c, err)
+		default:
+			response.ErrorFrom(c, service.ErrProcurementSharedMonitoringUnavailable)
+		}
+		return
+	}
+	response.Success(c, out)
+}
+
 // First-time additions only. Existing plans and product ownership are untouched.
 func (h *ChannelHandler) ApplyProcurementRecipe(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
