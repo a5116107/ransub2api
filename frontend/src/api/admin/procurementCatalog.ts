@@ -12,9 +12,27 @@ export interface ProcurementSharedMonitoringPreview {
   requirements: number; shared_accounts: number
   current_minimum_requests_per_day: number | null; delta_minimum_requests_per_day: number | null
   coverage?: MonitoringProbeCoverage
+  application_review?: {
+    revision: number; observed_at: string; expires_at: string; fingerprint: string; can_confirm: boolean; release_ownership: boolean
+    changes: Array<{ account_id: number; plan_id?: number; operation: string; reason: string }>
+  }
 }
-export async function previewProcurementSharedMonitoring(products: ProcurementMonitoringSelection[], signal?: AbortSignal): Promise<ProcurementSharedMonitoringPreview> {
-  return (await apiClient.post<ProcurementSharedMonitoringPreview>('/admin/upstream-procurement/monitoring-preview', { version: 1, products }, { signal })).data
+export interface ProcurementSharedMonitoringState {
+  version: number; revision: number; observed_at: string; products: ProcurementMonitoringSelection[]
+  plans: Array<{ account_id: number; plan_id: number; state: string; enabled: boolean }>
+}
+export interface ProcurementSharedMonitoringApplyCommand {
+  version: 2; products: ProcurementMonitoringSelection[]; release_ownership: boolean
+  revision: number; observed_at: string; fingerprint: string; confirm: true
+}
+export async function readProcurementSharedMonitoring(signal?: AbortSignal): Promise<ProcurementSharedMonitoringState> {
+  return (await apiClient.get<ProcurementSharedMonitoringState>('/admin/upstream-procurement/monitoring', { signal })).data
+}
+export async function applyProcurementSharedMonitoring(command: ProcurementSharedMonitoringApplyCommand): Promise<ProcurementSharedMonitoringState> {
+  return (await apiClient.post<ProcurementSharedMonitoringState>('/admin/upstream-procurement/monitoring', command)).data
+}
+export async function previewProcurementSharedMonitoring(products: ProcurementMonitoringSelection[], signal?: AbortSignal, releaseOwnership = false): Promise<ProcurementSharedMonitoringPreview> {
+  return (await apiClient.post<ProcurementSharedMonitoringPreview>('/admin/upstream-procurement/monitoring-preview', { version: 2, products, release_ownership: releaseOwnership }, { signal })).data
 }
 export interface ProcurementRequestScope {
   account_id: number

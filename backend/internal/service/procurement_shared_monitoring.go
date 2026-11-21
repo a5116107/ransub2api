@@ -17,8 +17,10 @@ import (
 
 const ProcurementSharedMonitoringProductLimit = 20
 
-var ErrProcurementSharedMonitoringCommand = infraerrors.BadRequest("PROCUREMENT_SHARED_MONITORING_COMMAND_INVALID", "select 1-20 distinct products and their observation presets")
+var ErrProcurementSharedMonitoringCommand = infraerrors.BadRequest("PROCUREMENT_SHARED_MONITORING_COMMAND_INVALID", "select distinct products and observation presets within the shared-plan limit")
 var ErrProcurementSharedMonitoringUnavailable = infraerrors.ServiceUnavailable("PROCUREMENT_SHARED_MONITORING_UNAVAILABLE", "shared monitoring preview is unavailable")
+var ErrProcurementSharedMonitoringConflict = infraerrors.Conflict("PROCUREMENT_SHARED_MONITORING_CHANGED", "shared observation inputs changed; read saved participation and preview again")
+var ErrProcurementSharedMonitoringOwned = infraerrors.Conflict("PROCUREMENT_SHARED_MONITORING_OWNED", "this observation plan is managed by shared products; pause and release shared management before editing it manually")
 
 type ProcurementMonitoringProductSelection struct {
 	ProductID int64 `json:"product_id"`
@@ -26,12 +28,13 @@ type ProcurementMonitoringProductSelection struct {
 }
 
 type ProcurementSharedMonitoringCommand struct {
-	Version  int                                     `json:"version"`
-	Products []ProcurementMonitoringProductSelection `json:"products"`
+	Version          int                                     `json:"version"`
+	Products         []ProcurementMonitoringProductSelection `json:"products"`
+	ReleaseOwnership bool                                    `json:"release_ownership,omitempty"`
 }
 
 func (c *ProcurementSharedMonitoringCommand) Validate() error {
-	if c == nil || c.Version != 1 || len(c.Products) == 0 || len(c.Products) > ProcurementSharedMonitoringProductLimit {
+	if c == nil || (c.Version != 1 && c.Version != 2) || c.Products == nil || c.Version == 1 && (len(c.Products) == 0 || c.ReleaseOwnership) || len(c.Products) > ProcurementSharedMonitoringProductLimit || c.ReleaseOwnership && len(c.Products) != 0 {
 		return ErrProcurementSharedMonitoringCommand
 	}
 	seen := map[int64]bool{}
@@ -47,7 +50,9 @@ func (c *ProcurementSharedMonitoringCommand) Validate() error {
 func ParseProcurementSharedMonitoringCommand(raw []byte) (*ProcurementSharedMonitoringCommand, error) {
 	root := gjson.ParseBytes(raw)
 	var c ProcurementSharedMonitoringCommand
-	if !gjson.ValidBytes(raw) || !procurementCatalogObject(root, "version", "products") || !root.Get("products").IsArray() {
+	validObject := procurementCatalogObject(root, "version", "products") || root.Get("version").Int() == 2 && procurementCatalogObject(root, "version", "products", "release_ownership")
+	release := root.Get("release_ownership")
+	if !gjson.ValidBytes(raw) || !validObject || !root.Get("products").IsArray() || release.Exists() && release.Type != gjson.True && release.Type != gjson.False {
 		return nil, ErrProcurementSharedMonitoringCommand
 	}
 	for _, p := range root.Get("products").Array() {
@@ -96,10 +101,85 @@ type ProcurementSharedMonitoringPreview struct {
 	CurrentMinimumRequestsPerDay *int64                               `json:"current_minimum_requests_per_day"`
 	DeltaMinimumRequestsPerDay   *int64                               `json:"delta_minimum_requests_per_day"`
 	Coverage                     *MonitoringProbeCoverage             `json:"coverage,omitempty"`
+	ApplicationReview            *ProcurementSharedMonitoringReview   `json:"application_review,omitempty"`
+}
+
+type ProcurementSharedMonitoringChange struct {
+	AccountID int64  `json:"account_id"`
+	PlanID    int64  `json:"plan_id,omitempty"`
+	Operation string `json:"operation"`
+	Reason    string `json:"reason"`
+}
+
+type ProcurementSharedMonitoringReview struct {
+	Revision         int64                               `json:"revision"`
+	ObservedAt       time.Time                           `json:"observed_at"`
+	ExpiresAt        time.Time                           `json:"expires_at"`
+	Fingerprint      string                              `json:"fingerprint"`
+	CanConfirm       bool                                `json:"can_confirm"`
+	ReleaseOwnership bool                                `json:"release_ownership"`
+	Changes          []ProcurementSharedMonitoringChange `json:"changes"`
+}
+
+type ProcurementSharedMonitoringSavedPlan struct {
+	AccountID int64  `json:"account_id"`
+	PlanID    int64  `json:"plan_id"`
+	State     string `json:"state"`
+	Enabled   bool   `json:"enabled"`
+}
+
+type ProcurementSharedMonitoringState struct {
+	Version    int                                     `json:"version"`
+	Revision   int64                                   `json:"revision"`
+	ObservedAt time.Time                               `json:"observed_at"`
+	Products   []ProcurementMonitoringProductSelection `json:"products"`
+	Plans      []ProcurementSharedMonitoringSavedPlan  `json:"plans"`
+}
+
+type ProcurementSharedMonitoringApplyCommand struct {
+	ProcurementSharedMonitoringCommand
+	Revision    int64     `json:"revision"`
+	ObservedAt  time.Time `json:"observed_at"`
+	Fingerprint string    `json:"fingerprint"`
+	Confirm     bool      `json:"confirm"`
+}
+
+func (c ProcurementSharedMonitoringApplyCommand) MarshalJSON() ([]byte, error) {
+	type command ProcurementSharedMonitoringApplyCommand
+	return json.Marshal(struct {
+		command
+		ReleaseOwnership bool `json:"release_ownership"`
+	}{command: command(c), ReleaseOwnership: c.ReleaseOwnership})
+}
+
+func (c *ProcurementSharedMonitoringApplyCommand) Validate() error {
+	if c == nil || c.Version != 2 || c.ProcurementSharedMonitoringCommand.Validate() != nil || !c.Confirm || c.Revision < 0 || c.Revision >= domain.MaxProcurementPolicyRevision || c.ObservedAt.IsZero() || len(c.Fingerprint) != 64 || strings.Trim(c.Fingerprint, "0123456789abcdef") != "" {
+		return ErrProcurementSharedMonitoringCommand
+	}
+	return nil
+}
+
+func ParseProcurementSharedMonitoringApplyCommand(raw []byte) (*ProcurementSharedMonitoringApplyCommand, error) {
+	root := gjson.ParseBytes(raw)
+	var c ProcurementSharedMonitoringApplyCommand
+	if !gjson.ValidBytes(raw) || !procurementCatalogObject(root, "version", "products", "release_ownership", "revision", "observed_at", "fingerprint", "confirm") || !root.Get("products").IsArray() || root.Get("release_ownership").Type != gjson.True && root.Get("release_ownership").Type != gjson.False || root.Get("revision").Type != gjson.Number {
+		return nil, ErrProcurementSharedMonitoringCommand
+	}
+	for _, p := range root.Get("products").Array() {
+		if !procurementCatalogObject(p, "product_id", "preset_id") {
+			return nil, ErrProcurementSharedMonitoringCommand
+		}
+	}
+	if json.Unmarshal(raw, &c) != nil || c.Validate() != nil {
+		return nil, ErrProcurementSharedMonitoringCommand
+	}
+	return &c, nil
 }
 
 type ProcurementSharedMonitoringRepository interface {
 	PreviewProcurementSharedMonitoring(context.Context, *ProcurementSharedMonitoringCommand) (*ProcurementSharedMonitoringPreview, error)
+	ReadProcurementSharedMonitoring(context.Context) (*ProcurementSharedMonitoringState, error)
+	ApplyProcurementSharedMonitoring(context.Context, *ProcurementSharedMonitoringApplyCommand) (*ProcurementSharedMonitoringState, error)
 }
 
 func (s *ChannelService) ProcurementSharedMonitoringRepository() (ProcurementSharedMonitoringRepository, error) {

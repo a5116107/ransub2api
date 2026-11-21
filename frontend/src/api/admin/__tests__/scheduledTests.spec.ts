@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '../../client'
 import { listPelicanHistory } from '../scheduledTests'
 import { createQualityPreset, listQualityPresets, updateQualityPreset } from '../accountQuality'
+import { readProcurementSharedMonitoring, previewProcurementSharedMonitoring, applyProcurementSharedMonitoring } from '../procurementCatalog'
 
 vi.mock('../../client', () => ({ apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }))
 
@@ -36,5 +37,21 @@ describe('Pelican history API', () => {
     expect(apiClient.get).toHaveBeenLastCalledWith('/admin/pelican-test-results', { params: { before_id: 0, account_id: 42 } })
     await listPelicanHistory(9)
     expect(apiClient.get).toHaveBeenLastCalledWith('/admin/pelican-test-results', { params: { before_id: 9 } })
+  })
+})
+
+describe('shared observation API', () => {
+  it('reads saved participation and posts explicit false release consent through the original admin endpoints', async () => {
+    const signal = new AbortController().signal, products = [{ product_id: 2, preset_id: 3 }]
+    vi.mocked(apiClient.post).mockResolvedValue({ data: {} })
+    await readProcurementSharedMonitoring(signal)
+    expect(apiClient.get).toHaveBeenCalledWith('/admin/upstream-procurement/monitoring', { signal })
+    await previewProcurementSharedMonitoring(products, signal)
+    expect(apiClient.post).toHaveBeenLastCalledWith('/admin/upstream-procurement/monitoring-preview', { version: 2, products, release_ownership: false }, { signal })
+    const command = { version: 2 as const, products, release_ownership: false, revision: 0, observed_at: '2026-11-21T08:00:00Z', fingerprint: 'a'.repeat(64), confirm: true as const }
+    await applyProcurementSharedMonitoring(command)
+    expect(apiClient.post).toHaveBeenLastCalledWith('/admin/upstream-procurement/monitoring', command)
+    await previewProcurementSharedMonitoring([], signal, true)
+    expect(apiClient.post).toHaveBeenLastCalledWith('/admin/upstream-procurement/monitoring-preview', { version: 2, products: [], release_ownership: true }, { signal })
   })
 })

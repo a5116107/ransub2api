@@ -1,4 +1,4 @@
-import type { ProcurementManagementPreview, ProcurementManagementState, ProcurementManagementReview, ProcurementProductImpact, ProcurementWriterReview, ProcurementMonitoringSelection, ProcurementSharedMonitoringPreview } from '@/api/admin/procurementCatalog'
+import type { ProcurementManagementPreview, ProcurementManagementState, ProcurementManagementReview, ProcurementProductImpact, ProcurementWriterReview, ProcurementMonitoringSelection, ProcurementSharedMonitoringPreview, ProcurementSharedMonitoringState } from '@/api/admin/procurementCatalog'
 import type { QualityRulePreset } from '@/api/admin/accountQuality'
 import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 
@@ -199,9 +199,29 @@ function validProcurementRecipeCoverage(c: MonitoringProbeCoverage): boolean {
     !!c.schedule_window_start && !!c.schedule_window_end && Date.parse(c.schedule_window_end) - Date.parse(c.schedule_window_start) === 86400000
 }
 
-export function validProcurementSharedMonitoringPreview(v: ProcurementSharedMonitoringPreview, selections: ProcurementMonitoringSelection[]): boolean {
-  if (!v || v.version !== 1 || v.scope !== 'approved_sources_only' || !Number.isFinite(Date.parse(v.observed_at)) ||
-    !Array.isArray(v.products) || !v.products.length || v.products.length !== selections.length || v.products.length > 20 ||
+export function validProcurementSharedMonitoringState(v: ProcurementSharedMonitoringState): boolean {
+  if (!v || v.version !== 1 || !count(v.revision) || !Number.isFinite(Date.parse(v.observed_at)) ||
+    !Array.isArray(v.products) || v.products.length > 20 || !Array.isArray(v.plans) || v.plans.length > 1000 ||
+    v.revision === 0 && (v.products.length > 0 || v.plans.length > 0)) return false
+  let previous = 0
+  for (const p of v.products) {
+    if (!p || !count(p.product_id) || p.product_id <= previous || !count(p.preset_id) || !p.preset_id) return false
+    previous = p.product_id
+  }
+  previous = 0
+  const ids = new Set<number>()
+  for (const p of v.plans) {
+    if (!p || !count(p.account_id) || p.account_id <= previous || !count(p.plan_id) || !p.plan_id || ids.has(p.plan_id) ||
+      !['managed', 'paused', 'managed_plan_missing', 'managed_plan_changed', 'managed_plan_running'].includes(p.state) || typeof p.enabled !== 'boolean' ||
+      p.state === 'managed' && !p.enabled || p.state === 'paused' && p.enabled || p.state === 'managed_plan_missing' && p.enabled) return false
+    previous = p.account_id; ids.add(p.plan_id)
+  }
+  return true
+}
+
+export function validProcurementSharedMonitoringPreview(v: ProcurementSharedMonitoringPreview, selections: ProcurementMonitoringSelection[], releaseOwnership = false): boolean {
+  if (!v || ![1, 2].includes(v.version) || v.scope !== 'approved_sources_only' || !Number.isFinite(Date.parse(v.observed_at)) ||
+    !Array.isArray(v.products) || v.version === 1 && !v.products.length || v.products.length !== selections.length || v.products.length > 20 ||
     !Array.isArray(v.accounts) || v.accounts.length > 1000 || !count(v.requirements) || !count(v.shared_accounts)) return false
   const productCounts = new Map<number, number>()
   let previous = 0
@@ -216,7 +236,8 @@ export function validProcurementSharedMonitoringPreview(v: ProcurementSharedMoni
   }
   let requirements = 0, shared = 0
   previous = 0
-  const reasons = ['compatible', 'invalid_requirements', 'invalid_preset', 'observation_settings_conflict', 'native_model_limit', 'schedule_timezones_conflict', 'invalid_merged_plan', 'existing_observation_plan']
+  const managedConflicts = ['managed_plan_missing', 'managed_plan_changed', 'managed_plan_running']
+  const reasons = ['compatible', 'invalid_requirements', 'invalid_preset', 'observation_settings_conflict', 'native_model_limit', 'schedule_timezones_conflict', 'invalid_merged_plan', 'existing_observation_plan', ...(v.version === 2 ? managedConflicts : [])]
   for (const row of v.accounts) {
     if (!row || !count(row.account_id) || row.account_id <= previous || typeof row.name !== 'string' ||
       !Array.isArray(row.product_ids) || !row.product_ids.length || row.product_ids.length > 20 ||
@@ -226,19 +247,43 @@ export function validProcurementSharedMonitoringPreview(v: ProcurementSharedMoni
       !Array.isArray(row.models) || row.models.length > 50 || new Set(row.models).size !== row.models.length || !row.models.every(m => typeof m === 'string' && m.length > 0) ||
       typeof row.cron_expression !== 'string' || (row.models.length > 0) !== (row.cron_expression.length > 0) ||
       row.state === 'compatible' && !row.models.length ||
-      row.reason !== 'existing_observation_plan' && (row.existing_plan_id != null || row.existing_enabled != null) ||
+      v.version === 1 && row.reason !== 'existing_observation_plan' && (row.existing_plan_id != null || row.existing_enabled != null) ||
+      v.version === 2 && ((row.existing_plan_id == null) !== (row.existing_enabled == null) || row.existing_plan_id != null && (!count(row.existing_plan_id) || row.existing_plan_id === 0 || typeof row.existing_enabled !== 'boolean')) ||
       row.reason === 'existing_observation_plan' && (!count(row.existing_plan_id) || !row.existing_plan_id || typeof row.existing_enabled !== 'boolean')) return false
     for (const id of row.product_ids) productCounts.set(id, productCounts.get(id)! + 1)
     requirements += row.product_ids.length; shared += Number(row.product_ids.length > 1); previous = row.account_id
   }
   if (v.products.some(p => (p.accounts ?? 0) !== productCounts.get(p.product_id)) || requirements !== v.requirements || shared !== v.shared_accounts) return false
   const incomplete = v.products.some(p => p.state !== 'approved_sources')
-  if (v.state !== (incomplete ? 'incomplete' : v.accounts.some(a => a.state === 'conflict') ? 'conflict' : 'compatible')) return false
-  const computable = !incomplete && v.accounts.length > 0 && v.accounts.every(a => a.models.length > 0)
-  if (!computable) return v.coverage == null && v.current_minimum_requests_per_day === null && v.delta_minimum_requests_per_day === null
+  let orphanConflict = false
+  if (v.version === 2) {
+    const r = v.application_review
+    if (!r || !count(r.revision) || r.revision >= Number.MAX_SAFE_INTEGER || typeof r.can_confirm !== 'boolean' || typeof r.release_ownership !== 'boolean' || r.release_ownership !== releaseOwnership ||
+      releaseOwnership && selections.length > 0 || Date.parse(r.observed_at) !== Date.parse(v.observed_at) ||
+      Date.parse(r.expires_at) - Date.parse(r.observed_at) !== 120000 || !/^[0-9a-f]{64}$/.test(r.fingerprint) ||
+      !Array.isArray(r.changes) || r.changes.length > 1000) return false
+    const seen = new Set<number>()
+    previous = 0
+    for (const c of r.changes) {
+      if (!c || !count(c.account_id) || c.account_id <= previous || !['create', 'update', 'retain', 'pause', 'retain_paused', 'release', 'conflict'].includes(c.operation) ||
+        !['compatible', ...reasons].includes(c.reason) || (c.operation === 'conflict') !== (c.reason !== 'compatible') ||
+        c.operation === 'create' && c.plan_id != null || !['create', 'conflict'].includes(c.operation) && (!count(c.plan_id) || !c.plan_id) ||
+        c.plan_id != null && (!count(c.plan_id) || !c.plan_id)) return false
+      const account = v.accounts.find(a => a.account_id === c.account_id)
+      if (account ? (account.reason !== c.reason || (account.state === 'compatible' ? !['create', 'update', 'retain'].includes(c.operation) : c.operation !== 'conflict')) : !['pause', 'retain_paused', 'release', 'conflict'].includes(c.operation)) return false
+      if (c.operation === 'release' && !releaseOwnership || releaseOwnership && c.operation !== 'release' && c.operation !== 'conflict') return false
+      orphanConflict ||= !account && c.operation === 'conflict'
+      previous = c.account_id; seen.add(c.account_id)
+    }
+    if (v.accounts.some(a => !seen.has(a.account_id))) return false
+  } else if (v.application_review != null) return false
+  if (v.state !== (incomplete ? 'incomplete' : orphanConflict || v.accounts.some(a => a.state === 'conflict') ? 'conflict' : 'compatible')) return false
+  const computable = !incomplete && !orphanConflict && (v.accounts.length > 0 || v.version === 2) && v.accounts.every(a => a.models.length > 0 && !managedConflicts.includes(a.reason))
+  if (!computable) return v.application_review?.can_confirm !== true && v.coverage == null && v.current_minimum_requests_per_day === null && v.delta_minimum_requests_per_day === null
   const c = v.coverage
   return !!c && validProcurementRecipeCoverage(c) && Date.parse(c.observed_at) === Date.parse(v.observed_at) &&
-    count(v.current_minimum_requests_per_day) && count(v.delta_minimum_requests_per_day) &&
+    count(v.current_minimum_requests_per_day) && typeof v.delta_minimum_requests_per_day === 'number' && (v.version === 1 ? count(v.delta_minimum_requests_per_day) : Number.isSafeInteger(v.delta_minimum_requests_per_day)) &&
+    (v.version !== 2 || v.application_review!.can_confirm === (v.state === 'compatible' && (selections.length === 0 || c.enforced && c.can_save))) &&
     c.minimum_total_requests_per_day === v.current_minimum_requests_per_day + v.delta_minimum_requests_per_day
 }
 

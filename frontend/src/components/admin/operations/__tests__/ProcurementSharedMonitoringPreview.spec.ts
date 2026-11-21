@@ -1,14 +1,14 @@
 import { mount, flushPromises } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import View from '../ProcurementSharedMonitoringPreview.vue'
 import Select from '@/components/common/Select.vue'
-import { previewProcurementSharedMonitoring, type ProcurementSharedMonitoringPreview } from '@/api/admin/procurementCatalog'
+import { readProcurementSharedMonitoring, applyProcurementSharedMonitoring, previewProcurementSharedMonitoring, type ProcurementSharedMonitoringPreview } from '@/api/admin/procurementCatalog'
 import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
-import { validProcurementSharedMonitoringPreview } from '@/utils/procurementProductImpact'
+import { validProcurementSharedMonitoringPreview, validProcurementSharedMonitoringState } from '@/utils/procurementProductImpact'
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
-vi.mock('@/api/admin/procurementCatalog', () => ({ previewProcurementSharedMonitoring: vi.fn() }))
+vi.mock('@/api/admin/procurementCatalog', () => ({ readProcurementSharedMonitoring: vi.fn(), applyProcurementSharedMonitoring: vi.fn(), previewProcurementSharedMonitoring: vi.fn() }))
 const selections = [{ product_id: 2, preset_id: 7 }, { product_id: 3, preset_id: 8 }]
 const fixture = (): ProcurementSharedMonitoringPreview => ({
   version: 1, scope: 'approved_sources_only', observed_at: '2026-11-21T09:00:00Z', state: 'compatible',
@@ -25,11 +25,14 @@ function view() {
   wrappers.push(w); return w
 }
 async function choose(w: ReturnType<typeof mount>) {
+  (w.get('details').element as HTMLDetailsElement).open = true
+  await w.get('details').trigger('toggle'); await flushPromises()
   w.findAllComponents(Select)[0]!.vm.$emit('update:modelValue', 2)
   w.findAllComponents(Select)[1]!.vm.$emit('update:modelValue', 3)
   await w.get('#shared-preset-0').setValue(7); await w.get('#shared-preset-1').setValue(8)
   await nextTick()
 }
+beforeEach(() => { vi.mocked(readProcurementSharedMonitoring).mockResolvedValue({ version: 1, revision: 0, observed_at: '2026-11-21T09:00:00Z', products: [], plans: [] }) })
 async function preview(w: ReturnType<typeof mount>) { await w.get('form').trigger('submit'); await flushPromises() }
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount(); vi.useRealTimers(); vi.resetAllMocks() })
 
@@ -39,7 +42,7 @@ describe('shared monitoring preview', () => {
     expect(w.get('[data-testid="shared-preview"]').attributes('disabled')).toBeDefined()
     vi.mocked(previewProcurementSharedMonitoring).mockResolvedValue(fixture())
     await choose(w); await preview(w)
-    expect(previewProcurementSharedMonitoring).toHaveBeenCalledWith(selections, expect.any(AbortSignal))
+    expect(previewProcurementSharedMonitoring).toHaveBeenCalledWith(selections, expect.any(AbortSignal), false)
     expect(w.get('[data-testid="shared-conclusion"]').text()).toContain('states.compatible')
     expect(w.get('[data-testid="shared-shared"]').text()).toBe('1')
     expect(w.get('[data-testid="shared-accounts"]').text()).toBe('1')
@@ -85,7 +88,7 @@ describe('shared monitoring preview', () => {
     expect(w.get('[data-testid="shared-error"]').text()).toContain(status === 403 ? 'forbidden' : 'failed')
     expect(w.find('[data-testid="shared-result"]').exists()).toBe(false)
     await preview(w); expect(w.find('[data-testid="shared-error"]').exists()).toBe(false)
-    expect(previewProcurementSharedMonitoring).toHaveBeenLastCalledWith(selections, expect.any(AbortSignal))
+    expect(previewProcurementSharedMonitoring).toHaveBeenLastCalledWith(selections, expect.any(AbortSignal), false)
   })
   it('ignores late responses after an edit and aborts on unmount', async () => {
     let resolve!: (r: ProcurementSharedMonitoringPreview) => void
@@ -141,5 +144,104 @@ describe('shared monitoring contract', () => {
     r => { r.coverage!.schedule_window_end = r.coverage!.schedule_window_start }, r => { r.coverage!.observed_at = '2026-11-21T09:00:01Z' }
   ] satisfies Array<(r: ProcurementSharedMonitoringPreview) => void>)('rejects malformed or contradictory results %#', mutate => {
     const r = fixture(); mutate(r); expect(validProcurementSharedMonitoringPreview(r, selections)).toBe(false)
+  })
+})
+
+function writable(): ProcurementSharedMonitoringPreview {
+  return { ...fixture(), version: 2, application_review: {
+    revision: 0, observed_at: '2026-11-21T09:00:00Z', expires_at: '2026-11-21T09:02:00Z', fingerprint: 'a'.repeat(64), can_confirm: true, release_ownership: false,
+    changes: [{ account_id: 9, operation: 'create', reason: 'compatible' }]
+  } }
+}
+const saved = () => ({ version: 1, revision: 1, observed_at: '2026-11-21T09:00:01Z', products: selections, plans: [{ account_id: 9, plan_id: 11, state: 'managed', enabled: true }] })
+describe('shared monitoring persistence', () => {
+  it.each([
+    (r: ProcurementSharedMonitoringPreview) => { r.application_review!.revision = -1 },
+    r => { r.application_review!.expires_at = r.observed_at }, r => { r.application_review!.observed_at = 'invalid' },
+    r => { r.application_review!.fingerprint = 'A'.repeat(64) }, r => { r.application_review!.changes = [] },
+    r => { r.application_review!.changes[0]!.operation = 'pause' }, r => { r.application_review!.changes[0]!.plan_id = 11 },
+    r => { r.application_review!.changes[0]!.account_id = 10 }, r => { r.application_review!.changes.push({ ...r.application_review!.changes[0]! }) },
+    r => { r.application_review!.release_ownership = true }, r => { r.coverage!.enforced = false }, r => { r.version = 3 }
+  ] satisfies Array<(r: ProcurementSharedMonitoringPreview) => void>)('rejects malformed writable contracts %#', mutate => {
+    const data = writable(); mutate(data); expect(validProcurementSharedMonitoringPreview(data, selections)).toBe(false)
+  })
+  it('accepts negative demand deltas only on verified version-two updates', () => {
+    const data = writable(); data.current_minimum_requests_per_day = 500; data.delta_minimum_requests_per_day = -212
+    expect(validProcurementSharedMonitoringPreview(data, selections)).toBe(true)
+    data.version = 1; delete data.application_review
+    expect(validProcurementSharedMonitoringPreview(data, selections)).toBe(false)
+  })
+  it.each([
+    (s: ReturnType<typeof saved>) => { s.version = 2 }, s => { s.revision = 0 }, s => { s.observed_at = 'invalid' },
+    s => { s.products.reverse() }, s => { s.products[0]!.preset_id = 0 }, s => { s.plans[0]!.plan_id = 0 },
+    s => { s.plans[0]!.state = 'unknown-but-good' }, s => { s.plans[0]!.enabled = false }, s => { s.plans.push({ ...s.plans[0]! }) }
+  ])('rejects malformed durable state %#', mutate => {
+    const state = { ...saved(), products: selections.map(s => ({ ...s })) }; mutate(state)
+    expect(validProcurementSharedMonitoringState(state)).toBe(false)
+  })
+  it('requires loading durable participation before any preview or save', async () => {
+    vi.mocked(readProcurementSharedMonitoring).mockRejectedValue({ status: 503 })
+    const w = view(); (w.get('details').element as HTMLDetailsElement).open = true
+    await w.get('details').trigger('toggle'); await flushPromises(); await preview(w)
+    expect(previewProcurementSharedMonitoring).not.toHaveBeenCalled()
+    expect(applyProcurementSharedMonitoring).not.toHaveBeenCalled()
+    expect(w.get('[data-testid="shared-error"]').text()).toContain('readFailed')
+  })
+  it('loads the complete saved participation, including products outside the search page', async () => {
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValue(saved())
+    const w = view(); (w.get('details').element as HTMLDetailsElement).open = true
+    await w.get('details').trigger('toggle'); await flushPromises()
+    expect(w.findAll('[data-testid="shared-selection"]')).toHaveLength(2)
+    expect(w.findAllComponents(Select).map(s => s.props('modelValue'))).toEqual([2, 3])
+    expect(w.get('[data-testid="shared-saved-state"]').text()).toContain('"revision":1')
+    expect(applyProcurementSharedMonitoring).not.toHaveBeenCalled()
+  })
+  it('saves once after consent, serializes edits and independently reads back exact ownership', async () => {
+    vi.mocked(previewProcurementSharedMonitoring).mockResolvedValue(writable())
+    let finish!: (v: ReturnType<typeof saved>) => void
+    vi.mocked(applyProcurementSharedMonitoring).mockReturnValue(new Promise(r => { finish = r }))
+    const w = view(); await choose(w); await preview(w)
+    expect(w.get('[data-testid="shared-save"]').attributes('disabled')).toBeDefined()
+    await w.get('[data-testid="shared-consent"]').setValue(true)
+    await w.get('[data-testid="shared-save"]').trigger('click')
+    expect(w.get('fieldset').attributes('disabled')).toBeDefined()
+    expect(applyProcurementSharedMonitoring).toHaveBeenCalledTimes(1)
+    expect(applyProcurementSharedMonitoring).toHaveBeenCalledWith({ version: 2, products: selections, release_ownership: false, revision: 0, observed_at: '2026-11-21T09:00:00Z', fingerprint: 'a'.repeat(64), confirm: true })
+    vi.mocked(readProcurementSharedMonitoring).mockResolvedValue(saved()); finish(saved()); await flushPromises()
+    expect(readProcurementSharedMonitoring).toHaveBeenCalledTimes(2)
+    expect(w.get('[data-testid="shared-success"]').text()).toContain('saved')
+    expect(w.find('[data-testid="shared-save"]').exists()).toBe(false)
+  })
+  it.each(['lost', 'read', 'mismatch', 'conflict'])('requires a new read after %s without replaying the write', async mode => {
+    vi.mocked(previewProcurementSharedMonitoring).mockResolvedValue(writable())
+    vi.mocked(applyProcurementSharedMonitoring).mockResolvedValue(saved())
+    const w = view(); await choose(w); await preview(w)
+    if (mode === 'lost' || mode === 'conflict') vi.mocked(applyProcurementSharedMonitoring).mockRejectedValue({ status: mode === 'conflict' ? 409 : 503 })
+    else if (mode === 'read') vi.mocked(readProcurementSharedMonitoring).mockRejectedValue({ status: 503 })
+    else vi.mocked(readProcurementSharedMonitoring).mockResolvedValue({ ...saved(), revision: 2 })
+    await w.get('[data-testid="shared-consent"]').setValue(true); await w.get('[data-testid="shared-save"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="shared-success"]').exists()).toBe(false)
+    expect(w.get('[data-testid="shared-error"]').text()).toContain(mode === 'conflict' ? 'conflict' : mode === 'lost' ? 'saveUnknown' : 'savedReadFailed')
+    await preview(w); expect(applyProcurementSharedMonitoring).toHaveBeenCalledTimes(1)
+    expect(previewProcurementSharedMonitoring).toHaveBeenCalledTimes(1)
+  })
+  it('clears all participation only explicitly, and previews pause then release', async () => {
+    const w = view(); await choose(w)
+    await w.get('[data-testid="shared-clear"]').trigger('click')
+    expect(w.findAll('[data-testid="shared-selection"]')).toHaveLength(0)
+    await w.get('[data-testid="shared-release"]').setValue(true)
+    vi.mocked(previewProcurementSharedMonitoring).mockResolvedValue({ ...writable(), products: [], accounts: [], requirements: 0, shared_accounts: 0 })
+    await preview(w)
+    expect(previewProcurementSharedMonitoring).toHaveBeenCalledWith([], expect.any(AbortSignal), true)
+  })
+  it('clears consent on edit and expiry, and never enables saving a legacy preview', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] })
+    vi.mocked(previewProcurementSharedMonitoring).mockResolvedValue(writable())
+    const w = view(); await choose(w); await preview(w)
+    await w.get('[data-testid="shared-consent"]').setValue(true); await vi.advanceTimersByTimeAsync(31000)
+    expect(w.get('[data-testid="shared-save"]').attributes('disabled')).toBeDefined()
+    expect((w.get('[data-testid="shared-consent"]').element as HTMLInputElement).checked).toBe(false)
+    vi.mocked(previewProcurementSharedMonitoring).mockResolvedValue(fixture()); await preview(w)
+    expect(w.find('[data-testid="shared-save"]').exists()).toBe(false)
   })
 })

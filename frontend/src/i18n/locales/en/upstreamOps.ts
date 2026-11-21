@@ -1,6 +1,17 @@
 export default {
   sharedMonitoring: {
-    title: 'Shared monitoring across products', intro: 'Select products and observation presets to combine approved supply requirements before reviewing shared accounts and budget.',
+    title: 'Shared observation plans', intro: 'Load all saved product participation, edit and preview, then explicitly save the complete batch. Shared accounts combine models and observation times.',
+    savedState: 'Saved revision {revision} · {products} products · {plans} managed plans', reload: 'Reload saved configuration',
+    readFailed: 'Saved participation could not be read. Reload before editing so other products are retained.', ownershipConflict: 'A managed plan changed, is missing or is running. Check the native plans before previewing again.',
+    clear: 'Clear participating products', pauseAll: 'Saving an empty list pauses all managed plans and retains history and shared ownership.', release: 'Also release shared ownership after pausing, returning plans to manual management',
+    changesTitle: 'Complete batch changes', changeCounts: 'Create {create} · Update {update} · Pause/return {pause} · Retain {retain} · Conflict {conflict}',
+    operations: { create: 'Create', update: 'Update native plan', retain: 'Retain native plan', pause: 'Pause and retain ownership', retain_paused: 'Keep paused', release: 'Pause and return to manual', conflict: 'Conflict; entire batch blocked' },
+    replaceAll: 'This replaces the entire participation list. Requirements of omitted products are removed; manual plans are never claimed.', expires: 'Confirmation expires at {at}; preview again after 30 seconds on this page.',
+    consent: 'I confirm the complete participation list, plan changes and budget lower bound. Enabled plans incur recurring probe costs; token cost and full coverage may remain unknown.',
+    save: 'Confirm complete batch', saving: 'Saving and independently verifying…', saved: 'An independent read verified participation, saved revision and plan ownership. View account quality for actual probe results.',
+    conflict: 'Configuration, sources, budget or native plans changed. Reload the complete saved list before previewing again.',
+    saveUnknown: 'The save outcome is unknown. Reload saved configuration and inspect plans before another preview; do not replay the old confirmation.',
+    savedReadFailed: 'The write returned success, but independent verification is incomplete. Reload saved configuration instead of resubmitting.',
     product: 'Product {n}', preset: 'Observation preset {n}', choosePreset: 'Choose an observation preset', add: 'Add product', remove: 'Remove', removeRow: 'Remove product {n}',
     preview: 'Preview shared demand', loading: 'Checking…', retry: 'Retry', duplicate: 'Select each product only once.', loadFailed: 'Options failed to load. Please retry.',
     failed: 'The preview failed or returned an incompatible contract. Selections are retained; check again.', forbidden: 'Full administrator access is required.',
@@ -11,14 +22,15 @@ export default {
     sources: { approved_sources: '{count} approved source accounts', sources_unavailable: 'Approved sources unknown or unavailable', no_approved_accounts: 'No accounts in approved sources', product_inactive: 'Product inactive', expired: 'Snapshot expired; check again' },
     reasons: {
       compatible: 'Observation settings compatible', invalid_requirements: 'Invalid requirements', invalid_preset: 'Native preset invalid or disabled', observation_settings_conflict: 'Question, grading, reasoning or other test settings conflict',
-      native_model_limit: 'Merged native model or sample limit exceeded', schedule_timezones_conflict: 'Different schedule time zones; merge not inferred', invalid_merged_plan: 'Merged plan failed native validation', existing_observation_plan: 'Existing observation plan; original ownership retained', expired: 'Snapshot expired; check again'
+      native_model_limit: 'Merged native model or sample limit exceeded', schedule_timezones_conflict: 'Different schedule time zones; merge not inferred', invalid_merged_plan: 'Merged plan failed native validation', existing_observation_plan: 'Existing observation plan; original ownership retained', expired: 'Snapshot expired; check again',
+      managed_plan_missing: 'Managed native plan missing; batch blocked', managed_plan_changed: 'Managed native definition changed; batch blocked', managed_plan_running: 'Managed native plan running; retry after it finishes'
     },
     budget: {
       fits: 'Known request lower bound fits; token cost and timely completion are not guaranteed.', partial: 'Known lower bound fits, but some monitoring demand remains unestimated.', blocked: 'Known demand exceeds native budget constraints; changes must be blocked.', off: 'Budget enforcement is off; this does not establish executable capacity.', unknown: 'Shared demand is incomplete; no budget total is available.', expired: 'Budget snapshot expired.',
-      counts: 'Current {current}/day · Additional lower bound +{delta} · Proposed {total}/day · Regular capacity {capacity}/day',
+      counts: 'Current {current}/day · Lower-bound change {delta} · Proposed {total}/day · Regular capacity {capacity}/day',
       boundary: 'A native cron envelope can add execution times. Budget uses the final models and expression; retries, tokens, complete scopes and peak completion are not guaranteed.', configure: 'View shared monitoring budget'
     },
-    boundary: 'Preview only: no plans, product participation, ownership, counters, billing or upstream calls are changed. Existing manual, template and paused observation plans are retained. Shared saving and continuous coordination are not implemented. Source and settings compatibility do not establish model identity, cache quality or automatic product eligibility.'
+    boundary: 'Preview is read-only. Explicit confirmation atomically saves shared participation and native plans; conflicts or budget excess roll back the batch. Existing manual, template and old paused rules are never claimed. Saving makes no upstream calls or product-membership changes; the original executor runs enabled plans. Continuous coordination remains inactive. Compatibility does not establish model identity, cache quality or automatic product eligibility.'
   },
   productImpact: {
     recipe: {

@@ -42,7 +42,7 @@ func TestProcurementSharedMonitoringCommand(t *testing.T) {
 	require.Len(t, c.Products, 2)
 	var missing *ProcurementSharedMonitoringCommand
 	require.ErrorIs(t, missing.Validate(), ErrProcurementSharedMonitoringCommand)
-	for _, bad := range []string{"null", "[]", "{}", raw + "{}", strings.Replace(raw, `"version":1`, `"version":2`, 1),
+	for _, bad := range []string{"null", "[]", "{}", raw + "{}", strings.Replace(raw, `"version":1`, `"version":3`, 1),
 		strings.Replace(raw, `"version":1`, `"version":1,"version":1`, 1), strings.Replace(raw, `"product_id":2`, `"product_id":2,"product_id":2`, 1),
 		strings.Replace(raw, `"product_id":4`, `"product_id":2`, 1), strings.Replace(raw, `"preset_id":3`, `"preset_id":null`, 1),
 		strings.Replace(raw, `"product_id":2`, `"product_id":9007199254740992`, 1), strings.Replace(raw, `"product_id":2`, `"product_id":1.5`, 1),
@@ -54,6 +54,32 @@ func TestProcurementSharedMonitoringCommand(t *testing.T) {
 		c.Products = append(c.Products, ProcurementMonitoringProductSelection{ProductID: int64(i + 10), PresetID: 3})
 	}
 	require.ErrorIs(t, c.Validate(), ErrProcurementSharedMonitoringCommand)
+}
+
+func TestProcurementSharedMonitoringPersistentCommands(t *testing.T) {
+	for _, raw := range []string{`{"version":2,"products":[]}`, `{"version":2,"products":[],"release_ownership":true}`, `{"version":2,"products":[{"product_id":2,"preset_id":3}],"release_ownership":false}`} {
+		_, err := ParseProcurementSharedMonitoringCommand([]byte(raw))
+		require.NoError(t, err)
+	}
+	for _, raw := range []string{`{"version":2,"products":null}`, `{"version":2,"products":[],"release_ownership":null}`, `{"version":1,"products":[{"product_id":2,"preset_id":3}],"release_ownership":false}`, `{"version":2,"products":[{"product_id":2,"preset_id":3}],"release_ownership":true}`} {
+		_, err := ParseProcurementSharedMonitoringCommand([]byte(raw))
+		require.ErrorIs(t, err, ErrProcurementSharedMonitoringCommand, raw)
+	}
+	raw := `{"version":2,"products":[{"product_id":2,"preset_id":3}],"release_ownership":false,"revision":0,"observed_at":"2026-11-21T08:00:00Z","fingerprint":"` + strings.Repeat("a", 64) + `","confirm":true}`
+	c, err := ParseProcurementSharedMonitoringApplyCommand([]byte(raw))
+	require.NoError(t, err)
+	require.NoError(t, c.Validate())
+	encoded, err := json.Marshal(c)
+	require.NoError(t, err)
+	roundTrip, err := ParseProcurementSharedMonitoringApplyCommand(encoded)
+	require.NoError(t, err)
+	require.Equal(t, c, roundTrip)
+	var empty *ProcurementSharedMonitoringApplyCommand
+	require.ErrorIs(t, empty.Validate(), ErrProcurementSharedMonitoringCommand)
+	for _, bad := range []string{raw + `{}`, strings.Replace(raw, `"revision":0`, `"revision":null`, 1), strings.Replace(raw, `"revision":0`, `"revision":-1`, 1), strings.Replace(raw, `"revision":0`, `"revision":9007199254740991`, 1), strings.Replace(raw, `"confirm":true`, `"confirm":false`, 1), strings.Replace(raw, `"confirm":true`, `"confirm":true,"confirm":true`, 1), strings.Replace(raw, `"release_ownership":false`, `"release_ownership":null`, 1), strings.Replace(raw, `"product_id":2`, `"product_id":2,"product_id":2`, 1), strings.Replace(raw, `"version":2`, `"version":1`, 1), strings.Replace(raw, strings.Repeat("a", 64), strings.Repeat("A", 64), 1), strings.Replace(raw, `"observed_at":"2026-11-21T08:00:00Z"`, `"observed_at":null`, 1), strings.Replace(raw, `"confirm":true`, `"confirm":true,"extra":1`, 1)} {
+		_, err := ParseProcurementSharedMonitoringApplyCommand([]byte(bad))
+		require.ErrorIs(t, err, ErrProcurementSharedMonitoringCommand, bad)
+	}
 }
 
 func TestProcurementSharedMonitoringMergePreservesNativeRequirements(t *testing.T) {

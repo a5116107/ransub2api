@@ -158,6 +158,47 @@ func (h *ChannelHandler) ProcurementSharedMonitoringPreview(c *gin.Context) {
 	response.Success(c, out)
 }
 
+func (h *ChannelHandler) ProcurementSharedMonitoring(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	repo, err := h.channelService.ProcurementSharedMonitoringRepository()
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	var out *service.ProcurementSharedMonitoringState
+	if c.Request.Method == http.MethodGet {
+		out, err = repo.ReadProcurementSharedMonitoring(ctx)
+	} else {
+		var raw []byte
+		raw, err = io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 8192))
+		if err != nil {
+			response.ErrorFrom(c, service.ErrProcurementSharedMonitoringCommand)
+			return
+		}
+		var command *service.ProcurementSharedMonitoringApplyCommand
+		command, err = service.ParseProcurementSharedMonitoringApplyCommand(raw)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		middleware.SetAuditAction(c, "admin.upstream_procurement.shared_observation")
+		middleware.SetAuditExtra(c, map[string]any{"products": len(command.Products), "revision": command.Revision, "release_ownership": command.ReleaseOwnership})
+		out, err = repo.ApplyProcurementSharedMonitoring(ctx, command)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrProcurementSharedMonitoringCommand), errors.Is(err, service.ErrProcurementSharedMonitoringConflict), errors.Is(err, service.ErrObserverScope), errors.Is(err, service.ErrProcurementProductImpactTooLarge):
+			response.ErrorFrom(c, err)
+		default:
+			response.ErrorFrom(c, service.ErrProcurementSharedMonitoringUnavailable)
+		}
+		return
+	}
+	response.Success(c, out)
+}
+
 // First-time additions only. Existing plans and product ownership are untouched.
 func (h *ChannelHandler) ApplyProcurementRecipe(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")

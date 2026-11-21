@@ -141,6 +141,11 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 		return nil, err
 	}
 	var cfg service.PelicanTestConfig
+	if request != nil {
+		if err := checkProcurementObservationManualWrite(ctx, tx, id); err != nil {
+			return nil, err
+		}
+	}
 	if json.Unmarshal(config, &cfg) != nil || cfg.Quality == nil || cfg.Quality.Action == service.QualityActionOpenAITwoFAAdmission {
 		return nil, infraerrors.BadRequest("QUALITY_OWNERSHIP_UNSUPPORTED", "ownership inspection requires an editable quality rule")
 	}

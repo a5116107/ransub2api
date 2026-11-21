@@ -1,6 +1,17 @@
 export default {
   sharedMonitoring: {
-    title: '多产品共享检测预演', intro: '选择产品及其观察预设，按批准的供应来源合并模型与检测时刻，先核对共用账号和预算。',
+    title: '多产品共享观察计划', intro: '先读取已保存的全部产品及预设，再编辑并预演。共用账号合并模型和检测时刻，确认后整批保存。',
+    savedState: '已保存修订 {revision} · {products} 个参与产品 · {plans} 条受管计划', reload: '重新读取已保存配置',
+    readFailed: '已保存参与清单读取失败；请重新读取后再编辑，避免遗漏其他产品。', ownershipConflict: '部分受管计划已变更、缺失或正在运行，请核对原计划后再预演。',
+    clear: '清空参与产品', pauseAll: '保存空清单会暂停全部受管计划并保留历史；默认继续保留共享归属。', release: '同时解除共享归属，计划暂停后交还手动管理',
+    changesTitle: '整批变更结论', changeCounts: '新增 {create} · 更新 {update} · 暂停/交还 {pause} · 不变 {retain} · 冲突 {conflict}',
+    operations: { create: '新增', update: '更新原计划', retain: '保留原计划', pause: '暂停并保留归属', retain_paused: '继续暂停', release: '暂停并交还手动', conflict: '冲突，整批阻断' },
+    replaceAll: '本次替换整份参与清单，不是追加；未列入产品的检测需求将移除，手工规则不会被接管。', expires: '确认有效期至 {at}；页面快照30秒后须重新预演。',
+    consent: '确认以上完整清单、计划变更和预算下界；启用的计划将按周期产生检测费用，Token费用与完整覆盖可能仍未知。',
+    save: '确认保存整批计划', saving: '正在保存并独立核实…', saved: '已独立读回并核实参与清单、保存修订与计划归属；实际检测结果请查看账号质量页。',
+    conflict: '配置、来源、预算或原计划已变化，本次未确认保存。请重新读取完整清单后再预演。',
+    saveUnknown: '保存结果未知。请先重新读取已保存配置，核对计划后再预演；不要重复提交旧确认。',
+    savedReadFailed: '写入已返回成功，但独立读回未核实。请重新读取保存配置，勿重复提交。',
     product: '产品 {n}', preset: '观察预设 {n}', choosePreset: '选择观察预设', add: '添加产品', remove: '移除', removeRow: '移除产品 {n}',
     preview: '预演共享需求', loading: '正在核对…', retry: '重试', duplicate: '同一产品只需选择一次。', loadFailed: '选项加载失败，请重试。',
     failed: '预演未完成或返回了不兼容数据。选择已保留，请重新核对。', forbidden: '需要完整管理员权限。',
@@ -11,14 +22,15 @@ export default {
     sources: { approved_sources: '{count} 个批准来源账号', sources_unavailable: '批准来源未知或不可用', no_approved_accounts: '批准来源中暂无账号', product_inactive: '产品已停用', expired: '快照过期，待重新核对' },
     reasons: {
       compatible: '检测配置可合并', invalid_requirements: '需求无效', invalid_preset: '原预设无效或已停用', observation_settings_conflict: '题型、判题、推理或其他检测设置不相容',
-      native_model_limit: '合并后超过原生模型或样本上限', schedule_timezones_conflict: '检测时区不同，未自动合并', invalid_merged_plan: '合并结果未通过原生校验', existing_observation_plan: '已有观察计划，保留原归属', expired: '快照过期，待重新核对'
+      native_model_limit: '合并后超过原生模型或样本上限', schedule_timezones_conflict: '检测时区不同，未自动合并', invalid_merged_plan: '合并结果未通过原生校验', existing_observation_plan: '已有观察计划，保留原归属', expired: '快照过期，待重新核对',
+      managed_plan_missing: '受管原计划缺失，整批阻断', managed_plan_changed: '受管原计划内容已变化，整批阻断', managed_plan_running: '受管原计划正在运行，请等待收尾后重试'
     },
     budget: {
       fits: '已知调用下界可容纳；不是 Token 费用或及时完成保证。', partial: '已知下界可容纳，但检测覆盖仍有未估算项。', blocked: '已知需求超过原预算约束，变更应被阻断。', off: '预算保护未开启，不作为可执行依据。', unknown: '共享需求不完整，未提供预算合计。', expired: '预算快照已过期。',
-      counts: '当前 {current} / 日 · 新增下界 +{delta} · 变更后 {total} / 日 · 常规容量 {capacity} / 日',
+      counts: '当前 {current} / 日 · 下界变化 {delta} · 变更后 {total} / 日 · 常规容量 {capacity} / 日',
       boundary: '原生 Cron 的覆盖合并可能增加执行时刻，预算按最终模型和表达式测算；重试、Token、完整 scope 和峰值完成时间没有保证。', configure: '查看共享检测预算'
     },
-    boundary: '仅预演，不写计划、产品参与关系、归属、额度或账单，也不请求上游。已有手工、模板和暂停观察计划均保留；当前没有共享合并保存或连续协调。来源和配置相容不等于模型真实、缓存合格或自动产品资格。'
+    boundary: '预演只读；明确确认才原子保存共享参与及原计划，超预算或冲突整批回滚。已有手工、模板及旧暂停观察计划不接管。保存不调用上游、不改变产品关联或人工停调；计划由原执行器按周期运行。连续自动协调尚未启用；相容不等于模型真实、缓存合格或自动产品资格。'
   },
   productImpact: {
     recipe: {

@@ -108,14 +108,6 @@ func (r *scheduledTestPlanRepository) ListDue(ctx context.Context, now time.Time
 }
 
 func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
-	const query = `
-		UPDATE scheduled_test_plans
-		SET model_id = $2, cron_expression = $3, enabled = $4, max_results = $5, auto_recover = $6, next_run_at = $7, updated_at = NOW(), pelican_config = $8
-		WHERE id = $1 AND COALESCE(pelican_config->'quality'->>'action','') <> 'openai_two_fa_admission'
-		RETURNING id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, pelican_config, running_until
-	`
-	args := []any{plan.ID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, marshalPelicanConfig(plan.PelicanConfig)}
-
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -124,11 +116,37 @@ func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.
 	if err := lockMonitoringCoveragePlanWrite(ctx, tx); err != nil {
 		return nil, err
 	}
-	updated, err := scanPlan(tx.QueryRowContext(ctx, query, args...))
+	var accountID int64
+	if err := tx.QueryRowContext(ctx, `SELECT account_id FROM scheduled_test_plans WHERE id=$1 FOR UPDATE`, plan.ID).Scan(&accountID); err != nil {
+		return nil, err
+	}
+	if err := authorizeScheduledObserverWrite(ctx, tx, accountID); err != nil {
+		return nil, err
+	}
+	if err := checkProcurementObservationManualWrite(ctx, tx, plan.ID); err != nil {
+		return nil, err
+	}
+	updated, err := updateScheduledTestPlanTx(ctx, tx, plan, true)
 	if err != nil {
 		return nil, err
 	}
-	if err = authorizeScheduledObserverWrite(ctx, tx, updated.AccountID); err != nil {
+	return updated, tx.Commit()
+}
+
+// Both native edits and an approved shared batch use the original definition,
+// reference and quality-state rules. A batch validates budget once at its end.
+// Callers hold the plan lock and have authorized the persisted account.
+func updateScheduledTestPlanTx(ctx context.Context, tx *sql.Tx, plan *service.ScheduledTestPlan, validateCoverage bool) (*service.ScheduledTestPlan, error) {
+	const query = `
+		UPDATE scheduled_test_plans
+		SET model_id = $2, cron_expression = $3, enabled = $4, max_results = $5, auto_recover = $6, next_run_at = $7, updated_at = NOW(), pelican_config = $8
+		WHERE id = $1 AND COALESCE(pelican_config->'quality'->>'action','') <> 'openai_two_fa_admission'
+		RETURNING id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, pelican_config, running_until
+	`
+	args := []any{plan.ID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, marshalPelicanConfig(plan.PelicanConfig)}
+
+	updated, err := scanPlan(tx.QueryRowContext(ctx, query, args...))
+	if err != nil {
 		return nil, err
 	}
 	state, err := readQualityState(ctx, tx, plan.ID)
@@ -174,11 +192,10 @@ func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.
 		}
 	}
 
-	if err = validateMonitoringCoveragePlanWrite(ctx, tx, updated.Enabled); err != nil {
-		return nil, err
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
+	if validateCoverage {
+		if err = validateMonitoringCoveragePlanWrite(ctx, tx, updated.Enabled); err != nil {
+			return nil, err
+		}
 	}
 	return updated, nil
 }
@@ -212,6 +229,9 @@ func deleteScheduledTestPlanTx(ctx context.Context, tx *sql.Tx, id int64) error 
 		if err := authorizeScheduledObserverWrite(ctx, tx, accountID); err != nil {
 			return err
 		}
+	}
+	if err := checkProcurementObservationManualWrite(ctx, tx, id); err != nil {
+		return err
 	}
 	state, err := readQualityState(ctx, tx, id)
 	if err != nil {
