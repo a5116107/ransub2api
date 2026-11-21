@@ -7,13 +7,13 @@
     <form class="grid min-w-0 items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto]" @submit.prevent="preview">
       <div class="min-w-0">
         <label for="impact-product" class="mb-1 block text-sm font-medium">{{ t(`${p}.product`) }}</label>
-        <Select id="impact-product" v-model="productID" :options="options" :aria-label="t(`${p}.product`)" :placeholder="t(`${p}.choose`)"
+        <Select id="impact-product" v-model="productID" :options="options" :disabled="recipeBusy" :aria-label="t(`${p}.product`)" :placeholder="t(`${p}.choose`)"
           :searchable="true" :remote="true" :loading="productsBusy" :empty-text="t(`${p}.noProducts`)" aria-describedby="impact-product-help"
           @open="openProducts" @search="loadProducts" />
       </div>
       <div class="min-w-0 sm:col-start-1">
         <label for="impact-preset" class="mb-1 block text-sm font-medium">{{ t(`${p}.recipe.label`) }}</label>
-        <select id="impact-preset" v-model="presetID" class="input w-full" :disabled="presetsBusy" aria-describedby="impact-recipe-help" @focus="loadPresets">
+        <select id="impact-preset" v-model="presetID" class="input w-full" :disabled="presetsBusy || recipeBusy" aria-describedby="impact-recipe-help" @focus="loadPresets">
           <option :value="null">{{ t(`${p}.recipe.none`) }}</option>
           <option v-for="preset in recipePresets" :key="preset.id" :value="preset.id">{{ preset.name }} · #{{ preset.id }}</option>
         </select>
@@ -24,9 +24,9 @@
         </div>
         <p v-else-if="presetsLoaded && !recipePresets.length" class="text-sm">{{ t(`${p}.recipe.empty`) }}</p>
         <a href="/admin/account-quality" class="text-xs text-primary-600 underline dark:text-primary-400">{{ t(`${p}.recipe.configure`) }}</a>
-        <button type="button" class="ml-3 text-xs underline" :disabled="presetsBusy" @click="loadPresets(true)">{{ t(`${p}.recipe.refresh`) }}</button>
+        <button type="button" class="ml-3 text-xs underline" :disabled="presetsBusy || recipeBusy" @click="loadPresets(true)">{{ t(`${p}.recipe.refresh`) }}</button>
       </div>
-      <button type="submit" class="btn btn-secondary" :disabled="busy || managementBusy || !productID" data-testid="product-impact-preview">{{ t(`${p}.${busy ? 'loading' : 'preview'}`) }}</button>
+      <button type="submit" class="btn btn-secondary" :disabled="busy || managementBusy || recipeBusy || !productID" data-testid="product-impact-preview">{{ t(`${p}.${busy ? 'loading' : 'preview'}`) }}</button>
     </form>
     <p id="impact-product-help" class="text-xs leading-5 text-gray-500">{{ t(`${p}.readOnly`) }}</p>
     <section v-if="productID" class="min-w-0 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600" aria-labelledby="management-authorization-title" data-testid="management-authorization">
@@ -37,9 +37,9 @@
       <p v-if="managementError" role="alert" class="text-sm text-amber-800 dark:text-amber-300" data-testid="management-error">{{ t(`${p}.authorization.${managementError}`) }}</p>
       <p v-if="managementSaved" role="status" class="text-sm text-primary-700 dark:text-primary-300" data-testid="management-saved">{{ t(`${p}.authorization.saved`) }}</p>
       <div class="flex flex-wrap items-center gap-2">
-        <button type="button" class="btn btn-secondary" :disabled="managementBusy" data-testid="management-refresh" @click="managementAction('read')">{{ t(`${p}.authorization.${managementBusy ? 'loading' : 'refresh'}`) }}</button>
-        <button type="button" class="btn btn-secondary" :disabled="managementBusy || !managementState || !selectedMemberships.length" data-testid="management-preview" @click="managementAction('preview')">{{ t(`${p}.authorization.preview`, { count: selectedMemberships.length }) }}</button>
-        <button v-if="managementState?.mode === 'review'" type="button" class="btn btn-secondary" :disabled="managementBusy" data-testid="management-manual" @click="managementAction('manual')">{{ t(`${p}.authorization.manual`) }}</button>
+        <button type="button" class="btn btn-secondary" :disabled="managementBusy || recipeBusy" data-testid="management-refresh" @click="managementAction('read')">{{ t(`${p}.authorization.${managementBusy ? 'loading' : 'refresh'}`) }}</button>
+        <button type="button" class="btn btn-secondary" :disabled="managementBusy || recipeBusy || !managementState || !selectedMemberships.length" data-testid="management-preview" @click="managementAction('preview')">{{ t(`${p}.authorization.preview`, { count: selectedMemberships.length }) }}</button>
+        <button v-if="managementState?.mode === 'review'" type="button" class="btn btn-secondary" :disabled="managementBusy || recipeBusy" data-testid="management-manual" @click="managementAction('manual')">{{ t(`${p}.authorization.manual`) }}</button>
       </div>
       <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.authorization.choose`) }}</p>
       <div v-if="managementPreview" class="min-w-0 space-y-3 rounded-lg bg-gray-50 p-3 dark:bg-dark-800" data-testid="management-preview-result">
@@ -64,6 +64,11 @@
       <button type="button" class="btn btn-secondary" :disabled="productsBusy" @click="loadProducts(lastSearch)">{{ t(`${p}.retry`) }}</button>
     </div>
     <p v-if="loadedProducts && !productsBusy && !productsError && !products.length" class="text-sm" role="status">{{ t(`${p}.noProducts`) }}</p>
+    <div v-if="recipeError || recipeSaved" aria-live="polite">
+      <p v-if="recipeError" role="alert" class="text-sm text-amber-800 dark:text-amber-300" data-testid="recipe-error">{{ t(`${p}.recipe.application.${recipeError}`) }}</p>
+      <p v-if="recipeSaved" role="status" class="text-sm text-primary-700 dark:text-primary-300" data-testid="recipe-saved">{{ t(`${p}.recipe.application.saved`, { count: recipeSaved }) }}</p>
+      <a href="/admin/account-quality" class="text-sm text-primary-600 underline dark:text-primary-400">{{ t(`${p}.recipe.application.manage`) }}</a>
+    </div>
     <div v-if="error" role="alert" class="space-y-2 text-sm text-red-600 dark:text-red-400" data-testid="product-impact-error">
       <p>{{ t(`${p}.${error}`) }}</p>
       <button type="button" class="btn btn-secondary" :disabled="busy || !productID" @click="preview">{{ t(`${p}.retry`) }}</button>
@@ -103,6 +108,16 @@
           <p v-if="recipePartial" class="text-xs">{{ t(`${p}.recipe.unestimated`) }}</p>
         </template>
         <p class="break-words text-xs text-gray-500">{{ t(`${p}.recipe.identity`, { revision: result.monitoring_recipe.source_policy_revision, time: result.monitoring_recipe.preset_updated_at }) }}</p>
+        <section class="min-w-0 space-y-3 border-t border-gray-200 pt-3 dark:border-dark-600" aria-labelledby="recipe-application-title" data-testid="recipe-application">
+          <h5 id="recipe-application-title" class="text-sm font-medium">{{ t(`${p}.recipe.application.title`) }}</h5>
+          <p class="text-sm" data-testid="recipe-application-state">{{ t(`${p}.recipe.application.${!result.monitoring_recipe.application_review ? 'legacy' : recipeExpired ? 'expired' : result.monitoring_recipe.application_review.can_confirm ? 'ready' : 'blocked'}`) }}</p>
+          <template v-if="result.monitoring_recipe.application_review?.can_confirm">
+            <p class="break-words text-xs text-gray-500">{{ t(`${p}.recipe.application.expires`, { time: result.monitoring_recipe.application_review.expires_at }) }}</p>
+            <label class="flex items-start gap-2 text-sm"><input v-model="recipeConsent" type="checkbox" class="mt-1" :disabled="recipeBusy || managementBusy || recipeExpired" data-testid="recipe-consent" /><span>{{ t(`${p}.recipe.application.consent`, { count: result.monitoring_recipe.accounts, delta: result.monitoring_recipe.demand?.delta_minimum_requests_per_day }) }}</span></label>
+            <button type="button" class="btn btn-primary" :disabled="recipeBusy || managementBusy || recipeExpired || !recipeConsent" data-testid="recipe-confirm" @click="distributeRecipe">{{ t(`${p}.recipe.application.${recipeBusy ? 'saving' : 'confirm'}`) }}</button>
+          </template>
+          <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.recipe.application.boundary`) }}</p>
+        </section>
         <p class="text-xs leading-5">{{ t(`${p}.recipe.boundary`) }}</p>
       </section>
       <p v-if="result.group_status !== 'active'" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200">{{ t(`${p}.inactive`) }}</p>
@@ -249,7 +264,7 @@ import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
 import { listQualityPresets, type QualityRulePreset } from '@/api/admin/accountQuality'
-import { previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementPreview, type ProcurementManagementState, type ProcurementProductImpact } from '@/api/admin/procurementCatalog'
+import { applyProcurementRecipe, previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementPreview, type ProcurementManagementState, type ProcurementProductImpact, type ProcurementRecipeApplication } from '@/api/admin/procurementCatalog'
 import { validProcurementProductImpact, validProcurementManagementState, validProcurementManagementPreview, observationRecipePreset } from '@/utils/procurementProductImpact'
 import type { AdminGroup } from '@/types'
 
@@ -260,7 +275,7 @@ const presetID = ref<number | null>(null), presets = ref<QualityRulePreset[]>([]
 const recipePresets = computed(() => presets.value.filter(observationRecipePreset))
 let presetsController: AbortController | undefined
 async function loadPresets(force: boolean | Event = false) {
-  if (presetsBusy.value || presetsLoaded.value && force !== true) return
+  if (recipeBusy.value || presetsBusy.value || presetsLoaded.value && force !== true) return
   if (force === true) { previewController?.abort(); previewGeneration++; busy.value = false; result.value = null; error.value = '' }
   presetsController = new AbortController(); presetsBusy.value = true; presetsError.value = false
   try {
@@ -280,6 +295,45 @@ const selected = ref<AdminGroup | null>(null)
 const managementState = ref<ProcurementManagementState | null>(null), managementPreview = ref<ProcurementManagementPreview | null>(null)
 const selectedMemberships = ref<number[]>([]), managementConsent = ref(false), managementBusy = ref(false), managementError = ref(''), managementSaved = ref(false)
 const managementClock = ref(Date.now()), managementReceived = ref(0)
+const recipeBusy = ref(false), recipeConsent = ref(false), recipeError = ref(''), recipeSaved = ref(0), recipeDeadline = ref(0)
+let recipeGeneration = 0, recipeController: AbortController | undefined
+const recipeExpired = computed(() => managementClock.value >= recipeDeadline.value)
+watch(recipeExpired, expired => { if (expired) recipeConsent.value = false })
+function invalidateRecipe() {
+  recipeGeneration++; recipeController?.abort(); recipeBusy.value = false; recipeConsent.value = false; recipeError.value = ''; recipeSaved.value = 0; recipeDeadline.value = 0
+}
+watch([productID, presetID], invalidateRecipe, { flush: 'sync' })
+function validRecipeApplication(value: ProcurementRecipeApplication, id: number, preset: number, ids: number[]): boolean {
+  return !!value && value.version === 1 && value.group_id === id && value.preset_id === preset && Array.isArray(value.plans) &&
+    value.plans.length === ids.length && new Set(value.plans.map(p => p?.account_id)).size === ids.length &&
+    new Set(value.plans.map(p => p?.plan_id)).size === ids.length && value.plans.every(p => !!p && ids.includes(p.account_id) && Number.isSafeInteger(p.plan_id) && p.plan_id > 0)
+}
+async function distributeRecipe() {
+  const draft = result.value, r = draft?.monitoring_recipe, review = r?.application_review
+  if (!draft || !r || !productID.value || recipeBusy.value || managementBusy.value || !review?.can_confirm || !recipeConsent.value || recipeExpired.value) return
+  const id = productID.value, preset = r.preset_id, ids = draft.management_review!.source_inventory!.accounts.filter(a => a.in_approved_sources === true).map(a => a.account_id)
+  const generation = ++recipeGeneration
+  recipeController?.abort(); recipeController = new AbortController()
+  const signal = recipeController.signal
+  recipeBusy.value = true; recipeConsent.value = false; recipeError.value = ''; recipeSaved.value = 0
+  let written = false
+  try {
+    const saved = await applyProcurementRecipe(id, { version: 1, preset_id: preset, observed_at: review.observed_at, fingerprint: review.fingerprint }, signal)
+    written = true
+    if (!alive || generation !== recipeGeneration) return
+    result.value = null
+    if (!validRecipeApplication(saved, id, preset, ids)) throw new Error('invalid distribution response')
+    const next = await previewProcurementProductImpact(id, signal, preset)
+    if (!validProcurementProductImpact(next, id, preset) || !saved.plans.every(row => next.monitoring_recipe?.distribution_review?.conflicts.some(p => p.account_id === row.account_id && p.plan_id === row.plan_id && p.enabled))) throw new Error('unverified distribution')
+    if (alive && generation === recipeGeneration) { result.value = next; recipeSaved.value = saved.plans.length; recipeDeadline.value = 0 }
+  } catch (e) {
+    if (alive && generation === recipeGeneration) {
+      result.value = null
+      const status = (e as { status?: number })?.status
+      recipeError.value = written ? 'savedReadFailed' : status === 409 ? 'conflict' : status === 403 ? 'forbidden' : 'failed'
+    }
+  } finally { if (alive && generation === recipeGeneration) recipeBusy.value = false }
+}
 let managementGeneration = 0, managementController: AbortController | undefined
 const managementExpired = computed(() => managementClock.value >= (managementPreview.value ? managementReceived.value + Date.parse(managementPreview.value.expires_at) - Date.parse(managementPreview.value.observed_at) : Infinity))
 const managementTimer = setInterval(() => { managementClock.value = Date.now() }, 1000)
@@ -291,7 +345,7 @@ watch(productID, () => {
   if (productID.value) void managementAction('read')
 })
 async function managementAction(action: 'read' | 'preview' | 'review' | 'manual') {
-  if (!productID.value || managementBusy.value) return
+  if (!productID.value || managementBusy.value || recipeBusy.value) return
   const id = productID.value, generation = ++managementGeneration, ids = selectedMemberships.value.slice()
   const draft = managementPreview.value, state = managementState.value
   if (action === 'review' && (!draft?.can_confirm || !managementConsent.value || managementExpired.value)) return
@@ -341,7 +395,7 @@ async function managementAction(action: 'read' | 'preview' | 'review' | 'manual'
     }
   } finally { if (alive && generation === managementGeneration) managementBusy.value = false }
 }
-onBeforeUnmount(() => { clearInterval(managementTimer); managementGeneration++; managementController?.abort() })
+onBeforeUnmount(() => { clearInterval(managementTimer); managementGeneration++; managementController?.abort(); recipeGeneration++; recipeController?.abort() })
 const options = computed(() => {
   const rows = products.value.slice()
   if (selected.value && !rows.some(row => row.id === selected.value?.id)) rows.unshift(selected.value)
@@ -415,14 +469,21 @@ async function loadProducts(search: string) {
   finally { if (alive && generation === productsGeneration) productsBusy.value = false }
 }
 async function preview() {
-  if (busy.value || !productID.value) return
+  if (busy.value || recipeBusy.value || !productID.value) return
+  invalidateRecipe()
+  const startedAt = Date.now()
   const id = productID.value, generation = ++previewGeneration
   previewController?.abort(); previewController = new AbortController()
   busy.value = true; error.value = ''; result.value = null; page.value = 1; reviewPage.value = 1; sourcePage.value = 1; writerPage.value = 1; recipePage.value = 1
   try {
     const next = presetID.value == null ? await previewProcurementProductImpact(id, previewController.signal) : await previewProcurementProductImpact(id, previewController.signal, presetID.value)
     if (!validProcurementProductImpact(next, id, presetID.value ?? undefined)) throw new Error('invalid product impact')
-    if (alive && generation === previewGeneration) result.value = next
+    if (alive && generation === previewGeneration) {
+      result.value = next
+      const review = next.monitoring_recipe?.application_review
+      recipeDeadline.value = review ? startedAt + Date.parse(review.expires_at) - Date.parse(review.observed_at) : 0
+      managementClock.value = Date.now()
+    }
   } catch (e) {
     if (alive && generation === previewGeneration) {
       const status = (e as { status?: number })?.status, reason = (e as { reason?: string })?.reason

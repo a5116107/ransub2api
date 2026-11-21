@@ -3,6 +3,7 @@
 package repository_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,6 +71,7 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	protected.Use(gin.HandlerFunc(middleware.NewAdminAuthMiddleware(auth, service.NewUserService(users, nil, nil, nil), nil, nil)))
 	protected.Use((&admin.AccountHandler{}).AuthorizeObserver)
 	protected.GET("/upstream-procurement/products/:id/impact", h.ProcurementProductImpact)
+	protected.POST("/upstream-procurement/products/:id/monitoring-recipe", h.ApplyProcurementRecipe)
 	run := func(role, query string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -101,7 +103,7 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	out := read()
 	r := out.MonitoringRecipe
 	require.NotNil(t, r)
-	require.Equal(t, 2, r.Version)
+	require.Equal(t, 3, r.Version)
 	require.Equal(t, "ready", r.DistributionReview.State)
 	require.Equal(t, 2, r.DistributionReview.ExaminedAccounts)
 	require.Empty(t, r.DistributionReview.Conflicts)
@@ -114,6 +116,295 @@ func TestProcurementMonitoringRecipePostgresAdminHTTP(t *testing.T) {
 	require.True(t, r.Demand.Coverage.CanSave)
 	require.EqualValues(t, 1, r.SourcePolicyRevision)
 	require.False(t, r.PresetUpdatedAt.IsZero())
+	apply := func(role string, raw []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/admin/upstream-procurement/products/%d/monitoring-recipe", product), bytes.NewReader(raw))
+		if tokens[role] != "" {
+			req.Header.Set("Authorization", "Bearer "+tokens[role])
+		}
+		router.ServeHTTP(w, req)
+		require.NotContains(t, w.Body.String(), "private-")
+		require.NotContains(t, w.Body.String(), "pq:")
+		return w
+	}
+	command := func() []byte {
+		t.Helper()
+		r := read().MonitoringRecipe
+		require.True(t, r.ApplicationReview.CanConfirm)
+		raw, err := json.Marshal(service.ProcurementRecipeCommand{Version: 1, PresetID: preset, ObservedAt: r.ApplicationReview.ObservedAt, Fingerprint: r.ApplicationReview.Fingerprint})
+		require.NoError(t, err)
+		return raw
+	}
+	t.Run("first additions use original plans and are independently readable without adopting old rules", func(t *testing.T) {
+		raw := command()
+		for role, status := range map[string]int{"": 401, "user": 403, "observer": 403} {
+			require.Equal(t, status, apply(role, raw).Code)
+		}
+		for _, bad := range [][]byte{[]byte(`null`), []byte(`{}`), []byte(`{"version":1,"version":1,"preset_id":1,"observed_at":"2026-11-21T00:00:00Z","fingerprint":"` + string(bytes.Repeat([]byte("a"), 64)) + `"}`), append(raw[:len(raw)-1:len(raw)-1], []byte(`,"account_ids":[1]}`)...), bytes.Repeat([]byte(" "), 8193)} {
+			require.Equal(t, 400, apply("admin", bad).Code)
+		}
+		w := apply("admin", raw)
+		require.Equal(t, 200, w.Code, w.Body.String())
+		require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+		var saved struct {
+			Data service.ProcurementRecipeApplication `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &saved))
+		require.Equal(t, product, saved.Data.GroupID)
+		require.Equal(t, preset, saved.Data.PresetID)
+		require.Len(t, saved.Data.Plans, 2)
+		for _, row := range saved.Data.Plans {
+			plan, err := native.GetPlan(ctx, row.PlanID)
+			require.NoError(t, err)
+			require.Equal(t, row.AccountID, plan.AccountID)
+			require.Contains(t, accounts[:2], plan.AccountID)
+			require.True(t, plan.Enabled)
+			require.NotNil(t, plan.NextRunAt)
+			require.Equal(t, service.QualityActionObserveOnly, plan.PelicanConfig.Quality.Action)
+			require.Equal(t, []string{"model-a", "model-b"}, plan.PelicanConfig.ModelIDs)
+			// Use the original runner consumer, including the unbound and
+			// scheduling-paused approved account. No paid request is issued.
+			runner := repository.NewScheduledTestPlanRepository(db)
+			due, err := runner.ListDue(ctx, *plan.NextRunAt)
+			require.NoError(t, err)
+			require.Contains(t, func() []int64 {
+				ids := []int64{}
+				for _, p := range due {
+					ids = append(ids, p.ID)
+				}
+				return ids
+			}(), plan.ID)
+			until := plan.NextRunAt.Add(time.Minute)
+			claimed, err := runner.ClaimPelican(ctx, plan, *plan.NextRunAt, until, plan.NextRunAt.Add(time.Hour))
+			require.NoError(t, err)
+			require.True(t, claimed)
+			require.NoError(t, runner.FinishPelican(ctx, plan.ID, until, *plan.NextRunAt))
+			finished, err := runner.GetByID(ctx, plan.ID)
+			require.NoError(t, err)
+			require.Nil(t, finished.RunningUntil)
+			require.NotNil(t, finished.LastRunAt)
+			t.Cleanup(func() { require.NoError(t, native.DeletePlan(ctx, row.PlanID)) })
+		}
+		fresh := read().MonitoringRecipe
+		require.Equal(t, "conflict", fresh.DistributionReview.State)
+		require.False(t, fresh.ApplicationReview.CanConfirm)
+		require.Len(t, fresh.DistributionReview.Conflicts, 2)
+		require.Equal(t, 409, apply("admin", raw).Code, "replay must not add duplicate plans")
+		for _, row := range saved.Data.Plans {
+			require.NoError(t, native.DeletePlan(ctx, row.PlanID))
+		}
+	})
+	t.Run("confirmation waits for the original budget lock and sees the committed preceding writer", func(t *testing.T) {
+		raw := command()
+		var cmd service.ProcurementRecipeCommand
+		require.NoError(t, json.Unmarshal(raw, &cmd))
+		lock, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = lock.Rollback() }()
+		_, err = lock.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(0x42505350524f4245))
+		require.NoError(t, err)
+		pending := make(chan error, 1)
+		go func() {
+			_, err := repository.NewChannelRepository(db).(service.ProcurementRecipeRepository).ApplyProcurementRecipe(ctx, product, &cmd)
+			pending <- err
+		}()
+		require.Eventually(t, func() bool {
+			var n int
+			err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%'`).Scan(&n)
+			return err == nil && n > 0
+		}, time.Second, 10*time.Millisecond)
+		changed := settings
+		changed.RequestsPerDay = 100
+		changed.Revision++
+		encoded, err := json.Marshal(changed)
+		require.NoError(t, err)
+		_, err = lock.ExecContext(ctx, `UPDATE settings SET value=$1 WHERE key=$2`, string(encoded), service.MonitoringProbeBudgetSettingKey)
+		require.NoError(t, err)
+		require.NoError(t, lock.Commit())
+		require.ErrorIs(t, <-pending, service.ErrProcurementRecipeConflict)
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&n))
+		require.Equal(t, 1, n)
+		settings.Revision = changed.Revision
+		settings, err = budget.SaveSettings(ctx, settings)
+		require.NoError(t, err)
+	})
+	t.Run("final native coverage failure rolls back every inserted plan", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `CREATE FUNCTION recipe_final_coverage_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.cron_expression='* * * * *'; RETURN NEW; END $$; CREATE TRIGGER recipe_final_coverage_fault BEFORE INSERT ON scheduled_test_plans FOR EACH ROW EXECUTE FUNCTION recipe_final_coverage_fault()`)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `DROP TRIGGER IF EXISTS recipe_final_coverage_fault ON scheduled_test_plans; DROP FUNCTION IF EXISTS recipe_final_coverage_fault()`)
+			require.NoError(t, err)
+		})
+		require.Equal(t, 503, apply("admin", command()).Code)
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&n))
+		require.Equal(t, 1, n)
+		_, err = db.ExecContext(ctx, `DROP TRIGGER recipe_final_coverage_fault ON scheduled_test_plans; DROP FUNCTION recipe_final_coverage_fault()`)
+		require.NoError(t, err)
+	})
+	t.Run("source removal committed while waiting for an account lock withdraws the whole confirmation", func(t *testing.T) {
+		var cmd service.ProcurementRecipeCommand
+		require.NoError(t, json.Unmarshal(command(), &cmd))
+		lock, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = lock.Rollback() }()
+		_, err = lock.ExecContext(ctx, `SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE`, accounts[0])
+		require.NoError(t, err)
+		pending := make(chan error, 1)
+		go func() {
+			_, err := repository.NewChannelRepository(db).(service.ProcurementRecipeRepository).ApplyProcurementRecipe(ctx, product, &cmd)
+			pending <- err
+		}()
+		require.Eventually(t, func() bool {
+			var n int
+			err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM accounts%FOR NO KEY UPDATE%'`).Scan(&n)
+			return err == nil && n > 0
+		}, time.Second, 10*time.Millisecond)
+		_, err = lock.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accounts[0], source)
+		require.NoError(t, err)
+		require.NoError(t, lock.Commit())
+		require.ErrorIs(t, <-pending, service.ErrProcurementRecipeConflict)
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&n))
+		require.Equal(t, 1, n)
+		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accounts[0], source)
+		require.NoError(t, err)
+	})
+	t.Run("two products sharing an account cannot create a second observation plan", func(t *testing.T) {
+		var other int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform,rate_multiplier,procurement_policy) VALUES('Another recipe product','openai',.2,$1) RETURNING id`, policy).Scan(&other))
+		repo := repository.NewChannelRepository(db)
+		reviews := map[int64]*service.ProcurementRecipeCommand{}
+		for _, id := range []int64{product, other} {
+			out, err := repo.(service.ProcurementCatalogRepository).PreviewProcurementProductImpact(ctx, id, preset)
+			require.NoError(t, err)
+			r := out.MonitoringRecipe.ApplicationReview
+			require.True(t, r.CanConfirm)
+			reviews[id] = &service.ProcurementRecipeCommand{Version: 1, PresetID: preset, ObservedAt: r.ObservedAt, Fingerprint: r.Fingerprint}
+		}
+		pending := make(chan error, 2)
+		for id, cmd := range reviews {
+			go func() {
+				_, err := repo.(service.ProcurementRecipeRepository).ApplyProcurementRecipe(ctx, id, cmd)
+				pending <- err
+			}()
+		}
+		var success, conflict int
+		for range 2 {
+			err := <-pending
+			if err == nil {
+				success++
+			} else {
+				require.ErrorIs(t, err, service.ErrProcurementRecipeConflict)
+				conflict++
+			}
+		}
+		require.Equal(t, 1, success)
+		require.Equal(t, 1, conflict)
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&n))
+		require.Equal(t, 3, n)
+		_, err := db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE pelican_config#>>'{quality,action}'='observe_only'; DELETE FROM groups WHERE name='Another recipe product'`)
+		require.NoError(t, err)
+	})
+	t.Run("changed preset source or budget invalidates confirmation before any insert", func(t *testing.T) {
+		for _, kind := range []string{"preset", "source", "budget", "expired", "future", "forged"} {
+			raw := command()
+			switch kind {
+			case "preset":
+				_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET max_results=101 WHERE id=$1`, preset)
+			case "source":
+				_, err = db.ExecContext(ctx, `UPDATE accounts SET name='Changed approved supply' WHERE id=$1`, accounts[0])
+			case "budget":
+				settings.RequestsPerDay = 1100
+				settings, err = budget.SaveSettings(ctx, settings)
+			default:
+				var cmd service.ProcurementRecipeCommand
+				require.NoError(t, json.Unmarshal(raw, &cmd))
+				if kind == "expired" {
+					cmd.ObservedAt = cmd.ObservedAt.Add(-3 * time.Minute)
+				}
+				if kind == "future" {
+					cmd.ObservedAt = cmd.ObservedAt.Add(time.Minute)
+				}
+				if kind == "forged" {
+					cmd.Fingerprint = string(bytes.Repeat([]byte("a"), 64))
+				}
+				raw, err = json.Marshal(cmd)
+			}
+			require.NoError(t, err)
+			require.Equal(t, 409, apply("admin", raw).Code, kind)
+			_, err = db.ExecContext(ctx, `UPDATE quality_rule_presets SET max_results=100 WHERE id=$1`, preset)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `UPDATE accounts SET name='Recipe supply 0' WHERE id=$1`, accounts[0])
+			require.NoError(t, err)
+			if kind == "budget" {
+				settings.RequestsPerDay = 1000
+				settings, err = budget.SaveSettings(ctx, settings)
+				require.NoError(t, err)
+			}
+			var n int
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&n))
+			require.Equal(t, 1, n)
+		}
+	})
+	t.Run("a failure on the second native row rolls back the complete batch", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE FUNCTION recipe_fail_second() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.account_id=%d THEN RAISE EXCEPTION 'private-batch-fault'; END IF; RETURN NEW; END $$; CREATE TRIGGER recipe_fail_second BEFORE INSERT ON scheduled_test_plans FOR EACH ROW EXECUTE FUNCTION recipe_fail_second()`, accounts[1]))
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `DROP TRIGGER IF EXISTS recipe_fail_second ON scheduled_test_plans; DROP FUNCTION IF EXISTS recipe_fail_second()`)
+			require.NoError(t, err)
+		})
+		require.Equal(t, 503, apply("admin", command()).Code)
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&n))
+		require.Equal(t, 1, n)
+		_, err = db.ExecContext(ctx, `DROP TRIGGER recipe_fail_second ON scheduled_test_plans; DROP FUNCTION recipe_fail_second()`)
+		require.NoError(t, err)
+	})
+	t.Run("concurrent confirmations create a single complete set", func(t *testing.T) {
+		raw := command()
+		results := make(chan *httptest.ResponseRecorder, 2)
+		for i := 0; i < 2; i++ {
+			go func() { results <- apply("admin", raw) }()
+		}
+		statuses := map[int]int{}
+		for i := 0; i < 2; i++ {
+			w := <-results
+			statuses[w.Code]++
+			if w.Code == 200 {
+				var saved struct {
+					Data service.ProcurementRecipeApplication `json:"data"`
+				}
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &saved))
+				for _, row := range saved.Data.Plans {
+					t.Cleanup(func() { require.NoError(t, native.DeletePlan(ctx, row.PlanID)) })
+				}
+			}
+		}
+		require.Equal(t, map[int]int{200: 1, 409: 1}, statuses)
+		_, err := db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE pelican_config#>>'{quality,action}'='observe_only'`)
+		require.NoError(t, err)
+	})
+	t.Run("a first distribution needs a short-lived input review distinct from budget", func(t *testing.T) {
+		raw, err := json.Marshal(read().MonitoringRecipe)
+		require.NoError(t, err)
+		var projection struct {
+			ApplicationReview *struct {
+				CanConfirm  bool      `json:"can_confirm"`
+				Fingerprint string    `json:"fingerprint"`
+				ObservedAt  time.Time `json:"observed_at"`
+				ExpiresAt   time.Time `json:"expires_at"`
+			} `json:"application_review"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &projection))
+		require.NotNil(t, projection.ApplicationReview, "budget and uniqueness alone are not a write review")
+		require.True(t, projection.ApplicationReview.CanConfirm)
+		require.Len(t, projection.ApplicationReview.Fingerprint, 64)
+		require.Equal(t, 2*time.Minute, projection.ApplicationReview.ExpiresAt.Sub(projection.ApplicationReview.ObservedAt))
+	})
 	t.Run("budget capacity does not override the original observation-plan uniqueness", func(t *testing.T) {
 		for _, test := range []struct {
 			enabled bool

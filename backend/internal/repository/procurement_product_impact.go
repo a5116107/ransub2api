@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
@@ -41,7 +42,7 @@ func (r *channelRepository) PreviewProcurementProductImpact(ctx context.Context,
 	}
 	out := &service.ProcurementProductImpact{Version: 1, GroupStatus: group.Status, GateEnabled: group.ProfitControlEnabled, BoundAccounts: len(accounts), ManagementReview: review}
 	if len(presetIDs) == 1 {
-		out.MonitoringRecipe, err = loadProcurementMonitoringRecipe(ctx, tx, presetIDs[0], review.SourceInventory)
+		out.MonitoringRecipe, err = loadProcurementMonitoringRecipe(ctx, tx, group, presetIDs[0], review.SourceInventory, time.Time{})
 		if err != nil {
 			return nil, err
 		}

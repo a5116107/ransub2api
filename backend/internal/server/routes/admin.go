@@ -1101,6 +1101,7 @@ func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	admin.PUT("/upstream-procurement/catalog", h.Admin.Channel.ProcurementCatalog)
 	admin.POST("/upstream-procurement/preview", h.Admin.Channel.ProcurementClassificationPreview)
 	admin.GET("/upstream-procurement/products/:id/impact", h.Admin.Channel.ProcurementProductImpact)
+	admin.POST("/upstream-procurement/products/:id/monitoring-recipe", h.Admin.Channel.ApplyProcurementRecipe)
 	admin.GET("/upstream-procurement/products/:id/management", h.Admin.Channel.ProcurementManagement)
 	admin.POST("/upstream-procurement/products/:id/management/preview", h.Admin.Channel.ProcurementManagement)
 	admin.PUT("/upstream-procurement/products/:id/management", h.Admin.Channel.ProcurementManagement)

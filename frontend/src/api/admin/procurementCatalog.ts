@@ -107,10 +107,18 @@ export interface ProcurementMonitoringRecipe {
     state: 'ready' | 'conflict' | 'unknown'; examined_accounts: number
     conflicts: Array<{ account_id: number; plan_id: number; enabled: boolean }>
   }
+  application_review?: { observed_at: string; expires_at: string; fingerprint: string; can_confirm: boolean }
   demand?: {
     additional_plans: number; current_minimum_requests_per_day: number; delta_minimum_requests_per_day: number
     coverage: MonitoringProbeCoverage
   }
+}
+
+export interface ProcurementRecipeApplication {
+  version: number; group_id: number; preset_id: number; plans: Array<{ account_id: number; plan_id: number }>
+}
+export async function applyProcurementRecipe(id: number, command: { version: 1; preset_id: number; observed_at: string; fingerprint: string }, signal?: AbortSignal): Promise<ProcurementRecipeApplication> {
+  return (await apiClient.post<ProcurementRecipeApplication>(`/admin/upstream-procurement/products/${id}/monitoring-recipe`, command, { signal })).data
 }
 
 export async function previewProcurementProductImpact(id: number, signal?: AbortSignal, presetID?: number): Promise<ProcurementProductImpact> {

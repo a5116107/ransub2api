@@ -1,6 +1,18 @@
 export default {
   productImpact: {
     recipe: {
+      application: {
+        title: 'First observation-plan distribution', ready: 'Ready for one-time additions. Sources, preset and budget will be checked again before saving.',
+        blocked: 'First additions are blocked. Check the product status, existing observation plans and budget enforcement.', legacy: 'No current distribution review is included. Run a new preview.',
+        consent: 'Create enabled observation plans for all {count} approved accounts, adding at least {delta} calls/day. Scheduled checks will incur upstream costs.',
+        confirm: 'Confirm observation plans', saving: 'Saving and verifying…', expires: 'Review expires at {time}. Changed inputs require a new preview.',
+        expired: 'This review has expired. Preview again before confirming.', saved: 'Independently read back and verified {count} new observation plans. View actual runs on Account Quality.',
+        conflict: 'Inputs changed, the review expired, or plans conflict. Distribution is not confirmed. Preview again.', forbidden: 'This action requires full administrator access. Confirmation was cleared.',
+        failed: 'Distribution outcome is unconfirmed. Check saved plans on Account Quality, then preview again. Do not replay the old confirmation.',
+        savedReadFailed: 'Saving returned success, but complete read-back was not verified. Inspect Account Quality before creating more plans.',
+        boundary: 'Adds account observation plans only: no replacement or merging of existing rules, product membership changes, scheduling changes or automatic takeover. Unbound and scheduling-paused approved accounts also receive plans. Unknown coverage and token costs are not guaranteed.',
+        manage: 'View account quality plans and results'
+      },
       distribution: {
         title: 'Existing observation-plan conflicts',
         states: {
@@ -14,10 +26,10 @@ export default {
         manage: 'View account quality rules', pages: 'Observation-plan conflict pages'
       },
       label: 'Simulate added monitoring (optional)', none: 'Review saved rules only', title: 'Monitoring demand preview', refresh: 'Refresh presets',
-      help: 'Choose an observation-only answer preset to simulate one additional plan per approved account. Existing plans are retained, not reused or distributed.',
+      help: 'Choose an observation-only answer preset to preview additions for approved accounts. One-time distribution requires separate confirmation; existing rules are not reused.',
       loading: 'Loading presets…', loadFailed: 'Preset loading failed. Saved-rule review is still available.', empty: 'No enabled native observation-only answer presets.', configure: 'Manage quality presets',
       invalid: 'The preset is missing, disabled, or not an observation-only answer rule. Select a valid preset.',
-      boundary: 'Read-only: no checks, adoption, scheduling changes or product membership writes. Daily calls are optimistic lower bounds, not full scope, peak, token or timeliness guarantees. Capacity does not prove answer quality or model identity.',
+      boundary: 'Previewing saves nothing and runs no checks. Separate confirmation creates native observation plans without adopting existing rules or changing scheduling or memberships. Daily calls are optimistic lower bounds, not full scope, peak, token or timeliness guarantees. Capacity does not prove answer quality or model identity.',
       states: {
         sources_unavailable: 'Approved sources are unconfirmed: no estimate or fallback to the original pool or all accounts.', no_approved_accounts: 'Approved sources are currently empty; no additional plans.',
         not_enforced: 'Budget protection is off. These are demand estimates, not guaranteed capacity.', insufficient: 'A capacity limit is exceeded. Adjust cadence, approved sources, or budget.',
@@ -32,7 +44,7 @@ export default {
     intro: 'Choose a sales group to see which bound accounts its saved price rules would reject with the profit gate enabled.',
     product: 'Sales product / group', choose: 'Search products by name', noProducts: 'No matching sales groups.', disabledProduct: 'Disabled',
     preview: 'Check activation impact', loading: 'Checking…', retry: 'Retry',
-    readOnly: 'Read-only: no switch, membership or paid probe changes. No account or product IDs to remember.',
+    readOnly: 'Checks are read-only and change no switches or memberships. Observation plans are created only after separate consent and confirmation. No account or product IDs to remember.',
     searchMore: 'Showing {count} of {total} matching products. Search by name to narrow the list.',
     productsFailed: 'Product list could not be read. Your selection is retained.',
     failed: 'This check returned no complete result. Refresh and retry; missing data has not been treated as a pass.',

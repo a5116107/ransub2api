@@ -42,6 +42,19 @@ type planRowQuerier interface {
 
 // insertScheduledTestPlan is shared with group rules, which insert inside their own transaction.
 func insertScheduledTestPlan(ctx context.Context, q *sql.Tx, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
+	created, err := insertScheduledTestPlanRow(ctx, q, plan)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMonitoringCoveragePlanWrite(ctx, q, created.Enabled); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+// Callers hold the native budget write lock. Atomic batches validate coverage
+// once after their final row, before committing any of the additions.
+func insertScheduledTestPlanRow(ctx context.Context, q *sql.Tx, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
 	if err := authorizeScheduledObserverWrite(ctx, q, plan.AccountID); err != nil {
 		return nil, err
 	}
@@ -53,14 +66,7 @@ func insertScheduledTestPlan(ctx context.Context, q *sql.Tx, plan *service.Sched
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8)
 		RETURNING id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, pelican_config, running_until
 	`, plan.AccountID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, marshalPelicanConfig(plan.PelicanConfig))
-	created, err := scanPlan(row)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateMonitoringCoveragePlanWrite(ctx, q, created.Enabled); err != nil {
-		return nil, err
-	}
-	return created, nil
+	return scanPlan(row)
 }
 
 func (r *scheduledTestPlanRepository) GetByID(ctx context.Context, id int64) (*service.ScheduledTestPlan, error) {

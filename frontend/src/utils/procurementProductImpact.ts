@@ -146,7 +146,7 @@ export function observationRecipePreset(preset: QualityRulePreset): boolean {
 function validMonitoringRecipe(value: ProcurementProductImpact, presetID?: number): boolean {
   const r = value.monitoring_recipe, source = value.management_review?.source_inventory
   if (presetID == null) return r == null
-  if (!r || ![1, 2].includes(r.version) || r.preset_id !== presetID || typeof r.preset_name !== 'string' ||
+  if (!r || ![1, 2, 3].includes(r.version) || r.preset_id !== presetID || typeof r.preset_name !== 'string' ||
     !Number.isFinite(Date.parse(r.preset_updated_at)) || !count(r.source_policy_revision) || !source ||
     r.source_policy_revision !== source.policy_revision) return false
   if (r.version === 1) {
@@ -171,9 +171,11 @@ function validMonitoringRecipe(value: ProcurementProductImpact, presetID?: numbe
       }
     }
   }
-  if (source.state !== 'approved_sources') return r.state === 'sources_unavailable' && r.accounts === null && r.demand == null
+  const application = r.application_review
+  if (r.version < 3 && application != null) return false
+  if (source.state !== 'approved_sources') return r.state === 'sources_unavailable' && r.accounts === null && r.demand == null && application == null
   if (r.accounts !== source.approved_accounts || !count(r.accounts)) return false
-  if (r.accounts === 0) return r.state === 'no_approved_accounts' && r.demand == null
+  if (r.accounts === 0) return r.state === 'no_approved_accounts' && r.demand == null && application == null
   const d = r.demand, c = d?.coverage
   if (r.state !== 'previewed' || !d || !c || d.additional_plans !== r.accounts ||
     ![d.current_minimum_requests_per_day, d.delta_minimum_requests_per_day, c.minimum_total_requests_per_day, c.regular_day_capacity, c.budget_revision].every(count) ||
@@ -182,6 +184,12 @@ function validMonitoringRecipe(value: ProcurementProductImpact, presetID?: numbe
     [...c.blocking_reasons, ...c.warnings].some(v => typeof v !== 'string') ||
     c.can_save !== (!c.enforced || c.blocking_reasons.length === 0) || !Number.isFinite(Date.parse(c.observed_at)) ||
     !c.schedule_window_start || !c.schedule_window_end || Date.parse(c.schedule_window_end) - Date.parse(c.schedule_window_start) !== 86400000) return false
+  if (r.version === 3) {
+    if (!application || typeof application.can_confirm !== 'boolean' || !/^[a-f0-9]{64}$/.test(application.fingerprint) ||
+      !Number.isFinite(Date.parse(application.observed_at)) || Date.parse(application.expires_at) - Date.parse(application.observed_at) !== 120000 ||
+      Date.parse(application.observed_at) !== Date.parse(c.observed_at) || Date.parse(value.observed_at) < Date.parse(application.observed_at) ||
+      application.can_confirm !== (value.group_status === 'active' && r.distribution_review?.state === 'ready' && c.enforced && c.can_save)) return false
+  }
   return true
 }
 

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProcurementProductImpactView from '../ProcurementProductImpact.vue'
 import Select from '@/components/common/Select.vue'
 import { list as listGroups } from '@/api/admin/groups'
-import { previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementState, type ProcurementManagementPreview, type ProcurementManagementReview, type ProcurementProductImpact, type ProcurementSourceInventory, type ProcurementWriterReview } from '@/api/admin/procurementCatalog'
+import { applyProcurementRecipe, previewProcurementProductImpact, readProcurementManagement, previewProcurementManagement, saveProcurementManagement, type ProcurementManagementState, type ProcurementManagementPreview, type ProcurementManagementReview, type ProcurementProductImpact, type ProcurementSourceInventory, type ProcurementWriterReview } from '@/api/admin/procurementCatalog'
 import { validProcurementProductImpact, validProcurementManagementPreview } from '@/utils/procurementProductImpact'
 import zh from '@/i18n/locales/zh/upstreamOps'
 import en from '@/i18n/locales/en/upstreamOps'
@@ -14,7 +14,7 @@ import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? ' ' + JSON.stringify(values) : ''}` }) }))
 vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
 vi.mock('@/api/admin/accountQuality', () => ({ listQualityPresets: vi.fn() }))
-vi.mock('@/api/admin/procurementCatalog', () => ({ previewProcurementProductImpact: vi.fn(), readProcurementManagement: vi.fn(), previewProcurementManagement: vi.fn(), saveProcurementManagement: vi.fn() }))
+vi.mock('@/api/admin/procurementCatalog', () => ({ applyProcurementRecipe: vi.fn(), previewProcurementProductImpact: vi.fn(), readProcurementManagement: vi.fn(), previewProcurementManagement: vi.fn(), saveProcurementManagement: vi.fn() }))
 const p = 'upstreamOps.productImpact.'
 const wrappers: ReturnType<typeof mount>[] = []
 const product = (id = 2) => ({ id, name: `Sales ${id}`, platform: 'openai', status: 'active' })
@@ -271,6 +271,141 @@ describe('read-only product monitoring recipe', () => {
     for (const value of Object.values(locale.productImpact.recipe.states)) expect(value).toBeTypeOf('string')
     for (const value of Object.values(locale.productImpact.recipe.distribution.states)) expect(value).toBeTypeOf('string')
     for (const key of ['title', 'conflict', 'enabled', 'paused', 'boundary', 'manage', 'pages'] as const) expect(locale.productImpact.recipe.distribution[key]).toBeTypeOf('string')
+  })
+})
+
+const applicableRecipeFixture = (): ProcurementProductImpact => {
+  const next = reviewedRecipeFixture()
+  next.monitoring_recipe!.version = 3
+  next.monitoring_recipe!.application_review = { observed_at: next.observed_at, expires_at: new Date(Date.parse(next.observed_at) + 120000).toISOString(), fingerprint: 'b'.repeat(64), can_confirm: true }
+  return next
+}
+const applicationFixture = () => ({ version: 1, group_id: 2, preset_id: 7, plans: [{ account_id: 9, plan_id: 101 }, { account_id: 30, plan_id: 102 }] })
+const savedRecipeFixture = (): ProcurementProductImpact => {
+  const next = applicableRecipeFixture()
+  next.monitoring_recipe!.application_review!.can_confirm = false
+  next.monitoring_recipe!.distribution_review = { state: 'conflict', examined_accounts: 2, conflicts: applicationFixture().plans.map(row => ({ ...row, enabled: true })) }
+  return next
+}
+async function applicationView() {
+  vi.mocked(listQualityPresets).mockResolvedValue([presetFixture()])
+  vi.mocked(previewProcurementProductImpact).mockResolvedValue(applicableRecipeFixture())
+  const w = view(); await choose(w)
+  await w.get('#impact-preset').trigger('focus'); await flushPromises(); await w.get('#impact-preset').setValue('7'); await preview(w)
+  return w
+}
+async function confirmRecipe(w: ReturnType<typeof mount>) {
+  await w.get('[data-testid="recipe-consent"]').setValue(true)
+  await w.get('[data-testid="recipe-confirm"]').trigger('click'); await flushPromises()
+}
+describe('explicit first monitoring-plan distribution', () => {
+  it('requires consent, writes only the reviewed preset and verifies every plan in an independent read', async () => {
+    const w = await applicationView()
+    expect(validProcurementProductImpact(applicableRecipeFixture(), 2, 7)).toBe(true)
+    expect(w.get('[data-testid="recipe-confirm"]').attributes('disabled')).toBeDefined()
+    expect(applyProcurementRecipe).not.toHaveBeenCalled()
+    vi.mocked(applyProcurementRecipe).mockResolvedValue(applicationFixture())
+    vi.mocked(previewProcurementProductImpact).mockResolvedValue(savedRecipeFixture())
+    await confirmRecipe(w)
+    const r = applicableRecipeFixture().monitoring_recipe!.application_review!
+    expect(applyProcurementRecipe).toHaveBeenCalledTimes(1)
+    expect(applyProcurementRecipe).toHaveBeenCalledWith(2, { version: 1, preset_id: 7, observed_at: r.observed_at, fingerprint: r.fingerprint }, expect.any(AbortSignal))
+    expect(previewProcurementProductImpact).toHaveBeenCalledTimes(2)
+    expect(w.get('[data-testid="recipe-saved"]').text()).toContain(p + 'recipe.application.saved')
+    expect(w.get('[data-testid="recipe-saved"]').text()).toContain('"count":2')
+    expect(saveProcurementManagement).not.toHaveBeenCalled()
+    expect(w.find('[data-testid="recipe-consent"]').exists()).toBe(false)
+  })
+  it.each(['legacy1', 'legacy2', 'inactive', 'conflict', 'not_enforced', 'insufficient', 'unknown'])('never offers first distribution for %s', async state => {
+    const next = applicableRecipeFixture(), r = next.monitoring_recipe!
+    if (state.startsWith('legacy')) { r.version = state === 'legacy1' ? 1 : 2; delete r.application_review; if (r.version === 1) delete r.distribution_review }
+    else {
+      r.application_review!.can_confirm = false
+      if (state === 'inactive') next.group_status = 'inactive'
+      if (state === 'conflict') r.distribution_review = { state: 'conflict', examined_accounts: 2, conflicts: [{ account_id: 9, plan_id: 18, enabled: false }] }
+      if (state === 'not_enforced') r.demand!.coverage.enforced = false
+      if (state === 'insufficient') { r.demand!.coverage.can_save = false; r.demand!.coverage.blocking_reasons = ['day_capacity'] }
+      if (state === 'unknown') r.distribution_review = { state: 'unknown', examined_accounts: 0, conflicts: [] }
+    }
+    const w = await applicationView(); vi.mocked(previewProcurementProductImpact).mockResolvedValue(next); await preview(w)
+    expect(w.find('[data-testid="recipe-consent"]').exists()).toBe(false)
+    expect(applyProcurementRecipe).not.toHaveBeenCalled()
+  })
+  it('expires conservatively from request start, clears consent and requires a fresh preview', async () => {
+    vi.useFakeTimers()
+    const w = await applicationView()
+    await w.get('[data-testid="recipe-consent"]').setValue(true)
+    await vi.advanceTimersByTimeAsync(121000)
+    expect(w.get('[data-testid="recipe-confirm"]').attributes('disabled')).toBeDefined()
+    expect(w.text()).toContain(p + 'recipe.application.expired')
+    await w.get('[data-testid="recipe-confirm"]').trigger('click'); await flushPromises()
+    expect(applyProcurementRecipe).not.toHaveBeenCalled()
+    await preview(w)
+    expect(w.get<HTMLInputElement>('[data-testid="recipe-consent"]').element.checked).toBe(false)
+    let finish!: (v: ProcurementProductImpact) => void
+    vi.mocked(previewProcurementProductImpact).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    await w.get('form').trigger('submit'); await vi.advanceTimersByTimeAsync(121000)
+    finish(applicableRecipeFixture()); await flushPromises()
+    expect(w.get('[data-testid="recipe-confirm"]').attributes('disabled')).toBeDefined()
+  })
+  it.each([409, 403, 503])('clears the confirmation after HTTP %s and does not blindly replay', async status => {
+    const w = await applicationView()
+    vi.mocked(applyProcurementRecipe).mockRejectedValue({ status })
+    await confirmRecipe(w)
+    expect(w.get('[data-testid="recipe-error"]').text()).toContain(p + `recipe.application.${status === 409 ? 'conflict' : status === 403 ? 'forbidden' : 'failed'}`)
+    expect(w.find('[data-testid="recipe-consent"]').exists()).toBe(false)
+    expect((w.get('#impact-preset').element as HTMLSelectElement).value).toBe('7')
+    expect(applyProcurementRecipe).toHaveBeenCalledTimes(1)
+    await preview(w)
+    expect(w.get<HTMLInputElement>('[data-testid="recipe-consent"]').element.checked).toBe(false)
+  })
+  it.each(['read_failure', 'missing_plan', 'paused_plan', 'different_plan', 'malformed_write'])('reports the saved result as unverified after %s', async fault => {
+    const w = await applicationView()
+    const saved = applicationFixture(), next = savedRecipeFixture()
+    if (fault === 'read_failure') vi.mocked(previewProcurementProductImpact).mockRejectedValue({ status: 503 })
+    else {
+      if (fault === 'missing_plan') next.monitoring_recipe!.distribution_review!.conflicts.pop()
+      if (fault === 'paused_plan') next.monitoring_recipe!.distribution_review!.conflicts[0].enabled = false
+      if (fault === 'different_plan') next.monitoring_recipe!.distribution_review!.conflicts[0].plan_id = 999
+      vi.mocked(previewProcurementProductImpact).mockResolvedValue(next)
+    }
+    vi.mocked(applyProcurementRecipe).mockResolvedValue(fault === 'malformed_write' ? { ...saved, plans: [saved.plans[0], saved.plans[0]] } : saved)
+    await confirmRecipe(w)
+    expect(w.find('[data-testid="recipe-saved"]').exists()).toBe(false)
+    expect(w.get('[data-testid="recipe-error"]').text()).toContain(p + 'recipe.application.savedReadFailed')
+    expect(w.find('[data-testid="recipe-consent"]').exists()).toBe(false)
+  })
+  it('serializes write controls and ignores a late completion after the selected product changes', async () => {
+    const w = await applicationView()
+    let finish!: (v: ReturnType<typeof applicationFixture>) => void
+    vi.mocked(applyProcurementRecipe).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    await confirmRecipe(w)
+    expect(w.get('#impact-preset').attributes('disabled')).toBeDefined()
+    expect(w.get('[data-testid="product-impact-preview"]').attributes('disabled')).toBeDefined()
+    expect(w.get('[data-testid="management-refresh"]').attributes('disabled')).toBeDefined()
+    expect(w.get('[data-testid="recipe-confirm"]').attributes('disabled')).toBeDefined()
+    w.getComponent(Select).vm.$emit('update:modelValue', 3); await flushPromises()
+    finish(applicationFixture()); await flushPromises()
+    expect(w.find('[data-testid="recipe-saved"]').exists()).toBe(false)
+    expect(w.find('[data-testid="product-impact-result"]').exists()).toBe(false)
+    expect(previewProcurementProductImpact).toHaveBeenCalledTimes(1)
+  })
+  it('rejects corrupt, contradictory or future confirmation contracts rather than creating permissions', () => {
+    for (const mutate of [
+      (v: ProcurementProductImpact) => { delete v.monitoring_recipe!.application_review },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.version = 2 },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.version = 4 },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.application_review!.fingerprint = 'z'.repeat(64) },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.application_review!.expires_at = 'invalid' },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.application_review!.can_confirm = false },
+      (v: ProcurementProductImpact) => { v.group_status = 'inactive' },
+      (v: ProcurementProductImpact) => { v.monitoring_recipe!.application_review!.expires_at = v.monitoring_recipe!.application_review!.observed_at }
+    ]) { const next = applicableRecipeFixture(); mutate(next); expect(validProcurementProductImpact(next, 2, 7)).toBe(false) }
+  })
+  it.each([zh, en])('provides consent, cost, conflict and uncertain-write explanations', locale => {
+    for (const key of ['title', 'ready', 'blocked', 'legacy', 'consent', 'confirm', 'saving', 'expires', 'expired', 'saved', 'conflict', 'forbidden', 'failed', 'savedReadFailed', 'boundary', 'manage']) {
+      expect((locale.productImpact.recipe.application as Record<string, unknown>)[key]).toBeTypeOf('string')
+    }
   })
 })
 

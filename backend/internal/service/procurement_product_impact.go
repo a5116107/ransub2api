@@ -1,9 +1,14 @@
 package service
 
 import (
+	"context"
+	"encoding/hex"
+	"encoding/json"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/tidwall/gjson"
 )
 
 // Bounded, administrator-only price diagnostics. This is not full eligibility,
@@ -13,6 +18,11 @@ const ProcurementProductImpactAccountLimit = 1000
 var ErrProcurementProductImpactTooLarge = infraerrors.BadRequest("PROCUREMENT_PRODUCT_IMPACT_TOO_LARGE", "product exceeds 1000 accounts; use explicit scope diagnostics")
 var ErrProcurementMonitoringRecipeInvalid = infraerrors.BadRequest("PROCUREMENT_MONITORING_RECIPE_INVALID", "choose an enabled native answer observation preset")
 var ErrProcurementMonitoringRecipeNotFound = infraerrors.NotFound("PROCUREMENT_MONITORING_RECIPE_NOT_FOUND", "monitoring preset not found")
+var ErrProcurementRecipeCommand = infraerrors.BadRequest("PROCUREMENT_RECIPE_COMMAND_INVALID", "invalid first-distribution confirmation")
+var ErrProcurementRecipeConflict = infraerrors.Conflict("PROCUREMENT_RECIPE_CONFLICT", "inputs changed, expired or conflict; preview again")
+var ErrProcurementRecipeUnavailable = infraerrors.ServiceUnavailable("PROCUREMENT_RECIPE_UNAVAILABLE", "distribution was not confirmed; inspect saved plans before another confirmation")
+
+const ProcurementRecipeReviewTTL = 2 * time.Minute
 
 type ProcurementProductImpact struct {
 	Version            int                          `json:"version"`
@@ -27,8 +37,8 @@ type ProcurementProductImpact struct {
 	MonitoringRecipe   *ProcurementMonitoringRecipe `json:"monitoring_recipe,omitempty"`
 }
 
-// Read-only additions across the approved inventory. No old plan is adopted,
-// replaced or deduplicated, and the preview never authorizes distribution.
+// Preview across the approved inventory. No old plan is adopted, replaced or
+// deduplicated; first additions require a separate administrator confirmation.
 type ProcurementMonitoringRecipe struct {
 	Version              int                                  `json:"version"`
 	PresetID             int64                                `json:"preset_id"`
@@ -39,6 +49,65 @@ type ProcurementMonitoringRecipe struct {
 	Accounts             *int                                 `json:"accounts"`
 	Demand               *ProcurementMonitoringRecipeDemand   `json:"demand,omitempty"`
 	DistributionReview   *ProcurementRecipeDistributionReview `json:"distribution_review,omitempty"`
+	ApplicationReview    *ProcurementRecipeApplicationReview  `json:"application_review,omitempty"`
+}
+
+type ProcurementRecipeApplicationReview struct {
+	ObservedAt  time.Time `json:"observed_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Fingerprint string    `json:"fingerprint"`
+	CanConfirm  bool      `json:"can_confirm"`
+}
+
+type ProcurementRecipeCommand struct {
+	Version     int       `json:"version"`
+	PresetID    int64     `json:"preset_id"`
+	ObservedAt  time.Time `json:"observed_at"`
+	Fingerprint string    `json:"fingerprint"`
+}
+
+func (c *ProcurementRecipeCommand) Validate() error {
+	if c == nil || c.Version != 1 || c.PresetID < 1 || c.PresetID > domain.MaxProcurementPolicyRevision || c.ObservedAt.IsZero() || len(c.Fingerprint) != 64 {
+		return ErrProcurementRecipeCommand
+	}
+	if _, err := hex.DecodeString(c.Fingerprint); err != nil {
+		return ErrProcurementRecipeCommand
+	}
+	return nil
+}
+
+func ParseProcurementRecipeCommand(raw []byte) (*ProcurementRecipeCommand, error) {
+	var command ProcurementRecipeCommand
+	if !gjson.ValidBytes(raw) || !procurementCatalogObject(gjson.ParseBytes(raw), "version", "preset_id", "observed_at", "fingerprint") ||
+		json.Unmarshal(raw, &command) != nil || command.Validate() != nil {
+		return nil, ErrProcurementRecipeCommand
+	}
+	return &command, nil
+}
+
+type ProcurementRecipeApplication struct {
+	Version  int                            `json:"version"`
+	GroupID  int64                          `json:"group_id"`
+	PresetID int64                          `json:"preset_id"`
+	Plans    []ProcurementRecipeCreatedPlan `json:"plans"`
+}
+
+type ProcurementRecipeCreatedPlan struct {
+	AccountID int64 `json:"account_id"`
+	PlanID    int64 `json:"plan_id"`
+}
+
+type ProcurementRecipeRepository interface {
+	ApplyProcurementRecipe(context.Context, int64, *ProcurementRecipeCommand) (*ProcurementRecipeApplication, error)
+}
+
+func (s *ChannelService) ProcurementRecipeRepository() (ProcurementRecipeRepository, error) {
+	if s != nil {
+		if r, ok := s.repo.(ProcurementRecipeRepository); ok {
+			return r, nil
+		}
+	}
+	return nil, ErrProcurementRecipeUnavailable
 }
 
 // The native per-account observation uniqueness check, independent of budget.

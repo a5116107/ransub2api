@@ -125,6 +125,46 @@ func (h *ChannelHandler) ProcurementClassificationPreview(c *gin.Context) {
 	response.Success(c, out)
 }
 
+// First-time additions only. Existing plans and product ownership are untouched.
+func (h *ChannelHandler) ApplyProcurementRecipe(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 || id > 9007199254740991 {
+		response.ErrorFrom(c, service.ErrProcurementRecipeCommand)
+		return
+	}
+	repo, err := h.channelService.ProcurementRecipeRepository()
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 8192))
+	if err != nil {
+		response.ErrorFrom(c, service.ErrProcurementRecipeCommand)
+		return
+	}
+	command, err := service.ParseProcurementRecipeCommand(raw)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	middleware.SetAuditAction(c, "admin.upstream_procurement.monitoring_recipe")
+	middleware.SetAuditExtra(c, map[string]any{"group_id": id, "preset_id": command.PresetID})
+	out, err := repo.ApplyProcurementRecipe(ctx, id, command)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrProcurementRecipeCommand), errors.Is(err, service.ErrProcurementRecipeConflict), errors.Is(err, service.ErrGroupNotFound), errors.Is(err, service.ErrObserverScope), errors.Is(err, service.ErrProcurementProductImpactTooLarge):
+			response.ErrorFrom(c, err)
+		default:
+			response.ErrorFrom(c, service.ErrProcurementRecipeUnavailable)
+		}
+		return
+	}
+	response.Success(c, out)
+}
+
 // Separate authorization from price simulation and automatic execution. Error
 // responses never expose stored configuration, SQL details or credentials.
 func (h *ChannelHandler) ProcurementManagement(c *gin.Context) {

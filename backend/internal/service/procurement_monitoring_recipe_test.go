@@ -2,11 +2,30 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestProcurementRecipeConfirmationCommand(t *testing.T) {
+	raw := `{"version":1,"preset_id":7,"observed_at":"2026-11-21T08:00:00Z","fingerprint":"` + strings.Repeat("a", 64) + `"}`
+	command, err := ParseProcurementRecipeCommand([]byte(raw))
+	require.NoError(t, err)
+	require.EqualValues(t, 7, command.PresetID)
+	require.NoError(t, command.Validate())
+	var empty *ProcurementRecipeCommand
+	require.ErrorIs(t, empty.Validate(), ErrProcurementRecipeCommand)
+	for _, invalid := range []string{"null", "[]", "{}", raw + "{}", strings.Replace(raw, `"version":1`, `"version":2`, 1),
+		strings.Replace(raw, `"version":1`, `"version":1,"version":1`, 1), strings.Replace(raw, `"preset_id":7`, `"preset_id":null`, 1),
+		strings.Replace(raw, `"preset_id":7`, `"preset_id":9007199254740992`, 1), strings.Replace(raw, `"preset_id":7`, `"preset_id":1.5`, 1),
+		strings.Replace(raw, `"observed_at":"2026-11-21T08:00:00Z"`, `"observed_at":null`, 1),
+		strings.Replace(raw, strings.Repeat("a", 64), strings.Repeat("z", 64), 1), strings.Replace(raw, `"preset_id":7`, `"preset_id":7,"account_ids":[1]`, 1)} {
+		_, err := ParseProcurementRecipeCommand([]byte(invalid))
+		require.ErrorIs(t, err, ErrProcurementRecipeCommand)
+	}
+}
 
 func TestProcurementMonitoringRecipeNativePlan(t *testing.T) {
 	at := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
