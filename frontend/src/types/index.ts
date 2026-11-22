@@ -2840,7 +2840,7 @@ export interface QualityJudgeConfig {
   model_id: string
   prompt: string
 }
-export type QualityMeasurementDimension = 'answer_correctness' | 'transport' | 'grading' | 'model_identity'
+export type QualityMeasurementDimension = 'answer_correctness' | 'transport' | 'grading' | 'reported_model' | 'model_identity'
 export interface QualityMeasurement {
   version: number
   measurement_hash: string

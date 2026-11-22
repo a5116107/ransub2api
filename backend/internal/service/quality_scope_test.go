@@ -24,6 +24,32 @@ func qualityScopeFixture() (*Account, AvailabilityRequestScope, QualityEvidenceR
 	return account, scope, QualityEvidenceRule{Plan: plan, Samples: []*ScheduledTestResult{sample}}, at
 }
 
+func TestQualityReportedModelDoesNotAuthorizeOrReplaceAnswerEvidence(t *testing.T) {
+	for _, declaration := range []string{"match", "mismatch", "unknown"} {
+		for _, answer := range []string{"pass", "fail", "unknown"} {
+			t.Run(declaration+"/"+answer, func(t *testing.T) {
+				account, scope, rule, at := qualityScopeFixture()
+				sample := rule.Samples[0]
+				measurement := sample.PelicanConfig.QualityMeasurement
+				measurement.Dimensions["reported_model"] = QualityDimensionMeasurement{Status: "unknown", Reason: "model_declaration_not_observed"}
+				if declaration == "match" {
+					measurement.Dimensions["reported_model"] = measuredQualityDimension("pass", "upstream_model_matches_request", 1)
+				} else if declaration == "mismatch" {
+					measurement.Dimensions["reported_model"] = measuredQualityDimension("fail", "upstream_model_differs_from_request", 0)
+				}
+				if answer == "fail" {
+					measurement.Dimensions["answer_correctness"] = measuredQualityDimension("fail", "graded_incorrect", 0)
+				} else if answer == "unknown" {
+					measurement.Dimensions["answer_correctness"] = QualityDimensionMeasurement{Status: "unknown", Reason: "grading_inconclusive"}
+				}
+				out := AssessQualityScopeEvidence(account, scope, []QualityEvidenceRule{rule}, at, false)
+				require.Equal(t, answer, out.Status, "declarations are diagnostic; the existing answer evidence contract remains authoritative")
+				require.Equal(t, "unknown", out.ModelIdentity)
+			})
+		}
+	}
+}
+
 func TestQualityScopeEvidenceConservativeIntersection(t *testing.T) {
 	for _, scenario := range []string{"pass", "incorrect", "expired", "paused", "rule-changed", "running", "partial-round", "route-changed", "new-fault", "wrong-scope", "unknown-sample", "other-model", "invalid-plan", "wrong-plan", "duplicate-rule", "duplicate-sample", "future-read", "limited", "absent-account", "not-configured"} {
 		t.Run(scenario, func(t *testing.T) {

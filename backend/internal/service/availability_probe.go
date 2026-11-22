@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
@@ -13,16 +14,17 @@ import (
 // It is evidence for a future latest-state decision, not scheduling permission.
 // The allowlist excludes trace IDs, credentials, routes and upstream error text.
 type AvailabilityProbeResult struct {
-	route          *QualityRouteEvidence
-	Version        int                       `json:"version"`
-	Status         string                    `json:"status"`
-	Reason         string                    `json:"reason"`
-	HTTPStatus     int                       `json:"http_status,omitempty"`
-	SemanticStatus int                       `json:"semantic_status,omitempty"`
-	AttemptCount   int                       `json:"attempt_count"`
-	StartedAt      time.Time                 `json:"started_at"`
-	FinishedAt     time.Time                 `json:"finished_at"`
-	Scope          *AvailabilityRequestScope `json:"scope,omitempty"`
+	route               *QualityRouteEvidence
+	reportedModelStatus string
+	Version             int                       `json:"version"`
+	Status              string                    `json:"status"`
+	Reason              string                    `json:"reason"`
+	HTTPStatus          int                       `json:"http_status,omitempty"`
+	SemanticStatus      int                       `json:"semantic_status,omitempty"`
+	AttemptCount        int                       `json:"attempt_count"`
+	StartedAt           time.Time                 `json:"started_at"`
+	FinishedAt          time.Time                 `json:"finished_at"`
+	Scope               *AvailabilityRequestScope `json:"scope,omitempty"`
 }
 
 type availabilityProbeSnapshotKey struct{}
@@ -42,10 +44,47 @@ func withAvailabilityProbeConnection(ctx context.Context, accountID int64, conne
 
 type availabilityProbeObservation struct {
 	route          *QualityRouteEvidence
+	reportedModel  *upstreamResponseModelObserver
 	snapshot       *requesttiming.Snapshot
 	semanticStatus int
 	scope          *AvailabilityRequestScope
 	scopeAttempt   int
+}
+
+func observeAvailabilityOpenAIResponse(ctx context.Context, payload []byte, eventType string) {
+	observation, _ := ctx.Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation)
+	if observation == nil {
+		return
+	}
+	if observation.reportedModel == nil {
+		observation.reportedModel = &upstreamResponseModelObserver{}
+	}
+	observation.reportedModel.ObserveOpenAI(payload, eventType)
+}
+
+func availabilityReportedModelStatus(scope *AvailabilityRequestScope, observer *upstreamResponseModelObserver) string {
+	if scope == nil || observer == nil {
+		return "unknown"
+	}
+	switch scope.Protocol {
+	case "responses_http", "chat_http", "responses_ws_v2":
+	default:
+		return "unknown"
+	}
+	if observer.Conflict() {
+		return "conflict"
+	}
+	reported := strings.TrimSpace(observer.Model())
+	requested := strings.TrimSpace(scope.Model)
+	// The shared observer bounds model names by truncating. A boundary-length
+	// value cannot prove exact equality, so it stays unknown here.
+	if !billingDeclarationToken(reported, upstreamResponseModelMaxLength-1) || !billingDeclarationToken(requested, upstreamResponseModelMaxLength-1) {
+		return "unknown"
+	}
+	if reported == requested {
+		return "match"
+	}
+	return "mismatch"
 }
 
 func observeAvailabilityProbeFailure(ctx context.Context, payload []byte, message string) {
@@ -67,7 +106,7 @@ func beginAvailabilityWSProbe(ctx context.Context, account *Account, target stri
 		return ctx, func(*openAIWSConn, any) {}, func(error) {}
 	}
 	request, trace := requesttiming.StartAttempt(request, account.ID, 0)
-	observation.scope, observation.scopeAttempt, observation.semanticStatus, observation.route = nil, trace.Number(), 0, nil
+	observation.scope, observation.scopeAttempt, observation.semanticStatus, observation.route, observation.reportedModel = nil, trace.Number(), 0, nil, nil
 	ctx = request.Context()
 	sent := false
 	return ctx, func(conn *openAIWSConn, payload any) {
@@ -132,6 +171,9 @@ func availabilityProbeResult(started, finished time.Time, observation *availabil
 	if observation.scopeAttempt == last.Number && observation.scope != nil {
 		scope := *observation.scope
 		result.Scope = &scope
+		if complete {
+			result.reportedModelStatus = availabilityReportedModelStatus(result.Scope, observation.reportedModel)
+		}
 		if observation.route != nil && observation.route.AccountID == last.AccountID && qualityRouteAttemptObserved(snapshot, last, scope.Protocol) {
 			copy := *observation.route
 			result.route = &copy

@@ -282,8 +282,16 @@
                 <p v-if="!measurement.supported" class="text-amber-700 dark:text-amber-400" role="status">{{ t('qualityOps.measurement.unsupported') }}</p>
                 <table class="w-full table-fixed text-left text-xs">
                   <thead><tr><th scope="col" class="w-1/3 break-words py-2">{{ t('qualityOps.measurement.dimension') }}</th><th scope="col" class="break-words py-2">{{ t('qualityOps.measurement.result') }}</th><th scope="col" class="w-14 break-words py-2 text-right">{{ t('qualityOps.measurement.score') }}</th><th scope="col" class="w-14 break-words py-2 text-right">{{ t('qualityOps.measurement.samples') }}</th></tr></thead>
-                  <tbody><tr v-for="dimension in measurement.dimensions" :key="dimension.key" :data-testid="`quality-measurement-${dimension.key}`" :data-status="dimension.status" class="border-t border-gray-200 align-top dark:border-gray-700"><th scope="row" class="break-words py-2 pr-2 font-medium">{{ t(`qualityOps.measurement.dimensions.${dimension.key}`) }}</th><td class="break-words py-2 pr-1"><span :class="dimension.status === 'pass' ? 'text-emerald-700 dark:text-emerald-400' : dimension.status === 'fail' ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'">{{ t(`qualityOps.measurement.states.${dimension.status}`) }}</span><p class="mt-1 text-gray-500">{{ t(`qualityOps.measurement.reasons.${dimension.reason}`) }}</p></td><td class="py-2 text-right tabular-nums">{{ dimension.score == null ? '—' : `${dimension.score}/1` }}</td><td class="py-2 text-right tabular-nums">{{ dimension.samples }}</td></tr></tbody>
+                  <tbody>
+                    <tr v-for="dimension in measurement.dimensions" :key="dimension.key" :data-testid="`quality-measurement-${dimension.key}`" :data-status="dimension.status" class="border-t border-gray-200 align-top dark:border-gray-700">
+                      <th scope="row" class="break-words py-2 pr-2 font-medium">{{ t(`qualityOps.measurement.dimensions.${dimension.key}`) }}</th>
+                      <td class="break-words py-2 pr-1"><span :class="dimension.tone">{{ t(dimension.label) }}</span><p class="mt-1 text-gray-500">{{ t(`qualityOps.measurement.reasons.${dimension.reason}`) }}</p></td>
+                      <td class="py-2 text-right tabular-nums">{{ dimension.score == null ? '—' : `${dimension.score}/1` }}</td>
+                      <td class="py-2 text-right tabular-nums">{{ dimension.samples }}</td>
+                    </tr>
+                  </tbody>
                 </table>
+                <p class="mt-2 text-xs text-gray-500 dark:text-gray-400" data-testid="quality-model-declaration-note">{{ t('qualityOps.measurement.modelDeclarationNote') }}</p>
                 <p class="mt-2 text-amber-700 dark:text-amber-400" data-testid="quality-measurement-current">{{ t('qualityOps.measurement.currentUnknown') }}</p>
                 <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-validity" :data-status="measurement.validity.status" role="status">{{ t('qualityOps.measurement.validityAtRead') }} · {{ t(`qualityOps.measurement.validityStates.${measurement.validity.status}`) }}<span class="block text-xs">{{ t(`qualityOps.measurement.validityReasons.${measurement.validity.reason}`) }}</span></p>
                 <p class="mt-2 break-words text-sm text-gray-600 dark:text-gray-300" data-testid="quality-measurement-round" :data-status="measurement.round.status" role="status">{{ t('qualityOps.measurement.roundAtRead') }} · {{ t(`qualityOps.measurement.roundStates.${measurement.round.status}`) }}<span class="block text-xs">{{ t(`qualityOps.measurement.roundReasons.${measurement.round.reason}`) }}</span><span v-if="measurement.round.samples !== null" class="block text-xs">{{ t('qualityOps.measurement.roundCoverage', { count: measurement.round.samples, expected: measurement.round.expected ?? '—' }) }}</span></p>
@@ -491,26 +499,31 @@ const measurement = computed(() => {
   const observed = Date.parse(value.observed_at), completed = Date.parse(value.completed_at)
   const supported = value.version === 1 && hash(value.measurement_hash) && hash(value.policy_hash) &&
     Number.isFinite(observed) && Number.isFinite(completed) && observed <= completed
-  const keys = ['answer_correctness', 'transport', 'grading', 'model_identity'] as const
+  const keys = ['answer_correctness', 'transport', 'grading', 'reported_model', 'model_identity'] as const
   const contracts = {
     answer_correctness: { pass: 'graded_correct', fail: 'graded_incorrect', unknown: ['grading_not_observed', 'grading_inconclusive', 'invalid_measurement'] },
     transport: { pass: 'completed_response', fail: 'request_failed', unknown: ['transport_not_observed', 'invalid_measurement'] },
     grading: { pass: 'grading_completed', fail: 'grading_failed', unknown: ['grading_not_observed', 'grader_identity_not_observed', 'invalid_measurement'] },
+    reported_model: { pass: 'upstream_model_matches_request', fail: 'upstream_model_differs_from_request', unknown: ['model_declaration_not_observed', 'model_declaration_conflict', 'invalid_measurement'] },
     model_identity: { pass: '', fail: '', unknown: ['independent_baseline_not_observed'] },
   }
   const dimensions = keys.map(key => {
     const dimension = value.dimensions?.[key]
     const contract = contracts[key]
-    // Version 1 has no independent model identity baseline or current lease.
+    // A provider's model declaration is diagnostic only, never an identity baseline.
     // A malformed score/count must never color an unverified dimension green.
     const definite = supported && key !== 'model_identity' && dimension?.sample_count === 1 &&
       ((dimension.status === 'pass' && dimension.score === 1 && dimension.reason === contract.pass) ||
         (dimension.status === 'fail' && dimension.score === 0 && dimension.reason === contract.fail))
     const unknown = supported && dimension?.status === 'unknown' && dimension.score === null && dimension.sample_count === 0 &&
       contract.unknown.includes(dimension.reason)
-    return { key, status: definite ? dimension.status : 'unknown', score: definite ? dimension.score : null,
+    const status = definite ? dimension.status : 'unknown'
+    const tone = status === 'pass' ? 'text-emerald-700 dark:text-emerald-400' : status === 'fail' ?
+      key === 'reported_model' ? 'text-amber-700 dark:text-amber-400' : 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'
+    const label = `qualityOps.measurement.${key === 'reported_model' ? 'declarationStates' : 'states'}.${status}`
+    return { key, status, tone, label, score: definite ? dimension.score : null,
       samples: definite ? 1 : 0,
-      reason: key === 'model_identity' ? 'independent_baseline_not_observed' : definite || unknown ? dimension.reason : 'invalid_measurement' }
+      reason: key === 'model_identity' ? 'independent_baseline_not_observed' : key === 'reported_model' && !dimension ? 'model_declaration_not_observed' : definite || unknown ? dimension.reason : 'invalid_measurement' }
   })
   const safe = (candidate: unknown) => typeof candidate === 'string' && candidate.trim() ? candidate : '—'
   const assessment = selectedResult.value?.quality_measurement_validity

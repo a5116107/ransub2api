@@ -74,6 +74,8 @@ func TestAvailabilityWSProbeUsesConfiguredTransport(t *testing.T) {
 	require.Equal(t, "pass", probe.Status)
 	result.PelicanConfig.Quality = &QualityPolicy{Action: QualityActionObserveOnly, ExpectedAnswer: "42"}
 	recordQualityMeasurement(&ScheduledTestPlan{AccountID: account.ID, PelicanConfig: result.PelicanConfig}, result)
+	require.Equal(t, "pass", result.PelicanConfig.QualityMeasurement.Dimensions["reported_model"].Status)
+	require.Equal(t, "unknown", result.PelicanConfig.QualityMeasurement.Dimensions["model_identity"].Status)
 	require.NotNil(t, result.QualityRouteEvidence, "the concrete socket and accepted frame prove the configured API-key route")
 	require.True(t, result.QualityRouteEvidence.MatchesResult(result))
 	require.Equal(t, "responses_ws_v2", probe.Scope.Protocol)

@@ -1819,6 +1819,7 @@ describe('quality operations', () => {
       answer_correctness: { status: 'fail', reason: 'graded_incorrect', score: 0, sample_count: 1 },
       transport: { status: 'pass', reason: 'completed_response', score: 1, sample_count: 1 },
       grading: { status: 'pass', reason: 'grading_completed', score: 1, sample_count: 1 },
+      reported_model: { status: 'unknown', reason: 'model_declaration_not_observed', score: null, sample_count: 0 },
       model_identity: { status: 'unknown', reason: 'independent_baseline_not_observed', score: null, sample_count: 0 },
     },
   })
@@ -1831,6 +1832,26 @@ describe('quality operations', () => {
     await (wrapper.vm as any).operationDetails(operation); await flushPromises()
     return wrapper
   }
+  it.each(['match', 'mismatch', 'conflict', 'legacy', 'malformed', 'future'] as const)('separates model declaration %s from verified model identity', async scenario => {
+    const value = measurementSample()
+    if (scenario === 'match') value.dimensions.reported_model = { status: 'pass', reason: 'upstream_model_matches_request', score: 1, sample_count: 1 }
+    if (scenario === 'mismatch') value.dimensions.reported_model = { status: 'fail', reason: 'upstream_model_differs_from_request', score: 0, sample_count: 1 }
+    if (scenario === 'conflict') value.dimensions.reported_model = { status: 'unknown', reason: 'model_declaration_conflict', score: null, sample_count: 0 }
+    if (scenario === 'legacy') delete (value.dimensions as any).reported_model
+    if (scenario === 'malformed') value.dimensions.reported_model = { status: 'pass', reason: 'SYNTHETIC_PRIVATE_DECLARATION', score: 1, sample_count: 1 }
+    if (scenario === 'future') value.version = 99
+    const wrapper = await openMeasurement(value)
+    const declaration = wrapper.get('[data-testid="quality-measurement-reported_model"]')
+    const expected = scenario === 'match' ? 'pass' : scenario === 'mismatch' ? 'fail' : 'unknown'
+    expect(declaration.attributes('data-status')).toBe(expected)
+    expect(declaration.text()).toContain(`qualityOps.measurement.declarationStates.${expected}`)
+    if (scenario === 'mismatch') expect(declaration.get('span').classes()).toContain('text-amber-700')
+    expect(declaration.text()).not.toContain('SYNTHETIC_PRIVATE_DECLARATION')
+    if (scenario === 'legacy') expect(declaration.text()).toContain('qualityOps.measurement.reasons.model_declaration_not_observed')
+    expect(wrapper.get('[data-testid="quality-measurement-model_identity"]').attributes('data-status')).toBe('unknown')
+    expect(wrapper.get('[data-testid="quality-model-declaration-note"]').text()).toBe('qualityOps.measurement.modelDeclarationNote')
+    wrapper.unmount()
+  })
   it.each(['responded', 'blocked', 'inconclusive'] as const)('separates ordinary grader dependency %s from the answer and model identity', async status => {
     const dependency = { version: 1, status, reason: status === 'responded' ? 'grading_completed' : status === 'blocked' ? 'all_slots_busy' : 'grading_uncertain',
       candidate_accounts: 2, slot_checks: status === 'blocked' ? 2 : 1, busy_accounts: status === 'blocked' ? 2 : 0,

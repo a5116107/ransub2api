@@ -192,6 +192,7 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 			"answer_correctness": {Status: "unknown", Reason: "grading_not_observed"},
 			"transport":          {Status: "unknown", Reason: "transport_not_observed"},
 			"grading":            {Status: "unknown", Reason: "grading_not_observed"},
+			"reported_model":     {Status: "unknown", Reason: "model_declaration_not_observed"},
 			"model_identity":     {Status: "unknown", Reason: "independent_baseline_not_observed"},
 		}}
 	cfg.QualityMeasurement = m
@@ -210,6 +211,16 @@ func recordQualityMeasurement(plan *ScheduledTestPlan, result *ScheduledTestResu
 			m.Dimensions["transport"] = measuredQualityDimension("pass", "completed_response", 1)
 		case "fail":
 			m.Dimensions["transport"] = measuredQualityDimension("fail", "request_failed", 0)
+		}
+		if probe.Status == "pass" {
+			switch probe.reportedModelStatus {
+			case "match":
+				m.Dimensions["reported_model"] = measuredQualityDimension("pass", "upstream_model_matches_request", 1)
+			case "mismatch":
+				m.Dimensions["reported_model"] = measuredQualityDimension("fail", "upstream_model_differs_from_request", 0)
+			case "conflict":
+				m.Dimensions["reported_model"] = QualityDimensionMeasurement{Status: "unknown", Reason: "model_declaration_conflict"}
+			}
 		}
 	}
 	judge := result.QualityJudgment

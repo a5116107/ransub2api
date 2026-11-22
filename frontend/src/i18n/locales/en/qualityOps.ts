@@ -705,12 +705,17 @@ export default {
       "answer_correctness": "Answer correctness",
       "transport": "Request completion",
       "grading": "Grading completion",
+      "reported_model": "Upstream model declaration",
       "model_identity": "Model identity"
     },
     "reasons": {
       "grading_not_observed": "Grading not observed",
       "transport_not_observed": "Transport not observed",
       "independent_baseline_not_observed": "No independent model baseline",
+      "model_declaration_not_observed": "Model declaration not observed",
+      "model_declaration_conflict": "Upstream model declarations conflict",
+      "upstream_model_matches_request": "Matches the model sent upstream",
+      "upstream_model_differs_from_request": "Differs from the model sent upstream",
       "completed_response": "Complete response observed",
       "request_failed": "Request failure observed",
       "graded_correct": "Answer graded correct",
@@ -720,6 +725,8 @@ export default {
       "grading_failed": "Grading system failed",
       "grader_identity_not_observed": "Grader provenance missing",
       "invalid_measurement": "Invalid measurement contract"
-    }
+    },
+    "modelDeclarationNote": "A matching name is only the upstream's declaration, not model verification. A different name may be a version alias; check an independent baseline.",
+    "declarationStates": { "pass": "Name matches", "fail": "Name differs", "unknown": "Unknown" }
   }
 }

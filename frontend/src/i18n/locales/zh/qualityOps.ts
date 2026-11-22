@@ -705,12 +705,17 @@ export default {
       "answer_correctness": "答题正确性",
       "transport": "请求完成",
       "grading": "判题完成",
+      "reported_model": "上游声明模型",
       "model_identity": "模型身份"
     },
     "reasons": {
       "grading_not_observed": "未观测到判题",
       "transport_not_observed": "未观测到传输",
       "independent_baseline_not_observed": "没有独立模型基线",
+      "model_declaration_not_observed": "未观测到模型声明",
+      "model_declaration_conflict": "上游模型声明不一致",
+      "upstream_model_matches_request": "与实际请求模型一致",
+      "upstream_model_differs_from_request": "与实际请求模型不一致",
       "completed_response": "已观测完整响应",
       "request_failed": "已观测请求失败",
       "graded_correct": "答案判定正确",
@@ -720,6 +725,8 @@ export default {
       "grading_failed": "判题系统故障",
       "grader_identity_not_observed": "缺少判题来源",
       "invalid_measurement": "测量合同无效"
-    }
+    },
+    "modelDeclarationNote": "声明一致只表示返回名称与发送名称相同，不代表模型验真；名称不同也可能是版本别名，需结合独立基线核对。",
+    "declarationStates": { "pass": "名称一致", "fail": "名称不同", "unknown": "未知" }
   }
 }

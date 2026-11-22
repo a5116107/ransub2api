@@ -1299,6 +1299,11 @@ func (s *AccountTestService) testResponsesGatewayAccountConnection(c *gin.Contex
 		probeCtx.Request.Header.Set("Session-Id", "account-test-"+uuid.NewString())
 	}
 	result, err := s.openaiGatewayService.Forward(probeCtx.Request.Context(), probeCtx, account, body)
+	if observation, _ := probeCtx.Request.Context().Value(availabilityProbeSnapshotKey{}).(*availabilityProbeObservation); observation != nil && result != nil {
+		// Native WS owns its observer locally; the original forward result is
+		// the common raw-response boundary before client-facing rewrites.
+		observation.reportedModel = &upstreamResponseModelObserver{first: result.UpstreamResponseModel, conflict: result.UpstreamResponseModelConflict}
+	}
 	recordPelicanTestSSE(c.Request.Context(), "openai", model, probe.Body.Bytes())
 	if err != nil {
 		// A single-account test has no other account to fail over to.
@@ -3342,6 +3347,7 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
 		usage.read(jsonStr)
 		observeUpstreamCacheProbeEvent(c.Request.Context(), []byte(jsonStr), true)
+		observeAvailabilityOpenAIResponse(c.Request.Context(), []byte(jsonStr), "")
 		if jsonStr == "[DONE]" {
 			if modelTraceRequested(c.Request.Context()) && !seenFinish {
 				return s.sendErrorAndEnd(c, "ModelTrace generation ended without a finish reason")
@@ -3428,6 +3434,7 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
 		usage.read(jsonStr)
 		observeUpstreamCacheProbeEvent(c.Request.Context(), []byte(jsonStr), false)
+		observeAvailabilityOpenAIResponse(c.Request.Context(), []byte(jsonStr), strings.TrimSpace(gjson.Get(jsonStr, "type").String()))
 		if jsonStr == "[DONE]" {
 			if seenCompleted {
 				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})

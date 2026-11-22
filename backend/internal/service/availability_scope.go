@@ -670,7 +670,7 @@ func observeAvailabilityProbeRequest(request *http.Request, trace *requesttiming
 	if observation == nil || trace.Number() == 0 {
 		return func(*http.Response) {}
 	}
-	observation.scope, observation.scopeAttempt, observation.semanticStatus, observation.route = nil, trace.Number(), 0, nil
+	observation.scope, observation.scopeAttempt, observation.semanticStatus, observation.route, observation.reportedModel = nil, trace.Number(), 0, nil, nil
 	identity, valid := availabilityRequestIdentity(request)
 	if !valid {
 		return func(*http.Response) {}

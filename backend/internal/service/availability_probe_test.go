@@ -6,17 +6,139 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestQualityReportedModelRealHTTP(t *testing.T) {
+	for _, protocol := range []string{"responses", "chat"} {
+		for _, scenario := range []string{"matching", "different", "missing", "conflicting", "incomplete", "opaque-request", "long-name", "invalid-name"} {
+			t.Run(protocol+"/"+scenario, func(t *testing.T) {
+				reported := "wire-model"
+				if scenario == "different" {
+					reported = "another-model"
+				}
+				if scenario == "missing" {
+					reported = ""
+				}
+				if scenario == "long-name" {
+					reported = strings.Repeat("m", 201)
+				}
+				if scenario == "invalid-name" {
+					reported = "untrusted name"
+				}
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					calls.Add(1)
+					body, err := io.ReadAll(request.Body)
+					require.NoError(t, err)
+					require.Equal(t, "wire-model", gjson.GetBytes(body, "model").String(), "compare to the mapped physical model, not the public alias")
+					w.Header().Set("Content-Type", "text/event-stream")
+					if protocol == "chat" {
+						require.Equal(t, "/v1/chat/completions", request.URL.Path)
+						if scenario == "conflicting" {
+							_, _ = io.WriteString(w, "data: {\"model\":\"another-model\",\"choices\":[]}\n\n")
+						}
+						_, _ = fmt.Fprintf(w, "data: {\"model\":%q,\"choices\":[{\"delta\":{\"content\":\"42\"}}]}\n\n", reported)
+						if scenario != "incomplete" {
+							_, _ = io.WriteString(w, "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+						}
+						return
+					}
+					require.Equal(t, "/v1/responses", request.URL.Path)
+					if scenario == "conflicting" {
+						_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"model\":\"another-model\"}}\n\n")
+					}
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"42\"}\n\n")
+					if scenario != "incomplete" {
+						_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"model\":%q}}\n\n", reported)
+					}
+				}))
+				t.Cleanup(server.Close)
+				account := &Account{ID: 781, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+					Credentials: map[string]any{"api_key": "declaration-fixture-key", "base_url": server.URL, "model_mapping": map[string]any{"public-model": "wire-model"}},
+					Extra:       map[string]any{"openai_responses_mode": "force_responses"}}
+				if protocol == "chat" {
+					account.Extra["openai_responses_mode"] = "force_chat_completions"
+				}
+				transport := &codexModelsHTTPUpstreamStub{do: func(request *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+					request, trace := requesttiming.StartTransport(request)
+					response, err := server.Client().Do(request)
+					trace.Response(response, err)
+					if scenario == "opaque-request" && response != nil {
+						response.Request = nil
+					}
+					return response, err
+				}}
+				svc := pelicanClaudeTestService(account, transport)
+				svc.cfg = rawChatCompletionsTestConfig()
+				cfg := &PelicanTestConfig{QuestionKind: "candy", Prompt: "Return 42", ParallelCount: 1,
+					Quality: &QualityPolicy{Action: QualityActionObserveOnly, ExpectedAnswer: "42"}}
+				result, err := svc.RunPelicanBackground(t.Context(), account.ID, "public-model", cfg)
+				require.NoError(t, err)
+				require.EqualValues(t, 1, calls.Load())
+				recordQualityMeasurement(&ScheduledTestPlan{AccountID: account.ID, PelicanConfig: cfg}, result)
+				measurement := result.PelicanConfig.QualityMeasurement
+				wantStatus, wantReason := "unknown", "model_declaration_not_observed"
+				switch scenario {
+				case "matching":
+					wantStatus, wantReason = "pass", "upstream_model_matches_request"
+				case "different":
+					wantStatus, wantReason = "fail", "upstream_model_differs_from_request"
+				case "conflicting":
+					wantReason = "model_declaration_conflict"
+				}
+				require.Equal(t, wantStatus, measurement.Dimensions["reported_model"].Status)
+				require.Equal(t, wantReason, measurement.Dimensions["reported_model"].Reason)
+				require.Equal(t, "unknown", measurement.Dimensions["model_identity"].Status)
+				raw, err := json.Marshal(result)
+				require.NoError(t, err)
+				for _, private := range []string{"declaration-fixture-key", server.URL, "another-model", "untrusted name", "reportedModelStatus"} {
+					require.NotContains(t, string(raw), private)
+				}
+				var roundTrip ScheduledTestResult
+				require.NoError(t, json.Unmarshal(raw, &roundTrip))
+				require.Equal(t, measurement.Dimensions["reported_model"], roundTrip.PelicanConfig.QualityMeasurement.Dimensions["reported_model"])
+			})
+		}
+	}
+}
+
+func TestQualityReportedModelAttemptAndScopeBoundaries(t *testing.T) {
+	for _, protocol := range []string{"responses_http", "chat_http", "responses_ws_v2", "bps_responses", "messages_http", "unknown"} {
+		t.Run(protocol, func(t *testing.T) {
+			observer := &upstreamResponseModelObserver{}
+			observer.Observe("wire-model", true)
+			want := "unknown"
+			if protocol == "responses_http" || protocol == "chat_http" || protocol == "responses_ws_v2" {
+				want = "match"
+			}
+			require.Equal(t, want, availabilityReportedModelStatus(&AvailabilityRequestScope{Protocol: protocol, Model: "wire-model"}, observer))
+		})
+	}
+	observation := &availabilityProbeObservation{reportedModel: &upstreamResponseModelObserver{first: "stale-model"}}
+	collector := requesttiming.New(time.Now(), 0)
+	ctx := context.WithValue(requesttiming.With(t.Context(), collector), availabilityProbeSnapshotKey{}, observation)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", strings.NewReader(`{"model":"wire-model","input":"sample"}`))
+	require.NoError(t, err)
+	request, trace := requesttiming.StartAttempt(request, 1, 0)
+	observeAvailabilityProbeRequest(request, trace, nil, "")
+	require.Nil(t, observation.reportedModel, "a new HTTP attempt must not inherit an earlier declaration")
+	observation.reportedModel = &upstreamResponseModelObserver{first: "stale-model"}
+	_, _, _ = beginAvailabilityWSProbe(ctx, &Account{ID: 1}, "wss://fixture.invalid/v1/responses")
+	require.Nil(t, observation.reportedModel, "a new socket attempt must not inherit an earlier declaration")
+}
 
 func TestAvailabilityProbeNativeMessagesRequiresCompleteProtocol(t *testing.T) {
 	start := "data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":2}}}\n\n"
