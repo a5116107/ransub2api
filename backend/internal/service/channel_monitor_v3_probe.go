@@ -414,7 +414,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 		}
 	}()
 	challenge := generateChallenge()
-	runCtx, cancel := context.WithTimeout(ctx, channelMonitorV3ProbeTimeout)
+	runCtx, cancel := context.WithTimeout(withAutomaticMonitoringProbe(ctx), channelMonitorV3ProbeTimeout)
 	defer cancel()
 	plan := &PelicanGroupTestPlan{GroupID: target.GroupID, ModelID: target.Model, PelicanConfig: &PelicanTestConfig{
 		QuestionKind: ChannelMonitorV3ProbeQuestionKind, Prompt: challenge.Prompt, ReasoningEffort: target.ReasoningEffort,

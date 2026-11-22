@@ -287,7 +287,7 @@ func TestPluginMonitoringBudgetConcurrentIsolation(t *testing.T) {
 }
 
 func TestPluginMonitoringBudgetGroupEntrypoints(t *testing.T) {
-	for _, mode := range []string{"scheduled", "manual", "candy"} {
+	for _, mode := range []string{"scheduled", "manual", "candy", "idle"} {
 		t.Run(mode, func(t *testing.T) {
 			tests, api, runtime, budget, native, account := monitoringPluginAccountTests(t, "<html></html>")
 			plan := groupTestPlan(1)
@@ -296,7 +296,15 @@ func TestPluginMonitoringBudgetGroupEntrypoints(t *testing.T) {
 			router := &groupTestRouterFake{steps: []routeStep{{account: account}, {account: stateProbeAccount()}}}
 			groups, showcase := newGroupTestService(repo, router, tests.RunPelicanBackground)
 			var result *MonitoringProbeBudgetDenial
-			if mode == "candy" {
+			if mode == "idle" {
+				prober, idleRepo, _ := monitorV3ProberFixture(router, tests.RunPelicanBackground)
+				t.Cleanup(prober.Stop)
+				prober.RunDue(t.Context(), monitorV3ProbeTick)
+				require.Len(t, idleRepo.finished, 1)
+				require.Equal(t, ChannelMonitorV3ProbeDeferred, idleRepo.finished[0].Outcome)
+				require.Empty(t, idleRepo.finished[0].ErrorMessage)
+				result = idleRepo.finished[0].BudgetDeferral
+			} else if mode == "candy" {
 				candyRepo := &candyRepoFake{channelMonitorV2RepoStub: channelMonitorV2RepoStub{config: candyConfigFixture()}}
 				candyServiceFixture(candyRepo, groups).RunDue(t.Context(), groupTestNow)
 				require.Len(t, candyRepo.results, 1)
@@ -335,4 +343,71 @@ func TestPluginMonitoringBudgetGroupEntrypoints(t *testing.T) {
 			require.Zero(t, runtime.inFlight.Load())
 		})
 	}
+}
+
+func TestPluginMonitoringBudgetIdleDeferralAndNativeRecovery(t *testing.T) {
+	tests, api, runtime, budget, native, account := monitoringPluginAccountTests(t, "21")
+	before, err := json.Marshal(account)
+	require.NoError(t, err)
+	router := &groupTestRouterFake{steps: []routeStep{{account: account}, {account: account}}}
+	prober, repo, _ := monitorV3ProberFixture(router, tests.RunPelicanBackground)
+	t.Cleanup(prober.Stop)
+	prober.RunDue(t.Context(), monitorV3ProbeTick)
+	require.Len(t, repo.finished, 1)
+	deferred := repo.finished[0]
+	require.Equal(t, ChannelMonitorV3ProbeDeferred, deferred.Outcome)
+	require.Equal(t, "monitoring_budget_deferred", deferred.Category)
+	require.Equal(t, "plugin_metering_unavailable", deferred.BudgetDeferral.Reason)
+	require.Equal(t, "plugin", deferred.BudgetDeferral.Scope)
+	require.Empty(t, deferred.ErrorMessage)
+	require.Zero(t, api.calls.Load())
+	require.Empty(t, native.requests)
+	require.Empty(t, budget.requests)
+	require.Zero(t, runtime.inFlight.Load())
+
+	// Direct manual diagnostics retain the original RPC path even with a probe
+	// question kind. Only the scheduler-owned entry point marks it automatic.
+	manual, err := tests.RunPelicanBackground(t.Context(), account.ID, "gpt-probe", &PelicanTestConfig{
+		QuestionKind: ChannelMonitorV3ProbeQuestionKind, Prompt: "Return 21", ParallelCount: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "success", manual.Status, manual.ErrorMessage)
+	require.Nil(t, manual.BudgetDeferral)
+	require.EqualValues(t, 1, api.calls.Load())
+	require.Empty(t, budget.requests, "one plugin RPC is not physical metering")
+
+	tests.pluginManager.route.Store(nil)
+	var nativeCalls int
+	tests.httpUpstream = monitoringBudgetHTTP{base: &codexModelsHTTPUpstreamStub{do: func(request *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+		nativeCalls++
+		body, readErr := io.ReadAll(request.Body)
+		require.NoError(t, readErr)
+		var payload struct {
+			Input []struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"input"`
+		}
+		require.NoError(t, json.Unmarshal(body, &payload))
+		require.NotEmpty(t, payload.Input)
+		require.NotEmpty(t, payload.Input[0].Content)
+		return qualityBudgetReply(monitorV3Answer(payload.Input[0].Content[0].Text)), nil
+	}}}
+	prober.RunDue(t.Context(), monitorV3ProbeTick.Add(5*time.Minute))
+	require.Len(t, repo.finished, 2)
+	require.Equal(t, ChannelMonitorV3ProbeSuccess, repo.finished[1].Outcome)
+	require.Nil(t, repo.finished[1].BudgetDeferral, "the next round must not inherit an earlier deferral")
+	require.Equal(t, 1, nativeCalls)
+	require.Len(t, budget.requests, 1)
+	require.False(t, budget.requests[0].Recovery)
+	require.Equal(t, 1, budget.released)
+	require.EqualValues(t, 1, api.calls.Load(), "unbinding must not call the old plugin again")
+	require.Equal(t, []int64{account.ID, account.ID}, router.released)
+	require.Zero(t, runtime.inFlight.Load())
+	// The retained deferred observation is not rewritten by the successful round.
+	require.Equal(t, ChannelMonitorV3ProbeDeferred, repo.finished[0].Outcome)
+	after, err := json.Marshal(account)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
 }
