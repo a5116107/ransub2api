@@ -26,10 +26,14 @@ type turnAdmissionRepo struct {
 	accounts        []*Account
 	err             error
 	reads           int
+	current         func() *Account
 }
 
 func (r *turnAdmissionRepo) GetOpenAITurnAdmission(context.Context, int64) (*Account, *Account, error) {
 	r.reads++
+	if r.current != nil {
+		return r.current(), r.parent, r.err
+	}
 	if len(r.accounts) > 0 {
 		return r.accounts[min(r.reads-1, len(r.accounts)-1)], r.parent, r.err
 	}

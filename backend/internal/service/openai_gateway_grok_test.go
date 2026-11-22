@@ -2298,8 +2298,15 @@ func TestForwardGrokResponsesRetryRechecksPurchasedRoute(t *testing.T) {
 				rate := 0.9
 				latest.RateMultiplier = &rate
 			}
-			repo := &turnAdmissionRepo{accounts: []*Account{selected, &latest}}
 			var requests atomic.Int32
+			// Change only after the first physical request. Native final-send
+			// checks may read the account more than once before that request.
+			repo := &turnAdmissionRepo{current: func() *Account {
+				if requests.Load() > 0 {
+					return &latest
+				}
+				return selected
+			}}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("Authorization") != "Bearer fixture-key" {
 					t.Error("unexpected fixture authorization")
@@ -2329,7 +2336,7 @@ func TestForwardGrokResponsesRetryRechecksPurchasedRoute(t *testing.T) {
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body))).WithContext(ctx)
 			result, err := svc.forwardGrokResponses(ctx, c, selected, body, "grok", false, time.Now())
-			require.Equal(t, 2, repo.reads)
+			require.GreaterOrEqual(t, repo.reads, 2, "the retry must re-read the purchased route")
 			if changed {
 				var denied *OpenAITurnAdmissionError
 				require.ErrorAs(t, err, &denied)

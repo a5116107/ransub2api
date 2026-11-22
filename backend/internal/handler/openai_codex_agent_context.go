@@ -10,18 +10,18 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// Codex Desktop injects Companion Page context as agent function_call_output
-// items without a corresponding model call. Preserve their text as user context
+// Codex Desktop injects page and goal context as named agent function_call_output
+// items without a corresponding model call. Preserve their original trust boundary
 // before ordinary tool-output validation, including when replaying tool history.
 // Unrecognized outputs and items carrying a call identity remain untouched.
-func normalizeCodexPageContext(body []byte) ([]byte, bool) {
+func normalizeCodexAgentContext(body []byte) ([]byte, bool) {
 	input := gjson.GetBytes(body, "input")
 	if !input.IsArray() {
 		return body, false
 	}
 	hasContext := false
 	input.ForEach(func(_, item gjson.Result) bool {
-		hasContext = isCodexPageContext(item)
+		hasContext = isCodexAgentContext(item)
 		return !hasContext
 	})
 	if !hasContext || !hasUniqueJSONMembers(body) {
@@ -30,16 +30,27 @@ func normalizeCodexPageContext(body []byte) ([]byte, bool) {
 	var items []json.RawMessage
 	changed := false
 	input.ForEach(func(_, item gjson.Result) bool {
-		if !isCodexPageContext(item) {
+		if !isCodexAgentContext(item) {
 			items = append(items, json.RawMessage(item.Raw))
 			return true
+		}
+		text := "<external_" + item.Get("name").String() + ">\n" + item.Get("output").String() + "\n</external_" + item.Get("name").String() + ">"
+		if item.Get("name").String() == "goal_objective" {
+			// An agent-created objective is data, not a new user instruction.
+			// JSON quoting also escapes closing tags inside its original text.
+			context, err := json.Marshal(map[string]string{"namespace": "agent", "name": "goal_objective", "output": item.Get("output").String()})
+			if err != nil {
+				items = append(items, json.RawMessage(item.Raw))
+				return true
+			}
+			text = "<untrusted_codex_agent_context>\n" + string(context) + "\n</untrusted_codex_agent_context>"
 		}
 		message, err := json.Marshal(map[string]any{
 			"type": "message",
 			"role": "user",
 			"content": []any{map[string]any{
 				"type": "input_text",
-				"text": "<external_" + item.Get("name").String() + ">\n" + item.Get("output").String() + "\n</external_" + item.Get("name").String() + ">",
+				"text": text,
 			}},
 		})
 		if err != nil {
@@ -61,7 +72,7 @@ func normalizeCodexPageContext(body []byte) ([]byte, bool) {
 	return normalized, true
 }
 
-func isCodexPageContext(item gjson.Result) bool {
+func isCodexAgentContext(item gjson.Result) bool {
 	if item.Get("type").String() != "function_call_output" || item.Get("namespace").String() != "agent" {
 		return false
 	}
@@ -76,6 +87,18 @@ func isCodexPageContext(item gjson.Result) bool {
 		return false
 	}
 	name := item.Get("name").String()
+	if name == "goal_objective" {
+		valid := strings.TrimSpace(output.String()) != ""
+		item.ForEach(func(key, _ gjson.Result) bool {
+			switch key.String() {
+			case "type", "namespace", "name", "output", "id", "call_id", "tool_call_id", "internal_chat_message_metadata_passthrough":
+			default:
+				valid = false
+			}
+			return valid
+		})
+		return valid
+	}
 	if name == "codex_apps_open_page" {
 		return validCodexPageSnapshot(output.String())
 	}
