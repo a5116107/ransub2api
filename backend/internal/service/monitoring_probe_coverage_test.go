@@ -638,7 +638,7 @@ func TestMonitoringProbeCoverageUnestimatedSources(t *testing.T) {
 				Sources []string `json:"unestimated_demand_sources"`
 			}
 			require.NoError(t, json.Unmarshal(encoded, &view))
-			require.ElementsMatch(t, []string{"account_quota_cycle", "ollama_usage", "responses_capability", "event_diagnostics"}, view.Sources)
+			require.ElementsMatch(t, []string{"account_quota_cycle", "ollama_usage", "responses_capability", "event_diagnostics", "v3_idle_probes"}, view.Sources)
 			require.Zero(t, coverage.MinimumTotalRequestsPerDay, "do not invent future physical calls or token demand")
 			require.Empty(t, coverage.BlockingReasons, "unestimated demand is not a proved capacity shortfall")
 			require.True(t, coverage.CanSave, "repair and enforcement-disable paths must remain available")

@@ -4357,3 +4357,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 终稿RPC回归证明V3结构化plugin_metering_unavailable/plugin延期、中性历史，RPC0、原生回退0、预算调用/Token无虚构计量、仅选一个账号且原槽释放、插件运行未被当健康故障。直接手动RunPelicanBackground即使使用monitor_probe题型仍走原RPC；解除绑定后下一时槽恢复原生预算，释放租约且不继承上轮延期；账号JSON前后完全相同。原插件/手动/业务/伪请求头/判题/定时分组/V2糖果/并发和停机边界一并回归。
 - 实际命令`go test -json -race -p 1 -tags unit ./internal/service -run '^Test(PluginMonitoringBudget|ChannelMonitorV3|PelicanGroupTest)' -count=2 -timeout=5m`退出0，service1.391s，双轮88顶层/162含子例通过事件，0fail/skip/race；不是162个新增独立场景。go vet退出0、原Go1.27.4兼容增量fast lint为0 issues.；原Linux构建自然完成且成功，身份复核时进程已退出，没有执行停止操作；诊断`-x`构建亦成功，后者仅为重叠证据，不增加覆盖。续接时核对4路径LF摘要全部匹配，并解析原JSONL确认162pass/0fail/0skip，不重跑相同构建。源码/测试与原Go锁4路径LF联合摘要1d00de28484327ca10e3c10140a3bd05bea1b2142fd63962dd6505872a934174，最小证据沿v3-plugin-automatic-*。
 - 未改原预算设置、判题、质量期限、可用准入或普通业务，不请求供应商、不启动新探针；RPC为本地bufconn，恢复原生计量的HTTP适配器为夹具，不冒称真实供应商/数据库/生产恢复。旧应用回退会重新失去该入口围栏，须暂停这类自动计划或沿原排空合同统一升级；完整插件物理计量、覆盖编译、公平性、多节点和生产仍沿D8.1/D8.2开放。前端与schema未变，沿已有中性延期UI证据，不重新宣称本轮浏览器验收。
+
+
+### 2026-11-23 D8.1 — V3条件需求在原预算面板显式披露
+
+- 续接449f8400a，在原容量编译器/摘要/预览的未估算来源增加v3_idle_probes；实时成功数决定是否触发，未纳入固定周期最低量。原中英面板按现有来源名单呈现“V3空闲检测／未估算”及触发、共享预算与插件中性延期说明，不引入配置/接口/迁移或平行编译器。来源类型不证明实际启用；已知量0、允许保存均不外推全覆盖，未知不额外拒存。
+- 红测：原Go两种强制设置均因缺第五来源退出1；前端定向初次过滤未命中、93skip不作证据，修正名称后中英2fail/91skip暴露新来源被归为unknown。终稿go test -json -race -p1 -tags unit ./internal/service -run '^Test(PluginMonitoringBudget|ChannelMonitorV3|PelicanGroupTest|MonitoringProbeCoverage)' -count=2 -timeout=5m实际316含子例通过事件、0fail/skip/race，service1.500s。原PG17真实仓储PreviewAndRevalidation双轮race2pass/0skip（5.789s），验证新摘要/预览、原保存重编译拒超限/CAS、重建读回及预算表零写；未改SQL算法。
+- 前端原预算面板93例与locale3例共96pass；vue-tsc/改动ESLint、service/repository vet及兼容Go1.27.4增量fast lint均退出0、0 issues。原前端构建36.26s/退出0，保留既有chunk/Browserslist提醒。编译产物本地浏览器16组检查覆盖中英1440/390、5来源、缺失/未来值去重脱敏、键盘/存读回/错误恢复、无横溢出；errors/failedRequests/unhandledPaths均空。合成API不冒充生产持久化，SQL证明另列；证据沿v3-idle-coverage-*。
+- 环境过程保留：初次PG启动误用共享工具数据目录，与55433占用冲突，启动失败且未连接/改写其业务数据；核对原夹具pg目录后，漏传原端口导致本任务进程临时监听5432，正常停止再带55441/loopback恢复原库，原SQL首轮连接失败留存，最终双轮通过。首次浏览器误用Vite源码服务器，原API通配拦截源码模块而超时；改用已构建产物的原preview服务后通过，非产品缺陷。停止源码Vite的组合命令遭宿主策略拒绝，未换工具重试；18761/PID44964为本任务待宿主解除的进程，勿误认全资源清理。原PG/Redis8缓存复用，未建新库/clone/worktree/依赖树，生产和原28项20done/8部分保持。

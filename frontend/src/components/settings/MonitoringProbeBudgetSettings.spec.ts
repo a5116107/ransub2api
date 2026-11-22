@@ -442,14 +442,18 @@ describe('Shared physical probe budgets', () => {
     api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), billing_enabled: false,
       account_plans: 0, group_plans: 0, candy_probes: 0, candy_inventory_complete: true,
       active_monitors: 0, active_inventory_complete: true, minimum_total_requests_per_day: 0,
-      unestimated_demand_sources: ['account_quota_cycle', 'ollama_usage', 'responses_capability', 'event_diagnostics'] })
+      unestimated_demand_sources: ['account_quota_cycle', 'ollama_usage', 'responses_capability', 'event_diagnostics', 'v3_idle_probes'] })
     const wrapper = await open(locale)
     await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
     await flushPromises()
     const panel = wrapper.get('[data-testid="probe-budget-unestimated-demand"]')
-    expect(panel.findAll('[data-source]')).toHaveLength(4)
+    expect(panel.findAll('[data-source]')).toHaveLength(5)
     expect(panel.text()).toContain('Ollama')
     expect(panel.text()).toContain('Responses')
+    const idle = panel.get('[data-source="v3_idle_probes"]')
+    expect(idle.text()).toContain(locale === 'zh' ? 'V3 空闲检测' : 'V3 idle probes')
+    expect(idle.text()).toContain(locale === 'zh' ? '未估算' : 'Unestimated')
+    expect(idle.text()).toContain(locale === 'zh' ? '实时业务成功数' : 'live successful traffic')
     expect(panel.text()).toContain(locale === 'zh' ? '未估算' : 'Unestimated')
     expect(panel.text()).toContain(locale === 'zh' ? '不是已启用库存' : 'not an inventory of enabled')
     expect(wrapper.get('[data-testid="probe-budget-capacity-verdict"]').text()).toContain(locale === 'zh' ? '已编译范围' : 'compiled scopes')

@@ -544,6 +544,7 @@ export default {
           capacitySourceNames: {
             account_quota_cycle: '账号周期余额 / 配额', ollama_usage: 'Ollama 用量刷新',
             responses_capability: 'Responses 能力探测', event_diagnostics: '事件 / 手动诊断',
+            v3_idle_probes: 'V3 空闲检测',
             unknown: '需求覆盖未知'
           },
           capacitySourceHints: {
@@ -551,6 +552,7 @@ export default {
             ollama_usage: '受活动、429、会话状态、缓存与合并影响；刷新间隔不是未来实际调用次数。',
             responses_capability: '由建号与凭据变更触发；未来事件数量尚未预测。',
             event_diagnostics: '已计量的网关、门票、重试及手动诊断仍缺完整未来工作量清单，不代表全部通道均已计量。',
+            v3_idle_probes: '仅在 V3 时槽临近结束、实时业务成功数低于配置门槛时触发。未来调用量未估算，不等于零或已预留周期容量；原生调用仍受共享预算约束，命中未接入计量的插件时自动检测延期，不记为失败。',
             unknown: '缺失、空白或未识别的覆盖信息保留未知，不据此认定未启用或零调用。'
           },
           capacityExceeded: '存在明确超限；目标周期不能完整覆盖',
