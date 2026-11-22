@@ -803,7 +803,7 @@ func TestQualityMonitoringBudgetAdaptiveNativeBases(t *testing.T) {
 }
 
 func TestQualityMonitoringBudgetAdaptiveDenialStopsAnswer(t *testing.T) {
-	for _, at := range []int{2, 3} {
+	for _, at := range []int{1, 2, 3} {
 		t.Run(strconv.Itoa(at), func(t *testing.T) {
 			account := adaptiveCNAccountTestAccount(2, PlatformKimi)
 			tests, upstream := adaptiveCNAccountTestService(account, adaptiveCNChatTestResponse(), adaptiveCNAnthropicTestResponse(), adaptiveCNResponsesTestResponse())
@@ -821,7 +821,12 @@ func TestQualityMonitoringBudgetAdaptiveDenialStopsAnswer(t *testing.T) {
 			require.Equal(t, "inconclusive", qualityOutcome([]*ScheduledTestResult{result}))
 			require.Equal(t, "answer_budget_deferred", result.QualityJudgment.Reason)
 			require.Equal(t, denial, result.QualityJudgment.BudgetDeferral)
-			require.NotEmpty(t, result.ResponseText, "retain the answer already observed before local deferral")
+			if at > 1 {
+				require.NotEmpty(t, result.ResponseText, "retain the answer already observed before local deferral")
+			} else {
+				require.Empty(t, result.ResponseText)
+			}
+			require.Equal(t, at > 1, result.monitoringBudgetAdmitted, "only actual physical admission consumes a queue turn")
 			require.Len(t, upstream.requests, at-1)
 			require.Len(t, repo.requests, at, "local deferral must not restart the multi-protocol answer")
 			require.Equal(t, at-1, repo.released)

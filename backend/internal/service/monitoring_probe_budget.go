@@ -224,6 +224,18 @@ func monitoringProbeLocalError(ctx context.Context) error {
 	return probe.local.err
 }
 
+// A partial adapter chain consumes a scheduling turn even if its next physical
+// request is deferred. Admission is not a successful health observation.
+func monitoringProbeWasAdmitted(ctx context.Context) bool {
+	probe, _ := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+	if probe.local == nil {
+		return false
+	}
+	probe.local.mu.Lock()
+	defer probe.local.mu.Unlock()
+	return probe.local.admitted
+}
+
 func recordMonitoringProbeLocalError(ctx context.Context, err error) {
 	probe, _ := ctx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
 	probe.local.record(err)

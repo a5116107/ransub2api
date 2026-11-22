@@ -90,6 +90,9 @@ type PelicanGroupTestResult struct {
 	StartedAt      time.Time                    `json:"started_at"`
 	FinishedAt     time.Time                    `json:"finished_at"`
 	CreatedAt      time.Time                    `json:"created_at"`
+
+	// Accumulates physical admission across retries, not a persisted verdict.
+	monitoringBudgetAdmitted bool
 }
 
 // PelicanGroupTestPlanInput is what an admin edits; the question is always the HTML drawing kind.
@@ -441,8 +444,10 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 	started := s.now()
 	var costUSD float64
 	priced, attempted, incomplete := false, false, false
+	admitted := false
 	defer func() {
 		if result != nil {
+			result.monitoringBudgetAdmitted = admitted
 			if priced || !attempted {
 				result.CostUSD = &costUSD
 			} else {
@@ -494,6 +499,9 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 			}()
 			sample, err = s.runAccount(context.WithValue(ctx, pelicanTestUsageKey{}, usage), route.account.ID, route.model, plan.PelicanConfig)
 		}()
+		if sample != nil {
+			admitted = admitted || sample.monitoringBudgetAdmitted
+		}
 		if err != nil || sample == nil {
 			sample = &ScheduledTestResult{Status: "failed", ErrorMessage: fmt.Sprint(err)}
 			sample.BudgetDeferral = monitoringProbeDeferral(err, s.now())

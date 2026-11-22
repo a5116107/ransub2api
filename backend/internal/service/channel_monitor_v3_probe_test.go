@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,212 @@ type monitorV3LifecycleRepo struct {
 	reads  atomic.Int32
 	read   func(context.Context) (*ChannelMonitorV3Config, error)
 	finish func(context.Context, ChannelMonitorV3ProbeResult) error
+}
+
+func TestChannelMonitorV3FairBudgetCoverage(t *testing.T) {
+	const targets, capacity, rounds = 100, 4, 25
+	steps := make([]routeStep, targets*rounds)
+	for i := range steps {
+		steps[i].account = account(77, "shared probe account")
+	}
+	var calls atomic.Int32
+	var mu sync.Mutex
+	covered := make(map[string]int)
+	p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: steps}, func(_ context.Context, _ int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+		if calls.Add(1) > capacity {
+			return &ScheduledTestResult{BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute"}}, nil
+		}
+		mu.Lock()
+		covered[model]++
+		mu.Unlock()
+		return &ScheduledTestResult{Status: "success", ResponseText: monitorV3Answer(cfg.Prompt)}, nil
+	})
+	t.Cleanup(p.Stop)
+	repo.components = nil
+	for i := range targets {
+		repo.components = append(repo.components, ChannelMonitorV3Component{ID: int64(i + 1), GroupID: 4, Model: fmt.Sprintf("probe-%03d", i), Enabled: true})
+	}
+	for round := range rounds {
+		calls.Store(0)
+		p.RunDue(t.Context(), monitorV3ProbeTick.Add(time.Duration(round)*5*time.Minute))
+		require.LessOrEqual(t, int(calls.Load()), capacity+channelMonitorV3ProbeWorkers, "exhaustion must stop claiming the remaining queue; in-flight calls may finish")
+		var latest uint64
+		for _, turn := range p.turns {
+			if turn.served > latest {
+				latest = turn.served
+			}
+		}
+		cohort := 0
+		for _, turn := range p.turns {
+			if turn.served == latest {
+				cohort++
+			}
+		}
+		require.Equal(t, capacity, cohort, "one completed round remains one tier, not one serial tier per result")
+	}
+	require.Len(t, covered, targets, "every stable target must receive one turn before any served target receives a second")
+	for model, count := range covered {
+		require.Equal(t, 1, count, model)
+	}
+}
+
+func TestChannelMonitorV3ProbeQueueInventory(t *testing.T) {
+	p, _, _ := monitorV3ProberFixture(&groupTestRouterFake{}, nil)
+	t.Cleanup(p.Stop)
+	a := channelMonitorV3ProbeTarget{GroupID: 4, Model: "a"}
+	b := channelMonitorV3ProbeTarget{GroupID: 4, Model: "b"}
+	c := channelMonitorV3ProbeTarget{GroupID: 5, Model: "a"}
+	targets := []channelMonitorV3ProbeTarget{c, b, a}
+	due := slices.Clone(targets)
+	p.orderProbes(targets, due)
+	require.Equal(t, []channelMonitorV3ProbeTarget{a, b, c}, due)
+	p.turnSequence += 10
+	p.turns[a.key()] = channelMonitorV3ProbeTurn{served: p.turnSequence}
+	p.turns[b.key()] = channelMonitorV3ProbeTurn{served: 1, tried: p.turnSequence}
+	newTarget := channelMonitorV3ProbeTarget{GroupID: 1, Model: "new"}
+	targets = append(targets, newTarget)
+	due = slices.Clone(targets)
+	p.orderProbes(targets, due)
+	require.Equal(t, []channelMonitorV3ProbeTarget{c, b, a, newTarget}, due, "a low-ID newcomer cannot jump older pending work")
+	p.orderProbes([]channelMonitorV3ProbeTarget{b}, nil)
+	require.Len(t, p.turns, 1, "a complete inventory removes obsolete queue state")
+	require.Contains(t, p.turns, b.key())
+}
+
+func TestChannelMonitorV3FairPartialChainsYield(t *testing.T) {
+	var calls atomic.Int32
+	var native atomic.Int32
+	steps := make([]routeStep, 4)
+	for i := range steps {
+		steps[i].account = account(77, "chosen")
+	}
+	p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: steps}, func(_ context.Context, _ int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+		denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute"}
+		if calls.Add(1) > 1 {
+			return &ScheduledTestResult{BudgetDeferral: denial}, nil
+		}
+		if model == "partial" {
+			return &ScheduledTestResult{monitoringBudgetAdmitted: true, BudgetDeferral: denial}, nil
+		}
+		native.Add(1)
+		return &ScheduledTestResult{Status: "success", ResponseText: monitorV3Answer(cfg.Prompt)}, nil
+	})
+	t.Cleanup(p.Stop)
+	repo.components = []ChannelMonitorV3Component{{ID: 1, GroupID: 4, Model: "partial", Enabled: true}, {ID: 2, GroupID: 4, Model: "native", Enabled: true}}
+	// Dispatch the partial chain first, without relying on goroutine ordering.
+	targets := channelMonitorV3ProbeTargets(repo.config.IdleProbe, repo.components)
+	p.orderProbes(targets, slices.Clone(targets))
+	p.turnSequence = 100
+	p.turns[channelMonitorV3ProbeKey{groupID: 4, model: "native"}] = channelMonitorV3ProbeTurn{served: 100}
+	p.RunDue(t.Context(), monitorV3ProbeTick)
+	require.Zero(t, native.Load())
+	calls.Store(0)
+	p.RunDue(t.Context(), monitorV3ProbeTick.Add(5*time.Minute))
+	require.EqualValues(t, 1, native.Load(), "a deferred chain that already spent budget must yield to pending work")
+}
+
+func TestChannelMonitorV3OlderTierDrainsBeforeRecentWork(t *testing.T) {
+	entered, release, younger, done := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+	var releaseOnce sync.Once
+	router := &groupTestRouterFake{steps: []routeStep{{account: account(77, "old")}, {account: account(78, "recent")}}}
+	p, repo, _ := monitorV3ProberFixture(router, func(_ context.Context, _ int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+		if model == "old" {
+			close(entered)
+			<-release
+			return &ScheduledTestResult{BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day"}}, nil
+		}
+		younger <- struct{}{}
+		return &ScheduledTestResult{Status: "success", ResponseText: monitorV3Answer(cfg.Prompt)}, nil
+	})
+	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("tier fixture did not drain")
+		}
+	})
+	repo.components = []ChannelMonitorV3Component{{ID: 1, GroupID: 4, Model: "old", Enabled: true}, {ID: 2, GroupID: 4, Model: "recent", Enabled: true}}
+	targets := channelMonitorV3ProbeTargets(repo.config.IdleProbe, repo.components)
+	p.orderProbes(targets, slices.Clone(targets))
+	p.turnSequence = 100
+	p.turns[channelMonitorV3ProbeKey{groupID: 4, model: "recent"}] = channelMonitorV3ProbeTurn{served: 100}
+	go func() { p.RunDue(t.Context(), monitorV3ProbeTick); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pending target did not start")
+	}
+	select {
+	case <-younger:
+		t.Fatal("recent work raced an older in-flight target for the last budget")
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the probe did not finish")
+	}
+	require.Len(t, repo.claims, 1, "global exhaustion stops the younger tier before claiming it")
+	require.Len(t, repo.finished, 1)
+	require.Equal(t, ChannelMonitorV3ProbeDeferred, repo.finished[0].Outcome)
+}
+
+func TestChannelMonitorV3BudgetDispatchOutcomes(t *testing.T) {
+	for _, scope := range []string{"key", "key_minute", "site", "site_minute", "plugin", "global_minute", "global_day", "coordinator", "unknown"} {
+		for _, admitted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/admitted=%t", scope, admitted), func(t *testing.T) {
+				denial := &MonitoringProbeBudgetDenial{Reason: "fixture_denial", Scope: scope}
+				p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: []routeStep{{account: account(77, "chosen")}}}, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+					return &ScheduledTestResult{monitoringBudgetAdmitted: admitted, BudgetDeferral: denial}, nil
+				})
+				t.Cleanup(p.Stop)
+				run := p.runOne(t.Context(), channelMonitorV3ProbeTarget{GroupID: 4, Model: "gpt-probe"}, monitorV3ProbeTick, 5)
+				require.Equal(t, admitted, run.served, "admitted partial chains must yield their next turn")
+				require.Equal(t, !slices.Contains([]string{"key", "key_minute", "site", "site_minute", "plugin"}, scope), run.stop)
+				require.Len(t, repo.finished, 1)
+				require.Equal(t, ChannelMonitorV3ProbeDeferred, repo.finished[0].Outcome)
+				require.Empty(t, repo.finished[0].ErrorMessage)
+			})
+		}
+	}
+}
+
+func TestChannelMonitorV3CanceledAdmissionDoesNotPublish(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: []routeStep{{account: account(77, "chosen")}}}, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+		cancel()
+		return &ScheduledTestResult{monitoringBudgetAdmitted: true, Status: "failed", ErrorMessage: context.Canceled.Error()}, nil
+	})
+	t.Cleanup(p.Stop)
+	run := p.runOne(ctx, channelMonitorV3ProbeTarget{GroupID: 4, Model: "gpt-probe"}, monitorV3ProbeTick, 5)
+	require.True(t, run.served, "cancellation must not erase an earlier physical admission")
+	require.Empty(t, repo.finished, "queue accounting is not a late health observation")
+}
+
+func TestChannelMonitorV3LocalDeferralKeepsIndependentRoutes(t *testing.T) {
+	for _, scope := range []string{"key", "key_minute", "site", "site_minute", "plugin"} {
+		t.Run(scope, func(t *testing.T) {
+			var calls atomic.Int32
+			router := &groupTestRouterFake{steps: []routeStep{{account: account(77, "chosen")}, {account: account(78, "other")}}}
+			p, repo, _ := monitorV3ProberFixture(router, func(_ context.Context, _ int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+				calls.Add(1)
+				if model == "blocked" {
+					return &ScheduledTestResult{BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "fixture_denial", Scope: scope}}, nil
+				}
+				return &ScheduledTestResult{Status: "success", ResponseText: monitorV3Answer(cfg.Prompt)}, nil
+			})
+			t.Cleanup(p.Stop)
+			repo.components = []ChannelMonitorV3Component{{ID: 1, GroupID: 4, Model: "blocked", Enabled: true}, {ID: 2, GroupID: 4, Model: "independent", Enabled: true}}
+			p.RunDue(t.Context(), monitorV3ProbeTick)
+			require.EqualValues(t, 2, calls.Load())
+			require.Len(t, repo.finished, 2)
+			require.Equal(t, 1, len(slices.DeleteFunc(slices.Clone(repo.finished), func(r ChannelMonitorV3ProbeResult) bool { return r.Outcome != ChannelMonitorV3ProbeSuccess })))
+		})
+	}
 }
 
 func (r *monitorV3LifecycleRepo) FinishProbe(ctx context.Context, result ChannelMonitorV3ProbeResult) error {

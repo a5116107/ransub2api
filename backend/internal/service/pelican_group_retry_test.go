@@ -12,7 +12,7 @@ import (
 )
 
 func TestPelicanGroupMonitoringBudgetDeferralStopsFailover(t *testing.T) {
-	for _, mode := range []string{"answer", "scheduled", "typed_denial", "coordinator", "lease_lost", "after_supplier_failure"} {
+	for _, mode := range []string{"answer", "scheduled", "typed_denial", "coordinator", "lease_lost", "after_supplier_failure", "after_partial_answer"} {
 		t.Run(mode, func(t *testing.T) {
 			denial := &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: groupTestNow.Add(time.Hour)}
 			router := &groupTestRouterFake{steps: []routeStep{{account: account(11, "first")}, {account: account(12, "second")}, {account: account(13, "unused")}}}
@@ -21,7 +21,7 @@ func TestPelicanGroupMonitoringBudgetDeferralStopsFailover(t *testing.T) {
 			svc, showcase := newGroupTestService(repo, router, func(_ context.Context, id int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
 				calls++
 				if mode == "after_supplier_failure" && id == 11 {
-					return &ScheduledTestResult{Status: "failed", ErrorMessage: "API returned 503"}, nil
+					return &ScheduledTestResult{monitoringBudgetAdmitted: true, Status: "failed", ErrorMessage: "API returned 503"}, nil
 				}
 				switch mode {
 				case "typed_denial":
@@ -32,6 +32,8 @@ func TestPelicanGroupMonitoringBudgetDeferralStopsFailover(t *testing.T) {
 					return nil, ErrMonitoringProbeBudgetLeaseLost
 				case "scheduled":
 					return &ScheduledTestResult{Status: "deferred", BudgetDeferral: denial}, nil
+				case "after_partial_answer":
+					return &ScheduledTestResult{monitoringBudgetAdmitted: true, BudgetDeferral: denial}, nil
 				default:
 					return &ScheduledTestResult{Status: "failed", ErrorMessage: "answer_budget_deferred", ResponseText: "partial output", QualityJudgment: &QualityJudgment{Verdict: "unknown", BudgetDeferral: denial}}, nil
 				}
@@ -49,9 +51,13 @@ func TestPelicanGroupMonitoringBudgetDeferralStopsFailover(t *testing.T) {
 			require.Len(t, router.released, wantCalls)
 			require.Len(t, result.Attempts, wantCalls-1, "keep only real earlier supplier failures")
 			require.Empty(t, result.ErrorMessage, "do not publish local budget failure as supplier error")
+			require.Equal(t, mode == "after_supplier_failure" || mode == "after_partial_answer", result.monitoringBudgetAdmitted)
 			raw, err := json.Marshal(result)
 			require.NoError(t, err)
 			require.Contains(t, string(raw), `"budget_deferral":`)
+			require.NotContains(t, string(raw), "monitoringBudgetAdmitted")
+			require.NotContains(t, string(raw), "monitoring_budget_admitted")
+			require.NotContains(t, string(raw), "monitoringBudgetAdmitted")
 		})
 	}
 }

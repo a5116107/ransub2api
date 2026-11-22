@@ -69,8 +69,10 @@ func TestMonitoringProbeBudgetTransportLifecycle(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			repo := &monitoringBudgetRepoStub{}
 			original := monitoringBudgetRequest(t, repo)
+			require.False(t, monitoringProbeWasAdmitted(original.Context()))
 			req, finish, err := BeginMonitoringProbeRequest(original)
 			require.NoError(t, err)
+			require.True(t, monitoringProbeWasAdmitted(req.Context()))
 			require.Len(t, repo.requests, 1)
 			require.Equal(t, config.UpstreamCredentialFingerprints(original), repo.requests[0].KeyHashes)
 			require.Equal(t, monitoringProbeHash("https://example.com/tenant"), repo.requests[0].SiteHash)
@@ -95,6 +97,7 @@ func TestMonitoringProbeBudgetTransportLifecycle(t *testing.T) {
 			}
 			finish()
 			require.Equal(t, 1, repo.released)
+			require.True(t, monitoringProbeWasAdmitted(req.Context()), "settlement does not erase the physical admission")
 		})
 	}
 }

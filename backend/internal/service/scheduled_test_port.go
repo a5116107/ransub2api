@@ -82,8 +82,10 @@ type ScheduledTestPlan struct {
 
 // ScheduledTestResult represents a single test execution result.
 type ScheduledTestResult struct {
-	BudgetDeferral       *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
-	QualityRouteEvidence *QualityRouteEvidence        `json:"-"`
+	// Runtime-only queue accounting; never persisted or accepted as evidence.
+	monitoringBudgetAdmitted bool
+	BudgetDeferral           *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
+	QualityRouteEvidence     *QualityRouteEvidence        `json:"-"`
 	// Derived for a detail read; never saved or accepted as rule configuration.
 	QualityMeasurementValidity *QualityMeasurementValidity `json:"quality_measurement_validity,omitempty"`
 	// Runtime-only; set solely from an actual own-credential OAuth HTTP 401.

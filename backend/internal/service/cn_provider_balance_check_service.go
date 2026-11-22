@@ -271,11 +271,7 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 					local := monitoringProbeLocalError(jobCtx)
 					denial := monitoringProbeDeferral(local, time.Now())
 					result.served = denial == nil && jobCtx.Err() == nil
-					if probe, ok := jobCtx.Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext); ok && probe.local != nil {
-						probe.local.mu.Lock()
-						result.served = result.served || probe.local.admitted
-						probe.local.mu.Unlock()
-					}
+					result.served = result.served || monitoringProbeWasAdmitted(jobCtx)
 					if denial != nil {
 						switch denial.Scope {
 						case "key", "key_minute", "site", "site_minute":
