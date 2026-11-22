@@ -75,7 +75,7 @@ func (r *channelRepository) SaveProcurementCatalog(ctx context.Context, draft *d
 }
 
 func (r *channelRepository) PreviewProcurementClassification(ctx context.Context, command *service.ProcurementPreviewCommand) (*service.ProcurementClassificationPreview, error) {
-	if command == nil || len(command.Requests) < 1 || len(command.Requests) > 100 || command.ProductGroupID != nil && (*command.ProductGroupID < 1 || *command.ProductGroupID > domain.MaxProcurementPolicyRevision) || command.PolicyDraft != nil && !command.EvaluateCandidate {
+	if command == nil || len(command.Requests) < 1 || len(command.Requests) > 100 || command.ProductGroupID != nil && (*command.ProductGroupID < 1 || *command.ProductGroupID > domain.MaxProcurementPolicyRevision) || command.PolicyDraft != nil && !command.EvaluateCandidate || command.ProfitDraft != nil && command.PolicyDraft == nil {
 		return nil, service.ErrProcurementCatalogInvalid
 	}
 	if command.EvaluateCandidate {
@@ -125,6 +125,16 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 			}
 			draftPreview = &service.ProcurementPolicyDraftPreview{Version: 1, BasedOnRevision: command.PolicyDraft.Revision, OtherSettings: "saved_product", ProfitControlEnabled: product.ProfitControlEnabled, Policy: prepared.Clone()}
 			product.ProcurementPolicy = prepared
+			if command.ProfitDraft != nil {
+				profit, err := command.ProfitDraft.Prepared()
+				if err != nil || profit.Platform != product.Platform {
+					return nil, service.ErrProcurementCatalogInvalid
+				}
+				draftPreview.Version, draftPreview.OtherSettings, draftPreview.ProfitDraft = 2, "saved_except_profit", profit
+				draftPreview.ProfitControlEnabled = profit.ProfitControlEnabled
+				product.RateMultiplier, product.ProfitControlEnabled = profit.RateMultiplier, profit.ProfitControlEnabled
+				product.ProfitMinMargin, product.ProfitSafetyBuffer = profit.ProfitMinMargin, profit.ProfitSafetyBuffer
+			}
 		}
 		product.ProcurementSources, _ = loadProcurementSources(ctx, tx, product)
 	}

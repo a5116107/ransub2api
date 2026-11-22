@@ -212,6 +212,10 @@ export default {
   },
   "procurement": {
     candidateMode: 'Evaluate an approved-source candidate (select a product first)',
+    draftProfitBoundary: 'Read-only simulation of the unsaved procurement policy, default sale multiplier, profit switch, margin and safety buffer. Peak rates, subscription, platform, model restrictions and all other settings still use saved values. This is neither a full save preview nor a user-specific quote; it saves nothing, starts no probes and grants no send eligibility. Editing any draft input withdraws the result.',
+    draftProfitGateOn: 'Draft profit gate enabled (not saved)',
+    draftProfitGateOff: 'Draft profit gate disabled (not saved)',
+    draftProfitValues: 'Simulated default sale multiplier {rate}; min margin {margin}; safety buffer {buffer}',
     draftTitle: 'Preview this policy draft before saving (read-only)',
     draftProductHint: 'The product is fixed to the Group being edited. Only approved-source candidates are checked; membership is unchanged.',
     draftCandidate: 'Approved-source candidate (membership unchanged)',

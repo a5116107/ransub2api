@@ -1,4 +1,15 @@
 import type { GroupProcurementPolicy } from '@/types'
+import type { ProcurementProfitDraft } from '@/api/admin/procurementCatalog'
+
+// Wire validation only; native saves and the server remain the price authority.
+export function validProcurementProfitDraft(value: unknown): value is ProcurementProfitDraft {
+  if (!value || typeof value !== 'object') return false
+  const p = value as ProcurementProfitDraft
+  return Object.keys(p).sort().join(',') === 'platform,profit_control_enabled,profit_min_margin,profit_safety_buffer,rate_multiplier,version' &&
+    p.version === 1 && ['openai', 'anthropic', 'gemini', 'grok', 'antigravity'].includes(p.platform) && typeof p.profit_control_enabled === 'boolean' &&
+    Number.isFinite(p.rate_multiplier) && p.rate_multiplier > 0 && Number.isFinite(p.profit_min_margin) && p.profit_min_margin >= 0 && p.profit_min_margin < 1 &&
+    Number.isFinite(p.profit_safety_buffer) && p.profit_safety_buffer >= 0 && p.profit_safety_buffer < 1 && (!p.profit_control_enabled || p.profit_min_margin + p.profit_safety_buffer < 1)
+}
 
 const ratePattern = /^(0|[1-9]\d{0,7})(?:\.(\d{1,8}))?$/
 

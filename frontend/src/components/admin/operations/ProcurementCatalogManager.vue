@@ -3,7 +3,7 @@
     <summary class="cursor-pointer font-semibold">{{ t(`${p}.${previewOnly ? 'draftTitle' : 'title'}`) }}</summary>
     <div class="mt-4 min-w-0 space-y-4">
       <p v-if="!previewOnly" class="text-sm leading-6 text-gray-600 dark:text-gray-300">{{ t(`${p}.scope`) }}</p>
-      <p v-if="previewOnly" class="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="policy-draft-boundary">{{ t(`${p}.draftBoundary`) }}</p>
+      <p v-if="previewOnly" class="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="policy-draft-boundary">{{ t(`${p}.${profitDraft ? 'draftProfitBoundary' : 'draftBoundary'}`) }}</p>
       <p v-if="previewOnly && draftInvalid" role="status" class="text-xs text-amber-800 dark:text-amber-300">{{ t(`${p}.draftIncomplete`) }}</p>
       <p v-if="error" role="alert" class="break-words text-sm text-red-600 dark:text-red-400" data-testid="procurement-error">{{ t(`${p}.${error}`) }}</p>
       <p v-if="busy" role="status" class="text-sm">{{ t('upstreamOps.loading') }}</p>
@@ -77,7 +77,8 @@
           </fieldset>
         </component>
         <section v-if="result" aria-live="polite" class="min-w-0 space-y-3 rounded-lg bg-gray-50 p-3 dark:bg-dark-800" data-testid="catalog-preview-result">
-          <p v-if="result.policy_draft" class="break-words rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="policy-draft-result">{{ t(`${p}.draftResult`, { from: result.policy_draft.based_on_revision, to: result.policy_draft.policy.revision }) }} · {{ t(`${p}.${result.policy_draft.profit_control_enabled ? 'draftGateOn' : 'draftGateOff'}`) }}</p>
+          <p v-if="result.policy_draft" class="break-words rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="policy-draft-result">{{ t(`${p}.draftResult`, { from: result.policy_draft.based_on_revision, to: result.policy_draft.policy.revision }) }} · {{ t(`${p}.${result.policy_draft.profit_draft ? result.policy_draft.profit_control_enabled ? 'draftProfitGateOn' : 'draftProfitGateOff' : result.policy_draft.profit_control_enabled ? 'draftGateOn' : 'draftGateOff'}`) }}</p>
+          <p v-if="result.policy_draft?.profit_draft" class="break-words text-sm" data-testid="profit-draft-values">{{ t(`${p}.draftProfitValues`, { rate: result.policy_draft.profit_draft.rate_multiplier, margin: result.policy_draft.profit_draft.profit_min_margin.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 2 }), buffer: result.policy_draft.profit_draft.profit_safety_buffer.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 2 }) }) }}</p>
           <p class="break-words text-xs text-gray-500">{{ t(`${p}.revision`, { revision: result.catalog.revision }) }} · {{ result.observed_at }}</p>
           <div v-for="(item, index) in result.results" :key="index" class="min-w-0 space-y-2">
             <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.state === 'classified' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="catalog-preview-state">{{ t(`${p}.states.${knownState(item.state)}`) }}</span>
@@ -185,13 +186,13 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useNow } from '@vueuse/core'
-import { readProcurementCatalog, saveProcurementCatalog, previewProcurementScopes, type ProcurementCatalog, type ProcurementCatalogSnapshot, type ProcurementRequestScope, type ProcurementPreview, type ProcurementEvaluatedGate, type QualityScopeEvidence, type AvailabilityScopeEvidence } from '@/api/admin/procurementCatalog'
+import { readProcurementCatalog, saveProcurementCatalog, previewProcurementScopes, type ProcurementCatalog, type ProcurementCatalogSnapshot, type ProcurementRequestScope, type ProcurementPreview, type ProcurementEvaluatedGate, type QualityScopeEvidence, type AvailabilityScopeEvidence, type ProcurementProfitDraft } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot, validateProcurementCatalog } from '@/utils/procurementCatalog'
-import { cloneProcurementPolicy, procurementPolicyCommand, validateProcurementPolicy } from '@/utils/procurementPolicy'
+import { cloneProcurementPolicy, procurementPolicyCommand, validateProcurementPolicy, validProcurementProfitDraft } from '@/utils/procurementPolicy'
 import type { GroupProcurementPolicy } from '@/types'
 import qualityMessages from '@/i18n/locales/en/upstreamOps'
 
-const props = withDefaults(defineProps<{ previewOnly?: boolean; productGroupId?: number; policyDraft?: GroupProcurementPolicy | null; disabled?: boolean }>(), { previewOnly: false, disabled: false })
+const props = withDefaults(defineProps<{ previewOnly?: boolean; productGroupId?: number; policyDraft?: GroupProcurementPolicy | null; profitDraft?: ProcurementProfitDraft; disabled?: boolean }>(), { previewOnly: false, disabled: false })
 const emit = defineEmits<{ policyConflict: [] }>()
 const { t } = useI18n(), p = 'upstreamOps.procurement'
 const now = useNow({ interval: 1000 })
@@ -207,10 +208,10 @@ const responses = computed(() => probe.value.protocol !== 'chat_http')
 const candidate = computed<ProcurementCatalog>(() => ({ version: 1, revision: saved.value?.catalog.revision ?? 0, buckets: rows.value.map(row => ({ code: row.code, name: row.name, min_rate: row.min === '' ? null : row.min, max_rate: row.unbounded ? null : row.max })) }))
 const validation = computed(() => validateProcurementCatalog(candidate.value))
 const dirty = computed(() => Boolean(saved.value) && JSON.stringify(candidate.value) !== JSON.stringify(saved.value?.catalog))
-const draftInvalid = computed(() => props.previewOnly && (!props.policyDraft || Boolean(validateProcurementPolicy(props.policyDraft)) || !Number.isSafeInteger(props.productGroupId) || props.productGroupId! < 1))
+const draftInvalid = computed(() => props.previewOnly && (!props.policyDraft || Boolean(validateProcurementPolicy(props.policyDraft)) || !Number.isSafeInteger(props.productGroupId) || props.productGroupId! < 1 || props.profitDraft !== undefined && !validProcurementProfitDraft(props.profitDraft)))
 const validProbe = computed(() => !props.disabled && !draftInvalid.value && (!probe.value.candidate || productID.value !== undefined) && !Number.isNaN(productID.value) && Number.isSafeInteger(probe.value.account) && probe.value.account > 0 && probe.value.publicModel.trim() !== '' && probe.value.model.trim() !== '' && probe.value.tier !== '' && probe.value.effort !== '')
 watch([rows, probe], () => { generation++; result.value = null; success.value = false }, { deep: true, flush: 'sync' })
-watch(() => [props.productGroupId, props.policyDraft, props.disabled], () => {
+watch(() => [props.productGroupId, props.policyDraft, props.profitDraft, props.disabled], () => {
   if (!props.previewOnly) return
   generation++; result.value = null; error.value = ''
   probe.value.product = String(props.productGroupId ?? '')
@@ -273,19 +274,21 @@ async function preview() {
   const id = generation
   const product = productID.value, evaluateCandidate = probe.value.candidate
   const draft = props.previewOnly && props.policyDraft ? cloneProcurementPolicy(props.policyDraft) : undefined
+  const profit = draft && props.profitDraft ? { ...props.profitDraft } : undefined
   busy.value = true; error.value = ''; result.value = null
   try {
-    const next = await previewProcurementScopes({ requests: [request], ...(product === undefined ? {} : { product_group_id: product }), ...(evaluateCandidate ? { evaluate_candidate: true } : {}), ...(draft ? { policy_draft: draft } : {}) }, controller.signal)
+    const next = await previewProcurementScopes({ requests: [request], ...(product === undefined ? {} : { product_group_id: product }), ...(evaluateCandidate ? { evaluate_candidate: true } : {}), ...(draft ? { policy_draft: draft } : {}), ...(profit ? { profit_draft: profit } : {}) }, controller.signal)
     if (!validProcurementSnapshot(next) || next.catalog.revision !== saved.value.catalog.revision || !Number.isFinite(Date.parse(next.observed_at)) || !Array.isArray(next.results) || next.results.length !== 1 ||
       next.results[0]?.account_id !== request.account_id || next.results[0]?.public_model !== request.public_model || !next.results[0]?.scope ||
       !Object.entries(request.scope).every(([key, value]) => next.results[0]!.scope[key as keyof ProcurementRequestScope['scope']] === value) || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
     const projection = next.results[0]!.product_procurement
     if (draft) {
       const simulation = next.policy_draft, prepared = { ...draft, revision: draft.revision + 1 }
-      if (!simulation || Object.keys(simulation).sort().join(',') !== 'based_on_revision,other_settings,policy,profit_control_enabled,version' ||
-        simulation.version !== 1 || simulation.based_on_revision !== draft.revision || simulation.other_settings !== 'saved_product' || typeof simulation.profit_control_enabled !== 'boolean' ||
+      if (!simulation || Object.keys(simulation).sort().join(',') !== (profit ? 'based_on_revision,other_settings,policy,profit_control_enabled,profit_draft,version' : 'based_on_revision,other_settings,policy,profit_control_enabled,version') ||
+        simulation.version !== (profit ? 2 : 1) || simulation.based_on_revision !== draft.revision || simulation.other_settings !== (profit ? 'saved_except_profit' : 'saved_product') || typeof simulation.profit_control_enabled !== 'boolean' ||
         !simulation.policy || validateProcurementPolicy(simulation.policy) || procurementPolicyCommand(prepared, simulation.policy) !== undefined ||
         Object.keys(simulation.policy).sort().join(',') !== Object.keys(prepared).filter(k => prepared[k as keyof GroupProcurementPolicy] !== undefined).sort().join(',') || projection?.policy_revision !== prepared.revision ||
+        profit && (!validProcurementProfitDraft(simulation.profit_draft) || Object.entries(profit).some(([key, value]) => simulation.profit_draft![key as keyof ProcurementProfitDraft] !== value) || simulation.profit_control_enabled !== profit.profit_control_enabled) ||
         projection.answer_quality?.required !== (prepared.quality === 'current_answer') || projection.availability?.required !== (prepared.availability === 'current_state') || projection.evaluated_gates?.version !== 4) throw new Error('inconsistent policy simulation')
     } else if (next.policy_draft !== undefined) throw new Error('unexpected policy simulation')
     const quality = next.results[0]!.quality_evidence

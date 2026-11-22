@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,47 @@ import (
 )
 
 const catalogCommandFixture = `{"version":1,"revision":0,"buckets":[{"code":"b1","name":"First","min_rate":"0.2","max_rate":"0.5"},{"code":"b2","name":"Second","min_rate":"0.5","max_rate":"0.6"}]}`
+
+func TestProcurementProfitDraftCommand(t *testing.T) {
+	raw := `{"requests":[{"account_id":7,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"fixture","stream":false,"service_tier":"unspecified","reasoning_effort":"unspecified","capability":"text"}}],"product_group_id":42,"evaluate_candidate":true,"policy_draft":{"version":1,"revision":3,"min_rate":null,"max_rate":null},"profit_draft":{"version":1,"platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"profit_min_margin":0.1,"profit_safety_buffer":0.05}}`
+	_, err := ParseProcurementPreviewCommand([]byte(raw))
+	require.NoError(t, err, "a complete unsaved profit configuration must use the original preview")
+	for _, invalid := range []string{
+		strings.Replace(raw, `"profit_draft":{`, `"profit_draft":null,"extra":{`, 1),
+		strings.Replace(raw, `"profit_draft":{`, `"profit_draft":{"version":1,`, 1),
+		strings.Replace(raw, `"profit_draft":{"version":1`, `"profit_draft":{"version":2`, 1),
+		strings.Replace(raw, `"platform":"openai"`, `"platform":"unknown"`, 1),
+		strings.Replace(raw, `"rate_multiplier":0.15`, `"rate_multiplier":null`, 1),
+		strings.Replace(raw, `"rate_multiplier":0.15`, `"rate_multiplier":0`, 1),
+		strings.Replace(raw, `"profit_control_enabled":true`, `"profit_control_enabled":"true"`, 1),
+		strings.Replace(raw, `,"profit_safety_buffer":0.05`, ``, 1),
+		strings.Replace(raw, `"profit_min_margin":0.1`, `"profit_min_margin":0.99`, 1),
+		strings.Replace(raw, `,"policy_draft":{"version":1,"revision":3,"min_rate":null,"max_rate":null}`, ``, 1),
+		strings.Replace(raw, `"evaluate_candidate":true`, `"evaluate_candidate":false`, 1),
+	} {
+		_, err := ParseProcurementPreviewCommand([]byte(invalid))
+		require.ErrorIs(t, err, ErrProcurementCatalogInvalid)
+	}
+}
+
+func TestProcurementProfitDraftNativeNormalization(t *testing.T) {
+	for _, rate := range []float64{0, -1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		require.Error(t, ValidateGroupRateMultiplier(rate))
+		_, err := (&ProcurementProfitDraft{Version: 1, Platform: "openai", RateMultiplier: rate}).Prepared()
+		require.ErrorIs(t, err, ErrProcurementCatalogInvalid)
+	}
+	for _, platform := range []string{"openai", "anthropic", "gemini", "grok", "antigravity"} {
+		draft := &ProcurementProfitDraft{Version: 1, Platform: platform, RateMultiplier: .15, ProfitMinMargin: -1, ProfitSafetyBuffer: 2}
+		prepared, err := draft.Prepared()
+		require.NoError(t, err)
+		require.Zero(t, prepared.ProfitMinMargin)
+		require.Zero(t, prepared.ProfitSafetyBuffer)
+		require.EqualValues(t, -1, draft.ProfitMinMargin)
+		draft.ProfitControlEnabled = true
+		_, err = draft.Prepared()
+		require.ErrorIs(t, err, ErrProcurementCatalogInvalid)
+	}
+}
 
 func TestProcurementPolicyDraftCommand(t *testing.T) {
 	raw := `{"requests":[{"account_id":7,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"fixture","stream":false,"service_tier":"unspecified","reasoning_effort":"unspecified","capability":"text"}}],"product_group_id":42,"evaluate_candidate":true,"policy_draft":{"version":7,"revision":3,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","availability":"current_state","source_group_ids":[11],"evidence_template":{"version":1,"code":"answer_availability"}}}`

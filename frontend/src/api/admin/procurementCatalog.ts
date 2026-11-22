@@ -81,9 +81,12 @@ export interface QualityScopeEvidence {
   rule_count: number; confirmed_rules: number; samples: number; valid_samples: number; other_scope_rules: number
   rules: QualityScopeRuleEvidence[]
 }
-export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number; evaluate_candidate?: boolean; policy_draft?: GroupProcurementPolicy }
+export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number; evaluate_candidate?: boolean; policy_draft?: GroupProcurementPolicy; profit_draft?: ProcurementProfitDraft }
+export interface ProcurementProfitDraft {
+  version: number; platform: string; rate_multiplier: number; profit_control_enabled: boolean; profit_min_margin: number; profit_safety_buffer: number
+}
 export interface ProcurementPolicyDraftPreview {
-  version: number; based_on_revision: number; other_settings: string; profit_control_enabled: boolean; policy: GroupProcurementPolicy
+  version: number; based_on_revision: number; other_settings: string; profit_control_enabled: boolean; policy: GroupProcurementPolicy; profit_draft?: ProcurementProfitDraft
 }
 export interface ProcurementPreview extends ProcurementCatalogSnapshot { observed_at: string; results: ProcurementClassification[]; policy_draft?: ProcurementPolicyDraftPreview }
 

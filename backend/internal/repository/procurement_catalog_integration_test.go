@@ -834,6 +834,65 @@ func TestProcurementPolicyDraftPostgresHTTPAndSnapshot(t *testing.T) {
 		_, err := repo.PreviewProcurementClassification(canceled, command)
 		require.ErrorIs(t, err, context.Canceled)
 	})
+	t.Run("profit draft matches native save without changing the saved product", func(t *testing.T) {
+		combined := *command
+		combined.PolicyDraft = saved.Clone()
+		combined.ProfitDraft = &service.ProcurementProfitDraft{Version: 1, Platform: "openai", RateMultiplier: .02, ProfitControlEnabled: true, ProfitMinMargin: .1, ProfitSafetyBuffer: .05}
+		out := call("admin", &combined, 200)
+		require.Equal(t, 2, out.PolicyDraft.Version)
+		require.Equal(t, "saved_except_profit", out.PolicyDraft.OtherSettings)
+		require.Equal(t, combined.ProfitDraft, out.PolicyDraft.ProfitDraft)
+		require.InDelta(t, .02, out.Results[0].Product.DefaultD, 1e-12)
+		require.Equal(t, "blocked", out.Results[0].Product.State)
+		require.Equal(t, "fail", out.Results[0].Product.EvaluatedGates.State)
+		original := combined
+		original.ProfitDraft = nil
+		require.Equal(t, "constraints_passed", call("admin", &original, 200).Results[0].Product.State)
+		for role, code := range map[string]int{"": 401, "user": 403, "observer": 403} {
+			call(role, &combined, code)
+		}
+		for _, mutate := range []func(*service.ProcurementPreviewCommand){
+			func(c *service.ProcurementPreviewCommand) { c.PolicyDraft = saved.WithRevision(2) },
+			func(c *service.ProcurementPreviewCommand) { c.ProfitDraft.Platform = "gemini" },
+			func(c *service.ProcurementPreviewCommand) { c.ProfitDraft.RateMultiplier = 0 },
+		} {
+			bad := combined
+			profit := *combined.ProfitDraft
+			bad.ProfitDraft = &profit
+			mutate(&bad)
+			code := 400
+			if bad.PolicyDraft.Revision != saved.Revision {
+				code = 409
+			}
+			call("admin", &bad, code)
+		}
+		// A separate native product proves persistence parity without touching
+		// the original preview fixture's revision or account relations.
+		var nativeID int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform,rate_multiplier,profit_control_enabled,procurement_policy) VALUES('native profit parity','openai',.15,true,$1) RETURNING id`, encode(saved)).Scan(&nativeID))
+		rate, enabled, margin, buffer := .02, true, .1, .05
+		_, err := management.UpdateGroup(ctx, nativeID, &service.UpdateGroupInput{RateMultiplier: &rate, ProfitControlEnabled: &enabled, ProfitMinMargin: &margin, ProfitSafetyBuffer: &buffer, ProcurementPolicy: json.RawMessage(encode(saved))})
+		require.NoError(t, err)
+		native := combined
+		native.ProductGroupID = &nativeID
+		native.PolicyDraft, native.ProfitDraft = nil, nil
+		persisted := call("admin", &native, 200)
+		require.Equal(t, out.Results[0].Product.DefaultD, persisted.Results[0].Product.DefaultD)
+		require.Equal(t, out.Results[0].Product.Threshold, persisted.Results[0].Product.Threshold)
+		require.Equal(t, out.Results[0].Product.State, persisted.Results[0].Product.State)
+		require.Equal(t, out.Results[0].Product.EvaluatedGates.State, persisted.Results[0].Product.EvaluatedGates.State)
+	})
+	t.Run("draft switch is explicit and unsupported saved platform is never simulated", func(t *testing.T) {
+		combined := *command
+		combined.ProfitDraft = &service.ProcurementProfitDraft{Version: 1, Platform: "openai", RateMultiplier: .15, ProfitControlEnabled: false, ProfitMinMargin: -1, ProfitSafetyBuffer: 2}
+		out := call("admin", &combined, 200)
+		require.False(t, out.PolicyDraft.ProfitControlEnabled)
+		require.Zero(t, out.PolicyDraft.ProfitDraft.ProfitMinMargin)
+		require.Zero(t, out.PolicyDraft.ProfitDraft.ProfitSafetyBuffer)
+		require.Equal(t, "disabled", out.Results[0].Product.State)
+		require.False(t, combined.ProfitDraft.ProfitControlEnabled)
+		require.EqualValues(t, -1, combined.ProfitDraft.ProfitMinMargin, "native normalization must not mutate the command")
+	})
 	t.Run("saved switch and request scope remain authoritative", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=false WHERE id=$1`, productID)
 		require.NoError(t, err)
@@ -849,6 +908,8 @@ func TestProcurementPolicyDraftPostgresHTTPAndSnapshot(t *testing.T) {
 		require.NotEqual(t, "pass", out.Results[0].Product.EvaluatedGates.State)
 	})
 	t.Run("one snapshot retains its base and the next read rejects a changed revision", func(t *testing.T) {
+		combined := *command
+		combined.ProfitDraft = &service.ProcurementProfitDraft{Version: 1, Platform: "openai", RateMultiplier: .1, ProfitControlEnabled: true}
 		lock, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { _ = lock.Rollback() }()
@@ -862,7 +923,7 @@ func TestProcurementPolicyDraftPostgresHTTPAndSnapshot(t *testing.T) {
 		previewCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		go func() {
-			out, err := repo.PreviewProcurementClassification(previewCtx, command)
+			out, err := repo.PreviewProcurementClassification(previewCtx, &combined)
 			done <- result{out, err}
 		}()
 		deadline := time.Now().Add(3 * time.Second)
@@ -877,12 +938,14 @@ func TestProcurementPolicyDraftPostgresHTTPAndSnapshot(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		require.True(t, blocked, "the preview must reach its post-product evidence read")
-		_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2 WHERE id=$1`, productID, encode(saved.WithRevision(4)))
+		_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2, rate_multiplier=.01 WHERE id=$1`, productID, encode(saved.WithRevision(4)))
 		require.NoError(t, err)
 		require.NoError(t, lock.Rollback())
 		read := <-done
 		require.NoError(t, read.err)
 		require.EqualValues(t, 3, read.out.PolicyDraft.BasedOnRevision)
+		require.Equal(t, 2, read.out.PolicyDraft.Version)
+		require.InDelta(t, .1, read.out.Results[0].Product.DefaultD, 1e-12)
 		call("admin", command, 409)
 		fresh := *command
 		fresh.PolicyDraft = draft.WithRevision(4)

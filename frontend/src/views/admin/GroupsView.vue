@@ -3061,8 +3061,8 @@
         </div>
 
         <ProcurementPolicyFields
-          v-if="isProfitControlPlatform(editForm.platform) && editForm.profit_control_enabled"
-          v-model="editProcurementPolicy" id-prefix="edit-procurement" :platform="editForm.platform" :product-group-id="editingGroup?.id"
+          v-if="isProfitControlPlatform(editForm.platform) && (editForm.profit_control_enabled || editProcurementPolicy)"
+          v-model="editProcurementPolicy" :profit-draft="editProcurementProfitDraft" id-prefix="edit-procurement" :platform="editForm.platform" :product-group-id="editingGroup?.id"
           :conflict="editProcurementConflict" :latest-policy="latestProcurementPolicy" :refreshing="refreshingProcurementPolicy"
           @refresh="refreshProcurementPolicy" @resolve="resolveProcurementConflict" @conflict="editProcurementConflict = true; refreshProcurementPolicy()"
         />
@@ -6075,6 +6075,12 @@ const normalizeRateMultiplier = (
 // 利润控制表单辅助（换算与校验逻辑见 groupsProfitControl.ts，便于单测）。
 const percentToDecimal = profitPercentToDecimal;
 const decimalToPercent = profitDecimalToPercent;
+const editProcurementProfitDraft = computed(() => ({
+  version: 1, platform: editForm.platform, rate_multiplier: Number(editForm.rate_multiplier),
+  profit_control_enabled: isProfitControlPlatform(editForm.platform) && editForm.profit_control_enabled,
+  profit_min_margin: percentToDecimal(editForm.profit_min_margin_percent),
+  profit_safety_buffer: percentToDecimal(editForm.profit_safety_buffer_percent),
+}));
 
 const validateProfitControlForm = (form: ProfitControlFormState): boolean => {
   const errorKey = validateProfitControlFormState(form);

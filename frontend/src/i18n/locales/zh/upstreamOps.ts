@@ -212,6 +212,10 @@ export default {
   },
   "procurement": {
     candidateMode: '评估批准来源中的候选（需先填写产品）',
+    draftProfitBoundary: '只读模拟当前未保存的采购策略、默认销售倍率、利润开关、利润率和安全垫；高峰、订阅、平台、模型限制及其他设置仍采用已保存值。非完整保存影响或用户专属报价；不保存、不检测、不授予发送资格。修改任一草稿参数后撤下旧结果。',
+    draftProfitGateOn: '草稿利润门开启（尚未保存）',
+    draftProfitGateOff: '草稿利润门关闭（尚未保存）',
+    draftProfitValues: '模拟默认销售倍率 {rate}；最低利润率 {margin}；安全垫 {buffer}',
     draftTitle: '保存前预演本策略草稿（只读）',
     draftProductHint: '产品已锁定为当前编辑对象；仅检查批准来源候选，不改变产品关联。',
     draftCandidate: '批准来源候选（不新增关联）',

@@ -442,6 +442,14 @@ func NormalizeGroupPlatform(platform string) string {
 	return platform
 }
 
+// ValidateGroupRateMultiplier is shared by native group saves and read-only previews.
+func ValidateGroupRateMultiplier(rate float64) error {
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 {
+		return errors.New("rate_multiplier must be > 0")
+	}
+	return nil
+}
+
 // ValidateProfitControlConfig 是分组利润控制配置的唯一校验来源，handler 与 service 层共用。
 // enabled=true 时仅允许五个可计费平台分组；margin/buffer 各自 ∈ [0,1)，且 margin+buffer < 1
 // （相加 >=1 时阈值 <=0，所有可核价账号都会被排除，视为配置错误而不是静默全黑）。

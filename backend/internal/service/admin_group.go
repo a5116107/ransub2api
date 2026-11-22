@@ -398,8 +398,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		normalizeCreateGroupInputForSimpleMode(input)
 	}
-	if input.RateMultiplier <= 0 {
-		return nil, errors.New("rate_multiplier must be > 0")
+	if err := ValidateGroupRateMultiplier(input.RateMultiplier); err != nil {
+		return nil, err
 	}
 	i18n, err := normalizeGroupI18n(input.I18n)
 	if err != nil {
@@ -816,8 +816,8 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		group.Platform = input.Platform
 	}
 	if input.RateMultiplier != nil {
-		if *input.RateMultiplier <= 0 {
-			return nil, errors.New("rate_multiplier must be > 0")
+		if err := ValidateGroupRateMultiplier(*input.RateMultiplier); err != nil {
+			return nil, err
 		}
 		group.RateMultiplier = *input.RateMultiplier
 	}

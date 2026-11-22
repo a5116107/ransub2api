@@ -85,6 +85,50 @@ describe('policy draft preview inside the existing Group form', () => {
     expect(w.find('[data-testid="policy-draft-result"]').exists()).toBe(true)
     expect(saveProcurementCatalog).not.toHaveBeenCalled()
   })
+  it('previews the unsaved profit configuration and invalidates the old result on price edits', async () => {
+    const profit = { version: 1, platform: 'openai', rate_multiplier: 0.2, profit_control_enabled: true, profit_min_margin: 0.1, profit_safety_buffer: 0.05 }
+    vi.mocked(previewProcurementScopes).mockImplementation(async ({ requests }) => {
+      const out = response(requests)
+      Object.assign(out.policy_draft!, { version: 2, other_settings: 'saved_except_profit', profit_draft: profit })
+      return out
+    })
+    const w = await draftView(); await w.setProps({ profitDraft: profit })
+    await w.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+    expect(vi.mocked(previewProcurementScopes).mock.calls[0]![0]).toMatchObject({ profit_draft: profit })
+    expect(w.find('[data-testid="policy-draft-result"]').exists()).toBe(true)
+    expect(w.get('[data-testid="policy-draft-boundary"]').text()).toContain(prefix + 'draftProfitBoundary')
+    await w.setProps({ profitDraft: { ...profit, rate_multiplier: 0.25 } })
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(saveProcurementCatalog).not.toHaveBeenCalled()
+  })
+  it.each(['missing', 'version', 'parameters', 'switch', 'extra'])('rejects a mismatched combined profit receipt: %s', async kind => {
+    const profit = { version: 1, platform: 'openai', rate_multiplier: 0.2, profit_control_enabled: true, profit_min_margin: 0.1, profit_safety_buffer: 0.05 }
+    vi.mocked(previewProcurementScopes).mockImplementation(async ({ requests }) => {
+      const out = response(requests)
+      Object.assign(out.policy_draft!, { version: 2, other_settings: 'saved_except_profit', profit_draft: { ...profit } })
+      if (kind === 'missing') delete out.policy_draft!.profit_draft
+      if (kind === 'version') out.policy_draft!.version = 1
+      if (kind === 'parameters') out.policy_draft!.profit_draft!.rate_multiplier = 0.3
+      if (kind === 'switch') out.policy_draft!.profit_control_enabled = false
+      if (kind === 'extra') Object.assign(out.policy_draft!.profit_draft!, { authorized: true })
+      return out
+    })
+    const w = await draftView(); await w.setProps({ profitDraft: profit })
+    await w.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+  })
+  it('discards a combined receipt arriving after the profit switch changes', async () => {
+    const profit = { version: 1, platform: 'openai', rate_multiplier: 0.2, profit_control_enabled: true, profit_min_margin: 0.1, profit_safety_buffer: 0.05 }
+    let resolve!: (out: ProcurementPreview) => void
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(() => new Promise(r => { resolve = r }))
+    const w = await draftView(); await w.setProps({ profitDraft: profit })
+    await w.get('[data-testid="catalog-preview"]').trigger('click')
+    const out = response(vi.mocked(previewProcurementScopes).mock.calls[0]![0].requests)
+    Object.assign(out.policy_draft!, { version: 2, other_settings: 'saved_except_profit', profit_draft: profit })
+    await w.setProps({ profitDraft: { ...profit, profit_control_enabled: false } }); resolve(out); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+  })
   it('retains the exact scope and asks the original Group flow to resolve a revision conflict', async () => {
     vi.mocked(previewProcurementScopes).mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
     const w = await draftView(); await w.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()

@@ -109,7 +109,7 @@
         {{ t(`admin.groups.profitControl.procurement.${restrictedSources ? sourceCount === 0 ? 'sourcesEmpty' : 'sourcesCount' : 'sourcesOriginal'}`, { count: sourceCount }) }}
       </p>
     </div>
-    <ProcurementCatalogManager v-if="productGroupId && modelValue && !unsupported" :product-group-id="productGroupId" :policy-draft="modelValue" :disabled="Boolean(error) || conflict || refreshing" preview-only @policy-conflict="emit('conflict')" />
+    <ProcurementCatalogManager v-if="productGroupId && modelValue && !unsupported" :product-group-id="productGroupId" :policy-draft="modelValue" :profit-draft="profitDraft" :disabled="Boolean(error) || conflict || refreshing" preview-only @policy-conflict="emit('conflict')" />
     <p :id="`${idPrefix}-status`" :role="error ? 'alert' : 'status'" class="text-xs"
       :class="error ? 'text-amber-700 dark:text-amber-300' : 'text-gray-600 dark:text-gray-300'">
       <template v-if="error">{{ t(`admin.groups.profitControl.procurement.${error}`) }}</template>
@@ -151,12 +151,14 @@ import { applyProcurementEvidenceTemplate, cloneProcurementPolicy, parseProcurem
 import { readProcurementCatalog, type ProcurementCatalog } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot } from '@/utils/procurementCatalog'
 import ProcurementCatalogManager from '@/components/admin/operations/ProcurementCatalogManager.vue'
+import type { ProcurementProfitDraft } from '@/api/admin/procurementCatalog'
 
 const props = defineProps<{
   modelValue: GroupProcurementPolicy | null
   idPrefix: string
   platform?: GroupPlatform
   productGroupId?: number
+  profitDraft?: ProcurementProfitDraft
   conflict?: boolean
   latestPolicy?: GroupProcurementPolicy | null
   refreshing?: boolean

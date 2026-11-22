@@ -45,11 +45,35 @@ type ProcurementPreviewCommand struct {
 	EvaluateCandidate bool                        `json:"evaluate_candidate,omitempty"`
 	ProductGroupID    *int64                      `json:"product_group_id,omitempty"`
 	PolicyDraft       *domain.ProcurementPolicy   `json:"policy_draft,omitempty"`
+	ProfitDraft       *ProcurementProfitDraft     `json:"profit_draft,omitempty"`
+}
+
+type ProcurementProfitDraft struct {
+	Version              int     `json:"version"`
+	Platform             string  `json:"platform"`
+	RateMultiplier       float64 `json:"rate_multiplier"`
+	ProfitControlEnabled bool    `json:"profit_control_enabled"`
+	ProfitMinMargin      float64 `json:"profit_min_margin"`
+	ProfitSafetyBuffer   float64 `json:"profit_safety_buffer"`
+}
+
+// Prepared uses the native save normalization, without mutating input or a group.
+func (p *ProcurementProfitDraft) Prepared() (*ProcurementProfitDraft, error) {
+	if p == nil || p.Version != 1 || !profitControlPlatformSupported(p.Platform) || ValidateGroupRateMultiplier(p.RateMultiplier) != nil {
+		return nil, ErrProcurementCatalogInvalid
+	}
+	out := *p
+	out.ProfitControlEnabled, out.ProfitMinMargin, out.ProfitSafetyBuffer = NormalizeProfitControlConfig(p.Platform, p.ProfitControlEnabled, p.ProfitMinMargin, p.ProfitSafetyBuffer)
+	if ValidateProfitControlConfig(out.Platform, out.ProfitControlEnabled, out.ProfitMinMargin, out.ProfitSafetyBuffer) != nil {
+		return nil, ErrProcurementCatalogInvalid
+	}
+	return &out, nil
 }
 
 // A counterfactual policy at the next native revision, never saved authority.
-// Every other product setting continues to come from the same saved snapshot.
+// Version 2 also simulates the explicitly listed native profit settings.
 type ProcurementPolicyDraftPreview struct {
+	ProfitDraft          *ProcurementProfitDraft   `json:"profit_draft,omitempty"`
 	Version              int                       `json:"version"`
 	BasedOnRevision      int64                     `json:"based_on_revision"`
 	OtherSettings        string                    `json:"other_settings"`
@@ -368,7 +392,7 @@ func ParseProcurementCatalogCommand(raw []byte) (*domain.ProcurementCatalog, err
 func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, error) {
 	value := gjson.ParseBytes(raw)
 	fields, valid := procurementUniqueObject(value)
-	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !valid || (len(fields) < 1 || len(fields) > 4) || !value.Get("requests").IsArray() {
+	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !valid || (len(fields) < 1 || len(fields) > 5) || !value.Get("requests").IsArray() {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	command := &ProcurementPreviewCommand{}
@@ -396,7 +420,25 @@ func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, err
 		}
 		known++
 	}
-	if len(fields) != known || command.EvaluateCandidate && command.ProductGroupID == nil || command.PolicyDraft != nil && !command.EvaluateCandidate {
+	if field, present := fields["profit_draft"]; present {
+		if !procurementCatalogObject(field, "version", "platform", "rate_multiplier", "profit_control_enabled", "profit_min_margin", "profit_safety_buffer") ||
+			field.Get("profit_control_enabled").Type != gjson.True && field.Get("profit_control_enabled").Type != gjson.False {
+			return nil, ErrProcurementCatalogInvalid
+		}
+		for _, name := range []string{"version", "rate_multiplier", "profit_min_margin", "profit_safety_buffer"} {
+			if field.Get(name).Type != gjson.Number {
+				return nil, ErrProcurementCatalogInvalid
+			}
+		}
+		if json.Unmarshal([]byte(field.Raw), &command.ProfitDraft) != nil {
+			return nil, ErrProcurementCatalogInvalid
+		}
+		if _, err := command.ProfitDraft.Prepared(); err != nil {
+			return nil, err
+		}
+		known++
+	}
+	if len(fields) != known || command.EvaluateCandidate && command.ProductGroupID == nil || command.PolicyDraft != nil && !command.EvaluateCandidate || command.ProfitDraft != nil && command.PolicyDraft == nil {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	items := value.Get("requests").Array()
