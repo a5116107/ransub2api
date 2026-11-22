@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -332,4 +333,84 @@ func TestProcurementQualityPostSlotAndRegionalAuthority(t *testing.T) {
 	snapshot.localSnapshotReader = nil
 	require.Same(t, repo, procurementQualityReader(snapshot, nil))
 	require.Same(t, repo, procurementQualityReader(nil, repo))
+}
+
+func TestProcurementEvidenceTemplateConsumesOriginalHTTPAndWSGates(t *testing.T) {
+	var sends atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { sends.Add(1); w.WriteHeader(200) }))
+	defer upstream.Close()
+	account := billingCandidateAccount(t, 901, billingApplicabilityEntry("responses_http", "unspecified", true))
+	account.Extra = map[string]any{}
+	account.Credentials["base_url"] = upstream.URL
+	group := profitControlTestGroup(7, 0, 0)
+	require.NoError(t, json.Unmarshal([]byte(`{"version":7,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","availability":"current_state","source_group_ids":[11],"evidence_template":{"version":1,"code":"answer_availability"}}`), &group.ProcurementPolicy))
+	group.ProcurementSources = &domain.ProcurementSourceSnapshot{Version: 1, ProductGroupID: 7, PolicyRevision: 1, GroupIDs: []int64{11}, AccountIDs: []int64{901}}
+	gate := &openAIProfitControlGate{groupID: 7, platform: PlatformOpenAI, threshold: 1, procurementPolicy: group.ProcurementPolicy.Clone(), procurementSources: group.ProcurementSources.Clone(), procurementGroup: func(context.Context) (*Group, error) { return group, nil }}
+	quality, availability, protocol := "pass", "pass", "responses_http"
+	gate.qualityReader = procurementQualityTestReader(func(context.Context, *Account, AvailabilityRequestScope) (*QualityScopeEvidence, error) {
+		at := time.Now()
+		until := at.Add(time.Minute)
+		return &QualityScopeEvidence{Version: 1, Status: quality, Reason: "all_rules_passed", EvaluatedAt: at, ValidUntil: &until, RuleCount: 1, ConfirmedRules: 1, Samples: 1, ValidSamples: 1}, nil
+	})
+	gate.availabilityReader = procurementAvailabilityTestReader(func(context.Context, *Account) ([]*AvailabilityReport, error) {
+		report := availabilityAdmissionPass(901, "gpt-fixture")
+		report.Models[0].Status = availability
+		report.Models[0].Decision.Status = availability
+		report.Models[0].Decision.Scope.Protocol = protocol
+		report.Models[0].Decision.Scope.Stream = protocol == "responses_ws_v2"
+		return []*AvailabilityReport{report}, nil
+	})
+	ctx := context.WithValue(t.Context(), openAIProfitControlGateCtxKey{}, gate)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, accountRepo: &turnAdmissionRepo{account: account}}
+	for _, state := range []string{"pass", "quality unknown", "availability unknown", "pass"} {
+		quality, availability = "pass", "pass"
+		if state == "quality unknown" {
+			quality = "unknown"
+		}
+		if state == "availability unknown" {
+			availability = "unknown"
+		}
+		for _, engine := range []string{"openai", "native"} {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"gpt-fixture","input":"fixture"}`))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer "+account.GetCredential("api_key"))
+			var guarded *http.Request
+			var blocked error
+			if engine == "openai" {
+				guarded, blocked = svc.guardOpenAIProfitRequest(req, account)
+			} else {
+				guarded, blocked = guardGatewayUpstreamRequest(req, account, &gatewayFinalAdmissionRepo{latest: account}, svc.cfg)
+			}
+			before := sends.Load()
+			if state != "pass" {
+				require.Error(t, blocked)
+				require.True(t, IsOpenAITurnAdmissionError(blocked))
+				require.Equal(t, before, sends.Load())
+				continue
+			}
+			require.NoError(t, blocked)
+			response, err := http.DefaultClient.Do(guarded)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Equal(t, before+1, sends.Load())
+		}
+	}
+	require.EqualValues(t, 4, sends.Load())
+	account = billingCandidateAccount(t, 901, billingApplicabilityEntry("responses_ws_v2", "unspecified", true))
+	account.Extra = map[string]any{}
+	protocol = "responses_ws_v2"
+	quality, availability = "pass", "pass"
+	binding := (&OpenAIGatewayService{}).bindOpenAIWSHandshake(account, "gpt-fixture", http.Header{"Authorization": []string{"Bearer " + account.GetCredential("api_key")}}, strings.Replace(account.GetOpenAIBaseURL(), "https://", "wss://", 1)+"/v1/responses")
+	require.NotNil(t, binding.availability.route)
+	frame := []byte(`{"type":"response.create","model":"gpt-fixture","input":"fixture","stream":true}`)
+	scope := binding.availability.scope(account, frame)
+	require.NotNil(t, scope)
+	wsCtx := context.WithValue(ctx, procurementActualScopeKey{}, func() *AvailabilityRequestScope { return scope })
+	require.NoError(t, (&OpenAIGatewayService{}).checkOpenAIWSBinding(wsCtx, account, "gpt-fixture", binding, frame))
+	availability = "unknown"
+	require.Error(t, (&OpenAIGatewayService{}).checkOpenAIWSBinding(wsCtx, account, "gpt-fixture", binding, frame))
+	availability = "pass"
+	require.NoError(t, (&OpenAIGatewayService{}).checkOpenAIWSBinding(wsCtx, account, "gpt-fixture", binding, frame))
+	group.ProcurementPolicy.Quality = "not_required"
+	require.Error(t, (&OpenAIGatewayService{}).checkOpenAIWSBinding(wsCtx, account, "gpt-fixture", binding, frame), "drifted fixed requirements must fail closed")
 }

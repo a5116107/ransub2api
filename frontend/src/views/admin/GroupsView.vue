@@ -4471,7 +4471,7 @@ import { platformLabel } from "@/utils/platformColors";
 import Icon from "@/components/icons/Icon.vue";
 import GroupI18nField from "@/components/admin/group/GroupI18nField.vue";
 import ProcurementPolicyFields from "@/components/admin/group/ProcurementPolicyFields.vue";
-import { procurementPolicyCommand, validateProcurementPolicy } from "@/utils/procurementPolicy";
+import { applyProcurementEvidenceTemplate, procurementPolicyCommand, validateProcurementPolicy } from "@/utils/procurementPolicy";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
 import GroupAntiDistillationSettings from "@/components/admin/group/GroupAntiDistillationSettings.vue";
@@ -6494,6 +6494,9 @@ const resolveProcurementConflict = () => {
   }
   if (latest && latest.version >= 6 && editProcurementPolicy.value.version < 6) {
     editProcurementPolicy.value = { ...editProcurementPolicy.value, version: 6, source_group_ids: latest.source_group_ids === null ? null : [...(latest.source_group_ids ?? [])] };
+  }
+  if (latest && latest.version >= 7 && editProcurementPolicy.value.version < 7) {
+    editProcurementPolicy.value = applyProcurementEvidenceTemplate(editProcurementPolicy.value, latest.evidence_template!.code as 'custom' | 'answer_availability');
   }
   editProcurementPolicy.value = { ...editProcurementPolicy.value, revision: latest?.revision ?? 0 };
   editProcurementConflict.value = false;

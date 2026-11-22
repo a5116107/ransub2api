@@ -2,6 +2,15 @@
   <fieldset class="mt-3 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
     <legend class="px-1 text-sm font-medium text-gray-700 dark:text-gray-200">{{ t('admin.groups.profitControl.procurement.title') }}</legend>
     <p :id="`${idPrefix}-hint`" class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.groups.profitControl.procurement.hint') }}</p>
+    <div v-if="!unsupported" class="space-y-2">
+      <label :for="`${idPrefix}-evidence-template`" class="input-label">{{ t(`${p}.templateTitle`) }}</label>
+      <select :id="`${idPrefix}-evidence-template`" class="input" :value="modelValue?.evidence_template?.code ?? 'legacy'" data-testid="procurement-evidence-template" @change="setTemplate(($event.target as HTMLSelectElement).value)">
+        <option v-if="(modelValue?.version ?? 0) < 7" value="legacy">{{ t(`${p}.templateLegacy`) }}</option>
+        <option value="answer_availability">{{ t(`${p}.templateMonitored`) }}</option>
+        <option value="custom">{{ t(`${p}.templateCustom`) }}</option>
+      </select>
+      <p class="text-xs leading-5 text-gray-500 dark:text-gray-400" data-testid="procurement-template-hint">{{ t(`${p}.templateHint`) }}</p>
+    </div>
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <div>
         <label :for="`${idPrefix}-min`" class="input-label">{{ t('admin.groups.profitControl.procurement.min') }}</label>
@@ -19,7 +28,7 @@
     </div>
     <div v-if="!unsupported" class="space-y-2">
       <label :for="`${idPrefix}-source-groups-mode`" class="input-label">{{ t(`${p}.sourceGroupsTitle`) }}</label>
-      <select :id="`${idPrefix}-source-groups-mode`" class="input" :value="restrictedSourceGroups ? 'selected' : 'original'" @change="setSourceGroupMode(($event.target as HTMLSelectElement).value)">
+      <select :id="`${idPrefix}-source-groups-mode`" class="input" :disabled="fixedTemplate" :value="restrictedSourceGroups ? 'selected' : 'original'" @change="setSourceGroupMode(($event.target as HTMLSelectElement).value)">
         <option value="original">{{ t(`${p}.sourceGroupsOriginal`) }}</option>
         <option value="selected">{{ t(`${p}.sourceGroupsSelected`) }}</option>
       </select>
@@ -45,7 +54,7 @@
     </div>
     <div v-if="!unsupported" class="space-y-2">
       <label :for="`${idPrefix}-availability`" class="input-label">{{ t(`${p}.availabilityTitle`) }}</label>
-      <select :id="`${idPrefix}-availability`" class="input" :value="modelValue?.availability ?? 'not_required'" :aria-describedby="`${idPrefix}-availability-hint`" @change="setAvailability(($event.target as HTMLSelectElement).value)">
+      <select :id="`${idPrefix}-availability`" class="input" :disabled="fixedTemplate" :value="modelValue?.availability ?? 'not_required'" :aria-describedby="`${idPrefix}-availability-hint`" @change="setAvailability(($event.target as HTMLSelectElement).value)">
         <option value="not_required">{{ t(`${p}.availabilityOff`) }}</option>
         <option value="current_state">{{ t(`${p}.availabilityRequired`) }}</option>
       </select>
@@ -53,7 +62,7 @@
     </div>
     <div v-if="!unsupported" class="space-y-2">
       <label :for="`${idPrefix}-quality`" class="input-label">{{ t(`${p}.qualityTitle`) }}</label>
-      <select :id="`${idPrefix}-quality`" class="input" :value="modelValue?.quality ?? 'not_required'" :aria-describedby="`${idPrefix}-quality-hint`" @change="setQuality(($event.target as HTMLSelectElement).value)">
+      <select :id="`${idPrefix}-quality`" class="input" :disabled="fixedTemplate" :value="modelValue?.quality ?? 'not_required'" :aria-describedby="`${idPrefix}-quality-hint`" @change="setQuality(($event.target as HTMLSelectElement).value)">
         <option value="not_required">{{ t(`${p}.qualityOff`) }}</option>
         <option value="current_answer">{{ t(`${p}.qualityRequired`) }}</option>
       </select>
@@ -119,6 +128,7 @@
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestQuality`) }}: {{ t(`${p}.${latestPolicy?.quality === 'current_answer' ? 'qualityRequired' : 'qualityOff'}`) }}</p>
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.latestAvailability`) }}: {{ t(`${p}.${latestPolicy?.availability === 'current_state' ? 'availabilityRequired' : 'availabilityOff'}`) }}</p>
       <p v-if="latestPolicy !== undefined && !latestError" class="break-words">{{ t(`${p}.sourceGroupsLatest`) }}: {{ Array.isArray(latestPolicy?.source_group_ids) ? latestPolicy.source_group_ids.length ? latestPolicy.source_group_ids.join(', ') : t(`${p}.sourceGroupsEmpty`) : t(`${p}.sourceGroupsOriginal`) }}</p>
+      <p v-if="latestPolicy !== undefined && !latestError" class="break-words" data-testid="procurement-latest-template">{{ t(`${p}.latestTemplate`) }}: {{ t(`${p}.${latestPolicy?.evidence_template?.code === 'answer_availability' ? 'templateMonitored' : latestPolicy?.evidence_template?.code === 'custom' ? 'templateCustom' : 'templateLegacy'}`) }}</p>
       <div class="flex flex-wrap gap-2">
         <button type="button" class="btn btn-secondary text-xs" :disabled="refreshing" @click="emit('refresh')">
           {{ t('admin.groups.profitControl.procurement.reloadLatest') }}
@@ -136,7 +146,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { GroupProcurementPolicy, GroupPlatform } from '@/types'
 import { adminAPI } from '@/api/admin'
-import { cloneProcurementPolicy, parseProcurementSourceIDs, validateProcurementPolicy } from '@/utils/procurementPolicy'
+import { applyProcurementEvidenceTemplate, cloneProcurementPolicy, parseProcurementSourceIDs, validateProcurementPolicy } from '@/utils/procurementPolicy'
 import { readProcurementCatalog, type ProcurementCatalog } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot } from '@/utils/procurementCatalog'
 
@@ -157,7 +167,8 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const p = 'admin.groups.profitControl.procurement'
 const error = computed(() => validateProcurementPolicy(props.modelValue))
-const unsupported = computed(() => error.value === 'unsupported')
+const unsupported = computed(() => error.value === 'unsupported' || error.value === 'templateFormat')
+const fixedTemplate = computed(() => props.modelValue?.evidence_template?.version === 1 && props.modelValue.evidence_template.code === 'answer_availability')
 const latestError = computed(() => props.latestPolicy === undefined ? null : validateProcurementPolicy(props.latestPolicy))
 const restrictedSources = computed(() => (props.modelValue?.version ?? 0) >= 2 && Array.isArray(props.modelValue?.sources?.account_ids))
 const restrictedBuckets = computed(() => (props.modelValue?.version ?? 0) >= 3 && Array.isArray(props.modelValue?.buckets?.codes))
@@ -199,9 +210,9 @@ async function loadSourceGroups() {
 }
 watch([restrictedSourceGroups, () => props.platform, () => props.productGroupId], ([restricted]) => { if (restricted) void loadSourceGroups() }, { immediate: true })
 function setSourceGroupMode(value: string) {
-  if (unsupported.value) return
+  if (unsupported.value || fixedTemplate.value) return
   const next = draft()
-  next.version = 6
+  next.version = Math.max(6, next.version)
   next.sources ??= { account_ids: null }; next.buckets ??= { codes: null }
   next.quality ??= 'not_required'; next.availability ??= 'not_required'
   next.source_group_ids = value === 'selected' ? [] : null
@@ -226,8 +237,13 @@ function draft(): GroupProcurementPolicy {
   return props.modelValue ? cloneProcurementPolicy(props.modelValue) : { version: 1, revision: 0, min_rate: null, max_rate: null }
 }
 
+function setTemplate(value: string) {
+  if (unsupported.value || !['custom', 'answer_availability'].includes(value)) return
+  emit('update:modelValue', applyProcurementEvidenceTemplate(draft(), value as 'custom' | 'answer_availability'))
+}
+
 function setQuality(value: string) {
-  if (unsupported.value) return
+  if (unsupported.value || fixedTemplate.value) return
   const next = draft()
   next.version = Math.max(4, next.version)
   next.sources ??= { account_ids: null }
@@ -237,7 +253,7 @@ function setQuality(value: string) {
 }
 
 function setAvailability(value: string) {
-  if (unsupported.value) return
+  if (unsupported.value || fixedTemplate.value) return
   const next = draft()
   next.version = Math.max(5, next.version)
   next.sources ??= { account_ids: null }

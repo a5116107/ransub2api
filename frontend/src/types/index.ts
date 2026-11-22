@@ -673,6 +673,8 @@ export interface GroupProcurementPolicy {
   availability?: string
   // Version 6: null preserves the pool; [] admits no approved source group.
   source_group_ids?: number[] | null
+  // Version 7 pins a template version without granting model/cache qualification.
+  evidence_template?: { version: number; code: string }
 }
 
 export interface AdminGroup extends Group {

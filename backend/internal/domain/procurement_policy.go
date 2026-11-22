@@ -17,15 +17,39 @@ import (
 // sources and explicit evidence requirements. It does not certify model/cache
 // quality or own group bindings.
 type ProcurementPolicy struct {
-	Version        int                 `json:"version"`
-	Revision       int64               `json:"revision"`
-	MinRate        *string             `json:"min_rate"`
-	MaxRate        *string             `json:"max_rate"`
-	Sources        *ProcurementSources `json:"sources,omitempty"`
-	Buckets        *ProcurementBuckets `json:"buckets,omitempty"`
-	Quality        string              `json:"quality,omitempty"`
-	Availability   string              `json:"availability,omitempty"`
-	SourceGroupIDs []int64             `json:"source_group_ids,omitempty"`
+	Version          int                          `json:"version"`
+	Revision         int64                        `json:"revision"`
+	MinRate          *string                      `json:"min_rate"`
+	MaxRate          *string                      `json:"max_rate"`
+	Sources          *ProcurementSources          `json:"sources,omitempty"`
+	Buckets          *ProcurementBuckets          `json:"buckets,omitempty"`
+	Quality          string                       `json:"quality,omitempty"`
+	Availability     string                       `json:"availability,omitempty"`
+	SourceGroupIDs   []int64                      `json:"source_group_ids,omitempty"`
+	EvidenceTemplate *ProcurementEvidenceTemplate `json:"evidence_template,omitempty"`
+}
+
+// Template versions pin the existing evidence requirements. They never
+// certify identity/cache or create observation plans or product memberships.
+type ProcurementEvidenceTemplate struct {
+	Version int    `json:"version"`
+	Code    string `json:"code"`
+}
+
+func (t *ProcurementEvidenceTemplate) UnmarshalJSON(raw []byte) error {
+	if _, err := procurementJSONFields(raw, []string{"version", "code"}); err != nil {
+		return err
+	}
+	type contract ProcurementEvidenceTemplate
+	var value contract
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if value.Version != 1 || value.Code != "custom" && value.Code != "answer_availability" {
+		return errors.New("unknown procurement evidence template")
+	}
+	*t = ProcurementEvidenceTemplate(value)
+	return nil
 }
 
 // Explicit null and empty lists remain distinct in v6; older contracts never
@@ -50,7 +74,7 @@ func (p ProcurementPolicy) MarshalJSON() ([]byte, error) {
 // struct decoding accepts missing bounds, case aliases and last-value wins,
 // which could turn a damaged snapshot into less restrictive admission.
 func (p *ProcurementPolicy) UnmarshalJSON(raw []byte) error {
-	fields, err := procurementJSONFields(raw, []string{"version", "revision", "min_rate", "max_rate"}, "sources", "buckets", "quality", "availability", "source_group_ids")
+	fields, err := procurementJSONFields(raw, []string{"version", "revision", "min_rate", "max_rate"}, "sources", "buckets", "quality", "availability", "source_group_ids", "evidence_template")
 	if err != nil {
 		return err
 	}
@@ -66,7 +90,7 @@ func (p *ProcurementPolicy) UnmarshalJSON(raw []byte) error {
 	if err := policy.ValidateDraft(); err != nil {
 		return err
 	}
-	if policy.Version == 1 && fields["sources"] != nil || policy.Version < 3 && fields["buckets"] != nil || policy.Version < 4 && fields["quality"] != nil || policy.Version < 5 && fields["availability"] != nil || policy.Version < 6 && fields["source_group_ids"] != nil || policy.Version >= 6 && fields["source_group_ids"] == nil {
+	if policy.Version == 1 && fields["sources"] != nil || policy.Version < 3 && fields["buckets"] != nil || policy.Version < 4 && fields["quality"] != nil || policy.Version < 5 && fields["availability"] != nil || policy.Version < 6 && fields["source_group_ids"] != nil || policy.Version >= 6 && fields["source_group_ids"] == nil || policy.Version < 7 && fields["evidence_template"] != nil {
 		return errors.New("procurement fields do not match the policy version")
 	}
 	*p = policy
@@ -194,7 +218,7 @@ func procurementBound(value *string) (*big.Rat, error) {
 }
 
 func (p *ProcurementPolicy) ValidateDraft() error {
-	if p == nil || p.Version < 1 || p.Version > 6 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
+	if p == nil || p.Version < 1 || p.Version > 7 || p.Revision < 0 || p.Revision > MaxProcurementPolicyRevision {
 		return errors.New("invalid procurement policy version or revision")
 	}
 	if p.Version == 1 && p.Sources != nil || p.Version >= 2 && p.Sources == nil {
@@ -211,6 +235,17 @@ func (p *ProcurementPolicy) ValidateDraft() error {
 	}
 	if p.Version < 6 && p.SourceGroupIDs != nil || len(p.SourceGroupIDs) > 64 {
 		return errors.New("invalid procurement source groups")
+	}
+	if p.Version < 7 && p.EvidenceTemplate != nil || p.Version >= 7 && (p.EvidenceTemplate == nil || p.EvidenceTemplate.Version != 1 || p.EvidenceTemplate.Code != "custom" && p.EvidenceTemplate.Code != "answer_availability") {
+		return errors.New("invalid procurement evidence template contract")
+	}
+	if p.Version >= 7 && p.EvidenceTemplate.Code == "answer_availability" {
+		if p.Quality != "current_answer" || p.Availability != "current_state" {
+			return errors.New("fixed evidence template requirements changed")
+		}
+		if len(p.SourceGroupIDs) == 0 {
+			return errors.New("evidence template requires explicitly approved source groups")
+		}
 	}
 	seenGroups := make(map[int64]bool, len(p.SourceGroupIDs))
 	for _, id := range p.SourceGroupIDs {
@@ -275,6 +310,10 @@ func (p *ProcurementPolicy) Clone() *ProcurementPolicy {
 		return nil
 	}
 	next := *p
+	if p.EvidenceTemplate != nil {
+		value := *p.EvidenceTemplate
+		next.EvidenceTemplate = &value
+	}
 	next.SourceGroupIDs = slices.Clone(p.SourceGroupIDs)
 	if p.Buckets != nil {
 		next.Buckets = &ProcurementBuckets{Codes: slices.Clone(p.Buckets.Codes)}

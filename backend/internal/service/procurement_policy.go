@@ -11,7 +11,7 @@ import (
 )
 
 var ErrProcurementPolicyConflict = infraerrors.Conflict("GROUP_PROCUREMENT_POLICY_CONFLICT", "procurement policy changed; review the latest policy before saving")
-var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires a complete supported version, the current revision, an exact nonempty interval, explicit sources/buckets, quality for version 4+ and availability for version 5+ and explicit source_group_ids for version 6")
+var ErrProcurementPolicyInvalid = infraerrors.BadRequest("INVALID_GROUP_PROCUREMENT_POLICY", "procurement policy requires a complete supported version, the current revision, an exact nonempty interval, explicit sources/buckets, quality for version 4+ and availability for version 5+ and explicit source_group_ids for version 6+ and a pinned evidence_template for version 7")
 
 func procurementPolicyUpdate(raw json.RawMessage, current *ProcurementPolicy) (*ProcurementPolicy, *int64, error) {
 	if len(raw) == 0 {

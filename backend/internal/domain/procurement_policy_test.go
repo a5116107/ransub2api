@@ -314,3 +314,46 @@ func TestProcurementSourceSnapshotAuthorityAndClone(t *testing.T) {
 		require.Error(t, json.Unmarshal([]byte(raw), &decoded))
 	}
 }
+
+func TestProcurementEvidenceTemplateCompleteContract(t *testing.T) {
+	raw := `{"version":7,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","availability":"current_state","source_group_ids":[12],"evidence_template":{"version":1,"code":"answer_availability"}}`
+	var policy ProcurementPolicy
+	require.NoError(t, json.Unmarshal([]byte(raw), &policy))
+	require.NoError(t, policy.Validate())
+	encoded, err := json.Marshal(policy)
+	require.NoError(t, err)
+	require.JSONEq(t, raw, string(encoded))
+}
+
+func TestProcurementEvidenceTemplateRejectsDriftAndClones(t *testing.T) {
+	const raw = `{"version":7,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","availability":"current_state","source_group_ids":[12],"evidence_template":{"version":1,"code":"answer_availability"}}`
+	for _, change := range []struct{ from, to string }{
+		{`,"evidence_template":{"version":1,"code":"answer_availability"}`, ``},
+		{`"evidence_template":{"version":1,"code":"answer_availability"}`, `"evidence_template":null`},
+		{`"version":7`, `"version":6`}, {`"version":1,"code"`, `"version":2,"code"`},
+		{`"code":"answer_availability"`, `"code":"future"`},
+		{`"code":"answer_availability"`, `"code":"answer_availability","code":"answer_availability"`},
+		{`"code":"answer_availability"`, `"Code":"answer_availability"`},
+		{`"code":"answer_availability"`, `"code":"answer_availability","extra":true`},
+		{`"quality":"current_answer"`, `"quality":"not_required"`},
+		{`"availability":"current_state"`, `"availability":"not_required"`},
+		{`"source_group_ids":[12]`, `"source_group_ids":null`}, {`"source_group_ids":[12]`, `"source_group_ids":[]`},
+	} {
+		var policy ProcurementPolicy
+		require.Error(t, json.Unmarshal([]byte(strings.Replace(raw, change.from, change.to, 1)), &policy), change.to)
+	}
+	var policy ProcurementPolicy
+	require.NoError(t, json.Unmarshal([]byte(raw), &policy))
+	copy := policy.WithRevision(2)
+	copy.EvidenceTemplate.Code = "custom"
+	copy.Quality = "not_required"
+	copy.SourceGroupIDs = nil
+	require.NoError(t, copy.Validate())
+	require.Equal(t, "answer_availability", policy.EvidenceTemplate.Code)
+	require.Equal(t, []int64{12}, policy.SourceGroupIDs)
+	var old ProcurementPolicy
+	require.NoError(t, json.Unmarshal([]byte(`{"version":1,"revision":1,"min_rate":null,"max_rate":null}`), &old))
+	b, err := json.Marshal(old)
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "evidence_template")
+}

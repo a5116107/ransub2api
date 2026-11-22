@@ -801,3 +801,95 @@ func TestProcurementSourceGroupsPostgresHTTPAuthority(t *testing.T) {
 	_, err = groups.GetByIDLite(canceled, productID)
 	require.Error(t, err)
 }
+
+func TestProcurementEvidenceTemplatePostgresHTTP(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	groups := repository.NewAdminGroupRepository(client, db)
+	management := service.NewAdminService(nil, nil, groups, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := admin.NewGroupHandler(management, nil, nil)
+	router := gin.New()
+	router.POST("/groups", handler.Create)
+	router.PUT("/groups/:id", handler.Update)
+	router.GET("/groups/:id", handler.GetByID)
+	run := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, r)
+		return w
+	}
+	var sourceID int64
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform) VALUES('template approved source','openai') RETURNING id`).Scan(&sourceID))
+	policy := fmt.Sprintf(`{"version":7,"revision":0,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","availability":"current_state","source_group_ids":[%d],"evidence_template":{"version":1,"code":"answer_availability"}}`, sourceID)
+	response := run("POST", "/groups", `{"name":"template product","platform":"openai","rate_multiplier":0.15,"profit_control_enabled":true,"procurement_policy":`+policy+`}`)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	var envelope struct {
+		Data service.Group `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	id := envelope.Data.ID
+	path := fmt.Sprintf("/groups/%d", id)
+	read := func() *domain.ProcurementPolicy {
+		t.Helper()
+		r := run("GET", path, "")
+		require.Equal(t, 200, r.Code, r.Body.String())
+		var out struct {
+			Data service.Group `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(r.Body.Bytes(), &out))
+		require.NotNil(t, out.Data.ProcurementPolicy)
+		return out.Data.ProcurementPolicy
+	}
+	encode := func(v any) string { t.Helper(); b, e := json.Marshal(v); require.NoError(t, e); return string(b) }
+	saved := read()
+	require.EqualValues(t, 1, saved.Revision)
+	require.Equal(t, "answer_availability", saved.EvidenceTemplate.Code)
+	require.Equal(t, "current_answer", saved.Quality)
+	require.Equal(t, "current_state", saved.Availability)
+	var plansBefore, relationsBefore int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&plansBefore))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM account_groups`).Scan(&relationsBefore))
+	for _, bad := range []string{
+		strings.Replace(encode(saved), `"version":1,"code"`, `"version":2,"code"`, 1),
+		strings.Replace(encode(saved), `"current_answer"`, `"not_required"`, 1),
+		strings.Replace(encode(saved), `"current_state"`, `"not_required"`, 1),
+		strings.Replace(encode(saved), fmt.Sprintf(`"source_group_ids":[%d]`, sourceID), `"source_group_ids":[]`, 1),
+	} {
+		before := encode(read())
+		r := run("PUT", path, `{"procurement_policy":`+bad+`}`)
+		require.Equal(t, 400, r.Code, r.Body.String())
+		require.Equal(t, before, encode(read()))
+	}
+	old := saved.Clone()
+	old.Version = 6
+	old.EvidenceTemplate = nil
+	r := run("PUT", path, `{"procurement_policy":`+encode(old)+`}`)
+	require.Equal(t, 400, r.Code, r.Body.String())
+	r = run("PUT", path, `{"name":"renamed template product"}`)
+	require.Equal(t, 200, r.Code, r.Body.String())
+	require.Equal(t, encode(saved), encode(read()), "old clients omitting the policy must preserve its pinned requirements")
+	custom := saved.Clone()
+	custom.EvidenceTemplate.Code = "custom"
+	r = run("PUT", path, `{"procurement_policy":`+encode(custom)+`}`)
+	require.Equal(t, 200, r.Code, r.Body.String())
+	reread := read()
+	require.EqualValues(t, 2, reread.Revision)
+	require.Equal(t, "custom", reread.EvidenceTemplate.Code)
+	require.Equal(t, "current_answer", reread.Quality)
+	r = run("PUT", path, `{"procurement_policy":`+encode(saved)+`}`)
+	require.Equal(t, 409, r.Code, r.Body.String())
+	require.Equal(t, encode(reread), encode(read()))
+	reread.EvidenceTemplate.Code = "answer_availability"
+	r = run("PUT", path, `{"procurement_policy":`+encode(reread)+`}`)
+	require.Equal(t, 200, r.Code, r.Body.String())
+	restored := read()
+	require.EqualValues(t, 3, restored.Revision)
+	require.Equal(t, "answer_availability", restored.EvidenceTemplate.Code)
+	var plansAfter, relationsAfter int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scheduled_test_plans`).Scan(&plansAfter))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM account_groups`).Scan(&relationsAfter))
+	require.Equal(t, plansBefore, plansAfter)
+	require.Equal(t, relationsBefore, relationsAfter)
+}

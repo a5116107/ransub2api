@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { GroupProcurementPolicy } from '@/types'
-import { cloneProcurementPolicy, parseProcurementSourceIDs, procurementPolicyCommand, validateProcurementPolicy } from '@/utils/procurementPolicy'
+import { applyProcurementEvidenceTemplate, cloneProcurementPolicy, parseProcurementSourceIDs, procurementPolicyCommand, validateProcurementPolicy } from '@/utils/procurementPolicy'
 
 const policy = (min_rate: string | null = '0.02', max_rate: string | null = '0.03'): GroupProcurementPolicy =>
   ({ version: 1, revision: 1, min_rate, max_rate })
@@ -108,6 +108,26 @@ describe('approved source-group contract', () => {
   expect(validateProcurementPolicy(missing)).toBe('unsupported')
   for (const ids of [[0], [-1], [2, 2], [Number.MAX_SAFE_INTEGER + 1], Array.from({ length: 65 }, (_, i) => i + 1)]) expect(validateProcurementPolicy({ ...base, source_group_ids: ids })).toBe('sourceGroupFormat')
   expect(validateProcurementPolicy({ ...base, version: 5 })).toBe('sourceGroupFormat')
-  expect(validateProcurementPolicy({ ...base, version: 7 })).toBe('unsupported')
+  expect(validateProcurementPolicy({ ...base, version: 8 })).toBe('unsupported')
+ })
+})
+
+describe('pinned procurement evidence templates',()=>{
+ const base={version:6,revision:3,min_rate:'0.02',max_rate:'0.05',sources:{account_ids:[91]},buckets:{codes:['low']},quality:'not_required',availability:'not_required',source_group_ids:[12]}
+ it('compiles once into the existing fields and preserves all independent constraints',()=>{
+  const policy=applyProcurementEvidenceTemplate(base,'answer_availability')
+  expect(policy).toEqual({...base,version:7,quality:'current_answer',availability:'current_state',evidence_template:{version:1,code:'answer_availability'}})
+  expect(validateProcurementPolicy(policy)).toBeNull();expect(base.quality).toBe('not_required')
+  const clone=cloneProcurementPolicy(policy);clone.evidence_template!.version=2;expect(policy.evidence_template!.version).toBe(1)
+  const custom=applyProcurementEvidenceTemplate(policy,'custom');expect(custom.quality).toBe('current_answer');expect(custom.availability).toBe('current_state')
+  expect(procurementPolicyCommand(custom,policy)?.evidence_template?.code).toBe('custom')
+ })
+ it('keeps incomplete sources pending and rejects drift instead of downgrading the template',()=>{
+  const policy=applyProcurementEvidenceTemplate({...base,source_group_ids:null},'answer_availability')
+  expect(policy.source_group_ids).toEqual([]);expect(validateProcurementPolicy(policy)).toBe('templateSources')
+  for(const template of [undefined,{version:2,code:'answer_availability'},{version:1,code:'future'},{version:1,code:'custom',extra:true}]) expect(validateProcurementPolicy({...policy,evidence_template:template})).toBe('templateFormat')
+  expect(validateProcurementPolicy({...policy,source_group_ids:[12],quality:'not_required'})).toBe('templateFormat')
+  expect(validateProcurementPolicy({...policy,source_group_ids:[12],availability:'not_required'})).toBe('templateFormat')
+  expect(validateProcurementPolicy({...base,evidence_template:{version:1,code:'custom'}})).toBe('templateFormat')
  })
 })

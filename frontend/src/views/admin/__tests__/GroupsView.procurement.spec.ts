@@ -53,6 +53,22 @@ const submit = async (wrapper: View) => { await wrapper.get('#edit-group-form').
 const procurementToggle = (wrapper: View, form: string) => wrapper.get(form).findAll('label')
   .find(label => label.text() === 'admin.groups.profitControl.enable')!.get('input')
 
+beforeEach(() => {
+  localStorage.clear()
+  vi.clearAllMocks()
+  Object.values(mocks).forEach(mock => mock.mockReset())
+  mocks.create.mockResolvedValue(base)
+  mocks.update.mockResolvedValue(base)
+  mocks.getById.mockResolvedValue(base)
+  mocks.getAll.mockResolvedValue([])
+  mocks.getModelAllowlistCandidates.mockResolvedValue([])
+  mocks.getUsageSummary.mockResolvedValue([])
+  mocks.getCapacitySummary.mockResolvedValue([])
+  mocks.getLiveCapability.mockResolvedValue({ supported: false })
+  mocks.catalog.mockResolvedValue({ catalog: { version: 1, revision: 4, buckets: [{ code: 'low', name: 'Low', min_rate: '0.02', max_rate: '0.03' }, { code: 'standard', name: 'Standard', min_rate: '0.03', max_rate: '0.05' }] }, gaps: [] })
+})
+afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.restoreAllMocks() })
+
 describe('product procurement interval in the original Group editor', () => {
   it('selects approved source groups without self, inactive or foreign-platform sources and preserves other hard gates', async () => {
     mocks.getAll.mockResolvedValue([{ ...base, id: 701, name: 'Approved source A' }, { ...base, id: 702, name: 'Approved source B' }, base, { ...base, id: 703, status: 'inactive' }, { ...base, id: 704, platform: 'anthropic' }])
@@ -183,21 +199,6 @@ describe('product procurement interval in the original Group editor', () => {
     await submit(wrapper)
     expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({ ...policy, quality: 'not_required' })
   })
-  beforeEach(() => {
-    localStorage.clear()
-    vi.clearAllMocks()
-    Object.values(mocks).forEach(mock => mock.mockReset())
-    mocks.create.mockResolvedValue(base)
-    mocks.update.mockResolvedValue(base)
-    mocks.getById.mockResolvedValue(base)
-    mocks.getAll.mockResolvedValue([])
-    mocks.getModelAllowlistCandidates.mockResolvedValue([])
-    mocks.getUsageSummary.mockResolvedValue([])
-    mocks.getCapacitySummary.mockResolvedValue([])
-    mocks.getLiveCapability.mockResolvedValue({ supported: false })
-    mocks.catalog.mockResolvedValue({ catalog: { version: 1, revision: 4, buckets: [{ code: 'low', name: 'Low', min_rate: '0.02', max_rate: '0.03' }, { code: 'standard', name: 'Standard', min_rate: '0.03', max_rate: '0.05' }] }, gaps: [] })
-  })
-  afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.restoreAllMocks() })
 
   it('selects latest catalog buckets through the original editor and preserves source/range constraints', async () => {
     const wrapper = mountView()
@@ -437,4 +438,37 @@ describe('product procurement interval in the original Group editor', () => {
     await submit(wrapper)
     expect(mocks.update.mock.calls[2][1].procurement_policy).toEqual({ ...savedPolicy, version: 2, revision: 2, sources: { account_ids: [902, 903] } })
   })
+})
+
+
+describe('pinned evidence templates in the original Group form',()=>{
+ const fixed={...savedPolicy,version:7,sources:{account_ids:null},buckets:{codes:null},quality:'current_answer',availability:'current_state',source_group_ids:[701],evidence_template:{version:1,code:'answer_availability'}}
+ it('requires an explicit approved source and saves the existing evidence gates together',async()=>{
+  mocks.getAll.mockResolvedValue([{...base,id:701,name:'Approved supplier'}])
+  const wrapper=mountView();await edit(wrapper)
+  await wrapper.get('#edit-procurement-evidence-template').setValue('answer_availability');await flushPromises()
+  expect(wrapper.get('#edit-procurement-quality').attributes('disabled')).toBeDefined();expect(wrapper.get('#edit-procurement-availability').attributes('disabled')).toBeDefined()
+  expect(wrapper.get('#edit-procurement-source-groups-mode').attributes('disabled')).toBeDefined()
+  await submit(wrapper);expect(mocks.update).not.toHaveBeenCalled();expect(mocks.showError).toHaveBeenCalledWith('admin.groups.profitControl.procurement.templateSources')
+  await wrapper.get('input[data-source-group-id="701"]').setValue(true);await submit(wrapper)
+  expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual(fixed)
+ })
+ it('returns to custom without silently disabling evidence or downgrading the policy version',async()=>{
+  mocks.getAll.mockResolvedValue([{...base,id:701,name:'Approved supplier'}])
+  const wrapper=mountView({...base,procurement_policy:fixed});await edit(wrapper)
+  expect((wrapper.get('#edit-procurement-evidence-template').element as HTMLSelectElement).value).toBe('answer_availability')
+  await wrapper.get('#edit-procurement-evidence-template').setValue('custom');await wrapper.get('#edit-procurement-quality').setValue('not_required');await wrapper.get('#edit-procurement-source-groups-mode').setValue('original');await submit(wrapper)
+  expect(mocks.update.mock.calls[0][1].procurement_policy).toEqual({...fixed,quality:'not_required',source_group_ids:null,evidence_template:{version:1,code:'custom'}})
+  expect(fixed.quality).toBe('current_answer')
+ })
+ it('retains the draft and explicitly inherits a newer pinned template after a revision conflict',async()=>{
+  mocks.getAll.mockResolvedValue([{...base,id:701,name:'Approved supplier'}])
+  const previous={...fixed,version:6,evidence_template:undefined,quality:'not_required',availability:'not_required'}
+  mocks.update.mockRejectedValueOnce({status:409,reason:'GROUP_PROCUREMENT_POLICY_CONFLICT'});mocks.getById.mockResolvedValue({...base,procurement_policy:{...fixed,revision:2}})
+  const wrapper=mountView({...base,procurement_policy:previous});await edit(wrapper);await wrapper.get('#edit-procurement-max').setValue('0.06');await submit(wrapper)
+  await button(wrapper,'admin.groups.profitControl.procurement.reloadLatest').trigger('click');await flushPromises()
+  expect(wrapper.get('[data-testid="procurement-latest-template"]').text()).toContain('templateMonitored')
+  await button(wrapper,'admin.groups.profitControl.procurement.useLatestRevision').trigger('click');await submit(wrapper)
+  expect(mocks.update.mock.calls[1][1].procurement_policy).toEqual({...fixed,revision:2,max_rate:'0.06'})
+ })
 })
