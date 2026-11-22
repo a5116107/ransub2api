@@ -2,14 +2,268 @@ package service
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+type monitorV3LifecycleRepo struct {
+	*monitorV3RepoFake
+	reads  atomic.Int32
+	read   func(context.Context) (*ChannelMonitorV3Config, error)
+	finish func(context.Context, ChannelMonitorV3ProbeResult) error
+}
+
+func (r *monitorV3LifecycleRepo) FinishProbe(ctx context.Context, result ChannelMonitorV3ProbeResult) error {
+	if r.finish != nil {
+		return r.finish(ctx, result)
+	}
+	return r.monitorV3RepoFake.FinishProbe(ctx, result)
+}
+
+func (r *monitorV3LifecycleRepo) GetConfig(ctx context.Context) (*ChannelMonitorV3Config, error) {
+	r.reads.Add(1)
+	if r.read != nil {
+		return r.read(ctx)
+	}
+	return r.monitorV3RepoFake.GetConfig(ctx)
+}
+
+func TestChannelMonitorV3StoppedProberStartsNoNewWork(t *testing.T) {
+	p, base, _ := monitorV3ProberFixture(&groupTestRouterFake{}, nil)
+	repo := &monitorV3LifecycleRepo{monitorV3RepoFake: base}
+	p.repo = repo
+	p.Stop()
+	p.Start()
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.RunDue(t.Context(), monitorV3ProbeTick)
+			p.Stop()
+		}()
+	}
+	wg.Wait()
+	require.Zero(t, repo.reads.Load(), "a stopped executor must not query configuration or reserve new probes")
+	require.Empty(t, base.claims)
+}
+
+func TestChannelMonitorV3StopCancelsAndDrainsEveryCaller(t *testing.T) {
+	p, base, _ := monitorV3ProberFixture(&groupTestRouterFake{}, nil)
+	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		releaseOnce.Do(func() { close(release) })
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("the active probe did not drain during cleanup")
+		}
+		p.Stop()
+	})
+	repo := &monitorV3LifecycleRepo{monitorV3RepoFake: base, read: func(ctx context.Context) (*ChannelMonitorV3Config, error) {
+		close(entered)
+		<-ctx.Done()
+		close(canceled)
+		<-release // A storage driver may still be returning after cancellation.
+		return nil, ctx.Err()
+	}}
+	p.repo = repo
+	go func() { p.RunDue(ctx, monitorV3ProbeTick); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the probe did not enter its configuration read")
+	}
+	// Overlapping ticks still skip instead of starting a second inventory read.
+	p.RunDue(t.Context(), monitorV3ProbeTick)
+	require.EqualValues(t, 1, repo.reads.Load())
+	returned := make(chan struct{}, 20)
+	for range 20 {
+		go func() { p.Stop(); returned <- struct{}{} }()
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel the active direct RunDue call")
+	}
+	select {
+	case <-returned:
+		t.Fatal("Stop returned before the active configuration read exited")
+	default:
+	}
+	releaseOnce.Do(func() { close(release) })
+	for range 20 {
+		select {
+		case <-returned:
+		case <-time.After(3 * time.Second):
+			t.Fatal("concurrent Stop callers did not await the same drain")
+		}
+	}
+	p.RunDue(t.Context(), monitorV3ProbeTick)
+	require.EqualValues(t, 1, repo.reads.Load())
+	require.Empty(t, base.claims)
+}
+
+func TestChannelMonitorV3StopCancelsPhysicalHTTPAndQueuedTargets(t *testing.T) {
+	entered, release := make(chan struct{}, channelMonitorV3ProbeWorkers), make(chan struct{})
+	var releaseOnce sync.Once
+	var sends atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		entered <- struct{}{}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	steps := make([]routeStep, channelMonitorV3ProbeWorkers)
+	for i := range steps {
+		steps[i] = routeStep{account: account(int64(i+1), "physical probe")}
+	}
+	router := &groupTestRouterFake{steps: steps}
+	var returned atomic.Int32
+	p, repo, _ := monitorV3ProberFixture(router, func(ctx context.Context, _ int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+		defer returned.Add(1)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader("{}"))
+		if err != nil {
+			return nil, err
+		}
+		response, err := server.Client().Do(request)
+		if response != nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}
+		return nil, err
+	})
+	t.Cleanup(p.Stop)
+	repo.components = nil
+	for i := range 100 {
+		repo.components = append(repo.components, ChannelMonitorV3Component{ID: int64(i + 1), GroupID: 4, Model: "probe-" + strconv.Itoa(i), Enabled: true})
+	}
+	runDone := make(chan struct{})
+	go func() { p.RunDue(t.Context(), monitorV3ProbeTick); close(runDone) }()
+	for range channelMonitorV3ProbeWorkers {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the bounded worker pool did not reach its physical requests")
+		}
+	}
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not cancel and await the physical requests")
+	}
+	<-runDone
+	require.EqualValues(t, channelMonitorV3ProbeWorkers, sends.Load())
+	require.EqualValues(t, channelMonitorV3ProbeWorkers, returned.Load())
+	require.Len(t, repo.claims, channelMonitorV3ProbeWorkers, "queued targets must not acquire a slot after cancellation")
+	require.Empty(t, repo.finished, "shutdown is not a failed or passing observation")
+	require.Len(t, router.released, channelMonitorV3ProbeWorkers)
+	p.RunDue(t.Context(), monitorV3ProbeTick.Add(time.Hour))
+	require.Len(t, repo.claims, channelMonitorV3ProbeWorkers)
+}
+
+func TestChannelMonitorV3StopWaitsForBoundedResultSave(t *testing.T) {
+	router := &groupTestRouterFake{steps: []routeStep{{account: account(77, "completed")}}}
+	p, base, _ := monitorV3ProberFixture(router, func(_ context.Context, _ int64, _ string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+		return &ScheduledTestResult{Status: "success", ResponseText: monitorV3Answer(cfg.Prompt)}, nil
+	})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); p.Stop() })
+	var saveCanceled atomic.Bool
+	p.repo = &monitorV3LifecycleRepo{monitorV3RepoFake: base, finish: func(ctx context.Context, result ChannelMonitorV3ProbeResult) error {
+		close(entered)
+		<-release
+		saveCanceled.Store(ctx.Err() != nil)
+		return base.FinishProbe(ctx, result)
+	}}
+	done := make(chan struct{})
+	go func() { p.RunDue(t.Context(), monitorV3ProbeTick); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a completed answer did not reach result persistence")
+	}
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before the independent bounded save completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the prober did not drain after its save completed")
+	}
+	<-done
+	require.False(t, saveCanceled.Load())
+	require.Len(t, base.finished, 1)
+	require.Equal(t, ChannelMonitorV3ProbeSuccess, base.finished[0].Outcome)
+}
+
+func TestChannelMonitorV3CanceledCallerDoesNotStopService(t *testing.T) {
+	p, base, _ := monitorV3ProberFixture(&groupTestRouterFake{}, nil)
+	t.Cleanup(p.Stop)
+	repo := &monitorV3LifecycleRepo{monitorV3RepoFake: base}
+	p.repo = repo
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	p.RunDue(ctx, monitorV3ProbeTick)
+	require.Zero(t, repo.reads.Load())
+	p.RunDue(t.Context(), monitorV3ProbeTick)
+	require.EqualValues(t, 1, repo.reads.Load(), "caller cancellation must not terminate the service lifetime")
+	require.Len(t, base.claims, 1)
+}
+
+func TestChannelMonitorV3ConcurrentStartStopAndTicks(t *testing.T) {
+	for range 50 {
+		p, base, _ := monitorV3ProberFixture(&groupTestRouterFake{}, nil)
+		repo := &monitorV3LifecycleRepo{monitorV3RepoFake: base}
+		p.repo = repo
+		var wg sync.WaitGroup
+		for range 10 {
+			wg.Add(3)
+			go func() { defer wg.Done(); p.Start() }()
+			go func() { defer wg.Done(); p.Stop() }()
+			go func() { defer wg.Done(); p.RunDue(t.Context(), monitorV3ProbeTick) }()
+		}
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("concurrent startup, ticks and shutdown did not drain")
+		}
+		before := repo.reads.Load()
+		p.Start()
+		p.RunDue(t.Context(), monitorV3ProbeTick.Add(time.Hour))
+		p.Stop()
+		require.Equal(t, before, repo.reads.Load(), "a terminated service must not be restarted by repeated Start")
+	}
+}
 
 func TestChannelMonitorV3ProbesJudgeOnlyQuietSlots(t *testing.T) {
 	cfg := monitorV3Config()

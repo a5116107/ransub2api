@@ -36,17 +36,6 @@ func (r *availabilityAdmissionRepo) ReadAccountAvailability(ctx context.Context,
 	return r.reports, r.readErr
 }
 
-func availabilityAdmissionPass(accountID int64, model string) *AvailabilityReport {
-	now := time.Now()
-	finished := now.Add(-time.Second)
-	until := now.Add(time.Minute)
-	return &AvailabilityReport{AccountID: accountID, Configured: true, Enabled: true, EvaluatedAt: now,
-		Models: []AvailabilityModelState{{ModelID: model, Status: "pass", AvailabilityState: AvailabilityState{
-			Decision: &AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: finished.Add(-time.Second), FinishedAt: finished,
-				Scope: &AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: model, ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}, ValidUntil: &until,
-		}}}}
-}
-
 func TestAvailabilityManagedConnectionRejectsUnboundParentEvidence(t *testing.T) {
 	account := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
 		AuthConnectionID: "connection-a", AuthConnectionRevision: 1,

@@ -18,6 +18,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Both default and unit-tagged contract tests share these availability fixtures.
+type procurementAvailabilityTestReader func(context.Context, *Account) ([]*AvailabilityReport, error)
+
+func (f procurementAvailabilityTestReader) ReadAccountAvailability(ctx context.Context, account *Account) ([]*AvailabilityReport, error) {
+	return f(ctx, account)
+}
+
+func availabilityAdmissionPass(accountID int64, model string) *AvailabilityReport {
+	now := time.Now()
+	finished := now.Add(-time.Second)
+	until := now.Add(time.Minute)
+	return &AvailabilityReport{AccountID: accountID, Configured: true, Enabled: true, EvaluatedAt: now,
+		Models: []AvailabilityModelState{{ModelID: model, Status: "pass", AvailabilityState: AvailabilityState{
+			Decision: &AvailabilityProbeResult{Version: 1, Status: "pass", StartedAt: finished.Add(-time.Second), FinishedAt: finished,
+				Scope: &AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: model, ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}, ValidUntil: &until,
+		}}}}
+}
+
 func TestProcurementAvailabilityRequiredRejectsMissingAuthority(t *testing.T) {
 	var policy ProcurementPolicy
 	require.NoError(t, json.Unmarshal([]byte(`{"version":5,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"not_required","availability":"current_state"}`), &policy))

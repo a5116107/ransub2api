@@ -19,12 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type procurementAvailabilityTestReader func(context.Context, *Account) ([]*AvailabilityReport, error)
-
-func (f procurementAvailabilityTestReader) ReadAccountAvailability(ctx context.Context, account *Account) ([]*AvailabilityReport, error) {
-	return f(ctx, account)
-}
-
 func procurementCurrentAvailabilityPolicy() *ProcurementPolicy {
 	return &ProcurementPolicy{Version: 5, Revision: 1, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "not_required", Availability: "current_state"}
 }

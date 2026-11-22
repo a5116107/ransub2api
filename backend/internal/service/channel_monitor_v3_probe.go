@@ -208,10 +208,12 @@ type ChannelMonitorV3Prober struct {
 	tick     sync.Mutex
 	prunedAt time.Time
 
-	ctx       context.Context
-	cancel    context.CancelFunc
-	startOnce sync.Once
-	stopOnce  sync.Once
+	ctx         context.Context
+	cancel      context.CancelFunc
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+	wg          sync.WaitGroup
 }
 
 func NewChannelMonitorV3Prober(repo ChannelMonitorV3Repository, groups *PelicanGroupTestService, settings channelMonitorRuntimeReader) *ChannelMonitorV3Prober {
@@ -223,15 +225,32 @@ func (p *ChannelMonitorV3Prober) Start() {
 	if p == nil || p.repo == nil || p.groups == nil {
 		return
 	}
-	p.startOnce.Do(func() { go p.loop() })
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.started || p.stopped {
+		return
+	}
+	p.started = true
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.loop()
+	}()
 }
 
-// Stop cancels the loop and any probe in flight; a cancelled probe is saved as a failure.
+// Stop prevents new work and waits for the loop, in-flight probes and their
+// bounded result saves. Interrupted probes keep their original unfinished state.
 func (p *ChannelMonitorV3Prober) Stop() {
 	if p == nil {
 		return
 	}
-	p.stopOnce.Do(p.cancel)
+	p.lifecycleMu.Lock()
+	p.stopped = true
+	if p.cancel != nil {
+		p.cancel()
+	}
+	p.lifecycleMu.Unlock()
+	p.wg.Wait()
 }
 
 func (p *ChannelMonitorV3Prober) loop() {
@@ -255,7 +274,27 @@ func (p *ChannelMonitorV3Prober) loop() {
 // RunDue probes the idle targets of the slot that ends within a minute of now.
 // It returns once those probes finished; ticks that arrive meanwhile are skipped.
 func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
-	if p == nil || !p.tick.TryLock() {
+	if p == nil || ctx.Err() != nil {
+		return
+	}
+	// Registration and shutdown share the lock: Wait never races a late Add.
+	p.lifecycleMu.Lock()
+	if p.stopped {
+		p.lifecycleMu.Unlock()
+		return
+	}
+	p.wg.Add(1)
+	p.lifecycleMu.Unlock()
+	defer p.wg.Done()
+	runCtx, cancel := context.WithCancel(ctx)
+	stopLifetime := context.AfterFunc(p.ctx, cancel)
+	defer stopLifetime()
+	defer cancel()
+	if p.ctx.Err() != nil {
+		return
+	}
+	ctx = runCtx
+	if !p.tick.TryLock() {
 		return
 	}
 	defer p.tick.Unlock()
@@ -263,6 +302,9 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	cfg, err := p.repo.GetConfig(ctx)
 	if err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v3", "idle probe config failed: %v", err)
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	p.prune(ctx, cfg.AvailabilityRange, now)
@@ -279,6 +321,9 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 		logger.LegacyPrintf("service.channel_monitor_v3", "idle probe components failed: %v", err)
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	targets := channelMonitorV3ProbeTargets(cfg.IdleProbe, components)
 	if len(targets) == 0 {
 		return
@@ -292,6 +337,9 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	counts, err := p.repo.SuccessCounts(ctx, groupIDs, slot, now)
 	if err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v3", "idle probe traffic count failed: %v", err)
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	due := channelMonitorV3DueProbes(targets, counts, cfg.MinRequests)
@@ -331,7 +379,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 		return
 	}
 	group, err := p.groups.groups.GetByID(ctx, target.GroupID)
-	if err != nil || group == nil || group.Status != StatusActive {
+	if err != nil || group == nil || group.Status != StatusActive || ctx.Err() != nil {
 		return
 	}
 	id, err := p.repo.ClaimProbe(ctx, target.GroupID, target.Model, slot, slotMinutes)
