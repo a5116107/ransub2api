@@ -2494,3 +2494,19 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 原Page上下文归一化扩展并原位更名为Agent上下文；目标以JSON引用的不可信数据包装保留，真实call_id/未知形状/重复字段不转换，顺序/大整数/历史保留。
 - 开发主线API-key/OAuth和两种stream路径双轮race256通过；更广续接回归426通过。稳定候选只提升兼容代码及相关测试，不带入开发Grok夹具修正或其他在研能力。
 - 无数据库迁移、账号/分组/预算或代理配置变化。版本2.21.0-ransub.9；构建、发行及生产验收分别留证；不运行CI，原.8及持久数据保留作回退。
+
+### 2026-11-22 D9.1.9 — Goal 上下文热修复上线及首输出保护
+
+- 续接唯一 H 盘工作树及既有 project-state-hub、quality-guard、systematic-debugging、dev-workbench、delivery-ops、server-access。稳定应用源为 de8b86ed8916c012f5421cc00c4fdd97eec8d6f3，开发仍沿 feat/automated-upstream-supply；不把在研自动供应池带入生产，不新建 clone/worktree，不运行 CI。
+- 生产 2026-11-22 16:27–20:27（香港时间）的 4 小时日志分列：6 次入口 invalid_request_error/400 尚未选账号；账号 16 有 4 次、账号 7 有 3 次上游流内 502；另 1 次账号 7 的响应头 504 已切账号 16 恢复并产生唯一成功用量。后者后台记录是已恢复事件，不计作最终请求失败。历史没有原始请求正文，最小 Goal 请求重现相同 400 只证明该兼容缺口，不断言六次历史输入完全相同。
+- 原 Page 上下文实现原位扩为 Agent 并更名，支持 agent.goal_objective 无 call_id 的正式上下文形状。目标以 JSON 引用的不可信数据包装；原真实工具关联、未知形状、重复字段、完整历史及大整数保留。旧实现/符号已删除，非并行实现。开发 Grok 重试夹具按第一笔物理发送后变化账号，不再假定发送前只有一次账号读取；仍断言重试复核和不合格零发送。该夹具修正未提升生产。
+- 复用匹配源码的稳定 handler 双轮 race 256、开发续接 426、准入 95 条父子通过事件，均零 fail/skip；本轮六个源码/测试文件 SHA256 与 source.json 全部一致。另实际执行 production-boundary-final.jsonl：15 顶层/60 含子例通过，handler 1.270s、service 2.446s，零 fail/skip；覆盖 Goal/API-key/OAuth、真实孤立工具拒绝、元数据/心跳不解除首输出保护及输出后失败不重放。first-output-config-regression.jsonl：27 顶层/29 含子例通过，config 2.405s、handler 3.372s、service 11.435s，零 fail/skip；两组有重叠，不相加成独立场景。继承完整 lint 的 0 issues.、格式及构建证据按匹配源码复用。
+- 本机验证包公开为 v2.21.0-ransub.9，制品二进制 SHA256 c8cec584a18135fe373f72b7e247588264206b1aa9360ea4d214f8aa48fa96ff。预构建镜像封装 45022063206 成功，仅 publish-prebuilt-image 执行，其余编译/测试等 job skipped；原 release.yml 已恢复 active。镜像固定摘要 bfea56342282ccd674192ae9c33486cd003a2dd65638d938a657a0605040a7f2，标签/源码/程序三项逐一匹配，不用可变 latest 作为加载证明。
+- 承接既有生产数据副本四阶段：旧版、候选、回退、再次升级全部通过，16 账号/2 分组及 432 条原迁移保持。20:29 实际通过原 Caddy 维护路由排空、干净退出、固定镜像升级和同镜像重建；已删除维护路由。加载哈希与制品一致，原 PG/Redis 容器 ID 和业务配置保持。无 schema 变更，原 .8 程序、数据库及配置回退材料保留。
+- 502 的关联日志显示 stream_failed 且 upstream_error_response_already_written=true；三个账号 7 请求各约 901–903 秒，历史未记正文，不能反推已经输出的是文本还是结构事件，也不能把它们都归因于 Goal。源码在已提交输出后禁止跨账号重放，避免拼接/重复工具执行；另有真实响应头超时切换成功日志证明并非所有请求都未换号。历史对应失败未见成功用量记录，不将缺 usage 解释为供应商未扣费。
+- 线上已保存的响应头超时 enabled/60 秒覆盖 Compose 默认 20 秒；5 分钟累计 3 次失败、暂停 1 分钟的保护保持。首输出上限此前未在 Compose 显式配置。经用户明确接受首输出前重试可能重复采购计费后，只新增 GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_SECONDS=120 和 GATEWAY_OPENAI_HIGH_EFFORT_FIRST_OUTPUT_TIMEOUT_SECONDS=300。先对比 docker compose config，除这两项外完整配置相同，再于 20:37 排空重建；仍为同一 .9 程序，配置前后账号/分组及 PG/Redis 不变。原逻辑最多一次首输出换线，高推理为 high/xhigh/max；正常输出后的流不受该首输出计时器截断，原 60 秒头等待仍独立生效。
+- 配置备份保存在 hk2:/opt/sub2api/deploy/backups/ransub2api-2.21.0-ransub.9/docker-compose.pre-first-output.yml。撤销两项时恢复该配置并沿相同排空/重建方式激活，保持 .9 与现有持久数据；应用回退另用原 .8 材料。配置回退文件已留存，未将“可回退”冒称已实际回退该项线上配置。
+- 公网真实 HTTPS/认证后台与浏览器 1440/390 核验两次：版本均 .9/latest=.9/has_update=false；判题账号不足显示中性未知，不显示失败通过混淆，零浏览器/网络错误及业务配置写入。带 Goal 无 call_id 的请求分别在 2.812s、2.891s 完整输出、各恰好一个 response.completed 和一条自身 client-request-id 用量；第二次已独立读取运行容器 120/300 环境与相同程序哈希。真实孤立工具结果仍 400。仅证明这些公网场景，未人为触发生产 120/300 秒超时或宣称原 Mac 长历史全部恢复。
+- 最小证据沿 H:/Root/DevCache/evidence/sub2api-production-failover/codex-goal-context：recent-errors-before.json、correlated-upstream-logs.json、stream-failure-analysis.json、pull/deploy/verify/tune.log、public-smoke-before-timeout.json、public-smoke.json 及回归日志。额外配置启用后日志快照命令在创建进程前被自动审批以 blocked by policy 拒绝，执行 0；未换工具绕过，不声称获得该观察窗口。owner 宿主策略维护者，解除条件为允许原只读日志/版本快照；原 Mac 旧失败会话的恢复需实际会话重试证据，仍归 D9。
+- 线上已退出的 .9 候选程序精确清理 164335776 bytes，回退程序与备份保留。继承 service/data、历史拒删 scratch、可复用 source/依赖/Go 缓存不删除、不纳入提交或藏入 ignore。STATE、唯一设计与开发 VERSION 原位更新；原 28 项 20 done/8 部分不变，未将 D9 或完整供应池计为完成。稳定分支仅补上线文档，不改变发布应用源码；任务交付身份与终稿稳定测试结果另按实际完成追加。
+- 最终原稳定源码目录实际执行同一首输出配置/恢复命令，STABLE_TIMEOUT_TEST_EXIT=0：27 顶层/29 含子例通过，0 fail/skip，config 2.398s、handler 3.359s、service 11.475s。含原配置环境变量加载、高推理 120/300 分流、首输出超时取消、元数据/心跳保护、输出后不重放及至多一次换线；与开发回归重复覆盖，不合计。gofmt、git diff --check、旧 normalizeCodexPageContext/日志符号零引用及 STATE 8132bytes/94行/检查点681bytes检查通过。
