@@ -704,3 +704,189 @@ func TestProcurementQualityEvidenceHTTPReadOnlyAndRecovery(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM scheduled_test_results WHERE plan_id=$1`, plan.ID).Scan(&after))
 	require.Equal(t, samples, after, "preview must never start a probe or save a generated sample")
 }
+
+func TestProcurementPolicyDraftPostgresHTTPAndSnapshot(t *testing.T) {
+	db, client := repository.UpstreamChannelsTestDatabase(t)
+	ctx := t.Context()
+	repo := repository.NewChannelRepository(db).(service.ProcurementCatalogRepository)
+	var productID, sourceID, accountID int64
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform,rate_multiplier,profit_control_enabled) VALUES('draft product','openai',.15,true) RETURNING id`).Scan(&productID))
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform) VALUES('draft approved source','openai') RETURNING id`).Scan(&sourceID))
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,schedulable,rate_multiplier,group_rate_multiplier,credentials) VALUES('draft supply','openai','apikey','active',true,.025,1,'{"base_url":"https://draft.invalid","api_key":"draft-local-secret","model_mapping":{"public-model":"wire-model"}}') RETURNING id`).Scan(&accountID))
+	_, err := db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accountID, sourceID)
+	require.NoError(t, err)
+	encode := func(v any) string { t.Helper(); b, err := json.Marshal(v); require.NoError(t, err); return string(b) }
+	saved := &domain.ProcurementPolicy{Version: 6, Revision: 3, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "not_required", Availability: "not_required", SourceGroupIDs: []int64{sourceID}}
+	_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2 WHERE id=$1`, productID, encode(saved))
+	require.NoError(t, err)
+	_, err = repo.SaveProcurementCatalog(ctx, &domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}})
+	require.NoError(t, err)
+	management := service.NewAdminService(&config.Config{}, nil, repository.NewAdminGroupRepository(client, db), repository.NewAdminAccountRepository(client, db, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	_, err = management.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{ManualRateApplicability: json.RawMessage(encode(map[string]any{
+		"source_version": "draft-fixture-v1", "reason": "local contract", "expires_at": time.Now().UTC().Add(time.Hour), "confirm_current_binding": true, "expected_revision": "",
+		"entries": []any{map[string]any{"model": "wire-model", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}},
+	}))})
+	require.NoError(t, err)
+	h := admin.NewChannelHandler(service.NewChannelService(repository.NewChannelRepository(db), nil, nil, nil, nil), nil, nil)
+	router := gin.New()
+	users := repository.NewUserRepository(client, db)
+	auth := service.NewAuthService(client, users, nil, nil, &config.Config{JWT: config.JWTConfig{Secret: "draft-policy-local-fixture", ExpireHour: 1}}, nil, nil, nil, nil, nil, nil, nil, nil)
+	protected := router.Group("/api/v1/admin")
+	protected.Use(gin.HandlerFunc(middleware.NewAdminAuthMiddleware(auth, service.NewUserService(users, nil, nil, nil), nil, nil)))
+	protected.Use((&admin.AccountHandler{}).AuthorizeObserver)
+	protected.POST("/preview", h.ProcurementClassificationPreview)
+	tokens := map[string]string{}
+	for _, role := range []string{"admin", "user", "observer"} {
+		var id int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO users(email,password_hash,role) VALUES($1,'fixture',$2) RETURNING id`, "draft-"+role+"@test.invalid", role).Scan(&id))
+		user, err := users.GetByID(ctx, id)
+		require.NoError(t, err)
+		tokens[role], err = auth.GenerateToken(ctx, user)
+		require.NoError(t, err)
+	}
+	footprint := func() map[string]string {
+		t.Helper()
+		out := map[string]string{}
+		for _, table := range []string{"accounts", "account_groups", "groups", "quality_rule_presets", "scheduled_test_plans", "scheduled_test_results", "usage_logs", "settings", "monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "scheduler_outbox"} {
+			var value string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT md5(COALESCE(string_agg(r::text,'|' ORDER BY r::text),'')) FROM (SELECT row_to_json(t) r FROM `+table+` t) s`).Scan(&value))
+			out[table] = value
+		}
+		return out
+	}
+	draft := saved.Clone()
+	draft.Version = 7
+	draft.Quality = "current_answer"
+	draft.Availability = "current_state"
+	draft.EvidenceTemplate = &domain.ProcurementEvidenceTemplate{Version: 1, Code: "answer_availability"}
+	command := &service.ProcurementPreviewCommand{ProductGroupID: &productID, EvaluateCandidate: true, PolicyDraft: draft, Requests: []service.ProfitPreviewRequestScope{{AccountID: accountID, PublicModel: "public-model", Scope: service.AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "wire-model", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}}}
+	call := func(role string, input any, code int) *service.ProcurementClassificationPreview {
+		t.Helper()
+		before := footprint()
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/v1/admin/preview", strings.NewReader(encode(input)))
+		req.Header.Set("Content-Type", "application/json")
+		if token := tokens[role]; token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		router.ServeHTTP(w, req)
+		require.Equal(t, code, w.Code, w.Body.String())
+		require.Equal(t, before, footprint(), "every draft preview, conflict and denial is read-only")
+		for _, private := range []string{"draft-local-secret", "draft.invalid", "password_hash", "credentials"} {
+			require.NotContains(t, w.Body.String(), private)
+		}
+		if code != 200 {
+			return nil
+		}
+		require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+		var out struct {
+			Data service.ProcurementClassificationPreview `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+		return &out.Data
+	}
+	t.Run("saved green never stands in for a stricter unsaved draft", func(t *testing.T) {
+		original := *command
+		original.PolicyDraft = nil
+		actual := call("admin", &original, 200)
+		require.Nil(t, actual.PolicyDraft)
+		require.Equal(t, "pass", actual.Results[0].Product.EvaluatedGates.State)
+		out := call("admin", command, 200)
+		require.NotNil(t, out.PolicyDraft)
+		require.EqualValues(t, 3, out.PolicyDraft.BasedOnRevision)
+		require.EqualValues(t, 4, out.PolicyDraft.Policy.Revision)
+		require.Equal(t, "saved_product", out.PolicyDraft.OtherSettings)
+		require.True(t, out.PolicyDraft.ProfitControlEnabled)
+		require.EqualValues(t, 4, out.Results[0].Product.PolicyRevision)
+		require.Equal(t, "unknown", out.Results[0].Product.EvaluatedGates.State)
+		require.Equal(t, 4, out.Results[0].Product.EvaluatedGates.RequiredGates)
+		require.Equal(t, "not_evaluated", out.Results[0].Qualification)
+		require.EqualValues(t, 3, command.PolicyDraft.Revision)
+		require.Equal(t, "not_required", saved.Quality)
+	})
+	t.Run("strict permissions, validation, CAS and recovery", func(t *testing.T) {
+		for role, code := range map[string]int{"": 401, "user": 403, "observer": 403} {
+			call(role, command, code)
+		}
+		for _, scope := range []context.Context{service.WithObserverScope(ctx, []int64{}), service.WithObserverScope(ctx, []int64{productID, sourceID})} {
+			_, err := repo.PreviewProcurementClassification(scope, command)
+			require.ErrorIs(t, err, service.ErrObserverScope)
+		}
+		stale := *command
+		stale.PolicyDraft = draft.WithRevision(2)
+		call("admin", &stale, 409)
+		invalid := *command
+		invalid.PolicyDraft = draft.Clone()
+		invalid.PolicyDraft.Quality = "not_required"
+		call("admin", &invalid, 400)
+		invalid = *command
+		invalid.EvaluateCandidate = false
+		call("admin", &invalid, 400)
+		unknown := *command
+		unknown.PolicyDraft = draft.Clone()
+		unknown.PolicyDraft.SourceGroupIDs = []int64{sourceID + 100000}
+		out := call("admin", &unknown, 200)
+		require.Equal(t, "unknown", out.Results[0].Product.Candidate.SourceState)
+		require.NotEqual(t, "pass", out.Results[0].Product.EvaluatedGates.State)
+		call("admin", command, 200)
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := repo.PreviewProcurementClassification(canceled, command)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+	t.Run("saved switch and request scope remain authoritative", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=false WHERE id=$1`, productID)
+		require.NoError(t, err)
+		out := call("admin", command, 200)
+		require.False(t, out.PolicyDraft.ProfitControlEnabled)
+		require.Equal(t, "disabled", out.Results[0].Product.State)
+		_, err = db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=true WHERE id=$1`, productID)
+		require.NoError(t, err)
+		other := *command
+		other.Requests = append([]service.ProfitPreviewRequestScope{}, command.Requests...)
+		other.Requests[0].Scope.Model = "different-model"
+		out = call("admin", &other, 200)
+		require.NotEqual(t, "pass", out.Results[0].Product.EvaluatedGates.State)
+	})
+	t.Run("one snapshot retains its base and the next read rejects a changed revision", func(t *testing.T) {
+		lock, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = lock.Rollback() }()
+		_, err = lock.ExecContext(ctx, `LOCK TABLE scheduled_test_plans IN ACCESS EXCLUSIVE MODE`)
+		require.NoError(t, err)
+		type result struct {
+			out *service.ProcurementClassificationPreview
+			err error
+		}
+		done := make(chan result, 1)
+		previewCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		go func() {
+			out, err := repo.PreviewProcurementClassification(previewCtx, command)
+			done <- result{out, err}
+		}()
+		deadline := time.Now().Add(3 * time.Second)
+		blocked := false
+		for time.Now().Before(deadline) {
+			var n int
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND datname=current_database() AND wait_event_type='Lock' AND query ILIKE '%scheduled_test_plans%'`).Scan(&n))
+			if n > 0 {
+				blocked = true
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		require.True(t, blocked, "the preview must reach its post-product evidence read")
+		_, err = db.ExecContext(ctx, `UPDATE groups SET procurement_policy=$2 WHERE id=$1`, productID, encode(saved.WithRevision(4)))
+		require.NoError(t, err)
+		require.NoError(t, lock.Rollback())
+		read := <-done
+		require.NoError(t, read.err)
+		require.EqualValues(t, 3, read.out.PolicyDraft.BasedOnRevision)
+		call("admin", command, 409)
+		fresh := *command
+		fresh.PolicyDraft = draft.WithRevision(4)
+		out := call("admin", &fresh, 200)
+		require.EqualValues(t, 5, out.PolicyDraft.Policy.Revision)
+	})
+}

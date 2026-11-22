@@ -12,6 +12,109 @@ const fixture = (): ProcurementCatalogSnapshot => ({ catalog: { version: 1, revi
 const wrappers: ReturnType<typeof mount>[] = []
 type View = ReturnType<typeof mount>
 const prefix = 'upstreamOps.procurement.'
+
+describe('policy draft preview inside the existing Group form', () => {
+  const policy = () => ({ version: 7, revision: 3, min_rate: null, max_rate: null, sources: { account_ids: null }, buckets: { codes: null }, quality: 'current_answer', availability: 'current_state', source_group_ids: [11], evidence_template: { version: 1, code: 'answer_availability' } })
+  async function draftView() {
+    const w = mount(ProcurementCatalogManager, { props: { previewOnly: true, productGroupId: 42, policyDraft: policy() } })
+    wrappers.push(w)
+    ;(w.element as HTMLDetailsElement).open = true
+    await w.trigger('toggle'); await flushPromises(); await setupProbe(w)
+    return w
+  }
+  function response(requests: ProcurementRequestScope[], draft = policy()): ProcurementPreview {
+    const out = productPreview(requests, 'unknown'), product = out.results[0]!.product_procurement!
+    product.version = 2; product.policy_revision = draft.revision + 1
+    product.candidate = { in_product: false, source_state: 'pass' }
+    out.results[0]!.availability_evidence = availabilityFixture('unknown')
+    product.availability = { version: 1, required: true, state: 'unknown' }
+    product.evaluated_gates!.required_gates = 4
+    out.policy_draft = { version: 1, based_on_revision: draft.revision, other_settings: 'saved_product', profit_control_enabled: true, policy: { ...draft, revision: draft.revision + 1 } }
+    return withGateDetails(out)
+  }
+  it('uses a read-only preview context without nesting forms or exposing catalog writes', async () => {
+    const w = mount(ProcurementCatalogManager, { props: {
+      previewOnly: true, productGroupId: 42,
+      policyDraft: { version: 7, revision: 3, min_rate: null, max_rate: null, sources: { account_ids: null }, buckets: { codes: null }, quality: 'current_answer', availability: 'current_state', source_group_ids: [11], evidence_template: { version: 1, code: 'answer_availability' } }
+    } })
+    wrappers.push(w)
+    ;(w.element as HTMLDetailsElement).open = true
+    await w.trigger('toggle'); await flushPromises()
+    expect(w.get('[data-testid="policy-draft-boundary"]').text()).toContain(prefix + 'draftBoundary')
+    expect(w.findAll('form')).toHaveLength(0)
+    expect(w.get('[data-testid="catalog-preview"]').attributes('type')).toBe('button')
+    expect(w.find('[data-testid="catalog-save"]').exists()).toBe(false)
+    expect((w.get('[data-testid="procurement-product"]').element as HTMLInputElement).value).toBe('42')
+    expect(w.get('[data-testid="procurement-product"]').attributes('disabled')).toBeDefined()
+  })
+  it('sends the exact draft and clearly labels the hypothetical revision without saving', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] }); vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    vi.mocked(previewProcurementScopes).mockImplementation(async ({ requests }) => response(requests))
+    const w = await draftView()
+    await w.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+    expect(previewProcurementScopes).toHaveBeenCalledWith(expect.objectContaining({ product_group_id: 42, evaluate_candidate: true, policy_draft: policy() }), expect.any(AbortSignal))
+    expect(w.get('[data-testid="policy-draft-result"]').text()).toContain(prefix + 'draftResult')
+    expect(w.findAll('[data-testid="product-evaluated-gate"]')).toHaveLength(4)
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix + 'evaluatedGatesStates.unknown')
+    expect(saveProcurementCatalog).not.toHaveBeenCalled()
+    await w.setProps({ policyDraft: { ...policy(), max_rate: '0.04' } })
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+  })
+  it.each(['missing', 'version', 'base', 'revision', 'settings', 'enabled', 'policy', 'extra', 'missing-required-gate'])('rejects incompatible draft receipts and permits an explicit retry (%s)', async kind => {
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const out = response(requests), draft = out.policy_draft!
+      if (kind === 'missing') delete out.policy_draft
+      if (kind === 'version') draft.version = 2
+      if (kind === 'base') draft.based_on_revision++
+      if (kind === 'revision') draft.policy.revision++
+      if (kind === 'settings') draft.other_settings = 'unsaved_product'
+      if (kind === 'enabled') Object.assign(draft, { profit_control_enabled: 'true' })
+      if (kind === 'policy') draft.policy.quality = 'not_required'
+      if (kind === 'extra') Object.assign(draft, { authorized: true })
+      if (kind === 'missing-required-gate') {
+        const product = out.results[0]!.product_procurement!
+        product.answer_quality = { version: 1, required: false, state: 'not_required' }
+      }
+      return out
+    })
+    const w = await draftView(); await w.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => response(requests))
+    await w.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="policy-draft-result"]').exists()).toBe(true)
+    expect(saveProcurementCatalog).not.toHaveBeenCalled()
+  })
+  it('retains the exact scope and asks the original Group flow to resolve a revision conflict', async () => {
+    vi.mocked(previewProcurementScopes).mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' })
+    const w = await draftView(); await w.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+    expect(w.emitted('policyConflict')).toHaveLength(1)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'draftConflict')
+    expect((w.get('[data-testid="procurement-wire-model"]').element as HTMLInputElement).value).toBe('wire-model')
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+  })
+  it('discards a late response after the policy changes and blocks an incomplete draft', async () => {
+    let resolve!: (value: ProcurementPreview) => void
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(() => new Promise(r => { resolve = r }))
+    const w = await draftView(); await w.get('[data-testid="catalog-preview"]').trigger('click')
+    const sent = vi.mocked(previewProcurementScopes).mock.calls[0]![0]
+    await w.setProps({ policyDraft: { ...policy(), source_group_ids: [] } })
+    resolve(response(sent.requests)); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('fieldset').attributes('disabled')).toBeDefined()
+    expect(previewProcurementScopes).toHaveBeenCalledTimes(1)
+  })
+  it('captures Enter in the embedded scope instead of submitting the enclosing Group form', async () => {
+    vi.mocked(previewProcurementScopes).mockImplementation(async ({ requests }) => response(requests))
+    const w = await draftView(), parent = document.createElement('form'), onKey = vi.fn()
+    parent.addEventListener('keydown', onKey); parent.append(w.element)
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    w.get('[data-testid="procurement-wire-model"]').element.dispatchEvent(event); await flushPromises()
+    expect(event.defaultPrevented).toBe(true); expect(onKey).not.toHaveBeenCalled()
+    expect(previewProcurementScopes).toHaveBeenCalledTimes(1); expect(saveProcurementCatalog).not.toHaveBeenCalled()
+    parent.remove()
+  })
+})
 async function open() {
   const w = mount(ProcurementCatalogManager); wrappers.push(w)
   expect(readProcurementCatalog).not.toHaveBeenCalled()
@@ -35,6 +138,16 @@ beforeEach(() => {
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount(); vi.useRealTimers() })
 
 describe('catalog editing and scope classification in the original operations page', () => {
+  it('preserves native submit semantics for keyboard preview on the original page', async () => {
+    const w = await open(); await setupProbe(w)
+    expect(w.get('[data-testid="catalog-preview"]').attributes('type')).toBe('submit')
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    w.get('[data-testid="procurement-wire-model"]').element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    await submitPreview(w); await flushPromises()
+    expect(previewProcurementScopes).toHaveBeenCalledTimes(1)
+    expect(saveProcurementCatalog).not.toHaveBeenCalled()
+  })
   it('shows every configured blocker from one v4 assessment, not just the first rejection', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
     vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))

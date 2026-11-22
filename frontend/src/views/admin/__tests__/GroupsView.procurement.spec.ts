@@ -6,9 +6,9 @@ import GroupsView from '@/views/admin/GroupsView.vue'
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), create: vi.fn(), update: vi.fn(), getById: vi.fn(), showError: vi.fn(), showSuccess: vi.fn(),
-  getAll: vi.fn(), getModelAllowlistCandidates: vi.fn(), getUsageSummary: vi.fn(), getCapacitySummary: vi.fn(), getLiveCapability: vi.fn(), catalog: vi.fn()
+  getAll: vi.fn(), getModelAllowlistCandidates: vi.fn(), getUsageSummary: vi.fn(), getCapacitySummary: vi.fn(), getLiveCapability: vi.fn(), catalog: vi.fn(), preview: vi.fn()
 }))
-vi.mock('@/api/admin/procurementCatalog', () => ({ readProcurementCatalog: mocks.catalog }))
+vi.mock('@/api/admin/procurementCatalog', async () => ({ ...await vi.importActual('@/api/admin/procurementCatalog'), readProcurementCatalog: mocks.catalog, previewProcurementScopes: mocks.preview }))
 vi.mock('@/api/admin', () => ({ adminAPI: {
   groups: { list: mocks.list, create: mocks.create, update: mocks.update, getById: mocks.getById,
     getAll: mocks.getAll, getModelAllowlistCandidates: mocks.getModelAllowlistCandidates,
@@ -443,6 +443,29 @@ describe('product procurement interval in the original Group editor', () => {
 
 describe('pinned evidence templates in the original Group form',()=>{
  const fixed={...savedPolicy,version:7,sources:{account_ids:null},buckets:{codes:null},quality:'current_answer',availability:'current_state',source_group_ids:[701],evidence_template:{version:1,code:'answer_availability'}}
+ it('previews the policy in the original form and resolves a read-only CAS conflict without saving', async () => {
+  mocks.getAll.mockResolvedValue([{ ...base, id: 701, name: 'Approved supplier' }])
+  mocks.getById.mockResolvedValue({ ...base, procurement_policy: { ...fixed, revision: 2 } })
+  mocks.preview.mockRejectedValueOnce({ status: 409, reason: 'GROUP_PROCUREMENT_POLICY_CONFLICT' }).mockRejectedValueOnce({ status: 503 })
+  const wrapper = mountView({ ...base, procurement_policy: fixed }); await edit(wrapper)
+  const manager = wrapper.get('[data-testid="procurement-manager"]')
+  ;(manager.element as HTMLDetailsElement).open = true
+  await manager.trigger('toggle'); await flushPromises()
+  expect(wrapper.findAll('form form')).toHaveLength(0)
+  await manager.get('[data-testid="procurement-account"]').setValue(7)
+  await manager.get('[data-testid="procurement-public-model"]').setValue('public-model')
+  await manager.get('[data-testid="procurement-wire-model"]').setValue('wire-model')
+  await manager.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+  expect(mocks.update).not.toHaveBeenCalled()
+  expect(mocks.preview.mock.calls[0][0]).toMatchObject({ product_group_id: 42, evaluate_candidate: true, policy_draft: fixed })
+  expect(wrapper.text()).toContain('admin.groups.profitControl.procurement.conflict')
+  expect(wrapper.get('[data-testid="procurement-latest-template"]').text()).toContain('templateMonitored')
+  expect((manager.get('[data-testid="procurement-wire-model"]').element as HTMLInputElement).value).toBe('wire-model')
+  await button(wrapper, 'admin.groups.profitControl.procurement.useLatestRevision').trigger('click'); await flushPromises()
+  await manager.get('[data-testid="catalog-preview"]').trigger('click'); await flushPromises()
+  expect(mocks.preview.mock.calls[1][0].policy_draft.revision).toBe(2)
+  expect(mocks.update).not.toHaveBeenCalled()
+ })
  it('requires an explicit approved source and saves the existing evidence gates together',async()=>{
   mocks.getAll.mockResolvedValue([{...base,id:701,name:'Approved supplier'}])
   const wrapper=mountView();await edit(wrapper)

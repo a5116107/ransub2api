@@ -75,7 +75,7 @@ func (r *channelRepository) SaveProcurementCatalog(ctx context.Context, draft *d
 }
 
 func (r *channelRepository) PreviewProcurementClassification(ctx context.Context, command *service.ProcurementPreviewCommand) (*service.ProcurementClassificationPreview, error) {
-	if command == nil || len(command.Requests) < 1 || len(command.Requests) > 100 || command.ProductGroupID != nil && (*command.ProductGroupID < 1 || *command.ProductGroupID > domain.MaxProcurementPolicyRevision) {
+	if command == nil || len(command.Requests) < 1 || len(command.Requests) > 100 || command.ProductGroupID != nil && (*command.ProductGroupID < 1 || *command.ProductGroupID > domain.MaxProcurementPolicyRevision) || command.PolicyDraft != nil && !command.EvaluateCandidate {
 		return nil, service.ErrProcurementCatalogInvalid
 	}
 	if command.EvaluateCandidate {
@@ -107,12 +107,25 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	// exact SQL snapshot; no second credential-bearing inventory is persisted.
 	client := dbent.NewClient(dbent.Driver(entsql.NewDriver(dialect.Postgres, entsql.Conn{ExecQuerier: tx})))
 	var product *service.Group
+	var draftPreview *service.ProcurementPolicyDraftPreview
 	if command.ProductGroupID != nil {
 		entity, err := client.Group.Query().Where(dbgroup.IDEQ(*command.ProductGroupID), dbgroup.DeletedAtIsNil()).Only(ctx)
 		if err != nil {
 			return nil, err
 		}
 		product = groupEntityToService(entity)
+		if command.PolicyDraft != nil {
+			raw, err := json.Marshal(command.PolicyDraft)
+			if err != nil {
+				return nil, service.ErrProcurementCatalogInvalid
+			}
+			prepared, _, err := service.PrepareProcurementPolicyUpdate(raw, product.ProcurementPolicy)
+			if err != nil {
+				return nil, err
+			}
+			draftPreview = &service.ProcurementPolicyDraftPreview{Version: 1, BasedOnRevision: command.PolicyDraft.Revision, OtherSettings: "saved_product", ProfitControlEnabled: product.ProfitControlEnabled, Policy: prepared.Clone()}
+			product.ProcurementPolicy = prepared
+		}
 		product.ProcurementSources, _ = loadProcurementSources(ctx, tx, product)
 	}
 	entities, err := observerAccountQuery(ctx, client.Account.Query()).Where(dbaccount.IDIn(ids...), dbaccount.DeletedAtIsNil()).All(ctx)
@@ -138,7 +151,7 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	out := &service.ProcurementClassificationPreview{ProcurementCatalogSnapshot: service.ProcurementCatalogSnapshot{Catalog: catalog, Gaps: catalog.Gaps()}, Results: make([]service.ProcurementScopeClassification, 0, len(requests))}
+	out := &service.ProcurementClassificationPreview{ProcurementCatalogSnapshot: service.ProcurementCatalogSnapshot{Catalog: catalog, Gaps: catalog.Gaps()}, Results: make([]service.ProcurementScopeClassification, 0, len(requests)), PolicyDraft: draftPreview}
 	availability := make(map[int64][]*service.AvailabilityReport, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]

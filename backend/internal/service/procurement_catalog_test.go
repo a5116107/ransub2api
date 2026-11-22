@@ -12,6 +12,40 @@ import (
 
 const catalogCommandFixture = `{"version":1,"revision":0,"buckets":[{"code":"b1","name":"First","min_rate":"0.2","max_rate":"0.5"},{"code":"b2","name":"Second","min_rate":"0.5","max_rate":"0.6"}]}`
 
+func TestProcurementPolicyDraftCommand(t *testing.T) {
+	raw := `{"requests":[{"account_id":7,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"fixture","stream":false,"service_tier":"unspecified","reasoning_effort":"unspecified","capability":"text"}}],"product_group_id":42,"evaluate_candidate":true,"policy_draft":{"version":7,"revision":3,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":null},"quality":"current_answer","availability":"current_state","source_group_ids":[11],"evidence_template":{"version":1,"code":"answer_availability"}}}`
+	command, err := ParseProcurementPreviewCommand([]byte(raw))
+	require.NoError(t, err, "an explicit complete policy draft must be previewed before it is saved")
+	require.NotNil(t, command.PolicyDraft)
+	require.EqualValues(t, 3, command.PolicyDraft.Revision)
+	for _, malformed := range []string{
+		strings.Replace(raw, `,"product_group_id":42`, ``, 1),
+		strings.Replace(raw, `"evaluate_candidate":true`, `"evaluate_candidate":false`, 1),
+		strings.Replace(raw, `"policy_draft":{`, `"policy_draft":null,"extra":{`, 1),
+		strings.Replace(raw, `"version":7`, `"version":8`, 1),
+		strings.Replace(raw, `"quality":"current_answer"`, `"quality":"not_required"`, 1),
+		strings.Replace(raw, `"revision":3`, `"revision":null`, 1),
+		strings.Replace(raw, `"policy_draft":{`, `"policy_draft":{"version":7,`, 1),
+		strings.Replace(raw, `"policy_draft":{`, `"policy_draft":{},"policy_draft":{`, 1),
+		strings.Replace(raw, `"policy_draft":{`, `"policy_draft":{`+strings.Repeat(" ", 32768), 1),
+	} {
+		_, err := ParseProcurementPreviewCommand([]byte(malformed))
+		require.ErrorIs(t, err, ErrProcurementCatalogInvalid)
+	}
+	current := command.PolicyDraft.Clone()
+	current.Version, current.EvidenceTemplate, current.Quality, current.Availability = 6, nil, "not_required", "not_required"
+	draft, err := json.Marshal(command.PolicyDraft)
+	require.NoError(t, err)
+	prepared, expected, err := PrepareProcurementPolicyUpdate(draft, current)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, *expected)
+	require.EqualValues(t, 4, prepared.Revision)
+	require.EqualValues(t, 3, command.PolicyDraft.Revision)
+	require.Equal(t, "not_required", current.Quality)
+	_, _, err = PrepareProcurementPolicyUpdate(draft, current.WithRevision(4))
+	require.ErrorIs(t, err, ErrProcurementPolicyConflict)
+}
+
 func TestProcurementEvaluatedGatesExplainsAllBlockers(t *testing.T) {
 	at := time.Date(2031, 1, 6, 12, 0, 0, 0, time.UTC)
 	priceUntil, qualityUntil, availabilityUntil := at.Add(2*time.Second), at.Add(time.Minute), at.Add(2*time.Minute)

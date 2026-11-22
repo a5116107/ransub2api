@@ -1,5 +1,6 @@
 import { apiClient } from '../client'
 import type { MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
+import type { GroupProcurementPolicy } from '@/types'
 
 export interface ProcurementBucket { code: string; name: string; min_rate: string | null; max_rate: string | null }
 export interface ProcurementCatalog { version: number; revision: number; buckets: ProcurementBucket[] }
@@ -80,8 +81,11 @@ export interface QualityScopeEvidence {
   rule_count: number; confirmed_rules: number; samples: number; valid_samples: number; other_scope_rules: number
   rules: QualityScopeRuleEvidence[]
 }
-export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number; evaluate_candidate?: boolean }
-export interface ProcurementPreview extends ProcurementCatalogSnapshot { observed_at: string; results: ProcurementClassification[] }
+export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number; evaluate_candidate?: boolean; policy_draft?: GroupProcurementPolicy }
+export interface ProcurementPolicyDraftPreview {
+  version: number; based_on_revision: number; other_settings: string; profit_control_enabled: boolean; policy: GroupProcurementPolicy
+}
+export interface ProcurementPreview extends ProcurementCatalogSnapshot { observed_at: string; results: ProcurementClassification[]; policy_draft?: ProcurementPolicyDraftPreview }
 
 export interface ProcurementProductImpact {
   version: number

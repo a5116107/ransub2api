@@ -508,7 +508,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if err := ValidateProfitControlConfig(platform, profitControlEnabled, profitMinMargin, profitSafetyBuffer); err != nil {
 		return nil, err
 	}
-	procurement, _, err := procurementPolicyUpdate(input.ProcurementPolicy, nil)
+	procurement, _, err := PrepareProcurementPolicyUpdate(input.ProcurementPolicy, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -935,7 +935,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	// 利润控制与高峰同一收口：按合并后的最终平台归一化（转到不支持平台时静默重置），
 	// 再对合并后的最终配置统一校验，防止部分字段更新拼出非法组合入库。
 	group.ProfitControlEnabled, group.ProfitMinMargin, group.ProfitSafetyBuffer = NormalizeProfitControlConfig(group.Platform, group.ProfitControlEnabled, group.ProfitMinMargin, group.ProfitSafetyBuffer)
-	procurement, expectedRevision, policyErr := procurementPolicyUpdate(input.ProcurementPolicy, group.ProcurementPolicy)
+	procurement, expectedRevision, policyErr := PrepareProcurementPolicyUpdate(input.ProcurementPolicy, group.ProcurementPolicy)
 	if policyErr != nil {
 		return nil, policyErr
 	}

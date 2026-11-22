@@ -169,7 +169,7 @@ func TestProcurementAvailabilityCandidateCacheAndPostSlotRefresh(t *testing.T) {
 	raw, err := json.Marshal(group.ProcurementPolicy)
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(raw, &current))
-	_, _, err = procurementPolicyUpdate([]byte(strings.Replace(string(raw), `"version":5`, `"version":4`, 1)), &current)
+	_, _, err = PrepareProcurementPolicyUpdate([]byte(strings.Replace(string(raw), `"version":5`, `"version":4`, 1)), &current)
 	require.ErrorIs(t, err, ErrProcurementPolicyInvalid)
 }
 

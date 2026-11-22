@@ -109,6 +109,7 @@
         {{ t(`admin.groups.profitControl.procurement.${restrictedSources ? sourceCount === 0 ? 'sourcesEmpty' : 'sourcesCount' : 'sourcesOriginal'}`, { count: sourceCount }) }}
       </p>
     </div>
+    <ProcurementCatalogManager v-if="productGroupId && modelValue && !unsupported" :product-group-id="productGroupId" :policy-draft="modelValue" :disabled="Boolean(error) || conflict || refreshing" preview-only @policy-conflict="emit('conflict')" />
     <p :id="`${idPrefix}-status`" :role="error ? 'alert' : 'status'" class="text-xs"
       :class="error ? 'text-amber-700 dark:text-amber-300' : 'text-gray-600 dark:text-gray-300'">
       <template v-if="error">{{ t(`admin.groups.profitControl.procurement.${error}`) }}</template>
@@ -149,6 +150,7 @@ import { adminAPI } from '@/api/admin'
 import { applyProcurementEvidenceTemplate, cloneProcurementPolicy, parseProcurementSourceIDs, validateProcurementPolicy } from '@/utils/procurementPolicy'
 import { readProcurementCatalog, type ProcurementCatalog } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot } from '@/utils/procurementCatalog'
+import ProcurementCatalogManager from '@/components/admin/operations/ProcurementCatalogManager.vue'
 
 const props = defineProps<{
   modelValue: GroupProcurementPolicy | null
@@ -163,6 +165,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: GroupProcurementPolicy | null]
   refresh: []
   resolve: []
+  conflict: []
 }>()
 const { t } = useI18n()
 const p = 'admin.groups.profitControl.procurement'

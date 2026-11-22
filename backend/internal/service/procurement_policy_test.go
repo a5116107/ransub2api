@@ -21,17 +21,17 @@ import (
 
 func TestProcurementPolicyVersionedCommands(t *testing.T) {
 	valid := json.RawMessage(`{"version":1,"revision":0,"min_rate":"0.02000000","max_rate":"0.03"}`)
-	created, expected, err := procurementPolicyUpdate(valid, nil)
+	created, expected, err := PrepareProcurementPolicyUpdate(valid, nil)
 	require.NoError(t, err)
 	require.EqualValues(t, 0, *expected)
 	require.EqualValues(t, 1, created.Revision)
 	require.Equal(t, "0.02", *created.MinRate)
-	kept, expected, err := procurementPolicyUpdate(nil, created)
+	kept, expected, err := PrepareProcurementPolicyUpdate(nil, created)
 	require.NoError(t, err)
 	require.Nil(t, expected)
 	*kept.MinRate = "0"
 	require.Equal(t, "0.02", *created.MinRate)
-	_, _, err = procurementPolicyUpdate(valid, created)
+	_, _, err = PrepareProcurementPolicyUpdate(valid, created)
 	require.ErrorIs(t, err, ErrProcurementPolicyConflict)
 	for _, invalid := range []string{
 		`null`, `{}`, `{"version":1,"revision":0}`, `{"version":1,"revision":null,"min_rate":null,"max_rate":null}`,
@@ -41,10 +41,10 @@ func TestProcurementPolicyVersionedCommands(t *testing.T) {
 		`{"Version":1,"revision":0,"min_rate":null,"max_rate":null}`,
 		`{"version":2,"revision":0,"min_rate":null,"max_rate":null}`,
 	} {
-		_, _, err := procurementPolicyUpdate(json.RawMessage(invalid), nil)
+		_, _, err := PrepareProcurementPolicyUpdate(json.RawMessage(invalid), nil)
 		require.ErrorIs(t, err, ErrProcurementPolicyInvalid, invalid)
 	}
-	cleared, _, err := procurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":1,"min_rate":null,"max_rate":null}`), created)
+	cleared, _, err := PrepareProcurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":1,"min_rate":null,"max_rate":null}`), created)
 	require.NoError(t, err)
 	require.Nil(t, cleared.MinRate)
 	require.Nil(t, cleared.MaxRate)
@@ -123,11 +123,11 @@ func TestProcurementPolicyAllowedBucketsGate(t *testing.T) {
 
 func TestProcurementPolicyBucketsCompleteCommandsAndDowngrade(t *testing.T) {
 	raw := `{"version":3,"revision":0,"min_rate":null,"max_rate":null,"sources":{"account_ids":null},"buckets":{"codes":["next","low"]}}`
-	created, expected, err := procurementPolicyUpdate(json.RawMessage(raw), nil)
+	created, expected, err := PrepareProcurementPolicyUpdate(json.RawMessage(raw), nil)
 	require.NoError(t, err)
 	require.Zero(t, *expected)
 	require.Equal(t, []string{"low", "next"}, created.Buckets.Codes)
-	kept, expected, err := procurementPolicyUpdate(nil, created)
+	kept, expected, err := PrepareProcurementPolicyUpdate(nil, created)
 	require.NoError(t, err)
 	require.Nil(t, expected)
 	kept.Buckets.Codes[0] = "other"
@@ -139,7 +139,7 @@ func TestProcurementPolicyBucketsCompleteCommandsAndDowngrade(t *testing.T) {
 		strings.Replace(raw, `"version":3`, `"version":2`, 1),
 		strings.Replace(raw, `"buckets":`, `"buckets":null,"buckets":`, 1),
 	} {
-		_, _, err := procurementPolicyUpdate(json.RawMessage(invalid), nil)
+		_, _, err := PrepareProcurementPolicyUpdate(json.RawMessage(invalid), nil)
 		require.ErrorIs(t, err, ErrProcurementPolicyInvalid, invalid)
 	}
 	for _, version := range []string{"1", "2"} {
@@ -148,37 +148,37 @@ func TestProcurementPolicyBucketsCompleteCommandsAndDowngrade(t *testing.T) {
 			legacy += `,"sources":{"account_ids":null}`
 		}
 		legacy += `}`
-		_, _, err = procurementPolicyUpdate(json.RawMessage(legacy), created)
+		_, _, err = PrepareProcurementPolicyUpdate(json.RawMessage(legacy), created)
 		require.ErrorIs(t, err, ErrProcurementPolicyInvalid)
-		_, _, err = procurementPolicyUpdate(json.RawMessage(strings.Replace(legacy, `"revision":1`, `"revision":0`, 1)), created)
+		_, _, err = PrepareProcurementPolicyUpdate(json.RawMessage(strings.Replace(legacy, `"revision":1`, `"revision":0`, 1)), created)
 		require.ErrorIs(t, err, ErrProcurementPolicyConflict)
 	}
 }
 
 func TestProcurementPolicySourcesCompleteCommandsAndDowngrade(t *testing.T) {
 	command := `{"version":2,"revision":0,"min_rate":null,"max_rate":null,"sources":{"account_ids":[902,901]}}`
-	created, expected, err := procurementPolicyUpdate(json.RawMessage(command), nil)
+	created, expected, err := PrepareProcurementPolicyUpdate(json.RawMessage(command), nil)
 	require.NoError(t, err)
 	require.Zero(t, *expected)
 	require.Equal(t, []int64{901, 902}, created.Sources.AccountIDs)
-	kept, expected, err := procurementPolicyUpdate(nil, created)
+	kept, expected, err := PrepareProcurementPolicyUpdate(nil, created)
 	require.NoError(t, err)
 	require.Nil(t, expected)
 	kept.Sources.AccountIDs[0] = 1
 	require.EqualValues(t, 901, created.Sources.AccountIDs[0])
 	for _, sources := range []string{`null`, `{}`, `{"account_ids":[0]}`, `{"account_ids":[1,1]}`, `{"account_ids":[9007199254740992]}`, `{"account_ids":[1.1]}`, `{"account_ids":["1"]}`, `{"account_ids":false}`, `{"account_ids":null,"account_ids":null}`, `{"Account_ids":[1]}`, `{"account_ids":[1],"pass":true}`} {
 		raw := `{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":` + sources + `}`
-		_, _, err = procurementPolicyUpdate(json.RawMessage(raw), created)
+		_, _, err = PrepareProcurementPolicyUpdate(json.RawMessage(raw), created)
 		require.ErrorIs(t, err, ErrProcurementPolicyInvalid, raw)
 	}
-	_, _, err = procurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":1,"min_rate":null,"max_rate":null}`), created)
+	_, _, err = PrepareProcurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":1,"min_rate":null,"max_rate":null}`), created)
 	require.ErrorIs(t, err, ErrProcurementPolicyInvalid, "legacy complete edits must not erase sources")
-	_, _, err = procurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":0,"min_rate":null,"max_rate":null}`), created)
+	_, _, err = PrepareProcurementPolicyUpdate(json.RawMessage(`{"version":1,"revision":0,"min_rate":null,"max_rate":null}`), created)
 	require.ErrorIs(t, err, ErrProcurementPolicyConflict, "a stale range-only draft must reach explicit review instead of failing as a downgrade")
-	_, _, err = procurementPolicyUpdate(json.RawMessage(command), created)
+	_, _, err = PrepareProcurementPolicyUpdate(json.RawMessage(command), created)
 	require.ErrorIs(t, err, ErrProcurementPolicyConflict)
 	for _, ids := range []string{`null`, `[]`} {
-		updated, _, err := procurementPolicyUpdate(json.RawMessage(`{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":`+ids+`}}`), created)
+		updated, _, err := PrepareProcurementPolicyUpdate(json.RawMessage(`{"version":2,"revision":1,"min_rate":null,"max_rate":null,"sources":{"account_ids":`+ids+`}}`), created)
 		require.NoError(t, err)
 		require.Equal(t, ids == "null", updated.Sources.AccountIDs == nil)
 	}

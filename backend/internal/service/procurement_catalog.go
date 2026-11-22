@@ -44,6 +44,17 @@ type ProcurementPreviewCommand struct {
 	Requests          []ProfitPreviewRequestScope `json:"requests"`
 	EvaluateCandidate bool                        `json:"evaluate_candidate,omitempty"`
 	ProductGroupID    *int64                      `json:"product_group_id,omitempty"`
+	PolicyDraft       *domain.ProcurementPolicy   `json:"policy_draft,omitempty"`
+}
+
+// A counterfactual policy at the next native revision, never saved authority.
+// Every other product setting continues to come from the same saved snapshot.
+type ProcurementPolicyDraftPreview struct {
+	Version              int                       `json:"version"`
+	BasedOnRevision      int64                     `json:"based_on_revision"`
+	OtherSettings        string                    `json:"other_settings"`
+	ProfitControlEnabled bool                      `json:"profit_control_enabled"`
+	Policy               *domain.ProcurementPolicy `json:"policy"`
 }
 
 // This is a read-only projection at the group's default sale price, never a
@@ -303,8 +314,9 @@ func (p *ProcurementProductPreview) AssessEvidence(policy *ProcurementPolicy, qu
 
 type ProcurementClassificationPreview struct {
 	ProcurementCatalogSnapshot
-	ObservedAt time.Time                        `json:"observed_at"`
-	Results    []ProcurementScopeClassification `json:"results"`
+	ObservedAt  time.Time                        `json:"observed_at"`
+	Results     []ProcurementScopeClassification `json:"results"`
+	PolicyDraft *ProcurementPolicyDraftPreview   `json:"policy_draft,omitempty"`
 }
 
 type ProcurementCatalogRepository interface {
@@ -356,7 +368,7 @@ func ParseProcurementCatalogCommand(raw []byte) (*domain.ProcurementCatalog, err
 func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, error) {
 	value := gjson.ParseBytes(raw)
 	fields, valid := procurementUniqueObject(value)
-	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !valid || (len(fields) < 1 || len(fields) > 3) || !value.Get("requests").IsArray() {
+	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !valid || (len(fields) < 1 || len(fields) > 4) || !value.Get("requests").IsArray() {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	command := &ProcurementPreviewCommand{}
@@ -378,7 +390,13 @@ func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, err
 		command.EvaluateCandidate = field.Bool()
 		known++
 	}
-	if len(fields) != known || command.EvaluateCandidate && command.ProductGroupID == nil {
+	if field, present := fields["policy_draft"]; present {
+		if len(field.Raw) > 32768 || json.Unmarshal([]byte(field.Raw), &command.PolicyDraft) != nil || command.PolicyDraft.ValidateDraft() != nil {
+			return nil, ErrProcurementCatalogInvalid
+		}
+		known++
+	}
+	if len(fields) != known || command.EvaluateCandidate && command.ProductGroupID == nil || command.PolicyDraft != nil && !command.EvaluateCandidate {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	items := value.Get("requests").Array()

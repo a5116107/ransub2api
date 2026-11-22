@@ -4277,3 +4277,18 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 本项只减少D4.3/D7.4的版本化配置缺口。原28项20done/8部分保持，完整资格/自动产品关联、D6.2/完整三步、独立参考/实际供应身份/缓存域、严格混版和生产验收仍开放；不把本地模板或配置门通过当成高缓存/模型真实/全自动供应池已完成。终稿构建和本地/自有远程交付身份随后独立收取。
 
 - 终稿构建已从原31302句柄正常收取：go test -p 1 -tags unit,embed ./internal/web -count=1 -timeout=3m实际ok1.997s/EMBED_EXIT=0；其后的GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1 -tags embed -o NUL ./cmd/server实际LINUX_BUILD_EXIT=0。未中断/重启构建或另建缓存；最终两段中英影响说明与Vite28.05s匹配，只证明编译/嵌入，不是Linux运行或生产加载。D4.3.24本地验收关闭，原28项分母与外部等待保持。
+
+
+### 2026-11-22 D4.3.25 — 保存前的策略草稿精确预演
+
+- 承接b39749323782fd6c2b437d3d99f4e3ac4375435b与原H盘唯一feat/automated-upstream-supply；继承本项实现后继续验证/修复。采用project-state-hub、dev-workbench、quality-guard、ui-studio、code-health-ops、delivery-ops和resource-reclaim-ops；本地实现/验证/提交及自有origin同分支同步，不CI、PR、schema迁移、发行或生产变更。Code Index MCP本轮无现成索引，按已知源码和rg定位，未为此全量重建。
+- 原采购预演可选完整policy_draft，要求显式产品及候选模式、完整管理员；同一只读RepeatableRead快照调用原创建/更新共用的PrepareProcurementPolicyUpdate，核对版本/CAS、模拟下一修订后重读来源与原价格/账号保护/答题/最新可用证据。回执标出基准/假设修订及other_settings=saved_product，售价/利润开关/模型限制采用保存值。旧命令不补草稿元数据；无策略/成员/检测/预算/outbox写入或供应商请求，预演修订不成为写入授权。
+- 原分组表单复用同一候选结果组件，固定当前产品与候选模式，目录只读、不嵌套form；不完整来源禁查，不退回全池。草稿/请求变化撤旧、迟到结果丢弃、30秒及原证据到期转未知；409沿原读取最新/明确核对，403/503及矛盾回执保留输入且不给旧通过。无产品ID的新建入口不承诺预演，其他未保存产品字段和完整资格不在本项范围。
+- 本轮复核发现普通运维页的查询按钮也被改成type=button，破坏多输入表单原生Enter提交。新增回归先真实失败（expected button to be submit，1fail/153未选择，不视为覆盖）；原位改成嵌入button/普通submit，并让普通页沿原submit、嵌入沿click/捕获Enter各发一次，不叠加两条请求。原procurementPolicyUpdate旧符号rg为0，所有创建/更新/预演/测试调用统一到原函数，无重复校验器、备用页面或新路由。
+- 复用已落盘且匹配未变后端源码的policy-draft-service.jsonl：domain/service双轮race共620条父子test通过事件，0fail/skip（domain1.450s、service28.217s）；policy-draft-pg-final.jsonl为仓储双轮58条通过事件，0fail/skip、19.951s。它们是收取的前轮结果，不冒称本轮重跑或相加为独立场景。真实PG/原认证HTTP覆盖保存绿不能替代更严格草稿、权限/取消/坏合同/CAS及恢复、批准来源变化、保存开关/请求scope保持、锁等待中同快照与下一读冲突；11表全行摘要零写。原始新增命令红测保留。
+- 键盘修复后本轮实际pnpm exec vitest run的原8套件590pass/0fail/0skip，UI_TEST_EXIT=0；vue-tsc --noEmit与8触及路径ESLint均退出0。预期注入503的测试stderr保留，不当作未处理异常。Vite终稿26.18s/VITE_BUILD_EXIT=0，旧Browserslist和大chunk提醒保留；未升级依赖或另建构建缓存。
+- 终稿Edge原GroupsView/运维原组件及CSS、真实管理员HTTP/隔离PG，中英×1440/390共44项/112次记录请求，含4次明确注入503及4个坏回执变体；非注入HTTP104次，page/console/非预期网络错误0。包括普通页输入和按钮Enter、嵌入Enter零分组提交、草稿/来源变更、未知/失败结论、真实409/恢复、迟到/到期/错误重试及零SQL写。外层AppLayout与容量/用量等辅助读取仍为本地测试壳，非完整后台、真实供应商或生产E2E。policy-draft-browser.json及四视口截图沿原production-flow-review目录，中文390已目检；另有前轮12项/48请求稳定视觉证据，范围重叠不累计独立覆盖。
+- 本轮四包go vet -p 1 -tags unit,integration配原overlay退出0；兼容Go1.27.4的既有golangci-lint v2.15.0增量fast检查实际0 issues./LINT_EXIT=0。前端终稿构建后重做go test -p 1 -tags unit,embed ./internal/web -count=1 -timeout=3m实际ok1.952s/EMBED_EXIT=0；显式GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -p 1 -tags embed -o NUL ./cmd/server实际LINUX_BUILD_EXIT=0。只证明编译/嵌入，不证明Linux运行或生产加载；未变后端复用原race结果。
+- 17项源码/测试规范LF路径与内容联合SHA256=0e01f265071dd6c76436d0bfcd640fdce59e911c4f8912885e4155cdf6795c6e；逐文件和锁文件/静态规则摘要在原policy-draft-source.json。STATE写入前两次超8192bytes的内存草稿已拒写并原位压缩，未增账本；唯一设计原D7.4行删除已完成的共享观察下发/拥有者缺口，保留统一资格驱动成员差量、完整三步、全scope预算和多Key联合验收。
+- 浏览器/隔离HTTP夹具正常退出（54.986s），任务Vite受控停止；确认无其他PG client后pg_ctl fast退出0，Redis按精确ID核对并正常stop/自动回收。18761/55441/56442监听0，无新clone/worktree/依赖环境；PG数据、Go/pnpm/dist为可复用缓存。复用的5个已拒删scratch仍原路径共24670bytes，含本地夹具认证文件不打印/提交；本轮不重试删除、不换工具/移动/改权限。继承service/data仍12文件1164bytes，历史拒删保持，owner宿主策略维护者，精确路径删除获允许或手工删除后释放，不声称全工作树clean或磁盘回收。源码/原文档为交付，原evidence最小日志/截图为证据。
+- D4.3.25本地子验收关闭，原28项20done/8部分不变。统一资格/自动成员关联、D6.2/完整三步、独立参考、实际供应身份/缓存域、严格混版及生产验收继续开放；本地批准组与配置门通过不等同模型真/高缓存/全自动供应池完成。仅自有feat交付，生产稳定线及原发布边界保持。

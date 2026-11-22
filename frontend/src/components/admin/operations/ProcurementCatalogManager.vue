@@ -1,14 +1,17 @@
 <template>
   <details class="card min-w-0 p-4" data-testid="procurement-manager" @toggle="toggle">
-    <summary class="cursor-pointer font-semibold">{{ t(`${p}.title`) }}</summary>
+    <summary class="cursor-pointer font-semibold">{{ t(`${p}.${previewOnly ? 'draftTitle' : 'title'}`) }}</summary>
     <div class="mt-4 min-w-0 space-y-4">
-      <p class="text-sm leading-6 text-gray-600 dark:text-gray-300">{{ t(`${p}.scope`) }}</p>
+      <p v-if="!previewOnly" class="text-sm leading-6 text-gray-600 dark:text-gray-300">{{ t(`${p}.scope`) }}</p>
+      <p v-if="previewOnly" class="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="policy-draft-boundary">{{ t(`${p}.draftBoundary`) }}</p>
+      <p v-if="previewOnly && draftInvalid" role="status" class="text-xs text-amber-800 dark:text-amber-300">{{ t(`${p}.draftIncomplete`) }}</p>
       <p v-if="error" role="alert" class="break-words text-sm text-red-600 dark:text-red-400" data-testid="procurement-error">{{ t(`${p}.${error}`) }}</p>
       <p v-if="busy" role="status" class="text-sm">{{ t('upstreamOps.loading') }}</p>
       <button v-if="!saved" type="button" class="btn btn-secondary" :disabled="busy" @click="load">{{ t(`${p}.load`) }}</button>
       <template v-else>
         <p class="text-xs text-gray-500" data-testid="procurement-revision">{{ t(`${p}.revision`, { revision: saved.catalog.revision }) }}</p>
         <button type="button" class="btn btn-secondary text-sm" :disabled="busy" data-testid="catalog-reload" @click="load">{{ t(`${p}.reload`) }}</button>
+        <template v-if="!previewOnly">
         <p v-if="!saved.catalog.buckets.length" role="status" class="text-sm">{{ t(`${p}.empty`) }}</p>
         <div v-if="saved.gaps.length" class="space-y-1 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="procurement-gaps">
           <p class="font-medium">{{ t(`${p}.gaps`) }}</p>
@@ -47,13 +50,14 @@
           </div>
         </div>
         <p v-if="success" role="status" class="text-sm text-green-700 dark:text-green-400">{{ t(`${p}.saved`) }}</p>
-        <form class="min-w-0 space-y-3 border-t border-gray-200 pt-4 dark:border-dark-600" @submit.prevent="preview">
-          <fieldset :disabled="busy || dirty || conflict" class="min-w-0 space-y-3">
+        </template>
+        <component :is="previewOnly ? 'div' : 'form'" class="min-w-0 space-y-3 border-t border-gray-200 pt-4 dark:border-dark-600" @submit.prevent="preview" @keydown.enter="handlePreviewEnter">
+          <fieldset :disabled="busy || dirty || conflict || disabled || draftInvalid" class="min-w-0 space-y-3">
             <legend class="mb-2 text-sm font-medium">{{ t(`${p}.preview`) }}</legend>
             <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.previewHint`) }}</p>
             <p v-if="dirty || conflict" class="text-sm text-amber-800 dark:text-amber-300">{{ t(`${p}.saveBeforePreview`) }}</p>
             <div class="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <label class="min-w-0 text-sm">{{ t(`${p}.product`) }}<input v-model="probe.product" inputmode="numeric" maxlength="16" class="input mt-1 w-full" data-testid="procurement-product" aria-describedby="procurement-product-hint" :aria-invalid="Number.isNaN(productID)" /></label>
+              <label class="min-w-0 text-sm">{{ t(`${p}.product`) }}<input v-model="probe.product" inputmode="numeric" maxlength="16" class="input mt-1 w-full" data-testid="procurement-product" aria-describedby="procurement-product-hint" :aria-invalid="Number.isNaN(productID)" :disabled="previewOnly" /></label>
               <label class="min-w-0 text-sm">{{ t('upstreamOps.account') }}<input v-model.number="probe.account" type="number" min="1" step="1" class="input mt-1 w-full" required data-testid="procurement-account" /></label>
               <label class="min-w-0 text-sm">{{ t('upstreamOps.public') }}<input v-model="probe.publicModel" class="input mt-1 w-full" maxlength="200" required data-testid="procurement-public-model" /></label>
               <label class="min-w-0 text-sm">{{ t(`${p}.wireModel`) }}<input v-model="probe.model" class="input mt-1 w-full" maxlength="200" required data-testid="procurement-wire-model" /></label>
@@ -63,16 +67,17 @@
               <label v-if="responses" class="min-w-0 text-sm">{{ t(`${p}.summary`) }}<select v-model="probe.summary" class="input mt-1 w-full"><option value="">{{ t(`${p}.unspecified`) }}</option><option v-for="value in ['none','auto','concise','detailed']" :key="value" :value="value">{{ value }}</option></select></label>
               <label v-if="responses" class="min-w-0 text-sm">{{ t(`${p}.verbosity`) }}<select v-model="probe.verbosity" class="input mt-1 w-full" data-testid="procurement-verbosity"><option value="">{{ t(`${p}.unspecified`) }}</option><option v-for="value in ['low','medium','high']" :key="value" :value="value">{{ value }}</option></select></label>
             </div>
-            <p id="procurement-product-hint" class="text-xs leading-5 text-gray-500">{{ t(`${p}.productHint`) }}</p>
+            <p id="procurement-product-hint" class="text-xs leading-5 text-gray-500">{{ t(`${p}.${previewOnly ? 'draftProductHint' : 'productHint'}`) }}</p>
             <div class="flex flex-wrap gap-4 text-sm">
-              <label class="flex items-start gap-2"><input v-model="probe.candidate" type="checkbox" class="mt-1" :disabled="productID === undefined || Number.isNaN(productID)" data-testid="procurement-candidate" />{{ t(`${p}.candidateMode`) }}</label>
+              <label class="flex items-start gap-2"><input v-model="probe.candidate" type="checkbox" class="mt-1" :disabled="previewOnly || productID === undefined || Number.isNaN(productID)" data-testid="procurement-candidate" />{{ t(`${p}.${previewOnly ? 'draftCandidate' : 'candidateMode'}`) }}</label>
               <label class="flex items-start gap-2"><input v-model="probe.stream" type="checkbox" class="mt-1" :disabled="probe.protocol === 'responses_ws_v2'" />{{ t(`${p}.stream`) }}</label>
               <label v-if="responses" class="flex items-start gap-2"><input v-model="probe.encrypted" type="checkbox" class="mt-1" />{{ t(`${p}.encrypted`) }}</label>
             </div>
-            <button type="submit" class="btn btn-secondary" :disabled="!validProbe" data-testid="catalog-preview">{{ t(`${p}.previewAction`) }}</button>
+            <button :type="previewOnly ? 'button' : 'submit'" class="btn btn-secondary" :disabled="!validProbe" data-testid="catalog-preview" @click="previewOnly && preview()">{{ t(`${p}.previewAction`) }}</button>
           </fieldset>
-        </form>
+        </component>
         <section v-if="result" aria-live="polite" class="min-w-0 space-y-3 rounded-lg bg-gray-50 p-3 dark:bg-dark-800" data-testid="catalog-preview-result">
+          <p v-if="result.policy_draft" class="break-words rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-200" data-testid="policy-draft-result">{{ t(`${p}.draftResult`, { from: result.policy_draft.based_on_revision, to: result.policy_draft.policy.revision }) }} · {{ t(`${p}.${result.policy_draft.profit_control_enabled ? 'draftGateOn' : 'draftGateOff'}`) }}</p>
           <p class="break-words text-xs text-gray-500">{{ t(`${p}.revision`, { revision: result.catalog.revision }) }} · {{ result.observed_at }}</p>
           <div v-for="(item, index) in result.results" :key="index" class="min-w-0 space-y-2">
             <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="item.state === 'classified' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="catalog-preview-state">{{ t(`${p}.states.${knownState(item.state)}`) }}</span>
@@ -182,8 +187,12 @@ import { useI18n } from 'vue-i18n'
 import { useNow } from '@vueuse/core'
 import { readProcurementCatalog, saveProcurementCatalog, previewProcurementScopes, type ProcurementCatalog, type ProcurementCatalogSnapshot, type ProcurementRequestScope, type ProcurementPreview, type ProcurementEvaluatedGate, type QualityScopeEvidence, type AvailabilityScopeEvidence } from '@/api/admin/procurementCatalog'
 import { validProcurementSnapshot, validateProcurementCatalog } from '@/utils/procurementCatalog'
+import { cloneProcurementPolicy, procurementPolicyCommand, validateProcurementPolicy } from '@/utils/procurementPolicy'
+import type { GroupProcurementPolicy } from '@/types'
 import qualityMessages from '@/i18n/locales/en/upstreamOps'
 
+const props = withDefaults(defineProps<{ previewOnly?: boolean; productGroupId?: number; policyDraft?: GroupProcurementPolicy | null; disabled?: boolean }>(), { previewOnly: false, disabled: false })
+const emit = defineEmits<{ policyConflict: [] }>()
 const { t } = useI18n(), p = 'upstreamOps.procurement'
 const now = useNow({ interval: 1000 })
 const saved = ref<ProcurementCatalogSnapshot | null>(null), latest = ref<ProcurementCatalogSnapshot | null>(null)
@@ -198,8 +207,19 @@ const responses = computed(() => probe.value.protocol !== 'chat_http')
 const candidate = computed<ProcurementCatalog>(() => ({ version: 1, revision: saved.value?.catalog.revision ?? 0, buckets: rows.value.map(row => ({ code: row.code, name: row.name, min_rate: row.min === '' ? null : row.min, max_rate: row.unbounded ? null : row.max })) }))
 const validation = computed(() => validateProcurementCatalog(candidate.value))
 const dirty = computed(() => Boolean(saved.value) && JSON.stringify(candidate.value) !== JSON.stringify(saved.value?.catalog))
-const validProbe = computed(() => (!probe.value.candidate || productID.value !== undefined) && !Number.isNaN(productID.value) && Number.isSafeInteger(probe.value.account) && probe.value.account > 0 && probe.value.publicModel.trim() !== '' && probe.value.model.trim() !== '' && probe.value.tier !== '' && probe.value.effort !== '')
+const draftInvalid = computed(() => props.previewOnly && (!props.policyDraft || Boolean(validateProcurementPolicy(props.policyDraft)) || !Number.isSafeInteger(props.productGroupId) || props.productGroupId! < 1))
+const validProbe = computed(() => !props.disabled && !draftInvalid.value && (!probe.value.candidate || productID.value !== undefined) && !Number.isNaN(productID.value) && Number.isSafeInteger(probe.value.account) && probe.value.account > 0 && probe.value.publicModel.trim() !== '' && probe.value.model.trim() !== '' && probe.value.tier !== '' && probe.value.effort !== '')
 watch([rows, probe], () => { generation++; result.value = null; success.value = false }, { deep: true, flush: 'sync' })
+watch(() => [props.productGroupId, props.policyDraft, props.disabled], () => {
+  if (!props.previewOnly) return
+  generation++; result.value = null; error.value = ''
+  probe.value.product = String(props.productGroupId ?? '')
+  probe.value.candidate = true
+}, { deep: true, immediate: true, flush: 'sync' })
+function handlePreviewEnter(event: KeyboardEvent) {
+  if (!props.previewOnly) return
+  event.preventDefault(); event.stopPropagation(); void preview()
+}
 function accept(next: ProcurementCatalogSnapshot) {
   if (!validProcurementSnapshot(next)) throw new Error('unsupported catalog response')
   return next
@@ -230,7 +250,7 @@ function review() {
   saved.value = latest.value; latest.value = null; conflict.value = false; result.value = null; error.value = ''
 }
 async function save() {
-  if (busy.value || !dirty.value || validation.value || conflict.value) return
+  if (props.previewOnly || busy.value || !dirty.value || validation.value || conflict.value) return
   busy.value = true; error.value = ''; success.value = false; result.value = null
   try {
     const next = accept(await saveProcurementCatalog(candidate.value, controller.signal))
@@ -252,13 +272,22 @@ async function preview() {
   } }
   const id = generation
   const product = productID.value, evaluateCandidate = probe.value.candidate
+  const draft = props.previewOnly && props.policyDraft ? cloneProcurementPolicy(props.policyDraft) : undefined
   busy.value = true; error.value = ''; result.value = null
   try {
-    const next = await previewProcurementScopes({ requests: [request], ...(product === undefined ? {} : { product_group_id: product }), ...(evaluateCandidate ? { evaluate_candidate: true } : {}) }, controller.signal)
+    const next = await previewProcurementScopes({ requests: [request], ...(product === undefined ? {} : { product_group_id: product }), ...(evaluateCandidate ? { evaluate_candidate: true } : {}), ...(draft ? { policy_draft: draft } : {}) }, controller.signal)
     if (!validProcurementSnapshot(next) || next.catalog.revision !== saved.value.catalog.revision || !Number.isFinite(Date.parse(next.observed_at)) || !Array.isArray(next.results) || next.results.length !== 1 ||
       next.results[0]?.account_id !== request.account_id || next.results[0]?.public_model !== request.public_model || !next.results[0]?.scope ||
       !Object.entries(request.scope).every(([key, value]) => next.results[0]!.scope[key as keyof ProcurementRequestScope['scope']] === value) || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
     const projection = next.results[0]!.product_procurement
+    if (draft) {
+      const simulation = next.policy_draft, prepared = { ...draft, revision: draft.revision + 1 }
+      if (!simulation || Object.keys(simulation).sort().join(',') !== 'based_on_revision,other_settings,policy,profit_control_enabled,version' ||
+        simulation.version !== 1 || simulation.based_on_revision !== draft.revision || simulation.other_settings !== 'saved_product' || typeof simulation.profit_control_enabled !== 'boolean' ||
+        !simulation.policy || validateProcurementPolicy(simulation.policy) || procurementPolicyCommand(prepared, simulation.policy) !== undefined ||
+        Object.keys(simulation.policy).sort().join(',') !== Object.keys(prepared).filter(k => prepared[k as keyof GroupProcurementPolicy] !== undefined).sort().join(',') || projection?.policy_revision !== prepared.revision ||
+        projection.answer_quality?.required !== (prepared.quality === 'current_answer') || projection.availability?.required !== (prepared.availability === 'current_state') || projection.evaluated_gates?.version !== 4) throw new Error('inconsistent policy simulation')
+    } else if (next.policy_draft !== undefined) throw new Error('unexpected policy simulation')
     const quality = next.results[0]!.quality_evidence
     const availability = next.results[0]!.availability_evidence
     if (projection?.account_controls !== undefined && !validAccountControls(projection.account_controls, next.observed_at)) throw new Error('unknown account controls')
@@ -280,7 +309,12 @@ async function preview() {
     if (projection && (projection.price_valid_until !== undefined || [3, 4].includes(projection.evaluated_gates?.version ?? 0)) && !validPriceSnapshot(projection, next.observed_at)) throw new Error('unknown price deadline')
     if (!validEvaluatedGates(next.results[0]!, next.observed_at)) throw new Error('inconsistent evaluated product gates')
     if (alive && generation === id) result.value = next
-  } catch { if (alive && generation === id) error.value = 'previewFailed' }
+  } catch (e) {
+    if (alive && generation === id) {
+      if (draft && (e as { status?: number })?.status === 409) { error.value = 'draftConflict'; emit('policyConflict') }
+      else error.value = 'previewFailed'
+    }
+  }
   finally { if (alive) busy.value = false }
 }
 function validCandidate(product: NonNullable<ProcurementPreview['results'][number]['product_procurement']>, requested: boolean): boolean {

@@ -3064,7 +3064,7 @@
           v-if="isProfitControlPlatform(editForm.platform) && editForm.profit_control_enabled"
           v-model="editProcurementPolicy" id-prefix="edit-procurement" :platform="editForm.platform" :product-group-id="editingGroup?.id"
           :conflict="editProcurementConflict" :latest-policy="latestProcurementPolicy" :refreshing="refreshingProcurementPolicy"
-          @refresh="refreshProcurementPolicy" @resolve="resolveProcurementConflict"
+          @refresh="refreshProcurementPolicy" @resolve="resolveProcurementConflict" @conflict="editProcurementConflict = true; refreshProcurementPolicy()"
         />
         <!-- 支持的模型系列（仅 antigravity 平台） -->
         <div v-if="editForm.platform === 'antigravity'" class="border-t pt-4">
