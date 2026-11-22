@@ -162,22 +162,158 @@ func TestProcurementCatalogPostgresHTTPAndSnapshot(t *testing.T) {
 				token, err = auth.GenerateToken(ctx, user)
 				require.NoError(t, err)
 			}
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upstream-procurement/preview", strings.NewReader(encode(map[string]any{"product_group_id": groupID, "requests": []service.ProfitPreviewRequestScope{request}})))
-			if token != "" {
-				req.Header.Set("Authorization", "Bearer "+token)
-			}
-			router.ServeHTTP(w, req)
-			require.Equal(t, code, w.Code, w.Body.String())
-			for _, private := range []string{"catalog-fixture-secret", "relay.invalid", "credentials", "password_hash"} {
-				require.NotContains(t, w.Body.String(), private)
-			}
-			if role == "admin" {
-				require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
-				require.Contains(t, w.Body.String(), `"scheduling_disabled"`)
+			for _, evaluateCandidate := range []bool{false, true} {
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upstream-procurement/preview", strings.NewReader(encode(map[string]any{"product_group_id": groupID, "requests": []service.ProfitPreviewRequestScope{request}, "evaluate_candidate": evaluateCandidate})))
+				if token != "" {
+					req.Header.Set("Authorization", "Bearer "+token)
+				}
+				router.ServeHTTP(w, req)
+				require.Equal(t, code, w.Code, w.Body.String())
+				for _, private := range []string{"catalog-fixture-secret", "relay.invalid", "credentials", "password_hash"} {
+					require.NotContains(t, w.Body.String(), private)
+				}
+				if role == "admin" {
+					require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+					require.Contains(t, w.Body.String(), `"scheduling_disabled"`)
+				}
 			}
 		}
 	})
+	t.Run("approved source candidate uses one read-only authority", func(t *testing.T) {
+		var sourceID int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO groups(name,platform) VALUES('candidate supply source','openai') RETURNING id`).Scan(&sourceID))
+		policy := &domain.ProcurementPolicy{Version: 6, Revision: 1, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "not_required", Availability: "not_required", SourceGroupIDs: []int64{sourceID}}
+		save := func() {
+			t.Helper()
+			_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=true,procurement_policy=$2::jsonb WHERE id=$1`, groupID, encode(policy))
+			require.NoError(t, err)
+		}
+		_, err := db.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, groupID)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `UPDATE accounts SET schedulable=true WHERE id=$1`, accountID)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accountID, sourceID)
+		require.NoError(t, err)
+		save()
+		attest(time.Hour)
+		t.Cleanup(func() {
+			_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=false,procurement_policy=NULL WHERE id=$1`, groupID)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `UPDATE accounts SET schedulable=false WHERE id=$1`, accountID)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,7) ON CONFLICT DO NOTHING`, accountID, groupID)
+			require.NoError(t, err)
+		})
+		footprint := func() map[string]string {
+			t.Helper()
+			out := map[string]string{}
+			for _, table := range []string{"accounts", "account_groups", "groups", "quality_rule_presets", "scheduled_test_plans", "scheduled_test_results", "usage_logs", "settings", "monitoring_probe_budget_counters", "monitoring_probe_budget_leases", "scheduler_outbox"} {
+				var digest string
+				err := db.QueryRowContext(ctx, `SELECT md5(COALESCE(string_agg(r::text,'|' ORDER BY r::text),'')) FROM (SELECT row_to_json(t) r FROM `+table+` t) s`).Scan(&digest)
+				require.NoError(t, err)
+				out[table] = digest
+			}
+			return out
+		}
+		read := func(candidate bool) *service.ProcurementClassificationPreview {
+			t.Helper()
+			before := footprint()
+			response := run(http.MethodPost, "/preview", encode(map[string]any{"requests": []service.ProfitPreviewRequestScope{request}, "product_group_id": groupID, "evaluate_candidate": candidate}))
+			require.Equal(t, 200, response.Code, response.Body.String())
+			require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+			require.NotContains(t, response.Body.String(), "catalog-fixture-secret")
+			require.NotContains(t, response.Body.String(), "relay.invalid")
+			var out struct {
+				Data service.ProcurementClassificationPreview `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &out))
+			require.Equal(t, before, footprint(), "candidate reads cannot modify membership, plans, counters or outbox")
+			return &out.Data
+		}
+		original := read(false)
+		require.Equal(t, "not_associated", original.Results[0].Product.State)
+		require.Nil(t, original.Results[0].Product.Candidate)
+		candidate := read(true)
+		row := candidate.Results[0]
+		require.Equal(t, "constraints_passed", row.Product.State)
+		require.Equal(t, "pass", row.Product.EvaluatedGates.State)
+		require.Equal(t, 2, row.Product.Version)
+		require.False(t, row.Product.Candidate.InProduct)
+		require.Equal(t, "pass", row.Product.Candidate.SourceState)
+		require.Equal(t, "not_evaluated", row.Qualification)
+		command := &service.ProcurementPreviewCommand{Requests: []service.ProfitPreviewRequestScope{request}, ProductGroupID: &groupID, EvaluateCandidate: true}
+		for _, scoped := range []context.Context{service.WithObserverScope(ctx, []int64{}), service.WithObserverScope(ctx, []int64{sourceID, groupID})} {
+			out, err := repo.PreviewProcurementClassification(scoped, command)
+			require.ErrorIs(t, err, service.ErrObserverScope)
+			require.Nil(t, out)
+		}
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		out, e := repo.PreviewProcurementClassification(cancelled, command)
+		require.Error(t, e)
+		require.Nil(t, out)
+		// The live read is held after its snapshot starts; a concurrent removal
+		// must affect the next read, never be mixed with the old product authority.
+		lock, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = lock.Rollback() }()
+		_, err = lock.ExecContext(ctx, `LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE`)
+		require.NoError(t, err)
+		type pendingResult struct {
+			out *service.ProcurementClassificationPreview
+			err error
+		}
+		pending := make(chan pendingResult, 1)
+		readCtx, cancelRead := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelRead()
+		go func() {
+			out, err := repo.PreviewProcurementClassification(readCtx, command)
+			pending <- pendingResult{out, err}
+		}()
+		require.Eventually(t, func() bool {
+			var n int
+			err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%accounts%'`).Scan(&n)
+			return err == nil && n > 0
+		}, 5*time.Second, 20*time.Millisecond)
+		_, err = lock.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 AND group_id=$2`, accountID, sourceID)
+		require.NoError(t, err)
+		require.NoError(t, lock.Commit())
+		prior := <-pending
+		require.NoError(t, prior.err)
+		require.Equal(t, "pass", prior.out.Results[0].Product.Candidate.SourceState)
+		fresh := read(true)
+		require.Equal(t, "fail", fresh.Results[0].Product.Candidate.SourceState)
+		require.Equal(t, "fail", fresh.Results[0].Product.EvaluatedGates.State)
+		_, err = db.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, accountID, sourceID)
+		require.NoError(t, err)
+		require.Equal(t, "pass", read(true).Results[0].Product.Candidate.SourceState)
+		policy.SourceGroupIDs = nil
+		policy.Revision++
+		save()
+		unknown := read(true)
+		require.Equal(t, "unknown", unknown.Results[0].Product.Candidate.SourceState)
+		require.Equal(t, "unknown", unknown.Results[0].Product.EvaluatedGates.State)
+		policy.SourceGroupIDs = []int64{}
+		policy.Revision++
+		save()
+		require.Equal(t, "fail", read(true).Results[0].Product.Candidate.SourceState)
+		policy.SourceGroupIDs = []int64{sourceID}
+		policy.Revision++
+		save()
+		_, err = db.ExecContext(ctx, `UPDATE groups SET status='inactive' WHERE id=$1`, sourceID)
+		require.NoError(t, err)
+		require.Equal(t, "unknown", read(true).Results[0].Product.Candidate.SourceState)
+		_, err = db.ExecContext(ctx, `UPDATE groups SET status='active' WHERE id=$1`, sourceID)
+		require.NoError(t, err)
+		policy.Quality = "current_answer"
+		policy.Availability = "current_state"
+		policy.Revision++
+		save()
+		unknown = read(true)
+		require.Equal(t, "unknown", unknown.Results[0].Product.EvaluatedGates.State)
+	})
+
 	t.Run("product policy is evaluated in the original scope preview", func(t *testing.T) {
 		t.Cleanup(func() {
 			_, err := db.ExecContext(ctx, `UPDATE groups SET profit_control_enabled=false,procurement_policy=null WHERE id=$1`, groupID)

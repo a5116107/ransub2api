@@ -15,7 +15,7 @@ import (
 )
 
 func procurementCatalogError(c *gin.Context, err error) {
-	if errors.Is(err, service.ErrProcurementCatalogInvalid) || errors.Is(err, service.ErrProcurementCatalogConflict) {
+	if errors.Is(err, service.ErrProcurementCatalogInvalid) || errors.Is(err, service.ErrProcurementCatalogConflict) || errors.Is(err, service.ErrObserverScope) {
 		response.ErrorFrom(c, err)
 		return
 	}

@@ -54,6 +54,7 @@ export interface ProcurementClassification extends ProcurementRequestScope {
   quality_evidence?: QualityScopeEvidence
   availability_evidence?: AvailabilityScopeEvidence
   product_procurement?: {
+    candidate?: { in_product: boolean; source_state: string }
     price_valid_until?: string | null
     account_controls?: { version: number; state: string; reason: string; evaluated_at: string; valid_until: string | null }
     evaluated_gates?: { version: number; state: string; reason: string; passed_gates: number; required_gates: number; evaluated_at: string; valid_until: string | null; gates?: ProcurementEvaluatedGate[] }
@@ -79,7 +80,7 @@ export interface QualityScopeEvidence {
   rule_count: number; confirmed_rules: number; samples: number; valid_samples: number; other_scope_rules: number
   rules: QualityScopeRuleEvidence[]
 }
-export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number }
+export interface ProcurementPreviewCommand { requests: ProcurementRequestScope[]; product_group_id?: number; evaluate_candidate?: boolean }
 export interface ProcurementPreview extends ProcurementCatalogSnapshot { observed_at: string; results: ProcurementClassification[] }
 
 export interface ProcurementProductImpact {

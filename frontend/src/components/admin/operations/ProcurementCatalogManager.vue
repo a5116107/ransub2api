@@ -65,6 +65,7 @@
             </div>
             <p id="procurement-product-hint" class="text-xs leading-5 text-gray-500">{{ t(`${p}.productHint`) }}</p>
             <div class="flex flex-wrap gap-4 text-sm">
+              <label class="flex items-start gap-2"><input v-model="probe.candidate" type="checkbox" class="mt-1" :disabled="productID === undefined || Number.isNaN(productID)" data-testid="procurement-candidate" />{{ t(`${p}.candidateMode`) }}</label>
               <label class="flex items-start gap-2"><input v-model="probe.stream" type="checkbox" class="mt-1" :disabled="probe.protocol === 'responses_ws_v2'" />{{ t(`${p}.stream`) }}</label>
               <label v-if="responses" class="flex items-start gap-2"><input v-model="probe.encrypted" type="checkbox" class="mt-1" />{{ t(`${p}.encrypted`) }}</label>
             </div>
@@ -124,6 +125,11 @@
             </section>
             <div v-if="item.product_procurement" class="min-w-0 space-y-2 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="product-procurement">
               <p class="break-words text-sm font-medium">{{ t(`${p}.productResult`, { id: item.product_procurement.group_id, revision: item.product_procurement.policy_revision }) }}</p>
+              <div v-if="item.product_procurement.candidate" class="space-y-1 rounded-lg border border-amber-200 p-2 text-sm dark:border-amber-800" data-testid="product-candidate">
+                <p>{{ t(`${p}.${item.product_procurement.candidate.in_product ? 'candidateAssociated' : 'candidateNotAssociated'}`) }}</p>
+                <p>{{ t(`${p}.candidateSourceStates.${candidateSourceState(item.product_procurement.candidate)}`) }}</p>
+                <p class="text-xs leading-5">{{ t(`${p}.candidateBoundary`) }}</p>
+              </div>
               <p v-if="item.product_procurement.catalog_revision !== undefined" class="text-xs text-gray-500">{{ t(`${p}.revision`, { revision: item.product_procurement.catalog_revision }) }}</p>
               <span class="inline-block max-w-full break-words rounded-full px-3 py-1 text-sm" :class="productPriceState(item) === 'constraints_passed' ? 'bg-green-100 text-green-900 dark:bg-green-900/30 dark:text-green-200' : 'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200'" data-testid="product-procurement-state">{{ t(`${p}.productStates.${productPriceState(item)}`) }}</span>
               <p class="break-all text-xs" data-testid="product-price-validity">{{ t(`${p}.priceSnapshotBoundary`) }} {{ item.product_procurement.price_valid_until ?? t('upstreamOps.unknown') }}</p>
@@ -159,7 +165,7 @@
                 <div><dt class="text-gray-500">{{ t(`${p}.productSale`) }}</dt><dd>{{ item.product_procurement.default_d }}</dd></div>
                 <div><dt class="text-gray-500">{{ t(`${p}.productThreshold`) }}</dt><dd>{{ item.product_procurement.threshold }}</dd></div>
               </dl>
-              <p v-if="item.product_procurement.reason" class="break-all font-mono text-xs">{{ item.product_procurement.reason === 'rejected_procurement_bucket' ? t(`${p}.bucketRejected`) : item.product_procurement.reason === 'rejected_procurement_catalog_unavailable' ? t(`${p}.catalogUnavailable`) : item.product_procurement.reason }}</p>
+              <p v-if="item.product_procurement.reason && !['candidate_sources_unconfirmed', 'candidate_source_not_approved'].includes(item.product_procurement.reason)" class="break-all font-mono text-xs">{{ item.product_procurement.reason === 'rejected_procurement_bucket' ? t(`${p}.bucketRejected`) : item.product_procurement.reason === 'rejected_procurement_catalog_unavailable' ? t(`${p}.catalogUnavailable`) : item.product_procurement.reason }}</p>
               <p class="text-xs leading-5 text-gray-500">{{ t(`${p}.productDefaultBasis`) }}</p>
             </div>
           </div>
@@ -185,13 +191,14 @@ const busy = ref(false), error = ref(''), conflict = ref(false), success = ref(f
 let rowKey = 0, alive = true, generation = 0
 const controller = new AbortController()
 const rows = ref<Array<{ key: number; code: string; name: string; min: string; max: string; unbounded: boolean }>>([])
-const probe = ref({ product: '', account: 0, publicModel: '', model: '', protocol: 'responses_http', tier: 'unspecified', effort: 'unspecified', stream: false, summary: '', verbosity: '', encrypted: false })
+const probe = ref({ product: '', candidate: false, account: 0, publicModel: '', model: '', protocol: 'responses_http', tier: 'unspecified', effort: 'unspecified', stream: false, summary: '', verbosity: '', encrypted: false })
 const productID = computed(() => probe.value.product.trim() === '' ? undefined : /^[1-9]\d*$/.test(probe.value.product.trim()) && Number.isSafeInteger(Number(probe.value.product)) ? Number(probe.value.product) : NaN)
+watch(productID, id => { if (id === undefined || Number.isNaN(id)) probe.value.candidate = false }, { flush: 'sync' })
 const responses = computed(() => probe.value.protocol !== 'chat_http')
 const candidate = computed<ProcurementCatalog>(() => ({ version: 1, revision: saved.value?.catalog.revision ?? 0, buckets: rows.value.map(row => ({ code: row.code, name: row.name, min_rate: row.min === '' ? null : row.min, max_rate: row.unbounded ? null : row.max })) }))
 const validation = computed(() => validateProcurementCatalog(candidate.value))
 const dirty = computed(() => Boolean(saved.value) && JSON.stringify(candidate.value) !== JSON.stringify(saved.value?.catalog))
-const validProbe = computed(() => !Number.isNaN(productID.value) && Number.isSafeInteger(probe.value.account) && probe.value.account > 0 && probe.value.publicModel.trim() !== '' && probe.value.model.trim() !== '' && probe.value.tier !== '' && probe.value.effort !== '')
+const validProbe = computed(() => (!probe.value.candidate || productID.value !== undefined) && !Number.isNaN(productID.value) && Number.isSafeInteger(probe.value.account) && probe.value.account > 0 && probe.value.publicModel.trim() !== '' && probe.value.model.trim() !== '' && probe.value.tier !== '' && probe.value.effort !== '')
 watch([rows, probe], () => { generation++; result.value = null; success.value = false }, { deep: true, flush: 'sync' })
 function accept(next: ProcurementCatalogSnapshot) {
   if (!validProcurementSnapshot(next)) throw new Error('unsupported catalog response')
@@ -244,10 +251,10 @@ async function preview() {
     service_tier: probe.value.tier, reasoning_effort: probe.value.effort, capability: 'text', ...options
   } }
   const id = generation
-  const product = productID.value
+  const product = productID.value, evaluateCandidate = probe.value.candidate
   busy.value = true; error.value = ''; result.value = null
   try {
-    const next = await previewProcurementScopes({ requests: [request], ...(product === undefined ? {} : { product_group_id: product }) }, controller.signal)
+    const next = await previewProcurementScopes({ requests: [request], ...(product === undefined ? {} : { product_group_id: product }), ...(evaluateCandidate ? { evaluate_candidate: true } : {}) }, controller.signal)
     if (!validProcurementSnapshot(next) || next.catalog.revision !== saved.value.catalog.revision || !Number.isFinite(Date.parse(next.observed_at)) || !Array.isArray(next.results) || next.results.length !== 1 ||
       next.results[0]?.account_id !== request.account_id || next.results[0]?.public_model !== request.public_model || !next.results[0]?.scope ||
       !Object.entries(request.scope).every(([key, value]) => next.results[0]!.scope[key as keyof ProcurementRequestScope['scope']] === value) || next.results[0]?.qualification !== 'not_evaluated') throw new Error('unknown preview response')
@@ -257,7 +264,7 @@ async function preview() {
     if (projection?.account_controls !== undefined && !validAccountControls(projection.account_controls, next.observed_at)) throw new Error('unknown account controls')
     if (quality !== undefined && !validQualityEvidence(quality, next.observed_at)) throw new Error('unknown quality evidence')
     if (availability !== undefined && !validAvailabilityEvidence(availability, next.observed_at)) throw new Error('unknown availability evidence')
-    if (product === undefined ? projection !== undefined : !projection || projection.version !== 1 || projection.group_id !== product || projection.price_basis !== 'group_default' ||
+    if (product === undefined ? projection !== undefined : !projection || projection.version !== (evaluateCandidate ? 2 : 1) || !validCandidate(projection, evaluateCandidate) || projection.group_id !== product || projection.price_basis !== 'group_default' ||
       projection.catalog_revision !== undefined && (projection.catalog_revision !== next.catalog.revision || !Number.isSafeInteger(projection.catalog_revision)) ||
       !Number.isSafeInteger(projection.policy_revision) || projection.policy_revision < 0 || !Number.isFinite(projection.default_d) || projection.default_d < 0 || !Number.isFinite(projection.threshold) || projection.threshold < 0 ||
       !['constraints_passed', 'blocked', 'disabled', 'product_inactive', 'not_associated', 'not_evaluated'].includes(projection.state) ||
@@ -275,6 +282,17 @@ async function preview() {
     if (alive && generation === id) result.value = next
   } catch { if (alive && generation === id) error.value = 'previewFailed' }
   finally { if (alive) busy.value = false }
+}
+function validCandidate(product: NonNullable<ProcurementPreview['results'][number]['product_procurement']>, requested: boolean): boolean {
+  const candidate = product.candidate
+  if (!requested) return candidate === undefined
+  if (!candidate || Object.keys(candidate).sort().join(',') !== 'in_product,source_state' || typeof candidate.in_product !== 'boolean' ||
+    !['pass', 'fail', 'unknown'].includes(candidate.source_state) || product.state === 'not_associated') return false
+  if (candidate.source_state === 'unknown') return ['not_evaluated', 'disabled', 'product_inactive'].includes(product.state)
+  return candidate.source_state !== 'fail' || product.state !== 'constraints_passed'
+}
+function candidateSourceState(candidate: { source_state: string }): string {
+  return result.value && now.value.getTime() - Date.parse(result.value.observed_at) < 30000 ? candidate.source_state : 'unknown'
 }
 function knownState(value: string) { return ['classified','unclassified','scope_unconfirmed','rate_unavailable','account_unavailable','not_configured'].includes(value) ? value : 'unknown' }
 function evidenceExpired(evidence?: { valid_until: string | null }) {

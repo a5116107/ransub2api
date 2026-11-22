@@ -210,7 +210,7 @@ func TestProcurementCatalogPreviewScopeAndPriceAuthority(t *testing.T) {
 			a.Credentials["model_mapping"] = map[string]any{"gpt-fixture": "gpt-fixture"}
 			r := request
 			tc.mutate(a, &r)
-			result := ClassifyProcurementScope(catalog, a, r, at.Add(time.Second), nil)
+			result := ClassifyProcurementScope(catalog, a, r, at.Add(time.Second), nil, false)
 			require.Equal(t, tc.state, result.State)
 			require.Equal(t, "not_evaluated", result.Qualification)
 			if tc.code == "" {
@@ -225,9 +225,9 @@ func TestProcurementCatalogPreviewScopeAndPriceAuthority(t *testing.T) {
 			require.NotContains(t, string(raw), "test-api-key")
 		})
 	}
-	result := ClassifyProcurementScope(catalog, nil, request, at, nil)
+	result := ClassifyProcurementScope(catalog, nil, request, at, nil, false)
 	require.Equal(t, "account_unavailable", result.State)
-	result = ClassifyProcurementScope(&domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}, nil, request, at, nil)
+	result = ClassifyProcurementScope(&domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}, nil, request, at, nil, false)
 	require.Equal(t, "not_configured", result.State)
 }
 
@@ -278,7 +278,7 @@ func TestProcurementAccountControlsRejectProtectedAccounts(t *testing.T) {
 			require.False(t, a.IsSchedulable())
 			request := ProfitPreviewRequestScope{AccountID: a.ID, PublicModel: "gpt-fixture", Scope: AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}
 			group := &Group{ID: 42, Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: 1, ProfitControlEnabled: true}
-			result := ClassifyProcurementScope(&domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}, a, request, at, group)
+			result := ClassifyProcurementScope(&domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}, a, request, at, group, false)
 			require.Equal(t, "constraints_passed", result.Product.State, "price must remain independent of account protection")
 			require.Equal(t, "fail", result.Product.EvaluatedGates.State, "protected accounts must not receive an aggregate pass")
 			require.Equal(t, "not_evaluated", result.Qualification)
@@ -337,7 +337,7 @@ func TestProcurementProductPreviewUsesOriginalGateWithoutAwardingQualification(t
 	request := ProfitPreviewRequestScope{AccountID: a.ID, PublicModel: "fixture", Scope: AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}
 	catalog := &domain.ProcurementCatalog{Version: 1, Buckets: []domain.ProcurementBucket{}}
 	group := &Group{ID: 42, Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: .15, ProfitControlEnabled: true, ProfitMinMargin: .2, ProcurementPolicy: &ProcurementPolicy{Version: 2, Revision: 3, Sources: &domain.ProcurementSources{AccountIDs: []int64{}}}}
-	result := ClassifyProcurementScope(catalog, a, request, at, group)
+	result := ClassifyProcurementScope(catalog, a, request, at, group, false)
 	require.Equal(t, "not_configured", result.State)
 	require.Equal(t, "blocked", result.Product.State)
 	require.Equal(t, ProfitPreviewClassRejectedSource, result.Product.PriceClass)
@@ -348,20 +348,20 @@ func TestProcurementProductPreviewUsesOriginalGateWithoutAwardingQualification(t
 	require.Equal(t, "not_evaluated", result.Qualification)
 	group.ProcurementPolicy.Sources.AccountIDs = []int64{901}
 	group.ProfitControlEnabled = false
-	result = ClassifyProcurementScope(catalog, a, request, at, group)
+	result = ClassifyProcurementScope(catalog, a, request, at, group, false)
 	require.Equal(t, "disabled", result.Product.State)
 	group.ProfitControlEnabled = true
 	group.Status = StatusDisabled
-	result = ClassifyProcurementScope(catalog, a, request, at, group)
+	result = ClassifyProcurementScope(catalog, a, request, at, group, false)
 	require.Equal(t, "product_inactive", result.Product.State)
 	group.Status = StatusActive
 	a.GroupIDs = nil
-	result = ClassifyProcurementScope(catalog, a, request, at, group)
+	result = ClassifyProcurementScope(catalog, a, request, at, group, false)
 	require.Equal(t, "not_associated", result.Product.State)
-	result = ClassifyProcurementScope(catalog, nil, request, at, group)
+	result = ClassifyProcurementScope(catalog, nil, request, at, group, false)
 	require.Equal(t, "not_evaluated", result.Product.State)
 	require.Equal(t, "account_unavailable", result.Product.Reason)
-	result = ClassifyProcurementScope(catalog, a, request, at, nil)
+	result = ClassifyProcurementScope(catalog, a, request, at, nil, false)
 	require.Nil(t, result.Product, "old inventory-only commands retain their response")
 }
 
@@ -405,11 +405,11 @@ func TestProcurementProductPriceDependenciesExpireBeforeControls(t *testing.T) {
 			}
 			before, err := json.Marshal(a.Extra)
 			require.NoError(t, err)
-			result := ClassifyProcurementScope(catalog, a, r, at, group)
+			result := ClassifyProcurementScope(catalog, a, r, at, group, false)
 			require.Equal(t, "constraints_passed", result.Product.State)
 			require.Equal(t, "pass", result.Product.EvaluatedGates.State)
 			require.True(t, until.Equal(*result.Product.EvaluatedGates.ValidUntil), "price evidence must expire before the account snapshot: got %s, want %s", result.Product.EvaluatedGates.ValidUntil, until)
-			later := ClassifyProcurementScope(catalog, a, r, until, group)
+			later := ClassifyProcurementScope(catalog, a, r, until, group, false)
 			require.NotEqual(t, "pass", later.Product.EvaluatedGates.State, "expiry or a new peak price requires a fresh decision")
 			after, err := json.Marshal(a.Extra)
 			require.NoError(t, err)
@@ -454,4 +454,106 @@ func TestProcurementPriceDeadlinePrecedenceAndNoExtension(t *testing.T) {
 	require.True(t, at.Truncate(time.Minute).Add(time.Minute).Equal(*procurementPriceDeadlineAt(a, nil, at)))
 	require.True(t, at.Add(ProcurementPreviewTTL).Equal(*procurementPriceDeadlineAt(nil, nil, at)))
 	require.Nil(t, procurementPriceDeadlineAt(a, nil, time.Time{}))
+}
+
+func TestProcurementCandidateCommand(t *testing.T) {
+	request := `{"requests":[{"account_id":7,"public_model":"fixture","scope":{"version":2,"protocol":"responses_http","model":"fixture","stream":false,"service_tier":"unspecified","reasoning_effort":"unspecified","capability":"text"}}],"product_group_id":42`
+	cmd, err := ParseProcurementPreviewCommand([]byte(request + `,"evaluate_candidate":true}`))
+	require.NoError(t, err)
+	raw, err := json.Marshal(cmd)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"evaluate_candidate":true`)
+	for _, bad := range []string{`null`, `0`, `"true"`, `{}`, `[]`} {
+		_, err := ParseProcurementPreviewCommand([]byte(request + `,"evaluate_candidate":` + bad + `}`))
+		require.Error(t, err)
+	}
+	_, err = ParseProcurementPreviewCommand([]byte(strings.Replace(request+`,"evaluate_candidate":true}`, `,"product_group_id":42`, ``, 1)))
+	require.Error(t, err)
+	_, err = ParseProcurementPreviewCommand([]byte(request + `,"evaluate_candidate":true,"evaluate_candidate":true}`))
+	require.Error(t, err)
+	_, err = ParseProcurementPreviewCommand([]byte(request + `,"evaluate_candidate":false}`))
+	require.NoError(t, err)
+}
+
+func TestProcurementCandidateUsesApprovedInventoryWithoutGrantingSend(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Second)
+	for _, name := range []string{"unbound", "bound", "outside source", "empty sources", "unknown sources", "missing snapshot", "old snapshot", "wrong product", "old policy", "manual limit", "account protection", "answer required", "availability required", "price failed"} {
+		t.Run(name, func(t *testing.T) {
+			a := billingApplicabilityAccount(t, at, billingApplicabilityFixture(at, billingApplicabilityEntry("responses_http", "unspecified", true)))
+			a.Status, a.Schedulable, a.GroupIDs = StatusActive, true, nil
+			request := ProfitPreviewRequestScope{AccountID: a.ID, PublicModel: "gpt-fixture", Scope: AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "gpt-fixture", ServiceTier: "unspecified", ReasoningEffort: "unspecified", Capability: "text"}}
+			catalog, err := ParseProcurementCatalogCommand([]byte(catalogCommandFixture))
+			require.NoError(t, err)
+			catalog = catalog.WithRevision(1)
+			group := &Group{ID: 42, Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: 1, ProfitControlEnabled: true, ProfitMinMargin: .2,
+				ProcurementPolicy:  &ProcurementPolicy{Version: 6, Revision: 1, Sources: &domain.ProcurementSources{}, Buckets: &domain.ProcurementBuckets{}, Quality: "not_required", Availability: "not_required", SourceGroupIDs: []int64{43}},
+				ProcurementSources: &domain.ProcurementSourceSnapshot{Version: 1, ProductGroupID: 42, PolicyRevision: 1, GroupIDs: []int64{43}, AccountIDs: []int64{a.ID}}}
+			source, aggregate := "pass", "pass"
+			switch name {
+			case "bound":
+				a.GroupIDs = []int64{42}
+			case "outside source":
+				group.ProcurementSources.AccountIDs = []int64{}
+				source, aggregate = "fail", "fail"
+			case "empty sources":
+				group.ProcurementPolicy.SourceGroupIDs = []int64{}
+				group.ProcurementSources.GroupIDs = []int64{}
+				source, aggregate = "fail", "fail"
+			case "unknown sources":
+				group.ProcurementPolicy.SourceGroupIDs = nil
+				source, aggregate = "unknown", "unknown"
+			case "missing snapshot":
+				group.ProcurementSources = nil
+				source, aggregate = "unknown", "unknown"
+			case "old snapshot":
+				group.ProcurementSources.PolicyRevision = 2
+				source, aggregate = "unknown", "unknown"
+			case "wrong product":
+				group.ProcurementSources.ProductGroupID = 44
+				source, aggregate = "unknown", "unknown"
+			case "old policy":
+				group.ProcurementPolicy.Version = 5
+				group.ProcurementPolicy.SourceGroupIDs = nil
+				source, aggregate = "unknown", "unknown"
+			case "manual limit":
+				group.ProcurementPolicy.Sources.AccountIDs = []int64{}
+				aggregate = "fail"
+			case "account protection":
+				a.Schedulable = false
+				aggregate = "fail"
+			case "answer required":
+				group.ProcurementPolicy.Quality = "current_answer"
+				aggregate = "unknown"
+			case "availability required":
+				group.ProcurementPolicy.Availability = "current_state"
+				aggregate = "unknown"
+			case "price failed":
+				group.RateMultiplier = .01
+				aggregate = "fail"
+			}
+			before, err := json.Marshal([]any{a, group, catalog})
+			require.NoError(t, err)
+			current := ClassifyProcurementScope(catalog, a, request, at, group, false)
+			require.Equal(t, 1, current.Product.Version)
+			require.Nil(t, current.Product.Candidate)
+			if name == "unbound" {
+				require.Equal(t, "not_associated", current.Product.State)
+			}
+			result := ClassifyProcurementScope(catalog, a, request, at, group, true)
+			require.Equal(t, 2, result.Product.Version)
+			require.NotNil(t, result.Product.Candidate)
+			require.Equal(t, name == "bound", result.Product.Candidate.InProduct)
+			require.Equal(t, source, result.Product.Candidate.SourceState)
+			require.Equal(t, aggregate, result.Product.EvaluatedGates.State)
+			require.Equal(t, "not_evaluated", result.Qualification)
+			if name == "unbound" || name == "bound" {
+				require.Equal(t, "constraints_passed", result.Product.State)
+			}
+			after, err := json.Marshal([]any{a, group, catalog})
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "candidate projection must not manufacture membership or mutate evidence")
+			result.Product.AssessEvidence(group.ProcurementPolicy, nil, nil, at.Add(ProcurementPreviewTTL))
+			require.NotEqual(t, "pass", result.Product.EvaluatedGates.State, "old read cannot authorize later admission")
+		})
+	}
 }

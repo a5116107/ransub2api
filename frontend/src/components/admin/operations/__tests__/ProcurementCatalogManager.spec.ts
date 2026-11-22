@@ -689,3 +689,93 @@ function qualityFixture(status: string) {
     rules: status === 'not_configured' ? [] : [{ plan_id: 12, status, reason: status === 'pass' ? 'all_samples_passed' : status === 'fail' ? 'answer_incorrect' : 'expired', samples: 1, valid_samples: valid ? 1 : 0, valid_until: valid ? '2026-11-19T00:05:00Z' : null }]
   }
 }
+
+
+describe('approved-source candidate evaluation', () => {
+  it('requires a selected product and explicitly requests candidate mode without saving anything', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w)
+    expect(w.get('[data-testid="procurement-candidate"]').attributes('disabled')).toBeDefined()
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    await w.get('[data-testid="procurement-candidate"]').setValue(true)
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const out = withGateDetails(productPreview(requests, 'not_required'))
+      Object.assign(out.results[0]!.product_procurement!, { version: 2, candidate: { in_product: false, source_state: 'pass' } })
+      return out
+    })
+    await submitPreview(w); await flushPromises()
+    expect(vi.mocked(previewProcurementScopes).mock.calls[0]![0]).toMatchObject({ product_group_id: 42, evaluate_candidate: true })
+    expect(w.get('[data-testid="product-candidate"]').text()).toContain(prefix + 'candidateNotAssociated')
+    expect(w.get('[data-testid="product-candidate"]').text()).toContain(prefix + 'candidateSourceStates.pass')
+    expect(w.text()).toContain(prefix + 'candidateBoundary')
+    expect(saveProcurementCatalog).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(31000)
+    expect(w.get('[data-testid="product-candidate"]').text()).toContain(prefix + 'candidateSourceStates.unknown')
+    await w.get('[data-testid="procurement-product"]').setValue('')
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect((w.get('[data-testid="procurement-candidate"]').element as HTMLInputElement).checked).toBe(false)
+  })
+  it.each(['legacy', 'missing', 'bad source', 'bad association', 'mixed current', 'extra metadata'])('rejects %s candidate contracts without retaining a pass', async kind => {
+    const w = await open(); await setupProbe(w)
+    await w.get('[data-testid="procurement-product"]').setValue('42')
+    await w.get('[data-testid="procurement-candidate"]').setValue(true)
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const out = withGateDetails(productPreview(requests, 'not_required')), p = out.results[0]!.product_procurement! as unknown as Record<string, unknown>
+      p.version = 2; p.candidate = { in_product: false, source_state: 'pass' }
+      if (kind === 'legacy') { p.version = 1; delete p.candidate }
+      if (kind === 'missing') delete p.candidate
+      if (kind === 'bad source') p.candidate = { in_product: false, source_state: 'future' }
+      if (kind === 'bad association') p.candidate = { in_product: 'false', source_state: 'pass' }
+      if (kind === 'mixed current') p.version = 1
+      if (kind === 'extra metadata') p.candidate = { in_product: false, source_state: 'pass', hidden: 'unknown' }
+      return out
+    })
+    await submitPreview(w); await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect(w.get('[data-testid="procurement-error"]').text()).toContain(prefix + 'previewFailed')
+    expect((w.get('[data-testid="procurement-candidate"]').element as HTMLInputElement).checked).toBe(true)
+    expect(saveProcurementCatalog).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('candidate conclusions and recovery', () => {
+  it.each(['unknown', 'fail', 'protected', 'bound'])('keeps %s separate from association and complete qualification', async state => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] }); vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w = await open(); await setupProbe(w); await w.get('[data-testid="procurement-product"]').setValue('42'); await w.get('[data-testid="procurement-candidate"]').setValue(true)
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({ requests }) => {
+      const out=withGateDetails(productPreview(requests,'not_required')), p=out.results[0]!.product_procurement!, gates=p.evaluated_gates!
+      p.version=2; p.candidate={in_product:state==='bound',source_state:['bound','protected'].includes(state)?'pass':state}
+      if(state==='unknown') { p.state='not_evaluated';p.price_valid_until=null;Object.assign(gates.gates![0]!,{state:'unknown',reason:'price_constraints_unavailable',valid_until:null});Object.assign(gates,{state:'unknown',reason:'price_constraints_unavailable',passed_gates:1}) }
+      if(state==='fail') { p.state='blocked';p.price_class='rejected_procurement_source';Object.assign(gates.gates![0]!,{state:'fail',reason:'price_constraints_failed'});Object.assign(gates,{state:'fail',reason:'price_constraints_failed',passed_gates:1}) }
+      if(state==='protected') { Object.assign(p.account_controls!,{state:'fail',reason:'scheduling_disabled'});Object.assign(gates.gates![1]!,{state:'fail',reason:'account_controls_failed'});Object.assign(gates,{state:'fail',reason:'account_controls_failed',passed_gates:1}) }
+      return out
+    })
+    await submitPreview(w);await flushPromises()
+    expect(w.get('[data-testid="product-candidate"]').text()).toContain(prefix+(state==='bound'?'candidateAssociated':'candidateNotAssociated'))
+    expect(w.get('[data-testid="product-evaluated-gates-status"]').text()).toContain(prefix+'evaluatedGatesStates.'+(state==='bound'?'pass':state==='unknown'?'unknown':'fail'))
+    expect(w.text()).toContain(prefix+'notQualified');expect(saveProcurementCatalog).not.toHaveBeenCalled()
+  })
+  it('preserves the reviewed candidate on 403 and accepts only a new explicit preview', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] }); vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w=await open();await setupProbe(w);await w.get('[data-testid="procurement-product"]').setValue('42');await w.get('[data-testid="procurement-candidate"]').setValue(true)
+    vi.mocked(previewProcurementScopes).mockRejectedValueOnce({status:403})
+    await submitPreview(w);await flushPromises();expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+    expect((w.get('[data-testid="procurement-candidate"]').element as HTMLInputElement).checked).toBe(true)
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(async ({requests})=>{const out=withGateDetails(productPreview(requests,'not_required'));Object.assign(out.results[0]!.product_procurement!,{version:2,candidate:{in_product:false,source_state:'pass'}});return out})
+    await submitPreview(w);await flushPromises();expect(w.get('[data-testid="product-candidate"]').exists()).toBe(true)
+    expect(previewProcurementScopes).toHaveBeenCalledTimes(2);expect(saveProcurementCatalog).not.toHaveBeenCalled()
+  })
+  it('does not render a candidate reply after returning to current-membership mode', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });vi.setSystemTime(new Date('2026-11-19T00:00:00Z'))
+    const w=await open();await setupProbe(w);await w.get('[data-testid="procurement-product"]').setValue('42');await w.get('[data-testid="procurement-candidate"]').setValue(true)
+    let resolve!:(value:ProcurementPreview)=>void
+    vi.mocked(previewProcurementScopes).mockImplementationOnce(()=>new Promise(done=>{resolve=done}))
+    await submitPreview(w)
+    await w.get('[data-testid="procurement-candidate"]').setValue(false)
+    const requests=vi.mocked(previewProcurementScopes).mock.calls[0]![0].requests,out=withGateDetails(productPreview(requests,'not_required'))
+    Object.assign(out.results[0]!.product_procurement!,{version:2,candidate:{in_product:false,source_state:'pass'}});resolve(out);await flushPromises()
+    expect(w.find('[data-testid="catalog-preview-result"]').exists()).toBe(false)
+  })
+})

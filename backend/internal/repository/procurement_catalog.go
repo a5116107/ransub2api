@@ -78,6 +78,14 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	if command == nil || len(command.Requests) < 1 || len(command.Requests) > 100 || command.ProductGroupID != nil && (*command.ProductGroupID < 1 || *command.ProductGroupID > domain.MaxProcurementPolicyRevision) {
 		return nil, service.ErrProcurementCatalogInvalid
 	}
+	if command.EvaluateCandidate {
+		if command.ProductGroupID == nil {
+			return nil, service.ErrProcurementCatalogInvalid
+		}
+		if err := procurementManagementAccess(ctx, *command.ProductGroupID); err != nil {
+			return nil, err
+		}
+	}
 	requests := command.Requests
 	ids := make([]int64, 0, len(requests))
 	for _, request := range requests {
@@ -149,7 +157,7 @@ func (r *channelRepository) PreviewProcurementClassification(ctx context.Context
 	}
 	qualityRules := quality.assess(out.ObservedAt)
 	for _, request := range requests {
-		result := service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt, product)
+		result := service.ClassifyProcurementScope(catalog, byID[request.AccountID], request, out.ObservedAt, product, command.EvaluateCandidate)
 		result.Quality = service.AssessQualityScopeEvidence(byID[request.AccountID], request.Scope, qualityRules[request.AccountID], out.ObservedAt, quality.limited)
 		result.Availability = service.AssessAvailabilityScopeEvidence(byID[request.AccountID], &request.Scope, availability[request.AccountID], out.ObservedAt)
 		if result.Product != nil {

@@ -41,13 +41,20 @@ type ProcurementScopeClassification struct {
 }
 
 type ProcurementPreviewCommand struct {
-	Requests       []ProfitPreviewRequestScope `json:"requests"`
-	ProductGroupID *int64                      `json:"product_group_id,omitempty"`
+	Requests          []ProfitPreviewRequestScope `json:"requests"`
+	EvaluateCandidate bool                        `json:"evaluate_candidate,omitempty"`
+	ProductGroupID    *int64                      `json:"product_group_id,omitempty"`
 }
 
 // This is a read-only projection at the group's default sale price, never a
 // user-specific price quote or a scheduling/quality/cache qualification.
+type ProcurementCandidatePreview struct {
+	InProduct   bool   `json:"in_product"`
+	SourceState string `json:"source_state"`
+}
+
 type ProcurementProductPreview struct {
+	Candidate       *ProcurementCandidatePreview       `json:"candidate,omitempty"`
 	PriceValidUntil *time.Time                         `json:"price_valid_until"`
 	AccountControls *ProcurementAccountControlsPreview `json:"account_controls"`
 	EvaluatedGates  *ProcurementEvaluatedGatesPreview  `json:"evaluated_gates,omitempty"`
@@ -349,7 +356,7 @@ func ParseProcurementCatalogCommand(raw []byte) (*domain.ProcurementCatalog, err
 func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, error) {
 	value := gjson.ParseBytes(raw)
 	fields, valid := procurementUniqueObject(value)
-	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !valid || (len(fields) != 1 && len(fields) != 2) || !value.Get("requests").IsArray() {
+	if len(raw) > 65536 || !gjson.ValidBytes(raw) || !valid || (len(fields) < 1 || len(fields) > 3) || !value.Get("requests").IsArray() {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	command := &ProcurementPreviewCommand{}
@@ -359,7 +366,19 @@ func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, err
 			return nil, ErrProcurementCatalogInvalid
 		}
 		command.ProductGroupID = &id
-	} else if len(fields) != 1 {
+	}
+	known := 1
+	if command.ProductGroupID != nil {
+		known++
+	}
+	if field, present := fields["evaluate_candidate"]; present {
+		if field.Type != gjson.True && field.Type != gjson.False {
+			return nil, ErrProcurementCatalogInvalid
+		}
+		command.EvaluateCandidate = field.Bool()
+		known++
+	}
+	if len(fields) != known || command.EvaluateCandidate && command.ProductGroupID == nil {
 		return nil, ErrProcurementCatalogInvalid
 	}
 	items := value.Get("requests").Array()
@@ -386,7 +405,7 @@ func ParseProcurementPreviewCommand(raw []byte) (*ProcurementPreviewCommand, err
 
 // ClassifyProcurementScope consumes the original U_gate and exact applicability
 // contracts. A catalog match is never a quality/cache or product qualification.
-func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Account, request ProfitPreviewRequestScope, at time.Time, product *Group) ProcurementScopeClassification {
+func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Account, request ProfitPreviewRequestScope, at time.Time, product *Group, evaluateCandidate bool) ProcurementScopeClassification {
 	result := ProcurementScopeClassification{ProfitPreviewRequestScope: request, State: "scope_unconfirmed", Applicability: "unknown", RateSource: "unknown", Qualification: "not_evaluated"}
 	if product != nil {
 		productView := *product
@@ -399,13 +418,35 @@ func ClassifyProcurementScope(catalog *domain.ProcurementCatalog, account *Accou
 		if product.ProcurementPolicy != nil {
 			projection.PolicyRevision = product.ProcurementPolicy.Revision
 		}
+		if evaluateCandidate {
+			projection.Version = 2
+			projection.Candidate = &ProcurementCandidatePreview{SourceState: "unknown"}
+			if account != nil && account.ID == request.AccountID {
+				projection.Candidate.InProduct = slices.Contains(account.GroupIDs, product.ID)
+				policy := product.ProcurementPolicy
+				// Candidate expansion requires positive, explicit group authority.
+				// Legacy original-pool limits are not an approved supply inventory.
+				if policy != nil && policy.Version >= 6 && policy.SourceGroupIDs != nil {
+					if allowed, err := policy.AllowsSourceAccount(product.ID, account.ID, product.ProcurementSources); err == nil {
+						projection.Candidate.SourceState = "fail"
+						if allowed {
+							projection.Candidate.SourceState = "pass"
+						}
+					}
+				}
+			}
+		}
 		switch {
 		case product.Status != StatusActive:
 			projection.State, projection.Reason = "product_inactive", "product_inactive"
 		case !report.EffectiveGate:
 			projection.State, projection.Reason = "disabled", "profit_gate_disabled"
-		case account != nil && !slices.Contains(account.GroupIDs, product.ID):
+		case projection.Candidate != nil && projection.Candidate.SourceState == "unknown":
+			projection.State, projection.Reason = "not_evaluated", "candidate_sources_unconfirmed"
+		case !evaluateCandidate && account != nil && !slices.Contains(account.GroupIDs, product.ID):
 			projection.State, projection.Reason = "not_associated", "account_not_in_product"
+		case verdict.Admitted && projection.Candidate != nil && projection.Candidate.SourceState == "fail":
+			projection.State, projection.PriceClass, projection.Reason = "blocked", ProfitPreviewClassRejectedSource, "candidate_source_not_approved"
 		case verdict.Admitted:
 			projection.State = "constraints_passed"
 		case verdict.PriceClass != "" && verdict.PriceClass != ProfitPreviewClassAdmitted:
