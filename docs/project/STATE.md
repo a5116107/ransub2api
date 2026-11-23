@@ -3,15 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 V3已同步c89e05c7b；panic残留2容器/2卷已回收，不CI/发布。
-证据：V3双轮6/保存排空6/旧入口6/账本12pass，0fail/skip/race；vet/lint0。
-同Key/100Key、20故障不饥饿/同槽零重发/次槽恢复及账号保全已验。
-下一步：其余scope库存/跨通道公平/V1-CN等节点；供应商与生产等待保持。
-生产上次已验.9/de8b86ed8916/c8cec584a181；120/high300、最多换线1次及60秒头/5-3-1保持。
-生产16账号/2组/432迁移及PG/Redis不动；本次未部署。
-剩余：Mac旧会话/BPS长流恢复，历史流内upstream_timeout约900秒。
-旧BPS图12/1164B策略拒删保留；历史回收证据见DECISIONS，未重试。
-原28项20done/8部分；保护资源/解除条件见DECISIONS。
+任务：D8.1 Ollama自动排空/取消发布本地已验；原28项20done/8部分。
+授权：本地实现/验证及自有功能分支同步；不CI/发布/部署。
+验证命令：go vet -tags integration -p 1 ./internal/service ./internal/repository
+验证结果：SQL46/race672/压力750pass，0fail/skip/race；vet/lint/Linux退出0。
+验证来源：855056d6c+diff4a371bb3aefd；evidence/sub2api-billing-applicability/ollama-runner-lifecycle-*。
+下一动作：提交同步已验修复；续原D8.1 Ollama双进程100组/重建验收。
+尝试：1
+阻塞：其余scope/跨通道公平、多节点/严格混版及生产待验；历史拒删保持。
+责任方：开发方/供应商/宿主维护者，详下表与DECISIONS。
+解除条件：补对应scope/真实来源证据；历史保护路径获准释放。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -70,7 +71,7 @@
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/多维/同scope汇总及判题依赖详情已验；独立基线、其余线路/覆盖与资格消费仍缺 |
 | D8 | in_progress | 原物理/Token/100队列、周期下界、本地链及倍率实钟双进程已验；其余scope/通道公平/其余执行器多节点/生产/严格混版待验 |
-| D8.1本地子项 | in_progress | 原止发/寿命、CN分层/双进程账本、倍率实钟及V3双进程100Key已验；全scope/跨通道公平/其余节点/生产待验 |
+| D8.1本地子项 | in_progress | 原止发/寿命、CN分层/双进程账本、倍率实钟/V3百Key及Ollama取消恢复已验；全scope/跨通道公平/其余节点/生产待验 |
 | D8.1 V2/V3本地链 | done | 原链及保存前止发/错误收尾、SQL重建和中英在途原因已验；非全scope/跨通道公平/多节点/生产 |
 | D9 | in_progress | .9 Goal同例/唯一用量、排空重建、120/300及429换线已验；旧Mac会话/BPS长流与D9.2仍待 |
 | R1 | done | .9/de8b86ed8916已发行上线；稳定源/制品/加载同源，四阶段回退及公网SSE/UI已验；开发在研保持 |

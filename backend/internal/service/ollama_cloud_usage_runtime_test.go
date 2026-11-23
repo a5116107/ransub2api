@@ -4,13 +4,259 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func ollamaLifecycleFixture(t *testing.T, upstream HTTPUpstream) (*OllamaCloudUsageService, *ollamaUsageTestRepo) {
+	t.Helper()
+	account := ollamaUsageAccount(9101)
+	account.Extra[OllamaCloudUsageSessionExtraKey] = "cipher:wos-session=lifecycle-fixture"
+	account.Extra[OllamaCloudUsageAutoRefreshExtraKey] = true
+	repo := &ollamaUsageTestRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}, due: []Account{*account}}
+	settings := &upstreamBillingProbeSettingRepo{values: map[string]string{SettingKeyOllamaCloudUsageSettings: `{"enabled":true,"interval_minutes":60,"debounce_minutes":1}`}}
+	return newOllamaUsageTestService(t, repo, upstream, settings, true), repo
+}
+
+func TestOllamaCloudUsageLifecycleExternalDueStopsAndDrains(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		entered, canceled, drain := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(drain) })
+		defer release()
+		upstream := &ollamaUsageHTTPStub{body: ollamaUsageFixture(t), beforeResponse: func(req *http.Request) {
+			close(entered)
+			select {
+			case <-req.Context().Done():
+				close(canceled)
+				<-drain
+			case <-drain:
+			}
+		}}
+		svc, repo := ollamaLifecycleFixture(t, upstream)
+		done := make(chan error, 1)
+		go func() { done <- svc.RunDue(t.Context()) }()
+		<-entered
+		first, second := make(chan struct{}), make(chan struct{})
+		go func() { svc.Stop(); close(first) }()
+		synctest.Wait()
+		go func() { svc.Stop(); close(second) }()
+		synctest.Wait()
+		select {
+		case <-canceled:
+		default:
+			assert.Fail(t, "Stop did not cancel the external automatic refresh")
+		}
+		for _, stopped := range []<-chan struct{}{first, second} {
+			select {
+			case <-stopped:
+				assert.Fail(t, "Stop returned while the automatic refresh was still draining")
+			default:
+			}
+		}
+		assert.Equal(t, "stopping", svc.MonitoringRuntime().State)
+		release()
+		<-first
+		<-second
+		require.ErrorIs(t, <-done, context.Canceled)
+		require.Nil(t, repo.accounts[9101].Extra[OllamaCloudUsageSnapshotExtraKey])
+		require.Empty(t, svc.refreshSlots)
+		require.Equal(t, "stopped", svc.MonitoringRuntime().State)
+	})
+}
+
+func TestOllamaCloudUsageLifecycleStoppedDueDoesNotSend(t *testing.T) {
+	upstream := &ollamaUsageHTTPStub{body: ollamaUsageFixture(t)}
+	svc, repo := ollamaLifecycleFixture(t, upstream)
+	svc.Stop()
+	assert.ErrorIs(t, svc.RunDue(t.Context()), context.Canceled)
+	assert.Zero(t, upstream.calls.Load(), "stopped automatic work must not send")
+	assert.Nil(t, repo.accounts[9101].Extra[OllamaCloudUsageSnapshotExtraKey])
+}
+
+func TestOllamaCloudUsageLifecycleCanceledRefreshPublishesNothing(t *testing.T) {
+	for _, phase := range []string{"response", "body"} {
+		for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable} {
+			t.Run(phase+"/"+http.StatusText(status), func(t *testing.T) {
+				cause := errors.New("refresh caller retired")
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				var upstream HTTPUpstream = &ollamaUsageHTTPStub{body: ollamaUsageFixture(t), status: status,
+					beforeResponse: func(*http.Request) { cancel(cause) }}
+				if phase == "body" {
+					upstream = ollamaLifecycleLateBodyUpstream{body: ollamaUsageFixture(t), status: status, onRead: func() { cancel(cause) }}
+				}
+				svc, repo := ollamaLifecycleFixture(t, upstream)
+				old := time.Now().UTC().Add(-2 * time.Hour)
+				previous := &OllamaCloudUsageSnapshot{Status: OllamaCloudUsageStatusOK, Data: &OllamaCloudUsageData{Plan: "previous"},
+					FetchedAt: &old, LastAttemptAt: old, NextRefreshAt: old}
+				repo.accounts[9101].Extra[OllamaCloudUsageSnapshotExtraKey] = previous
+				_, err := svc.Refresh(ctx, 9101)
+				assert.ErrorIs(t, err, cause)
+				assert.Same(t, previous, repo.accounts[9101].Extra[OllamaCloudUsageSnapshotExtraKey], "late transport replies must not replace prior evidence or renew its freshness")
+				require.Equal(t, "cipher:wos-session=lifecycle-fixture", repo.accounts[9101].Extra[OllamaCloudUsageSessionExtraKey])
+				require.Equal(t, true, repo.accounts[9101].Extra[OllamaCloudUsageAutoRefreshExtraKey])
+				if stub, ok := upstream.(*ollamaUsageHTTPStub); ok {
+					require.EqualValues(t, 1, stub.calls.Load())
+				}
+				require.Empty(t, svc.refreshSlots)
+			})
+		}
+	}
+}
+
+func TestOllamaCloudUsageLifecycleManualRefreshAfterStop(t *testing.T) {
+	upstream := &ollamaUsageHTTPStub{body: ollamaUsageFixture(t)}
+	svc, _ := ollamaLifecycleFixture(t, upstream)
+	svc.Stop()
+	state, err := svc.Refresh(t.Context(), 9101)
+	require.NoError(t, err)
+	require.Equal(t, OllamaCloudUsageStatusOK, state.Snapshot.Status)
+	require.EqualValues(t, 1, upstream.calls.Load())
+}
+
+type ollamaLifecycleLateBody struct {
+	io.ReadCloser
+	ctx    context.Context
+	onRead func()
+}
+
+func (b *ollamaLifecycleLateBody) Read(p []byte) (int, error) {
+	if b.onRead != nil {
+		b.onRead()
+	}
+	<-b.ctx.Done()
+	return b.ReadCloser.Read(p)
+}
+
+type ollamaLifecycleLateBodyUpstream struct {
+	HTTPUpstream
+	body   []byte
+	status int
+	onRead func()
+}
+
+func (u ollamaLifecycleLateBodyUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	status := u.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"text/html"}},
+		Body: &ollamaLifecycleLateBody{ReadCloser: io.NopCloser(strings.NewReader(string(u.body))), ctx: req.Context(), onRead: u.onRead}, Request: req}, nil
+}
+
+func TestOllamaCloudUsageLifecycleRequestTimeoutIsNotPassingEvidence(t *testing.T) {
+	for _, phase := range []string{"response", "body"} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				body := ollamaUsageFixture(t)
+				var upstream HTTPUpstream = &ollamaUsageHTTPStub{body: body, beforeResponse: func(req *http.Request) { <-req.Context().Done() }}
+				if phase == "body" {
+					upstream = ollamaLifecycleLateBodyUpstream{body: body}
+				}
+				svc, _ := ollamaLifecycleFixture(t, upstream)
+				state, err := svc.Refresh(t.Context(), 9101)
+				require.NoError(t, err, "the transport deadline is a supplier failure, not caller cancellation")
+				require.Equal(t, OllamaCloudUsageStatusFailed, state.Snapshot.Status)
+				require.Equal(t, 1, state.Snapshot.FailureCount)
+				require.Nil(t, state.Snapshot.FetchedAt)
+				require.NoError(t, t.Context().Err())
+				require.Empty(t, svc.refreshSlots)
+			})
+		})
+	}
+}
+
+func TestOllamaCloudUsageLifecycleQueuedDueStopsWithoutRescan(t *testing.T) {
+	entered, canceled, drain := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(drain) })
+	defer release()
+	upstream := &ollamaUsageHTTPStub{body: ollamaUsageFixture(t), beforeResponse: func(req *http.Request) {
+		close(entered)
+		<-req.Context().Done()
+		close(canceled)
+		<-drain
+	}}
+	svc, base := ollamaLifecycleFixture(t, upstream)
+	var scans atomic.Int64
+	svc.accountRepo = &ollamaRuntimeRepo{ollamaUsageTestRepo: base, list: func(context.Context) ([]Account, error) {
+		scans.Add(1)
+		account, err := base.GetByID(t.Context(), 9101)
+		if err != nil {
+			return nil, err
+		}
+		return []Account{*account}, nil
+	}}
+	results := make(chan error, 21)
+	go func() { results <- svc.RunDue(t.Context()) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ollama automatic refresh did not reach its request")
+	}
+	for range 20 {
+		ctx := &billingProbeLifecycleContext{Context: t.Context(), attached: make(chan struct{})}
+		go func() { results <- svc.RunDue(ctx) }()
+		select {
+		case <-ctx.attached:
+		case <-time.After(5 * time.Second):
+			t.Fatal("automatic refresh did not register its caller context")
+		}
+	}
+	stopped := make(chan struct{})
+	go func() { svc.Stop(); close(stopped) }()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("automatic refresh did not receive shutdown cancellation")
+	}
+	require.EqualValues(t, 1, scans.Load())
+	release()
+	for range 21 {
+		select {
+		case err := <-results:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(5 * time.Second):
+			t.Fatal("queued automatic refresh did not drain")
+		}
+	}
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("automatic refresh shutdown did not complete")
+	}
+	require.EqualValues(t, 1, scans.Load())
+	require.EqualValues(t, 1, upstream.calls.Load())
+	require.Empty(t, svc.refreshSlots)
+	require.Nil(t, base.accounts[9101].Extra[OllamaCloudUsageSnapshotExtraKey])
+}
+
+func TestOllamaCloudUsageLifecycleConcurrentStartRunStop(t *testing.T) {
+	for range 25 {
+		repo := &ollamaUsageTestRepo{upstreamBillingProbeAccountRepo: &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{}}}
+		svc := newOllamaUsageTestService(t, repo, &ollamaUsageHTTPStub{}, &upstreamBillingProbeSettingRepo{}, true)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() { defer wg.Done(); <-start; svc.Start() }()
+		go func() { defer wg.Done(); <-start; _ = svc.RunDue(t.Context()) }()
+		go func() { defer wg.Done(); <-start; svc.Stop() }()
+		close(start)
+		wg.Wait()
+		svc.Stop()
+		svc.Start()
+		require.ErrorIs(t, svc.RunDue(t.Context()), context.Canceled)
+		require.Empty(t, svc.refreshSlots)
+	}
+}
 
 func TestOllamaMonitoringRuntimeLifecycleAndProjection(t *testing.T) {
 	var missing *OllamaCloudUsageService

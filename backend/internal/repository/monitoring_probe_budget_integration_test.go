@@ -43,20 +43,9 @@ type ollamaBudgetFixtureEncryptor struct{}
 func (ollamaBudgetFixtureEncryptor) Encrypt(v string) (string, error) { return v, nil }
 func (ollamaBudgetFixtureEncryptor) Decrypt(v string) (string, error) { return v, nil }
 
-func TestOllamaCloudUsageMonitoringBudgetHTTPPostgresSessionAndRecovery(t *testing.T) {
-	db, client := newBillingAuditDatabase(t)
-	var calls atomic.Int32
-	body, err := os.ReadFile("../service/testdata/ollama_settings_usage.html")
-	require.NoError(t, err)
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/settings" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") == "" {
-			http.Error(w, "unexpected settings request", http.StatusBadRequest)
-			return
-		}
-		calls.Add(1)
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write(body)
-	}))
+func ollamaBudgetTestUpstream(t *testing.T, handler http.HandlerFunc) service.HTTPUpstream {
+	t.Helper()
+	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
 	roots := x509.NewCertPool()
 	roots.AddCert(server.Certificate())
@@ -67,9 +56,25 @@ func TestOllamaCloudUsageMonitoringBudgetHTTPPostgresSessionAndRecovery(t *testi
 	t.Cleanup(transport.CloseIdleConnections)
 	httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	upstream := gatewayPinDelegate{call: func(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return gatewayPinDelegate{call: func(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 		return httpClient.Do(req)
 	}}
+}
+
+func TestOllamaCloudUsageMonitoringBudgetHTTPPostgresSessionAndRecovery(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	var calls atomic.Int32
+	body, err := os.ReadFile("../service/testdata/ollama_settings_usage.html")
+	require.NoError(t, err)
+	upstream := ollamaBudgetTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/settings" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") == "" {
+			http.Error(w, "unexpected settings request", http.StatusBadRequest)
+			return
+		}
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(body)
+	})
 	create := func(name, cookie string) *service.Account {
 		return mustCreateAccount(t, client, &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
 			Status: service.StatusActive, Schedulable: true, Concurrency: 2, Credentials: map[string]any{"api_key": name, "base_url": "https://ollama.com"},

@@ -520,7 +520,7 @@ func (s *OllamaCloudUsageService) runLoop() {
 		case <-s.parentCtx.Done():
 			return
 		case <-ticker.C:
-			if err := s.RunDue(s.parentCtx); err != nil {
+			if err := s.RunDue(s.parentCtx); err != nil && s.parentCtx.Err() == nil {
 				logger.LegacyPrintf("service.ollama_cloud_usage", "run_due_failed: err=%v", err)
 			}
 		}
@@ -761,9 +761,26 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 	if s == nil || s.accountRepo == nil {
 		return nil
 	}
+	// External automatic ticks share Stop's drain; manual Refresh keeps its
+	// caller lifetime. Admission and Wait use the same lifecycle lock.
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return context.Canceled
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+	defer s.wg.Done()
+	ctx, cancelRun := context.WithCancelCause(ctx)
+	stopParent := context.AfterFunc(s.parentCtx, func() { cancelRun(context.Cause(s.parentCtx)) })
+	defer stopParent()
+	defer cancelRun(nil)
 	s.cycleMu.Lock()
 	defer s.cycleMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	if err := context.Cause(s.parentCtx); err != nil {
+		cancelRun(err)
+	}
+	if err := context.Cause(ctx); err != nil {
 		return err
 	}
 	settings, err := s.GetSettings(ctx)
@@ -826,6 +843,9 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 		expected := account
 		group.Go(func() error {
 			if _, refreshErr := s.refreshAccount(ctx, accountID, settings, true); refreshErr != nil {
+				if ctx.Err() != nil {
+					return nil // Cancellation is not a supplier or identity failure.
+				}
 				if s.monitoringDeferral(accountID, refreshErr) != nil {
 					return nil
 				}
@@ -840,12 +860,18 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 			return nil
 		})
 	}
-	return group.Wait()
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	return context.Cause(ctx)
 }
 
 func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, accountID int64, settings *OllamaCloudUsageSettings, requireEnabled bool) (*OllamaCloudUsageSnapshot, error) {
 	if s == nil || s.accountRepo == nil {
 		return nil, ErrOllamaCloudUsageUnavailable
+	}
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
 	}
 	if settings == nil {
 		settings = defaultOllamaCloudUsageSettings()
@@ -866,6 +892,9 @@ func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, accountID 
 			defer func() { <-s.refreshSlots }()
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		}
+		if err := context.Cause(ctx); err != nil {
+			return nil, err
 		}
 		account, loadErr := s.accountRepo.GetByID(ctx, accountID)
 		if loadErr != nil {
@@ -971,14 +1000,26 @@ func (s *OllamaCloudUsageService) refreshLoadedAccount(ctx context.Context, acco
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("Cookie", cookie)
 	req.Header.Set("User-Agent", "sub2api-ollama-usage/1")
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if canceled := context.Cause(ctx); canceled != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, canceled
+	}
 	if local := monitoringProbeLocalError(requestCtx); local != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
 		return nil, local
 	}
-	if err != nil {
+	if err != nil || requestCtx.Err() != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "request_failed", 0, false)
 	}
 	if resp == nil || resp.Body == nil {
@@ -987,6 +1028,12 @@ func (s *OllamaCloudUsageService) refreshLoadedAccount(ctx context.Context, acco
 	body, readErr := ReadMonitoringProbeResponse(requestCtx, resp, ollamaCloudUsageMaxBodyBytes+1)
 	if IsMonitoringProbeBudgetFailure(readErr) {
 		return nil, readErr
+	}
+	if canceled := context.Cause(ctx); canceled != nil {
+		return nil, canceled
+	}
+	if requestCtx.Err() != nil {
+		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_read_failed", 0, false)
 	}
 	if resp.Request != nil && !isExactOllamaCloudSettingsURL(resp.Request.URL) {
 		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_host_mismatch", 0, false)
@@ -1065,6 +1112,9 @@ func (s *OllamaCloudUsageService) persistFailure(
 }
 
 func (s *OllamaCloudUsageService) updateSnapshot(ctx context.Context, account *Account, snapshot *OllamaCloudUsageSnapshot) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	writer, ok := s.accountRepo.(ollamaCloudUsageRepository)
 	if !ok {
 		return ErrOllamaCloudUsageUnavailable
