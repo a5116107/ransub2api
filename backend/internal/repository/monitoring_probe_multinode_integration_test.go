@@ -82,7 +82,7 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 		runMonitoringBillingNode(t, command, db, budget)
 		return
 	}
-	if command.Mode == "v3" || command.Mode == "group" || command.Mode == "scheduled" {
+	if command.Mode == "v3" || command.Mode == "group" || command.Mode == "scheduled" || command.Mode == "v2" {
 		runMonitoringGroupProbeNode(t, command, db, budget)
 		return
 	}
@@ -252,12 +252,13 @@ func runMonitoringGroupProbeNode(t *testing.T, command monitoringBudgetNodeComma
 	groups := service.NewPelicanGroupTestService(NewPelicanGroupTestRepository(db), NewGroupRepository(client, db), nil, gateway, concurrency, tester, nil, nil)
 	if command.Mode == "group" {
 		groups.RunDue(t.Context(), command.Tick)
-	} else if command.Mode == "scheduled" {
+	} else if command.Mode == "scheduled" || command.Mode == "v2" {
 		original := NewScheduledTestPlanRepository(db)
 		batches, ok := original.(service.QualitySharedBatchRepository)
 		require.True(t, ok)
 		plans := &monitoringScheduledNodePlans{ScheduledTestPlanRepository: original, QualitySharedBatchRepository: batches, done: make(chan struct{})}
 		monitor := service.ProvideChannelMonitorV2Service(NewChannelMonitorV2Repository(db), settings, groups)
+		budget.SetGroupProbeQueues(monitor, nil)
 		runtime := &config.Config{Timezone: cfg.Timezone, Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
 		runner := service.ProvideScheduledTestRunnerService(plans,
 			service.NewScheduledTestService(NewScheduledTestPlanRepository(db), NewScheduledTestResultRepository(db)), tester, nil,
@@ -268,6 +269,16 @@ func runMonitoringGroupProbeNode(t *testing.T, command monitoringBudgetNodeComma
 		case <-plans.done:
 		case <-time.After(80 * time.Second):
 			t.Fatal("original scheduled cron did not finish its first real batch")
+		}
+		if command.Mode == "v2" {
+			// An empty account inventory finishes before the parallel candy batch.
+			// Read the existing runtime projection; do not stop its parent early.
+			require.Eventually(t, func() bool {
+				summary, err := budget.Summary(t.Context())
+				return err == nil && summary != nil && summary.Coverage != nil && summary.Coverage.GroupProbeQueues != nil &&
+					summary.Coverage.GroupProbeQueues.V2 != nil && summary.Coverage.GroupProbeQueues.V2.Cycle != nil &&
+					summary.Coverage.GroupProbeQueues.V2.Cycle.FinishedAt != nil
+			}, 20*time.Second, 20*time.Millisecond, "original candy batch must settle before its cron parent stops")
 		}
 		runner.Stop()
 	} else {
@@ -290,7 +301,7 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	lifetime := 30 * time.Second
-	if command.Mode == "scheduled" {
+	if command.Mode == "scheduled" || command.Mode == "v2" {
 		lifetime = 95 * time.Second // A real minute boundary plus the original ten-second delay.
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), lifetime)
