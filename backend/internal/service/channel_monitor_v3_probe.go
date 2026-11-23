@@ -385,11 +385,11 @@ func (p *ChannelMonitorV3Prober) prune(ctx context.Context, availabilityRange st
 }
 
 func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonitorV3ProbeTarget, slot time.Time, slotMinutes int) (run monitoringProbeQueueRun) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return
 	}
 	group, err := p.groups.groups.GetByID(ctx, target.GroupID)
-	if err != nil || group == nil || group.Status != StatusActive || ctx.Err() != nil {
+	if err != nil || group == nil || group.Status != StatusActive || ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return
 	}
 	id, err := p.repo.ClaimProbe(ctx, target.GroupID, target.Model, slot, slotMinutes)

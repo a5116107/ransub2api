@@ -90,6 +90,9 @@ func (q *monitoringProbeQueue) order(targets, due []monitoringProbeQueueKey) {
 // Older tiers drain first: a recent fast job must not spend the last budget
 // while an older one is still acquiring its scheduler or physical slot.
 func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQueueKey, run func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun) {
+	ctx = withMonitoringProbeDispatchStop(ctx)
+	dispatch := ctx.Value(monitoringProbeDispatchStopKey{}).(*monitoringProbeDispatchStop)
+	stopSignal := dispatch.stopped
 	q.observeState("running")
 	type finished struct {
 		key monitoringProbeQueueKey
@@ -106,7 +109,10 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 		age = q.turns[due[0]].served
 	}
 	for {
-		for !exhausted && ctx.Err() == nil && active < monitoringProbeQueueWorkers && next < len(due) {
+		if denial := dispatch.denial.Load(); denial != nil {
+			exhausted, lastDenial, stopSignal = true, denial, nil
+		}
+		for !exhausted && !monitoringProbeDispatchStopped(ctx) && ctx.Err() == nil && active < monitoringProbeQueueWorkers && next < len(due) {
 			key := due[next]
 			if q.turns[key].served != age {
 				break
@@ -146,7 +152,14 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 			q.finishRuntime(state)
 			return
 		}
-		result := <-done
+		var result finished
+		select {
+		case <-stopSignal:
+			// A sample can stop dispatch before its bounded save returns.
+			// Keep draining the original workers and count only their exits.
+			continue
+		case result = <-done:
+		}
 		active--
 		finishedCount++
 		if result.run.budgetDeferral != nil {
@@ -184,18 +197,26 @@ func monitoringProbeBudgetStopsQueue(denial *MonitoringProbeBudgetDenial) bool {
 // work, grading, independent result storage or lease cleanup.
 type monitoringProbeDispatchStopKey struct{}
 
+type monitoringProbeDispatchStop struct {
+	denial  atomic.Pointer[MonitoringProbeBudgetDenial]
+	stopped chan struct{}
+}
+
 func withMonitoringProbeDispatchStop(ctx context.Context) context.Context {
-	return context.WithValue(ctx, monitoringProbeDispatchStopKey{}, &atomic.Bool{})
+	return context.WithValue(ctx, monitoringProbeDispatchStopKey{}, &monitoringProbeDispatchStop{stopped: make(chan struct{})})
 }
 
 func monitoringProbeDispatchStopped(ctx context.Context) bool {
-	stop, _ := ctx.Value(monitoringProbeDispatchStopKey{}).(*atomic.Bool)
-	return stop != nil && stop.Load()
+	stop, _ := ctx.Value(monitoringProbeDispatchStopKey{}).(*monitoringProbeDispatchStop)
+	return stop != nil && stop.denial.Load() != nil
 }
 
 func stopMonitoringProbeDispatch(ctx context.Context, denial *MonitoringProbeBudgetDenial) {
-	if stop, ok := ctx.Value(monitoringProbeDispatchStopKey{}).(*atomic.Bool); ok && monitoringProbeBudgetStopsQueue(denial) {
-		stop.Store(true)
+	if stop, ok := ctx.Value(monitoringProbeDispatchStopKey{}).(*monitoringProbeDispatchStop); ok && monitoringProbeBudgetStopsQueue(denial) {
+		copy := *denial
+		if stop.denial.CompareAndSwap(nil, &copy) {
+			close(stop.stopped)
+		}
 	}
 }
 

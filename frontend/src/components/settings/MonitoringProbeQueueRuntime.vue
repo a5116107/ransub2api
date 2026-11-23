@@ -78,7 +78,9 @@ function cycle(value: QueueRuntime | null, scan: ReturnType<typeof inventory>) {
   if (run.oldest_pending_at !== null && (!timestamp(run.oldest_pending_at) || Date.parse(run.oldest_pending_at) > Date.parse(run.started_at))) return null
   if (run.queued + run.active > 0 && run.oldest_pending_at === null) return null
   const denial = run.budget_deferral
-  if (denial !== null && (!denial || typeof denial.reason !== 'string' || typeof denial.scope !== 'string' || typeof denial.retry_at !== 'string' || run.deferred === 0)) return null
+  if (denial !== null && (!denial || typeof denial.reason !== 'string' || typeof denial.scope !== 'string' || typeof denial.retry_at !== 'string')) return null
+  if (denial !== null && run.deferred === 0 && (value!.state !== 'running' || run.active === 0 ||
+    ['key', 'key_minute', 'site', 'site_minute', 'plugin'].includes(denial.scope))) return null
   if (run.deferred > 0 && denial === null) return null
   return run
 }

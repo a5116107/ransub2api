@@ -2,6 +2,7 @@ import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { afterEach, expect, it } from 'vitest'
 import MonitoringProbeQueueRuntime from './MonitoringProbeQueueRuntime.vue'
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 import type { MonitoringProbeGroupQueues, MonitoringProbeQueueRuntime as QueueRuntime } from '@/types/monitoringProbeBudget'
 import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
@@ -35,6 +36,36 @@ it.each(['en', 'zh'])('separates queue progress from quality and physical usage 
   expect(wrapper.text()).toContain(locale === 'zh' ? '退出不代表检测通过' : 'Exiting is not passing')
   expect(wrapper.text()).toContain(locale === 'zh' ? '不是账号数或物理请求数' : 'not account or physical-request counts')
   expect(wrapper.text()).toContain(locale === 'zh' ? '不代表' : 'not')
+})
+
+it.each(['en', 'zh'])('shows a global budget stop while admitted workers still drain in %s', async locale => {
+  const value = runtime()
+  value.state = 'running'
+  Object.assign(value.cycle!, { finished_at: null, queued: 4, active: 4, finished: 0, deferred: 0 })
+  const wrapper = open({ v2: value }, locale)
+  const panel = () => wrapper.get('[data-group-probe-queue="v2"]')
+  expect(panel().get('[data-testid="group-queue-cycle-v2"]').findAll('dd').map(n => n.text())).toEqual(['4', '4', '0', '0'])
+  expect(panel().findComponent(MonitoringProbeBudgetNotice).exists()).toBe(true)
+  expect(panel().text()).not.toContain(locale === 'zh' ? '本轮数量未知' : 'Cycle counts unknown')
+  const completed = runtime()
+  Object.assign(completed.cycle!, { queued: 4, active: 0, finished: 4, deferred: 1 })
+  await wrapper.setProps({ queues: { v2: completed } })
+  expect(panel().get('[data-testid="group-queue-cycle-v2"]').findAll('dd').map(n => n.text())).toEqual(['4', '0', '4', '1'])
+  expect(panel().findComponent(MonitoringProbeBudgetNotice).exists()).toBe(true)
+  const recovered = runtime()
+  recovered.state = 'idle'
+  Object.assign(recovered.cycle!, { queued: 0, active: 0, finished: 8, deferred: 0, oldest_pending_at: null, budget_deferral: null })
+  await wrapper.setProps({ queues: { v2: recovered } })
+  expect(panel().findComponent(MonitoringProbeBudgetNotice).exists()).toBe(false)
+  expect(panel().get('[data-testid="group-queue-state-v2"]').text()).toContain(locale === 'zh' ? '本轮已结束' : 'Cycle finished')
+})
+
+it.each(['key', 'key_minute', 'site', 'site_minute', 'plugin'])('does not invent an early global pause from a %s deferral', scope => {
+  const value = runtime()
+  value.state = 'running'
+  Object.assign(value.cycle!, { finished_at: null, queued: 4, active: 4, finished: 0, deferred: 0 })
+  value.cycle!.budget_deferral!.scope = scope
+  expect(open({ v2: value }).find('[data-testid="group-queue-cycle-v2"]').exists()).toBe(false)
 })
 
 it.each(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable'])('localizes the %s observation without treating it as a health verdict', state => {

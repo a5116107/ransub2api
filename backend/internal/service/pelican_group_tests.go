@@ -439,11 +439,6 @@ func (s *PelicanGroupTestService) runSamples(ctx context.Context, plan *PelicanG
 		go func(index int) {
 			defer wg.Done()
 			results[index] = s.runSample(ctx, plan, group)
-			// Signal from each finished sample before waiting for slower sibling
-			// samples or the independent storage path. Do not cancel either.
-			if results[index] != nil {
-				stopMonitoringProbeDispatch(ctx, results[index].BudgetDeferral)
-			}
 		}(i)
 	}
 	wg.Wait()
@@ -468,6 +463,9 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 				result.CostUSD = nil
 			}
 			result.CostIncomplete = incomplete || (attempted && !priced)
+			// The original group, V2 and V3 callers all save after this return.
+			// Stop new claims now, without canceling admitted work or storage.
+			stopMonitoringProbeDispatch(ctx, result.BudgetDeferral)
 		}
 	}()
 	defer func() {

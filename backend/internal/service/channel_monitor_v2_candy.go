@@ -219,11 +219,11 @@ func (cfg ChannelMonitorV2Config) CandyProbeAllowed(probe ChannelMonitorV2CandyP
 }
 
 func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe ChannelMonitorV2CandyProbe, cfg *ChannelMonitorV2Config, tick time.Time) (run monitoringProbeQueueRun) {
-	if ctx.Err() != nil || !s.settings.GetChannelMonitorRuntime(ctx).V2Active() {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) || !s.settings.GetChannelMonitorRuntime(ctx).V2Active() {
 		return
 	}
 	group, err := s.groups.groups.GetByID(ctx, probe.GroupID)
-	if err != nil || !cfg.CandyProbeAllowed(probe, group) || ctx.Err() != nil {
+	if err != nil || !cfg.CandyProbeAllowed(probe, group) || ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return
 	}
 	slot := tick.UTC().Truncate(time.Duration(probe.IntervalMinutes) * time.Minute)
