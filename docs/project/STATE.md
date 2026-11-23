@@ -3,12 +3,12 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1共享响应取消/期限保全本地已验；原28项20done/8部分。
+任务：D8.1共享响应/Codex请求期限保全本地已验；原28项20done/8部分。
 授权：本地实现/验证及自有功能分支同步；不CI/发布/部署。
 验证命令：go test -tags integration -race（定向双轮，详DECISIONS）
-验证结果：SQL96/压力1200/调用方236pass；unit1740pass/8原skip；静态/Linux0。
-验证来源：3f7cf9488+de1eb8cf5347；evidence/sub2api-billing-applicability/quota-response-cancellation-*。
-下一动作：提交同步后续Codex配额读取的15秒请求ctx边界；父验收不提前关闭。
+验证结果：unit426/SQL80/压力50pass，0fail/skip/race；vet/lint/Linux0。
+验证来源：49e9b6a91+666335eb4895；evidence/sub2api-billing-applicability/codex-quota-deadline-*。
+下一动作：原D8.1其余执行器多节点/跨通道公平，既有scope与混版父验收仍开放。
 尝试：1
 阻塞：实际scope/独立基线/缓存域证据及历史拒删；其余开发/生产验收仍待完成。
 责任方：开发方/供应商/宿主维护者，详下表与DECISIONS。

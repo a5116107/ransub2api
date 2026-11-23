@@ -20,6 +20,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/stretchr/testify/require"
 )
 
@@ -227,6 +228,44 @@ func TestCNProviderQuotaDeadlinePreservesPreviousEvidence(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestCodexUsageProbeMonitoringRequestDeadlinePreservesHeaders(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	account := codexProbeFixtureAccount()
+	codexProbeLoopback(t, account, server)
+	client, err := httppool.GetClient(httppool.Options{ProxyURL: account.Proxy.URL(), Timeout: 15 * time.Second, ResponseHeaderTimeout: 10 * time.Second})
+	require.NoError(t, err)
+	original := client.Transport
+	t.Cleanup(func() { client.Transport = original })
+	synctest.Test(t, func(t *testing.T) {
+		var requests, closed int
+		client.Transport = codexProbeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests++
+			require.Equal(t, "chatgpt.com", req.URL.Host)
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"},
+				"X-Codex-Primary-Used-Percent": []string{"0"}, "X-Codex-Primary-Window-Minutes": []string{"300"}},
+				Body: &monitoringBoundaryResponseBody{Reader: strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":3}}}\n\n"),
+					beforeRead: func() { <-req.Context().Done() }, onClose: func() { closed++ }}, Request: req}, nil
+		})
+		repo := &codexProbeRecoveryRepo{accountUsageCodexProbeRepo: accountUsageCodexProbeRepo{updateExtraCh: make(chan map[string]any, 1)}, cleared: make(chan struct{}, 1)}
+		svc := &AccountUsageService{accountRepo: repo}
+		budget := &monitoringBudgetRepoStub{}
+		ctx := NewMonitoringProbeBudgetService(budget).Context(t.Context(), "https://chatgpt.com", false)
+		updates, err := svc.probeOpenAICodexSnapshot(ctx, account)
+		synctest.Wait()
+		require.ErrorIs(t, err, context.DeadlineExceeded, "the nested 15-second request deadline, not the still-live parent, owns publication")
+		require.Empty(t, updates)
+		require.Empty(t, repo.updateExtraCh)
+		require.Empty(t, repo.cleared, "late zero-usage headers must not recover the prior cooldown")
+		require.Equal(t, 77.0, account.Extra["codex_5h_used_percent"])
+		require.Equal(t, 1, requests)
+		require.Equal(t, 1, closed)
+		require.Equal(t, 1, budget.released)
+		require.Equal(t, []MonitoringProbeTokenUsage{{Reported: true, Tokens: 7}}, budget.usages)
+		require.NoError(t, ctx.Err())
+	})
 }
 
 func TestCNProviderBalanceCheckMonitoringBudgetDispatchAndRecovery(t *testing.T) {

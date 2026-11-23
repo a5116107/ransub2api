@@ -14,7 +14,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +24,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
@@ -415,6 +418,122 @@ func TestCNProviderBalanceDeadlineHTTPPostgresEvidenceAndRecovery(t *testing.T) 
 	var usage int64
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&usage))
 	require.Zero(t, usage)
+}
+
+func TestCodexQuotaRequestDeadlineHTTPPostgresEvidenceAndRecovery(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" || r.Host != "chatgpt.com" || r.Header.Get("Authorization") != "Bearer codex-deadline-fixture" {
+			http.Error(w, "unexpected codex quota fixture request", http.StatusBadRequest)
+			return
+		}
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-codex-primary-used-percent", "0")
+		w.Header().Set("x-codex-primary-window-minutes", "300")
+		w.Header().Set("x-codex-primary-reset-after-seconds", "18000")
+		w.Header().Set("x-codex-secondary-used-percent", "0")
+		w.Header().Set("x-codex-secondary-window-minutes", "10080")
+		w.Header().Set("x-codex-secondary-reset-after-seconds", "604800")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":3,\"total_tokens\":7}}}\n\n")
+	}))
+	t.Cleanup(server.Close)
+	limited, reset := time.Now().UTC().Add(-time.Minute), time.Now().UTC().Add(time.Hour)
+	account := mustCreateAccount(t, client, &service.Account{Name: "codex-quota-deadline", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Status: service.StatusActive, Schedulable: true, Concurrency: 2, RateLimitedAt: &limited, RateLimitResetAt: &reset,
+		Credentials: map[string]any{"access_token": "codex-deadline-fixture", "chatgpt_account_id": "deadline-fixture"},
+		Extra:       map[string]any{"codex_5h_used_percent": 77.0, "codex_usage_updated_at": "2026-01-01T00:00:00Z", "manual_note": "preserved"}})
+	row := func() string {
+		t.Helper()
+		var raw string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, account.ID).Scan(&raw))
+		return raw
+	}
+	before := row()
+	host, portText, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err)
+	proxy := &service.Proxy{Protocol: "http", Host: host, Port: port}
+	httpClient, err := httppool.GetClient(httppool.Options{ProxyURL: proxy.URL(), Timeout: 15 * time.Second, ResponseHeaderTimeout: 10 * time.Second})
+	require.NoError(t, err)
+	baseURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	original := httpClient.Transport
+	var delay atomic.Bool
+	delay.Store(true)
+	httpClient.Transport = githubReleaseRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		copy := req.Clone(req.Context())
+		copy.URL.Scheme, copy.URL.Host = baseURL.Scheme, baseURL.Host
+		response, err := http.DefaultTransport.RoundTrip(copy)
+		if err != nil {
+			return response, err
+		}
+		body, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return nil, err
+		}
+		if delay.Load() {
+			<-req.Context().Done()
+		}
+		response.Body, response.Request = io.NopCloser(strings.NewReader(string(body))), req
+		return response, nil
+	})
+	t.Cleanup(func() { httpClient.Transport = original; httppool.EvictProxyClients(proxy.URL()) })
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 1
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	run := func() *service.UsageInfo {
+		t.Helper()
+		account, err := accounts.GetByID(ctx, account.ID)
+		require.NoError(t, err)
+		proxyID := int64(1)
+		account.ProxyID, account.Proxy = &proxyID, proxy
+		usageService := service.NewAccountUsageService(accounts, nil, nil, nil, nil, nil, nil, nil, service.NewUsageCache(), nil, nil)
+		callCtx := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)).Context(ctx, "https://chatgpt.com", false)
+		usage, err := usageService.GetUsageForAccount(callCtx, account, true)
+		require.NoError(t, err, "upstream timeout keeps the existing usage fallback, not a fabricated fresh snapshot")
+		return usage
+	}
+	usage := run()
+	require.NotNil(t, usage.FiveHour)
+	require.Equal(t, 77.0, usage.FiveHour.Utilization)
+	require.Equal(t, before, row(), "late zero-usage headers must not renew evidence or clear the original cooldown")
+	summary, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, summary.DayUsed)
+	require.EqualValues(t, 7, summary.DayTokens, "the complete returned usage is charged even when its header evidence expires")
+	require.Zero(t, summary.ActiveRequests)
+	require.Zero(t, summary.UsagePending)
+	require.Zero(t, summary.UsageUnknown)
+	delay.Store(false)
+	policy.RequestsPerDay = 2
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	usage = run()
+	require.Equal(t, 0.0, usage.FiveHour.Utilization)
+	require.Eventually(t, func() bool {
+		fresh, err := accounts.GetByID(ctx, account.ID)
+		return err == nil && fresh.RateLimitedAt == nil && fresh.RateLimitResetAt == nil && fresh.Extra["codex_5h_used_percent"] == 0.0
+	}, 5*time.Second, 5*time.Millisecond, "fresh in-deadline response must persist and recover only the observed cooldown")
+	summary, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, calls.Load())
+	require.EqualValues(t, 2, summary.DayUsed)
+	require.EqualValues(t, 14, summary.DayTokens)
+	require.EqualValues(t, 2, summary.UsageReported)
+	require.Zero(t, summary.UsagePending)
+	require.Zero(t, summary.UsageUnknown)
+	require.Zero(t, summary.ActiveRequests)
+	var usageLogs int64
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&usageLogs))
+	require.Zero(t, usageLogs)
 }
 
 func TestResponsesSupportMonitoringBudgetPostgresSharedKeyAndRecovery(t *testing.T) {

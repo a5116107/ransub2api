@@ -948,14 +948,15 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if err != nil {
 		return nil, fmt.Errorf("openai codex probe request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
 	if monitoringProbeActive(ctx) {
 		// This quota refresh is a real generation request. Consume its returned
 		// usage and settle before header observations can recover the account.
-		if _, err := ReadMonitoringProbeResponse(ctx, resp, 8<<20); err != nil {
+		// The request deadline, not just its longer-lived caller, owns validity.
+		if _, err := ReadMonitoringProbeResponse(reqCtx, resp, 8<<20); err != nil {
 			return nil, err
 		}
+	} else {
+		defer func() { _ = resp.Body.Close() }()
 	}
 	return s.persistOpenAICodexProbeResponse(account.ID, resp, observed)
 }
