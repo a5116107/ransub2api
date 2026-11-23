@@ -19,14 +19,22 @@ import (
 	"testing"
 	"time"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	redisclient "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
 // Connection details travel only over the child stdin, never arguments, logs,
 // or committed configuration. Each process owns its DB pool and HTTP client.
 type monitoringBudgetNodeCommand struct {
+	Mode          string
 	DSN           string
+	RedisAddress  string
+	RedisDB       int
 	Site          string
 	Path          string
 	Method        string
@@ -54,6 +62,11 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(8)
 	budget := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db))
+	if command.Mode == "billing" {
+		runMonitoringBillingNode(t, command, db, budget)
+		return
+	}
+	require.Empty(t, command.Mode)
 	client := &http.Client{Timeout: 15 * time.Second}
 	defer client.CloseIdleConnections()
 	encoder := json.NewEncoder(os.Stdout)
@@ -103,6 +116,33 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 	}
 	wg.Wait()
 	require.NoError(t, outputErr)
+}
+
+func runMonitoringBillingNode(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB, budget *service.MonitoringProbeBudgetService) {
+	t.Helper()
+	require.Equal(t, 1, command.Requests)
+	require.NotEmpty(t, command.RedisAddress)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	defer func() { _ = client.Close() }()
+	rdb := redisclient.NewClient(&redisclient.Options{Addr: command.RedisAddress, DB: command.RedisDB})
+	defer func() { _ = rdb.Close() }()
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	upstream := NewHTTPUpstream(cfg).(*httpUpstreamService)
+	defer func() {
+		upstream.mu.Lock()
+		defer upstream.mu.Unlock()
+		for _, entry := range upstream.clients {
+			entry.client.CloseIdleConnections()
+		}
+	}()
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+	runner := service.NewUpstreamBillingProbeService(accounts, tester, service.NewSettingService(NewSettingRepository(client), cfg))
+	runner.SetMonitoringBudget(budget)
+	runner.SetLeaderLock(NewLeaderLockCache(rdb), db)
+	defer runner.Stop()
+	require.NoError(t, runner.RunDue(t.Context()))
+	require.NoError(t, json.NewEncoder(os.Stdout).Encode(monitoringBudgetNodeReply{Status: http.StatusOK}))
 }
 
 type monitoringBudgetNode struct {
