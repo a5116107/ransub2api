@@ -3,24 +3,33 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // stubMonitorSvc 实现 monitorRunnerSvc，用于隔离 runner 与真实 service/repo。
 type stubMonitorSvc struct {
-	enabled    []*ChannelMonitor
-	runCount   atomic.Int64
-	runCalled  chan int64 // 每次 RunCheck 触发时 push 一次（缓冲足够大避免阻塞）
-	runErr     error
-	listErr    error
-	runHoldFor time.Duration // RunCheck 内额外阻塞的时长，用来测试 Stop 等待行为
+	enabled   []*ChannelMonitor
+	runCount  atomic.Int64
+	runCalled chan int64 // 每次 RunCheck 触发时 push 一次（缓冲足够大避免阻塞）
+	runErr    error
+	listErr   error
+	list      func(context.Context) ([]*ChannelMonitor, error)
+	run       func(context.Context, int64) ([]*CheckResult, error)
 }
 
-func (s *stubMonitorSvc) ListEnabledMonitors(_ context.Context) ([]*ChannelMonitor, error) {
+func (s *stubMonitorSvc) ListEnabledMonitors(ctx context.Context) ([]*ChannelMonitor, error) {
+	if s.list != nil {
+		return s.list(ctx)
+	}
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
@@ -35,11 +44,8 @@ func (s *stubMonitorSvc) RunCheck(ctx context.Context, id int64) ([]*CheckResult
 		default:
 		}
 	}
-	if s.runHoldFor > 0 {
-		select {
-		case <-time.After(s.runHoldFor):
-		case <-ctx.Done():
-		}
+	if s.run != nil {
+		return s.run(ctx, id)
 	}
 	return nil, s.runErr
 }
@@ -298,28 +304,323 @@ func TestStop_DrainsAllGoroutines(t *testing.T) {
 	stoppedWithin(t, r, 3*time.Second)
 }
 
-// TestStop_WaitsForInFlightCheck 验证 Stop 会等待正在执行的 RunCheck 退出（pool.StopAndWait）。
+// Every Stop caller waits for the original canceled check to drain.
 func TestStop_WaitsForInFlightCheck(t *testing.T) {
-	svc := &stubMonitorSvc{
-		runCalled:  make(chan int64, 1),
-		runHoldFor: 200 * time.Millisecond,
-	}
+	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	svc := &stubMonitorSvc{run: func(ctx context.Context, _ int64) ([]*CheckResult, error) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			close(canceled)
+		case <-release:
+			return nil, nil
+		}
+		<-release
+		return nil, ctx.Err()
+	}}
 	r := newRunnerForTest(svc)
+	t.Cleanup(func() { once.Do(func() { close(release) }); r.Stop() })
 	r.Start()
 	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
-
 	select {
-	case <-svc.runCalled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first fire never happened")
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the original worker did not start")
 	}
+	stopped := make(chan struct{}, 2)
+	go func() { r.Stop(); stopped <- struct{}{} }()
+	select {
+	case <-canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop must cancel the active check, not just its timer")
+	}
+	go func() { r.Stop(); stopped <- struct{}{} }()
+	select {
+	case <-stopped:
+		t.Fatal("a Stop caller returned before the same in-flight check drained")
+	case <-time.After(30 * time.Millisecond):
+	}
+	once.Do(func() { close(release) })
+	for range 2 {
+		select {
+		case <-stopped:
+		case <-time.After(3 * time.Second):
+			t.Fatal("every Stop must complete after draining")
+		}
+	}
+	require.Empty(t, r.inFlight)
+}
 
-	start := time.Now()
+func TestV1RunnerStopCancelsAndDrainsStartupInventory(t *testing.T) {
+	entered, canceled, release, started := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	svc := &stubMonitorSvc{list: func(ctx context.Context) ([]*ChannelMonitor, error) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			close(canceled)
+		case <-release:
+		}
+		<-release
+		return []*ChannelMonitor{{ID: 1, Enabled: true, IntervalSeconds: 60}}, nil
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(func() { once.Do(func() { close(release) }); <-started; r.Stop() })
+	go func() { defer close(started); r.Start() }()
+	<-entered
+	stopped := make(chan struct{})
+	go func() { r.Stop(); close(stopped) }()
+	select {
+	case <-canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop must reach the startup inventory read")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("Stop must await startup inventory drain")
+	case <-time.After(30 * time.Millisecond):
+	}
+	once.Do(func() { close(release) })
+	<-started
+	<-stopped
+	require.Zero(t, svc.runCount.Load(), "a late inventory must not schedule anything after Stop")
+}
+
+func TestV1RunnerUnscheduleCancelsOnlyOriginalTask(t *testing.T) {
+	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	svc := &stubMonitorSvc{run: func(ctx context.Context, id int64) ([]*CheckResult, error) {
+		if id != 1 {
+			return nil, nil
+		}
+		close(entered)
+		select {
+		case <-ctx.Done():
+			close(canceled)
+		case <-release:
+		}
+		<-release
+		return nil, ctx.Err()
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(func() { once.Do(func() { close(release) }); r.Stop() })
+	r.Start()
+	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
+	<-entered
+	r.Schedule(&ChannelMonitor{ID: 2, Enabled: true, IntervalSeconds: 60})
+	r.Unschedule(1)
+	select {
+	case <-canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Unschedule must cancel the original in-flight check")
+	}
+	require.NotNil(t, runnerTaskPtr(r, 2), "other scheduled monitors remain active")
+	require.Nil(t, runnerTaskPtr(r, 1))
+	once.Do(func() { close(release) })
 	stoppedWithin(t, r, 3*time.Second)
-	elapsed := time.Since(start)
-	// Stop 必须等待 in-flight check 跑完（runHoldFor=200ms），耗时下界约 100ms。
-	if elapsed < 100*time.Millisecond {
-		t.Fatalf("Stop returned too fast (%v); did not wait for in-flight check", elapsed)
+	require.Empty(t, r.inFlight)
+}
+
+func TestV1RunnerCanceledFireStartsNoWork(t *testing.T) {
+	svc := &stubMonitorSvc{}
+	r := newRunnerForTest(svc)
+	r.Start()
+	defer r.Stop()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for range 100 {
+		r.fire(ctx, &scheduledMonitor{id: 1001, name: "canceled fixture"})
+	}
+	r.pool.StopAndWait()
+	require.Zero(t, svc.runCount.Load(), "a canceled/retired task must not enter the checker even when the pool is empty")
+	require.Empty(t, r.inFlight)
+}
+
+func TestV1RunnerReplacementSurvivesLateDecryptFailure(t *testing.T) {
+	entered, release, failed, replacement := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var calls atomic.Int32
+	svc := &stubMonitorSvc{run: func(ctx context.Context, _ int64) ([]*CheckResult, error) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+			close(failed)
+			return nil, ErrChannelMonitorAPIKeyDecryptFailed
+		}
+		close(replacement)
+		return nil, nil
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(func() { once.Do(func() { close(release) }); r.Stop() })
+	r.Start()
+	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
+	<-entered
+	old := runnerTaskPtr(r, 1)
+	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
+	current := runnerTaskPtr(r, 1)
+	require.NotSame(t, old, current)
+	once.Do(func() { close(release) })
+	<-failed
+	select {
+	case <-replacement:
+	case <-time.After(3 * time.Second):
+		t.Fatal("new configuration must execute after old work drains, not wait a full interval or be unscheduled by its stale failure")
+	}
+	require.Same(t, current, runnerTaskPtr(r, 1))
+	require.EqualValues(t, 2, calls.Load())
+	require.False(t, errors.Is(r.parentCtx.Err(), context.Canceled))
+}
+
+func TestV1RunnerStopSkipsEveryQueuedMonitor(t *testing.T) {
+	entered := make(chan struct{}, monitorWorkerConcurrency)
+	canceled := make(chan struct{}, monitorWorkerConcurrency)
+	release := make(chan struct{})
+	var once sync.Once
+	svc := &stubMonitorSvc{run: func(ctx context.Context, _ int64) ([]*CheckResult, error) {
+		entered <- struct{}{}
+		select {
+		case <-ctx.Done():
+			canceled <- struct{}{}
+		case <-release:
+		}
+		<-release
+		return nil, ctx.Err()
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(func() { once.Do(func() { close(release) }); r.Stop() })
+	r.Start()
+	for id := int64(1); id <= monitorWorkerConcurrency; id++ {
+		r.Schedule(&ChannelMonitor{ID: id, Enabled: true, IntervalSeconds: 60})
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("the original worker pool did not admit its first cohort")
+		}
+	}
+	for id := int64(monitorWorkerConcurrency + 1); id <= 100; id++ {
+		r.Schedule(&ChannelMonitor{ID: id, Enabled: true, IntervalSeconds: 60})
+	}
+	require.Eventually(t, func() bool {
+		r.inFlightMu.Lock()
+		defer r.inFlightMu.Unlock()
+		return len(r.inFlight) == 100
+	}, 3*time.Second, time.Millisecond)
+	done := make(chan struct{})
+	go func() { r.Stop(); close(done) }()
+	for range monitorWorkerConcurrency {
+		select {
+		case <-canceled:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Stop did not reach every admitted check")
+		}
+	}
+	once.Do(func() { close(release) })
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled queued workers did not release their in-flight entries")
+	}
+	require.EqualValues(t, monitorWorkerConcurrency, svc.runCount.Load(), "the 95 queued monitors must never enter RunCheck")
+	require.Empty(t, r.inFlight)
+}
+
+func TestV1RunnerUnscheduleQueuedMonitorLeavesOthersRunning(t *testing.T) {
+	entered := make(chan struct{}, monitorWorkerConcurrency)
+	release, independent := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var retired atomic.Int32
+	svc := &stubMonitorSvc{run: func(ctx context.Context, id int64) ([]*CheckResult, error) {
+		switch id {
+		case 1001:
+			retired.Add(1)
+		case 1002:
+			close(independent)
+		default:
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return nil, ctx.Err()
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(func() { once.Do(func() { close(release) }); r.Stop() })
+	r.Start()
+	for id := int64(1); id <= monitorWorkerConcurrency; id++ {
+		r.Schedule(&ChannelMonitor{ID: id, Enabled: true, IntervalSeconds: 60})
+		<-entered
+	}
+	r.Schedule(&ChannelMonitor{ID: 1001, Enabled: true, IntervalSeconds: 60})
+	require.Eventually(t, func() bool {
+		r.inFlightMu.Lock()
+		defer r.inFlightMu.Unlock()
+		_, queued := r.inFlight[1001]
+		return queued
+	}, 3*time.Second, time.Millisecond)
+	r.Unschedule(1001)
+	r.Schedule(&ChannelMonitor{ID: 1002, Enabled: true, IntervalSeconds: 60})
+	once.Do(func() { close(release) })
+	select {
+	case <-independent:
+	case <-time.After(3 * time.Second):
+		t.Fatal("retiring a queued monitor must not stall other monitors")
+	}
+	r.Stop()
+	require.Zero(t, retired.Load())
+	require.Empty(t, r.inFlight)
+}
+
+func TestV1RunnerPanicReleasesSlotWithoutLoggingPayload(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	var calls atomic.Int32
+	finished := make(chan struct{}, 2)
+	svc := &stubMonitorSvc{run: func(context.Context, int64) ([]*CheckResult, error) {
+		finished <- struct{}{}
+		if calls.Add(1) == 1 {
+			panic("PRIVATE_PANIC_PAYLOAD")
+		}
+		return nil, nil
+	}}
+	r := newRunnerForTest(svc)
+	defer r.Stop()
+	r.Start()
+	for range 2 {
+		r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
+		select {
+		case <-finished:
+		case <-time.After(3 * time.Second):
+			t.Fatal("a recovered worker panic must not strand the same monitor slot")
+		}
+		require.Eventually(t, func() bool {
+			r.inFlightMu.Lock()
+			defer r.inFlightMu.Unlock()
+			return len(r.inFlight) == 0
+		}, 3*time.Second, time.Millisecond)
+	}
+	r.Stop()
+	require.Contains(t, output.String(), "runner panic")
+	require.NotContains(t, output.String(), "PRIVATE_PANIC_PAYLOAD")
+}
+
+func TestV1RunnerConcurrentStartScheduleAndStop(t *testing.T) {
+	for range 25 {
+		r := newRunnerForTest(&stubMonitorSvc{})
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(r.Start)
+			wg.Go(func() { r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60}) })
+			wg.Go(func() { r.Unschedule(1) })
+			wg.Go(r.Stop)
+		}
+		wg.Wait()
+		r.Stop()
+		require.Empty(t, r.inFlight)
+		require.Empty(t, r.tasks)
 	}
 }
 

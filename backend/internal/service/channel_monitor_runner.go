@@ -53,25 +53,27 @@ type ChannelMonitorRunner struct {
 	parentCtx    context.Context
 	parentCancel context.CancelFunc
 
-	mu      sync.Mutex
-	tasks   map[int64]*scheduledMonitor
-	wg      sync.WaitGroup
-	started bool
-	stopped bool
+	mu       sync.Mutex
+	tasks    map[int64]*scheduledMonitor
+	wg       sync.WaitGroup
+	started  bool
+	stopped  bool
+	stopDone chan struct{}
 
 	// inFlight 跟踪正在执行的 monitor.ID。fire 调度前会检查避免重复提交，
 	// 防止单次检测耗时 > interval 时同一 monitor 被并发执行。
-	inFlight   map[int64]struct{}
+	inFlight   map[int64]chan struct{}
 	inFlightMu sync.Mutex
 }
 
 // scheduledMonitor 单个监控的运行时上下文。
 type scheduledMonitor struct {
-	id       int64
-	name     string
-	interval time.Duration
-	jitter   time.Duration // 每轮 ± [0, jitter] 的均匀随机偏移；0 = 固定间隔
-	cancel   context.CancelFunc
+	id          int64
+	name        string
+	interval    time.Duration
+	jitter      time.Duration // 每轮 ± [0, jitter] 的均匀随机偏移；0 = 固定间隔
+	cancel      context.CancelFunc
+	previousRun <-chan struct{}
 }
 
 // nextDelay 计算下一次触发的等待时长：interval ± [0, jitter] 的均匀随机偏移。
@@ -108,7 +110,7 @@ func newChannelMonitorRunner(svc monitorRunnerSvc, settingService *SettingServic
 		parentCtx:      ctx,
 		parentCancel:   cancel,
 		tasks:          make(map[int64]*scheduledMonitor),
-		inFlight:       make(map[int64]struct{}),
+		inFlight:       make(map[int64]chan struct{}),
 	}
 }
 
@@ -124,9 +126,11 @@ func (r *ChannelMonitorRunner) Start() {
 		return
 	}
 	r.started = true
+	r.wg.Add(1)
 	r.mu.Unlock()
+	defer r.wg.Done()
 
-	ctx, cancel := context.WithTimeout(context.Background(), monitorStartupLoadTimeout)
+	ctx, cancel := context.WithTimeout(r.parentCtx, monitorStartupLoadTimeout)
 	defer cancel()
 	enabled, err := r.svc.ListEnabledMonitors(ctx)
 	if err != nil {
@@ -183,12 +187,16 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 		existing.cancel()
 	}
 	ctx, cancel := context.WithCancel(r.parentCtx)
+	r.inFlightMu.Lock()
+	previousRun := r.inFlight[m.ID]
+	r.inFlightMu.Unlock()
 	task := &scheduledMonitor{
-		id:       m.ID,
-		name:     m.Name,
-		interval: interval,
-		jitter:   jitter,
-		cancel:   cancel,
+		id:          m.ID,
+		name:        m.Name,
+		interval:    interval,
+		jitter:      jitter,
+		cancel:      cancel,
+		previousRun: previousRun,
 	}
 	r.tasks[m.ID] = task
 	r.wg.Add(1)
@@ -200,18 +208,21 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 // Unschedule 取消指定监控的定时任务（若存在）。
 // 已经在执行中的检测会通过 ctx 取消信号传递。
 func (r *ChannelMonitorRunner) Unschedule(id int64) {
+	r.unschedule(id, nil)
+}
+
+// A stale worker can retire only its own scheduled task, never its replacement.
+func (r *ChannelMonitorRunner) unschedule(id int64, expected *scheduledMonitor) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	task, ok := r.tasks[id]
-	if ok {
+	if ok && (expected == nil || expected == task) {
 		delete(r.tasks, id)
-	}
-	r.mu.Unlock()
-	if ok {
 		task.cancel()
 	}
+	r.mu.Unlock()
 }
 
 // Stop 优雅停止：取消所有任务、关闭池。
@@ -221,13 +232,18 @@ func (r *ChannelMonitorRunner) Stop() {
 	}
 	r.mu.Lock()
 	if r.stopped {
+		done := r.stopDone
 		r.mu.Unlock()
+		<-done
 		return
 	}
 	r.stopped = true
+	r.stopDone = make(chan struct{})
+	done := r.stopDone
 	r.parentCancel()
 	r.tasks = nil
 	r.mu.Unlock()
+	defer close(done)
 
 	r.wg.Wait()
 	r.pool.StopAndWait()
@@ -239,6 +255,13 @@ func (r *ChannelMonitorRunner) Stop() {
 func (r *ChannelMonitorRunner) runScheduled(ctx context.Context, task *scheduledMonitor) {
 	defer r.wg.Done()
 
+	if task.previousRun != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-task.previousRun:
+		}
+	}
 	r.fire(ctx, task)
 
 	timer := time.NewTimer(task.nextDelay())
@@ -257,20 +280,31 @@ func (r *ChannelMonitorRunner) runScheduled(ctx context.Context, task *scheduled
 // fire 提交一次检测到 worker 池。功能开关关闭时跳过本次（不取消任务，
 // 重新启用时立即恢复）；池满或重复在飞时也跳过。
 func (r *ChannelMonitorRunner) fire(ctx context.Context, task *scheduledMonitor) {
+	if ctx.Err() != nil {
+		return
+	}
 	if r.settingService != nil {
 		rt := r.settingService.GetChannelMonitorRuntime(ctx)
 		if !rt.ActiveProbesAllowed() {
 			return
 		}
 	}
+	// Submission and retirement share the lock. A canceled timer, queued old
+	// task or late settings read must not submit new work after replacement/Stop.
+	r.mu.Lock()
+	if r.stopped || ctx.Err() != nil || r.tasks[task.id] != task {
+		r.mu.Unlock()
+		return
+	}
 	if !r.tryAcquireInFlight(task.id) {
+		r.mu.Unlock()
 		slog.Debug("channel_monitor: skip already in-flight",
 			"monitor_id", task.id, "name", task.name)
 		return
 	}
-	if _, ok := r.pool.TrySubmit(func() {
-		r.runOne(task.id, task.name)
-	}); !ok {
+	_, submitted := r.pool.TrySubmit(func() { r.runOne(ctx, task) })
+	r.mu.Unlock()
+	if !submitted {
 		// 池满：丢弃本次检测，但必须释放已占用的 inFlight 槽，否则该 monitor 会被永久卡住。
 		r.releaseInFlight(task.id)
 		slog.Warn("channel_monitor: worker pool full, skip submission",
@@ -286,37 +320,49 @@ func (r *ChannelMonitorRunner) tryAcquireInFlight(id int64) bool {
 	if _, exists := r.inFlight[id]; exists {
 		return false
 	}
-	r.inFlight[id] = struct{}{}
+	r.inFlight[id] = make(chan struct{})
 	return true
 }
 
 // releaseInFlight 释放 in-flight 槽。runOne 完成（含 panic recover）后必须调用。
 func (r *ChannelMonitorRunner) releaseInFlight(id int64) {
 	r.inFlightMu.Lock()
-	delete(r.inFlight, id)
+	if done, exists := r.inFlight[id]; exists {
+		delete(r.inFlight, id)
+		close(done)
+	}
 	r.inFlightMu.Unlock()
 }
 
 // runOne 执行单个监控的检测。普通错误只记日志；API key 解密失败会撤销任务。
 // 任务结束时（含 panic recover）必须释放 in-flight 槽。
-func (r *ChannelMonitorRunner) runOne(id int64, name string) {
-	ctx, cancel := context.WithTimeout(context.Background(), monitorRequestTimeout+monitorPingTimeout+monitorRunOneBuffer)
+func (r *ChannelMonitorRunner) runOne(parent context.Context, task *scheduledMonitor) {
+	ctx, cancel := context.WithTimeout(parent, monitorRequestTimeout+monitorPingTimeout+monitorRunOneBuffer)
 	defer cancel()
 
-	defer r.releaseInFlight(id)
+	defer r.releaseInFlight(task.id)
 
 	defer func() {
-		if rec := recover(); rec != nil {
+		if recover() != nil {
 			slog.Error("channel_monitor: runner panic",
-				"monitor_id", id, "name", name, "panic", rec)
+				"monitor_id", task.id, "name", task.name)
 		}
 	}()
 
-	if _, err := r.svc.RunCheck(ctx, id); err != nil {
+	r.mu.Lock()
+	retired := r.stopped || r.tasks[task.id] != task || ctx.Err() != nil
+	r.mu.Unlock()
+	if retired {
+		return
+	}
+	if _, err := r.svc.RunCheck(ctx, task.id); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		if errors.Is(err, ErrChannelMonitorAPIKeyDecryptFailed) {
-			r.Unschedule(id)
+			r.unschedule(task.id, task)
 		}
 		slog.Warn("channel_monitor: run check failed",
-			"monitor_id", id, "name", name, "error", err)
+			"monitor_id", task.id, "name", task.name, "error", err)
 	}
 }

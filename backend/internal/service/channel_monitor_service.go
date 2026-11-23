@@ -628,6 +628,9 @@ func (s *ChannelMonitorService) ListHistory(ctx context.Context, id int64, model
 // 按 check_mode 分派：probe（默认，现状探活）/ quota（仅查关联账号配额，
 // 零 LLM 成本）/ quota_probe（探活 + 配额快照挂主模型行）。
 func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*CheckResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	rt := s.probeRuntime(ctx)
 	if !rt.Enabled {
 		return nil, ErrChannelMonitorDisabled
@@ -651,6 +654,9 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 		results = s.runQuotaOnlyCheck(ctx, m)
 	case MonitorCheckModeQuotaProbe:
 		results = s.runChecksConcurrent(ctx, m)
+		if ctx.Err() != nil {
+			break
+		}
 		snapshot, quotaErr := s.fetchQuotaSnapshot(ctx, m)
 		if deferral := monitoringProbeDeferral(quotaErr, time.Now()); deferral != nil && len(results) > 0 {
 			results[0].QuotaBudgetDeferral = deferral
@@ -659,6 +665,11 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 		}
 	default:
 		results = s.runChecksConcurrent(ctx, m)
+	}
+	// Retiring a runner/task or canceling a manual request is not a new
+	// upstream observation, even when its transport returns a late answer.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	s.persistCheckResults(ctx, m, results)
 	return results, nil
@@ -751,6 +762,9 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 	// Ping and each model own their local error state. A skipped sibling must
 	// not invalidate a different model's fully completed observation.
 	pingMs := pingEndpointOrigin(s.monitoringBudget.Context(ctx, m.Endpoint, false), m, opts)
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	var eg errgroup.Group
 	for i, model := range models {

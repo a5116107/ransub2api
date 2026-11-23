@@ -19,6 +19,65 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestChannelMonitorCanceledRunKeepsHistoryAndFreshness(t *testing.T) {
+	for _, phase := range []string{"before", "request", "late_success"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var sends atomic.Int32
+			oldModel, oldPing := monitorHTTPClient, monitorPingHTTPClient
+			defer func() { monitorHTTPClient, monitorPingHTTPClient = oldModel, oldPing }()
+			monitorHTTPClient = &http.Client{Transport: monitorBudgetRoundTripper(func(req *http.Request) (*http.Response, error) {
+				sends.Add(1)
+				cancel()
+				if phase == "request" {
+					return nil, ctx.Err()
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`))}, nil
+			})}
+			monitorPingHTTPClient = &http.Client{Transport: monitorBudgetRoundTripper(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+			})}
+			repo := &quotaModeRepoStub{monitor: &ChannelMonitor{ID: 1, Provider: MonitorProviderOpenAI,
+				Endpoint: "https://fixture.example/v1", APIKey: "OLD:fixture", PrimaryModel: "fixture-model",
+				BodyOverrideMode: MonitorBodyOverrideModeReplace, BodyOverride: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}}}
+			if phase == "before" {
+				cancel()
+			}
+			results, err := newQuotaModeService(repo).RunCheck(ctx, 1)
+			require.ErrorIs(t, err, context.Canceled, "caller cancellation is not a new upstream verdict")
+			require.Nil(t, results)
+			require.Empty(t, repo.history)
+			require.Empty(t, repo.markedIDs, "canceled work must not renew observation freshness")
+			if phase == "before" {
+				pauses := sends.Load()
+				require.Zero(t, pauses, "already-canceled checks must not call the provider")
+			}
+		})
+	}
+}
+
+func TestChannelMonitorProviderTimeoutStillRecordsFault(t *testing.T) {
+	oldModel, oldPing := monitorHTTPClient, monitorPingHTTPClient
+	defer func() { monitorHTTPClient, monitorPingHTTPClient = oldModel, oldPing }()
+	monitorHTTPClient = &http.Client{Transport: monitorBudgetRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})}
+	monitorPingHTTPClient = &http.Client{Transport: monitorBudgetRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	repo := &quotaModeRepoStub{monitor: &ChannelMonitor{ID: 1, Provider: MonitorProviderOpenAI,
+		Endpoint: "https://fixture.example/v1", APIKey: "OLD:fixture", PrimaryModel: "fixture-model"}}
+	results, err := newQuotaModeService(repo).RunCheck(t.Context(), 1)
+	require.NoError(t, err)
+	require.NoError(t, t.Context().Err(), "the provider's own timeout did not cancel its caller")
+	require.Len(t, results, 1)
+	require.Equal(t, MonitorStatusError, results[0].Status)
+	require.Nil(t, results[0].BudgetDeferral)
+	require.Len(t, repo.history, 1, "actual transport failures still produce the existing upstream observation")
+	require.Equal(t, []int64{1}, repo.markedIDs)
+}
+
 func TestChannelMonitorBudgetRejectsBeforeGeneration(t *testing.T) {
 	for _, cause := range []error{
 		&MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day", RetryAt: time.Now().Add(time.Hour)},
