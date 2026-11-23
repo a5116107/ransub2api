@@ -82,8 +82,8 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 		runMonitoringBillingNode(t, command, db, budget)
 		return
 	}
-	if command.Mode == "v3" {
-		runMonitoringV3Node(t, command, db, budget)
+	if command.Mode == "v3" || command.Mode == "group" {
+		runMonitoringGroupProbeNode(t, command, db, budget)
 		return
 	}
 	if command.Mode == "ollama" {
@@ -193,7 +193,7 @@ func runMonitoringOllamaNode(t *testing.T, command monitoringBudgetNodeCommand, 
 	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK, Reason: scan.State}))
 }
 
-func runMonitoringV3Node(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB, budget *service.MonitoringProbeBudgetService) {
+func runMonitoringGroupProbeNode(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB, budget *service.MonitoringProbeBudgetService) {
 	t.Helper()
 	require.Equal(t, 1, command.Requests)
 	require.NotEmpty(t, command.RedisAddress)
@@ -223,9 +223,13 @@ func runMonitoringV3Node(t *testing.T, command monitoringBudgetNodeCommand, db *
 	tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
 	tester.SetMonitoringBudget(budget)
 	groups := service.NewPelicanGroupTestService(NewPelicanGroupTestRepository(db), NewGroupRepository(client, db), nil, gateway, concurrency, tester, nil, nil)
-	prober := service.NewChannelMonitorV3Prober(NewChannelMonitorV3Repository(db), groups, settings)
-	defer prober.Stop()
-	prober.RunDue(t.Context(), command.Tick)
+	if command.Mode == "group" {
+		groups.RunDue(t.Context(), command.Tick)
+	} else {
+		prober := service.NewChannelMonitorV3Prober(NewChannelMonitorV3Repository(db), groups, settings)
+		defer prober.Stop()
+		prober.RunDue(t.Context(), command.Tick)
+	}
 	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
 }
 
