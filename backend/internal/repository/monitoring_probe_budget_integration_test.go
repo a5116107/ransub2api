@@ -47,11 +47,18 @@ func ollamaBudgetTestUpstream(t *testing.T, handler http.HandlerFunc) service.HT
 	t.Helper()
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
+	return ollamaBudgetPinnedUpstream(t, server.Listener.Addr().String(), server.Certificate().Raw)
+}
+
+func ollamaBudgetPinnedUpstream(t *testing.T, address string, certificate []byte) service.HTTPUpstream {
+	t.Helper()
+	cert, err := x509.ParseCertificate(certificate)
+	require.NoError(t, err)
 	roots := x509.NewCertPool()
-	roots.AddCert(server.Certificate())
+	roots.AddCert(cert)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12},
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+			return (&net.Dialer{}).DialContext(ctx, network, address)
 		}}
 	t.Cleanup(transport.CloseIdleConnections)
 	httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,

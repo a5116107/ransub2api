@@ -39,6 +39,7 @@ type monitoringBudgetNodeCommand struct {
 	RedisAddress  string
 	RedisDB       int
 	Site          string
+	Certificate   []byte
 	Path          string
 	Method        string
 	Header        http.Header
@@ -83,6 +84,10 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 	}
 	if command.Mode == "v3" {
 		runMonitoringV3Node(t, command, db, budget)
+		return
+	}
+	if command.Mode == "ollama" {
+		runMonitoringOllamaNode(t, command, db)
 		return
 	}
 	require.Empty(t, command.Mode)
@@ -161,6 +166,31 @@ func runMonitoringBillingNode(t *testing.T, command monitoringBudgetNodeCommand,
 	defer runner.Stop()
 	require.NoError(t, runner.RunDue(t.Context()))
 	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
+}
+
+func runMonitoringOllamaNode(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB) {
+	t.Helper()
+	require.Equal(t, 1, command.Requests)
+	require.NotEmpty(t, command.RedisAddress)
+	endpoint, err := url.Parse(command.Site)
+	require.NoError(t, err)
+	require.Equal(t, "https", endpoint.Scheme)
+	require.NotEmpty(t, endpoint.Host)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	defer func() { _ = client.Close() }()
+	rdb := redisclient.NewClient(&redisclient.Options{Addr: command.RedisAddress, DB: command.RedisDB})
+	defer func() { _ = rdb.Close() }()
+	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
+	cfg.Totp.EncryptionKeyConfigured = true
+	upstream := ollamaBudgetPinnedUpstream(t, endpoint.Host, command.Certificate)
+	runner := service.ProvideOllamaCloudUsageService(newAccountRepositoryWithSQL(client, db, nil), upstream,
+		service.NewSettingService(NewSettingRepository(client), cfg), ollamaBudgetFixtureEncryptor{}, cfg,
+		NewLeaderLockCache(rdb), db, NewMonitoringProbeBudgetRepository(db))
+	defer runner.Stop()
+	require.NoError(t, runner.RunDue(t.Context()))
+	scan := runner.MonitoringRuntime().LastScan
+	require.NotNil(t, scan)
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK, Reason: scan.State}))
 }
 
 func runMonitoringV3Node(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB, budget *service.MonitoringProbeBudgetService) {
