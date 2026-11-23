@@ -22,6 +22,11 @@ type cnQuotaProber interface {
 // cnQuotaProbeConcurrency bounds all periodic checks; payg keeps one in-flight.
 const cnQuotaProbeConcurrency = 4
 
+const (
+	cnBalanceCheckLeaderLockKey = "cn_provider_balance_check"
+	cnBalanceCheckLeaderLockTTL = 2 * time.Minute
+)
+
 // CNProviderBalanceCheckService 周期性探测国产供应商账号：
 //   - payg（按量付费）：余额低于阈值则临时停调，恢复则清除（仅清除本服务写入的停调）；
 //   - coding plan：调用 CNProviderQuotaService 探测 5h/weekly 滚动窗口并落 extra 快照，
@@ -37,6 +42,7 @@ type CNProviderBalanceCheckService struct {
 	balanceService   *CNProviderBalanceService
 	quotaService     cnQuotaProber
 	monitoringBudget *MonitoringProbeBudgetService
+	lockCache        LeaderLockCache
 	cfg              *config.Config
 	interval         time.Duration
 	lifecycleMu      sync.Mutex
@@ -73,6 +79,20 @@ func NewCNProviderBalanceCheckService(
 
 func (s *CNProviderBalanceCheckService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
 	s.monitoringBudget = budget
+}
+
+func (s *CNProviderBalanceCheckService) SetLeaderLock(cache LeaderLockCache) {
+	s.lockCache = cache
+}
+
+func (s *CNProviderBalanceCheckService) acquireCycleLock(ctx context.Context, key, owner string, ttl time.Duration) bool {
+	lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	acquired, err := s.lockCache.TryAcquireLeaderLock(lockCtx, key, owner, ttl)
+	if err != nil {
+		log.Printf("[CNBalance] acquire cycle lock failed: %v", err)
+	}
+	return acquired && err == nil
 }
 
 // Give every account its own local error state. Detached provider flights keep
@@ -169,6 +189,42 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	defer s.cycleMu.Unlock()
 	if ctx.Err() != nil {
 		return
+	}
+	if s.lockCache != nil {
+		if s.interval <= 0 {
+			return
+		}
+		// A distinct owner per run prevents a delayed release/renewal from
+		// touching the next run, even when the same process wins again.
+		owner := s.instanceID + ":" + uuid.NewString()
+		started := time.Now()
+		if !s.acquireCycleLock(ctx, cnBalanceCheckLeaderLockKey, owner, cnBalanceCheckLeaderLockTTL) {
+			return
+		}
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = s.lockCache.ReleaseLeaderLock(releaseCtx, cnBalanceCheckLeaderLockKey, owner)
+		}()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		stopRenewal := keepRenewedLease(ctx, started, cnBalanceCheckLeaderLockTTL,
+			func(ctx context.Context) (bool, error) {
+				return s.lockCache.RenewLeaderLock(ctx, cnBalanceCheckLeaderLockKey, owner, cnBalanceCheckLeaderLockTTL)
+			}, func() {
+				log.Print("[CNBalance] leader lease lost; stopping this cycle")
+				cancel()
+			})
+		defer stopRenewal()
+		now := time.Now().UTC()
+		slot := now.Truncate(s.interval)
+		key := fmt.Sprintf("%s:%d:%d", cnBalanceCheckLeaderLockKey, s.interval, slot.UnixNano())
+		// Keep this one-shot marker until the UTC window ends. Releasing the
+		// main lock after a fast run must not let a peer scan the same window.
+		if !s.acquireCycleLock(ctx, key, owner, slot.Add(s.interval).Sub(now)) {
+			return
+		}
 	}
 	collectCtx, cancelCollect := context.WithTimeout(ctx, 30*time.Second)
 	targets, complete := s.collectProbeTargets(collectCtx)

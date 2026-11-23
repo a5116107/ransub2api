@@ -319,8 +319,10 @@ func TestCNProviderBalanceCheckMonitoringBudgetDispatchAndRecovery(t *testing.T)
 
 func TestProvideCNProviderBalanceCheckInstallsMonitoringBudget(t *testing.T) {
 	budget := &monitoringBudgetRepoStub{}
-	svc := ProvideCNProviderBalanceCheckService(nil, nil, nil, &config.Config{}, budget)
+	cache := &fakeLeaderLockCache{}
+	svc := ProvideCNProviderBalanceCheckService(nil, nil, nil, &config.Config{}, budget, cache)
 	require.Same(t, budget, svc.monitoringBudget.repo)
+	require.Same(t, cache, svc.lockCache)
 }
 
 func TestChannelMonitorQuotaBudgetAccountAdaptersSettleBeforePublishing(t *testing.T) {

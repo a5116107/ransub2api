@@ -383,7 +383,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	auditLogRepository := repository.NewAuditLogRepository(db)
 	auditLogService := service.ProvideAuditLogService(auditLogRepository, settingService, configConfig)
 	auditLogHandler := admin.NewAuditLogHandler(auditLogService, totpService)
-	cnProviderBalanceCheckService := service.ProvideCNProviderBalanceCheckService(accountRepository, cnProviderBalanceService, cnProviderQuotaService, configConfig, monitoringProbeBudgetRepository)
+	cnProviderBalanceCheckService := service.ProvideCNProviderBalanceCheckService(accountRepository, cnProviderBalanceService, cnProviderQuotaService, configConfig, monitoringProbeBudgetRepository, leaderLockCache)
 	channelMonitorV3Prober := service.ProvideChannelMonitorV3Prober(channelMonitorV3Repository, pelicanGroupTestService, settingService, configConfig)
 	upstreamBillingProbeService := service.ProvideUpstreamBillingProbeService(accountRepository, accountTestService, settingService, leaderLockCache, db, configConfig, newAPIAuthorizationRepository, secretEncryptor, monitoringProbeBudgetRepository, cnProviderBalanceCheckService, ollamaCloudUsageService, channelMonitorV2Service, channelMonitorV3Prober)
 	openCodeGoUsageService := service.ProvideOpenCodeGoUsageService(accountRepository, httpUpstream, settingService, leaderLockCache, db, configConfig)

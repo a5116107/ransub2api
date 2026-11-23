@@ -90,6 +90,10 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 		runMonitoringOllamaNode(t, command, db)
 		return
 	}
+	if command.Mode == "cn" {
+		runMonitoringCNNode(t, command, db, budget)
+		return
+	}
 	require.Empty(t, command.Mode)
 	client := &http.Client{Timeout: 15 * time.Second}
 	defer client.CloseIdleConnections()
@@ -165,6 +169,39 @@ func runMonitoringBillingNode(t *testing.T, command monitoringBudgetNodeCommand,
 	runner.SetLeaderLock(NewLeaderLockCache(rdb), db)
 	defer runner.Stop()
 	require.NoError(t, runner.RunDue(t.Context()))
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
+}
+
+func runMonitoringCNNode(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB, budget *service.MonitoringProbeBudgetService) {
+	t.Helper()
+	require.Equal(t, 1, command.Requests)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	defer func() { _ = client.Close() }()
+	rdb := redisclient.NewClient(&redisclient.Options{Addr: command.RedisAddress, DB: command.RedisDB})
+	defer func() { _ = rdb.Close() }()
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	cfg.Gateway.CNProviders.BalanceCheckEnabled = true
+	upstream := NewHTTPUpstream(cfg)
+	native := pr612NativeTransport(t, upstream)
+	defer func() {
+		native.mu.Lock()
+		defer native.mu.Unlock()
+		for _, entry := range native.clients {
+			entry.client.CloseIdleConnections()
+		}
+	}()
+	accounts := NewAccountRepository(client, db, nil)
+	runner := service.NewCNProviderBalanceCheckService(accounts, service.NewCNProviderBalanceService(accounts, nil, upstream, cfg), nil, cfg, time.Second)
+	runner.SetMonitoringBudget(budget)
+	runner.SetLeaderLock(NewLeaderLockCache(rdb))
+	defer runner.Stop()
+	runner.Start()
+	select {
+	case <-time.After(3200 * time.Millisecond):
+	case <-t.Context().Done():
+		t.Fatal("CN process context expired")
+	}
+	runner.Stop()
 	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
 }
 

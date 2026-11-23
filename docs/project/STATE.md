@@ -3,12 +3,12 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 V2双进程64Key四实钟槽本地已验；原28项20done/8部分。
+任务：D8.1 CN双进程去重/预算恢复本地已验；原28项20done/8部分。
 授权：本地实现/验证及自有功能分支同步；不CI/发布/部署。
-验证命令：go test -tags integration -race（定向双轮，详DECISIONS）
-验证结果：V2实钟1/原SQL42/unit516pass，0fail/skip/race；vet/lint0，原Linux复用。
-验证来源：bc8bd4b19+837b16063f6e；evidence/sub2api-billing-applicability/v2-multinode-*。
-下一动作：续原CN多节点/跨通道公平与覆盖；实际scope/严格混版父验收保持。
+验证命令：go test -tags unit/integration -race（双轮/50轮，详DECISIONS）
+验证结果：unit512/SQL84、续租800pass，0fail/skip/race；vet/lint/Linux0。
+验证来源：f51102786+30fa25281b5b；evidence/sub2api-billing-applicability/cn-multinode-*。
+下一动作：D8.1其余执行器/跨通道公平；真实scope/严格混版待验。
 尝试：1
 阻塞：实际scope/独立基线/缓存域证据及历史拒删；其余开发/生产验收仍待完成。
 责任方：开发方/供应商/宿主维护者，详下表与DECISIONS。
@@ -71,14 +71,14 @@
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/多维/同scope汇总及判题依赖详情已验；独立基线、其余线路/覆盖与资格消费仍缺 |
 | D8 | in_progress | 原物理/Token/100队列、周期下界、本地链及倍率实钟双进程已验；其余scope/通道公平/其余执行器多节点/生产/严格混版待验 |
-| D8.1本地子项 | in_progress | 原止发/寿命、CN分层/账本、倍率实钟/V3/Ollama/分组/账号cron百Key及V2实钟64Key已验；全scope/跨通道公平/其余节点/生产待验 |
+| D8.1本地子项 | in_progress | 止发/寿命、CN分层/双进程、账本/倍率/V3/Ollama/分组/账号百Key及V2实钟64Key已验；全scope/跨通道公平/其余节点/生产待验 |
 | D8.1 V2/V3本地链 | done | 原链及保存前止发/错误收尾、SQL重建和中英在途原因已验；非全scope/跨通道公平/多节点/生产 |
 | D9 | in_progress | .9 Goal同例/唯一用量、排空重建、120/300及429换线已验；旧Mac会话/BPS长流与D9.2仍待 |
 | R1 | done | .9/de8b86ed8916已发行上线；稳定源/制品/加载同源，四阶段回退及公网SSE/UI已验；开发在研保持 |
 
 ## 剩余执行顺序与等待
 
-- 按检查点推进原D2/D3/D5/D8。
+- CN双进程四阶段/手动隔离已本地验，续原D2/D3/D5/D8。
 - .22.1–.5沿原tick/预算锁及原生写入本地已验，非完整产品资格。
 - D9.1生产.9已验；PR3/v2.24.1冲突未解；未验功能不发布，见DECISIONS。
 - 供应商/接入方待提供实际组/模型/fast、独立参考、缓存域/存活及unknown请求唯一关联；开发方据对应scope/证据验证。

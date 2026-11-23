@@ -409,6 +409,7 @@ func ProvideCNProviderBalanceCheckService(
 	quotaService *CNProviderQuotaService,
 	cfg *config.Config,
 	budgetRepo MonitoringProbeBudgetRepository,
+	lockCache LeaderLockCache,
 ) *CNProviderBalanceCheckService {
 	minutes := 10
 	if cfg != nil && cfg.Gateway.CNProviders.BalanceCheckIntervalMinutes > 0 {
@@ -416,6 +417,7 @@ func ProvideCNProviderBalanceCheckService(
 	}
 	svc := NewCNProviderBalanceCheckService(accountRepo, balanceService, quotaService, cfg, time.Duration(minutes)*time.Minute)
 	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))
+	svc.SetLeaderLock(lockCache)
 	startBackgroundService(cfg, svc)
 	return svc
 }

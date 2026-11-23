@@ -7,7 +7,7 @@ import (
 )
 
 // The watchdog is independent of renewal I/O and measures validity from the
-// start of the last acknowledged operation. Both callers cancel on renewal
+// start of the last acknowledged operation. Callers cancel on renewal
 // errors and reserve one third of the TTL for their transport to join.
 func keepRenewedLease(ctx context.Context, acquiredAt time.Time, ttl time.Duration, renew func(context.Context) (bool, error), onLoss func()) func() {
 	validFor := ttl * 2 / 3
