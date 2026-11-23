@@ -345,8 +345,8 @@ describe('Shared physical probe budgets', () => {
 
   it.each(['en', 'zh'])('distinguishes bounded, failed and unobserved Ollama scans without fabricating zero in %s', async locale => {
     for (const [state, label] of Object.entries(locale === 'zh'
-      ? { observed: '最近到期扫描', disabled: '自动刷新停用', not_leader: '本次未取得周期执行权', settings_unavailable: '配置读取失败', inventory_unavailable: '候选读取失败' }
-      : { observed: 'Last due scan', disabled: 'Automatic refresh disabled', not_leader: 'This cycle did not acquire leadership', settings_unavailable: 'Settings read failed', inventory_unavailable: 'Candidate read failed' })) {
+      ? { observed: '最近到期扫描', disabled: '自动刷新停用', not_leader: '本次未取得周期执行权', coordination_unavailable: '节点协调异常，本轮已停止', settings_unavailable: '配置读取失败', inventory_unavailable: '候选读取失败' }
+      : { observed: 'Last due scan', disabled: 'Automatic refresh disabled', not_leader: 'This cycle did not acquire leadership', coordination_unavailable: 'Node coordination unavailable; this cycle stopped', settings_unavailable: 'Settings read failed', inventory_unavailable: 'Candidate read failed' })) {
       const runtime = ollamaRuntime()
       runtime.last_scan = { ...runtime.last_scan, state, candidates: state === 'observed' ? 0 : null, due_groups: state === 'observed' ? 0 : null, limit_reached: state === 'observed' ? true : null }
       api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), ollama_usage: runtime } })

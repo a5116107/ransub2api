@@ -593,7 +593,7 @@ export default {
           ollamaScanLimited: 'Reached the per-scan limit; remaining demand is unknown, not fully covered.',
           ollamaScanAt: 'Last cycle observed at: {value}; refreshing this panel does not renew the observation.',
           ollamaCadence: 'Last observed configuration: {interval} minute maximum activity wait, {debounce} minute debounce; not a fixed call interval.',
-          ollamaScanStates: { observed: 'Last due scan', disabled: 'Automatic refresh disabled', not_leader: 'This cycle did not acquire leadership', settings_unavailable: 'Settings read failed', inventory_unavailable: 'Candidate read failed', unknown: 'No usable cycle observation; demand remains unknown' },
+          ollamaScanStates: { observed: 'Last due scan', disabled: 'Automatic refresh disabled', not_leader: 'This cycle did not acquire leadership', coordination_unavailable: 'Node coordination unavailable; this cycle stopped', settings_unavailable: 'Settings read failed', inventory_unavailable: 'Candidate read failed', unknown: 'No usable cycle observation; demand remains unknown' },
           cnRuntimeTitle: 'CN periodic monitoring · Responding process',
           cnRuntimeHint: 'Read-only memory snapshot; no scan or probe is triggered. It does not cover other nodes. Targets are not physical requests, token budgets or a coverage guarantee.',
           cnRuntimeState: 'Runner state',

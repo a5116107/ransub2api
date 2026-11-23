@@ -586,7 +586,7 @@ export default {
           ollamaScanLimited: '达到单次上限，其余需求未知，不代表已全覆盖。',
           ollamaScanAt: '最近周期观测时间：{value}；刷新面板不会延长该观测。',
           ollamaCadence: '最近观测配置：活动最长等待 {interval} 分钟、安静防抖 {debounce} 分钟；不是固定调用间隔。',
-          ollamaScanStates: { observed: '最近到期扫描', disabled: '自动刷新停用', not_leader: '本次未取得周期执行权', settings_unavailable: '配置读取失败', inventory_unavailable: '候选读取失败', unknown: '暂无可用周期观测，需求保持未知' },
+          ollamaScanStates: { observed: '最近到期扫描', disabled: '自动刷新停用', not_leader: '本次未取得周期执行权', coordination_unavailable: '节点协调异常，本轮已停止', settings_unavailable: '配置读取失败', inventory_unavailable: '候选读取失败', unknown: '暂无可用周期观测，需求保持未知' },
           cnRuntimeTitle: 'CN 周期检测 · 本次响应进程',
           cnRuntimeHint: '只读内存快照，不触发扫描或探测；不代表其他节点。目标数不是物理请求数、Token 预算或覆盖保证。',
           cnRuntimeState: '执行器状态',

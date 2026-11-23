@@ -86,7 +86,7 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 		runMonitoringGroupProbeNode(t, command, db, budget)
 		return
 	}
-	if command.Mode == "ollama" {
+	if command.Mode == "ollama" || command.Mode == "ollama_lease" {
 		runMonitoringOllamaNode(t, command, db)
 		return
 	}
@@ -220,14 +220,40 @@ func runMonitoringOllamaNode(t *testing.T, command monitoringBudgetNodeCommand, 
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
 	cfg.Totp.EncryptionKeyConfigured = true
 	upstream := monitoringBudgetPinnedUpstream(t, endpoint.Host, command.Certificate)
-	runner := service.ProvideOllamaCloudUsageService(newAccountRepositoryWithSQL(client, db, nil), upstream,
+	accounts := service.AccountRepository(newAccountRepositoryWithSQL(client, db, nil))
+	if command.Mode == "ollama_lease" {
+		accounts = &monitoringOllamaLeaseAccounts{accountRepository: newAccountRepositoryWithSQL(client, db, nil)}
+	}
+	runner := service.ProvideOllamaCloudUsageService(accounts, upstream,
 		service.NewSettingService(NewSettingRepository(client), cfg), ollamaBudgetFixtureEncryptor{}, cfg,
 		NewLeaderLockCache(rdb), db, NewMonitoringProbeBudgetRepository(db))
 	defer runner.Stop()
-	require.NoError(t, runner.RunDue(t.Context()))
+	runErr := runner.RunDue(t.Context())
 	scan := runner.MonitoringRuntime().LastScan
 	require.NotNil(t, scan)
-	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK, Reason: scan.State}))
+	status := http.StatusOK
+	if command.Mode == "ollama_lease" {
+		require.Error(t, runErr)
+		require.Equal(t, "coordination_unavailable", scan.State)
+		require.Nil(t, scan.Candidates)
+		status = http.StatusServiceUnavailable
+	} else {
+		require.NoError(t, runErr)
+	}
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: status, Reason: scan.State}))
+}
+
+// Storage latency keeps the native four-request wave in flight at the real
+// first renewal. All actual reads/writes still use the original SQL repository.
+type monitoringOllamaLeaseAccounts struct{ *accountRepository }
+
+func (r *monitoringOllamaLeaseAccounts) ListOllamaCloudUsageGroupAccounts(ctx context.Context, anchors []*service.Account) ([]service.Account, error) {
+	select {
+	case <-time.After(19 * time.Second):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.accountRepository.ListOllamaCloudUsageGroupAccounts(ctx, anchors)
 }
 
 type monitoringScheduledNodePlans struct {
@@ -338,6 +364,9 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	lifetime := 30 * time.Second
+	if command.Mode == "ollama_lease" {
+		lifetime = 70 * time.Second // Original two-minute lease renews at forty seconds.
+	}
 	if command.Mode == "scheduled" || command.Mode == "v2" {
 		lifetime = 95 * time.Second // A real minute boundary plus the original ten-second delay.
 	}

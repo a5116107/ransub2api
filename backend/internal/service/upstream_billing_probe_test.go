@@ -1304,7 +1304,7 @@ func TestUpstreamBillingProbeRunnerOnlyScansOnLeader(t *testing.T) {
 	peer := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
 	peer.instanceID = "peer"
 	peer.SetLeaderLock(cache, nil)
-	_, acquired, err := peer.tryAcquireLeaderLock(context.Background(), lockKey, peer.instanceID)
+	_, acquired, err := tryAcquireDetectionLeaderLock(context.Background(), peer.lockCache, peer.db, lockKey, peer.instanceID, upstreamBillingProbeLeaderLockTTL)
 	require.NoError(t, err)
 	require.True(t, acquired)
 	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
@@ -1322,7 +1322,7 @@ func TestUpstreamBillingProbeLeaderLockFailsClosedOnCacheError(t *testing.T) {
 	svc := newUpstreamBillingProbeTestService(&upstreamBillingProbeAccountRepo{}, &upstreamBillingProbeHTTPStub{}, &upstreamBillingProbeSettingRepo{})
 	svc.SetLeaderLock(&fakeLeaderLockCache{acquireErr: context.DeadlineExceeded}, nil)
 
-	release, acquired, err := svc.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(time.Now()), svc.instanceID)
+	release, acquired, err := tryAcquireDetectionLeaderLock(context.Background(), svc.lockCache, svc.db, upstreamBillingProbeLeaderLockKeyAt(time.Now()), svc.instanceID, upstreamBillingProbeLeaderLockTTL)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.False(t, acquired)
@@ -1338,10 +1338,10 @@ func TestUpstreamBillingProbeLeaderLockUsesCadenceBuckets(t *testing.T) {
 	beforeBoundary := time.Unix(59, 0)
 	afterBoundary := beforeBoundary.Add(time.Second)
 
-	releaseFirst, acquired, err := first.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(beforeBoundary), first.instanceID)
+	releaseFirst, acquired, err := tryAcquireDetectionLeaderLock(context.Background(), first.lockCache, first.db, upstreamBillingProbeLeaderLockKeyAt(beforeBoundary), first.instanceID, upstreamBillingProbeLeaderLockTTL)
 	require.NoError(t, err)
 	require.True(t, acquired)
-	releaseSecond, acquired, err := second.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKeyAt(afterBoundary), second.instanceID)
+	releaseSecond, acquired, err := tryAcquireDetectionLeaderLock(context.Background(), second.lockCache, second.db, upstreamBillingProbeLeaderLockKeyAt(afterBoundary), second.instanceID, upstreamBillingProbeLeaderLockTTL)
 	require.NoError(t, err)
 	require.True(t, acquired, "the prior cadence lock must not suppress the next cadence")
 	releaseFirst()

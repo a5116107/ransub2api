@@ -77,6 +77,7 @@ var (
 		"OLLAMA_CLOUD_USAGE_REFRESH_RATE_LIMITED", "Ollama Cloud usage can be refreshed manually once every 30 seconds",
 	)
 	errOllamaCloudUsageUnauthorizedHTML = errors.New("settings HTML is a sign-in page")
+	errOllamaCloudUsageLeaderLockLost   = errors.New("Ollama Cloud usage leader lock lost")
 )
 
 const (
@@ -771,6 +772,7 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()
+	observationCtx := ctx
 	ctx, cancelRun := context.WithCancelCause(ctx)
 	stopParent := context.AfterFunc(s.parentCtx, func() { cancelRun(context.Cause(s.parentCtx)) })
 	defer stopParent()
@@ -792,12 +794,30 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 		s.observeMonitoringScan(ctx, "disabled", settings, 0, 0)
 		return nil
 	}
-	release, acquired := tryAcquireSingletonLeaderLock(ctx, s.lockCache, s.db, ollamaCloudUsageLeaderLockKey, s.instanceID, ollamaCloudUsageLeaderLockTTL)
+	owner := s.instanceID + ":" + uuid.NewString()
+	lockStarted := time.Now()
+	release, acquired, lockErr := tryAcquireDetectionLeaderLock(ctx, s.lockCache, s.db, ollamaCloudUsageLeaderLockKey, owner, ollamaCloudUsageLeaderLockTTL)
+	if lockErr != nil {
+		s.observeMonitoringScan(ctx, "coordination_unavailable", settings, 0, 0)
+		return fmt.Errorf("acquire Ollama usage leader lock: %w", lockErr)
+	}
 	if !acquired {
 		s.observeMonitoringScan(ctx, "not_leader", settings, 0, 0)
 		return nil
 	}
 	defer release()
+	if s.lockCache != nil {
+		stopRenewal := keepRenewedLease(ctx, lockStarted, ollamaCloudUsageLeaderLockTTL,
+			func(ctx context.Context) (bool, error) {
+				return s.lockCache.RenewLeaderLock(ctx, ollamaCloudUsageLeaderLockKey, owner, ollamaCloudUsageLeaderLockTTL)
+			}, func() { cancelRun(errOllamaCloudUsageLeaderLockLost) })
+		defer stopRenewal()
+		defer func() {
+			if errors.Is(context.Cause(ctx), errOllamaCloudUsageLeaderLockLost) {
+				s.observeMonitoringScan(observationCtx, "coordination_unavailable", settings, 0, 0)
+			}
+		}()
+	}
 
 	writer, ok := s.accountRepo.(ollamaCloudUsageRepository)
 	if !ok {

@@ -452,7 +452,7 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	// process. A delayed renewal or release must not affect a successor batch.
 	owner := s.instanceID + ":" + uuid.NewString()
 	lockStarted := time.Now()
-	runRelease, acquired, lockErr := s.tryAcquireLeaderLock(ctx, upstreamBillingProbeLeaderLockKey, owner)
+	runRelease, acquired, lockErr := tryAcquireDetectionLeaderLock(ctx, s.lockCache, s.db, upstreamBillingProbeLeaderLockKey, owner, upstreamBillingProbeLeaderLockTTL)
 	if lockErr != nil {
 		return fmt.Errorf("acquire upstream billing probe leader lock: %w", lockErr)
 	}
@@ -470,7 +470,7 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	}
 
 	lockNow := time.Now()
-	cadenceRelease, acquired, lockErr := s.tryAcquireLeaderLock(ctx, upstreamBillingProbeLeaderLockKeyAt(lockNow), owner)
+	cadenceRelease, acquired, lockErr := tryAcquireDetectionLeaderLock(ctx, s.lockCache, s.db, upstreamBillingProbeLeaderLockKeyAt(lockNow), owner, upstreamBillingProbeLeaderLockTTL)
 	if lockErr != nil {
 		return fmt.Errorf("acquire upstream billing probe cadence lock: %w", lockErr)
 	}
@@ -687,29 +687,6 @@ func (s *UpstreamBillingProbeService) ProbeAccounts(ctx context.Context, account
 
 func upstreamBillingProbeLeaderLockKeyAt(now time.Time) string {
 	return fmt.Sprintf("%s:%d", upstreamBillingProbeLeaderLockKey, now.Unix()/int64(upstreamBillingProbeCycleInterval/time.Second))
-}
-
-func (s *UpstreamBillingProbeService) tryAcquireLeaderLock(ctx context.Context, key, owner string) (func(), bool, error) {
-	lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if s.lockCache != nil {
-		acquired, err := s.lockCache.TryAcquireLeaderLock(lockCtx, key, owner, upstreamBillingProbeLeaderLockTTL)
-		if err != nil {
-			return nil, false, err
-		}
-		if !acquired {
-			return nil, false, nil
-		}
-		return func() {
-			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer releaseCancel()
-			_ = s.lockCache.ReleaseLeaderLock(releaseCtx, key, owner)
-		}, true, nil
-	}
-	if s.db != nil {
-		return tryAcquireDBAdvisoryLockWithError(lockCtx, s.db, hashAdvisoryLockID(key))
-	}
-	return func() {}, true, nil
 }
 
 func releaseUpstreamBillingProbeLeaderLock(release func(), releaseAt time.Time) {

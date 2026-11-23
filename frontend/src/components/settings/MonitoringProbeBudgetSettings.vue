@@ -319,7 +319,7 @@ const ollamaLastScan = computed(() => {
 })
 const ollamaScanState = computed(() => {
   const state = ollamaLastScan.value?.state
-  return state && ['observed', 'disabled', 'not_leader', 'settings_unavailable', 'inventory_unavailable'].includes(state) ? state : 'unknown'
+  return state && ['observed', 'disabled', 'not_leader', 'coordination_unavailable', 'settings_unavailable', 'inventory_unavailable'].includes(state) ? state : 'unknown'
 })
 const ollamaScan = computed(() => {
   const scan = ollamaLastScan.value, limit = ollamaRuntime.value?.scan_limit

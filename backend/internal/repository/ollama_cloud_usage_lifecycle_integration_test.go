@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -347,4 +349,157 @@ func TestOllamaCloudUsageLifecycleHTTPPostgresCancelAndRecovery(t *testing.T) {
 			require.Zero(t, invalid.Load())
 		})
 	}
+}
+
+func TestOllamaCloudUsageIndependentProcessesLeaderLossAndRecovery(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	options := *integrationRedis.Options()
+	options.DB = 14
+	rdb := redisclient.NewClient(&options)
+	t.Cleanup(func() { _ = rdb.Close() })
+	size, err := rdb.DBSize(ctx).Result()
+	require.NoError(t, err)
+	require.Zero(t, size, "lease fixture must own an empty DB in the isolated Redis")
+	const key = leaderLockKeyPrefix + "ollama:cloud:usage:leader"
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		require.NoError(t, rdb.Del(cleanup, key).Err())
+		size, err := rdb.DBSize(cleanup).Result()
+		require.NoError(t, err)
+		require.Zero(t, size)
+	})
+	body, err := os.ReadFile("../service/testdata/ollama_settings_usage.html")
+	require.NoError(t, err)
+	var calls, canceled, invalid atomic.Int64
+	var block atomic.Bool
+	block.Store(true)
+	entered := make(chan struct{}, 4)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("wos-session")
+		if err != nil || !strings.HasPrefix(cookie.Value, "lease-fixture-") || r.Host != "ollama.com" || r.URL.Path != "/settings" || r.Method != http.MethodGet || r.Header.Get("Authorization") != "" {
+			invalid.Add(1)
+			http.Error(w, "unexpected fixture request", http.StatusBadRequest)
+			return
+		}
+		calls.Add(1)
+		if block.Load() {
+			entered <- struct{}{}
+			<-r.Context().Done()
+			canceled.Add(1)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	require.NoError(t, NewSettingRepository(client).Set(ctx, service.SettingKeyOllamaCloudUsageSettings, `{"enabled":true,"interval_minutes":60,"debounce_minutes":1}`))
+	budget := NewMonitoringProbeBudgetRepository(db)
+	_, err = budget.SaveSettings(ctx, monitoringBudgetPolicy())
+	require.NoError(t, err)
+	old, lastUsed := time.Now().UTC().Add(-2*time.Hour), time.Now().UTC().Add(-2*time.Minute)
+	for i := range 20 {
+		for _, platform := range []string{service.PlatformOpenAI, service.PlatformAnthropic} {
+			mustCreateAccount(t, client, &service.Account{Name: fmt.Sprintf("lease-%d-%s", i, platform), Platform: platform,
+				Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 2, LastUsedAt: &lastUsed,
+				Credentials: map[string]any{"api_key": fmt.Sprintf("fixture-lease-%d", i), "base_url": "https://ollama.com"},
+				Extra: map[string]any{service.OllamaCloudUsageSessionExtraKey: fmt.Sprintf("wos-session=lease-fixture-%d", i),
+					service.OllamaCloudUsageAutoRefreshExtraKey: true,
+					service.OllamaCloudUsageSnapshotExtraKey: &service.OllamaCloudUsageSnapshot{Status: service.OllamaCloudUsageStatusOK,
+						Data: &service.OllamaCloudUsageData{Plan: "previous"}, FetchedAt: &old, LastAttemptAt: old, NextRefreshAt: old}}})
+		}
+	}
+	readRows := func() string {
+		t.Helper()
+		var rows string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT jsonb_agg(row_to_json(a) ORDER BY id)::text FROM accounts a`).Scan(&rows))
+		return rows
+	}
+	before := sha256.Sum256([]byte(readRows()))
+	// A live Postgres connection is not a second coordination authority when
+	// this node's configured Redis client fails but a peer still owns Redis.
+	require.NoError(t, rdb.Set(ctx, key, "fixture-existing-authority", time.Minute).Err())
+	closedRedis := redisclient.NewClient(&options)
+	require.NoError(t, closedRedis.Close())
+	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
+	cfg.Totp.EncryptionKeyConfigured = true
+	failedNode := service.ProvideOllamaCloudUsageService(newAccountRepositoryWithSQL(client, db, nil),
+		monitoringBudgetPinnedUpstream(t, server.Listener.Addr().String(), server.Certificate().Raw),
+		service.NewSettingService(NewSettingRepository(client), cfg), ollamaBudgetFixtureEncryptor{}, cfg,
+		NewLeaderLockCache(closedRedis), db, budget)
+	t.Cleanup(failedNode.Stop)
+	require.Error(t, failedNode.RunDue(ctx))
+	require.Equal(t, "coordination_unavailable", failedNode.MonitoringRuntime().LastScan.State)
+	require.Nil(t, failedNode.MonitoringRuntime().LastScan.Candidates)
+	require.Zero(t, calls.Load(), "Redis failure must not acquire an independent Postgres leader lock")
+	require.Equal(t, before, sha256.Sum256([]byte(readRows())))
+	require.NoError(t, NewLeaderLockCache(rdb).ReleaseLeaderLock(ctx, "ollama:cloud:usage:leader", "fixture-existing-authority"))
+	failedNode.Stop()
+	command := monitoringBudgetNodeCommand{Mode: "ollama_lease", DSN: monitoringBudgetNodeDSN(t, db), RedisAddress: options.Addr,
+		RedisDB: options.DB, Site: server.URL, Certificate: server.Certificate().Raw, Requests: 1}
+	replies := make(chan monitoringBudgetNodeReply, 3)
+	leader := startMonitoringBudgetNode(t, command, replies)
+	for range 4 {
+		select {
+		case <-entered:
+		case <-time.After(45 * time.Second):
+			t.Fatal("native Ollama wave did not reach the actual HTTP transport before first renewal")
+		}
+	}
+	firstOwner, err := rdb.Get(ctx, key).Result()
+	require.NoError(t, err)
+	require.NotEmpty(t, firstOwner)
+	summary, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 4, summary.DayUsed)
+	require.EqualValues(t, 4, summary.ActiveRequests)
+	// Simulate an acknowledged successor, not a timer shortcut or a second
+	// budget. The original runner must notice it on its real forty-second tick.
+	require.NoError(t, rdb.Set(ctx, key, "fixture-successor", 2*time.Minute).Err())
+	leader.wait()
+	require.Equal(t, monitoringBudgetNodeReply{Status: http.StatusServiceUnavailable, Reason: "coordination_unavailable"}, receiveMonitoringBudgetReply(t, replies))
+	require.Eventually(t, func() bool { return canceled.Load() == 4 }, 5*time.Second, 10*time.Millisecond)
+	require.EqualValues(t, 4, calls.Load(), "queued credential groups must not dispatch after the lease is lost")
+	require.Equal(t, before, sha256.Sum256([]byte(readRows())), "loss must not refresh, fail, disable or erase the old snapshots")
+	owner, err := rdb.Get(ctx, key).Result()
+	require.NoError(t, err)
+	require.Equal(t, "fixture-successor", owner, "the stale process must not release the successor")
+	command.Mode = "ollama"
+	peer := startMonitoringBudgetNode(t, command, replies)
+	require.NotEqual(t, leader.pid, peer.pid)
+	peer.wait()
+	require.Equal(t, monitoringBudgetNodeReply{Status: http.StatusOK, Reason: "not_leader"}, receiveMonitoringBudgetReply(t, replies))
+	require.EqualValues(t, 4, calls.Load())
+	owner, err = rdb.Get(ctx, key).Result()
+	require.NoError(t, err)
+	require.Equal(t, "fixture-successor", owner)
+	require.NoError(t, NewLeaderLockCache(rdb).ReleaseLeaderLock(ctx, "ollama:cloud:usage:leader", "fixture-successor"))
+	block.Store(false)
+	recovery := startMonitoringBudgetNode(t, command, replies)
+	require.NotEqual(t, leader.pid, recovery.pid)
+	recovery.wait()
+	require.Equal(t, monitoringBudgetNodeReply{Status: http.StatusOK, Reason: "observed"}, receiveMonitoringBudgetReply(t, replies))
+	require.EqualValues(t, 24, calls.Load(), "only the twenty original credential groups recover; siblings share each request")
+	var fresh, failures, usage int64
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT
+ (SELECT count(*) FROM accounts WHERE (extra#>>'{ollama_cloud_usage_snapshot,last_attempt_at}')::timestamptz>$1),
+ (SELECT count(*) FROM accounts WHERE extra#>>'{ollama_cloud_usage_snapshot,status}'<>'ok'),
+ (SELECT count(*) FROM usage_logs)`, old).Scan(&fresh, &failures, &usage))
+	require.EqualValues(t, 40, fresh)
+	require.Zero(t, failures)
+	require.Zero(t, usage)
+	summary, err = budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 24, summary.DayUsed)
+	require.Zero(t, summary.DayTokens)
+	require.Zero(t, summary.UsageReported)
+	require.Zero(t, summary.UsagePending)
+	require.Zero(t, summary.UsageUnknown)
+	require.Zero(t, summary.ActiveRequests)
+	require.Zero(t, invalid.Load())
+	exists, err := rdb.Exists(ctx, key).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+	t.Log("three independent processes / real 40-second renewal: canceled=4, recovered_groups=20, updated_accounts=40, physical_calls=24; active/pending/unknown/tokens/downstream_usage=0")
 }

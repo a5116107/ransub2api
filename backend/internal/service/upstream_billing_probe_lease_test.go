@@ -293,7 +293,7 @@ func TestUpstreamBillingProbeLeaderLeaseCoversSlowNewAPIBatch(t *testing.T) {
 		synctest.Wait()
 		peer := newUpstreamBillingProbeTestService(first.accountRepo, first.accountTestService.httpUpstream, nil)
 		peer.SetLeaderLock(cache, nil)
-		release, acquired, err := peer.tryAcquireLeaderLock(context.Background(), upstreamBillingProbeLeaderLockKey, peer.instanceID)
+		release, acquired, err := tryAcquireDetectionLeaderLock(context.Background(), peer.lockCache, peer.db, upstreamBillingProbeLeaderLockKey, peer.instanceID, upstreamBillingProbeLeaderLockTTL)
 		if acquired {
 			release()
 		}

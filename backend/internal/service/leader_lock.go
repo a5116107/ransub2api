@@ -21,6 +21,33 @@ type LeaderLockCache interface {
 	ReleaseLeaderLock(ctx context.Context, key, owner string) error
 }
 
+// Detection runners must keep one coordination authority: a configured Redis
+// error must not split leadership between Redis and a Postgres fallback.
+// Database-only runners retain their session advisory lock; local fixtures with
+// neither backend remain ungated. Redis callers must renew long-running leases.
+func tryAcquireDetectionLeaderLock(ctx context.Context, cache LeaderLockCache, db *sql.DB, key, owner string, ttl time.Duration) (func(), bool, error) {
+	lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if cache != nil {
+		acquired, err := cache.TryAcquireLeaderLock(lockCtx, key, owner, ttl)
+		if err != nil {
+			return nil, false, err
+		}
+		if !acquired {
+			return nil, false, nil
+		}
+		return func() {
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer releaseCancel()
+			_ = cache.ReleaseLeaderLock(releaseCtx, key, owner)
+		}, true, nil
+	}
+	if db != nil {
+		return tryAcquireDBAdvisoryLockWithError(lockCtx, db, hashAdvisoryLockID(key))
+	}
+	return func() {}, true, nil
+}
+
 // tryAcquireSingletonLeaderLock provides best-effort single-flight execution of a
 // periodic background job across multiple instances. It prefers the Redis-backed
 // LeaderLockCache and falls back to a Postgres advisory lock when the cache is
