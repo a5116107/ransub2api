@@ -386,13 +386,13 @@ func (s *UpstreamBillingProbeService) Stop() {
 		return
 	}
 	s.mu.Lock()
-	if s.stopped {
-		s.mu.Unlock()
-		return
+	if !s.stopped {
+		s.stopped = true
+		s.parentCancel()
 	}
-	s.stopped = true
-	s.parentCancel()
 	s.mu.Unlock()
+	// Every caller waits for the same automatic work, including externally
+	// invoked batches; a repeated Stop is not proof that the drain finished.
 	s.wg.Wait()
 }
 
@@ -406,7 +406,7 @@ func (s *UpstreamBillingProbeService) runLoop() {
 		case <-s.parentCtx.Done():
 			return
 		case <-ticker.C:
-			if err := s.RunDue(s.parentCtx); err != nil {
+			if err := s.RunDue(s.parentCtx); err != nil && s.parentCtx.Err() == nil {
 				logger.LegacyPrintf("service.upstream_billing_probe", "run_due_failed: err=%v", err)
 			}
 		}
@@ -418,8 +418,28 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	if s == nil || s.accountRepo == nil {
 		return nil
 	}
+	// Admission and Stop share the lock so Wait cannot race a new batch added
+	// to an empty group. Manual ProbeAccount keeps its own caller lifetime.
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return context.Canceled
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+	defer s.wg.Done()
+	ctx, cancelRun := context.WithCancelCause(ctx)
+	stopParent := context.AfterFunc(s.parentCtx, func() { cancelRun(context.Cause(s.parentCtx)) })
+	defer stopParent()
+	defer cancelRun(nil)
 	s.cycleMu.Lock()
 	defer s.cycleMu.Unlock()
+	if err := context.Cause(s.parentCtx); err != nil {
+		cancelRun(err)
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 
 	settings, err := s.getSettings(ctx)
 	if err != nil {
@@ -428,8 +448,6 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	if !settings.Enabled {
 		return nil
 	}
-	ctx, cancelRun := context.WithCancelCause(ctx)
-	defer cancelRun(nil)
 	// Each batch owns a distinct token, including successive batches on the same
 	// process. A delayed renewal or release must not affect a successor batch.
 	owner := s.instanceID + ":" + uuid.NewString()

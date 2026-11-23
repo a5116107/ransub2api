@@ -216,3 +216,138 @@ func TestUpstreamBillingProbeIndependentProcessesHundredAccountsRealCadence(t *t
 	require.Zero(t, active.Load())
 	t.Log("100 accounts covered once over five actual UTC minute slots; 20 supplier failures, 80 passes, 180 physical calls, no duplicate process batches")
 }
+
+func TestUpstreamBillingProbeLifecycleHTTPPostgresHistoryAndRecovery(t *testing.T) {
+	for _, entry := range []string{"background", "external_due"} {
+		t.Run(entry, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			var calls, canceled, balances atomic.Int64
+			var block atomic.Bool
+			block.Store(true)
+			entered := make(chan struct{}, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/usage" {
+					balances.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"mode":"unrestricted","isValid":true,"remaining":12.34,"unit":"USD","balance":12.34}`)
+					return
+				}
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/sub2api/billing" {
+					http.NotFound(w, r)
+					return
+				}
+				calls.Add(1)
+				if block.Load() {
+					entered <- struct{}{}
+					<-r.Context().Done()
+					canceled.Add(1)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"object":"sub2api.key_billing","schema_version":1,"billing_scope":"token","group_rate_multiplier":0.03,"resolved_rate_multiplier":0.03,"peak_rate_enabled":false,"effective_rate_multiplier":0.03,"observed_at":%q}`, time.Now().UTC().Format(time.RFC3339Nano))
+			}))
+			t.Cleanup(server.Close)
+			cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+			settings := service.NewSettingService(NewSettingRepository(client), cfg)
+			require.NoError(t, settings.SetUpstreamBillingProbeSettings(ctx, &service.UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5}))
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			policy.Concurrency, policy.SiteConcurrency, policy.KeyConcurrency = 4, 4, 4
+			_, err := budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			old := time.Now().UTC().Add(-time.Hour)
+			extra, err := json.Marshal(map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true,
+				service.UpstreamBillingRateSyncEnabledExtraKey: false, service.UpstreamBillingProbeExtraKey: service.UpstreamBillingProbeSnapshot{
+					Status: service.UpstreamBillingProbeStatusOK, LastAttemptAt: old, NextProbeAt: old, FreshUntil: &old}})
+			require.NoError(t, err)
+			ids := make([]int64, 20)
+			for i := range ids {
+				credentials, err := json.Marshal(map[string]string{"api_key": fmt.Sprintf("fixture-lifecycle-%d", i), "base_url": server.URL})
+				require.NoError(t, err)
+				require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra,rate_multiplier)
+ VALUES($1,'openai','apikey','active',$2::jsonb,$3::jsonb,1) RETURNING id`, fmt.Sprintf("lifecycle-%d", i), string(credentials), string(extra)).Scan(&ids[i]))
+			}
+			// The real insert trigger normalizes account defaults. Compare the
+			// stopped cycle with that persisted baseline, not the pre-insert JSON.
+			var baseline string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT extra::text FROM accounts WHERE id=$1`, ids[0]).Scan(&baseline))
+			upstream := NewHTTPUpstream(cfg)
+			native := pr612NativeTransport(t, upstream)
+			t.Cleanup(func() {
+				native.mu.Lock()
+				defer native.mu.Unlock()
+				for _, connection := range native.clients {
+					connection.client.CloseIdleConnections()
+				}
+			})
+			newRunner := func() *service.UpstreamBillingProbeService {
+				accounts := newAccountRepositoryWithSQL(client, db, nil)
+				tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+				runner := service.NewUpstreamBillingProbeService(accounts, tester, service.NewSettingService(NewSettingRepository(client), cfg))
+				runner.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)))
+				t.Cleanup(runner.Stop)
+				return runner
+			}
+			runner := newRunner()
+			done := make(chan error, 1)
+			if entry == "background" {
+				runner.Start()
+			} else {
+				go func() { done <- runner.RunDue(ctx) }()
+			}
+			for range 4 {
+				select {
+				case <-entered:
+				case <-time.After(10 * time.Second):
+					t.Fatal("native billing cycle did not reach its four physical requests")
+				}
+			}
+			stopped := make(chan struct{})
+			go func() { runner.Stop(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(5 * time.Second):
+				t.Fatal("native billing cycle did not cancel and drain")
+			}
+			if entry == "external_due" {
+				require.ErrorIs(t, <-done, context.Canceled)
+			}
+			require.Eventually(t, func() bool { return canceled.Load() == 4 }, 5*time.Second, 5*time.Millisecond)
+			require.EqualValues(t, 4, calls.Load(), "queued automatic checks must not start after cancellation")
+			require.Zero(t, balances.Load())
+			require.ErrorIs(t, runner.RunDue(ctx), context.Canceled)
+			var changed int64
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE extra IS DISTINCT FROM $1::jsonb`, baseline).Scan(&changed))
+			require.Zero(t, changed, "stopping must preserve previous evidence, freshness and failure count")
+			summary, err := budget.Summary(ctx)
+			require.NoError(t, err)
+			require.EqualValues(t, 4, summary.DayUsed, "canceled physical requests are not refunded")
+			require.Zero(t, summary.ActiveRequests)
+			require.Zero(t, summary.UsagePending)
+			block.Store(false)
+			manual, err := runner.ProbeAccount(ctx, ids[0])
+			require.NoError(t, err)
+			require.Equal(t, service.UpstreamBillingProbeStatusOK, manual.Status)
+			require.NoError(t, newRunner().RunDue(ctx), "a new service must still execute the remaining due inventory")
+			require.EqualValues(t, 24, calls.Load())
+			require.EqualValues(t, 20, balances.Load())
+			var failed, healthy, usage, originalRates int64
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT
+ (SELECT count(*) FROM accounts WHERE extra#>>'{upstream_billing_probe,status}'='failed'),
+ (SELECT count(*) FROM accounts WHERE extra#>>'{upstream_billing_probe,status}'='ok'),
+ (SELECT count(*) FROM usage_logs),(SELECT count(*) FROM accounts WHERE rate_multiplier=1)`).Scan(&failed, &healthy, &usage, &originalRates))
+			require.Zero(t, failed)
+			require.EqualValues(t, 20, healthy)
+			require.Zero(t, usage)
+			require.EqualValues(t, 20, originalRates)
+			summary, err = budget.Summary(ctx)
+			require.NoError(t, err)
+			require.EqualValues(t, 44, summary.DayUsed)
+			require.Zero(t, summary.ActiveRequests)
+			require.Zero(t, summary.UsagePending)
+			require.Zero(t, summary.UsageUnknown)
+			require.Zero(t, summary.DayTokens)
+		})
+	}
+}

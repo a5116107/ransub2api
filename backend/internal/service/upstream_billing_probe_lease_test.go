@@ -11,8 +11,228 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type billingProbeLifecycleTransport struct {
+	HTTPUpstream
+	check func(*http.Request) (*http.Response, error)
+}
+
+func (h billingProbeLifecycleTransport) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return h.check(req)
+}
+
+func billingProbeLifecycleFixture() (*upstreamBillingProbeAccountRepo, *upstreamBillingProbeSettingRepo) {
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Credentials: map[string]any{"api_key": "fixture-key", "base_url": "https://upstream.example"},
+		Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true}}
+	return &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{1: account}},
+		&upstreamBillingProbeSettingRepo{values: map[string]string{SettingKeyUpstreamBillingProbeSettings: `{"enabled":true,"interval_minutes":30}`}}
+}
+
+func TestUpstreamBillingProbeLifecycleRepeatedStopWaitsForDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo, settings := billingProbeLifecycleFixture()
+		entered, canceled, drain := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(drain) })
+		defer release()
+		svc := newUpstreamBillingProbeTestService(repo, billingProbeLifecycleTransport{check: func(req *http.Request) (*http.Response, error) {
+			close(entered)
+			<-req.Context().Done()
+			close(canceled)
+			<-drain
+			return nil, req.Context().Err()
+		}}, settings)
+		svc.Start()
+		<-entered
+		first, second := make(chan struct{}), make(chan struct{})
+		go func() { svc.Stop(); close(first) }()
+		<-canceled
+		go func() { svc.Stop(); close(second) }()
+		synctest.Wait()
+		select {
+		case <-first:
+			assert.Fail(t, "initial Stop returned while a native request was still draining")
+		default:
+		}
+		select {
+		case <-second:
+			assert.Fail(t, "repeated Stop returned before the same drain completed")
+		default:
+		}
+		release()
+		<-first
+		<-second
+		require.Empty(t, svc.probeSlots)
+		require.Nil(t, repo.accounts[1].Extra[UpstreamBillingProbeExtraKey])
+	})
+}
+
+func TestUpstreamBillingProbeLifecycleExternalDueStopsAndDrains(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo, settings := billingProbeLifecycleFixture()
+		entered, canceled, drain := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(drain) })
+		defer release()
+		svc := newUpstreamBillingProbeTestService(repo, billingProbeLifecycleTransport{check: func(req *http.Request) (*http.Response, error) {
+			close(entered)
+			select {
+			case <-req.Context().Done():
+				close(canceled)
+				<-drain
+			case <-drain:
+			}
+			return nil, context.Canceled
+		}}, settings)
+		done := make(chan error, 1)
+		go func() { done <- svc.RunDue(context.Background()) }()
+		<-entered
+		stopped := make(chan struct{})
+		go func() { svc.Stop(); close(stopped) }()
+		synctest.Wait()
+		select {
+		case <-canceled:
+		default:
+			assert.Fail(t, "service Stop did not cancel the external automatic batch")
+		}
+		select {
+		case <-stopped:
+			assert.Fail(t, "service Stop did not wait for the external automatic batch")
+		default:
+		}
+		release()
+		<-stopped
+		require.ErrorIs(t, <-done, context.Canceled)
+		require.Empty(t, svc.probeSlots)
+		require.Nil(t, repo.accounts[1].Extra[UpstreamBillingProbeExtraKey])
+	})
+}
+
+func TestUpstreamBillingProbeLifecycleStoppedDueDoesNotSend(t *testing.T) {
+	repo, settings := billingProbeLifecycleFixture()
+	upstream := &upstreamBillingProbeHTTPStub{}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, settings)
+	svc.Stop()
+	require.ErrorIs(t, svc.RunDue(t.Context()), context.Canceled)
+	require.Zero(t, upstream.calls.Load())
+	require.Zero(t, upstream.balanceCalls.Load())
+	require.Nil(t, repo.accounts[1].Extra[UpstreamBillingProbeExtraKey])
+	result, err := svc.ProbeAccount(t.Context(), 1)
+	require.NoError(t, err, "stopping the automatic runner must not disable manual probes")
+	require.Equal(t, UpstreamBillingProbeStatusOK, result.Status)
+	require.EqualValues(t, 1, upstream.calls.Load())
+	require.EqualValues(t, 1, upstream.balanceCalls.Load())
+}
+
+type billingProbeLifecycleDueRepo struct {
+	*upstreamBillingProbeAccountRepo
+	scans atomic.Int64
+}
+
+func (r *billingProbeLifecycleDueRepo) ListDueUpstreamBillingProbeAccounts(ctx context.Context, _ time.Time, _ int) ([]Account, error) {
+	r.scans.Add(1)
+	account, err := r.GetByID(ctx, 1)
+	if err != nil {
+		return nil, err
+	}
+	return []Account{*account}, nil
+}
+
+// Observing caller-context attachment gives the test a real admission barrier,
+// without using synthetic-clock waits on goroutines blocked in cycleMu.Lock.
+type billingProbeLifecycleContext struct {
+	context.Context
+	attached chan struct{}
+	once     sync.Once
+}
+
+func (c *billingProbeLifecycleContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.attached) })
+	return c.Context.Done()
+}
+
+func TestUpstreamBillingProbeLifecycleQueuedDueStopsWithoutScanning(t *testing.T) {
+	accounts, settings := billingProbeLifecycleFixture()
+	repo := &billingProbeLifecycleDueRepo{upstreamBillingProbeAccountRepo: accounts}
+	entered, canceled, drain := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(drain) })
+	defer release()
+	svc := newUpstreamBillingProbeTestService(repo, billingProbeLifecycleTransport{check: func(req *http.Request) (*http.Response, error) {
+		close(entered)
+		<-req.Context().Done()
+		close(canceled)
+		<-drain
+		return nil, req.Context().Err()
+	}}, settings)
+	t.Cleanup(svc.Stop)
+	results := make(chan error, 21)
+	go func() { results <- svc.RunDue(t.Context()) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("native billing batch did not enter its physical request")
+	}
+	for range 20 {
+		ctx := &billingProbeLifecycleContext{Context: t.Context(), attached: make(chan struct{})}
+		go func() { results <- svc.RunDue(ctx) }()
+		select {
+		case <-ctx.attached:
+		case <-time.After(5 * time.Second):
+			t.Fatal("queued automatic batch did not attach its caller lifetime")
+		}
+	}
+	stopped := make(chan struct{})
+	go func() { svc.Stop(); close(stopped) }()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not cancel the active billing request")
+	}
+	require.EqualValues(t, 1, repo.scans.Load())
+	select {
+	case <-stopped:
+		assert.Fail(t, "Stop returned before queued automatic work had drained")
+	default:
+	}
+	release()
+	for range 21 {
+		select {
+		case err := <-results:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(5 * time.Second):
+			t.Fatal("queued automatic batch did not finish cancellation")
+		}
+	}
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not complete the shared drain")
+	}
+	require.EqualValues(t, 1, repo.scans.Load(), "retired queued batches must not rescan inventory")
+	require.Empty(t, svc.probeSlots)
+	require.Nil(t, accounts.accounts[1].Extra[UpstreamBillingProbeExtraKey])
+}
+
+func TestUpstreamBillingProbeLifecycleConcurrentStartRunStop(t *testing.T) {
+	for range 25 {
+		_, settings := billingProbeLifecycleFixture()
+		svc := newUpstreamBillingProbeTestService(&upstreamBillingProbeAccountRepo{}, &upstreamBillingProbeHTTPStub{}, settings)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() { defer wg.Done(); <-start; svc.Start() }()
+		go func() { defer wg.Done(); <-start; _ = svc.RunDue(t.Context()) }()
+		go func() { defer wg.Done(); <-start; svc.Stop() }()
+		close(start)
+		wg.Wait()
+		svc.Stop()
+		svc.Start()
+		require.ErrorIs(t, svc.RunDue(t.Context()), context.Canceled)
+		require.Empty(t, svc.probeSlots)
+	}
+}
 
 func slowBillingProbeLeaseFixture(t *testing.T) (*UpstreamBillingProbeService, *atomic.Int64, *atomic.Int64) {
 	t.Helper()
