@@ -124,7 +124,8 @@ type ScheduledTestPlanRepository interface {
 	ListDue(ctx context.Context, now time.Time) ([]*ScheduledTestPlan, error)
 	Update(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestPlan, error)
 	Delete(ctx context.Context, id int64) error
-	UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time) error
+	// A nil finish releases an unstarted claim without recording last_run_at.
+	FinishConnectivity(ctx context.Context, plan *ScheduledTestPlan, until time.Time, finished *time.Time, next time.Time) error
 }
 
 // PelicanHistoryResult includes account identity without exposing account credentials.

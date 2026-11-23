@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -400,13 +401,92 @@ func TestScheduledConnectivityMonitoringBudgetAccountingAndManualIsolation(t *te
 
 type scheduledBudgetPlanRepo struct {
 	ScheduledTestPlanRepository
-	next time.Time
-	runs int
+	next   time.Time
+	runs   int
+	claims int
+	claim  func(context.Context) (bool, error)
+	finish func(context.Context)
+	last   *time.Time
 }
 
-func (r *scheduledBudgetPlanRepo) UpdateAfterRun(_ context.Context, _ int64, _, next time.Time) error {
+func (r *scheduledBudgetPlanRepo) ClaimPelican(ctx context.Context, _ *ScheduledTestPlan, _, _, _ time.Time) (bool, error) {
+	r.claims++
+	if r.claim != nil {
+		return r.claim(ctx)
+	}
+	return true, nil
+}
+
+func (r *scheduledBudgetPlanRepo) FinishConnectivity(ctx context.Context, _ *ScheduledTestPlan, _ time.Time, finished *time.Time, next time.Time) error {
+	if r.finish != nil {
+		r.finish(ctx)
+	}
 	r.next, r.runs = next, r.runs+1
+	r.last = finished
 	return nil
+}
+
+func TestScheduledConnectivityClaimFencesBeforeUpstream(t *testing.T) {
+	for _, scenario := range []string{"busy", "claim_failure", "canceled_after_claim", "budget_after_claim", "invalid_cron"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ctx = withMonitoringProbeDispatchStop(ctx)
+			tests, upstream := qualityBudgetTestService(&monitoringBudgetRepoStub{}, scheduledBudgetReply())
+			plans := &scheduledBudgetPlanRepo{claim: func(context.Context) (bool, error) {
+				switch scenario {
+				case "busy":
+					return false, nil
+				case "claim_failure":
+					return false, errors.New("fixture claim storage unavailable")
+				case "budget_after_claim":
+					stopMonitoringProbeDispatch(ctx, &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day"})
+					return true, nil
+				default:
+					cancel()
+					return true, nil
+				}
+			}, finish: func(ctx context.Context) {
+				require.NoError(t, ctx.Err(), "owned leases finish with a bounded independent save context")
+			}}
+			results := &pelicanResults{}
+			runner := NewScheduledTestRunnerService(plans, NewScheduledTestService(plans, results), tests, nil, nil)
+			due := time.Now().UTC().Add(-time.Minute)
+			plan := &ScheduledTestPlan{ID: 11, AccountID: 2, ModelID: "test-model", CronExpression: "* * * * *", MaxResults: 20, NextRunAt: &due}
+			if scenario == "invalid_cron" {
+				plan.CronExpression = "not a cron"
+			}
+			require.False(t, runner.runOnePlan(ctx, plan))
+			require.Empty(t, upstream.requests)
+			require.Empty(t, results.results)
+			if scenario == "invalid_cron" {
+				require.Zero(t, plans.claims)
+			} else {
+				require.Equal(t, 1, plans.claims)
+			}
+			if scenario == "canceled_after_claim" || scenario == "budget_after_claim" {
+				require.Equal(t, 1, plans.runs)
+				require.Nil(t, plans.last)
+				require.Equal(t, due, plans.next)
+			} else {
+				require.Zero(t, plans.runs)
+			}
+		})
+	}
+}
+
+func TestScheduledConnectivityClaimFinishesAfterSaveFailure(t *testing.T) {
+	tests, upstream := qualityBudgetTestService(&monitoringBudgetRepoStub{}, scheduledBudgetReply())
+	plans := &scheduledBudgetPlanRepo{}
+	results := &scheduledLifecycleResults{create: func(ctx context.Context, _ *ScheduledTestResult) (*ScheduledTestResult, error) {
+		require.NoError(t, ctx.Err())
+		return nil, errors.New("fixture result storage unavailable")
+	}}
+	runner := NewScheduledTestRunnerService(plans, NewScheduledTestService(plans, results), tests, nil, nil)
+	require.True(t, runner.runOnePlan(t.Context(), &ScheduledTestPlan{ID: 11, AccountID: 2, ModelID: "test-model", CronExpression: "* * * * *", MaxResults: 20}))
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, 1, plans.claims)
+	require.Equal(t, 1, plans.runs, "result storage failure must not leave the real claim active or replay a paid call")
 }
 
 func TestScheduledConnectivityMonitoringBudgetRunnerNoFalseRecovery(t *testing.T) {

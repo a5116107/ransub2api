@@ -272,10 +272,12 @@ func deleteScheduledTestPlanTx(ctx context.Context, tx *sql.Tx, id int64) error 
 	return nil
 }
 
-func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time) error {
+func (r *scheduledTestPlanRepository) FinishConnectivity(ctx context.Context, plan *service.ScheduledTestPlan, until time.Time, finished *time.Time, next time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE scheduled_test_plans SET last_run_at = $2, next_run_at = $3, updated_at = NOW() WHERE id = $1
-	`, id, lastRunAt, nextRunAt)
+		UPDATE scheduled_test_plans SET running_until=NULL,last_run_at=COALESCE($3::timestamptz,last_run_at),
+		next_run_at=CASE WHEN updated_at=$4 AND next_run_at=$5 THEN $6 ELSE next_run_at END
+		WHERE id=$1 AND running_until=$2
+	`, plan.ID, until, finished, plan.UpdatedAt, plan.NextRunAt, next)
 	return err
 }
 
@@ -447,7 +449,8 @@ func marshalPelicanConfig(config *service.PelicanTestConfig) any {
 	return string(data)
 }
 
-// Compare the saved version as well as the due time: a concurrent pause/edit wins.
+// Both connectivity and Pelican plans use this original claim. Compare the saved
+// version as well as the due time: a concurrent pause/edit wins.
 func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *service.ScheduledTestPlan, now, until, next time.Time) (bool, error) {
 	plan.QualityFaultVersion = nil
 	plan.QualityFaultRound = ""

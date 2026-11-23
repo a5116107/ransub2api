@@ -263,6 +263,57 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		}
 		return completed
 	}
+	now := time.Now()
+	nextRun, err := computeNextRun(plan.CronExpression, now)
+	if err != nil {
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d computeNextRun error: %v", plan.ID, err)
+		return false
+	}
+	until := now.Add(15 * time.Minute).Truncate(time.Microsecond)
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
+		return false
+	}
+	claimed, err := s.planRepo.ClaimPelican(ctx, plan, now, until, nextRun)
+	if err != nil || !claimed {
+		if err != nil {
+			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d claim error: %v", plan.ID, err)
+		}
+		return false
+	}
+	// Connectivity shares the original persisted claim but has no quality marker.
+	// Freeze the claimed nominal next time: edits and successors must win over
+	// this worker's delayed finish, including after cancellation or a panic.
+	claimedPlan, claimedNext := *plan, nextRun
+	claimedPlan.NextRunAt = &claimedNext
+	var retryAt time.Time
+	started := false
+	defer func() {
+		finished := time.Now()
+		next, err := computeNextRun(plan.CronExpression, finished)
+		if err != nil {
+			next = claimedNext
+		}
+		if retryAt.After(next) {
+			next = retryAt
+		}
+		var finishedAt *time.Time
+		if started {
+			finishedAt = &finished
+		} else if plan.NextRunAt != nil {
+			// A local stop may race the claim. No adapter ran, so return the
+			// nominal due round instead of consuming it without a result.
+			next = *plan.NextRunAt
+		}
+		finishCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.planRepo.FinishConnectivity(finishCtx, &claimedPlan, until, finishedAt, next); err != nil {
+			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d finish error: %v", plan.ID, err)
+		}
+	}()
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
+		return false
+	}
+	started = true
 	result, err := s.accountTestSvc.RunTestBackground(ctx, plan.AccountID, plan.ModelID)
 	if err != nil {
 		stopMonitoringProbeDispatch(ctx, monitoringProbeDeferral(err, time.Now()))
@@ -270,6 +321,9 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		return false
 	}
 	stopMonitoringProbeDispatch(ctx, monitoringProbeResultDeferral(result))
+	if result.BudgetDeferral != nil {
+		retryAt = result.BudgetDeferral.RetryAt
+	}
 
 	if ctx.Err() != nil && result.Status == "success" {
 		result.Status, result.ErrorMessage = "failed", ctx.Err().Error()
@@ -285,18 +339,6 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		s.tryRecoverAccount(ctx, plan.AccountID, plan.ID)
 	}
 
-	nextRun, err := computeNextRun(plan.CronExpression, time.Now())
-	if err != nil {
-		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d computeNextRun error: %v", plan.ID, err)
-		return false
-	}
-	if result.BudgetDeferral != nil && result.BudgetDeferral.RetryAt.After(nextRun) {
-		nextRun = result.BudgetDeferral.RetryAt
-	}
-
-	if err := s.planRepo.UpdateAfterRun(saveCtx, plan.ID, time.Now(), nextRun); err != nil {
-		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun error: %v", plan.ID, err)
-	}
 	return true
 }
 

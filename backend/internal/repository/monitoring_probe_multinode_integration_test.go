@@ -82,7 +82,7 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 		runMonitoringBillingNode(t, command, db, budget)
 		return
 	}
-	if command.Mode == "v3" || command.Mode == "group" {
+	if command.Mode == "v3" || command.Mode == "group" || command.Mode == "scheduled" {
 		runMonitoringGroupProbeNode(t, command, db, budget)
 		return
 	}
@@ -193,6 +193,33 @@ func runMonitoringOllamaNode(t *testing.T, command monitoringBudgetNodeCommand, 
 	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK, Reason: scan.State}))
 }
 
+type monitoringScheduledNodePlans struct {
+	service.ScheduledTestPlanRepository
+	service.QualitySharedBatchRepository
+	finalizations int
+	done          chan struct{}
+	once          sync.Once
+}
+
+func (r *monitoringScheduledNodePlans) FinalizeQualityBatches(ctx context.Context) error {
+	if err := r.QualitySharedBatchRepository.FinalizeQualityBatches(ctx); err != nil {
+		return err
+	}
+	r.finalizations++
+	if r.finalizations == 2 {
+		r.once.Do(func() { close(r.done) })
+	}
+	return nil
+}
+
+func (r *monitoringScheduledNodePlans) ListDue(ctx context.Context, now time.Time) ([]*service.ScheduledTestPlan, error) {
+	plans, err := r.ScheduledTestPlanRepository.ListDue(ctx, now)
+	if err == nil && len(plans) == 0 {
+		r.once.Do(func() { close(r.done) })
+	}
+	return plans, err
+}
+
 func runMonitoringGroupProbeNode(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB, budget *service.MonitoringProbeBudgetService) {
 	t.Helper()
 	require.Equal(t, 1, command.Requests)
@@ -225,6 +252,24 @@ func runMonitoringGroupProbeNode(t *testing.T, command monitoringBudgetNodeComma
 	groups := service.NewPelicanGroupTestService(NewPelicanGroupTestRepository(db), NewGroupRepository(client, db), nil, gateway, concurrency, tester, nil, nil)
 	if command.Mode == "group" {
 		groups.RunDue(t.Context(), command.Tick)
+	} else if command.Mode == "scheduled" {
+		original := NewScheduledTestPlanRepository(db)
+		batches, ok := original.(service.QualitySharedBatchRepository)
+		require.True(t, ok)
+		plans := &monitoringScheduledNodePlans{ScheduledTestPlanRepository: original, QualitySharedBatchRepository: batches, done: make(chan struct{})}
+		monitor := service.ProvideChannelMonitorV2Service(NewChannelMonitorV2Repository(db), settings, groups)
+		runtime := &config.Config{Timezone: cfg.Timezone, Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
+		runner := service.ProvideScheduledTestRunnerService(plans,
+			service.NewScheduledTestService(NewScheduledTestPlanRepository(db), NewScheduledTestResultRepository(db)), tester, nil,
+			runtime, &service.QualityJudgeService{}, nil, groups, monitor)
+		defer runner.Stop()
+		runner.Start()
+		select {
+		case <-plans.done:
+		case <-time.After(80 * time.Second):
+			t.Fatal("original scheduled cron did not finish its first real batch")
+		}
+		runner.Stop()
 	} else {
 		prober := service.NewChannelMonitorV3Prober(NewChannelMonitorV3Repository(db), groups, settings)
 		defer prober.Stop()
@@ -244,7 +289,11 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	require.NoError(t, err)
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	lifetime := 30 * time.Second
+	if command.Mode == "scheduled" {
+		lifetime = 95 * time.Second // A real minute boundary plus the original ten-second delay.
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), lifetime)
 	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestMonitoringProbeBudgetProcessNode$")
 	cmd.Env = append(os.Environ(), "SUB2API_MONITORING_BUDGET_PROCESS=1")
 	cmd.Stdin = bytes.NewReader(input)
