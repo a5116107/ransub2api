@@ -576,6 +576,71 @@ func TestCNProviderBalanceCheckFairBudgetCycles(t *testing.T) {
 	})
 }
 
+func TestCNProviderBalanceCheckOlderTierDrainsBeforeRecentWork(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		var oldCalls, recentCalls atomic.Int32
+		var recovering atomic.Bool
+		prober := cnQueueQuotaProber{query: func(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
+			if id == 1 {
+				oldCalls.Add(1)
+				if !recovering.Load() {
+					close(entered)
+					<-release
+					denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute", RetryAt: time.Now().Add(time.Minute)}
+					recordMonitoringProbeLocalError(ctx, denial)
+					return nil, denial
+				}
+			} else {
+				recentCalls.Add(1)
+			}
+			return &CNProviderQuotaProbeResult{Success: true}, nil
+		}}
+		svc := &CNProviderBalanceCheckService{accountRepo: cnQueueAccounts(t, 2), quotaService: prober, cfg: &config.Config{},
+			turnSequence: 100, turns: map[int64]cnBalanceProbeTurn{1: {served: 1}, 2: {served: 100}}}
+		svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(&monitoringBudgetRepoStub{}))
+		go func() { svc.runOnce(t.Context()); close(done) }()
+		<-entered
+		synctest.Wait()
+		before := recentCalls.Load()
+		close(release)
+		<-done
+		require.Zero(t, before, "recent work must not race older in-flight work for its budget")
+		require.Zero(t, recentCalls.Load(), "global exhaustion must stop the next age tier")
+		require.EqualValues(t, 1, oldCalls.Load())
+		require.EqualValues(t, 1, svc.turns[1].served, "unadmitted work retains its original age")
+		recovering.Store(true)
+		svc.runOnce(t.Context())
+		require.EqualValues(t, 2, oldCalls.Load())
+		require.EqualValues(t, 1, recentCalls.Load(), "recovered old work must release the younger tier")
+		require.Equal(t, svc.turns[1].served, svc.turns[2].served, "one completed round must share an age tier")
+	})
+}
+
+func TestCNProviderBalanceCheckOlderTierLocalDenialReleasesPeers(t *testing.T) {
+	for _, scope := range []string{"key", "key_minute", "site", "site_minute"} {
+		t.Run(scope, func(t *testing.T) {
+			var recentCalls atomic.Int32
+			svc := &CNProviderBalanceCheckService{accountRepo: cnQueueAccounts(t, 2), cfg: &config.Config{},
+				turnSequence: 100, turns: map[int64]cnBalanceProbeTurn{1: {served: 1}, 2: {served: 100}},
+				quotaService: cnQueueQuotaProber{query: func(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
+					if id == 1 {
+						denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: scope, RetryAt: time.Now().Add(time.Minute)}
+						recordMonitoringProbeLocalError(ctx, denial)
+						return nil, denial
+					}
+					recentCalls.Add(1)
+					return &CNProviderQuotaProbeResult{Success: true}, nil
+				}}}
+			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(&monitoringBudgetRepoStub{}))
+			svc.runOnce(t.Context())
+			require.EqualValues(t, 1, recentCalls.Load(), "a local denial must release the next independent age tier")
+			require.EqualValues(t, 1, svc.turns[1].served)
+			require.Greater(t, svc.turns[2].served, uint64(100))
+		})
+	}
+}
+
 func sumCNPhysicalCalls(calls map[int64]int) int {
 	total := 0
 	for _, count := range calls {
@@ -803,5 +868,12 @@ func TestCNProviderBalanceCheckQueuePaygSerialWithoutBlockingQuota(t *testing.T)
 		require.Equal(t, 1, maxPayg)
 		require.Equal(t, cnQuotaProbeConcurrency, maxActive)
 		require.True(t, quotaWhilePayg, "a slow balance check must leave the other slots available")
+		maxActive, maxPayg, calls, paygCalls, quotaWhilePayg = 0, 0, 0, 0, false
+		svc.runOnce(t.Context())
+		require.Equal(t, 17, calls)
+		require.Equal(t, 5, paygCalls)
+		require.Equal(t, 1, maxPayg)
+		require.Equal(t, cnQuotaProbeConcurrency, maxActive, "completed peers must remain concurrent in the next round")
+		require.True(t, quotaWhilePayg)
 	})
 }

@@ -219,6 +219,11 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 			quotas = append(quotas, i)
 		}
 	}
+	// Drain older unserved work before recent work can spend the last budget.
+	// A completed round shares one age so the next round retains concurrency.
+	age := s.turns[targets[0].account.ID].served
+	s.turnSequence++
+	servedAge := s.turnSequence
 	// Retain the original workload-derived 30..300s bound. This is not a
 	// promise that every target fits or that a detached flight was withdrawn.
 	batches := (len(quotas) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
@@ -238,10 +243,11 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	for {
 		for !exhausted && runCtx.Err() == nil && active < cnQuotaProbeConcurrency {
 			index := -1
-			if nextQuota < len(quotas) {
+			if nextQuota < len(quotas) && s.turns[targets[quotas[nextQuota]].account.ID].served == age {
 				index = quotas[nextQuota]
 			}
-			if !balanceBusy && nextBalance < len(balances) && (index < 0 || balances[nextBalance] < index) {
+			if !balanceBusy && nextBalance < len(balances) && s.turns[targets[balances[nextBalance]].account.ID].served == age &&
+				(index < 0 || balances[nextBalance] < index) {
 				index = balances[nextBalance]
 			}
 			if index < 0 {
@@ -286,6 +292,19 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 			}()
 		}
 		if active == 0 {
+			if !exhausted && runCtx.Err() == nil {
+				next := -1
+				if nextQuota < len(quotas) {
+					next = quotas[nextQuota]
+				}
+				if nextBalance < len(balances) && (next < 0 || balances[nextBalance] < next) {
+					next = balances[nextBalance]
+				}
+				if next >= 0 {
+					age = s.turns[targets[next].account.ID].served
+					continue
+				}
+			}
 			break
 		}
 		result := <-done
@@ -295,9 +314,8 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 			balanceBusy = false
 		}
 		if result.served {
-			s.turnSequence++
 			turn := s.turns[target.account.ID]
-			turn.served = s.turnSequence
+			turn.served = servedAge
 			s.turns[target.account.ID] = turn
 		}
 		exhausted = exhausted || result.stop
