@@ -35,6 +35,7 @@ type ScheduledTestRunnerService struct {
 	stopped        bool
 	cancel         context.CancelFunc
 	stopDone       chan struct{}
+	tickMu         sync.Mutex
 }
 
 // NewScheduledTestRunnerService creates a new runner.
@@ -124,6 +125,10 @@ func (s *ScheduledTestRunnerService) Stop() {
 }
 
 func (s *ScheduledTestRunnerService) runScheduled(parent context.Context) {
+	if s == nil || parent.Err() != nil || !s.tickMu.TryLock() {
+		return
+	}
+	defer s.tickMu.Unlock()
 	// Delay 10s so execution lands at ~:10 of each minute instead of :00.
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
@@ -138,6 +143,7 @@ func (s *ScheduledTestRunnerService) runScheduled(parent context.Context) {
 
 	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
 	defer cancel()
+	ctx = withMonitoringProbeDispatchStop(ctx)
 
 	s.reconcileSharedMonitoring(ctx)
 	if ctx.Err() != nil {
@@ -201,10 +207,17 @@ func (s *ScheduledTestRunnerService) runScheduled(parent context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if monitoringProbeDispatchStopped(ctx) {
+			break
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case sem <- struct{}{}:
+		}
+		if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
+			<-sem
+			break
 		}
 		wg.Add(1)
 		go func(p *ScheduledTestPlan) {
@@ -221,7 +234,7 @@ func (s *ScheduledTestRunnerService) runScheduled(parent context.Context) {
 }
 
 func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *ScheduledTestPlan) (completed bool) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return false
 	}
 	if s.planSlots != nil {
@@ -233,7 +246,7 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		}
 	}
 	// A free slot and cancellation can both be ready in the select above.
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return false
 	}
 	ctx = context.WithValue(withAutomaticMonitoringProbe(ctx), qualityProbeContextKey{}, true)
@@ -252,9 +265,11 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 	}
 	result, err := s.accountTestSvc.RunTestBackground(ctx, plan.AccountID, plan.ModelID)
 	if err != nil {
+		stopMonitoringProbeDispatch(ctx, monitoringProbeDeferral(err, time.Now()))
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d RunTestBackground error: %v", plan.ID, err)
 		return false
 	}
+	stopMonitoringProbeDispatch(ctx, monitoringProbeResultDeferral(result))
 
 	if ctx.Err() != nil && result.Status == "success" {
 		result.Status, result.ErrorMessage = "failed", ctx.Err().Error()
@@ -295,7 +310,7 @@ func (s *ScheduledTestRunnerService) runAvailabilityCoverage(ctx context.Context
 	rounds := availabilityCoverageRounds(plan, plan.AvailabilityEligibleConnections, time.Now())
 	seen := []string{plan.AvailabilityProbeConnectionID}
 	expectedFault := plan.AvailabilityFaultVersion
-	for i := 1; i < rounds && ctx.Err() == nil; i++ {
+	for i := 1; i < rounds && ctx.Err() == nil && !monitoringProbeDispatchStopped(ctx); i++ {
 		latest, err := s.planRepo.GetByID(ctx, plan.ID)
 		if err != nil || latest == nil || !latest.Enabled || !latest.UpdatedAt.Equal(plan.UpdatedAt) || latest.PelicanConfig == nil || latest.PelicanConfig.Availability == nil || latest.NextRunAt == nil || !latest.NextRunAt.Equal(*plan.NextRunAt) || !latest.NextRunAt.After(time.Now()) {
 			return

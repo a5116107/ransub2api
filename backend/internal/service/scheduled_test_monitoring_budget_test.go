@@ -485,3 +485,193 @@ func TestScheduledConnectivityMonitoringBudgetProviderErrorIsNotDeferral(t *test
 	require.Len(t, upstream.requests, 1)
 	require.Equal(t, 1, repo.released)
 }
+
+func TestScheduledRunnerGlobalBudgetStopsNewPlans(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var due []*ScheduledTestPlan
+		for i := range 100 {
+			plan := pelicanPlan()
+			plan.ID = int64(i + 1)
+			plan.PelicanConfig.ParallelCount = 1
+			due = append(due, plan)
+		}
+		var saved, finished atomic.Int32
+		plans := &scheduledLifecyclePlans{claim: true, list: func(context.Context) ([]*ScheduledTestPlan, error) { return due, nil },
+			finish: func(ctx context.Context) error { finished.Add(1); return ctx.Err() }}
+		results := &scheduledLifecycleResults{create: func(ctx context.Context, result *ScheduledTestResult) (*ScheduledTestResult, error) {
+			saved.Add(1)
+			return result, ctx.Err()
+		}}
+		runner := NewScheduledTestRunnerService(plans, NewScheduledTestService(plans, results), &AccountTestService{}, nil, nil)
+		runner.runPelican = func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+			return &ScheduledTestResult{Status: "deferred", BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "token_limit", Scope: "global_day"}}, nil
+		}
+		runner.runScheduled(t.Context())
+		require.LessOrEqual(t, plans.claims.Load(), int32(scheduledTestDefaultMaxWorkers), "the account-plan lane must also leave unstarted plans due after a global denial")
+		require.Equal(t, plans.claims.Load(), saved.Load())
+		require.Equal(t, plans.claims.Load(), finished.Load())
+		require.Empty(t, runner.planSlots)
+	})
+}
+
+func TestScheduledRunnerBudgetScopesAndNewTickRecovery(t *testing.T) {
+	for _, scope := range []string{"global", "global_day", "global_minute", "system", "unknown", "", "site", "site_minute", "key", "key_minute", "plugin"} {
+		for _, judgeOnly := range []bool{false, true} {
+			name := scope
+			if judgeOnly {
+				name += "/judge"
+			}
+			t.Run(name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					var due []*ScheduledTestPlan
+					for i := range 24 {
+						plan := pelicanPlan()
+						plan.ID = int64(i + 1)
+						due = append(due, plan)
+					}
+					var saved, finished atomic.Int32
+					var paused atomic.Bool
+					paused.Store(true)
+					plans := &scheduledLifecyclePlans{claim: true, list: func(context.Context) ([]*ScheduledTestPlan, error) { return due, nil },
+						finish: func(ctx context.Context) error { finished.Add(1); return ctx.Err() }}
+					results := &scheduledLifecycleResults{create: func(ctx context.Context, result *ScheduledTestResult) (*ScheduledTestResult, error) {
+						saved.Add(1)
+						return result, ctx.Err()
+					}}
+					runner := NewScheduledTestRunnerService(plans, NewScheduledTestService(plans, results), &AccountTestService{}, nil, nil)
+					runner.runPelican = func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+						result := &ScheduledTestResult{Status: "success", ResponseText: "<svg></svg>"}
+						if paused.Load() {
+							denial := &MonitoringProbeBudgetDenial{Reason: "fixture_limit", Scope: scope}
+							result.Status = "deferred"
+							if judgeOnly {
+								result.QualityJudgment = &QualityJudgment{Verdict: "unknown", BudgetDeferral: denial}
+							} else {
+								result.BudgetDeferral = denial
+							}
+						}
+						return result, nil
+					}
+					runner.runScheduled(t.Context())
+					first := plans.claims.Load()
+					global := monitoringProbeBudgetStopsQueue(&MonitoringProbeBudgetDenial{Scope: scope})
+					if global {
+						require.LessOrEqual(t, first, int32(scheduledTestDefaultMaxWorkers))
+					} else {
+						require.EqualValues(t, 24, first, "one site's, Key's or plugin's deferral must not stop unrelated plans")
+					}
+					require.Positive(t, first)
+					require.Equal(t, first, finished.Load())
+					require.EqualValues(t, first*2, saved.Load(), "already-admitted sibling samples still complete")
+					paused.Store(false)
+					runner.runScheduled(t.Context())
+					require.EqualValues(t, first+24, plans.claims.Load(), "a new tick must not inherit an exhausted batch's stop")
+					require.Equal(t, plans.claims.Load(), finished.Load())
+					require.EqualValues(t, plans.claims.Load()*2, saved.Load())
+					require.Empty(t, runner.planSlots)
+				})
+			})
+		}
+	}
+}
+
+func TestScheduledRunnerBudgetPauseBeforeSiblingOrSaveDrain(t *testing.T) {
+	for _, hold := range []string{"sample", "save"} {
+		t.Run(hold, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var due []*ScheduledTestPlan
+				for i := range 100 {
+					plan := pelicanPlan()
+					plan.ID, plan.AccountID = int64(i+1), int64(i+1)
+					plan.PelicanConfig.ParallelCount = 1
+					due = append(due, plan)
+				}
+				if hold == "sample" {
+					due[0].PelicanConfig.ParallelCount = 2
+				}
+				deny, others, held := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var releaseDeny, releaseOthers, releaseHeld sync.Once
+				var reads, started, firstSamples, saved, finished atomic.Int32
+				plans := &scheduledLifecyclePlans{claim: true, list: func(context.Context) ([]*ScheduledTestPlan, error) {
+					reads.Add(1)
+					return due, nil
+				}, finish: func(ctx context.Context) error { finished.Add(1); return ctx.Err() }}
+				results := &scheduledLifecycleResults{create: func(ctx context.Context, result *ScheduledTestResult) (*ScheduledTestResult, error) {
+					if hold == "save" && result.BudgetDeferral != nil {
+						<-held
+					}
+					require.NoError(t, ctx.Err())
+					saved.Add(1)
+					return result, nil
+				}}
+				runner := NewScheduledTestRunnerService(plans, NewScheduledTestService(plans, results), &AccountTestService{}, nil, nil)
+				runner.runPelican = func(ctx context.Context, accountID int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+					started.Add(1)
+					if accountID == 1 {
+						if firstSamples.Add(1) == 1 {
+							<-deny
+							return &ScheduledTestResult{Status: "deferred", BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day"}}, nil
+						}
+						<-held
+					} else {
+						<-others
+					}
+					require.NoError(t, ctx.Err(), "a budget stop must not cancel already-admitted work")
+					return &ScheduledTestResult{Status: "success", ResponseText: "<svg></svg>"}, nil
+				}
+				done := make(chan struct{})
+				go func() { defer close(done); runner.runScheduled(t.Context()) }()
+				defer func() {
+					releaseDeny.Do(func() { close(deny) })
+					releaseOthers.Do(func() { close(others) })
+					releaseHeld.Do(func() { close(held) })
+					<-done
+				}()
+				time.Sleep(11 * time.Second)
+				synctest.Wait()
+				initial := scheduledTestDefaultMaxWorkers
+				if hold == "sample" {
+					initial++
+				}
+				require.EqualValues(t, initial, started.Load())
+				releaseDeny.Do(func() { close(deny) })
+				synctest.Wait()
+				releaseOthers.Do(func() { close(others) })
+				synctest.Wait()
+				require.EqualValues(t, scheduledTestDefaultMaxWorkers, plans.claims.Load(), "slow siblings or storage must not delay stop-dispatch")
+				runner.runScheduled(t.Context())
+				require.EqualValues(t, 1, reads.Load(), "an overlapping tick must not bypass a draining batch")
+				manual := pelicanPlan()
+				manual.ID, manual.AccountID, manual.PelicanConfig.ParallelCount = 1001, 1001, 1
+				require.True(t, runner.runOnePlan(t.Context(), manual), "direct event work keeps its independent lifetime")
+				releaseHeld.Do(func() { close(held) })
+				<-done
+				require.EqualValues(t, scheduledTestDefaultMaxWorkers+1, plans.claims.Load())
+				require.Equal(t, plans.claims.Load(), finished.Load())
+				require.EqualValues(t, initial+1, saved.Load())
+				require.Empty(t, runner.planSlots)
+			})
+		})
+	}
+}
+
+func TestScheduledRunnerBudgetInventoryErrorReleasesTick(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var reads atomic.Int32
+		plans := &scheduledLifecyclePlans{list: func(context.Context) ([]*ScheduledTestPlan, error) {
+			if reads.Add(1) == 1 {
+				return nil, ErrMonitoringProbeBudgetUnavailable
+			}
+			return nil, nil
+		}}
+		runner := NewScheduledTestRunnerService(plans, NewScheduledTestService(plans, &scheduledLifecycleResults{}), &AccountTestService{}, nil, nil)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		runner.runScheduled(ctx)
+		require.Zero(t, reads.Load())
+		runner.runScheduled(t.Context())
+		runner.runScheduled(t.Context())
+		require.EqualValues(t, 2, reads.Load(), "an inventory error must release the batch lock for the next tick")
+		require.Empty(t, runner.planSlots)
+	})
+}

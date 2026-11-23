@@ -110,6 +110,9 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 }
 
 func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *ScheduledTestPlan) bool {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
+		return false
+	}
 	plan.AvailabilityCoverageStop = false
 	coverageOnly := plan.TriggerSource == AvailabilityCoverageSource
 	var triggeredAccount *Account
@@ -139,7 +142,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	// Persisted lease prevents duplicate execution across ticks and server replicas.
 	// It also recovers automatically after a process crash.
 	until := now.Add(15 * time.Minute).Truncate(time.Microsecond)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return false
 	}
 	claimed, err := s.planRepo.ClaimPelican(ctx, plan, now, until, next)
@@ -293,6 +296,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 					continue
 				}
 				result := s.runPelicanSample(runCtx, &samplePlan)
+				stopMonitoringProbeDispatch(runCtx, monitoringProbeResultDeferral(result))
 				if plan.PelicanConfig.Quality != nil && !coverageOnly && qualityModelUnsupported(result.ErrorMessage) {
 					unsupported.Store(samplePlan.ModelID, true)
 					persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(runCtx), 3*time.Second)

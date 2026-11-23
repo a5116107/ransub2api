@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -176,4 +177,37 @@ func monitoringProbeBudgetStopsQueue(denial *MonitoringProbeBudgetDenial) bool {
 	default:
 		return true
 	}
+}
+
+// Each native scheduled lane owns one stop signal per batch. This value is
+// internal, not configuration or request metadata; it never cancels admitted
+// work, grading, independent result storage or lease cleanup.
+type monitoringProbeDispatchStopKey struct{}
+
+func withMonitoringProbeDispatchStop(ctx context.Context) context.Context {
+	return context.WithValue(ctx, monitoringProbeDispatchStopKey{}, &atomic.Bool{})
+}
+
+func monitoringProbeDispatchStopped(ctx context.Context) bool {
+	stop, _ := ctx.Value(monitoringProbeDispatchStopKey{}).(*atomic.Bool)
+	return stop != nil && stop.Load()
+}
+
+func stopMonitoringProbeDispatch(ctx context.Context, denial *MonitoringProbeBudgetDenial) {
+	if stop, ok := ctx.Value(monitoringProbeDispatchStopKey{}).(*atomic.Bool); ok && monitoringProbeBudgetStopsQueue(denial) {
+		stop.Store(true)
+	}
+}
+
+func monitoringProbeResultDeferral(result *ScheduledTestResult) *MonitoringProbeBudgetDenial {
+	if result == nil {
+		return nil
+	}
+	if result.BudgetDeferral != nil {
+		return result.BudgetDeferral
+	}
+	if result.QualityJudgment != nil {
+		return result.QualityJudgment.BudgetDeferral
+	}
+	return nil
 }

@@ -4410,3 +4410,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - SQL首次编译因未使用context失败，后续执行因夹具未接收SaveSettings的新Revision而409，原日志分别scheduled-group-budget-sql-focus/native保留；夹具使用原保存返回值后终稿通过，没有更改应用CAS或放宽断言。复用原PG17 loopback55441及隔离数据库、Redis8.4 loopback56442；overlay只替代Docker准备，原迁移/查询/适配器/断言不替换。
 - 两包unit,integration的go vet退出0；增量fast lint（new-from-rev=d3c843156）退出0、0 issues。最小日志沿H:/Root/DevCache/evidence/sub2api-billing-applicability/scheduled-group-budget-*；无前端/schema/锁文件改动，不重复旧UI验收。Linux构建及交付结果待原活句柄收尾，后续变更在STATE保持；回退只恢复旧耗尽后继续领取行为，保留原预算/计划/历史，仍需原统一排空合同，非严格混版通过。
 - 分组子项终稿Linux目标GOOS=linux/GOARCH=amd64/CGO_ENABLED=0的go build -p 1 -tags embed -o NUL ./cmd/server实际退出0；原唯一构建8分余自然结束，无并发重复构建/终止，Go临时构建树已自行清除，原node-compile-cache保留。沿本地源及自有功能分支交付；未部署生产。继续原D8.1依赖就绪验收发现账号计划同因缺口，新增scheduled-account-budget-red实际退出1（100领取/10上限），留在本地WIP继续修复，不混入本分组子项提交。
+
+### 2026-11-23 D8.1 — 原生账号计划全局止发、同轮归集及共用逻辑
+
+- 接续9d3da8bb1已验证/同步的分组止发子项，继续唯一H盘功能分支，本地实施/验证/自有origin同步，不CI/PR/合并/发布，原28项20done/8部分不变。原账号runScheduled在首次全局延期后仍处理100计划；scheduled-account-budget-red实际退出1，100领取超过原10工人。该失败独立于分组修复，不用分组或V2/V3证据冒充账号通道。
+- 原tick增加本进程TryLock，跨tick不重入；在原派发槽前后、runOnePlan账号槽前后和Pelican持久Claim前读同批暂停。旧连通结果及Pelican每个答题/判题结果完成后、慢样本/独立保存前发布全局/协调/未知延期；原已准入样本、判题、保存/Finish和最后共享批次finalize继续，不取消/退款/造绿。原可用性额外轮次遇暂停不再另起，Key/站点/插件局部延期保持其他来源执行；新tick/直接事件不继承旧暂停，错误/取消释放tick锁，实际故障/恢复与业务选路不改。
+- 两个真实调用方共用原monitoring_probe_queue内的内部暂停辅助和结果延期提取；删除pelicanGroupScheduledBudgetKey、pelicanGroupScheduledBudgetExhausted、pelicanGroupTestBudgetDeferral，源码残留0；没有第二套runner/配置或保留并行实现。沿原质量/预算分类，不将供应商错误文字认作本地预算。
+- 双轮完整相关服务+AvailabilityCoverage终稿1076条pass（4.936s），专项10轮470条pass（2.173s），0fail/skip/race；涵盖11种延期scope×直接/判题、慢样本/慢保存/重叠tick、独立事件、取消/库存失败锁恢复。原账号取消/停止/共享质量及旧配置行为仍通过，不更改原答题失败+unknown判题的历史合同。
+- 本地SQL夹具首次因缺少原必填ReasoningEffort编译后的验证失败，修正后又因误以为原Pelican结果顶层必须deferred而两轮断言失败。源码确认原Pelican本地延期保留failed/answer_budget_deferred及QualityJudgment.unknown+BudgetDeferral；旧连通才是顶层deferred。仅修夹具按两种原合同核验，没有改应用状态/判题或放宽中性延期范围。原日志scheduled-account-budget-sql/sql-final保留；原cron end-of-batch FinalizeQualityBatches实际回调作为完成观测，不用第一个保存或Stop取消伪造预算止发。
+- 终稿真实SQL/HTTP双轮40条pass（228.613s）、0fail/skip/race；每轮40混合计划为10次中性延期/30原到期计划重建恢复、31物理调用/217实际token，pending/unknown/active均0、原账号行/下游usage不变，原Pelican全局止发及CAS/预算历史同时回归。只有已领取计划推进；不把未领取计划写延期或刷新年龄。该结果使用原每分钟cron及10秒错峰，不缩短应用时钟或启动平行调度器。
+- 终稿两包vet、增量fast lint（new-from-rev=9d3da8bb1）及Linux embed整站目标构建均退出0、lint 0 issues。11个源码/测试/应用锁输入LF摘要67bfd76d483d81b675ad52f1c092d4ed5e0682ae76010e222c7f8996bd6f4e78；实际命令和最小失败/终稿日志沿scheduled-account-budget-*，前端/schema/应用锁无改动，不重复旧UI证据。旧分组专用3符号源码0残留，新TODO/FIXME/XXX 0；本地文档126链接均存在。
+- 测试结束PG无其他client/隔离数据库0、Redis只有自身自检client；精确本轮Redis容器89cf36fb257c正常停止并自动回收，复用PG55441 fast停回，原其他实例/缓存/PG数据不动；Go构建临时树均自行清除，仅既有node-compile-cache复用。历史12图1164B和既有拒删材料原位保护，不重试/隐藏/提交；本任务无源码scratch/worktree/clone。完整D8.1覆盖/公平/多节点、D8.2严格混版及D2/D3/D5/D6/D7/D9原验收保持开放，无生产发布。

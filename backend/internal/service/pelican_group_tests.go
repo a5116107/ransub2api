@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -161,15 +160,6 @@ type PelicanGroupTestService struct {
 	runs sync.WaitGroup
 	// One due batch per process; manual runs retain their own persisted lease.
 	dueMu sync.Mutex
-}
-
-// This source is set only by RunDue, never by stored config or request headers.
-// It stops new scheduled claims without canceling already admitted work/saves.
-type pelicanGroupScheduledBudgetKey struct{}
-
-func pelicanGroupScheduledBudgetExhausted(ctx context.Context) bool {
-	stop, _ := ctx.Value(pelicanGroupScheduledBudgetKey{}).(*atomic.Bool)
-	return stop != nil && stop.Load()
 }
 
 func NewPelicanGroupTestService(
@@ -331,7 +321,7 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 		return
 	}
 	defer s.dueMu.Unlock()
-	ctx = context.WithValue(ctx, pelicanGroupScheduledBudgetKey{}, &atomic.Bool{})
+	ctx = withMonitoringProbeDispatchStop(ctx)
 	plans, err := s.repo.ListDue(ctx, now)
 	if err != nil {
 		logger.LegacyPrintf("service.pelican_group_test", "list due plans failed: %v", err)
@@ -341,7 +331,7 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	for _, plan := range plans {
-		if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
+		if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 			return
 		}
 		select {
@@ -349,7 +339,7 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 			return
 		case sem <- struct{}{}:
 		}
-		if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
+		if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 			<-sem
 			return
 		}
@@ -363,7 +353,7 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 }
 
 func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *PelicanGroupTestPlan, now time.Time) {
-	if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return
 	}
 	defer func() {
@@ -387,7 +377,7 @@ func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *Pelica
 	// The persisted lease keeps ticks and server replicas from running a plan twice and
 	// expires by itself after a crash.
 	until := now.Add(pelicanGroupTestLease).Truncate(time.Microsecond)
-	if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
+	if ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return
 	}
 	claimed, err := s.repo.Claim(ctx, plan, now, until, &next)
@@ -451,9 +441,8 @@ func (s *PelicanGroupTestService) runSamples(ctx context.Context, plan *PelicanG
 			results[index] = s.runSample(ctx, plan, group)
 			// Signal from each finished sample before waiting for slower sibling
 			// samples or the independent storage path. Do not cancel either.
-			if stop, ok := ctx.Value(pelicanGroupScheduledBudgetKey{}).(*atomic.Bool); ok &&
-				results[index] != nil && monitoringProbeBudgetStopsQueue(results[index].BudgetDeferral) {
-				stop.Store(true)
+			if results[index] != nil {
+				stopMonitoringProbeDispatch(ctx, results[index].BudgetDeferral)
 			}
 		}(i)
 	}
@@ -537,7 +526,7 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 		if ctx.Err() != nil && sample.Status == "success" {
 			sample.Status, sample.ErrorMessage = "failed", ctx.Err().Error()
 		}
-		denial := pelicanGroupTestBudgetDeferral(sample)
+		denial := monitoringProbeResultDeferral(sample)
 		if denial != nil || ctx.Err() != nil || !pelicanGroupTestRetryable(sample) || len(attempts)+1 >= PelicanGroupTestMaxAttempts {
 			result = s.newResult(plan, started, s.now(), sample.ErrorMessage)
 			result.Status = sample.Status
@@ -584,7 +573,7 @@ func (s *PelicanGroupTestService) newResult(plan *PelicanGroupTestPlan, started,
 // transient upstream/stream failures to discard partial output and start a fresh answer.
 // This applies only to buffered group tests, not streams already sent to API clients.
 func pelicanGroupTestRetryable(result *ScheduledTestResult) bool {
-	if result.Status != "failed" || pelicanGroupTestBudgetDeferral(result) != nil {
+	if result.Status != "failed" || monitoringProbeResultDeferral(result) != nil {
 		return false
 	}
 	switch result.ErrorMessage {
@@ -609,16 +598,6 @@ func pelicanGroupTestRetryable(result *ScheduledTestResult) bool {
 	}
 	return strings.HasPrefix(result.ErrorMessage, "Stream read error: ") ||
 		strings.HasPrefix(result.ErrorMessage, "Chat Completions stream read error from /v1/chat/completions: ")
-}
-
-func pelicanGroupTestBudgetDeferral(result *ScheduledTestResult) *MonitoringProbeBudgetDenial {
-	if result.BudgetDeferral != nil {
-		return result.BudgetDeferral
-	}
-	if result.QualityJudgment != nil {
-		return result.QualityJudgment.BudgetDeferral
-	}
-	return nil
 }
 
 func (s *PelicanGroupTestService) ListResults(ctx context.Context, planID int64, page, pageSize int) ([]*PelicanGroupTestResult, int64, error) {
