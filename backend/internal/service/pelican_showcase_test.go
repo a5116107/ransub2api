@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,7 @@ type pruneCall struct {
 }
 
 type showcaseRepoStub struct {
+	mu        sync.Mutex
 	published []publishCall
 	pruned    []pruneCall
 	groups    []*PelicanShowcaseGroup
@@ -53,10 +55,14 @@ type showcaseRepoStub struct {
 }
 
 func (r *showcaseRepoStub) Publish(_ context.Context, snapshot PelicanShowcaseSnapshot, maxItems int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.published = append(r.published, publishCall{snapshot, maxItems})
 	return nil
 }
 func (r *showcaseRepoStub) Prune(_ context.Context, maxItems int, before time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.pruned = append(r.pruned, pruneCall{maxItems, before})
 	return nil
 }

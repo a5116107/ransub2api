@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -158,6 +159,17 @@ type PelicanGroupTestService struct {
 	now        func() time.Time
 	// runs tracks background runs so tests can wait for them.
 	runs sync.WaitGroup
+	// One due batch per process; manual runs retain their own persisted lease.
+	dueMu sync.Mutex
+}
+
+// This source is set only by RunDue, never by stored config or request headers.
+// It stops new scheduled claims without canceling already admitted work/saves.
+type pelicanGroupScheduledBudgetKey struct{}
+
+func pelicanGroupScheduledBudgetExhausted(ctx context.Context) bool {
+	stop, _ := ctx.Value(pelicanGroupScheduledBudgetKey{}).(*atomic.Bool)
+	return stop != nil && stop.Load()
 }
 
 func NewPelicanGroupTestService(
@@ -312,11 +324,14 @@ func (s *PelicanGroupTestService) RunNow(ctx context.Context, id int64) error {
 	return nil
 }
 
-// RunDue runs every due plan; the scheduled-test runner calls it once a minute.
+// RunDue preserves repository due order and stops dispatching after a global
+// budget deferral. Existing samples and lease/result saves are still drained.
 func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
-	if s == nil || ctx.Err() != nil {
+	if s == nil || ctx.Err() != nil || !s.dueMu.TryLock() {
 		return
 	}
+	defer s.dueMu.Unlock()
+	ctx = context.WithValue(ctx, pelicanGroupScheduledBudgetKey{}, &atomic.Bool{})
 	plans, err := s.repo.ListDue(ctx, now)
 	if err != nil {
 		logger.LegacyPrintf("service.pelican_group_test", "list due plans failed: %v", err)
@@ -326,13 +341,17 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	for _, plan := range plans {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
 			return
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case sem <- struct{}{}:
+		}
+		if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
+			<-sem
+			return
 		}
 		wg.Add(1)
 		go func(plan *PelicanGroupTestPlan) {
@@ -344,7 +363,7 @@ func (s *PelicanGroupTestService) RunDue(ctx context.Context, now time.Time) {
 }
 
 func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *PelicanGroupTestPlan, now time.Time) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
 		return
 	}
 	defer func() {
@@ -368,7 +387,7 @@ func (s *PelicanGroupTestService) runScheduled(ctx context.Context, plan *Pelica
 	// The persisted lease keeps ticks and server replicas from running a plan twice and
 	// expires by itself after a crash.
 	until := now.Add(pelicanGroupTestLease).Truncate(time.Microsecond)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || pelicanGroupScheduledBudgetExhausted(ctx) {
 		return
 	}
 	claimed, err := s.repo.Claim(ctx, plan, now, until, &next)
@@ -430,6 +449,12 @@ func (s *PelicanGroupTestService) runSamples(ctx context.Context, plan *PelicanG
 		go func(index int) {
 			defer wg.Done()
 			results[index] = s.runSample(ctx, plan, group)
+			// Signal from each finished sample before waiting for slower sibling
+			// samples or the independent storage path. Do not cancel either.
+			if stop, ok := ctx.Value(pelicanGroupScheduledBudgetKey{}).(*atomic.Bool); ok &&
+				results[index] != nil && monitoringProbeBudgetStopsQueue(results[index].BudgetDeferral) {
+				stop.Store(true)
+			}
 		}(i)
 	}
 	wg.Wait()
