@@ -72,6 +72,7 @@ type ChannelMonitorV2CandyService struct {
 	settings channelMonitorRuntimeReader
 	tick     sync.Mutex
 	now      func() time.Time
+	queue    monitoringProbeQueue
 }
 
 func newChannelMonitorV2CandyService(repo ChannelMonitorV2Repository, groups *PelicanGroupTestService, settings channelMonitorRuntimeReader) *ChannelMonitorV2CandyService {
@@ -158,7 +159,7 @@ func (s *ChannelMonitorV2CandyService) validateGroups(ctx context.Context, probe
 // usage totals. Authentication/rate-limit health handling remains in the shared
 // account-test and gateway paths.
 func (s *ChannelMonitorV2CandyService) RunDue(ctx context.Context, now time.Time) {
-	if s == nil || !s.tick.TryLock() {
+	if s == nil || ctx.Err() != nil || !s.tick.TryLock() {
 		return
 	}
 	defer s.tick.Unlock()
@@ -166,37 +167,31 @@ func (s *ChannelMonitorV2CandyService) RunDue(ctx context.Context, now time.Time
 		logger.LegacyPrintf("service.channel_monitor_v2", "candy retention failed: %v", err)
 	}
 	if s.settings == nil || !s.settings.GetChannelMonitorRuntime(ctx).V2Active() {
+		s.queue.turns = nil
 		return
 	}
 	cfg, err := s.config.GetConfig(ctx)
-	if err != nil || cfg == nil || !cfg.Enabled {
+	if err != nil || cfg == nil || ctx.Err() != nil {
 		return
 	}
-	jobs := make(chan ChannelMonitorV2CandyProbe)
-	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for probe := range jobs {
-				s.runOne(ctx, probe, cfg, now)
-			}
-		}()
+	if !cfg.Enabled {
+		s.queue.turns = nil
+		return
 	}
+	targets := make(map[monitoringProbeQueueKey]ChannelMonitorV2CandyProbe, len(cfg.CandyProbes))
+	keys := make([]monitoringProbeQueueKey, 0, len(cfg.CandyProbes))
 	for _, probe := range cfg.CandyProbes {
 		if !probe.Enabled || (len(cfg.GroupIDs) > 0 && !slices.Contains(cfg.GroupIDs, probe.GroupID)) {
 			continue
 		}
-		select {
-		case jobs <- probe:
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			return
-		}
+		key := monitoringProbeQueueKey{groupID: probe.GroupID, scope: probe.key()}
+		keys = append(keys, key)
+		targets[key] = probe
 	}
-	close(jobs)
-	wg.Wait()
+	s.queue.order(keys, keys)
+	s.queue.run(ctx, keys, func(ctx context.Context, key monitoringProbeQueueKey) monitoringProbeQueueRun {
+		return s.runOne(ctx, targets[key], cfg, now)
+	})
 }
 
 // CandyProbeAllowed is shared by execution and capacity preflight. Display model
@@ -214,12 +209,12 @@ func (cfg ChannelMonitorV2Config) CandyProbeAllowed(probe ChannelMonitorV2CandyP
 	return false
 }
 
-func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe ChannelMonitorV2CandyProbe, cfg *ChannelMonitorV2Config, tick time.Time) {
+func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe ChannelMonitorV2CandyProbe, cfg *ChannelMonitorV2Config, tick time.Time) (run monitoringProbeQueueRun) {
 	if ctx.Err() != nil || !s.settings.GetChannelMonitorRuntime(ctx).V2Active() {
 		return
 	}
 	group, err := s.groups.groups.GetByID(ctx, probe.GroupID)
-	if err != nil || !cfg.CandyProbeAllowed(probe, group) {
+	if err != nil || !cfg.CandyProbeAllowed(probe, group) || ctx.Err() != nil {
 		return
 	}
 	slot := tick.UTC().Truncate(time.Duration(probe.IntervalMinutes) * time.Minute)
@@ -248,6 +243,10 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 	plan := &PelicanGroupTestPlan{GroupID: probe.GroupID, ModelID: probe.Model, PelicanConfig: &PelicanTestConfig{QuestionKind: "candy", Prompt: CandyPrompt, ReasoningEffort: probe.ReasoningEffort, ParallelCount: 1, ModelID: probe.Model}}
 	sample := s.groups.runSample(runCtx, plan, group)
 	result.LatencyMs = s.now().Sub(result.CheckedAt).Milliseconds()
+	if sample != nil {
+		run.served = sample.monitoringBudgetAdmitted || sample.BudgetDeferral == nil && ctx.Err() == nil
+		run.stop = monitoringProbeBudgetStopsQueue(sample.BudgetDeferral)
+	}
 	if sample != nil && sample.BudgetDeferral != nil {
 		result.Verdict, result.Reason, result.BudgetDeferral = "deferred", "monitoring_budget_deferred", sample.BudgetDeferral
 		return
@@ -276,6 +275,7 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 	if CandyAnswerCorrect(answer) {
 		result.Verdict = "correct"
 	}
+	return
 }
 
 func (s *ChannelMonitorV2CandyService) attachHistory(ctx context.Context, matrix *ChannelMonitorV2Matrix, cfg *ChannelMonitorV2Config, admin bool) error {

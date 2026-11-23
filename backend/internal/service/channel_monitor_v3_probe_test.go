@@ -51,15 +51,15 @@ func TestChannelMonitorV3FairBudgetCoverage(t *testing.T) {
 	for round := range rounds {
 		calls.Store(0)
 		p.RunDue(t.Context(), monitorV3ProbeTick.Add(time.Duration(round)*5*time.Minute))
-		require.LessOrEqual(t, int(calls.Load()), capacity+channelMonitorV3ProbeWorkers, "exhaustion must stop claiming the remaining queue; in-flight calls may finish")
+		require.LessOrEqual(t, int(calls.Load()), capacity+monitoringProbeQueueWorkers, "exhaustion must stop claiming the remaining queue; in-flight calls may finish")
 		var latest uint64
-		for _, turn := range p.turns {
+		for _, turn := range p.queue.turns {
 			if turn.served > latest {
 				latest = turn.served
 			}
 		}
 		cohort := 0
-		for _, turn := range p.turns {
+		for _, turn := range p.queue.turns {
 			if turn.served == latest {
 				cohort++
 			}
@@ -70,29 +70,6 @@ func TestChannelMonitorV3FairBudgetCoverage(t *testing.T) {
 	for model, count := range covered {
 		require.Equal(t, 1, count, model)
 	}
-}
-
-func TestChannelMonitorV3ProbeQueueInventory(t *testing.T) {
-	p, _, _ := monitorV3ProberFixture(&groupTestRouterFake{}, nil)
-	t.Cleanup(p.Stop)
-	a := channelMonitorV3ProbeTarget{GroupID: 4, Model: "a"}
-	b := channelMonitorV3ProbeTarget{GroupID: 4, Model: "b"}
-	c := channelMonitorV3ProbeTarget{GroupID: 5, Model: "a"}
-	targets := []channelMonitorV3ProbeTarget{c, b, a}
-	due := slices.Clone(targets)
-	p.orderProbes(targets, due)
-	require.Equal(t, []channelMonitorV3ProbeTarget{a, b, c}, due)
-	p.turnSequence += 10
-	p.turns[a.key()] = channelMonitorV3ProbeTurn{served: p.turnSequence}
-	p.turns[b.key()] = channelMonitorV3ProbeTurn{served: 1, tried: p.turnSequence}
-	newTarget := channelMonitorV3ProbeTarget{GroupID: 1, Model: "new"}
-	targets = append(targets, newTarget)
-	due = slices.Clone(targets)
-	p.orderProbes(targets, due)
-	require.Equal(t, []channelMonitorV3ProbeTarget{c, b, a, newTarget}, due, "a low-ID newcomer cannot jump older pending work")
-	p.orderProbes([]channelMonitorV3ProbeTarget{b}, nil)
-	require.Len(t, p.turns, 1, "a complete inventory removes obsolete queue state")
-	require.Contains(t, p.turns, b.key())
 }
 
 func TestChannelMonitorV3FairPartialChainsYield(t *testing.T) {
@@ -117,9 +94,13 @@ func TestChannelMonitorV3FairPartialChainsYield(t *testing.T) {
 	repo.components = []ChannelMonitorV3Component{{ID: 1, GroupID: 4, Model: "partial", Enabled: true}, {ID: 2, GroupID: 4, Model: "native", Enabled: true}}
 	// Dispatch the partial chain first, without relying on goroutine ordering.
 	targets := channelMonitorV3ProbeTargets(repo.config.IdleProbe, repo.components)
-	p.orderProbes(targets, slices.Clone(targets))
-	p.turnSequence = 100
-	p.turns[channelMonitorV3ProbeKey{groupID: 4, model: "native"}] = channelMonitorV3ProbeTurn{served: 100}
+	keys := make([]monitoringProbeQueueKey, 0, len(targets))
+	for _, target := range targets {
+		keys = append(keys, target.key())
+	}
+	p.queue.order(keys, keys)
+	p.queue.turnSequence = 100
+	p.queue.turns[monitoringProbeQueueKey{groupID: 4, scope: "native"}] = monitoringProbeTurn{served: 100}
 	p.RunDue(t.Context(), monitorV3ProbeTick)
 	require.Zero(t, native.Load())
 	calls.Store(0)
@@ -151,9 +132,13 @@ func TestChannelMonitorV3OlderTierDrainsBeforeRecentWork(t *testing.T) {
 	})
 	repo.components = []ChannelMonitorV3Component{{ID: 1, GroupID: 4, Model: "old", Enabled: true}, {ID: 2, GroupID: 4, Model: "recent", Enabled: true}}
 	targets := channelMonitorV3ProbeTargets(repo.config.IdleProbe, repo.components)
-	p.orderProbes(targets, slices.Clone(targets))
-	p.turnSequence = 100
-	p.turns[channelMonitorV3ProbeKey{groupID: 4, model: "recent"}] = channelMonitorV3ProbeTurn{served: 100}
+	keys := make([]monitoringProbeQueueKey, 0, len(targets))
+	for _, target := range targets {
+		keys = append(keys, target.key())
+	}
+	p.queue.order(keys, keys)
+	p.queue.turnSequence = 100
+	p.queue.turns[monitoringProbeQueueKey{groupID: 4, scope: "recent"}] = monitoringProbeTurn{served: 100}
 	go func() { p.RunDue(t.Context(), monitorV3ProbeTick); close(done) }()
 	select {
 	case <-entered:
@@ -327,7 +312,7 @@ func TestChannelMonitorV3StopCancelsAndDrainsEveryCaller(t *testing.T) {
 }
 
 func TestChannelMonitorV3StopCancelsPhysicalHTTPAndQueuedTargets(t *testing.T) {
-	entered, release := make(chan struct{}, channelMonitorV3ProbeWorkers), make(chan struct{})
+	entered, release := make(chan struct{}, monitoringProbeQueueWorkers), make(chan struct{})
 	var releaseOnce sync.Once
 	var sends atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +325,7 @@ func TestChannelMonitorV3StopCancelsPhysicalHTTPAndQueuedTargets(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	steps := make([]routeStep, channelMonitorV3ProbeWorkers)
+	steps := make([]routeStep, monitoringProbeQueueWorkers)
 	for i := range steps {
 		steps[i] = routeStep{account: account(int64(i+1), "physical probe")}
 	}
@@ -366,7 +351,7 @@ func TestChannelMonitorV3StopCancelsPhysicalHTTPAndQueuedTargets(t *testing.T) {
 	}
 	runDone := make(chan struct{})
 	go func() { p.RunDue(t.Context(), monitorV3ProbeTick); close(runDone) }()
-	for range channelMonitorV3ProbeWorkers {
+	for range monitoringProbeQueueWorkers {
 		select {
 		case <-entered:
 		case <-time.After(5 * time.Second):
@@ -381,13 +366,13 @@ func TestChannelMonitorV3StopCancelsPhysicalHTTPAndQueuedTargets(t *testing.T) {
 		t.Fatal("Stop did not cancel and await the physical requests")
 	}
 	<-runDone
-	require.EqualValues(t, channelMonitorV3ProbeWorkers, sends.Load())
-	require.EqualValues(t, channelMonitorV3ProbeWorkers, returned.Load())
-	require.Len(t, repo.claims, channelMonitorV3ProbeWorkers, "queued targets must not acquire a slot after cancellation")
+	require.EqualValues(t, monitoringProbeQueueWorkers, sends.Load())
+	require.EqualValues(t, monitoringProbeQueueWorkers, returned.Load())
+	require.Len(t, repo.claims, monitoringProbeQueueWorkers, "queued targets must not acquire a slot after cancellation")
 	require.Empty(t, repo.finished, "shutdown is not a failed or passing observation")
-	require.Len(t, router.released, channelMonitorV3ProbeWorkers)
+	require.Len(t, router.released, monitoringProbeQueueWorkers)
 	p.RunDue(t.Context(), monitorV3ProbeTick.Add(time.Hour))
-	require.Len(t, repo.claims, channelMonitorV3ProbeWorkers)
+	require.Len(t, repo.claims, monitoringProbeQueueWorkers)
 }
 
 func TestChannelMonitorV3StopWaitsForBoundedResultSave(t *testing.T) {

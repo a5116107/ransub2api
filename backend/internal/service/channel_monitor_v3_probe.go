@@ -1,7 +1,6 @@
 package service
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"regexp"
@@ -37,7 +36,6 @@ const (
 	// channelMonitorV3ProbeLead is how long before a slot ends it is probed.
 	channelMonitorV3ProbeLead    = 30 * time.Second
 	channelMonitorV3ProbeTimeout = 90 * time.Second
-	channelMonitorV3ProbeWorkers = 4
 	channelMonitorV3ProbeMessage = 300
 
 	channelMonitorV3WrongAnswerPrefix = "answer_mismatch:"
@@ -208,9 +206,7 @@ type ChannelMonitorV3Prober struct {
 
 	tick     sync.Mutex
 	prunedAt time.Time
-	// Protected by tick; local scheduling age, never evidence freshness.
-	turnSequence uint64
-	turns        map[channelMonitorV3ProbeKey]channelMonitorV3ProbeTurn
+	queue    monitoringProbeQueue
 
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -313,7 +309,7 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	}
 	p.prune(ctx, cfg.AvailabilityRange, now)
 	if !cfg.IdleProbe.Enabled || len(cfg.IdleProbe.Groups) == 0 || p.settings == nil || !p.settings.GetChannelMonitorRuntime(ctx).V3Active() {
-		p.turns = nil
+		p.queue.turns = nil
 		return
 	}
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
@@ -331,7 +327,7 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	}
 	targets := channelMonitorV3ProbeTargets(cfg.IdleProbe, components)
 	if len(targets) == 0 {
-		p.turns = nil
+		p.queue.turns = nil
 		return
 	}
 	groupIDs := []int64{}
@@ -349,97 +345,20 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 		return
 	}
 	due := channelMonitorV3DueProbes(targets, counts, cfg.MinRequests)
-	p.orderProbes(targets, due)
-	type finished struct {
-		key channelMonitorV3ProbeKey
-		run channelMonitorV3ProbeRun
-	}
-	done := make(chan finished, channelMonitorV3ProbeWorkers)
-	active, next, exhausted := 0, 0, false
-	// Completed work in one round forms one age tier, preserving worker
-	// concurrency on later rounds instead of serializing every completion.
-	p.turnSequence++
-	servedAge := p.turnSequence
-	var age uint64
-	if len(due) > 0 {
-		age = p.turns[due[0].key()].served
-	}
-	for {
-		for !exhausted && ctx.Err() == nil && active < channelMonitorV3ProbeWorkers && next < len(due) {
-			target := due[next]
-			// Drain the older tier before launching younger work: otherwise a
-			// fast recent target can spend the last budget ahead of an old
-			// target that is still acquiring its scheduler/physical slot.
-			if p.turns[target.key()].served != age {
-				break
-			}
-			next++
-			p.turnSequence++
-			turn := p.turns[target.key()]
-			turn.tried = p.turnSequence
-			p.turns[target.key()] = turn
-			active++
-			go func() { done <- finished{target.key(), p.runOne(ctx, target, slot, cfg.IntervalMinutes)} }()
-		}
-		if active == 0 {
-			if !exhausted && ctx.Err() == nil && next < len(due) {
-				age = p.turns[due[next].key()].served
-				continue
-			}
-			return
-		}
-		result := <-done
-		active--
-		if result.run.served {
-			turn := p.turns[result.key]
-			turn.served = servedAge
-			p.turns[result.key] = turn
-		}
-		exhausted = exhausted || result.run.stop
-	}
-}
-
-type channelMonitorV3ProbeKey struct {
-	groupID int64
-	model   string
-}
-
-type channelMonitorV3ProbeTurn struct{ served, tried uint64 }
-
-type channelMonitorV3ProbeRun struct{ served, stop bool }
-
-// New inventory joins behind pending work. Local deferrals retain their service
-// age; admitted partial chains consume a turn so they cannot monopolize renewals.
-func (p *ChannelMonitorV3Prober) orderProbes(targets, due []channelMonitorV3ProbeTarget) {
-	if p.turns == nil {
-		p.turns = make(map[channelMonitorV3ProbeKey]channelMonitorV3ProbeTurn, len(targets))
-	}
-	p.turnSequence++
-	present := make(map[channelMonitorV3ProbeKey]bool, len(targets))
+	all := make([]monitoringProbeQueueKey, 0, len(targets))
+	byKey := make(map[monitoringProbeQueueKey]channelMonitorV3ProbeTarget, len(targets))
 	for _, target := range targets {
 		key := target.key()
-		present[key] = true
-		if _, exists := p.turns[key]; !exists {
-			p.turns[key] = channelMonitorV3ProbeTurn{served: p.turnSequence}
-		}
+		all = append(all, key)
+		byKey[key] = target
 	}
-	for key := range p.turns {
-		if !present[key] {
-			delete(p.turns, key)
-		}
+	keys := make([]monitoringProbeQueueKey, 0, len(due))
+	for _, target := range due {
+		keys = append(keys, target.key())
 	}
-	slices.SortFunc(due, func(a, b channelMonitorV3ProbeTarget) int {
-		left, right := p.turns[a.key()], p.turns[b.key()]
-		if order := cmp.Compare(left.served, right.served); order != 0 {
-			return order
-		}
-		if order := cmp.Compare(left.tried, right.tried); order != 0 {
-			return order
-		}
-		if order := cmp.Compare(a.GroupID, b.GroupID); order != 0 {
-			return order
-		}
-		return strings.Compare(a.Model, b.Model)
+	p.queue.order(all, keys)
+	p.queue.run(ctx, keys, func(ctx context.Context, key monitoringProbeQueueKey) monitoringProbeQueueRun {
+		return p.runOne(ctx, byKey[key], slot, cfg.IntervalMinutes)
 	})
 }
 
@@ -453,7 +372,7 @@ func (p *ChannelMonitorV3Prober) prune(ctx context.Context, availabilityRange st
 	}
 }
 
-func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonitorV3ProbeTarget, slot time.Time, slotMinutes int) (run channelMonitorV3ProbeRun) {
+func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonitorV3ProbeTarget, slot time.Time, slotMinutes int) (run monitoringProbeQueueRun) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -513,12 +432,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 		if sample.BudgetDeferral != nil {
 			result.Outcome, result.Category, result.ErrorMessage = ChannelMonitorV3ProbeDeferred, "monitoring_budget_deferred", ""
 			result.BudgetDeferral = sample.BudgetDeferral
-			switch sample.BudgetDeferral.Scope {
-			case "key", "key_minute", "site", "site_minute", "plugin":
-				// Independent sites/keys and native routes may still run.
-			default:
-				run.stop = true
-			}
+			run.stop = monitoringProbeBudgetStopsQueue(sample.BudgetDeferral)
 			return
 		}
 	}
@@ -576,8 +490,8 @@ type channelMonitorV3ProbeTarget struct {
 	ReasoningEffort string
 }
 
-func (t channelMonitorV3ProbeTarget) key() channelMonitorV3ProbeKey {
-	return channelMonitorV3ProbeKey{groupID: t.GroupID, model: t.Model}
+func (t channelMonitorV3ProbeTarget) key() monitoringProbeQueueKey {
+	return monitoringProbeQueueKey{groupID: t.GroupID, scope: t.Model}
 }
 
 // channelMonitorV3ProbeTargets lists what the enabled components of the

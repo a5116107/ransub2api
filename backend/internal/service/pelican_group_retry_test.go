@@ -57,7 +57,6 @@ func TestPelicanGroupMonitoringBudgetDeferralStopsFailover(t *testing.T) {
 			require.Contains(t, string(raw), `"budget_deferral":`)
 			require.NotContains(t, string(raw), "monitoringBudgetAdmitted")
 			require.NotContains(t, string(raw), "monitoring_budget_admitted")
-			require.NotContains(t, string(raw), "monitoringBudgetAdmitted")
 		})
 	}
 }
