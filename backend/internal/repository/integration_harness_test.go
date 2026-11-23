@@ -68,6 +68,13 @@ func runIntegrationTests(m *testing.M) int {
 			}
 		}
 	}
+	if os.Getenv("SUB2API_MONITORING_BUDGET_PROCESS") == "1" {
+		for _, arg := range os.Args {
+			if arg == "-test.run=^TestMonitoringProbeBudgetProcessNode$" {
+				return m.Run()
+			}
+		}
+	}
 
 	if !dockerIsAvailable(ctx) {
 		// In CI we expect Docker to be available so integration tests should fail loudly.

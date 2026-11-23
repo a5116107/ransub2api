@@ -3,12 +3,12 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 V1主动监控寿命/取消/排空本地已验；自有分支交付，不CI/发布。
-证据：v1-runner-lifecycle；race1580/压力700、SQL双轮6+24通过，vet/lint通过。
-停机/停用/换配置、100排队与晚到记录已验；真实HTTP取消/手动及重建恢复已验。
-下一步：其余scope库存/跨通道公平/多节点；供应商与生产等待保持。
+任务：D8.1双独立进程共享物理预算本地已验；自有分支交付，不CI/发布。
+证据：multi-process-budget-final双轮72pass，0fail/skip/race；vet/lint0。
+已验：两通道100竞争、硬限/恢复预留、实际Token/取消与重建；非生产。
+下一步：其余scope库存/原执行器跨通道公平/多节点周期；原外部等待保持。
 生产上次已验.9/de8b86ed8916/c8cec584a181；120/high300、最多换线1次及60秒头/5-3-1保持。
-16账号/2组/432迁移与PG/Redis不动；D9证据沿codex-goal-context，本次未部署。
+生产16账号/2组/432迁移及PG/Redis不动；本次未部署。
 剩余：Mac旧会话/BPS长流恢复，历史流内upstream_timeout约900秒。
 旧BPS图12/1164B策略拒删保留；历史回收证据见DECISIONS，未重试。
 原28项20done/8部分；保护资源/解除条件见DECISIONS。
@@ -69,8 +69,8 @@
 | D7.1/D7.2 | done | 结论/覆盖/账号一致性、计费标签/开关/CSV及前端静态/构建/中英手机已验 |
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/多维/同scope汇总及判题依赖详情已验；独立基线、其余线路/覆盖与资格消费仍缺 |
-| D8 | in_progress | 物理/Token/100队列及倍率/V1日下界、V2/V3本地链已验；其余scope/通道公平性/多节点/生产/严格混版待验 |
-| D8.1本地子项 | in_progress | 预算/配方、V1寿命及原分组/账号/V2/V3止发恢复已验；全scope/库存/跨通道公平/多节点/生产待验 |
+| D8 | in_progress | 原物理/Token/100队列、周期下界与本地链及双进程已验；其余scope/通道公平/原执行器多节点/生产/严格混版待验 |
+| D8.1本地子项 | in_progress | 原计划止发/V1寿命及双进程硬限/恢复预留/Token已验；全scope/库存/跨通道公平/原执行器多节点周期/生产待验 |
 | D8.1 V2/V3本地链 | done | 原链及保存前止发/错误收尾、SQL重建和中英在途原因已验；非全scope/跨通道公平/多节点/生产 |
 | D9 | in_progress | .9 Goal同例/唯一用量、排空重建、120/300及429换线已验；旧Mac会话/BPS长流与D9.2仍待 |
 | R1 | done | .9/de8b86ed8916已发行上线；稳定源/制品/加载同源，四阶段回退及公网SSE/UI已验；开发在研保持 |
@@ -88,5 +88,5 @@
 
 - 工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream禁推，无额外worktree。
 - backend/tmp历史拒删、Windows符号链接权限仍待宿主；正式153包及Linux同例已验。
-- PG55441/Redis8:56442本轮复用后停回；旧Redis56441/历史拒删归宿主，条件见DECISIONS。
+- 本轮原PG17/Redis8.4夹具已回收；历史55441/56442停回，旧Redis56441保护。
 - 历史拒删data/scratch/assets及owner/释放条件见DECISIONS。

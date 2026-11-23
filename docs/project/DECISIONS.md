@@ -4447,3 +4447,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 测试结束PG其他client/隔离库均0、Redis仅自检client；复用PG55441正常fast停回，精确本轮Redis304511bdd498正常stop/自动回收，无数据库/缓存数据重建。原12图1164B及既有拒删材料保护不变，不隐藏/重试/纳入提交；无新clone/worktree/并行实现或任务台账。本轮临时构建树随原Go进程退出回收，既有node-compile-cache和Go/模块缓存继续复用，Linux唯一活句柄及自有分支交付收尾。
 - 最终50轮专项700pass（7.102s）、0fail/skip/race；Linux终稿GOOS=linux/GOARCH=amd64/CGO_ENABLED=0的go build -p 1 -tags embed -o NUL ./cmd/server实际退出0，沿原唯一活句柄等待，无重复构建/强停。旧runHoldFor和旧runOne签名、启动/执行器两处Detached Background均源码0残留，无新增可执行TODO/FIXME/XXX；本地127文档链接均存在。
 - PG无其他client/隔离库0、Redis仅自检client后，PG55441 fast停回、精确本轮Redis304511bdd498正常stop/自动回收；原其他实例/PG数据/共享Go缓存不动。Go构建临时树已自动清除，仅既有node-compile-cache复用；无新clone/worktree/源内scratch。历史12图1164B及既有拒删材料继续保护，不重试/隐藏/纳入提交。任务源/测试/统一文档沿自有功能分支提交同步，未改生产或官方upstream，完整父验收保持开放。
+
+
+### 2026-11-23 D8.1 — 双独立进程共享物理账本与跨通道竞争
+
+- 在a91b4e306同一功能工作区继续，只补D8.1独立进程交互验收、回归和自有origin交付，不CI/发布/部署，不改生产或原预算执行逻辑。原28项20done/8部分不变；补齐物理账本证据不关闭全scope库存、原执行器跨通道公平/多节点周期、严格混版及生产父验收。本轮未复现账本绕过或虚构新的业务修复。
+- 原peer/重建用例仍在同一进程；新增原集成测试二进制子入口，两个真实独立进程持不同PID、独立SQL池/HTTP客户端，沿原Budget.Context、MonitoringProbeHTTPClient及PG事务/租约实际出站。不添加第二套预算或调度器；私有连接仅经stdin传入，不进入参数、日志或仓库。旁路原容器启动必须同时匹配专用环境标记及精确测试名，普通测试沿原隔离容器/迁移/数据库清理。
+- 每个全局/站点/同Key硬限组合均有50次生成与50次余额查询竞争，Bearer/X-API-Key同密钥统一归集；仅4次HTTP在途、96次延期，额外恢复进程也遵守各硬限，拒绝不扣调用额度。5槽/20%恢复预留组合只准4个普通请求，第三进程可用最后1槽，再一恢复请求仍受总硬限。真实SQL同时核对普通/总在途及计数；放行后实际Token只计生成响应回传usage，管理查询不伪造生成usage，active/pending/unknown均归零。
+- 另以全新进程验证实际Token7耗尽后零发、余额仍可查、观测模式继续记账、重新启用不清旧账、真实HTTP请求取消及独立进程恢复。最终5次实际HTTP/21实际Token，3条完整usage、1条取消无usage的unknown、active/pending0，usage_logs0；不退款或把未知当免费。该层不证明真实供应商身份/缓存、崩溃后未回传usage、原runner覆盖周期或生产恢复。
+- 首轮纯生成5条pass（96.38s），混合通道及原Token/SQL回归双轮70条pass（115.67s）；补恢复预留与全部硬限对照后的终稿：`go test -json -tags integration -race -vet=off -p 1 ./internal/repository -run '^TestMonitoringProbeBudget(IndependentProcesses|ActualToken|PostgresLimitsAndLifecycle)' -count=2 -timeout=9m`退出0，72条pass、0fail/skip/race（127.31s，含父子及双轮，非72个独立场景）。复用原PG17/Redis8.4隔离夹具，非mock/overlay。`go vet -tags integration -p 1 ./internal/repository`退出0（13.23s）；golangci-lint-v2.15.0原增量fast/integration检查退出0、0 issues（3.61s）。最小原始证据沿H:/Root/DevCache/evidence/sub2api-billing-applicability/multi-process-budget-*，终稿为multi-process-budget-final.jsonl。
+- 7个源码/测试/应用锁LF输入摘要11b450f269e8fae3510df26ce23311592e8a9404373b3866b2fccc7a8716e4a3。未改非test应用源码、前端、协议或schema，复用原应用构建，不重复无关UI/Linux/CI。测试私库由原夹具删除，原共享业务行前后相同；已等待全部子进程退出，测试容器按原defer回收，55441/56442无监听。未新建clone/worktree/源内scratch；共享缓存与历史受保护材料不动。STATE曾因恢复行超出8192B，已原位压缩重复信息并重验，不另建台账。回退只移除本测试及专用子入口，无生产数据迁移/配置或额度清零。
