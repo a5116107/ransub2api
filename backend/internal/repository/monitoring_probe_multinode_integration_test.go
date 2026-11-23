@@ -3,17 +3,20 @@
 package repository
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,12 +45,24 @@ type monitoringBudgetNodeCommand struct {
 	Requests      int
 	TimeoutMillis int
 	Recovery      bool
+	Tick          time.Time
 }
 
 type monitoringBudgetNodeReply struct {
 	Status int    `json:"status"`
 	Reason string `json:"reason,omitempty"`
 	Scope  string `json:"scope,omitempty"`
+}
+
+const monitoringBudgetNodeFrame = "monitoring-node-result:"
+
+func writeMonitoringBudgetNodeReply(w io.Writer, reply monitoringBudgetNodeReply) error {
+	raw, err := json.Marshal(reply)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "%s%s\n", monitoringBudgetNodeFrame, raw)
+	return err
 }
 
 func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
@@ -66,10 +81,13 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 		runMonitoringBillingNode(t, command, db, budget)
 		return
 	}
+	if command.Mode == "v3" {
+		runMonitoringV3Node(t, command, db, budget)
+		return
+	}
 	require.Empty(t, command.Mode)
 	client := &http.Client{Timeout: 15 * time.Second}
 	defer client.CloseIdleConnections()
-	encoder := json.NewEncoder(os.Stdout)
 	var outputMu sync.Mutex
 	var outputErr error
 	var wg sync.WaitGroup
@@ -108,7 +126,7 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 				}
 			}
 			outputMu.Lock()
-			if err := encoder.Encode(reply); err != nil && outputErr == nil {
+			if err := writeMonitoringBudgetNodeReply(os.Stdout, reply); err != nil && outputErr == nil {
 				outputErr = err
 			}
 			outputMu.Unlock()
@@ -142,7 +160,43 @@ func runMonitoringBillingNode(t *testing.T, command monitoringBudgetNodeCommand,
 	runner.SetLeaderLock(NewLeaderLockCache(rdb), db)
 	defer runner.Stop()
 	require.NoError(t, runner.RunDue(t.Context()))
-	require.NoError(t, json.NewEncoder(os.Stdout).Encode(monitoringBudgetNodeReply{Status: http.StatusOK}))
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
+}
+
+func runMonitoringV3Node(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB, budget *service.MonitoringProbeBudgetService) {
+	t.Helper()
+	require.Equal(t, 1, command.Requests)
+	require.NotEmpty(t, command.RedisAddress)
+	require.False(t, command.Tick.IsZero())
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	defer func() { _ = client.Close() }()
+	rdb := redisclient.NewClient(&redisclient.Options{Addr: command.RedisAddress, DB: command.RedisDB})
+	defer func() { _ = rdb.Close() }()
+	cfg := &config.Config{Timezone: "UTC", Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	cfg.Default.RateMultiplier = 1
+	settings := service.NewSettingService(NewSettingRepository(client), cfg)
+	upstream := NewHTTPUpstream(cfg)
+	native := pr612NativeTransport(t, upstream)
+	defer func() {
+		native.mu.Lock()
+		defer native.mu.Unlock()
+		for _, entry := range native.clients {
+			entry.client.CloseIdleConnections()
+		}
+	}()
+	accounts := NewAccountRepository(client, db, nil)
+	concurrency := service.NewConcurrencyService(NewConcurrencyCache(rdb, 1, 60))
+	gateway := service.NewOpenAIGatewayService(accounts, nil, nil, nil, nil, nil, nil, NewGatewayCache(rdb), cfg, nil, concurrency,
+		service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+	defer gateway.StopOpenAICodexTicketHarvester()
+	defer gateway.CloseOpenAIWSPool()
+	tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
+	tester.SetMonitoringBudget(budget)
+	groups := service.NewPelicanGroupTestService(NewPelicanGroupTestRepository(db), NewGroupRepository(client, db), nil, gateway, concurrency, tester, nil, nil)
+	prober := service.NewChannelMonitorV3Prober(NewChannelMonitorV3Repository(db), groups, settings)
+	defer prober.Stop()
+	prober.RunDue(t.Context(), command.Tick)
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
 }
 
 type monitoringBudgetNode struct {
@@ -169,16 +223,32 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	var runErr, decodeErr error
 	go func() {
 		defer close(done)
-		decoder := json.NewDecoder(stdout)
-		for range command.Requests {
+		reader := bufio.NewScanner(stdout)
+		reader.Buffer(make([]byte, 4096), 1<<20)
+		received := 0
+		for reader.Scan() {
+			line := reader.Text()
+			if !strings.HasPrefix(line, monitoringBudgetNodeFrame) {
+				continue // Framework logs are not control messages or diagnostics.
+			}
 			var reply monitoringBudgetNodeReply
-			if decodeErr = decoder.Decode(&reply); decodeErr != nil {
+			if decodeErr = json.Unmarshal([]byte(strings.TrimPrefix(line, monitoringBudgetNodeFrame)), &reply); decodeErr != nil {
 				break
 			}
+			received++
 			replies <- reply
+		}
+		if decodeErr == nil {
+			decodeErr = reader.Err()
+		}
+		if received != command.Requests && decodeErr == nil {
+			decodeErr = io.ErrUnexpectedEOF
 		}
 		_, _ = io.Copy(io.Discard, stdout)
 		runErr = cmd.Wait()
+		if decodeErr != nil && received < command.Requests {
+			replies <- monitoringBudgetNodeReply{Reason: "node_output_incomplete"}
+		}
 	}()
 	t.Cleanup(func() {
 		cancel()

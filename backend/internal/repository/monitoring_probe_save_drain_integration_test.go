@@ -97,7 +97,8 @@ func testMonitoringProbeSaveDrain(t *testing.T, mode string) {
 			}
 		}
 		answer := "21"
-		if match := challenge.FindSubmatch(body); len(match) == 4 {
+		if questions := challenge.FindAllSubmatch(body, -1); len(questions) > 0 {
+			match := questions[len(questions)-1] // Skip the fixed few-shot examples.
 			a, _ := strconv.Atoi(string(match[1]))
 			b, _ := strconv.Atoi(string(match[3]))
 			if string(match[2]) == "-" {
@@ -238,6 +239,14 @@ func testMonitoringProbeSaveDrain(t *testing.T, mode string) {
 	stop()
 	require.EqualValues(t, targets+4, sends.Load())
 	require.Nil(t, view().Cycle.BudgetDeferral)
+	var passed, rejected int
+	if mode == "v2" {
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FILTER(WHERE verdict='correct'),count(*) FILTER(WHERE verdict IN ('incorrect','error')) FROM channel_monitor_v2_candy_results`).Scan(&passed, &rejected))
+	} else {
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FILTER(WHERE outcome='success'),count(*) FILTER(WHERE outcome='failure') FROM channel_monitor_v3_probe_results`).Scan(&passed, &rejected))
+	}
+	require.Equal(t, targets+4, passed, "drained and recovered requests must actually pass the original detector")
+	require.Zero(t, rejected)
 	usage, err := policyRepo.Summary(ctx)
 	require.NoError(t, err)
 	require.EqualValues(t, sends.Load(), usage.DayUsed)
