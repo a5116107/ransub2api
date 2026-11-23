@@ -279,6 +279,9 @@ func ReadMonitoringProbeResponse(ctx context.Context, response *http.Response, l
 	if err := monitoringProbeLocalError(ctx); err != nil {
 		return nil, err
 	}
+	if err := context.Cause(ctx); err != nil {
+		return nil, errors.Join(readErr, closeErr, err)
+	}
 	return body, errors.Join(readErr, closeErr)
 }
 

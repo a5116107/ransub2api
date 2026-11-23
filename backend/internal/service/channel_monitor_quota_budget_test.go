@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"testing/synctest"
 	"time"
 
@@ -34,6 +35,197 @@ func accountQuotaBudgetFixture(t *testing.T, platform string) (*Account, *comman
 	default:
 		t.Fatalf("unsupported fixture platform %s", platform)
 		return nil, nil, 0, 0
+	}
+}
+
+type monitoringBoundaryResponseBody struct {
+	io.Reader
+	beforeRead func()
+	onClose    func()
+	closeErr   error
+}
+
+func (b *monitoringBoundaryResponseBody) Read(p []byte) (int, error) {
+	if b.beforeRead != nil {
+		b.beforeRead()
+	}
+	return b.Reader.Read(p)
+}
+
+func (b *monitoringBoundaryResponseBody) Close() error {
+	if b.onClose != nil {
+		b.onClose()
+	}
+	return b.closeErr
+}
+
+func TestReadMonitoringProbeResponseCanceledBodyIsNotEvidence(t *testing.T) {
+	for _, phase := range []string{"before_read", "during_read", "during_close"} {
+		t.Run(phase, func(t *testing.T) {
+			cause := errors.New("probe caller retired")
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			var closed int
+			body := &monitoringBoundaryResponseBody{Reader: strings.NewReader(`{"balance":10}`), onClose: func() { closed++ }}
+			switch phase {
+			case "before_read":
+				cancel(cause)
+			case "during_read":
+				body.beforeRead = func() { cancel(cause) }
+			case "during_close":
+				body.onClose = func() { closed++; cancel(cause) }
+			}
+			data, err := ReadMonitoringProbeResponse(ctx, &http.Response{Body: body}, 1024)
+			require.Equal(t, 1, closed, "body closure and lease settlement must precede a cancellation return")
+			require.ErrorIs(t, err, cause)
+			require.Nil(t, data, "late complete bytes must not be published as current quota evidence")
+		})
+	}
+}
+
+func TestReadMonitoringProbeResponseCancellationPreservesSettlement(t *testing.T) {
+	for _, generation := range []bool{false, true} {
+		for _, phase := range []string{"success", "read", "close", "close_with_settlement_failure"} {
+			t.Run(fmt.Sprintf("generation=%t/%s", generation, phase), func(t *testing.T) {
+				caller, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				cause := errors.New("response publication retired")
+				budget := &monitoringBudgetRepoStub{}
+				if phase == "close_with_settlement_failure" {
+					budget.releaseErr = errors.New("fixture settlement failure")
+				}
+				ctx := NewMonitoringProbeBudgetService(budget).Context(caller, "https://fixture.invalid", false)
+				method, path := http.MethodGet, "/quota"
+				if generation {
+					method, path = http.MethodPost, "/v1/responses"
+				}
+				req, err := http.NewRequestWithContext(ctx, method, "https://fixture.invalid"+path, nil)
+				require.NoError(t, err)
+				req.Header.Set("Authorization", "Bearer response-publication-fixture")
+				req, finish, err := BeginMonitoringProbeRequest(req)
+				require.NoError(t, err)
+				body := &monitoringBoundaryResponseBody{Reader: strings.NewReader(`{"usage":{"input_tokens":4,"output_tokens":3}}`)}
+				if phase == "read" {
+					body.beforeRead = func() { cancel(cause) }
+				} else if phase != "success" {
+					body.onClose = func() { cancel(cause) }
+				}
+				response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: body, Request: req}
+				require.NoError(t, FinishMonitoringProbeResponse(req.Context(), response, nil, finish))
+				data, err := ReadMonitoringProbeResponse(ctx, response, 1024)
+				switch phase {
+				case "success":
+					require.NoError(t, err, "normal lease release cancels only its internal context, not the caller")
+					require.NotEmpty(t, data)
+				case "close_with_settlement_failure":
+					require.True(t, IsMonitoringProbeBudgetFailure(err), "local settlement failure must keep its typed deferral")
+					require.Nil(t, data)
+				default:
+					require.ErrorIs(t, err, cause)
+					require.Nil(t, data)
+				}
+				require.Equal(t, 1, budget.released)
+				require.Len(t, budget.requests, 1)
+				usage := MonitoringProbeTokenUsage{}
+				if generation {
+					usage = MonitoringProbeTokenUsage{Reported: true, Tokens: 7}
+				}
+				require.Equal(t, []MonitoringProbeTokenUsage{usage}, budget.usages, "canceled publication must not refund the physical call or reported tokens")
+			})
+		}
+	}
+}
+
+func TestReadMonitoringProbeResponseCancellationRetainsIOErrors(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	cause, readErr, closeErr := errors.New("caller retired"), errors.New("fixture read failure"), errors.New("fixture close failure")
+	body := &monitoringBoundaryResponseBody{Reader: io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(readErr)),
+		onClose: func() { cancel(cause) }, closeErr: closeErr}
+	data, err := ReadMonitoringProbeResponse(ctx, &http.Response{Body: body}, 1024)
+	require.Nil(t, data)
+	for _, expected := range []error{cause, readErr, closeErr} {
+		require.ErrorIs(t, err, expected)
+	}
+}
+
+type monitoringBoundaryQuotaUpstream struct {
+	HTTPUpstream
+	response func(*http.Request) *http.Response
+}
+
+func (u monitoringBoundaryQuotaUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	return u.response(req), nil
+}
+
+func TestCNProviderBalanceDeadlinePreservesPreviousEvidence(t *testing.T) {
+	for _, phase := range []string{"response", "body"} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				account := newDeepSeekBalanceProbeAccount()
+				account.Extra = map[string]any{"deepseek_balance": 2.0, "deepseek_balance_low": true,
+					"deepseek_balance_updated_at": "2026-01-01T00:00:00Z", "unrelated": "preserved"}
+				accounts := &cnBalanceProbeRepo{account: account}
+				budget := &monitoringBudgetRepoStub{}
+				closed := 0
+				upstream := monitoringBoundaryQuotaUpstream{response: func(req *http.Request) *http.Response {
+					body := &monitoringBoundaryResponseBody{Reader: strings.NewReader(`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"10"}]}`),
+						onClose: func() { closed++ }}
+					if phase == "response" {
+						<-req.Context().Done()
+					} else {
+						body.beforeRead = func() { <-req.Context().Done() }
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body, Request: req}
+				}}
+				ctx := withAccountTestMonitoringSite(NewMonitoringProbeBudgetService(budget).qualityContext(t.Context()), "")
+				svc := NewCNProviderBalanceService(accounts, nil, monitoringBudgetHTTP{base: upstream}, nil)
+				result, err := svc.QueryBalance(ctx, account.ID)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.Nil(t, result)
+				require.Empty(t, accounts.extraWrites, "an expired request must not renew balance or clear a prior low-balance flag")
+				require.Equal(t, 1, closed)
+				require.Len(t, budget.requests, 1)
+				require.Equal(t, 1, budget.released, "the real physical attempt is still charged and settled")
+				require.Equal(t, []MonitoringProbeTokenUsage{{}}, budget.usages, "quota requests must not invent generation usage")
+				require.NoError(t, t.Context().Err(), "a provider deadline is distinct from caller cancellation")
+			})
+		})
+	}
+}
+
+func TestCNProviderQuotaDeadlinePreservesPreviousEvidence(t *testing.T) {
+	for _, platform := range []string{PlatformCommandCode, PlatformCline, PlatformMistral} {
+		for _, phase := range []string{"response", "body"} {
+			t.Run(platform+"/"+phase, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					account, base, _, _ := accountQuotaBudgetFixture(t, platform)
+					accounts := &cnBalanceProbeRepo{account: account}
+					budget := &monitoringBudgetRepoStub{}
+					upstream := monitoringBoundaryQuotaUpstream{response: func(req *http.Request) *http.Response {
+						response, _ := base.Do(req, "", account.ID, account.Concurrency)
+						if phase == "response" {
+							<-req.Context().Done()
+						} else {
+							original := response.Body
+							response.Body = &monitoringBoundaryResponseBody{Reader: original, beforeRead: func() { <-req.Context().Done() },
+								onClose: func() { _ = original.Close() }}
+						}
+						return response
+					}}
+					ctx := withAccountTestMonitoringSite(NewMonitoringProbeBudgetService(budget).qualityContext(t.Context()), "")
+					svc := NewCNProviderQuotaService(accounts, nil, monitoringBudgetHTTP{base: upstream}, nil)
+					result, err := svc.QueryUsage(ctx, account.ID)
+					require.Error(t, err, "expired primary quota responses must not become successful provider evidence")
+					require.Nil(t, result)
+					require.Empty(t, accounts.extraWrites)
+					require.Len(t, base.requests, 1, "a timed-out primary must not trigger optional metadata requests")
+					require.Equal(t, 1, budget.released)
+					require.Equal(t, []MonitoringProbeTokenUsage{{}}, budget.usages)
+					require.NoError(t, t.Context().Err())
+				})
+			})
+		}
 	}
 }
 

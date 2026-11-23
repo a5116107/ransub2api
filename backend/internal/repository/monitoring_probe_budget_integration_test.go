@@ -43,14 +43,14 @@ type ollamaBudgetFixtureEncryptor struct{}
 func (ollamaBudgetFixtureEncryptor) Encrypt(v string) (string, error) { return v, nil }
 func (ollamaBudgetFixtureEncryptor) Decrypt(v string) (string, error) { return v, nil }
 
-func ollamaBudgetTestUpstream(t *testing.T, handler http.HandlerFunc) service.HTTPUpstream {
+func monitoringBudgetTestUpstream(t *testing.T, handler http.HandlerFunc) service.HTTPUpstream {
 	t.Helper()
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
-	return ollamaBudgetPinnedUpstream(t, server.Listener.Addr().String(), server.Certificate().Raw)
+	return monitoringBudgetPinnedUpstream(t, server.Listener.Addr().String(), server.Certificate().Raw)
 }
 
-func ollamaBudgetPinnedUpstream(t *testing.T, address string, certificate []byte) service.HTTPUpstream {
+func monitoringBudgetPinnedUpstream(t *testing.T, address string, certificate []byte) service.HTTPUpstream {
 	t.Helper()
 	cert, err := x509.ParseCertificate(certificate)
 	require.NoError(t, err)
@@ -73,7 +73,7 @@ func TestOllamaCloudUsageMonitoringBudgetHTTPPostgresSessionAndRecovery(t *testi
 	var calls atomic.Int32
 	body, err := os.ReadFile("../service/testdata/ollama_settings_usage.html")
 	require.NoError(t, err)
-	upstream := ollamaBudgetTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+	upstream := monitoringBudgetTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/settings" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") == "" {
 			http.Error(w, "unexpected settings request", http.StatusBadRequest)
 			return
@@ -244,7 +244,7 @@ func TestAccountQuotaMonitoringBudgetPostgresOptionalFailureAndRecovery(t *testi
 					"/v1/billing/subscription": `{"plan_name":"INDIVIDUAL","vibe_payg_enabled":false}`,
 				}
 			}
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := monitoringBudgetTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer mstrl_quota_fixture" {
 					http.Error(w, "unexpected quota request", http.StatusBadRequest)
 					return
@@ -257,20 +257,7 @@ func TestAccountQuotaMonitoringBudgetPostgresOptionalFailureAndRecovery(t *testi
 				calls.Add(1)
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, body)
-			}))
-			t.Cleanup(server.Close)
-			roots := x509.NewCertPool()
-			roots.AddCert(server.Certificate())
-			transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12},
-				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-					return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
-				}}
-			t.Cleanup(transport.CloseIdleConnections)
-			httpClient := &http.Client{Transport: &accountResponseTransport{base: transport}, Timeout: 5 * time.Second,
-				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-			upstream := gatewayPinDelegate{call: func(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
-				return httpClient.Do(req)
-			}}
+			})
 			account := mustCreateAccount(t, client, &service.Account{Name: "quota-account-budget", Platform: platform, Type: service.AccountTypeAPIKey,
 				Status: service.StatusActive, Schedulable: true, Concurrency: 2, Credentials: map[string]any{"api_key": "mstrl_quota_fixture", "api_protocol": service.APIProtocolAdaptive}})
 			alias := mustCreateAccount(t, client, &service.Account{Name: "quota-account-alias", Platform: platform, Type: account.Type,
@@ -322,6 +309,112 @@ func TestAccountQuotaMonitoringBudgetPostgresOptionalFailureAndRecovery(t *testi
 			require.Zero(t, stats.ActiveRequests)
 		})
 	}
+}
+
+func TestCNProviderBalanceDeadlineHTTPPostgresEvidenceAndRecovery(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/tenant/user/balance" || r.Header.Get("Authorization") != "Bearer deadline-balance-fixture" {
+			http.Error(w, "unexpected balance fixture request", http.StatusBadRequest)
+			return
+		}
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"10"}]}`)
+	}))
+	t.Cleanup(server.Close)
+	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
+	accounts := newAccountRepositoryWithSQL(client, db, nil)
+	create := func(name string) *service.Account {
+		return mustCreateAccount(t, client, &service.Account{Name: name, Platform: service.PlatformDeepseek, Type: service.AccountTypeAPIKey,
+			Status: service.StatusActive, Schedulable: true, Concurrency: 2,
+			Credentials: map[string]any{"api_key": "deadline-balance-fixture", "base_url": server.URL + "/tenant", "account_mode": service.AccountModePayG},
+			Extra:       map[string]any{"deepseek_balance": 2.0, "deepseek_balance_low": true, "deepseek_balance_updated_at": "2026-01-01T00:00:00Z", "manual_note": "preserved"}})
+	}
+	first, alias := create("deadline-balance"), create("deadline-balance-alias")
+	row := func(id int64) string {
+		t.Helper()
+		var value string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT row_to_json(a)::text FROM accounts a WHERE id=$1`, id).Scan(&value))
+		return value
+	}
+	firstBefore, aliasBefore := row(first.ID), row(alias.ID)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 1
+	var err error
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	upstream := NewHTTPUpstream(cfg)
+	native := pr612NativeTransport(t, upstream)
+	t.Cleanup(func() {
+		native.mu.Lock()
+		defer native.mu.Unlock()
+		for _, entry := range native.clients {
+			entry.client.CloseIdleConnections()
+		}
+	})
+	// Buffer a real, fully settled HTTP reply, then emulate a provider adapter
+	// that returns it after the original request deadline instead of an error.
+	late := gatewayPinDelegate{call: func(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+		response, err := upstream.Do(req, proxy, id, concurrency)
+		if err != nil {
+			return response, err
+		}
+		body, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return nil, err
+		}
+		<-req.Context().Done()
+		response.Body = io.NopCloser(strings.NewReader(string(body)))
+		return response, nil
+	}}
+	run := func(id int64, transport service.HTTPUpstream) (*service.CNProviderBalanceResult, error) {
+		ctx := service.NewMonitoringProbeBudgetService(NewMonitoringProbeBudgetRepository(db)).Context(ctx, server.URL, false)
+		return service.NewCNProviderBalanceService(accounts, nil, transport, cfg).QueryBalance(ctx, id)
+	}
+	result, err := run(first.ID, late)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Nil(t, result)
+	require.NoError(t, ctx.Err(), "the upstream deadline must not cancel the fixture caller")
+	require.Equal(t, firstBefore, row(first.ID), "late success must not replace the old balance, timestamp or low-balance guard")
+	require.Equal(t, aliasBefore, row(alias.ID))
+	require.EqualValues(t, 1, calls.Load())
+	result, err = run(alias.ID, upstream)
+	require.Nil(t, result)
+	var denial *service.MonitoringProbeBudgetDenial
+	require.ErrorAs(t, err, &denial)
+	require.Equal(t, "global_day", denial.Scope)
+	require.EqualValues(t, 1, calls.Load(), "adapter reconstruction must not refund the timed-out physical call")
+	require.Equal(t, aliasBefore, row(alias.ID))
+	policy.RequestsPerDay = 2
+	_, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	result, err = run(alias.ID, upstream)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.True(t, result.Persisted)
+	require.Equal(t, 10.0, result.Balance)
+	require.EqualValues(t, 2, calls.Load())
+	require.Equal(t, firstBefore, row(first.ID), "recovery belongs to the queried account only")
+	fresh, err := accounts.GetByID(ctx, alias.ID)
+	require.NoError(t, err)
+	require.Equal(t, false, fresh.Extra["deepseek_balance_low"])
+	require.Equal(t, "preserved", fresh.Extra["manual_note"])
+	summary, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, summary.DayUsed)
+	require.Zero(t, summary.DayTokens)
+	require.Zero(t, summary.ActiveRequests)
+	require.Zero(t, summary.UsagePending)
+	require.Zero(t, summary.UsageUnknown)
+	require.Zero(t, summary.UsageReported)
+	var usage int64
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&usage))
+	require.Zero(t, usage)
 }
 
 func TestResponsesSupportMonitoringBudgetPostgresSharedKeyAndRecovery(t *testing.T) {

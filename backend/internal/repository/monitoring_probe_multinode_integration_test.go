@@ -182,7 +182,7 @@ func runMonitoringOllamaNode(t *testing.T, command monitoringBudgetNodeCommand, 
 	defer func() { _ = rdb.Close() }()
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
 	cfg.Totp.EncryptionKeyConfigured = true
-	upstream := ollamaBudgetPinnedUpstream(t, endpoint.Host, command.Certificate)
+	upstream := monitoringBudgetPinnedUpstream(t, endpoint.Host, command.Certificate)
 	runner := service.ProvideOllamaCloudUsageService(newAccountRepositoryWithSQL(client, db, nil), upstream,
 		service.NewSettingService(NewSettingRepository(client), cfg), ollamaBudgetFixtureEncryptor{}, cfg,
 		NewLeaderLockCache(rdb), db, NewMonitoringProbeBudgetRepository(db))

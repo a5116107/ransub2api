@@ -239,7 +239,7 @@ func TestOllamaCloudUsageLifecycleHTTPPostgresCancelAndRecovery(t *testing.T) {
 			var block atomic.Bool
 			block.Store(true)
 			entered := make(chan struct{}, 4)
-			upstream := ollamaBudgetTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			upstream := monitoringBudgetTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet || r.URL.Path != "/settings" || r.Host != "ollama.com" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") == "" {
 					invalid.Add(1)
 					http.Error(w, "unexpected settings request", http.StatusBadRequest)
