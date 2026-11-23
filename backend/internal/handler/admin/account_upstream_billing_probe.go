@@ -15,6 +15,7 @@ import (
 )
 
 func (h *AccountHandler) GetMonitoringProbeBudget(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	result, err := h.upstreamBillingProbe.MonitoringBudget().Summary(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)

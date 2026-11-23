@@ -5,6 +5,7 @@ package repository_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,120 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type groupQueueRuntimeRepository struct {
+	service.ChannelMonitorV3Repository
+	reads atomic.Int32
+}
+
+func (r *groupQueueRuntimeRepository) GetConfig(context.Context) (*service.ChannelMonitorV3Config, error) {
+	r.reads.Add(1)
+	return nil, errors.New("fixture inventory unavailable")
+}
+
+func TestMonitoringProbeGroupQueuesPostgresAdminHTTPReadOnly(t *testing.T) {
+	db, _ := repository.UpstreamChannelsTestDatabase(t)
+	policyRepo := repository.NewMonitoringProbeBudgetRepository(db)
+	policy, err := policyRepo.GetSettings(t.Context())
+	require.NoError(t, err)
+	groups := &service.PelicanGroupTestService{}
+	monitor := service.ProvideChannelMonitorV2Service(repository.NewChannelMonitorV2Repository(db), nil, groups)
+	idleRepo := &groupQueueRuntimeRepository{}
+	idle := service.NewChannelMonitorV3Prober(idleRepo, groups, nil)
+	t.Cleanup(idle.Stop)
+	budget := service.NewMonitoringProbeBudgetService(policyRepo)
+	budget.SetGroupProbeQueues(monitor, idle)
+	probe := service.NewUpstreamBillingProbeService(nil, nil, nil)
+	probe.SetMonitoringBudget(budget)
+	t.Cleanup(probe.Stop)
+	h := &admin.AccountHandler{}
+	h.SetUpstreamBillingProbeService(probe)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		if c.GetHeader("X-Fixture-Admin") != "queue-runtime" {
+			c.AbortWithStatus(http.StatusForbidden)
+		}
+	})
+	router.GET("/budget", h.GetMonitoringProbeBudget)
+	router.POST("/preview", h.PreviewMonitoringProbeCoverage)
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+	counts := func() string {
+		t.Helper()
+		var value string
+		require.NoError(t, db.QueryRowContext(t.Context(), `SELECT json_build_array(
+ (SELECT count(*) FROM monitoring_probe_budget_counters),
+ (SELECT count(*) FROM monitoring_probe_budget_leases),
+ (SELECT count(*) FROM channel_monitor_v2_candy_results),
+ (SELECT count(*) FROM channel_monitor_v3_probe_results),
+ (SELECT count(*) FROM usage_logs),
+ (SELECT count(*) FROM scheduled_test_plans))::text`).Scan(&value))
+		return value
+	}
+	before := counts()
+	read := func(path string, authorize bool) *service.MonitoringProbeGroupQueues {
+		t.Helper()
+		method, body := http.MethodGet, ""
+		if path == "/preview" {
+			method = http.MethodPost
+			raw, marshalErr := json.Marshal(policy)
+			require.NoError(t, marshalErr)
+			body = string(raw)
+		}
+		req, requestErr := http.NewRequestWithContext(t.Context(), method, server.URL+path, strings.NewReader(body))
+		require.NoError(t, requestErr)
+		req.Header.Set("Content-Type", "application/json")
+		if authorize {
+			req.Header.Set("X-Fixture-Admin", "queue-runtime")
+		}
+		res, requestErr := server.Client().Do(req)
+		require.NoError(t, requestErr)
+		defer func() { require.NoError(t, res.Body.Close()) }()
+		if !authorize {
+			require.Equal(t, http.StatusForbidden, res.StatusCode)
+			return nil
+		}
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.Equal(t, "no-store", res.Header.Get("Cache-Control"))
+		var out struct {
+			Data json.RawMessage `json:"data"`
+		}
+		require.NoError(t, json.NewDecoder(res.Body).Decode(&out))
+		var coverage service.MonitoringProbeCoverage
+		if path == "/preview" {
+			require.NoError(t, json.Unmarshal(out.Data, &coverage))
+		} else {
+			var summary service.MonitoringProbeBudgetSummary
+			require.NoError(t, json.Unmarshal(out.Data, &summary))
+			coverage = *summary.Coverage
+		}
+		require.Equal(t, policy.Revision, coverage.BudgetRevision)
+		require.NotNil(t, coverage.GroupProbeQueues)
+		return coverage.GroupProbeQueues
+	}
+	for _, path := range []string{"/budget", "/preview"} {
+		read(path, false)
+	}
+	first := read("/budget", true)
+	require.Equal(t, "unobserved", first.V2.State)
+	require.Equal(t, "unobserved", first.V3.State)
+	require.Zero(t, idleRepo.reads.Load(), "GET and preview must not scan runtime inventory")
+	idle.RunDue(t.Context(), time.Now())
+	require.EqualValues(t, 1, idleRepo.reads.Load())
+	for range 3 {
+		for _, path := range []string{"/budget", "/preview"} {
+			view := read(path, true)
+			require.Equal(t, first.V2.InstanceID, view.V2.InstanceID)
+			require.Equal(t, first.V3.InstanceID, view.V3.InstanceID)
+			require.Equal(t, "inventory_unavailable", view.V3.State)
+			require.Nil(t, view.V3.LastScan)
+			require.Nil(t, view.V3.Cycle)
+		}
+	}
+	require.EqualValues(t, 1, idleRepo.reads.Load(), "read-back must not trigger retries")
+	require.Equal(t, "unobserved", first.V3.State, "earlier responses remain historical snapshots")
+	require.Equal(t, before, counts(), "views must not create plans, probes, usage, budget counters or leases")
+}
 
 type v1BudgetMonitorEncryptor struct{}
 

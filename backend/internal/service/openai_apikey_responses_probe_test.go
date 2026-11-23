@@ -600,7 +600,7 @@ func TestResponsesCapabilityRuntimeOriginalBudgetProjectionAndProvider(t *testin
 	repo := &monitoringRuntimeBudgetRepo{coverage: coverage}
 	tests := NewAccountTestService(responsesProbeLifecycleRepo{}, nil, nil, nil, nil, &httpUpstreamRecorder{}, &config.Config{}, nil)
 	probe := ProvideUpstreamBillingProbeService(nil, tests, nil, nil, nil,
-		&config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}, nil, nil, repo, nil, nil)
+		&config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}, nil, nil, repo, nil, nil, nil, nil)
 	t.Cleanup(probe.Stop)
 	preview, err := probe.MonitoringBudget().PreviewCoverage(t.Context(), policy)
 	require.NoError(t, err)

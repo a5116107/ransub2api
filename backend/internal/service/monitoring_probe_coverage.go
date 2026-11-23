@@ -62,6 +62,7 @@ type MonitoringProbeCoverage struct {
 	CNQuotaCycle        *CNMonitoringRuntime                        `json:"cn_quota_cycle,omitempty"`
 	OllamaUsage         *OllamaMonitoringRuntime                    `json:"ollama_usage,omitempty"`
 	ResponsesCapability *ResponsesCapabilityMonitoringRuntime       `json:"responses_capability,omitempty"`
+	GroupProbeQueues    *MonitoringProbeGroupQueues                 `json:"group_probe_queues,omitempty"`
 }
 
 // Known periodic demand only. Site minute counters are scaled to a full UTC

@@ -201,7 +201,7 @@ func TestCNMonitoringRuntimeBudgetProjectionAndProviderWiring(t *testing.T) {
 	repo := &monitoringRuntimeBudgetRepo{coverage: coverage}
 	cn := NewCNProviderBalanceCheckService(nil, nil, nil, &config.Config{}, time.Minute)
 	probe := ProvideUpstreamBillingProbeService(nil, nil, nil, nil, nil,
-		&config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}, nil, nil, repo, cn, nil)
+		&config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}, nil, nil, repo, cn, nil, nil, nil)
 	t.Cleanup(probe.Stop)
 	preview, err := probe.MonitoringBudget().PreviewCoverage(t.Context(), policy)
 	require.NoError(t, err)

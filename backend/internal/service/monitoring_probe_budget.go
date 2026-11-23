@@ -116,6 +116,8 @@ type MonitoringProbeBudgetService struct {
 	cnQuotaCycle        *CNProviderBalanceCheckService
 	ollamaUsage         *OllamaCloudUsageService
 	responsesCapability *AccountTestService
+	groupMonitor        *ChannelMonitorV2Service
+	idleProber          *ChannelMonitorV3Prober
 }
 
 func NewMonitoringProbeBudgetService(repo MonitoringProbeBudgetRepository) *MonitoringProbeBudgetService {
@@ -135,6 +137,10 @@ func (s *MonitoringProbeBudgetService) SetResponsesCapability(tests *AccountTest
 	s.responsesCapability = tests
 }
 
+func (s *MonitoringProbeBudgetService) SetGroupProbeQueues(monitor *ChannelMonitorV2Service, idle *ChannelMonitorV3Prober) {
+	s.groupMonitor, s.idleProber = monitor, idle
+}
+
 func (s *MonitoringProbeBudgetService) runtimeCoverage(coverage *MonitoringProbeCoverage) *MonitoringProbeCoverage {
 	if coverage == nil {
 		return nil
@@ -143,6 +149,11 @@ func (s *MonitoringProbeBudgetService) runtimeCoverage(coverage *MonitoringProbe
 	view.CNQuotaCycle = s.cnQuotaCycle.MonitoringRuntime()
 	view.OllamaUsage = s.ollamaUsage.MonitoringRuntime()
 	view.ResponsesCapability = s.responsesCapability.ResponsesCapabilityRuntime()
+	var candy *ChannelMonitorV2CandyService
+	if s.groupMonitor != nil {
+		candy = s.groupMonitor.candy
+	}
+	view.GroupProbeQueues = &MonitoringProbeGroupQueues{V2: candy.MonitoringRuntime(), V3: s.idleProber.MonitoringRuntime()}
 	return &view
 }
 

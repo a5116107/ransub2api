@@ -175,6 +175,7 @@
               <p class="mt-1 break-words text-xs" data-testid="responses-runtime-times">{{ t(`${prefix}.responsesRuntimeTimes`, { started: displayWindow(responsesLastStarted), finished: displayWindow(responsesLastFinished) }) }}</p>
             </div>
           </div>
+          <MonitoringProbeQueueRuntime :queues="coverage.group_probe_queues" />
           <ul v-if="coverage.blocking_reasons.length || coverage.warnings.length" class="mt-2 list-inside list-disc space-y-1" data-testid="probe-budget-capacity-reasons">
             <li v-for="reason in [...coverage.blocking_reasons, ...coverage.warnings]" :key="reason">{{ capacityReason(reason) }}</li>
           </ul>
@@ -198,6 +199,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api'
 import Toggle from '@/components/common/Toggle.vue'
+import MonitoringProbeQueueRuntime from './MonitoringProbeQueueRuntime.vue'
 import type { MonitoringProbeBudgetSummary, MonitoringProbeCoverage } from '@/types/monitoringProbeBudget'
 
 const { t } = useI18n()

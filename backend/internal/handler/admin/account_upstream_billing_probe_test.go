@@ -105,6 +105,7 @@ func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
 		router.ServeHTTP(w, req)
 		require.Equal(t, tc.status, w.Code)
 		if tc.status == 200 {
+			require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 			require.Contains(t, w.Body.String(), `"inventory_complete":true`)
 			require.Contains(t, w.Body.String(), `"ollama_usage":{`)
 			require.Contains(t, w.Body.String(), ollama.MonitoringRuntime().InstanceID)
@@ -118,6 +119,20 @@ func TestAccountHandlerMonitoringProbeCoverage(t *testing.T) {
 	wGet := httptest.NewRecorder()
 	router.ServeHTTP(wGet, httptest.NewRequest("GET", "/budget", nil))
 	require.Equal(t, 200, wGet.Code)
+	require.Equal(t, "no-store", wGet.Header().Get("Cache-Control"))
+	var queueView struct {
+		Data struct {
+			Coverage struct {
+				Queues *service.MonitoringProbeGroupQueues `json:"group_probe_queues"`
+			} `json:"coverage"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(wGet.Body.Bytes(), &queueView))
+	require.NotNil(t, queueView.Data.Coverage.Queues)
+	require.Equal(t, "unavailable", queueView.Data.Coverage.Queues.V2.State)
+	require.Equal(t, "unavailable", queueView.Data.Coverage.Queues.V3.State)
+	require.Nil(t, queueView.Data.Coverage.Queues.V2.Cycle)
+	require.Nil(t, queueView.Data.Coverage.Queues.V3.LastScan)
 	require.Contains(t, wGet.Body.String(), ollama.MonitoringRuntime().InstanceID)
 	require.Contains(t, wGet.Body.String(), `"last_scan":null`)
 	require.Contains(t, wGet.Body.String(), tests.ResponsesCapabilityRuntime().InstanceID)

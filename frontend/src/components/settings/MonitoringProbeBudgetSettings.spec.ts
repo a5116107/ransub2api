@@ -31,6 +31,18 @@ beforeEach(() => {
   api.previewMonitoringProbeCoverage.mockResolvedValue(coverage())
   api.updateMonitoringProbeBudget.mockImplementation(async value => ({ ...value, revision: value.revision + 1 }))
 })
+
+it.each(['en', 'zh'])('shows unobserved group probe queues as unknown rather than zero in %s', async locale => {
+  api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: coverage() })
+  const wrapper = await open(locale)
+  const panel = wrapper.get('[data-testid="probe-budget-group-queues"]')
+  expect(panel.text()).toContain(locale === 'zh' ? '分组检测队列' : 'Group probe queues')
+  expect(panel.findAll('[data-group-probe-queue]')).toHaveLength(2)
+  expect(panel.text()).toContain(locale === 'zh' ? '未知' : 'Unknown')
+  expect(panel.find('[data-testid="group-queue-cycle-v2"]').exists()).toBe(false)
+  expect(panel.find('[data-testid="group-queue-cycle-v3"]').exists()).toBe(false)
+  wrapper.unmount()
+})
 async function open(locale = 'en') {
   const wrapper = mount(MonitoringProbeBudgetSettings, { global: { plugins: [createI18n({ legacy: false, locale, messages: { en, zh } })] } })
   await flushPromises()

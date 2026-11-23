@@ -351,6 +351,8 @@ func ProvideUpstreamBillingProbeService(
 	budgetRepo MonitoringProbeBudgetRepository,
 	cnQuotaCycle *CNProviderBalanceCheckService,
 	ollamaUsage *OllamaCloudUsageService,
+	groupMonitor *ChannelMonitorV2Service,
+	idleProber *ChannelMonitorV3Prober,
 ) *UpstreamBillingProbeService {
 	svc := NewUpstreamBillingProbeService(accountRepo, accountTestService, settingService)
 	svc.SetLeaderLock(lockCache, db)
@@ -358,6 +360,7 @@ func ProvideUpstreamBillingProbeService(
 	svc.MonitoringBudget().SetCNQuotaCycle(cnQuotaCycle)
 	svc.MonitoringBudget().SetOllamaUsage(ollamaUsage)
 	svc.MonitoringBudget().SetResponsesCapability(accountTestService)
+	svc.MonitoringBudget().SetGroupProbeQueues(groupMonitor, idleProber)
 	svc.SetNewAPIAuthorization(newAPIRepo, encryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
 	startBackgroundService(cfg, svc)
 	return svc

@@ -298,10 +298,17 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 		return
 	}
 	defer p.tick.Unlock()
+	p.queue.observeState("scanning")
+	defer func() {
+		if ctx.Err() != nil {
+			p.queue.observeState("canceled")
+		}
+	}()
 	now = now.UTC()
 	cfg, err := p.repo.GetConfig(ctx)
 	if err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v3", "idle probe config failed: %v", err)
+		p.queue.observeState("inventory_unavailable")
 		return
 	}
 	if ctx.Err() != nil {
@@ -310,16 +317,19 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	p.prune(ctx, cfg.AvailabilityRange, now)
 	if !cfg.IdleProbe.Enabled || len(cfg.IdleProbe.Groups) == 0 || p.settings == nil || !p.settings.GetChannelMonitorRuntime(ctx).V3Active() {
 		p.queue.turns = nil
+		p.queue.observeState("inactive")
 		return
 	}
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
 	slot := now.Truncate(interval)
 	if slot.Add(interval).Sub(now) > time.Minute {
+		p.queue.observeState("not_due")
 		return
 	}
 	components, err := p.repo.ListComponents(ctx)
 	if err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v3", "idle probe components failed: %v", err)
+		p.queue.observeState("inventory_unavailable")
 		return
 	}
 	if ctx.Err() != nil {
@@ -327,7 +337,8 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	}
 	targets := channelMonitorV3ProbeTargets(cfg.IdleProbe, components)
 	if len(targets) == 0 {
-		p.queue.turns = nil
+		p.queue.order(nil, nil)
+		p.queue.run(ctx, nil, nil)
 		return
 	}
 	groupIDs := []int64{}
@@ -339,6 +350,7 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	counts, err := p.repo.SuccessCounts(ctx, groupIDs, slot, now)
 	if err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v3", "idle probe traffic count failed: %v", err)
+		p.queue.observeState("inventory_unavailable")
 		return
 	}
 	if ctx.Err() != nil {
@@ -421,6 +433,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 	sample := p.groups.runSample(runCtx, plan, group)
 	if sample != nil {
 		run.served = sample.monitoringBudgetAdmitted
+		run.budgetDeferral = sample.BudgetDeferral
 	}
 	if ctx.Err() != nil {
 		abandoned = true

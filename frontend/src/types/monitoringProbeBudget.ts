@@ -98,9 +98,34 @@ export interface MonitoringProbeCoverage {
   cn_quota_cycle?: CNMonitoringRuntime | null
   ollama_usage?: OllamaMonitoringRuntime | null
   responses_capability?: ResponsesCapabilityMonitoringRuntime | null
+  group_probe_queues?: MonitoringProbeGroupQueues | null
   billing_scopes?: MonitoringProbeCoverageBillingScopes | null
   periodic_sites?: MonitoringProbeCoveragePeriodicSites | null
   periodic_credentials?: MonitoringProbeCoveragePeriodicCredentials | null
+}
+
+export interface MonitoringProbeGroupQueues {
+  v2?: MonitoringProbeQueueRuntime | null
+  v3?: MonitoringProbeQueueRuntime | null
+}
+
+export interface MonitoringProbeQueueRuntime {
+  version: number
+  scope: string
+  instance_id: string
+  state: string
+  observed_at: string
+  last_scan: { observed_at: string; targets: number; due: number } | null
+  cycle: {
+    started_at: string
+    finished_at: string | null
+    queued: number
+    active: number
+    finished: number
+    deferred: number
+    oldest_pending_at: string | null
+    budget_deferral: MonitoringProbeBudgetDeferral | null
+  } | null
 }
 
 export interface MonitoringProbeCoveragePeriodicCredentials {

@@ -163,19 +163,28 @@ func (s *ChannelMonitorV2CandyService) RunDue(ctx context.Context, now time.Time
 		return
 	}
 	defer s.tick.Unlock()
+	s.queue.observeState("scanning")
+	defer func() {
+		if ctx.Err() != nil {
+			s.queue.observeState("canceled")
+		}
+	}()
 	if err := s.repo.PruneCandyHistory(ctx, now); err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v2", "candy retention failed: %v", err)
 	}
 	if s.settings == nil || !s.settings.GetChannelMonitorRuntime(ctx).V2Active() {
 		s.queue.turns = nil
+		s.queue.observeState("inactive")
 		return
 	}
 	cfg, err := s.config.GetConfig(ctx)
 	if err != nil || cfg == nil || ctx.Err() != nil {
+		s.queue.observeState("inventory_unavailable")
 		return
 	}
 	if !cfg.Enabled {
 		s.queue.turns = nil
+		s.queue.observeState("inactive")
 		return
 	}
 	targets := make(map[monitoringProbeQueueKey]ChannelMonitorV2CandyProbe, len(cfg.CandyProbes))
@@ -244,6 +253,7 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 	sample := s.groups.runSample(runCtx, plan, group)
 	result.LatencyMs = s.now().Sub(result.CheckedAt).Milliseconds()
 	if sample != nil {
+		run.budgetDeferral = sample.BudgetDeferral
 		run.served = sample.monitoringBudgetAdmitted || sample.BudgetDeferral == nil && ctx.Err() == nil
 		run.stop = monitoringProbeBudgetStopsQueue(sample.BudgetDeferral)
 	}
