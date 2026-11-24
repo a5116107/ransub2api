@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -63,6 +64,31 @@ type ChannelMonitorRepository interface {
 	UpdateAggregationWatermark(ctx context.Context, date time.Time) error
 }
 
+// ChannelMonitorScheduledRepository coordinates only the original V1 runner.
+// Claims are private scheduling state, never health evidence or downstream use.
+type ChannelMonitorScheduledRepository interface {
+	ClaimScheduledCheck(context.Context, *ChannelMonitor, time.Duration, time.Duration) (*ChannelMonitorScheduledClaim, error)
+	RenewScheduledCheck(context.Context, int64, *ChannelMonitorScheduledClaim, time.Duration) (bool, error)
+	FinishScheduledCheck(context.Context, int64, *ChannelMonitorScheduledClaim, []*ChannelMonitorHistoryRow) (bool, error)
+	ReleaseScheduledCheck(context.Context, int64, *ChannelMonitorScheduledClaim, bool) error
+}
+
+type ChannelMonitorScheduledClaim struct {
+	ID               string
+	ConfigurationKey string
+	NextDelay        time.Duration
+}
+
+type ChannelMonitorScheduledWait struct{ After time.Duration }
+
+func (*ChannelMonitorScheduledWait) Error() string {
+	return "channel monitor scheduled check is not due"
+}
+
+const channelMonitorScheduledLeaseTTL = 2 * time.Minute
+
+var errChannelMonitorScheduledClaimLost = errors.New("channel monitor scheduled claim lost")
+
 // channelMonitorRuntimeReader is the optional settings view used to gate V1
 // active probes by channel_monitor_enabled + channel_monitor_mode.
 type channelMonitorRuntimeReader interface {
@@ -76,6 +102,7 @@ type ChannelMonitorService struct {
 	upstreamKeyAdmission        UpstreamKeyRequestAdmission
 	requireUpstreamKeyAdmission bool
 	monitoringBudget            *MonitoringProbeBudgetService
+	requireScheduledClaims      bool
 	// settings is optional; when nil, RunCheck fails closed for active probes
 	// (mode defaults to v2 / retired) so tests without settings never hit upstream.
 	settings channelMonitorRuntimeReader
@@ -642,6 +669,54 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	if err != nil {
 		return nil, err
 	}
+	var claim *ChannelMonitorScheduledClaim
+	var scheduledRepo ChannelMonitorScheduledRepository
+	if automatic, _ := ctx.Value(automaticMonitoringProbeKey{}).(bool); automatic {
+		if !m.Enabled {
+			return nil, nil
+		}
+		var supported bool
+		scheduledRepo, supported = s.repo.(ChannelMonitorScheduledRepository)
+		if !supported && s.requireScheduledClaims {
+			return nil, fmt.Errorf("channel monitor scheduled coordination is unavailable")
+		}
+		if supported {
+			if m.IntervalSeconds < monitorMinIntervalSeconds || m.IntervalSeconds > monitorMaxIntervalSeconds ||
+				m.JitterSeconds < 0 || m.IntervalSeconds-m.JitterSeconds < monitorMinIntervalSeconds {
+				return nil, fmt.Errorf("invalid channel monitor schedule")
+			}
+			delay := (&scheduledMonitor{interval: time.Duration(m.IntervalSeconds) * time.Second, jitter: time.Duration(m.JitterSeconds) * time.Second}).nextDelay()
+			started := time.Now()
+			claimCtx, stopClaim := context.WithTimeout(ctx, 2*time.Second)
+			claim, err = scheduledRepo.ClaimScheduledCheck(claimCtx, m, channelMonitorScheduledLeaseTTL, delay)
+			stopClaim()
+			var wait *ChannelMonitorScheduledWait
+			if errors.As(err, &wait) {
+				recordChannelMonitorSchedule(ctx, wait.After)
+				return nil, nil
+			}
+			if err != nil || claim == nil {
+				return nil, err
+			}
+			recordChannelMonitorSchedule(ctx, claim.NextDelay)
+			var cancel context.CancelCauseFunc
+			ctx, cancel = context.WithCancelCause(ctx)
+			defer cancel(nil)
+			defer func() {
+				releaseCtx, stop := context.WithTimeout(context.Background(), 2*time.Second)
+				defer stop()
+				if releaseErr := scheduledRepo.ReleaseScheduledCheck(releaseCtx, id, claim, ctx.Err() != nil); releaseErr != nil {
+					slog.Warn("channel_monitor: release scheduled claim failed", "monitor_id", id)
+				}
+			}()
+			stopRenewal := keepRenewedLease(ctx, started, channelMonitorScheduledLeaseTTL,
+				func(ctx context.Context) (bool, error) {
+					return scheduledRepo.RenewScheduledCheck(ctx, id, claim, channelMonitorScheduledLeaseTTL)
+				},
+				func() { cancel(errChannelMonitorScheduledClaimLost) })
+			defer stopRenewal()
+		}
+	}
 	s.decryptAndPublishBudgetScope(ctx, m)
 	checkMode := defaultCheckMode(m.CheckMode)
 	if checkMode != MonitorCheckModeQuota && m.APIKeyDecryptFailed {
@@ -668,10 +743,20 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	}
 	// Retiring a runner/task or canceling a manual request is not a new
 	// upstream observation, even when its transport returns a late answer.
-	if err := ctx.Err(); err != nil {
+	if err := context.Cause(ctx); err != nil {
 		return nil, err
 	}
-	s.persistCheckResults(ctx, m, results)
+	if claim != nil {
+		finished, finishErr := scheduledRepo.FinishScheduledCheck(ctx, id, claim, channelMonitorHistoryRows(m, results))
+		if finishErr != nil {
+			return nil, finishErr
+		}
+		if !finished {
+			return nil, errChannelMonitorScheduledClaimLost
+		}
+	} else {
+		s.persistCheckResults(ctx, m, results)
+	}
 	return results, nil
 }
 
@@ -715,6 +800,21 @@ func attachQuotaSnapshot(results []*CheckResult, snapshot *domain.MonitorQuotaSn
 // persistCheckResults 写入本次检测的历史记录并更新 last_checked_at。
 // 任一写库失败都只记日志，不影响调用方拿到 results（与 MVP 期望一致：宁可漏记历史也要先返回结果）。
 func (s *ChannelMonitorService) persistCheckResults(ctx context.Context, m *ChannelMonitor, results []*CheckResult) {
+	rows := channelMonitorHistoryRows(m, results)
+	if len(rows) == 0 {
+		return
+	}
+	if err := s.repo.InsertHistoryBatch(ctx, rows); err != nil {
+		slog.Error("channel_monitor: insert history failed",
+			"monitor_id", m.ID, "name", m.Name, "error", err)
+	}
+	if err := s.repo.MarkChecked(ctx, m.ID, time.Now()); err != nil {
+		slog.Error("channel_monitor: mark checked failed",
+			"monitor_id", m.ID, "error", err)
+	}
+}
+
+func channelMonitorHistoryRows(m *ChannelMonitor, results []*CheckResult) []*ChannelMonitorHistoryRow {
 	rows := make([]*ChannelMonitorHistoryRow, 0, len(results))
 	for _, r := range results {
 		if r == nil || r.Skipped {
@@ -731,17 +831,7 @@ func (s *ChannelMonitorService) persistCheckResults(ctx context.Context, m *Chan
 			Quota:         r.Quota,
 		})
 	}
-	if len(rows) == 0 {
-		return
-	}
-	if err := s.repo.InsertHistoryBatch(ctx, rows); err != nil {
-		slog.Error("channel_monitor: insert history failed",
-			"monitor_id", m.ID, "name", m.Name, "error", err)
-	}
-	if err := s.repo.MarkChecked(ctx, m.ID, time.Now()); err != nil {
-		slog.Error("channel_monitor: mark checked failed",
-			"monitor_id", m.ID, "error", err)
-	}
+	return rows
 }
 
 // runChecksConcurrent 对 primary + extra 模型并发执行检测。

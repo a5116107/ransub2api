@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 
 	entsql "entgo.io/ent/dialect/sql"
@@ -205,7 +207,13 @@ func (r *channelMonitorRepository) Update(ctx context.Context, m *service.Channe
 
 		var err error
 		updated, err = updater.Save(ctx)
-		return translatePersistenceError(err, service.ErrChannelMonitorNotFound, nil)
+		if err != nil {
+			return translatePersistenceError(err, service.ErrChannelMonitorNotFound, nil)
+		}
+		// A configuration save is a new scheduled generation, even after an
+		// A-to-B-to-A edit. Observation-only writers do not clear this claim.
+		_, err = client.ExecContext(ctx, `DELETE FROM channel_monitor_probe_claims WHERE monitor_id=$1`, m.ID)
+		return err
 	}, func(ctx context.Context, tx sqlQueryer) error {
 		return validateMonitoringCoverageActiveWrite(ctx, tx, m.Enabled)
 	})
@@ -294,6 +302,133 @@ func (r *channelMonitorRepository) MarkChecked(ctx context.Context, id int64, ch
 		return translatePersistenceError(err, service.ErrChannelMonitorNotFound, nil)
 	}
 	return nil
+}
+
+// Scheduling revisions exclude observation-only writes. The database computes
+// the key from its full configuration, including future fields, without ever
+// returning encrypted credentials or persisting them a second time.
+const channelMonitorConfigurationKeySQL = `md5(((to_jsonb(m)-'last_checked_at'-'updated_at') ||
+ jsonb_build_object('extra_headers',COALESCE(m.extra_headers,'{}'::jsonb)
+ -'sub2api:budget_credential_scope'-'sub2api:duplicate_operation_id'))::text)`
+
+func (r *channelMonitorRepository) ClaimScheduledCheck(ctx context.Context, expected *service.ChannelMonitor, ttl, delay time.Duration) (*service.ChannelMonitorScheduledClaim, error) {
+	if expected == nil || ttl <= 0 || delay <= 0 {
+		return nil, fmt.Errorf("invalid channel monitor scheduled claim")
+	}
+	claim := &service.ChannelMonitorScheduledClaim{ID: uuid.NewString()}
+	var remaining float64
+	err := r.db.QueryRowContext(ctx, `INSERT INTO channel_monitor_probe_claims AS c
+ (monitor_id,configuration_key,lease_id,lease_expires_at,next_due_at)
+ SELECT m.id,`+channelMonitorConfigurationKeySQL+`,$2::uuid,
+ clock_timestamp()+$3*interval '1 second',clock_timestamp()+$4*interval '1 second'
+ FROM channel_monitors m WHERE m.id=$1 AND m.enabled AND m.updated_at=$5
+ ON CONFLICT(monitor_id) DO UPDATE SET configuration_key=EXCLUDED.configuration_key,
+ lease_id=EXCLUDED.lease_id,lease_expires_at=EXCLUDED.lease_expires_at,next_due_at=EXCLUDED.next_due_at
+ WHERE c.configuration_key<>EXCLUDED.configuration_key OR
+ (c.lease_id IS NOT NULL AND c.lease_expires_at<=clock_timestamp()) OR
+ (c.lease_id IS NULL AND c.next_due_at<=clock_timestamp())
+ RETURNING configuration_key,EXTRACT(EPOCH FROM next_due_at-clock_timestamp())`, expected.ID, claim.ID, ttl.Seconds(), delay.Seconds(), expected.UpdatedAt).
+		Scan(&claim.ConfigurationKey, &remaining)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = r.db.QueryRowContext(ctx, `SELECT GREATEST(0,EXTRACT(EPOCH FROM
+ CASE WHEN c.lease_id IS NOT NULL AND c.lease_expires_at>clock_timestamp()
+ THEN CASE WHEN c.next_due_at>clock_timestamp() THEN LEAST(c.next_due_at,c.lease_expires_at) ELSE c.lease_expires_at END
+ ELSE c.next_due_at END-clock_timestamp())) FROM channel_monitor_probe_claims c JOIN channel_monitors m ON m.id=c.monitor_id
+ WHERE m.id=$1 AND m.enabled AND m.updated_at=$2 AND c.configuration_key=`+channelMonitorConfigurationKeySQL, expected.ID, expected.UpdatedAt).Scan(&remaining)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		after := time.Duration(remaining * float64(time.Second))
+		if after < time.Millisecond {
+			after = time.Millisecond
+		}
+		return nil, &service.ChannelMonitorScheduledWait{After: after}
+	}
+	if err != nil {
+		return nil, err
+	}
+	claim.NextDelay = time.Duration(remaining * float64(time.Second))
+	if claim.NextDelay < 0 {
+		claim.NextDelay = 0
+	}
+	return claim, nil
+}
+
+func (r *channelMonitorRepository) RenewScheduledCheck(ctx context.Context, id int64, claim *service.ChannelMonitorScheduledClaim, ttl time.Duration) (bool, error) {
+	if claim == nil || ttl <= 0 {
+		return false, fmt.Errorf("invalid channel monitor scheduled renewal")
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE channel_monitor_probe_claims c
+ SET lease_expires_at=clock_timestamp()+$4*interval '1 second' FROM channel_monitors m
+ WHERE c.monitor_id=$1 AND m.id=c.monitor_id AND m.enabled AND c.lease_id=$2::uuid
+ AND c.configuration_key=$3 AND c.lease_expires_at>clock_timestamp()
+ AND c.configuration_key=`+channelMonitorConfigurationKeySQL, id, claim.ID, claim.ConfigurationKey, ttl.Seconds())
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n > 0, err
+}
+
+func (r *channelMonitorRepository) FinishScheduledCheck(ctx context.Context, id int64, claim *service.ChannelMonitorScheduledClaim, rows []*service.ChannelMonitorHistoryRow) (bool, error) {
+	if claim == nil {
+		return false, fmt.Errorf("missing channel monitor scheduled claim")
+	}
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var checkedAt time.Time
+	err = scanSingleRow(ctx, tx.Client(), `SELECT clock_timestamp() FROM channel_monitor_probe_claims c
+ JOIN channel_monitors m ON m.id=c.monitor_id WHERE c.monitor_id=$1 AND m.enabled
+ AND c.lease_id=$2::uuid AND c.configuration_key=$3 AND c.lease_expires_at>clock_timestamp()
+ AND c.configuration_key=`+channelMonitorConfigurationKeySQL+` FOR NO KEY UPDATE OF m,c`,
+		[]any{id, claim.ID, claim.ConfigurationKey}, &checkedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if row == nil || row.MonitorID != id {
+			return false, fmt.Errorf("channel monitor history does not belong to scheduled claim")
+		}
+	}
+	txCtx := dbent.NewTxContext(ctx, tx)
+	if err := r.InsertHistoryBatch(txCtx, rows); err != nil {
+		return false, err
+	}
+	if len(rows) > 0 {
+		if err := r.MarkChecked(txCtx, id, checkedAt); err != nil {
+			return false, err
+		}
+	}
+	result, err := tx.Client().ExecContext(ctx, `UPDATE channel_monitor_probe_claims
+ SET lease_id=NULL,lease_expires_at=NULL WHERE monitor_id=$1 AND lease_id=$2::uuid
+ AND lease_expires_at>clock_timestamp()`, id, claim.ID)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed == 0 {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+func (r *channelMonitorRepository) ReleaseScheduledCheck(ctx context.Context, id int64, claim *service.ChannelMonitorScheduledClaim, retry bool) error {
+	if claim == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE channel_monitor_probe_claims
+ SET lease_id=NULL,lease_expires_at=NULL,next_due_at=CASE WHEN $3 THEN clock_timestamp() ELSE next_due_at END
+ WHERE monitor_id=$1 AND lease_id=$2::uuid`, id, claim.ID, retry)
+	return err
 }
 
 func (r *channelMonitorRepository) InsertHistoryBatch(ctx context.Context, rows []*service.ChannelMonitorHistoryRow) error {

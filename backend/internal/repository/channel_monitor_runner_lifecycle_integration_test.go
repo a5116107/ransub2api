@@ -19,15 +19,20 @@ import (
 
 type lifecycleCheckedMonitorRepo struct {
 	service.ChannelMonitorRepository
+	service.ChannelMonitorScheduledRepository
 	marked chan time.Time
 }
 
-func (r *lifecycleCheckedMonitorRepo) MarkChecked(ctx context.Context, id int64, at time.Time) error {
-	err := r.ChannelMonitorRepository.MarkChecked(ctx, id, at)
-	if err == nil {
-		r.marked <- at
+func (r *lifecycleCheckedMonitorRepo) FinishScheduledCheck(ctx context.Context, id int64, claim *service.ChannelMonitorScheduledClaim, rows []*service.ChannelMonitorHistoryRow) (bool, error) {
+	finished, err := r.ChannelMonitorScheduledRepository.FinishScheduledCheck(ctx, id, claim, rows)
+	if finished && err == nil && len(rows) > 0 {
+		m, loadErr := r.ChannelMonitorRepository.GetByID(ctx, id)
+		if loadErr != nil {
+			return false, loadErr
+		}
+		r.marked <- *m.LastCheckedAt
 	}
-	return err
+	return finished, err
 }
 
 func TestChannelMonitorRunnerLifecycleHTTPPostgresHistoryAndRecovery(t *testing.T) {
@@ -97,7 +102,7 @@ func testChannelMonitorRunnerLifecycle(t *testing.T, action string) {
 	newService := func(marked chan time.Time) *service.ChannelMonitorService {
 		var repo service.ChannelMonitorRepository = repository.NewChannelMonitorRepository(client, db)
 		if marked != nil {
-			repo = &lifecycleCheckedMonitorRepo{repo, marked}
+			repo = &lifecycleCheckedMonitorRepo{repo, repo.(service.ChannelMonitorScheduledRepository), marked}
 		}
 		return service.ProvideChannelMonitorService(repo, v1BudgetMonitorEncryptor{},
 			service.NewSettingService(repository.NewSettingRepository(client), cfg), cfg, nil, repository.NewMonitoringProbeBudgetRepository(db))

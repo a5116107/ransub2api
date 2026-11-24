@@ -6,11 +6,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -96,6 +99,10 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 	}
 	if command.Mode == "cn" {
 		runMonitoringCNNode(t, command, db, budget)
+		return
+	}
+	if command.Mode == "v1" {
+		runMonitoringV1Node(t, command, db)
 		return
 	}
 	require.Empty(t, command.Mode)
@@ -204,6 +211,38 @@ func runMonitoringCNNode(t *testing.T, command monitoringBudgetNodeCommand, db *
 	case <-time.After(3200 * time.Millisecond):
 	case <-t.Context().Done():
 		t.Fatal("CN process context expired")
+	}
+	runner.Stop()
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
+}
+
+func runMonitoringV1Node(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB) {
+	t.Helper()
+	require.True(t, command.TimeoutMillis > 0 && command.TimeoutMillis <= 60000)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	defer func() { _ = client.Close() }()
+	cfg := &config.Config{}
+	settings := service.NewSettingService(NewSettingRepository(client), cfg)
+	cert, err := x509.ParseCertificate(command.Certificate)
+	require.NoError(t, err)
+	roots := x509.NewCertPool()
+	roots.AddCert(cert)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(command.Site, "https://"))
+		}}
+	defer transport.CloseIdleConnections()
+	// V1 meters generation and HEAD itself; its pinned fixture must not pass
+	// through HTTPUpstream's second instrumentation or invent HEAD credentials.
+	t.Cleanup(service.SetChannelMonitorHTTPClientForTesting(&http.Client{Transport: transport, Timeout: 15 * time.Second}))
+	monitors := service.ProvideChannelMonitorService(NewChannelMonitorRepository(client, db), ollamaBudgetFixtureEncryptor{}, settings, cfg, nil, NewMonitoringProbeBudgetRepository(db))
+	runner := service.NewChannelMonitorRunner(monitors, settings)
+	monitors.SetScheduler(runner)
+	defer runner.Stop()
+	runner.Start()
+	select {
+	case <-time.After(time.Duration(command.TimeoutMillis) * time.Millisecond):
+	case <-t.Context().Done():
 	}
 	runner.Stop()
 	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
@@ -414,6 +453,9 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	}
 	if command.Mode == "scheduled" || command.Mode == "v2" {
 		lifetime = 95 * time.Second // A real minute boundary plus the original ten-second delay.
+	}
+	if command.Mode == "v1" {
+		lifetime = time.Duration(command.TimeoutMillis)*time.Millisecond + 20*time.Second
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), lifetime)
 	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestMonitoringProbeBudgetProcessNode$")

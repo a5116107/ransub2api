@@ -204,6 +204,13 @@ func (r *channelMonitorRequestTemplateRepository) applyToMonitorsWithClient(
 	if headersAffected != int64(affected) {
 		return 0, fmt.Errorf("apply template headers: affected %d rows, expected %d", headersAffected, affected)
 	}
+	// Invalidate only the monitors actually covered by this template write,
+	// in the same transaction, including an identical re-application.
+	if _, err := client.ExecContext(ctx, `DELETE FROM channel_monitor_probe_claims c USING channel_monitors m
+ WHERE c.monitor_id=m.id AND m.template_id=$1 AND m.id=ANY($2) AND m.provider=$3 AND m.api_mode=$4`,
+		id, pq.Array(monitorIDs), string(tpl.Provider), defaultAPIModeRepo(tpl.APIMode)); err != nil {
+		return 0, fmt.Errorf("invalidate applied monitor claims: %w", err)
+	}
 	return headersAffected, nil
 }
 

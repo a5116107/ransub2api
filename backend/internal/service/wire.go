@@ -1273,6 +1273,7 @@ func ProvideChannelMonitorService(
 	budgetRepo MonitoringProbeBudgetRepository,
 ) *ChannelMonitorService {
 	svc := NewChannelMonitorService(repo, encryptor)
+	svc.requireScheduledClaims = true
 	svc.SetRuntimeReader(settingService)
 	svc.SetUpstreamKeyAuthority(cfg, upstream)
 	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))

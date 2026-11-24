@@ -74,6 +74,26 @@ type scheduledMonitor struct {
 	jitter      time.Duration // 每轮 ± [0, jitter] 的均匀随机偏移；0 = 固定间隔
 	cancel      context.CancelFunc
 	previousRun <-chan struct{}
+	reschedule  chan time.Time
+}
+
+type channelMonitorScheduleHintKey struct{}
+
+// A physical worker reports the database's remaining due time to the original
+// timer. Without this, SQL latency would make every fixed timer arrive early
+// and accidentally skip every other cycle; jitter must not be sampled twice.
+type channelMonitorScheduleHint struct {
+	observed time.Time
+	after    time.Duration
+}
+
+func recordChannelMonitorSchedule(ctx context.Context, after time.Duration) {
+	if after < 0 {
+		after = 0
+	}
+	if hint, _ := ctx.Value(channelMonitorScheduleHintKey{}).(*channelMonitorScheduleHint); hint != nil {
+		hint.observed, hint.after = time.Now(), after
+	}
 }
 
 // nextDelay 计算下一次触发的等待时长：interval ± [0, jitter] 的均匀随机偏移。
@@ -197,6 +217,7 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 		jitter:      jitter,
 		cancel:      cancel,
 		previousRun: previousRun,
+		reschedule:  make(chan time.Time, 1),
 	}
 	r.tasks[m.ID] = task
 	r.wg.Add(1)
@@ -270,6 +291,18 @@ func (r *ChannelMonitorRunner) runScheduled(ctx context.Context, task *scheduled
 		select {
 		case <-ctx.Done():
 			return
+		case due := <-task.reschedule:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			delay := time.Until(due)
+			if delay < 0 {
+				delay = 0
+			}
+			timer.Reset(delay)
 		case <-timer.C:
 			r.fire(ctx, task)
 			timer.Reset(task.nextDelay())
@@ -340,7 +373,17 @@ func (r *ChannelMonitorRunner) runOne(parent context.Context, task *scheduledMon
 	ctx, cancel := context.WithTimeout(parent, monitorRequestTimeout+monitorPingTimeout+monitorRunOneBuffer)
 	defer cancel()
 
-	defer r.releaseInFlight(task.id)
+	hint := &channelMonitorScheduleHint{}
+	ctx = context.WithValue(ctx, channelMonitorScheduleHintKey{}, hint)
+	defer func() {
+		r.releaseInFlight(task.id)
+		if !hint.observed.IsZero() && ctx.Err() == nil {
+			select {
+			case task.reschedule <- hint.observed.Add(hint.after):
+			default:
+			}
+		}
+	}()
 
 	defer func() {
 		if recover() != nil {
@@ -355,7 +398,7 @@ func (r *ChannelMonitorRunner) runOne(parent context.Context, task *scheduledMon
 	if retired {
 		return
 	}
-	if _, err := r.svc.RunCheck(ctx, task.id); err != nil {
+	if _, err := r.svc.RunCheck(withAutomaticMonitoringProbe(ctx), task.id); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
