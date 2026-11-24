@@ -3,6 +3,8 @@ package service
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -13,7 +15,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
-const monitoringProbeQueueWorkers = 4
+const (
+	monitoringProbeQueueWorkers        = 4
+	monitoringProbeQueueStoreTimeout   = 2 * time.Second
+	monitoringProbeQueueAttemptTimeout = 2 * time.Minute
+)
 
 // Activity-driven usage observations already persist their due clocks. Keep
 // those required refreshes ahead of exploratory inventory, without inventing a
@@ -43,63 +49,69 @@ type monitoringProbeQueueKey struct {
 	scope   string
 }
 
-type monitoringProbeTurn struct {
-	served, tried uint64
-	waitingSince  time.Time
-}
-
 type monitoringProbeQueueRun struct {
 	served, stop   bool
 	budgetDeferral *MonitoringProbeBudgetDenial
 }
 
-// Local scheduling age, not evidence freshness or a distributed reservation.
-// The owning executor holds its tick lock throughout order and run.
+// Shared scheduling age, not evidence freshness or execution authority.
+// The map is a single scan's snapshot, never a process-local fallback.
 type monitoringProbeQueue struct {
-	turnSequence uint64
-	turns        map[monitoringProbeQueueKey]monitoringProbeTurn
-	runtimeMu    sync.Mutex
-	runtime      MonitoringProbeQueueRuntime
+	round     int64
+	store     GroupMonitoringTurnRepository
+	turns     map[monitoringProbeQueueKey]GroupMonitoringTurn
+	runtimeMu sync.Mutex
+	runtime   MonitoringProbeQueueRuntime
 }
 
-// New inventory joins behind pending work. Only a complete inventory may prune
-// old state; callers preserve it when their inventory read fails.
-func (q *monitoringProbeQueue) order(targets, due []monitoringProbeQueueKey) {
-	now := time.Now().UTC()
-	if q.turns == nil {
-		q.turns = make(map[monitoringProbeQueueKey]monitoringProbeTurn, len(targets))
+// Call only after a complete inventory read. Configuration fencing and pruning
+// happen in the same transaction; a failed scan must not erase shared age.
+func (q *monitoringProbeQueue) order(ctx context.Context, source any, cfg GroupMonitoringQueueConfig, targets map[monitoringProbeQueueKey]string, due []monitoringProbeQueueKey) bool {
+	store, ok := source.(GroupMonitoringTurnRepository)
+	if !ok {
+		q.observeState("coordination_unavailable")
+		return false
 	}
-	q.turnSequence++
 	dueSet := make(map[monitoringProbeQueueKey]bool, len(due))
 	for _, key := range due {
 		dueSet[key] = true
 	}
-	present := make(map[monitoringProbeQueueKey]bool, len(targets))
-	for _, key := range targets {
-		present[key] = true
-		if _, exists := q.turns[key]; !exists {
-			q.turns[key] = monitoringProbeTurn{served: q.turnSequence}
-		}
+	input := make([]GroupMonitoringTurn, 0, len(targets))
+	byHash := make(map[monitoringProbeQueueKey]monitoringProbeQueueKey, len(targets))
+	for key, identity := range targets {
+		turn := GroupMonitoringTurn{GroupID: key.groupID, ScopeHash: fmt.Sprintf("%x", sha256.Sum256([]byte(key.scope))),
+			IdentityHash: fmt.Sprintf("%x", sha256.Sum256([]byte(identity))), Due: dueSet[key]}
+		input = append(input, turn)
+		byHash[monitoringProbeQueueKey{groupID: key.groupID, scope: turn.ScopeHash}] = key
 	}
-	for key := range q.turns {
-		if !present[key] {
-			delete(q.turns, key)
-			continue
-		}
-		turn := q.turns[key]
-		if !dueSet[key] {
-			turn.waitingSince = time.Time{}
-		} else if turn.waitingSince.IsZero() {
-			turn.waitingSince = now
-		}
-		q.turns[key] = turn
+	loadCtx, cancel := context.WithTimeout(ctx, monitoringProbeQueueStoreTimeout)
+	queue, err := store.SyncGroupMonitoringTurns(loadCtx, cfg, input)
+	cancel()
+	if err != nil || queue == nil || queue.Round <= 0 || len(queue.Turns) != len(targets) {
+		q.observeState("coordination_unavailable")
+		return false
 	}
+	turns := make(map[monitoringProbeQueueKey]GroupMonitoringTurn, len(targets))
+	for _, turn := range queue.Turns {
+		key, exists := byHash[monitoringProbeQueueKey{groupID: turn.GroupID, scope: turn.ScopeHash}]
+		if !exists || turn.Served <= 0 || turn.Served >= queue.Round || turn.Tried < 0 ||
+			turn.IdentityHash != fmt.Sprintf("%x", sha256.Sum256([]byte(targets[key]))) {
+			q.observeState("coordination_unavailable")
+			return false
+		}
+		if _, duplicate := turns[key]; duplicate {
+			q.observeState("coordination_unavailable")
+			return false
+		}
+		turns[key] = turn
+	}
+	q.store, q.round, q.turns = store, queue.Round, turns
 	slices.SortFunc(due, func(a, b monitoringProbeQueueKey) int {
 		left, right := q.turns[a], q.turns[b]
-		if order := cmp.Compare(left.served, right.served); order != 0 {
+		if order := cmp.Compare(left.Served, right.Served); order != 0 {
 			return order
 		}
-		if order := cmp.Compare(left.tried, right.tried); order != 0 {
+		if order := cmp.Compare(left.Tried, right.Tried); order != 0 {
 			return order
 		}
 		if order := cmp.Compare(a.groupID, b.groupID); order != 0 {
@@ -107,7 +119,8 @@ func (q *monitoringProbeQueue) order(targets, due []monitoringProbeQueueKey) {
 		}
 		return strings.Compare(a.scope, b.scope)
 	})
-	q.observeInventory(now, len(targets), len(due))
+	q.observeInventory(time.Now().UTC(), len(targets), len(due))
+	return true
 }
 
 // A completed round forms one age tier so later rounds retain concurrency.
@@ -119,53 +132,67 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 	stopSignal := dispatch.stopped
 	q.observeState("running")
 	type finished struct {
-		key monitoringProbeQueueKey
-		run monitoringProbeQueueRun
+		key  monitoringProbeQueueKey
+		turn GroupMonitoringTurn
+		run  monitoringProbeQueueRun
 	}
 	done := make(chan finished, monitoringProbeQueueWorkers)
 	active, next, exhausted := 0, 0, false
 	finishedCount, deferred := 0, 0
 	var lastDenial *MonitoringProbeBudgetDenial
-	q.turnSequence++
-	servedAge := q.turnSequence
-	var age uint64
+	coordinationFailed := false
+	var age int64
 	if len(due) > 0 {
-		age = q.turns[due[0]].served
+		age = q.turns[due[0]].Served
 	}
 	for {
 		if denial := dispatch.denial.Load(); denial != nil {
 			exhausted, lastDenial, stopSignal = true, denial, nil
 		}
-		for !exhausted && !monitoringProbeDispatchStopped(ctx) && ctx.Err() == nil && active < monitoringProbeQueueWorkers && next < len(due) {
+		for !coordinationFailed && !exhausted && !monitoringProbeDispatchStopped(ctx) && ctx.Err() == nil && active < monitoringProbeQueueWorkers && next < len(due) {
 			key := due[next]
-			if q.turns[key].served != age {
+			if q.turns[key].Served != age {
+				break
+			}
+			claimCtx, cancel := context.WithTimeout(ctx, monitoringProbeQueueStoreTimeout)
+			turn, claimed, err := q.store.ClaimGroupMonitoringTurn(claimCtx, q.turns[key])
+			cancel()
+			if err != nil {
+				coordinationFailed = true
+				q.observeState("coordination_unavailable")
 				break
 			}
 			next++
-			q.turnSequence++
-			turn := q.turns[key]
-			turn.tried = q.turnSequence
+			if !claimed {
+				// Another scan/identity owns it; this is not a health result.
+				finishedCount++
+				continue
+			}
 			q.turns[key] = turn
 			active++
 			go func() {
-				result := finished{key: key}
+				result := finished{key: key, turn: turn}
 				defer func() {
 					if recover() != nil {
 						logger.LegacyPrintf("service.monitoring_probe_queue", "probe worker panicked")
 					}
 					done <- result
 				}()
-				result.run = run(ctx, key)
+				attemptCtx, cancel := context.WithTimeout(ctx, monitoringProbeQueueAttemptTimeout)
+				defer cancel()
+				result.run = run(attemptCtx, key)
 			}()
 		}
 		q.observeProgress(len(due)-next, active, finishedCount, deferred, lastDenial)
 		if active == 0 {
-			if !exhausted && ctx.Err() == nil && next < len(due) {
-				age = q.turns[due[next]].served
+			if !coordinationFailed && !exhausted && ctx.Err() == nil && next < len(due) {
+				age = q.turns[due[next]].Served
 				continue
 			}
 			state := "idle"
 			switch {
+			case coordinationFailed:
+				state = "coordination_unavailable"
 			case ctx.Err() != nil:
 				state = "canceled"
 			case exhausted:
@@ -194,10 +221,24 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 				lastDenial = result.run.budgetDeferral
 			}
 		}
+		// Admitted work still consumes its turn after parent cancellation.
+		// This bounded save does not renew evidence or refund procurement.
+		saveCtx, cancel := context.WithTimeout(context.Background(), monitoringProbeQueueStoreTimeout)
+		round := int64(0)
 		if result.run.served {
-			turn := q.turns[result.key]
-			turn.served = servedAge
-			turn.waitingSince = time.Time{}
+			round = q.round
+		}
+		updated, err := q.store.FinishGroupMonitoringTurn(saveCtx, result.turn, round)
+		cancel()
+		if err != nil {
+			coordinationFailed = true
+			q.observeState("coordination_unavailable")
+		} else if updated {
+			turn := result.turn
+			turn.ClaimUntil = time.Time{}
+			if result.run.served {
+				turn.Served, turn.WaitingSince = q.round, time.Time{}
+			}
 			q.turns[result.key] = turn
 		}
 		exhausted = exhausted || result.run.stop

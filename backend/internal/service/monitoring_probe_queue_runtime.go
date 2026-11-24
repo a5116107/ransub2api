@@ -88,8 +88,8 @@ func (q *monitoringProbeQueue) observeState(state string) {
 func (q *monitoringProbeQueue) oldestPending() *time.Time {
 	var oldest time.Time
 	for _, turn := range q.turns {
-		if !turn.waitingSince.IsZero() && (oldest.IsZero() || turn.waitingSince.Before(oldest)) {
-			oldest = turn.waitingSince
+		if !turn.WaitingSince.IsZero() && (oldest.IsZero() || turn.WaitingSince.Before(oldest)) {
+			oldest = turn.WaitingSince
 		}
 	}
 	if oldest.IsZero() {

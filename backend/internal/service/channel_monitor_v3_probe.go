@@ -337,8 +337,9 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 	}
 	targets := channelMonitorV3ProbeTargets(cfg.IdleProbe, components)
 	if len(targets) == 0 {
-		p.queue.order(nil, nil)
-		p.queue.run(ctx, nil, nil)
+		if p.queue.order(ctx, p.repo, GroupMonitoringQueueConfig{Version: cfg.Version, IdleProbe: &cfg.IdleProbe}, nil, nil) {
+			p.queue.run(ctx, nil, nil)
+		}
 		return
 	}
 	groupIDs := []int64{}
@@ -357,18 +358,20 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 		return
 	}
 	due := channelMonitorV3DueProbes(targets, counts, cfg.MinRequests)
-	all := make([]monitoringProbeQueueKey, 0, len(targets))
+	identities := make(map[monitoringProbeQueueKey]string, len(targets))
 	byKey := make(map[monitoringProbeQueueKey]channelMonitorV3ProbeTarget, len(targets))
 	for _, target := range targets {
 		key := target.key()
-		all = append(all, key)
+		identities[key] = fmt.Sprintf("%s\x00%s\x00%d", target.Model, target.ReasoningEffort, cfg.IntervalMinutes)
 		byKey[key] = target
 	}
 	keys := make([]monitoringProbeQueueKey, 0, len(due))
 	for _, target := range due {
 		keys = append(keys, target.key())
 	}
-	p.queue.order(all, keys)
+	if !p.queue.order(ctx, p.repo, GroupMonitoringQueueConfig{Version: cfg.Version, IdleProbe: &cfg.IdleProbe}, identities, keys) {
+		return
+	}
 	p.queue.run(ctx, keys, func(ctx context.Context, key monitoringProbeQueueKey) monitoringProbeQueueRun {
 		return p.runOne(ctx, byKey[key], slot, cfg.IntervalMinutes)
 	})

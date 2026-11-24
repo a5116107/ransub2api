@@ -118,8 +118,9 @@ func TestChannelMonitorV2CandyPartialChainYields(t *testing.T) {
 	s := candyServiceFixture(repo, groups)
 	partialKey := monitoringProbeQueueKey{groupID: partial.GroupID, scope: partial.key()}
 	nativeKey := monitoringProbeQueueKey{groupID: native.GroupID, scope: native.key()}
-	s.queue.turnSequence = 100
-	s.queue.turns = map[monitoringProbeQueueKey]monitoringProbeTurn{partialKey: {served: 1}, nativeKey: {served: 100}}
+	require.True(t, s.queue.order(t.Context(), repo, GroupMonitoringQueueConfig{}, map[monitoringProbeQueueKey]string{partialKey: partial.key(), nativeKey: native.key()}, []monitoringProbeQueueKey{partialKey, nativeKey}))
+	repo.setAge(partialKey, 1, 0)
+	repo.setAge(nativeKey, 100, 0)
 	s.RunDue(t.Context(), groupTestNow)
 	require.Zero(t, completed.Load())
 	require.Len(t, repo.claims, 1, "a younger tier must not race the older in-flight chain")
@@ -143,17 +144,17 @@ func TestChannelMonitorV2CandyQueueInventoryLifecycle(t *testing.T) {
 	s := candyServiceFixture(repo, groups)
 	probe := candyProbeFixture()
 	key := monitoringProbeQueueKey{groupID: probe.GroupID, scope: probe.key()}
-	s.queue.turns = map[monitoringProbeQueueKey]monitoringProbeTurn{key: {served: 1, tried: 2}}
+	s.queue.turns = map[monitoringProbeQueueKey]GroupMonitoringTurn{key: {Served: 1, Tried: 2}}
 	s.config = candyQueueConfigRepo{candyRepoFake: repo, read: func(context.Context) (*ChannelMonitorV2Config, error) { return nil, errors.New("fixture read failed") }}
 	s.RunDue(t.Context(), groupTestNow)
-	require.Equal(t, monitoringProbeTurn{served: 1, tried: 2}, s.queue.turns[key], "a failed read must not erase pending work")
+	require.Equal(t, GroupMonitoringTurn{Served: 1, Tried: 2}, s.queue.turns[key], "a failed read must not erase pending work")
 	s.config = repo
 	repo.config.CandyProbes = nil
 	s.RunDue(t.Context(), groupTestNow)
 	require.Empty(t, s.queue.turns)
 	repo.config.CandyProbes = []ChannelMonitorV2CandyProbe{probe}
 	probe.IntervalMinutes = 5
-	s.queue.turns[key] = monitoringProbeTurn{served: 1}
+	s.queue.turns[key] = GroupMonitoringTurn{Served: 1}
 	repo.config.CandyProbes[0] = probe
 	s.RunDue(t.Context(), groupTestNow)
 	require.NotContains(t, s.queue.turns, key, "a changed interval is a different native config key")

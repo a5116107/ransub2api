@@ -52,15 +52,15 @@ func TestChannelMonitorV3FairBudgetCoverage(t *testing.T) {
 		calls.Store(0)
 		p.RunDue(t.Context(), monitorV3ProbeTick.Add(time.Duration(round)*5*time.Minute))
 		require.LessOrEqual(t, int(calls.Load()), capacity+monitoringProbeQueueWorkers, "exhaustion must stop claiming the remaining queue; in-flight calls may finish")
-		var latest uint64
+		var latest int64
 		for _, turn := range p.queue.turns {
-			if turn.served > latest {
-				latest = turn.served
+			if turn.Served > latest {
+				latest = turn.Served
 			}
 		}
 		cohort := 0
 		for _, turn := range p.queue.turns {
-			if turn.served == latest {
+			if turn.Served == latest {
 				cohort++
 			}
 		}
@@ -98,9 +98,9 @@ func TestChannelMonitorV3FairPartialChainsYield(t *testing.T) {
 	for _, target := range targets {
 		keys = append(keys, target.key())
 	}
-	p.queue.order(keys, keys)
-	p.queue.turnSequence = 100
-	p.queue.turns[monitoringProbeQueueKey{groupID: 4, scope: "native"}] = monitoringProbeTurn{served: 100}
+	require.True(t, p.queue.order(t.Context(), repo, GroupMonitoringQueueConfig{}, v3QueueIdentities(targets, repo.config.IntervalMinutes), keys))
+	repo.setAge(monitoringProbeQueueKey{groupID: 4, scope: "partial"}, 1, 0)
+	repo.setAge(monitoringProbeQueueKey{groupID: 4, scope: "native"}, 100, 0)
 	p.RunDue(t.Context(), monitorV3ProbeTick)
 	require.Zero(t, native.Load())
 	calls.Store(0)
@@ -136,9 +136,9 @@ func TestChannelMonitorV3OlderTierDrainsBeforeRecentWork(t *testing.T) {
 	for _, target := range targets {
 		keys = append(keys, target.key())
 	}
-	p.queue.order(keys, keys)
-	p.queue.turnSequence = 100
-	p.queue.turns[monitoringProbeQueueKey{groupID: 4, scope: "recent"}] = monitoringProbeTurn{served: 100}
+	require.True(t, p.queue.order(t.Context(), repo, GroupMonitoringQueueConfig{}, v3QueueIdentities(targets, repo.config.IntervalMinutes), keys))
+	repo.setAge(monitoringProbeQueueKey{groupID: 4, scope: "old"}, 1, 0)
+	repo.setAge(monitoringProbeQueueKey{groupID: 4, scope: "recent"}, 100, 0)
 	go func() { p.RunDue(t.Context(), monitorV3ProbeTick); close(done) }()
 	select {
 	case <-entered:

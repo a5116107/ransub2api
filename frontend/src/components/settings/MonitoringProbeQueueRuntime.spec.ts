@@ -68,7 +68,7 @@ it.each(['key', 'key_minute', 'site', 'site_minute', 'plugin'])('does not invent
   expect(open({ v2: value }).find('[data-testid="group-queue-cycle-v2"]').exists()).toBe(false)
 })
 
-it.each(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable'])('localizes the %s observation without treating it as a health verdict', state => {
+it.each(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable', 'coordination_unavailable'])('localizes the %s observation without treating it as a health verdict', state => {
   const value = runtime()
   value.state = state
   value.last_scan = null
@@ -136,4 +136,22 @@ it('sanitizes unknown deferral reasons and scopes through the existing notice', 
   const wrapper = open({ v2: value })
   expect(wrapper.find('[data-testid="group-queue-cycle-v2"]').exists()).toBe(true)
   expect(wrapper.text()).not.toContain('PRIVATE_')
+})
+
+
+it.each(['en', 'zh'])('shows shared state failure, draining and recovery without a health verdict in %s', async locale => {
+  const value = runtime()
+  value.state = 'coordination_unavailable'
+  Object.assign(value.cycle!, { finished_at: null, queued: 4, active: 4, finished: 0, deferred: 0 })
+  const wrapper = open({ v2: value, v3: value }, locale)
+  for (const mode of ['v2', 'v3']) {
+    expect(wrapper.get(`[data-testid="group-queue-state-${mode}"]`).text()).toContain(locale === 'zh' ? '共享排队状态异常，已停止新检测' : 'Shared queue unavailable; new checks stopped')
+    expect(wrapper.get(`[data-testid="group-queue-cycle-${mode}"]`).findAll('dd').map(n => n.text())).toEqual(['4', '4', '0', '0'])
+  }
+  const recovered = runtime()
+  recovered.state = 'idle'
+  Object.assign(recovered.cycle!, { queued: 0, active: 0, finished: 8, deferred: 0, oldest_pending_at: null, budget_deferral: null })
+  await wrapper.setProps({ queues: { v2: recovered, v3: recovered } })
+  expect(wrapper.text()).not.toContain(locale === 'zh' ? '共享排队状态异常' : 'Shared queue unavailable')
+  expect(wrapper.text()).toContain(locale === 'zh' ? '退出不代表检测通过' : 'Exiting is not passing')
 })

@@ -55,7 +55,7 @@ func TestMonitoringProbeQueueRuntimeDeferralAndRecovery(t *testing.T) {
 	for i := range keys {
 		keys[i] = monitoringProbeQueueKey{groupID: int64(i + 1), scope: "PRIVATE_SCOPE"}
 	}
-	q.order(keys, keys)
+	orderProbeQueue(t, &q, keys, keys)
 	start := q.runtimeSnapshot()
 	require.EqualValues(t, 8, start.LastScan.Targets)
 	require.EqualValues(t, 8, start.Cycle.Queued)
@@ -89,7 +89,7 @@ func TestMonitoringProbeQueueRuntimeDeferralAndRecovery(t *testing.T) {
 	require.Equal(t, "request_limit", frozen.Cycle.BudgetDeferral.Reason)
 	require.False(t, frozen.Cycle.FinishedAt.IsZero())
 	require.Equal(t, firstWaiting, *frozen.Cycle.OldestPendingAt)
-	q.order(keys, keys)
+	orderProbeQueue(t, &q, keys, keys)
 	require.Equal(t, firstWaiting, *q.runtimeSnapshot().Cycle.OldestPendingAt, "another scan must not renew an old wait")
 	q.run(t.Context(), keys, func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun {
 		return monitoringProbeQueueRun{served: true}
@@ -102,7 +102,7 @@ func TestMonitoringProbeQueueRuntimeDeferralAndRecovery(t *testing.T) {
 	require.Nil(t, recovered.Cycle.BudgetDeferral)
 	require.Nil(t, recovered.Cycle.OldestPendingAt)
 	require.Equal(t, "budget_paused", frozen.State, "a retained old read is immutable")
-	q.order(keys, nil)
+	orderProbeQueue(t, &q, keys, nil)
 	q.run(t.Context(), nil, nil)
 	quiet := q.runtimeSnapshot()
 	require.EqualValues(t, 8, quiet.LastScan.Targets)
@@ -121,7 +121,7 @@ func TestMonitoringProbeQueueRuntimeConcurrentReadsDoNotProbe(t *testing.T) {
 	for i := range keys {
 		keys[i].groupID = int64(i + 1)
 	}
-	q.order(keys, keys)
+	orderProbeQueue(t, &q, keys, keys)
 	entered, release, done := make(chan struct{}, monitoringProbeQueueWorkers), make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	ctx, cancel := context.WithCancel(t.Context())
@@ -183,7 +183,7 @@ func TestMonitoringProbeQueueRuntimeConcurrentReadsDoNotProbe(t *testing.T) {
 func TestMonitoringProbeQueueRuntimeKeepsStoppingReason(t *testing.T) {
 	var q monitoringProbeQueue
 	keys := []monitoringProbeQueueKey{{groupID: 1}, {groupID: 2}, {groupID: 3}, {groupID: 4}, {groupID: 5}}
-	q.order(keys, keys)
+	orderProbeQueue(t, &q, keys, keys)
 	release, done := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	t.Cleanup(func() {

@@ -536,13 +536,13 @@ export default {
         budget: {
           groupQueues: {
             title: '分组检测队列 · 本次响应节点',
-            hint: '只读原执行器的最近活动，不触发扫描或检测。V2 按组与模型 / effort / 周期区分目标，V3 按组与模型区分；目标数不是账号数或物理请求数，退出不代表检测通过。不是全节点库存或当前配置已生效的保证；刷新只更新读取时间，不延长扫描或等待起点。',
+            hint: '只读原执行器的最近活动，不触发扫描或检测。V2 按组与模型 / effort / 周期区分目标，V3 按组与模型区分；目标数不是账号数或物理请求数，退出不代表检测通过。不是全节点库存或当前配置已生效的保证；排队年龄由共享存储保留；刷新只更新读取时间，不延长扫描或等待起点。',
             modes: { v2: 'V2 糖果检测', v3: 'V3 空闲检测' },
-            states: { unknown: '未知', unavailable: '运行来源未接入', unobserved: '尚无执行观察', scanning: '读取库存中', queued: '等待执行', running: '检测执行中', idle: '本轮已结束', budget_paused: '预算暂停', deferred: '部分检测延期', canceled: '本轮已取消', inactive: '最近观察为未启用', not_due: '尚未到检测时机', inventory_unavailable: '最近库存读取失败' },
+            states: { unknown: '未知', unavailable: '运行来源未接入', unobserved: '尚无执行观察', scanning: '读取库存中', queued: '等待执行', running: '检测执行中', idle: '本轮已结束', budget_paused: '预算暂停', deferred: '部分检测延期', canceled: '本轮已取消', inactive: '最近观察为未启用', not_due: '尚未到检测时机', inventory_unavailable: '最近库存读取失败' , coordination_unavailable: '共享排队状态异常，已停止新检测' },
             metrics: { queued: '待执行', active: '在途', finished: '已退出', deferred: '已延期' },
             inventory: '最近完整扫描：{targets} 个候选 · {due} 个待检', scanAt: '扫描时间：',
             unobserved: '库存尚未观察或数据未知，不按零目标计算。', countsUnknown: '本轮计数未知，不当作空队列。',
-            oldest: '最早本地待轮转时间：', noWaiting: '该快照无待轮转目标',
+            oldest: '最早共享待轮转时间（本次扫描）：', noWaiting: '该快照无待轮转目标',
             cycleStarted: '本轮排队开始：', cycleFinished: '本轮退出：', deferredTitle: '检测延期，不记为上游故障',
             details: '实例与读取时间', readAt: '读取时间：'
           },

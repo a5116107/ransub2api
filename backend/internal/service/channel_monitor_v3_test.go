@@ -15,6 +15,7 @@ import (
 
 // monitorV3RepoFake keeps V3 state in memory and serves canned passive facts.
 type monitorV3RepoFake struct {
+	groupMonitoringTurnsFake
 	mu         sync.Mutex
 	config     ChannelMonitorV3Config
 	categories []ChannelMonitorV3Category

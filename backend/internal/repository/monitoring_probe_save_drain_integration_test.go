@@ -23,6 +23,7 @@ import (
 )
 
 type queueSaveV2Repository struct {
+	service.GroupMonitoringTurnRepository
 	service.ChannelMonitorV2Repository
 	service.ChannelMonitorV2CandyRepository
 	gate func(context.Context, *service.MonitoringProbeBudgetDenial)
@@ -34,6 +35,7 @@ func (r *queueSaveV2Repository) FinishCandyProbe(ctx context.Context, result ser
 }
 
 type queueSaveV3Repository struct {
+	service.GroupMonitoringTurnRepository
 	service.ChannelMonitorV3Repository
 	gate func(context.Context, *service.MonitoringProbeBudgetDenial)
 }
@@ -185,13 +187,13 @@ func testMonitoringProbeSaveDrain(t *testing.T, mode string) {
 		if mode == "v2" {
 			store, ok := v2.(service.ChannelMonitorV2CandyRepository)
 			require.True(t, ok)
-			monitor := service.ProvideChannelMonitorV2Service(&queueSaveV2Repository{v2, store, gate}, settings, groups)
+			monitor := service.ProvideChannelMonitorV2Service(&queueSaveV2Repository{v2.(service.GroupMonitoringTurnRepository), v2, store, gate}, settings, groups)
 			budget.SetGroupProbeQueues(monitor, nil)
 			plans, results := repository.NewScheduledTestPlanRepository(db), repository.NewScheduledTestResultRepository(db)
 			runner := service.ProvideScheduledTestRunnerService(plans, service.NewScheduledTestService(plans, results), tester, nil, cfg, &service.QualityJudgeService{}, nil, groups, monitor)
 			stop = runner.Stop
 		} else {
-			prober := service.NewChannelMonitorV3Prober(&queueSaveV3Repository{v3, gate}, groups, settings)
+			prober := service.NewChannelMonitorV3Prober(&queueSaveV3Repository{v3.(service.GroupMonitoringTurnRepository), v3, gate}, groups, settings)
 			budget.SetGroupProbeQueues(nil, prober)
 			done := make(chan struct{})
 			go func() { defer close(done); prober.RunDue(ctx, at) }()

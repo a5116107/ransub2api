@@ -47,7 +47,7 @@ const props = defineProps<{ queues?: MonitoringProbeGroupQueues | null }>()
 const { t, locale } = useI18n()
 const prefix = 'admin.settings.upstreamBillingProbe.budget.groupQueues'
 const metrics = ['queued', 'active', 'finished', 'deferred'] as const
-const states = new Set(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable'])
+const states = new Set(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable', 'coordination_unavailable'])
 const timestamp = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value))
 const counts = (...values: unknown[]) => values.every(value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
 const displayTime = (value: string) => new Date(value).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US')
@@ -79,7 +79,7 @@ function cycle(value: QueueRuntime | null, scan: ReturnType<typeof inventory>) {
   if (run.queued + run.active > 0 && run.oldest_pending_at === null) return null
   const denial = run.budget_deferral
   if (denial !== null && (!denial || typeof denial.reason !== 'string' || typeof denial.scope !== 'string' || typeof denial.retry_at !== 'string')) return null
-  if (denial !== null && run.deferred === 0 && (value!.state !== 'running' || run.active === 0 ||
+  if (denial !== null && run.deferred === 0 && (!['running', 'coordination_unavailable'].includes(value!.state) || run.active === 0 ||
     ['key', 'key_minute', 'site', 'site_minute', 'plugin'].includes(denial.scope))) return null
   if (run.deferred > 0 && denial === null) return null
   return run

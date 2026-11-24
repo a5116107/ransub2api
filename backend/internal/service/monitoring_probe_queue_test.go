@@ -20,20 +20,20 @@ func TestMonitoringProbeQueueInventory(t *testing.T) {
 	c := monitoringProbeQueueKey{groupID: 5, scope: "a"}
 	targets := []monitoringProbeQueueKey{c, b, a}
 	due := slices.Clone(targets)
-	q.order(targets, due)
+	orderProbeQueue(t, &q, targets, due)
 	require.Equal(t, []monitoringProbeQueueKey{a, b, c}, due)
-	q.turnSequence += 10
-	q.turns[a] = monitoringProbeTurn{served: q.turnSequence}
-	q.turns[b] = monitoringProbeTurn{served: 1, tried: q.turnSequence}
+	store := q.store.(*groupMonitoringTurnsFake)
+	store.setAge(a, 12, 0)
+	store.setAge(b, 1, 12)
 	newTarget := monitoringProbeQueueKey{groupID: 1, scope: "new"}
 	targets = append(targets, newTarget)
 	due = slices.Clone(targets)
-	q.order(targets, due)
+	orderProbeQueue(t, &q, targets, due)
 	require.Equal(t, []monitoringProbeQueueKey{c, b, a, newTarget}, due, "a low-ID newcomer must not jump old pending work")
-	q.order([]monitoringProbeQueueKey{b}, nil)
+	orderProbeQueue(t, &q, []monitoringProbeQueueKey{b}, nil)
 	require.Len(t, q.turns, 1, "a complete inventory removes obsolete queue state")
 	require.Contains(t, q.turns, b)
-	q.order(nil, nil)
+	orderProbeQueue(t, &q, nil, nil)
 	require.Empty(t, q.turns)
 }
 
@@ -43,11 +43,11 @@ func TestMonitoringProbeQueueRetainsParallelismAcrossRounds(t *testing.T) {
 	for i := range keys {
 		keys[i] = monitoringProbeQueueKey{groupID: int64(i + 1)}
 	}
-	q.order(keys, keys)
+	orderProbeQueue(t, &q, keys, keys)
 	q.run(t.Context(), keys, func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun {
 		return monitoringProbeQueueRun{served: true}
 	})
-	q.order(keys, keys)
+	orderProbeQueue(t, &q, keys, keys)
 	ctx, cancel := context.WithCancel(t.Context())
 	entered, release, done := make(chan struct{}, monitoringProbeQueueWorkers), make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -90,7 +90,7 @@ func TestMonitoringProbeQueueRetainsParallelismAcrossRounds(t *testing.T) {
 func TestMonitoringProbeQueueCanceledAndPanickingWorkers(t *testing.T) {
 	var q monitoringProbeQueue
 	keys := []monitoringProbeQueueKey{{groupID: 1}, {groupID: 2}, {groupID: 3}, {groupID: 4}, {groupID: 5}}
-	q.order(keys, keys)
+	orderProbeQueue(t, &q, keys, keys)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	q.run(ctx, keys, func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun {
@@ -106,7 +106,7 @@ func TestMonitoringProbeQueueCanceledAndPanickingWorkers(t *testing.T) {
 		return monitoringProbeQueueRun{served: true}
 	})
 	require.EqualValues(t, len(keys), calls.Load(), "a worker panic must neither crash nor strand the queue")
-	require.Less(t, q.turns[keys[0]].served, q.turns[keys[1]].served, "an unobserved panic is not physical admission")
+	require.Less(t, q.turns[keys[0]].Served, q.turns[keys[1]].Served, "an unobserved panic is not physical admission")
 }
 
 type candySaveGateRepo struct {

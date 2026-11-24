@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,12 +51,14 @@ type monitoringBudgetNodeCommand struct {
 	TimeoutMillis int
 	Recovery      bool
 	Tick          time.Time
+	ObserveQueue  bool
 }
 
 type monitoringBudgetNodeReply struct {
 	Status int    `json:"status"`
 	Reason string `json:"reason,omitempty"`
 	Scope  string `json:"scope,omitempty"`
+	State  string `json:"state,omitempty"`
 }
 
 const monitoringBudgetNodeFrame = "monitoring-node-result:"
@@ -397,6 +400,7 @@ func runMonitoringGroupProbeNode(t *testing.T, command monitoringBudgetNodeComma
 	tester := service.NewAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil)
 	tester.SetMonitoringBudget(budget)
 	groups := service.NewPelicanGroupTestService(NewPelicanGroupTestRepository(db), NewGroupRepository(client, db), nil, gateway, concurrency, tester, nil, nil)
+	var queueState string
 	if command.Mode == "group" {
 		groups.RunDue(t.Context(), command.Tick)
 	} else if command.Mode == "scheduled" || command.Mode == "v2" {
@@ -423,17 +427,25 @@ func runMonitoringGroupProbeNode(t *testing.T, command monitoringBudgetNodeComma
 			require.Eventually(t, func() bool {
 				summary, err := budget.Summary(t.Context())
 				return err == nil && summary != nil && summary.Coverage != nil && summary.Coverage.GroupProbeQueues != nil &&
-					summary.Coverage.GroupProbeQueues.V2 != nil && summary.Coverage.GroupProbeQueues.V2.Cycle != nil &&
-					summary.Coverage.GroupProbeQueues.V2.Cycle.FinishedAt != nil
+					summary.Coverage.GroupProbeQueues.V2 != nil && (summary.Coverage.GroupProbeQueues.V2.State == "coordination_unavailable" ||
+					summary.Coverage.GroupProbeQueues.V2.Cycle != nil && summary.Coverage.GroupProbeQueues.V2.Cycle.FinishedAt != nil)
 			}, 20*time.Second, 20*time.Millisecond, "original candy batch must settle before its cron parent stops")
+			if command.ObserveQueue {
+				summary, err := budget.Summary(t.Context())
+				require.NoError(t, err)
+				queueState = summary.Coverage.GroupProbeQueues.V2.State
+			}
 		}
 		runner.Stop()
 	} else {
 		prober := service.NewChannelMonitorV3Prober(NewChannelMonitorV3Repository(db), groups, settings)
 		defer prober.Stop()
 		prober.RunDue(t.Context(), command.Tick)
+		if command.ObserveQueue {
+			queueState = prober.MonitoringRuntime().State
+		}
 	}
-	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK, State: queueState}))
 }
 
 type monitoringBudgetNode struct {
@@ -468,14 +480,24 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	require.NoError(t, cmd.Start())
 	done := make(chan struct{})
 	var runErr, decodeErr error
+	var diagnostics []string
 	go func() {
 		defer close(done)
 		reader := bufio.NewScanner(stdout)
+		// Keep only source locations and known failure labels, never raw child
+		// logs, connection strings, credentials or upstream response bodies.
+		location := regexp.MustCompile(`[a-zA-Z0-9_]+_test\.go:\d+`)
 		reader.Buffer(make([]byte, 4096), 1<<20)
 		received := 0
 		for reader.Scan() {
 			line := reader.Text()
 			if !strings.HasPrefix(line, monitoringBudgetNodeFrame) {
+				if found := location.FindString(line); found != "" && len(diagnostics) < 12 {
+					diagnostics = append(diagnostics, found)
+				}
+				if strings.Contains(line, "WARNING: DATA RACE") {
+					diagnostics = append(diagnostics, "race_detector")
+				}
 				continue // Framework logs are not control messages or diagnostics.
 			}
 			var reply monitoringBudgetNodeReply
@@ -504,7 +526,7 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	return monitoringBudgetNode{pid: cmd.Process.Pid, wait: func() {
 		t.Helper()
 		<-done
-		require.NoError(t, runErr, "isolated monitoring node exited unsuccessfully")
+		require.NoError(t, runErr, "isolated monitoring node exited unsuccessfully; sanitized locations: %v", diagnostics)
 		require.NoError(t, decodeErr, "isolated monitoring node returned incomplete results")
 	}}
 }

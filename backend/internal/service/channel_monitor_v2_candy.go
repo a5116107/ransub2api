@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -188,16 +189,34 @@ func (s *ChannelMonitorV2CandyService) RunDue(ctx context.Context, now time.Time
 		return
 	}
 	targets := make(map[monitoringProbeQueueKey]ChannelMonitorV2CandyProbe, len(cfg.CandyProbes))
+	identities := make(map[monitoringProbeQueueKey]string, len(cfg.CandyProbes))
 	keys := make([]monitoringProbeQueueKey, 0, len(cfg.CandyProbes))
+	groupInventory := make(map[int64]*Group)
 	for _, probe := range cfg.CandyProbes {
 		if !probe.Enabled || (len(cfg.GroupIDs) > 0 && !slices.Contains(cfg.GroupIDs, probe.GroupID)) {
+			continue
+		}
+		group, read := groupInventory[probe.GroupID]
+		if !read {
+			group, err = s.groups.groups.GetByID(ctx, probe.GroupID)
+			if err != nil && !errors.Is(err, ErrGroupNotFound) {
+				// This is not a complete inventory; retain the shared ages.
+				s.queue.observeState("inventory_unavailable")
+				return
+			}
+			groupInventory[probe.GroupID] = group
+		}
+		if !cfg.CandyProbeAllowed(probe, group) {
 			continue
 		}
 		key := monitoringProbeQueueKey{groupID: probe.GroupID, scope: probe.key()}
 		keys = append(keys, key)
 		targets[key] = probe
+		identities[key] = probe.key()
 	}
-	s.queue.order(keys, keys)
+	if !s.queue.order(ctx, s.repo, GroupMonitoringQueueConfig{Version: cfg.Version}, identities, keys) {
+		return
+	}
 	s.queue.run(ctx, keys, func(ctx context.Context, key monitoringProbeQueueKey) monitoringProbeQueueRun {
 		return s.runOne(ctx, targets[key], cfg, now)
 	})

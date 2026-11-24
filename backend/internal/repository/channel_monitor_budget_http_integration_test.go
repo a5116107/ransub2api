@@ -35,7 +35,7 @@ func (r *groupQueueRuntimeRepository) GetConfig(context.Context) (*service.Chann
 }
 
 func TestMonitoringProbeGroupQueuesPostgresAdminHTTPReadOnly(t *testing.T) {
-	db, _ := repository.UpstreamChannelsTestDatabase(t)
+	db, client := repository.UpstreamChannelsTestDatabase(t)
 	policyRepo := repository.NewMonitoringProbeBudgetRepository(db)
 	policy, err := policyRepo.GetSettings(t.Context())
 	require.NoError(t, err)
@@ -136,6 +136,43 @@ func TestMonitoringProbeGroupQueuesPostgresAdminHTTPReadOnly(t *testing.T) {
 	require.EqualValues(t, 1, idleRepo.reads.Load(), "read-back must not trigger retries")
 	require.Equal(t, "unobserved", first.V3.State, "earlier responses remain historical snapshots")
 	require.Equal(t, before, counts(), "views must not create plans, probes, usage, budget counters or leases")
+	// Exercise the real shared-store failure/recovery through the existing
+	// administrator contract; no group target needs to contact an upstream.
+	settingsRepo := repository.NewSettingRepository(client)
+	require.NoError(t, settingsRepo.SetMultiple(t.Context(), map[string]string{service.SettingKeyChannelMonitorEnabled: "true", service.SettingKeyChannelMonitorMode: "v3"}))
+	settings := service.NewSettingService(settingsRepo, &config.Config{})
+	group := &service.Group{Name: "shared-queue-admin", Platform: service.PlatformOpenAI, Status: service.StatusActive, RateMultiplier: 1}
+	require.NoError(t, repository.NewGroupRepository(client, db).Create(t.Context(), group))
+	native := repository.NewChannelMonitorV3Repository(db)
+	cfg, err := native.GetConfig(t.Context())
+	require.NoError(t, err)
+	cfg.IntervalMinutes = 5
+	_, err = native.UpdateConfig(t.Context(), *cfg, cfg.Version, 0)
+	require.NoError(t, err)
+	require.NoError(t, native.UpdateIdleProbe(t.Context(), service.ChannelMonitorV3IdleProbe{Enabled: true, Groups: []service.ChannelMonitorV3IdleProbeGroup{{GroupID: group.ID}}}))
+	shared := service.NewChannelMonitorV3Prober(native, groups, settings)
+	t.Cleanup(shared.Stop)
+	budget.SetGroupProbeQueues(monitor, shared)
+	_, err = db.ExecContext(t.Context(), `ALTER TABLE monitoring_group_probe_turns RENAME TO hidden_group_turns`)
+	require.NoError(t, err)
+	tick := time.Now().UTC().Truncate(5 * time.Minute).Add(-30 * time.Second)
+	shared.RunDue(t.Context(), tick)
+	for _, path := range []string{"/budget", "/preview"} {
+		view := read(path, true)
+		require.Equal(t, "coordination_unavailable", view.V3.State)
+		require.Nil(t, view.V3.LastScan, "a failed synchronization is not a complete zero inventory")
+		require.Nil(t, view.V3.Cycle)
+	}
+	_, err = db.ExecContext(t.Context(), `ALTER TABLE hidden_group_turns RENAME TO monitoring_group_probe_turns`)
+	require.NoError(t, err)
+	shared.RunDue(t.Context(), tick)
+	for _, path := range []string{"/budget", "/preview"} {
+		view := read(path, true)
+		require.Equal(t, "idle", view.V3.State)
+		require.NotNil(t, view.V3.LastScan)
+		require.Zero(t, view.V3.LastScan.Targets, "only the recovered complete inventory establishes zero targets")
+	}
+	require.Equal(t, before, counts(), "coordination failures and recovery cannot create physical requests, verdicts or billing")
 }
 
 type v1BudgetMonitorEncryptor struct{}

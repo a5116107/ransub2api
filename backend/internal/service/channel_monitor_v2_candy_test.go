@@ -13,6 +13,7 @@ import (
 )
 
 type candyRepoFake struct {
+	groupMonitoringTurnsFake
 	channelMonitorV2RepoStub
 	mu            sync.Mutex
 	claims        map[string]int64

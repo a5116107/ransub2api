@@ -543,13 +543,13 @@ export default {
         budget: {
           groupQueues: {
             title: 'Group probe queues · Responding node',
-            hint: 'Read-only observations from the original executors; viewing does not scan or probe. V2 targets are group/model/effort/interval scopes; V3 targets are group/model scopes, not account or physical-request counts. Exiting is not passing a check. This is not fleet inventory or proof that current settings took effect. Refreshing changes only the read time, not scan times or waiting origins.',
+            hint: 'Read-only observations from the original executors; viewing does not scan or probe. V2 targets are group/model/effort/interval scopes; V3 targets are group/model scopes, not account or physical-request counts. Exiting is not passing a check. This is not fleet inventory or proof that current settings took effect. Shared storage retains queue age across executor restarts. Refreshing changes only the read time, not scan times or waiting origins.',
             modes: { v2: 'V2 candy probes', v3: 'V3 idle probes' },
-            states: { unknown: 'Unknown', unavailable: 'Runtime source unavailable', unobserved: 'Not yet observed', scanning: 'Reading inventory', queued: 'Queued', running: 'Executing probes', idle: 'Cycle finished', budget_paused: 'Budget paused', deferred: 'Some probes deferred', canceled: 'Cycle canceled', inactive: 'Last observed inactive', not_due: 'Not due yet', inventory_unavailable: 'Last inventory read failed' },
+            states: { unknown: 'Unknown', unavailable: 'Runtime source unavailable', unobserved: 'Not yet observed', scanning: 'Reading inventory', queued: 'Queued', running: 'Executing probes', idle: 'Cycle finished', budget_paused: 'Budget paused', deferred: 'Some probes deferred', canceled: 'Cycle canceled', inactive: 'Last observed inactive', not_due: 'Not due yet', inventory_unavailable: 'Last inventory read failed', coordination_unavailable: 'Shared queue unavailable; new checks stopped' },
             metrics: { queued: 'Queued', active: 'In flight', finished: 'Exited', deferred: 'Deferred' },
             inventory: 'Last complete scan: {targets} candidates · {due} due', scanAt: 'Scan time:',
             unobserved: 'Inventory is unobserved or unknown, not zero targets.', countsUnknown: 'Cycle counts are unknown, not an empty queue.',
-            oldest: 'Oldest local waiting origin:', noWaiting: 'No waiting targets in this snapshot',
+            oldest: 'Oldest shared waiting origin (this scan):', noWaiting: 'No waiting targets in this snapshot',
             cycleStarted: 'Cycle queued at:', cycleFinished: 'Cycle exited at:', deferredTitle: 'Probe deferred, not an upstream failure',
             details: 'Instance and read time', readAt: 'Read time:'
           },
