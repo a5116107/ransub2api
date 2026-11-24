@@ -81,6 +81,18 @@ type ChannelMonitorScheduledClaim struct {
 
 type ChannelMonitorScheduledWait struct{ After time.Duration }
 
+// ChannelMonitorScheduleRepository exposes only a configuration snapshot. The
+// clock and per-monitor generations are not quality evidence or API data.
+type ChannelMonitorScheduleRepository interface {
+	LoadScheduleSnapshot(context.Context, int64) (*ChannelMonitorScheduleSnapshot, error)
+}
+
+type ChannelMonitorScheduleSnapshot struct {
+	Revision  int64
+	Monitors  []*ChannelMonitor
+	Revisions map[int64]int64
+}
+
 func (*ChannelMonitorScheduledWait) Error() string {
 	return "channel monitor scheduled check is not due"
 }
@@ -896,6 +908,24 @@ func (s *ChannelMonitorService) ListEnabledMonitors(ctx context.Context) ([]*Cha
 	if err != nil {
 		return nil, err
 	}
+	s.decryptScheduledMonitors(ctx, all)
+	return all, nil
+}
+
+func (s *ChannelMonitorService) LoadScheduleSnapshot(ctx context.Context, known int64) (*ChannelMonitorScheduleSnapshot, error) {
+	repo, ok := s.repo.(ChannelMonitorScheduleRepository)
+	if !ok {
+		return nil, errors.New("channel monitor schedule snapshot repository missing")
+	}
+	snapshot, err := repo.LoadScheduleSnapshot(ctx, known)
+	if err != nil || snapshot == nil {
+		return snapshot, err
+	}
+	s.decryptScheduledMonitors(ctx, snapshot.Monitors)
+	return snapshot, nil
+}
+
+func (s *ChannelMonitorService) decryptScheduledMonitors(ctx context.Context, all []*ChannelMonitor) {
 	// Backfill is best effort for the whole batch, not N independent waits.
 	// Always finish decryption so a slow evidence store cannot stall scheduling.
 	publishCtx, cancel := context.WithTimeout(ctx, channelMonitorBudgetScopePublishTimeout)
@@ -903,7 +933,6 @@ func (s *ChannelMonitorService) ListEnabledMonitors(ctx context.Context) ([]*Cha
 	for _, m := range all {
 		s.decryptAndPublishBudgetScope(publishCtx, m)
 	}
-	return all, nil
 }
 
 // cleanupOldHistory 删除 monitorHistoryRetentionDays 天之前的明细历史记录。

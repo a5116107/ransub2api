@@ -20,6 +20,7 @@ import (
 type lifecycleCheckedMonitorRepo struct {
 	service.ChannelMonitorRepository
 	service.ChannelMonitorScheduledRepository
+	service.ChannelMonitorScheduleRepository
 	marked chan time.Time
 }
 
@@ -102,7 +103,7 @@ func testChannelMonitorRunnerLifecycle(t *testing.T, action string) {
 	newService := func(marked chan time.Time) *service.ChannelMonitorService {
 		var repo service.ChannelMonitorRepository = repository.NewChannelMonitorRepository(client, db)
 		if marked != nil {
-			repo = &lifecycleCheckedMonitorRepo{repo, repo.(service.ChannelMonitorScheduledRepository), marked}
+			repo = &lifecycleCheckedMonitorRepo{repo, repo.(service.ChannelMonitorScheduledRepository), repo.(service.ChannelMonitorScheduleRepository), marked}
 		}
 		return service.ProvideChannelMonitorService(repo, v1BudgetMonitorEncryptor{},
 			service.NewSettingService(repository.NewSettingRepository(client), cfg), cfg, nil, repository.NewMonitoringProbeBudgetRepository(db))
@@ -126,6 +127,10 @@ func testChannelMonitorRunnerLifecycle(t *testing.T, action string) {
 	require.NoError(t, err)
 	require.EqualValues(t, 2, usage.ActiveRequests)
 	if action == "unschedule" {
+		// A production callback follows a committed disable, not a second
+		// in-memory configuration that can disagree with other nodes.
+		monitor.Enabled = false
+		require.NoError(t, monitors.Update(ctx, monitor))
 		first.Unschedule(monitor.ID)
 		require.Eventually(t, func() bool { return canceled.Load() == 2 }, 3*time.Second, time.Millisecond, "retiring the monitor must cancel both real HTTP calls")
 	}
@@ -151,6 +156,10 @@ func testChannelMonitorRunnerLifecycle(t *testing.T, action string) {
 	require.Zero(t, usage.UsagePending)
 	require.Zero(t, usage.ActiveRequests)
 	block.Store(false)
+	if !monitor.Enabled {
+		monitor.Enabled = true
+		require.NoError(t, monitors.Update(ctx, monitor))
+	}
 	// Stopping automatic work must not cancel a separate manual request.
 	manual, err := newService(nil).RunCheck(ctx, monitor.ID)
 	require.NoError(t, err)

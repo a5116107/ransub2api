@@ -210,10 +210,9 @@ func (r *channelMonitorRepository) Update(ctx context.Context, m *service.Channe
 		if err != nil {
 			return translatePersistenceError(err, service.ErrChannelMonitorNotFound, nil)
 		}
-		// A configuration save is a new scheduled generation, even after an
-		// A-to-B-to-A edit. Observation-only writers do not clear this claim.
-		_, err = client.ExecContext(ctx, `DELETE FROM channel_monitor_probe_claims WHERE monitor_id=$1`, m.ID)
-		return err
+		// The configuration trigger advances the generation in this transaction,
+		// preserving its revision while fencing identical and A-to-B-to-A saves.
+		return nil
 	}, func(ctx context.Context, tx sqlQueryer) error {
 		return validateMonitoringCoverageActiveWrite(ctx, tx, m.Enabled)
 	})
@@ -292,6 +291,60 @@ func (r *channelMonitorRepository) ListEnabled(ctx context.Context) ([]*service.
 		out = append(out, entToServiceMonitor(row))
 	}
 	return out, nil
+}
+
+// LoadScheduleSnapshot avoids loading credentials when nothing changed. After
+// a change, the clock, enabled rows and their generations share one SQL snapshot.
+func (r *channelMonitorRepository) LoadScheduleSnapshot(ctx context.Context, known int64) (*service.ChannelMonitorScheduleSnapshot, error) {
+	var revision int64
+	if err := r.db.QueryRowContext(ctx, `SELECT revision FROM channel_monitor_schedule_clock WHERE id=1`).Scan(&revision); err != nil {
+		return nil, fmt.Errorf("read channel monitor schedule revision: %w", err)
+	}
+	if revision == known {
+		return nil, nil
+	}
+	tx, err := r.client.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := scanSingleRow(ctx, tx.Client(), `SELECT revision FROM channel_monitor_schedule_clock WHERE id=1`, nil, &revision); err != nil {
+		return nil, err
+	}
+	rows, err := tx.ChannelMonitor.Query().Where(channelmonitor.EnabledEQ(true)).All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &service.ChannelMonitorScheduleSnapshot{Revision: revision, Monitors: make([]*service.ChannelMonitor, 0, len(rows)),
+		Revisions: make(map[int64]int64, len(rows))}
+	for _, row := range rows {
+		snapshot.Monitors = append(snapshot.Monitors, entToServiceMonitor(row))
+	}
+	result, err := tx.Client().QueryContext(ctx, `SELECT c.monitor_id,c.schedule_revision FROM channel_monitor_probe_claims c
+ JOIN channel_monitors m ON m.id=c.monitor_id WHERE m.enabled`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = result.Close() }()
+	for result.Next() {
+		var id, generation int64
+		if err := result.Scan(&id, &generation); err != nil {
+			return nil, err
+		}
+		snapshot.Revisions[id] = generation
+	}
+	if err := result.Err(); err != nil {
+		return nil, err
+	}
+	if err := result.Close(); err != nil {
+		return nil, err
+	}
+	for _, m := range snapshot.Monitors {
+		if _, ok := snapshot.Revisions[m.ID]; !ok {
+			return nil, fmt.Errorf("channel monitor schedule generation missing for monitor %d", m.ID)
+		}
+	}
+	return snapshot, tx.Commit()
 }
 
 func (r *channelMonitorRepository) MarkChecked(ctx context.Context, id int64, checkedAt time.Time) error {

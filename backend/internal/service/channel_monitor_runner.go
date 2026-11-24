@@ -11,13 +11,12 @@ import (
 	"github.com/alitto/pond/v2"
 )
 
-// MonitorScheduler 调度器接口，供 ChannelMonitorService 在 CRUD 时回调，
+// MonitorScheduler 调度器接口，供 ChannelMonitorService 在已提交 CRUD 后回调，
 // 用 setter 注入避免 service ↔ runner 的 wire 依赖环。
 type MonitorScheduler interface {
-	// Schedule 为指定监控创建（或重置）独立定时任务。
-	// 当 m.Enabled=false 时等同于 Unschedule(m.ID)。
+	// Schedule 唤醒已提交配置协调；无需仓储的本地夹具直接重建任务。
 	Schedule(m *ChannelMonitor)
-	// Unschedule 取消指定监控的定时任务（若存在）。
+	// Unschedule 协调已提交删除/停用；本地夹具直接取消任务。
 	Unschedule(id int64)
 }
 
@@ -36,9 +35,8 @@ type monitorRunnerSvc interface {
 //
 // 设计：
 //   - 每个 enabled monitor 对应一个独立 goroutine + ticker（按各自 IntervalSeconds）
-//   - Start 时一次性加载所有 enabled monitor 并为每个建立任务
-//   - Service 在 Create/Update/Delete 后通过 MonitorScheduler 接口回调，
-//     即时重建/取消对应任务（无需轮询 DB）
+//   - Start 加载一致配置快照；同一 runner 每 5 秒检查持久版本
+//   - CRUD 回调唤醒同一个协调入口，按每监控代际差量重建/取消任务
 //   - 实际 HTTP 检测交给 pond 池（容量 monitorWorkerConcurrency），
 //     防止突发并发拖垮上游
 //
@@ -60,6 +58,12 @@ type ChannelMonitorRunner struct {
 	stopped  bool
 	stopDone chan struct{}
 
+	scheduleSource   ChannelMonitorScheduleRepository
+	scheduleRevision int64
+	scheduleSignal   uint64
+	scheduleWake     chan struct{}
+	scheduleInterval time.Duration
+
 	// inFlight 跟踪正在执行的 monitor.ID。fire 调度前会检查避免重复提交，
 	// 防止单次检测耗时 > interval 时同一 monitor 被并发执行。
 	inFlight   map[int64]chan struct{}
@@ -69,6 +73,7 @@ type ChannelMonitorRunner struct {
 // scheduledMonitor 单个监控的运行时上下文。
 type scheduledMonitor struct {
 	id          int64
+	revision    int64
 	name        string
 	interval    time.Duration
 	jitter      time.Duration // 每轮 ± [0, jitter] 的均匀随机偏移；0 = 固定间隔
@@ -117,20 +122,29 @@ func (t *scheduledMonitor) nextDelay() time.Duration {
 // pool 在构造时即建好：避免 Start 在 mu 内赋值、fire/Stop 在 mu 外读取的竞态隐患，
 // 且 pond.NewPool 创建本身近似零开销，提前建池不会浪费资源。
 func NewChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService) *ChannelMonitorRunner {
-	return newChannelMonitorRunner(svc, settingService)
+	r := newChannelMonitorRunner(svc, settingService)
+	if svc != nil {
+		if _, supported := svc.repo.(ChannelMonitorScheduleRepository); supported || svc.requireScheduledClaims {
+			r.scheduleSource = svc
+		}
+	}
+	return r
 }
 
 // newChannelMonitorRunner 内部构造，接受最小化接口，便于单元测试注入 stub。
 func newChannelMonitorRunner(svc monitorRunnerSvc, settingService *SettingService) *ChannelMonitorRunner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ChannelMonitorRunner{
-		svc:            svc,
-		settingService: settingService,
-		pool:           pond.NewPool(monitorWorkerConcurrency),
-		parentCtx:      ctx,
-		parentCancel:   cancel,
-		tasks:          make(map[int64]*scheduledMonitor),
-		inFlight:       make(map[int64]chan struct{}),
+		svc:              svc,
+		settingService:   settingService,
+		pool:             pond.NewPool(monitorWorkerConcurrency),
+		parentCtx:        ctx,
+		parentCancel:     cancel,
+		tasks:            make(map[int64]*scheduledMonitor),
+		inFlight:         make(map[int64]chan struct{}),
+		scheduleRevision: -1,
+		scheduleWake:     make(chan struct{}, 1),
+		scheduleInterval: 5 * time.Second,
 	}
 }
 
@@ -149,6 +163,16 @@ func (r *ChannelMonitorRunner) Start() {
 	r.wg.Add(1)
 	r.mu.Unlock()
 	defer r.wg.Done()
+	if r.scheduleSource != nil {
+		r.reconcileSchedule()
+		r.mu.Lock()
+		if !r.stopped {
+			r.wg.Add(1)
+			go r.watchSchedule()
+		}
+		r.mu.Unlock()
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.parentCtx, monitorStartupLoadTimeout)
 	defer cancel()
@@ -163,16 +187,30 @@ func (r *ChannelMonitorRunner) Start() {
 	slog.Info("channel_monitor: runner started", "scheduled_tasks", len(enabled))
 }
 
-// Schedule 为指定监控创建（或重置）独立定时任务。
-//   - m.Enabled=false 或 APIKeyDecryptFailed=true → 等同于 Unschedule(m.ID)
-//   - 已存在的任务会先被取消再重建（适用于 IntervalSeconds 变更场景）
-//   - 新任务立即触发首次检测，之后按 IntervalSeconds 周期触发
+// Schedule wakes the same snapshot loader after a committed save. A stale CRUD
+// response is not an independent configuration source. Local stubs without a
+// repository retain direct scheduling; new tasks keep the original first fire.
 func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 	if r == nil || m == nil {
 		return
 	}
+	if r.scheduleSource != nil {
+		r.wakeSchedule()
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scheduleLocked(m, 0)
+}
+
+// scheduleLocked is also used by snapshot reconciliation. Production callbacks
+// never apply their captured monitor directly over a newer committed snapshot.
+func (r *ChannelMonitorRunner) scheduleLocked(m *ChannelMonitor, revision int64) {
 	if !m.Enabled || m.APIKeyDecryptFailed {
-		r.Unschedule(m.ID)
+		if task := r.tasks[m.ID]; task != nil {
+			delete(r.tasks, m.ID)
+			task.cancel()
+		}
 		return
 	}
 	interval := time.Duration(m.IntervalSeconds) * time.Second
@@ -188,9 +226,7 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 		jitter = 0
 	}
 
-	r.mu.Lock()
 	if r.stopped {
-		r.mu.Unlock()
 		return
 	}
 	if !r.started {
@@ -198,7 +234,6 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 		// 当前 wire 顺序是 SetScheduler → Start，CRUD 钩子最早也只能在请求到达时触发，
 		// 此时 Start 早已完成。出现此分支时把 monitor 信息打出来便于排查，
 		// 不入队、不缓存——交给运维通过重启或修复 wire 解决。
-		r.mu.Unlock()
 		slog.Warn("channel_monitor: schedule before runner started, skip",
 			"monitor_id", m.ID, "name", m.Name)
 		return
@@ -212,6 +247,7 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 	r.inFlightMu.Unlock()
 	task := &scheduledMonitor{
 		id:          m.ID,
+		revision:    revision,
 		name:        m.Name,
 		interval:    interval,
 		jitter:      jitter,
@@ -221,15 +257,99 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 	}
 	r.tasks[m.ID] = task
 	r.wg.Add(1)
-	r.mu.Unlock()
-
 	go r.runScheduled(ctx, task)
 }
 
-// Unschedule 取消指定监控的定时任务（若存在）。
-// 已经在执行中的检测会通过 ctx 取消信号传递。
+// Unschedule wakes configuration reconciliation after a committed disable or
+// delete. Retirement cancels in-flight work through the original task context.
 func (r *ChannelMonitorRunner) Unschedule(id int64) {
+	if r != nil && r.scheduleSource != nil {
+		r.wakeSchedule()
+		return
+	}
 	r.unschedule(id, nil)
+}
+
+func (r *ChannelMonitorRunner) wakeSchedule() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.started || r.stopped {
+		return
+	}
+	r.scheduleSignal++
+	select {
+	case r.scheduleWake <- struct{}{}:
+	default:
+	}
+}
+
+func (r *ChannelMonitorRunner) watchSchedule() {
+	defer r.wg.Done()
+	ticker := time.NewTicker(r.scheduleInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.parentCtx.Done():
+			return
+		case <-ticker.C:
+		case <-r.scheduleWake:
+		}
+		r.reconcileSchedule()
+	}
+}
+
+func (r *ChannelMonitorRunner) reconcileSchedule() {
+	r.mu.Lock()
+	known, signal, stopped := r.scheduleRevision, r.scheduleSignal, r.stopped
+	r.mu.Unlock()
+	if stopped {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.parentCtx, monitorStartupLoadTimeout)
+	defer cancel()
+	snapshot, err := r.scheduleSource.LoadScheduleSnapshot(ctx, known)
+	if err != nil {
+		if r.parentCtx.Err() == nil {
+			slog.Warn("channel_monitor: schedule snapshot load failed", "error", err)
+		}
+		return
+	}
+	if snapshot == nil {
+		return
+	}
+	// Reject malformed/incomplete snapshots instead of treating a read failure
+	// as empty inventory and retiring healthy schedules.
+	desired := make(map[int64]*ChannelMonitor, len(snapshot.Monitors))
+	for _, m := range snapshot.Monitors {
+		if m == nil || m.ID <= 0 || desired[m.ID] != nil {
+			slog.Error("channel_monitor: invalid schedule snapshot")
+			return
+		}
+		revision, ok := snapshot.Revisions[m.ID]
+		if !ok || revision < 0 || revision > snapshot.Revision {
+			slog.Error("channel_monitor: schedule snapshot generation missing or invalid", "monitor_id", m.ID)
+			return
+		}
+		desired[m.ID] = m
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped || ctx.Err() != nil || r.scheduleSignal != signal || snapshot.Revision <= r.scheduleRevision {
+		return
+	}
+	for id, task := range r.tasks {
+		m := desired[id]
+		if m == nil || !m.Enabled || m.APIKeyDecryptFailed || task.revision != snapshot.Revisions[id] {
+			delete(r.tasks, id)
+			task.cancel()
+		}
+	}
+	for id, m := range desired {
+		if r.tasks[id] == nil {
+			r.scheduleLocked(m, snapshot.Revisions[id])
+		}
+	}
+	r.scheduleRevision = snapshot.Revision
 }
 
 // A stale worker can retire only its own scheduled task, never its replacement.
