@@ -6,7 +6,7 @@
 任务：D8.1 OpenCode锁/预算/寿命已本地验；原28项20done/8部分。
 授权：本地实现/验证、自有分支同步；不CI/发布/部署。
 验证：race服务500/SQL108、UI266、浏览器中英1440/390通过。
-来源：fda93d7b2后本轮，opencode-usage-*；见DECISIONS。
+来源：d695b3571（自有远端同tip），opencode-usage-*；见DECISIONS。
 下一动作：V1周期多节点；全scope/通道公平仍待。
 尝试：1
 阻塞：实际scope/独立基线/缓存域；历史拒删与本轮/旧overlay。
