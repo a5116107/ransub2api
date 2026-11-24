@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -143,6 +144,17 @@ type monitoringBudgetCounter struct {
 	tokenLimit int64
 }
 
+const monitoringBudgetWaitDuration = time.Second
+const monitoringBudgetWaitPoll = 50 * time.Millisecond
+const monitoringBudgetMaxWaiters = 256
+
+type monitoringBudgetWaiter struct {
+	id       string
+	deadline time.Time
+	queued   bool
+	denial   *service.MonitoringProbeBudgetDenial
+}
+
 func (r *monitoringProbeBudgetRepository) Acquire(ctx context.Context, request service.MonitoringProbeBudgetRequest) (string, error) {
 	if request.SiteHash == "" || len(request.SiteHash) > 128 || len(request.KeyHashes) == 0 || len(request.KeyHashes) > 16 {
 		return "", service.ErrMonitoringProbeBudgetUnavailable
@@ -155,6 +167,55 @@ func (r *monitoringProbeBudgetRepository) Acquire(ctx context.Context, request s
 			return "", service.ErrMonitoringProbeBudgetUnavailable
 		}
 	}
+	waiter := &monitoringBudgetWaiter{id: uuid.NewString(), deadline: time.Now().Add(monitoringBudgetWaitDuration)}
+	defer func() {
+		if !waiter.queued {
+			return
+		}
+		// Only this call owns its ticket. Cancellation does not delete peers or
+		// cancel admitted work; a crashed process's ticket expires independently.
+		cleanup, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		if _, err := r.db.ExecContext(cleanup, `DELETE FROM monitoring_probe_budget_waiters WHERE id=$1`, waiter.id); err != nil {
+			slog.Warn("monitoring_probe: contention ticket cleanup failed")
+		}
+	}()
+	pause := monitoringBudgetWaitPoll
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if waiter.queued && !time.Now().Before(waiter.deadline) {
+			return "", waiter.denial
+		}
+		id, err := r.acquire(ctx, request, waiter)
+		var denial *service.MonitoringProbeBudgetDenial
+		if !waiter.queued || !errors.As(err, &denial) || !monitoringBudgetWaitable(denial) {
+			return id, err
+		}
+		waiter.denial = denial
+		remaining := time.Until(waiter.deadline)
+		if remaining <= 0 {
+			return "", denial
+		}
+		timer := time.NewTimer(min(pause, remaining))
+		pause = min(4*monitoringBudgetWaitPoll, 2*pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func monitoringBudgetWaitable(denial *service.MonitoringProbeBudgetDenial) bool {
+	return denial != nil && denial.Scope == "global" && (denial.Reason == "concurrency_limit" || denial.Reason == "recovery_reserve")
+}
+
+// Every attempt uses the original short transaction. Waiting never holds its
+// lock, database connection or a speculative request/token reservation.
+func (r *monitoringProbeBudgetRepository) acquire(ctx context.Context, request service.MonitoringProbeBudgetRequest, waiter *monitoringBudgetWaiter) (string, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -172,6 +233,11 @@ func (r *monitoringProbeBudgetRepository) Acquire(ctx context.Context, request s
 	var now time.Time
 	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 		return "", err
+	}
+	if waiter.queued && !time.Now().Before(waiter.deadline) {
+		denial := *waiter.denial
+		denial.RetryAt = now.Add(time.Second)
+		return "", &denial
 	}
 	minute := now.UTC().Truncate(time.Minute)
 	day := now.UTC().Truncate(24 * time.Hour)
@@ -210,11 +276,30 @@ func (r *monitoringProbeBudgetRepository) Acquire(ctx context.Context, request s
 				}
 			}
 		}
-		if denial, err := monitoringBudgetConcurrency(ctx, tx, now, request, settings); err != nil || denial != nil {
-			if err != nil {
+		denial, err := monitoringBudgetConcurrency(ctx, tx, now, request, settings)
+		if err != nil {
+			return "", err
+		}
+		if denial != nil && !monitoringBudgetWaitable(denial) {
+			return "", denial
+		}
+		allowed, err := monitoringBudgetFairTurn(ctx, tx, now, request, settings, waiter, denial != nil)
+		if err != nil {
+			return "", err
+		}
+		if !allowed {
+			if denial == nil {
+				denial = &service.MonitoringProbeBudgetDenial{Reason: "concurrency_limit", Scope: "global", RetryAt: now.Add(time.Second)}
+			}
+			if err := tx.Commit(); err != nil {
 				return "", err
 			}
 			return "", denial
+		}
+	}
+	if waiter.queued {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM monitoring_probe_budget_waiters WHERE id=$1`, waiter.id); err != nil {
+			return "", err
 		}
 	}
 	regular := 1
@@ -229,7 +314,7 @@ func (r *monitoringProbeBudgetRepository) Acquire(ctx context.Context, request s
 			return "", err
 		}
 	}
-	id := uuid.NewString()
+	id := waiter.id
 	if _, err := tx.ExecContext(ctx, `INSERT INTO monitoring_probe_budget_leases(id,site_hash,key_hashes,recovery,expires_at,meter_tokens)
  VALUES($1,$2,$3,$4,$5,$6)`, id, request.SiteHash, pq.Array(request.KeyHashes), request.Recovery, now.Add(service.MonitoringProbeBudgetLeaseTTL), request.MeterTokens); err != nil {
 		return "", err
@@ -245,7 +330,11 @@ func (r *monitoringProbeBudgetRepository) Acquire(ctx context.Context, request s
  (SELECT ctid FROM monitoring_probe_budget_counters WHERE bucket_start<$1 ORDER BY bucket_start LIMIT 64)`, day.Add(-48*time.Hour)); err != nil {
 		return "", err
 	}
-	return id, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	waiter.queued = false
+	return id, nil
 }
 
 func monitoringBudgetConcurrency(ctx context.Context, tx *sql.Tx, now time.Time, request service.MonitoringProbeBudgetRequest, settings service.MonitoringProbeBudgetSettings) (*service.MonitoringProbeBudgetDenial, error) {
