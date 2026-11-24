@@ -115,7 +115,14 @@ export interface MonitoringProbeQueueRuntime {
   instance_id: string
   state: string
   observed_at: string
-  last_scan: { observed_at: string; targets: number; due: number } | null
+  last_scan: {
+    observed_at: string
+    targets: number
+    due: number
+    priority_version?: number
+    review_targets?: number
+    routine_targets?: number
+  } | null
   cycle: {
     started_at: string
     finished_at: string | null

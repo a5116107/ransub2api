@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"slices"
@@ -358,18 +359,19 @@ func (p *ChannelMonitorV3Prober) RunDue(ctx context.Context, now time.Time) {
 		return
 	}
 	due := channelMonitorV3DueProbes(targets, counts, cfg.MinRequests)
-	identities := make(map[monitoringProbeQueueKey]string, len(targets))
+	identities := make(map[monitoringProbeQueueKey]monitoringProbeQueueTarget, len(targets))
 	byKey := make(map[monitoringProbeQueueKey]channelMonitorV3ProbeTarget, len(targets))
 	for _, target := range targets {
 		key := target.key()
-		identities[key] = fmt.Sprintf("%s\x00%s\x00%d", target.Model, target.ReasoningEffort, cfg.IntervalMinutes)
+		identities[key] = monitoringProbeQueueTarget{identity: target.identity(cfg.IntervalMinutes),
+			evidenceKey: ChannelMonitorV3ProbeConfigKey(target.Model, target.ReasoningEffort, cfg.IntervalMinutes), intervalMinutes: cfg.IntervalMinutes}
 		byKey[key] = target
 	}
 	keys := make([]monitoringProbeQueueKey, 0, len(due))
 	for _, target := range due {
 		keys = append(keys, target.key())
 	}
-	if !p.queue.order(ctx, p.repo, GroupMonitoringQueueConfig{Version: cfg.Version, IdleProbe: &cfg.IdleProbe}, identities, keys) {
+	if !p.queue.order(ctx, p.repo, GroupMonitoringQueueConfig{Version: cfg.Version, IdleProbe: &cfg.IdleProbe, ObservedAt: now}, identities, keys) {
 		return
 	}
 	p.queue.run(ctx, keys, func(ctx context.Context, key monitoringProbeQueueKey) monitoringProbeQueueRun {
@@ -395,7 +397,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 	if err != nil || group == nil || group.Status != StatusActive || ctx.Err() != nil || monitoringProbeDispatchStopped(ctx) {
 		return
 	}
-	id, err := p.repo.ClaimProbe(ctx, target.GroupID, target.Model, slot, slotMinutes)
+	id, err := p.repo.ClaimProbe(ctx, target.GroupID, target.Model, slot, slotMinutes, ChannelMonitorV3ProbeConfigKey(target.Model, target.ReasoningEffort, slotMinutes))
 	if err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v3", "idle probe claim group=%d failed: %v", target.GroupID, err)
 		return
@@ -508,6 +510,17 @@ type channelMonitorV3ProbeTarget struct {
 
 func (t channelMonitorV3ProbeTarget) key() monitoringProbeQueueKey {
 	return monitoringProbeQueueKey{groupID: t.GroupID, scope: t.Model}
+}
+
+func (t channelMonitorV3ProbeTarget) identity(intervalMinutes int) string {
+	return fmt.Sprintf("%s\x00%s\x00%d", t.Model, t.ReasoningEffort, intervalMinutes)
+}
+
+// ChannelMonitorV3ProbeConfigKey records only the native probe configuration.
+// It does not identify the actual upstream account or attest model identity.
+func ChannelMonitorV3ProbeConfigKey(model, effort string, intervalMinutes int) string {
+	target := channelMonitorV3ProbeTarget{Model: model, ReasoningEffort: effort}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(target.identity(intervalMinutes))))
 }
 
 // channelMonitorV3ProbeTargets lists what the enabled components of the

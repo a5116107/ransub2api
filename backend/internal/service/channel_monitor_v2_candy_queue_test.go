@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"slices"
@@ -12,6 +13,38 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestChannelMonitorV2CandyNativeReviewPriority(t *testing.T) {
+	repo := &candyRepoFake{channelMonitorV2RepoStub: channelMonitorV2RepoStub{config: candyConfigFixture()}}
+	repo.config.CandyProbes = nil
+	repo.nativeReviewDue = map[string]time.Time{}
+	groupRepo := groupTestGroupsFake{}
+	for id := int64(1); id <= 8; id++ {
+		probe := candyProbeFixture()
+		probe.GroupID = id
+		repo.config.CandyProbes = append(repo.config.CandyProbes, probe)
+		groupRepo[id] = &Group{ID: id, Platform: PlatformOpenAI, Status: StatusActive}
+		if id > 4 {
+			hash := fmt.Sprintf("%x", sha256.Sum256([]byte(probe.key())))
+			repo.nativeReviewDue[fmt.Sprintf("%d/%s", id, hash)] = groupTestNow.Add(-time.Minute)
+		}
+	}
+	var calls atomic.Int32
+	var mu sync.Mutex
+	served := []int64{}
+	groups := &PelicanGroupTestService{groups: groupRepo, router: &candyRouterSpy{}, now: time.Now,
+		runAccount: func(_ context.Context, id int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+			if calls.Add(1) > 4 {
+				return &ScheduledTestResult{BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day"}}, nil
+			}
+			mu.Lock()
+			served = append(served, id)
+			mu.Unlock()
+			return &ScheduledTestResult{Status: "success", ResponseText: "21"}, nil
+		}}
+	candyServiceFixture(repo, groups).RunDue(t.Context(), groupTestNow)
+	require.ElementsMatch(t, []int64{5, 6, 7, 8}, served, "same-age native reviews must use the budget before unexplored groups")
+}
 
 func TestChannelMonitorV2CandyFairBudgetCoverage(t *testing.T) {
 	const targets, capacity = channelCandyMaxProbes, 4
@@ -118,7 +151,7 @@ func TestChannelMonitorV2CandyPartialChainYields(t *testing.T) {
 	s := candyServiceFixture(repo, groups)
 	partialKey := monitoringProbeQueueKey{groupID: partial.GroupID, scope: partial.key()}
 	nativeKey := monitoringProbeQueueKey{groupID: native.GroupID, scope: native.key()}
-	require.True(t, s.queue.order(t.Context(), repo, GroupMonitoringQueueConfig{}, map[monitoringProbeQueueKey]string{partialKey: partial.key(), nativeKey: native.key()}, []monitoringProbeQueueKey{partialKey, nativeKey}))
+	require.True(t, s.queue.order(t.Context(), repo, GroupMonitoringQueueConfig{}, map[monitoringProbeQueueKey]monitoringProbeQueueTarget{partialKey: {identity: partial.key()}, nativeKey: {identity: native.key()}}, []monitoringProbeQueueKey{partialKey, nativeKey}))
 	repo.setAge(partialKey, 1, 0)
 	repo.setAge(nativeKey, 100, 0)
 	s.RunDue(t.Context(), groupTestNow)

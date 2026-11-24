@@ -21,6 +21,7 @@ type groupMonitoringTurnsFake struct {
 	turns                        map[string]GroupMonitoringTurn
 	syncErr, claimErr, finishErr error
 	staleClaim                   bool
+	nativeReviewDue              map[string]time.Time
 }
 
 func groupTurnKey(turn GroupMonitoringTurn) string {
@@ -53,6 +54,7 @@ func (r *groupMonitoringTurnsFake) SyncGroupMonitoringTurns(ctx context.Context,
 	r.sequence++
 	out := &GroupMonitoringQueue{Round: r.sequence}
 	for _, turn := range turns {
+		turn.ReviewDueAt = r.nativeReviewDue[groupTurnKey(turn)]
 		out.Turns = append(out.Turns, turn)
 	}
 	return out, nil
@@ -99,11 +101,11 @@ func orderProbeQueue(t *testing.T, q *monitoringProbeQueue, targets, due []monit
 	if store == nil {
 		store = &groupMonitoringTurnsFake{}
 	}
-	identities := make(map[monitoringProbeQueueKey]string, len(targets))
+	identities := make(map[monitoringProbeQueueKey]monitoringProbeQueueTarget, len(targets))
 	for _, key := range targets {
-		identities[key] = key.scope
+		identities[key] = monitoringProbeQueueTarget{identity: key.scope}
 	}
-	require.True(t, q.order(t.Context(), store, GroupMonitoringQueueConfig{}, identities, due))
+	require.True(t, q.order(t.Context(), store, GroupMonitoringQueueConfig{ObservedAt: time.Now().UTC()}, identities, due))
 }
 
 func (r *groupMonitoringTurnsFake) setAge(key monitoringProbeQueueKey, served, tried int64) {
@@ -122,10 +124,10 @@ func (r *groupMonitoringTurnsFake) setAge(key monitoringProbeQueueKey, served, t
 	}
 }
 
-func v3QueueIdentities(targets []channelMonitorV3ProbeTarget, interval int) map[monitoringProbeQueueKey]string {
-	out := make(map[monitoringProbeQueueKey]string, len(targets))
+func v3QueueIdentities(targets []channelMonitorV3ProbeTarget, interval int) map[monitoringProbeQueueKey]monitoringProbeQueueTarget {
+	out := make(map[monitoringProbeQueueKey]monitoringProbeQueueTarget, len(targets))
 	for _, target := range targets {
-		out[target.key()] = fmt.Sprintf("%s\x00%s\x00%d", target.Model, target.ReasoningEffort, interval)
+		out[target.key()] = monitoringProbeQueueTarget{identity: target.identity(interval), evidenceKey: ChannelMonitorV3ProbeConfigKey(target.Model, target.ReasoningEffort, interval), intervalMinutes: interval}
 	}
 	return out
 }
@@ -156,12 +158,12 @@ func TestMonitoringProbeQueueSharedFailureStopsAndRecovers(t *testing.T) {
 			if failure == "stale" {
 				store.staleClaim = true
 			}
-			identities := map[monitoringProbeQueueKey]string{}
+			identities := map[monitoringProbeQueueKey]monitoringProbeQueueTarget{}
 			for _, key := range keys {
-				identities[key] = key.scope
+				identities[key] = monitoringProbeQueueTarget{identity: key.scope}
 			}
 			var calls atomic.Int32
-			if q.order(t.Context(), source, GroupMonitoringQueueConfig{}, identities, keys) {
+			if q.order(t.Context(), source, GroupMonitoringQueueConfig{ObservedAt: time.Now().UTC()}, identities, keys) {
 				q.run(t.Context(), keys, func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun {
 					calls.Add(1)
 					return monitoringProbeQueueRun{served: true}
@@ -176,7 +178,7 @@ func TestMonitoringProbeQueueSharedFailureStopsAndRecovers(t *testing.T) {
 				require.Equal(t, "coordination_unavailable", q.runtimeSnapshot().State)
 			}
 			store.syncErr, store.claimErr, store.finishErr, store.staleClaim = nil, nil, nil, false
-			require.True(t, q.order(t.Context(), store, GroupMonitoringQueueConfig{}, identities, keys))
+			require.True(t, q.order(t.Context(), store, GroupMonitoringQueueConfig{ObservedAt: time.Now().UTC()}, identities, keys))
 			q.run(t.Context(), keys, func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun {
 				return monitoringProbeQueueRun{served: true}
 			})
@@ -189,7 +191,7 @@ func TestMonitoringProbeQueueSharedFailureStopsAndRecovers(t *testing.T) {
 					store.turns[key] = turn
 				}
 				store.mu.Unlock()
-				require.True(t, q.order(t.Context(), store, GroupMonitoringQueueConfig{}, identities, keys))
+				require.True(t, q.order(t.Context(), store, GroupMonitoringQueueConfig{ObservedAt: time.Now().UTC()}, identities, keys))
 				q.run(t.Context(), keys, func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun {
 					return monitoringProbeQueueRun{served: true}
 				})
@@ -214,6 +216,44 @@ func TestMonitoringProbeQueueCanceledAdmissionPersistsAge(t *testing.T) {
 	orderProbeQueue(t, &rebuilt, keys, keys)
 	require.Greater(t, rebuilt.turns[keys[0]].Served, before.Served, "consumed age must survive both cancellation and executor rebuild")
 	require.NotEqual(t, q.runtimeSnapshot().InstanceID, rebuilt.runtimeSnapshot().InstanceID)
+}
+
+func TestMonitoringProbeQueuePeerReviewsFenceRoutineTier(t *testing.T) {
+	store := &groupMonitoringTurnsFake{nativeReviewDue: map[string]time.Time{}}
+	keys := make([]monitoringProbeQueueKey, 8)
+	hash := fmt.Sprintf("%x", sha256.Sum256(nil))
+	for i := range keys {
+		keys[i].groupID = int64(i + 1)
+		if i >= 4 {
+			store.nativeReviewDue[fmt.Sprintf("%d/%s", i+1, hash)] = time.Now().Add(-time.Minute)
+		}
+	}
+	left := monitoringProbeQueue{store: store}
+	orderProbeQueue(t, &left, keys, keys)
+	claims := []GroupMonitoringTurn{}
+	for _, key := range keys[:4] {
+		turn, ok, err := store.ClaimGroupMonitoringTurn(t.Context(), left.turns[key])
+		require.NoError(t, err)
+		require.True(t, ok)
+		claims = append(claims, turn)
+	}
+	right := monitoringProbeQueue{store: store}
+	orderProbeQueue(t, &right, keys, keys)
+	right.run(t.Context(), keys, func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun {
+		t.Error("peer-owned reviews must not be bypassed by lower routine work")
+		return monitoringProbeQueueRun{}
+	})
+	require.Equal(t, "claim_changed", right.runtimeSnapshot().State)
+	require.EqualValues(t, 4, right.runtimeSnapshot().Cycle.Queued)
+	for _, turn := range claims {
+		ok, err := store.FinishGroupMonitoringTurn(t.Context(), turn, left.round)
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	orderProbeQueue(t, &right, keys, keys)
+	for _, key := range keys[:4] {
+		require.LessOrEqual(t, key.groupID, int64(4), "the next original scan resumes unserved routine work")
+	}
 }
 
 func TestMonitoringProbeQueuePeerCannotStealInFlightAge(t *testing.T) {

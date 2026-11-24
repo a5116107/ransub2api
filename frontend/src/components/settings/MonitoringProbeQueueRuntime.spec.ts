@@ -20,6 +20,42 @@ function open(queues?: MonitoringProbeGroupQueues, locale = 'en') {
   return mount(MonitoringProbeQueueRuntime, { props: { queues }, global: { plugins: [createI18n({ legacy: false, locale, messages: { en, zh } })] } })
 }
 
+it.each(['en', 'zh'])('shows due review classes without turning them into health verdicts in %s', locale => {
+  const value = runtime()
+  Object.assign(value.last_scan!, { priority_version: 1, review_targets: 3, routine_targets: 5 })
+  const wrapper = open({ v2: value, v3: value }, locale)
+  for (const mode of ['v2', 'v3']) {
+    expect(wrapper.get(`[data-testid="group-queue-priority-${mode}"]`).text()).toBe(locale === 'zh'
+      ? '本次待检：必要复核 3 · 常规轮转 5' : 'Due in this scan: 3 required reviews · 5 routine targets')
+  }
+  expect(wrapper.text()).toContain(locale === 'zh' ? '不是健康或质量结论' : 'not health or quality verdicts')
+  expect(wrapper.text()).toContain(locale === 'zh' ? '旧轮未服务目标优先' : 'Unserved older rounds come first')
+})
+
+it.each([
+  ['legacy', {}], ['future', { priority_version: 2, review_targets: 3, routine_targets: 5 }],
+  ['negative', { priority_version: 1, review_targets: -1, routine_targets: 9 }],
+  ['missing', { priority_version: 1, review_targets: 3 }],
+  ['wrong denominator', { priority_version: 1, review_targets: 3, routine_targets: 7 }],
+  ['fractional', { priority_version: 1, review_targets: .5, routine_targets: 7.5 }],
+  ['unsafe', { priority_version: 1, review_targets: Number.MAX_SAFE_INTEGER, routine_targets: 1 }],
+] as const)('keeps %s priority classes unknown while retaining valid queue progress', (_name, fields) => {
+  const value = runtime()
+  Object.assign(value.last_scan!, fields)
+  const wrapper = open({ v2: value })
+  expect(wrapper.find('[data-testid="group-queue-priority-v2"]').exists()).toBe(false)
+  expect(wrapper.get('[data-testid="group-queue-priority-unknown-v2"]').text()).toContain('not zero required reviews')
+  expect(wrapper.find('[data-testid="group-queue-cycle-v2"]').exists()).toBe(true)
+})
+
+it('retains an explicit zero due inventory and classification', () => {
+  const value = runtime()
+  value.state = 'idle'
+  Object.assign(value.last_scan!, { targets: 0, due: 0, priority_version: 1, review_targets: 0, routine_targets: 0 })
+  Object.assign(value.cycle!, { queued: 0, active: 0, finished: 0, deferred: 0, oldest_pending_at: null, budget_deferral: null })
+  expect(open({ v2: value }).get('[data-testid="group-queue-priority-v2"]').text()).toContain('0 required reviews · 0 routine targets')
+})
+
 it.each(['en', 'zh'])('separates queue progress from quality and physical usage in %s', locale => {
   const paused = runtime()
   const idle = runtime()
@@ -68,7 +104,7 @@ it.each(['key', 'key_minute', 'site', 'site_minute', 'plugin'])('does not invent
   expect(open({ v2: value }).find('[data-testid="group-queue-cycle-v2"]').exists()).toBe(false)
 })
 
-it.each(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable', 'coordination_unavailable'])('localizes the %s observation without treating it as a health verdict', state => {
+it.each(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable', 'coordination_unavailable', 'claim_changed'])('localizes the %s observation without treating it as a health verdict', state => {
   const value = runtime()
   value.state = state
   value.last_scan = null

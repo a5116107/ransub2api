@@ -189,7 +189,7 @@ func (r *monitorV3RepoFake) SuccessCounts(_ context.Context, groups []int64, fro
 	r.countCalls = append(r.countCalls, monitorV3SlotCall{groups: groups, from: from, to: to})
 	return r.successCounts, nil
 }
-func (r *monitorV3RepoFake) ClaimProbe(_ context.Context, groupID int64, model string, slot time.Time, slotMinutes int) (int64, error) {
+func (r *monitorV3RepoFake) ClaimProbe(_ context.Context, groupID int64, model string, slot time.Time, slotMinutes int, configKey string) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := fmt.Sprint(groupID, "/", model, "/", slot.Format(time.RFC3339), "/", slotMinutes)

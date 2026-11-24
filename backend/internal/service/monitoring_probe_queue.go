@@ -54,6 +54,11 @@ type monitoringProbeQueueRun struct {
 	budgetDeferral *MonitoringProbeBudgetDenial
 }
 
+type monitoringProbeQueueTarget struct {
+	identity, evidenceKey string
+	intervalMinutes       int
+}
+
 // Shared scheduling age, not evidence freshness or execution authority.
 // The map is a single scan's snapshot, never a process-local fallback.
 type monitoringProbeQueue struct {
@@ -66,7 +71,7 @@ type monitoringProbeQueue struct {
 
 // Call only after a complete inventory read. Configuration fencing and pruning
 // happen in the same transaction; a failed scan must not erase shared age.
-func (q *monitoringProbeQueue) order(ctx context.Context, source any, cfg GroupMonitoringQueueConfig, targets map[monitoringProbeQueueKey]string, due []monitoringProbeQueueKey) bool {
+func (q *monitoringProbeQueue) order(ctx context.Context, source any, cfg GroupMonitoringQueueConfig, targets map[monitoringProbeQueueKey]monitoringProbeQueueTarget, due []monitoringProbeQueueKey) bool {
 	store, ok := source.(GroupMonitoringTurnRepository)
 	if !ok {
 		q.observeState("coordination_unavailable")
@@ -78,9 +83,10 @@ func (q *monitoringProbeQueue) order(ctx context.Context, source any, cfg GroupM
 	}
 	input := make([]GroupMonitoringTurn, 0, len(targets))
 	byHash := make(map[monitoringProbeQueueKey]monitoringProbeQueueKey, len(targets))
-	for key, identity := range targets {
+	for key, target := range targets {
 		turn := GroupMonitoringTurn{GroupID: key.groupID, ScopeHash: fmt.Sprintf("%x", sha256.Sum256([]byte(key.scope))),
-			IdentityHash: fmt.Sprintf("%x", sha256.Sum256([]byte(identity))), Due: dueSet[key]}
+			IdentityHash: fmt.Sprintf("%x", sha256.Sum256([]byte(target.identity))), Due: dueSet[key],
+			EvidenceKey: target.evidenceKey, IntervalMinutes: target.intervalMinutes}
 		input = append(input, turn)
 		byHash[monitoringProbeQueueKey{groupID: key.groupID, scope: turn.ScopeHash}] = key
 	}
@@ -95,7 +101,8 @@ func (q *monitoringProbeQueue) order(ctx context.Context, source any, cfg GroupM
 	for _, turn := range queue.Turns {
 		key, exists := byHash[monitoringProbeQueueKey{groupID: turn.GroupID, scope: turn.ScopeHash}]
 		if !exists || turn.Served <= 0 || turn.Served >= queue.Round || turn.Tried < 0 ||
-			turn.IdentityHash != fmt.Sprintf("%x", sha256.Sum256([]byte(targets[key]))) {
+			turn.IdentityHash != fmt.Sprintf("%x", sha256.Sum256([]byte(targets[key].identity))) ||
+			!turn.ReviewDueAt.IsZero() && (cfg.ObservedAt.IsZero() || turn.ReviewDueAt.After(cfg.ObservedAt)) {
 			q.observeState("coordination_unavailable")
 			return false
 		}
@@ -111,6 +118,15 @@ func (q *monitoringProbeQueue) order(ctx context.Context, source any, cfg GroupM
 		if order := cmp.Compare(left.Served, right.Served); order != 0 {
 			return order
 		}
+		if left.ReviewDueAt.IsZero() != right.ReviewDueAt.IsZero() {
+			if left.ReviewDueAt.IsZero() {
+				return 1
+			}
+			return -1
+		}
+		if order := left.ReviewDueAt.Truncate(time.Microsecond).Compare(right.ReviewDueAt.Truncate(time.Microsecond)); order != 0 {
+			return order
+		}
 		if order := cmp.Compare(left.Tried, right.Tried); order != 0 {
 			return order
 		}
@@ -119,13 +135,20 @@ func (q *monitoringProbeQueue) order(ctx context.Context, source any, cfg GroupM
 		}
 		return strings.Compare(a.scope, b.scope)
 	})
-	q.observeInventory(time.Now().UTC(), len(targets), len(due))
+	reviews := 0
+	for _, key := range due {
+		if !q.turns[key].ReviewDueAt.IsZero() {
+			reviews++
+		}
+	}
+	q.observeInventory(time.Now().UTC(), len(targets), len(due), reviews)
 	return true
 }
 
 // A completed round forms one age tier so later rounds retain concurrency.
-// Older tiers drain first: a recent fast job must not spend the last budget
-// while an older one is still acquiring its scheduler or physical slot.
+// Older tiers drain first, then native reviews before routine work within that
+// tier. A recent fast job must not spend the last budget while an older/review
+// job is still acquiring its scheduler or physical slot.
 func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQueueKey, run func(context.Context, monitoringProbeQueueKey) monitoringProbeQueueRun) {
 	ctx = withMonitoringProbeDispatchStop(ctx)
 	dispatch := ctx.Value(monitoringProbeDispatchStopKey{}).(*monitoringProbeDispatchStop)
@@ -141,9 +164,12 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 	finishedCount, deferred := 0, 0
 	var lastDenial *MonitoringProbeBudgetDenial
 	coordinationFailed := false
+	claimChanged := false
 	var age int64
+	var review bool
 	if len(due) > 0 {
 		age = q.turns[due[0]].Served
+		review = !q.turns[due[0]].ReviewDueAt.IsZero()
 	}
 	for {
 		if denial := dispatch.denial.Load(); denial != nil {
@@ -151,7 +177,7 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 		}
 		for !coordinationFailed && !exhausted && !monitoringProbeDispatchStopped(ctx) && ctx.Err() == nil && active < monitoringProbeQueueWorkers && next < len(due) {
 			key := due[next]
-			if q.turns[key].Served != age {
+			if q.turns[key].Served != age || !q.turns[key].ReviewDueAt.IsZero() != review {
 				break
 			}
 			claimCtx, cancel := context.WithTimeout(ctx, monitoringProbeQueueStoreTimeout)
@@ -165,6 +191,9 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 			next++
 			if !claimed {
 				// Another scan/identity owns it; this is not a health result.
+				// Drain independent targets in this tier. A peer must not use
+				// the same age's routine budget ahead of outstanding reviews.
+				claimChanged = true
 				finishedCount++
 				continue
 			}
@@ -185,8 +214,11 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 		}
 		q.observeProgress(len(due)-next, active, finishedCount, deferred, lastDenial)
 		if active == 0 {
-			if !coordinationFailed && !exhausted && ctx.Err() == nil && next < len(due) {
+			reviewGate := claimChanged && review && next < len(due) && q.turns[due[next]].Served == age && q.turns[due[next]].ReviewDueAt.IsZero()
+			if !coordinationFailed && !exhausted && !reviewGate && ctx.Err() == nil && next < len(due) {
 				age = q.turns[due[next]].Served
+				review = !q.turns[due[next]].ReviewDueAt.IsZero()
+				claimChanged = false
 				continue
 			}
 			state := "idle"
@@ -197,6 +229,8 @@ func (q *monitoringProbeQueue) run(ctx context.Context, due []monitoringProbeQue
 				state = "canceled"
 			case exhausted:
 				state = "budget_paused"
+			case reviewGate:
+				state = "claim_changed"
 			case deferred > 0:
 				state = "deferred"
 			}

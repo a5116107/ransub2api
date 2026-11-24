@@ -2,6 +2,7 @@
   <section class="mt-4 rounded-lg border border-amber-300 p-3 dark:border-amber-800" data-testid="probe-budget-group-queues">
     <h5 class="font-semibold">{{ t(`${prefix}.title`) }}</h5>
     <p class="mt-2 text-xs">{{ t(`${prefix}.hint`) }}</p>
+    <p class="mt-1 text-xs">{{ t(`${prefix}.priorityHint`) }}</p>
     <div class="mt-3 grid gap-3 lg:grid-cols-2">
       <article v-for="row in rows" :key="row.mode" class="min-w-0 rounded-lg border border-amber-200 p-3 dark:border-amber-900" :data-group-probe-queue="row.mode">
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -10,6 +11,8 @@
         </div>
         <template v-if="row.scan">
           <p class="mt-3 text-xs" :data-testid="`group-queue-scan-${row.mode}`">{{ t(`${prefix}.inventory`, row.scan) }}</p>
+          <p v-if="row.priority" class="mt-1 text-xs" :data-testid="`group-queue-priority-${row.mode}`">{{ t(`${prefix}.priority`, row.priority) }}</p>
+          <p v-else class="mt-1 text-xs" :data-testid="`group-queue-priority-unknown-${row.mode}`">{{ t(`${prefix}.priorityUnknown`) }}</p>
           <p class="mt-1 break-words text-xs">{{ t(`${prefix}.scanAt`) }} <time :datetime="row.scan.observed_at">{{ displayTime(row.scan.observed_at) }}</time></p>
         </template>
         <p v-else class="mt-3 text-xs">{{ t(`${prefix}.unobserved`) }}</p>
@@ -47,7 +50,7 @@ const props = defineProps<{ queues?: MonitoringProbeGroupQueues | null }>()
 const { t, locale } = useI18n()
 const prefix = 'admin.settings.upstreamBillingProbe.budget.groupQueues'
 const metrics = ['queued', 'active', 'finished', 'deferred'] as const
-const states = new Set(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable', 'coordination_unavailable'])
+const states = new Set(['unavailable', 'unobserved', 'scanning', 'queued', 'running', 'idle', 'budget_paused', 'deferred', 'canceled', 'inactive', 'not_due', 'inventory_unavailable', 'coordination_unavailable', 'claim_changed'])
 const timestamp = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value))
 const counts = (...values: unknown[]) => values.every(value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
 const displayTime = (value: string) => new Date(value).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US')
@@ -85,9 +88,15 @@ function cycle(value: QueueRuntime | null, scan: ReturnType<typeof inventory>) {
   return run
 }
 
+function priority(scan: ReturnType<typeof inventory>) {
+  if (!scan || scan.priority_version !== 1 || !counts(scan.review_targets, scan.routine_targets) ||
+    !Number.isSafeInteger(scan.review_targets! + scan.routine_targets!) || scan.review_targets! + scan.routine_targets! !== scan.due) return null
+  return { review: scan.review_targets!, routine: scan.routine_targets! }
+}
+
 const rows = computed(() => (['v2', 'v3'] as const).map(mode => {
   const view = runtime(props.queues?.[mode])
   const scan = inventory(view)
-  return { mode, runtime: view, scan, cycle: cycle(view, scan) }
+  return { mode, runtime: view, scan, priority: priority(scan), cycle: cycle(view, scan) }
 }))
 </script>

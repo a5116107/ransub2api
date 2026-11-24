@@ -118,7 +118,7 @@ func testPelicanGroupMonitoringBudgetPostgresHistoryAndMonitorIsolation(t *testi
 	v3 := NewChannelMonitorV3Repository(integrationDB)
 	slot := now.Truncate(5 * time.Minute).Add(-5 * time.Minute)
 	for i, outcome := range []string{service.ChannelMonitorV3ProbeSuccess, service.ChannelMonitorV3ProbeFailure, service.ChannelMonitorV3ProbeDeferred} {
-		id, claimErr := v3.ClaimProbe(ctx, group.ID, fmt.Sprintf("budget-model-%d", i), slot, 5)
+		id, claimErr := v3.ClaimProbe(ctx, group.ID, fmt.Sprintf("budget-model-%d", i), slot, 5, service.ChannelMonitorV3ProbeConfigKey(fmt.Sprintf("budget-model-%d", i), "", 5))
 		require.NoError(t, claimErr)
 		result := service.ChannelMonitorV3ProbeResult{ID: id, Outcome: outcome, LatencyMs: 100, CostUSD: &zero}
 		if i == 1 {

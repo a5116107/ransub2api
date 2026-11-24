@@ -246,3 +246,205 @@ func TestGroupMonitoringTurnsConfigMigrationFailureAndRecovery(t *testing.T) {
 	require.EqualValues(t, 1, summary.DayUsed)
 	require.Zero(t, summary.ActiveRequests)
 }
+
+func TestGroupMonitoringNativeReviewClocks(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	group := mustCreateGroup(t, client, &service.Group{Name: "native-clock", Platform: service.PlatformOpenAI, Status: service.StatusActive})
+	other := mustCreateGroup(t, client, &service.Group{Name: "native-clock-other", Platform: service.PlatformOpenAI, Status: service.StatusActive})
+	hash := func(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(value))) }
+	now := time.Now().UTC().Truncate(time.Second)
+	slot := now.Truncate(5 * time.Minute).Add(-15 * time.Minute)
+	for _, lane := range []string{"v2", "v3"} {
+		t.Run(lane, func(t *testing.T) {
+			repo, cfg := groupTurnsFixture(t, db, lane)
+			cfg.ObservedAt = now
+			key, scope := hash("candy-v1:native-model:medium:5"), ""
+			identity := hash(key)
+			scope = identity
+			if lane == "v3" {
+				key, scope = service.ChannelMonitorV3ProbeConfigKey("native-model", "medium", 5), hash("native-model")
+				identity = key
+			}
+			target := service.GroupMonitoringTurn{GroupID: group.ID, ScopeHash: scope, IdentityHash: identity, Due: true, EvidenceKey: key, IntervalMinutes: 5}
+			cases := []string{"success", "failure", "deferred", "running", "unfinished", "future_finished", "future_slot", "zero_clock", "reversed_clock", "wrong_key", "wrong_group", "wrong_model", "wrong_effort", "wrong_interval", "legacy", "deferred_keeps_old", "future_keeps_old"}
+			if lane == "v2" {
+				cases = append(cases, "interrupted")
+			}
+			for _, scenario := range cases {
+				t.Run(scenario, func(t *testing.T) {
+					table := "channel_monitor_v2_candy_results"
+					if lane == "v3" {
+						table = "channel_monitor_v3_probe_results"
+					}
+					_, err := db.ExecContext(ctx, "DELETE FROM "+table)
+					require.NoError(t, err)
+					seed := func(old bool) {
+						t.Helper()
+						groupID, configKey, model := group.ID, any(key), "native-model"
+						effort := "medium"
+						minutes, stamp, started, finished := 5, slot, slot.Add(time.Minute), any(slot.Add(2*time.Minute))
+						status, reason, deferral := "success", "", any(nil)
+						if lane == "v2" {
+							status = "correct"
+						}
+						if !old {
+							switch scenario {
+							case "failure":
+								if lane == "v2" {
+									status = "incorrect"
+								} else {
+									status = "failure"
+								}
+							case "deferred", "deferred_keeps_old":
+								status, deferral = "deferred", `{"reason":"request_limit","scope":"global_day","retry_at":"2026-12-01T00:00:00Z"}`
+							case "running":
+								status, finished = "running", nil
+							case "unfinished":
+								finished = nil
+							case "future_finished", "future_keeps_old":
+								finished = now.Add(time.Hour)
+							case "future_slot":
+								stamp = now.Add(time.Hour)
+							case "zero_clock":
+								started = time.Time{}
+							case "reversed_clock":
+								finished = started.Add(-time.Second)
+							case "wrong_key":
+								configKey = hash("other-configuration")
+							case "wrong_group":
+								groupID = other.ID
+							case "wrong_interval":
+								minutes = 10
+								configKey = hash("interval-10")
+							case "legacy":
+								if lane == "v3" {
+									configKey = nil
+								} else {
+									configKey = "old-unknown-key"
+								}
+							case "interrupted":
+								status, reason = "error", "interrupted"
+							case "wrong_model":
+								model = "other-model"
+							case "wrong_effort":
+								effort = "low"
+								if lane == "v3" {
+									configKey = service.ChannelMonitorV3ProbeConfigKey(model, effort, 5)
+								}
+							}
+						} else {
+							stamp, started, finished = slot.Add(-5*time.Minute), slot.Add(-4*time.Minute), slot.Add(-3*time.Minute)
+						}
+						if lane == "v2" {
+							_, err = db.ExecContext(ctx, `INSERT INTO channel_monitor_v2_candy_results(group_id,config_key,model,reasoning_effort,slot,checked_at,finished_at,verdict,reason,budget_deferral) VALUES($1,$2,$3,$10,$4,$5,$6,$7,$8,$9::jsonb)`, groupID, configKey, model, stamp, started, finished, status, reason, deferral, effort)
+						} else {
+							_, err = db.ExecContext(ctx, `INSERT INTO channel_monitor_v3_probe_results(group_id,config_key,model,slot_start,slot_minutes,started_at,finished_at,outcome,budget_deferral) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`, groupID, configKey, model, stamp, minutes, started, finished, status, deferral)
+						}
+						require.NoError(t, err)
+					}
+					keepsOld := scenario == "deferred_keeps_old" || scenario == "future_keeps_old"
+					if keepsOld {
+						seed(true)
+					}
+					seed(false)
+					queue, err := repo.SyncGroupMonitoringTurns(ctx, cfg, []service.GroupMonitoringTurn{target})
+					require.NoError(t, err)
+					turn := groupTurn(t, queue, group.ID)
+					if scenario == "success" || scenario == "failure" || keepsOld {
+						due := slot.Add(5 * time.Minute)
+						if lane == "v3" {
+							due = slot.Add(9 * time.Minute)
+						}
+						if keepsOld {
+							due = due.Add(-5 * time.Minute)
+						}
+						require.Equal(t, due, turn.ReviewDueAt)
+						rebuilt, err := repo.SyncGroupMonitoringTurns(ctx, cfg, []service.GroupMonitoringTurn{target})
+						require.NoError(t, err)
+						require.Equal(t, turn, groupTurn(t, rebuilt, group.ID), "reading the native clock must not renew age or evidence")
+					} else {
+						require.True(t, turn.ReviewDueAt.IsZero(), "invalid, unknown or deferred evidence is not a review")
+					}
+					var evidence string
+					require.NoError(t, db.QueryRowContext(ctx, "SELECT json_agg(r ORDER BY id)::text FROM "+table+" r").Scan(&evidence))
+					if scenario == "success" {
+						_, err = db.ExecContext(ctx, "ALTER TABLE "+table+" RENAME TO hidden_native_results")
+						require.NoError(t, err)
+						_, err = repo.SyncGroupMonitoringTurns(ctx, cfg, []service.GroupMonitoringTurn{target})
+						require.Error(t, err, "native history failures must not become routine fallback")
+						_, err = db.ExecContext(ctx, "ALTER TABLE hidden_native_results RENAME TO "+table)
+						require.NoError(t, err)
+						recovered, err := repo.SyncGroupMonitoringTurns(ctx, cfg, []service.GroupMonitoringTurn{target})
+						require.NoError(t, err)
+						require.Equal(t, turn, groupTurn(t, recovered, group.ID))
+					}
+					var unchanged string
+					require.NoError(t, db.QueryRowContext(ctx, "SELECT json_agg(r ORDER BY id)::text FROM "+table+" r").Scan(&unchanged))
+					require.Equal(t, evidence, unchanged, "classification never writes the original verdict or time")
+				})
+			}
+			invalid := cfg
+			invalid.ObservedAt = time.Time{}
+			_, err := repo.SyncGroupMonitoringTurns(ctx, invalid, []service.GroupMonitoringTurn{target})
+			require.Error(t, err)
+			target.IntervalMinutes = 0
+			_, err = repo.SyncGroupMonitoringTurns(ctx, cfg, []service.GroupMonitoringTurn{target})
+			require.Error(t, err)
+		})
+	}
+	var usage, counters int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM usage_logs),(SELECT count(*) FROM monitoring_probe_budget_counters)`).Scan(&usage, &counters))
+	require.Zero(t, usage)
+	require.Zero(t, counters)
+}
+
+func TestChannelMonitorV3ProbeConfigMigrationAndLegacy(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	group := mustCreateGroup(t, client, &service.Group{Name: "v3-config-migration", Platform: service.PlatformOpenAI, Status: service.StatusActive})
+	slot := time.Now().UTC().Truncate(5 * time.Minute).Add(-time.Hour)
+	_, err := db.ExecContext(ctx, `INSERT INTO channel_monitor_v3_probe_results(group_id,model,slot_start,slot_minutes,outcome) VALUES($1,'native-model',$2,5,'failure')`, group.ID, slot)
+	require.NoError(t, err)
+	ddl, err := os.ReadFile("../../migrations/356_channel_monitor_v3_probe_config.sql")
+	require.NoError(t, err)
+	for range 2 {
+		_, err = db.ExecContext(ctx, string(ddl))
+		require.NoError(t, err)
+	}
+	var unknown int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM channel_monitor_v3_probe_results WHERE config_key IS NULL AND outcome='failure'`).Scan(&unknown))
+	require.Equal(t, 1, unknown, "migration must not guess the legacy effort")
+	repo := NewChannelMonitorV3Repository(db)
+	key := service.ChannelMonitorV3ProbeConfigKey("native-model", "low", 5)
+	high := service.ChannelMonitorV3ProbeConfigKey("native-model", "high", 5)
+	require.NotEqual(t, key, high)
+	id, err := repo.ClaimProbe(ctx, group.ID, "native-model", slot.Add(5*time.Minute), 5, key)
+	require.NoError(t, err)
+	require.Positive(t, id)
+	again, err := repo.ClaimProbe(ctx, group.ID, "native-model", slot.Add(5*time.Minute), 5, high)
+	require.NoError(t, err)
+	require.Zero(t, again, "effort change must not bypass the original one-per-slot claim")
+	var saved string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT config_key FROM channel_monitor_v3_probe_results WHERE id=$1`, id).Scan(&saved))
+	require.Equal(t, key, saved)
+	budget := NewMonitoringProbeBudgetRepository(db)
+	_, err = budget.SaveSettings(ctx, monitoringBudgetPolicy())
+	require.NoError(t, err)
+	lease, err := budget.Acquire(ctx, service.MonitoringProbeBudgetRequest{SiteHash: "site", KeyHashes: []string{"key"}})
+	require.NoError(t, err)
+	require.NoError(t, budget.Release(ctx, lease, service.MonitoringProbeTokenUsage{}))
+	_, err = db.ExecContext(ctx, `ALTER TABLE channel_monitor_v3_probe_results DROP COLUMN config_key`)
+	require.NoError(t, err)
+	var outcomes string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT string_agg(outcome,',' ORDER BY id) FROM channel_monitor_v3_probe_results`).Scan(&outcomes))
+	require.Equal(t, "failure,running", outcomes)
+	_, err = db.ExecContext(ctx, string(ddl))
+	require.NoError(t, err)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM channel_monitor_v3_probe_results WHERE config_key IS NULL`).Scan(&unknown))
+	require.Equal(t, 2, unknown)
+	summary, err := budget.Summary(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, summary.DayUsed)
+	require.Zero(t, summary.ActiveRequests)
+}

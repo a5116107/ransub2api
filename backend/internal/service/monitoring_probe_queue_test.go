@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"slices"
 	"sync"
@@ -12,6 +13,86 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestMonitoringProbeQueueNativeReviewTiers(t *testing.T) {
+	keys := []monitoringProbeQueueKey{{groupID: 1}, {groupID: 2}, {groupID: 3}, {groupID: 4}}
+	store := &groupMonitoringTurnsFake{nativeReviewDue: map[string]time.Time{}}
+	var q monitoringProbeQueue
+	q.store = store
+	orderProbeQueue(t, &q, keys, keys)
+	for _, key := range keys {
+		store.setAge(key, 10, 0)
+	}
+	store.setAge(keys[3], 1, 0)
+	hash := fmt.Sprintf("%x", sha256.Sum256(nil))
+	store.nativeReviewDue[fmt.Sprintf("2/%s", hash)] = time.Now().Add(-time.Minute)
+	store.nativeReviewDue[fmt.Sprintf("3/%s", hash)] = time.Now().Add(-2 * time.Minute)
+	due := slices.Clone(keys)
+	orderProbeQueue(t, &q, keys, due)
+	require.Equal(t, []monitoringProbeQueueKey{keys[3], keys[2], keys[1], keys[0]}, due,
+		"unserved old rounds precede reviews; reviews then follow their native due clocks")
+	view := q.runtimeSnapshot()
+	require.Equal(t, 1, view.LastScan.PriorityVersion)
+	require.EqualValues(t, 2, view.LastScan.ReviewTargets)
+	require.EqualValues(t, 2, view.LastScan.RoutineTargets)
+}
+
+func TestMonitoringProbeQueueReviewsDrainBeforeRoutine(t *testing.T) {
+	store := &groupMonitoringTurnsFake{nativeReviewDue: map[string]time.Time{}}
+	q := monitoringProbeQueue{store: store}
+	keys := make([]monitoringProbeQueueKey, 8)
+	hash := fmt.Sprintf("%x", sha256.Sum256(nil))
+	for i := range keys {
+		keys[i].groupID = int64(i + 1)
+		if i >= 4 {
+			store.nativeReviewDue[fmt.Sprintf("%d/%s", i+1, hash)] = time.Now().Add(-time.Minute)
+		}
+	}
+	orderProbeQueue(t, &q, keys, keys)
+	entered, gate, done := make(chan struct{}, 4), make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	ctx, cancel := context.WithCancel(t.Context())
+	var routines atomic.Int32
+	t.Cleanup(func() {
+		cancel()
+		release()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("native review batch did not drain")
+		}
+	})
+	go func() {
+		defer close(done)
+		q.run(ctx, keys, func(ctx context.Context, key monitoringProbeQueueKey) monitoringProbeQueueRun {
+			if key.groupID > 4 {
+				entered <- struct{}{}
+				select {
+				case <-gate:
+				case <-ctx.Done():
+				}
+			} else {
+				routines.Add(1)
+			}
+			return monitoringProbeQueueRun{served: true}
+		})
+	}()
+	for range 4 {
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("all four review workers must retain their original concurrency")
+		}
+	}
+	require.Zero(t, routines.Load(), "sorting alone must not allow a routine goroutine to race a blocked review")
+	release()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("routine phase did not resume")
+	}
+	require.EqualValues(t, 4, routines.Load())
+}
 
 func TestMonitoringProbeQueueInventory(t *testing.T) {
 	var q monitoringProbeQueue

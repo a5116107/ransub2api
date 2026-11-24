@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,39 @@ type monitorV3LifecycleRepo struct {
 	reads  atomic.Int32
 	read   func(context.Context) (*ChannelMonitorV3Config, error)
 	finish func(context.Context, ChannelMonitorV3ProbeResult) error
+}
+
+func TestChannelMonitorV3NativeReviewPriority(t *testing.T) {
+	p, repo, groups := monitorV3ProberFixture(nil, nil)
+	defer p.Stop()
+	repo.components, repo.config.IdleProbe.Groups = nil, nil
+	repo.nativeReviewDue = map[string]time.Time{}
+	groupRepo := groupTestGroupsFake{}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("gpt-probe")))
+	for id := int64(1); id <= 8; id++ {
+		repo.components = append(repo.components, ChannelMonitorV3Component{ID: id, GroupID: id, Model: "gpt-probe", Enabled: true})
+		repo.config.IdleProbe.Groups = append(repo.config.IdleProbe.Groups, ChannelMonitorV3IdleProbeGroup{GroupID: id, ReasoningEffort: "low"})
+		groupRepo[id] = &Group{ID: id, Platform: PlatformOpenAI, Status: StatusActive}
+		if id > 4 {
+			repo.nativeReviewDue[fmt.Sprintf("%d/%s", id, hash)] = monitorV3ProbeTick.Add(-time.Minute)
+		}
+	}
+	groups.groups, groups.router = groupRepo, &candyRouterSpy{}
+	var calls atomic.Int32
+	var mu sync.Mutex
+	served := []int64{}
+	groups.runAccount = func(_ context.Context, id int64, _ string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+		if calls.Add(1) > 4 {
+			return &ScheduledTestResult{BudgetDeferral: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_day"}}, nil
+		}
+		mu.Lock()
+		served = append(served, id)
+		mu.Unlock()
+		return &ScheduledTestResult{Status: "success", ResponseText: monitorV3Answer(cfg.Prompt)}, nil
+	}
+	p.RunDue(t.Context(), monitorV3ProbeTick)
+	require.ElementsMatch(t, []int64{5, 6, 7, 8}, served)
+	require.EqualValues(t, 4, p.MonitoringRuntime().LastScan.ReviewTargets)
 }
 
 func TestChannelMonitorV3FairBudgetCoverage(t *testing.T) {

@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 CN必要复核优先本地已验；原28项20done/8部分。
+任务：D8.1 V2/V3原证据复核优先本地已验；原28项20done/8部分。
 授权：本地实现/验证、自有分支同步；不CI/发布/部署。
-验证：race936/默认35/SQL14/UI102/浏览器24通过；静态/Linux通过。
-来源：5e769716c/1ff7408c1e62，cn-priority-*。
-下一动作：核V1/V2/V3原证据时钟，续D8.1全scope/跨通道。
-尝试：CN同轮抢预算红绿、跨余额/用量、重建/原API与夹具共享已验。
-阻塞：实际scope/独立基线/缓存域；历史及本轮空目录清理受限。
+验证：race1856/默认120/SQL56/UI163/浏览器28及静态/Linux通过。
+来源：5a4ce1858/aaf2a4f4b178，group-priority-*。
+下一动作：续D8.1其余scope/跨通道，D2/D3/D5真实来源仍待证据。
+尝试：原时钟/配置归属/同轮及双节点优先、重建与异常恢复已验。
+阻塞：真实scope/基线/缓存域；历史与本轮2838271B临时文件清理受限。
 责任方：开发方/供应商/宿主维护者；详下表及DECISIONS。
 解除：补来源证据；宿主释放已列路径的清理限制。
 <!-- resume:end -->
@@ -70,15 +70,15 @@
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/多维/同scope汇总及判题依赖详情已验；独立基线、其余线路/覆盖与资格消费仍缺 |
 | D8 | in_progress | 物理/Token/100队列、周期下界/本地链与倍率实钟已验；全scope/其余跨窗口/生产/严格混版仍待 |
-| D8.1本地子项 | in_progress | 原通道/FIFO、倍率/用量/CN复核优先与CN/V2/V3持久轮转已本地验；全scope/跨通道/生产待验 |
+| D8.1本地子项 | in_progress | 原通道/FIFO、原生复核优先及持久轮转已验；全scope/跨通道/生产待验 |
 | D8.1 V1配置/领取 | done | 跨节点快照/领取跨提交围栏、独立进程/回退已本地验；非生产 |
-| D8.1 V2/V3本地链 | done | 原链/持久年龄、双节点/CAS/重建/异常恢复/API与中英已验；非全scope/跨通道公平/生产 |
+| D8.1 V2/V3本地链 | done | 原时钟/配置归属/复核优先、双节点/重建/故障恢复/API与中英已验；非全scope/生产 |
 | D9 | in_progress | .9 Goal同例/唯一用量、排空重建、120/300及429换线已验；旧Mac会话/BPS长流与D9.2仍待 |
 | R1 | done | .9/de8b86ed8916已发行上线；稳定源/制品/加载同源，四阶段回退及公网SSE/UI已验；开发在研保持 |
 
 ## 剩余执行顺序与等待
 
-- CN/V2/V3持久轮转、CN同轮复核优先/API已验；续V1/V2/V3原时钟、全scope/跨通道及D2/D3/D5。
+- V1原到期/配置围栏与V2/V3同配置原时钟已核；续D8.1全scope/跨通道及D2/D3/D5。
 - D9.1生产.9已验；PR3/v2.24.1冲突未解；未验功能不发布，见DECISIONS。
 - 供应商/接入方待提供实际组/模型/fast、独立参考、缓存域/存活及unknown请求唯一关联；开发方据对应scope/证据验证。
 - D3.3非文本待供应商/模型/协议；D6.3待可信前缀/候选域。文本通过不外推其他能力。
@@ -88,5 +88,5 @@
 
 - 工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream禁推，无额外worktree。
 - backend/tmp历史拒删、Windows符号链接权限仍待宿主；正式153包及Linux同例已验。
-- 本轮PG/Redis/浏览器回收；group-turns与cn-priority空目录0B清理受限；旧服务保护。
-- 历史overlay/v1-config-sync及probe-priority（3文件242729427B、0活跃）清理被工具策略拒绝，宿主待释放；详DECISIONS。
+- 本轮PG/Redis/浏览器已回收；group-priority余2文件2838271B拒删，0活跃；旧服务保护。
+- 历史overlay/v1-config-sync、group-turns/cn-priority及probe-priority（242729427B）拒删保持；宿主待释放，详DECISIONS。

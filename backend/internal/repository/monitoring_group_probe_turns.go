@@ -37,6 +37,7 @@ func validGroupMonitoringTurn(turn service.GroupMonitoringTurn) bool {
 
 func syncGroupMonitoringTurns(ctx context.Context, db *sql.DB, lane string, cfg service.GroupMonitoringQueueConfig, targets []service.GroupMonitoringTurn) (*service.GroupMonitoringQueue, error) {
 	ids, scopes, identities, due := make([]int64, 0, len(targets)), make([]string, 0, len(targets)), make([]string, 0, len(targets)), make([]bool, 0, len(targets))
+	reviewIDs, reviewScopes, reviewKeys, reviewMinutes := []int64{}, []string{}, []string{}, []int{}
 	seen := make(map[string]bool, len(targets))
 	for _, target := range targets {
 		key := fmt.Sprintf("%d/%s", target.GroupID, target.ScopeHash)
@@ -45,6 +46,18 @@ func syncGroupMonitoringTurns(ctx context.Context, db *sql.DB, lane string, cfg 
 		}
 		seen[key] = true
 		ids, scopes, identities, due = append(ids, target.GroupID), append(scopes, target.ScopeHash), append(identities, target.IdentityHash), append(due, target.Due)
+		if target.EvidenceKey == "" && target.IntervalMinutes == 0 {
+			continue
+		}
+		maximum := 1440
+		if lane == "v3" {
+			maximum = 60
+		}
+		if cfg.ObservedAt.IsZero() || target.IntervalMinutes < 1 || target.IntervalMinutes > maximum ||
+			!validCNMonitoringTurn(service.CNMonitoringTurn{AccountID: target.GroupID, IdentityHash: target.EvidenceKey}) {
+			return nil, errors.New("invalid native group monitoring scope")
+		}
+		reviewIDs, reviewScopes, reviewKeys, reviewMinutes = append(reviewIDs, target.GroupID), append(reviewScopes, target.ScopeHash), append(reviewKeys, target.EvidenceKey), append(reviewMinutes, target.IntervalMinutes)
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -125,6 +138,58 @@ func syncGroupMonitoringTurns(ctx context.Context, db *sql.DB, lane string, cfg 
 	err = errors.Join(rows.Err(), rows.Close())
 	if err != nil {
 		return nil, err
+	}
+	if len(reviewIDs) > 0 {
+		// Read original terminal observations, never queue-age metadata, as the
+		// source of a review. Deferred/running/legacy-unknown rows do not erase
+		// an older valid observation. The original next slot/window is a due
+		// clock, not a newly invented health or quality TTL.
+		observation := `SELECT r.slot+make_interval(mins=>w.minutes) AS due_at
+ FROM channel_monitor_v2_candy_results r
+ WHERE r.group_id=w.id AND r.config_key=w.config
+ AND encode(sha256(convert_to(r.config_key,'UTF8')),'hex')=w.scope
+ AND encode(sha256(convert_to('candy-v1:'||r.model||':'||r.reasoning_effort||':'||w.minutes::text,'UTF8')),'hex')=w.config
+ AND r.verdict IN ('correct','incorrect','error') AND r.reason<>'interrupted'
+ AND r.budget_deferral IS NULL AND isfinite(r.slot) AND isfinite(r.checked_at) AND isfinite(r.finished_at)
+ AND r.slot>'0001-01-01'::timestamptz AND r.checked_at>'0001-01-01'::timestamptz
+ AND r.finished_at>=r.checked_at AND r.finished_at<=LEAST($5::timestamptz,clock_timestamp())
+ AND r.slot+make_interval(mins=>w.minutes)<=LEAST($5::timestamptz,clock_timestamp())
+ ORDER BY r.slot DESC,r.id DESC LIMIT 1`
+		if lane == "v3" {
+			observation = `SELECT r.slot_start+make_interval(mins=>2*w.minutes)-INTERVAL '1 minute' AS due_at
+ FROM channel_monitor_v3_probe_results r
+ WHERE r.group_id=w.id AND r.config_key=w.config AND r.slot_minutes=w.minutes
+ AND encode(sha256(convert_to(r.model,'UTF8')),'hex')=w.scope
+ AND r.outcome IN ('success','failure') AND r.budget_deferral IS NULL
+ AND isfinite(r.slot_start) AND isfinite(r.started_at) AND isfinite(r.finished_at)
+ AND r.slot_start>'0001-01-01'::timestamptz AND r.started_at>'0001-01-01'::timestamptz
+ AND r.finished_at>=r.started_at AND r.finished_at<=LEAST($5::timestamptz,clock_timestamp())
+ AND r.slot_start+make_interval(mins=>2*w.minutes)-INTERVAL '1 minute'<=LEAST($5::timestamptz,clock_timestamp())
+ ORDER BY r.slot_start DESC,r.id DESC LIMIT 1`
+		}
+		rows, err = tx.QueryContext(ctx, `SELECT w.id,w.scope,p.due_at
+ FROM unnest($1::bigint[],$2::text[],$3::text[],$4::int[]) AS w(id,scope,config,minutes)
+ JOIN LATERAL (`+observation+`) p ON TRUE`, pq.Array(reviewIDs), pq.Array(reviewScopes), pq.Array(reviewKeys), pq.Array(reviewMinutes), cfg.ObservedAt)
+		if err != nil {
+			return nil, err
+		}
+		byScope := make(map[string]int, len(queue.Turns))
+		for i, turn := range queue.Turns {
+			byScope[fmt.Sprintf("%d/%s", turn.GroupID, turn.ScopeHash)] = i
+		}
+		for rows.Next() {
+			var observed service.GroupMonitoringTurn
+			if err = rows.Scan(&observed.GroupID, &observed.ScopeHash, &observed.ReviewDueAt); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if i, exists := byScope[fmt.Sprintf("%d/%s", observed.GroupID, observed.ScopeHash)]; exists {
+				queue.Turns[i].ReviewDueAt = observed.ReviewDueAt.UTC()
+			}
+		}
+		if err = errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, err
+		}
 	}
 	return queue, tx.Commit()
 }

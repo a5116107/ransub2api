@@ -54,13 +54,13 @@ func (r *channelMonitorV3Repository) SuccessCounts(ctx context.Context, groupIDs
 	return out, err
 }
 
-func (r *channelMonitorV3Repository) ClaimProbe(ctx context.Context, groupID int64, model string, slot time.Time, slotMinutes int) (int64, error) {
+func (r *channelMonitorV3Repository) ClaimProbe(ctx context.Context, groupID int64, model string, slot time.Time, slotMinutes int, configKey string) (int64, error) {
 	var id int64
 	err := r.db.QueryRowContext(ctx, `
-		INSERT INTO channel_monitor_v3_probe_results (group_id, model, slot_start, slot_minutes)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO channel_monitor_v3_probe_results (group_id, model, slot_start, slot_minutes, config_key)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (group_id, model, slot_start) DO NOTHING
-		RETURNING id`, groupID, model, slot, slotMinutes).Scan(&id)
+		RETURNING id`, groupID, model, slot, slotMinutes, configKey).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}

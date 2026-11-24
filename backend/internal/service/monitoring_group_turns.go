@@ -19,6 +19,11 @@ type GroupMonitoringTurn struct {
 	Served, Tried           int64
 	WaitingSince            time.Time
 	ClaimUntil              time.Time
+	// Transient native-result scope and derived next review boundary. These
+	// never persist as a second observation or confer health/quality validity.
+	EvidenceKey     string
+	IntervalMinutes int
+	ReviewDueAt     time.Time
 }
 
 type GroupMonitoringQueue struct {
@@ -27,8 +32,9 @@ type GroupMonitoringQueue struct {
 }
 
 type GroupMonitoringQueueConfig struct {
-	Version   int
-	IdleProbe *ChannelMonitorV3IdleProbe
+	Version    int
+	IdleProbe  *ChannelMonitorV3IdleProbe
+	ObservedAt time.Time
 }
 
 // Both native V2 and V3 repositories implement this contract. Its failure is

@@ -171,6 +171,9 @@ func TestMonitoringProbeGroupQueuesPostgresAdminHTTPReadOnly(t *testing.T) {
 		require.Equal(t, "idle", view.V3.State)
 		require.NotNil(t, view.V3.LastScan)
 		require.Zero(t, view.V3.LastScan.Targets, "only the recovered complete inventory establishes zero targets")
+		require.Equal(t, 1, view.V3.LastScan.PriorityVersion)
+		require.Zero(t, view.V3.LastScan.ReviewTargets)
+		require.Zero(t, view.V3.LastScan.RoutineTargets)
 	}
 	require.Equal(t, before, counts(), "coordination failures and recovery cannot create physical requests, verdicts or billing")
 }

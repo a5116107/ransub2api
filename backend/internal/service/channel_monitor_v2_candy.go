@@ -189,7 +189,7 @@ func (s *ChannelMonitorV2CandyService) RunDue(ctx context.Context, now time.Time
 		return
 	}
 	targets := make(map[monitoringProbeQueueKey]ChannelMonitorV2CandyProbe, len(cfg.CandyProbes))
-	identities := make(map[monitoringProbeQueueKey]string, len(cfg.CandyProbes))
+	identities := make(map[monitoringProbeQueueKey]monitoringProbeQueueTarget, len(cfg.CandyProbes))
 	keys := make([]monitoringProbeQueueKey, 0, len(cfg.CandyProbes))
 	groupInventory := make(map[int64]*Group)
 	for _, probe := range cfg.CandyProbes {
@@ -209,12 +209,13 @@ func (s *ChannelMonitorV2CandyService) RunDue(ctx context.Context, now time.Time
 		if !cfg.CandyProbeAllowed(probe, group) {
 			continue
 		}
-		key := monitoringProbeQueueKey{groupID: probe.GroupID, scope: probe.key()}
+		configKey := probe.key()
+		key := monitoringProbeQueueKey{groupID: probe.GroupID, scope: configKey}
 		keys = append(keys, key)
 		targets[key] = probe
-		identities[key] = probe.key()
+		identities[key] = monitoringProbeQueueTarget{identity: configKey, evidenceKey: configKey, intervalMinutes: probe.IntervalMinutes}
 	}
-	if !s.queue.order(ctx, s.repo, GroupMonitoringQueueConfig{Version: cfg.Version}, identities, keys) {
+	if !s.queue.order(ctx, s.repo, GroupMonitoringQueueConfig{Version: cfg.Version, ObservedAt: now}, identities, keys) {
 		return
 	}
 	s.queue.run(ctx, keys, func(ctx context.Context, key monitoringProbeQueueKey) monitoringProbeQueueRun {

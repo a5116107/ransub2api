@@ -334,7 +334,7 @@ type ChannelMonitorV3Repository interface {
 	SuccessCounts(ctx context.Context, groupIDs []int64, from, to time.Time) ([]ChannelMonitorV3Fact, error)
 	// ClaimProbe reserves the probe of a group and model for one slot; it
 	// returns 0 when the slot is already taken.
-	ClaimProbe(ctx context.Context, groupID int64, model string, slot time.Time, slotMinutes int) (int64, error)
+	ClaimProbe(ctx context.Context, groupID int64, model string, slot time.Time, slotMinutes int, configKey string) (int64, error)
 	FinishProbe(ctx context.Context, result ChannelMonitorV3ProbeResult) error
 	// ProbeFacts sums the finished probes of the groups taken in [from, to),
 	// binned into interval slots by when they were taken; interval 0 folds

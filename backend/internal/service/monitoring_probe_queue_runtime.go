@@ -24,9 +24,12 @@ type MonitoringProbeQueueRuntime struct {
 }
 
 type MonitoringProbeQueueInventory struct {
-	ObservedAt time.Time `json:"observed_at"`
-	Targets    int64     `json:"targets"`
-	Due        int64     `json:"due"`
+	ObservedAt      time.Time `json:"observed_at"`
+	Targets         int64     `json:"targets"`
+	Due             int64     `json:"due"`
+	PriorityVersion int       `json:"priority_version"`
+	ReviewTargets   int64     `json:"review_targets"`
+	RoutineTargets  int64     `json:"routine_targets"`
 }
 
 type MonitoringProbeQueueCycle struct {
@@ -98,11 +101,12 @@ func (q *monitoringProbeQueue) oldestPending() *time.Time {
 	return &oldest
 }
 
-func (q *monitoringProbeQueue) observeInventory(now time.Time, targets, due int) {
+func (q *monitoringProbeQueue) observeInventory(now time.Time, targets, due, reviews int) {
 	oldest := q.oldestPending()
 	q.runtimeMu.Lock()
 	q.runtime.State = "queued"
-	q.runtime.LastScan = &MonitoringProbeQueueInventory{ObservedAt: now, Targets: int64(targets), Due: int64(due)}
+	q.runtime.LastScan = &MonitoringProbeQueueInventory{ObservedAt: now, Targets: int64(targets), Due: int64(due),
+		PriorityVersion: 1, ReviewTargets: int64(reviews), RoutineTargets: int64(due - reviews)}
 	q.runtime.Cycle = &MonitoringProbeQueueCycle{StartedAt: now, Queued: int64(due), OldestPendingAt: oldest}
 	q.runtimeMu.Unlock()
 }
