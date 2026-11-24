@@ -200,6 +200,7 @@ func TestChannelMonitorV1ScheduledClaimsFailureClosed(t *testing.T) {
 	m := &service.ChannelMonitor{Name: "V1 missing claim table", Provider: service.MonitorProviderOpenAI,
 		Endpoint: "https://example.com/v1", APIKey: "fixture", PrimaryModel: "model", Enabled: true, IntervalSeconds: 60}
 	require.NoError(t, repo.Create(ctx, m))
+	m = readV1ClaimSnapshot(t, repo, m)
 	_, err := db.ExecContext(ctx, `ALTER TABLE channel_monitor_probe_claims RENAME TO fixture_held_claims`)
 	require.NoError(t, err)
 	t.Cleanup(func() {

@@ -12,6 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func readV1ClaimSnapshot(t *testing.T, repo service.ChannelMonitorRepository, m *service.ChannelMonitor) *service.ChannelMonitor {
+	t.Helper()
+	current, err := repo.GetByID(t.Context(), m.ID)
+	require.NoError(t, err)
+	return current
+}
+
 func TestChannelMonitorV1ScheduledClaimsPostgresBoundaries(t *testing.T) {
 	db, client := newBillingAuditDatabase(t)
 	ctx := t.Context()
@@ -21,6 +28,7 @@ func TestChannelMonitorV1ScheduledClaimsPostgresBoundaries(t *testing.T) {
 		APIMode: service.MonitorAPIModeChatCompletions, Endpoint: "https://example.com/tenant/v1", APIKey: "fixture-encrypted",
 		PrimaryModel: "model-a", Enabled: true, IntervalSeconds: 60, ExtraHeaders: map[string]string{}}
 	require.NoError(t, repo.Create(ctx, m))
+	m = readV1ClaimSnapshot(t, repo, m)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var won []*service.ChannelMonitorScheduledClaim
@@ -48,6 +56,7 @@ func TestChannelMonitorV1ScheduledClaimsPostgresBoundaries(t *testing.T) {
 	other := *m
 	other.ID, other.Name = 0, "V1 independent monitor"
 	require.NoError(t, repo.Create(ctx, &other))
+	other = *readV1ClaimSnapshot(t, repo, &other)
 	otherClaim, err := claims.ClaimScheduledCheck(ctx, &other, 2*time.Minute, 75*time.Second)
 	require.NoError(t, err)
 	require.NotNil(t, otherClaim, "one monitor's in-flight owner must not serialize independent monitors")
@@ -117,6 +126,7 @@ func TestChannelMonitorV1ScheduledClaimsPostgresBoundaries(t *testing.T) {
 	// is fenced before its history or freshness transaction can commit.
 	after.PrimaryModel = "model-b"
 	require.NoError(t, repo.Update(ctx, after))
+	after = readV1ClaimSnapshot(t, repo, after)
 	renewed, err = claims.RenewScheduledCheck(ctx, m.ID, second, 2*time.Minute)
 	require.NoError(t, err)
 	require.False(t, renewed)
@@ -170,6 +180,7 @@ func TestChannelMonitorV1ClaimMigrationRollbackPreservesData(t *testing.T) {
 	m := &service.ChannelMonitor{Name: "V1 rollback", Provider: service.MonitorProviderOpenAI, APIMode: service.MonitorAPIModeChatCompletions,
 		Endpoint: "https://example.com/v1", APIKey: "fixture-encrypted", PrimaryModel: "model", Enabled: true, IntervalSeconds: 60}
 	require.NoError(t, repo.Create(ctx, m))
+	m = readV1ClaimSnapshot(t, repo, m)
 	require.NoError(t, repo.InsertHistoryBatch(ctx, []*service.ChannelMonitorHistoryRow{{MonitorID: m.ID, Model: "model", Status: service.MonitorStatusOperational, CheckedAt: time.Now()}}))
 	before := func() string {
 		t.Helper()
@@ -221,6 +232,8 @@ func TestChannelMonitorV1TemplateApplyInvalidatesOnlyOwnedClaims(t *testing.T) {
 	unrelated := *linked
 	unrelated.ID, unrelated.TemplateID, unrelated.Name = 0, nil, "V1 unrelated"
 	require.NoError(t, repo.Create(ctx, &unrelated))
+	linked = readV1ClaimSnapshot(t, repo, linked)
+	unrelated = *readV1ClaimSnapshot(t, repo, &unrelated)
 	linkedClaim, err := claims.ClaimScheduledCheck(ctx, linked, 2*time.Minute, time.Minute)
 	require.NoError(t, err)
 	require.NotNil(t, linkedClaim)

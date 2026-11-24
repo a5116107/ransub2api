@@ -67,6 +67,11 @@ type ChannelMonitor struct {
 	DuplicateOperationID  string
 	BudgetCredentialScope *ChannelMonitorBudgetCredentialScope `json:"-"`
 
+	// ScheduledConfigurationKey is captured with the stored row by GetByID.
+	// Automatic claims compare this opaque key before using that exact snapshot;
+	// never derive it from a caller's decrypted/normalized configuration.
+	ScheduledConfigurationKey string `json:"-"`
+
 	// APIKeyDecryptFailed 表示 APIKey 字段无法解密（密钥不一致或损坏）。
 	// 此时 APIKey 为空字符串，runner / RunCheck 必须跳过该监控并提示重填。
 	APIKeyDecryptFailed bool

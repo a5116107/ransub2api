@@ -162,13 +162,37 @@ func (r *channelMonitorRepository) FindByDuplicateOperationID(ctx context.Contex
 }
 
 func (r *channelMonitorRepository) GetByID(ctx context.Context, id int64) (*service.ChannelMonitor, error) {
-	row, err := r.client.ChannelMonitor.Query().
-		Where(channelmonitor.IDEQ(id)).
-		Only(ctx)
+	// Read the row and its configuration identity from one MVCC snapshot.
+	// updated_at alone does not cover FK or direct configuration writes.
+	var raw []byte
+	var configurationKey string
+	var createdAt, updatedAt time.Time
+	var checkedAt sql.NullTime
+	err := scanSingleRow(ctx, r.client, `SELECT to_jsonb(m)-'created_at'-'updated_at'-'last_checked_at',`+channelMonitorConfigurationKeySQL+`,
+ m.created_at,m.updated_at,m.last_checked_at FROM channel_monitors m WHERE m.id=$1`, []any{id},
+		&raw, &configurationKey, &createdAt, &updatedAt, &checkedAt)
 	if err != nil {
 		return nil, translatePersistenceError(err, service.ErrChannelMonitorNotFound, nil)
 	}
-	return entToServiceMonitor(row), nil
+	// Ent deliberately excludes ciphertext from its JSON representation. Decode
+	// that one private column explicitly; conversion still uses the same adapter.
+	var stored struct {
+		dbent.ChannelMonitor
+		EncryptedKey string `json:"api_key_encrypted"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return nil, fmt.Errorf("decode channel monitor snapshot: %w", err)
+	}
+	stored.ChannelMonitor.APIKeyEncrypted = stored.EncryptedKey
+	// Keep the driver's existing timezone/precision representation. JSON would
+	// otherwise replace time.UTC with an anonymous zero-offset Location.
+	stored.CreatedAt, stored.UpdatedAt = createdAt, updatedAt
+	if checkedAt.Valid {
+		stored.LastCheckedAt = &checkedAt.Time
+	}
+	m := entToServiceMonitor(&stored.ChannelMonitor)
+	m.ScheduledConfigurationKey = configurationKey
+	return m, nil
 }
 
 func (r *channelMonitorRepository) Update(ctx context.Context, m *service.ChannelMonitor) error {
@@ -357,37 +381,41 @@ func (r *channelMonitorRepository) MarkChecked(ctx context.Context, id int64, ch
 	return nil
 }
 
-// Scheduling revisions exclude observation-only writes. The database computes
-// the key from its full configuration, including future fields, without ever
-// returning encrypted credentials or persisting them a second time.
+// Configuration identities exclude observation writes and include future stored
+// fields. Compute them from the row, never a decrypted/normalized projection,
+// without persisting another credential copy.
 const channelMonitorConfigurationKeySQL = `md5(((to_jsonb(m)-'last_checked_at'-'updated_at') ||
  jsonb_build_object('extra_headers',COALESCE(m.extra_headers,'{}'::jsonb)
  -'sub2api:budget_credential_scope'-'sub2api:duplicate_operation_id'))::text)`
 
 func (r *channelMonitorRepository) ClaimScheduledCheck(ctx context.Context, expected *service.ChannelMonitor, ttl, delay time.Duration) (*service.ChannelMonitorScheduledClaim, error) {
-	if expected == nil || ttl <= 0 || delay <= 0 {
+	if expected == nil || expected.ID <= 0 || len(expected.ScheduledConfigurationKey) != 32 || ttl <= 0 || delay <= 0 {
 		return nil, fmt.Errorf("invalid channel monitor scheduled claim")
 	}
 	claim := &service.ChannelMonitorScheduledClaim{ID: uuid.NewString()}
 	var remaining float64
-	err := r.db.QueryRowContext(ctx, `INSERT INTO channel_monitor_probe_claims AS c
+	err := r.db.QueryRowContext(ctx, `WITH current_monitor AS MATERIALIZED (
+ SELECT m.* FROM channel_monitors m WHERE m.id=$1 AND m.enabled AND m.updated_at=$5
+ AND `+channelMonitorConfigurationKeySQL+`=$6 FOR NO KEY UPDATE
+ ) INSERT INTO channel_monitor_probe_claims AS c
  (monitor_id,configuration_key,lease_id,lease_expires_at,next_due_at)
  SELECT m.id,`+channelMonitorConfigurationKeySQL+`,$2::uuid,
  clock_timestamp()+$3*interval '1 second',clock_timestamp()+$4*interval '1 second'
- FROM channel_monitors m WHERE m.id=$1 AND m.enabled AND m.updated_at=$5
+ FROM current_monitor m
  ON CONFLICT(monitor_id) DO UPDATE SET configuration_key=EXCLUDED.configuration_key,
  lease_id=EXCLUDED.lease_id,lease_expires_at=EXCLUDED.lease_expires_at,next_due_at=EXCLUDED.next_due_at
  WHERE c.configuration_key<>EXCLUDED.configuration_key OR
  (c.lease_id IS NOT NULL AND c.lease_expires_at<=clock_timestamp()) OR
  (c.lease_id IS NULL AND c.next_due_at<=clock_timestamp())
- RETURNING configuration_key,EXTRACT(EPOCH FROM next_due_at-clock_timestamp())`, expected.ID, claim.ID, ttl.Seconds(), delay.Seconds(), expected.UpdatedAt).
+ RETURNING configuration_key,EXTRACT(EPOCH FROM next_due_at-clock_timestamp())`, expected.ID, claim.ID, ttl.Seconds(), delay.Seconds(), expected.UpdatedAt, expected.ScheduledConfigurationKey).
 		Scan(&claim.ConfigurationKey, &remaining)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = r.db.QueryRowContext(ctx, `SELECT GREATEST(0,EXTRACT(EPOCH FROM
  CASE WHEN c.lease_id IS NOT NULL AND c.lease_expires_at>clock_timestamp()
  THEN CASE WHEN c.next_due_at>clock_timestamp() THEN LEAST(c.next_due_at,c.lease_expires_at) ELSE c.lease_expires_at END
  ELSE c.next_due_at END-clock_timestamp())) FROM channel_monitor_probe_claims c JOIN channel_monitors m ON m.id=c.monitor_id
- WHERE m.id=$1 AND m.enabled AND m.updated_at=$2 AND c.configuration_key=`+channelMonitorConfigurationKeySQL, expected.ID, expected.UpdatedAt).Scan(&remaining)
+ WHERE m.id=$1 AND m.enabled AND m.updated_at=$2 AND c.configuration_key=$3
+ AND c.configuration_key=`+channelMonitorConfigurationKeySQL, expected.ID, expected.UpdatedAt, expected.ScheduledConfigurationKey).Scan(&remaining)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -436,10 +464,14 @@ func (r *channelMonitorRepository) FinishScheduledCheck(ctx context.Context, id 
 	}
 	defer func() { _ = tx.Rollback() }()
 	var checkedAt time.Time
-	err = scanSingleRow(ctx, tx.Client(), `SELECT clock_timestamp() FROM channel_monitor_probe_claims c
- JOIN channel_monitors m ON m.id=c.monitor_id WHERE c.monitor_id=$1 AND m.enabled
+	// Acquire the monitor before its claim, matching claim/configuration writes.
+	// A joining FOR UPDATE can lock the claim first and deadlock a contender.
+	err = scanSingleRow(ctx, tx.Client(), `WITH current_monitor AS MATERIALIZED (
+ SELECT m.* FROM channel_monitors m WHERE m.id=$1 AND m.enabled FOR NO KEY UPDATE
+ ) SELECT clock_timestamp() FROM current_monitor m
+ JOIN channel_monitor_probe_claims c ON m.id=c.monitor_id WHERE c.monitor_id=$1
  AND c.lease_id=$2::uuid AND c.configuration_key=$3 AND c.lease_expires_at>clock_timestamp()
- AND c.configuration_key=`+channelMonitorConfigurationKeySQL+` FOR NO KEY UPDATE OF m,c`,
+ AND c.configuration_key=`+channelMonitorConfigurationKeySQL+` FOR NO KEY UPDATE OF c`,
 		[]any{id, claim.ID, claim.ConfigurationKey}, &checkedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
