@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"io"
 	"maps"
 	"math/rand/v2"
 	"net/http"
@@ -56,6 +55,8 @@ const (
 )
 
 var (
+	errOpenCodeGoUsageLeaderLockLost = errors.New("OpenCode Go usage leader lock lost")
+
 	ErrOpenCodeGoUsageUnavailable = infraerrors.ServiceUnavailable(
 		"OPENCODE_GO_USAGE_UNAVAILABLE", "OpenCode Go usage is unavailable",
 	)
@@ -122,10 +123,11 @@ type OpenCodeGoUsageSnapshot struct {
 
 // OpenCodeGoUsageState is the dedicated DTO exposed to administrators.
 type OpenCodeGoUsageState struct {
-	AccountID          int64                    `json:"account_id"`
-	Eligible           bool                     `json:"eligible"`
-	AutoRefreshEnabled bool                     `json:"auto_refresh_enabled"`
-	Snapshot           *OpenCodeGoUsageSnapshot `json:"snapshot,omitempty"`
+	AccountID          int64                        `json:"account_id"`
+	Eligible           bool                         `json:"eligible"`
+	AutoRefreshEnabled bool                         `json:"auto_refresh_enabled"`
+	Snapshot           *OpenCodeGoUsageSnapshot     `json:"snapshot,omitempty"`
+	BudgetDeferral     *MonitoringProbeBudgetDenial `json:"budget_deferral,omitempty"`
 }
 
 type openCodeGoUsageRepository interface {
@@ -344,9 +346,10 @@ func scheduleOpenCodeGoUsageActivity(deferred *DeferredService, account *Account
 
 // OpenCodeGoUsageService refreshes the official usage JSON without affecting routing state.
 type OpenCodeGoUsageService struct {
-	accountRepo    AccountRepository
-	httpUpstream   HTTPUpstream
-	settingService *SettingService
+	accountRepo      AccountRepository
+	httpUpstream     HTTPUpstream
+	monitoringBudget *MonitoringProbeBudgetService
+	settingService   *SettingService
 
 	parentCtx    context.Context
 	parentCancel context.CancelFunc
@@ -388,12 +391,18 @@ func ProvideOpenCodeGoUsageService(
 	lockCache LeaderLockCache,
 	db *sql.DB,
 	cfg *config.Config,
+	budgetRepo MonitoringProbeBudgetRepository,
 ) *OpenCodeGoUsageService {
 	svc := NewOpenCodeGoUsageService(accountRepo, httpUpstream, settingService)
 	svc.lockCache = lockCache
 	svc.db = db
+	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budgetRepo))
 	startBackgroundService(cfg, svc)
 	return svc
+}
+
+func (s *OpenCodeGoUsageService) SetMonitoringBudget(budget *MonitoringProbeBudgetService) {
+	s.monitoringBudget = budget
 }
 
 func (s *OpenCodeGoUsageService) Start() {
@@ -416,12 +425,10 @@ func (s *OpenCodeGoUsageService) Stop() {
 		return
 	}
 	s.mu.Lock()
-	if s.stopped {
-		s.mu.Unlock()
-		return
+	if !s.stopped {
+		s.stopped = true
+		s.parentCancel()
 	}
-	s.stopped = true
-	s.parentCancel()
 	s.mu.Unlock()
 	s.wg.Wait()
 }
@@ -436,7 +443,7 @@ func (s *OpenCodeGoUsageService) runLoop() {
 		case <-s.parentCtx.Done():
 			return
 		case <-ticker.C:
-			if err := s.RunDue(s.parentCtx); err != nil {
+			if err := s.RunDue(s.parentCtx); err != nil && s.parentCtx.Err() == nil {
 				logger.LegacyPrintf("service.opencode_go_usage", "run_due_failed: err=%v", err)
 			}
 		}
@@ -585,6 +592,14 @@ func (s *OpenCodeGoUsageService) Refresh(ctx context.Context, accountID int64) (
 		return nil, err
 	}
 	if _, err := s.refreshAccount(ctx, accountID, settings, false); err != nil {
+		if denial := monitoringProbeDeferral(err, s.currentTime()); denial != nil {
+			state, stateErr := s.GetState(ctx, accountID)
+			if stateErr != nil {
+				return nil, stateErr
+			}
+			state.BudgetDeferral = denial
+			return state, nil
+		}
 		return nil, err
 	}
 	return s.GetState(ctx, accountID)
@@ -594,8 +609,28 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 	if s == nil || s.accountRepo == nil {
 		return nil
 	}
+	// Automatic admissions and Stop share one drain; manual refreshes keep
+	// their caller lifetime and the same physical monitoring budget.
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return context.Canceled
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+	defer s.wg.Done()
+	ctx, cancelRun := context.WithCancelCause(ctx)
+	stopParent := context.AfterFunc(s.parentCtx, func() { cancelRun(context.Cause(s.parentCtx)) })
+	defer stopParent()
+	defer cancelRun(nil)
 	s.cycleMu.Lock()
 	defer s.cycleMu.Unlock()
+	if err := context.Cause(s.parentCtx); err != nil {
+		cancelRun(err)
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	settings, err := s.GetSettings(ctx)
 	if err != nil {
 		return err
@@ -603,11 +638,23 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 	if !settings.Enabled {
 		return nil
 	}
-	release, acquired := tryAcquireSingletonLeaderLock(ctx, s.lockCache, s.db, opencodeGoUsageLeaderLockKey, s.instanceID, opencodeGoUsageLeaderLockTTL)
+	owner := s.instanceID + ":" + uuid.NewString()
+	lockStarted := time.Now()
+	release, acquired, lockErr := tryAcquireDetectionLeaderLock(ctx, s.lockCache, s.db, opencodeGoUsageLeaderLockKey, owner, opencodeGoUsageLeaderLockTTL)
+	if lockErr != nil {
+		return fmt.Errorf("acquire OpenCode Go usage leader lock: %w", lockErr)
+	}
 	if !acquired {
 		return nil
 	}
 	defer release()
+	if s.lockCache != nil {
+		stopRenewal := keepRenewedLease(ctx, lockStarted, opencodeGoUsageLeaderLockTTL,
+			func(ctx context.Context) (bool, error) {
+				return s.lockCache.RenewLeaderLock(ctx, opencodeGoUsageLeaderLockKey, owner, opencodeGoUsageLeaderLockTTL)
+			}, func() { cancelRun(errOpenCodeGoUsageLeaderLockLost) })
+		defer stopRenewal()
+	}
 
 	writer, ok := s.accountRepo.(openCodeGoUsageRepository)
 	if !ok {
@@ -619,9 +666,15 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list due OpenCode Go usage accounts: %w", err)
 	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	var group errgroup.Group
 	seenGroups := make(map[string]struct{}, len(accounts))
 	for index := range accounts {
+		if ctx.Err() != nil {
+			break
+		}
 		account := accounts[index]
 		fingerprint, valid := openCodeGoUsageGroupFingerprint(&account)
 		if !valid || !account.IsActive() || !openCodeGoUsageAutoRefreshEnabled(&account) {
@@ -640,6 +693,13 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 		expected := account
 		group.Go(func() error {
 			if _, refreshErr := s.refreshAccount(ctx, accountID, settings, true); refreshErr != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				if denial := monitoringProbeDeferral(refreshErr, s.currentTime()); denial != nil {
+					logger.LegacyPrintf("service.opencode_go_usage", "monitoring_budget_deferred: account_id=%d reason=%s scope=%s", accountID, denial.Reason, denial.Scope)
+					return nil
+				}
 				if errors.Is(refreshErr, ErrOpenCodeGoUsageIdentityChanged) {
 					if disableErr := writer.DisableOpenCodeGoUsageAutoRefresh(ctx, &expected); disableErr != nil {
 						logger.LegacyPrintf("service.opencode_go_usage", "disable_auto_refresh_failed: account_id=%d err=%v", accountID, disableErr)
@@ -651,12 +711,18 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 			return nil
 		})
 	}
-	return group.Wait()
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	return context.Cause(ctx)
 }
 
 func (s *OpenCodeGoUsageService) refreshAccount(ctx context.Context, accountID int64, settings *OpenCodeGoUsageSettings, requireEnabled bool) (*OpenCodeGoUsageSnapshot, error) {
 	if s == nil || s.accountRepo == nil {
 		return nil, ErrOpenCodeGoUsageUnavailable
+	}
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
 	}
 	if settings == nil {
 		settings = defaultOpenCodeGoUsageSettings()
@@ -672,11 +738,17 @@ func (s *OpenCodeGoUsageService) refreshAccount(ctx context.Context, accountID i
 		return nil, ErrOpenCodeGoUsageAccountInvalid
 	}
 	value, err, _ := s.refreshGroup.Do(key, func() (any, error) {
+		if err := context.Cause(ctx); err != nil {
+			return nil, err
+		}
 		select {
 		case s.refreshSlots <- struct{}{}:
 			defer func() { <-s.refreshSlots }()
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		}
+		if err := context.Cause(ctx); err != nil {
+			return nil, err
 		}
 		account, loadErr := s.accountRepo.GetByID(ctx, accountID)
 		if loadErr != nil {
@@ -754,6 +826,7 @@ func (s *OpenCodeGoUsageService) refreshLoadedAccount(ctx context.Context, accou
 		}
 		proxyURL = account.Proxy.URL()
 	}
+	ctx = s.monitoringBudget.Context(ctx, "https://opencode.ai", false)
 	requestCtx, cancel := context.WithTimeout(WithHTTPUpstreamRedirectsDisabled(ctx), opencodeGoUsageRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, opencodeGoUsageAPIURL, nil)
@@ -763,14 +836,41 @@ func (s *OpenCodeGoUsageService) refreshLoadedAccount(ctx context.Context, accou
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("User-Agent", "sub2api-opencode-go-usage/1")
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
-	if err != nil {
+	if canceled := context.Cause(ctx); canceled != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, canceled
+	}
+	if local := monitoringProbeLocalError(requestCtx); local != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, local
+	}
+	if err != nil || requestCtx.Err() != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "request_failed", 0, false)
 	}
 	if resp == nil || resp.Body == nil {
 		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "empty_response", 0, false)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	body, readErr := ReadMonitoringProbeResponse(requestCtx, resp, opencodeGoUsageMaxBodyBytes+1)
+	if IsMonitoringProbeBudgetFailure(readErr) {
+		return nil, readErr
+	}
+	if canceled := context.Cause(ctx); canceled != nil {
+		return nil, canceled
+	}
+	if requestCtx.Err() != nil {
+		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_read_failed", 0, false)
+	}
 	if resp.Request != nil && !isExactOpenCodeGoUsageURL(resp.Request.URL) {
 		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_host_mismatch", 0, false)
 	}
@@ -786,7 +886,6 @@ func (s *OpenCodeGoUsageService) refreshLoadedAccount(ctx context.Context, accou
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "http_error", retryAfter(resp.Header, now), false)
 	}
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, opencodeGoUsageMaxBodyBytes+1))
 	if readErr != nil {
 		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_read_failed", 0, false)
 	}
@@ -849,6 +948,9 @@ func (s *OpenCodeGoUsageService) persistFailure(
 }
 
 func (s *OpenCodeGoUsageService) updateSnapshot(ctx context.Context, account *Account, snapshot *OpenCodeGoUsageSnapshot) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	writer, ok := s.accountRepo.(openCodeGoUsageRepository)
 	if !ok {
 		return ErrOpenCodeGoUsageUnavailable

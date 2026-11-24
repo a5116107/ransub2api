@@ -274,6 +274,7 @@ export default {
         noBalanceEndpoint: 'This platform has no balance query endpoint',
       },
       opencodeGo: {
+        budgetRetained: 'This usage check is deferred. Existing observations and automatic-refresh settings are unchanged. The budget is shared by the actual outbound API key; this query consumes neither generation tokens nor downstream usage.',
         accountMode: {
           zen: 'Zen',
           zenDesc: 'Pay-as-you-go gateway. Consumes account credits, billed per token.',

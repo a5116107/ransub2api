@@ -1389,7 +1389,7 @@ func TestMonitoringProbeCoveragePreviewAndRevalidation(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, preview.CanSave)
 	require.EqualValues(t, 96, preview.MinimumRequestsPerDay)
-	sources := []string{"account_quota_cycle", "ollama_usage", "responses_capability", "event_diagnostics", "v3_idle_probes"}
+	sources := []string{"account_quota_cycle", "ollama_usage", "opencode_usage", "responses_capability", "event_diagnostics", "v3_idle_probes"}
 	require.ElementsMatch(t, sources, preview.UnestimatedDemandSources)
 	raw, err := json.Marshal(preview)
 	require.NoError(t, err)

@@ -38,6 +38,14 @@
     >
       {{ statusLabel }}
     </span>
+    <MonitoringProbeBudgetNotice
+      v-if="state.budget_deferral"
+      :deferral="state.budget_deferral"
+      :title="t('modelTrace.budgetPaused')"
+      data-testid="opencode-go-budget-deferral"
+    >
+      <p>{{ t('admin.accounts.opencodeGo.budgetRetained') }}</p>
+    </MonitoringProbeBudgetNotice>
     <div class="flex items-center pt-0.5">
       <button
         type="button"
@@ -73,6 +81,7 @@ import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, OpenCodeGoUsageState } from '@/types'
 import UsageProgressBar from './UsageProgressBar.vue'
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 
 const props = defineProps<{ account: Account }>()
 const emit = defineEmits<{ updated: [state: OpenCodeGoUsageState] }>()

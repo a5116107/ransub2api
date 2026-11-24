@@ -561,12 +561,14 @@ export default {
           capacityUnestimatedHint: 'These are unestimated source families, not an inventory of enabled monitors. Unknown demand is not zero; saving does not reserve capacity or prove full coverage.',
           capacityUnestimatedStatus: 'Unestimated',
           capacitySourceNames: {
+            opencode_usage: 'OpenCode Go usage refresh',
             account_quota_cycle: 'Periodic account balance / quota', ollama_usage: 'Ollama usage refresh',
             responses_capability: 'Responses capability detection', event_diagnostics: 'Event / manual diagnostics',
             v3_idle_probes: 'V3 idle probes',
             unknown: 'Unknown demand coverage'
           },
           capacitySourceHints: {
+            opencode_usage: 'Driven by model activity, debounce, failure backoff and shared-key coalescing. Future call counts are not forecast; each physical query uses the shared request and concurrency budget, not generation tokens.',
             account_quota_cycle: 'The responding process snapshot is below. Other nodes and complete physical demand remain unobserved; the last queue is not a live fleet inventory.',
             ollama_usage: 'Depends on activity, 429 events, session state, caching and coalescing; refresh intervals are not guaranteed future call counts.',
             responses_capability: 'Account creation and credential changes trigger checks; future event counts have not been forecast.',

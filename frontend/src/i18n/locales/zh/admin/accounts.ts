@@ -600,6 +600,7 @@ export default {
         noBalanceEndpoint: '该平台暂无余额查询接口',
       },
       opencodeGo: {
+        budgetRetained: '本次用量查询已延期；已有观测与自动刷新设置不变。预算按实际出站 API Key 共享，不消耗生成 Token 预算，也不计入下游用量。',
         accountMode: {
           zen: 'Zen',
           zenDesc: '按量付费网关，消耗账户余额，按 Token 计费。',

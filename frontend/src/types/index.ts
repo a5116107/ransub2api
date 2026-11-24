@@ -1429,6 +1429,7 @@ export interface OpenCodeGoUsageSnapshot {
 }
 
 export interface OpenCodeGoUsageState {
+  budget_deferral?: MonitoringProbeBudgetDeferral
   account_id: number
   eligible: boolean
   auto_refresh_enabled: boolean

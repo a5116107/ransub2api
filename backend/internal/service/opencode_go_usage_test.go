@@ -11,12 +11,170 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenCodeGoUsageMonitoringBudgetDefersAndRecovers(t *testing.T) {
+	for _, entry := range []string{"manual", "automatic"} {
+		t.Run(entry, func(t *testing.T) {
+			account := openCodeGoUsageAccount(9920)
+			account.Extra[OpenCodeGoUsageAutoRefreshExtraKey] = true
+			repo := &openCodeGoUsageTestRepo{accounts: map[int64]*Account{account.ID: account}}
+			settings := &upstreamBillingProbeSettingRepo{values: map[string]string{SettingKeyOpenCodeGoUsageSettings: `{"enabled":true,"interval_minutes":15}`}}
+			upstream := &openCodeGoUsageHTTPStub{body: []byte(openCodeGoUsageFixture)}
+			budget := &monitoringBudgetRepoStub{denyAt: 1, err: &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "key_minute", RetryAt: time.Now().Add(time.Minute)}}
+			svc := newOpenCodeGoUsageTestService(t, repo, monitoringBudgetHTTP{base: upstream}, settings)
+			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+			run := func(deferred bool) {
+				t.Helper()
+				if entry == "automatic" {
+					require.NoError(t, svc.RunDue(t.Context()))
+					return
+				}
+				state, err := svc.Refresh(t.Context(), account.ID)
+				require.NoError(t, err)
+				if deferred {
+					require.NotNil(t, state.BudgetDeferral)
+					require.Equal(t, "key_minute", state.BudgetDeferral.Scope)
+					require.Nil(t, state.Snapshot)
+				} else {
+					require.Nil(t, state.BudgetDeferral)
+					require.Equal(t, OpenCodeGoUsageStatusOK, state.Snapshot.Status)
+				}
+			}
+			run(true)
+			require.Zero(t, upstream.calls.Load())
+			require.NotContains(t, account.Extra, OpenCodeGoUsageSnapshotExtraKey)
+			require.Equal(t, true, account.Extra[OpenCodeGoUsageAutoRefreshExtraKey])
+			budget.denyAt = 0
+			run(false)
+			require.EqualValues(t, 1, upstream.calls.Load())
+			require.Len(t, budget.requests, 2)
+			require.Equal(t, 1, budget.released)
+			for _, request := range budget.requests {
+				require.Equal(t, monitoringProbeHash("https://opencode.ai"), request.SiteHash)
+				require.Equal(t, config.UpstreamCredentialFingerprints(upstream.lastRequest), request.KeyHashes)
+				require.False(t, request.MeterTokens, "usage GET is not model generation")
+				require.False(t, request.Recovery)
+			}
+			require.Zero(t, budget.usages[0].Tokens)
+			require.False(t, budget.usages[0].Reported)
+		})
+	}
+}
+
+func TestOpenCodeGoUsageMonitoringBudgetSettlesBeforeSnapshot(t *testing.T) {
+	for _, phase := range []string{"settlement", "lease_before_body", "caller_during_body"} {
+		for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable} {
+			t.Run(phase+"/"+http.StatusText(status), func(t *testing.T) {
+				account := openCodeGoUsageAccount(9921)
+				old := time.Now().Add(-time.Hour)
+				previous := &OpenCodeGoUsageSnapshot{Status: OpenCodeGoUsageStatusOK, FetchedAt: &old, LastAttemptAt: old, NextRefreshAt: old}
+				account.Extra[OpenCodeGoUsageSnapshotExtraKey] = previous
+				account.Extra[OpenCodeGoUsageAutoRefreshExtraKey] = true
+				repo := &openCodeGoUsageTestRepo{accounts: map[int64]*Account{account.ID: account}}
+				budget := &monitoringBudgetRepoStub{}
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				upstream := &openCodeGoUsageHTTPStub{status: status, body: []byte(openCodeGoUsageFixture)}
+				var transport HTTPUpstream = upstream
+				if phase == "settlement" {
+					budget.releaseErr = errors.New("fixture settlement failure")
+				} else if phase == "lease_before_body" {
+					upstream.beforeResponse = func(req *http.Request) {
+						probe := req.Context().Value(monitoringProbeBudgetKey{}).(monitoringProbeBudgetContext)
+						probe.local.record(ErrMonitoringProbeBudgetLeaseLost)
+					}
+				} else {
+					transport = ollamaLifecycleLateBodyUpstream{body: []byte(openCodeGoUsageFixture), status: status, onRead: func() { cancel(context.Canceled) }}
+				}
+				svc := newOpenCodeGoUsageTestService(t, repo, monitoringBudgetHTTP{base: transport}, nil)
+				svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
+				state, err := svc.Refresh(ctx, account.ID)
+				if phase == "caller_during_body" {
+					require.ErrorIs(t, err, context.Canceled)
+				} else {
+					require.NoError(t, err)
+					require.NotNil(t, state.BudgetDeferral)
+					require.Same(t, previous, account.Extra[OpenCodeGoUsageSnapshotExtraKey])
+				}
+				require.Equal(t, 1, budget.released)
+				require.Same(t, previous, account.Extra[OpenCodeGoUsageSnapshotExtraKey])
+				require.Equal(t, true, account.Extra[OpenCodeGoUsageAutoRefreshExtraKey])
+			})
+		}
+	}
+}
+
+func TestOpenCodeGoUsageCanceledReplyRetainsEvidence(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			account := openCodeGoUsageAccount(9901)
+			previous := &OpenCodeGoUsageSnapshot{Status: OpenCodeGoUsageStatusOK}
+			account.Extra[OpenCodeGoUsageSnapshotExtraKey] = previous
+			account.Extra[OpenCodeGoUsageAutoRefreshExtraKey] = true
+			repo := &openCodeGoUsageTestRepo{accounts: map[int64]*Account{account.ID: account}}
+			cause := errors.New("refresh caller retired")
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			upstream := &openCodeGoUsageHTTPStub{status: status, body: []byte(openCodeGoUsageFixture),
+				beforeResponse: func(*http.Request) { cancel(cause) }}
+			svc := newOpenCodeGoUsageTestService(t, repo, upstream, nil)
+			_, err := svc.Refresh(ctx, account.ID)
+			require.ErrorIs(t, err, cause)
+			require.Same(t, previous, account.Extra[OpenCodeGoUsageSnapshotExtraKey])
+			require.Equal(t, true, account.Extra[OpenCodeGoUsageAutoRefreshExtraKey])
+		})
+	}
+}
+
+func TestOpenCodeGoUsageStopDrainsExternalAutomaticRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		entered, drain := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(drain) })
+		defer release()
+		account := openCodeGoUsageAccount(9902)
+		account.Extra[OpenCodeGoUsageAutoRefreshExtraKey] = true
+		repo := &openCodeGoUsageTestRepo{accounts: map[int64]*Account{account.ID: account}}
+		settings := &upstreamBillingProbeSettingRepo{values: map[string]string{SettingKeyOpenCodeGoUsageSettings: `{"enabled":true,"interval_minutes":15}`}}
+		upstream := &openCodeGoUsageHTTPStub{body: []byte(openCodeGoUsageFixture), beforeResponse: func(*http.Request) {
+			close(entered)
+			<-drain
+		}}
+		svc := newOpenCodeGoUsageTestService(t, repo, upstream, settings)
+		done := make(chan error, 1)
+		go func() { done <- svc.RunDue(t.Context()) }()
+		<-entered
+		stops := []chan struct{}{make(chan struct{}), make(chan struct{})}
+		for _, stopped := range stops {
+			go func() { svc.Stop(); close(stopped) }()
+		}
+		synctest.Wait()
+		premature := false
+		for _, stopped := range stops {
+			select {
+			case <-stopped:
+				premature = true
+			default:
+			}
+		}
+		release()
+		for _, stopped := range stops {
+			<-stopped
+		}
+		err := <-done
+		require.False(t, premature, "every Stop must wait for the external automatic run")
+		require.ErrorIs(t, err, context.Canceled)
+		require.NotContains(t, account.Extra, OpenCodeGoUsageSnapshotExtraKey)
+		require.ErrorIs(t, svc.RunDue(t.Context()), context.Canceled)
+	})
+}
 
 // openCodeGoUsageFixture is the verified upstream 200 response (2026-08-13).
 const openCodeGoUsageFixture = `{"usage":{"rolling":{"status":"ok","percent":6,"resetsAt":"2026-08-13T18:26:39.281Z"},"weekly":{"status":"ok","percent":2,"resetsAt":"2026-08-17T00:00:00.281Z"},"monthly":{"status":"ok","percent":1,"resetsAt":"2026-09-13T13:24:47.281Z"}}}`

@@ -3,16 +3,15 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D8.1 Ollama续租/失主恢复已本地验；原28项20done/8部分。
+任务：D8.1 OpenCode锁/预算/寿命已本地验；原28项20done/8部分。
 授权：本地实现/验证、自有分支同步；不CI/发布/部署。
-验证命令：go test -race（unit/integration，详DECISIONS）。
-验证结果：unit950/租约1450/SQL39/进程2pass；UI98/浏览器16，静态/构建0。
-验证来源：3d5c910d0/f0d696cf6b7d；ollama-leader-lease-*，详DECISIONS。
-下一动作：同步后续原OpenCode用量预算/寿命及V1多节点验收。
+验证：race服务500/SQL108、UI266、浏览器中英1440/390通过。
+来源：fda93d7b2后本轮，opencode-usage-*；见DECISIONS。
+下一动作：V1周期多节点；全scope/通道公平仍待。
 尝试：1
-阻塞：真实scope/独立基线/缓存域；历史及H:/Root/DevCache/tmp/sub2api-go/ollama-leader-lease清理拒绝。
+阻塞：实际scope/独立基线/缓存域；历史拒删与本轮/旧overlay。
 责任方：开发方/供应商/宿主维护者；详下表及DECISIONS。
-解除条件：补实际scope/来源证据，宿主释放历史保护路径。
+解除：补实际来源证据，宿主释放历史保护路径。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -71,14 +70,14 @@
 | D3.1 | done | 原HTTP/Redis本地链五类失效换线/恢复不抢回及失败关闭；race106/1838与独立Key11；非生产 |
 | D7.3 | in_progress | 历史/多维/同scope汇总及判题依赖详情已验；独立基线、其余线路/覆盖与资格消费仍缺 |
 | D8 | in_progress | 原物理/Token/100队列、周期下界、本地链及倍率实钟双进程已验；其余scope/通道公平/其余执行器多节点/生产/严格混版待验 |
-| D8.1本地子项 | in_progress | 止发/寿命、CN双进程/Ollama失主、倍率/V3/分组/账号百Key及V2实钟64Key已验；全scope/跨通道公平/其余节点/生产待验 |
+| D8.1本地子项 | in_progress | OpenCode锁/预算/寿命及100Key、CN/Ollama/倍率/V2/V3/分组/账号已本地验；全scope/通道公平/V1/生产待验 |
 | D8.1 V2/V3本地链 | done | 原链及保存前止发/错误收尾、SQL重建和中英在途原因已验；非全scope/跨通道公平/多节点/生产 |
 | D9 | in_progress | .9 Goal同例/唯一用量、排空重建、120/300及429换线已验；旧Mac会话/BPS长流与D9.2仍待 |
 | R1 | done | .9/de8b86ed8916已发行上线；稳定源/制品/加载同源，四阶段回退及公网SSE/UI已验；开发在研保持 |
 
 ## 剩余执行顺序与等待
 
-- CN双进程/Ollama续租失主与手动隔离已本地验，续原D2/D3/D5/D8。
+- OpenCode锁/预算/寿命已本地验，续V1多节点及原D2/D3/D5/D8。
 - .22.1–.5沿原tick/预算锁及原生写入本地已验，非完整产品资格。
 - D9.1生产.9已验；PR3/v2.24.1冲突未解；未验功能不发布，见DECISIONS。
 - 供应商/接入方待提供实际组/模型/fast、独立参考、缓存域/存活及unknown请求唯一关联；开发方据对应scope/证据验证。
@@ -89,5 +88,5 @@
 
 - 工作树：H:/Root/jiaoben/01_AI接口与网关/sub2api；origin=a5116107/ransub2api；upstream禁推，无额外worktree。
 - backend/tmp历史拒删、Windows符号链接权限仍待宿主；正式153包及Linux同例已验。
-- 本轮原PG17/Redis8.4夹具已回收；历史55441/56442停回，旧Redis56441保护。
-- 历史拒删及本轮2.8MB overlay待宿主释放，路径/owner见DECISIONS。
+- 本轮原PG18.1/Redis8.4夹具已回收；历史55441/56442停回，旧Redis56441保护。
+- 历史及两轮overlay拒删待宿主释放，路径/owner见DECISIONS。

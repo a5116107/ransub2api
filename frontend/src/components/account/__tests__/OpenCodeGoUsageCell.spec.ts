@@ -141,6 +141,33 @@ describe('OpenCodeGoUsageCell', () => {
     expect(badge.classes()).toEqual(expect.arrayContaining(['bg-amber-100', 'text-amber-700']))
   })
 
+  it('retains observed windows during a budget deferral and clears the notice on recovery', async () => {
+    const deferred = usageState({ budget_deferral: {
+      reason: 'request_limit', scope: 'key_minute', retry_at: '2026-11-24T15:00:00Z'
+    } })
+    refreshOpenCodeGoUsage.mockResolvedValueOnce(deferred).mockResolvedValueOnce(usageState())
+    const wrapper = mount(OpenCodeGoUsageCell, { props: { account: account() } })
+    await wrapper.get('[data-testid="opencode-go-usage-query"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="opencode-go-budget-deferral"]').text()).toContain('modelTrace.budgetPaused')
+    expect(wrapper.findAllComponents(UsageProgressBar)).toHaveLength(3)
+    expect(wrapper.find('[data-testid="opencode-go-status-badge"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="opencode-go-usage-query"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="opencode-go-budget-deferral"]').exists()).toBe(false)
+  })
+
+  it('does not interpret a future budget reason or invalid retry time as success', () => {
+    const wrapper = mount(OpenCodeGoUsageCell, { props: { account: account(usageState({
+      snapshot: undefined, budget_deferral: { reason: 'constructor', scope: '__proto__', retry_at: 'invalid' }
+    })) } })
+    const notice = wrapper.get('[data-testid="opencode-go-budget-deferral"]')
+    expect(notice.text()).toContain('modelTrace.budgetReasonUnknown')
+    expect(notice.text()).toContain('modelTrace.budgetScopes.unknown')
+    expect(notice.find('time').exists()).toBe(false)
+    expect(wrapper.findAllComponents(UsageProgressBar)).toHaveLength(0)
+  })
+
   it('shows a red badge for failed snapshots', () => {
     const wrapper = mount(OpenCodeGoUsageCell, {
       props: { account: account(usageState({ snapshot: { status: 'failed', last_attempt_at: '2026-07-22T12:00:00Z', next_refresh_at: '2026-07-22T13:00:00Z', last_error: 'http_error' } })) }

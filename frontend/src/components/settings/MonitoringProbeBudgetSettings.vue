@@ -274,7 +274,7 @@ const knownScopesInactive = computed(() => {
 const unestimatedSources = computed(() => {
   const sources = coverage.value?.unestimated_demand_sources
   if (!Array.isArray(sources) || sources.length === 0) return ['unknown']
-  const known = new Set(['account_quota_cycle', 'ollama_usage', 'responses_capability', 'event_diagnostics', 'v3_idle_probes'])
+  const known = new Set(['account_quota_cycle', 'ollama_usage', 'opencode_usage', 'responses_capability', 'event_diagnostics', 'v3_idle_probes'])
   return [...new Set(sources.map(source => typeof source === 'string' && known.has(source) ? source : 'unknown'))]
 })
 const cnRuntime = computed(() => {

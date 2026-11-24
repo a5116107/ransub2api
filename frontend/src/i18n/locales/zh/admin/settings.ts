@@ -554,12 +554,14 @@ export default {
           capacityUnestimatedHint: '以下是未估算的来源类型，不是已启用库存。未知需求不是零；允许保存不代表预留容量或保证全覆盖。',
           capacityUnestimatedStatus: '未估算',
           capacitySourceNames: {
+            opencode_usage: 'OpenCode Go 用量刷新',
             account_quota_cycle: '账号周期余额 / 配额', ollama_usage: 'Ollama 用量刷新',
             responses_capability: 'Responses 能力探测', event_diagnostics: '事件 / 手动诊断',
             v3_idle_probes: 'V3 空闲检测',
             unknown: '需求覆盖未知'
           },
           capacitySourceHints: {
+            opencode_usage: '按业务活动、防抖、失败退避与共享 Key 合并触发；未来调用量未估算。每次实际查询受共享调用与并发预算约束，不消耗生成 Token 预算。',
             account_quota_cycle: '当前响应进程的运行快照见下方；其他节点与完整物理调用需求尚未观察，最近队列不是全节点实时库存。',
             ollama_usage: '受活动、429、会话状态、缓存与合并影响；刷新间隔不是未来实际调用次数。',
             responses_capability: '由建号与凭据变更触发；未来事件数量尚未预测。',

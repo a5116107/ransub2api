@@ -147,7 +147,7 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		// These are source-level omissions, not observed enabled inventory.
 		// Node configuration, future events and traffic-dependent V3 idle
 		// probes cannot be inferred from the compiled periodic inventory.
-		UnestimatedDemandSources: []string{"account_quota_cycle", "ollama_usage", "responses_capability", "event_diagnostics", "v3_idle_probes"},
+		UnestimatedDemandSources: []string{"account_quota_cycle", "ollama_usage", "opencode_usage", "responses_capability", "event_diagnostics", "v3_idle_probes"},
 		ScheduleWindowStart:      now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour),
 	}
 	result.ScheduleWindowEnd = result.ScheduleWindowStart.Add(24 * time.Hour)

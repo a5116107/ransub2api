@@ -19,7 +19,9 @@ import {
   setPlatformCatalog
 } from '@/constants/platformCatalog'
 
-const { updateAccountMock, syncUpstreamModelsMock, checkMixedChannelRiskMock, authIsSimpleMode, showErrorMock, showWarningMock } = vi.hoisted(() => ({
+const { updateAccountMock, syncUpstreamModelsMock, checkMixedChannelRiskMock, authIsSimpleMode, showErrorMock, showWarningMock, showSuccessMock, refreshOpenCodeGoUsageMock } = vi.hoisted(() => ({
+  showSuccessMock: vi.fn(),
+  refreshOpenCodeGoUsageMock: vi.fn(),
   showErrorMock: vi.fn(),
   showWarningMock: vi.fn(),
   updateAccountMock: vi.fn(),
@@ -32,7 +34,7 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError: showErrorMock,
     showWarning: showWarningMock,
-    showSuccess: vi.fn(),
+    showSuccess: showSuccessMock,
     showInfo: vi.fn()
   })
 }))
@@ -52,7 +54,8 @@ vi.mock('@/api/admin', () => ({
       getManagementCapabilities: vi.fn().mockResolvedValue({ web_search_enabled: false, account_quota_notify_enabled: false }),
       update: updateAccountMock,
       syncUpstreamModels: syncUpstreamModelsMock,
-      checkMixedChannelRisk: checkMixedChannelRiskMock
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
+      refreshOpenCodeGoUsage: refreshOpenCodeGoUsageMock
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -1244,6 +1247,28 @@ describe('EditAccountModal', () => {
     expect(credentials.api_base_urls).toEqual({ chat_completions: 'https://relay.example.com/v1' })
     if (rotate) expect(credentials.api_key).toBe('fixture-rotated-mistral-key')
     else expect(credentials).not.toHaveProperty('api_key')
+  })
+
+  it('shows a neutral OpenCode budget deferral without a refresh-success toast, then recovers', async () => {
+    const account = buildAccount() as ReturnType<typeof buildAccount> & { opencode_go_usage?: import('@/types').OpenCodeGoUsageState }
+    account.credentials.base_url = 'https://opencode.ai/zen/go/v1'
+    const snapshot = { status: 'ok' as const, last_attempt_at: '2026-11-24T10:00:00Z', next_refresh_at: '2026-11-24T11:00:00Z' }
+    const state = { account_id: account.id, eligible: true, auto_refresh_enabled: true, snapshot }
+    account.opencode_go_usage = state
+    refreshOpenCodeGoUsageMock.mockReset().mockResolvedValueOnce({ ...state,
+      budget_deferral: { reason: 'request_limit', scope: 'key_minute', retry_at: '2026-11-24T15:00:00Z' }
+    }).mockResolvedValueOnce(state)
+    showSuccessMock.mockClear()
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="opencode-go-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="opencode-go-budget-deferral"]').text()).toContain('modelTrace.budgetPaused')
+    expect(wrapper.find('[data-testid="opencode-go-usage-details"]').exists()).toBe(true)
+    expect(showSuccessMock).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="opencode-go-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="opencode-go-budget-deferral"]').exists()).toBe(false)
+    expect(showSuccessMock).toHaveBeenCalledWith('admin.accounts.opencodeGo.refreshSuccess')
   })
 
   it('preserves OpenCode Zen account type and endpoints on submit', async () => {

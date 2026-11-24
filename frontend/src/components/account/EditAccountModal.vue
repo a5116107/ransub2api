@@ -2566,6 +2566,14 @@
           <Icon name="refresh" size="sm" class="animate-spin" />
         </div>
         <template v-else>
+          <MonitoringProbeBudgetNotice
+            v-if="opencodeGoState?.budget_deferral"
+            :deferral="opencodeGoState.budget_deferral"
+            :title="t('modelTrace.budgetPaused')"
+            data-testid="opencode-go-budget-deferral"
+          >
+            <p>{{ t('admin.accounts.opencodeGo.budgetRetained') }}</p>
+          </MonitoringProbeBudgetNotice>
           <div
             v-if="opencodeGoSnapshot"
             class="border-y border-gray-100 py-3 dark:border-dark-700"
@@ -3709,6 +3717,7 @@
 </template>
 
 <script setup lang="ts">
+import MonitoringProbeBudgetNotice from '@/components/admin/account/MonitoringProbeBudgetNotice.vue'
 import QwenPlatformNotice from '@/components/common/QwenPlatformNotice.vue'
 import QwenCacheSettings from './QwenCacheSettings.vue'
 import { applyQwenCacheSettings } from './qwenCacheSettings'
@@ -3990,8 +3999,9 @@ const setOpenCodeGoAutoRefresh = async (enabled: boolean) => {
 const refreshOpenCodeGoUsage = async () => {
   opencodeGoRefreshing.value = true
   try {
-    applyOpenCodeGoState(await adminAPI.accounts.refreshOpenCodeGoUsage(props.account!.id))
-    appStore.showSuccess(t('admin.accounts.opencodeGo.refreshSuccess'))
+    const next = await adminAPI.accounts.refreshOpenCodeGoUsage(props.account!.id)
+    applyOpenCodeGoState(next)
+    if (!next.budget_deferral) appStore.showSuccess(t('admin.accounts.opencodeGo.refreshSuccess'))
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(
       error,

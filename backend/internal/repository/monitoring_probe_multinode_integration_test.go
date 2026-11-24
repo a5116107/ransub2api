@@ -90,6 +90,10 @@ func TestMonitoringProbeBudgetProcessNode(t *testing.T) {
 		runMonitoringOllamaNode(t, command, db)
 		return
 	}
+	if command.Mode == "opencode" || command.Mode == "opencode_lease" {
+		runMonitoringOpenCodeNode(t, command, db)
+		return
+	}
 	if command.Mode == "cn" {
 		runMonitoringCNNode(t, command, db, budget)
 		return
@@ -203,6 +207,47 @@ func runMonitoringCNNode(t *testing.T, command monitoringBudgetNodeCommand, db *
 	}
 	runner.Stop()
 	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: http.StatusOK}))
+}
+
+func runMonitoringOpenCodeNode(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB) {
+	t.Helper()
+	require.Equal(t, 1, command.Requests)
+	endpoint, err := url.Parse(command.Site)
+	require.NoError(t, err)
+	require.Equal(t, "https", endpoint.Scheme)
+	require.NotEmpty(t, endpoint.Host)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	defer func() { _ = client.Close() }()
+	rdb := redisclient.NewClient(&redisclient.Options{Addr: command.RedisAddress, DB: command.RedisDB})
+	defer func() { _ = rdb.Close() }()
+	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
+	accounts := service.AccountRepository(newAccountRepositoryWithSQL(client, db, nil))
+	if command.Mode == "opencode_lease" {
+		accounts = &monitoringOpenCodeLeaseAccounts{accountRepository: newAccountRepositoryWithSQL(client, db, nil)}
+	}
+	runner := service.ProvideOpenCodeGoUsageService(accounts, monitoringBudgetPinnedUpstream(t, endpoint.Host, command.Certificate),
+		service.NewSettingService(NewSettingRepository(client), cfg), NewLeaderLockCache(rdb), db, cfg, NewMonitoringProbeBudgetRepository(db))
+	defer runner.Stop()
+	runErr := runner.RunDue(t.Context())
+	status := http.StatusOK
+	if command.Mode == "opencode_lease" {
+		require.ErrorContains(t, runErr, "leader lock lost")
+		status = http.StatusServiceUnavailable
+	} else {
+		require.NoError(t, runErr)
+	}
+	require.NoError(t, writeMonitoringBudgetNodeReply(os.Stdout, monitoringBudgetNodeReply{Status: status}))
+}
+
+type monitoringOpenCodeLeaseAccounts struct{ *accountRepository }
+
+func (r *monitoringOpenCodeLeaseAccounts) ListOpenCodeGoUsageGroupAccounts(ctx context.Context, anchors []*service.Account) ([]service.Account, error) {
+	select {
+	case <-time.After(19 * time.Second):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.accountRepository.ListOpenCodeGoUsageGroupAccounts(ctx, anchors)
 }
 
 func runMonitoringOllamaNode(t *testing.T, command monitoringBudgetNodeCommand, db *sql.DB) {
@@ -364,7 +409,7 @@ func startMonitoringBudgetNode(t *testing.T, command monitoringBudgetNodeCommand
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	lifetime := 30 * time.Second
-	if command.Mode == "ollama_lease" {
+	if command.Mode == "ollama_lease" || command.Mode == "opencode_lease" {
 		lifetime = 70 * time.Second // Original two-minute lease renews at forty seconds.
 	}
 	if command.Mode == "scheduled" || command.Mode == "v2" {
