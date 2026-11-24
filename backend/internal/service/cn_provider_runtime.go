@@ -16,11 +16,14 @@ type CNMonitoringRuntime struct {
 }
 
 type CNMonitoringInventory struct {
-	ObservedAt     time.Time `json:"observed_at"`
-	Complete       bool      `json:"complete"`
-	Targets        int64     `json:"targets"`
-	BalanceTargets int64     `json:"balance_targets"`
-	QuotaTargets   int64     `json:"quota_targets"`
+	ObservedAt      time.Time `json:"observed_at"`
+	Complete        bool      `json:"complete"`
+	Targets         int64     `json:"targets"`
+	BalanceTargets  int64     `json:"balance_targets"`
+	QuotaTargets    int64     `json:"quota_targets"`
+	PriorityVersion int       `json:"priority_version"`
+	ReviewTargets   int64     `json:"review_targets"`
+	RoutineTargets  int64     `json:"routine_targets"`
 }
 
 func (s *CNProviderBalanceCheckService) MonitoringRuntime() *CNMonitoringRuntime {
@@ -59,12 +62,17 @@ func (s *CNProviderBalanceCheckService) MonitoringRuntime() *CNMonitoringRuntime
 }
 
 func (s *CNProviderBalanceCheckService) observeMonitoringInventory(targets []accountProbeTarget, complete bool) {
-	scan := &CNMonitoringInventory{ObservedAt: time.Now().UTC(), Complete: complete, Targets: int64(len(targets))}
+	scan := &CNMonitoringInventory{ObservedAt: time.Now().UTC(), Complete: complete, Targets: int64(len(targets)), PriorityVersion: 1}
 	for _, target := range targets {
 		if target.balance {
 			scan.BalanceTargets++
 		} else {
 			scan.QuotaTargets++
+		}
+		if target.reviewAt.IsZero() {
+			scan.RoutineTargets++
+		} else {
+			scan.ReviewTargets++
 		}
 	}
 	s.lifecycleMu.Lock()

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -60,4 +61,55 @@ func (s *CNProviderBalanceCheckService) observeTurnCoordination(available bool) 
 	s.lifecycleMu.Lock()
 	s.turnCoordinationFailed = !available
 	s.lifecycleMu.Unlock()
+}
+
+// Only native observations of this route/provider may establish a required
+// cadence review. This is queue metadata, not a health or freshness verdict;
+// a quota reset is not evidence expiry. Missing data remains routine work.
+func cnMonitoringReviewAt(target accountProbeTarget, interval time.Duration, now time.Time) time.Time {
+	a := target.account
+	if a == nil || interval <= 0 {
+		return time.Time{}
+	}
+	provider := a.Platform
+	if !target.balance {
+		provider = a.GetCodingPlanProvider()
+		if provider == "" {
+			return time.Time{}
+		}
+	}
+	var earliest time.Time
+	observe := func(suffix string, usable bool) {
+		if !usable {
+			return
+		}
+		stamp, ok := a.Extra[cnExtraKey(provider, suffix)].(string)
+		if !ok {
+			return
+		}
+		observed, err := time.Parse(time.RFC3339Nano, stamp)
+		if err != nil || observed.Unix() <= 0 || observed.After(now) {
+			return
+		}
+		due := observed.Add(interval)
+		if due.After(now) {
+			return
+		}
+		if earliest.IsZero() || due.Before(earliest) {
+			earliest = due
+		}
+	}
+	validNumber := func(suffix string, nonnegative bool) bool {
+		n, ok := cnParseF64(a.Extra[cnExtraKey(provider, suffix)])
+		return ok && !math.IsNaN(n) && !math.IsInf(n, 0) && (!nonnegative || n >= 0)
+	}
+	if target.balance || provider == PlatformCommandCode || provider == PlatformCline || provider == PlatformMistral {
+		observe(cnBalanceExtraSuffixUpdated, validNumber(cnBalanceExtraSuffixBalance, false))
+	}
+	if !target.balance {
+		usable := validNumber(cnExtraSuffix5hUsed, true) || validNumber(cnExtraSuffixWeeklyUsed, true) ||
+			(cnQuotaHasMonthlyWindow(provider) || provider == PlatformCline) && validNumber(cnExtraSuffixMonthlyUsed, true)
+		observe(cnExtraSuffixUsageUpdated, usable)
+	}
+	return earliest
 }

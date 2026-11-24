@@ -165,9 +165,10 @@ func (s *CNProviderBalanceCheckService) Stop() {
 type accountProbeCheck func(ctx context.Context, account *Account, threshold float64) cnBalanceCheckOutcome
 
 type accountProbeTarget struct {
-	account *Account
-	check   accountProbeCheck
-	balance bool
+	account  *Account
+	check    accountProbeCheck
+	balance  bool
+	reviewAt time.Time
 }
 
 func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
@@ -266,8 +267,19 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 		if left.Served != right.Served {
 			return left.Served < right.Served
 		}
+		leftReview, rightReview := targets[i].reviewAt, targets[j].reviewAt
+		if leftReview.IsZero() != rightReview.IsZero() {
+			return !leftReview.IsZero()
+		}
+		if !leftReview.Equal(rightReview) {
+			return leftReview.Before(rightReview)
+		}
 		if left.Tried != right.Tried {
 			return left.Tried < right.Tried
+		}
+		leftCreated, rightCreated := targets[i].account.CreatedAt.Truncate(time.Microsecond), targets[j].account.CreatedAt.Truncate(time.Microsecond)
+		if !leftCreated.Equal(rightCreated) {
+			return leftCreated.Before(rightCreated)
 		}
 		return targets[i].account.ID < targets[j].account.ID
 	})
@@ -282,6 +294,10 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	// Drain older unserved work before recent work can spend the last budget.
 	// A completed round shares one age so the next round retains concurrency.
 	age := queue.Turns[targets[0].account.ID].Served
+	review := !targets[0].reviewAt.IsZero()
+	inTier := func(index int) bool {
+		return queue.Turns[targets[index].account.ID].Served == age && !targets[index].reviewAt.IsZero() == review
+	}
 	// Retain the original workload-derived 30..300s bound. This is not a
 	// promise that every target fits or that a detached flight was withdrawn.
 	batches := (len(quotas) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
@@ -302,10 +318,10 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	for {
 		for !exhausted && runCtx.Err() == nil && active < cnQuotaProbeConcurrency {
 			index := -1
-			if nextQuota < len(quotas) && queue.Turns[targets[quotas[nextQuota]].account.ID].Served == age {
+			if nextQuota < len(quotas) && inTier(quotas[nextQuota]) {
 				index = quotas[nextQuota]
 			}
-			if !balanceBusy && nextBalance < len(balances) && queue.Turns[targets[balances[nextBalance]].account.ID].Served == age &&
+			if !balanceBusy && nextBalance < len(balances) && inTier(balances[nextBalance]) &&
 				(index < 0 || balances[nextBalance] < index) {
 				index = balances[nextBalance]
 			}
@@ -371,6 +387,7 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 				}
 				if next >= 0 {
 					age = queue.Turns[targets[next].account.ID].Served
+					review = !targets[next].reviewAt.IsZero()
 					continue
 				}
 			}
@@ -413,6 +430,7 @@ func (s *CNProviderBalanceCheckService) collectProbeTargets(ctx context.Context)
 	var targets []accountProbeTarget
 	complete := true
 	seen := map[int64]bool{}
+	now := time.Now().UTC()
 	for _, platform := range []string{PlatformKimi, PlatformDeepseek, PlatformZhipu, PlatformMiniMax, PlatformCommandCode, PlatformCline, PlatformMistral} {
 		if ctx.Err() != nil {
 			return targets, false
@@ -450,7 +468,9 @@ func (s *CNProviderBalanceCheckService) collectProbeTargets(ctx context.Context)
 			}
 			if check != nil {
 				seen[account.ID] = true
-				targets = append(targets, accountProbeTarget{account: account, check: check, balance: balance})
+				target := accountProbeTarget{account: account, check: check, balance: balance}
+				target.reviewAt = cnMonitoringReviewAt(target, s.interval, now)
+				targets = append(targets, target)
 			}
 		}
 	}

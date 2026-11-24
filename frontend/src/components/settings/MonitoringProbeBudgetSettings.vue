@@ -138,6 +138,9 @@
               <template v-if="cnInventory">
                 <p class="mt-3 font-medium" data-testid="cn-runtime-inventory">{{ t(`${prefix}.${cnInventory.complete ? 'cnRuntimeComplete' : 'cnRuntimePartial'}`, { targets: cnInventory.targets, balance: cnInventory.balance_targets, quota: cnInventory.quota_targets }) }}</p>
                 <p class="mt-1 text-xs">{{ t(`${prefix}.cnRuntimeScanAt`, { value: cnInventory.observed_at }) }}</p>
+                <p v-if="cnPriority" class="mt-2 font-medium" data-testid="cn-runtime-priority">{{ t(`${prefix}.cnRuntimePriority`, cnPriority) }}</p>
+                <p v-else class="mt-2 text-xs" data-testid="cn-runtime-priority-unknown">{{ t(`${prefix}.cnRuntimePriorityUnknown`) }}</p>
+                <p class="mt-1 text-xs">{{ t(`${prefix}.cnRuntimePriorityHint`) }}</p>
               </template>
               <p v-else class="mt-3 text-xs">{{ t(`${prefix}.cnRuntimeUnobserved`) }}</p>
             </div>
@@ -294,6 +297,13 @@ const cnInventory = computed(() => {
   return scan && typeof scan.complete === 'boolean' && Number.isFinite(Date.parse(scan.observed_at)) &&
     [scan.targets, scan.balance_targets, scan.quota_targets].every(value => Number.isSafeInteger(value) && value >= 0) &&
     scan.targets === scan.balance_targets + scan.quota_targets ? scan : null
+})
+const cnPriority = computed(() => {
+  const scan = cnInventory.value
+  return scan?.priority_version === 1 &&
+    [scan.review_targets, scan.routine_targets].every(value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) &&
+    scan.review_targets! + scan.routine_targets! === scan.targets
+    ? { review: scan.review_targets!, routine: scan.routine_targets! } : null
 })
 const ollamaRuntime = computed(() => {
   const runtime = coverage.value?.ollama_usage

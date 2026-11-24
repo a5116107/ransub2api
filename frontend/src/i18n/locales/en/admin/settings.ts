@@ -606,6 +606,9 @@ export default {
           cnRuntimeComplete: 'Last complete scan: {targets} targets · Balance {balance} · Quota {quota}',
           cnRuntimePartial: 'Partial scan: at least {targets} targets · Balance {balance} · Quota {quota}; remainder unknown',
           cnRuntimeScanAt: 'Inventory scanned at: {value}; refreshing this panel does not renew the observation.',
+          cnRuntimePriority: 'This inventory: {review} required reviews · {routine} routine targets',
+          cnRuntimePriorityUnknown: 'No usable priority classification; counts remain unknown.',
+          cnRuntimePriorityHint: 'Older unserved turns stay first. Within one turn tier, valid balance/usage reviews due at the original cadence drain before routine targets. This is not a passing health verdict, eligibility or reserved capacity. Partial scans leave other targets unobserved.',
           cnRuntimeUnobserved: 'No inventory scan observed, or data is incomplete; not treated as zero targets.',
           cnRuntimeStates: {
             running: 'Running', stopping: 'Stopping (waiting for in-flight work)', stopped: 'Stopped', disabled: 'Disabled by configuration',

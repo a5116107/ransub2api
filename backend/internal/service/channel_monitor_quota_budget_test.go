@@ -1038,15 +1038,6 @@ func TestCNProviderBalanceCheckQueueOverlapAndPanicRecovery(t *testing.T) {
 	})
 }
 
-type cnQueueBalanceRepo struct {
-	AccountRepository
-	load func(context.Context, int64) (*Account, error)
-}
-
-func (r cnQueueBalanceRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
-	return r.load(ctx, id)
-}
-
 func TestCNProviderBalanceCheckQueuePaygSerialWithoutBlockingQuota(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		repo := cnQueueAccounts(t, 12)

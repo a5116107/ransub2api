@@ -820,7 +820,12 @@ func TestCNProviderQueueBudgetHTTPPostgresCyclesAndStop(t *testing.T) {
 	require.EqualValues(t, 12, firstScan.LastScan.Targets)
 	require.EqualValues(t, 12, firstScan.LastScan.BalanceTargets)
 	require.Zero(t, firstScan.LastScan.QuotaTargets)
+	require.Equal(t, 1, firstScan.LastScan.PriorityVersion)
+	require.Zero(t, firstScan.LastScan.ReviewTargets)
+	require.EqualValues(t, 12, firstScan.LastScan.RoutineTargets)
 	preview := readRuntime(true)
+	require.Equal(t, firstScan.LastScan.ReviewTargets, preview.LastScan.ReviewTargets)
+	require.Equal(t, firstScan.LastScan.RoutineTargets, preview.LastScan.RoutineTargets)
 	require.Equal(t, firstScan.InstanceID, preview.InstanceID)
 	require.Equal(t, firstScan.LastScan.ObservedAt, preview.LastScan.ObservedAt, "refresh does not renew the inventory observation")
 	assertProgress(4) // Both reads must leave counters, HTTP traffic and account observations intact.

@@ -11,19 +11,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// commandCodeTestAccount 只带 api_key：端点与分流规则全部来自 provider profile。
-func commandCodeTestAccount(id int64) *Account {
-	return &Account{
-		ID:          id,
-		Name:        "cc",
-		Platform:    PlatformCommandCode,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Concurrency: 1,
-		Credentials: map[string]any{"api_key": "user_test_key"},
-	}
-}
-
 func TestCommandCodeProfileRoutesByModel(t *testing.T) {
 	account := commandCodeTestAccount(1)
 	require.True(t, account.IsMultiProtocolAPIKey())

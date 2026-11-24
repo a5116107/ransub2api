@@ -105,3 +105,25 @@ func clineTestAccount(id int64) *Account {
 		Credentials: map[string]any{"api_key": "cline_test_key", "api_protocol": APIProtocolAdaptive},
 	}
 }
+
+// commandCodeTestAccount 只带 api_key：端点与分流规则全部来自 provider profile。
+func commandCodeTestAccount(id int64) *Account {
+	return &Account{
+		ID:          id,
+		Name:        "cc",
+		Platform:    PlatformCommandCode,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "user_test_key"},
+	}
+}
+
+type cnQueueBalanceRepo struct {
+	AccountRepository
+	load func(context.Context, int64) (*Account, error)
+}
+
+func (r cnQueueBalanceRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	return r.load(ctx, id)
+}

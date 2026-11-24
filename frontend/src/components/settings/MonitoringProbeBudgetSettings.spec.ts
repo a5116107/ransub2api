@@ -32,6 +32,43 @@ beforeEach(() => {
   api.updateMonitoringProbeBudget.mockImplementation(async value => ({ ...value, revision: value.revision + 1 }))
 })
 
+it.each(['en', 'zh'])('shows CN priority separately from health and physical demand in %s', async locale => {
+  const scan = { observed_at: '2026-11-25T00:00:00Z', complete: false, targets: 12, balance_targets: 4, quota_targets: 8,
+    priority_version: 1, review_targets: 5, routine_targets: 7 }
+  const runtime = { version: 1, scope: 'responding_process', instance_id: 'fixture-process', state: 'running', interval_seconds: 600,
+    observed_at: '2026-11-25T00:01:00Z', last_scan: scan }
+  api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), cn_quota_cycle: runtime } })
+  const wrapper = await open(locale)
+  const panel = wrapper.get('[data-testid="probe-budget-cn-runtime"]')
+  expect(panel.get('[data-testid="cn-runtime-priority"]').text()).toBe(locale === 'zh' ? '本次清单：必要复核 5 · 常规轮转 7' : 'This inventory: 5 required reviews · 7 routine targets')
+  expect(panel.text()).toContain(locale === 'zh' ? '先保旧轮未服务目标' : 'Older unserved turns stay first')
+  expect(panel.text()).toContain(locale === 'zh' ? '不是健康通过' : 'not a passing health verdict')
+  expect(panel.text()).toContain(locale === 'zh' ? '其余未知' : 'remainder unknown')
+  expect(wrapper.get('[data-testid="probe-budget-total-calls"]').text()).toBe('69456 / 80000')
+  api.previewMonitoringProbeCoverage.mockResolvedValue({ ...coverage(), cn_quota_cycle: runtime })
+  await wrapper.get('[data-testid="probe-budget-preview"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.get('[data-testid="cn-runtime-priority"]').text()).toContain(locale === 'zh' ? '必要复核 5' : '5 required reviews')
+  expect(api.updateMonitoringProbeBudget).not.toHaveBeenCalled()
+})
+
+it.each(['en', 'zh'])('keeps invalid or old-node CN priority unknown while retaining inventory in %s', async locale => {
+  const scan = { observed_at: '2026-11-25T00:00:00Z', complete: true, targets: 12, balance_targets: 4, quota_targets: 8 }
+  for (const priority of [{}, { priority_version: 2, review_targets: 5, routine_targets: 7 },
+    { priority_version: 1, review_targets: -1, routine_targets: 13 }, { priority_version: 1, review_targets: 1.5, routine_targets: 10.5 },
+    { priority_version: 1, review_targets: 5 }, { priority_version: 1, review_targets: 5, routine_targets: 8 },
+    { priority_version: 1, review_targets: Number.MAX_SAFE_INTEGER + 1, routine_targets: 0 }]) {
+    const runtime = { version: 1, scope: 'responding_process', instance_id: 'fixture-process', state: 'running', interval_seconds: 600,
+      observed_at: '2026-11-25T00:01:00Z', last_scan: { ...scan, ...priority } }
+    api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: { ...coverage(), cn_quota_cycle: runtime } })
+    const wrapper = await open(locale)
+    expect(wrapper.get('[data-testid="cn-runtime-inventory"]').text()).toContain('12')
+    expect(wrapper.find('[data-testid="cn-runtime-priority"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="cn-runtime-priority-unknown"]').text()).toContain(locale === 'zh' ? '数量保持未知' : 'counts remain unknown')
+    wrapper.unmount()
+  }
+})
+
 it.each(['en', 'zh'])('shows unobserved group probe queues as unknown rather than zero in %s', async locale => {
   api.getMonitoringProbeBudget.mockResolvedValueOnce({ ...summary(), coverage: coverage() })
   const wrapper = await open(locale)

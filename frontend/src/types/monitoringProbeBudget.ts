@@ -201,6 +201,9 @@ export interface CNMonitoringRuntime {
     targets: number
     balance_targets: number
     quota_targets: number
+    priority_version?: number
+    review_targets?: number
+    routine_targets?: number
   } | null
 }
 

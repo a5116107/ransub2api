@@ -599,6 +599,9 @@ export default {
           cnRuntimeComplete: '最近完整扫描：{targets} 个目标 · 余额 {balance} · 配额 {quota}',
           cnRuntimePartial: '最近部分读取：至少 {targets} 个目标 · 余额 {balance} · 配额 {quota}；其余未知',
           cnRuntimeScanAt: '库存扫描时间：{value}；刷新面板不延长此观测时间。',
+          cnRuntimePriority: '本次清单：必要复核 {review} · 常规轮转 {routine}',
+          cnRuntimePriorityUnknown: '未取得有效优先级分类，数量保持未知。',
+          cnRuntimePriorityHint: '先保旧轮未服务目标；同轮内已到原周期的有效余额／用量复核先行，复核退出后再处理常规目标。分类不是健康通过、资格或额度预留；部分清单仍有未观察目标。',
           cnRuntimeUnobserved: '未观察到库存扫描或数据不完整；不按零目标计算。',
           cnRuntimeStates: {
             running: '运行中', stopping: '停止中（等待在途收尾）', stopped: '已停止', disabled: '配置停用',
