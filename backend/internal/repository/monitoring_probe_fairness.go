@@ -24,10 +24,10 @@ func monitoringBudgetFairTurn(ctx context.Context, tx *sql.Tx, now time.Time, re
 		return true, nil
 	}
 	remaining := time.Until(waiter.deadline)
-	if remaining <= 0 || !waiter.queued && pending >= monitoringBudgetMaxWaiters {
+	if remaining <= 0 {
 		return false, nil
 	}
-	if !waiter.queued {
+	if !waiter.queued && pending < monitoringBudgetMaxWaiters {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO monitoring_probe_budget_waiters
  (id,site_hash,key_hashes,recovery,meter_tokens,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, waiter.id,
 			request.SiteHash, pq.Array(request.KeyHashes), request.Recovery, request.MeterTokens, now.Add(remaining)); err != nil {
@@ -73,7 +73,10 @@ func monitoringBudgetFairTurn(ctx context.Context, tx *sql.Tx, now time.Time, re
 		settings.TokensPerDay, monitoringBudgetRegularLimit(settings.TokensPerDay, settings.RecoveryReservePercent),
 		settings.SiteTokensPerMinute, settings.KeyTokensPerMinute).Scan(&winner)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		// A full waiting inventory is not a global capacity gate. The current
+		// request already passed every hard limit; if no older ticket is
+		// eligible it may proceed without registering a 257th ticket.
+		return !waiter.queued, nil
 	}
 	if err != nil {
 		return false, err

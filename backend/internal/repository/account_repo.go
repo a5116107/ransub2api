@@ -4199,6 +4199,17 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 		return nil, errors.New("account repository SQL executor not configured")
 	}
 
+	// All four persisted clocks use the same defensive parser. A malformed
+	// evidence window must not discard a valid next attempt or budget deferral.
+	parseTimestamp := func(field string) string {
+		return `CASE WHEN ` + field + ` ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+		 AND ` + field + ` NOT LIKE '0000-%' THEN
+		 (jsonb_path_query_first_tz(jsonb_build_object('value',
+		 replace(regexp_replace(regexp_replace(` + field + `,
+		 '(\.[0-9]{6})[0-9]+(Z|[+-][0-9]{2}:[0-9]{2})$', '\1\2'), 'Z$', '+00:00'), 'T', ' ')),
+		 '$.value.datetime()', '{}'::jsonb, true) #>> '{}')::timestamptz END`
+	}
+
 	rows, err := r.sql.QueryContext(ctx, `
 		WITH candidates AS (
 			SELECT
@@ -4206,6 +4217,8 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 				created_at,
 				extra #>> '{upstream_billing_probe,status}' AS probe_status,
 				extra #>> '{upstream_billing_probe,next_probe_at}' AS next_probe_at,
+				extra #>> '{upstream_billing_probe,received_at}' AS received_at,
+				extra #>> '{upstream_billing_probe,fresh_until}' AS fresh_until,
 				extra #>> '{upstream_billing_probe_deferral,retry_at}' AS deferred_until
 			FROM accounts
 			WHERE deleted_at IS NULL
@@ -4217,35 +4230,18 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 				id,
 				created_at,
 				probe_status,
-				next_probe_at,
-				CASE WHEN deferred_until ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' THEN
-				 jsonb_path_query_first_tz(jsonb_build_object('value',replace(regexp_replace(regexp_replace(deferred_until,
-				 '(\.[0-9]{6})[0-9]+(Z|[+-][0-9]{2}:[0-9]{2})$', '\1\2'), 'Z$', '+00:00'), 'T', ' ')),
-				 '$.value.datetime()', '{}'::jsonb, true) #>> '{}' END AS parsed_deferred_until,
-				next_probe_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' AS rfc3339_shape,
-				jsonb_path_query_first_tz(
-					jsonb_build_object(
-						'value',
-						replace(regexp_replace(regexp_replace(
-							next_probe_at,
-							'(\.[0-9]{6})[0-9]+(Z|[+-][0-9]{2}:[0-9]{2})$',
-							'\1\2'
-						), 'Z$', '+00:00'), 'T', ' ')
-					),
-					'$.value.datetime()',
-					'{}'::jsonb,
-					true
-				) #>> '{}' AS parsed_next_probe_at
+				`+parseTimestamp("next_probe_at")+` AS parsed_next_probe_at,
+				`+parseTimestamp("received_at")+` AS parsed_received_at,
+				`+parseTimestamp("fresh_until")+` AS parsed_fresh_until,
+				`+parseTimestamp("deferred_until")+` AS parsed_deferred_until
 			FROM candidates
 		), normalized AS (
-			SELECT
-				id,
-				created_at,
-				probe_status,
-				next_probe_at,
-				parsed_next_probe_at,
-				parsed_deferred_until,
-				rfc3339_shape AND parsed_next_probe_at IS NOT NULL AS valid_next_probe_at
+			SELECT *,
+				COALESCE(probe_status IN ('ok', 'failed') AND parsed_next_probe_at IS NOT NULL
+				 AND parsed_next_probe_at <> TIMESTAMPTZ '0001-01-01 00:00:00+00', FALSE) AS recheck,
+				COALESCE(NULLIF(GREATEST(
+				 CASE WHEN probe_status IN ('ok', 'unsupported', 'failed') THEN parsed_next_probe_at END,
+				 parsed_deferred_until), TIMESTAMPTZ '0001-01-01 00:00:00+00'), created_at) AS due_at
 			FROM parsed
 		)
 		SELECT id
@@ -4253,18 +4249,17 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 		WHERE (parsed_deferred_until IS NULL OR parsed_deferred_until::timestamptz <= $1)
 		AND (probe_status NOT IN ('ok', 'unsupported', 'failed')
 			OR probe_status IS NULL
-			OR next_probe_at IS NULL
-			OR NOT valid_next_probe_at
-			OR CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz <= $1 ELSE FALSE END)
+			OR parsed_next_probe_at IS NULL
+			OR parsed_next_probe_at::timestamptz <= $1)
 		ORDER BY
-			COALESCE(NULLIF(GREATEST(
-				CASE WHEN probe_status IN ('ok', 'unsupported', 'failed') AND valid_next_probe_at
-					THEN parsed_next_probe_at::timestamptz END,
-				parsed_deferred_until::timestamptz
-			), TIMESTAMPTZ '0001-01-01 00:00:00+00'), created_at) ASC,
+			recheck DESC,
+			CASE WHEN recheck AND parsed_received_at <> TIMESTAMPTZ '0001-01-01 00:00:00+00'
+			 AND parsed_received_at <= $1 AND parsed_fresh_until > parsed_received_at
+			 THEN parsed_fresh_until ELSE due_at END ASC,
+			due_at ASC,
 			id ASC
 		LIMIT $2
-	`, now.UTC(), limit)
+	`, now.UTC().Truncate(time.Microsecond), limit)
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -485,6 +486,7 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 		return fmt.Errorf("list enabled upstream billing probes: %w", err)
 	}
 	due := make([]Account, 0, len(accounts))
+	priorities := make(map[int64]upstreamBillingProbeQueuePriority, len(accounts))
 	for i := range accounts {
 		account := accounts[i]
 		if !isUpstreamBillingProbeAccount(&account) || !account.IsActive() || !upstreamBillingProbeEnabled(&account) {
@@ -494,41 +496,104 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 			continue
 		}
 		due = append(due, account)
+		priorities[account.ID] = upstreamBillingProbePriority(&account, now)
 	}
 	sort.SliceStable(due, func(i, j int) bool {
-		left, right := upstreamBillingProbeDueAt(&due[i]), upstreamBillingProbeDueAt(&due[j])
-		// New inventory joins at its creation time, not year zero. An endless
-		// stream of new accounts must not displace already-due recovery.
-		if left.IsZero() {
-			left = due[i].CreatedAt
+		left, right := priorities[due[i].ID], priorities[due[j].ID]
+		if left.recheck != right.recheck {
+			return left.recheck
 		}
-		if right.IsZero() {
-			right = due[j].CreatedAt
+		if !left.urgentAt.Equal(right.urgentAt) {
+			return left.urgentAt.Before(right.urgentAt)
 		}
-		if left.Equal(right) {
-			return due[i].ID < due[j].ID
+		if !left.dueAt.Equal(right.dueAt) {
+			return left.dueAt.Before(right.dueAt)
 		}
-		return left.Before(right)
+		return due[i].ID < due[j].ID
 	})
 	if len(due) > upstreamBillingProbeMaxPerCycle {
 		due = due[:upstreamBillingProbeMaxPerCycle]
 	}
 
-	var group errgroup.Group
-	for i := range due {
-		accountID := due[i].ID
-		group.Go(func() error {
-			if _, probeErr := s.probeScheduledAccount(ctx, accountID, settings.IntervalMinutes); probeErr != nil && ctx.Err() == nil {
-				if monitoringProbeDeferral(probeErr, s.currentTime()) != nil {
-					return nil
-				}
-				logger.LegacyPrintf("service.upstream_billing_probe", "probe_due_failed: account_id=%d err=%v", accountID, probeErr)
+	// Required reviews must finish before exploration competes for scarce
+	// physical quota. Bound dispatch as well as the existing shared probe slots.
+	split := sort.Search(len(due), func(i int) bool { return !priorities[due[i].ID].recheck })
+	for _, phase := range [][]Account{due[:split], due[split:]} {
+		var group errgroup.Group
+		group.SetLimit(upstreamBillingProbeConcurrency)
+		for i := range phase {
+			if ctx.Err() != nil {
+				break
 			}
-			return nil
-		})
+			accountID := phase[i].ID
+			group.Go(func() error {
+				if _, probeErr := s.probeScheduledAccount(ctx, accountID, settings.IntervalMinutes); probeErr != nil && ctx.Err() == nil {
+					if monitoringProbeDeferral(probeErr, s.currentTime()) != nil {
+						return nil
+					}
+					logger.LegacyPrintf("service.upstream_billing_probe", "probe_due_failed: account_id=%d err=%v", accountID, probeErr)
+				}
+				return nil
+			})
+		}
+		_ = group.Wait()
 	}
-	_ = group.Wait()
 	return context.Cause(ctx)
+}
+
+type upstreamBillingProbeQueuePriority struct {
+	recheck         bool
+	urgentAt, dueAt time.Time
+}
+
+var upstreamBillingProbeTimestampPattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$`)
+
+func upstreamBillingProbeTimestamp(raw json.RawMessage) time.Time {
+	var value string
+	if json.Unmarshal(raw, &value) != nil || !upstreamBillingProbeTimestampPattern.MatchString(value) {
+		return time.Time{}
+	}
+	stamp, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || stamp.Year() < 1 {
+		return time.Time{}
+	}
+	return stamp.UTC()
+}
+
+// Scheduling metadata is not a health verdict. Decode fields independently:
+// a damaged evidence timestamp must not erase a saved future retry window.
+func upstreamBillingProbeScheduleMetadata(account *Account) (status string, next, received, fresh time.Time) {
+	if account == nil {
+		return
+	}
+	raw, err := json.Marshal(account.Extra[UpstreamBillingProbeExtraKey])
+	if err != nil {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || json.Unmarshal(fields["status"], &status) != nil || !isUpstreamBillingProbeStatus(status) {
+		return "", time.Time{}, time.Time{}, time.Time{}
+	}
+	return status, upstreamBillingProbeTimestamp(fields["next_probe_at"]), upstreamBillingProbeTimestamp(fields["received_at"]), upstreamBillingProbeTimestamp(fields["fresh_until"])
+}
+
+func upstreamBillingProbePriority(account *Account, now time.Time) upstreamBillingProbeQueuePriority {
+	status, next, received, fresh := upstreamBillingProbeScheduleMetadata(account)
+	received, fresh = received.Truncate(time.Microsecond), fresh.Truncate(time.Microsecond)
+	due := upstreamBillingProbeDueAt(account)
+	if due.IsZero() {
+		due = account.CreatedAt
+	}
+	priority := upstreamBillingProbeQueuePriority{
+		recheck: (status == UpstreamBillingProbeStatusOK || status == UpstreamBillingProbeStatusFailed) && !next.Truncate(time.Microsecond).IsZero(),
+		dueAt:   due.Truncate(time.Microsecond), urgentAt: due.Truncate(time.Microsecond),
+	}
+	// Only a complete, ordered observed evidence window can supply urgency.
+	// Unknown clocks retain due age rather than inventing expiry or success.
+	if priority.recheck && !received.IsZero() && !fresh.IsZero() && !received.After(now.Truncate(time.Microsecond)) && fresh.After(received) {
+		priority.urgentAt = fresh.Truncate(time.Microsecond)
+	}
+	return priority
 }
 
 func (s *UpstreamBillingProbeService) listDueAccounts(ctx context.Context, now time.Time) ([]Account, error) {

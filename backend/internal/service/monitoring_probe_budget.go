@@ -661,12 +661,19 @@ func upstreamBillingProbeDeferral(account *Account) *MonitoringProbeBudgetDenial
 }
 
 func upstreamBillingProbeDueAt(account *Account) time.Time {
-	var due time.Time
-	if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil {
-		due = snapshot.NextProbeAt
+	_, due, _, _ := upstreamBillingProbeScheduleMetadata(account)
+	if account == nil {
+		return due
 	}
-	if deferred := upstreamBillingProbeDeferral(account); deferred != nil && deferred.RetryAt.After(due) {
-		due = deferred.RetryAt
+	// Other damaged display fields cannot discard an authoritative retry clock.
+	raw, err := json.Marshal(account.Extra[UpstreamBillingProbeDeferralExtraKey])
+	var fields struct {
+		RetryAt json.RawMessage `json:"retry_at"`
+	}
+	if err == nil && json.Unmarshal(raw, &fields) == nil {
+		if retry := upstreamBillingProbeTimestamp(fields.RetryAt); retry.After(due) {
+			due = retry
+		}
 	}
 	return due
 }

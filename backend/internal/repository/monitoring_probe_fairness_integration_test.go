@@ -503,6 +503,81 @@ func TestMonitoringProbeBudgetSharedWaitMigrationAndBound(t *testing.T) {
 	t.Logf("waiter bound=%d; replay/rollback preserve accounting and recovery", monitoringBudgetMaxWaiters)
 }
 
+func TestMonitoringProbeBudgetSharedFullQueueDoesNotBlockIndependentSource(t *testing.T) {
+	for _, blocked := range []string{"site_concurrency", "key_concurrency", "site_requests", "key_requests", "site_tokens", "key_tokens", "global_tokens", "recovery_reserve"} {
+		t.Run(blocked, func(t *testing.T) {
+			db, _ := newBillingAuditDatabase(t)
+			repo := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			policy.Concurrency, policy.SiteConcurrency, policy.KeyConcurrency = 3, 3, 3
+			switch blocked {
+			case "site_concurrency":
+				policy.SiteConcurrency = 1
+			case "key_concurrency":
+				policy.KeyConcurrency = 1
+			case "site_requests":
+				policy.SiteRequestsPerMinute = 1
+			case "key_requests":
+				policy.KeyRequestsPerMinute = 1
+			case "site_tokens":
+				policy.SiteTokensPerMinute = 7
+			case "key_tokens":
+				policy.KeyTokensPerMinute = 7
+			case "global_tokens":
+				policy.TokensPerDay = 7
+			case "recovery_reserve":
+				policy.Concurrency, policy.RecoveryReservePercent = 2, 50
+			}
+			policy, err := repo.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			busy := service.MonitoringProbeBudgetRequest{SiteHash: "full-blocked-site", KeyHashes: []string{"full-blocked-key"}, MeterTokens: true}
+			held, err := repo.Acquire(t.Context(), busy)
+			require.NoError(t, err)
+			tokens := int64(0)
+			if blocked == "site_tokens" || blocked == "key_tokens" || blocked == "global_tokens" {
+				tokens = 7
+				require.NoError(t, repo.Release(t.Context(), held, service.MonitoringProbeTokenUsage{Tokens: tokens, Reported: true}))
+			}
+			_, err = db.ExecContext(t.Context(), `INSERT INTO monitoring_probe_budget_waiters(id,site_hash,key_hashes,recovery,meter_tokens,expires_at)
+ SELECT gen_random_uuid(),$1,ARRAY[$2]::text[],false,true,clock_timestamp()+interval '5 seconds'
+ FROM generate_series(1,$3)`, busy.SiteHash, busy.KeyHashes[0], monitoringBudgetMaxWaiters)
+			require.NoError(t, err)
+			independent := service.MonitoringProbeBudgetRequest{SiteHash: "full-independent-site", KeyHashes: []string{"full-independent-key"},
+				MeterTokens: blocked != "global_tokens", Recovery: blocked == "recovery_reserve"}
+			id, err := repo.Acquire(t.Context(), independent)
+			require.NoError(t, err, "a queue full of locally blocked waiters must not deny another source's free physical slot")
+			require.NotEmpty(t, id)
+			require.Equal(t, monitoringBudgetMaxWaiters, monitoringFairWaiters(t, db), "direct independent admission must not exceed the waiting bound or erase peers")
+			if independent.MeterTokens {
+				require.NoError(t, repo.Release(t.Context(), id, service.MonitoringProbeTokenUsage{Tokens: 7, Reported: true}))
+				tokens += 7
+			} else {
+				require.NoError(t, repo.Release(t.Context(), id, service.MonitoringProbeTokenUsage{}))
+			}
+			require.NoError(t, repo.Release(t.Context(), held, service.MonitoringProbeTokenUsage{}))
+			// Restore each old candidate's specific constraint through the original
+			// settings contract. Its older ticket must then protect the next free slot.
+			policy.Concurrency, policy.SiteConcurrency, policy.KeyConcurrency, policy.RecoveryReservePercent = 3, 3, 3, 0
+			policy.SiteRequestsPerMinute, policy.KeyRequestsPerMinute = 100, 100
+			policy.SiteTokensPerMinute, policy.KeyTokensPerMinute, policy.TokensPerDay = 0, 0, 0
+			_, err = repo.SaveSettings(t.Context(), policy)
+			require.NoError(t, err)
+			_, err = repo.Acquire(t.Context(), independent)
+			var denial *service.MonitoringProbeBudgetDenial
+			require.ErrorAs(t, err, &denial, "once older peers are eligible again the full queue must protect their turn")
+			require.Equal(t, "global", denial.Scope)
+			summary, err := repo.Summary(t.Context())
+			require.NoError(t, err)
+			require.EqualValues(t, 2, summary.DayUsed)
+			require.EqualValues(t, tokens, summary.DayTokens)
+			require.Zero(t, summary.ActiveRequests)
+			var downstream int
+			require.NoError(t, db.QueryRowContext(t.Context(), `SELECT count(*) FROM usage_logs`).Scan(&downstream))
+			require.Zero(t, downstream)
+		})
+	}
+}
+
 func TestMonitoringProbeBudgetSharedSlotWaitAndRecovery(t *testing.T) {
 	db, _ := newBillingAuditDatabase(t)
 	db.SetMaxOpenConns(1) // Waiting must leave the sole connection available for Release.
