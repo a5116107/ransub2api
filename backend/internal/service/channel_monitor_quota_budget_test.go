@@ -829,8 +829,9 @@ func TestCNProviderBalanceCheckOlderTierDrainsBeforeRecentWork(t *testing.T) {
 			}
 			return &CNProviderQuotaProbeResult{Success: true}, nil
 		}}
-		svc := &CNProviderBalanceCheckService{accountRepo: cnQueueAccounts(t, 2), quotaService: prober, cfg: &config.Config{},
-			turnSequence: 100, turns: map[int64]cnBalanceProbeTurn{1: {served: 1}, 2: {served: 100}}}
+		repo := cnQueueAccounts(t, 2)
+		seedCNQueueAges(t, repo)
+		svc := &CNProviderBalanceCheckService{accountRepo: repo, quotaService: prober, cfg: &config.Config{}}
 		svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(&monitoringBudgetRepoStub{}))
 		go func() { svc.runOnce(t.Context()); close(done) }()
 		<-entered
@@ -841,12 +842,12 @@ func TestCNProviderBalanceCheckOlderTierDrainsBeforeRecentWork(t *testing.T) {
 		require.Zero(t, before, "recent work must not race older in-flight work for its budget")
 		require.Zero(t, recentCalls.Load(), "global exhaustion must stop the next age tier")
 		require.EqualValues(t, 1, oldCalls.Load())
-		require.EqualValues(t, 1, svc.turns[1].served, "unadmitted work retains its original age")
+		require.EqualValues(t, 1, repo.turns[1].Served, "unadmitted work retains its original age")
 		recovering.Store(true)
 		svc.runOnce(t.Context())
 		require.EqualValues(t, 2, oldCalls.Load())
 		require.EqualValues(t, 1, recentCalls.Load(), "recovered old work must release the younger tier")
-		require.Equal(t, svc.turns[1].served, svc.turns[2].served, "one completed round must share an age tier")
+		require.Equal(t, repo.turns[1].Served, repo.turns[2].Served, "one completed round must share an age tier")
 	})
 }
 
@@ -854,8 +855,9 @@ func TestCNProviderBalanceCheckOlderTierLocalDenialReleasesPeers(t *testing.T) {
 	for _, scope := range []string{"key", "key_minute", "site", "site_minute"} {
 		t.Run(scope, func(t *testing.T) {
 			var recentCalls atomic.Int32
-			svc := &CNProviderBalanceCheckService{accountRepo: cnQueueAccounts(t, 2), cfg: &config.Config{},
-				turnSequence: 100, turns: map[int64]cnBalanceProbeTurn{1: {served: 1}, 2: {served: 100}},
+			repo := cnQueueAccounts(t, 2)
+			seedCNQueueAges(t, repo)
+			svc := &CNProviderBalanceCheckService{accountRepo: repo, cfg: &config.Config{},
 				quotaService: cnQueueQuotaProber{query: func(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
 					if id == 1 {
 						denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: scope, RetryAt: time.Now().Add(time.Minute)}
@@ -868,8 +870,8 @@ func TestCNProviderBalanceCheckOlderTierLocalDenialReleasesPeers(t *testing.T) {
 			svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(&monitoringBudgetRepoStub{}))
 			svc.runOnce(t.Context())
 			require.EqualValues(t, 1, recentCalls.Load(), "a local denial must release the next independent age tier")
-			require.EqualValues(t, 1, svc.turns[1].served)
-			require.Greater(t, svc.turns[2].served, uint64(100))
+			require.EqualValues(t, 1, repo.turns[1].Served)
+			require.Greater(t, repo.turns[2].Served, int64(100))
 		})
 	}
 }
@@ -964,19 +966,19 @@ func TestCNProviderBalanceCheckQueueInventoryLifecycle(t *testing.T) {
 	}}
 	svc := &CNProviderBalanceCheckService{accountRepo: repo, quotaService: &fakeCNQuotaProber{}, cfg: &config.Config{}}
 	svc.runOnce(t.Context())
-	require.Len(t, svc.turns, 12)
+	require.Len(t, base.turns, 12)
 	clineID := base.byPlatform[PlatformCline][0].ID
-	prior := svc.turns[clineID]
+	prior := base.turns[clineID]
 	failed = true
 	svc.runOnce(t.Context())
-	require.Equal(t, prior, svc.turns[clineID], "partial inventory must preserve absent accounts' deferred age")
+	require.Equal(t, prior, base.turns[clineID], "partial inventory must preserve absent accounts' deferred age")
 	failed = false
 	delete(base.byPlatform, PlatformCline)
 	svc.runOnce(t.Context())
-	require.Len(t, svc.turns, 8, "complete inventory must reclaim removed targets")
+	require.Len(t, base.turns, 8, "complete inventory must reclaim removed targets")
 	clear(base.byPlatform)
 	svc.runOnce(t.Context())
-	require.Empty(t, svc.turns)
+	require.Empty(t, base.turns)
 }
 
 func TestCNProviderBalanceCheckQueueCancelsCollection(t *testing.T) {

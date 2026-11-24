@@ -397,7 +397,7 @@ func TestCNProviderBalanceCheckRunOnceProbesCommandCode(t *testing.T) {
 	prober := &commandCodeBalanceProber{balance: 0.2}
 	cfg := &config.Config{}
 	cfg.Gateway.CNProviders.BalanceThreshold = 0.5
-	svc := &CNProviderBalanceCheckService{accountRepo: repo, quotaService: prober, cfg: cfg}
+	svc := &CNProviderBalanceCheckService{accountRepo: cnQueueStoredAccounts{repo, &fakeCNCheckRepo{}}, quotaService: prober, cfg: cfg}
 
 	svc.runOnce(t.Context())
 

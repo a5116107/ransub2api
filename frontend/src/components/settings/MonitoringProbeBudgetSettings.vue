@@ -283,7 +283,7 @@ const cnRuntime = computed(() => {
 })
 const cnRuntimeState = computed(() => {
   const state = cnRuntime.value?.state
-  return state && ['running', 'stopping', 'stopped', 'disabled', 'role_disabled', 'not_started', 'unavailable'].includes(state) ? state : 'unknown'
+  return state && ['running', 'stopping', 'stopped', 'disabled', 'role_disabled', 'not_started', 'unavailable', 'coordination_unavailable'].includes(state) ? state : 'unknown'
 })
 const cnRuntimeInterval = computed(() => {
   const value = cnRuntime.value?.interval_seconds

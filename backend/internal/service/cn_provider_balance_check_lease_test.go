@@ -133,7 +133,7 @@ func TestCNProviderBalanceCheckLeaderLeaseCoversSlowQueue(t *testing.T) {
 		peer.quotaService = prober
 		peer.SetLeaderLock(cache)
 		peer.runOnce(t.Context())
-		require.Empty(t, peer.turns, "a peer must not scan after the original lease TTL while the queue is running")
+		require.Nil(t, peer.lastScan, "a peer must not scan after the original lease TTL while the queue is running")
 		require.NotEmpty(t, cache.heldBy(cnBalanceCheckLeaderLockKey))
 		<-done
 		require.EqualValues(t, 40, calls.Load())

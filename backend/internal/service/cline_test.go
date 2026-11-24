@@ -596,7 +596,7 @@ func TestCNProviderBalanceCheckRunOnceProbesClineUsage(t *testing.T) {
 	upstream := newClineAccountUpstream(commandCodeAlphaResponse{status: http.StatusOK, body: clineUsageLimitsBody}, `{"success":true,"data":{"balance":200000}}`)
 	cfg := clineUsageTestConfig()
 	svc := &CNProviderBalanceCheckService{
-		accountRepo:    repo,
+		accountRepo:    cnQueueStoredAccounts{repo, &fakeCNCheckRepo{}},
 		balanceService: NewCNProviderBalanceService(repo, nil, upstream, cfg),
 		quotaService:   NewCNProviderQuotaService(repo, nil, upstream, cfg),
 		cfg:            cfg,
@@ -619,7 +619,7 @@ func TestCNProviderBalanceCheckRunOnceDispatchesAccountProbesByPlatform(t *testi
 	cline := *clineTestAccount(2)
 	repo := &commandCodeCheckRepo{accounts: []Account{commandCode, cline}}
 	prober := &commandCodeBalanceProber{balance: 0.2}
-	svc := &CNProviderBalanceCheckService{accountRepo: repo, quotaService: prober, cfg: clineUsageTestConfig()}
+	svc := &CNProviderBalanceCheckService{accountRepo: cnQueueStoredAccounts{repo, &fakeCNCheckRepo{}}, quotaService: prober, cfg: clineUsageTestConfig()}
 
 	svc.runOnce(t.Context())
 

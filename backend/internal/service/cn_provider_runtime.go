@@ -46,6 +46,8 @@ func (s *CNProviderBalanceCheckService) MonitoringRuntime() *CNMonitoringRuntime
 	case !s.cfg.Gateway.CNProviders.BalanceCheckEnabled || s.interval <= 0:
 		view.State = "disabled"
 	case s.accountRepo == nil || s.balanceService == nil:
+	case s.turnCoordinationFailed:
+		view.State = "coordination_unavailable"
 	case s.started:
 		view.State = "running"
 	case !s.cfg.RunsBackgroundJobs():

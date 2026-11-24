@@ -38,24 +38,23 @@ const (
 // Command Code 账号一次探测同时刷新窗口快照与积分余额，积分低于阈值时同样临时停调。
 // Cline 账号同样一次探测刷新 ClinePass 窗口与积分，只冷却用完的一边（见 cline_usage.go）。
 type CNProviderBalanceCheckService struct {
-	accountRepo      AccountRepository
-	balanceService   *CNProviderBalanceService
-	quotaService     cnQuotaProber
-	monitoringBudget *MonitoringProbeBudgetService
-	lockCache        LeaderLockCache
-	cfg              *config.Config
-	interval         time.Duration
-	lifecycleMu      sync.Mutex
-	started          bool
-	stopped          bool
-	drained          bool
-	instanceID       string
-	lastScan         *CNMonitoringInventory
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	cycleMu          sync.Mutex
-	turnSequence     uint64
-	turns            map[int64]cnBalanceProbeTurn
+	accountRepo            AccountRepository
+	balanceService         *CNProviderBalanceService
+	quotaService           cnQuotaProber
+	monitoringBudget       *MonitoringProbeBudgetService
+	lockCache              LeaderLockCache
+	cfg                    *config.Config
+	interval               time.Duration
+	lifecycleMu            sync.Mutex
+	started                bool
+	stopped                bool
+	drained                bool
+	instanceID             string
+	lastScan               *CNMonitoringInventory
+	cancel                 context.CancelFunc
+	wg                     sync.WaitGroup
+	cycleMu                sync.Mutex
+	turnCoordinationFailed bool
 }
 
 // NewCNProviderBalanceCheckService 构造周期余额/额度检测服务。
@@ -163,15 +162,6 @@ func (s *CNProviderBalanceCheckService) Stop() {
 	s.lifecycleMu.Unlock()
 }
 
-// Local scheduling age, not evidence freshness or a distributed reservation.
-// A rejected request keeps its age; an admitted physical attempt (including a
-// partial adapter chain) consumes a turn, so an expensive chain cannot monopolize
-// each renewed budget. tried breaks ties between equally old rejected jobs.
-type cnBalanceProbeTurn struct {
-	served uint64
-	tried  uint64
-}
-
 type accountProbeCheck func(ctx context.Context, account *Account, threshold float64) cnBalanceCheckOutcome
 
 type accountProbeTarget struct {
@@ -182,7 +172,7 @@ type accountProbeTarget struct {
 
 func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	// A ticker is serial, but a concurrent invocation must not duplicate its
-	// queue or race the local fairness state.
+	// queue or race inventory synchronization.
 	if !s.cycleMu.TryLock() {
 		return
 	}
@@ -232,38 +222,52 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	if ctx.Err() == nil {
 		s.observeMonitoringInventory(targets, complete)
 	}
-	if ctx.Err() != nil || len(targets) == 0 {
-		if complete {
-			s.turns = nil
-		}
+	if ctx.Err() != nil {
 		return
 	}
-	if s.turns == nil {
-		s.turns = make(map[int64]cnBalanceProbeTurn, len(targets))
+	store, ok := s.accountRepo.(CNMonitoringTurnRepository)
+	if !ok {
+		s.observeTurnCoordination(false)
+		log.Print("[CNBalance] persistent scheduling unavailable; cycle stopped")
+		return
 	}
-	s.turnSequence++
-	present := make(map[int64]bool, len(targets))
+	identities := make([]CNMonitoringTurn, 0, len(targets))
 	for _, target := range targets {
-		id := target.account.ID
-		present[id] = true
-		if _, exists := s.turns[id]; !exists {
-			s.turns[id] = cnBalanceProbeTurn{served: s.turnSequence}
+		turn, err := cnMonitoringTurn(target)
+		if err != nil {
+			s.observeTurnCoordination(false)
+			log.Print("[CNBalance] invalid scheduling identity; cycle stopped")
+			return
+		}
+		identities = append(identities, turn)
+	}
+	stateCtx, cancelState := context.WithTimeout(ctx, 3*time.Second)
+	queue, err := store.SyncCNMonitoringTurns(stateCtx, identities, complete)
+	cancelState()
+	if err != nil || queue == nil || queue.Round <= 0 {
+		s.observeTurnCoordination(false)
+		log.Print("[CNBalance] persistent scheduling read failed; cycle stopped")
+		return
+	}
+	s.observeTurnCoordination(true)
+	current := targets[:0]
+	for i, target := range targets {
+		turn, exists := queue.Turns[target.account.ID]
+		if exists && turn.IdentityHash == identities[i].IdentityHash && turn.Served > 0 && turn.Served < queue.Round && turn.Tried >= 0 {
+			current = append(current, target)
 		}
 	}
-	if complete {
-		for id := range s.turns {
-			if !present[id] {
-				delete(s.turns, id)
-			}
-		}
+	targets = current
+	if len(targets) == 0 {
+		return
 	}
 	sort.Slice(targets, func(i, j int) bool {
-		left, right := s.turns[targets[i].account.ID], s.turns[targets[j].account.ID]
-		if left.served != right.served {
-			return left.served < right.served
+		left, right := queue.Turns[targets[i].account.ID], queue.Turns[targets[j].account.ID]
+		if left.Served != right.Served {
+			return left.Served < right.Served
 		}
-		if left.tried != right.tried {
-			return left.tried < right.tried
+		if left.Tried != right.Tried {
+			return left.Tried < right.Tried
 		}
 		return targets[i].account.ID < targets[j].account.ID
 	})
@@ -277,9 +281,7 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	}
 	// Drain older unserved work before recent work can spend the last budget.
 	// A completed round shares one age so the next round retains concurrency.
-	age := s.turns[targets[0].account.ID].served
-	s.turnSequence++
-	servedAge := s.turnSequence
+	age := queue.Turns[targets[0].account.ID].Served
 	// Retain the original workload-derived 30..300s bound. This is not a
 	// promise that every target fits or that a detached flight was withdrawn.
 	batches := (len(quotas) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
@@ -291,6 +293,7 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 		outcome cnBalanceCheckOutcome
 		served  bool
 		stop    bool
+		turn    CNMonitoringTurn
 	}
 	done := make(chan finished, cnQuotaProbeConcurrency)
 	threshold := s.cfg.Gateway.CNProviders.BalanceThreshold
@@ -299,10 +302,10 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 	for {
 		for !exhausted && runCtx.Err() == nil && active < cnQuotaProbeConcurrency {
 			index := -1
-			if nextQuota < len(quotas) && s.turns[targets[quotas[nextQuota]].account.ID].served == age {
+			if nextQuota < len(quotas) && queue.Turns[targets[quotas[nextQuota]].account.ID].Served == age {
 				index = quotas[nextQuota]
 			}
-			if !balanceBusy && nextBalance < len(balances) && s.turns[targets[balances[nextBalance]].account.ID].served == age &&
+			if !balanceBusy && nextBalance < len(balances) && queue.Turns[targets[balances[nextBalance]].account.ID].Served == age &&
 				(index < 0 || balances[nextBalance] < index) {
 				index = balances[nextBalance]
 			}
@@ -312,20 +315,30 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 			target := targets[index]
 			if target.balance {
 				nextBalance++
-				balanceBusy = true
 			} else {
 				nextQuota++
 			}
-			s.turnSequence++
-			turn := s.turns[target.account.ID]
-			turn.tried = s.turnSequence
-			s.turns[target.account.ID] = turn
+			claimCtx, cancelClaim := context.WithTimeout(runCtx, 2*time.Second)
+			turn, claimed, claimErr := store.ClaimCNMonitoringTurn(claimCtx, queue.Turns[target.account.ID])
+			cancelClaim()
+			if claimErr != nil {
+				s.observeTurnCoordination(false)
+				exhausted = true
+				log.Print("[CNBalance] persistent scheduling claim failed; dispatch stopped")
+				break
+			}
+			if !claimed {
+				continue // An updated inventory/owner wins; no process-local retry.
+			}
+			if target.balance {
+				balanceBusy = true
+			}
 			active++
 			// Always create job-owned state, even if the caller already carries
 			// this service's policy. Adapters retain it within this job only.
 			jobCtx := withAccountTestMonitoringSite(s.monitoringBudget.qualityContext(runCtx), "")
 			go func() {
-				result := finished{index: index}
+				result := finished{index: index, turn: turn}
 				defer func() {
 					if recover() != nil {
 						log.Printf("[CNBalance] probe account %d panicked", target.account.ID)
@@ -357,7 +370,7 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 					next = balances[nextBalance]
 				}
 				if next >= 0 {
-					age = s.turns[targets[next].account.ID].served
+					age = queue.Turns[targets[next].account.ID].Served
 					continue
 				}
 			}
@@ -370,9 +383,16 @@ func (s *CNProviderBalanceCheckService) runOnce(ctx context.Context) {
 			balanceBusy = false
 		}
 		if result.served {
-			turn := s.turns[target.account.ID]
-			turn.served = servedAge
-			s.turns[target.account.ID] = turn
+			// Admission can precede cancellation, so persist the consumed turn
+			// with an independent bounded context after the original worker exits.
+			finishCtx, cancelFinish := context.WithTimeout(context.Background(), 2*time.Second)
+			_, finishErr := store.FinishCNMonitoringTurn(finishCtx, result.turn, queue.Round)
+			cancelFinish()
+			if finishErr != nil {
+				s.observeTurnCoordination(false)
+				exhausted = true
+				log.Print("[CNBalance] persistent scheduling save failed; dispatch stopped")
+			}
 		}
 		exhausted = exhausted || result.stop
 		switch result.outcome {

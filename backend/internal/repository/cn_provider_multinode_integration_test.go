@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,77 @@ import (
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCNProviderIndependentProcessesPreserveQueueAge(t *testing.T) {
+	db, client := newBillingAuditDatabase(t)
+	ctx := t.Context()
+	options := *integrationRedis.Options()
+	options.DB = 10
+	rdb := redisclient.NewClient(&options)
+	t.Cleanup(func() { _ = rdb.Close() })
+	size, err := rdb.DBSize(ctx).Result()
+	require.NoError(t, err)
+	require.Zero(t, size)
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		require.NoError(t, rdb.FlushDB(cleanup).Err())
+	})
+	var calls [12]atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index, err := strconv.Atoi(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer cn-age-fixture-"))
+		if err != nil || index < 0 || index >= len(calls) || r.Method != http.MethodGet || r.URL.Path != "/tenant/user/balance" {
+			http.Error(w, "invalid fixture request", http.StatusBadRequest)
+			return
+		}
+		calls[index].Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"10"}]}`)
+	}))
+	t.Cleanup(server.Close)
+	accounts := NewAccountRepository(client, db, nil)
+	for i := range calls {
+		require.NoError(t, accounts.Create(ctx, &service.Account{Name: fmt.Sprintf("cn-age-%d", i), Platform: service.PlatformDeepseek,
+			Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 1,
+			Credentials: map[string]any{"api_key": fmt.Sprintf("cn-age-fixture-%d", i), "base_url": server.URL + "/tenant", "account_mode": service.AccountModePayG}}))
+	}
+	budget := NewMonitoringProbeBudgetRepository(db)
+	policy := monitoringBudgetPolicy()
+	policy.RequestsPerDay = 4
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	command := monitoringBudgetNodeCommand{Mode: "cn", DSN: monitoringBudgetNodeDSN(t, db), RedisAddress: options.Addr, RedisDB: options.DB, Requests: 1}
+	previousPID := 0
+	for _, capacity := range []int64{4, 8, 12} {
+		if capacity != 4 {
+			policy.RequestsPerDay = capacity
+			policy, err = budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+		}
+		replies := make(chan monitoringBudgetNodeReply, 1)
+		node := startMonitoringBudgetNode(t, command, replies)
+		require.NotEqual(t, previousPID, node.pid)
+		previousPID = node.pid
+		require.Equal(t, http.StatusOK, receiveMonitoringBudgetReply(t, replies).Status)
+		node.wait()
+		unique := 0
+		for i := range calls {
+			count := calls[i].Load()
+			if count > 0 {
+				unique++
+			}
+			require.LessOrEqual(t, count, int64(1), "a restarted node must preserve account %d's consumed turn", i)
+		}
+		require.EqualValues(t, capacity, unique, "newly restored capacity must serve older unserved peers, not restart the low-ID prefix")
+		summary, err := budget.Summary(ctx)
+		require.NoError(t, err)
+		require.Equal(t, capacity, summary.DayUsed)
+		require.Zero(t, summary.ActiveRequests)
+	}
+	var downstream int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs`).Scan(&downstream))
+	require.Zero(t, downstream)
+}
 
 func TestCNProviderIndependentProcessesDoNotDuplicateCycle(t *testing.T) {
 	db, client := newBillingAuditDatabase(t)

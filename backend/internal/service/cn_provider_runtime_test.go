@@ -155,7 +155,7 @@ func TestCNMonitoringRuntimeStopDoesNotReportDrainedEarly(t *testing.T) {
 func TestCNMonitoringRuntimePartialEmptyAndCancelledCollection(t *testing.T) {
 	base := cnQueueAccounts(t, 12)
 	failed := false
-	repo := cnQueueInventoryRepo{list: func(ctx context.Context, platform string) ([]Account, error) {
+	repo := cnQueueInventoryRepo{fakeCNCheckRepo: base, list: func(ctx context.Context, platform string) ([]Account, error) {
 		if failed && platform == PlatformCline {
 			return nil, errors.New("private inventory fixture failure")
 		}

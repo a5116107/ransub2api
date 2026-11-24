@@ -32,6 +32,62 @@ func (f *fakeCNQuotaProber) QueryUsage(ctx context.Context, accountID int64) (*C
 type fakeCNCheckRepo struct {
 	AccountRepository
 	byPlatform map[string][]Account
+	turnMu     sync.Mutex
+	turnSeq    int64
+	turns      map[int64]CNMonitoringTurn
+}
+
+func (r *fakeCNCheckRepo) SyncCNMonitoringTurns(_ context.Context, targets []CNMonitoringTurn, complete bool) (*CNMonitoringQueue, error) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	if r.turns == nil {
+		r.turns = make(map[int64]CNMonitoringTurn)
+	}
+	r.turnSeq++
+	present := make(map[int64]bool, len(targets))
+	for _, target := range targets {
+		present[target.AccountID] = true
+		if previous, exists := r.turns[target.AccountID]; !exists || previous.IdentityHash != target.IdentityHash {
+			target.Served = r.turnSeq
+			r.turns[target.AccountID] = target
+		}
+	}
+	if complete {
+		for id := range r.turns {
+			if !present[id] {
+				delete(r.turns, id)
+			}
+		}
+	}
+	r.turnSeq++
+	result := &CNMonitoringQueue{Round: r.turnSeq, Turns: make(map[int64]CNMonitoringTurn)}
+	for id := range present {
+		result.Turns[id] = r.turns[id]
+	}
+	return result, nil
+}
+
+func (r *fakeCNCheckRepo) ClaimCNMonitoringTurn(_ context.Context, expected CNMonitoringTurn) (CNMonitoringTurn, bool, error) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	if r.turns[expected.AccountID] != expected {
+		return expected, false, nil
+	}
+	r.turnSeq++
+	expected.Tried = r.turnSeq
+	r.turns[expected.AccountID] = expected
+	return expected, true, nil
+}
+
+func (r *fakeCNCheckRepo) FinishCNMonitoringTurn(_ context.Context, expected CNMonitoringTurn, round int64) (bool, error) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	if r.turns[expected.AccountID] != expected {
+		return false, nil
+	}
+	expected.Served = round
+	r.turns[expected.AccountID] = expected
+	return true, nil
 }
 
 func (r *fakeCNCheckRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {

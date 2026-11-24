@@ -416,10 +416,10 @@ describe('Shared physical probe budgets', () => {
   })
 
   it.each(['en', 'zh'])('preserves lifecycle, explicit empty scans and malformed-scan unknowns in %s', async locale => {
-    const states = ['running', 'stopping', 'stopped', 'disabled', 'role_disabled', 'not_started', 'unavailable']
+    const states = ['running', 'stopping', 'stopped', 'disabled', 'role_disabled', 'not_started', 'unavailable', 'coordination_unavailable']
     const labels = locale === 'zh'
-      ? ['运行中', '停止中（等待在途收尾）', '已停止', '配置停用', '本节点角色不执行周期任务', '尚未启动', '运行依赖未接入']
-      : ['Running', 'Stopping (waiting for in-flight work)', 'Stopped', 'Disabled by configuration', 'Node role excludes periodic jobs', 'Not started', 'Runtime dependencies unavailable']
+      ? ['运行中', '停止中（等待在途收尾）', '已停止', '配置停用', '本节点角色不执行周期任务', '尚未启动', '运行依赖未接入', '共享排队状态异常，已停止新检测']
+      : ['Running', 'Stopping (waiting for in-flight work)', 'Stopped', 'Disabled by configuration', 'Node role excludes periodic jobs', 'Not started', 'Runtime dependencies unavailable', 'Shared queue unavailable; new checks stopped']
     const scan = { observed_at: '2026-11-19T11:59:00Z', complete: true, targets: 0, balance_targets: 0, quota_targets: 0 }
     const runtime = { version: 1, scope: 'responding_process', instance_id: 'fixture-process', state: 'running', interval_seconds: 600, observed_at: scan.observed_at, last_scan: scan }
     for (const [index, state] of states.entries()) {

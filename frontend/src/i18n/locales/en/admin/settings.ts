@@ -609,6 +609,7 @@ export default {
           cnRuntimeUnobserved: 'No inventory scan observed, or data is incomplete; not treated as zero targets.',
           cnRuntimeStates: {
             running: 'Running', stopping: 'Stopping (waiting for in-flight work)', stopped: 'Stopped', disabled: 'Disabled by configuration',
+            coordination_unavailable: 'Shared queue unavailable; new checks stopped',
             role_disabled: 'Node role excludes periodic jobs', not_started: 'Not started', unavailable: 'Runtime dependencies unavailable', unknown: 'Unknown'
           },
           capacityPartial: 'No proven shortfall found; full coverage is still unverified',

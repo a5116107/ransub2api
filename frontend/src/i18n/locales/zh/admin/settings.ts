@@ -602,6 +602,7 @@ export default {
           cnRuntimeUnobserved: '未观察到库存扫描或数据不完整；不按零目标计算。',
           cnRuntimeStates: {
             running: '运行中', stopping: '停止中（等待在途收尾）', stopped: '已停止', disabled: '配置停用',
+            coordination_unavailable: '共享排队状态异常，已停止新检测',
             role_disabled: '本节点角色不执行周期任务', not_started: '尚未启动', unavailable: '运行依赖未接入', unknown: '未知'
           },
           capacityPartial: '未发现已证明的超限；仍不是全覆盖保证',

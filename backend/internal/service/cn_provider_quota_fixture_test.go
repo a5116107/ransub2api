@@ -15,6 +15,11 @@ type cnQueueQuotaProber struct {
 	query func(context.Context, int64) (*CNProviderQuotaProbeResult, error)
 }
 
+type cnQueueStoredAccounts struct {
+	AccountRepository
+	CNMonitoringTurnRepository
+}
+
 func (p cnQueueQuotaProber) QueryUsage(ctx context.Context, id int64) (*CNProviderQuotaProbeResult, error) {
 	return p.query(ctx, id)
 }
@@ -37,6 +42,23 @@ func cnQueueAccounts(t *testing.T, count int) *fakeCNCheckRepo {
 		repo.byPlatform[account.Platform] = append(repo.byPlatform[account.Platform], account)
 	}
 	return repo
+}
+
+func seedCNQueueAges(t *testing.T, repo *fakeCNCheckRepo) {
+	t.Helper()
+	svc := &CNProviderBalanceCheckService{accountRepo: repo, quotaService: &fakeCNQuotaProber{}}
+	targets, _ := svc.collectProbeTargets(t.Context())
+	repo.turns = make(map[int64]CNMonitoringTurn)
+	repo.turnSeq = 100
+	for _, target := range targets {
+		turn, err := cnMonitoringTurn(target)
+		require.NoError(t, err)
+		turn.Served = 100
+		if turn.AccountID == 1 {
+			turn.Served = 1
+		}
+		repo.turns[turn.AccountID] = turn
+	}
 }
 
 type cnQueueInventoryRepo struct {

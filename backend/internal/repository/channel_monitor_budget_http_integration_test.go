@@ -621,6 +621,7 @@ func TestChannelMonitorQuotaBudgetHTTPPostgresRestartAndRecovery(t *testing.T) {
 // entrypoint. Observations at the next boundary include all prior settlements.
 type cnQueueCycleAccountRepo struct {
 	service.AccountRepository
+	service.CNMonitoringTurnRepository
 	cycles chan struct{}
 	resume chan struct{}
 }
@@ -679,7 +680,7 @@ func TestCNProviderQueueBudgetHTTPPostgresCyclesAndStop(t *testing.T) {
 	policy.Enabled, policy.RecoveryReservePercent, policy.RequestsPerDay = true, 0, 4
 	policy, err := budget.SaveSettings(ctx, policy)
 	require.NoError(t, err)
-	gate := &cnQueueCycleAccountRepo{AccountRepository: accounts, cycles: make(chan struct{}), resume: make(chan struct{})}
+	gate := &cnQueueCycleAccountRepo{AccountRepository: accounts, CNMonitoringTurnRepository: accounts.(service.CNMonitoringTurnRepository), cycles: make(chan struct{}), resume: make(chan struct{})}
 	svc := service.NewCNProviderBalanceCheckService(gate,
 		service.NewCNProviderBalanceService(accounts, nil, repository.NewHTTPUpstream(cfg), cfg), nil, cfg, time.Millisecond)
 	svc.SetMonitoringBudget(service.NewMonitoringProbeBudgetService(budget))
@@ -788,12 +789,27 @@ func TestCNProviderQueueBudgetHTTPPostgresCyclesAndStop(t *testing.T) {
 	assertProgress(4) // Both reads must leave counters, HTTP traffic and account observations intact.
 	runCycle()        // Exhausted SQL budget: no new HTTP request or account snapshot.
 	assertProgress(4)
+	// Release real physical capacity while the private scheduling table is
+	// unavailable. The original runner/API must report the storage failure and
+	// keep every unsent observation unchanged rather than restart local ages.
+	_, err = db.ExecContext(ctx, `ALTER TABLE cn_provider_monitoring_turns RENAME TO cn_provider_monitoring_turns_offline`)
+	require.NoError(t, err)
+	policy.RequestsPerDay = 8
+	policy, err = budget.SaveSettings(ctx, policy)
+	require.NoError(t, err)
+	runCycle()
+	assertProgress(4)
+	require.Equal(t, "coordination_unavailable", readRuntime(false).State)
+	require.Equal(t, "coordination_unavailable", readRuntime(true).State)
+	_, err = db.ExecContext(ctx, `ALTER TABLE cn_provider_monitoring_turns_offline RENAME TO cn_provider_monitoring_turns`)
+	require.NoError(t, err)
 	for _, limit := range []int64{8, 12} {
 		policy.RequestsPerDay = limit
 		policy, err = budget.SaveSettings(ctx, policy)
 		require.NoError(t, err)
 		runCycle()
 		assertProgress(int(limit))
+		require.Equal(t, "running", readRuntime(false).State, "restored storage must clear the stopped-detection conclusion")
 	}
 	stopped := make(chan struct{})
 	go func() { svc.Stop(); close(stopped) }()
