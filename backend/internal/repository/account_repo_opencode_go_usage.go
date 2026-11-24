@@ -378,7 +378,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 	minFetchIntervalSeconds := service.OpenCodeGoUsageMinFetchInterval.Seconds()
 	rows, err := r.sql.QueryContext(ctx, `
 		WITH eligible AS (
-			SELECT id,
+			SELECT id, created_at,
 				credentials ->> 'api_key' AS api_key,
 				last_used_at,
 				extra -> 'opencode_go_usage_snapshot' AS snapshot
@@ -396,7 +396,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 				AND jsonb_typeof(credentials -> 'api_key') = 'string'
 			GROUP BY credentials ->> 'api_key'
 		), joined AS (
-			SELECT e.id, e.api_key, e.snapshot, g.group_last_used_at,
+			SELECT e.id, e.created_at, e.api_key, e.snapshot, g.group_last_used_at,
 				e.snapshot #>> '{status}' AS status,
 				e.snapshot #>> '{fetched_at}' AS fetched_at,
 				e.snapshot #>> '{last_attempt_at}' AS last_attempt_at,
@@ -404,7 +404,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 			FROM eligible e
 			JOIN group_activity g ON g.api_key = e.api_key
 		), parsed AS MATERIALIZED (
-			SELECT id, api_key, snapshot, group_last_used_at, status,
+			SELECT id, created_at, api_key, snapshot, group_last_used_at, status,
 				`+ollamaCloudUsageParseRFC3339SQL("fetched_at")+` AS parsed_fetched_at,
 				`+ollamaCloudUsageParseRFC3339SQL("last_attempt_at")+` AS parsed_last_attempt_at,
 				`+ollamaCloudUsageParseRFC3339SQL("next_refresh_at")+` AS parsed_next_refresh_at
@@ -450,11 +450,11 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 				activity_due_at AS due_at
 			FROM timed
 		), ranked AS (
-			SELECT id, api_key, group_last_used_at, due_class, due_at,
+			SELECT id, created_at, api_key, group_last_used_at, due_class, due_at,
 				row_number() OVER (
 					PARTITION BY api_key
-					ORDER BY due_class,
-						due_at NULLS FIRST,
+					ORDER BY due_class DESC,
+						COALESCE(due_at, created_at),
 						id
 				) AS group_rank
 			FROM candidates
@@ -463,7 +463,7 @@ func (r *accountRepository) ListDueOpenCodeGoUsageAccounts(
 		SELECT id, group_last_used_at
 		FROM ranked
 		WHERE group_rank = 1
-		ORDER BY due_class, due_at NULLS FIRST, id
+		ORDER BY due_class DESC, COALESCE(due_at, created_at), id
 		LIMIT $4
 	`, now.UTC(), debounceSeconds, maxWaitSeconds, limit, minFetchIntervalSeconds)
 	if err != nil {

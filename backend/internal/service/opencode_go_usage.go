@@ -669,7 +669,8 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	var group errgroup.Group
+	targets := make([]Account, 0, len(accounts))
+	dueTimes := make(map[int64]time.Time, len(accounts))
 	seenGroups := make(map[string]struct{}, len(accounts))
 	for index := range accounts {
 		if ctx.Err() != nil {
@@ -686,33 +687,45 @@ func (s *OpenCodeGoUsageService) RunDue(ctx context.Context) error {
 		seenGroups[fingerprint] = struct{}{}
 		snapshot := decodeOpenCodeGoUsageSnapshot(account.Extra)
 		// ListDue stamps Account.LastUsedAt with the api_key group MAX(last_used_at).
-		if !openCodeGoUsageIsAutoRefreshDue(snapshot, account.LastUsedAt, now, debounce, maxWait) {
+		dueAt, eligible := openCodeGoUsageAutoRefreshDueAt(snapshot, account.LastUsedAt, debounce, maxWait)
+		if !eligible || now.Before(dueAt) {
 			continue
 		}
-		accountID := account.ID
-		expected := account
-		group.Go(func() error {
-			if _, refreshErr := s.refreshAccount(ctx, accountID, settings, true); refreshErr != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				if denial := monitoringProbeDeferral(refreshErr, s.currentTime()); denial != nil {
-					logger.LegacyPrintf("service.opencode_go_usage", "monitoring_budget_deferred: account_id=%d reason=%s scope=%s", accountID, denial.Reason, denial.Scope)
-					return nil
-				}
-				if errors.Is(refreshErr, ErrOpenCodeGoUsageIdentityChanged) {
-					if disableErr := writer.DisableOpenCodeGoUsageAutoRefresh(ctx, &expected); disableErr != nil {
-						logger.LegacyPrintf("service.opencode_go_usage", "disable_auto_refresh_failed: account_id=%d err=%v", accountID, disableErr)
-					}
-					return nil
-				}
-				logger.LegacyPrintf("service.opencode_go_usage", "refresh_due_failed: account_id=%d err=%v", accountID, refreshErr)
-			}
-			return nil
-		})
+		targets = append(targets, account)
+		dueTimes[account.ID] = dueAt
 	}
-	if err := group.Wait(); err != nil {
-		return err
+	for _, phase := range monitoringUsageProbePhases(targets, dueTimes) {
+		var group errgroup.Group
+		group.SetLimit(opencodeGoUsageConcurrency)
+		for _, account := range phase {
+			if ctx.Err() != nil {
+				break
+			}
+			accountID := account.ID
+			expected := account
+			group.Go(func() error {
+				if _, refreshErr := s.refreshAccount(ctx, accountID, settings, true); refreshErr != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					if denial := monitoringProbeDeferral(refreshErr, s.currentTime()); denial != nil {
+						logger.LegacyPrintf("service.opencode_go_usage", "monitoring_budget_deferred: account_id=%d reason=%s scope=%s", accountID, denial.Reason, denial.Scope)
+						return nil
+					}
+					if errors.Is(refreshErr, ErrOpenCodeGoUsageIdentityChanged) {
+						if disableErr := writer.DisableOpenCodeGoUsageAutoRefresh(ctx, &expected); disableErr != nil {
+							logger.LegacyPrintf("service.opencode_go_usage", "disable_auto_refresh_failed: account_id=%d err=%v", accountID, disableErr)
+						}
+						return nil
+					}
+					logger.LegacyPrintf("service.opencode_go_usage", "refresh_due_failed: account_id=%d err=%v", accountID, refreshErr)
+				}
+				return nil
+			})
+		}
+		if err := group.Wait(); err != nil {
+			return err
+		}
 	}
 	return context.Cause(ctx)
 }

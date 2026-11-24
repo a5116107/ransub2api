@@ -835,6 +835,7 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 		return err
 	}
 	targets := make([]Account, 0, len(accounts))
+	dueTimes := make(map[int64]time.Time, len(accounts))
 	seenGroups := make(map[string]struct{}, len(accounts))
 	for index := range accounts {
 		account := accounts[index]
@@ -848,40 +849,45 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 		seenGroups[fingerprint] = struct{}{}
 		snapshot := decodeOllamaCloudUsageSnapshot(account.Extra)
 		// ListDue stamps Account.LastUsedAt with the api_key group MAX(last_used_at).
-		if !ollamaCloudUsageIsAutoRefreshDue(snapshot, account.LastUsedAt, now, debounce, maxWait) {
+		dueAt, eligible := ollamaCloudUsageAutoRefreshDueAt(snapshot, account.LastUsedAt, debounce, maxWait)
+		if !eligible || now.Before(dueAt) {
 			continue
 		}
 		targets = append(targets, account)
+		dueTimes[account.ID] = dueAt
 	}
 	s.observeMonitoringScan(ctx, "observed", settings, len(accounts), len(targets))
-	var group errgroup.Group
-	for _, account := range targets {
-		if ctx.Err() != nil {
-			break
-		}
-		accountID := account.ID
-		expected := account
-		group.Go(func() error {
-			if _, refreshErr := s.refreshAccount(ctx, accountID, settings, true); refreshErr != nil {
-				if ctx.Err() != nil {
-					return nil // Cancellation is not a supplier or identity failure.
-				}
-				if s.monitoringDeferral(accountID, refreshErr) != nil {
-					return nil
-				}
-				if errors.Is(refreshErr, ErrOllamaCloudUsageIdentityChanged) {
-					if disableErr := writer.DisableOllamaCloudUsageAutoRefresh(ctx, &expected); disableErr != nil {
-						logger.LegacyPrintf("service.ollama_cloud_usage", "disable_auto_refresh_failed: account_id=%d err=%v", accountID, disableErr)
-					}
-					return nil
-				}
-				logger.LegacyPrintf("service.ollama_cloud_usage", "refresh_due_failed: account_id=%d err=%v", accountID, refreshErr)
+	for _, phase := range monitoringUsageProbePhases(targets, dueTimes) {
+		var group errgroup.Group
+		group.SetLimit(ollamaCloudUsageConcurrency)
+		for _, account := range phase {
+			if ctx.Err() != nil {
+				break
 			}
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return err
+			accountID := account.ID
+			expected := account
+			group.Go(func() error {
+				if _, refreshErr := s.refreshAccount(ctx, accountID, settings, true); refreshErr != nil {
+					if ctx.Err() != nil {
+						return nil // Cancellation is not a supplier or identity failure.
+					}
+					if s.monitoringDeferral(accountID, refreshErr) != nil {
+						return nil
+					}
+					if errors.Is(refreshErr, ErrOllamaCloudUsageIdentityChanged) {
+						if disableErr := writer.DisableOllamaCloudUsageAutoRefresh(ctx, &expected); disableErr != nil {
+							logger.LegacyPrintf("service.ollama_cloud_usage", "disable_auto_refresh_failed: account_id=%d err=%v", accountID, disableErr)
+						}
+						return nil
+					}
+					logger.LegacyPrintf("service.ollama_cloud_usage", "refresh_due_failed: account_id=%d err=%v", accountID, refreshErr)
+				}
+				return nil
+			})
+		}
+		if err := group.Wait(); err != nil {
+			return err
+		}
 	}
 	return context.Cause(ctx)
 }

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,29 @@ import (
 )
 
 const monitoringProbeQueueWorkers = 4
+
+// Activity-driven usage observations already persist their due clocks. Keep
+// those required refreshes ahead of exploratory inventory, without inventing a
+// health/quality expiry or resetting any provider backoff. The native runners
+// drain the first phase before dispatching the second with their shared slots.
+func monitoringUsageProbePhases(accounts []Account, dueTimes map[int64]time.Time) [][]Account {
+	sort.SliceStable(accounts, func(i, j int) bool {
+		left, right := dueTimes[accounts[i].ID], dueTimes[accounts[j].ID]
+		if left.IsZero() != right.IsZero() {
+			return !left.IsZero()
+		}
+		if left.IsZero() {
+			left, right = accounts[i].CreatedAt, accounts[j].CreatedAt
+		}
+		left, right = left.Truncate(time.Microsecond), right.Truncate(time.Microsecond)
+		if !left.Equal(right) {
+			return left.Before(right)
+		}
+		return accounts[i].ID < accounts[j].ID
+	})
+	split := sort.Search(len(accounts), func(i int) bool { return dueTimes[accounts[i].ID].IsZero() })
+	return [][]Account{accounts[:split], accounts[split:]}
+}
 
 type monitoringProbeQueueKey struct {
 	groupID int64

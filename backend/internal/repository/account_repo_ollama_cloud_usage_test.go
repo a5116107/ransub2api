@@ -229,7 +229,7 @@ func TestListDueOllamaCloudUsageAccountsFiltersOrdersAndLimits(t *testing.T) {
 		"group_last_used_at > parsed_last_attempt_at::timestamptz",
 		"$1 >= activity_due_at",
 		"COALESCE(parsed_next_refresh_at::timestamptz, '-infinity'::timestamptz)",
-		"ORDER BY due_class, due_at NULLS FIRST, id",
+		"ORDER BY due_class DESC, COALESCE(due_at, created_at), id",
 	} {
 		require.Contains(t, normalized, clause)
 	}

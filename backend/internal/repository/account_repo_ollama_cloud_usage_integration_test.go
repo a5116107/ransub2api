@@ -4,15 +4,191 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
+	redisclient "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUsageProbeRequiredRefreshBudgetHTTPIndependentProcesses(t *testing.T) {
+	for _, provider := range []string{"ollama", "opencode"} {
+		t.Run(provider, func(t *testing.T) {
+			db, client := newBillingAuditDatabase(t)
+			ctx := t.Context()
+			options := *integrationRedis.Options()
+			options.DB = 12
+			rdb := redisclient.NewClient(&options)
+			t.Cleanup(func() { _ = rdb.Close() })
+			size, err := rdb.DBSize(ctx).Result()
+			require.NoError(t, err)
+			require.Zero(t, size)
+			var calls [6]atomic.Int64
+			body := []byte(`{"usage":{"rolling":{"status":"ok","percent":6},"weekly":{"status":"ok","percent":2},"monthly":{"status":"ok","percent":1}}}`)
+			if provider == "ollama" {
+				body, err = os.ReadFile("../service/testdata/ollama_settings_usage.html")
+				require.NoError(t, err)
+			}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				if provider == "ollama" {
+					cookie, err := r.Cookie("wos-session")
+					if err != nil {
+						http.Error(w, "missing fixture cookie", http.StatusBadRequest)
+						return
+					}
+					key = cookie.Value
+				}
+				index, err := strconv.Atoi(strings.TrimPrefix(key, "priority-"))
+				if err != nil || index < 0 || index >= len(calls) || r.Method != http.MethodGet {
+					http.Error(w, "unexpected fixture request", http.StatusBadRequest)
+					return
+				}
+				calls[index].Add(1)
+				_, _ = w.Write(body)
+			}))
+			t.Cleanup(server.Close)
+			snapshotKey, enabledKey, settingsKey, baseURL := service.OllamaCloudUsageSnapshotExtraKey, service.OllamaCloudUsageAutoRefreshExtraKey, service.SettingKeyOllamaCloudUsageSettings, "https://ollama.com"
+			if provider == "opencode" {
+				snapshotKey, enabledKey, settingsKey, baseURL = service.OpenCodeGoUsageSnapshotExtraKey, service.OpenCodeGoUsageAutoRefreshExtraKey, service.SettingKeyOpenCodeGoUsageSettings, "https://opencode.ai/zen/go/v1"
+			}
+			require.NoError(t, NewSettingRepository(client).Set(ctx, settingsKey, `{"enabled":true,"interval_minutes":60,"debounce_minutes":1}`))
+			budget := NewMonitoringProbeBudgetRepository(db)
+			policy := monitoringBudgetPolicy()
+			policy.RequestsPerDay = 2
+			policy.Concurrency, policy.SiteConcurrency, policy.KeyConcurrency = 4, 4, 1
+			policy, err = budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			now := time.Now().UTC()
+			for i := range calls {
+				extra := map[string]any{enabledKey: true, service.OllamaCloudUsageSessionExtraKey: fmt.Sprintf("wos-session=priority-%d", i)}
+				if i >= 4 {
+					extra[snapshotKey] = map[string]any{"status": "ok", "fetched_at": now.Add(-2 * time.Hour), "last_attempt_at": now.Add(-2 * time.Hour), "next_refresh_at": now.Add(-time.Hour)}
+				}
+				raw, err := json.Marshal(extra)
+				require.NoError(t, err)
+				credentials, err := json.Marshal(map[string]string{"api_key": fmt.Sprintf("priority-%d", i), "base_url": baseURL})
+				require.NoError(t, err)
+				_, err = db.ExecContext(ctx, `INSERT INTO accounts(name,platform,type,status,credentials,extra,last_used_at,created_at,rate_multiplier)
+ VALUES($1,'openai','apikey','active',$2::jsonb,$3::jsonb,$4,$5,1)`, fmt.Sprintf("usage-priority-%d", i), credentials, raw, now.Add(-2*time.Minute), now.Add(-30*24*time.Hour))
+				require.NoError(t, err)
+			}
+			command := monitoringBudgetNodeCommand{Mode: provider, DSN: monitoringBudgetNodeDSN(t, db), RedisAddress: options.Addr,
+				RedisDB: options.DB, Site: server.URL, Certificate: server.Certificate().Raw, Requests: 1}
+			run := func() int {
+				t.Helper()
+				replies := make(chan monitoringBudgetNodeReply, 1)
+				node := startMonitoringBudgetNode(t, command, replies)
+				require.Equal(t, http.StatusOK, receiveMonitoringBudgetReply(t, replies).Status)
+				node.wait()
+				return node.pid
+			}
+			firstPID := run()
+			for i := range calls {
+				want := int64(0)
+				if i >= 4 {
+					want = 1
+				}
+				require.Equal(t, want, calls[i].Load(), "only necessary refreshes may consume the scarce physical budget")
+			}
+			read := func() string {
+				t.Helper()
+				var rows string
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT jsonb_agg(row_to_json(a) ORDER BY id)::text FROM accounts a`).Scan(&rows))
+				return rows
+			}
+			before := read()
+			require.NotEqual(t, firstPID, run())
+			require.Equal(t, before, read(), "budget exhaustion and process restart do not refresh or fail uncalled inventory")
+			policy.RequestsPerDay = 6
+			_, err = budget.SaveSettings(ctx, policy)
+			require.NoError(t, err)
+			run()
+			for i := range calls {
+				require.EqualValues(t, 1, calls[i].Load(), "only remaining exploratory groups run after capacity recovers")
+			}
+			summary, err := budget.Summary(ctx)
+			require.NoError(t, err)
+			require.EqualValues(t, 6, summary.DayUsed)
+			require.Zero(t, summary.ActiveRequests)
+			require.Zero(t, summary.UsagePending)
+			require.Zero(t, summary.DayTokens)
+			var downstream, changedRates int
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM usage_logs),(SELECT count(*) FROM accounts WHERE rate_multiplier<>1)`).Scan(&downstream, &changedRates))
+			require.Zero(t, downstream)
+			require.Zero(t, changedRates)
+			size, err = rdb.DBSize(ctx).Result()
+			require.NoError(t, err)
+			require.Zero(t, size)
+		})
+	}
+}
+
+func TestUsageProbeDueInventoryPrioritizesRequiredRefreshes(t *testing.T) {
+	for _, provider := range []string{"ollama", "opencode"} {
+		t.Run(provider, func(t *testing.T) {
+			tx := testEntTx(t)
+			repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
+			now := time.Date(2026, time.November, 24, 12, 0, 0, 123456000, time.UTC)
+			snapshotKey, enabledKey, baseURL := service.OllamaCloudUsageSnapshotExtraKey, service.OllamaCloudUsageAutoRefreshExtraKey, "https://ollama.com"
+			if provider == "opencode" {
+				snapshotKey, enabledKey, baseURL = service.OpenCodeGoUsageSnapshotExtraKey, service.OpenCodeGoUsageAutoRefreshExtraKey, "https://opencode.ai/zen/go/v1"
+			}
+			_, err := tx.ExecContext(t.Context(), `UPDATE accounts SET extra=extra-$1::text`, enabledKey)
+			require.NoError(t, err)
+			insert := func(key string, snapshot map[string]any, created time.Time) int64 {
+				t.Helper()
+				extra := map[string]any{enabledKey: true, service.OllamaCloudUsageSessionExtraKey: "cipher:fixture", snapshotKey: snapshot}
+				raw, err := json.Marshal(extra)
+				require.NoError(t, err)
+				creds, err := json.Marshal(map[string]string{"base_url": baseURL, "api_key": key})
+				require.NoError(t, err)
+				var id int64
+				require.NoError(t, scanSingleRow(t.Context(), tx, `INSERT INTO accounts(name,platform,type,status,credentials,extra,created_at,last_used_at)
+ VALUES($1,'openai','apikey','active',$2::jsonb,$3::jsonb,$4,$5) RETURNING id`, []any{key, creds, raw, created, now.Add(-10 * time.Minute)}, &id))
+				return id
+			}
+			var oldestNew int64
+			for i := 0; i < 21; i++ {
+				oldestNew = insert(fmt.Sprintf("usage-priority-%s-new-%d", provider, i), nil, now.Add(-time.Duration(i+1)*time.Hour))
+			}
+			snapshot := func(status string, attempt time.Time) map[string]any {
+				return map[string]any{"status": status, "fetched_at": attempt, "last_attempt_at": attempt, "next_refresh_at": now.Add(-time.Minute)}
+			}
+			refresh := insert("usage-priority-refresh-"+provider, snapshot("ok", now.Add(-time.Hour)), now.Add(-time.Hour))
+			recoverySnapshot := snapshot("failed", now.Add(-2*time.Hour))
+			recoverySnapshot["next_refresh_at"] = now.Add(-50 * time.Minute)
+			recovery := insert("usage-priority-recovery-"+provider, recoverySnapshot, now.Add(-time.Hour))
+			alias := insert("usage-priority-recovery-"+provider, nil, now.Add(-48*time.Hour))
+			future := snapshot("failed", now.Add(-3*time.Hour))
+			future["next_refresh_at"] = now.Add(time.Hour)
+			blocked := insert("usage-priority-backoff-"+provider, future, now.Add(-time.Hour))
+			list := repo.ListDueOllamaCloudUsageAccounts
+			if provider == "opencode" {
+				list = repo.ListDueOpenCodeGoUsageAccounts
+			}
+			accounts, err := list(t.Context(), now, time.Minute, 15*time.Minute, 20)
+			require.NoError(t, err)
+			require.Len(t, accounts, 20)
+			require.Equal(t, recovery, accounts[0].ID, "required recovery precedes fresh inventory before LIMIT")
+			require.Equal(t, refresh, accounts[1].ID)
+			require.Equal(t, oldestNew, accounts[2].ID)
+			require.NotContains(t, accountIDs(accounts), blocked, "a future Retry-After remains a hard exclusion")
+			require.NotContains(t, accountIDs(accounts), alias, "a missing sibling cannot hide an existing due review or count the same key twice")
+		})
+	}
+}
 
 func TestListDueOllamaCloudUsageAccountsOrderingLimitAndProxyHydration(t *testing.T) {
 	ctx := context.Background()
@@ -63,14 +239,14 @@ func TestListDueOllamaCloudUsageAccountsOrderingLimitAndProxyHydration(t *testin
 
 	require.NoError(t, err)
 	require.Len(t, accounts, 2)
-	require.Equal(t, missingSnapshot.ID, accounts[0].ID)
-	require.Equal(t, due.ID, accounts[1].ID)
-	require.NotNil(t, accounts[1].LastUsedAt)
-	require.WithinDuration(t, activity.UTC(), accounts[1].LastUsedAt.UTC(), time.Second)
+	require.Equal(t, due.ID, accounts[0].ID)
+	require.Equal(t, missingSnapshot.ID, accounts[1].ID)
+	require.NotNil(t, accounts[0].LastUsedAt)
+	require.WithinDuration(t, activity.UTC(), accounts[0].LastUsedAt.UTC(), time.Second)
 	require.NotContains(t, accountIDs(accounts), uppercasePath.ID)
-	require.NotNil(t, accounts[0].Proxy)
-	require.Equal(t, proxy.ID, accounts[0].Proxy.ID)
-	require.Equal(t, proxy.URL(), accounts[0].Proxy.URL())
+	require.NotNil(t, accounts[1].Proxy)
+	require.Equal(t, proxy.ID, accounts[1].Proxy.ID)
+	require.Equal(t, proxy.URL(), accounts[1].Proxy.URL())
 }
 
 // TestListDueOllamaCloudUsageAccountsParsesAllRFC3339Precisions pins the SQL
