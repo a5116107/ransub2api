@@ -183,6 +183,7 @@ func (r *channelRepository) ReadUpstreamOperations(ctx context.Context, f servic
 		quality += ` SELECT jsonb_build_object('source','scheduled_test_results complete frozen plan+round+model; current account cohort', 'summary',(SELECT jsonb_build_object('rounds',count(*),'passed',count(*) FILTER(WHERE outcome='passed'),'degraded',count(*) FILTER(WHERE outcome='degraded'),'inconclusive',count(*) FILTER(WHERE outcome='inconclusive')) FROM classified),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(c)) FROM (SELECT * FROM classified ORDER BY id DESC LIMIT $9 OFFSET $10)c),'[]'::jsonb),'total',(SELECT count(*) FROM classified))`
 		out.Quality = readUpstreamSection(ctx, tx, quality, args...)
 	}
+	out.Availability = readUpstreamAvailability(ctx, tx, f, args)
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -217,6 +218,114 @@ const upstreamOperationsErrors = `WITH ` + upstreamOperationsCohort + `, params 
  SELECT jsonb_build_object('source','retained ops_error_logs; current account cohort; count_tokens excluded; no complete request failure denominator','records',(SELECT count(*) FROM scoped),'upstream_5xx',(SELECT count(*) FROM scoped WHERE upstream_status_code>=500),'latest_sample_at',(SELECT max(created_at) FROM scoped),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(b)) FROM (SELECT * FROM buckets ORDER BY records DESC,error_type,error_phase,status_code LIMIT 20)b),'[]'::jsonb),'bucket_total',(SELECT count(*) FROM buckets),'error_rate',NULL)`
 
 var _ service.UpstreamOperationsRepository = (*channelRepository)(nil)
+
+type operationsAvailability struct {
+	Version      int                           `json:"version"`
+	Source       string                        `json:"source"`
+	Reports      []*service.AvailabilityReport `json:"reports"`
+	PlanTotal    int                           `json:"plan_total"`
+	ModelTotal   int                           `json:"model_total"`
+	ModelsLoaded int                           `json:"models_loaded"`
+	Truncated    bool                          `json:"truncated"`
+}
+
+// Current decisions use the original authority in this SAME snapshot; neither
+// historical usage nor group successes are substituted for account evidence.
+func readUpstreamAvailability(ctx context.Context, tx *sql.Tx, f service.UpstreamOperationsFilter, args []any) service.ChannelOperationsSection {
+	out := service.ChannelOperationsSection{Status: "query_failed", Data: json.RawMessage("null"), Error: "Availability query failed; retry"}
+	if f.Model != "" && f.ModelScope != "public" {
+		out.Status, out.Error = "unsupported_scope", "Availability model filters use configured request models, not billed or mapped aliases"
+		return out
+	}
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT operations_availability"); err != nil {
+		return out
+	}
+	success := false
+	defer func() {
+		if !success {
+			_, _ = tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT operations_availability")
+		}
+		_, _ = tx.ExecContext(ctx, "RELEASE SAVEPOINT operations_availability")
+	}()
+	query := `WITH ` + upstreamOperationsCohort + `,
+ members AS (SELECT id FROM cohort c WHERE ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=c.id AND ag.group_id=$6)) ORDER BY id LIMIT $9 OFFSET $10),
+ plans AS (SELECT id,CASE WHEN jsonb_typeof(pelican_config->'model_ids')='array' THEN GREATEST(jsonb_array_length(pelican_config->'model_ids'),1) ELSE 1 END AS models,
+ octet_length(pelican_config::text) AS config_bytes FROM scheduled_test_plans WHERE account_id IN(SELECT id FROM members) AND pelican_config ? 'availability'
+ AND ($7='' OR model_id=$7 OR (pelican_config->'model_ids') ? $7) AND $1::timestamptz IS NOT NULL AND $2::timestamptz IS NOT NULL AND $8::text IS NOT NULL)
+ SELECT id,models,config_bytes,count(*) OVER(),sum(models) OVER() FROM plans ORDER BY id LIMIT 100`
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return out
+	}
+	type plan struct {
+		id            int64
+		models, bytes int
+	}
+	var plans []plan
+	data := operationsAvailability{Version: 1, Source: "current_account_availability_authority", Reports: []*service.AvailabilityReport{}}
+	for rows.Next() {
+		var p plan
+		if err = rows.Scan(&p.id, &p.models, &p.bytes, &data.PlanTotal, &data.ModelTotal); err != nil {
+			break
+		}
+		plans = append(plans, p)
+	}
+	rowErr := rows.Err()
+	_ = rows.Close()
+	if err != nil || rowErr != nil {
+		return out
+	}
+	readModels := 0
+	for _, p := range plans {
+		if p.models > 50 || p.bytes > 65536 || readModels+p.models > 100 {
+			data.Truncated = true
+			continue
+		}
+		readModels += p.models
+		reports, readErr := readAvailabilityReportsInTx(ctx, tx, "id", p.id, nil)
+		if readErr != nil {
+			return out
+		}
+		for _, report := range reports {
+			if f.Model != "" {
+				models := report.Models[:0]
+				for _, model := range report.Models {
+					if model.ModelID == f.Model {
+						models = append(models, model)
+					}
+				}
+				report.Models = models
+			}
+			data.ModelsLoaded += len(report.Models)
+			data.Reports = append(data.Reports, report)
+		}
+	}
+	data.Truncated = data.Truncated || data.PlanTotal > len(data.Reports)
+	// Re-evaluate after ALL reads so an earlier report cannot outlive its TTL.
+	var at time.Time
+	if err = tx.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&at); err != nil {
+		return out
+	}
+	for _, report := range data.Reports {
+		report.EvaluatedAt = at
+		for i := range report.Models {
+			model := &report.Models[i]
+			if model.Reason == "latest_decision" || model.Reason == "expired" {
+				model.Status = model.StatusAt(at)
+				if model.Status == "stale" {
+					model.Reason = "expired"
+				}
+			}
+		}
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return out
+	}
+	out.Status, out.Error, out.Data, out.QueriedAt = "ready", "", raw, at
+	success = true
+	return out
+}
 
 // Only persisted metadata is projected. Artwork remains behind the original
 // admin result endpoint; previous attempts never become successful account tests.

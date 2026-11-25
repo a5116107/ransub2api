@@ -25,7 +25,7 @@
         <section class="card space-y-3 p-4"><h2 class="font-semibold">{{ t('upstreamOps.discovery') }}</h2><p class="text-xs text-gray-500">{{ t('upstreamOps.discoveryNote') }}</p><div class="flex flex-wrap gap-2"><button v-for="c in snapshot.usage.catalog" :key="c.key" class="btn btn-secondary max-w-full break-all" @click="selectUpstream(c.key)">{{ c.name }} · {{ c.accounts }}</button></div><p class="text-xs">{{ applied.page }} · {{ snapshot.usage.catalog_total }}</p></section>
         <section v-if="applied.upstream || applied.account_id" class="card space-y-3 p-4"><h2 class="font-semibold">{{ t('upstreamOps.currentMembers') }}</h2><p class="text-xs text-gray-500">{{ t('upstreamOps.memberNote') }}</p><div class="flex flex-wrap gap-2"><button v-for="a in snapshot.usage.members" :key="a.id" class="btn btn-secondary" data-testid="member-drill" @click="selectAccount(a.id)">{{ a.name }} #{{ a.id }}</button></div><p class="text-xs">{{ applied.page }} · {{ snapshot.usage.member_total }}</p></section>
         <section class="card p-4" data-testid="upstream-summary"><h2>{{ t('upstreamOps.summary') }}</h2><p>{{ t('upstreamOps.requests') }} {{ snapshot.usage.summary.requests }} · {{ t('upstreamOps.unknownUpstream') }} {{ snapshot.usage.summary.unknown_upstream_requests }}</p></section>
-        <UpstreamLineCards :snapshot="snapshot" @select="selectAccount" @edit="openAccountEditor" @configure="openPriceAuthorization" />
+        <UpstreamLineCards :snapshot="snapshot" :read-elapsed-ms="readElapsedMs" @select="selectAccount" @edit="openAccountEditor" @configure="openPriceAuthorization" />
         <nav class="flex flex-wrap items-center gap-3" :aria-label="t('upstreamOps.lines.pagination')" data-testid="operations-pagination">
           <button class="btn btn-secondary" data-testid="operations-previous" :disabled="loading || applied.page <= 1" @click="page(-1)">{{ t('upstreamOps.previous') }}</button>
           <span class="text-sm">{{ t('upstreamOps.lines.page', { page: applied.page, total: snapshot.usage.member_total ?? 0 }) }}</span>
@@ -175,6 +175,7 @@ const from=ref(local(start)), until=ref(local(at))
 const initial: OperationsQuery = { from:start.toISOString(),until:at.toISOString(),upstream:'',account_id:0,group_id:0,model:'',model_scope:'public',dimension:'upstream',sort:'requests',direction:'desc',page:1,page_size:20 }
 const draft=ref<OperationsQuery>({...initial}), applied=ref<OperationsQuery>({...initial})
 const snapshot=ref<OperationsSnapshot|null>(null), loading=ref(false), error=ref('')
+const readElapsedMs=ref(0)
 let request=0, alive=true, controller: AbortController|undefined
 const editingAccount=ref<Account|null>(null), configuringAccount=ref<Account|null>(null)
 const editorGroups=ref<AdminGroup[]>([]), editorProxies=ref<Proxy[]>([]), editorLoading=ref(false), editorError=ref('')
@@ -221,8 +222,8 @@ function validRequestScope(row: UpstreamAttemptRow) {
 }
 function formatMetric(m:UpstreamMetrics,key:typeof amountKeys[number]) {return number(m[key],0)}
 async function load() {
- const id=++request; controller?.abort(); controller=new AbortController(); loading.value=true; error.value=''; snapshot.value=null
- try { const next=await readOperations({...applied.value},controller.signal); if(alive && request===id) snapshot.value=next }
+ const id=++request, started=performance.now(); controller?.abort(); controller=new AbortController(); loading.value=true; error.value=''; snapshot.value=null
+ try { const next=await readOperations({...applied.value},controller.signal); if(alive && request===id) { readElapsedMs.value=Math.max(0,performance.now()-started); snapshot.value=next } }
  catch { if(alive && request===id) error.value=t('upstreamOps.queryFailed') }
  finally { if(alive && request===id) loading.value=false }
 }

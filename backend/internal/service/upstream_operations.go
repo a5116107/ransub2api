@@ -32,15 +32,16 @@ type UpstreamOperationsFilter struct {
 }
 
 type UpstreamOperationsSnapshot struct {
-	Scope       UpstreamOperationsFilter `json:"scope"`
-	QueriedAt   time.Time                `json:"queried_at"`
-	Attribution string                   `json:"attribution"`
-	Usage       json.RawMessage          `json:"usage"`
-	Quality     ChannelOperationsSection `json:"quality"`
-	Errors      ChannelOperationsSection `json:"errors"`
-	RawCache    ChannelOperationsSection `json:"raw_cache"`
-	Attempts    ChannelOperationsSection `json:"attempts"`
-	ModelTests  ChannelOperationsSection `json:"model_tests"`
+	Scope        UpstreamOperationsFilter `json:"scope"`
+	QueriedAt    time.Time                `json:"queried_at"`
+	Attribution  string                   `json:"attribution"`
+	Usage        json.RawMessage          `json:"usage"`
+	Quality      ChannelOperationsSection `json:"quality"`
+	Errors       ChannelOperationsSection `json:"errors"`
+	RawCache     ChannelOperationsSection `json:"raw_cache"`
+	Attempts     ChannelOperationsSection `json:"attempts"`
+	ModelTests   ChannelOperationsSection `json:"model_tests"`
+	Availability ChannelOperationsSection `json:"availability"`
 }
 
 type UpstreamOperationsRepository interface {

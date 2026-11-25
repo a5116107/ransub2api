@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -178,4 +179,141 @@ func TestUpstreamOperationsLineCardsPriceAndFrozenPelicanModels(t *testing.T) {
 	out, err = f.repo.ReadUpstreamOperations(t.Context(), q)
 	require.NoError(t, err)
 	require.Contains(t, string(out.ModelTests.Data), `"total": 0`)
+}
+
+func TestUpstreamOperationsAvailabilityUsesCurrentAuthority(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	_, err := integrationDB.Exec(`UPDATE accounts SET type='apikey' WHERE id=$1`, f.account)
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var plan int64
+	require.NoError(t, integrationDB.QueryRow(`INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,pelican_config) VALUES($1,'target','*/30 * * * *',true,'{"availability":{"valid_for_seconds":60}}') RETURNING id`, f.account).Scan(&plan))
+	filter := service.UpstreamOperationsFilter{From: now.Add(-time.Hour), Until: now, AccountID: f.account, Model: "target", ModelScope: "public", Dimension: "account", Sort: "name", Direction: "asc", Page: 1, PageSize: 20}
+	read := func() service.ChannelOperationsSection {
+		t.Helper()
+		out, err := f.repo.ReadUpstreamOperations(t.Context(), filter)
+		require.NoError(t, err)
+		raw, err := json.Marshal(out)
+		require.NoError(t, err)
+		var projection struct {
+			Availability service.ChannelOperationsSection `json:"availability"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &projection))
+		return projection.Availability
+	}
+	first := read()
+	require.Equal(t, "ready", first.Status)
+	require.Contains(t, string(first.Data), `"model_id":"target"`)
+	require.Contains(t, string(first.Data), `"status":"unknown"`)
+	require.Contains(t, string(first.Data), `"reason":"not_observed"`)
+	writeState := func(status string, age time.Duration) {
+		t.Helper()
+		tx, err := integrationDB.BeginTx(t.Context(), nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		fp, err := accountRouteFingerprintWithBinding(t.Context(), tx, f.account, false, nil)
+		require.NoError(t, err)
+		var observed time.Time
+		require.NoError(t, tx.QueryRowContext(t.Context(), `SELECT clock_timestamp()-interval '1 second'`).Scan(&observed))
+		observed = observed.Add(-age)
+		until := observed.Add(time.Minute)
+		probe := &service.AvailabilityProbeResult{Version: 1, Status: status, Reason: "completed_response", StartedAt: observed.Add(-time.Second), FinishedAt: observed, AttemptCount: 1, Scope: &service.AvailabilityRequestScope{Version: 2, Protocol: "responses_http", Model: "wire-target", Capability: "text", ServiceTier: "default", ReasoningEffort: "low"}}
+		fault := int64(0)
+		state, err := json.Marshal(availabilityStoredState{AvailabilityState: service.AvailabilityState{Decision: probe, Observation: &service.AvailabilityProbeResult{Version: 1, Status: "inconclusive", StartedAt: observed, FinishedAt: observed}, ValidUntil: &until}, FaultVersion: &fault})
+		require.NoError(t, err)
+		_, err = tx.ExecContext(t.Context(), `INSERT INTO account_availability_states(plan_id,model_id,plan_version,route_fingerprint,round_lease,state) SELECT id,'target',updated_at,$2,clock_timestamp(),$3 FROM scheduled_test_plans WHERE id=$1 ON CONFLICT(plan_id,model_id) DO UPDATE SET plan_version=EXCLUDED.plan_version,route_fingerprint=EXCLUDED.route_fingerprint,state=EXCLUDED.state`, plan, fp[:], state)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+	}
+	for _, status := range []string{"pass", "fail", "pass"} {
+		writeState(status, 0)
+		var before, after string
+		require.NoError(t, integrationDB.QueryRow(`SELECT state::text FROM account_availability_states WHERE plan_id=$1`, plan).Scan(&before))
+		section := read()
+		require.Contains(t, string(section.Data), `"status":"`+status+`"`)
+		require.Contains(t, string(section.Data), `"status":"inconclusive"`)
+		require.Contains(t, string(section.Data), `"model":"wire-target"`)
+		require.NotContains(t, string(section.Data), "route_fingerprint")
+		require.NotContains(t, string(section.Data), "fault_version")
+		require.NotContains(t, string(section.Data), "synthetic-fixture-only")
+		require.NoError(t, integrationDB.QueryRow(`SELECT state::text FROM account_availability_states WHERE plan_id=$1`, plan).Scan(&after))
+		require.Equal(t, before, after, "snapshot reads must not change availability state")
+	}
+	writeState("pass", 2*time.Minute)
+	require.Contains(t, string(read().Data), `"reason":"expired"`)
+	writeState("pass", 0)
+	_, err = integrationDB.Exec(`UPDATE scheduled_test_plans SET availability_fault_version=availability_fault_version+1 WHERE id=$1`, plan)
+	require.NoError(t, err)
+	require.Contains(t, string(read().Data), `"reason":"new_fault_event"`)
+	_, err = integrationDB.Exec(`UPDATE scheduled_test_plans SET availability_fault_version=0 WHERE id=$1`, plan)
+	require.NoError(t, err)
+	require.Contains(t, string(read().Data), `"reason":"latest_decision"`)
+	filter.ModelScope = "upstream"
+	require.Equal(t, "unsupported_scope", read().Status)
+	filter.ModelScope = "public"
+	filter.Model = "other-model"
+	require.NotContains(t, string(read().Data), `"model_id":"target"`)
+	filter.Model = "target"
+	_, err = integrationDB.Exec(`UPDATE accounts SET credentials='{"api_key":"rotated-fixture-only"}' WHERE id=$1`, f.account)
+	require.NoError(t, err)
+	require.Contains(t, string(read().Data), `"reason":"route_changed"`)
+	writeState("pass", 0)
+	_, err = integrationDB.Exec(`UPDATE scheduled_test_plans SET enabled=false WHERE id=$1`, plan)
+	require.NoError(t, err)
+	require.Contains(t, string(read().Data), `"reason":"rule_paused"`)
+}
+
+func TestUpstreamOperationsAvailabilityLimitsPagingAndFailureRecovery(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	_, err := integrationDB.Exec(`INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,pelican_config) SELECT $1,'target','*/30 * * * *',false,'{"availability":{"valid_for_seconds":60}}'::jsonb FROM generate_series(1,101)`, f.account)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	filter := service.UpstreamOperationsFilter{From: now.Add(-time.Hour), Until: now, AccountID: f.account, Dimension: "upstream", ModelScope: "public", Sort: "name", Direction: "asc", Page: 1, PageSize: 1}
+	read := func() *service.UpstreamOperationsSnapshot {
+		t.Helper()
+		out, readErr := f.repo.ReadUpstreamOperations(t.Context(), filter)
+		require.NoError(t, readErr)
+		return out
+	}
+	out := read()
+	require.Equal(t, "ready", out.Availability.Status)
+	var data operationsAvailability
+	require.NoError(t, json.Unmarshal(out.Availability.Data, &data))
+	require.Equal(t, 101, data.PlanTotal)
+	require.Equal(t, 100, data.ModelsLoaded)
+	require.Len(t, data.Reports, 100)
+	require.True(t, data.Truncated)
+	filter.Page = 2
+	out = read()
+	require.NoError(t, json.Unmarshal(out.Availability.Data, &data))
+	require.Empty(t, data.Reports)
+	filter.Page = 1
+	_, err = integrationDB.Exec(`UPDATE scheduled_test_plans SET pelican_config=jsonb_set(pelican_config,'{availability}','"bad"'::jsonb) WHERE account_id=$1`, f.account)
+	require.NoError(t, err)
+	out = read()
+	require.Equal(t, "query_failed", out.Availability.Status)
+	_, err = integrationDB.Exec(`UPDATE scheduled_test_plans SET pelican_config='{"availability":{"valid_for_seconds":"bad"}}' WHERE account_id=$1`, f.account)
+	require.NoError(t, err)
+	out = read()
+	require.Equal(t, "query_failed", out.Availability.Status)
+	require.Contains(t, string(out.Usage), "member_total", "a failed availability section must not roll back other reads")
+	require.Equal(t, "ready", out.Errors.Status)
+	_, err = integrationDB.Exec(`UPDATE scheduled_test_plans SET pelican_config='{"availability":{"valid_for_seconds":60}}' WHERE account_id=$1`, f.account)
+	require.NoError(t, err)
+	require.Equal(t, "ready", read().Availability.Status)
+	tx, err := integrationDB.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	raw, err := operationsAccounts(t.Context(), tx, filter)
+	require.NoError(t, err)
+	_, err = integrationDB.Exec(`UPDATE scheduled_test_plans SET pelican_config=pelican_config-'availability' WHERE account_id=$1`, f.account)
+	require.NoError(t, err)
+	args := []any{filter.From, filter.Until, string(raw), filter.Upstream, filter.AccountID, filter.GroupID, filter.Model, filter.ModelScope, filter.PageSize, 0}
+	sameSnapshot := readUpstreamAvailability(t.Context(), tx, filter, args)
+	require.Equal(t, "ready", sameSnapshot.Status)
+	require.NoError(t, json.Unmarshal(sameSnapshot.Data, &data))
+	require.Equal(t, 101, data.PlanTotal, "the availability projection must not open a second, newer transaction")
+	require.NoError(t, tx.Commit())
+	require.NoError(t, json.Unmarshal(read().Availability.Data, &data))
+	require.Empty(t, data.Reports)
 }

@@ -16,6 +16,25 @@
         <div class="min-w-0"><dt class="mb-2 text-xs text-gray-500">{{ t('upstreamOps.lines.cacheAndWait') }}</dt><dd><p v-if="!caches(member.id).length" class="text-sm">{{ t('upstreamOps.lines.noComparable') }}</p><div v-for="(row, index) in caches(member.id).slice(0, 3)" :key="index" class="mb-2"><code class="break-all text-xs">{{ row.upstream_model || row.public_model || t('upstreamOps.unknown') }}</code><p class="text-lg font-semibold tabular-nums">{{ percent(row.token_read_rate) }}</p><p class="text-xs text-gray-500">{{ row.service_tier ?? t('upstreamOps.unknown') }} / {{ row.reasoning_effort ?? t('upstreamOps.unknown') }} · {{ t('upstreamOps.lines.firstText') }} {{ number(firstText(row)) }} ms</p></div><p class="text-xs text-gray-500">{{ t('upstreamOps.lines.cacheScope') }}</p></dd></div>
         <div class="min-w-0"><dt class="mb-2 text-xs text-gray-500">{{ t('upstreamOps.lines.activity') }}</dt><dd class="space-y-2 text-sm"><p>{{ t('upstreamOps.lines.usageRows', { count: member.metrics?.requests ?? t('upstreamOps.unknown') }) }}</p><p>P50 / P90 · {{ number(member.metrics?.p50_ms) }} / {{ number(member.metrics?.p90_ms) }} ms</p><p class="text-xs text-gray-500">{{ t('upstreamOps.lines.completionUnknown') }}</p><p class="text-xs text-gray-500">{{ t('upstreamOps.lines.capacity', { count: member.concurrency ?? t('upstreamOps.unknown') }) }}</p></dd></div>
       </dl>
+      <section class="min-w-0 border-t border-gray-100 p-4 dark:border-dark-600" :aria-label="t('upstreamOps.lines.availability.title')" data-testid="line-availability">
+        <h4 class="text-sm font-medium">{{ t('upstreamOps.lines.availability.title') }}</h4>
+        <p class="mt-1 text-xs text-gray-500">{{ t('upstreamOps.lines.availability.scope') }}</p>
+        <p v-if="!availabilityReady" class="mt-2 text-sm" role="status">{{ t(snapshot.availability?.status === 'query_failed' ? 'upstreamOps.queryFailed' : 'upstreamOps.lines.availability.unread') }}</p>
+        <p v-else-if="!availabilityReports(member.id).length" class="mt-2 text-sm text-gray-500">{{ t('upstreamOps.lines.availability.empty') }}</p>
+        <div v-for="report in availabilityReports(member.id)" :key="report.plan_id" class="mt-3 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <p v-if="!report.models.length" class="text-sm text-gray-500">{{ t('upstreamOps.lines.availability.unread') }}</p>
+          <div v-for="model in report.models" :key="model.model_id" class="min-w-0 rounded-lg border p-3 dark:border-dark-600" data-testid="line-availability-model">
+            <div class="flex flex-wrap items-start justify-between gap-2"><code class="break-all text-sm">{{ model.model_id }}</code><span class="rounded px-2 py-1 text-xs font-medium" :class="availabilityState(report, model) === 'pass' ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300' : availabilityState(report, model) === 'fail' ? 'bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300' : 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-300'" data-testid="line-availability-state">{{ t(`upstreamOps.lines.availability.${availabilityState(report, model)}`) }}</span></div>
+            <p class="mt-2 text-xs text-gray-500" data-testid="line-availability-reason">{{ availabilityReason(report, model) }}</p>
+            <p class="mt-1 break-all text-xs">{{ model.decision?.scope?.model || t('upstreamOps.unknown') }} · {{ model.decision?.scope?.protocol || t('upstreamOps.unknown') }} · {{ model.decision?.scope?.service_tier || t('upstreamOps.unknown') }} / {{ model.decision?.scope?.reasoning_effort || t('upstreamOps.unknown') }}</p>
+            <p class="mt-1 text-xs text-gray-500">{{ t('upstreamOps.lines.availability.observed') }} {{ date(model.observation?.finished_at ?? '') }} · {{ t(`upstreamOps.lines.availability.${model.observation?.status === 'pass' ? 'pass' : model.observation?.status === 'fail' ? 'fail' : 'unknown'}`) }}</p>
+            <p class="mt-1 text-xs text-gray-500">{{ t('upstreamOps.lines.availability.decision') }} {{ date(model.decision?.finished_at ?? '') }}</p>
+            <p class="mt-1 text-xs text-gray-500">{{ t('upstreamOps.lines.availability.until') }} {{ date(model.valid_until ?? '') }}</p>
+            <a class="mt-2 inline-block text-xs text-primary-600 underline dark:text-primary-400" :href="`/admin/account-quality?plan_id=${report.plan_id}`">{{ t('upstreamOps.plan') }} #{{ report.plan_id }}</a>
+          </div>
+        </div>
+        <p v-if="availabilityReady && snapshot.availability?.data?.truncated" class="mt-2 text-xs text-amber-800 dark:text-amber-300" role="status">{{ t('upstreamOps.lines.availability.capped') }}</p>
+      </section>
       <section class="min-w-0 border-t border-gray-100 p-4 dark:border-dark-600" :aria-label="t('upstreamOps.lines.tests')">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 class="text-sm font-medium">{{ t('upstreamOps.lines.tests') }}</h4><a class="text-xs text-primary-600 underline dark:text-primary-400" href="/admin/pelican-tests">{{ t('upstreamOps.lines.testPlans') }}</a></div>
         <p v-if="!testsReady" class="text-sm" role="status">{{ t(snapshot.model_tests?.status === 'query_failed' ? 'upstreamOps.queryFailed' : 'upstreamOps.lines.testScopeUnknown') }}</p>
@@ -49,7 +68,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Account } from '@/types'
-import type { AccountBasis, ModelTestArtwork, ModelTestRow, OperationsSnapshot, UpstreamRawCacheRow } from '@/api/admin/upstreamOperations'
+import type { AccountBasis, ModelTestArtwork, ModelTestRow, OperationsSnapshot, UpstreamRawCacheRow, AvailabilityLineReport, AvailabilityLineModel } from '@/api/admin/upstreamOperations'
 import { getResult } from '@/api/admin/pelicanTests'
 import { extractPelicanHtml } from '@/utils/pelicanHtml'
 import type { PelicanBody } from '@/components/user/pelican/pelicanShowcaseFormat'
@@ -59,7 +78,7 @@ import QualityRoundAssessment from './QualityRoundAssessment.vue'
 import PelicanShowcaseCard from '@/components/user/pelican/PelicanShowcaseCard.vue'
 import PelicanArtworkPreview from '@/components/user/pelican/PelicanArtworkPreview.vue'
 
-const props = defineProps<{ snapshot: OperationsSnapshot }>()
+const props = defineProps<{ snapshot: OperationsSnapshot; readElapsedMs?: number }>()
 const emit = defineEmits<{ select: [id: number]; edit: [id: number]; configure: [id: number] }>()
 const { t } = useI18n()
 const participation = ref('all')
@@ -67,11 +86,32 @@ const bodies = ref<Record<number, PelicanBody>>({})
 const selectedArtwork = ref<ModelTestArtwork | null>(null)
 const controller = new AbortController()
 const clock = ref(Date.now())
-const timer = window.setInterval(() => { clock.value = Date.now() }, 15_000)
+const elapsedClock = ref(performance.now())
+const loadedAt = ref(performance.now())
+const timer = window.setInterval(() => { clock.value = Date.now(); elapsedClock.value = performance.now() }, 1_000)
 const now = computed(() => Math.max(clock.value, Date.parse(props.snapshot.queried_at) || 0))
-watch(() => props.snapshot.scope, () => { selectedArtwork.value = null })
+watch(() => props.snapshot, () => { selectedArtwork.value = null; loadedAt.value = performance.now(); elapsedClock.value = loadedAt.value })
 const members = computed(() => (props.snapshot.usage.members ?? []).filter(a => participation.value === 'all' || participation.value === 'on' && !a.deleted && a.schedulable === true && a.status === 'active' || participation.value === 'off' && (a.deleted || a.schedulable === false)))
 const testsReady = computed(() => props.snapshot.model_tests?.status === 'ready' && props.snapshot.model_tests.data?.version === 1 && props.snapshot.model_tests.data.source === 'persisted_pelican_group_test_frozen_model' && Array.isArray(props.snapshot.model_tests.data.rows) && Number.isSafeInteger(props.snapshot.model_tests.data.total) && props.snapshot.model_tests.data.total >= props.snapshot.model_tests.data.rows.length)
+const availabilityReady = computed(() => {
+  const data = props.snapshot.availability?.data
+  return props.snapshot.availability?.status === 'ready' && data?.version === 1 && data.source === 'current_account_availability_authority' && Array.isArray(data.reports) && Number.isSafeInteger(data.plan_total) && data.plan_total >= data.reports.length && Number.isSafeInteger(data.model_total) && data.model_total >= data.models_loaded && Number.isSafeInteger(data.models_loaded) && data.models_loaded === data.reports.reduce((count, report) => count + (Array.isArray(report.models) ? report.models.length : NaN), 0) && typeof data.truncated === 'boolean'
+})
+const availabilityReports = (id: number) => availabilityReady.value ? props.snapshot.availability!.data!.reports.filter(r => r.account_id === id) : []
+function availabilityState(report: AvailabilityLineReport, model: AvailabilityLineModel) {
+  if (!report.enabled) return 'paused'
+  if (!['pass', 'fail'].includes(model.status)) return model.reason === 'expired' ? 'expired' : 'unknown'
+  const evaluated = Date.parse(report.evaluated_at), until = Date.parse(model.valid_until ?? '')
+  const decision = model.decision, scope = decision?.scope
+  if (!report.configured || !Number.isFinite(evaluated) || !Number.isFinite(until) || decision?.version !== 1 || decision.status !== model.status || !Number.isFinite(Date.parse(decision.started_at)) || Date.parse(decision.finished_at) < Date.parse(decision.started_at) || !(Date.parse(decision.finished_at) <= evaluated) || ![2, 3, 4].includes(scope?.version ?? 0) || !scope?.model || !scope.protocol) return 'unknown'
+  return until <= evaluated + Math.max(0, props.readElapsedMs ?? 0) + Math.max(0, elapsedClock.value - loadedAt.value) ? 'expired' : model.status
+}
+function availabilityReason(report: AvailabilityLineReport, model: AvailabilityLineModel) {
+  const state = availabilityState(report, model)
+  const known = ['not_observed', 'rule_changed', 'route_changed', 'new_fault_event', 'connection_not_selected', 'connection_not_observed', 'evidence_version_missing', 'invalid_evidence']
+  const reason = state === 'paused' ? 'rule_paused' : state === 'expired' ? 'expired' : known.includes(model.reason) ? model.reason : state === 'pass' || state === 'fail' ? 'latest_decision' : 'unknown'
+  return t(`upstreamOps.lines.availability.reasons.${reason}`)
+}
 const number = (v: number | undefined | null) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v.toLocaleString(undefined, { maximumFractionDigits: 4 }) : t('upstreamOps.unknown')
 const percent = (v: number | undefined | null) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? `${(v * 100).toFixed(2)}%` : t('upstreamOps.unknown')
 const date = (v: string) => Number.isFinite(Date.parse(v)) ? new Date(v).toLocaleString() : t('upstreamOps.unknown')

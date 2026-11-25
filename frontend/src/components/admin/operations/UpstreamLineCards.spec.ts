@@ -22,6 +22,56 @@ function fixture(): OperationsSnapshot {
 const render = (snapshot = fixture()) => mount(UpstreamLineCards, { props: { snapshot }, global: { stubs: { Teleport: true } } })
 const detail = () => ({ ...artwork, status: 'success', pelican_config: { model_id: artwork.model, reasoning_effort: artwork.reasoning_effort }, response_text: '<svg xmlns="http://www.w3.org/2000/svg"><text>Historical output</text></svg>' })
 
+function availabilityFixture(): OperationsSnapshot {
+ const s=fixture(), evaluated='2026-11-25T10:00:00Z'
+ const decision={version:1,status:'pass',reason:'completed_response',started_at:'2026-11-25T09:59:58Z',finished_at:'2026-11-25T09:59:59Z',attempt_count:1,scope:{version:2,protocol:'responses_http',model:'wire-model',stream:true,service_tier:'default',reasoning_effort:'low',capability:'text'}}
+ s.availability={status:'ready',queried_at:evaluated,data:{version:1,source:'current_account_availability_authority',plan_total:1,model_total:1,models_loaded:1,truncated:false,reports:[{plan_id:12,account_id:9,configured:true,enabled:true,evaluated_at:evaluated,models:[{model_id:'tested-model',status:'pass',reason:'latest_decision',observation:{...decision,status:'inconclusive'},decision,valid_until:'2026-11-25T10:00:30Z'}]}]}}
+ return s
+}
+
+describe('latest availability on the original line card',()=>{
+ it('separates the latest inconclusive observation from an existing current decision and frozen wire scope',()=>{
+  const w=render(availabilityFixture())
+  expect(w.get('[data-testid="line-availability-state"]').text()).toBe('upstreamOps.lines.availability.pass')
+  expect(w.get('[data-testid="line-availability-model"]').text()).toContain('wire-model')
+  expect(w.get('[data-testid="line-availability-model"]').text()).toContain('responses_http')
+  expect(w.get('[data-testid="line-availability-model"]').text()).toContain('upstreamOps.lines.availability.unknown')
+  expect(w.get('[data-account-id="14"]').find('[data-testid="line-availability-state"]').exists()).toBe(false)
+  w.unmount()
+ })
+ it.each(['future','wrong source','bad total','no scope','no decision','paused','expired','changed route'])('never upgrades %s evidence to a pass',mode=>{
+  const s=availabilityFixture(),data=s.availability!.data!,report=data.reports[0],model=report.models[0]
+  if(mode==='future')data.version=9
+  else if(mode==='wrong source')data.source='historical_success_rate'
+  else if(mode==='bad total')data.models_loaded=2
+  else if(mode==='no scope')delete model.decision!.scope
+  else if(mode==='no decision')delete model.decision
+  else if(mode==='paused')report.enabled=false
+  else if(mode==='expired')model.valid_until=report.evaluated_at
+  else {model.status='unknown';model.reason='route_changed';delete model.decision}
+  const w=render(s)
+  expect(w.findAll('[data-testid="line-availability-state"]').some(b=>b.text()==='upstreamOps.lines.availability.pass')).toBe(false)
+  w.unmount()
+ })
+ it('expires with monotonic elapsed time rather than extending a pass when the browser wall clock moves back',async()=>{
+  let monotonic=0
+  vi.useFakeTimers({toFake:['setInterval','clearInterval','Date']})
+  const spy=vi.spyOn(performance,'now').mockImplementation(()=>monotonic)
+  const w=render(availabilityFixture())
+  try {
+   expect(w.get('[data-testid="line-availability-state"]').text()).toContain('.pass')
+   vi.setSystemTime(new Date('2000-01-01T00:00:00Z'));monotonic=31_000
+   await vi.advanceTimersByTimeAsync(1_000)
+   expect(w.get('[data-testid="line-availability-state"]').text()).toContain('.expired')
+  } finally {w.unmount();spy.mockRestore();vi.useRealTimers()}
+ })
+ it('charges the full request/read duration before presenting a current pass',()=>{
+  const w=mount(UpstreamLineCards,{props:{snapshot:availabilityFixture(),readElapsedMs:31_000},global:{stubs:{Teleport:true}}})
+  expect(w.get('[data-testid="line-availability-state"]').text()).toContain('.expired')
+  w.unmount()
+ })
+})
+
 describe('actual upstream line panel', () => {
  it('shows actual tested model, latest failure and historical artwork without equating generation to verification', () => {
   const w = render()
