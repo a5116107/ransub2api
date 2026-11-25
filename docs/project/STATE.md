@@ -3,19 +3,16 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-D8/D9合并v2.25.0：保留历史流量/预测/旧守护打票，不CI、不提升在研供应池。
-唯一integration/upstream-stable；应用源4c557ba96已推；PR4无冲突，待拥有者审核合并。
-生产仍.9/de8b86ed8916，实载c8cec584a18135fe；PG/Redis及432迁移保持。
-UI6790pass/53原skip、类型/构建通过；PG历史/共享Redis3、forecast/coupon25已验。
-固定e16505d58不限量lint72项已修，最终0 issues/vet0；不称全仓全绿。
-原生/透传/bridge未发送恢复race168pass；混合拥有者13pass，均0fail/skip。
-扩大198入口1217pass、退出夹具1叶fail；按1.2s排空+5s握手修后整组67pass/0skip。
-Linux非root四包已过；历史全量平台失败/skip保留；flow-review/upstream-225-*为证据。
-候选2.25.0-ransub.1绑定4c557ba96，二进制f53d7482a948849b；未公开发行。
-生产副本432→495→旧版回退→重升全过，144340历史/369汇总及11表指纹保留。
-305199343bytes备份已校验；6演练容器/1网络全回收；正式生产未切换。
-下一：PR4拥有者审核合并→自有发行/排空上线/公网终态与唯一记账；不自行合并。
-原28项20done/8部分；外部契约/非文本/缓存净收益及历史保留资源不改判。
+D8/D9：v225保留历史/预测/旧守护打票；不CI、不提升在研供应池。
+应用源4c557ba96，自有PR4无冲突，待拥有者审核合并；不自行合并。
+正式生产仍.9/de8b86ed8916/c8cec584a18135fe；原PG/Redis及432迁移保持。
+固定e16505d58不限量lint0/vet0；恢复168、混合13、legacy67全部pass/0skip。
+扩大1217pass/退出夹具1叶fail，修后整组67pass；原失败保留，不称全仓绿。
+候选.1绑定4c557ba96/f53d7482a948849b，构建/类型/归档校验通过，未公开。
+副本432→495/旧版回退/重升通过，144340历史/369汇总和11表指纹保留。
+备份305199343bytes已核，6容器/1网络全回收；生产未切换。
+待PR4拥有者合并→自有发行/排空/公网验收；原28项20done/8部分保持。
+外部契约/非文本/缓存净收益及历史保留资源不改判。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -81,4 +78,4 @@ Linux非root四包已过；历史全量平台失败/skip保留；flow-review/ups
 - Windows完整repository缺`SeCreateSymbolicLinkPrivilege`，Linux同例已过；管理员提供权限后重跑，未改skip。
 - 历史拒删的候选、overlay、pyc和运维脚本完整路径/大小/证据见DECISIONS；均保留由拥有者处理，不重试或移动；正式.1包仍在-final。
 - 历史stream-health/production-failover/release-build拒删路径与字节见DECISIONS，拥有者处理；不换工具重试。
-- 增量lint固定e16505d58且不截断数量；72项及最终业务改动0 issues，vet0；完整旧失败保留。
+- 固定基线不限量lint0/vet0；完整历史失败保留，不称整仓全绿。

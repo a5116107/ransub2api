@@ -2540,3 +2540,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - Windows 的 chmod/符号链接与 shell 内核限制在 Linux 非 root/无网络/exec tmpfs 使用同源测试程序验证：mihomo174pass/6原skip、reauthruntime11pass/0skip、requestcapture112pass/1原skip、BPS691pass/0skip；全部退出0。初始 tmpfs 缺 exec 与 PowerShell 未引用点参数失败分别保留，未改变业务实现或添加 skip。两个已验的 sysutil/repository Linux 权限用例证据复用。
 - 生产只读确认仍 .9/de8b86ed8916、程序 SHA c8cec584a18135fe373f72b7e247588264206b1aa9360ea4d214f8aa48fa96ff；16账号/2组/1用户/1Key/432迁移，PG/Redis原ID保持。按原部署工具建立 /opt/sub2api/deploy/backups/ransub2api-2.25.0-ransub.1，数据库305199343bytes/SHA256 51321ca30321e6269603af601b413ac092d8492cc859d1d2a3767b1c34e825b4，配置、持久数据和旧程序均保留，production_changed=false；候选副本演练不等于生产切换。
 - 已核明未公开 .1 候选仍绑定旧5f1a4eb1c，精确移除其四个普通制品文件共245886975bytes后复用同一目录重建，不删任何已发布版本/回退资料/依赖缓存。原12PNG、历史拒删scratch保留。198受影响测试入口的PG14/Redis7扩大race运行中；其实际结果、最终制品和副本演练继续追加，不把已知源码通过外推为线上业务恢复。
+
+
+### 2026-11-26 D8/D9：最终候选与生产历史副本四阶段验收
+
+- 受影响198入口的七包 PG14/Redis7（真实Redis5进程PATH）扩大race完成：1217条pass事件、0skip，只有 TestIssue914LegacyWSCompatibility/apikey/passthrough/plaintext_instructions 在退出阶段一叶失败，另一个fail为父节点；六包通过、handler包失败（upstream-225-checked-assertions-race.jsonl）。原始日志保留，不宣称该命令整包绿。
+- 退出夹具 issue600Finish 原5秒总预算少于现有1.2秒usage排空加coder/websocket最多5秒关闭握手。只改测试等待总预算到8秒，连接退出、原始头和唯一完成用量断言均保留，不修改生产时间/重试/结算。整组 TestIssue914LegacyWSCompatibility 的67父子事件race通过，0fail/skip、handler50.167s（upstream-225-legacy-shutdown-final.jsonl）；按固定e16505d58不限量lint复验0 issues、handler vet退出0。不是通过改skip或删除原失败断言消除失败。
+- 混合拥有者专用 unit,ownerconflict 标签race另验13父子通过事件，0fail/skip、service2.354s，验证诊断不能冒充完整证明、重建仍重新核对原记录及新helper的七类保护（upstream-225-mixed-owner-final.jsonl）。与168事件有重叠，不重复计独立场景。
+- 最终 local-build --simple 实际退出0，前端类型检查及Vite1m3s通过，保留大分包警告。候选2.25.0-ransub.1的Linux amd64归档245887138bytes、SHA256 e0d3d8d2f563b3de4c56ec7cbe4a9308a07926aec033dc42660342441e762451；嵌入程序SHA256 f53d7482a948849b54ed5f41061e618a2001b93b31d9974954f76a5e59bc3b56，源码4c557ba961c32ddfa73829e0eeac49c77c502f09。发行工具verify实际退出0。后续4ec9155a9只改测试退出预算/文档，git diff排除*_test.go/文档后生产源码差异退出0；保留这份明确来源的同源候选，不伪造二进制Commit或重发旧归档。当前未公开Release/镜像，不将本地包称为线上latest。
+- 在hk2原部署布局/旧.9镜像下，隔离网络与tmpfs PostgreSQL/Redis恢复已校验的305199343bytes生产备份，执行旧版→候选→旧版回退→候选重升四阶段，实际全部通过（PRODUCTION_REHEARSAL_EXIT=0；upstream-225-production-rehearsal.log）。迁移432→495，旧迁移checksum逐项保持；回退旧程序在495 schema仍可登录、读取16账号/性能API，重升幂等。四阶段核对真实/proc/1/exe和内嵌Commit，旧程序c8cec584a18135fe、候选f53d7482a948849b。账号凭据/extra/启停/并发/倍率、用户余额/角色、组别倍率/绑定、优先调度及5/3/1设置快照保持。仅副本暂停倍率探测runner，无生产写入。
+- 11张既存保留表逐行转JSON后排序摘要比较全部一致：user_traffic_events144340行、user_traffic_hourly369行、balance_forecast_coverage1行，以及预测episode/outbox、旧token guard事件/状态/v2账号、oauth重登配置、工单/消息的既存空表均保留。候选迁移没有执行删除流量历史；这只是该真实备份的保留/串行升级与回退证据，不证明混版、真实供应商旧长会话或缓存净收益。
+- 副本六容器、一网络按归属标签及捕获ID全回收。后验 PRODUCTION_UNCHANGED_EXIT=0，正式APP/PG/Redis原容器ID、.9/de8b86ed8916/程序c8cec584a18135fe及432迁移保持；管理登录/16账号/性能API正常，隔离资源剩余0，备份SHA复核通过（upstream-225-production-after-rehearsal.log）。原28项20done/8部分不变。
+- 本轮四个已退出Linux测试程序精确删除66374279bytes；加上先前被取代的未公开制品245886975bytes，共312261254逻辑bytes，不冒称磁盘物理压缩。旧回滚/备份、可复用缓存、历史12PNG及曾拒删的repository/sysutil等scratch保持；不新建工作树、不抢其他任务进程、不删共享依赖。
+- PR4完成冲突/源码及副本子验收，待拥有者审核合并；不自行合并、不提前提升production或公开候选。公开发行、固定镜像、正式排空切换和公网终态/唯一用量仍是独立待验项；当前没有运行编译/测试CI。前次STATE写后字节断言失败已原位缩减并在写前检查，失败不影响已验证候选或生产，未重写已推历史。
