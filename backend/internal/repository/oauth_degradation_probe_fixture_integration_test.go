@@ -5,11 +5,13 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +23,7 @@ var confirmedProbeFixtures sync.Map
 func prepareConfirmedProbeFixture(t *testing.T, id int64) service.OAuthDegradationCandyReview {
 	t.Helper()
 	if saved, ok := confirmedProbeFixtures.Load(id); ok {
-		return saved.(service.OAuthDegradationCandyReview)
+		return testassert.Type[service.OAuthDegradationCandyReview](t, saved)
 	}
 	ctx := t.Context()
 	var raw string
@@ -53,7 +55,10 @@ func evaluateConfirmedProbe(ctx context.Context, repo *accountRepository, id int
 	if !ok {
 		return repo.EvaluateOAuthDegradation(ctx, id, now)
 	}
-	review := value.(service.OAuthDegradationCandyReview)
+	review, typed := value.(service.OAuthDegradationCandyReview)
+	if !typed {
+		return fmt.Errorf("invalid confirmed probe fixture %T", value)
+	}
 	return repo.evaluateOAuthDegradation(ctx, id, now, &review)
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -83,9 +84,10 @@ func TestMatureProvidersRefreshClaimAndLowBalance(t *testing.T) {
 	require.Equal(t, 1, count)
 	_, err = db.Exec(`UPDATE mature_providers SET next_refresh_at=NOW() WHERE id=$1`, p.Data.ID)
 	require.NoError(t, err)
-	worker := any(a).(interface {
+	worker := testassert.Type[interface {
 		RefreshDueMatureProvider(context.Context) (bool, error)
-	})
+	}](t, any(a))
+
 	_, err = worker.RefreshDueMatureProvider(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM mature_provider_alerts WHERE provider_id=$1`, p.Data.ID).Scan(&count))

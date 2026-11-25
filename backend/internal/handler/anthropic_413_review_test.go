@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -156,7 +157,7 @@ func runAnthropic413ReviewRequest(t *testing.T, committed bool, firstStatus int)
 		}
 		h.Messages(c)
 		if value, ok := c.Get(service.OpsUpstreamErrorsKey); ok {
-			run.events = append(run.events, value.([]*service.OpsUpstreamErrorEvent)...)
+			run.events = append(run.events, testassert.Type[[]*service.OpsUpstreamErrorEvent](t, value)...)
 		}
 	})
 	body := fmt.Sprintf(`{"model":"claude-sonnet-4-5","max_tokens":16,"thinking":{"type":"enabled","budget_tokens":1},"stream":%t,"messages":[{"role":"user","content":"synthetic-413-review"}]}`, committed)

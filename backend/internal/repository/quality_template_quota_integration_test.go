@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -143,7 +144,7 @@ func TestIssue817QuotaSkipPreserves401AndOwnership(t *testing.T) {
 	var before []byte
 	require.NoError(t, integrationDB.QueryRow(`SELECT COALESCE((SELECT state FROM account_quality_states WHERE plan_id=$1),'{}'::jsonb)`, f.plan.ID).Scan(&before))
 	// A stale worker must not release a newer lease or touch its streak.
-	repo := f.plans.(service.QualityQuotaSkipRepository)
+	repo := testassert.Type[service.QualityQuotaSkipRepository](t, f.plans)
 	require.NoError(t, repo.FinishQuotaSkippedPelican(ctx, f.plan, f.until.Add(-time.Minute), time.Now()))
 	current, err := f.plans.GetByID(ctx, f.plan.ID)
 	require.NoError(t, err)

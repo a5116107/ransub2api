@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -295,7 +296,7 @@ func TestSchedulerCacheSnapshotMemoLastUsedIsFreshAndCopiesAreIndependent(t *tes
 
 	// A caller must not mutate cached last_used or nested model mappings.
 	*second[0].LastUsedAt = embedded.Add(24 * time.Hour)
-	second[0].Credentials["model_mapping"].(map[string]any)["claude-sonnet"] = "poisoned"
+	testassert.Type[map[string]any](t, second[0].Credentials["model_mapping"])["claude-sonnet"] = "poisoned"
 	independent := memoRead(t, cache, bucket)
 	require.Equal(t, latest, *independent[0].LastUsedAt)
 	require.Equal(t, "sonnet-a", independent[0].GetMappedModel("claude-sonnet"))

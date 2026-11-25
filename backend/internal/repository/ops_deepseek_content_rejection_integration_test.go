@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
 func TestOpsDeepSeekContentRejectionHistoryAndSLA(t *testing.T) {
 	ctx := context.Background()
-	ops := NewOpsRepository(integrationDB).(*opsRepository)
+	ops := testassert.Type[*opsRepository](t, NewOpsRepository(integrationDB))
 	start := time.Now().UTC().Truncate(time.Hour).Add(-6 * time.Hour)
 	end := start.Add(time.Hour)
 	model := "deepseek-content-rejection-regression"
@@ -73,7 +74,7 @@ func TestOpsDeepSeekContentRejectionHistoryAndSLA(t *testing.T) {
 	list, err := ops.ListErrorLogs(ctx, &service.OpsErrorLogFilter{StartTime: &start, EndTime: &end, Model: model, View: "excluded"})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, list.Total)
-	monitor := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository)
+	monitor := testassert.Type[*channelMonitorV2Repository](t, NewChannelMonitorV2Repository(integrationDB))
 	require.NoError(t, monitor.RecomputeRange(ctx, start, end))
 	var monitorErrors int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT COALESCE(sum(error_requests),0) FROM channel_monitor_v2_metrics_1m WHERE model=$1 AND platform='deepseek'", model).Scan(&monitorErrors))

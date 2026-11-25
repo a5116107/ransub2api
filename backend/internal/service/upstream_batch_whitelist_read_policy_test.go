@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -90,7 +91,7 @@ func newBatchWhitelistReadFixture(t *testing.T) *batchWhitelistReadFixture {
 		assert.Equal(t, http.MethodGet, req.Method)
 		assert.Equal(t, "/basispoints/api/responses/access", req.URL.Path)
 		assert.Equal(t, account.ID, id)
-		response := ordinaryModelsUpstreamResponse(f.bpsBody.Load().(string))
+		response := ordinaryModelsUpstreamResponse(testassert.Type[string](t, f.bpsBody.Load()))
 		response.StatusCode = int(f.bpsStatus.Load())
 		return response, nil
 	}}
@@ -100,7 +101,7 @@ func newBatchWhitelistReadFixture(t *testing.T) *batchWhitelistReadFixture {
 		assert.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(int(f.nativeStatus.Load()))
-		_, _ = w.Write([]byte(f.nativeBody.Load().(string)))
+		_, _ = w.Write([]byte(testassert.Type[string](t, f.nativeBody.Load())))
 	}))
 	original := chatgptCodexModelsURL
 	chatgptCodexModelsURL = server.URL

@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -136,7 +137,7 @@ func TestOAuth429CompactGlobalForwardWorker(t *testing.T) {
 				}
 				a, err = repo.GetByID(t.Context(), a.ID)
 				require.NoError(t, err)
-				blocks := a.Extra[service.OAuth429ModelBlocksKey].(map[string]any)
+				blocks := testassert.Type[map[string]any](t, a.Extra[service.OAuth429ModelBlocksKey])
 				require.Len(t, blocks, 1)
 				require.NotNil(t, blocks[target])
 				require.Error(t, forward(21, "/v1/responses/compact"))

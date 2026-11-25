@@ -83,11 +83,11 @@ func TestSetStringFieldInJSONObjectsMatchesSJSONRandomized(t *testing.T) {
 	contents := []string{`"x"`, `""`, `null`, `"中文"`, `"a \"b\" \\ c"`, `[{"type":"text","text":"t"}]`}
 	for n := 0; n < 300; n++ {
 		var b strings.Builder
-		b.WriteString("{" + pick(ws) + `"model":"m",` + pick(ws) + `"messages":` + pick(ws) + "[")
+		_, _ = b.WriteString("{" + pick(ws) + `"model":"m",` + pick(ws) + `"messages":` + pick(ws) + "[")
 		count := rng.Intn(30)
 		for i := 0; i < count; i++ {
 			if i > 0 {
-				b.WriteString(pick(ws) + "," + pick(ws))
+				_, _ = b.WriteString(pick(ws) + "," + pick(ws))
 			}
 			members := []string{
 				`"role"` + pick(ws) + ":" + pick(ws) + `"` + pick(roles) + `"`,
@@ -100,9 +100,9 @@ func TestSetStringFieldInJSONObjectsMatchesSJSONRandomized(t *testing.T) {
 			if rng.Intn(10) == 0 {
 				members = nil // 空对象
 			}
-			b.WriteString("{" + pick(ws) + strings.Join(members, pick(ws)+","+pick(ws)) + pick(ws) + "}")
+			_, _ = b.WriteString("{" + pick(ws) + strings.Join(members, pick(ws)+","+pick(ws)) + pick(ws) + "}")
 		}
-		b.WriteString(pick(ws) + "]" + pick(ws) + "}")
+		_, _ = b.WriteString(pick(ws) + "]" + pick(ws) + "}")
 		body := []byte(b.String())
 		require.True(t, gjson.ValidBytes(body), "generated invalid JSON: %s", body)
 		requireSameAsSJSONLoop(t, body, "reasoning_content", func(i int) string { return "v" + strconv.Itoa(i) + pick([]string{"", "\"", "中"}) })
@@ -152,7 +152,7 @@ func TestNormalizeOllamaCloudChatCompletionsRequestMatchesSJSON(t *testing.T) {
 func deepSeekAgentConversation(n int) []byte {
 	filler := strings.Repeat("lorem ipsum dolor sit amet ", 40)
 	var b strings.Builder
-	b.WriteString(`{"model":"deepseek-chat","stream":true,"messages":[`)
+	_, _ = b.WriteString(`{"model":"deepseek-chat","stream":true,"messages":[`)
 	for i := 0; i < n; i++ {
 		if i > 0 {
 			_ = b.WriteByte(',')
@@ -161,7 +161,7 @@ func deepSeekAgentConversation(n int) []byte {
 		fmt.Fprintf(&b, `{"role":"assistant","content":"","tool_calls":[{"id":"call_%d","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"%s\"}"}}]},`, i, filler)
 		fmt.Fprintf(&b, `{"role":"tool","tool_call_id":"call_%d","content":"%s"}`, i, filler)
 	}
-	b.WriteString(`]}`)
+	_, _ = b.WriteString(`]}`)
 	return []byte(b.String())
 }
 

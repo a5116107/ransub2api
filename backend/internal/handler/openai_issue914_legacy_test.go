@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -133,7 +134,7 @@ func TestIssue914LegacyHTTPCompatibility(t *testing.T) {
 				c, rec := newIssue715Context(t, body)
 				key, exists := c.Get(string(middleware.ContextKeyAPIKey))
 				require.True(t, exists)
-				key.(*service.APIKey).Group.AllowImageGeneration = true
+				testassert.Type[*service.APIKey](t, key).Group.AllowImageGeneration = true
 				c.Request.Header.Set("session_id", "fixture-914")
 				if change == "lite_namespace" || change == "lite_search" {
 					c.Request.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")

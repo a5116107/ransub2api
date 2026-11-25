@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -121,11 +122,11 @@ func TestIssue817CoalescedQuotaObservationsKeepFieldTimes(t *testing.T) {
 	filter := QualityRuleAccountFilter{Statuses: []string{"active"}}
 	require.True(t, QualityTemplateQuotaAvailable(filter, a, now), "new 5h observation must not refresh stale weekly exhaustion")
 	a.Extra["codex_7d_reset_after_seconds"] = 3600
-	a.Extra[CodexUsageFieldVersionsKey].(map[string]any)["codex_7d_reset_after_seconds"] = now.Add(-3 * time.Hour).UnixNano()
+	testassert.Type[map[string]any](t, a.Extra[CodexUsageFieldVersionsKey])["codex_7d_reset_after_seconds"] = now.Add(-3 * time.Hour).UnixNano()
 	require.True(t, QualityTemplateQuotaAvailable(filter, a, now), "relative reset must use its original field observation")
 	a.Extra["codex_7d_reset_at"] = now.Add(time.Hour).Format(time.RFC3339Nano)
 	require.False(t, QualityTemplateQuotaAvailable(filter, a, now), "known current window retains exhaustion until reset")
-	delete(a.Extra[CodexUsageFieldVersionsKey].(map[string]any), "codex_7d_used_percent")
+	delete(testassert.Type[map[string]any](t, a.Extra[CodexUsageFieldVersionsKey]), "codex_7d_used_percent")
 	require.True(t, QualityTemplateQuotaAvailable(filter, a, now), "missing version in versioned observations is unknown")
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -90,7 +91,7 @@ func TestOAuth429HTTPForwardNormalization(t *testing.T) {
 			require.NoError(t, err)
 			require.False(t, got.IsOAuth429ModelBlocked("gpt-6-luna"))
 			require.True(t, got.IsModelSupported("gpt-6-luna"))
-			blocks := got.Extra[service.OAuth429ModelBlocksKey].(map[string]any)
+			blocks := testassert.Type[map[string]any](t, got.Extra[service.OAuth429ModelBlocksKey])
 			require.Len(t, blocks, 1)
 			require.NotNil(t, blocks["gpt-6-astra"])
 		})

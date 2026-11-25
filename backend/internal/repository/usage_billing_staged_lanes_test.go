@@ -161,8 +161,8 @@ func TestStagedLaneCancellationAndRecoveryIsolation(t *testing.T) {
 	cancel()
 	require.NoError(t, shared.Err())
 	select {
-	case <-batchHead:
-		t.Fatal("started transaction was abandoned")
+	case err := <-batchHead:
+		t.Fatalf("started transaction was abandoned: %v", err)
 	default:
 	}
 	close(probe.batchRelease)

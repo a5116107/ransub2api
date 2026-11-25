@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -124,7 +125,7 @@ func TestIssue842HTTPPolicyAndDeliveryBoundaries(t *testing.T) {
 							client := clients()
 							cache := repository.NewGatewayCache(client)
 							if fault != "" {
-								cache = &issue842FaultCache{GatewayCache: cache, issue715WSDeliveryCache: cache.(issue715WSDeliveryCache), fault: fault, client: client}
+								cache = &issue842FaultCache{GatewayCache: cache, issue715WSDeliveryCache: testassert.Type[issue715WSDeliveryCache](t, cache), fault: fault, client: client}
 							}
 							settings := service.NewSettingService(&issue842Settings{beta: lossy}, cfg)
 							h := newOpenAIResponsesFailoverTestHandlerWithSettings(t, testutil.NewRealHTTPUpstream(cfg), cache, settings, accounts...)

@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -110,7 +111,7 @@ func TestMatureProvidersPostgresCRUD(t *testing.T) {
 	p := decode(request(a, "POST", "", body))
 	require.NotEmpty(t, p["id"])
 	require.Equal(t, "unknown", p["status"], "saving a record is not a connection or generation test")
-	metrics := p["metrics"].(map[string]any)
+	metrics := testassert.Type[map[string]any](t, p["metrics"])
 	for _, field := range []string{"balance", "today_spend", "total_spend", "total_recharge"} {
 		require.Nil(t, metrics[field], field+" must remain unknown")
 	}

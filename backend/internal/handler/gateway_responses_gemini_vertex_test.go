@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -145,12 +146,12 @@ func TestGatewayResponsesGeminiVertexHTTP(t *testing.T) {
 					chunk = `{"candidates":[{"content":{"parts":[{"text":"OK"}]}}]}`
 				}
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
-				w.(http.Flusher).Flush()
+				_ = http.NewResponseController(w).Flush()
 				switch name {
 				case "early_eof_usage":
 					return
 				case "read_error_usage":
-					conn, _, hijackErr := w.(http.Hijacker).Hijack()
+					conn, _, hijackErr := testassert.Type[http.Hijacker](t, w).Hijack()
 					if hijackErr != nil {
 						t.Error(hijackErr)
 						return
@@ -381,4 +382,6 @@ func (w *responsesVertexCancelWriter) Write(body []byte) (int, error) {
 	return n, err
 }
 
-func (w *responsesVertexCancelWriter) Flush() { w.ResponseWriter.(http.Flusher).Flush() }
+func (w *responsesVertexCancelWriter) Flush() {
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}

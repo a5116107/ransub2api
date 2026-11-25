@@ -77,14 +77,15 @@ func TestHTTP2AIOpsFailureIdentityScopedToAPIKey(t *testing.T) {
 			assertPopulation := func() {
 				t.Helper()
 				evidence := capture()
-				if scenario == "conflicting_completed_usage" {
+				switch scenario {
+				case "conflicting_completed_usage":
 					require.Equal(t, 4, evidence.Samples, "F3 conflicting completed usage must be excluded only for the same API key")
 					require.InDelta(t, 0.5, evidence.ErrorRate, 0.000001, "F3 both scoped failures must survive success exclusion")
-				} else if scenario == "unknown_model" {
+				case "unknown_model":
 					require.False(t, evidence.ModelCoverageComplete, "F3 an older different-key unknown-model failure must remain a cohort blocker")
 					require.Equal(t, 3, evidence.Samples)
 					require.InDelta(t, 2.0/3.0, evidence.ErrorRate, 0.000001)
-				} else {
+				default:
 					require.Equal(t, 3, evidence.Samples, "F3 one success plus two different-key resets sharing X-Request-ID must be three samples")
 					require.InDelta(t, 2.0/3.0, evidence.ErrorRate, 0.000001)
 				}

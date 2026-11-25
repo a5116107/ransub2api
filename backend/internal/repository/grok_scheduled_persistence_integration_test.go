@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -417,12 +418,12 @@ func TestIssue817GrokNegativePreservesAdaptiveCooldown(t *testing.T) {
 				require.True(t, reset.Equal(*account.RateLimitResetAt))
 				require.Equal(t, history, account.Extra[service.GrokRateLimitHistoryExtraKey])
 				require.True(t, generation.Equal(*staleEdit.RateLimitedAt), "the returned edit snapshot must reflect the committed generation")
-				cleared, err := accounts.(*accountRepository).ClearRateLimitIfObserved(ctx, id, staleGeneration, reset)
+				cleared, err := testassert.Type[*accountRepository](t, accounts).ClearRateLimitIfObserved(ctx, id, staleGeneration, reset)
 				require.NoError(t, err)
 				require.False(t, cleared, "a positive that observed G1 cannot clear G2 after a name edit")
 				// The admin path normally uses the billing-settings capability.
 				staleBillingEdit.Name = "stale billing-settings name edit"
-				require.NoError(t, accounts.(service.AccountBillingSettingsRepository).UpdateWithAccountBillingSettings(ctx, staleBillingEdit, service.AccountBillingSettingsUpdate{SetName: true, SetNotes: true}))
+				require.NoError(t, testassert.Type[service.AccountBillingSettingsRepository](t, accounts).UpdateWithAccountBillingSettings(ctx, staleBillingEdit, service.AccountBillingSettingsUpdate{SetName: true, SetNotes: true}))
 				account, err = accounts.GetByID(ctx, id)
 				require.NoError(t, err)
 				require.True(t, generation.Equal(*account.RateLimitedAt))
@@ -446,7 +447,7 @@ func TestIssue817GrokNegativePreservesAdaptiveCooldown(t *testing.T) {
 				// Reset extension starts a new window, so old tier evidence must
 				// not leak into that window or survive a clear/re-arm generation.
 				newBoundary := reset.Add(time.Minute)
-				require.NoError(t, accounts.(*accountRepository).SetRateLimitedIfLater(ctx, id, newBoundary))
+				require.NoError(t, testassert.Type[*accountRepository](t, accounts).SetRateLimitedIfLater(ctx, id, newBoundary))
 				account, err = accounts.GetByID(ctx, id)
 				require.NoError(t, err)
 				next, _ = service.GrokRepeated429ResetForTesting(account, newBoundary.Add(time.Second))
@@ -458,7 +459,7 @@ func TestIssue817GrokNegativePreservesAdaptiveCooldown(t *testing.T) {
 				require.NoError(t, err)
 				require.Nil(t, account.RateLimitedAt, "an ordinary stale edit cannot undo an explicit clear")
 				require.Nil(t, account.RateLimitResetAt)
-				require.NoError(t, accounts.(*accountRepository).SetRateLimitedIfLater(ctx, id, reset))
+				require.NoError(t, testassert.Type[*accountRepository](t, accounts).SetRateLimitedIfLater(ctx, id, reset))
 				account, err = accounts.GetByID(ctx, id)
 				require.NoError(t, err)
 				rearmedGeneration := *account.RateLimitedAt

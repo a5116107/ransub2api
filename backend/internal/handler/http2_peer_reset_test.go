@@ -51,7 +51,7 @@ func TestHTTP2PeerResetBoundary(t *testing.T) {
 		submissions.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
-		w.(http.Flusher).Flush()
+		_ = http.NewResponseController(w).Flush()
 		// net/http sends RST_STREAM(INTERNAL_ERROR), without a successful terminal.
 		panic(http.ErrAbortHandler)
 	}))
@@ -151,7 +151,7 @@ func TestHTTP2PeerResetAdaptersNeverReplay(t *testing.T) {
 							_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
 						}
 					}
-					w.(http.Flusher).Flush()
+					_ = http.NewResponseController(w).Flush()
 					panic(http.ErrAbortHandler)
 				}))
 				upstream.EnableHTTP2 = true
@@ -305,7 +305,7 @@ func TestHTTP2PeerResetPartialImages(t *testing.T) {
 				submissions.Add(1)
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = io.WriteString(w, "event: image_generation.completed\ndata: {\"type\":\"image_generation.completed\",\"b64_json\":\"aW1hZ2U=\",\"output_format\":\"png\",\"size\":\"1024x1024\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}\n\n")
-				w.(http.Flusher).Flush()
+				_ = http.NewResponseController(w).Flush()
 				panic(http.ErrAbortHandler)
 			}))
 			server.EnableHTTP2 = true
@@ -500,7 +500,7 @@ func TestHTTP2PeerResetNativeConversionBoundary(t *testing.T) {
 					}
 					w.Header().Set("Content-Type", "text/event-stream")
 					_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_synthetic\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n")
-					w.(http.Flusher).Flush()
+					_ = http.NewResponseController(w).Flush()
 					panic(http.ErrAbortHandler)
 				}))
 				server.EnableHTTP2 = true
@@ -573,7 +573,7 @@ func TestHTTP2PeerResetWebSocketTurnPersistence(t *testing.T) {
 					_, _ = io.WriteString(w, "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_semantic\",\"status\":\"failed\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"synthetic context limit\"}}}\n\n")
 					return
 				}
-				w.(http.Flusher).Flush()
+				_ = http.NewResponseController(w).Flush()
 				panic(http.ErrAbortHandler)
 			}))
 			upstream.EnableHTTP2 = true
@@ -693,7 +693,7 @@ func testHTTP2CCSemanticFailureOwnershipAndSLA(t *testing.T, multiline bool) {
 					errorEvent = "data: {\"error\":\ndata: {\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"synthetic semantic failure\"}\ndata: }\n\n"
 				}
 				_, _ = io.WriteString(w, "data: {\"id\":\"synthetic\",\"model\":\"gpt-5.1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n"+errorEvent)
-				w.(http.Flusher).Flush()
+				_ = http.NewResponseController(w).Flush()
 				panic(http.ErrAbortHandler)
 			}))
 			upstream.EnableHTTP2 = true

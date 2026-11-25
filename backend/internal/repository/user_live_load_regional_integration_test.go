@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/regional/slots"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,7 +26,7 @@ func userLiveLoadRegionalCache(t *testing.T, local bool) *regionalConcurrencyCac
 	base := NewConcurrencyCache(testRedis(t), 15, 30)
 	cache, err := NewRegionalConcurrencyCache(base, p, l)
 	require.NoError(t, err)
-	return cache.(*regionalConcurrencyCache)
+	return testassert.Type[*regionalConcurrencyCache](t, cache)
 }
 
 func acquireUserLiveLoadResource(t *testing.T, c *regionalConcurrencyCache, kind string, id int64, source string) {

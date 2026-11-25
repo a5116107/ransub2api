@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -279,16 +280,16 @@ func TestGPT62SubscriptionUltrafastInManifestAndForcedRequests(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, "priority", tier["id"])
 			if tc.snapshot == fastOnly {
-				require.Equal(t, "account Fast", tiers[0].(map[string]any)["description"])
+				require.Equal(t, "account Fast", testassert.Type[map[string]any](t, tiers[0])["description"])
 			}
 			ctx := context.WithValue(context.Background(), ctxkey.Group, group)
 			forced := openAIGroupForcedServiceTier(ctx, &account, account.GetMappedModel("public")+"-max")
 			if tc.want {
 				require.Len(t, tiers, 2)
-				require.Equal(t, "ultrafast", tiers[1].(map[string]any)["id"])
+				require.Equal(t, "ultrafast", testassert.Type[map[string]any](t, tiers[1])["id"])
 				require.Equal(t, OpenAIFastTierUltrafast, forced)
 				if tc.snapshot == both {
-					require.Equal(t, "workspace grant", tiers[1].(map[string]any)["description"])
+					require.Equal(t, "workspace grant", testassert.Type[map[string]any](t, tiers[1])["description"])
 				}
 			} else {
 				require.Len(t, tiers, 1)

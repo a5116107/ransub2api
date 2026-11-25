@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
@@ -107,7 +108,7 @@ func TestProcurementSnapshotProfitUsesMixedRequestTargetsAndUnknowns(t *testing.
 		require.NoError(t, err)
 		var data map[string]any
 		require.NoError(t, json.Unmarshal(out.Usage, &data))
-		return data["summary"].(map[string]any)
+		return testassert.Type[map[string]any](t, data["summary"])
 	}
 	summary := read()
 	require.Equal(t, 8.0, summary["estimated_cost"], "10*.7 + 10*.1 exactly once; never account debit 77 or current cost 99")

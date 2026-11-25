@@ -29,6 +29,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -663,7 +664,7 @@ func runHTTPRebuildFixture(t *testing.T, accountType string, stream bool, pointe
 	}
 	template, _ := newIssue715Context(t, "{}")
 	if option.apiKey != nil {
-		option.apiKey(template.Keys[string(middleware.ContextKeyAPIKey)].(*service.APIKey))
+		option.apiKey(testassert.Type[*service.APIKey](t, template.Keys[string(middleware.ContextKeyAPIKey)]))
 	}
 	done := make(chan struct{}, 1)
 	var sessions []string
@@ -671,7 +672,7 @@ func runHTTPRebuildFixture(t *testing.T, accountType string, stream bool, pointe
 	var observeErr error
 	router := gin.New()
 	if authenticated {
-		key := template.Keys[string(middleware.ContextKeyAPIKey)].(*service.APIKey)
+		key := testassert.Type[*service.APIKey](t, template.Keys[string(middleware.ContextKeyAPIKey)])
 		key.Key, key.Status, key.UserID = "fixture-issue854-http", service.StatusActive, key.User.ID
 		key.User.Status = service.StatusActive
 		key.Group.Status, key.Group.Hydrated = service.StatusActive, true
@@ -746,7 +747,7 @@ func runHTTPRebuildFixture(t *testing.T, accountType string, stream bool, pointe
 			}
 			if pointer == "tool_schema_null" {
 				declarations := httpRebuildToolDefinitions()
-				declarations[0].(map[string]any)["parameters"].(map[string]any)["type"] = nil
+				testassert.Type[map[string]any](t, testassert.Type[map[string]any](t, declarations[0])["parameters"])["type"] = nil
 				body["tools"] = declarations
 			}
 		}

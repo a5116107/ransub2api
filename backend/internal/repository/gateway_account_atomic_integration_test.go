@@ -11,6 +11,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -129,7 +130,7 @@ func TestGatewayAtomicUpdateOAuthInterleaving(t *testing.T) {
 	for _, route := range []string{"admin", "account-service", "bulk"} {
 		t.Run(route, func(t *testing.T) {
 			repo, groups, a, target := gatewayAtomicFixture(t)
-			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: repo.(service.GatewayAccountTransactionRepository), beforeLock: true,
+			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: testassert.Type[service.GatewayAccountTransactionRepository](t, repo), beforeLock: true,
 				entered: make(chan struct{}), release: make(chan struct{})}
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
@@ -175,7 +176,7 @@ func TestGatewayAtomicUpdateRollbackAfterStagedFields(t *testing.T) {
 			require.NoError(t, err)
 			var events int
 			require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM scheduler_outbox WHERE account_id=$1`, a.ID).Scan(&events))
-			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: repo.(service.GatewayAccountTransactionRepository), failBinding: true,
+			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: testassert.Type[service.GatewayAccountTransactionRepository](t, repo), failBinding: true,
 				entered: make(chan struct{}), release: make(chan struct{})}
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
@@ -214,7 +215,7 @@ func TestGatewayAtomicUpdateSuccessfulCommit(t *testing.T) {
 	for _, route := range []string{"admin", "account-service", "bulk"} {
 		t.Run(route, func(t *testing.T) {
 			repo, groups, a, target := gatewayAtomicFixture(t)
-			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: repo.(service.GatewayAccountTransactionRepository), beforeLock: true,
+			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: testassert.Type[service.GatewayAccountTransactionRepository](t, repo), beforeLock: true,
 				entered: make(chan struct{}), release: make(chan struct{})}
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
@@ -259,7 +260,7 @@ func TestGatewayAtomicUpdateCallerTransactionRollback(t *testing.T) {
 			repo, groups, a, target := gatewayAtomicFixture(t)
 			before, err := repo.GetByID(t.Context(), a.ID)
 			require.NoError(t, err)
-			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: repo.(service.GatewayAccountTransactionRepository), failBinding: true,
+			barrier := &gatewayAtomicBarrierRepo{AdminAccountRepository: repo, atomic: testassert.Type[service.GatewayAccountTransactionRepository](t, repo), failBinding: true,
 				entered: make(chan struct{}), release: make(chan struct{})}
 			close(barrier.release)
 			tx, err := integrationEntClient.Tx(t.Context())

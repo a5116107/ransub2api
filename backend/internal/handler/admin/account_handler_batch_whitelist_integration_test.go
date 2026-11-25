@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
@@ -112,8 +113,8 @@ func TestBatchWhitelistPostgresHandlerReadback(t *testing.T) {
 		after := read(id)
 		if id == ids[0] || id == ids[2] {
 			model := fmt.Sprintf("live-%d", id)
-			require.Equal(t, map[string]any{model: model}, after["credentials"].(map[string]any)["model_mapping"])
-			after["credentials"].(map[string]any)["model_mapping"] = before[id]["credentials"].(map[string]any)["model_mapping"]
+			require.Equal(t, map[string]any{model: model}, testassert.Type[map[string]any](t, after["credentials"])["model_mapping"])
+			testassert.Type[map[string]any](t, after["credentials"])["model_mapping"] = testassert.Type[map[string]any](t, before[id]["credentials"])["model_mapping"]
 			// The existing CAS intentionally bumps the account revision.
 			after["updated_at"] = before[id]["updated_at"]
 		}

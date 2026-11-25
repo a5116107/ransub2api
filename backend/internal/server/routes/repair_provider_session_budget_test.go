@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -134,7 +135,7 @@ func TestMatureProviderImportRotationBudget(t *testing.T) {
 				defer srv.Close()
 				target, err := url.Parse(srv.URL)
 				require.NoError(t, err)
-				transport := srv.Client().Transport.(*http.Transport).Clone()
+				transport := testassert.Type[*http.Transport](t, srv.Client().Transport).Clone()
 				transport.ResponseHeaderTimeout = 10 * time.Second
 				defer transport.CloseIdleConnections()
 				client := &http.Client{Timeout: 15 * time.Second, Transport: matureProviderTransport(func(r *http.Request) (*http.Response, error) {

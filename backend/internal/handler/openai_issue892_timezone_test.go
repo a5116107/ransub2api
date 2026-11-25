@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	coderws "github.com/coder/websocket"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -251,7 +252,7 @@ func TestIssue892OpaqueEnvironmentAdapters(t *testing.T) {
 					baseCache := repository.NewGatewayCache(clients())
 					cache := baseCache
 					if scenario == "pending" || scenario == "failed" {
-						cache = &issue892LateFenceCache{GatewayCache: baseCache, issue715WSDeliveryCache: baseCache.(issue715WSDeliveryCache), client: clients(), fence: scenario}
+						cache = &issue892LateFenceCache{GatewayCache: baseCache, issue715WSDeliveryCache: testassert.Type[issue715WSDeliveryCache](t, baseCache), client: clients(), fence: scenario}
 					}
 					u := &issue805Oracle{}
 					srv := u.server(t)

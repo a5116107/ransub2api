@@ -200,10 +200,11 @@ func TestOAuthRetryOwnerBusyAfterSlotRelease(t *testing.T) {
 				}
 				<-workerDone
 				want := []int64{1}
-				if scenario == "recovered" {
+				switch scenario {
+				case "recovered":
 					want = []int64{1, 1}
 					require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-				} else if scenario == "exhausted" {
+				case "exhausted":
 					want = []int64{1, 1, 1, 1}
 					require.Equal(t, http.StatusBadGateway, rec.Code, rec.Body.String())
 				}

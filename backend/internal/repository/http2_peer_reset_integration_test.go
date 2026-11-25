@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
 func TestHTTP2PeerResetPersistence(t *testing.T) {
 	ctx := context.Background()
-	repo := NewOpsRepository(integrationDB).(*opsRepository)
+	repo := testassert.Type[*opsRepository](t, NewOpsRepository(integrationDB))
 	start := time.Now().UTC().Truncate(time.Hour).Add(-11 * time.Hour)
 	end := start.Add(time.Hour)
 	now := start.Add(time.Minute)
@@ -73,7 +74,7 @@ func TestHTTP2PeerResetPersistence(t *testing.T) {
 	var hourlySLA int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT error_count_sla FROM ops_metrics_hourly WHERE bucket_start=$1 AND platform='openai' AND group_id IS NULL", start).Scan(&hourlySLA))
 	require.Equal(t, sla, hourlySLA)
-	monitor := NewChannelMonitorV2Repository(integrationDB).(*channelMonitorV2Repository)
+	monitor := testassert.Type[*channelMonitorV2Repository](t, NewChannelMonitorV2Repository(integrationDB))
 	require.NoError(t, monitor.RecomputeRange(ctx, start, end))
 	var category string
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT error_category FROM channel_monitor_v2_error_metrics_1m WHERE model=$1", model).Scan(&category))

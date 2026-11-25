@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +22,7 @@ func TestIssue817QuotaSkipRetainsActualIsolationOwnership(t *testing.T) {
 	require.NoError(t, integrationDB.QueryRow(`SELECT state FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&stateBefore))
 	require.NotEqual(t, "{}", string(stateBefore))
 	require.NoError(t, integrationDB.QueryRow(`SELECT to_jsonb(a) FROM accounts a WHERE id=$1`, f.account).Scan(&accountBefore))
-	require.NoError(t, f.plans.(service.QualityQuotaSkipRepository).FinishQuotaSkippedPelican(ctx, f.plan, f.until, time.Now()))
+	require.NoError(t, testassert.Type[service.QualityQuotaSkipRepository](t, f.plans).FinishQuotaSkippedPelican(ctx, f.plan, f.until, time.Now()))
 	var stateAfter, accountAfter []byte
 	require.NoError(t, integrationDB.QueryRow(`SELECT state FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&stateAfter))
 	require.NoError(t, integrationDB.QueryRow(`SELECT to_jsonb(a) FROM accounts a WHERE id=$1`, f.account).Scan(&accountAfter))

@@ -9,6 +9,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,7 +80,7 @@ func TestTOTPBindingMigrationCanReloadWithoutReplacingSnapshot(t *testing.T) {
 		_, err = integrationDB.ExecContext(ctx, string(migration))
 		require.NoError(t, err, "migration reload must be idempotent")
 	}
-	saved, err := NewOpenAIOAuthReauthRepository(integrationDB).(*openAIOAuthReauthRepository).GetTOTPRotationByTask(ctx, r.TaskID)
+	saved, err := testassert.Type[*openAIOAuthReauthRepository](t, NewOpenAIOAuthReauthRepository(integrationDB)).GetTOTPRotationByTask(ctx, r.TaskID)
 	require.NoError(t, err)
 	require.Equal(t, cfg.LoginEmail, saved.LoginEmail)
 	require.Equal(t, cfg.TOTPSecretCiphertext, saved.PreviousCiphertext)

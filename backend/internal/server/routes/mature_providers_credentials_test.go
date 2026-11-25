@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +89,7 @@ func TestMatureProvidersCredentialsAndMetadata(t *testing.T) {
 	p = decode(request("POST", path+"/refresh", fmt.Sprintf(`{"revision":%.0f}`, p["revision"])))
 	require.EqualValues(t, 2, calls.Load())
 	require.Equal(t, "connected", p["status"])
-	metrics := p["metrics"].(map[string]any)
+	metrics := testassert.Type[map[string]any](t, p["metrics"])
 	require.EqualValues(t, 12.5, metrics["balance"])
 	require.EqualValues(t, 0, metrics["today_spend"])
 	require.EqualValues(t, 3.5, metrics["total_spend"])

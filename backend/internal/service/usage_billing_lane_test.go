@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -669,7 +670,7 @@ func TestUsageBillingProviderPreservesRecoveryBusyWalletBypass(t *testing.T) {
 	}}
 	lanes := newLaneTestCombiner(underlying, 16)
 	t.Cleanup(lanes.Stop)
-	repo := ProvideUsageBillingRepository(lanes).(DurableUsageBillingRepository)
+	repo := testassert.Type[DurableUsageBillingRepository](t, ProvideUsageBillingRepository(lanes))
 	require.NoError(t, recoverUsageBillingBatch(context.Background(), repo, nil, nil))
 	require.Equal(t, []string{"first", "second"}, underlying.workerCalls)
 	require.Equal(t, []string{"second"}, recovery.acked)

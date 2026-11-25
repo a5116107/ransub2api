@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -27,10 +28,10 @@ func TestImageBillingPayloadPreservesRawUsage(t *testing.T) {
 		require.NoError(t, err)
 		var x map[string]any
 		require.NoError(t, json.Unmarshal(b, &x))
-		u := x["usage"].(map[string]any)
+		u := testassert.Type[map[string]any](t, x["usage"])
 		require.Equal(t, float64(0), u["input_tokens"])
 		require.Equal(t, float64(2010000), u["output_tokens"])
-		require.Equal(t, "image", x["billing"].(map[string]any)["billing_mode"])
+		require.Equal(t, "image", testassert.Type[map[string]any](t, x["billing"])["billing_mode"])
 		if strings.Contains(raw, `"usage"`) {
 			require.Contains(t, x, "upstream_usage")
 		}

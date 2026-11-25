@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -211,7 +212,7 @@ func (u *readableWSOracle) server(t *testing.T) *httptest.Server {
 			}
 			answer := u.response(r, body, false)
 			if answer == nil {
-				conn, _, err := w.(http.Hijacker).Hijack()
+				conn, _, err := testassert.Type[http.Hijacker](t, w).Hijack()
 				if err == nil {
 					u.mu.Lock()
 					u.disconnectsInjected++

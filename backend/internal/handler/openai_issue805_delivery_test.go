@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -236,7 +237,7 @@ func TestIssue805HTTPKeyPermissionStillRejectsBeforeSend(t *testing.T) {
 	c, rec := newIssue715Context(t, issue715Body(true, false))
 	c.Request.Header.Set("session_id", "fixture-758-thread")
 	key, _ := c.Get(string(middleware.ContextKeyAPIKey))
-	key.(*service.APIKey).AllowLongContext = false
+	testassert.Type[*service.APIKey](t, key).AllowLongContext = false
 	nodes(true).Responses(c)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Equal(t, "context_length_exceeded", gjson.Get(rec.Body.String(), "error.code").String())

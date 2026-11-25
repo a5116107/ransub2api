@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -155,7 +156,7 @@ func TestOAuth429WeeklyOnlyQueryUsageSupersedesEvidence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, _, cfg := totpRotationFixture(t)
-			accounts := NewAccountRepository(integrationEntClient, integrationDB, nil).(*accountRepository)
+			accounts := testassert.Type[*accountRepository](t, NewAccountRepository(integrationEntClient, integrationDB, nil))
 			require.NoError(t, accounts.SetSchedulable(ctx, cfg.AccountID, true))
 			require.NoError(t, accounts.UpdateCredentials(ctx, cfg.AccountID, map[string]any{"email": "owner@example.test", "chatgpt_account_id": "fictional-owner", "access_token": "fictional-token", "expires_at": time.Now().Add(time.Hour).Format(time.RFC3339)}))
 			rates := service.NewRateLimitService(accounts, nil, &config.Config{}, nil, nil)

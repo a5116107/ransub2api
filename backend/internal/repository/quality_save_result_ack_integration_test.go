@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue/queuetest"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -123,7 +124,7 @@ func TestIssue817SaveResultFailureDoesNotAcknowledge(t *testing.T) {
  config_revision=(SELECT md5(jsonb_build_array(pelican_config,model_id,cron_expression)::text) FROM scheduled_test_plans WHERE id=$1) WHERE plan_id=$1`, plan.ID, plan.UpdatedAt)
 						require.NoError(t, err)
 					}
-					plans := &issue817SavePlans{scheduledTestPlanRepository: f.plans.(*scheduledTestPlanRepository)}
+					plans := &issue817SavePlans{scheduledTestPlanRepository: testassert.Type[*scheduledTestPlanRepository](t, f.plans)}
 					results := &issue817ResultFault{ScheduledTestResultRepository: NewScheduledTestResultRepository(integrationDB), failCreate: fault.failCreate, failPrune: fault.failPrune}
 					redis := miniredis.RunT(t)
 					client := queuetest.NewClient(redis.Addr())

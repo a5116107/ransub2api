@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -178,8 +179,8 @@ func TestOpenAIWSAfterOutput_Generic500AndExplicit502NeedAfterStream(t *testing.
 	}
 	after := func(status int, keyword string) *Account {
 		account := before(status, keyword)
-		rules := account.Credentials["temp_unschedulable_rules"].([]any)
-		rule := rules[0].(map[string]any)
+		rules := testassert.Type[[]any](t, account.Credentials["temp_unschedulable_rules"])
+		rule := testassert.Type[map[string]any](t, rules[0])
 		rule["stream_timing"] = TempUnschedStreamAfter
 		return account
 	}

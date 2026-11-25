@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,7 +42,7 @@ func newUserGroupDeniedModelsFixture(t *testing.T) *userGroupDeniedModelsFixture
 	})
 	return &userGroupDeniedModelsFixture{
 		ctx:     context.Background(),
-		repo:    NewUserGroupRateRepository(integrationDB).(*userGroupRateRepository),
+		repo:    testassert.Type[*userGroupRateRepository](t, NewUserGroupRateRepository(integrationDB)),
 		tx:      integrationDB,
 		groupID: group.ID,
 		userA:   userA.ID,

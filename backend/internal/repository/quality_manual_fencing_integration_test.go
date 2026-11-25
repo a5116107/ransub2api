@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/qualityqueue/queuetest"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -51,7 +52,7 @@ func TestIssue817ManualWorkerInterleaving(t *testing.T) {
 	manual, err := f.plans.GetByID(ctx, plan.ID)
 	require.NoError(t, err)
 
-	plans := &issue817ObservedPlans{scheduledTestPlanRepository: f.plans.(*scheduledTestPlanRepository), attempts: make(chan bool, 8)}
+	plans := &issue817ObservedPlans{scheduledTestPlanRepository: testassert.Type[*scheduledTestPlanRepository](t, f.plans), attempts: make(chan bool, 8)}
 	redis := miniredis.RunT(t)
 	client := queuetest.NewClient(redis.Addr())
 	t.Cleanup(func() { _ = client.Close() })

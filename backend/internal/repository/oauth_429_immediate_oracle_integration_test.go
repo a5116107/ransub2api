@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	testassert "github.com/Wei-Shaw/sub2api/internal/testutil/assertions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,7 +92,7 @@ func TestOAuth429ImmediateWithoutQualityOpsBehaviorOracle(t *testing.T) {
 	if factory.Type().NumIn() == 10 {
 		args = append(args, reflect.ValueOf(service.NewConcurrencyService(NewConcurrencyCache(testRedis(t), 15, 60))))
 	}
-	runner := factory.Call(args)[0].Interface().(*service.ScheduledTestRunnerService)
+	runner := testassert.Type[*service.ScheduledTestRunnerService](t, factory.Call(args)[0].Interface())
 	defer runner.Stop()
 	// Older production has no independent worker. Its missing capability must fail
 	// the same named business assertion below, not an undefined-symbol compiler.
