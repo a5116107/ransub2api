@@ -1,20 +1,21 @@
-# 生产监测、验真与调度流程图册
+# 生产监测、验真与供给经营流程图册
 
-> 核查：2026-11-20，配置快照11:28–11:32（UTC+8）。运行版 `v2.21.0-ransub.8`，发行源码 `1171780c7fc5e38def77dba160ac570a827a45bf`，镜像摘要 `291c5bf6dccd`。这是时间点快照，不是实时面板。
+> 核查：2026-11-25 16:47–16:48（UTC+8）。运行版 `v2.21.0-ransub.9`，发行源码 `de8b86ed8916c012f5421cc00c4fdd97eec8d6f3`，实际程序 `c8cec584a181`，镜像摘要 `bfea56342282`。这是已读取的时间点快照，不是实时面板。
 >
-> 本文负责**生产事实与流程解释**；唯一方案和任务仍在[主设计§12.1、§13.3](monitor-driven-scheduling-design.md#121-低心智配置与上游监控面板提案)。开发功能不视作生产能力。本轮只读，不触发付费检测、不改配置、不部署、不运行CI。
+> 本文负责生产事实与流程；唯一方案和任务仍在[主设计§12.1、§13.3](monitor-driven-scheduling-design.md#121-低心智配置与上游监控面板提案)。先阅读其中的[产品化体验合同](monitor-driven-scheduling-design.md#1219-产品化体验合同2026-11-25)。开发能力不视作生产已启用。本轮只读生产，不触发付费检测、不改配置、不部署、不运行CI。
 
-[打开离线图文版（9张已渲染流程图）](production-observation-flow.html)。HTML由本文和主设计§12.1生成，不是另一份方案。
+[打开离线图文版与可点击产品草图](production-observation-flow.html)。现状图、目标业务图和体验草图分区；HTML由本文、主设计与脱敏快照生成，不是另一份方案，也不是已上线的新后台。
 
 ## 1. 核心判断
 
 目标是“管理员定义产品边界，程序持续证明并维护合格供应”，不是增加分数后继续手工搬账号。生产尚未完整闭环：
 
 1. V2面板的健康色、缓存和首Token等指标，**不直接决定选路资格**。质量规则、原生故障保护、人工开关分别生效。
-2. 15个账号只有9、14号开启调度，每个配置并发10。配置上限不等于实时可用容量，也不代表每个模型都有两个合格备选。
-3. 主力账号的**报表估算倍率0.10、利润准入倍率1.00、下游售价倍率0.20**。利润门当前关闭，直接开启会排除两个主力账号。
-4. **单题通过、整轮通过、处置完成、当前可调度是不同结论**。不能用一个红绿灯代替。
-5. 随机推理题、糖果题、返回模型名及Codex/TLS客户端指纹，不单独认证真实模型。当前没有模型身份认证闭环的生产证据。
+2. 16个账号只有9、14号开启调度，每个配置并发10。配置上限不等于实时可用容量，也不代表每个模型都有两个合格备选。
+3. 主力账号的**报表估算倍率0.10、利润准入倍率1.00、下游分组默认售价倍率0.20**。利润门当前关闭；在默认售价0.20且无用户覆盖的预演条件下，开启会排除两个主力账号，不能直接推荐开启。
+4. 本次近24小时主力线路的Token读取率约95%–98%，保存的平均首Token仍约14–19秒；高缓存与慢等待可以同时存在。
+5. **单题通过、整轮通过、处置完成、当前可调度是不同结论**。不能用一个红绿灯代替。
+6. 随机推理题、糖果题、返回模型名及Codex/TLS客户端指纹，不单独认证真实模型。当前没有模型身份认证闭环的生产证据。
 
 ## 2. 线上上下游与配置
 
@@ -25,38 +26,39 @@
 ```mermaid
 flowchart TD
   CLIENT["下游 Codex / API 客户端"] --> KEY["K1 · 用户1 · 有效<br/>绑定G2"]
-  KEY --> GROUP["G2 · OpenAI<br/>售价D=0.20 · 无用户覆盖<br/>利润门关 · 无fallback组"]
+  KEY --> GROUP["G2 · OpenAI<br/>默认售价D=0.20 · 覆盖需按请求核对<br/>利润门关 · 无fallback组"]
   GROUP --> ROUTE["现有基础选路<br/>资格、连续性、负载与槽位"]
-  ROUTE --> A9["A9 · R09 · 调度开<br/>配置并发10<br/>准入1.00 / 估算成本0.10"]
-  ROUTE --> A14["A14 · R10 · 调度开<br/>配置并发10<br/>准入1.00 / 估算成本0.10"]
-  A9 --> U9["上游Key线路R09<br/>内部账号 / 缓存域未知"]
-  A14 --> U14["上游Key线路R10<br/>内部账号 / 缓存域未知"]
-  OFF["另13个账号调度关闭<br/>A2/A11/A15另有error状态"] -. "非正常业务候选" .-> ROUTE
+  ROUTE --> A9["A9 · R10 · 调度开<br/>配置并发10<br/>准入1.00 / 估算成本0.10"]
+  ROUTE --> A14["A14 · R11 · 调度开<br/>配置并发10<br/>准入1.00 / 估算成本0.10"]
+  A9 --> U9["上游Key线路R10<br/>内部账号 / 缓存域未知"]
+  A14 --> U14["上游Key线路R11<br/>内部账号 / 缓存域未知"]
+  OFF["另14个账号调度关闭<br/>A2/A7/A11/A15/A16为error状态"] -. "非正常业务候选" .-> ROUTE
   G1["G1 · Anthropic · D=1.00<br/>无账号 / 下游Key绑定"]
   ROUTE -. "被动观测" .-> OBS["用量、错误、性能、V2面板"]
 ```
 
-所有账号均为OpenAI API Key、优先级1、账号附加销售倍率1、配置并发10。12个地址桶、15个不同Key值，未发现同值Key重复建号；不同地址仍可能共用供应商故障域。
+所有账号均为OpenAI API Key、优先级1、配置并发10。13个地址桶、16个不同Key值，未发现同值Key重复建号；不同地址仍可能共用供应商故障域。
 
-| 账号 | 地址桶 | 状态 / 调度 | 当前关联 | 准入账号倍率U | 报表估算倍率C | 倍率探测 / 账号倍率同步 |
+| 账号 | 本次地址桶 | 状态 / 调度 | 当前关联 | 准入U | 估算C | 元数据观测 / 时效 |
 | --- | --- | --- | --- | ---: | ---: | --- |
-| A1 | R01 | active / 关 | G2 | 0.20 | 0.20 | 开 / 开；快照有效 |
-| A2 | R03 | error / 关 | G2 | 0.08 | 0.08 | 开 / 开；保存的成功快照过期 |
-| A3 | R02 | active / 关 | G2 | 1.00 | 0.10 | 开 / 未开启；404不支持；pool_mode=true |
-| A4 | R05 | active / 关 | G2 | 1.00 | 0.10 | 开 / 关；404不支持 |
-| A5 | R10 | active / 关 | G2 | 1.00 | 0.10 | 开 / 关；404不支持 |
-| A6 | R10 | active / 关 | G2 | 1.00 | 0.10 | 开 / 未开启；404不支持 |
-| A7 | R12 | active / 关 | G2 | 1.00 | 0.029 | 开 / 关；声明0.029 |
-| A8 | R11 | active / 关 | G2 | 1.00 | 0.04 | 开 / 关；声明0.04 |
-| A9 | R09 | active / **开** | G2 | **1.00** | **0.10** | 开 / 关；404不支持 |
-| A10 | R04 | active / 关 | 无 | 1.00 | 0.03 | 开 / 未开启；声明0.03 |
-| A11 | R07 | error / 关 | G2 | 1.00 | 0.10 | 开 / 关；404不支持 |
-| A12 | R08 | active / 关 | G2 | 1.00 | 0 | 开 / 未开启；声明0，非已验证免费 |
-| A13 | R08 | active / 关 | G2 | 1.00 | 0 | 关 / 关；无快照 |
-| A14 | R10 | active / **开** | G2 | **1.00** | **0.10** | 关 / 关；无快照 |
-| A15 | R06 | error / 关 | G2 | 1.00 | 0.10 | 开 / 关；无快照 |
+| A1 | R01 | active / 关 | G2 | 0.200 | 0.200 | 成功声明 0.2；新鲜 |
+| A2 | R03 | error / 关 | G2 | 0.080 | 0.080 | 成功声明 0.08；过期 |
+| A3 | R02 | active / 关 | G2 | 1.000 | 0.100 | 接口不支持 |
+| A4 | R06 | active / 关 | G2 | 1.000 | 0.100 | 接口不支持 |
+| A5 | R11 | active / 关 | G2 | 1.000 | 0.100 | 接口不支持 |
+| A6 | R11 | active / 关 | G2 | 1.000 | 0.100 | 接口不支持 |
+| A7 | R13 | error / 关 | G2 | 1.000 | 0.050 | 成功声明 0.05；过期 |
+| A8 | R12 | active / 关 | G2 | 1.000 | 0.050 | 成功声明 0.05；新鲜 |
+| A9 | R10 | active / **开** | G2 | 1.000 | 0.100 | 接口不支持 |
+| A10 | R04 | active / 关 | 无 | 1.000 | 0.030 | 成功声明 0.03；新鲜 |
+| A11 | R05 | error / 关 | G2 | 1.000 | 0.100 | 接口不支持 |
+| A12 | R08 | active / 关 | G2 | 1.000 | 0.001 | 成功声明 0.001；新鲜 |
+| A13 | R08 | active / 关 | G2 | 1.000 | 0.000 | 无快照；探测关 |
+| A14 | R11 | active / **开** | G2 | 1.000 | 0.100 | 无快照；探测关 |
+| A15 | R07 | error / 关 | G2 | 1.000 | 0.100 | 无快照 |
+| A16 | R09 | error / 关 | G2 | 1.000 | 0.080 | 成功声明 0.08；过期 |
 
-“关”只说明保存值，不反推操作者或原因。A5/A6/A14共地址，A12/A13共地址，但Key不同，缓存关系仍未知。A9/A14的sol、terra、6.2-sol均同名映射，映射不是身份认证。
+“关”只说明保存值，不反推操作者或原因。地址桶只在本次快照内有效，不跨快照比较；A5/A6/A14同地址、A12/A13同地址但Key不同，缓存关系未核实。A7/A8估算已变为0.05，A12为0.001，新增A16估算0.08；不再沿用11/20的0.029/0.04/0或15账号库存。价格同步开关本次未完成准确重读，不把null或错误字段当成“关”。
 
 ### 2.2 什么真正生效
 
@@ -65,14 +67,14 @@ flowchart TD
 | V2监控 | 开，G2，每60秒刷新 | 展示聚合健康，不自动移组/隔离 |
 | V2阈值 | 错误权重0.6、TTFT/缓存各0.2；最小样本10 | TTFT警告8s/严重20s；缓存警告85%/严重60%；不是选路门 |
 | V2糖果题 | G2 / gpt-6.1-sol / medium，每分钟 | 分组抽样，不是每个上游Key各测一次 |
-| 分组鹈鹕 | G2 / gpt-6.1-sol，每15分钟 | 分组回答/展示，非全组账号验真 |
-| 账号质量 | 13条启用，每30分钟，随机推理/high | 动作移出G2、自动恢复开、5xx即时触发关 |
+| 分组鹈鹕 | 11/20快照为G2每15分钟；本次待重读 | 分组回答/展示，非全组账号验真；历史配置不当本次观测 |
+| 账号质量 | 14条启用，每30分钟，随机推理/high | 动作移出G2、自动恢复开、5xx即时触发关 |
 | 普通连通性 | A3/A4/A6/A7共4条，每30分钟 | 原生auto_recover，与质量计划独立 |
 | 最新可用性准入 | 未配置；状态表为空 | 尚未启用“最近检测可用且未过期才放行” |
 | 性能阈值暂停 | 无账号配置 | 性能可观测不等于自动停调；统计窗源码默认60分钟 |
 | 优先评分 | 设置缺省，源码默认关 | advanced scheduler亦显式关；并非统一评分分流 |
 | 跨请求健康保护 | **开：5分钟累计3次、暂停1分钟** | 符合分类的失败按账号累计，成功不清零，不是失败率阈值 |
-| 倍率元数据探测 | 全局缺省开/30分钟，13个账号开 | 单组有效声明可更新估算C；账号倍率同步另有开关 |
+| 倍率元数据探测 | 全局缺省开/30分钟，14个账号开 | 单组有效声明可更新估算C；账号倍率同步另有开关 |
 | 利润门 | G1/G2均关 | 报表盈利不等于会拦超倍率线路 |
 | V1 / V3空闲探测 | V1无配置，当前V2；V3 idle_probe关 | 不是另外正在运行的主动检测池 |
 | 自动采购桶、受管产品、完整多维资格与预算 | 开发或提案 | 不属于本次生产稳定版已验能力 |
@@ -86,9 +88,9 @@ flowchart TD
   LOG --> BREAK["符合分类的故障<br/>5分钟3次 → 账号冷却1分钟"]
   LOG -. "性能阈值未配置" .-> PERF["独立性能暂停层"]
   CLOCK["原定时运行器"] --> PRICE["倍率/余额元数据<br/>默认30分钟 + 账号开关"]
-  CLOCK --> Q["13条账号质量规则<br/>30分钟 · 随机推理/high"]
+  CLOCK --> Q["14条账号质量规则<br/>30分钟 · 随机推理/high"]
   CLOCK --> C["4条普通连通性<br/>30分钟 · auto_recover"]
-  CLOCK --> GROUP["G2糖果每分钟<br/>分组鹈鹕每15分钟"]
+  CLOCK --> GROUP["G2糖果每分钟<br/>鹈鹕旧周期15分钟，本次待核对"]
   Q --> RESULT["答题 + 判题 + 同题对照<br/>通过 / 明确失败 / 不确定"]
   RESULT --> ACTION["所有权校验<br/>移组 / 恢复 / 冲突"]
   PRICE --> SNAP["声明快照 / 估算倍率<br/>可选账号倍率同步"]
@@ -104,7 +106,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  PLAN["13条质量规则按account_id运行<br/>移出G2后仍可复测"] --> TEST["共享批次生成题目/参考答案<br/>配置模型×样本"]
+  PLAN["14条质量规则按account_id运行<br/>移出G2后仍可复测"] --> TEST["共享批次生成题目/参考答案<br/>配置模型×样本"]
   TEST --> R{"得到完整可判答案？"}
   R -- "传输/鉴权失败或跳过" --> UNKNOWN["质量不确定<br/>另记运行错误；不新增降智处置"]
   R -- "是" --> JUDGE["LLM判题：G2 / gpt-6.1-terra<br/>排除被测账号，占并发槽"]
@@ -126,26 +128,20 @@ flowchart TD
 
 图中为逻辑归约；处置在原整轮/共享批次收集完成或到达其收集期限、且版本与所有权校验通过后执行，不是单个答案返回就立即改组。
 
-### 4.1 生产实例
+### 4.1 本次结果与历史例子分开看
 
-| 时间 / 证据 | 实际情况 | 结论 |
-| --- | --- | --- |
-| 11:00 P12/A9，9184/9185 | terra答错，peer_passed=0/no_passing_peer；sol通过 | 答案一错一对；处置整轮inconclusive，非两个模型都通过 |
-| 11:00 P16/A14，9182/9183 | 同样是terra无通过对照、sol通过 | 不新增确认降智，也不恢复整个规则 |
-| 10:30 P16/A14，9159/9160 | 两模型正确，动作restore_conflict | 答题通过，恢复未完成，不代表全部恢复 |
-| 11:00 P14/A12、P15/A13 | 单模型本轮passed | 调度开关仍false；检测不替管理员打开停调 |
-| P13/A10 | 保存移出G2的所有权，当前无关联 | 按ID的复测仍继续 |
+本次16:30样本中P12/A9结果15435、P13/A10结果15437、P15/A13结果15443等动作均为`inconclusive`，部分无判题verdict，不能据`failed`反推所有模型答错。移出G2的A10仍有按ID计划，复测不因移组消失。
 
-当前有质量所有权的规则为P12/P13/P16；A9/A14又在G2中，历史所有权与外部关联需对账，不能由当前关系倒推全部历史原因。
+11/20的P12/P16“一个模型通过、另一个无通过对照”及P16“答题通过但restore_conflict”保留为历史诊断例，不是11/25实时冲突计数。当前仍有P12/P13/P16质量状态记录，但本次未完整重读它们拥有的关系差量，不宣称恢复完成。
 
-**风险不等于宣称当前没有判题账号。** A9/A14开调度且声明支持terra，通常互为候选，但仍受容量和隔离等约束；若两者都被移组/停调，判题失去来源。应使用不在本产品移组目标中的独立参考池，本轮没有创建它。随机题本地生成参考答案后，仍调用配置LLM比较答案，不是纯本地判分。
+G2仍是规则保存的判题来源和移组目标，存在循环依赖风险；这不等于断言此刻没有判题账号。A9/A14能否互为参考还受模型、资格和容量影响；同地址或另建一组也不证明参考独立。随机题本地生成参考后仍调用配置LLM判分，答对不认证模型身份。
 
 ## 5. 用户请求如何放行、等待与切换
 
 ```mermaid
 flowchart TD
   REQ["K1：G2/模型/effort/协议/会话"] --> AUTH["鉴权、余额配额、组权限与能力检查"]
-  AUTH --> PRICE["固定本次售价时刻<br/>D=0.20；利润门关"]
+  AUTH --> PRICE["固定本次售价时刻<br/>组默认D=0.20；利润门关"]
   PRICE --> ELIG["当前G2资格<br/>状态/开关/限流/冷却/模型隔离<br/>主要开启者A9、A14"]
   ELIG --> OWNER{"会话或数据归属？"}
   OWNER -- "原线路合格兼容" --> STICKY["优先原账号，保护缓存连续性"]
@@ -157,10 +153,10 @@ flowchart TD
   CAP -- "否" --> WAIT["有界等待<br/>黏性配置120s / fallback30s<br/>Key队列30s，非一律相加"]
   WAIT -- "取得槽位并终检通过" --> SEND
   WAIT -- "超时 / 取消 / 资格变化" --> RETRY
-  CAP -- "是" --> SEND["终检后发往上游<br/>OpenAI响应头超时配置20s"]
+  CAP -- "是" --> SEND["终检后发往上游<br/>响应头受有效配置控制<br/>环境20s，后台覆盖待复核"]
   SEND --> FIN{"完整完成？"}
   FIN -- "是" --> BILL["按实际结果与usage入账<br/>保存观测，延续有效粘性"]
-  FIN -- "否" --> RETRY{"可重试、未提交下游输出<br/>未取消、有预算、归属允许？"}
+  FIN -- "否" --> RETRY{"原规则允许重试？<br/>核对提交/幂等/输出、取消、预算和归属"}
   RETRY -- "是" --> EX["排除失败候选 / 受限重试"]
   EX --> ELIG
   RETRY -- "否" --> STOP
@@ -169,9 +165,9 @@ flowchart TD
 
 这是OpenAI文本主链逻辑视图，不承诺HTTP/WS/媒体内部步骤相同。归属未知按已选兼容策略透传，只拦截有证据的跨线数据；未知透传不保证换线成功。HTTP200不等于SSE完整完成，已输出后的断流不透明拼接重试。
 
-20秒是响应头限制，不是首文本SLA或请求总上限。黏性满槽可先等120秒，重试继续耗时。诊断应合并展示“已等多久、在等什么、剩余预算、为何不切换”，而非让管理员分别猜超时。
+**多个配置层是当前心智负担的一部分。** 本次环境值是响应头20s、粘性120s、fallback30s、Key队列30s。11/22发布后验另确认后台响应头覆盖60s，普通/高推理首输出120/300s；本次补充重读遇SSH超时，20s只称环境值，不称最终生效值。产品应统一显示有效值、来源、当前等待阶段及剩余预算，而不是让管理员分别猜；响应头限制不是首文本SLA，也不是所有阶段一律相加。
 
-近24小时留存日志中，无账号归属的一类503在一次查询中有503条，后一次为504条；另有A9/A14归属的502及HTTP200内错误。查询时点不同，且日志不是完整冻结请求全集，不直接相加计算失败率，也不凭状态码认定都是队列问题；需请求ID与尝试链关联后定责。
+已提交请求的重放还受提交状态、幂等与重复计费保护，不能只看“还没输出”就承诺可换账号。原11/20错误数量不沿用为当前失败率；需请求ID与尝试链关联后定责，200也不等于流完整完成。
 
 ## 6. 倍率、利润门与报表
 
@@ -183,13 +179,13 @@ flowchart TD
   SNAP --> SYNC{"另开账号倍率同步？"}
   SYNC -- "开且证据有效" --> U["准入/账号统计倍率U<br/>accounts.rate_multiplier"]
   MANUAL["手工账号倍率"] --> U
-  D["G2售价 + 用户覆盖 + 高峰<br/>本次D=0.20"] --> GATE["利润门<br/>U ≤ D × (1 - margin - buffer)"]
+  D["G2售价 + 用户覆盖 + 高峰<br/>组默认D=0.20"] --> GATE["利润门<br/>U ≤ D × (1 - margin - buffer)"]
   U --> GATE
   GATE -. "当前关闭，不做该价格过滤" .-> BIZ["业务选路"]
   BIZ --> USAGE["usage_logs<br/>基数total_cost / 扣费actual_cost"]
   USAGE --> REPORT["只读利润报表<br/>估算成本=total_cost×当前C<br/>估算利润=actual_cost减估算成本"]
   C --> REPORT
-  CAUTION["A9/A14：U=1.00，C=0.10<br/>直接启门会因1.00大于0.20全排除"] -. "先预演，不直接开关" .-> GATE
+  CAUTION["A9/A14：U=1.00，C=0.10<br/>按默认0.20且无覆盖预演会全排除"] -. "先预演，不直接开关" .-> GATE
 ```
 
 - **采购声明倍率**：特定Key/固定组的声明，带来源、期限、模型/服务档；不是已核对的实际结算价。
@@ -197,7 +193,7 @@ flowchart TD
 - **估算C**：报表使用，缺失默认0.10；默认不能包装成已确认价格。当前报表按当前C计算，不是历史逐请求采购价快照。
 - **销售D**：本次固定的销售规则，不随换账号改变；actual_cost为保存的扣费，订阅扣费也不自动等于现金收入。
 
-实时文本利润门公式为 `U ≤ D × (1 - profit_min_margin - profit_safety_buffer)`。上游声明0须核对语义，404只说明元数据接口不支持；不等于模型不能用。真实采购价重构继续延期，高缓存不用于绕过既定倍率上限。
+实时文本利润门公式为 `U ≤ D × (1 - profit_min_margin - profit_safety_buffer)`。显式0须核对语义，404只说明元数据接口不支持；不等于模型不能用。真实采购价重构继续延期，高缓存不用于绕过既定倍率上限。
 
 独立图片/视频、Grok媒体、count_tokens、live不直接套用此文本门；混合Responses的token计费部分仍受保护。报表查询的5分钟预算不是上游响应超时。
 
@@ -205,16 +201,16 @@ flowchart TD
 
 ### 7.1 实际用量示例
 
-11:30左右读取近24小时usage_logs；跨effort/协议混合，仅解释现状，不作为严格线路比较。
+本次16:47–16:48读取近24小时留存usage，混合effort/协议，仅解释现状，不作为严格线路比较。首Token均值不是首非空文本或P95。
 
-| 本系统账号 / 模型 | 账单记录数 | 归一化Token读取率 | 保存的平均首Token |
+| 本系统账号 / 模型 | 用量行数 | 归一化Token读取率 | 保存的平均首Token |
 | --- | ---: | ---: | ---: |
-| A14 / gpt-6.1-sol | 3835 | 96.34% | 15.52s |
-| A9 / gpt-6.1-sol | 2664 | 96.51% | 17.48s |
-| A9 / gpt-6.2-sol | 79 | 92.05% | 15.77s |
-| A14 / gpt-6.2-sol | 4 | 49.67% | 18.09s，低样本 |
+| A14 / gpt-6.2-sol | 1434 | 98.32% | 14.25s |
+| A9 / gpt-6.1-sol | 453 | 95.12% | 17.66s |
+| A14 / gpt-6.1-sol | 323 | 97.71% | 19.29s |
+| A9 / gpt-6.2-sol | 225 | 97.08% | 15.67s |
 
-共6582条，Token加权读取率约96.37%。这不是供应商全站统计，也不是每个新会话的热缓存保证；百分比不算术平均。高缓存与慢首字可同时存在。
+共2435条用量记录；下游K1/G2分别有1659条6.2-sol、776条6.1-sol。不是供应商全站统计，也不是每个新会话热缓存保证；高缓存与慢首字可以并存，不能平均各线路百分比。
 
 | 面向谁 | 正确范围 | 当前边界 |
 | --- | --- | --- |
@@ -255,38 +251,52 @@ flowchart TD
 | `/admin/channels/monitor`、`/monitor` | 展示健康阈值不等于隔离阈值 |
 | `/admin/priority-scheduling` | 页面存在不等于启用；评分不授予资格 |
 | `/admin/channel-operations` | 原运维总览；地址桶不是业务渠道或故障域 |
-| `/admin/upstream-channels`、`/admin/profit-operations` | 当前1个实体、仅A1绑定；其余按地址只读归类；并非模型价卡渠道 |
+| `/admin/upstream-channels`、`/admin/profit-operations` | 11/20为1个实体且仅A1绑定；本次待重读；其余按地址只读归类；并非模型价卡渠道 |
 | `/admin/group-cache-tests`、`/admin/pelican-tests` | 端到端抽样/展示，可计费，不是逐Key全覆盖认证 |
 
 根因是**业务对象、证据范围与写入所有权交叉**；把原表单折叠到同一页仍需记住同样多的依赖。
 
-## 9. 优化方向与交付边界
+## 9. 产品化方向与交付边界
 
-统一方案见[主设计§12.1](monitor-driven-scheduling-design.md#121-低心智配置与上游监控面板提案)：一条供应记录、一个产品策略、一份可解释准入结果；各检测器只产证据，一个拥有者维护受管关系；三步配置，日常只处理异常。
+统一方案见[主设计§12.1.9产品化体验合同](monitor-driven-scheduling-design.md#1219-产品化体验合同2026-11-25)：**一个经营台，四个业务视图；定义产品→选供应→确认供给方案，日常只处理例外。**
 
-本轮是事实核查与设计，不是已上线的新后台。原28项仍20done/8部分，D3/D4/D5/D6/D7/D8的生产及外部验收不因画图关闭。
+| 用户办什么事 | 生产.9已有 | 开发分支已有切片 | 仍待完成的产品结果 |
+| --- | --- | --- | --- |
+| 接一条供应 | 原账号、倍率探测、分组、利润报表 | 批准来源/采购区间、精确预演、逐门解释 | 一次接入流程，只补真正缺项；价格冲突直接可见 |
+| 开一个产品 | 原销售组，G2利润门关 | 原Group模板、接管审核、部分计划配方 | 三步建产品→预览影响→确认→独立读回，完整自动维护 |
+| 看懂质量 | 原答题/判题/同题对照与恢复 | 依赖诊断、独立多维证据 | 身份和功能分开、上游范围清楚、结论到操作闭环 |
+| 稳定接单 | 原粘性、健康保护、.9提交边界 | 部分资格与缓存通路本地已验 | 严格产品完整资格消费、全scope与多Key用户隔离 |
+| 日常少操心 | 原运维/质量/利润分散页面 | 原运维页含产品影响、采购目录组件 | 经营摘要、线路详情、按根因归并异常、最短处理入口 |
+
+开发`UpstreamChannelOperationsView.vue`仍挂载`UpstreamAnalytics`；已有预演组件不等于默认页面已替人完成经营判断。方案复用原账号、Group、检查和调度；不再增一套库存/评分器/选路器。工程约束下钻，首层用业务文案。
+
+本轮交付现状图、目标业务图、可点击离线体验草图与用户旅程验收；不修改业务代码或生产配置。原28项仍20done/8部分，完整产品、独立身份/缓存域与原生产验收没有借画图关闭。
 
 ## 10. 证据与源码
 
-本地最小证据：`H:/Root/DevCache/evidence/sub2api-production-flow-review/snapshot.json`，只有白名单状态、ID、模型及聚合数，无Key/地址/登录响应/原始正文。只读事务限时8秒，保留SSH主机校验；一次Paramiko EOF切到原生SSH，一次本地解码错误未算成功采集。
+当前最小证据：`H:/Root/DevCache/evidence/sub2api-production-flow-review/product-review-snapshot.json`，只含白名单ID、配置和聚合，无Key值/地址/登录响应/正文。SQL显式只读、单条8秒上限。旧`snapshot.json`只用于历史差异，不能替代本次数据。
+
+首次读取暴露旧标量列`model_allowlist_enabled`已不存在，改读实际JSON列后成功。后续补充查询遇原生SSH超时与Paramiko开通道超时；无关闭主机校验或无限重试。分组鹈鹕周期、准入倍率同步开关、最终有效超时与实体绑定标本次待重读，不以旧配置冒充当前观测。
+
+生产固定源码`de8b86ed8916`；开发核对基线`daeca7be1`。当前源码对比显示.8→.9未修改本文主要质量/倍率/利润机制，但请求提交边界不能沿用旧版描述。下面的链接均固定生产源码，不指向移动HEAD。
 
 源码固定到上述发行提交，不能用开发HEAD替代：
 
 | 对象 | 源码 |
 | --- | --- |
-| 整轮归约 | [account_quality.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/account_quality.go#L234) |
-| 判题来源/超时 | [quality_judge.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/quality_judge.go#L56) |
-| 同题对照 | [quality_shared_batch.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/quality_shared_batch.go#L150) |
-| 答题到判题 | [pelican_scheduled.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/pelican_scheduled.go#L490) |
-| 可用期限 | [availability_policy.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/availability_policy.go#L31) |
-| 基础选路 | [openai_gateway_scheduling.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/openai_gateway_scheduling.go#L1206) |
-| 累计保护分类 | [openai_apikey_health_breaker.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/openai_apikey_health_breaker.go#L22) |
-| 利润准入 | [openai_profit_control.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/openai_profit_control.go#L8) |
-| 报表成本/默认 | [account_cost.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/account_cost.go#L10)、[profit_operations.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/profit_operations.go) |
-| 倍率探测 | [upstream_billing_probe.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/upstream_billing_probe.go#L35) |
-| 缓存归一化公式 | [channel_monitor_v2_repo.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/repository/channel_monitor_v2_repo.go#L1440) |
-| 性能暂停 | [account_performance.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/account_performance.go#L38) |
-| 默认评分关闭 | [priority_scheduling.go](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/backend/internal/service/priority_scheduling.go#L57) |
-| 后台路由 | [router/index.ts](https://github.com/a5116107/ransub2api/blob/1171780c7fc5e38def77dba160ac570a827a45bf/frontend/src/router/index.ts) |
+| 整轮归约 | [account_quality.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/account_quality.go) |
+| 判题来源/超时 | [quality_judge.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/quality_judge.go) |
+| 同题对照 | [quality_shared_batch.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/quality_shared_batch.go) |
+| 答题到判题 | [pelican_scheduled.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/pelican_scheduled.go) |
+| 可用期限 | [availability_policy.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/availability_policy.go) |
+| 基础选路 | [openai_gateway_scheduling.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/openai_gateway_scheduling.go) |
+| 累计保护分类 | [openai_apikey_health_breaker.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/openai_apikey_health_breaker.go) |
+| 利润准入 | [openai_profit_control.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/openai_profit_control.go) |
+| 报表成本/默认 | [account_cost.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/account_cost.go)、[profit_operations.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/profit_operations.go) |
+| 倍率探测 | [upstream_billing_probe.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/upstream_billing_probe.go) |
+| 缓存归一化公式 | [channel_monitor_v2_repo.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/repository/channel_monitor_v2_repo.go) |
+| 性能暂停 | [account_performance.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/account_performance.go) |
+| 默认评分关闭 | [priority_scheduling.go](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/backend/internal/service/priority_scheduling.go) |
+| 后台路由 | [router/index.ts](https://github.com/a5116107/ransub2api/blob/de8b86ed8916c012f5421cc00c4fdd97eec8d6f3/frontend/src/router/index.ts) |
 
 源码证明机制存在，不单独证明已启用、模型真实或供应商兑现价格/缓存承诺。留存数据和本次只读查询也不替代故障会话的完整生产验收。

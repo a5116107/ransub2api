@@ -4769,3 +4769,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 终稿go vet -tags unit,integration -p 1和golangci-lint-v2.15.0 run --fast-only --build-tags unit,integration --new-from-rev=5a4ce1858 --timeout 5m对service/repository/admin/cmd/server退出0，lint=0 issues。发现旧共享frontend-overlay仍有156个失效映射，首次用该旧overlay的Linux编译只作编译证据，不当本轮UI打包证明；未改受保护旧路径。在唯一任务scratch生成匹配当前原构建的overlay，go list实证254构建文件=254embed、missing/stale均0，再以GOOS=linux/GOARCH=amd64/CGO0执行 `go build -p 1 -tags embed -overlay H:/Root/DevCache/tmp/sub2api-go/group-priority/frontend-overlay.json -o NUL ./cmd/server` 退出0。终稿24个backend/frontend输入路径+NUL+LF内容SHA256为aaf2a4f4b1781b33253f72ffedcfb17160e205488143835ac44cb0f095825eaa；清单及原始命令沿H:/Root/DevCache/evidence/sub2api-billing-applicability/group-priority-*，不创建新依赖/缓存/发行制品。
 - 资源与清理：全部测试/独立子进程、临时PG/Redis/Ryuk及任务Edge/静态服务已退出回收，未触碰旧容器/服务。原Go中间树自然回收，唯一任务scratch H:/Root/DevCache/tmp/sub2api-go/group-priority剩2文件2838271B（本次overlay和browser源，最小browser复现已保留证据目录），0活跃、无reparse/目标严格位于命名父目录；原生PowerShell Remove-Item删除命令在启动前被工具策略拒绝，未实际删除，不换工具/移动绕过或声称磁盘已释放。由宿主维护者解除该精确路径的执行层限制后回收；历史12图1164B和probe-priority/overlay/v1-config-sync/group-turns/cn-priority受限项原位保护、不纳入Git或ignore。未新增clone/worktree/第二实现/TODO/FIXME/XXX，旧map目标签名和旧ClaimProbe签名零引用。
 - STATE/唯一设计原位更新且不增加分母；最终Git核对任务提交和自有远端tip，production稳定线不动。本项关闭原D8.1的V2/V3本地原时钟/归属/必要复核子缺口，不关闭完整scope/覆盖编译、跨通道长期份额、供应商真实来源/独立基线/缓存域、完整资格、严格混版D8.2或生产。回退本次应用需统一排空；可保留356列/索引、历史/账本和已消费采购不回滚；撤列会丢配置归属但不删除原结果，已由私库验明。旧版不认识预算/队列时不称严格混版通过。
+
+
+## 2026-11-25 D7.4：产品化经营台设计，保持只读边界
+
+- 用户要求基于源码及生产实际上下游/配置梳理监测、检测、验真、利润和后台操作，并明确“产品化，而非工程化”。本轮交付现状/目标图与可点击离线体验草图，不改业务代码、配置，不触发付费检查/CI/发布/部署；新产品体验合同待讨论确认，原已授权切片及父项状态保持。
+- 已读生产.9/de8b86ed8916，镜像bfea56342282、实际程序c8cec584a181；2026-11-25 16:47–16:48快照16账号、A9/A14开启、K1/G2、默认售价0.20和价格门关。两主力U1.00/C0.10；14质量+4连通计划，V2健康显示与实际准入分开。近24h2435用量行、对应模型缓存95.12%–98.32%且平均首Token14.25–19.29秒，不据此认证身份、完整完成率或首文本SLA。
+- 原图册原位刷新，移除15账号/旧倍率/旧统计冒充当前的内容；13张图含6现状、4业务目标、3按需技术图。主设计12.1.9为唯一产品体验合同，HTML按该文档与脱敏快照生成，工程实现切片折叠，默认经营概览/供应线路/销售产品/待处理。配置改为“我要卖什么→用哪些上游→确认供给方案”，结论→原因→影响→操作；具体价格、质量/身份、缓存和恢复语义不因页面简化而合并或绕过。
+- 原生产规则、手动停调、关系拥有者和数据归属保持。完整自动资格、受管关系维护、独立模型/缓存证据和多Key用户旅程未验，不将开发HEAD daeca7be1能力算生产生效。D7.4原任务中细化用户办成验收，原28项20done/8部分不增减。
+- 首次SQL读到已不存在的标量model_allowlist_enabled失败，改读实际JSON后完成主快照。补充读同步开关/鹈鹕计划/有效超时/业务实体绑定遇原生SSH超时及Paramiko通道超时，停止等价尝试；初次同步读取错字段的null已撤出证据，不当false。环境响应头20s不是当前最终生效值，11/22后验60s与首输出120/300只作历史配置，未重读项明确保留。
+- render-docs.py真实渲染13 SVG，语法错误/坏内链/页面错误0，HTML可离线且无外部脚本；Edge1440/390共30项交互通过，0页面错误/网络请求。覆盖模型/产品范围切换、无来源不借G2、线路详情与键盘焦点、价格/判题影响、三步草稿错误/空来源/未齐前置、加载/空/错误/重试、窄屏及图导航。仅验证设计草图，不冒充生产持久保存或真实运营人员可用性测试。真实用户操作成本与整体验收仍待实施观察。
+- 15个固定生产源码链接用git cat-file逐项验存在；git diff --check与STATE边界核对。证据复用H:/Root/DevCache/evidence/sub2api-production-flow-review/product-review-snapshot.json、render-verification.json与product-experience-browser.json；脱敏不含Key值/原站点/登录响应/用户正文。已有data和历史拒删资源不触碰。
