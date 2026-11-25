@@ -252,18 +252,22 @@ func (s *ScheduledTestRunnerService) startQualityTriggers() {
 					defer func() { <-slots; active.Delete(id) }()
 					runCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
 					defer cancel()
-					if err := s.runQualityTriggeredAccount(runCtx, id, entry.ObservedAt); err != nil {
-						return
-					}
-					if runCtx.Err() != nil {
-						return
-					}
-					// Do not remove a newer signal that arrived after queue expiry.
-					_ = queue.Acknowledge(runCtx, entry)
+					_ = s.runQualityTrigger(runCtx, entry)
 				}(id, entry)
 			}
 		}
 	}()
+}
+
+func (s *ScheduledTestRunnerService) runQualityTrigger(ctx context.Context, entry qualityqueue.Signal) error {
+	if err := s.runQualityTriggeredAccount(ctx, entry.AccountID, entry.ObservedAt); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Do not remove a newer signal that arrived after queue expiry.
+	return s.qualityTrigger.queue.Acknowledge(ctx, entry)
 }
 
 func (s *ScheduledTestRunnerService) runQualityTriggeredAccount(ctx context.Context, accountID int64, observedAt time.Time) error {
@@ -440,7 +444,7 @@ func quality5xxTestConfig(account *Account, model string, cfg PelicanTestConfig)
 		return cfg, cfg.Quality != nil && cfg.Quality.TriggerOnUpstream5xx && !cfg.BPSRecoveryPending
 	}
 	cfg.ParallelCount = 1
-	if cfg.QuestionKind == QualityRandomQuestionKind {
+	if cfg.QuestionKind == QualityRandomQuestionKind || cfg.QuestionKind == QualityCialloQuestionKind {
 		// Preserve the configured external judge. Never substitute the public
 		// fixed candy answer or bypass judging for a random reasoning rule.
 		return cfg, !cfg.BPSRecoveryPending

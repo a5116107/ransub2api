@@ -418,12 +418,8 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 // Capacity exhaustion returns Acquired=false; the caller owns any waiting.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int) (*AcquireResult, error) {
-	// If maxConcurrency is 0 or negative, no limit
 	if maxConcurrency <= 0 {
-		return &AcquireResult{
-			Acquired:    true,
-			ReleaseFunc: func() {}, // no-op
-		}, nil
+		return s.trackUnlimitedUserSlot(ctx, userID), nil
 	}
 
 	// Generate unique request ID for this slot
@@ -461,6 +457,44 @@ func releaseConcurrencySlot(ctx context.Context, dimension string, ownerID int64
 	if err := release(releaseCtx, ownerID, requestID); err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: failed to release %s slot for %d (req=%s): %v", dimension, ownerID, requestID, err)
 	}
+}
+
+// UserSlotTracker records unlimited users in the existing concurrency set.
+// It has no admission authority and must never reject a business request.
+type UserSlotTracker interface {
+	TrackUserSlot(context.Context, int64, string) error
+	ReleaseTrackedUserSlot(context.Context, int64, string) error
+}
+
+func (s *ConcurrencyService) trackUnlimitedUserSlot(ctx context.Context, userID int64) *AcquireResult {
+	result := &AcquireResult{Acquired: true, ReleaseFunc: func() {}}
+	if s == nil || s.cache == nil || userID <= 0 {
+		return result
+	}
+	tracker, ok := s.cache.(UserSlotTracker)
+	if !ok {
+		return result
+	}
+	requestID := generateRequestID()
+	trackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	err := tracker.TrackUserSlot(trackCtx, userID, requestID)
+	cancel()
+	if err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: failed to track user slot for %d: %v", userID, err)
+	}
+	// Release even after a timeout: Redis may have accepted the write.
+	var once sync.Once
+	result.RequestID = requestID
+	result.ReleaseFunc = func() {
+		once.Do(func() {
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancel()
+			if err := tracker.ReleaseTrackedUserSlot(releaseCtx, userID, requestID); err != nil {
+				logger.LegacyPrintf("service.concurrency", "Warning: failed to release tracked user slot for %d: %v", userID, err)
+			}
+		})
+	}
+	return result
 }
 
 // APIKeySlotAdmissionCache adds atomic admission to the shared statistics set.

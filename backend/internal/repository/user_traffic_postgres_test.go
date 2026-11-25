@@ -65,6 +65,18 @@ func TestTrafficPostgresIdempotencyIsolationAndCalendarBuckets(t *testing.T) {
 	e := service.TrafficEvent{EventID: uuid.NewString(), UserID: 1, APIKeyID: 2, GroupID: 3, RequestID: "same", Endpoint: "/v1/messages", Method: "POST", StartedAt: start.Add(5 * time.Minute), FinishedAt: start.Add(6 * time.Minute), UploadBytes: 100, DownloadBytes: 200, StatusCode: 200, Outcome: "completed", RequestComplete: true, MeasurementVersion: 1}
 	require.NoError(t, repo.RecordTraffic(ctx, e))
 	require.NoError(t, repo.RecordTraffic(ctx, e))
+	retention, err := os.ReadFile("../../migrations/398_drop_user_traffic.sql")
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, err = db.ExecContext(ctx, string(retention))
+		require.NoError(t, err)
+		var raw, hourly int
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM user_traffic_events").Scan(&raw))
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM user_traffic_hourly").Scan(&hourly))
+		require.Equal(t, 1, raw, "upgrade must retain raw history")
+		require.Equal(t, 1, hourly, "upgrade must retain aggregated history")
+	}
+
 	// Opposite sides of a non-whole-hour midnight must land on different days.
 	e2 := e
 	e2.EventID = uuid.NewString()

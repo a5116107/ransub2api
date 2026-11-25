@@ -25,6 +25,7 @@ const (
 // new-request stops. A stopped owner is rejected rather than reassigned.
 // Account eligibility, continuity, profit gates and concurrency acquisition stay authoritative.
 type PrioritySchedulingConfig struct {
+	CacheWeight                float64  `json:"cache_weight"`
 	ErrorRateWeight            float64  `json:"error_rate_weight"`
 	ErrorRateWindowMinutes     int      `json:"error_rate_window_minutes"`
 	ErrorRatePriorSamples      int      `json:"error_rate_prior_samples"`
@@ -103,7 +104,7 @@ func ValidatePrioritySchedulingConfig(c PrioritySchedulingConfig) error {
 		}
 	}
 	sum := 0.0
-	for _, w := range []float64{c.QualityWeight, c.LatencyWeight, c.LoadWeight, c.CostWeight} {
+	for _, w := range []float64{c.QualityWeight, c.LatencyWeight, c.LoadWeight, c.CostWeight, c.CacheWeight} {
 		if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 || w > 100 {
 			return errors.New("weights must be between 0 and 100")
 		}
@@ -193,6 +194,8 @@ func (s *SettingService) SavePrioritySchedulingConfig(ctx context.Context, c *Pr
 			previous = raw
 			for _, field := range preserve {
 				switch field {
+				case "cache_weight":
+					committed.CacheWeight = current.CacheWeight
 				case "target_tps":
 					committed.TargetTPS = current.TargetTPS
 				case "error_rate_weight":
@@ -506,9 +509,18 @@ func scorePriorityCandidate(c PrioritySchedulingConfig, item openAIAccountCandid
 		out.EconomicsSource = "unknown"
 		out.Reasons = append(out.Reasons, "profit_insufficient")
 	}
+	cache := 0.5
+	if c.CacheWeight > 0 {
+		if metrics != nil && metrics.CacheSamples >= c.MinSamples && validPerformanceMetric(metrics.AvgCachePercent) && *metrics.AvgCachePercent <= 100 {
+			cache = *metrics.AvgCachePercent / 100
+		} else {
+			unknown = true
+			out.Reasons = append(out.Reasons, "cache_insufficient")
+		}
+	}
 	w := c.weights()
-	sum := w[0] + w[1] + w[2] + w[3]
-	out.BaseScore = 100 * (w[0]*quality + w[1]*latency + w[2]*throughput + w[3]*cost) / sum
+	sum := w[0] + w[1] + w[2] + w[3] + c.CacheWeight
+	out.BaseScore = 100 * (w[0]*quality + w[1]*latency + w[2]*throughput + w[3]*cost + c.CacheWeight*cache) / sum
 	out.ErrorPenalty = 1
 	if metrics != nil {
 		if rate := performanceUpstreamErrorRate(metrics.UpstreamError); rate != nil {

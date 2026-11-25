@@ -48,7 +48,7 @@ func TestNewAPIAuthorizationSaveUsesEffectiveProtocolSite(t *testing.T) {
 				mock.ExpectQuery("INSERT INTO new_api_site_authorizations").WithArgs(site, int64(7), "encrypted").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(11)))
 				mock.ExpectQuery("UPDATE accounts a SET extra").WithArgs(int64(11)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 				mock.ExpectExec("INSERT INTO new_api_account_bindings").WithArgs(int64(1), int64(11), int64(3), service.NewAPIAccountFingerprint(account), "vip").WillReturnResult(sqlmock.NewResult(1, 1))
-				mock.ExpectExec("UPDATE accounts SET extra").WithArgs(int64(1), site, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("UPDATE accounts SET extra").WithArgs(int64(1), site, int64(7), "{}").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("INSERT INTO scheduler_outbox").WithArgs(service.SchedulerOutboxEventAccountChanged, int64(1), nil, nil, sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectCommit()
 			} else {

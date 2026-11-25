@@ -55,7 +55,7 @@ func TestMessagesTimingForwardOutcome(t *testing.T) {
 				parsed = nil
 			}
 			result, err := svc.Forward(req.Context(), c, account, parsed)
-			if ending == "eof" || ending == "invalid_request" {
+			if ending == "eof" || ending == "invalid_request" || ending == "disconnected" {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
@@ -152,7 +152,7 @@ func TestMessagesTimingLoopback(t *testing.T) {
 				} else {
 					result, err = svc.handleStreamingResponse(ctx, resp, c, account, time.Now(), "fixture", "fixture", false)
 				}
-				if ending == "error" || ending == "eof" || (ending == "write_error" && !passthrough) {
+				if ending == "error" || ending == "eof" || ending == "write_error" || ending == "terminal_only" || ending == "event_fallback" || ending == "capture_gap" || ending == "done_marker" {
 					require.Error(t, err)
 				} else {
 					require.NoError(t, err)
@@ -188,7 +188,7 @@ func TestMessagesTimingLoopback(t *testing.T) {
 						require.Equal(t, "typed_messages_sse", v.TextStream.Source)
 						require.Equal(t, 2, *v.TextStream.Chunks)
 						require.GreaterOrEqual(t, *v.TextStream.MaxGapMS, 50.0)
-						if ending == "error" || ending == "eof" || ending == "done_marker" {
+						if ending == "error" || ending == "eof" || ending == "done_marker" || ending == "event_fallback" {
 							require.Equal(t, "partial", v.TextStream.Status)
 						} else {
 							require.Equal(t, "observed", v.TextStream.Status)
@@ -196,7 +196,7 @@ func TestMessagesTimingLoopback(t *testing.T) {
 						}
 					}
 					require.Nil(t, v.OutputRate.TokensPerSecond)
-					if ending == "completed" || ending == "event_fallback" || ending == "terminal_only" {
+					if ending == "completed" {
 						require.Equal(t, "observed", v.Cache.Status)
 						require.Equal(t, "canonical_messages_cumulative_usage", v.Cache.Source)
 						require.EqualValues(t, 60, *v.Cache.InputTokens)
@@ -216,8 +216,13 @@ func TestMessagesTimingLoopback(t *testing.T) {
 					require.Equal(t, 120, result.usage.OutputTokens)
 					require.Equal(t, 30, result.usage.CacheReadInputTokens)
 					require.Equal(t, 20, result.usage.CacheCreationInputTokens)
-					require.NotNil(t, result.firstTokenMs)
-					require.Contains(t, recorder.Body.String(), `"type":"message_stop"`)
+					if ending == "terminal_only" {
+						require.Nil(t, result.firstTokenMs, "terminal-only traffic is not a first token")
+						require.NotContains(t, recorder.Body.String(), `"type":"message_stop"`)
+					} else {
+						require.NotNil(t, result.firstTokenMs)
+						require.Contains(t, recorder.Body.String(), `"type":"message_stop"`)
+					}
 				}
 			})
 		}
@@ -344,7 +349,7 @@ func TestMessagesTimingNativeProviderCanonicalWire(t *testing.T) {
 				require.NoError(t, parseErr)
 				svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), rateLimitService: &RateLimitService{}, httpUpstream: antigravityTimingHTTPUpstream{client: server.Client(), target: target}}
 				result, err := svc.ForwardAsAnthropic(c.Request.Context(), c, account, body, "", "")
-				if ending == "eof" {
+				if ending == "eof" || ending == "late_error" || (ending == "write_error" && stream) {
 					require.Error(t, err)
 				} else {
 					require.NoError(t, err)
@@ -407,13 +412,13 @@ func TestMessagesTimingBridges(t *testing.T) {
 						send("ping", `{"type":"ping"}`)
 						send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" last"}}`)
 						send("content_block_stop", `{"type":"content_block_stop","index":0}`)
-						if ending == "done_marker" || ending == "finalize_write_error" {
+						if ending == "done_marker" {
 							send("message_delta", `{"type":"message_delta","usage":{"output_tokens":120}}`)
 							_, _ = io.WriteString(w, "data: [DONE]\n\n")
 						} else {
 							send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"`+stop+`"},"usage":{"output_tokens":120}}`)
 						}
-						if ending != "eof" && ending != "done_marker" && ending != "finalize_write_error" {
+						if ending != "eof" && ending != "done_marker" {
 							send("message_stop", `{"type":"message_stop"}`)
 						}
 						if ending == "late_error" {
@@ -496,10 +501,10 @@ func TestMessagesTimingBridges(t *testing.T) {
 							outputTokens, disconnected = result.Usage.OutputTokens, result.ClientDisconnect
 						}
 					}
-					if (ending == "idle_after_stop" && !anthropicPlatform) || (ending == "late_error" && anthropicPlatform && !stream) {
+					if ending != "complete" && ending != "max_tokens" && ending != "missing_read" && ending != "event_only_after_stop" && (ending != "canceled" || stream) {
 						require.Error(t, err)
 					} else {
-						require.NoError(t, err, "the original conversion/finalization contract remains unchanged")
+						require.NoError(t, err, "complete responses keep their conversion and usage contract")
 						require.True(t, hasResult)
 						require.Equal(t, 120, outputTokens)
 					}

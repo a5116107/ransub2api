@@ -357,7 +357,7 @@ describe('observer usage filters', () => {
   })
 })
 
-describe('UsageFilters — identity-only traffic filters', () => {
+describe('UsageFilters — user and API key filters', () => {
   let wrapper: ReturnType<typeof mount>
   beforeEach(() => {
     vi.useFakeTimers()
@@ -368,7 +368,7 @@ describe('UsageFilters — identity-only traffic filters', () => {
     ])
     mockSearchApiKeys.mockReset().mockResolvedValue([{ id: 10, name: 'First key' }])
     wrapper = mount(UsageFilters, {
-      props: { modelValue: defaultFilters(), identityOnly: true, showActions: false, exporting: false, startDate: '', endDate: '' },
+      props: { modelValue: defaultFilters(), showActions: false, exporting: false, startDate: '', endDate: '' },
     })
   })
   afterEach(() => { wrapper.unmount(); vi.useRealTimers() })
@@ -380,14 +380,6 @@ describe('UsageFilters — identity-only traffic filters', () => {
     await wrapper.findAll('button').find(button => button.text().includes(email))!.trigger('click')
     await flushPromises()
   }
-
-  it('renders only shared user/key searches without loading unrelated filter data', async () => {
-    await flushPromises()
-    expect(wrapper.findAll('input')).toHaveLength(2)
-    expect(wrapper.findAllComponents({ name: 'Select' })).toHaveLength(0)
-    expect(mockGroupsList).not.toHaveBeenCalled()
-    expect(wrapper.props('modelValue').start_date).toBe('')
-  })
 
   it('clears the selected key when changing users and loads the new user’s keys', async () => {
     await chooseUser('first@example.test')
@@ -438,5 +430,32 @@ describe('UsageFilters — identity-only traffic filters', () => {
     await input.trigger('focus')
     expect(wrapper.text()).not.toContain('Cleared key')
     expect(wrapper.props('modelValue').api_key_id).toBeUndefined()
+  })
+})
+
+describe('admin usage platform filter', () => {
+  it.each(['ranking', 'connections', 'latency'] as const)('keeps the platform selector out of %s', async mode => {
+    const wrapper = mountFilters(defaultFilters(), mode)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="usage-platform-filter"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not expose the admin platform filter in observer mode', async () => {
+    const wrapper = mount(UsageFilters, {
+      props: { modelValue: defaultFilters(), exporting: false, startDate: '', endDate: '' },
+      global: { provide: { [observerUsageContext as symbol]: true }, stubs: { Select: true } },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="usage-platform-filter"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it.each(['usage', 'errors'] as const)('offers the platform selector alongside the group filter in %s', async mode => {
+    const wrapper = mountFilters(defaultFilters(), mode)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="usage-platform-filter"]').exists(),
+      'admin usage details must offer a platform selector').toBe(true)
+    wrapper.unmount()
   })
 })

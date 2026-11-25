@@ -3,19 +3,23 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D9.1.9 Goal400定向热修复已发行/上线；不CI/不提升在研供应池。
-应用：.9/de8b86ed8916；程序c8cec584a181，镜像bfea56342282。
-验证：生产副本四阶段、排空升级/重建、16账号/2组/432迁移及PG/Redis保持。
-公网Goal同例2.891秒完成/唯一用量；账号7的429已切16，79秒唯一用量。
-配置：用户批准首输出120秒/high300秒、最多换线1次；60秒头等待/5-3-1保持。
-证据：codex-goal-context；稳定首输出27顶层/29含子例、零fail/skip。
-仍待原Mac旧会话与BPS长流故障；上游约900秒后发upstream_timeout。
-原28项20done/8部分；历史data/拒删及在研边界保持。
+D8/D9集成v2.25.0；保留历史流量/余额预测/旧守护打票，不CI、不提升在研供应池。
+唯一integration/upstream-stable；HEAD e16505d58/MERGE_HEAD fd354ef87；114冲突已解未提交。
+生产.9/de8b86ed8916，实载c8cec584a18135fe；PG/Redis原ID已核，15GB/5.9GB可用。
+UI652文件6790pass/53原skip，类型/构建通过；ESLint唯一警告修后5pass。
+PG14流量历史/幂等+共享Redis3pass；forecast/coupon SQL25pass；审核共享Key5pass。
+保留race1165pass/6缺DB skip，SQL另已补；两个Windows权限同例Linux非root通过。
+已补预测退出/wire、分组夹具/Redis、HTTP与WS恢复后的归属刷新、bridge未发送交接。
+bridge原2失败场景现4pass；native显式指针不再被自动丢弃；所有临时诊断已删。
+指纹库CRLF致SHA变更已定位并以精确LF属性修复；时序零毫秒断言修复，专项race退出0。
+当前73238全core、19316不限量增量lint运行中；证据flow-review/upstream-225-*。
+下一步收敛这两项及必要race→提交候选→副本升级回退→PR/发布/排空上线，保留回滚。
+原28项20done/8部分；外部契约/非文本/缓存净收益保持；历史data与拒删scratch保留。
 <!-- resume:end -->
 
 ## 目标与入口
 
-更新日期：2026-11-22。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
+更新日期：2026-11-26。倍率范围内多供应商自动调度，保护质量、完整响应体验与会话缓存，便于同步原仓库。
 - [唯一设计与任务定义](monitor-driven-scheduling-design.md)
 - [追加式决策与验证历史](DECISIONS.md)
 - 保留自研与自有渠道；本轮授权最新版本合并/发行/上线，不CI；真实采购价不做。
@@ -63,7 +67,7 @@
 
 ## 下一项工作
 
-原28项20 done、8部分（D2–D9）。生产/自有latest均.9/de8b86ed8916；120/300首输出、60秒头等待、5/3/1及人工停调保持。上游v2.21.5/PR#3冲突与原外部验收保留，不提升在研供应池。
+原28项20 done、8部分（D2–D9）。生产/自有latest均.9/de8b86ed8916；120/300首输出、60秒头等待、5/3/1及人工停调保持。上游v2.25.0集成/PR冲突与原外部验收保留，不提升在研供应池。
 
 ## 外部等待与清理
 
@@ -74,5 +78,5 @@
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
 - Windows完整repository缺`SeCreateSymbolicLinkPrivilege`，Linux同例已过；管理员提供权限后重跑，未改skip。
 - 历史拒删的候选、overlay、pyc和运维脚本完整路径/大小/证据见DECISIONS；均保留由拥有者处理，不重试或移动；正式.1包仍在-final。
-- `H:/Root/DevCache/tmp/sub2api-stream-health`历史拒删，本轮复用后3文件21252bytes；不再次删/移动。新production-failover空目录及release-build的2文件20172bytes删除亦在进程创建前被拦截，实际删除0、无活跃引用；完整路径见DECISIONS，由拥有者处理。
+- 历史stream-health/production-failover/release-build拒删路径与字节见DECISIONS，拥有者处理；不换工具重试。
 - 本轮原规则全包lint为62项既存诊断（61项未改文件、1项原行），增量0；保留失败输出，不称整包全绿。

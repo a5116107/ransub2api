@@ -505,6 +505,8 @@ func TestOpenAIGatewayServiceRecordUsage_PeakRateAffectsTokenModeImageOutputToke
 		},
 		User:    &User{ID: 2004},
 		Account: &Account{ID: 3004},
+		// The peak window excludes 23:59, so do not depend on the wall clock.
+		PricingAt: time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC),
 	})
 
 	require.NoError(t, err)
@@ -3432,6 +3434,18 @@ func TestGroupBillsOpenAIFastAtStandardRequiresOpenAIAccount(t *testing.T) {
 	))
 }
 
+// "免费 Fast" 只把 priority 降到 Standard 价；Ultrafast 是独立的更高档位，
+// 分组强制 Ultrafast 时仍按 Ultrafast 计费。
+func TestGroupBillsOpenAIFastAtStandardExcludesUltrafast(t *testing.T) {
+	apiKey := &APIKey{Group: &Group{Platform: PlatformOpenAI, FreeOpenAIFast: true, ForceOpenAIUltrafast: true}}
+
+	require.False(t, groupBillsOpenAIFastAtStandard(
+		apiKey,
+		&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		OpenAIFastTierUltrafast,
+	))
+}
+
 func TestOpenAIGatewayServiceRecordUsage_ServiceTierNeverRaisedByUpstreamResponse(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}
@@ -3459,6 +3473,41 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierNeverRaisedByUpstreamRespons
 	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.4", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0)
 	require.NoError(t, calcErr)
 	require.InDelta(t, baseCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_ExcelBPSOmittedTierBillsStandard(t *testing.T) {
+	for _, observed := range []string{"default", "priority"} {
+		t.Run(observed, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+			usage := OpenAIUsage{InputTokens: 100, OutputTokens: 50}
+			result := &OpenAIForwardResult{
+				RequestID:                   "resp_bps_omitted_tier",
+				UpstreamEndpoint:            "/basispoints/api/responses",
+				UpstreamResponseServiceTier: observed,
+				Usage:                       usage,
+				Model:                       "gpt-5.4",
+				Duration:                    time.Second,
+			}
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				Result: result,
+				APIKey: &APIKey{ID: 1021},
+				User:   &User{ID: 2021},
+				Account: &Account{ID: 3021, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+					Extra: map[string]any{"openai_excel_bps": true}},
+			})
+			require.NoError(t, err)
+			require.Nil(t, result.ServiceTier, "an omitted outbound tier must not be upgraded by the response")
+			require.NotNil(t, usageRepo.lastLog)
+			require.Nil(t, usageRepo.lastLog.ServiceTier)
+			expected := expectedOpenAICost(t, svc, "gpt-5.4", usage, svc.cfg.Default.RateMultiplier)
+			require.InDelta(t, expected.TotalCost, usageRepo.lastLog.TotalCost, 1e-12)
+			require.InDelta(t, QuantizeUsageBillingAmount(expected.ActualCost), usageRepo.lastLog.ActualCost, 1e-12)
+			require.Equal(t, 1, userRepo.deductCalls)
+			require.InDelta(t, usageRepo.lastLog.ActualCost, userRepo.lastAmount, 1e-12)
+		})
+	}
 }
 
 func TestOpenAIGatewayServiceRecordUsage_HeaderTimeoutRetriesAddSurcharge(t *testing.T) {

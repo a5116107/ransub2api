@@ -26,6 +26,7 @@ func (h *SettingHandler) SavePriorityScheduling(c *gin.Context) {
 	defaults := service.DefaultPrioritySchedulingConfig()
 	var request struct {
 		service.PrioritySchedulingConfig
+		CacheWeight                *float64 `json:"cache_weight"`
 		TargetTPS                  *float64 `json:"target_tps"`
 		ErrorRateWeight            *float64 `json:"error_rate_weight"`
 		ErrorRateWindowMinutes     *int     `json:"error_rate_window_minutes"`
@@ -46,7 +47,12 @@ func (h *SettingHandler) SavePriorityScheduling(c *gin.Context) {
 		return
 	}
 	cfg := request.PrioritySchedulingConfig
-	preserve := make([]string, 0, 13)
+	preserve := make([]string, 0, 14)
+	if request.CacheWeight != nil {
+		cfg.CacheWeight = *request.CacheWeight
+	} else {
+		preserve = append(preserve, "cache_weight")
+	}
 	if request.TargetTPS != nil {
 		cfg.TargetTPS = *request.TargetTPS
 	} else {

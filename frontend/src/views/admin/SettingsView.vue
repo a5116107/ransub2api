@@ -46,14 +46,20 @@
                   class="settings-tab-badge"
                 />
                 <NewFeatureBadge
-                  v-if="tab.key === 'email'"
-                  :notice-id="NEW_FEATURE_NOTICES.balanceForecast"
+                  v-if="tab.key === 'gateway'"
+                  :notice-id="NEW_FEATURE_NOTICES.openai409OmitEncryptedHistory"
                   :user-id="authStore.user?.id"
                   class="settings-tab-badge"
                 />
                 <NewFeatureBadge
                   v-if="tab.key === 'gateway'"
                   :notice-id="NEW_FEATURE_NOTICES.deepSeekSearch"
+                  :user-id="authStore.user?.id"
+                  class="settings-tab-badge"
+                />
+                <NewFeatureBadge
+                  v-if="tab.key === 'gateway'"
+                  :notice-id="NEW_FEATURE_NOTICES.exaSearch"
                   :user-id="authStore.user?.id"
                   class="settings-tab-badge"
                 />
@@ -5535,6 +5541,15 @@
                   />
                 </div>
 
+              <EncryptedHistory409Settings
+                v-model="form.openai_409_omit_encrypted_history_enabled"
+                :user-id="authStore.user?.id"
+              />
+              <EncryptedHistory400Settings
+                v-model="form.openai_400_omit_encrypted_history_enabled"
+                :user-id="authStore.user?.id"
+              />
+
               <!-- OpenAI Responses 首 token 统计 -->
               <div class="border-b border-gray-100 pb-5 dark:border-dark-700 md:col-span-2">
                 <label
@@ -6111,6 +6126,7 @@
                   {{ t("admin.settings.webSearchEmulation.title") }}
                 </h2>
                 <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.deepSeekSearch" :user-id="authStore.user?.id" />
+                <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.exaSearch" :user-id="authStore.user?.id" />
               </div>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
                 {{ t("admin.settings.webSearchEmulation.description") }}
@@ -6187,6 +6203,7 @@
                           { value: 'brave', label: 'Brave Search' },
                           { value: 'tavily', label: 'Tavily' },
                           { value: 'deepseek', label: 'DeepSeek' },
+                          { value: 'exa', label: 'Exa' },
                         ]"
                         class="w-36"
                         @click.stop
@@ -6194,6 +6211,12 @@
                       <NewFeatureBadge
                         v-if="provider.type === 'deepseek'"
                         :notice-id="NEW_FEATURE_NOTICES.deepSeekSearch"
+                        :user-id="authStore.user?.id"
+                        @click.stop
+                      />
+                      <NewFeatureBadge
+                        v-if="provider.type === 'exa'"
+                        :notice-id="NEW_FEATURE_NOTICES.exaSearch"
                         :user-id="authStore.user?.id"
                         @click.stop
                       />
@@ -7834,6 +7857,17 @@
               <Toggle v-model="form.model_plaza_require_auth" />
             </div>
 
+            <ModelPlazaCurrencySettings v-if="form.model_plaza_enabled" v-model="form.model_plaza_currency" />
+            <div v-if="form.model_plaza_enabled">
+              <label for="plaza-exchange-rate" class="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.features.modelPlaza.displayExchangeRate') }}
+                <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.modelPlazaCurrency" :user-id="authStore.user?.id" />
+              </label>
+              <p id="plaza-exchange-rate-help" class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.modelPlaza.displayExchangeRateHint') }}</p>
+              <input id="plaza-exchange-rate" v-model.number="form.model_plaza_usd_to_cny_rate" type="number" min="0.000001" step="any" required
+                aria-describedby="plaza-exchange-rate-help" class="input mt-2 max-w-xs" />
+            </div>
+
             <div v-if="form.model_plaza_enabled">
               <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
                 {{ t('admin.settings.features.modelPlaza.priceDescription') }}
@@ -8730,6 +8764,7 @@
                     <div class="relative">
                       <input
                         :value="form.payment_recharge_fee_rate ?? ''"
+                        data-testid="payment-global-fee-rate"
                         @input="
                           form.payment_recharge_fee_rate = Math.min(
                             100,
@@ -9070,6 +9105,7 @@
           <PaymentProviderList
             v-if="form.payment_enabled"
             :providers="providers"
+            :global-fee-rate="savedPaymentFeeRate"
             :loading="providersLoading"
             :can-create="hasAnyPaymentTypeEnabled"
             :enabled-payment-types="form.payment_enabled_types"
@@ -9562,6 +9598,7 @@
         :show="showProviderDialog"
         :saving="providerSaving"
         :editing="editingProvider"
+        :global-fee-rate="savedPaymentFeeRate"
         :all-key-options="providerKeyOptions"
         :enabled-key-options="enabledProviderKeyOptions"
         :all-payment-types="allPaymentTypes"
@@ -9595,6 +9632,10 @@
 </template>
 
 <script setup lang="ts">
+import ModelPlazaCurrencySettings from '@/components/settings/ModelPlazaCurrencySettings.vue'
+import { defaultPlazaCurrencySettings } from '@/utils/plazaCurrency'
+import EncryptedHistory409Settings from "@/components/settings/EncryptedHistory409Settings.vue";
+import EncryptedHistory400Settings from "@/components/settings/EncryptedHistory400Settings.vue";
 import { excelBPSImageLimits } from "@/utils/excelBPSImageLimits";
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { listPlatformIds } from "@/constants/platformCatalog";
@@ -9894,7 +9935,7 @@ const rectifierForm = reactive({
   enabled: true,
   thinking_signature_enabled: true,
   thinking_budget_enabled: true,
-  apikey_signature_enabled: false,
+  apikey_signature_enabled: true,
   apikey_signature_patterns: [] as string[],
 });
 
@@ -10642,6 +10683,8 @@ const form = reactive<SettingsForm>({
   grok_cross_client_model_map_enabled: false,
   grok_default_base_url_mode: "cli",
   grok_video_source_url_enabled: false,
+  openai_409_omit_encrypted_history_enabled: false,
+  openai_400_omit_encrypted_history_enabled: false,
   // Identity patch (Claude -> Gemini)
   enable_identity_patch: true,
   identity_patch_prompt: "",
@@ -10726,6 +10769,8 @@ const form = reactive<SettingsForm>({
   model_plaza_enabled: false,
   model_plaza_require_auth: false,
   model_plaza_description: '',
+  model_plaza_usd_to_cny_rate: 7,
+  model_plaza_currency: defaultPlazaCurrencySettings(),
   // Plugin management menu visibility; plugin runtime is unaffected.
   plugin_management_enabled: false,
   // Support tickets (网站工单) switch + form config
@@ -11742,6 +11787,7 @@ async function loadSettings() {
     settings.balance_forecast_enabled ??= false;
     settings.balance_forecast_threshold_hours ??= 12;
     settings.balance_forecast_max_notifications ??= 3;
+    savedPaymentFeeRate.value = settings.payment_recharge_fee_rate ?? 0;
     settings.payment_load_balance_strategy =
       settings.payment_load_balance_strategy || "round-robin";
     // Only assign non-null values from backend (null means unconfigured, keep defaults)
@@ -12411,6 +12457,8 @@ async function saveSettings() {
         form.grok_cross_client_model_map_enabled,
       grok_default_base_url_mode: form.grok_default_base_url_mode,
       grok_video_source_url_enabled: form.grok_video_source_url_enabled,
+      openai_409_omit_encrypted_history_enabled: form.openai_409_omit_encrypted_history_enabled,
+      openai_400_omit_encrypted_history_enabled: form.openai_400_omit_encrypted_history_enabled,
       enable_identity_patch: form.enable_identity_patch,
       identity_patch_prompt: form.identity_patch_prompt,
       min_claude_code_version: form.min_claude_code_version,
@@ -12565,6 +12613,8 @@ async function saveSettings() {
       model_plaza_enabled: form.model_plaza_enabled,
       model_plaza_require_auth: form.model_plaza_require_auth,
       model_plaza_description: form.model_plaza_description,
+      model_plaza_usd_to_cny_rate: form.model_plaza_usd_to_cny_rate,
+      model_plaza_currency: form.model_plaza_currency,
       plugin_management_enabled: form.plugin_management_enabled,
       // Support tickets: blank category rows are dropped; the server trims and deduplicates.
       support_ticket_enabled: form.support_ticket_enabled,
@@ -12643,6 +12693,7 @@ async function saveSettings() {
     const updated = await settingsStepUp.run(() =>
       adminAPI.settings.updateSettings(payload),
     );
+    savedPaymentFeeRate.value = updated.payment_recharge_fee_rate ?? savedPaymentFeeRate.value;
     adminSettingsStore.smartOpsHiddenMenuItems = [...(updated.smart_ops_hidden_menu_items ?? DEFAULT_SMART_OPS_HIDDEN_MENU_ITEMS)];
     for (const [key, value] of Object.entries(updated)) {
       if (key === "openai_fast_policy_settings") continue;
@@ -13453,6 +13504,8 @@ function slog(...args: unknown[]) {
 const providersLoading = ref(false);
 const providerSaving = ref(false);
 const providers = ref<ProviderInstance[]>([]);
+// Provider dialogs save independently; unsaved global form edits are not effective rates.
+const savedPaymentFeeRate = ref<number>();
 const showProviderDialog = ref(false);
 const showDeleteProviderDialog = ref(false);
 const editingProvider = ref<ProviderInstance | null>(null);

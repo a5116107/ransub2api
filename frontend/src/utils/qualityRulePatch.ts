@@ -13,7 +13,7 @@ export function qualityJudgeConfigured(judge?: QualityJudgeConfig): judge is Qua
 // 新建「降智开 BPS」时的默认勾选；target_group_id = -1 表示还没选 403 后的目标分组。
 export function defaultQualityBPS(): QualityBPSPolicy {
   return { failure_threshold: 2, usage_percent: 0, require_all: false, all_models: false, models: [...DEFAULT_EXCEL_BPS_MODELS],
-    omit_unsupported_tools: false, ignore_encrypted_content: true, auto_disable_on_403: true, auto_recover_on_403: false, recovery_interval_minutes: DEFAULT_BPS_RECOVERY_INTERVAL_MINUTES, auto_move_on_403: false,
+    omit_unsupported_tools: false, ignore_encrypted_content: true, web_search: false, web_search_auto: false, auto_disable_on_403: true, auto_recover_on_403: false, recovery_interval_minutes: DEFAULT_BPS_RECOVERY_INTERVAL_MINUTES, auto_move_on_403: false,
     target_group_id: -1, session_proxy: false, proxy_source: 'mihomo', cache_creation_as_input: true, pass_threshold: 2, hold_on_usage: true }
 }
 
@@ -58,6 +58,7 @@ export function copyQualityRuleConfig(source: PelicanTestConfig): PelicanTestCon
       bps: bps ? {
         failure_threshold: bps.failure_threshold, usage_percent: bps.usage_percent, require_all: bps.require_all,
         all_models: bps.all_models, models: [...(bps.models || [])], omit_unsupported_tools: bps.omit_unsupported_tools,
+        web_search: bps.web_search === true, web_search_auto: bps.web_search === true && bps.web_search_auto === true,
         ignore_encrypted_content: bps.ignore_encrypted_content, auto_disable_on_403: bps.auto_disable_on_403,
         auto_recover_on_403: bps.auto_recover_on_403, recovery_interval_minutes: bps.recovery_interval_minutes,
         auto_move_on_403: bps.auto_move_on_403, target_group_id: bps.target_group_id,
@@ -87,6 +88,7 @@ export function qualityBPSError(bps: QualityBPSPolicy): string {
 export function qualityBPSPayload(bps: QualityBPSPolicy): QualityBPSPolicy {
   return {
     ...bps,
+    web_search: bps.web_search === true, web_search_auto: bps.web_search === true && bps.web_search_auto === true,
     recovery_interval_minutes: bps.recovery_interval_minutes ?? DEFAULT_BPS_RECOVERY_INTERVAL_MINUTES,
     models: bps.all_models ? [] : [...bps.models],
     target_group_id: bps.auto_move_on_403 ? bps.target_group_id : 0,
@@ -165,7 +167,7 @@ export function qualityRuleFieldValue(rule: Pick<ScheduledTestPlan, 'model_id' |
     case 'restore': return [q?.auto_restore, b?.pass_threshold, b?.hold_on_usage]
     case 'action': return [q?.action, q?.remove_group_ids || [], q?.remove_models || [], q?.recovery_concurrency, q?.retest_rest_minutes ?? 0,
       b ? [b.failure_threshold, b.usage_percent, b.require_all, b.all_models, b.models || [], b.omit_unsupported_tools,
-        b.ignore_encrypted_content, b.auto_disable_on_403, b.auto_recover_on_403, b.recovery_interval_minutes,
+        b.ignore_encrypted_content, b.web_search === true, b.web_search_auto === true, b.auto_disable_on_403, b.auto_recover_on_403, b.recovery_interval_minutes,
         b.auto_move_on_403, b.target_group_id, b.session_proxy, b.proxy_source, b.cache_creation_as_input] : null]
   }
 }
@@ -218,7 +220,11 @@ export function buildQualityRulePatch(
     config.parallel_count = probe ? 1 : source.parallel_count
     config.quality.expected_answer = probe || random ? '' : source.quality.expected_answer
     if (probe) { delete config.quality.judge; config.model_ids = [patch.model_id || plan.model_id] }
-    else {
+    else if (source.question_kind === 'ciallo') {
+      config.prompt = 'ciallo'
+      config.quality.expected_answer = ''
+      delete config.quality.judge
+    } else {
       const judge = copyQualityRuleConfig(source).quality.judge
       if (!qualityJudgeConfigured(judge)) throw new Error('qualityOps.configureJudge')
       if (!random && (!config.prompt.trim() || !config.quality.expected_answer.trim())) throw new Error('qualityOps.questionRequired')
@@ -255,7 +261,7 @@ export function buildQualityRulePatch(
     config.quality.bps.pass_threshold = from.pass_threshold
     config.quality.bps.hold_on_usage = from.hold_on_usage
   }
-  if (config.quality.action === 'isolate_models' && config.question_kind !== 'candy' && config.question_kind !== 'random_reasoning') throw new Error('qualityOps.isolationRequiresCandy')
+  if (config.quality.action === 'isolate_models' && config.question_kind !== 'candy' && config.question_kind !== 'random_reasoning' && config.question_kind !== 'ciallo') throw new Error('qualityOps.isolationRequiresCandy')
   if (config.question_kind === STATE_PROBE_QUESTION && (config.model_ids?.length || 0) > 1) throw new Error('qualityOps.probeSingleModel')
   const samples = (config.model_ids?.length || 1) * config.parallel_count
   if (samples > 100 || (config.model_ids?.length || 0) > 50) throw new Error('qualityOps.tooManyModelSamples')

@@ -259,6 +259,15 @@ func newExcelBPSRequestTo(ctx context.Context, targetURL, accept string, body []
 		"X-Openai-Internal-Basispoints-Client-Product":       {"basispoints-excel-plugin"},
 		"X-Openai-Internal-Basispoints-Client-Agent-Profile": {"excel"},
 	}
+	// Derive the user only from the bearer actually sent on this request. The
+	// parent account can retain a different Codex grant or stale user metadata.
+	// Decoding projects identity; it does not assert JWT signature validation.
+	if claims, decodeErr := openai.DecodeIDToken(token); decodeErr == nil && claims.OpenAIAuth != nil {
+		userID := strings.TrimSpace(firstNonEmptyReauth(claims.OpenAIAuth.ChatGPTUserID, claims.OpenAIAuth.UserID))
+		if userID != "" && !strings.ContainsAny(userID, "\r\n") {
+			req.Header.Set("X-Openai-Account-User-Id", userID)
+		}
+	}
 	return req, nil
 }
 
@@ -322,6 +331,17 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return clientCanceled()
 		}
 		return nil, newExcelBPSRateLimitedFailoverError(retryAfter)
+	}
+	// BPS returns before the native forwarder's tier policy. Apply that same
+	// administrator policy before building the BPS wire body.
+	body, err := s.applyOpenAIFastPolicyToBody(ctx, account, model, body)
+	if err != nil {
+		var blocked *OpenAIFastBlockedError
+		if errors.As(err, &blocked) {
+			MarkResponseCommitted(c)
+			writeOpenAIFastPolicyBlockedResponse(c, blocked)
+		}
+		return nil, err
 	}
 	imageSettings, err := s.settingService.GetExcelBPSImageRelaySettings(ctx)
 	if err != nil {
@@ -389,6 +409,11 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 			return fail(400, "basispoints_request_invalid", err.Error())
 		}
 	}
+	var searchPlan *basispoints.SearchPlan
+	body, searchPlan, err = basispoints.NormalizeWebSearchRequest(body, account.IsExcelBPSSearchEnabled() && !isControlledExperiment(ctx), account.IsExcelBPSSearchAutoEnabled())
+	if err != nil {
+		return fail(400, "basispoints_request_invalid", err.Error())
+	}
 	// Capture client references before native-image preparation installs its
 	// internal preflight placeholder or image policy rewrites the body.
 	clientFileIDs, err := basispoints.ImageFileReferences(body)
@@ -398,6 +423,23 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	clientEncrypted, err := basispoints.EncryptedHistoryReferences(body)
 	if err != nil {
 		return fail(400, "basispoints_request_invalid", "Invalid encrypted history")
+	}
+	// Acquire the logical request exit before token lookup: an expired Excel
+	// grant must refresh through the same lease as attachments and generation.
+	if c != nil {
+		c.Set(openAIRequestProxyOpsKey, (*openAIRequestProxyRoute)(nil))
+	}
+	proxyCtx, releaseProxy, proxyErr := s.beginOpenAIRequestProxy(ctx, nil, account)
+	if proxyErr != nil {
+		if isExcelBPSClientCancellation(c, proxyErr) {
+			return clientCanceled()
+		}
+		return fail(503, "basispoints_proxy_unavailable", "No healthy BPS session proxy is available; retry later")
+	}
+	defer releaseProxy()
+	ctx = proxyCtx
+	if route, ok := openAIRequestProxyFromContext(ctx, account.ID); ok && c != nil {
+		c.Set(openAIRequestProxyOpsKey, route)
 	}
 	token, err := s.getExcelBPSAccessToken(ctx, account)
 	if err != nil {
@@ -526,7 +568,7 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	if account.Proxy != nil {
 		attachmentProxy = account.Proxy.URL()
 	}
-	if images != nil && images.HasImages() && account.IsExcelBPSMihomoEnabled() {
+	if images != nil && images.HasImages() && (account.IsExcelBPSMihomoEnabled() || account.ExcelBPSRequestProxyEnabled()) {
 		var lease excelBPSLease
 		// Pin the attachment upload and the Responses request to the same exit,
 		// whichever pool the account chose.
@@ -682,6 +724,10 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	}
 	SetActualOpenAIUpstreamEndpoint(c, "/basispoints/api/responses")
 	SetOpsUpstreamModel(c, model)
+	upstreamBody, err = searchPlan.Attach(upstreamBody, bridge)
+	if err != nil {
+		return fail(400, "basispoints_request_invalid", err.Error())
+	}
 	sent := time.Now()
 	resp, lease, proxyURL, err := s.doExcelBPSRequest(requestCtx, c, account, sessionScope, upstreamBody, token, accountID, requestAcquire)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(sent).Milliseconds())
@@ -835,106 +881,126 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 	// BPS and Codex share quota. Refresh at the HTTP boundary even if the client
 	// disconnects or a later stream/protocol error prevents normal completion.
 	s.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, resp.Header)
-	converted := bridge.StreamWithRepairs(requestCtx, resp.Body, func(repairCtx context.Context, failed map[string]any, validation error) (map[string]any, error) {
-		if isControlledExperiment(ctx) {
-			return nil, errors.New("controlled experiment disables BPS tool repair submissions")
-		}
-		markPriorityAttemptFailure(repairCtx)
-		correctedBody, err := basispoints.BuildToolRepairRequest(upstreamBody, failed, validation)
-		if err != nil {
-			return nil, err
-		}
-		repairReq, err := newExcelBPSRequest(repairCtx, correctedBody, token, accountID)
-		if err != nil {
-			return nil, err
-		}
-		repairResp, err := s.doPriorityObservedHTTP(repairReq, proxyURL, account)
-		if err == nil {
-			s.guardExcelBPSProgress(repairCtx, repairResp)
-		}
-		if err != nil {
-			if repairCtx.Err() != nil {
-				return nil, repairCtx.Err()
+	var converted io.ReadCloser
+	if searchPlan != nil {
+		converted = bridge.StreamWithSearch(requestCtx, resp.Body, upstreamBody, searchPlan,
+			func(searchCtx context.Context, query string) (basispoints.SearchResult, error) {
+				return s.executeExcelBPSSearch(searchCtx, account, searchPlan, token, accountID, proxyURL, model, query)
+			}, func(nextCtx context.Context, nextBody []byte) (io.ReadCloser, error) {
+				return s.continueExcelBPSSearch(nextCtx, account, nextBody, token, accountID, proxyURL)
+			})
+	} else {
+		// Both repair callbacks run serially on the bridge goroutine. Their
+		// evolving request body must not replace the caller's immutable body,
+		// which is still read below when constructing result metadata.
+		repairUpstreamBody := upstreamBody
+		converted = bridge.StreamWithRepairs(requestCtx, resp.Body, func(repairCtx context.Context, failed map[string]any, validation error) (map[string]any, error) {
+			if isControlledExperiment(ctx) {
+				return nil, errors.New("controlled experiment disables BPS tool repair submissions")
 			}
-			return nil, fmt.Errorf("excel BPS correction connection failed")
-		}
-		defer func() { _ = repairResp.Body.Close() }()
-		stop := context.AfterFunc(repairCtx, func() { _ = repairResp.Body.Close() })
-		defer stop()
-		if repairResp.StatusCode >= 200 && repairResp.StatusCode < 300 {
-			observeBPSTestResponse(repairCtx, repairResp, model, token, "")
-		}
-		if repairResp.StatusCode < 200 || repairResp.StatusCode >= 300 {
-			raw, _ := io.ReadAll(io.LimitReader(repairResp.Body, 512<<10))
-			observeBPSTestResponse(repairCtx, repairResp, model, token, gjson.GetBytes(raw, "error.code").String())
-			if repairResp.StatusCode == http.StatusTooManyRequests {
-				// Output was already accepted: cool the route, never replay the request.
-				s.coolDownExcelBPS(repairCtx, account, repairResp.Header.Get("Retry-After"), repairResp.Header)
+			markPriorityAttemptFailure(repairCtx)
+			correctedBody, err := basispoints.BuildToolRepairRequest(repairUpstreamBody, failed, validation)
+			if err != nil {
+				return nil, err
 			}
-			s.handleExcelBPSUnauthorized(repairCtx, account, repairResp.StatusCode, repairResp.Header, raw, token)
-			if isExcelBPSModelPermissionError(repairResp.StatusCode, gjson.GetBytes(raw, "error.code").String()) && !isQualityObservation(repairCtx) {
-				s.coolDownExcelBPSModel(account, model)
+			repairReq, err := newExcelBPSRequest(repairCtx, correctedBody, token, accountID)
+			if err != nil {
+				return nil, err
 			}
-			if repairResp.StatusCode == http.StatusForbidden && !isExcelBPSModelPermissionError(http.StatusForbidden, gjson.GetBytes(raw, "error.code").String()) {
-				s.moveExcelBPSOn403(repairCtx, account)
-				s.disableExcelBPSOn403(repairCtx, account)
+			repairResp, err := s.doPriorityObservedHTTP(repairReq, proxyURL, account)
+			if err == nil {
+				s.guardExcelBPSProgress(repairCtx, repairResp)
 			}
-			return nil, fmt.Errorf("excel BPS correction returned HTTP %d", repairResp.StatusCode)
-		}
-		s.UpdateCodexUsageSnapshotFromHeaders(repairCtx, account.ID, repairResp.Header)
-		upstreamBody = correctedBody
-		return basispoints.ReadToolRepairResponse(repairResp.Body)
-	}, func(repairCtx context.Context) (io.ReadCloser, error) {
-		markPriorityAttemptFailure(repairCtx)
-		repairBody, err := basispoints.RepairRequest(upstreamBody)
-		if err != nil {
-			return nil, err
-		}
-		retry, err := newExcelBPSRequest(repairCtx, repairBody, token, accountID)
-		if err != nil {
-			return nil, err
-		}
-		if isControlledExperiment(ctx) {
-			return nil, errors.New("controlled experiment disables BPS correction submissions")
-		}
-		repaired, err := s.doPriorityObservedHTTP(retry, proxyURL, account)
-		if err == nil {
-			s.guardExcelBPSProgress(repairCtx, repaired)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("excel BPS tool correction transport failed")
-		}
-		if repaired.StatusCode >= 200 && repaired.StatusCode < 300 {
-			observeBPSTestResponse(repairCtx, repaired, model, token, "")
-		}
-		if repaired.StatusCode < 200 || repaired.StatusCode >= 300 {
-			raw, _ := io.ReadAll(io.LimitReader(repaired.Body, 512<<10))
-			observeBPSTestResponse(repairCtx, repaired, model, token, gjson.GetBytes(raw, "error.code").String())
-			_ = repaired.Body.Close()
-			if repaired.StatusCode == http.StatusTooManyRequests {
-				s.coolDownExcelBPS(repairCtx, account, repaired.Header.Get("Retry-After"), repaired.Header)
+			s.rateLimitService.observeQualityResponse(repairReq.Context(), account, repairResp, err)
+			if err != nil {
+				if repairCtx.Err() != nil {
+					return nil, repairCtx.Err()
+				}
+				return nil, fmt.Errorf("excel BPS correction connection failed")
 			}
-			s.handleExcelBPSUnauthorized(repairCtx, account, repaired.StatusCode, repaired.Header, raw, token)
-			if isExcelBPSModelPermissionError(repaired.StatusCode, gjson.GetBytes(raw, "error.code").String()) && !isQualityObservation(repairCtx) {
-				s.coolDownExcelBPSModel(account, model)
+			defer func() { _ = repairResp.Body.Close() }()
+			stop := context.AfterFunc(repairCtx, func() { _ = repairResp.Body.Close() })
+			defer stop()
+			if repairResp.StatusCode >= 200 && repairResp.StatusCode < 300 {
+				observeBPSTestResponse(repairCtx, repairResp, model, token, "")
 			}
-			if repaired.StatusCode == http.StatusForbidden && !isExcelBPSModelPermissionError(http.StatusForbidden, gjson.GetBytes(raw, "error.code").String()) {
-				s.moveExcelBPSOn403(repairCtx, account)
-				s.disableExcelBPSOn403(repairCtx, account)
+			if repairResp.StatusCode < 200 || repairResp.StatusCode >= 300 {
+				raw, _ := io.ReadAll(io.LimitReader(repairResp.Body, 512<<10))
+				observeBPSTestResponse(repairCtx, repairResp, model, token, gjson.GetBytes(raw, "error.code").String())
+				if repairResp.StatusCode == http.StatusTooManyRequests {
+					// Output was already accepted: cool the route, never replay the request.
+					s.coolDownExcelBPS(repairCtx, account, repairResp.Header.Get("Retry-After"), repairResp.Header)
+				}
+				s.handleExcelBPSUnauthorized(repairCtx, account, repairResp.StatusCode, repairResp.Header, raw, token)
+				if isExcelBPSModelPermissionError(repairResp.StatusCode, gjson.GetBytes(raw, "error.code").String()) && !isQualityObservation(repairCtx) {
+					s.coolDownExcelBPSModel(account, model)
+				}
+				if repairResp.StatusCode == http.StatusForbidden && !isExcelBPSModelPermissionError(http.StatusForbidden, gjson.GetBytes(raw, "error.code").String()) {
+					s.moveExcelBPSOn403(repairCtx, account)
+					s.disableExcelBPSOn403(repairCtx, account)
+				}
+				return nil, fmt.Errorf("excel BPS correction returned HTTP %d", repairResp.StatusCode)
 			}
-			return nil, fmt.Errorf("excel BPS tool correction returned HTTP %d", repaired.StatusCode)
-		}
-		s.UpdateCodexUsageSnapshotFromHeaders(repairCtx, account.ID, repaired.Header)
-		return repaired.Body, nil
-	})
+			s.UpdateCodexUsageSnapshotFromHeaders(repairCtx, account.ID, repairResp.Header)
+			repairUpstreamBody = correctedBody
+			return basispoints.ReadToolRepairResponse(repairResp.Body)
+		}, func(repairCtx context.Context) (io.ReadCloser, error) {
+			markPriorityAttemptFailure(repairCtx)
+			repairBody, err := basispoints.RepairRequest(repairUpstreamBody)
+			if err != nil {
+				return nil, err
+			}
+			retry, err := newExcelBPSRequest(repairCtx, repairBody, token, accountID)
+			if err != nil {
+				return nil, err
+			}
+			if isControlledExperiment(ctx) {
+				return nil, errors.New("controlled experiment disables BPS correction submissions")
+			}
+			repaired, err := s.doPriorityObservedHTTP(retry, proxyURL, account)
+			if err == nil {
+				s.guardExcelBPSProgress(repairCtx, repaired)
+			}
+			s.rateLimitService.observeQualityResponse(retry.Context(), account, repaired, err)
+			if err != nil {
+				return nil, fmt.Errorf("excel BPS tool correction transport failed")
+			}
+			if repaired.StatusCode >= 200 && repaired.StatusCode < 300 {
+				observeBPSTestResponse(repairCtx, repaired, model, token, "")
+			}
+			if repaired.StatusCode < 200 || repaired.StatusCode >= 300 {
+				raw, _ := io.ReadAll(io.LimitReader(repaired.Body, 512<<10))
+				observeBPSTestResponse(repairCtx, repaired, model, token, gjson.GetBytes(raw, "error.code").String())
+				_ = repaired.Body.Close()
+				if repaired.StatusCode == http.StatusTooManyRequests {
+					s.coolDownExcelBPS(repairCtx, account, repaired.Header.Get("Retry-After"), repaired.Header)
+				}
+				s.handleExcelBPSUnauthorized(repairCtx, account, repaired.StatusCode, repaired.Header, raw, token)
+				if isExcelBPSModelPermissionError(repaired.StatusCode, gjson.GetBytes(raw, "error.code").String()) && !isQualityObservation(repairCtx) {
+					s.coolDownExcelBPSModel(account, model)
+				}
+				if repaired.StatusCode == http.StatusForbidden && !isExcelBPSModelPermissionError(http.StatusForbidden, gjson.GetBytes(raw, "error.code").String()) {
+					s.moveExcelBPSOn403(repairCtx, account)
+					s.disableExcelBPSOn403(repairCtx, account)
+				}
+				return nil, fmt.Errorf("excel BPS tool correction returned HTTP %d", repaired.StatusCode)
+			}
+			s.UpdateCodexUsageSnapshotFromHeaders(repairCtx, account.ID, repaired.Header)
+			return repaired.Body, nil
+		})
+	}
+
 	if len(compactOutput) > 0 {
 		converted = basispoints.WithCompactedWindow(requestCtx, converted, compactOutput, compactUsageWire)
+	}
+	if account.ExcelBPSRequestProxyEnabled() {
+		converted = ownExcelBPSRequestBody(ctx, converted, lease)
 	}
 	defer func() { _ = converted.Close() }()
 	// The bridge sees the body after group policy mapping. Keep the original
 	// client effort for usage display, and the BPS-normalized effort for billing.
 	requestedEffort := coalesceRequestedReasoningEffort(RequestedReasoningEffortFromContext(ctx), &bridge.RequestedEffort)
-	result := &OpenAIForwardResult{Model: originalModel, UpstreamModel: model, UpstreamEndpoint: "/basispoints/api/responses", Stream: stream, ReasoningEffort: &bridge.Effort, RequestedReasoningEffort: requestedEffort, RequestID: resp.Header.Get("x-request-id")}
+	result := &OpenAIForwardResult{Model: originalModel, UpstreamModel: model, UpstreamEndpoint: "/basispoints/api/responses", Stream: stream, ReasoningEffort: &bridge.Effort, RequestedReasoningEffort: requestedEffort, ServiceTier: extractOpenAIServiceTierFromBody(upstreamBody), RequestID: resp.Header.Get("x-request-id")}
 	if stream {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -1014,7 +1080,8 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 				completed = []byte(gjson.GetBytes(payload, "response").Raw)
 				result.ResponseID = gjson.GetBytes(payload, "response.id").String()
 				result.UpstreamResponseModel = gjson.GetBytes(payload, "response.model").String()
-				upstreamFailure = basispoints.ParseUpstreamFailure(payload)
+				result.UpstreamResponseServiceTier = normalizeObservedOpenAIServiceTier(gjson.GetBytes(payload, "response.service_tier").String())
+				upstreamFailure = basispoints.ParseNormalizedUpstreamFailure(payload)
 				if bridgeFailure != nil {
 					markPriorityAttemptFailure(ctx)
 					setOpsUpstreamError(c, resp.StatusCode, "", "")
@@ -1034,7 +1101,12 @@ func (s *OpenAIGatewayService) forwardExcelBPS(ctx context.Context, c *gin.Conte
 				if upstreamFailure != nil {
 					// Preserve the actual HTTP status separately from the event's
 					// semantic status. An accepted generation is never replayed.
-					setOpsUpstreamError(c, resp.StatusCode, upstreamFailure.Message, "")
+					safeDetail := ""
+					if upstreamFailure.Search != nil {
+						raw, _ := json.Marshal(upstreamFailure.Details())
+						safeDetail = string(raw)
+					}
+					setOpsUpstreamError(c, resp.StatusCode, upstreamFailure.Message, safeDetail)
 					MarkOpsStreamErrorValue(c, OpsStreamError{
 						ErrType: upstreamFailure.Type, Code: upstreamFailure.Code, Message: upstreamFailure.Message,
 						IntendedStatus: upstreamFailure.Status, CountTowardsSLA: true, NonStream: !stream,

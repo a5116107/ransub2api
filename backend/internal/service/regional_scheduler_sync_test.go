@@ -121,7 +121,7 @@ type regionalExportRepo struct {
 	availabilityReads int
 }
 
-func (r *regionalExportRepo) ListSchedulableUngroupedByPlatform(context.Context, string) ([]Account, error) {
+func (r *regionalExportRepo) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]Account, error) {
 	if r.fail {
 		return nil, errors.New("db unavailable")
 	}

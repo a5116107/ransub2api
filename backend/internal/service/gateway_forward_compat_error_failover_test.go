@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -113,7 +114,7 @@ func TestHandleCCStreamingFromAnthropic_PingForwardedAfterHoldWindow(t *testing.
 	require.NoError(t, upstream.Close())
 	select {
 	case err := <-finished:
-		require.NoError(t, err)
+		require.NoError(t, err, "a complete response after delayed keepalive must finish normally")
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream did not finish after EOF")
 	}
@@ -195,6 +196,15 @@ func TestForwardAsCompatBuffered_UpstreamErrorEventFailsOver(t *testing.T) {
 				result, err := forwardCompatForTest(svc, c, endpoint, body, account)
 
 				var failoverErr *UpstreamFailoverError
+				if tc.name == "permission_after_partial_output" {
+					require.Error(t, err)
+					require.NotNil(t, result)
+					require.Equal(t, 12, result.Usage.InputTokens)
+					require.False(t, errors.As(err, &failoverErr))
+					require.Equal(t, http.StatusBadGateway, rec.Code)
+					require.Contains(t, rec.Body.String(), "permission_error")
+					return
+				}
 				require.ErrorAs(t, err, &failoverErr)
 				require.Equal(t, tc.wantStatus, failoverErr.StatusCode)
 				require.True(t, failoverErr.ShouldRetryNextAccount())

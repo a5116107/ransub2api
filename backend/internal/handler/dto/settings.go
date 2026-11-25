@@ -342,10 +342,12 @@ type SystemSettings struct {
 	ChannelMonitorHideUserRanking        bool   `json:"channel_monitor_hide_user_ranking"`
 
 	// Grok model mapping policy (admin settings; empty account mapping falls back to these).
-	GrokDefaultTextModel           string `json:"grok_default_text_model"`
-	GrokCrossClientModelMapEnabled bool   `json:"grok_cross_client_model_map_enabled"`
-	GrokDefaultBaseURLMode         string `json:"grok_default_base_url_mode"`
-	GrokVideoSourceURLEnabled      bool   `json:"grok_video_source_url_enabled"`
+	GrokDefaultTextModel                 string `json:"grok_default_text_model"`
+	GrokCrossClientModelMapEnabled       bool   `json:"grok_cross_client_model_map_enabled"`
+	GrokDefaultBaseURLMode               string `json:"grok_default_base_url_mode"`
+	GrokVideoSourceURLEnabled            bool   `json:"grok_video_source_url_enabled"`
+	OpenAI409OmitEncryptedHistoryEnabled bool   `json:"openai_409_omit_encrypted_history_enabled"`
+	OpenAI400OmitEncryptedHistoryEnabled bool   `json:"openai_400_omit_encrypted_history_enabled"`
 
 	// Available Channels feature switch (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
@@ -359,10 +361,12 @@ type SystemSettings struct {
 	SubscriptionEnabled bool `json:"subscription_enabled"`
 
 	// Model Plaza feature (public group/model pricing showcase)
-	ModelPlazaEnabled       bool   `json:"model_plaza_enabled"`
-	ModelPlazaRequireAuth   bool   `json:"model_plaza_require_auth"`
-	ModelPlazaDescription   string `json:"model_plaza_description"`
-	PluginManagementEnabled bool   `json:"plugin_management_enabled"`
+	ModelPlazaEnabled       bool                               `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth   bool                               `json:"model_plaza_require_auth"`
+	ModelPlazaDescription   string                             `json:"model_plaza_description"`
+	ModelPlazaUSDToCNYRate  float64                            `json:"model_plaza_usd_to_cny_rate"`
+	ModelPlazaCurrency      service.ModelPlazaCurrencySettings `json:"model_plaza_currency"`
+	PluginManagementEnabled bool                               `json:"plugin_management_enabled"`
 
 	// Support tickets ("网站工单") switch + form config
 	SupportTicketEnabled bool                        `json:"support_ticket_enabled"`

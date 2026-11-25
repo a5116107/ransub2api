@@ -917,7 +917,7 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	// but they are always client-visible blocked requests that belong in admin + user error
 	// lists.  Without the exemption the entire streaming-path cyber sink would be invisible.
 	if !opsFilterIncludesRecoveredProviderRows(filter, phaseFilter) {
-		clauses = append(clauses, "(COALESCE(e.status_code, 0) >= 400 OR e.error_type = 'cyber_policy')")
+		clauses = append(clauses, "(COALESCE(e.status_code, 0) >= 400 OR e.error_type = 'cyber_policy' OR e.error_type = 'transport_error')")
 	}
 
 	if filter.StartTime != nil && !filter.StartTime.IsZero() {
@@ -931,7 +931,11 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	}
 	if p := strings.TrimSpace(filter.Platform); p != "" {
 		args = append(args, p)
-		clauses = append(clauses, "e.platform = $"+itoa(len(args)))
+		match := "e.platform = $" + itoa(len(args))
+		if p == "unknown" {
+			match = "(" + match + " OR e.platform IS NULL OR e.platform = '')"
+		}
+		clauses = append(clauses, match)
 	}
 	if filter.GroupID != nil && *filter.GroupID > 0 {
 		args = append(args, *filter.GroupID)

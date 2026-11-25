@@ -25,7 +25,7 @@ func PinnedAPIKeyGroup(c *gin.Context) (int64, bool) {
 
 func isMultiGroupBillingInfoRequest(c *gin.Context, key *service.APIKey) bool {
 	_, pinned := PinnedAPIKeyGroup(c)
-	return c.Request.URL.Path == "/v1/sub2api/billing" && len(key.ConfiguredGroupIDs()) > 1 && !pinned
+	return (c.Request.URL.Path == "/v1/sub2api/billing" || isKeyGroupHealthRequest(c)) && len(key.ConfiguredGroupIDs()) > 1 && !pinned
 }
 
 func rejectAPIKeyRequestGroup(c *gin.Context, google bool, err error) (*service.APIKey, error) {
@@ -40,6 +40,17 @@ func rejectAPIKeyRequestGroup(c *gin.Context, google bool, err error) (*service.
 		AbortWithError(c, status, reason, message)
 	}
 	return nil, err
+}
+
+func isKeyGroupHealthRequest(c *gin.Context) bool {
+	return c.Request.Method == http.MethodGet && c.FullPath() == "/v1/sub2api/group-health"
+}
+
+const gatewayUsageRecordsPath = "/v1/usage/records"
+
+// IsGatewayUsagePath identifies the two read-only accounting endpoints.
+func IsGatewayUsagePath(path string) bool {
+	return path == "/v1/usage" || path == gatewayUsageRecordsPath
 }
 
 const modelListingGroupsKey = "api_key.model_listing_groups"
@@ -120,7 +131,7 @@ func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subsc
 		if !slices.Contains(key.ConfiguredGroupIDs(), requestedGroupID) {
 			return rejectAPIKeyRequestGroup(c, google, service.ErrGroupNotAllowed)
 		}
-		if c.Request.URL.Path == "/v1/usage" || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path) {
+		if IsGatewayUsagePath(c.Request.URL.Path) || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path) {
 			return rejectAPIKeyRequestGroup(c, google, infraerrors.BadRequest("API_KEY_GROUP_UNSUPPORTED", "Group selection is not supported for this resource"))
 		}
 		if c.Request.URL.Path == "/v1/sub2api/billing" || len(key.ConfiguredGroupIDs()) < 2 {
@@ -132,7 +143,7 @@ func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subsc
 			return selected, nil
 		}
 	}
-	if len(key.ConfiguredGroupIDs()) < 2 || isMultiGroupBillingInfoRequest(c, key) || c.Request.URL.Path == "/v1/usage" || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path) {
+	if len(key.ConfiguredGroupIDs()) < 2 || isMultiGroupBillingInfoRequest(c, key) || IsGatewayUsagePath(c.Request.URL.Path) || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path) {
 		return key, nil
 	}
 	var models []string
@@ -176,15 +187,13 @@ func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subsc
 			return nil, infraerrors.ServiceUnavailable("AUTO_CREDIT_UNAVAILABLE", "Credit authorization unavailable")
 		}
 	}
+	balanceDenied := false
 	accepts := func(candidate *service.APIKey) bool {
 		group := candidate.Group
 		// Binding the restricted target must not make the normal cheapest-group
 		// selector send healthy conversations there. Forced penalties returned
 		// above already passed the normal target authorization checks.
 		if penaltyConfig.Applies(key.UserID) && !penaltyConfig.ObserveOnly && penaltyConfig.Policy == "session_route_then_block" && penaltyConfig.TargetGroupID != nil && group.ID == *penaltyConfig.TargetGroupID {
-			return false
-		}
-		if checkBilling && !group.IsSubscriptionType() && groupBalanceNeedsRecovery(candidate.User.Balance, cfg) && !canRecoverBalance {
 			return false
 		}
 		if google && !groupAllowsGooglePlatform(path, group) {
@@ -223,6 +232,12 @@ func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subsc
 				return false
 			}
 		}
+		// Report balance only after this group passes every request policy.
+		// A forbidden model/client must not become a misleading top-up prompt.
+		if checkBilling && !group.IsSubscriptionType() && groupBalanceNeedsRecovery(candidate.User.Balance, cfg) && !canRecoverBalance {
+			balanceDenied = true
+			return false
+		}
 		return true
 	}
 	ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, key.UserID)
@@ -251,6 +266,9 @@ func selectAPIKeyRequestGroup(c *gin.Context, keys *service.APIKeyService, subsc
 	}
 	selected, err := keys.SelectRequestGroup(ctx, key, models, kind, subscriptions, accepts, checkBilling, requestedGroupID)
 	if err != nil {
+		if balanceDenied && infraerrors.Reason(err) == "NO_ELIGIBLE_API_KEY_GROUP" {
+			err = infraerrors.Forbidden("INSUFFICIENT_BALANCE", service.InsufficientUserBalanceMessage)
+		}
 		return rejectAPIKeyRequestGroup(c, google, err)
 	}
 	if requestedGroupID != 0 {

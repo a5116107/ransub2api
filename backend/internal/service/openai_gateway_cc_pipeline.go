@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -31,6 +32,22 @@ import (
 // 所有 helper 都是对既有内联代码的等价提取，不改变任何行为；各路径的差异
 // （GLM effort 归一化、fast policy、Grok 分支、ClientDisconnect 语义等）仍留在
 // 调用方，属于有意保留的行为差异，不在此强行统一。
+
+// flushBeforeUpstreamRead 在扫描器向上游读取新数据之前调用 flush。
+//
+// bufio.Scanner 只在缓冲里没有完整行时才调用 Read，所以 flush 恰好发生在
+// "要等上游下一批数据"之前：已经到达的行不会被延后写给客户端，而同一次读取里
+// 到达的多行（data 行与事件间空行、一次到达的多个事件）合并成一次 flush，
+// 不再每行一次写系统调用。
+type flushBeforeUpstreamRead struct {
+	r     io.Reader
+	flush func()
+}
+
+func (f *flushBeforeUpstreamRead) Read(p []byte) (int, error) {
+	f.flush()
+	return f.r.Read(p)
+}
 
 // newUpstreamSSEScanner 构造读取上游 SSE 流的行扫描器，按配置放大单行上限。
 func (s *OpenAIGatewayService) newUpstreamSSEScanner(r io.Reader) *bufio.Scanner {
@@ -93,6 +110,24 @@ func (s *OpenAIGatewayService) readOpenAIUpstreamErrorWithCompleteness(resp *htt
 // failoverOpenAIUpstreamHTTPError 对 >=400 的上游响应做 failover 判定：命中时
 // 记录 ops 事件、执行账号级错误处置并返回 *UpstreamFailoverError；未命中返回
 // nil，调用方继续走各自端点格式的非 failover 错误处理链。
+const openAICompatTempUnschedAttemptKey = "openai_compat_temp_unsched_attempt"
+
+type openAICompatTempUnschedAttempt struct {
+	response  *http.Response
+	accountID int64
+	memo      *tempUnschedAttemptMemo
+}
+
+func openAICompatTempUnschedContext(c *gin.Context, response *http.Response, account *Account) context.Context {
+	ctx := c.Request.Context()
+	value, _ := c.Get(openAICompatTempUnschedAttemptKey)
+	checked, ok := value.(*openAICompatTempUnschedAttempt)
+	if ok && checked.response == response && account != nil && checked.accountID == account.ID {
+		return context.WithValue(ctx, tempUnschedAttemptMemoKey{}, checked.memo)
+	}
+	return ctx
+}
+
 func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	ctx context.Context,
 	c *gin.Context,
@@ -102,9 +137,18 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	upstreamMsg string,
 	upstreamModel string,
 ) *UpstreamFailoverError {
+	if isDeepSeekInputContentResponse(account, resp.StatusCode, respBody) {
+		return nil
+	}
 	shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody)
 	tempUnscheduled := false
 	if c != nil && account != nil && account.Platform != PlatformGrok && !shouldFailover && !IsResponseCommitted(c) && s.rateLimitService != nil {
+		// The compatibility error writer processes this same response next if
+		// the threshold is pending. Share only this response's evaluation;
+		// another upstream attempt must receive its own counter observation.
+		memo := &tempUnschedAttemptMemo{}
+		ctx = context.WithValue(ctx, tempUnschedAttemptMemoKey{}, memo)
+		c.Set(openAICompatTempUnschedAttemptKey, &openAICompatTempUnschedAttempt{response: resp, accountID: account.ID, memo: memo})
 		tempUnscheduled = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, upstreamModel) == ErrorPolicyTempUnscheduled
 		shouldFailover = tempUnscheduled
 	}
@@ -141,7 +185,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	if account.Platform != PlatformGrok && !tempUnscheduled {
 		shouldDisable = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 	}
-	return s.newOpenAIAccountFailoverError(
+	return s.newOpenAIHTTPAccountFailoverError(
 		account,
 		resp.StatusCode,
 		resp.Header,
@@ -211,7 +255,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		return nil, err
 	}
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
-	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))
+	upstreamReq, err := http.NewRequestWithContext(withOAuth429WireBody(upstreamCtx, body), http.MethodPost, targetURL, bytes.NewReader(body))
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
@@ -256,7 +300,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 
 	// 账号级请求头覆写：放在所有内置默认头（含 Grok CLI 身份头）之后应用，
 	// 使配置值获得除共享传输层强制头之外的最高优先级。
-	account.ApplyHeaderOverrides(upstreamReq.Header)
+	account.ApplyHeaderOverridesWithContext(upstreamReq.Context(), upstreamReq.Header)
 	applyOpenCodeSessionHeader(c, account, targetURL, upstreamReq.Header, body)
 
 	proxyURL := ""
@@ -279,7 +323,9 @@ type ccStreamScanState struct {
 	FirstTokenMs *int
 	// SawDone 表示上游发出了 [DONE] 哨兵。
 	SawDone bool
-	// Err 为 scanner 读错误（客户端 context 取消不属于此类，会原样带出）。
+	// SemanticFailure is authoritative only after valid JSON and an SSE delimiter.
+	SemanticFailure []byte
+	// Err 为上游语义失败或 scanner 读错误（客户端 context 取消会原样带出）。
 	// 非 nil 时调用方必须跳过 finalize 并返回 usage-incomplete 错误，避免
 	// 把上游截断伪装成正常收尾。
 	Err error
@@ -299,14 +345,58 @@ func (s *OpenAIGatewayService) scanCCStream(
 	emit func(*apicompat.ChatCompletionsChunk),
 ) ccStreamScanState {
 	var st ccStreamScanState
+	var pendingData strings.Builder
+	stagingEvent := false
+	eventBytes := 0
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "chat_completions"}
 	for scanner.Scan() {
 		line := scanner.Text()
 		timing.observeTimingLine(line)
-		payload, ok := extractOpenAISSEDataLine(line)
-		if !ok {
+		if eventType, ok := extractOpenAISSEEventLine(line); ok && eventType == "error" {
+			stagingEvent = true
+		}
+		payload, isData := extractOpenAISSEDataLine(line)
+		if isData {
+			trimmed := strings.TrimSpace(payload)
+			// Complete ordinary chunks retain their immediate per-line delivery.
+			// A JSON fragment may be the start of a data-only multiline error;
+			// retain it with all subsequent data until the SSE delimiter.
+			if trimmed != "" && trimmed != "[DONE]" && (!gjson.Valid(payload) || gjson.Get(payload, "error").IsObject() || gjson.Get(payload, "type").String() == "error") {
+				stagingEvent = true
+			}
+		}
+		if stagingEvent {
+			// Include framing bytes so even empty data lines have a fixed bound.
+			if len(line)+1 > openAIFirstOutputStageMaxBytes-eventBytes {
+				st.Err = errors.New("upstream error event exceeds size limit")
+				return st
+			}
+			eventBytes += len(line) + 1
+			if payload, ok := extractOpenAISSEDataLine(line); ok {
+				_, _ = pendingData.WriteString(payload)
+				_ = pendingData.WriteByte('\n')
+			}
+			if line != "" {
+				continue
+			}
+			payload = pendingData.String()
+			if gjson.Valid(payload) && gjson.Get(payload, "error").IsObject() {
+				st.SemanticFailure = []byte(payload)
+				st.Err = errors.New("upstream semantic stream failure")
+				return st
+			}
+			pendingData.Reset()
+			stagingEvent, eventBytes = false, 0
+			// Invalid/truncated events cannot hide a subsequent read reset.
+			if !gjson.Valid(payload) {
+				continue
+			}
+			// Multiline non-error chunks and usage use the same conversion path.
+			isData = true
+		}
+		if !isData {
 			continue
 		}
 		payload = strings.TrimSpace(payload)
@@ -363,6 +453,9 @@ func (s *OpenAIGatewayService) scanCCStream(
 			)
 		}
 		st.Err = err
+		if resetErr, handled := handleOpenAIHTTP2PeerReset(c, account, requestID, err); handled {
+			st.Err = resetErr
+		}
 	}
 	return st
 }
@@ -386,6 +479,9 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	if err != nil {
 		timing := sseTimingObserver{ctx: responseTimingContext(c, resp)}
 		timing.failTimingCapture()
+		if resetErr, handled := handleOpenAIHTTP2PeerReset(c, account, resp.Header.Get("x-request-id"), err); handled {
+			return nil, OpenAIUsage{}, resetErr
+		}
 		if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
 			writeError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}

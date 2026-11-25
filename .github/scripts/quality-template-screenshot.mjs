@@ -20,9 +20,9 @@ export const listQualityPlans=async()=>[structuredClone(plan)];export const list
 export const createQualityPreset=async(body)=>{const saved={...JSON.parse(JSON.stringify(body)),id:17,created_at:'',updated_at:''};presets=[saved];window.templateEvidence.presetWrites++;return saved};export const updateQualityPreset=async(id,body)=>{presets=[{...JSON.parse(JSON.stringify(body)),id,created_at:'',updated_at:''}];window.templateEvidence.presetWrites++;return structuredClone(presets[0])};
 export const runQualityPlan=async()=>{window.templateEvidence.runCalls++};export const createQualityTemplate=async()=>{throw Error('unexpected_dispatch')};export const updateQualityTemplate=async()=>{throw Error('unexpected_dispatch')};export const deleteQualityTemplate=async()=>{};
 export const previewQualityOwnership=async()=>({entries:[],models:[],group_ids:[],action:'',ownership_retained:false,relinquishable_count:0});export const reconcileQualityOwnership=async()=>{};export const restoreQualityOwnership=async()=>{};export const removeQualityOwnedModel=async()=>{};`,
-  accounts: `export const list=async()=>({items:[{id:1,name:'虚构账号',platform:'openai',type:'oauth',status:'active'}],total:1}); export const getAntigravityDefaultModelMapping=async()=>({}); export const accountsAPI={};`,
-  groups: `export const getModelAllowlistCandidates=async()=>['synthetic-judge']; export const getAllIncludingInactive=async()=>[{id:21,name:'虚构普通判题分组',status:'active',platform:'openai'}];`,
-  scheduled: `export default {create:async()=>{window.templateEvidence.planWrites++;return {id:8}},update:async()=>{window.templateEvidence.planWrites++;return {id:7}},delete:async()=>{},listResults:async()=>[],getResult:async()=>({})};`,
+  accounts: `export const list=async()=>({items:[{id:1,name:'虚构账号',platform:'openai',type:'oauth',status:'active'}],total:1}); export const getAntigravityDefaultModelMapping=async()=>({}); export const getAvailableModels=async()=>[]; export const getModelReasoning=async()=>({supported_reasoning_levels:[],default_reasoning_level:''}); export const probeOpenAICodexState=async()=>{throw new Error('unexpected_account_diagnostic')}; export const accountsAPI={list,getAntigravityDefaultModelMapping,getAvailableModels,getModelReasoning,probeOpenAICodexState}; export default accountsAPI;`,
+  groups: `export const getModelAllowlistCandidates=async()=>['synthetic-judge']; export const getAllIncludingInactive=async()=>[{id:21,name:'虚构普通判题分组',status:'active',platform:'openai'}]; export const groupsAPI={getModelAllowlistCandidates,getAllIncludingInactive}; export default groupsAPI;`,
+  scheduled: `export const scheduledTestsAPI={create:async()=>{window.templateEvidence.planWrites++;return {id:8}},update:async()=>{window.templateEvidence.planWrites++;return {id:7}},delete:async()=>{},listResults:async()=>[],getResult:async()=>({})}; export default scheduledTestsAPI;`,
 }
 // Real JS fixtures let Vite's dependency scanner classify imports that replace
 // .vue files; a virtual ID there is incorrectly treated as an HTML entry.
@@ -100,8 +100,35 @@ try {
   if (!await page.getByTestId('quality-target-group-21').isChecked()) throw Error('edited_groups_not_applied')
   if (await page.getByTestId('quality-copy-max-results').inputValue()!=='147') throw Error('edited_retention_not_applied')
   await page.getByTestId('quality-reuse-preview').screenshot({path:path.join(output,'complete-read-apply-draft-preview.png')})
-  const operations=await page.evaluate(()=>window.templateEvidence)
+  let operations=await page.evaluate(()=>window.templateEvidence)
   if (operations.presetWrites!==2 || operations.planWrites!==0 || operations.runCalls!==0) throw Error('passive_template_wrote_business_state')
+  // Bulk import keeps field selection explicit; the preview now offers a
+  // complete path from an empty selection to reviewed, saveable changes.
+  await page.locator('.editor-footer .btn-secondary').click()
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await page.locator('[data-plan-id="7"] .rule-checkbox input').check()
+  await page.getByTestId('quality-bulk-edit').click()
+  await page.getByTestId('quality-preset-select').selectOption('17')
+  await page.getByTestId('quality-apply-preset').click()
+  const bulkSubmit = page.locator('.editor-footer button[form="quality-rule-form"]')
+  if (!await bulkSubmit.isDisabled()) throw Error('bulk_empty_fields_save_enabled')
+  await page.getByTestId('quality-reuse-preview').screenshot({path:path.join(output,'bulk-import-empty-fields.png')})
+  await page.locator('.modal-footer').screenshot({path:path.join(output,'bulk-import-save-hint.png')})
+  if (!process.env.QUALITY_BULK_BEFORE) {
+    if (!await page.getByTestId('quality-reuse-empty-fields').isVisible()) throw Error('bulk_empty_hint_missing')
+    await page.getByTestId('quality-reuse-select-all').click()
+    if (!await bulkSubmit.isDisabled()) throw Error('bulk_unconfirmed_save_enabled')
+    await page.getByTestId('quality-reuse-confirm').check()
+    if (await bulkSubmit.isDisabled()) throw Error('bulk_confirmed_save_disabled')
+    await page.locator('[data-reuse-target="7"] summary').click()
+    await page.getByTestId('quality-reuse-preview').screenshot({path:path.join(output,'bulk-import-confirmed-fields.png')})
+    await page.getByTestId('quality-reuse-field-enabled').uncheck()
+    if (!await bulkSubmit.isDisabled()) throw Error('bulk_changed_fields_kept_confirmation')
+    await page.getByTestId('quality-reuse-confirm').check()
+    await bulkSubmit.click()
+    if ((await page.evaluate(()=>window.templateEvidence.planWrites)) !== 1) throw Error('bulk_did_not_save_target')
+  }
+  operations=await page.evaluate(()=>window.templateEvidence)
   if (failures.length || blocked.length) throw new Error('offline_render_failed')
   await fs.writeFile(path.join(output, 'verification.json'), JSON.stringify({ commit: process.env.QUALITY_HEAD_SHA, component: 'AccountQualityView.vue', operations, synthetic: true, paidRequests: 0, applicationApiCalls: 0, failures, blocked }, null, 2))
 } catch (err) {

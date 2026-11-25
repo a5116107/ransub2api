@@ -37,6 +37,7 @@ func (u accountTimingUpstream) Do(req *http.Request, proxy string, account int64
 	resp, err := u.upstream.Do(req, proxy, account, concurrency)
 	observeScope(resp)
 	trace.Response(resp, err)
+	recordOAuth429TestStatus(req, account, resp, err)
 	accountTestResponseMode(req, resp)
 	return resp, err
 }
@@ -47,6 +48,7 @@ func (u accountTimingUpstream) DoWithTLS(req *http.Request, proxy string, accoun
 	resp, err := u.upstream.DoWithTLS(req, proxy, account, concurrency, profile)
 	observeScope(resp)
 	trace.Response(resp, err)
+	recordOAuth429TestStatus(req, account, resp, err)
 	accountTestResponseMode(req, resp)
 	return resp, err
 }

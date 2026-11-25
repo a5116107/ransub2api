@@ -8,16 +8,45 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamstats"
-
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 )
 
-type accountPerformanceRepository struct{ db *sql.DB }
+type accountPerformanceRepository struct {
+	db      *sql.DB
+	display *accountPerformanceDisplayCache
+}
 
-func NewAccountPerformanceRepository(db *sql.DB) service.AccountPerformanceRepository {
-	return &accountPerformanceRepository{db: db}
+func NewAccountPerformanceRepository(db *sql.DB, rdb *redis.Client, cfg *config.Config) service.AccountPerformanceRepository {
+	r := &accountPerformanceRepository{db: db}
+	r.display = newAccountPerformanceDisplayCache(rdb, cfg.Database.DBName, func(ctx context.Context, ids []int64, minutes int, now time.Time) (map[int64]service.AccountPerformance, error) {
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err = tx.ExecContext(ctx, `SET LOCAL statement_timeout='4500ms'; SET LOCAL lock_timeout='500ms'; SET LOCAL work_mem='8MB'; SET LOCAL max_parallel_workers_per_gather=0`); err != nil {
+			return nil, err
+		}
+		metrics, err := readAccountPerformanceWindow(ctx, tx, ids, minutes, now, nil)
+		if err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return metrics, nil
+	})
+	return r
+}
+
+func (r *accountPerformanceRepository) Stop() {
+	if r.display != nil {
+		r.display.stop()
+	}
 }
 
 // Strict, completed instrumented requests only. Missing traces/ambiguous traces,
@@ -26,36 +55,42 @@ func NewAccountPerformanceRepository(db *sql.DB) service.AccountPerformanceRepos
 // Normalize Z and nanoseconds before jsonpath .datetime(): PostgreSQL 14-16
 // needs an explicit UTC offset; all supported versions accept microseconds.
 const performanceMetricsSQL = `
-WITH source AS (
- SELECT u.*, t.detail,
+WITH source AS MATERIALIZED (
+ SELECT u.account_id,u.output_tokens,u.duration_ms,u.first_token_ms,u.stream,
+  u.input_tokens,u.cache_read_tokens,u.cache_creation_tokens,
   (jsonb_path_query_first_tz(jsonb_build_object('at',
-   regexp_replace(regexp_replace(t.detail->>'started_at','Z$','+00:00'),
+   regexp_replace(regexp_replace(d.started_at,'Z$','+00:00'),
     '(\.[0-9]{6})[0-9]+([+-])','\1\2')),
    '$.at.datetime()', '{}',true)#>>'{}')::timestamptz AS event_at
  FROM usage_logs u
  JOIN LATERAL (
-  SELECT (array_agg(detail))[1] AS detail FROM (
+  SELECT detail, count(*) OVER () AS traces FROM (
    SELECT detail FROM request_timing_details WHERE usage_log_id=u.id LIMIT 2
-  ) bounded_traces HAVING COUNT(*)=1
- ) t ON true
- -- Successful usage is timestamped at completion, never before trace start.
- -- Reuses idx_usage_logs_account_created_at before joining timing evidence.
+  ) bounded_traces
+ ) t ON t.traces=1
+ -- Decode the potentially TOASTed JSON once instead of once per predicate.
+ CROSS JOIN LATERAL jsonb_to_record(CASE WHEN jsonb_typeof(t.detail)='object' THEN t.detail ELSE '{}'::jsonb END) AS d(
+  version text,started_at text,outcome text,status text,body_complete text,
+  canceled text,truncated text,client_disconnect text,downstream_error text,terminal text)
  WHERE u.account_id=ANY($1) AND u.created_at >= $2
+ AND COALESCE(u.image_count,0)=0 AND COALESCE(u.image_output_tokens,0)=0
+ AND COALESCE(u.billing_mode,'token') NOT IN ('image','video')
+ AND d.version='1' AND d.outcome='success' AND d.status='200' AND d.body_complete='true'
+ AND d.canceled='false' AND d.truncated='false'
+ AND d.client_disconnect='false' AND d.downstream_error='false'
+ AND (NOT u.stream OR d.terminal='completed')
 ), successful AS (
- SELECT * FROM source
- WHERE event_at >= $2 AND event_at <= $3
- AND detail->>'version'='1' AND detail->>'outcome'='success'
- AND detail->>'status'='200' AND detail->>'body_complete'='true'
- AND detail->>'canceled'='false' AND detail->>'truncated'='false'
- AND detail->>'client_disconnect'='false' AND detail->>'downstream_error'='false'
- AND (NOT stream OR detail->>'terminal'='completed')
- AND COALESCE(image_count,0)=0 AND COALESCE(image_output_tokens,0)=0 AND COALESCE(billing_mode,'token') NOT IN ('image','video')
+ SELECT * FROM source WHERE event_at >= $2 AND event_at <= $3
 ), usage AS (
  SELECT account_id,
  AVG(output_tokens*1000.0/NULLIF(duration_ms,0)) FILTER(WHERE output_tokens>=2 AND duration_ms>0) AS tps,
  COUNT(*) FILTER(WHERE output_tokens>=2 AND duration_ms>0) AS tps_n,
  AVG(first_token_ms) FILTER(WHERE stream AND first_token_ms>=0 AND first_token_ms<=duration_ms AND output_tokens>=2) AS ttft,
- COUNT(*) FILTER(WHERE stream AND first_token_ms>=0 AND first_token_ms<=duration_ms AND output_tokens>=2) AS ttft_n
+ COUNT(*) FILTER(WHERE stream AND first_token_ms>=0 AND first_token_ms<=duration_ms AND output_tokens>=2) AS ttft_n,
+ AVG(100.0*cache_read_tokens/NULLIF(input_tokens::numeric+cache_read_tokens+cache_creation_tokens,0))
+  FILTER(WHERE input_tokens>=0 AND cache_read_tokens>=0 AND cache_creation_tokens>=0) AS cache_percent,
+ COUNT(*) FILTER(WHERE input_tokens>=0 AND cache_read_tokens>=0 AND cache_creation_tokens>=0
+  AND input_tokens::numeric+cache_read_tokens+cache_creation_tokens>0) AS cache_n
  FROM successful GROUP BY account_id
 ), rounds AS (
  SELECT p.account_id,p.id,r.quality_round_id,
@@ -87,7 +122,7 @@ WITH source AS (
  COUNT(*) FILTER(WHERE passed OR failed) AS quality_n FROM rounds GROUP BY account_id
 )
 SELECT ids.id,u.tps,COALESCE(u.tps_n,0),u.ttft,COALESCE(u.ttft_n,0),q.degraded,COALESCE(q.quality_n,0),
- COALESCE(m.config,'{}'),COALESCE(m.revision,0),COALESCE(m.paused,false),COALESCE(m.pause_generation,0),m.paused_at,COALESCE(m.reason,'')
+ COALESCE(m.config,'{}'),COALESCE(m.revision,0),COALESCE(m.paused,false),COALESCE(m.pause_generation,0),m.paused_at,COALESCE(m.reason,''),u.cache_percent,COALESCE(u.cache_n,0)
 FROM unnest($1::bigint[]) ids(id)
 JOIN accounts a ON a.id=ids.id AND a.deleted_at IS NULL
 LEFT JOIN usage u ON u.account_id=ids.id LEFT JOIN quality q ON q.account_id=ids.id
@@ -123,6 +158,11 @@ func readAccountPerformance(ctx context.Context, db sqlExecutor, ids []int64, no
 	if err != nil {
 		return nil, err
 	}
+	return readAccountPerformanceWindow(ctx, db, ids, minutes, now, scope)
+}
+
+func readAccountPerformanceWindow(ctx context.Context, db sqlExecutor, ids []int64, minutes int, now time.Time, scope *service.PrioritySchedulingQuery) (map[int64]service.AccountPerformance, error) {
+	out := make(map[int64]service.AccountPerformance, len(ids))
 	since := now.Add(-time.Duration(minutes) * time.Minute)
 	statement := performanceMetricsSQL
 	args := []any{pq.Array(ids), since, now}
@@ -154,7 +194,7 @@ func readAccountPerformance(ctx context.Context, db sqlExecutor, ids []int64, no
 	for rows.Next() {
 		var m service.AccountPerformance
 		var config []byte
-		if err := rows.Scan(&m.AccountID, &m.AvgTPS, &m.TPSSamples, &m.AvgTTFTMs, &m.TTFTSamples, &m.DegradationPercent, &m.QualitySamples, &config, &m.Revision, &m.Paused, &m.PauseGeneration, &m.PausedAt, &m.Reason); err != nil {
+		if err := rows.Scan(&m.AccountID, &m.AvgTPS, &m.TPSSamples, &m.AvgTTFTMs, &m.TTFTSamples, &m.DegradationPercent, &m.QualitySamples, &config, &m.Revision, &m.Paused, &m.PauseGeneration, &m.PausedAt, &m.Reason, &m.AvgCachePercent, &m.CacheSamples); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(config, &m.Config); err != nil {
@@ -183,7 +223,10 @@ func readAccountPerformance(ctx context.Context, db sqlExecutor, ids []int64, no
 	return out, nil
 }
 func (r *accountPerformanceRepository) Read(ctx context.Context, ids []int64, now time.Time) (map[int64]service.AccountPerformance, error) {
-	return readAccountPerformance(ctx, r.db, ids, now, nil)
+	if r.display == nil {
+		return readAccountPerformance(ctx, r.db, ids, now, nil)
+	}
+	return r.readDisplay(ctx, ids, now)
 }
 func (r *accountPerformanceRepository) EnabledIDs(ctx context.Context) ([]int64, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT m.account_id FROM account_performance_monitors m JOIN accounts a ON a.id=m.account_id WHERE m.config->>'enabled'='true' AND NOT m.paused AND a.deleted_at IS NULL ORDER BY m.account_id`)

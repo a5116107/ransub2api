@@ -55,6 +55,11 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 		cfg = &copy
 
 	}
+	var ciallo *CialloEvidence
+	if cfg.QuestionKind == QualityCialloQuestionKind {
+		ciallo = &CialloEvidence{TemplateVersion: cialloTemplateVersion, JudgeVersion: cialloJudgeVersion}
+		ctx = context.WithValue(ctx, cialloEvidenceKey{}, ciallo)
+	}
 	started := time.Now()
 	observation := &availabilityProbeObservation{}
 	ctx = context.WithValue(ctx, availabilityProbeSnapshotKey{}, observation)
@@ -91,12 +96,16 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 		output = ""
 		message = pelicanErrHistoryLimit
 	}
+	if ciallo != nil && message == "" && (!ciallo.complete || ciallo.interrupted || ctx.Err() != nil) {
+		message = "ciallo_incomplete"
+	}
 	status := "success"
 	if message != "" {
 		status = "failed"
 	}
 	finished := time.Now()
 	snapshot := *cfg
+	snapshot.Ciallo = ciallo
 	snapshot.ModelID = model
 	snapshot.AvailabilityResult = availability
 	snapshot.ActualPrompt = intelligenceTestPrompt(cfg)
@@ -138,6 +147,25 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d claim failed: %v", plan.ID, err)
 	}
 	if err != nil || !claimed {
+		return false
+	}
+	// Re-read quota after claiming: the account may have exhausted its quota
+	// since template selection or ListDue. Do not turn a skipped run into a
+	// quality verdict, or disturb ownership used by later recovery rounds.
+	available, quotaErr := s.qualityTemplateQuotaAvailable(ctx, plan)
+	if quotaErr != nil || !available {
+		logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d account=%d skipped: template quota unavailable", plan.ID, plan.AccountID)
+		finishCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		var finishErr error
+		if repo, ok := s.planRepo.(QualityQuotaSkipRepository); ok {
+			finishErr = repo.FinishQuotaSkippedPelican(finishCtx, plan, until, time.Now())
+		} else {
+			finishErr = s.planRepo.FinishPelican(finishCtx, plan.ID, until, time.Now())
+		}
+		if finishErr != nil {
+			logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d finish failed: %v", plan.ID, finishErr)
+		}
 		return false
 	}
 	// Result-only metadata must not mutate the stored rule or shared plan config.
@@ -386,16 +414,20 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		if result.Status == "success" {
 			succeeded = true
 		}
-		if err := s.scheduledSvc.SaveResult(saveCtx, plan.ID, plan.MaxResults, result); err != nil {
-			allSaved = false
-			logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d save failed: %v", plan.ID, err)
+		saved, saveErr := s.scheduledSvc.saveResult(saveCtx, plan.ID, plan.MaxResults, result)
+		allSaved = allSaved && saved
+		if saveErr != nil {
+			logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d save failed: %v", plan.ID, saveErr)
 		}
 	}
+	if !allSaved {
+		// Partial history cannot cover a queued signal. Keep the claimed lease:
+		// releasing it would immediately replay probes and quality actions.
+		// Persistence-only recovery after lease expiry needs a durable continuation.
+		return false
+	}
 	if cleanup, ok := s.planRepo.(QualityOAuth401Repository); ok {
-		evidence := &QualityOAuth401Round{}
-		if allSaved {
-			evidence = QualityOAuth401Evidence(plan, results)
-		}
+		evidence := QualityOAuth401Evidence(plan, results)
 		deleted, cleanupErr := cleanup.CompleteQualityOAuth401Round(saveCtx, plan, until, evidence)
 		if cleanupErr != nil {
 			logger.LegacyPrintf("service.scheduled_test_runner", "quality OAuth 401 cleanup plan=%d account=%d failed", plan.ID, plan.AccountID)
@@ -407,6 +439,12 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	if succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && plan.PelicanConfig.Availability == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
 		s.tryRecoverAccount(saveCtx, plan.AccountID, plan.ID)
 	}
+	if plan.PelicanConfig.Quality != nil && isBuiltinCandyPlan(plan.PelicanConfig) && applyTriggeredQuality &&
+		qualityAction != "stale_run" && qualityAction != "action_error" && qualityAction != "account_deleted" {
+		s.reviewDegradationCandyRound(runCtx, plan, until, results)
+	}
+	finishCtx, finishCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer finishCancel()
 	finished := time.Now()
 	if coverageOnly {
 		finisher, ok := s.planRepo.(interface {
@@ -423,9 +461,9 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		if nextErr != nil {
 			return false
 		}
-		err = s.planRepo.FinishTriggeredQuality(saveCtx, plan, until, finished, following)
+		err = s.planRepo.FinishTriggeredQuality(finishCtx, plan, until, finished, following)
 	} else {
-		err = s.planRepo.FinishPelican(saveCtx, plan.ID, until, finished)
+		err = s.planRepo.FinishPelican(finishCtx, plan.ID, until, finished)
 	}
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d finish failed: %v", plan.ID, err)
@@ -439,18 +477,17 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 // the persistence loop with a nil entry. Panic values may contain request data.
 func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan *ScheduledTestPlan) (result *ScheduledTestResult) {
 	started := time.Now()
+	// Own the result metadata; rule/client evidence is not proof of the input
+	// assembled by the answer executor. Probes do not send a question prompt.
+	var snapshot PelicanTestConfig
 	var availability *AvailabilityProbeResult
 	failure := func(message string) *ScheduledTestResult {
 		finished := time.Now()
-		snapshot := &PelicanTestConfig{}
-		if plan.PelicanConfig != nil {
-			*snapshot = *plan.PelicanConfig
-		}
 		snapshot.AvailabilityResult = availability
 		if snapshot.AvailabilityResult == nil {
 			snapshot.AvailabilityResult = availabilityProbeResult(started, finished, nil, false, false, ctx.Err())
 		}
-		return &ScheduledTestResult{Status: "failed", ErrorMessage: message, StartedAt: started, FinishedAt: finished, LatencyMs: finished.Sub(started).Milliseconds(), PelicanConfig: snapshot}
+		return &ScheduledTestResult{Status: "failed", ErrorMessage: message, StartedAt: started, FinishedAt: finished, LatencyMs: finished.Sub(started).Milliseconds(), PelicanConfig: &snapshot}
 	}
 	defer func() {
 		if recover() != nil {
@@ -458,11 +495,18 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 			logger.LegacyPrintf("service.scheduled_test_runner", "pelican plan=%d account=%d sample panicked", plan.ID, plan.AccountID)
 		}
 	}()
+	snapshot = *plan.PelicanConfig
+	snapshot.ActualPrompt = ""
 	if plan.PelicanConfig.QuestionKind == QualityRandomQuestionKind && (plan.PelicanConfig.RandomQuestion == nil || plan.PelicanConfig.Prompt == "" || plan.PelicanConfig.Quality == nil || plan.PelicanConfig.Quality.ExpectedAnswer == "") {
 		return failure("random_question_not_prepared")
 	}
 	if batch := plan.PelicanConfig.QualityBatch; batch != nil && !time.Now().Before(batch.StartDeadline) {
 		return failure("quality_batch_start_window_closed")
+	}
+	if !isOpenAICodexStateProbePlan(plan.PelicanConfig) && ctx.Err() == nil {
+		// Retain the assembled invocation input even if the adapter fails or
+		// panics before returning evidence; this does not assert delivery.
+		snapshot.ActualPrompt = intelligenceTestPrompt(plan.PelicanConfig)
 	}
 	var err error
 	probeCtx := ctx
@@ -476,15 +520,15 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 	if result == nil {
 		return failure("scheduled_test_empty_result: background sample returned no result")
 	}
-	snapshot := *plan.PelicanConfig
-	snapshot.AvailabilityResult = nil
 	if result.PelicanConfig != nil {
-		snapshot.AvailabilityResult = result.PelicanConfig.AvailabilityResult
+		// The trusted executor's snapshot describes the actual answer call.
+		snapshot = *result.PelicanConfig
 	}
+	snapshot.TriggerSource = plan.PelicanConfig.TriggerSource
+	result.PelicanConfig = &snapshot
 	if snapshot.AvailabilityResult == nil {
 		snapshot.AvailabilityResult = availabilityProbeResult(result.StartedAt, result.FinishedAt, nil, false, false, ctx.Err())
 	}
-	result.PelicanConfig = &snapshot
 	availability = snapshot.AvailabilityResult
 	// 探针题型的结果自带 correct/incorrect/unknown 判定，不经过判题模型。
 	if plan.PelicanConfig.Quality != nil && plan.TriggerSource != AvailabilityCoverageSource && result.Status == "success" && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
@@ -498,6 +542,14 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 			judgment = &QualityJudgment{Verdict: "incorrect", Reason: "builtin_candy", AccountID: plan.AccountID}
 			if CandyAnswerCorrect(result.ResponseText) {
 				judgment.Verdict = "correct"
+			}
+		} else if plan.PelicanConfig.QuestionKind == QualityCialloQuestionKind {
+			judgment = &QualityJudgment{Kind: QualityCialloQuestionKind, RulesVersion: cialloJudgeVersion, Verdict: "unknown", Reason: "incomplete"}
+			if evidence := snapshot.Ciallo; evidence != nil && evidence.complete && !evidence.interrupted && strings.TrimSpace(result.ResponseText) != "" {
+				judgment.Verdict, judgment.Reason = "incorrect", "unmatched"
+				if matchedCialloGreeting(result.ResponseText) != "" {
+					judgment.Verdict, judgment.Reason = "correct", "matched"
+				}
 			}
 		} else if s.judgeQuality != nil {
 			judgment = s.judgeQuality(ctx, plan.AccountID, plan.PelicanConfig, result.ResponseText)
@@ -558,6 +610,9 @@ func isBuiltinCandyPlan(cfg *PelicanTestConfig) bool {
 
 // Missing kind preserves HTML validation for saved plans from older versions.
 func intelligenceTestPrompt(cfg *PelicanTestConfig) string {
+	if cfg.QuestionKind == QualityCialloQuestionKind {
+		return QualityCialloQuestionKind
+	}
 	if cfg.Quality != nil {
 		return cfg.Prompt + "\n\n只输出最终答案，不要解释。"
 	}

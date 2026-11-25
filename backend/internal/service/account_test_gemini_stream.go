@@ -17,7 +17,7 @@ import (
 // answer availability, and an SSE sentinel or thought text never completes it.
 func readGeminiTestStream(ctx context.Context, body io.Reader, observe func(string), emit func(TestEvent)) error {
 	_, answerTest := pelicanTestOptionsFromContext(ctx)
-	requireComplete := answerTest || ctx.Value(availabilityProbeSnapshotKey{}) != nil
+	requireComplete := answerTest || ctx.Value(availabilityProbeSnapshotKey{}) != nil || isOAuth429Execution(ctx)
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 4096), 4<<20)
 	var data strings.Builder
@@ -133,6 +133,7 @@ func readGeminiTestStream(ctx context.Context, body io.Reader, observe func(stri
 			}
 			switch finish.String() {
 			case "STOP":
+				confirmOAuth429Answer(ctx, output)
 				if !output {
 					return errors.New(pelicanErrEmptyOutput)
 				}

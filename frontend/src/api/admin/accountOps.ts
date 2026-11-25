@@ -1,4 +1,8 @@
 import { apiClient } from '../client'
+export async function setAccountOpsBalanceLowNotification(id: number, enabled: boolean): Promise<AccountOpsConfig> {
+  const { data } = await apiClient.put(`/admin/account-ops/accounts/${id}/balance-notification`, { enabled })
+  return data
+}
 export type AccountOpsWebhookProvider = 'wecom' | 'dingtalk' | 'feishu' | 'custom'
 export interface AccountOpsWebhook {
   id: string
@@ -36,7 +40,13 @@ export interface AccountOpsQuotaThreshold {
   notify_recovery?: boolean
 }
 export type AccountOpsObservationStatus = 'ok' | 'stale' | 'failed' | 'unsupported' | 'unknown'
+export type AccountOpsOAuthLifecycle = 'temporary' | 'long_term'
+export async function setAccountOpsOAuthLifecycle(id: number, lifecycle: AccountOpsOAuthLifecycle): Promise<void> {
+  await apiClient.put(`/admin/account-ops/accounts/${id}/lifecycle`, { lifecycle })
+}
 export interface AccountOpsThresholdAccount {
+  provider_id?: number
+  oauth_lifecycle?: AccountOpsOAuthLifecycle
   account_id: number
   account_name: string
   group_id?: string
@@ -46,6 +56,8 @@ export interface AccountOpsThresholdAccount {
   type: 'apikey' | 'oauth'
   balance: number | null
   unit: string
+  probe_enabled?: boolean
+  last_known_balance?: number
   balance_status: AccountOpsObservationStatus
   received_at: string | null
   usage_windows: Array<{
@@ -58,6 +70,7 @@ export interface AccountOpsThresholdAccount {
   }>
 }
 export interface AccountOpsGroup {
+  provider_id?: number
   id: string
   name: string
   default_name: string
@@ -71,10 +84,11 @@ export interface AccountOpsConfig {
   recipient: string
   email_name?: string
   balance_low: boolean
+  balance_low_disabled_account_ids?: number[]
   weekly_quota: boolean
   cooldown_minutes: number
   webhooks?: AccountOpsWebhook[]
-  groups?: Array<{ id: string; name: string; provider?: string; site?: string; account_ids?: number[] }>
+  groups?: Array<{ id: string; name: string; provider_id?: number; provider?: string; site?: string; account_ids?: number[] }>
   balance_thresholds?: AccountOpsBalanceThreshold[]
   quota_thresholds?: AccountOpsQuotaThreshold[]
 }
@@ -162,7 +176,7 @@ export async function getAccountOpsThresholdGroups(): Promise<AccountOpsGroup[]>
     account_ids: Array.isArray(group.account_ids) ? [...group.account_ids] : [],
   }))
 }
-export async function saveAccountOpsGroups(groups: Array<{ id: string; name: string; provider?: string; site?: string; account_ids: number[] }>): Promise<AccountOpsConfig> {
+export async function saveAccountOpsGroups(groups: Array<{ id: string; name: string; provider_id?: number; provider?: string; site?: string; account_ids: number[] }>): Promise<AccountOpsConfig> {
   return (await apiClient.put('/admin/account-ops/groups', { groups })).data
 }
 export async function testAccountOpsWebhook(id: string): Promise<{ ok: boolean }> {

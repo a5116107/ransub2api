@@ -12,6 +12,9 @@ func firstNonEmpty(values ...string) string {
 }
 
 type SystemSettings struct {
+	BalanceForecastEnabled              bool
+	BalanceForecastThresholdHours       float64
+	BalanceForecastMaxNotifications     int
 	OpenAICodexTicketHarvestScope       CodexTicketHarvestScope
 	OpenAICodexTicketStrictResponse     bool
 	OpenAICodexTicketCandyObservation   bool
@@ -221,10 +224,12 @@ type SystemSettings struct {
 	PrismBrowserAPIKey                   string `json:"-"`
 
 	// Grok model mapping policy (admin settings; empty mapping falls back to these).
-	GrokDefaultTextModel           string `json:"grok_default_text_model"`
-	GrokCrossClientModelMapEnabled bool   `json:"grok_cross_client_model_map_enabled"`
-	GrokDefaultBaseURLMode         string `json:"grok_default_base_url_mode"`
-	GrokVideoSourceURLEnabled      bool   `json:"grok_video_source_url_enabled"`
+	GrokDefaultTextModel                 string `json:"grok_default_text_model"`
+	GrokCrossClientModelMapEnabled       bool   `json:"grok_cross_client_model_map_enabled"`
+	GrokDefaultBaseURLMode               string `json:"grok_default_base_url_mode"`
+	GrokVideoSourceURLEnabled            bool   `json:"grok_video_source_url_enabled"`
+	OpenAI409OmitEncryptedHistoryEnabled bool   `json:"openai_409_omit_encrypted_history_enabled"`
+	OpenAI400OmitEncryptedHistoryEnabled bool   `json:"openai_400_omit_encrypted_history_enabled"`
 
 	// Available Channels feature (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
@@ -240,10 +245,12 @@ type SystemSettings struct {
 	SubscriptionEnabled bool `json:"subscription_enabled"`
 
 	// Model Plaza feature (public group/model pricing showcase)
-	ModelPlazaEnabled       bool   `json:"model_plaza_enabled"`
-	ModelPlazaRequireAuth   bool   `json:"model_plaza_require_auth"`
-	ModelPlazaDescription   string `json:"model_plaza_description"`
-	PluginManagementEnabled bool   `json:"plugin_management_enabled"`
+	ModelPlazaEnabled       bool                       `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth   bool                       `json:"model_plaza_require_auth"`
+	ModelPlazaDescription   string                     `json:"model_plaza_description"`
+	ModelPlazaUSDToCNYRate  float64                    `json:"model_plaza_usd_to_cny_rate"`
+	ModelPlazaCurrency      ModelPlazaCurrencySettings `json:"model_plaza_currency"`
+	PluginManagementEnabled bool                       `json:"plugin_management_enabled"`
 
 	// Support tickets ("网站工单") switch + form config
 	SupportTicketEnabled bool                `json:"support_ticket_enabled"`
@@ -330,12 +337,9 @@ type SystemSettings struct {
 	OpenAIAdvancedSchedulerEffectiveWeightSessionSticky    string
 
 	// 余额不足提醒
-	BalanceForecastEnabled          bool
-	BalanceForecastThresholdHours   float64
-	BalanceForecastMaxNotifications int
-	BalanceLowNotifyEnabled         bool
-	BalanceLowNotifyThreshold       float64
-	BalanceLowNotifyRechargeURL     string
+	BalanceLowNotifyEnabled     bool
+	BalanceLowNotifyThreshold   float64
+	BalanceLowNotifyRechargeURL string
 
 	// 订阅到期提醒
 	SubscriptionExpiryNotifyEnabled bool
@@ -613,6 +617,7 @@ func DefaultRectifierSettings() *RectifierSettings {
 		Enabled:                  true,
 		ThinkingSignatureEnabled: true,
 		ThinkingBudgetEnabled:    true,
+		APIKeySignatureEnabled:   true,
 	}
 }
 

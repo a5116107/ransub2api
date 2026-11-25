@@ -143,7 +143,7 @@ func TestAvailabilityGeminiSemanticFaultSQLRecovery(t *testing.T) {
 			cfg := &config.Config{}
 			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 			upstream := &geminiAvailabilitySQLUpstream{client: server.Client()}
-			limiter := service.ProvideRateLimitService(accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, plans)
+			limiter := service.ProvideRateLimitService(accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, plans)
 			gateway := service.NewGeminiMessagesCompatService(accounts, nil, nil, nil, nil, limiter, upstream, nil, cfg)
 			antigravityGateway := service.NewAntigravityGatewayService(accounts, nil, nil, &service.AntigravityTokenProvider{}, limiter, upstream, service.NewSettingService(nil, cfg), nil)
 			tester := service.NewAccountTestService(accounts, nil, nil, nil, antigravityGateway, upstream, cfg, nil)

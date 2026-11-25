@@ -153,14 +153,16 @@ func availabilityBPSScopeForRequest(request *http.Request, payload []byte) *Avai
 		fields["store"].Type != gjson.False || !fields["input"].IsArray() || !availabilityTextInput(fields["input"], "responses_http") {
 		return nil
 	}
-	management := fields["context_management"]
-	if !management.IsArray() || len(management.Array()) != 1 {
-		return nil
-	}
-	compact, valid := availabilityJSONObject(management.Array()[0])
-	if !valid || len(compact) != 2 || compact["type"].String() != "compaction" ||
-		compact["compact_threshold"].Type != gjson.Number || compact["compact_threshold"].Raw != "920000" {
-		return nil
+	if fields["context_management"].Exists() {
+		management := fields["context_management"]
+		if !management.IsArray() || len(management.Array()) != 1 {
+			return nil
+		}
+		compact, valid := availabilityJSONObject(management.Array()[0])
+		if !valid || len(compact) != 2 || compact["type"].String() != "compaction" ||
+			compact["compact_threshold"].Type != gjson.Number || compact["compact_threshold"].Raw != "920000" {
+			return nil
+		}
 	}
 	metadata, valid := availabilityJSONObject(fields["metadata"])
 	if !valid || len(metadata) != 3 || metadata["task_id"].Type != gjson.String || metadata["turn_id"].Type != gjson.String ||

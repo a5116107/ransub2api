@@ -16,10 +16,11 @@ except ImportError:
     from openai_excel_oauth_adapter import replace_exact
 
 PINNED_PROTOCOL_BLOB = 'ff2db2507e401c29fa78705e44f5b40a3108a8c6'
-STAGES = frozenset(('starting', 'web_login', 'password_accepted', 'mfa_challenge',
+BOUND_PROTOCOL_BLOB = '7d5143da87e36ad79c2d050003df99319736b866'
+STAGES = frozenset(('starting', 'web_login', 'email_verification', 'password_accepted', 'mfa_challenge',
                    'mfa_accepted', 'web_redirect', 'oauth_authorize', 'session_select',
                    'workspace_select', 'callback_validation', 'token_exchange', 'oauth_output', 'completed'))
-REASONS = frozenset(('none', 'protocol_error', 'password_rejected', 'totp_rejected',
+REASONS = frozenset(('none', 'protocol_error', 'password_rejected', 'totp_rejected', 'email_otp_required',
                     'interaction_required', 'security_check', 'session_unavailable', 'workspace_mismatch',
                     'callback_missing', 'callback_invalid', 'callback_state_mismatch', 'pkce_invalid',
                     'token_exchange_failed', 'credentials_incomplete', 'transport_error', 'runtime_error',
@@ -31,17 +32,45 @@ MAX_DIAGNOSTIC_BYTES = 1024
 
 def codex_source(source):
     raw = source.encode('utf-8')
-    if hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() != PINNED_PROTOCOL_BLOB:
+    if hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() not in (PINNED_PROTOCOL_BLOB, BOUND_PROTOCOL_BLOB):
         raise ValueError('unsupported_codex_runtime_layout')
     source = replace_exact(source, 'import crypto from "node:crypto";', '''import crypto from "node:crypto";
-import {createProtocolDiagnostics, validateCodexCallback, observeProtocolResponse} from "./openai_codex_diagnostics.mjs";
+import {createProtocolDiagnostics, validateCodexCallback, observeProtocolResponse, isTotpRejectionResponse} from "./openai_codex_diagnostics.mjs";
+import {resolveCodexLoginPage} from "./openai_codex_login.mjs";
 const protocolDiagnostic = createProtocolDiagnostics(process.env.SUB2API_PROTOCOL_DIAGNOSTIC_PATH,
   Number(process.env.SUB2API_PROTOCOL_TASK_ID));
 console.log = console.warn = console.error = () => {};''')
     for old, new in (
-        ('    assertOk(result, `${method} ${url}`);', '    observeProtocolResponse(result);\n    assertOk(result, `${method} ${url}`);'),
+        ('    assertOk(result, `${method} ${url}`);', '    if (new URL(url).pathname === "/api/accounts/mfa/verify" && isTotpRejectionResponse(result)) throw new Error(`HTTP ${result.res.status} invalid_otp`);\n    observeProtocolResponse(result);\n    assertOk(result, `${method} ${url}`);'),
         ('async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret }) {',
          'async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret }) {\n  protocolDiagnostic.mark("web_login");'),
+        ('      screen_hint: "login_or_signup",\n      login_hint: email,', '      screen_hint: "login",'),
+        ('  const authPage = await client.follow(signin.url, { referer: `${chatgptBase}/` });\n  console.log(`[info] Auth page: ${safeUrl(authPage.finalUrl)}`);',
+         '''  let authPage = await client.follow(signin.url, { referer: `${chatgptBase}/` });
+  authPage = await resolveCodexLoginPage(client, authPage, {authBase, email, deviceId},
+    {createSentinelHeaders, authJsonStep, getContinueUrl});'''),
+        ('''async function verifyEmailOtp(client, { authBase, rl, deviceId, referer }) {
+  for (;;) {
+    const emailCode = await askEmailOtp(rl, client, authBase);
+    try {
+      const sentinelHeaders = await createSentinelHeaders(client, {
+        authBase,
+        deviceId,
+        flow: "email_otp_validate",
+      });
+      const { data } = await authJsonStep(client, authBase, "POST", "/api/accounts/email-otp/validate", {
+        code: emailCode,
+      }, { referer, headers: sentinelHeaders });
+      return data;
+    } catch (error) {
+      if (!isRejectedEmailOtpError(error)) throw error;
+      console.log("[email-otp-rejected] 邮箱验证码错误，请重新输入，或输入 r 重新发送。");
+    }
+  }
+}''', '''async function verifyEmailOtp() {
+  protocolDiagnostic.mark("email_verification");
+  throw new Error("email_otp_required");
+}'''),
         ('      console.log("[ok] Password accepted");', '      protocolDiagnostic.mark("password_accepted");'),
         ('  console.log("[mfa] TOTP 2FA challenge reached.");', '  protocolDiagnostic.mark("mfa_challenge");'),
         ('      console.log("[ok] 2FA verification accepted");', '      protocolDiagnostic.mark("mfa_accepted");'),
@@ -68,6 +97,8 @@ console.log = console.warn = console.error = () => {};''')
         ('    if (!data[key]) throw new Error(`Token response missing ${key}.`);',
          '    if (typeof data[key] !== "string" || !data[key].trim()) throw new Error("credentials_incomplete");'),
     ):
+        if old == '      if (!isRejectedTotpError(error)) throw error;' and 'TOTP_FACTOR_BINDING_REQUIRED' in source:
+            continue  # The tracked bounded MFA flow already terminates explicit rejection.
         source = replace_exact(source, old, new)
     # Both saved-session and freshly authenticated-session failures must end the
     # queued attempt. Do not turn a rejected OAuth result into another login.
@@ -134,6 +165,7 @@ def prepare_codex_runtime(root: Path, temporary: Path) -> Path:
     script = staged / 'src/protocol-login.mjs'
     script.write_text(patched)
     shutil.copy2(Path(__file__).with_name('openai_codex_diagnostics.mjs'), script.parent)
+    shutil.copy2(Path(__file__).with_name('openai_codex_login.mjs'), script.parent)
     return script
 
 

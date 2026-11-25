@@ -3,6 +3,7 @@ package handler
 import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	ratelimit "github.com/Wei-Shaw/sub2api/internal/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -44,6 +45,7 @@ func ProvideAdminHandlers(
 	pelicanGroupTestHandler *admin.PelicanGroupTestHandler,
 	controlledExperimentHandler *admin.ControlledExperimentHandler,
 	accountOpsHandler *admin.AccountOpsHandler,
+	openAIReloginHandler *admin.OpenAIReloginHandler,
 	accountTokenGuardHandler *admin.AccountTokenGuardHandler,
 	accountTokenGuardV2Handler *admin.AccountTokenGuardV2Handler,
 	channelHandler *admin.ChannelHandler,
@@ -102,6 +104,7 @@ func ProvideAdminHandlers(
 		APIKey:                 apiKeyHandler,
 		AccountOps:             accountOpsHandler,
 		AccountTokenGuard:      accountTokenGuardHandler,
+		OpenAIRelogin:          openAIReloginHandler,
 		AccountTokenGuardV2:    accountTokenGuardV2Handler,
 		ScheduledTest:          scheduledTestHandler,
 		PelicanGroupTest:       pelicanGroupTestHandler,
@@ -211,11 +214,13 @@ func ProvideAdminSettingHandler(settingService *service.SettingService, emailSer
 
 // ProvideHandlers creates the Handlers struct
 func ProvideHandlers(
+	qqBotHandler *QQBotHandler,
 	lotteryHandler *LotteryHandler,
 	authHandler *AuthHandler,
 	userHandler *UserHandler,
 	apiKeyHandler *APIKeyHandler,
 	usageHandler *UsageHandler,
+	usageRecordsHandler *UsageRecordsHandler,
 	redeemHandler *RedeemHandler,
 	subscriptionHandler *SubscriptionHandler,
 	announcementHandler *AnnouncementHandler,
@@ -241,11 +246,13 @@ func ProvideHandlers(
 	_ *service.OpenAIQuotaAutoResetService,
 ) *Handlers {
 	return &Handlers{
+		QQBot:            qqBotHandler,
 		Lottery:          lotteryHandler,
 		Auth:             authHandler,
 		User:             userHandler,
 		APIKey:           apiKeyHandler,
 		Usage:            usageHandler,
+		UsageRecords:     usageRecordsHandler,
 		Redeem:           redeemHandler,
 		Subscription:     subscriptionHandler,
 		Announcement:     announcementHandler,
@@ -271,12 +278,15 @@ func ProvideHandlers(
 
 // ProviderSet is the Wire provider set for all handlers
 var ProviderSet = wire.NewSet(
+	NewQQBotHandler,
 	// Top-level handlers
 	NewLotteryHandler,
 	NewAuthHandler,
 	NewUserHandler,
 	NewAPIKeyHandler,
 	NewUsageHandler,
+	ratelimit.NewRateLimiter,
+	NewUsageRecordsHandler,
 	NewRedeemHandler,
 	NewSubscriptionHandler,
 	NewAnnouncementHandler,
@@ -329,9 +339,10 @@ var ProviderSet = wire.NewSet(
 	admin.NewPelicanGroupTestHandler,
 	admin.NewControlledExperimentHandler,
 	admin.NewAccountOpsHandler,
+	admin.NewOpenAIReloginHandler,
 	admin.NewAccountTokenGuardHandler,
 	admin.NewAccountTokenGuardV2Handler,
-	admin.NewChannelHandler,
+	admin.ProvideMatureChannelHandler,
 	admin.NewChannelMonitorHandler,
 	admin.NewChannelMonitorRequestTemplateHandler,
 	admin.NewContentModerationHandlerWithSafetyPrompt,

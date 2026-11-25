@@ -70,13 +70,13 @@ func TestNewAPIWalletAndUserContextAndMaskMatching(t *testing.T) {
 	matched := matchNewAPITokens(a, result.tokens)
 	require.Len(t, matched, 1)
 	require.Equal(t, int64(3), matched[0].ID)
-	snapshot := newAPISnapshot(matched[0], result, 30, time.Now())
+	snapshot := newAPISnapshot(a, matched[0], result, 30, time.Now())
 	require.Equal(t, "ok", snapshot.Status)
 	require.Equal(t, 2.5, snapshot.Balance.Data["wallet_balance"])
 	_, ok := snapshot.CostMultiplierToSync()
 	require.False(t, ok)
 	result.ratios = map[string]float64{}
-	snapshot = newAPISnapshot(matched[0], result, 30, time.Now())
+	snapshot = newAPISnapshot(a, matched[0], result, 30, time.Now())
 	require.Equal(t, "unsupported", snapshot.Status)
 	require.Equal(t, "ok", snapshot.Balance.Status)
 }
@@ -131,7 +131,7 @@ func TestNewAPISnapshotRequiresFixedMatchingGroup(t *testing.T) {
 			var token NewAPIToken
 			require.NoError(t, json.Unmarshal([]byte(tt.token), &token))
 			token.ID = 3
-			snap := newAPISnapshot(token, &newAPIData{wallet: 2.5, ratios: map[string]float64{token.Group: tt.rate}}, 30, now)
+			snap := newAPISnapshot(nil, token, &newAPIData{wallet: 2.5, ratios: map[string]float64{token.Group: tt.rate}}, 30, now)
 			require.Equal(t, UpstreamBillingProbeStatusOK, snap.Balance.Status)
 			require.Equal(t, 2.5, snap.Balance.Data["wallet_balance"])
 			require.Equal(t, "group", snap.Data["billing_scope"])

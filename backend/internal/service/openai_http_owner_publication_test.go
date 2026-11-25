@@ -65,7 +65,7 @@ func TestHTTPResponseContinuationKeepsCreationScope(t *testing.T) {
 					c, _ := gin.CreateTestContext(httptest.NewRecorder())
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 					groupID := int64(17)
-					c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
+					c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID, AllowLongContext: true})
 					SetOpenAIResponseOwner(c, 101, 201, "")
 					return c
 				}
@@ -122,7 +122,7 @@ func TestHTTPResponseContinuationRechecksBeforeSend(t *testing.T) {
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				groupID := int64(17)
-				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
+				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID, AllowLongContext: true})
 				SetOpenAIResponseOwner(c, 101, 201, "")
 				return c
 			}
@@ -198,6 +198,29 @@ func TestHTTPResponseContinuationRejectsAmbiguousOrRemovedState(t *testing.T) {
 	}
 }
 
+func TestHTTPResponseContinuationDistinguishesMissingOwnerAndStoreFailure(t *testing.T) {
+	for _, unavailable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("store_unavailable=%t", unavailable), func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			SetOpenAIResponseOwner(c, 101, 201, "resp_missing")
+			svc := &OpenAIGatewayService{}
+			if unavailable {
+				svc.cache = struct{ GatewayCache }{&stubGatewayCache{}}
+			}
+			_, err := svc.bindOpenAIResponseContinuation(t.Context(), c, &Account{ID: 42}, []byte(`{"model":"gpt-5.1","previous_response_id":"resp_missing"}`))
+			var denied *OpenAITurnAdmissionError
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, "http_continuation_unavailable", denied.Reason)
+			if unavailable {
+				require.ErrorIs(t, err, ErrOpenAIResponseOwnerUnavailable, "storage failure must stay distinguishable from an unowned pointer")
+			} else {
+				require.Nil(t, denied.Unwrap(), "a confirmed missing owner is a policy rejection, not a store outage")
+			}
+		})
+	}
+}
+
 func TestHTTPResponseContinuationWSKeepsCreationScope(t *testing.T) {
 	for _, change := range []string{"key", "endpoint", "model", "tier"} {
 		t.Run(change, func(t *testing.T) {
@@ -217,7 +240,7 @@ func TestHTTPResponseContinuationWSKeepsCreationScope(t *testing.T) {
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				groupID := int64(17)
-				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
+				c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID, AllowLongContext: true})
 				SetOpenAIResponseOwner(c, 101, 201, previous)
 				body := []byte(fmt.Sprintf(`{"model":%q,"service_tier":%q,"previous_response_id":%q,"input":"next","stream":false}`, model, tier, previous))
 				return svc.Forward(t.Context(), c, account, body)
@@ -291,7 +314,7 @@ func TestHTTPResponseContinuationWSRechecksAfterDial(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	groupID := int64(17)
-	c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID})
+	c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: &groupID, AllowLongContext: true})
 	SetOpenAIResponseOwner(c, 101, 201, "resp_before_dial")
 	result, err := svc.Forward(t.Context(), c, account, []byte(`{"model":"gpt-5.1","previous_response_id":"resp_before_dial","input":"next","stream":false}`))
 	require.True(t, IsOpenAITurnAdmissionError(err), "revocation during dial must stop the physical frame: %v", err)

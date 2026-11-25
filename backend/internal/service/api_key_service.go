@@ -66,15 +66,16 @@ const (
 // 因此调用方必须显式声明要改的列。
 type APIKeyUpdateFields struct {
 	// Administrator-only policy fields have independent masks to preserve concurrent edits.
-	ModelMapping     bool
-	ReasoningEffort  bool
-	AllowLongContext bool
-	ConcurrencyLimit bool
-	Name             bool
-	Status           bool
-	Quota            bool
-	GroupID          bool
-	ExpiresAt        bool
+	ModelMapping      bool
+	ReasoningEffort   bool
+	ContextTokenLimit bool
+	AllowLongContext  bool
+	ConcurrencyLimit  bool
+	Name              bool
+	Status            bool
+	Quota             bool
+	GroupID           bool
+	ExpiresAt         bool
 	// QuotaUsed 仅供"重置配额用量"路径声明；常规计费走 IncrementQuotaUsed。
 	QuotaUsed bool
 	// RateLimits 覆盖 rate_limit_5h / _1d / _7d 三个阈值。
@@ -82,7 +83,10 @@ type APIKeyUpdateFields struct {
 	// RateLimitUsage 覆盖 usage_5h/_1d/_7d 与三个窗口起点，
 	// 仅供"重置限流用量"路径声明；常规计费走 IncrementRateLimitUsage。
 	RateLimitUsage bool
-	// IPRules 覆盖 ip_whitelist 与 ip_blacklist。
+	// IPWhitelist / IPBlacklist only write the explicitly requested ACL column.
+	IPWhitelist bool
+	IPBlacklist bool
+	// IPRules retains the legacy opt-in to write both ACL columns.
 	IPRules bool
 }
 
@@ -979,11 +983,11 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	// 更新 IP 限制（nil 不修改，空数组清空设置）
 	if req.IPWhitelist != nil {
 		apiKey.IPWhitelist = *req.IPWhitelist
-		fields.IPRules = true
+		fields.IPWhitelist = true
 	}
 	if req.IPBlacklist != nil {
 		apiKey.IPBlacklist = *req.IPBlacklist
-		fields.IPRules = true
+		fields.IPBlacklist = true
 	}
 
 	// Update rate limit configuration
@@ -1130,6 +1134,22 @@ func (s *APIKeyService) IncrementUsage(ctx context.Context, keyID int64) error {
 		_ = s.cache.SetDailyUsageExpiry(ctx, cacheKey, 24*time.Hour)
 	}
 	return nil
+}
+
+// BillingGroupInfo contains the display text for the group bound to an API key.
+type BillingGroupInfo struct {
+	Name        string `json:"group_name"`
+	Description string `json:"group_description"`
+}
+
+// GetBillingGroupInfo loads display text only when requested by the billing endpoint.
+func (s *APIKeyService) GetBillingGroupInfo(ctx context.Context, groupID int64, language string) (*BillingGroupInfo, error) {
+	group, err := s.groupRepo.GetByIDLite(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	name, description := group.I18n.Localize(language, group.Name, group.Description)
+	return &BillingGroupInfo{Name: name, Description: description}, nil
 }
 
 // GetAvailableGroups 获取用户有权限绑定的分组列表

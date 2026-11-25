@@ -14,14 +14,17 @@ import (
 // items without a corresponding model call. Preserve their original trust boundary
 // before ordinary tool-output validation, including when replaying tool history.
 // Unrecognized outputs and items carrying a call identity remain untouched.
-func normalizeCodexAgentContext(body []byte) ([]byte, bool) {
+func normalizeCodexUntrustedContext(body []byte) ([]byte, bool) {
+	if !mayContainCodexCallOutputCandidate(body, "codex_apps_open_page", "codex_apps_selected_page_part_", "browser_info", "goal_objective", "untrusted_context", "ide_context", "untrusted_content", "proposed_plan") {
+		return body, false
+	}
 	input := gjson.GetBytes(body, "input")
 	if !input.IsArray() {
 		return body, false
 	}
 	hasContext := false
 	input.ForEach(func(_, item gjson.Result) bool {
-		hasContext = isCodexAgentContext(item)
+		hasContext = isCodexContext(item)
 		return !hasContext
 	})
 	if !hasContext || !hasUniqueJSONMembers(body) {
@@ -30,7 +33,7 @@ func normalizeCodexAgentContext(body []byte) ([]byte, bool) {
 	var items []json.RawMessage
 	changed := false
 	input.ForEach(func(_, item gjson.Result) bool {
-		if !isCodexAgentContext(item) {
+		if !isCodexContext(item) {
 			items = append(items, json.RawMessage(item.Raw))
 			return true
 		}
@@ -44,6 +47,9 @@ func normalizeCodexAgentContext(body []byte) ([]byte, bool) {
 				return true
 			}
 			text = "<untrusted_codex_agent_context>\n" + string(context) + "\n</untrusted_codex_agent_context>"
+
+		} else if codexStandaloneContextName(item.Get("name").String()) {
+			text = "<external_" + item.Get("name").String() + ">" + item.Get("output").String() + "</external_" + item.Get("name").String() + ">"
 		}
 		message, err := json.Marshal(map[string]any{
 			"type": "message",
@@ -72,7 +78,7 @@ func normalizeCodexAgentContext(body []byte) ([]byte, bool) {
 	return normalized, true
 }
 
-func isCodexAgentContext(item gjson.Result) bool {
+func isCodexContext(item gjson.Result) bool {
 	if item.Get("type").String() != "function_call_output" || item.Get("namespace").String() != "agent" {
 		return false
 	}
@@ -98,6 +104,16 @@ func isCodexAgentContext(item gjson.Result) bool {
 			return valid
 		})
 		return valid
+
+	}
+	if codexStandaloneContextName(name) {
+		if name == "untrusted_content" {
+			return true
+		}
+		if name == "proposed_plan" {
+			return output.String() != ""
+		}
+		return strings.TrimSpace(output.String()) != ""
 	}
 	if name == "codex_apps_open_page" {
 		return validCodexPageSnapshot(output.String())
@@ -141,4 +157,12 @@ func validCodexPageSnapshot(text string) bool {
 	}
 	var value string
 	return json.Unmarshal(id, &value) == nil && strings.TrimSpace(value) != ""
+}
+
+func codexStandaloneContextName(name string) bool {
+	switch name {
+	case "browser_info", "goal_objective", "untrusted_context", "ide_context", "untrusted_content", "proposed_plan":
+		return true
+	}
+	return false
 }

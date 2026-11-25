@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 )
 
@@ -293,8 +294,13 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 	if selected == nil {
 		return nil, denyOpenAITurn("account_unavailable")
 	}
+	gatewayView := selected.gatewayProtocolSource != nil
+	gatewayModel := selected.gatewayProtocolModel
+	if gatewayView {
+		selected = selected.gatewayProtocolSource
+	}
 	strictProvider := (selected.IsGrok() || selected.IsMultiProtocolAPIKey()) && gatewayProfitControlGateActive(ctx)
-	if !selected.IsOpenAI() && !strictProvider && (s.schedulerSnapshot == nil || s.schedulerSnapshot.localSnapshotReader == nil) {
+	if !gatewayView && !selected.IsOpenAI() && !strictProvider && (s.schedulerSnapshot == nil || s.schedulerSnapshot.localSnapshotReader == nil) {
 		// Ungated providers retain their existing direct-call behavior. Strict
 		// Grok and multi-protocol text requests share OpenAI's authoritative reader.
 		return selected, nil
@@ -307,7 +313,16 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 		// and persistence fence must never be bypassed by the process admission
 		// cache, including already established WebSocket turns.
 		var err error
-		latest, err = s.schedulerSnapshot.GetAccount(ctx, selected.ID)
+		if gatewayView {
+			scope, _ := ctx.Value(gatewaySelectionKey{}).(gatewaySelection)
+			reader := gatewayAccountReader(s.accountRepo, s.schedulerSnapshot)
+			if reader == nil {
+				return nil, denyOpenAITurn("latest_state_unavailable")
+			}
+			latest, _, err = reader.GatewayRequestAccount(ctx, selected.ID, scope.groupID)
+		} else {
+			latest, err = s.schedulerSnapshot.GetAccount(ctx, selected.ID)
+		}
 		if err != nil || latest == nil || latest.ID != selected.ID || latest.IsShadow() {
 			return nil, denyOpenAITurn("latest_state_unavailable")
 		}
@@ -320,7 +335,7 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 			// rate. Regional snapshots retain their own authority and TTL above.
 			cacheTTL = 0
 		}
-		if cacheTTL > 0 {
+		if cacheTTL > 0 && !gatewayView {
 			if cached, cachedParent, ok := s.openAITurnAdmissionCache.load(selected.ID, cacheTTL); ok {
 				latest, parent, authoritativeRead = cached, cachedParent, true
 			}
@@ -328,7 +343,7 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 		if s.accountRepo != nil {
 			reader, ok := s.accountRepo.(OpenAITurnAdmissionReader)
 			if !ok {
-				if s.requireLatestTurnAdmission {
+				if s.requireLatestTurnAdmission || gatewayView {
 					return nil, denyOpenAITurn("latest_state_unavailable")
 				}
 				// Small direct-call fixtures may provide a repository for
@@ -347,11 +362,11 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 				if err != nil || latest == nil || latest.ID != selected.ID {
 					return nil, denyOpenAITurn("latest_state_unavailable")
 				}
-				if cacheTTL > 0 {
+				if cacheTTL > 0 && !gatewayView {
 					s.openAITurnAdmissionCache.store(latest, parent)
 				}
 			}
-		} else if s.requireLatestTurnAdmission {
+		} else if s.requireLatestTurnAdmission || gatewayView {
 			// Real services are constructed with this flag. Small unit-test services
 			// can exercise the pure supplied-account predicate without a database.
 			return nil, denyOpenAITurn("latest_state_unavailable")
@@ -378,6 +393,31 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 				return nil, denyOpenAITurn("account_ineligible")
 			}
 		}
+	}
+	if gatewayView {
+		// Keep the real turn reader and all common admission guards. Validate
+		// both uncached snapshots against the original neutral identity, then
+		// rebuild a view; never make the stored gateway schedulable.
+		reader := gatewayAccountReader(s.accountRepo, s.schedulerSnapshot)
+		if reader == nil || !authoritativeRead {
+			return nil, denyOpenAITurn("latest_state_unavailable")
+		}
+		group, _ := ctx.Value(ctxkey.Group).(*Group)
+		if group == nil || (enforceGroup && group.ID != groupID) {
+			return nil, denyOpenAITurn("group_membership_changed")
+		}
+		current, liveGroup, err := reader.GatewayRequestAccount(ctx, selected.ID, group.ID)
+		if err != nil {
+			return nil, &OpenAITurnAdmissionError{Reason: "latest_state_unavailable", cause: err}
+		}
+		if _, err := gatewayProtocolAccountFromSnapshot(ctx, selected, current, liveGroup, "openai", gatewayModel); err != nil {
+			return nil, &OpenAITurnAdmissionError{Reason: "account_ineligible", cause: err}
+		}
+		view, err := gatewayProtocolAccountFromSnapshot(ctx, selected, latest, liveGroup, "openai", gatewayModel)
+		if err != nil {
+			return nil, &OpenAITurnAdmissionError{Reason: "account_ineligible", cause: err}
+		}
+		latest = view
 	}
 	if authoritativeRead && !latest.IsSchedulable() {
 		return nil, denyOpenAITurn("account_ineligible")
@@ -459,7 +499,11 @@ func (s *OpenAIGatewayService) admitOpenAITurnWithGroup(
 		return nil, &OpenAITurnAdmissionError{Reason: excelOAuthRouteErrorCode, cause: err}
 	}
 	// 会话中途被收窄了分组内的可用模型、或后续 turn 换成了不允许的模型时，要求客户端重连重新选号。
-	if enforceGroup && !latest.IsModelAllowedInGroup(&groupID, outboundModel) {
+	groupModel := outboundModel
+	if latest.gatewayProtocolSource != nil {
+		groupModel = latest.gatewayProtocolModel
+	}
+	if enforceGroup && !latest.IsModelAllowedInGroup(&groupID, groupModel) {
 		return nil, denyOpenAITurn("model_not_allowed_in_group")
 	}
 	if err := checkOpenAITurnBindingAndRate(ctx, selected, latest); err != nil {

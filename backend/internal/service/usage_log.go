@@ -103,6 +103,11 @@ func ApplyLegacyRequestFields(requestType RequestType, fallbackStream bool, fall
 }
 
 type UsageLog struct {
+	ProcurementCostSnapshot *ProcurementCostSnapshot
+	CustomerCostDetails     *CustomerCostDetails
+	// Platform snapshots the concrete upstream provider at request time. Gateway
+	// accounts use the resolved request target. Empty is unknown legacy data.
+	Platform      string
 	ContentTiming *requesttiming.ContentObservation
 	ID            int64
 	UserID        int64

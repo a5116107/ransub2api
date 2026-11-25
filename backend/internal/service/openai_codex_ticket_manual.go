@@ -107,7 +107,7 @@ func (s *OpenAIGatewayService) ExecuteManualHarvest(ctx context.Context, req Man
 	expectedBlocks := codexHarvestExpectedBlocks(account, s.openAICodexTicketConfig())
 	expectedLength := openAICodexTicketTargetLength(account, cfg)
 	tried := map[string]bool{}
-	got := s.manualHarvestLiveModels(account, req.Models)
+	got := s.liveCodexTicketModels(account, req.Models)
 	keepID := ""
 	ticketsStored := 0
 	consecutiveFails := 0

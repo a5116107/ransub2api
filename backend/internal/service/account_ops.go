@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/mail"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,18 +12,19 @@ import (
 const accountOpsSettingsKey = "account_ops_notifications_v1"
 
 type AccountOpsConfig struct {
-	Enabled             bool                    `json:"enabled"`
-	Recipient           string                  `json:"recipient"`
-	EmailName           string                  `json:"email_name,omitempty"`
-	BalanceLow          bool                    `json:"balance_low"`
-	WeeklyQuota         bool                    `json:"weekly_quota"`
-	CooldownMinutes     int                     `json:"cooldown_minutes"`
-	Webhooks            []AccountOpsWebhook     `json:"webhooks"`
-	Groups              []AccountOpsGroup       `json:"groups"`
-	GroupsInitialized   bool                    `json:"groups_initialized,omitempty"`
-	UngroupedAccountIDs []int64                 `json:"ungrouped_account_ids,omitempty"`
-	BalanceThresholds   []AccountOpsBalanceRule `json:"balance_thresholds"`
-	QuotaThresholds     []AccountOpsQuotaRule   `json:"quota_thresholds"`
+	Enabled                      bool                    `json:"enabled"`
+	Recipient                    string                  `json:"recipient"`
+	EmailName                    string                  `json:"email_name,omitempty"`
+	BalanceLowDisabledAccountIDs []int64                 `json:"balance_low_disabled_account_ids,omitempty"`
+	BalanceLow                   bool                    `json:"balance_low"`
+	WeeklyQuota                  bool                    `json:"weekly_quota"`
+	CooldownMinutes              int                     `json:"cooldown_minutes"`
+	Webhooks                     []AccountOpsWebhook     `json:"webhooks"`
+	Groups                       []AccountOpsGroup       `json:"groups"`
+	GroupsInitialized            bool                    `json:"groups_initialized,omitempty"`
+	UngroupedAccountIDs          []int64                 `json:"ungrouped_account_ids,omitempty"`
+	BalanceThresholds            []AccountOpsBalanceRule `json:"balance_thresholds"`
+	QuotaThresholds              []AccountOpsQuotaRule   `json:"quota_thresholds"`
 }
 
 func defaultAccountOpsConfig() AccountOpsConfig {
@@ -40,12 +39,10 @@ func ValidateAccountOpsConfig(c AccountOpsConfig) (err error) {
 	if c.CooldownMinutes < 5 || c.CooldownMinutes > 1440 {
 		return errors.New("cooldown_minutes must be between 5 and 1440")
 	}
-	if c.Recipient != "" {
-		address, err := mail.ParseAddress(c.Recipient)
-		if err != nil || address.Address != c.Recipient || strings.ContainsAny(c.Recipient, "\r\n") || len(c.Recipient) > 254 {
-			return errors.New("recipient must be one email address")
-		}
+	if _, err := parseAccountOpsRecipients(c.Recipient); err != nil {
+		return err
 	}
+
 	if err := validateAccountOpsExtras(c); err != nil {
 		return err
 	}
@@ -112,6 +109,9 @@ type AccountOpsService struct {
 	robotLast          map[string]time.Time
 	degradationCursor  int64
 	autoSeen           map[int64]bool
+	oauth429Samples    [4]chan OAuth429Observation
+	oauth429Routing    OAuth429RoutingPolicy
+	oauth429RoutingErr error
 	autoConfigMu       sync.Mutex
 	autoGroups         GroupRepository
 	autoAccounts       AccountConcurrencyRepository
@@ -178,7 +178,7 @@ func (s *AccountOpsService) Observe(account *Account, status int, headers http.H
 		return
 	}
 	kind, signal := classifyAccountOpsFailure(account.Platform, status, headers, body)
-	if !c.Allows(kind) {
+	if !c.AllowsAccount(kind, account.ID) {
 		return
 	}
 	name := []rune(account.Name)
@@ -186,6 +186,15 @@ func (s *AccountOpsService) Observe(account *Account, status int, headers http.H
 		name = name[:120]
 	}
 	group := accountOpsGroupAssignment(account, c)
+	// Linked wallets use one authoritative balance-threshold episode. Request
+	// failures from individual keys must not send a second low-balance alert.
+	if kind == "balance_low" && accountOpsProviderID(c, account.ID) > 0 {
+		for _, rule := range c.BalanceThresholds {
+			if rule.Enabled && thresholdAccountGroup(nil, rule.AccountID, c).ID == group.ID {
+				return
+			}
+		}
+	}
 	event := AccountOpsEvent{AccountID: account.ID, AccountName: string(name), GroupID: group.ID, GroupName: group.Name, Kind: kind, Signal: signal, HTTPStatus: status}
 	// The hot request path never waits for SMTP or the database. Raw errors and credentials do not enter the queue.
 	select {
@@ -209,6 +218,9 @@ func (s *AccountOpsService) start(runSharedJobs bool) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
+	if repo, ok := s.accounts.(OAuth429Repository); ok {
+		s.startOAuth429Observations(ctx, repo)
+	}
 	s.fallbackSharedJobs.Store(runSharedJobs)
 	s.wg.Add(2)
 	go s.runAutoConfig(ctx)
@@ -249,6 +261,7 @@ func (s *AccountOpsService) start(runSharedJobs bool) {
 func (s *AccountOpsService) Stop() {
 	s.lifecycle.Lock()
 	cancel := s.cancel
+	oauth429HTTPObserver.CompareAndSwap(s, nil)
 	s.lifecycle.Unlock()
 	if cancel != nil {
 		cancel()

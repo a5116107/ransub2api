@@ -140,13 +140,16 @@ docs/project/*
 !docs/project/STATE.md
 !docs/project/DECISIONS.md
 !docs/project/monitor-driven-scheduling-design.md
+!docs/account-platform-edit.md
+!docs/openai-totp-factor-recovery.md
 !docs/ai-ops-codex.md
 !docs/reauth-identity-validation.md
 !docs/openai-context-limit-errors.md
 !docs/openai-agent-continuation.md
+!docs/encrypted-agent-owner-policy.md
 !docs/stream-timing.md
 !docs/openai-sse-delivery.md
-!docs/user-traffic.md
+!docs/usage-records-api.md
 !docs/typesafe-content-audit.md
 !docs/multi-host-session-owner.md
 !docs/security-penalties.md
@@ -243,3 +246,16 @@ issues/
 tools/local-worker/
 
 !docs/key-risk-patrol.md
+
+# Reproducible Free Fast customer-cost evidence runners.
+!/.github/scripts/
+!/.github/scripts/free-fast-customer-cost-browser.mjs
+!/.github/scripts/free-fast-cost-evidence.py
+!/.github/scripts/test_free_fast_cost_evidence.py
+/.github/scripts/__pycache__/
+
+!docs/free-ultrafast-billing.md
+!/.github/scripts/free-ultrafast-browser.mjs
+
+!docs/smart-ops-retirement.md
+!docs/user-traffic.md

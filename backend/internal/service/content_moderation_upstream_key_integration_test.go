@@ -83,7 +83,7 @@ func TestContentModerationSharesRealRedisKeyCapacityAndRecovers(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = db.Close() })
 				mock.ExpectQuery("SELECT value FROM settings").WithArgs(cyberevidence.ConfigKey).WillReturnError(sql.ErrNoRows)
-				svc := service.ProvideContentModerationService(moderationAdmissionSettings{}, nil, nil, nil, nil, nil, nil, nil, db, nil, cfg, transport)
+				svc := service.ProvideContentModerationService(nil, moderationAdmissionSettings{}, nil, nil, nil, nil, nil, nil, nil, db, nil, cfg, transport)
 				t.Cleanup(svc.CyberEvidence().Close)
 				require.NoError(t, mock.ExpectationsWereMet())
 				busyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/held", strings.NewReader("{}"))

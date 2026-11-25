@@ -2511,3 +2511,19 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 线上已退出的 .9 候选程序精确清理 164335776 bytes，回退程序与备份保留。继承 service/data、历史拒删 scratch、可复用 source/依赖/Go 缓存不删除、不纳入提交或藏入 ignore。STATE、唯一设计与开发 VERSION 原位更新；原 28 项 20 done/8 部分不变，未将 D9 或完整供应池计为完成。稳定分支仅补上线文档，不改变发布应用源码；任务交付身份与终稿稳定测试结果另按实际完成追加。
 - 最终原稳定源码目录实际执行同一首输出配置/恢复命令，STABLE_TIMEOUT_TEST_EXIT=0：27 顶层/29 含子例通过，0 fail/skip，config 2.398s、handler 3.359s、service 11.475s。含原配置环境变量加载、高推理 120/300 分流、首输出超时取消、元数据/心跳保护、输出后不重放及至多一次换线；与开发回归重复覆盖，不合计。gofmt、git diff --check、旧 normalizeCodexPageContext/日志符号零引用及 STATE 8132bytes/94行/检查点681bytes检查通过。
 - 20:47:42 新生产请求记录 9643 提供实际切换证据：账号 7 的上游 429 作为可恢复尝试，随后账号 16 完成，同一个 client_request_id 仅有一条 usage（219921 input / 2161 output），耗时 79.034 秒，最终 HTTP 状态 200；两个账号当前均 active 且 schedulable。此例证明限流后可换线和唯一结算，不代表之前的 BPS 长流故障已恢复；失败尝试是否被上游计费仍未知。证据 recent-recovery.json。
+
+
+### 2026-11-26 D8/D9：v2.25.0 保留生产能力的合并与兼容修复
+
+- 用户确认保留线上流量记录/历史表、余额耗尽预测、旧凭证守护与打票，再迁移到新版能力。唯一工作树 `integration/upstream-stable` 从稳定线 e16505d58 合并 fd354ef87（固定原上游 0fa2cb6ac91effee2a45b933bb44b460f05a8c49），114 个冲突文件已逐项解决；不提升在研自动供应池、不运行构建/测试 CI。
+- 恢复原路由、侧栏、设置、通知模板、定时任务及 Wire 连接；398 迁移保留原流量表和历史，不清 spool。补回 BalanceNotifyService.Stop 的进程退出连接，再用项目 Go 1.27.4 构建 Wire 工具生成既有 wire_gen.go；原安装 Wire 为 Go 1.26、go generate 缺 subcommands 校验项的失败均保留，没有为生成工具改业务依赖。
+- 原位修复新旧流协议兼容：按规范确认 message_start、实际 token usage、消息终态及事件类型；无可观测 usage 不生成幽灵账单，失败流不发成功终态，已经输出不跨账号重放。新增测试的调度快照接入同一个分组仓库，Windows 实例型 Redis 夹具改用独立回环进程；生产利润/分组/会话保护保持失败关闭。
+- HTTP 可读恢复后同步其已校验的 provider 指针；WS 对恢复后的帧、确认证据支持的 plaintext bridge 投影同步同一归属。原生 WS 不再把客户端显式指针当成自动附加指针删除。bridge 新构建守卫在已知不同账号且尚未物理发送时交回既有 unsent-owner 流程；该流程仍验证开关、完成的归属/工具证据和新请求，存储失败及同账号模型/档位/线路变化仍终止。原 bridge guard_live/refusal 两个失败场景已 4 个父子通过事件，零失败/跳过；不作为真实供应商旧任务恢复证明。
+- 归属仓库缺失/读取失败保留错误原因，只有确认的缺失/不匹配按 WS policy violation 返回，临时读取故障仍属暂时不可用。旧缓存包装补齐真实 shared response-owner 能力；历史测试由 v1 字符串断言改为检查 v2 用户/Key/账号/作用域，仍验证旧记录不被覆盖。显式 legacy compatibility 保持原选择边界，默认严格模式不变。
+- 前端全量 `pnpm exec vitest run` 为 652 文件、6790 passed、53 原有 skipped；类型检查与嵌入构建通过。ESLint 首轮一个未用变量警告原位删除，同文件 5 项及定向 ESLint 退出 0。不把原跳过项改成通过。
+- PG14 `-race -tags 'unit integration'` 的流量历史保留/幂等与共享 Redis 竞争 3 项通过，零失败/跳过；隔离 SQL 的 forecast/coupon 25 项、审核检测共享 Key 容量及恢复 5 项通过，夹具数据库按 ID/标签停止。此前缺 TRAFFIC_TEST_POSTGRES_DSN 的跳过已通过原 harness 提供其隔离 DSN 消除。
+- 保留专项 `-race` 为 1165 passed/6 个缺外部 DSN 原 skip；数据库专项另验，不把重叠用例相加为独立场景。Windows 的凭证目录和 cgroup 逃逸用例受符号链接权限限制，同源码测试程序在隔离 Linux 非 root 用户下分别通过；未添加平台 skip。
+- 指纹库元数据失败确认为 autocrlf 改变被嵌入的原始字节：CRLF SHA eeab6ff54d6ffb2b294ebfd6cce25bce387f7a268b66759144f64c16f6c66b9f，原 Git/LF SHA f267d0513aa06981d024ec5394746fceddf44e4e8a75fa6bf8304255f4b32d6d；以精确 .gitattributes LF 规则保留已审阅库，不改期望摘要或模型算法。HTTP 追踪零毫秒是合法时间值，断言改检查事件存在；两包专项 race 退出 0。
+- 清理未引用 isGrokVideoCreateEndpoint、无效赋值、未检查的测试断言/资源退出及格式问题；临时打印/调用栈诊断全部删除。depguard 保留生产禁反向依赖，仅补齐与原注释一致的嵌套 *_test.go 排除，原非规范头大小写测试不改成其他断言。
+- 当前源码扩大回归和不限数量的增量 lint 正在执行；所有失败日志仍保留，未宣称整仓通过。生产进程仍 2.21.0-ransub.9/c8cec584a18135fe，原 PostgreSQL/Redis 容器身份保持。候选提交、PR 同步、生产副本四阶段、发行、排空切换与公网业务各自待验，不用源码测试替代加载/业务证据。原 28 项 20 done/8 部分不变。
+- 本轮 Linux 两个已退出测试程序保留在 H:/Root/DevCache/tmp/sub2api-go/upstream-225-repository.test 与 upstream-225-sysutil.test；首次合并构建与删除的组合命令在创建进程前被宿主拒绝，后续仅执行独立验证，没有换工具删除。历史 12 个 1164 bytes 图片夹具保留，未藏入 ignore、提交或删除。

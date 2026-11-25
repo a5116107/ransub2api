@@ -211,6 +211,10 @@ func validMiniMaxH3OutputURL(raw string) bool {
 
 func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, taskID string, body []byte) (forwardResult *OpenAIForwardResult, forwardErr error) {
 	billingBody := body
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
+
 	if !endpoint.IsMiniMaxH3() || !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityMiniMaxH3) {
 		return nil, fmt.Errorf("MiniMax-H3 requires a MiniMax pay-as-you-go API key account with a custom base URL")
 	}
@@ -231,7 +235,10 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		}
 		result.Model, result.BillingModel, result.UpstreamModel = info.Model, info.Model, account.GetMappedModel(info.Model)
 		if !strings.EqualFold(result.UpstreamModel, "MiniMax-H3") {
-			return nil, fmt.Errorf("this video relay only supports MiniMax-H3")
+			// Relay-specific video models require an explicit account mapping.
+			if _, configured := account.GetModelMapping()[info.Model]; !configured || strings.TrimSpace(result.UpstreamModel) == "" {
+				return nil, fmt.Errorf("MiniMax-H3 requires an explicit account model mapping for this model")
+			}
 		}
 		result.VideoResolution, result.VideoDurationSeconds = info.Resolution, info.DurationSeconds
 		body, err = sjson.SetBytes(body, "model", result.UpstreamModel)
@@ -250,7 +257,7 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 	if err != nil {
 		return nil, err
 	}
-	account.ApplyHeaderOverrides(req.Header)
+	account.ApplyHeaderOverridesWithContext(req.Context(), req.Header)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -355,7 +362,9 @@ func (s *OpenAIGatewayService) ForwardMiniMaxH3(ctx context.Context, c *gin.Cont
 		}
 	case MiniMaxH3EndpointStatus:
 		result.AsyncVideoTerminal = status == "completed" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired"
-		if status == "completed" && validMiniMaxH3OutputURL(gjson.GetBytes(responseBody, "metadata.url").String()) {
+		if status == "completed" &&
+			(validMiniMaxH3OutputURL(gjson.GetBytes(responseBody, "metadata.url").String()) ||
+				validMiniMaxH3OutputURL(gjson.GetBytes(responseBody, "url").String())) {
 			result.VideoCount = 1
 		}
 	}

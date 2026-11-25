@@ -14,6 +14,8 @@ type LegacyEngine interface {
 
 type PromptEngine interface {
 	EffectiveMode() Mode
+	// Enqueue borrows req read-only for this call; implementations must copy
+	// any request memory retained after returning.
 	Enqueue(ctx context.Context, req Request) error
 	Evaluate(ctx context.Context, req Request) (*PromptDecision, error)
 }
@@ -29,6 +31,9 @@ func NewCoordinator(legacy LegacyEngine, prompt PromptEngine) *Coordinator {
 }
 
 func (c *Coordinator) Check(ctx context.Context, req Request) (decision Decision) {
+	if req.NoBodyRetention {
+		ctx = service.WithRecoveredContextPrivacy(ctx)
+	}
 	if c == nil {
 		return allowDecision(nil, nil)
 	}
@@ -72,14 +77,14 @@ func (c *Coordinator) Check(ctx context.Context, req Request) (decision Decision
 		req.GroupName = req.PenaltyContext.OriginalGroupName
 	}
 	mode := ModeOff
-	if c.prompt != nil {
+	if c.prompt != nil && !req.SkipPrompt {
 		mode = c.prompt.EffectiveMode()
 	}
 	switch mode {
 	case ModeAsync:
 		// Enqueue is deliberately best-effort. The implementation owns a bounded
 		// context and copies request memory before it can outlive the Handler.
-		_ = c.prompt.Enqueue(ctx, req.Clone())
+		_ = c.prompt.Enqueue(ctx, req)
 		legacy, _ := c.checkLegacy(ctx, req)
 		return prioritize(legacy, nil)
 	case ModeBlocking:
