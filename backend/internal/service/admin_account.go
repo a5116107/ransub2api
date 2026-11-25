@@ -122,7 +122,6 @@ var duplicateAccountDiscardedExtraKeys = map[string]struct{}{
 	// Provider observations, capability probes, and transient scheduling state.
 	"model_rate_limits":                      {},
 	QualityModelIsolationKey:                 {},
-	OAuth429ModelBlocksKey:                   {},
 	"session_window_utilization":             {},
 	"passive_usage_7d_utilization":           {},
 	"passive_usage_7d_reset":                 {},
@@ -480,7 +479,7 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Concurrency:              normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
 		Priority:                 input.Priority,
 		Status:                   StatusActive,
-		Schedulable:              input.InitialAdmissionPlan == nil && input.Type != AccountTypeGateway,
+		Schedulable:              (input.initialAutoSchedule == nil || *input.initialAutoSchedule) && input.InitialAdmissionPlan == nil && input.Type != AccountTypeGateway,
 	}
 	groupSync := input.GroupSyncEnabled != nil && *input.GroupSyncEnabled
 	if groupSync && input.ProbeEnabled != nil && !*input.ProbeEnabled {
@@ -634,7 +633,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if account.IsGateway() && atomicCreator == nil {
 		atomicCreator, _ = s.accountRepo.(AccountDuplicateRepository)
 	}
-	if (account.IsGateway() || account.InitialAdmissionPlan != nil || account.InitialAPIKeyDisposition != nil) && atomicCreator != nil {
+	if (input.initialAutoSchedule != nil || account.IsGateway() || account.InitialAdmissionPlan != nil || account.InitialAPIKeyDisposition != nil) && atomicCreator != nil {
 		// Publish the initially blocked account, its groups and both background
 		// plans atomically; the worker cannot race a partially bound import.
 		groups := make([]AccountGroup, 0, len(groupIDs))
@@ -1201,7 +1200,6 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	// Dedicated quality restore/runtime paths use their own transaction/UpdateExtra.
 	updates = maps.Clone(updates)
 	delete(updates, QualityModelIsolationKey)
-	delete(updates, OAuth429ModelBlocksKey)
 	delete(updates, OAuthDegradationActionExtraKey)
 	if err := ValidateAccountCostMultiplierExtra(updates); err != nil {
 		return err

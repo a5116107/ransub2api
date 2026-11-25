@@ -1121,18 +1121,24 @@ readLoop:
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
+			contextRejected := IsUpstreamContextRejection(statusCode, message)
+			if contextRejected {
+				statusCode = http.StatusBadRequest
+			}
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
 				emitStreamMessage(message, true)
+				if contextRejected {
+					markOpenAIWSClientVisibleFailure(c, eventType, message)
+				}
 			}
 			if !reqStream {
 				commitTurnState()
-				c.JSON(statusCode, gin.H{
-					"error": gin.H{
-						"type":    "upstream_error",
-						"message": errMsg,
-					},
-				})
+				fields := gin.H{"type": "upstream_error", "message": errMsg}
+				if contextRejected {
+					fields["type"], fields["code"] = "invalid_request_error", "context_length_exceeded"
+				}
+				c.JSON(statusCode, gin.H{"error": fields})
 			}
 			if openAIWSModelFailureStatus(account, message) != 0 {
 				return nil, ErrOpenAIWSModelUnavailable

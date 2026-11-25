@@ -87,6 +87,27 @@ class SyncUpstreamTest(unittest.TestCase):
                 sync.sync()
         self.assertFalse(any(call.args[0] == 'push' for call in git.call_args_list))
 
+    def test_existing_pull_request_uses_gh_cli_url_field(self):
+        url = 'https://github.com/a5116107/ransub2api/pull/5'
+        responses = [
+            {'full_name': sync.REPOSITORY, 'default_branch': sync.BASE},
+            {'tag_name': 'v2.25.2', 'draft': False, 'prerelease': False},
+            [{'number': 5, 'url': url}],
+        ]
+        results = [subprocess.CompletedProcess([], 0, value) for value in (
+            'https://github.com/a5116107/ransub2api\n', '', 'a' * 40, '', 'b' * 40, '')]
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
+                patch.object(sync, 'gh_json', side_effect=responses), \
+                patch.object(sync, 'git', side_effect=results), \
+                patch.object(sync, 'integration_status', return_value='conflicts'), \
+                patch.object(sync, 'tracking_candidate', return_value='c' * 40), \
+                patch.object(sync, 'review_candidate', return_value=(sync.TRACKING, 'c' * 40, 'conflicts', True)), \
+                patch.object(sync, 'github') as github:
+            result = sync.sync()
+        self.assertEqual(result['pull_request'], url)
+        github.assert_called_once()
+        self.assertEqual(github.call_args.args[:2], ('PATCH', f'repos/{sync.REPOSITORY}/pulls/5'))
+
     def test_integrated_release_does_not_preview_or_publish(self):
         with patch.object(sync, 'git', return_value=subprocess.CompletedProcess([], 0, '')) as git:
             self.assertEqual(sync.integration_status('custom', 'source'), 'integrated')
