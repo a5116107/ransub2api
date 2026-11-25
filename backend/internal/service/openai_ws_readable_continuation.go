@@ -97,6 +97,23 @@ func openAIWSUnsentAgentTurn(err error, body []byte, model string, turn int) err
 	return &openAIWSUnsentTurnError{cause: closed, body: append([]byte(nil), body...), model: model, turn: turn, keepAccount: true, completedSource: route.completedSource}
 }
 
+// Use only before the current generation's first physical write. A known
+// different producer may enter the existing verified recovery path; missing
+// evidence, storage failures and same-account scope changes stay terminal.
+func (s *OpenAIGatewayService) openAIWSUnsentResponseOwnerTurn(ctx context.Context, c *gin.Context, account *Account, err error, source, payload []byte, model string, turn int) error {
+	var denied *OpenAITurnAdmissionError
+	if !errors.As(err, &denied) || denied.Reason != "http_continuation_scope_changed" || openAIWSAgentRecoveryFromContext(ctx) == nil {
+		return err
+	}
+	previous := gjson.GetBytes(payload, "previous_response_id").String()
+	owner, found, ownerErr := s.getOpenAIWSStateStore().GetResponseOwner(ctx, getOpenAIGroupIDFromContext(c), previous)
+	if ownerErr != nil || !found || !owner.Valid() || owner.Scope.AccountID == account.ID {
+		return err
+	}
+	routeErr := &openAIWSOwnerRouteError{cause: openAIAgentRecoveryError("owner_unavailable")}
+	return openAIWSUnsentAgentTurn(routeErr, source, model, turn)
+}
+
 type openAIWSUnsentOwnerProofKey struct{}
 type openAIWSUnsentAdmissionKey struct{}
 

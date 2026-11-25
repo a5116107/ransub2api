@@ -154,7 +154,10 @@ func gatewayTestRequest(router *gin.Engine, ctx context.Context, body string) *h
 func gatewayTestStream(protocol string) string {
 	switch protocol {
 	case "anthropic":
-		return "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"synthetic answer\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+		return "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"synthetic-message\",\"type\":\"message\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"synthetic answer\"}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	case "gemini":
 		return "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"synthetic answer\"}]},\"finishReason\":\"STOP\"}]}\n\n"
 	case "chat":

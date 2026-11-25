@@ -1971,6 +1971,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		continuationCtx, continuationErr := s.bindOpenAIResponseContinuation(ctx, c, account, payload)
 		if continuationErr != nil {
+			if latencyGenerationStartedTurn != turn {
+				continuationErr = s.openAIWSUnsentResponseOwnerTurn(ctx, c, account, continuationErr, clientPayload, payload, originalModel, turn)
+			}
 			return nil, continuationErr
 		}
 		checkAdmission := func(admissionCtx context.Context) (*Account, error) {

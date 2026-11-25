@@ -24,6 +24,7 @@ func TestBPSServiceTierWireContract(t *testing.T) {
 		{name: "boolean", present: true, input: true, invalid: true},
 		{name: "array", present: true, input: []any{"priority"}, invalid: true},
 		{name: "empty", present: true, input: "", invalid: true},
+		{name: "whitespace", present: true, input: " \t ", invalid: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source := testSource()

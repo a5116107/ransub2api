@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,65 @@ func TestOpenAI409WSUnsentTurnBoundary(t *testing.T) {
 				current[0] = '!'
 				again, _, _, _ := OpenAIWSUnsentTurnPayload(err)
 				require.True(t, gjson.ValidBytes(again))
+			}
+		})
+	}
+}
+
+func TestOpenAIWSUnsentResponseOwnerRequiresKnownDifferentProducer(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		owner      bool
+		same       bool
+		storeFails bool
+		manager    bool
+		reason     string
+		validBody  bool
+		want       bool
+	}{
+		{"different_producer", true, false, false, true, "http_continuation_scope_changed", true, true},
+		{"same_producer_scope_change", true, true, false, true, "http_continuation_scope_changed", true, false},
+		{"unknown_producer", false, false, false, true, "http_continuation_scope_changed", true, false},
+		{"store_failure", false, false, true, true, "http_continuation_scope_changed", true, false},
+		{"recovery_unbound", true, false, false, false, "http_continuation_scope_changed", true, false},
+		{"unavailable_not_scope_change", true, false, false, true, "http_continuation_unavailable", true, false},
+		{"invalid_source", true, false, false, true, "http_continuation_scope_changed", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{}
+			if tc.storeFails {
+				svc.cache = &stubGatewayCache{}
+			}
+			producer := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			selected := &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			if tc.same {
+				selected = producer
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Set("api_key", &APIKey{ID: 201, UserID: 101, GroupID: int64Ptr(17)})
+			SetOpenAIResponseOwner(c, 101, 201, "resp_owner_fixture")
+			ctx := context.Background()
+			if tc.manager {
+				ctx = context.WithValue(ctx, openAIWSAgentRecoveryKey{}, &openAIWSAgentRecovery{})
+			}
+			if tc.owner {
+				owner := OpenAIResponseOwner{UserID: 101, APIKeyID: 201, Scope: openAIWSContinuationScope(producer, "gpt-5.1", "")}
+				require.NoError(t, svc.getOpenAIWSStateStore().BindResponseOwner(ctx, 17, "resp_owner_fixture", owner, time.Minute))
+			}
+			body := []byte(`{"model":"gpt-5.1","previous_response_id":"resp_owner_fixture","input":"current frame"}`)
+			source := append([]byte(nil), body...)
+			if !tc.validBody {
+				source = []byte("invalid")
+			}
+			err := svc.openAIWSUnsentResponseOwnerTurn(ctx, c, selected, denyOpenAITurn(tc.reason), source, body, "gpt-5.1", 2)
+			payload, model, turn, retry := OpenAIWSUnsentTurnPayload(err)
+			require.Equal(t, tc.want, retry)
+			if retry {
+				require.Equal(t, source, payload)
+				require.Equal(t, "gpt-5.1", model)
+				require.Equal(t, 2, turn)
+				require.True(t, OpenAIWSUnsentTurnKeepsAccount(err))
 			}
 		})
 	}

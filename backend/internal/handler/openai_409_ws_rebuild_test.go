@@ -354,8 +354,9 @@ func runReadableWSContinuationWithOptions(t *testing.T, mode, scenario string, o
 		history = nil
 	} // No earlier readable intent exists in the connection either.
 	issue715WSSend(t, h.clientConn, create(history, ""))
-	first := gjson.GetBytes(issue715WSRead(t, h.clientConn), "response")
-	require.Equal(t, "completed", first.Get("status").String())
+	firstRaw := issue715WSRead(t, h.clientConn)
+	first := gjson.GetBytes(firstRaw, "response")
+	require.Equal(t, "completed", first.Get("status").String(), string(firstRaw))
 	tools := &httpRebuildTools{additional: option.additionalTool}
 	for _, item := range first.Get("output").Array() {
 		history = append(history, item.Raw)

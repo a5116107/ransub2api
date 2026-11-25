@@ -4,16 +4,16 @@
 
 <!-- resume:start -->
 D8/D9集成v2.25.0；保留历史流量/余额预测/旧守护打票，不CI、不提升在研供应池。
-唯一integration/upstream-stable；HEAD e16505d58/MERGE_HEAD fd354ef87；114冲突已解未提交。
+唯一integration/upstream-stable；5f1a4eb1c合并已推自有仓库；PR4可合并，旧PR3已关闭。
 生产.9/de8b86ed8916，实载c8cec584a18135fe；PG/Redis原ID已核，15GB/5.9GB可用。
-UI652文件6790pass/53原skip，类型/构建通过；ESLint唯一警告修后5pass。
-PG14流量历史/幂等+共享Redis3pass；forecast/coupon SQL25pass；审核共享Key5pass。
-保留race1165pass/6缺DB skip，SQL另已补；两个Windows权限同例Linux非root通过。
-已补预测退出/wire、分组夹具/Redis、HTTP与WS恢复后的归属刷新、bridge未发送交接。
-bridge原2失败场景现4pass；native显式指针不再被自动丢弃；所有临时诊断已删。
-指纹库CRLF致SHA变更已定位并以精确LF属性修复；时序零毫秒断言修复，专项race退出0。
-当前73238全core、19316不限量增量lint运行中；证据flow-review/upstream-225-*。
-下一步收敛这两项及必要race→提交候选→副本升级回退→PR/发布/排空上线，保留回滚。
+UI652文件6790pass/53原skip，类型/构建通过；SQL保留及共享Redis3pass。
+forecast/coupon SQL25pass、审核共享Key5pass；保留race1165pass/6原skip。
+预测退出/wire、恢复归属、指纹LF及零毫秒断言已修；专项race通过。
+不限量lint固定e16505d58：72项修复后0 issues；最终新增业务改动同命令0，vet0。
+全源码54592pass/256skip/43fail事件；Windows权限/脚本已分离，业务失败未报绿。
+原生/透传WS未发送交接、BPS空档位/Anthropic夹具已修；Redis5恢复race168pass/0skip。
+Linux非root四包已过；真实PG14扩大198入口运行中；证据flow-review/upstream-225-*。
+备份305199343bytes已校验、生产未变；下一：最终包/副本四阶段/PR复核→发行上线。
 原28项20done/8部分；外部契约/非文本/缓存净收益保持；历史data与拒删scratch保留。
 <!-- resume:end -->
 
@@ -79,4 +79,4 @@ bridge原2失败场景现4pass；native显式指针不再被自动丢弃；所�
 - Windows完整repository缺`SeCreateSymbolicLinkPrivilege`，Linux同例已过；管理员提供权限后重跑，未改skip。
 - 历史拒删的候选、overlay、pyc和运维脚本完整路径/大小/证据见DECISIONS；均保留由拥有者处理，不重试或移动；正式.1包仍在-final。
 - 历史stream-health/production-failover/release-build拒删路径与字节见DECISIONS，拥有者处理；不换工具重试。
-- 本轮原规则全包lint为62项既存诊断（61项未改文件、1项原行），增量0；保留失败输出，不称整包全绿。
+- 增量lint固定e16505d58且不截断数量；72项及最终业务改动0 issues，vet0；完整旧失败保留。

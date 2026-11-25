@@ -1420,13 +1420,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				// Availability describes the final wire tier, not the client's
 				// pre-policy tier. Check before RPM and again after its wait.
 				if _, err := checkAdmission(out, model); err != nil {
-					return out, nil, err
+					return out, nil, s.openAIWSUnsentResponseOwnerTurn(ctx, c, account, err, clientPayload, out, requestModelForThisFrame, turnNo)
 				}
 				if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
 					return out, nil, err
 				}
 				if _, err := checkAdmission(out, model); err != nil {
-					return out, nil, err
+					return out, nil, s.openAIWSUnsentResponseOwnerTurn(ctx, c, account, err, clientPayload, out, requestModelForThisFrame, turnNo)
 				}
 				pendingLatencyCtx = turnLatencyCtx
 				activePolicyModel.Store(&model)
@@ -1558,6 +1558,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				model := gjson.GetBytes(payload, "model").String()
 				if _, err := checkAdmission(payload, model); err != nil {
+					err = s.openAIWSUnsentResponseOwnerTurn(ctx, c, account, err, pendingAgentSource, payload, usageMeta.requestModelForFrame(pendingAgentSource), max(2, int(completedTurns.Load())+1))
 					return openAIWSUnsentTurn(err, pendingAgentSource, usageMeta.requestModelForFrame(pendingAgentSource), max(2, int(completedTurns.Load())+1))
 				}
 				if _, err := keyTurn.begin(ctx); err != nil {
@@ -1565,7 +1566,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				if keyAuthority != nil || s.hasAvailabilityAdmission() || authenticatedResponseOwner {
 					if _, err := checkAdmission(payload, model); err != nil {
-						return err
+						return s.openAIWSUnsentResponseOwnerTurn(ctx, c, account, err, pendingAgentSource, payload, usageMeta.requestModelForFrame(pendingAgentSource), max(2, int(completedTurns.Load())+1))
 					}
 				}
 				if err := s.priorityLatencyBeforeSend(pendingLatencyCtx, account); err != nil {

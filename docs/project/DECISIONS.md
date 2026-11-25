@@ -2527,3 +2527,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 清理未引用 isGrokVideoCreateEndpoint、无效赋值、未检查的测试断言/资源退出及格式问题；临时打印/调用栈诊断全部删除。depguard 保留生产禁反向依赖，仅补齐与原注释一致的嵌套 *_test.go 排除，原非规范头大小写测试不改成其他断言。
 - 当前源码扩大回归和不限数量的增量 lint 正在执行；所有失败日志仍保留，未宣称整仓通过。生产进程仍 2.21.0-ransub.9/c8cec584a18135fe，原 PostgreSQL/Redis 容器身份保持。候选提交、PR 同步、生产副本四阶段、发行、排空切换与公网业务各自待验，不用源码测试替代加载/业务证据。原 28 项 20 done/8 部分不变。
 - 本轮 Linux 两个已退出测试程序保留在 H:/Root/DevCache/tmp/sub2api-go/upstream-225-repository.test 与 upstream-225-sysutil.test；首次合并构建与删除的组合命令在创建进程前被宿主拒绝，后续仅执行独立验证，没有换工具删除。历史 12 个 1164 bytes 图片夹具保留，未藏入 ignore、提交或删除。
+
+
+### 2026-11-26 D8/D9：固定基线静态清零及原生 WS 未发送恢复
+
+- 合并提交 5f1a4eb1c 已同步自有 integration/upstream-stable；PR #4 对 production 为 CLEAN/MERGEABLE、无 CI 检查，旧冲突 PR #3 已关闭。候选仍不等于上线；沿原 28 项 20 done/8 部分，不提升开发供应池、不自行合并 PR。
+- 取消 lint 的诊断数量上限后，以固定 e16505d5872b491d97ca16229c155124ffd01f4b 对比再检出 72 项（70 errcheck/2 staticcheck）。42 个测试文件原位使用已有 assertions.Type、资源错误处理及 tagged switch；未减规则、不用移动 HEAD 避开诊断。最终命令在原检查范围加入 basispoints/accountconnectiontiming，保留 unit,integration、concurrency 1、max-issues-per-linter 0/max-same-issues 0/new-from-rev；实际退出 0、0 issues.（upstream-225-go-lint-delivery.txt）。相关七包 go vet -p 1 -tags unit 退出 0（upstream-225-delivery-vet.txt）。
+- 完整源码输出的实际事件为 54592 pass/256 skip/43 fail，9 包失败；不得作为全仓绿证。Anthropic 连接夹具缺 message_start 与合法 delta/usage，以完整原生事件修复，不放宽生产检测。BPS 对明确空白 service_tier 原位拒绝，缺失/null 兼容保持，增加纯空白边界。原 WS 自动降级测试同时验证显式客户端指针在默认模式保留与显式 legacy 模式原 full-create 行为，未删除其原断言。
+- 新响应作用域校验先于原 agent recovery，导致 native/ctx_pool/shared/dedicated/passthrough 的 guard_live/refusal 在安全的未发送下一帧提前终止。复用原 openAIWSUnsentAgentTurn，收敛 bridge 已有重复判断到同一 helper；只允许已知不同账号的作用域冲突进入重建。存储失败、未知记录、同账号模型/档位/线路变化及已发送当前轮仍终结；重建继续核对开关、完整拥有者/工具和最终字节。不增加第二套调度或宽松透传。
+- 最终 go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^Test(OpenAIWSUnsent|OpenAI409WSUnsent|OpenAIWSPlaintext|WSResponseOwner|WSNodeOwner|OpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledPrevResponseCreationScope|Issue854Owner|OpenAI409WSReadable|OpenAI409WSReviewRepairs|OpenAI409WSInitial)' -count=1 -timeout=8m -json 退出 0：168 条父子通过事件/0 fail/skip，service18.391s、handler64.413s（upstream-225-owner-recovery-final.jsonl）。7 类新 helper 保护边界三轮24事件另通过，不叠加成独立场景。原生与透传当前帧在读取、RPM 等待和写前不同边界都已覆盖。
+- 一次恢复复查遗漏 Redis5 子进程 PATH，系统 Redis3 让初代归属写入直接 store_unavailable；失败保留，不据此改生产 Lua。显式恢复既有 H:/Root/tools/redis/5.0.14.1 后定位剩余透传边界再修复，最终168事件全部通过。此前原始失败、诊断不足、fmt 缺失与日志文件占用均保留为失败；最终日志为独立命令，不覆盖原失败日志。
+- Windows 的 chmod/符号链接与 shell 内核限制在 Linux 非 root/无网络/exec tmpfs 使用同源测试程序验证：mihomo174pass/6原skip、reauthruntime11pass/0skip、requestcapture112pass/1原skip、BPS691pass/0skip；全部退出0。初始 tmpfs 缺 exec 与 PowerShell 未引用点参数失败分别保留，未改变业务实现或添加 skip。两个已验的 sysutil/repository Linux 权限用例证据复用。
+- 生产只读确认仍 .9/de8b86ed8916、程序 SHA c8cec584a18135fe373f72b7e247588264206b1aa9360ea4d214f8aa48fa96ff；16账号/2组/1用户/1Key/432迁移，PG/Redis原ID保持。按原部署工具建立 /opt/sub2api/deploy/backups/ransub2api-2.25.0-ransub.1，数据库305199343bytes/SHA256 51321ca30321e6269603af601b413ac092d8492cc859d1d2a3767b1c34e825b4，配置、持久数据和旧程序均保留，production_changed=false；候选副本演练不等于生产切换。
+- 已核明未公开 .1 候选仍绑定旧5f1a4eb1c，精确移除其四个普通制品文件共245886975bytes后复用同一目录重建，不删任何已发布版本/回退资料/依赖缓存。原12PNG、历史拒删scratch保留。198受影响测试入口的PG14/Redis7扩大race运行中；其实际结果、最终制品和副本演练继续追加，不把已知源码通过外推为线上业务恢复。

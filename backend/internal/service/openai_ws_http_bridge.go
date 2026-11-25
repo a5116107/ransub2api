@@ -711,18 +711,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	for {
 		upstreamReq, buildErr := buildUpstreamRequest(body)
 		if buildErr != nil {
-			var denied *OpenAITurnAdmissionError
-			if forwardStart.IsZero() && errors.As(buildErr, &denied) && denied.Reason == "http_continuation_scope_changed" {
-				// A positively known, different producer belongs to the existing
-				// unsent-owner recovery path. Never reinterpret store failures or
-				// same-account model/tier/route changes as permission to replay.
-				previous := gjson.GetBytes(body, "previous_response_id").String()
-				owner, found, ownerErr := s.getOpenAIWSStateStore().GetResponseOwner(ctx, getOpenAIGroupIDFromContext(c), previous)
-				if recovery := openAIWSAgentRecoveryFromContext(ctx); recovery != nil && ownerErr == nil && found && owner.Valid() && owner.Scope.AccountID != account.ID {
-					source, _ := ctx.Value(openAIWSAgentSourceKey{}).([]byte)
-					routeErr := &openAIWSOwnerRouteError{cause: openAIAgentRecoveryError("owner_unavailable")}
-					return nil, openAIWSUnsentAgentTurn(routeErr, source, originalModel, turn)
-				}
+			if forwardStart.IsZero() {
+				source, _ := ctx.Value(openAIWSAgentSourceKey{}).([]byte)
+				buildErr = s.openAIWSUnsentResponseOwnerTurn(ctx, c, account, buildErr, source, body, originalModel, turn)
 			}
 			return nil, buildErr
 		}
